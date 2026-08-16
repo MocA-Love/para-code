@@ -4,27 +4,51 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { describe, expect, it, vi } from 'vitest';
-import { updateCcusageWarmLeaseLifecycle } from '../app/(settings)/ccusage.js';
-import { updateSystemSpaceDiskWarmLeaseLifecycle } from '../app/(settings)/system.js';
-import { MobileWarmLeaseAppStateBridge } from './appState.js';
-import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable } from './store.js';
+import React, { createElement, type ComponentType } from 'react';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { encodePairingUri, generateIdentity, toBase64Url, type Identity } from '@para/protocol';
+import CcusageScreen, { updateCcusageWarmLeaseLifecycle } from '../app/(settings)/ccusage.js';
+import SystemScreen, { updateSystemSpaceDiskWarmLeaseLifecycle } from '../app/(settings)/system.js';
+import { MobileWarmLeaseAppStateBridge, useAppStore } from './appState.js';
+import {
+	mobileWarmLeaseOwnerRevision, MobileController, MobileWarmLeaseLifecycle,
+	shouldMaintainMobileWarmLease, type MobileDisposable, type MobileWarmLeaseResource, type StoreState,
+} from './store.js';
+import type { PairedCredentials } from './relayClient.js';
+
+const componentHarness = vi.hoisted(() => ({
+	focused: true,
+	appActive: true,
+	storage: new Map<string, string>(),
+	pairCredentials: undefined as PairedCredentials | undefined,
+	leaseEvents: [] as string[],
+}));
+
+vi.mock('./store.js', async () => {
+	const actual = await vi.importActual<typeof import('./store.js')>('./store.js');
+	return {
+		...actual,
+		// Keep every runtime online so an identity/revision-only render cannot be
+		// accidentally covered by a simultaneous connection transition.
+		createEmptyStoreState: (): StoreState => ({ ...actual.createEmptyStoreState(), connection: 'online' }),
+	};
+});
 
 vi.mock('react-native', () => {
-	const component = () => null;
 	return {
-		ActivityIndicator: component,
+		ActivityIndicator: 'ActivityIndicator',
 		AppState: { currentState: 'active', addEventListener: () => ({ remove() { } }) },
-		Pressable: component,
-		RefreshControl: component,
-		ScrollView: component,
-		StyleSheet: { create: <T>(value: T) => value },
-		Text: component,
-		View: component,
+		Pressable: 'Pressable',
+		RefreshControl: 'RefreshControl',
+		ScrollView: 'ScrollView',
+		StyleSheet: { absoluteFill: {}, create: <T>(value: T) => value },
+		Text: 'Text',
+		View: 'View',
 	};
 });
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
-vi.mock('expo-router', () => ({ useIsFocused: () => true }));
+vi.mock('expo-router', () => ({ useIsFocused: () => componentHarness.focused }));
 vi.mock('react-native-svg', () => ({ default: () => null, Circle: () => null }));
 vi.mock('./platform.js', () => ({
 	configureNotificationHandler() { },
@@ -36,8 +60,23 @@ vi.mock('./platform.js', () => ({
 	migrateLegacyTerminalOperationOutbox: async () => { },
 	persistNotifyKey: async () => { },
 	presentLocalNotification: async () => { },
-	rnSocketFactory: () => { throw new Error('socket factory is not used by warm lease seam tests'); },
-	secureKeyStore: { getItem: async () => null, setItem: async () => { }, deleteItem: async () => { } },
+	rnSocketFactory: () => { throw new Error('socket factory is replaced at the controller I/O boundary'); },
+	secureKeyStore: {
+		getItem: async (key: string) => componentHarness.storage.get(key) ?? null,
+		setItem: async (key: string, value: string) => { componentHarness.storage.set(key, value); },
+		deleteItem: async (key: string) => { componentHarness.storage.delete(key); },
+	},
+}));
+vi.mock('./pairingClient.js', () => ({
+	PairingClient: class {
+		cancel(): void { }
+		async pair(): Promise<PairedCredentials> {
+			if (componentHarness.pairCredentials === undefined) {
+				throw new Error('pair credentials were not configured by the test');
+			}
+			return componentHarness.pairCredentials;
+		}
+	},
 }));
 vi.mock('../modules/para-voice-session/index.js', () => ({
 	activateVoiceSession: async () => { },
@@ -46,10 +85,10 @@ vi.mock('../modules/para-voice-session/index.js', () => ({
 	isVoiceSessionSupported: () => false,
 	onVoiceSessionRemoteStop: () => () => { },
 }));
-vi.mock('./components/connectionGate.js', () => ({ ConnectionGate: () => null }));
+vi.mock('./components/connectionGate.js', () => ({ ConnectionGate: 'ConnectionGate' }));
 vi.mock('./components/screenHeader.js', () => ({ HeaderCircleButton: () => null, ScreenHeader: () => null }));
-vi.mock('./components/selectablePill.js', () => ({ SelectablePill: () => null }));
-vi.mock('./hooks/useAppIsActive.js', () => ({ useAppIsActive: () => true }));
+vi.mock('./components/selectablePill.js', () => ({ SelectablePill: 'SelectablePill' }));
+vi.mock('./hooks/useAppIsActive.js', () => ({ useAppIsActive: () => componentHarness.appActive }));
 vi.mock('./hooks/useTabBarSpacer.js', () => ({ useTabBarSpacer: () => 0 }));
 vi.mock('./ipad/useContentColumn.js', () => ({ useContentColumnStyle: () => ({}) }));
 vi.mock('./theme.js', () => ({
@@ -73,6 +112,128 @@ interface TestWarmLeaseController {
 	createWarmLease(resource: 'ccusage' | 'spaceDisk'): MobileDisposable;
 	releaseAllWarmLeases(): void;
 }
+
+const controllerOwners = new WeakMap<MobileController, string>();
+const controllerLeases = new WeakMap<MobileController, Set<() => void>>();
+let pcBIdentity: Identity;
+
+function credentials(owner: string, identity: Identity, token = `token-${owner}`): PairedCredentials {
+	return {
+		relayUrl: 'wss://relay.test',
+		deviceId: owner,
+		mobileId: `mobile-${owner}`,
+		mobileToken: token,
+		pcPublicKey: identity.publicKey,
+	};
+}
+
+function storedPc(owner: string, name: string, identity: Identity): object {
+	return {
+		id: owner,
+		name,
+		renamed: false,
+		addedAt: owner === 'pc-a' ? 1 : 2,
+		...credentials(owner, identity),
+		pcPublicKey: toBase64Url(identity.publicKey),
+	};
+}
+
+async function flushReact(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
+async function renderScreen(component: ComponentType): Promise<ReactTestRenderer> {
+	let renderer: ReactTestRenderer | undefined;
+	await act(async () => {
+		renderer = create(createElement(component));
+		await flushReact();
+	});
+	return renderer!;
+}
+
+async function updateScreen(renderer: ReactTestRenderer, component: ComponentType): Promise<void> {
+	await act(async () => {
+		renderer.update(createElement(component));
+		await flushReact();
+	});
+}
+
+beforeAll(async () => {
+	vi.useFakeTimers();
+	vi.stubGlobal('__DEV__', false);
+	vi.stubGlobal('React', React);
+	(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+	vi.spyOn(MobileController.prototype, 'connect').mockImplementation(function (this: MobileController, creds) {
+		controllerOwners.set(this, creds.deviceId);
+		this.state.connection = 'online';
+		(this as unknown as { onChange: (state: StoreState) => void }).onChange({ ...this.state });
+	});
+	vi.spyOn(MobileController.prototype, 'reconnect').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'disconnect').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'resumeFromBackground').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'suspendForBackground').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'ensureConnected').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'detachAll').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'setTerminalViewport').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'sendNotifyPrefs').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'reset').mockResolvedValue(undefined);
+	vi.spyOn(MobileController.prototype, 'usageDashboard').mockResolvedValue({
+		days: [], sessions: [], projects: [], failedReports: [], fetchedAt: 1,
+	});
+	vi.spyOn(MobileController.prototype, 'systemResources').mockResolvedValue({
+		host: { cpu: 10, cores: 8, memory: { total: 100, used: 20 }, disks: [], collectedAt: 1 },
+		snapshot: {
+			app: {
+				cpu: 1, memory: 2,
+				main: { cpu: 1, memory: 1 }, renderer: { cpu: 0, memory: 1 }, other: { cpu: 0, memory: 0 },
+			},
+			scopes: [], totalCpu: 1, totalMemory: 2, hostTotalMemory: 100, collectedAt: 1,
+		},
+	});
+	vi.spyOn(MobileController.prototype, 'spaceDisk').mockResolvedValue({ spaces: [], measuredAt: 1, durationMs: 1 });
+	vi.spyOn(MobileController.prototype, 'createWarmLease').mockImplementation(function (this: MobileController, resource: MobileWarmLeaseResource) {
+		const owner = controllerOwners.get(this);
+		if (owner === undefined) {
+			throw new Error('warm lease controller has not crossed the connect boundary');
+		}
+		componentHarness.leaseEvents.push(`${owner}:acquire:${resource}`);
+		let disposed = false;
+		const active = controllerLeases.get(this) ?? new Set<() => void>();
+		controllerLeases.set(this, active);
+		const dispose = () => {
+			if (disposed) { return; }
+			disposed = true;
+			active.delete(dispose);
+			componentHarness.leaseEvents.push(`${owner}:release:${resource}`);
+		};
+		active.add(dispose);
+		return { dispose };
+	});
+	vi.spyOn(MobileController.prototype, 'releaseAllWarmLeases').mockImplementation(function (this: MobileController) {
+		for (const dispose of [...(controllerLeases.get(this) ?? [])]) {
+			dispose();
+		}
+	});
+
+	const pcAIdentity = generateIdentity();
+	pcBIdentity = generateIdentity();
+	componentHarness.storage.set('para.pcs', JSON.stringify([
+		storedPc('pc-a', 'PC A', pcAIdentity),
+		storedPc('pc-b', 'PC B', pcBIdentity),
+	]));
+	componentHarness.storage.set('para.activePc', 'pc-a');
+	await useAppStore.getState().init();
+});
+
+afterAll(() => {
+	vi.clearAllTimers();
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+	delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+});
 
 describe('mobile warm lease screen lifecycle', () => {
 	it('requires focused, active and online for ccusage', () => {
@@ -224,5 +385,143 @@ describe('mobile warm lease screen lifecycle', () => {
 			'online:acquire', 'online:release', 'volume:acquire', 'volume:release',
 		]);
 		lifecycle.dispose();
+	});
+
+	it('renders ccusage through actual Zustand projection and hands the lease across PC and inactive boundaries', async () => {
+		componentHarness.focused = true;
+		componentHarness.appActive = true;
+		if (useAppStore.getState().activePcId !== 'pc-a') {
+			useAppStore.getState().switchPc('pc-a');
+		}
+		expect(useAppStore.getState()).toMatchObject({ activePcId: 'pc-a', connection: 'online' });
+		componentHarness.leaseEvents.length = 0;
+		const renderer = await renderScreen(CcusageScreen);
+		try {
+			expect(componentHarness.leaseEvents).toEqual(['pc-a:acquire:ccusage']);
+
+			await act(async () => {
+				useAppStore.getState().switchPc('pc-b');
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents).toEqual([
+				'pc-a:acquire:ccusage', 'pc-a:release:ccusage', 'pc-b:acquire:ccusage',
+			]);
+
+			componentHarness.focused = false;
+			await updateScreen(renderer, CcusageScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:release:ccusage');
+			componentHarness.focused = true;
+			await updateScreen(renderer, CcusageScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:acquire:ccusage');
+
+			componentHarness.appActive = false;
+			await updateScreen(renderer, CcusageScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:release:ccusage');
+			componentHarness.appActive = true;
+			await updateScreen(renderer, CcusageScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:acquire:ccusage');
+
+			await act(async () => {
+				useAppStore.setState({ connection: 'offline' });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents).toEqual([
+				'pc-a:acquire:ccusage', 'pc-a:release:ccusage', 'pc-b:acquire:ccusage',
+				'pc-b:release:ccusage', 'pc-b:acquire:ccusage', 'pc-b:release:ccusage',
+				'pc-b:acquire:ccusage', 'pc-b:release:ccusage',
+			]);
+		} finally {
+			await act(async () => { renderer.unmount(); });
+		}
+	});
+
+	it('renders system through actual Zustand revision projection and every volume lease boundary', async () => {
+		componentHarness.focused = true;
+		componentHarness.appActive = true;
+		await act(async () => {
+			useAppStore.getState().switchPc('pc-a');
+			await flushReact();
+		});
+		expect(useAppStore.getState()).toMatchObject({ activePcId: 'pc-a', connection: 'online' });
+		componentHarness.leaseEvents.length = 0;
+		const renderer = await renderScreen(SystemScreen);
+		try {
+			expect(componentHarness.leaseEvents).toEqual([]);
+			const volume = renderer.root.findByProps({ accessibilityLabel: 'ボリューム' });
+			await act(async () => {
+				volume.props.onPress();
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents).toEqual(['pc-a:acquire:spaceDisk']);
+
+			await act(async () => {
+				useAppStore.getState().switchPc('pc-b');
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents).toEqual([
+				'pc-a:acquire:spaceDisk', 'pc-a:release:spaceDisk', 'pc-b:acquire:spaceDisk',
+			]);
+
+			const previousRevision = useAppStore.getState().controllerRevision;
+			componentHarness.pairCredentials = credentials('pc-b', pcBIdentity, 'token-pc-b-repaired');
+			const uri = encodePairingUri({
+				version: 1,
+				relayUrl: 'wss://relay.test',
+				deviceId: 'pc-b',
+				pairId: 'repair-pair',
+				pairingToken: new Uint8Array(32).fill(7),
+				pcPublicKey: pcBIdentity.publicKey,
+				pcName: 'PC B',
+			});
+			await act(async () => {
+				await useAppStore.getState().pairFromUri(uri, 'Phone', () => { });
+				await flushReact();
+			});
+			expect(useAppStore.getState()).toMatchObject({
+				activePcId: 'pc-b',
+				controllerRevision: previousRevision + 1,
+				connection: 'online',
+			});
+			expect(componentHarness.leaseEvents).toEqual([
+				'pc-a:acquire:spaceDisk', 'pc-a:release:spaceDisk', 'pc-b:acquire:spaceDisk',
+				'pc-b:release:spaceDisk', 'pc-b:acquire:spaceDisk',
+			]);
+
+			componentHarness.focused = false;
+			await updateScreen(renderer, SystemScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:release:spaceDisk');
+			componentHarness.focused = true;
+			await updateScreen(renderer, SystemScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:acquire:spaceDisk');
+
+			componentHarness.appActive = false;
+			await updateScreen(renderer, SystemScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:release:spaceDisk');
+			componentHarness.appActive = true;
+			await updateScreen(renderer, SystemScreen);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:acquire:spaceDisk');
+
+			await act(async () => {
+				useAppStore.setState({ connection: 'offline' });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:release:spaceDisk');
+			await act(async () => {
+				useAppStore.setState({ connection: 'online' });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:acquire:spaceDisk');
+
+			const process = renderer.root.findByProps({ accessibilityLabel: 'プロセス' });
+			await act(async () => {
+				process.props.onPress();
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.slice(-2)).toEqual([
+				'pc-b:acquire:spaceDisk', 'pc-b:release:spaceDisk',
+			]);
+		} finally {
+			await act(async () => { renderer.unmount(); });
+		}
 	});
 });
