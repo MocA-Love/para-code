@@ -243,6 +243,8 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
 	private _bindings: readonly IParadisPaneBinding[] = [];
+	private _bindingByToken: ReadonlyMap<string, IParadisPaneBinding> = new Map();
+	private _bindingsByPageId: ReadonlyMap<string, readonly IParadisPaneBinding[]> = new Map();
 	private _seenTokens = new Set<string>();
 	private readonly _poller: ParadisAgentBrowserBindingPoller;
 	private readonly _tokenRefreshCoalescer: ParadisAgentBrowserBindingTokenRefreshCoalescer;
@@ -325,7 +327,11 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			this._tokenRefreshCoalescer.schedule();
 		}));
 		this._register(this.terminalService.onDidChangeInstances(() => this.scheduleFire()));
-		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.scheduleFire()));
+		this._register(this.terminalService.onAnyInstanceTitleChange(instance => {
+			if (this.paneTokenService.getTokenForInstance(instance.instanceId) !== undefined) {
+				this.scheduleFire();
+			}
+		}));
 		this._register(this.browserViewWorkbenchService.onDidChangeBrowserViews(() => this.onBrowserViewsChanged()));
 		this._register(this.terminalScopeService.onDidChangeStableScope(event => {
 			this.scheduleFire();
@@ -526,7 +532,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				title: instance.title,
 				agentKind: detectAgentKind(instance),
 				mcpConnected: this._seenTokens.has(token),
-				binding: this._bindings.find(b => b.token === token),
+				binding: this.getBindingForToken(token),
 				bindEligibility: model ? this.getBindEligibility(model, token) : undefined,
 			});
 		}
@@ -545,11 +551,11 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	getBindingsForPage(pageId: string): IParadisPaneBinding[] {
-		return this._bindings.filter(binding => binding.pageId === pageId);
+		return [...(this._bindingsByPageId.get(pageId) ?? [])];
 	}
 
 	getBindingForToken(token: string): IParadisPaneBinding | undefined {
-		return this._bindings.find(binding => binding.token === token);
+		return this._bindingByToken.get(token);
 	}
 
 	/** このウィンドウのターミナルペインにトークンが1本でも割り当てられているか（renderer内で同期判定）。 */
@@ -588,8 +594,23 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				const changed = JSON.stringify(bindings) !== JSON.stringify(this._bindings)
 					|| seenTokens.length !== this._seenTokens.size
 					|| seenTokens.some(token => !this._seenTokens.has(token));
+				const bindingByToken = new Map<string, IParadisPaneBinding>();
+				const bindingsByPageId = new Map<string, IParadisPaneBinding[]>();
+				for (const binding of bindings) {
+					if (!bindingByToken.has(binding.token)) {
+						bindingByToken.set(binding.token, binding);
+					}
+					const pageBindings = bindingsByPageId.get(binding.pageId);
+					if (pageBindings) {
+						pageBindings.push(binding);
+					} else {
+						bindingsByPageId.set(binding.pageId, [binding]);
+					}
+				}
 				this._appliedRefreshSerial = refreshSerial;
 				this._bindings = bindings;
+				this._bindingByToken = bindingByToken;
+				this._bindingsByPageId = bindingsByPageId;
 				this._seenTokens = new Set(seenTokens);
 				if (refreshSerial === this._nextRefreshSerial) {
 					this._refreshRetryRequired = false;
