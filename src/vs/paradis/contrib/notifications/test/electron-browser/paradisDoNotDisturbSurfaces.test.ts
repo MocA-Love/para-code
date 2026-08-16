@@ -605,6 +605,76 @@ suite('Paradis DND actual surfaces', () => {
 		assert.deepStrictEqual({ fireCount: manualTimer.fireCount, maxPendingCount: manualTimer.maxPendingCount }, { fireCount: 4, maxPendingCount: 2 });
 	});
 
+	test('cancels both actual surface timers when a dedicated event transitions timed DND to OFF or manual ON', () => {
+		const results: object[] = [];
+		for (const transition of [
+			{ name: 'OFF', state: { enabled: false, until: undefined } },
+			{ name: 'manual ON', state: { enabled: true, until: undefined } },
+		] as const) {
+			let clock = 1_000;
+			const manualTimer = new ManualTimer(() => clock, value => clock = value);
+			class TestStatusContribution extends ParadisDoNotDisturbStatusBarContribution {
+				protected static override readonly refreshControllerFactory: ParadisDoNotDisturbRefreshControllerFactory
+					= refresh => paradisCreateDoNotDisturbRefreshController(refresh, { timer: manualTimer, now: () => clock });
+			}
+			class TestSection extends ParadisDoNotDisturbSection {
+				protected static override readonly refreshControllerFactory: ParadisDoNotDisturbRefreshControllerFactory
+					= refresh => paradisCreateDoNotDisturbRefreshController(refresh, { timer: manualTimer, now: () => clock });
+			}
+
+			const settings = store.add(new TestSettingsService({ enabled: true, until: 91_000 }, () => clock));
+			const statusbar = store.add(new TestStatusbarService());
+			store.add(new TestStatusContribution(statusbar, settings));
+			const container = createContainer(`DND timed to ${transition.name}`);
+			store.add(new TestSection(container, settings));
+			const capturedCallbackIds = [...manualTimer.capturedCallbackIds];
+			assert.deepStrictEqual({ pending: manualTimer.pendingCount, pendingDelays: manualTimer.pendingDelays() }, {
+				pending: 2,
+				pendingDelays: [60_000, 60_000],
+			});
+
+			settings.setState(transition.state);
+			settings.fireDedicated(false);
+			const renderedToggle = container.querySelector('input.pns-toggle');
+			const afterEvent = {
+				pending: manualTimer.pendingCount,
+				reads: settings.getDoNotDisturbReadCount,
+				statusUpdates: statusbar.updates.length,
+				statusText: statusbar.updates.at(-1)?.text,
+				sectionChildren: container.childElementCount,
+				toggleChecked: (renderedToggle as HTMLInputElement).checked,
+				setCount: manualTimer.setCount,
+			};
+			for (const callbackId of capturedCallbackIds) {
+				manualTimer.fireCaptured(callbackId);
+			}
+			results.push({
+				transition: transition.name,
+				afterEvent,
+				lateCallbackDeltas: {
+					reads: settings.getDoNotDisturbReadCount - afterEvent.reads,
+					statusUpdates: statusbar.updates.length - afterEvent.statusUpdates,
+					sectionRenders: container.querySelector('input.pns-toggle') === renderedToggle ? 0 : 1,
+					sets: manualTimer.setCount - afterEvent.setCount,
+					pending: manualTimer.pendingCount,
+				},
+			});
+		}
+
+		assert.deepStrictEqual(results, [
+			{
+				transition: 'OFF',
+				afterEvent: { pending: 0, reads: 4, statusUpdates: 1, statusText: '$(bell) おやすみモード', sectionChildren: 3, toggleChecked: false, setCount: 2 },
+				lateCallbackDeltas: { reads: 0, statusUpdates: 0, sectionRenders: 0, sets: 0, pending: 0 },
+			},
+			{
+				transition: 'manual ON',
+				afterEvent: { pending: 0, reads: 4, statusUpdates: 1, statusText: '$(bell-slash) おやすみ中', sectionChildren: 4, toggleChecked: true, setCount: 2 },
+				lateCallbackDeltas: { reads: 0, statusUpdates: 0, sectionRenders: 0, sets: 0, pending: 0 },
+			},
+		]);
+	});
+
 	test('rearms changed deadlines and ignores captured callbacks from the old generation', () => {
 		let clock = 1_000;
 		const manualTimer = new ManualTimer(() => clock, value => clock = value);
