@@ -10,6 +10,7 @@
 // キーは `paradis.notifications.*` プレフィックスで統一する。APIキー等の機微情報を含むため
 // StorageTarget.MACHINE を使い、Settings Sync による同期対象から外す。
 
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -52,6 +53,11 @@ export interface IParadisDoNotDisturbState {
 	readonly until: number | undefined;
 }
 
+/** おやすみモードの変更元。external は別window等からのAPPLICATION storage変更を表す。 */
+export interface IParadisDoNotDisturbChangeEvent {
+	readonly external: boolean;
+}
+
 export const IParadisNotificationsSettingsService = createDecorator<IParadisNotificationsSettingsService>('paradisNotificationsSettingsService');
 
 /**
@@ -70,6 +76,7 @@ export type ParadisNotificationsChangeScope = 'notifications' | 'aivis' | 'dnd';
 export interface IParadisNotificationsSettingsService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChange: Event<ParadisNotificationsChangeScope>;
+	readonly onDidChangeDoNotDisturb: Event<IParadisDoNotDisturbChangeEvent>;
 
 	getSelectedRingtoneId(): string;
 	setSelectedRingtoneId(id: string): void;
@@ -129,16 +136,42 @@ const KEY_DO_NOT_DISTURB_UNTIL = 'paradis.notifications.doNotDisturbUntil';
 const KEY_AIVIS = 'paradis.notifications.aivis';
 const KEY_AIVIS_CUSTOM_PRESETS = 'paradis.notifications.aivisCustomModelPresets';
 
-class ParadisNotificationsSettingsService extends Disposable implements IParadisNotificationsSettingsService {
+/**
+ * 既にpendingな0ms windowのdeadlineを動かさず、次のexternal DND通知を予約する。
+ */
+export function paradisScheduleDoNotDisturbExternalChange(scheduler: { isScheduled(): boolean; schedule(): void }): void {
+	if (!scheduler.isScheduled()) {
+		scheduler.schedule();
+	}
+}
+
+/** 通知サウンドとAivis、おやすみモード設定のAPPLICATION storage実装。 */
+export class ParadisNotificationsSettingsService extends Disposable implements IParadisNotificationsSettingsService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _onDidChange = this._register(new Emitter<ParadisNotificationsChangeScope>());
 	readonly onDidChange: Event<ParadisNotificationsChangeScope> = this._onDidChange.event;
+	private readonly _onDidChangeDoNotDisturb = this._register(new Emitter<IParadisDoNotDisturbChangeEvent>());
+	readonly onDidChangeDoNotDisturb: Event<IParadisDoNotDisturbChangeEvent> = this._onDidChangeDoNotDisturb.event;
+
+	private readonly _doNotDisturbExternalChangeScheduler = this._register(new RunOnceScheduler(
+		() => this._onDidChangeDoNotDisturb.fire({ external: true }),
+		0,
+	));
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
+
+		for (const key of [KEY_DO_NOT_DISTURB, KEY_DO_NOT_DISTURB_UNTIL]) {
+			this.storageService.onDidChangeValue(StorageScope.APPLICATION, key, this._store)(event => {
+				if (event.external !== true) {
+					return;
+				}
+				paradisScheduleDoNotDisturbExternalChange(this._doNotDisturbExternalChangeScheduler);
+			}, undefined, this._store);
+		}
 	}
 
 	getSelectedRingtoneId(): string {
@@ -234,6 +267,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 			}
 		}
 		this._onDidChange.fire('dnd');
+		this._onDidChangeDoNotDisturb.fire({ external: false });
 	}
 
 	getAivisSettings(): IParadisAivisSettings {
