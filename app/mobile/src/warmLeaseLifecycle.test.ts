@@ -387,7 +387,7 @@ describe('mobile warm lease screen lifecycle', () => {
 		lifecycle.dispose();
 	});
 
-	it('renders ccusage through actual Zustand projection and hands the lease across PC and inactive boundaries', async () => {
+	it('renders ccusage through actual Zustand activePcId-only and revision-only projections', async () => {
 		componentHarness.focused = true;
 		componentHarness.appActive = true;
 		if (useAppStore.getState().activePcId !== 'pc-a') {
@@ -395,16 +395,68 @@ describe('mobile warm lease screen lifecycle', () => {
 		}
 		expect(useAppStore.getState()).toMatchObject({ activePcId: 'pc-a', connection: 'online' });
 		componentHarness.leaseEvents.length = 0;
+		let actualActivePcId = 'pc-a';
 		const renderer = await renderScreen(CcusageScreen);
 		try {
 			expect(componentHarness.leaseEvents).toEqual(['pc-a:acquire:ccusage']);
+			const identityOnlyRevision = useAppStore.getState().controllerRevision;
+
+			await act(async () => {
+				useAppStore.setState({ activePcId: 'pc-b' });
+				await flushReact();
+			});
+			expect(useAppStore.getState()).toMatchObject({
+				activePcId: 'pc-b',
+				controllerRevision: identityOnlyRevision,
+			});
+			expect([...componentHarness.leaseEvents]).toEqual([
+				'pc-a:acquire:ccusage', 'pc-a:release:ccusage', 'pc-a:acquire:ccusage',
+			]);
+
+			await act(async () => {
+				useAppStore.setState({ activePcId: 'pc-a' });
+				await flushReact();
+			});
+			expect(useAppStore.getState()).toMatchObject({
+				activePcId: 'pc-a',
+				controllerRevision: identityOnlyRevision,
+			});
+			expect(componentHarness.leaseEvents.slice(-2)).toEqual([
+				'pc-a:release:ccusage', 'pc-a:acquire:ccusage',
+			]);
 
 			await act(async () => {
 				useAppStore.getState().switchPc('pc-b');
 				await flushReact();
 			});
-			expect(componentHarness.leaseEvents).toEqual([
-				'pc-a:acquire:ccusage', 'pc-a:release:ccusage', 'pc-b:acquire:ccusage',
+			actualActivePcId = 'pc-b';
+			expect(componentHarness.leaseEvents.slice(-2)).toEqual([
+				'pc-a:release:ccusage', 'pc-b:acquire:ccusage',
+			]);
+
+			componentHarness.leaseEvents.length = 0;
+			const previousRevision = useAppStore.getState().controllerRevision;
+			componentHarness.pairCredentials = credentials('pc-b', pcBIdentity, 'token-pc-b-ccusage-repaired');
+			const uri = encodePairingUri({
+				version: 1,
+				relayUrl: 'wss://relay.test',
+				deviceId: 'pc-b',
+				pairId: 'ccusage-repair-pair',
+				pairingToken: new Uint8Array(32).fill(6),
+				pcPublicKey: pcBIdentity.publicKey,
+				pcName: 'PC B',
+			});
+			await act(async () => {
+				await useAppStore.getState().pairFromUri(uri, 'Phone', () => { });
+				await flushReact();
+			});
+			expect(useAppStore.getState()).toMatchObject({
+				activePcId: 'pc-b',
+				controllerRevision: previousRevision + 1,
+				connection: 'online',
+			});
+			expect([...componentHarness.leaseEvents]).toEqual([
+				'pc-b:release:ccusage', 'pc-b:acquire:ccusage',
 			]);
 
 			componentHarness.focused = false;
@@ -425,17 +477,19 @@ describe('mobile warm lease screen lifecycle', () => {
 				useAppStore.setState({ connection: 'offline' });
 				await flushReact();
 			});
-			expect(componentHarness.leaseEvents).toEqual([
-				'pc-a:acquire:ccusage', 'pc-a:release:ccusage', 'pc-b:acquire:ccusage',
-				'pc-b:release:ccusage', 'pc-b:acquire:ccusage', 'pc-b:release:ccusage',
-				'pc-b:acquire:ccusage', 'pc-b:release:ccusage',
-			]);
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-b:release:ccusage');
 		} finally {
-			await act(async () => { renderer.unmount(); });
+			componentHarness.focused = true;
+			componentHarness.appActive = true;
+			await act(async () => {
+				useAppStore.setState({ activePcId: actualActivePcId, connection: 'online' });
+				await flushReact();
+				renderer.unmount();
+			});
 		}
 	});
 
-	it('renders system through actual Zustand revision projection and every volume lease boundary', async () => {
+	it('renders system through actual Zustand activePcId-only and revision-only projections', async () => {
 		componentHarness.focused = true;
 		componentHarness.appActive = true;
 		await act(async () => {
@@ -444,6 +498,7 @@ describe('mobile warm lease screen lifecycle', () => {
 		});
 		expect(useAppStore.getState()).toMatchObject({ activePcId: 'pc-a', connection: 'online' });
 		componentHarness.leaseEvents.length = 0;
+		let actualActivePcId = 'pc-a';
 		const renderer = await renderScreen(SystemScreen);
 		try {
 			expect(componentHarness.leaseEvents).toEqual([]);
@@ -453,13 +508,39 @@ describe('mobile warm lease screen lifecycle', () => {
 				await flushReact();
 			});
 			expect(componentHarness.leaseEvents).toEqual(['pc-a:acquire:spaceDisk']);
+			const identityOnlyRevision = useAppStore.getState().controllerRevision;
+
+			await act(async () => {
+				useAppStore.setState({ activePcId: 'pc-b' });
+				await flushReact();
+			});
+			expect(useAppStore.getState()).toMatchObject({
+				activePcId: 'pc-b',
+				controllerRevision: identityOnlyRevision,
+			});
+			expect([...componentHarness.leaseEvents]).toEqual([
+				'pc-a:acquire:spaceDisk', 'pc-a:release:spaceDisk', 'pc-a:acquire:spaceDisk',
+			]);
+
+			await act(async () => {
+				useAppStore.setState({ activePcId: 'pc-a' });
+				await flushReact();
+			});
+			expect(useAppStore.getState()).toMatchObject({
+				activePcId: 'pc-a',
+				controllerRevision: identityOnlyRevision,
+			});
+			expect(componentHarness.leaseEvents.slice(-2)).toEqual([
+				'pc-a:release:spaceDisk', 'pc-a:acquire:spaceDisk',
+			]);
 
 			await act(async () => {
 				useAppStore.getState().switchPc('pc-b');
 				await flushReact();
 			});
-			expect(componentHarness.leaseEvents).toEqual([
-				'pc-a:acquire:spaceDisk', 'pc-a:release:spaceDisk', 'pc-b:acquire:spaceDisk',
+			actualActivePcId = 'pc-b';
+			expect(componentHarness.leaseEvents.slice(-2)).toEqual([
+				'pc-a:release:spaceDisk', 'pc-b:acquire:spaceDisk',
 			]);
 
 			const previousRevision = useAppStore.getState().controllerRevision;
@@ -482,8 +563,7 @@ describe('mobile warm lease screen lifecycle', () => {
 				controllerRevision: previousRevision + 1,
 				connection: 'online',
 			});
-			expect(componentHarness.leaseEvents).toEqual([
-				'pc-a:acquire:spaceDisk', 'pc-a:release:spaceDisk', 'pc-b:acquire:spaceDisk',
+			expect(componentHarness.leaseEvents.slice(-2)).toEqual([
 				'pc-b:release:spaceDisk', 'pc-b:acquire:spaceDisk',
 			]);
 
@@ -521,7 +601,13 @@ describe('mobile warm lease screen lifecycle', () => {
 				'pc-b:acquire:spaceDisk', 'pc-b:release:spaceDisk',
 			]);
 		} finally {
-			await act(async () => { renderer.unmount(); });
+			componentHarness.focused = true;
+			componentHarness.appActive = true;
+			await act(async () => {
+				useAppStore.setState({ activePcId: actualActivePcId, connection: 'online' });
+				await flushReact();
+				renderer.unmount();
+			});
 		}
 	});
 });
