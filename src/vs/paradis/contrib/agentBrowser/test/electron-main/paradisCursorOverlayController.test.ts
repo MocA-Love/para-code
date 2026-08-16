@@ -215,14 +215,13 @@ suite('Paradis Cursor Overlay Controller', () => {
 		);
 	});
 
-	test('a capture whose hide timed out is still restored, so the cursor cannot stay invisible', async () => {
+	test('a capture whose hide failed is still restored, so the cursor cannot stay invisible', async () => {
 		const target = new TestTarget();
 		const controller = new ParadisCursorOverlayController(() => true, () => 0);
 
 		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 1, y: 1 });
-		// A hidden, throttled view can take longer than the hide timeout to settle, which puts the
-		// view into the failure backoff. The page is hidden by then and honours that flag on later
-		// moves, so skipping the restore would leave an invisible cursor behind for good.
+		// The page is hidden by the time the hide fails, and it honours that flag on later moves,
+		// so skipping the restore would leave an invisible cursor behind for good.
 		// A slow page still gets its flash; 'captured' clears the hidden flag just like 'show'.
 		target.reply = async () => { throw new Error('hide did not settle'); };
 		await controller.hideForCapture(target);
@@ -230,6 +229,33 @@ suite('Paradis Cursor Overlay Controller', () => {
 		controller.afterCapture(target, true);
 
 		assert.deepStrictEqual(target.commands, ['move', 'hide', 'captured']);
+	});
+
+	test('typing nudges the cursor onto the focused element, throttled to a few per burst', async () => {
+		const target = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+
+		controller.onKeyEvent(target);
+		clock += 10;
+		controller.onKeyEvent(target);
+		clock += 10;
+		controller.onKeyEvent(target);
+		clock += 1_000;
+		controller.onKeyEvent(target);
+
+		assert.deepStrictEqual(target.commands, ['focus', 'focus']);
+	});
+
+	test('a click still shows the cursor when the preceding move never landed', async () => {
+		const target = new TestTarget();
+		const controller = new ParadisCursorOverlayController();
+
+		// No move at all: the page-side script creates the cursor for the press itself, so the
+		// click is never silent.
+		await controller.onMouseEvent(target, { type: 'mousePressed', x: 30, y: 40, button: 'left' });
+
+		assert.deepStrictEqual(target.commands, ['press']);
 	});
 
 	test('a screenshot-only agent still gets a flash without ever moving the cursor', async () => {
@@ -299,19 +325,29 @@ suite('Paradis Cursor Overlay Controller', () => {
 		assert.deepStrictEqual(target.commands, []);
 	});
 
-	test('a page that throws is dropped for a while instead of being retried on every event', async () => {
+	test('an occasional failure does not black out the overlay, but a broken page eventually does', async () => {
 		const target = new TestTarget();
-		let clock = 0;
-		target.reply = async () => { throw new Error('detached frame'); };
+		const clock = 0;
 		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		const move = async (x: number) => {
+			await controller.onMouseEvent(target, { type: 'mouseMoved', x, y: 0 });
+			// The detached run settles on a later microtask than onMouseEvent returns.
+			await Promise.resolve(); await Promise.resolve();
+		};
 
-		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 1, y: 1 });
-		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 2, y: 2 });
-		clock += 60_000;
+		// Navigations reject the injection routinely; a single one must not cost 30 seconds.
+		target.reply = async () => { throw new Error('frame was detached'); };
+		await move(1);
 		target.reply = async () => 0;
-		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 3, y: 3 });
+		await move(2);
+		await move(3);
 
-		assert.deepStrictEqual(target.commands, ['move', 'move']);
+		// A genuinely broken page fails over and over, and that does earn the backoff.
+		target.reply = async () => { throw new Error('frame was detached'); };
+		await move(4); await move(5); await move(6);
+		await move(7);
+
+		assert.deepStrictEqual(target.commands, ['move', 'move', 'move', 'move', 'move', 'move']);
 	});
 
 	test('a settings lookup that throws never escapes into input dispatch or capture', async () => {

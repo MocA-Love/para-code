@@ -43,14 +43,20 @@ export interface IParadisCursorOverlayTarget {
 	getState(): { readonly visible: boolean };
 }
 
-/** ページ側スクリプトの実行を待つ上限（ms）。超えたら諦めて本来の処理へ進む。 */
-const EVAL_TIMEOUT_MS = 400;
-
-/** 撮影前の退避だけは描画反映(rAF 2回)を待つぶん、少し長めに見る。 */
+/** 撮影前の退避を待つ上限（ms）。ここだけは撮影を止めないため必ず打ち切る。 */
 const HIDE_EVAL_TIMEOUT_MS = 700;
 
-/** 実行に失敗したビューで演出を止めておく時間（ms）。 */
+/** 演出を止めておく時間（ms）。 */
 const FAILURE_BACKOFF_MS = 30_000;
+
+/**
+ * これだけ連続で失敗したら演出を止める。
+ *
+ * `executeJavaScriptInIsolatedWorld` はページ遷移やフレーム破棄のたびに正常に reject する。
+ * エージェント操作中の遷移は日常茶飯事なので、1回の失敗で止めると演出がほとんどの時間
+ * 消えてしまう。「本当に壊れているページ」だけを弾くために連続回数で判断する。
+ */
+const FAILURE_STREAK_LIMIT = 3;
 
 /**
  * 撮影フラッシュの最小間隔（ms）。
@@ -59,6 +65,9 @@ const FAILURE_BACKOFF_MS = 30_000;
  * 点滅そのものになってしまう（見づらいだけでなく、光過敏の観点でも避けたい）。
  */
 const FLASH_MIN_INTERVAL_MS = 1_200;
+
+/** フォーカス追従を送る最小間隔（ms）。打鍵1回ごとに送らないための間引き。 */
+const FOCUS_NUDGE_INTERVAL_MS = 250;
 
 /** カーソルの現在位置（ビューポート座標）と、それを置いた時刻。 */
 interface IParadisCursorPosition {
@@ -94,6 +103,10 @@ export class ParadisCursorOverlayController {
 	private readonly detachGeneration = new WeakMap<object, number>();
 	/** 撮影を始めた時点の `detachGeneration`（重なった撮影では最初の1回ぶんだけ覚える）。 */
 	private readonly captureGeneration = new WeakMap<object, number>();
+	/** 連続で失敗した回数（成功したら0に戻す）。 */
+	private readonly failureStreak = new WeakMap<object, number>();
+	/** 最後にフォーカス追従を送った時刻（キー入力のたびに送らないための間引き）。 */
+	private readonly lastFocusNudgeAt = new WeakMap<object, number>();
 
 	constructor(
 		/** 設定 `paradis.agentBrowser.showCursorOverlay` の現在値を返す。 */
@@ -127,7 +140,7 @@ export class ParadisCursorOverlayController {
 		if (type === 'mousePressed') {
 			// 波紋は配送を待たせる価値がないので投げっぱなしにする。
 			this.position.set(view, { x, y, at: this.now() });
-			void this.run(view, { kind: 'press', x, y }, EVAL_TIMEOUT_MS);
+			this.run(view, { kind: 'press', x, y, label: cursorLabel() });
 			return 0;
 		}
 		const at = this.now();
@@ -135,8 +148,29 @@ export class ParadisCursorOverlayController {
 		const glideMs = paradisCursorGlideMs(this.position.get(view), next, paradisCursorMoveMaxMs(params));
 		this.position.set(view, next);
 		// 実行の完了は待たない。待つのはカーソルが滑り終わるぶんだけで、その間に注入は済む。
-		void this.run(view, { kind: 'move', x, y, label: cursorLabel(), durationMs: glideMs }, EVAL_TIMEOUT_MS);
+		this.run(view, { kind: 'move', x, y, label: cursorLabel(), durationMs: glideMs });
 		return paradisClampCursorWaitMs(glideMs, PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS);
+	}
+
+	/**
+	 * キーボード入力の配送時に呼ぶ。フォーカスされている要素へカーソルを寄せる。
+	 *
+	 * キー入力は座標を持たないので、どこへ寄せるかはページ側が
+	 * `document.activeElement` から決める。打鍵のたびに送っても意味がないので間引く。
+	 * （`fill` のようにCDPの入力すら出さない操作は、ページ側の focusin 監視が拾う。）
+	 */
+	onKeyEvent(view: IParadisCursorOverlayTarget): void {
+		if (!this.isActive(view)) {
+			this.removeIfDisabled(view);
+			return;
+		}
+		const at = this.now();
+		const previous = this.lastFocusNudgeAt.get(view);
+		if (previous !== undefined && at - previous < FOCUS_NUDGE_INTERVAL_MS) {
+			return;
+		}
+		this.lastFocusNudgeAt.set(view, at);
+		this.run(view, { kind: 'focus', label: cursorLabel() });
 	}
 
 	/**
@@ -158,7 +192,7 @@ export class ParadisCursorOverlayController {
 		if (!this.isUsable(view)) {
 			return;
 		}
-		await this.run(view, { kind: 'hide' }, HIDE_EVAL_TIMEOUT_MS);
+		await this.runAndWait(view, { kind: 'hide' }, HIDE_EVAL_TIMEOUT_MS);
 	}
 
 	/**
@@ -185,10 +219,10 @@ export class ParadisCursorOverlayController {
 		// 撮り始めてから手放していないときだけ光らせる。
 		const stillOurs = (this.captureGeneration.get(view) ?? 0) === (this.detachGeneration.get(view) ?? 0);
 		if (captured && stillOurs && this.enabled() && this.shouldFlash(view)) {
-			void this.run(view, { kind: 'captured' }, EVAL_TIMEOUT_MS);
+			this.run(view, { kind: 'captured', toast: captureToastLabel() });
 			return;
 		}
-		void this.run(view, { kind: 'show' }, EVAL_TIMEOUT_MS);
+		this.run(view, { kind: 'show' });
 	}
 
 	/**
@@ -218,7 +252,7 @@ export class ParadisCursorOverlayController {
 		if (!this.isAlive(view)) {
 			return;
 		}
-		void this.run(view, { kind: 'remove' }, EVAL_TIMEOUT_MS);
+		this.run(view, { kind: 'remove' });
 	}
 
 	/** 設定がOFFに変わったとき、既に置いたカーソルを1度だけ片付ける。 */
@@ -230,7 +264,7 @@ export class ParadisCursorOverlayController {
 		this.removeOverlay(view);
 	}
 
-	/** 連続撮影で点滅させないための間引き。 */
+	/** 撮影後の知らせと復帰は待たないので、まとめて投げっぱなしにする。 */
 	private shouldFlash(view: IParadisCursorOverlayTarget): boolean {
 		const previous = this.lastFlashAt.get(view);
 		const at = this.now();
@@ -290,38 +324,59 @@ export class ParadisCursorOverlayController {
 		}
 	}
 
-	/** ページ側スクリプトを1回実行する。失敗しても投げず、undefinedを返す。 */
-	private async run(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand, timeoutMs: number): Promise<unknown> {
-		let pending: Promise<unknown>;
+	/**
+	 * ページ側スクリプトを投げっぱなしで実行する。
+	 *
+	 * 演出はどれも「届けば嬉しい」だけのものなので、完了を待たない。待たなければ
+	 * タイムアウト用のタイマーも要らず、入力配送1回ごとの費用は送信だけになる。
+	 */
+	private run(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand): void {
+		void this.execute(view, command);
+	}
+
+	/** 撮影前の退避だけは結果を待つ。ページが黙っていても撮影は止めない。 */
+	private async runAndWait(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand, timeoutMs: number): Promise<void> {
+		// タイムアウトは失敗として数えない。遅いだけのページで演出を丸ごと止める理由はなく、
+		// 本当に壊れているなら reject 側が連続して立つ。
+		await raceTimeout(this.execute(view, command), timeoutMs);
+	}
+
+	/** 実行本体。例外は全てここで吸収し、呼び出し元へは絶対に投げない。 */
+	private async execute(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand): Promise<void> {
 		try {
 			const code = paradisBuildCursorOverlayScript(command);
-			if (command.kind === 'move' || command.kind === 'press') {
+			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus') {
 				this.injected.add(view);
 			}
-			// 先に catch を付けておく。raceTimeout がタイムアウトで先に解決したあとに
-			// 実行側が失敗しても、未処理のrejectionにならないようにするため。
-			pending = view.webContents
-				.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }])
-				.catch(() => {
-					this.markFailed(view);
-					return undefined;
-				});
+			await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }]);
+			this.failureStreak.delete(view);
 		} catch {
 			this.markFailed(view);
-			return undefined;
-		}
-		try {
-			// タイムアウトも失敗として数える。応答しないページで毎回上限まで待たされないよう、
-			// しばらく演出そのものを止める。
-			return await raceTimeout(pending, timeoutMs, () => this.markFailed(view));
-		} catch {
-			this.markFailed(view);
-			return undefined;
 		}
 	}
 
+	/**
+	 * 実行の失敗を記録する。連続で続いたときだけ演出を止める。
+	 *
+	 * ページ遷移やフレーム破棄による reject は正常な出来事なので、1回で止めると
+	 * エージェント操作中はほとんどの時間バックオフに入ってしまう。
+	 */
 	private markFailed(view: IParadisCursorOverlayTarget): void {
-		this.disabledUntil.set(view, this.now() + FAILURE_BACKOFF_MS);
+		const streak = (this.failureStreak.get(view) ?? 0) + 1;
+		this.failureStreak.set(view, streak);
+		if (streak >= FAILURE_STREAK_LIMIT) {
+			this.failureStreak.delete(view);
+			this.disabledUntil.set(view, this.now() + FAILURE_BACKOFF_MS);
+		}
+	}
+}
+
+/** 撮影完了の知らせに出す文言。 */
+function captureToastLabel(): string {
+	try {
+		return localize('paradis.agentBrowser.captureToast', "キャプチャ完了");
+	} catch {
+		return 'Screenshot captured';
 	}
 }
 

@@ -52,6 +52,25 @@ export interface IParadisCursorOverlayTuning {
 	readonly rippleMs: number;
 	/** スクリーンショット撮影フラッシュの再生時間（ms）。 */
 	readonly flashMs: number;
+	/** 撮影完了の知らせを出しておく時間（ms）。 */
+	readonly toastMs: number;
+	/** フォーカス移動に合わせてカーソルを寄せるときの移動時間（ms）。 */
+	readonly focusMs: number;
+	/**
+	 * フォーカスの移り先を見に行く間隔（ms）。
+	 *
+	 * `focusin` を使えないため定期的に見る。エージェント操作中のビューは必ず未フォーカスで
+	 * （`dispatchExactViewInput` がフォーカス中の配送を拒む）、未フォーカスのドキュメントでは
+	 * Chromium がフォーカス系イベントの発火を抑えるため、購読しても永久に呼ばれない。
+	 */
+	readonly focusPollMs: number;
+	/**
+	 * 直前のマウス操作からこの時間（ms）はフォーカス追従を見送る。
+	 *
+	 * クリック直後はその要素にフォーカスが移るので、追従させるとカーソルが押した点から
+	 * 勝手にずれる。マウスが動かしているあいだはマウスを優先する。
+	 */
+	readonly focusHoldOffMs: number;
 	/** 非表示化してから撮影して良いと判断するまでの最大待ち時間（ms）。 */
 	readonly settleMs: number;
 }
@@ -66,6 +85,10 @@ export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object
 	idleMs: 60_000,
 	rippleMs: 460,
 	flashMs: 340,
+	toastMs: 1600,
+	focusMs: 140,
+	focusPollMs: 250,
+	focusHoldOffMs: 1_200,
 	settleMs: 250,
 });
 
@@ -81,14 +104,21 @@ export const PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS = 400;
 export type ParadisCursorOverlayCommand =
 	/** 目標座標へカーソルを滑らせる（必要なら生成する）。長さはmain側が決める。 */
 	| { readonly kind: 'move'; readonly x: number; readonly y: number; readonly label: string; readonly durationMs: number }
-	/** 押した座標へカーソルを合わせて波紋を出す。カーソルが未生成なら何もしない。 */
-	| { readonly kind: 'press'; readonly x: number; readonly y: number }
+	/** 押した座標へカーソルを合わせて波紋を出す（未生成ならその場に作る）。 */
+	| { readonly kind: 'press'; readonly x: number; readonly y: number; readonly label: string }
+	/**
+	 * いまフォーカスされている要素へカーソルを寄せる。
+	 *
+	 * `fill` のようにキーボードもマウスも使わない操作（`element.value` を直接書く）は
+	 * CDPの入力を一切出さないため、座標を持たないこのコマンドで面倒を見る。
+	 */
+	| { readonly kind: 'focus'; readonly label: string }
 	/** 撮影のため即座に隠す（進行中のフラッシュも消す）。描画が反映されるまで待ってから解決する。 */
 	| { readonly kind: 'hide' }
 	/** 隠していたカーソルを元に戻すだけ（フラッシュは出さない）。 */
 	| { readonly kind: 'show' }
-	/** 撮影完了。隠していたカーソルを戻し、フラッシュ演出を出す。 */
-	| { readonly kind: 'captured' }
+	/** 撮影完了。隠していたカーソルを戻し、フラッシュと知らせを出す。 */
+	| { readonly kind: 'captured'; readonly toast: string }
 	/** オーバーレイもフラッシュも完全に取り除く。 */
 	| { readonly kind: 'remove' };
 
@@ -184,9 +214,29 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		 *  カーソルを作ってしまわないようにするための分離。 */
 		function state(create) {
 			var s = window[K];
-			if (!s && create) { s = window[K] = { h: null, rp: null, lb: null, t: '', x: null, y: null, tm: 0, f: null, hid: false }; }
+			if (!s && create) {
+				s = window[K] = { h: null, rp: null, lb: null, t: '', x: null, y: null, tm: 0, f: null, ts: null, tst: 0, hid: false, fo: null, fe: null, mt: 0 };
+			}
 			return s || null;
 		}
+
+		/** いまフォーカスされている要素（shadow root の中まで辿る）。 */
+		function deepActive() {
+			var el = doc.activeElement, guard = 0;
+			while (el && el.shadowRoot && el.shadowRoot.activeElement && guard++ < 20) { el = el.shadowRoot.activeElement; }
+			return el;
+		}
+		/** 要素のどこにカーソルを置くか。画面外・大きさ0なら置かない。 */
+		function pointOf(el) {
+			if (!el || !el.getBoundingClientRect || el === doc.body || el === doc.documentElement) { return null; }
+			var r;
+			try { r = el.getBoundingClientRect(); } catch (e) { return null; }
+			if (!r || (r.width <= 0 && r.height <= 0)) { return null; }
+			var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+			if (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw) { return null; }
+			return { x: Math.round(r.left + Math.min(14, Math.max(2, r.width / 2))), y: Math.round(r.top + r.height / 2) };
+		}
+
 		function buildCursor(s) {
 			var h = doc.createElement('div');
 			h.setAttribute('aria-hidden', 'true');
@@ -220,16 +270,38 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			w.appendChild(rp); w.appendChild(g); w.appendChild(lb);
 			sr.appendChild(w);
 			s.h = h; s.rp = rp; s.lb = lb;
+			// キーボードもマウスも使わない操作（fill 等）はCDPの入力を一切出さないので、
+			// フォーカスの移り先を定期的に見て寄せる。focusin を購読しないのは、エージェントが
+			// 操作しているビューは必ず未フォーカスで、そのドキュメントでは Chromium が
+			// フォーカス系イベントを発火しないため（購読しても永久に呼ばれない）。
+			try {
+				s.fo = setInterval(function () {
+					try {
+						var st = window[K];
+						if (!st || !st.h) { return; }
+						if (st.mt && Date.now() - st.mt < c.focusHoldOffMs) { return; }
+						var el = deepActive();
+						if (!el || st.fe === el) { return; }
+						var p = pointOf(el);
+						if (!p) { return; }
+						st.fe = el;
+						place(st, p.x, p.y, calm ? 0 : c.focusMs, true);
+					} catch (e) { }
+				}, c.focusPollMs);
+			} catch (e) { s.fo = null; }
 		}
 		function dropFlash(s) {
-			if (s.f) {
-				if (s.f.parentNode) { s.f.parentNode.removeChild(s.f); }
-				s.f = null;
-			}
+			if (s.f) { if (s.f.parentNode) { s.f.parentNode.removeChild(s.f); } s.f = null; }
+		}
+		function dropToast(s) {
+			if (s.tst) { clearTimeout(s.tst); s.tst = 0; }
+			if (s.ts) { if (s.ts.parentNode) { s.ts.parentNode.removeChild(s.ts); } s.ts = null; }
 		}
 		function kill(s) {
 			if (s.tm) { clearTimeout(s.tm); s.tm = 0; }
-			dropFlash(s);
+			dropFlash(s); dropToast(s);
+			if (s.fo) { try { clearInterval(s.fo); } catch (e) { } s.fo = null; }
+			s.fe = null;
 			if (s.h && s.h.parentNode) { s.h.parentNode.removeChild(s.h); }
 			if (window[K] === s) { try { delete window[K]; } catch (e) { window[K] = void 0; } }
 		}
@@ -250,29 +322,62 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			}
 			return true;
 		}
-
-		if (c.kind === 'move') {
-			var sm = state(true);
-			if (!sm || !attachCursor(sm)) { return 0; }
+		/** カーソルを座標へ置く。移動・押下・フォーカス追従で共通。 */
+		function place(s, x, y, dur, fromFocus) {
+			if (!attachCursor(s)) { return; }
+			// マウス由来の配置はフォーカス追従より優先する（クリック直後に勝手にずれない）。
+			if (!fromFocus) { s.mt = Date.now(); }
 			// 撮影のために隠している間は絶対に出さない。別のペインが同じページを操作していると
-			// ここで復活してしまい、進行中の撮影にカーソルが写る（main側のhideDepthは
-			// 撮影側の台帳なので、入力側のこの経路までは塞げない）。
-			if (!sm.hid) { sx(sm.h, { display: '' }); }
-			if (sm.t !== c.label) { sm.t = c.label; sm.lb.textContent = c.label; }
-			var firstMove = sm.x === null;
-			var tr = 'translate3d(' + c.x + 'px,' + c.y + 'px,0)';
-			sm.x = c.x; sm.y = c.y;
-			if (firstMove || calm || !(c.durationMs > 0)) {
-				sx(sm.h, { transition: 'none', transform: tr });
-				void sm.h.offsetWidth;
-				sx(sm.h, { transition: calm ? 'none' : 'opacity 170ms ease', opacity: '1' });
+			// ここで復活してしまい、進行中の撮影にカーソルが写る。
+			if (!s.hid) { sx(s.h, { display: '' }); }
+			var first = s.x === null;
+			var tr = 'translate3d(' + x + 'px,' + y + 'px,0)';
+			s.x = x; s.y = y;
+			if (first || calm || !(dur > 0)) {
+				sx(s.h, { transition: 'none', transform: tr });
+				void s.h.offsetWidth;
+				sx(s.h, { transition: calm ? 'none' : 'opacity 170ms ease', opacity: '1' });
 			} else {
-				sx(sm.h, {
-					transition: 'transform ' + c.durationMs + 'ms cubic-bezier(0.33,0.02,0.18,1), opacity 170ms ease',
+				sx(s.h, {
+					transition: 'transform ' + dur + 'ms cubic-bezier(0.33,0.02,0.18,1), opacity 170ms ease',
 					transform: tr, opacity: '1'
 				});
 			}
-			arm(sm, c.idleMs + (firstMove ? 0 : c.durationMs));
+			arm(s, c.idleMs + (first ? 0 : dur));
+		}
+		function setLabel(s, label) {
+			if (s.lb && s.t !== label) { s.t = label; s.lb.textContent = label; }
+		}
+
+		if (c.kind === 'move' || c.kind === 'press' || c.kind === 'focus') {
+			var sm = state(true);
+			if (!sm) { return 0; }
+			if (c.kind === 'focus') {
+				var fel = deepActive();
+				var fp = pointOf(fel);
+				if (!fp) { return 0; }
+				if (!attachCursor(sm)) { return 0; }
+				setLabel(sm, c.label);
+				sm.fe = fel;
+				place(sm, fp.x, fp.y, calm ? 0 : c.focusMs, true);
+				return 0;
+			}
+			if (!attachCursor(sm)) { return 0; }
+			setLabel(sm, c.label);
+			if (c.kind === 'move') {
+				place(sm, c.x, c.y, c.durationMs);
+				return 0;
+			}
+			// press: 押した点そのものへ合わせてから波紋を出す。移動のコマンドが届いて
+			// いなくてもクリックが無音にならないよう、ここでも作る。
+			place(sm, c.x, c.y, 0);
+			if (calm) { return 0; }
+			try {
+				sm.rp.animate(
+					[{ transform: 'scale(0.35)', opacity: 0.75 }, { transform: 'scale(1.6)', opacity: 0 }],
+					{ duration: c.rippleMs, easing: 'cubic-bezier(0.2,0.7,0.3,1)' }
+				);
+			} catch (e) { }
 			return 0;
 		}
 
@@ -281,27 +386,58 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			if (!sc) { return 0; }
 			sc.hid = false;
 			if (sc.h) { sx(sc.h, { display: '' }); }
-			if (calm) { return 0; }
 			var p2 = root();
 			if (!p2) { return 0; }
-			dropFlash(sc);
-			var f = doc.createElement('div');
-			f.setAttribute('aria-hidden', 'true');
-			sx(f, {
-				position: 'fixed', left: '0px', top: '0px', width: '100%', height: '100%',
-				margin: '0px', padding: '0px', border: '0px', background: '#ffffff',
-				opacity: '0', pointerEvents: 'none', zIndex: '2147483647'
+			// 知らせは撮影が終わってから出すので画像には写らない。動きを抑える設定でも
+			// 「撮れた」ことは伝えたいので、こちらは出したうえで動きだけ止める。
+			dropToast(sc);
+			var ts = doc.createElement('div');
+			ts.setAttribute('aria-hidden', 'true');
+			sx(ts, {
+				position: 'fixed', top: '12px', right: '12px', margin: '0px',
+				display: 'flex', alignItems: 'center', gap: '8px',
+				background: '#16181c', color: '#ffffff',
+				font: '400 11px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+				padding: '8px 12px', borderRadius: '8px', whiteSpace: 'nowrap',
+				boxShadow: '0 4px 14px rgba(0,0,0,0.35)', pointerEvents: 'none',
+				zIndex: '2147483647', opacity: calm ? '1' : '0'
 			});
-			p2.appendChild(f);
-			sc.f = f;
-			var gone = function () { if (sc.f === f) { dropFlash(sc); } else if (f.parentNode) { f.parentNode.removeChild(f); } };
-			try {
-				var an = f.animate([{ opacity: 0 }, { opacity: 0.92, offset: 0.16 }, { opacity: 0 }], { duration: c.flashMs, easing: 'ease-out' });
-				an.onfinish = gone; an.oncancel = gone;
-			} catch (e) { }
-			setTimeout(gone, c.flashMs + 500);
-			// カーソルだけが理由で state を生かし続けない。フラッシュしか無いなら畳む。
-			if (!sc.h) { setTimeout(function () { if (!sc.h && !sc.f) { kill(sc); } }, c.flashMs + 600); }
+			var thumb = doc.createElement('div');
+			sx(thumb, { width: '26px', height: '18px', flex: 'none', background: '#3a3d44', border: '1px solid #565961', borderRadius: '3px' });
+			var text = doc.createElement('span');
+			text.textContent = c.toast;
+			ts.appendChild(thumb); ts.appendChild(text);
+			p2.appendChild(ts);
+			sc.ts = ts;
+			sc.tst = setTimeout(function () { if (window[K] === sc && sc.ts === ts) { dropToast(sc); } else if (ts.parentNode) { ts.parentNode.removeChild(ts); } }, c.toastMs + 120);
+			if (!calm) {
+				try {
+					ts.animate([
+						{ opacity: 0, transform: 'translateY(-8px) scale(0.92)' },
+						{ opacity: 1, transform: 'translateY(0px) scale(1)', offset: 0.12 },
+						{ opacity: 1, transform: 'translateY(0px) scale(1)', offset: 0.82 },
+						{ opacity: 0, transform: 'translateY(-6px) scale(0.98)' }
+					], { duration: c.toastMs, easing: 'ease-out' });
+				} catch (e) { }
+				dropFlash(sc);
+				var f = doc.createElement('div');
+				f.setAttribute('aria-hidden', 'true');
+				sx(f, {
+					position: 'fixed', left: '0px', top: '0px', width: '100%', height: '100%',
+					margin: '0px', padding: '0px', border: '0px', background: '#ffffff',
+					opacity: '0', pointerEvents: 'none', zIndex: '2147483647'
+				});
+				p2.appendChild(f);
+				sc.f = f;
+				var gone = function () { if (sc.f === f) { dropFlash(sc); } else if (f.parentNode) { f.parentNode.removeChild(f); } };
+				try {
+					var an = f.animate([{ opacity: 0 }, { opacity: 0.92, offset: 0.16 }, { opacity: 0 }], { duration: c.flashMs, easing: 'ease-out' });
+					an.onfinish = gone; an.oncancel = gone;
+				} catch (e) { }
+				setTimeout(gone, c.flashMs + 500);
+			}
+			// カーソルだけが理由で state を生かし続けない。演出しか無いなら畳む。
+			if (!sc.h) { setTimeout(function () { if (window[K] === sc && !sc.h && !sc.f && !sc.ts) { kill(sc); } }, c.toastMs + 600); }
 			return 0;
 		}
 
@@ -311,8 +447,8 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		if (c.kind === 'remove') { kill(s); return 0; }
 		if (c.kind === 'show') { s.hid = false; if (s.h) { sx(s.h, { display: '' }); } return 0; }
 		if (c.kind === 'hide') {
-			// 撮影に入るので、進行中のフラッシュも必ず消す（残っていると次の1枚が真っ白になる）。
-			dropFlash(s);
+			// 撮影に入るので、進行中の演出も必ず消す（残っていると次の1枚に写る）。
+			dropFlash(s); dropToast(s);
 			s.hid = true;
 			if (s.h) { sx(s.h, { transition: 'none', display: 'none' }); }
 			return new Promise(function (res) {
@@ -323,22 +459,6 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 					requestAnimationFrame(function () { requestAnimationFrame(done); });
 				} else { done(); }
 			});
-		}
-		if (c.kind === 'press') {
-			if (!s.h || s.x === null) { return 0; }
-			// 押した点そのものへ合わせてから波紋を出す（移動と押下がずれて見えないように）。
-			s.x = c.x; s.y = c.y;
-			sx(s.h, { transition: 'none', transform: 'translate3d(' + c.x + 'px,' + c.y + 'px,0)', opacity: '1' });
-			if (!s.hid) { sx(s.h, { display: '' }); }
-			arm(s, c.idleMs);
-			if (calm) { return 0; }
-			try {
-				s.rp.animate(
-					[{ transform: 'scale(0.35)', opacity: 0.75 }, { transform: 'scale(1.6)', opacity: 0 }],
-					{ duration: c.rippleMs, easing: 'cubic-bezier(0.2,0.7,0.3,1)' }
-				);
-			} catch (e) { }
-			return 0;
 		}
 		return 0;
 	} catch (e) { return 0; }
