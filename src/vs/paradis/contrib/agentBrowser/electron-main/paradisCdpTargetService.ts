@@ -450,6 +450,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 			if (cursorWaitMs > 0) {
 				await timeout(cursorWaitMs);
 			}
+		} else if (command.method === 'Input.dispatchKeyEvent' || command.method === 'Input.insertText') {
+			// キー入力には座標が無いので、フォーカスされている要素へ寄せるようページ側へ頼む。
+			// 配送は待たせない。
+			this.cursorOverlay.onKeyEvent(view);
 		}
 
 		const keySignature = command.method === 'Input.dispatchKeyEvent'
