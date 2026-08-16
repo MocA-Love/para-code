@@ -120,16 +120,19 @@ const BINDING_IDLE_POLL_INTERVAL = 30_000;
 const BROWSER_VIEW_RECONCILE_RETRY_INTERVAL = 3_000;
 type ParadisAgentBrowserBindingPollCadence = typeof BINDING_FAST_POLL_INTERVAL | typeof BINDING_IDLE_POLL_INTERVAL;
 
+/** Model-local timer abstraction, module-exported for deterministic poll and coalescer tests. */
 export interface IParadisAgentBrowserBindingPollTimer {
 	set(callback: () => void, delayMs: number): unknown;
 	clear(handle: unknown): void;
 }
 
+/** Constructor timer seams, module-exported so tests can inject independent deterministic clocks. */
 export interface IParadisAgentBrowserBindingModelOptions {
 	readonly pollTimerFactory?: () => IParadisAgentBrowserBindingPollTimer;
 	readonly tokenRefreshTimerFactory?: () => IParadisAgentBrowserBindingPollTimer;
 }
 
+/** Owns the single adaptive one-shot poll deadline; module-exported to test cadence policy directly. */
 export class ParadisAgentBrowserBindingPoller extends Disposable {
 	private handle: unknown;
 	private scheduledCadence: ParadisAgentBrowserBindingPollCadence | undefined;
@@ -195,6 +198,7 @@ export class ParadisAgentBrowserBindingPoller extends Disposable {
 	}
 }
 
+/** Coalesces pane-token changes into one 0ms refresh; module-exported to test its fixed window directly. */
 export class ParadisAgentBrowserBindingTokenRefreshCoalescer extends Disposable {
 	private handle: unknown;
 
