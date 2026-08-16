@@ -260,6 +260,17 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		};
 	}
 
+	function bindingRow(token: string, pageId: string, generation: number): IParadisPaneBinding {
+		return {
+			token,
+			pageId,
+			pageInfo: { url: `https://${pageId}.test`, title: pageId },
+			generation,
+			boundAt: generation,
+			scope: { kind: 'managed', stateKey: 'space-a' },
+		};
+	}
+
 	test('polls clean idle twice and fast state twenty times per minute', () => {
 		for (const [idle, expected] of [[true, 2], [false, 20]] as const) {
 			const timer = new DeterministicPollTimer();
@@ -409,6 +420,44 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		}
 	});
 
+	test('fires title changes only for terminal instances that currently own pane tokens', async () => {
+		const fixtureStore = new DisposableStore();
+		try {
+			const fixture = createFixture({ store: fixtureStore, pollTimer: new DeterministicPollTimer() });
+			await nextTask();
+			fixture.resetChangeCount();
+			fixture.paneTokens.delete(fixture.instances.second.instanceId);
+			fixture.terminalTitlesChanged.fire(fixture.instances.second);
+			await new Promise<void>(resolve => setTimeout(resolve, 120));
+			assert.strictEqual(fixture.changeCount, 0);
+			fixture.terminalTitlesChanged.fire(fixture.instances.first);
+			await new Promise<void>(resolve => setTimeout(resolve, 120));
+			assert.strictEqual(fixture.changeCount, 1);
+		} finally {
+			fixtureStore.dispose();
+		}
+	});
+
+	test('keeps pane token add and remove notifications independent of title filtering', async () => {
+		const fixtureStore = new DisposableStore();
+		try {
+			const fixture = createFixture({ store: fixtureStore, pollTimer: new DeterministicPollTimer() });
+			await nextTask();
+			fixture.resetChangeCount();
+			fixture.paneTokens.delete(fixture.instances.second.instanceId);
+			fixture.paneTokensChanged.fire();
+			await new Promise<void>(resolve => setTimeout(resolve, 120));
+			assert.strictEqual(fixture.changeCount, 1);
+			fixture.resetChangeCount();
+			fixture.paneTokens.set(fixture.instances.second.instanceId, 'token-b');
+			fixture.paneTokensChanged.fire();
+			await new Promise<void>(resolve => setTimeout(resolve, 120));
+			assert.strictEqual(fixture.changeCount, 1);
+		} finally {
+			fixtureStore.dispose();
+		}
+	});
+
 	test('uses only sync, prepare, and commit after page sharing', async () => {
 		const fixture = createFixture();
 		await fixture.bindingModel.refresh();
@@ -460,12 +509,73 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 
 		const newerRefresh = fixture.bindingModel.refresh();
 		await eventually(() => reads.length === 2);
-		await reads[1].complete([binding(2)]);
+		const newest = bindingRow('token', 'view-a', 2);
+		await reads[1].complete([newest]);
 		await newerRefresh;
 		await reads[0].complete([binding(1)]);
 		await new Promise<void>(resolve => setTimeout(resolve, 0));
 
-		assert.strictEqual(fixture.bindingModel.getBindingForToken('token')?.generation, 2);
+		assert.deepStrictEqual({
+			getter: fixture.bindingModel.bindings[0] === newest,
+			token: fixture.bindingModel.getBindingForToken('token') === newest,
+			page: fixture.bindingModel.getBindingsForPage('view-a')[0] === newest,
+			generation: fixture.bindingModel.getBindingForToken('token')?.generation,
+		}, { getter: true, token: true, page: true, generation: 2 });
+	});
+
+	test('preserves first duplicate, page order, row identity, and fresh page arrays', async () => {
+		const fixture = createFixture();
+		const first = bindingRow('duplicate', 'page-a', 1);
+		const middle = bindingRow('middle', 'page-b', 2);
+		const lastDuplicate = bindingRow('duplicate', 'page-a', 3);
+		const tail = bindingRow('tail', 'page-a', 4);
+		fixture.backendBindings = [first, middle, lastDuplicate, tail];
+		await fixture.bindingModel.refresh();
+		const firstPageRead = fixture.bindingModel.getBindingsForPage('page-a');
+		firstPageRead.splice(0, firstPageRead.length);
+		const secondPageRead = fixture.bindingModel.getBindingsForPage('page-a');
+		assert.deepStrictEqual({
+			duplicateGeneration: fixture.bindingModel.getBindingForToken('duplicate')?.generation,
+			pageGenerations: secondPageRead.map(row => row.generation),
+			getterIdentity: fixture.bindingModel.bindings[0] === first,
+			tokenIdentity: fixture.bindingModel.getBindingForToken('duplicate') === first,
+			pageIdentities: secondPageRead.map((row, index) => row === [first, lastDuplicate, tail][index]),
+			freshArray: secondPageRead !== firstPageRead,
+		}, {
+			duplicateGeneration: 1,
+			pageGenerations: [1, 3, 4],
+			getterIdentity: true,
+			tokenIdentity: true,
+			pageIdentities: [true, true, true],
+			freshArray: true,
+		});
+	});
+
+	test('does not reread binding keys during indexed lookups or pane descriptor assembly', async () => {
+		let tokenAccesses = 0;
+		let pageAccesses = 0;
+		const rows = Array.from({ length: 1_000 }, (_, index) => {
+			const token = `token-${index}`;
+			const pageId = `page-${index % 500}`;
+			const row = bindingRow(token, pageId, index + 1);
+			Object.defineProperties(row, {
+				token: { enumerable: true, get: () => { tokenAccesses++; return token; } },
+				pageId: { enumerable: true, get: () => { pageAccesses++; return pageId; } },
+			});
+			return row;
+		});
+		const fixture = createFixture({ listBindings: async () => rows });
+		fixture.paneTokens.set(1, 'token-0');
+		fixture.paneTokens.set(2, 'token-1');
+		await eventually(() => fixture.bindingModel.bindings.length === 1_000);
+		tokenAccesses = 0;
+		pageAccesses = 0;
+		for (let lookup = 0; lookup < 10_000; lookup++) {
+			assert.strictEqual(fixture.bindingModel.getBindingForToken(`token-${lookup % 1_000}`), rows[lookup % 1_000]);
+			assert.strictEqual(fixture.bindingModel.getBindingsForPage(`page-${lookup % 500}`).length, 2);
+			fixture.bindingModel.getPanes();
+		}
+		assert.deepStrictEqual({ tokenAccesses, pageAccesses }, { tokenAccesses: 0, pageAccesses: 0 });
 	});
 
 	test('coalesces one hundred pane token events into one binding-list pair', async () => {
