@@ -250,6 +250,32 @@ suite('ParadisSpaceDiskClient', () => {
 		}
 	});
 
+	test('does not send an acquire when provider release aborts after the initialization barrier settles but before the send turn', async () => {
+		const harness = createClient();
+		const barrier = deferred<void>();
+		harness.setBarrierFactory(() => barrier.promise);
+		const provider = new ParadisMobileWarmLeaseProvider(
+			() => Promise.resolve(),
+			(ownerId, active, cancellation) => harness.client.setWarmLease(ownerId, active, cancellation),
+		);
+		try {
+			const acquire = provider.setLease('mobile-a', mobileSpaceWarmRequest(true));
+			await flushMicrotasks();
+			barrier.resolve(undefined);
+			await Promise.resolve();
+			await Promise.resolve();
+			const release = provider.setLease('mobile-a', mobileSpaceWarmRequest(false));
+			await Promise.all([acquire, release]);
+
+			const ownerId = 'mobile-a:spaceDisk:integration-lease';
+			assert.deepStrictEqual(harness.calls.map(call => warmPayload(call)), [
+				{ ownerId, active: false, targets: [] },
+			]);
+		} finally {
+			provider.dispose();
+		}
+	});
+
 	test('lets synchronous provider release win after a ready barrier but before the acquire send turn', async () => {
 		const harness = createClient();
 		const provider = new ParadisMobileWarmLeaseProvider(
