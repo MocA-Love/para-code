@@ -88,6 +88,68 @@ export function paradisTerminalHistoryCacheKey(shellType: TerminalShellType, res
 	return JSON.stringify([shellType, resource.toString()]);
 }
 
+/** Decodes zsh history bytes after reversing zsh's Meta byte encoding. */
+export function paradisDecodeZshHistory(bytes: Uint8Array): string {
+	if (!bytes.includes(0x83)) {
+		return new TextDecoder().decode(bytes);
+	}
+	const unmetafied = new Uint8Array(bytes.length);
+	let outputLength = 0;
+	for (let index = 0; index < bytes.length; index++) {
+		let byte = bytes[index];
+		if (byte === 0x83 && index + 1 < bytes.length) {
+			byte = bytes[++index] ^ 0x20;
+		}
+		unmetafied[outputLength++] = byte;
+	}
+	return new TextDecoder().decode(unmetafied.subarray(0, outputLength));
+}
+
+/** Parses zsh extended history and escaped continuations in oldest-to-newest order. */
+export function paradisParseZshHistory(content: string): readonly string[] {
+	const isExtendedHistory = /^:\s\d+:\d+;/.test(content);
+	const lines = content.split(isExtendedHistory ? /:\s\d+:\d+;/ : /(?<!\\)\n/);
+	const result = new Set<string>();
+	for (const line of lines) {
+		const sanitized = line.replace(/\\\n/g, '\n').trim();
+		if (sanitized.length > 0) {
+			result.add(sanitized);
+		}
+	}
+	return Array.from(result);
+}
+
+/** Parses bash history using upstream's quote-aware multiline behavior. */
+export function paradisParseBashHistory(content: string): readonly string[] {
+	const lines = content.split('\n');
+	const result = new Set<string>();
+	let currentCommand: string | undefined;
+	let wrapCharacter: string | undefined;
+	for (const line of lines) {
+		if (currentCommand === undefined) {
+			currentCommand = line;
+		} else {
+			currentCommand += `\n${line}`;
+		}
+		for (let index = 0; index < line.length; index++) {
+			if (wrapCharacter) {
+				if (line[index] === wrapCharacter) {
+					wrapCharacter = undefined;
+				}
+			} else if (line[index].match(/['"]/)) {
+				wrapCharacter = line[index];
+			}
+		}
+		if (wrapCharacter === undefined) {
+			if (currentCommand.length > 0) {
+				result.add(currentCommand.trim());
+			}
+			currentCommand = undefined;
+		}
+	}
+	return Array.from(result);
+}
+
 /**
  * Shares one lazy loader for the owner's lifetime, or only while pending when completed caching is disabled.
  * Cancellation detaches only that waiter; rejection reaches current waiters and a later `get` retries.
