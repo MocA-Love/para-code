@@ -15,7 +15,7 @@ import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
-import type { SpaceDiskResult, SystemResourcesResult } from '../../src/store.js';
+import { MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type SpaceDiskResult, type SystemResourcesResult } from '../../src/store.js';
 import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, buildProcessRows, buildScopeRows, diskLevel, formatBytes, formatCpu,
 	buildSpaceDiskRows, sortRowsBy, usageLevel, usagePercent, type ResourceRow, type UsageLevel,
@@ -91,7 +91,14 @@ export default function SystemScreen() {
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
-	const { systemResources, spaceDiskUsage, connection } = useAppStore(useShallow(s => ({ systemResources: s.systemResources, spaceDiskUsage: s.spaceDisk, connection: s.connection })));
+	const { systemResources, spaceDiskUsage, connection, activePcId, controllerRevision, acquireSpaceDiskWarmLease } = useAppStore(useShallow(s => ({
+		systemResources: s.systemResources,
+		spaceDiskUsage: s.spaceDisk,
+		connection: s.connection,
+		activePcId: s.activePcId,
+		controllerRevision: s.controllerRevision,
+		acquireSpaceDiskWarmLease: s.acquireSpaceDiskWarmLease,
+	})));
 
 	const [data, setData] = useState<SystemResourcesResult | undefined>();
 	const [loading, setLoading] = useState(false);
@@ -140,6 +147,18 @@ export default function SystemScreen() {
 	// 固まった数字を出し続けないようにする（画面を離れる・アプリが背面に回ったら止める）。
 	const isFocused = useIsFocused();
 	const isAppActive = useAppIsActive();
+	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
+	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
+	useEffect(() => {
+		const lifecycle = warmLeaseLifecycle.current!;
+		lifecycle.update(shouldMaintainMobileWarmLease('spaceDisk', {
+			focused: isFocused,
+			appActive: isAppActive,
+			online: connection === 'online',
+			volumeAxis: axis === 'volume',
+		}), acquireSpaceDiskWarmLease);
+		return () => lifecycle.update(false, acquireSpaceDiskWarmLease);
+	}, [isFocused, isAppActive, connection, axis, activePcId, controllerRevision, acquireSpaceDiskWarmLease]);
 	useEffect(() => {
 		if (!isFocused || !isAppActive || connection !== 'online') {
 			return;
