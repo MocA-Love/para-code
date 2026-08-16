@@ -11,6 +11,105 @@
 // どちらのレイヤーからも参照できる common に置く。
 
 import { localize } from '../../../../nls.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
+
+export interface IParadisDoNotDisturbRefreshState {
+	readonly enabled: boolean;
+	readonly until: number | undefined;
+}
+
+export interface IParadisDoNotDisturbRefreshTimer {
+	set(callback: () => void, delayMs: number): unknown;
+	clear(handle: unknown): void;
+}
+
+export interface IParadisDoNotDisturbRefreshControllerOptions {
+	readonly now?: () => number;
+	readonly timer?: IParadisDoNotDisturbRefreshTimer;
+}
+
+export type ParadisDoNotDisturbRefreshControllerFactory = (
+	refresh: (renderNow: number) => IParadisDoNotDisturbRefreshState,
+) => ParadisDoNotDisturbRefreshController;
+
+export function paradisGetDoNotDisturbRefreshDelay(state: IParadisDoNotDisturbRefreshState, now: number): number | undefined {
+	if (!state.enabled || state.until === undefined) {
+		return undefined;
+	}
+	if (!Number.isFinite(state.until) || !Number.isFinite(now)) {
+		return 60_000;
+	}
+	return Math.max(0, Math.min(60_000, state.until - now));
+}
+
+/** Owns the single deadline-aware refresh timeout for one DND surface. */
+export class ParadisDoNotDisturbRefreshController implements IDisposable {
+	private timerHandle: unknown;
+	private timerScheduled = false;
+	private generation = 0;
+	private disposed = false;
+
+	constructor(
+		private readonly refreshCallback: (renderNow: number) => IParadisDoNotDisturbRefreshState,
+		private readonly now: () => number,
+		private readonly timer: IParadisDoNotDisturbRefreshTimer,
+	) { }
+
+	refresh(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.clearTimer();
+		const generation = ++this.generation;
+		const state = this.refreshCallback(this.now());
+		if (this.disposed || generation !== this.generation) {
+			return;
+		}
+		const delay = paradisGetDoNotDisturbRefreshDelay(state, this.now());
+		if (delay === undefined) {
+			return;
+		}
+		const handle = this.timer.set(() => {
+			if (this.disposed || generation !== this.generation || !this.timerScheduled || this.timerHandle !== handle) {
+				return;
+			}
+			this.timerScheduled = false;
+			this.refresh();
+		}, delay);
+		this.timerHandle = handle;
+		this.timerScheduled = true;
+	}
+
+	dispose(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.disposed = true;
+		this.generation++;
+		this.clearTimer();
+	}
+
+	private clearTimer(): void {
+		if (!this.timerScheduled) {
+			return;
+		}
+		const handle = this.timerHandle;
+		this.timerScheduled = false;
+		this.timer.clear(handle);
+	}
+}
+
+const defaultRefreshTimer: IParadisDoNotDisturbRefreshTimer = {
+	set: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+	clear: handle => globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>),
+};
+
+export function paradisCreateDoNotDisturbRefreshController(
+	refresh: (renderNow: number) => IParadisDoNotDisturbRefreshState,
+	options: IParadisDoNotDisturbRefreshControllerOptions = {},
+): ParadisDoNotDisturbRefreshController {
+	return new ParadisDoNotDisturbRefreshController(refresh, options.now ?? Date.now, options.timer ?? defaultRefreshTimer);
+}
 
 /** ステータスバーのクリック先。Quick Pick で持続時間を選ぶ。 */
 export const PARADIS_DO_NOT_DISTURB_SELECT_COMMAND = 'paradis.notifications.selectDoNotDisturb';
