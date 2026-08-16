@@ -18,6 +18,7 @@ import {
 	IParadisWorktree,
 	IParadisWorktreeService,
 } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { ParadisMobileWarmLeaseProvider } from '../../../mobileRelay/electron-browser/paradisMobileWorkspaceProvider.js';
 import { IParadisSpaceDiskTarget, PARADIS_SPACE_DISK_CHANNEL } from '../../common/paradisSpaceDisk.js';
 import { ParadisSpaceDiskClient } from '../../electron-browser/paradisSpaceDiskClient.js';
 
@@ -31,17 +32,22 @@ interface IChannelCall {
 interface IDeferred<T> {
 	readonly promise: Promise<T>;
 	readonly resolve: (value: T) => void;
+	readonly reject: (error: Error) => void;
 }
 
 type TestSpaceDiskClient = ParadisSpaceDiskClient & {
-	setWarmLease(ownerId: string, active: boolean): Promise<void>;
+	setWarmLease(ownerId: string, active: boolean, cancellation?: AbortSignal): Promise<void>;
 	createWarmLease(): IDisposable;
 };
 
 function deferred<T>(): IDeferred<T> {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>(resolvePromise => resolve = resolvePromise);
-	return { promise, resolve };
+	let reject!: (error: Error) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -106,6 +112,17 @@ function createClient() {
 
 function warmPayload(call: IChannelCall): { readonly ownerId: string; readonly active: boolean; readonly targets: readonly IParadisSpaceDiskTarget[] } {
 	return (call.args as readonly [{ readonly ownerId: string; readonly active: boolean; readonly targets: readonly IParadisSpaceDiskTarget[] }])[0];
+}
+
+function mobileSpaceWarmRequest(active: boolean) {
+	return {
+		t: 'spaceDiskWarmLease',
+		leaseId: 'integration-lease',
+		active,
+		desktopEpoch: 'desktop-epoch',
+		windowId: 7,
+		rendererGeneration: 11,
+	} as const;
 }
 
 suite('ParadisSpaceDiskClient', () => {
@@ -206,6 +223,126 @@ suite('ParadisSpaceDiskClient', () => {
 		]);
 	});
 
+	test('integrates provider release with client barrier cancellation before any acquire is sent', async () => {
+		const harness = createClient();
+		const barrier = deferred<void>();
+		harness.setBarrierFactory(() => barrier.promise);
+		const provider = new ParadisMobileWarmLeaseProvider(
+			() => Promise.resolve(),
+			(ownerId, active, cancellation) => harness.client.setWarmLease(ownerId, active, cancellation),
+		);
+		try {
+			const acquire = provider.setLease('mobile-a', mobileSpaceWarmRequest(true));
+			await flushMicrotasks();
+			const release = provider.setLease('mobile-a', mobileSpaceWarmRequest(false));
+			await flushMicrotasks();
+			const beforeBarrier = harness.calls.map(call => warmPayload(call));
+			barrier.resolve(undefined);
+			await Promise.all([acquire, release]);
+
+			const ownerId = 'mobile-a:spaceDisk:integration-lease';
+			assert.deepStrictEqual({ beforeBarrier, final: harness.calls.map(call => warmPayload(call)) }, {
+				beforeBarrier: [{ ownerId, active: false, targets: [] }],
+				final: [{ ownerId, active: false, targets: [] }],
+			});
+		} finally {
+			provider.dispose();
+		}
+	});
+
+	test('lets synchronous provider release win after a ready barrier but before the acquire send turn', async () => {
+		const harness = createClient();
+		const provider = new ParadisMobileWarmLeaseProvider(
+			() => Promise.resolve(),
+			(ownerId, active, cancellation) => harness.client.setWarmLease(ownerId, active, cancellation),
+		);
+		try {
+			const acquire = provider.setLease('mobile-a', mobileSpaceWarmRequest(true));
+			const release = provider.setLease('mobile-a', mobileSpaceWarmRequest(false));
+			await Promise.all([acquire, release]);
+
+			const ownerId = 'mobile-a:spaceDisk:integration-lease';
+			assert.deepStrictEqual(harness.calls.map(call => warmPayload(call)), [
+				{ ownerId, active: false, targets: [] },
+			]);
+		} finally {
+			provider.dispose();
+		}
+	});
+
+	test('integrates provider release as a trailing send after the client acquire has started', async () => {
+		const harness = createClient();
+		const acquireCompletion = deferred<unknown>();
+		harness.setCallBehaviour(call => warmPayload(call).active ? acquireCompletion.promise : Promise.resolve(undefined));
+		const provider = new ParadisMobileWarmLeaseProvider(
+			() => Promise.resolve(),
+			(ownerId, active, cancellation) => harness.client.setWarmLease(ownerId, active, cancellation),
+		);
+		try {
+			const acquire = provider.setLease('mobile-a', mobileSpaceWarmRequest(true));
+			await flushMicrotasks();
+			const release = provider.setLease('mobile-a', mobileSpaceWarmRequest(false));
+			await flushMicrotasks();
+			const beforeAcquireCompletion = harness.calls.map(call => warmPayload(call));
+			acquireCompletion.resolve(undefined);
+			await Promise.all([acquire, release]);
+
+			const ownerId = 'mobile-a:spaceDisk:integration-lease';
+			assert.deepStrictEqual({ beforeAcquireCompletion, final: harness.calls.map(call => warmPayload(call)) }, {
+				beforeAcquireCompletion: [{ ownerId, active: true, targets: [{ stateKey: 'one', name: 'Repository one', path: '/repositories/one', worktrees: [{ stateKey: 'worktree:file:///worktrees/one-feature', name: 'Feature', path: '/worktrees/one-feature' }] }] }],
+				final: [
+					{ ownerId, active: true, targets: [{ stateKey: 'one', name: 'Repository one', path: '/repositories/one', worktrees: [{ stateKey: 'worktree:file:///worktrees/one-feature', name: 'Feature', path: '/worktrees/one-feature' }] }] },
+					{ ownerId, active: false, targets: [] },
+				],
+			});
+		} finally {
+			provider.dispose();
+		}
+	});
+
+	test('shares one cancellable barrier wait for repeated updates of the same owner', async () => {
+		const harness = createClient();
+		const barrier = deferred<void>();
+		harness.setBarrierFactory(() => barrier.promise);
+
+		for (let index = 0; index < 1_000; index++) {
+			void harness.client.setWarmLease('mobile-owner', true);
+		}
+		await flushMicrotasks();
+		assert.strictEqual(harness.barrierReads, 1);
+
+		await harness.client.setWarmLease('mobile-owner', false);
+		assert.deepStrictEqual(harness.calls.map(call => warmPayload(call)), [
+			{ ownerId: 'mobile-owner', active: false, targets: [] },
+		]);
+	});
+
+	test('bounds active plus retiring barrier states and reuses a slot immediately after cancellation', async () => {
+		const harness = createClient();
+		const barrier = deferred<void>();
+		harness.setBarrierFactory(() => barrier.promise);
+
+		for (let index = 0; index < 128; index++) {
+			void harness.client.setWarmLease(`owner-${index}`, true);
+		}
+		await flushMicrotasks();
+		void harness.client.setWarmLease('overflow-owner', true);
+		await flushMicrotasks();
+		assert.strictEqual(harness.barrierReads, 128);
+
+		await harness.client.setWarmLease('owner-0', false);
+		void harness.client.setWarmLease('replacement-owner', true);
+		await flushMicrotasks();
+
+		assert.deepStrictEqual({
+			barrierReads: harness.barrierReads,
+			releases: harness.calls.map(call => warmPayload(call)),
+		}, {
+			barrierReads: 129,
+			releases: [{ ownerId: 'owner-0', active: false, targets: [] }],
+		});
+	});
+
 	test('does not send a late acquire when a desktop lease is disposed at the initialization barrier', async () => {
 		const clock = sinon.useFakeTimers({ now: 1_000_000 });
 		const harness = createClient();
@@ -216,7 +353,9 @@ suite('ParadisSpaceDiskClient', () => {
 		await flushMicrotasks();
 		lease.dispose();
 		barrier.resolve(undefined);
-		await flushMicrotasks();
+		for (let index = 0; index < 50 && harness.calls.length === 0; index++) {
+			await Promise.resolve();
+		}
 
 		assert.deepStrictEqual(harness.calls.map(call => ({ command: call.command, payload: warmPayload(call) })), [{
 			command: 'setWarmLease',
@@ -246,6 +385,23 @@ suite('ParadisSpaceDiskClient', () => {
 			{ ownerId, active: true, targets: [{ stateKey: 'one', name: 'Repository one', path: '/repositories/one', worktrees: [{ stateKey: 'worktree:file:///worktrees/one-feature', name: 'Feature', path: '/worktrees/one-feature' }] }] },
 			{ ownerId, active: false, targets: [] },
 		]);
+		assert.strictEqual(clock.countTimers(), 0);
+	});
+
+	test('cleans up a disposed desktop owner when acquire and trailing release both reject', async () => {
+		const clock = sinon.useFakeTimers({ now: 1_000_000 });
+		const harness = createClient();
+		const acquireCompletion = deferred<unknown>();
+		let callCount = 0;
+		harness.setCallBehaviour(() => ++callCount === 1 ? acquireCompletion.promise : Promise.reject(new Error('release failed')));
+
+		const lease = harness.client.createWarmLease();
+		await flushMicrotasks();
+		lease.dispose();
+		acquireCompletion.reject(new Error('acquire response lost'));
+		await flushMicrotasks();
+
+		assert.deepStrictEqual(harness.calls.map(call => warmPayload(call).active), [true, false]);
 		assert.strictEqual(clock.countTimers(), 0);
 	});
 });

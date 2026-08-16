@@ -171,6 +171,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 	/** 実行中の計測(同じ顔ぶれの同時要求を1本にまとめる)。 */
 	private inflight: Promise<IParadisSpaceDiskResult> | undefined;
 	private inflightSignature: string | undefined;
+	private inflightForegroundCacheInterest = false;
 	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<WarmLeaseSnapshot>;
 	private readonly warmLeaseOwners = new Map<string, IWarmLeaseOwner>();
 	private readonly warmLeaseListener: IDisposable;
@@ -265,9 +266,11 @@ export class ParadisSpaceDiskService implements IDisposable {
 		targets: readonly IParadisSpaceDiskTarget[],
 		signature: string,
 		shouldCache: () => boolean = () => true,
+		foregroundCacheInterest = true,
 	): Promise<IParadisSpaceDiskResult> {
 		const inflight = this.inflight;
 		if (inflight && this.inflightSignature === signature) {
+			this.inflightForegroundCacheInterest ||= foregroundCacheInterest;
 			return inflight;
 		}
 		// 前の走行の失敗はここでは扱わない(その走行の呼び出し元が受け取っている)。
@@ -275,7 +278,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		const promise: Promise<IParadisSpaceDiskResult> = previous
 			.then(() => this.doMeasure(targets))
 			.then(result => {
-				if (!this.disposed && this.inflight === promise && shouldCache()) {
+				if (!this.disposed && this.inflight === promise && (this.inflightForegroundCacheInterest || shouldCache())) {
 					this.cache = { result, at: this.now(), signature };
 					this.failures = 0;
 				}
@@ -285,10 +288,12 @@ export class ParadisSpaceDiskService implements IDisposable {
 				if (this.inflight === promise) {
 					this.inflight = undefined;
 					this.inflightSignature = undefined;
+					this.inflightForegroundCacheInterest = false;
 				}
 			});
 		this.inflight = promise;
 		this.inflightSignature = signature;
+		this.inflightForegroundCacheInterest = foregroundCacheInterest;
 		return promise;
 	}
 
@@ -383,12 +388,13 @@ export class ParadisSpaceDiskService implements IDisposable {
 			this.syncWarmTimer();
 			return;
 		}
+		const signature = signatureOf(targets);
 		// 手動更新の直後などで十分新しいなら、この周回は何もしない。
-		if (this.cache && this.now() - this.cache.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
+		if (this.cache?.signature === signature && this.now() - this.cache.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
 			return;
 		}
 		try {
-			await this.run(targets, signatureOf(targets), () => this.warmLeaseTracker.isCurrent(key, generation));
+			await this.run(targets, signature, () => this.warmLeaseTracker.isCurrent(key, generation), false);
 			if (this.warmLeaseTracker.isCurrent(key, generation)) {
 				this.failures = 0;
 			}

@@ -1115,6 +1115,13 @@ export const useAppStore = create<AppState>(set => ({
 					startConnectionHeartbeat();
 				} else if (action === 'suspend') {
 					const state = useAppStore.getState();
+					for (const runtime of runtimes.values()) {
+						try {
+							runtime.controller.releaseAllWarmLeases();
+						} catch {
+							// 背景移行時の解放はbest-effortだが、失敗しても残りのPCは必ず解放する。
+						}
+					}
 					// 音声通知を明示的に開始している間は、PCから届く音声クリップの受信に
 					// Relay が必要なため、バックグラウンドでもソケットと心拍を維持する。
 					if (!state.voiceNotifications.desired) {

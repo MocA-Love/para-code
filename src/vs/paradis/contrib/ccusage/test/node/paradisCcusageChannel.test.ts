@@ -150,6 +150,43 @@ suite('ParadisCcusageService', () => {
 		service.dispose();
 	});
 
+	test('coalesces an overlapping warm tick into one pending pass before starting a different target', async () => {
+		let releaseFirst!: (result: IExecResult) => void;
+		const pendingFirst = new Promise<IExecResult>(resolve => releaseFirst = resolve);
+		const { clock, invocations, service } = createService(invocation => invocation === 1
+			? pendingFirst
+			: { stdout: JSON.stringify({ blocks: [] }) });
+		const channel = new ParadisCcusageChannel(service);
+		const dailyPayload = { ownerId: 'dashboard-owner', active: true, targets: [dailyWarmTarget] };
+		const blocksPayload = {
+			ownerId: 'dashboard-owner',
+			active: true,
+			targets: [{ kind: 'blocks', options: { executablePath: '/test/ccusage' } }],
+		};
+
+		await channel.call('', 'setWarmLease', [dailyPayload]);
+		await keepLeasesAliveUntilNextWarmPass(clock, channel, [dailyPayload]);
+		assert.deepStrictEqual(invocations.map(invocation => invocation.args), [
+			['daily', '--json', '--since', '20260519'],
+		]);
+
+		await channel.call('', 'setWarmLease', [blocksPayload]);
+		await keepLeasesAliveUntilNextWarmPass(clock, channel, [blocksPayload]);
+		assert.deepStrictEqual(invocations.map(invocation => invocation.args), [
+			['daily', '--json', '--since', '20260519'],
+		]);
+
+		releaseFirst({ stdout: dailyOutput('stale') });
+		for (let index = 0; index < 50 && invocations.length < 2; index++) {
+			await Promise.resolve();
+		}
+		assert.deepStrictEqual(invocations.map(invocation => invocation.args), [
+			['daily', '--json', '--since', '20260519'],
+			['blocks', '--active', '--json'],
+		]);
+		service.dispose();
+	});
+
 	test('purges an expired owner at the warm tick even when the expiry scheduler is delayed', async () => {
 		const delayedScheduler: IParadisWarmLeaseScheduler = {
 			schedule: () => { },
@@ -193,6 +230,28 @@ suite('ParadisCcusageService', () => {
 		const rows = await service.fetchDaily({ executablePath: '/test/ccusage', since: '20260519' });
 
 		assert.deepStrictEqual({ calls: invocations.length, period: rows[0]?.period }, { calls: 2, period: 'fresh-2' });
+		service.dispose();
+	});
+
+	test('publishes a warm-first in-flight result when a foreground request joins before owner release', async () => {
+		let releaseWarm!: (result: IExecResult) => void;
+		const pendingWarm = new Promise<IExecResult>(resolve => releaseWarm = resolve);
+		const { clock, invocations, service } = createService(() => pendingWarm);
+		const channel = new ParadisCcusageChannel(service);
+		const payload = { ownerId: 'status-owner', active: true, targets: [dailyWarmTarget] };
+
+		await channel.call('', 'setWarmLease', [payload]);
+		await keepLeasesAliveUntilNextWarmPass(clock, channel, [payload]);
+		const foreground = service.fetchDaily({ executablePath: '/test/ccusage', since: '20260519' });
+		await channel.call('', 'setWarmLease', [{ ownerId: payload.ownerId, active: false, targets: [] }]);
+		releaseWarm({ stdout: dailyOutput('foreground-joined') });
+		const joined = await foreground;
+		const cached = await service.fetchDaily({ executablePath: '/test/ccusage', since: '20260519' });
+
+		assert.deepStrictEqual({ calls: invocations.length, periods: [joined[0]?.period, cached[0]?.period] }, {
+			calls: 1,
+			periods: ['foreground-joined', 'foreground-joined'],
+		});
 		service.dispose();
 	});
 

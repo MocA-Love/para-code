@@ -186,8 +186,9 @@ export class ParadisCcusageClient {
 				// 切断済みrouteのrelease失敗は、新routeのacquireを妨げない。
 			}
 		}
-		await currentRoute.channel.call<void>('setWarmLease', [{ ownerId, active: true, targets }]);
+		// 送信後の応答だけ失われた場合も、退役時は同じrouteへ補償releaseする。
 		this.warmLeaseRoutes.set(ownerId, currentRoute);
+		await currentRoute.channel.call<void>('setWarmLease', [{ ownerId, active: true, targets }]);
 	}
 
 	private resolveRoute(): IParadisCcusageRoute {

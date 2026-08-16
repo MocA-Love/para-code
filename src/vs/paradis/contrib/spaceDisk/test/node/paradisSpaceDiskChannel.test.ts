@@ -256,6 +256,27 @@ suite('ParadisSpaceDiskService', () => {
 		service.dispose();
 	});
 
+	test('publishes a warm-first in-flight result when a foreground request joins before owner release', async () => {
+		const pendingWarm = deferred<IDirectorySizeResult>();
+		const { channel, clock, invocations, service } = createService(() => pendingWarm.promise);
+		const targets = [target('warm-joined')];
+		const payload = { ownerId: 'desktop-owner', active: true as const, targets };
+
+		await channel.call('', 'setWarmLease', [payload]);
+		await renewUntilNextWarmPass(clock, channel, [payload]);
+		const foreground = service.measure(targets);
+		await channel.call('', 'setWarmLease', [{ ownerId: payload.ownerId, active: false, targets: [] }]);
+		pendingWarm.resolve({ bytes: 42, files: 1, truncated: false });
+		const joined = await foreground;
+		const cached = await service.measure(targets);
+
+		assert.deepStrictEqual({ calls: invocations.length, bytes: [joined.spaces[0]?.ownBytes, cached.spaces[0]?.ownBytes] }, {
+			calls: 1,
+			bytes: [42, 42],
+		});
+		service.dispose();
+	});
+
 	test('uses the renewed target snapshot without resetting the warm deadline', async () => {
 		const { channel, clock, invocations, service } = createService();
 		let payload = { ownerId: 'desktop-owner', active: true as const, targets: [target('before')] };
@@ -354,6 +375,39 @@ suite('ParadisSpaceDiskService', () => {
 		});
 		service.dispose();
 		assert.strictEqual((periodicScheduler.dispose as sinon.SinonSpy).callCount, 1);
+	});
+
+	test('does not let a fresh cache hide a renewed or fallback snapshot with a different signature', async () => {
+		let runner: (() => void) | undefined;
+		const periodicScheduler: IParadisWarmLeaseScheduler = {
+			schedule: () => { },
+			cancel: () => { },
+			dispose: () => { },
+		};
+		const { channel, invocations, service } = createService(undefined, undefined, callback => {
+			runner = callback;
+			return periodicScheduler;
+		});
+		const ownerA = { ownerId: 'owner-a', active: true as const, targets: [target('fallback')] };
+		const ownerB = { ownerId: 'owner-b', active: true as const, targets: [target('latest-before')] };
+
+		await channel.call('', 'setWarmLease', [ownerA]);
+		await channel.call('', 'setWarmLease', [ownerB]);
+		runner!();
+		await flushMicrotasks();
+		await channel.call('', 'setWarmLease', [{ ...ownerB, targets: [target('latest-after')] }]);
+		runner!();
+		await flushMicrotasks();
+		await channel.call('', 'setWarmLease', [{ ownerId: ownerB.ownerId, active: false, targets: [] }]);
+		runner!();
+		await flushMicrotasks();
+
+		assert.deepStrictEqual(invocations.map(invocation => invocation.root), [
+			'/repositories/latest-before',
+			'/repositories/latest-after',
+			'/repositories/fallback',
+		]);
+		service.dispose();
 	});
 
 	test('does not publish a released warm generation after the same owner reacquires', async () => {

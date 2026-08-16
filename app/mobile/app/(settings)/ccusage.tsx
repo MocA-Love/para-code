@@ -154,9 +154,10 @@ export default function CcusageScreen() {
 	const column = useContentColumnStyle();
 	// 相対時刻表示（セッションの最終アクティビティ）を画面を開いたままでも追従させる
 	const now = useNow();
-	const { usageDashboard, connection, activePcId, controllerRevision, acquireUsageWarmLease } = useAppStore(useShallow(s => ({
+	const { usageDashboard, connection, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease } = useAppStore(useShallow(s => ({
 		usageDashboard: s.usageDashboard,
 		connection: s.connection,
+		warmLeaseReady: s.connection === 'online' && s.pcOnline && s.sessionProtocolReady,
 		activePcId: s.activePcId,
 		controllerRevision: s.controllerRevision,
 		acquireUsageWarmLease: s.acquireUsageWarmLease,
@@ -170,12 +171,12 @@ export default function CcusageScreen() {
 		updateCcusageWarmLeaseLifecycle(lifecycle, {
 			focused: isFocused,
 			appActive: isAppActive,
-			online: connection === 'online',
+			online: warmLeaseReady,
 			activePcId,
 			controllerRevision,
 		}, acquireUsageWarmLease);
 		return () => lifecycle.update(false, acquireUsageWarmLease);
-	}, [isFocused, isAppActive, connection, activePcId, controllerRevision, acquireUsageWarmLease]);
+	}, [isFocused, isAppActive, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease]);
 
 	const [data, setData] = useState<UsageDashboardResult | undefined>();
 	const [loading, setLoading] = useState(false);

@@ -110,10 +110,11 @@ export default function SystemScreen() {
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
-	const { systemResources, spaceDiskUsage, connection, activePcId, controllerRevision, acquireSpaceDiskWarmLease } = useAppStore(useShallow(s => ({
+	const { systemResources, spaceDiskUsage, connection, warmLeaseReady, activePcId, controllerRevision, acquireSpaceDiskWarmLease } = useAppStore(useShallow(s => ({
 		systemResources: s.systemResources,
 		spaceDiskUsage: s.spaceDisk,
 		connection: s.connection,
+		warmLeaseReady: s.connection === 'online' && s.pcOnline && s.sessionProtocolReady,
 		activePcId: s.activePcId,
 		controllerRevision: s.controllerRevision,
 		acquireSpaceDiskWarmLease: s.acquireSpaceDiskWarmLease,
@@ -173,13 +174,13 @@ export default function SystemScreen() {
 		updateSystemSpaceDiskWarmLeaseLifecycle(lifecycle, {
 			focused: isFocused,
 			appActive: isAppActive,
-			online: connection === 'online',
+			online: warmLeaseReady,
 			volumeAxis: axis === 'volume',
 			activePcId,
 			controllerRevision,
 		}, acquireSpaceDiskWarmLease);
 		return () => lifecycle.update(false, acquireSpaceDiskWarmLease);
-	}, [isFocused, isAppActive, connection, axis, activePcId, controllerRevision, acquireSpaceDiskWarmLease]);
+	}, [isFocused, isAppActive, warmLeaseReady, axis, activePcId, controllerRevision, acquireSpaceDiskWarmLease]);
 	useEffect(() => {
 		if (!isFocused || !isAppActive || connection !== 'online') {
 			return;

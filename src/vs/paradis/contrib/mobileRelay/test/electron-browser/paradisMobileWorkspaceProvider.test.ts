@@ -159,6 +159,30 @@ suite('ParadisMobileWorkspaceProvider', () => {
 			assert.strictEqual(calls.filter(call => !call.active).length, 129);
 		});
 
+		test('counts never-settling retiring operations in a resource-scoped owner quota', async () => {
+			const pending = new Promise<void>(() => { });
+			const calls: { resource: string; active: boolean }[] = [];
+			const provider = new ParadisMobileWarmLeaseProvider(
+				(_ownerId, active) => { calls.push({ resource: 'ccusage', active }); return pending; },
+				(_ownerId, active) => { calls.push({ resource: 'spaceDisk', active }); return Promise.resolve(); },
+			);
+
+			for (let index = 0; index < 128; index++) {
+				void provider.setLease(`mobile-${index}`, warmRequest('usageWarmLease', `lease-${index}`, true));
+			}
+			for (let index = 0; index < 128; index++) {
+				void provider.setLease(`mobile-${index}`, warmRequest('usageWarmLease', `lease-${index}`, false));
+			}
+			void provider.setLease('overflow-mobile', warmRequest('usageWarmLease', 'overflow', true));
+			await provider.setLease('space-mobile', warmRequest('spaceDiskWarmLease', 'independent', true));
+
+			assert.deepStrictEqual({
+				ccusageCalls: calls.filter(call => call.resource === 'ccusage').length,
+				spaceDiskCalls: calls.filter(call => call.resource === 'spaceDisk').length,
+			}, { ccusageCalls: 128, spaceDiskCalls: 1 });
+			provider.dispose();
+		});
+
 		test('serializes a release behind a pending acquire', async () => {
 			let finishAcquire!: () => void;
 			const acquireBarrier = new Promise<void>(resolve => finishAcquire = resolve);

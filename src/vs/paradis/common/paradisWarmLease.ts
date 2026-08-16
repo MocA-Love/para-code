@@ -45,6 +45,10 @@ interface IParadisWarmLeaseOwner<TTarget extends ParadisWarmLeaseTargetValue> {
 	readonly cost: number;
 }
 
+type ParadisWarmLeaseAuthority<TTarget extends ParadisWarmLeaseTargetValue> =
+	| { readonly found: false }
+	| { readonly found: true; readonly target: TTarget };
+
 type SchedulerFactory = (runner: () => void) => IParadisWarmLeaseScheduler;
 
 const cloneRejected = Symbol('cloneRejected');
@@ -375,15 +379,15 @@ export class ParadisWarmLeaseTracker<TTarget extends ParadisWarmLeaseTargetValue
 		for (const key of keys) {
 			const previous = this.snapshots.get(key);
 			const next = this.findLatestTarget(key);
-			if (!next) {
+			if (!next.found) {
 				if (previous) {
 					this.snapshots.delete(key);
 					changed = true;
 				}
 				continue;
 			}
-			if (!previous || !this.equals(previous.target, next)) {
-				this.snapshots.set(key, Object.freeze({ key, target: next, generation: ++this.nextGeneration }));
+			if (!previous || !this.equals(previous.target, next.target)) {
+				this.snapshots.set(key, Object.freeze({ key, target: next.target, generation: ++this.nextGeneration }));
 				changed = true;
 			}
 		}
@@ -392,17 +396,17 @@ export class ParadisWarmLeaseTracker<TTarget extends ParadisWarmLeaseTargetValue
 		}
 	}
 
-	private findLatestTarget(key: string): TTarget | undefined {
+	private findLatestTarget(key: string): ParadisWarmLeaseAuthority<TTarget> {
 		let latestSequence = -1;
-		let latestTarget: TTarget | undefined;
+		let latest: ParadisWarmLeaseAuthority<TTarget> = { found: false };
 		for (const [ownerId, target] of this.ownersByTarget.get(key) ?? []) {
 			const owner = this.owners.get(ownerId);
 			if (owner && owner.renewSequence > latestSequence) {
 				latestSequence = owner.renewSequence;
-				latestTarget = target;
+				latest = { found: true, target };
 			}
 		}
-		return latestTarget;
+		return latest;
 	}
 
 	private syncExpiryScheduler(): void {
@@ -429,6 +433,7 @@ export class ParadisWarmLeaseController implements IDisposable {
 	private readonly scheduler: IParadisWarmLeaseScheduler;
 	private desiredOwnerId: string | undefined;
 	private acquiredOwnerId: string | undefined;
+	private ambiguousOwnerId: string | undefined;
 	private refreshRequested = false;
 	private reconciling = false;
 	private disposed = false;
@@ -515,18 +520,29 @@ export class ParadisWarmLeaseController implements IDisposable {
 					}
 					continue;
 				}
+				const ambiguousOwnerId = this.ambiguousOwnerId;
+				if (ambiguousOwnerId && ambiguousOwnerId !== desiredOwnerId) {
+					this.ambiguousOwnerId = undefined;
+					await this.invoke(this.release, ambiguousOwnerId);
+					continue;
+				}
 
 				if (!desiredOwnerId) {
 					return;
 				}
+				this.refreshRequested = false;
 				const acquired = await this.invoke(this.acquire, desiredOwnerId);
 				if (!acquired) {
-					if (this.desiredOwnerId === desiredOwnerId) {
-						this.desiredOwnerId = undefined;
-						this.refreshRequested = false;
+					this.ambiguousOwnerId = desiredOwnerId;
+					if (this.desiredOwnerId !== desiredOwnerId || this.refreshRequested) {
+						continue;
 					}
-					continue;
+					if (!this.disposed) {
+						this.scheduler.schedule(PARADIS_WARM_LEASE_RENEW_INTERVAL_MS);
+					}
+					return;
 				}
+				this.ambiguousOwnerId = undefined;
 				this.acquiredOwnerId = desiredOwnerId;
 				if (this.desiredOwnerId === desiredOwnerId && !this.refreshRequested) {
 					this.scheduler.schedule(PARADIS_WARM_LEASE_RENEW_INTERVAL_MS);

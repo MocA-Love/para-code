@@ -23,6 +23,8 @@ const componentHarness = vi.hoisted(() => ({
 	storage: new Map<string, string>(),
 	pairCredentials: undefined as PairedCredentials | undefined,
 	leaseEvents: [] as string[],
+	runtimeEvents: [] as string[],
+	appStateChange: undefined as ((state: string) => void) | undefined,
 }));
 
 vi.mock('./store.js', async () => {
@@ -31,14 +33,25 @@ vi.mock('./store.js', async () => {
 		...actual,
 		// Keep every runtime online so an identity/revision-only render cannot be
 		// accidentally covered by a simultaneous connection transition.
-		createEmptyStoreState: (): StoreState => ({ ...actual.createEmptyStoreState(), connection: 'online' }),
+		createEmptyStoreState: (): StoreState => ({
+			...actual.createEmptyStoreState(),
+			connection: 'online',
+			pcOnline: true,
+			sessionProtocolReady: true,
+		}),
 	};
 });
 
 vi.mock('react-native', () => {
 	return {
 		ActivityIndicator: 'ActivityIndicator',
-		AppState: { currentState: 'active', addEventListener: () => ({ remove() { } }) },
+		AppState: {
+			currentState: 'active',
+			addEventListener: (_event: string, listener: (state: string) => void) => {
+				componentHarness.appStateChange = listener;
+				return { remove() { } };
+			},
+		},
 		Pressable: 'Pressable',
 		RefreshControl: 'RefreshControl',
 		ScrollView: 'ScrollView',
@@ -173,7 +186,9 @@ beforeAll(async () => {
 	vi.spyOn(MobileController.prototype, 'reconnect').mockImplementation(() => { });
 	vi.spyOn(MobileController.prototype, 'disconnect').mockImplementation(() => { });
 	vi.spyOn(MobileController.prototype, 'resumeFromBackground').mockImplementation(() => { });
-	vi.spyOn(MobileController.prototype, 'suspendForBackground').mockImplementation(() => { });
+	vi.spyOn(MobileController.prototype, 'suspendForBackground').mockImplementation(function (this: MobileController) {
+		componentHarness.runtimeEvents.push(`${controllerOwners.get(this)}:suspend`);
+	});
 	vi.spyOn(MobileController.prototype, 'ensureConnected').mockImplementation(() => { });
 	vi.spyOn(MobileController.prototype, 'detachAll').mockImplementation(() => { });
 	vi.spyOn(MobileController.prototype, 'setTerminalViewport').mockImplementation(() => { });
@@ -212,6 +227,7 @@ beforeAll(async () => {
 		return { dispose };
 	});
 	vi.spyOn(MobileController.prototype, 'releaseAllWarmLeases').mockImplementation(function (this: MobileController) {
+		componentHarness.runtimeEvents.push(`${controllerOwners.get(this)}:release-all`);
 		for (const dispose of [...(controllerLeases.get(this) ?? [])]) {
 			dispose();
 		}
@@ -387,12 +403,123 @@ describe('mobile warm lease screen lifecycle', () => {
 		lifecycle.dispose();
 	});
 
+	it('reacquires the ccusage lease when session readiness recovers without a connection transition', async () => {
+		componentHarness.focused = true;
+		componentHarness.appActive = true;
+		await act(async () => {
+			useAppStore.setState({ connection: 'online', pcOnline: true, sessionProtocolReady: true });
+			await flushReact();
+		});
+		componentHarness.leaseEvents.length = 0;
+		const renderer = await renderScreen(CcusageScreen);
+		try {
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:acquire:ccusage');
+			await act(async () => {
+				useAppStore.setState({ pcOnline: false, sessionProtocolReady: false });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:release:ccusage');
+			const releasedCount = componentHarness.leaseEvents.length;
+			await act(async () => {
+				useAppStore.setState({ pcOnline: true });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents).toHaveLength(releasedCount);
+			await act(async () => {
+				useAppStore.setState({ sessionProtocolReady: true });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:acquire:ccusage');
+			expect(useAppStore.getState().connection).toBe('online');
+		} finally {
+			await act(async () => {
+				useAppStore.setState({ connection: 'online', pcOnline: true, sessionProtocolReady: true });
+				renderer.unmount();
+				await flushReact();
+			});
+		}
+	});
+
+	it('reacquires the space disk lease when session readiness recovers without a connection transition', async () => {
+		componentHarness.focused = true;
+		componentHarness.appActive = true;
+		await act(async () => {
+			useAppStore.setState({ connection: 'online', pcOnline: true, sessionProtocolReady: true });
+			await flushReact();
+		});
+		componentHarness.leaseEvents.length = 0;
+		const renderer = await renderScreen(SystemScreen);
+		try {
+			const volume = renderer.root.findByProps({ accessibilityLabel: 'ボリューム' });
+			await act(async () => {
+				volume.props.onPress();
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:acquire:spaceDisk');
+			await act(async () => {
+				useAppStore.setState({ pcOnline: false, sessionProtocolReady: false });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:release:spaceDisk');
+			const releasedCount = componentHarness.leaseEvents.length;
+			await act(async () => {
+				useAppStore.setState({ pcOnline: true });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents).toHaveLength(releasedCount);
+			await act(async () => {
+				useAppStore.setState({ sessionProtocolReady: true });
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:acquire:spaceDisk');
+			expect(useAppStore.getState().connection).toBe('online');
+		} finally {
+			await act(async () => {
+				useAppStore.setState({ connection: 'online', pcOnline: true, sessionProtocolReady: true });
+				renderer.unmount();
+				await flushReact();
+			});
+		}
+	});
+
+	it('releases every runtime lease in voice background mode while leaving transports open', async () => {
+		componentHarness.focused = true;
+		componentHarness.appActive = true;
+		if (useAppStore.getState().activePcId !== 'pc-a') {
+			useAppStore.getState().switchPc('pc-a');
+		}
+		useAppStore.setState({ connection: 'online', pcOnline: true, sessionProtocolReady: true });
+		componentHarness.leaseEvents.length = 0;
+		const renderer = await renderScreen(CcusageScreen);
+		try {
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:acquire:ccusage');
+			componentHarness.runtimeEvents.length = 0;
+			await act(async () => {
+				useAppStore.setState({ voiceNotifications: { desired: true, status: 'live' } });
+				componentHarness.appStateChange?.('background');
+				await flushReact();
+			});
+			expect(componentHarness.leaseEvents.at(-1)).toBe('pc-a:release:ccusage');
+			expect(componentHarness.runtimeEvents.filter(event => event.endsWith(':release-all')).sort()).toEqual([
+				'pc-a:release-all', 'pc-b:release-all',
+			]);
+			expect(componentHarness.runtimeEvents.some(event => event.endsWith(':suspend'))).toBe(false);
+		} finally {
+			await act(async () => {
+				useAppStore.setState({ voiceNotifications: { desired: false, status: 'idle' } });
+				renderer.unmount();
+				await flushReact();
+			});
+		}
+	});
+
 	it('renders ccusage through actual Zustand activePcId-only and revision-only projections', async () => {
 		componentHarness.focused = true;
 		componentHarness.appActive = true;
 		if (useAppStore.getState().activePcId !== 'pc-a') {
 			useAppStore.getState().switchPc('pc-a');
 		}
+		useAppStore.setState({ pcOnline: true, sessionProtocolReady: true });
 		expect(useAppStore.getState()).toMatchObject({ activePcId: 'pc-a', connection: 'online' });
 		componentHarness.leaseEvents.length = 0;
 		let actualActivePcId = 'pc-a';
@@ -427,6 +554,7 @@ describe('mobile warm lease screen lifecycle', () => {
 
 			await act(async () => {
 				useAppStore.getState().switchPc('pc-b');
+				useAppStore.setState({ pcOnline: true, sessionProtocolReady: true });
 				await flushReact();
 			});
 			actualActivePcId = 'pc-b';
@@ -448,6 +576,7 @@ describe('mobile warm lease screen lifecycle', () => {
 			});
 			await act(async () => {
 				await useAppStore.getState().pairFromUri(uri, 'Phone', () => { });
+				useAppStore.setState({ pcOnline: true, sessionProtocolReady: true });
 				await flushReact();
 			});
 			expect(useAppStore.getState()).toMatchObject({
@@ -482,7 +611,7 @@ describe('mobile warm lease screen lifecycle', () => {
 			componentHarness.focused = true;
 			componentHarness.appActive = true;
 			await act(async () => {
-				useAppStore.setState({ activePcId: actualActivePcId, connection: 'online' });
+				useAppStore.setState({ activePcId: actualActivePcId, connection: 'online', pcOnline: true, sessionProtocolReady: true });
 				await flushReact();
 				renderer.unmount();
 			});
@@ -494,6 +623,7 @@ describe('mobile warm lease screen lifecycle', () => {
 		componentHarness.appActive = true;
 		await act(async () => {
 			useAppStore.getState().switchPc('pc-a');
+			useAppStore.setState({ pcOnline: true, sessionProtocolReady: true });
 			await flushReact();
 		});
 		expect(useAppStore.getState()).toMatchObject({ activePcId: 'pc-a', connection: 'online' });
@@ -536,6 +666,7 @@ describe('mobile warm lease screen lifecycle', () => {
 
 			await act(async () => {
 				useAppStore.getState().switchPc('pc-b');
+				useAppStore.setState({ pcOnline: true, sessionProtocolReady: true });
 				await flushReact();
 			});
 			actualActivePcId = 'pc-b';
@@ -556,6 +687,7 @@ describe('mobile warm lease screen lifecycle', () => {
 			});
 			await act(async () => {
 				await useAppStore.getState().pairFromUri(uri, 'Phone', () => { });
+				useAppStore.setState({ pcOnline: true, sessionProtocolReady: true });
 				await flushReact();
 			});
 			expect(useAppStore.getState()).toMatchObject({
@@ -604,7 +736,7 @@ describe('mobile warm lease screen lifecycle', () => {
 			componentHarness.focused = true;
 			componentHarness.appActive = true;
 			await act(async () => {
-				useAppStore.setState({ activePcId: actualActivePcId, connection: 'online' });
+				useAppStore.setState({ activePcId: actualActivePcId, connection: 'online', pcOnline: true, sessionProtocolReady: true });
 				await flushReact();
 				renderer.unmount();
 			});

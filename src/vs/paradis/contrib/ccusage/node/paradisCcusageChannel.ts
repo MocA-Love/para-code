@@ -91,6 +91,11 @@ interface IWarmFailure {
 	readonly count: number;
 }
 
+interface IInflightReport {
+	readonly promise: Promise<unknown>;
+	foregroundCacheInterest: boolean;
+}
+
 interface IWarmLeaseOwner {
 	readonly expiresAt: number;
 	readonly targetKeys: readonly string[];
@@ -127,7 +132,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	/** レポート結果のTTLキャッシュ(キー: 実行引数+実行ファイルパス)。 */
 	private readonly cache = new Map<string, { at: number; ttl: number; value: unknown }>();
 	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
-	private readonly inflight = new Map<string, Promise<unknown>>();
+	private readonly inflight = new Map<string, IInflightReport>();
 	/** dispose 時に停止する実行中の子プロセス。 */
 	private readonly activeChildren = new Set<cp.ChildProcess>();
 	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<ParadisCcusageWarmTarget>;
@@ -136,6 +141,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private readonly warmLeaseListener: IDisposable;
 	/** active lease がある間だけ温め直すタイマー。 */
 	private warmTimer: ReturnType<typeof setInterval> | undefined;
+	private warmPassRunning = false;
+	private warmPassPending = false;
 	/** dispose 後にタイマーが再起動しないようにする。 */
 	private disposed = false;
 	/**
@@ -268,7 +275,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				// 鮮度判定はここで済ませているので、キャッシュを見に行かせず必ず実行させる。
 				const reportArgs = [...warmReportArgs[target.kind]];
 				const ttl = target.kind === 'blocks' ? BLOCK_CACHE_TTL_MS : CACHE_TTL_MS;
-				await this.execJsonInternal(reportArgs, { ...target.options, bypassCache: true }, ttl, () => this.warmLeaseTracker.isCurrent(key, generation));
+				await this.execJsonInternal(reportArgs, { ...target.options, bypassCache: true }, ttl, () => this.warmLeaseTracker.isCurrent(key, generation), false);
 				if (this.warmLeaseTracker.isCurrent(key, generation)) {
 					this.warmFailures.delete(key);
 				}
@@ -284,6 +291,32 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			}
 		}
 		this.syncWarmTimer();
+	}
+
+	private requestWarmPass(): void {
+		if (this.disposed) {
+			return;
+		}
+		if (this.warmPassRunning) {
+			this.warmPassPending = true;
+			return;
+		}
+		this.warmPassRunning = true;
+		void this.drainWarmPasses();
+	}
+
+	private async drainWarmPasses(): Promise<void> {
+		try {
+			do {
+				this.warmPassPending = false;
+				await this.runWarmPass();
+			} while (this.warmPassPending && !this.disposed);
+		} finally {
+			this.warmPassRunning = false;
+			if (this.disposed) {
+				this.warmPassPending = false;
+			}
+		}
 	}
 
 	private syncWarmTimer(): void {
@@ -302,7 +335,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			return failure?.generation !== snapshot.generation || failure.count < WARM_MAX_CONSECUTIVE_FAILURES;
 		});
 		if (hasWarmableTarget && this.warmTimer === undefined) {
-			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
+			const timer = setInterval(() => this.requestWarmPass(), WARM_INTERVAL_MS);
 			(timer as { unref?: () => void }).unref?.();
 			this.warmTimer = timer;
 		} else if (!hasWarmableTarget && this.warmTimer !== undefined) {
@@ -371,6 +404,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 	dispose(): void {
 		this.disposed = true;
+		this.warmPassPending = false;
 		if (this.warmTimer !== undefined) {
 			clearInterval(this.warmTimer);
 			this.warmTimer = undefined;
@@ -394,6 +428,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		options: IParadisCcusageExecOptions,
 		ttl: number = CACHE_TTL_MS,
 		shouldCache: () => boolean = () => true,
+		foregroundCacheInterest = true,
 	): Promise<T> {
 		const args = this.buildArgs(reportArgs, options);
 		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
@@ -406,24 +441,28 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		// bypassCache でも実行中の同一リクエストには相乗りする(結果はどのみち今まさに取り直したもの)
 		const inflight = this.inflight.get(cacheKey);
 		if (inflight) {
-			return inflight as Promise<T>;
+			inflight.foregroundCacheInterest ||= foregroundCacheInterest;
+			return inflight.promise as Promise<T>;
 		}
 
-		const promise = this.doExecJson<T>(reportArgs, args, options)
-			.then(({ value, usedOfflineFallback }) => {
-				if (!this.disposed && shouldCache()) {
-					this.pruneCache();
-					this.cache.set(cacheKey, { at: this.now(), ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value });
-				}
-				return value;
-			})
-			.finally(() => {
-				if (this.inflight.get(cacheKey) === promise) {
-					this.inflight.delete(cacheKey);
-				}
-			});
-		this.inflight.set(cacheKey, promise);
-		return promise;
+		const record: IInflightReport = {
+			foregroundCacheInterest,
+			promise: this.doExecJson<T>(reportArgs, args, options)
+				.then(({ value, usedOfflineFallback }) => {
+					if (!this.disposed && (record.foregroundCacheInterest || shouldCache())) {
+						this.pruneCache();
+						this.cache.set(cacheKey, { at: this.now(), ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value });
+					}
+					return value;
+				})
+				.finally(() => {
+					if (this.inflight.get(cacheKey) === record) {
+						this.inflight.delete(cacheKey);
+					}
+				}),
+		};
+		this.inflight.set(cacheKey, record);
+		return record.promise as Promise<T>;
 	}
 
 	/** 期限切れエントリの掃除(since が日付で変わるため古いキーが溜まり続けるのを防ぐ)。 */

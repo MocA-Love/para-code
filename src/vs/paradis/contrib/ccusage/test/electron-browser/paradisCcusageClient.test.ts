@@ -210,6 +210,46 @@ suite('ParadisCcusageClient', () => {
 		]);
 	});
 
+	test('releases the captured attempted route when an ambiguous acquire rejects before retirement', async () => {
+		sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
+		const configurationChanges = new Emitter<void>();
+		const calls: IChannelCall[] = [];
+		const remoteA = {
+			call<T>(command: string, args?: unknown): Promise<T> {
+				calls.push({ channel: 'remote-a', command, args });
+				const payload = (args as readonly [{ readonly active: boolean }])[0];
+				return payload.active ? Promise.reject(new Error('response lost')) : Promise.resolve(undefined as T);
+			},
+		};
+		const remoteB = {
+			call<T>(command: string, args?: unknown): Promise<T> {
+				calls.push({ channel: 'remote-b', command, args });
+				return Promise.resolve(undefined as T);
+			},
+		};
+		const firstConnection = { getChannel: () => remoteA };
+		const secondConnection = { getChannel: () => remoteB };
+		let connection: typeof firstConnection | typeof secondConnection = firstConnection;
+		const client = new ParadisCcusageClient(
+			{ getChannel: () => remoteB } as unknown as ISharedProcessService,
+			{ getValue: () => '', onDidChangeConfiguration: configurationChanges.event } as unknown as IConfigurationService,
+			{ getConnection: () => connection } as unknown as IRemoteAgentService,
+		);
+
+		const lease = client.createStatusWarmLease();
+		await flushMicrotasks();
+		const ownerId = ((calls[0]?.args as readonly [{ readonly ownerId: string }])[0]).ownerId;
+		connection = secondConnection;
+		lease.dispose();
+		await flushMicrotasks();
+		configurationChanges.dispose();
+
+		assert.deepStrictEqual(calls.map(call => ({ channel: call.channel, args: call.args })), [
+			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
+			{ channel: 'remote-a', args: [{ ownerId, active: false, targets: [] }] },
+		]);
+	});
+
 	test('keeps the captured local channel when the shared process returns a new wrapper', async () => {
 		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
 		const configurationChanges = new Emitter<void>();

@@ -91,6 +91,7 @@ interface IParadisMobileWarmLeaseOperation {
 	version: number;
 	processedVersion: number;
 	running: Promise<void> | undefined;
+	abortPendingAcquire: (() => void) | undefined;
 }
 
 /**
@@ -105,7 +106,7 @@ export class ParadisMobileWarmLeaseProvider implements IDisposable {
 
 	constructor(
 		private readonly setUsageWarmLease: (ownerId: string, active: boolean) => Promise<void>,
-		private readonly setSpaceDiskWarmLease: (ownerId: string, active: boolean) => Promise<void>,
+		private readonly setSpaceDiskWarmLease: (ownerId: string, active: boolean, cancellation?: AbortSignal) => Promise<void>,
 		private readonly now: () => number = Date.now,
 		schedulerFactory: (runner: () => void) => IParadisMobileWarmLeaseScheduler = runner => new RunOnceScheduler(runner, MOBILE_WARM_LEASE_EXPIRY_MS),
 	) {
@@ -126,12 +127,22 @@ export class ParadisMobileWarmLeaseProvider implements IDisposable {
 			this.scheduleExpiry();
 			return this.requestOperation(ownerId, resource, false);
 		}
-		if (!this.leases.has(ownerId) && this.leases.size >= MOBILE_WARM_LEASE_MAX_OWNERS) {
+		if (!this.operations.has(ownerId) && this.operationCount(resource) >= MOBILE_WARM_LEASE_MAX_OWNERS) {
 			return Promise.resolve();
 		}
 		this.leases.set(ownerId, { ownerId, resource, expiresAt: this.now() + MOBILE_WARM_LEASE_EXPIRY_MS });
 		this.scheduleExpiry();
 		return this.requestOperation(ownerId, resource, true);
+	}
+
+	private operationCount(resource: ParadisMobileWarmLeaseResource): number {
+		let count = 0;
+		for (const operation of this.operations.values()) {
+			if (operation.resource === resource) {
+				count++;
+			}
+		}
+		return count;
 	}
 
 	private purgeExpired(): void {
@@ -162,8 +173,11 @@ export class ParadisMobileWarmLeaseProvider implements IDisposable {
 	private requestOperation(ownerId: string, resource: ParadisMobileWarmLeaseResource, active: boolean): Promise<void> {
 		let operation = this.operations.get(ownerId);
 		if (operation === undefined) {
-			operation = { ownerId, resource, desiredActive: active, version: 0, processedVersion: 0, running: undefined };
+			operation = { ownerId, resource, desiredActive: active, version: 0, processedVersion: 0, running: undefined, abortPendingAcquire: undefined };
 			this.operations.set(ownerId, operation);
+		}
+		if (!active) {
+			operation.abortPendingAcquire?.();
 		}
 		operation.desiredActive = active;
 		operation.version++;
@@ -177,7 +191,22 @@ export class ParadisMobileWarmLeaseProvider implements IDisposable {
 				const version = operation.version;
 				const active = operation.desiredActive;
 				try {
-					await (operation.resource === 'ccusage' ? this.setUsageWarmLease : this.setSpaceDiskWarmLease)(operation.ownerId, active);
+					if (operation.resource === 'ccusage') {
+						await this.setUsageWarmLease(operation.ownerId, active);
+					} else if (active) {
+						const cancellation = new AbortController();
+						const abortPendingAcquire = () => cancellation.abort();
+						operation.abortPendingAcquire = abortPendingAcquire;
+						try {
+							await this.setSpaceDiskWarmLease(operation.ownerId, true, cancellation.signal);
+						} finally {
+							if (operation.abortPendingAcquire === abortPendingAcquire) {
+								operation.abortPendingAcquire = undefined;
+							}
+						}
+					} else {
+						await this.setSpaceDiskWarmLease(operation.ownerId, false);
+					}
 				} catch (error) {
 					const action = active ? 'acquire' : 'release';
 					reportParadisDiagnosticError('owned', 'mobile-warm-lease', `backend-${action}`, error, {
@@ -612,7 +641,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// スペース(リポジトリ/worktree)ごとのディスク使用量。実体は spaceDisk のクライアント
 		// （計測は shared process。1周に数十秒かかるので裏で温めた結果が即座に返る）
 		private readonly fetchSpaceDisk: (bypassCache: boolean) => Promise<IParadisSpaceDiskResult>,
-		setSpaceDiskWarmLease: (ownerId: string, active: boolean) => Promise<void>,
+		setSpaceDiskWarmLease: (ownerId: string, active: boolean, cancellation?: AbortSignal) => Promise<void>,
 		// コマンドプリセット（PC版と同一の定義・同一の実行経路）。モバイルの一覧と実行はここを通す
 		private readonly presetService: IParadisPresetService,
 	) {

@@ -273,7 +273,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// スペースごとのディスク使用量。計測は shared process で1時間ごとに走っているので、
 			// ここは基本的に温まったキャッシュを返すだけになる
 			bypassCache => spaceDiskClient.measure(bypassCache),
-			(ownerId, active) => spaceDiskClient.setWarmLease(ownerId, active),
+			(ownerId, active, cancellation) => spaceDiskClient.setWarmLease(ownerId, active, cancellation),
 			// コマンドプリセット。PC版のピン留めボタンと同じサービスをそのまま使う
 			// （定義の解決も実行経路も1つに保ち、PCとスマホで挙動が割れないようにする）
 			presetService,
