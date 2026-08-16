@@ -11,6 +11,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Event } from '../../../../../base/common/event.js';
 import { OperatingSystem } from '../../../../../base/common/platform.js';
+import { env } from '../../../../../base/common/process.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileOperationError, FileOperationResult, IFileContent, IFileService } from '../../../../../platform/files/common/files.js';
@@ -224,7 +225,9 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 	const resources: URI[] = [];
 	const readTokens: (CancellationToken | undefined)[] = [];
 	const counters: ITestCounters = { persisted: 0, environment: 0, read: 0, decodeZsh: 0, parseZsh: 0, parseBash: 0, fallback: 0 };
-	const environment = options.environment ?? createRemoteEnvironment('/home/test');
+	const environment = Object.prototype.hasOwnProperty.call(options, 'environment')
+		? options.environment ?? null
+		: createRemoteEnvironment('/home/test');
 	const remoteAgentService: Pick<IRemoteAgentService, 'getEnvironment' | 'getConnection'> = {
 		getEnvironment: () => {
 			counters.environment++;
@@ -307,6 +310,51 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 		setShellType: value => shellType = value,
 		setPersistedCommands: value => persistedCommands = value,
 	};
+}
+
+interface IKeyResourceObservation {
+	directKeyResource: URI | undefined;
+	directKeyString: string | undefined;
+	proxiedResource: URI | undefined;
+}
+
+function observeDirectKeyResource(provider: ParadisTerminalHistoryCompletionProvider): IKeyResourceObservation {
+	type FileRequest = {
+		readonly shellType: PosixShellType.Bash | PosixShellType.Zsh;
+		readonly sourceLabel: string;
+		readonly resource: URI;
+	};
+	type Location = { readonly scheme: string; readonly authority: string | undefined; readonly home: string };
+	const boundary = provider as unknown as {
+		_createFileRequest(shellType: PosixShellType.Bash | PosixShellType.Zsh, location: Location): FileRequest;
+	};
+	const createFileRequest = boundary._createFileRequest.bind(provider);
+	const observation: IKeyResourceObservation = {
+		directKeyResource: undefined,
+		directKeyString: undefined,
+		proxiedResource: undefined,
+	};
+	boundary._createFileRequest = (shellType, location) => {
+		const request = createFileRequest(shellType, location);
+		const resource = new Proxy(request.resource, {
+			get: (target, property, receiver) => {
+				if (property === 'toString') {
+					return (skipEncoding?: boolean): string => {
+						const value = target.toString(skipEncoding);
+						if (new Error().stack?.includes('paradisTerminalHistoryCacheKey')) {
+							observation.directKeyResource = receiver as URI;
+							observation.directKeyString = value;
+						}
+						return value;
+					};
+				}
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		observation.proxiedResource = resource;
+		return Object.freeze({ ...request, resource });
+	};
+	return observation;
 }
 
 interface IContributionHarness {
@@ -536,49 +584,45 @@ suite('ParadisTerminalHistoryCompletion', () => {
 	test('uses the exact same full URI object for the cache key and file read', async () => {
 		// Catches cloning/truncating the resource between key construction and I/O wiring.
 		const harness = createHarness({ shellType: PosixShellType.Bash, remoteAuthority: 'authority' });
-		type FileRequest = {
-			readonly shellType: PosixShellType.Bash | PosixShellType.Zsh;
-			readonly sourceLabel: string;
-			readonly resource: URI;
-		};
-		type Location = { readonly scheme: string; readonly authority: string | undefined; readonly home: string };
-		const boundary = harness.provider as unknown as {
-			_createFileRequest(shellType: PosixShellType.Bash | PosixShellType.Zsh, location: Location): FileRequest;
-		};
-		const createFileRequest = boundary._createFileRequest.bind(harness.provider);
-		let directKeyResource: URI | undefined;
-		let directKeyString: string | undefined;
-		let proxiedResource: URI | undefined;
-		boundary._createFileRequest = (shellType, location) => {
-			const request = createFileRequest(shellType, location);
-			const resource = new Proxy(request.resource, {
-				get: (target, property, receiver) => {
-					if (property === 'toString') {
-						return (skipEncoding?: boolean): string => {
-							const value = target.toString(skipEncoding);
-							if (new Error().stack?.includes('paradisTerminalHistoryCacheKey')) {
-								directKeyResource = receiver as URI;
-								directKeyString = value;
-							}
-							return value;
-						};
-					}
-					return Reflect.get(target, property, receiver);
-				},
-			});
-			proxiedResource = resource;
-			return Object.freeze({ ...request, resource });
-		};
+		const observation = observeDirectKeyResource(harness.provider);
 		await harness.provider.provideCompletions('e', 1, CancellationToken.None);
 		assert.strictEqual(harness.resources.length, 1);
-		assert.strictEqual(directKeyResource, proxiedResource);
-		assert.strictEqual(directKeyResource, harness.resources[0]);
-		assert.deepStrictEqual({ keyResource: directKeyString, resource: harness.resources[0].toString(), environment: harness.counters.environment }, {
+		assert.strictEqual(observation.directKeyResource, observation.proxiedResource);
+		assert.strictEqual(observation.directKeyResource, harness.resources[0]);
+		assert.deepStrictEqual({ keyResource: observation.directKeyString, resource: harness.resources[0].toString(), environment: harness.counters.environment }, {
 			keyResource: 'vscode-remote://authority/home/test/.bash_history',
 			resource: 'vscode-remote://authority/home/test/.bash_history',
 			environment: 1,
 		});
 		harness.provider.dispose();
+	});
+
+	test('uses local HOME for zsh and bash when the remote environment is null', async () => {
+		const originalHome = env['HOME'];
+		env['HOME'] = '/home/test';
+		try {
+			for (const shellType of [PosixShellType.Zsh, PosixShellType.Bash] as const) {
+				const harness = createHarness({ shellType, environment: null });
+				const observation = observeDirectKeyResource(harness.provider);
+				await harness.provider.provideCompletions('e', 1, CancellationToken.None);
+				const expected = `file:///home/test/${shellType === PosixShellType.Zsh ? '.zsh_history' : '.bash_history'}`;
+				assert.strictEqual(observation.directKeyResource, observation.proxiedResource, shellType);
+				assert.strictEqual(observation.directKeyResource, harness.resources[0], shellType);
+				assert.deepStrictEqual({ environment: harness.counters.environment, read: harness.counters.read, keyResource: observation.directKeyString, resource: harness.resources[0]?.toString() }, {
+					environment: 1,
+					read: 1,
+					keyResource: expected,
+					resource: expected,
+				}, shellType);
+				harness.provider.dispose();
+			}
+		} finally {
+			if (originalHome === undefined) {
+				delete env['HOME'];
+			} else {
+				env['HOME'] = originalHome;
+			}
+		}
 	});
 
 	test('preserves persisted MRU then file MRU completion semantics', async () => {
