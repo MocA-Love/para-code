@@ -22,7 +22,7 @@ import { clearShellFileHistory, getCommandHistory, getShellFileHistory, ITermina
 import { ITerminalCompletion, TerminalCompletionItemKind } from '../../../../../workbench/contrib/terminalContrib/suggest/browser/terminalCompletionItem.js';
 import { ITerminalCompletionProvider, ITerminalCompletionService } from '../../../../../workbench/contrib/terminalContrib/suggest/browser/terminalCompletionService.js';
 import { IRemoteAgentConnection, IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { paradisDecodeZshHistory, paradisParseBashHistory, paradisParseZshHistory } from '../../common/paradisTerminalHistoryCache.js';
+import { paradisDecodeZshHistory, paradisParseBashHistory, paradisParseZshHistory, paradisTerminalHistoryCacheKey } from '../../common/paradisTerminalHistoryCache.js';
 import { IParadisTerminalHistoryCompletionProviderOptions, ParadisTerminalHistoryCompletionContribution, ParadisTerminalHistoryCompletionProvider } from '../../browser/paradisTerminalHistoryCompletion.contribution.js';
 
 class Deferred<T> {
@@ -51,6 +51,7 @@ class TrackedDeferred<T> {
 	});
 	readonly promise: Promise<T>;
 	thenCount = 0;
+	rejectionHandlerCount = 0;
 
 	constructor() {
 		const source = this._source;
@@ -62,6 +63,9 @@ class TrackedDeferred<T> {
 				onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
 			): Promise<TResult1 | TResult2> {
 				self.thenCount++;
+				if (onrejected) {
+					self.rejectionHandlerCount++;
+				}
 				return source.then(onfulfilled, onrejected);
 			}
 			catch<TResult = never>(onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null): Promise<T | TResult> {
@@ -144,12 +148,15 @@ interface ITestHarnessOptions {
 	readonly decodeZshHistory?: (bytes: Uint8Array) => string;
 	readonly parseZshHistory?: (content: string) => readonly string[];
 	readonly parseBashHistory?: (content: string) => readonly string[];
+	readonly fallback?: (shellType: TerminalShellType | undefined) => Promise<{ readonly sourceLabel: string; readonly commands: readonly string[] } | undefined>;
 }
 
 interface ITestHarness {
 	readonly provider: ParadisTerminalHistoryCompletionProvider;
 	readonly counters: ITestCounters;
 	readonly resources: URI[];
+	readonly keyResources: URI[];
+	readonly cacheKeys: string[];
 	readonly readTokens: (CancellationToken | undefined)[];
 	readonly instantiationService: Pick<IInstantiationService, 'invokeFunction' | 'createInstance'>;
 	readonly terminalService: Pick<ITerminalService, 'activeInstance'>;
@@ -217,6 +224,8 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 	let shellType: TerminalShellType | undefined = options.shellType ?? PosixShellType.Zsh;
 	let persistedCommands = options.persistedCommands ?? [];
 	const resources: URI[] = [];
+	const keyResources: URI[] = [];
+	const cacheKeys: string[] = [];
 	const readTokens: (CancellationToken | undefined)[] = [];
 	const counters: ITestCounters = { persisted: 0, environment: 0, read: 0, decodeZsh: 0, parseZsh: 0, parseBash: 0, fallback: 0 };
 	const environment = options.environment ?? createRemoteEnvironment('/home/test');
@@ -259,6 +268,9 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 			}
 			if (Object.is(fn, getShellFileHistory)) {
 				counters.fallback++;
+				if (options.fallback) {
+					return options.fallback(args[0] as TerminalShellType | undefined) as R;
+				}
 			}
 			return fn(accessor, ...args);
 		}) as IInstantiationService['invokeFunction'],
@@ -279,6 +291,12 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 			counters.parseBash++;
 			return options.parseBashHistory ? options.parseBashHistory(content) : paradisParseBashHistory(content);
 		},
+		cacheKey: (type: TerminalShellType, resource: URI) => {
+			keyResources.push(resource);
+			const key = paradisTerminalHistoryCacheKey(type, resource);
+			cacheKeys.push(key);
+			return key;
+		},
 	};
 	const provider = new ParadisTerminalHistoryCompletionProvider(
 		providerOptions,
@@ -291,6 +309,8 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 		provider,
 		counters,
 		resources,
+		keyResources,
+		cacheKeys,
 		readTokens,
 		instantiationService,
 		terminalService,
@@ -523,6 +543,21 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		assert.deepStrictEqual(await windows.provider.provideCompletions('e', 1, CancellationToken.None), []);
 		assert.strictEqual(windows.counters.read, 0);
 		windows.provider.dispose();
+	});
+
+	test('uses the exact same full URI object for the cache key and file read', async () => {
+		// Catches cloning/truncating the resource between key construction and I/O wiring.
+		const harness = createHarness({ shellType: PosixShellType.Bash, remoteAuthority: 'authority' });
+		await harness.provider.provideCompletions('e', 1, CancellationToken.None);
+		assert.strictEqual(harness.keyResources.length, 1);
+		assert.strictEqual(harness.resources.length, 1);
+		assert.strictEqual(harness.keyResources[0], harness.resources[0]);
+		assert.deepStrictEqual({ key: harness.cacheKeys[0], resource: harness.resources[0].toString(), environment: harness.counters.environment }, {
+			key: '["bash","vscode-remote://authority/home/test/.bash_history"]',
+			resource: 'vscode-remote://authority/home/test/.bash_history',
+			environment: 1,
+		});
+		harness.provider.dispose();
 	});
 
 	test('preserves persisted MRU then file MRU completion semantics', async () => {
@@ -808,6 +843,34 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		}
 	});
 
+	test('shares only the pending fallback generation for Fish and an undefined shell', async () => {
+		for (const shellType of [PosixShellType.Fish, undefined] as const) {
+			const first = new Deferred<{ readonly sourceLabel: string; readonly commands: readonly string[] } | undefined>();
+			let generation = 0;
+			const harness = createHarness({
+				shellType: PosixShellType.Fish,
+				fallback: () => ++generation === 1
+					? first.promise
+					: Promise.resolve({ sourceLabel: 'fallback source', commands: ['next result'] }),
+			});
+			harness.setShellType(shellType);
+			const calls = Array.from({ length: 100 }, () => harness.provider.provideCompletions('f', 1, CancellationToken.None));
+			await flushMicrotasks();
+			assert.strictEqual(harness.counters.fallback, 1, String(shellType));
+			first.resolve({ sourceLabel: 'fallback source', commands: ['first old', 'first new'] });
+			const results = await Promise.all(calls);
+			for (const result of results) {
+				assert.deepStrictEqual(result, [
+					completion('first new', 'fallback source'),
+					completion('first old', 'fallback source'),
+				], String(shellType));
+			}
+			assert.deepStrictEqual(await harness.provider.provideCompletions('n', 1, CancellationToken.None), [completion('next result', 'fallback source')]);
+			assert.strictEqual(harness.counters.fallback, 2, String(shellType));
+			harness.provider.dispose();
+		}
+	});
+
 	test('keeps an all-cancelled fallback generation pending until it settles', async () => {
 		// Catches eviction of a pending-only generation when its last waiter cancels.
 		const variants: readonly ('success' | 'undefined' | 'reject')[] = ['success', 'undefined', 'reject'];
@@ -873,6 +936,23 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		} finally {
 			clearShellFileHistory();
 		}
+	});
+
+	test('handles a late rejected pending fallback after actual contribution disposal', async () => {
+		const fallback = new TrackedDeferred<{ readonly sourceLabel: string; readonly commands: readonly string[] } | undefined>();
+		const harness = createHarness({ shellType: PosixShellType.Fish, fallback: () => fallback.promise });
+		const actual = createContributionHarness(harness);
+		const pending = actual.provider.provideCompletions('l', 1, CancellationToken.None);
+		await flushMicrotasks();
+		actual.contribution.dispose();
+		assert.strictEqual(await pending, undefined);
+		assert.strictEqual(actual.registrationDisposed(), 1);
+
+		fallback.reject(new Error('late fallback rejection'));
+		await flushMicrotasks();
+		assert.deepStrictEqual({ fallback: harness.counters.fallback, rejectionHandlers: fallback.rejectionHandlerCount }, { fallback: 1, rejectionHandlers: 1 });
+		assert.strictEqual(await pending, undefined);
+		assert.strictEqual(await actual.provider.provideCompletions('l', 1, CancellationToken.None), undefined);
 	});
 
 	test('applies the generic post-await guard when listener disposal disposes the contribution', async () => {
