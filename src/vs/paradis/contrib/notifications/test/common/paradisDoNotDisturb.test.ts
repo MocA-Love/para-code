@@ -130,6 +130,12 @@ suite('Paradis DND refresh controller', () => {
 		}, timer, () => clock);
 
 		controller.refresh();
+		assert.deepStrictEqual({ reads, pending: timer.pendingCount, delays: timer.pendingDelays(), setCount: timer.setCount }, {
+			reads: 1,
+			pending: 1,
+			delays: [60_000],
+			setCount: 1,
+		});
 		clock = 61_000;
 		timer.fire(1);
 
