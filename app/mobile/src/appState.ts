@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { acquireCapturedWarmLease, MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -93,6 +93,10 @@ interface AppState extends StoreState {
 	pcs: PcSummary[];
 	/** いま画面が見ているPC。 */
 	activePcId: string | undefined;
+	/** 同じPCの再pairを含む active controller オブジェクトの交代世代。 */
+	controllerRevision: number;
+	acquireUsageWarmLease(): MobileDisposable;
+	acquireSpaceDiskWarmLease(): MobileDisposable;
 	/**
 	 * 見ていないPCとも接続を保つか。オフにすると、いま見ているPC以外は切断して
 	 * プッシュ通知だけで様子を知る（モバイル回線の通信量を抑えたい人向け。既定はオン）。
@@ -382,6 +386,16 @@ let activePcId: string | undefined;
  * （切り替えのたびに付け替えるので、各アクションは常にアクティブなPCへ届く）。
  */
 let controller: MobileController | undefined;
+let controllerRevision = 0;
+
+function replaceActiveController(next: MobileController | undefined): number {
+	if (controller === next) {
+		return controllerRevision;
+	}
+	controller?.releaseAllWarmLeases();
+	controller = next;
+	return ++controllerRevision;
+}
 /** ピン留め・アーカイブのPC別記録（保存形はPC ID → キー配列）。 */
 let pinnedRecord: ScopedKeyRecord = {};
 let archivedRecord: ScopedKeyRecord = {};
@@ -761,6 +775,7 @@ function activatePc(id: string, notice?: { readonly previousPcId: string | undef
 	endVoiceNotifications();
 	const previous = activePcId !== undefined ? runtimes.get(activePcId) : undefined;
 	if (previous !== undefined) {
+		previous.controller.releaseAllWarmLeases();
 		// 画面側の購読解除（画面を離れるときのcleanup）は「いま見ているPC」へ届いてしまうため、
 		// 切り替え前のPCの購読はここでまとめて畳む。放置すると、そのPCは再接続のたびに
 		// 再attachされ、見ていない間もずっと差分を送り続ける。
@@ -776,12 +791,13 @@ function activatePc(id: string, notice?: { readonly previousPcId: string | undef
 	// 切り替え前のPCで見ていた画像（PC画面の一部が写り込む）はメモリに残さない。
 	toolImageCache.clear();
 	activePcId = id;
-	controller = runtime.controller;
+	const nextControllerRevision = replaceActiveController(runtime.controller);
 	applyPairingCorrelationTag(runtime.pc.creds.deviceId);
 	void saveActivePcId(secureKeyStore, id).catch(err => console.warn('[appState] failed to save active PC', err));
 	useAppStore.setState({
 		...runtime.state,
 		activePcId: id,
+		controllerRevision: nextControllerRevision,
 		pcs: pcSummaries(),
 		selectedWs: undefined,
 		selectedTerminalKey: undefined,
@@ -880,6 +896,7 @@ export const useAppStore = create<AppState>(set => ({
 	paired: false,
 	pcs: [],
 	activePcId: undefined,
+	controllerRevision: 0,
 	// 見ていないPCとの接続も既定では保つ。切り替えた瞬間に一覧が出ていて、裏で待たれている
 	// 質問にも気づけるのがこの機能の要点なので、既定でそちらへ倒す。
 	keepBackgroundPcs: true,
@@ -912,6 +929,14 @@ export const useAppStore = create<AppState>(set => ({
 
 	stopVoiceNotifications() {
 		endVoiceNotifications();
+	},
+
+	acquireUsageWarmLease() {
+		return acquireCapturedWarmLease(() => controller, 'ccusage');
+	},
+
+	acquireSpaceDiskWarmLease() {
+		return acquireCapturedWarmLease(() => controller, 'spaceDisk');
 	},
 
 	async init() {
@@ -1024,7 +1049,7 @@ export const useAppStore = create<AppState>(set => ({
 			}
 			pcOrder = storedPcs.map(pc => pc.id);
 			activePcId = initialActiveId;
-			controller = initialActiveId !== undefined ? runtimes.get(initialActiveId)?.controller : undefined;
+			const initialControllerRevision = replaceActiveController(initialActiveId !== undefined ? runtimes.get(initialActiveId)?.controller : undefined);
 			// オンラインになるたび通知設定をPCへ同期する（PC側の永続値を最新に保つ。
 			// オフライン中に変更した設定もここで追いつく）。init()が後続処理の失敗で
 			// リトライされた場合に多重登録しないようフラグでガードする。
@@ -1090,6 +1115,7 @@ export const useAppStore = create<AppState>(set => ({
 				paired: storedPcs.length > 0,
 				pcs: pcSummaries(),
 				activePcId: initialActiveId,
+				controllerRevision: initialControllerRevision,
 				pinnedKeys: scopedKeysFor(pinnedRecord, initialActiveId),
 				archivedKeys: scopedKeysFor(archivedRecord, initialActiveId),
 				presetHiddenKeys: scopedKeysFor(presetHiddenRecord, initialActiveId),
@@ -1196,8 +1222,8 @@ export const useAppStore = create<AppState>(set => ({
 				// 同じPCの繋ぎ直し。activatePc は「既にアクティブ」として素通りするので、
 				// コントローラの差し替えと、前の接続で溜まっていた表示の破棄をここで行う。
 				const next = runtimes.get(pc.id);
-				controller = next?.controller;
-				set({ ...(next?.state ?? createEmptyStoreState()), pcs: pcSummaries(), selectedTerminalKey: undefined, agentDrafts: {} });
+				const nextControllerRevision = replaceActiveController(next?.controller);
+				set({ ...(next?.state ?? createEmptyStoreState()), pcs: pcSummaries(), controllerRevision: nextControllerRevision, selectedTerminalKey: undefined, agentDrafts: {} });
 				applyConnectionPolicy();
 			} else {
 				activatePc(pc.id);
@@ -1307,12 +1333,13 @@ export const useAppStore = create<AppState>(set => ({
 		if (id === activePcId) {
 			const next = pcOrder[0];
 			activePcId = undefined;
-			controller = undefined;
+			const nextControllerRevision = replaceActiveController(undefined);
 			set({
 				...createEmptyStoreState(),
 				paired: remaining.length > 0,
 				pcs: pcSummaries(),
 				activePcId: undefined,
+				controllerRevision: nextControllerRevision,
 				selectedWs: undefined,
 				homeShowAllWorkspaces: true,
 				selectedTerminalKey: undefined,

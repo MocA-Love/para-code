@@ -2,7 +2,7 @@
 
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, decodeBinaryFsUpload, encodeBinaryTerminalData, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
+import { acquireCapturedWarmLease, clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -112,14 +112,15 @@ describe('revokeSelfOnRelay', () => {
 
 class FakePair {
 	readonly client: SocketLike;
+	readonly transportEvents: string[] = [];
 	private h: Partial<SocketLike> = {};
 	private peer: ((d: string | ArrayBuffer) => void) | null = null;
 	constructor() {
 		const self = this;
 		this.client = {
 			binaryType: 'arraybuffer',
-			send(d) { const b = typeof d === 'string' ? d : ab(d); queueMicrotask(() => self.peer?.(b)); },
-			close() { queueMicrotask(() => self.h.onclose?.()); },
+			send(d) { self.transportEvents.push('send'); const b = typeof d === 'string' ? d : ab(d); queueMicrotask(() => self.peer?.(b)); },
+			close() { self.transportEvents.push('close'); queueMicrotask(() => self.h.onclose?.()); },
 			get onopen() { return self.h.onopen ?? null; }, set onopen(v) { self.h.onopen = v ?? undefined; },
 			get onclose() { return self.h.onclose ?? null; }, set onclose(v) { self.h.onclose = v ?? undefined; },
 			get onerror() { return self.h.onerror ?? null; }, set onerror(v) { self.h.onerror = v ?? undefined; },
@@ -178,6 +179,88 @@ function desktopState(terminals: { id: number; title: string; agentToken?: strin
 }
 
 describe('MobileController', () => {
+	it('binds cleanup to the captured controller across an active PC switch', () => {
+		const events: string[] = [];
+		const oldController = { createWarmLease: (resource: string) => { events.push(`old:acquire:${resource}`); return { dispose: () => events.push(`old:release:${resource}`) }; } };
+		const newController = { createWarmLease: (resource: string) => { events.push(`new:acquire:${resource}`); return { dispose: () => events.push(`new:release:${resource}`) }; } };
+		let current = oldController;
+		const oldLease = acquireCapturedWarmLease(() => current, 'ccusage');
+		current = newController;
+		oldLease.dispose();
+		const newLease = acquireCapturedWarmLease(() => current, 'ccusage');
+		newLease.dispose();
+		expect(events).toEqual([
+			'old:acquire:ccusage', 'old:release:ccusage',
+			'new:acquire:ccusage', 'new:release:ccusage',
+		]);
+	});
+
+	it('sends exact warm lease acquire, 300 second heartbeat and unmount release payloads', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const messages: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Fs, frame => messages.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+		await flush();
+
+		vi.useFakeTimers();
+		try {
+			const lease = controller.createWarmLease('ccusage');
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(300_000);
+			lease.dispose();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(messages).toHaveLength(3);
+			const leaseId = messages[0]?.leaseId;
+			expect(messages).toEqual([
+				{ t: 'usageWarmLease', leaseId, active: true, desktopEpoch: 'desktop-test', windowId: 1, rendererGeneration: 1 },
+				{ t: 'usageWarmLease', leaseId, active: true, desktopEpoch: 'desktop-test', windowId: 1, rendererGeneration: 1 },
+				{ t: 'usageWarmLease', leaseId, active: false, desktopEpoch: 'desktop-test', windowId: 1, rendererGeneration: 1 },
+			]);
+		} finally {
+			vi.useRealTimers();
+			controller.disconnect();
+		}
+	});
+
+	for (const action of ['disconnect', 'suspendForBackground'] as const) {
+		it(`releases every registered warm lease before ${action} tears down the transport`, async () => {
+			const mobile = generateIdentity();
+			const pc = generateIdentity();
+			const pair = new FakePair();
+			const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+			const controller = new MobileController(mobile, () => pair.client, () => { });
+			const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+			controller.connect(creds);
+			pair.fireOpen();
+			const pcMux = await pcMuxPromise;
+			await flush();
+			const events: string[] = [];
+			pcMux.on(Channels.Fs, frame => {
+				const message = JSON.parse(new TextDecoder().decode(frame.payload)) as { active?: boolean };
+				events.push(message.active ? 'acquire' : 'release');
+			});
+			pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+			await flush();
+			controller.createWarmLease('spaceDisk');
+			await flush();
+			pair.transportEvents.length = 0;
+			controller[action]();
+			expect(pair.transportEvents.slice(0, 2)).toEqual(['send', 'close']);
+			await flush();
+			expect(events).toEqual(['acquire', 'release']);
+			controller.disconnect();
+		});
+	}
+
 	it('does not retain activeWs from a renderer that is no longer pending or present', () => {
 		const previous: WorkspaceState = {
 			protocolVersion: 3, desktopEpoch: 'desktop', revision: 1, complete: true,

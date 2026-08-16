@@ -8,7 +8,7 @@
 
 import { IntervalTimer, raceTimeout, RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
-import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -36,7 +36,7 @@ import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisS
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
-import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
+import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind, NotifyPayload, ParadisMobileWarmLeaseRequest } from '../common/paradisMobileProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
@@ -72,6 +72,137 @@ interface INavigatorBatteryManager {
 	readonly charging: boolean;
 	addEventListener(type: 'levelchange' | 'chargingchange', listener: () => void): void;
 	removeEventListener(type: 'levelchange' | 'chargingchange', listener: () => void): void;
+}
+
+const MOBILE_WARM_LEASE_EXPIRY_MS = 15 * 60 * 1000;
+const MOBILE_WARM_LEASE_MAX_OWNERS = 128;
+
+export interface IParadisMobileWarmLeaseScheduler extends IDisposable {
+	schedule(delay: number): void;
+	cancel(): void;
+}
+
+type ParadisMobileWarmLeaseResource = 'ccusage' | 'spaceDisk';
+
+interface IParadisMobileWarmLeaseOperation {
+	readonly ownerId: string;
+	readonly resource: ParadisMobileWarmLeaseResource;
+	desiredActive: boolean;
+	version: number;
+	processedVersion: number;
+	running: Promise<void> | undefined;
+}
+
+/**
+ * Mobile wire の lease を renderer client の one-shot owner API へ橋渡しする。
+ * provider 自身は renew を生成せず、mobile から届いた heartbeat と release だけを owner ごとに直列化する。
+ */
+export class ParadisMobileWarmLeaseProvider implements IDisposable {
+	private readonly leases = new Map<string, { readonly ownerId: string; readonly resource: ParadisMobileWarmLeaseResource; expiresAt: number }>();
+	private readonly operations = new Map<string, IParadisMobileWarmLeaseOperation>();
+	private readonly expiryScheduler: IParadisMobileWarmLeaseScheduler;
+	private disposed = false;
+
+	constructor(
+		private readonly setUsageWarmLease: (ownerId: string, active: boolean) => Promise<void>,
+		private readonly setSpaceDiskWarmLease: (ownerId: string, active: boolean) => Promise<void>,
+		private readonly now: () => number = Date.now,
+		schedulerFactory: (runner: () => void) => IParadisMobileWarmLeaseScheduler = runner => new RunOnceScheduler(runner, MOBILE_WARM_LEASE_EXPIRY_MS),
+	) {
+		this.expiryScheduler = schedulerFactory(() => this.purgeExpired());
+	}
+
+	setLease(mobileId: string, request: ParadisMobileWarmLeaseRequest): Promise<void> {
+		if (this.disposed) {
+			return Promise.resolve();
+		}
+		this.purgeExpired();
+		const resource: ParadisMobileWarmLeaseResource = request.t === 'usageWarmLease' ? 'ccusage' : 'spaceDisk';
+		const ownerId = `${mobileId}:${resource}:${request.leaseId}`;
+		if (!request.active) {
+			if (!this.leases.delete(ownerId)) {
+				return Promise.resolve();
+			}
+			this.scheduleExpiry();
+			return this.requestOperation(ownerId, resource, false);
+		}
+		if (!this.leases.has(ownerId) && this.leases.size >= MOBILE_WARM_LEASE_MAX_OWNERS) {
+			return Promise.resolve();
+		}
+		this.leases.set(ownerId, { ownerId, resource, expiresAt: this.now() + MOBILE_WARM_LEASE_EXPIRY_MS });
+		this.scheduleExpiry();
+		return this.requestOperation(ownerId, resource, true);
+	}
+
+	private purgeExpired(): void {
+		if (this.disposed) {
+			return;
+		}
+		const now = this.now();
+		for (const [ownerId, lease] of this.leases) {
+			if (lease.expiresAt <= now) {
+				this.leases.delete(ownerId);
+				void this.requestOperation(ownerId, lease.resource, false);
+			}
+		}
+		this.scheduleExpiry();
+	}
+
+	private scheduleExpiry(): void {
+		this.expiryScheduler.cancel();
+		let earliest = Number.POSITIVE_INFINITY;
+		for (const lease of this.leases.values()) {
+			earliest = Math.min(earliest, lease.expiresAt);
+		}
+		if (Number.isFinite(earliest)) {
+			this.expiryScheduler.schedule(Math.max(0, earliest - this.now()));
+		}
+	}
+
+	private requestOperation(ownerId: string, resource: ParadisMobileWarmLeaseResource, active: boolean): Promise<void> {
+		let operation = this.operations.get(ownerId);
+		if (operation === undefined) {
+			operation = { ownerId, resource, desiredActive: active, version: 0, processedVersion: 0, running: undefined };
+			this.operations.set(ownerId, operation);
+		}
+		operation.desiredActive = active;
+		operation.version++;
+		operation.running ??= this.reconcile(operation);
+		return operation.running;
+	}
+
+	private async reconcile(operation: IParadisMobileWarmLeaseOperation): Promise<void> {
+		try {
+			while (operation.processedVersion !== operation.version) {
+				const version = operation.version;
+				const active = operation.desiredActive;
+				try {
+					await (operation.resource === 'ccusage' ? this.setUsageWarmLease : this.setSpaceDiskWarmLease)(operation.ownerId, active);
+				} catch {
+					// transport / shared process teardown 中の best-effort release は後続 owner を止めない。
+				}
+				operation.processedVersion = version;
+			}
+		} finally {
+			operation.running = undefined;
+			if (!operation.desiredActive && operation.processedVersion === operation.version && !this.leases.has(operation.ownerId)) {
+				this.operations.delete(operation.ownerId);
+			}
+		}
+	}
+
+	dispose(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.disposed = true;
+		this.expiryScheduler.dispose();
+		const leases = [...this.leases.values()];
+		this.leases.clear();
+		for (const lease of leases) {
+			void this.requestOperation(lease.ownerId, lease.resource, false);
+		}
+	}
 }
 
 /**
@@ -421,7 +552,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
 	// PC本体のバッテリー状態（Battery Status API）。未対応環境ではundefinedのまま＝state未配信。
 	private battery: IParadisMobileDesktopBattery | undefined;
-
+	private readonly mobileWarmLeases: ParadisMobileWarmLeaseProvider;
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
 		private readonly windowId: number,
@@ -453,6 +584,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
+		setUsageWarmLease: (ownerId: string, active: boolean) => Promise<void>,
 		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk の shared process バックエンド
 		private readonly fetchRtkSavings: (bypassCache: boolean) => Promise<IParadisRtkDashboardData>,
 		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor の shared process バックエンド
@@ -474,10 +606,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// スペース(リポジトリ/worktree)ごとのディスク使用量。実体は spaceDisk のクライアント
 		// （計測は shared process。1周に数十秒かかるので裏で温めた結果が即座に返る）
 		private readonly fetchSpaceDisk: (bypassCache: boolean) => Promise<IParadisSpaceDiskResult>,
+		setSpaceDiskWarmLease: (ownerId: string, active: boolean) => Promise<void>,
 		// コマンドプリセット（PC版と同一の定義・同一の実行経路）。モバイルの一覧と実行はここを通す
 		private readonly presetService: IParadisPresetService,
 	) {
 		super();
+		this.mobileWarmLeases = this._register(new ParadisMobileWarmLeaseProvider(setUsageWarmLease, setSpaceDiskWarmLease));
 		let markInitialAgentPanesReady!: () => void;
 		this.initialAgentPanesReady = new Promise<void>(resolve => { markInitialAgentPanesReady = resolve; });
 		this.markInitialAgentPanesReady = markInitialAgentPanesReady;
@@ -1057,6 +1191,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		if (frame.ch === Channels.Fs) {
+			const warmLease = decodeParadisMobileWarmLeaseRequest(frame.payload.buffer);
+			if (warmLease.kind !== 'not-warm') {
+				if (warmLease.kind === 'valid' && frame.mobileId !== undefined) {
+					void this.mobileWarmLeases.setLease(frame.mobileId, warmLease.request);
+				}
+				return;
+			}
 			this.handleFsInbound(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] fs request failed', err));
 		}
 	}

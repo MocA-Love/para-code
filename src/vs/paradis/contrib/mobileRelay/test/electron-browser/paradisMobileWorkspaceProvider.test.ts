@@ -7,7 +7,45 @@
 import * as assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
+import { IParadisMobileWarmLeaseScheduler, ParadisMobileWarmLeaseProvider, paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
+import { parseParadisMobileWarmLeaseRequest } from '../../common/paradisMobileProtocol.js';
+
+class TestWarmLeaseScheduler implements IParadisMobileWarmLeaseScheduler {
+	private scheduled = false;
+
+	constructor(private readonly runner: () => void) { }
+
+	schedule(): void {
+		this.scheduled = true;
+	}
+
+	cancel(): void {
+		this.scheduled = false;
+	}
+
+	fire(): void {
+		if (!this.scheduled) {
+			return;
+		}
+		this.scheduled = false;
+		this.runner();
+	}
+
+	dispose(): void {
+		this.cancel();
+	}
+}
+
+function warmRequest(t: 'usageWarmLease' | 'spaceDiskWarmLease', leaseId: string, active: boolean) {
+	return {
+		t,
+		leaseId,
+		active,
+		desktopEpoch: 'desktop-epoch',
+		windowId: 7,
+		rendererGeneration: 11,
+	} as const;
+}
 
 suite('ParadisMobileWorkspaceProvider', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -53,6 +91,123 @@ suite('ParadisMobileWorkspaceProvider', () => {
 				absent: false,
 				empty: false,
 			});
+		});
+	});
+
+	suite('warm lease bridge', () => {
+		test('accepts only the exact generation-bound wire payload', () => {
+			const valid = warmRequest('usageWarmLease', 'lease-1', true);
+			assert.deepStrictEqual(parseParadisMobileWarmLeaseRequest(valid), { kind: 'valid', request: valid });
+			for (const malformed of [
+				{ ...valid, extra: true },
+				{ ...valid, rendererGeneration: undefined },
+				{ ...valid, desktopEpoch: '' },
+				{ ...valid, leaseId: 'bad owner' },
+				{ ...valid, active: 1 },
+			]) {
+				assert.deepStrictEqual(parseParadisMobileWarmLeaseRequest(malformed), { kind: 'invalid' });
+			}
+			assert.deepStrictEqual(parseParadisMobileWarmLeaseRequest({ t: 'usage', id: 'foreground' }), { kind: 'not-warm' });
+		});
+
+		test('namespaces owners and renews one owner without consuming another slot', async () => {
+			const calls: { resource: string; ownerId: string; active: boolean }[] = [];
+			const provider = new ParadisMobileWarmLeaseProvider(
+				(ownerId, active) => { calls.push({ resource: 'ccusage', ownerId, active }); return Promise.resolve(); },
+				(ownerId, active) => { calls.push({ resource: 'spaceDisk', ownerId, active }); return Promise.resolve(); },
+			);
+			try {
+				await provider.setLease('mobile-a', warmRequest('usageWarmLease', 'lease-1', true));
+				await provider.setLease('mobile-a', warmRequest('usageWarmLease', 'lease-1', true));
+				await provider.setLease('mobile-b', warmRequest('spaceDiskWarmLease', 'lease-1', true));
+				assert.deepStrictEqual(calls, [
+					{ resource: 'ccusage', ownerId: 'mobile-a:ccusage:lease-1', active: true },
+					{ resource: 'ccusage', ownerId: 'mobile-a:ccusage:lease-1', active: true },
+					{ resource: 'spaceDisk', ownerId: 'mobile-b:spaceDisk:lease-1', active: true },
+				]);
+			} finally {
+				provider.dispose();
+			}
+		});
+
+		test('purges expired owners before the 128 owner cap and releases on expiry and dispose', async () => {
+			let now = 0;
+			let scheduler!: TestWarmLeaseScheduler;
+			const calls: { ownerId: string; active: boolean }[] = [];
+			const provider = new ParadisMobileWarmLeaseProvider(
+				(ownerId, active) => { calls.push({ ownerId, active }); return Promise.resolve(); },
+				(ownerId, active) => { calls.push({ ownerId, active }); return Promise.resolve(); },
+				() => now,
+				runner => scheduler = new TestWarmLeaseScheduler(runner),
+			);
+			await provider.setLease('expired-mobile', warmRequest('usageWarmLease', 'expired', true));
+			now = 900_001;
+			for (let index = 0; index < 128; index++) {
+				await provider.setLease(`mobile-${index}`, warmRequest('usageWarmLease', `lease-${index}`, true));
+			}
+			await provider.setLease('overflow-mobile', warmRequest('usageWarmLease', 'overflow', true));
+			assert.strictEqual(calls.filter(call => call.active).length, 129);
+			assert.deepStrictEqual(calls.find(call => call.ownerId === 'expired-mobile:ccusage:expired' && !call.active), {
+				ownerId: 'expired-mobile:ccusage:expired', active: false,
+			});
+			now = 1_800_002;
+			scheduler.fire();
+			await Promise.resolve();
+			provider.dispose();
+			await Promise.resolve();
+			assert.strictEqual(calls.filter(call => !call.active).length, 129);
+		});
+
+		test('serializes a release behind a pending acquire', async () => {
+			let finishAcquire!: () => void;
+			const acquireBarrier = new Promise<void>(resolve => finishAcquire = resolve);
+			const operations: string[] = [];
+			const backendOwners = new Set<string>();
+			const provider = new ParadisMobileWarmLeaseProvider(
+				async (ownerId, active) => {
+					operations.push(active ? 'acquire:start' : 'release');
+					if (active) {
+						await acquireBarrier;
+						backendOwners.add(ownerId);
+						operations.push('acquire:end');
+					} else {
+						backendOwners.delete(ownerId);
+					}
+				},
+				() => Promise.resolve(),
+			);
+			const acquire = provider.setLease('mobile-a', warmRequest('usageWarmLease', 'slow', true));
+			await Promise.resolve();
+			const release = provider.setLease('mobile-a', warmRequest('usageWarmLease', 'slow', false));
+			assert.deepStrictEqual(operations, ['acquire:start']);
+			finishAcquire();
+			await Promise.all([acquire, release]);
+			assert.deepStrictEqual(operations, ['acquire:start', 'acquire:end', 'release']);
+			assert.strictEqual(backendOwners.size, 0);
+			provider.dispose();
+		});
+
+		test('serializes provider dispose behind a pending space disk acquire', async () => {
+			let finishAcquire!: () => void;
+			const acquireBarrier = new Promise<void>(resolve => finishAcquire = resolve);
+			const operations: string[] = [];
+			const provider = new ParadisMobileWarmLeaseProvider(
+				() => Promise.resolve(),
+				async (_ownerId, active) => {
+					operations.push(active ? 'acquire:start' : 'release');
+					if (active) {
+						await acquireBarrier;
+						operations.push('acquire:end');
+					}
+				},
+			);
+			const acquire = provider.setLease('mobile-a', warmRequest('spaceDiskWarmLease', 'slow', true));
+			await Promise.resolve();
+			provider.dispose();
+			assert.deepStrictEqual(operations, ['acquire:start']);
+			finishAcquire();
+			await acquire;
+			assert.deepStrictEqual(operations, ['acquire:start', 'acquire:end', 'release']);
 		});
 	});
 });
