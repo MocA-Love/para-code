@@ -9,6 +9,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisMobileWarmLeaseScheduler, ParadisMobileWarmLeaseProvider, paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
 import { parseParadisMobileWarmLeaseRequest } from '../../common/paradisMobileProtocol.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 
 class TestWarmLeaseScheduler implements IParadisMobileWarmLeaseScheduler {
 	private scheduled = false;
@@ -208,6 +209,53 @@ suite('ParadisMobileWorkspaceProvider', () => {
 			finishAcquire();
 			await acquire;
 			assert.deepStrictEqual(operations, ['acquire:start', 'acquire:end', 'release']);
+		});
+
+		test('reports failed backend actions and retries an acquire on the next mobile heartbeat', async () => {
+			const acquireError = new Error('acquire unavailable');
+			const releaseError = new Error('release unavailable');
+			const calls: boolean[] = [];
+			const failures: { operation: string; error: unknown; extra: Record<string, unknown> | undefined }[] = [];
+			let failAcquire = true;
+			configureParadisDiagnosticReporter((_scope, _feature, operation, error, extra) => failures.push({ operation, error, extra }));
+			const provider = new ParadisMobileWarmLeaseProvider(
+				async (_ownerId, active) => {
+					calls.push(active);
+					if (active && failAcquire) {
+						failAcquire = false;
+						throw acquireError;
+					}
+					if (!active) {
+						throw releaseError;
+					}
+				},
+				() => Promise.resolve(),
+			);
+			try {
+				await provider.setLease('mobile-a', warmRequest('usageWarmLease', 'retry', true));
+				assert.deepStrictEqual(calls, [true]);
+				assert.deepStrictEqual(failures, [{
+					operation: 'backend-acquire', error: acquireError,
+					extra: { safe_action: 'acquire', safe_resource: 'ccusage', safe_owner_id: 'mobile-a:ccusage:retry' },
+				}]);
+
+				await provider.setLease('mobile-a', warmRequest('usageWarmLease', 'retry', true));
+				assert.deepStrictEqual(calls, [true, true]);
+				await provider.setLease('mobile-a', warmRequest('usageWarmLease', 'retry', false));
+				assert.deepStrictEqual(failures, [
+					{
+						operation: 'backend-acquire', error: acquireError,
+						extra: { safe_action: 'acquire', safe_resource: 'ccusage', safe_owner_id: 'mobile-a:ccusage:retry' },
+					},
+					{
+						operation: 'backend-release', error: releaseError,
+						extra: { safe_action: 'release', safe_resource: 'ccusage', safe_owner_id: 'mobile-a:ccusage:retry' },
+					},
+				]);
+			} finally {
+				provider.dispose();
+				configureParadisDiagnosticReporter(() => { });
+			}
 		});
 	});
 });

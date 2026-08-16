@@ -178,8 +178,14 @@ export class ParadisMobileWarmLeaseProvider implements IDisposable {
 				const active = operation.desiredActive;
 				try {
 					await (operation.resource === 'ccusage' ? this.setUsageWarmLease : this.setSpaceDiskWarmLease)(operation.ownerId, active);
-				} catch {
-					// transport / shared process teardown 中の best-effort release は後続 owner を止めない。
+				} catch (error) {
+					const action = active ? 'acquire' : 'release';
+					reportParadisDiagnosticError('owned', 'mobile-warm-lease', `backend-${action}`, error, {
+						safe_action: action,
+						safe_resource: operation.resource,
+						safe_owner_id: operation.ownerId,
+					}, active ? 'error' : 'warning');
+					// release は best-effort、acquire は local lease を残して次の mobile heartbeat で再試行する。
 				}
 				operation.processedVersion = version;
 			}

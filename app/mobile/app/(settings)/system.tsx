@@ -15,7 +15,7 @@ import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
-import { MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type SpaceDiskResult, type SystemResourcesResult } from '../../src/store.js';
+import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type SpaceDiskResult, type SystemResourcesResult } from '../../src/store.js';
 import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, buildProcessRows, buildScopeRows, diskLevel, formatBytes, formatCpu,
 	buildSpaceDiskRows, sortRowsBy, usageLevel, usagePercent, type ResourceRow, type UsageLevel,
@@ -147,6 +147,7 @@ export default function SystemScreen() {
 	// 固まった数字を出し続けないようにする（画面を離れる・アプリが背面に回ったら止める）。
 	const isFocused = useIsFocused();
 	const isAppActive = useAppIsActive();
+	const warmLeaseOwnerRevision = mobileWarmLeaseOwnerRevision(activePcId, controllerRevision);
 	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
 	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
 	useEffect(() => {
@@ -156,9 +157,9 @@ export default function SystemScreen() {
 			appActive: isAppActive,
 			online: connection === 'online',
 			volumeAxis: axis === 'volume',
-		}), acquireSpaceDiskWarmLease);
+		}), acquireSpaceDiskWarmLease, warmLeaseOwnerRevision);
 		return () => lifecycle.update(false, acquireSpaceDiskWarmLease);
-	}, [isFocused, isAppActive, connection, axis, activePcId, controllerRevision, acquireSpaceDiskWarmLease]);
+	}, [isFocused, isAppActive, connection, axis, warmLeaseOwnerRevision, acquireSpaceDiskWarmLease]);
 	useEffect(() => {
 		if (!isFocused || !isAppActive || connection !== 'online') {
 			return;

@@ -76,12 +76,40 @@ export interface MobileDisposable {
 
 interface MobileWarmLeaseController {
 	createWarmLease(resource: MobileWarmLeaseResource): MobileDisposable;
+	releaseAllWarmLeases(): void;
 }
 
 /** controller lookup は1回だけ行い、cleanupを取得時点の controller へ固定する。 */
 export function acquireCapturedWarmLease(getCurrentController: () => MobileWarmLeaseController | undefined, resource: MobileWarmLeaseResource): MobileDisposable {
 	const captured = getCurrentController();
 	return captured?.createWarmLease(resource) ?? { dispose: () => { } };
+}
+
+/** AppState の active controller と、同一PC再pairを含む交代世代を一緒に管理する。 */
+export class MobileWarmLeaseControllerRegistry {
+	private current: MobileWarmLeaseController | undefined;
+	private currentRevision = 0;
+
+	get revision(): number {
+		return this.currentRevision;
+	}
+
+	replace(next: MobileWarmLeaseController | undefined): number {
+		if (this.current === next) {
+			return this.currentRevision;
+		}
+		try {
+			this.current?.releaseAllWarmLeases();
+		} catch {
+			// PC switch は best-effort release の失敗後も新controllerへ進める。
+		}
+		this.current = next;
+		return ++this.currentRevision;
+	}
+
+	acquire(resource: MobileWarmLeaseResource): MobileDisposable {
+		return acquireCapturedWarmLease(() => this.current, resource);
+	}
 }
 
 export function shouldMaintainMobileWarmLease(
@@ -91,17 +119,29 @@ export function shouldMaintainMobileWarmLease(
 	return state.focused && state.appActive && state.online && (resource !== 'spaceDisk' || state.volumeAxis);
 }
 
+/** screen effect がPC identityと同一PC再pair revisionのどちらの交代も同じowner handoffとして扱うkey。 */
+export function mobileWarmLeaseOwnerRevision(activePcId: string | undefined, controllerRevision: number): string {
+	return JSON.stringify([activePcId ?? null, controllerRevision]);
+}
+
 /** React effect の条件遷移を同期的な acquire/release へ落とす小さな lifecycle seam。 */
 export class MobileWarmLeaseLifecycle implements MobileDisposable {
 	private lease: MobileDisposable | undefined;
+	private ownerRevision: unknown;
 
-	update(active: boolean, acquire: () => MobileDisposable): void {
+	update(active: boolean, acquire: () => MobileDisposable, ownerRevision?: unknown): void {
 		if (active) {
-			this.lease ??= acquire();
+			if (this.lease !== undefined && Object.is(this.ownerRevision, ownerRevision)) {
+				return;
+			}
+			this.lease?.dispose();
+			this.lease = acquire();
+			this.ownerRevision = ownerRevision;
 			return;
 		}
 		this.lease?.dispose();
 		this.lease = undefined;
+		this.ownerRevision = undefined;
 	}
 
 	dispose(): void {
@@ -1444,7 +1484,11 @@ export class MobileController {
 
 	releaseAllWarmLeases(): void {
 		for (const lease of [...this.warmLeases.values()]) {
-			this.releaseWarmLease(lease);
+			try {
+				this.releaseWarmLease(lease);
+			} catch {
+				// Teardown is best-effort: one failed socket send must not block the remaining owners or transport close.
+			}
 		}
 	}
 

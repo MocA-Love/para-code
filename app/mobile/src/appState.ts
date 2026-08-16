@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { acquireCapturedWarmLease, MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -386,15 +386,15 @@ let activePcId: string | undefined;
  * （切り替えのたびに付け替えるので、各アクションは常にアクティブなPCへ届く）。
  */
 let controller: MobileController | undefined;
-let controllerRevision = 0;
+const warmLeaseControllers = new MobileWarmLeaseControllerRegistry();
 
 function replaceActiveController(next: MobileController | undefined): number {
 	if (controller === next) {
-		return controllerRevision;
+		return warmLeaseControllers.revision;
 	}
-	controller?.releaseAllWarmLeases();
+	const revision = warmLeaseControllers.replace(next);
 	controller = next;
-	return ++controllerRevision;
+	return revision;
 }
 /** ピン留め・アーカイブのPC別記録（保存形はPC ID → キー配列）。 */
 let pinnedRecord: ScopedKeyRecord = {};
@@ -932,11 +932,11 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	acquireUsageWarmLease() {
-		return acquireCapturedWarmLease(() => controller, 'ccusage');
+		return warmLeaseControllers.acquire('ccusage');
 	},
 
 	acquireSpaceDiskWarmLease() {
-		return acquireCapturedWarmLease(() => controller, 'spaceDisk');
+		return warmLeaseControllers.acquire('spaceDisk');
 	},
 
 	async init() {
