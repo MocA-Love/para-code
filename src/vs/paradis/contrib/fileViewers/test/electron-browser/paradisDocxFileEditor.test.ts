@@ -10,7 +10,7 @@ import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
-import { Schemas } from '../../../../../base/common/network.js';
+import { FileAccess, Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/index.js';
@@ -18,6 +18,7 @@ import { FileChangesEvent, FileChangeType, IFileService, IFileSystemWatcher } fr
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../../workbench/contrib/webview/browser/webview.js';
+import { asWebviewUri } from '../../../../../workbench/contrib/webview/common/webview.js';
 import { ITextFileService } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
@@ -39,18 +40,23 @@ interface IDocxHtmlSnapshot {
 	readonly classification: 'viewer' | 'rejected' | 'unknown';
 	readonly docxUrl?: string;
 	readonly csp?: string;
-	readonly scriptNames?: readonly string[];
+	readonly scriptUrls?: readonly string[];
+	readonly nonceConsistency?: {
+		readonly csp: boolean;
+		readonly externalScripts: boolean;
+		readonly inlineScript: boolean;
+	};
 	readonly renderOptions?: {
-		readonly ignoreWidth: boolean;
-		readonly ignoreHeight: boolean;
-		readonly breakPages: boolean;
-		readonly ignoreLastRenderedPageBreak: boolean;
-		readonly experimental: boolean;
-		readonly renderHeaders: boolean;
-		readonly renderFooters: boolean;
-		readonly renderFootnotes: boolean;
-		readonly renderEndnotes: boolean;
-		readonly useBase64URL: boolean;
+		readonly ignoreWidth: boolean | undefined;
+		readonly ignoreHeight: boolean | undefined;
+		readonly breakPages: boolean | undefined;
+		readonly ignoreLastRenderedPageBreak: boolean | undefined;
+		readonly experimental: boolean | undefined;
+		readonly renderHeaders: boolean | undefined;
+		readonly renderFooters: boolean | undefined;
+		readonly renderFootnotes: boolean | undefined;
+		readonly renderEndnotes: boolean | undefined;
+		readonly useBase64URL: boolean | undefined;
 	};
 }
 
@@ -92,13 +98,25 @@ suite('ParadisDocxFileEditor', () => {
 			}
 			const docxUrlMatch = /const DOCX_URL = ("(?:[^"\\]|\\.)*");/.exec(html);
 			const cspMatch = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(html);
-			const scriptNames = [...html.matchAll(/<script nonce="[^"]+" src="[^"]+\/(jszip\.min\.js|docx-preview\.min\.js)"><\/script>/g)].map(match => match[1]);
-			const readBooleanOption = (name: string): boolean => new RegExp(`\\b${name}: (true|false)`).exec(html)?.[1] === 'true';
+			const styleNonce = /<style nonce="([^"]+)">/.exec(html)?.[1];
+			const cspNonce = /script-src 'nonce-([^']+)'/.exec(cspMatch?.[1] ?? '')?.[1];
+			const scriptMatches = [...html.matchAll(/<script nonce="([^"]+)"(?: src="([^"]+)")?>/g)];
+			const externalScripts = scriptMatches.filter(match => match[2] !== undefined);
+			const inlineScripts = scriptMatches.filter(match => match[2] === undefined);
+			const readBooleanOption = (name: string): boolean | undefined => {
+				const match = new RegExp(`\\b${name}: (true|false)`).exec(html);
+				return match ? match[1] === 'true' : undefined;
+			};
 			return {
 				classification,
 				docxUrl: docxUrlMatch ? JSON.parse(docxUrlMatch[1]) : undefined,
-				csp: cspMatch?.[1].replace(/nonce-[^' ]+/, 'nonce-<nonce>'),
-				scriptNames,
+				csp: styleNonce ? cspMatch?.[1].replace(`nonce-${styleNonce}`, 'nonce-<nonce>') : cspMatch?.[1],
+				scriptUrls: externalScripts.map(match => match[2]),
+				nonceConsistency: {
+					csp: styleNonce !== undefined && cspNonce === styleNonce,
+					externalScripts: styleNonce !== undefined && externalScripts.length === 2 && externalScripts.every(match => match[1] === styleNonce),
+					inlineScript: styleNonce !== undefined && inlineScripts.length === 1 && inlineScripts[0][1] === styleNonce,
+				},
 				renderOptions: {
 					ignoreWidth: readBooleanOption('ignoreWidth'),
 					ignoreHeight: readBooleanOption('ignoreHeight'),
@@ -390,11 +408,17 @@ suite('ParadisDocxFileEditor', () => {
 	});
 
 	function expectedViewerSnapshot(docxUrl: string): IDocxHtmlSnapshot {
+		const libraryBase = asWebviewUri(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview')).toString(true);
 		return {
 			classification: 'viewer',
 			docxUrl,
 			csp: 'default-src \'none\'; script-src \'nonce-<nonce>\' https:; style-src \'unsafe-inline\'; img-src blob: data: https:; font-src https: data: blob:; connect-src https: blob: data:;',
-			scriptNames: ['jszip.min.js', 'docx-preview.min.js'],
+			scriptUrls: [`${libraryBase}/jszip.min.js`, `${libraryBase}/docx-preview.min.js`],
+			nonceConsistency: {
+				csp: true,
+				externalScripts: true,
+				inlineScript: true,
+			},
 			renderOptions: {
 				ignoreWidth: false,
 				ignoreHeight: false,
