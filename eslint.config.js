@@ -1974,6 +1974,9 @@ export default defineConfig(
 						// PARA-PATCH: terminal.clipboard.contribution.ts が画像のみクリップボードのペースト中継
 						// (paradisTryTerminalImagePaste) を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/terminalImagePaste/~',
+						// PARA-PATCH: terminalLinkManager.ts が authority付き file:// リンク(SMB/UNC)を
+						// 外部ブラウザで開くdetector (ParadisTerminalFileUriLinkDetector) を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/terminalFileUriLinks/~',
 						'vscode-notebook-renderer', // Type only import
 						'@vscode/tree-sitter-wasm', // type import
 						{
