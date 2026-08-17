@@ -16,7 +16,6 @@ import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../plat
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -40,6 +39,7 @@ import { paradisRegisterAuxiliaryWindowCloseHandler, paradisRegisterAuxiliaryWin
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { paradisLocalRepositoryPickContext, paradisPickAndAddLocalRepositories } from './paradisPickLocalRepositories.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { IParadisSpaceNotesService } from '../common/paradisSpaceNotes.js';
 import { PARADIS_SCM_SCOPE_SETTING_ID } from '../common/paradisScmScope.js';
@@ -263,38 +263,6 @@ class ParadisInitializeWorkspaceAction extends Action2 {
 	}
 }
 
-/**
- * フォルダ選択ダイアログで既存のローカルフォルダを一覧へ登録する (従来の Add Repository の本体)。
- * electron-browser 側の統合フロー (URLクローン) の「Add Local Folder」項目からも呼ばれる。
- */
-export async function paradisPickAndAddLocalRepositories(service: IParadisWorkspaceSwitchService, fileDialogService: IFileDialogService, contextService: IWorkspaceContextService, scheme?: string): Promise<void> {
-	const uris = await fileDialogService.showOpenDialog({
-		// allow-any-unicode-next-line
-		title: localize('paradis.workspaceSwitch.addRepositoryDialog', "リポジトリを追加"),
-		// allow-any-unicode-next-line
-		openLabel: localize('paradis.workspaceSwitch.addRepositoryLabel', "追加"),
-		canSelectFiles: false,
-		canSelectFolders: true,
-		canSelectMany: true,
-		// 接続中はダイアログが既定で接続先を見る。どちらを開くかを呼び出し側が決められるようにして、
-		// 「このPCのフォルダ」と「接続先のフォルダ」を別々の項目として出せるようにする
-		...(scheme !== undefined ? { availableFileSystems: [scheme] } : {})
-	});
-	if (!uris || uris.length === 0) {
-		return;
-	}
-
-	const added: IParadisWorkspaceRepository[] = [];
-	for (const uri of uris) {
-		added.push(await service.addRepository(uri));
-	}
-
-	// まだ何も開いていない (初期化直後の空ワークスペース) なら、最初の登録先へそのまま切り替える
-	if (contextService.getWorkspace().folders.length === 0 && added.length > 0) {
-		await service.switchRepository(added[0].id);
-	}
-}
-
 class ParadisAddRepositoryAction extends Action2 {
 	constructor() {
 		super({
@@ -310,19 +278,16 @@ class ParadisAddRepositoryAction extends Action2 {
 			return;
 		}
 
-		const service = accessor.get(IParadisWorkspaceSwitchService);
-		const fileDialogService = accessor.get(IFileDialogService);
-		const contextService = accessor.get(IWorkspaceContextService);
 		const commandService = accessor.get(ICommandService);
 
 		// デスクトップでは URLクローン対応の統合フロー (electron-browser 側で登録) に委譲する。
-		// 未登録の環境 (webビルド) では従来どおりフォルダ選択ダイアログを開く
+		// 未登録の環境 (webビルド) では従来どおりフォルダの選択へ進む
 		if (CommandsRegistry.getCommand(PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID)) {
 			await commandService.executeCommand(PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID);
 			return;
 		}
 
-		await paradisPickAndAddLocalRepositories(service, fileDialogService, contextService);
+		await paradisPickAndAddLocalRepositories(paradisLocalRepositoryPickContext(accessor));
 	}
 }
 

@@ -22,6 +22,7 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { ResourceMap } from '../../../../base/common/map.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { localize } from '../../../../nls.js';
@@ -961,22 +962,30 @@ export class ParadisWorkspacesView extends ViewPane {
 		promise.catch(error => this.notificationService.error(error));
 	}
 
-	/** diff 統計 (+N/-N) をポーリングで取得する。非表示中の実行・再スケジュールは lifecycle が抑止する。 */
-	private async refreshDiffStats(): Promise<void> {
-		const paths = new Set<string>();
+	/**
+	 * 一覧に出ているリポジトリと作業ツリーの URI。git を動かすマシンは URI にしか書かれていない
+	 * ため、パス文字列ではなく URI のまま渡す（手元と接続先に同じ絶対パスがありうる）。
+	 */
+	private pollTargets(): URI[] {
+		const targets = new ResourceMap<URI>();
 		for (const repository of this.workspaceSwitchService.repositories) {
-			paths.add(repository.uri.fsPath);
+			targets.set(repository.uri, repository.uri);
 			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
 				if (!worktree.missing) {
-					paths.add(worktree.uri.fsPath);
+					targets.set(worktree.uri, worktree.uri);
 				}
 			}
 		}
+		return [...targets.values()];
+	}
 
-		if (paths.size === 0) {
+	/** diff 統計 (+N/-N) をポーリングで取得する。非表示中の実行・再スケジュールは lifecycle が抑止する。 */
+	private async refreshDiffStats(): Promise<void> {
+		const targets = this.pollTargets();
+		if (targets.length === 0) {
 			return;
 		}
-		const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, [...paths]);
+		const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, targets);
 		if (result) {
 			this._diffStats.clear();
 			for (const [path, stat] of Object.entries(result)) {
@@ -988,20 +997,11 @@ export class ParadisWorkspacesView extends ViewPane {
 
 	/** 各 worktree の現在ブランチに紐づく PR 状態をポーリングで取得する。仕組みは refreshDiffStats と同じ。 */
 	private async refreshPrStatuses(): Promise<void> {
-		const paths = new Set<string>();
-		for (const repository of this.workspaceSwitchService.repositories) {
-			paths.add(repository.uri.fsPath);
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing) {
-					paths.add(worktree.uri.fsPath);
-				}
-			}
-		}
-
-		if (paths.size === 0) {
+		const targets = this.pollTargets();
+		if (targets.length === 0) {
 			return;
 		}
-		const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, [...paths]);
+		const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, targets);
 		if (result) {
 			this._prStatuses.clear();
 			for (const [path, status] of Object.entries(result)) {

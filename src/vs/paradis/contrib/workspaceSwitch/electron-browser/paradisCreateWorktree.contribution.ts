@@ -11,7 +11,7 @@
 // git 実行（shared process チャネル）と Electron 依存があるため electron-browser 層に置く。
 
 import { Codicon } from '../../../../base/common/codicons.js';
-import { URI } from '../../../../base/common/uri.js';
+import { URI, UriComponents } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -20,17 +20,16 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
@@ -259,7 +258,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		const dialogService = accessor.get(IDialogService);
 		const switchService = accessor.get(IParadisWorkspaceSwitchService);
 		const worktreeService = accessor.get(IParadisWorktreeService);
-		const sharedProcessService = accessor.get(ISharedProcessService);
+		const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
 		const logService = accessor.get(ILogService);
 		// アクセサは同期実行中しか有効でないため、await をまたぐ teardown 実行用に
 		// instantiationService だけ取り出しておき、実行時は invokeFunction で新しいアクセサを作る
@@ -331,10 +330,11 @@ class ParadisRemoveWorktreeAction extends Action2 {
 					}
 				},
 				remove: async () => {
-					const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
+					// git はこのリポジトリがあるマシンで動かす（作業ツリーも同じマシンにある）
+					const { channel, path } = resolveGitHost(repository.uri);
 					const removeRequest: IParadisRemoveWorktreeRequest = {
-						repoPath: repository.uri.fsPath,
-						worktreePath: uri.fsPath,
+						repoPath: path(repository.uri),
+						worktreePath: path(uri),
 						force: false
 					};
 
@@ -442,9 +442,34 @@ class ParadisRemoveWorktreeAction extends Action2 {
 registerAction2(ParadisRemoveWorktreeAction);
 
 /**
+ * ビューから渡された URI 群に対し、それぞれのリポジトリがあるマシンで `command` を実行する。
+ * 結果は URI ではなく `fsPath` をキーに返す（ビュー側が fsPath で引くため）。
+ *
+ * パス文字列だけを受け取って接続の有無で送り先を決めると、手元と接続先に同じ絶対パスがある構成で
+ * 別マシンの値を拾って平然と表示してしまう。どのマシンのものかは URI にしか書かれていない。
+ */
+async function collectPerWorktree<T>(accessor: ServicesAccessor, resources: UriComponents[], command: string): Promise<Record<string, T>> {
+	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
+	const result: Record<string, T> = {};
+	await Promise.all(resources.map(async component => {
+		const resource = URI.revive(component);
+		const host = resolveGitHost(resource);
+		try {
+			const value = await host.channel.call<T | undefined>(command, [host.path(resource)]);
+			if (value !== undefined) {
+				result[resource.fsPath] = value;
+			}
+		} catch {
+			// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
+		}
+	}));
+	return result;
+}
+
+/**
  * 各作業ツリーの未コミット差分 (+/-行数) をまとめて返すコマンド。
- * Workspaces ビュー (browser 層) がポーリングで ID 経由で呼ぶ。git 実行は shared process の
- * worktree git チャネルに委譲する (web ビルドでは未登録のため呼び出し側で安全に無効化される)。
+ * Workspaces ビュー (browser 層) がポーリングで ID 経由で呼ぶ。git 実行は worktree git
+ * チャネルに委譲する (web ビルドでは未登録のため呼び出し側で安全に無効化される)。
  */
 class ParadisGetDiffStatsAction extends Action2 {
 	constructor() {
@@ -456,27 +481,11 @@ class ParadisGetDiffStatsAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, paths?: string[]): Promise<Record<string, IParadisDiffStat>> {
-		if (!Array.isArray(paths) || paths.length === 0) {
+	async run(accessor: ServicesAccessor, resources?: UriComponents[]): Promise<Record<string, IParadisDiffStat>> {
+		if (!Array.isArray(resources) || resources.length === 0) {
 			return {};
 		}
-		const sharedProcessService = accessor.get(ISharedProcessService);
-		// 接続中のウィンドウでは、その接続先の作業ツリーを見ている。git は shared process では
-		// なく接続先で回さないと「そんなディレクトリは無い」で毎回失敗する（同名のチャネルを
-		// REH 側にも生やしてある。paradisWorktreeGitChannel の registerParadisWorktreeGitForServer）
-		const remoteConnection = accessor.get(IRemoteAgentService).getConnection();
-		const channel = remoteConnection
-			? remoteConnection.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
-			: sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
-		const result: Record<string, IParadisDiffStat> = {};
-		await Promise.all(paths.map(async path => {
-			try {
-				result[path] = await channel.call<IParadisDiffStat>('getDiffStat', [path]);
-			} catch {
-				// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
-			}
-		}));
-		return result;
+		return collectPerWorktree<IParadisDiffStat>(accessor, resources, 'getDiffStat');
 	}
 }
 
@@ -484,8 +493,8 @@ registerAction2(ParadisGetDiffStatsAction);
 
 /**
  * 各作業ツリーの現在ブランチに紐づく GitHub PR の状態をまとめて返すコマンド。
- * Workspaces ビュー (browser 層) がポーリングで ID 経由で呼ぶ。gh CLI の実行は shared process の
- * worktree git チャネルに委譲する (web ビルドでは未登録のため呼び出し側で安全に無効化される)。
+ * Workspaces ビュー (browser 層) がポーリングで ID 経由で呼ぶ。gh CLI の実行は worktree git
+ * チャネルに委譲する (web ビルドでは未登録のため呼び出し側で安全に無効化される)。
  */
 class ParadisGetPrStatusesAction extends Action2 {
 	constructor() {
@@ -497,28 +506,12 @@ class ParadisGetPrStatusesAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, paths?: string[]): Promise<Record<string, IParadisPrStatus>> {
-		if (!Array.isArray(paths) || paths.length === 0) {
+	async run(accessor: ServicesAccessor, resources?: UriComponents[]): Promise<Record<string, IParadisPrStatus>> {
+		if (!Array.isArray(resources) || resources.length === 0) {
 			return {};
 		}
-		const sharedProcessService = accessor.get(ISharedProcessService);
-		// git と同じ理由で、接続中は接続先の gh を使う（手元で回すとパスが無くて必ず失敗する）
-		const remoteConnection = accessor.get(IRemoteAgentService).getConnection();
-		const channel = remoteConnection
-			? remoteConnection.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
-			: sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
-		const result: Record<string, IParadisPrStatus> = {};
-		await Promise.all(paths.map(async path => {
-			try {
-				const status = await channel.call<IParadisPrStatus | undefined>('getPrStatus', [path]);
-				if (status) {
-					result[path] = status;
-				}
-			} catch {
-				// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
-			}
-		}));
-		return result;
+		// git と同じ理由で、そのリポジトリがあるマシンの gh を使う
+		return collectPerWorktree<IParadisPrStatus>(accessor, resources, 'getPrStatus');
 	}
 }
 
