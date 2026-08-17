@@ -56,6 +56,20 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		});
 	});
 
+	test('a hidden repository change refreshes immediately when the view returns', () => {
+		const harness = store.add(new PollingHarness());
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+		harness.fireVisibility(false, false);
+		harness.repositories.fire();
+
+		harness.fireVisibility(true, true);
+		assert.deepStrictEqual(harness.clock.pendingDelays(), { diff: 0, pr: 0 });
+		harness.clock.advance(0);
+
+		assert.deepStrictEqual(harness.counts().commands, { diff: 2, pr: 2 });
+	});
+
 	test('ignores a true visibility payload while the actual view body remains hidden', () => {
 		const harness = store.add(new PollingHarness());
 		harness.lifecycle.start(false);
@@ -81,6 +95,22 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0], pr: [0] });
 		harness.clock.advance(0);
 		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 1 });
+	});
+
+	test('rapid hide and show preserves the remaining polling budget', () => {
+		const harness = store.add(new PollingHarness());
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+		harness.clock.advance(1_000);
+
+		for (let index = 0; index < 20; index++) {
+			harness.fireVisibility(false, false);
+			harness.fireVisibility(true, true);
+		}
+		harness.clock.advance(0);
+
+		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 1 });
+		assert.deepStrictEqual(harness.clock.pendingDelays(), { diff: 9_000, pr: 299_000 });
 	});
 
 	test('visible completion preserves the 10 second diff and 5 minute PR intervals', () => {
@@ -126,7 +156,7 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		});
 	});
 
-	test('show during in-flight work schedules one immediate refresh after completion', () => {
+	test('show during in-flight work reuses its completion and resumes normal cadence', () => {
 		const harness = store.add(new PollingHarness(false));
 		harness.lifecycle.start(true);
 		harness.clock.advance(0);
@@ -137,9 +167,9 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0], pr: [0] });
 
 		harness.completeInFlight();
-		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0, 0], pr: [0, 0] });
+		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0, 10_000], pr: [0, 300_000] });
 		harness.clock.advance(0);
-		assert.deepStrictEqual(harness.counts().commands, { diff: 2, pr: 2 });
+		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 1 });
 	});
 });
 
@@ -301,6 +331,7 @@ class PollingControllerHarness implements IDisposable {
 			() => this.refresh('diff'),
 			() => this.refresh('pr'),
 			(runner, defaultDelay) => this.clock.createScheduler(runner, defaultDelay),
+			() => this.clock.time,
 		));
 	}
 
@@ -358,6 +389,7 @@ class PollingHarness implements IDisposable {
 			() => this.refreshDiff(),
 			() => this.refreshPr(),
 			(runner, defaultDelay) => this.clock.createScheduler(runner, defaultDelay),
+			() => this.clock.time,
 		));
 	}
 
@@ -446,6 +478,13 @@ class FakeClock {
 
 	cancelCounts(): Record<PollKind, number> {
 		return { diff: this.diff.cancelCount, pr: this.pr.cancelCount };
+	}
+
+	pendingDelays(): Record<PollKind, number | undefined> {
+		return {
+			diff: this.diff.dueTime === undefined ? undefined : this.diff.dueTime - this.now,
+			pr: this.pr.dueTime === undefined ? undefined : this.pr.dueTime - this.now,
+		};
 	}
 
 	get time(): number { return this.now; }
