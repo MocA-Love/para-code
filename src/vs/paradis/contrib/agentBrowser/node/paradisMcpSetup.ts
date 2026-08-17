@@ -10,19 +10,18 @@ import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { constants as fsConstants, promises as fs, type Stats } from 'fs';
 import { homedir } from 'os';
-import { FileAccess } from '../../../../base/common/network.js';
 import { basename, dirname, extname, join } from '../../../../base/common/path.js';
 import { findExecutable, killTree } from '../../../../base/node/processes.js';
-import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
-import { encodeParadisTomlBasicString, inspectParadisMcpTomlSection } from '../common/paradisMcpSetupEncoding.js';
-import { computeParadisCodexShimRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from './paradisMcpConfigStatus.js';
+import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
+import { inspectParadisMcpTomlSection, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from './paradisMcpConfigStatus.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
-// ~/.claude.json は会話履歴などを含みうるため 1MiB を超えやすい。ステータス判定のためだけの
-// 読み取り上限はコーデックスの config.toml より大きく取る（自動編集はしないため厳密さより緩さを優先）。
+// ~/.claude.json は会話履歴などを含みうるため 1MiB を超えやすい。読むのはステータス判定のときだけで、
+// 書き込みは `claude mcp add` に任せている（こちらでJSONを組み立て直さない）ので上限は緩く取る。
 const MAX_CLAUDE_CONFIG_BYTES = 32 * 1024 * 1024;
 const CODEX_CONFIG_OPEN_FLAGS = fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 const CODEX_SETUP_ERROR = 'Automatic setup could not update the Codex configuration safely.';
@@ -219,7 +218,6 @@ export function runParadisMcpSetupCommand(
 
 export interface IParadisMcpSetupControllerOptions {
 	readonly platform: NodeJS.Platform;
-	readonly resolveShimPath: () => string;
 	readonly resolveShellEnv: () => Promise<NodeJS.ProcessEnv>;
 	readonly findExecutable: (command: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>;
 	readonly runCommand: (command: string, args: readonly string[], env: NodeJS.ProcessEnv) => Promise<IParadisMcpSetupCommandResult>;
@@ -405,12 +403,12 @@ export class ParadisMcpSetupController {
 
 	constructor(private readonly options: IParadisMcpSetupControllerOptions) { }
 
-	setup(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
+	setup(cli: ParadisMcpCli, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
 		const existing = this.flights.get(cli);
 		if (existing !== undefined) {
 			return existing;
 		}
-		const flight = (cli === 'claude' ? this.setupClaude() : this.setupCodex()).finally(() => {
+		const flight = (cli === 'claude' ? this.setupClaude(gatewayPort) : this.setupCodex(gatewayPort)).finally(() => {
 			if (this.flights.get(cli) === flight) {
 				this.flights.delete(cli);
 			}
@@ -422,20 +420,20 @@ export class ParadisMcpSetupController {
 	/** 「MCP接続設定」タブ表示用の、Claude Code / Codex 双方のMCP設定ステータスを判定する。 */
 	async status(gatewayPort: number | undefined): Promise<IParadisMcpConfigStatus> {
 		const [claude, codex] = await Promise.all([
-			this.statusClaude(),
+			this.statusClaude(gatewayPort),
 			this.statusCodex(gatewayPort),
 		]);
 		return { claude, codex, ...(gatewayPort !== undefined ? { gatewayPort } : {}) };
 	}
 
-	private async statusClaude(): Promise<IParadisMcpCliConfigStatus> {
+	private async statusClaude(gatewayPort: number | undefined): Promise<IParadisMcpCliConfigStatus> {
 		const claudeConfigJsonPath = this.options.claudeConfigJsonPath ?? join(homedir(), '.claude.json');
 		try {
 			const snapshot = await readConfigSnapshot(claudeConfigJsonPath, this.options.configReadFileSystem, MAX_CLAUDE_CONFIG_BYTES);
 			if (!snapshot.exists) {
 				return { cli: 'claude', state: 'unconfigured' };
 			}
-			const state = inspectParadisClaudeMcpJson(snapshot.text);
+			const state = inspectParadisClaudeMcpJson(snapshot.text, gatewayPort);
 			return {
 				cli: 'claude',
 				state,
@@ -479,7 +477,7 @@ export class ParadisMcpSetupController {
 	 */
 	fix(cli: ParadisMcpCli, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
 		if (cli === 'claude') {
-			return this.setup('claude');
+			return this.setup('claude', gatewayPort);
 		}
 		return this.fixCodex(gatewayPort);
 	}
@@ -488,21 +486,20 @@ export class ParadisMcpSetupController {
 		const configPath = join(this.options.codexHome, 'config.toml');
 		try {
 			const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
-			if (!original.exists) {
-				return this.setupCodex();
+			if (!original.exists || gatewayPort === undefined) {
+				return this.setupCodex(gatewayPort);
 			}
 			const inspection = inspectParadisCodexMcpToml(original.text, gatewayPort);
 			if (inspection.state === 'configured') {
 				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
 			}
-			if (inspection.state === 'needsFix' && inspection.staleServerName !== undefined) {
-				const shimPath = this.options.resolveShimPath();
-				const rewritten = computeParadisCodexShimRewrite(
+			// 古いポートを指しているのが私たち以外の名前（chrome-devtools 等）の場合は、その節を
+			// HTTP方式へ書き換える。私たちの名前なら setupCodex 側の節ごと差し替えで直る。
+			if (inspection.state === 'needsFix' && inspection.staleServerName !== undefined && inspection.staleServerName !== 'para-browser') {
+				const rewritten = computeParadisCodexTableRewrite(
 					original.text,
 					inspection.staleServerName,
-					shimPath,
-					PARADIS_PANE_TOKEN_ENV_VAR,
-					PARADIS_MCP_PORT_FILE_ENV_VAR,
+					paradisCodexMcpTableBody(gatewayPort),
 				);
 				if (rewritten === undefined || rewritten === original.text) {
 					throw new Error('Ambiguous Codex MCP rewrite target');
@@ -510,19 +507,31 @@ export class ParadisMcpSetupController {
 				await writeConfigAtomic(configPath, original, rewritten, this.options.configReadFileSystem);
 				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: inspection.staleServerName, outcome: 'success' }] };
 			}
-			return this.setupCodex();
+			return this.setupCodex(gatewayPort);
 		} catch {
 			this.options.log('Codex MCP configuration fix failed');
 			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
 		}
 	}
 
-	private async setupClaude(): Promise<IParadisMcpSetupResult> {
-		let shimPath: string;
+	/**
+	 * Claude Code へ para-browser を HTTP の MCP サーバーとして登録する。
+	 *
+	 * `~/.claude.json` は会話履歴まで抱えて数十MiBになりうるので、こちらでは読み書きしない
+	 * （JSONを丸ごと組み立て直すのは、直したい1エントリに対して代償が大きすぎる）。書き込みは
+	 * `claude mcp add` に任せる。
+	 *
+	 * ヘッダーの値は `${…}` のまま渡す。展開するのは Claude Code 自身で、そうすることで
+	 * ペインごとに違うトークンを設定ファイルへ焼き込まずに済む。引数は配列のまま渡しており
+	 * シェルを経由しないので、ここで展開されることはない。
+	 */
+	private async setupClaude(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
+		if (gatewayPort === undefined) {
+			return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: CLAUDE_SETUP_ERROR }] };
+		}
 		let env: NodeJS.ProcessEnv;
 		let executable: string | undefined;
 		try {
-			shimPath = this.options.resolveShimPath();
 			env = await this.options.resolveShellEnv();
 			executable = await this.options.findExecutable('claude', env);
 		} catch {
@@ -532,11 +541,19 @@ export class ParadisMcpSetupController {
 		if (executable === undefined || (this.options.platform === 'win32' && !/\.(?:exe|com)$/i.test(extname(executable)))) {
 			return { cli: 'claude', cliAvailable: false, servers: [] };
 		}
+		const addArguments = [
+			'mcp', 'add', '-s', 'user', '--transport', 'http', 'para-browser', paradisMcpServerUrl(gatewayPort),
+			'--header', `Authorization: Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}`,
+		];
 		let result: IParadisMcpSetupCommandResult;
 		try {
-			result = await this.options.runCommand(executable, [
-				'mcp', 'add', '-s', 'user', 'para-browser', '--', 'node', shimPath,
-			], env);
+			result = await this.options.runCommand(executable, addArguments, env);
+			// `mcp add` に上書きは無い。既にあるのは旧shim方式か古いポートを指した登録なので、
+			// 消してから入れ直す（同じ名前の私たちのエントリだけが対象）。
+			if (result.kind === 'exit' && result.code !== 0 && result.output.toLowerCase().includes('already exists')) {
+				await this.options.runCommand(executable, ['mcp', 'remove', '-s', 'user', 'para-browser'], env);
+				result = await this.options.runCommand(executable, addArguments, env);
+			}
 		} catch {
 			this.options.log('Claude MCP runner failed');
 			return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: CLAUDE_SETUP_ERROR }] };
@@ -547,39 +564,31 @@ export class ParadisMcpSetupController {
 		if (result.kind === 'exit' && result.code === 0) {
 			return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'success' }] };
 		}
-		if (result.kind === 'exit' && result.output.toLowerCase().includes('already exists')) {
-			return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'already' }] };
-		}
 		this.options.log('Claude MCP registration failed');
 		return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: CLAUDE_SETUP_ERROR }] };
 	}
 
-	private async setupCodex(): Promise<IParadisMcpSetupResult> {
+	/**
+	 * Codex へ para-browser を HTTP の MCP サーバーとして登録する。
+	 *
+	 * 私たちの節は毎回書き直す（`paradisUpsertCodexMcpToml`）。旧shim方式の絶対パスや古いポートを
+	 * 指した節が残っていても、中身を読んで直すより丸ごと入れ替える方が確実。
+	 */
+	private async setupCodex(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
 		const configPath = join(this.options.codexHome, 'config.toml');
+		if (gatewayPort === undefined) {
+			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
+		}
 		try {
 			const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
-			const inspection = inspectParadisMcpTomlSection(original.text);
-			if (inspection === 'present') {
-				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
-			}
-			if (inspection === 'ambiguous') {
+			// 節ごと差し替えるので 'present' でも進む。曖昧な構文のときだけ手を出さない。
+			if (inspectParadisMcpTomlSection(original.text) === 'ambiguous') {
 				throw new Error('Ambiguous Codex MCP configuration');
 			}
-			const shimPath = this.options.resolveShimPath();
-			const section = [
-				'[mcp_servers.para-browser]',
-				'command = "node"',
-				`args = [${encodeParadisTomlBasicString(shimPath)}]`,
-				`env_vars = [${encodeParadisTomlBasicString(PARADIS_PANE_TOKEN_ENV_VAR)}, ${encodeParadisTomlBasicString(PARADIS_MCP_PORT_FILE_ENV_VAR)}]`,
-			].join('\n');
-			let content = original.text;
-			if (content.length > 0 && !content.endsWith('\n')) {
-				content += '\n';
+			const content = paradisUpsertCodexMcpToml(original.text, gatewayPort);
+			if (content === original.text) {
+				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
 			}
-			if (content.length > 0) {
-				content += '\n';
-			}
-			content += `${section}\n`;
 			await writeConfigAtomic(configPath, original, content, this.options.configReadFileSystem);
 			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'success' }] };
 		} catch {
@@ -596,7 +605,6 @@ export function createParadisMcpSetupController(
 ): ParadisMcpSetupController {
 	return new ParadisMcpSetupController({
 		platform: process.platform,
-		resolveShimPath: () => FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js').fsPath,
 		resolveShellEnv,
 		findExecutable: (command, env) => findExecutable(command, undefined, undefined, env),
 		runCommand: runParadisMcpSetupCommand,

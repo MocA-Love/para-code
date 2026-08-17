@@ -298,17 +298,71 @@ export function inspectParadisMcpTomlSection(source: string): ParadisMcpTomlSect
  */
 const PARADIS_MCP_TOML_SERVER_NAME = 'para-browser';
 
+/** para-browser MCP サーバーのURL。手元でも接続先でも 127.0.0.1 の同じ番号を叩く。 */
+export function paradisMcpServerUrl(port: number): string {
+	return `http://127.0.0.1:${port}/`;
+}
+
+/**
+ * Codex の `[mcp_servers.para-browser]` の中身（ヘッダー行を除く）。
+ *
+ * トークンはペインごとに違うので値は焼き込まず、環境変数の名前だけを渡す
+ * （`bearer_token_env_var`。Codex が起動時にその変数を読んで Bearer に載せる）。
+ */
+export function paradisCodexMcpTableBody(port: number): string {
+	return [
+		`url = ${encodeParadisTomlBasicString(paradisMcpServerUrl(port))}`,
+		`bearer_token_env_var = ${encodeParadisTomlBasicString(PARADIS_PANE_TOKEN_ENV_VAR)}`,
+	].join('\n');
+}
+
+/**
+ * Claude Code の `mcpServers['para-browser']` を、既存の設定を保ったまま HTTP 方式へ差し替える。
+ *
+ * `${…}` のまま書くのは Claude Code が起動時に自分の環境変数で展開するため。ペインごとに違う
+ * トークンを、設定ファイルへ焼き込まずに渡せる唯一の手段になっている。
+ *
+ * @returns 書き戻すべきJSON。読めない・オブジェクトでない場合は undefined（呼び出し側は諦める）。
+ */
+export function paradisUpsertClaudeMcpJson(existingRaw: string | undefined, port: number): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(existingRaw === undefined || existingRaw.length === 0 ? '{}' : existingRaw);
+	} catch {
+		return undefined;
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		return undefined;
+	}
+	const config = parsed as Record<string, unknown>;
+	const existingServers = config.mcpServers;
+	const servers: Record<string, unknown> = existingServers !== null && typeof existingServers === 'object' && !Array.isArray(existingServers)
+		? { ...existingServers as Record<string, unknown> }
+		: {};
+	servers[PARADIS_MCP_TOML_SERVER_NAME] = {
+		type: 'http',
+		url: paradisMcpServerUrl(port),
+		headers: { Authorization: `Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}` },
+	};
+	return JSON.stringify({ ...config, mcpServers: servers }, undefined, 2) + '\n';
+}
+
 export function paradisUpsertCodexMcpToml(source: string, port: number): string {
 	const section = [
 		`[mcp_servers.${PARADIS_MCP_TOML_SERVER_NAME}]`,
-		`url = ${encodeParadisTomlBasicString(`http://127.0.0.1:${port}/`)}`,
-		`bearer_token_env_var = ${encodeParadisTomlBasicString(PARADIS_PANE_TOKEN_ENV_VAR)}`,
+		paradisCodexMcpTableBody(port),
 	].join('\n');
 
 	const lines = source.split('\n');
 	const header = /^\s*\[mcp_servers\.(?:para-browser|"para-browser"|'para-browser')\]\s*$/;
 	const start = lines.findIndex(line => header.test(line));
 	if (start < 0) {
+		// 見出しが見つからないのに節は在る、という書き方がある（`[ mcp_servers . "para-browser" ]`
+		// のように空白やコメントを挟んだもの）。ここで足すと同じテーブルを二重に定義してしまい、
+		// Codex は設定ごと読めなくなる。触らずに返し、呼び出し側に「既にある」と扱わせる。
+		if (inspectParadisMcpTomlSection(source) !== 'absent') {
+			return source;
+		}
 		const prefix = source.length === 0 ? '' : source.endsWith('\n\n') ? source : source.endsWith('\n') ? `${source}\n` : `${source}\n\n`;
 		return `${prefix}${section}\n`;
 	}
@@ -316,6 +370,11 @@ export function paradisUpsertCodexMcpToml(source: string, port: number): string 
 	let end = start + 1;
 	while (end < lines.length && !/^\s*\[/.test(lines[end])) {
 		end++;
+	}
+	// 次のテーブルとの間に置かれていた空行は本文ではなく区切りなので残す。
+	// 巻き込むと、当てるたびに空行が1つずつ減って結果が変わってしまう
+	while (end - 1 > start && lines[end - 1].trim().length === 0) {
+		end--;
 	}
 	// 節の直前にあった空行は残す（区切りが潰れると読みにくい）
 	const replaced = [...lines.slice(0, start), ...section.split('\n'), ...lines.slice(end)];

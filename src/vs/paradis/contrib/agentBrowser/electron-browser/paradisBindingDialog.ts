@@ -500,8 +500,9 @@ export class ParadisBindingDialog extends Disposable {
 	private _renderMcpManual(container: HTMLElement): void {
 		const details = dom.append(container, $('details.pbd-mcp-manual')) as HTMLDetailsElement;
 		dom.append(details, $('summary')).textContent = STR_MANUAL_SUMMARY;
-		this._appendManualSnippet(details, STR_SETUP_CLAUDE_LABEL, getParadisClaudeSetupSnippet());
-		this._appendManualSnippet(details, STR_SETUP_CODEX_LABEL, getParadisCodexSetupSnippet());
+		const port = this._mcpStatus?.gatewayPort;
+		this._appendManualSnippet(details, STR_SETUP_CLAUDE_LABEL, getParadisClaudeSetupSnippet(port));
+		this._appendManualSnippet(details, STR_SETUP_CODEX_LABEL, getParadisCodexSetupSnippet(port));
 	}
 
 	private _appendManualSnippet(container: HTMLElement, label: string, snippet: string): void {

@@ -11,10 +11,25 @@
 // TOMLは全実装せず、既存の注入耐性スキャナ（paradisMcpSetupEncoding）を再利用して安全側に倒す。
 
 import { ParadisMcpConfigState } from '../common/paradisAgentBrowser.js';
-import { encodeParadisTomlBasicString, MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from '../common/paradisMcpSetupEncoding.js';
+import { MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from '../common/paradisMcpSetupEncoding.js';
 
-/** stdioシムのファイル名断片。設定値がこれを含めば para-browser（shim方式）とみなす。 */
+/** stdioシムのファイル名断片。設定値がこれを含めば para-browser（旧shim方式）とみなす。 */
 export const PARADIS_MCP_SHIM_MARKER = 'paradisBrowserMcpShim';
+
+/**
+ * 設定に書かれた para-browser の宛先ポート。HTTP方式のURLからだけ読む。
+ *
+ * shim方式にはURLが無い（シムがポートファイルを毎回読み直す）ので undefined になる。
+ * それで正しい: shim方式はポートが変わっても壊れないため、古いポート判定の対象外。
+ */
+function detectParadisMcpUrlPort(value: string): number | undefined {
+	const match = /^https?:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(value.trim());
+	if (match === null) {
+		return undefined;
+	}
+	const port = Number(match[1]);
+	return Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
+}
 
 /** Codex config.toml のMCP設定判定結果。 */
 export interface IParadisCodexMcpConfigInspection {
@@ -48,11 +63,21 @@ function claudeEntryReferencesShim(entry: unknown): boolean {
 	return strings.some(value => value.includes(PARADIS_MCP_SHIM_MARKER));
 }
 
+/** MCPサーバー1エントリのHTTP方式URLに書かれたポート（HTTP方式でなければ undefined）。 */
+function claudeEntryUrlPort(entry: unknown): number | undefined {
+	if (!isRecord(entry) || typeof entry.url !== 'string') {
+		return undefined;
+	}
+	return detectParadisMcpUrlPort(entry.url);
+}
+
 /**
- * `~/.claude.json` のトップレベル `mcpServers` に shim方式の para-browser エントリがあるか判定する。
+ * `~/.claude.json` のトップレベル `mcpServers` に para-browser エントリがあるか判定する。
+ * HTTP方式（現行）とshim方式（旧・現在も動作する）の両方を設定済みとみなす。
+ * HTTP方式のURLが今のポートと食い違っていれば needsFix（ワンクリック修正の対象）。
  * JSONが壊れている・形が想定外なら unconfigured を返す（失敗ではなく未設定として扱う）。
  */
-export function inspectParadisClaudeMcpJson(text: string): 'configured' | 'unconfigured' {
+export function inspectParadisClaudeMcpJson(text: string, gatewayPort: number | undefined): ParadisMcpConfigState {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
@@ -62,12 +87,21 @@ export function inspectParadisClaudeMcpJson(text: string): 'configured' | 'uncon
 	if (!isRecord(parsed) || !isRecord(parsed.mcpServers)) {
 		return 'unconfigured';
 	}
+	let configured = false;
 	for (const entry of Object.values(parsed.mcpServers)) {
+		const port = claudeEntryUrlPort(entry);
+		if (port !== undefined) {
+			if (gatewayPort !== undefined && port !== gatewayPort) {
+				return 'needsFix';
+			}
+			configured = true;
+			continue;
+		}
 		if (claudeEntryReferencesShim(entry)) {
-			return 'configured';
+			configured = true;
 		}
 	}
-	return 'unconfigured';
+	return configured ? 'configured' : 'unconfigured';
 }
 
 /**
@@ -143,51 +177,47 @@ function collectCodexServerTables(lines: readonly string[]): IServerTable[] {
 	return tables;
 }
 
+/** テーブル本体の `url = "http://127.0.0.1:<port>/"` に書かれたポート。 */
+function detectCodexTableUrlPort(code: string): number | undefined {
+	const match = /(^|\n)\s*url\s*=\s*"([^"\n]*)"/.exec(code);
+	return match === null ? undefined : detectParadisMcpUrlPort(match[2]);
+}
+
 /**
  * Codex config.toml のMCP設定状態を判定する。
- * (a) shim方式の para-browser があれば configured
- * (b) chrome-devtools系が古いポートを固定参照していれば（現行ゲートウェイポートと不一致）needsFix
- * (c) どちらも無ければ unconfigured
+ * (a) HTTP方式（現行）またはshim方式（旧・現在も動作する）の para-browser があれば configured
+ * (b) 古いポートを固定参照していれば（現行ゲートウェイポートと不一致）needsFix。
+ *     対象は chrome-devtools系の `--browser-url` と、私たちのHTTP方式の `url` の両方
+ * (c) どれも無ければ unconfigured
  */
 export function inspectParadisCodexMcpToml(text: string, gatewayPort: number | undefined): IParadisCodexMcpConfigInspection {
 	const tables = collectCodexServerTables(text.split(/\r?\n/));
-	// stale（要修正）検出を shim 検出より先に回す。複数 chrome-devtools エントリのうち1つを
-	// shim へ書き換えた後でも、残った stale が shim エントリの陰に隠れて見逃されないようにする
+	// stale（要修正）検出を configured 検出より先に回す。複数 chrome-devtools エントリのうち1つを
+	// 書き換えた後でも、残った stale が正しいエントリの陰に隠れて見逃されないようにする
 	// （stale が1つでも残っていれば configured にせず needsFix を返す）。
 	for (const table of tables) {
-		const port = detectChromeDevtoolsBrowserUrlPort(table.code);
+		const port = detectChromeDevtoolsBrowserUrlPort(table.code) ?? detectCodexTableUrlPort(table.code);
 		if (port !== undefined && gatewayPort !== undefined && port !== gatewayPort) {
 			return { state: 'needsFix', detectedPort: port, staleServerName: table.name };
 		}
 	}
 	for (const table of tables) {
-		if (table.code.includes(PARADIS_MCP_SHIM_MARKER)) {
+		if (detectCodexTableUrlPort(table.code) !== undefined || table.code.includes(PARADIS_MCP_SHIM_MARKER)) {
 			return { state: 'configured' };
 		}
 	}
 	return { state: 'unconfigured' };
 }
 
-/** shim方式テーブル本体（ヘッダー除く）を生成する。 */
-function paradisCodexShimTableBody(shimPath: string, tokenEnvVar: string, portFileEnvVar: string): string {
-	return [
-		'command = "node"',
-		`args = [${encodeParadisTomlBasicString(shimPath)}]`,
-		`env_vars = [${encodeParadisTomlBasicString(tokenEnvVar)}, ${encodeParadisTomlBasicString(portFileEnvVar)}]`,
-	].join('\n');
-}
-
 /**
- * 指定した `[mcp_servers.<staleServerName>]` テーブルを shim方式へ書き換えた全文を返す。
+ * 指定した `[mcp_servers.<staleServerName>]` テーブルの中身を差し替えた全文を返す。
  * 対象テーブルが一意に特定できない場合は undefined（呼び出し側は fail closed する）。
  * テーブル外の内容（他のサーバー・コメント・書式）は保持する。
  */
-export function computeParadisCodexShimRewrite(
+export function computeParadisCodexTableRewrite(
 	text: string,
 	staleServerName: string,
-	shimPath: string,
-	tokenEnvVar: string,
-	portFileEnvVar: string,
+	body: string,
 ): string | undefined {
 	const usesCrlf = /\r\n/.test(text);
 	const eol = usesCrlf ? '\r\n' : '\n';
@@ -199,7 +229,6 @@ export function computeParadisCodexShimRewrite(
 	}
 	const table = matches[0];
 	const headerLine = lines[table.headerLine];
-	const body = paradisCodexShimTableBody(shimPath, tokenEnvVar, portFileEnvVar);
 	const replacement = [headerLine, ...body.split('\n')];
 	const next = [
 		...lines.slice(0, table.headerLine),

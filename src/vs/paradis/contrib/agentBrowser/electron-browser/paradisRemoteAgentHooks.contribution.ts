@@ -23,42 +23,14 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_NOTIFY_HOOK_RELATIVE_PATH } from '../common/paradisAgentHooks.js';
-import { paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 
-function parseRemoteAgentJson(existingRaw: string | undefined): Record<string, unknown> | undefined {
-	if (existingRaw === undefined) {
-		return {};
-	}
-	try {
-		const parsed: unknown = JSON.parse(existingRaw);
-		return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-			? parsed as Record<string, unknown>
-			: undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function stringifyRemoteAgentJson(value: object): string {
-	return JSON.stringify(value, undefined, 2) + '\n';
-}
-
-/** 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。 */
+/**
+ * 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。
+ * 手元のClaudeへ書くものと同一なので、組み立ては共通のencoderに任せる。
+ */
 export function paradisMergeRemoteClaudeMcpJson(existingRaw: string | undefined, port: number): string | undefined {
-	const config = parseRemoteAgentJson(existingRaw);
-	if (config === undefined) {
-		return undefined;
-	}
-	const existingServers = config.mcpServers;
-	const servers: Record<string, unknown> = existingServers !== null && typeof existingServers === 'object' && !Array.isArray(existingServers)
-		? { ...existingServers as Record<string, unknown> }
-		: {};
-	servers['para-browser'] = {
-		type: 'http',
-		url: `http://127.0.0.1:${port}/`,
-		headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }
-	};
-	return stringifyRemoteAgentJson({ ...config, mcpServers: servers });
+	return paradisUpsertClaudeMcpJson(existingRaw, port);
 }
 
 /** 接続先への hook 導入を再試行し、ゲートウェイ番号の変化に追従する。 */

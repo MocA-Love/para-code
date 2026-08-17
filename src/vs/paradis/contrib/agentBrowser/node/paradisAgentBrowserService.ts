@@ -2326,7 +2326,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (this._serverDisposed) {
 			throw new Error('Para Browser protocol rejected');
 		}
-		return this._mcpSetupController.setup(request.cli);
+		return this._mcpSetupController.setup(request.cli, await this._currentGatewayPort());
 	}
 
 	/** バインディングダイアログ「MCP接続設定」タブ表示用のステータス判定（実設定ファイルを読む）。 */

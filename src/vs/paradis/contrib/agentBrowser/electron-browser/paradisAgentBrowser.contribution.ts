@@ -240,14 +240,14 @@ class ParadisCopyMcpSetupCommandAction extends Action2 {
 				label: 'Claude Code',
 				description: localize('paradis.copyMcpSetup.claude.description', "Shell commands — paste into a Para Code terminal pane"),
 				detail: localize('paradis.copyMcpSetup.claude.detail', "Registers para-browser (page reading) and chrome-devtools-mcp (full automation via the CDP gateway). One-time setup."),
-				resolveSnippet: getParadisClaudeSetupSnippet,
+				resolveSnippet: async () => getParadisClaudeSetupSnippet((await bindingModel.getGatewayEndpoint()).port),
 				doneMessage: localize('paradis.copyMcpSetup.claude.done', "Copied Claude Code setup commands. Paste them into a terminal pane. If a server is already registered, remove it first with \"claude mcp remove <name>\"."),
 			},
 			{
 				label: 'Codex',
 				description: localize('paradis.copyMcpSetup.codex.description', "TOML snippet — paste into ~/.codex/config.toml (not into a shell)"),
 				detail: localize('paradis.copyMcpSetup.codex.detail', "Adds para-browser and chrome-devtools-mcp entries with the required env_vars forwarding."),
-				resolveSnippet: getParadisCodexSetupSnippet,
+				resolveSnippet: async () => getParadisCodexSetupSnippet((await bindingModel.getGatewayEndpoint()).port),
 				doneMessage: localize('paradis.copyMcpSetup.codex.done', "Copied the Codex config.toml snippet. Paste it into ~/.codex/config.toml (do not paste it into a shell)."),
 			},
 			{
