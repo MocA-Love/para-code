@@ -68,6 +68,95 @@ interface RendererRequestTarget {
 	readonly rendererGeneration: number;
 }
 
+export type MobileWarmLeaseResource = 'ccusage' | 'spaceDisk';
+
+export interface MobileDisposable {
+	dispose(): void;
+}
+
+export interface MobileWarmLeaseController {
+	createWarmLease(resource: MobileWarmLeaseResource): MobileDisposable;
+	releaseAllWarmLeases(): void;
+}
+
+/** controller lookup は1回だけ行い、cleanupを取得時点の controller へ固定する。 */
+export function acquireCapturedWarmLease(getCurrentController: () => MobileWarmLeaseController | undefined, resource: MobileWarmLeaseResource): MobileDisposable {
+	const captured = getCurrentController();
+	return captured?.createWarmLease(resource) ?? { dispose: () => { } };
+}
+
+/** AppState の active controller と、同一PC再pairを含む交代世代を一緒に管理する。 */
+export class MobileWarmLeaseControllerRegistry {
+	private current: MobileWarmLeaseController | undefined;
+	private currentRevision = 0;
+
+	get revision(): number {
+		return this.currentRevision;
+	}
+
+	replace(next: MobileWarmLeaseController | undefined): number {
+		if (this.current === next) {
+			return this.currentRevision;
+		}
+		try {
+			this.current?.releaseAllWarmLeases();
+		} catch {
+			// PC switch は best-effort release の失敗後も新controllerへ進める。
+		}
+		this.current = next;
+		return ++this.currentRevision;
+	}
+
+	acquire(resource: MobileWarmLeaseResource): MobileDisposable {
+		return acquireCapturedWarmLease(() => this.current, resource);
+	}
+}
+
+export function shouldMaintainMobileWarmLease(
+	resource: MobileWarmLeaseResource,
+	state: { readonly focused: boolean; readonly appActive: boolean; readonly online: boolean; readonly volumeAxis: boolean },
+): boolean {
+	return state.focused && state.appActive && state.online && (resource !== 'spaceDisk' || state.volumeAxis);
+}
+
+/** screen effect がPC identityと同一PC再pair revisionのどちらの交代も同じowner handoffとして扱うkey。 */
+export function mobileWarmLeaseOwnerRevision(activePcId: string | undefined, controllerRevision: number): string {
+	return JSON.stringify([activePcId ?? null, controllerRevision]);
+}
+
+/** React effect の条件遷移を同期的な acquire/release へ落とす小さな lifecycle seam。 */
+export class MobileWarmLeaseLifecycle implements MobileDisposable {
+	private lease: MobileDisposable | undefined;
+	private ownerRevision: unknown;
+
+	update(active: boolean, acquire: () => MobileDisposable, ownerRevision?: unknown): void {
+		if (active) {
+			if (this.lease !== undefined && Object.is(this.ownerRevision, ownerRevision)) {
+				return;
+			}
+			this.lease?.dispose();
+			this.lease = acquire();
+			this.ownerRevision = ownerRevision;
+			return;
+		}
+		this.lease?.dispose();
+		this.lease = undefined;
+		this.ownerRevision = undefined;
+	}
+
+	dispose(): void {
+		this.update(false, () => ({ dispose: () => { } }));
+	}
+}
+
+interface MobileWarmLease {
+	readonly leaseId: string;
+	readonly resource: MobileWarmLeaseResource;
+	readonly timer: ReturnType<typeof setInterval>;
+	target: RendererRequestTarget | undefined;
+	disposed: boolean;
+}
+
 /** partial stateはready windowだけを置換し、pending windowの最後の表示を保持する。 */
 export function mergeWorkspaceState(previous: WorkspaceState | undefined, incoming: WorkspaceState): WorkspaceState {
 	if (previous === undefined || incoming.complete) {
@@ -1299,6 +1388,9 @@ export class MobileController {
 	private terminalOperationDispatchDepth = 0;
 	/** 現在の暗号接続で受信したStateだけから確定する。画面保持Stateからは復元しない。 */
 	private liveFsUploadEncoding: string | undefined;
+	private readonly warmLeases = new Map<string, MobileWarmLease>();
+	private warmLeaseCounter = 0;
+	private static readonly WARM_LEASE_HEARTBEAT_MS = 300_000;
 
 	constructor(
 		private readonly identity: Identity,
@@ -1374,6 +1466,115 @@ export class MobileController {
 		this.emit();
 	}
 
+	createWarmLease(resource: MobileWarmLeaseResource): MobileDisposable {
+		const leaseId = `mobile-${++this.warmLeaseCounter}-${toBase64Url(randomToken(9))}`;
+		const lease: MobileWarmLease = {
+			leaseId,
+			resource,
+			target: undefined,
+			disposed: false,
+			timer: setInterval(() => this.sendWarmLease(lease, true), MobileController.WARM_LEASE_HEARTBEAT_MS),
+		};
+		this.warmLeases.set(leaseId, lease);
+		this.sendWarmLease(lease, true);
+		return {
+			dispose: () => this.releaseWarmLease(lease),
+		};
+	}
+
+	releaseAllWarmLeases(): void {
+		for (const lease of [...this.warmLeases.values()]) {
+			try {
+				this.releaseWarmLease(lease);
+			} catch {
+				// Teardown is best-effort: one failed socket send must not block the remaining owners or transport close.
+			}
+		}
+	}
+
+	private releaseWarmLease(lease: MobileWarmLease): void {
+		if (lease.disposed) {
+			return;
+		}
+		try {
+			this.sendWarmLease(lease, false);
+		} finally {
+			lease.disposed = true;
+			clearInterval(lease.timer);
+			this.warmLeases.delete(lease.leaseId);
+		}
+	}
+
+	private sendWarmLease(lease: MobileWarmLease, active: boolean): void {
+		const client = this.client;
+		if (client === undefined) {
+			return;
+		}
+		let target = lease.target;
+		if (active) {
+			if (!this.isLiveAvailable()) {
+				return;
+			}
+			const current = this.warmLeaseTarget();
+			if (current === undefined) {
+				return;
+			}
+			if (target !== undefined && !this.sameWarmLeaseTarget(target, current)) {
+				this.sendWarmLeasePayload(client, lease, false, target);
+			}
+			target = current;
+			lease.target = current;
+		}
+		if (target !== undefined) {
+			this.sendWarmLeasePayload(client, lease, active, target);
+		}
+	}
+
+	private sendWarmLeasePayload(client: RelayClient, lease: MobileWarmLease, active: boolean, target: RendererRequestTarget): void {
+		try {
+			client.send('fs', encoder.encode(JSON.stringify({
+				t: lease.resource === 'ccusage' ? 'usageWarmLease' : 'spaceDiskWarmLease',
+				leaseId: lease.leaseId,
+				active,
+				desktopEpoch: target.desktopEpoch,
+				windowId: target.windowId,
+				rendererGeneration: target.rendererGeneration,
+			})));
+		} catch {
+			// Warm leases are best-effort. Keep active leases registered so the next heartbeat can retry.
+		}
+	}
+
+	private warmLeaseTarget(): RendererRequestTarget | undefined {
+		const desktop = this.state.workspace;
+		if (desktop === undefined) {
+			return undefined;
+		}
+		const activeWindowId = desktop.activeWs === undefined
+			? undefined
+			: desktop.workspaces.find(workspace => workspace.id === desktop.activeWs)?.windowId;
+		const renderer = desktop.renderers.find(candidate => candidate.ready && candidate.windowId === activeWindowId)
+			?? desktop.renderers.find(candidate => candidate.ready);
+		return renderer === undefined ? undefined : {
+			desktopEpoch: desktop.desktopEpoch,
+			windowId: renderer.windowId,
+			rendererGeneration: renderer.rendererGeneration,
+		};
+	}
+
+	private sameWarmLeaseTarget(a: RendererRequestTarget | undefined, b: RendererRequestTarget | undefined): boolean {
+		return a?.desktopEpoch === b?.desktopEpoch && a?.windowId === b?.windowId && a?.rendererGeneration === b?.rendererGeneration;
+	}
+
+	private refreshWarmLeaseTargets(): void {
+		const current = this.warmLeaseTarget();
+		for (const lease of this.warmLeases.values()) {
+			if (!this.sameWarmLeaseTarget(lease.target, current)) {
+				this.sendWarmLease(lease, true);
+			}
+		}
+	}
+
 	connect(creds: PairedCredentials): void {
 		const scope = terminalOperationPairingScope(creds);
 		if (this.operationOutboxScope !== scope) {
@@ -1398,9 +1599,13 @@ export class MobileController {
 				void this.persistNotifyKey(MobileController.bytesToHexStatic(notifyKey)).catch(() => { /* シミュレータ等では失敗してよい */ });
 			} catch { /* 導出失敗時はプッシュ本文が固定文になるだけ（致命的でない） */ }
 		}
+		this.releaseAllWarmLeases();
 		this.client?.close();
 		this.client = new RelayClient(this.identity, creds, this.socketFactory, {
 			onStateChange: s => {
+				if (s !== 'online') {
+					this.releaseAllWarmLeases();
+				}
 				this.state.connection = s;
 				if (s !== 'online') {
 					this.state.sessionProtocolReady = false;
@@ -1421,6 +1626,9 @@ export class MobileController {
 				}
 			},
 			onPcPresence: online => {
+				if (!online) {
+					this.releaseAllWarmLeases();
+				}
 				this.state.pcOnline = online;
 				let agentChatsChanged = false;
 				if (!online) {
@@ -1457,6 +1665,7 @@ export class MobileController {
 	}
 
 	disconnect(): void {
+		this.releaseAllWarmLeases();
 		if (this.livenessTimer !== undefined) {
 			clearInterval(this.livenessTimer);
 			this.livenessTimer = undefined;
@@ -1487,6 +1696,7 @@ export class MobileController {
 		}
 		const previousCredentials = this.lastCredentials;
 		this.resetting = true;
+		this.releaseAllWarmLeases();
 		// 生存確認のインターバルも止める。resetしたコントローラはそのまま捨てられるので、
 		// 残すとタイマーごとコントローラ一式がGCされずに残り続ける。
 		if (this.livenessTimer !== undefined) {
@@ -1566,6 +1776,7 @@ export class MobileController {
 
 	/** バックグラウンド通知をAPNsへ一本化するため、フォアグラウンド用ソケットを止める。 */
 	suspendForBackground(): void {
+		this.releaseAllWarmLeases();
 		if (!this.client) {
 			return;
 		}
@@ -1582,6 +1793,11 @@ export class MobileController {
 		} else if (this.lastCredentials) {
 			this.connect(this.lastCredentials);
 		}
+	}
+
+	dispose(): void {
+		this.releaseAllWarmLeases();
+		this.disconnect();
 	}
 
 	/** 未接続なら即座に接続、'online' 表示中は生存確認する（フォアグラウンド復帰時用）。 */
@@ -3325,6 +3541,7 @@ export class MobileController {
 					&& (incoming.revision < previous.revision || (incoming.revision === previous.revision && (previous.complete || !incoming.complete)))) {
 					this.emit();
 					this.reconcileTerminalOperationOutbox(incoming.desktopEpoch);
+					this.refreshWarmLeaseTargets();
 					if (firstReadyState) {
 						this.resumeLiveSessionSubscriptions();
 					}
@@ -3336,6 +3553,7 @@ export class MobileController {
 				const applied = mergeWorkspaceState(previous, incoming);
 				const epochChanged = previous !== undefined && applied.desktopEpoch !== previous.desktopEpoch;
 				this.state.workspace = applied;
+				this.refreshWarmLeaseTargets();
 				this.cancelStaleRendererRequests();
 				if (epochChanged) {
 					this.state.terminalOutput.clear();

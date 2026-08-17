@@ -13,7 +13,7 @@
 //
 // ProxyChannel.fromService でそのままチャネル化できるよう、公開メソッドはasyncのみ。
 
-import { app } from 'electron';
+import * as electron from 'electron';
 import { homedir, totalmem } from 'os';
 import {
 	IParadisHostResources,
@@ -28,10 +28,34 @@ import {
 	IParadisResourceUsage,
 } from '../common/paradisResourceMonitor.js';
 import { ParadisHostResourceSampler } from '../node/paradisHostResources.js';
-import { captureParadisProcessSnapshot, getParadisSubtreeResources } from './paradisResourceMonitorProcessTree.js';
+import { captureParadisProcessSnapshot, getParadisSubtreeResources, IParadisProcessSnapshot } from './paradisResourceMonitorProcessTree.js';
 
 /** パネル表示中のポーリング間隔(2秒)より短い鮮度でキャッシュを再利用する。 */
-const SNAPSHOT_MAX_AGE_MS = 2_500;
+const ACTIVE_SNAPSHOT_MAX_AGE_MS = 2_500;
+/** 閉じたパネルの5秒ポーリングをwindow間で同じraw世代へ集約する。 */
+const IDLE_SNAPSHOT_MAX_AGE_MS = 5_000;
+/** モバイルのhost resources取得は従来の2.5秒cacheを維持する。 */
+const HOST_RESOURCES_MAX_AGE_MS = 2_500;
+
+export interface IParadisResourceMonitorRawSample {
+	/** renderer所有のsessionsを含まない、main processで共有できる1世代分の収集結果。 */
+	readonly processSnapshot: IParadisProcessSnapshot;
+	readonly app: IParadisResourceMonitorAppMetrics;
+	readonly hostTotalMemory: number;
+	readonly collectedAt: number;
+}
+
+export interface IParadisResourceMonitorMainServiceDependencies {
+	readonly collectRawSample: () => Promise<IParadisResourceMonitorRawSample>;
+	readonly now: () => number;
+	readonly schedule: (callback: () => void, delayMs: number) => { dispose(): void };
+}
+
+interface IParadisResourceMonitorRawGeneration {
+	readonly sample: IParadisResourceMonitorRawSample;
+	/** Cache鮮度の基準。収集時間の分だけ次のscanが遅れないよう、完了時刻と分ける。 */
+	readonly startedAt: number;
+}
 
 function normalizeFiniteNumber(value: unknown): number {
 	return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -50,7 +74,7 @@ function collectAppMetrics(): IParadisResourceMonitorAppMetrics {
 	const renderer: { cpu: number; memory: number } = { cpu: 0, memory: 0 };
 	const other: { cpu: number; memory: number } = { cpu: 0, memory: 0 };
 
-	for (const proc of app.getAppMetrics()) {
+	for (const proc of electron.app.getAppMetrics()) {
 		const cpu = normalizeFiniteNumber(proc.cpu?.percentCPUUsage);
 		// Electronの workingSetSize はKB単位。
 		const memory = normalizeFiniteNumber(proc.memory?.workingSetSize) * 1024;
@@ -74,15 +98,36 @@ function collectAppMetrics(): IParadisResourceMonitorAppMetrics {
 	};
 }
 
+async function collectRawSample(): Promise<IParadisResourceMonitorRawSample> {
+	const processSnapshot = await captureParadisProcessSnapshot();
+	return {
+		processSnapshot,
+		app: collectAppMetrics(),
+		hostTotalMemory: normalizeFiniteNumber(totalmem()),
+		collectedAt: Date.now(),
+	};
+}
+
+const defaultDependencies: IParadisResourceMonitorMainServiceDependencies = {
+	collectRawSample,
+	now: () => Date.now(),
+	schedule: (callback, delayMs) => {
+		const handle = setTimeout(callback, delayMs);
+		return { dispose: () => clearTimeout(handle) };
+	},
+};
+
 /**
  * `shared process only` ではなく、メインプロセスのみで完結するCPU/RAM収集サービス。
- * `getSnapshot` は2.5秒以内の再呼び出しをキャッシュから返し、並行呼び出しは1つの
- * in-flight Promiseへ集約する(パネル表示中の2秒ポーリングによる `ps` の多重実行を防ぐ)。
+ * `getSnapshot` はactive要求で2.5秒、idle要求で5秒までraw収集結果を共有し、並行呼び出しを1つの
+ * in-flight Promiseへ集約する。sessionsは共有せず、各requestの復帰時に同じraw世代へ投影する。
  */
 export class ParadisResourceMonitorMainService implements IParadisResourceMonitorMainService {
 
-	private cachedSnapshot: IParadisResourceMonitorSnapshot | undefined;
-	private inflightCollection: Promise<IParadisResourceMonitorSnapshot> | undefined;
+	private cachedRawGeneration: IParadisResourceMonitorRawGeneration | undefined;
+	private inflightCollection: Promise<IParadisResourceMonitorRawGeneration> | undefined;
+	private rawSampleExpiry: { dispose(): void } | undefined;
+	private rawSampleCacheRevision = 0;
 
 	// ホスト全体の使用量(モバイルの「システム」画面専用)。CPUは累積値の差分なので
 	// サンプラーを1つだけ持ち回る。
@@ -92,8 +137,10 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 	private cachedHostResources: IParadisHostResources | undefined;
 	private inflightHostCollection: Promise<IParadisHostResources> | undefined;
 
+	constructor(private readonly dependencies: IParadisResourceMonitorMainServiceDependencies = defaultDependencies) { }
+
 	async getHostResources(request: IParadisHostResourcesRequest): Promise<IParadisHostResources> {
-		if (!request.force && this.cachedHostResources && Date.now() - this.cachedHostResources.collectedAt <= SNAPSHOT_MAX_AGE_MS) {
+		if (!request.force && this.cachedHostResources && Date.now() - this.cachedHostResources.collectedAt <= HOST_RESOURCES_MAX_AGE_MS) {
 			return this.cachedHostResources;
 		}
 		// force（モバイルのプルダウン更新）は進行中の収集に相乗りさせない。相乗りさせると
@@ -116,32 +163,38 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 	}
 
 	async getSnapshot(request: IParadisResourceMonitorSnapshotRequest): Promise<IParadisResourceMonitorSnapshot> {
-		if (!request.force && this.cachedSnapshot && Date.now() - this.cachedSnapshot.collectedAt <= SNAPSHOT_MAX_AGE_MS) {
-			return this.cachedSnapshot;
+		const maxAgeMs = request.freshness === 'idle' ? IDLE_SNAPSHOT_MAX_AGE_MS : ACTIVE_SNAPSHOT_MAX_AGE_MS;
+		const cachedGeneration = this.cachedRawGeneration;
+		const cachedAgeMs = cachedGeneration ? this.dependencies.now() - cachedGeneration.startedAt : undefined;
+		const isCachedGenerationFresh = cachedAgeMs !== undefined && (request.freshness === 'idle' ? cachedAgeMs < maxAgeMs : cachedAgeMs <= maxAgeMs);
+		if (!request.force && cachedGeneration && isCachedGenerationFresh) {
+			return this.projectSnapshot(cachedGeneration.sample, request.sessions);
 		}
 
 		if (this.inflightCollection) {
-			return this.inflightCollection;
+			return this.projectSnapshot((await this.inflightCollection).sample, request.sessions);
 		}
 
-		const collection = this.collectSnapshotNow(request.sessions)
-			.catch(() => this.cachedSnapshot ?? this.createEmptySnapshot())
-			.then(snapshot => {
-				this.cachedSnapshot = snapshot;
-				return snapshot;
+		const startedAt = this.dependencies.now();
+		const collection = this.dependencies.collectRawSample()
+			// Cache successful captures from completion so a slow Windows process scan still
+			// benefits from the complete active/idle reuse window. Failure fallback below
+			// deliberately retains the previous generation's original deadline.
+			.then(sample => ({ sample, startedAt: this.dependencies.now() }))
+			.catch(() => this.cachedRawGeneration ?? { sample: this.createEmptyRawSample(), startedAt })
+			.then(generation => {
+				this.cacheRawGeneration(generation);
+				return generation;
 			})
 			.finally(() => {
 				this.inflightCollection = undefined;
 			});
 		this.inflightCollection = collection;
 
-		return collection;
+		return this.projectSnapshot((await collection).sample, request.sessions);
 	}
 
-	private async collectSnapshotNow(sessions: readonly IParadisResourceMonitorSessionRequest[]): Promise<IParadisResourceMonitorSnapshot> {
-		const processSnapshot = await captureParadisProcessSnapshot();
-		const appMetrics = collectAppMetrics();
-
+	private projectSnapshot(rawSample: IParadisResourceMonitorRawSample, sessions: readonly IParadisResourceMonitorSessionRequest[]): IParadisResourceMonitorSnapshot {
 		const scopesByStateKey = new Map<string, { scopeName: string; usage: IParadisResourceUsage; sessions: IParadisResourceMonitorSessionMetrics[] }>();
 
 		for (const session of sessions) {
@@ -149,7 +202,7 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 				continue;
 			}
 
-			const resources = getParadisSubtreeResources(processSnapshot, session.pid);
+			const resources = getParadisSubtreeResources(rawSample.processSnapshot, session.pid);
 			const sessionMetrics: IParadisResourceMonitorSessionMetrics = {
 				name: session.sessionName,
 				pid: session.pid,
@@ -182,24 +235,43 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 		}
 
 		return {
-			app: appMetrics,
+			app: rawSample.app,
 			scopes,
-			totalCpu: appMetrics.cpu + sessionCpuTotal,
-			totalMemory: appMetrics.memory + sessionMemoryTotal,
-			hostTotalMemory: normalizeFiniteNumber(totalmem()),
-			collectedAt: Date.now(),
+			totalCpu: rawSample.app.cpu + sessionCpuTotal,
+			totalMemory: rawSample.app.memory + sessionMemoryTotal,
+			hostTotalMemory: rawSample.hostTotalMemory,
+			collectedAt: rawSample.collectedAt,
 		};
 	}
 
-	private createEmptySnapshot(): IParadisResourceMonitorSnapshot {
+	private cacheRawGeneration(generation: IParadisResourceMonitorRawGeneration): void {
+		this.rawSampleExpiry?.dispose();
+		this.rawSampleExpiry = undefined;
+
+		const remainingMs = generation.startedAt + IDLE_SNAPSHOT_MAX_AGE_MS - this.dependencies.now();
+		if (remainingMs <= 0) {
+			this.cachedRawGeneration = undefined;
+			this.rawSampleCacheRevision++;
+			return;
+		}
+
+		this.cachedRawGeneration = generation;
+		const cacheRevision = ++this.rawSampleCacheRevision;
+		this.rawSampleExpiry = this.dependencies.schedule(() => {
+			if (this.rawSampleCacheRevision === cacheRevision) {
+				this.cachedRawGeneration = undefined;
+				this.rawSampleExpiry = undefined;
+			}
+		}, remainingMs);
+	}
+
+	private createEmptyRawSample(): IParadisResourceMonitorRawSample {
 		const zero: IParadisResourceUsage = { cpu: 0, memory: 0 };
 		return {
+			processSnapshot: { byPid: new Map(), childrenOf: new Map() },
 			app: { ...zero, main: zero, renderer: zero, other: zero },
-			scopes: [],
-			totalCpu: 0,
-			totalMemory: 0,
 			hostTotalMemory: normalizeFiniteNumber(totalmem()),
-			collectedAt: Date.now(),
+			collectedAt: this.dependencies.now(),
 		};
 	}
 }

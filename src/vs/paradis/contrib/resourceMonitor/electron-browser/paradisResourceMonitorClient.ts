@@ -17,7 +17,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { IParadisHostResources, IParadisResourceMonitorMainService, IParadisResourceMonitorMobileReport, IParadisResourceMonitorSessionRequest, IParadisResourceMonitorSnapshot, PARADIS_HOST_RESOURCES_CHANNEL, PARADIS_RESOURCE_MONITOR_CHANNEL } from '../common/paradisResourceMonitor.js';
+import { IParadisHostResources, IParadisResourceMonitorMainService, IParadisResourceMonitorMobileReport, IParadisResourceMonitorSessionRequest, IParadisResourceMonitorSnapshot, ParadisResourceMonitorFreshness, PARADIS_HOST_RESOURCES_CHANNEL, PARADIS_RESOURCE_MONITOR_CHANNEL } from '../common/paradisResourceMonitor.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 
 /** スコープに紐付かないターミナル(リスト外フォルダ等)をまとめる仮想スコープキー。 */
@@ -59,8 +59,8 @@ export class ParadisResourceMonitorClient {
 		return remoteConnection.getChannel(PARADIS_HOST_RESOURCES_CHANNEL).call<IParadisHostResources>('getHostResources', { force: request.force });
 	}
 
-	getSnapshot(force: boolean): Promise<IParadisResourceMonitorSnapshot> {
-		return this.resourceMonitorService.getSnapshot({ sessions: this.collectSessionRequests(), force });
+	getSnapshot(force: boolean, freshness: ParadisResourceMonitorFreshness = 'active'): Promise<IParadisResourceMonitorSnapshot> {
+		return this.resourceMonitorService.getSnapshot({ sessions: this.collectSessionRequests(), force, freshness });
 	}
 
 	/**

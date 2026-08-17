@@ -312,6 +312,46 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.authority, 'bindingStates').size, 0);
 	});
 
+	test('status snapshot channel accepts only strict zero arguments and rejects stale connections first', async () => {
+		const fixture = createFixture();
+		const first = {};
+		const replacement = {};
+		fixture.service.registerRendererConnection('window:1', first);
+		await fixture.service.syncBindingAuthority(first, authorityManifest(1, true, [{ token: 'token' }]));
+		Reflect.get(fixture.service, '_paneStatuses').set('token', { status: 'working', changedAt: 9 });
+		Reflect.get(fixture.service, '_agentHookTokens').add('token');
+		const firstChannel = new ParadisAgentBrowserChannel(fixture.service, first);
+
+		for (const args of [undefined, []]) {
+			assert.deepStrictEqual(await firstChannel.call('window:1', 'listAgentStatusSnapshot', args), {
+				paneStatuses: [{ token: 'token', status: 'working', changedAt: 9 }],
+				agentHookTokens: ['token'],
+			});
+		}
+		const hiddenArgs: unknown[] & { hidden?: boolean } = [];
+		Object.defineProperty(hiddenArgs, 'hidden', { value: true });
+		const symbolArgs: unknown[] = [];
+		Reflect.set(symbolArgs, Symbol('unexpected'), true);
+		for (const invalid of [[undefined], ['extra'], 1, {}, hiddenArgs, symbolArgs]) {
+			assert.throws(() => firstChannel.call('window:1', 'listAgentStatusSnapshot', invalid), /protocol/i);
+		}
+
+		fixture.service.registerRendererConnection('window:1', replacement);
+		let argumentAccesses = 0;
+		const hostileArgs = new Proxy([], {
+			get: (target, property, receiver) => {
+				argumentAccesses++;
+				return Reflect.get(target, property, receiver);
+			},
+			ownKeys: target => {
+				argumentAccesses++;
+				return Reflect.ownKeys(target);
+			},
+		});
+		assert.throws(() => firstChannel.call('window:1', 'listAgentStatusSnapshot', hostileArgs), /protocol/i);
+		assert.strictEqual(argumentAccesses, 0);
+	});
+
 	test('setupMcp is connection-scoped before the first manifest and accepts only an exact data record', async () => {
 		const fixture = createFixture();
 		const stale = {};
@@ -532,6 +572,94 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(await fixture.service.notifyTerminalExit(connectionA, 'token-b'), false);
 		assert.strictEqual(await fixture.service.acknowledgePaneStatus(connectionA, 'token-b'), false);
 		assert.strictEqual(fixture.bindings.has('token-b'), true);
+	});
+
+	test('returns one status snapshot scoped to the caller connection including owned hook-only tokens', async () => {
+		const fixture = createFixture();
+		const connectionA = {};
+		const connectionB = {};
+		fixture.service.registerRendererConnection('window:1', connectionA);
+		fixture.service.registerRendererConnection('window:2', connectionB);
+		await fixture.service.syncBindingAuthority(connectionA, authorityManifest(1, true, [
+			{ token: 'status-a' },
+			{ token: 'hook-only-a' },
+		]));
+		await fixture.service.syncBindingAuthority(connectionB, authorityManifest(1, true, [
+			{ token: 'status-b' },
+			{ token: 'hook-only-b' },
+		]));
+		Reflect.get(fixture.service, '_paneStatuses')
+			.set('status-a', { status: 'permission', changedAt: 11, cwd: '/repo/a' })
+			.set('status-b', { status: 'review', changedAt: 22, cwd: '/repo/b' });
+		Reflect.get(fixture.service, '_agentHookTokens')
+			.add('status-a')
+			.add('hook-only-a')
+			.add('status-b')
+			.add('hook-only-b');
+
+		assert.deepStrictEqual(await fixture.service.listAgentStatusSnapshot(connectionA), {
+			paneStatuses: [{ token: 'status-a', status: 'permission', changedAt: 11, cwd: '/repo/a' }],
+			agentHookTokens: ['status-a', 'hook-only-a'],
+		});
+	});
+
+	test('resolves eligibility and sweeps stale fallback status once for one atomic snapshot', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
+			{ token: 'stale-status' },
+			{ token: 'hook-only' },
+		]));
+		Reflect.get(fixture.service, '_paneStatuses').set('stale-status', {
+			status: 'working',
+			changedAt: 0,
+			backgroundCompletionFallback: true,
+		});
+		Reflect.get(fixture.service, '_agentHookTokens').add('stale-status').add('hook-only');
+		const currentEligibleTokens = Reflect.get(fixture.service, '_currentEligibleTokens').bind(fixture.service) as (connection: object) => ReadonlySet<string>;
+		const sweepStalePaneStatuses = Reflect.get(fixture.service, '_sweepStalePaneStatuses').bind(fixture.service) as (eligibleTokens: ReadonlySet<string>) => void;
+		let eligibleResolutions = 0;
+		let staleSweeps = 0;
+		Reflect.set(fixture.service, '_currentEligibleTokens', (candidate: object) => {
+			eligibleResolutions++;
+			return currentEligibleTokens(candidate);
+		});
+		Reflect.set(fixture.service, '_sweepStalePaneStatuses', (eligibleTokens: ReadonlySet<string>) => {
+			staleSweeps++;
+			sweepStalePaneStatuses(eligibleTokens);
+		});
+
+		const before = Date.now();
+		const snapshot = await fixture.service.listAgentStatusSnapshot(connection);
+		const after = Date.now();
+		assert.deepStrictEqual(snapshot.agentHookTokens, ['stale-status', 'hook-only']);
+		assert.strictEqual(snapshot.paneStatuses.length, 1);
+		assert.deepStrictEqual(
+			{ token: snapshot.paneStatuses[0].token, status: snapshot.paneStatuses[0].status },
+			{ token: 'stale-status', status: 'review' },
+		);
+		assert.strictEqual(snapshot.paneStatuses[0].changedAt >= before, true);
+		assert.strictEqual(snapshot.paneStatuses[0].changedAt <= after, true);
+		assert.strictEqual(eligibleResolutions, 1);
+		assert.strictEqual(staleSweeps, 1);
+	});
+
+	test('keeps legacy status and hook-token list commands independently available', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
+			{ token: 'status-token' },
+			{ token: 'hook-only-token' },
+		]));
+		Reflect.get(fixture.service, '_paneStatuses').set('status-token', { status: 'working', changedAt: 17 });
+		Reflect.get(fixture.service, '_agentHookTokens').add('status-token').add('hook-only-token');
+
+		assert.deepStrictEqual(await fixture.service.listPaneStatuses(connection), [
+			{ token: 'status-token', status: 'working', changedAt: 17 },
+		]);
+		assert.deepStrictEqual(await fixture.service.listAgentHookTokens(connection), ['status-token', 'hook-only-token']);
 	});
 
 	test('updates PID complements only from accepted owned manifests and preserves recovery omissions', async () => {

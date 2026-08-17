@@ -94,6 +94,57 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 	};
 }
 
+/** mobile が renderer provider に維持させる dashboard warm lease。 */
+export type ParadisMobileWarmLeaseRequest = Readonly<{
+	readonly t: 'usageWarmLease' | 'spaceDiskWarmLease';
+	readonly leaseId: string;
+	readonly active: boolean;
+	readonly desktopEpoch: string;
+	readonly windowId: number;
+	readonly rendererGeneration: number;
+}>;
+
+export type ParadisMobileWarmLeaseParseResult =
+	| { readonly kind: 'not-warm' }
+	| { readonly kind: 'invalid' }
+	| { readonly kind: 'valid'; readonly request: ParadisMobileWarmLeaseRequest };
+
+const PARADIS_MOBILE_WARM_LEASE_KEYS = ['active', 'desktopEpoch', 'leaseId', 'rendererGeneration', 't', 'windowId'] as const;
+const PARADIS_MOBILE_WARM_LEASE_ID = /^[A-Za-z0-9._:-]{1,96}$/;
+
+/**
+ * warm lease だけを通常の protocol v3 FS/SCM request から切り分け、exact plain payload を検証する。
+ * 通常 request は rendererGeneration を持たない既存 wire のままなので、not-warm として返す。
+ */
+export function parseParadisMobileWarmLeaseRequest(value: unknown): ParadisMobileWarmLeaseParseResult {
+	if (value === null || typeof value !== 'object') {
+		return { kind: 'not-warm' };
+	}
+	const candidate = value as Record<string, unknown>;
+	if (candidate.t !== 'usageWarmLease' && candidate.t !== 'spaceDiskWarmLease') {
+		return { kind: 'not-warm' };
+	}
+	if (Object.getPrototypeOf(candidate) !== Object.prototype
+		|| Object.keys(candidate).sort().join('\0') !== [...PARADIS_MOBILE_WARM_LEASE_KEYS].sort().join('\0')
+		|| typeof candidate.leaseId !== 'string' || !PARADIS_MOBILE_WARM_LEASE_ID.test(candidate.leaseId)
+		|| typeof candidate.active !== 'boolean'
+		|| typeof candidate.desktopEpoch !== 'string' || candidate.desktopEpoch.length === 0 || candidate.desktopEpoch.length > 200
+		|| typeof candidate.windowId !== 'number' || !Number.isSafeInteger(candidate.windowId) || candidate.windowId < 0
+		|| typeof candidate.rendererGeneration !== 'number' || !Number.isSafeInteger(candidate.rendererGeneration) || candidate.rendererGeneration < 1) {
+		return { kind: 'invalid' };
+	}
+	return { kind: 'valid', request: candidate as ParadisMobileWarmLeaseRequest };
+}
+
+/** warm lease JSON bytes を判別する。JSON 不正は通常 request と同じく配送しない。 */
+export function decodeParadisMobileWarmLeaseRequest(bytes: Uint8Array): ParadisMobileWarmLeaseParseResult {
+	try {
+		return parseParadisMobileWarmLeaseRequest(JSON.parse(new TextDecoder().decode(bytes)));
+	} catch {
+		return { kind: 'not-warm' };
+	}
+}
+
 // ---- リレー制御メッセージ（app/protocol/src/relay.ts と一致） ----
 
 export const RELAY_DATA_VERSION = 0x01;
