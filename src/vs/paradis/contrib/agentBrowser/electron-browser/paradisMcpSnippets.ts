@@ -10,15 +10,12 @@
 // 「Para Code: Copy MCP Setup Command」コマンドとバインディングダイアログの両方から使われる
 // （挙動の二重実装を避けるための共通化モジュール）。
 
-import { FileAccess } from '../../../../base/common/network.js';
 import { isWindows } from '../../../../base/common/platform.js';
-import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
-import { encodeParadisPosixShellArgument, encodeParadisPowerShellArgument, encodeParadisTomlBasicString } from '../common/paradisMcpSetupEncoding.js';
+import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { encodeParadisPosixShellArgument, encodeParadisPowerShellArgument, paradisCodexMcpTableBody, paradisMcpServerUrl } from '../common/paradisMcpSetupEncoding.js';
 
-/** stdioシム（毎起動時にポートファイルから実ポートを解決する）の絶対パス。 */
-export function getParadisShimPath(): string {
-	return FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js').fsPath;
-}
+/** サーバーが立ち上がる前は番号が決まらない。貼れるものが無いことをそのまま伝える。 */
+const PORT_UNAVAILABLE_SNIPPET = '# Para Code is still starting its browser server. Reopen this dialog in a moment.\n';
 
 /**
  * Claude Code向けセットアップスニペット: シェルにそのまま貼れる純粋なコマンドのみ
@@ -33,14 +30,19 @@ export function getParadisShimPath(): string {
  * （ページの開閉はPara Code UI側で行い、ビューポート変更は emulate ツールを使う。
  * 内蔵プロキシはこれらを一覧から除外して提示する）。
  */
-export function getParadisClaudeSetupSnippet(): string {
-	const shimPath = getParadisShimPath();
-	const quotedShimPath = isWindows
-		? encodeParadisPowerShellArgument(shimPath)
-		: encodeParadisPosixShellArgument(shimPath);
+export function getParadisClaudeSetupSnippet(port: number | undefined): string {
+	if (port === undefined) {
+		return PORT_UNAVAILABLE_SNIPPET;
+	}
+	// ヘッダーは `${…}` のまま貼らせる（展開するのは Claude Code 自身）。シェルが先に展開して
+	// しまわないよう、POSIX ではシングルクォート相当・PowerShell では `$` を含む素の文字列を使う。
+	const header = `Authorization: Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}`;
+	const quotedHeader = isWindows
+		? encodeParadisPowerShellArgument(header)
+		: encodeParadisPosixShellArgument(header);
 	return [
 		...(isWindows ? ['# PowerShell'] : []),
-		`claude mcp add -s user para-browser -- node ${quotedShimPath}`,
+		`claude mcp add -s user --transport http para-browser ${paradisMcpServerUrl(port)} --header ${quotedHeader}`,
 		'',
 	].join('\n');
 }
@@ -49,15 +51,15 @@ export function getParadisClaudeSetupSnippet(): string {
  * Codex向けセットアップスニペット: config.toml に貼るスニペット
  * （TOMLは#コメント可、シェルには貼らない前提）。
  */
-export function getParadisCodexSetupSnippet(): string {
-	const shimPathToml = encodeParadisTomlBasicString(getParadisShimPath());
+export function getParadisCodexSetupSnippet(port: number | undefined): string {
+	if (port === undefined) {
+		return PORT_UNAVAILABLE_SNIPPET;
+	}
 	return [
 		'# Add to ~/.codex/config.toml',
 		'# Note: chrome-devtools tools are built into the para-browser server (no separate chrome-devtools entry needed).',
 		'[mcp_servers.para-browser]',
-		'command = "node"',
-		`args = [${shimPathToml}]`,
-		`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}"]`,
+		paradisCodexMcpTableBody(port),
 		'',
 	].join('\n');
 }

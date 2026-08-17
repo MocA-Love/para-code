@@ -17,6 +17,9 @@ import {
 	runParadisMcpSetupCommand,
 } from '../../node/paradisMcpSetup.js';
 
+/** para-browser MCP サーバーの番号。設定に書き込まれる宛先になる。 */
+const PORT = 47286;
+
 class FakeChild extends EventEmitter {
 	readonly stdout = new PassThrough();
 	readonly stderr = new PassThrough();
@@ -198,12 +201,12 @@ suite('Para Browser MCP setup', () => {
 		assert.strictEqual(closeFirstChild.listenerCount('close'), 0);
 	});
 
-	test('Claude setup resolves the internal shim and passes it as one argv without a shell', async () => {
-		const shimPath = `/tmp/Para "Code"/'single'/$(touch marker)/\`touch marker2\`/\\path`;
+	// ヘッダーの `${…}` を展開するのは Claude Code 自身。ここで展開されたり、シェル経由で
+	// コマンド置換として解釈されたりすると、ペインのトークンが渡らなくなる。
+	test('Claude setup passes the unexpanded header as one argv without a shell', async () => {
 		const calls: { command: string; args: readonly string[]; env: NodeJS.ProcessEnv }[] = [];
 		const controller = new ParadisMcpSetupController({
 			platform: 'darwin',
-			resolveShimPath: () => shimPath,
 			resolveShellEnv: async () => ({ PATH: '/safe' }),
 			findExecutable: async () => '/safe/claude',
 			runCommand: async (command, args, env): Promise<IParadisMcpSetupCommandResult> => {
@@ -213,11 +216,12 @@ suite('Para Browser MCP setup', () => {
 			codexHome: '/unused',
 			log: () => undefined,
 		});
-		const result = await controller.setup('claude');
+		const result = await controller.setup('claude', PORT);
 		assert.strictEqual(result.cliAvailable, true);
 		assert.deepStrictEqual(calls, [{
 			command: '/safe/claude',
-			args: ['mcp', 'add', '-s', 'user', 'para-browser', '--', 'node', shimPath],
+			args: ['mcp', 'add', '-s', 'user', '--transport', 'http', 'para-browser', `http://127.0.0.1:${PORT}/`,
+				'--header', 'Authorization: Bearer ${PARA_CODE_TERMINAL_PANE_ID}'],
 			env: { PATH: '/safe' },
 		}]);
 	});
@@ -227,19 +231,18 @@ suite('Para Browser MCP setup', () => {
 		const logs: { readonly message: string; readonly error?: unknown }[] = [];
 		const controller = new ParadisMcpSetupController({
 			platform: 'darwin',
-			resolveShimPath: () => '/safe/shim.js',
 			resolveShellEnv: async () => ({ PATH: '/safe' }),
 			findExecutable: async () => '/safe/claude',
 			runCommand: () => Promise.resolve(result),
 			codexHome: '/unused',
 			log: (message, error) => logs.push({ message, error }),
 		});
-		const rejected = await controller.setup('claude');
+		const rejected = await controller.setup('claude', PORT);
 		assert.strictEqual(rejected.servers[0].outcome, 'error');
 		assert.strictEqual(rejected.servers[0].detail?.includes('raw secret'), false);
 		assert.deepStrictEqual(logs, [{ message: 'Claude MCP runner failed', error: undefined }]);
 		result = { kind: 'timeout', output: 'already exists' };
-		const timedOut = await controller.setup('claude');
+		const timedOut = await controller.setup('claude', PORT);
 		assert.strictEqual(timedOut.servers[0].outcome, 'error');
 	});
 
@@ -247,14 +250,13 @@ suite('Para Browser MCP setup', () => {
 		let runCount = 0;
 		const controller = new ParadisMcpSetupController({
 			platform: 'win32',
-			resolveShimPath: () => 'C:\\Para Code\\shim.js',
 			resolveShellEnv: async () => ({ PATH: 'C:\\bin' }),
 			findExecutable: async () => 'C:\\bin\\claude.cmd',
 			runCommand: async () => { runCount++; return { kind: 'exit', code: 0, output: '' }; },
 			codexHome: 'C:\\unused',
 			log: () => undefined,
 		});
-		assert.deepStrictEqual(await controller.setup('claude'), { cli: 'claude', cliAvailable: false, servers: [] });
+		assert.deepStrictEqual(await controller.setup('claude', PORT), { cli: 'claude', cliAvailable: false, servers: [] });
 		assert.strictEqual(runCount, 0);
 	});
 
@@ -263,7 +265,6 @@ suite('Para Browser MCP setup', () => {
 		let runCount = 0;
 		const controller = new ParadisMcpSetupController({
 			platform: 'darwin',
-			resolveShimPath: () => '/safe/shim.js',
 			resolveShellEnv: async () => ({ PATH: '/safe' }),
 			findExecutable: async () => '/safe/claude',
 			runCommand: () => {
@@ -273,8 +274,8 @@ suite('Para Browser MCP setup', () => {
 			codexHome: '/unused',
 			log: () => undefined,
 		});
-		const first = controller.setup('claude');
-		const second = controller.setup('claude');
+		const first = controller.setup('claude', PORT);
+		const second = controller.setup('claude', PORT);
 		assert.strictEqual(first, second);
 		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.strictEqual(runCount, 1);
@@ -287,22 +288,21 @@ suite('Para Browser MCP setup', () => {
 		try {
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => 'C:\\Para "Code"\\shim\n.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
 				codexHome: directory,
 				log: () => undefined,
 			});
-			const first = await controller.setup('codex');
+			const first = await controller.setup('codex', PORT);
 			assert.strictEqual(first.servers[0].outcome, 'success');
 			const configPath = join(directory, 'config.toml');
 			const content = await fs.readFile(configPath, 'utf8');
-			assert.match(content, /args = \["C:\\\\Para \\"Code\\"\\\\shim\\n\.js"\]/);
+			assert.match(content, new RegExp(`url = "http://127\\.0\\.0\\.1:${PORT}/"`));
 			assert.strictEqual(/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/.test(content), false);
 
 			await fs.writeFile(configPath, '[ mcp_servers . "para-browser" ] # existing\ncommand = "custom"\n');
-			const second = await controller.setup('codex');
+			const second = await controller.setup('codex', PORT);
 			assert.strictEqual(second.servers[0].outcome, 'already');
 			assert.strictEqual(await fs.readFile(configPath, 'utf8'), '[ mcp_servers . "para-browser" ] # existing\ncommand = "custom"\n');
 		} finally {
@@ -318,14 +318,13 @@ suite('Para Browser MCP setup', () => {
 			await fs.chmod(configPath, 0o666);
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => '/safe/shim.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
 				codexHome: directory,
 				log: () => undefined,
 			});
-			assert.strictEqual((await controller.setup('codex')).servers[0].outcome, 'success');
+			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'success');
 			assert.strictEqual((await fs.stat(configPath)).mode & 0o777, 0o666);
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
@@ -339,14 +338,13 @@ suite('Para Browser MCP setup', () => {
 			await fs.writeFile(configPath, '[mcp_servers]\npara-browser = { command = "custom" }\n');
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => '/safe/shim.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
 				codexHome: directory,
 				log: () => undefined,
 			});
-			const result = await controller.setup('codex');
+			const result = await controller.setup('codex', PORT);
 			assert.strictEqual(result.servers[0].outcome, 'error');
 			assert.strictEqual(result.servers[0].detail?.includes('para-browser'), false);
 			assert.strictEqual(await fs.readFile(configPath, 'utf8'), '[mcp_servers]\npara-browser = { command = "custom" }\n');
@@ -364,14 +362,13 @@ suite('Para Browser MCP setup', () => {
 			await fs.symlink(target, configPath);
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => '/safe/shim.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
 				codexHome: directory,
 				log: () => undefined,
 			});
-			assert.strictEqual((await controller.setup('codex')).servers[0].outcome, 'error');
+			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'error');
 			assert.strictEqual((await fs.lstat(configPath)).isSymbolicLink(), true);
 			assert.strictEqual(await fs.readFile(target, 'utf8'), 'model = "custom"\n');
 		} finally {
@@ -388,7 +385,6 @@ suite('Para Browser MCP setup', () => {
 			let readCount = 0;
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => '/safe/shim.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
@@ -403,7 +399,7 @@ suite('Para Browser MCP setup', () => {
 					},
 				},
 			});
-			assert.strictEqual((await controller.setup('codex')).servers[0].outcome, 'error');
+			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'error');
 			assert.strictEqual(readCount, 0);
 			assert.deepStrictEqual(await fs.readFile(configPath), original);
 		} finally {
@@ -420,7 +416,6 @@ suite('Para Browser MCP setup', () => {
 			let mutated = false;
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => '/safe/shim.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
@@ -439,7 +434,7 @@ suite('Para Browser MCP setup', () => {
 					},
 				},
 			});
-			assert.strictEqual((await controller.setup('codex')).servers[0].outcome, 'error');
+			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'error');
 			assert.deepStrictEqual(await fs.readFile(configPath), Buffer.concat([original, Buffer.from('#')]));
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
@@ -455,7 +450,6 @@ suite('Para Browser MCP setup', () => {
 			let openFlags: number | undefined;
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => '/safe/shim.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
@@ -472,7 +466,7 @@ suite('Para Browser MCP setup', () => {
 					},
 				},
 			});
-			assert.strictEqual((await controller.setup('codex')).servers[0].outcome, 'error');
+			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'error');
 			assert.strictEqual((openFlags ?? 0) & fsConstants.O_NONBLOCK, fsConstants.O_NONBLOCK);
 			assert.strictEqual((openFlags ?? 0) & fsConstants.O_NOFOLLOW, fsConstants.O_NOFOLLOW);
 			assert.deepStrictEqual(await fs.readFile(configPath), original);
@@ -489,14 +483,13 @@ suite('Para Browser MCP setup', () => {
 			const logs: { readonly message: string; readonly error?: unknown }[] = [];
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => '/safe/shim.js',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
 				codexHome: directory,
 				log: (message, error) => logs.push({ message, error }),
 			});
-			assert.strictEqual((await controller.setup('codex')).servers[0].outcome, 'error');
+			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'error');
 			assert.strictEqual((await fs.lstat(configPath)).isDirectory(), true);
 			assert.deepStrictEqual(logs, [{ message: 'Codex MCP configuration update failed', error: undefined }]);
 		} finally {

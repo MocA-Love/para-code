@@ -12,11 +12,12 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisMcpSetupController } from '../../node/paradisMcpSetup.js';
-import { computeParadisCodexShimRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from '../../node/paradisMcpConfigStatus.js';
+import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from '../../node/paradisMcpConfigStatus.js';
+import { paradisCodexMcpTableBody } from '../../common/paradisMcpSetupEncoding.js';
 
+const PORT = 47286;
 const SHIM = '/Applications/Para Code.app/Contents/Resources/paradisBrowserMcpShim.js';
 const TOKEN_ENV = 'PARA_CODE_TERMINAL_PANE_ID';
-const PORTFILE_ENV = 'PARA_CODE_MCP_PORT_FILE';
 
 suite('Para Browser MCP config status', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -24,13 +25,13 @@ suite('Para Browser MCP config status', () => {
 	test('inspectParadisClaudeMcpJson detects a shim entry and rejects everything else', () => {
 		assert.strictEqual(inspectParadisClaudeMcpJson(JSON.stringify({
 			mcpServers: { 'para-browser': { command: 'node', args: [SHIM] } },
-		})), 'configured');
+		}), PORT), 'configured');
 		assert.strictEqual(inspectParadisClaudeMcpJson(JSON.stringify({
 			mcpServers: { other: { command: 'node', args: ['/somewhere/other.js'] } },
-		})), 'unconfigured');
-		assert.strictEqual(inspectParadisClaudeMcpJson('{ not valid json'), 'unconfigured');
-		assert.strictEqual(inspectParadisClaudeMcpJson('{}'), 'unconfigured');
-		assert.strictEqual(inspectParadisClaudeMcpJson(JSON.stringify({ mcpServers: [] })), 'unconfigured');
+		}), PORT), 'unconfigured');
+		assert.strictEqual(inspectParadisClaudeMcpJson('{ not valid json', PORT), 'unconfigured');
+		assert.strictEqual(inspectParadisClaudeMcpJson('{}', PORT), 'unconfigured');
+		assert.strictEqual(inspectParadisClaudeMcpJson(JSON.stringify({ mcpServers: [] }), PORT), 'unconfigured');
 	});
 
 	test('inspectParadisCodexMcpToml classifies shim, stale chrome-devtools, and absent configs', () => {
@@ -86,15 +87,15 @@ suite('Para Browser MCP config status', () => {
 		const first = inspectParadisCodexMcpToml(twoStale, 47286);
 		assert.strictEqual(first.state, 'needsFix');
 		assert.ok(first.staleServerName !== undefined);
-		// After the first table is rewritten to the shim method, the second must still be flagged.
-		const afterOneFix = computeParadisCodexShimRewrite(twoStale, first.staleServerName, SHIM, TOKEN_ENV, PORTFILE_ENV);
+		// After the first table is rewritten to the HTTP method, the second must still be flagged.
+		const afterOneFix = computeParadisCodexTableRewrite(twoStale, first.staleServerName, paradisCodexMcpTableBody(PORT));
 		assert.ok(afterOneFix !== undefined);
 		const second = inspectParadisCodexMcpToml(afterOneFix, 47286);
 		assert.strictEqual(second.state, 'needsFix');
 		assert.notStrictEqual(second.staleServerName, first.staleServerName);
 	});
 
-	test('computeParadisCodexShimRewrite rewrites only the target table and preserves the rest', () => {
+	test('computeParadisCodexTableRewrite rewrites only the target table and preserves the rest', () => {
 		const original = [
 			'model = "gpt"',
 			'',
@@ -106,18 +107,18 @@ suite('Para Browser MCP config status', () => {
 			'keep = true',
 			'',
 		].join('\n');
-		const rewritten = computeParadisCodexShimRewrite(original, 'chrome-devtools-mcp', SHIM, TOKEN_ENV, PORTFILE_ENV);
+		const rewritten = computeParadisCodexTableRewrite(original, 'chrome-devtools-mcp', paradisCodexMcpTableBody(PORT));
 		assert.ok(rewritten !== undefined);
-		assert.ok(rewritten.includes('paradisBrowserMcpShim'));
 		assert.ok(!rewritten.includes('47834'));
 		assert.ok(rewritten.includes('model = "gpt"'));
 		assert.ok(rewritten.includes('[other]'));
 		assert.ok(rewritten.includes('keep = true'));
 		assert.ok(rewritten.includes('[mcp_servers.chrome-devtools-mcp]'));
-		assert.ok(rewritten.includes(`env_vars = ["${TOKEN_ENV}", "${PORTFILE_ENV}"]`));
+		assert.ok(rewritten.includes(`url = "http://127.0.0.1:${PORT}/"`));
+		assert.ok(rewritten.includes(`bearer_token_env_var = "${TOKEN_ENV}"`));
 
 		// Absent or ambiguous targets fail closed.
-		assert.strictEqual(computeParadisCodexShimRewrite(original, 'missing', SHIM, TOKEN_ENV, PORTFILE_ENV), undefined);
+		assert.strictEqual(computeParadisCodexTableRewrite(original, 'missing', paradisCodexMcpTableBody(PORT)), undefined);
 	});
 
 	test('controller.status reads the real claude.json and codex config.toml', async () => {
@@ -133,7 +134,6 @@ suite('Para Browser MCP config status', () => {
 			].join('\n'));
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => SHIM,
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
@@ -164,7 +164,6 @@ suite('Para Browser MCP config status', () => {
 			assert.ok((await fs.stat(claudeJsonPath)).size > 1024 * 1024);
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => SHIM,
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
@@ -194,7 +193,6 @@ suite('Para Browser MCP config status', () => {
 			].join('\n'));
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => SHIM,
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
@@ -210,7 +208,7 @@ suite('Para Browser MCP config status', () => {
 		}
 	});
 
-	test('controller.fix rewrites a stale codex chrome-devtools entry to the shim method', async () => {
+	test('controller.fix rewrites a stale codex chrome-devtools entry to the HTTP method', async () => {
 		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-fix-'));
 		try {
 			const configPath = join(directory, 'config.toml');
@@ -223,7 +221,6 @@ suite('Para Browser MCP config status', () => {
 			].join('\n'));
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
-				resolveShimPath: () => SHIM,
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
@@ -234,10 +231,10 @@ suite('Para Browser MCP config status', () => {
 			const result = await controller.fix('codex', 47286);
 			assert.strictEqual(result.servers[0].outcome, 'success');
 			const content = await fs.readFile(configPath, 'utf8');
-			assert.ok(content.includes('paradisBrowserMcpShim'));
+			assert.ok(content.includes(`url = "http://127.0.0.1:${PORT}/"`));
 			assert.ok(!content.includes('47834'));
 			assert.ok(content.includes('model = "gpt"'));
-			// Re-running now sees the shim entry and reports it as already configured.
+			// Re-running now sees the HTTP entry and reports it as already configured.
 			assert.strictEqual((await controller.fix('codex', 47286)).servers[0].outcome, 'already');
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
