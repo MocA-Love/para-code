@@ -97,13 +97,15 @@ const STR_BTN_AUTO_SETUP = localize('paradis.bindingDialog.btnAutoSetup', "自�
 // allow-any-unicode-next-line
 const STR_BTN_FIX = localize('paradis.bindingDialog.btnFix', "ワンクリックで修正");
 // allow-any-unicode-next-line
+const STR_BTN_REAPPLY = localize('paradis.bindingDialog.btnReapply', "設定を入れ直す");
+// allow-any-unicode-next-line
 const STR_SETUP_RUNNING = localize('paradis.bindingDialog.setupRunning', "実行中…");
 // allow-any-unicode-next-line
-const strMcpDetailConfigured = (path: string) => localize('paradis.bindingDialog.mcpDetailConfigured', "{0} に para-browser（shim方式）を検出しました。Para Codeの再起動後もサーバーポートに自動追従します。", path);
+const strMcpDetailConfigured = (path: string) => localize('paradis.bindingDialog.mcpDetailConfigured', "{0} に para-browser を検出しました。ターミナルごとに中継役のプロセスを立てる旧方式のままなら、下のボタンで Para Code へ直接つなぐ方式へ入れ直せます。", path);
 // allow-any-unicode-next-line
 const strMcpDetailUnconfigured = (path: string) => localize('paradis.bindingDialog.mcpDetailUnconfigured', "para-browser（MCPサーバー）が未登録です。自動セットアップで {0} に追加します。", path);
 // allow-any-unicode-next-line
-const strMcpDetailNeedsFix = (port: number) => localize('paradis.bindingDialog.mcpDetailNeedsFix', "chrome-devtools 系エントリが古いポート（127.0.0.1:{0}）を固定参照しています。現在のエンドポイントに接続できません。ワンクリックでポートファイル参照方式（shim）へ書き換えます。", port);
+const strMcpDetailNeedsFix = (port: number) => localize('paradis.bindingDialog.mcpDetailNeedsFix', "古いポート（127.0.0.1:{0}）を固定参照している設定があります。今のエンドポイントには繋がりません。ワンクリックで今の番号へ書き換えます。", port);
 // allow-any-unicode-next-line
 const strMcpDetailManualOnly = (path: string) => localize('paradis.bindingDialog.mcpDetailManualOnly', "para-browser（MCPサーバー）が未登録です。{0} に既存のMCP設定があるため自動セットアップは行えません。下の「手動でセットアップする」からコマンドをコピーして追加してください。", path);
 // allow-any-unicode-next-line
@@ -113,7 +115,7 @@ const STR_MCP_DETAIL_LOADING = localize('paradis.bindingDialog.mcpDetailLoading'
 // allow-any-unicode-next-line
 const STR_MANUAL_SUMMARY = localize('paradis.bindingDialog.manualSummary', "手動でセットアップする（コマンドを表示）");
 // allow-any-unicode-next-line
-const STR_SETUP_CLAUDE_LABEL = localize('paradis.bindingDialog.setupClaudeLabel', "Claude Code（stdio型、初回のみ）");
+const STR_SETUP_CLAUDE_LABEL = localize('paradis.bindingDialog.setupClaudeLabel', "Claude Code（初回のみ）");
 // allow-any-unicode-next-line
 const STR_SETUP_CODEX_LABEL = localize('paradis.bindingDialog.setupCodexLabel', "~/.codex/config.toml に追記");
 // allow-any-unicode-next-line
@@ -443,9 +445,10 @@ export class ParadisBindingDialog extends Disposable {
 		const setupState = this._setupStates.get(cli);
 		// manualOnly のとき（Codexで既存MCP設定があり自動追記が失敗する場合）は自動ボタンを出さず、
 		// 下部の「手動でセットアップする」だけに誘導する。
-		const actionable = (state === 'unconfigured' && status?.manualOnly !== true)
-			|| state === 'needsFix'
-			|| state === 'failed';
+		// 設定済みでも押せるようにしておく。旧方式（ターミナルごとに中継役のプロセスを立てる）の
+		// 登録はそのまま動くので設定済みと判定されるが、押し直さないと新方式へ移れない。
+		// 確認中（state が未確定）は押させない。
+		const actionable = state !== undefined && (state !== 'unconfigured' || status?.manualOnly !== true);
 		if (actionable) {
 			this._renderMcpAction(card, cli, state, setupState?.busy === true);
 		}
@@ -491,7 +494,8 @@ export class ParadisBindingDialog extends Disposable {
 		}
 		dom.append(button, $('span')).textContent = busy
 			? STR_SETUP_RUNNING
-			: state === 'needsFix' ? STR_BTN_FIX : STR_BTN_AUTO_SETUP;
+			: state === 'needsFix' ? STR_BTN_FIX
+				: state === 'configured' ? STR_BTN_REAPPLY : STR_BTN_AUTO_SETUP;
 		button.disabled = busy;
 		const kind = state === 'needsFix' ? 'fix' : 'setup';
 		this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => void this._runCliAction(cli, kind)));
