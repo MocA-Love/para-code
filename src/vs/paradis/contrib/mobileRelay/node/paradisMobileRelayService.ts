@@ -41,6 +41,7 @@ import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.j
 import {
 	Channels,
 	ChannelId,
+	decodeParadisMobileWarmLeaseRequest,
 	decodeNotifyControl,
 	decodeRelayControl,
 	encodeNotify,
@@ -1905,6 +1906,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private async handleWindowFrame(frame: IParadisMobileInboundFrame): Promise<void> {
+		const warmLease = frame.ch === Channels.Fs
+			? decodeParadisMobileWarmLeaseRequest(frame.payload.buffer)
+			: { kind: 'not-warm' } as const;
+		if (warmLease.kind !== 'not-warm') {
+			if (warmLease.kind === 'invalid' || frame.mobileId === undefined
+				|| warmLease.request.desktopEpoch !== this.terminalRegistry.desktopEpoch) {
+				return;
+			}
+			const owner = this.terminalRegistry.leaseOfWindow(warmLease.request.windowId);
+			if (owner === undefined || owner.rendererGeneration !== warmLease.request.rendererGeneration) {
+				return;
+			}
+			await this.withCurrentRegisteredLease(owner, async () => {
+				this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, frame.mobileId]);
+			});
+			return;
+		}
 		let message: { id?: unknown; protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown; ws?: unknown };
 		const binaryUpload = frame.ch === Channels.Fs ? paradisDecodeBinaryFsUpload(frame.payload.buffer) : undefined;
 		if (binaryUpload !== undefined) {

@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
@@ -12,7 +13,8 @@ import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
-import type { UsageAgent, UsageDashboardResult } from '../../src/store.js';
+import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
+import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
 
 /** モデル・プロジェクト別バーの表示上限件数。 */
 const TOP_MODELS = 6;
@@ -25,6 +27,28 @@ const PERIOD_OPTIONS = [7, 30, 90] as const;
 type PeriodDays = typeof PERIOD_OPTIONS[number];
 /** エージェント絞り込み。'all' は絞り込みなし。 */
 type AgentFilter = UsageAgent | 'all';
+
+export interface CcusageWarmLeaseScreenState {
+	readonly focused: boolean;
+	readonly appActive: boolean;
+	readonly online: boolean;
+	readonly activePcId: string | undefined;
+	readonly controllerRevision: number;
+}
+
+/** Ccusage screen effect が所有する lease の全入力を一度に適用する production seam。 */
+export function updateCcusageWarmLeaseLifecycle(
+	lifecycle: MobileWarmLeaseLifecycle,
+	state: CcusageWarmLeaseScreenState,
+	acquire: () => MobileDisposable,
+): void {
+	lifecycle.update(shouldMaintainMobileWarmLease('ccusage', {
+		focused: state.focused,
+		appActive: state.appActive,
+		online: state.online,
+		volumeAxis: false,
+	}), acquire, mobileWarmLeaseOwnerRevision(state.activePcId, state.controllerRevision));
+}
 
 const AGENT_LABEL: Record<UsageAgent, string> = {
 	claude: 'Claude',
@@ -130,7 +154,29 @@ export default function CcusageScreen() {
 	const column = useContentColumnStyle();
 	// 相対時刻表示（セッションの最終アクティビティ）を画面を開いたままでも追従させる
 	const now = useNow();
-	const { usageDashboard, connection } = useAppStore(useShallow(s => ({ usageDashboard: s.usageDashboard, connection: s.connection })));
+	const { usageDashboard, connection, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease } = useAppStore(useShallow(s => ({
+		usageDashboard: s.usageDashboard,
+		connection: s.connection,
+		warmLeaseReady: s.connection === 'online' && s.pcOnline && s.sessionProtocolReady,
+		activePcId: s.activePcId,
+		controllerRevision: s.controllerRevision,
+		acquireUsageWarmLease: s.acquireUsageWarmLease,
+	})));
+	const isFocused = useIsFocused();
+	const isAppActive = useAppIsActive();
+	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
+	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
+	useEffect(() => {
+		const lifecycle = warmLeaseLifecycle.current!;
+		updateCcusageWarmLeaseLifecycle(lifecycle, {
+			focused: isFocused,
+			appActive: isAppActive,
+			online: warmLeaseReady,
+			activePcId,
+			controllerRevision,
+		}, acquireUsageWarmLease);
+		return () => lifecycle.update(false, acquireUsageWarmLease);
+	}, [isFocused, isAppActive, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease]);
 
 	const [data, setData] = useState<UsageDashboardResult | undefined>();
 	const [loading, setLoading] = useState(false);
