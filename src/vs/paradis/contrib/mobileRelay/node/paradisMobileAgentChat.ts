@@ -35,7 +35,7 @@ import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js'
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
@@ -295,6 +295,10 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const POLL_INTERVAL_MS = 1500;
+/** Claude hookが渡す agent_id の受理形。SubagentStart/Stopの2経路(親子関係の解決・backgroundTasks反映)で共有する。 */
+const PARADIS_CLAUDE_AGENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
+/** backgroundTasks上でtranscriptパース由来ID (openedTasks/closedTasks) と衝突させないための名前空間。 */
+const HOOK_BACKGROUND_TASK_PREFIX = 'hook:';
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
 const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
 const INITIAL_READ_TAIL_BYTES = 4 * 1024 * 1024;
@@ -2863,6 +2867,46 @@ class TranscriptTailer {
 			this.delegate.onDelta(added);
 			this.delegate.onActivity();
 		});
+	}
+
+	/**
+	 * SubagentStart/SubagentStop hook 由来のバックグラウンドタスク開始を反映する。
+	 * transcriptパース由来 (openedTasks) と同じ backgroundTasks を共有するが、キーは
+	 * `hook:` 接頭辞 (呼び出し側の HOOK_BACKGROUND_TASK_PREFIX) で名前空間を分け、由来の
+	 * 異なるIDが衝突して誤って早期closeされないようにする。上限は copyPaneActivity
+	 * (paradisAgentHookBus.ts) の公開上限と合わせる: 超えた分はどのみち公開されないので、
+	 * ここで弾いておかないと外部プロセスからの入力で無制限に Map が伸び得る。
+	 */
+	markBackgroundTaskOpen(id: string, at: number): void {
+		if (this.backgroundTasks.has(id) || this.backgroundTasks.size >= BACKGROUND_TASK_MAX_ENTRIES) {
+			return;
+		}
+		this.backgroundTasks.set(id, at);
+		this.delegate.onActivity();
+	}
+
+	/** SubagentStart/SubagentStop hook 由来のバックグラウンドタスク終了を反映する。 */
+	markBackgroundTaskClose(id: string): void {
+		if (this.backgroundTasks.delete(id)) {
+			this.delegate.onActivity();
+		}
+	}
+
+	/**
+	 * hook由来 (HOOK_BACKGROUND_TASK_PREFIX接頭辞) のバックグラウンドタスクだけを破棄する。
+	 * transcriptパース由来 (openedTasks) は対象外。SubagentStop の発火漏れ等で閉じ損ねた
+	 * エントリを、次のユーザーターン開始時に持ち越さないためのもの。
+	 */
+	clearHookBackgroundTasks(): void {
+		let changed = false;
+		for (const id of this.backgroundTasks.keys()) {
+			if (id.startsWith(HOOK_BACKGROUND_TASK_PREFIX) && this.backgroundTasks.delete(id)) {
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.delegate.onActivity();
+		}
 	}
 
 	/** パースで収集したシグナルをタスク・質問・メタ情報の追跡へ反映し、変化があれば通知する。 */
@@ -5542,13 +5586,44 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscribers(event.token);
 		}
+		const subagentActivityId = event.event === 'SubagentStart' || event.event === 'SubagentStop' ? str(event.payload?.['agent_id']) : undefined;
+		const subagentId = subagentActivityId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(subagentActivityId) ? subagentActivityId : undefined;
 		if (event.event === 'SubagentStop') {
-			const activityId = str(event.payload?.['agent_id']);
 			const agentTranscriptPath = str(event.payload?.['agent_transcript_path']);
-			if (activityId !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(activityId)
-				&& agentTranscriptPath !== undefined && await isAllowedTranscriptPath(agentTranscriptPath)) {
-				this.claudeSubagentTranscriptPaths.set(`${event.token}\0${activityId}`, agentTranscriptPath);
+			if (subagentId !== undefined && agentTranscriptPath !== undefined && await isAllowedTranscriptPath(agentTranscriptPath)) {
+				this.claudeSubagentTranscriptPaths.set(`${event.token}\0${subagentId}`, agentTranscriptPath);
 			}
+		}
+		// メイン待機中 (fork/general-purpose等のsubagentへ調査を委任している間) に review 化して
+		// 完了通知音が誤発火する事例があった。実行中のsubagentを backgroundTasks に見せることで、
+		// paradisAgentBrowserService.ts の既存安全弁 (paradisCountLiveBackgroundTasks 経由、
+		// Stop が来てもbackgroundTasksが残っていればreviewへ畳まずworkingを維持する) を
+		// Subagentにも適用させる。モバイルの agentStatusStore も同じ listPaneStatuses を参照するため、
+		// モバイル側で subagent 実行中に「レビュー」表示になる不具合もこれで併せて直る。
+		if (subagentId !== undefined) {
+			const backgroundTaskId = `${HOOK_BACKGROUND_TASK_PREFIX}${subagentId}`;
+			if (backgroundTaskId.length <= BACKGROUND_TASK_ID_MAX_LENGTH) {
+				// status収束のため、モバイル購読の有無に関わらず反映する (ensureEagerTailer と同じ方針)。
+				// tailer不在 (ウィンドウ再読み込み中等でterminalIdが未解決) の間は open/close とも
+				// 対称に無言でスキップされ、安全弁が効かない従来挙動に戻るだけで実害はない。
+				this.ensureEagerTailer(event.token, info);
+				const tailer = this.tailers.get(event.token);
+				if (event.event === 'SubagentStart') {
+					tailer?.markBackgroundTaskOpen(backgroundTaskId, event.at);
+				} else {
+					tailer?.markBackgroundTaskClose(backgroundTaskId);
+				}
+			}
+		}
+		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand) {
+			// 新しいユーザーターンが始まった時点で前ターンのsubagentは全て終わっている。
+			// SubagentStop の発火漏れ (Claude Code側の既知の制約) やhookの到着順序の逆転
+			// (並行POSTのため理論上あり得る) で閉じ損ねた hook: エントリを次ターンまで持ち越さない。
+			// これは「次ターン開始まで」の救済であり、同一ターン内で取りこぼした場合は
+			// paradisAgentBrowserService.ts の stale sweep (最大15分、
+			// PARADIS_AGENT_BACKGROUND_TASK_STALE_MS) が効くまで、review表示が working へ
+			// 巻き戻ったまま＝完了通知が遅れて鳴る側の実害が残る。
+			this.tailers.get(event.token)?.clearHookBackgroundTasks();
 		}
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand && this.activityTracker(event.token).beginTurn()) {
 			this.pushActivityToSubscribers(event.token);

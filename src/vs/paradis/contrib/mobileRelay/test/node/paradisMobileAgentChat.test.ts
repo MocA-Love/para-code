@@ -438,6 +438,86 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('reflects SubagentStart/SubagentStop into backgroundTasks so review notifications wait for the subagent', async () => {
+		const token = 'pane-subagent-background-task';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'subagent-background-task.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			tailers: Map<string, { readonly backgroundTasks: ReadonlyMap<string, number> }>;
+			hookProcessing: Map<string, Promise<void>>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+
+			fireParadisAgentHookEvent({
+				token, event: 'UserPromptSubmit', sessionId: 'session-1', transcriptPath,
+				cwd: '/workspace', payload: { prompt: '調査して' }, at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'UserPromptSubmit was not processed');
+
+			// 不正なagent_id (許可文字外) はbackgroundTasksへ登録されない。
+			fireParadisAgentHookEvent({
+				token, event: 'SubagentStart', sessionId: 'session-1', transcriptPath, cwd: '/workspace',
+				payload: { agent_id: '../etc/passwd' }, at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'invalid SubagentStart was not processed');
+
+			fireParadisAgentHookEvent({
+				token, event: 'SubagentStart', sessionId: 'session-1', transcriptPath, cwd: '/workspace',
+				payload: { agent_id: 'abc-1', agent_type: 'general-purpose' }, at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'SubagentStart was not processed');
+			assert.deepStrictEqual([...(access.tailers.get(token)?.backgroundTasks.keys() ?? [])], ['hook:abc-1']);
+
+			fireParadisAgentHookEvent({
+				token, event: 'SubagentStop', sessionId: 'session-1', transcriptPath, cwd: '/workspace',
+				payload: { agent_id: 'abc-1', last_assistant_message: '完了' }, at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'SubagentStop was not processed');
+			assert.deepStrictEqual([...(access.tailers.get(token)?.backgroundTasks.keys() ?? [])], []);
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('clears a leftover hook background task (SubagentStop firing loss) once the next user turn starts', async () => {
+		const token = 'pane-subagent-leftover-task';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'subagent-leftover-task.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			tailers: Map<string, { readonly backgroundTasks: ReadonlyMap<string, number> }>;
+			hookProcessing: Map<string, Promise<void>>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+
+			fireParadisAgentHookEvent({
+				token, event: 'UserPromptSubmit', sessionId: 'session-2', transcriptPath,
+				cwd: '/workspace', payload: { prompt: '調査して' }, at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'first UserPromptSubmit was not processed');
+
+			fireParadisAgentHookEvent({
+				token, event: 'SubagentStart', sessionId: 'session-2', transcriptPath, cwd: '/workspace',
+				payload: { agent_id: 'orphan-1' }, at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'SubagentStart was not processed');
+			assert.deepStrictEqual([...(access.tailers.get(token)?.backgroundTasks.keys() ?? [])], ['hook:orphan-1']);
+
+			// SubagentStopの発火漏れを模擬: 対応するStopが来ないまま次のユーザーターンが始まる。
+			fireParadisAgentHookEvent({
+				token, event: 'UserPromptSubmit', sessionId: 'session-2', transcriptPath,
+				cwd: '/workspace', payload: { prompt: '次の指示' }, at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'second UserPromptSubmit was not processed');
+			assert.deepStrictEqual([...(access.tailers.get(token)?.backgroundTasks.keys() ?? [])], []);
+		} finally {
+			chat.dispose();
+		}
+	});
+
 	test('detects a Codex subagent rollout whose session_id names the parent thread', () => {
 		// 現行Codexが実際に書く形。子rolloutの session_id は「親の」thread IDで、自分のIDは id 側。
 		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
