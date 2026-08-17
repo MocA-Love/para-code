@@ -34,6 +34,8 @@ interface IParadisWorkspacesPollState {
 	readonly scheduler: IParadisWorkspacesPollingScheduler;
 	inFlight: boolean;
 	pendingImmediate: boolean;
+	invalidated: boolean;
+	lastCompletedAt: number | undefined;
 }
 
 /**
@@ -51,22 +53,27 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		refreshDiffStats: () => void,
 		refreshPrStatus: () => void,
 		schedulerFactory: SchedulerFactory = (runner, defaultDelay) => new RunOnceScheduler(runner, defaultDelay),
+		private readonly now: () => number = Date.now,
 	) {
 		super();
 		this.diffStats = {
 			scheduler: this._register(schedulerFactory(refreshDiffStats, DIFF_STATS_POLL_INTERVAL_MS)),
 			inFlight: false,
 			pendingImmediate: false,
+			invalidated: false,
+			lastCompletedAt: undefined,
 		};
 		this.prStatus = {
 			scheduler: this._register(schedulerFactory(refreshPrStatus, PR_STATUS_POLL_INTERVAL_MS)),
 			inFlight: false,
 			pendingImmediate: false,
+			invalidated: false,
+			lastCompletedAt: undefined,
 		};
 
 		this._register(signals.onDidChangeVisibility(() => this.setVisible(signals.isBodyVisible())));
-		this._register(signals.onDidChangeRepositories(() => this.requestRefresh()));
-		this._register(signals.onDidChangeWorktrees(() => this.requestRefresh()));
+		this._register(signals.onDidChangeRepositories(() => this.requestRefresh(true)));
+		this._register(signals.onDidChangeWorktrees(() => this.requestRefresh(true)));
 	}
 
 	/** controller 構築時の実可視状態で、初回ポーリングを一度だけ開始する。 */
@@ -106,8 +113,10 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		this.visible = false;
 		this.diffStats.inFlight = false;
 		this.diffStats.pendingImmediate = false;
+		this.diffStats.invalidated = false;
 		this.prStatus.inFlight = false;
 		this.prStatus.pendingImmediate = false;
+		this.prStatus.invalidated = false;
 		super.dispose();
 	}
 
@@ -124,11 +133,19 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			this.cancelPending(this.prStatus);
 			return;
 		}
-		this.requestRefresh();
+		this.resume(this.diffStats, DIFF_STATS_POLL_INTERVAL_MS);
+		this.resume(this.prStatus, PR_STATUS_POLL_INTERVAL_MS);
 	}
 
-	private requestRefresh(): void {
-		if (!this.started || !this.visible) {
+	private requestRefresh(markInvalidated = false): void {
+		if (!this.started) {
+			return;
+		}
+		if (!this.visible) {
+			if (markInvalidated) {
+				this.diffStats.invalidated = true;
+				this.prStatus.invalidated = true;
+			}
 			return;
 		}
 		this.requestImmediate(this.diffStats);
@@ -161,12 +178,13 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			return;
 		}
 		state.inFlight = false;
+		state.lastCompletedAt = this.now();
 		if (!this.visible) {
-			state.pendingImmediate = false;
 			return;
 		}
-		if (state.pendingImmediate) {
+		if (state.pendingImmediate || state.invalidated) {
 			state.pendingImmediate = false;
+			state.invalidated = false;
 			state.scheduler.schedule(0);
 			return;
 		}
@@ -176,6 +194,19 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	private cancelPending(state: IParadisWorkspacesPollState): void {
 		state.scheduler.cancel();
 		state.pendingImmediate = false;
+	}
+
+	private resume(state: IParadisWorkspacesPollState, interval: number): void {
+		if (state.inFlight) {
+			return;
+		}
+		const elapsed = state.lastCompletedAt === undefined ? interval : this.now() - state.lastCompletedAt;
+		if (state.invalidated || elapsed >= interval) {
+			state.invalidated = false;
+			state.scheduler.schedule(0);
+			return;
+		}
+		state.scheduler.schedule(Math.max(0, interval - elapsed));
 	}
 }
 
@@ -191,6 +222,7 @@ export class ParadisWorkspacesPollingController extends Disposable {
 		private readonly refreshDiffStats: () => Promise<void>,
 		private readonly refreshPrStatus: () => Promise<void>,
 		schedulerFactory?: SchedulerFactory,
+		now?: () => number,
 	) {
 		super();
 		this.lifecycle = this._register(new ParadisWorkspacesPollingLifecycle(
@@ -198,6 +230,7 @@ export class ParadisWorkspacesPollingController extends Disposable {
 			() => { void this.runDiffStatsRefresh(); },
 			() => { void this.runPrStatusRefresh(); },
 			schedulerFactory,
+			now,
 		));
 		this.lifecycle.start(signals.isBodyVisible());
 	}
