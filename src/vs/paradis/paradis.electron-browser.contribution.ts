@@ -51,3 +51,4 @@ import './contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribu
 import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mobileRelay/electron-browser/paradisRemoteTranscriptMirror.contribution.js';
 
 registerParadisRemoteTranscriptMirrorContribution();
+import './contrib/remoteTerminals/electron-browser/paradisRemoteTerminalShutdown.contribution.js';

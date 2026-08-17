@@ -59,6 +59,9 @@ import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { hasKey, isString } from '../../../../base/common/types.js';
 import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
 import { paradisCaptureTerminalCreationScopeLease, paradisSetTerminalCreationScopeLease } from './paradisTerminalCreationScope.js';
+import { paradisJoinKeptDetaches, paradisPrepareTerminalShutdown, paradisShouldKeepTerminalProcessAlive, paradisShouldKeepTerminalProcessesAlive } from './paradisTerminalShutdownPolicy.js';
+// PARA-PATCH: Para Code parks editor terminals of other spaces outside any editor input
+import { paradisListParkedTerminalEditorInstances } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js';
 
 interface IBackgroundTerminal {
 	instance: ITerminalInstance;
@@ -635,6 +638,10 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	private async _onBeforeShutdownAsync(reason: ShutdownReason): Promise<boolean> {
+		// PARA-PATCH: decide up front whether the processes should outlive this window (remote
+		// windows can keep them on the server). Must run before the early return below, which
+		// does not count Para Code-parked terminals.
+		await paradisPrepareTerminalShutdown(reason);
 		if (this.instances.length === 0) {
 			// No terminal instances, don't veto
 			return false;
@@ -644,7 +651,14 @@ export class TerminalService extends Disposable implements ITerminalService {
 		// still shows as that cannot be revived
 		try {
 			this._shutdownWindowCount = await this._nativeDelegate?.getWindowCount();
-			const shouldReviveProcesses = this._shouldReviveProcesses(reason);
+			// PARA-PATCH: never revive processes we are keeping alive. Reviving creates a *new* pty and
+			// `_expandTerminalInstance` prefers it (`revivedPtyId ?? ptyId`), so the surviving process
+			// would be left unattached and killed by the short grace timer on the next connect.
+			// Known gap: buffer state written by an *earlier* exit that did not keep the processes is
+			// not cleared here, so it can still win once. It needs having exited without keeping, then
+			// never connecting to that remote again (connecting consumes and clears it), then exiting
+			// with keeping — rare enough not to be worth a second patch site to erase the storage.
+			const shouldReviveProcesses = this._shouldReviveProcesses(reason) && !paradisShouldKeepTerminalProcessesAlive(reason);
 			if (shouldReviveProcesses) {
 				// Attempt to persist the terminal state but only allow 2000ms as we can't block
 				// shutdown. This can happen when in a remote workspace but the other side has been
@@ -660,9 +674,13 @@ export class TerminalService extends Disposable implements ITerminalService {
 			// Persist terminal _processes_
 			const shouldPersistProcesses = this._terminalConfigurationService.config.enablePersistentSessions && reason === ShutdownReason.RELOAD;
 			if (!shouldPersistProcesses) {
+				// PARA-PATCH: only warn about the terminals we are actually going to end. Keeping the
+				// remote ones alive does not make the local/non-persistent ones survive, so the warning
+				// still has to appear for those.
+				const paradisEndingInstances = this.foregroundInstances.filter(instance => !paradisShouldKeepTerminalProcessAlive(reason, instance));
 				const hasDirtyInstances = (
-					(this._terminalConfigurationService.config.confirmOnExit === 'always' && this.foregroundInstances.length > 0) ||
-					(this._terminalConfigurationService.config.confirmOnExit === 'hasChildProcesses' && this.foregroundInstances.some(e => e.hasChildProcesses))
+					(this._terminalConfigurationService.config.confirmOnExit === 'always' && paradisEndingInstances.length > 0) ||
+					(this._terminalConfigurationService.config.confirmOnExit === 'hasChildProcesses' && paradisEndingInstances.some(e => e.hasChildProcesses))
 				);
 				if (hasDirtyInstances) {
 					return this._onBeforeShutdownConfirmation(reason);
@@ -712,19 +730,45 @@ export class TerminalService extends Disposable implements ITerminalService {
 	private _onWillShutdown(e: WillShutdownEvent): void {
 		// Don't touch processes if the shutdown was a result of reload as they will be reattached
 		const shouldPersistTerminals = this._terminalConfigurationService.config.enablePersistentSessions && e.reason === ShutdownReason.RELOAD;
+		// PARA-PATCH: terminals running on a remote can outlive this window. Decided per instance
+		// because a remote window can also hold local terminals, and keeping those would only leave
+		// orphans on this machine that nothing ever reconnects to.
+		const paradisKeptDetaches: Promise<void>[] = [];
 
 		// PARA-PATCH: include Para Code-parked groups so their terminals persist/dispose like visible ones
 		const paradisParkedInstances = (this._terminalGroupService.paradisParkedGroups ?? []).flatMap(g => g.terminalInstances);
-		for (const instance of [...this._terminalGroupService.instances, ...paradisParkedInstances, ...this._backgroundedTerminalInstances.map(bg => bg.instance)]) {
-			if (shouldPersistTerminals && instance.shouldPersist) {
+		// PARA-PATCH: terminals parked out of the editor area belong to no editor input any more, so
+		// nothing else here reaches them. Left out, they are neither ended nor detached, which means
+		// the remote never starts their reconnection timer and they can never be reclaimed.
+		// Keep this list in step with `countPersistentTerminals` in
+		// paradis/contrib/remoteTerminals/electron-browser/paradisRemoteTerminalShutdown.contribution.ts.
+		const paradisParkedEditorInstances = paradisListParkedTerminalEditorInstances();
+		for (const instance of [...this._terminalGroupService.instances, ...paradisParkedInstances, ...paradisParkedEditorInstances, ...this._backgroundedTerminalInstances.map(bg => bg.instance)]) {
+			// PARA-PATCH: keep this terminal running on the remote instead of ending it.
+			if (paradisShouldKeepTerminalProcessAlive(e.reason, instance)) {
+				// Force the process to persist. Without it the remote only keeps terminals that were
+				// typed into, so a terminal started with a command and left to run would be ended.
+				paradisKeptDetaches.push(instance.detachProcessAndDispose(TerminalExitReason.Shutdown, true));
+			} else if (shouldPersistTerminals && instance.shouldPersist) {
 				instance.detachProcessAndDispose(TerminalExitReason.Shutdown);
 			} else {
 				instance.dispose(TerminalExitReason.Shutdown);
 			}
 		}
+		// PARA-PATCH: hold the window open until the detach messages have reached the remote. Nothing
+		// else starts the reconnection timer over there, so a message lost to the closing socket
+		// leaves the process running with no timer and no way to reclaim it.
+		if (paradisKeptDetaches.length > 0) {
+			// 待ち方は paradisJoinKeptDetaches に一本化してある（上限とログの理由はそちら）。
+			e.join(paradisJoinKeptDetaches(paradisKeptDetaches), {
+				id: 'paradis.keepRemoteTerminals',
+				label: nls.localize('paradis.keepRemoteTerminals.joiner', "Leaving terminals running on the remote"),
+			});
+		}
 
 		// Clear terminal layout info only when not persisting
-		if (!shouldPersistTerminals && !this._shouldReviveProcesses(e.reason)) {
+		// PARA-PATCH: `|| paradisShouldKeepTerminalProcessesAlive(...)` so the layout survives too.
+		if (!shouldPersistTerminals && !this._shouldReviveProcesses(e.reason) && !paradisShouldKeepTerminalProcessesAlive(e.reason)) {
 			this._primaryBackend?.setTerminalLayoutInfo(undefined);
 		}
 	}
