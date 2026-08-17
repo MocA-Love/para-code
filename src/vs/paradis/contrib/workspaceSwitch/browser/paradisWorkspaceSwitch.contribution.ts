@@ -361,7 +361,8 @@ class ParadisSwitchRepositoryAction extends Action2 {
 			placeHolder: localize('paradis.workspaceSwitch.switchPlaceholder', "Select a repository to switch to")
 		});
 		if (pick) {
-			await service.switchRepository(pick.repository.id);
+			// ユーザー起点の切り替えは連打を畳み込む (中間スペースを経由しない)。
+			await service.switchRepository(pick.repository.id, { coalesce: true });
 		}
 	}
 }
@@ -515,7 +516,8 @@ for (let index = 1; index <= 9; index++) {
 			const service = accessor.get(IParadisWorkspaceSwitchService);
 			const repository = service.repositories[index - 1];
 			if (repository) {
-				await service.switchRepository(repository.id);
+				// ユーザー起点の切り替えは連打を畳み込む (中間スペースを経由しない)。
+				await service.switchRepository(repository.id, { coalesce: true });
 			}
 		}
 	});
@@ -530,7 +532,8 @@ async function switchRelative(accessor: ServicesAccessor, delta: number): Promis
 
 	const activeIndex = repositories.findIndex(repository => repository.id === service.activeRepository?.id);
 	const nextIndex = activeIndex === -1 ? 0 : (activeIndex + delta + repositories.length) % repositories.length;
-	await service.switchRepository(repositories[nextIndex].id);
+	// ユーザー起点の切り替えは連打を畳み込む (中間スペースを経由しない)。
+	await service.switchRepository(repositories[nextIndex].id, { coalesce: true });
 }
 
 registerAction2(class extends Action2 {

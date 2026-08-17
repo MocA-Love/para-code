@@ -456,6 +456,31 @@ export interface IParadisAgentStatusStore {
 }
 
 /**
+ * 切り替えのオプション。
+ *
+ * **既定 (省略時) は従来どおり「投入された切り替えを全て順に実行する」**。退役のロールバックや
+ * worktree 作成直後の切り替えのように、切り替えが成立したことを前提に後続処理が走る内部呼び出しを
+ * 落としてはいけないため、安全側を既定にしている。
+ */
+export interface IParadisSwitchOptions {
+	/**
+	 * 実行開始前に、より新しい `coalesce` 付きの切り替えが来ていたらこの回を飛ばす。
+	 *
+	 * ユーザーがスペースを連打したときに中間のスペースを1つずつ経由するのを防ぐためのもので、
+	 * **UI からの切り替え (ショートカット・クイックピック・サイドバー) にだけ付ける**。中間の
+	 * スペースを経由しなくなる＝そのぶんの退避/復元 (エディタの detach、ターミナルの park) が
+	 * 丸ごと起きないので、速さだけでなく取りこぼしの窓も減る。
+	 *
+	 * 既に実行が始まっている切り替えは止められないため、連打の1回目は従来どおり完走する。
+	 *
+	 * **これを付けると、resolve しても対象スペースに居るとは限らない**（追い越されて飛ばされた
+	 * 回も正常 resolve する）。resolve 後に `activeStateKey` を読む、あるいは切り替え先で
+	 * 何かを開くといった「到達したこと」を前提にする呼び出し元には付けてはいけない。
+	 */
+	readonly coalesce?: boolean;
+}
+
+/**
  * 複数リポジトリを単一のマルチルートワークスペース内で瞬時に切り替えるサービス。
  * ワークスペースの identity (configPath 由来の workspace id) を固定したまま
  * IWorkspaceEditingService.updateFolders で folders だけを入れ替えることで、
@@ -538,13 +563,13 @@ export interface IParadisWorkspaceSwitchService {
 	 * マルチルート (WORKSPACE) 状態でのみ動作する (単一フォルダ状態から呼ぶと
 	 * upstream が新規 untitled workspace を作ってしまい workspace id が変わるため拒否する)。
 	 */
-	switchRepository(id: string): Promise<void>;
+	switchRepository(id: string, options?: IParadisSwitchOptions): Promise<void>;
 
 	/** worktree へ切り替える (状態キーは paradisWorktreeStateKey(uri)) */
-	switchToWorktree(worktree: IParadisWorktree): Promise<void>;
+	switchToWorktree(worktree: IParadisWorktree, options?: IParadisSwitchOptions): Promise<void>;
 
 	/** 固定された補助ウィンドウなど、既知の状態キーを所有するスペースへ切り替える。 */
-	switchToStateKey(stateKey: string): Promise<void>;
+	switchToStateKey(stateKey: string, options?: IParadisSwitchOptions): Promise<void>;
 
 	/**
 	 * 指定スコープに紐づく保存済み状態 (working set / パネル表示状態) を破棄し、
