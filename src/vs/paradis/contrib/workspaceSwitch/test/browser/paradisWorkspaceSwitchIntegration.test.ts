@@ -11,7 +11,7 @@ import { Disposable, DisposableStore } from '../../../../../base/common/lifecycl
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ILogService } from '../../../../../platform/log/common/log.js';
+import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
@@ -883,6 +883,7 @@ async function createHarness(
 				{} as IWorkbenchEnvironmentService,
 				contextService,
 				parts,
+				new NullLogService(),
 			);
 			testDisposables.add(scope);
 			return scope;
