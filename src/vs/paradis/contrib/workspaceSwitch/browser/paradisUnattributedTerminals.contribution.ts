@@ -47,7 +47,17 @@ class ParadisAdoptUnattributedTerminalsAction extends Action2 {
 			});
 			return;
 		}
-		notificationService.info(localize('paradis.unattributedTerminals.adopted', "Moved {0} terminal(s) into this space.", adopted));
+		// 引き取り先が正しいかはユーザーにしか分からない（コマンドは今のスペースへ入れるだけで、
+		// どのスペースのものだったかは誰も知らない）。所属は台帳へ確定して次のセッションまで
+		// 残るので、その場で戻せるようにしておく。
+		notificationService.prompt(
+			Severity.Info,
+			localize('paradis.unattributedTerminals.adopted', "Moved {0} terminal(s) into this space.", adopted),
+			[{
+				label: localize('paradis.unattributedTerminals.undo', "Undo"),
+				run: () => scopeService.undoLastTerminalAdoption(),
+			}],
+		);
 	}
 }
 
