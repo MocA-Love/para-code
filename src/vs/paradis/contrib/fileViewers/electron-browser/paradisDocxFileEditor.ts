@@ -107,8 +107,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		const invocationEpoch = ++this._inputEpoch;
+		const previousInput = this._input;
+		const previousOptions = this._options;
 		await super.setInput(input, options, context, token);
-		if (this._disposed || invocationEpoch !== this._inputEpoch || token.isCancellationRequested) {
+		if (this._disposed || invocationEpoch !== this._inputEpoch) {
+			return;
+		}
+		if (token.isCancellationRequested) {
+			this._input = previousInput;
+			this._options = previousOptions;
 			return;
 		}
 
