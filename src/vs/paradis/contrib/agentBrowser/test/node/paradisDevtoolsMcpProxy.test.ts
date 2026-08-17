@@ -22,9 +22,15 @@ interface IFakeDevtoolsChild {
 	respondToPendingToolCalls(): void;
 }
 
+interface IFakeDevtoolsSpawnOptions {
+	readonly env: NodeJS.ProcessEnv;
+	readonly stdio: ['pipe', 'pipe', 'pipe'];
+}
+
 interface IFakeDevtoolsChildren {
 	readonly children: readonly IFakeDevtoolsChild[];
-	readonly spawn: () => ChildProcessWithoutNullStreams;
+	readonly spawn: (command: string, args: string[], options: IFakeDevtoolsSpawnOptions) => ChildProcessWithoutNullStreams;
+	readonly spawnOptions: readonly IFakeDevtoolsSpawnOptions[];
 	readonly hungToolCallCount: number;
 	hangNextToolCalls(count: number, stderr?: string): void;
 	failNextToolCall(message: string): void;
@@ -75,6 +81,7 @@ class ThrowingDiagnosticLogService extends NullLogService {
 
 function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBeforeHungToolCall?: string; toolCallErrors?: readonly string[]; toolsListResult?: unknown; ignoreKillExit?: boolean } = {}): IFakeDevtoolsChildren {
 	const children: IFakeDevtoolsChild[] = [];
+	const spawnOptions: IFakeDevtoolsSpawnOptions[] = [];
 	let remainingHungToolCalls = options.hangToolCalls ?? 0;
 	let stderrBeforeHungToolCall = options.stderrBeforeHungToolCall;
 	let hungToolCallCount = 0;
@@ -88,7 +95,8 @@ function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBef
 		}
 	};
 
-	const spawn = (): ChildProcessWithoutNullStreams => {
+	const spawn = (_command: string, _args: string[], spawnOptionsReceived: IFakeDevtoolsSpawnOptions): ChildProcessWithoutNullStreams => {
+		spawnOptions.push(spawnOptionsReceived);
 		const process = new EventEmitter();
 		const stdin = new PassThrough();
 		const stdout = new PassThrough();
@@ -172,6 +180,7 @@ function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBef
 	return {
 		children,
 		spawn,
+		spawnOptions,
 		get hungToolCallCount() { return hungToolCallCount; },
 		hangNextToolCalls: (count, stderr) => {
 			remainingHungToolCalls += count;
@@ -230,6 +239,14 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		await proxy.tryCallTool('secret-token', 2, 'ws://two', 'take_snapshot', {});
 		assert.strictEqual(fixture.children.length, 2);
 		assert.strictEqual(fixture.children[0].killCount, 1);
+	});
+
+	test('disables update checks for the vendored child', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { spawnChild: fixture.spawn }));
+		await proxy.listTools('secret-token', 1, 'ws://one');
+
+		assert.strictEqual(fixture.spawnOptions[0].env.CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS, '1');
 	});
 
 	test('rejects an older generation without replacing the newer child', async () => {

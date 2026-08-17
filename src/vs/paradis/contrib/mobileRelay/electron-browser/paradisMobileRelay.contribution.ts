@@ -9,7 +9,6 @@
 import { localize, localize2 } from '../../../../nls.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
-import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -63,20 +62,14 @@ import { ParadisAgentCommandDeliveryCoordinator, paradisShouldRetireAgentToken }
 import { ParadisAgentTerminalRecoveryTracker } from '../common/paradisAgentTerminalRecovery.js';
 import { IParadisAgentTerminalHintConsumer, paradisCreateAgentTerminalHintConsumer, paradisCreateTerminalOutputConsumer } from '../common/paradisTerminalOutputHotPath.js';
 import { setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { ParadisMobilePcFocusHeartbeatCoordinator } from './paradisMobilePcFocusHeartbeat.js';
+import { ParadisMobileRelayRendererLifecycle } from './paradisMobileRelayRendererLifecycle.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
 const MENU_COMMAND = 'paradis.mobile.showMenu';
 /** PCフォーカス状態のハートビート間隔。shared process側のTTL（WINDOW_FOCUS_TTL_MS=90秒）より十分短く保つ。 */
 const PC_FOCUS_HEARTBEAT_INTERVAL_MS = 25_000;
-
-/**
- * ウィンドウにフォーカスが当たったまま、OSが報告する無操作時間がこれを超えたら「PCの前にいない」
- * とみなす。短くしすぎると画面をただ眺めている間にスマホが鳴り、長くしすぎると離席に気づくのが
- * 遅れる。作業中なら数分に一度は必ず何か触るので、確実に離席と言える長さを取る。
- * 画面ロックはこの閾値を待たずに即座に離席とする。
- */
-const PC_AWAY_IDLE_MS = 5 * 60_000;
 
 /**
  * renderer 側のモバイルリレー contribution。
@@ -106,9 +99,6 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private readonly windowLeasePromise: Promise<IParadisMobileWindowLease>;
 	private readonly rendererReadyPromise: Promise<void>;
 	private previousOnlineMobiles = 0;
-	/** 画面ロック中か（ロック中はアイドル時間の閾値を待たず離席とみなす。PC_AWAY_IDLE_MS参照）。 */
-	private screenLocked = false;
-
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@IMainProcessService mainProcessService: IMainProcessService,
@@ -188,26 +178,20 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// `withProgress` が実行中ずっと active ロックを保持するため、長時間走る拡張が1つあるだけで
 		// 「操作中」に張り付く。`getSystemIdleTime()` はOSが持つ本物の無操作時間なので、
 		// バックグラウンド処理では動かず、画面ロックもディスプレイスリープも正しく積算される。
-		const reportPcFocus = () => {
-			const visiblyFocused = !mainWindow.document.hidden && this.hostService.hasFocus;
-			if (!visiblyFocused || this.screenLocked) {
-				// ロックは即座に離席とみなす（アイドル時間の閾値を待たない）。
-				withCurrentRendererLease(lease => this.service.setPcFocus(lease, false)).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
-				return;
-			}
-			this.nativeHostService.getSystemIdleTime().then(idleSeconds => {
-				const focused = idleSeconds * 1000 <= PC_AWAY_IDLE_MS;
-				return withCurrentRendererLease(lease => this.service.setPcFocus(lease, focused));
-			}).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
-		};
-		this._register(this.nativeHostService.onDidLockScreen(() => { this.screenLocked = true; reportPcFocus(); }));
-		this._register(this.nativeHostService.onDidUnlockScreen(() => { this.screenLocked = false; reportPcFocus(); }));
-		this._register(this.hostService.onDidChangeFocus(() => reportPcFocus()));
-		this._register(dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => reportPcFocus()));
-		const focusHeartbeat = this._register(new IntervalTimer());
-		focusHeartbeat.cancelAndSet(() => reportPcFocus(), PC_FOCUS_HEARTBEAT_INTERVAL_MS);
-		reportPcFocus();
-		this._register({ dispose: () => { withWindowLease(lease => this.service.setPcFocus(lease, false)).catch(() => { }); } });
+		const focusHeartbeat = this._register(new ParadisMobilePcFocusHeartbeatCoordinator({
+			heartbeatIntervalMs: PC_FOCUS_HEARTBEAT_INTERVAL_MS,
+			isVisiblyFocused: () => !mainWindow.document.hidden && this.hostService.hasFocus,
+			getSystemIdleTime: () => this.nativeHostService.getSystemIdleTime(),
+			resolveCurrentRendererLease: () => withCurrentRendererLease(async lease => lease),
+			resolveWindowLease: () => withWindowLease(async lease => lease),
+			setPcFocus: (lease, focused) => this.service.setPcFocus(lease, focused),
+			setSharedProcessEnabled: enabled => this.service.setEnabled(enabled),
+			onDidLockScreen: this.nativeHostService.onDidLockScreen,
+			onDidUnlockScreen: this.nativeHostService.onDidUnlockScreen,
+			onDidChangeFocus: listener => this.hostService.onDidChangeFocus(() => listener()),
+			onDidChangeVisibility: listener => dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => listener()),
+			onError: (operation, error) => this.logService.warn(`[paradisMobileRelay] ${operation} failed`, error),
+		}));
 
 		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
@@ -221,7 +205,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const resourceMonitorClient = instantiationService.createInstance(ParadisResourceMonitorClient);
 		const spaceDiskClient = instantiationService.createInstance(ParadisSpaceDiskClient);
 
-		this.provider = this._register(new ParadisMobileWorkspaceProvider(
+		const createProvider = () => this._register(new ParadisMobileWorkspaceProvider(
 			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
 			mainWindow.vscodeWindowId,
 			workspaceSwitchService,
@@ -278,6 +262,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// （定義の解決も実行経路も1つに保ち、PCとスマホで挙動が割れないようにする）
 			presetService,
 		));
+		const rendererLifecycle = new ParadisMobileRelayRendererLifecycle(
+			focusHeartbeat,
+			createProvider,
+			this.isEnabled(),
+		);
+		this.provider = rendererLifecycle.provider;
 		// 初回同期。この push の完了が terminalStateReady（=markRendererReady の前提）を
 		// 解決するため、無変化打ち切りの対象にしない。
 		this.provider.pushState(true);
@@ -294,8 +284,6 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			() => markRendererReady(),
 			err => this.logService.warn('[paradisMobileRelay] initial renderer state sync failed', err),
 		);
-		reportPcFocus();
-
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、
 		// shell integration後の鮮度検証済みtranscript探索で実在セッションを確定できる。
 		// その確定結果をホーム一覧のagentフラグへ反映する。
@@ -493,7 +481,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			}
 			if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY)) {
 				const enabled = this.isEnabled();
-				this.service.setEnabled(enabled).catch(err => this.logService.warn('[paradisMobileRelay] setEnabled failed', err));
+				rendererLifecycle.setEnabled(enabled);
 				if (!enabled) {
 					this.provider.detachAll();
 					// ペイン同期を止めるので shared process からの更新はもう来ない。ここで

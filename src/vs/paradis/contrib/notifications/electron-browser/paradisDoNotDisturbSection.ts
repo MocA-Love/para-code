@@ -10,17 +10,13 @@
 // （ステータスバーのクイックトグルと同じ選択肢を common/paradisDoNotDisturb.ts から共有する）。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
-import { paradisFormatDoNotDisturbRemaining, PARADIS_DO_NOT_DISTURB_DURATIONS } from '../common/paradisDoNotDisturb.js';
+import { IParadisDoNotDisturbState, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { paradisCreateDoNotDisturbRefreshController, paradisFormatDoNotDisturbRemaining, PARADIS_DO_NOT_DISTURB_DURATIONS, ParadisDoNotDisturbRefreshControllerFactory } from '../common/paradisDoNotDisturb.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 
 const $ = dom.$;
-
-/** 残り時間の表示を分単位で追従させるための再描画間隔。 */
-const REFRESH_INTERVAL_MS = 60 * 1000;
 
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.dnd.section.title', "おやすみモード");
@@ -37,6 +33,9 @@ const STR_MANUAL_HINT = localize('paradis.dnd.section.manualHint', "自分でオ
 
 export class ParadisDoNotDisturbSection extends Disposable {
 
+	protected static readonly refreshControllerFactory: ParadisDoNotDisturbRefreshControllerFactory
+		= refresh => paradisCreateDoNotDisturbRefreshController(refresh);
+
 	private readonly _renderDisposables = this._register(new DisposableStore());
 
 	constructor(
@@ -45,35 +44,24 @@ export class ParadisDoNotDisturbSection extends Disposable {
 	) {
 		super();
 
-		this._register(this.settingsService.onDidChange(scope => {
-			if (scope === 'dnd') {
-				this._render();
-			}
-		}));
-
-		// 期限切れの自動解除はイベントを伴わない（getDoNotDisturb() の読み取り時に起きる）ため、
-		// 残り時間の表示更新と兼ねて定期的に読み直す。
-		const timer = this._register(new IntervalTimer());
-		timer.cancelAndSet(() => this._render(), REFRESH_INTERVAL_MS);
-
-		this._render();
+		const refreshControllerFactory = new.target.refreshControllerFactory;
+		const refreshController = this._register(refreshControllerFactory(renderNow => this._refresh(renderNow)));
+		this._register(this.settingsService.onDidChangeDoNotDisturb(() => refreshController.refresh()));
+		refreshController.refresh();
 	}
 
-	private _render(): void {
-		if (this._store.isDisposed) {
-			return;
-		}
-		paradisPreserveScroll(this.container, () => this._renderBody());
+	private _refresh(renderNow: number): IParadisDoNotDisturbState {
+		const state = this.settingsService.getDoNotDisturb();
+		paradisPreserveScroll(this.container, () => this._renderBody(state, renderNow));
+		return state;
 	}
 
-	private _renderBody(): void {
+	private _renderBody(state: IParadisDoNotDisturbState, renderNow: number): void {
 		dom.clearNode(this.container);
 		this._renderDisposables.clear();
 
 		dom.append(this.container, $('.pns-section-title')).textContent = STR_TITLE;
 		dom.append(this.container, $('.pns-section-desc')).textContent = STR_DESC;
-
-		const state = this.settingsService.getDoNotDisturb();
 
 		const toggleRow = dom.append(this.container, $('.pns-row'));
 		const toggleLabels = dom.append(toggleRow, $('div'));
@@ -99,7 +87,7 @@ export class ParadisDoNotDisturbSection extends Disposable {
 			button.textContent = duration.label;
 			// 「自分でオフにするまで」だけは保存された状態（until 未設定）から現在の選択と判別できる。
 			// 時限の3つは経過に伴って残り時間が変わるため、選択中の強調ではなく下の残り時間で示す。
-			if (duration.resolveUntil(Date.now()) === undefined && state.until === undefined) {
+			if (duration.resolveUntil(renderNow) === undefined && state.until === undefined) {
 				button.classList.add('pns-btn-primary');
 			}
 			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
@@ -107,7 +95,7 @@ export class ParadisDoNotDisturbSection extends Disposable {
 			}));
 		}
 
-		const remaining = paradisFormatDoNotDisturbRemaining(state.until, Date.now());
+		const remaining = paradisFormatDoNotDisturbRemaining(state.until, renderNow);
 		dom.append(field, $('.pns-row-hint')).textContent = remaining
 			// allow-any-unicode-next-line
 			? localize('paradis.dnd.section.remainingHint', "あと{0}で自動的に解除されます。", remaining)

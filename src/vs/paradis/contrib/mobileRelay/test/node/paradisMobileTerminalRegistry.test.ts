@@ -9,8 +9,37 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { paradisMobileWindowRoute, paradisResolveMobileTerminalStateKey } from '../../common/paradisMobileRelay.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
 
+class CountingParadisMobileTerminalRegistry extends ParadisMobileTerminalRegistry {
+	callCount = 0;
+
+	override desktopState() {
+		this.callCount++;
+		return super.desktopState();
+	}
+}
+
 suite('ParadisMobileTerminalRegistry', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('通常のsyncWindowはdesktopStateを2回だけ構築し、登録terminalを返す', () => {
+		const registry = new CountingParadisMobileTerminalRegistry('desktop-epoch');
+		const state = registry.syncWindow(1, 'window-session', 3, {
+			activeWs: 'repo',
+			workspaces: [{ id: 'repo', name: 'Repo' }],
+			terminals: [{ terminalKey: 'terminal-key', id: 7, title: 'Terminal', ws: 'repo' }],
+		});
+
+		assert.strictEqual(registry.callCount, 2);
+		assert.strictEqual(state.revision, 1);
+		assert.deepStrictEqual(state.terminals, [{
+			terminalKey: 'terminal-key',
+			id: 7,
+			title: 'Terminal',
+			ws: '1:repo',
+			windowId: 1,
+			rendererGeneration: 3,
+		}]);
+	});
 
 	test('binary upload対応をDesktop Stateで通知する', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');

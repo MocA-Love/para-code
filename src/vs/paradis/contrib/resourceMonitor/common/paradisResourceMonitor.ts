@@ -39,8 +39,12 @@ export interface IParadisResourceMonitorSessionRequest {
 	readonly pid: number;
 }
 
+export type ParadisResourceMonitorFreshness = 'active' | 'idle';
+
 export interface IParadisResourceMonitorSnapshotRequest {
 	readonly sessions: readonly IParadisResourceMonitorSessionRequest[];
+	/** idle表示だけ5秒以内のraw収集結果を共有する。省略値と不正値はactiveとして扱う。 */
+	readonly freshness?: ParadisResourceMonitorFreshness;
 	/** trueならキャッシュを無視して再収集する(手動リフレッシュ用)。 */
 	readonly force?: boolean;
 }
