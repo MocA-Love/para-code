@@ -10,12 +10,15 @@ import assert from 'assert';
 import { promises as fs } from 'fs';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { IParadisResumeListRequest, IParadisResumeSpace } from '../../common/paradisSessionResume.js';
 import { ParadisSessionResumeService } from '../../node/paradisSessionResumeChannel.js';
 
 const nodeRequire = createRequire(import.meta.url);
+type IParadisSessionResumeServiceDependencies = NonNullable<ConstructorParameters<typeof ParadisSessionResumeService>[0]>;
 
 suite('ParadisSessionResume', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -51,20 +54,27 @@ suite('ParadisSessionResume', () => {
 		readBoundedFile?: (filePath: string) => Promise<{ text: string; truncated: boolean }>,
 		beforeSummaryRead?: (filePath: string) => Promise<void>,
 		beforeTranscriptRead?: (filePath: string) => Promise<void>,
+		searchCacheMaxBytes?: number,
 	): ParadisSessionResumeService {
-		return new ParadisSessionResumeService({
+		const dependencies: IParadisSessionResumeServiceDependencies = {
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, matchCwd: cwd }),
 			readBoundedFile,
 			beforeSummaryRead,
 			beforeTranscriptRead,
-		}, new NullLogService());
+			searchCacheMaxBytes,
+		};
+		return new ParadisSessionResumeService(dependencies, new NullLogService());
+	}
+
+	function createListRequest(space: Partial<IParadisResumeSpace> = {}, includeArchived = false): IParadisResumeListRequest {
+		return {
+			spaces: [{ stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true, ...space }],
+			includeArchived,
+		};
 	}
 
 	function listSessions(service: ParadisSessionResumeService, includeArchived = false) {
-		return service.list({
-			spaces: [{ stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true }],
-			includeArchived,
-		});
+		return service.list(createListRequest({}, includeArchived));
 	}
 
 	function claudeMessage(role: 'user' | 'assistant', text: string, timestamp = '2026-08-13T01:00:00.000Z'): string {
@@ -245,6 +255,173 @@ suite('ParadisSessionResume', () => {
 		]);
 	});
 
+	test('shares one active scan for identical normalized list requests', async () => {
+		const transcriptPath = join(claudeProject, 'shared-active-scan.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Shared active scan')]);
+		const firstSummaryRead = new DeferredPromise<void>();
+		const summaryGate = new DeferredPromise<void>();
+		let summaryReadCount = 0;
+		const service = createService(undefined, async () => {
+			summaryReadCount++;
+			firstSummaryRead.complete();
+			await summaryGate.p;
+		});
+
+		const first = service.list(createListRequest());
+		await firstSummaryRead.p;
+		const second = service.list(createListRequest());
+		summaryGate.complete();
+		const [firstResult, secondResult] = await Promise.all([first, second]);
+
+		assert.strictEqual(summaryReadCount, 1);
+		assert.strictEqual(firstResult, secondResult);
+	});
+
+	test('keeps raw cwd results independent when equivalent cwd requests overlap in either order', async () => {
+		const transcriptPath = join(claudeProject, 'raw-cwd-active-scan.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Raw cwd active scan')]);
+		const alternateCwd = `${workspace}/../workspace`;
+		for (const [firstCwd, secondCwd] of [[workspace, alternateCwd], [alternateCwd, workspace]]) {
+			const firstSummaryRead = new DeferredPromise<void>();
+			const summaryGate = new DeferredPromise<void>();
+			let summaryReadCount = 0;
+			const service = createService(undefined, async () => {
+				summaryReadCount++;
+				firstSummaryRead.complete();
+				await summaryGate.p;
+			});
+
+			const first = service.list(createListRequest({ cwd: firstCwd }));
+			await firstSummaryRead.p;
+			const second = service.list(createListRequest({ cwd: secondCwd }));
+			summaryGate.complete();
+			const [[firstSession], [secondSession]] = await Promise.all([first, second]);
+
+			assert.strictEqual(summaryReadCount, 2);
+			assert.strictEqual(firstSession?.cwd, firstCwd);
+			assert.strictEqual(secondSession?.cwd, secondCwd);
+		}
+	});
+
+	test('snapshots valid list spaces before caller mutation', async () => {
+		const transcriptPath = join(claudeProject, 'snapshot-list-space.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Snapshot list space')]);
+		const firstSummaryRead = new DeferredPromise<void>();
+		const summaryGate = new DeferredPromise<void>();
+		const service = createService(undefined, async () => {
+			firstSummaryRead.complete();
+			await summaryGate.p;
+		});
+		const request = {
+			spaces: [{ stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true }],
+			includeArchived: false,
+		};
+
+		const list = service.list(request);
+		request.spaces[0].stateKey = 'mutated-state';
+		request.spaces[0].name = 'Mutated Workspace';
+		request.spaces[0].current = false;
+		await firstSummaryRead.p;
+		summaryGate.complete();
+		const [session] = await list;
+
+		assert.deepStrictEqual({
+			stateKey: session?.spaceStateKey,
+			name: session?.spaceName,
+			cwd: session?.cwd,
+			current: session?.currentSpace,
+		}, {
+			stateKey: 'workspace-state',
+			name: 'Fixture Workspace',
+			cwd: workspace,
+			current: true,
+		});
+	});
+
+	test('does not share active scans for distinct observable list requests', async () => {
+		const primaryTranscriptPath = join(claudeProject, 'distinct-active-scan-primary.jsonl');
+		const secondaryWorkspace = join(root, 'secondary-workspace');
+		await fs.mkdir(secondaryWorkspace, { recursive: true });
+		const secondaryRealWorkspace = await fs.realpath(secondaryWorkspace);
+		const secondaryProject = join(claudeHome, 'projects', secondaryRealWorkspace.replace(/[^a-zA-Z0-9]/g, '-'));
+		const secondaryTranscriptPath = join(secondaryProject, 'distinct-active-scan-secondary.jsonl');
+		await Promise.all([
+			writeLines(primaryTranscriptPath, [claudeMessage('user', 'Primary distinct active scan')]),
+			fs.mkdir(secondaryProject, { recursive: true }).then(() => writeLines(secondaryTranscriptPath, [claudeMessage('user', 'Secondary distinct active scan')])),
+		]);
+
+		const primarySpace: IParadisResumeSpace = { stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true };
+		const secondarySpace: IParadisResumeSpace = { stateKey: 'secondary-state', name: 'Secondary Workspace', cwd: secondaryWorkspace, current: false };
+		const cases: readonly { readonly name: string; readonly first: IParadisResumeListRequest; readonly second: IParadisResumeListRequest; readonly expectedSummaryReads: number }[] = [
+			{ name: 'state key', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, stateKey: 'other-state' }], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'name', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, name: 'Other Workspace' }], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'cwd', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [secondarySpace], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'current', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, current: false }], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'includeArchived', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [primarySpace], includeArchived: true }, expectedSummaryReads: 2 },
+			{ name: 'space order', first: { spaces: [primarySpace, secondarySpace], includeArchived: false }, second: { spaces: [secondarySpace, primarySpace], includeArchived: false }, expectedSummaryReads: 4 },
+		];
+
+		for (const testCase of cases) {
+			const firstSummaryRead = new DeferredPromise<void>();
+			const summaryGate = new DeferredPromise<void>();
+			let summaryReadCount = 0;
+			const service = createService(undefined, async () => {
+				summaryReadCount++;
+				firstSummaryRead.complete();
+				await summaryGate.p;
+			});
+
+			const first = service.list(testCase.first);
+			await firstSummaryRead.p;
+			const second = service.list(testCase.second);
+			summaryGate.complete();
+			await Promise.all([first, second]);
+
+			assert.strictEqual(summaryReadCount, testCase.expectedSummaryReads, testCase.name);
+		}
+	});
+
+	test('rescans after an active list request settles', async () => {
+		const transcriptPath = join(claudeProject, 'rescan-after-settle.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Rescan after settle')]);
+		let summaryReadCount = 0;
+		const service = createService(undefined, async () => {
+			summaryReadCount++;
+		});
+
+		await service.list(createListRequest());
+		await service.list(createListRequest());
+
+		assert.strictEqual(summaryReadCount, 2);
+	});
+
+	test('cleans a rejected active list request so a later request retries', async () => {
+		const transcriptPath = join(claudeProject, 'retry-after-rejection.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Retry after rejection')]);
+		let resolveHomesCount = 0;
+		let summaryReadCount = 0;
+		const service = new ParadisSessionResumeService({
+			resolveAgentHomes: cwd => {
+				resolveHomesCount++;
+				if (resolveHomesCount === 1) {
+					throw new Error('agent homes unavailable');
+				}
+				return { claude: claudeHome, codex: codexHome, matchCwd: cwd };
+			},
+			beforeSummaryRead: async () => {
+				summaryReadCount++;
+			},
+		}, new NullLogService());
+
+		const [first, second] = await Promise.allSettled([service.list(createListRequest()), service.list(createListRequest())]);
+		const retried = await service.list(createListRequest());
+
+		assert.strictEqual(first.status, 'rejected');
+		assert.strictEqual(second.status, 'rejected');
+		assert.strictEqual(summaryReadCount, 1);
+		assert.deepStrictEqual(retried.map(session => session.id), ['retry-after-rejection']);
+	});
+
 	test('list does not read a Claude summary swapped to an outside symlink after lstat', async () => {
 		const transcriptPath = join(claudeProject, 'summary-swap-session.jsonl');
 		const outsidePath = join(root, 'outside-summary.jsonl');
@@ -354,6 +531,282 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('limits cold transcript searches across clients while only superseding the older client search', async () => {
+		const transcriptPaths = Array.from({ length: 8 }, (_, index) => join(claudeProject, `limited-search-${index}.jsonl`));
+		await Promise.all(transcriptPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+			claudeMessage('user', `Limited search ${index}`),
+			claudeMessage('assistant', `shared-cold-token-${index}`),
+		])));
+		const fourReadsStarted = new DeferredPromise<void>();
+		const releaseReads = new DeferredPromise<void>();
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		const service = createService(async filePath => {
+			activeReads++;
+			maxActiveReads = Math.max(maxActiveReads, activeReads);
+			if (activeReads >= 4) {
+				fourReadsStarted.complete();
+			}
+			try {
+				await releaseReads.p;
+				return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+			} finally {
+				activeReads--;
+			}
+		});
+		const sessions = await listSessions(service);
+		const firstClientCatalogIds = sessions.filter(session => /^limited-search-[0-3]$/.test(session.id)).map(session => session.catalogId);
+		const secondClientCatalogIds = sessions.filter(session => /^limited-search-[4-7]$/.test(session.id)).map(session => session.catalogId);
+		assert.strictEqual(firstClientCatalogIds.length, 4);
+		assert.strictEqual(secondClientCatalogIds.length, 4);
+
+		const olderFirstClientSearch = service.search('first-client', 'shared-cold-token', firstClientCatalogIds);
+		const secondClientSearch = service.search('second-client', 'shared-cold-token', secondClientCatalogIds);
+		await fourReadsStarted.p;
+		const newestFirstClientSearch = service.search('first-client', '', firstClientCatalogIds);
+		releaseReads.complete();
+		const [olderFirstClientResult, newestFirstClientResult, secondClientResult] = await Promise.all([
+			olderFirstClientSearch,
+			newestFirstClientSearch,
+			secondClientSearch,
+		]);
+
+		assert.deepStrictEqual({
+			maxActiveReads,
+			olderFirstClientResult,
+			newestFirstClientResult: newestFirstClientResult.map(result => result.catalogId),
+			secondClientResult: secondClientResult.map(result => ({ catalogId: result.catalogId, source: result.source })).sort((a, b) => a.catalogId.localeCompare(b.catalogId)),
+		}, {
+			maxActiveReads: 4,
+			olderFirstClientResult: [],
+			newestFirstClientResult: firstClientCatalogIds,
+			secondClientResult: secondClientCatalogIds.map(catalogId => ({ catalogId, source: 'conversation' })).sort((a, b) => a.catalogId.localeCompare(b.catalogId)),
+		});
+	});
+
+	test('starts queued transcript reads after a saturated cold read rejects', async () => {
+		const transcriptPaths = Array.from({ length: 5 }, (_, index) => join(claudeProject, `rejected-limiter-${index}.jsonl`));
+		await Promise.all(transcriptPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+			claudeMessage('user', `Rejected limiter ${index}`),
+			claudeMessage('assistant', 'rejected-limiter-token'),
+		])));
+		const fourReadsStarted = new DeferredPromise<void>();
+		const fifthReadStarted = new DeferredPromise<void>();
+		const releaseFailingRead = new DeferredPromise<void>();
+		const releaseOtherReads = new DeferredPromise<void>();
+		const startedPaths: string[] = [];
+		const blockingRead = { paths: new Set<string>(), failingPath: undefined as string | undefined };
+		let failureReleased = false;
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		const service = createService(async filePath => {
+			if (!blockingRead.paths.has(filePath)) {
+				assert.strictEqual(failureReleased, true);
+				fifthReadStarted.complete();
+				return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+			}
+			activeReads++;
+			maxActiveReads = Math.max(maxActiveReads, activeReads);
+			startedPaths.push(filePath);
+			if (startedPaths.length === 4) {
+				fourReadsStarted.complete();
+			}
+			try {
+				if (filePath === blockingRead.failingPath) {
+					await releaseFailingRead.p;
+					failureReleased = true;
+					throw new Error('expected cold read failure');
+				}
+				await releaseOtherReads.p;
+				return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+			} finally {
+				activeReads--;
+			}
+		});
+		const sessions = await listSessions(service);
+		const catalogIds = sessions.map(session => session.catalogId);
+		blockingRead.paths = new Set(sessions.slice(0, 4).map(session => join(claudeProject, `${session.id}.jsonl`)));
+		blockingRead.failingPath = join(claudeProject, `${sessions[0].id}.jsonl`);
+		assert.ok(blockingRead.failingPath);
+
+		const search = service.search('rejected-limiter-client', 'rejected-limiter-token', catalogIds);
+		await fourReadsStarted.p;
+		releaseFailingRead.complete();
+		try {
+			const fifthStartedBeforeOtherReads = await Promise.race([
+				fifthReadStarted.p.then(() => true),
+				new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100)),
+			]);
+			assert.strictEqual(fifthStartedBeforeOtherReads, true);
+		} finally {
+			releaseOtherReads.complete();
+		}
+		const results = await search;
+
+		assert.deepStrictEqual({
+			maxActiveReads,
+			startedReads: startedPaths.length + 1,
+			resultCount: results.length,
+			resultSources: results.map(result => result.source),
+		}, {
+			maxActiveReads: 4,
+			startedReads: 5,
+			resultCount: 4,
+			resultSources: ['conversation', 'conversation', 'conversation', 'conversation'],
+		});
+	});
+
+	test('keeps metadata cache hit preview and list work outside saturated cold reads', async () => {
+		const warmPath = join(claudeProject, 'limiter-warm.jsonl');
+		const metadataPath = join(claudeProject, 'limiter-metadata.jsonl');
+		const coldPaths = Array.from({ length: 4 }, (_, index) => join(claudeProject, `limiter-cold-${index}.jsonl`));
+		await Promise.all([
+			writeLines(warmPath, [claudeMessage('user', 'Warm title'), claudeMessage('assistant', 'warm-cache-token')]),
+			writeLines(metadataPath, [claudeMessage('user', 'Metadata-only title'), claudeMessage('assistant', 'metadata body')]),
+			...coldPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+				claudeMessage('user', `Cold title ${index}`),
+				claudeMessage('assistant', 'saturated-cold-token'),
+			])),
+		]);
+		const fourColdReadsStarted = new DeferredPromise<void>();
+		const releaseColdReads = new DeferredPromise<void>();
+		let coldReadStarts = 0;
+		const service = createService(async filePath => {
+			if (coldPaths.includes(filePath)) {
+				coldReadStarts++;
+				if (coldReadStarts === 4) {
+					fourColdReadsStarted.complete();
+				}
+				await releaseColdReads.p;
+			}
+			return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+		});
+		const sessions = await listSessions(service);
+		const warm = sessions.find(session => session.id === 'limiter-warm');
+		const metadata = sessions.find(session => session.id === 'limiter-metadata');
+		const coldCatalogIds = sessions.filter(session => /^limiter-cold-\d$/.test(session.id)).map(session => session.catalogId);
+		assert.ok(warm);
+		assert.ok(metadata);
+		assert.strictEqual(coldCatalogIds.length, 4);
+		await service.search('warm-cache-prime', 'warm-cache-token', [warm.catalogId]);
+
+		const coldSearch = service.search('saturated-cold', 'saturated-cold-token', coldCatalogIds);
+		await fourColdReadsStarted.p;
+		try {
+			const completedBeforeRelease = await Promise.race([
+				Promise.all([
+					service.search('metadata-fast-path', 'metadata-only title', [metadata.catalogId]),
+					service.search('warm-cache-hit', 'warm-cache-token', [warm.catalogId]),
+					service.preview(warm.catalogId),
+					listSessions(service),
+				]).then(() => true),
+				new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100)),
+			]);
+			assert.deepStrictEqual({ completedBeforeRelease, coldReadStarts }, { completedBeforeRelease: true, coldReadStarts: 4 });
+		} finally {
+			releaseColdReads.complete();
+		}
+		const coldResults = await coldSearch;
+		assert.strictEqual(coldResults.length, 4);
+	});
+
+	test('uses text populated while waiting for a search permit without another physical read', async () => {
+		const coldPaths = Array.from({ length: 4 }, (_, index) => join(claudeProject, `recheck-cold-${index}.jsonl`));
+		const targetPath = join(claudeProject, 'recheck-target.jsonl');
+		await Promise.all([
+			...coldPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+				claudeMessage('user', `Recheck cold ${index}`),
+				claudeMessage('assistant', 'recheck-cold-token'),
+			])),
+			writeLines(targetPath, [claudeMessage('user', 'Recheck target'), claudeMessage('assistant', 'physical-read-token')]),
+		]);
+		const fourColdReadsStarted = new DeferredPromise<void>();
+		const releaseColdReads = new DeferredPromise<void>();
+		let coldReadStarts = 0;
+		let targetReadStarts = 0;
+		const service = createService(async filePath => {
+			if (coldPaths.includes(filePath)) {
+				coldReadStarts++;
+				if (coldReadStarts === 4) {
+					fourColdReadsStarted.complete();
+				}
+				await releaseColdReads.p;
+			}
+			if (filePath === targetPath) {
+				targetReadStarts++;
+			}
+			return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+		});
+		const sessions = await listSessions(service);
+		const coldCatalogIds = sessions.filter(session => /^recheck-cold-\d$/.test(session.id)).map(session => session.catalogId);
+		const target = sessions.find(session => session.id === 'recheck-target');
+		assert.strictEqual(coldCatalogIds.length, 4);
+		assert.ok(target);
+
+		const coldSearch = service.search('recheck-cold-client', 'recheck-cold-token', coldCatalogIds);
+		await fourColdReadsStarted.p;
+		const targetSearch = service.search('recheck-target-client', 'recheck-cache-token', [target.catalogId]);
+		const internals = service as unknown as {
+			readonly searchTextCache: { set(catalogId: string, revision: number, text: string): void };
+		};
+		// The public service shares same-entry reads; populate the cache as the valid prior owner seam while this entry waits.
+		internals.searchTextCache.set(target.catalogId, target.updatedAt, 'recheck-cache-token');
+		releaseColdReads.complete();
+		const [coldResults, targetResults] = await Promise.all([coldSearch, targetSearch]);
+
+		assert.deepStrictEqual({
+			coldResults: coldResults.length,
+			targetReadStarts,
+			targetResults: targetResults.map(result => ({ catalogId: result.catalogId, source: result.source })),
+		}, {
+			coldResults: 4,
+			targetReadStarts: 0,
+			targetResults: [{ catalogId: target.catalogId, source: 'conversation' }],
+		});
+	});
+
+	test('preserves search source snippet and match count for metadata and conversation terms', async () => {
+		const transcriptPath = join(claudeProject, 'search-golden.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Metadata phrase'),
+			claudeMessage('assistant', 'Conversation-only phrase'),
+		]);
+		const service = createService();
+		const [session] = await listSessions(service);
+
+		const metadata = await service.search('golden-metadata', 'metadata phrase', [session.catalogId]);
+		const conversation = await service.search('golden-conversation', 'conversation-only', [session.catalogId]);
+		const mixed = await service.search('golden-mixed', 'metadata conversation-only', [session.catalogId]);
+		const duplicate = await service.search('golden-duplicate', 'conversation-only conversation-only', [session.catalogId]);
+
+		assert.deepStrictEqual({ metadata, conversation, mixed, duplicate }, {
+			metadata: [{
+				catalogId: session.catalogId,
+				matchCount: 4,
+				snippet: `${session.title} ${session.preview} ${session.cwd} ${session.id} ${session.spaceName}`,
+				source: 'metadata',
+			}],
+			conversation: [{
+				catalogId: session.catalogId,
+				matchCount: 1,
+				snippet: 'Metadata phrase Conversation-only phrase',
+				source: 'conversation',
+			}],
+			mixed: [{
+				catalogId: session.catalogId,
+				matchCount: 4,
+				snippet: 'Metadata phrase Conversation-only phrase',
+				source: 'conversation',
+			}],
+			duplicate: [{
+				catalogId: session.catalogId,
+				matchCount: 2,
+				snippet: 'Metadata phrase Conversation-only phrase',
+				source: 'conversation',
+			}],
+		});
+	});
+
 	test('search publishes only the newest revision when an older search finishes later', async () => {
 		const oldPath = join(claudeProject, 'old-search-session.jsonl');
 		const intermediatePath = join(claudeProject, 'intermediate-search-session.jsonl');
@@ -415,6 +868,170 @@ suite('ParadisSessionResume', () => {
 			intermediate: [{ catalogId: intermediateCatalogId, source: 'conversation' }],
 			newest: [{ catalogId: newCatalogId, source: 'conversation' }],
 			stale: [],
+		});
+	});
+
+	test('evicts only the least recently used search text and keeps preview available', async () => {
+		const firstPath = join(claudeProject, 'search-cache-first.jsonl');
+		const secondPath = join(claudeProject, 'search-cache-second.jsonl');
+		const thirdPath = join(claudeProject, 'search-cache-third.jsonl');
+		await Promise.all([
+			writeLines(firstPath, [claudeMessage('user', 'First prompt'), claudeMessage('assistant', 'conversation-a')]),
+			writeLines(secondPath, [claudeMessage('user', 'Second prompt'), claudeMessage('assistant', 'conversation-b')]),
+			writeLines(thirdPath, [claudeMessage('user', 'Third prompt'), claudeMessage('assistant', 'conversation-c')]),
+		]);
+		const transcriptReads = new Map<string, number>();
+		const service = createService(undefined, undefined, async filePath => {
+			transcriptReads.set(filePath, (transcriptReads.get(filePath) ?? 0) + 1);
+		}, 120);
+		const sessions = await listSessions(service);
+		const first = sessions.find(session => session.id === 'search-cache-first');
+		const second = sessions.find(session => session.id === 'search-cache-second');
+		const third = sessions.find(session => session.id === 'search-cache-third');
+		assert.ok(first);
+		assert.ok(second);
+		assert.ok(third);
+
+		await service.search('cache-a', 'conversation-a', [first.catalogId]);
+		await service.search('cache-b', 'conversation-b', [second.catalogId]);
+		await service.search('cache-a-hit', 'conversation-a', [first.catalogId]);
+		await service.search('cache-c', 'conversation-c', [third.catalogId]);
+		const preview = await service.preview(second.catalogId);
+		await service.search('cache-b-reread', 'conversation-b', [second.catalogId]);
+
+		assert.deepStrictEqual({
+			first: transcriptReads.get(firstPath),
+			second: transcriptReads.get(secondPath),
+			third: transcriptReads.get(thirdPath),
+			preview: preview.messages.map(message => message.text),
+		}, {
+			first: 1,
+			second: 3,
+			third: 1,
+			preview: ['Second prompt', 'conversation-b'],
+		});
+	});
+
+	test('retries a transient transcript read failure on the next search', async () => {
+		const transcriptPath = join(claudeProject, 'search-retry.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Retry prompt'),
+			claudeMessage('assistant', 'retry-token appears only in the conversation'),
+		]);
+		let reads = 0;
+		const service = createService(async filePath => {
+			reads++;
+			if (reads === 1) {
+				throw new Error('temporary read failure');
+			}
+			return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+		});
+		const [session] = await listSessions(service);
+
+		const failed = await service.search('retry-client', 'retry-token', [session.catalogId]);
+		const retried = await service.search('retry-client', 'retry-token', [session.catalogId]);
+
+		assert.deepStrictEqual({ failed, retried: retried.map(result => ({ catalogId: result.catalogId, source: result.source })), reads }, {
+			failed: [],
+			retried: [{ catalogId: session.catalogId, source: 'conversation' }],
+			reads: 2,
+		});
+	});
+
+	test('does not publish an old revision search read after the catalog entry is refreshed', async () => {
+		const transcriptPath = join(claudeProject, 'search-revision-race.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Revision prompt'),
+			claudeMessage('assistant', 'old-revision-token'),
+		]);
+		const readStarted = new DeferredPromise<void>();
+		const releaseRead = new DeferredPromise<void>();
+		let blocked = true;
+		let reads = 0;
+		const service = createService(undefined, undefined, async () => {
+			reads++;
+			if (blocked) {
+				readStarted.complete();
+				await releaseRead.p;
+			}
+		});
+		const [oldSession] = await listSessions(service);
+		const oldSearch = service.search('old-revision', 'old-revision-token', [oldSession.catalogId]);
+		await readStarted.p;
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Revision prompt'),
+			claudeMessage('assistant', 'new-revision-token'),
+		]);
+		const nextTimestamp = new Date(oldSession.updatedAt + 2_000);
+		await fs.utimes(transcriptPath, nextTimestamp, nextTimestamp);
+		const [newSession] = await listSessions(service);
+		assert.strictEqual(newSession.catalogId, oldSession.catalogId);
+		assert.notStrictEqual(newSession.updatedAt, oldSession.updatedAt);
+
+		releaseRead.complete();
+		await oldSearch;
+		blocked = false;
+		const refreshed = await service.search('new-revision', 'new-revision-token', [newSession.catalogId]);
+
+		assert.deepStrictEqual({
+			refreshed: refreshed.map(result => ({ catalogId: result.catalogId, source: result.source })),
+			reads,
+		}, {
+			refreshed: [{ catalogId: newSession.catalogId, source: 'conversation' }],
+			reads: 2,
+		});
+	});
+
+	test('does not publish a removed entry read into a replacement with the same revision', async () => {
+		const transcriptPath = join(claudeProject, 'search-catalog-replacement-race.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Catalog replacement prompt')]);
+		const staleText = [
+			claudeMessage('user', 'Catalog replacement prompt'),
+			claudeMessage('assistant', 'stale-catalog-token'),
+		].join('\n');
+		const freshText = [
+			claudeMessage('user', 'Catalog replacement prompt'),
+			claudeMessage('assistant', 'fresh-catalog-token'),
+		].join('\n');
+		const readStarted = new DeferredPromise<void>();
+		const releaseRead = new DeferredPromise<void>();
+		let transcriptReads = 0;
+		const service = createService(async () => {
+			transcriptReads++;
+			if (transcriptReads === 1) {
+				readStarted.complete();
+				await releaseRead.p;
+				return { text: staleText, truncated: false };
+			}
+			return { text: freshText, truncated: false };
+		});
+		const [oldSession] = await listSessions(service);
+		const oldSearch = service.search('old-catalog-entry', 'stale-catalog-token', [oldSession.catalogId]);
+		await readStarted.p;
+
+		const internals = service as unknown as {
+			readonly catalog: Map<string, { readonly touchedAt: number }>;
+			trimCatalog(protectedCatalogIds: ReadonlySet<string>): void;
+		};
+		for (let index = 0; index < 2400; index++) {
+			internals.catalog.set(`replacement-filler-${index}`, { touchedAt: Number.MAX_SAFE_INTEGER });
+		}
+		internals.trimCatalog(new Set());
+		assert.strictEqual(internals.catalog.has(oldSession.catalogId), false);
+		const [replacement] = await listSessions(service);
+		assert.strictEqual(replacement.catalogId, oldSession.catalogId);
+		assert.strictEqual(replacement.updatedAt, oldSession.updatedAt);
+
+		releaseRead.complete();
+		await oldSearch;
+		const fresh = await service.search('replacement-catalog-entry', 'fresh-catalog-token', [replacement.catalogId]);
+
+		assert.deepStrictEqual({
+			fresh: fresh.map(result => ({ catalogId: result.catalogId, source: result.source })),
+			transcriptReads,
+		}, {
+			fresh: [{ catalogId: replacement.catalogId, source: 'conversation' }],
+			transcriptReads: 2,
 		});
 	});
 

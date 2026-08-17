@@ -10,7 +10,6 @@
 // 抑制の実体は paradisNotificationTrigger.contribution.ts の _notify() 冒頭にあり、ここは
 // 状態の表示と切り替えだけを担う。
 
-import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -18,17 +17,16 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
-import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
-import { paradisFormatDoNotDisturbRemaining, PARADIS_DO_NOT_DISTURB_DURATIONS, PARADIS_DO_NOT_DISTURB_SELECT_COMMAND } from '../common/paradisDoNotDisturb.js';
+import { IParadisDoNotDisturbState, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { paradisCreateDoNotDisturbRefreshController, paradisFormatDoNotDisturbRemaining, PARADIS_DO_NOT_DISTURB_DURATIONS, PARADIS_DO_NOT_DISTURB_SELECT_COMMAND, ParadisDoNotDisturbRefreshControllerFactory } from '../common/paradisDoNotDisturb.js';
 
 const STATUSBAR_ENTRY_ID = 'paradis.notifications.doNotDisturb';
 
-/** 残り時間の表示を更新する間隔（分単位表示なので1分で十分）。 */
-const REFRESH_INTERVAL_MS = 60 * 1000;
-
-class ParadisDoNotDisturbStatusBarContribution extends Disposable implements IWorkbenchContribution {
+export class ParadisDoNotDisturbStatusBarContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'paradis.contrib.doNotDisturbStatusBar';
+	protected static readonly refreshControllerFactory: ParadisDoNotDisturbRefreshControllerFactory
+		= refresh => paradisCreateDoNotDisturbRefreshController(refresh);
 
 	private readonly entry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 
@@ -38,23 +36,15 @@ class ParadisDoNotDisturbStatusBarContribution extends Disposable implements IWo
 	) {
 		super();
 
-		this._register(this.settingsService.onDidChange(scope => {
-			if (scope === 'dnd') {
-				this.update();
-			}
-		}));
-
-		// 期限切れによる自動解除は getDoNotDisturb() の読み取り時に起きる（イベントは飛ばない）ため、
-		// 残り時間の再計算と併せてここで定期的に読み直す。
-		const timer = this._register(new IntervalTimer());
-		timer.cancelAndSet(() => this.update(), REFRESH_INTERVAL_MS);
-
-		this.update();
+		const refreshControllerFactory = new.target.refreshControllerFactory;
+		const refreshController = this._register(refreshControllerFactory(renderNow => this._refresh(renderNow)));
+		this._register(this.settingsService.onDidChangeDoNotDisturb(() => refreshController.refresh()));
+		refreshController.refresh();
 	}
 
-	private update(): void {
+	private _refresh(renderNow: number): IParadisDoNotDisturbState {
 		const state = this.settingsService.getDoNotDisturb();
-		const remaining = paradisFormatDoNotDisturbRemaining(state.until, Date.now());
+		const remaining = paradisFormatDoNotDisturbRemaining(state.until, renderNow);
 
 		let label: string;
 		let tooltip: string;
@@ -90,6 +80,7 @@ class ParadisDoNotDisturbStatusBarContribution extends Disposable implements IWo
 			// ccusage(-9990) / githubMetrics(-9991) の左、RTK(-9993) の右
 			this.entry.value = this.statusbarService.addEntry(properties, STATUSBAR_ENTRY_ID, StatusbarAlignment.RIGHT, -9992);
 		}
+		return state;
 	}
 }
 

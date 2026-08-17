@@ -7,6 +7,7 @@
 
 import { deepStrictEqual, rejects, strictEqual } from 'assert';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
 
@@ -19,6 +20,20 @@ async function encodeWorkbook(configure: (workbook: ExcelJS.Workbook) => void): 
 
 suite('ParadisSpreadsheetService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('loads and shares the heavy runtime only when parsing starts', async () => {
+		let runtimeLoads = 0;
+		const service = new ParadisSpreadsheetService(async () => {
+			runtimeLoads++;
+			return { ExcelJS, JSZip };
+		});
+		const workbook = await encodeWorkbook(() => undefined);
+
+		strictEqual(runtimeLoads, 0);
+		await Promise.all([service.parseWorkbook(workbook), service.parseWorkbook(workbook)]);
+
+		strictEqual(runtimeLoads, 1);
+	});
 
 	test('rejects bytes that are not an xlsx archive', async () => {
 		const service = new ParadisSpreadsheetService();

@@ -47,6 +47,7 @@ import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspac
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
+import { ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 
@@ -54,15 +55,7 @@ import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, 
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
  * 未登録 = executeCommand が undefined を返すだけで安全に無効化される)。 */
 const GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
-/** diff 統計のポーリング間隔。編集の即時反映より、常時ポーリングによる負荷を避けることを優先する。 */
-const DIFF_STATS_POLL_INTERVAL_MS = 10_000;
 const GET_PR_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getPrStatuses';
-/**
- * PR 状態のポーリング間隔。1回のポーリングで worktree ごとに gh の GitHub API 呼び出しが
- * 発生する (認証済み上限 5,000 req/h) ため、diff 統計より大幅に長くして API 消費を抑える。
- * PR の open/draft/merged/closed は分単位で変わるものではないので実用上十分。
- */
-const PR_STATUS_POLL_INTERVAL_MS = 300_000;
 
 export const PARADIS_WORKSPACES_VIEW_ID = 'workbench.view.paradisWorkspaces.repositories';
 
@@ -744,10 +737,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	private tree: WorkbenchObjectTree<WorkspaceTreeElement, FuzzyScore> | undefined;
 	/** worktree の uri.fsPath → 未コミット差分統計。ポーリングでのみ更新する (refreshDiffStats 参照) */
 	private readonly _diffStats = new Map<string, IParadisDiffStat>();
-	private readonly _diffStatsScheduler: RunOnceScheduler;
 	/** worktree の uri.fsPath → 現在ブランチに紐づく PR 状態。ポーリングでのみ更新する (refreshPrStatuses 参照) */
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
-	private readonly _prStatusScheduler: RunOnceScheduler;
 	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
 	/** 折りたたみ操作の最中にツリーを組み直さないための遅延実行 (onDidChangeCollapseState 参照) */
 	private readonly _updateTreeScheduler: RunOnceScheduler;
@@ -783,16 +774,24 @@ export class ParadisWorkspacesView extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		this._diffStatsScheduler = this._register(new RunOnceScheduler(() => this.refreshDiffStats(), DIFF_STATS_POLL_INTERVAL_MS));
-		this._prStatusScheduler = this._register(new RunOnceScheduler(() => this.refreshPrStatuses(), PR_STATUS_POLL_INTERVAL_MS));
+		this._register(new ParadisWorkspacesPollingController(
+			{
+				isBodyVisible: () => this.isBodyVisible(),
+				onDidChangeVisibility: this.onDidChangeBodyVisibility,
+				onDidChangeRepositories: this.workspaceSwitchService.onDidChangeRepositories,
+				onDidChangeWorktrees: this.worktreeService.onDidChangeWorktrees,
+			},
+			() => this.refreshDiffStats(),
+			() => this.refreshPrStatuses(),
+		));
 		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
 		this._updateTreeScheduler = this._register(new RunOnceScheduler(() => this.updateTree(), 0));
 
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this.updateNotesPanelSpace(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
 		// メモの未完了バッジは行の表示内容なので、メモが変わったらツリーを描き直す
 		this._register(this.spaceNotesService.onDidChangeNotes(() => this.updateTree()));
-		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this.updateNotesPanelSpace(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
+		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
 		// 注意: 引数なしの tree.rerender() は行の renderElement を再実行しないため、
 		// setChildren で作り直す (identityProvider により選択/折りたたみ状態は保持される)
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.updateTree()));
@@ -906,8 +905,6 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this.updateTree();
 		this.updateNotesPanelSpace();
-		this._diffStatsScheduler.schedule(0);
-		this._prStatusScheduler.schedule(0);
 	}
 
 	/** メモ欄の対象を、いま開いているスペースに追従させる。 */
@@ -964,20 +961,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		promise.catch(error => this.notificationService.error(error));
 	}
 
-	/** refreshDiffStats の多重実行防止 (await 中に schedule(0) が割り込むと再入しうる) */
-	private _diffStatsInFlight = false;
-
-	/** diff 統計 (+N/-N) をポーリングで取得する。View可視時のみ実行し、非可視時は間隔だけ空けて再チェックする。 */
+	/** diff 統計 (+N/-N) をポーリングで取得する。非表示中の実行・再スケジュールは lifecycle が抑止する。 */
 	private async refreshDiffStats(): Promise<void> {
-		if (this._diffStatsInFlight) {
-			this._diffStatsScheduler.schedule();
-			return;
-		}
-		if (!this.isBodyVisible()) {
-			this._diffStatsScheduler.schedule();
-			return;
-		}
-
 		const paths = new Set<string>();
 		for (const repository of this.workspaceSwitchService.repositories) {
 			paths.add(repository.uri.fsPath);
@@ -989,42 +974,20 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 
 		if (paths.size === 0) {
-			this._diffStatsScheduler.schedule();
 			return;
 		}
-
-		this._diffStatsInFlight = true;
-		try {
-			const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, [...paths]);
-			if (result) {
-				this._diffStats.clear();
-				for (const [path, stat] of Object.entries(result)) {
-					this._diffStats.set(path, stat);
-				}
-				this.updateTree();
+		const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, [...paths]);
+		if (result) {
+			this._diffStats.clear();
+			for (const [path, stat] of Object.entries(result)) {
+				this._diffStats.set(path, stat);
 			}
-		} catch {
-			// web ビルド等でコマンド未登録の場合は無視 (diff バッジを出さないだけで安全に成立する)
-		} finally {
-			this._diffStatsInFlight = false;
-			this._diffStatsScheduler.schedule();
+			this.updateTree();
 		}
 	}
 
-	/** refreshPrStatuses の多重実行防止 (await 中に schedule(0) が割り込むと再入しうる) */
-	private _prStatusesInFlight = false;
-
 	/** 各 worktree の現在ブランチに紐づく PR 状態をポーリングで取得する。仕組みは refreshDiffStats と同じ。 */
 	private async refreshPrStatuses(): Promise<void> {
-		if (this._prStatusesInFlight) {
-			this._prStatusScheduler.schedule();
-			return;
-		}
-		if (!this.isBodyVisible()) {
-			this._prStatusScheduler.schedule();
-			return;
-		}
-
 		const paths = new Set<string>();
 		for (const repository of this.workspaceSwitchService.repositories) {
 			paths.add(repository.uri.fsPath);
@@ -1036,25 +999,15 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 
 		if (paths.size === 0) {
-			this._prStatusScheduler.schedule();
 			return;
 		}
-
-		this._prStatusesInFlight = true;
-		try {
-			const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, [...paths]);
-			if (result) {
-				this._prStatuses.clear();
-				for (const [path, status] of Object.entries(result)) {
-					this._prStatuses.set(path, status);
-				}
-				this.updateTree();
+		const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, [...paths]);
+		if (result) {
+			this._prStatuses.clear();
+			for (const [path, status] of Object.entries(result)) {
+				this._prStatuses.set(path, status);
 			}
-		} catch {
-			// web ビルド等でコマンド未登録の場合は無視 (PR チップを出さないだけで安全に成立する)
-		} finally {
-			this._prStatusesInFlight = false;
-			this._prStatusScheduler.schedule();
+			this.updateTree();
 		}
 	}
 

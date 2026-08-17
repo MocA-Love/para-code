@@ -82,6 +82,9 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 			case 'listAgentHookTokens':
 				requireArgs(arg, 0);
 				return this.service.listAgentHookTokens(this.rendererConnection) as Promise<T>;
+			case 'listAgentStatusSnapshot':
+				requireArgs(arg, 0);
+				return this.service.listAgentStatusSnapshot(this.rendererConnection) as Promise<T>;
 			case 'notifyTerminalExit': {
 				const args = requireArgs(arg, 1);
 				return this.service.notifyTerminalExit(this.rendererConnection, requireToken(args[0])) as Promise<T>;
