@@ -159,7 +159,11 @@ export class ParadisCcusageClient {
 			runner => new RunOnceScheduler(runner, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS),
 			() => `ccusage:${generateUuid()}`,
 		));
-		store.add(this.configurationService.onDidChangeConfiguration(() => controller.refresh()));
+		store.add(this.configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH)) {
+				controller.refresh();
+			}
+		}));
 		controller.setEnabled(true);
 		return store;
 	}
