@@ -4,9 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese test names)
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import * as assert from 'assert';
 import { Event } from '../../../../../base/common/event.js';
-import { IntervalTimer } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
@@ -15,12 +16,16 @@ class StateBroadcastMetricsTimer {
 	private callback: (() => void) | undefined;
 	readonly callbacks: Array<() => void> = [];
 	readonly intervals: number[] = [];
+	disposeCount = 0;
+
+	constructor(private readonly onSchedule: (interval: number) => void = () => undefined) { }
 
 	cancel(): void {
 		this.callback = undefined;
 	}
 
 	cancelAndSet(callback: () => void, interval: number): void {
+		this.onSchedule(interval);
 		this.callback = callback;
 		this.callbacks.push(callback);
 		this.intervals.push(interval);
@@ -36,6 +41,11 @@ class StateBroadcastMetricsTimer {
 
 	get active(): boolean {
 		return this.callback !== undefined;
+	}
+
+	dispose(): void {
+		this.disposeCount++;
+		this.cancel();
 	}
 }
 
@@ -65,8 +75,8 @@ function createStateBroadcastMetricsFixture(): { service: IStateBroadcastMetrics
 		setConnectionState: () => undefined,
 		connect: () => state.lifecycleTimerStates.push(timer.active),
 		disconnect: () => state.lifecycleTimerStates.push(timer.active),
-	}) as IStateBroadcastMetricsFixture;
-	return { service, timer, logs, state: service as IStateBroadcastMetricsFixture & typeof state };
+	}) as unknown as IStateBroadcastMetricsFixture;
+	return { service, timer, logs, state: service as unknown as IStateBroadcastMetricsFixture & typeof state };
 }
 
 suite('ParadisMobileRelayService state broadcast metrics', () => {
@@ -87,18 +97,9 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 	});
 
 	test('does not schedule metrics before initialize and starts them before connecting when initialized enabled', async () => {
-		const relayServicePrototype = ParadisMobileRelayService.prototype as unknown as { startHostResourceSampling(): void };
-		const startHostResourceSampling = relayServicePrototype.startHostResourceSampling;
-		const intervalTimerPrototype = IntervalTimer.prototype as unknown as { cancelAndSet(runner: () => void, interval: number): void };
-		const cancelAndSet = intervalTimerPrototype.cancelAndSet;
 		const events: string[] = [];
-		const intervals: number[] = [];
+		const timer = new StateBroadcastMetricsTimer(() => events.push('metrics'));
 		let service: ParadisMobileRelayService | undefined;
-		relayServicePrototype.startHostResourceSampling = () => undefined;
-		intervalTimerPrototype.cancelAndSet = (_runner, interval) => {
-			events.push('metrics');
-			intervals.push(interval);
-		};
 		try {
 			service = new ParadisMobileRelayService(
 				'/tmp/paradis-mobile-relay-metrics-test',
@@ -107,9 +108,13 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 				undefined,
 				{ onDidChangeManifest: Event.None } as never,
 				new NullLogService(),
+				undefined,
+				undefined,
+				undefined,
+				{ stateBroadcastMetricsTimer: timer, disableHostResourceSampling: true },
 			);
 
-			assert.deepStrictEqual({ events, intervals }, { events: [], intervals: [] });
+			assert.deepStrictEqual({ events, intervals: timer.intervals }, { events: [], intervals: [] });
 
 			const fixture = service as unknown as {
 				load(): Promise<void>;
@@ -120,14 +125,11 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 				fixture.state = { mobiles: [], device: { deviceId: 'device', pcToken: 'token' } };
 			};
 			fixture.connect = () => events.push('connect');
-
 			await service.initialize(true, undefined);
 
-			assert.deepStrictEqual({ events, intervals }, { events: ['metrics', 'connect'], intervals: [60_000] });
+			assert.deepStrictEqual({ events, intervals: timer.intervals }, { events: ['metrics', 'connect'], intervals: [60_000] });
 		} finally {
 			service?.dispose();
-			intervalTimerPrototype.cancelAndSet = cancelAndSet;
-			relayServicePrototype.startHostResourceSampling = startHostResourceSampling;
 		}
 	});
 
@@ -244,25 +246,22 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 	});
 
 	test('disposes the registered metrics timer with the service', () => {
-		const prototype = ParadisMobileRelayService.prototype as unknown as { startHostResourceSampling(): void };
-		const startHostResourceSampling = prototype.startHostResourceSampling;
-		prototype.startHostResourceSampling = () => undefined;
-		try {
-			const service = new ParadisMobileRelayService(
-				'/tmp/paradis-mobile-relay-metrics-test',
-				undefined as never,
-				undefined,
-				undefined,
-				{ onDidChangeManifest: Event.None } as never,
-				new NullLogService(),
-			);
+		const timer = new StateBroadcastMetricsTimer();
+		const service = new ParadisMobileRelayService(
+			'/tmp/paradis-mobile-relay-metrics-test',
+			undefined as never,
+			undefined,
+			undefined,
+			{ onDidChangeManifest: Event.None } as never,
+			new NullLogService(),
+			undefined,
+			undefined,
+			undefined,
+			{ stateBroadcastMetricsTimer: timer, disableHostResourceSampling: true },
+		);
 
-			service.dispose();
-			const timer = (service as unknown as { stateBroadcastMetricsTimer: IntervalTimer }).stateBroadcastMetricsTimer;
+		service.dispose();
 
-			assert.throws(() => timer.cancelAndSet(() => undefined, 60_000));
-		} finally {
-			prototype.startHostResourceSampling = startHostResourceSampling;
-		}
+		assert.strictEqual(timer.disposeCount, 1);
 	});
 });
