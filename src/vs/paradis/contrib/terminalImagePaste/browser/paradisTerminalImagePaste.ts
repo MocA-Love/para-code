@@ -13,8 +13,13 @@ import { URI } from '../../../../base/common/uri.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 
-/** 貼り付けた画像を置くファイル名の接頭辞。掃除するときの目印も兼ねる。 */
-const PASTED_IMAGE_PREFIX = '.para-pasted-image-';
+/**
+ * 貼り付けた画像を置くディレクトリ名。cwd 配下に作る（TUI が確認なしに読める範囲を保つため）。
+ *
+ * `.para-code/` 直下は `paradisAgentHooks.ts` の hooks スクリプトやリモートエージェントの
+ * ソケットが `$HOME/.para-code/` として既に使っている名前空間なので、専用のサブディレクトリを切る。
+ */
+const PASTED_IMAGE_DIR = '.para-code/pasted-images';
 /** 置きっぱなしを掃除する閾値。TUI が読む前に消さない程度に長く取る。 */
 const PASTED_IMAGE_TTL_MS = 60 * 60 * 1000;
 
@@ -80,28 +85,36 @@ export async function paradisTryTerminalImagePaste(
 
 /** 画像を接続先へ書き、そのパスを返す。書けなければ undefined。 */
 async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalImagePasteTarget): Promise<string | undefined> {
-	const directory = resolveRemoteDirectory(target);
-	if (!directory) {
+	const cwd = resolveRemoteCwd(target);
+	if (!cwd) {
 		return undefined;
 	}
-	const file = URI.joinPath(directory, `${PASTED_IMAGE_PREFIX}${Date.now()}.png`);
+	const directory = URI.joinPath(cwd, PASTED_IMAGE_DIR);
+	const file = URI.joinPath(directory, `${Date.now()}.png`);
+	// .gitignore を画像より先に用意する。逆順だと、書き終えた直後の一瞬 .png だけが
+	// git の変更一覧に見える窓ができてしまう。失敗しても貼り付け自体は成立するので無視してよい
+	// （内部で例外を握りつぶす）。可視性に関わる処理なのでここは待つ。
+	await ensurePastedImagesIgnored(directory, target.fileService);
 	try {
 		await target.fileService.writeFile(file, VSBuffer.wrap(image));
 	} catch {
 		return undefined;
 	}
-	// 過去に置いたものを掃除する。失敗しても貼り付け自体は成立するので無視してよい。
+	// 過去に置いたものの掃除はユーザーから見える効果が無いので、待たずに投げっぱなしにする。
 	void cleanupOldImages(directory, target.fileService, file);
 	return file.path;
 }
 
 /**
- * 画像の置き場所。ターミナルの作業ディレクトリを使う。
+ * ターミナルの作業ディレクトリを SSH 接続先の URI として解決する。cwd が取れないときは諦める。
  *
- * TUI は自分の作業ディレクトリ配下なら追加の確認なしに読めるため、ホーム配下などに置くより
- * 素直に繋がる。cwd が取れないときは諦める（ホームに置くと TUI 側で読めないことがある）。
+ * 注意: `target.cwd` は CwdDetection capability が OSC 7 / OSC 1337 のエスケープシーケンスから
+ * 読み取った値で、ターミナルに出力できる側（実行中のコマンドやリモートのプロセス）なら誰でも
+ * 書き換えられる。ここでは「クリップボードの画像を、ユーザーが今いるつもりの場所に置く」という
+ * UX 上の前提として素直に信頼しているが、任意ディレクトリへの書き込みを許すことにはなるので、
+ * 機密性の高い操作をこの値に追加で乗せないこと。
  */
-function resolveRemoteDirectory(target: IParadisTerminalImagePasteTarget): URI | undefined {
+function resolveRemoteCwd(target: IParadisTerminalImagePasteTarget): URI | undefined {
 	if (!target.cwd || !target.remoteAuthority) {
 		return undefined;
 	}
@@ -113,15 +126,39 @@ async function cleanupOldImages(directory: URI, fileService: IFileService, keep:
 		const entries = await fileService.resolve(directory);
 		const now = Date.now();
 		for (const child of entries.children ?? []) {
-			if (child.isDirectory || !child.name.startsWith(PASTED_IMAGE_PREFIX) || child.resource.path === keep.path) {
+			if (child.isDirectory || !child.name.endsWith('.png') || child.resource.path === keep.path) {
 				continue;
 			}
-			const stamp = Number(child.name.slice(PASTED_IMAGE_PREFIX.length, child.name.lastIndexOf('.')));
-			if (Number.isFinite(stamp) && now - stamp > PASTED_IMAGE_TTL_MS) {
+			const base = child.name.slice(0, child.name.lastIndexOf('.'));
+			if (!/^\d+$/.test(base)) {
+				continue;
+			}
+			if (now - Number(base) > PASTED_IMAGE_TTL_MS) {
 				await fileService.del(child.resource);
 			}
 		}
 	} catch {
 		// 掃除できなくても実害はない
+	}
+}
+
+/**
+ * `.para-code/pasted-images/` を Git の untracked ファイルとして出さないよう、ディレクトリ内に
+ * `.gitignore`（内容は `*` のみ）が無ければ作る。
+ *
+ * リポジトリルートの `.gitignore` を書き換える案は、tracked ファイルへの無断書き込みになり
+ * `git commit -a` 等でユーザーの意図しない差分が紛れ込むほか、読み取り失敗時に既存の内容を
+ * 破壊しかねないため採らない。自分専用のサブディレクトリの中に固定内容のファイルを置くだけなら、
+ * 既存ファイルには一切触れず、内容が常に同じなので並行書き込みが起きても壊れない。
+ */
+async function ensurePastedImagesIgnored(directory: URI, fileService: IFileService): Promise<void> {
+	try {
+		const gitignore = URI.joinPath(directory, '.gitignore');
+		if (await fileService.exists(gitignore)) {
+			return;
+		}
+		await fileService.writeFile(gitignore, VSBuffer.fromString('*\n'));
+	} catch {
+		// .gitignore を用意できなくても貼り付け自体は成立しているので無視してよい
 	}
 }
