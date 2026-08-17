@@ -40,7 +40,6 @@ import {
 	IParadisAgentCommandTemplate,
 	IParadisGitBranches,
 	PARADIS_DEFAULT_AGENT_COMMANDS,
-	PARADIS_WORKTREE_GIT_CHANNEL,
 	paradisBuildAgentCommand,
 	paradisBuildWorktreeNames,
 	paradisParseWorktreeNaming,
@@ -52,6 +51,7 @@ import {
 } from '../common/paradisWorktreeCreate.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
 
 /**
@@ -300,15 +300,16 @@ function fallbackBranchName(seeds: readonly (string | undefined)[]): string {
 /** 作成フォームの材料（リポジトリ一覧＋各ブランチ＋エージェント定義）を集める。 */
 export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): Promise<IParadisWorktreeCreateFormData> {
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
-	const sharedProcessService = accessor.get(ISharedProcessService);
 	const configurationService = accessor.get(IConfigurationService);
 	const fileService = accessor.get(IFileService);
 	const logService = accessor.get(ILogService);
-	const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
+	// リポジトリごとに git を動かすマシンが違いうる（接続中でも手元のリポジトリを混ぜられる）
+	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
 	const repos = await Promise.all(switchService.repositories.map(async r => {
+		const host = resolveGitHost(r.uri);
 		let branches: IParadisGitBranches = { branches: [], head: undefined };
 		try {
-			branches = await channel.call<IParadisGitBranches>('listBranches', [r.uri.fsPath]);
+			branches = await host.channel.call<IParadisGitBranches>('listBranches', [host.path(r.uri)]);
 		} catch (error) {
 			logService.warn('[ParadisWorktreeHeadlessCreate] listBranches failed', r.name, error);
 		}
@@ -448,7 +449,10 @@ export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, 
 export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, request: IParadisHeadlessWorktreeRequest, options: IParadisWorktreeCreateFlowOptions): Promise<IParadisWorktreeCreateFlowResult> {
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	const worktreeService = accessor.get(IParadisWorktreeService);
+	// Copilot 命名だけは手元の shared process が持つ（ネットワーク越しの API 呼び出しで、
+	// リポジトリのパスとは関係ない）。git はリポジトリのあるマシンで回す
 	const sharedProcessService = accessor.get(ISharedProcessService);
+	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
 	const configurationService = accessor.get(IConfigurationService);
 	const languageModelsService = accessor.get(ILanguageModelsService);
 	const authenticationService = accessor.get(IAuthenticationService);
@@ -462,13 +466,15 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	if (!repository) {
 		throw new Error(`unknown repository: ${request.repositoryId}`);
 	}
+	// git はこのリポジトリがあるマシンで動かす。作ろうとしている作業ツリーも同じマシンに置く
+	const gitHost = resolveGitHost(repository.uri);
 	const prompt = (request.prompt ?? '').trim();
 	const agentId = request.agentId && request.agentId.length > 0 ? request.agentId : 'none';
 
 	// ベースブランチと重複回避に使う既存ブランチ一覧（取得失敗時は空扱いで進める）
 	let branchesInfo: IParadisGitBranches = { branches: [], head: undefined };
 	try {
-		branchesInfo = await sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call<IParadisGitBranches>('listBranches', [repository.uri.fsPath]);
+		branchesInfo = await gitHost.channel.call<IParadisGitBranches>('listBranches', [gitHost.path(repository.uri)]);
 	} catch (error) {
 		logService.warn('[ParadisWorktreeHeadlessCreate] listBranches failed', error);
 	}
@@ -520,9 +526,9 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const worktreeUri = computeWorktreeUri(configurationService, repository, dirName);
 	// ダイアログ実装と同じく、これから作るターミナルを常にこのworktreeへ明示的に紐付ける
 	const targetStateKey = paradisWorktreeStateKey(worktreeUri);
-	await sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('addWorktree', [{
-		repoPath: repository.uri.fsPath,
-		worktreePath: worktreeUri.fsPath,
+	await gitHost.channel.call('addWorktree', [{
+		repoPath: gitHost.path(repository.uri),
+		worktreePath: gitHost.path(worktreeUri),
 		newBranch: branch,
 		baseRef,
 	}]);

@@ -35,7 +35,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
-import { paradisPickAndAddLocalRepositories } from '../browser/paradisWorkspaceSwitch.contribution.js';
+import { paradisLocalRepositoryPickContext, paradisPickAndAddLocalRepositories } from '../browser/paradisPickLocalRepositories.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID, PARADIS_CLONE_PARENT_DIR_SETTING, paradisParseGitUrl } from '../common/paradisRepositoryClone.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
@@ -93,6 +93,8 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		const remoteAgentService = accessor.get(IRemoteAgentService);
 		const switchService = accessor.get(IParadisWorkspaceSwitchService);
 		const contextService = accessor.get(IWorkspaceContextService);
+		// このフローは await をまたぐので、フォルダ選択に要るサービスも入口で取り出しておく
+		const pickContext = paradisLocalRepositoryPickContext(accessor);
 
 		// クリップボードに Git URL があればプリフィルする
 		let value = '';
@@ -114,7 +116,7 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 			if (result.kind === 'local') {
 				// 選んだ項目のマシン（接続先 / このPC）でフォルダを選ばせる。渡さないと
 				// 接続中は常に接続先が開き、「このPCの…」を選んでも相手側が出てしまう
-				await paradisPickAndAddLocalRepositories(switchService, fileDialogService, contextService, result.scheme);
+				await paradisPickAndAddLocalRepositories(pickContext, result.scheme);
 				return;
 			}
 			if (result.kind === 'changeDestination') {
@@ -373,7 +375,11 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 						lastPercent = Math.max(lastPercent, event.overallPercent);
 						progress.report({ message: event.message, increment });
 					}));
-					const request: IParadisCloneRepositoryRequest = { url, targetPath: target.fsPath, cloneId };
+					// 接続先へ渡すパスに fsPath を使ってはいけない。fsPath はこのウィンドウが動いている
+					// OS を見て区切りを付け替えるので、Windows から Linux の接続先へ繋いでいると
+					// /home/u/x が \home\u\x に化ける
+					const targetPath = remoteConnection ? target.path : target.fsPath;
+					const request: IParadisCloneRepositoryRequest = { url, targetPath, cloneId };
 					await channel.call('cloneRepository', [request]);
 				} finally {
 					listeners.dispose();

@@ -6,8 +6,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // リポジトリの .paracode.json から setup/teardown スクリプトを読み取り、Workspace Trust と
-// スクリプト内容ごとの初回承認を強制した上で shared process の paradisWorktreeGitChannel 経由で
-// 実行するオーケストレーション。
+// スクリプト内容ごとの初回承認を強制した上で paradisWorktreeGitChannel 経由で実行する
+// オーケストレーション。スクリプトはリポジトリのあるマシン（接続中なら接続先）で回す。
 
 import { hash } from '../../../../base/common/hash.js';
 import { joinPath } from '../../../../base/common/resources.js';
@@ -16,11 +16,10 @@ import { URI } from '../../../../base/common/uri.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
-import { PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorkspaceLifecycleConfig, paradisParseWorkspaceLifecycleConfig, ParadisWorkspaceLifecycleKind } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
@@ -54,7 +53,8 @@ export async function paradisReadWorkspaceLifecycleConfig(fileService: IFileServ
 export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAccessor, kind: ParadisWorkspaceLifecycleKind, repository: IParadisWorkspaceRepository, worktreeUri: URI): Promise<boolean> {
 	const trustService = accessor.get(IWorkspaceTrustManagementService);
 	const fileService = accessor.get(IFileService);
-	const sharedProcessService = accessor.get(ISharedProcessService);
+	// 承認ダイアログの await をまたいで accessor は使えないので、ここで取り出しておく
+	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
 	const dialogService = accessor.get(IDialogService);
 	const storageService = accessor.get(IStorageService);
 	const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
@@ -97,8 +97,10 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 		storageService.store(LIFECYCLE_APPROVED_STORAGE_KEY, JSON.stringify(approved), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
-	await sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('runLifecycleScript', [{
-		kind, repoPath: repository.uri.fsPath, worktreePath: worktreeUri.fsPath, script,
+	// スクリプトを動かすのはリポジトリがあるマシン。作業ツリーは常に同じマシンにある
+	const host = resolveGitHost(repository.uri);
+	await host.channel.call('runLifecycleScript', [{
+		kind, repoPath: host.path(repository.uri), worktreePath: host.path(worktreeUri), script,
 		...(timeoutMinutes !== undefined ? { timeoutMinutes } : {})
 	}]);
 	return true;

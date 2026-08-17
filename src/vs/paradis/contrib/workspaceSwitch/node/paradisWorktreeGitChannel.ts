@@ -6,9 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// shared process 上で git worktree 操作（worktree add / ブランチ列挙）を実行するサービスと
-// IPC チャネル。workbench からは ISharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
-// 経由で呼ぶ。実装方式は platform/git/node/localGitService.ts（upstream の低レベル git 実行）と
+// git worktree 操作（worktree add / ブランチ列挙）を実行するサービスと IPC チャネル。
+// shared process と REH（接続先）の両方に同じチャネルを生やしてあり、workbench からは
+// electron-browser/paradisWorktreeGitChannelClient.ts 経由で「そのリポジトリがあるマシン」へ
+// 繋ぐ。実装方式は platform/git/node/localGitService.ts（upstream の低レベル git 実行）と
 // 同じ execFile('git', ...) 直叩き。upstream サービスの改変を避けるため fork 側に独立させている。
 
 import * as cp from 'child_process';
@@ -758,7 +759,9 @@ export function registerParadisWorktreeGit(server: IPCServer<string>, logService
  *
  * configurationService / args を渡さないのは、どちらもログインシェルの環境変数を解決する
  * ためのオプションで（未指定でも既定の解決にフォールバックする）、サーバー側には対応する
- * 実体が無いため。WSL 振り分けもホスト OS 判定で無効になる（サーバーは Linux）。
+ * 実体が無いため。ログインシェルを介する runLifecycleScript は接続先の ~/.profile 等で PATH が
+ * 戻るが、execFile 直叩きの git / gh は接続先の PATH に載っている必要がある（gh を
+ * ~/.local/bin などに入れている接続先では、PR 状態が取れないことがある）。
  */
 export function registerParadisWorktreeGitForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
 	const service = new ParadisWorktreeGitService(logService);

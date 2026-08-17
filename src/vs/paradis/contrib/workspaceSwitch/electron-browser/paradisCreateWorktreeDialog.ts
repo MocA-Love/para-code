@@ -23,7 +23,6 @@ import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -33,12 +32,12 @@ import {
 	IParadisAgentLaunchOptions,
 	IParadisGitBranches,
 	PARADIS_DEFAULT_AGENT_COMMANDS,
-	PARADIS_WORKTREE_GIT_CHANNEL,
 	paradisBuildAgentCommand,
 	paradisDeduplicateWorktreeDirName,
 	paradisSanitizeBranchName,
 } from '../common/paradisWorktreeCreate.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
+import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
 
@@ -132,7 +131,9 @@ const PREVIEW_PROMPT_MAX_LENGTH = 40;
 export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, preselectedRepositoryId?: string, prefill?: IParadisHeadlessWorktreeRequest): void {
 	const dialog = new ParadisCreateWorktreeDialog(
 		accessor.get(ILayoutService),
-		accessor.get(ISharedProcessService),
+		// git を動かすマシンはリポジトリごとに違いうるので、選択が変わるたびに引き直せるよう
+		// チャネルそのものではなく解決関数を渡す
+		paradisWorktreeGitHostResolver(accessor),
 		accessor.get(IParadisWorkspaceSwitchService),
 		accessor.get(IParadisWorktreeService),
 		accessor.get(IConfigurationService),
@@ -187,7 +188,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 	constructor(
 		layoutService: ILayoutService,
-		private readonly sharedProcessService: ISharedProcessService,
+		private readonly resolveGitHost: (resource: URI) => IParadisWorktreeGitHost,
 		private readonly switchService: IParadisWorkspaceSwitchService,
 		private readonly worktreeService: IParadisWorktreeService,
 		private readonly configurationService: IConfigurationService,
@@ -569,8 +570,8 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		loadingOption.value = '';
 		loadingOption.textContent = STR_BRANCHES_LOADING;
 		try {
-			const branches = await this.sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
-				.call<IParadisGitBranches>('listBranches', [repository.uri.fsPath]);
+			const host = this.resolveGitHost(repository.uri);
+			const branches = await host.channel.call<IParadisGitBranches>('listBranches', [host.path(repository.uri)]);
 			if (this._store.isDisposed || this._selectedRepository?.id !== repository.id) {
 				return;
 			}
