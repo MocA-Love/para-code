@@ -9,7 +9,7 @@
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -464,6 +464,17 @@ export class MobileSession {
  * shared process 常駐のモバイルリレーサービス。リレーへの outbound WSS を所有し、
  * E2E暗号・ペアリング・フレーム多重化を行う。renderer とは IPC チャネルで接続する。
  */
+interface IParadisMobileRelayMetricsTimer extends IDisposable {
+	cancel(): void;
+	cancelAndSet(runner: () => void, interval: number): void;
+}
+
+/** @internal Constructor dependencies used only by deterministic lifecycle tests. */
+export interface IParadisMobileRelayServiceTestSeams {
+	readonly stateBroadcastMetricsTimer?: IParadisMobileRelayMetricsTimer;
+	readonly disableHostResourceSampling?: boolean;
+}
+
 export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService {
 	declare readonly _serviceBrand: undefined;
 
@@ -497,7 +508,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private enabled = false;
 	private connectionState: ParadisMobileConnectionState = 'disabled';
 	// Mobile relay が有効な間だけ動かし、shared process の不要な定期起床を避ける。
-	private readonly stateBroadcastMetricsTimer = this._register(new IntervalTimer());
+	private readonly stateBroadcastMetricsTimer: IParadisMobileRelayMetricsTimer;
 	private stateBroadcastMetricsEnabled = false;
 	private stateBroadcastMetricsGeneration = 0;
 
@@ -569,8 +580,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		_args?: NativeParsedArgs,
 		// 生成済みAivis音声（MP3）。同一 shared process の通知サービスが発火する。
 		voiceClips?: Event<VSBuffer>,
+		testSeams?: IParadisMobileRelayServiceTestSeams,
 	) {
 		super();
+		this.stateBroadcastMetricsTimer = this._register(testSeams?.stateBroadcastMetricsTimer ?? new IntervalTimer());
 		this.disconnectReporter = this._register(new ParadisRelayDisconnectReporter({
 			reportDelayMs: RELAY_DISCONNECT_REPORT_DELAY_MS,
 			reportAfterAttempts: RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS,
@@ -657,7 +670,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.webrtcRendererLeases.clear();
 			this.disconnect();
 		}));
-		this.startHostResourceSampling();
+		if (!testSeams?.disableHostResourceSampling) {
+			this.startHostResourceSampling();
+		}
 	}
 
 	/**
