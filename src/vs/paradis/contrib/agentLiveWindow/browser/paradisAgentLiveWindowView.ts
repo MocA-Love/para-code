@@ -143,6 +143,16 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	/** タイルの壁を縦に送るスクロール領域。タイル上のホイールをここへ流し直すために持つ */
 	private readonly scroll: HTMLElement;
 	private readonly wall: HTMLElement;
+	/** 手動並び替え中、挿入先を示す縦線。壁の直下に1本だけ置き、dragover のたびに位置を書き換える */
+	private readonly insertLine: HTMLElement;
+	/**
+	 * setDragImage 用のゴースト要素。コンストラクタで先に作って画面外に置いておく
+	 * (ドラッグ開始のたびに生成すると、レイアウトが一度も走っていない状態のまま
+	 * setDragImage に渡ることになり、初回だけゴーストが空に見えることがある)。
+	 */
+	private readonly dragGhostElement: HTMLElement;
+	/** dragover で判定した現在の挿入先 (どのタイルの前/後か) */
+	private dropTarget: { readonly token: string; readonly after: boolean } | undefined;
 	private readonly filterBar: HTMLElement;
 	private readonly filterBarText: HTMLElement;
 	private readonly countText: HTMLElement;
@@ -163,13 +173,32 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		container: HTMLElement,
 		private readonly model: ParadisAgentLiveModel,
 		private readonly viewState: IParadisAgentLiveViewState,
+		/**
+		 * この aux window を透過で開けたか (Windows では常に false)。auxiliary window の
+		 * コンテナ要素はメインウィンドウの class (`paradis-transparent` を含む) を自動でミラーし
+		 * 続けるため (applyHTML の trackAttributes)、そこへ独自クラスを付けても次の同期で消される。
+		 * 代わりに、このビューが自分で握っている {@link root} へクラスを立てることで、透過対応
+		 * するのを Windows では確実に避ける。
+		 */
+		transparencyActive: boolean,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
 		const root = append(container, $('.paradis-agent-live-window'));
+		root.classList.toggle('paradis-agent-live-transparent', transparencyActive);
 		this.root = root;
+
+		const dragGhost = $('.paradis-agent-live-drag-ghost');
+		// 画面外に置く。setDragImage は呼び出し時点のスナップショットを使うため、要素が
+		// このタイミングで DOM に存在してさえいれば見た目に出す必要はない。
+		dragGhost.style.position = 'fixed';
+		dragGhost.style.top = '-9999px';
+		dragGhost.style.left = '-9999px';
+		getWindow(container).document.body.appendChild(dragGhost);
+		this._register({ dispose: () => dragGhost.remove() });
+		this.dragGhostElement = dragGhost;
 
 		// --- ツールバー (1段) -------------------------------------------------------------
 		const toolbar = append(root, $('.paradis-agent-live-toolbar'));
@@ -204,6 +233,25 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		const scroll = append(root, $('.paradis-agent-live-scroll'));
 		this.scroll = scroll;
 		this.wall = append(scroll, $('.paradis-agent-live-wall'));
+		// 壁 (wall) の子要素として置く。render() の place() はタイルの root しか動かさないため、
+		// insertLine は「place() が触れない余り物」として毎回タイルの後ろへ押し出され続ける
+		// (place() は wall.childNodes.item(cursor) と比較して不一致なら insertBefore するので、
+		// タイルではない insertLine は必ず不一致になり前へ押し出される)。壁の外に置いて座標系を
+		// 分けるより単純なため、この暗黙の押し出しに乗っている。
+		this.insertLine = append(this.wall, $('.paradis-agent-live-insert-line'));
+		// dragover/drop は壁側で一括して受ける。個々のタイルに付けていた頃は、ドロップ先の
+		// カード全体を枠でハイライトしていたが、掴んでいないカードまで光って見えて紛らわしかった
+		// ため、挿入位置を示す縦線 (insertLine) 方式に変えている。
+		this._register(addDisposableListener(this.wall, EventType.DRAG_OVER, event => this.onWallDragOver(event)));
+		this._register(addDisposableListener(this.wall, EventType.DROP, event => this.onWallDrop(event)));
+		// 壁の外 (ツールバーや絞り込みバーの上) へポインタが出たら線を消す。dragleave は子要素間の
+		// 出入りでも飛んでくるため、relatedTarget が壁の中に留まっている間は無視する。
+		this._register(addDisposableListener(this.wall, EventType.DRAG_LEAVE, event => {
+			const related = event.relatedTarget;
+			if (!isHTMLElement(related) || !this.wall.contains(related)) {
+				this.hideInsertLine();
+			}
+		}));
 
 		this.observeIntersections(scroll);
 
@@ -353,14 +401,20 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		const disposables = new DisposableStore();
 		const root = $('.paradis-agent-live-tile');
-		root.draggable = true;
 		root.tabIndex = 0;
-
-		const spaceBar = append(root, $('.paradis-agent-live-spacebar'));
 
 		// 見出しは1行だけ。名前・経過時間・状態を横に並べ、タイルの面積を端末へ回す。
 		const head = append(root, $('.paradis-agent-live-tile-head'));
-		append(head, $('span.paradis-agent-live-drag-handle.codicon.codicon-gripper'));
+		// スペース色の帯はヘッダーの高さだけに収める (head 自身を position: relative の基準に
+		// している)。以前はタイル全体に伸ばしていたが、端末領域の不透明な背景でほぼ隠れて見えず、
+		// ウィンドウ透過を有効にしたときだけ帯が下まで見えてしまっていた。
+		const spaceBar = append(head, $('.paradis-agent-live-spacebar'));
+		const dragHandle = append(head, $('span.paradis-agent-live-drag-handle.codicon.codicon-gripper'));
+		// 掴めるのはハンドルだけ。タイル全体を draggable にすると、見出しのボタンや端末の
+		// テキスト選択からもドラッグが始まってしまい、既定のブラウザゴースト (xterm の中身
+		// ごとの要素スナップショット) が隣のタイルへ重なって見える不具合の原因になっていた。
+		dragHandle.draggable = true;
+		disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), dragHandle, localize('paradis.agentLive.dragHandle', "ドラッグして並べ替え")));
 		const title = append(head, $('.paradis-agent-live-tile-title.paradis-agent-live-grow'));
 		// 見出しは幅次第で切り詰められる。全文を読む手段を残す。
 		const titleHover = disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), title, ''));
@@ -436,35 +490,24 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			this.scroll.scrollTop += wheelScrollPixels(event, this.scroll.clientHeight);
 		}, { capture: true, passive: false }));
 
-		// ドラッグ＆ドロップによる手動並び替え。
-		disposables.add(addDisposableListener(root, EventType.DRAG_START, event => {
+		// ドラッグ＆ドロップによる手動並び替え。dragover/drop は壁 (wall) 側で一括して受ける
+		// (onWallDragOver/onWallDrop)。ここではドラッグの開始と終了、ゴーストの差し替えだけを扱う。
+		disposables.add(addDisposableListener(dragHandle, EventType.DRAG_START, event => {
 			this.draggedToken = entry.token;
 			root.classList.add('dragging');
 			event.dataTransfer?.setData('text/plain', entry.token);
+			// setDragImage を指定しないと、ブラウザ既定のゴースト (タイル全体、xterm の中身
+			// ごとの要素スナップショット) が使われ、隣のタイルへ重なって「掴んでいないタイルまで
+			// プレビューされている」ように見えてしまう。タイトルだけの軽量なチップに差し替える。
+			// entry はタイル生成時点のクロージャなので、名前が変わった端末では古いラベルになる
+			// ことがある。this.tiles から今の entry を引き直す (ホイール処理と同じ理由)。
+			const current = this.tiles.get(entry.token)?.entry ?? entry;
+			event.dataTransfer?.setDragImage(this.dragGhost(tileTitleText(current)), 14, 14);
 		}));
-		disposables.add(addDisposableListener(root, EventType.DRAG_END, () => {
+		disposables.add(addDisposableListener(dragHandle, EventType.DRAG_END, () => {
 			this.draggedToken = undefined;
 			root.classList.remove('dragging');
-		}));
-		disposables.add(addDisposableListener(root, EventType.DRAG_OVER, event => {
-			if (this.draggedToken && this.draggedToken !== entry.token) {
-				event.preventDefault();
-				root.classList.add('drop-target');
-			}
-		}));
-		disposables.add(addDisposableListener(root, EventType.DRAG_LEAVE, () => root.classList.remove('drop-target')));
-		disposables.add(addDisposableListener(root, EventType.DROP, event => {
-			event.preventDefault();
-			root.classList.remove('drop-target');
-			const dragged = this.draggedToken;
-			this.draggedToken = undefined;
-			if (!dragged || dragged === entry.token) {
-				return;
-			}
-			this.viewState.manualOrder = paradisApplyAgentLiveManualDrop(this.viewState.manualOrder, this.visibleOrder, dragged, entry.token);
-			// 自動ソート中にドラッグされたら、見えている並びを保ったまま手動へ移す。
-			this.viewState.sort = 'manual';
-			this.commit();
+			this.hideInsertLine();
 		}));
 
 		let mirror: ParadisAgentLiveMirror | undefined;
@@ -714,6 +757,60 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			}
 		}, { root: scroll, rootMargin: '150px' });
 		this._register({ dispose: () => this.intersectionObserver?.disconnect() });
+	}
+
+	// ------------------------------------------------------------------ ドラッグ&ドロップ
+
+	/**
+	 * dragover を壁全体で受け、ポインタの下にあるタイルの左右どちら側へ挿すかを判定して
+	 * 挿入線 (insertLine) をその境目へ動かす。実際の並べ替えは drop 時にまとめて行う。
+	 */
+	private onWallDragOver(event: DragEvent): void {
+		if (!this.draggedToken) {
+			return;
+		}
+		const targetElement = isHTMLElement(event.target) ? event.target.closest<HTMLElement>('.paradis-agent-live-tile') : null;
+		const token = targetElement && this.tokensByElement.get(targetElement);
+		if (!targetElement || !token || token === this.draggedToken) {
+			this.hideInsertLine();
+			return;
+		}
+		event.preventDefault();
+		const rect = targetElement.getBoundingClientRect();
+		const wallRect = this.wall.getBoundingClientRect();
+		const after = event.clientX > rect.left + rect.width / 2;
+		this.dropTarget = { token, after };
+		this.insertLine.style.display = 'block';
+		this.insertLine.style.top = `${rect.top - wallRect.top}px`;
+		this.insertLine.style.height = `${rect.height}px`;
+		this.insertLine.style.width = '3px';
+		this.insertLine.style.left = `${(after ? rect.right : rect.left) - wallRect.left - 1.5}px`;
+	}
+
+	private onWallDrop(event: DragEvent): void {
+		event.preventDefault();
+		const dragged = this.draggedToken;
+		const target = this.dropTarget;
+		this.draggedToken = undefined;
+		this.hideInsertLine();
+		if (!dragged || !target || dragged === target.token) {
+			return;
+		}
+		this.viewState.manualOrder = paradisApplyAgentLiveManualDrop(this.viewState.manualOrder, this.visibleOrder, dragged, target.token, target.after);
+		// 自動ソート中にドラッグされたら、見えている並びを保ったまま手動へ移す。
+		this.viewState.sort = 'manual';
+		this.commit();
+	}
+
+	private hideInsertLine(): void {
+		this.insertLine.style.display = 'none';
+		this.dropTarget = undefined;
+	}
+
+	/** setDragImage 用の軽量ゴースト ({@link dragGhostElement}、コンストラクタで生成済み) のラベルを差し替えて返す。 */
+	private dragGhost(label: string): HTMLElement {
+		this.dragGhostElement.textContent = label;
+		return this.dragGhostElement;
 	}
 
 	// ------------------------------------------------------------------ 操作

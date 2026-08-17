@@ -379,12 +379,16 @@ export function paradisGroupAgentLiveEntries(
  * 自動ソート中にドラッグされた場合は、その時点で見えている並び (visibleOrder) を手動順の
  * 土台にする。そうしないと「画面の並びと手動順が無関係」な状態から1件だけ動かすことになり、
  * 直後に全体が別の順序へ飛ぶ。
+ *
+ * @param insertAfter true なら target の直後、false/未指定なら target の直前へ挿入する。
+ * 挿入線 (どちらの隣に置くかをポインタ位置で示す) が指す側に正しく挿さるようにするための引数。
  */
 export function paradisApplyAgentLiveManualDrop(
 	currentOrder: readonly string[],
 	visibleOrder: readonly string[],
 	dragged: string,
 	target: string,
+	insertAfter?: boolean,
 ): string[] {
 	const base = [...currentOrder];
 	// 見えているトークンを、現在の手動順に無いものも含めて土台へ反映する。
@@ -401,7 +405,8 @@ export function paradisApplyAgentLiveManualDrop(
 		base.splice(from, 1);
 	}
 	const to = base.indexOf(target);
-	base.splice(to < 0 ? base.length : to, 0, dragged);
+	const at = to < 0 ? base.length : (insertAfter ? to + 1 : to);
+	base.splice(at, 0, dragged);
 	return base;
 }
 
