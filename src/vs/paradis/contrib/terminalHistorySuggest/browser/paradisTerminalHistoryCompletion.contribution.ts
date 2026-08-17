@@ -195,24 +195,20 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 	}
 
 	private async _resolveLocation(): Promise<IParadisTerminalHistoryLocation | undefined> {
-		try {
-			const remoteEnvironment = await this._remoteAgentService.getEnvironment();
-			if (remoteEnvironment?.os === OperatingSystem.Windows || !remoteEnvironment && isWindows) {
-				return undefined;
-			}
-			const home = remoteEnvironment?.userHome?.fsPath ?? env['HOME'];
-			if (!home) {
-				return undefined;
-			}
-			const remoteAuthority = this._remoteAgentService.getConnection()?.remoteAuthority;
-			return Object.freeze({
-				scheme: remoteAuthority ? Schemas.vscodeRemote : Schemas.file,
-				authority: remoteAuthority,
-				home,
-			});
-		} catch {
+		const remoteEnvironment = await this._remoteAgentService.getEnvironment();
+		if (remoteEnvironment?.os === OperatingSystem.Windows || !remoteEnvironment && isWindows) {
 			return undefined;
 		}
+		const home = remoteEnvironment?.userHome?.fsPath ?? env['HOME'];
+		if (!home) {
+			return undefined;
+		}
+		const remoteAuthority = this._remoteAgentService.getConnection()?.remoteAuthority;
+		return Object.freeze({
+			scheme: remoteAuthority ? Schemas.vscodeRemote : Schemas.file,
+			authority: remoteAuthority,
+			home,
+		});
 	}
 
 	private _createFileRequest(shellType: PosixShellType.Bash | PosixShellType.Zsh, location: IParadisTerminalHistoryLocation): IParadisTerminalHistoryFileRequest {

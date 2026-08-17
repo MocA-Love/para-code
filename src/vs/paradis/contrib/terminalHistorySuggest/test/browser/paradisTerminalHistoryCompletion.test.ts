@@ -143,7 +143,7 @@ interface ITestCounters {
 interface ITestHarnessOptions {
 	readonly shellType?: TerminalShellType;
 	readonly persistedCommands?: readonly string[];
-	readonly environment?: IRemoteAgentEnvironment | null | Promise<IRemoteAgentEnvironment | null>;
+	readonly environment?: IRemoteAgentEnvironment | null | Promise<IRemoteAgentEnvironment | null> | (() => Promise<IRemoteAgentEnvironment | null>);
 	readonly remoteAuthority?: string;
 	readonly read?: (resource: URI, token: CancellationToken | undefined) => Promise<IFileContent>;
 	readonly decodeZshHistory?: (bytes: Uint8Array) => string;
@@ -231,7 +231,7 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 	const remoteAgentService: Pick<IRemoteAgentService, 'getEnvironment' | 'getConnection'> = {
 		getEnvironment: () => {
 			counters.environment++;
-			return Promise.resolve(environment);
+			return typeof environment === 'function' ? environment() : Promise.resolve(environment);
 		},
 		getConnection: () => options.remoteAuthority ? { remoteAuthority: options.remoteAuthority } as IRemoteAgentConnection : null,
 	};
@@ -579,6 +579,26 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		assert.deepStrictEqual(await windows.provider.provideCompletions('e', 1, CancellationToken.None), []);
 		assert.strictEqual(windows.counters.read, 0);
 		windows.provider.dispose();
+	});
+
+	test('retries location resolution after a transient environment failure', async () => {
+		let attempts = 0;
+		const harness = createHarness({
+			environment: () => ++attempts === 1
+				? Promise.reject(new Error('environment unavailable'))
+				: Promise.resolve(createRemoteEnvironment('/home/test')),
+		});
+
+		await assert.rejects(() => harness.provider.provideCompletions('e', 1, CancellationToken.None), /environment unavailable/);
+		const recovered = await harness.provider.provideCompletions('e', 1, CancellationToken.None);
+
+		assert.deepStrictEqual({ attempts, read: harness.counters.read, resources: harness.resources.map(resource => resource.toString()), recovered }, {
+			attempts: 2,
+			read: 1,
+			resources: ['file:///home/test/.zsh_history'],
+			recovered: [completion('echo two', '~/.zsh_history'), completion('echo one', '~/.zsh_history')],
+		});
+		harness.provider.dispose();
 	});
 
 	test('uses the exact same full URI object for the cache key and file read', async () => {
