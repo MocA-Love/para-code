@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import * as assert from 'assert';
 import * as sinon from 'sinon';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
@@ -253,6 +255,7 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 	});
 
 	test('holds the dashboard warm lease only for a visible editor with an input and reacquires it on return', async () => {
+		sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
 		const harness = createHarness();
 		disposables.add(harness.instantiationService);
 		disposables.add(toDisposable(() => harness.configuration.dispose()));

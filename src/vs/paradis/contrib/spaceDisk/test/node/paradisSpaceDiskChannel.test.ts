@@ -377,6 +377,40 @@ suite('ParadisSpaceDiskService', () => {
 		assert.strictEqual((periodicScheduler.dispose as sinon.SinonSpy).callCount, 1);
 	});
 
+	test('bounds warm failures per target signature across alternating owner renewals', async () => {
+		let runner: (() => void) | undefined;
+		const periodicScheduler: IParadisWarmLeaseScheduler = {
+			schedule: () => { },
+			cancel: () => { },
+			dispose: () => { },
+		};
+		const { channel, invocations, service } = createService(
+			() => Promise.reject(new Error('measurement failed')),
+			undefined,
+			callback => {
+				runner = callback;
+				return periodicScheduler;
+			},
+		);
+		const owners = [
+			{ ownerId: 'owner-a', active: true as const, targets: [target('owner-a')] },
+			{ ownerId: 'owner-b', active: true as const, targets: [target('owner-b')] },
+		];
+
+		for (let index = 0; index < 10; index++) {
+			await channel.call('', 'setWarmLease', [owners[index % owners.length]]);
+			runner!();
+			await flushMicrotasks();
+		}
+
+		assert.deepStrictEqual(invocations.map(invocation => invocation.root), [
+			'/repositories/owner-a', '/repositories/owner-b',
+			'/repositories/owner-a', '/repositories/owner-b',
+			'/repositories/owner-a', '/repositories/owner-b',
+		]);
+		service.dispose();
+	});
+
 	test('does not let a fresh cache hide a renewed or fallback snapshot with a different signature', async () => {
 		let runner: (() => void) | undefined;
 		const periodicScheduler: IParadisWarmLeaseScheduler = {

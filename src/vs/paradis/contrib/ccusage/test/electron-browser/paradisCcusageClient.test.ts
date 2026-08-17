@@ -7,7 +7,7 @@ import * as assert from 'assert';
 import * as sinon from 'sinon';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
@@ -28,6 +28,10 @@ async function flushMicrotasks(): Promise<void> {
 	for (let index = 0; index < 4; index++) {
 		await Promise.resolve();
 	}
+}
+
+function configurationChange(affectedKey: string): IConfigurationChangeEvent {
+	return { affectsConfiguration: key => key === affectedKey } as IConfigurationChangeEvent;
 }
 
 suite('ParadisCcusageClient', () => {
@@ -58,7 +62,7 @@ suite('ParadisCcusageClient', () => {
 
 	test('creates status and dashboard leases from the authoritative fixed targets', async () => {
 		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
-		const configurationChanges = new Emitter<void>();
+		const configurationChanges = new Emitter<IConfigurationChangeEvent>();
 		const calls: IChannelCall[] = [];
 		const channel = {
 			call<T>(command: string, args?: unknown): Promise<T> {
@@ -130,7 +134,7 @@ suite('ParadisCcusageClient', () => {
 
 	test('updates warm targets only when the configuration event requests a renewal', async () => {
 		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
-		const configurationChanges = new Emitter<void>();
+		const configurationChanges = new Emitter<IConfigurationChangeEvent>();
 		const calls: IChannelCall[] = [];
 		const channel = {
 			call<T>(command: string, args?: unknown): Promise<T> {
@@ -148,7 +152,9 @@ suite('ParadisCcusageClient', () => {
 		await flushMicrotasks();
 		clock.setSystemTime(new Date(2026, 7, 17, 12, 0, 0));
 		await flushMicrotasks();
-		configurationChanges.fire();
+		configurationChanges.fire(configurationChange('editor.fontSize'));
+		await flushMicrotasks();
+		configurationChanges.fire(configurationChange('paradis.ccusage.executablePath'));
 		await flushMicrotasks();
 		const ownerId = ((calls[0]?.args as readonly [{ readonly ownerId: string }])[0]).ownerId;
 		lease.dispose();
@@ -164,7 +170,7 @@ suite('ParadisCcusageClient', () => {
 
 	test('keeps a captured channel for the same remote connection and transfers ownership across routes', async () => {
 		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
-		const configurationChanges = new Emitter<void>();
+		const configurationChanges = new Emitter<IConfigurationChangeEvent>();
 		const calls: IChannelCall[] = [];
 		const createChannel = (name: string) => ({
 			call<T>(command: string, args?: unknown): Promise<T> {
@@ -212,7 +218,7 @@ suite('ParadisCcusageClient', () => {
 
 	test('releases the captured attempted route when an ambiguous acquire rejects before retirement', async () => {
 		sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
-		const configurationChanges = new Emitter<void>();
+		const configurationChanges = new Emitter<IConfigurationChangeEvent>();
 		const calls: IChannelCall[] = [];
 		const remoteA = {
 			call<T>(command: string, args?: unknown): Promise<T> {
@@ -252,7 +258,7 @@ suite('ParadisCcusageClient', () => {
 
 	test('keeps the captured local channel when the shared process returns a new wrapper', async () => {
 		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
-		const configurationChanges = new Emitter<void>();
+		const configurationChanges = new Emitter<IConfigurationChangeEvent>();
 		const calls: IChannelCall[] = [];
 		const createChannel = (name: string) => ({
 			call<T>(command: string, args?: unknown): Promise<T> {

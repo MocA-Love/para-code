@@ -176,8 +176,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 	private readonly warmLeaseOwners = new Map<string, IWarmLeaseOwner>();
 	private readonly warmLeaseListener: IDisposable;
 	private readonly warmPeriodicScheduler: IParadisWarmLeaseScheduler;
-	private failures = 0;
-	private failureGeneration: number | undefined;
+	private readonly failuresBySignature = new Map<string, number>();
 	private warmScheduled = false;
 	private disposed = false;
 	/** 走行中の計測へ渡す中断フラグ。dispose で立てて、フォルダを歩き切る前に止める。 */
@@ -237,7 +236,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		// 諦めた対象を再開してよいのは、ユーザーが明示的に測り直したときだけ。
 		// 画面を開くたびにリセットすると、失敗し続ける環境で永久にリトライすることになる。
 		if (bypassCache) {
-			this.failures = 0;
+			this.failuresBySignature.delete(signature);
 			this.syncWarmTimer();
 		}
 
@@ -280,7 +279,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 			.then(result => {
 				if (!this.disposed && this.inflight === promise && (this.inflightForegroundCacheInterest || shouldCache())) {
 					this.cache = { result, at: this.now(), signature };
-					this.failures = 0;
+					this.failuresBySignature.delete(signature);
 				}
 				return result;
 			})
@@ -380,28 +379,25 @@ export class ParadisSpaceDiskService implements IDisposable {
 			return;
 		}
 		const { generation, key, target: { targets } } = snapshot;
-		if (this.failureGeneration !== generation) {
-			this.failureGeneration = generation;
-			this.failures = 0;
-		}
-		if (this.failures >= MAX_CONSECUTIVE_FAILURES || targets.length === 0 || this.inflight !== undefined) {
+		const signature = signatureOf(targets);
+		if ((this.failuresBySignature.get(signature) ?? 0) >= MAX_CONSECUTIVE_FAILURES || targets.length === 0 || this.inflight !== undefined) {
 			this.syncWarmTimer();
 			return;
 		}
-		const signature = signatureOf(targets);
 		// 手動更新の直後などで十分新しいなら、この周回は何もしない。
 		if (this.cache?.signature === signature && this.now() - this.cache.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
 			return;
 		}
 		try {
 			await this.run(targets, signature, () => this.warmLeaseTracker.isCurrent(key, generation), false);
-			if (this.warmLeaseTracker.isCurrent(key, generation)) {
-				this.failures = 0;
+			if (!this.disposed) {
+				this.failuresBySignature.delete(signature);
 			}
 		} catch (error) {
 			// 失敗してもキャッシュは壊さない(古い値が残るだけ)。続けて失敗したら諦める。
-			if (this.warmLeaseTracker.isCurrent(key, generation)) {
-				this.failures++;
+			// owner generation が完了直前に切り替わっても、同じ署名の失敗履歴は失わない。
+			if (!this.disposed) {
+				this.recordWarmFailure(signature);
 			}
 			this.logService.trace(`[ParadisSpaceDisk] background measure failed: ${error}`);
 		}
@@ -414,16 +410,11 @@ export class ParadisSpaceDiskService implements IDisposable {
 		}
 		const snapshot = this.warmLeaseTracker.activeTargets()[0];
 		if (!snapshot) {
-			this.failureGeneration = undefined;
-			this.failures = 0;
+			this.failuresBySignature.clear();
 			this.stopWarmLoop();
 			return;
 		}
-		if (this.failureGeneration !== snapshot.generation) {
-			this.failureGeneration = snapshot.generation;
-			this.failures = 0;
-		}
-		if (this.failures >= MAX_CONSECUTIVE_FAILURES) {
+		if ((this.failuresBySignature.get(signatureOf(snapshot.target.targets)) ?? 0) >= MAX_CONSECUTIVE_FAILURES) {
 			this.stopWarmLoop();
 			return;
 		}
@@ -431,6 +422,16 @@ export class ParadisSpaceDiskService implements IDisposable {
 			this.warmPeriodicScheduler.schedule(WARM_INTERVAL_MS);
 			this.warmScheduled = true;
 		}
+	}
+
+	private recordWarmFailure(signature: string): void {
+		if (!this.failuresBySignature.has(signature) && this.failuresBySignature.size >= WARM_LEASE_MAX_OWNERS) {
+			const oldest = this.failuresBySignature.keys().next().value;
+			if (oldest !== undefined) {
+				this.failuresBySignature.delete(oldest);
+			}
+		}
+		this.failuresBySignature.set(signature, (this.failuresBySignature.get(signature) ?? 0) + 1);
 	}
 
 	private stopWarmLoop(): void {
