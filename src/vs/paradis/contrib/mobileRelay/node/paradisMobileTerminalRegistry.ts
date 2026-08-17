@@ -94,10 +94,12 @@ export class ParadisMobileTerminalRegistry {
 		// validation/lease metadataは毎回更新する一方、wire上のrevisionはモバイルから
 		// 見えるDesktop Stateが変わった時だけ進める。broadcast自体はservice側で維持し、
 		// 新規sessionや送信失敗後の再試行をPhase 2の配送ゲートへ委ねる。
-		if (!objectsEqual(previousDesktopState, this.desktopState())) {
+		const nextDesktopState = this.desktopState();
+		if (!objectsEqual(previousDesktopState, nextDesktopState)) {
 			this.revision++;
+			return { ...nextDesktopState, revision: this.revision };
 		}
-		return this.desktopState();
+		return nextDesktopState;
 	}
 
 	/**

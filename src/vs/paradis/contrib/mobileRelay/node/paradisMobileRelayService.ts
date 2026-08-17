@@ -7,8 +7,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -464,6 +465,17 @@ export class MobileSession {
  * shared process 常駐のモバイルリレーサービス。リレーへの outbound WSS を所有し、
  * E2E暗号・ペアリング・フレーム多重化を行う。renderer とは IPC チャネルで接続する。
  */
+interface IParadisMobileRelayMetricsTimer extends IDisposable {
+	cancel(): void;
+	cancelAndSet(runner: () => void, interval: number): void;
+}
+
+/** @internal Constructor dependencies used only by deterministic lifecycle tests. */
+export interface IParadisMobileRelayServiceTestSeams {
+	readonly stateBroadcastMetricsTimer?: IParadisMobileRelayMetricsTimer;
+	readonly disableHostResourceSampling?: boolean;
+}
+
 export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService {
 	declare readonly _serviceBrand: undefined;
 
@@ -496,6 +508,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private identity: MobileIdentity | undefined;
 	private enabled = false;
 	private connectionState: ParadisMobileConnectionState = 'disabled';
+	// Mobile relay が有効な間だけ動かし、shared process の不要な定期起床を避ける。
+	private readonly stateBroadcastMetricsTimer: IParadisMobileRelayMetricsTimer;
+	private stateBroadcastMetricsEnabled = false;
+	private stateBroadcastMetricsGeneration = 0;
 
 	private socket: WebSocket | undefined;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -565,8 +581,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		_args?: NativeParsedArgs,
 		// 生成済みAivis音声（MP3）。同一 shared process の通知サービスが発火する。
 		voiceClips?: Event<VSBuffer>,
+		testSeams?: IParadisMobileRelayServiceTestSeams,
 	) {
 		super();
+		this.stateBroadcastMetricsTimer = this._register(testSeams?.stateBroadcastMetricsTimer ?? new IntervalTimer());
 		this.disconnectReporter = this._register(new ParadisRelayDisconnectReporter({
 			reportDelayMs: RELAY_DISCONNECT_REPORT_DELAY_MS,
 			reportAfterAttempts: RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS,
@@ -653,26 +671,50 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.webrtcRendererLeases.clear();
 			this.disconnect();
 		}));
-		this.startHostResourceSampling();
-		this.startStateBroadcastMetrics();
+		if (!testSeams?.disableHostResourceSampling) {
+			this.startHostResourceSampling();
+		}
 	}
 
 	/**
-	 * 計測用: Desktop State の broadcast 回数と、そのうち実際に電波へ出した回数を
-	 * 1分ごとに1行だけ残す（renderer側の state push 計測と対になる）。活動が無い間は出さない。
+	 * Mobile relayが有効な間だけdesktop state broadcast計測タイマーを動かす。
+	 *
+	 * 無効化時は、停止済みタイマーのキュー済みcallbackが実行されても古い集計を報告しないよう、
+	 * 集計も同時に捨てる。
 	 */
-	private startStateBroadcastMetrics(): void {
-		const handle = setInterval(() => {
-			if (this.broadcastCount === 0) {
-				return;
+	private setStateBroadcastMetricsEnabled(enabled: boolean): void {
+		if (this.stateBroadcastMetricsEnabled === enabled) {
+			return;
+		}
+		this.stateBroadcastMetricsEnabled = enabled;
+		const generation = ++this.stateBroadcastMetricsGeneration;
+		if (!enabled) {
+			this.stateBroadcastMetricsTimer.cancel();
+			this.resetStateBroadcastMetrics();
+			return;
+		}
+		this.resetStateBroadcastMetrics();
+		this.stateBroadcastMetricsTimer.cancelAndSet(() => {
+			if (this.stateBroadcastMetricsEnabled && generation === this.stateBroadcastMetricsGeneration) {
+				this.reportStateBroadcastMetrics();
 			}
-			const calls = this.broadcastCount;
-			const sent = this.broadcastSentCount;
-			this.broadcastCount = 0;
-			this.broadcastSentCount = 0;
-			this.logService.info(`[paradisMobileRelay][metrics] desktop state broadcast: ${calls} calls, ${sent} sent, ${calls - sent} deduped`);
 		}, 60_000);
-		this._register(toDisposable(() => clearInterval(handle)));
+	}
+
+	/** 計測用: Desktop State の broadcast 回数と、そのうち実際に電波へ出した回数を1分ごとに残す。 */
+	private reportStateBroadcastMetrics(): void {
+		if (this.broadcastCount === 0) {
+			return;
+		}
+		const calls = this.broadcastCount;
+		const sent = this.broadcastSentCount;
+		this.resetStateBroadcastMetrics();
+		this.logService.info(`[paradisMobileRelay][metrics] desktop state broadcast: ${calls} calls, ${sent} sent, ${calls - sent} deduped`);
+	}
+
+	private resetStateBroadcastMetrics(): void {
+		this.broadcastCount = 0;
+		this.broadcastSentCount = 0;
 	}
 
 	// --- PC本体のリソース使用量 -------------------------------------------------
@@ -928,6 +970,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		await this.load();
 		this.updateDiagnosticCorrelation();
 		this.enabled = enabled;
+		this.setStateBroadcastMetricsEnabled(enabled);
 		this.disconnectReporter.setEnabled(enabled);
 		if (enabled && this.state.device) {
 			this.connect();
@@ -942,6 +985,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		this.enabled = enabled;
+		this.setStateBroadcastMetricsEnabled(enabled);
 		if (enabled) {
 			if (this.state.device) {
 				this.connect();
@@ -1687,11 +1731,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				this.logService.warn('[paradisMobileRelay] failed to read Renderer lease manifest', error);
 				return;
 			}
+			const targetedSession = mobileId !== undefined ? this.sessions.get(mobileId) : undefined;
+			let hasOnlineSession = false;
+			if (mobileId === undefined) {
+				for (const session of this.sessions.values()) {
+					if (session.isOnline) {
+						hasOnlineSession = true;
+						break;
+					}
+				}
+			}
+			if (mobileId !== undefined ? !targetedSession?.isOnline : !hasOnlineSession) {
+				return;
+			}
 			const state = this.terminalRegistry.desktopState();
 			const bytes = new TextEncoder().encode(JSON.stringify(state));
 			if (mobileId !== undefined) {
-				const session = this.sessions.get(mobileId);
-				if (session?.isOnline && await session.sendDesktopState(bytes, true)) {
+				if (targetedSession?.isOnline && await targetedSession.sendDesktopState(bytes, true)) {
 					this.broadcastSentCount++;
 				}
 				return;

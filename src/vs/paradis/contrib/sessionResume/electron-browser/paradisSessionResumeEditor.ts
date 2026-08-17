@@ -38,6 +38,7 @@ import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSessio
 import { ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
 import { PARADIS_SESSION_RESUME_EDITOR_ID } from './paradisSessionResumeInput.js';
 import { IParadisSessionResumeEditorOptions, paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from './paradisSessionResumeOrchestration.js';
+import { ParadisSessionResumeRefreshController } from './paradisSessionResumeRefreshController.js';
 
 const $ = dom.$;
 type AgentFilter = 'all' | ParadisResumeAgent;
@@ -69,7 +70,6 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	private previewMessages: readonly IParadisResumeMessage[] | undefined;
 	private previewTruncated = false;
 	private loading = false;
-	private refreshPending = false;
 	private previewLoading = false;
 	private previewSequence = 0;
 	private query = '';
@@ -83,6 +83,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	private periodFilter: PeriodFilter = 'all';
 	private readonly resumingCatalogIds = new Set<string>();
 	private readonly markdownCodeBlockRenderer: EditorMarkdownCodeBlockRenderer;
+	private readonly refreshController: ParadisSessionResumeRefreshController;
 
 	constructor(
 		group: IEditorGroup,
@@ -99,9 +100,11 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		super(PARADIS_SESSION_RESUME_EDITOR_ID, group, telemetryService, themeService, storageService);
 		this.client = instantiationService.createInstance(ParadisSessionResumeClient);
 		this.markdownCodeBlockRenderer = instantiationService.createInstance(EditorMarkdownCodeBlockRenderer);
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.refresh()));
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.refresh()));
-		this._register(this.worktreeService.onDidChangeWorktrees(() => this.refresh()));
+		this.refreshController = this._register(new ParadisSessionResumeRefreshController(() => this.refresh()));
+		this.refreshController.start();
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.refreshController.invalidate()));
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.refreshController.invalidate()));
+		this._register(this.worktreeService.onDidChangeWorktrees(() => this.refreshController.invalidate()));
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
@@ -160,13 +163,13 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		this.archivedInput = dom.append(archivedLabel, $('input')) as HTMLInputElement;
 		this.archivedInput.type = 'checkbox';
 		dom.append(archivedLabel, $('span')).textContent = localize('paradis.sessionResume.archived', "アーカイブ済み");
-		this._register(dom.addDisposableListener(this.archivedInput, dom.EventType.CHANGE, () => this.refresh()));
+		this._register(dom.addDisposableListener(this.archivedInput, dom.EventType.CHANGE, () => this.refreshController.requestImmediate()));
 
 		this.refreshButton = dom.append(toolbar, $('button.paradis-session-resume-refresh')) as HTMLButtonElement;
 		this.refreshButton.title = localize('paradis.sessionResume.refresh', "セッション履歴を更新");
 		this.refreshButton.setAttribute('aria-label', this.refreshButton.title);
 		dom.append(this.refreshButton, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
-		this._register(dom.addDisposableListener(this.refreshButton, dom.EventType.CLICK, () => this.refresh()));
+		this._register(dom.addDisposableListener(this.refreshButton, dom.EventType.CLICK, () => this.refreshController.requestImmediate()));
 
 		const content = dom.append(this.root, $('.paradis-session-resume-content'));
 		this.list = dom.append(content, $('.paradis-session-resume-list'));
@@ -226,12 +229,17 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
 		if (!this.loading && this.sessions.length === 0) {
-			await this.refresh();
+			await this.refreshController.requestImmediate();
 		}
 	}
 
 	override layout(_dimension: dom.Dimension): void { }
 	override focus(): void { this.searchInput?.focus(); }
+
+	protected override setEditorVisible(visible: boolean): void {
+		super.setEditorVisible(visible);
+		this.refreshController.setVisible(visible);
+	}
 
 	private collectSpaces(): readonly IResumeSpaceView[] {
 		const current = this.workspaceSwitchService.activeStateKey;
@@ -256,8 +264,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	}
 
 	private async refresh(): Promise<void> {
-		if (this.loading) {
-			this.refreshPending = true;
+		if (this._store.isDisposed || this.loading) {
 			return;
 		}
 		// 旧catalogに対する全文検索結果が、新しいcatalogへ遅着して一覧を空にしないよう失効させる。
@@ -268,12 +275,18 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		this.render();
 		try {
 			await this.worktreeService.initializationBarrier;
+			if (this._store.isDisposed) {
+				return;
+			}
 			this.spaces = this.collectSpaces();
 			this.updateSpaceSelectOptions();
 			this.sessions = await this.client.list({
 				spaces: this.spaces.map(({ stateKey, name, cwd, current }) => ({ stateKey, name, cwd, current })),
 				includeArchived: this.archivedInput?.checked === true,
 			});
+			if (this._store.isDisposed) {
+				return;
+			}
 			this.selected = this.sessions.find(session => session.id === this.selected?.id && session.agent === this.selected.agent) ?? this.sessions[0];
 			this.previewMessages = undefined;
 			const selectionChanged = this.ensureSelectedSessionIsVisible();
@@ -281,17 +294,17 @@ export class ParadisSessionResumeEditor extends EditorPane {
 				void this.loadPreview(this.selected);
 			}
 		} catch (error) {
-			this.notificationService.error(error);
-		} finally {
-			this.loading = false;
-			this.refreshButton?.classList.remove('loading');
-			this.render();
-			if (this.query) {
-				this.searchScheduler.schedule();
+			if (!this._store.isDisposed) {
+				this.notificationService.error(error);
 			}
-			if (this.refreshPending) {
-				this.refreshPending = false;
-				void this.refresh();
+		} finally {
+			if (!this._store.isDisposed) {
+				this.loading = false;
+				this.refreshButton?.classList.remove('loading');
+				this.render();
+				if (this.query) {
+					this.searchScheduler.schedule();
+				}
 			}
 		}
 	}
@@ -312,6 +325,9 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	}
 
 	private async searchTranscripts(): Promise<void> {
+		if (this._store.isDisposed) {
+			return;
+		}
 		const query = this.query;
 		const sequence = ++this.searchSequence;
 		if (!query) {
@@ -326,7 +342,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		}
 		try {
 			const matches = await this.client.search(query, this.sessions.map(session => session.catalogId));
-			if (sequence === this.searchSequence && query === this.query) {
+			if (!this._store.isDisposed && sequence === this.searchSequence && query === this.query) {
 				this.searchMatches = new Map(matches.map(match => [match.catalogId, match]));
 				const selectionChanged = this.ensureSelectedSessionIsVisible();
 				if (!selectionChanged && this.selected) {
@@ -662,22 +678,25 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	}
 
 	private async loadPreview(session: IParadisResumeSession): Promise<void> {
+		if (this._store.isDisposed) {
+			return;
+		}
 		const sequence = ++this.previewSequence;
 		const query = this.query;
 		this.previewLoading = true;
 		this.render();
 		try {
 			const preview = await this.client.preview(session.catalogId, query || undefined);
-			if (sequence !== this.previewSequence || this.selected?.catalogId !== session.catalogId || query !== this.query) { return; }
+			if (this._store.isDisposed || sequence !== this.previewSequence || this.selected?.catalogId !== session.catalogId || query !== this.query) { return; }
 			this.previewMessages = preview.messages;
 			this.previewTruncated = preview.truncated;
 		} catch (error) {
-			if (sequence === this.previewSequence && this.selected?.catalogId === session.catalogId && query === this.query) {
+			if (!this._store.isDisposed && sequence === this.previewSequence && this.selected?.catalogId === session.catalogId && query === this.query) {
 				this.notificationService.error(error);
 				this.previewMessages = [];
 			}
 		} finally {
-			if (sequence === this.previewSequence && this.selected?.catalogId === session.catalogId && query === this.query) {
+			if (!this._store.isDisposed && sequence === this.previewSequence && this.selected?.catalogId === session.catalogId && query === this.query) {
 				this.previewLoading = false;
 				this.render();
 			}

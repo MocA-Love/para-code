@@ -12,6 +12,7 @@ import type { FileHandle } from 'fs/promises';
 import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
+import { Limiter } from '../../../../base/common/async.js';
 import { basename, isAbsolute, join, resolve } from '../../../../base/common/path.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
@@ -19,6 +20,7 @@ import { isWindows } from '../../../../base/common/platform.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
@@ -39,14 +41,19 @@ const MAX_CLAUDE_SESSIONS_PER_SPACE = 200;
 const SUMMARY_HEAD_BYTES = 512 * 1024;
 const MAX_SEARCH_TEXT_CHARS = 64 * 1024;
 const MAX_CATALOG_ENTRIES = 2400;
+const DEFAULT_SEARCH_TEXT_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_CONCURRENT_SEARCH_TEXT_READS = 4;
 
 interface ICatalogEntry {
 	readonly session: IParadisResumeSession;
 	readonly transcriptPath: string;
 	readonly allowedRoot: string;
-	searchText?: string;
 	searchTextPromise?: Promise<string>;
 	touchedAt: number;
+}
+
+interface INormalizedParadisResumeListRequest extends IParadisResumeListRequest {
+	readonly includeArchived: boolean;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -65,12 +72,11 @@ function clipped(value: string, limit = MAX_MESSAGE_CHARS): string {
 	return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }
 
-function countSearchTermOccurrences(value: string, terms: readonly string[]): number {
-	const haystack = value.toLocaleLowerCase();
+function countSearchTermOccurrences(lowercaseValue: string, terms: readonly string[]): number {
 	let count = 0;
 	for (const term of terms) {
 		let offset = 0;
-		while ((offset = haystack.indexOf(term, offset)) !== -1) {
+		while ((offset = lowercaseValue.indexOf(term, offset)) !== -1) {
 			count++;
 			offset += term.length;
 		}
@@ -288,6 +294,9 @@ function pathInside(root: string, candidate: string): boolean {
 
 export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
+	private readonly searchTextCache: ParadisSessionSearchTextCache;
+	private readonly searchTextReadLimiter = new Limiter<string>(MAX_CONCURRENT_SEARCH_TEXT_READS);
+	private readonly activeListRequests = new Map<string, Promise<readonly IParadisResumeSession[]>>();
 	private readonly searchRevisions = new Map<string, number>();
 	private searchRevision = 0;
 	private readonly resolveAgentHomes: typeof paradisResolveAgentHomes;
@@ -301,6 +310,7 @@ export class ParadisSessionResumeService {
 			readonly readBoundedFile?: typeof readBoundedFile;
 			readonly beforeSummaryRead?: (filePath: string) => Promise<void>;
 			readonly beforeTranscriptRead?: (filePath: string) => Promise<void>;
+			readonly searchCacheMaxBytes?: number;
 		} | undefined,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -308,9 +318,27 @@ export class ParadisSessionResumeService {
 		this.readBoundedFile = dependencies?.readBoundedFile ?? readBoundedFile;
 		this.beforeSummaryRead = dependencies?.beforeSummaryRead;
 		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
+		this.searchTextCache = new ParadisSessionSearchTextCache(dependencies?.searchCacheMaxBytes ?? DEFAULT_SEARCH_TEXT_CACHE_BYTES);
 	}
 
 	async list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
+		const normalizedRequest = this.normalizeListRequest(request);
+		const requestKey = this.createListRequestKey(normalizedRequest);
+		const activeRequest = this.activeListRequests.get(requestKey);
+		if (activeRequest) {
+			return activeRequest;
+		}
+
+		const listRequest = this.collectList(normalizedRequest).finally(() => {
+			if (this.activeListRequests.get(requestKey) === listRequest) {
+				this.activeListRequests.delete(requestKey);
+			}
+		});
+		this.activeListRequests.set(requestKey, listRequest);
+		return listRequest;
+	}
+
+	private normalizeListRequest(request: IParadisResumeListRequest): INormalizedParadisResumeListRequest {
 		const seenStateKeys = new Set<string>();
 		const seenCwds = new Set<string>();
 		const spaces = Array.isArray(request?.spaces) ? request.spaces.filter(space => {
@@ -327,17 +355,38 @@ export class ParadisSessionResumeService {
 			seenStateKeys.add(space.stateKey);
 			seenCwds.add(cwdKey);
 			return true;
-		}).slice(0, 200) : [];
+		}).slice(0, 200).map(space => ({
+			stateKey: space.stateKey,
+			name: space.name,
+			cwd: space.cwd,
+			current: space.current,
+		})) : [];
+		return { spaces, includeArchived: request.includeArchived === true };
+	}
+
+	private createListRequestKey(request: INormalizedParadisResumeListRequest): string {
+		return JSON.stringify({
+			includeArchived: request.includeArchived,
+			spaces: request.spaces.map(space => ({
+				stateKey: space.stateKey,
+				name: space.name,
+				cwd: space.cwd,
+				current: space.current,
+			})),
+		});
+	}
+
+	private async collectList(request: INormalizedParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
 		const sessions: IParadisResumeSession[] = [];
 		const homesSeen = new Set<string>();
-		for (const space of spaces) {
+		for (const space of request.spaces) {
 			const homes = this.resolveAgentHomes(space.cwd);
 			await this.collectClaude(space, homes.claude, homes.matchCwd, sessions);
 			if (!homesSeen.has(homes.codex)) {
 				homesSeen.add(homes.codex);
-				const indexed = await this.collectCodex(spaces, homes.codex, sessions, request.includeArchived === true);
+				const indexed = await this.collectCodex(request.spaces, homes.codex, sessions, request.includeArchived);
 				if (!indexed) {
-					await this.collectCodexRollouts(spaces, homes.codex, sessions);
+					await this.collectCodexRollouts(request.spaces, homes.codex, sessions);
 				}
 			}
 		}
@@ -397,7 +446,7 @@ export class ParadisSessionResumeService {
 			return result;
 		}
 		const matches: IParadisResumeSearchResult[] = [];
-		// 全文走査は検索時だけ。4並列に制限して、WSLや大きな履歴でもI/Oを暴走させない。
+		// 全文走査は検索時だけ。各検索の並列数を抑えつつ、service全体でもreadを制限する。
 		const entries = [...new Set(requestedCatalogIds)].slice(0, MAX_SESSIONS)
 			.map(catalogId => [catalogId, this.catalog.get(catalogId)] as const)
 			.filter((entry): entry is readonly [string, ICatalogEntry] => entry[1] !== undefined);
@@ -408,20 +457,21 @@ export class ParadisSessionResumeService {
 				entry.touchedAt = Date.now();
 				const metadata = `${entry.session.title}\n${entry.session.preview}\n${entry.session.cwd}\n${entry.session.id}\n${entry.session.spaceName}`;
 				let searchable = metadata;
+				let searchableLower = metadata.toLocaleLowerCase();
 				let source: IParadisResumeSearchResult['source'] = 'metadata';
-				if (!terms.every(term => searchable.toLocaleLowerCase().includes(term))) {
+				if (!terms.every(term => searchableLower.includes(term))) {
 					try {
-						searchable += `\n${await this.getSearchText(entry)}`;
+						const searchText = await this.getSearchText(entry);
+						searchable += `\n${searchText}`;
+						searchableLower += `\n${searchText.toLocaleLowerCase()}`;
 						source = 'conversation';
-					} catch {
-						entry.searchText = '';
-					}
+					} catch { /* 一時的なread失敗は次の検索で再試行する */ }
 				}
-				if (terms.every(term => searchable.toLocaleLowerCase().includes(term))) {
+				if (terms.every(term => searchableLower.includes(term))) {
 					const snippetSource = source === 'conversation' ? searchable.slice(metadata.length + 1) : metadata;
 					matches.push({
 						catalogId,
-						matchCount: countSearchTermOccurrences(searchable, terms),
+						matchCount: countSearchTermOccurrences(searchableLower, terms),
 						snippet: createSearchSnippet(snippetSource, terms),
 						source,
 					});
@@ -437,13 +487,20 @@ export class ParadisSessionResumeService {
 	}
 
 	private getSearchText(entry: ICatalogEntry): Promise<string> {
-		if (entry.searchText !== undefined) {
-			return Promise.resolve(entry.searchText);
+		const catalogId = entry.session.catalogId;
+		const revision = entry.session.updatedAt;
+		const cached = this.searchTextCache.get(catalogId, revision);
+		if (cached !== undefined) {
+			return Promise.resolve(cached);
 		}
 		if (entry.searchTextPromise !== undefined) {
 			return entry.searchTextPromise;
 		}
-		entry.searchTextPromise = (async () => {
+		const searchTextPromise = this.searchTextReadLimiter.queue(async () => {
+			const cachedAfterWait = this.searchTextCache.get(catalogId, revision);
+			if (cachedAfterWait !== undefined) {
+				return cachedAfterWait;
+			}
 			const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
 			const parts: string[] = [];
 			for (const line of data.text.split('\n')) {
@@ -456,10 +513,24 @@ export class ParadisSessionResumeService {
 			const searchable = fullText.length <= MAX_SEARCH_TEXT_CHARS
 				? fullText
 				: `${fullText.slice(0, 16 * 1024)}\n${fullText.slice(-(MAX_SEARCH_TEXT_CHARS - 16 * 1024))}`;
-			entry.searchText = searchable;
-			return entry.searchText;
-		})().finally(() => entry.searchTextPromise = undefined);
-		return entry.searchTextPromise;
+			return searchable;
+		});
+		entry.searchTextPromise = searchTextPromise;
+		void searchTextPromise.then(searchable => {
+			const current = this.catalog.get(catalogId);
+			if (current?.session.updatedAt === revision && current.searchTextPromise === searchTextPromise) {
+				this.searchTextCache.set(catalogId, revision, searchable);
+			}
+		}, () => undefined).finally(() => {
+			if (entry.searchTextPromise === searchTextPromise) {
+				entry.searchTextPromise = undefined;
+			}
+			const current = this.catalog.get(catalogId);
+			if (current?.session.updatedAt === revision && current.searchTextPromise === searchTextPromise) {
+				current.searchTextPromise = undefined;
+			}
+		});
+		return searchTextPromise;
 	}
 
 	private addSession(session: Omit<IParadisResumeSession, 'catalogId'>, transcriptPath: string, allowedRoot: string, target: IParadisResumeSession[]): void {
@@ -469,8 +540,11 @@ export class ParadisSessionResumeService {
 		const catalogId = `session-${createHash('sha256').update(`${session.agent}\0${normalizePath(transcriptPath)}`).digest('hex').slice(0, 32)}`;
 		const complete: IParadisResumeSession = { ...session, catalogId };
 		const previous = this.catalog.get(catalogId);
-		const searchText = previous?.session.updatedAt === complete.updatedAt ? previous.searchText : undefined;
-		this.catalog.set(catalogId, { session: complete, transcriptPath, allowedRoot, searchText, touchedAt: Date.now() });
+		if (previous?.session.updatedAt !== complete.updatedAt) {
+			this.searchTextCache.delete(catalogId);
+		}
+		const searchTextPromise = previous?.session.updatedAt === complete.updatedAt ? previous.searchTextPromise : undefined;
+		this.catalog.set(catalogId, { session: complete, transcriptPath, allowedRoot, searchTextPromise, touchedAt: Date.now() });
 		target.push(complete);
 	}
 
@@ -484,6 +558,7 @@ export class ParadisSessionResumeService {
 			.slice(0, this.catalog.size - MAX_CATALOG_ENTRIES);
 		for (const [catalogId] of oldest) {
 			this.catalog.delete(catalogId);
+			this.searchTextCache.delete(catalogId);
 		}
 	}
 

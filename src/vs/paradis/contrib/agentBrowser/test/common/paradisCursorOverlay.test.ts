@@ -125,10 +125,11 @@ suite('Paradis Cursor Overlay', () => {
 	test('every command kind builds a syntactically valid script', () => {
 		const kinds = [
 			{ kind: 'move', x: 1, y: 2, label: 'x', durationMs: 200 },
-			{ kind: 'press', x: 1, y: 2 },
+			{ kind: 'press', x: 1, y: 2, label: 'x' },
+			{ kind: 'focus', label: 'x' },
 			{ kind: 'hide' },
 			{ kind: 'show' },
-			{ kind: 'captured' },
+			{ kind: 'captured', toast: 'done' },
 			{ kind: 'remove' },
 		] as const;
 		assert.deepStrictEqual(

@@ -11,6 +11,130 @@
 // どちらのレイヤーからも参照できる common に置く。
 
 import { localize } from '../../../../nls.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
+
+/** The DND snapshot that an owner rendered during a controller refresh. */
+export interface IParadisDoNotDisturbRefreshState {
+	readonly enabled: boolean;
+	readonly until: number | undefined;
+}
+
+/**
+ * Host timer seam for the refresh controller.
+ *
+ * `set` must return before invoking `callback`. Returned handles may be
+ * `undefined`, but must remain stable under strict equality and must not be
+ * `NaN`, so a late callback can be matched to the reservation that owns it.
+ */
+export interface IParadisDoNotDisturbRefreshTimer {
+	set(callback: () => void, delayMs: number): unknown;
+	clear(handle: unknown): void;
+}
+
+/** Synchronous clock and timer dependencies used to create a refresh controller. */
+export interface IParadisDoNotDisturbRefreshControllerOptions {
+	readonly now?: () => number;
+	readonly timer?: IParadisDoNotDisturbRefreshTimer;
+}
+
+/** Creates a cold controller for one synchronously rendered DND surface. */
+export type ParadisDoNotDisturbRefreshControllerFactory = (
+	refresh: (renderNow: number) => IParadisDoNotDisturbRefreshState,
+) => ParadisDoNotDisturbRefreshController;
+
+/** Returns the delay before a DND surface must read and render a fresh snapshot. */
+export function paradisGetDoNotDisturbRefreshDelay(state: IParadisDoNotDisturbRefreshState, now: number): number | undefined {
+	if (!state.enabled || state.until === undefined) {
+		return undefined;
+	}
+	if (!Number.isFinite(state.until) || !Number.isFinite(now)) {
+		return 60_000;
+	}
+	return Math.max(0, Math.min(60_000, state.until - now));
+}
+
+/**
+ * Owns the single deadline-aware refresh timeout for one DND surface.
+ *
+ * Construction is cold: it neither renders nor starts a timer. The owner must
+ * register its change listeners before calling {@link refresh} explicitly for
+ * the initial synchronous render. The owner callback and clock are synchronous;
+ * any exception they or the timer seam throw propagates to the caller.
+ *
+ * An owner that returns a finite expired deadline must read through the DND
+ * settings getter, whose normalization guarantees that the next read returns
+ * OFF. Repeatedly returning the same expired snapshot violates this contract.
+ */
+export class ParadisDoNotDisturbRefreshController implements IDisposable {
+	private timerHandle: unknown;
+	private timerScheduled = false;
+	private generation = 0;
+	private disposed = false;
+
+	constructor(
+		private readonly refreshCallback: (renderNow: number) => IParadisDoNotDisturbRefreshState,
+		private readonly now: () => number,
+		private readonly timer: IParadisDoNotDisturbRefreshTimer,
+	) { }
+
+	/** Cancels the prior reservation, renders synchronously, and schedules at most one new timeout. */
+	refresh(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.clearTimer();
+		const generation = ++this.generation;
+		const state = this.refreshCallback(this.now());
+		if (this.disposed || generation !== this.generation) {
+			return;
+		}
+		const delay = paradisGetDoNotDisturbRefreshDelay(state, this.now());
+		if (delay === undefined) {
+			return;
+		}
+		const handle = this.timer.set(() => {
+			if (this.disposed || generation !== this.generation || !this.timerScheduled || this.timerHandle !== handle) {
+				return;
+			}
+			this.timerScheduled = false;
+			this.refresh();
+		}, delay);
+		this.timerHandle = handle;
+		this.timerScheduled = true;
+	}
+
+	/** Invalidates callbacks and synchronously clears the pending timeout. */
+	dispose(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.disposed = true;
+		this.generation++;
+		this.clearTimer();
+	}
+
+	private clearTimer(): void {
+		if (!this.timerScheduled) {
+			return;
+		}
+		const handle = this.timerHandle;
+		this.timerScheduled = false;
+		this.timer.clear(handle);
+	}
+}
+
+const defaultRefreshTimer: IParadisDoNotDisturbRefreshTimer = {
+	set: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+	clear: handle => globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>),
+};
+
+/** Creates a cold DND refresh controller without performing the initial refresh. */
+export function paradisCreateDoNotDisturbRefreshController(
+	refresh: (renderNow: number) => IParadisDoNotDisturbRefreshState,
+	options: IParadisDoNotDisturbRefreshControllerOptions = {},
+): ParadisDoNotDisturbRefreshController {
+	return new ParadisDoNotDisturbRefreshController(refresh, options.now ?? Date.now, options.timer ?? defaultRefreshTimer);
+}
 
 /** ステータスバーのクリック先。Quick Pick で持続時間を選ぶ。 */
 export const PARADIS_DO_NOT_DISTURB_SELECT_COMMAND = 'paradis.notifications.selectDoNotDisturb';
