@@ -6,10 +6,11 @@
 #
 # The pane app-server is an enhancement, not a requirement: if it cannot be started
 # (a broken Codex state directory, a full disk, a stale runtime directory, …) this
-# launcher warns and runs the user's Codex directly rather than failing. Because this
-# launcher is injected into every Para Code terminal's PATH unconditionally and there
-# is no setting to bypass it, exiting here would leave the user with no way to run
-# Codex at all — `resume` is not on the delegated-command list either.
+# launcher warns and runs the user's Codex directly rather than failing. Turning the
+# pane app-server off is a settings-time decision — Para Code then keeps this launcher
+# out of the terminal's PATH entirely — so by the time this script runs the user has
+# asked for it, and exiting on failure would leave them with no way to run Codex at
+# all (`resume` is not on the delegated-command list either).
 
 set -u
 

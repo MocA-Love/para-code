@@ -16,11 +16,13 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { isWindows } from '../../../../base/common/platform.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY } from '../../mobileRelay/common/paradisMobileRelay.js';
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
@@ -49,6 +51,12 @@ export interface IParadisPaneTokenService {
 	listPaneTokens(): readonly { readonly instanceId: number; readonly token: string }[];
 
 	/**
+	 * ペイン専用 Codex app-server を立てる設定になっているか。
+	 * 立てないなら、その宛先を用意する側（SSH接続先へのソケット転送など）も一緒に畳む。
+	 */
+	isCodexPaneAppServerEnabled(): boolean;
+
+	/**
 	 * PTY起動前の {@link IShellLaunchConfig} にペイントークン等のenvを注入する。
 	 * `attachPersistentProcess`（永続ターミナル再接続）の場合は元のPTY環境を保持するため
 	 * envを変更せず、インスタンス生成後にrevive済みnonceから対応を復元する。
@@ -56,7 +64,7 @@ export interface IParadisPaneTokenService {
 	prepareShellLaunchConfig(shellLaunchConfig: IShellLaunchConfig): void;
 }
 
-class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenService {
+export class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
@@ -80,6 +88,7 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IPathService pathService: IPathService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -129,7 +138,35 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(token));
 	}
 
+	/**
+	 * ペイン専用 Codex app-server を立てる設定になっているか。
+	 *
+	 * この app-server は「MCPサーバーにペインのenvを継がせる」ためだけに入れたもので、それは
+	 * `--remote` を使わない素の Codex なら元から成り立つ（MCPを起こすのはCodex自身のプロセスで、
+	 * そのenvはペインのシェルから継いでいる）。一方で代償は大きく、ペインごとにapp-serverが1本
+	 * 立ち、その配下でMCPが丸ごと起動し直される。Codexを開くたびに毎回起きる。
+	 *
+	 * 立てる価値があるのはモバイルのライブ連携（生成中テキスト・動的モデル一覧・次ターン設定）を
+	 * 使うときだけ。読み手（paradisMobileRelay.contribution.ts の syncAgentLiveOptions）と
+	 * 同じ条件で判定する。ここだけ緩いと、モバイルを切っている人が誰も繋がないapp-serverの
+	 * 代金だけ払うことになる。
+	 */
+	isCodexPaneAppServerEnabled(): boolean {
+		return this.configurationService.getValue(PARADIS_MOBILE_ENABLED_KEY) === true
+			&& this.configurationService.getValue(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY) === true;
+	}
+
+	/**
+	 * ペイン専用 Codex app-server の居場所。立てない設定なら undefined を返し、ランチャーも
+	 * ソケットも env へ入れない（= ペインでは素の `codex` がそのまま動く）。
+	 *
+	 * env はPTY起動時に一度きり組み立てられるので、設定を変えても既に開いているターミナルの
+	 * 中身は変わらない（新しく開いたターミナルから効く）。設定の説明文にも同じことを書いてある。
+	 */
 	private _getCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
+		if (!this.isCodexPaneAppServerEnabled()) {
+			return undefined;
+		}
 		if (this.environmentService.remoteAuthority !== undefined) {
 			return this._getRemoteCodexRuntime(token);
 		}

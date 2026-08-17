@@ -264,7 +264,10 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 * 場所は shared process が決める（ウィンドウの言い値でソケットを作らせない）。
 	 */
 	private syncCodexSockets(home: URI, channel: IChannel): void {
-		const tokens = this.paneTokenService.listPaneTokens().map(pane => pane.token);
+		// 立てない設定なら宛先も要らない。空で送ると、既に張ってある転送はそこで畳まれる
+		const tokens = this.paneTokenService.isCodexPaneAppServerEnabled()
+			? this.paneTokenService.listPaneTokens().map(pane => pane.token)
+			: [];
 		channel.call('syncRemoteCodexSockets', [this.environmentService.remoteAuthority, joinPath(home, '.para-code').path, tokens])
 			.catch(error => this.logService.trace('[paradis] could not sync the Codex sockets with the host', error));
 	}
