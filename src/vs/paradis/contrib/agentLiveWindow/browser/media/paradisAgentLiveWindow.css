@@ -295,19 +295,23 @@
 	background-color: var(--vscode-descriptionForeground);
 }
 
+/* charts.orange は minimapFindMatch 経由の継承で 33% アルファ (Dark Modern 等) だったり、
+	High Contrast では未定義 (invalid at computed-value time で消える) だったりして、テーマに
+	よって「実行中」ドットが見えなくなる。charts.yellow (editorWarningForeground 由来) は全既定
+	テーマで不透明に定義されているため、こちらへ寄せる。フォールバックは念のための保険。 */
 .paradis-agent-live-dot.working {
-	background-color: #f59e0b;
+	background-color: var(--vscode-charts-yellow, #cca700);
 	animation: paradis-agent-live-breathe 2.4s ease-in-out infinite;
 }
 
 .paradis-agent-live-dot.permission,
 .paradis-agent-live-dot.question {
-	background-color: #ef4444;
+	background-color: var(--vscode-charts-red, #ef4444);
 	animation: paradis-agent-live-pulse 1s ease-in-out infinite;
 }
 
 .paradis-agent-live-dot.review {
-	background-color: #22c55e;
+	background-color: var(--vscode-charts-green, #22c55e);
 }
 
 @keyframes paradis-agent-live-pulse {
@@ -338,10 +342,10 @@
 	white-space: nowrap;
 }
 
-.paradis-agent-live-badge.working { color: #f59e0b; }
+.paradis-agent-live-badge.working { color: var(--vscode-charts-yellow, #cca700); }
 .paradis-agent-live-badge.permission,
-.paradis-agent-live-badge.question { color: #ef4444; }
-.paradis-agent-live-badge.review { color: #22c55e; }
+.paradis-agent-live-badge.question { color: var(--vscode-charts-red, #ef4444); }
+.paradis-agent-live-badge.review { color: var(--vscode-charts-green, #22c55e); }
 
 /* ---- 絞り込み状況バー ---- */
 
@@ -372,8 +376,8 @@
 
 /* ---- グリッド ---- */
 
-/* 枠線色はタイルの隙間 (gap) を描くためのもので、壁だけに持たせる。「高さを指定」で
-	タイルが画面を埋めきらないとき、その下の余白まで枠線色のベタ塗りになるのを避ける。 */
+/* カード化 (2026-08 見直し): 隙間はタイル/端末と別トークンの「枠線色のベタ塗り」ではなく、
+	壁と同じ editor-background の上に浮かせた意図的な余白にする。継ぎ目を無くすのが狙い。 */
 .paradis-agent-live-scroll {
 	flex: 1;
 	overflow: auto;
@@ -381,11 +385,18 @@
 }
 
 .paradis-agent-live-wall {
-	background-color: var(--vscode-editorWidget-border);
+	/* .paradis-agent-live-insert-line (position: absolute) の包含ブロックをここにする。
+		無指定だと祖先で最初に positioned な要素 (.paradis-agent-live-window, inset: 0) まで
+		遡ってしまい、スクロールしていない状態の座標がスクロールしないウィンドウ全体に
+		適用されて線の位置がずれる。overflow: auto の .paradis-agent-live-scroll は
+		包含ブロックを作らないため、ここで明示する必要がある。 */
+	position: relative;
+	background-color: var(--vscode-editor-background);
 	/* タイル1枚の高さ。実際の値は JS が px で流し込む (「高さを指定」のときだけ使う) */
 	--paradis-agent-live-row-height: 280px;
 	display: grid;
-	gap: 1px;
+	gap: 10px;
+	padding: 10px;
 }
 
 /* 「画面を等分」。何件あっても1画面に収まる代わりに、増えるほど1枚が小さくなる。 */
@@ -447,21 +458,24 @@
 	flex-direction: column;
 	/* 高さはグリッドの行が決める。ここで下限を持つと行の等分より優先されてしまう。 */
 	min-height: 0;
-	background-color: var(--vscode-editor-background);
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 9px;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 	overflow: hidden;
 }
 
 .paradis-agent-live-tile.attention {
-	box-shadow: inset 0 0 0 1px var(--vscode-charts-yellow, #cca700);
+	box-shadow: 0 0 0 1px var(--vscode-charts-yellow, #cca700), 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 
 .paradis-agent-live-tile.dragging {
 	opacity: 0.35;
 }
 
-.paradis-agent-live-tile.drop-target {
-	box-shadow: inset 0 0 0 2px var(--vscode-focusBorder);
-}
+/* 手動並び替え中のドロップ先はカード全体のハイライトではなく、隣に挿入する位置を示す縦線
+	(.paradis-agent-live-insert-line、壁に1本だけ置いて JS が位置を動かす) で示す。掴んでいない
+	カードの枠が光る見た目を無くすため、drop-target のハイライトはここでは持たない。 */
 
 .paradis-agent-live-tile:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
@@ -469,29 +483,47 @@
 }
 
 /* ホイールの行き先が端末になっているタイル (端末そのものを掴んでいる状態)。壁が動かない理由が
-	分かるよう枠で示す。box-shadow ではなく outline を使うのは、要対応 (attention) の黄色枠や
-	ドロップ先の枠と同じ詳細度で後勝ちになり、それらを消してしまうため。 */
+	分かるよう枠で示す。box-shadow ではなく outline を使うのは、要対応 (attention) の黄色枠と
+	同じ詳細度で後勝ちになり、それを消してしまうため。 */
 .paradis-agent-live-tile:has(.paradis-agent-live-term:focus-within) {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
 
+/* タイルヘッダーだけに帯を出す (以前はタイル全体に伸ばしていたが、端末領域の不透明な背景で
+	ほぼ隠れて見えず、ウィンドウ透過を有効にしたときだけ帯が下まで見えてしまっていた)。
+	position: relative の親をヘッダーに変えたことで、この要素の top/bottom はヘッダーの
+	高さだけに収まる。 */
 .paradis-agent-live-spacebar {
 	position: absolute;
 	left: 0;
 	top: 0;
 	bottom: 0;
-	width: 2px;
+	width: 3px;
+	border-radius: 9px 0 0 0;
 }
 
-/* 見出しは1行だけ。タイトル・ブランチ・経過時間・状態を横に並べ、残りは全部端末へ回す。 */
+/* 手動並び替えのドロップ位置を示す挿入線。壁 (.paradis-agent-live-wall) の直下に1本だけ置き、
+	dragover のたびに JS が位置とサイズを書き換える。 */
+.paradis-agent-live-insert-line {
+	position: absolute;
+	border-radius: 2px;
+	background-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 6px var(--vscode-focusBorder);
+	display: none;
+	pointer-events: none;
+	z-index: 5;
+}
+
+/* 見出しは1行だけ。タイトル・ブランチ・経過時間・状態を横に並べ、残りは全部端末へ回す。
+	position: relative は .paradis-agent-live-spacebar の位置決めの基準にするため。 */
 .paradis-agent-live-tile-head {
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 7px;
 	padding: 4px 8px 4px 11px;
 	border-bottom: 1px solid var(--vscode-editorWidget-border);
-	background-color: var(--vscode-editorWidget-background);
 }
 
 .paradis-agent-live-drag-handle {
@@ -617,6 +649,12 @@
  * 環境で、出入りのたびに clientWidth が揺れるのを避けるため。macOS のオーバーレイでは
  * そもそも幅を取らないので影響しない。
  */
+/* 背景は terminal.background のまま (タイル本体は editorWidget-background)。xterm 自身が
+	キャンバスへ terminal.background を塗るため、ここを editorWidget-background に合わせても
+	「コンテナ ↔ xterm の実描画域」の継ぎ目が新たにできるだけで、非透過時は解決にならない
+	(透過時は xterm 側のアルファが 0 になるので下の色がそのまま見え、問題にならない)。カードと
+	しての一体感はヘッダーの境界線と角丸・影 (親の .paradis-agent-live-tile が持つ) で表す。
+	border-radius を親に任せているのは、親が overflow: hidden で切り抜くため二重指定が不要だから。 */
 .paradis-agent-live-term {
 	position: relative;
 	flex: 1;
@@ -641,6 +679,20 @@
 	padding: 12px;
 	font-size: 11.5px;
 	color: var(--vscode-descriptionForeground);
+}
+
+/* ドラッグ中に setDragImage へ渡す軽量なゴースト。画面外に固定表示するだけで、実際には
+	見えない (スナップショットとして使われた時点で役目を終える)。 */
+.paradis-agent-live-drag-ghost {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 10px;
+	border-radius: 999px;
+	background-color: var(--vscode-focusBorder);
+	color: var(--vscode-editor-background);
+	font-size: 11px;
+	white-space: nowrap;
 }
 
 .paradis-agent-live-tile-actions {
@@ -807,4 +859,48 @@
 
 .paradis-agent-live-pop-hint:empty {
 	display: none;
+}
+
+/* ---- ウィンドウ透過 (paradis.window.transparency.*) ----
+ *
+ * このウィンドウは auxiliary window (メインウィンドウとは別の BrowserWindow) として開かれる。
+ * そのコンテナ要素は applyHTML の trackAttributes によりメインウィンドウの class
+ * (`monaco-workbench paradis-transparent` を含む) を継続的にミラーされ続けるため、コンテナへ
+ * 直接クラスを立てても次の同期で消えてしまう (かつ Windows でも無条件にミラーされ、ネイティブ
+ * 非透過ウィンドウの上で color-mix が走って色ずれになる)。ゲートには .paradis-agent-live-window
+ * 自身が持つ独自クラス (.paradis-agent-live-transparent、ParadisAgentLiveWindowView が
+ * transparencyActive — Windows では常に false — から付与する) を使う。View が握っている要素
+ * なので、ミラーの影響を受けず安全にゲートできる。
+ *
+ * opacity は paradisApplyAuxiliaryWindowTransparency (windowTransparency/browser) がコンテナへ
+ * 書き込む --paradis-transparency-opacity から取る (別 document のためインライン style は
+ * ミラーされず、こちらは個別設定が必要)。
+ *
+ * ポップオーバー (歯車の設定パネル) は paradisWindowTransparency.css の既存方針
+ * (floating overlay は不透明のまま保つ) に合わせ、対象に含めない。
+ *
+ * ターミナル本体 (xterm) の背景アルファは isParadisTransparentActive() 経由の既存の仕組みで
+ * 別途 0 になる (mainWindow を参照するため、aux window から見てもメインウィンドウの実透過状態と
+ * 連動する)。.paradis-agent-live-term のコンテナ側背景 (非透過時) は terminal-background の
+ * ままにしてあり (上の定義参照)、透過時だけここで transparent に落とす。 */
+.paradis-agent-live-window.paradis-agent-live-transparent {
+	background-color: color-mix(in srgb, var(--vscode-editor-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-toolbar,
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-filterbar {
+	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-scroll,
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-wall {
+	background-color: transparent !important;
+}
+
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-tile {
+	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-term {
+	background-color: transparent !important;
 }

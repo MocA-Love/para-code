@@ -133,11 +133,17 @@ suite('Paradis - agent live window', () => {
 				paradisApplyAgentLiveManualDrop(['a', 'b', 'c', 'd'], visible, 'a', 'c'),
 				// 一覧に居ないトークンへ落ちた場合は末尾へ回す。
 				paradisApplyAgentLiveManualDrop(['a', 'b'], ['a', 'b'], 'a', 'zzz'),
+				// insertAfter: true で target の直後へ挿す (挿入線がタイルの右側を指したとき)。
+				paradisApplyAgentLiveManualDrop(['a', 'b', 'c', 'd'], visible, 'a', 'c', true),
+				// insertAfter を省略した場合は従来どおり target の直前 (後方互換)。
+				paradisApplyAgentLiveManualDrop(['a', 'b', 'c', 'd'], visible, 'a', 'c', false),
 			],
 			[
 				['a', 'd', 'b', 'c'],
 				['b', 'a', 'c', 'd'],
 				['b', 'a'],
+				['b', 'c', 'a', 'd'],
+				['b', 'a', 'c', 'd'],
 			],
 		);
 	});

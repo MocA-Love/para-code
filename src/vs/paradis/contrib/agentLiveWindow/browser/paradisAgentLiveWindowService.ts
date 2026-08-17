@@ -10,10 +10,13 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { paradisApplyAuxiliaryWindowTransparency, paradisIsAuxiliaryWindowTransparencyActive } from '../../windowTransparency/browser/paradisAuxiliaryWindowTransparency.js';
 import { IParadisAuxiliaryWindowScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentLiveSummary,
@@ -68,6 +71,8 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 		@IAuxiliaryWindowService private readonly auxiliaryWindowService: IAuxiliaryWindowService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -96,13 +101,23 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 		// サービスが先に破棄されてもウィンドウ側が取り残されないよう、生成直後に登録する。
 		const disposables = this._register(new DisposableStore());
 		try {
+			const transparencyActive = paradisIsAuxiliaryWindowTransparencyActive(this.layoutService);
 			const auxiliaryWindow = disposables.add(await this.auxiliaryWindowService.open({
 				bounds: this.restoreBounds(),
 				nativeTitlebar: true,
+				transparent: transparencyActive,
 			}));
 			await auxiliaryWindow.whenStylesHaveLoaded;
 
 			auxiliaryWindow.window.document.title = localize('paradis.agentLive.windowTitle', "エージェント");
+
+			// このウィンドウのコンテナはメインウィンドウの class (paradis-transparent を含む) を
+			// 自動でミラーする (applyHTML の trackAttributes)。ここでは別 document のため伝播しない
+			// --paradis-transparency-opacity だけを個別に設定する。透過対応の CSS 自体はコンテナの
+			// ミラーされた class ではなく、View 側が握る root 要素の独自クラスをゲートに使う
+			// (ParadisAgentLiveWindowView に transparencyActive を渡している。Windows でミラーされた
+			// class だけを見て CSS が誤発火しないようにするため)。
+			disposables.add(paradisApplyAuxiliaryWindowTransparency(auxiliaryWindow.container, this.configurationService));
 
 			// このウィンドウは特定のスペースに属さない。登録しないと resolveWindow が 'pending' を
 			// 返し、ここにフォーカスがある間に作られたターミナル / ブラウザビューがアクティブ
@@ -114,6 +129,7 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 				auxiliaryWindow.container,
 				this.model,
 				this.viewState,
+				transparencyActive,
 			));
 			disposables.add(view.onDidChangeViewState(() => this.scheduleSave()));
 

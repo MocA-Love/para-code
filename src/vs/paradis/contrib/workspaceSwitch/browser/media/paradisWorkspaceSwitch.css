@@ -135,17 +135,21 @@
 		paradis-status-pulse-clock 1s ease-in-out infinite;
 }
 
+/* charts.orange は継承元 (minimapFindMatch) の関係でテーマによって33%アルファだったり
+	High Contrast で未定義 (消える) だったりするため、全既定テーマで不透明な charts.yellow
+	(editorWarningForeground 由来) を使う。paradisAgentLiveWindow.css の .paradis-agent-live-dot
+	と語彙を揃えている (値を変えるときは両方直す)。 */
 .paradis-workspaces-list .paradis-status-working {
-	color: #f59e0b;
+	color: var(--vscode-charts-yellow, #cca700);
 	opacity: var(--paradis-status-breathe);
 }
 
 .paradis-workspaces-list .paradis-status-review {
-	color: #22c55e;
+	color: var(--vscode-charts-green, #22c55e);
 }
 
 .paradis-workspaces-list .paradis-status-permission {
-	color: #ef4444;
+	color: var(--vscode-charts-red, #ef4444);
 	opacity: var(--paradis-status-pulse);
 }
 
