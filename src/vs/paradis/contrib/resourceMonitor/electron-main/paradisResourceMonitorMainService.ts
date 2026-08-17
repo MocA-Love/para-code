@@ -177,7 +177,10 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 
 		const startedAt = this.dependencies.now();
 		const collection = this.dependencies.collectRawSample()
-			.then(sample => ({ sample, startedAt }))
+			// Cache successful captures from completion so a slow Windows process scan still
+			// benefits from the complete active/idle reuse window. Failure fallback below
+			// deliberately retains the previous generation's original deadline.
+			.then(sample => ({ sample, startedAt: this.dependencies.now() }))
 			.catch(() => this.cachedRawGeneration ?? { sample: this.createEmptyRawSample(), startedAt })
 			.then(generation => {
 				this.cacheRawGeneration(generation);
