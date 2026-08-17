@@ -16,7 +16,8 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
+import { registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -114,8 +115,120 @@ export interface IParadisAgentBrowserBindingModel {
 	getGatewayEndpoint(): Promise<IParadisGatewayEndpoint>;
 }
 
-/** shared processへのポーリング間隔（ms）。IPC1往復の軽い呼び出しのみ。 */
-const POLL_INTERVAL = 3000;
+const BINDING_FAST_POLL_INTERVAL = 3_000;
+const BINDING_IDLE_POLL_INTERVAL = 30_000;
+const BROWSER_VIEW_RECONCILE_RETRY_INTERVAL = 3_000;
+type ParadisAgentBrowserBindingPollCadence = typeof BINDING_FAST_POLL_INTERVAL | typeof BINDING_IDLE_POLL_INTERVAL;
+
+/** Model-local timer abstraction, module-exported for deterministic poll and coalescer tests. */
+export interface IParadisAgentBrowserBindingPollTimer {
+	set(callback: () => void, delayMs: number): unknown;
+	clear(handle: unknown): void;
+}
+
+/** Constructor timer seams, module-exported so tests can inject independent deterministic clocks. */
+export interface IParadisAgentBrowserBindingModelOptions {
+	readonly pollTimerFactory?: () => IParadisAgentBrowserBindingPollTimer;
+	readonly tokenRefreshTimerFactory?: () => IParadisAgentBrowserBindingPollTimer;
+}
+
+/** Owns the single adaptive one-shot poll deadline; module-exported to test cadence policy directly. */
+export class ParadisAgentBrowserBindingPoller extends Disposable {
+	private handle: unknown;
+	private scheduledCadence: ParadisAgentBrowserBindingPollCadence | undefined;
+	private started = false;
+
+	constructor(
+		private readonly requestRefresh: () => void,
+		private readonly isIdle: () => boolean,
+		private readonly timer: IParadisAgentBrowserBindingPollTimer,
+	) {
+		super();
+	}
+
+	start(): void {
+		if (this.started || this._store.isDisposed) {
+			return;
+		}
+		this.started = true;
+		this.schedule(this.desiredCadence());
+		this.requestRefresh();
+	}
+
+	stateChanged(): void {
+		if (!this.started || this._store.isDisposed) {
+			return;
+		}
+		const cadence = this.desiredCadence();
+		if (cadence === this.scheduledCadence) {
+			return;
+		}
+		this.cancel();
+		this.schedule(cadence);
+	}
+
+	private desiredCadence(): ParadisAgentBrowserBindingPollCadence {
+		return this.isIdle() ? BINDING_IDLE_POLL_INTERVAL : BINDING_FAST_POLL_INTERVAL;
+	}
+
+	private schedule(cadence: ParadisAgentBrowserBindingPollCadence): void {
+		this.scheduledCadence = cadence;
+		this.handle = this.timer.set(() => {
+			this.handle = undefined;
+			this.scheduledCadence = undefined;
+			if (this._store.isDisposed) {
+				return;
+			}
+			this.schedule(this.desiredCadence());
+			this.requestRefresh();
+		}, cadence);
+	}
+
+	private cancel(): void {
+		if (this.handle !== undefined) {
+			this.timer.clear(this.handle);
+			this.handle = undefined;
+		}
+		this.scheduledCadence = undefined;
+	}
+
+	override dispose(): void {
+		this.cancel();
+		super.dispose();
+	}
+}
+
+/** Coalesces pane-token changes into one 0ms refresh; module-exported to test its fixed window directly. */
+export class ParadisAgentBrowserBindingTokenRefreshCoalescer extends Disposable {
+	private handle: unknown;
+
+	constructor(
+		private readonly requestRefresh: () => void,
+		private readonly timer: IParadisAgentBrowserBindingPollTimer,
+	) {
+		super();
+	}
+
+	schedule(): void {
+		if (this.handle !== undefined || this._store.isDisposed) {
+			return;
+		}
+		this.handle = this.timer.set(() => {
+			this.handle = undefined;
+			if (!this._store.isDisposed) {
+				this.requestRefresh();
+			}
+		}, 0);
+	}
+
+	override dispose(): void {
+		if (this.handle !== undefined) {
+			this.timer.clear(this.handle);
+			this.handle = undefined;
+		}
+		super.dispose();
+	}
+}
 
 interface IParadisBindScopeSnapshot {
 	readonly scope: ParadisStableBindingScope;
@@ -130,8 +243,12 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
 	private _bindings: readonly IParadisPaneBinding[] = [];
+	private _bindingByToken: ReadonlyMap<string, IParadisPaneBinding> = new Map();
+	private _bindingsByPageId: ReadonlyMap<string, readonly IParadisPaneBinding[]> = new Map();
 	private _seenTokens = new Set<string>();
-	private _pollTimer: number | undefined;
+	private readonly _poller: ParadisAgentBrowserBindingPoller;
+	private readonly _tokenRefreshCoalescer: ParadisAgentBrowserBindingTokenRefreshCoalescer;
+	private _refreshRetryRequired = false;
 	private _disposed = false;
 	private readonly _browserViewReconcileScheduler: RunOnceScheduler;
 	private readonly _browserViewReconciler: ParadisSerializedReconciler;
@@ -159,6 +276,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	get bindings(): readonly IParadisPaneBinding[] { return this._bindings; }
 
 	constructor(
+		options: IParadisAgentBrowserBindingModelOptions | undefined,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
@@ -169,6 +287,23 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		@IParadisAgentBrowserAuthoritySyncService private readonly authoritySyncService: IParadisAgentBrowserAuthoritySyncService,
 	) {
 		super();
+		const pollTimer = options?.pollTimerFactory?.() ?? {
+			set: (callback: () => void, delayMs: number) => mainWindow.setTimeout(callback, delayMs),
+			clear: (handle: unknown) => mainWindow.clearTimeout(handle as number),
+		};
+		this._poller = this._register(new ParadisAgentBrowserBindingPoller(
+			() => { void this.refresh(); },
+			() => !this._requiresFastRefresh(),
+			pollTimer,
+		));
+		const tokenRefreshTimer = options?.tokenRefreshTimerFactory?.() ?? {
+			set: (callback: () => void, delayMs: number) => mainWindow.setTimeout(callback, delayMs),
+			clear: (handle: unknown) => mainWindow.clearTimeout(handle as number),
+		};
+		this._tokenRefreshCoalescer = this._register(new ParadisAgentBrowserBindingTokenRefreshCoalescer(
+			() => { void this.refresh(); },
+			tokenRefreshTimer,
+		));
 		this._removedBrowserBindingReconciler = new ParadisRemovedBrowserBindingReconciler(
 			new Set(this.browserViewWorkbenchService.getKnownBrowserViews().keys()),
 			{
@@ -186,9 +321,17 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		}, 100));
 
 		// ペイン集合・タイトル（エージェント種別判定に使用）の変化はUIの再描画に直結する。
-		this._register(this.paneTokenService.onDidChange(() => this.scheduleFire()));
+		this._register(this.paneTokenService.onDidChange(() => {
+			this.scheduleFire();
+			this._poller.stateChanged();
+			this._tokenRefreshCoalescer.schedule();
+		}));
 		this._register(this.terminalService.onDidChangeInstances(() => this.scheduleFire()));
-		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.scheduleFire()));
+		this._register(this.terminalService.onAnyInstanceTitleChange(instance => {
+			if (this.paneTokenService.getTokenForInstance(instance.instanceId) !== undefined) {
+				this.scheduleFire();
+			}
+		}));
 		this._register(this.browserViewWorkbenchService.onDidChangeBrowserViews(() => this.onBrowserViewsChanged()));
 		this._register(this.terminalScopeService.onDidChangeStableScope(event => {
 			this.scheduleFire();
@@ -205,10 +348,9 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			}
 		}));
 
-		this._pollTimer = mainWindow.setInterval(() => { void this.refresh(); }, POLL_INTERVAL);
 		// 初期refreshの完了だけではreconcileしない。BrowserView復元中の空のknown台帳を
 		// 「消滅」と誤判定しないよう、台帳のchange eventを起点にする。
-		void this.refresh();
+		this._poller.start();
 	}
 
 	private scheduleFire(): void {
@@ -364,7 +506,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		// lifecycle判定はlistBindings単独で完結済み。ここではUI cacheだけを最後に更新する。
 		await this.refresh();
 		if (!this._disposed && this._removedBrowserBindingReconciler.hasPendingRemovals) {
-			this.scheduleBrowserViewReconcile(POLL_INTERVAL);
+			this.scheduleBrowserViewReconcile(BROWSER_VIEW_RECONCILE_RETRY_INTERVAL);
 		} else {
 			// 実行中にqueueされた同じ削除eventが既に収束していれば、
 			// 予約済みの不要な後続refresh/reconcileを取り消す。
@@ -390,7 +532,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				title: instance.title,
 				agentKind: detectAgentKind(instance),
 				mcpConnected: this._seenTokens.has(token),
-				binding: this._bindings.find(b => b.token === token),
+				binding: this.getBindingForToken(token),
 				bindEligibility: model ? this.getBindEligibility(model, token) : undefined,
 			});
 		}
@@ -409,16 +551,25 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	getBindingsForPage(pageId: string): IParadisPaneBinding[] {
-		return this._bindings.filter(binding => binding.pageId === pageId);
+		return [...(this._bindingsByPageId.get(pageId) ?? [])];
 	}
 
 	getBindingForToken(token: string): IParadisPaneBinding | undefined {
-		return this._bindings.find(binding => binding.token === token);
+		return this._bindingByToken.get(token);
 	}
 
 	/** このウィンドウのターミナルペインにトークンが1本でも割り当てられているか（renderer内で同期判定）。 */
 	private hasAnyPaneToken(): boolean {
 		return this.paneTokenService.listPaneTokens().length > 0;
+	}
+
+	private _requiresFastRefresh(): boolean {
+		return this.hasAnyPaneToken() || this._bindings.length > 0 || this._seenTokens.size > 0
+			|| this._pendingUnsharePageIds.size > 0;
+	}
+
+	private _requiresRefresh(): boolean {
+		return this._requiresFastRefresh() || this._refreshRetryRequired;
 	}
 
 	async refresh(): Promise<void> {
@@ -427,13 +578,9 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 
 	/** Returns the exact fresh binding snapshot, independent of concurrent cache refreshes. */
 	private async _refreshFromBackend(force: boolean = false): Promise<readonly IParadisPaneBinding[] | undefined> {
-		// トークンが1本も無ければ shared process のバインディング/接続実績はこのウィンドウに
-		// 関係し得ず、listBindings/listSeenTokens の結果は必ず空へ収束する。ただし直前まで
-		// 残っていたキャッシュを空へ落とし切る必要があるため、「トークン0 かつ 手元の
-		// bindings/seenTokens も既に空」の両方を満たすときだけ IPC をスキップする。片方でも
-		// 非空なら通常どおり取得して確実に空へ収束させ、トークンが1本でも生えれば次の tick で
-		// 即座に取得を再開する（interval 自体は止めないのでイベント取りこぼしで固まらない）。
-		if (!force && !this.hasAnyPaneToken() && this._bindings.length === 0 && this._seenTokens.size === 0) {
+		// token、cache、retry、pending cleanupの全てが無いclean idleではbinding-list IPCを省略する。
+		// token eventは0ms refreshを予約し、eventを取りこぼしてもidle pollが現在stateを再確認する。
+		if (!force && !this._requiresRefresh()) {
 			return this._bindings;
 		}
 		const refreshSerial = ++this._nextRefreshSerial;
@@ -448,20 +595,42 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			}
 			this._clearVerifiedPageBinds(refreshSerial);
 			if (refreshSerial > this._appliedRefreshSerial) {
-				this._appliedRefreshSerial = refreshSerial;
 				const changed = JSON.stringify(bindings) !== JSON.stringify(this._bindings)
 					|| seenTokens.length !== this._seenTokens.size
 					|| seenTokens.some(token => !this._seenTokens.has(token));
+				const bindingByToken = new Map<string, IParadisPaneBinding>();
+				const bindingsByPageId = new Map<string, IParadisPaneBinding[]>();
+				for (const binding of bindings) {
+					if (!bindingByToken.has(binding.token)) {
+						bindingByToken.set(binding.token, binding);
+					}
+					const pageBindings = bindingsByPageId.get(binding.pageId);
+					if (pageBindings) {
+						pageBindings.push(binding);
+					} else {
+						bindingsByPageId.set(binding.pageId, [binding]);
+					}
+				}
+				this._appliedRefreshSerial = refreshSerial;
 				this._bindings = bindings;
+				this._bindingByToken = bindingByToken;
+				this._bindingsByPageId = bindingsByPageId;
 				this._seenTokens = new Set(seenTokens);
+				if (refreshSerial === this._nextRefreshSerial) {
+					this._refreshRetryRequired = false;
+				}
 				if (changed) {
 					this.scheduleFire();
 				}
+				this._poller.stateChanged();
 			}
 			this._schedulePendingPageUnshares(bindings);
 			return bindings;
 		} catch {
-			// shared process 未起動等。次のポーリングで再試行される。
+			if (!this._store.isDisposed && refreshSerial === this._nextRefreshSerial) {
+				this._refreshRetryRequired = true;
+				this._poller.stateChanged();
+			}
 			return undefined;
 		}
 	}
@@ -659,6 +828,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			for (const pageId of candidatePageIds) {
 				this._pendingUnsharePageIds.add(pageId);
 			}
+			this._poller.stateChanged();
 			return;
 		}
 		await this._unsharePagesWithoutBindings(candidatePageIds, bindings);
@@ -668,15 +838,19 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		pageIds: Iterable<string>,
 		bindings: readonly IParadisPaneBinding[],
 	): Promise<void> {
-		for (const pageId of pageIds) {
-			if (bindings.some(binding => binding.pageId === pageId)) {
-				continue;
+		try {
+			for (const pageId of pageIds) {
+				if (bindings.some(binding => binding.pageId === pageId)) {
+					continue;
+				}
+				const model = this.browserViewWorkbenchService.getKnownBrowserViews().get(pageId)?.model;
+				if (model) {
+					await model.setSharedWithAgent(false);
+				}
+				this._pendingUnsharePageIds.delete(pageId);
 			}
-			const model = this.browserViewWorkbenchService.getKnownBrowserViews().get(pageId)?.model;
-			if (model) {
-				await model.setSharedWithAgent(false);
-			}
-			this._pendingUnsharePageIds.delete(pageId);
+		} finally {
+			this._poller.stateChanged();
 		}
 	}
 
@@ -695,7 +869,10 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				if (exact) {
 					await this._unsharePagesWithoutBindings([pageId], exact);
 				}
-			}).catch(() => undefined).finally(() => this._scheduledUnsharePageIds.delete(pageId));
+			}).catch(() => undefined).finally(() => {
+				this._scheduledUnsharePageIds.delete(pageId);
+				this._poller.stateChanged();
+			});
 		}
 	}
 
@@ -774,10 +951,6 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		this._browserViewReconciler.dispose();
 		this._browserViewReconcileScheduler.cancel();
 		this._browserViewReconcileScheduledDelay = undefined;
-		if (this._pollTimer !== undefined) {
-			mainWindow.clearInterval(this._pollTimer);
-			this._pollTimer = undefined;
-		}
 		super.dispose();
 	}
 }
@@ -797,4 +970,4 @@ export function detectAgentKind(instance: ITerminalInstance): ParadisPaneAgentKi
 	return 'shell';
 }
 
-registerSingleton(IParadisAgentBrowserBindingModel, ParadisAgentBrowserBindingModel, InstantiationType.Delayed);
+registerSingleton(IParadisAgentBrowserBindingModel, new SyncDescriptor(ParadisAgentBrowserBindingModel, [undefined], true));
