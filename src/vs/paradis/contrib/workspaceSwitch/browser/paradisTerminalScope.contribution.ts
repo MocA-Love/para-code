@@ -11,7 +11,9 @@ import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
+import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
@@ -23,6 +25,7 @@ import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreati
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
+import { IParadisTerminalNonceScopeDisagreement, paradisMigrateProcessScopesToNonceScopes, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
@@ -45,6 +48,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	declare readonly _serviceBrand: undefined;
 
 	private static readonly MAPPING_STORAGE_KEY = 'paradis.workspaceSwitch.terminalRepositories';
+	/** nonce をキーにした所属台帳。旧 MAPPING_STORAGE_KEY とは別に持ち、当面は併存させる。 */
+	private static readonly NONCE_MAPPING_STORAGE_KEY = 'paradis.workspaceSwitch.terminalScopesByNonce';
 
 	/**
 	 * park の保留を打ち切るまでの上限 (詳細は `_parkDeferralReleased`)。
@@ -124,6 +129,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _initialCwds = new Map<number, string>();
 	private readonly _initialCwdResolvedInstances = new Set<number>();
 	private readonly _activeFallbackInstances = new Set<number>();
+	/** nonce 台帳と ID 台帳が食い違った回数。0 のままなら nonce を信頼してよい。 */
+	private _nonceScopeDisagreements = 0;
 	private readonly _initialCwdResolutions = new WeakMap<ITerminalInstance, Promise<void>>();
 	private _terminalRestoreComplete = false;
 	private _worktreeSnapshotReady = false;
@@ -143,6 +150,20 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _restoredPersistentProcessScopes: Map<number, string>;
 	private readonly _quarantinedPersistentProcessScopes: Map<number, string>;
 
+	// 所属スペースを nonce で引く台帳。PTY ID の台帳と違い、キーは端末の構築時に同期で決まり
+	// revive をまたいでも変わらないので、「ID 未確定のまま落ちて漏れる」「revive で対応が切れる」
+	// が起きない。ID 台帳より先に引くが、食い違ったら ID 台帳を採る（nonce の不変性はコードで
+	// 追った内容で実機未検証のため、先に引く方を信じて誤ったスペースへ寄せることを避ける）。
+	//
+	// ID 台帳と同じく読み側と書き側を分ける。非アクティブスペースの端末は、そのスペースへ
+	// 切り替えるまで live にならない＝起動時の prune では消せない。1枚で兼ねると、まさに
+	// この台帳が拾うはずの端末を起動のたびに自分で捨てることになる。
+
+	/** 書き側。今セッションで確定した分だけを持ち、live でなくなった分は prune される。 */
+	private readonly _nonceScopes: Map<string, string>;
+	/** 読み側。前セッションから復元した対応で、prune しない。 */
+	private readonly _restoredNonceScopes: Map<string, string>;
+
 	constructor(
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -155,6 +176,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 		// 復元は数秒で終わる。ここまで待っても完了しないなら復元経路が落ちていると見なし、
@@ -177,6 +199,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this._persistentProcessScopes = new Map(initialPartition.accepted);
 		this._restoredPersistentProcessScopes = new Map(initialPartition.accepted);
 		this._quarantinedPersistentProcessScopes = initialPartition.quarantined;
+		const loadedNonceMapping = this.loadNonceMapping();
+		this._nonceScopes = new Map(loadedNonceMapping);
+		this._restoredNonceScopes = new Map(loadedNonceMapping);
 
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
 		this._register(this.terminalService.onDidChangeInstances(() => this.refreshAllStableScopes()));
@@ -241,7 +266,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			const scopeSnapshot = new Map([...this._quarantinedPersistentProcessScopes, ...this._restoredPersistentProcessScopes]);
 			// 一巡し切ったときだけ記録する。中断した場合は「台帳が空 = 端末が無い」とは言えず、
 			// worktree 側の missing 自動退役がそれを根拠にすると生きた PTY を巻き添えにする
-			if (await this.reviveOrphanedScopedEditorTerminals(scopeSnapshot)) {
+			const revivalComplete = await this.reviveOrphanedScopedEditorTerminals(scopeSnapshot);
+			if (revivalComplete) {
 				paradisMarkOrphanTerminalRevivalComplete();
 			}
 			if (this._store.isDisposed) {
@@ -249,6 +275,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 			const liveInstances = this.refreshAllStableScopes();
 			paradisPrunePersistentProcessScopes(this._persistentProcessScopes, liveInstances.map(instance => this.toScopedInstance(instance)));
+			// 復活が中断していたら prune しない。非アクティブスペースの端末はまだ live になって
+			// おらず、ここで落とすと「この台帳が拾うべきエントリ」を保存から消してしまう
+			// （読み側は残るのでこの世代は無事だが、次回起動で失う）。
+			if (revivalComplete) {
+				this.pruneNonceScopes(liveInstances);
+			}
 			this.persistMapping();
 		});
 		void this.worktreeService.initializationBarrier.then(() => {
@@ -277,6 +309,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			const liveInstances = this.refreshAllStableScopes();
 			if (this._terminalRestoreComplete) {
 				paradisPrunePersistentProcessScopes(this._persistentProcessScopes, liveInstances.map(instance => this.toScopedInstance(instance)));
+				// 孤児復活が一巡していなければ、まだ live になっていない端末が居る。上と同じ理由で
+				// その状態の live 一覧を根拠に nonce 台帳を削ってはいけない。
+				if (paradisIsOrphanTerminalRevivalComplete()) {
+					this.pruneNonceScopes(liveInstances);
+				}
 			}
 			this.tagUntaggedGroups();
 			this.persistMapping();
@@ -507,6 +544,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return false;
 		}
 		const workspaceId = this.workspaceContextService.getWorkspace().id;
+		// 旧 ID 台帳から nonce 台帳への翻訳は、ここで既に取れている一覧を使い回す。
+		// `listProcesses()` は pty host が孤児判定のためレンダラーへ問い合わせて返事を待つので
+		// 安くない。別途もう1往復すると、その分だけ孤児復活の開始が遅れ、ユーザーのスペース
+		// 切り替えと競合して完走フラグに届かなくなる確率が上がる。
+		this.migrateProcessScopesToNonceScopes(details, workspaceId, persistentProcessScopes);
 		// 1件でも取りこぼしたら完走扱いにしない。フラグが保証したいのは「台帳がもう増えない」
 		// ではなく「台帳が空ならそのスコープに端末は無い」の方で、復活に失敗した PTY は
 		// pty host に生きたまま台帳へ入らないため、両者がずれる
@@ -604,6 +646,64 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		return result;
 	}
 
+	/**
+	 * 旧 ID 台帳を nonce 台帳へ翻訳する。
+	 *
+	 * この版で初めて nonce 台帳を持つので、翻訳しないと前セッションから引き継いだ端末が
+	 * 「nonce では引けない」状態から始まる。ID 台帳がまだ prune される前に橋を架けておく。
+	 *
+	 * 対応表にできるのは、渡された一覧に居る PTY だけ。`listProcesses()` は孤児だけを返すので、
+	 * 既に attach 済みの端末はここには来ない。そちらは live なので `recordNonceScopes` が
+	 * 通常経路で書く。この関数が埋めるのは「まだ誰も掴んでいない前セッションの端末」の分。
+	 */
+	private migrateProcessScopesToNonceScopes(
+		details: readonly IProcessDetails[],
+		workspaceId: string,
+		persistentProcessScopes: ReadonlyMap<number, string>,
+	): void {
+		const nonceByPtyId = new Map<number, string>();
+		// `scopeLookupId` には「旧 ID 空間の revive 元」と「新 ID 空間の生 ID」が混ざる。どちらも
+		// 同じ小さな整数空間なので衝突しうる。Map のキーにする以上、衝突を放置すると片方の nonce が
+		// 黙って捨てられ、残った nonce に別端末の stateKey が結びつく。nonce は不変なので、その
+		// 誤対応は永久に固定される。同一性を証明できない以上、両方見送る
+		// （`listOrphanPtyIdsByNonce` が同じ nonce の重複に対して取っている防御と同じ形）。
+		const duplicated = new Set<number>();
+		for (const detail of details) {
+			const nonce = paradisTerminalIdentityNonce(detail.shellIntegrationNonce);
+			// 母集団は孤児ループと揃える。機能端末やユーザーに見せない端末は所属を持たない。
+			if (nonce === undefined || detail.workspaceId !== workspaceId
+				|| detail.isFeatureTerminal === true || detail.hideFromUser === true) {
+				continue;
+			}
+			// 台帳のキーは「前セッションの PTY ID」で、`detail.id` は今世代の ID。revive 元が
+			// 分かっているならそちらで引く（引く ID を先に1つ選ぶ形。ルックアップ結果へ `??` を
+			// 掛けるのは別の誤りで、孤児ループのコメントが禁じているのはそちら）。
+			const scopeLookupId = detail.paradisRevivedFromPersistentProcessId ?? detail.id;
+			if (nonceByPtyId.has(scopeLookupId)) {
+				duplicated.add(scopeLookupId);
+				continue;
+			}
+			nonceByPtyId.set(scopeLookupId, nonce);
+		}
+		for (const scopeLookupId of duplicated) {
+			nonceByPtyId.delete(scopeLookupId);
+		}
+		if (nonceByPtyId.size === 0) {
+			return;
+		}
+		// 読み側にだけ入れる。前セッションの対応であって、今セッションで live になったわけではない。
+		const migrated = paradisMigrateProcessScopesToNonceScopes(this._restoredNonceScopes, persistentProcessScopes, nonceByPtyId);
+		if (migrated.size === 0) {
+			return;
+		}
+		// 保存するのは書き側なので、**今回足した分だけ**をそちらへ写す。読み側の全件を写すと
+		// prune で落とした死んだ記録まで復活してしまう。
+		for (const [nonce, stateKey] of migrated) {
+			this._nonceScopes.set(nonce, stateKey);
+		}
+		this.persistNonceMapping();
+	}
+
 	/** このウィンドウのインスタンスが掴んでいる PTY ID（park 中・background 含む）。 */
 	private listHeldPtyIds(): ReadonlySet<number> {
 		const ids = new Set<number>();
@@ -692,6 +792,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	private recordPersistentProcessScopes(instances: readonly ITerminalInstance[]): void {
+		// nonce 台帳は pid の確定を待たない。ID 台帳が「pid 未確定のうちは書けない」せいで
+		// 漏らしていた端末を、同じ呼び出し地点から取りこぼさずに拾うため先に書く。
+		this.recordNonceScopes(instances);
 		for (const instance of instances) {
 			const persistentProcessId = this.getPersistentProcessId(instance);
 			if (persistentProcessId === undefined) {
@@ -788,7 +891,18 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._activeFallbackInstances.delete(instance.instanceId);
 			return;
 		}
-		if (paradisRestorePersistentProcessScope(this._instanceScopes, this._restoredPersistentProcessScopes, this.toRestoredScopedInstance(instance)) !== undefined) {
+		// nonce 台帳を ID 台帳より先に引く。ID 台帳が漏らした端末（pid 未確定のまま落ちた、
+		// revive で ID が振り直された）をここで拾えるのが狙い。食い違いは ID 台帳を採るので、
+		// 従来引けていた端末の結果は変わらない。
+		const processStateKey = paradisRestorePersistentProcessScope(this._instanceScopes, this._restoredPersistentProcessScopes, this.toRestoredScopedInstance(instance));
+		const restoredStateKey = paradisResolveNonceScope(
+			this._restoredNonceScopes,
+			this.instanceNonce(instance),
+			processStateKey,
+			disagreement => this.reportNonceScopeDisagreement(instance, disagreement),
+		);
+		if (restoredStateKey !== undefined) {
+			this._instanceScopes.set(instance.instanceId, restoredStateKey);
 			this._activeFallbackInstances.delete(instance.instanceId);
 			return;
 		}
@@ -1009,6 +1123,20 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this._quarantinedPersistentProcessScopes.delete(persistentProcessId);
 			}
 		}
+		// nonce 台帳も一緒に掃除する。ここを残すと、ID 台帳から消えた端末が退役済みのスペースへ
+		// nonce で寄せられ、二度と unpark されない場所へ park されて PTY ごと不可視になる。
+		let retiredNonces = false;
+		for (const ledger of [this._nonceScopes, this._restoredNonceScopes]) {
+			for (const [nonce, assignedStateKey] of ledger) {
+				if (assignedStateKey === stateKey) {
+					ledger.delete(nonce);
+					retiredNonces = true;
+				}
+			}
+		}
+		if (retiredNonces) {
+			this.persistNonceMapping();
+		}
 		for (const instanceId of retiringInstanceIds) {
 			const persistentProcessId = this._persistentProcessIdByInstance.get(instanceId);
 			if (persistentProcessId !== undefined && this._instanceIdByPersistentProcessId.get(persistentProcessId) === instanceId) {
@@ -1099,6 +1227,89 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return new Map();
 		}
 		return paradisParseTerminalProcessScopeStorage(raw) ?? new Map();
+	}
+
+	private persistNonceMapping(): void {
+		const raw = paradisSerializeTerminalNonceScopeStorage(this._nonceScopes);
+		if (raw === undefined) {
+			// 上限を超えると保存できない。黙って止まると「台帳が効かない」だけの状態が続くので残す。
+			this.logService.warn(`[paradisTerminalScope] the nonce scope ledger is too large to persist (${this._nonceScopes.size} entries); keeping the previous one`);
+			return;
+		}
+		this.storageService.store(ParadisTerminalWorkspaceScope.NONCE_MAPPING_STORAGE_KEY, raw, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	/**
+	 * live でなくなった端末の記録を書き側から落とし、結果を保存する。
+	 *
+	 * 読み側（`_restoredNonceScopes`）は落とさない。非アクティブスペースの端末はそのスペースへ
+	 * 切り替えるまで live にならないので、ここで消すとこの台帳が拾うはずの端末を毎起動で
+	 * 自分から捨てることになる。ID 台帳が読み書きを分けているのと同じ理由。
+	 */
+	private pruneNonceScopes(liveInstances: readonly ITerminalInstance[]): void {
+		const before = this._nonceScopes.size;
+		paradisPruneNonceScopes(this._nonceScopes, liveInstances.map(instance => this.instanceNonce(instance)));
+		if (this._nonceScopes.size !== before) {
+			this.persistNonceMapping();
+		}
+	}
+
+	private loadNonceMapping(): Map<string, string> {
+		const raw = this.storageService.get(ParadisTerminalWorkspaceScope.NONCE_MAPPING_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return new Map();
+		}
+		return paradisParseTerminalNonceScopeStorage(raw) ?? new Map();
+	}
+
+	/**
+	 * nonce 台帳と ID 台帳の食い違いを記録する。
+	 *
+	 * nonce が revive をまたいで不変であることはコードを追って確認したが実機では未検証で、
+	 * ここが鳴るならその前提が崩れている。第2段階（所属不明を推測で埋めるのをやめる）は
+	 * nonce 台帳を信頼できることが前提なので、進める前にこのログを見て判断する。
+	 */
+	private reportNonceScopeDisagreement(instance: ITerminalInstance, disagreement: IParadisTerminalNonceScopeDisagreement): void {
+		this._nonceScopeDisagreements++;
+		this.logService.warn(`[paradisTerminalScope] nonce scope disagreed with the process ledger (instance ${instance.instanceId}, total ${this._nonceScopeDisagreements}); keeping the process ledger value`, {
+			nonceStateKey: disagreement.nonceStateKey,
+			processStateKey: disagreement.processStateKey,
+		});
+	}
+
+	/** 端末の nonce。台帳のキーに使えない形（切り離された端末の空文字など）は undefined。 */
+	private instanceNonce(instance: ITerminalInstance): string | undefined {
+		return paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+	}
+
+	/**
+	 * 今わかっている所属を nonce 台帳へ書き足す。ID 台帳と違い pid の確定を待たない。
+	 *
+	 * 推測（active fallback）由来の値は書かない。そういう端末は cwd が判明したら
+	 * `reevaluateActiveFallbackScopes` が訂正する前提で `_activeFallbackInstances` に居るが、
+	 * nonce は revive をまたいでも変わらないので、一度書くと次セッションでは復元経路が
+	 * cwd 解決より先に確定させてしまい、訂正の機会が永久に来なくなる。
+	 * ID 台帳は pid が振り直されれば対応が切れて再評価できるが、こちらは切れない。
+	 */
+	private recordNonceScopes(instances: readonly ITerminalInstance[]): void {
+		let changed = false;
+		for (const instance of instances) {
+			const nonce = this.instanceNonce(instance);
+			const stateKey = this._instanceScopes.get(instance.instanceId);
+			if (nonce === undefined || stateKey === undefined
+				|| this._activeFallbackInstances.has(instance.instanceId)
+				|| this._nonceScopes.get(nonce) === stateKey) {
+				continue;
+			}
+			// 書き側にだけ入れる。読み側は「前セッションから引き継いだ対応」に閉じておく
+			// （生きた端末が同一セッション中に復元経路へ戻る経路は無く、`recordRecoveredScopeIfUnassigned`
+			// は `_instanceScopes` があれば早期 return する）。prune できない側を太らせない。
+			this._nonceScopes.set(nonce, stateKey);
+			changed = true;
+		}
+		if (changed) {
+			this.persistNonceMapping();
+		}
 	}
 
 	/**
