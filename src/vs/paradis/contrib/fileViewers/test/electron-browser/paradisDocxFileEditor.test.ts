@@ -357,6 +357,7 @@ suite('ParadisDocxFileEditor', () => {
 			cancellation.cancel();
 			await pending;
 
+			strictEqual(fixture.editor.input, undefined);
 			deepStrictEqual(fixture.snapshot(), {
 				watcherResources: [],
 				readResources: [],
@@ -364,6 +365,31 @@ suite('ParadisDocxFileEditor', () => {
 				claims: 0,
 				releases: 0,
 				htmlDocuments: [],
+				overlayCallsAfterDispose: 0,
+			});
+		});
+
+		test('restores the previous tab input when a replacement is cancelled', async () => {
+			const fixture = createDocxEditorFixture();
+			const resourceA = URI.file('/workspace/a.docx');
+			const resourceB = URI.file('/workspace/b.docx');
+			const inputA = fixture.createInput(resourceA);
+			await fixture.editor.setInput(inputA, undefined, Object.create(null), CancellationToken.None);
+			await fixture.settleCurrentRender();
+			const cancellation = fixture.createCancellationTokenSource();
+
+			const pending = fixture.editor.setInput(fixture.createInput(resourceB), undefined, Object.create(null), cancellation.token);
+			cancellation.cancel();
+			await pending;
+
+			strictEqual(fixture.editor.input, inputA);
+			deepStrictEqual(fixture.snapshot(), {
+				watcherResources: [resourceA.toString()],
+				readResources: [resourceA.toString()],
+				readOptions: [{ length: 4 }],
+				claims: 1,
+				releases: 0,
+				htmlDocuments: ['viewer'],
 				overlayCallsAfterDispose: 0,
 			});
 		});
