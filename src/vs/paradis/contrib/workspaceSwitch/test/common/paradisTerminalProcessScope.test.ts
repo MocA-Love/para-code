@@ -8,7 +8,10 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../../common/paradisTerminalProcessScope.js';
+import {
+	paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate,
+	paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage
+} from '../../common/paradisTerminalProcessScope.js';
 
 suite('paradisRecordInstanceScopes / paradisLookupInstanceScope', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -209,6 +212,70 @@ suite('paradisRecordInstanceScopes / paradisLookupInstanceScope', () => {
 			worktreeSnapshotReady: true,
 			activeStateKeyCandidate: 'scope:created-here',
 		}), { status: 'resolved', stateKey: 'scope:created-here' });
+	});
+
+	// 復元された端末に貼られる「アクティブなスペース」は作成時のものではなく、復元処理が
+	// 走った時点のもの。それを所属として確定させると、台帳に焼き付いて次のセッションへ伝わる。
+	// 分からないまま返し、呼び出し側に待避させる。
+	test('does not hand a restored terminal to whatever space is active now', () => {
+		const settled = { initialCwdResolved: true, worktreeSnapshotReady: true, activeStateKeyCandidate: 'scope:active-now' };
+
+		assert.deepStrictEqual({
+			restored: paradisResolveTerminalScopeCandidate({ ...settled, restoredFromPersistentProcess: true }),
+			// cwd から引けるなら復元でも所属は分かる。
+			restoredWithCwd: paradisResolveTerminalScopeCandidate({ ...settled, restoredFromPersistentProcess: true, initialCwdStateKey: 'worktree:known' }),
+			// 台帳に載っていれば従来どおりそれが最優先。
+			restoredWithLedger: paradisResolveTerminalScopeCandidate({ ...settled, restoredFromPersistentProcess: true, persistentStateKey: 'scope:from-ledger' }),
+			// 新しく開かれた端末は今までどおり作成時のスペースへ。
+			created: paradisResolveTerminalScopeCandidate({ ...settled, restoredFromPersistentProcess: false }),
+		}, {
+			restored: { status: 'resolved' },
+			restoredWithCwd: { status: 'resolved', stateKey: 'worktree:known' },
+			restoredWithLedger: { status: 'resolved', stateKey: 'scope:from-ledger' },
+			created: { status: 'resolved', stateKey: 'scope:active-now' },
+		});
+	});
+
+	// 隠した端末は自力では戻らない。戻し口の無い状況で隠すと、混在を避けるために端末を
+	// 永久に失うという、より悪い事故になる。材料が1つでも欠けたら隠さない側へ倒す。
+	test('only parks an unattributed group when there is somewhere to recover it to', () => {
+		const restored = { restoredFromPersistentProcess: true, initialCwdSettled: true, hasScope: false };
+		const base = {
+			isManagedWorkspaceWindow: true,
+			activeStateKey: 'scope:active',
+			worktreeSnapshotReady: true,
+			hasResolvableScopeRoots: true,
+			instances: [restored],
+		};
+
+		assert.deepStrictEqual({
+			settled: paradisShouldParkUnattributedGroup(base),
+			// スペースを使っていないウィンドウ: 所属が付きようがなく、引き取り先も無い。
+			unmanagedWindow: paradisShouldParkUnattributedGroup({ ...base, isManagedWorkspaceWindow: false }),
+			noActiveSpace: paradisShouldParkUnattributedGroup({ ...base, activeStateKey: undefined }),
+			// リモート接続では cwd 照合の root が file スキームだけなので構造的に空になる。
+			noRoots: paradisShouldParkUnattributedGroup({ ...base, hasResolvableScopeRoots: false }),
+			pendingWorktrees: paradisShouldParkUnattributedGroup({ ...base, worktreeSnapshotReady: false }),
+			// cwd の取得がまだ終わっていない端末は、判定材料が揃っていないので待避しない
+			// （取得を試み終えたなら、失敗していても根拠が無い＝待避対象）。
+			cwdPending: paradisShouldParkUnattributedGroup({ ...base, instances: [{ ...restored, initialCwdSettled: false }] }),
+			// 新規作成の端末は作成時のスペースへ寄せるので対象外。
+			freshTerminal: paradisShouldParkUnattributedGroup({ ...base, instances: [{ ...restored, restoredFromPersistentProcess: false }] }),
+			alreadyScoped: paradisShouldParkUnattributedGroup({ ...base, instances: [{ ...restored, hasScope: true }] }),
+			mixedWithFresh: paradisShouldParkUnattributedGroup({ ...base, instances: [restored, { ...restored, restoredFromPersistentProcess: false }] }),
+			empty: paradisShouldParkUnattributedGroup({ ...base, instances: [] }),
+		}, {
+			settled: true,
+			unmanagedWindow: false,
+			noActiveSpace: false,
+			noRoots: false,
+			pendingWorktrees: false,
+			cwdPending: false,
+			freshTerminal: false,
+			alreadyScoped: false,
+			mixedWithFresh: false,
+			empty: false,
+		});
 	});
 
 	test('rejects malformed persistent scope storage atomically and bounds its size', () => {

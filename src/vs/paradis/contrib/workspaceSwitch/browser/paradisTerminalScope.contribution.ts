@@ -11,7 +11,9 @@ import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
+import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -23,8 +25,8 @@ import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITermina
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisMigrateProcessScopesToNonceScopes, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
@@ -131,6 +133,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _activeFallbackInstances = new Set<number>();
 	/** nonce 台帳と ID 台帳が食い違った回数。0 のままなら nonce を信頼してよい。 */
 	private _nonceScopeDisagreements = 0;
+	/**
+	 * 所属が分からないまま待避しているグループ。`_groupRepositories` とは別に持つ
+	 * （あちらへ入れると目印が所属として台帳へ焼き付き、cwd による自己修復を殺す）。
+	 */
+	private readonly _unattributedGroups = new Set<ITerminalGroup>();
+	private _unattributedNoticeShown = false;
 	private readonly _initialCwdResolutions = new WeakMap<ITerminalInstance, Promise<void>>();
 	private _terminalRestoreComplete = false;
 	private _worktreeSnapshotReady = false;
@@ -177,6 +185,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 		// 復元は数秒で終わる。ここまで待っても完了しないなら復元経路が落ちていると見なし、
@@ -342,6 +351,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	resolveScope(instanceId: number): ParadisBindingScope {
+		// 待避中の端末は「どのスペースの持ち物でもない」ので、所属を尋ねられても
+		// アクティブスペースを答えない（下の解決は所属不明なら最後にそこへ落ちる）。
+		// ここで答えてしまうと、モバイル・通知・binding authority が一度その所属で観測し、
+		// 実在しないスペースの持ち物として扱われる。
+		if (this.isUnattributedInstance(instanceId)) {
+			return { kind: 'pending' };
+		}
 		const groupStateKey = this.getGroupStateKey(instanceId);
 		const parkedEditorStateKey = this.getParkedEditorStateKey(instanceId);
 		const isLiveInstance = groupStateKey !== undefined
@@ -448,6 +464,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	/** グループの構成インスタンスの instanceId に、このタグ付けを記録する */
 	private recordInstanceScopes(group: ITerminalGroup, stateKey: string, clearActiveFallback = false): void {
+		// 所属が決まったグループは、もう「所属不明」ではない。印を残すと台帳には所属があるのに
+		// `resolveScope` は pending を返し続ける、という食い違いになる。
+		this._unattributedGroups.delete(group);
 		const liveInstances = group.terminalInstances.filter(instance => !instance.isDisposed);
 		paradisRecordInstanceScopes(this._instanceScopes, liveInstances, stateKey);
 		this.recordPersistentProcessScopes(liveInstances);
@@ -912,6 +931,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			worktreeSnapshotReady: this._worktreeSnapshotReady,
 			initialCwdStateKey,
 			activeStateKeyCandidate: this._activeScopeCandidates.get(instance.instanceId),
+			// 復元された端末かどうか。新しく開かれた端末は今までどおり作成時のスペースへ寄せる。
+			restoredFromPersistentProcess: instance.shellLaunchConfig.attachPersistentProcess !== undefined,
 		});
 		if (candidate.status === 'resolved' && candidate.stateKey !== undefined) {
 			this._instanceScopes.set(instance.instanceId, candidate.stateKey);
@@ -958,6 +979,14 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// 優先する。initial cwd/worktree snapshotが未確定ならタグ付け自体を保留する。
 			const stateKey = this.resolveGroupScope(group) ?? this.resolveGroupInitialCwdScope(group);
 			if (!stateKey) {
+				// 所属が分からない復元グループは、アクティブスペースに置いたままにしない。
+				// 台帳にも cwd にも根拠が無いのに表示すると、それは「今開いているスペースの
+				// 持ち物」に見えてしまう＝混ざる。判定がまだ途中のもの（cwd や worktree 一覧の
+				// 確定待ち）は対象外で、次の呼び出しでやり直す。
+				if (this.isSettledUnattributedRestoredGroup(group)) {
+					this.parkUnattributedGroup(groupService, group);
+					changed = true;
+				}
 				continue;
 			}
 
@@ -972,6 +1001,164 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (changed) {
 			this.persistMapping();
 		}
+	}
+
+	/** 所属不明として待避しているターミナルの本数。コマンドの表示に使う。 */
+	countUnattributedTerminals(): number {
+		// park 保留中のグループも `_unattributedGroups` に入っているので、ここだけ数えれば足りる
+		// （`_deferredParkGroups` も見ると同じ端末を二重に数えることになる）。
+		let count = 0;
+		for (const group of this._unattributedGroups) {
+			count += group.terminalInstances.filter(instance => !instance.isDisposed).length;
+		}
+		return count;
+	}
+
+	/**
+	 * 所属不明として待避しているターミナルを、今のスペースの持ち物として引き取る。
+	 *
+	 * 引き取った時点で所属が決まるので、以後は通常の端末と同じ扱いになる（台帳にも載る）。
+	 * @returns 引き取ったターミナルの本数。
+	 */
+	adoptUnattributedTerminals(): number {
+		const groupService = this.terminalGroupService;
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		if (!(groupService instanceof TerminalGroupService) || activeStateKey === undefined || this._unattributedGroups.size === 0) {
+			return 0;
+		}
+		let adopted = 0;
+		// park 保留中の分は、保留を解いた先で今のスペースへ入るように差し替えるだけでよい。
+		for (const [group, stateKey] of this._deferredParkGroups) {
+			if (stateKey === PARADIS_UNATTRIBUTED_TERMINAL_SCOPE) {
+				this._deferredParkGroups.set(group, activeStateKey);
+				// 印を外すのを忘れると `resolveScope` が永久に pending を返し続け、
+				// 台帳には所属があるのにモバイル・通知・binding authority から見えなくなる。
+				this._unattributedGroups.delete(group);
+				this._groupRepositories.set(group, activeStateKey);
+				this.recordInstanceScopes(group, activeStateKey);
+				adopted += group.terminalInstances.filter(instance => !instance.isDisposed).length;
+			}
+		}
+		const parked = this._parkedGroups.get(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE) ?? [];
+		const stillParked: ITerminalGroup[] = [];
+		for (const group of parked) {
+			// グループ単位で確定させる。まとめて台帳から外してから失敗すると、park は解けて
+			// いないのに待避先の台帳からも消え、どの経路からも辿れないグループが残る。
+			try {
+				groupService.paradisUnparkGroup(group);
+			} catch (error) {
+				stillParked.push(group);
+				onUnexpectedError(error);
+				continue;
+			}
+			this._unattributedGroups.delete(group);
+			this._groupRepositories.set(group, activeStateKey);
+			this.recordInstanceScopes(group, activeStateKey);
+			adopted += group.terminalInstances.filter(instance => !instance.isDisposed).length;
+		}
+		if (stillParked.length > 0) {
+			this._parkedGroups.set(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE, stillParked);
+		} else {
+			this._parkedGroups.delete(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE);
+		}
+		this.persistMapping();
+		this.refreshAllStableScopes();
+		return adopted;
+	}
+
+	/**
+	 * 所属が「まだ分からない」ではなく「分からないまま確定した」復元グループか。
+	 *
+	 * 判定材料が揃う前（initial cwd の解決待ち、worktree 一覧の確定待ち）に待避させると、
+	 * 後から cwd で正しいスペースが分かる端末まで隠してしまう。全インスタンスについて
+	 * 材料が揃い、それでも所属が出なかったものだけを対象にする。
+	 * 新しく開かれた端末は作成時のスペースへ寄せられるので、ここには来ない。
+	 */
+	private isSettledUnattributedRestoredGroup(group: ITerminalGroup): boolean {
+		return paradisShouldParkUnattributedGroup({
+			isManagedWorkspaceWindow: this.workspaceSwitchService.isManagedWorkspaceWindow,
+			activeStateKey: this.workspaceSwitchService.activeStateKey,
+			worktreeSnapshotReady: this._worktreeSnapshotReady,
+			hasResolvableScopeRoots: this.hasResolvableScopeRoots(),
+			instances: group.terminalInstances.map(instance => ({
+				restoredFromPersistentProcess: instance.shellLaunchConfig.attachPersistentProcess !== undefined,
+				// 取得に失敗した端末も含める。根拠が無いまま表示すると結局混ざるうえ、
+				// タグ付けも待避もされない端末はどのスペースでも出続けてしまう。
+				initialCwdSettled: this._initialCwdResolvedInstances.has(instance.instanceId),
+				hasScope: this._instanceScopes.get(instance.instanceId) !== undefined,
+			})),
+		});
+	}
+
+	/** 待避中のグループに属する端末か。 */
+	private isUnattributedInstance(instanceId: number): boolean {
+		for (const group of this._unattributedGroups) {
+			if (group.terminalInstances.some(instance => instance.instanceId === instanceId)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** cwd から所属を引ける土台があるか（照合先の root が1つでもあるか）。 */
+	private hasResolvableScopeRoots(): boolean {
+		for (const repository of this.workspaceSwitchService.repositories) {
+			if (repository.uri.scheme === 'file') {
+				return true;
+			}
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing && worktree.uri.scheme === 'file') {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * 所属の分からない復元グループの待避先。
+	 *
+	 * どのスペースにも属さないので、スペースを切り替えても戻ってこない。戻す手段は
+	 * 待避時に出す通知のボタンか、コマンド "Recover Terminals Without a Space" から引き取る。
+	 * 表示したまま混ぜるより隠す方を選んでいるのは、混ざった側は所属が上書きされて
+	 * 元がどこだったか分からなくなるのに対し、隠れた側は引き取れば戻せるため。
+	 */
+	private parkUnattributedGroup(groupService: TerminalGroupService, group: ITerminalGroup): void {
+		// `_groupRepositories` には入れない。あそこへ入れると `getGroupStateKey` がこの目印を
+		// 所属として返し、そこから `_instanceScopes` → pid 台帳 → nonce 台帳と自動で伝播して
+		// 永続化される。所属スコープとして焼き付いた目印は cwd より優先して引かれるので、
+		// 一時的な理由で1度隠れた端末が cwd で自己修復する道を永久に塞いでしまう。
+		// 実在しない stateKey がモバイルや通知など外部の消費者にも漏れる。
+		this._unattributedGroups.add(group);
+		this.parkGroup(groupService, group, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE);
+		this.logService.warn(`[paradisTerminalScope] parked a restored terminal group with no resolvable space (${group.terminalInstances.length} terminals); use the unattributed terminals command to bring it back`);
+		this.notifyUnattributedTerminals();
+	}
+
+	/**
+	 * 隠したことを一度だけ知らせる。ログだけだと、ユーザーからは端末が黙って消えたようにしか
+	 * 見えず、戻せることも分からない（エージェントを走らせていた端末なら事故と区別できない）。
+	 */
+	private notifyUnattributedTerminals(): void {
+		if (this._unattributedNoticeShown) {
+			return;
+		}
+		this._unattributedNoticeShown = true;
+		this.notificationService.prompt(
+			Severity.Info,
+			localize('paradis.unattributedTerminals.parked', "Some restored terminals could not be matched to a space, so they are being kept aside instead of being shown here."),
+			[{
+				label: localize('paradis.unattributedTerminals.recover', "Move Them Into This Space"),
+				run: () => {
+					if (this.adoptUnattributedTerminals() === 0) {
+						this.notificationService.warn(localize('paradis.unattributedTerminals.recoverFailed', "The terminals could not be moved into this space. Open a space first, then run \"Recover Terminals Without a Space\"."));
+					}
+				},
+			}],
+			// 復元直後、ユーザーが画面を見ていない時間帯に出る。自動で消えると、端末が黙って
+			// 消えたようにしか見えないという、この通知が防ぎたかった状態に戻ってしまう。
+			{ sticky: true },
+		);
 	}
 
 	/** @param stateKey park 先スコープの stateKey (リポジトリ本体では repositoryId と同値)。 */
@@ -1009,6 +1196,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 		for (const [group, deferredStateKey] of deferred) {
+			// 印を付けてから park するまでの間、グループは画面に見えたままなので、その窓で
+			// split されることがある。ユーザーが今作った端末を巻き添えに隠さないよう、
+			// 実際に隠す直前にもう一度判定し直す。条件から外れていれば待避を取り消す。
+			if (deferredStateKey === PARADIS_UNATTRIBUTED_TERMINAL_SCOPE && !this.isSettledUnattributedRestoredGroup(group)) {
+				this._unattributedGroups.delete(group);
+				continue;
+			}
 			const stateKey = this._groupRepositories.get(group) ?? deferredStateKey;
 			if (!groupService.groups.includes(group) || stateKey === activeStateKey) {
 				continue;
@@ -1164,6 +1358,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private discardGroup(group: ITerminalGroup): void {
 		this._groupRepositories.delete(group);
 		this._deferredParkGroups.delete(group);
+		// 消し忘れるとグループ（とその配下の端末）の参照がウィンドウの寿命ぶん残り、
+		// 所属判定のたびにその死骸を走査することになる。
+		this._unattributedGroups.delete(group);
 		for (const [stateKey, groups] of this._parkedGroups) {
 			const index = groups.indexOf(group);
 			if (index !== -1) {

@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
+import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
@@ -26,7 +28,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
-import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
@@ -692,6 +694,67 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+
+	// 所属の分からない復元ターミナルは、アクティブスペースへ推測で寄せず待避させる。
+	// 待避の印を外し忘れると「台帳には所属があるのに resolveScope は pending」という
+	// 食い違いが残り、モバイル・通知・binding authority からその端末が消える。
+	test('recovers a parked terminal group even while parking is still deferred', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createRestoredTerminalGroup(4001);
+			const harness = await createHarness(['space-a'], testDisposables);
+			// 待避には引き取り先（今のスペース）が要る。無ければ隠さない判断になる。
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			// cwd の解決も worktree バリアも非同期。材料が揃ってからタグ付けを走らせる。
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			// 復元中は park を保留する（先に park すると split が壊れるため）。保留中でも待避対象。
+			assert.strictEqual(scope.countUnattributedTerminals(), 1, '待避対象として数えられる');
+
+			const adopted = scope.adoptUnattributedTerminals();
+
+			assert.deepStrictEqual({
+				adopted,
+				remaining: scope.countUnattributedTerminals(),
+				// 引き取った端末の所属。待避の印が残っていると、台帳に所属があっても
+				// `resolveScope` が pending を返し続け、モバイルや通知から消えたままになる。
+				// （このハーネスはターミナル接続を Connecting のままにしているので、
+				//   binding scope 側の判定ではなく台帳を直接見る）
+				stateKey: scope.getStateKeyForInstance(4001),
+			}, { adopted: 1, remaining: 0, stateKey: 'space-a' });
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	test('forgets a parked group once it is disposed', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createRestoredTerminalGroup(4002);
+			const harness = await createHarness(['space-b'], testDisposables);
+			// 待避には引き取り先（今のスペース）が要る。無ければ隠さない判断になる。
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			// cwd の解決も worktree バリアも非同期。材料が揃ってからタグ付けを走らせる。
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.strictEqual(scope.countUnattributedTerminals(), 1);
+
+			harness.disposeGroup(group);
+
+			// 消し忘れるとグループと配下の端末の参照がウィンドウの寿命ぶん残り続ける。
+			assert.strictEqual(scope.countUnattributedTerminals(), 0);
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 });
 
 interface IWorkspaceSwitchIntegrationHarness {
@@ -700,9 +763,46 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly parts: IEditorGroupsService;
 	readonly terminalEditorService: Pick<ITerminalEditorService, 'instances'>;
 	readonly detachedTerminalInstanceIds: readonly number[];
-	installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>): ParadisTerminalWorkspaceScope;
+	/** park 中のグループ。待避されたかを見るのに使う。 */
+	readonly parkedGroups: ReadonlySet<ITerminalGroup>;
+	installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>, options?: IParadisTerminalScopeHarnessOptions): ParadisTerminalWorkspaceScope;
+	/** グループ構成が変わったことを知らせる（タグ付けを走らせる）。 */
+	fireGroupsChanged(): void;
+	disposeGroup(group: ITerminalGroup): void;
 	createEditor(path: string, modified: boolean): TestFileEditorInput;
 	addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number, shellIntegrationNonce: string): ITerminalInstance;
+}
+
+/** ターミナルスコープを組み立てるときの、テストごとに変えたい前提。 */
+interface IParadisTerminalScopeHarnessOptions {
+	readonly groups?: readonly ITerminalGroup[];
+	/** worktree の初期化バリアを解決済みにするか（待避判定の材料の1つ）。 */
+	readonly worktreeReady?: boolean;
+}
+
+/** マイクロタスクとタイマーを数回まわして、非同期の解決を落ち着かせる。 */
+async function settle(): Promise<void> {
+	for (let i = 0; i < 5; i++) {
+		await new Promise<void>(resolve => setTimeout(resolve, 0));
+	}
+}
+
+/**
+ * 復元されたターミナル1本だけを持つグループ。`attachPersistentProcess` の有無が
+ * 「復元された端末か」の判別材料そのものなので、テストからも明示的に指定する。
+ */
+function createRestoredTerminalGroup(instanceId: number, options: { readonly restored?: boolean; readonly initialCwd?: string } = {}): ITerminalGroup {
+	const instance = {
+		instanceId,
+		shellIntegrationNonce: `nonce-${instanceId}`,
+		isDisposed: false,
+		shellLaunchConfig: (options.restored === false ? {} : { attachPersistentProcess: { id: instanceId } }) as IShellLaunchConfig,
+		processReady: Promise.resolve(),
+		getInitialCwd: async () => options.initialCwd ?? '/somewhere/unknown',
+		onDisposed: Event.None,
+		onDidChangeTarget: Event.None,
+	} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+	return { terminalInstances: [instance] } satisfies Partial<ITerminalGroup> as unknown as ITerminalGroup;
 }
 
 function createFakeTerminalInstance(ids: ReturnType<typeof createUniqueTerminalIds>): { readonly instance: ITerminalInstance } {
@@ -844,23 +944,33 @@ async function createHarness(
 		{ remoteAuthority: undefined } as unknown as IWorkbenchEnvironmentService,
 	));
 
+	const parkedGroups = new Set<ITerminalGroup>();
+	const onDidChangeGroups = testDisposables.add(new Emitter<void>());
+	const onDidDisposeGroup = testDisposables.add(new Emitter<ITerminalGroup>());
+
 	return {
 		workspaceSwitchService,
+		parkedGroups,
+		fireGroupsChanged: () => onDidChangeGroups.fire(),
+		disposeGroup: (group: ITerminalGroup) => onDidDisposeGroup.fire(group),
 		editorScopeService,
 		parts,
 		terminalEditorService,
 		detachedTerminalInstanceIds,
-		installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>): ParadisTerminalWorkspaceScope {
+		installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>, options: IParadisTerminalScopeHarnessOptions = {}): ParadisTerminalWorkspaceScope {
 			onOpenTerminalEditor = onOpenEditor;
 			const terminalGroupService = Object.create(TerminalGroupService.prototype) as TerminalGroupService;
+			const groups = options.groups ?? [];
 			Object.defineProperties(terminalGroupService, {
-				groups: { get: () => [] },
-				paradisParkedGroups: { get: () => [] },
-				onDidChangeGroups: { value: Event.None },
-				onDidDisposeGroup: { value: Event.None },
+				groups: { get: () => groups.filter(group => !parkedGroups.has(group)) },
+				paradisParkedGroups: { get: () => [...parkedGroups] },
+				onDidChangeGroups: { value: onDidChangeGroups.event },
+				onDidDisposeGroup: { value: onDidDisposeGroup.event },
+				paradisParkGroup: { value: (group: ITerminalGroup) => { parkedGroups.add(group); } },
+				paradisUnparkGroup: { value: (group: ITerminalGroup) => { parkedGroups.delete(group); } },
 			});
 			const terminalService = {
-				instances: [],
+				instances: groups.flatMap(group => group.terminalInstances),
 				whenConnected: new Promise<void>(() => { }),
 				connectionState: TerminalConnectionState.Connecting,
 				onDidChangeInstances: Event.None,
@@ -868,8 +978,9 @@ async function createHarness(
 				onAnyInstanceProcessIdReady: Event.None,
 			} satisfies Partial<ITerminalService> as unknown as ITerminalService;
 			const worktreeService = {
-				initializationBarrier: new Promise<void>(() => { }),
+				initializationBarrier: options.worktreeReady === true ? Promise.resolve() : new Promise<void>(() => { }),
 				onDidChangeWorktrees: Event.None,
+				getWorktrees: () => [],
 			} satisfies Partial<IParadisWorktreeService> as unknown as IParadisWorktreeService;
 			const scope = new ParadisTerminalWorkspaceScope(
 				terminalGroupService as unknown as ITerminalGroupService,
@@ -884,6 +995,7 @@ async function createHarness(
 				contextService,
 				parts,
 				new NullLogService(),
+				new TestNotificationService(),
 			);
 			testDisposables.add(scope);
 			return scope;

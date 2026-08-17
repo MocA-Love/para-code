@@ -162,6 +162,14 @@ export function paradisListSpaces(
 
 // --- ターミナルスコープ / エージェント状態 -------------------------------------------------------
 
+/**
+ * 所属の分からない復元ターミナルの待避先を表す、スペースではない目印。
+ *
+ * 実在するスペースの stateKey（リポジトリ ID / worktree キー）とは衝突しない形にしてある。
+ * 切り替えでは戻らず、専用のコマンドから今のスペースへ引き取る。
+ */
+export const PARADIS_UNATTRIBUTED_TERMINAL_SCOPE = 'paradis:unattributed-terminals';
+
 export const IParadisTerminalScopeService = createDecorator<IParadisTerminalScopeService>('paradisTerminalScopeService');
 export const IParadisBrowserScopeService = createDecorator<IParadisBrowserScopeService>('paradisBrowserScopeService');
 export const IParadisAuxiliaryWindowScopeService = createDecorator<IParadisAuxiliaryWindowScopeService>('paradisAuxiliaryWindowScopeService');
@@ -372,6 +380,14 @@ export interface IParadisTerminalScopeService {
 	 * ターミナル作成」用。既定のタグ付けはアクティブスコープ所属になるため)
 	 */
 	assignInstanceScope(instanceId: number, stateKey: string): void;
+	/**
+	 * 所属スペースを確定できず待避しているターミナルの本数。
+	 * 復元された端末を「今アクティブなスペース」へ推測で寄せると、その所属が台帳へ焼き付いて
+	 * 元がどこだったか分からなくなるため、確定できないものは表示せず待避させている。
+	 */
+	countUnattributedTerminals(): number;
+	/** 待避中のターミナルを今のスペースの持ち物として引き取る。@returns 引き取った本数。 */
+	adoptUnattributedTerminals(): number;
 }
 
 export const IParadisAgentStatusStore = createDecorator<IParadisAgentStatusStore>('paradisAgentStatusStore');
