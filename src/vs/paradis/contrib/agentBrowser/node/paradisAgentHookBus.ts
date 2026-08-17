@@ -56,8 +56,10 @@ const HOOK_PAYLOAD_MAX_DEPTH = 20;
 const HOOK_PAYLOAD_MAX_ENTRIES = 100;
 const HOOK_PAYLOAD_MAX_STRING = 10_000;
 const PANE_TOKEN_MAX_LENGTH = 200;
-const BACKGROUND_TASK_MAX_ENTRIES = 4_096;
-const BACKGROUND_TASK_ID_MAX_LENGTH = 200;
+/** paradisMobileAgentChat.ts の SubagentStart/SubagentStop 反映側でも同じ上限を使う（登録側で超過を弾き、公開時に無言で切り捨てられるのを防ぐため export）。 */
+export const BACKGROUND_TASK_MAX_ENTRIES = 4_096;
+/** 同上（IDの長さ版）。 */
+export const BACKGROUND_TASK_ID_MAX_LENGTH = 200;
 const BACKGROUND_TASK_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 function sanitizeHookValue(value: unknown, depth: number): unknown {
