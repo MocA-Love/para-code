@@ -20,6 +20,9 @@ import { TerminalLocalFileLinkOpener, TerminalLocalFolderInWorkspaceLinkOpener, 
 import { TerminalLocalLinkDetector } from './terminalLocalLinkDetector.js';
 import { TerminalUriLinkDetector } from './terminalUriLinkDetector.js';
 import { TerminalWordLinkDetector } from './terminalWordLinkDetector.js';
+// PARA-PATCH: file:// links with an authority (SMB/UNC-style, e.g. from CLI agent output) fail the
+// built-in Uri detector's local stat check and silently fall through to word-link quick-open search.
+import { ParadisTerminalFileUriLinkDetector } from '../../../../../paradis/contrib/terminalFileUriLinks/browser/paradisTerminalFileUriLinkDetector.js';
 import { ITerminalConfigurationService, ITerminalExternalLinkProvider, TerminalLinkQuickPickEvent } from '../../../terminal/browser/terminal.js';
 import { ILinkHoverTargetOptions, TerminalHover } from '../../../terminal/browser/widgets/terminalHoverWidget.js';
 import { TerminalWidgetManager } from '../../../terminal/browser/widgets/widgetManager.js';
@@ -84,6 +87,8 @@ export class TerminalLinkManager extends DisposableStore {
 			this._setupLinkDetector(TerminalLocalLinkDetector.id, this._instantiationService.createInstance(TerminalLocalLinkDetector, this._xterm, capabilities, this._processInfo, this._linkResolver));
 		}
 		this._setupLinkDetector(TerminalUriLinkDetector.id, this._instantiationService.createInstance(TerminalUriLinkDetector, this._xterm, this._processInfo, this._linkResolver));
+		// PARA-PATCH: see import above.
+		this._setupLinkDetector(ParadisTerminalFileUriLinkDetector.id, this._instantiationService.createInstance(ParadisTerminalFileUriLinkDetector, this._xterm, this._processInfo, this._linkResolver));
 		this._setupLinkDetector(TerminalWordLinkDetector.id, this.add(this._instantiationService.createInstance(TerminalWordLinkDetector, this._xterm)));
 
 		// Setup link openers
