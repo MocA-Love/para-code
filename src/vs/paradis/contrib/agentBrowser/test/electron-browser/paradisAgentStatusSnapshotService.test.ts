@@ -146,7 +146,7 @@ suite('ParadisAgentStatusSnapshotService', () => {
 		assert.deepStrictEqual(outcomes.map(outcome => outcome.sequence), [1]);
 	});
 
-	test('drops a stale error after an immediate refresh and publishes the following success', async () => {
+	test('counts an in-flight failure before publishing the requested follow-up success', async () => {
 		const scheduler = new TestScheduler();
 		const first = new DeferredPromise<IParadisAgentStatusSnapshot>();
 		let calls = 0;
@@ -158,12 +158,14 @@ suite('ParadisAgentStatusSnapshotService', () => {
 		service.requestRefresh();
 		first.error(new Error('stale failure'));
 		await flushAsync();
-		assert.strictEqual(outcomes.length, 0);
+		assert.deepStrictEqual(outcomes.map(outcome => ({ sequence: outcome.sequence, failed: outcome.error instanceof Error })), [
+			{ sequence: 1, failed: true },
+		]);
 
 		await scheduler.runNext();
-		assert.strictEqual(outcomes.length, 1);
-		assert.strictEqual(outcomes[0].sequence, 1);
-		assert.strictEqual(outcomes[0].snapshot?.agentHookTokens[0], 'fresh');
+		assert.strictEqual(outcomes.length, 2);
+		assert.strictEqual(outcomes[1].sequence, 2);
+		assert.strictEqual(outcomes[1].snapshot?.agentHookTokens[0], 'fresh');
 	});
 
 	test('publishes failures as monotonic outcomes and retries after two seconds', async () => {
