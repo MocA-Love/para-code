@@ -188,7 +188,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			setSharedProcessEnabled: enabled => this.service.setEnabled(enabled),
 			onDidLockScreen: this.nativeHostService.onDidLockScreen,
 			onDidUnlockScreen: this.nativeHostService.onDidUnlockScreen,
-			onDidChangeFocus: this.hostService.onDidChangeFocus,
+			onDidChangeFocus: listener => this.hostService.onDidChangeFocus(() => listener()),
 			onDidChangeVisibility: listener => dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => listener()),
 			onError: (operation, error) => this.logService.warn(`[paradisMobileRelay] ${operation} failed`, error),
 		}));
@@ -240,6 +240,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
+			(ownerId, active) => ccusageClient.setDashboardWarmLease(ownerId, active),
 			bypassCache => rtkClient.fetchDashboard(bypassCache),
 			bypassCache => limitsClient.getSnapshot(bypassCache),
 			bypassCache => githubClient.getSnapshot(bypassCache),
@@ -256,6 +257,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// スペースごとのディスク使用量。計測は shared process で1時間ごとに走っているので、
 			// ここは基本的に温まったキャッシュを返すだけになる
 			bypassCache => spaceDiskClient.measure(bypassCache),
+			(ownerId, active, cancellation) => spaceDiskClient.setWarmLease(ownerId, active, cancellation),
 			// コマンドプリセット。PC版のピン留めボタンと同じサービスをそのまま使う
 			// （定義の解決も実行経路も1つに保ち、PCとスマホで挙動が割れないようにする）
 			presetService,

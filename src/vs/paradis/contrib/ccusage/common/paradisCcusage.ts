@@ -27,6 +27,28 @@ export interface IParadisCcusageExecOptions {
 	readonly bypassCache?: boolean;
 }
 
+/** leaseで温められる固定report種別。 */
+export type ParadisCcusageWarmTargetKind = 'daily' | 'blocks' | 'session' | 'projects';
+
+/** warm CLIへ渡せる正規化済みoption。 */
+export type ParadisCcusageWarmTargetOptions = Readonly<{
+	readonly executablePath?: string;
+	readonly since?: string;
+}>;
+
+/** owner leaseが要求する1つのwarm対象。 */
+export type ParadisCcusageWarmTarget = Readonly<{
+	readonly kind: ParadisCcusageWarmTargetKind;
+	readonly options: ParadisCcusageWarmTargetOptions;
+}>;
+
+/** IPCのsetWarmLease commandが受け取るpayload。 */
+export type ParadisCcusageWarmLeasePayload = Readonly<{
+	readonly ownerId: string;
+	readonly active: boolean;
+	readonly targets: readonly ParadisCcusageWarmTarget[];
+}>;
+
 /** モデル単位の内訳(daily/session 共通)。 */
 export interface IParadisCcusageModelBreakdown {
 	readonly modelName: string;
@@ -111,6 +133,8 @@ export type ParadisCcusageProjects = { readonly [projectName: string]: IParadisC
 
 /** shared process チャネルのメソッドと戻り値。 */
 export interface IParadisCcusageService {
+	/** ownerのwarm対象を更新する。空配列はownerをreleaseする。 */
+	setWarmLease(ownerId: string, targets: readonly ParadisCcusageWarmTarget[]): void;
 	/** 統合 daily(全エージェント合算・モデル別内訳付き)。 */
 	fetchDaily(options: IParadisCcusageExecOptions): Promise<IParadisCcusageDailyRow[]>;
 	/** アクティブな5時間ブロック(存在しなければ undefined)。 */

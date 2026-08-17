@@ -17,7 +17,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
@@ -105,6 +105,7 @@ export class ParadisCcusageEditor extends EditorPane {
 	private customToInput: HTMLInputElement | undefined;
 
 	private readonly client: ParadisCcusageClient;
+	private readonly warmLease = this._register(new MutableDisposable<IDisposable>());
 	private readonly bodyDisposables = this._register(new DisposableStore());
 	private readonly relayoutScheduler = this._register(new RunOnceScheduler(() => this.renderBody(), 100));
 
@@ -225,9 +226,20 @@ export class ParadisCcusageEditor extends EditorPane {
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
+		this.updateWarmLease();
 		if (!this.data && !this.loading) {
 			this.refresh();
 		}
+	}
+
+	override clearInput(): void {
+		this.warmLease.clear();
+		super.clearInput();
+	}
+
+	override setVisible(visible: boolean): void {
+		super.setVisible(visible);
+		this.updateWarmLease();
 	}
 
 	override layout(_dimension: dom.Dimension): void {
@@ -240,6 +252,14 @@ export class ParadisCcusageEditor extends EditorPane {
 	override focus(): void {
 		super.focus();
 		this.body?.focus();
+	}
+
+	private updateWarmLease(): void {
+		if (this.isVisible() && this.input) {
+			this.warmLease.value ??= this.client.createDashboardWarmLease();
+		} else {
+			this.warmLease.clear();
+		}
 	}
 
 	private setPreset(key: ParadisCcusagePresetKey): void {
