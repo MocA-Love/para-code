@@ -41,9 +41,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY]: {
 			type: 'boolean',
-			default: true,
+			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.mobile.agent.codexDaemonStreaming', "Para Codeの各ターミナルで稼働中のCodex pane app-serverへ接続し、生成中テキスト・SubAgent・ツール出力・動的モデル一覧・次ターン設定をPara Code Mobileへ連携します。追加の共有daemonは起動せず、Codex終了時にpane app-serverも停止します。問題がある場合は無効にでき、無効時や接続失敗時は従来のhook/transcript同期へ自動的に戻ります。")
+			markdownDescription: localize('paradis.mobile.agent.codexDaemonStreaming', "Codexのライブ連携: 生成中の文字・子エージェント・ツールの出力・モデル一覧・次のターンの設定を、Para Code Mobileへその場で送ります。有効にすると、Codexを開いたターミナル1つにつき裏方のプロセスがもう1つ立ち上がり、その下でツール連携（MCP）のプロセス群も丸ごと起動し直されるため、メモリと起動時間がターミナルの数だけ増えます。無効のあいだCodexは素のまま動き、モバイルへは少し遅れて届きます（モバイルからモデルと思考の深さは変えられません）。この設定は新しく開いたターミナルから効きます。{0} が無効なときは何も起動しません。", `\`${PARADIS_MOBILE_ENABLED_KEY}\``)
 		}
 	}
 });
