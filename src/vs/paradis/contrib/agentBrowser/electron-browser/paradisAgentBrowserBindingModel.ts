@@ -565,7 +565,11 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 
 	private _requiresFastRefresh(): boolean {
 		return this.hasAnyPaneToken() || this._bindings.length > 0 || this._seenTokens.size > 0
-			|| this._refreshRetryRequired || this._pendingUnsharePageIds.size > 0;
+			|| this._pendingUnsharePageIds.size > 0;
+	}
+
+	private _requiresRefresh(): boolean {
+		return this._requiresFastRefresh() || this._refreshRetryRequired;
 	}
 
 	async refresh(): Promise<void> {
@@ -576,7 +580,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	private async _refreshFromBackend(force: boolean = false): Promise<readonly IParadisPaneBinding[] | undefined> {
 		// token、cache、retry、pending cleanupの全てが無いclean idleではbinding-list IPCを省略する。
 		// token eventは0ms refreshを予約し、eventを取りこぼしてもidle pollが現在stateを再確認する。
-		if (!force && !this._requiresFastRefresh()) {
+		if (!force && !this._requiresRefresh()) {
 			return this._bindings;
 		}
 		const refreshSerial = ++this._nextRefreshSerial;

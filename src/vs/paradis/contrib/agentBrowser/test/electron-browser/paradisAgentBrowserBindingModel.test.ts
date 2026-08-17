@@ -755,7 +755,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		}
 	});
 
-	test('retries a failed force read after three seconds before returning to idle', async () => {
+	test('retries a failed clean force read on the idle cadence before returning to idle', async () => {
 		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
 		const fixtureStore = new DisposableStore();
 		const pollTimer = new DeterministicPollTimer();
@@ -767,8 +767,8 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 			await eventually(() => bindingReads.reads.length === 1);
 			await bindingReads.reject(0, new Error('authority unavailable'));
 			await forceRefresh;
-			assert.strictEqual(pollTimer.nextDelay, 3_000);
-			pollTimer.advance(3_000);
+			assert.strictEqual(pollTimer.nextDelay, 30_000);
+			pollTimer.advance(30_000);
 			await eventually(() => bindingReads.reads.length === 2);
 			assert.deepStrictEqual(bindingListCommands(fixture.commands), [
 				'listBindings', 'listSeenTokens', 'listBindings', 'listSeenTokens',
@@ -834,9 +834,9 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 			await newer;
 			await bindingReads.complete(1, []);
 			await older;
-			assert.strictEqual(pollTimer.nextDelay, 3_000);
+			assert.strictEqual(pollTimer.nextDelay, 30_000);
 			fixture.commands.length = 0;
-			pollTimer.advance(3_000);
+			pollTimer.advance(30_000);
 			await nextTask();
 			assert.strictEqual(bindingReads.reads.length, 4);
 			assert.deepStrictEqual(bindingListCommands(fixture.commands), ['listBindings', 'listSeenTokens']);
