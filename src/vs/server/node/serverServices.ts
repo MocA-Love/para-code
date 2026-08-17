@@ -103,6 +103,10 @@ import { IMcpGalleryManifestService } from '../../platform/mcp/common/mcpGallery
 import { McpGalleryManifestIPCService } from '../../platform/mcp/common/mcpGalleryManifestServiceIpc.js';
 import { SANDBOX_HELPER_CHANNEL_NAME, SandboxHelperChannel } from '../../platform/sandbox/common/sandboxHelperIpc.js';
 import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.js';
+// PARA-PATCH: terminals wait longer than the connection does, and the server has to stay up
+// for as long as they do (see those files for why)
+import { paradisTerminalReconnectionGraceTime } from '../../paradis/contrib/remoteTerminals/common/paradisTerminalGraceTime.js';
+import { registerParadisServerTerminalLifetime } from '../../paradis/contrib/remoteTerminals/node/paradisServerTerminalLifetime.js';
 // PARA-PATCH: channel that runs git on this machine for a connected client (registered below)
 import { registerParadisWorktreeGitForServer } from '../../paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.js';
 // PARA-PATCH: usage and limits are recorded on this machine, so a connected client asks here
@@ -231,11 +235,14 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 	const instantiationService: IInstantiationService = new InstantiationService(services);
 	services.set(ILanguagePackService, instantiationService.createInstance(NativeLanguagePackService));
 
+	// PARA-PATCH: terminals wait longer than the connection does. Losing the connection state costs
+	// a reconnect; losing a terminal costs whatever was running in it. See paradisTerminalGraceTime.ts.
+	const paradisTerminalGraceTime = paradisTerminalReconnectionGraceTime(environmentService.args['reconnection-grace-time'], environmentService.reconnectionGraceTime);
 	const ptyHostStarter = instantiationService.createInstance(
 		NodePtyHostStarter,
 		{
-			graceTime: environmentService.reconnectionGraceTime,
-			shortGraceTime: environmentService.reconnectionGraceTime > 0 ? Math.min(ProtocolConstants.ReconnectionShortGraceTime, environmentService.reconnectionGraceTime) : 0,
+			graceTime: paradisTerminalGraceTime,
+			shortGraceTime: paradisTerminalGraceTime > 0 ? Math.min(ProtocolConstants.ReconnectionShortGraceTime, paradisTerminalGraceTime) : 0,
 			scrollback: configurationService.getValue<number>(TerminalSettingId.PersistentSessionScrollback) ?? 100
 		}
 	);
@@ -247,6 +254,15 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		shutdownWithoutDelay: !!args['remote-auto-shutdown-without-delay'],
 	});
 	services.set(IServerLifetimeService, serverLifetimeService);
+
+	// PARA-PATCH: the shutdown countdown only counts extension hosts, and closing a window ends the
+	// extension host immediately — so the server would exit five minutes later and take every
+	// terminal with it, long before their own reconnection grace runs out.
+	// Only wired up where it can help: without auto-shutdown there is no timer to push back, and
+	// with `remote-auto-shutdown-without-delay` pushing it back means shutting down right away.
+	if (!!args['enable-remote-auto-shutdown'] && !args['remote-auto-shutdown-without-delay']) {
+		disposables.add(registerParadisServerTerminalLifetime(ptyHostService, serverLifetimeService, paradisTerminalGraceTime, logService));
+	}
 
 	// ---- Agent host wiring -------------------------------------------------
 	//

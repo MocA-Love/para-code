@@ -13,6 +13,8 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { EditorInput, IEditorCloseHandler } from '../../../common/editor/editorInput.js';
 import { ITerminalInstance, ITerminalInstanceService, terminalEditorId } from './terminal.js';
 import { getColorClass, getUriClasses } from './terminalIcon.js';
+// PARA-PATCH: editor terminals need the same 'keep it running on the remote' decision
+import { paradisJoinKeptDetaches, paradisShouldKeepTerminalProcessAlive } from './paradisTerminalShutdownPolicy.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig, TerminalExitReason, TerminalLocation, TerminalSettingId } from '../../../../platform/terminal/common/terminal.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
@@ -183,7 +185,16 @@ export class TerminalEditorInput extends EditorInput implements IEditorCloseHand
 
 			// Don't touch processes if the shutdown was a result of reload as they will be reattached
 			const shouldPersistTerminals = this._configurationService.getValue<boolean>(TerminalSettingId.EnablePersistentSessions) && e.reason === ShutdownReason.RELOAD;
-			if (shouldPersistTerminals) {
+			// PARA-PATCH: terminals opened as editor tabs are torn down here rather than by
+			// `terminalService._onWillShutdown`, so the same decision has to be made in both places.
+			// Without this, "leave them running on the remote" would silently skip every editor
+			// terminal (Para Code uses those heavily).
+			if (paradisShouldKeepTerminalProcessAlive(e.reason, instance)) {
+				e.join(paradisJoinKeptDetaches([instance.detachProcessAndDispose(TerminalExitReason.Shutdown, true)]), {
+					id: 'paradis.keepRemoteTerminals.editor',
+					label: localize('paradis.keepRemoteTerminals.editorJoiner', "Leaving a terminal running on the remote"),
+				});
+			} else if (shouldPersistTerminals) {
 				instance.detachProcessAndDispose(TerminalExitReason.Shutdown);
 			} else {
 				instance.dispose(TerminalExitReason.Shutdown);

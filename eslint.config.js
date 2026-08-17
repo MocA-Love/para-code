@@ -2055,6 +2055,9 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts が接続先のマシン全体の使用量を答えるチャネル
 						// (registerParadisHostResourcesForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/resourceMonitor/~',
+						// PARA-PATCH: serverServices.ts がターミナルの猶予時間を決めるための逆方向 import
+						// (paradisTerminalReconnectionGraceTime)
+						'vs/paradis/contrib/remoteTerminals/~',
 						'vs/server/~'
 					]
 				},

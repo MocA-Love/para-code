@@ -1213,7 +1213,8 @@ export interface ITerminalInstance extends IBaseTerminalInstance {
 	 *
 	 * @param reason The reason why the terminal is being disposed
 	 */
-	detachProcessAndDispose(reason: TerminalExitReason): Promise<void>;
+	// PARA-PATCH: optional `forcePersist` (see terminalInstance.ts)
+	detachProcessAndDispose(reason: TerminalExitReason, forcePersist?: boolean): Promise<void>;
 
 	/**
 	 * When the panel is hidden or a terminal in the editor area becomes inactive, reset the focus context key

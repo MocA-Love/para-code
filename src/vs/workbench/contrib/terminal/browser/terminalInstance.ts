@@ -1378,10 +1378,12 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		super.dispose();
 	}
 
-	async detachProcessAndDispose(reason: TerminalExitReason): Promise<void> {
+	// PARA-PATCH: `forcePersist` lets a caller keep a process that has never been typed into
+	// (the backend otherwise ends those on detach). Defaults to the previous behaviour.
+	async detachProcessAndDispose(reason: TerminalExitReason, forcePersist?: boolean): Promise<void> {
 		// Detach the process and dispose the instance, without the instance dispose the terminal
 		// won't go away. Force persist if the detach was requested by the user (not shutdown).
-		await this._processManager.detachFromProcess(reason === TerminalExitReason.User);
+		await this._processManager.detachFromProcess(forcePersist ?? reason === TerminalExitReason.User);
 		this.dispose(reason);
 	}
 
