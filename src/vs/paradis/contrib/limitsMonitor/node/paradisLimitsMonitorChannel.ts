@@ -801,7 +801,17 @@ export class ParadisLimitsMonitorService {
 				ptyEnv[key] = value;
 			}
 		}
-		const child = pty.spawn(claudeCommand, ['setup-token'], {
+		// Windowsのnode-pty(ConPTY)はfileをそのままCreateProcessWへ渡すため、npmが
+		// 生成する.cmdシムを直接起動できない(起動失敗)。cmd.exe /c経由にラップして解決する。
+		// 通常のchild_process系はlibuvが.cmd/.batを検知してcmd.exe経由に切り替えるため
+		// この問題が起きない(resolveCommand/canExecuteが成功と判定するのはこのため)。
+		// /cの引数はcmdが自前の"/"クォート規則で再解釈するため、args文字列側をもう一重
+		// 丸ごとクォートしないと(/s指定でも)外側のクォートが剥がれてパス中の空白で壊れる
+		// (Node.jsのchild_process内部が同じ組み立てを行っている実装に合わせた)
+		const isWindows = process.platform === 'win32';
+		const ptyFile = isWindows ? (process.env.ComSpec || 'cmd.exe') : claudeCommand;
+		const ptyArgs: string[] | string = isWindows ? `/d /s /v:off /c ""${claudeCommand}" setup-token"` : ['setup-token'];
+		const child = pty.spawn(ptyFile, ptyArgs, {
 			name: 'xterm-256color',
 			cols: 200,
 			rows: 50,
@@ -849,7 +859,11 @@ export class ParadisLimitsMonitorService {
 			if (settled) {
 				tokenResolve?.(settled);
 			} else {
-				tokenReject?.(new Error(`claude setup-token exited with code ${exitCode} before producing a token`));
+				// 蓄積出力全体をエラーに乗せない(Ink製TUIは\r描画で\nを含まないことがあり、
+				// その場合は最後の非空行=全文になりうるため長さも切る)
+				const lines = stripAnsi(output).trim().split('\n');
+				const detail = (lines.findLast(line => line.trim().length > 0) ?? '').trim().slice(-200);
+				tokenReject?.(new Error(`claude setup-token exited with code ${exitCode}${detail ? `: ${detail}` : ''} before producing a token`));
 			}
 		});
 
