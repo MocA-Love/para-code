@@ -11,8 +11,8 @@
 // (IParadisWorkbookData)へ変換する。図形(drawing)・対角罫線は今回はスコープ外。
 // exceljs は Buffer/stream 依存のため workbench(renderer, sandbox)では動かず、node層で実行する必要がある。
 
-import ExcelJS from 'exceljs';
-import JSZip from 'jszip';
+import type ExcelJS from 'exceljs';
+import type JSZip from 'jszip';
 import {
 	IParadisCellData,
 	IParadisCellRange,
@@ -30,6 +30,22 @@ import {
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 
 const MAX_ROWS = 2000;
+
+/** Heavy Node dependencies loaded only when the first workbook parse starts. */
+export interface IParadisSpreadsheetRuntime {
+	readonly ExcelJS: typeof ExcelJS;
+	readonly JSZip: typeof JSZip;
+}
+
+type SpreadsheetRuntimeLoader = () => Promise<IParadisSpreadsheetRuntime>;
+
+const loadSpreadsheetRuntime: SpreadsheetRuntimeLoader = async () => {
+	const [excelJSModule, jsZipModule] = await Promise.all([
+		import('exceljs'),
+		import('jszip'),
+	]);
+	return { ExcelJS: excelJSModule.default, JSZip: jsZipModule.default };
+};
 
 /** CSS px(96dpi) を pt(72dpi) に。ページ割りの計算は pt で行う。 */
 const PX_TO_PT = 72 / 96;
@@ -565,8 +581,8 @@ function getSheetDimensions(ws: ExcelJS.Worksheet): ISheetDims {
 	return { minR: 1, maxR: ws.rowCount || 1, minC: 1, maxC: ws.columnCount || 1 };
 }
 
-function isNumericCell(cell: ExcelJS.Cell): boolean {
-	if (cell.type === ExcelJS.ValueType.Number) {
+function isNumericCell(cell: ExcelJS.Cell, numberCellType: ExcelJS.ValueType): boolean {
+	if (cell.type === numberCellType) {
 		return true;
 	}
 	const v = cell.value;
@@ -665,7 +681,7 @@ function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
 // renderer へ渡し renderer が DOMParser で図形化する。改ページは brk の id だけ抜き出す。
 // 注意: sheetN.xml の「ファイル番号」は表示順と一致しない(workbook.xml の <sheets> 並びが表示順)。
 // exceljs の eachSheet は表示順なので、すべて「表示順(1始まり)」に正規化して返す。
-async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
+async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
@@ -674,7 +690,7 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 	let themeColorsByName: { [name: string]: string } | undefined;
 	let maxDigitWidth = 7;
 	try {
-		const zip = await JSZip.loadAsync(buffer as unknown as Parameters<typeof JSZip.loadAsync>[0]);
+		const zip = await JSZipRuntime.loadAsync(buffer as unknown as Parameters<typeof JSZip.loadAsync>[0]);
 		const files = zip.files;
 
 		// テーマパレット(セルのテーマ色・図形の schemeClr の解決に使う)。
@@ -813,14 +829,18 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 }
 
 export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
+	private runtimePromise: Promise<IParadisSpreadsheetRuntime> | undefined;
+
+	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
 
 	async parseWorkbook(base64Content: string): Promise<IParadisWorkbookData> {
-		const workbook = new ExcelJS.Workbook();
+		const runtime = await this.getRuntime();
+		const workbook = new runtime.ExcelJS.Workbook();
 		const buffer = Buffer.from(base64Content, 'base64');
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
-		const extras = await extractXlsxExtras(buffer);
+		const extras = await extractXlsxExtras(buffer, runtime.JSZip);
 
 		// このブックのテーマパレットを組み立てて有効化する(以降の eachSheet ループは同期なので、
 		// 並行する parseWorkbook 呼び出しがあってもループ中に差し替わることはない)。
@@ -882,7 +902,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 					const val = getCellDisplayValue(cell);
 					const style: Record<string, string> = getCellStyle(cell) as Record<string, string>;
 					// general 配置(明示指定なし)の数値は右寄せにする。
-					if (!style.textAlign && isNumericCell(cell)) {
+					if (!style.textAlign && isNumericCell(cell, runtime.ExcelJS.ValueType.Number)) {
 						style.textAlign = 'right';
 					}
 					const mergeInfo = mergeEntry && mergeEntry.kind === 'origin' ? mergeEntry : null;
@@ -992,5 +1012,15 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			drawingsBySheet: extras.drawingsBySheet,
 			...(extras.themeColorsByName ? { themeColors: extras.themeColorsByName } : {}),
 		};
+	}
+
+	private getRuntime(): Promise<IParadisSpreadsheetRuntime> {
+		const runtimePromise = this.runtimePromise ??= this.runtimeLoader();
+		return runtimePromise.catch(error => {
+			if (this.runtimePromise === runtimePromise) {
+				this.runtimePromise = undefined;
+			}
+			throw error;
+		});
 	}
 }
