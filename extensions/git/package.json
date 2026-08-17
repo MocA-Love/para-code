@@ -974,6 +974,13 @@
         "enablement": "!operationInProgress"
       },
       {
+        "command": "git.paraSelectBranchDiffBase",
+        "title": "%command.paraSelectBranchDiffBase%",
+        "icon": "$(git-compare)",
+        "category": "Git",
+        "enablement": "!operationInProgress"
+      },
+      {
         "command": "git.viewStagedChanges",
         "title": "%command.viewStagedChanges%",
         "icon": "$(diff-multiple)",
@@ -1738,6 +1745,10 @@
           "when": "config.git.enabled && !git.missing"
         },
         {
+          "command": "git.paraSelectBranchDiffBase",
+          "when": "config.git.enabled && !git.missing && config.git.paraBranchDiff.enabled"
+        },
+        {
           "command": "git.viewStagedChanges",
           "when": "config.git.enabled && !git.missing"
         },
@@ -2297,6 +2308,16 @@
           "group": "inline@1"
         },
         {
+          "command": "git.paraSelectBranchDiffBase",
+          "when": "scmProvider == git && scmResourceGroup == paraBranchDiff",
+          "group": "inline@1"
+        },
+        {
+          "command": "git.paraSelectBranchDiffBase",
+          "when": "scmProvider == git && scmResourceGroup == paraBranchDiff",
+          "group": "1_modification"
+        },
+        {
           "command": "git.cleanAll",
           "when": "scmProvider == git && scmResourceGroup == workingTree && config.git.untrackedChanges == mixed",
           "group": "1_modification"
@@ -2628,6 +2649,11 @@
         {
           "command": "git.openFile",
           "when": "scmProvider == git && scmResourceGroup == untracked",
+          "group": "navigation"
+        },
+        {
+          "command": "git.openFile",
+          "when": "scmProvider == git && scmResourceGroup == paraBranchDiff",
           "group": "navigation"
         },
         {
@@ -3749,6 +3775,12 @@
           "scope": "resource",
           "default": false,
           "description": "%config.alwaysShowStagedChangesResourceGroup%"
+        },
+        "git.paraBranchDiff.enabled": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": true,
+          "description": "%config.paraBranchDiff.enabled%"
         },
         "git.alwaysSignOff": {
           "type": "boolean",
