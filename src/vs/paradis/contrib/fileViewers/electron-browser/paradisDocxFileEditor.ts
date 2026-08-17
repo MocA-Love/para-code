@@ -15,6 +15,7 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisPdfFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
@@ -40,6 +41,7 @@ import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
 const DOCX_HEADER_BYTES = 4;
+const DOCX_WATCH_RERENDER_DELAY_MS = 50;
 
 /** DOCX(Zip)の先頭ローカルファイルヘッダを検証する。 */
 export function isParadisDocxHeader(bytes: Uint8Array): boolean {
@@ -76,6 +78,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _editorVisible = false;
 	private _currentResource: URI | undefined;
 	private _renderGeneration = 0;
+	private _inputEpoch = 0;
+	private _disposed = false;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
@@ -102,21 +106,49 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		const invocationEpoch = ++this._inputEpoch;
+		const previousInput = this._input;
+		const previousOptions = this._options;
 		await super.setInput(input, options, context, token);
+		if (this._disposed || invocationEpoch !== this._inputEpoch) {
+			return;
+		}
+		if (token.isCancellationRequested) {
+			this._input = previousInput;
+			this._options = previousOptions;
+			return;
+		}
 
 		const resource = (input as ParadisDocxInput).resource;
 		this._currentResource = resource;
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
+		let watchInvalidationGeneration: number | undefined;
+		const rerenderScheduler = store.add(new RunOnceScheduler(() => {
+			const expectedGeneration = watchInvalidationGeneration;
+			watchInvalidationGeneration = undefined;
+			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && this._webviewClaimed) {
+				this._renderResource(resource);
+			}
+		}, DOCX_WATCH_RERENDER_DELAY_MS));
+		const scheduleWatchRerender = () => {
+			if (!isEqual(this._currentResource, resource) || !this._webviewClaimed) {
+				return;
+			}
+			watchInvalidationGeneration = this._renderGeneration;
+			if (!rerenderScheduler.isScheduled()) {
+				rerenderScheduler.schedule();
+			}
+		};
 
 		// ディスク上の .docx が差し替わったら表示中なら再レンダリングする。
 		try {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
 			store.add(watcher);
 			store.add(watcher.onDidChange(e => {
-				if (e.contains(resource) && isEqual(this._currentResource, resource) && this._webviewClaimed) {
-					this._renderResource(resource);
+				if (e.contains(resource)) {
+					scheduleWatchRerender();
 				}
 			}));
 		} catch {
@@ -164,24 +196,27 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	protected _renderResource(resource: URI): void {
 		const generation = ++this._renderGeneration;
-		void this._renderResourceAfterPreflight(resource, generation);
+		const inputEpoch = this._inputEpoch;
+		void this._renderResourceAfterPreflight(resource, generation, inputEpoch);
 	}
 
-	private async _renderResourceAfterPreflight(resource: URI, generation: number): Promise<void> {
+	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number): Promise<void> {
 		const webview = this._ensureWebview(resource);
 		webview.contentOptions = {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
 		};
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
-		switch (getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration)) {
+		const decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
+		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
+			return;
+		}
+		switch (decision) {
 			case 'rejected':
 				webview.setHtml(this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
 				webview.setHtml(this._buildHtml(resource));
-				return;
-			case 'stale':
 				return;
 		}
 	}
@@ -380,6 +415,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._inputEpoch++;
 		this._inputDisposables.clear();
 		this._currentResource = undefined;
 		if (this._webview && this._webviewClaimed) {
@@ -387,6 +423,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._webviewClaimed = false;
 		}
 		super.clearInput();
+	}
+
+	override dispose(): void {
+		this._disposed = true;
+		this._inputEpoch++;
+		this._currentResource = undefined;
+		super.dispose();
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
