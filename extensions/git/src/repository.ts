@@ -907,6 +907,14 @@ export class Repository implements Disposable {
 	private updateModelStateCancellationTokenSource: CancellationTokenSource | undefined;
 	private disposables: Disposable[] = [];
 
+	// PARA-PATCH: state for parking a repository while its Para Code space is not active.
+	// See paradisRepositoryPark.ts for why the repository is kept alive at all.
+	private _fileWatcherDisposables: Disposable[] = [];
+	private _scopeActive = true;
+	private readonly _onDidChangeScopeActive = new EventEmitter<void>();
+	/** Whether this repository belongs to the active space. False while parked. */
+	get scopeActive(): boolean { return this._scopeActive; }
+
 	constructor(
 		private readonly repository: BaseRepository,
 		private readonly repositoryResolver: IRepositoryResolver,
@@ -922,34 +930,10 @@ export class Repository implements Disposable {
 	) {
 		this._operations = new OperationManager(this.logger);
 
-		const repositoryWatcher = workspace.createFileSystemWatcher(new RelativePattern(Uri.file(repository.root), '**'));
-		this.disposables.push(repositoryWatcher);
-
-		const onRepositoryFileChange = anyEvent(repositoryWatcher.onDidChange, repositoryWatcher.onDidCreate, repositoryWatcher.onDidDelete);
-		const onRepositoryWorkingTreeFileChange = filterEvent(onRepositoryFileChange, uri => !/\.git($|\\|\/)/.test(relativePath(repository.root, uri.fsPath)));
-
-		let onRepositoryDotGitFileChange: Event<Uri>;
-
-		try {
-			const dotGitFileWatcher = new DotGitWatcher(this, logger);
-			onRepositoryDotGitFileChange = dotGitFileWatcher.event;
-			this.disposables.push(dotGitFileWatcher);
-		} catch (err) {
-			logger.error(`Failed to watch path:'${this.dotGit.path}' or commonPath:'${this.dotGit.commonPath}', reverting to legacy API file watched. Some events might be lost.\n${err.stack || err}`);
-
-			onRepositoryDotGitFileChange = filterEvent(onRepositoryFileChange, uri => /\.git($|\\|\/)/.test(uri.path));
-		}
-
-		// FS changes should trigger `git status`:
-		// 	- any change inside the repository working tree
-		//	- any change within the first level of the `.git` folder, except the folder itself and `index.lock` (repository and worktree)
-		const onFileChange = anyEvent(onRepositoryWorkingTreeFileChange, onRepositoryDotGitFileChange);
-		onFileChange(this.onFileChange, this, this.disposables);
-
-		// Relevate repository changes should trigger virtual document change events
-		onRepositoryDotGitFileChange(this._onDidChangeRepository.fire, this._onDidChangeRepository, this.disposables);
-
-		this.disposables.push(new FileEventLogger(onRepositoryWorkingTreeFileChange, onRepositoryDotGitFileChange, logger));
+		// PARA-PATCH: file watching was moved into startFileWatchers() so that a repository which
+		// scrolled out of the active Para Code space can stop watching without being disposed and
+		// rebuilt on the way back. See paradisRepositoryPark.ts and setScopeActive() below.
+		this.startFileWatchers();
 
 		// Parent source control. Repositories opened in the Sessions app
 		// don't use the parent/child relationship and it is expected for
@@ -3173,7 +3157,96 @@ export class Repository implements Disposable {
 		}
 	}
 
+	/**
+	 * PARA-PATCH: file watching for this repository, extracted from the constructor so that it can
+	 * be torn down and rebuilt when the repository is parked. See paradisRepositoryPark.ts.
+	 */
+	private startFileWatchers(): void {
+		const repository = this.repository;
+		const logger = this.logger;
+
+		const repositoryWatcher = workspace.createFileSystemWatcher(new RelativePattern(Uri.file(repository.root), '**'));
+		this._fileWatcherDisposables.push(repositoryWatcher);
+
+		const onRepositoryFileChange = anyEvent(repositoryWatcher.onDidChange, repositoryWatcher.onDidCreate, repositoryWatcher.onDidDelete);
+		const onRepositoryWorkingTreeFileChange = filterEvent(onRepositoryFileChange, uri => !/\.git($|\\|\/)/.test(relativePath(repository.root, uri.fsPath)));
+
+		let onRepositoryDotGitFileChange: Event<Uri>;
+
+		try {
+			const dotGitFileWatcher = new DotGitWatcher(this, logger);
+			onRepositoryDotGitFileChange = dotGitFileWatcher.event;
+			this._fileWatcherDisposables.push(dotGitFileWatcher);
+		} catch (err) {
+			logger.error(`Failed to watch path:'${this.dotGit.path}' or commonPath:'${this.dotGit.commonPath}', reverting to legacy API file watched. Some events might be lost.\n${err.stack || err}`);
+
+			onRepositoryDotGitFileChange = filterEvent(onRepositoryFileChange, uri => /\.git($|\\|\/)/.test(uri.path));
+		}
+
+		// FS changes should trigger `git status`:
+		// 	- any change inside the repository working tree
+		//	- any change within the first level of the `.git` folder, except the folder itself and `index.lock` (repository and worktree)
+		const onFileChange = anyEvent(onRepositoryWorkingTreeFileChange, onRepositoryDotGitFileChange);
+		onFileChange(this.onFileChange, this, this._fileWatcherDisposables);
+
+		// Relevate repository changes should trigger virtual document change events
+		onRepositoryDotGitFileChange(this._onDidChangeRepository.fire, this._onDidChangeRepository, this._fileWatcherDisposables);
+
+		this._fileWatcherDisposables.push(new FileEventLogger(onRepositoryWorkingTreeFileChange, onRepositoryDotGitFileChange, logger));
+	}
+
+	/** PARA-PATCH: see startFileWatchers(). */
+	private stopFileWatchers(): void {
+		this._fileWatcherDisposables = dispose(this._fileWatcherDisposables);
+	}
+
+	/**
+	 * PARA-PATCH: park/unpark this repository as its Para Code space becomes inactive/active.
+	 *
+	 * A parked repository stops watching and holds back its background work. Whatever changed while
+	 * it was blind is picked up by a single `status()` on the way back, which is one git process
+	 * against the 6-12 that rebuilding the repository would cost. See paradisRepositoryPark.ts.
+	 */
+	setScopeActive(active: boolean): void {
+		if (this._scopeActive === active) {
+			return;
+		}
+
+		this._scopeActive = active;
+
+		if (!active) {
+			this.stopFileWatchers();
+			// Always clear the resource states. The SourceControl stays registered with scm while
+			// parked, so consumers that read ISCMService directly (search's "modified files only",
+			// chat repository info; the SCM view itself is scoped by paradisScopedScmViewService)
+			// would otherwise see another space's changes. Unparking refills them via status().
+			this.mergeGroup.resourceStates = [];
+			this.indexGroup.resourceStates = [];
+			this.workingTreeGroup.resourceStates = [];
+			this.untrackedGroup.resourceStates = [];
+			this._onDidChangeScopeActive.fire();
+			this.logger.trace(`[Repository][setScopeActive] Parked repository: ${this.root}`);
+			return;
+		}
+
+		this.startFileWatchers();
+		this.logger.trace(`[Repository][setScopeActive] Unparked repository: ${this.root}`);
+		// Nobody watched this repository while it was parked, so unparking always starts with a
+		// status(). Waiters are released only after it settles: waking them first would put auto
+		// fetch and an idle status on git at the same moment, right when the switch is heaviest.
+		this.status()
+			.catch(err => this.logger.warn(`[Repository][setScopeActive] Failed to refresh after unparking: ${err}`))
+			.finally(() => this._onDidChangeScopeActive.fire());
+	}
+
 	private onFileChange(_uri: Uri): void {
+		// PARA-PATCH: a parked repository has no watchers, so this should not fire at all. Guard
+		// anyway so an in-flight event delivered during parking cannot start a `git status`.
+		if (!this._scopeActive) {
+			this.logger.trace('[Repository][onFileChange] Skip running git status because the repository is parked.');
+			return;
+		}
+
 		const config = workspace.getConfiguration('git');
 		const autorefresh = config.get<boolean>('autorefresh');
 
@@ -3211,6 +3284,18 @@ export class Repository implements Disposable {
 		while (true) {
 			if (!this.operations.isIdle()) {
 				await eventToPromise(this.onDidRunOperation);
+				continue;
+			}
+
+			// PARA-PATCH: hold back background work (auto fetch, idle `git status`) while the
+			// repository is parked, so a space the user is not looking at costs nothing.
+			//
+			// If the repository is evicted from the parking lot while parked this wait never
+			// resolves, which is fine rather than a leak: Emitter.dispose() drops listeners
+			// without notifying, so the waiter becomes unreachable along with the repository.
+			// See paradisRepositoryPark.ts.
+			if (!this._scopeActive) {
+				await eventToPromise(filterEvent(this._onDidChangeScopeActive.event, () => this._scopeActive));
 				continue;
 			}
 
@@ -3491,6 +3576,9 @@ export class Repository implements Disposable {
 	}
 
 	dispose(): void {
+		// PARA-PATCH: watchers live in their own list so parking can drop them; see startFileWatchers().
+		this.stopFileWatchers();
+		this._onDidChangeScopeActive.dispose();
 		this.disposables = dispose(this.disposables);
 	}
 }

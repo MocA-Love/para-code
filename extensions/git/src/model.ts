@@ -21,6 +21,7 @@ import { IPostCommitCommandsProviderRegistry } from './postCommitCommands';
 import { IBranchProtectionProviderRegistry } from './branchProtection';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
 import { RepositoryCache } from './repositoryCache';
+import { ParadisRepositoryParkingLot } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
 
 class RepositoryPick implements QuickPickItem {
 	@memoize get label(): string {
@@ -59,6 +60,10 @@ export interface OriginalResourceChangeEvent {
 
 interface OpenRepository extends Disposable {
 	repository: Repository;
+	// PARA-PATCH: park/unpark instead of dispose/rebuild across space switches.
+	// See paradisRepositoryPark.ts.
+	park(): void;
+	unpark(): void;
 }
 
 class ClosedRepositoriesManager {
@@ -284,10 +289,16 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	// Throttle initial repository.status() across repositories to avoid starving the ext host (#318279).
 	private readonly _initialStatusLimiter = new Limiter<void>(5);
 
+	// PARA-PATCH: repositories of recently visited Para Code spaces are parked instead of disposed,
+	// so switching back does not pay for `git rev-parse`, a fresh `Repository` and a rebuilt
+	// recursive watcher. See paradisRepositoryPark.ts.
+	private readonly _parkingLot: ParadisRepositoryParkingLot;
+
 	private disposables: Disposable[] = [];
 
 	constructor(readonly git: Git, private readonly askpass: Askpass, private globalState: Memento, readonly workspaceState: Memento, private logger: LogOutputChannel, private readonly telemetryReporter: TelemetryReporter) {
 		// Repositories managers
+		this._parkingLot = new ParadisRepositoryParkingLot(logger); // PARA-PATCH: see paradisRepositoryPark.ts
 		this._closedRepositoriesManager = new ClosedRepositoriesManager(workspaceState);
 		this._parentRepositoriesManager = new ParentRepositoriesManager(globalState);
 		this._unsafeRepositoriesManager = new UnsafeRepositoriesManager();
@@ -469,6 +480,13 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 
 	private async onDidChangeWorkspaceFolders({ added, removed }: WorkspaceFoldersChangeEvent): Promise<void> {
 		try {
+			// PARA-PATCH: bring back repositories parked by an earlier space switch before deciding
+			// what still needs opening, so the expensive path below is skipped entirely on the way
+			// back to a space we have already visited. See paradisRepositoryPark.ts.
+			for (const folder of added) {
+				this._parkingLot.unparkForFolder(folder.uri.fsPath);
+			}
+
 			const possibleRepositoryFolders = added
 				.filter(folder => !this.getOpenRepository(folder.uri));
 
@@ -477,13 +495,17 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 				.filter(repository => !!repository) as Repository[];
 
 			const activeRepositories = new Set<Repository>(activeRepositoriesList);
-			const openRepositoriesToDispose = removed
+			const openRepositoriesToPark = removed
 				.map(folder => this.getOpenRepository(folder.uri))
 				.filter(r => !!r)
 				.filter(r => !activeRepositories.has(r!.repository))
 				.filter(r => !(workspace.workspaceFolders || []).some(f => isDescendant(f.uri.fsPath, r!.repository.root))) as OpenRepository[];
 
-			openRepositoriesToDispose.forEach(r => r.dispose());
+			// PARA-PATCH: park instead of dispose. `park()` still fires `onDidCloseRepository` and
+			// takes the repository out of `openRepositories`, so everything reading that array
+			// (pickRepository, the `git.mergeChanges` and `operationInProgress` contexts,
+			// getRepository) behaves exactly as it did when the repository was disposed here.
+			openRepositoriesToPark.forEach(r => r.park());
 			this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${possibleRepositoryFolders.map(p => p.uri.fsPath).join(', ')}]`);
 			await Promise.all(possibleRepositoryFolders.map(p => this.openRepository(p.uri.fsPath)));
 		}
@@ -494,6 +516,11 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 
 	private async onDidChangeWorkspaceTrustedFolders(): Promise<void> {
 		try {
+			// PARA-PATCH: trust decisions are rare and must never be evaluated against a stale
+			// parked repository, so drop the whole parking lot rather than re-checking each entry.
+			// See paradisRepositoryPark.ts.
+			this._parkingLot.clear();
+
 			const openRepositoriesToDispose: OpenRepository[] = [];
 
 			for (const openRepository of this.openRepositories) {
@@ -514,6 +541,13 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	}
 
 	private onDidChangeConfiguration(): void {
+		// PARA-PATCH: a parked repository whose `git.enabled` was turned off must not come back.
+		// Only the ones that actually became disabled are dropped: this handler runs on every
+		// configuration change, and clearing the whole parking lot here would defeat it entirely.
+		// See paradisRepositoryPark.ts.
+		this._parkingLot.disposeMatching(root =>
+			workspace.getConfiguration('git', Uri.file(root)).get<boolean>('enabled') !== true);
+
 		const possibleRepositoryFolders = (workspace.workspaceFolders || [])
 			.filter(folder => workspace.getConfiguration('git', folder.uri).get<boolean>('enabled') === true)
 			.filter(folder => !this.getOpenRepository(folder.uri));
@@ -616,6 +650,16 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 		try {
 			const { repositoryRoot, unsafeRepositoryMatch } = await this.getRepositoryRoot(repoPath);
 			this.logger.trace(`[Model][openRepository] Repository root for path ${repoPath} is: ${repositoryRoot}`);
+
+			// PARA-PATCH: a parked repository is not in `openRepositories`, so `getRepositoryExact`
+			// cannot see it. Without this every other caller of openRepository (visible editors,
+			// submodule/worktree scans, the `git.openRepository` command) would build a second
+			// `Repository` for a root we already hold, leaving two of them for the same root.
+			// See paradisRepositoryPark.ts.
+			if (this._parkingLot.unparkForRoot(repositoryRoot)) {
+				this.logger.trace(`[Model][openRepository] Repository for path ${repositoryRoot} was parked; unparked it`);
+				return;
+			}
 
 			const existingRepository = await this.getRepositoryExact(repositoryRoot);
 			if (existingRepository) {
@@ -872,11 +916,60 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			operationListener.dispose();
 			repository.dispose();
 
+			// PARA-PATCH: a parked repository is no longer in `openRepositories`, so make sure the
+			// parking lot lets go of it too (eviction disposes through here as well, and forgetting
+			// an entry it already removed is a no-op). See paradisRepositoryPark.ts.
+			this._parkingLot.forget(repository.root);
+
+			const wasOpen = this.openRepositories.includes(openRepository);
 			this.openRepositories = this.openRepositories.filter(e => e !== openRepository);
-			this._onDidCloseRepository.fire(repository);
+			// PARA-PATCH: parking already fired the close event; do not fire it twice.
+			if (wasOpen) {
+				this._onDidCloseRepository.fire(repository);
+			}
+			updateMergeChanges();
+			updateOperationInProgressContext();
 		};
 
-		const openRepository = { repository, dispose };
+		// PARA-PATCH: park keeps the repository object (and its `git` state) alive but takes it out
+		// of the active set and stops its background work. Externally this looks exactly like the
+		// close/open pair upstream produced by disposing and rebuilding. See paradisRepositoryPark.ts.
+		const park = () => {
+			if (!this.openRepositories.includes(openRepository)) {
+				return;
+			}
+
+			this.openRepositories = this.openRepositories.filter(e => e !== openRepository);
+			repository.setScopeActive(false);
+			this._parkingLot.park({ root: repository.root, rootRealPath: repository.rootRealPath, unpark, dispose });
+			this._onDidCloseRepository.fire(repository);
+			updateMergeChanges();
+			updateOperationInProgressContext();
+		};
+
+		const unpark = () => {
+			if (this.openRepositories.includes(openRepository)) {
+				return;
+			}
+
+			// PARA-PATCH: parking drops the `.git` watcher, so a repository deleted while parked
+			// (Para Code removes worktrees itself) would otherwise come back pointing at nothing.
+			// See paradisRepositoryPark.ts.
+			if (!fs.existsSync(path.join(repository.dotGit.commonPath ?? repository.dotGit.path))) {
+				this.logger.trace(`[Model][unpark] Parked repository disappeared, disposing instead: ${repository.root}`);
+				dispose();
+				return;
+			}
+
+			this.openRepositories.push(openRepository);
+			// Refreshes the repository once, covering everything that changed while it was parked.
+			repository.setScopeActive(true);
+			this._onDidOpenRepository.fire(repository);
+			updateMergeChanges();
+			updateOperationInProgressContext();
+		};
+
+		const openRepository = { repository, dispose, park, unpark };
 		this.openRepositories.push(openRepository);
 		updateMergeChanges();
 		this._onDidOpenRepository.fire(repository);
@@ -1215,6 +1308,8 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	}
 
 	dispose(): void {
+		this._parkingLot.dispose(); // PARA-PATCH: see paradisRepositoryPark.ts
+
 		const openRepositories = [...this.openRepositories];
 		openRepositories.forEach(r => r.dispose());
 		this.openRepositories = [];

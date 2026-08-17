@@ -198,6 +198,107 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	test('skips superseded coalescing switches and lands on the last requested space', async () => {
+		const testDisposables = new DisposableStore();
+		const firstUpdateStarted = new DeferredPromise<void>();
+		const releaseFirstUpdate = new DeferredPromise<void>();
+		const timeline: string[] = [];
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b', 'space-c', 'space-d'],
+				testDisposables,
+				async (phase, uri, updateIndex) => {
+					timeline.push(`update:${uri.path}:${phase}`);
+					if (phase === 'start' && updateIndex === 0) {
+						firstUpdateStarted.complete();
+						await releaseFirstUpdate.p;
+					}
+				}
+			);
+
+			// 連打の1回目は既に実行が始まっているので止められない。畳み込まれるのは、待機中の
+			// space-c (space-d に追い越される) だけで、着地点は最後に押された space-d になる。
+			const firstSwitch = harness.workspaceSwitchService.switchRepository('space-b', { coalesce: true });
+			await firstUpdateStarted.p;
+			const supersededSwitch = harness.workspaceSwitchService.switchRepository('space-c', { coalesce: true });
+			const lastSwitch = harness.workspaceSwitchService.switchRepository('space-d', { coalesce: true });
+
+			releaseFirstUpdate.complete();
+			const switchResults = await Promise.allSettled([firstSwitch, supersededSwitch, lastSwitch]);
+
+			assert.deepStrictEqual({
+				switchResults: switchResults.map(result => result.status),
+				timeline,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				isSwitching: harness.workspaceSwitchService.isSwitching,
+			}, {
+				switchResults: ['fulfilled', 'fulfilled', 'fulfilled'],
+				// space-c への folders 入れ替えが一切走っていないことが畳み込みの成立条件。
+				timeline: [
+					'update:/workspace-b:start',
+					'update:/workspace-b:end',
+					'update:/workspace-d:start',
+					'update:/workspace-d:end',
+				],
+				activeStateKey: 'space-d',
+				isSwitching: false,
+			});
+		} finally {
+			releaseFirstUpdate.complete();
+			testDisposables.dispose();
+		}
+	});
+
+	test('never skips an internal switch that a caller depends on completing', async () => {
+		const testDisposables = new DisposableStore();
+		const firstUpdateStarted = new DeferredPromise<void>();
+		const releaseFirstUpdate = new DeferredPromise<void>();
+		const timeline: string[] = [];
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b', 'space-c', 'space-d'],
+				testDisposables,
+				async (phase, uri, updateIndex) => {
+					timeline.push(`update:${uri.path}:${phase}`);
+					if (phase === 'start' && updateIndex === 0) {
+						firstUpdateStarted.complete();
+						await releaseFirstUpdate.p;
+					}
+				}
+			);
+
+			const firstSwitch = harness.workspaceSwitchService.switchRepository('space-b', { coalesce: true });
+			await firstUpdateStarted.p;
+			// coalesce なしの切り替え (退役のロールバックや worktree 作成直後の切り替えに相当) は、
+			// 後から新しい要求が来ても飛ばしてはいけない。
+			const internalSwitch = harness.workspaceSwitchService.switchRepository('space-c');
+			const lastSwitch = harness.workspaceSwitchService.switchRepository('space-d', { coalesce: true });
+
+			releaseFirstUpdate.complete();
+			const switchResults = await Promise.allSettled([firstSwitch, internalSwitch, lastSwitch]);
+
+			assert.deepStrictEqual({
+				switchResults: switchResults.map(result => result.status),
+				timeline,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+			}, {
+				switchResults: ['fulfilled', 'fulfilled', 'fulfilled'],
+				timeline: [
+					'update:/workspace-b:start',
+					'update:/workspace-b:end',
+					'update:/workspace-c:start',
+					'update:/workspace-c:end',
+					'update:/workspace-d:start',
+					'update:/workspace-d:end',
+				],
+				activeStateKey: 'space-d',
+			});
+		} finally {
+			releaseFirstUpdate.complete();
+			testDisposables.dispose();
+		}
+	});
+
 	test('waits for completion participants before releasing the next space switch', async () => {
 		const testDisposables = new DisposableStore();
 		const participantStarted = new DeferredPromise<void>();

@@ -23,7 +23,7 @@ import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/s
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
@@ -196,6 +196,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	/** 切り替え処理の直列化 (連打時に退避と復元が交錯して状態が壊れるのを防ぐ) */
 	private readonly _switchSequencer = new Sequencer();
+
+	/**
+	 * `coalesce` 付きの切り替え要求の世代。要求ごとに進み、実行開始時に自分の世代が最新でなければ
+	 * その回を飛ばす（連打された中間スペースを経由しないため）。詳細は `switchToTarget`。
+	 */
+	private _coalesceGeneration = 0;
 
 	private _switching = false;
 	get isSwitching(): boolean {
@@ -616,36 +622,44 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this._onDidChangeRepositories.fire();
 	}
 
-	async switchRepository(id: string): Promise<void> {
+	async switchRepository(id: string, options?: IParadisSwitchOptions): Promise<void> {
 		const repository = this._repositories.find(candidate => candidate.id === id);
 		if (!repository) {
 			throw new Error(`Unknown Para Code repository: ${id}`);
 		}
 
-		return this.switchToTarget(repository.id, repository.uri);
+		return this.switchToTarget(repository.id, repository.uri, options);
 	}
 
-	async switchToWorktree(worktree: IParadisWorktree): Promise<void> {
+	async switchToWorktree(worktree: IParadisWorktree, options?: IParadisSwitchOptions): Promise<void> {
 		if (worktree.missing) {
 			throw new Error(`Para Code worktree is missing on disk: ${worktree.uri.fsPath}`);
 		}
 
-		return this.switchToTarget(paradisWorktreeStateKey(worktree.uri), worktree.uri);
+		return this.switchToTarget(paradisWorktreeStateKey(worktree.uri), worktree.uri, options);
 	}
 
-	async switchToStateKey(stateKey: string): Promise<void> {
+	async switchToStateKey(stateKey: string, options?: IParadisSwitchOptions): Promise<void> {
 		const repository = this._repositories.find(candidate => candidate.id === stateKey);
 		if (repository) {
-			return this.switchToTarget(repository.id, repository.uri);
+			return this.switchToTarget(repository.id, repository.uri, options);
 		}
 		if (stateKey.startsWith('worktree:')) {
-			return this.switchToTarget(stateKey, URI.parse(stateKey.slice('worktree:'.length)));
+			return this.switchToTarget(stateKey, URI.parse(stateKey.slice('worktree:'.length)), options);
 		}
 		throw new Error(`Unknown Para Code space: ${stateKey}`);
 	}
 
-	private switchToTarget(stateKey: string, uri: URI): Promise<void> {
+	private switchToTarget(stateKey: string, uri: URI, options?: IParadisSwitchOptions): Promise<void> {
 		this.ensureMultiRootWorkspace();
+
+		// 連打の畳み込み。`coalesce` 付きの要求だけが世代を進め、実行開始時点で自分より新しい
+		// `coalesce` 付きの要求が来ていたらこの回を丸ごと飛ばす。中間スペースの退避/復元を
+		// 省けるので、待ち時間だけでなくエディタ・ターミナルの出し入れ回数も減る。
+		//
+		// **`coalesce` の無い要求 (内部呼び出し) は世代を進めず、飛ばされることもない。** 退役の
+		// ロールバックや worktree 作成直後の切り替えは、成立を前提に後続処理が走るため。
+		const coalesceGeneration = options?.coalesce ? ++this._coalesceGeneration : undefined;
 
 		// 計測は sequencer の待ちを含めない位置から始める。キュー待ちは「切り替えが遅い」ではなく
 		// 「連打された」なので、混ぜると分布が読めなくなる。件数は sample rate で絞られる。
@@ -654,344 +668,353 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// という肝心の相関が取れない。
 		const terminalEditors = this.terminalEditorService.instances.length;
 		const editors = this.editorGroupsService.groups.reduce((total, group) => total + group.count, 0);
-		return this._switchSequencer.queue(() => runInParadisSpan('workspaceSwitch', 'switch', {
-			safe_terminal_editors: terminalEditors,
-			safe_editors: editors,
-		}, async () => {
-			// フェーズの所要時間は**子spanではなく自前の計測**で取る。renderer の Sentry SDK には
-			// AsyncContextStrategy が無く、`await` を跨ぐと active span を見失うため、await の後に
-			// 作った子spanは親に繋がらず独立したトランザクションになり、それぞれが別々に
-			// サンプリング抽選を受ける（本番で1件も届いていなかった一因）。数値を自分で持てば
-			// 実行文脈にも await の位置にも一切依存しない。
-			const switchStartedAt = Date.now();
-			const phaseMs: Record<string, number> = {};
-			const timePhase = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
-				const startedAt = Date.now();
-				try {
-					return await run();
-				} finally {
-					phaseMs[name] = Date.now() - startedAt;
-				}
-			};
-			// 同期の重い区間（park ループ、退避、パネル復元）にも使う。切り替えの体感は
-			// await の有無で決まらないので、非同期の区間だけ測っても遅さの説明にならない。
-			const timeSyncPhase = <T>(name: string, run: () => T): T => {
-				const startedAt = Date.now();
-				try {
-					return run();
-				} finally {
-					phaseMs[name] = Date.now() - startedAt;
-				}
-			};
-			const previousKey = this.activeStateKey;
-			const folders = this.contextService.getWorkspace().folders;
-			const previousUri = folders.length === 1 ? folders[0].uri : undefined;
-			if (folders.length === 1 && isEqual(folders[0].uri, uri)) {
-				await paradisApplySameUriScopeCorrection(
-					previousKey,
-					stateKey,
-					() => this.setActiveEntry(stateKey, uri),
-					correctedStateKey => this._onDidSwitchScope.fire(correctedStateKey),
-					markParadisManagedWorkspaceWindow,
-					async () => {
-						await this.editorScopeService.correctActiveScope(previousKey, stateKey, uri);
-						this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
-						if (previousKey !== stateKey) {
-							await this.runSwitchCompletionParticipants(stateKey);
-						}
-					},
-				);
-				return;
+		return this._switchSequencer.queue(() => {
+			// 実行が始まる前に追い越されていたら、この回は何もしない。**span を張る前に判定する**：
+			// 飛ばした回まで計測に載せると、フェーズ内訳の分布に 0ms 付近の山ができて読めなくなる。
+			if (coalesceGeneration !== undefined && coalesceGeneration !== this._coalesceGeneration) {
+				this.logService.trace(`[ParadisWorkspaceSwitch] Skipping superseded switch to ${stateKey}`);
+				return Promise.resolve();
 			}
 
-			// updateFolders で folders[0] が変わる前に必ずフラグを立てる。
-			// relauncher の RunOnceScheduler はフォルダ変更の 10ms 後に発火するため、
-			// ここで立てておけば発火時点で確実にスキップされる。
-			markParadisManagedWorkspaceWindow();
-
-			this._switching = true;
-			this.editorScopeService.beginSwitch();
-			this.auxiliaryWindowScopeService.setMainScope(previousKey, true, true);
-			let completed = false;
-			let sourceCaptured = false;
-			let switchError: unknown;
-			// 所要時間は**この切り替えのローカル**へ受ける（インスタンスに置くと、先行 stat が
-			// 解決する前に失敗した回で前回の値を今回の値として送ってしまう）。計測は finally から
-			// 読むので、宣言は try の外に置くこと。
-			let folderStatMs: number | undefined;
-			try {
-				this._onWillSwitchScope.fire(previousKey);
-
-				// 切り替え先フォルダの stat を先に投げておく。updateFolders はこの確認を内部で
-				// 待つが、切り替えは park や PTY 問い合わせで数百ms使うので、その裏で済ませれば
-				// 本流の待ち時間から消える (詳細は paradisWorkspaceFolderVerification.ts)。
-				// await しないのが要点なので、ここで例外を外に出さないこと。
-				const folderVerified = this.verifyTargetFolder(uri).then(ms => { folderStatMs = ms; });
-
-				// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
-				if (previousKey !== undefined) {
-					timeSyncPhase('capture_scope', () => {
-						this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
-						// **`sourceCaptured` はここで立てる。** 退避が済んだ時点でロールバックの
-						// 対象になる。パネル表示の保存まで含めた後ろへ動かすと、そちらが投げたときに
-						// 退避済みのエディタ状態を復元しないまま戻ってしまう。
-						sourceCaptured = true;
-						this.savePanelVisibilityFor(previousKey);
-					});
-
-					// エディタターミナルは working set の保存後・適用前にインスタンスを input から
-					// 切り離して生かしたままパークする。切り離さないと applyWorkingSet のエディタ close で
-					// PTY ごと破棄され、戻ってきた際に死んだ pty への再接続で壊れたターミナルが復元される
-					// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
-					// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
-					//
-					// captureScope が retain 済みの入力 (子プロセス実行中の端末 = closeHandler が確認を
-					// 要求する入力) は対象外とする。retain された入力は close 時も terminalEditorService の
-					// 一覧に残り続け (terminalEditorService.ts の PARA-PATCH)、restoreScope の再アタッチで
-					// そのまま復帰する。ここで detachInstance すると retain 中の入力を dispose してしまい
-					// 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
-					// **端末数に比例する区間**。`safe_terminal_editors` を一緒に送っているのは、
-					// ここの伸びと突き合わせるため。
-					const parkedNonces = new Set<string>();
-					timeSyncPhase('park_terminals', () => {
-						for (const instance of [...this.terminalEditorService.instances]) {
-							const input = this.terminalEditorService.getInputFromResource(instance.resource);
-							if (this.editorGroupsService.isEditorInputRetained?.(input)) {
-								continue;
+			return runInParadisSpan('workspaceSwitch', 'switch', {
+				safe_terminal_editors: terminalEditors,
+				safe_editors: editors,
+			}, async () => {
+				// フェーズの所要時間は**子spanではなく自前の計測**で取る。renderer の Sentry SDK には
+				// AsyncContextStrategy が無く、`await` を跨ぐと active span を見失うため、await の後に
+				// 作った子spanは親に繋がらず独立したトランザクションになり、それぞれが別々に
+				// サンプリング抽選を受ける（本番で1件も届いていなかった一因）。数値を自分で持てば
+				// 実行文脈にも await の位置にも一切依存しない。
+				const switchStartedAt = Date.now();
+				const phaseMs: Record<string, number> = {};
+				const timePhase = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+					const startedAt = Date.now();
+					try {
+						return await run();
+					} finally {
+						phaseMs[name] = Date.now() - startedAt;
+					}
+				};
+				// 同期の重い区間（park ループ、退避、パネル復元）にも使う。切り替えの体感は
+				// await の有無で決まらないので、非同期の区間だけ測っても遅さの説明にならない。
+				const timeSyncPhase = <T>(name: string, run: () => T): T => {
+					const startedAt = Date.now();
+					try {
+						return run();
+					} finally {
+						phaseMs[name] = Date.now() - startedAt;
+					}
+				};
+				const previousKey = this.activeStateKey;
+				const folders = this.contextService.getWorkspace().folders;
+				const previousUri = folders.length === 1 ? folders[0].uri : undefined;
+				if (folders.length === 1 && isEqual(folders[0].uri, uri)) {
+					await paradisApplySameUriScopeCorrection(
+						previousKey,
+						stateKey,
+						() => this.setActiveEntry(stateKey, uri),
+						correctedStateKey => this._onDidSwitchScope.fire(correctedStateKey),
+						markParadisManagedWorkspaceWindow,
+						async () => {
+							await this.editorScopeService.correctActiveScope(previousKey, stateKey, uri);
+							this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
+							if (previousKey !== stateKey) {
+								await this.runSwitchCompletionParticipants(stateKey);
 							}
-							// input.group はキャッシュで detach 後に古い値が残り得るため、実際に入力を
-							// 含むグループを検索して補助ウィンドウ所属を判定する
-							const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
-							if (containingGroup && this.editorGroupsService.getPart(containingGroup) !== this.editorGroupsService.mainPart) {
-								continue;
-							}
-							if (paradisParkTerminalEditorInstance(instance, previousKey)) {
-								// 実際に park できた nonce だけを控える。復元時に「この顔ぶれが
-								// そのまま台帳に残っているか」を名指しで確かめるための唯一の材料。
-								// park に失敗した入力（PTY ID 未確定・nonce 不正）は載らないので、
-								// 集合が working set の端末数に届かず、判定は「引く側」へ倒れる。
-								const parkedNonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
-								if (parkedNonce !== undefined) {
-									parkedNonces.add(parkedNonce);
+						},
+					);
+					return;
+				}
+
+				// updateFolders で folders[0] が変わる前に必ずフラグを立てる。
+				// relauncher の RunOnceScheduler はフォルダ変更の 10ms 後に発火するため、
+				// ここで立てておけば発火時点で確実にスキップされる。
+				markParadisManagedWorkspaceWindow();
+
+				this._switching = true;
+				this.editorScopeService.beginSwitch();
+				this.auxiliaryWindowScopeService.setMainScope(previousKey, true, true);
+				let completed = false;
+				let sourceCaptured = false;
+				let switchError: unknown;
+				// 所要時間は**この切り替えのローカル**へ受ける（インスタンスに置くと、先行 stat が
+				// 解決する前に失敗した回で前回の値を今回の値として送ってしまう）。計測は finally から
+				// 読むので、宣言は try の外に置くこと。
+				let folderStatMs: number | undefined;
+				try {
+					this._onWillSwitchScope.fire(previousKey);
+
+					// 切り替え先フォルダの stat を先に投げておく。updateFolders はこの確認を内部で
+					// 待つが、切り替えは park や PTY 問い合わせで数百ms使うので、その裏で済ませれば
+					// 本流の待ち時間から消える (詳細は paradisWorkspaceFolderVerification.ts)。
+					// await しないのが要点なので、ここで例外を外に出さないこと。
+					const folderVerified = this.verifyTargetFolder(uri).then(ms => { folderStatMs = ms; });
+
+					// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
+					if (previousKey !== undefined) {
+						timeSyncPhase('capture_scope', () => {
+							this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
+							// **`sourceCaptured` はここで立てる。** 退避が済んだ時点でロールバックの
+							// 対象になる。パネル表示の保存まで含めた後ろへ動かすと、そちらが投げたときに
+							// 退避済みのエディタ状態を復元しないまま戻ってしまう。
+							sourceCaptured = true;
+							this.savePanelVisibilityFor(previousKey);
+						});
+
+						// エディタターミナルは working set の保存後・適用前にインスタンスを input から
+						// 切り離して生かしたままパークする。切り離さないと applyWorkingSet のエディタ close で
+						// PTY ごと破棄され、戻ってきた際に死んだ pty への再接続で壊れたターミナルが復元される
+						// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
+						// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
+						//
+						// captureScope が retain 済みの入力 (子プロセス実行中の端末 = closeHandler が確認を
+						// 要求する入力) は対象外とする。retain された入力は close 時も terminalEditorService の
+						// 一覧に残り続け (terminalEditorService.ts の PARA-PATCH)、restoreScope の再アタッチで
+						// そのまま復帰する。ここで detachInstance すると retain 中の入力を dispose してしまい
+						// 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
+						// **端末数に比例する区間**。`safe_terminal_editors` を一緒に送っているのは、
+						// ここの伸びと突き合わせるため。
+						const parkedNonces = new Set<string>();
+						timeSyncPhase('park_terminals', () => {
+							for (const instance of [...this.terminalEditorService.instances]) {
+								const input = this.terminalEditorService.getInputFromResource(instance.resource);
+								if (this.editorGroupsService.isEditorInputRetained?.(input)) {
+									continue;
 								}
-								this.terminalEditorService.detachInstance(instance);
+								// input.group はキャッシュで detach 後に古い値が残り得るため、実際に入力を
+								// 含むグループを検索して補助ウィンドウ所属を判定する
+								const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
+								if (containingGroup && this.editorGroupsService.getPart(containingGroup) !== this.editorGroupsService.mainPart) {
+									continue;
+								}
+								if (paradisParkTerminalEditorInstance(instance, previousKey)) {
+									// 実際に park できた nonce だけを控える。復元時に「この顔ぶれが
+									// そのまま台帳に残っているか」を名指しで確かめるための唯一の材料。
+									// park に失敗した入力（PTY ID 未確定・nonce 不正）は載らないので、
+									// 集合が working set の端末数に届かず、判定は「引く側」へ倒れる。
+									const parkedNonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+									if (parkedNonce !== undefined) {
+										parkedNonces.add(parkedNonce);
+									}
+									this.terminalEditorService.detachInstance(instance);
+								}
+							}
+						});
+						// **永続化しない。** 再起動を跨ぐと台帳の中身は起動時の孤児復活で作られた別物に
+						// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
+						// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
+						this._workingSetTerminalNonces.set(previousKey, parkedNonces);
+					}
+
+					// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
+					// 「可視エディタが使用中のリポジトリ」を close しない (extensions/git/src/model.ts の
+					// onDidChangeWorkspaceFolders)。updateFolders を先にすると旧リポジトリのエディタが
+					// まだ開いているため SCM にリポジトリが残留してスコープが漏れる。
+					// 未保存入力はcaptureScopeでretain/detach済みなので、ここでは保存済み入力だけが
+					// upstream Working Setの通常挙動に従って切り替わる。
+					// working set の deserialize から呼ばれる reviveInput は同期なので、その中から pty host へ
+					// 問い合わせられない。park ループの直後・適用の直前という「park が確定していて、まだ
+					// 誰も revive していない」唯一の窓で孤児 PTY のスナップショットを取り直しておく。
+					// スナップショットはこの適用専用なので、終わったら必ず捨てる。残すとロールバックでの
+					// 再適用や後続の revive が古い情報で attach 先を決めてしまう
+					// (paradisTerminalEditorRevive.ts)。
+					// 復元先の端末が**すべてこのウィンドウの park 台帳に載っている**なら、索引は誰も
+					// 読まない。`reviveInput` は台帳を先に引き、当たれば
+					// `paradisResolveRevivedTerminalEditorInput` まで到達しないため
+					// （`terminalEditorService.ts` の PARA-PATCH）。
+					//
+					// 本番データがこの形をはっきり示していた: 締め切り(500ms)に到達した33件は**全件が
+					// 孤児0件**で、待った末に得るものが何も無かった。一方で孤児が取れた12件のうち11件は
+					// 応答が300ms超で、**締め切りを縮めると「索引が役に立つ回」だけを落とす**。
+					// だから待ち時間は縮めず、「そもそも要らない回」を外す。
+					//
+					// **件数の比較で代用しないこと。** 台帳の母集団はそのスコープの working set に
+					// 閉じていない（`assignInstanceScope` の付け替え park、起動時の孤児復活 park、
+					// 切り替え失敗時の再 park で、working set に無い端末が同じスコープへ載る）。
+					// 一方 park 中に PTY が死ねばエントリだけ消えるので、「1つ死んで1つ余計に載っている」
+					// だけで件数は釣り合い、死んだ側は索引なしで危険な経路へ落ちる。
+					//
+					// **アプリ再起動後は台帳が空になる、とも思わないこと。** 起動時の
+					// `reviveOrphanedScopedEditorTerminals` が孤児 PTY を台帳へ入れるうえ、
+					// 端末数は working set と一緒に永続化されているので、件数比較だと
+					// **索引が唯一の防波堤である世代跨ぎの復元でこそ skip が成立してしまう**。
+					//
+					// だから「前回この手で park した nonce の顔ぶれ」を控えておき、それが
+					// そのまま台帳に残っているかを名指しで確かめる。この集合は永続化していないので、
+					// 再起動後は必ず undefined ＝ 引く側へ倒れる。
+					// 復元先にターミナルエディタが載っていないと分かっているなら、pty host への
+					// 問い合わせ自体を飛ばす。判定は2段階で、混ぜないこと:
+					//
+					// - working set が無い（初訪問・破棄済み）→ `applyWorkingSetFor` は
+					//   `applyWorkingSet('empty')` に落ちて `reviveInput` を一度も呼ばない。
+					//   復元される端末入力が存在しないので 0 でよい。
+					// - working set はあるが数が `undefined`（この計装より前に保存されたデータ、
+					//   または保存時に数えられなかった回）→ **「無い」ではなく「不明」**。
+					//   ここを 0 と扱うと、端末を含む working set を索引なしで復元してしまう。
+					const restoreTerminals = this._workingSets.has(stateKey)
+						? this._workingSetTerminals.get(stateKey)
+						: 0;
+					await timePhase('revive_index', () => {
+						// 判定は**使う直前で**取る。カウントを先に取って await を挟むと、その間に
+						// pty exit が届いて台帳が縮んでも「引かない」が確定済みになってしまう。
+						const expectedNonces = this._workingSetTerminalNonces.get(stateKey);
+						const coveredByPark = restoreTerminals !== undefined
+							&& expectedNonces !== undefined
+							// park に失敗した入力があると集合が端末数に届かない＝賄えていない。
+							&& expectedNonces.size >= restoreTerminals
+							&& paradisAreAllParkedForScope(expectedNonces, stateKey);
+						// 0件回は `no-terminals` を優先する。0 は `coveredByPark` も自明に満たすので、
+						// 先に判定しないと新条件の効果が「もともと端末が無い回」に薄められて読めなくなる。
+						const skipReason = restoreTerminals === 0 ? 'no-terminals'
+							: coveredByPark ? 'covered-by-park' : undefined;
+						return paradisRefreshTerminalReviveIndex(stateKey, {
+							skipLookup: skipReason !== undefined,
+							skipReason,
+							// 判定の裏取り用。`parked > expected` が常態なら、working set に無い端末が
+							// 同じスコープへ載っている＝件数比較が危険だった実態が本番で確認できる。
+							parkedCount: expectedNonces?.size,
+							expectedCount: restoreTerminals,
+						});
+					});
+					try {
+						await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
+					} finally {
+						paradisClearTerminalReviveIndex();
+					}
+
+					await timePhase('trust_uris', () => this.trustUris(uri));
+					// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
+					// stat 自体の時間ではなく「本流が待たされた時間」なので、そちらを測る。
+					await timePhase('verify_folder_wait', () => folderVerified);
+					// `update_folders` は本番の p95 で 1086ms、最遅群では 1〜2秒を占める最大の区間だが、
+					// 中身は upstream の `workspaceEditingService` なので、そのままでは「何に使われた
+					// 時間か」が分からない。upstream に手を入れずに切り分けるため、**upstream が公開して
+					// いる2つのイベントの発火時刻**で3つに割る（`IWorkspaceContextService` の
+					// `onWillChangeWorkspaceFolders` / `onDidChangeWorkspaceFolders`）。
+					//
+					//   呼び出し → willChange   … 設定ファイルの書き換えに加えて、**`toValidWorkspaceFolders`
+					//                             の全フォルダ直列 stat** と各フォルダの設定読み込み
+					//   willChange → didChange  … willChange 参加者に加えて、`onDidChangeConfiguration` の
+					//                             ワークベンチ全体への同期配信
+					//   didChange → 解決        … 残り
+					//
+					// 本番の実測では前半（呼び出し→didChange）が全体の 99% を占めていた。
+					// **前半が重い＝「書き込みが遅い」と読まないこと。** `doUpdateFolders` 側の stat は
+					// 既に PARA-PATCH で飛ばしているが、`toValidWorkspaceFolders` の stat は素通しで
+					// 残っており（単発の実測中央値 322ms）、そちらが第一候補になる。
+					const updateFoldersStartedAt = Date.now();
+					let foldersWillChangeAt: number | undefined;
+					let foldersChangedAt: number | undefined;
+					const foldersEventListeners = new DisposableStore();
+					foldersEventListeners.add(this.contextService.onWillChangeWorkspaceFolders(() => {
+						foldersWillChangeAt ??= Date.now();
+					}));
+					foldersEventListeners.add(this.contextService.onDidChangeWorkspaceFolders(() => {
+						foldersChangedAt ??= Date.now();
+					}));
+					try {
+						await timePhase('update_folders',
+							() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
+					} finally {
+						foldersEventListeners.dispose();
+						// 観測できなかった区間はキーごと落とす。0 を入れると「速かった」と
+						// 区別がつかなくなり、集計が黙って歪む。
+						// **すべて「区間の長さ」で揃える。** 累積と差分を混ぜると、Discover で
+						// 積み上げたときに前半が二重に数えられる。既存の `update_folders_to_event` だけは
+						// 開始からの累積のまま残す（前リリースのデータと比較できなくなるため）。
+						if (foldersWillChangeAt !== undefined) {
+							phaseMs['update_folders_write'] = foldersWillChangeAt - updateFoldersStartedAt;
+						}
+						if (foldersChangedAt !== undefined) {
+							phaseMs['update_folders_to_event'] = foldersChangedAt - updateFoldersStartedAt;
+							if (foldersWillChangeAt !== undefined) {
+								phaseMs['update_folders_participants'] = foldersChangedAt - foldersWillChangeAt;
 							}
 						}
-					});
-					// **永続化しない。** 再起動を跨ぐと台帳の中身は起動時の孤児復活で作られた別物に
-					// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
-					// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
-					this._workingSetTerminalNonces.set(previousKey, parkedNonces);
-				}
-
-				// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
-				// 「可視エディタが使用中のリポジトリ」を close しない (extensions/git/src/model.ts の
-				// onDidChangeWorkspaceFolders)。updateFolders を先にすると旧リポジトリのエディタが
-				// まだ開いているため SCM にリポジトリが残留してスコープが漏れる。
-				// 未保存入力はcaptureScopeでretain/detach済みなので、ここでは保存済み入力だけが
-				// upstream Working Setの通常挙動に従って切り替わる。
-				// working set の deserialize から呼ばれる reviveInput は同期なので、その中から pty host へ
-				// 問い合わせられない。park ループの直後・適用の直前という「park が確定していて、まだ
-				// 誰も revive していない」唯一の窓で孤児 PTY のスナップショットを取り直しておく。
-				// スナップショットはこの適用専用なので、終わったら必ず捨てる。残すとロールバックでの
-				// 再適用や後続の revive が古い情報で attach 先を決めてしまう
-				// (paradisTerminalEditorRevive.ts)。
-				// 復元先の端末が**すべてこのウィンドウの park 台帳に載っている**なら、索引は誰も
-				// 読まない。`reviveInput` は台帳を先に引き、当たれば
-				// `paradisResolveRevivedTerminalEditorInput` まで到達しないため
-				// （`terminalEditorService.ts` の PARA-PATCH）。
-				//
-				// 本番データがこの形をはっきり示していた: 締め切り(500ms)に到達した33件は**全件が
-				// 孤児0件**で、待った末に得るものが何も無かった。一方で孤児が取れた12件のうち11件は
-				// 応答が300ms超で、**締め切りを縮めると「索引が役に立つ回」だけを落とす**。
-				// だから待ち時間は縮めず、「そもそも要らない回」を外す。
-				//
-				// **件数の比較で代用しないこと。** 台帳の母集団はそのスコープの working set に
-				// 閉じていない（`assignInstanceScope` の付け替え park、起動時の孤児復活 park、
-				// 切り替え失敗時の再 park で、working set に無い端末が同じスコープへ載る）。
-				// 一方 park 中に PTY が死ねばエントリだけ消えるので、「1つ死んで1つ余計に載っている」
-				// だけで件数は釣り合い、死んだ側は索引なしで危険な経路へ落ちる。
-				//
-				// **アプリ再起動後は台帳が空になる、とも思わないこと。** 起動時の
-				// `reviveOrphanedScopedEditorTerminals` が孤児 PTY を台帳へ入れるうえ、
-				// 端末数は working set と一緒に永続化されているので、件数比較だと
-				// **索引が唯一の防波堤である世代跨ぎの復元でこそ skip が成立してしまう**。
-				//
-				// だから「前回この手で park した nonce の顔ぶれ」を控えておき、それが
-				// そのまま台帳に残っているかを名指しで確かめる。この集合は永続化していないので、
-				// 再起動後は必ず undefined ＝ 引く側へ倒れる。
-				// 復元先にターミナルエディタが載っていないと分かっているなら、pty host への
-				// 問い合わせ自体を飛ばす。判定は2段階で、混ぜないこと:
-				//
-				// - working set が無い（初訪問・破棄済み）→ `applyWorkingSetFor` は
-				//   `applyWorkingSet('empty')` に落ちて `reviveInput` を一度も呼ばない。
-				//   復元される端末入力が存在しないので 0 でよい。
-				// - working set はあるが数が `undefined`（この計装より前に保存されたデータ、
-				//   または保存時に数えられなかった回）→ **「無い」ではなく「不明」**。
-				//   ここを 0 と扱うと、端末を含む working set を索引なしで復元してしまう。
-				const restoreTerminals = this._workingSets.has(stateKey)
-					? this._workingSetTerminals.get(stateKey)
-					: 0;
-				await timePhase('revive_index', () => {
-					// 判定は**使う直前で**取る。カウントを先に取って await を挟むと、その間に
-					// pty exit が届いて台帳が縮んでも「引かない」が確定済みになってしまう。
-					const expectedNonces = this._workingSetTerminalNonces.get(stateKey);
-					const coveredByPark = restoreTerminals !== undefined
-						&& expectedNonces !== undefined
-						// park に失敗した入力があると集合が端末数に届かない＝賄えていない。
-						&& expectedNonces.size >= restoreTerminals
-						&& paradisAreAllParkedForScope(expectedNonces, stateKey);
-					// 0件回は `no-terminals` を優先する。0 は `coveredByPark` も自明に満たすので、
-					// 先に判定しないと新条件の効果が「もともと端末が無い回」に薄められて読めなくなる。
-					const skipReason = restoreTerminals === 0 ? 'no-terminals'
-						: coveredByPark ? 'covered-by-park' : undefined;
-					return paradisRefreshTerminalReviveIndex(stateKey, {
-						skipLookup: skipReason !== undefined,
-						skipReason,
-						// 判定の裏取り用。`parked > expected` が常態なら、working set に無い端末が
-						// 同じスコープへ載っている＝件数比較が危険だった実態が本番で確認できる。
-						parkedCount: expectedNonces?.size,
-						expectedCount: restoreTerminals,
-					});
-				});
-				try {
-					await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
-				} finally {
-					paradisClearTerminalReviveIndex();
-				}
-
-				await timePhase('trust_uris', () => this.trustUris(uri));
-				// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
-				// stat 自体の時間ではなく「本流が待たされた時間」なので、そちらを測る。
-				await timePhase('verify_folder_wait', () => folderVerified);
-				// `update_folders` は本番の p95 で 1086ms、最遅群では 1〜2秒を占める最大の区間だが、
-				// 中身は upstream の `workspaceEditingService` なので、そのままでは「何に使われた
-				// 時間か」が分からない。upstream に手を入れずに切り分けるため、**upstream が公開して
-				// いる2つのイベントの発火時刻**で3つに割る（`IWorkspaceContextService` の
-				// `onWillChangeWorkspaceFolders` / `onDidChangeWorkspaceFolders`）。
-				//
-				//   呼び出し → willChange   … 設定ファイルの書き換えに加えて、**`toValidWorkspaceFolders`
-				//                             の全フォルダ直列 stat** と各フォルダの設定読み込み
-				//   willChange → didChange  … willChange 参加者に加えて、`onDidChangeConfiguration` の
-				//                             ワークベンチ全体への同期配信
-				//   didChange → 解決        … 残り
-				//
-				// 本番の実測では前半（呼び出し→didChange）が全体の 99% を占めていた。
-				// **前半が重い＝「書き込みが遅い」と読まないこと。** `doUpdateFolders` 側の stat は
-				// 既に PARA-PATCH で飛ばしているが、`toValidWorkspaceFolders` の stat は素通しで
-				// 残っており（単発の実測中央値 322ms）、そちらが第一候補になる。
-				const updateFoldersStartedAt = Date.now();
-				let foldersWillChangeAt: number | undefined;
-				let foldersChangedAt: number | undefined;
-				const foldersEventListeners = new DisposableStore();
-				foldersEventListeners.add(this.contextService.onWillChangeWorkspaceFolders(() => {
-					foldersWillChangeAt ??= Date.now();
-				}));
-				foldersEventListeners.add(this.contextService.onDidChangeWorkspaceFolders(() => {
-					foldersChangedAt ??= Date.now();
-				}));
-				try {
-					await timePhase('update_folders',
-						() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
-				} finally {
-					foldersEventListeners.dispose();
-					// 観測できなかった区間はキーごと落とす。0 を入れると「速かった」と
-					// 区別がつかなくなり、集計が黙って歪む。
-					// **すべて「区間の長さ」で揃える。** 累積と差分を混ぜると、Discover で
-					// 積み上げたときに前半が二重に数えられる。既存の `update_folders_to_event` だけは
-					// 開始からの累積のまま残す（前リリースのデータと比較できなくなるため）。
-					if (foldersWillChangeAt !== undefined) {
-						phaseMs['update_folders_write'] = foldersWillChangeAt - updateFoldersStartedAt;
+						// ロールバックの updateFolders は別のフォルダへ戻すので、確認結果を残さない。
+						paradisClearVerifiedWorkspaceFolders();
 					}
-					if (foldersChangedAt !== undefined) {
-						phaseMs['update_folders_to_event'] = foldersChangedAt - updateFoldersStartedAt;
-						if (foldersWillChangeAt !== undefined) {
-							phaseMs['update_folders_participants'] = foldersChangedAt - foldersWillChangeAt;
-						}
+
+					this.setActiveEntry(stateKey, uri);
+					await timePhase('commit_switch', () => this.editorScopeService.commitSwitch(stateKey, uri));
+					this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
+					await timePhase('restore_scope', () => this.editorScopeService.restoreScope(stateKey));
+					await timePhase('restore_backups', () => this.editorScopeService.restoreBackups());
+					timeSyncPhase('restore_panels', () => this.restorePanelVisibilityFor(stateKey));
+					completed = true;
+				} catch (error) {
+					switchError = error;
+					await paradisRunBestEffortPhases([
+						async () => {
+							const currentFolders = this.contextService.getWorkspace().folders;
+							if (previousUri && (currentFolders.length !== 1 || !isEqual(currentFolders[0].uri, previousUri))) {
+								await this.workspaceEditingService.updateFolders(0, currentFolders.length, [{ uri: previousUri }]);
+							}
+						},
+						async () => {
+							if (previousKey !== undefined && sourceCaptured) {
+								await this.applyWorkingSetFor(previousKey);
+							}
+						},
+						async () => {
+							if (previousKey !== undefined && sourceCaptured) {
+								await this.editorScopeService.restoreScope(previousKey);
+							}
+						},
+						() => {
+							if (previousKey !== undefined && sourceCaptured && previousUri) {
+								this.setActiveEntry(previousKey, previousUri);
+							} else if (previousKey === undefined) {
+								this.clearActiveEntry();
+							}
+						},
+						() => {
+							if (previousKey !== undefined && sourceCaptured) {
+								this.restorePanelVisibilityFor(previousKey);
+							}
+						},
+						() => this.editorScopeService.rollbackSwitch(previousKey, previousUri),
+						() => this.auxiliaryWindowScopeService.setMainScope(previousKey, this.isManagedWorkspaceWindow, false),
+						() => this.editorScopeService.restoreBackups(),
+					], rollbackError => this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch phase', rollbackError));
+					throw error;
+				} finally {
+					this._switching = false;
+
+					// 完了時は切り替え先スコープへ、途中で例外が起きた場合は元スコープへ発火する。
+					// onWillSwitchScope で退避済みの状態 (SCM入力の下書き・park済みターミナル) は
+					// onDidSwitchScope を受け皿として復元されるため、失敗時に発火しないと迷子のまま残る
+					const restoreKey = completed ? stateKey : switchError !== undefined ? previousKey : undefined;
+					if (restoreKey !== undefined) {
+						// 制御フローを担う非同期 participant を先に完走させてから、完了通知を配る。
+						// この await 中も Sequencer のスロットは保持されるので、次の切り替えは始まらない。
+						await timePhase('notify_scope_switched', async () => {
+							await this.runSwitchCompletionParticipants(restoreKey);
+							this._onDidSwitchScope.fire(restoreKey);
+						});
 					}
-					// ロールバックの updateFolders は別のフォルダへ戻すので、確認結果を残さない。
+
+					// 台帳の保険。破棄は `update_folders` の finally にあるが、そこへ到達する前に
+					// 例外が出ると**セッション中ずっと残り**、切り替えと無関係な後続の判定が古い
+					// 確認結果で stat を飛ばす。消費者が「フォルダを除外する側」にも増えた以上、
+					// 残す危険のほうが大きい。`Set.clear()` なので二重呼び出しは無害。
 					paradisClearVerifiedWorkspaceFolders();
-				}
 
-				this.setActiveEntry(stateKey, uri);
-				await timePhase('commit_switch', () => this.editorScopeService.commitSwitch(stateKey, uri));
-				this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
-				await timePhase('restore_scope', () => this.editorScopeService.restoreScope(stateKey));
-				await timePhase('restore_backups', () => this.editorScopeService.restoreBackups());
-				timeSyncPhase('restore_panels', () => this.restorePanelVisibilityFor(stateKey));
-				completed = true;
-			} catch (error) {
-				switchError = error;
-				await paradisRunBestEffortPhases([
-					async () => {
-						const currentFolders = this.contextService.getWorkspace().folders;
-						if (previousUri && (currentFolders.length !== 1 || !isEqual(currentFolders[0].uri, previousUri))) {
-							await this.workspaceEditingService.updateFolders(0, currentFolders.length, [{ uri: previousUri }]);
-						}
-					},
-					async () => {
-						if (previousKey !== undefined && sourceCaptured) {
-							await this.applyWorkingSetFor(previousKey);
-						}
-					},
-					async () => {
-						if (previousKey !== undefined && sourceCaptured) {
-							await this.editorScopeService.restoreScope(previousKey);
-						}
-					},
-					() => {
-						if (previousKey !== undefined && sourceCaptured && previousUri) {
-							this.setActiveEntry(previousKey, previousUri);
-						} else if (previousKey === undefined) {
-							this.clearActiveEntry();
-						}
-					},
-					() => {
-						if (previousKey !== undefined && sourceCaptured) {
-							this.restorePanelVisibilityFor(previousKey);
-						}
-					},
-					() => this.editorScopeService.rollbackSwitch(previousKey, previousUri),
-					() => this.auxiliaryWindowScopeService.setMainScope(previousKey, this.isManagedWorkspaceWindow, false),
-					() => this.editorScopeService.restoreBackups(),
-				], rollbackError => this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch phase', rollbackError));
-				throw error;
-			} finally {
-				this._switching = false;
-
-				// 完了時は切り替え先スコープへ、途中で例外が起きた場合は元スコープへ発火する。
-				// onWillSwitchScope で退避済みの状態 (SCM入力の下書き・park済みターミナル) は
-				// onDidSwitchScope を受け皿として復元されるため、失敗時に発火しないと迷子のまま残る
-				const restoreKey = completed ? stateKey : switchError !== undefined ? previousKey : undefined;
-				if (restoreKey !== undefined) {
-					// 制御フローを担う非同期 participant を先に完走させてから、完了通知を配る。
-					// この await 中も Sequencer のスロットは保持されるので、次の切り替えは始まらない。
-					await timePhase('notify_scope_switched', async () => {
-						await this.runSwitchCompletionParticipants(restoreKey);
-						this._onDidSwitchScope.fire(restoreKey);
+					// 計測は**復元まで済ませた後**。completion participant と完了通知の処理も
+					// ユーザーが感じる切り替え時間に含める。
+					this.recordSwitchPhases({
+						startedAt: switchStartedAt,
+						phaseMs,
+						completed,
+						failed: switchError !== undefined,
+						terminalEditors,
+						editors,
+						folderStatMs,
+						folderStatSkipped: paradisTakeVerifiedWorkspaceFolderHits(),
 					});
 				}
-
-				// 台帳の保険。破棄は `update_folders` の finally にあるが、そこへ到達する前に
-				// 例外が出ると**セッション中ずっと残り**、切り替えと無関係な後続の判定が古い
-				// 確認結果で stat を飛ばす。消費者が「フォルダを除外する側」にも増えた以上、
-				// 残す危険のほうが大きい。`Set.clear()` なので二重呼び出しは無害。
-				paradisClearVerifiedWorkspaceFolders();
-
-				// 計測は**復元まで済ませた後**。completion participant と完了通知の処理も
-				// ユーザーが感じる切り替え時間に含める。
-				this.recordSwitchPhases({
-					startedAt: switchStartedAt,
-					phaseMs,
-					completed,
-					failed: switchError !== undefined,
-					terminalEditors,
-					editors,
-					folderStatMs,
-					folderStatSkipped: paradisTakeVerifiedWorkspaceFolderHits(),
-				});
-			}
-		}));
+			});
+		});
 	}
 
 	private async runSwitchCompletionParticipants(stateKey: string): Promise<void> {

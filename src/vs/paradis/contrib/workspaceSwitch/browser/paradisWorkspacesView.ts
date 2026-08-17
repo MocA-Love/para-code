@@ -957,9 +957,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 		// 切り替えは updateFolders / ディスク状態の変化で reject しうる。握り潰さず通知する
 		// (放置すると unhandled rejection になりビュー上は「無反応」に見える)。
+		// ユーザー起点の切り替えは連打を畳み込む (中間スペースを経由しない)。
 		const promise = worktree.isMainCheckout
-			? this.workspaceSwitchService.switchRepository(worktree.repositoryId)
-			: this.workspaceSwitchService.switchToWorktree(worktree);
+			? this.workspaceSwitchService.switchRepository(worktree.repositoryId, { coalesce: true })
+			: this.workspaceSwitchService.switchToWorktree(worktree, { coalesce: true });
 		promise.catch(error => this.notificationService.error(error));
 	}
 
