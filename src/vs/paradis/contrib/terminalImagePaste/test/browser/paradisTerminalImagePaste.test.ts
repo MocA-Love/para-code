@@ -5,9 +5,9 @@
 
 import * as assert from 'assert';
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
-import type { VSBuffer } from '../../../../../base/common/buffer.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { isString } from '../../../../../base/common/types.js';
-import type { URI } from '../../../../../base/common/uri.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import type { IFileService } from '../../../../../platform/files/common/files.js';
@@ -65,20 +65,29 @@ suite('ParadisTerminalImagePaste', () => {
 		assert.strictEqual(inputCalls, 0);
 	});
 
-	test('writes the image onto the connected host and returns its path instead of Ctrl+V', async () => {
+	function makeFileService(overrides: Partial<IFileService> = {}): IFileService {
+		return {
+			writeFile: async () => ({} as never),
+			resolve: async () => ({ children: [] }),
+			del: async () => { },
+			exists: async () => false,
+			...overrides,
+		} as unknown as IFileService;
+	}
+
+	test('writes .gitignore before the image, so untracked .png is never visible on its own', async () => {
 		const written: Array<{ path: string; authority: string; bytes: number }> = [];
 		const inputs: string[] = [];
 		const result = await paradisTryTerminalImagePaste(
 			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
 			{ raw: { input: (data: string) => inputs.push(data) } } as unknown as { raw: RawXtermTerminal },
 			{
-				fileService: {
+				fileService: makeFileService({
 					writeFile: async (resource: URI, buffer: VSBuffer) => {
 						written.push({ path: resource.path, authority: resource.authority, bytes: buffer.byteLength });
+						return {} as never;
 					},
-					resolve: async () => ({ children: [] }),
-					del: async () => { },
-				} as unknown as IFileService,
+				}),
 				remoteAuthority: 'ssh-remote+paradis-pc',
 				cwd: '/home/yuasa/develop/maguro/ai-zyusetu'
 			}
@@ -88,20 +97,126 @@ suite('ParadisTerminalImagePaste', () => {
 			{
 				returnedPathDirectory: isString(result) ? result.slice(0, result.lastIndexOf('/')) : result,
 				isPng: isString(result) && result.endsWith('.png'),
-				wroteOnce: written.length,
+				writeOrder: written.map(w => w.path.endsWith('.gitignore') ? 'gitignore' : w.path.endsWith('.png') ? 'image' : w.path),
 				wroteToHost: written[0]?.authority,
-				wroteBytes: written[0]?.bytes,
+				wroteImageBytes: written.find(w => w.path.endsWith('.png'))?.bytes,
 				sentCtrlV: inputs.length
 			},
 			{
-				returnedPathDirectory: '/home/yuasa/develop/maguro/ai-zyusetu',
+				returnedPathDirectory: '/home/yuasa/develop/maguro/ai-zyusetu/.para-code/pasted-images',
 				isPng: true,
-				wroteOnce: 1,
+				writeOrder: ['gitignore', 'image'],
 				wroteToHost: 'ssh-remote+paradis-pc',
-				wroteBytes: 4,
+				wroteImageBytes: 4,
 				sentCtrlV: 0
 			}
 		);
+	});
+
+	test('creates .para-code/pasted-images/.gitignore with a wildcard when missing', async () => {
+		const written = new Map<string, string>();
+		await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					writeFile: async (resource: URI, buffer: VSBuffer) => {
+						written.set(resource.path, buffer.toString());
+						return {} as never;
+					},
+				}),
+				remoteAuthority: 'ssh-remote+paradis-pc',
+				cwd: '/home/yuasa/develop/maguro/ai-zyusetu/packages/app'
+			}
+		);
+
+		assert.strictEqual(
+			written.get('/home/yuasa/develop/maguro/ai-zyusetu/packages/app/.para-code/pasted-images/.gitignore'),
+			'*\n'
+		);
+	});
+
+	test('does not touch .gitignore again when it already exists, but still writes the image', async () => {
+		const written: Array<{ path: string; content: string }> = [];
+		const gitignorePath = '/home/yuasa/develop/maguro/.para-code/pasted-images/.gitignore';
+		const imagePath = '/home/yuasa/develop/maguro/.para-code/pasted-images/'; // prefix check below
+		const result = await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					writeFile: async (resource: URI, buffer: VSBuffer) => {
+						written.push({ path: resource.path, content: buffer.toString() });
+						return {} as never;
+					},
+					exists: async (resource: URI) => resource.path === gitignorePath,
+				}),
+				remoteAuthority: 'ssh-remote+paradis-pc',
+				cwd: '/home/yuasa/develop/maguro'
+			}
+		);
+
+		assert.deepStrictEqual(
+			{
+				touchedGitignore: written.some(w => w.path === gitignorePath),
+				wroteImage: isString(result) && result.startsWith(imagePath) && result.endsWith('.png'),
+				writeCount: written.length,
+			},
+			{
+				touchedGitignore: false,
+				wroteImage: true,
+				writeCount: 1,
+			}
+		);
+	});
+
+	test('still writes the image and returns its path even if preparing .gitignore fails', async () => {
+		const result = await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					exists: async (resource: URI) => {
+						if (resource.path.endsWith('.gitignore')) {
+							throw new Error('stat failed');
+						}
+						return false;
+					},
+				}),
+				remoteAuthority: 'ssh-remote+paradis-pc',
+				cwd: '/home/yuasa/develop/maguro'
+			}
+		);
+
+		assert.strictEqual(isString(result) && result.endsWith('.png'), true);
+	});
+
+	test('cleans up only stale timestamped png files, sparing an oddly named .png and unrelated files', async () => {
+		const now = Date.now();
+		const staleTimestamp = now - 2 * 60 * 60 * 1000;
+		const freshTimestamp = now - 60 * 1000;
+		const deleted: string[] = [];
+		await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					resolve: async () => ({
+						children: [
+							{ name: `${staleTimestamp}.png`, isDirectory: false, resource: URI.parse(`vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/${staleTimestamp}.png`) },
+							{ name: `${freshTimestamp}.png`, isDirectory: false, resource: URI.parse(`vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/${freshTimestamp}.png`) },
+							{ name: '.png', isDirectory: false, resource: URI.parse('vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/.png') },
+							{ name: '.gitignore', isDirectory: false, resource: URI.parse('vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/.gitignore') },
+						],
+					} as never),
+					del: async (resource: URI) => { deleted.push(resource.path); },
+				}),
+				remoteAuthority: 'ssh-remote+paradis-pc',
+				cwd: '/home/yuasa'
+			}
+		);
+
+		assert.deepStrictEqual(deleted, [`/home/yuasa/.para-code/pasted-images/${staleTimestamp}.png`]);
 	});
 
 	test('falls through when connected but the terminal has no working directory', async () => {
