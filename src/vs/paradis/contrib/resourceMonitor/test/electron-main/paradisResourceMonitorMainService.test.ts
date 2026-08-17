@@ -102,7 +102,7 @@ suite('ParadisResourceMonitorMainService', () => {
 		assert.strictEqual(secondSnapshot.totalCpu, 2);
 	});
 
-	test('idle freshness starts when collection starts rather than when it completes', async () => {
+	test('a slow successful collection remains reusable for the full idle freshness window', async () => {
 		const clock = new TestClockScheduler();
 		let captureCount = 0;
 		let resolveInitialCapture: ((sample: IParadisResourceMonitorRawSample) => void) | undefined;
@@ -117,12 +117,12 @@ suite('ParadisResourceMonitorMainService', () => {
 		});
 
 		const initial = service.getSnapshot({ sessions: [], freshness: 'idle' });
-		clock.advance(100);
+		clock.advance(6_000);
 		assert.ok(resolveInitialCapture);
-		resolveInitialCapture(createRawSample([], 100, 1));
+		resolveInitialCapture(createRawSample([], 6_000, 1));
 		await initial;
 
-		clock.advance(4_899);
+		clock.advance(4_999);
 		const beforeBoundary = await service.getSnapshot({ sessions: [], freshness: 'idle' });
 		clock.advance(1);
 		const atBoundary = await service.getSnapshot({ sessions: [], freshness: 'idle' });
