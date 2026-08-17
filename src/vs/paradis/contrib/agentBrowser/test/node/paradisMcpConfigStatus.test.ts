@@ -56,6 +56,38 @@ suite('Para Browser MCP config status', () => {
 		assert.deepStrictEqual(inspectParadisCodexMcpToml('model = "x"\n', 47286), { state: 'unconfigured' });
 	});
 
+	// URL によるポート判定を名前で絞らないと、ユーザーが持っている無関係な HTTP の MCP を
+	// 「古いポートの para-browser」と読み、ワンクリック修正がその節を丸ごと私たちの中身へ
+	// 置き換えてしまう（取り返しがつかない）。
+	test('never mistakes someone else\'s local http MCP server for a stale para-browser', () => {
+		const foreign = [
+			'[mcp_servers.my-own-tool]',
+			'url = "http://127.0.0.1:3333/"',
+			'bearer_token_env_var = "MY_TOKEN"',
+			'',
+		].join('\n');
+
+		assert.deepStrictEqual({
+			foreignOnly: inspectParadisCodexMcpToml(foreign, PORT),
+			// 私たちの節が正しく設定されていれば、隣に別サーバーが居ても configured のまま。
+			withOurs: inspectParadisCodexMcpToml(`${foreign}\n[mcp_servers.para-browser]\nurl = "http://127.0.0.1:${PORT}/"\n`, PORT),
+			// 私たちの節が古いポートを指しているときだけ needsFix。
+			oursStale: inspectParadisCodexMcpToml(`${foreign}\n[mcp_servers.para-browser]\nurl = "http://127.0.0.1:1234/"\n`, PORT),
+		}, {
+			foreignOnly: { state: 'unconfigured' },
+			withOurs: { state: 'configured' },
+			oursStale: { state: 'needsFix', detectedPort: 1234, staleServerName: 'para-browser' },
+		});
+
+		// Claude 側も同じ。無関係なエントリで needsFix が永久に消えなくならないこと。
+		assert.deepStrictEqual({
+			foreignOnly: inspectParadisClaudeMcpJson(JSON.stringify({ mcpServers: { other: { type: 'http', url: 'http://127.0.0.1:3333/' } } }), PORT),
+			withOurs: inspectParadisClaudeMcpJson(JSON.stringify({
+				mcpServers: { other: { type: 'http', url: 'http://127.0.0.1:3333/' }, 'para-browser': { type: 'http', url: `http://127.0.0.1:${PORT}/` } },
+			}), PORT),
+		}, { foreignOnly: 'unconfigured', withOurs: 'configured' });
+	});
+
 	test('inspectParadisCodexMcpToml reports a surviving stale entry even when a shim entry coexists', () => {
 		// W3 regression: a shim entry must NOT hide a remaining stale chrome-devtools entry.
 		const mixed = [

@@ -296,7 +296,8 @@ export function inspectParadisMcpTomlSection(source: string): ParadisMcpTomlSect
  *
  * @returns 書き戻すべき中身。変更が要らなければ元のまま返す。
  */
-const PARADIS_MCP_TOML_SERVER_NAME = 'para-browser';
+/** 私たちが所有する MCP サーバー名。判定・書き換えの対象をこの名前に限る。 */
+export const PARADIS_MCP_SERVER_NAME = 'para-browser';
 
 /** para-browser MCP サーバーのURL。手元でも接続先でも 127.0.0.1 の同じ番号を叩く。 */
 export function paradisMcpServerUrl(port: number): string {
@@ -339,7 +340,7 @@ export function paradisUpsertClaudeMcpJson(existingRaw: string | undefined, port
 	const servers: Record<string, unknown> = existingServers !== null && typeof existingServers === 'object' && !Array.isArray(existingServers)
 		? { ...existingServers as Record<string, unknown> }
 		: {};
-	servers[PARADIS_MCP_TOML_SERVER_NAME] = {
+	servers[PARADIS_MCP_SERVER_NAME] = {
 		type: 'http',
 		url: paradisMcpServerUrl(port),
 		headers: { Authorization: `Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}` },
@@ -349,7 +350,7 @@ export function paradisUpsertClaudeMcpJson(existingRaw: string | undefined, port
 
 export function paradisUpsertCodexMcpToml(source: string, port: number): string {
 	const section = [
-		`[mcp_servers.${PARADIS_MCP_TOML_SERVER_NAME}]`,
+		`[mcp_servers.${PARADIS_MCP_SERVER_NAME}]`,
 		paradisCodexMcpTableBody(port),
 	].join('\n');
 
