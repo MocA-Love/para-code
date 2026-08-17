@@ -130,7 +130,10 @@ export class ParadisAgentStatusSnapshotService extends Disposable implements IPa
 				}));
 			}
 		} catch (error) {
-			if (!this._disposed && generation === this._generation) {
+			// A refresh requested while this transport is running makes a successful snapshot
+			// stale, but it must not erase the failed attempt from consumers' consecutive-failure
+			// accounting. The queued immediate refresh will still run next.
+			if (!this._disposed) {
 				this._publish(Object.freeze({ sequence: ++this._sequence, error }));
 			}
 		} finally {
