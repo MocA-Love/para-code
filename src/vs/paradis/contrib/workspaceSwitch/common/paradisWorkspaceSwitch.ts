@@ -386,8 +386,19 @@ export interface IParadisTerminalScopeService {
 	 * 元がどこだったか分からなくなるため、確定できないものは表示せず待避させている。
 	 */
 	countUnattributedTerminals(): number;
-	/** 待避中のターミナルを今のスペースの持ち物として引き取る。@returns 引き取った本数。 */
+	/**
+	 * 待避中のターミナルを今のスペースの持ち物として引き取る。
+	 * 対象はパネルのターミナルグループのみ（エディタ領域の端末はそもそも待避経路に乗らない。
+	 * あちらはスペースごとのタブ構成の中にしか居ないので、所属を推測する必要がない）。
+	 * @returns 引き取った本数。
+	 */
 	adoptUnattributedTerminals(): number;
+	/**
+	 * 直前の引き取りを取り消し、待避していた状態へ戻す。
+	 * 引き取りは所属を台帳へ確定させる操作で、間違ったスペースで引き取ると次のセッションまで
+	 * 残るため、戻し口を用意している。@returns 戻した本数（取り消せる引き取りが無ければ 0）。
+	 */
+	undoLastTerminalAdoption(): number;
 }
 
 export const IParadisAgentStatusStore = createDecorator<IParadisAgentStatusStore>('paradisAgentStatusStore');

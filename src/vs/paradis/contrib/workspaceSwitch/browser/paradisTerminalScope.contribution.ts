@@ -7,13 +7,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { disposableTimeout } from '../../../../base/common/async.js';
-import { onUnexpectedError } from '../../../../base/common/errors.js';
+import { BugIndicatingError, onUnexpectedError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { INotificationHandle, INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -29,7 +29,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IPar
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisMigrateProcessScopesToNonceScopes, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
-import { paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
+import { paradisCurrentRestoreStateKey, paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 
@@ -45,6 +45,9 @@ import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagn
  *   一旦復元される。{persistentProcessId → repositoryId} の保存済みマッピングから
  *   再接続完了時に再タグ付け・再 park する
  */
+/** 読み取り専用の突き合わせで「live 台帳は見ない」ことを表すための空台帳。 */
+const EMPTY_INSTANCE_SCOPES: ReadonlyMap<number, string> = new Map<number, string>();
+
 export class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTerminalScopeService {
 
 	declare readonly _serviceBrand: undefined;
@@ -127,18 +130,69 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _stableScopeTracker = this._register(new ParadisTerminalStableScopeTracker());
 	private readonly _instanceRetirementTracker = this._register(new ParadisTerminalInstanceRetirementTracker());
 	private readonly _activeScopeCandidates = new Map<number, string | undefined>();
+	/**
+	 * 端末を初めて見た時点で working set の復元中だったスペース。
+	 *
+	 * エディタ領域の端末はスペースごとの working set の中にしか居ないので、「どの working set から
+	 * 出てきたか」がそのまま所属の根拠になる（パネルのグループは全スペース分がまとめて復元される
+	 * ため、同じことが言えない）。切り替え以外の経路では未設定で、その場合は起動時のアクティブ
+	 * スペース（= 復元される working set の持ち主）を根拠にする。
+	 */
+	private readonly _restoreScopeCandidates = new Map<number, string>();
+	/**
+	 * 初めて見た時点で「前セッションから復元された端末」だったもの。
+	 *
+	 * `shellLaunchConfig.attachPersistentProcess` を毎回読んではいけない。attach に失敗すると
+	 * terminalProcessManager がその場で undefined に書き換えるので、復元端末が新規端末に化け、
+	 * しかも書き換えが非同期なため判定を引く時刻次第で答えが変わる。
+	 */
+	private readonly _restoredInstances = new Set<number>();
 	private readonly _candidateCapturedInstances = new Set<number>();
 	private readonly _initialCwds = new Map<number, string>();
 	private readonly _initialCwdResolvedInstances = new Set<number>();
+	/**
+	 * 作られた時のスペースを根拠にしただけの端末。cwd が判明したら訂正する前提で、nonce 台帳
+	 * （revive をまたいで不変＝訂正の機会が二度と来ない）には書かない。
+	 *
+	 * pid 台帳には書く。書かないと、cwd を引けない構成（リモート、worktree 列挙が遅い起動）で
+	 * ユーザー自身が作った端末がリロードのたびに所属不明へ戻って隠れてしまう。その代わり、
+	 * 同じ pty host 世代のリロードでは pid 台帳から印の無い確定値として読み戻される
+	 * （`recordRecoveredScopeIfUnassigned`）＝**推測は1度のリロードで確定に昇格する**。
+	 * 昇格するのは「ユーザーがそのスペースで作った端末」に限られるので許容している。
+	 */
 	private readonly _activeFallbackInstances = new Set<number>();
+	/**
+	 * 同居しているグループから所属を借りているだけで、自分の根拠は無い端末。
+	 *
+	 * `_activeFallbackInstances`（作られた時のスペースという自前の根拠がある推測）とは分けて持つ。
+	 * あちらは pid 台帳へ書いてよい——書かないと、リロードのたびに「どこのものか分からない端末」に
+	 * 戻って隠れてしまう。こちらは自前の根拠がゼロなので、**どの台帳にも書かない**。書くと1度の
+	 * リロードで pid 台帳から確定値として読み戻され、cwd による訂正の機会が永久に来なくなる。
+	 */
+	private readonly _inheritedGroupScopes = new Set<number>();
 	/** nonce 台帳と ID 台帳が食い違った回数。0 のままなら nonce を信頼してよい。 */
 	private _nonceScopeDisagreements = 0;
+	/** グループの所属と構成員の自前の根拠が食い違った回数。 */
+	private _groupScopeDisagreements = 0;
 	/**
 	 * 所属が分からないまま待避しているグループ。`_groupRepositories` とは別に持つ
 	 * （あちらへ入れると目印が所属として台帳へ焼き付き、cwd による自己修復を殺す）。
 	 */
 	private readonly _unattributedGroups = new Set<ITerminalGroup>();
-	private _unattributedNoticeShown = false;
+	/**
+	 * 直前の引き取りで今のスペースへ入れたグループ。取り消しの対象はこの1回分だけ持つ
+	 * （何回でも遡れる履歴にすると、間にユーザーが並べ替えた結果を巻き戻すことになる）。
+	 */
+	private _lastAdoption: { readonly groups: ITerminalGroup[]; readonly stateKey: string; readonly instanceIds: ReadonlySet<number> } | undefined;
+	/**
+	 * 表示中の「待避しました」通知。閉じられたら捨てて、次に待避が起きたらまた知らせる。
+	 * 出しっぱなしを1つに抑えるだけで、1ウィンドウにつき1回きりにはしない
+	 * （2回目以降に隠れた端末は、ユーザーからは黙って消えたようにしか見えない）。
+	 */
+	private _unattributedNotice: INotificationHandle | undefined;
+	/** 出しっぱなしの案内があるか。ハンドルを受け取る前に閉じられても取りこぼさないための印。 */
+	private _unattributedNoticeOpen = false;
+	private readonly _unattributedNoticeListener = this._register(new MutableDisposable());
 	private readonly _initialCwdResolutions = new WeakMap<ITerminalInstance, Promise<void>>();
 	private _terminalRestoreComplete = false;
 	private _worktreeSnapshotReady = false;
@@ -406,6 +460,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 		this._instanceScopes.set(instanceId, stateKey);
 		this._activeFallbackInstances.delete(instanceId);
+		this._inheritedGroupScopes.delete(instanceId);
 		this.recordPersistentProcessScopes([instance]);
 		this.trackInstanceRetirement(instance);
 		this._stableScopeTracker.observe(instanceId, { kind: 'managed', stateKey });
@@ -418,6 +473,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		const group = groupService.groups.find(g => g.terminalInstances.some(instance => instance.instanceId === instanceId));
 		if (group !== undefined && this._groupRepositories.get(group) !== stateKey) {
 			this._groupRepositories.set(group, stateKey);
+			// ここだけは構成員の根拠と突き合わせない。ユーザー（またはモバイル）が明示的に指定した
+			// 移動で、表示単位はグループなので、同居している端末も一緒に動くのが期待どおり。
+			// 突き合わせを挟むと「指定したのに動かない端末がある」ことになる。
 			this.recordInstanceScopes(group, stateKey, true);
 			if (stateKey !== this.workspaceSwitchService.activeStateKey) {
 				this.parkGroup(groupService, group, stateKey);
@@ -429,6 +487,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	private parkExplicitlyScopedEditorIfInactive(instance: ITerminalInstance): void {
+		// 切り替えの最中は「所属＝復元先」「アクティブ＝切り替え元」がずれている区間があり、
+		// そのまま比べると復元したばかりの端末を detach してしまう。切り替え側の復元経路に任せる。
+		if (this.workspaceSwitchService.isSwitching) {
+			return;
+		}
 		const stateKey = this._instanceScopes.get(instance.instanceId);
 		// エディタターミナル以外 (パネル端末等) で getInputFromResource を呼ぶと例外になり、
 		// 呼び出し元リスナーの後続処理 (persistMapping 等) まで巻き添えで中断してしまう。
@@ -462,17 +525,40 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		return this.collectLiveInstances().get(instanceId);
 	}
 
-	/** グループの構成インスタンスの instanceId に、このタグ付けを記録する */
-	private recordInstanceScopes(group: ITerminalGroup, stateKey: string, clearActiveFallback = false): void {
+	/**
+	 * グループの構成インスタンスの instanceId に、このタグ付けを記録する。
+	 * @param derivedFromGroup 所属を「同居している誰か」から引いた場合は true。構成員ごとに
+	 * 自前の根拠と突き合わせ、食い違いを黙って上書きしない（`reconcileGroupScope`）。
+	 * ユーザーやモバイルの明示指定は false のまま全員へ確定させる。
+	 */
+	private recordInstanceScopes(group: ITerminalGroup, stateKey: string, clearGuessMarks = false, derivedFromGroup = false): void {
+		// 同時には立たない。突き合わせて付けた印をその場で消すと、書き出しの1回ぶんしか
+		// 守れず、直後の `refreshAllStableScopes` などで借り物が台帳へ入る。
+		//
+		// 投げない。この関数は復元完了後の一連の処理 (`whenConnected` の then) から呼ばれ、
+		// そこには catch が無い。投げると park の保留解除も孤児復活も台帳の掃除も丸ごと飛び、
+		// 「印を1回消す」より遥かに悪い状態（他スペースの端末が見え続ける）になる。
+		// 報告だけして、安全な側 (`derivedFromGroup`) の意味で続行する。
+		if (clearGuessMarks && derivedFromGroup) {
+			onUnexpectedError(new BugIndicatingError('paradisTerminalScope: a derived group scope must not clear the guess marks it just made'));
+			clearGuessMarks = false;
+		}
 		// 所属が決まったグループは、もう「所属不明」ではない。印を残すと台帳には所属があるのに
 		// `resolveScope` は pending を返し続ける、という食い違いになる。
 		this._unattributedGroups.delete(group);
 		const liveInstances = group.terminalInstances.filter(instance => !instance.isDisposed);
-		paradisRecordInstanceScopes(this._instanceScopes, liveInstances, stateKey);
+		if (derivedFromGroup) {
+			for (const instance of liveInstances) {
+				this.reconcileGroupScope(instance, stateKey);
+			}
+		} else {
+			paradisRecordInstanceScopes(this._instanceScopes, liveInstances, stateKey);
+		}
 		this.recordPersistentProcessScopes(liveInstances);
 		for (const instance of liveInstances) {
-			if (clearActiveFallback) {
+			if (clearGuessMarks) {
 				this._activeFallbackInstances.delete(instance.instanceId);
+				this._inheritedGroupScopes.delete(instance.instanceId);
 			}
 			this.trackInstanceRetirement(instance);
 			this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
@@ -762,10 +848,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 			this._persistentProcessIdByInstance.delete(instanceId);
 			this._activeScopeCandidates.delete(instanceId);
+			this._restoreScopeCandidates.delete(instanceId);
 			this._candidateCapturedInstances.delete(instanceId);
 			this._initialCwds.delete(instanceId);
 			this._initialCwdResolvedInstances.delete(instanceId);
 			this._activeFallbackInstances.delete(instanceId);
+			this._inheritedGroupScopes.delete(instanceId);
+			this._restoredInstances.delete(instanceId);
 			this._stableScopeTracker.retire(instanceId);
 			this.persistMapping();
 		});
@@ -778,6 +867,15 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				instance.instanceId,
 				paradisTakeTerminalCreationScopeLease(instance.shellLaunchConfig) ?? this.workspaceSwitchService.activeStateKey,
 			);
+			// 端末が現れた瞬間にしか読めない。スペース切り替えの復元区間を抜けると消えるため、
+			// 後から「この端末はどの working set から出てきたのか」を引き直すことはできない。
+			const restoreStateKey = paradisCurrentRestoreStateKey();
+			if (restoreStateKey !== undefined) {
+				this._restoreScopeCandidates.set(instance.instanceId, restoreStateKey);
+			}
+			if (instance.shellLaunchConfig.attachPersistentProcess !== undefined) {
+				this._restoredInstances.add(instance.instanceId);
+			}
 		}
 		if (this._initialCwdResolutions.has(instance)) {
 			return;
@@ -829,7 +927,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._persistentProcessIdByInstance.set(instance.instanceId, persistentProcessId);
 			this._instanceIdByPersistentProcessId.set(persistentProcessId, instance.instanceId);
 		}
-		paradisRecordPersistentProcessScopes(this._instanceScopes, this._persistentProcessScopes, instances.map(instance => this.toScopedInstance(instance)));
+		// 借り物の所属は pid 台帳にも書かない。書くと1度のリロードで確定値として読み戻され
+		// （pid は同じ pty host 世代なら変わらない）、cwd による訂正の機会が永久に来なくなる。
+		paradisRecordPersistentProcessScopes(
+			this._instanceScopes,
+			this._persistentProcessScopes,
+			instances.filter(instance => !this._inheritedGroupScopes.has(instance.instanceId)).map(instance => this.toScopedInstance(instance)),
+		);
 	}
 
 	private getPersistentProcessId(instance: ITerminalInstance): number | undefined {
@@ -904,9 +1008,20 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (this._instanceScopes.has(instance.instanceId)) {
 			return;
 		}
-		const containingStateKey = this.getGroupStateKey(instance.instanceId) ?? this.getParkedEditorStateKey(instance.instanceId);
-		if (containingStateKey !== undefined) {
-			this._instanceScopes.set(instance.instanceId, containingStateKey);
+		// タグ付け済みのグループへ後から加わった端末（split、background からの復帰、park 台帳から
+		// 開き直された端末）はここを通る。`tagUntaggedGroups` はタグ付け済みのグループを丸ごと
+		// 飛ばすので、ここで突き合わせないと、グループの所属が印も突き合わせも無しに確定して
+		// 台帳へ焼き付く（cwd 解決前に通ると訂正の機会も無くなる）。
+		const groupStateKey = this.getGroupStateKey(instance.instanceId);
+		if (groupStateKey !== undefined) {
+			this.reconcileGroupScope(instance, groupStateKey);
+			return;
+		}
+		// park 台帳の stateKey は「そのスペースの持ち物として明示的に待避した」履歴なので、
+		// 同居しているだけのグループとは違い、そのまま確定として扱ってよい。
+		const parkedEditorStateKey = this.getParkedEditorStateKey(instance.instanceId);
+		if (parkedEditorStateKey !== undefined) {
+			this._instanceScopes.set(instance.instanceId, parkedEditorStateKey);
 			this._activeFallbackInstances.delete(instance.instanceId);
 			return;
 		}
@@ -932,7 +1047,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			initialCwdStateKey,
 			activeStateKeyCandidate: this._activeScopeCandidates.get(instance.instanceId),
 			// 復元された端末かどうか。新しく開かれた端末は今までどおり作成時のスペースへ寄せる。
-			restoredFromPersistentProcess: instance.shellLaunchConfig.attachPersistentProcess !== undefined,
+			// 初出時に控えた値を見る（生の `attachPersistentProcess` は attach 失敗で消える）。
+			// ここだけ生読みすると、attach に失敗した復元端末が新規端末として扱われて
+			// アクティブスペースの推測が入り、待避の判定材料 (`hasScope`) まで崩れる。
+			restoredFromPersistentProcess: this._restoredInstances.has(instance.instanceId),
 		});
 		if (candidate.status === 'resolved' && candidate.stateKey !== undefined) {
 			this._instanceScopes.set(instance.instanceId, candidate.stateKey);
@@ -941,21 +1059,131 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			} else {
 				this._activeFallbackInstances.delete(instance.instanceId);
 			}
+			return;
+		}
+		// ここまでで所属が出なかった端末でも、エディタ領域のものは容れ物が根拠になる（下記参照）。
+		// 判定材料が揃う前 (pending) に確定させないよう、resolved まで待ってから引く。
+		const containerStateKey = candidate.status === 'resolved' ? this.editorContainerStateKey(instance) : undefined;
+		if (containerStateKey !== undefined) {
+			this._instanceScopes.set(instance.instanceId, containerStateKey);
+			this._activeFallbackInstances.delete(instance.instanceId);
 		}
 	}
 
+	/**
+	 * エディタ領域の端末が「どのスペースの持ち物か」を、それが入っている容れ物から引く。
+	 *
+	 * パネルのグループは全スペース分がまとめて復元されるので、「今そこに在る」ことは所属の根拠に
+	 * ならない（だから根拠の無い復元グループは待避させる）。エディタ領域は事情が逆で、端末は
+	 * スペースごとの working set の中にしか存在せず、別スペースのものは切り替えるまで復元すら
+	 * されない。つまり「今この working set から出てきた」こと自体が根拠になる。
+	 *
+	 * **根拠にできるのは復元先スペースが分かっている経路だけ**。分からない経路（起動時のエディタ
+	 * 復元、補助ウィンドウの復元など）で「今アクティブなスペース」に落とすのは根拠ではなく推測で、
+	 * それを確定として記録すると台帳へ焼き付いて park と退役時の破棄の対象になる。別スペースに
+	 * 固定した補助ウィンドウの端末が、起動時にメインウィンドウのスペースへ吸い込まれ、そのスペース
+	 * を離れた瞬間に見えていたタブごと detach される、という壊れ方をする。記録しなければ従来どおり
+	 * `paradisResolveTerminalBindingScope` が最後にアクティブスペースへ落とすだけで済む
+	 * （見え方は同じで、台帳に残らないぶん後から直せる）。
+	 */
+	private editorContainerStateKey(instance: ITerminalInstance): string | undefined {
+		if (!this.terminalEditorService.instances.includes(instance)) {
+			return undefined;
+		}
+		return this._restoreScopeCandidates.get(instance.instanceId);
+	}
+
+	/**
+	 * 確定していない所属（作られた時のスペースという推測、同居グループからの借り物）を、
+	 * cwd が判明した時点で引き直す。どちらの印もここで訂正されることを前提に、台帳への
+	 * 書き出しを控えている。
+	 */
 	private reevaluateActiveFallbackScopes(): void {
-		for (const instanceId of [...this._activeFallbackInstances]) {
+		let promoted = false;
+		for (const instanceId of new Set([...this._activeFallbackInstances, ...this._inheritedGroupScopes])) {
 			const instance = this.findLiveInstance(instanceId);
 			if (instance === undefined) {
 				this._activeFallbackInstances.delete(instanceId);
+				this._inheritedGroupScopes.delete(instanceId);
 				continue;
 			}
-			const initialCwdStateKey = this.resolveInstanceInitialCwdScope(instance);
-			if (initialCwdStateKey !== undefined && initialCwdStateKey !== this._instanceScopes.get(instanceId)) {
-				this.assignInstanceScope(instanceId, initialCwdStateKey);
+			// cwd が主だが、worktree 一覧の確定で台帳が引けるようになることもある。
+			// どちらでも「自前の根拠が出た」ことに変わりはないので、両方見る。
+			const resolved = this.resolveInstanceInitialCwdScope(instance) ?? this.ownScopeEvidence(instance);
+			if (resolved === undefined) {
+				continue;
 			}
+			// 値が同じでも印は外す（自前の根拠へ昇格させる）。外し忘れると借り物のままどの台帳にも
+			// 書かれず、次のセッションで根拠ゼロから始まってしまう。
+			//
+			// ここで `assignInstanceScope` を使ってはいけない。あれは「ユーザーの明示指定なので
+			// グループごと動かす」経路で、同居している端末の所属まで突き合わせ無しに上書きする。
+			// これは自動訂正なので、直したい1本だけを動かし、グループの扱いはタグ付けに任せる。
+			this._instanceScopes.set(instanceId, resolved);
+			this._activeFallbackInstances.delete(instanceId);
+			this._inheritedGroupScopes.delete(instanceId);
+			this.recordPersistentProcessScopes([instance]);
+			this._stableScopeTracker.observe(instanceId, this.resolveScope(instanceId));
+			promoted = true;
 		}
+		if (promoted) {
+			this.rehomeGroupsWithoutAClaimingMember();
+			// 昇格をここで保存する。呼び出し元はタグ付けが動いたときしか保存しないので、
+			// 任せると「次のセッションで根拠ゼロから始まらないようにする」という目的に届かない。
+			this.persistMapping();
+		}
+	}
+
+	/**
+	 * 所属を主張する構成員が1人も居なくなったグループを、置き場所ごと計算し直す。
+	 *
+	 * 訂正は端末1本だけを動かす（グループごと動かすのはユーザーの明示指定のときだけ）。ところが
+	 * `tagUntaggedGroups` はタグ付け済みのグループを丸ごと飛ばすので、放っておくとグループの
+	 * 置き場所を直す契機がセッション中2度と来ない。1本しか入っていないグループでこれが起きると、
+	 * 台帳は正しいのに**別のスペースの端末が今のスペースに出続ける**——避けたかった状態そのもの。
+	 *
+	 * まだその所属を主張する構成員が残っているグループは触らない（`chooseGroupStateKey` と同じ、
+	 * 見えているものを勝手に隠さない側の判断）。
+	 */
+	private rehomeGroupsWithoutAClaimingMember(): void {
+		const groupService = this.terminalGroupService;
+		if (!(groupService instanceof TerminalGroupService)) {
+			return;
+		}
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		for (const [group, stateKey] of [...this._groupRepositories]) {
+			const liveInstances = group.terminalInstances.filter(instance => !instance.isDisposed);
+			if (liveInstances.length === 0
+				|| liveInstances.some(instance => this.ownScopeEvidence(instance) === stateKey)) {
+				continue;
+			}
+			const resolved = this.resolveGroupScope(group) ?? this.resolveGroupInitialCwdScope(group);
+			const next = this.chooseGroupStateKey(group, resolved, activeStateKey);
+			if (next === undefined || next === stateKey) {
+				continue;
+			}
+			this.rehomeGroup(groupService, group, next, activeStateKey);
+		}
+	}
+
+	/** グループを別のスペースへ移す（台帳と、実際に見えているかの両方を合わせる）。 */
+	private rehomeGroup(groupService: TerminalGroupService, group: ITerminalGroup, stateKey: string, activeStateKey: string | undefined): void {
+		const wasVisible = groupService.groups.includes(group);
+		this.removeFromParkLedger(group);
+		this._deferredParkGroups.delete(group);
+		this._groupRepositories.set(group, stateKey);
+		if (stateKey === activeStateKey) {
+			if (!wasVisible) {
+				groupService.paradisUnparkGroup(group);
+			}
+			return;
+		}
+		if (wasVisible) {
+			this.parkGroup(groupService, group, stateKey);
+			return;
+		}
+		// 既に隠れている。実体はそのままでよいので、待避先の台帳だけ付け替える。
+		this.addToParkLedger(stateKey, group);
 	}
 
 	private tagUntaggedGroups(): void {
@@ -977,7 +1205,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 			// 既知の対応 (今セッション中のタグ付け実績、またはリロード前の保存済みマッピング) を
 			// 優先する。initial cwd/worktree snapshotが未確定ならタグ付け自体を保留する。
-			const stateKey = this.resolveGroupScope(group) ?? this.resolveGroupInitialCwdScope(group);
+			const resolvedStateKey = this.resolveGroupScope(group) ?? this.resolveGroupInitialCwdScope(group);
+			const stateKey = this.chooseGroupStateKey(group, resolvedStateKey, activeStateKey);
 			if (!stateKey) {
 				// 所属が分からない復元グループは、アクティブスペースに置いたままにしない。
 				// 台帳にも cwd にも根拠が無いのに表示すると、それは「今開いているスペースの
@@ -991,7 +1220,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 
 			this._groupRepositories.set(group, stateKey);
-			this.recordInstanceScopes(group, stateKey);
+			this.recordInstanceScopes(group, stateKey, false, true);
 			changed = true;
 
 			if (stateKey !== activeStateKey) {
@@ -1001,6 +1230,112 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (changed) {
 			this.persistMapping();
 		}
+	}
+
+	/**
+	 * その端末単体で言える所属（同居している他の端末からの伝播を除いた、自前の根拠）。
+	 *
+	 * どれも読むだけ。`paradisRestorePersistentProcessScope` は引くついでに `_instanceScopes` へ
+	 * 書いてしまうので、ここでは使わない。
+	 */
+	private ownScopeEvidence(instance: ITerminalInstance): string | undefined {
+		const recorded = this._instanceScopes.get(instance.instanceId);
+		// 借り物・推測として入った値は自前の根拠ではないので、その場合だけ引き直す。
+		if (recorded !== undefined
+			&& !this._inheritedGroupScopes.has(instance.instanceId)
+			&& !this._activeFallbackInstances.has(instance.instanceId)) {
+			return recorded;
+		}
+		// 新しく開かれた端末は「作られた時のスペース」が自分の根拠。復元された端末にはそれが無い。
+		if (!this._restoredInstances.has(instance.instanceId)) {
+			return this._activeScopeCandidates.get(instance.instanceId);
+		}
+		// 優先順位は `recordRecoveredScopeIfUnassigned` と揃える。台帳と cwd が食い違う端末
+		// （worktree を移した、入れ子のリポジトリで cwd が別スコープの root に最長一致した等）で
+		// 答えが経路によって変わると、グループの突き合わせのたびに所属が書き換わる。
+		// live 台帳は渡さない。渡すと上で除いたはずの借り物をここで拾い直してしまう。
+		const processStateKey = paradisLookupInstanceScope(EMPTY_INSTANCE_SCOPES, this._restoredPersistentProcessScopes, [this.toRestoredScopedInstance(instance)]);
+		return paradisResolveNonceScope(this._restoredNonceScopes, this.instanceNonce(instance), processStateKey)
+			?? this.resolveInstanceInitialCwdScope(instance)
+			?? this.editorContainerStateKey(instance);
+	}
+
+	/**
+	 * グループを「どのスペースに置くか」を決める。
+	 *
+	 * `resolveGroupScope` は構成員の**配列順で最初に引けた1本**を採る。構成員の根拠が割れている
+	 * グループでは、これはユーザーにもコードを読む人にも予測できない基準になる。表示単位が
+	 * グループである以上どちらか一方は間違った場所に出るので、せめて基準を決めておく:
+	 * **今見えているスペースを主張する構成員が居るなら、そちらに置く。**
+	 *
+	 * 隠す方に倒すと、ユーザーがたった今この分割ペインに開いた端末が、スペースを切り替えても
+	 * いないのに画面から消える（隠れた先のスペースへ切り替えれば戻るが、消えた側からは
+	 * どこへ行ったか分からない）。一方こちらに倒しても、各端末の所属は `reconcileGroupScope` が
+	 * 自分の根拠のまま保つので、台帳が混ざることはない。混ざるのは見た目だけで、しかも既に
+	 * そう見えていた状態が続くだけになる。
+	 *
+	 * この選択はタグ付けした瞬間の状況（どのスペースがアクティブか、どの構成員が先に根拠を
+	 * 得たか）で決まるので、**同じ混在グループでもセッションごとに置き場所が変わりうる**。
+	 * どちらへ倒したかは warn に残してある。
+	 */
+	private chooseGroupStateKey(group: ITerminalGroup, resolvedStateKey: string | undefined, activeStateKey: string | undefined): string | undefined {
+		if (resolvedStateKey === undefined || activeStateKey === undefined || resolvedStateKey === activeStateKey) {
+			return resolvedStateKey;
+		}
+		const claimsActive = group.terminalInstances.some(instance => !instance.isDisposed
+			&& this.ownScopeEvidence(instance) === activeStateKey);
+		if (!claimsActive) {
+			return resolvedStateKey;
+		}
+		this.logService.warn(`[paradisTerminalScope] a group holds terminals from more than one space; showing it in the active space (${activeStateKey}) instead of ${resolvedStateKey} so nothing disappears from under the user`);
+		return activeStateKey;
+	}
+
+	/**
+	 * グループから所属を引き継ぐときに、構成員それぞれの自前の根拠と突き合わせる。
+	 *
+	 * グループの所属は「最初に根拠の引けた1本」から決まり、表示も待避もグループ単位でしかできない
+	 * ので、同居している端末へ所属が伝わること自体は避けられない。避けられるのは、それを**確定**
+	 * として台帳へ焼き付けることの方。
+	 * - 自前の根拠が無い構成員: 借り物の印を付ける（どの台帳にも書かず、cwd が判明したら訂正する）
+	 * - 自前の根拠がグループと食い違う構成員: 上書きしない。自分の根拠の方を残す
+	 *   （グループの見た目は1つでも、どのスペースの持ち物かという答えまで混ぜる理由は無い）
+	 */
+	private reconcileGroupScope(instance: ITerminalInstance, stateKey: string): void {
+		const own = this.ownScopeEvidence(instance);
+		if (own === undefined) {
+			this._inheritedGroupScopes.add(instance.instanceId);
+			this._instanceScopes.set(instance.instanceId, stateKey);
+			return;
+		}
+		this._inheritedGroupScopes.delete(instance.instanceId);
+		if (own !== stateKey) {
+			this.reportGroupScopeDisagreement(instance, own, stateKey);
+		}
+		this._instanceScopes.set(instance.instanceId, own);
+		// 新しく開かれた端末の「作られた時のスペース」は根拠ではあるが確定ではない。
+		// 通常の解決経路 (`recordRecoveredScopeIfUnassigned`) と同じ印を付けておかないと、
+		// グループ経由で入った分だけが台帳へ焼き付き、cwd による訂正も効かなくなる。
+		if (!this._restoredInstances.has(instance.instanceId)
+			&& this.resolveInstanceInitialCwdScope(instance) === undefined
+			&& own === this._activeScopeCandidates.get(instance.instanceId)) {
+			this._activeFallbackInstances.add(instance.instanceId);
+		}
+	}
+
+	/**
+	 * グループの所属と、構成員が自前で言える所属が食い違ったことを記録する。
+	 * これが鳴るのは「別スペースの端末が1つのグループに同居している」ときだけなので、
+	 * 頻度が読めれば表示単位そのものを分ける必要があるかの判断材料になる。
+	 */
+	private reportGroupScopeDisagreement(instance: ITerminalInstance, ownStateKey: string, groupStateKey: string): void {
+		this._groupScopeDisagreements++;
+		// 台帳はこの端末自身の答えを残すが、表示と待避はグループ側に従う（グループ単位でしか
+		// 出し入れできないため）。つまりこの端末は「所属は Y、見えるのは X のとき」になる。
+		this.logService.warn(`[paradisTerminalScope] a terminal disagrees with the space of the group it sits in (instance ${instance.instanceId}, total ${this._groupScopeDisagreements}); keeping the terminal's own space in the ledger while the group keeps deciding where it is shown`, {
+			ownStateKey,
+			groupStateKey,
+		});
 	}
 
 	/** 所属不明として待避しているターミナルの本数。コマンドの表示に使う。 */
@@ -1027,6 +1362,15 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return 0;
 		}
 		let adopted = 0;
+		const adoptedGroups: ITerminalGroup[] = [];
+		const adoptedInstanceIds = new Set<number>();
+		const countAdopted = (group: ITerminalGroup): number => {
+			const live = group.terminalInstances.filter(instance => !instance.isDisposed);
+			for (const instance of live) {
+				adoptedInstanceIds.add(instance.instanceId);
+			}
+			return live.length;
+		};
 		// park 保留中の分は、保留を解いた先で今のスペースへ入るように差し替えるだけでよい。
 		for (const [group, stateKey] of this._deferredParkGroups) {
 			if (stateKey === PARADIS_UNATTRIBUTED_TERMINAL_SCOPE) {
@@ -1035,8 +1379,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				// 台帳には所属があるのにモバイル・通知・binding authority から見えなくなる。
 				this._unattributedGroups.delete(group);
 				this._groupRepositories.set(group, activeStateKey);
-				this.recordInstanceScopes(group, activeStateKey);
-				adopted += group.terminalInstances.filter(instance => !instance.isDisposed).length;
+				// ユーザーが選んだ引き取り先なので確定させる（取り消しは undo が受け持つ）。
+				this.recordInstanceScopes(group, activeStateKey, true);
+				adoptedGroups.push(group);
+				adopted += countAdopted(group);
 			}
 		}
 		const parked = this._parkedGroups.get(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE) ?? [];
@@ -1053,17 +1399,121 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 			this._unattributedGroups.delete(group);
 			this._groupRepositories.set(group, activeStateKey);
-			this.recordInstanceScopes(group, activeStateKey);
-			adopted += group.terminalInstances.filter(instance => !instance.isDisposed).length;
+			this.recordInstanceScopes(group, activeStateKey, true);
+			adoptedGroups.push(group);
+			adopted += countAdopted(group);
 		}
 		if (stillParked.length > 0) {
 			this._parkedGroups.set(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE, stillParked);
 		} else {
 			this._parkedGroups.delete(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE);
 		}
+		// 引き取りは所属を確定させる操作で、確定した所属は nonce 台帳に残って次のセッションへ
+		// 伝わる。間違ったスペースで引き取ったことに後から気付いても戻せない、を避けるために
+		// 直前の1回分だけ覚えておく。
+		this._lastAdoption = adoptedGroups.length > 0 ? { groups: adoptedGroups, stateKey: activeStateKey, instanceIds: adoptedInstanceIds } : undefined;
+		// 待つものが無くなったら、出しっぱなしの案内は閉じる（コマンドから引き取った場合も）。
+		if (this._unattributedGroups.size === 0) {
+			this._unattributedNotice?.close();
+			this._unattributedNotice = undefined;
+			this._unattributedNoticeOpen = false;
+		}
 		this.persistMapping();
 		this.refreshAllStableScopes();
 		return adopted;
+	}
+
+	/**
+	 * 直前の引き取りを取り消し、待避していた状態へ戻す。
+	 *
+	 * 台帳から所属を消してから待避し直す。消さずに待避だけすると、次の起動で台帳から
+	 * 「引き取り先のスペースの持ち物」として復活し、取り消したはずの誤りが戻ってくる。
+	 *
+	 * 引き取った後に起きたことは巻き戻さない。所属を付け替えられたグループと、引き取った後に
+	 * 端末が足されたグループは対象外にする（待避は丸ごとしかできないので、戻すとユーザーが
+	 * 今作った端末まで一緒に隠れてしまう）。
+	 * @returns 戻したターミナルの本数。
+	 */
+	undoLastTerminalAdoption(): number {
+		const groupService = this.terminalGroupService;
+		const adoption = this._lastAdoption;
+		this._lastAdoption = undefined;
+		if (!(groupService instanceof TerminalGroupService) || adoption === undefined) {
+			return 0;
+		}
+		let released = 0;
+		for (const group of adoption.groups) {
+			// 引き取り以降に所属が変わったグループ（モバイルからの付け替え等）は触らない。
+			if (this._groupRepositories.get(group) !== adoption.stateKey) {
+				continue;
+			}
+			const instances = group.terminalInstances.filter(instance => !instance.isDisposed);
+			// 引き取った後にこのグループへ足された端末が1本でもあれば、そのグループは触らない。
+			// 待避は丸ごとしかできないので、戻すとユーザーが今作った端末まで一緒に隠れる。
+			if (instances.length === 0 || instances.some(instance => !adoption.instanceIds.has(instance.instanceId))) {
+				continue;
+			}
+			for (const instance of instances) {
+				this.forgetInstanceScope(instance);
+			}
+			this._groupRepositories.delete(group);
+			this.reparkAsUnattributed(groupService, group);
+			released += instances.length;
+		}
+		this.persistMapping();
+		this.refreshAllStableScopes();
+		return released;
+	}
+
+	/**
+	 * 所属を取り消したグループを、待避中の状態へ戻す。
+	 *
+	 * 先に全ての park 台帳から外す。外さずに待避先へ足すと、切り替えで park 済みだったグループが
+	 * 元のスペースと待避先の両方に載り、そのスペースへ戻ると画面には出るのに `resolveScope` は
+	 * 待避中として pending を返し続ける（モバイル・通知から消える）。本数の二重計上も起きる。
+	 */
+	private reparkAsUnattributed(groupService: TerminalGroupService, group: ITerminalGroup): void {
+		this._deferredParkGroups.delete(group);
+		this.removeFromParkLedger(group);
+		if (groupService.groups.includes(group)) {
+			this.parkUnattributedGroup(groupService, group, false);
+			return;
+		}
+		// 既に park 済み。実体はそのままでよいので、待避先の台帳へ付け替えるだけにする
+		// （`paradisParkGroup` は groups に居ないグループを黙って無視するため、呼んでも台帳が
+		// ずれるだけになる）。
+		this._unattributedGroups.add(group);
+		this.addToParkLedger(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE, group);
+	}
+
+	/** 端末の所属を全台帳から消し、「所属不明」の状態へ戻す。 */
+	private forgetInstanceScope(instance: ITerminalInstance): void {
+		this._instanceScopes.delete(instance.instanceId);
+		this._activeFallbackInstances.delete(instance.instanceId);
+		this._inheritedGroupScopes.delete(instance.instanceId);
+		// 容れ物からの根拠も捨てる。残すと直後の引き直しでその場から所属が付き、取り消せない。
+		this._restoreScopeCandidates.delete(instance.instanceId);
+		this._stableScopeTracker.retire(instance.instanceId);
+		// 現世代の ID が確定しているときだけ消す。`getPersistentProcessId` は前世代の attach 先へ
+		// フォールバックするので、それで消すと別の端末の現世代エントリを巻き添えにしうる。
+		const persistentProcessId = instance.persistentProcessId;
+		if (persistentProcessId !== undefined && persistentProcessId >= 0) {
+			this._persistentProcessScopes.delete(persistentProcessId);
+			this._restoredPersistentProcessScopes.delete(persistentProcessId);
+			// worktree バリア前の隔離分も消す。残すとバリア完了時に両方の pid 台帳へ復活し、
+			// 待避中なのに所属だけある（どのスペースへ切り替えても戻らない）状態になる。
+			this._quarantinedPersistentProcessScopes.delete(persistentProcessId);
+		}
+		const nonce = this.instanceNonce(instance);
+		if (nonce === undefined) {
+			return;
+		}
+		// 読み側も必ず消す。書き側だけ消すと、この端末は次に所属を引かれたときに読み側から
+		// 元の所属で復活し、取り消したはずの引き取りがそのまま戻る。
+		this._restoredNonceScopes.delete(nonce);
+		if (this._nonceScopes.delete(nonce)) {
+			this.persistNonceMapping();
+		}
 	}
 
 	/**
@@ -1081,7 +1531,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			worktreeSnapshotReady: this._worktreeSnapshotReady,
 			hasResolvableScopeRoots: this.hasResolvableScopeRoots(),
 			instances: group.terminalInstances.map(instance => ({
-				restoredFromPersistentProcess: instance.shellLaunchConfig.attachPersistentProcess !== undefined,
+				// 初出時に控えた値を見る。`attachPersistentProcess` は attach 失敗で消されるため、
+				// 都度読むと復元端末が新規端末に化けて、グループごと待避の対象から外れてしまう。
+				restoredFromPersistentProcess: this._restoredInstances.has(instance.instanceId),
 				// 取得に失敗した端末も含める。根拠が無いまま表示すると結局混ざるうえ、
 				// タグ付けも待避もされない端末はどのスペースでも出続けてしまう。
 				initialCwdSettled: this._initialCwdResolvedInstances.has(instance.instanceId),
@@ -1123,7 +1575,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 表示したまま混ぜるより隠す方を選んでいるのは、混ざった側は所属が上書きされて
 	 * 元がどこだったか分からなくなるのに対し、隠れた側は引き取れば戻せるため。
 	 */
-	private parkUnattributedGroup(groupService: TerminalGroupService, group: ITerminalGroup): void {
+	private parkUnattributedGroup(groupService: TerminalGroupService, group: ITerminalGroup, notify = true): void {
 		// `_groupRepositories` には入れない。あそこへ入れると `getGroupStateKey` がこの目印を
 		// 所属として返し、そこから `_instanceScopes` → pid 台帳 → nonce 台帳と自動で伝播して
 		// 永続化される。所属スコープとして焼き付いた目印は cwd より優先して引かれるので、
@@ -1132,33 +1584,63 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this._unattributedGroups.add(group);
 		this.parkGroup(groupService, group, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE);
 		this.logService.warn(`[paradisTerminalScope] parked a restored terminal group with no resolvable space (${group.terminalInstances.length} terminals); use the unattributed terminals command to bring it back`);
-		this.notifyUnattributedTerminals();
+		if (notify) {
+			this.notifyUnattributedTerminals();
+		}
 	}
 
 	/**
-	 * 隠したことを一度だけ知らせる。ログだけだと、ユーザーからは端末が黙って消えたようにしか
+	 * 隠したことを知らせる。ログだけだと、ユーザーからは端末が黙って消えたようにしか
 	 * 見えず、戻せることも分からない（エージェントを走らせていた端末なら事故と区別できない）。
+	 *
+	 * 出しっぱなしの通知が1つある間は重ねない。閉じられた後にまた待避が起きたら、改めて知らせる。
 	 */
 	private notifyUnattributedTerminals(): void {
-		if (this._unattributedNoticeShown) {
+		if (this._unattributedNoticeOpen) {
 			return;
 		}
-		this._unattributedNoticeShown = true;
-		this.notificationService.prompt(
+		// 「出しっぱなしが1つある」印はハンドルとは別に持つ。`onDidClose` が `prompt` から戻る前に
+		// 発火しないことに依存している（実装はモデルへ足してハンドルを返すだけで、通知フィルタも
+		// 見せ方を変えるだけで閉じない）。もしそこが変わると、印が立ったままになって以後この
+		// ウィンドウでは知らせられなくなる——ハンドルを問い合わせる口が無いので、そこは防いでいない。
+		this._unattributedNoticeOpen = true;
+		const forget = () => {
+			this._unattributedNoticeOpen = false;
+			this._unattributedNotice = undefined;
+		};
+		const handle = this.notificationService.prompt(
 			Severity.Info,
 			localize('paradis.unattributedTerminals.parked', "Some restored terminals could not be matched to a space, so they are being kept aside instead of being shown here."),
 			[{
 				label: localize('paradis.unattributedTerminals.recover', "Move Them Into This Space"),
 				run: () => {
-					if (this.adoptUnattributedTerminals() === 0) {
+					const adopted = this.adoptUnattributedTerminals();
+					if (adopted === 0) {
 						this.notificationService.warn(localize('paradis.unattributedTerminals.recoverFailed', "The terminals could not be moved into this space. Open a space first, then run \"Recover Terminals Without a Space\"."));
+						return;
 					}
+					// 引き取り先が正しいかはユーザーにしか分からない。戻し口をその場で出す。
+					// 自動で消してはいけない（取り消せる間だけが価値なので、消えると戻し口も消える）。
+					this.notificationService.prompt(
+						Severity.Info,
+						localize('paradis.unattributedTerminals.adopted', "Moved {0} terminal(s) into this space.", adopted),
+						[{
+							label: localize('paradis.unattributedTerminals.undo', "Undo"),
+							run: () => this.undoLastTerminalAdoption(),
+						}],
+						{ sticky: true },
+					);
 				},
 			}],
 			// 復元直後、ユーザーが画面を見ていない時間帯に出る。自動で消えると、端末が黙って
 			// 消えたようにしか見えないという、この通知が防ぎたかった状態に戻ってしまう。
 			{ sticky: true },
 		);
+		if (this._unattributedNoticeOpen) {
+			this._unattributedNotice = handle;
+			// 購読を溜めないよう毎回1つに置き換える。
+			this._unattributedNoticeListener.value = Event.once(handle.onDidClose)(forget);
+		}
 	}
 
 	/** @param stateKey park 先スコープの stateKey (リポジトリ本体では repositoryId と同値)。 */
@@ -1169,12 +1651,32 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 		groupService.paradisParkGroup(group);
+		this.addToParkLedger(stateKey, group);
+	}
+
+	private addToParkLedger(stateKey: string, group: ITerminalGroup): void {
 		let parked = this._parkedGroups.get(stateKey);
 		if (!parked) {
 			parked = [];
 			this._parkedGroups.set(stateKey, parked);
 		}
-		parked.push(group);
+		if (!parked.includes(group)) {
+			parked.push(group);
+		}
+	}
+
+	/** park 台帳の全スコープから、このグループを外す（実体の park 状態は変えない）。 */
+	private removeFromParkLedger(group: ITerminalGroup): void {
+		for (const [stateKey, groups] of this._parkedGroups) {
+			const index = groups.indexOf(group);
+			if (index !== -1) {
+				groups.splice(index, 1);
+				if (groups.length === 0) {
+					// 空配列でキーを残すと「park 中の端末がある」と誤判定される (probe は has() で引く)
+					this._parkedGroups.delete(stateKey);
+				}
+			}
+		}
 	}
 
 	/**
@@ -1338,10 +1840,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 			this._persistentProcessIdByInstance.delete(instanceId);
 			this._activeScopeCandidates.delete(instanceId);
+			this._restoreScopeCandidates.delete(instanceId);
 			this._candidateCapturedInstances.delete(instanceId);
 			this._initialCwds.delete(instanceId);
 			this._initialCwdResolvedInstances.delete(instanceId);
 			this._activeFallbackInstances.delete(instanceId);
+			this._inheritedGroupScopes.delete(instanceId);
+			this._restoredInstances.delete(instanceId);
 			this._stableScopeTracker.retire(instanceId);
 		}
 
@@ -1351,8 +1856,67 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				instance.dispose(TerminalExitReason.User);
 			}
 		}
-		this._parkedGroups.delete(stateKey);
+		this.releaseSurvivorsOfRetiredScope(stateKey);
 		this.persistMapping();
+	}
+
+	/**
+	 * 退役したスコープに park していたグループを片付ける。
+	 *
+	 * 全滅したグループは `onDidDisposeGroup` → `discardGroup` が台帳から外すので、ここで見るのは
+	 * **生き残った端末が居るグループ**の方。グループの所属と構成員の所属は食い違うことがあり
+	 * （`reconcileGroupScope`）、その場合ここには「退役したスコープに park されているが、中の端末は
+	 * 別のスペースの持ち物」というグループが残る。バケツごと捨てると `applyScope` の復帰は
+	 * `_parkedGroups.get(切り替え先)` しか見ないため二度と引っかからず、PTY は生きているのに
+	 * どのスペースにも出てこない端末になる。park を解いてタグ付けからやり直させる。
+	 */
+	private releaseSurvivorsOfRetiredScope(stateKey: string): void {
+		const groupService = this.terminalGroupService;
+		// 起点は park 台帳ではなく「所属が退役キーのグループ」全部。park 台帳だけを見ると、
+		// 表示中のグループと park 保留中のグループの所属が退役キーのまま残り、次の切り替えで
+		// そのキーへ park される。そのキーへ切り替わることは二度と無いので、台帳には載って
+		// いるのにどこからも辿り着けないグループになる。
+		const candidates = new Set<ITerminalGroup>(this._parkedGroups.get(stateKey) ?? []);
+		this._parkedGroups.delete(stateKey);
+		for (const [group, assignedStateKey] of this._groupRepositories) {
+			if (assignedStateKey === stateKey) {
+				candidates.add(group);
+			}
+		}
+		for (const [group, assignedStateKey] of this._deferredParkGroups) {
+			if (assignedStateKey === stateKey) {
+				candidates.add(group);
+			}
+		}
+		let released = false;
+		for (const group of candidates) {
+			this._groupRepositories.delete(group);
+			this._deferredParkGroups.delete(group);
+			if (!group.terminalInstances.some(instance => !instance.isDisposed)
+				|| !(groupService instanceof TerminalGroupService)) {
+				continue;
+			}
+			this.removeFromParkLedger(group);
+			// 表示中（park 保留中を含む）のグループは、所属を外すだけでよい。
+			if (groupService.groups.includes(group)) {
+				released = true;
+				continue;
+			}
+			try {
+				groupService.paradisUnparkGroup(group);
+				released = true;
+			} catch (error) {
+				// 退役したキーのバケツへは戻さない（上と同じ理由）。待避扱いにすれば、通知と
+				// コマンドから引き取れる回路に乗る。
+				this._unattributedGroups.add(group);
+				this.addToParkLedger(PARADIS_UNATTRIBUTED_TERMINAL_SCOPE, group);
+				onUnexpectedError(error);
+			}
+		}
+		if (released) {
+			// 根拠があれば正しいスペースへ、無ければ待避へ落ちる。
+			this.tagUntaggedGroups();
+		}
 	}
 
 	private discardGroup(group: ITerminalGroup): void {
@@ -1361,16 +1925,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// 消し忘れるとグループ（とその配下の端末）の参照がウィンドウの寿命ぶん残り、
 		// 所属判定のたびにその死骸を走査することになる。
 		this._unattributedGroups.delete(group);
-		for (const [stateKey, groups] of this._parkedGroups) {
-			const index = groups.indexOf(group);
-			if (index !== -1) {
-				groups.splice(index, 1);
-				if (groups.length === 0) {
-					// 空配列でキーを残すと「park 中の端末がある」と誤判定される (probe は has() で引く)
-					this._parkedGroups.delete(stateKey);
-				}
-			}
+		if (this._lastAdoption !== undefined) {
+			const remaining = this._lastAdoption.groups.filter(adopted => adopted !== group);
+			this._lastAdoption = remaining.length > 0 ? { ...this._lastAdoption, groups: remaining } : undefined;
 		}
+		this.removeFromParkLedger(group);
 	}
 
 	/**
@@ -1396,7 +1955,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 
 			this._groupRepositories.set(group, restoredStateKey);
-			this.recordInstanceScopes(group, restoredStateKey, true);
+			// `chooseGroupStateKey`（今見えているスペースを主張する構成員が居ればそちらへ置く）は
+			// 通さない。ここは接続完了直後で全員が復元端末＝今のスペースを主張する構成員が居ない
+			// 場面であり、台帳が言う場所へ素直に置くのが正しい。
+			//
+			// 印は消さない。ここは「pid 未確定で誤タグされた復元グループを直す」経路＝借り物が
+			// 最も出やすい場所なので、消すと直後の書き出しで両台帳へ焼き付く。
+			this.recordInstanceScopes(group, restoredStateKey, false, true);
 			changed = true;
 
 			if (restoredStateKey !== activeStateKey) {
@@ -1495,6 +2060,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			const stateKey = this._instanceScopes.get(instance.instanceId);
 			if (nonce === undefined || stateKey === undefined
 				|| this._activeFallbackInstances.has(instance.instanceId)
+				|| this._inheritedGroupScopes.has(instance.instanceId)
 				|| this._nonceScopes.get(nonce) === stateKey) {
 				continue;
 			}

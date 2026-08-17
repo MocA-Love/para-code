@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
-import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
+import { INotificationHandle, INotificationService, IPromptChoice, Severity } from '../../../../../platform/notification/common/notification.js';
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
@@ -36,8 +36,10 @@ import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeServi
 import { paradisGetParkedTerminalEditorStateKey, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
+import { paradisParseTerminalNonceScopeStorage } from '../../common/paradisTerminalNonceScope.js';
+import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from '../../browser/paradisTerminalEditorRevive.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
 
 suite('ParadisWorkspaceSwitchService integration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -731,6 +733,405 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 引き取りは所属を台帳へ確定させる操作で、確定した所属は次のセッションへ伝わる。
+	// 間違ったスペースで引き取ったことに後から気付いても戻せない、を避けるための取り消し。
+	test('undoes the last recovery and puts the terminals back out of the space', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createRestoredTerminalGroup(4003);
+			const harness = await createHarness(['space-a'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.strictEqual(scope.adoptUnattributedTerminals(), 1);
+
+			const released = scope.undoLastTerminalAdoption();
+
+			assert.deepStrictEqual({
+				released,
+				unattributed: scope.countUnattributedTerminals(),
+				// 台帳に所属が残っていると、次の起動で「引き取り先のスペースの持ち物」として
+				// 復活し、取り消したはずの誤りが戻ってくる。
+				stateKey: scope.getStateKeyForInstance(4003),
+				persistedNonces: harness.persistedNonceScopes(),
+				// 2度目の取り消しは対象が無い（同じ操作を繰り返して待避を積み増さない）。
+				secondUndo: scope.undoLastTerminalAdoption(),
+			}, { released: 1, unattributed: 1, stateKey: undefined, persistedNonces: [], secondUndo: 0 });
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// グループの所属は最初に根拠の引けた1本から決まり、グループ全員に書き込まれる。分割ペインの
+	// 片方がユーザーの作った新しい端末だと、同居しているだけの復元端末にもその所属が付く。
+	// 表示単位がグループである以上この伝播は避けられないが、焼き付けてはいけない。
+	test('does not persist a space onto a restored terminal that only shares a group with a new one', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createTerminalGroup([
+				createRestoredTerminalInstance(4004),
+				createRestoredTerminalInstance(4005, { restored: false }),
+			]);
+			const harness = await createHarness(['space-a'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			assert.deepStrictEqual({
+				// 新しい端末を巻き添えに隠さない（グループごと待避はしない）。
+				unattributed: scope.countUnattributedTerminals(),
+				parked: harness.parkedGroups.has(group),
+				restoredStateKey: scope.getStateKeyForInstance(4004),
+				freshStateKey: scope.getStateKeyForInstance(4005),
+				// 同居していただけの復元端末に、新しい端末のスペースを焼き付けない
+				// （印を付けないと `nonce-4004` がここに残り、次の起動へ誤りが伝わる）。
+				// 新しい端末の方も推測（作成時のアクティブスペース）なので保存されない。
+				persistedNonces: harness.persistedNonceScopes(),
+			}, {
+				unattributed: 0,
+				parked: false,
+				restoredStateKey: 'space-a',
+				freshStateKey: 'space-a',
+				persistedNonces: [],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// エディタ領域の端末はスペースごとの working set の中にしか居ないので、そこから出てきたこと
+	// 自体が所属の根拠になる（パネルのグループは全スペース分がまとめて復元されるので言えない）。
+	// 根拠として記録しないと、所属が空のまま画面には出続ける端末になる。
+	test('gives a restored editor terminal the space whose working set produced it', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const editorTerminal = createRestoredTerminalInstance(4006);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			// 切り替えでの復元中は「アクティブ＝切り替え元、復元先＝切り替え先」なので、
+			// アクティブスペースを見ると必ず取り違える。復元先が勝つことをここで固定する。
+			await paradisRefreshTerminalReviveIndex('space-b', { skipLookup: true });
+			const scope = harness.installTerminalScope(async () => { }, { editorInstances: [editorTerminal], worktreeReady: true });
+			await settle();
+			harness.fireInstancesChanged();
+			await settle();
+
+			assert.deepStrictEqual({
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				stateKey: scope.getStateKeyForInstance(4006),
+				// 容れ物という根拠から確定させた所属なので、推測と違い台帳へ残してよい。
+				persistedNonces: harness.persistedNonceScopes(),
+			}, { activeStateKey: 'space-a', stateKey: 'space-b', persistedNonces: [['nonce-4006', 'space-b']] });
+		} finally {
+			paradisClearTerminalReviveIndex();
+			testDisposables.dispose();
+		}
+	});
+
+	// 復元先が分からない経路（起動時のエディタ復元、補助ウィンドウの復元）で「今アクティブな
+	// スペース」に落とすのは根拠ではなく推測。確定として記録すると、別スペースに固定した補助
+	// ウィンドウの端末がメインのスペースへ吸い込まれ、そこを離れた瞬間に detach される。
+	test('does not stamp the active space onto a restored editor terminal with no working set to point at', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const editorTerminal = createRestoredTerminalInstance(4007);
+			const harness = await createHarness(['space-a'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { editorInstances: [editorTerminal], worktreeReady: true });
+			await settle();
+			harness.fireInstancesChanged();
+			await settle();
+
+			assert.deepStrictEqual({
+				stateKey: scope.getStateKeyForInstance(4007),
+				persistedNonces: harness.persistedNonceScopes(),
+			}, { stateKey: undefined, persistedNonces: [] });
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 「最初に根拠の引けた1本」でグループ全員を上書きすると、別スペースの根拠を持つ端末が
+	// 黙って別のスペースの持ち物にされる。表示単位は1つでも、答えまで混ぜる理由は無い。
+	test('keeps a terminal in its own space when it disagrees with the group it sits in', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createTerminalGroup([
+				createRestoredTerminalInstance(4008, { initialCwd: '/workspace-b/sub' }),
+				createRestoredTerminalInstance(4009, { restored: false }),
+			]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true, connected: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			assert.deepStrictEqual({
+				// cwd という自前の根拠を持つ端末は、同居先のスペースに上書きされない。
+				restoredStateKey: scope.getStateKeyForInstance(4008),
+				// ユーザーが今のスペースで作った端末も、同居先へ引きずられない。
+				freshStateKey: scope.getStateKeyForInstance(4009),
+				// 焼き付けてよいのは根拠のある方だけ（新規端末の所属は作成時の推測なので保存しない）。
+				persistedNonces: harness.persistedNonceScopes(),
+				// 表示と待避はグループ単位でしか決められない。構成員の根拠が割れたときは、
+				// 今見えているスペース (space-a) を主張する端末が居る側に置く。隠す方に倒すと、
+				// ユーザーがたった今ここに開いた端末が、切り替えてもいないのに消える。
+				parked: harness.parkedGroups.has(group),
+				unattributed: scope.countUnattributedTerminals(),
+			}, {
+				restoredStateKey: 'space-b',
+				freshStateKey: 'space-a',
+				persistedNonces: [['nonce-4008', 'space-b']],
+				parked: false,
+				unattributed: 0,
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 引き取ったグループを別スペースへ切り替えて park させてから取り消すと、park 台帳の
+	// 元スペースと待避先の両方に載りうる。載ると、そのスペースへ戻ったとき画面には出るのに
+	// 「待避中」として扱われ続け、本数も二重に数えられる。
+	test('undoes a recovery without leaving the group in two park ledgers', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createRestoredTerminalGroup(4010);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true, connected: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			// 待避の案内に出るボタンから引き取る（実際のユーザー操作と同じ経路）。
+			const parkedNotice = harness.notifications[0];
+			await parkedNotice.choices[0].run();
+			assert.strictEqual(scope.countUnattributedTerminals(), 0, '今のスペースへ引き取れる');
+
+			// 別スペースへ切り替えると、引き取り先スペースのものとして park される。
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const released = scope.undoLastTerminalAdoption();
+
+			// 取り消しは「取り消せる間だけ」が価値なので、案内が自動で消えてはいけない。
+			const undoNotice = harness.notifications.find(notification => notification.choices.some(choice => choice.label === 'Undo'));
+			assert.strictEqual(undoNotice?.sticky, true, '取り消しの案内は自動で消さない');
+
+			assert.deepStrictEqual({
+				released,
+				unattributed: scope.countUnattributedTerminals(),
+				stateKey: scope.getStateKeyForInstance(4010),
+				// 二重に載っていれば、ここで同じグループを2度処理して 2 が返る。
+				readopted: scope.adoptUnattributedTerminals(),
+				remaining: scope.countUnattributedTerminals(),
+			}, { released: 1, unattributed: 1, stateKey: undefined, readopted: 1, remaining: 0 });
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 待避のお知らせを1ウィンドウにつき1回きりにすると、2回目以降に隠れた端末はユーザーから
+	// 黙って消えたようにしか見えない。閉じた後にまた待避が起きたら、改めて知らせる。
+	test('tells the user again when more terminals are set aside after the notice was closed', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [createRestoredTerminalGroup(4011)], worktreeReady: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			const first = harness.notifications.length;
+
+			// 出しっぱなしの間は重ねない。
+			harness.addGroup(createRestoredTerminalGroup(4012));
+			await settle();
+			const whileOpen = harness.notifications.length;
+
+			harness.notifications[0].close();
+			harness.addGroup(createRestoredTerminalGroup(4013));
+			await settle();
+
+			assert.deepStrictEqual({
+				first,
+				whileOpen,
+				afterClose: harness.notifications.length,
+				// 復元直後、画面を見ていない時間帯に出るので自動では消さない。
+				sticky: harness.notifications[0].sticky,
+				unattributed: scope.countUnattributedTerminals(),
+			}, { first: 1, whileOpen: 1, afterClose: 2, sticky: true, unattributed: 3 });
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// タグ付けはグループ単位で1度しか走らない。後から分割で加わった端末や、いったん背面へ
+	// 回して戻した端末は別経路で所属を引くので、そこでも突き合わせないと、根拠ゼロの端末に
+	// グループの所属が印なしで確定して台帳へ焼き付く。
+	test('does not stamp a group space onto a terminal that joins it later', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const members = [createRestoredTerminalInstance(4014, { initialCwd: '/workspace-a/sub' })];
+			const group = createTerminalGroup(members);
+			const harness = await createHarness(['space-a'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.strictEqual(scope.getStateKeyForInstance(4014), 'space-a', 'cwd から所属が決まる');
+
+			// タグ付け済みのグループへ、根拠を持たない復元端末が後から合流する。
+			members.push(createRestoredTerminalInstance(4015));
+			harness.fireInstancesChanged();
+			await settle();
+
+			assert.deepStrictEqual({
+				// 表示はグループ単位なので所属自体は引き継ぐ。
+				joinedStateKey: scope.getStateKeyForInstance(4015),
+				// ただし借り物なので台帳へは残さない（残すと cwd での訂正が二度と来ない）。
+				persistedNonces: harness.persistedNonceScopes(),
+			}, {
+				joinedStateKey: 'space-a',
+				persistedNonces: [['nonce-4014', 'space-a']],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 接続完了後の掃除は「pid が確定しておらず、復元中はタグ付けできなかったグループ」を
+	// 台帳で直す経路。借り物が最も出やすい場所なので、ここで印を消すと直後の書き出しで焼き付く。
+	//
+	// 固定しているのは「この経路で借り物が台帳へ入らない」という不変条件であって、特定の引数
+	// ミスではない。引数を取り違えた場合はガードが安全側へ倒して結果を保つので、このテストの
+	// アサーションではなく `onUnexpectedError` を拾うエラーハンドラ側で落ちる。
+	test('does not burn a swept-in space onto a group member with no evidence of its own', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			// pty id は復元中まだ確定していない（台帳を引けないので untagged のまま残る）。
+			const attachTarget: { id?: number } = {};
+			const ledgerBacked = createRestoredTerminalInstance(4016);
+			(ledgerBacked.shellLaunchConfig as { attachPersistentProcess?: unknown }).attachPersistentProcess = attachTarget;
+			const group = createTerminalGroup([ledgerBacked, createRestoredTerminalInstance(4017)]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				// worktree 一覧が未確定なので cwd でも引けず、待避の判定材料も揃わない。
+				worktreeReady: false,
+				connectLater: true,
+				persistentProcessScopes: [[77, 'space-b']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.strictEqual(scope.getStateKeyForInstance(4016), undefined, '復元中はまだ所属が決まらない');
+
+			// 接続が完了する頃には pty id が確定し、台帳から所属が引けるようになる。
+			attachTarget.id = 77;
+			harness.finishConnecting();
+			await settle();
+			// 掃除の後にも書き出しの契機は何度も来る。印が消えていれば、ここで焼き付く。
+			harness.fireInstancesChanged();
+			await settle();
+
+			assert.deepStrictEqual({
+				ledgerBackedStateKey: scope.getStateKeyForInstance(4016),
+				// 同居しているだけの端末にも表示上の所属は伝わる。
+				inheritedStateKey: scope.getStateKeyForInstance(4017),
+				// 台帳へ残してよいのは、台帳から引けた側だけ。
+				persistedNonces: harness.persistedNonceScopes(),
+			}, {
+				ledgerBackedStateKey: 'space-b',
+				inheritedStateKey: 'space-b',
+				persistedNonces: [['nonce-4016', 'space-b']],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 借り物の端末を cwd で訂正するとき、同居している「自前の根拠を持つ端末」を巻き添えに
+	// 上書きしてはいけない。訂正はユーザーの明示指定ではないので、グループごと動かさない。
+	test('correcting a borrowed space does not overwrite the space of the terminal beside it', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const borrowed = createRestoredTerminalInstance(4018, { initialCwd: '/worktree-b/sub' });
+			const grounded = createRestoredTerminalInstance(4019, { initialCwd: '/workspace-a/sub' });
+			const group = createTerminalGroup([grounded, borrowed]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.strictEqual(scope.getStateKeyForInstance(4018), 'space-a', '同居先から所属を借りている');
+
+			// worktree が一覧に現れ、借り物の端末の cwd がそこに一致するようになる。
+			harness.addWorktree('space-b', '/worktree-b');
+			await settle();
+
+			assert.deepStrictEqual({
+				correctedStateKey: scope.getStateKeyForInstance(4018),
+				// 訂正の巻き添えで、自前の根拠を持つ端末の所属が書き換わってはいけない。
+				groundedStateKey: scope.getStateKeyForInstance(4019),
+			}, {
+				correctedStateKey: paradisWorktreeStateKey(URI.file('/worktree-b')),
+				groundedStateKey: 'space-a',
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 訂正は端末1本だけを動かすので、グループの置き場所を直す契機を別に用意しないと、
+	// 台帳は正しいのに別のスペースの端末が今のスペースに出続ける（1本しか入っていない
+	// グループでは必ずこうなる）。
+	test('moves a group out of the active space once its only terminal turns out to belong elsewhere', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createTerminalGroup([createRestoredTerminalInstance(4020, { restored: false, initialCwd: '/worktree-c/sub' })]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true, connected: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.strictEqual(harness.parkedGroups.has(group), false, '作られた時のスペースにそのまま出ている');
+
+			// worktree が一覧に現れ、この端末は別スペースのものだと分かる。
+			harness.addWorktree('space-b', '/worktree-c');
+			await settle();
+
+			assert.deepStrictEqual({
+				stateKey: scope.getStateKeyForInstance(4020),
+				// 所属だけ直してグループを置き去りにすると、ここが false のまま＝混ざり続ける。
+				parked: harness.parkedGroups.has(group),
+			}, {
+				stateKey: paradisWorktreeStateKey(URI.file('/worktree-c')),
+				parked: true,
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 	test('forgets a parked group once it is disposed', async () => {
 		const testDisposables = new DisposableStore();
 		try {
@@ -765,9 +1166,21 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly detachedTerminalInstanceIds: readonly number[];
 	/** park 中のグループ。待避されたかを見るのに使う。 */
 	readonly parkedGroups: ReadonlySet<ITerminalGroup>;
+	/** 保存された nonce 台帳。所属が「焼き付いた」かどうかはここでしか見分けられない。 */
+	persistedNonceScopes(): readonly (readonly [string, string])[];
 	installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>, options?: IParadisTerminalScopeHarnessOptions): ParadisTerminalWorkspaceScope;
 	/** グループ構成が変わったことを知らせる（タグ付けを走らせる）。 */
 	fireGroupsChanged(): void;
+	/** ターミナルの増減を知らせる（所属の引き直しを走らせる）。 */
+	fireInstancesChanged(): void;
+	/** 後からグループを増やす（タグ付けもあわせて走らせる）。 */
+	addGroup(group: ITerminalGroup): void;
+	/** `connectLater` で止めていたターミナルの復元完了を進める。 */
+	finishConnecting(): void;
+	/** worktree を1つ増やして知らせる（cwd から所属を引けるようになる契機）。 */
+	addWorktree(repositoryId: string, path: string): void;
+	/** 出された通知。待避を知らせたか、閉じた後にまた知らせるかを見るのに使う。 */
+	readonly notifications: IRecordedNotification[];
 	disposeGroup(group: ITerminalGroup): void;
 	createEditor(path: string, modified: boolean): TestFileEditorInput;
 	addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number, shellIntegrationNonce: string): ITerminalInstance;
@@ -778,6 +1191,17 @@ interface IParadisTerminalScopeHarnessOptions {
 	readonly groups?: readonly ITerminalGroup[];
 	/** worktree の初期化バリアを解決済みにするか（待避判定の材料の1つ）。 */
 	readonly worktreeReady?: boolean;
+	/** エディタ領域に復元済みとして置いておくターミナル。 */
+	readonly editorInstances?: readonly ITerminalInstance[];
+	/** ターミナルの復元を完了させるか（park の保留が解けて実際に待避が走る）。 */
+	readonly connected?: boolean;
+	/**
+	 * 復元を「後から」完了させる。`harness.finishConnecting()` を呼ぶまで待つので、
+	 * 接続完了時の掃除 (`sweepRestoredGroups`) だけを狙って踏める。
+	 */
+	readonly connectLater?: boolean;
+	/** 前セッションから引き継いだ {pty id → スペース} の台帳。 */
+	readonly persistentProcessScopes?: readonly (readonly [number, string])[];
 }
 
 /** マイクロタスクとタイマーを数回まわして、非同期の解決を落ち着かせる。 */
@@ -792,7 +1216,68 @@ async function settle(): Promise<void> {
  * 「復元された端末か」の判別材料そのものなので、テストからも明示的に指定する。
  */
 function createRestoredTerminalGroup(instanceId: number, options: { readonly restored?: boolean; readonly initialCwd?: string } = {}): ITerminalGroup {
-	const instance = {
+	return createTerminalGroup([createRestoredTerminalInstance(instanceId, options)]);
+}
+
+/** 出された通知1件。押せるボタンと、閉じる操作をテストから触れるようにしておく。 */
+interface IRecordedNotification {
+	readonly severity: Severity;
+	readonly message: string;
+	readonly choices: readonly IPromptChoice[];
+	readonly sticky: boolean;
+	close(): void;
+	isClosed(): boolean;
+}
+
+/**
+ * 通知を記録するだけのサービス。待避の案内は「閉じたらまた出す」という寿命が仕様の一部なので、
+ * 使い捨ての no-op ハンドルを返す TestNotificationService では検査できない。
+ */
+class RecordingNotificationService {
+	constructor(private readonly recorded: IRecordedNotification[]) { }
+
+	prompt(severity: Severity, message: string, choices: IPromptChoice[], options?: { sticky?: boolean }): INotificationHandle {
+		const onDidClose = new Emitter<void>();
+		let closed = false;
+		const close = () => {
+			if (!closed) {
+				closed = true;
+				onDidClose.fire();
+				onDidClose.dispose();
+			}
+		};
+		this.recorded.push({
+			severity,
+			message,
+			choices,
+			sticky: options?.sticky === true,
+			close,
+			isClosed: () => closed,
+		});
+		return {
+			onDidClose: onDidClose.event,
+			onDidChangeVisibility: Event.None,
+			progress: undefined,
+			close,
+			updateSeverity: () => { },
+			updateMessage: () => { },
+			updateActions: () => { },
+		} satisfies Partial<INotificationHandle> as unknown as INotificationHandle;
+	}
+
+	notify(): INotificationHandle { return this.prompt(Severity.Info, '', []); }
+	info(message: string): INotificationHandle { return this.prompt(Severity.Info, message, []); }
+	warn(message: string): INotificationHandle { return this.prompt(Severity.Warning, message, []); }
+	error(error: string | Error): INotificationHandle { return this.prompt(Severity.Error, String(error), []); }
+	status(): { close(): void } { return { close: () => { } }; }
+}
+
+function createTerminalGroup(instances: ITerminalInstance[]): ITerminalGroup {
+	return { terminalInstances: instances } satisfies Partial<ITerminalGroup> as unknown as ITerminalGroup;
+}
+
+function createRestoredTerminalInstance(instanceId: number, options: { readonly restored?: boolean; readonly initialCwd?: string } = {}): ITerminalInstance {
+	return {
 		instanceId,
 		shellIntegrationNonce: `nonce-${instanceId}`,
 		isDisposed: false,
@@ -802,7 +1287,6 @@ function createRestoredTerminalGroup(instanceId: number, options: { readonly res
 		onDisposed: Event.None,
 		onDidChangeTarget: Event.None,
 	} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
-	return { terminalInstances: [instance] } satisfies Partial<ITerminalGroup> as unknown as ITerminalGroup;
 }
 
 function createFakeTerminalInstance(ids: ReturnType<typeof createUniqueTerminalIds>): { readonly instance: ITerminalInstance } {
@@ -946,12 +1430,37 @@ async function createHarness(
 
 	const parkedGroups = new Set<ITerminalGroup>();
 	const onDidChangeGroups = testDisposables.add(new Emitter<void>());
+	const onDidChangeInstances = testDisposables.add(new Emitter<void>());
+	const liveGroups: ITerminalGroup[] = [];
+	const deferredConnection = new DeferredPromise<void>();
+	const onDidChangeWorktrees = testDisposables.add(new Emitter<void>());
+	const worktrees = new Map<string, IParadisWorktree[]>();
+	const notifications: IRecordedNotification[] = [];
+	const notificationService = new RecordingNotificationService(notifications) as unknown as INotificationService;
 	const onDidDisposeGroup = testDisposables.add(new Emitter<ITerminalGroup>());
 
 	return {
 		workspaceSwitchService,
 		parkedGroups,
+		persistedNonceScopes(): readonly (readonly [string, string])[] {
+			const raw = storageService.get('paradis.workspaceSwitch.terminalScopesByNonce', StorageScope.WORKSPACE);
+			const parsed = raw === undefined ? new Map<string, string>() : (paradisParseTerminalNonceScopeStorage(raw) ?? new Map<string, string>());
+			return [...parsed].sort(([left], [right]) => left.localeCompare(right));
+		},
 		fireGroupsChanged: () => onDidChangeGroups.fire(),
+		fireInstancesChanged: () => onDidChangeInstances.fire(),
+		finishConnecting: () => deferredConnection.complete(),
+		addWorktree: (repositoryId: string, path: string) => {
+			const existing = worktrees.get(repositoryId) ?? [];
+			existing.push({ repositoryId, name: path, uri: URI.file(path), missing: false } satisfies Partial<IParadisWorktree> as unknown as IParadisWorktree);
+			worktrees.set(repositoryId, existing);
+			onDidChangeWorktrees.fire();
+		},
+		addGroup: (group: ITerminalGroup) => {
+			liveGroups.push(group);
+			onDidChangeGroups.fire();
+		},
+		notifications,
 		disposeGroup: (group: ITerminalGroup) => onDidDisposeGroup.fire(group),
 		editorScopeService,
 		parts,
@@ -960,7 +1469,8 @@ async function createHarness(
 		installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>, options: IParadisTerminalScopeHarnessOptions = {}): ParadisTerminalWorkspaceScope {
 			onOpenTerminalEditor = onOpenEditor;
 			const terminalGroupService = Object.create(TerminalGroupService.prototype) as TerminalGroupService;
-			const groups = options.groups ?? [];
+			const groups = liveGroups;
+			liveGroups.push(...(options.groups ?? []));
 			Object.defineProperties(terminalGroupService, {
 				groups: { get: () => groups.filter(group => !parkedGroups.has(group)) },
 				paradisParkedGroups: { get: () => [...parkedGroups] },
@@ -969,18 +1479,32 @@ async function createHarness(
 				paradisParkGroup: { value: (group: ITerminalGroup) => { parkedGroups.add(group); } },
 				paradisUnparkGroup: { value: (group: ITerminalGroup) => { parkedGroups.delete(group); } },
 			});
+			for (const instance of options.editorInstances ?? []) {
+				terminals.push(instance);
+			}
+			if (options.persistentProcessScopes !== undefined) {
+				storageService.store(
+					'paradis.workspaceSwitch.terminalRepositories',
+					JSON.stringify(options.persistentProcessScopes.map(([persistentProcessId, repositoryId]) => ({ persistentProcessId, repositoryId }))),
+					StorageScope.WORKSPACE,
+					StorageTarget.MACHINE,
+				);
+			}
 			const terminalService = {
-				instances: groups.flatMap(group => group.terminalInstances),
-				whenConnected: new Promise<void>(() => { }),
+				// スナップショットにしない。グループを足したり分割したりした後の検査で嘘をつく。
+				get instances() { return groups.flatMap(group => group.terminalInstances); },
+				whenConnected: options.connectLater === true
+					? deferredConnection.p
+					: (options.connected === true ? Promise.resolve() : new Promise<void>(() => { })),
 				connectionState: TerminalConnectionState.Connecting,
-				onDidChangeInstances: Event.None,
+				onDidChangeInstances: onDidChangeInstances.event,
 				onDidChangeConnectionState: Event.None,
 				onAnyInstanceProcessIdReady: Event.None,
 			} satisfies Partial<ITerminalService> as unknown as ITerminalService;
 			const worktreeService = {
 				initializationBarrier: options.worktreeReady === true ? Promise.resolve() : new Promise<void>(() => { }),
-				onDidChangeWorktrees: Event.None,
-				getWorktrees: () => [],
+				onDidChangeWorktrees: onDidChangeWorktrees.event,
+				getWorktrees: (repositoryId: string) => worktrees.get(repositoryId) ?? [],
 			} satisfies Partial<IParadisWorktreeService> as unknown as IParadisWorktreeService;
 			const scope = new ParadisTerminalWorkspaceScope(
 				terminalGroupService as unknown as ITerminalGroupService,
@@ -995,7 +1519,7 @@ async function createHarness(
 				contextService,
 				parts,
 				new NullLogService(),
-				new TestNotificationService(),
+				notificationService,
 			);
 			testDisposables.add(scope);
 			return scope;
