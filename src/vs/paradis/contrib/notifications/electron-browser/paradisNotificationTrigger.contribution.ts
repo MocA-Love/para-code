@@ -7,14 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ペイン単位のエージェント実行状態 (review=完了 / permission=要対応) への遷移を検知し、
-// 通知サウンド + OS通知 + Aivis読み上げをトリガーする。購読元は workspaceSwitch の
-// ParadisAgentStatusPoller (paradisAgentStatus.contribution.ts) と同じ shared process の
-// listPaneStatuses だが、あちらはスコープ単位に集約するのに対しこちらはペイン単位の遷移検知が
-// 必要なため、別クラスとして実装している（互いに独立してポーリングする）。
+// 通知サウンド + OS通知 + Aivis読み上げをトリガーする。workspaceSwitch の状態表示と同じ
+// renderer-local snapshot producerを購読し、同じ取得済みsnapshotからペイン単位の遷移を検知する。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.js';
-import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
@@ -27,24 +24,15 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
-
-const POLL_INTERVAL = 2000;
-
-// permission / question は Codex の AutoMode や Claude の hook 自動応答で「要求→即自動解決」される
-// ことがあり、遷移した瞬間に鳴らすと人間の対応が不要なケースでも通知してしまう。遷移後この時間
-// 待って、まだ同じステータスに留まっている場合のみ発火する (自動処理は数秒以内に working へ戻る)。
-// 代償として正当な許可要求・質問の通知はこの時間だけ遅れる。review (作業完了) は即時のまま。
-const ACTION_CONFIRM_DELAY = 5000;
-
-type NotifyStatus = 'review' | 'permission' | 'question';
+import { ParadisAgentStatusNotificationConsumer, ParadisAgentStatusNotificationTracker, ParadisAgentNotifyStatus } from './paradisAgentStatusNotificationTracker.js';
 
 /** {{event}} の読み上げ用ラベル（日本語）。 */
-const EVENT_LABELS: Readonly<Record<NotifyStatus, string>> = Object.freeze({
+const EVENT_LABELS: Readonly<Record<ParadisAgentNotifyStatus, string>> = Object.freeze({
 	// allow-any-unicode-next-line
 	review: '作業完了',
 	// allow-any-unicode-next-line
@@ -64,15 +52,9 @@ const STR_TITLE_PERMISSION = 'エージェントが対応を求めています';
 /**
  * ペイン単位の 'review' / 'permission' 遷移を検知して通知をトリガーする workbench contribution。
  */
-class ParadisNotificationTrigger extends Disposable implements IWorkbenchContribution {
+export class ParadisNotificationTrigger extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisNotificationTrigger';
-
-	/** token → 直近確認したステータス（遷移検知用。エントリが消えた=idleに戻ったとみなす）。 */
-	private readonly _previousStatus = new Map<string, ParadisAgentStatus>();
-
-	/** token → permission/question 遷移の発火待ちタイマー (ACTION_CONFIRM_DELAY 参照)。 */
-	private readonly _pendingActionTimers = this._register(new DisposableMap<string>());
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -87,6 +69,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		@IHostService private readonly hostService: IHostService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisAgentStatusSnapshotService snapshotService: IParadisAgentStatusSnapshotService,
 	) {
 		super();
 
@@ -105,72 +88,17 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('resumeAivis').catch(() => { /* shared process 未起動時は無視 */ });
 		}));
 
-		const timer = this._register(new IntervalTimer());
-		timer.cancelAndSet(() => this._poll(), POLL_INTERVAL);
-		this._poll();
-	}
-
-	private async _poll(): Promise<void> {
-		let statuses: IParadisAgentPaneStatus[];
-		try {
-			statuses = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<IParadisAgentPaneStatus[]>('listPaneStatuses');
-		} catch (error) {
+		const tracker = this._register(new ParadisAgentStatusNotificationTracker((token, status) => {
+			void this._handleTransition(token, status).catch(error => {
+				this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
+			});
+		}));
+		this._register(new ParadisAgentStatusNotificationConsumer(snapshotService, tracker, error => {
 			this.logService.trace('[ParadisNotifications] poll failed', String(error));
-			return; // shared process 未起動 (起動直後) は静かにスキップ
-		}
-
-		const seenTokens = new Set<string>();
-		for (const paneStatus of statuses) {
-			seenTokens.add(paneStatus.token);
-			const previous = this._previousStatus.get(paneStatus.token);
-			this._previousStatus.set(paneStatus.token, paneStatus.status);
-
-			if (previous === paneStatus.status) {
-				continue; // 遷移なし
-			}
-			// ステータスが変わったら、前回の permission/question 遷移の発火待ちは破棄する
-			// (自動応答等で working へ戻った場合はここで通知がキャンセルされる)。
-			this._pendingActionTimers.deleteAndDispose(paneStatus.token);
-			if (paneStatus.status !== 'review' && paneStatus.status !== 'permission' && paneStatus.status !== 'question') {
-				continue; // working への遷移は通知対象外
-			}
-			// 質問(AskUserQuestion)への遷移も「人間の対応が必要」= 許可要求と同じPC通知
-			// (音 + OS通知 + Aivis) を出す。モバイルの質問通知は transcript ミラー
-			// (paradisMobileAgentChat) が質問本文付きで別経路発火するため、ここはPC向けのみ。
-			// status は {{event}} で区別できるよう question のまま渡し、テンプレート選択や
-			// 優先度の分岐箇所で permission と同扱いにする。
-			if (paneStatus.status === 'review') {
-				void this._handleTransition(paneStatus.token, paneStatus.status).catch(error => {
-					this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
-				});
-				continue;
-			}
-			// permission / question は即発火せず ACTION_CONFIRM_DELAY 待ち、その間の
-			// ポーリングでステータスが維持されている場合のみ発火する (自動処理の抑制)。
-			const token = paneStatus.token;
-			const status = paneStatus.status;
-			this._pendingActionTimers.set(token, disposableTimeout(() => {
-				this._pendingActionTimers.deleteAndDispose(token);
-				if (this._previousStatus.get(token) !== status) {
-					return; // 待機中に自動応答・終了等で解消済み
-				}
-				void this._handleTransition(token, status).catch(error => {
-					this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
-				});
-			}, ACTION_CONFIRM_DELAY));
-		}
-
-		// トークンが listPaneStatuses から消えた（idleに戻った/ペイン終了）場合は履歴を捨てる。
-		// これにより次回 review/permission に入った際に再度遷移として検知される。
-		for (const token of [...this._previousStatus.keys()]) {
-			if (!seenTokens.has(token)) {
-				this._previousStatus.delete(token);
-				this._pendingActionTimers.deleteAndDispose(token);
-			}
-		}
+		}));
 	}
 
-	private async _handleTransition(token: string, status: NotifyStatus): Promise<void> {
+	private async _handleTransition(token: string, status: ParadisAgentNotifyStatus): Promise<void> {
 		const instanceId = this.paneTokenService.getInstanceForToken(token);
 		if (instanceId === undefined) {
 			return; // ペインが別ウィンドウ or 終了済み
@@ -204,7 +132,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 	}
 
 	/** 音 + OS通知 + Aivis を発火する (stateKey === undefined はスコープ外フォールバック)。 */
-	private async _notify(stateKey: string | undefined, status: NotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
+	private async _notify(stateKey: string | undefined, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
 		// おやすみモード中は音・OS通知・Aivis発話を一括抑制する。
 		if (this.settingsService.getDoNotDisturb().enabled) {
 			return;
@@ -261,7 +189,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 	 * どのキーも空文字のまま読み上げに渡らないよう、解決できない値は段階的にフォールバックする
 	 * (space → ワークスペースフォルダ名 → 既定語 / branch → space / worktree → branch)。
 	 */
-	private async _resolvePlaceholders(stateKey: string, status: NotifyStatus, instanceId: number): Promise<IParadisAivisPlaceholders> {
+	private async _resolvePlaceholders(stateKey: string, status: ParadisAgentNotifyStatus, instanceId: number): Promise<IParadisAivisPlaceholders> {
 		const event = EVENT_LABELS[status];
 		const tab = this._resolveTabName(instanceId);
 
@@ -285,7 +213,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 	}
 
 	/** スコープ外ターミナル用フォールバック: ワークスペースフォルダ名をスペース名として使う。 */
-	private async _resolveFallbackPlaceholders(status: NotifyStatus, instanceId: number): Promise<IParadisAivisPlaceholders> {
+	private async _resolveFallbackPlaceholders(status: ParadisAgentNotifyStatus, instanceId: number): Promise<IParadisAivisPlaceholders> {
 		const event = EVENT_LABELS[status];
 		const tab = this._resolveTabName(instanceId);
 		const folder = this.contextService.getWorkspace().folders[0];
@@ -339,7 +267,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		}
 	}
 
-	private _showOsNotification(stateKey: string | undefined, status: NotifyStatus, placeholders: IParadisAivisPlaceholders): void {
+	private _showOsNotification(stateKey: string | undefined, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): void {
 		const title = status === 'review' ? STR_TITLE_REVIEW : STR_TITLE_PERMISSION;
 		const body = placeholders.worktree && placeholders.worktree !== placeholders.space
 			? `${placeholders.space ?? ''} (${placeholders.worktree})`
