@@ -42,11 +42,66 @@ export interface IParadisTerminalScopeCandidateInput {
 	readonly worktreeSnapshotReady: boolean;
 	readonly initialCwdStateKey?: string;
 	readonly activeStateKeyCandidate?: string;
+	/**
+	 * 前セッションから復元された（`attachPersistentProcess` 付きで作られた）端末か。
+	 *
+	 * `activeStateKeyCandidate` は本来「その端末が作られたときにアクティブだったスペース」で、
+	 * ユーザーがそこで開いた端末なら正しい答えになる。ところが復元された端末に対しては、
+	 * 復元処理が走った時点のアクティブスペースが後から候補として貼られるため、
+	 * 「たまたま今開いているスペース」を意味してしまう。それを所属として確定させ、
+	 * 台帳に焼き付けているのが、端末が別のスペースに現れる主因。
+	 */
+	readonly restoredFromPersistentProcess?: boolean;
 }
 
 export type ParadisTerminalScopeCandidate =
 	| { readonly status: 'pending' }
 	| { readonly status: 'resolved'; readonly stateKey?: string };
+
+/** 待避してよいかの判定材料。1つでも欠けたら待避させない（隠すより出す方に倒す）。 */
+export interface IParadisUnattributedParkInput {
+	/** スペース機能が有効なウィンドウか。無効なら所属は付きようがなく、引き取り先も無い。 */
+	readonly isManagedWorkspaceWindow: boolean;
+	/** 引き取り先になる今のスペース。無ければ戻す操作ができない。 */
+	readonly activeStateKey: string | undefined;
+	/** worktree 一覧が確定したか。 */
+	readonly worktreeSnapshotReady: boolean;
+	/** cwd で所属を引ける照合先が1つでもあるか。無いなら「判定できなかった」であって未所属ではない。 */
+	readonly hasResolvableScopeRoots: boolean;
+	/** グループ内の端末。空グループは対象外。 */
+	readonly instances: readonly {
+		/** 前セッションから復元された端末か。新規作成は作成時のスペースへ寄せるので対象外。 */
+		readonly restoredFromPersistentProcess: boolean;
+		/**
+		 * cwd の取得を試み終えたか（成功・失敗どちらでも true）。
+		 *
+		 * 失敗した端末も待避対象にする。取れなかったのは所属の根拠が無いということで、
+		 * それを今のスペースの持ち物として見せれば結局混ざる。取れた端末だけを対象に
+		 * すると、取れなかった端末はタグ付けも待避もされず、どのスペースへ切り替えても
+		 * 出続ける（＝一番避けたい状態）。隠しても引き取り口があるので戻せる。
+		 */
+		readonly initialCwdSettled: boolean;
+		/** 既に所属が決まっているか。 */
+		readonly hasScope: boolean;
+	}[];
+}
+
+/**
+ * 所属が「まだ分からない」ではなく「分からないまま確定した」復元グループか。
+ *
+ * 混ざるより隠す方を選ぶ判断だが、隠した端末は自力では戻ってこない。戻し口の無い状況
+ * （スペース未使用のウィンドウ、cwd 照合の土台が無いリモート）で隠すと、混在を避けるために
+ * 端末を永久に失うという、より悪い事故になる。判定材料が揃ったときだけ true にする。
+ */
+export function paradisShouldParkUnattributedGroup(input: IParadisUnattributedParkInput): boolean {
+	if (!input.isManagedWorkspaceWindow || input.activeStateKey === undefined
+		|| !input.worktreeSnapshotReady || !input.hasResolvableScopeRoots
+		|| input.instances.length === 0) {
+		return false;
+	}
+	return input.instances.every(instance =>
+		instance.restoredFromPersistentProcess && instance.initialCwdSettled && !instance.hasScope);
+}
 
 /** 明示指定と永続復元を優先し、それ以外はinitial cwdとworktree一覧が揃うまで確定しない。 */
 export function paradisResolveTerminalScopeCandidate(input: IParadisTerminalScopeCandidateInput): ParadisTerminalScopeCandidate {
@@ -57,7 +112,13 @@ export function paradisResolveTerminalScopeCandidate(input: IParadisTerminalScop
 	if (!input.initialCwdResolved || !input.worktreeSnapshotReady) {
 		return { status: 'pending' };
 	}
-	const stateKey = input.initialCwdStateKey ?? input.activeStateKeyCandidate;
+	// 復元された端末は「今アクティブなスペース」へ寄せない。作られた場所を知らないだけなのに
+	// 別のスペースの持ち物として確定させてしまい、しかもその答えが台帳に残って次のセッションへ
+	// 伝わる（cwd から引けなくなった端末は、以後どのセッションでも間違ったままになる）。
+	// 所属不明のまま返し、呼び出し側に park させる。見えない端末は台帳を消せば戻せるが、
+	// 混ざった端末は所属を上書きされていて元がどこだったか分からない。
+	const guess = input.restoredFromPersistentProcess === true ? undefined : input.activeStateKeyCandidate;
+	const stateKey = input.initialCwdStateKey ?? guess;
 	return stateKey === undefined ? { status: 'resolved' } : { status: 'resolved', stateKey };
 }
 
