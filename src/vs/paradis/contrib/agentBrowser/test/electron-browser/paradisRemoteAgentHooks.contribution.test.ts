@@ -35,7 +35,7 @@ suite('ParadisRemoteAgentHooksController', () => {
 				events.push(`install:${attempts}`);
 				return attempts === 2 ? 4100 : undefined;
 			},
-			async () => ({ port: 4100 }),
+			async () => 4100,
 			async delayMs => { events.push(`delay:${delayMs}`); },
 			(_callback, intervalMs): IDisposable => {
 				events.push(`interval:${intervalMs}`);
@@ -61,7 +61,7 @@ suite('ParadisRemoteAgentHooksController', () => {
 		const exhausted = deferred();
 		const controller = store.add(new ParadisRemoteAgentHooksController(
 			async () => { events.push('install'); return undefined; },
-			async () => ({ port: 4100 }),
+			async () => 4100,
 			async delayMs => { events.push(`delay:${delayMs}`); },
 			() => toDisposable(() => undefined),
 			{
@@ -89,10 +89,10 @@ suite('ParadisRemoteAgentHooksController', () => {
 		let callback: (() => Promise<void>) | undefined;
 		let installCount = 0;
 		const watching = deferred();
-		const endpoints = [{ port: 4100 }, { port: 4200 }, { port: 4200 }];
+		const endpoints = [4100, 4200, 4200];
 		const controller = store.add(new ParadisRemoteAgentHooksController(
 			async () => ++installCount === 1 ? 4100 : 4200,
-			async () => endpoints.shift()!,
+			async () => endpoints.shift(),
 			async () => undefined,
 			(candidate, _intervalMs) => {
 				callback = candidate;
@@ -133,7 +133,7 @@ suite('ParadisRemoteAgentHooksController', () => {
 				}
 				return 4300;
 			},
-			async () => ({ port: endpoints[endpointReadCount++] }),
+			async () => endpoints[endpointReadCount++],
 			async () => undefined,
 			candidate => {
 				callback = candidate;
@@ -167,7 +167,7 @@ suite('ParadisRemoteAgentHooksController', () => {
 		const retryStarted = deferred();
 		const retryController = store.add(new ParadisRemoteAgentHooksController(
 			async () => { installCount++; return undefined; },
-			async () => ({ port: 4100 }),
+			async () => 4100,
 			async () => { retryStarted.resolve(); await retryDelay.promise; },
 			() => toDisposable(() => undefined),
 			new NullLogService(),
@@ -180,7 +180,7 @@ suite('ParadisRemoteAgentHooksController', () => {
 		const watching = deferred();
 		const pollController = store.add(new ParadisRemoteAgentHooksController(
 			async () => 4100,
-			async () => { endpointReadCount++; return { port: 4100 }; },
+			async () => { endpointReadCount++; return 4100; },
 			async () => undefined,
 			callback => {
 				poll = callback;

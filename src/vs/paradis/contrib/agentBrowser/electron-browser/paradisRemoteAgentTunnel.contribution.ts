@@ -18,7 +18,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 
-const PARADIS_REMOTE_AGENT_TUNNEL_SETTING = 'paradis.remote.agentReturnTunnel';
+export const PARADIS_REMOTE_AGENT_TUNNEL_SETTING = 'paradis.remote.agentReturnTunnel';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -31,7 +31,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			// allow-any-unicode-next-line
-			description: localize('paradis.remote.agentReturnTunnel', "SSH で接続したとき、接続先で動くエージェントが手元の Para Code へ通知を返せるように経路を開きます。オフにすると、接続先のエージェントの実行状態がワークスペースビューに出ません。")
+			description: localize('paradis.remote.agentReturnTunnel', "SSH で接続したとき、接続先で動くエージェントが手元の Para Code へ通知を返せるように経路を開きます。オフにすると、接続先への通知 hook / MCP 設定の設置ごと行われなくなり、実行状態のドットやモバイルのチャットミラーが出ません。")
 		}
 	}
 });
@@ -55,8 +55,8 @@ export class ParadisRemoteAgentTunnelController extends Disposable {
 
 	private async ensure(remoteAuthority: string): Promise<void> {
 		try {
-			const opened = await this.channel.call<boolean>('ensureRemoteAgentTunnel', [remoteAuthority]);
-			this.logService.info(`[paradis] return tunnel for ${remoteAuthority}: ${opened ? 'opened' : 'not available'}`);
+			const port = await this.channel.call<number | undefined>('ensureRemoteAgentTunnel', [remoteAuthority]);
+			this.logService.info(`[paradis] return tunnel for ${remoteAuthority}: ${port !== undefined ? `opened (port ${port})` : 'not available'}`);
 		} catch (error) {
 			this.logService.warn('[paradis] could not request the agent return tunnel', error);
 		}

@@ -62,6 +62,16 @@ const RETRY_DELAY_MS = 5000;
 const CLAUDE_VERSION_TTL_MS = 30 * 60_000;
 const MAX_RETRIES = 3;
 
+/**
+ * `Allocated port ...` の通知が来ないまま待たせない上限。接続先の `~/.ssh/config` に
+ * `LogLevel ERROR`/`QUIET` があると（`-o LogLevel=INFO` で通常は上書きされるが、念のため）
+ * ssh は正常に繋がったまま何も書かないことがある。有限時間で諦めて再試行の輪へ戻す。
+ */
+const ALLOCATION_TIMEOUT_MS = 10_000;
+
+/** 使い切って諦めてから、また試していいと判断するまでの待ち時間。 */
+const EXHAUSTED_RETRY_COOLDOWN_MS = 30_000;
+
 interface ITunnelEntry {
 	readonly host: string;
 	/**
@@ -73,15 +83,28 @@ interface ITunnelEntry {
 	child: ChildProcess | undefined;
 	retries: number;
 	retryTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 割り当て通知を待つ上限。番号が分かる・接続が終わるのどちらかで必ず片付ける。 */
+	allocationTimer: ReturnType<typeof setTimeout> | undefined;
 	disposed: boolean;
+	/** 接続先で実際に割り当てられた番号。張れていない・切れている間は undefined。 */
+	remotePort: number | undefined;
+	/** 今回の接続試行の決着を待っている呼び出し元。複数の呼び出しが同じ結果を共有する。 */
+	pending: Array<(port: number | undefined) => void>;
+	/** 再試行を使い切って、この接続先はもう追い直さないと決めた状態。 */
+	exhausted: boolean;
+	/** 使い切った時刻。`EXHAUSTED_RETRY_COOLDOWN_MS` 経ったら追い直しを許す。 */
+	exhaustedAt: number | undefined;
 }
 
 /**
- * 接続先ごとに `ssh -N -R <port>:127.0.0.1:<port>` を1本維持する。
+ * 接続先ごとに `ssh -N -R 0:127.0.0.1:<port>` を1本維持する。
  *
- * ポート番号は手元のゲートウェイが実際に listen している番号をそのまま使う。接続先でも
- * 同じ番号で開くので、既存の hook スクリプト・MCP シムが読む「ポートファイルの port」を
- * そのまま接続先へ置けば、両者の期待が一致する。
+ * 接続先で開くポートは固定番号ではなく、その都度 sshd に選ばせる動的な番号にする。
+ * 同じ接続先ホストへ複数ユーザーの Para Code が同時に SSH するとき（例: 共有の開発サーバー）、
+ * 全員が同じ既定ポートで戻りトンネルを張ろうとすると、先に繋いだ人だけが成功し、
+ * 後から繋いだ人は `remote port forwarding failed for listen port <固定番号>` で
+ * 恒久的に失敗する（実機で確認済み）。動的ポートなら sshd が空いている番号を選ぶので衝突しない。
+ * 割り当てられた番号は ssh の stderr に出る `Allocated port <N> for remote forward to ...` を読んで拾う。
  */
 export class ParadisRemoteAgentTunnels extends Disposable {
 
@@ -119,26 +142,63 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 
 	/**
-	 * 接続先への経路を用意する。既にあれば何もしない。
-	 * @returns 張れた（もしくは既にある）なら true
+	 * 接続先への経路を用意する。既にあれば（張れていても、まだ試行中でも）その結果に相乗りする。
+	 * @returns 接続先で実際に割り当てられた番号。張れなかった／使い切って諦めた場合は undefined
 	 */
-	ensure(remoteAuthority: string, port: number): boolean {
+	ensure(remoteAuthority: string, port: number): Promise<number | undefined> {
 		if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-			return false;
+			return Promise.resolve(undefined);
 		}
 		const host = paradisSshHostFromAuthority(remoteAuthority);
 		if (host === undefined) {
 			// SSH 以外の接続先（コンテナ等）は対象外。静かに諦める
-			return false;
+			return Promise.resolve(undefined);
 		}
 		const existing = this.tunnels.get(remoteAuthority);
 		if (existing !== undefined && !existing.disposed) {
-			return true;
+			if (existing.remotePort !== undefined) {
+				return Promise.resolve(existing.remotePort);
+			}
+			if (existing.exhausted) {
+				if (existing.exhaustedAt !== undefined && Date.now() - existing.exhaustedAt < EXHAUSTED_RETRY_COOLDOWN_MS) {
+					// 諦めてからまだ間もない。ここで待たせても誰も起こしてくれない
+					return Promise.resolve(undefined);
+				}
+				// 十分待った。仕切り直す。resolver を pending へ積んでから start() を呼ぶこと
+				// （逆にすると、spawn が同期的に失敗する経路で settle() が空の pending を空振りし、
+				// この呼び出しの resolver だけ誰にも解決されず取り残される）
+				existing.exhausted = false;
+				existing.exhaustedAt = undefined;
+				existing.retries = 0;
+				const restarted = new Promise<number | undefined>(resolve => existing.pending.push(resolve));
+				this.start(remoteAuthority, existing, port);
+				return restarted;
+			}
+			return new Promise(resolve => existing.pending.push(resolve));
 		}
-		const entry: ITunnelEntry = { host, controlPath: this.controlPathFor(remoteAuthority), child: undefined, retries: 0, retryTimer: undefined, disposed: false };
+		const entry: ITunnelEntry = {
+			host, controlPath: this.controlPathFor(remoteAuthority), child: undefined, retries: 0, retryTimer: undefined,
+			allocationTimer: undefined, disposed: false, remotePort: undefined, pending: [], exhausted: false, exhaustedAt: undefined,
+		};
 		this.tunnels.set(remoteAuthority, entry);
+		// resolver を pending へ積んでから start() を呼ぶこと（理由は上記コメントと同じ）
+		const result = new Promise<number | undefined>(resolve => entry.pending.push(resolve));
 		this.start(remoteAuthority, entry, port);
-		return true;
+		return result;
+	}
+
+	/** 決着（成功／今回の試行の失敗）を、待っている全員へ配る。 */
+	private settle(entry: ITunnelEntry, port: number | undefined): void {
+		if (entry.allocationTimer !== undefined) {
+			clearTimeout(entry.allocationTimer);
+			entry.allocationTimer = undefined;
+		}
+		entry.remotePort = port;
+		const pending = entry.pending;
+		entry.pending = [];
+		for (const resolve of pending) {
+			resolve(port);
+		}
 	}
 
 	/** 接続が切れたとき（ウィンドウが閉じた・別の接続先へ移った）に畳む。 */
@@ -154,13 +214,16 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		}
 		entry.child?.kill();
 		entry.child = undefined;
+		this.settle(entry, undefined);
 		this.tunnels.delete(remoteAuthority);
 	}
 
 	private start(remoteAuthority: string, entry: ITunnelEntry, port: number): void {
 		const args = [
 			'-N',
-			'-R', `${port}:127.0.0.1:${port}`,
+			// 固定番号ではなく sshd に選ばせる。同じホストへ複数ユーザーが同時に繋ぐ共有サーバーで、
+			// 全員が同じ番号を取り合って後勝ちの人だけ弾かれ続ける事故を避けるため
+			'-R', `0:127.0.0.1:${port}`,
 			// Codex ペインのソケットを後から足し引きするための制御口。接続そのものは1本のまま
 			// にしたいので、ペインごとに ssh を起こさずここへ相乗りさせる
 			...(entry.controlPath !== undefined ? ['-M', '-S', entry.controlPath, '-o', 'ControlPersist=no'] : []),
@@ -168,6 +231,10 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			'-o', 'BatchMode=yes',
 			// ポートを取れなかったら黙って繋がったままにせず終了させる
 			'-o', 'ExitOnForwardFailure=yes',
+			// 割り当てられた番号を知らせる `Allocated port ...` 行は INFO レベルで出る。接続先の
+			// `~/.ssh/config` が LogLevel を絞っていても、コマンドライン引数は config より優先されるので
+			// ここで強制する
+			'-o', 'LogLevel=INFO',
 			'-o', 'ServerAliveInterval=30',
 			'-o', 'ServerAliveCountMax=3',
 			entry.host,
@@ -178,32 +245,75 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			child = this.spawnSsh(args);
 		} catch (error) {
 			this.logService.warn(`[paradis] could not start the return tunnel to ${entry.host}`, error);
+			// 呼び出し元が来た結果を無期限に待つ状態のまま entry だけ残ることを防ぐ。
+			// 呼び出し元自身が今後 ensure() し直せば、既定のクールダウン後にまた試せる
+			entry.exhausted = true;
+			entry.exhaustedAt = Date.now();
+			this.settle(entry, undefined);
 			return;
 		}
 		entry.child = child;
 
+		// 割り当て通知が来ないまま（LogLevel が絞られている等）待たせ続けない。番号が分かるか
+		// 接続が終わるかのどちらかが先に起きるので、ここでは「終わらせる」側を受け持つ
+		entry.allocationTimer = setTimeout(() => {
+			entry.allocationTimer = undefined;
+			if (!entry.disposed && entry.remotePort === undefined) {
+				entry.child?.kill();
+			}
+		}, ALLOCATION_TIMEOUT_MS);
+
 		// spawn は起動できなくても例外を投げず、この event でだけ知らせてくる。購読しないと
 		// 「ssh が PATH に無い」が黙って捨てられ、張れていないのに何も分からなくなる。
+		// spawn 失敗時は 'exit' が発火しないことがあるため、後始末は 'close' 側でまとめて行う
 		child.on('error', error => {
 			this.logService.warn(`[paradis] the return tunnel to ${entry.host} could not start (is ssh on PATH?)`, error);
 		});
 
-		// ssh の stderr は失敗理由（ポート衝突・鍵無し）が出る唯一の場所なので拾っておく。
-		// 経路が張れないと実行状態が出ないだけで原因が見えないため、warn で残す。
+		// ssh の stderr は失敗理由（鍵無し等）に加え、動的ポートで割り当てられた番号
+		// （`Allocated port <N> for remote forward to 127.0.0.1:<port>`）が出る唯一の場所なので拾っておく。
+		// チャンクは行境界と無関係に届くため、行単位に組み直してから調べる
+		let stderrBuffer = '';
+		const allocatedPortPattern = new RegExp(`^Allocated port (\\d+) for remote forward to 127\\.0\\.0\\.1:${port}$`);
 		child.stderr?.on('data', (chunk: Buffer) => {
-			const text = chunk.toString().trim();
-			if (text.length > 0) {
-				this.logService.warn(`[paradis] return tunnel (${entry.host}): ${text}`);
+			stderrBuffer += chunk.toString();
+			let newlineIndex: number;
+			while ((newlineIndex = stderrBuffer.indexOf('\n')) >= 0) {
+				const line = stderrBuffer.slice(0, newlineIndex).trim();
+				stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+				if (line.length === 0) {
+					continue;
+				}
+				const allocated = allocatedPortPattern.exec(line);
+				if (allocated !== null) {
+					this.logService.info(`[paradis] return tunnel (${entry.host}): ${line}`);
+					const remotePort = Number(allocated[1]);
+					if (Number.isInteger(remotePort) && remotePort > 0 && remotePort <= 65535) {
+						entry.retries = 0; // 一度でも張れたら、次に切れたときはまた最初から数え直す
+						this.settle(entry, remotePort);
+					}
+				} else {
+					this.logService.warn(`[paradis] return tunnel (${entry.host}): ${line}`);
+				}
 			}
 		});
 
-		child.on('exit', code => {
+		child.on('close', code => {
+			if (entry.allocationTimer !== undefined) {
+				clearTimeout(entry.allocationTimer);
+				entry.allocationTimer = undefined;
+			}
+			entry.child = undefined;
+			// 張れていた経路が死んだ。古い番号のまま使わせない
+			entry.remotePort = undefined;
 			if (entry.disposed) {
 				return;
 			}
-			entry.child = undefined;
 			if (entry.retries >= MAX_RETRIES) {
 				this.logService.warn(`[paradis] gave up on the return tunnel to ${entry.host} (last exit code ${code})`);
+				entry.exhausted = true;
+				entry.exhaustedAt = Date.now();
+				this.settle(entry, undefined);
 				return;
 			}
 			entry.retries++;
