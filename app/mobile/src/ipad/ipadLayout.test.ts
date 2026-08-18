@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { listColumnsFor, sidebarWidthFor } from './ipadLayout.js';
+import { listColumnsFor, sidebarWidthFor, SIDEBAR_RAIL_WIDTH } from './ipadLayout.js';
 
 describe('sidebarWidthFor', () => {
 	test('狭いiPadでは下限、広いiPadでは上限で止まる', () => {
@@ -27,5 +27,11 @@ describe('listColumnsFor', () => {
 
 	test('13インチのlandscapeでは2列になる', () => {
 		expect(listColumnsFor(1366 - sidebarWidthFor(1366))).toBe(2);
+	});
+
+	test('レールへ畳むと展開時より必ず本文が広くなる', () => {
+		for (const width of [744, 834, 1024, 1194, 1366]) {
+			expect(width - SIDEBAR_RAIL_WIDTH).toBeGreaterThan(width - sidebarWidthFor(width));
+		}
 	});
 });

@@ -323,8 +323,10 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	const repoIds = new Set(repos.map(r => r.id));
 	// 親が一覧に見つからないworktree（不整合時の保険）はフラット表示にフォールバック
 	const orphans = list.filter(w => w.parent !== undefined && !repoIds.has(w.parent));
-	// 閉じているリポジトリidの集合（既定は全展開）。ドロワーはマウントされ続けるため
-	// セッション中は保持される（永続化はしない）。
+	// 閉じているリポジトリidの集合（既定は全展開）。iPhone版と、iPadの常設サイドバーを
+	// 展開しているあいだはマウントされ続けるためセッション中は保持される（永続化はしない）。
+	// ただしiPadでサイドバーをレール（畳んだ状態）へ切り替えると `IpadSidebar` がこの
+	// コンポーネントごと一旦アンマウントするため、そのときはこの状態も一緒にリセットされる。
 	const [collapsedRepos, setCollapsedRepos] = useState<ReadonlySet<string>>(new Set());
 	// 「新しいスペース（worktree）を作成」シートの表示状態（見出し右の＋から開く）。
 	const [createSheetOpen, setCreateSheetOpen] = useState(false);
