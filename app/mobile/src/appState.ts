@@ -159,6 +159,12 @@ interface AppState extends StoreState {
 	 */
 	homePreferences: HomeListPreferences;
 	setHomePreferences(next: HomeListPreferences): void;
+	/**
+	 * iPadの常設サイドバーを畳んでいるか（アイコンのみのレール表示）。狭い幅（iPhone、
+	 * Split View/Slide Over）では意味を持たない。端末に保存し、次回起動時も同じ見え方にする。
+	 */
+	sidebarCollapsed: boolean;
+	setSidebarCollapsed(value: boolean): void;
 	/** ターミナル画面で選択中の論理キー（ws切替時はリセット）。 */
 	selectedTerminalKey: string | undefined;
 	setSelectedTerminalKey(terminalKey: string | undefined): void;
@@ -927,6 +933,7 @@ export const useAppStore = create<AppState>(set => ({
 	selectedWs: undefined,
 	homeShowAllWorkspaces: true,
 	homePreferences: DEFAULT_HOME_PREFERENCES,
+	sidebarCollapsed: false,
 	selectedTerminalKey: undefined,
 	browserSelection: undefined,
 	// suppressWhenPcFocused の既定はオン。PCの前にいる間もスマホが鳴るのが通知過多の
@@ -1017,6 +1024,15 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load pcPreferences', err);
+			}
+			// iPadサイドバーの折りたたみ状態をロード（保存が無い/壊れている場合は既定のまま）。
+			try {
+				const raw = await secureKeyStore.getItem('sidebarCollapsed');
+				if (raw) {
+					set({ sidebarCollapsed: JSON.parse(raw) === true });
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load sidebarCollapsed', err);
 			}
 			// ピン留め・アーカイブはPCごとに分けて保存する。単一PC時代の配列形式は、
 			// そのとき唯一のペアリング相手だったPCのものとして引き継ぐ。
@@ -1622,6 +1638,11 @@ export const useAppStore = create<AppState>(set => ({
 	setHomePreferences(next: HomeListPreferences) {
 		set({ homePreferences: next });
 		secureKeyStore.setItem('homeListPreferences', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save homeListPreferences', err));
+	},
+
+	setSidebarCollapsed(value: boolean) {
+		set({ sidebarCollapsed: value });
+		secureKeyStore.setItem('sidebarCollapsed', JSON.stringify(value)).catch(err => console.warn('[appState] failed to save sidebarCollapsed', err));
 	},
 
 	setSelectedTerminalKey(terminalKey: string | undefined) {

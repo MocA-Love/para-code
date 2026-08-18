@@ -8,7 +8,7 @@
  *   （md は marked でHTML化、html はそのまま表示）
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
@@ -399,7 +399,36 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
 	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
 	const [presentedAsSheet] = useState(useIsRegularWidth());
-	const headerTop = presentedAsSheet ? 14 : 58;
+	// iPad(pageSheet)限定の「全画面に拡大」トグル。UIKitはpresentationStyleの後変更を
+	// 無視するため、Modalごと `key` で作り直して見た目を切り替える（WebViewは開き直しになるが、
+	// ユーザーが明示的に表示モードを切り替えた操作なので許容する）。
+	// 注意: NativeFileView（PDF/動画/音声）もこのタイミングで丸ごと作り直されるため、
+	// 動画・音声の再生位置とPDFのスクロール位置は毎回リセットされ、キャッシュファイルも
+	// 再書き出しになる。切り替えるたびの操作なので許容しているが、悪化させないこと。
+	//
+	// ただし同一コミットで `key` を差し替えるだけだと、旧Modalの dismiss が完了する前に
+	// 新Modalの present が走り、UIKit側で提示に失敗することがある。`onDismiss`（iOSのみ、
+	// dismissアニメーション完了時に発火）で「完全に閉じ終えてから作り直す」よう順序を保証する。
+	const [expanded, setExpanded] = useState(false);
+	const [modalOpen, setModalOpen] = useState(true);
+	const pendingExpandedRef = useRef<boolean | undefined>(undefined);
+	const effectiveSheet = presentedAsSheet && !expanded;
+	const headerTop = effectiveSheet ? 14 : 58;
+
+	const requestToggleExpanded = () => {
+		hapticImpact('light');
+		pendingExpandedRef.current = !expanded;
+		setModalOpen(false);
+	};
+	const handleDismiss = () => {
+		if (pendingExpandedRef.current !== undefined) {
+			setExpanded(pendingExpandedRef.current);
+			pendingExpandedRef.current = undefined;
+			setModalOpen(true);
+			return;
+		}
+		onClose();
+	};
 	const name = path.split('/').pop() ?? path;
 	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
@@ -448,9 +477,17 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
 
 	// iPad幅では pageSheet にして、常設サイドバーを覆い隠さないようにする
-	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。
+	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。ヘッダーの拡大ボタンで
+	// ユーザーが明示的に選んだときだけ全画面へ切り替える。
 	return (
-		<Modal visible animationType="slide" presentationStyle={presentedAsSheet ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose}>
+		<Modal
+			key={effectiveSheet ? 'sheet' : 'full'}
+			visible={modalOpen}
+			animationType="slide"
+			presentationStyle={effectiveSheet ? 'pageSheet' : 'fullScreen'}
+			onDismiss={handleDismiss}
+			onRequestClose={onClose}
+		>
 			<View style={styles.screen}>
 				<View style={[styles.header, { paddingTop: headerTop }]}>
 					{backLabel !== undefined ? (
@@ -469,6 +506,16 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 								<Text style={[styles.segmentText, mode === 'code' && styles.segmentTextActive]}>Raw</Text>
 							</Pressable>
 						</View>
+					) : null}
+					{presentedAsSheet ? (
+						<Pressable
+							onPress={requestToggleExpanded}
+							hitSlop={14}
+							accessibilityRole="button"
+							accessibilityLabel={expanded ? 'シート表示に戻す' : '全画面表示にする'}
+						>
+							<Ionicons name={expanded ? 'contract' : 'expand'} size={19} color={colors.textDim} />
+						</Pressable>
 					) : null}
 					{backLabel === undefined ? (
 						<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">

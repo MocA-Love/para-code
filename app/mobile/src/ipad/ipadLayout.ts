@@ -9,12 +9,20 @@
 const SIDEBAR_MIN = 280;
 const SIDEBAR_MAX = 340;
 
+/** サイドバーを畳んだときの「レール」幅（pt）。タブアイコン1個ぶんが収まる最小幅。 */
+export const SIDEBAR_RAIL_WIDTH = 64;
+
 /** ウィンドウ幅に対するサイドバーの比率（iPad Pro 11のportrait 834ptでおよそ272→下限の280に丸まる）。 */
 const SIDEBAR_RATIO = 0.28;
 
 /**
  * サイドバー幅。狭いiPadでは本文が潰れないよう下限で止め、広いiPadでは
  * 間延びしないよう上限で止める。
+ *
+ * 注意: `[...].map(sidebarWidthFor)` の形で呼んでいる既存テストがあるため、第2引数は
+ * 追加しないこと（`Array#map` はコールバックへ index を渡すため、素朴に2つ目の仮引数を
+ * 足すと呼び出し側の書き換えなしに index が紛れ込んで壊れる）。レール幅は
+ * `SIDEBAR_RAIL_WIDTH` を呼び出し側で直接使う。
  */
 export function sidebarWidthFor(windowWidth: number): number {
 	return Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, windowWidth * SIDEBAR_RATIO)));

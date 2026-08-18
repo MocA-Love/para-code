@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
@@ -39,13 +40,16 @@ interface BrowserTarget {
  * `active` が false の間（画面がフォーカスを失った間）は screencast を停止する。
  */
 export function BrowserPanel({ active, preferredToken }: { active: boolean; preferredToken?: string }) {
-	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection } = useAppStore(useShallow(s => ({
+	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection, sidebarCollapsed, setSidebarCollapsed } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
 		browserInput: s.browserInput, frame: s.browserFrame, connection: s.connection,
 		pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		setJpegFramesSuspended: s.setJpegFramesSuspended, workspace: s.workspace,
 		browserSelection: s.browserSelection, setBrowserSelection: s.setBrowserSelection,
+		sidebarCollapsed: s.sidebarCollapsed, setSidebarCollapsed: s.setSidebarCollapsed,
 	})));
+	// iPadの常設サイドバーを一時的に畳んでミラー映像を広げるボタン（regular幅でのみ意味を持つ）。
+	const regular = useIsRegularWidth();
 	const live = connection === 'online' && pcOnline && sessionProtocolReady;
 	const cachedSelection = browserSelection;
 	const cachedTargetIsCurrent = cachedSelection?.desktopEpoch === workspace?.desktopEpoch;
@@ -489,6 +493,19 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 					selectTextOnFocus
 					editable={live}
 				/>
+				{regular ? (
+					// iPadの常設サイドバーを畳んでミラー映像面を広げるボタン。機能1(IpadShellの開閉ボタン)と
+					// 同じ `sidebarCollapsed` を共有するため、ここで畳むと他の画面へ移ってもレールのまま
+					// （アプリ再起動後も同じ）。ラベルはその実際の動作に合わせている。
+					<Pressable
+						onPress={() => { hapticImpact('light'); setSidebarCollapsed(!sidebarCollapsed); }}
+						hitSlop={14}
+						accessibilityRole="button"
+						accessibilityLabel={sidebarCollapsed ? 'サイドバーを戻す' : 'サイドバーを畳んで広く見る'}
+					>
+						<Ionicons name={sidebarCollapsed ? 'contract' : 'expand'} size={15} color={colors.textDim} />
+					</Pressable>
+				) : null}
 			</View>
 			{/* ピンチで拡大縮小・ドラッグでパンできるようScrollViewズームに載せる。
 			    タップ座標は子ビューのローカル座標系（ズーム非依存）なのでマッピングはそのまま有効 */}

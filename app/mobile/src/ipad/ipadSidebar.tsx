@@ -8,8 +8,9 @@ import { isAgentWaiting } from '../store.js';
 import { GlassSurface } from '../components/glassSurface.js';
 import { WsDrawerContent } from '../components/wsDrawer.js';
 import { colors, radius, squircle } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
 import { activeSidebarTab, SIDEBAR_TABS, type SidebarTab } from './ipadTabs.js';
+import { IpadSidebarRail } from './ipadSidebarRail.js';
+import { selectTab } from './ipadSelectTab.js';
 
 /**
  * iPadの常設サイドバー。中身はiPhone版のワークスペースドロワーそのもの
@@ -19,8 +20,15 @@ import { activeSidebarTab, SIDEBAR_TABS, type SidebarTab } from './ipadTabs.js';
  * エージェント個別の会話とAgent tree & Tasksをここに置かないのは、iPhone版と
  * 動線を揃えるため。会話はホーム一覧の行から、Agent tree & Tasksは会話画面の
  * 「実行中」ストリップから開く。
+ *
+ * `collapsed` のときは `WsDrawerContent` を出さず、`IpadSidebarRail`（アイコンだけの
+ * レール）に丸ごと差し替える。開閉ボタン自体は `IpadShell` が持つため、ここでは
+ * 出し分けだけを担う。
  */
-export function IpadSidebar() {
+export function IpadSidebar({ collapsed }: { collapsed?: boolean }) {
+	if (collapsed) {
+		return <IpadSidebarRail />;
+	}
 	return <WsDrawerContent onClose={noop} navigation={<SidebarTabBar />} />;
 }
 
@@ -52,32 +60,6 @@ function SidebarTabBar() {
 			</GlassSurface>
 		</View>
 	);
-}
-
-/**
- * サイドバーのセグメントを押したときの遷移。
- *
- * タブそのもの以外（エージェント詳細・ブラウザ・アーカイブ等）を開いている間も、出発点の
- * タブを選択状態で見せている。そのため「選択中なら何もしない」で済ませると、`/agent` から
- * ホームへ戻れない押せないボタンになってしまう。
- *
- * また `router.navigate('/terminal')` をスタック画面から呼ぶと、React Navigationの
- * StackRouterは既存の `(tabs)` へ戻さず**もう1枚積む**（NAVIGATEは`pop`指定が無い限り
- * 既存routeを探しに行かない）。タブ群が二重にマウントされてしまうため、スタックを
- * 畳める状況では `dismissTo` を使って既存の `(tabs)` まで戻しつつタブを切り替える。
- */
-function selectTab(router: ReturnType<typeof useRouter>, tab: SidebarTab, active: SidebarTab['name'] | undefined): void {
-	// スタックを畳めない＝タブ直下にいる。そこで既に選択中なら本当に何もすることが無い。
-	const stacked = router.canDismiss();
-	if (!stacked && active === tab.name) {
-		return;
-	}
-	hapticSelection();
-	if (stacked) {
-		router.dismissTo(tab.href);
-		return;
-	}
-	router.navigate(tab.href);
 }
 
 function TabButton({ tab, active, badge, onPress }: { tab: SidebarTab; active: boolean; badge?: number; onPress: () => void }) {
