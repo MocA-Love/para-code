@@ -1,0 +1,213 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Service status (Claude/Codex/GitHub) title bar chips (paradisServiceStatusWidget.ts) and the
+ * per-service popover (paradisServiceStatusPopover.ts). Layout mirrors the AI limits monitor
+ * trigger (paradisLimitsMonitor.css), which itself mirrors Superset apps/desktop's TopBar
+ * ServiceStatusIndicators widget. Colors come from --vscode-* theme tokens except the fixed
+ * severity accents (green/amber/red/grey), which match the rest of Para Code.
+ */
+
+/* ---------- trigger chips (title bar) ---------- */
+
+.paradis-service-status-trigger {
+	/* Same drag-region caveat as the other title bar triggers: explicit z-index needed. */
+	z-index: 2500;
+	-webkit-app-region: no-drag;
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 25px;
+	height: 22px;
+	margin: 0 1px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	cursor: pointer;
+	color: var(--vscode-titleBar-inactiveForeground, var(--vscode-foreground));
+}
+
+.paradis-service-status-trigger:hover,
+.paradis-service-status-trigger.active {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-titleBar-activeForeground, var(--vscode-foreground));
+}
+
+.paradis-service-status-logo {
+	width: 16px;
+	height: 16px;
+	border-radius: 3px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+}
+
+/* ブランドの地色。トリガーチップとポップオーバー両方の .paradis-service-status-logo に効かせる(以前はポップオーバー限定だったため、ライト/高コントラストテーマでチップの白グリフが透明地に浮いて見えなくなっていた)。 */
+.paradis-service-status-logo.claude {
+	background: #d97757;
+}
+
+.paradis-service-status-logo.codex {
+	background: #f5f5f5;
+}
+
+.paradis-service-status-logo.github {
+	background: #24292e;
+}
+
+.paradis-service-status-logo svg {
+	width: 13px;
+	height: 13px;
+	display: block;
+}
+
+.paradis-service-status-trigger .paradis-service-status-dot {
+	position: absolute;
+	right: 1px;
+	bottom: 1px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	box-shadow: 0 0 0 1.5px var(--vscode-titleBar-activeBackground, transparent);
+}
+
+.paradis-service-status-dot.ok {
+	background: #2ea043;
+}
+
+.paradis-service-status-dot.minor {
+	background: #f0b429;
+}
+
+.paradis-service-status-dot.major {
+	background: #ef4444;
+}
+
+.paradis-service-status-dot.maintenance {
+	background: #58a6ff;
+}
+
+.paradis-service-status-dot.unknown {
+	background: #8b8b8b;
+}
+
+/* ---------- popover ---------- */
+
+.paradis-service-status-popover {
+	position: fixed;
+	z-index: 2500;
+	/* width は POPOVER_WIDTH (paradisServiceStatusPopover.ts) から element.style.width で設定する。reposition() のクランプ計算と二重管理にならないよう、ここでは固定しない。 */
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: 6px;
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	font-size: 12px;
+	outline: none;
+	overflow: hidden;
+}
+
+.paradis-service-status-popover .pssp-body {
+	padding: 12px 14px;
+}
+
+.paradis-service-status-popover .pssp-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: 600;
+	margin-bottom: 6px;
+}
+
+.paradis-service-status-popover .pssp-title .paradis-service-status-logo svg {
+	width: 10px;
+	height: 10px;
+}
+
+.paradis-service-status-popover .pssp-level {
+	font-size: 11px;
+	padding: 1px 7px;
+	border-radius: 8px;
+	color: #ffffff;
+	margin-left: 2px;
+}
+
+.paradis-service-status-popover .pssp-level.ok {
+	background: #2ea043;
+}
+
+.paradis-service-status-popover .pssp-level.minor {
+	background: #f0b429;
+	color: #3b2a00;
+}
+
+.paradis-service-status-popover .pssp-level.major {
+	background: #ef4444;
+}
+
+.paradis-service-status-popover .pssp-level.maintenance {
+	background: #58a6ff;
+}
+
+.paradis-service-status-popover .pssp-level.unknown {
+	background: #8b8b8b;
+}
+
+.paradis-service-status-popover .pssp-desc {
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.6;
+	margin-bottom: 6px;
+}
+
+.paradis-service-status-popover .pssp-meta {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+	overflow-wrap: anywhere;
+}
+
+.paradis-service-status-popover .pssp-footer {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+}
+
+.paradis-service-status-popover .pssp-link {
+	color: var(--vscode-textLink-foreground);
+	text-decoration: none;
+	cursor: pointer;
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-service-status-popover .pssp-link:hover {
+	text-decoration: underline;
+}
+
+.paradis-service-status-popover .pssp-manage {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	cursor: pointer;
+	flex: none;
+}
+
+.paradis-service-status-popover .pssp-manage .codicon {
+	font-size: 13px;
+}
+
+.paradis-service-status-popover .pssp-manage:hover {
+	color: var(--vscode-foreground);
+}
