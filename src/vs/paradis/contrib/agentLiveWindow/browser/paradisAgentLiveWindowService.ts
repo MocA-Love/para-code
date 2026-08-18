@@ -102,9 +102,16 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 		const disposables = this._register(new DisposableStore());
 		try {
 			const transparencyActive = paradisIsAuxiliaryWindowTransparencyActive(this.layoutService);
+			// nativeTitlebar: true (OS が描く不透明なタイトルバー) と transparent: true を同時に
+			// 指定すると、macOS では BrowserWindow 自体が透過になり、ネイティブタイトルバーの帯
+			// (信号ボタンの背景含む) ごと透けてしまう。paradisIsAuxiliaryWindowTransparencyActive が
+			// 真を返すのは macOS のときだけなので、透過が有効な間だけメインウィンドウと同じ
+			// hidden タイトルバー (信号ボタン自体は macOS が引き続き描画し、背景は DOM 側の CSS で
+			// 塗れる) に切り替える。ドラッグ領域と信号ボタン用の余白は
+			// paradisAgentLiveWindow.css の .paradis-agent-live-transparent 側で確保している。
 			const auxiliaryWindow = disposables.add(await this.auxiliaryWindowService.open({
 				bounds: this.restoreBounds(),
-				nativeTitlebar: true,
+				nativeTitlebar: !transparencyActive,
 				transparent: transparencyActive,
 			}));
 			await auxiliaryWindow.whenStylesHaveLoaded;

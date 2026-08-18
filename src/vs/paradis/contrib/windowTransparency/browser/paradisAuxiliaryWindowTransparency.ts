@@ -19,7 +19,7 @@
 // (2) 別 document のため伝播しないインラインの `--paradis-transparency-opacity` を aux コンテナへ
 // 個別に設定することだけ。
 
-import { isWindows } from '../../../../base/common/platform.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
@@ -35,11 +35,18 @@ const OPACITY_CUSTOM_PROPERTY = '--paradis-transparency-opacity';
  * aux window は同一 renderer プロセスの別 BrowserWindow で、環境設定 (`environmentService.window.*`) は
  * 常にメインウィンドウのものを指すため使えない)。
  *
- * nativeTitlebar を使う aux window に `transparent: true` を Windows へ要求するとフレームレス前提が
- * 崩れるため、Windows では常に無効化する。
+ * この aux window (Agent Live Window) は `nativeTitlebar: true` でネイティブタイトルバーを要求して
+ * 開かれる。`transparent: true` と組み合わせられるのは macOS だけ (透過にすると信号ボタンの背後の
+ * 帯だけ hidden タイトルバーへ切り替え、信号ボタン自体は macOS が引き続き描画するので DOM 側の
+ * 帯を透過対応 CSS で塗れる — paradisAgentLiveWindowService.ts 参照)。それ以外の OS では有効化しない:
+ * - Windows は `transparent: true` にフレームレス (frame: false) が前提で、ネイティブタイトルバーとは
+ *   そもそも両立しない。
+ * - Linux は hidden タイトルバーにすると `frame: false` になり OS のウィンドウ枠ごと消えるが、この
+ *   ウィンドウは (メインウィンドウと違い) 閉じる/最小化/最大化を自前描画する custom titlebar を
+ *   持たないため、置き換えの手段が無いままウィンドウ操作ボタンが丸ごと失われる。
  */
 export function paradisIsAuxiliaryWindowTransparencyActive(layoutService: IWorkbenchLayoutService): boolean {
-	if (isWindows) {
+	if (!isMacintosh) {
 		return false;
 	}
 	return layoutService.mainContainer.classList.contains(PARADIS_TRANSPARENT_CLASS);

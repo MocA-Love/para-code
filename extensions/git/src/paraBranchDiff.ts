@@ -163,7 +163,8 @@ export class ParaBranchDiffProvider {
 			const resources = this.repository.createBranchDiffResources(changes.slice(0, RESOURCE_LIMIT));
 
 			this.repository.branchDiffBase = { commit: state.baseCommit, label: state.baseLabel };
-			this.repository.branchDiffGroup.label = l10n.t('Changes Since {0}', state.baseLabel);
+			// allow-any-unicode-next-line
+			this.repository.branchDiffGroup.label = l10n.t('{0} 以降の変更', state.baseLabel);
 			this.repository.branchDiffGroup.resourceStates = resources;
 			this.lastKey = state.key;
 			this.lastCount = resources.length;
@@ -310,7 +311,8 @@ export function registerParaBranchDiffCommands(model: Model, logger: LogOutputCh
 
 		const HEAD = repository.HEAD;
 		if (HEAD?.type !== RefType.Head || !HEAD.name) {
-			window.showInformationMessage(l10n.t('The current branch cannot be compared with a base branch.'));
+			// allow-any-unicode-next-line
+			window.showInformationMessage(l10n.t('現在のブランチはベースブランチと比較できません。'));
 			return;
 		}
 
@@ -323,12 +325,14 @@ export function registerParaBranchDiffCommands(model: Model, logger: LogOutputCh
 			.sort((one, other) => one.label.localeCompare(other.label));
 
 		if (picks.length === 0) {
-			window.showInformationMessage(l10n.t('There are no remote branches to compare "{0}" with.', headName));
+			// allow-any-unicode-next-line
+			window.showInformationMessage(l10n.t('「{0}」と比較できるリモートブランチがありません。', headName));
 			return;
 		}
 
 		const pick = await window.showQuickPick(picks, {
-			placeHolder: l10n.t('Select the branch to compare "{0}" with', headName)
+			// allow-any-unicode-next-line
+			placeHolder: l10n.t('「{0}」と比較するブランチを選択', headName)
 		});
 
 		if (!pick) {
@@ -351,7 +355,8 @@ export function registerParaBranchDiffCommands(model: Model, logger: LogOutputCh
 			// Repository.run() rejects while the repository is being closed, which is the only way
 			// a config write reaches us as an exception.
 			logger.warn(`[registerParaBranchDiffCommands] Failed to set ${configKey} to ${pick.label}: ${err}`);
-			window.showErrorMessage(l10n.t('Failed to set the base branch of "{0}".', headName));
+			// allow-any-unicode-next-line
+			window.showErrorMessage(l10n.t('「{0}」のベースブランチを設定できませんでした。', headName));
 			return;
 		}
 
@@ -360,7 +365,8 @@ export function registerParaBranchDiffCommands(model: Model, logger: LogOutputCh
 		// Comparing a branch with the very branch it tracks has nothing to show, and the group
 		// would just disappear without explanation.
 		if (HEAD.upstream && `${HEAD.upstream.remote}/${HEAD.upstream.name}` === pick.label) {
-			window.showInformationMessage(l10n.t('"{0}" tracks "{1}", so there are no branch changes to show against it.', headName, pick.label));
+			// allow-any-unicode-next-line
+			window.showInformationMessage(l10n.t('「{0}」は「{1}」を追跡しているため、比較して表示するブランチの変更はありません。', headName, pick.label));
 		}
 	});
 }

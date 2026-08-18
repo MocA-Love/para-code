@@ -250,8 +250,10 @@ export class Resource implements SourceControlResourceState {
 		// here is staged — it is what the branch changed since its base. See paraBranchDiff.ts.
 		if (this._resourceGroupType === ResourceGroupType.BranchDiff) {
 			switch (this.type) {
-				case Status.INDEX_ADDED: return l10n.t('Added');
-				case Status.INDEX_RENAMED: return l10n.t('Renamed');
+				// allow-any-unicode-next-line
+				case Status.INDEX_ADDED: return l10n.t('追加済み');
+				// allow-any-unicode-next-line
+				case Status.INDEX_RENAMED: return l10n.t('名前変更済み');
 			}
 		}
 
@@ -1077,7 +1079,8 @@ export class Repository implements Disposable {
 		this._workingTreeGroup = this._sourceControl.createResourceGroup('workingTree', l10n.t('Changes'), { multiDiffEditorEnableViewChanges: true });
 		this._untrackedGroup = this._sourceControl.createResourceGroup('untracked', l10n.t('Untracked Changes'), { multiDiffEditorEnableViewChanges: true });
 		// PARA-PATCH: created last so it renders below the upstream groups. See paraBranchDiff.ts.
-		this._branchDiffGroup = this._sourceControl.createResourceGroup(BRANCH_DIFF_GROUP_ID, l10n.t('Branch Changes'));
+		// allow-any-unicode-next-line
+		this._branchDiffGroup = this._sourceControl.createResourceGroup(BRANCH_DIFF_GROUP_ID, l10n.t('ブランチの変更'));
 
 		const updateIndexGroupVisibility = () => {
 			const config = workspace.getConfiguration('git', root);
