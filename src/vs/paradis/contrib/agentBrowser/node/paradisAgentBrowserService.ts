@@ -48,6 +48,8 @@ import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
+// PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
+import { IParadisMcpToolProvider } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 
 /**
@@ -464,6 +466,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	});
 	private _pendingBindPreparations = 0;
 	private _authorityFaulted = false;
+	/**
+	 * PARA-PATCH: このMCPサーバーへツールを足した他のcontrib（モバイル端末操作など）。
+	 * サーバーを機能ごとに増やさずに済ませるための相乗り口で、認証とペイン解決は
+	 * ここまでで完了しているためプロバイダは解決済みトークンだけを受け取る。
+	 */
+	private readonly _toolProviders: IParadisMcpToolProvider[] = [];
 	private readonly _ingressLeaseStates = new WeakMap<IParadisAgentBrowserIngressLease, IParadisBindingOwnedTokenLease>();
 	private _nextBindingGeneration = 0;
 	/** workbenchから同期される「ペイントークン ⇔ シェルPID」表（CDPゲートウェイの呼び出し元識別用）。 */
@@ -1548,6 +1556,14 @@ export class ParadisAgentBrowserService extends Disposable {
 	// --- MCP HTTPサーバー ---
 
 	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
+	/**
+	 * PARA-PATCH: このMCPサーバーへツールを足す（モバイル端末操作など、別contribの機能）。
+	 * shared processの起動時に一度だけ呼ばれる想定。
+	 */
+	registerToolProvider(provider: IParadisMcpToolProvider): void {
+		this._toolProviders.push(provider);
+	}
+
 	async getGatewayEndpoint(): Promise<IParadisGatewayEndpoint> {
 		await this._serverStartPromise;
 		const port = this._port;
@@ -2375,7 +2391,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				// para固有ツールのみに縮退し、一覧自体は失敗させない）
 				const tools = await this._listDevtoolsTools(ingressLease, signal);
 				this._requireIngressLease(ingressLease);
-				return { tools: [...TOOLS, ...tools] };
+				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
+				const provided = this._toolProviders.flatMap(provider => [...provider.listTools()]);
+				return { tools: [...TOOLS, ...provided, ...tools] };
 			}
 			case 'tools/call':
 				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal);
@@ -2392,6 +2410,14 @@ export class ParadisAgentBrowserService extends Disposable {
 			throw new JsonRpcMethodError(-32602, `Unknown tool: ${String(name)}`);
 		}
 		if (!TOOLS.some(t => t.name === name)) {
+			// PARA-PATCH: 登録されたツールプロバイダに先に当てる（自分のツールでなければundefinedを返す約束）
+			for (const provider of this._toolProviders) {
+				const result = await provider.callTool(token, name, params?.arguments, signal);
+				this._requireIngressLease(ingressLease);
+				if (result !== undefined) {
+					return result;
+				}
+			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
 			return this._callDevtoolsTool(ingressLease, name, params?.arguments, signal);
 		}

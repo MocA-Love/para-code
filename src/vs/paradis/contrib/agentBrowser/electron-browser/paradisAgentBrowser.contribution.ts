@@ -89,7 +89,34 @@ async function openBindingDialog(accessor: ServicesAccessor, instanceId?: number
 	);
 }
 
+/**
+ * モバイル端末のアタッチだけを目的にダイアログを開く。ブラウザページを1枚も開いていなくても
+ * 端末タブへ入れるよう、ページを解決せずに開く点が openBindingDialog との違い。
+ */
+function openMobileDeviceDialog(accessor: ServicesAccessor): void {
+	const instantiationService = accessor.get(IInstantiationService);
+	activeDialog?.dispose();
+	activeDialog = instantiationService.createInstance(ParadisBindingDialog, undefined, undefined);
+}
+
 // --- コマンドパレット ---
+
+class ParadisOpenMobileDeviceDialogAction extends Action2 {
+	static readonly ID = 'paradis.mobileCanvas.openAttachDialog';
+
+	constructor() {
+		super({
+			id: ParadisOpenMobileDeviceDialogAction.ID,
+			title: localize2('paradis.openMobileDeviceDialog', "Attach Mobile Device to Terminal Pane"),
+			category: CATEGORY,
+			f1: true,
+		});
+	}
+
+	run(accessor: ServicesAccessor): void {
+		openMobileDeviceDialog(accessor);
+	}
+}
 
 class ParadisOpenBindingDialogAction extends Action2 {
 	static readonly ID = 'paradis.agentBrowser.openBindingDialog';
@@ -458,6 +485,7 @@ class ParadisAgentBrowserAuthoritySyncContribution implements IWorkbenchContribu
 }
 
 registerAction2(ParadisOpenBindingDialogAction);
+registerAction2(ParadisOpenMobileDeviceDialogAction);
 registerAction2(ParadisShareBrowserPageWithTerminalPaneAction);
 registerAction2(ParadisUnshareBrowserPageAction);
 registerAction2(ParadisCopyMcpSetupCommandAction);
