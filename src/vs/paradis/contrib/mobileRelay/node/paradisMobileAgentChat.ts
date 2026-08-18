@@ -329,7 +329,25 @@ const PARADIS_QUESTION_READY_MARKER_LENGTH = 12;
  * 「通知が届かない」の切り分けは、この内訳が無いと始まらない（浮上した回数だけを数えていても、
  * 出さなかったのか出したのに届かなかったのかが永久に分からない）。
  */
-type ParadisQuestionNotifyOutcome = 'dispatched' | 'no-terminal' | 'no-owner' | 'unauthorized' | 'owner-changed' | 'authorize-failed';
+type ParadisQuestionNotifyOutcome = 'dispatched' | 'no-terminal' | 'no-owner' | 'unauthorized' | 'owner-changed' | 'authorize-failed' | 'suppressed-group' | 'suppressed-content';
+
+/**
+ * 群キーの抑制期限。1回の AskUserQuestion（質問N問）に対して鳴らすのは1度だけにする。
+ * 期限を切るのは、回答が失われてTUIが同じ質問を出し直したときに鳴らし直せるようにするため
+ * （期限が無いと、一度取りこぼした質問はその後どれだけ再提示されても二度と鳴らない）。
+ */
+const QUESTION_NOTIFY_GROUP_SUPPRESS_TTL_MS = 10 * 60_000;
+
+/**
+ * 内容キーの抑制期限。**群キーより意図的に短くしてある。**
+ *
+ * 内容キーは質問文と選択肢が同じなら一致するので、『続けますか？[はい/いいえ]』のような
+ * 定型の再掲まで巻き込む。本来は「前の同内容質問がまだ未回答か」で線を引くのが正しいが、
+ * 狙っている経路またぎの重複（live で浮上したものが transcript に書き出される）は秒オーダーで
+ * 起きるのに対し、同じ文面が改めて聞かれるのは分オーダーなので、その時間差で近似している。
+ * ここを伸ばすと定型質問の2回目以降が鳴らなくなる。
+ */
+const QUESTION_NOTIFY_CONTENT_SUPPRESS_TTL_MS = 60_000;
 /** 回答のキー列を流し終えたかを見る待ち時間の上限（計測用）。 */
 const QUESTION_SETTLE_MAX_WAIT_MS = 30_000;
 /** attach応答スナップショットで送る最大件数。 */
@@ -3113,6 +3131,18 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** 計測専用: `token\0questionGroup` → その質問グループで通知を送った回数。 */
 	private readonly questionNotifyCounts = new Map<string, number>();
 	/**
+	 * 実際に通知を出した群キー・内容キー → その時刻。重複通知の抑制に使う（計測専用ではない）。
+	 *
+	 * キーが2種類あるのは、重複が2つの別々の理由で起きるため。1つの AskUserQuestion に質問が
+	 * N問あればN回鳴る（群キーで止まる）のに加え、同じ質問が live（hook由来）と transcript
+	 * （記録由来）の両経路で浮上する。後者は `questionGroup` の名前空間が経路ごとに違う
+	 * （transcript は toolUseId、live は `liveg:` 合成キー）ので、**群キーでは同一視できない**。
+	 *
+	 * ディスクへは残さない。再起動後に「通知済み」と誤判定して一度も鳴らないほうが、
+	 * 重複して鳴るより明らかに害が大きい。
+	 */
+	private readonly questionNotifiedAt = new Map<string, number>();
+	/**
 	 * 計測専用: `token\0interactionId` → その質問が最初に浮上した時刻。
 	 *
 	 * **レース説と「操作が遅れて届いた」を切り分ける唯一の材料。** TUI は質問を描いてから
@@ -3202,6 +3232,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			for (const timer of this.questionSettleTimers) { clearTimeout(timer); }
 			this.questionSettleTimers.clear();
 			this.questionNotifyCounts.clear();
+			this.questionNotifiedAt.clear();
 		}));
 	}
 
@@ -5864,17 +5895,19 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private recordQuestionNotifyShape(token: string, message: IParadisAgentChatMessage, outcome: ParadisQuestionNotifyOutcome): void {
 		const group = message.questionGroup ?? message.toolUseId;
-		if (group === undefined) {
-			return;
+		if (group !== undefined) {
+			// 同じ質問が live と transcript の両経路で浮上するので、**最初の1回だけ**を起点にする。
+			// `group` は回答時の `interactionId` と同じ値（parseAskUserQuestions が付ける）。
+			const seenKey = `${token}\0${group}`;
+			if (!this.questionFirstSeenAt.has(seenKey)) {
+				this.questionFirstSeenAt.set(seenKey, Date.now());
+				this.evictOldest(this.questionFirstSeenAt, QUESTION_NOTIFY_COUNT_LIMIT);
+			}
 		}
-		// 同じ質問が live と transcript の両経路で浮上するので、**最初の1回だけ**を起点にする。
-		// `group` は回答時の `interactionId` と同じ値（parseAskUserQuestions が付ける）。
-		const seenKey = `${token}\0${group}`;
-		if (!this.questionFirstSeenAt.has(seenKey)) {
-			this.questionFirstSeenAt.set(seenKey, Date.now());
-			this.evictOldest(this.questionFirstSeenAt, QUESTION_NOTIFY_COUNT_LIMIT);
-		}
-		const groupSeq = this.bumpQuestionNotifyCount(`g\0${token}\0${group}`);
+		// 群が引けない質問はカウンタを引き当てられないが、**記録自体は必ず残す**。ここで
+		// 打ち切ると、抑制で鳴らさなかったぶんが計測から丸ごと消え、「減った」のか
+		// 「壊れて出なくなった」のかを区別できなくなる（この仕組みで唯一の検証手段）。
+		const groupSeq = group === undefined ? -1 : this.bumpQuestionNotifyCount(`g\0${token}\0${group}`);
 		const contentSeq = this.bumpQuestionNotifyCount(`c\0${token}\0${liveQuestionContentKey(message)}`);
 		runInParadisSpan('agentQuestion', 'notify', {
 			// 2以上なら同じ質問グループで通知が重なっている。
@@ -5929,23 +5962,108 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.recordQuestionNotifyShape(token, message, 'no-owner');
 			return;
 		}
+		// 同じ質問グループの2問目以降と、live/transcript の両経路で浮上した同一内容は鳴らさない。
+		const suppressed = this.suppressedQuestionNotify(token, message);
+		if (suppressed !== undefined) {
+			// 抑制したぶんも必ず記録する。ここを黙って return にすると、通知が減ったのか
+			// 壊れて出なくなったのかを後から区別できなくなる。
+			this.recordQuestionNotifyShape(token, message, suppressed);
+			return;
+		}
+		// authorize は非同期なので、同じ群の2問目が待ち行列で追い抜かないよう先に予約する。
+		// 実際に鳴らせなかった経路では**必ず**取り消すこと（取り消し漏れ＝その質問は二度と鳴らない）。
+		const reservation = this.reserveQuestionNotify(token, message);
 		void this.authorizeOwner(owner).then(authorized => {
 			if (!authorized) {
+				reservation.release();
 				this.recordQuestionNotifyShape(token, message, 'unauthorized');
 				return;
 			}
 			const current = this.ownerForPane(terminalId, token);
 			if (current === undefined || !this.samePaneOwner(current, owner) || this.tailers.get(token) !== tailer) {
+				reservation.release();
 				this.recordQuestionNotifyShape(token, message, 'owner-changed');
 				return;
 			}
-			const ws = this.tokenToWorkspace.get(token);
-			this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(ws !== undefined ? { ws } : {}), agentToken: token, owner });
-			this.recordQuestionNotifyShape(token, message, 'dispatched');
+			try {
+				const ws = this.tokenToWorkspace.get(token);
+				this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(ws !== undefined ? { ws } : {}), agentToken: token, owner });
+				this.recordQuestionNotifyShape(token, message, 'dispatched');
+			} catch (error) {
+				// `.then(onFulfilled, onRejected)` は成功枝で投げた例外を第2引数で拾わない。
+				// ここで捕まえないと、予約が残ったまま計測も残らず、その質問はTTLのあいだ
+				// 一度も鳴らない（しかも理由が記録に出ない）。
+				reservation.release();
+				this.recordQuestionNotifyShape(token, message, 'authorize-failed');
+				this.logService.warn('[paradisAgentChat] question notify dispatch failed', error);
+			}
 		}, error => {
+			reservation.release();
 			this.recordQuestionNotifyShape(token, message, 'authorize-failed');
 			this.logService.warn('[paradisAgentChat] question owner validation failed', error);
 		});
+	}
+
+	/** 抑制の突き合わせに使う2種類のキー。群が引けない質問は内容キーだけで判定する。 */
+	private questionNotifyKeys(token: string, message: IParadisAgentChatMessage): { readonly group: string | undefined; readonly content: string } {
+		const group = message.questionGroup ?? message.toolUseId;
+		return {
+			group: group === undefined ? undefined : `g\0${token}\0${group}`,
+			content: `c\0${token}\0${liveQuestionContentKey(message)}`,
+		};
+	}
+
+	/**
+	 * 直近に同じ質問を鳴らしていれば、その理由を返す。
+	 *
+	 * 内容キーは `liveQuestionContentKey`（質問文＋選択肢ラベル）の**完全一致**で見る。
+	 * `paradisHasPendingDuplicateQuestion` が持つ「片側の選択肢が空なら質問文だけで同一とみなす」
+	 * 第2段は入れていないので、hookが選択肢を落とした場合（Windows の PowerShell など）の
+	 * 経路またぎはここでは止まらない。そこは取り込み時点の照合（`takeLiveQuestionMatch`）が
+	 * 受け持っている領域で、二重に緩い規則を持ち込むと同文の別質問まで巻き込む。
+	 */
+	private suppressedQuestionNotify(token: string, message: IParadisAgentChatMessage): ParadisQuestionNotifyOutcome | undefined {
+		const keys = this.questionNotifyKeys(token, message);
+		const now = Date.now();
+		if (keys.group !== undefined && this.recentlyNotifiedQuestion(keys.group, now, QUESTION_NOTIFY_GROUP_SUPPRESS_TTL_MS)) {
+			// 群で止めたぶんも内容キーを覚えておく。ここを飛ばすと、同じ内容が別経路
+			// （群キーの名前空間が live と transcript で違う）で浮上したときに素通りし、
+			// 経路またぎの重複が半分残る＝この抑制の狙いの半分が効かなくなる。
+			this.questionNotifiedAt.set(keys.content, now);
+			this.evictOldest(this.questionNotifiedAt, QUESTION_NOTIFY_COUNT_LIMIT);
+			return 'suppressed-group';
+		}
+		return this.recentlyNotifiedQuestion(keys.content, now, QUESTION_NOTIFY_CONTENT_SUPPRESS_TTL_MS) ? 'suppressed-content' : undefined;
+	}
+
+	/** 期限切れの記録はその場で捨てる（再提示された質問を鳴らし直せるようにするため）。 */
+	private recentlyNotifiedQuestion(key: string, now: number, ttlMs: number): boolean {
+		const notifiedAt = this.questionNotifiedAt.get(key);
+		if (notifiedAt === undefined) {
+			return false;
+		}
+		if (now - notifiedAt <= ttlMs) {
+			return true;
+		}
+		this.questionNotifiedAt.delete(key);
+		return false;
+	}
+
+	private reserveQuestionNotify(token: string, message: IParadisAgentChatMessage): { release(): void } {
+		const keys = this.questionNotifyKeys(token, message);
+		const now = Date.now();
+		const reserved = keys.group === undefined ? [keys.content] : [keys.group, keys.content];
+		for (const key of reserved) {
+			this.questionNotifiedAt.set(key, now);
+		}
+		this.evictOldest(this.questionNotifiedAt, QUESTION_NOTIFY_COUNT_LIMIT);
+		return {
+			release: () => {
+				for (const key of reserved) {
+					this.questionNotifiedAt.delete(key);
+				}
+			},
+		};
 	}
 
 	private terminalIdForToken(token: string): number | undefined {

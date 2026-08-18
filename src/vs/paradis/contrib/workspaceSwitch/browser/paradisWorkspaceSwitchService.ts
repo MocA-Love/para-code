@@ -867,9 +867,17 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						// 先に判定しないと新条件の効果が「もともと端末が無い回」に薄められて読めなくなる。
 						const skipReason = restoreTerminals === 0 ? 'no-terminals'
 							: coveredByPark ? 'covered-by-park' : undefined;
+						// skip できなかったとき、4つある条件のどれで落ちたかを1つだけ選んで残す。
+						// 本番では skip が3%しか成立しておらず、その理由が観測できていなかった。
+						const blockReason = skipReason !== undefined ? undefined
+							: restoreTerminals === undefined ? 'unknown-expected' as const
+								: expectedNonces === undefined ? 'no-ledger' as const
+									: expectedNonces.size < restoreTerminals ? 'count-short' as const
+										: 'not-all-parked' as const;
 						return paradisRefreshTerminalReviveIndex(stateKey, {
 							skipLookup: skipReason !== undefined,
 							skipReason,
+							...(blockReason !== undefined ? { blockReason } : {}),
 							// 判定の裏取り用。`parked > expected` が常態なら、working set に無い端末が
 							// 同じスコープへ載っている＝件数比較が危険だった実態が本番で確認できる。
 							parkedCount: expectedNonces?.size,
@@ -1011,6 +1019,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						editors,
 						folderStatMs,
 						folderStatSkipped: paradisTakeVerifiedWorkspaceFolderHits(),
+						previousFolders: folders.length,
 					});
 				}
 			});
@@ -1049,6 +1058,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		readonly editors: number;
 		readonly folderStatMs: number | undefined;
 		readonly folderStatSkipped: number;
+		readonly previousFolders: number;
 	}): void {
 		try {
 			const durations: Record<string, number> = {};
@@ -1072,6 +1082,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// upstream 側が見る URI は再構成された別インスタンスなので、一致しなければ
 				// 安全側に無言で倒れる。時間の差だけ見ていても空振りに気付けない。
 				safe_folder_stat_skipped: sample.folderStatSkipped,
+				// `update_folders_write` は p50 85ms に対し p95 761ms で、**常に遅いのではなく
+				// 時々非常に遅い**。書き換えるフォルダ数が裾の説明になるかを見るために載せる
+				// （なるなら .code-workspace の書き込み量、ならないなら reload() 側が疑わしい）。
+				safe_previous_folders: sample.previousFolders,
 			}, () => { });
 		} catch (error) {
 			this.logService.error('[ParadisWorkspaceSwitch] Failed to record switch phases', error);

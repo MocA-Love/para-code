@@ -11,15 +11,18 @@ import type { AgentApprovalChoice, AgentMessageSendResult } from '../store.js';
  * そのまま表示し、hookだけの旧経路では許可/拒否の2択へフォールバックする。
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-export function ApprovalCard({ interactionId, onApprove, title, detail, choices }: {
+export function ApprovalCard({ interactionId, onApprove, title, detail, choices, refreshing }: {
 	interactionId: string;
 	onApprove: (interactionId: string, choice: string) => Promise<AgentMessageSendResult>;
 	title?: string;
 	detail?: string;
 	choices?: readonly AgentApprovalChoice[];
+	/** 再取得の応答待ち。カードは出したまま操作だけ止める（差し替えるとローカルの失敗表示が消える）。 */
+	refreshing?: boolean;
 }) {
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
+	const disabled = submitting || refreshing === true;
 	// 対象が入れ替わったら直前の失敗表示は用済み。
 	useEffect(() => { setError(undefined); }, [interactionId]);
 	const effectiveChoices: readonly AgentApprovalChoice[] = choices ?? [
@@ -52,10 +55,10 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices 
 					{effectiveChoices.map(choice => (
 						<Pressable
 							key={choice.id}
-							disabled={submitting}
+							disabled={disabled}
 							accessibilityRole="button"
-							accessibilityState={{ disabled: submitting }}
-							style={[styles.approvalBtn, choice.tone === 'approve' ? styles.approveBtn : choice.tone === 'deny' ? styles.denyBtn : styles.neutralBtn, submitting && styles.disabled]}
+							accessibilityState={{ disabled }}
+							style={[styles.approvalBtn, choice.tone === 'approve' ? styles.approveBtn : choice.tone === 'deny' ? styles.denyBtn : styles.neutralBtn, disabled && styles.disabled]}
 							onPress={() => { choice.tone === 'deny' ? hapticWarning() : hapticSuccess(); submit(choice); }}
 						>
 							<Text style={choice.tone === 'approve' ? styles.approveBtnText : choice.tone === 'deny' ? styles.denyBtnText : styles.neutralBtnText}>{choice.label}</Text>
@@ -64,6 +67,7 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices 
 				</View>
 			) : null}
 			{error !== undefined ? <Text style={styles.approvalError}>{error}</Text> : null}
+			{refreshing === true ? <Text style={styles.approvalError}>最新の内容を取得しています。届くまで回答できません</Text> : null}
 			<Text style={styles.approvalHint}>{effectiveChoices.length > 0 ? 'PC側で回答した場合も自動的に閉じます' : 'PCのCodex画面で承認内容を確認してください'}</Text>
 		</View>
 	);

@@ -1589,6 +1589,100 @@ describe('MobileController agent approval', () => {
 
 // --- ターミナル同期プロトコル（epoch/seq/ACK） ---
 
+describe('MobileController agent refresh staleness', () => {
+	const APPROVAL = {
+		kind: 'approval', id: 'codex:s:approval-1', title: 'コマンドの実行許可', detail: 'git add src/file.ts',
+		choices: [{ id: '0', label: '許可', tone: 'approve' }, { id: '1', label: '拒否', tone: 'deny' }],
+	};
+
+	async function setup() {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'codex', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'e1', rev: 1,
+			messages: [{ rev: 1, role: 'assistant', kind: 'text', text: 'hi' }],
+			capabilities: { agentActions: true },
+			interaction: APPROVAL,
+		}));
+		await flush();
+		return { controller, pcMux, encode, latestState: () => latest };
+	}
+
+	it('keeps the chat visible while marking it stale, and only clears it on a response that carries the interaction', async () => {
+		const { controller, pcMux, encode, latestState } = await setup();
+		controller.refreshAgent('terminal-7');
+		await flush();
+		const afterRefresh = latestState()?.agentChats.get('terminal-7');
+
+		// PCは走行中のライブ本文も delta で押し出す。これは `interaction` を運ばず、購読登録が
+		// attach の応答生成より先に済むぶん**再attachの応答を追い越す**。ここで印が落ちると、
+		// 古い承認カードのまま操作できてしまう（delete をやめた分の退行になる）。
+		pcMux.send(Channels.Agent, encode({
+			t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 1, messages: [],
+			live: { phase: 'message', source: 'codex-daemon', startedAt: 10, updatedAt: 20, text: '走行中' },
+		}));
+		await flush();
+		const afterLiveDelta = latestState()?.agentChats.get('terminal-7')?.stale;
+
+		// interaction を伴う delta（attach の応答）でだけ落ちる。
+		pcMux.send(Channels.Agent, encode({
+			t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 2,
+			messages: [{ rev: 2, role: 'assistant', kind: 'text', text: 'yo' }],
+			interaction: APPROVAL,
+		}));
+		await flush();
+		const afterInteractionDelta = latestState()?.agentChats.get('terminal-7')?.stale;
+
+		controller.refreshAgent('terminal-7');
+		await flush();
+		pcMux.send(Channels.Agent, encode({ t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'e1', rev: 3, messages: [] }));
+		await flush();
+		const afterSnapshot = latestState()?.agentChats.get('terminal-7')?.stale;
+
+		expect({
+			keptChat: afterRefresh !== undefined,
+			keptMessages: afterRefresh?.messages.length,
+			marked: afterRefresh?.stale,
+			survivesLiveDelta: afterLiveDelta,
+			clearedByInteractionDelta: afterInteractionDelta,
+			clearedBySnapshot: afterSnapshot,
+		}).toEqual({
+			keptChat: true,
+			keptMessages: 1,
+			marked: true,
+			survivesLiveDelta: true,
+			clearedByInteractionDelta: undefined,
+			clearedBySnapshot: undefined,
+		});
+	});
+
+	it('does not mark a chat stale when there is no interaction to protect (old PCs would never clear it)', async () => {
+		const { controller, pcMux, encode, latestState } = await setup();
+		// interaction を持たない状態にしてから再取得する。
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'e1', rev: 4, messages: [],
+		}));
+		await flush();
+		controller.refreshAgent('terminal-7');
+		await flush();
+		expect(latestState()?.agentChats.get('terminal-7')?.stale).toBeUndefined();
+	});
+});
+
 describe('MobileController terminal sync protocol', () => {
 	async function setup() {
 		const mobile = generateIdentity();

@@ -104,6 +104,9 @@ export default function AgentDetailScreen() {
 	// interaction が届いていないのに permission と言われている状態。実IDが無く回答を送れない
 	// （PC側の hasPendingInteraction と一致しない）ので、押せない二択ではなく誘導だけを出す。
 	const approvalUnavailable = chat?.interaction === undefined && activeTerminal?.agentStatus === 'permission';
+	// 再取得を要求した直後。表示中の要求が今もPC側の現在の要求である保証がないので、カードは
+	// 残したまま操作だけ止める（useAgentActions も同じ条件で送信を拒否する）。
+	const refreshing = chat?.stale === true;
 	const actions = useAgentActions(activeKey, chat?.agent);
 
 	// 送ったがまだ読まれていないメッセージの控え。エージェントが作業中に送ると、読まれるまで
@@ -479,8 +482,8 @@ export default function AgentDetailScreen() {
 							: null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} terminalKey={activeKey} />
-								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
-								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
+								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} refreshing={refreshing} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
+								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} refreshing={refreshing} onSubmit={actions.answerQuestionGroup} />
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
 									: <AgentTimeline msgs={item.msgs} terminalKey={activeKey} />}
 						contentContainerStyle={[styles.listContent, regular && styles.readingColumn, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
@@ -541,6 +544,8 @@ export default function AgentDetailScreen() {
 
 			{approval !== undefined && activeKey !== undefined ? (
 				<View style={[styles.approvalBarWrap, regular && styles.readingColumn, regular && styles.approvalBarWrapRegular]}>
+					{/* 再取得中もカードは差し替えず、無効化だけする。別のViewへ入れ替えると
+					    送信中・失敗理由といったカード側のローカル状態が消える。 */}
 					<ApprovalCard
 						key={approval.id}
 						interactionId={approval.id}
@@ -548,6 +553,7 @@ export default function AgentDetailScreen() {
 						title={approval.title}
 						detail={approval.detail ?? findLatestApprovalRequest(chat)}
 						choices={approval.choices}
+						refreshing={refreshing}
 					/>
 				</View>
 			) : approvalUnavailable && activeKey !== undefined ? (

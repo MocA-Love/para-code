@@ -19,9 +19,11 @@ import { setMobileSpanAttributes, startMobileSpan } from '../sentry.js';
  * 同じ toolUseId の tool_result が届いたら回答済み表示になる。
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText }: {
+export function QuestionCard({ message, answered, refreshing, onAnswer, onMulti, onFreeText }: {
 	message: AgentChatMessage;
 	answered: boolean;
+	/** 再取得の応答待ち。表示は残したまま操作だけ止める（回答済みとは別の状態）。 */
+	refreshing?: boolean;
 	onAnswer: (interactionId: string, question: AgentQuestionShape, optionIndex: number) => Promise<AgentMessageSendResult>;
 	onMulti: (interactionId: string, question: AgentQuestionShape, indices: number[]) => Promise<AgentMessageSendResult>;
 	onFreeText: (interactionId: string, question: AgentQuestionShape, text: string) => Promise<AgentMessageSendResult>;
@@ -39,7 +41,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 	const interactionId = message.questionGroup ?? message.toolUseId;
 	// PC側で回答された（answered）か、対象が入れ替わったら直前の失敗表示は用済み。
 	useEffect(() => { setError(undefined); }, [answered, interactionId]);
-	const disabled = answered || submitted || interactionId === undefined;
+	const disabled = answered || submitted || refreshing === true || interactionId === undefined;
 	const isToggled = (i: number) => toggled.has(i);
 	const toggle = (i: number) => {
 		setToggled(prev => {
@@ -143,6 +145,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 				<Text style={styles.hint}>選択肢を取得できませんでした。TUI側と番号がずれる可能性があるため、ターミナルタブでの回答が確実です</Text>
 			) : null}
 			{!answered && interactionId === undefined ? <Text style={styles.hint}>この質問はモバイルから安全に回答できません。ターミナルタブで回答してください</Text> : null}
+			{!answered && refreshing === true ? <Text style={styles.hint}>最新の内容を取得しています。届くまで回答できません</Text> : null}
 			{error !== undefined ? <Text style={styles.questionError}>{error}</Text> : null}
 			{!disabled && options.length > 0 ? <Text style={styles.hint}>{multiSelect ? 'タップで選択し「決定」で回答します' : 'タップで回答します'}</Text> : null}
 		</View>
@@ -155,10 +158,12 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
  * TUIでは1問ごとのEnterがフォーム全体をSubmitしてしまうため、1問ずつの即時注入はしない
  * （送信キー列の組み立ては useAgentActions.answerQuestionGroup 側）。
  */
-export function QuestionGroupCard({ messages, answered, onSubmit }: {
+export function QuestionGroupCard({ messages, answered, refreshing, onSubmit }: {
 	/** 同一 questionGroup の質問（questionIndex 順）。 */
 	messages: AgentChatMessage[];
 	answered: boolean;
+	/** 再取得の応答待ち。表示は残したまま操作だけ止める（回答済みとは別の状態）。 */
+	refreshing?: boolean;
 	onSubmit: (interactionId: string, questions: readonly AgentQuestionShape[], answers: QuestionGroupAnswer[]) => Promise<AgentMessageSendResult>;
 }) {
 	const [step, setStep] = useState(0);
@@ -169,7 +174,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
 	// PC側で回答された（answered）か、対象が入れ替わったら直前の失敗表示は用済み。
 	useEffect(() => { setError(undefined); }, [answered, interactionId]);
-	const disabled = answered || submitted || interactionId === undefined;
+	const disabled = answered || submitted || refreshing === true || interactionId === undefined;
 	const current = messages[step];
 	const options = current?.options ?? [];
 	const multiSelect = current?.multiSelect === true;
