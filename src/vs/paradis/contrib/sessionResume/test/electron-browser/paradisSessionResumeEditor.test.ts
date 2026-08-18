@@ -27,7 +27,8 @@ import { EditorInput } from '../../../../../workbench/common/editor/editorInput.
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ParadisSessionResumeEditor } from '../../electron-browser/paradisSessionResumeEditor.js';
-import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSession } from '../../common/paradisSessionResume.js';
+import { IParadisResumeListRequestWithUri } from '../../electron-browser/paradisSessionResumeClient.js';
+import { IParadisResumePreview, IParadisResumeSession } from '../../common/paradisSessionResume.js';
 import { paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from '../../electron-browser/paradisSessionResumeOrchestration.js';
 
 suite('ParadisSessionResumeEditor', () => {
@@ -370,12 +371,12 @@ suite('ParadisSessionResumeEditor', () => {
 });
 
 class TestResumeClient {
-	readonly listRequests: IParadisResumeListRequest[] = [];
+	readonly listRequests: IParadisResumeListRequestWithUri[] = [];
 	listResult: () => Promise<readonly IParadisResumeSession[]> = async () => [];
 	previewResult: () => Promise<IParadisResumePreview> = async () => ({ messages: [], truncated: false });
 	searchResult: () => Promise<readonly []> = async () => [];
 
-	async list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
+	async list(request: IParadisResumeListRequestWithUri): Promise<readonly IParadisResumeSession[]> {
 		this.listRequests.push(request);
 		return this.listResult();
 	}

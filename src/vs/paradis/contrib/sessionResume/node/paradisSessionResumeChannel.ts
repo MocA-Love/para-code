@@ -17,6 +17,7 @@ import { basename, isAbsolute, join, resolve } from '../../../../base/common/pat
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -794,19 +795,33 @@ export class ParadisSessionResumeService {
 	}
 }
 
-export class ParadisSessionResumeChannel implements IServerChannel<string> {
+/**
+ * `search` の revision 追跡に使うクライアント識別子。shared process の ctx は string、REH の ctx は
+ * `{clientId}` を持つ接続情報。想定外の形の ctx では、失効の的にならない一意な値を都度作る
+ * （`String(ctx)` に倒すと全クライアントが同じキーへ落ちて、無関係な検索同士が誤って
+ * 打ち切り合うため、"検索が失効しない"側へ倒す方が安全）。
+ */
+function clientIdFrom(ctx: unknown): string {
+	if (typeof ctx === 'string') {
+		return ctx;
+	}
+	const clientId = (ctx as { clientId?: unknown } | undefined)?.clientId;
+	return typeof clientId === 'string' ? clientId : generateUuid();
+}
+
+export class ParadisSessionResumeChannel<TContext = string> implements IServerChannel<TContext> {
 	constructor(private readonly service: ParadisSessionResumeService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest) as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
-			case 'search': return this.service.search(ctx, typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
+			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			default: throw new Error(`Method not found: ${command}`);
 		}
 	}
@@ -815,5 +830,18 @@ export class ParadisSessionResumeChannel implements IServerChannel<string> {
 export function registerParadisSessionResume(server: IPCServer<string>, logService: ILogService): IDisposable {
 	const service = new ParadisSessionResumeService(undefined, logService);
 	server.registerChannel(PARADIS_SESSION_RESUME_CHANNEL, new ParadisSessionResumeChannel(service));
+	return { dispose() { } };
+}
+
+/**
+ * serverServices.ts（REH）の登録点から1行で呼べるファクトリ。
+ *
+ * SSH 接続先の ~/.claude・~/.codex が実際に transcript を持つ側。shared process 版は常に手元の
+ * マシンで動き、接続先のホームには一切到達できないため、同じチャネルを接続先にも生やす。
+ */
+export function registerParadisSessionResumeForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	const service = new ParadisSessionResumeService(undefined, logService);
+	server.registerChannel(PARADIS_SESSION_RESUME_CHANNEL, new ParadisSessionResumeChannel<TContext>(service));
+	// service は取り置きの Map しか持たず（開いた handle は都度 close される）、解放すべき資源が無い。
 	return { dispose() { } };
 }

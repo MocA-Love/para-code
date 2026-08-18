@@ -114,6 +114,8 @@ import { registerParadisCcusageForServer } from '../../paradis/contrib/ccusage/n
 import { registerParadisLimitsMonitorForServer } from '../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
 // PARA-PATCH: this machine's own load, for a connected client to show instead of its own
 import { registerParadisHostResourcesForServer } from '../../paradis/contrib/resourceMonitor/node/paradisHostResourcesChannel.js';
+// PARA-PATCH: agent session transcripts (~/.claude, ~/.codex) live on this machine, so a connected client's Session Resume view asks here
+import { registerParadisSessionResumeForServer } from '../../paradis/contrib/sessionResume/node/paradisSessionResumeChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -361,6 +363,9 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// PARA-PATCH: while a client is connected, the terminals and agents run here, so
 		// "how busy is the machine" means this machine, not the one showing the window.
 		disposables.add(registerParadisHostResourcesForServer(socketServer, logService));
+		// PARA-PATCH: expose the same Session Resume channel the shared process has, so a connected
+		// client's Session Resume view can list/preview/search transcripts saved on this machine.
+		disposables.add(registerParadisSessionResumeForServer(socketServer, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 
