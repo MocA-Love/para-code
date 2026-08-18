@@ -13,6 +13,7 @@ import * as marked from '../common/marked/marked.js';
 import { parse } from '../common/marshalling.js';
 import { FileAccess, Schemas } from '../common/network.js';
 import { cloneAndChange } from '../common/objects.js';
+import { paradisTruncateAtFullWidthLinkTermination } from '../common/paradisFullWidthLinkTermination.js';
 import { basename as pathBasename } from '../common/path.js';
 import { basename, dirname, resolvePath } from '../common/resources.js';
 import { escape } from '../common/strings.js';
@@ -121,8 +122,21 @@ const defaultMarkedRenderers = Object.freeze({
 		}
 
 		// Remove markdown escapes. Workaround for https://github.com/chjj/marked/issues/829
+		// PARA-PATCH: a bare http(s) autolink immediately followed by full-width CJK punctuation
+		// allow-any-unicode-next-line
+		// (e.g. a CLI agent writing `https://example.com/pull/3515（ドラフト）`) is swallowed whole
+		// by marked's URL tokenizer, so the rendered link opens a URL that 404s. Move anything from
+		// the first full-width terminator onward back out of the link. See
+		// paradisFullWidthLinkTermination.ts.
+		let linkTrailingText = '';
 		if (href === text) { // raw link case
 			text = removeMarkdownEscapes(text);
+			const truncatedText = paradisTruncateAtFullWidthLinkTermination(text);
+			if (truncatedText.length < text.length) {
+				linkTrailingText = text.slice(truncatedText.length);
+				text = truncatedText;
+				href = truncatedText;
+			}
 		}
 
 		title = typeof title === 'string' ? escapeDoubleQuotes(removeMarkdownEscapes(title)) : '';
@@ -147,7 +161,7 @@ const defaultMarkedRenderers = Object.freeze({
 			.replace(/'/g, '&#39;');
 
 		const effectiveTitle = title || (isCommandUri ? '' : href);
-		return `<a href="${href}" title="${effectiveTitle}" draggable="false">${text}</a>`;
+		return `<a href="${href}" title="${effectiveTitle}" draggable="false">${text}</a>${escape(linkTrailingText)}`;
 	},
 });
 
