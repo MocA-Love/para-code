@@ -14,6 +14,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { basename } from '../../../../base/common/resources.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -34,8 +35,8 @@ import { IChatOutputRendererService } from '../../../../workbench/contrib/chat/b
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSpace, ParadisResumeAgent } from '../common/paradisSessionResume.js';
-import { ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
+import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent } from '../common/paradisSessionResume.js';
+import { IParadisResumeSpaceWithUri, ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
 import { PARADIS_SESSION_RESUME_EDITOR_ID } from './paradisSessionResumeInput.js';
 import { IParadisSessionResumeEditorOptions, paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from './paradisSessionResumeOrchestration.js';
 import { ParadisSessionResumeRefreshController } from './paradisSessionResumeRefreshController.js';
@@ -44,10 +45,6 @@ const $ = dom.$;
 type AgentFilter = 'all' | ParadisResumeAgent;
 type PeriodFilter = 'all' | 'day' | 'week' | 'month';
 const SPACE_FILTER_PREFIX = 'space:';
-
-interface IResumeSpaceView extends IParadisResumeSpace {
-	readonly uri: URI;
-}
 
 export class ParadisSessionResumeEditor extends EditorPane {
 	static readonly ID = PARADIS_SESSION_RESUME_EDITOR_ID;
@@ -64,7 +61,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	private readonly renderDisposables = this._register(new DisposableStore());
 	private readonly searchScheduler = this._register(new RunOnceScheduler(() => this.searchTranscripts(), 250));
 	private readonly client: ParadisSessionResumeClient;
-	private spaces: readonly IResumeSpaceView[] = [];
+	private spaces: readonly IParadisResumeSpaceWithUri[] = [];
 	private sessions: readonly IParadisResumeSession[] = [];
 	private selected: IParadisResumeSession | undefined;
 	private previewMessages: readonly IParadisResumeMessage[] | undefined;
@@ -241,21 +238,23 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		this.refreshController.setVisible(visible);
 	}
 
-	private collectSpaces(): readonly IResumeSpaceView[] {
+	private collectSpaces(): readonly IParadisResumeSpaceWithUri[] {
 		const current = this.workspaceSwitchService.activeStateKey;
-		const spaces: IResumeSpaceView[] = [];
+		const spaces: IParadisResumeSpaceWithUri[] = [];
+		// file はローカルの、vscode-remote は SSH 接続先のリポジトリ。それ以外（未保存など）は対象外。
+		const isResumableScheme = (scheme: string) => scheme === Schemas.file || scheme === Schemas.vscodeRemote;
 		for (const repository of this.workspaceSwitchService.repositories) {
-			if (repository.uri.scheme !== 'file') {
+			if (!isResumableScheme(repository.uri.scheme)) {
 				continue;
 			}
-			spaces.push({ stateKey: repository.id, name: repository.name, cwd: repository.uri.fsPath, uri: repository.uri, current: repository.id === current });
+			spaces.push({ stateKey: repository.id, name: repository.name, uri: repository.uri, current: repository.id === current });
 			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (worktree.missing || worktree.isMainCheckout || worktree.uri.scheme !== 'file') {
+				if (worktree.missing || worktree.isMainCheckout || !isResumableScheme(worktree.uri.scheme)) {
 					continue;
 				}
 				const stateKey = paradisWorktreeStateKey(worktree.uri);
 				spaces.push({
-					stateKey, name: `${repository.name} ✦ ${worktree.name}`, cwd: worktree.uri.fsPath, uri: worktree.uri,
+					stateKey, name: `${repository.name} ✦ ${worktree.name}`, uri: worktree.uri,
 					current: stateKey === current,
 				});
 			}
@@ -281,7 +280,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			this.spaces = this.collectSpaces();
 			this.updateSpaceSelectOptions();
 			this.sessions = await this.client.list({
-				spaces: this.spaces.map(({ stateKey, name, cwd, current }) => ({ stateKey, name, cwd, current })),
+				spaces: this.spaces,
 				includeArchived: this.archivedInput?.checked === true,
 			});
 			if (this._store.isDisposed) {
@@ -365,7 +364,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		dom.clearNode(this.list);
 		dom.clearNode(this.detail);
 		if (this.loading && this.sessions.length === 0) {
-			this.renderState(this.list, Codicon.loading, localize('paradis.sessionResume.loading', "ローカルのセッション履歴を読み込んでいます…"), true);
+			this.renderState(this.list, Codicon.loading, localize('paradis.sessionResume.loading', "セッション履歴を読み込んでいます…"), true);
 			this.renderState(this.detail, Codicon.history, localize('paradis.sessionResume.selectAfterLoad', "セッションを選択すると会話を確認できます。"));
 			return;
 		}
