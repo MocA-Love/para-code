@@ -41,11 +41,6 @@ export class ParadisMobileCanvasChannel implements IServerChannel<string> {
 				this.service.detach(requireString(request, 'paneToken'));
 				return Promise.resolve(undefined as T);
 			}
-			case 'releaseScope': {
-				const request = requireObject(arg);
-				this.service.releaseScope(requireString(request, 'stateKey'));
-				return Promise.resolve(undefined as T);
-			}
 			default:
 				throw new Error(`Call not found: ${command}`);
 		}

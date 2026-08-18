@@ -24,6 +24,7 @@ import './contrib/workspaceSwitch/electron-browser/paradisCreateWorktree.contrib
 import './contrib/workspaceSwitch/electron-browser/paradisAddRepositoryFlow.contribution.js';
 // モバイル端末⇔ターミナルペインのアタッチUIが使うモデル（registerSingletonを起動時に確実に走らせる）
 import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
+import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasLifecycle.contribution.js';
 import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationSettingsDialog.contribution.js';

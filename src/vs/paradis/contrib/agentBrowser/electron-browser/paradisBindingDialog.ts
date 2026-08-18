@@ -159,11 +159,15 @@ const STR_BTN_DETACH = localize('paradis.bindingDialog.btnDetach', "解除");
 // allow-any-unicode-next-line
 const STR_DEVICE_UNATTACHED = localize('paradis.bindingDialog.deviceUnattached', "未アタッチ");
 // allow-any-unicode-next-line
-const strDeviceAttachedHere = (pane: string) => localize('paradis.bindingDialog.deviceAttachedHere', "アタッチ中 · {0}", pane);
+const strDeviceAttachedTo = (panes: string) => localize('paradis.bindingDialog.deviceAttachedTo', "アタッチ中 · {0}", panes);
 // allow-any-unicode-next-line
-const strDeviceAttachedElse = (pane: string) => localize('paradis.bindingDialog.deviceAttachedElse', "別のペインが使用中: {0}", pane);
+const strPaneHoldsOtherDevice = (device: string) => localize('paradis.bindingDialog.paneHoldsOtherDevice', "{0} をアタッチ中 — 渡すと入れ替わります", device);
 // allow-any-unicode-next-line
-const STR_DEVICES_PICK_PANE = localize('paradis.bindingDialog.devicesPickPane', "この端末を渡すターミナルペインを選んでください");
+const STR_BTN_CHOOSE_PANES = localize('paradis.bindingDialog.btnChoosePanes', "ペインを選ぶ");
+// allow-any-unicode-next-line
+const STR_BTN_CLOSE_PANES = localize('paradis.bindingDialog.btnClosePanes', "閉じる");
+// allow-any-unicode-next-line
+const STR_DEVICES_PICK_PANE = localize('paradis.bindingDialog.devicesPickPane', "この端末を渡すターミナルペインを選んでください（同じ端末を複数のペインへ同時に渡せます）");
 // allow-any-unicode-next-line
 const STR_DEVICES_NO_PANE = localize('paradis.bindingDialog.devicesNoPane', "アタッチできるターミナルペインがありません。新しいターミナルでエージェントCLIを起動してください。");
 // allow-any-unicode-next-line
@@ -705,8 +709,9 @@ export class ParadisBindingDialog extends Disposable {
 
 		const panes = this.bindingModel.getPanes();
 		for (const device of snapshot.devices) {
-			const attachment = snapshot.attachments.find(entry => entry.deviceId === device.id);
-			const attachedPane = attachment ? panes.find(pane => pane.token === attachment.paneToken) : undefined;
+			// 1台の端末を複数のペインへ同時にアタッチできる（1ペイン1台だけを守る）ので、
+			// ここは配列で受ける。
+			const attached = snapshot.attachments.filter(entry => entry.deviceId === device.id);
 
 			const row = dom.append(list, $('.pbd-pane-row'));
 			const main = dom.append(row, $('.pbd-row-main'));
@@ -716,27 +721,18 @@ export class ParadisBindingDialog extends Disposable {
 			dom.append(statePill, $(`.pbd-dot.${device.isRunning ? 'green' : 'gray'}`));
 			dom.append(statePill, $('span')).textContent = device.isRunning ? STR_DEVICE_RUNNING : STR_DEVICE_STOPPED;
 
-			const paneLabel = attachedPane ? this._paneDisplayName(attachedPane) : attachment?.paneToken ?? '';
-			const status = attachment
-				? (attachedPane ? strDeviceAttachedHere(paneLabel) : strDeviceAttachedElse(paneLabel))
-				: STR_DEVICE_UNATTACHED;
+			const status = attached.length === 0
+				? STR_DEVICE_UNATTACHED
+				: strDeviceAttachedTo(attached.map(entry => this._attachmentPaneLabel(entry, panes)).join('、'));
 			dom.append(main, $('.pbd-row-sub')).textContent = device.runtime ? `${device.runtime} · ${status}` : status;
 
-			const button = dom.append(row, $('button.pbd-row-btn')) as HTMLButtonElement;
-			if (attachment) {
-				button.classList.add('unshare');
-				button.textContent = STR_BTN_DETACH;
-				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
-					void this._runDeviceAction(() => this.mobileCanvasModel.detach(attachment.paneToken));
-				}));
-			} else {
-				button.classList.add('share');
-				button.textContent = STR_BTN_ATTACH;
-				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
-					this._attachTargetDeviceId = this._attachTargetDeviceId === device.id ? undefined : device.id;
-					this._render();
-				}));
-			}
+			// アタッチも解除も渡し先ペインごとの操作なので、行のボタンはペイン一覧の開閉に徹する。
+			const button = dom.append(row, $('button.pbd-row-btn.share')) as HTMLButtonElement;
+			button.textContent = this._attachTargetDeviceId === device.id ? STR_BTN_CLOSE_PANES : STR_BTN_CHOOSE_PANES;
+			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+				this._attachTargetDeviceId = this._attachTargetDeviceId === device.id ? undefined : device.id;
+				this._render();
+			}));
 
 			if (this._attachTargetDeviceId === device.id) {
 				this._renderAttachTargets(list, device.id, panes, snapshot.attachments);
@@ -744,32 +740,56 @@ export class ParadisBindingDialog extends Disposable {
 		}
 	}
 
-	/** 「アタッチ」を押した端末の直下に出す、渡し先ペインの一覧。 */
+	/** 台帳のエントリを、実在するペイン名（無ければ生のトークン）で表す。 */
+	private _attachmentPaneLabel(attachment: IParadisMobileAttachment, panes: readonly IParadisPaneDescriptor[]): string {
+		const pane = panes.find(candidate => candidate.token === attachment.paneToken);
+		return pane ? this._paneDisplayName(pane) : attachment.paneToken;
+	}
+
+	/**
+	 * 端末の直下に出す、渡し先ペインの一覧。この端末を既に持っているペインは「解除」になり、
+	 * 持っていないペインは「アタッチ」になる。アタッチと解除の両方がここで完結する。
+	 */
 	private _renderAttachTargets(
 		list: HTMLElement,
 		deviceId: string,
 		panes: readonly IParadisPaneDescriptor[],
 		attachments: readonly IParadisMobileAttachment[],
 	): void {
-		// 既に別の端末を持っているペインは、取り違えを避けるため候補から外す。
-		const available = panes.filter(pane => !attachments.some(entry => entry.paneToken === pane.token));
-		if (available.length === 0) {
+		if (panes.length === 0) {
 			dom.append(list, $('.pbd-empty')).textContent = STR_DEVICES_NO_PANE;
 			return;
 		}
 		dom.append(list, $('.pbd-scope-note')).textContent = STR_DEVICES_PICK_PANE;
-		for (const pane of available) {
+		for (const pane of panes) {
+			const current = attachments.find(entry => entry.paneToken === pane.token);
+			const holdsThisDevice = current?.deviceId === deviceId;
+
 			const row = dom.append(list, $('.pbd-pane-row'));
 			const main = dom.append(row, $('.pbd-row-main'));
 			dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
-			dom.append(main, $('.pbd-row-sub')).textContent = this._paneMcpConnected(pane) ? STR_SUB_READY : STR_SUB_NEEDS_MCP;
-			const button = dom.append(row, $('button.pbd-row-btn.share')) as HTMLButtonElement;
-			button.textContent = STR_BTN_ATTACH;
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
-				// スペースを跨いだアタッチを残さないよう、アタッチ時点の所属スペースを添えて記録する。
-				const stateKey = this.terminalScopeService.getStateKeyForInstance(pane.instanceId);
-				void this._runDeviceAction(() => this.mobileCanvasModel.attach(pane.token, deviceId, stateKey));
-			}));
+			// 1ペイン1台なので、別の端末を持っているペインへ渡すと入れ替わる。何が外れるかを先に見せる。
+			const sub = current && !holdsThisDevice
+				? strPaneHoldsOtherDevice(current.deviceName)
+				: (this._paneMcpConnected(pane) ? STR_SUB_READY : STR_SUB_NEEDS_MCP);
+			dom.append(main, $('.pbd-row-sub')).textContent = sub;
+
+			const button = dom.append(row, $('button.pbd-row-btn')) as HTMLButtonElement;
+			if (holdsThisDevice) {
+				button.classList.add('unshare');
+				button.textContent = STR_BTN_DETACH;
+				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+					void this._runDeviceAction(() => this.mobileCanvasModel.detach(pane.token));
+				}));
+			} else {
+				button.classList.add('share');
+				button.textContent = STR_BTN_ATTACH;
+				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+					// どのスペースのペインへ渡したかを残しておく（表示と将来の後始末のため）。
+					const stateKey = this.terminalScopeService.getStateKeyForInstance(pane.instanceId);
+					void this._runDeviceAction(() => this.mobileCanvasModel.attach(pane.token, deviceId, stateKey));
+				}));
+			}
 		}
 	}
 
