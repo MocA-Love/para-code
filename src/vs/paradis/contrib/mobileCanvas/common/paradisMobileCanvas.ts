@@ -23,9 +23,26 @@ export interface IParadisMobileDevice {
 	readonly platform: string;
 	/** 例: `iOS 18.4`。無い場合もある。 */
 	readonly runtime?: string;
+	/**
+	 * 画面の寸法。**ピクセルと「ポイント」の両方を持つのが要点**で、
+	 * スクリーンショットはピクセル、入力系（tap/swipe）はポイントを使う。
+	 * この対応が分からないとスクリーンショットを見て座標を出しても必ず外れる。
+	 */
+	readonly display?: IParadisMobileDisplay;
 	/** 例: `booted` / `shutdown`。ホストの表記をそのまま通す。 */
 	readonly state: string;
 	readonly isRunning: boolean;
+}
+
+/** 端末画面の寸法。ピクセル空間とポイント空間の対応を表す。 */
+export interface IParadisMobileDisplay {
+	readonly pixelWidth: number;
+	readonly pixelHeight: number;
+	readonly pointWidth: number;
+	readonly pointHeight: number;
+	/** ピクセル = ポイント × scale。 */
+	readonly scale: number;
+	readonly orientation?: string;
 }
 
 /** 1ペイン分のアタッチ状態。 */
