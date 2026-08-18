@@ -1,0 +1,500 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* レイアウトプリセットの編集キャンバスと、タブバーから開くプリセット一覧のポップオーバー。
+	色はすべてワークベンチのテーマ変数から取り、固定色を持たない。 */
+
+/* --- 編集キャンバス（EditorPane） ------------------------------------------------------------ */
+
+.paradis-layout-preset-editor {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+}
+
+.paradis-layout-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-layout-toolbar-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-layout-toolbar-spacer {
+	flex: 1 1 auto;
+}
+
+.paradis-layout-slot-count {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-layout-name,
+.paradis-layout-select {
+	height: 26px;
+	padding: 0 6px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-family: inherit;
+	font-size: 12px;
+}
+
+.paradis-layout-name {
+	width: 200px;
+}
+
+.paradis-layout-name:focus,
+.paradis-layout-select:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-layout-button {
+	height: 26px;
+	padding: 0 12px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 4px;
+	background-color: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-family: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.paradis-layout-button:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-layout-button.primary {
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-layout-button.primary:hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.paradis-layout-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+.paradis-layout-hint {
+	flex: 0 0 auto;
+	padding: 5px 12px;
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--vscode-descriptionForeground);
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-layout-canvas {
+	flex: 1 1 auto;
+	display: flex;
+	min-height: 0;
+	padding: 8px;
+}
+
+.paradis-layout-split {
+	display: flex;
+	flex: 1 1 0;
+	gap: 6px;
+	min-width: 0;
+	min-height: 0;
+}
+
+.paradis-layout-split.columns {
+	flex-direction: row;
+}
+
+.paradis-layout-split.rows {
+	flex-direction: column;
+}
+
+.paradis-layout-pane {
+	position: relative;
+	display: flex;
+	flex: 1 1 0;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 6px;
+	background-color: var(--vscode-editorWidget-background);
+}
+
+/* 種類ごとの色分けは上辺の線だけに載せる（面を塗ると中身の文字のコントラストが崩れる）。 */
+.paradis-layout-pane.kind-terminal {
+	border-top: 2px solid var(--vscode-charts-green);
+}
+
+.paradis-layout-pane.kind-browser {
+	border-top: 2px solid var(--vscode-charts-blue);
+}
+
+.paradis-layout-pane.kind-file {
+	border-top: 2px solid var(--vscode-charts-yellow);
+}
+
+.paradis-layout-pane-header {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	padding: 5px 6px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-layout-pane-kind {
+	flex: 0 0 auto;
+	max-width: 110px;
+	height: 22px;
+	padding: 0 4px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-family: inherit;
+	font-size: 11px;
+}
+
+.paradis-layout-pane-field {
+	flex: 1 1 90px;
+	min-width: 60px;
+	height: 22px;
+	padding: 0 6px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+}
+
+.paradis-layout-pane-kind:focus,
+.paradis-layout-pane-field:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-layout-pane-remove {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-layout-pane-remove:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-layout-pane-remove:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* 分割ゾーンの基準。ヘッダー（プルダウン・入力欄）まで覆わないよう、
+	ゾーンは枠全体ではなくこの本文領域の中に閉じ込める。 */
+.paradis-layout-pane-body {
+	position: relative;
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	min-height: 0;
+	padding: 8px;
+	overflow: hidden;
+	text-align: center;
+}
+
+.paradis-layout-pane-glyph {
+	font-size: 20px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-layout-pane-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-layout-pane-detail {
+	max-width: 100%;
+	font-family: var(--monaco-monospace-font);
+	font-size: 10.5px;
+	color: var(--vscode-foreground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* 分割の当たり判定。枠の端に寄せて、ホバーで初めて見えるようにする
+	（常時見えていると、枠そのものの形が読み取りにくくなる）。 */
+.paradis-layout-split-zone {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 2;
+	border: 0;
+	background-color: transparent;
+	color: var(--vscode-focusBorder);
+	opacity: 0;
+	cursor: pointer;
+	transition: opacity 100ms ease, background-color 100ms ease;
+}
+
+.paradis-layout-pane:hover .paradis-layout-split-zone,
+.paradis-layout-pane:focus-within .paradis-layout-split-zone {
+	opacity: 1;
+	background-color: color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent);
+}
+
+.paradis-layout-pane .paradis-layout-split-zone:hover {
+	opacity: 1;
+	background-color: color-mix(in srgb, var(--vscode-focusBorder) 40%, transparent);
+}
+
+.paradis-layout-split-zone.up {
+	top: 0;
+	left: 25%;
+	right: 25%;
+	height: 22%;
+	border-radius: 0 0 6px 6px;
+}
+
+.paradis-layout-split-zone.down {
+	bottom: 0;
+	left: 25%;
+	right: 25%;
+	height: 22%;
+	border-radius: 6px 6px 0 0;
+}
+
+.paradis-layout-split-zone.left {
+	left: 0;
+	top: 25%;
+	bottom: 25%;
+	width: 22%;
+	border-radius: 0 6px 6px 0;
+}
+
+.paradis-layout-split-zone.right {
+	right: 0;
+	top: 25%;
+	bottom: 25%;
+	width: 22%;
+	border-radius: 6px 0 0 6px;
+}
+
+/* --- タブバーから開くプリセット一覧のポップオーバー ------------------------------------------- */
+
+.paradis-layout-popover {
+	display: flex;
+	flex-direction: column;
+	width: 300px;
+	max-height: 420px;
+	padding: 8px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 8px;
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow);
+}
+
+.paradis-layout-popover-title {
+	flex: 0 0 auto;
+	padding: 2px 4px 8px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-layout-popover-list {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.paradis-layout-popover-empty {
+	padding: 8px 4px 12px;
+	font-size: 11.5px;
+	line-height: 1.6;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-layout-popover-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.paradis-layout-popover-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-layout-popover-item:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* 形のサムネイル。枠の割合をそのまま縮めて描くので、名前を読まなくても形が分かる。 */
+.paradis-layout-thumb {
+	display: flex;
+	flex: 0 0 auto;
+	gap: 1px;
+	width: 46px;
+	height: 32px;
+	padding: 2px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 3px;
+	background-color: var(--vscode-editor-background);
+}
+
+.paradis-layout-thumb-split {
+	display: flex;
+	flex: 1 1 0;
+	gap: 1px;
+	min-width: 0;
+	min-height: 0;
+}
+
+.paradis-layout-thumb-split.columns {
+	flex-direction: row;
+}
+
+.paradis-layout-thumb-split.rows {
+	flex-direction: column;
+}
+
+.paradis-layout-thumb-slot {
+	flex: 1 1 0;
+	min-width: 0;
+	min-height: 0;
+	border-radius: 1px;
+	background-color: var(--vscode-editorWidget-border);
+}
+
+.paradis-layout-thumb-slot.kind-terminal {
+	background-color: var(--vscode-charts-green);
+}
+
+.paradis-layout-thumb-slot.kind-browser {
+	background-color: var(--vscode-charts-blue);
+}
+
+.paradis-layout-thumb-slot.kind-file {
+	background-color: var(--vscode-charts-yellow);
+}
+
+.paradis-layout-popover-main {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.paradis-layout-popover-name {
+	font-size: 12px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-layout-popover-summary {
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-layout-popover-actions {
+	display: flex;
+	flex: 0 0 auto;
+	gap: 1px;
+	visibility: hidden;
+}
+
+.paradis-layout-popover-item:hover .paradis-layout-popover-actions,
+.paradis-layout-popover-item:focus-within .paradis-layout-popover-actions {
+	visibility: visible;
+}
+
+.paradis-layout-popover-action {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-layout-popover-action:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-layout-popover-action:focus-visible {
+	visibility: visible;
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-layout-popover-footer {
+	flex: 0 0 auto;
+	display: flex;
+	gap: 6px;
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-layout-popover-footer .paradis-layout-button {
+	flex: 1 1 0;
+}
