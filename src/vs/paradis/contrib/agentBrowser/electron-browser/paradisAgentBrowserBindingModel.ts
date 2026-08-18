@@ -16,18 +16,22 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { paradisCollectLivePaneInstances } from '../browser/paradisLivePaneInstances.js';
 import { IParadisAbortBindResult, IParadisCommitBindResult, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPrepareBindRequest, IParadisPrepareBindResult, ParadisMcpCli, IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler } from '../common/paradisBrowserBindingLifecycle.js';
 import { IParadisBindEligibility, IParadisBrowserScopeService, IParadisTerminalScopeService, ParadisStableBindingScope, paradisBindingScopesEqual, paradisEvaluateBindingScopeEligibility, paradisRequireBindingScopeEligibility } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
+import { ParadisRemoteMcpSetupController } from './paradisRemoteMcpSetup.js';
 
 export const IParadisAgentBrowserBindingModel = createDecorator<IParadisAgentBrowserBindingModel>('paradisAgentBrowserBindingModel');
 
@@ -285,6 +289,9 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IParadisBrowserScopeService private readonly browserScopeService: IParadisBrowserScopeService,
 		@IParadisAgentBrowserAuthoritySyncService private readonly authoritySyncService: IParadisAgentBrowserAuthoritySyncService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IPathService private readonly pathService: IPathService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
 		const pollTimer = options?.pollTimerFactory?.() ?? {
@@ -877,25 +884,66 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	async setupMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
+		if (this._isSshRemote()) {
+			return this._remoteMcpSetup().fix(cli);
+		}
 		const request: IParadisMcpSetupRequest = { cli };
 		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 			.call<IParadisMcpSetupResult>('setupMcp', [request]);
 	}
 
 	async getMcpConfigStatus(): Promise<IParadisMcpConfigStatus> {
+		if (this._isSshRemote()) {
+			return this._remoteMcpSetup().status();
+		}
 		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 			.call<IParadisMcpConfigStatus>('getMcpConfigStatus');
 	}
 
 	async fixMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
+		if (this._isSshRemote()) {
+			return this._remoteMcpSetup().fix(cli);
+		}
 		const request: IParadisMcpFixRequest = { cli };
 		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 			.call<IParadisMcpSetupResult>('fixMcp', [request]);
 	}
 
+	/**
+	 * この番号は「今のウィンドウのターミナルペインで動くエージェントが繋ぐべきゲートウェイ」を
+	 * 表す。SSH接続中は接続先のペインでエージェントが動くため、手元のゲートウェイポートではなく
+	 * 戻りトンネルが接続先で実際に受け取った番号を返す（`paradisRemoteAgentHooks.contribution.ts`
+	 * が接続先の設定へ書き込むのと同じ番号）。
+	 */
 	getGatewayEndpoint(): Promise<IParadisGatewayEndpoint> {
+		if (this._isSshRemote()) {
+			return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+				.call<number | undefined>('ensureRemoteAgentTunnel', [this.environmentService.remoteAuthority])
+				.then(port => {
+					if (port === undefined) {
+						throw new Error('Para Browser return tunnel is not available.');
+					}
+					return { port };
+				});
+		}
 		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 			.call<IParadisGatewayEndpoint>('getGatewayEndpoint');
+	}
+
+	private _isSshRemote(): boolean {
+		return this.environmentService.remoteAuthority?.startsWith('ssh-remote+') === true;
+	}
+
+	private _remoteMcpSetupController: ParadisRemoteMcpSetupController | undefined;
+	private _remoteMcpSetup(): ParadisRemoteMcpSetupController {
+		if (this._remoteMcpSetupController === undefined) {
+			this._remoteMcpSetupController = new ParadisRemoteMcpSetupController(
+				this.fileService,
+				() => this.pathService.userHome(),
+				() => this.getGatewayEndpoint().then(endpoint => endpoint.port, () => undefined),
+			);
+		}
+		return this._remoteMcpSetupController;
 	}
 
 	async unbindPage(model: IBrowserViewModel): Promise<number> {
