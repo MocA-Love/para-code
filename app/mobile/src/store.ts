@@ -8,12 +8,14 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
 import { isValidPresetDef } from './presets.js';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
+import { reuseWorkspaceState } from './workspaceIdentity.js';
+import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
 export interface WorkspacePrStatus {
@@ -1058,6 +1060,11 @@ export interface AgentChatState {
 	/** PC側がsession検証付きAgent Actionを受け付ける。 */
 	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
+	/**
+	 * 再取得を要求した直後で、表示中の内容がPC側の現状と一致している保証がない。
+	 * カードは描いたまま操作だけを止めるための印で、PCからの応答（snapshot/delta/none）で落ちる。
+	 */
+	stale?: true;
 }
 
 export interface AgentInteraction {
@@ -1230,6 +1237,12 @@ export function createEmptyStoreState(): StoreState {
 const IDENTITY_KEY = 'para.identity';
 const CREDS_KEY = 'para.credentials';
 const OPERATION_RUN_KEY = 'para.operationRun';
+/**
+ * stale の印を自動で落とすまでの猶予。PC側は attach を解決できないと15秒で黙って捨てるので、
+ * その倍を待ってから諦める（短すぎると、遅れて届いた応答の直前に印が外れて誤操作を許す）。
+ */
+const AGENT_STALE_WATCHDOG_MS = 30_000;
+
 const MAX_TERM_BUFFER = 200_000;
 // --- ターミナル同期プロトコル（epoch/seq対応PC向け）の定数 ---
 // 受信文字数がこの閾値を超えるたびにACKを返す（PC側フロー制御の材料。本家
@@ -1356,6 +1369,13 @@ export class MobileController {
 	 */
 	private attachedAgents = new Map<string, number>();
 	private readonly attachedAgentTargets = new Map<string, string>();
+	/**
+	 * state の交渉が済むまでの間に届いたライブ系フレームの預かり所。
+	 * 投機attach（state を待たずに送る attach）の応答を取りこぼさないために持つ。
+	 */
+	private readonly resumeFrames = new ResumeFrameBuffer();
+	/** stale を立てたまま応答が来なかったときに印を落とすためのタイマー（terminalKey 単位）。 */
+	private readonly staleWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
 	private readonly agentControlTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly agentCommandCatalogTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
@@ -1622,6 +1642,8 @@ export class MobileController {
 				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
 				if (s === 'online') {
 					this.requestState();
+					// state の返信を待たずに同じフラッシュで送る。ここで分けて待つと復帰が2往復になる。
+					this.sendSpeculativeAgentAttaches();
 					this.registerPushToken();
 				}
 			},
@@ -1640,6 +1662,7 @@ export class MobileController {
 					agentChatsChanged = this.cancelStaleRendererRequests();
 				} else if (this.state.connection === 'online') {
 					this.requestState();
+					this.sendSpeculativeAgentAttaches();
 				}
 				this.emit(agentChatsChanged ? { agentChats: true } : undefined);
 			},
@@ -1723,12 +1746,16 @@ export class MobileController {
 			this.lastCredentials = undefined;
 			this.attachedAgents.clear();
 			this.attachedAgentTargets.clear();
+			// 預かっていたライブフレームも捨てる。ペアリングを解いた後に持ち越すと、次のPCへ
+			// 繋いだ最初の state 適用で前のPCのフレームが再生される。
+			this.resumeFrames.clear();
 			this.pendingAgentLiveResyncs.clear();
 			this.fsContentHashCache.clear();
 			for (const pending of this.agentControlTimers.values()) {
 				clearTimeout(pending.timer);
 			}
 			this.agentControlTimers.clear();
+			this.clearStaleWatchdogs();
 			for (const pending of this.agentCommandCatalogTimers.values()) {
 				clearTimeout(pending.timer);
 			}
@@ -2203,9 +2230,13 @@ export class MobileController {
 		void this.sendTerm(terminalKey, { t: 'ackStatus' });
 	}
 
-	/** 現在の状態スナップショットを要求する。 */
+	/**
+	 * 現在の状態スナップショットを要求する。
+	 * `stateEncoding` は圧縮の交渉。**PCは要求されたときだけ圧縮する**（この申告を知らない
+	 * 旧アプリへ gzip を送ると、JSON.parse の例外が握り潰されてホームが空のまま固まるため）。
+	 */
 	requestState(): void {
-		this.client?.send('state', encoder.encode(JSON.stringify({ protocolVersion: 3 })));
+		this.client?.send('state', encoder.encode(JSON.stringify({ protocolVersion: 3, stateEncoding: JSON_GZIP_RESPONSE_ENCODING })));
 	}
 
 	private resumeLiveSessionSubscriptions(): void {
@@ -2223,6 +2254,51 @@ export class MobileController {
 		}
 		for (const id of this.pendingNotificationDismissals) {
 			this.client?.send('notify', encodeNotifyDismiss(id));
+		}
+	}
+
+	/**
+	 * state の返信を待たずに agent の attach を先出しする（復帰の往復を2回から1回へ減らす）。
+	 *
+	 * 対象と token は前回のセッションで受け取った workspace から組む。アプリがバックグラウンドに
+	 * いる間も手元に残っているので、state を待つ必要はない。対象が既に消えていた場合、PC側は
+	 * `none` を返すか、token を解決できなければ保留の末に捨てるだけで害はない。
+	 *
+	 * **ターミナル(`term`)は投機送信しない。** そちらの送信は `outboxReplayEpoch` の確定を
+	 * 要求し、それが決まるのは state 受信時なので、先に送ると操作台帳の再送順が壊れる。
+	 */
+	private sendSpeculativeAgentAttaches(): void {
+		for (const terminalKey of this.attachedAgents.keys()) {
+			this.sendAgentAttach(terminalKey, true);
+		}
+	}
+
+	/**
+	 * state 適用までの間に預かっていたフレームを、届いた順に流し直す。
+	 *
+	 * 取りこぼしがあったときは**1件も再生しない**。欠けたまま繋ぐと、画面は更新されている
+	 * のに中身に穴が空き、しかもそれが分からないため。代わりに attach の記録を捨てて購読を
+	 * やり直す（`attachTerminal` は毎回新しい epoch を採番するので再購読は常に安全）。
+	 */
+	private replayResumeFrames(): void {
+		const drained = this.resumeFrames.drain();
+		if (drained.overflowed) {
+			// **この2つを同じ同期ブロックに置くこと。** 間に await を挟むと、記録だけ消えて
+			// 再購読が走らない瞬間ができ、その画面はアプリを再起動するまで古いまま固まる。
+			this.attachedAgentTargets.clear();
+			try {
+				this.resumeLiveSessionSubscriptions();
+			} catch { /* 張り直せなくても、次の state 変化でもう一度機会がある */ }
+			return;
+		}
+		for (const frame of drained.frames) {
+			// **1件の失敗で残りを道連れにしない。** drain() は取り出した時点でキューを空に
+			// するので、ここで例外が上へ抜けると残りは戻せず永久に失われる（しかもこの
+			// 呼び出しは state 処理の「壊れたJSONを無視する」catch の内側にあるため、
+			// 呼び出し側の後続処理まで巻き添えで飛ぶ）。
+			try {
+				this.handleFrame(frame);
+			} catch { /* 1フレーム落ちても次の state と再attachで追いつく */ }
 		}
 	}
 
@@ -2370,9 +2446,19 @@ export class MobileController {
 		}
 	}
 
-	private isLiveAvailable(): boolean {
+	/**
+	 * ライブ系フレームを送れるか。
+	 *
+	 * `speculative` のときだけ「protocol交渉が済んでいる」条件を外す。これは**送信側だけの
+	 * 緩和**で、受信側の不変条件は変えていない。安全な理由は2つ:
+	 *  - 早く着いた応答は適用されず預かられ、v3 の state を適用した後でしか流れない
+	 *  - 相手が v3 でなければ預かりごと捨てる（`resumeFrames.clear()`）
+	 *
+	 * それ以外の条件（接続・PC生存・protocolError なし・reset 中でない）は投機送信でも必要。
+	 */
+	private isLiveAvailable(speculative = false): boolean {
 		return this.operationOutboxScope !== undefined && this.state.connection === 'online' && this.state.pcOnline
-			&& this.state.sessionProtocolReady && this.state.protocolError === undefined && !this.resetting;
+			&& (speculative || this.state.sessionProtocolReady) && this.state.protocolError === undefined && !this.resetting;
 	}
 
 	private agentInputContextFor(terminalKey: string): string {
@@ -2634,6 +2720,15 @@ export class MobileController {
 		const count = (this.attachedAgents.get(terminalKey) ?? 0) + 1;
 		this.attachedAgents.set(terminalKey, count);
 		if (count === 1) {
+			// 前に開いたときの interaction が残っている場合、それが今もPC側の要求である保証はない。
+			// 回答APIを持たない古いPCへは選択肢の番号が生のキーとして飛ぶため、応答
+			// （snapshot/delta/none）で stale が落ちるまで操作を止める。interaction を持たない
+			// チャットには印を付けない（通常の再開で操作不能の窓を作らないため）。
+			const existing = this.state.agentChats.get(terminalKey);
+			if (existing !== undefined && existing.interaction !== undefined && existing.stale !== true) {
+				this.markAgentStale(terminalKey, existing);
+				this.emit({ agentChats: true });
+			}
 			this.sendAgentAttach(terminalKey);
 		}
 	}
@@ -2676,12 +2771,56 @@ export class MobileController {
 		}
 	}
 
+	/** 保留中のウォッチドッグを全部止める（セッションやepochが替わって印の意味が無くなったとき）。 */
+	private clearStaleWatchdogs(): void {
+		for (const timer of this.staleWatchdogs.values()) {
+			clearTimeout(timer);
+		}
+		this.staleWatchdogs.clear();
+	}
+
+	/**
+	 * 「表示が古いかもしれない」印を立て、応答が来なかった場合に自力で解けるようにする。
+	 *
+	 * PC側は attach の宛先を解決できないと**何も返さずに捨てる**経路が複数ある（owner交代、
+	 * authorize失敗、世代の入れ替わり、15秒の保留切れ）。モバイル側の再attachのきっかけは
+	 * renderer切替・再接続・購読数0→1しかなく、ホームが同じ端末を購読し続けている間は
+	 * どれも起きない。印を立てっぱなしにすると、操作できないカードがアプリを再起動するまで
+	 * 残ることになるので、応答が無ければ印だけ落として通常の操作に戻す。
+	 */
+	private markAgentStale(terminalKey: string, existing: AgentChatState): void {
+		this.state.agentChats.set(terminalKey, { ...existing, stale: true });
+		const pending = this.staleWatchdogs.get(terminalKey);
+		if (pending !== undefined) {
+			clearTimeout(pending);
+		}
+		this.staleWatchdogs.set(terminalKey, setTimeout(() => {
+			this.staleWatchdogs.delete(terminalKey);
+			const current = this.state.agentChats.get(terminalKey);
+			if (current?.stale !== true) {
+				return;
+			}
+			this.state.agentChats.set(terminalKey, (({ stale: _stale, ...rest }) => rest)(current));
+			this.emit({ agentChats: true });
+		}, AGENT_STALE_WATCHDOG_MS));
+	}
+
 	/** チャット表示の再読み込み（セッションが見つからなかった後の再試行にも使う）。 */
 	refreshAgent(terminalKey: string): void {
 		if (!this.isLiveAvailable()) {
 			return;
 		}
-		this.state.agentChats.delete(terminalKey);
+		// 消さずに「古い」印を付ける。消すとカードごと画面から消えて再取得まで空白になるうえ、
+		// 誤操作を「消えている間は押せない」という偶発に頼ることになる。stale 中は
+		// useAgentActions が明示的に拒否するので、表示を保ったまま誤送信だけを止められる。
+		//
+		// 印を付けるのは**回答できる要求が出ているときだけ**。interaction を送ってこないPCの
+		// チャットに付けると、stale を落とす delta も来ないため永久に操作できなくなる
+		// （落とせるのは interaction を伴う応答だけ、という上の規則と対になっている）。
+		const existing = this.state.agentChats.get(terminalKey);
+		if (existing !== undefined && existing.interaction !== undefined) {
+			this.markAgentStale(terminalKey, existing);
+		}
 		this.pendingAgentLiveResyncs.delete(terminalKey);
 		this.emit({ agentChats: true });
 		if (this.attachedAgents.has(terminalKey)) {
@@ -2796,8 +2935,8 @@ export class MobileController {
 		}
 	}
 
-	private sendAgentAttach(terminalKey: string): void {
-		if (!this.isLiveAvailable()) {
+	private sendAgentAttach(terminalKey: string, speculative = false): void {
+		if (!this.isLiveAvailable(speculative)) {
 			return;
 		}
 		const terminal = this.terminalForKey(terminalKey);
@@ -3434,6 +3573,12 @@ export class MobileController {
 		// Stateは現在の暗号セッションでprotocol v3を交渉する唯一のhandshake frame。
 		// それ以外は交渉完了前・不一致後・reset中に一切取り込まず、旧PCのpushでcached stateを汚染しない。
 		if (frame.ch !== 'state' && (!this.state.sessionProtocolReady || this.state.protocolError !== undefined || this.resetting)) {
+			// 交渉待ちの間に届いたライブ系フレームは捨てずに預かり、state を適用した直後に
+			// 同じ順序で流し直す（投機attachの応答は state より先に着きうるため）。
+			// 版数不一致中と reset 中はセッションそのものが無効なので預からない。
+			if (!this.state.sessionProtocolReady && this.state.protocolError === undefined && !this.resetting) {
+				this.resumeFrames.push(frame);
+			}
 			return;
 		}
 		if (frame.ch === 'scm' || frame.ch === 'fs') {
@@ -3488,11 +3633,20 @@ export class MobileController {
 		}
 		if (frame.ch === 'state') {
 			try {
-				const incoming = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;
+				// 新しいPCは requestState の交渉に応じて gzip で返してくる。magic を持たない
+				// 従来のJSONはそのまま通す（PCを更新していない場合の経路）。
+				const raw = isGzipJsonResponse(frame.payload) ? decodeGzipJsonResponse(frame.payload) : frame.payload;
+				if (raw === undefined) {
+					// 壊れた圧縮フレームは捨てる。stateは常に全量なので次の再送で自動的に追いつく。
+					return;
+				}
+				const incoming = JSON.parse(decoder.decode(raw)) as WorkspaceState;
 				if (incoming.protocolVersion !== 3) {
 					this.state.sessionProtocolReady = false;
 					this.liveFsUploadEncoding = undefined;
 					this.state.protocolError = 'PC版とモバイル版の通信バージョンが一致しません。両方を最新版へ更新してください。';
+					// 版数が合わないPCから預かったぶんは適用先が無い。抱えたままにしない。
+					this.resumeFrames.clear();
 					this.state.workspace = undefined;
 					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
@@ -3545,12 +3699,18 @@ export class MobileController {
 					if (firstReadyState) {
 						this.resumeLiveSessionSubscriptions();
 					}
+					// 変化なしの「暖かい復帰」。**最も多く通る経路なので、ここの再生を忘れると
+					// 投機attachの応答がほぼ毎回捨てられる。**
+					this.replayResumeFrames();
 					return;
 				}
 				// PC再起動直後の部分state（新epochだがwindow未ready）はmergeWorkspaceStateが旧表示を
 				// 保持する。その間はterminal出力・agentチャットのキャッシュも道連れに消さないよう、
 				// 「実際に適用されたworkspaceのepochが変わったか」で判定する。
-				const applied = mergeWorkspaceState(previous, incoming);
+				// 値が等しい部分は前回の参照を据え置く（構造共有）。complete:true の state は
+				// JSON.parse 由来で全要素が新品参照になるため、これが無いとターミナル1件の
+				// タイトル変更でも全画面が最大10Hzで再レンダーされる。
+				const applied = reuseWorkspaceState(previous, mergeWorkspaceState(previous, incoming));
 				const epochChanged = previous !== undefined && applied.desktopEpoch !== previous.desktopEpoch;
 				this.state.workspace = applied;
 				this.refreshWarmLeaseTargets();
@@ -3572,6 +3732,7 @@ export class MobileController {
 						clearTimeout(pending.timer);
 					}
 					this.agentControlTimers.clear();
+					this.clearStaleWatchdogs();
 					for (const pending of this.agentCommandCatalogTimers.values()) {
 						clearTimeout(pending.timer);
 					}
@@ -3614,13 +3775,16 @@ export class MobileController {
 						this.termStreams.delete(terminalKey);
 					}
 				}
-				// workspace は再代入で参照が変わる。terminalOutput / agentChats は上の掃除で
-				// ミューテートしうるため、常に新参照へ差し替える（掃除が空振りでも安全側に倒す）。
+				// terminalOutput / agentChats は上の掃除でミューテートしうるため、常に新参照へ
+				// 差し替える（掃除が空振りでも安全側に倒す）。workspace 本体は revision が毎回
+				// 進むので参照も毎回変わる。構造共有で据え置かれるのは配下の配列と要素なので、
+				// 購読側が「必要な部分だけを購読する」前提は今も変わらない。
 				this.emit({ term: true, agentChats: true });
 				this.reconcileTerminalOperationOutbox(incoming.desktopEpoch);
 				if (firstReadyState) {
 					this.resumeLiveSessionSubscriptions();
 				}
+				this.replayResumeFrames();
 				for (const [terminalKey, stream] of this.termStreams) {
 					const target = this.rendererTargetFor(terminalKey);
 					if (stream.listeners.size > 0 && target !== undefined && target !== stream.rendererTarget) {
@@ -3913,7 +4077,17 @@ export class MobileController {
 					? (({ live: _live, liveRevision: _liveRevision, ...rest }) => rest)(existing)
 					: existing;
 				const withoutActivity = msg.activity === null ? (({ activity: _activity, ...rest }) => rest)(withoutLive) : withoutLive;
-				const base = msg.interaction === null ? (({ interaction: _interaction, ...rest }) => rest)(withoutActivity) : withoutActivity;
+				const withoutInteraction = msg.interaction === null ? (({ interaction: _interaction, ...rest }) => rest)(withoutActivity) : withoutActivity;
+				// stale を落としてよいのは、PCが「今の要求」を一緒に運んできた delta だけ。
+				//
+				// PCはライブ本文や info の押し出しでも delta を送るが、それらは `messages: []` で
+				// `interaction` を持たない。エージェントが走行中は最大10Hzで流れるうえ、購読登録は
+				// attach の応答生成より先に済むため、これらは**再attachの応答を追い越す**。無条件に
+				// 落とすと、追い越された瞬間に古い interaction のままガードだけが外れ、回答APIを
+				// 持たない旧PCへ走行中のPTYへ選択肢のキーが入る（delete をやめた分の退行になる）。
+				const base = msg.interaction !== undefined
+					? (({ stale: _stale, ...rest }) => rest)(withoutInteraction)
+					: withoutInteraction;
 				this.state.agentChats.set(terminalKey, {
 					...base,
 					rev: msg.rev ?? existing.rev,

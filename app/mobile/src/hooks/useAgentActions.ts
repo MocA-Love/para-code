@@ -33,6 +33,9 @@ export interface AgentActions {
 
 const STALE_INTERACTION_RESULT: AgentMessageSendResult = { status: 'rejected', message: '回答の対象が変わりました。最新の内容を確認してください。' };
 const NO_TARGET_RESULT: AgentMessageSendResult = { status: 'rejected', message: '送信先のエージェントが見つかりません' };
+// 再取得の要求中。表示は残っているがPC側の現状と一致している保証がないので、
+// 特に回答APIを持たない古いPCへ生のキーを注入してしまわないよう、ここで止める。
+const REFRESHING_RESULT: AgentMessageSendResult = { status: 'rejected', message: '最新の内容を取得しています。少し待ってからもう一度お試しください。' };
 
 /** PTY注入（agentActions 非対応セッション向けのレガシー経路）の成否を同じ結果型へ揃える。 */
 function fromInjection(ok: boolean): AgentMessageSendResult {
@@ -59,6 +62,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	const answerAgentApproval = useAppStore(s => s.answerAgentApproval);
 	const updateClaudeSettingAction = useAppStore(s => s.updateClaudeSetting);
 	const interaction = useAppStore(s => terminalKey !== undefined ? s.agentChats.get(terminalKey)?.interaction : undefined);
+	const stale = useAppStore(s => terminalKey !== undefined && s.agentChats.get(terminalKey)?.stale === true);
 	const supportsAgentActions = useAppStore(s => terminalKey !== undefined && s.agentChats.get(terminalKey)?.capabilities?.agentActions === true);
 	const supportsClaudeSettings = useAppStore(s => terminalKey !== undefined && s.agentChats.get(terminalKey)?.capabilities?.claudeSettings === true);
 	const rendererTarget = useAppStore(s => agentRendererTarget(s, terminalKey));
@@ -73,7 +77,10 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	useEffect(() => {
 		cancelSequences();
 		return cancelSequences;
-	}, [rendererTarget, terminalKey, agent, interaction?.kind, interaction?.id, cancelSequences]);
+		// stale も依存に含める。以前は再取得が interaction ごとチャットを消していたので、この
+		// effect が走って注入途中のキー列が止まっていた。印を立てるだけに変えた今、ここを
+		// 外すと「再取得が入っても残りのキーが未検証のままPTYへ流れ続ける」ことになる。
+	}, [rendererTarget, terminalKey, agent, interaction?.kind, interaction?.id, stale, cancelSequences]);
 
 	const send = useCallback((data: string) => {
 		return terminalKey !== undefined && rendererTarget !== undefined
@@ -90,6 +97,11 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		cancelSequences();
 		for (let index = 0; index < parts.length; index++) {
 			if (agentRendererTarget(useAppStore.getState(), terminalKey) !== sequenceTarget) {
+				return false;
+			}
+			// 送っている最中に再取得が始まったら残りを打ち切る。先頭の stale チェックは
+			// 呼び出し時点の値なので、300ms間隔で送る途中の変化はここでしか拾えない。
+			if (useAppStore.getState().agentChats.get(terminalKey)?.stale === true) {
 				return false;
 			}
 			if (index > 0) {
@@ -127,6 +139,9 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	 */
 	const answerQuestions = useCallback(
 		(interactionId: string, questions: readonly AgentQuestionShape[], answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult> => {
+			if (stale) {
+				return Promise.resolve(REFRESHING_RESULT);
+			}
 			if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
 				return Promise.resolve(STALE_INTERACTION_RESULT);
 			}
@@ -138,7 +153,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			}
 			return sendSequence(agentQuestionKeySequence(questions, answers)).then(fromInjection);
 		},
-		[terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence],
+		[terminalKey, interaction, stale, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
 
 	const answerQuestion = useCallback((interactionId: string, question: AgentQuestionShape, optionIndex: number): Promise<AgentMessageSendResult> => {
@@ -171,6 +186,9 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	 *  - Codex: y / d のショートカット1文字（Enter不要）。
 	 */
 	const approve = useCallback((interactionId: string, choice: string): Promise<AgentMessageSendResult> => {
+		if (stale) {
+			return Promise.resolve(REFRESHING_RESULT);
+		}
 		if (interaction?.kind !== 'approval' || interaction.id !== interactionId) {
 			return Promise.resolve(STALE_INTERACTION_RESULT);
 		}
@@ -190,9 +208,12 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		} else {
 			return Promise.resolve(fromInjection(send('\u001b')));
 		}
-	}, [terminalKey, agent, interaction, supportsAgentActions, answerAgentApproval, send, sendSequence]);
+	}, [terminalKey, agent, interaction, stale, supportsAgentActions, answerAgentApproval, send, sendSequence]);
 
 	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult> => {
+		if (stale) {
+			return Promise.resolve(REFRESHING_RESULT);
+		}
 		if (terminalKey === undefined) {
 			return Promise.resolve(NO_TARGET_RESULT);
 		}
@@ -206,7 +227,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			return updateClaudeSettingAction(terminalKey, setting, value);
 		}
 		return sendSequence([`/${setting} ${value}`, '\r']).then(fromInjection);
-	}, [terminalKey, agent, interaction, supportsClaudeSettings, updateClaudeSettingAction, sendSequence]);
+	}, [terminalKey, agent, interaction, stale, supportsClaudeSettings, updateClaudeSettingAction, sendSequence]);
 
 	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve, updateClaudeSetting };
 }

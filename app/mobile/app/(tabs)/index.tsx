@@ -19,9 +19,9 @@ import {
 	type AttentionOpenState,
 } from '../../src/components/attentionStackBehavior.js';
 import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
-import { AgentBadge, AgentRowContent, agentRowStyles, type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
+import { type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
+import { HomeAgentRow, type HomeAgentRowHandlers } from '../../src/components/homeAgentRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
-import { SwipeRow, swipeActionColors } from '../../src/components/swipeRow.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
@@ -111,26 +111,32 @@ export default function HomeScreen() {
 	const scopeIds = useMemo(
 		() => (scopeKey === undefined ? undefined : new Set(scopeKey.split('\n'))),
 		[scopeKey]);
-	const wsById = new Map((workspace?.workspaces ?? []).map(w => [w.id, w]));
+	// 以下の derive は memo 済みの行へ渡る値の出どころなので、参照を安定させておく。
+	// state 側で中身の参照が据え置かれる（workspaceIdentity.ts）ため、PCから同じ内容が
+	// 再送された場合はここも丸ごと据え置かれ、行の memo が実際に効くようになる。
+	const wsById = useMemo(() => new Map((workspace?.workspaces ?? []).map(w => [w.id, w])), [workspace?.workspaces]);
 	/** ws未タグのターミナルはPC側アクティブワークスペース所属として扱う（ホーム全体で共通のフォールバック順）。 */
-	const resolveWs = (t: { ws?: string }) =>
+	const resolveWs = useCallback((t: { ws?: string }) =>
 		(t.ws !== undefined ? wsById.get(t.ws) : undefined)
 		?? (workspace?.activeWs !== undefined ? wsById.get(workspace.activeWs) : undefined)
-		?? workspace?.workspaces[0];
-	const inScope = (t: { ws?: string }) => {
+		?? workspace?.workspaces[0],
+		[wsById, workspace?.activeWs, workspace?.workspaces]);
+	const inScope = useCallback((t: { ws?: string }) => {
 		if (scopeIds === undefined) {
 			return true;
 		}
 		const ws = resolveWs(t);
 		return ws !== undefined && scopeIds.has(ws.id);
-	};
+	}, [scopeIds, resolveWs]);
 
 	// 応答待ちのターミナル（絞り込み中は対象外のワークスペース分は無視する）。全件を上部の
 	// スタックに積み、開いた1件だけ中身を購読する。同時に複数へ attach しないのは、
 	// フックが1ターミナル単位であることと、閉じた行に中身が要らないため。
 	// 一覧と同じく、エージェントCLIが動いた実績のあるターミナルだけを対象にする
 	// （プレーンなターミナルが状態を拾って最上部に居座るのを防ぐ）。
-	const waitingTerminals = sortWaiting((workspace?.terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus) && inScope(t)));
+	const waitingTerminals = useMemo(
+		() => sortWaiting((workspace?.terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus) && inScope(t))),
+		[workspace?.terminals, inScope]);
 	const waitingKeys = waitingTerminals.map(t => t.terminalKey);
 	// 「見たことがある」の記録は絞り込みの外側で取る（ドロワーで表示範囲を往復しただけで
 	// 記録が消え、自分で畳んだ1件が開き直るのを防ぐ）。
@@ -166,9 +172,9 @@ export default function HomeScreen() {
 	// 残るため、これが無いと「前に開いたときの質問・承認」が現在の内容として一瞬出てしまう
 	// （古い承認カードを押すと、回答APIを持たない旧PCへは生のキーが飛んでしまう）。
 	//
-	// ホームが前面にあるときだけ走らせる。refreshAgent は共有の agentChats から対象を消すので、
-	// 背面のまま実行するとエージェント詳細画面を読んでいる最中に会話が消えてしまう
-	// （質問が届いて自動オープンした瞬間に前面が真っ白になる）。
+	// ホームが前面にあるときだけ走らせる。refreshAgent は会話を消さなくなった（古い印を付けて
+	// 操作だけ止め、PCの応答で解ける）が、それでも背面で走らせると、詳細画面を読んでいる最中に
+	// 承認カードが一時的に押せなくなる。前面のときだけに絞る理由は残っている。
 	// またこの effect は useAgentChatSubscription より**前**に置くこと。detach → refresh → attach
 	// の順になり、attach 要求が1通で済む（後ろに置くと refresh 側からも attach が飛ぶ）。
 	const homeFocused = useIsFocused();
@@ -180,8 +186,10 @@ export default function HomeScreen() {
 	}, [homeFocused, openState.openKey, refreshAgent]);
 	const openChat = useAgentChatSubscription(openState.openKey);
 	const openActions = useAgentActions(openState.openKey, openChat?.agent);
-	const visibleWaitingTerminals = visibleWaiting(waitingTerminals, openState.openKey, attentionExpanded);
-	const stackItems: AttentionStackItem[] = visibleWaitingTerminals.map(t => {
+	const visibleWaitingTerminals = useMemo(
+		() => visibleWaiting(waitingTerminals, openState.openKey, attentionExpanded),
+		[waitingTerminals, openState.openKey, attentionExpanded]);
+	const stackItems = useMemo<AttentionStackItem[]>(() => visibleWaitingTerminals.map(t => {
 		const ws = resolveWs(t);
 		return {
 			terminalKey: t.terminalKey,
@@ -192,28 +200,72 @@ export default function HomeScreen() {
 			pinned: pinnedKeys.has(pinKeyForTerminal(t)),
 			agentStatus: t.agentStatus === 'permission' ? 'permission' : 'question',
 		};
-	});
+	}), [visibleWaitingTerminals, resolveWs, pinnedKeys]);
 
 	/** アーカイブ直後の「元に戻す」。数秒で自然に消える。 */
 	const [undoArchive, setUndoArchive] = useState<{ key: string; title: string } | undefined>(undefined);
 	const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	useEffect(() => () => { if (undoTimer.current !== undefined) { clearTimeout(undoTimer.current); } }, []);
-	const archive = (terminalKey: string, title: string) => {
+	const archive = useCallback((terminalKey: string, title: string) => {
 		setArchived(pinKeyForTerminal({ terminalKey }), true);
 		setUndoArchive({ key: pinKeyForTerminal({ terminalKey }), title });
 		if (undoTimer.current !== undefined) {
 			clearTimeout(undoTimer.current);
 		}
 		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, 4_000);
-	};
+	}, [setArchived]);
 
 	/** 削除は取り返しがつかないので、スワイプから直に消さず一度だけ聞く。 */
-	const confirmDelete = (terminalKey: string, title: string) => {
+	const confirmDelete = useCallback((terminalKey: string, title: string) => {
 		Alert.alert('エージェントを削除', `「${title}」を削除します。PCのターミナルごと閉じられます。`, [
 			{ text: 'キャンセル', style: 'cancel' },
 			{ text: '削除', style: 'destructive', onPress: () => closeTerminal(terminalKey) },
 		]);
-	};
+	}, [closeTerminal]);
+
+	/**
+	 * エージェントタブへ遷移する。setSelectedWsがselectedTerminalKeyをリセットするため、この順序を厳守する。
+	 * 行へ安定した参照で渡すため useCallback にしてあり、フックなので早期returnより前に置く。
+	 */
+	const openAgent = useCallback((wsId: string, terminalKey: string) => {
+		hapticSelection();
+		setSelectedWs(wsId);
+		setSelectedTerminalKey(terminalKey);
+		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
+	}, [router, setSelectedWs, setSelectedTerminalKey]);
+
+	/**
+	 * 行から呼ぶ操作をひとまとめにして参照を固定する。行は memo 済みなので、ここが毎レンダー
+	 * 新品になると比較が必ず落ちて memo が素通りする（1つでも不安定な関数があると同じこと）。
+	 */
+	const rowHandlers = useMemo<HomeAgentRowHandlers>(() => ({
+		registerRef: (terminalKey, node) => {
+			if (node) {
+				rowRefs.current.set(terminalKey, node);
+			} else {
+				rowRefs.current.delete(terminalKey);
+			}
+		},
+		onOpen: (wsId, terminalKey) => {
+			if (wsId !== undefined) {
+				openAgent(wsId, terminalKey);
+			}
+		},
+		onLongPress: (terminalKey, title, pinned, rowData, anchor) => {
+			const target = { terminalKey, title, pinned };
+			const node = rowRefs.current.get(terminalKey);
+			if (node) {
+				// ウィンドウ座標を取得してから、その位置に浮かせたクローンとメニューを開く。
+				node.measureInWindow((x, y, width, height) => setMenu({ target, anchor, rect: { x, y, width, height }, rowData }));
+			} else {
+				setMenu({ target, anchor, rowData });
+			}
+		},
+		onStatusPress: (terminalKey, anchor) => setStatusPopover({ target: { terminalKey, status: 'review' }, anchor }),
+		onAck: ackAgentStatus,
+		onArchive: archive,
+		onDelete: confirmDelete,
+	}), [openAgent, ackAgentStatus, archive, confirmDelete]);
 
 	// ══ ここから下はフック（`useMemo`/`useCallback`/`useWsHeader`）を含む ══
 	// **早期returnより前に置くこと。** 下に置くと `ready && !paired` が切り替わった瞬間に
@@ -228,16 +280,14 @@ export default function HomeScreen() {
 	// PCからのstate再送（最大10Hz）ごとにヘッダー層へ書き込みが走る。
 	const listable = useMemo(
 		() => (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus)),
-		// `inScope` は毎レンダー新しい関数だが、中身は scopeKey（絞り込み先）と workspace で
-		// 決まるので、依存はそれで足りる。
+		// `inScope` 自体が useCallback で安定しているので、依存はそれを直接書けば足りる
+		// （以前はここに `inScope` の依存を手で写していたため、向こうに条件を1つ足すと
+		// この一覧だけ古い判定を使い続ける、という気付きにくい壊れ方をする形だった）。
 		//
-		// なお `workspace.terminals` / `workspace.workspaces` は PCからのstate再送ごとに
-		// **必ず新しい参照**になる（`store.ts` の `mergeWorkspaceState` が毎回組み立て直す）ので、
-		// エージェントが走っている間の再送（最大10Hz）ではここは通り抜ける。それは正しい
-		// ——一覧の中身が変わればヘッダーの件数も変わる。ここで止めたいのは「中身が変わって
-		// いないのに作り直す」ぶん（キーボード開閉・フォーカス変化・幅の計測など）だけ。
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[workspace?.terminals, workspace?.workspaces, workspace?.activeWs, scopeKey, archivedKeys]);
+		// なお `workspace.terminals` は、中身が同じなら再送のたびに**同じ参照が据え置かれる**
+		// （`workspaceIdentity.ts` の構造共有）。以前は毎回新品になっていたため、エージェントが
+		// 走っている間の再送（最大10Hz）でここが通り抜けていた。今は中身が本当に変わったときだけ通る。
+		[workspace?.terminals, inScope, archivedKeys]);
 	// 「すべて確認済みにする」の対象。既読の概念があるのはレビュー待ちだけで、実行中や
 	// アイドルには確認するものが無い。応答待ちは回答して解消するものなので含めない。
 	const reviewable = useMemo(() => listable.filter(t => t.agentStatus === 'review'), [listable]);
@@ -325,15 +375,6 @@ export default function HomeScreen() {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
 	}
 
-	/** エージェントタブへ遷移する。setSelectedWsがselectedTerminalKeyをリセットするため、この順序を厳守する。 */
-	const openAgent = (wsId: string, terminalKey: string) => {
-		hapticSelection();
-		setSelectedWs(wsId);
-		setSelectedTerminalKey(terminalKey);
-		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
-	};
-
-
 	// 並び順・絞り込みはユーザーが選べる（判定は homeSort.ts、設定は端末に保存される）。
 	// スペース順の基準はドロワーのワークスペース一覧と同じ並びにする。所属の解決は
 	// resolveWs を通す（ws未タグをPC側アクティブスペース所属として扱う共通の規則。
@@ -382,87 +423,19 @@ export default function HomeScreen() {
 				    絞り込みチップも本文ではなくヘッダーの帯（WsHeader の below）にある。 */}
 				{renderAgentRows(rows.map(t => {
 					const ws = resolveWs(t);
-					const color = ws ? wsColor(ws) : colors.accent;
-					const pinned = pinnedKeys.has(pinKeyForTerminal(t));
-					const rowData: AgentRowData = { title: t.title, wsName: ws?.name ?? '—', wsColor: color, branch: ws?.branch, pinned, agentStatus: t.agentStatus };
-					const badge = t.agentStatus === 'review' ? (
-						// レビューのみタップで「確認済みにする」ポップオーバーを開ける
-						// （応答待ち/質問は回答して解消するもの、実行中/アイドルは既読の概念が無い）
-						<Pressable
-							hitSlop={8}
-							onPress={e => {
-								hapticSelection();
-								setStatusPopover({
-								target: { terminalKey: t.terminalKey, status: 'review' },
-									anchor: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
-								});
-							}}
-							accessibilityLabel="ステータスを確認済みにする"
-						>
-							<AgentBadge status={t.agentStatus} />
-						</Pressable>
-					) : undefined;
-					const row = (
-						<Pressable
-							ref={node => { if (node) { rowRefs.current.set(t.terminalKey, node); } else { rowRefs.current.delete(t.terminalKey); } }}
-							style={agentRowStyles.container}
-							onPress={() => { if (ws) { openAgent(ws.id, t.terminalKey); } }}
-							// 既定の500msは一覧の行に対しては待たされ過ぎるので半分にする。
-							delayLongPress={250}
-							onLongPress={e => {
-								hapticImpact('medium');
-								const target = { terminalKey: t.terminalKey, title: t.title, pinned };
-								const anchor = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
-								const node = rowRefs.current.get(t.terminalKey);
-								if (node) {
-									// ウィンドウ座標を取得してから、その位置に浮かせたクローンとメニューを開く。
-									node.measureInWindow((x, y, width, height) => setMenu({ target, anchor, rect: { x, y, width, height }, rowData }));
-								} else {
-									setMenu({ target, anchor, rowData });
-								}
-							}}
-						>
-							<AgentRowContent data={rowData} badge={badge} />
-						</Pressable>
-					);
-					// 左スワイプで片付ける。応答待ちの行はここには来ない（上部のスタックが持つ）ので、
-					// 片付けても自動で戻ってくる行にスワイプを出してしまう心配はない。
-					//
-					// 引き切って実行されるのは**アーカイブだけ**。削除は開いてカードを押さないと
-					// 実行できない。勢いよく払っただけでエージェントが消えるのは取り返しがつかない。
 					return (
-						<SwipeRow
+						<HomeAgentRow
 							key={t.terminalKey}
-							direction="left"
-							actions={[
-								// 「確認済み」は全行に出す（決定D）。行によって枚数が変わると、
-								// スワイプのたびに開く深さが違って手が覚えられない。
-								{
-									key: 'ack',
-									label: '確認済み',
-									icon: 'eye-outline' as const,
-									color: swipeActionColors.neutral,
-									onPress: () => ackAgentStatus(t.terminalKey),
-								},
-								{
-									key: 'archive',
-									label: 'アーカイブ',
-									icon: 'file-tray-full-outline' as const,
-									color: swipeActionColors.strong,
-									fullSwipe: true,
-									onPress: () => archive(t.terminalKey, t.title),
-								},
-								{
-									key: 'delete',
-									label: '削除',
-									icon: 'trash-outline' as const,
-									color: swipeActionColors.destructive,
-									onPress: () => confirmDelete(t.terminalKey, t.title),
-								},
-							]}
-						>
-							{row}
-						</SwipeRow>
+							terminalKey={t.terminalKey}
+							wsId={ws?.id}
+							title={t.title}
+							wsName={ws?.name ?? '—'}
+							wsColor={ws ? wsColor(ws) : colors.accent}
+							branch={ws?.branch}
+							pinned={pinnedKeys.has(pinKeyForTerminal(t))}
+							agentStatus={t.agentStatus}
+							handlers={rowHandlers}
+						/>
 					);
 				}), columns)}
 				{rows.length === 0 && listable.length > 0 ? (

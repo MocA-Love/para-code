@@ -495,6 +495,18 @@ export function paradisScreenShowsMarker(screen: string, marker: string): boolea
 	return screen.replace(/\s+/g, '').includes(marker);
 }
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
+/**
+ * リサイズ再同期のスナップショットに含めるスクロールバック行数。
+ *
+ * **0にしてはいけない。** モバイルはスナップショットを受けると必ず端末をリセットしてから
+ * 書き戻すので、ここに載らなかった履歴はその場で失われる（遡れなくなる）。さらにこの再同期は
+ * attach のたびにも走る（モバイルの申告寸法をPTYへ反映した結果リサイズが発火するため）ので、
+ * 0 だと attach で送った1000行を200ms後に自分で消してしまう。
+ *
+ * 1000行のままだと実測16万文字に達し、TERM_HIGH_WATERMARK_CHARS を超えて送信直後に必ず
+ * フロー制御のsuspendedを誘発していた。200行はその上限を下回りつつ、遡れる範囲を残す妥協点。
+ */
+const TERM_RESIZE_SNAPSHOT_SCROLLBACK_ROWS = 200;
 // --- ターミナル同期プロトコル（epoch対応クライアント向け）の定数 ---
 const TERM_COALESCE_MS = 16; // onData のまとめ送り間隔（1フレーム=1暗号化+relay往復のため細切れ送信を避ける）
 // フロー制御: 未ACK文字数が HIGH を超えたら生ストリーム転送を止め（ptyは止めない）、
@@ -663,11 +675,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.terminalIdentityService.onDidChange(() => this.pushStateSoon()));
 		// タイトル変更（F2手動リネーム、モバイルからのrename、プロセス由来の自動タイトルなど）を
 		// 他のペアリング端末・他ウィンドウへも伝播する。
-		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.pushStateSoon()));
+		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.pushStateCosmeticSoon()));
 		// park/unpark（ワークスペース切り替えでの退避/復帰）は instances イベントに乗らないため groups 変化でも再送する
 		this._register(this.terminalGroupService.onDidChangeGroups(() => this.pushStateSoon()));
 		// PC側のリサイズで cols/rows が変わったら再送（モバイルのxtermが同寸法に追従する）
-		this._register(this.terminalService.onDidChangeInstanceDimensions(() => this.pushStateSoon()));
+		this._register(this.terminalService.onDidChangeInstanceDimensions(() => this.pushStateCosmeticSoon()));
 		// attach中ターミナルのリサイズは、寸法確定後にVTスナップショットで再同期する。
 		// 生ストリームだけだと「新寸法向けの再描画がモバイルの旧寸法xtermへ書かれる」レースが
 		// 構造的に残り、特に代替バッファ（TUI）はリサイズでリフローされないため崩れたままになる。
@@ -758,7 +770,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return;
 			}
 			this.battery = next;
-			this.pushStateSoon();
+			this.pushStateCosmeticSoon();
 		};
 		manager.addEventListener('levelchange', apply);
 		manager.addEventListener('chargingchange', apply);
@@ -827,11 +839,33 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));
+	/**
+	 * 見た目だけの変化（タイトル・cols/rows・バッテリー）専用の遅いスケジューラ。
+	 * これらは表示が少し遅れても実害がない一方、TUIはタイトルを連射するため、構造変化と
+	 * 同じ100msで流すと state がほぼ絶え間なく飛ぶ。
+	 */
+	private readonly pushStateCosmeticScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 500));
 
 	/** イベント起点のスナップショット再送（100msに集約）。 */
 	private pushStateSoon(): void {
+		// 構造変化のスナップショットには見た目の変化も入るので、待たせていたぶんは取り下げる。
+		this.pushStateCosmeticScheduler.cancel();
 		if (!this.pushStateScheduler.isScheduled()) {
 			this.pushStateScheduler.schedule();
+		}
+	}
+
+	/**
+	 * 見た目だけの変化の再送（500msに集約）。
+	 *
+	 * **`isScheduled()` のガードは絶対に外さないこと。** 素の `schedule()` は既存タイマーを
+	 * 張り直す＝デバウンスになるため、タイトルを連射するTUIが動いている間、state が永久に
+	 * 更新されなくなる（スロットルなら必ず500msごとに1回は流れる）。
+	 */
+	private pushStateCosmeticSoon(): void {
+		// 構造変化が既に予約されていれば、そちらが見た目の変化ごと運ぶので何もしない。
+		if (!this.pushStateCosmeticScheduler.isScheduled() && !this.pushStateScheduler.isScheduled()) {
+			this.pushStateCosmeticScheduler.schedule();
 		}
 	}
 
@@ -2331,6 +2365,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const title = msg.title.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e]/g, '').trim().slice(0, 200);
 				if (title.length > 0) {
 					await instance.rename(title);
+					// モバイルには楽観更新が無く、この再送が届くまで古い名前が出たままになる。
+					// タイトル変更イベントは見た目用の遅い経路（500ms）へ振ってあるので、
+					// ユーザーが自分で押した操作についてはここで構造変化と同じ速さに戻す。
+					this.pushStateSoon();
 				} else {
 					await complete('failed');
 					return;
@@ -2709,7 +2747,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (expectedSync === undefined) {
 			return;
 		}
-		this.serializeTerminalSnapshot(instance).then(snapshot => {
+		// 送る履歴の量は理由ごとに変える。モバイルはスナップショットを受けるたびに端末を
+		// リセットして書き戻すので、**ここに載せなかった履歴はモバイル側から失われる**。
+		//  - attach: 初めて中身を受け取るので従来どおり全部（1000行）
+		//  - resize: attach 直後にも必ず走るため 0 にはできない（送ったばかりの履歴を消す）。
+		//            水位を超えない範囲に減らす
+		//  - flow:   追いつきは「スクロールバックの完全性より最新画面を優先」する経路なので 0
+		const scrollback = reason === 'attach' ? TERM_SNAPSHOT_SCROLLBACK_ROWS
+			: reason === 'resize' ? TERM_RESIZE_SNAPSHOT_SCROLLBACK_ROWS
+				: 0;
+		this.serializeTerminalSnapshot(instance, scrollback).then(snapshot => {
 			// serialize解決を待つ間に detach された場合は送らない。
 			if (!this.terminalSubscribers.get(id)?.has(mobileId)) {
 				return;
@@ -2751,7 +2798,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * PC側xtermの現画面をVTシーケンスへシリアライズする。代替バッファ（TUIの全画面）・
 	 * カーソル位置・色・モードを復元できる。serialize addon は端末ごとに一度だけ load する。
 	 */
-	private async serializeTerminalSnapshot(instance: ITerminalInstance): Promise<string | undefined> {
+	private async serializeTerminalSnapshot(instance: ITerminalInstance, scrollback: number = TERM_SNAPSHOT_SCROLLBACK_ROWS): Promise<string | undefined> {
 		const xterm = instance.xterm;
 		if (!xterm) {
 			return undefined;
@@ -2776,7 +2823,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			timeout(1000),
 		]);
 		// 通常バッファのスクロールバックは行数で抑える（代替バッファ=TUIは常に全体が含まれる）。
-		return addon.serialize({ scrollback: TERM_SNAPSHOT_SCROLLBACK_ROWS });
+		return addon.serialize({ scrollback });
 	}
 
 	private sendTerm(id: number, mobileId: string, msg: TermOutbound): void {

@@ -99,6 +99,13 @@ export async function paradisRefreshTerminalReviveIndex(
 		readonly parkedCount?: number;
 		/** working set 保存時の端末数。`parked > expected` が常態なら件数比較は危険だった証拠。 */
 		readonly expectedCount?: number;
+		/**
+		 * skip を諦めた理由（skip が成立した回は `undefined`）。
+		 * `no-ledger` = nonce台帳そのものが無い（そのスペースをまだ一度も離れていない等）、
+		 * `unknown-expected` = 復元する端末数が不明、`count-short` = park が端末数に届かない、
+		 * `not-all-parked` = 数は足りるが顔ぶれが違う。
+		 */
+		readonly blockReason?: 'no-ledger' | 'unknown-expected' | 'count-short' | 'not-all-parked';
 	},
 ): Promise<void> {
 	restoreStateKey = targetStateKey;
@@ -154,6 +161,14 @@ export async function paradisRefreshTerminalReviveIndex(
 			safe_timed_out: resolved === undefined,
 			safe_orphans: orphanPtyIdByNonce.size,
 			safe_index_skipped: false,
+			// **skip できなかった回にも台帳の数を送る。** これまでは skip 分岐でしか送って
+			// いなかったため、「なぜ skip が 3% しか成立しないのか」を本番データから一切
+			// 追えなかった（Sentry 上でも両方を持つ span は0件だった）。
+			safe_index_parked: options?.parkedCount ?? -1,
+			safe_index_expected: options?.expectedCount ?? -1,
+			// どの条件で skip を諦めたか。数が足りないのか、台帳自体が無いのか、顔ぶれが
+			// 違うのかで次に直す場所が変わる。
+			safe_index_block_reason: options?.blockReason ?? 'unspecified',
 		});
 	} catch (error) {
 		orphanPtyIdByNonce = new Map();

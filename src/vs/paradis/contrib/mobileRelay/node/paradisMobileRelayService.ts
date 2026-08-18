@@ -89,6 +89,7 @@ import { ParadisHostResourceSampler } from '../../resourceMonitor/node/paradisHo
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { ParadisRelayDisconnectReporter } from '../common/paradisRelayDisconnectReport.js';
 import { ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.js';
+import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisEncodeNegotiatedGzipJsonResponse } from '../common/paradisMobileGzipJson.js';
 import { paradisDeliverVoiceClip } from './paradisVoiceClipDelivery.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
@@ -231,16 +232,27 @@ export class MobileSession {
 		return this.negotiatedProtocolVersion === PARADIS_MOBILE_PROTOCOL_VERSION;
 	}
 
+	/**
+	 * このモバイルがDesktop Stateの圧縮を明示的に要求したか（旧アプリは何も送らない）。
+	 * **既定は必ず非圧縮**。gzipを無条件に送ると、旧アプリの `JSON.parse` が例外になり、
+	 * それが受信側の catch に握り潰されて「エラー表示のないままホームが空で固まる」に化ける。
+	 */
+	private negotiatedStateEncoding: string | undefined;
+
 	negotiateProtocol(payload: Uint8Array): boolean {
 		let received: unknown;
 		try {
-			const request = JSON.parse(new TextDecoder().decode(payload)) as { protocolVersion?: unknown };
+			const request = JSON.parse(new TextDecoder().decode(payload)) as { protocolVersion?: unknown; stateEncoding?: unknown };
 			received = request.protocolVersion;
 			this.negotiatedProtocolVersion = request.protocolVersion === PARADIS_MOBILE_PROTOCOL_VERSION
 				? PARADIS_MOBILE_PROTOCOL_VERSION
 				: undefined;
+			this.negotiatedStateEncoding = request.stateEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING
+				? PARADIS_JSON_GZIP_RESPONSE_ENCODING
+				: undefined;
 		} catch {
 			this.negotiatedProtocolVersion = undefined;
+			this.negotiatedStateEncoding = undefined;
 		}
 		if (!this.hasCurrentProtocol) {
 			// 版数不一致は「繋がっているのに何も表示されない」形で現れる（アプリだけ更新した等）。
@@ -427,6 +439,11 @@ export class MobileSession {
 		this.mux = undefined;
 		this.confirmed = false;
 		this.negotiatedProtocolVersion = undefined;
+		// **必ず一緒に落とすこと。** セッションは mobileId で再接続をまたいで再利用されるため、
+		// ここに前回の交渉結果が残ると、アプリを古い版へ入れ直した端末に対して、次の requestState
+		// が届く前のブロードキャストで gzip を送ってしまう（旧アプリはJSON.parseで例外になり、
+		// それが握り潰されてホームが空のまま固まる）。
+		this.negotiatedStateEncoding = undefined;
 		this.pendingVerify = undefined;
 		this.stateDelivery.reset();
 	}
@@ -453,7 +470,13 @@ export class MobileSession {
 		if (mux === undefined) {
 			return false;
 		}
-		return this.stateDelivery.deliver(payload, force, state => mux.send(Channels.State, state));
+		// 圧縮は送信直前のここだけで行う。`deliver` の無変化判定は渡された非圧縮JSONのまま
+		// 動くので、gzip の出力が実行ごとに揺れても dedupe が壊れることはない
+		// （圧縮後のバイト列で比較すると、同じ内容でも別物と判定されて毎回送ってしまう）。
+		return this.stateDelivery.deliver(payload, force, async state => {
+			const encoded = await paradisEncodeNegotiatedGzipJsonResponse(this.negotiatedStateEncoding, state) ?? state;
+			await mux.send(Channels.State, encoded);
+		});
 	}
 
 	get idBytes(): Uint8Array {

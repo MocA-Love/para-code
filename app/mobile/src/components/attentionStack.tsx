@@ -83,6 +83,9 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 	// フォーム全体がSubmitされる事故を防ぐ）。エージェント画面のステップ式カードへ誘導する。
 	const isGroupedQuestion = question !== undefined && question.questionGroup !== undefined && (question.questionCount ?? 1) > 1;
 	const approval = interaction?.kind === 'approval' ? interaction : undefined;
+	// 再取得の応答待ち。表示中の要求が今もPC側の現在の要求である保証がないので操作を止める
+	// （useAgentActions も同じ条件で送信を拒否する）。
+	const refreshing = chat?.stale === true;
 
 	return (
 		<View style={styles.body}>
@@ -102,6 +105,7 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 					key={question.questionGroup ?? question.toolUseId ?? question.rev}
 					message={question}
 					answered={false}
+					refreshing={refreshing}
 					onAnswer={actions.answerQuestion}
 					onMulti={actions.answerQuestionMulti}
 					onFreeText={actions.answerQuestionFreeText}
@@ -114,6 +118,7 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 					title={approval.title}
 					detail={approval.detail ?? findLatestApprovalRequest(chat)}
 					choices={approval.choices}
+					refreshing={refreshing}
 				/>
 			) : (
 				// 質問も承認も特定できないときに許可/拒否カードを出さない。以前は合成の
