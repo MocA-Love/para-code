@@ -1560,20 +1560,22 @@ export class ParadisAgentBrowserService extends Disposable {
 	/**
 	 * SSH 接続先から、このゲートウェイへ戻ってこられるようにする。
 	 *
-	 * エージェントの hook も para-browser MCP も 127.0.0.1 の同じ番号を叩く作りなので、
-	 * 接続先でも同じ番号が手元へ向くようにするだけで両方が繋がる。失敗しても投げない:
+	 * エージェントの hook も para-browser MCP も 127.0.0.1 の番号を叩く作りなので、接続先の
+	 * その番号が手元へ向くようにするだけで両方が繋がる。番号は固定せず接続先の sshd に選ばせる
+	 * （同じホストへ複数ユーザーが同時に SSH する共有サーバーで固定番号が衝突するのを避けるため）。
+	 * @returns 接続先で実際に割り当てられた番号。失敗しても投げない:
 	 * 張れない状態は「接続先の hook が届かない」だけで、手元の動きには何も影響しない。
 	 */
-	async ensureRemoteAgentTunnel(remoteAuthority: string): Promise<boolean> {
+	async ensureRemoteAgentTunnel(remoteAuthority: string): Promise<number | undefined> {
 		if (typeof remoteAuthority !== 'string' || remoteAuthority.length === 0) {
-			return false;
+			return undefined;
 		}
 		try {
 			const { port } = await this.getGatewayEndpoint();
-			return this._remoteTunnels.ensure(remoteAuthority, port);
+			return await this._remoteTunnels.ensure(remoteAuthority, port);
 		} catch (error) {
 			this.logService.trace('[ParadisAgentBrowser] could not set up the return tunnel', error);
-			return false;
+			return undefined;
 		}
 	}
 

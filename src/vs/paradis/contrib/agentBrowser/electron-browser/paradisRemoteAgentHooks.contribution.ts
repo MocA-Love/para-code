@@ -14,6 +14,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -24,6 +25,7 @@ import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js'
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_NOTIFY_HOOK_RELATIVE_PATH } from '../common/paradisAgentHooks.js';
 import { paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
 
 /**
  * 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。
@@ -42,7 +44,7 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 
 	constructor(
 		private readonly install: () => Promise<number | undefined>,
-		private readonly readEndpoint: () => Promise<{ readonly port: number }>,
+		private readonly readEndpoint: () => Promise<number | undefined>,
 		private readonly delay: (delayMs: number) => Promise<void>,
 		private readonly interval: (callback: () => Promise<void>, intervalMs: number) => IDisposable,
 		private readonly logService: Pick<ILogService, 'info' | 'warn'>,
@@ -74,10 +76,13 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 				return;
 			}
 		}
-		this.logService.warn('[paradis] gave up installing the agent hooks on the host');
+		// 4段階とも張れなかった。ここで諦めきらず、後段のポーリングへ引き継ぐ。トンネル側は
+		// クールダウン明けに自分から追い直すので、いずれ番号が付けばここで拾える
+		this.logService.warn('[paradis] could not install the agent hooks after the initial retries; will keep checking');
+		this.watchForPortChanges();
 	}
 
-	/** ゲートウェイ番号が変わったときだけ接続先へ hook 一式を再導入する。 */
+	/** 接続先側の番号が変わった（初めて張れた場合を含む）ときだけ hook 一式を再導入する。 */
 	private watchForPortChanges(): void {
 		this._register(this.interval(async () => {
 			if (this._store.isDisposed || this.isPolling) {
@@ -85,11 +90,13 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 			}
 			this.isPolling = true;
 			try {
-				const endpoint = await this.readEndpoint();
-				if (this._store.isDisposed || endpoint.port === this.installedPort) {
+				const port = await this.readEndpoint();
+				// port が undefined はまだ張れていないだけ。installedPort も undefined ならこれまでと
+				// 変わっていないので、install() を空振りさせない
+				if (this._store.isDisposed || port === undefined || port === this.installedPort) {
 					return;
 				}
-				this.logService.info(`[paradis] gateway port changed (${this.installedPort} -> ${endpoint.port}); updating the host`);
+				this.logService.info(`[paradis] host port changed (${this.installedPort} -> ${port}); updating the host`);
 				const installedPort = await this.install();
 				if (!this._store.isDisposed && installedPort !== undefined) {
 					this.installedPort = installedPort;
@@ -112,11 +119,13 @@ export class ParadisRemoteAgentHooksController extends Disposable {
  *
  * 置くのは3つ:
  *  - notify スクリプト（手元と同じもの。shared process から本文をもらう）
- *  - ポートファイル（スクリプトが通知先の番号を読むところ）
+ *  - ポートファイル（スクリプトが通知先の番号を読むところ。接続先の sshd が割り当てた
+ *    動的な番号で、手元のゲートウェイの番号とは一致しない）
  *  - Claude / Codex の設定への hook 定義（既にあるものは触らない）
  *
- * 通知そのものは 127.0.0.1 の同じ番号へ飛ぶ。そこが手元に繋がるようにするのは
- * paradisRemoteAgentTunnel.contribution.ts の役目で、こちらは「叩く側」を用意するだけ。
+ * 通知は接続先の 127.0.0.1 へ飛ぶ。それが手元まで戻ってくる経路（戻りトンネル）を実際に
+ * 張るのは shared process 側（paradisRemoteAgentTunnel.ts）で、ここは `ensureRemoteAgentTunnel`
+ * を呼んで「今回張れた番号」をもらい、接続先の各設定ファイルへ焼き込むだけ。
  */
 class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContribution {
 
@@ -124,6 +133,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IFileService private readonly fileService: IFileService,
 		@IPathService private readonly pathService: IPathService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -133,8 +143,12 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		super();
 
 		// SSH の接続先だけを対象にする。他の種類の接続先（WSL・コンテナ）は ssh を通らないので、
-		// 置いたものへ実行権も付けられず、ソケットも引けない
-		if (this.environmentService.remoteAuthority?.startsWith('ssh-remote+') === true) {
+		// 置いたものへ実行権も付けられず、ソケットも引けない。戻りトンネルが設定で切られている
+		// ときは、置いても宛先ポートが取れず動かない設定を接続先に残すだけなので置かない
+		if (
+			this.environmentService.remoteAuthority?.startsWith('ssh-remote+') === true
+			&& this.configurationService.getValue<boolean>(PARADIS_REMOTE_AGENT_TUNNEL_SETTING)
+		) {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
 			// ペインが増減するたび、接続先の Codex ソケットの引き込みを合わせ直す
 			this._register(this.paneTokenService.onDidChange(() => {
@@ -148,7 +162,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			});
 			this._register(new ParadisRemoteAgentHooksController(
 				() => this.install(channel),
-				() => channel.call<{ port: number }>('getGatewayEndpoint'),
+				() => channel.call<number | undefined>('ensureRemoteAgentTunnel', [this.environmentService.remoteAuthority]),
 				delayMs => new Promise(resolve => setTimeout(resolve, delayMs)),
 				(callback, intervalMs) => disposableWindowInterval(mainWindow, callback, intervalMs),
 				this.logService,
@@ -156,7 +170,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		}
 	}
 
-	/** @returns 置けたゲートウェイ番号。まだ整っていないだけなら undefined（呼び出し側が試し直す） */
+	/** @returns 置けた接続先側の番号。まだ整っていないだけなら undefined（呼び出し側が試し直す） */
 	private async install(channel: IChannel): Promise<number | undefined> {
 		try {
 			// 接続中の userHome は接続先のホーム。ここから下は全て接続先のパスになる
@@ -164,28 +178,34 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			// スクリプトはこの場所を見て通知先の番号を読む。env は手元のパスのまま届いてしまうので、
 			// 場所をスクリプトへ焼き込んでもらう
 			const portFile = joinPath(home, '.para-code', 'paradis-browser-mcp.json');
-			const [script, endpoint] = await Promise.all([
+			const [script, remotePort] = await Promise.all([
 				channel.call<string>('getNotifyScriptContent', [portFile.path]),
-				channel.call<{ port: number }>('getGatewayEndpoint'),
+				channel.call<number | undefined>('ensureRemoteAgentTunnel', [this.environmentService.remoteAuthority]),
 			]);
+			if (remotePort === undefined) {
+				// 戻りトンネルがまだ張れていない（張っている最中／今回は失敗）。番号が無いものを
+				// 書いても仕方ないので、次のリトライに任せる
+				return undefined;
+			}
 
 			const scriptFile = joinPath(home, PARADIS_NOTIFY_HOOK_RELATIVE_PATH);
 			await this.fileService.writeFile(scriptFile, VSBuffer.fromString(script));
 			// 実行権が要る。IFileService には chmod が無いので、shared process 側へ頼む
 			await channel.call('markRemoteHookExecutable', [this.environmentService.remoteAuthority, scriptFile.path]);
 
-			// 手元と同じ番号を書いておく。トンネルが張られている限りそのまま手元へ届く
-			await this.fileService.writeFile(portFile, VSBuffer.fromString(JSON.stringify({ protocolVersion: 1, port: endpoint.port })));
+			// 戻りトンネルが接続先で実際に受け取った番号を書いておく。固定番号ではないので、
+			// 同じホストへ他ユーザーが同時に SSH していても衝突しない
+			await this.fileService.writeFile(portFile, VSBuffer.fromString(JSON.stringify({ protocolVersion: 1, port: remotePort })));
 
 			await this.installCodexLauncher(home, channel);
 
 			await this.mergeAgentHooks(joinPath(home, '.claude', 'settings.json'), 'claude');
 			await this.mergeAgentHooks(joinPath(home, '.codex', 'hooks.json'), 'codex');
-			await this.mergeClaudeMcp(home, endpoint.port);
-			await this.mergeCodexMcp(home, endpoint.port);
+			await this.mergeClaudeMcp(home, remotePort);
+			await this.mergeCodexMcp(home, remotePort);
 			this.syncCodexSockets(home, channel);
-			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${endpoint.port})`);
-			return endpoint.port;
+			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${remotePort})`);
+			return remotePort;
 		} catch (error) {
 			// 置けなくても接続そのものは使える。実行状態が出ないだけ
 			this.logService.warn('[paradis] could not install the agent hooks on the host (will retry)', error);
@@ -263,8 +283,8 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 * 接続先の Claude Code へ para-browser MCP を登録する。
 	 *
 	 * MCP サーバーの実体は手元の shared process にあり、素の HTTP で話せる。接続先からは
-	 * 戻り経路（paradisRemoteAgentTunnel）で同じ番号に届くので、そこを URL に書けばよい。
-	 * シムを接続先へ置く必要はない（あれは stdio を HTTP へ橋渡しするだけのもの）。
+	 * 戻り経路（paradisRemoteAgentTunnel）が接続先で受け取った番号（`port` 引数）へ届くので、
+	 * そこを URL に書けばよい。シムを接続先へ置く必要はない（あれは stdio を HTTP へ橋渡しするだけのもの）。
 	 *
 	 * トークンはペインごとに違うため、値を焼き込まず `${PARA_CODE_TERMINAL_PANE_ID}` の
 	 * まま書く。エージェントはターミナルの env を継いで起動するので、そこで解決される。
