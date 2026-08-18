@@ -26,6 +26,7 @@ import './contrib/workspaceSwitch/electron-browser/paradisAddRepositoryFlow.cont
 import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
 import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasLifecycle.contribution.js';
 import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';
+import './contrib/layoutPresets/electron-browser/paradisLayoutPresets.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationSettingsDialog.contribution.js';
 import './contrib/notifications/electron-browser/paradisDoNotDisturbStatusBar.contribution.js';
