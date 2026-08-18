@@ -1804,6 +1804,9 @@ export default defineConfig(
 						// PARA-PATCH: 同titlebarPart.ts が AIリミットモニターのタイトルバーウィジェット
 						// (createParadisLimitsMonitorWidget)を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/limitsMonitor/~',
+						// PARA-PATCH: 同titlebarPart.ts が Claude/Codex/GitHubサービスステータスの
+						// タイトルバーウィジェット(createParadisServiceStatusWidget)を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/serviceStatus/~',
 						'assert',
 						{
 							'when': 'test',

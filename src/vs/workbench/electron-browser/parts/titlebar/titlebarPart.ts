@@ -11,6 +11,8 @@ import { IDisposable, MutableDisposable } from '../../../../base/common/lifecycl
 import { createParadisResourceMonitorWidget } from '../../../../paradis/contrib/resourceMonitor/electron-browser/paradisResourceMonitorWidget.js';
 // PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
 import { createParadisLimitsMonitorWidget } from '../../../../paradis/contrib/limitsMonitor/electron-browser/paradisLimitsMonitorWidget.js';
+// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
+import { createParadisServiceStatusWidget } from '../../../../paradis/contrib/serviceStatus/electron-browser/paradisServiceStatusWidget.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -66,6 +68,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 	private readonly paradisResourceMonitorWidget = this._register(new MutableDisposable<IDisposable>());
 	// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
 	private readonly paradisLimitsMonitorWidget = this._register(new MutableDisposable<IDisposable>());
+	// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
+	private readonly paradisServiceStatusWidget = this._register(new MutableDisposable<IDisposable>());
 
 	private cachedWindowControlStyles: { bgColor: string; fgColor: string } | undefined;
 	private cachedWindowControlHeight: number | undefined;
@@ -174,6 +178,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 		this.paradisResourceMonitorWidget.value = createParadisResourceMonitorWidget(this.instantiationService, this.leftContent);
 		// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
 		this.paradisLimitsMonitorWidget.value = createParadisLimitsMonitorWidget(this.instantiationService, this.leftContent);
+		// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
+		this.paradisServiceStatusWidget.value = createParadisServiceStatusWidget(this.instantiationService, this.leftContent);
 
 		// Native menu controller
 		if (isMacintosh || hasNativeMenu(this.configurationService)) {

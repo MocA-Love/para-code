@@ -1,0 +1,33 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// Claude/Codex/GitHub のサービスステータス表示のオン/オフ設定。実体(タイトルバーウィジェット)は
+// IRequestServiceを使うためelectron-browser側にあるが、設定スキーマ自体はweb/desktop共通で
+// 安全なので paradis.common.contribution.ts 経由でここだけ先に登録する
+// (resourceMonitor/limitsMonitorと同じ分離)。
+
+import { localize } from '../../../../nls.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
+import { PARADIS_SERVICE_STATUS_SETTING_ENABLED } from '../common/paradisServiceStatus.js';
+
+// セクションは resourceMonitor/limitsMonitor 側と同じ 'paradis' に相乗り(集約セクション)。
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'paradis',
+	order: 999,
+	title: localize('paradisConfigurationTitle', "Para Code"),
+	type: 'object',
+	properties: {
+		[PARADIS_SERVICE_STATUS_SETTING_ENABLED]: {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.WINDOW,
+			description: localize('paradis.serviceStatus.enabled', "タイトルバーに Claude / Codex(OpenAI) / GitHub のサービスステータスを表示するかどうかを制御します。")
+		}
+	}
+});
