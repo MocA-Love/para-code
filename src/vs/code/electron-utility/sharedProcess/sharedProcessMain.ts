@@ -147,6 +147,8 @@ import { MeteredConnectionChannelClient, METERED_CONNECTION_CHANNEL } from '../.
 import { PlaywrightChannel } from '../../../platform/browserView/node/playwrightChannel.js';
 // PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け用のバインディングレジストリ+MCPサーバー（fork独自、src/vs/paradis/contrib/agentBrowser/ 参照）
 import { registerParadisAgentBrowser } from '../../../paradis/contrib/agentBrowser/node/paradisAgentBrowserChannel.js';
+// PARA-PATCH: モバイル端末（iOSシミュレータ/Androidエミュレータ）⇔エージェントCLI紐付け（fork独自、src/vs/paradis/contrib/mobileCanvas/ 参照）
+import { registerParadisMobileCanvas } from '../../../paradis/contrib/mobileCanvas/node/paradisMobileCanvasChannel.js';
 // PARA-PATCH: 通知サウンド/Aivis読み上げ用バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
 import { registerParadisNotifications } from '../../../paradis/contrib/notifications/node/paradisNotificationsChannel.js';
 // PARA-PATCH: おやすみモードを aivis-mcp 側のミュートへ伝える aivis CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
@@ -547,6 +549,15 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 			accessor.get(IConfigurationService),
 			this.configuration.args,
 			audio => paradisNotifications.publishMobileVoiceClip(audio),
+		));
+
+		// PARA-PATCH: モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは上のMCPサーバーへ相乗りさせるため、
+		// エージェントCLI側に追加のMCP設定は要らない
+		this._register(registerParadisMobileCanvas(
+			this.server,
+			accessor.get(INativeEnvironmentService).builtinExtensionsPath,
+			accessor.get(ILogService),
+			provider => paradisAgentBrowser.registerToolProvider(provider),
 		));
 
 		// PARA-PATCH: Excelビューア/差分の xlsx パースバックエンド（exceljs。rendererでは動かないためshared processで実行）

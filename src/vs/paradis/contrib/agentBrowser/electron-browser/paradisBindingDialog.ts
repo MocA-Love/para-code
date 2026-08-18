@@ -16,6 +16,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { BugIndicatingError } from '../../../../base/common/errors.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -24,6 +25,9 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
+import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
+import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
+import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
@@ -34,6 +38,8 @@ const $ = dom.$;
 // --- UI文字列（日本語。hygieneのunicodeチェック対策として1行ずつマーカーを付ける） ---
 // allow-any-unicode-next-line
 const STR_DIALOG_TITLE = localize('paradis.bindingDialog.title', "ブラウザページをエージェントと共有");
+// allow-any-unicode-next-line
+const STR_DIALOG_TITLE_DEVICES = localize('paradis.bindingDialog.titleDevices', "モバイル端末をエージェントと共有");
 // allow-any-unicode-next-line
 const STR_CLOSE_ARIA = localize('paradis.bindingDialog.closeAria', "閉じる");
 // allow-any-unicode-next-line
@@ -136,7 +142,36 @@ const CLI_DISPLAY_NAME: Readonly<Record<ParadisMcpCli, string>> = { claude: 'Cla
 /** 設定ファイルの表示用フレンドリーパス（未設定時は絶対パスが取れないため既定パスを出す）。 */
 const CLI_CONFIG_PATH: Readonly<Record<ParadisMcpCli, string>> = { claude: '~/.claude.json', codex: '~/.codex/config.toml' };
 
-type DialogTab = 'panes' | 'mcp';
+// allow-any-unicode-next-line
+const STR_TAB_DEVICES = localize('paradis.bindingDialog.tabDevices', "モバイル端末");
+// allow-any-unicode-next-line
+const STR_DEVICES_EMPTY = localize('paradis.bindingDialog.devicesEmpty', "使えるiOSシミュレータ／Androidエミュレータが見つかりませんでした。iOSにはXcode、Androidには Android SDK（emulator・adb にPATHが通っていること）が必要です。");
+// allow-any-unicode-next-line
+const STR_DEVICES_LOADING = localize('paradis.bindingDialog.devicesLoading', "端末を探しています…");
+// allow-any-unicode-next-line
+const STR_DEVICE_RUNNING = localize('paradis.bindingDialog.deviceRunning', "起動中");
+// allow-any-unicode-next-line
+const STR_DEVICE_STOPPED = localize('paradis.bindingDialog.deviceStopped', "停止中");
+// allow-any-unicode-next-line
+const STR_BTN_ATTACH = localize('paradis.bindingDialog.btnAttach', "アタッチ");
+// allow-any-unicode-next-line
+const STR_BTN_DETACH = localize('paradis.bindingDialog.btnDetach', "解除");
+// allow-any-unicode-next-line
+const STR_DEVICE_UNATTACHED = localize('paradis.bindingDialog.deviceUnattached', "未アタッチ");
+// allow-any-unicode-next-line
+const strDeviceAttachedHere = (pane: string) => localize('paradis.bindingDialog.deviceAttachedHere', "アタッチ中 · {0}", pane);
+// allow-any-unicode-next-line
+const strDeviceAttachedElse = (pane: string) => localize('paradis.bindingDialog.deviceAttachedElse', "別のペインが使用中: {0}", pane);
+// allow-any-unicode-next-line
+const STR_DEVICES_PICK_PANE = localize('paradis.bindingDialog.devicesPickPane', "この端末を渡すターミナルペインを選んでください");
+// allow-any-unicode-next-line
+const STR_DEVICES_NO_PANE = localize('paradis.bindingDialog.devicesNoPane', "アタッチできるターミナルペインがありません。新しいターミナルでエージェントCLIを起動してください。");
+// allow-any-unicode-next-line
+const STR_DEVICES_FOOTER_HINT = localize('paradis.bindingDialog.devicesFooterHint', "エージェントはアタッチしたこの端末だけを操作できます");
+// allow-any-unicode-next-line
+const strAttachFailed = (detail: string) => localize('paradis.bindingDialog.attachFailed', "アタッチに失敗しました: {0}", detail);
+
+type DialogTab = 'panes' | 'devices' | 'mcp';
 
 /** CLIごとの「自動セットアップ / 修正」実行状態。 */
 interface IParadisSetupState {
@@ -169,15 +204,21 @@ export class ParadisBindingDialog extends Disposable {
 	private _bindError: string | undefined;
 	private _mcpStatus: IParadisMcpConfigStatus | undefined;
 	private readonly _setupStates = new Map<ParadisMcpCli, IParadisSetupState>();
+	/** 「アタッチ」を押して渡し先ペインの一覧を開いている端末（開いていなければ undefined）。 */
+	private _attachTargetDeviceId: string | undefined;
 
 	constructor(
-		private readonly pageModel: IBrowserViewModel,
+		// モバイル端末のアタッチだけを目的に開く場合はページが無い（ブラウザページを1枚も
+		// 開いていなくても端末タブへ入れるようにするため）。ページ起点のタブからは _page を使う。
+		private readonly pageModel: IBrowserViewModel | undefined,
 		// 呼び出し元ペインの識別に使われていたが、行内アクションUIでは選択の概念がないため未使用。
 		// API互換のため引数は維持する。
 		_options: IParadisBindingDialogOptions | undefined,
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 		@ILayoutService layoutService: ILayoutService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IParadisMobileCanvasModel private readonly mobileCanvasModel: IParadisMobileCanvasModel,
+		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 	) {
 		super();
 
@@ -188,7 +229,7 @@ export class ParadisBindingDialog extends Disposable {
 		// --- header ---
 		const header = dom.append(modal, $('.pbd-header'));
 		const titles = dom.append(header, $('.pbd-titles'));
-		dom.append(titles, $('h2')).textContent = STR_DIALOG_TITLE;
+		dom.append(titles, $('h2')).textContent = this.pageModel ? STR_DIALOG_TITLE : STR_DIALOG_TITLE_DEVICES;
 		const closeBtn = dom.append(header, $('.pbd-close'));
 		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
 		closeBtn.setAttribute('role', 'button');
@@ -200,7 +241,13 @@ export class ParadisBindingDialog extends Disposable {
 
 		// --- tabs ---
 		const tabsBar = dom.append(modal, $('.pbd-tabs'));
-		this._createTab(tabsBar, 'panes', STR_TAB_PANES);
+		// ページ無しで開いた場合、ページ起点の「ターミナルペイン」タブは意味を持たないので出さない。
+		if (this.pageModel) {
+			this._createTab(tabsBar, 'panes', STR_TAB_PANES);
+		} else {
+			this._activeTab = 'devices';
+		}
+		this._createTab(tabsBar, 'devices', STR_TAB_DEVICES);
 		this._createTab(tabsBar, 'mcp', STR_TAB_MCP);
 
 		// --- body ---
@@ -225,8 +272,13 @@ export class ParadisBindingDialog extends Disposable {
 		}));
 
 		this._register(this.bindingModel.onDidChange(() => this._render()));
-		this._register(this.pageModel.onDidChangeTitle(() => this._render()));
-		this._register(this.pageModel.onDidChangeSharingState(() => this._render()));
+		// 端末一覧はホスト起動を伴うことがあるため、このダイアログが開いている間だけ取りに行く。
+		this._register(this.mobileCanvasModel.onDidChange(() => this._render()));
+		this._register(this.mobileCanvasModel.beginPolling());
+		if (this.pageModel) {
+			this._register(this.pageModel.onDidChangeTitle(() => this._render()));
+			this._register(this.pageModel.onDidChangeSharingState(() => this._render()));
+		}
 
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._render();
@@ -261,8 +313,19 @@ export class ParadisBindingDialog extends Disposable {
 		this._tabElements.set(tab, element);
 	}
 
+	/**
+	 * ページ起点のタブ（ターミナルペイン）専用のアクセサ。端末タブしか開けない状態では
+	 * それらのコードパスに入らないため、ここに来たら呼び出し側の不具合。
+	 */
+	private get _page(): IBrowserViewModel {
+		if (!this.pageModel) {
+			throw new BugIndicatingError('The panes tab of the binding dialog requires a browser page.');
+		}
+		return this.pageModel;
+	}
+
 	private _panes(): IParadisPaneDescriptor[] {
-		return this.bindingModel.getPanesForPage(this.pageModel);
+		return this.pageModel ? this.bindingModel.getPanesForPage(this.pageModel) : this.bindingModel.getPanes();
 	}
 
 	private _paneDisplayName(pane: IParadisPaneDescriptor): string {
@@ -283,10 +346,17 @@ export class ParadisBindingDialog extends Disposable {
 			element.classList.toggle('active', tab === this._activeTab);
 		}
 		this._renderMcpTabBadge();
-		this._renderPageBar();
+		// 共有先のページを表す帯は「ターミナルペイン」タブの文脈でしか意味を持たない。
+		// モバイル端末タブは端末が主語なので、出したままだと無関係な情報になる。
+		this._pageBar.style.display = this._activeTab === 'panes' ? '' : 'none';
+		if (this._activeTab === 'panes') {
+			this._renderPageBar();
+		}
 		dom.clearNode(this._body);
 		if (this._activeTab === 'panes') {
 			this._renderPanesTab();
+		} else if (this._activeTab === 'devices') {
+			this._renderDevicesTab();
 		} else {
 			this._renderMcpTab();
 		}
@@ -305,18 +375,18 @@ export class ParadisBindingDialog extends Disposable {
 	private _renderPageBar(): void {
 		dom.clearNode(this._pageBar);
 		const favicon = dom.append(this._pageBar, $('.pbd-favicon'));
-		if (this.pageModel.favicon) {
+		if (this._page.favicon) {
 			const img = dom.append(favicon, $('img')) as HTMLImageElement;
-			img.src = this.pageModel.favicon;
+			img.src = this._page.favicon;
 			img.alt = '';
 		} else {
 			favicon.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.globe)}`));
 		}
 		const text = dom.append(this._pageBar, $('.pbd-pb-text'));
-		dom.append(text, $('span.pbd-pb-title')).textContent = this.pageModel.title || this.pageModel.url;
-		dom.append(text, $('span.pbd-pb-url')).textContent = this.pageModel.url;
+		dom.append(text, $('span.pbd-pb-title')).textContent = this._page.title || this._page.url;
+		dom.append(text, $('span.pbd-pb-url')).textContent = this._page.url;
 
-		const isShared = this.bindingModel.getBindingsForPage(this.pageModel.id).length > 0;
+		const isShared = this.bindingModel.getBindingsForPage(this._page.id).length > 0;
 		const pill = dom.append(this._pageBar, $(`.pbd-page-pill.${isShared ? 'shared' : 'unshared'}`));
 		if (isShared) {
 			dom.append(pill, $('.pbd-dot.green'));
@@ -333,7 +403,7 @@ export class ParadisBindingDialog extends Disposable {
 		// スコープ外（別スペース）のペインは一覧に出さない。ただし現在このページに共有中の行は
 		// 解除できるよう常に残す。
 		return this._panes().filter(pane =>
-			pane.bindEligibility?.eligible === true || pane.binding?.pageId === this.pageModel.id);
+			pane.bindEligibility?.eligible === true || pane.binding?.pageId === this._page.id);
 	}
 
 	private _renderPanesTab(): void {
@@ -371,7 +441,7 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _renderPaneRow(pane: IParadisPaneDescriptor): HTMLElement {
 		const row = $('.pbd-pane-row');
-		const boundHere = pane.binding?.pageId === this.pageModel.id;
+		const boundHere = pane.binding?.pageId === this._page.id;
 		const boundElse = !!pane.binding && !boundHere;
 
 		const dotClass = (pane.binding || pane.mcpConnected) ? 'green' : 'amber';
@@ -381,14 +451,14 @@ export class ParadisBindingDialog extends Disposable {
 		dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
 		dom.append(main, $('.pbd-row-sub')).textContent = this._paneSubText(pane, boundHere, boundElse);
 
-		const action = paradisGetPaneBindingAction(pane.binding?.pageId, this.pageModel.id, pane.bindEligibility);
+		const action = paradisGetPaneBindingAction(pane.binding?.pageId, this._page.id, pane.bindEligibility);
 		const button = dom.append(row, $('button.pbd-row-btn')) as HTMLButtonElement;
 		if (action === 'unbind') {
 			button.classList.add('unshare');
 			button.textContent = STR_BTN_ROW_UNSHARE;
 			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
 				if (boundHere) {
-					void this.bindingModel.unbindPane(this.pageModel, pane.token);
+					void this.bindingModel.unbindPane(this._page, pane.token);
 				} else {
 					void this.bindingModel.unbindToken(pane.token);
 				}
@@ -610,11 +680,116 @@ export class ParadisBindingDialog extends Disposable {
 		}));
 	}
 
+	// --- モバイル端末タブ ---
+
+	/**
+	 * 端末を主語にした一覧。行のボタンでアタッチ／解除する。
+	 * 「アタッチ」を押すと、その行の下に渡し先ペインの一覧をその場で開く（別ウィンドウの
+	 * QuickPickを重ねるとこのモーダルのフォーカスとEscape処理を奪い合うため、中で完結させる）。
+	 */
+	private _renderDevicesTab(): void {
+		const snapshot = this.mobileCanvasModel.snapshot;
+		const list = dom.append(this._body, $('.pbd-pane-list'));
+
+		if (snapshot.devices.length === 0) {
+			const empty = dom.append(list, $('.pbd-empty'));
+			if (this.mobileCanvasModel.loading) {
+				empty.textContent = STR_DEVICES_LOADING;
+			} else {
+				empty.textContent = snapshot.unavailableReason
+					? `${STR_DEVICES_EMPTY}\n\n${snapshot.unavailableReason}`
+					: STR_DEVICES_EMPTY;
+			}
+			return;
+		}
+
+		const panes = this.bindingModel.getPanes();
+		for (const device of snapshot.devices) {
+			const attachment = snapshot.attachments.find(entry => entry.deviceId === device.id);
+			const attachedPane = attachment ? panes.find(pane => pane.token === attachment.paneToken) : undefined;
+
+			const row = dom.append(list, $('.pbd-pane-row'));
+			const main = dom.append(row, $('.pbd-row-main'));
+			const title = dom.append(main, $('.pbd-row-title'));
+			dom.append(title, $('span')).textContent = device.name;
+			const statePill = dom.append(title, $(`span.pbd-pill.${device.isRunning ? 'green' : 'gray'}`));
+			dom.append(statePill, $(`.pbd-dot.${device.isRunning ? 'green' : 'gray'}`));
+			dom.append(statePill, $('span')).textContent = device.isRunning ? STR_DEVICE_RUNNING : STR_DEVICE_STOPPED;
+
+			const paneLabel = attachedPane ? this._paneDisplayName(attachedPane) : attachment?.paneToken ?? '';
+			const status = attachment
+				? (attachedPane ? strDeviceAttachedHere(paneLabel) : strDeviceAttachedElse(paneLabel))
+				: STR_DEVICE_UNATTACHED;
+			dom.append(main, $('.pbd-row-sub')).textContent = device.runtime ? `${device.runtime} · ${status}` : status;
+
+			const button = dom.append(row, $('button.pbd-row-btn')) as HTMLButtonElement;
+			if (attachment) {
+				button.classList.add('unshare');
+				button.textContent = STR_BTN_DETACH;
+				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+					void this._runDeviceAction(() => this.mobileCanvasModel.detach(attachment.paneToken));
+				}));
+			} else {
+				button.classList.add('share');
+				button.textContent = STR_BTN_ATTACH;
+				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+					this._attachTargetDeviceId = this._attachTargetDeviceId === device.id ? undefined : device.id;
+					this._render();
+				}));
+			}
+
+			if (this._attachTargetDeviceId === device.id) {
+				this._renderAttachTargets(list, device.id, panes, snapshot.attachments);
+			}
+		}
+	}
+
+	/** 「アタッチ」を押した端末の直下に出す、渡し先ペインの一覧。 */
+	private _renderAttachTargets(
+		list: HTMLElement,
+		deviceId: string,
+		panes: readonly IParadisPaneDescriptor[],
+		attachments: readonly IParadisMobileAttachment[],
+	): void {
+		// 既に別の端末を持っているペインは、取り違えを避けるため候補から外す。
+		const available = panes.filter(pane => !attachments.some(entry => entry.paneToken === pane.token));
+		if (available.length === 0) {
+			dom.append(list, $('.pbd-empty')).textContent = STR_DEVICES_NO_PANE;
+			return;
+		}
+		dom.append(list, $('.pbd-scope-note')).textContent = STR_DEVICES_PICK_PANE;
+		for (const pane of available) {
+			const row = dom.append(list, $('.pbd-pane-row'));
+			const main = dom.append(row, $('.pbd-row-main'));
+			dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
+			dom.append(main, $('.pbd-row-sub')).textContent = this._paneMcpConnected(pane) ? STR_SUB_READY : STR_SUB_NEEDS_MCP;
+			const button = dom.append(row, $('button.pbd-row-btn.share')) as HTMLButtonElement;
+			button.textContent = STR_BTN_ATTACH;
+			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+				// スペースを跨いだアタッチを残さないよう、アタッチ時点の所属スペースを添えて記録する。
+				const stateKey = this.terminalScopeService.getStateKeyForInstance(pane.instanceId);
+				void this._runDeviceAction(() => this.mobileCanvasModel.attach(pane.token, deviceId, stateKey));
+			}));
+		}
+	}
+
+	private async _runDeviceAction(action: () => Promise<void>): Promise<void> {
+		try {
+			await action();
+			this._bindError = undefined;
+			this._attachTargetDeviceId = undefined;
+		} catch (error) {
+			this._bindError = strAttachFailed(error instanceof Error ? error.message : String(error));
+		}
+		this._render();
+	}
+
 	private _renderFooter(): void {
 		dom.clearNode(this._footer);
 		const hint = dom.append(this._footer, $('.pbd-hint'));
 		hint.appendChild($(`span${ThemeIcon.asCSSSelector(this._bindError ? Codicon.error : Codicon.shield)}`));
-		dom.append(hint, $('span')).textContent = this._bindError ?? STR_FOOTER_HINT;
+		const defaultHint = this._activeTab === 'devices' ? STR_DEVICES_FOOTER_HINT : STR_FOOTER_HINT;
+		dom.append(hint, $('span')).textContent = this._bindError ?? defaultHint;
 
 		const closeButton = dom.append(this._footer, $('button.pbd-btn')) as HTMLButtonElement;
 		closeButton.textContent = STR_BTN_CLOSE;
@@ -623,7 +798,7 @@ export class ParadisBindingDialog extends Disposable {
 
 	private async _bindPane(token: string): Promise<void> {
 		const bound = await paradisRunDialogBind(
-			() => this.bindingModel.bindPageToPane(this.pageModel, token),
+			() => this.bindingModel.bindPageToPane(this._page, token),
 			error => this._bindError = paradisGetBindingErrorMessage(error, {
 				pending: STR_META_SCOPE_PENDING,
 				differentScope: STR_META_SCOPE_MISMATCH,
