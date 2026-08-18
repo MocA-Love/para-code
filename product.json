@@ -116,16 +116,9 @@
 		{
 			"name": "mobile-canvas-vscode",
 			"version": "0.1.16",
-			"sha256": "",
+			"sha256": "80fb7cb88975f8b55e20dc5680b70714468f3f6ffa6fe971d9824f660211ed5c",
 			"repo": "https://github.com/Redth/mobile-canvas-ghcp",
-			"platformSpecific": {
-				"darwin-arm64": "3485206d687307242cf473b49a43b9a7ebedad5db0918d55a820658e0b8719de",
-				"darwin-x64": "6db644191a95d9353f5c014c4e02925a9e8ee3bc0132cb4087f8162f0082e1f8",
-				"linux-arm64": "7004cff856bd12951f54753c3701d6efb13a0f5bef11f54d2e782e7886bda3c0",
-				"linux-x64": "e427ad0d072d5a492c220f8d76f55e599c92f7f354765fa32ef6ae65f63fea2e",
-				"win32-arm64": "484a4ec3d8539b7845f239bf9d9a4a2aad2a91948b039dfdeeb3f2b927a51ac3",
-				"win32-x64": "e178bc527cc6b6efa0af36a7a18c59756363fa4d0668d72205d309c829383799"
-			},
+			"vsix": "resources/paradis/builtin/mobile-canvas-vscode-0.1.16.vsix",
 			"metadata": {
 				"id": "e6de95f7-8c3f-41a1-8673-74ca7a1ba199",
 				"publisherId": {

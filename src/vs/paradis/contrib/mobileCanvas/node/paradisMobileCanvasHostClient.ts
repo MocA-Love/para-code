@@ -34,16 +34,34 @@ interface IHostMetadata {
 	readonly version: string;
 }
 
-/** 同梱ランタイムの `dist/runtimes/manifest.json` のうち、ここで使う部分だけ。 */
+/**
+ * Mobile Canvas の `dist/runtimes/manifest.json` のうち、ここで使う部分だけ。
+ *
+ * 同梱している拡張はランタイム非同梱版なので、各ファイルは拡張の中の `archive`（ローカルの .gz）
+ * ではなく `asset`（GitHub Release のアセット名）を指す。**ネイティブ実行ファイルをアプリの中に
+ * 置かないのは macOS の公証を通すためで、意図的な構成**（同梱すると Apple が .gz を展開して
+ * 中の未署名 Mach-O を見つけ、アプリ全体の公証が拒否される）。
+ */
 interface IRuntimeManifest {
 	readonly runtimes: {
 		readonly [platformKey: string]: {
 			readonly rid: string;
 			readonly executable: string;
 			readonly id: string;
-			readonly files: { readonly [name: string]: { readonly archive: string; readonly sha256: string; readonly size: number } };
+			readonly files: {
+				readonly [name: string]: {
+					/** 拡張に同梱されている場合の相対パス。非同梱版には無い。 */
+					readonly archive?: string;
+					/** GitHub Release から取る場合のアセット名。 */
+					readonly asset?: string;
+					readonly sha256: string;
+					readonly size: number;
+				};
+			};
 		};
 	};
+	/** ランタイムの取得元。非同梱版で `asset` を解決するのに使う。 */
+	readonly distribution?: { readonly repository: string; readonly tag: string };
 }
 
 /** ホストが応答しない・起動できないなど、Mobile Canvas 側の都合で失敗したことを表す。 */
@@ -59,6 +77,10 @@ const HOST_HEALTH_TIMEOUT_MS = 750;
 const REQUEST_TIMEOUT_MS = 60_000;
 /** gunzip 後の実行ファイルサイズの上限。manifest の申告値が壊れていた場合の歯止め。 */
 const MAX_RUNTIME_BYTES = 512 * 1024 * 1024;
+/** 圧縮済みアーカイブの上限。壊れた応答を丸ごとメモリに載せないための歯止め。 */
+const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
+/** ランタイム取得は初回のみ・数十MBなので、通常のREST呼び出しより長く待つ。 */
+const RUNTIME_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class ParadisMobileCanvasHostClient {
 
@@ -274,7 +296,9 @@ export class ParadisMobileCanvasHostClient {
 				if (!Number.isSafeInteger(file.size) || file.size <= 0 || file.size > MAX_RUNTIME_BYTES) {
 					throw new ParadisMobileCanvasUnavailableError(`Invalid declared runtime size for ${name}: ${file.size}`);
 				}
-				const packed = await readFile(join(runtimesDir, file.archive));
+				const packed = file.archive
+					? await readFile(join(runtimesDir, file.archive))
+					: await this._downloadArchive(manifest, file.asset);
 				const bytes = gunzipSync(packed, { maxOutputLength: file.size });
 				const actual = createHash('sha256').update(bytes).digest('hex');
 				if (actual !== file.sha256) {
@@ -293,6 +317,33 @@ export class ParadisMobileCanvasHostClient {
 		} finally {
 			await rm(staging, { recursive: true, force: true }).catch(() => { });
 		}
+	}
+
+	/**
+	 * ランタイムのアーカイブを GitHub Release から取る。展開後の sha256 は呼び出し側で
+	 * manifest の値と突き合わせるので、ここでは大きさの上限だけ見る。
+	 */
+	private async _downloadArchive(manifest: IRuntimeManifest, asset: string | undefined): Promise<Buffer> {
+		const distribution = manifest.distribution;
+		if (!asset || !distribution?.repository || !distribution?.tag) {
+			throw new ParadisMobileCanvasUnavailableError('The Mobile Canvas runtime manifest does not say where to download the runtime from.');
+		}
+		const url = `https://github.com/${distribution.repository}/releases/download/${distribution.tag}/${asset}`;
+		this._logService.info(`[paradis-mobile-canvas] downloading the Mobile Canvas runtime (${asset})`);
+		let response: Response;
+		try {
+			response = await fetch(url, { signal: AbortSignal.timeout(RUNTIME_DOWNLOAD_TIMEOUT_MS) });
+		} catch (error) {
+			throw new ParadisMobileCanvasUnavailableError(`Could not download the Mobile Canvas runtime: ${toMessage(error)}`);
+		}
+		if (!response.ok) {
+			throw new ParadisMobileCanvasUnavailableError(`Could not download the Mobile Canvas runtime: ${response.status} ${response.statusText}`);
+		}
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		if (bytes.byteLength === 0 || bytes.byteLength > MAX_ARCHIVE_BYTES) {
+			throw new ParadisMobileCanvasUnavailableError(`The downloaded Mobile Canvas runtime has an unexpected size (${bytes.byteLength} bytes).`);
+		}
+		return Buffer.from(bytes);
 	}
 }
 
