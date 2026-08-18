@@ -23,7 +23,7 @@ class ParadisAdoptUnattributedTerminalsAction extends Action2 {
 	constructor() {
 		super({
 			id: 'paradis.workspaceSwitch.adoptUnattributedTerminals',
-			title: localize2('paradis.workspaceSwitch.adoptUnattributedTerminals', "Recover Terminals Without a Space"),
+			title: localize2('paradis.workspaceSwitch.adoptUnattributedTerminals', "所属スペースのないターミナルを復元"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: true,
 		});
@@ -35,7 +35,7 @@ class ParadisAdoptUnattributedTerminalsAction extends Action2 {
 
 		const waiting = scopeService.countUnattributedTerminals();
 		if (waiting === 0) {
-			notificationService.info(localize('paradis.unattributedTerminals.none', "There are no terminals waiting to be recovered."));
+			notificationService.info(localize('paradis.unattributedTerminals.none', "復元待ちのターミナルはありません。"));
 			return;
 		}
 
@@ -43,7 +43,7 @@ class ParadisAdoptUnattributedTerminalsAction extends Action2 {
 		if (adopted === 0) {
 			notificationService.notify({
 				severity: Severity.Warning,
-				message: localize('paradis.unattributedTerminals.failed', "The terminals could not be recovered into this space. Open a space first, then try again."),
+				message: localize('paradis.unattributedTerminals.failed', "このスペースへターミナルを復元できませんでした。先にスペースを開いてから、もう一度お試しください。"),
 			});
 			return;
 		}
@@ -52,9 +52,9 @@ class ParadisAdoptUnattributedTerminalsAction extends Action2 {
 		// 残るので、その場で戻せるようにしておく。
 		notificationService.prompt(
 			Severity.Info,
-			localize('paradis.unattributedTerminals.adopted', "Moved {0} terminal(s) into this space.", adopted),
+			localize('paradis.unattributedTerminals.adopted', "{0} 個のターミナルをこのスペースへ移動しました。", adopted),
 			[{
-				label: localize('paradis.unattributedTerminals.undo', "Undo"),
+				label: localize('paradis.unattributedTerminals.undo', "元に戻す"),
 				run: () => scopeService.undoLastTerminalAdoption(),
 			}],
 		);

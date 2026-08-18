@@ -49,12 +49,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'string',
 			enum: ['ask', 'always', 'never'],
 			enumDescriptions: [
-				localize('paradis.remote.keepTerminalsAliveOnClose.ask', "Ask every time a window connected to a remote is closed."),
-				localize('paradis.remote.keepTerminalsAliveOnClose.always', "Always leave the terminals running on the remote."),
-				localize('paradis.remote.keepTerminalsAliveOnClose.never', "Always end the terminals, like a local window does."),
+				localize('paradis.remote.keepTerminalsAliveOnClose.ask', "接続先につながっているウィンドウを閉じるたびに確認する"),
+				localize('paradis.remote.keepTerminalsAliveOnClose.always', "常に接続先でターミナルを実行したまま残す"),
+				localize('paradis.remote.keepTerminalsAliveOnClose.never', "ローカルのウィンドウと同様、常にターミナルを終了する"),
 			],
 			default: 'ask',
-			description: localize('paradis.remote.keepTerminalsAliveOnClose', "What to do with terminals running on a remote when the window that opened them is closed. Terminals left running are picked up again the next time you connect, together with their tabs and split layout. They are ended by the remote once its reconnection grace period runs out, and terminals that are not restored are ended shortly after the next time you connect to the same remote. Quitting the whole app never asks; it follows a remembered choice and otherwise leaves the terminals running. This has no effect on local windows or on local terminals inside a remote window."),
+			description: localize('paradis.remote.keepTerminalsAliveOnClose', "接続先で動いているターミナルを、開いていたウィンドウを閉じたときにどう扱うかを設定します。残したターミナルは次に同じ接続先へつなぎ直したときに、タブと分割レイアウトごと復元されます。再接続の猶予期間が過ぎると接続先側で終了し、復元されなかったターミナルも次に同じ接続先へつないだ直後に終了します。アプリ全体を終了するときは確認せず、覚えている選択に従うか、なければターミナルを残したまま終了します。ローカルのウィンドウや、接続先ウィンドウ内のローカルターミナルには影響しません。"),
 		},
 	},
 });
@@ -150,19 +150,19 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 	private async promptUser(abandoned: { value: boolean }): Promise<boolean> {
 		const { result, checkboxChecked } = await this.dialogService.prompt<boolean>({
 			type: 'question',
-			message: localize('paradis.remote.keepTerminals.message', "Leave the terminals running on the remote?"),
-			detail: localize('paradis.remote.keepTerminals.detail', "They keep running after this window closes, and come back with their tabs and layout the next time you connect."),
+			message: localize('paradis.remote.keepTerminals.message', "接続先でターミナルを実行したまま残しますか?"),
+			detail: localize('paradis.remote.keepTerminals.detail', "このウィンドウを閉じても実行され続け、次に接続したときにタブとレイアウトごと戻ってきます。"),
 			buttons: [
 				{
-					label: localize('paradis.remote.keepTerminals.keep', "&&Leave Them Running"),
+					label: localize('paradis.remote.keepTerminals.keep', "実行したまま残す(&&L)"),
 					run: () => true,
 				},
 				{
-					label: localize('paradis.remote.keepTerminals.end', "&&End Them"),
+					label: localize('paradis.remote.keepTerminals.end', "終了する(&&E)"),
 					run: () => false,
 				},
 			],
-			checkbox: { label: localize('paradis.remote.keepTerminals.remember', "Remember this choice") },
+			checkbox: { label: localize('paradis.remote.keepTerminals.remember', "この選択を記憶する") },
 		});
 		const keep = result ?? true;
 		if (checkboxChecked === true && !abandoned.value) {

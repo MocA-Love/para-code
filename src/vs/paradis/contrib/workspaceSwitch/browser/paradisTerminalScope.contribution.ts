@@ -1571,7 +1571,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 所属の分からない復元グループの待避先。
 	 *
 	 * どのスペースにも属さないので、スペースを切り替えても戻ってこない。戻す手段は
-	 * 待避時に出す通知のボタンか、コマンド "Recover Terminals Without a Space" から引き取る。
+	 * 待避時に出す通知のボタンか、コマンド「所属スペースのないターミナルを復元」から引き取る。
 	 * 表示したまま混ぜるより隠す方を選んでいるのは、混ざった側は所属が上書きされて
 	 * 元がどこだったか分からなくなるのに対し、隠れた側は引き取れば戻せるため。
 	 */
@@ -1610,22 +1610,22 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		};
 		const handle = this.notificationService.prompt(
 			Severity.Info,
-			localize('paradis.unattributedTerminals.parked', "Some restored terminals could not be matched to a space, so they are being kept aside instead of being shown here."),
+			localize('paradis.unattributedTerminals.parked', "復元されたターミナルの一部はスペースを特定できなかったため、ここには表示されず待避されています。"),
 			[{
-				label: localize('paradis.unattributedTerminals.recover', "Move Them Into This Space"),
+				label: localize('paradis.unattributedTerminals.recover', "このスペースへ移動"),
 				run: () => {
 					const adopted = this.adoptUnattributedTerminals();
 					if (adopted === 0) {
-						this.notificationService.warn(localize('paradis.unattributedTerminals.recoverFailed', "The terminals could not be moved into this space. Open a space first, then run \"Recover Terminals Without a Space\"."));
+						this.notificationService.warn(localize('paradis.unattributedTerminals.recoverFailed', "このスペースへターミナルを移動できませんでした。先にスペースを開いてから「所属スペースのないターミナルを復元」を実行してください。"));
 						return;
 					}
 					// 引き取り先が正しいかはユーザーにしか分からない。戻し口をその場で出す。
 					// 自動で消してはいけない（取り消せる間だけが価値なので、消えると戻し口も消える）。
 					this.notificationService.prompt(
 						Severity.Info,
-						localize('paradis.unattributedTerminals.adopted', "Moved {0} terminal(s) into this space.", adopted),
+						localize('paradis.unattributedTerminals.adopted', "{0} 個のターミナルをこのスペースへ移動しました。", adopted),
 						[{
-							label: localize('paradis.unattributedTerminals.undo', "Undo"),
+							label: localize('paradis.unattributedTerminals.undo', "元に戻す"),
 							run: () => this.undoLastTerminalAdoption(),
 						}],
 						{ sticky: true },

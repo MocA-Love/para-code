@@ -869,8 +869,9 @@
  * 直接クラスを立てても次の同期で消えてしまう (かつ Windows でも無条件にミラーされ、ネイティブ
  * 非透過ウィンドウの上で color-mix が走って色ずれになる)。ゲートには .paradis-agent-live-window
  * 自身が持つ独自クラス (.paradis-agent-live-transparent、ParadisAgentLiveWindowView が
- * transparencyActive — Windows では常に false — から付与する) を使う。View が握っている要素
- * なので、ミラーの影響を受けず安全にゲートできる。
+ * transparencyActive — macOS 以外では常に false、詳細は paradisIsAuxiliaryWindowTransparencyActive
+ * のコメント参照 — から付与する) を使う。View が握っている要素なので、ミラーの影響を受けず
+ * 安全にゲートできる。
  *
  * opacity は paradisApplyAuxiliaryWindowTransparency (windowTransparency/browser) がコンテナへ
  * 書き込む --paradis-transparency-opacity から取る (別 document のためインライン style は
@@ -903,4 +904,19 @@
 
 .paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-term {
 	background-color: transparent !important;
+}
+
+/* 透過が有効な間、この aux window は nativeTitlebar ではなく hidden タイトルバーで開かれる
+	(paradisAgentLiveWindowService.ts 参照)。OS のネイティブ帯が無くなるぶん、このウィンドウを
+	動かす手段をトップバーへ持たせる。個々のチップは no-drag に戻してクリックできるようにする。
+	信号ボタンは macOS が hidden タイトルバーでも変わらず左上へ描画し続けるため、その幅ぶん
+	(titlebarpart.css の .window-controls-container が desktop macOS 向けに使っているのと同じ
+	70px) を左に空けてチップと重ならないようにする。 */
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-toolbar {
+	-webkit-app-region: drag;
+	padding-left: 70px;
+}
+
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-toolbar button {
+	-webkit-app-region: no-drag;
 }
