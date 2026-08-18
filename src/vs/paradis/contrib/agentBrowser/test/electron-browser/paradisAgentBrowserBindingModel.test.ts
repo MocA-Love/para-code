@@ -8,9 +8,12 @@ import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
+import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisCommitBindResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult } from '../../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserAuthoritySyncService } from '../../electron-browser/paradisAgentBrowserAuthoritySyncService.js';
@@ -109,6 +112,9 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		pollTimer?: DeterministicPollTimer;
 		tokenRefreshTimer?: DeterministicPollTimer;
 		store?: DisposableStore;
+		/** SSHリモート分岐（`_isSshRemote()`）をテストするための接続先authority。既定は未接続。 */
+		remoteAuthority?: string;
+		ensureRemoteAgentTunnel?: () => Promise<number | undefined>;
 	}) {
 		const fixtureStore = options?.store ?? store;
 		const terminalScopeChanged = fixtureStore.add(new Emitter<{ instanceId: number; scope?: unknown }>());
@@ -190,6 +196,8 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 						backendBindings = backendBindings.filter(binding => binding.token !== token);
 						return true as T;
 					}
+					case 'ensureRemoteAgentTunnel':
+						return await (options?.ensureRemoteAgentTunnel?.() ?? Promise.resolve(51234)) as T;
 					default: throw new Error(`unexpected command: ${command}`);
 				}
 			},
@@ -234,9 +242,15 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 			pollTimerFactory: pollTimer ? () => pollTimer : undefined,
 			tokenRefreshTimerFactory: tokenRefreshTimer ? () => tokenRefreshTimer : undefined,
 		} : undefined;
+		// 既定はSSHリモート未接続（remoteAuthority: undefined）。リモート分岐（_isSshRemote()）を
+		// 試すテストだけ options.remoteAuthority を渡す
+		const environmentService = { remoteAuthority: options?.remoteAuthority } as unknown as IWorkbenchEnvironmentService;
+		const pathService = {} as unknown as IPathService;
+		const fileService = {} as unknown as IFileService;
 		const bindingModel = fixtureStore.add(new ParadisAgentBrowserBindingModel(modelOptions,
 			sharedProcessService, terminalService, terminalGroupService, paneTokenService,
-			browserViewWorkbenchService, terminalScopeService, browserScopeService, authoritySyncService));
+			browserViewWorkbenchService, terminalScopeService, browserScopeService, authoritySyncService,
+			environmentService, pathService, fileService));
 		let changeCount = 0;
 		fixtureStore.add(bindingModel.onDidChange(() => changeCount++));
 
@@ -1448,5 +1462,22 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 
 		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 9]);
 		assert.deepStrictEqual(fixture.sharingCalls, [false]);
+	});
+
+	test('routes MCP setup and the gateway endpoint through the SSH return tunnel instead of the local shared-process commands when connected remotely', async () => {
+		const fixture = createFixture({ remoteAuthority: 'ssh-remote+example.com', ensureRemoteAgentTunnel: async () => 51234 });
+
+		const endpoint = await fixture.bindingModel.getGatewayEndpoint();
+		assert.deepStrictEqual(endpoint, { port: 51234 });
+		assert.deepStrictEqual(fixture.commands.filter(call => call.command === 'ensureRemoteAgentTunnel').map(call => call.args), [['ssh-remote+example.com']]);
+		// ローカル版の shared process コマンドは一度も呼ばれない（接続先を見ずローカルの設定を読んでいた元のバグの再発防止）
+		assert.ok(!fixture.commands.some(call => call.command === 'getGatewayEndpoint'));
+	});
+
+	test('reports the return tunnel as unavailable instead of falling back to the local gateway', async () => {
+		const fixture = createFixture({ remoteAuthority: 'ssh-remote+example.com', ensureRemoteAgentTunnel: async () => undefined });
+
+		await assert.rejects(fixture.bindingModel.getGatewayEndpoint());
+		assert.ok(!fixture.commands.some(call => call.command === 'getGatewayEndpoint'));
 	});
 });
