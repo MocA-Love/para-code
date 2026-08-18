@@ -159,8 +159,21 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -e
-          xcrun notarytool submit "darwin-${{ matrix.arch }}.zip" \
-            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          # PARA-PATCH: `notarytool submit --wait` は status が Invalid でも終了コード0を返すため、
+          # 素通りして次の stapler が "Record not found" で落ちるだけになり、Appleが何を拒否したのかが
+          # ログに残らない。status を見て自分で失敗させ、拒否理由(notarytool log)を必ず出す。
+          SUBMIT_JSON="$(xcrun notarytool submit "darwin-${{ matrix.arch }}.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --output-format json)"
+          echo "$SUBMIT_JSON"
+          SUBMISSION_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$SUBMIT_JSON")"
+          SUBMISSION_STATUS="$(node -p 'JSON.parse(process.argv[1]).status' "$SUBMIT_JSON")"
+          if [ "$SUBMISSION_STATUS" != "Accepted" ]; then
+            echo "::error::Notarization returned status '$SUBMISSION_STATUS' for submission $SUBMISSION_ID"
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            exit 1
+          fi
           APP_DIR="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}"
           xcrun stapler staple "$APP_DIR/$(node -p "require('./product.json').nameLong").app"
           # Re-zip so the shipped artifact carries the stapled ticket.
