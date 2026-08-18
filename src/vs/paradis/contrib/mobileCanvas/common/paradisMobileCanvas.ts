@@ -35,9 +35,11 @@ export interface IParadisMobileAttachment {
 	readonly deviceId: string;
 	readonly deviceName: string;
 	/**
-	 * アタッチした時点でそのペインが属していたスペースの識別子。
-	 * スペースを跨いだアタッチを拒むためと、スペース破棄時に解除するために持つ。
-	 * スペース管理下でないペインの場合は `undefined`。
+	 * アタッチした時点でそのペインが属していたスペースの識別子。スペース管理下でなければ `undefined`。
+	 *
+	 * スペースを切り替えてもアタッチは解除しない（ターミナルとエージェントが生き続ける以上、
+	 * 端末だけ黙って取り上げると作業途中の相手が壊れるため）。この値は「どのスペースの作業で
+	 * 渡した端末か」を後から辿るための記録として持つ。
 	 */
 	readonly stateKey: string | undefined;
 	readonly attachedAt: number;

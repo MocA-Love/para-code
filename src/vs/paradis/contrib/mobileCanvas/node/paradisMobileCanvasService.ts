@@ -149,17 +149,15 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	}
 
 	/**
-	 * ペインへ端末をアタッチする。同じペインの既存のアタッチは置き換える（1ペイン1台）。
-	 * 同じ端末が別のペインにアタッチされている場合は拒否する（取り合いを起こさないため）。
+	 * ペインへ端末をアタッチする。同じペインの既存のアタッチは置き換える。
+	 *
+	 * 対応は「1ペインにつき1台」だけを守り、**1台の端末を複数のペインへ同時にアタッチするのは許す**。
+	 * ツールが端末IDを取らない以上ペイン側は一意である必要があるが、逆向き（同じ端末を複数の
+	 * エージェントで見る／触る）は実際に有用な使い方で、禁じる理由がないため。
 	 *
 	 * @param stateKey ペインが属するスペースの識別子。スペース管理下でなければ `undefined`。
 	 */
 	async attach(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment> {
-		for (const existing of this._attachments.values()) {
-			if (existing.deviceId === deviceId && existing.paneToken !== paneToken) {
-				throw new Error(`${existing.deviceName} is already attached to another terminal pane.`);
-			}
-		}
 		const device = (await this._listDevices(signal)).find(candidate => candidate.id === deviceId);
 		if (!device) {
 			throw new Error(`Unknown mobile device: ${deviceId}`);
@@ -180,18 +178,6 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	detach(paneToken: string): void {
 		if (this._attachments.delete(paneToken)) {
 			this._logService.info('[paradis-mobile-canvas] detached a terminal pane');
-		}
-	}
-
-	/**
-	 * スペースが畳まれた／破棄されたときに、そのスペースに属するアタッチを一括解除する。
-	 * ブラウザページ共有がスペース切替でバインドを retire するのと同じ考え方。
-	 */
-	releaseScope(stateKey: string): void {
-		for (const [token, attachment] of [...this._attachments]) {
-			if (attachment.stateKey === stateKey) {
-				this._attachments.delete(token);
-			}
 		}
 	}
 
