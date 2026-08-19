@@ -176,6 +176,24 @@ suite('presets with the same name', () => {
 		]);
 	});
 
+	test('treats folder as one more distinguishing value, without letting it hide or eclipse the others', () => {
+		const existing = [
+			resolved({ name: 'build', folder: 'Web', commands: ['bun run build'] }, 0),
+		];
+		assert.deepStrictEqual([
+			// 同じフォルダでも cwd が違えば見分けが付く（folder が cwd を覆い隠して保存をブロックしない）
+			paradisFindPresetNameConflict({ name: 'build', folder: 'Web', cwd: './frontend', commands: ['bun run build'] }, existing).kind,
+			// フォルダだけ違えば見分けが付く（folder 自体も区別語として働く）
+			paradisFindPresetNameConflict({ name: 'build', folder: 'Api', commands: ['bun run build'] }, existing).kind,
+			// フォルダ・cwd・説明まで全部同じなら区別できない
+			paradisFindPresetNameConflict({ name: 'build', folder: 'Web', commands: ['bun run build'] }, existing).kind,
+		], [
+			ParadisPresetNameConflict.Distinguishable,
+			ParadisPresetNameConflict.Distinguishable,
+			ParadisPresetNameConflict.Indistinguishable,
+		]);
+	});
+
 	test('points at the preset it actually collided with, not at the first one sharing the name', () => {
 		const existing = [
 			resolved({ name: 'dev', commands: ['bun dev'], appliesTo: ['para-code'] }, 0),

@@ -1,0 +1,186 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* ピン留めコマンドプリセットのツールバー項目（paradisPresetClusterViewItem.ts）。 */
+
+.monaco-workbench .paradis-preset-cluster {
+	display: inline-flex;
+	align-items: center;
+	height: 100%;
+	position: relative;
+	flex: 0 0 auto;
+}
+
+/* ---------- 展開時: 個々のボタンをそのまま並べる ---------- */
+
+.monaco-workbench .paradis-preset-cluster-full {
+	display: flex;
+	align-items: center;
+}
+
+.monaco-workbench .paradis-preset-cluster.is-collapsed .paradis-preset-cluster-full {
+	display: none;
+}
+
+/* ---------- 折りたたみ時: まとめアイコン＋バッジ ---------- */
+
+.monaco-workbench .paradis-preset-cluster-collapsed {
+	display: none;
+	position: relative;
+}
+
+.monaco-workbench .paradis-preset-cluster.is-collapsed .paradis-preset-cluster-collapsed {
+	display: block;
+}
+
+.monaco-workbench .paradis-preset-cluster-btn {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 22px;
+	padding: 3px 6px;
+	margin-right: 4px;
+	border-radius: var(--vscode-cornerRadius-medium, 4px);
+	background: transparent;
+	border: none;
+	color: var(--vscode-foreground);
+	font: inherit;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-btn,
+.monaco-workbench .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-btn,
+.monaco-workbench .paradis-preset-cluster-btn:focus-visible {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	outline: none;
+}
+
+.monaco-workbench .paradis-preset-cluster-icon.codicon-layers {
+	font-size: 14px;
+}
+
+.monaco-workbench .paradis-preset-cluster-badge {
+	min-width: 14px;
+	height: 14px;
+	padding: 0 4px;
+	border-radius: 999px;
+	font-size: 10px;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+/* ---------- フライアウト: タブ側に覆いかぶさりながら「左」へ水平展開する ----------
+	縦のドロップダウンではなく、タイトルバーの「エージェント一覧」ウィジェットと同じ max-width
+	展開の手法（横方向）。ホバー/フォーカスで開き、閉じるときだけ遅延させる。 */
+
+.monaco-workbench .paradis-preset-cluster-flyout {
+	position: absolute;
+	top: 0;
+	right: 100%;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	flex-wrap: nowrap;
+	gap: 2px;
+	padding: 0 4px;
+	margin-right: 2px;
+	border-radius: var(--vscode-cornerRadius-medium, 4px);
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	box-shadow: var(--vscode-shadow-xl, 0 4px 14px rgba(0, 0, 0, 0.4));
+	z-index: 90;
+
+	opacity: 0;
+	max-width: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.monaco-enable-motion .monaco-workbench .paradis-preset-cluster-flyout,
+.monaco-workbench.monaco-enable-motion .paradis-preset-cluster-flyout {
+	transition: opacity 160ms ease, max-width 160ms ease;
+	transition-delay: 200ms; /* 閉じるときだけ遅延させ、カーソル移動中に誤って閉じないようにする */
+}
+
+.monaco-reduce-motion .monaco-workbench .paradis-preset-cluster-flyout,
+.monaco-workbench.monaco-reduce-motion .paradis-preset-cluster-flyout {
+	transition-duration: 0ms !important;
+}
+
+.monaco-workbench .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-flyout,
+.monaco-workbench .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-flyout {
+	opacity: 1;
+	max-width: 70vw;
+	pointer-events: auto;
+	/* ピン留めが非常に多いと 70vw にも収まらないことがある。切り捨てて到達不能にする代わりに
+	横スクロールで拾えるようにする（folding元のプリセット数が多いほど起きやすいケース）。 */
+	overflow-x: auto;
+}
+
+/* クラシックなスクロールバー環境（Windows/Linuxの既定）だと水平スクロールバーが約15pxの
+	レイアウト領域を確保し、22pxの行の中身が縦に切れる。上流の .tabs-container（editorTabsControl側）
+	と同じくスクロールバー自体は出さない——ホイール操作で辿れれば十分。 */
+.monaco-workbench .paradis-preset-cluster-flyout::-webkit-scrollbar {
+	display: none;
+}
+
+.monaco-enable-motion .monaco-workbench .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-flyout,
+.monaco-enable-motion .monaco-workbench .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-flyout,
+.monaco-workbench.monaco-enable-motion .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-flyout,
+.monaco-workbench.monaco-enable-motion .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-flyout {
+	transition-delay: 0ms; /* 開くときは即時 */
+}
+
+/* ---------- 個々のプリセットボタン（展開行・フライアウトの両方で共用） ---------- */
+
+.monaco-workbench .paradis-preset-cluster-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: 22px;
+	padding: 3px;
+	margin-right: 4px;
+	border-radius: var(--vscode-cornerRadius-medium, 4px);
+	background: transparent;
+	border: none;
+	color: var(--vscode-foreground);
+	font: inherit;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.monaco-workbench .paradis-preset-cluster-flyout .paradis-preset-cluster-item:last-child,
+.monaco-workbench .paradis-preset-cluster-full .paradis-preset-cluster-item:last-child {
+	margin-right: 0;
+}
+
+.monaco-workbench .paradis-preset-cluster-item:hover,
+.monaco-workbench .paradis-preset-cluster-item:focus-visible {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	outline: none;
+}
+
+.monaco-workbench .paradis-preset-cluster-item-icon {
+	width: 16px;
+	height: 16px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 16px;
+}
+
+.monaco-workbench .paradis-preset-cluster-item-label {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+	white-space: nowrap;
+}
