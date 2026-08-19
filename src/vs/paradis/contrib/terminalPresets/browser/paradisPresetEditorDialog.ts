@@ -174,6 +174,10 @@ const STR_SOURCE_USER = localize('paradis.presetEditor.sourceUser', "ユーザ�
 // allow-any-unicode-next-line
 const STR_SOURCE_WORKSPACE = localize('paradis.presetEditor.sourceWorkspace', "リポジトリ");
 // allow-any-unicode-next-line
+const STR_LOCALLY_HIDDEN_BADGE = localize('paradis.presetEditor.locallyHiddenBadge', "自分だけ非表示中");
+// allow-any-unicode-next-line
+const STR_UNHIDE = localize('paradis.presetEditor.unhide', "表示する");
+// allow-any-unicode-next-line
 const STR_SELECT = localize('paradis.presetEditor.select', "選択");
 // allow-any-unicode-next-line
 const strSelectPreset = (name: string) => localize('paradis.presetEditor.selectPreset', "{0} を選択", name);
@@ -439,6 +443,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		if (qualifier) {
 			dom.append(nameLine, $('span.ppe-badge.qualifier')).textContent = qualifier;
 		}
+		if (preset.locallyHidden) {
+			dom.append(nameLine, $('span.ppe-badge.locally-hidden')).textContent = STR_LOCALLY_HIDDEN_BADGE;
+		}
 		dom.append(main, $('.ppe-row-detail')).textContent = preset.description || paradisPresetCommandSignature(preset, ' && ');
 
 		const actions = dom.append(row, $('.ppe-row-actions'));
@@ -457,6 +464,15 @@ class ParadisPresetEditorDialog extends Disposable {
 		moveBtn('↑', options.moveUp);
 		// allow-any-unicode-next-line
 		moveBtn('↓', options.moveDown);
+		if (preset.locallyHidden) {
+			// タブバーの右クリック「非表示にする」で workspace ソースへ立てたフラグを戻す唯一の入口。
+			// 定義元の .paracode.json には触れない（setWorkspacePresetLocallyHidden 参照）。
+			const unhideBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
+			unhideBtn.textContent = STR_UNHIDE;
+			this._viewStore.add(dom.addDisposableListener(unhideBtn, 'click', () => {
+				this.presetService.setWorkspacePresetLocallyHidden(preset, false);
+			}));
+		}
 		const runBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
 		runBtn.textContent = STR_RUN;
 		this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {

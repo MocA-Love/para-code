@@ -107,6 +107,13 @@
 	color: var(--vscode-statusBarItem-remoteForeground, var(--vscode-badge-foreground));
 }
 
+/* このマシンだけの非表示（.paracode.json は変更していない）を、注意喚起の色で目立たせる。 */
+.paradis-preset-editor-dialog .ppe-badge.locally-hidden {
+	background: transparent;
+	border: 1px solid var(--vscode-editorWarning-foreground, var(--vscode-widget-border));
+	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
 .paradis-preset-editor-dialog .ppe-row-detail {
 	color: var(--vscode-descriptionForeground);
 	font-size: 11px;
