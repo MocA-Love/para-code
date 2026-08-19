@@ -58,7 +58,7 @@ export interface IParadisBrowserLiveSummary {
 	readonly sharedAll: number;
 }
 
-export type ParadisBrowserLiveSort = 'editor' | 'title' | 'shared';
+export type ParadisBrowserLiveSort = 'editor' | 'title' | 'shared' | 'space';
 
 /** タイルの束ね方。スペースをまたいで並ぶので、既定はスペースごとにまとめる。 */
 export type ParadisBrowserLiveGroup = 'space' | 'none';
@@ -75,18 +75,30 @@ export interface IParadisBrowserLiveViewState {
 	columns: number;
 	/** 共有中のページだけに絞る。 */
 	sharedOnly: boolean;
-	/** いま開いているスペースのページだけに絞る。 */
+	/**
+	 * いま開いているスペースのページだけに絞る。
+	 *
+	 * {@link spaces} と違い、切り替えに追従する (「手元のぶんだけ見る」という意図を保つ)。
+	 */
 	activeSpaceOnly: boolean;
+	/** 表示するスペースの状態キー。undefined = すべて。 */
+	spaces: string[] | undefined;
+	/** 一覧から外したページ (ビューID)。閉じるのとは違い、タブはそのまま残る。 */
+	hidden: string[];
 	sort: ParadisBrowserLiveSort;
 	group: ParadisBrowserLiveGroup;
 	cadence: ParadisBrowserLiveCadence;
+}
+
+function stringArray(value: unknown): string[] | undefined {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
 }
 
 export const PARADIS_BROWSER_LIVE_MIN_COLUMNS = 1;
 export const PARADIS_BROWSER_LIVE_MAX_COLUMNS = 6;
 export const PARADIS_BROWSER_LIVE_DEFAULT_COLUMNS = 3;
 
-const SORTS: readonly ParadisBrowserLiveSort[] = ['editor', 'title', 'shared'];
+const SORTS: readonly ParadisBrowserLiveSort[] = ['editor', 'title', 'shared', 'space'];
 const GROUPS: readonly ParadisBrowserLiveGroup[] = ['space', 'none'];
 const CADENCES: readonly ParadisBrowserLiveCadence[] = ['off', 'normal', 'smooth'];
 
@@ -102,6 +114,8 @@ export function paradisDefaultBrowserLiveViewState(): IParadisBrowserLiveViewSta
 		columns: PARADIS_BROWSER_LIVE_DEFAULT_COLUMNS,
 		sharedOnly: false,
 		activeSpaceOnly: false,
+		spaces: undefined,
+		hidden: [],
 		sort: 'editor',
 		group: 'space',
 		cadence: 'normal',
@@ -130,6 +144,9 @@ export function paradisParseBrowserLiveViewState(raw: string | undefined): IPara
 	}
 	state.sharedOnly = parsed.sharedOnly === true;
 	state.activeSpaceOnly = parsed.activeSpaceOnly === true;
+	const spaces = stringArray(parsed.spaces);
+	state.spaces = spaces && spaces.length > 0 ? spaces : undefined;
+	state.hidden = stringArray(parsed.hidden) ?? [];
 	if (typeof parsed.sort === 'string' && (SORTS as readonly string[]).includes(parsed.sort)) {
 		state.sort = parsed.sort as ParadisBrowserLiveSort;
 	}
@@ -146,12 +163,25 @@ export function paradisSerializeBrowserLiveViewState(state: IParadisBrowserLiveV
 	return JSON.stringify(state);
 }
 
+/** 絞り込みが1つでも効いているか (状況バーを出す条件)。 */
+export function paradisHasBrowserLiveFilter(state: IParadisBrowserLiveViewState): boolean {
+	return state.sharedOnly || state.activeSpaceOnly || state.spaces !== undefined || state.hidden.length > 0;
+}
+
 export function paradisFilterBrowserLiveEntries(entries: readonly IParadisBrowserLiveEntry[], state: IParadisBrowserLiveViewState): IParadisBrowserLiveEntry[] {
+	const hidden = new Set(state.hidden);
+	const spaces = state.spaces ? new Set(state.spaces) : undefined;
 	return entries.filter(entry => {
+		if (hidden.has(entry.viewId)) {
+			return false;
+		}
 		if (state.sharedOnly && entry.agents.length === 0) {
 			return false;
 		}
 		if (state.activeSpaceOnly && !entry.inActiveSpace) {
+			return false;
+		}
+		if (spaces && !spaces.has(entry.stateKey ?? '')) {
 			return false;
 		}
 		return true;
@@ -181,6 +211,10 @@ export function paradisSortBrowserLiveEntries(entries: readonly IParadisBrowserL
 				// 共有中を先頭へ寄せ、その中はタブの並びを保つ (同じ状態のものが入れ替わらない)。
 				const byShared = (b.agents.length > 0 ? 1 : 0) - (a.agents.length > 0 ? 1 : 0);
 				return byShared !== 0 ? byShared : a.order - b.order;
+			}
+			case 'space': {
+				const bySpace = a.spaceName.localeCompare(b.spaceName);
+				return bySpace !== 0 ? bySpace : a.order - b.order;
 			}
 			case 'editor':
 			default:

@@ -6,10 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { $, addDisposableListener, append, EventType, getWindow, isHTMLElement } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventType, getWindow, isHTMLElement } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import {
 	IParadisBrowserLiveViewState,
@@ -24,6 +24,7 @@ const SORT_LABELS: Record<ParadisBrowserLiveSort, string> = {
 	editor: localize('paradis.browserLive.sort.editor', "タブの並び"),
 	title: localize('paradis.browserLive.sort.title', "タイトル順"),
 	shared: localize('paradis.browserLive.sort.shared', "共有中を先頭"),
+	space: localize('paradis.browserLive.sort.space', "スペース名順"),
 };
 
 const GROUP_LABELS: Record<ParadisBrowserLiveGroup, string> = {
@@ -45,6 +46,10 @@ const MIN_HEIGHT = 120;
 export interface IParadisBrowserLivePopoverHost {
 	/** これを開いたボタン。ここへのクリックは「外側」に数えない (トグルとして働かせるため)。 */
 	readonly anchor: HTMLElement;
+	/** スペースの状態キー → 表示名。一覧に出ているページのぶんだけ。 */
+	readonly spaces: () => Map<string, string>;
+	/** いま一覧から外しているページの数。 */
+	readonly hiddenCount: () => number;
 	readonly commit: () => void;
 	readonly close: (restoreFocus: boolean) => void;
 }
@@ -63,6 +68,15 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 	private readonly groupButtons = new Map<ParadisBrowserLiveGroup, HTMLElement>();
 	private readonly columnButtons = new Map<number, HTMLElement>();
 	private readonly cadenceButtons = new Map<ParadisBrowserLiveCadence, HTMLElement>();
+	private readonly spaceButtons = new Map<string, HTMLElement>();
+	private readonly spaceList: HTMLElement;
+	private readonly hiddenText: HTMLElement;
+	private readonly restoreHiddenButton: HTMLElement;
+	private allSpacesButton: HTMLElement | undefined;
+	/** スペース一覧は開いている間も作り直しうるので、その分の購読だけ別に持つ。 */
+	private readonly spaceDisposables = this._register(new DisposableStore());
+	/** 前回組み立てたときの顔ぶれ。同じなら作り直さない (選択中のスクロール位置を保つ)。 */
+	private spaceKeys: string[] = [];
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -94,6 +108,24 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 			this.sortButtons.set(sort, button);
 		}
 		this.hintRow(localize('paradis.browserLive.sortHintActive', "どの並びでも、いま開いているスペースのページを先に置きます"));
+
+		// --- スペース --------------------------------------------------------------------
+		this.separator();
+		this.section(localize('paradis.browserLive.spacesLabel', "スペース"));
+		this.spaceList = append(this.element, $('.paradis-browser-live-pop-list.scrollable'));
+		this.spaceList.setAttribute('role', 'group');
+		this.spaceList.setAttribute('aria-label', localize('paradis.browserLive.spacesLabel', "スペース"));
+
+		// --- 非表示 ----------------------------------------------------------------------
+		this.separator();
+		const hiddenRow = append(this.element, $('.paradis-browser-live-pop-row'));
+		this.hiddenText = append(hiddenRow, $('span.paradis-browser-live-pop-key'));
+		this.restoreHiddenButton = append(hiddenRow, $('button.paradis-browser-live-chip'));
+		this.restoreHiddenButton.textContent = localize('paradis.browserLive.restoreHidden', "すべて戻す");
+		this._register(addDisposableListener(this.restoreHiddenButton, EventType.CLICK, () => {
+			this.viewState.hidden = [];
+			this.host.commit();
+		}));
 
 		// --- まとめ方 --------------------------------------------------------------------
 		this.separator();
@@ -176,6 +208,69 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 		for (const [cadence, button] of this.cadenceButtons) {
 			this.mark(button, this.viewState.cadence === cadence);
 		}
+		this.updateSpaces();
+		const hidden = this.host.hiddenCount();
+		this.hiddenText.textContent = hidden > 0
+			? localize('paradis.browserLive.hiddenCount', "非表示 {0} 件", hidden)
+			: localize('paradis.browserLive.hiddenNone', "非表示なし");
+		this.restoreHiddenButton.classList.toggle('hidden', hidden === 0);
+	}
+
+	/**
+	 * スペース一覧を現在の状態に合わせる。顔ぶれが変わっていなければチェックの付け替えだけで
+	 * 済ませる —— ページのタイトルが変わるたびに再描画が走るので、毎回組み立て直すと
+	 * 一覧のスクロール位置が戻り、キーボードで選んでいる最中はフォーカスまで失われる。
+	 */
+	private updateSpaces(): void {
+		const options = this.host.spaces();
+		const keys = [...options.keys()];
+		if (keys.length !== this.spaceKeys.length || keys.some((key, index) => key !== this.spaceKeys[index])) {
+			this.buildSpaces(options);
+			this.spaceKeys = keys;
+		}
+		const selected = this.viewState.spaces;
+		for (const [key, button] of this.spaceButtons) {
+			this.mark(button, selected === undefined || selected.includes(key));
+		}
+		if (this.allSpacesButton) {
+			this.mark(this.allSpacesButton, selected === undefined);
+		}
+	}
+
+	private buildSpaces(options: Map<string, string>): void {
+		this.spaceDisposables.clear();
+		this.spaceButtons.clear();
+		clearNode(this.spaceList);
+		for (const [key, label] of options) {
+			const button = append(this.spaceList, $('button.paradis-browser-live-pop-item'));
+			button.setAttribute('role', 'checkbox');
+			append(button, $('span.paradis-browser-live-pop-check.codicon.codicon-check'));
+			append(button, $('span')).textContent = label;
+			this.spaceDisposables.add(addDisposableListener(button, EventType.CLICK, () => {
+				// 選択中の集合はクリック時点のものを読む (組み立て時の値を掴むと古くなる)。
+				const selected = this.viewState.spaces;
+				const current = selected === undefined ? [...options.keys()] : [...selected];
+				const index = current.indexOf(key);
+				if (index >= 0) {
+					current.splice(index, 1);
+				} else {
+					current.push(key);
+				}
+				// 全部外した / 全部入れた場合は「すべて」に戻す (空の一覧を見せない)。
+				this.viewState.spaces = current.length === 0 || current.length === options.size ? undefined : current;
+				this.host.commit();
+			}));
+			this.spaceButtons.set(key, button);
+		}
+		const all = append(this.spaceList, $('button.paradis-browser-live-pop-item'));
+		all.setAttribute('role', 'checkbox');
+		append(all, $('span.paradis-browser-live-pop-check.codicon.codicon-check'));
+		append(all, $('span')).textContent = localize('paradis.browserLive.selectAllSpaces', "すべてのスペース");
+		this.spaceDisposables.add(addDisposableListener(all, EventType.CLICK, () => {
+			this.viewState.spaces = undefined;
+			this.host.commit();
+		}));
+		this.allSpacesButton = all;
 	}
 
 	/** 選択状態は見た目 (class) と読み上げ (aria-checked) の両方へ出す。 */
