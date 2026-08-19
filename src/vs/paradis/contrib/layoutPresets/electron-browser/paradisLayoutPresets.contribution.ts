@@ -14,6 +14,7 @@
 //   - コマンドパレット（適用 / 新規作成）
 
 import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
@@ -23,6 +24,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
@@ -233,9 +235,18 @@ registerAction2(class ShowLayoutPresetsAction extends Action2 {
 	constructor() {
 		super({
 			id: SHOW_PRESETS_COMMAND_ID,
-			title: localize2('paradis.layoutPresets.show', "Apply Editor Layout Preset..."),
+			// allow-any-unicode-next-line
+			// watermark・タブバーのボタンと表示名を揃える(以前は英語のままで経路によって名前が食い違っていた)
+			title: localize2('paradis.layoutPresets.show', "レイアウトプリセットを適用..."),
 			category: CATEGORY,
 			f1: true,
+			// watermark はキーバインドの無いコマンドを表示しないため必須。
+			// ⌃⌘T (toggleEditorTerminal) に揃えて ⌃⌘L を使う
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyL,
+				mac: { primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyL }
+			}
 		});
 	}
 

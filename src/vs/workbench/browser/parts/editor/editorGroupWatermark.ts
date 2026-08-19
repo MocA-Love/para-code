@@ -41,11 +41,16 @@ const openRecent: WatermarkEntry = { text: localize('watermark.openRecent', "Ope
 const newUntitledFile: WatermarkEntry = { text: localize('watermark.newUntitledFile', "New Untitled Text File"), id: 'workbench.action.files.newUntitledFile' };
 const findInFiles: WatermarkEntry = { text: localize('watermark.findInFiles', "Find in Files"), id: 'workbench.action.findInFiles' };
 // PARA-PATCH: open the terminal in the editor area (same surface as the browser toggle) instead of the bottom panel
-const toggleTerminal: WatermarkEntry = { text: localize({ key: 'watermark.toggleTerminal', comment: ['toggle is a verb here'] }, "Toggle Terminal"), id: 'paradis.terminal.toggleEditorTerminal', when: { web: ContextKeyExpr.equals('terminalProcessSupported', true) } };
+// allow-any-unicode-next-line
+const toggleTerminal: WatermarkEntry = { text: localize('watermark.toggleTerminal', "ターミナルの切り替え"), id: 'paradis.terminal.toggleEditorTerminal', when: { web: ContextKeyExpr.equals('terminalProcessSupported', true) } };
 // PARA-PATCH: expose the integrated browser next to the terminal entry (command only registers on Electron, so it naturally disappears on web via the command-existence filter)
-const toggleBrowser: WatermarkEntry = { text: localize({ key: 'watermark.toggleBrowser', comment: ['toggle is a verb here'] }, "Toggle Browser"), id: 'workbench.action.browser.openOrList' };
+// allow-any-unicode-next-line
+const toggleBrowser: WatermarkEntry = { text: localize('watermark.toggleBrowser', "ブラウザーの切り替え"), id: 'workbench.action.browser.openOrList' };
 const startDebugging: WatermarkEntry = { text: localize('watermark.startDebugging', "Start Debugging"), id: 'workbench.action.debug.start', when: { web: ContextKeyExpr.equals('terminalProcessSupported', true) } };
 const openSettings: WatermarkEntry = { text: localize('watermark.openSettings', "Open Settings"), id: 'workbench.action.openSettings' };
+// PARA-PATCH: expose the layout preset picker (electron-only command; naturally disappears on web via the command-existence filter)
+// allow-any-unicode-next-line
+const showLayoutPresets: WatermarkEntry = { text: localize('watermark.showLayoutPresets', "レイアウトプリセット"), id: 'paradis.editor.showLayoutPresets' };
 
 const baseEntries: WatermarkEntry[] = [
 	openChat,
@@ -57,10 +62,11 @@ const emptyWindowEntries: WatermarkEntry[] = coalesce([
 	openRecent,
 	...(isMacintosh && !isWeb ? [openFileOrFolder] : [openFile, openFolder]),
 	isMacintosh && !isWeb ? newUntitledFile : undefined, // fill in one more on macOS to get to 5 entries
-	// PARA-PATCH: always show the terminal/browser toggles instead of leaving them
+	// PARA-PATCH: always show the terminal/browser/layout-preset entries instead of leaving them
 	// to the random top-up from otherEntries below
 	toggleTerminal,
 	toggleBrowser,
+	showLayoutPresets,
 ]);
 
 const workspaceEntries: WatermarkEntry[] = [
@@ -68,6 +74,7 @@ const workspaceEntries: WatermarkEntry[] = [
 	// PARA-PATCH: same as above
 	toggleTerminal,
 	toggleBrowser,
+	showLayoutPresets,
 ];
 
 const otherEntries: WatermarkEntry[] = [
@@ -76,6 +83,7 @@ const otherEntries: WatermarkEntry[] = [
 	startDebugging,
 	toggleTerminal,
 	toggleBrowser, // PARA-PATCH: include the browser toggle in the top-up pool too
+	showLayoutPresets, // PARA-PATCH: same for the layout preset picker
 	openSettings,
 ];
 
