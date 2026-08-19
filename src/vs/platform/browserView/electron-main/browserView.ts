@@ -5,7 +5,8 @@
 
 // PARA-PATCH: import nativeImage/NativeImage for screenshot encoding and WebFrameMain for per-frame automation key delivery (Para Browser MCP screenshot + automation input hardening)
 import { nativeImage, screen, WebContentsView, webContents, type NativeImage, type WebFrameMain } from 'electron';
-import { Disposable } from '../../../base/common/lifecycle.js';
+// PARA-PATCH: MutableDisposable/toDisposable for the deferred focus hand-back below
+import { Disposable, MutableDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { IBrowserViewBounds, IBrowserViewDevToolsStateEvent, IBrowserViewFocusEvent, IBrowserViewKeyDownEvent, IBrowserViewState, IBrowserViewNavigationEvent, IBrowserViewLoadingEvent, IBrowserViewLoadError, IBrowserViewTitleChangeEvent, IBrowserViewFaviconChangeEvent, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, IBrowserViewFindInPageResult, IBrowserViewVisibilityEvent, browserViewIsolatedWorldId, browserZoomFactors, browserZoomDefaultIndex, IBrowserViewOwner, IBrowserViewOpenOptions, IBrowserViewPermissionRequestEvent } from '../common/browserView.js';
@@ -76,6 +77,8 @@ export class BrowserView extends Disposable {
 	private _isDisposed = false;
 
 	private _wantsVisibility = false;
+	// PARA-PATCH: at most one deferred focus hand-back per view (setVisible is called repeatedly; registering a disposable per call would pile them up on the view)
+	private readonly _paradisPendingFocusHandBack = this._register(new MutableDisposable());
 	private _hasBeenLaidOut = false;
 
 	private static readonly MAX_CONSOLE_LOG_ENTRIES = 1000;
@@ -995,9 +998,37 @@ export class BrowserView extends Disposable {
 			return;
 		}
 
+		// PARA-PATCH: a deferred hand-back is pointless once we are shown again (Para Code)
+		if (visible) {
+			this._paradisPendingFocusHandBack.clear();
+		}
+
 		// If the view is focused, pass focus back to the window when hiding
 		if (!visible && this._view.webContents.isFocused()) {
-			this._currentWindow?.win?.webContents.focus();
+			// PARA-PATCH: defer the hand-back while the window is in the background (Para Code: hiding also happens off-screen — switching spaces parks the leaving space's views — and focusing the window from there drags the whole app in front of whatever the user is actually using. Focus still has to leave the view we are hiding, so hand it back the next time that window comes forward, and only if nothing else claimed focus by then)
+			const window = this._currentWindow?.win;
+			if (window?.isFocused()) {
+				window.webContents.focus();
+			} else if (window && !window.isDestroyed()) {
+				const handOverFocus = () => {
+					if (window.isDestroyed() || this._view.webContents.isDestroyed()) {
+						return;
+					}
+					// The window may have come forward because the user clicked another view in
+					// it. Taking focus then would pull it off whatever they just clicked.
+					const focused = webContents.getFocusedWebContents?.();
+					if (focused && focused !== this._view.webContents) {
+						return;
+					}
+					window.webContents.focus();
+				};
+				window.once('focus', handOverFocus);
+				this._paradisPendingFocusHandBack.value = toDisposable(() => {
+					if (!window.isDestroyed()) {
+						window.off('focus', handOverFocus);
+					}
+				});
+			}
 		}
 
 		if (this._hasBeenLaidOut || !visible) {
