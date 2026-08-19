@@ -16,6 +16,7 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { IParadisWorktreeGitCommandResult } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { ChannelId } from './paradisMobileProtocol.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
@@ -321,12 +322,6 @@ export interface IParadisMobileRelayService {
 	/** Rendererで実際に操作が完了した後、そのleaseからだけ最終結果を確定する。 */
 	completeTerminalOperation(lease: IParadisMobileWindowLease, mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus): Promise<void>;
 
-	/**
-	 * scmチャネル用のgit実行（rendererはプロセスを起動できないためshared processで実行）。
-	 * サブコマンドはサービス実装側の許可リストで制限される。
-	 */
-	runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult>;
-
 	// --- SSH 接続先 transcript の写し -----------------------------------------------------------
 	//
 	// エージェントの会話本文は transcript を tail して読むが、shared process からは接続先の
@@ -387,17 +382,10 @@ export interface IParadisMobileRelayService {
 
 	/** PTY表示からbest-effort抽出した経過時間等を既存ライブ状態へ補足する。 */
 	notifyAgentTerminalHint(lease: IParadisMobileWindowLease, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void>;
-
-	/** fsチャネル用: ripgrepによるファイル名検索（.gitignore尊重・再帰）。 */
-	searchFiles(rootPath: string, query: string, maxResults: number): Promise<{ files: string[]; truncated: boolean }>;
-
-	/** fsチャネル用: ripgrepによるテキスト全文検索（スマートケース・リテラル一致）。 */
-	searchText(rootPath: string, query: string, maxResults: number): Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>;
 }
 
 /** runGit の結果。 */
-export interface IParadisGitResult {
-	readonly code: number;
-	readonly stdout: string;
-	readonly stderr: string;
-}
+// runGit の実体は paradisWorktreeGitChannel.ts (workspaceSwitch) に統合済み。同じ形の結果型を
+// mobileRelay 側にも持つと、片方だけフィールドが増えたときに channel.call<T> の型が実体と
+// 静かにずれるため、実体の型をそのまま使う。
+export type IParadisGitResult = IParadisWorktreeGitCommandResult;

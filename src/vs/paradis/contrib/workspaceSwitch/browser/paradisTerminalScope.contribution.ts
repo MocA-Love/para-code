@@ -19,13 +19,14 @@ import { IProcessDetails } from '../../../../platform/terminal/common/terminalPr
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisMigrateProcessScopesToNonceScopes, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
@@ -240,6 +241,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		// 復元は数秒で終わる。ここまで待っても完了しないなら復元経路が落ちていると見なし、
@@ -990,13 +992,16 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return undefined;
 		}
 		const roots: IParadisTerminalScopeRoot[] = [];
+		const connectedAuthority = this.remoteAgentService.getConnection()?.remoteAuthority;
 		for (const repository of this.workspaceSwitchService.repositories) {
-			if (repository.uri.scheme === 'file') {
-				roots.push({ root: repository.uri.fsPath, stateKey: repository.id });
+			const repositoryRoot = paradisScopeRootPath(repository.uri, connectedAuthority);
+			if (repositoryRoot !== undefined) {
+				roots.push({ root: repositoryRoot, stateKey: repository.id });
 			}
 			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing && worktree.uri.scheme === 'file') {
-					roots.push({ root: worktree.uri.fsPath, stateKey: paradisWorktreeStateKey(worktree.uri) });
+				const worktreeRoot = worktree.missing ? undefined : paradisScopeRootPath(worktree.uri, connectedAuthority);
+				if (worktreeRoot !== undefined) {
+					roots.push({ root: worktreeRoot, stateKey: paradisWorktreeStateKey(worktree.uri) });
 				}
 			}
 		}
@@ -1554,12 +1559,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	/** cwd から所属を引ける土台があるか（照合先の root が1つでもあるか）。 */
 	private hasResolvableScopeRoots(): boolean {
+		const connectedAuthority = this.remoteAgentService.getConnection()?.remoteAuthority;
 		for (const repository of this.workspaceSwitchService.repositories) {
-			if (repository.uri.scheme === 'file') {
+			if (paradisScopeRootPath(repository.uri, connectedAuthority) !== undefined) {
 				return true;
 			}
 			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing && worktree.uri.scheme === 'file') {
+				if (!worktree.missing && paradisScopeRootPath(worktree.uri, connectedAuthority) !== undefined) {
 					return true;
 				}
 			}

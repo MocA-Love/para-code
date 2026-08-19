@@ -11,6 +11,7 @@ import { raceCancellation, timeout } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
@@ -23,6 +24,7 @@ import { ITerminalContribution } from '../../../../workbench/contrib/terminal/br
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -260,6 +262,7 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 		context: ITerminalContributionContext,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -297,7 +300,23 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 	 */
 	private get terminalEligible(): boolean {
 		const terminalType = this.instance.shellLaunchConfig.attachPersistentProcess?.type ?? this.instance.shellLaunchConfig.type;
-		return !this.instance.hasRemoteAuthority && terminalType !== 'Task';
+		return terminalType !== 'Task';
+	}
+
+	/**
+	 * このターミナルが動いているマシンの、Codex メタデータチャネル。
+	 *
+	 * `hasRemoteAuthority` はターミナルの pty がどこで動いているかを指す（SSH 接続先/WSL）。
+	 * shared process 版は常に手元のマシンで動くため、接続先で起動した Codex の state DB・
+	 * rollout には一切到達できない。REH サーバーに同じチャネルを登録してあるので、リモートの
+	 * ターミナルはそちらへ問い合わせる。
+	 */
+	private get titleChannel(): IChannel | undefined {
+		if (!this.instance.hasRemoteAuthority) {
+			return this.sharedProcessService.getChannel(PARADIS_CODEX_TERMINAL_TITLE_CHANNEL);
+		}
+		const connection = this.remoteAgentService.getConnection();
+		return connection?.getChannel<IChannel>(PARADIS_CODEX_TERMINAL_TITLE_CHANNEL);
 	}
 
 	private attachCommandDetection(commandDetection: ICommandDetectionCapability): void {
@@ -375,6 +394,12 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 		let skipRolloutScan = false;
 		let consecutiveErrors = 0;
 		while (!token.isCancellationRequested && this.isCurrent(state)) {
+			const channel = this.titleChannel;
+			if (!channel) {
+				// リモート接続が切れている間は、繋ぎ直りを待たずに諦める（次のコマンド実行時にまた
+				// 試す機会がある）。
+				return;
+			}
 			const request: IParadisCodexThreadPromptRequest = {
 				threadId: state.threadId!,
 				cwd: state.cwd,
@@ -382,7 +407,7 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 				skipRolloutScan,
 			};
 			try {
-				const result = await raceCancellation(this.sharedProcessService.getChannel(PARADIS_CODEX_TERMINAL_TITLE_CHANNEL)
+				const result = await raceCancellation(channel
 					.call<IParadisCodexThreadPromptResult>('findThreadPrompt', [request]), token);
 				if (!result || token.isCancellationRequested || !this.isCurrent(state)) {
 					return;

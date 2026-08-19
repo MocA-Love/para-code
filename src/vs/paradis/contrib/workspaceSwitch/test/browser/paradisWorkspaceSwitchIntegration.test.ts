@@ -28,6 +28,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
+import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
@@ -1520,6 +1521,7 @@ async function createHarness(
 				parts,
 				new NullLogService(),
 				notificationService,
+				{ getConnection: () => null } as unknown as IRemoteAgentService,
 			);
 			testDisposables.add(scope);
 			return scope;

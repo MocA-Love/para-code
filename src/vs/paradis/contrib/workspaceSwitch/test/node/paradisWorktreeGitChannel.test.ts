@@ -337,4 +337,48 @@ suite('ParadisWorktreeGitService', () => {
 			/teardown スクリプトが 10 分以内に終了しなかった/
 		);
 	});
+
+	suite('runGit', () => {
+		test('runs an allowed subcommand with -C and core.quotepath=false, returning exit code 0', async () => {
+			const calls: IExecFileCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
+
+			const result = await service.runGit('/repo', ['status', '--porcelain=v1']);
+
+			assert.deepStrictEqual(calls.map(call => ({ command: call.command, args: call.args })), [
+				{ command: 'git', args: ['-C', '/repo', '-c', 'core.quotepath=false', 'status', '--porcelain=v1'] },
+			]);
+			assert.deepStrictEqual(result, { code: 0, stdout: '', stderr: '' });
+		});
+
+		test('rejects a subcommand outside the allow list without spawning a process', async () => {
+			const calls: IExecFileCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
+
+			await assert.rejects(service.runGit('/repo', ['push', 'origin', 'main']), /subcommand not allowed/);
+
+			assert.strictEqual(calls.length, 0);
+		});
+
+		test('rejects a forbidden option even inside an allowed subcommand, without spawning a process', async () => {
+			const calls: IExecFileCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
+
+			await assert.rejects(service.runGit('/repo', ['log', '--upload-pack=evil']), /argument not allowed/);
+
+			assert.strictEqual(calls.length, 0);
+		});
+
+		test('returns a non-zero exit code instead of rejecting when git itself fails', async () => {
+			const execFile = ((_command: string, _args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				callback(Object.assign(new Error('exit 128'), { code: 128 }), '', 'fatal: not a git repository');
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile);
+
+			const result = await service.runGit('/repo', ['status', '--porcelain=v1']);
+
+			assert.deepStrictEqual(result, { code: 128, stdout: '', stderr: 'fatal: not a git repository' });
+		});
+	});
 });

@@ -10,6 +10,7 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneStatus, ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotOutcome, IParadisAgentStatusSnapshotService } from '../../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
@@ -75,6 +76,18 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 
 		fixture.producer.publish(success(2, [pane('detached', 'permission')], []));
 		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), [[stateKey, ['permission']]]);
+	});
+
+	// W3 回帰テスト: 素朴な startsWith(root + sep) は SSH 接続先 (vscode-remote, POSIX区切り) の
+	// サブディレクトリ cwd に一致できなかった (root と完全一致の cwd しか当たらなかった)。
+	test('matches an SSH-connected worktree root even for a subdirectory cwd', () => {
+		const fixture = createFixture(() => true, 'ssh-remote+host');
+		const worktree = fixture.worktrees[0];
+		const stateKey = paradisWorktreeStateKey(worktree.uri);
+
+		fixture.producer.publish(success(1, [pane('detached', 'working', `${worktree.uri.path}/packages/app`)], []));
+
+		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), [[stateKey, ['working']]]);
 	});
 
 	test('scope switch reprojects the cached snapshot before requesting one fresh snapshot', () => {
@@ -159,7 +172,7 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		assert.strictEqual(fixture.producer.refreshRequests, 0);
 	});
 
-	function createFixture(isWindowFocused: () => boolean = () => true) {
+	function createFixture(isWindowFocused: () => boolean = () => true, remoteAuthority?: string) {
 		const producer = new TestSnapshotService();
 		const scopeSwitch = store.add(new Emitter<string>());
 		const instanceByToken = new Map<string, number>();
@@ -167,17 +180,20 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		const statusStore = new TestStatusStore();
 		const acknowledged: string[] = [];
 		const pollErrors: unknown[] = [];
+		// remoteAuthority が指定されたら、リポジトリ/worktree を SSH 接続先の vscode-remote URI にする
+		// （W3 回帰テスト用: file スキームのままだと connectedAuthority を渡す意味のあるケースを作れない）。
+		const toUri = (path: string) => remoteAuthority !== undefined ? URI.parse(`vscode-remote://${remoteAuthority}${path}`) : URI.file(path);
 		const worktrees: IParadisWorktree[] = [{
 			repositoryId: 'space-a',
 			name: 'feature',
-			uri: URI.file('/repos/space-a/worktrees/feature'),
+			uri: toUri('/repos/space-a/worktrees/feature'),
 		}];
 		let activeStateKey: string | undefined = 'space-a';
 		const workspaceSwitchService = {
 			get activeStateKey() { return activeStateKey; },
 			repositories: [
-				{ id: 'space-a', name: 'Space A', uri: URI.file('/repos/space-a') },
-				{ id: 'space-b', name: 'Space B', uri: URI.file('/repos/space-b') },
+				{ id: 'space-a', name: 'Space A', uri: toUri('/repos/space-a') },
+				{ id: 'space-b', name: 'Space B', uri: toUri('/repos/space-b') },
 			],
 			onDidSwitchScope: scopeSwitch.event,
 		} as unknown as IParadisWorkspaceSwitchService;
@@ -193,6 +209,9 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 			worktreeService: {
 				getWorktrees: (repositoryId: string) => repositoryId === 'space-a' ? worktrees : [],
 			} as unknown as IParadisWorktreeService,
+			remoteAgentService: {
+				getConnection: () => remoteAuthority !== undefined ? { remoteAuthority } : null,
+			} as unknown as IRemoteAgentService,
 			statusStore,
 			acknowledgePaneStatus: token => acknowledged.push(token),
 			logPollFailure: error => pollErrors.push(error),

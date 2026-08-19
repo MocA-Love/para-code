@@ -19,6 +19,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
@@ -56,6 +57,7 @@ export class ParadisAgentStatusPoller extends Disposable implements IWorkbenchCo
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@IParadisAgentStatusSnapshotService snapshotService: IParadisAgentStatusSnapshotService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 
@@ -76,6 +78,7 @@ export class ParadisAgentStatusPoller extends Disposable implements IWorkbenchCo
 			terminalScopeService: this.terminalScopeService,
 			workspaceSwitchService: this.workspaceSwitchService,
 			worktreeService: this.worktreeService,
+			remoteAgentService: this.remoteAgentService,
 			statusStore: this.statusStore,
 			acknowledgePaneStatus: token => {
 				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)

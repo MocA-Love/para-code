@@ -16,26 +16,7 @@ import { spawn } from 'child_process';
 import { isWindows } from '../../../../base/common/platform.js';
 import { rgDiskPath } from '../../../../base/node/ripgrep.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-
-export interface IParadisFileSearchResult {
-	/** ルート相対パス ('/'区切り)。ランク順。 */
-	readonly files: string[];
-	readonly truncated: boolean;
-}
-
-export interface IParadisTextSearchMatch {
-	/** ルート相対パス ('/'区切り)。 */
-	readonly path: string;
-	/** 1始まりの行番号。 */
-	readonly line: number;
-	/** マッチ行のテキスト (トリム・長さ制限済み)。 */
-	readonly text: string;
-}
-
-export interface IParadisTextSearchResult {
-	readonly matches: IParadisTextSearchMatch[];
-	readonly truncated: boolean;
-}
+import { IParadisFileSearchResult, IParadisTextSearchMatch, IParadisTextSearchResult } from '../common/paradisRemoteSearch.js';
 
 const SEARCH_TIMEOUT_MS = 15_000;
 /** searchFiles で走査するファイル一覧の上限 (巨大リポジトリの防波堤)。 */

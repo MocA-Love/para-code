@@ -6,9 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
 import { IntervalTimer, raceTimeout, RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -494,6 +496,33 @@ function paradisVisibleTerminalText(instance: ITerminalInstance): string {
 export function paradisScreenShowsMarker(screen: string, marker: string): boolean {
 	return screen.replace(/\s+/g, '').includes(marker);
 }
+
+/**
+ * xterm.js が今まさにSGR拡張座標（DECSET 1006）でマウスイベントを符号化しているか。
+ *
+ * 公開APIには無いが、`_core` 経由で内部サービスを覗くのは upstream 自身が既に使っている
+ * パターン（`workbench/contrib/terminal/browser/xterm/xtermTerminal.ts:285-288` の
+ * `ITerminalWithCore`/`IXtermCore`）。ここで覗く `_inputHandler._mouseStateService` は
+ * `IXtermCore` にまだ無いフィールドなので、このファイル内だけの狭い構造型で受ける
+ * （`IXtermCore` 自体は書き換えない＝差し替え点を1つに保つ）。
+ *
+ * `@xterm/headless` で実測して到達可能なことを確認済み: DECSET 1000/1002/1003/1006 を
+ * 流すと `activeEncoding` は `'SGR'`。1006 抜き（`mouse=a` だが legacy encoding の vim 相当）
+ * だと `'DEFAULT'` のまま。読めない・想定外の形のときは `false`（矢印キーへのフォールバック
+ * 側）に倒す。
+ */
+export function paradisIsSgrMouseEncodingActive(raw: RawXtermTerminal): boolean {
+	interface IXtermCoreWithMouseState {
+		_inputHandler?: {
+			_mouseStateService?: {
+				activeEncoding?: unknown;
+			};
+		};
+	}
+	const core = (raw as unknown as { _core?: IXtermCoreWithMouseState })._core;
+	return core?._inputHandler?._mouseStateService?.activeEncoding === 'SGR';
+}
+
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
 /**
  * リサイズ再同期のスナップショットに含めるスクロールバック行数。
@@ -527,6 +556,10 @@ const TERM_VIEWPORT_LEASE_MS = 60_000;       // この時間更新が無けれ�
 const TERM_VIEWPORT_SWEEP_MS = 15_000;       // 満了チェックの周期
 // スワイプ1回で送れるスクロール行数の上限。速くなぞったときに大量のキーを撃ち込まない。
 const TERM_SCROLL_MAX_LINES = 40;
+// マウスホイール1刻みで進む行数の目安（多くのTUIが採用する慣習値）。モバイル側は行数で
+// 申告してくるため、ホイールで送るときはこの値で割ってホイール刻み数へ変換する。
+// 割らずに1行=1刻みで送ると、同じスワイプでも矢印キー経路の約3倍スクロールしてしまう。
+const TERM_SCROLL_LINES_PER_WHEEL_TICK = 3;
 
 /** VTスナップショットを送る理由（計測でどの経路が転送量を占めるか切り分けるため）。 */
 type TermSnapshotReason = 'attach' | 'flow' | 'resize';
@@ -618,7 +651,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly extensionService: IExtensionService,
 		private readonly themeService: IThemeService,
 		private readonly sharedProcessService: ISharedProcessService,
-		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
+		/**
+		 * その URI が「このウィンドウから触れてよい場所」か。file はローカルなので常に true、
+		 * vscode-remote は接続中の authority と一致する場合だけ true。
+		 *
+		 * 別ホストで登録した古い vscode-remote や、未接続中の vscode-remote を「手元」として
+		 * 扱ってしまうと、たまたま絶対パスが一致する手元の無関係なリポジトリ/フォルダへ誤って
+		 * 到達できてしまう（`runGit` は書き込みを伴うため実害が大きい。PR状態・ブランチ表示・
+		 * 検索も、無関係な手元の内容を返す事故になる）。file/vscode-remote の許可判定は
+		 * すべてこの関数を通すこと。
+		 */
+		private readonly isReachableWorkspaceUri: (uri: URI) => boolean,
+		// 対象リポジトリ/worktree の URI から、git を動かすマシンを解決するのは呼び出し元
+		// （paradisChannelHostResolver）の役目。ここは file・vscode-remote どちらの URI も
+		// そのまま受け取れる。unresolved: 'reject' で解決できない場合は reject する。
+		private readonly runGit: (repoUri: URI, args: readonly string[]) => Promise<IParadisGitResult>,
 		private readonly paneTokenService: IParadisPaneTokenService,
 		private readonly terminalIdentityService: IParadisTerminalIdentityService,
 		private readonly syncTerminalState: (state: IParadisMobileWindowStateV2) => void,
@@ -628,8 +675,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly continueAgentInteraction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<'valid' | 'completed' | 'stale'>,
 		private readonly finalizeAgentInteraction: (mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed') => Promise<void>,
 		private readonly validateAgentAction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<boolean>,
-		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
-		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
+		// search対象がどのマシンにあるかは呼び出し元（paradisRemoteSearchHostResolver）が
+		// root の scheme/authority から解決する。
+		private readonly searchFiles: (root: URI, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
+		private readonly searchText: (root: URI, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
 		setUsageWarmLease: (ownerId: string, active: boolean) => Promise<void>,
 		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk の shared process バックエンド
@@ -644,9 +693,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly createWorktree: (request: IParadisHeadlessWorktreeRequest) => Promise<IParadisHeadlessWorktreeResult>,
 		// 既存ワークスペースへのエージェント起動。実体は paradisLaunchAgentInWorkspace
 		private readonly launchAgentInWorkspace: (request: IParadisAgentLaunchInWorkspaceRequest) => Promise<void>,
-		// 各パスの現在ブランチに紐づく PR 状態。実体は PC 版 Workspaces ビューと同じ
-		// paradis.workspaceSwitch.getPrStatuses コマンド（contribution側で束ねて渡される）
-		private readonly getPrStatuses: (paths: readonly string[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
+		// 各リポジトリ/worktree の現在ブランチに紐づく PR 状態。実体は PC 版 Workspaces ビューと同じ
+		// paradis.workspaceSwitch.getPrStatuses コマンド（contribution側で束ねて渡される）。
+		// SSH 接続先のリポジトリでも正しいマシンの gh を使えるよう、URI をそのまま渡す
+		// （コマンド側で paradisWorktreeGitHostResolver がホストを解決する）。
+		private readonly getPrStatuses: (uris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
 		// PC本体のCPU/メモリ/ディスクと Para Code 内訳。実体は resourceMonitor のクライアント
 		// （収集はメインプロセス。モバイルの「システム」画面が開いている間だけ呼ばれる）
 		private readonly fetchResourceReport: (force: boolean) => Promise<IParadisResourceMonitorMobileReport>,
@@ -935,26 +986,34 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.prStatusScheduler.schedule();
 			return;
 		}
-		// fsPath → ワークスペースid（stateスナップショットの workspaces[].id と同じキー体系）
+		// fsPath → ワークスペースid（stateスナップショットの workspaces[].id と同じキー体系）。
+		// キーは呼び出し先 (paradis.workspaceSwitch.getPrStatuses コマンド) が結果を返す際の
+		// キーと揃える必要があり、そちらは常に resource.fsPath (URI.revive 後、呼び出し元
+		// =このウィンドウの OS でのパス表記) を使う。SSH 接続先のリポジトリでも scheme を
+		// vscode-remote のまま渡す — git を動かすマシンの解決はコマンド側 (paradisWorktreeGitHostResolver)
+		// に任せる。
 		const pathToWsId = new Map<string, string>();
+		const uris: URI[] = [];
 		for (const repo of this.workspaceSwitchService.repositories) {
-			if (repo.uri.scheme !== 'file') {
+			if (!this.isReachableWorkspaceUri(repo.uri)) {
 				continue;
 			}
 			pathToWsId.set(repo.uri.fsPath, repo.id);
+			uris.push(repo.uri);
 			for (const worktree of this.worktreeService.getWorktrees(repo.id)) {
-				if (!worktree.missing) {
+				if (!worktree.missing && this.isReachableWorkspaceUri(worktree.uri)) {
 					pathToWsId.set(worktree.uri.fsPath, paradisWorktreeStateKey(worktree.uri));
+					uris.push(worktree.uri);
 				}
 			}
 		}
-		if (pathToWsId.size === 0) {
+		if (uris.length === 0) {
 			this.prStatusScheduler.schedule();
 			return;
 		}
 		this.prStatusesInFlight = true;
 		try {
-			const result = await this.getPrStatuses([...pathToWsId.keys()]);
+			const result = await this.getPrStatuses(uris);
 			if (result) {
 				const next = new Map<string, IParadisPrStatus>();
 				for (const [path, status] of Object.entries(result)) {
@@ -1007,10 +1066,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	/** 各リポジトリのブランチ名を非同期に更新し、変化があれば state を再送する。 */
 	private refreshBranches(): void {
 		for (const repo of this.workspaceSwitchService.repositories) {
-			if (repo.uri.scheme !== 'file') {
+			if (!this.isReachableWorkspaceUri(repo.uri)) {
 				continue;
 			}
-			this.runGit(repo.uri.fsPath, ['rev-parse', '--abbrev-ref', 'HEAD']).then(result => {
+			this.runGit(repo.uri, ['rev-parse', '--abbrev-ref', 'HEAD']).then(result => {
 				const branch = result.stdout.trim();
 				if (branch && this.branchCache.get(repo.id) !== branch) {
 					this.branchCache.set(repo.id, branch);
@@ -1510,9 +1569,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	// --- scm チャネル -----------------------------------------------------------
 
-	private repoPathForWs(ws: string): string | undefined {
+	/**
+	 * SCM 操作 (git 実行) の対象リポジトリ/worktree の URI。
+	 *
+	 * scheme は file・vscode-remote のどちらでもよい — git を実際にどのマシンで動かすかは
+	 * `runGit` コールバック側 (paradisChannelHostResolver) が URI の scheme/authority から
+	 * 解決する。ここで file に絞ると SSH 接続先のリポジトリが SCM 操作から丸ごと外れてしまう。
+	 * ただし別ホスト・未接続中の vscode-remote まで通すと、絶対パスが一致する手元の無関係な
+	 * フォルダへ誤って到達しうるため、`isReachableWorkspaceUri` で弾く。
+	 */
+	private repoUriForWs(ws: string): URI | undefined {
 		const root = this.resolveWsRoot(ws);
-		return root?.scheme === 'file' ? root.fsPath : undefined;
+		return root && this.isReachableWorkspaceUri(root) ? root : undefined;
 	}
 
 	private async handleScmInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
@@ -1688,16 +1756,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			return;
 		}
-		const repoPath = this.repoPathForWs(msg.ws);
-		if (!repoPath) {
+		const repoUri = this.repoUriForWs(msg.ws);
+		if (!repoUri) {
 			reply({ error: `unknown workspace: ${msg.ws}` });
 			return;
 		}
 		try {
 			if (msg.t === 'status') {
 				const [status, branch] = await Promise.all([
-					this.runGit(repoPath, ['status', '--porcelain=v1']),
-					this.runGit(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']),
+					this.runGit(repoUri, ['status', '--porcelain=v1']),
+					this.runGit(repoUri, ['rev-parse', '--abbrev-ref', 'HEAD']),
 				]);
 				const files = status.stdout.split('\n').filter(l => l.length > 3).map(line => ({
 					// porcelain v1: XY <path> （リネームは "old -> new"）
@@ -1711,7 +1779,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				if (msg.path) {
 					args.push('--', msg.path);
 				}
-				const result = await this.runGit(repoPath, args);
+				const result = await this.runGit(repoUri, args);
 				// 未追跡ファイルは diff に出ないため、空なら内容そのものを差分風に返す
 				let diff = result.stdout;
 				if (!diff && msg.path) {
@@ -1727,13 +1795,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				if (msg.all) {
-					const addResult = await this.runGit(repoPath, ['add', '-A']);
+					const addResult = await this.runGit(repoUri, ['add', '-A']);
 					if (addResult.code !== 0) {
 						reply({ error: addResult.stderr || 'git add failed' });
 						return;
 					}
 				}
-				const result = await this.runGit(repoPath, ['commit', '-m', msg.message]);
+				const result = await this.runGit(repoUri, ['commit', '-m', msg.message]);
 				if (result.code !== 0) {
 					reply({ error: result.stderr || result.stdout || 'git commit failed' });
 				} else {
@@ -1748,7 +1816,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: `invalid path: ${msg.path}` });
 					return;
 				}
-				const original = modified.with({ scheme: 'git', query: JSON.stringify({ path: modified.fsPath, ref: 'HEAD' }) });
+				// git: スキームの FileSystemProvider は git 拡張（workspace kind）が処理するため、
+				// SSH 接続中はリモート側で解決される。fsPath は常にこのウィンドウ（ローカル）の
+				// OS で区切りを付け替えるため、接続先へ渡すと区切りが化ける。
+				const modifiedGitQueryPath = modified.scheme === Schemas.file ? modified.fsPath : modified.path;
+				const original = modified.with({ scheme: 'git', query: JSON.stringify({ path: modifiedGitQueryPath, ref: 'HEAD' }) });
 				const html = await renderSpreadsheetDiffMobileHtml(this.fileService, this.sharedProcessService, original, modified, 'HEAD', '作業ツリー');
 				await replyCompressed({ t: 'xlsxDiff', html });
 			} else if (msg.t === 'log') {
@@ -1759,7 +1831,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 再計算するので取得時点のスナップショットが古くならない（%arだと整形済み文字列が
 				// 固定される上、author date基準のためrebaseしたコミットが実際より古く見える）。
 				// %arは旧バージョンのモバイルアプリ向けフォールバックとして当面残す。
-				const result = await this.runGit(repoPath, ['log', '--skip', String(skip), '-n', String(limit + 1), '--pretty=format:%H%x09%ct%x09%ar%x09%s']);
+				const result = await this.runGit(repoUri, ['log', '--skip', String(skip), '-n', String(limit + 1), '--pretty=format:%H%x09%ct%x09%ar%x09%s']);
 				// コミット0件のリポジトリも exit 128 になるため、実エラーは「非ゼロ かつ stderr あり」で判定する
 				if (result.code !== 0 && result.stderr.trim() && !/does not have any commits yet/.test(result.stderr)) {
 					reply({ error: result.stderr.trim() });
@@ -1774,7 +1846,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const commits = hasMore ? all.slice(0, limit) : all;
 				// リモートのWeb URLが分かればモバイル側でコミットページへ飛べるようにする。
 				// remoteが無い/失敗してもログ本体の応答は返す（履歴表示を巻き添えにしない）。
-				const remote = await this.runGit(repoPath, ['remote', 'get-url', 'origin']).catch(() => undefined);
+				const remote = await this.runGit(repoUri, ['remote', 'get-url', 'origin']).catch(() => undefined);
 				const webUrl = remote && remote.code === 0 ? remoteToWebUrl(remote.stdout.trim()) : undefined;
 				reply({ t: 'log', commits, hasMore, ...(webUrl ? { webUrl } : {}) });
 			} else if (msg.t === 'commitFiles') {
@@ -1784,7 +1856,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: 'invalid commit hash' });
 					return;
 				}
-				const result = await this.runGit(repoPath, ['show', '--name-status', '--pretty=format:', msg.hash]);
+				const result = await this.runGit(repoUri, ['show', '--name-status', '--pretty=format:', msg.hash]);
 				if (result.code !== 0) {
 					reply({ error: result.stderr.trim() || 'git show failed' });
 					return;
@@ -2032,19 +2104,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		// 検索（find/grep）はパスでなくクエリを取るため、パス解決の前に処理する。
-		// 実行はshared process（ripgrep）。ワークスペースルート起点なので脱出の余地はない。
+		// 実行は ripgrep（shared process、または SSH 接続先なら REH サーバー）。
+		// ワークスペースルート起点なので脱出の余地はない。
 		if (msg.t === 'find' || msg.t === 'grep') {
 			const root = this.resolveWsRoot(msg.ws);
-			if (!root || root.scheme !== 'file') {
+			if (!root || !this.isReachableWorkspaceUri(root)) {
 				reply({ error: `unknown workspace: ${msg.ws}` });
 				return;
 			}
 			try {
 				if (msg.t === 'find') {
-					const result = await this.searchFiles(root.fsPath, msg.query, 100);
+					const result = await this.searchFiles(root, msg.query, 100);
 					reply({ t: 'find', files: result.files, truncated: result.truncated });
 				} else {
-					const result = await this.searchText(root.fsPath, msg.query, 200);
+					const result = await this.searchText(root, msg.query, 200);
 					reply({ t: 'grep', matches: result.matches, truncated: result.truncated });
 				}
 			} catch (err) {
@@ -2054,7 +2127,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		if (msg.t === 'resolveLink') {
 			const root = this.resolveWsRoot(msg.ws);
-			if (!root || root.scheme !== 'file' || typeof msg.path !== 'string' || msg.path.length === 0 || msg.path.length > 4_096 || msg.path.includes('\0')) {
+			// paradisResolveExternalPath・fileService は vscode-remote を素通しするので、
+			// file に限定する理由はない。
+			if (!root || !this.isReachableWorkspaceUri(root) || typeof msg.path !== 'string' || msg.path.length === 0 || msg.path.length > 4_096 || msg.path.includes('\0')) {
 				reply({ error: 'invalid file link' });
 				return;
 			}
@@ -2596,18 +2671,56 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * モバイルのスワイプによるスクロール。
 	 *
 	 * 代替スクリーン（TUI）にはスクロールバックが無いので、端末を巻き戻すのではなく
-	 * アプリへ「上/下」を伝える必要がある。本家のマウスホイールも代替バッファでは
-	 * 同じことをしている（xterm の MouseService が矢印キーへ変換する）ので、それに倣う。
+	 * アプリへ「上/下」を伝える必要がある。
 	 *
-	 * マウスレポート（SGRホイール）は送らない。エンコーディング（DECSET 1006 の有無）が
-	 * 公開APIから読めず、取り違えると壊れた列をアプリへ渡すことになるため。矢印なら
-	 * どのモードでも意味が壊れない。
+	 * アプリが実際にSGRマウスホイール（DECSET 1006）で待ち受けているときだけ、実物のホイール
+	 * イベント（`CSI < 64/65 ; col ; row M`）を送る。矢印キーで代用しないのは、Claude Code
+	 * 実機で確認済みの実測（node-pty + 生バイト注入、SGRマウストラッキング有効時に上矢印×5を
+	 * 送ってもPTY出力が1バイトも変化しなかった）のとおり、マウストラッキング中のTUIは矢印キー
+	 * でのスクロールを実装していないことが多いため。
+	 *
+	 * SGRが有効かどうかは `instance.xterm.raw.modes.mouseTrackingMode`（公開API）だけでは
+	 * 判定できない。マウストラッキングそのものは有効でもSGR拡張座標（1006）は別のDECSETで、
+	 * 例えば vim の `mouse=a` は、接続先の xterm.js が DA2 応答で報告するバージョン
+	 * （このリポジトリが同梱する版は 276）が 277 未満だと legacy encoding のまま SGR を
+	 * 使わない。ncurses系（htop等）の既定 terminfo も同様。この状態でSGRを送ると
+	 * Esc+`[<64;...M` がそのまま生のキー入力として解釈され、無関係な操作（vimなら中央行
+	 * ジャンプ、htopならソート切替）を引き起こす。
+	 *
+	 * そこで xterm.js 内部（`_core._inputHandler._mouseStateService.activeEncoding`）を覗いて
+	 * 実際に 'SGR' が有効なときだけホイールを送る。公開APIではないが、upstream 自身が同じ
+	 * `_core` 経由のアクセスを既存パターンとして持っている
+	 * （`browser/xterm/xtermTerminal.ts:285-288` の `ITerminalWithCore`/`IXtermCore`）。
+	 * `@xterm/headless` で実測して到達可能なことを確認済み（1000/1002/1003/1006を流すと
+	 * `activeEncoding` は `'SGR'`、1006無しの `mouse=a` 相当だと `'DEFAULT'` のまま）。
+	 * 読めない・想定と違う値のときは安全側（矢印キー）へ倒す。
+	 *
+	 * 座標はカーソル位置を使わない。Claude Code のカーソルは下部の入力欄にあり、そこを指すと
+	 * 「入力欄の上でホイールを回した」ことになりかねないため、画面中央付近を指す固定値にする。
+	 *
+	 * 行数はモバイルの申告（スワイプ量から逆算した「行数」）をそのままホイール刻み数として
+	 * 送らない。ホイール1刻みは多くのTUIで数行分（慣習的に3行）進むため、そのまま送ると
+	 * 矢印キー経路の約3倍スクロールしてしまう（`TERM_SCROLL_LINES_PER_WHEEL_TICK` で割る）。
+	 *
+	 * SGRが確認できない（マウストラッキング無し、`x10` 等）ときは、`less`/`vim` など従来どおり
+	 * 矢印キー変換に倣う（本家のマウスホイールも代替バッファでは同じことをしている＝xterm の
+	 * MouseService が矢印キーへ変換する）。
 	 */
 	private async handleTerminalScroll(instance: ITerminalInstance, msg: { dir: 'up' | 'down'; lines: number }): Promise<void> {
+		const lines = Math.min(msg.lines, TERM_SCROLL_MAX_LINES);
+		const xterm = instance.xterm;
+		if (xterm !== undefined && paradisIsSgrMouseEncodingActive(xterm.raw)) {
+			const buttonCode = msg.dir === 'up' ? 64 : 65;
+			const row = Math.max(1, Math.floor(xterm.raw.rows / 2));
+			const wheelTicks = Math.max(1, Math.ceil(lines / TERM_SCROLL_LINES_PER_WHEEL_TICK));
+			const sequence = `\x1b[<${buttonCode};1;${row}M`;
+			await instance.sendText(sequence.repeat(wheelTicks), false);
+			return;
+		}
 		const finalChar = msg.dir === 'up' ? 'A' : 'B';
-		const applicationMode = instance.xterm?.raw.modes.applicationCursorKeysMode === true;
+		const applicationMode = xterm?.raw.modes.applicationCursorKeysMode === true;
 		const sequence = applicationMode ? `\x1bO${finalChar}` : `\x1b[${finalChar}`;
-		await instance.sendText(sequence.repeat(Math.min(msg.lines, TERM_SCROLL_MAX_LINES)), false);
+		await instance.sendText(sequence.repeat(lines), false);
 	}
 
 	/** まとめ送りタイマーと保留バッファのみ破棄する（snapshot送信時用。resizeTimerは別ライフサイクル）。 */

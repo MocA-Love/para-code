@@ -47,6 +47,13 @@ export interface IParadisDiffStat {
 	readonly deletions: number;
 }
 
+/** 許可リストに載ったサブコマンドの、任意 git 実行の生の結果。呼び出し側が exit code で成否を判定する。 */
+export interface IParadisWorktreeGitCommandResult {
+	readonly code: number;
+	readonly stdout: string;
+	readonly stderr: string;
+}
+
 /** GitHub PR の状態。GitHub の表示色に対応する4値。 */
 export type ParadisPrState = 'open' | 'draft' | 'merged' | 'closed';
 

@@ -160,6 +160,8 @@ import { registerParadisWorktreeGit } from '../../../paradis/contrib/workspaceSw
 // PARA-PATCH: モバイルリレー接続（fork独自、src/vs/paradis/contrib/mobileRelay/ 参照）。リレーへのoutbound WSSと
 // E2E暗号をshared processが所有する（ウィンドウreload非依存・Node webcryptoでX25519が動く）
 import { registerParadisMobileRelay } from '../../../paradis/contrib/mobileRelay/node/paradisMobileRelayChannel.js';
+// PARA-PATCH: モバイルの find/grep 用 ripgrep チャネル（fork独自、shared processとREHサーバー両方に登録する）
+import { registerParadisRemoteSearch } from '../../../paradis/contrib/mobileRelay/node/paradisRemoteSearchChannel.js';
 // PARA-PATCH: ccusage CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/ccusage/ 参照）
 import { registerParadisCcusage } from '../../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
 // PARA-PATCH: rtk CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/rtk/ 参照）
@@ -568,6 +570,8 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: モバイルリレーサービス（src/vs/paradis/contrib/mobileRelay/ 参照）
 		this._register(registerParadisMobileRelay(this.server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args, paradisAgentBrowser, paradisNotifications.onDidCreateMobileVoiceClip));
+		// PARA-PATCH: モバイルの find/grep 用 ripgrep チャネル
+		this._register(registerParadisRemoteSearch(this.server, accessor.get(ILogService)));
 
 		// PARA-PATCH: ccusage CLI 実行バックエンド（src/vs/paradis/contrib/ccusage/ 参照）
 		this._register(registerParadisCcusage(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
