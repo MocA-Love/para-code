@@ -1150,6 +1150,7 @@
 		"--vg-inner-fade",
 		"--paradis-agent-live-row-height",
 		"--paradis-pr-color",
+		"--paradis-preset-cluster-flyout-max-width",
 		"--paradis-statusbar-bg",
 		"--paradis-titlebar-bg",
 		"--paradis-transparency-opacity",

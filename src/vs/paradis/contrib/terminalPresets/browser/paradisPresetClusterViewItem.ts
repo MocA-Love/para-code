@@ -24,6 +24,11 @@
 //     > .monaco-scrollable-element      ← ScrollableElement が1段挟まる
 //         > .tabs-container
 //     > .editor-actions                 ← このクラスターもこの中に居る
+//
+// ホバー展開のフライアウトは左（タブ側）へ伸びるが、伸ばしっぱなしにすると分割ペインが狭い時や
+// サイドバーが開いている時に隣のペイン・サイドバーへ被さって見える。.tabs-and-actions-container
+// （＝このエディタグループ自身）の左端までの実測距離を上限にし、必ず自分のペインの中に収める
+// （updateFlyoutMaxWidth）。
 
 import './media/paradisPresetCluster.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -69,6 +74,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 
 	private container: HTMLElement | undefined;
 	private fullEl: HTMLElement | undefined;
+	private collapsedWrap: HTMLElement | undefined;
 	private row: HTMLElement | undefined;
 	private tabsContainer: HTMLElement | undefined;
 
@@ -125,6 +131,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		this.contentStore.clear();
 		dom.clearNode(container);
 		this.fullEl = undefined;
+		this.collapsedWrap = undefined;
 
 		const pinned = this.presetService.presets.filter(preset => preset.pinned !== false);
 		if (pinned.length === 0) {
@@ -155,6 +162,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		// collapsedWrap 自体は role を持たない純粋なホバー当たり判定・位置決めの箱。
 		// フォーカス可能・アクセシブルネームを持つのは実際にクリックできる clusterBtn（<button>）側。
 		const collapsedWrap = dom.append(container, $('.paradis-preset-cluster-collapsed'));
+		this.collapsedWrap = collapsedWrap;
 		const clusterBtn = dom.append(collapsedWrap, $('button.paradis-preset-cluster-btn')) as HTMLButtonElement;
 		clusterBtn.type = 'button';
 		clusterBtn.setAttribute('aria-label', strClusterAriaLabel(groups.length));
@@ -312,6 +320,31 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			? deficitIfExpanded > -HYSTERESIS_PX // 戻すには明確な余裕が要る
 			: deficitIfExpanded > HYSTERESIS_PX;  // 畳むにも明確な窮屈さが要る
 		this.setCollapsed(container, shouldCollapse);
+		// setCollapsed の後で測る。折りたたみ時だけ表示される要素（display:none で解除される）を
+		// 測るので、is-collapsed の適用より先に読むと常に幅0（フォールバック値）になってしまう。
+		if (this.collapsed) {
+			this.updateFlyoutMaxWidth(container, row);
+		}
+	}
+
+	/**
+	 * ホバー展開のフライアウトが、このエディタグループ（＝このターミナルのペイン）の左端を
+	 * 越えて伸びないよう上限を設定する。CSS 側は `max-width: 70vw` を素朴な既定値にしていたが、
+	 * ウィンドウ幅の70%はペインが分割やサイドバーで狭くなっているときには大きすぎ、隣のペインや
+	 * サイドバーへ被さって見えてしまう。フライアウトは（畳んだ）まとめアイコンの左辺から左へ
+	 * 伸びる作りなので、そこから row（.tabs-and-actions-container＝このペインの左端と揃う）の
+	 * 左端までの実測距離を上限にすれば、常にこのペインの中に収まる。
+	 */
+	private updateFlyoutMaxWidth(container: HTMLElement, row: HTMLElement): void {
+		const collapsedWrap = this.collapsedWrap;
+		if (!collapsedWrap) {
+			return;
+		}
+		const available = collapsedWrap.getBoundingClientRect().left - row.getBoundingClientRect().left;
+		// 極端に狭いペインでもフライアウト自体は多少残す（横スクロールで拾える範囲に収める）。
+		// これを大きくしすぎるとペインの外へ出てしまうので、あくまで最小限の可読幅にとどめる。
+		const MIN_FLYOUT_WIDTH = 80;
+		container.style.setProperty('--paradis-preset-cluster-flyout-max-width', `${Math.max(MIN_FLYOUT_WIDTH, Math.floor(available))}px`);
 	}
 
 	private setCollapsed(container: HTMLElement, value: boolean): void {
