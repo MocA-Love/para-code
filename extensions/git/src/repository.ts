@@ -25,9 +25,9 @@ import { CommitCommandsCenter, IPostCommitCommandsProviderRegistry } from './pos
 import { IPushErrorHandlerRegistry } from './pushError';
 import { IRemoteSourcePublisherRegistry } from './remotePublisher';
 import { StatusBarCommands } from './statusbar';
-import { toGitUri, toMultiFileDiffEditorUris } from './uri';
-// PARA-PATCH: "Changes Since <base branch>" resource group.
-import { BRANCH_DIFF_GROUP_ID, ParaBranchDiffProvider } from './paraBranchDiff';
+import { toGitUri } from './uri';
+// PARA-PATCH: "Changes Since <base branch>" view. See paraBranchDiff.ts.
+import { ParaBranchDiffProvider } from './paraBranchDiff';
 import { anyEvent, combinedDisposable, debounceEvent, dispose, EmptyDisposable, eventToPromise, filterEvent, find, getCommitShortHash, IDisposable, isCopilotWorktreeFolder, isDescendant, isLinuxSnap, isRemote, isWindows, Limiter, onceEvent, pathEquals, relativePath } from './util';
 import { IFileWatcher, watch } from './watch';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
@@ -52,9 +52,7 @@ export const enum ResourceGroupType {
 	Merge,
 	Index,
 	WorkingTree,
-	Untracked,
-	// PARA-PATCH: "Changes Since <base branch>" group. See paraBranchDiff.ts.
-	BranchDiff
+	Untracked
 }
 
 export class Resource implements SourceControlResourceState {
@@ -246,17 +244,6 @@ export class Resource implements SourceControlResourceState {
 	}
 
 	private get tooltip(): string {
-		// PARA-PATCH: a branch diff carries the status letters git uses for the index, but nothing
-		// here is staged — it is what the branch changed since its base. See paraBranchDiff.ts.
-		if (this._resourceGroupType === ResourceGroupType.BranchDiff) {
-			switch (this.type) {
-				// allow-any-unicode-next-line
-				case Status.INDEX_ADDED: return l10n.t('追加済み');
-				// allow-any-unicode-next-line
-				case Status.INDEX_RENAMED: return l10n.t('名前変更済み');
-			}
-		}
-
 		return Resource.getStatusText(this.type);
 	}
 
@@ -588,32 +575,6 @@ class ResourceCommandResolver {
 	}
 
 	getResources(resource: Resource): { left: Uri | undefined; right: Uri | undefined; original: Uri | undefined; modified: Uri | undefined } {
-		// PARA-PATCH: branch diff resources compare the base branch against HEAD rather than the
-		// index/working tree, so they cannot be resolved from the status letter alone. Resolved
-		// ahead of the submodule handling below, which would otherwise answer with a working tree
-		// comparison for a submodule that changed since the base branch. See paraBranchDiff.ts.
-		if (resource.resourceGroupType === ResourceGroupType.BranchDiff) {
-			const base = this.repository.branchDiffBase;
-
-			// The base branch is gone (the group is being emptied). Never fall through to the
-			// upstream resolution below: it would silently open an unrelated diff.
-			if (!base) {
-				return { left: undefined, right: resource.resourceUri, original: undefined, modified: undefined };
-			}
-
-			const change: Change = { status: resource.type, uri: resource.resourceUri, originalUri: resource.original, renameUri: resource.resourceUri };
-			const { originalUri, modifiedUri } = toMultiFileDiffEditorUris(change, base.commit, 'HEAD');
-
-			return {
-				// A file that only exists on one side has nothing to diff against, so open it on
-				// its own the way the working tree group does for deleted files.
-				left: modifiedUri ? originalUri : undefined,
-				right: modifiedUri ?? originalUri,
-				original: originalUri,
-				modified: modifiedUri
-			};
-		}
-
 		for (const submodule of this.repository.submodules) {
 			if (path.join(this.repository.root, submodule.path) === resource.resourceUri.fsPath) {
 				const original = undefined;
@@ -694,13 +655,6 @@ class ResourceCommandResolver {
 
 	private getTitle(resource: Resource): string {
 		const basename = path.basename(resource.resourceUri.fsPath);
-
-		// PARA-PATCH: the status letters of a branch diff mean "since the base branch", not
-		// "in the index". See paraBranchDiff.ts.
-		if (resource.resourceGroupType === ResourceGroupType.BranchDiff) {
-			const base = this.repository.branchDiffBase;
-			return base ? l10n.t('{0} (Since {1})', basename, base.label) : basename;
-		}
 
 		switch (resource.type) {
 			case Status.INDEX_MODIFIED:
@@ -800,37 +754,6 @@ export class Repository implements Disposable {
 
 	private _untrackedGroup: SourceControlResourceGroup;
 	get untrackedGroup(): GitResourceGroup { return this._untrackedGroup as GitResourceGroup; }
-
-	// PARA-PATCH: "Changes Since <base branch>" group. Everything below is filled in by
-	// ParaBranchDiffProvider; see paraBranchDiff.ts for the logic. Note that commands reaching
-	// this group cannot resolve their repository through Model.getRepository(), which only knows
-	// the four upstream groups — paraBranchDiff.ts keeps its own group-to-repository map.
-	private _branchDiffGroup: SourceControlResourceGroup;
-	get branchDiffGroup(): GitResourceGroup { return this._branchDiffGroup as GitResourceGroup; }
-
-	/**
-	 * What the branch diff group is currently comparing HEAD against, if anything. `commit` is the
-	 * merge base rather than the tip of `label`, so that opening a file shows only what this
-	 * branch changed even after the base branch moved on.
-	 */
-	branchDiffBase: { commit: string; label: string } | undefined;
-
-	createBranchDiffResources(changes: Change[]): Resource[] {
-		const config = workspace.getConfiguration('git', Uri.file(this.repository.root));
-		const useIcons = !config.get<boolean>('decorations.enabled', true);
-		const submodulePaths = new Set(this.submodules.map(submodule => path.join(this.repository.root, submodule.path)));
-
-		return changes
-			// A gitlink that moved comes through as a plain modification of the submodule
-			// directory, which has no file content to diff against the base branch. The set only
-			// covers submodules the working tree still knows about, so one that the branch removed
-			// entirely can still slip through.
-			.filter(change => !submodulePaths.has(change.uri.fsPath) && !submodulePaths.has(change.originalUri.fsPath))
-			.map(change => {
-				const renameUri = change.status === Status.INDEX_RENAMED ? change.renameUri : undefined;
-				return new Resource(this.resourceCommandResolver, ResourceGroupType.BranchDiff, change.originalUri, change.status, useIcons, renameUri, this.kind);
-			});
-	}
 
 	private _EMPTY_TREE: string | undefined;
 
@@ -943,9 +866,6 @@ export class Repository implements Disposable {
 		this.indexGroup.resourceStates = [];
 		this.workingTreeGroup.resourceStates = [];
 		this.untrackedGroup.resourceStates = [];
-		// PARA-PATCH: see paraBranchDiff.ts.
-		this.branchDiffGroup.resourceStates = [];
-		this.branchDiffBase = undefined;
 		this._sourceControl.count = 0;
 	}
 
@@ -1078,9 +998,6 @@ export class Repository implements Disposable {
 		this._indexGroup = this._sourceControl.createResourceGroup('index', l10n.t('Staged Changes'), { multiDiffEditorEnableViewChanges: true });
 		this._workingTreeGroup = this._sourceControl.createResourceGroup('workingTree', l10n.t('Changes'), { multiDiffEditorEnableViewChanges: true });
 		this._untrackedGroup = this._sourceControl.createResourceGroup('untracked', l10n.t('Untracked Changes'), { multiDiffEditorEnableViewChanges: true });
-		// PARA-PATCH: created last so it renders below the upstream groups. See paraBranchDiff.ts.
-		// allow-any-unicode-next-line
-		this._branchDiffGroup = this._sourceControl.createResourceGroup(BRANCH_DIFF_GROUP_ID, l10n.t('ブランチの変更'));
 
 		const updateIndexGroupVisibility = () => {
 			const config = workspace.getConfiguration('git', root);
@@ -1117,16 +1034,14 @@ export class Repository implements Disposable {
 
 		this.mergeGroup.hideWhenEmpty = true;
 		this.untrackedGroup.hideWhenEmpty = true;
-		// PARA-PATCH: the branch diff group is empty whenever no meaningful base branch comparison
-		// exists, and must stay out of the way then. See paraBranchDiff.ts.
-		this.branchDiffGroup.hideWhenEmpty = true;
 
 		this.disposables.push(this.mergeGroup);
 		this.disposables.push(this.indexGroup);
 		this.disposables.push(this.workingTreeGroup);
 		this.disposables.push(this.untrackedGroup);
-		// PARA-PATCH: see paraBranchDiff.ts.
-		this.disposables.push(this.branchDiffGroup);
+		// PARA-PATCH: computes what this branch changed since it forked off its base branch. The
+		// result is rendered by the "Changes Since <base branch>" view, not by a resource group.
+		// See paraBranchDiff.ts.
 		this.disposables.push(new ParaBranchDiffProvider(this, logger));
 
 		// Don't allow auto-fetch in untrusted workspaces
@@ -3322,10 +3237,6 @@ export class Repository implements Disposable {
 			this.indexGroup.resourceStates = [];
 			this.workingTreeGroup.resourceStates = [];
 			this.untrackedGroup.resourceStates = [];
-			// PARA-PATCH: see paraBranchDiff.ts. The base goes with the resources it describes, so
-			// that "there is a base" keeps meaning "the group is filled in".
-			this.branchDiffGroup.resourceStates = [];
-			this.branchDiffBase = undefined;
 			this._onDidChangeScopeActive.fire();
 			this.logger.trace(`[Repository][setScopeActive] Parked repository: ${this.root}`);
 			return;

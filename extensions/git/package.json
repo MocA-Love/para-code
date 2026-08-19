@@ -981,6 +981,49 @@
         "enablement": "!operationInProgress"
       },
       {
+        "command": "git.paraBranchDiffRefresh",
+        "title": "%command.paraBranchDiffRefresh%",
+        "icon": "$(refresh)",
+        "category": "Git",
+        "enablement": "!operationInProgress"
+      },
+      {
+        "command": "git.paraBranchDiffViewAll",
+        "title": "%command.paraBranchDiffViewAll%",
+        "icon": "$(diff-multiple)",
+        "category": "Git",
+        "enablement": "!operationInProgress"
+      },
+      {
+        "command": "git.paraBranchDiffOpenChanges",
+        "title": "%command.paraBranchDiffOpenChanges%",
+        "icon": "$(compare-changes)",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffOpenFile",
+        "title": "%command.paraBranchDiffOpenFile%",
+        "icon": "$(go-to-file)",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffSetViewModeTree",
+        "title": "%command.paraBranchDiffSetViewModeTree%",
+        "icon": "$(list-tree)",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffSetViewModeList",
+        "title": "%command.paraBranchDiffSetViewModeList%",
+        "icon": "$(list-flat)",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffSort",
+        "title": "%command.paraBranchDiffSort%",
+        "category": "Git"
+      },
+      {
         "command": "git.viewStagedChanges",
         "title": "%command.viewStagedChanges%",
         "icon": "$(diff-multiple)",
@@ -1749,6 +1792,34 @@
           "when": "config.git.enabled && !git.missing && config.git.paraBranchDiff.enabled"
         },
         {
+          "command": "git.paraBranchDiffRefresh",
+          "when": "config.git.enabled && !git.missing && config.git.paraBranchDiff.enabled"
+        },
+        {
+          "command": "git.paraBranchDiffViewAll",
+          "when": "config.git.enabled && !git.missing && git.paraBranchDiff.hasChanges"
+        },
+        {
+          "command": "git.paraBranchDiffOpenChanges",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffOpenFile",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffSetViewModeTree",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffSetViewModeList",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffSort",
+          "when": "false"
+        },
+        {
           "command": "git.viewStagedChanges",
           "when": "config.git.enabled && !git.missing"
         },
@@ -1931,6 +2002,71 @@
         {
           "command": "git.repositories.stashCopyBranchName",
           "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "git.paraBranchDiffViewAll",
+          "when": "view == git.paraBranchDiff",
+          "group": "navigation@1"
+        },
+        {
+          "command": "git.paraSelectBranchDiffBase",
+          "when": "view == git.paraBranchDiff",
+          "group": "navigation@2"
+        },
+        {
+          "command": "git.paraBranchDiffRefresh",
+          "when": "view == git.paraBranchDiff",
+          "group": "navigation@3"
+        },
+        {
+          "submenu": "git.paraBranchDiff.viewAndSort",
+          "when": "view == git.paraBranchDiff",
+          "group": "1_viewandsort@1"
+        }
+      ],
+      "git.paraBranchDiff.viewAndSort": [
+        {
+          "command": "git.paraBranchDiffSetViewModeList",
+          "when": "git.paraBranchDiff.viewMode == tree",
+          "group": "1_viewmode@1"
+        },
+        {
+          "command": "git.paraBranchDiffSetViewModeTree",
+          "when": "git.paraBranchDiff.viewMode == list",
+          "group": "1_viewmode@2"
+        },
+        {
+          "command": "git.paraBranchDiffSort",
+          "group": "2_sort@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "git.paraBranchDiffOpenFile",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "group": "inline@1"
+        },
+        {
+          "command": "git.paraBranchDiffOpenChanges",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "group": "navigation@1"
+        },
+        {
+          "command": "git.paraBranchDiffOpenFile",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "group": "navigation@2"
+        },
+        {
+          "command": "git.paraBranchDiffViewAll",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffRepository",
+          "group": "inline@1"
+        },
+        {
+          "command": "git.paraSelectBranchDiffBase",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffRepository",
+          "group": "navigation@1"
         }
       ],
       "scm/title": [
@@ -2308,16 +2444,6 @@
           "group": "inline@1"
         },
         {
-          "command": "git.paraSelectBranchDiffBase",
-          "when": "scmProvider == git && scmResourceGroup == paraBranchDiff",
-          "group": "inline@1"
-        },
-        {
-          "command": "git.paraSelectBranchDiffBase",
-          "when": "scmProvider == git && scmResourceGroup == paraBranchDiff",
-          "group": "1_modification"
-        },
-        {
           "command": "git.cleanAll",
           "when": "scmProvider == git && scmResourceGroup == workingTree && config.git.untrackedChanges == mixed",
           "group": "1_modification"
@@ -2649,11 +2775,6 @@
         {
           "command": "git.openFile",
           "when": "scmProvider == git && scmResourceGroup == untracked",
-          "group": "navigation"
-        },
-        {
-          "command": "git.openFile",
-          "when": "scmProvider == git && scmResourceGroup == paraBranchDiff",
           "group": "navigation"
         },
         {
@@ -3304,8 +3425,22 @@
         "id": "git.repositories.stash",
         "label": "%submenu.stash%",
         "icon": "$(plus)"
+      },
+      {
+        "id": "git.paraBranchDiff.viewAndSort",
+        "label": "%submenu.paraBranchDiffViewAndSort%"
       }
     ],
+    "views": {
+      "scm": [
+        {
+          "id": "git.paraBranchDiff",
+          "name": "%view.paraBranchDiff%",
+          "icon": "$(git-compare)",
+          "when": "config.git.enabled && !git.missing && git.paraBranchDiff.hasChanges"
+        }
+      ]
+    },
     "configuration": {
       "title": "Git",
       "properties": {
