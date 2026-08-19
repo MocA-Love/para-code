@@ -3300,10 +3300,13 @@ export class MobileController {
 		return this.request<FsResolveLinkResult>('fs', { t: 'resolveLink', ws, path });
 	}
 
-	/** ファイル読み取り（上限つき）。highlight=trueでPCテーマのハイライトHTMLも返る。 */
+	/**
+	 * ファイル読み取り（上限つき、PC側は20MBまで）。highlight=trueでPCテーマのハイライトHTMLも返る。
+	 * 大きいファイルはモバイル回線での受信に時間がかかるため、fsXlsxと同じ長めのタイムアウトにする。
+	 */
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult> {
 		const cacheKey = JSON.stringify(['read', ws, path, highlight === true]);
-		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 30_000, undefined, cacheKey);
+		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 120_000, undefined, cacheKey);
 	}
 
 	/** xlsx の1シートをPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
