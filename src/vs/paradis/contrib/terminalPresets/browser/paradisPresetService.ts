@@ -42,6 +42,7 @@ import {
 	IParadisSavePresetOptions,
 	isValidPresetDefinition,
 	paradisGetPresetTasks,
+	paradisPresetFingerprint,
 	paradisPresetKey,
 	paradisResolvePresetIndex,
 	paradisUsablePresetId,
@@ -83,6 +84,13 @@ const PRESET_TITLE_STORAGE_KEY = 'paradis.terminal.presets.restoredTitles';
 /** 台帳に残す件数の上限。消えた端末の分を確実に掃除する手がないので、古いものから捨てる。 */
 const MAX_REMEMBERED_PRESET_TITLES = 200;
 
+/**
+ * workspace ソースのプリセットを「このマシンでだけ非表示にする」台帳のキー。値は
+ * `${定義元ファイルのURI}::${指紋}` の配列（.paracode.json には一切書き込まない、
+ * このマシンだけの表示設定）。StorageTarget.MACHINE なので Settings Sync でも同期されない。
+ */
+const LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY = 'paradis.terminal.presets.locallyHiddenWorkspace';
+
 export class ParadisPresetService extends Disposable implements IParadisPresetService {
 
 	declare readonly _serviceBrand: undefined;
@@ -93,6 +101,8 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	private readonly _folderStores = this._register(new DisposableStore());
 	/** フォルダURI(string) → .paracode.json 由来のプリセット */
 	private readonly _workspacePresets = new Map<string, IParadisResolvedPreset[]>();
+	/** `${定義元ファイルのURI}::${指紋}` の集合。LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY 参照。 */
+	private readonly _locallyHiddenWorkspacePresets = new Set<string>();
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -106,6 +116,22 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
+
+		for (const key of this._readLocallyHiddenWorkspacePresets()) {
+			this._locallyHiddenWorkspacePresets.add(key);
+		}
+		// 同じワークスペースを2ウィンドウで開いていると、この台帳（WORKSPACE スコープ）は両方から
+		// 見える。片方だけがメモリ上の Set を持ち続けると、後から書き込んだ方が先勝ちで上書きし、
+		// 相手側が非表示にした分を消してしまう。ストレージ側の変更を都度取り込んで自分の Set を
+		// 追従させておけば、次に自分が書き込むときには既に相手の分を含んだ状態から始められる。
+		this._register(this.storageService.onDidChangeValue(StorageScope.WORKSPACE, LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY, this._store)(() => {
+			this._locallyHiddenWorkspacePresets.clear();
+			for (const key of this._readLocallyHiddenWorkspacePresets()) {
+				this._locallyHiddenWorkspacePresets.add(key);
+			}
+			this._reapplyLocallyHidden();
+			this._onDidChangePresets.fire();
+		}));
 
 		// リロードで復元されたターミナルにプリセット名を戻す。すでに復元済みのものと、これから
 		// 復元されるものの両方を見る（このサービスの生成と復元の順序は保証されていない）。
@@ -247,6 +273,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 						sourceUri: presetFile,
 						sourceIndex: index,
 						key: paradisPresetKey('workspace', presetFile, entry, index),
+						locallyHidden: this._locallyHiddenWorkspacePresets.has(this._locallyHiddenKey(presetFile, entry)),
 					};
 				});
 		} catch (error) {
@@ -449,6 +476,84 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		list[index] = { ...this._requireDefinitionAt(list, index), pinned };
 		parsed.presets = list;
 		await this.fileService.writeFile(preset.sourceUri, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+	}
+
+	/**
+	 * {@link _locallyHiddenWorkspacePresets} のキー。指紋は appliesTo を持たない workspace 定義向け。
+	 * 位置（sourceIndex）を含まない——並び替えで別のプリセットを誤って隠す事故を避けるため、
+	 * `paradisResolvePresetIndex` と同じく中身で同一性を判定する。裏返しに、同じファイル内に
+	 * **中身まで完全一致する定義が複数ある**場合（コピペ運用等）は、1件を隠すと同じ指紋を持つ
+	 * 全件が一緒に隠れる。
+	 */
+	private _locallyHiddenKey(sourceUri: URI, definition: IParadisPresetDefinition): string {
+		return `${sourceUri.toString()}::${paradisPresetFingerprint(definition, { ignoreAppliesTo: true })}`;
+	}
+
+	private _readLocallyHiddenWorkspacePresets(): string[] {
+		try {
+			const raw = this.storageService.get(LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY, StorageScope.WORKSPACE);
+			const parsed: unknown = raw ? JSON.parse(raw) : undefined;
+			return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+		} catch {
+			// 壊れた台帳は空扱いにする（何も非表示にならないだけで、機能そのものは動く）。
+			return [];
+		}
+	}
+
+	private _writeLocallyHiddenWorkspacePresets(): void {
+		this.storageService.store(
+			LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY,
+			JSON.stringify([...this._locallyHiddenWorkspacePresets]),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE,
+		);
+	}
+
+	/**
+	 * .paracode.json から読み込み済みのキャッシュ（{@link _workspacePresets}）に、
+	 * {@link _locallyHiddenWorkspacePresets} の現在の中身を `locallyHidden` として焼き直す。
+	 * 台帳を変えたのにここを呼ばないと、`onDidChangePresets` を発火しても `presets` getter が
+	 * 返す配列（キャッシュそのもの）は古い `locallyHidden` のままで、表示が一切変わらない。
+	 * ファイルの再読み込み（fileService 経由）は不要——計算値を1フィールド差し替えるだけ。
+	 */
+	private _reapplyLocallyHidden(): void {
+		for (const [folderKey, presets] of this._workspacePresets) {
+			this._workspacePresets.set(folderKey, presets.map(preset => {
+				const hidden = preset.sourceUri ? this._locallyHiddenWorkspacePresets.has(this._locallyHiddenKey(preset.sourceUri, preset)) : false;
+				return preset.locallyHidden === hidden ? preset : { ...preset, locallyHidden: hidden };
+			}));
+		}
+	}
+
+	/**
+	 * workspace ソースのプリセットをこのマシンだけで隠す／戻す。定義元の .paracode.json には
+	 * 一切書き込まない——git で共有されるファイルを、個人の表示都合で書き換えないため
+	 * （{@link setPresetPinned} との使い分けは interface 側のコメント参照）。
+	 *
+	 * 同じワークスペースを複数ウィンドウで開いている場合に備え、書き込む直前にストレージから
+	 * 読み直して自分の Set へ合流させる（他ウィンドウが自分より後に読み込んで先に書いていた分を
+	 * 上書きで消さないため）。
+	 */
+	setWorkspacePresetLocallyHidden(preset: IParadisResolvedPreset, hidden: boolean): void {
+		if (preset.source !== 'workspace' || !preset.sourceUri) {
+			return;
+		}
+		for (const key of this._readLocallyHiddenWorkspacePresets()) {
+			this._locallyHiddenWorkspacePresets.add(key);
+		}
+		const key = this._locallyHiddenKey(preset.sourceUri, preset);
+		const wasHidden = this._locallyHiddenWorkspacePresets.has(key);
+		if (hidden === wasHidden) {
+			return;
+		}
+		if (hidden) {
+			this._locallyHiddenWorkspacePresets.add(key);
+		} else {
+			this._locallyHiddenWorkspacePresets.delete(key);
+		}
+		this._writeLocallyHiddenWorkspacePresets();
+		this._reapplyLocallyHidden();
+		this._onDidChangePresets.fire();
 	}
 
 	// --- フォルダ・一括操作 ------------------------------------------------------------------------

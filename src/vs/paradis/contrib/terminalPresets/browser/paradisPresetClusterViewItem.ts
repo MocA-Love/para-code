@@ -33,8 +33,11 @@
 // 全プリセットが1個の合成アクションに統合されたため、VS Code 標準のツールバー右クリック
 // 「Hide '<名前>'」（MenuId + commandId 単位で個別に効く機能。src/vs/platform/actions/browser/
 // toolbar.ts の WorkbenchToolBar 参照）はこのクラスター全体を1項目としてしか隠せなくなった。
-// 代わりにボタン単位の右クリックで showHideMenu を出し、プリセットの pinned フィールドを直接
-// false にすることで、以前と同じ「プリセットごとにタブバーから非表示にする」操作を再現している。
+// 代わりにボタン単位の右クリックで showHideMenu を出し、以前と同じ「プリセットごとにタブバーから
+// 非表示にする」操作を再現している。書き込み先は保存元で分ける（hidePreset 参照）: user ソースは
+// 自分の設定なので pinned フィールドへ直接書き込むが、workspace ソース（.paracode.json 由来）へ
+// 同じことをすると git で共有される定義元ファイルがチーム全員分書き換わってしまうため、
+// このマシンだけの非表示台帳（setWorkspacePresetLocallyHidden）へ記録する。
 
 import './media/paradisPresetCluster.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -45,6 +48,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import Severity from '../../../../base/common/severity.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -74,6 +78,10 @@ const strHideLabel = (name: string, qualifier: string | undefined) => qualifier
 	: localize('paradis.presetCluster.hideLabel', "非表示にする: {0}", name);
 // allow-any-unicode-next-line
 const strHiddenNotice = (name: string) => localize('paradis.presetCluster.hiddenNotice', "「{0}」をターミナルのタブバーから非表示にしました。「コマンドプリセットを管理」からいつでも戻せます。", name);
+// allow-any-unicode-next-line
+const strHiddenNoticeWorkspace = (name: string) => localize('paradis.presetCluster.hiddenNoticeWorkspace', "「{0}」をこの端末のタブバーからだけ非表示にしました（このリポジトリの設定ファイルは変更していません）。「コマンドプリセットを管理」からいつでも戻せます。", name);
+// allow-any-unicode-next-line
+const STR_UNDO_HIDE = localize('paradis.presetCluster.undoHide', "元に戻す");
 // allow-any-unicode-next-line
 const strHideFailed = (name: string, message: string) => localize('paradis.presetCluster.hideFailed', "プリセット「{0}」を非表示にできませんでした: {1}", name, message);
 // allow-any-unicode-next-line
@@ -162,7 +170,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		this.collapsedWrap = undefined;
 		this.closeScheduler = undefined;
 
-		const pinned = this.presetService.presets.filter(preset => preset.pinned !== false);
+		const pinned = this.presetService.presets.filter(preset => preset.pinned !== false && !preset.locallyHidden);
 		if (pinned.length === 0) {
 			container.style.display = 'none';
 			this.groupCount = 0;
@@ -308,7 +316,8 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 	 * プリセット単位で独立して効いていた。今はすべてのピン留めプリセットが1個の合成アクションへ
 	 * まとまっているため、その標準機能は「クラスター全体を1項目として隠す」ことしかできない
 	 * （個々のプリセット単位の表示/非表示切り替えができなくなる）。同等の操作をアプリ側の
-	 * `pinned` フィールド経由で再現する。
+	 * `pinned` フィールド（user ソース）または、このマシンだけの非表示台帳（workspace ソース）
+	 * 経由で再現する（実際の分岐は {@link hidePreset} 参照）。
 	 */
 	private showHideMenu(anchor: HTMLElement, presets: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>): void {
 		const actions: IAction[] = presets.map(preset => toAction({
@@ -330,10 +339,32 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		});
 	}
 
+	/**
+	 * workspace ソース（.paracode.json 由来）は、このマシンだけの非表示台帳へ記録する
+	 * （定義元ファイルには一切書き込まない——リポジトリの持ち主が登録したプリセットを、
+	 * 自分の画面でだけ隠したいだけで、チーム共有ファイルへ差分を作りたいわけではないため）。
+	 * user ソースは自分の設定なので、従来どおり `pinned` フィールドへ直接書き込む。
+	 */
 	private async hidePreset(preset: IParadisResolvedPreset): Promise<void> {
+		// 隠した直後が一番「元に戻したい」タイミング。管理ダイアログまで探しに行かなくても
+		// その場で戻せるよう、通知自体に元に戻すアクションを付ける。
+		const undoAction = (run: () => void) => toAction({ id: 'paradis.presetCluster.undoHide', label: STR_UNDO_HIDE, run });
+		if (preset.source === 'workspace') {
+			this.presetService.setWorkspacePresetLocallyHidden(preset, true);
+			this.notificationService.notify({
+				severity: Severity.Info,
+				message: strHiddenNoticeWorkspace(preset.name),
+				actions: { primary: [undoAction(() => this.presetService.setWorkspacePresetLocallyHidden(preset, false))] },
+			});
+			return;
+		}
 		try {
 			await this.presetService.setPresetPinned(preset, false);
-			this.notificationService.info(strHiddenNotice(preset.name));
+			this.notificationService.notify({
+				severity: Severity.Info,
+				message: strHiddenNotice(preset.name),
+				actions: { primary: [undoAction(() => { this.presetService.setPresetPinned(preset, true).catch(error => this.notificationService.error(strHideFailed(preset.name, toErrorMessage(error)))); })] },
+			});
 		} catch (error) {
 			this.notificationService.error(strHideFailed(preset.name, toErrorMessage(error)));
 		}

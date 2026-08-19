@@ -120,6 +120,15 @@ export interface IParadisResolvedPreset extends IParadisPresetDefinition {
 	readonly sourceIndex: number;
 	/** メニュー登録などに使う安定キー。id があれば id 由来、無ければ位置由来。 */
 	readonly key: string;
+	/**
+	 * workspace ソース専用: このマシンでだけ、タブバーへの表示から外されているか（計算値。
+	 * 定義そのものには存在しないフィールドで、.paracode.json には一切書き込まれない）。
+	 * リポジトリ由来のプリセットを「自分だけ非表示にしたい」場合に使う——`pinned: false` を
+	 * 書き込むと git で共有されるファイルがチーム全員分書き換わってしまうため、
+	 * {@link IParadisPresetService.setWorkspacePresetLocallyHidden} は代わりにこのマシンだけの
+	 * 台帳へ記録する。
+	 */
+	readonly locallyHidden?: boolean;
 }
 
 /** プリセット実行時に呼び出し側が指定できる一時的な実行条件。 */
@@ -220,8 +229,19 @@ export interface IParadisPresetService {
 	 * ピン留め（タブバーへの表示）だけを切り替える。定義元ファイルの他のフィールドには一切触れない
 	 * ——`source`/`sourceUri`/`sourceIndex`/`key` は解決済みプリセットが持つ実装都合の値であり、
 	 * これらをそのまま書き込むと user 設定や .paracode.json（git 共有）へ絶対パス等が混入する。
+	 *
+	 * workspace ソースのプリセットを非表示にしたいだけなら、こちらではなく
+	 * {@link setWorkspacePresetLocallyHidden} を使う（定義元ファイルを一切変更しない）。
 	 */
 	setPresetPinned(preset: IParadisResolvedPreset, pinned: boolean): Promise<void>;
+
+	/**
+	 * workspace ソース（.paracode.json 由来）のプリセットを、このマシンでだけタブバーから
+	 * 隠す／戻す。git で共有される定義元ファイルには一切書き込まない——リポジトリの持ち主が
+	 * チーム向けに登録したプリセットを、自分の画面でだけ非表示にしたい場合に使う。
+	 * user ソースのプリセットに対しては no-op（{@link setPresetPinned} を使う）。
+	 */
+	setWorkspacePresetLocallyHidden(preset: IParadisResolvedPreset, hidden: boolean): void;
 
 	/**
 	 * 2つのプリセットの並び順（定義元ファイル内の位置）を入れ替える。
