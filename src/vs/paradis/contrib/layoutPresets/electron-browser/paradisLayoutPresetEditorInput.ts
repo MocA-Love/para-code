@@ -41,9 +41,6 @@ export function paradisEmptyLayoutPreset(): IParadisLayoutPresetDefinition {
 	};
 }
 
-/** 保存されたことのない下書きの指紋（どんな中身の指紋とも一致しない番兵）。 */
-const NEVER_SAVED = ' never-saved';
-
 let newInputCounter = 0;
 
 /** 解決済みプリセットから、保存できる素の定義部分だけを取り出す（sourceIndex / key を落とす）。 */
@@ -88,7 +85,11 @@ export class ParadisLayoutPresetEditorInput extends EditorInput implements IEdit
 		super();
 		this._target = presetKey ? this.presetService.presets.find(preset => preset.key === presetKey) : undefined;
 		this._draft = this._target ? cloneDefinition(this._target) : paradisEmptyLayoutPreset();
-		this._savedFingerprint = this._target ? paradisLayoutPresetFingerprint(this._target) : NEVER_SAVED;
+		// 「まだ保存していない」ことを、どの指紋とも一致しない番兵で表してはいけない。
+		// それだと新規タブが**永久に dirty** になり、閉じる確認で「保存しない」を選んでも
+		// revert 後の isDirty() が true のままで、閉じる操作が veto され続ける（タブが閉じられない）。
+		// 基準は常に「今の下書きそのもの」にして、ユーザーが手を入れて初めて dirty にする。
+		this._savedFingerprint = paradisLayoutPresetFingerprint(this._draft);
 		// 同じプリセットを2つのタブで開かないよう、リソースは編集対象ごとに一意にする
 		// （新規は毎回別のタブとして開けてよい）。
 		this.resource = URI.from({
@@ -155,8 +156,11 @@ export class ParadisLayoutPresetEditorInput extends EditorInput implements IEdit
 	}
 
 	override async revert(): Promise<void> {
-		this._savedFingerprint = this._target ? paradisLayoutPresetFingerprint(this._target) : NEVER_SAVED;
-		this.updateDraft(this._target ? cloneDefinition(this._target) : paradisEmptyLayoutPreset());
+		// 戻した先を新しい基準にする。ここで dirty を落とし切らないと、閉じる確認で
+		// 「保存しない」を選んでもタブが閉じない（呼び出し側は revert 後の isDirty() で veto を決める）。
+		const reverted = this._target ? cloneDefinition(this._target) : paradisEmptyLayoutPreset();
+		this._savedFingerprint = paradisLayoutPresetFingerprint(reverted);
+		this.updateDraft(reverted);
 	}
 
 	// --- IEditorCloseHandler ---------------------------------------------------------------------
