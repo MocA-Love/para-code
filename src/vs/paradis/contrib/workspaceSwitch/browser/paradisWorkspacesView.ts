@@ -167,6 +167,51 @@ function statusColorClass(status: ParadisAgentStatus): string {
 	}
 }
 
+/** 位相合わせの対象にする keyframes 名 (paradisWorkspaceSwitch.css と対応)。 */
+const PARADIS_STATUS_BLINK_ANIMATIONS = new Set(['paradis-status-breathe', 'paradis-status-pulse']);
+
+/** animationName → 周期(ms)。CSS の duration を唯一の情報源にするための読み取りキャッシュ。 */
+const paradisStatusBlinkPeriods = new Map<string, number>();
+
+/**
+ * 明滅の位相を、いつ生えた要素でも揃える。
+ *
+ * CSS アニメーションは「そのアニメーションが開始した瞬間」を起点に走るため、素直に書くと
+ * ドットが生えた時刻・状態が変わった時刻・行がスクロールで DOM を出入りした時刻の差が
+ * そのまま位相差になり、同じ「動作中」でも濃い橙と薄い黄に割れて見える。開始時点の位相ぶんを
+ * 負の delay として与えると、どの時刻に始まった要素も共有の時計上の同じ位相から走り出す。
+ *
+ * **`animationstart` で呼ぶこと。** 開始時刻は後から動く: 要素が DOM から外れる (リストの行の
+ * 使い回し)、`display: none` になる (ドット列やサマリの `.hidden`、ビュー自体の非表示) と
+ * アニメーションは cancel され、復帰時に「その時刻」から新規に開始する。このとき状態クラスは
+ * 変わらないので、クラス変更を起点にすると貼り直せず、古い delay が残って位相がずれる。
+ * 開始のたびに必ず1回発火するこのイベントなら、その全経路を取りこぼさない。
+ *
+ * delay は常に負なので現在時刻が待機フェーズへ戻ることはなく、貼り直しで再発火もしない。
+ */
+function syncStatusBlinkPhase(element: HTMLElement, animationName: string): void {
+	if (!PARADIS_STATUS_BLINK_ANIMATIONS.has(animationName)) {
+		return;
+	}
+	let periodMs = paradisStatusBlinkPeriods.get(animationName);
+	if (periodMs === undefined) {
+		// 周期は CSS 側だけが決める (ここで定数を持つと duration との二重管理になる)。
+		const seconds = parseFloat(DOM.getWindow(element).getComputedStyle(element).animationDuration);
+		if (!isFinite(seconds) || seconds <= 0) {
+			return;
+		}
+		periodMs = Math.round(seconds * 1000);
+		paradisStatusBlinkPeriods.set(animationName, periodMs);
+	}
+	// アニメーションの時計は document ごと (補助ウィンドウは別の time origin を持つ) なので、
+	// その document のタイムラインで測る。
+	const timelineTime = element.ownerDocument.timeline.currentTime;
+	if (typeof timelineTime !== 'number') {
+		return;
+	}
+	element.style.animationDelay = `${-Math.round(timelineTime % periodMs)}ms`;
+}
+
 /** ドット1個を、既にある要素を使い回して更新する (無ければ作る)。 */
 function updateStatusDot(container: HTMLElement, index: number, status: ParadisAgentStatus): void {
 	const existing = container.children.item(index);
@@ -806,6 +851,14 @@ export class ParadisWorkspacesView extends ViewPane {
 		// ツリーとメモ欄を縦に積む (メモ欄は下端固定、ツリーが残りを占める)
 		container.classList.add('paradis-workspaces-pane-body');
 		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
+		// 明滅の位相合わせ。個々のドットではなくルート1箇所で受ける (行は使い回されるので、
+		// 要素ごとに張ると付け外しの管理が要る)。詳細は syncStatusBlinkPhase を参照。
+		this._register(DOM.addDisposableListener(treeContainer, 'animationstart', (event: AnimationEvent) => {
+			const target = event.target;
+			if (DOM.isHTMLElement(target)) {
+				syncStatusBlinkPhase(target, event.animationName);
+			}
+		}));
 		// ピン留めの控え行を子行と同じ位置に見せるため、ツリーと同じインデント幅を持っておく
 		// (listService が同じ設定値でツリーの indent を決めている)
 		this.updateTreeIndent();
