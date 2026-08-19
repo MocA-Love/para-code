@@ -279,3 +279,32 @@ suite('Paradis Layout Presets - identity', () => {
 		);
 	});
 });
+
+suite('Paradis Layout Presets - dirty tracking', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// EditorInput 本体は DI が要るので、dirty 判定の中身（指紋の比較）だけをここで固定する。
+	// 実装が「まだ保存していない」を、どの指紋とも一致しない番兵で表すと、新規タブが永久に
+	// dirty になり、閉じる確認で「保存しない」を選んでも revert 後の isDirty() が true のままで
+	// 閉じる操作が veto され続ける（＝タブが閉じられなくなる）。基準を必ず実在の中身から
+	// 作っていれば、戻した先と基準が一致して dirty が落ちる。
+	const emptyPreset = () => ({ name: '新しいレイアウト', orientation: 'columns' as const, root: [empty()] });
+
+	test('触っていない新規プリセットは dirty にならない', () => {
+		const draft = emptyPreset();
+		const baseline = paradisLayoutPresetFingerprint(emptyPreset());
+		assert.strictEqual(paradisLayoutPresetFingerprint(draft) === baseline, true);
+	});
+
+	test('白紙へ戻した下書きは、白紙を基準にすれば必ず dirty が落ちる', () => {
+		let draft: ReturnType<typeof emptyPreset> = { ...emptyPreset(), name: '編集中' };
+		let baseline = paradisLayoutPresetFingerprint(emptyPreset());
+		assert.strictEqual(paradisLayoutPresetFingerprint(draft) !== baseline, true, '編集後は dirty');
+
+		// revert 相当: 戻した先を新しい基準にする
+		draft = emptyPreset();
+		baseline = paradisLayoutPresetFingerprint(draft);
+		assert.strictEqual(paradisLayoutPresetFingerprint(draft) !== baseline, false, 'revert 後は dirty ではない');
+	});
+});

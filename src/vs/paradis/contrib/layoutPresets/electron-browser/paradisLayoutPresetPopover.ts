@@ -23,7 +23,7 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IContextViewService, IOpenContextView } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -86,7 +86,7 @@ function renderThumbnail(preset: IParadisResolvedLayoutPreset): HTMLElement {
  * プリセット一覧のポップオーバーを開く。
  * @param anchor 開いたボタン。ここへのクリックは「外側」に数えない（トグルとして働かせるため）。
  */
-export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, anchor: HTMLElement): void {
+export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, anchor: HTMLElement): IOpenContextView {
 	const contextViewService = accessor.get(IContextViewService);
 	const presetService = accessor.get(IParadisLayoutPresetService);
 	const instantiationService = accessor.get(IInstantiationService);
@@ -96,7 +96,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 
 	const labels = slotKindLabels();
 
-	contextViewService.showContextView({
+	return contextViewService.showContextView({
 		getAnchor: () => anchor,
 		anchorAlignment: AnchorAlignment.RIGHT,
 		anchorPosition: AnchorPosition.BELOW,
@@ -204,15 +204,20 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 			(firstItem ?? create).focus();
 			return disposables;
 		},
-		onDOMEvent: (e: Event) => {
-			// 既定の実装は「ワークベンチ全体の外」でしか閉じない＝実質閉じない。
-			// クリックがポップオーバーの外（かつ開いたボタンの外）へ抜けたら閉じる。
-			if (e.type !== dom.EventType.CLICK) {
+		onDOMEvent: (event: { readonly target?: EventTarget | null }) => {
+			// 既定の実装は「ワークベンチ全体の外」でしか閉じない＝実質閉じないので、自分で閉じる。
+			//
+			// **イベントの種類で振り分けてはいけない。** ここへ来る click / keydown は
+			// dom.addStandardDisposableListener によって StandardMouseEvent / StandardKeyboardEvent に
+			// 包まれており、**どちらも `type` を持たない**。`e.type === 'click'` のような条件を書くと
+			// 常に undefined と比較することになり、条件が一度も成立せずポップオーバーが閉じなくなる。
+			// 見てよいのは `target` だけ（包まれた側にもある）。
+			const target = event.target;
+			if (!dom.isHTMLElement(target)) {
 				return;
 			}
-			const target = e.target as HTMLElement | null;
 			const view = contextViewService.getContextViewElement();
-			if (target && !dom.isAncestor(target, view) && !dom.isAncestor(target, anchor)) {
+			if (!dom.isAncestor(target, view) && !dom.isAncestor(target, anchor)) {
 				contextViewService.hideContextView();
 			}
 		},
@@ -228,6 +233,9 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
  * `icon: true` を渡すだけで素の ActionViewItem でも描ける。
  */
 export class ParadisLayoutPresetToolbarItem extends ActionViewItem {
+
+	/** 自分が開いたポップオーバー。ボタンが消えるときに道連れにする。 */
+	private opened: IOpenContextView | undefined;
 
 	constructor(
 		action: IAction,
@@ -245,8 +253,27 @@ export class ParadisLayoutPresetToolbarItem extends ActionViewItem {
 	override async onClick(event: MouseEvent): Promise<void> {
 		dom.EventHelper.stop(event, true);
 		const anchor = this.element;
-		if (anchor) {
-			this.instantiationService.invokeFunction(accessor => showParadisLayoutPresetPopover(accessor, anchor));
+		if (!anchor) {
+			return;
 		}
+		if (this.opened) {
+			// 開いているときに押したら閉じる（トグル）。ポップオーバー側の外側クリック判定は
+			// このボタンを「外」に数えないので、ここで閉じないと押しても何も起きない。
+			this.close();
+			return;
+		}
+		this.opened = this.instantiationService.invokeFunction(accessor => showParadisLayoutPresetPopover(accessor, anchor));
+	}
+
+	private close(): void {
+		this.opened?.close();
+		this.opened = undefined;
+	}
+
+	override dispose(): void {
+		// ツールバーはエディタグループの増減で作り直される（レイアウトの適用がまさにそれ）。
+		// 開いたままだと、消えたボタンに紐づいたポップオーバーだけが画面に residue として残る。
+		this.close();
+		super.dispose();
 	}
 }
