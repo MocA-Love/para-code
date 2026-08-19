@@ -89,6 +89,9 @@
 
 .monaco-workbench .paradis-preset-cluster-flyout {
 	position: absolute;
+	/* この画面には全体 box-sizing リセットが無く既定は content-box。updateFlyoutMaxWidth が
+		ペイン境界までの実測値を max-width に渡すので、padding/border ぶんも幅に含めて効かせる。 */
+	box-sizing: border-box;
 	top: 0;
 	right: 100%;
 	height: 100%;

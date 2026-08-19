@@ -217,6 +217,13 @@ export interface IParadisPresetService {
 	deletePresets(presets: readonly IParadisResolvedPreset[]): Promise<void>;
 
 	/**
+	 * ピン留め（タブバーへの表示）だけを切り替える。定義元ファイルの他のフィールドには一切触れない
+	 * ——`source`/`sourceUri`/`sourceIndex`/`key` は解決済みプリセットが持つ実装都合の値であり、
+	 * これらをそのまま書き込むと user 設定や .paracode.json（git 共有）へ絶対パス等が混入する。
+	 */
+	setPresetPinned(preset: IParadisResolvedPreset, pinned: boolean): Promise<void>;
+
+	/**
 	 * 2つのプリセットの並び順（定義元ファイル内の位置）を入れ替える。
 	 * 保存先や定義元ファイルが異なる組み合わせでは何もしない。
 	 */
