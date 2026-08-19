@@ -1149,6 +1149,7 @@
 		"--vg-corner-alpha",
 		"--vg-inner-fade",
 		"--paradis-agent-live-row-height",
+		"--paradis-cursor-duration",
 		"--paradis-pr-color",
 		"--paradis-preset-cluster-flyout-max-width",
 		"--paradis-statusbar-bg",

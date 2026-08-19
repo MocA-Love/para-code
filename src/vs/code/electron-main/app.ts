@@ -39,7 +39,7 @@ import { EncryptionMainService } from '../../platform/encryption/electron-main/e
 import { ipcBrowserViewChannelName } from '../../platform/browserView/common/browserView.js';
 import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/common/browserViewGroup.js';
 // PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway
-import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentCursorEvents, PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_AGENT_CURSOR_CHANNEL, PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService } from '../../paradis/contrib/agentBrowser/electron-main/paradisCdpTargetService.js';
 import { ParadisCursorOverlayController } from '../../paradis/contrib/agentBrowser/electron-main/paradisCursorOverlayController.js';
 // PARA-PATCH: browser mirror WebRTC spike — capture a single WebContentsView instead of the whole screen when armed
@@ -1466,6 +1466,12 @@ export class CodeApplication extends Disposable {
 		paradisCdpTargetService.pinUpstreamPort();
 		const paradisCdpTargetChannel = ProxyChannel.fromService(paradisCdpTargetService, disposables);
 		sharedProcessClient.then(client => client.registerChannel(PARADIS_CDP_TARGET_CHANNEL, paradisCdpTargetChannel));
+		// PARA-PATCH: mirror the agent cursor to the workbench too (the browser wall redraws it over the thumbnails; a page that is not on screen never paints its own overlay). Read-only surface: the renderer only subscribes to the event.
+		const paradisAgentCursorSurface: IParadisAgentCursorEvents = { onDidChangeAgentCursor: paradisCdpTargetService.onDidChangeAgentCursor };
+		// unbufferedEvents: nobody listens while the browser wall is closed, and the default
+		// buffering would pile every agent mouse move up in main until someone does. Dropping
+		// them is fine — the wall only mirrors what is happening right now.
+		mainProcessElectronServer.registerChannel(PARADIS_AGENT_CURSOR_CHANNEL, ProxyChannel.fromService(paradisAgentCursorSurface, disposables, { unbufferedEvents: ['onDidChangeAgentCursor'] }));
 
 		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)
 		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);

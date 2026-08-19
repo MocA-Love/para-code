@@ -584,6 +584,96 @@
 	}
 }
 
+/* ---------------------------------------------------------------- エージェントのカーソル */
+
+/* ページの中の演出をそのまま映すだけでは足りない。1280px のページを 260px のタイルへ縮めると
+	倍率は 0.2 で、20px の矢印は 4px、ラベルは読めない大きさになる。そのうえ画面に出ていない
+	ページでは Chromium がフレームを作らないので、演出そのものが進まない。
+	そこで座標だけを受け取り、ここで読める大きさに描き直す。 */
+.paradis-browser-live-cursor {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 0;
+	height: 0;
+	z-index: 6;
+	opacity: 0;
+	pointer-events: none;
+	/* 移動時間はページ側のカーソルと同じ長さを JS が流し込む。フェードは固定にする ——
+		1つの transition にまとめると、移動時間の指定が現れ方にも掛かってしまう。 */
+	transition: transform var(--paradis-cursor-duration, 0ms) cubic-bezier(0.2, 0.7, 0.2, 1), opacity 140ms ease;
+}
+
+.paradis-browser-live-cursor.is-shown {
+	opacity: 1;
+}
+
+/* 白い矢印にアクセント色の縁。ページ側に出るカーソル (paradisCursorOverlay.ts) と同じ形。 */
+.paradis-browser-live-cursor-arrow {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 17px;
+	height: 17px;
+	background-color: #ffffff;
+	filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.45));
+	-webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 2 L4 20 L9 15.5 L12.5 22 L15.5 20.5 L12 14 L19 14 Z'/></svg>");
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-size: contain;
+	border: 0;
+}
+
+.paradis-browser-live-cursor-ripple {
+	position: absolute;
+	left: -13px;
+	top: -13px;
+	width: 26px;
+	height: 26px;
+	box-sizing: border-box;
+	border-radius: 50%;
+	border: 2px solid var(--vscode-charts-blue, #3794ff);
+	opacity: 0;
+}
+
+@keyframes paradis-browser-live-ripple {
+	0% { opacity: 0.85; transform: scale(0.35); }
+	100% { opacity: 0; transform: scale(1.15); }
+}
+
+.paradis-browser-live-cursor-ripple.is-rippling {
+	animation: paradis-browser-live-ripple 460ms ease-out;
+}
+
+/* 撮影の合図。ページ側は全面を白く光らせるが、縮小した映像では潰れて分からないので、
+	タイルの枠を光らせる。 */
+@keyframes paradis-browser-live-shot {
+	0% { box-shadow: inset 0 0 0 0 rgba(255, 255, 255, 0.9); }
+	30% { box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.85); }
+	100% { box-shadow: inset 0 0 0 0 rgba(255, 255, 255, 0); }
+}
+
+.paradis-browser-live-shot-mark {
+	position: absolute;
+	inset: 0;
+	z-index: 7;
+	pointer-events: none;
+}
+
+.paradis-browser-live-shot-mark.is-flashing {
+	animation: paradis-browser-live-shot 600ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.paradis-browser-live-cursor {
+		transition: none !important;
+	}
+
+	.paradis-browser-live-cursor-ripple.is-rippling,
+	.paradis-browser-live-shot-mark.is-flashing {
+		animation: none !important;
+	}
+}
+
 /* ---------------------------------------------------------------- 歯車ポップオーバー */
 
 .paradis-browser-live-pop {
