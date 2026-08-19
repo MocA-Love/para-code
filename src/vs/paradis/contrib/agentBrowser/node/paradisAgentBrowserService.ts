@@ -2537,15 +2537,17 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * take_screenshot がファイルへ保存したとき、そのファイルを取りに来る口を応答へ添える。
 	 *
 	 * SSH で繋いだ先で動くエージェントが `filePath` を渡すと、画像は**手元**に落ちて接続先からは
-	 * 見えない。既に張ってある戻り経路で同じ番号へ届くので、curl 1回で取り出せる。
+	 * 見えない。既に張ってある戻り経路で取り出せるが、接続先で開いている番号は ssh が空きから
+	 * 選ぶので手元とは違う。案内には手元の番号だけを書き、接続先にはポートファイルを読ませる。
 	 */
 	private _offerScreenshotHandoff(token: string, result: unknown): unknown {
 		if (this._port === undefined) {
 			return result;
 		}
-		const urls = paradisScreenshotPathsFromToolResult(result)
-			.map(path => `http://127.0.0.1:${this._port}${PARADIS_SCREENSHOT_FETCH_PATH}/${this._screenshotHandoff.register(token, path)}`);
-		return paradisAppendScreenshotFetchHint(result, urls);
+		const localPort = this._port;
+		const targets = paradisScreenshotPathsFromToolResult(result)
+			.map(path => ({ id: this._screenshotHandoff.register(token, path), localPort }));
+		return paradisAppendScreenshotFetchHint(result, targets);
 	}
 
 	/**

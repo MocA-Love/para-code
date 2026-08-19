@@ -38,9 +38,14 @@ suite('ParadisScreenshotHandoff', () => {
 
 	test('adds the download line only when something was saved', () => {
 		const saved = toolResult('Saved screenshot to /tmp/a.png.');
-		const hinted = paradisAppendScreenshotFetchHint(saved, ['http://127.0.0.1:47286/paradis-mcp/screenshot/abc']) as { content: { type: string; text: string }[] };
+		const hinted = paradisAppendScreenshotFetchHint(saved, [{ id: 'abc', localPort: 47286 }]) as { content: { type: string; text: string }[] };
 		assert.strictEqual(hinted.content.length, 2);
-		assert.ok(hinted.content[1].text.includes('curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" http://127.0.0.1:47286/paradis-mcp/screenshot/abc'));
+		const hint = hinted.content[1].text;
+		// 手元向けには実際の番号を書く
+		assert.ok(hint.includes('http://127.0.0.1:47286/paradis-mcp/screenshot/abc'));
+		// 接続先向けは番号を焼き込まず、ポートファイルから読ませる (ssh が選ぶ番号は手元と違う)
+		assert.ok(hint.includes('$PARA_CODE_MCP_PORT_FILE'));
+		assert.ok(hint.includes('"http://127.0.0.1:$PORT/paradis-mcp/screenshot/abc"'));
 		// 元の本文は触らない
 		assert.strictEqual(hinted.content[0].text, 'Saved screenshot to /tmp/a.png.');
 
