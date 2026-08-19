@@ -79,7 +79,13 @@
 
 /* ---------- フライアウト: タブ側に覆いかぶさりながら「左」へ水平展開する ----------
 	縦のドロップダウンではなく、タイトルバーの「エージェント一覧」ウィジェットと同じ max-width
-	展開の手法（横方向）。ホバー/フォーカスで開き、閉じるときだけ遅延させる。 */
+	展開の手法（横方向）。
+	開閉は2種類のトリガーを使い分ける。キーボード（:focus-within）は即時（フォーカス移動は座標に
+	依存しないので猶予は要らない）。マウス（.is-open、ParadisPresetClusterViewItem がJSで付け外し
+	する）は、実際に閉じるまで少し待つ猶予をJS側（HOVER_CLOSE_DELAY_MS）に持たせている。CSSの
+	:hover は座標が1pxでも外れた瞬間に外れてしまい、まとめアイコンからここへ斜めに動かす普通の
+	操作でも閉じやすくなる（＝以前の transition-delay だけに頼る実装の不具合）ため、:hover には
+	直接連動させない。 */
 
 .monaco-workbench .paradis-preset-cluster-flyout {
 	position: absolute;
@@ -91,7 +97,6 @@
 	flex-wrap: nowrap;
 	gap: 2px;
 	padding: 0 4px;
-	margin-right: 2px;
 	border-radius: var(--vscode-cornerRadius-medium, 4px);
 	background: var(--vscode-editorWidget-background);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
@@ -106,8 +111,8 @@
 
 .monaco-enable-motion .monaco-workbench .paradis-preset-cluster-flyout,
 .monaco-workbench.monaco-enable-motion .paradis-preset-cluster-flyout {
+	/* 閉じる猶予はJS側が持つので、ここでの遅延は不要（開閉どちらもすぐアニメーションを始める）。 */
 	transition: opacity 160ms ease, max-width 160ms ease;
-	transition-delay: 200ms; /* 閉じるときだけ遅延させ、カーソル移動中に誤って閉じないようにする */
 }
 
 .monaco-reduce-motion .monaco-workbench .paradis-preset-cluster-flyout,
@@ -115,7 +120,7 @@
 	transition-duration: 0ms !important;
 }
 
-.monaco-workbench .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-flyout,
+.monaco-workbench .paradis-preset-cluster-collapsed.is-open .paradis-preset-cluster-flyout,
 .monaco-workbench .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-flyout {
 	opacity: 1;
 	/* --paradis-preset-cluster-flyout-max-width は ParadisPresetClusterViewItem が実測して書き込む
@@ -134,13 +139,6 @@
 	と同じくスクロールバー自体は出さない——ホイール操作で辿れれば十分。 */
 .monaco-workbench .paradis-preset-cluster-flyout::-webkit-scrollbar {
 	display: none;
-}
-
-.monaco-enable-motion .monaco-workbench .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-flyout,
-.monaco-enable-motion .monaco-workbench .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-flyout,
-.monaco-workbench.monaco-enable-motion .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-flyout,
-.monaco-workbench.monaco-enable-motion .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-flyout {
-	transition-delay: 0ms; /* 開くときは即時 */
 }
 
 /* ---------- 個々のプリセットボタン（展開行・フライアウトの両方で共用） ---------- */
