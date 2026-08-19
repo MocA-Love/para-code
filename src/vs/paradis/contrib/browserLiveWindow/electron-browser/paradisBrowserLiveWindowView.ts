@@ -25,6 +25,7 @@ import {
 	paradisBrowserLiveDisplayUrl,
 	paradisFilterBrowserLiveEntries,
 	paradisGroupBrowserLiveEntries,
+	paradisHasBrowserLiveFilter,
 	paradisSortBrowserLiveEntries,
 	paradisSummarizeBrowserLiveEntries,
 } from '../common/paradisBrowserLiveWindow.js';
@@ -91,6 +92,8 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 	private readonly activeSpaceChip: HTMLElement;
 	private readonly countText: HTMLElement;
 	private readonly settingsButton: HTMLElement;
+	private readonly filterBar: HTMLElement;
+	private readonly filterBarText: HTMLElement;
 	/** グループ見出しと空表示。タイルと違って毎回作り直すので、参照を持って消す。 */
 	private readonly chromeElements: HTMLElement[] = [];
 
@@ -150,6 +153,13 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.settingsButton, localize('paradis.browserLive.settings', "表示と並び")));
 		this._register(addDisposableListener(this.settingsButton, EventType.CLICK, () => this.toggleSettings()));
 
+		// --- 絞り込み状況 ----------------------------------------------------------------
+		this.filterBar = append(root, $('.paradis-browser-live-filterbar'));
+		this.filterBarText = append(this.filterBar, $('span.paradis-browser-live-grow'));
+		const clearButton = append(this.filterBar, $('button.paradis-browser-live-link'));
+		clearButton.textContent = localize('paradis.browserLive.clearFilters', "絞り込みを解除");
+		this._register(addDisposableListener(clearButton, EventType.CLICK, () => this.clearFilters()));
+
 		// --- 壁 ---------------------------------------------------------------------------
 		this.scroll = append(root, $('.paradis-browser-live-scroll'));
 		this.wall = append(this.scroll, $('.paradis-browser-live-wall'));
@@ -178,6 +188,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 
 	private render(): void {
 		const entries = this.model.entries;
+		this.pruneHidden(entries);
 		const filtered = paradisFilterBrowserLiveEntries(entries, this.viewState);
 		const sorted = paradisSortBrowserLiveEntries(filtered, this.viewState);
 		const groups = paradisGroupBrowserLiveEntries(sorted, this.viewState, localize('paradis.browserLive.unknownSpace', "スペース未確定"));
@@ -296,6 +307,11 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		disposables.add(addDisposableListener(reloadButton, EventType.CLICK, event => {
 			event.stopPropagation();
 			this.model.reload(entry.viewId).catch(onUnexpectedError);
+		}));
+		const hideButton = this.createMiniButton(actions, 'eye-closed', localize('paradis.browserLive.hide', "この一覧から隠す（タブは閉じません）"), disposables);
+		disposables.add(addDisposableListener(hideButton, EventType.CLICK, event => {
+			event.stopPropagation();
+			this.hideEntry(entry.viewId);
 		}));
 		const closeButton = this.createMiniButton(actions, 'close', localize('paradis.browserLive.close', "タブを閉じる"), disposables);
 		disposables.add(addDisposableListener(closeButton, EventType.CLICK, event => {
@@ -423,29 +439,82 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		}
 	}
 
+	/** 閉じられたタブが hidden に残り続けないよう掃除する (残ると「非表示 N 件」が減らない)。 */
+	private pruneHidden(entries: readonly IParadisBrowserLiveEntry[]): void {
+		if (this.viewState.hidden.length === 0) {
+			return;
+		}
+		const known = new Set(entries.map(entry => entry.viewId));
+		const kept = this.viewState.hidden.filter(viewId => known.has(viewId));
+		if (kept.length !== this.viewState.hidden.length) {
+			this.viewState.hidden = kept;
+			this._onDidChangeViewState.fire();
+		}
+	}
+
 	private updateChrome(entries: readonly IParadisBrowserLiveEntry[], shownCount: number): void {
 		// チップは一覧の中身 (全スペース) が基準。タイトルバーのバッジだけが手元のスペース基準。
 		const summary = paradisSummarizeBrowserLiveEntries(entries);
 		this.allChipCount.textContent = String(summary.totalAll);
 		this.sharedChipCount.textContent = String(summary.sharedAll);
-		const filtering = this.viewState.sharedOnly || this.viewState.activeSpaceOnly;
+		const filtering = paradisHasBrowserLiveFilter(this.viewState);
 		this.allChip.classList.toggle('checked', !filtering);
 		this.sharedChip.classList.toggle('checked', this.viewState.sharedOnly);
 		this.activeSpaceChip.classList.toggle('checked', this.viewState.activeSpaceOnly);
 		this.countText.textContent = filtering
 			? localize('paradis.browserLive.countFiltered', "{0} / {1} 件", shownCount, entries.length)
 			: localize('paradis.browserLive.count', "{0} 件", entries.length);
+
+		this.filterBar.classList.toggle('shown', filtering);
+		if (filtering) {
+			const parts: string[] = [];
+			if (this.viewState.sharedOnly) {
+				parts.push(localize('paradis.browserLive.filterState.shared', "共有中のみ"));
+			}
+			if (this.viewState.activeSpaceOnly) {
+				parts.push(localize('paradis.browserLive.filterState.activeSpace', "このスペースのみ"));
+			}
+			if (this.viewState.spaces) {
+				parts.push(localize('paradis.browserLive.filterState.spaces', "スペース {0} 件", this.viewState.spaces.length));
+			}
+			if (this.viewState.hidden.length > 0) {
+				parts.push(localize('paradis.browserLive.filterState.hidden', "非表示 {0} 件", this.viewState.hidden.length));
+			}
+			this.filterBarText.textContent = localize('paradis.browserLive.filterState', "絞り込み中: {0}", parts.join(' / '));
+		}
 	}
 
 	// ------------------------------------------------------------------ 操作
 
 	private clearFilters(): void {
-		if (!this.viewState.sharedOnly && !this.viewState.activeSpaceOnly) {
+		if (!paradisHasBrowserLiveFilter(this.viewState)) {
 			return;
 		}
 		this.viewState.sharedOnly = false;
 		this.viewState.activeSpaceOnly = false;
+		this.viewState.spaces = undefined;
+		this.viewState.hidden = [];
 		this.commitViewState();
+	}
+
+	private hideEntry(viewId: string): void {
+		if (this.viewState.hidden.includes(viewId)) {
+			return;
+		}
+		this.viewState.hidden = [...this.viewState.hidden, viewId];
+		this.commitViewState();
+	}
+
+	/** 歯車に出すスペースの選択肢。いま一覧に載っているページのスペースだけを出す。 */
+	private spaceOptions(): Map<string, string> {
+		const options = new Map<string, string>();
+		for (const entry of this.model.entries) {
+			const key = entry.stateKey ?? '';
+			if (!options.has(key)) {
+				options.set(key, entry.spaceName || localize('paradis.browserLive.unknownSpace', "スペース未確定"));
+			}
+		}
+		return options;
 	}
 
 	private toggleSharedOnly(): void {
@@ -470,6 +539,8 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 			this.viewState,
 			{
 				anchor: this.settingsButton,
+				spaces: () => this.spaceOptions(),
+				hiddenCount: () => this.viewState.hidden.length,
 				commit: () => this.commitViewState(),
 				close: (restoreFocus: boolean) => this.closeSettings(restoreFocus),
 			},

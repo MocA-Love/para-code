@@ -20,6 +20,7 @@ import {
 	paradisDefaultBrowserLiveViewState,
 	paradisFilterBrowserLiveEntries,
 	paradisGroupBrowserLiveEntries,
+	paradisHasBrowserLiveFilter,
 	paradisParseBrowserLiveViewState,
 	paradisSerializeBrowserLiveViewState,
 	paradisSortBrowserLiveEntries,
@@ -55,16 +56,22 @@ suite('Paradis Browser Live Window', () => {
 
 	test('view state round-trips and repairs broken input', () => {
 		const saved = paradisSerializeBrowserLiveViewState(state({
-			columns: 5, sharedOnly: true, activeSpaceOnly: true, sort: 'shared', group: 'none', cadence: 'smooth',
+			columns: 5, sharedOnly: true, activeSpaceOnly: true, spaces: ['space-a'], hidden: ['view-1'],
+			sort: 'space', group: 'none', cadence: 'smooth',
 		}));
 		assert.deepStrictEqual(paradisParseBrowserLiveViewState(saved), {
 			columns: 5,
 			sharedOnly: true,
 			activeSpaceOnly: true,
-			sort: 'shared',
+			spaces: ['space-a'],
+			hidden: ['view-1'],
+			sort: 'space',
 			group: 'none',
 			cadence: 'smooth',
 		});
+
+		// 空のスペース配列は「すべて」に戻す (空の一覧を見せない)。
+		assert.strictEqual(paradisParseBrowserLiveViewState(JSON.stringify({ spaces: [] })).spaces, undefined);
 
 		// 壊れた値・未知の値・範囲外はすべて既定へ落ちる (起動不能にしない)。
 		assert.deepStrictEqual(
@@ -88,7 +95,7 @@ suite('Paradis Browser Live Window', () => {
 		);
 	});
 
-	test('filters by sharing and by the active space', () => {
+	test('filters by sharing, space and the hidden list', () => {
 		const entries = [
 			entry('a', { agents: ['Claude'] }),
 			entry('b'),
@@ -100,15 +107,25 @@ suite('Paradis Browser Live Window', () => {
 				paradisFilterBrowserLiveEntries(entries, state({ sharedOnly: true })).map(item => item.viewId),
 				paradisFilterBrowserLiveEntries(entries, state({ activeSpaceOnly: true })).map(item => item.viewId),
 				paradisFilterBrowserLiveEntries(entries, state({ sharedOnly: true, activeSpaceOnly: true })).map(item => item.viewId),
+				paradisFilterBrowserLiveEntries(entries, state({ spaces: ['space-b'] })).map(item => item.viewId),
+				paradisFilterBrowserLiveEntries(entries, state({ hidden: ['a', 'c'] })).map(item => item.viewId),
 				paradisFilterBrowserLiveEntries(entries, state()).map(item => item.viewId),
 				paradisSummarizeBrowserLiveEntries(entries),
+				[
+					paradisHasBrowserLiveFilter(state()),
+					paradisHasBrowserLiveFilter(state({ hidden: ['a'] })),
+					paradisHasBrowserLiveFilter(state({ spaces: ['space-a'] })),
+				],
 			],
 			[
 				['a', 'c'],
 				['a', 'b'],
 				['a'],
+				['c'],
+				['b'],
 				['a', 'b', 'c'],
 				{ total: 2, shared: 1, totalAll: 3, sharedAll: 2 },
+				[false, true, true],
 			],
 		);
 	});
@@ -127,11 +144,14 @@ suite('Paradis Browser Live Window', () => {
 				paradisSortBrowserLiveEntries(entries, state({ sort: 'editor' })).map(item => item.viewId),
 				paradisSortBrowserLiveEntries(entries, state({ sort: 'title' })).map(item => item.viewId),
 				paradisSortBrowserLiveEntries(entries, state({ sort: 'shared' })).map(item => item.viewId),
+				paradisSortBrowserLiveEntries(entries, state({ sort: 'space' })).map(item => item.viewId),
 			],
 			[
 				['c', 'b', 'a', 'd'],
 				['a', 'c', 'b', 'd'],
 				['a', 'c', 'b', 'd'],
+				// スペース名は同じなので、手元のぶんはタブの並びのまま。別スペースは後ろ。
+				['c', 'b', 'a', 'd'],
 			],
 		);
 	});
