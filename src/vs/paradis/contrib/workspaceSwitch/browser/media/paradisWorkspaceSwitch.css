@@ -106,34 +106,25 @@
  * 走らせる使い方では回転が常時視界に入って疲れるため。速い脈動 (1秒) は「人間の対応待ち」
  * だけに残し、動作中とは速度で区別する。
  *
- * 明滅の「時計」はドット個々ではなくリストのルート1つが持ち、明るさをカスタムプロパティで
- * 配る。CSS アニメーションは要素にアニメーションが付いた瞬間を起点に走るため、ドット側に
- * animation を書くと、ドットが生えた時刻・状態が変わった時刻・行がスクロールで DOM を
- * 出入りした時刻の差がそのまま位相差になり、同じ「動作中」でも濃い橙と薄い黄に割れて見える。
- * 源を1つに集約すれば、ドットは現在の明るさを読むだけなので位相は原理的に一致する
- * (リストごと非表示になって時計が止まっても、再開時に全ドットが同じ位相から始まる)。
+ * 明滅は opacity を直接アニメーションさせる (paradisAgentLiveWindow.css と同じ方式)。
+ * opacity は合成スレッドだけで処理されるので、スタイル再計算もレイアウトも起きない。
  *
- * 時計は明滅するドットが実際にいるときだけ回す。カスタムプロパティのアニメーションは
- * 合成に回せず、値が変わるたびに継承先 (= リスト配下すべて) のスタイル再計算を伴うため、
- * エージェントが1体もいない間まで回し続けるとアイドル時のコストがゼロでなくなる。
- * 時計の入り切りで全ドットが同時に止まり同時に再開するので、位相の一致は損なわれない。 */
-@property --paradis-status-breathe {
-	syntax: '<number>';
-	inherits: true;
-	initial-value: 1;
-}
-
-@property --paradis-status-pulse {
-	syntax: '<number>';
-	inherits: true;
-	initial-value: 1;
-}
-
-.paradis-workspaces-list:has(.paradis-status-working, .paradis-status-permission) {
-	animation:
-		paradis-status-breathe-clock 2.4s ease-in-out infinite,
-		paradis-status-pulse-clock 1s ease-in-out infinite;
-}
+ * **カスタムプロパティを「時計」にする実装へ戻さないこと。** 以前はリストのルートで
+ * 継承するカスタムプロパティを回し、ドット側はその値を読むだけ、という作りだった (位相を
+ * 揃えるのが目的)。だがカスタムプロパティのアニメーションは合成に回せず、値が変わるたびに
+ * 継承先すべて = リスト配下の全要素のスタイル再計算を伴う。実機計測では配下488要素に対して
+ * 毎秒65,800要素が再計算され、レンダラとGPUで1コアの約26%、さらに毎秒48MBのゴミ
+ * (Blink の ComputedStyle) を生んでいた。明滅させたいドットは7個ほどしかなく、割に合わない。
+ *
+ * 位相合わせ (ドットが生えた時刻の差がそのまま位相差になり、同じ「動作中」でも濃い橙と
+ * 薄い黄に割れて見える問題) は、要素へ負の animation-delay を与えて JS 側で行う。
+ * paradisWorkspacesView.ts の syncStatusBlinkPhase を参照。
+ *
+ * duration はこの CSS が唯一の情報源で、JS は animationstart のときに読む (自由に変えてよい)。
+ * ただし **keyframes の名前を変えるときは、あちらの PARADIS_STATUS_BLINK_ANIMATIONS も直すこと。**
+ * 名前が食い違ってもエラーは出ず、位相合わせだけが静かに止まる。
+ * 同じ理由で **この2つのセレクタに2本目のアニメーションを足さないこと** (JS は
+ * animation-duration の先頭だけを読むので、どちらの名前で発火しても先頭の周期を拾ってしまう)。 */
 
 /* charts.orange は継承元 (minimapFindMatch) の関係でテーマによって33%アルファだったり
 	High Contrast で未定義 (消える) だったりするため、全既定テーマで不透明な charts.yellow
@@ -141,7 +132,7 @@
 	と語彙を揃えている (値を変えるときは両方直す)。 */
 .paradis-workspaces-list .paradis-status-working {
 	color: var(--vscode-charts-yellow, #cca700);
-	opacity: var(--paradis-status-breathe);
+	animation: paradis-status-breathe 2.4s ease-in-out infinite;
 }
 
 .paradis-workspaces-list .paradis-status-review {
@@ -150,25 +141,25 @@
 
 .paradis-workspaces-list .paradis-status-permission {
 	color: var(--vscode-charts-red, #ef4444);
-	opacity: var(--paradis-status-pulse);
+	animation: paradis-status-pulse 1s ease-in-out infinite;
 }
 
-@keyframes paradis-status-pulse-clock {
-	0%, 100% { --paradis-status-pulse: 1; }
-	50% { --paradis-status-pulse: 0.25; }
+@keyframes paradis-status-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.25; }
 }
 
-@keyframes paradis-status-breathe-clock {
-	0%, 100% { --paradis-status-breathe: 1; }
-	50% { --paradis-status-breathe: 0.45; }
+@keyframes paradis-status-breathe {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
 }
 
 /* allow-any-unicode-next-line */
 /* 動きに敏感な利用者の設定を尊重する (upstream も同名のメディアクエリでアニメーションを止めている)。
- * 時計を止めるとカスタムプロパティは initial-value (= 1) に戻るため、ドット側は不透明のまま残る。
- * セレクタは時計側と揃える (詳細度が下がると打ち消せない)。 */
+ * アニメーションを外すと opacity は既定 (= 1) に戻るので、ドットは不透明のまま残る。 */
 @media (prefers-reduced-motion: reduce) {
-	.paradis-workspaces-list:has(.paradis-status-working, .paradis-status-permission) {
+	.paradis-workspaces-list .paradis-status-working,
+	.paradis-workspaces-list .paradis-status-permission {
 		animation: none;
 	}
 }
