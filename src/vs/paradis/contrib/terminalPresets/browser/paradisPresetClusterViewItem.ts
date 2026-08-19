@@ -82,6 +82,12 @@ const MIN_GROUPS_TO_COLLAPSE = 3;
 const HYSTERESIS_PX = 24;
 /** タブの変更（追加・削除・並べ替え・タイトル変更）をこの間隔で合流させてから測り直す。 */
 const TABS_REMEASURE_DEBOUNCE_MS = 50;
+/**
+ * マウスがまとめアイコン（またはフライアウト）から外れてから、実際にフライアウトを閉じるまでの
+ * 猶予（ms）。0 だと :hover が一瞬でも外れた瞬間に閉じてしまい、アイコンからフライアウト内の
+ * ボタンへ斜めにカーソルを動かす普通の操作でも閉じやすくなる。
+ */
+const HOVER_CLOSE_DELAY_MS = 300;
 
 export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 
@@ -192,10 +198,31 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			this.showHideMenu(clusterBtn, groups.flat(), qualifiers);
 		}));
 		const flyout = dom.append(collapsedWrap, $('.paradis-preset-cluster-flyout'));
-		// ホバー/フォーカスが外れて閉じたあと、次に開いたときは先頭から見えるようにする
-		// （閉じている間にスクロール位置だけ更新するので見た目には出ない）。
-		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'mouseleave', () => { flyout.scrollLeft = 0; }));
-		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'focusout', () => { flyout.scrollLeft = 0; }));
+		// CSS の :hover はカーソルがこの要素（とその子孫）の描画領域から1pxでも外れた瞬間に外れる。
+		// まとめアイコンからフライアウトへ斜めに動かす途中で、境界のわずかな隙間を一瞬でも通ると
+		// そこで閉じてしまい、中のボタンまで辿り着けない——「はみ出すとすぐ閉じる」の正体はこれ。
+		// マウス操作だけは :hover に直結させず、実際に閉じるまで少し待つ猶予（closeScheduler）を
+		// JS 側で持たせる。キーボード操作（Tabでのフォーカス移動）はこの猶予が要らないので、CSS の
+		// :focus-within は今までどおり即時のまま別枠で残す（下の CSS 参照）。
+		const closeScheduler = this.contentStore.add(new RunOnceScheduler(() => {
+			collapsedWrap.classList.remove('is-open');
+			flyout.scrollLeft = 0;
+		}, HOVER_CLOSE_DELAY_MS));
+		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'mouseenter', () => {
+			closeScheduler.cancel();
+			collapsedWrap.classList.add('is-open');
+		}));
+		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'mouseleave', () => {
+			closeScheduler.schedule();
+		}));
+		// キーボードでフォーカスが完全に外へ出たときだけスクロール位置を戻す
+		// （フライアウト内をTabで移動しているだけなら relatedTarget も子孫のまま）。
+		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'focusout', e => {
+			if (collapsedWrap.contains(e.relatedTarget as Node | null)) {
+				return;
+			}
+			flyout.scrollLeft = 0;
+		}));
 
 		for (const group of groups) {
 			this.renderItem(fullEl, group, qualifiers);
