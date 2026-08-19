@@ -29,8 +29,8 @@ import { GitCommitInputBoxCodeActionsProvider, GitCommitInputBoxDiagnosticsManag
 import { GitBlameController } from './blame';
 import { CloneManager } from './cloneManager';
 import { getAskpassPaths } from './askpassManager';
-// PARA-PATCH: "Changes Since <base branch>" resource group.
-import { registerParaBranchDiffCommands } from './paraBranchDiff';
+// PARA-PATCH: "Changes Since <base branch>" view. See paraBranchDiffView.ts.
+import { registerParaBranchDiffView } from './paraBranchDiffView';
 
 const deactivateTasks: { (): Promise<void> }[] = [];
 
@@ -123,8 +123,8 @@ async function createModel(context: ExtensionContext, logger: LogOutputChannel, 
 		new GitTimelineProvider(model, cc),
 		new GitEditSessionIdentityProvider(model),
 		new TerminalShellExecutionManager(model, logger),
-		// PARA-PATCH: "Changes Since <base branch>" resource group. See paraBranchDiff.ts.
-		registerParaBranchDiffCommands(model, logger)
+		// PARA-PATCH: "Changes Since <base branch>" view. See paraBranchDiffView.ts.
+		registerParaBranchDiffView(model, context.workspaceState, logger)
 	);
 
 	const postCommitCommandsProvider = new GitPostCommitCommandsProvider(model);

@@ -4,40 +4,70 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { commands, Disposable, l10n, LogOutputChannel, SourceControlResourceGroup, Uri, window, workspace } from 'vscode';
-import type { Branch, Ref } from './api/git';
+import * as path from 'path';
+import { Disposable, Event, EventEmitter, l10n, LogOutputChannel, Uri, window, workspace } from 'vscode';
+import type { Branch, Change, Ref } from './api/git';
 import { RefType } from './api/git.constants';
 import type { Model } from './model';
 import type { Repository } from './repository';
 import { dispose } from './util';
 
-export const BRANCH_DIFF_GROUP_ID = 'paraBranchDiff';
-
 /**
- * Upper bound on the number of files listed in the branch diff group. A branch that diverged by
- * more than this is not something anybody reviews in a tree, and building that many resources
- * would stall the extension host on every status.
+ * Upper bound on the number of files reported for one branch. A branch that diverged by more than
+ * this is not something anybody reviews in a tree, and building that many nodes would stall the
+ * extension host on every status.
  */
 const RESOURCE_LIMIT = 5000;
 
 /**
- * Providers keyed by repository so that commands can reach the provider of a given repository
- * without widening the public surface of {@link Repository}.
+ * What a branch changed since it forked off its base branch.
  */
+export interface IParaBranchDiffState {
+	/**
+	 * The merge base the comparison runs against, and the human readable name of the branch that
+	 * merge base was derived from. `commit` is deliberately not the tip of `label`: diffing against
+	 * the tip would show other people's work as if this branch had reverted it once the base moved
+	 * on.
+	 */
+	readonly base: { readonly commit: string; readonly label: string };
+	readonly changes: readonly Change[];
+	/** Set when the branch diverged by more than {@link RESOURCE_LIMIT} files. */
+	readonly truncated: boolean;
+}
+
+/** Providers keyed by repository, so that the view and the commands can reach one. */
 const providers = new WeakMap<Repository, ParaBranchDiffProvider>();
 
-/**
- * Owner of each branch diff group. `Model.getRepository()` only recognises the four upstream
- * groups, so a command invoked from this group's menu has to resolve the repository itself.
- */
-const groupOwners = new WeakMap<SourceControlResourceGroup, Repository>();
+const _onDidChangeBranchDiff = new EventEmitter<Repository>();
+
+/** Fires whenever the branch diff of a repository changed, was cleared, or failed to compute. */
+export const onDidChangeBranchDiff: Event<Repository> = _onDidChangeBranchDiff.event;
 
 /**
- * Fills the "Changes Since &lt;base branch&gt;" resource group: everything the current branch
- * accumulated since it forked off its base branch, i.e. `git diff <base>...HEAD`.
+ * What `repository` changed since its branch forked off its base branch, or `undefined` when no
+ * meaningful comparison exists right now.
+ */
+export function getBranchDiffState(repository: Repository): IParaBranchDiffState | undefined {
+	// A parked repository belongs to another Para Code space. It keeps its last state around so
+	// that unparking does not have to recompute from scratch, but nothing may read it meanwhile.
+	if (!repository.scopeActive) {
+		return undefined;
+	}
+
+	return providers.get(repository)?.state;
+}
+
+/** Drops every cached decision for `repository` and recomputes. */
+export function refreshBranchDiff(repository: Repository): void {
+	providers.get(repository)?.reset();
+}
+
+/**
+ * Computes what the current branch accumulated since it forked off its base branch, i.e.
+ * `git diff <merge-base>...HEAD`.
  *
- * The group is deliberately empty (and therefore hidden, since it is created with
- * `hideWhenEmpty`) whenever a meaningful comparison cannot be made:
+ * The state is deliberately `undefined` — and the view therefore hidden — whenever a meaningful
+ * comparison cannot be made:
  * - a merge, rebase or cherry-pick is in progress, where the merge base is in flux
  * - no base branch could be resolved
  * - the base branch is the branch's own upstream, in which case the branch was not forked off
@@ -46,6 +76,9 @@ const groupOwners = new WeakMap<SourceControlResourceGroup, Repository>();
 export class ParaBranchDiffProvider {
 
 	private disposables: Disposable[] = [];
+
+	private _state: IParaBranchDiffState | undefined;
+	get state(): IParaBranchDiffState | undefined { return this._state; }
 
 	/** Base branch resolved for {@link baseBranchHEAD}. Resolving it costs git calls, so it is cached. */
 	private baseBranch: Branch | undefined;
@@ -56,13 +89,8 @@ export class ParaBranchDiffProvider {
 	private mergeBase: string | undefined;
 	private mergeBaseKey: string | undefined;
 
-	/**
-	 * Identity and size of the last successfully rendered diff, used to skip redundant work. The
-	 * size is part of it because the group is also cleared behind our back when the repository is
-	 * parked, and the key alone would then make us skip refilling it on the way back.
-	 */
+	/** Identity of the last successfully computed diff, used to skip redundant git calls. */
 	private lastKey: string | undefined;
-	private lastCount = 0;
 
 	private running = false;
 	private pending = false;
@@ -73,7 +101,6 @@ export class ParaBranchDiffProvider {
 		private readonly logger: LogOutputChannel
 	) {
 		providers.set(repository, this);
-		groupOwners.set(repository.branchDiffGroup, repository);
 
 		this.disposables.push(repository.onDidRunGitStatus(() => this.refresh()));
 		this.disposables.push(workspace.onDidChangeConfiguration(e => {
@@ -117,21 +144,24 @@ export class ParaBranchDiffProvider {
 		}
 	}
 
+	private setState(state: IParaBranchDiffState | undefined): void {
+		this._state = state;
+		_onDidChangeBranchDiff.fire(this.repository);
+	}
+
 	private async doRefresh(): Promise<void> {
 		try {
 			const state = await this.computeState();
 
 			if (!state) {
 				this.lastKey = undefined;
-				this.lastCount = 0;
-				this.repository.branchDiffBase = undefined;
-				if (this.repository.branchDiffGroup.resourceStates.length > 0) {
-					this.repository.branchDiffGroup.resourceStates = [];
+				if (this._state) {
+					this.setState(undefined);
 				}
 				return;
 			}
 
-			if (state.key === this.lastKey && this.repository.branchDiffGroup.resourceStates.length === this.lastCount) {
+			if (state.key === this.lastKey) {
 				return;
 			}
 
@@ -139,40 +169,62 @@ export class ParaBranchDiffProvider {
 			// branch which moved on since the fork does not show other people's work as if this
 			// branch had reverted it. Note that this leaves out type changes, which git omits from
 			// --diff-filter=ADMR.
-			const diff = await this.repository.diffBetween(state.baseCommit, 'HEAD');
-			const changes = Array.isArray(diff) ? diff : [];
-
-			if (changes.length > RESOURCE_LIMIT) {
-				this.logger.warn(`[ParaBranchDiffProvider][doRefresh] ${this.repository.root} differs from ${state.baseLabel} by ${changes.length} files, showing the first ${RESOURCE_LIMIT}`);
-			} else if (changes.length === 0) {
-				// git exits non-zero into an empty change list, so "no diff" and "the diff failed"
-				// look identical from here.
-				this.logger.trace(`[ParaBranchDiffProvider][doRefresh] ${this.repository.root} has no changes since ${state.baseLabel}`);
-			}
+			const all = await this.repository.diffBetween(state.baseCommit, 'HEAD');
 
 			// Resolving the base branch and running the diff both take git processes, and the
-			// repository can be parked or disposed while we wait. Parking clears every group on
-			// purpose so that nothing reads another space's changes, so writing our result now
-			// would undo that.
+			// repository can be parked or disposed while we wait.
 			if (this.disposed || !this.repository.scopeActive) {
 				this.lastKey = undefined;
-				this.lastCount = 0;
 				return;
 			}
 
-			const resources = this.repository.createBranchDiffResources(changes.slice(0, RESOURCE_LIMIT));
+			const filtered = this.withoutSubmodules(all);
 
-			this.repository.branchDiffBase = { commit: state.baseCommit, label: state.baseLabel };
-			// allow-any-unicode-next-line
-			this.repository.branchDiffGroup.label = l10n.t('{0} 以降の変更', state.baseLabel);
-			this.repository.branchDiffGroup.resourceStates = resources;
+			if (filtered.length > RESOURCE_LIMIT) {
+				this.logger.warn(`[ParaBranchDiffProvider][doRefresh] ${this.repository.root} differs from ${state.baseLabel} by ${filtered.length} files, showing the first ${RESOURCE_LIMIT}`);
+			}
+
+			if (filtered.length === 0) {
+				// An empty `all` is ambiguous: the git layer turns a failed `git diff` into an empty
+				// change list too, and remembering that would make a transient failure stick until a
+				// tip moves — the view would silently stay gone. Rows that were all filtered out are
+				// a different story: the diff demonstrably ran, so that answer is worth keeping.
+				this.lastKey = all.length > 0 ? state.key : undefined;
+				this.logger.trace(`[ParaBranchDiffProvider][doRefresh] ${this.repository.root} has nothing to show since ${state.baseLabel}`);
+				if (this._state) {
+					this.setState(undefined);
+				}
+				return;
+			}
+
 			this.lastKey = state.key;
-			this.lastCount = resources.length;
+			this.setState({
+				base: { commit: state.baseCommit, label: state.baseLabel },
+				changes: filtered.slice(0, RESOURCE_LIMIT),
+				truncated: filtered.length > RESOURCE_LIMIT
+			});
 		} catch (err) {
 			this.logger.warn(`[ParaBranchDiffProvider][doRefresh] Failed to compute branch diff for ${this.repository.root}: ${err}`);
 			this.lastKey = undefined;
-			this.lastCount = 0;
+			if (this._state) {
+				this.setState(undefined);
+			}
 		}
+	}
+
+	/**
+	 * A gitlink that moved comes through as a plain modification of the submodule directory, which
+	 * has no file content to diff against the base branch. The set only covers submodules the
+	 * working tree still knows about, so one that the branch removed entirely can still slip
+	 * through.
+	 */
+	private withoutSubmodules(changes: Change[]): Change[] {
+		if (this.repository.submodules.length === 0) {
+			return changes;
+		}
+
+		const paths = new Set(this.repository.submodules.map(submodule => path.join(this.repository.root, submodule.path)));
+		return changes.filter(change => !paths.has(change.uri.fsPath) && !paths.has(change.originalUri.fsPath));
 	}
 
 	/**
@@ -250,6 +302,14 @@ export class ParaBranchDiffProvider {
 			return undefined;
 		}
 
+		// HEAD is an ancestor of the base branch, so the branch has no commits of its own and the
+		// diff is empty by definition. Answering here keeps the most common empty case — a branch
+		// just created, or one already merged — from spawning a `git diff` on every status, which
+		// it otherwise would because an empty diff is never remembered (see doRefresh).
+		if (baseCommit === HEAD.commit) {
+			return undefined;
+		}
+
 		// Keyed on the merge base rather than the base branch tip, so a fetch that only moves the
 		// base branch forward does not make us diff again.
 		return { baseCommit, baseLabel, key: `${HEAD.name}\0${HEAD.commit}\0${baseLabel}\0${baseCommit}` };
@@ -287,9 +347,10 @@ export class ParaBranchDiffProvider {
 
 	dispose(): void {
 		this.disposed = true;
+		this._state = undefined;
 		providers.delete(this.repository);
-		groupOwners.delete(this.repository.branchDiffGroup);
 		this.disposables = dispose(this.disposables);
+		_onDidChangeBranchDiff.fire(this.repository);
 	}
 }
 
@@ -298,75 +359,71 @@ export class ParaBranchDiffProvider {
  * in the same `branch.<name>.vscode-merge-base` git config that `Repository.getBranchBase()`
  * reads, so it also steers the source control graph's base ref.
  */
-export function registerParaBranchDiffCommands(model: Model, logger: LogOutputChannel): Disposable {
-	return commands.registerCommand('git.paraSelectBranchDiffBase', async (group?: SourceControlResourceGroup) => {
-		// The command also sits on the resource group, where the group identifies the repository
-		// the user actually clicked. Only fall back to asking when invoked without one.
-		const repository = (group && groupOwners.get(group))
-			?? (model.repositories.length === 1 ? model.repositories[0] : await model.pickRepository());
+export async function selectBranchDiffBase(model: Model, logger: LogOutputChannel, repository: Repository | undefined): Promise<void> {
+	repository = repository
+		?? (model.repositories.length === 1 ? model.repositories[0] : await model.pickRepository());
 
-		if (!repository) {
-			return;
-		}
+	if (!repository) {
+		return;
+	}
 
-		const HEAD = repository.HEAD;
-		if (HEAD?.type !== RefType.Head || !HEAD.name) {
-			// allow-any-unicode-next-line
-			window.showInformationMessage(l10n.t('現在のブランチはベースブランチと比較できません。'));
-			return;
-		}
+	const HEAD = repository.HEAD;
+	if (HEAD?.type !== RefType.Head || !HEAD.name) {
+		// allow-any-unicode-next-line
+		window.showInformationMessage(l10n.t('現在のブランチはベースブランチと比較できません。'));
+		return;
+	}
 
-		const headName = HEAD.name;
-		const picks = repository.refs
-			// `refs/remotes/<remote>/HEAD` parses as a remote branch but is only a symref to the
-			// default branch, and comparing against it reads as nonsense in the group label.
-			.filter((ref: Ref): ref is Ref & { name: string } => ref.type === RefType.RemoteHead && !!ref.name && !ref.name.endsWith('/HEAD'))
-			.map(ref => ({ label: ref.name }))
-			.sort((one, other) => one.label.localeCompare(other.label));
+	const headName = HEAD.name;
+	const picks = repository.refs
+		// `refs/remotes/<remote>/HEAD` parses as a remote branch but is only a symref to the
+		// default branch, and comparing against it reads as nonsense in the view title.
+		.filter((ref: Ref): ref is Ref & { name: string } => ref.type === RefType.RemoteHead && !!ref.name && !ref.name.endsWith('/HEAD'))
+		.map(ref => ({ label: ref.name }))
+		.sort((one, other) => one.label.localeCompare(other.label));
 
-		if (picks.length === 0) {
-			// allow-any-unicode-next-line
-			window.showInformationMessage(l10n.t('「{0}」と比較できるリモートブランチがありません。', headName));
-			return;
-		}
+	if (picks.length === 0) {
+		// allow-any-unicode-next-line
+		window.showInformationMessage(l10n.t('「{0}」と比較できるリモートブランチがありません。', headName));
+		return;
+	}
 
-		const pick = await window.showQuickPick(picks, {
-			// allow-any-unicode-next-line
-			placeHolder: l10n.t('「{0}」と比較するブランチを選択', headName)
-		});
-
-		if (!pick) {
-			return;
-		}
-
-		const configKey = `branch.${headName}.vscode-merge-base`;
-
-		try {
-			// Deliberately not setConfig(): that appends, and a key with several values is one
-			// that deleting the branch can no longer clean up.
-			await repository.replaceConfig(configKey, pick.label);
-
-			// git config failures are swallowed down in the git layer, so the only way to notice a
-			// read-only or locked config is to read the value back.
-			if (await repository.getConfig(configKey) !== pick.label) {
-				throw new Error(`git config did not keep ${configKey}`);
-			}
-		} catch (err) {
-			// Repository.run() rejects while the repository is being closed, which is the only way
-			// a config write reaches us as an exception.
-			logger.warn(`[registerParaBranchDiffCommands] Failed to set ${configKey} to ${pick.label}: ${err}`);
-			// allow-any-unicode-next-line
-			window.showErrorMessage(l10n.t('「{0}」のベースブランチを設定できませんでした。', headName));
-			return;
-		}
-
-		providers.get(repository)?.reset();
-
-		// Comparing a branch with the very branch it tracks has nothing to show, and the group
-		// would just disappear without explanation.
-		if (HEAD.upstream && `${HEAD.upstream.remote}/${HEAD.upstream.name}` === pick.label) {
-			// allow-any-unicode-next-line
-			window.showInformationMessage(l10n.t('「{0}」は「{1}」を追跡しているため、比較して表示するブランチの変更はありません。', headName, pick.label));
-		}
+	const pick = await window.showQuickPick(picks, {
+		// allow-any-unicode-next-line
+		placeHolder: l10n.t('「{0}」と比較するブランチを選択', headName)
 	});
+
+	if (!pick) {
+		return;
+	}
+
+	const configKey = `branch.${headName}.vscode-merge-base`;
+
+	try {
+		// Deliberately not setConfig(): that appends, and a key with several values is one that
+		// deleting the branch can no longer clean up.
+		await repository.replaceConfig(configKey, pick.label);
+
+		// git config failures are swallowed down in the git layer, so the only way to notice a
+		// read-only or locked config is to read the value back.
+		if (await repository.getConfig(configKey) !== pick.label) {
+			throw new Error(`git config did not keep ${configKey}`);
+		}
+	} catch (err) {
+		// Repository.run() rejects while the repository is being closed, which is the only way a
+		// config write reaches us as an exception.
+		logger.warn(`[selectBranchDiffBase] Failed to set ${configKey} to ${pick.label}: ${err}`);
+		// allow-any-unicode-next-line
+		window.showErrorMessage(l10n.t('「{0}」のベースブランチを設定できませんでした。', headName));
+		return;
+	}
+
+	refreshBranchDiff(repository);
+
+	// Comparing a branch with the very branch it tracks has nothing to show, and the view would
+	// just disappear without explanation.
+	if (HEAD.upstream && `${HEAD.upstream.remote}/${HEAD.upstream.name}` === pick.label) {
+		// allow-any-unicode-next-line
+		window.showInformationMessage(l10n.t('「{0}」は「{1}」を追跡しているため、比較して表示するブランチの変更はありません。', headName, pick.label));
+	}
 }
