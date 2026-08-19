@@ -355,20 +355,23 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (targetIndex < 0 || targetIndex >= ordered.length) {
 			return;
 		}
-		const neighbor = ordered[targetIndex];
-		// スコープをまたぐ移動は不可（workspace 群は常に user 群より前）
-		if (neighbor.source !== preset.source) {
+		await this.swapPresets(preset, ordered[targetIndex]);
+	}
+
+	async swapPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void> {
+		// スコープをまたぐ入れ替えは不可（workspace 群は常に user 群より前）
+		if (presetA.source !== presetB.source) {
 			return;
 		}
-		if (preset.source === 'user') {
-			await this._swapUserPresets(preset, neighbor);
-		} else {
-			// 同一 .paracode.json 内でのみ入れ替える
-			if (!preset.sourceUri || !neighbor.sourceUri || preset.sourceUri.toString() !== neighbor.sourceUri.toString()) {
-				return;
-			}
-			await this._swapWorkspacePresets(preset.sourceUri, preset, neighbor);
+		if (presetA.source === 'user') {
+			await this._swapUserPresets(presetA, presetB);
+			return;
 		}
+		// 同一 .paracode.json 内でのみ入れ替える
+		if (!presetA.sourceUri || !presetB.sourceUri || presetA.sourceUri.toString() !== presetB.sourceUri.toString()) {
+			return;
+		}
+		await this._swapWorkspacePresets(presetA.sourceUri, presetA, presetB);
 	}
 
 	/**
@@ -419,6 +422,126 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			list.splice(this._requirePresetIndex(list, preset), 1);
 			parsed.presets = list;
 			await this.fileService.writeFile(preset.sourceUri, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+		}
+	}
+
+	// --- フォルダ・一括操作 ------------------------------------------------------------------------
+
+	/** 対象プリセットを、保存先（user / 各 .paracode.json）ごとに束ねる。ワークスペース由来のみ。 */
+	private _groupByWorkspaceFile(presets: readonly IParadisResolvedPreset[]): readonly { uri: URI; targets: IParadisResolvedPreset[] }[] {
+		const byFile = new Map<string, { uri: URI; targets: IParadisResolvedPreset[] }>();
+		for (const preset of presets) {
+			if (preset.source !== 'workspace' || !preset.sourceUri) {
+				continue;
+			}
+			const key = preset.sourceUri.toString();
+			const bucket = byFile.get(key);
+			if (bucket) {
+				bucket.targets.push(preset);
+			} else {
+				byFile.set(key, { uri: preset.sourceUri, targets: [preset] });
+			}
+		}
+		return [...byFile.values()];
+	}
+
+	private async _readWorkspacePresetsFile(presetFile: URI): Promise<{ parsed: { presets?: unknown[];[key: string]: unknown }; list: unknown[] }> {
+		let parsed: { presets?: unknown[];[key: string]: unknown } = {};
+		try {
+			const content = await this.fileService.readFile(presetFile);
+			parsed = parseJsonc<typeof parsed>(content.value.toString()) ?? {};
+		} catch {
+			// ファイルが無ければ対象も見つからないので、呼び出し側の _requirePresetIndex が例外にする
+		}
+		return { parsed, list: Array.isArray(parsed.presets) ? [...parsed.presets] : [] };
+	}
+
+	/**
+	 * 指定位置の定義を返す。無効な内容（手編集で壊れた等）なら対象を見失ったのと同様に扱う。
+	 * `_requirePresetIndex` が返す位置は常にここを通す——「見失ったら別の何かにフォールバックする」
+	 * 経路を作らない（.paracode.json へ実装都合の値を書き込んでしまう事故を避けるため）。
+	 */
+	private _requireDefinitionAt(list: readonly unknown[], index: number): IParadisPresetDefinition {
+		const current = list[index];
+		if (!isValidPresetDefinition(current)) {
+			throw new Error(STR_PRESET_GONE);
+		}
+		return current;
+	}
+
+	/**
+	 * 複数プリセットへ folder ラベルをまとめて設定する。フォルダへの移動・フォルダから出す・
+	 * フォルダ名の変更（既存メンバー全員へ新しい名前を書き戻す）のいずれもこれ1つで表せる。
+	 *
+	 * 対象が複数の定義元ファイル（ユーザー設定・複数リポジトリの .paracode.json）にまたがるとき、
+	 * 先に全ファイル・全対象の位置を解決しきってから書き込みに入る。1つでも対象を見失っていたら
+	 * どのファイルにも一切書き込まない——「対象を見失っている」ことが理由で一部だけ書き換わった
+	 * 状態になるのを防ぐ。ただし書き込みフェーズ自体（ディスクI/O）が2ファイル目以降で失敗する
+	 * （権限が無い等）ケースまでは防げない——その場合は先に書けたファイルまでは適用済みになる。
+	 */
+	async setPresetsFolder(presets: readonly IParadisResolvedPreset[], folder: string | undefined): Promise<void> {
+		const normalized = folder?.trim() || undefined;
+		const apply = (definition: IParadisPresetDefinition): IParadisPresetDefinition => ({ ...definition, folder: normalized });
+
+		const userTargets = presets.filter(preset => preset.source === 'user');
+		const userRaw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
+		const userList: unknown[] = Array.isArray(userRaw) ? [...userRaw] : [];
+		const userIndices = userTargets.map(target => this._requirePresetIndex(userList, target));
+
+		const workspacePlans: { readonly uri: URI; readonly parsed: { presets?: unknown[];[key: string]: unknown }; readonly list: unknown[]; readonly indices: readonly number[] }[] = [];
+		for (const { uri, targets } of this._groupByWorkspaceFile(presets)) {
+			const { parsed, list } = await this._readWorkspacePresetsFile(uri);
+			workspacePlans.push({ uri, parsed, list, indices: targets.map(target => this._requirePresetIndex(list, target)) });
+		}
+
+		// ここまで到達すれば、どのファイルも対象を見失っていない。実際の書き込みへ進む。
+		if (userTargets.length > 0) {
+			for (const index of userIndices) {
+				userList[index] = apply(this._requireDefinitionAt(userList, index));
+			}
+			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, userList, {}, ConfigurationTarget.USER, { donotNotifyError: false });
+		}
+		for (const plan of workspacePlans) {
+			for (const index of plan.indices) {
+				plan.list[index] = apply(this._requireDefinitionAt(plan.list, index));
+			}
+			plan.parsed.presets = plan.list;
+			await this.fileService.writeFile(plan.uri, VSBuffer.fromString(JSON.stringify(plan.parsed, null, '\t') + '\n'));
+		}
+	}
+
+	/**
+	 * 複数プリセットをまとめて削除する。{@link setPresetsFolder} と同じく、先に全ファイル・
+	 * 全対象の位置を解決しきってから削除に入る（部分適用を避けるため）。同じ対象が重複して
+	 * 渡されても、位置の重複を取り除いてから消すので巻き添えは起きない。
+	 */
+	async deletePresets(presets: readonly IParadisResolvedPreset[]): Promise<void> {
+		const userTargets = presets.filter(preset => preset.source === 'user');
+		const userRaw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
+		const userList: unknown[] = Array.isArray(userRaw) ? [...userRaw] : [];
+		// 位置の重複を取り除いたうえで、大きい位置から順に取り除く。小さい位置から消すと、
+		// 後続対象の位置がずれて別のプリセットを巻き込む。
+		const userIndices = [...new Set(userTargets.map(target => this._requirePresetIndex(userList, target)))].sort((a, b) => b - a);
+
+		const workspacePlans: { readonly uri: URI; readonly parsed: { presets?: unknown[];[key: string]: unknown }; readonly list: unknown[]; readonly indices: readonly number[] }[] = [];
+		for (const { uri, targets } of this._groupByWorkspaceFile(presets)) {
+			const { parsed, list } = await this._readWorkspacePresetsFile(uri);
+			const indices = [...new Set(targets.map(target => this._requirePresetIndex(list, target)))].sort((a, b) => b - a);
+			workspacePlans.push({ uri, parsed, list, indices });
+		}
+
+		if (userTargets.length > 0) {
+			for (const index of userIndices) {
+				userList.splice(index, 1);
+			}
+			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, userList, {}, ConfigurationTarget.USER, { donotNotifyError: false });
+		}
+		for (const plan of workspacePlans) {
+			for (const index of plan.indices) {
+				plan.list.splice(index, 1);
+			}
+			plan.parsed.presets = plan.list;
+			await this.fileService.writeFile(plan.uri, VSBuffer.fromString(JSON.stringify(plan.parsed, null, '\t') + '\n'));
 		}
 	}
 

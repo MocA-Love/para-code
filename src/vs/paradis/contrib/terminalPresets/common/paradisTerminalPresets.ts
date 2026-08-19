@@ -14,6 +14,7 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { GeneralShellType, ITerminalEnvironment, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
 
@@ -84,6 +85,12 @@ export interface IParadisPresetDefinition {
 	readonly cwd?: string;
 	/** 旧形式: 起動モード。未指定は new-terminal。tasks があれば無視される。 */
 	readonly launchMode?: ParadisPresetLaunchMode;
+	/**
+	 * 所属フォルダ名（任意）。同じ保存先・同じ名前の値を持つプリセット同士が、一覧でフォルダとして
+	 * まとめて表示される（{@link paradisGroupPresetsByFolder}）。フォルダ自体は独立した実体ではなく、
+	 * この文字列タグの一致だけで成り立つ——空フォルダという状態は存在しない。
+	 */
+	readonly folder?: string;
 	/** ターミナルタブバー右側にボタンとして表示するか。未指定は true。 */
 	readonly pinned?: boolean;
 	/** ピン留めボタンにアイコンに加えて名前も表示するか。未指定は false（アイコンのみ）。 */
@@ -197,6 +204,23 @@ export interface IParadisPresetService {
 
 	/** プリセットを定義元から削除する。 */
 	deletePreset(preset: IParadisResolvedPreset): Promise<void>;
+
+	/**
+	 * 複数プリセットへ folder ラベルをまとめて設定する。フォルダへの移動・フォルダから出す・
+	 * フォルダ名の変更（既存メンバー全員へ新しい名前を書き戻す）に使う。
+	 * 対象が複数の定義元ファイル（ユーザー設定・複数リポジトリの .paracode.json）にまたがっていても、
+	 * ファイルごとに1回ずつ読み書きする。
+	 */
+	setPresetsFolder(presets: readonly IParadisResolvedPreset[], folder: string | undefined): Promise<void>;
+
+	/** 複数プリセットをまとめて削除する（対象が複数の定義元ファイルにまたがっていてもよい）。 */
+	deletePresets(presets: readonly IParadisResolvedPreset[]): Promise<void>;
+
+	/**
+	 * 2つのプリセットの並び順（定義元ファイル内の位置）を入れ替える。
+	 * 保存先や定義元ファイルが異なる組み合わせでは何もしない。
+	 */
+	swapPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void>;
 }
 
 // --- 識別 ----------------------------------------------------------------------------------------
@@ -256,6 +280,7 @@ export function paradisPresetFingerprint(definition: IParadisPresetDefinition, o
 		// リポジトリレベルでは appliesTo は読み込み時に捨てられる（そのリポジトリ自体が対象）。
 		// 解決済みの側には残っていないので、突き合わせからも外す。
 		options?.ignoreAppliesTo ? [] : definition.appliesTo?.map(entry => entry.trim()) ?? [],
+		(definition.folder ?? '').trim(),
 		definition.pinned !== false,
 		definition.pinnedLabel === true,
 		definition.autoRun === true,
@@ -302,6 +327,10 @@ export function paradisPresetQualifier(preset: IParadisResolvedPreset): string |
 	if (appliesTo.length > 0) {
 		return appliesTo.map(lastSegment).join(', ');
 	}
+	const folder = preset.folder?.trim();
+	if (folder) {
+		return folder;
+	}
 	const cwd = preset.cwd?.trim();
 	if (cwd) {
 		return cwd;
@@ -337,6 +366,67 @@ export function paradisPresetQualifiers(presets: readonly IParadisResolvedPreset
 		const qualifier = paradisPresetQualifier(preset);
 		if (qualifier) {
 			result.set(preset.key, qualifier);
+		}
+	}
+	return result;
+}
+
+// --- フォルダ ------------------------------------------------------------------------------------
+//
+// フォルダは独立した実体を持たない——プリセットの folder フィールドが同じ値であることだけで
+// 成り立つ（{@link IParadisPresetDefinition.folder}）。そのため「空フォルダ」は表現できないが、
+// 保存先ファイルへ実装都合のレコードを足さずに済む。
+
+/**
+ * プリセットの保存先の識別キー。保存先が異なれば同じフォルダ名でも別のフォルダとして扱う
+ * （書き込み先を跨がないため）。↑↓の移動可否判定（隣接プリセットが同一スコープか）にも使う——
+ * ロジックを2箇所に重複させると、フォルダのグループ化と移動可否判定が食い違いかねない。
+ */
+export function paradisPresetScopeKey(preset: IParadisResolvedPreset): string {
+	return preset.source === 'workspace' ? `workspace:${preset.sourceUri?.toString() ?? ''}` : 'user';
+}
+
+/** 一覧の1グループ。folder が undefined の場合は「フォルダに入っていない」単独のプリセット（presets は必ず1件）。 */
+export interface IParadisPresetGroup {
+	readonly folder?: string;
+	readonly presets: readonly IParadisResolvedPreset[];
+}
+
+/**
+ * 表示順を保ったまま、同じ保存先・同じフォルダ名を持つプリセットをグループ化する。
+ * グループの並び順は「そのフォルダが最初に現れた位置」で決まる——フォルダの中身が定義元ファイル内で
+ * 連続していなくても、一覧ではフォルダとしてまとめて表示される。
+ */
+export function paradisGroupPresetsByFolder(presets: readonly IParadisResolvedPreset[]): readonly IParadisPresetGroup[] {
+	const groups: { folder?: string; presets: IParadisResolvedPreset[] }[] = [];
+	const indexByKey = new Map<string, number>();
+	for (const preset of presets) {
+		const folder = preset.folder?.trim();
+		if (!folder) {
+			groups.push({ presets: [preset] });
+			continue;
+		}
+		const key = `${paradisPresetScopeKey(preset)}::${folder}`;
+		const existingIndex = indexByKey.get(key);
+		if (existingIndex === undefined) {
+			indexByKey.set(key, groups.length);
+			groups.push({ folder, presets: [preset] });
+		} else {
+			groups[existingIndex].presets.push(preset);
+		}
+	}
+	return groups;
+}
+
+/** 現在のプリセット群に存在するフォルダ名の一覧（重複除去、出現順）。「フォルダへ移動」メニューに使う。 */
+export function paradisDistinctFolderNames(presets: readonly IParadisResolvedPreset[]): readonly string[] {
+	const seen = new Set<string>();
+	const result: string[] = [];
+	for (const preset of presets) {
+		const folder = preset.folder?.trim();
+		if (folder && !seen.has(folder)) {
+			seen.add(folder);
+			result.push(folder);
 		}
 	}
 	return result;
@@ -379,13 +469,20 @@ export function paradisFindPresetNameConflict(definition: IParadisPresetDefiniti
 	if (sameName.length === 0) {
 		return { kind: ParadisPresetNameConflict.None, sameName };
 	}
-	// 保存前の定義には source が無いので、定義だけで決まる部分（appliesTo / cwd）で比べる。
-	const qualifierOf = (candidate: IParadisPresetDefinition): string | undefined =>
-		paradisPresetQualifier({ ...candidate, source: 'user', sourceIndex: 0, key: '' });
-	const qualifier = qualifierOf(definition);
-	const description = (definition.description ?? '').trim();
-	const indistinguishableFrom = sameName.find(other =>
-		qualifierOf(other) === qualifier && (other.description ?? '').trim() === description);
+	// paradisPresetQualifier は「表示に出す1つの代表値」を選ぶ表示用のヒューリスティックで、
+	// 衝突判定にはそのまま使えない——候補の優先順位（appliesTo > folder > cwd > ...）のせいで、
+	// 先に来た候補が同じなら後ろの候補の違いが常に覆い隠される（例: フォルダだけ違う2件が
+	// 「見分けが付かない」と誤判定される／同じフォルダで cwd だけ違う2件も同様）。
+	// ここでは「見分けに使える値」を全部並べた合成キーで比較する——1つでも違えば区別できる。
+	const distinctnessKeyOf = (candidate: IParadisPresetDefinition): string => JSON.stringify([
+		(candidate.appliesTo ?? []).map(entry => entry.trim()).filter(entry => entry.length > 0).sort(),
+		(candidate.folder ?? '').trim(),
+		(candidate.cwd ?? '').trim(),
+		[...new Set(paradisGetPresetTasks(candidate).tasks.map(task => task.cwd?.trim()).filter((cwd): cwd is string => !!cwd))].sort(),
+		(candidate.description ?? '').trim(),
+	]);
+	const key = distinctnessKeyOf(definition);
+	const indistinguishableFrom = sameName.find(other => distinctnessKeyOf(other) === key);
 	return indistinguishableFrom
 		? { kind: ParadisPresetNameConflict.Indistinguishable, sameName, indistinguishableFrom }
 		: { kind: ParadisPresetNameConflict.Distinguishable, sameName };
@@ -428,6 +525,9 @@ export function isValidPresetDefinition(value: unknown): value is IParadisPreset
 	}
 	const candidate = value as IParadisPresetDefinition;
 	if (typeof candidate.name !== 'string' || candidate.name.trim().length === 0) {
+		return false;
+	}
+	if (candidate.folder !== undefined && candidate.folder !== null && typeof candidate.folder !== 'string') {
 		return false;
 	}
 	if (Array.isArray(candidate.tasks)) {
@@ -474,6 +574,25 @@ export function paradisGetPresetTasks(definition: IParadisPresetDefinition): { r
 /** 全タスクの全コマンドを1つの文字列にする（確認ダイアログ・一覧プレビュー用）。 */
 export function paradisPresetCommandSignature(definition: IParadisPresetDefinition, separator = '\n'): string {
 	return paradisGetPresetTasks(definition).tasks.flatMap(task => task.commands).join(separator);
+}
+
+/** ツールチップに載せるコマンド要約の上限。ボタンの説明であって本文の表示ではない。 */
+export const PARADIS_PRESET_TOOLTIP_COMMAND_MAX_LENGTH = 120;
+
+/**
+ * ボタン1つで何が起きるかをホバーで補う。アイコンだけのピン留めボタンは、これが
+ * 「押す前に中身を知る」唯一の手段になる（同名グループでは区別語も併記する）。
+ * タブバーのボタン（{@link paradisPresetEditorDialog.ts} の一覧プレビューではなく、実際に
+ * ホバーする側）と、そのカスタム描画（ParadisPresetClusterViewItem）の両方から使う共通実装。
+ */
+export function paradisPresetTooltip(preset: IParadisResolvedPreset, qualifier: string | undefined): string {
+	const commands = paradisPresetCommandSignature(preset, ' && ');
+	return [
+		// allow-any-unicode-next-line
+		qualifier ? localize('paradis.presetTooltip.name', "{0}（{1}）", preset.name, qualifier) : preset.name,
+		preset.description,
+		commands.length > PARADIS_PRESET_TOOLTIP_COMMAND_MAX_LENGTH ? `${commands.slice(0, PARADIS_PRESET_TOOLTIP_COMMAND_MAX_LENGTH)}…` : commands,
+	].filter((part): part is string => !!part).join(' — ');
 }
 
 /**
