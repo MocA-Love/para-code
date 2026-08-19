@@ -18,12 +18,13 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { createMarkdownLink, escapeMarkdownSyntaxTokens, MarkdownString } from '../../../../base/common/htmlContent.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { ResourceMap } from '../../../../base/common/map.js';
-import { URI } from '../../../../base/common/uri.js';
+import { URI, UriComponents } from '../../../../base/common/uri.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
@@ -51,12 +52,27 @@ import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
 import { ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
+import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLookupBatch, ParadisIssueState } from '../../../common/paradisIssueDetection.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
  * 未登録 = executeCommand が undefined を返すだけで安全に無効化される)。 */
 const GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 const GET_PR_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getPrStatuses';
+const GET_ISSUE_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getIssueStatuses';
+/**
+ * 1回のポーリングで解決を試みる Issue の上限 — **全 worktree 合計**であって worktree ごとではない。
+ * paradisWorktreeGitChannel.ts の PARADIS_ISSUE_STATUS_LOOKUPS_PER_CALL と値を揃えること。
+ *
+ * worktree ごとにこの件数を割り当てると、サーバー側 (ParadisGetIssueStatusesAction) が
+ * ホスト単位で複数 worktree ぶんの URL を1回の gh 呼び出しへ集約してから同じ上限で丸めるため、
+ * 分母が「worktreeごと」と「ホスト全体」でズレる。3スペースが4件ずつ (合計12件) のような
+ * ごく普通の構成でも、先行 worktree が予算を食い切って後続 worktree の URL が一度もサーバーへ
+ * 送られない状態が固定化し、hasUnresolvedIssueUrls() が恒久的に真を返し続けて即時ポーリングが
+ * 無限に再発火する不具合が実際にあった。paradisSelectIssueLookupBatch で全 target 横断の
+ * 合計としてこの上限を適用すること。
+ */
+const ISSUE_STATUS_LOOKUPS_PER_CALL = 8;
 
 export const PARADIS_WORKSPACES_VIEW_ID = 'workbench.view.paradisWorkspaces.repositories';
 
@@ -329,6 +345,13 @@ interface IWorktreeTemplateData {
 	readonly prHover: IManagedHover;
 	/** クリックリスナーが renderElement 後の最新 PR URL を参照するためのホルダー */
 	readonly prContext: { url?: string };
+	/**
+	 * 現在動作中のエージェントが対話から検出した GitHub Issue のマーク。PR と違い個々の番号は
+	 * 出さず、アイコン＋検出件数のみ（.paradis-worktree-note と同じ語彙）。ホバーで一覧を出す。
+	 */
+	readonly issue: HTMLElement;
+	readonly issueCount: HTMLElement;
+	readonly issueHover: IManagedHover;
 	/** メモの未完了件数バッジ (paradisSpaceNotesPanel と同じ内容の要約表示) */
 	readonly note: HTMLElement;
 	readonly noteCount: HTMLElement;
@@ -353,6 +376,40 @@ function prStateIcon(state: ParadisPrState): ThemeIcon {
 		case 'draft': return Codicon.gitPullRequestDraft;
 		default: return Codicon.gitPullRequest;
 	}
+}
+
+function issueStateLabel(state: ParadisIssueState): string {
+	switch (state) {
+		case 'closed': return localize('paradis.issue.closed', "Closed");
+		default: return localize('paradis.issue.open', "Open");
+	}
+}
+
+/**
+ * Issueマークのホバー内容。番号をクリック可能なリンクにする (createMarkdownLink)。まだ
+ * gh 解決が終わっていない URL はタイトル抜きで番号だけの行になる。ネイティブホバー
+ * (title属性、markdown非対応) 用に同じ内容のプレーンテキスト版も一緒に組み立てる。
+ */
+function issueHoverContent(issueUrls: readonly string[], getIssueStatus: (url: string) => IParadisIssueStatus | undefined): { markdown: MarkdownString; markdownNotSupportedFallback: string } {
+	// allow-any-unicode-next-line
+	const header = localize('paradis.issue.hoverHeader', "検出されたIssue · {0}件", issueUrls.length);
+	const markdownLines = [`**${escapeMarkdownSyntaxTokens(header)}**`, ''];
+	const plainLines = [header];
+	for (const url of issueUrls) {
+		const status = getIssueStatus(url);
+		if (status === undefined) {
+			markdownLines.push(`- ${createMarkdownLink('#…', url)}`);
+			plainLines.push('#…');
+			continue;
+		}
+		const label = `${issueStateLabel(status.state)} — ${status.title}`;
+		markdownLines.push(`- ${createMarkdownLink(`#${status.number}`, url)} ${escapeMarkdownSyntaxTokens(label)}`);
+		plainLines.push(`#${status.number} ${label}`);
+	}
+	return {
+		markdown: new MarkdownString(markdownLines.join('\n'), { supportThemeIcons: false, isTrusted: false }),
+		markdownNotSupportedFallback: plainLines.join('\n'),
+	};
 }
 
 function prStateLabel(state: ParadisPrState): string {
@@ -509,6 +566,9 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly getBreakdown: (stateKey: string) => readonly ParadisAgentStatus[],
 		private readonly getDiffStat: (worktree: IParadisWorktree) => IParadisDiffStat | undefined,
 		private readonly getPrStatus: (worktree: IParadisWorktree) => IParadisPrStatus | undefined,
+		/** 現在動作中のエージェントがそのスペースの対話から検出した Issue URL (未検出なら空配列)。 */
+		private readonly getIssueUrls: (worktree: IParadisWorktree) => readonly string[],
+		private readonly getIssueStatus: (url: string) => IParadisIssueStatus | undefined,
 		private readonly getNoteSummary: (worktree: IParadisWorktree) => IParadisSpaceNoteSummary,
 		private readonly getRepositoryColorHex: (repositoryId: string) => string | undefined,
 		/** バックグラウンド作成が進行中なら、その工程ラベル (ブランチ名の代わりに出す) */
@@ -554,6 +614,14 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			}));
 		}
 		const prHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pr, ''));
+		// 検出済み Issue のマーク。PR チップのすぐ隣 (同じ下段) に置く。番号は持たず、
+		// アイコン＋件数のみ（メモ件数バッジと同じ語彙）。クリックでの遷移は無い
+		// (複数件を束ねているため、開くリンクの選択はホバー内の各番号で行う)。
+		const issue = DOM.append(lowerTier, DOM.$('.paradis-worktree-issue'));
+		const issueIcon = DOM.append(issue, DOM.$('.codicon'));
+		issueIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.issueOpened).replace('codicon ', '')}`;
+		const issueCount = DOM.append(issue, DOM.$('span.paradis-worktree-issue-count'));
+		const issueHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), issue, ''));
 		// メモの未完了件数。行の情報量を増やしすぎないよう、未完了が1件以上あるときだけ出す
 		const note = DOM.append(upperTier, DOM.$('.paradis-worktree-note'));
 		const noteIcon = DOM.append(note, DOM.$('.codicon'));
@@ -579,7 +647,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			}));
 		}
 		const pinHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pin, ''));
-		return { row, icon, name, branch, dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
+		return { row, icon, name, branch, dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
@@ -665,6 +733,18 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			templateData.prIcon.className = 'codicon';
 			templateData.prNumber.textContent = '';
 			templateData.prHover.update('');
+		}
+
+		// Issueマーク: 現在動作中のエージェントがいるスペースにのみ出す。件数の変化がなくても
+		// getIssueUrls は毎回配列を作るため、空配列との比較で hidden の付け外しだけ行う。
+		const issueUrls = worktree.missing ? [] : this.getIssueUrls(worktree);
+		templateData.issue.classList.toggle('hidden', issueUrls.length === 0);
+		if (issueUrls.length > 0) {
+			templateData.issueCount.textContent = String(issueUrls.length);
+			templateData.issueHover.update(issueHoverContent(issueUrls, this.getIssueStatus));
+		} else {
+			templateData.issueCount.textContent = '';
+			templateData.issueHover.update('');
 		}
 	}
 
@@ -785,6 +865,31 @@ export class ParadisWorkspacesView extends ViewPane {
 	private readonly _diffStats = new Map<string, IParadisDiffStat>();
 	/** worktree の uri.fsPath → 現在ブランチに紐づく PR 状態。ポーリングでのみ更新する (refreshPrStatuses 参照) */
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
+	/**
+	 * Issue URL → 解決済みの番号・タイトル・状態。ポーリングでのみ更新する (refreshIssueStatuses 参照)。
+	 * PR/差分と違い worktree のパスではなく URL をキーにする (同じ Issue を複数のスペースが
+	 * 参照していても gh 呼び出しは1回で済み、解決結果もどちらの行からも同じ内容で引ける)。
+	 */
+	private readonly _issueStatuses = new Map<string, IParadisIssueStatus>();
+	/**
+	 * サーバーが実際に gh へ問い合わせ済みと確認した Issue URL（成功・失敗を問わない）。
+	 * ループ防止には使わない（下の _issueLookupRequested の役目）。ここは
+	 * paradisSelectIssueLookupBatch が「次にどの未解決 URL を優先して送るか」を決めるための
+	 * 優先度情報としてのみ使う。
+	 */
+	private readonly _issueLookupAttempted = new Set<string>();
+	/**
+	 * クライアントが実際に送信を決めた（=リクエストへ含めた）Issue URL。hasUnresolvedIssueUrls()
+	 * のループ防止判定はこちらで行う。**「試みた (_issueLookupAttempted)」ではなくこちらで
+	 * 判定すること** — サーバー側 (ParadisGetIssueStatusesAction) はホスト単位で複数 worktree
+	 * ぶんの URL を1回の gh 呼び出しへ集約するため、クライアントが送った URL の一部だけが
+	 * 実際に gh へ問い合わせられ、残りは attempted に含まれないまま返ってくることがある。
+	 * この区別を怠ると、複数スペースの合計が1回あたりの上限を超える (ごく普通の) 構成で
+	 * 一部 URL が二度と送られないまま「未解決」扱いが固定化し、即時ポーリングが無限に
+	 * 再発火して gh レート枠を枯渇させる (実際に再発した)。
+	 */
+	private readonly _issueLookupRequested = new Set<string>();
+	private readonly _pollingController: ParadisWorkspacesPollingController;
 	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
 	/** 折りたたみ操作の最中にツリーを組み直さないための遅延実行 (onDidChangeCollapseState 参照) */
 	private readonly _updateTreeScheduler: RunOnceScheduler;
@@ -820,7 +925,7 @@ export class ParadisWorkspacesView extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		this._register(new ParadisWorkspacesPollingController(
+		this._pollingController = this._register(new ParadisWorkspacesPollingController(
 			{
 				isBodyVisible: () => this.isBodyVisible(),
 				onDidChangeVisibility: this.onDidChangeBodyVisibility,
@@ -829,6 +934,9 @@ export class ParadisWorkspacesView extends ViewPane {
 			},
 			() => this.refreshDiffStats(),
 			() => this.refreshPrStatuses(),
+			undefined,
+			undefined,
+			() => this.refreshIssueStatuses(),
 		));
 		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
 		this._updateTreeScheduler = this._register(new RunOnceScheduler(() => this.updateTree(), 0));
@@ -840,7 +948,15 @@ export class ParadisWorkspacesView extends ViewPane {
 		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
 		// 注意: 引数なしの tree.rerender() は行の renderElement を再実行しないため、
 		// setChildren で作り直す (identityProvider により選択/折りたたみ状態は保持される)
-		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.updateTree()));
+		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => {
+			this.updateTree();
+			// 新規に検出された (まだ番号・タイトルを解決していない) Issue があれば、通常の300秒
+			// 周期を待たずに解決を前倒しする。件数バッジ自体は即座に出せるが、ホバー内容が
+			// 長時間「#…」のままだと検出が効いているのか分かりにくいため。
+			if (this.hasUnresolvedIssueUrls()) {
+				this._pollingController.requestImmediateIssueStatusRefresh();
+			}
+		}));
 		// バックグラウンド作成の進行状況（「作成中」行の追加・工程更新・完了時の除去）
 		this._register(this.createProgressStore.onDidChangeJobs(() => this.updateTree()));
 	}
@@ -879,6 +995,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			getBreakdown,
 			worktree => this._diffStats.get(worktree.uri.fsPath),
 			worktree => this._prStatuses.get(worktree.uri.fsPath),
+			worktree => this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)),
+			url => this._issueStatuses.get(url),
 			worktree => this.spaceNotesService.summary(worktreeStateKeyFor(worktree)),
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color),
 			worktree => this.pendingStageFor(worktree),
@@ -1061,6 +1179,101 @@ export class ParadisWorkspacesView extends ViewPane {
 				this._prStatuses.set(path, status);
 			}
 			this.updateTree();
+		}
+	}
+
+	/**
+	 * 現在動作中のスペースぶんだけ「そのworktreeで検出済みのIssue URL」をまとめる。
+	 * pollTargets と違いリポジトリ行は対象外（Issueはworktree=スペース単位の検出のため）。
+	 */
+	private pollIssueTargets(): { resource: UriComponents; issueUrls: readonly string[] }[] {
+		const targets: { resource: UriComponents; issueUrls: readonly string[] }[] = [];
+		for (const repository of this.workspaceSwitchService.repositories) {
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (worktree.missing) {
+					continue;
+				}
+				const issueUrls = this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree));
+				if (issueUrls.length > 0) {
+					targets.push({ resource: worktree.uri, issueUrls });
+				}
+			}
+		}
+		return targets;
+	}
+
+	/**
+	 * 現在の一覧に、まだ送信していない検出済み Issue URL があるか。「試みた
+	 * (_issueLookupAttempted、サーバーが実際に gh を呼んだか)」ではなく「送った
+	 * (_issueLookupRequested、クライアントがリクエストに含めたか)」で判定する。この違いが
+	 * 重要な理由は _issueLookupRequested のコメント参照。
+	 */
+	private hasUnresolvedIssueUrls(): boolean {
+		return this.pollIssueTargets().some(target => target.issueUrls.some(url => !this._issueLookupRequested.has(url)));
+	}
+
+	/** 検出済みの Issue URL を番号・タイトル・状態へ解決する。仕組みは refreshPrStatuses と同じ。 */
+	private async refreshIssueStatuses(): Promise<void> {
+		const targets = this.pollIssueTargets();
+		if (targets.length === 0) {
+			return;
+		}
+		// 全 worktree 横断で ISSUE_STATUS_LOOKUPS_PER_CALL 件までに絞ってから worktree ごとへ
+		// 再分配する (worktree ごとに個別へこの件数を割り当てては絶対にいけない — 理由は
+		// ISSUE_STATUS_LOOKUPS_PER_CALL のコメント参照)。まだ一度も gh へ問い合わせていない
+		// URL を優先することで、会話が長引いて合計件数が上限を超えても、直近に検出した分から
+		// 遅れて解決されていく。
+		const requestTargets = paradisSelectIssueLookupBatch(targets, this._issueLookupAttempted, ISSUE_STATUS_LOOKUPS_PER_CALL);
+		if (requestTargets.length === 0) {
+			return;
+		}
+		// クライアントが実際に送信を決めた URL は、この後の成否やサーバー側のホスト集約・
+		// 丸めの結果に関わらず、全経路で「送った」ことを記録する。ここが Critical#2 の本質的な
+		// 修正: サーバー応答 (attempted) を待ってから記録すると、ホスト単位の集約で
+		// 弾かれた分が「送っていないのに未送信のまま」で残り続け、即時ポーリングが無限に
+		// 再発火してしまう。
+		for (const target of requestTargets) {
+			for (const url of target.issueUrls) {
+				this._issueLookupRequested.add(url);
+			}
+		}
+		let response: IParadisIssueStatusesResult | undefined;
+		try {
+			response = await this.commandService.executeCommand<IParadisIssueStatusesResult>(GET_ISSUE_STATUSES_COMMAND_ID, requestTargets);
+		} catch {
+			// コマンド自体が失敗した (未登録・チャネル未接続等)。上の requested マーキングだけで
+			// ループ防止には十分 (attempted は優先度付けにのみ使うため、更新しなくても安全。
+			// 次回ホストが復旧すれば通常の300秒周期で再試行される)。
+		}
+		if (response) {
+			for (const url of response.attempted) {
+				this._issueLookupAttempted.add(url);
+			}
+			// clear しない: PR/差分と違い解決に時間差がある (新規URLはgh呼び出しが終わるまで
+			// 空のまま)。ここで毎回クリアすると、他worktreeの解決待ちの間に既知分の
+			// タイトル・状態までホバーから一瞬消えてしまう。
+			for (const [url, status] of Object.entries(response.resolved)) {
+				this._issueStatuses.set(url, status);
+			}
+			this.updateTree();
+		}
+		// 参照されなくなった (エージェントが対話でもう触れていない、かつどのworktreeの
+		// 検出一覧にも無い) URLは3つの台帳全部から溜め込まない
+		const referenced = new Set(targets.flatMap(target => target.issueUrls));
+		for (const url of this._issueStatuses.keys()) {
+			if (!referenced.has(url)) {
+				this._issueStatuses.delete(url);
+			}
+		}
+		for (const url of this._issueLookupAttempted) {
+			if (!referenced.has(url)) {
+				this._issueLookupAttempted.delete(url);
+			}
+		}
+		for (const url of this._issueLookupRequested) {
+			if (!referenced.has(url)) {
+				this._issueLookupRequested.delete(url);
+			}
 		}
 	}
 

@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_AGENT_STATUS_POLL_FAILURE_CLEAR_THRESHOLD, paradisShouldClearAgentStatusAfterPollFailures, paradisShouldSweepStaleWorkingStatus } from '../../common/paradisAgentStatusStale.js';
-import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, onParadisAgentPaneActivity, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard, setParadisAgentPaneActivity } from '../../node/paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, IParadisAgentHookEvent, onParadisAgentHookEvent, onParadisAgentPaneActivity, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../node/paradisAgentHookBus.js';
 
 suite('ParadisAgentBrowserStatus', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -259,6 +259,72 @@ suite('ParadisAgentBrowserStatus', () => {
 		} finally {
 			observer.dispose();
 			mutator.dispose();
+		}
+	});
+
+	test('denies detected issue URLs until an owner guard is installed', () => {
+		clearParadisAgentPaneIssueUrls('unguarded-issue-pane');
+		setParadisAgentPaneIssueUrls('unguarded-issue-pane', new Set(['https://github.com/owner/repo/issues/1']));
+		assert.strictEqual(getParadisAgentPaneIssueUrls('unguarded-issue-pane').size, 0);
+	});
+
+	test('keeps the newest issue URLs and drops the oldest once the per-pane limit is exceeded (FIFO)', () => {
+		const guard = registerParadisAgentPaneActivityGuard(token => token === 'issue-fifo-pane');
+		try {
+			// 上限 (32件) を1件超える33件を、検出順 (古い→新しい) のまま1回で渡す
+			const urls = Array.from({ length: 33 }, (_, index) => `https://github.com/owner/repo/issues/${index}`);
+			setParadisAgentPaneIssueUrls('issue-fifo-pane', new Set(urls));
+			const kept = getParadisAgentPaneIssueUrls('issue-fifo-pane');
+			assert.strictEqual(kept.size, 32);
+			// 最古 (issues/0) が落ち、直近 (issues/32) が残っていること
+			assert.strictEqual(kept.has('https://github.com/owner/repo/issues/0'), false);
+			assert.strictEqual(kept.has('https://github.com/owner/repo/issues/32'), true);
+			assert.strictEqual(kept.has('https://github.com/owner/repo/issues/1'), true);
+		} finally {
+			guard.dispose();
+			clearParadisAgentPaneIssueUrls('issue-fifo-pane');
+		}
+	});
+
+	test('a later smaller update replaces the earlier larger set instead of only growing', () => {
+		const guard = registerParadisAgentPaneActivityGuard(token => token === 'issue-replace-pane');
+		try {
+			setParadisAgentPaneIssueUrls('issue-replace-pane', new Set([
+				'https://github.com/owner/repo/issues/1',
+				'https://github.com/owner/repo/issues/2',
+			]));
+			setParadisAgentPaneIssueUrls('issue-replace-pane', new Set(['https://github.com/owner/repo/issues/1']));
+			const kept = getParadisAgentPaneIssueUrls('issue-replace-pane');
+			assert.strictEqual(kept.size, 1);
+			assert.strictEqual(kept.has('https://github.com/owner/repo/issues/2'), false);
+		} finally {
+			guard.dispose();
+			clearParadisAgentPaneIssueUrls('issue-replace-pane');
+		}
+	});
+
+	test('discards a non-https URL instead of storing it verbatim', () => {
+		const guard = registerParadisAgentPaneActivityGuard(token => token === 'issue-scheme-pane');
+		try {
+			setParadisAgentPaneIssueUrls('issue-scheme-pane', new Set(['vscode://owner/repo/issues/1', 'https://github.com/owner/repo/issues/2']));
+			const kept = getParadisAgentPaneIssueUrls('issue-scheme-pane');
+			assert.deepStrictEqual([...kept], ['https://github.com/owner/repo/issues/2']);
+		} finally {
+			guard.dispose();
+			clearParadisAgentPaneIssueUrls('issue-scheme-pane');
+		}
+	});
+
+	test('clears detected issue URLs when its pane is retired', () => {
+		const guard = registerParadisAgentPaneActivityGuard(token => token === 'issue-retired-pane');
+		try {
+			setParadisAgentPaneIssueUrls('issue-retired-pane', new Set(['https://github.com/owner/repo/issues/1']));
+			assert.strictEqual(getParadisAgentPaneIssueUrls('issue-retired-pane').size, 1);
+			clearParadisAgentPaneIssueUrls('issue-retired-pane');
+			assert.strictEqual(getParadisAgentPaneIssueUrls('issue-retired-pane').size, 0);
+		} finally {
+			guard.dispose();
+			clearParadisAgentPaneIssueUrls('issue-retired-pane');
 		}
 	});
 });

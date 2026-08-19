@@ -37,7 +37,7 @@ import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStat
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
-import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
@@ -1327,6 +1327,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._terminalExitedTokens.delete(token);
 		}
 		this._runNonThrowingCleanup('activity', () => clearParadisAgentPaneActivity(token));
+		this._runNonThrowingCleanup('issue-urls', () => clearParadisAgentPaneIssueUrls(token));
 		this._runNonThrowingCleanup('gateway', () => this._cdpGateway.retireToken(token));
 		this._runNonThrowingCleanup('devtools', () => this._devtoolsGenerationCoordinator.forgetWhenIdle(token, cleanupGeneration));
 	}
@@ -2317,7 +2318,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._sweepStalePaneStatuses(eligibleTokens);
 		const paneStatuses = [...this._paneStatuses]
 			.filter(([token]) => eligibleTokens.has(token))
-			.map(([token, entry]) => Object.freeze({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) }));
+			.map(([token, entry]) => {
+				const issueUrls = getParadisAgentPaneIssueUrls(token);
+				return Object.freeze({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}), ...(issueUrls.size > 0 ? { issueUrls: Object.freeze([...issueUrls]) } : {}) });
+			});
 		const agentHookTokens = [...this._agentHookTokens].filter(token => eligibleTokens.has(token));
 		return Object.freeze({
 			paneStatuses: Object.freeze(paneStatuses),

@@ -29,6 +29,7 @@ import { localize } from '../../../../nls.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisGithubCallSiteFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -65,6 +66,12 @@ const PARADIS_CLONE_IDLE_TIMEOUT_MS = 5 * 60_000;
  * アプリ寿命なので、ウィンドウの再読み込みでは状態が消えない）。
  */
 const PARADIS_GH_UNAVAILABLE_RETRY_MS = 10 * 60_000;
+
+/**
+ * 1回の getIssueStatuses 呼び出しで解決する Issue の上限。gh issue view は番号ごとに1本
+ * 実行するため、対話から大量のURLが検出された回でもレート枠を食い潰さないよう先着で丸める。
+ */
+const PARADIS_ISSUE_STATUS_LOOKUPS_PER_CALL = 8;
 
 /**
  * git 実行の上限時間。WSL へ振り分けるようになって初めて必要になった。停止中のディストロへ
@@ -352,6 +359,43 @@ export class ParadisWorktreeGitService {
 			this.logService.trace(`[ParadisWorktreeGit] gh pr view failed for ${worktreePath}: ${error instanceof Error ? error.message : String(error)}`);
 			return undefined;
 		}
+	}
+
+	/**
+	 * エージェントの対話から検出した GitHub Issue URL を番号・タイトル・状態へ解決する。
+	 * `--repo` を明示するため worktreePath 自体のリポジトリと issueUrls の紐付け先が
+	 * 別リポジトリでも正しく解決できる（cwd は gh 実行のためだけに使う）。
+	 * gh CLI 未インストール・未認証・URL解釈失敗はその1件だけ resolved から欠落させる
+	 * (Workspaces ビューのポーリング表示なので、個別の失敗で例外を伝播させない)。
+	 * `attempted` には実際に gh へ問い合わせた URL を成否問わず入れる (呼び出し側が
+	 * 「まだ結果が来ていない」と「試みたが解決できなかった」を区別するのに使う)。
+	 */
+	async getIssueStatuses(worktreePath: string, issueUrls: readonly string[]): Promise<IParadisIssueStatusesResult> {
+		// IPC 境界の防御: 呼び出し元のバグ (undefined の文字列化等) を早期に無害化する
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || !Array.isArray(issueUrls) || this.isGhUnavailable(worktreePath)) {
+			return { resolved: {}, attempted: [] };
+		}
+		const resolved: Record<string, IParadisIssueStatus> = {};
+		const attempted: string[] = [];
+		for (const url of issueUrls.slice(0, PARADIS_ISSUE_STATUS_LOOKUPS_PER_CALL)) {
+			const parsed = typeof url === 'string' ? paradisParseIssueUrl(url) : undefined;
+			if (parsed === undefined) {
+				// URL自体が解釈できないのは呼び出し元のバグであり、gh へは問い合わせていないため
+				// attempted には入れない (呼び出し側を「試行済み」と誤認させないため)。
+				continue;
+			}
+			attempted.push(url);
+			try {
+				const stdout = await this.execGh(['issue', 'view', String(parsed.number), '--repo', `${parsed.owner}/${parsed.repo}`, '--json', 'number,title,url,state'], worktreePath);
+				const status = paradisParseGhIssueStatus(stdout);
+				if (status !== undefined) {
+					resolved[url] = status;
+				}
+			} catch (error) {
+				this.logService.trace(`[ParadisWorktreeGit] gh issue view failed for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		return { resolved, attempted };
 	}
 
 	/** ローカルブランチ一覧（コミット日時の新しい順）と現在の HEAD ブランチを返す。 */
@@ -775,6 +819,7 @@ export class ParadisWorktreeGitChannel<TContext = string> implements IServerChan
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'getPrStatus': return this.service.getPrStatus(String(args[0])) as Promise<T>;
+			case 'getIssueStatuses': return this.service.getIssueStatuses(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
 			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest) as Promise<T>;

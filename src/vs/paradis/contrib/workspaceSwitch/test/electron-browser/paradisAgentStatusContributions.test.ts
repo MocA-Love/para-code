@@ -208,7 +208,9 @@ class TestStatusStore implements IParadisAgentStatusStore {
 	getInstanceStatus() { return undefined; }
 	isAgentInstance() { return false; }
 	hasDiscoveredAgentSession() { return false; }
+	getScopeIssueUrls() { return []; }
 	setDiscoveredAgentPaneTokens(): void { }
 	setScopeBreakdowns(): void { }
 	setInstanceStates(): void { }
+	setScopeIssueUrls(): void { }
 }

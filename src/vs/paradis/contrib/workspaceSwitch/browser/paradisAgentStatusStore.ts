@@ -13,6 +13,7 @@ import { IParadisAgentStatusStore, paradisAggregateAgentStatus, paradisSortAgent
 
 /** 全スコープで共有する空の結果。キャスト経由の書き込みで汚染されないよう凍結しておく */
 const EMPTY_BREAKDOWN: readonly ParadisAgentStatus[] = Object.freeze([]);
+const EMPTY_ISSUE_URLS: readonly string[] = Object.freeze([]);
 
 /**
  * IParadisAgentStatusStore の実装 (単純なインメモリストア)。
@@ -39,6 +40,8 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 	 * ペインだと分かる識別子がこちらだけだからで、書き込み側の変換も要らなくなる。
 	 */
 	private _discoveredAgentPaneTokens = new Set<string>();
+	/** スコープ (worktree/repository の stateKey) → 検出済み Issue URL (出現順)。 */
+	private _issueUrls = new Map<string, readonly string[]>();
 
 	getScopeStatus(stateKey: string): ParadisAgentStatus | undefined {
 		return this._statuses.get(stateKey);
@@ -46,6 +49,10 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 
 	getScopeBreakdown(stateKey: string): readonly ParadisAgentStatus[] {
 		return this._breakdowns.get(stateKey) ?? EMPTY_BREAKDOWN;
+	}
+
+	getScopeIssueUrls(stateKey: string): readonly string[] {
+		return this._issueUrls.get(stateKey) ?? EMPTY_ISSUE_URLS;
 	}
 
 	getInstanceStatus(instanceId: number): ParadisAgentStatus | undefined {
@@ -100,6 +107,20 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 		}
 		this._instanceStatuses = new Map(statuses);
 		this._agentInstanceIds = new Set(agentInstanceIds);
+		this._onDidChangeAgentStatuses.fire();
+	}
+
+	setScopeIssueUrls(issueUrls: ReadonlyMap<string, ReadonlySet<string>>): void {
+		const next = new Map([...issueUrls].map(([key, urls]) => [key, Object.freeze([...urls])] as const));
+		// 変化がある時だけイベントを発火する (setScopeBreakdowns と同じ作法)
+		const unchanged = this._issueUrls.size === next.size && [...next].every(([key, value]) => {
+			const previous = this._issueUrls.get(key);
+			return previous !== undefined && previous.length === value.length && previous.every((url, index) => url === value[index]);
+		});
+		if (unchanged) {
+			return;
+		}
+		this._issueUrls = next;
 		this._onDidChangeAgentStatuses.fire();
 	}
 }

@@ -79,6 +79,7 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 			this._latestSnapshot = undefined;
 			this._options.statusStore.setScopeBreakdowns(new Map());
 			this._options.statusStore.setInstanceStates(new Map(), new Set());
+			this._options.statusStore.setScopeIssueUrls(new Map());
 		}
 	}
 
@@ -117,6 +118,13 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 		const scopeBreakdowns = new Map<string, ParadisAgentStatus[]>();
 		const instanceStatuses = new Map<number, ParadisAgentStatus>();
 		const agentInstanceIds = new Set<number>();
+		/**
+		 * スコープ (stateKey) → 検出済み Issue URL。cwd 最長一致・記憶されたスコープ経由の
+		 * 曖昧な解決では紐付けない（誤ったスペースにIssueが出ることの実害は、実行状態ドットの
+		 * 誤表示より大きい — ユーザーが実際に開くリンクだから）。instance 経由でスコープが
+		 * 直接 'managed' に解決できた時だけ採用する。
+		 */
+		const scopeIssueUrls = new Map<string, Set<string>>();
 		for (const token of snapshot.agentHookTokens) {
 			const instanceId = this._options.paneTokenService.getInstanceForToken(token);
 			if (instanceId !== undefined) {
@@ -132,10 +140,12 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 			}
 			let stateKey: string | undefined;
 			let allowRememberedScope = instanceId === undefined;
+			let resolvedViaManagedInstance = false;
 			if (instanceId !== undefined) {
 				const scope = this._options.terminalScopeService.resolveScope(instanceId);
 				if (scope.kind === 'managed') {
 					stateKey = scope.stateKey;
+					resolvedViaManagedInstance = true;
 				} else if (scope.kind === 'pending') {
 					allowRememberedScope = true;
 				}
@@ -156,6 +166,17 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 				continue;
 			}
 
+			// Issueマークは scopeBreakdowns に載る（＝行のドット列に「動作中」として現れる）
+			// ペインとだけ連動させる。誤ったスペースへの紐付けを避けるため instance 経由で
+			// 'managed' に直接解決できた時だけ採用する (cwd最長一致・記憶されたスコープは対象外)。
+			if (resolvedViaManagedInstance && paneStatus.issueUrls !== undefined && paneStatus.issueUrls.length > 0) {
+				const urls = scopeIssueUrls.get(stateKey) ?? new Set<string>();
+				for (const url of paneStatus.issueUrls) {
+					urls.add(url);
+				}
+				scopeIssueUrls.set(stateKey, urls);
+			}
+
 			const breakdown = scopeBreakdowns.get(stateKey);
 			if (breakdown) {
 				breakdown.push(paneStatus.status);
@@ -166,5 +187,6 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 
 		this._options.statusStore.setScopeBreakdowns(scopeBreakdowns);
 		this._options.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds);
+		this._options.statusStore.setScopeIssueUrls(scopeIssueUrls);
 	}
 }

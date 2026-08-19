@@ -32,6 +32,37 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		assert.deepStrictEqual([...fixture.statusStore.agentInstanceIds], [7]);
 	});
 
+	test('attributes detected issue URLs to the scope only when resolved directly via a managed instance', () => {
+		const fixture = createFixture();
+		fixture.instanceByToken.set('pane-a', 7);
+		fixture.scopeByInstance.set(7, { kind: 'managed', stateKey: 'space-a' });
+
+		fixture.producer.publish(success(1, [
+			pane('pane-a', 'working', undefined, ['https://github.com/owner/repo/issues/1', 'https://github.com/owner/repo/issues/2']),
+		], ['pane-a']));
+
+		assert.deepStrictEqual(entries(fixture.statusStore.scopeIssueUrls), [
+			['space-a', ['https://github.com/owner/repo/issues/1', 'https://github.com/owner/repo/issues/2']],
+		]);
+	});
+
+	// Critical#2 の温床だった誤帰属ガードの回帰テスト: instance が取れず cwd 最長一致だけで
+	// 解決したペインの issueUrls は、実行状態ドット (scopeBreakdowns) には乗っても
+	// scopeIssueUrls には乗らないこと (曖昧な解決で誤ったスペースに Issue マークが付くのを防ぐため)。
+	test('does not attribute issue URLs to a scope resolved only by cwd matching', () => {
+		const fixture = createFixture();
+		const worktree = fixture.worktrees[0];
+		const stateKey = paradisWorktreeStateKey(worktree.uri);
+
+		fixture.producer.publish(success(1, [
+			pane('cwd-only', 'working', worktree.uri.fsPath + '/src', ['https://github.com/owner/repo/issues/1']),
+		], []));
+
+		// 実行状態のドット自体は cwd 一致でも従来どおり反映される (Issue マークの話とは別)
+		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), [[stateKey, ['working']]]);
+		assert.deepStrictEqual(entries(fixture.statusStore.scopeIssueUrls), []);
+	});
+
 	test('acknowledges only a focused local review in the active scope and omits it from stores', () => {
 		const fixture = createFixture();
 		fixture.instanceByToken.set('local-review', 1);
@@ -226,8 +257,8 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 	}
 });
 
-function pane(token: string, status: ParadisAgentStatus, cwd?: string): IParadisAgentPaneStatus {
-	return { token, status, changedAt: 1, cwd };
+function pane(token: string, status: ParadisAgentStatus, cwd?: string, issueUrls?: readonly string[]): IParadisAgentPaneStatus {
+	return { token, status, changedAt: 1, cwd, ...(issueUrls !== undefined ? { issueUrls } : {}) };
 }
 
 function success(sequence: number, paneStatuses: readonly IParadisAgentPaneStatus[], agentHookTokens: readonly string[]): IParadisAgentStatusSnapshotOutcome {
@@ -271,12 +302,14 @@ class TestStatusStore implements IParadisAgentStatusStore {
 	scopeBreakdowns = new Map<string, readonly ParadisAgentStatus[]>();
 	instanceStatuses = new Map<number, ParadisAgentStatus>();
 	agentInstanceIds = new Set<number>();
+	scopeIssueUrls = new Map<string, readonly string[]>();
 
 	getScopeStatus(): ParadisAgentStatus | undefined { return undefined; }
 	getScopeBreakdown(): readonly ParadisAgentStatus[] { return []; }
 	getInstanceStatus(): ParadisAgentStatus | undefined { return undefined; }
 	isAgentInstance(): boolean { return false; }
 	hasDiscoveredAgentSession(): boolean { return false; }
+	getScopeIssueUrls(stateKey: string): readonly string[] { return this.scopeIssueUrls.get(stateKey) ?? []; }
 	setDiscoveredAgentPaneTokens(): void { }
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void {
 		this.scopeBreakdowns = new Map(breakdowns);
@@ -284,5 +317,8 @@ class TestStatusStore implements IParadisAgentStatusStore {
 	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void {
 		this.instanceStatuses = new Map(statuses);
 		this.agentInstanceIds = new Set(agentInstanceIds);
+	}
+	setScopeIssueUrls(issueUrls: ReadonlyMap<string, ReadonlySet<string>>): void {
+		this.scopeIssueUrls = new Map([...issueUrls].map(([key, urls]) => [key, [...urls]] as const));
 	}
 }

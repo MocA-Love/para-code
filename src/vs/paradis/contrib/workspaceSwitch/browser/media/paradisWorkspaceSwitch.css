@@ -391,6 +391,43 @@
 .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed { --paradis-pr-color: #f85149; }
 
 /* allow-any-unicode-next-line */
+/* 現在動作中のエージェントが対話から検出した GitHub Issue のマーク。PR チップの隣 (同じ下段) に
+ * 置く。PR と違い個々の番号は持たず、アイコン＋検出件数のみ（.paradis-worktree-note と同じ
+ * 語彙）。詳細（番号・タイトル一覧）はホバーでのみ出す。色は PR チップの固定パレットと衝突
+ * しない青 (textLink.foreground) にして、一目で「PRではなくIssue」と分かるようにする。 */
+.paradis-workspaces-list .paradis-worktree-issue {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	flex-shrink: 0;
+	padding: 2px 5px;
+	border-radius: 4px;
+	font-size: 0.8em;
+	font-variant-numeric: tabular-nums;
+	line-height: 1;
+	cursor: default;
+	color: var(--vscode-textLink-foreground);
+	background-color: color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent);
+}
+
+.paradis-workspaces-list .paradis-worktree-issue:hover {
+	background-color: color-mix(in srgb, var(--vscode-textLink-foreground) 28%, transparent);
+}
+
+.paradis-workspaces-list .paradis-worktree-issue.hidden {
+	display: none;
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-issue > .codicon {
+	font-size: 12px;
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-workspaces-list .paradis-worktree-issue > .paradis-worktree-issue-count {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* allow-any-unicode-next-line */
 /* メモ (paradisSpaceNotesPanel) の未完了件数バッジ。未完了が0件の行では非表示にして
  * 行の情報量を増やさない。エージェントのドット列と同じ上段に置く
  * (どちらも「そのスペースで自分が抱えているもの」なので段の意味が揃う)。 */
