@@ -67,7 +67,11 @@ const strPresetGroupTitle = (name: string, count: number) => localize('paradis.p
 // allow-any-unicode-next-line
 const strRunFailed = (name: string, message: string) => localize('paradis.presetCluster.runFailed', "プリセット「{0}」を実行できませんでした: {1}", name, message);
 // allow-any-unicode-next-line
-const strHideLabel = (name: string, qualifier: string | undefined) => localize('paradis.presetCluster.hideLabel', "非表示にする: {0}", qualifier ? `${name} (${qualifier})` : name);
+const strHideLabel = (name: string, qualifier: string | undefined) => qualifier
+	// allow-any-unicode-next-line
+	? localize('paradis.presetCluster.hideLabelQualified', "非表示にする: {0} ({1})", name, qualifier)
+	// allow-any-unicode-next-line
+	: localize('paradis.presetCluster.hideLabel', "非表示にする: {0}", name);
 // allow-any-unicode-next-line
 const strHiddenNotice = (name: string) => localize('paradis.presetCluster.hiddenNotice', "「{0}」をターミナルのタブバーから非表示にしました。「コマンドプリセットを管理」からいつでも戻せます。", name);
 // allow-any-unicode-next-line
@@ -97,6 +101,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 	private container: HTMLElement | undefined;
 	private fullEl: HTMLElement | undefined;
 	private collapsedWrap: HTMLElement | undefined;
+	private closeScheduler: RunOnceScheduler | undefined;
 	private row: HTMLElement | undefined;
 	private tabsContainer: HTMLElement | undefined;
 
@@ -155,6 +160,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		dom.clearNode(container);
 		this.fullEl = undefined;
 		this.collapsedWrap = undefined;
+		this.closeScheduler = undefined;
 
 		const pinned = this.presetService.presets.filter(preset => preset.pinned !== false);
 		if (pinned.length === 0) {
@@ -206,8 +212,13 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		// :focus-within は今までどおり即時のまま別枠で残す（下の CSS 参照）。
 		const closeScheduler = this.contentStore.add(new RunOnceScheduler(() => {
 			collapsedWrap.classList.remove('is-open');
-			flyout.scrollLeft = 0;
+			// :focus-within でまだ開いている（Tab でフライアウト内へ入ってからマウスを乗せて
+			// 外した等）なら、表示中のスクロール位置を巻き戻さない。
+			if (!collapsedWrap.matches(':focus-within')) {
+				flyout.scrollLeft = 0;
+			}
 		}, HOVER_CLOSE_DELAY_MS));
+		this.closeScheduler = closeScheduler;
 		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'mouseenter', () => {
 			closeScheduler.cancel();
 			collapsedWrap.classList.add('is-open');
@@ -321,7 +332,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 
 	private async hidePreset(preset: IParadisResolvedPreset): Promise<void> {
 		try {
-			await this.presetService.savePreset({ ...preset, pinned: false }, preset.source, { replace: preset });
+			await this.presetService.setPresetPinned(preset, false);
 			this.notificationService.info(strHiddenNotice(preset.name));
 		} catch (error) {
 			this.notificationService.error(strHideFailed(preset.name, toErrorMessage(error)));
@@ -448,5 +459,13 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		}
 		this.collapsed = value;
 		container.classList.toggle('is-collapsed', value);
+		if (!value) {
+			// 折りたたみを解除するときは開いた状態を必ず捨てる。collapsedWrap が display:none へ
+			// 遷移するとき、mouseleave が確実に飛ぶ保証はない（次のマウス移動まで境界イベントが
+			// 再評価されないことがある）——放置すると is-open が残り、次に折りたたんだ瞬間、
+			// ホバーしていないのにフライアウトが開いた状態で現れる。
+			this.closeScheduler?.cancel();
+			this.collapsedWrap?.classList.remove('is-open');
+		}
 	}
 }

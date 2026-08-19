@@ -425,6 +425,32 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 	}
 
+	/**
+	 * ピン留めだけを切り替える。渡された `preset`（解決済み）を丸ごと書き込まない——
+	 * `source`/`sourceUri`/`sourceIndex`/`key` は own property として乗っているため、
+	 * スプレッドすると定義元ファイルへそのまま書き込まれてしまう（user 設定・.paracode.json
+	 * いずれも実装都合の値を書く経路を作らない、という {@link _requireDefinitionAt} と同じ理由）。
+	 * 対象の位置から現在の定義を読み直し、`pinned` だけを上書きして書き戻す。
+	 */
+	async setPresetPinned(preset: IParadisResolvedPreset, pinned: boolean): Promise<void> {
+		if (preset.source === 'user') {
+			const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
+			const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
+			const index = this._requirePresetIndex(list, preset);
+			list[index] = { ...this._requireDefinitionAt(list, index), pinned };
+			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
+			return;
+		}
+		if (!preset.sourceUri) {
+			return;
+		}
+		const { parsed, list } = await this._readWorkspacePresetsFile(preset.sourceUri);
+		const index = this._requirePresetIndex(list, preset);
+		list[index] = { ...this._requireDefinitionAt(list, index), pinned };
+		parsed.presets = list;
+		await this.fileService.writeFile(preset.sourceUri, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+	}
+
 	// --- フォルダ・一括操作 ------------------------------------------------------------------------
 
 	/** 対象プリセットを、保存先（user / 各 .paracode.json）ごとに束ねる。ワークスペース由来のみ。 */
