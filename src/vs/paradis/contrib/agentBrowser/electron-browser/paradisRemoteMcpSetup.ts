@@ -35,6 +35,7 @@ const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
 const CODEX_SETUP_ERROR = 'Could not update the Codex configuration on the host.';
 const CLAUDE_SETUP_ERROR = 'Could not update the Claude Code configuration on the host.';
 const TUNNEL_UNAVAILABLE_ERROR = 'Could not reach the host: the SSH return tunnel is not available yet.';
+const HOST_HOME_UNAVAILABLE_ERROR = 'Could not reach the host: the host home directory is not resolved yet.';
 
 /** 書き込み時に一時ファイル経由でリネームさせる。SSH越しの切断で全文書きかけのまま壊さないため。 */
 const ATOMIC_WRITE_OPTIONS = { atomic: { postfix: '.para-tmp' } } as const;
@@ -43,14 +44,29 @@ export class ParadisRemoteMcpSetupController {
 
 	constructor(
 		private readonly fileService: IFileService,
-		/** 接続先のホーム（`IPathService.userHome()`。接続中は自動で接続先を指す）。 */
-		private readonly remoteHome: () => Promise<URI>,
+		/**
+		 * 接続先のホーム。まだ接続先の環境が解決できていないときは undefined。
+		 *
+		 * `IPathService.userHome()` をそのまま渡してはいけない。あれは接続先の環境が取れないと
+		 * 黙って手元のホームを返すので、接続先向けの番号を手元の設定へ書いてしまう
+		 * （`common/paradisRemoteUserHome.ts` を通すこと）。
+		 */
+		private readonly remoteHome: () => Promise<URI | undefined>,
 		/** 接続先で戻りトンネルが実際に受け取った番号。張れていなければ undefined。 */
 		private readonly remotePort: () => Promise<number | undefined>,
 	) { }
 
 	async status(): Promise<IParadisMcpConfigStatus> {
 		const [home, port] = await Promise.all([this.remoteHome(), this.remotePort()]);
+		if (home === undefined) {
+			// 接続先の設定を読めていないだけで、手元の設定を代わりに見せてはいけない
+			// （「接続先は設定済み」と誤って出す方が、状態が出ないより悪い）
+			return {
+				claude: { cli: 'claude', state: 'unconfigured', failed: true },
+				codex: { cli: 'codex', state: 'unconfigured', failed: true },
+				...(port !== undefined ? { gatewayPort: port } : {}),
+			};
+		}
 		const [claude, codex] = await Promise.all([
 			this.statusClaude(home, port),
 			this.statusCodex(home, port),
@@ -60,6 +76,9 @@ export class ParadisRemoteMcpSetupController {
 
 	async fix(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
 		const [home, port] = await Promise.all([this.remoteHome(), this.remotePort()]);
+		if (home === undefined) {
+			return { cli, cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: HOST_HOME_UNAVAILABLE_ERROR }] };
+		}
 		if (port === undefined) {
 			return { cli, cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: TUNNEL_UNAVAILABLE_ERROR }] };
 		}
