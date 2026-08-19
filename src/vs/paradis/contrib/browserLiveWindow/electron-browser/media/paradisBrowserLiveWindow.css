@@ -1,0 +1,523 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* ---------------------------------------------------------------- タイトルバーのボタン */
+
+/* 隣の「エージェント一覧」(paradisAgentLiveWindow.css) と作法を揃える: 平常時はアイコンだけ、
+ * ホバー / キーボードフォーカスでラベルが開く。件数バッジだけは閉じているときも出す。 */
+.monaco-workbench .paradis-browser-live-titlebar-widget {
+	display: inline-flex;
+	align-items: center;
+	height: 22px;
+	padding: 0 4px;
+	border-radius: 5px;
+	cursor: pointer;
+	color: var(--vscode-titleBar-activeForeground);
+	-webkit-app-region: no-drag;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-browser-live-titlebar-widget:hover,
+.monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	outline: none;
+}
+
+.monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* 小さなタイルが並んだ格子。ページを並べて見る盤を表す */
+.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-icon {
+	width: 16px;
+	height: 16px;
+	flex: 0 0 auto;
+	background-color: currentColor;
+	-webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 2.5h5.5v5H1.5zm7.5 0h5.5v5H9zM1.5 8.5H7v5H1.5zm7.5 0h5.5v5H9z'/></svg>");
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center center;
+	-webkit-mask-size: contain;
+}
+
+.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label {
+	display: inline-block;
+	max-width: 0;
+	opacity: 0;
+	margin-left: 0;
+	color: var(--vscode-foreground);
+	font: inherit;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.monaco-enable-motion .monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label,
+.monaco-workbench.monaco-enable-motion .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label {
+	transition: max-width 160ms ease, opacity 160ms ease, margin-left 160ms ease;
+	transition-delay: 200ms;
+}
+
+.monaco-reduce-motion .monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label,
+.monaco-workbench.monaco-reduce-motion .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label {
+	transition-duration: 0ms !important;
+}
+
+.monaco-workbench .paradis-browser-live-titlebar-widget:hover > .paradis-browser-live-titlebar-label,
+.monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible > .paradis-browser-live-titlebar-label {
+	max-width: 200px;
+	opacity: 1;
+	margin-left: 6px;
+}
+
+.monaco-enable-motion .monaco-workbench .paradis-browser-live-titlebar-widget:hover > .paradis-browser-live-titlebar-label,
+.monaco-enable-motion .monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible > .paradis-browser-live-titlebar-label,
+.monaco-workbench.monaco-enable-motion .paradis-browser-live-titlebar-widget:hover > .paradis-browser-live-titlebar-label,
+.monaco-workbench.monaco-enable-motion .paradis-browser-live-titlebar-widget:focus-visible > .paradis-browser-live-titlebar-label {
+	transition-delay: 0ms;
+}
+
+.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge {
+	min-width: 16px;
+	height: 15px;
+	margin-left: 4px;
+	padding: 0 4px;
+	border-radius: 999px;
+	font-size: 10px;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge.hidden {
+	display: none;
+}
+
+/* 共有中のページがあるときだけ色を変える。「エージェントが掴んでいる」ことの合図。 */
+.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge.shared {
+	background-color: var(--vscode-charts-blue, #3794ff);
+	color: var(--vscode-editor-background);
+}
+
+/* ---------------------------------------------------------------- ウィンドウ本体 */
+
+.paradis-browser-live-window {
+	/* 親コンテナの高さ指定に頼らずウィンドウ全面を占める */
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	font-size: 13px;
+}
+
+.paradis-browser-live-grow {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-browser-live-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	flex-wrap: wrap;
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+	background-color: var(--vscode-editorWidget-background);
+}
+
+.paradis-browser-live-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 24px;
+	padding: 0 10px;
+	border-radius: 999px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	font-size: 11.5px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.paradis-browser-live-chip:hover {
+	background-color: var(--vscode-list-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-browser-live-chip.checked {
+	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-browser-live-chip .count {
+	font-size: 10.5px;
+	opacity: 0.75;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-browser-live-chip:focus-visible,
+.paradis-browser-live-value-button:focus-visible,
+.paradis-browser-live-mini-button:focus-visible,
+.paradis-browser-live-shot:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* 「並び: タブの並び」のように、現在値をラベルに出したまま押すたび次の値へ回るボタン。
+	項目が3つずつしかないので、畳んだポップオーバーより往復が少ない。 */
+.paradis-browser-live-value-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 24px;
+	padding: 0 9px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: 11.5px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.paradis-browser-live-value-button:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-browser-live-value-button > .key {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ---------------------------------------------------------------- タイルの壁 */
+
+.paradis-browser-live-scroll {
+	flex: 1;
+	overflow: auto;
+	background-color: var(--vscode-editor-background);
+}
+
+.paradis-browser-live-wall {
+	display: grid;
+	gap: 12px;
+	padding: 12px;
+	align-content: start;
+	background-color: var(--vscode-editor-background);
+}
+
+.paradis-browser-live-wall.columns-1 { grid-template-columns: 1fr; }
+.paradis-browser-live-wall.columns-2 { grid-template-columns: repeat(2, 1fr); }
+.paradis-browser-live-wall.columns-3 { grid-template-columns: repeat(3, 1fr); }
+.paradis-browser-live-wall.columns-4 { grid-template-columns: repeat(4, 1fr); }
+.paradis-browser-live-wall.columns-5 { grid-template-columns: repeat(5, 1fr); }
+.paradis-browser-live-wall.columns-6 { grid-template-columns: repeat(6, 1fr); }
+
+.paradis-browser-live-empty {
+	grid-column: 1 / -1;
+	padding: 56px 20px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12.5px;
+}
+
+.paradis-browser-live-tile {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 9px;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+	text-align: left;
+}
+
+.paradis-browser-live-tile:hover {
+	border-color: color-mix(in srgb, var(--vscode-focusBorder) 55%, var(--vscode-editorWidget-border));
+}
+
+/* いまエディタで開かれているタブ。一覧と画面を見比べたときの起点になる。 */
+.paradis-browser-live-tile.visible-tab {
+	border-color: var(--vscode-focusBorder);
+}
+
+/* エージェントへ共有中。ページ側に出るカーソル演出と同じ「掴まれている」合図。 */
+.paradis-browser-live-tile.shared {
+	box-shadow: 0 0 0 1px var(--vscode-charts-blue, #3794ff), 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+.paradis-browser-live-tile-head {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 5px 6px 5px 9px;
+	flex: 0 0 auto;
+	min-height: 28px;
+}
+
+.paradis-browser-live-favicon {
+	position: relative;
+	width: 16px;
+	height: 16px;
+	flex: 0 0 16px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-browser-live-favicon > img {
+	width: 16px;
+	height: 16px;
+	object-fit: contain;
+	border-radius: 3px;
+}
+
+/* 読めなかった favicon (http のページなど) は隠して、既定のアイコンだけを見せる。 */
+.paradis-browser-live-favicon > img.failed {
+	display: none;
+}
+
+.paradis-browser-live-favicon-fallback {
+	position: absolute;
+	font-size: 14px;
+}
+
+.paradis-browser-live-favicon-fallback.hidden {
+	display: none;
+}
+
+.paradis-browser-live-tile-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 11.5px;
+	color: var(--vscode-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-live-tile-actions {
+	display: flex;
+	gap: 1px;
+	flex: 0 0 auto;
+	opacity: 0;
+}
+
+.paradis-browser-live-tile:hover .paradis-browser-live-tile-actions,
+.paradis-browser-live-tile:focus-within .paradis-browser-live-tile-actions {
+	opacity: 1;
+}
+
+.paradis-browser-live-mini-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 20px;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-browser-live-mini-button.codicon {
+	font-size: 13px;
+}
+
+.paradis-browser-live-mini-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground);
+}
+
+/* ---- サムネイル ---- */
+
+/* ページの見た目そのものを見せる場所であり、「このタブを開く」ボタンでもある
+	(タイル全体をボタンにすると、その中の再読み込み・閉じるが入れ子のボタンになるため)。
+	まだ1枚も撮れていない間は editorWidget の地のままにして、灰色の箱以上のものを出さない。 */
+.paradis-browser-live-shot {
+	position: relative;
+	display: block;
+	width: 100%;
+	padding: 0;
+	margin: 0;
+	overflow: hidden;
+	flex: 0 0 auto;
+	aspect-ratio: 16 / 10;
+	background-color: var(--vscode-editorWidget-background);
+	border: 0;
+	border-top: 1px solid var(--vscode-editorWidget-border);
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+	-webkit-appearance: none;
+}
+
+/* 更新が止まっているタイルの印。動いていないことが分かれば「壊れている」と読まれない。
+	常時見えるので、面積も彩度も最小限に留める。 */
+.paradis-browser-live-paused {
+	position: absolute;
+	right: 6px;
+	bottom: 6px;
+	width: 18px;
+	height: 18px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	background-color: rgba(0, 0, 0, 0.45);
+	color: #ffffff;
+	opacity: 0.72;
+	pointer-events: auto;
+}
+
+.paradis-browser-live-paused.codicon {
+	font-size: 11px;
+}
+
+.paradis-browser-live-paused.hidden {
+	display: none;
+}
+
+.paradis-browser-live-frame {
+	width: 100%;
+	height: 100%;
+	display: block;
+	opacity: 0;
+	/* ページの上部を基準に切る。ヘッダーとタイトルが残る方が見分けやすい。 */
+	object-fit: cover;
+	object-position: top center;
+	-webkit-user-drag: none;
+}
+
+.paradis-browser-live-frame.loaded {
+	opacity: 1;
+}
+
+.paradis-browser-live-tile-foot {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 9px 6px;
+	flex: 0 0 auto;
+	min-height: 24px;
+}
+
+.paradis-browser-live-url {
+	flex: 1;
+	min-width: 0;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--monaco-monospace-font);
+}
+
+.paradis-browser-live-tags {
+	display: flex;
+	gap: 4px;
+	flex: 0 0 auto;
+}
+
+.paradis-browser-live-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 10px;
+	padding: 1px 7px 1px 6px;
+	border-radius: 999px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-browser-live-dot {
+	width: 6px;
+	height: 6px;
+	flex: 0 0 6px;
+	border-radius: 50%;
+	display: inline-block;
+	background-color: currentColor;
+}
+
+.paradis-browser-live-tag.shared,
+.paradis-browser-live-chip .paradis-browser-live-dot.shared {
+	color: var(--vscode-charts-blue, #3794ff);
+	border-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 50%, var(--vscode-editorWidget-border));
+}
+
+.paradis-browser-live-chip .paradis-browser-live-dot.shared {
+	background-color: var(--vscode-charts-blue, #3794ff);
+	border: 0;
+}
+
+.paradis-browser-live-tag.loading {
+	color: var(--vscode-charts-yellow, #cca700);
+	border-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 45%, var(--vscode-editorWidget-border));
+}
+
+.paradis-browser-live-tag.loading .paradis-browser-live-dot {
+	animation: paradis-browser-live-pulse 1s ease-in-out infinite;
+}
+
+.paradis-browser-live-tag.error {
+	color: var(--vscode-charts-red, #f14c4c);
+	border-color: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 45%, var(--vscode-editorWidget-border));
+}
+
+@keyframes paradis-browser-live-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.paradis-browser-live-tag .paradis-browser-live-dot {
+		animation: none !important;
+	}
+}
+
+/* ---------------------------------------------------------------- ウィンドウ透過 */
+
+/* エージェント一覧ウィンドウと同じ方針。auxiliary window のコンテナはメインウィンドウの
+	class をミラーし続けるため、ゲートには View 自身が握る .paradis-browser-live-transparent
+	(macOS で透過が有効なときだけ付く) を使う。opacity は windowTransparency が
+	コンテナへ書き込む --paradis-transparency-opacity から取る。 */
+.paradis-browser-live-window.paradis-browser-live-transparent {
+	background-color: color-mix(in srgb, var(--vscode-editor-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.paradis-browser-live-window.paradis-browser-live-transparent .paradis-browser-live-toolbar {
+	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+	/* 透過時は hidden タイトルバーで開くので、ここでウィンドウを動かせるようにする。
+		信号ボタンの幅 (titlebarpart.css と同じ 70px) を空けて重なりを避ける。 */
+	-webkit-app-region: drag;
+	padding-left: 70px;
+}
+
+.paradis-browser-live-window.paradis-browser-live-transparent .paradis-browser-live-toolbar button {
+	-webkit-app-region: no-drag;
+}
+
+.paradis-browser-live-window.paradis-browser-live-transparent .paradis-browser-live-scroll,
+.paradis-browser-live-window.paradis-browser-live-transparent .paradis-browser-live-wall {
+	background-color: transparent !important;
+}
+
+.paradis-browser-live-window.paradis-browser-live-transparent .paradis-browser-live-tile {
+	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
