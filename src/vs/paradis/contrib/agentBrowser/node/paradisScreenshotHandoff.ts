@@ -84,20 +84,39 @@ export function paradisScreenshotPathsFromToolResult(result: unknown): readonly 
  * 「この機械では別の場所にある」ことと、取りに来る方法を応答へ書き足す。
  *
  * 手元のペインから呼ばれたときは元のパスがそのまま使えるので余計な情報になるが、呼び出し元が
- * どの機械に居るかは MCP の要求からは分からない。1行足すだけの害と、SSH 接続時に画像を
+ * どの機械に居るかは MCP の要求からは分からない。数行足すだけの害と、SSH 接続時に画像を
  * 取り出せない害とを比べて、常に添える方を選んでいる。
+ *
+ * ポート番号は手元のぶんしか書かない。接続先で開いている番号は `ssh -R` が空きから選ぶので
+ * 手元とは一致せず、書いても必ず古くなる（以前は接続先でも同じ固定番号を開いていたので
+ * たまたま一致していた）。接続先には、その場でポートファイルを読ませる。
  */
-export function paradisAppendScreenshotFetchHint(result: unknown, fetchUrls: readonly string[]): unknown {
+export function paradisAppendScreenshotFetchHint(result: unknown, entries: readonly IParadisScreenshotFetchTarget[]): unknown {
 	const content = (result as { content?: unknown })?.content;
-	if (fetchUrls.length === 0 || !Array.isArray(content)) {
+	if (entries.length === 0 || !Array.isArray(content)) {
 		return result;
 	}
 	const lines = [
 		'The screenshot was written on the machine running Para Code, which is not necessarily the machine you are on.',
-		'If that path does not exist for you (for example when Para Code is connected to this host over SSH), download it instead:',
-		...fetchUrls.map(url => `  curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" ${url} -o <local-name>`),
+		'If that path does not exist for you (for example when Para Code is connected to this host over SSH), download it instead.',
+		'',
+		'On the machine running Para Code:',
+		...entries.map(entry => `  curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" http://127.0.0.1:${entry.localPort}${PARADIS_SCREENSHOT_FETCH_PATH}/${entry.id} -o <local-name>`),
+		'',
+		// 接続先で開くポートは ssh に選ばせた番号で、手元の番号とは一致しない。番号を焼き込むと
+		// 必ず古くなるので、その場で読ませる (このファイルの場所は接続先の hooks が持っている)。
+		'Over SSH the port is different — the return tunnel picks a free one. Read it from the port file first:',
+		`  PORT=$(sed -n 's/.*"port":[[:space:]]*\\([0-9]*\\).*/\\1/p' "$PARA_CODE_MCP_PORT_FILE")`,
+		...entries.map(entry => `  curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" "http://127.0.0.1:$PORT${PARADIS_SCREENSHOT_FETCH_PATH}/${entry.id}" -o <local-name>`),
 	];
 	return { ...(result as object), content: [...content, { type: 'text', text: lines.join('\n') }] };
+}
+
+/** 取り出し口1件分。番号は手元のぶんだけを持ち、接続先の番号は案内側で読ませる。 */
+export interface IParadisScreenshotFetchTarget {
+	readonly id: string;
+	/** 手元 (Para Code が動いている機械) の MCP ポート。 */
+	readonly localPort: number;
 }
 
 /**
