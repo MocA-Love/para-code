@@ -9,6 +9,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { paradisSpaceInfoLabel } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 /**
  * ライブウィンドウが扱う状態。エージェント実績はあるが hook 上は何も走っていない端末を
@@ -27,7 +28,8 @@ export const PARADIS_AGENT_LIVE_STATUS_ORDER: readonly ParadisAgentLiveStatus[] 
  * 「リポジトリ名 / worktree 名」の形に統一する。
  */
 export function paradisAgentLiveSpaceLabel(spaceName: string, detail: string): string {
-	return detail ? `${spaceName} / ${detail}` : spaceName;
+	// 書式そのものは workspaceSwitch/common の共通実装が持つ (ブラウザ一覧と揃えるため)。
+	return paradisSpaceInfoLabel({ name: spaceName, color: undefined, detail });
 }
 
 /** 手が止まっていてユーザーの操作を待っている状態。「要対応のみ」フィルタの定義。 */

@@ -157,7 +157,8 @@
 	gap: 6px;
 	height: 24px;
 	padding: 0 10px;
-	border-radius: 999px;
+	/* PARA-PATCH: 角丸を隣のボタン群 (歯車・セグメント) と同じ段へ揃える (ピル型をやめる) */
+	border-radius: 6px;
 	border: 1px solid var(--vscode-editorWidget-border);
 	background: transparent;
 	color: var(--vscode-descriptionForeground);
@@ -335,8 +336,10 @@
 	align-items: center;
 	gap: 5px;
 	font-size: 11px;
-	padding: 1px 8px 1px 6px;
-	border-radius: 999px;
+	/* PARA-PATCH: 丸みをチップと揃え (ピル型をやめ)、左右のパディングも対称にする
+		(非対称のままだと角丸を落としたときに文字が右へ寄って見える) */
+	padding: 1px 7px;
+	border-radius: 5px;
 	border: 1px solid var(--vscode-editorWidget-border);
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;

@@ -46,7 +46,8 @@ const STAGGER_WINDOW = 3000;
  * - 一覧の中で見えていない (スクロールで画面外・絞り込みで DOM から外れた)
  * - ウィンドウ自体が隠れている
  * - 更新頻度の設定が「止める」
- * - エディタ上で描かれておらず、エージェントへの共有もされていない (中身が動かない)
+ *
+ * 画面に出ていないページ (裏のタブ・別スペース) は止めずに、間隔だけ空けて追いかける。
  */
 export class ParadisBrowserLiveThumbnail extends Disposable {
 
@@ -61,7 +62,6 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 	private readonly targetWindow: CodeWindow;
 
 	private cadence: ParadisBrowserLiveCadence = 'normal';
-	private shared = false;
 	/** エディタ上で描かれているか。View が変化のたびに押し込む。 */
 	private visible = false;
 	private active = false;
@@ -113,21 +113,11 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 		this.restart();
 	}
 
-	/** エージェントへ共有中か。共有中のページは隠れていても中身が動くので撮り続ける。 */
-	setShared(shared: boolean): void {
-		if (this.shared === shared) {
-			return;
-		}
-		this.shared = shared;
-		this.restart();
-	}
-
 	/**
 	 * エディタ上で描かれているか。
 	 *
-	 * 撮る / 撮らないの判断がこの値で変わるので、変化したら必ず組み直す。隠れたタイルは
-	 * タイマーを張らずに休眠するため、これを伝えないと「前面に出てきたタブが止まったまま」に
-	 * なる (しかも一時停止の印は消えるので、動いている顔をしてしまう)。
+	 * 撮る間隔がこの値で変わる (裏のページは間隔を空ける)。前面に出た瞬間から追いつけるよう、
+	 * 変化したら必ず組み直す。
 	 */
 	setVisible(visible: boolean): void {
 		if (this.visible === visible) {
@@ -157,16 +147,15 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 
 	/** いまこのタイルを撮る間隔 (ms)。0 は「撮らない」。 */
 	private captureDelay(): number {
-		return paradisBrowserLiveCaptureDelayMs(this.cadence, { visible: this.visible, shared: this.shared });
+		return paradisBrowserLiveCaptureDelayMs(this.cadence, { visible: this.visible });
 	}
 
 	/**
 	 * 状態が変わったので撮影の予定を組み直す。
 	 *
-	 * 撮らない条件 (更新頻度が「止める」/ 画面に出ておらず共有もされていない) のタイルは、
-	 * ここでも撮りに行かない。壁をスクロールしてタイルが可視判定を出入りするたびに1枚ずつ
-	 * 撮ってしまうと、往復するだけで隠れたビューへの強制ペイントが積み上がるため。
-	 * 例外は絵が1枚も無いときだけで、これは空のタイルを見せないための最初の1枚。
+	 * 更新頻度が「止める」のタイルはここでも撮りに行かない (スクロールで可視判定を出入り
+	 * するたびに1枚ずつ撮ってしまうため)。例外は絵が1枚も無いときだけで、これは空のタイルを
+	 * 見せないための最初の1枚。
 	 */
 	private restart(): void {
 		this.clearTimer();

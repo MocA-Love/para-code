@@ -24,7 +24,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/titlebar/titlebarActions.js';
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IParadisBrowserLiveWindowService } from '../common/paradisBrowserLiveWindow.js';
+import { IParadisBrowserLiveSummary, IParadisBrowserLiveWindowService } from '../common/paradisBrowserLiveWindow.js';
 
 const OPEN_COMMAND_ID = 'paradis.browserLiveWindow.open';
 const TITLE_BAR_SETTING_ID = 'paradis.browserLiveWindow.titleBar.enabled';
@@ -122,7 +122,7 @@ class ParadisBrowserLiveTitleBarWidget extends BaseActionViewItem {
 				badge.classList.toggle('hidden', count === 0);
 				badge.classList.toggle('shared', summary.shared > 0);
 			}
-			const text = this.hoverText(summary.total, summary.shared);
+			const text = this.hoverText(summary);
 			container.setAttribute('aria-label', text);
 			hover.update(text);
 		};
@@ -130,14 +130,20 @@ class ParadisBrowserLiveTitleBarWidget extends BaseActionViewItem {
 		update();
 	}
 
-	private hoverText(total: number, shared: number): string {
-		if (shared > 0) {
-			return localize('paradis.browserLive.hoverShared', "ブラウザ一覧（{0} タブ / {1} 件を共有中）", total, shared);
+	/**
+	 * バッジの数はこのスペースのぶん。一覧には他のスペースのページも並ぶので、
+	 * 他にもある場合だけその総数を添える。
+	 */
+	private hoverText(summary: IParadisBrowserLiveSummary): string {
+		const head = summary.shared > 0
+			? localize('paradis.browserLive.hoverShared', "ブラウザ一覧（{0} タブ / {1} 件を共有中）", summary.total, summary.shared)
+			: summary.total > 0
+				? localize('paradis.browserLive.hoverOpen', "ブラウザ一覧（{0} タブ）", summary.total)
+				: localize('paradis.browserLive.hoverIdle', "ブラウザ一覧");
+		if (summary.totalAll > summary.total) {
+			return localize('paradis.browserLive.hoverOtherSpaces', "{0} — 他のスペースを含めると {1} タブ", head, summary.totalAll);
 		}
-		if (total > 0) {
-			return localize('paradis.browserLive.hoverOpen', "ブラウザ一覧（{0} タブ）", total);
-		}
-		return localize('paradis.browserLive.hoverIdle', "ブラウザ一覧");
+		return head;
 	}
 }
 

@@ -320,11 +320,15 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		// 期待する並びへ「位置がずれている要素だけ」動かす。appendChild で総入れ替えすると
 		// 入力中のタイルが一度 DOM から外れ、フォーカス (と IME の変換) が飛ぶ。
+		const movedTiles: ITile[] = [];
 		let cursor = 0;
 		const activeDocument = this.wall.ownerDocument;
-		const place = (element: HTMLElement): void => {
+		// 動かしたタイルは呼び出し側が覚えておき、ループの外でまとめて後始末する
+		// (中で scrollHeight を読むと、DOM 変更と交互になって強制レイアウトがタイル数ぶん走る)。
+		const place = (element: HTMLElement): boolean => {
 			const current: Node | null = this.wall.childNodes.item(cursor);
-			if (current !== element) {
+			const moved = current !== element;
+			if (moved) {
 				// insertBefore は移動する要素自身をいったん DOM から外すため、その中に
 				// フォーカスがあると body へ落ちる (打鍵の途中で入力が消える)。移動対象が
 				// フォーカスを抱えている場合だけ、動かした後に戻す。
@@ -336,6 +340,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 				restore?.focus({ preventScroll: true });
 			}
 			cursor++;
+			return moved;
 		};
 
 		if (sorted.length === 0) {
@@ -368,9 +373,19 @@ export class ParadisAgentLiveWindowView extends Disposable {
 						// 可視判定が使えない環境では、絞り込みで戻したタイルを自力で起こす。
 						tile.mirror?.setVisible(true);
 					}
-					place(tile.root);
+					if (place(tile.root)) {
+						movedTiles.push(tile);
+					}
 				}
 			}
+		}
+
+		// 動かしたタイルの端末領域は scrollTop が 0 に戻っている (DOM から一度外れるため)。
+		// 追従が生きているものは最新行へ戻す —— 戻さないと、並べ替えの拍子に下部が見えなく
+		// なったまま固まる。scroll は非同期に届くので、ここで同期に戻しておくことが
+		// ミラー側の判定 (paradisAgentLiveMirror.onScroll) の前提にもなっている。
+		for (const tile of movedTiles) {
+			tile.mirror?.pinToBottom();
 		}
 
 		this.updateChrome(entries, sorted.length);

@@ -17,16 +17,10 @@ import {
 	IParadisTerminalScopeService,
 	IParadisWorkspaceSwitchService,
 	IParadisWorktreeService,
-	paradisWorkspaceColorHex,
-	paradisWorktreeStateKey,
+	paradisResolveSpaceInfo,
+	IParadisSpaceInfo,
 } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentLiveEntry, ParadisAgentLiveStatus } from '../common/paradisAgentLiveWindow.js';
-
-interface ISpaceInfo {
-	readonly name: string;
-	readonly color: string | undefined;
-	readonly detail: string;
-}
 
 interface IStatusSince {
 	readonly status: ParadisAgentLiveStatus;
@@ -146,7 +140,7 @@ export class ParadisAgentLiveModel extends Disposable {
 	private recompute(): void {
 		const now = Date.now();
 		const livePanes = paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService);
-		const spaceCache = new Map<string, ISpaceInfo | undefined>();
+		const spaceCache = new Map<string, IParadisSpaceInfo | undefined>();
 		const entries: IParadisAgentLiveEntry[] = [];
 		const seenTokens = new Set<string>();
 		const seenInstanceIds = new Set<number>();
@@ -229,30 +223,8 @@ export class ParadisAgentLiveModel extends Disposable {
 		this._outputListeners.set(instance.instanceId, listeners);
 	}
 
-	private resolveSpace(stateKey: string | undefined, cache: Map<string, ISpaceInfo | undefined>): ISpaceInfo | undefined {
-		if (stateKey === undefined) {
-			return undefined;
-		}
-		if (cache.has(stateKey)) {
-			return cache.get(stateKey);
-		}
-
-		let resolved: ISpaceInfo | undefined;
-		for (const repository of this.workspaceSwitchService.repositories) {
-			const color = paradisWorkspaceColorHex(repository.color);
-			if (repository.id === stateKey) {
-				resolved = { name: repository.name, color, detail: this.worktreeService.getRepositoryBranch(repository.id) ?? '' };
-				break;
-			}
-			// 表示対象外の worktree でも端末は生きているので、検出済みのものを全て見る。
-			const worktree = this.worktreeService.getDetectedWorktrees(repository.id).find(candidate => paradisWorktreeStateKey(candidate.uri) === stateKey);
-			if (worktree) {
-				resolved = { name: repository.name, color, detail: worktree.branch ?? worktree.name };
-				break;
-			}
-		}
-
-		cache.set(stateKey, resolved);
-		return resolved;
+	/** スペースの表示情報。解決そのものは workspaceSwitch/common の共通実装が持つ。 */
+	private resolveSpace(stateKey: string | undefined, cache: Map<string, IParadisSpaceInfo | undefined>): IParadisSpaceInfo | undefined {
+		return paradisResolveSpaceInfo(stateKey, this.workspaceSwitchService.repositories, this.worktreeService, cache);
 	}
 }
