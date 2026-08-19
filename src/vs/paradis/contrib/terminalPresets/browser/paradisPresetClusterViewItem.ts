@@ -29,6 +29,12 @@
 // サイドバーが開いている時に隣のペイン・サイドバーへ被さって見える。.tabs-and-actions-container
 // （＝このエディタグループ自身）の左端までの実測距離を上限にし、必ず自分のペインの中に収める
 // （updateFlyoutMaxWidth）。
+//
+// 全プリセットが1個の合成アクションに統合されたため、VS Code 標準のツールバー右クリック
+// 「Hide '<名前>'」（MenuId + commandId 単位で個別に効く機能。src/vs/platform/actions/browser/
+// toolbar.ts の WorkbenchToolBar 参照）はこのクラスター全体を1項目としてしか隠せなくなった。
+// 代わりにボタン単位の右クリックで showHideMenu を出し、プリセットの pinned フィールドを直接
+// false にすることで、以前と同じ「プリセットごとにタブバーから非表示にする」操作を再現している。
 
 import './media/paradisPresetCluster.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -36,11 +42,12 @@ import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { renderLabelWithIcons } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { IAction, toAction } from '../../../../base/common/actions.js';
+import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -59,6 +66,15 @@ const strClusterAriaLabel = (count: number) => localize('paradis.presetCluster.a
 const strPresetGroupTitle = (name: string, count: number) => localize('paradis.presetCluster.groupTitle', "{0}（{1}件）", name, count);
 // allow-any-unicode-next-line
 const strRunFailed = (name: string, message: string) => localize('paradis.presetCluster.runFailed', "プリセット「{0}」を実行できませんでした: {1}", name, message);
+// allow-any-unicode-next-line
+const strHideLabel = (name: string, qualifier: string | undefined) => localize('paradis.presetCluster.hideLabel', "非表示にする: {0}", qualifier ? `${name} (${qualifier})` : name);
+// allow-any-unicode-next-line
+const strHiddenNotice = (name: string) => localize('paradis.presetCluster.hiddenNotice', "「{0}」をターミナルのタブバーから非表示にしました。「コマンドプリセットを管理」からいつでも戻せます。", name);
+// allow-any-unicode-next-line
+const strHideFailed = (name: string, message: string) => localize('paradis.presetCluster.hideFailed', "プリセット「{0}」を非表示にできませんでした: {1}", name, message);
+// allow-any-unicode-next-line
+const STR_MANAGE_PRESETS = localize('paradis.presetCluster.managePresets', "コマンドプリセットを管理...");
+const CONFIGURE_PRESETS_COMMAND_ID = 'paradis.terminal.configurePresets';
 
 /** これ未満のボタン数（同名は1個にまとめた後の件数）では、折りたたんでも浮く幅がわずかで手間が増えるだけなので機能自体を無効にする。 */
 const MIN_GROUPS_TO_COLLAPSE = 3;
@@ -90,6 +106,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IHoverService private readonly hoverService: IHoverService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super(undefined, action, options);
 	}
@@ -168,6 +185,12 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		clusterBtn.setAttribute('aria-label', strClusterAriaLabel(groups.length));
 		dom.append(clusterBtn, $('span.paradis-preset-cluster-icon.codicon.codicon-layers'));
 		dom.append(clusterBtn, $('span.paradis-preset-cluster-badge')).textContent = String(groups.length);
+		// まとめアイコン自体の右クリックは「どれか1件」に対応しないので、含まれる全プリセットを
+		// 横断した非表示メニューを出す（展開して個々のボタンを右クリックする手間を省く）。
+		this.contentStore.add(dom.addDisposableListener(clusterBtn, 'contextmenu', e => {
+			dom.EventHelper.stop(e, true);
+			this.showHideMenu(clusterBtn, groups.flat(), qualifiers);
+		}));
 		const flyout = dom.append(collapsedWrap, $('.paradis-preset-cluster-flyout'));
 		// ホバー/フォーカスが外れて閉じたあと、次に開いたときは先頭から見えるようにする
 		// （閉じている間にスクロール位置だけ更新するので見た目には出ない）。
@@ -200,6 +223,10 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 				dom.EventHelper.stop(e, true);
 				this.showGroupMenu(btn, group, qualifiers);
 			}));
+			this.contentStore.add(dom.addDisposableListener(btn, 'contextmenu', e => {
+				dom.EventHelper.stop(e, true);
+				this.showHideMenu(btn, group, qualifiers);
+			}));
 			return;
 		}
 
@@ -218,6 +245,10 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			dom.EventHelper.stop(e, true);
 			this.presetService.runPreset(preset).catch(error => this.notificationService.error(strRunFailed(preset.name, toErrorMessage(error))));
 		}));
+		this.contentStore.add(dom.addDisposableListener(btn, 'contextmenu', e => {
+			dom.EventHelper.stop(e, true);
+			this.showHideMenu(btn, [preset], qualifiers);
+		}));
 	}
 
 	private showGroupMenu(anchor: HTMLElement, group: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>): void {
@@ -231,6 +262,43 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			getAnchor: () => anchor,
 			getActions: () => actions,
 		});
+	}
+
+	/**
+	 * 右クリックで「非表示にする」を選べるメニュー。以前の実装（プリセットごとに個別の
+	 * MenuItemAction を登録していた頃）は、VS Code 標準のツールバー右クリック「Hide '<名前>'」が
+	 * プリセット単位で独立して効いていた。今はすべてのピン留めプリセットが1個の合成アクションへ
+	 * まとまっているため、その標準機能は「クラスター全体を1項目として隠す」ことしかできない
+	 * （個々のプリセット単位の表示/非表示切り替えができなくなる）。同等の操作をアプリ側の
+	 * `pinned` フィールド経由で再現する。
+	 */
+	private showHideMenu(anchor: HTMLElement, presets: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>): void {
+		const actions: IAction[] = presets.map(preset => toAction({
+			id: `paradis.presetCluster.hide.${preset.key}`,
+			label: strHideLabel(preset.name, qualifiers.get(preset.key)),
+			run: () => this.hidePreset(preset),
+		}));
+		if (actions.length > 0) {
+			actions.push(new Separator());
+		}
+		actions.push(toAction({
+			id: CONFIGURE_PRESETS_COMMAND_ID,
+			label: STR_MANAGE_PRESETS,
+			run: () => this.commandService.executeCommand(CONFIGURE_PRESETS_COMMAND_ID),
+		}));
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			getActions: () => actions,
+		});
+	}
+
+	private async hidePreset(preset: IParadisResolvedPreset): Promise<void> {
+		try {
+			await this.presetService.savePreset({ ...preset, pinned: false }, preset.source, { replace: preset });
+			this.notificationService.info(strHiddenNotice(preset.name));
+		} catch (error) {
+			this.notificationService.error(strHideFailed(preset.name, toErrorMessage(error)));
+		}
 	}
 
 	/**
