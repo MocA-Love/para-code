@@ -218,6 +218,15 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 
 **運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。
 
+## 内蔵ブラウザの倍率インジケータ（browserZoomIndicator、2026-08-20追加）
+
+`src/vs/paradis/contrib/browserZoomIndicator/` に実装。upstream のファイルは無変更で、公開されている拡張点だけを使う（`BrowserEditor.registerContribution()` と `BrowserWidgetLocation.PostUrl`）。
+
+- **upstream 取り込み時の確認点**: fork の CSS が upstream のズームピル（`.browser-zoom-pill`、`features/browserEditorZoomFeature.ts`）を`display: none` で隠している。クラス名が変わっても型検査・lint は通り、**ある日から同じ数字が二重に出るだけ**になるので、upstream 側にこのクラスが残っているかを目視すること。隠す対象は `.browser-url-bar-widgets:has(.paradis-browser-zoom-stepper)` の内側に限定してある
+- 倍率の増減は `BrowserEditorZoomSupport` へ委譲する（`model.zoomIn()` を直接呼ぶと、読み上げ `accessibilityService.status()` とコンテキストキー更新を素通りする）
+- **「既定 = 100%」ではない**。`workbench.browser.pageZoom` の既定値は「ウィンドウに合わせる」で、アプリのUI倍率を上げていると既定は 110% 等になる。淡色表示とリセットの文言は `IBrowserZoomService.getEffectiveZoomIndex(undefined, false)` から毎回引く
+- ウィジェットは URL ボックスの内側（`.browser-url-bar-widgets`、`overflow: hidden` で右端から刈られる）に入る。order 90 で upstream のボタン（共有 50 / お気に入り 60）より後ろに置き、詰まったときに先に消えるのはこちら側にしてある
+
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
 `src/vs/paradis/contrib/workspaceSwitch/` に実装。単一ウィンドウ・単一 `.code-workspace`（identity固定）のまま `updateFolders` で folders を丸ごと入れ替え、エディタ/ターミナル/ブラウザの状態をリポジトリごとに退避・復元する（Superset方式: 破棄せず隠す）。実装時に判明した落とし穴:
