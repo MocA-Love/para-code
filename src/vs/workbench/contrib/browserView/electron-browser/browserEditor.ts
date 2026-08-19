@@ -592,7 +592,12 @@ export class BrowserEditor extends EditorPane {
 		this._inputDisposables.add(model.onDidChangeFocus(({ focused }) => {
 			// When the view gets focused, make sure the editor reports that it has focus,
 			// but focus is removed from the workbench.
-			if (focused) {
+			// PARA-PATCH: ignore this notification once the workbench has taken focus back (Para Code: it crosses a process boundary, so it can land after the user clicked a terminal — reporting focus and pulling it back then takes it away from what they just clicked, once per queued notification. `document.hasFocus()` is what separates the two: focus moving into the native view blurs this document, while a click on a workbench element leaves it focused)
+			const stolenByWorkbench = this.window.document.hasFocus()
+				&& !!this.window.document.activeElement
+				&& this.window.document.activeElement !== this.window.document.body
+				&& !this._browserContainer.contains(this.window.document.activeElement);
+			if (focused && !stolenByWorkbench) {
 				this._onDidFocus?.fire();
 				this.ensureBrowserFocus();
 			}
