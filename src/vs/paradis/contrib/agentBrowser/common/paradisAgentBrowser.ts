@@ -881,6 +881,12 @@ export interface IParadisAgentPaneStatus {
 	 * スコープ解決フォールバック (cwd→リポジトリ/worktreeルートの最長一致) に使う。
 	 */
 	readonly cwd?: string;
+	/**
+	 * このペインで現在動作中のエージェントの対話から検出した GitHub Issue URL (出現順、重複無し)。
+	 * 空・未検出なら省略する (ワークスペース一覧のIssueマークは、動作中のペインでのみ表示するため
+	 * アイドル化すると自然に消える — hook活動の欠落時と区別する必要はない)。
+	 */
+	readonly issueUrls?: readonly string[];
 }
 
 /** 1回のowner解決とstale sweepから作る、renderer-local status producer向けsnapshot。 */

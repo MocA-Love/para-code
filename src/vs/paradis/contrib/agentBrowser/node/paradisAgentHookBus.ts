@@ -288,3 +288,77 @@ export function paradisCountLiveBackgroundTasks(token: string, now: number): num
 	}
 	return count;
 }
+
+// ---- ペイン単位で検出した GitHub Issue URL -------------------------------------------------
+// TranscriptTailer (paradisMobileAgentChat.ts) が transcript の追記行から抽出し、ここへ書き込む。
+// ParadisWorkspacesView (通常ウィンドウのワークスペース一覧) が「現在動作中のスペース」に
+// 限定してIssueマークを表示するため、activities と同じガード（captureIngressLease 経由の認可）を
+// 再利用する。ペインが終了・アイドル化した時に自然に消える点も activities と同じにする。
+
+/** 1ペインぶんに覚えておく Issue URL の上限（悪意ある/壊れたtranscriptによる無限増加の防止）。 */
+const PANE_ISSUE_URLS_MAX_ENTRIES = 32;
+
+const issueUrlsByToken = new Map<string, ReadonlySet<string>>();
+
+function issueUrlSetsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+	if (a.size !== b.size) {
+		return false;
+	}
+	for (const url of a) {
+		if (!b.has(url)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * ペインで検出した Issue URL 集合の更新（ParadisMobileAgentChat の tailer 専用）。差分が無ければ
+ * 何もしない。activities と違い購読イベントは持たない — 読み出し側 (ParadisAgentBrowserService の
+ * listAgentStatusSnapshot) は2秒ポーリングでこのマップを引くだけで足り、プッシュ通知は不要なため。
+ */
+export function setParadisAgentPaneIssueUrls(token: string, issueUrls: ReadonlySet<string>): void {
+	if (typeof token !== 'string' || token.length === 0 || token.length > PANE_TOKEN_MAX_LENGTH) {
+		return;
+	}
+	let permitted = false;
+	try {
+		permitted = activityGuard?.(token) === true;
+	} catch {
+		// Authority checks are fail-closed and must not disrupt transcript processing.
+	}
+	if (!permitted) {
+		return;
+	}
+	// 入力 (tailer が持つ検出済み集合) は検出順 = 古い→新しい。上限超過時は先頭 (古いもの) を
+	// 切り捨てて直近を残す (FIFO)。先頭から数える方式だと、いったん上限に達した後は同じ最初の
+	// N件が固定され続け、以降に検出した新しいIssueが永久にマークへ出てこなくなってしまう。
+	const validUrls: string[] = [];
+	for (const url of issueUrls) {
+		if (typeof url === 'string' && /^https:\/\//.test(url)) {
+			validUrls.push(url);
+		}
+	}
+	const bounded = new Set<string>(validUrls.length > PANE_ISSUE_URLS_MAX_ENTRIES
+		? validUrls.slice(validUrls.length - PANE_ISSUE_URLS_MAX_ENTRIES)
+		: validUrls);
+	const existing = issueUrlsByToken.get(token) ?? new Set<string>();
+	if (issueUrlSetsEqual(existing, bounded)) {
+		return;
+	}
+	if (bounded.size === 0) {
+		issueUrlsByToken.delete(token);
+	} else {
+		issueUrlsByToken.set(token, bounded);
+	}
+}
+
+/** 現在ペインで検出済みの Issue URL 集合（無ければ空集合）。 */
+export function getParadisAgentPaneIssueUrls(token: string): ReadonlySet<string> {
+	return issueUrlsByToken.get(token) ?? new Set();
+}
+
+/** terminal/pane終了時にtoken由来の検出済みIssueを即時破棄する。 */
+export function clearParadisAgentPaneIssueUrls(token: string): void {
+	issueUrlsByToken.delete(token);
+}

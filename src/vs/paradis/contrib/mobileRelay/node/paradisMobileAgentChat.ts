@@ -35,8 +35,9 @@ import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js'
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
 import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, IParadisCodexThreadTarget, PARADIS_CODEX_DAEMON_DISCONNECTED, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
@@ -2157,6 +2158,12 @@ interface ITailerDelegate {
 	 * 「そのペインでエージェントが今も動いている」証拠として使う（内容は問わない）。
 	 */
 	onAppended(): void;
+	/**
+	 * 追記行から検出した GitHub Issue URL の集合が変化した（累積・重複無し）。
+	 * ワークスペース一覧のIssueマーク用。エージェントが動いていないペインでは呼ばれないため、
+	 * 呼び出し側 (paradisAgentHookBus) でペインの生死に紐づけて自然に消す。
+	 */
+	onIssueUrlsUpdated?(issueUrls: ReadonlySet<string>): void;
 }
 
 /**
@@ -2258,6 +2265,8 @@ class TranscriptTailer {
 	 * サイズになるため、ペインごとに枠を持たせると常駐がペイン数に比例してしまう）。
 	 */
 	private readonly imageOwner = `tailer-${newEpoch()}`;
+	/** これまでに追記行から検出した GitHub Issue URL（出現順、重複無し）。epochリセットで捨てる。 */
+	private readonly issueUrls = new Set<string>();
 	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 起動時刻 (epoch ms)。 */
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
@@ -2446,6 +2455,10 @@ class TranscriptTailer {
 				this.delegate.onEpochReset();
 				this.delegate.onActivity();
 				this.delegate.onInfo();
+				// consumeText 内の issueUrlsChanged 判定は「差分があった時だけ」呼ぶため、
+				// truncate後の読み直しで検出Issueが1件も無くなった回だと呼ばれずに前の会話の
+				// URLが bus に残ってしまう。onActivity 等と同じく、ここで無条件に1回反映する。
+				this.delegate.onIssueUrlsUpdated?.(this.issueUrls);
 				return;
 			}
 			if (stat.size === this.offset) {
@@ -2532,6 +2545,9 @@ class TranscriptTailer {
 		this.fullTexts.clear();
 		this.fullTextBytes = 0;
 		sharedImageCache.releaseOwner(this.imageOwner);
+		// truncate等でepochが切り替わる = 会話の連続性が切れるため、検出済みIssueも
+		// 読み直し後の内容から作り直す (initialLoad が consumeText を再度呼ぶことで再検出される)。
+		this.issueUrls.clear();
 	}
 
 	/** 読み取ったテキストを行に分割してパースし、リングへ追加する。末尾の不完全行は持ち越す。 */
@@ -2543,10 +2559,19 @@ class TranscriptTailer {
 		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
 		const signals = newParseSignals();
 		let latestProgress: ITranscriptProgress | undefined;
+		let issueUrlsChanged = false;
 		for (const line of lines) {
 			const trimmed = line.trim();
 			if (trimmed.length === 0) {
 				continue;
+			}
+			// Issue URLはユーザーの発話・ツール入出力どちらにも現れ得るため、パース前の生JSON行
+			// テキストへ直接正規表現を当てる（メッセージ種別ごとの本文取り出しに依存しない）。
+			for (const url of paradisExtractIssueUrls(trimmed)) {
+				if (!this.issueUrls.has(url)) {
+					this.issueUrls.add(url);
+					issueUrlsChanged = true;
+				}
 			}
 			let obj: Record<string, unknown> | undefined;
 			try {
@@ -2620,6 +2645,9 @@ class TranscriptTailer {
 		this.applySignals(signals, emitDelta);
 		if (latestProgress !== undefined) {
 			this.delegate.onProgress(latestProgress);
+		}
+		if (issueUrlsChanged) {
+			this.delegate.onIssueUrlsUpdated?.(this.issueUrls);
 		}
 		if (added.length === 0) {
 			return;
@@ -5800,6 +5828,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			// hook が届かない構成（WSL のディストロの中）と、質問を出したまま止まっていた
 			// セッションを、鮮度の推測を持ち込まずに引き継ぎ扱いから解くための唯一の経路。
 			onAppended: () => this.rememberAgentEvidence(token),
+			// ワークスペース一覧のIssueマーク用。ペインの生死に紐づける判定 (activityGuard) は
+			// setParadisAgentPaneIssueUrls 側で行うため、ここでは検出結果をそのまま渡すだけでよい。
+			onIssueUrlsUpdated: issueUrls => setParadisAgentPaneIssueUrls(token, issueUrls),
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
 			// （ParadisAgentBrowserService がペイン実行状態 working/question の判定に使う）。
 			onActivity: pushActivity,

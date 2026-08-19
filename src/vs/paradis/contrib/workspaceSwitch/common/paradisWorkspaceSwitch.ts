@@ -564,12 +564,19 @@ export interface IParadisAgentStatusStore {
 	 * 使う。状態（実行中/完了）までは分からないので、載せるかどうかの判断にだけ使うこと。
 	 */
 	hasDiscoveredAgentSession(paneToken: string): boolean;
+	/**
+	 * スコープ内で現在動作中のエージェントの対話から検出済みの GitHub Issue URL (出現順、重複無し)。
+	 * 検出はエージェントが動いている間だけ供給されるため、アイドル化したスコープは自然に空へ戻る。
+	 */
+	getScopeIssueUrls(stateKey: string): readonly string[];
 	/** ポーラー専用。代表値は内訳から導出するため、書き込みは内訳のみで行う */
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void;
 	/** ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新） */
 	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void;
 	/** モバイルリレー専用（hook 以外の根拠でセッションが確定しているペインの一括更新）。 */
 	setDiscoveredAgentPaneTokens(paneTokens: ReadonlySet<string>): void;
+	/** ポーラー専用（スコープごとに検出済み Issue URL の一括更新）。 */
+	setScopeIssueUrls(issueUrls: ReadonlyMap<string, ReadonlySet<string>>): void;
 }
 
 /**

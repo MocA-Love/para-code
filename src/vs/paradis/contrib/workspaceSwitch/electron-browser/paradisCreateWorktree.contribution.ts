@@ -26,10 +26,11 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
+import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
-import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
@@ -42,6 +43,7 @@ export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.remov
 export const PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID = 'paradis.workspaceSwitch.configureLifecycleScripts';
 export const PARADIS_GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 export const PARADIS_GET_PR_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getPrStatuses';
+export const PARADIS_GET_ISSUE_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getIssueStatuses';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -524,6 +526,76 @@ class ParadisGetPrStatusesAction extends Action2 {
 }
 
 registerAction2(ParadisGetPrStatusesAction);
+
+/** 1つの作業ツリーで検出済みの Issue URL 一覧。ビュー側が更新のたびに組み立てて渡す。 */
+interface IParadisGetIssueStatusesRequest {
+	readonly resource: UriComponents;
+	readonly issueUrls: readonly string[];
+}
+
+/**
+ * 各作業ツリーで検出済みの GitHub Issue URL をまとめて番号・タイトル・状態へ解決するコマンド。
+ * collectPerWorktree と違い worktree ごとに引数 (issueUrls) が異なるため専用に組み立てる。
+ * 同じ Issue が複数のスペースから参照されていても、ホスト単位で URL を集合化してから
+ * 1回だけ gh へ問い合わせる (worktreeごとに重複してspawnしない)。`resolved`/`attempted` は
+ * 全ホストぶんを併合して返す。gh CLI の実行は worktree git チャネルに委譲する
+ * (web ビルドでは未登録のため呼び出し側で安全に無効化される)。
+ */
+class ParadisGetIssueStatusesAction extends Action2 {
+	constructor() {
+		super({
+			id: PARADIS_GET_ISSUE_STATUSES_COMMAND_ID,
+			title: localize2('paradis.workspaceSwitch.getIssueStatuses', "Get Worktree Issue Statuses"),
+			category: localize2('paradis.category', "Para Code"),
+			f1: false
+		});
+	}
+
+	async run(accessor: ServicesAccessor, requests?: IParadisGetIssueStatusesRequest[]): Promise<IParadisIssueStatusesResult> {
+		if (!Array.isArray(requests) || requests.length === 0) {
+			return { resolved: {}, attempted: [] };
+		}
+		const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
+		// 同じ Issue が複数のスペースから参照されていても gh 呼び出しは1回で済ませる。
+		// --repo を明示するため cwd はどの worktree のものでも構わない設計 (paradisWorktreeGitChannel.ts
+		// の getIssueStatuses 参照) なので、ホスト (手元 / 接続先) ごとに URL を集合化してから
+		// そのホストにつき1回だけ解決する。手元と接続先を同じ回に混ぜていても、
+		// paradisWorktreeGitHostResolver は解決先ごとに同じホストオブジェクトを返すため、
+		// Map のキーとしてそのまま使える。
+		const byHost = new Map<IParadisWorktreeGitHost, { anchor: URI; issueUrls: Set<string> }>();
+		for (const request of requests) {
+			if (!Array.isArray(request.issueUrls) || request.issueUrls.length === 0) {
+				continue;
+			}
+			const resource = URI.revive(request.resource);
+			const host = resolveGitHost(resource);
+			const entry = byHost.get(host);
+			if (entry === undefined) {
+				byHost.set(host, { anchor: resource, issueUrls: new Set(request.issueUrls) });
+			} else {
+				for (const url of request.issueUrls) {
+					entry.issueUrls.add(url);
+				}
+			}
+		}
+		const resolved: Record<string, IParadisIssueStatus> = {};
+		const attempted: string[] = [];
+		await Promise.all([...byHost.entries()].map(async ([host, entry]) => {
+			try {
+				const hostResult = await host.channel.call<IParadisIssueStatusesResult>('getIssueStatuses', [host.path(entry.anchor), [...entry.issueUrls]]);
+				Object.assign(resolved, hostResult.resolved);
+				attempted.push(...hostResult.attempted);
+			} catch {
+				// そのホストの失敗 (消えた・gh不在等) は無視し、他ホストの結果は返す。
+				// attempted に入れない = 呼び出し側 (Workspaces ビュー) は「試行できなかった」として
+				// 扱い、無限に即時再試行しない程度には抑えつつ、ホストが復旧したら再試行できる。
+			}
+		}));
+		return { resolved, attempted };
+	}
+}
+
+registerAction2(ParadisGetIssueStatusesAction);
 
 /**
  * リポジトリの Setup/Teardown スクリプト（.paracode.json）を編集するダイアログを開くコマンド。

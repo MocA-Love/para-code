@@ -13,6 +13,7 @@ import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 
 const DIFF_STATS_POLL_INTERVAL_MS = 10_000;
 const PR_STATUS_POLL_INTERVAL_MS = 300_000;
+const ISSUE_STATUS_POLL_INTERVAL_MS = 300_000;
 
 /** Workspaces view のポーリングを起動するスケジューラーの最小契約。 */
 export interface IParadisWorkspacesPollingScheduler extends IDisposable {
@@ -45,6 +46,12 @@ interface IParadisWorkspacesPollState {
 export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	private readonly diffStats: IParadisWorkspacesPollState;
 	private readonly prStatus: IParadisWorkspacesPollState;
+	/**
+	 * 検出済み Issue の解決ポーリング。呼び出し元 (refreshIssueStatus) が省略された場合は
+	 * undefined のままにし、開始・完了・即時要求のすべてを無害な no-op にする
+	 * (Web ビルド等、Issueマーク自体を持たない構成／既存テストの3引数呼び出しとの互換のため)。
+	 */
+	private readonly issueStatus: IParadisWorkspacesPollState | undefined;
 	private started = false;
 	private visible = false;
 
@@ -54,6 +61,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		refreshPrStatus: () => void,
 		schedulerFactory: SchedulerFactory = (runner, defaultDelay) => new RunOnceScheduler(runner, defaultDelay),
 		private readonly now: () => number = Date.now,
+		refreshIssueStatus?: () => void,
 	) {
 		super();
 		this.diffStats = {
@@ -70,6 +78,13 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			invalidated: false,
 			lastCompletedAt: undefined,
 		};
+		this.issueStatus = refreshIssueStatus !== undefined ? {
+			scheduler: this._register(schedulerFactory(refreshIssueStatus, ISSUE_STATUS_POLL_INTERVAL_MS)),
+			inFlight: false,
+			pendingImmediate: false,
+			invalidated: false,
+			lastCompletedAt: undefined,
+		} : undefined;
 
 		this._register(signals.onDidChangeVisibility(() => this.setVisible(signals.isBodyVisible())));
 		this._register(signals.onDidChangeRepositories(() => this.requestRefresh(true)));
@@ -108,6 +123,29 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		this.complete(this.prStatus, PR_STATUS_POLL_INTERVAL_MS);
 	}
 
+	/** Issue コマンドを開始できるときだけ in-flight にする。refreshIssueStatus 未指定なら常に false。 */
+	beginIssueStatusRefresh(): boolean {
+		return this.issueStatus !== undefined && this.begin(this.issueStatus);
+	}
+
+	/** Issue コマンド完了後、可視状態に応じて次回実行を決める。 */
+	completeIssueStatusRefresh(): void {
+		if (this.issueStatus !== undefined) {
+			this.complete(this.issueStatus, ISSUE_STATUS_POLL_INTERVAL_MS);
+		}
+	}
+
+	/**
+	 * 新規 Issue URL の検出時など、通常の300秒周期を待たずに次のIssue解決を即時実行させたい時に呼ぶ。
+	 * diff/PR と違い repositories/worktrees の変化ではなく、エージェント状態の変化が契機になるため
+	 * requestRefresh (private) とは別に公開する。
+	 */
+	requestImmediateIssueStatusRefresh(): void {
+		if (this.issueStatus !== undefined && this.started && this.visible) {
+			this.requestImmediate(this.issueStatus);
+		}
+	}
+
 	override dispose(): void {
 		this.started = false;
 		this.visible = false;
@@ -117,6 +155,11 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		this.prStatus.inFlight = false;
 		this.prStatus.pendingImmediate = false;
 		this.prStatus.invalidated = false;
+		if (this.issueStatus !== undefined) {
+			this.issueStatus.inFlight = false;
+			this.issueStatus.pendingImmediate = false;
+			this.issueStatus.invalidated = false;
+		}
 		super.dispose();
 	}
 
@@ -131,10 +174,16 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		if (!visible) {
 			this.cancelPending(this.diffStats);
 			this.cancelPending(this.prStatus);
+			if (this.issueStatus !== undefined) {
+				this.cancelPending(this.issueStatus);
+			}
 			return;
 		}
 		this.resume(this.diffStats, DIFF_STATS_POLL_INTERVAL_MS);
 		this.resume(this.prStatus, PR_STATUS_POLL_INTERVAL_MS);
+		if (this.issueStatus !== undefined) {
+			this.resume(this.issueStatus, ISSUE_STATUS_POLL_INTERVAL_MS);
+		}
 	}
 
 	private requestRefresh(markInvalidated = false): void {
@@ -145,11 +194,17 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			if (markInvalidated) {
 				this.diffStats.invalidated = true;
 				this.prStatus.invalidated = true;
+				if (this.issueStatus !== undefined) {
+					this.issueStatus.invalidated = true;
+				}
 			}
 			return;
 		}
 		this.requestImmediate(this.diffStats);
 		this.requestImmediate(this.prStatus);
+		if (this.issueStatus !== undefined) {
+			this.requestImmediate(this.issueStatus);
+		}
 	}
 
 	private requestImmediate(state: IParadisWorkspacesPollState): void {
@@ -223,6 +278,7 @@ export class ParadisWorkspacesPollingController extends Disposable {
 		private readonly refreshPrStatus: () => Promise<void>,
 		schedulerFactory?: SchedulerFactory,
 		now?: () => number,
+		private readonly refreshIssueStatus?: () => Promise<void>,
 	) {
 		super();
 		this.lifecycle = this._register(new ParadisWorkspacesPollingLifecycle(
@@ -231,6 +287,7 @@ export class ParadisWorkspacesPollingController extends Disposable {
 			() => { void this.runPrStatusRefresh(); },
 			schedulerFactory,
 			now,
+			this.refreshIssueStatus !== undefined ? () => { void this.runIssueStatusRefresh(); } : undefined,
 		));
 		this.lifecycle.start(signals.isBodyVisible());
 	}
@@ -259,5 +316,23 @@ export class ParadisWorkspacesPollingController extends Disposable {
 		} finally {
 			this.lifecycle.completePrStatusRefresh();
 		}
+	}
+
+	private async runIssueStatusRefresh(): Promise<void> {
+		if (this.refreshIssueStatus === undefined || !this.lifecycle.beginIssueStatusRefresh()) {
+			return;
+		}
+		try {
+			await this.refreshIssueStatus();
+		} catch {
+			// web ビルド等でコマンド未登録の場合は、Issueマークの詳細を出さず次回ポーリングへ進む
+		} finally {
+			this.lifecycle.completeIssueStatusRefresh();
+		}
+	}
+
+	/** 新規 Issue URL の検出時に、通常の300秒周期を待たず次のIssue解決を即時実行させる。 */
+	requestImmediateIssueStatusRefresh(): void {
+		this.lifecycle.requestImmediateIssueStatusRefresh();
 	}
 }
