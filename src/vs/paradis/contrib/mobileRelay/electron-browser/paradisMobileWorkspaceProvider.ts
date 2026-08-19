@@ -43,6 +43,8 @@ import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/pa
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 // PARA-PATCH: RTK節約データのモバイル配信
+import { localize } from '../../../../nls.js';
+import { isParadisRtkNotFoundError } from '../../rtk/common/paradisRtk.js';
 import { IParadisRtkDashboardData } from '../../rtk/electron-browser/paradisRtkClient.js';
 import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradisGithubMetrics.js';
@@ -698,7 +700,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly searchText: (root: URI, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
 		setUsageWarmLease: (ownerId: string, active: boolean) => Promise<void>,
-		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk の shared process バックエンド
+		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk のバックエンド(接続中は接続先の REH)
 		private readonly fetchRtkSavings: (bypassCache: boolean) => Promise<IParadisRtkDashboardData>,
 		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor の shared process バックエンド
 		private readonly fetchLimitsSnapshot: (bypassCache: boolean) => Promise<IParadisLimitsSnapshot>,
@@ -2069,7 +2071,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const data = await this.fetchRtkSavings(!!msg.bypassCache);
 				reply({ t: 'rtk', data });
 			} catch (err) {
-				reply({ error: String(err) });
+				// 未インストールは内部マーカー入りの英文で来る。そのまま見せない。
+				reply({
+					error: isParadisRtkNotFoundError(err)
+						? localize('paradis.mobile.rtkNotFound', "rtk が見つかりません。PC（SSH 接続中は接続先）にインストールすると節約量を見られます。")
+						: String(err)
+				});
 			}
 			return;
 		}

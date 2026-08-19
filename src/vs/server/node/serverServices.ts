@@ -112,6 +112,8 @@ import { registerParadisWorktreeGitForServer } from '../../paradis/contrib/works
 // PARA-PATCH: usage and limits are recorded on this machine, so a connected client asks here
 import { registerParadisCcusageForServer } from '../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
 import { registerParadisLimitsMonitorForServer } from '../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
+// PARA-PATCH: rtk keeps its savings log on the machine that ran the command (registered below)
+import { registerParadisRtkForServer } from '../../paradis/contrib/rtk/node/paradisRtkChannel.js';
 // PARA-PATCH: this machine's own load, for a connected client to show instead of its own
 import { registerParadisHostResourcesForServer } from '../../paradis/contrib/resourceMonitor/node/paradisHostResourcesChannel.js';
 // PARA-PATCH: agent session transcripts (~/.claude, ~/.codex) live on this machine, so a connected client's Session Resume view asks here
@@ -366,6 +368,9 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// recorded in this machine's home. Counting it on the client side misses all of it.
 		disposables.add(registerParadisCcusageForServer(socketServer, logService));
 		disposables.add(registerParadisLimitsMonitorForServer(socketServer, logService));
+		// PARA-PATCH: rtk records what it saved on the machine that ran the command, so while a
+		// client is connected those savings pile up here, not on the machine showing the window.
+		disposables.add(registerParadisRtkForServer(socketServer, logService));
 		// PARA-PATCH: while a client is connected, the terminals and agents run here, so
 		// "how busy is the machine" means this machine, not the one showing the window.
 		disposables.add(registerParadisHostResourcesForServer(socketServer, logService));

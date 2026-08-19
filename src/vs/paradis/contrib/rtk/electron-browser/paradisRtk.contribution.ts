@@ -11,7 +11,7 @@
 // - コマンド `paradis.rtk.showDashboard`(コマンドパレット対応)
 // - ステータスバー右側(ccusage ボタンの左)の rtk ボタン(今日の節約量を定期表示、クリックでダッシュボード)
 // - 設定 `paradis.rtk.*` のスキーマ登録
-// rtk CLI 実行本体は shared process 側(node/paradisRtkChannel.ts)にある。
+// rtk CLI 実行本体は node/paradisRtkChannel.ts にあり、shared process と接続先(REH)の双方で動く。
 
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -87,8 +87,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[PARADIS_RTK_SETTING_EXECUTABLE_PATH]: {
 			type: 'string',
 			default: '',
-			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.rtk.executablePath', "`rtk` 実行ファイルの絶対パス。空の場合は PATH 上の `rtk` を使います。"),
+			// SSH/WSL 接続中は接続先の rtk を実行するため、パスも接続先ごとに決まる必要がある。
+			// マシンスコープにすると、接続中は手元の値が使われず接続先のマシン設定だけが効く
+			// (手元の絶対パスを接続先へ送りつける事故が起きない)。逆に、既定プロファイル以外を
+			// 使っていて以前この設定を入れていた場合は、そのプロファイルの設定へ入れ直しになる。
+			scope: ConfigurationScope.MACHINE,
+			markdownDescription: localize('paradis.rtk.executablePath', "`rtk` 実行ファイルの絶対パス。空の場合は PATH 上の `rtk` を使います。SSH で接続している間は接続先の `rtk` を実行するため、接続先で別のパスを使う場合はリモート側の設定で指定してください。"),
 		},
 		[SETTING_STATUS_BAR_ENABLED]: {
 			type: 'boolean',
@@ -147,11 +151,18 @@ class ParadisRtkStatusBarContribution extends Disposable implements IWorkbenchCo
 	private showEntry(todaySaved: number | undefined, notFound: boolean): void {
 		const text = todaySaved !== undefined ? `$(zap) ${paradisRtkFormatTokens(todaySaved)} 節約` : '$(zap) rtk';
 		let tooltip: string;
+		// 接続中は接続先の rtk を見ているので、どのマシンの数字かが分かるようにする
+		// (手元のウィンドウと数字が違って見えるのは、集計しているマシンが違うため)。
+		const remoteHost = this.client.remoteHostLabel;
 		if (notFound) {
 			// 未検出でもボタンは残す(ダッシュボードにインストール手順を出しているため)。
-			tooltip = localize('paradis.rtk.statusTooltipNotFound', "rtk が見つかりません — クリックすると案内を表示します");
+			tooltip = remoteHost
+				? localize('paradis.rtk.statusTooltipNotFoundRemote', "接続先（{0}）に rtk が見つかりません — クリックすると案内を表示します", remoteHost)
+				: localize('paradis.rtk.statusTooltipNotFound', "rtk が見つかりません — クリックすると案内を表示します");
 		} else if (todaySaved !== undefined) {
-			tooltip = localize('paradis.rtk.statusTooltip', "今日 rtk が削減したトークン数: {0} — クリックで RTK 節約ダッシュボードを開きます", paradisRtkFormatTokens(todaySaved));
+			tooltip = remoteHost
+				? localize('paradis.rtk.statusTooltipRemote', "今日 rtk が接続先（{0}）で削減したトークン数: {1} — クリックで RTK 節約ダッシュボードを開きます", remoteHost, paradisRtkFormatTokens(todaySaved))
+				: localize('paradis.rtk.statusTooltip', "今日 rtk が削減したトークン数: {0} — クリックで RTK 節約ダッシュボードを開きます", paradisRtkFormatTokens(todaySaved));
 		} else {
 			tooltip = localize('paradis.rtk.statusTooltipNoData', "RTK 節約ダッシュボードを開きます");
 		}
