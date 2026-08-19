@@ -74,6 +74,18 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '1回の質問でまとめて複数聞かれたときや、同じ質問がPC側の別の経路から二重に上がってきたときも、通知は1回だけになります。',
 				tone: 'green',
 			},
+			{
+				icon: 'expand-outline',
+				title: 'iPadで差分も画面いっぱいに広げられるようになりました',
+				body: '差分を開いたときの右上のボタンで、ファイルやブラウザと同じように全画面へ切り替えられます。',
+				tone: 'green',
+			},
+			{
+				icon: 'document-text-outline',
+				title: '大きめのHTMLファイルが途中で切れなくなりました',
+				body: '1MBを超えるファイルは先頭までしか表示できませんでしたが、20MBまで読み込めるようになりました。単一ページのHTMLレポートやダッシュボード出力も最後まで表示できます。',
+				tone: 'green',
+			},
 		],
 	},
 	{

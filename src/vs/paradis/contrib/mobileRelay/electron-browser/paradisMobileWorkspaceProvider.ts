@@ -444,7 +444,24 @@ type FsInbound =
 	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
 	| { t: 'hl'; id: string; text: string; lang?: string };
 
-const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト。FrameMuxのチャンク分割転送で1MiB超の応答も送れる）
+// ファイル読み取り上限（バイト）。旧上限（1MiB）では単一ページに完結した大きめのHTMLレポート/
+// ダッシュボード出力が先頭で打ち切られ、`.html`のレンダー表示（生HTMLをそのままWebViewへ
+// 渡す唯一の経路）で途中から表示が壊れる不具合の原因になっていたため、バイナリと同じ
+// BINARY_READ_LIMIT まで引き上げた。
+//
+// 注意: gzip圧縮（store.ts の fsRead が指定する JSON_GZIP_RESPONSE_ENCODING）が効くのは
+// クライアントが対応を交渉し、かつJSON化後が32MiB以下のときだけで、無条件には効かない。
+// また非UTF-8バイト列は `content.value.toString()` でU+FFFDへ置換されて3倍、制御文字は
+// JSONエスケープで最大6倍に膨らみうる（base64膨張は無いという主張は本文には正しいが、
+// JSONエスケープ膨張は別に効く）。20MiB読んだテキストがJSON化・エスケープでFrameMuxの
+// 再結合上限（FRAME_REASSEMBLY_LIMIT = 32MiB）を超えないよう、下の FS_RESPONSE_PAYLOAD_LIMIT
+// で送信直前に実サイズを検査している。
+const FS_READ_LIMIT = 20 * 1024 * 1024;
+// fsチャンネルの応答（gzip交渉が効かない場合は無圧縮のJSON）が FrameMux の再結合上限
+// （FRAME_REASSEMBLY_LIMIT = 32MiB）を超えないよう、安全マージンを残して送信前に弾く値。
+// 超えた場合、黙って送って接続を切断させる（`onFatal`でソケットが閉じ再ハンドシェイクになる）
+// より、エラー応答を返すほうがユーザーへの影響が小さい。
+const FS_RESPONSE_PAYLOAD_LIMIT = 24 * 1024 * 1024;
 // バイナリ（PDF・Word・画像・動画・音声）の読み取り上限。base64 で約1.37倍に膨らむため、
 // FrameMux の再結合上限（FRAME_REASSEMBLY_LIMIT = 32MiB）に収まるようここで抑える（20MiB → base64 約27MiB）。
 const BINARY_READ_LIMIT = 20 * 1024 * 1024;
@@ -1989,7 +2006,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const replyCompressed = async (body: object) => {
 			const json = jsonReply(body);
 			const responseEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.responseEncoding : undefined;
-			sendReply(await paradisEncodeJsonResponsePayload('fs', msg.t, responseEncoding, json));
+			const encoded = await paradisEncodeJsonResponsePayload('fs', msg.t, responseEncoding, json);
+			// gzip交渉が効かない場合や、非UTF-8バイト/制御文字のJSONエスケープ膨張で
+			// FrameMuxの再結合上限を超えると、フレームが再結合されずソケットごと切断される
+			// （黙って表示が乱れるだけでは済まない）。実サイズをここで検査して弾く。
+			if (encoded.length > FS_RESPONSE_PAYLOAD_LIMIT) {
+				// allow-any-unicode-next-line
+				sendReply(jsonReply({ error: `このファイルは転送できる上限（${FS_RESPONSE_PAYLOAD_LIMIT / 1024 / 1024}MB）を超えています。テキストとして扱えない内容の可能性があります。` }));
+				return;
+			}
+			sendReply(encoded);
 		};
 		const replyCacheable = async (body: { readonly t: string } & Record<string, unknown>) => {
 			const cacheEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.cacheEncoding : undefined;

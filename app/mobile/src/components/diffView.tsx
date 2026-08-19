@@ -99,7 +99,31 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
 	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
 	const [presentedAsSheet] = useState(useIsRegularWidth());
-	const headerTop = presentedAsSheet ? 14 : 58;
+	// iPad(pageSheet)限定の「全画面に拡大」トグル。UIKitはpresentationStyleの後変更を
+	// 無視するため、Modalごと `key` で作り直して見た目を切り替える。同一コミットで
+	// `key` だけ差し替えると旧Modalのdismiss完了前に新Modalのpresentが走ることがあるため、
+	// `onDismiss`（iOSのみ、dismissアニメーション完了時に発火）で順序を保証する
+	// （fileViewer.tsx の FileViewer と同じ実装）。
+	const [expanded, setExpanded] = useState(false);
+	const [modalOpen, setModalOpen] = useState(true);
+	const pendingExpandedRef = useRef<boolean | undefined>(undefined);
+	const effectiveSheet = presentedAsSheet && !expanded;
+	const headerTop = effectiveSheet ? 14 : 58;
+
+	const requestToggleExpanded = () => {
+		hapticImpact('light');
+		pendingExpandedRef.current = !expanded;
+		setModalOpen(false);
+	};
+	const handleDismiss = () => {
+		if (pendingExpandedRef.current !== undefined) {
+			setExpanded(pendingExpandedRef.current);
+			pendingExpandedRef.current = undefined;
+			setModalOpen(true);
+			return;
+		}
+		onClose();
+	};
 	const { scmDiff, scmXlsxDiff, fsRead, fsXlsx, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
 		scmDiff: s.scmDiff, scmXlsxDiff: s.scmXlsxDiff, fsRead: s.fsRead, fsXlsx: s.fsXlsx,
 		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
@@ -123,6 +147,10 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	const [diffText, setDiffText] = useState<string | undefined>();
 	const [diffHtml, setDiffHtml] = useState<string | undefined>();
 	const [renderHtml, setRenderHtml] = useState<string | undefined>();
+	// レンダー表示中の内容がPC側の読み取り上限（fsRead、現在20MB）で切り詰められているか。
+	// .html はそのままWebViewへ渡す唯一の経路なので、切り詰められると表示が途中で壊れる
+	// （fileViewer.tsx の FileViewer と同じ注意喚起をここでも出す）。
+	const [renderTruncated, setRenderTruncated] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const contentIdentity = `${ws}\0${path}\0${staged}`;
 	const contentIdentityRef = useRef(contentIdentity);
@@ -135,6 +163,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 			setDiffText(undefined);
 			setDiffHtml(undefined);
 			setRenderHtml(undefined);
+			setRenderTruncated(false);
 			setError(undefined);
 		}
 		if (!live) {
@@ -173,6 +202,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 					const r = await fsRead(ws, path);
 					if (!cancelled && currentRendererTarget(ws) === requestTarget) {
 						setRenderHtml(kind === 'markdown' ? buildMarkdownHtml(r) : r.content);
+						setRenderTruncated(r.truncated);
 					}
 				}
 			} catch (e) {
@@ -195,9 +225,17 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	const loading = mode === 'render' ? renderHtml === undefined : kind === 'spreadsheet' ? diffHtml === undefined : diffText === undefined;
 
 	// iPad幅では pageSheet にして、常設サイドバーを覆い隠さないようにする
-	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。
+	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。ヘッダーの拡大ボタンで
+	// ユーザーが明示的に選んだときだけ全画面へ切り替える。
 	return (
-		<Modal visible animationType="slide" presentationStyle={presentedAsSheet ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose}>
+		<Modal
+			key={effectiveSheet ? 'sheet' : 'full'}
+			visible={modalOpen}
+			animationType="slide"
+			presentationStyle={effectiveSheet ? 'pageSheet' : 'fullScreen'}
+			onDismiss={handleDismiss}
+			onRequestClose={onClose}
+		>
 			<View style={styles.screen}>
 				<View style={[styles.header, { paddingTop: headerTop }]}>
 					<Ionicons name="git-compare-outline" size={16} color={colors.textDim} />
@@ -221,11 +259,24 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 							</Pressable>
 						</View>
 					) : null}
+					{presentedAsSheet ? (
+						<Pressable
+							onPress={requestToggleExpanded}
+							hitSlop={14}
+							accessibilityRole="button"
+							accessibilityLabel={expanded ? 'シート表示に戻す' : '全画面表示にする'}
+						>
+							<Ionicons name={expanded ? 'contract' : 'expand'} size={19} color={colors.textDim} />
+						</Pressable>
+					) : null}
 					<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={22} color={colors.text} />
 					</Pressable>
 				</View>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
+				{mode === 'render' && renderTruncated ? (
+					<Text style={styles.truncated}>サイズ上限のため先頭のみ表示しています</Text>
+				) : null}
 				{showWebView !== undefined ? (
 					// ペアリング済みワークスペースのHTMLはPC版と同様にスクリプト実行を許可する。
 					// xlsxは自前生成HTMLのシート切替スクリプトを実行する。
@@ -284,6 +335,7 @@ const styles = StyleSheet.create({
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
 	web: { flex: 1 },
 	error: { color: colors.red, fontSize: 12, paddingHorizontal: 16, paddingVertical: 8 },
+	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
 	body: { flex: 1 },
 	bodyContent: { paddingVertical: 8 },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
