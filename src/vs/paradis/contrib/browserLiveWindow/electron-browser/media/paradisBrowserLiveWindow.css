@@ -139,7 +139,9 @@
 	gap: 6px;
 	height: 24px;
 	padding: 0 10px;
-	border-radius: 999px;
+	/* 角丸はツールバーの他のボタン (歯車・ポップオーバーのセグメント) と同じ段に揃える。
+		ピル型にすると同じ列の中で1つだけ丸みの語彙が違って見えるため。 */
+	border-radius: 6px;
 	border: 1px solid var(--vscode-editorWidget-border);
 	background: transparent;
 	color: var(--vscode-descriptionForeground);
@@ -167,37 +169,48 @@
 }
 
 .paradis-browser-live-chip:focus-visible,
-.paradis-browser-live-value-button:focus-visible,
+.paradis-browser-live-icon-button:focus-visible,
 .paradis-browser-live-mini-button:focus-visible,
-.paradis-browser-live-shot:focus-visible {
+.paradis-browser-live-shot:focus-visible,
+.paradis-browser-live-pop-item:focus-visible,
+.paradis-browser-live-pop-seg button:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
 
-/* 「並び: タブの並び」のように、現在値をラベルに出したまま押すたび次の値へ回るボタン。
-	項目が3つずつしかないので、畳んだポップオーバーより往復が少ない。 */
-.paradis-browser-live-value-button {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	height: 24px;
-	padding: 0 9px;
-	border-radius: 6px;
-	border: 1px solid var(--vscode-editorWidget-border);
-	background: transparent;
-	color: var(--vscode-foreground);
-	font-family: inherit;
-	font-size: 11.5px;
-	cursor: pointer;
+.paradis-browser-live-tool-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 }
 
-.paradis-browser-live-value-button:hover {
-	background-color: var(--vscode-list-hoverBackground);
+.paradis-browser-live-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 24px;
+	border-radius: 6px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
 }
 
-.paradis-browser-live-value-button > .key {
-	color: var(--vscode-descriptionForeground);
+.paradis-browser-live-icon-button.codicon {
+	font-size: 14px;
+}
+
+.paradis-browser-live-icon-button:hover {
+	background-color: var(--vscode-list-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-browser-live-icon-button.checked {
+	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground);
+	border-color: var(--vscode-focusBorder);
 }
 
 /* ---------------------------------------------------------------- タイルの壁 */
@@ -222,6 +235,25 @@
 .paradis-browser-live-wall.columns-4 { grid-template-columns: repeat(4, 1fr); }
 .paradis-browser-live-wall.columns-5 { grid-template-columns: repeat(5, 1fr); }
 .paradis-browser-live-wall.columns-6 { grid-template-columns: repeat(6, 1fr); }
+
+/* スペースごとの見出し。一覧には全スペースのページが並ぶので、どこからどこまでが
+	どのスペースかを1行で示す。 */
+.paradis-browser-live-group-head {
+	grid-column: 1 / -1;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 2px 0;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-browser-live-swatch {
+	width: 3px;
+	height: 12px;
+	border-radius: 2px;
+	flex: 0 0 3px;
+}
 
 .paradis-browser-live-empty {
 	grid-column: 1 / -1;
@@ -252,16 +284,32 @@
 	border-color: var(--vscode-focusBorder);
 }
 
+/* スペース色の帯。見出しを消していても、どのスペースのページかが分かるようにする。
+	ヘッダーの高さだけに収める (下まで伸ばすとサムネの縁で切れて見える)。 */
+.paradis-browser-live-spacebar {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 3px;
+	border-radius: 9px 0 0 0;
+}
+
+.paradis-browser-live-spacebar.hidden {
+	display: none;
+}
+
 /* エージェントへ共有中。ページ側に出るカーソル演出と同じ「掴まれている」合図。 */
 .paradis-browser-live-tile.shared {
 	box-shadow: 0 0 0 1px var(--vscode-charts-blue, #3794ff), 0 2px 12px rgba(0, 0, 0, 0.2);
 }
 
 .paradis-browser-live-tile-head {
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 7px;
-	padding: 5px 6px 5px 9px;
+	padding: 5px 6px 5px 11px;
 	flex: 0 0 auto;
 	min-height: 28px;
 }
@@ -340,6 +388,10 @@
 .paradis-browser-live-mini-button:hover {
 	background-color: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
 	color: var(--vscode-foreground);
+}
+
+.paradis-browser-live-mini-button.hidden {
+	display: none;
 }
 
 /* ---- サムネイル ---- */
@@ -440,7 +492,7 @@
 	gap: 4px;
 	font-size: 10px;
 	padding: 1px 7px 1px 6px;
-	border-radius: 999px;
+	border-radius: 5px;
 	border: 1px solid var(--vscode-editorWidget-border);
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
@@ -475,6 +527,11 @@
 	animation: paradis-browser-live-pulse 1s ease-in-out infinite;
 }
 
+.paradis-browser-live-tag.space {
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.9;
+}
+
 .paradis-browser-live-tag.error {
 	color: var(--vscode-charts-red, #f14c4c);
 	border-color: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 45%, var(--vscode-editorWidget-border));
@@ -489,6 +546,130 @@
 	.paradis-browser-live-tag .paradis-browser-live-dot {
 		animation: none !important;
 	}
+}
+
+/* ---------------------------------------------------------------- 歯車ポップオーバー */
+
+.paradis-browser-live-pop {
+	position: absolute;
+	top: 40px;
+	right: 10px;
+	z-index: 50;
+	width: 300px;
+	overflow-y: auto;
+	padding: 8px 12px 12px;
+	font-size: 11.5px;
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 12px;
+	box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+}
+
+.paradis-browser-live-pop:focus-visible {
+	outline: none;
+}
+
+.paradis-browser-live-pop-head {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	margin: 8px 0 4px;
+}
+
+.paradis-browser-live-pop-head:first-child {
+	margin-top: 4px;
+}
+
+.paradis-browser-live-pop-sep {
+	height: 1px;
+	margin: 9px 0 2px;
+	background-color: var(--vscode-editorWidget-border);
+}
+
+.paradis-browser-live-pop-list {
+	display: flex;
+	flex-direction: column;
+}
+
+.paradis-browser-live-pop-item {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 4px 6px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: 11.5px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.paradis-browser-live-pop-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-browser-live-pop-check {
+	width: 12px;
+	color: var(--vscode-focusBorder);
+	visibility: hidden;
+}
+
+.paradis-browser-live-pop-check.codicon {
+	font-size: 12px;
+}
+
+.paradis-browser-live-pop-item.checked > .paradis-browser-live-pop-check {
+	visibility: visible;
+}
+
+.paradis-browser-live-pop-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 6px 0;
+}
+
+.paradis-browser-live-pop-key {
+	color: var(--vscode-descriptionForeground);
+	flex: 0 0 auto;
+}
+
+.paradis-browser-live-pop-note {
+	font-size: 10.5px;
+	line-height: 1.55;
+	color: var(--vscode-descriptionForeground);
+	margin: 2px 0 4px;
+}
+
+.paradis-browser-live-pop-seg {
+	display: flex;
+	margin-left: auto;
+	flex: 0 0 auto;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.paradis-browser-live-pop-seg button {
+	border: 0;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	font-size: 11px;
+	padding: 3px 9px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.paradis-browser-live-pop-seg button + button {
+	border-left: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-browser-live-pop-seg button.checked {
+	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground);
 }
 
 /* ---------------------------------------------------------------- ウィンドウ透過 */

@@ -39,7 +39,7 @@ interface ISerializedWindowBounds {
 	readonly height?: number;
 }
 
-const EMPTY_SUMMARY: IParadisBrowserLiveSummary = { total: 0, shared: 0 };
+const EMPTY_SUMMARY: IParadisBrowserLiveSummary = { total: 0, shared: 0, totalAll: 0, sharedAll: 0 };
 
 /**
  * ブラウザ一覧ウィンドウの開閉と、そこに出す一覧の寿命を持つ。
@@ -150,6 +150,10 @@ export class ParadisBrowserLiveWindowService extends Disposable implements IPara
 				transparencyActive,
 			));
 			disposables.add(view.onDidChangeViewState(() => this.scheduleSave()));
+			// 幅が変わるとツールバーが折り返して歯車の位置が動く。開いたままのポップオーバーを
+			// 追従させるために、レイアウトの通知をビューへ渡す。
+			// 寸法が確定してから測りたいので onDidLayout を使う (歯車の位置に追従させるため)。
+			disposables.add(auxiliaryWindow.onDidLayout(() => view.layout()));
 
 			this.focusWindow = () => auxiliaryWindow.window.focus();
 			this.windowDisposables = disposables;
@@ -212,7 +216,8 @@ export class ParadisBrowserLiveWindowService extends Disposable implements IPara
 
 	private updateSummary(): void {
 		const summary = this.model.summary;
-		if (this._summary.total === summary.total && this._summary.shared === summary.shared) {
+		if (this._summary.total === summary.total && this._summary.shared === summary.shared
+			&& this._summary.totalAll === summary.totalAll && this._summary.sharedAll === summary.sharedAll) {
 			return;
 		}
 		this._summary = summary;

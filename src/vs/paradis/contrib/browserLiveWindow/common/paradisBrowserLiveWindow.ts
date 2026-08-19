@@ -8,6 +8,7 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 /** ブラウザ一覧ウィンドウのタイル1枚分。 */
 export interface IParadisBrowserLiveEntry {
@@ -29,17 +30,38 @@ export interface IParadisBrowserLiveEntry {
 	readonly agents: readonly string[];
 	/** エディタの並び順 (グループ順 → グループ内の順)。「タブの並び」ソートの基準。 */
 	readonly order: number;
+	/** 所属スペースの状態キー。どのスペースにも属さないページでは undefined。 */
+	readonly stateKey: string | undefined;
+	/** スペースの表示名 (「リポジトリ / worktree」)。解決できなければ空。 */
+	readonly spaceName: string;
+	/** スペース色 (hex)。未設定・未解決では undefined。 */
+	readonly spaceColor: string | undefined;
+	/** いま開いているスペースのページか。閉じる操作を許すかの判断にも使う。 */
+	readonly inActiveSpace: boolean;
 }
 
-/** タイトルバーのボタンが出すバッジの材料。 */
+/**
+ * タイトルバーのボタンが出すバッジと、ツールバーのチップの材料。
+ *
+ * バッジは「いま開いているスペースのタイトルバー」に出るので、基準も今のスペースにする
+ * (一覧の中身は全スペースだが、バッジまで全スペース合計にすると、1タブしか開いていない
+ * スペースで大きな数字が出て、切り替えても動かない)。全体の数は補足として別に持つ。
+ */
 export interface IParadisBrowserLiveSummary {
-	/** 開いている内蔵ブラウザの総数。 */
+	/** いま開いているスペースのページ数。 */
 	readonly total: number;
 	/** そのうちエージェントへ共有中の数。1以上ならバッジを強調する。 */
 	readonly shared: number;
+	/** 他のスペースを含めた総数。 */
+	readonly totalAll: number;
+	/** 他のスペースを含めた共有中の数。 */
+	readonly sharedAll: number;
 }
 
 export type ParadisBrowserLiveSort = 'editor' | 'title' | 'shared';
+
+/** タイルの束ね方。スペースをまたいで並ぶので、既定はスペースごとにまとめる。 */
+export type ParadisBrowserLiveGroup = 'space' | 'none';
 
 /**
  * サムネの更新頻度。
@@ -53,7 +75,10 @@ export interface IParadisBrowserLiveViewState {
 	columns: number;
 	/** 共有中のページだけに絞る。 */
 	sharedOnly: boolean;
+	/** いま開いているスペースのページだけに絞る。 */
+	activeSpaceOnly: boolean;
 	sort: ParadisBrowserLiveSort;
+	group: ParadisBrowserLiveGroup;
 	cadence: ParadisBrowserLiveCadence;
 }
 
@@ -62,6 +87,7 @@ export const PARADIS_BROWSER_LIVE_MAX_COLUMNS = 6;
 export const PARADIS_BROWSER_LIVE_DEFAULT_COLUMNS = 3;
 
 const SORTS: readonly ParadisBrowserLiveSort[] = ['editor', 'title', 'shared'];
+const GROUPS: readonly ParadisBrowserLiveGroup[] = ['space', 'none'];
 const CADENCES: readonly ParadisBrowserLiveCadence[] = ['off', 'normal', 'smooth'];
 
 export function paradisClampBrowserLiveColumns(value: number): number {
@@ -75,7 +101,9 @@ export function paradisDefaultBrowserLiveViewState(): IParadisBrowserLiveViewSta
 	return {
 		columns: PARADIS_BROWSER_LIVE_DEFAULT_COLUMNS,
 		sharedOnly: false,
+		activeSpaceOnly: false,
 		sort: 'editor',
+		group: 'space',
 		cadence: 'normal',
 	};
 }
@@ -101,8 +129,12 @@ export function paradisParseBrowserLiveViewState(raw: string | undefined): IPara
 		state.columns = paradisClampBrowserLiveColumns(parsed.columns);
 	}
 	state.sharedOnly = parsed.sharedOnly === true;
+	state.activeSpaceOnly = parsed.activeSpaceOnly === true;
 	if (typeof parsed.sort === 'string' && (SORTS as readonly string[]).includes(parsed.sort)) {
 		state.sort = parsed.sort as ParadisBrowserLiveSort;
+	}
+	if (typeof parsed.group === 'string' && (GROUPS as readonly string[]).includes(parsed.group)) {
+		state.group = parsed.group as ParadisBrowserLiveGroup;
 	}
 	if (typeof parsed.cadence === 'string' && (CADENCES as readonly string[]).includes(parsed.cadence)) {
 		state.cadence = parsed.cadence as ParadisBrowserLiveCadence;
@@ -115,16 +147,31 @@ export function paradisSerializeBrowserLiveViewState(state: IParadisBrowserLiveV
 }
 
 export function paradisFilterBrowserLiveEntries(entries: readonly IParadisBrowserLiveEntry[], state: IParadisBrowserLiveViewState): IParadisBrowserLiveEntry[] {
-	return entries.filter(entry => !state.sharedOnly || entry.agents.length > 0);
+	return entries.filter(entry => {
+		if (state.sharedOnly && entry.agents.length === 0) {
+			return false;
+		}
+		if (state.activeSpaceOnly && !entry.inActiveSpace) {
+			return false;
+		}
+		return true;
+	});
 }
 
 /**
- * 並び替え。既定は「タブの並び」で、エディタで見えている順とタイルの順を一致させる
- * (一覧とタブを見比べたときに探し直さずに済む)。
+ * 並び替え。
+ *
+ * どの並びでも、いま開いているスペースのページを先に置く。一覧には全スペースのページが
+ * 並ぶので、手元のタブが他スペースのタブに埋もれると探し直しになるため。
+ * 既定の「タブの並び」は、その中でエディタのタブ順と一致させる。
  */
 export function paradisSortBrowserLiveEntries(entries: readonly IParadisBrowserLiveEntry[], state: IParadisBrowserLiveViewState): IParadisBrowserLiveEntry[] {
 	const sorted = [...entries];
 	sorted.sort((a, b) => {
+		const byActive = (b.inActiveSpace ? 1 : 0) - (a.inActiveSpace ? 1 : 0);
+		if (byActive !== 0) {
+			return byActive;
+		}
 		switch (state.sort) {
 			case 'title': {
 				const byTitle = paradisBrowserLiveDisplayTitle(a).localeCompare(paradisBrowserLiveDisplayTitle(b));
@@ -143,14 +190,67 @@ export function paradisSortBrowserLiveEntries(entries: readonly IParadisBrowserL
 	return sorted;
 }
 
-export function paradisSummarizeBrowserLiveEntries(entries: readonly IParadisBrowserLiveEntry[]): IParadisBrowserLiveSummary {
-	let shared = 0;
+export interface IParadisBrowserLiveGroupResult {
+	readonly key: string;
+	readonly label: string;
+	readonly color: string | undefined;
+	readonly entries: readonly IParadisBrowserLiveEntry[];
+}
+
+/**
+ * グループ化。並び替え済みの配列を受け取り、順序を保ったまま束ねる
+ * (グループの出現順は、グループ内の先頭要素が元の並びで先に来る順)。
+ */
+export function paradisGroupBrowserLiveEntries(
+	entries: readonly IParadisBrowserLiveEntry[],
+	state: IParadisBrowserLiveViewState,
+	unknownSpaceLabel: string,
+): IParadisBrowserLiveGroupResult[] {
+	if (state.group === 'none') {
+		return [{ key: '', label: '', color: undefined, entries }];
+	}
+	const groups = new Map<string, { label: string; color: string | undefined; entries: IParadisBrowserLiveEntry[] }>();
 	for (const entry of entries) {
-		if (entry.agents.length > 0) {
-			shared++;
+		const key = entry.stateKey ?? '';
+		let group = groups.get(key);
+		if (!group) {
+			group = { label: entry.spaceName || unknownSpaceLabel, color: entry.spaceColor, entries: [] };
+			groups.set(key, group);
+		}
+		group.entries.push(entry);
+	}
+	return [...groups].map(([key, group]) => ({ key, label: group.label, color: group.color, entries: group.entries }));
+}
+
+export function paradisSummarizeBrowserLiveEntries(entries: readonly IParadisBrowserLiveEntry[]): IParadisBrowserLiveSummary {
+	let total = 0;
+	let shared = 0;
+	let sharedAll = 0;
+	for (const entry of entries) {
+		const isShared = entry.agents.length > 0;
+		if (isShared) {
+			sharedAll++;
+		}
+		if (entry.inActiveSpace) {
+			total++;
+			if (isShared) {
+				shared++;
+			}
 		}
 	}
-	return { total: entries.length, shared };
+	return { total, shared, totalAll: entries.length, sharedAll };
+}
+
+/**
+ * そのページを「手元のスペースのもの」として扱ってよいか。
+ *
+ * スコープには 'pending' (所属がまだ分からない) がある。ウィンドウをリロードすると他スペースの
+ * ページが恒久的に pending のまま残ることがあるため、pending を手元扱いすると別スペースのタブに
+ * 閉じる・再読み込みが出てしまう (どちらもそのスペースの復元と台帳に触れる)。
+ * 分からないものは手元ではない、に倒す。
+ */
+export function paradisBrowserLiveInActiveSpace(scope: ParadisBindingScope, activeStateKey: string | undefined): boolean {
+	return scope.kind === 'unscoped' || (scope.kind === 'managed' && scope.stateKey === activeStateKey);
 }
 
 /**
@@ -196,31 +296,29 @@ export function paradisBrowserLiveDisplayUrl(url: string): string {
 
 /** サムネを撮るかどうかの判断材料。 */
 export interface IParadisBrowserLiveCaptureTarget {
-	/** エディタ上で実際に描かれているか。 */
+	/** エディタ上で実際に描かれているか (他のタブの裏・他スペースのページでは false)。 */
 	readonly visible: boolean;
-	/** エージェントへ共有中か。 */
-	readonly shared: boolean;
 }
 
 /**
- * 次のサムネ取得までの待ち時間 (ms)。0 は「撮らない」。
+ * 次のサムネ取得までの待ち時間 (ms)。0 は「撮らない」(更新頻度が「止める」のときだけ)。
  *
- * 隠れているタブは再描画が起きないので、撮っても絵は変わらない。そのうえ撮影のたびに
- * main 側で可視化のキックと1フレームぶんのペイント待ちが走り (browserViewScreenshot.ts の
- * prepareBrowserViewScreenshotCapture)、撮影はビューごとに直列化されているため、
- * エージェント自身のスクリーンショットまで後ろに並ばされる。
+ * 画面に出ていないページも追いかける —— 一覧の目的が「いまどのページがどうなっているかを
+ * 別ウィンドウで見張ること」なので、裏のタブや他スペースのページこそ見たい対象になる。
  *
- * そこで隠れているタブは原則「最後の1枚を出したまま撮らない」。例外はエージェントへ共有中の
- * ページだけで、これは画面に出ていなくても中身が動くので低頻度で追う。
+ * ただし裏のページは撮影のたびに main 側で可視化のキックと1フレームぶんのペイント待ちが走り
+ * (browserViewScreenshot.ts の prepareBrowserViewScreenshotCapture)、撮影はビューごとに
+ * 直列化されているため、エージェント自身のスクリーンショットを待たせる。前面のタブより
+ * 間隔を空けるのはそのため。負荷が気になる場合は更新頻度そのものを下げられる。
  */
 export function paradisBrowserLiveCaptureDelayMs(cadence: ParadisBrowserLiveCadence, target: IParadisBrowserLiveCaptureTarget): number {
 	if (cadence === 'off') {
 		return 0;
 	}
-	if (!target.visible) {
-		return target.shared ? 5000 : 0;
+	if (target.visible) {
+		return cadence === 'smooth' ? 350 : 1000;
 	}
-	return cadence === 'smooth' ? 350 : 1000;
+	return cadence === 'smooth' ? 1000 : 2500;
 }
 
 /**

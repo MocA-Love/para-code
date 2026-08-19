@@ -109,6 +109,12 @@ export class ParadisAgentLiveMirror extends Disposable {
 	 * 追従を止め、下端へ戻したら再開する (再同期やリサイズのたびに引き戻さない)。
 	 */
 	private pinnedToBottom = true;
+	/**
+	 * 直前に観測したスクロール領域の寸法。scroll がユーザー由来かを見分けるのに使う
+	 * ({@link onScroll} 参照)。
+	 */
+	private lastScrollHeight = 0;
+	private lastClientHeight = 0;
 	/** start() 実行中。await を跨いだ再入で端末が二重に生まれるのを防ぐ */
 	private starting = false;
 	private disposed = false;
@@ -125,7 +131,7 @@ export class ParadisAgentLiveMirror extends Disposable {
 		this.resizeObserverCtor = resizeObserverCtor ?? container.ownerDocument.defaultView?.ResizeObserver;
 		this.mount = $('.paradis-agent-live-term-mount');
 		this.container.appendChild(this.mount);
-		this._register(addDisposableListener(this.container, EventType.SCROLL, () => this.updateBottomPin()));
+		this._register(addDisposableListener(this.container, EventType.SCROLL, () => this.onScroll()));
 		this._register({
 			dispose: () => {
 				this.resizeObserver?.disconnect();
@@ -484,6 +490,37 @@ export class ParadisAgentLiveMirror extends Disposable {
 		return addon.serialize({ scrollback: SNAPSHOT_SCROLLBACK_ROWS });
 	}
 
+	/**
+	 * スクロールされた。ユーザーが動かしたのか、こちらの都合で動いたのかで扱いを変える。
+	 *
+	 * 見分けには「スクロール領域の寸法が前回から変わったか」を使う。ウィンドウやタイルの高さ、
+	 * 文字サイズ、行数が変わると、ブラウザが scrollTop を丸めて scroll を飛ばす —— これを
+	 * 「ユーザーが上を読み始めた」と読むと追従が切れ、次に寸法が変わるまで最新行が出てこなく
+	 * なる。寸法が動いていない scroll は、ホイールでもスクロールバーでもタッチでも必ず
+	 * ユーザー由来なので、そこだけで追従の有無を取り直す。
+	 *
+	 * 「時間で見分ける」方法は採れない。タイルのホイールは View 側が capture フェーズで受けて
+	 * stopPropagation するため、ミラーからはユーザーのホイール操作が観測できない。
+	 *
+	 * もう1つの経路 —— 並べ替えでタイルを DOM から出し入れして scrollTop が 0 に戻る場合 ——
+	 * は寸法が変わらないので、ここでは救えない。View が動かした直後に {@link pinToBottom} を
+	 * 同期で呼んで位置を戻しており、scroll は非同期に届くため、ここへ来る時点では既に戻った
+	 * 位置を測ることになる。この順序が崩れると元の不具合が再発する。
+	 */
+	private onScroll(): void {
+		const scrollHeight = this.container.scrollHeight;
+		const clientHeight = this.container.clientHeight;
+		const resized = scrollHeight !== this.lastScrollHeight || clientHeight !== this.lastClientHeight;
+		this.lastScrollHeight = scrollHeight;
+		this.lastClientHeight = clientHeight;
+		if (resized) {
+			this.pinToBottom();
+		}
+		// 寸法が動いた場合も最後に測り直す。上を読んでいる最中のリサイズで、ブラウザのクランプが
+		// たまたま下端へ着地させることがあり、そのときは「下端へ戻したら再開する」に従わせる。
+		this.updateBottomPin();
+	}
+
 	/** いま下端に居るかを記録する ({@link BOTTOM_PIN_TOLERANCE} までのずれは端数として下端扱い)。 */
 	private updateBottomPin(): void {
 		const distance = this.container.scrollHeight - this.container.clientHeight - this.container.scrollTop;
@@ -491,13 +528,22 @@ export class ParadisAgentLiveMirror extends Disposable {
 	}
 
 	/**
-	 * 最新行が見えるところまで寄せ直す。ミラーの高さが変わる操作 (再同期・リサイズ・文字サイズの
-	 * 変更) のあとに呼ぶ。追従を切っている (上を読んでいる) 間は動かさない。
+	 * 追従が生きているなら最新行が見えるところまで寄せ直す。上を読んでいる (自分で上へ
+	 * スクロールした) 間は何もしない。
+	 *
+	 * ミラーの高さが変わる操作 (再同期・リサイズ・文字サイズの変更) のあとに呼ぶほか、
+	 * タイルを DOM から出し入れした直後にも View から呼ぶ —— 出し入れでは scrollTop が 0 に
+	 * 戻るのに、DOM から外れている間の変化は scroll イベントとして通知されないため。
 	 */
-	private pinToBottom(): void {
+	pinToBottom(): void {
 		if (this.pinnedToBottom) {
 			this.container.scrollTop = this.container.scrollHeight;
 		}
+		// 寸法を触った側でも観測を更新しておく。scroll が飛ばないまま寸法だけ変わる状況
+		// (端末がタイルより短くて scrollTop が 0 のまま、など) があり、onScroll でしか
+		// 更新しないと古い値と比べて次のユーザー操作を1回ぶん食ってしまう。
+		this.lastScrollHeight = this.container.scrollHeight;
+		this.lastClientHeight = this.container.clientHeight;
 	}
 
 	private observeResize(): void {

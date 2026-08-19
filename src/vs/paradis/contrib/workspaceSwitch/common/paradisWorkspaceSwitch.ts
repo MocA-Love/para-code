@@ -120,6 +120,71 @@ export interface IParadisWorktreeService {
 	setPinned(stateKey: string, pinned: boolean): void;
 }
 
+/** スペース (リポジトリ本体 / worktree) を画面に出すための情報。 */
+export interface IParadisSpaceInfo {
+	readonly name: string;
+	/** スペース色 (hex)。色が未設定のリポジトリでは undefined。 */
+	readonly color: string | undefined;
+	/** worktree 名 (worktree では branch、リポジトリ本体では現在のブランチ)。 */
+	readonly detail: string;
+}
+
+/**
+ * 状態キーからスペースの表示情報を引く。
+ *
+ * リポジトリ名だけでは同じリポジトリの worktree を見分けられない (どれも同じ文字列になる)
+ * ため、実際に区別している worktree 側まで辿る。表示対象外の worktree でも端末やブラウザは
+ * 生きているので、検出済みのものを全て見る。
+ *
+ * 一覧系のウィンドウ (エージェント一覧・ブラウザ一覧) が同じ書式で名乗るための共通実装。
+ *
+ * @param cache 同じ再計算の中で使い回す解決結果。渡すと同じキーを2度引かない。
+ */
+export function paradisResolveSpaceInfo(
+	stateKey: string | undefined,
+	repositories: readonly IParadisWorkspaceRepository[],
+	worktreeService: Pick<IParadisWorktreeService, 'getRepositoryBranch' | 'getDetectedWorktrees'>,
+	cache?: Map<string, IParadisSpaceInfo | undefined>,
+): IParadisSpaceInfo | undefined {
+	if (stateKey === undefined) {
+		return undefined;
+	}
+	if (cache?.has(stateKey)) {
+		return cache.get(stateKey);
+	}
+
+	let resolved: IParadisSpaceInfo | undefined;
+	for (const repository of repositories) {
+		const color = paradisWorkspaceColorHex(repository.color);
+		if (repository.id === stateKey) {
+			resolved = { name: repository.name, color, detail: worktreeService.getRepositoryBranch(repository.id) ?? '' };
+			break;
+		}
+		const worktree = worktreeService.getDetectedWorktrees(repository.id).find(candidate => paradisWorktreeStateKey(candidate.uri) === stateKey);
+		if (worktree) {
+			resolved = { name: repository.name, color, detail: worktree.branch ?? worktree.name };
+			break;
+		}
+	}
+
+	cache?.set(stateKey, resolved);
+	return resolved;
+}
+
+/**
+ * スペースを一意に指す表示名。
+ *
+ * リポジトリ名だけでは同じリポジトリの worktree を見分けられない (どれも同じ文字列になり、
+ * 見出しも絞り込みの選択肢も同名で並ぶ)。実際に区別しているのは worktree 側なので、
+ * 「リポジトリ名 / worktree 名」の形に統一する。解決できていない場合は空文字。
+ */
+export function paradisSpaceInfoLabel(space: IParadisSpaceInfo | undefined): string {
+	if (!space) {
+		return '';
+	}
+	return space.detail ? `${space.name} / ${space.detail}` : space.name;
+}
+
 /**
  * worktree の切り替え状態キー (working set / ターミナル / パネル状態の分離キー)。
  * リポジトリは IParadisWorkspaceRepository.id をそのまま使う。

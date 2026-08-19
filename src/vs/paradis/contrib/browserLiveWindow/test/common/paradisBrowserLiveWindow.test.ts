@@ -15,9 +15,11 @@ import {
 	paradisBrowserLiveCaptureDelayMs,
 	paradisBrowserLiveDisplayTitle,
 	paradisBrowserLiveDisplayUrl,
+	paradisBrowserLiveInActiveSpace,
 	paradisBrowserLiveRetryDelayMs,
 	paradisDefaultBrowserLiveViewState,
 	paradisFilterBrowserLiveEntries,
+	paradisGroupBrowserLiveEntries,
 	paradisParseBrowserLiveViewState,
 	paradisSerializeBrowserLiveViewState,
 	paradisSortBrowserLiveEntries,
@@ -35,6 +37,10 @@ function entry(viewId: string, options: Partial<IParadisBrowserLiveEntry> = {}):
 		visible: false,
 		agents: [],
 		order: 0,
+		stateKey: 'space-a',
+		spaceName: 'repo / main',
+		spaceColor: '#4d78cc',
+		inActiveSpace: true,
 		...options,
 	};
 }
@@ -48,11 +54,15 @@ suite('Paradis Browser Live Window', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('view state round-trips and repairs broken input', () => {
-		const saved = paradisSerializeBrowserLiveViewState(state({ columns: 5, sharedOnly: true, sort: 'shared', cadence: 'smooth' }));
+		const saved = paradisSerializeBrowserLiveViewState(state({
+			columns: 5, sharedOnly: true, activeSpaceOnly: true, sort: 'shared', group: 'none', cadence: 'smooth',
+		}));
 		assert.deepStrictEqual(paradisParseBrowserLiveViewState(saved), {
 			columns: 5,
 			sharedOnly: true,
+			activeSpaceOnly: true,
 			sort: 'shared',
+			group: 'none',
 			cadence: 'smooth',
 		});
 
@@ -62,7 +72,7 @@ suite('Paradis Browser Live Window', () => {
 				paradisParseBrowserLiveViewState(undefined),
 				paradisParseBrowserLiveViewState('not json'),
 				paradisParseBrowserLiveViewState('null'),
-				paradisParseBrowserLiveViewState(JSON.stringify({ sort: 'nope', cadence: 'turbo', columns: 'many' })),
+				paradisParseBrowserLiveViewState(JSON.stringify({ sort: 'nope', group: 'nope', cadence: 'turbo', columns: 'many' })),
 			],
 			[
 				paradisDefaultBrowserLiveViewState(),
@@ -78,32 +88,38 @@ suite('Paradis Browser Live Window', () => {
 		);
 	});
 
-	test('filters to shared pages and summarizes them', () => {
+	test('filters by sharing and by the active space', () => {
 		const entries = [
 			entry('a', { agents: ['Claude'] }),
 			entry('b'),
-			entry('c', { agents: ['Codex', 'Claude'] }),
+			entry('c', { agents: ['Codex', 'Claude'], stateKey: 'space-b', inActiveSpace: false }),
 		];
 
 		assert.deepStrictEqual(
 			[
 				paradisFilterBrowserLiveEntries(entries, state({ sharedOnly: true })).map(item => item.viewId),
-				paradisFilterBrowserLiveEntries(entries, state({ sharedOnly: false })).map(item => item.viewId),
+				paradisFilterBrowserLiveEntries(entries, state({ activeSpaceOnly: true })).map(item => item.viewId),
+				paradisFilterBrowserLiveEntries(entries, state({ sharedOnly: true, activeSpaceOnly: true })).map(item => item.viewId),
+				paradisFilterBrowserLiveEntries(entries, state()).map(item => item.viewId),
 				paradisSummarizeBrowserLiveEntries(entries),
 			],
 			[
 				['a', 'c'],
+				['a', 'b'],
+				['a'],
 				['a', 'b', 'c'],
-				{ total: 3, shared: 2 },
+				{ total: 2, shared: 1, totalAll: 3, sharedAll: 2 },
 			],
 		);
 	});
 
-	test('sorts by tab order, title and shared-first', () => {
+	test('keeps the active space first, then applies the chosen order', () => {
 		const entries = [
 			entry('b', { title: 'Zebra', order: 1 }),
 			entry('a', { title: 'Apple', order: 2, agents: ['Claude'] }),
 			entry('c', { title: 'Mango', order: 0 }),
+			// 別スペースのページは、どの並びでも手元のページの後ろへ回す。
+			entry('d', { title: 'Alpha', order: 3, agents: ['Codex'], stateKey: 'space-b', inActiveSpace: false }),
 		];
 
 		assert.deepStrictEqual(
@@ -113,11 +129,55 @@ suite('Paradis Browser Live Window', () => {
 				paradisSortBrowserLiveEntries(entries, state({ sort: 'shared' })).map(item => item.viewId),
 			],
 			[
-				['c', 'b', 'a'],
-				['a', 'c', 'b'],
-				// 共有中が先頭。残りはタブの並びのまま (同じ状態のものを入れ替えない)。
-				['a', 'c', 'b'],
+				['c', 'b', 'a', 'd'],
+				['a', 'c', 'b', 'd'],
+				['a', 'c', 'b', 'd'],
 			],
+		);
+	});
+
+	test('groups by space in the order the tiles already have', () => {
+		const entries = [
+			entry('a', { order: 0 }),
+			entry('c', { order: 1, stateKey: 'space-b', spaceName: 'shop / cart', spaceColor: '#b180d7', inActiveSpace: false }),
+			entry('b', { order: 2 }),
+			entry('d', { order: 3, stateKey: undefined, spaceName: '', spaceColor: undefined }),
+		];
+		const sorted = paradisSortBrowserLiveEntries(entries, state());
+
+		assert.deepStrictEqual(
+			[
+				paradisGroupBrowserLiveEntries(sorted, state({ group: 'space' }), 'unknown')
+					.map(group => [group.label, group.color, group.entries.map(item => item.viewId)]),
+				paradisGroupBrowserLiveEntries(sorted, state({ group: 'none' }), 'unknown')
+					.map(group => [group.label, group.entries.map(item => item.viewId)]),
+			],
+			[
+				[
+					['repo / main', '#4d78cc', ['a', 'b']],
+					['unknown', undefined, ['d']],
+					['shop / cart', '#b180d7', ['c']],
+				],
+				[['', ['a', 'b', 'd', 'c']]],
+			],
+		);
+	});
+
+	test('treats only proven members of the active space as local', () => {
+		// 'pending' は「手元のもの」ではなく「まだ分からない」。ウィンドウのリロード後に
+		// 他スペースのページが恒久的に pending で残るため、ここを倒すと別スペースのタブに
+		// 閉じる・再読み込みが出てしまう。
+		assert.deepStrictEqual(
+			[
+				paradisBrowserLiveInActiveSpace({ kind: 'managed', stateKey: 'space-a' }, 'space-a'),
+				paradisBrowserLiveInActiveSpace({ kind: 'managed', stateKey: 'space-b' }, 'space-a'),
+				paradisBrowserLiveInActiveSpace({ kind: 'unscoped' }, 'space-a'),
+				paradisBrowserLiveInActiveSpace({ kind: 'unscoped' }, undefined),
+				paradisBrowserLiveInActiveSpace({ kind: 'pending' }, 'space-a'),
+				paradisBrowserLiveInActiveSpace({ kind: 'pending' }, undefined),
+				paradisBrowserLiveInActiveSpace({ kind: 'managed', stateKey: 'space-a' }, undefined),
+			],
+			[true, false, true, true, false, false, false],
 		);
 	});
 
@@ -143,29 +203,25 @@ suite('Paradis Browser Live Window', () => {
 		);
 	});
 
-	test('only captures what can change, and backs off after failures', () => {
-		const shown = { visible: true, shared: false };
-		const hidden = { visible: false, shared: false };
-		// 画面に出ていないページで中身が動くのは、エージェントが操作しているものだけ。
-		const hiddenShared = { visible: false, shared: true };
+	test('keeps following hidden pages, just less often', () => {
+		const shown = { visible: true };
+		const hidden = { visible: false };
 
 		assert.deepStrictEqual(
 			[
 				paradisBrowserLiveCaptureDelayMs('off', shown),
+				paradisBrowserLiveCaptureDelayMs('off', hidden),
 				paradisBrowserLiveCaptureDelayMs('normal', shown),
-				paradisBrowserLiveCaptureDelayMs('smooth', shown),
 				paradisBrowserLiveCaptureDelayMs('normal', hidden),
+				paradisBrowserLiveCaptureDelayMs('smooth', shown),
 				paradisBrowserLiveCaptureDelayMs('smooth', hidden),
-				paradisBrowserLiveCaptureDelayMs('normal', hiddenShared),
-				paradisBrowserLiveCaptureDelayMs('smooth', hiddenShared),
-				paradisBrowserLiveCaptureDelayMs('off', hiddenShared),
 				paradisBrowserLiveRetryDelayMs(1000, 1),
 				paradisBrowserLiveRetryDelayMs(1000, 3),
 				paradisBrowserLiveRetryDelayMs(1000, 99),
 				// 短い間隔でも、失敗時の待ちは1秒を下回らない。
 				paradisBrowserLiveRetryDelayMs(350, 1),
 			],
-			[0, 1000, 350, 0, 0, 5000, 5000, 0, 1000, 4000, 8000, 1000],
+			[0, 0, 1000, 2500, 350, 1000, 1000, 4000, 8000, 1000],
 		);
 	});
 });
