@@ -32,6 +32,7 @@ import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler } f
 import { IParadisBindEligibility, IParadisBrowserScopeService, IParadisTerminalScopeService, ParadisStableBindingScope, paradisBindingScopesEqual, paradisEvaluateBindingScopeEligibility, paradisRequireBindingScopeEligibility } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { ParadisRemoteMcpSetupController } from './paradisRemoteMcpSetup.js';
+import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 
 export const IParadisAgentBrowserBindingModel = createDecorator<IParadisAgentBrowserBindingModel>('paradisAgentBrowserBindingModel');
 
@@ -939,7 +940,9 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		if (this._remoteMcpSetupController === undefined) {
 			this._remoteMcpSetupController = new ParadisRemoteMcpSetupController(
 				this.fileService,
-				() => this.pathService.userHome(),
+				// 接続先の環境が解決できていない間は userHome() が手元のホームを返す。そのまま
+				// 渡すと、接続先向けの番号で手元の設定を書き換えてしまう
+				async () => paradisRemoteUserHome(this.environmentService.remoteAuthority, await this.pathService.userHome()),
 				() => this.getGatewayEndpoint().then(endpoint => endpoint.port, () => undefined),
 			);
 		}

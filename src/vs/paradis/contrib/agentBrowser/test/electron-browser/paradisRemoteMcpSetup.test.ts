@@ -149,4 +149,22 @@ suite('ParadisRemoteMcpSetupController', () => {
 		assert.strictEqual(result.servers[0].outcome, 'error');
 		assert.deepStrictEqual(written, []);
 	});
+
+	// 接続先の環境が解決できていないときに手元のホームで代用すると、接続先の番号を手元の
+	// 設定へ焼き込んでしまう（実際に踏んだ）。読むのも書くのもしないことを固定する
+	test('reads and writes nothing when the host home is not resolved yet', async () => {
+		const { service, files, written } = fakeFileService();
+		const controller = new ParadisRemoteMcpSetupController(service, async () => undefined, async () => 51234);
+
+		const [status, fixResult] = await Promise.all([controller.status(), controller.fix('claude')]);
+
+		assert.deepStrictEqual(status, {
+			claude: { cli: 'claude', state: 'unconfigured', failed: true },
+			codex: { cli: 'codex', state: 'unconfigured', failed: true },
+			gatewayPort: 51234,
+		});
+		assert.strictEqual(fixResult.servers[0].outcome, 'error');
+		assert.deepStrictEqual(written, []);
+		assert.strictEqual(files.size, 0);
+	});
 });

@@ -26,6 +26,7 @@ import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js'
 import { PARADIS_NOTIFY_HOOK_RELATIVE_PATH } from '../common/paradisAgentHooks.js';
 import { paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
+import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 
 /**
  * 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。
@@ -131,6 +132,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 	static readonly ID = 'paradis.remoteAgentHooks';
 
+	/** 接続先のホームが取れない旨のログを、30秒ごとの見直しで出し続けないための目印。 */
+	private hasWarnedAboutUnresolvedHome = false;
+
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -152,7 +156,11 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
 			// ペインが増減するたび、接続先の Codex ソケットの引き込みを合わせ直す
 			this._register(this.paneTokenService.onDidChange(() => {
-				void this.pathService.userHome().then(home => this.syncCodexSockets(home, channel), () => undefined);
+				void this.remoteUserHome().then(home => {
+					if (home !== undefined) {
+						this.syncCodexSockets(home, channel);
+					}
+				}, () => undefined);
 			}));
 			this._register({
 				dispose: () => {
@@ -170,11 +178,33 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		}
 	}
 
+	/**
+	 * 接続先のホーム。まだ接続先の環境が解決できていないときは undefined（判定は共通ヘルパ）。
+	 *
+	 * ここで返すものはそのまま書き込み先になるので、手元のホームが返っている間に進めると、
+	 * 接続先向けの設定（戻りトンネルの番号など）を手元の設定ファイルへ焼き込んでしまう。
+	 */
+	private async remoteUserHome(): Promise<URI | undefined> {
+		const home = paradisRemoteUserHome(this.environmentService.remoteAuthority, await this.pathService.userHome());
+		if (home === undefined) {
+			if (!this.hasWarnedAboutUnresolvedHome) {
+				this.hasWarnedAboutUnresolvedHome = true;
+				this.logService.warn('[paradis] the host home is not resolved yet; not installing the agent hooks (will retry)');
+			}
+			return undefined;
+		}
+		this.hasWarnedAboutUnresolvedHome = false;
+		return home;
+	}
+
 	/** @returns 置けた接続先側の番号。まだ整っていないだけなら undefined（呼び出し側が試し直す） */
 	private async install(channel: IChannel): Promise<number | undefined> {
 		try {
-			// 接続中の userHome は接続先のホーム。ここから下は全て接続先のパスになる
-			const home = await this.pathService.userHome();
+			// ここから下は全て接続先のパスになる。手元のホームが返ってきている間は何もしない
+			const home = await this.remoteUserHome();
+			if (home === undefined) {
+				return undefined;
+			}
 			// スクリプトはこの場所を見て通知先の番号を読む。env は手元のパスのまま届いてしまうので、
 			// 場所をスクリプトへ焼き込んでもらう
 			const portFile = joinPath(home, '.para-code', 'paradis-browser-mcp.json');

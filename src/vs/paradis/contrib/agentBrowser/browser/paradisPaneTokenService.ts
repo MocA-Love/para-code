@@ -26,6 +26,7 @@ import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY }
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
@@ -94,7 +95,9 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 
 		if (this.environmentService.remoteAuthority !== undefined) {
 			pathService.userHome().then(home => {
-				this.remoteHome = home.path;
+				// 接続先の環境が解決できていないと userHome() は手元のホームを返す。それを接続先の
+				// ホームとして扱うと、接続先には無い場所へソケットを作らせにいくことになる
+				this.remoteHome = paradisRemoteUserHome(this.environmentService.remoteAuthority, home)?.path;
 			}, () => {
 				// 取れなければ手元のパスのまま。接続先で Codex のペイン専用サーバーが立たないだけ
 			});
