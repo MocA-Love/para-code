@@ -6,8 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// shared process 上で rtk (Rust Token Killer) CLI を実行し、節約量の集計を返すサービスと IPC チャネル。
-// workbench からは ISharedProcessService.getChannel(PARADIS_RTK_CHANNEL) 経由で呼ぶ。
+// shared process 上(および SSH 接続先の REH 上)で rtk (Rust Token Killer) CLI を実行し、
+// 節約量の集計を返すサービスと IPC チャネル。workbench からは接続状態に応じて
+// shared process / 接続先のどちらかのチャネルへ呼ぶ(electron-browser/paradisRtkClient.ts)。
 // 実装方式は paradisCcusageChannel.ts と同じ execFile 直叩き(shell は使わない)。
 // 引数はここでレポート種別ごとに固定構築し、renderer から任意の CLI 引数は渡させない。
 //
@@ -33,6 +34,7 @@ import {
 	IParadisRtkHistoryEntry,
 	IParadisRtkService,
 	IParadisRtkSummary,
+	paradisRtkLocalDateString,
 	PARADIS_RTK_CHANNEL,
 	PARADIS_RTK_NOT_FOUND_MARKER
 } from '../common/paradisRtk.js';
@@ -104,6 +106,12 @@ export class ParadisRtkService implements IParadisRtkService {
 		args?: NativeParsedArgs,
 		private readonly execFile: typeof cp.execFile = cp.execFile,
 		private readonly now: () => number = Date.now,
+		/**
+		 * バックグラウンドでの取り直しを行うか。接続先(REH)では false にする —
+		 * サーバーは孤児ターミナルのために接続が切れた後も延命されることがあり、
+		 * 誰も見ていない間まで10分ごとに rtk を回し続ける理由が無いため。
+		 */
+		private readonly backgroundWarm: boolean = true,
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -112,6 +120,11 @@ export class ParadisRtkService implements IParadisRtkService {
 			this.now,
 			reportParadisShellEnvDiagnosticError,
 		);
+	}
+
+	/** rtk を実行するこのマシンにとっての今日。CLI は動かさないのでキャッシュもしない。 */
+	async fetchToday(): Promise<string> {
+		return paradisRtkLocalDateString(new Date(this.now()));
 	}
 
 	async fetchSummary(options: IParadisRtkExecOptions): Promise<IParadisRtkSummary> {
@@ -153,7 +166,7 @@ export class ParadisRtkService implements IParadisRtkService {
 	}
 
 	private rememberWarmTarget(args: string[], options: IParadisRtkExecOptions, parse: (stdout: string) => unknown): void {
-		if (this.disposed) {
+		if (this.disposed || !this.backgroundWarm) {
 			return;
 		}
 		const key = this.cacheKeyFor(args, options);
@@ -459,7 +472,7 @@ export function parseParadisRtkHistory(stdout: string): IParadisRtkHistoryEntry[
 	return entries;
 }
 
-// 接続先（REH）へ生やす予定は無いが、ccusage と同じ形にしておく（中身では使わない）。
+// ccusage と同じく、shared process と REH の双方へ同じ形で生やす。
 export class ParadisRtkChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisRtkService) { }
@@ -472,6 +485,7 @@ export class ParadisRtkChannel<TContext = string> implements IServerChannel<TCon
 		const args = Array.isArray(arg) ? arg : [];
 		const options = (args[0] ?? {}) as IParadisRtkExecOptions;
 		switch (command) {
+			case 'fetchToday': return this.service.fetchToday() as Promise<T>;
 			case 'fetchSummary': return this.service.fetchSummary(options) as Promise<T>;
 			case 'fetchDaily': return this.service.fetchDaily(options) as Promise<T>;
 			case 'fetchByCommand': return this.service.fetchByCommand(options) as Promise<T>;
@@ -483,8 +497,21 @@ export class ParadisRtkChannel<TContext = string> implements IServerChannel<TCon
 }
 
 /**
+ * serverServices.ts(REH)から1行で呼べるファクトリ。
+ * rtk はコマンドを実行したマシンのローカルDBに記録するため、SSH/WSL で接続している間の
+ * 節約量は接続先に貯まる。手元の shared process だけを見ているとその分がまるごと欠けるので、
+ * 同じチャネルを接続先にも生やして、クライアントから繋いでいる先へ聞けるようにする。
+ * サーバー側は configurationService/args を持たないため、シェル環境の解決は行わず
+ * サーバープロセスが継承した PATH をそのまま使う(ccusage の server 版と同じ)。
+ */
+export function registerParadisRtkForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	const service = new ParadisRtkService(logService, undefined, undefined, cp.execFile, Date.now, false);
+	server.registerChannel(PARADIS_RTK_CHANNEL, new ParadisRtkChannel<TContext>(service));
+	return { dispose: () => service.dispose() };
+}
+
+/**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
- * rtk は手元のマシンの記録しか持たないローカル専用ツールなので、接続先(REH)側には生やさない。
  */
 export function registerParadisRtk(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const service = new ParadisRtkService(logService, configurationService, args);

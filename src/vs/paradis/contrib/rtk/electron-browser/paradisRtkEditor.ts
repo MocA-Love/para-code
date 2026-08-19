@@ -28,13 +28,12 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { isParadisRtkNotFoundError, paradisRtkFormatTokens } from '../common/paradisRtk.js';
+import { isParadisRtkNotFoundError, paradisRtkFormatTokens, paradisRtkLocalDateString } from '../common/paradisRtk.js';
 import {
 	IParadisRtkDashboardData,
 	IParadisRtkDayData,
 	MAX_COMMAND_ROWS,
 	ParadisRtkClient,
-	paradisRtkLocalDateString,
 	paradisRtkSavingsPercent
 } from './paradisRtkClient.js';
 import { PARADIS_RTK_EDITOR_ID } from './paradisRtkInput.js';
@@ -200,7 +199,8 @@ export class ParadisRtkEditor extends EditorPane {
 	}
 
 	private currentRange(): IDateRange {
-		return presetRange(this.presetKey, new Date());
+		// 期間の基準は集計を出したマシンの今日。接続先と時差があると、手元の日付で切ると1日ずれる。
+		return presetRange(this.presetKey, this.data ? parseLocalDate(this.data.today) : new Date());
 	}
 
 	/** 週別表示は最低7日分ないと意味がないため、短い期間では強制的に日次にする。 */
@@ -257,9 +257,17 @@ export class ParadisRtkEditor extends EditorPane {
 		try {
 			this.data = await this.client.fetchDashboard(bypassCache);
 		} catch (error) {
-			this.lastError = isParadisRtkNotFoundError(error)
-				? localize('paradis.rtk.notFound', "rtk が見つかりません。https://github.com/rtk-ai/rtk からインストールしてください。")
-				: localize('paradis.rtk.error', "rtk の実行に失敗しました: {0}", error instanceof Error ? error.message : String(error));
+			if (isParadisRtkNotFoundError(error)) {
+				// SSH 接続中は接続先の rtk を実行するので、どちらのマシンに入れる話かを書き分ける
+				// (手元に入っているのに見つからない、という誤解を避けるため)。
+				// 接続先の PATH は SSH の非対話起動で決まるため、ターミナルでは動くのにここでは
+				// 見つからないことがある。「入れてあるのに」で詰まらないよう設定へも誘導する。
+				this.lastError = this.client.isRemote
+					? localize('paradis.rtk.notFoundRemote', "接続先（{0}）の PATH に rtk が見つかりません。SSH 接続中は接続先に貯まった節約量を表示します。接続先へインストールするか、接続先のマシン設定 paradis.rtk.executablePath に rtk の絶対パスを指定してください。", this.client.remoteHostLabel ?? '')
+					: localize('paradis.rtk.notFound', "rtk が見つかりません。https://github.com/rtk-ai/rtk からインストールしてください。");
+			} else {
+				this.lastError = localize('paradis.rtk.error', "rtk の実行に失敗しました: {0}", error instanceof Error ? error.message : String(error));
+			}
 		} finally {
 			this.loading = false;
 			this.refreshIcon?.classList.remove('spin');
@@ -332,7 +340,7 @@ export class ParadisRtkEditor extends EditorPane {
 		const accent = this.accent;
 
 		// 1枚目: 今日の節約量。期間フィルターに関わらず常に今日を出す(ステータスバーと同じ値)。
-		const today = this.data?.days.find(day => day.date === paradisRtkLocalDateString(new Date()));
+		const today = this.data?.days.find(day => day.date === this.data?.today);
 		const todaySaved = today?.savedTokens ?? 0;
 		const todayPercent = paradisRtkSavingsPercent(todaySaved, today?.inputTokens ?? 0);
 		const todayTile = dom.append(kpis, $('.paradis-rtk-card'));

@@ -78,8 +78,19 @@ export interface IParadisRtkHistoryEntry {
 	readonly tokens: number;
 }
 
-/** shared process チャネルのメソッドと戻り値。 */
+/**
+ * ローカル時刻で YYYY-MM-DD を返す(rtk の daily.date と同じ基準)。
+ * 「今日」は rtk を実行したマシンの日付なので、SSH 接続中に手元の時計で作ってはいけない
+ * (時差があると、接続先ではまだ来ていない日付を探しに行って今日の行を見失う)。
+ */
+export function paradisRtkLocalDateString(date: Date): string {
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** チャネルのメソッドと戻り値(shared process / 接続先の REH の双方が同じ形で実装する)。 */
 export interface IParadisRtkService {
+	/** rtk を実行するマシンにとっての今日(YYYY-MM-DD)。日付の基準を集計側へ合わせるために使う。 */
+	fetchToday(): Promise<string>;
 	/** 全期間の合計(`rtk gain -f json -d` の summary)。 */
 	fetchSummary(options: IParadisRtkExecOptions): Promise<IParadisRtkSummary>;
 	/** 日別の節約量(古い順)。 */

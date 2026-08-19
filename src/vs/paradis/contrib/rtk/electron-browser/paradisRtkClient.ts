@@ -6,19 +6,24 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// renderer から shared process の rtk 実行チャネルを呼び、ダッシュボード表示用の
+// renderer から rtk 実行チャネルを呼び、ダッシュボード表示用の
 // 正規化済みデータ(IParadisRtkDashboardData)へ変換するクライアント。
 // rtk の生の値は snake_case のままなので、UI からは直接参照させない。
-// rtk は手元のマシンの記録しか持たないため、SSH 接続中でも常に shared process へ聞く。
+// rtk はコマンドを実行したマシンのローカルDBに記録するため、SSH で繋いでいる間の節約量は
+// 接続先に貯まる。手元だけを見ると丸ごと欠けるので、繋いでいる先へ聞く
+// (同じチャネルを REH 側にも生やしてある。ccusage と同じ方針)。
 
+import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisRtkCommandRow,
 	IParadisRtkDailyRow,
 	IParadisRtkExecOptions,
 	IParadisRtkHistoryEntry,
 	IParadisRtkSummary,
+	paradisRtkLocalDateString,
 	PARADIS_RTK_CHANNEL
 } from '../common/paradisRtk.js';
 
@@ -46,6 +51,8 @@ export interface IParadisRtkTotals {
 }
 
 export interface IParadisRtkDashboardData {
+	/** rtk を実行したマシンにとっての今日(YYYY-MM-DD)。KPI と期間プリセットの基準にする。 */
+	readonly today: string;
 	readonly days: IParadisRtkDayData[];
 	readonly totals: IParadisRtkTotals;
 	readonly commands: IParadisRtkCommandRow[];
@@ -53,11 +60,6 @@ export interface IParadisRtkDashboardData {
 	/** 部分的に取得へ失敗したレポート名(UI で注記表示する)。 */
 	readonly failedReports: string[];
 	readonly fetchedAt: number;
-}
-
-/** ローカル時刻で YYYY-MM-DD を返す(rtk の daily.date と同じ基準)。 */
-export function paradisRtkLocalDateString(date: Date): string {
-	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 /** 節約率(%)。rtk の savings_pct と同じく「入力に対して何%削れたか」で出す。 */
@@ -70,9 +72,24 @@ export class ParadisRtkClient {
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) { }
 
-	private get channel() {
+	/** SSH/WSL で接続中かどうか。案内文を「接続先の rtk」と言い分けるために UI から参照する。 */
+	get isRemote(): boolean {
+		return this.remoteAgentService.getConnection() !== null;
+	}
+
+	/** 接続先の表示名(接続していなければ undefined)。どのマシンの集計かを UI に書くために使う。 */
+	get remoteHostLabel(): string | undefined {
+		return this.remoteAgentService.getConnection()?.remoteAuthority.replace(/^ssh-remote\+/, '');
+	}
+
+	private get channel(): IChannel {
+		const remoteConnection = this.remoteAgentService.getConnection();
+		if (remoteConnection) {
+			return remoteConnection.getChannel(PARADIS_RTK_CHANNEL);
+		}
 		return this.sharedProcessService.getChannel(PARADIS_RTK_CHANNEL);
 	}
 
@@ -94,13 +111,32 @@ export class ParadisRtkClient {
 	 * 今日の記録がまだ無い場合は undefined(0 と区別する)。
 	 */
 	async fetchTodaySaved(): Promise<number | undefined> {
-		const rows = await this.channel.call<IParadisRtkDailyRow[]>('fetchDaily', [this.execOptions()]);
+		const [rows, today] = await Promise.all([
+			this.channel.call<IParadisRtkDailyRow[]>('fetchDaily', [this.execOptions()]),
+			this.fetchToday(),
+		]);
 		if (!Array.isArray(rows) || rows.length === 0) {
 			return undefined;
 		}
-		const today = paradisRtkLocalDateString(new Date());
 		const todayRow = rows.find(row => row.date === today);
 		return todayRow ? (todayRow.saved_tokens ?? 0) : undefined;
+	}
+
+	/**
+	 * 集計を出したマシンにとっての今日。接続先と手元で時差があると日付がずれるため、
+	 * 日付の基準は必ず実行側へ聞く。答えられない相手(このメソッドを持たない古い接続先)へは
+	 * 手元の日付で代用する — ずれても最悪1日で、数字が出なくなるよりはましなため。
+	 */
+	private async fetchToday(): Promise<string> {
+		try {
+			const today = await this.channel.call<string>('fetchToday');
+			if (typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today)) {
+				return today;
+			}
+		} catch {
+			// 下のフォールバックへ。
+		}
+		return paradisRtkLocalDateString(new Date());
 	}
 
 	/**
@@ -110,6 +146,7 @@ export class ParadisRtkClient {
 	 */
 	async fetchDashboard(bypassCache = false): Promise<IParadisRtkDashboardData> {
 		const options = this.execOptions(bypassCache);
+		const today = await this.fetchToday();
 		const [summary, daily, commands, history] = await Promise.allSettled([
 			this.channel.call<IParadisRtkSummary>('fetchSummary', [options]),
 			this.channel.call<IParadisRtkDailyRow[]>('fetchDaily', [options]),
@@ -133,6 +170,7 @@ export class ParadisRtkClient {
 		}
 
 		return {
+			today,
 			days: normalizeDaily(daily.value),
 			totals: normalizeTotals(summary.status === 'fulfilled' ? summary.value : undefined),
 			commands: commands.status === 'fulfilled' ? normalizeCommands(commands.value) : [],
