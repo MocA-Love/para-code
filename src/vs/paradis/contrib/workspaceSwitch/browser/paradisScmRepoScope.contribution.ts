@@ -8,7 +8,6 @@
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { Schemas } from '../../../../base/common/network.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -16,7 +15,9 @@ import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uri
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ISCMRepository, ISCMService, ISCMViewService } from '../../../../workbench/contrib/scm/common/scm.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { PARADIS_SCM_SCOPE_SETTING_ID, paradisIsScmRootInScope } from '../common/paradisScmScope.js';
+import { paradisScopeRootPath } from '../common/paradisWorkspaceSwitch.js';
 
 /**
  * ソース管理ビューのリポジトリを「現在のワークスペースフォルダに関係するもの」だけに絞る (機能1)。
@@ -105,6 +106,7 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
 		@ILogService private readonly logService: ILogService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 
@@ -208,14 +210,22 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 				return;
 			}
 
+			const connectedAuthority = this.remoteAgentService.getConnection()?.remoteAuthority;
 			for (const folder of folders) {
 				// git.openRepository は falsy な path を渡すとフォルダ選択ダイアログを開いてしまうため、
-				// ローカル (file) の実パスを持つフォルダのみ対象にする
-				if (folder.uri.scheme !== Schemas.file || folder.uri.fsPath.length === 0) {
+				// 実パスを持つフォルダのみ対象にする。git 拡張は workspace kind なので、SSH 接続中は
+				// リモート側の extension host で実行される — そちらから見た絶対パス表記
+				// (vscode-remote なら常に POSIX 表記の uri.path) を渡す必要がある。fsPath は
+				// 呼び出し元 (常にローカル) の OS で区切りを付け替えるため、Windows から Linux の
+				// 接続先へ渡すと区切りが化ける。別ホストの vscode-remote・未接続中の vscode-remote は
+				// paradisScopeRootPath が弾く（手元へ流すと、絶対パスが一致する無関係な手元の
+				// フォルダを誤って git.openRepository へ渡しかねない）。
+				const path = paradisScopeRootPath(folder.uri, connectedAuthority);
+				if (!path || path.length === 0) {
 					continue;
 				}
 				try {
-					await this.commandService.executeCommand('git.openRepository', folder.uri.fsPath);
+					await this.commandService.executeCommand('git.openRepository', path);
 				} catch (error) {
 					// フォルダが git リポジトリでない場合も含め、失敗は無害 (git 拡張側で何も起きない)
 					this.logService.trace('[ParadisScmRepoScope] git.openRepository failed', error);

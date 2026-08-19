@@ -484,15 +484,15 @@ export class ParadisSpaceDiskService implements IDisposable {
 	}
 }
 
-export class ParadisSpaceDiskChannel implements IServerChannel<string> {
+export class ParadisSpaceDiskChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisSpaceDiskService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		if (command === 'setWarmLease') {
 			const payload = parseWarmLeasePayload(arg);
 			this.service.setWarmLease(payload.ownerId, payload.active, payload.targets);
@@ -611,5 +611,17 @@ function isExactPlainRecord(value: unknown, expectedKeys: readonly string[]): va
 export function registerParadisSpaceDisk(server: IPCServer<string>, logService: ILogService): IDisposable {
 	const service = new ParadisSpaceDiskService(logService);
 	server.registerChannel(PARADIS_SPACE_DISK_CHANNEL, new ParadisSpaceDiskChannel(service));
+	return { dispose: () => service.dispose() };
+}
+
+/**
+ * serverServices.ts（REH）の登録点から1行で呼べるファクトリ。
+ *
+ * SSH 接続先のスペースは接続先のファイルシステム上にしか実体が無い。shared process 版は常に
+ * 手元のマシンで動き、接続先のディスクには一切到達できないため、同じチャネルを接続先にも生やす。
+ */
+export function registerParadisSpaceDiskForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	const service = new ParadisSpaceDiskService(logService);
+	server.registerChannel(PARADIS_SPACE_DISK_CHANNEL, new ParadisSpaceDiskChannel<TContext>(service));
 	return { dispose: () => service.dispose() };
 }

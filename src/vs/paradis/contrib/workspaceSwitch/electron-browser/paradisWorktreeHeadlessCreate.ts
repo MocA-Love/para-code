@@ -18,6 +18,7 @@ import { CancellationTokenSource } from '../../../../base/common/cancellation.js
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { paradisResolveWslAgentHome } from '../../../common/paradisWslAgentHome.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -51,7 +52,7 @@ import {
 } from '../common/paradisWorktreeCreate.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
-import { paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
 
 /**
@@ -452,7 +453,10 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	// Copilot 命名だけは手元の shared process が持つ（ネットワーク越しの API 呼び出しで、
 	// リポジトリのパスとは関係ない）。git はリポジトリのあるマシンで回す
 	const sharedProcessService = accessor.get(ISharedProcessService);
-	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
+	// worktree の作成 (git worktree add) は書き込みなので、別ホスト/未接続の vscode-remote へ
+	// フォールバックしない write resolver を使う（手元へ流すと無関係な手元のリポジトリに
+	// ブランチと worktree を作ってしまう）。
+	const resolveGitHost = paradisWorktreeGitWriteHostResolver(accessor);
 	const configurationService = accessor.get(IConfigurationService);
 	const languageModelsService = accessor.get(ILanguageModelsService);
 	const authenticationService = accessor.get(IAuthenticationService);
@@ -468,6 +472,10 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	}
 	// git はこのリポジトリがあるマシンで動かす。作ろうとしている作業ツリーも同じマシンに置く
 	const gitHost = resolveGitHost(repository.uri);
+	if (!gitHost) {
+		// allow-any-unicode-next-line
+		throw new Error(localize('paradis.worktree.unreachableHost', "「{0}」は今つないでいる接続先にありません。このリポジトリがあるマシンへ接続してから実行してください。", repository.name));
+	}
 	const prompt = (request.prompt ?? '').trim();
 	const agentId = request.agentId && request.agentId.length > 0 ? request.agentId : 'none';
 

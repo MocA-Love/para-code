@@ -39,7 +39,7 @@ import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdent
 import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisConfirmedAgentPanes, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
+import { IParadisConfirmedAgentPanes, IParadisGitResult, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisAgentTerminalHintParser, paradisShouldAcceptAgentTerminalHint } from '../common/paradisAgentTerminalHints.js';
@@ -54,9 +54,13 @@ import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-bro
 import { ParadisSpaceDiskClient } from '../../spaceDisk/electron-browser/paradisSpaceDiskClient.js';
 import { IParadisPresetService } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { PARADIS_REMOTE_SEARCH_CHANNEL } from '../common/paradisRemoteSearch.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
-import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { IParadisPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryCoordinator, paradisShouldRetireAgentToken } from '../common/paradisAgentCommandLifecycle.js';
 import { ParadisAgentTerminalRecoveryTracker } from '../common/paradisAgentTerminalRecovery.js';
@@ -129,6 +133,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@ICommandService commandService: ICommandService,
 		@IParadisPresetService presetService: IParadisPresetService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 
@@ -204,6 +209,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// PC本体のCPU/メモリ/ディスク取得（PC版タイトルバーのリソースモニタと同じクライアント）
 		const resourceMonitorClient = instantiationService.createInstance(ParadisResourceMonitorClient);
 		const spaceDiskClient = instantiationService.createInstance(ParadisSpaceDiskClient);
+		// git 実行・find/grep とも、モバイルから触っているスペースが SSH 接続先にあるなら
+		// そちらの REH サーバーへ、手元にあるなら shared process へ振り分ける。
+		// unresolved: 'reject' — 別ホストの古い登録や未接続中の vscode-remote スペースを、
+		// 手元へ流してはいけない（同じ絶対パスの手元リポジトリへ誤って git commit する事故になる。
+		// PR状態のような読み取り専用チャネルの既定 'local' とは意図的に区別している）。
+		const gitHostResolver = instantiationService.invokeFunction(accessor => paradisChannelHostResolver(accessor, PARADIS_WORKTREE_GIT_CHANNEL, 'reject'));
+		const searchHostResolver = instantiationService.invokeFunction(accessor => paradisChannelHostResolver(accessor, PARADIS_REMOTE_SEARCH_CHANNEL, 'reject'));
 
 		const createProvider = () => this._register(new ParadisMobileWorkspaceProvider(
 			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
@@ -223,7 +235,23 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			extensionService,
 			themeService,
 			sharedProcessService,
-			(repoPath, args) => this.service.runGit(repoPath, args),
+			uri => {
+				if (uri.scheme === Schemas.file) {
+					return true;
+				}
+				if (uri.scheme !== Schemas.vscodeRemote) {
+					return false;
+				}
+				const connection = this.remoteAgentService.getConnection();
+				return connection !== null && uri.authority.toLowerCase() === connection.remoteAuthority.toLowerCase();
+			},
+			(repoUri, args) => {
+				const host = gitHostResolver(repoUri);
+				if (!host) {
+					return Promise.reject(new Error('This workspace is not reachable from this window.'));
+				}
+				return host.channel.call<IParadisGitResult>('runGit', [host.path(repoUri), args]);
+			},
 			paneTokenService,
 			terminalIdentityService,
 			state => { withWindowLease(lease => this.service.syncTerminalWindow(lease, state)).then(markTerminalStateReady, err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
@@ -237,8 +265,20 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(mobileId, requestId, token, epoch, terminalId) => withWindowLease(lease => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, lease)),
 			(mobileId, requestId, token, outcome) => withWindowLease(lease => this.service.finalizeAgentInteraction(mobileId, requestId, token, outcome, lease)),
 			(mobileId, requestId, token, epoch, terminalId) => withWindowLease(lease => this.service.validateAgentAction(mobileId, requestId, token, epoch, terminalId, lease)),
-			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
-			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
+			(root, query, maxResults) => {
+				const host = searchHostResolver(root);
+				if (!host) {
+					return Promise.reject(new Error('This workspace is not reachable from this window.'));
+				}
+				return host.channel.call<{ files: string[]; truncated: boolean }>('searchFiles', [host.path(root), query, maxResults]);
+			},
+			(root, query, maxResults) => {
+				const host = searchHostResolver(root);
+				if (!host) {
+					return Promise.reject(new Error('This workspace is not reachable from this window.'));
+				}
+				return host.channel.call<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>('searchText', [host.path(root), query, maxResults]);
+			},
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 			(ownerId, active) => ccusageClient.setDashboardWarmLease(ownerId, active),
 			bypassCache => rtkClient.fetchDashboard(bypassCache),
@@ -250,7 +290,11 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// 既存スペースへのエージェント起動（モバイルのホーム＋ボタン）
 			request => instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, request),
 			// PR 状態はPC版 Workspaces ビューと同じコマンド経由（gh 実行は shared process へ委譲）
-			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
+			// コマンドは UriComponents[] を期待する。文字列パス（fsPath 等）をそのまま渡すと
+			// URI.revive がパースに失敗する（このバグで PR 状態がずっと出ていなかった）。
+			// URI.prototype.toJSON() は自身をそのまま返すだけなので、この map の役目は
+			// 「URI を渡す」ことそのもの（文字列を渡さないこと）であり、変換の意味はない。
+			uris => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, uris.map(uri => uri.toJSON())),
 			// モバイルの「システム」画面。PC版タイトルバーのCPU/RAMモニタと同じクライアントを再利用し、
 			// ホストマシン全体の使用量とPara Code内訳をまとめて返す
 			force => resourceMonitorClient.getMobileReport(force),

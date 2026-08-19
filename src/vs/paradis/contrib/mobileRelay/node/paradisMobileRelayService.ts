@@ -35,7 +35,6 @@ import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.j
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
-import { IParadisFileSearchResult, IParadisTextSearchResult, paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
 import {
@@ -62,7 +61,6 @@ import {
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import {
-	IParadisGitResult,
 	IParadisConfirmedAgentPanes,
 	IParadisMobileInboundFrame,
 	IParadisMobileWindowStateV2,
@@ -1492,32 +1490,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.remoteTranscriptMirror.release(ownerId);
 	}
 
-	/**
-	 * scmチャネル用のgit実行。サブコマンドを許可リストで制限し、オプション経由の
-	 * 任意コマンド実行（--upload-pack等）を防ぐため各引数も検査する。
-	 */
-	async runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult> {
-		const ALLOWED_SUBCOMMANDS = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show']);
-		if (args.length === 0 || !ALLOWED_SUBCOMMANDS.has(args[0])) {
-			throw new Error(`paradisMobileRelay: git subcommand not allowed: ${args[0] ?? '(none)'}`);
-		}
-		// 外部コマンド実行やリポジトリ差し替えに繋がるオプションを拒否
-		const FORBIDDEN = /^--(upload-pack|receive-pack|exec|git-dir|work-tree|config-env)\b|^-c$|^-C$/;
-		for (const a of args) {
-			if (FORBIDDEN.test(a)) {
-				throw new Error(`paradisMobileRelay: git argument not allowed: ${a}`);
-			}
-		}
-		const { execFile } = await import('child_process');
-		// core.quotepath=false: 既定では非ASCIIパスが八進エスケープ+引用符("\345...")で
-		// 出力され、モバイルのソース管理タブで文字化け表示になるため無効化する。
-		return new Promise<IParadisGitResult>(resolve => {
-			execFile('git', ['-C', repoPath, '-c', 'core.quotepath=false', ...args], { maxBuffer: 4 * 1024 * 1024, timeout: 30_000 }, (err, stdout, stderr) => {
-				const rawCode: unknown = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code ?? 1 : 0;
-				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: String(stderr) });
-			});
-		});
-	}
+	// runGit は paradisWorktreeGitChannel.ts（shared process と REH サーバーの両方に登録）へ移した。
+	// SSH 接続先のリポジトリを操作するには git を接続先で動かす必要があり、mobileRelay サービスは
+	// shared process 専用のため対応できない。
 
 	/**
 	 * agentチャネル用: renderer から「ターミナルinstanceId ⇔ ペイントークン」対応表を同期する
@@ -1640,15 +1615,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		await this.withCurrentRegisteredLease(lease, async () => this.agentChat.onTerminalHint(lease.windowId, lease.windowSession, lease.rendererGeneration, terminalId, hint));
 	}
 
-	/** fsチャネル用: ripgrepによるファイル名検索（rendererはプロセスを起動できないためここで実行）。 */
-	async searchFiles(rootPath: string, query: string, maxResults: number): Promise<IParadisFileSearchResult> {
-		return paradisSearchFiles(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);
-	}
-
-	/** fsチャネル用: ripgrepによるテキスト全文検索。 */
-	async searchText(rootPath: string, query: string, maxResults: number): Promise<IParadisTextSearchResult> {
-		return paradisSearchText(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);
-	}
+	// searchFiles / searchText は paradisRemoteSearchChannel.ts（shared process と REH サーバーの
+	// 両方に登録）へ移した。SSH 接続先のワークスペースを検索するには、ripgrep を接続先で
+	// 動かす必要があり、mobileRelay サービスは shared process 専用のため対応できない。
 
 	private async revokeOnRelay(mobileId: string): Promise<void> {
 		if (!this.state.device) {

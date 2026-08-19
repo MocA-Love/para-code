@@ -7,10 +7,13 @@
 import * as assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisMobileRelayRendererLifecycle } from '../../electron-browser/paradisMobileRelayRendererLifecycle.js';
 import { IParadisMobileWarmLeaseScheduler, ParadisMobileWarmLeaseProvider, ParadisMobileWorkspaceProvider, paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
 import { parseParadisMobileWarmLeaseRequest } from '../../common/paradisMobileProtocol.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisWorkspaceRepository, IParadisWorktree } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisPrStatus } from '../../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 class TestWarmLeaseScheduler implements IParadisMobileWarmLeaseScheduler {
 	private scheduled = false;
@@ -517,6 +520,84 @@ suite('ParadisMobileWorkspaceProvider', () => {
 				pushStateSkipped: 0,
 				snapshotMetrics: 0,
 			});
+		});
+	});
+
+	suite('refreshPrStatuses', () => {
+		interface IRefreshPrStatusesFixture {
+			refreshPrStatuses(): Promise<void>;
+		}
+
+		function createFixture(options: {
+			repositories: readonly IParadisWorkspaceRepository[];
+			worktrees?: ReadonlyMap<string, readonly IParadisWorktree[]>;
+			getPrStatuses: (uris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>;
+			isReachableWorkspaceUri?: (uri: URI) => boolean;
+		}) {
+			// フルコンストラクタは大量の DI 依存を要求するため、プロトタイプだけを流用して
+			// refreshPrStatuses が実際に触るフィールドだけを与える（handleTerminalScroll の
+			// テストと同じ手法）。
+			const provider = Object.create(ParadisMobileWorkspaceProvider.prototype) as unknown as IRefreshPrStatusesFixture & {
+				mobileOnline: boolean;
+				prStatusesInFlight: boolean;
+				prStatusCache: Map<string, IParadisPrStatus>;
+				prStatusScheduler: { schedule(): void };
+				workspaceSwitchService: { repositories: readonly IParadisWorkspaceRepository[] };
+				worktreeService: { getWorktrees(repositoryId: string): readonly IParadisWorktree[] };
+				getPrStatuses: (uris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>;
+				isReachableWorkspaceUri: (uri: URI) => boolean;
+				logService: NullLogService;
+				pushStateSoon(): void;
+			};
+			provider.mobileOnline = true;
+			provider.prStatusesInFlight = false;
+			provider.prStatusCache = new Map();
+			provider.prStatusScheduler = { schedule: () => { } };
+			provider.workspaceSwitchService = { repositories: options.repositories };
+			provider.worktreeService = { getWorktrees: (id: string) => options.worktrees?.get(id) ?? [] };
+			provider.getPrStatuses = options.getPrStatuses;
+			provider.isReachableWorkspaceUri = options.isReachableWorkspaceUri ?? (() => true);
+			provider.logService = new NullLogService();
+			provider.pushStateSoon = () => { };
+			return provider;
+		}
+
+		test('passes a URI array (not fsPath strings) to getPrStatuses, for reachable repositories/worktrees only', async () => {
+			const requests: (readonly URI[])[] = [];
+			const localRepo: IParadisWorkspaceRepository = { id: 'local', name: 'Local', uri: URI.file('/repositories/local') };
+			const remoteRepo: IParadisWorkspaceRepository = { id: 'remote', name: 'Remote', uri: URI.parse('vscode-remote://ssh-remote+host/repo') };
+			const unreachableRepo: IParadisWorkspaceRepository = { id: 'unreachable', name: 'Unreachable', uri: URI.parse('vscode-remote://ssh-remote+other/repo') };
+			const fixture = createFixture({
+				repositories: [localRepo, remoteRepo, unreachableRepo],
+				getPrStatuses: async uris => { requests.push(uris); return undefined; },
+				isReachableWorkspaceUri: uri => uri.scheme === 'file' || uri.authority === 'ssh-remote+host',
+			});
+
+			await fixture.refreshPrStatuses();
+
+			assert.strictEqual(requests.length, 1);
+			assert.ok(requests[0].every(uri => uri instanceof URI), 'every request entry must be a URI instance, not a plain path string');
+			assert.deepStrictEqual(requests[0].map(uri => uri.toString()), [localRepo.uri.toString(), remoteRepo.uri.toString()]);
+		});
+
+		test('maps the fsPath-keyed result back onto the matching repository/worktree state key', async () => {
+			const repo: IParadisWorkspaceRepository = { id: 'one', name: 'One', uri: URI.file('/repositories/one') };
+			const worktree: IParadisWorktree = { repositoryId: 'one', name: 'Feature', uri: URI.file('/worktrees/one-feature') };
+			const fixture = createFixture({
+				repositories: [repo],
+				worktrees: new Map([['one', [worktree]]]),
+				getPrStatuses: async () => ({
+					[repo.uri.fsPath]: { number: 1, title: 'Repo PR', url: 'https://example.com/1', state: 'open' },
+					[worktree.uri.fsPath]: { number: 2, title: 'Worktree PR', url: 'https://example.com/2', state: 'draft' },
+				}),
+			});
+
+			await fixture.refreshPrStatuses();
+
+			assert.deepStrictEqual([...fixture.prStatusCache.entries()].sort(([a], [b]) => a.localeCompare(b)), [
+				['one', { number: 1, title: 'Repo PR', url: 'https://example.com/1', state: 'open' }],
+				[`worktree:${worktree.uri.toString()}`, { number: 2, title: 'Worktree PR', url: 'https://example.com/2', state: 'draft' }],
+			]);
 		});
 	});
 });

@@ -116,6 +116,12 @@ import { registerParadisLimitsMonitorForServer } from '../../paradis/contrib/lim
 import { registerParadisHostResourcesForServer } from '../../paradis/contrib/resourceMonitor/node/paradisHostResourcesChannel.js';
 // PARA-PATCH: agent session transcripts (~/.claude, ~/.codex) live on this machine, so a connected client's Session Resume view asks here
 import { registerParadisSessionResumeForServer } from '../../paradis/contrib/sessionResume/node/paradisSessionResumeChannel.js';
+// PARA-PATCH: a connected client's spaces live on this machine's disk, so the Space Disk usage view asks here
+import { registerParadisSpaceDiskForServer } from '../../paradis/contrib/spaceDisk/node/paradisSpaceDiskChannel.js';
+// PARA-PATCH: a connected client's Codex state DB / rollouts live on this machine, so the terminal title tracker asks here
+import { registerParadisCodexTerminalTitleForServer } from '../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
+// PARA-PATCH: a connected client's mobile find/grep needs ripgrep to run against this machine's files
+import { registerParadisRemoteSearchForServer } from '../../paradis/contrib/mobileRelay/node/paradisRemoteSearchChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -366,6 +372,15 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// PARA-PATCH: expose the same Session Resume channel the shared process has, so a connected
 		// client's Session Resume view can list/preview/search transcripts saved on this machine.
 		disposables.add(registerParadisSessionResumeForServer(socketServer, logService));
+		// PARA-PATCH: expose the same Space Disk channel the shared process has, so a connected
+		// client can measure disk usage for spaces that live on this machine.
+		disposables.add(registerParadisSpaceDiskForServer(socketServer, logService));
+		// PARA-PATCH: expose the same Codex terminal title channel the shared process has, so a
+		// connected client can read Codex thread metadata that lives on this machine.
+		disposables.add(registerParadisCodexTerminalTitleForServer(socketServer, logService));
+		// PARA-PATCH: expose the same ripgrep search channel the shared process has, so a connected
+		// client's mobile find/grep can search files that live on this machine.
+		disposables.add(registerParadisRemoteSearchForServer(socketServer, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 

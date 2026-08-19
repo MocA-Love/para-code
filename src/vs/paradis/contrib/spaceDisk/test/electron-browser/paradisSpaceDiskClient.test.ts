@@ -12,6 +12,8 @@ import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { IRemoteAgentConnection, IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisWorkspaceRepository,
 	IParadisWorkspaceSwitchService,
@@ -64,7 +66,7 @@ function worktree(repositoryId: string, name: string, path: string, overrides: P
 	return { repositoryId, name, uri: URI.file(path), ...overrides };
 }
 
-function createClient() {
+function createClient(options?: { readonly remoteAuthority?: string }) {
 	let repositories: readonly IParadisWorkspaceRepository[] = [repository('one')];
 	let worktrees = new Map<string, readonly IParadisWorktree[]>([
 		['one', [worktree('one', 'Feature', '/worktrees/one-feature')]],
@@ -72,13 +74,23 @@ function createClient() {
 	let barrierFactory: () => Promise<void> = () => Promise.resolve();
 	let barrierReads = 0;
 	const calls: IChannelCall[] = [];
+	const remoteCalls: IChannelCall[] = [];
 	const channelRequests: string[] = [];
+	const remoteChannelRequests: string[] = [];
 	let callBehaviour: (call: IChannelCall) => Promise<unknown> = () => Promise.resolve({ spaces: [], measuredAt: 0, durationMs: 0 });
+	let remoteCallBehaviour: (call: IChannelCall) => Promise<unknown> = () => Promise.resolve({ spaces: [], measuredAt: 0, durationMs: 0 });
 	const channel = {
 		call<T>(command: string, args?: unknown): Promise<T> {
 			const call = { command, args };
 			calls.push(call);
 			return callBehaviour(call) as Promise<T>;
+		},
+	};
+	const remoteChannel = {
+		call<T>(command: string, args?: unknown): Promise<T> {
+			const call = { command, args };
+			remoteCalls.push(call);
+			return remoteCallBehaviour(call) as Promise<T>;
 		},
 	};
 	const workspaceSwitchService = {
@@ -97,14 +109,24 @@ function createClient() {
 			return channel;
 		},
 	} as unknown as ISharedProcessService;
-	const client = new ParadisSpaceDiskClient(workspaceSwitchService, worktreeService, sharedProcessService) as TestSpaceDiskClient;
+	const remoteAuthority = options?.remoteAuthority;
+	const remoteAgentService = {
+		getConnection: () => remoteAuthority === undefined ? null : ({
+			remoteAuthority,
+			getChannel: (name: string) => { remoteChannelRequests.push(name); return remoteChannel; },
+		} as unknown as IRemoteAgentConnection),
+	} as unknown as IRemoteAgentService;
+	const client = new ParadisSpaceDiskClient(workspaceSwitchService, worktreeService, sharedProcessService, remoteAgentService, new NullLogService()) as TestSpaceDiskClient;
 	return {
 		calls,
+		remoteCalls,
 		channelRequests,
+		remoteChannelRequests,
 		client,
 		get barrierReads() { return barrierReads; },
 		setBarrierFactory: (factory: () => Promise<void>) => barrierFactory = factory,
 		setCallBehaviour: (behaviour: (call: IChannelCall) => Promise<unknown>) => callBehaviour = behaviour,
+		setRemoteCallBehaviour: (behaviour: (call: IChannelCall) => Promise<unknown>) => remoteCallBehaviour = behaviour,
 		setRepositories: (value: readonly IParadisWorkspaceRepository[]) => repositories = value,
 		setWorktrees: (value: Map<string, readonly IParadisWorktree[]>) => worktrees = value,
 	};
@@ -171,6 +193,71 @@ suite('ParadisSpaceDiskClient', () => {
 				{ command: 'setWarmLease', payload: { ownerId: 'mobile-owner', active: false, targets: [] } },
 			],
 		});
+	});
+
+	test('sends remote spaces to the connected remote channel and drops a vscode-remote space from a different authority', async () => {
+		const harness = createClient({ remoteAuthority: 'ssh-remote+host' });
+		harness.setRepositories([
+			repository('one'),
+			{ id: 'remote', name: 'Remote', uri: URI.parse('vscode-remote://ssh-remote+host/repository') },
+			{ id: 'other-host', name: 'Other host', uri: URI.parse('vscode-remote://ssh-remote+other/repository') },
+		]);
+		harness.setWorktrees(new Map([
+			['one', [worktree('one', 'Feature', '/worktrees/one-feature')]],
+			['remote', [{ repositoryId: 'remote', name: 'Remote WT', uri: URI.parse('vscode-remote://ssh-remote+host/worktree') }]],
+		]));
+
+		await harness.client.setWarmLease('mobile-owner', true);
+
+		assert.deepStrictEqual({
+			channels: harness.channelRequests,
+			remoteChannels: harness.remoteChannelRequests,
+			local: warmPayload(harness.calls[0]!).targets,
+			remote: warmPayload(harness.remoteCalls[0]!).targets,
+		}, {
+			channels: [PARADIS_SPACE_DISK_CHANNEL],
+			remoteChannels: [PARADIS_SPACE_DISK_CHANNEL],
+			local: [{ stateKey: 'one', name: 'Repository one', path: '/repositories/one', worktrees: [{ stateKey: 'worktree:file:///worktrees/one-feature', name: 'Feature', path: '/worktrees/one-feature' }] }],
+			remote: [{
+				stateKey: 'remote', name: 'Remote', path: '/repository',
+				worktrees: [{ stateKey: 'worktree:vscode-remote://ssh-remote%2Bhost/worktree', name: 'Remote WT', path: '/worktree' }],
+			}],
+		});
+	});
+
+	test('sends active:false (not active:true with empty targets) to a connected machine with nothing to watch', async () => {
+		const harness = createClient({ remoteAuthority: 'ssh-remote+host' });
+		// リモート接続はあるが、登録済みリポジトリはすべて手元 → remoteTargets は空になる
+		harness.setRepositories([repository('one')]);
+
+		await harness.client.setWarmLease('mobile-owner', true);
+
+		assert.deepStrictEqual({
+			local: { active: warmPayload(harness.calls[0]!).active, targetCount: warmPayload(harness.calls[0]!).targets.length },
+			remote: { active: warmPayload(harness.remoteCalls[0]!).active, targetCount: warmPayload(harness.remoteCalls[0]!).targets.length },
+		}, {
+			local: { active: true, targetCount: 1 },
+			// targets が空でも active: true のまま送ると、以前そのマシンに向けた（対象がまだ
+			// あった頃の）リースが残ってしまう。空バケツには active: false を送る。
+			remote: { active: false, targetCount: 0 },
+		});
+	});
+
+	test('measure merges local and remote spaces into one result', async () => {
+		const harness = createClient({ remoteAuthority: 'ssh-remote+host' });
+		harness.setRepositories([
+			repository('one'),
+			{ id: 'remote', name: 'Remote', uri: URI.parse('vscode-remote://ssh-remote+host/repository') },
+		]);
+		harness.setCallBehaviour(() => Promise.resolve({ spaces: [{ stateKey: 'one', name: 'Repository one', ownBytes: 10, worktrees: [] }], measuredAt: 0, durationMs: 0 }));
+		harness.setRemoteCallBehaviour(() => Promise.resolve({ spaces: [{ stateKey: 'remote', name: 'Remote', ownBytes: 20, worktrees: [] }], measuredAt: 0, durationMs: 0 }));
+
+		const result = await harness.client.measure(true);
+
+		assert.deepStrictEqual(result.spaces.map(space => ({ stateKey: space.stateKey, ownBytes: space.ownBytes })), [
+			{ stateKey: 'one', ownBytes: 10 },
+			{ stateKey: 'remote', ownBytes: 20 },
+		]);
 	});
 
 	test('awaits initialization and recollects targets on every five-minute heartbeat', async () => {

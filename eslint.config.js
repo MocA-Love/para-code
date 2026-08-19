@@ -2064,6 +2064,17 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts が接続先の ~/.claude・~/.codex を答えるチャネル
 						// (registerParadisSessionResumeForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/sessionResume/~',
+						// PARA-PATCH: serverServices.ts が接続先のディスク使用量を答えるチャネル
+						// (registerParadisSpaceDiskForServer) を登録するための逆方向 import
+						'vs/paradis/contrib/spaceDisk/~',
+						// PARA-PATCH: serverServices.ts が接続先の Codex state DB を答えるチャネル
+						// (registerParadisCodexTerminalTitleForServer) を登録するための逆方向 import
+						'vs/paradis/contrib/codexTerminalTitle/~',
+						// PARA-PATCH: serverServices.ts が接続先で ripgrep を動かすチャネル
+						// (registerParadisRemoteSearchForServer) を登録するための逆方向 import。
+						// mobileRelay 全体（ペアリング・E2E暗号・リレー本体等）を許可すると誤 import を
+						// 招くため、必要な node 層だけに絞る。
+						'vs/paradis/contrib/mobileRelay/node/**',
 						'vs/server/~'
 					]
 				},

@@ -212,15 +212,15 @@ export class ParadisCodexTerminalTitleService {
 }
 
 /** Shared-process IPC boundary for the read-only Codex metadata service. */
-export class ParadisCodexTerminalTitleChannel implements IServerChannel<string> {
+export class ParadisCodexTerminalTitleChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisCodexTerminalTitleService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		if (command !== 'findThreadPrompt') {
 			throw new Error(`Method not found: ${command}`);
 		}
@@ -232,5 +232,16 @@ export class ParadisCodexTerminalTitleChannel implements IServerChannel<string> 
 /** Registers the read-only Codex title metadata channel in the shared process. */
 export function registerParadisCodexTerminalTitle(server: IPCServer<string>, logService: ILogService): IDisposable {
 	server.registerChannel(PARADIS_CODEX_TERMINAL_TITLE_CHANNEL, new ParadisCodexTerminalTitleChannel(new ParadisCodexTerminalTitleService(logService)));
+	return { dispose: () => { } };
+}
+
+/**
+ * serverServices.ts（REH）の登録点から1行で呼べるファクトリ。
+ *
+ * SSH 接続先で動く Codex の state DB・rollout は接続先のファイルシステム上にしかない。
+ * shared process 版は常に手元のマシンで動くため、同じチャネルを接続先にも生やす。
+ */
+export function registerParadisCodexTerminalTitleForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	server.registerChannel(PARADIS_CODEX_TERMINAL_TITLE_CHANNEL, new ParadisCodexTerminalTitleChannel<TContext>(new ParadisCodexTerminalTitleService(logService)));
 	return { dispose: () => { } };
 }

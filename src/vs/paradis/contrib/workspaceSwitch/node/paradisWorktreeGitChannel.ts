@@ -28,7 +28,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEn
 import { localize } from '../../../../nls.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisGithubCallSiteFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -191,6 +191,48 @@ export class ParadisWorktreeGitService {
 				} else {
 					resolve(stdout);
 				}
+			});
+		});
+	}
+
+	private static readonly RUN_GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show']);
+	// 外部コマンド実行やリポジトリ差し替えに繋がるオプションを拒否する。`-C`/`-c` は自前で
+	// 先頭に足すので、呼び出し元が渡す args の側からは常に禁止する。`--output` は diff/log/show が
+	// 受け付け、値に任意パスを渡せば任意ファイル書き込みに使える。
+	// 既知の誤検出: このチェックは args 全体（オプションの「値」を含む）に掛かるため、例えば
+	// `git commit -m` のメッセージがたまたま `--output=...` で始まると拒否される（git 自体は
+	// `-m` の直後を常に値として扱うので危険はないが、区別せず一律拒否している）。安全側に倒した
+	// 割り切りで、実害は「稀に操作が失敗してエラーが返る」程度（任意コマンド実行にはならない）。
+	private static readonly RUN_GIT_FORBIDDEN_ARGUMENT = /^--(upload-pack|receive-pack|exec|git-dir|work-tree|config-env|output)\b|^-c$|^-C$/;
+
+	/**
+	 * モバイル中継・ソース管理タブ用の、許可リストで制限した任意 git サブコマンド実行。
+	 * `exec` と異なり例外を投げず、常に exit code を含めて返す（呼び出し側が判定するため）。
+	 *
+	 * ここでのチェックはサブコマンドと危険なオプションの許可/禁止だけで、`args` の値
+	 * （コミットハッシュ・ブランチ名等）の形式検証はしない。`git show <hash>` に不正な rev
+	 * を渡してもコマンドとしては安全（任意コマンド実行にはならない）だが、呼び出し元が
+	 * 意味のある値かどうかは呼び出し元の責任で確認すること（このチャネルの利用者が増えるたびに
+	 * 個々の呼び出し元で検証すること — 例: 40桁以内の16進に絞る等）。
+	 */
+	async runGit(repoPath: string, args: readonly string[]): Promise<IParadisWorktreeGitCommandResult> {
+		if (args.length === 0 || !ParadisWorktreeGitService.RUN_GIT_ALLOWED_SUBCOMMANDS.has(args[0])) {
+			throw new Error(`ParadisWorktreeGit: git subcommand not allowed: ${args[0] ?? '(none)'}`);
+		}
+		for (const arg of args) {
+			if (ParadisWorktreeGitService.RUN_GIT_FORBIDDEN_ARGUMENT.test(arg)) {
+				throw new Error(`ParadisWorktreeGit: git argument not allowed: ${arg}`);
+			}
+		}
+		const env = await this.cachedShellEnv.getEnv();
+		// core.quotepath=false: 既定では非ASCIIパスが八進エスケープ+引用符("\345...")で出力され、
+		// モバイルのソース管理タブで文字化け表示になるため無効化する。
+		const gitArgs: ParadisCommandArgument[] = ['-C', paradisWslPathArg(repoPath), '-c', 'core.quotepath=false', ...args];
+		const invocation = await this.resolveInvocation('git', gitArgs, undefined, ['GIT_TERMINAL_PROMPT'], { ...env, GIT_TERMINAL_PROMPT: '0' });
+		return new Promise<IParadisWorktreeGitCommandResult>(resolve => {
+			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+				const rawCode: unknown = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code ?? 1 : 0;
+				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: String(stderr) });
 			});
 		});
 	}
@@ -736,6 +778,7 @@ export class ParadisWorktreeGitChannel<TContext = string> implements IServerChan
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
 			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest) as Promise<T>;
+			case 'runGit': return this.service.runGit(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

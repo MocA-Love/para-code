@@ -8,13 +8,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { sep } from '../../../../base/common/path.js';
-import { URI } from '../../../../base/common/uri.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshot, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentTokenScopeMemory, paradisShouldClearAgentStatusAfterPollFailures } from '../../agentBrowser/common/paradisAgentStatusStale.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisTerminalScopeRoot, paradisResolveInitialCwdScope } from '../common/paradisTerminalProcessScope.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisScopeRootPath, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 
 export interface IParadisAgentStatusSnapshotConsumerOptions {
 	readonly snapshotService: IParadisAgentStatusSnapshotService;
@@ -22,6 +22,7 @@ export interface IParadisAgentStatusSnapshotConsumerOptions {
 	readonly terminalScopeService: IParadisTerminalScopeService;
 	readonly workspaceSwitchService: IParadisWorkspaceSwitchService;
 	readonly worktreeService: IParadisWorktreeService;
+	readonly remoteAgentService: IRemoteAgentService;
 	readonly statusStore: IParadisAgentStatusStore;
 	readonly acknowledgePaneStatus: (token: string) => void;
 	readonly logPollFailure: (error: unknown) => void;
@@ -85,23 +86,28 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 		if (cwd === undefined || cwd.length === 0) {
 			return undefined;
 		}
-		let best: { root: string; stateKey: string } | undefined;
-		const consider = (uri: URI, stateKey: string) => {
-			if (uri.scheme !== 'file') {
-				return;
-			}
-			const root = uri.fsPath;
-			if ((cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep)) && (best === undefined || root.length > best.root.length)) {
-				best = { root, stateKey };
-			}
-		};
+		// ターミナル側 (paradisTerminalScope.contribution.ts) と同じ突き合わせに揃える。
+		// 素朴な startsWith(root + sep) は sep をこのウィンドウの OS で決め打ちするため、
+		// Windows クライアント（sep === '\\'）から Linux 接続先の cwd（'/' 区切り）を
+		// 突き合わせると常に不一致になる。normalize を通す paradisResolveInitialCwdScope は
+		// 両辺に同じ変換をかけるので、この向き（POSIX クライアント→Windows 接続先を除く）は
+		// 一致する（逆方向・Windows クライアント→Windows 以外の接続先はこの関数の対象外の
+		// ままで、既存の制約であり今回の変更で悪化はしていない）。
+		const roots: IParadisTerminalScopeRoot[] = [];
+		const connectedAuthority = this._options.remoteAgentService.getConnection()?.remoteAuthority;
 		for (const repository of this._options.workspaceSwitchService.repositories) {
-			consider(repository.uri, repository.id);
+			const repositoryRoot = paradisScopeRootPath(repository.uri, connectedAuthority);
+			if (repositoryRoot !== undefined) {
+				roots.push({ root: repositoryRoot, stateKey: repository.id });
+			}
 			for (const worktree of this._options.worktreeService.getWorktrees(repository.id)) {
-				consider(worktree.uri, paradisWorktreeStateKey(worktree.uri));
+				const worktreeRoot = worktree.missing ? undefined : paradisScopeRootPath(worktree.uri, connectedAuthority);
+				if (worktreeRoot !== undefined) {
+					roots.push({ root: worktreeRoot, stateKey: paradisWorktreeStateKey(worktree.uri) });
+				}
 			}
 		}
-		return best?.stateKey;
+		return paradisResolveInitialCwdScope(cwd, roots);
 	}
 
 	private _projectSnapshot(snapshot: IParadisAgentStatusSnapshot): void {

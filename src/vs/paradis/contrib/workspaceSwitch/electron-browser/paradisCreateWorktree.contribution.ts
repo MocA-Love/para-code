@@ -29,7 +29,7 @@ import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IPar
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
-import { paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
@@ -258,7 +258,10 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		const dialogService = accessor.get(IDialogService);
 		const switchService = accessor.get(IParadisWorkspaceSwitchService);
 		const worktreeService = accessor.get(IParadisWorktreeService);
-		const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
+		// worktree の削除 (git worktree remove --force 等) は書き込みなので、別ホスト/未接続の
+		// vscode-remote へフォールバックしない write resolver を使う（手元へ流すと、絶対パスが
+		// 一致する無関係な手元のディレクトリを削除してしまう）。
+		const resolveGitHost = paradisWorktreeGitWriteHostResolver(accessor);
 		const logService = accessor.get(ILogService);
 		// アクセサは同期実行中しか有効でないため、await をまたぐ teardown 実行用に
 		// instantiationService だけ取り出しておき、実行時は invokeFunction で新しいアクセサを作る
@@ -331,7 +334,12 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				},
 				remove: async () => {
 					// git はこのリポジトリがあるマシンで動かす（作業ツリーも同じマシンにある）
-					const { channel, path } = resolveGitHost(repository.uri);
+					const host = resolveGitHost(repository.uri);
+					if (!host) {
+						// allow-any-unicode-next-line
+						throw new Error(localize('paradis.worktree.unreachableHost', "「{0}」は今つないでいる接続先にありません。このリポジトリがあるマシンへ接続してから実行してください。", repository.name));
+					}
+					const { channel, path } = host;
 					const removeRequest: IParadisRemoveWorktreeRequest = {
 						repoPath: path(repository.uri),
 						worktreePath: path(uri),

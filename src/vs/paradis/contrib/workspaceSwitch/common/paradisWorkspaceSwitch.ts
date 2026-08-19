@@ -8,6 +8,7 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -125,6 +126,30 @@ export interface IParadisWorktreeService {
  */
 export function paradisWorktreeStateKey(uri: URI): string {
 	return `worktree:${uri.toString()}`;
+}
+
+/**
+ * repository/worktree の URI を、cwd 文字列との突き合わせに使える root パス表記へ変換する。
+ *
+ * SSH 接続中はターミナルやエージェントペインが接続先で動くため、その cwd は接続先から見た表記
+ * （vscode-remote なら常に POSIX 表記の `uri.path`）になる。`fsPath` は常にこのウィンドウ
+ * （ローカル）の OS で区切りを付け替えるため、接続先の cwd とは一致しなくなる。file 以外・
+ * vscode-remote 以外（未保存など）は突き合わせ不能として除外する。
+ *
+ * `connectedAuthority` は、このウィンドウが今つないでいる SSH 接続先の authority
+ * （`IRemoteAgentService.getConnection()?.remoteAuthority`）。別ホストで登録した古い
+ * vscode-remote や、未接続中の vscode-remote まで通すと、たまたま絶対パスが一致する
+ * 手元の無関係な cwd と誤って突き合ってしまう（例: Linux クライアント + Linux 接続先で
+ * 双方に `/home/u/proj` がある構成）。渡し忘れを事故らせないため必須引数にしてある。
+ */
+export function paradisScopeRootPath(uri: URI, connectedAuthority: string | undefined): string | undefined {
+	if (uri.scheme === Schemas.file) {
+		return uri.fsPath;
+	}
+	if (uri.scheme === Schemas.vscodeRemote && connectedAuthority !== undefined && uri.authority.toLowerCase() === connectedAuthority.toLowerCase()) {
+		return uri.path;
+	}
+	return undefined;
 }
 
 /** 状態キーで指せるスペース1件（登録リポジトリ、またはその実在 worktree）。 */

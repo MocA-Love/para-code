@@ -19,7 +19,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
-import { paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorkspaceLifecycleConfig, paradisParseWorkspaceLifecycleConfig, ParadisWorkspaceLifecycleKind } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
@@ -53,8 +53,11 @@ export async function paradisReadWorkspaceLifecycleConfig(fileService: IFileServ
 export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAccessor, kind: ParadisWorkspaceLifecycleKind, repository: IParadisWorkspaceRepository, worktreeUri: URI): Promise<boolean> {
 	const trustService = accessor.get(IWorkspaceTrustManagementService);
 	const fileService = accessor.get(IFileService);
-	// 承認ダイアログの await をまたいで accessor は使えないので、ここで取り出しておく
-	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
+	// 承認ダイアログの await をまたいで accessor は使えないので、ここで取り出しておく。
+	// 任意スクリプトの実行は書き込み系なので、別ホスト/未接続の vscode-remote へ
+	// フォールバックしない write resolver を使う（手元へ流すと、絶対パスが一致する
+	// 無関係な手元のリポジトリでスクリプトを実行してしまう）。
+	const resolveGitHost = paradisWorktreeGitWriteHostResolver(accessor);
 	const dialogService = accessor.get(IDialogService);
 	const storageService = accessor.get(IStorageService);
 	const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
@@ -99,6 +102,10 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 
 	// スクリプトを動かすのはリポジトリがあるマシン。作業ツリーは常に同じマシンにある
 	const host = resolveGitHost(repository.uri);
+	if (!host) {
+		// allow-any-unicode-next-line
+		throw new Error(localize('paradis.worktree.unreachableHost', "「{0}」は今つないでいる接続先にありません。このリポジトリがあるマシンへ接続してから実行してください。", repository.name));
+	}
 	await host.channel.call('runLifecycleScript', [{
 		kind, repoPath: host.path(repository.uri), worktreePath: host.path(worktreeUri), script,
 		...(timeoutMinutes !== undefined ? { timeoutMinutes } : {})

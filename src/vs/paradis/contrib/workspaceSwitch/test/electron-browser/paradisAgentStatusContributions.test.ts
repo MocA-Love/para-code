@@ -15,6 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshot, PARADIS_AGENT_BROWSER_CHANNEL } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotOutcome, IParadisAgentStatusSnapshotService } from '../../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
@@ -112,6 +113,7 @@ suite('Paradis agent status contribution wiring', () => {
 			{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
 			{ onWillShutdown: Event.None } as unknown as ILifecycleService,
 			producer,
+			{ getConnection: () => null } as unknown as IRemoteAgentService,
 		));
 
 		const sharedSnapshot: IParadisAgentStatusSnapshot = {
