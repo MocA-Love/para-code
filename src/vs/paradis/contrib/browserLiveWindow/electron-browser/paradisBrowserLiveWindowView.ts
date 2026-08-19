@@ -18,9 +18,14 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisBrowserLiveModel } from './paradisBrowserLiveModel.js';
 import { ParadisBrowserLiveSettingsPopover } from './paradisBrowserLiveSettingsPopover.js';
 import { ParadisBrowserLiveThumbnail } from './paradisBrowserLiveThumbnail.js';
+import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IParadisAgentCursorEvent, IParadisAgentCursorEvents, PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_AGENT_CURSOR_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import {
 	IParadisBrowserLiveEntry,
 	IParadisBrowserLiveViewState,
+	paradisBrowserLiveCoverPoint,
 	paradisBrowserLiveDisplayTitle,
 	paradisBrowserLiveDisplayUrl,
 	paradisFilterBrowserLiveEntries,
@@ -36,6 +41,16 @@ interface ITile {
 	readonly shot: HTMLElement;
 	/** 更新が止まっていることを示す印。 */
 	readonly pausedMark: HTMLElement;
+	/** エージェントのカーソルの写し (ページ側の演出は、非表示のページでは進まない)。 */
+	readonly cursor: HTMLElement;
+	/** クリックの波紋。 */
+	readonly cursorRipple: HTMLElement;
+	/** 撮影の合図 (枠の光 + バッジ)。 */
+	readonly shotMark: HTMLElement;
+	/** カーソルを消すまでのタイマー。 */
+	cursorTimer: number | undefined;
+	/** 最後に受け取った割合座標。列数やウィンドウの幅が変わったときに置き直すために覚える。 */
+	cursorPoint: { readonly nx: number; readonly ny: number } | undefined;
 	/** スペース色の帯。どのスペースのページかを見出し以外でも分かるようにする。 */
 	readonly spaceBar: HTMLElement;
 	readonly faviconImage: HTMLImageElement;
@@ -62,6 +77,21 @@ interface ITile {
  */
 const FIRST_CAPTURE_STAGGER = 120;
 const FIRST_CAPTURE_STAGGER_MAX = 2000;
+
+/**
+ * 最後の操作からこの時間 (ms) が経ったらカーソルの写しを畳む。
+ *
+ * エージェントは考えている間もページを掴んだままなので、短く切ると操作のたびに消えては
+ * 現れて落ち着かない。ページ側の演出 (PARADIS_CURSOR_OVERLAY_TUNING.idleMs) と同じ考え方。
+ */
+const CURSOR_IDLE_MS = 60_000;
+
+/** アニメーションを頭から再生し直す (同じクラスを付け直しても再生されないため)。 */
+function fireOnce(element: HTMLElement, className: string): void {
+	element.classList.remove(className);
+	void element.offsetWidth;
+	element.classList.add(className);
+}
 
 /**
  * ブラウザ一覧ウィンドウの中身 (ツールバー + タイルの壁)。
@@ -118,6 +148,8 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		transparencyActive: boolean,
 		@IHoverService private readonly hoverService: IHoverService,
 		@ILogService private readonly logService: ILogService,
+		@IMainProcessService mainProcessService: IMainProcessService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -174,14 +206,33 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		}));
 
 		this._register(this.model.onDidChangeEntries(() => this.render()));
+		// エージェントのカーソルの写し。electron-main が読み取り専用で公開しているチャネルを
+		// ここで購読する —— 一覧を閉じれば購読も外れるので、見ていない間は配信されない。
+		const cursorEvents = ProxyChannel.toService<IParadisAgentCursorEvents>(mainProcessService.getChannel(PARADIS_AGENT_CURSOR_CHANNEL));
+		this._register(cursorEvents.onDidChangeAgentCursor(event => this.onAgentCursor(event)));
+		// 演出の設定を切ったら、既に出ているカーソルもここで畳む。ページ側は設定変更で自分の
+		// カーソルを片付けるが、その経路はビューIDを持たないので一覧へは通知が来ない。
+		this._register(this.configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING) && !this.isCursorMirrorEnabled()) {
+				for (const tile of this.tiles.values()) {
+					this.hideCursor(tile);
+				}
+			}
+		}));
 		this._register({ dispose: () => this.disposeAllTiles() });
 
 		this.render();
 	}
 
-	/** ウィンドウのサイズが変わったとき。開いたままのポップオーバーを歯車へ追従させる。 */
+	/** ウィンドウのサイズが変わったとき。ポップオーバーとカーソルの写しを今の寸法へ合わせる。 */
 	layout(): void {
 		this.popover.value?.layout();
+		for (const tile of this.tiles.values()) {
+			if (tile.cursorPoint) {
+				// 位置は px で焼き込んでいるので、枠が変われば置き直さないとずれたまま残る。
+				this.placeCursor(tile, 0);
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------ 描画
@@ -328,6 +379,14 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 			this.renderedOnce ? 0 : Math.min(FIRST_CAPTURE_STAGGER_MAX, index * FIRST_CAPTURE_STAGGER),
 			this.logService,
 		));
+		// エージェントのカーソル。ページ側の演出は縮小されて潰れるうえ、画面に出ていない
+		// ページでは進まないので、座標だけを受け取ってここへ読める大きさで描き直す。
+		const cursor = append(shot, $('.paradis-browser-live-cursor'));
+		cursor.setAttribute('aria-hidden', 'true');
+		const cursorRipple = append(cursor, $('.paradis-browser-live-cursor-ripple'));
+		append(cursor, $('.paradis-browser-live-cursor-arrow'));
+		const shotMark = append(shot, $('.paradis-browser-live-shot-mark'));
+		shotMark.setAttribute('aria-hidden', 'true');
 		const pausedMark = append(shot, $('span.paradis-browser-live-paused.codicon.codicon-debug-pause.hidden'));
 		pausedMark.setAttribute('aria-hidden', 'true');
 		disposables.add(this.hoverService.setupManagedHover(
@@ -344,7 +403,8 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		const tags = append(foot, $('.paradis-browser-live-tags'));
 
 		const tile: ITile = {
-			root, shot, pausedMark, spaceBar, faviconImage, faviconFallback, title, titleHover, reloadButton, closeButton, url, tags, thumbnail, disposables,
+			root, shot, pausedMark, cursor, cursorRipple, shotMark, cursorTimer: undefined, cursorPoint: undefined,
+			spaceBar, faviconImage, faviconFallback, title, titleHover, reloadButton, closeButton, url, tags, thumbnail, disposables,
 			// 可視判定がある環境では、最初の通知が来るまで止めておく (開いた瞬間に全タイルが
 			// 撮りに行かないように)。判定が使えない環境では最初から動かす。
 			inViewport: !this.intersectionObserver,
@@ -569,6 +629,104 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		this._onDidChangeViewState.fire();
 	}
 
+	// ------------------------------------------------------------------ エージェントのカーソル
+
+	/**
+	 * カーソルの写しをタイルへ描く。
+	 *
+	 * 座標は 0..1 の割合で来る (正規化は寸法を知っている electron-main 側で済ませてある)。
+	 * ここでやるのは、サムネイルが `object-fit: cover` で切り取られているぶんの補正だけ。
+	 * まだ1枚も撮れていないタイルでは画像の実寸が分からないので、その回は描かない。
+	 */
+	/** 演出の設定。切っている間は一覧側にもカーソルを出さない。 */
+	private isCursorMirrorEnabled(): boolean {
+		return this.configurationService.getValue<boolean>(PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING) !== false;
+	}
+
+	private onAgentCursor(event: IParadisAgentCursorEvent): void {
+		const tile = this.tiles.get(event.viewId);
+		if (!tile || !tile.root.parentElement) {
+			return;
+		}
+		if (event.kind === 'gone') {
+			this.hideCursor(tile);
+			return;
+		}
+		if (event.kind === 'captured') {
+			fireOnce(tile.shotMark, 'is-flashing');
+			return;
+		}
+		if (event.nx === undefined || event.ny === undefined) {
+			return;
+		}
+		// 初めて置くときは滑らせない。タイルの左上から目標へ走る線が見えてしまう
+		// (ページ側の演出も、最初の1回だけは移動時間を無視して置く)。
+		const settling = !tile.cursor.classList.contains('is-shown');
+		tile.cursorPoint = { nx: event.nx, ny: event.ny };
+		if (!this.placeCursor(tile, settling ? 0 : Math.max(0, event.durationMs ?? 0))) {
+			return;
+		}
+		if (event.kind === 'press') {
+			fireOnce(tile.cursorRipple, 'is-rippling');
+		}
+		// 操作が途切れたら自分で消える。ページ側の演出 (idleMs) と同じ考え方で、
+		// 「掴んだまま考えている」間にカーソルが消えては現れて落ち着かないのを避ける。
+		this.armCursorTimer(tile);
+	}
+
+	/**
+	 * 覚えている割合座標から、いまの枠に合わせて置き直す。切り取られて見えない位置なら隠す。
+	 *
+	 * @returns 置けたか (置けなかったときは呼び出し側でアイドルの延長もしない)
+	 */
+	private placeCursor(tile: ITile, durationMs: number): boolean {
+		const point = tile.cursorPoint;
+		const frame = tile.thumbnail.frameSize();
+		if (!point || !frame) {
+			return false;
+		}
+		const box = tile.shot.getBoundingClientRect();
+		const placed = paradisBrowserLiveCoverPoint(point.nx, point.ny, {
+			boxWidth: box.width,
+			boxHeight: box.height,
+			frameWidth: frame.width,
+			frameHeight: frame.height,
+		});
+		if (!placed) {
+			// 縦横比の違いで切られている場所。出すとページ上の別の位置を指してしまう。
+			tile.cursor.classList.remove('is-shown');
+			return false;
+		}
+		tile.cursor.style.setProperty('--paradis-cursor-duration', `${durationMs}ms`);
+		tile.cursor.style.transform = `translate3d(${Math.round(placed.x)}px, ${Math.round(placed.y)}px, 0)`;
+		tile.cursor.classList.add('is-shown');
+		return true;
+	}
+
+	private armCursorTimer(tile: ITile): void {
+		const targetWindow = getWindow(tile.root);
+		if (tile.cursorTimer !== undefined) {
+			targetWindow.clearTimeout(tile.cursorTimer);
+		}
+		tile.cursorTimer = targetWindow.setTimeout(() => {
+			tile.cursorTimer = undefined;
+			tile.cursor.classList.remove('is-shown');
+			// 座標も捨てる。残すと、この後のリサイズで置き直した拍子に、消したはずの
+			// カーソルがタイマー無しで復活して二度と消えなくなる。
+			tile.cursorPoint = undefined;
+		}, CURSOR_IDLE_MS);
+	}
+
+	private hideCursor(tile: ITile): void {
+		const targetWindow = getWindow(tile.root);
+		if (tile.cursorTimer !== undefined) {
+			targetWindow.clearTimeout(tile.cursorTimer);
+			tile.cursorTimer = undefined;
+		}
+		tile.cursor.classList.remove('is-shown');
+		tile.cursorPoint = undefined;
+	}
+
 	// ------------------------------------------------------------------ 可視性
 
 	private observeIntersections(): void {
@@ -604,6 +762,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 	}
 
 	private disposeTile(viewId: string, tile: ITile): void {
+		this.hideCursor(tile);
 		this.viewIdsByElement.delete(tile.root);
 		this.intersectionObserver?.unobserve(tile.root);
 		tile.root.remove();

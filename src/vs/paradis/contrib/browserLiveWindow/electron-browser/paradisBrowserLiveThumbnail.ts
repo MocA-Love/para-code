@@ -105,6 +105,19 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 		}
 	}
 
+	/**
+	 * いま出している絵のピクセル寸法。まだ1枚も撮れていなければ undefined。
+	 *
+	 * エージェントのカーソルを重ねる側が、`object-fit: cover` で切り取られているぶんを
+	 * 補正するのに使う (枠と画像の縦横比が違うと、割合をそのまま置いてもずれる)。
+	 */
+	frameSize(): { readonly width: number; readonly height: number } | undefined {
+		if (!this.hasFrame || this.image.naturalWidth === 0 || this.image.naturalHeight === 0) {
+			return undefined;
+		}
+		return { width: this.image.naturalWidth, height: this.image.naturalHeight };
+	}
+
 	setCadence(cadence: ParadisBrowserLiveCadence): void {
 		if (this.cadence === cadence) {
 			return;

@@ -195,6 +195,44 @@ export const PARADIS_AGENT_BROWSER_CHANNEL = 'paradisAgentBrowser';
 export const PARADIS_CDP_TARGET_CHANNEL = 'paradisCdpTarget';
 
 /**
+ * エージェントのカーソル演出を renderer へ写すチャネル (electron-main → renderer)。
+ *
+ * 演出そのものはページの中に描かれるので、ページが見えている限りは何もしなくても写る。
+ * 写らないのは「画面に出ていないページ」で、非表示のビューは Chromium がフレームを作らず、
+ * カーソルの移動 (CSS transition) も波紋やフラッシュ (Web Animations) も進まない。
+ * ブラウザ一覧はそういうページこそ見張る場所なので、座標だけを別便で受け取り、
+ * 縮小した映像の上へ読める大きさで描き直す。
+ */
+export const PARADIS_AGENT_CURSOR_CHANNEL = 'paradisAgentCursor';
+
+/** エージェントのカーソルが動いた・撮った・離れた、の1件。 */
+export interface IParadisAgentCursorEvent {
+	readonly viewId: string;
+	/**
+	 * `move` は目標へ滑らせる、`press` はクリックの波紋、`captured` は撮影、
+	 * `gone` は演出そのものの取り下げ (共有解除・ユーザーが操作を始めた)。
+	 */
+	readonly kind: 'move' | 'press' | 'captured' | 'gone';
+	/**
+	 * CSS ビューポートに対する割合 (0..1)。`captured` と `gone` では undefined。
+	 *
+	 * 正規化は electron-main 側で済ませる。受け側 (別プロセスの一覧ウィンドウ) は、そのページの
+	 * ビューポートの大きさも、撮影に使われたディスプレイの倍率も知らないため、生の座標を
+	 * 渡すと混在DPIやページのズームで位置がずれる。
+	 */
+	readonly nx?: number;
+	readonly ny?: number;
+	/** `move` を滑らせる時間 (ms)。ページ側に出るカーソルと同じ速さで動かすために使う。 */
+	readonly durationMs?: number;
+}
+
+/** {@link PARADIS_AGENT_CURSOR_CHANNEL} の公開面。renderer は購読しかしない。 */
+export interface IParadisAgentCursorEvents {
+	readonly onDidChangeAgentCursor: Event<IParadisAgentCursorEvent>;
+}
+
+
+/**
  * workbenchウィンドウが shared process の IPCServer へ登録する、ファイルプレビュー
  * オープン用IPCチャネル名。shared process 側（MCPの `preview_file` ツール）が
  * `ipcServer.getChannel(名前, ctxフィルタ)` で「呼び出し元ペインのウィンドウ」だけに

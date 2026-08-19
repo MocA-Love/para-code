@@ -25,6 +25,7 @@ import {
 	IParadisCdpFrameEvent,
 	IParadisCdpInputDispatchResult,
 	IParadisCdpScreenshotOptions,
+	IParadisAgentCursorEvent,
 	IParadisExactBrowserViewDescriptor,
 	PARADIS_EXACT_VIEW_LEASE_MAX_LENGTH,
 	PARADIS_EXACT_VIEW_TARGET_ID_MAX_LENGTH,
@@ -65,6 +66,21 @@ interface IFrameSubState {
  * app.ts で1度だけ生成されるプロセス寿命のシングルトン前提（dispose経路は無い。
  * フレーム購読は shared process 側の stopFrameSubscription / webContents の destroyed で解放される）。
  */
+/** CSS ビューポートの寸法と、それを測った時刻。 */
+interface IParadisCursorViewport {
+	readonly width: number;
+	readonly height: number;
+	readonly at: number;
+}
+
+/**
+ * ビューポート寸法の控えを使い回す時間 (ms)。
+ *
+ * リサイズやズームで変わるが、その頻度は入力より桁違いに低い。長くすると変化直後の数手が
+ * ずれ、短くすると入力のたびに CDP 往復が増える。
+ */
+const CURSOR_VIEWPORT_TTL_MS = 2_000;
+
 export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 
 	private readonly frameSubs = new Map<string, IFrameSubState>();
@@ -76,6 +92,26 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 	private readonly _onDidFrame = new Emitter<IParadisCdpFrameEvent>();
 	/** beginFrameSubscription 由来のフレーム（base64 JPEG）。全購読ターゲット共通、targetIdで振り分ける。 */
 	readonly onDidFrame: Event<IParadisCdpFrameEvent> = this._onDidFrame.event;
+
+	/** CSS ビューポート寸法の控え。入力のたびにページへ問い合わせないため。 */
+	private readonly cursorViewports = new WeakMap<BrowserView, IParadisCursorViewport>();
+	/**
+	 * カーソルを取り下げるたびに進む世代。
+	 *
+	 * 寸法の測り直しを挟む回だけ `move` の発火が非同期になり、その隙に「取り下げ」が
+	 * 割り込むと、消したはずのカーソルが後から復活してしまう。測る前の世代と突き合わせて落とす。
+	 */
+	private readonly cursorGenerations = new WeakMap<BrowserView, number>();
+	private readonly _onDidChangeAgentCursor = new Emitter<IParadisAgentCursorEvent>();
+	/**
+	 * カーソル演出の写し。
+	 *
+	 * 演出そのものはページの中に描かれるので、そのページが画面に出ている限りは何もしなくても
+	 * 映像に写る。写らないのは非表示のビューで、Chromium がフレームを作らないためカーソルの
+	 * 移動も波紋もフラッシュも進まない。ブラウザ一覧はそういうページこそ見張る場所なので、
+	 * 座標だけをここから流して、縮小映像の上へ描き直せるようにする。
+	 */
+	readonly onDidChangeAgentCursor: Event<IParadisAgentCursorEvent> = this._onDidChangeAgentCursor.event;
 
 	constructor(
 		private readonly browserViewMainService: IBrowserViewMainService,
@@ -92,6 +128,85 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 	 * shared process から聞かれるのを待たずに走らせる。コンストラクタでやらないのは、この
 	 * サービスを組み立てるだけで Electron とファイルシステムに触りに行かせないため。
 	 */
+	/**
+	 * カーソル演出を取り下げる。ページ側と一覧側の写しを必ず同時に片付ける。
+	 *
+	 * 別々に呼ぶと、片方だけ残った状態 (もう誰も操作していないページに一覧側のカーソルだけが
+	 * 最大1分残る) が作れてしまう。
+	 */
+	private removeCursorOverlay(viewId: string, view: BrowserView): void {
+		this.cursorOverlay.removeOverlay(view);
+		this.cursorGenerations.set(view, (this.cursorGenerations.get(view) ?? 0) + 1);
+		this._onDidChangeAgentCursor.fire({ viewId, kind: 'gone' });
+	}
+
+	/**
+	 * マウス入力に合わせてカーソルの写しを流す。
+	 *
+	 * 座標はここで 0..1 へ正規化する。受け側 (別プロセスの一覧ウィンドウ) は、そのページの
+	 * CSS ビューポートがどれだけの大きさか・どのディスプレイの倍率で撮られたかを知らない。
+	 * ページのズームや端末エミュレーションが効いていると、撮影画像の寸法から逆算しても合わない。
+	 *
+	 * 寸法はページに聞く (`Page.getLayoutMetrics`) が、入力のたびに往復すると配送が遅れるので
+	 * 短い間だけ覚えておく (モバイルミラーが同じ間引き方をしている)。まだ寸法を知らない間は
+	 * 何も送らない —— 位置の分からないカーソルを出すより、1手ぶん遅れて出る方がよい。
+	 */
+	private async fireAgentCursorMove(viewId: string, view: BrowserView, params: Readonly<Record<string, unknown>>, durationMs: number): Promise<void> {
+		const { type, x, y } = params;
+		if (type !== 'mousePressed' && type !== 'mouseMoved') {
+			return;
+		}
+		if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+			return;
+		}
+		if (!this.cursorOverlay.isOverlayEnabled()) {
+			return;
+		}
+		const generation = this.cursorGenerations.get(view) ?? 0;
+		const viewport = await this.resolveCursorViewport(view);
+		if (!viewport || (this.cursorGenerations.get(view) ?? 0) !== generation) {
+			// 測っている間にページが手を離れた。ここで出すと、消したカーソルが復活する。
+			return;
+		}
+		const nx = x / viewport.width;
+		const ny = y / viewport.height;
+		if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
+			return;
+		}
+		this._onDidChangeAgentCursor.fire(type === 'mousePressed'
+			? { viewId, kind: 'press', nx, ny }
+			: { viewId, kind: 'move', nx, ny, durationMs });
+	}
+
+	/**
+	 * CSS ビューポートの寸法。{@link CURSOR_VIEWPORT_TTL_MS} の間は前回の値を使い回す。
+	 *
+	 * `cssLayoutViewport` はスクロールバーを含まないが、サムネイルはビュー全幅の撮影なので、
+	 * 右端では割合がわずかに 1 を超える。スクロールバーの上をホバーした一瞬だけカーソルが
+	 * 消えるが、そこを直すために別の寸法を測りに行くほどのことではない。
+	 */
+	private async resolveCursorViewport(view: BrowserView): Promise<IParadisCursorViewport | undefined> {
+		const cached = this.cursorViewports.get(view);
+		const at = Date.now();
+		if (cached && at - cached.at < CURSOR_VIEWPORT_TTL_MS) {
+			return cached;
+		}
+		try {
+			const metrics = await view.debugger.sendCommand('Page.getLayoutMetrics') as { readonly cssLayoutViewport?: { readonly clientWidth?: unknown; readonly clientHeight?: unknown } };
+			const width = metrics?.cssLayoutViewport?.clientWidth;
+			const height = metrics?.cssLayoutViewport?.clientHeight;
+			if (typeof width !== 'number' || typeof height !== 'number' || width <= 0 || height <= 0) {
+				return undefined;
+			}
+			const viewport = { width, height, at: Date.now() };
+			this.cursorViewports.set(view, viewport);
+			return viewport;
+		} catch {
+			// ページ遷移中などで測れないことがある。次の入力で測り直す。
+			return undefined;
+		}
+	}
+
 	pinUpstreamPort(): void {
 		void this.upstreamPortPin.pin().catch(() => undefined);
 	}
@@ -338,7 +453,13 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		} finally {
 			// 復帰は必ず行い、フラッシュは本当に撮れたときだけ。所有権を失ったページや
 			// 失敗した撮影で光らせると、ユーザーが今使っているページが理由もなく光る。
-			this.cursorOverlay.afterCapture(view, captured);
+			// 一覧側の合図は、ページ側が実際に光ったときだけ出す。設定OFFと連射スロットル
+			// (FLASH_MIN_INTERVAL_MS) の判断を2箇所に複製しないため、戻り値をそのまま使う。
+			// 返るのは「光らせるコマンドを投げた」時点なので、ページ側の eval が失敗しても
+			// 一覧は光る。判断を複製しない方を採った結果で、承知のうえの非対称。
+			if (this.cursorOverlay.afterCapture(view, captured)) {
+				this._onDidChangeAgentCursor.fire({ viewId: descriptor.viewId, kind: 'captured' });
+			}
 		}
 	}
 
@@ -362,7 +483,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		if (enabledValue) {
 			this.frameKeepalive.remove(descriptor);
 			// 同じ信号がエージェントの手離れも意味するので、置きっぱなしのカーソルもここで片付ける。
-			this.cursorOverlay.removeOverlay(view);
+			this.removeCursorOverlay(descriptor.viewId, view);
 		} else {
 			this.frameKeepalive.add(descriptor);
 		}
@@ -434,7 +555,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 			if (view.webContents.isFocused()) {
 				// ユーザーが自分で操作し始めた合図。エージェントのカーソルを残すと、実カーソルの
 				// 横で固まったまま「止まっている」ように見えるので、ここで片付ける。
-				this.cursorOverlay.removeOverlay(view);
+				this.removeCursorOverlay(descriptor.viewId, view);
 				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user' };
 			}
 		} catch {
@@ -447,6 +568,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		// この後の commit 手順は毎回 authority と focus を取り直すので、ここで待つのは安全。
 		if (command.method === 'Input.dispatchMouseEvent') {
 			const cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params);
+			void this.fireAgentCursorMove(descriptor.viewId, view, command.params, cursorWaitMs);
 			if (cursorWaitMs > 0) {
 				await timeout(cursorWaitMs);
 			}

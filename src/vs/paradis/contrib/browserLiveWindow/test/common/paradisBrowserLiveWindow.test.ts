@@ -13,6 +13,7 @@ import {
 	IParadisBrowserLiveViewState,
 	PARADIS_BROWSER_LIVE_MAX_COLUMNS,
 	paradisBrowserLiveCaptureDelayMs,
+	paradisBrowserLiveCoverPoint,
 	paradisBrowserLiveDisplayTitle,
 	paradisBrowserLiveDisplayUrl,
 	paradisBrowserLiveInActiveSpace,
@@ -219,6 +220,48 @@ suite('Paradis Browser Live Window', () => {
 				'localhost:3000',
 				'example.com/a?b=c',
 				'',
+			],
+		);
+	});
+
+	test('maps the agent cursor through the thumbnail crop', () => {
+		// 枠と画像の縦横比が同じ: そのまま割合どおり。
+		const square = { boxWidth: 200, boxHeight: 100, frameWidth: 400, frameHeight: 200 };
+		// 16:10 の枠に 16:9 の画像 → cover なので左右が切られる。中央合わせ。
+		const wide = { boxWidth: 320, boxHeight: 200, frameWidth: 1600, frameHeight: 900 };
+		// 縦長の枠に横長の画像 → 縦を埋めるまで拡大するので、左右が大きくはみ出して切られる。
+		const tall = { boxWidth: 200, boxHeight: 400, frameWidth: 1000, frameHeight: 500 };
+		// 横長の枠に縦長のページ → 下がはみ出して切られる (object-position: top なので上端は残る)。
+		const portraitPage = { boxWidth: 320, boxHeight: 200, frameWidth: 800, frameHeight: 1200 };
+
+		assert.deepStrictEqual(
+			[
+				paradisBrowserLiveCoverPoint(0.5, 0.5, square),
+				paradisBrowserLiveCoverPoint(0, 0, square),
+				paradisBrowserLiveCoverPoint(0.5, 0.5, wide),
+				// 左端は切り取られた側へ落ちるので出さない。
+				paradisBrowserLiveCoverPoint(0, 0.5, wide),
+				paradisBrowserLiveCoverPoint(0.5, 0.1, tall),
+				paradisBrowserLiveCoverPoint(0.5, 0.9, tall),
+				// 画像の左寄りは枠の外へ切られている。
+				paradisBrowserLiveCoverPoint(0.1, 0.5, tall),
+				paradisBrowserLiveCoverPoint(0.5, 0.3, portraitPage),
+				// ページの下の方は枠に入らない。
+				paradisBrowserLiveCoverPoint(0.5, 0.9, portraitPage),
+				// 寸法が取れていないときは置かない。
+				paradisBrowserLiveCoverPoint(0.5, 0.5, { boxWidth: 0, boxHeight: 0, frameWidth: 0, frameHeight: 0 }),
+			],
+			[
+				{ x: 100, y: 50 },
+				{ x: 0, y: 0 },
+				{ x: 160, y: 100 },
+				undefined,
+				{ x: 100, y: 40 },
+				{ x: 100, y: 360 },
+				undefined,
+				{ x: 160, y: 144 },
+				undefined,
+				undefined,
 			],
 		);
 	});

@@ -328,6 +328,39 @@ export function paradisBrowserLiveDisplayUrl(url: string): string {
 	return rest;
 }
 
+/** サムネイルの表示枠と、その中に描かれている画像の実寸。 */
+export interface IParadisBrowserLiveCoverBox {
+	readonly boxWidth: number;
+	readonly boxHeight: number;
+	readonly frameWidth: number;
+	readonly frameHeight: number;
+}
+
+/**
+ * 画像の中の割合座標 (0..1) を、表示枠の中の px へ直す。
+ *
+ * サムネイルは `object-fit: cover` + `object-position: top center` で描いていて、枠と画像の
+ * 縦横比が違えば左右か下がはみ出して切られる。素直に「割合 × 枠の大きさ」で置くと、
+ * 切られた分だけカーソルがずれる (16:10 のタイルに 16:9 のページを映すと横に、縦長のペインでは
+ * 縦に大きくずれる)。切り取られて見えていない位置なら undefined を返す。
+ */
+export function paradisBrowserLiveCoverPoint(nx: number, ny: number, box: IParadisBrowserLiveCoverBox): { readonly x: number; readonly y: number } | undefined {
+	if (box.frameWidth <= 0 || box.frameHeight <= 0 || box.boxWidth <= 0 || box.boxHeight <= 0) {
+		return undefined;
+	}
+	// cover は「枠を覆う最小の倍率」。はみ出した側が切られる。
+	const scale = Math.max(box.boxWidth / box.frameWidth, box.boxHeight / box.frameHeight);
+	const width = box.frameWidth * scale;
+	const height = box.frameHeight * scale;
+	// object-position: top center —— 横は中央寄せ、縦は上端合わせ。
+	const x = (box.boxWidth - width) / 2 + nx * width;
+	const y = ny * height;
+	if (x < 0 || y < 0 || x > box.boxWidth || y > box.boxHeight) {
+		return undefined;
+	}
+	return { x, y };
+}
+
 /** サムネを撮るかどうかの判断材料。 */
 export interface IParadisBrowserLiveCaptureTarget {
 	/** エディタ上で実際に描かれているか (他のタブの裏・他スペースのページでは false)。 */

@@ -202,7 +202,7 @@ export class ParadisCursorOverlayController {
 	 * 光らせると、いま自分で操作しているページが理由もなく光ることになる。
 	 * 復帰は撮影の成否に関わらず必ず行う（隠したままにしない）。
 	 */
-	afterCapture(view: IParadisCursorOverlayTarget, captured: boolean): void {
+	afterCapture(view: IParadisCursorOverlayTarget, captured: boolean): boolean {
 		const depth = Math.max(0, (this.hideDepth.get(view) ?? 0) - 1);
 		this.hideDepth.set(view, depth);
 		// 復帰は「描く」ではなく「片付ける」側の操作なので、失敗バックオフでは止めない。
@@ -210,19 +210,30 @@ export class ParadisCursorOverlayController {
 		// 以降の移動でも自己回復しない）。非表示ビューの撮影では hide の解決がタイムアウトして
 		// バックオフが立つことが実際にあり、そこが一番踏みやすい。
 		if (!this.isAlive(view)) {
-			return;
+			return false;
 		}
 		if (depth > 0) {
 			// まだ別の撮影が走っている。ここで戻すとその1枚にカーソルが写る。
-			return;
+			return false;
 		}
 		// 撮り始めてから手放していないときだけ光らせる。
 		const stillOurs = (this.captureGeneration.get(view) ?? 0) === (this.detachGeneration.get(view) ?? 0);
 		if (captured && stillOurs && this.enabled() && this.shouldFlash(view)) {
 			this.run(view, { kind: 'captured', toast: captureToastLabel() });
-			return;
+			return true;
 		}
 		this.run(view, { kind: 'show' });
+		return false;
+	}
+
+	/**
+	 * 演出そのものが有効か（設定 `paradis.agentBrowser.showCursorOverlay`）。
+	 *
+	 * ブラウザ一覧はページの演出を縮小映像の上へ描き直すが、その判断も同じ設定に従わせる。
+	 * 設定を切った人の一覧にだけカーソルが出続ける、という食い違いを作らないため。
+	 */
+	isOverlayEnabled(): boolean {
+		return this.enabled();
 	}
 
 	/**
