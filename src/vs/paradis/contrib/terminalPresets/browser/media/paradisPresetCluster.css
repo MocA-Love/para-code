@@ -118,9 +118,13 @@
 .monaco-workbench .paradis-preset-cluster-collapsed:hover .paradis-preset-cluster-flyout,
 .monaco-workbench .paradis-preset-cluster-collapsed:focus-within .paradis-preset-cluster-flyout {
 	opacity: 1;
-	max-width: 70vw;
+	/* --paradis-preset-cluster-flyout-max-width は ParadisPresetClusterViewItem が実測して書き込む
+	「このエディタグループ（ペイン）の左端までの距離」。これが無いと 70vw（ウィンドウ幅基準）の
+	ままになり、サイドバーが開いていたり分割されたペインが狭いときに隣のペインやサイドバーへ
+	被さって見えてしまう。カスタムプロパティ未設定時（初回描画直後の一瞬）だけ 70vw を保険にする。 */
+	max-width: min(70vw, var(--paradis-preset-cluster-flyout-max-width, 70vw));
 	pointer-events: auto;
-	/* ピン留めが非常に多いと 70vw にも収まらないことがある。切り捨てて到達不能にする代わりに
+	/* ピン留めが非常に多いと、上記の上限にも収まらないことがある。切り捨てて到達不能にする代わりに
 	横スクロールで拾えるようにする（folding元のプリセット数が多いほど起きやすいケース）。 */
 	overflow-x: auto;
 }
