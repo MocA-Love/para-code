@@ -1,0 +1,96 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* upstream は倍率を変えた瞬間だけこのピルを 750ms 出す。常設のステッパー
+	(paradisBrowserZoomIndicator.contribution.ts) を足したので、同じ数字が二重に出ないよう隠す。
+	upstream のファイルには触れず、こちら側の CSS だけで閉じている。
+
+	自分のステッパーが載っている入れ物に限って隠す。登録に失敗した画面や、この contribution を
+	読まないウィンドウ (Agent Sessions) では upstream のピルをそのまま残したいため。
+	upstream 取り込み時は `.browser-zoom-pill` が残っているかを確認すること —— 名前が変わっても
+	型検査は通り、ある日から二重表示に戻るだけになる。 */
+.monaco-workbench .browser-url-bar-widgets:has(.paradis-browser-zoom-stepper) .browser-zoom-pill {
+	display: none !important;
+}
+
+/* URL ボックスの中 (PostUrl) に常設する倍率のステッパー。
+	高さは URL の表示行を超えないようにする —— ここを高くすると URL ボックスごと、つまり
+	ナビバー全体が数 px 伸びる。
+	幅は詰まったら縮む。この入れ物は overflow: hidden で右端から刈られるので、縮まない
+	ブロックを置くと upstream 側のボタン (共有トグル・お気に入り) が先に消える。 */
+.monaco-workbench .paradis-browser-zoom-stepper {
+	display: inline-flex;
+	align-items: center;
+	height: 20px;
+	flex: 0 1 auto;
+	min-width: 0;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-small, 5px);
+	overflow: hidden;
+}
+
+/* ページがまだ無い間 (起動直後・エラー画面) は押しても意味がない。ただし場所は空けたまま
+	にする —— display を切ると、その瞬間だけ URL ボックスの幅が変わって隣が動く。 */
+.monaco-workbench .paradis-browser-zoom-stepper.is-detached {
+	visibility: hidden;
+}
+
+.monaco-workbench .paradis-browser-zoom-stepper > button {
+	border: 0;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0;
+}
+
+.monaco-workbench .paradis-browser-zoom-stepper > button:hover:not(.is-disabled) {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .paradis-browser-zoom-stepper > button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* ± は詰まったときに先に諦める。数字だけでも「いま何倍か」は伝わる。 */
+.monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-step {
+	width: 20px;
+	height: 100%;
+	flex: 0 1 auto;
+	min-width: 0;
+	font-size: 12px;
+}
+
+.monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-step.is-disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+/* 数字はボタン兼表示。3桁 + % (500%) が入る幅を確保しつつ、倍率が変わっても
+	隣のボタンが動かないよう等幅数字にする。 */
+.monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-value {
+	min-width: 42px;
+	height: 100%;
+	padding: 0 4px;
+	flex: 0 0 auto;
+	font-size: 11px;
+	color: var(--vscode-foreground);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	border-left: 1px solid var(--vscode-editorWidget-border);
+	border-right: 1px solid var(--vscode-editorWidget-border);
+}
+
+/* 既定の倍率と同じ間は主張させない。常設なので、意味のない数字で視線を取らないため。
+	「既定 = 100%」ではない（設定 workbench.browser.pageZoom の既定は「ウィンドウに合わせる」）。
+	判定は TS 側の render() が IBrowserZoomService から引いている。 */
+.monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-value.is-default {
+	color: var(--vscode-descriptionForeground);
+}
