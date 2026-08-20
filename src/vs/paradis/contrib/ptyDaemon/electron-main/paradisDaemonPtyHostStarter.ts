@@ -22,10 +22,12 @@
 // ターミナルが変わり、しかもどちらも正常に見える)。
 
 import { spawn } from 'child_process';
+import { closeSync, mkdirSync, openSync } from 'fs';
 import { createConnection } from 'net';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
+import { join } from '../../../../base/common/path.js';
 import { removeDangerousEnvVariables } from '../../../../base/common/processes.js';
 import { IChannel, IChannelClient, getDelayedChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
@@ -235,6 +237,24 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	 * `unref()` まで済ませて、以後は一切面倒を見ない。起きたかどうかは繋いで確かめる
 	 * (起動の成否をプロセスの側から知ろうとすると、それだけで親子の縁が残る)。
 	 */
+	/**
+	 * 常駐の出力を書き出す先を開く。開けなければ捨てる（起動そのものは止めない）。
+	 *
+	 * ここに出るのは、**ログの仕組みが立ち上がる前に落ちたとき**の理由だけ。常駐が動き出せば
+	 * 通常のログへ書くので、このファイルはほとんど空のままになる。空でないときは、起動に
+	 * 失敗しているということ。
+	 */
+	private openDaemonLog(): number | 'ignore' {
+		try {
+			const dir = this.environmentMainService.logsHome.with({ scheme: Schemas.file }).fsPath;
+			mkdirSync(dir, { recursive: true });
+			return openSync(join(dir, 'paradis-ptydaemon-startup.log'), 'a');
+		} catch (error) {
+			this.logService.warn('[ParadisPtyDaemon] could not open a startup log for the daemon', error);
+			return 'ignore';
+		}
+	}
+
 	private spawnDaemon(): void {
 		const env: { [key: string]: string | undefined } = {
 			...process.env,
@@ -259,6 +279,8 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		// 開いたままのデバッガポート**になる。
 		removeDangerousEnvVariables(env);
 
+		const logHandle = this.openDaemonLog();
+
 		// Snap の Linux では、アプリの起動時に注入されたライブラリパスがそのまま子へ伝わり、
 		// そこから起きるシェルにまで波及する。upstream の `ElectronPtyHostStarter` と同じ手順で、
 		// 渡す間だけ外す。
@@ -267,12 +289,28 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			FileAccess.asFileUri('bootstrap-fork').fsPath,
 			'--type=ptyHost',
 			'--logsPath', this.environmentMainService.logsHome.with({ scheme: Schemas.file }).fsPath,
+			// **必ず渡す。** 常駐は自分の `--user-data-dir` から置き場所を計算し直して、渡された
+			// ものと一致するかを確かめる (環境変数だけで任意の場所に居座らせないため)。渡さないと
+			// 常駐だけが既定の場所を見るので、`--user-data-dir` を使っている構成 (開発ビルド、
+			// ポータブル、明示指定) では毎回一致せず、常駐が起動を拒み続ける。
+			'--user-data-dir', this.environmentMainService.userDataPath,
 		], {
 			detached: true,
-			stdio: 'ignore',
+			// 標準出力を捨てない。ここを捨てると、ログの仕組みが立つ前に落ちた常駐が**何も
+			// 残さずに消える**。起動しない理由が「ターミナルが開かない」以外に何も出てこない
+			// という、一番調べにくい形になる。
+			stdio: ['ignore', logHandle, logHandle],
 			env,
 		});
 		this.environmentMainService.restoreSnapExportedVariables();
+		// 渡し終えたら親側の口は閉じる。開いたままだと、常駐が死んでもこちらが掴み続ける。
+		if (logHandle !== 'ignore') {
+			try {
+				closeSync(logHandle);
+			} catch {
+				// 閉じられなくても起動には関わらない。
+			}
+		}
 		child.unref();
 	}
 

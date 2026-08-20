@@ -31,6 +31,8 @@ import { createConnection } from 'net';
 import { promises as fs } from 'fs';
 import { Server as SocketServer, serve } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { IParadisBindLock, paradisIsBindLockStale, paradisParseBindLock } from '../common/paradisPtyDaemonPolicy.js';
+import { paradisEnsurePtyDaemonDir } from './paradisPtyDaemonLedger.js';
+import { dirname } from '../../../../base/common/path.js';
 
 /** 先客が居るかを確かめるのに待つ時間。応答しない相手をいつまでも待たない。 */
 const PROBE_TIMEOUT = 1000;
@@ -90,6 +92,15 @@ function paradisProbeSocket(socketPath: string): Promise<boolean> {
  */
 export async function paradisServePtyDaemon(socketPath: string): Promise<ParadisServeResult> {
 	const notes: string[] = [];
+
+	// **bind より先に置き場所を作る。** ソケットは台帳と同じ 0700 のディレクトリに置くので
+	// (権限を1箇所で守るため)、そこが無いと `listen` は `ENOENT` で落ちる。台帳を書くときにも
+	// 作っているが、そちらは bind に成功した後なので間に合わない。
+	//
+	// 初回起動では必ずこの順で通る。ここを抜かすと**常駐は一度も起動できない**が、標準出力は
+	// 捨てられ、ログの仕組みはこの後にしか立たないので、症状は「ターミナルが開かない」だけに
+	// なって原因に辿り着けない (実際にそうなった)。
+	await paradisEnsurePtyDaemonDir(dirname(socketPath));
 
 	for (let attempt = 1; attempt <= BIND_ATTEMPTS; attempt++) {
 		// 素直に取れるなら取る。ほとんどの起動はここで終わる。
