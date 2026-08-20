@@ -124,6 +124,9 @@ import { registerParadisSpaceDiskForServer } from '../../paradis/contrib/spaceDi
 import { registerParadisCodexTerminalTitleForServer } from '../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
 // PARA-PATCH: a connected client's mobile find/grep needs ripgrep to run against this machine's files
 import { registerParadisRemoteSearchForServer } from '../../paradis/contrib/mobileRelay/node/paradisRemoteSearchChannel.js';
+// PARA-PATCH: the gh calls made while a client is connected happen here, and the sink that records
+// them is per-process, so nothing is counted unless this side owns one too (registered below)
+import { registerParadisGithubMetricsForServer } from '../../paradis/contrib/githubMetrics/node/paradisGithubMetricsChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -386,6 +389,10 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// PARA-PATCH: expose the same ripgrep search channel the shared process has, so a connected
 		// client's mobile find/grep can search files that live on this machine.
 		disposables.add(registerParadisRemoteSearchForServer(socketServer, logService));
+		// PARA-PATCH: while a client is connected, the gh calls Para Code makes run here, and the
+		// sink that records them only exists in the process that owns this service. Without one on
+		// this side every call is dropped, so the client's GitHub usage view shows nothing at all.
+		disposables.add(registerParadisGithubMetricsForServer(socketServer, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 

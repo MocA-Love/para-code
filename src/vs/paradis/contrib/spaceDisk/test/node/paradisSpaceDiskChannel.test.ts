@@ -178,7 +178,7 @@ suite('ParadisSpaceDiskService', () => {
 		service.dispose();
 	});
 
-	test('serializes different signatures so only the latest request publishes its cache', async () => {
+	test('serializes different signatures and caches both of their results', async () => {
 		const firstPending = deferred<IDirectorySizeResult>();
 		const secondPending = deferred<IDirectorySizeResult>();
 		const { invocations, service } = createService(invocation => invocation === 1 ? firstPending.promise : secondPending.promise);
@@ -194,9 +194,93 @@ suite('ParadisSpaceDiskService', () => {
 		assert.deepStrictEqual(invocations.map(invocation => invocation.root), ['/repositories/first', '/repositories/second']);
 		secondPending.resolve({ bytes: 2, files: 1, truncated: false });
 		await Promise.all([first, second]);
-		await service.measure([target('second')]);
+		const cachedSecond = await service.measure([target('second')]);
+		const cachedFirst = await service.measure([target('first')]);
 
-		assert.strictEqual(invocations.length, 2);
+		assert.deepStrictEqual({
+			calls: invocations.length,
+			bytes: [cachedFirst.spaces[0]?.ownBytes, cachedSecond.spaces[0]?.ownBytes],
+		}, {
+			calls: 2,
+			bytes: [1, 2],
+		});
+		service.dispose();
+	});
+
+	test('does not remeasure a signature that finished while the request waited behind another', async () => {
+		const firstPending = deferred<IDirectorySizeResult>();
+		const secondPending = deferred<IDirectorySizeResult>();
+		const { invocations, service } = createService(invocation => {
+			switch (invocation) {
+				case 1: return firstPending.promise;
+				case 2: return secondPending.promise;
+				default: return { bytes: 999, files: 1, truncated: false };
+			}
+		});
+
+		// A が走行中に B が並び、そこへ A がもう一度来る。3本目の A は B の後ろに繋がれるが、
+		// その頃には1本目の A が同じ顔ぶれを測り終えている。
+		const firstA = service.measure([target('a')]);
+		const b = service.measure([target('b')]);
+		const secondA = service.measure([target('a')]);
+
+		firstPending.resolve({ bytes: 1, files: 1, truncated: false });
+		await firstA;
+		await flushMicrotasks();
+		secondPending.resolve({ bytes: 2, files: 1, truncated: false });
+		await b;
+
+		assert.deepStrictEqual({
+			roots: invocations.map(invocation => invocation.root),
+			bytes: (await secondA).spaces[0]?.ownBytes,
+		}, {
+			roots: ['/repositories/a', '/repositories/b'],
+			bytes: 1,
+		});
+		service.dispose();
+	});
+
+	test('evicts the least recently used entry rather than the earliest measured one', async () => {
+		const { clock, invocations, service } = createService();
+
+		// いちばん最初に測った枠を、その後もずっと使い続ける。
+		await service.measure([target('kept')]);
+		for (let index = 0; index < 7; index++) {
+			clock.tick(1000);
+			await service.measure([target(`filler-${index}`)]);
+		}
+		clock.tick(1000);
+		await service.measure([target('kept')]);
+		clock.tick(1000);
+		await service.measure([target('overflow')]);
+		clock.tick(1000);
+		const kept = await service.measure([target('kept')]);
+
+		// 測定時刻で捨てていると 'kept' が最古なので追い出され、ここで10回目の計測が走る。
+		assert.deepStrictEqual({ calls: invocations.length, keptBytes: kept.spaces[0]?.ownBytes }, {
+			calls: 9,
+			keptBytes: 1,
+		});
+		service.dispose();
+	});
+
+	test('keeps a cache entry per signature and evicts the oldest beyond the cap', async () => {
+		const { invocations, service } = createService();
+
+		// 上限(8)を1つ超える数の顔ぶれを順に測る。最初に測ったものだけが落ちる。
+		for (let index = 0; index < 9; index++) {
+			await service.measure([target(`space-${index}`)]);
+		}
+		// 追い出されていないものはキャッシュから返る。
+		for (let index = 1; index < 9; index++) {
+			await service.measure([target(`space-${index}`)]);
+		}
+		await service.measure([target('space-0')]);
+
+		assert.deepStrictEqual(invocations.map(invocation => invocation.root), [
+			...Array.from({ length: 9 }, (_, index) => `/repositories/space-${index}`),
+			'/repositories/space-0',
+		]);
 		service.dispose();
 	});
 
@@ -444,7 +528,9 @@ suite('ParadisSpaceDiskService', () => {
 		service.dispose();
 	});
 
-	test('does not publish a released warm generation after the same owner reacquires', async () => {
+	// 当番(warm lease の世代)が入れ替わっても、測り終えた値そのものは古くならない。
+	// 捨てると次の前面要求が数十秒の全走査に戻るだけなので、署名の枠へ残す。
+	test('keeps a completed warm result after the same owner reacquires', async () => {
 		const pendingWarm = deferred<IDirectorySizeResult>();
 		const { channel, clock, invocations, service } = createService(invocation => invocation === 1
 			? pendingWarm.promise
@@ -466,11 +552,11 @@ suite('ParadisSpaceDiskService', () => {
 		await flushMicrotasks();
 		const foreground = await service.measure(payload.targets);
 
-		assert.deepStrictEqual({ calls: invocations.length, bytes: foreground.spaces[0]?.ownBytes }, { calls: 2, bytes: 200 });
+		assert.deepStrictEqual({ calls: invocations.length, bytes: foreground.spaces[0]?.ownBytes }, { calls: 1, bytes: 100 });
 		service.dispose();
 	});
 
-	test('does not publish an in-flight warm result after the final owner releases', async () => {
+	test('keeps a completed warm result after the final owner releases', async () => {
 		const pendingWarm = deferred<IDirectorySizeResult>();
 		const { channel, clock, invocations, service } = createService(invocation => invocation === 1
 			? pendingWarm.promise
@@ -491,7 +577,7 @@ suite('ParadisSpaceDiskService', () => {
 		await flushMicrotasks();
 		const foreground = await service.measure(payload.targets);
 
-		assert.deepStrictEqual({ calls: invocations.length, bytes: foreground.spaces[0]?.ownBytes }, { calls: 2, bytes: 200 });
+		assert.deepStrictEqual({ calls: invocations.length, bytes: foreground.spaces[0]?.ownBytes }, { calls: 1, bytes: 100 });
 		service.dispose();
 	});
 

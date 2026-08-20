@@ -2082,6 +2082,9 @@ export default defineConfig(
 						// mobileRelay 全体（ペアリング・E2E暗号・リレー本体等）を許可すると誤 import を
 						// 招くため、必要な node 層だけに絞る。
 						'vs/paradis/contrib/mobileRelay/node/**',
+						// PARA-PATCH: serverServices.ts が接続先で走った gh 呼び出しを数えるチャネル
+						// (registerParadisGithubMetricsForServer) を登録するための逆方向 import
+						'vs/paradis/contrib/githubMetrics/~',
 						'vs/server/~'
 					]
 				},

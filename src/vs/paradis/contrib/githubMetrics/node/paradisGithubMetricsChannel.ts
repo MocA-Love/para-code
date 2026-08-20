@@ -206,15 +206,16 @@ export class ParadisGithubMetricsService {
 	}
 }
 
-export class ParadisGithubMetricsChannel implements IServerChannel<string> {
+// ccusage / rtk と同じく、shared process と接続先(REH)の双方へ同じ形で生やす。
+export class ParadisGithubMetricsChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisGithubMetricsService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'getSnapshot': return this.service.getSnapshot((args[0] ?? {}) as IParadisGithubMetricsRequestOptions) as Promise<T>;
@@ -238,5 +239,25 @@ export class ParadisGithubMetricsChannel implements IServerChannel<string> {
 export function registerParadisGithubMetrics(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const service = new ParadisGithubMetricsService(logService, configurationService, args);
 	server.registerChannel(PARADIS_GITHUB_METRICS_CHANNEL, new ParadisGithubMetricsChannel(service));
+	return { dispose: () => service.dispose() };
+}
+
+/**
+ * serverServices.ts(REH)の登録点から1行で呼べるファクトリ。
+ *
+ * 記録シンク(paradisSetGithubCallSink)はプロセスごとのモジュール変数なので、shared process で
+ * 差しても接続先のプロセスには届かない。接続している間、worktree の PR 状態取得などの gh は
+ * すべて接続先で走る(paradisWorktreeGitChannel の server 版)ため、ここでサービスを立てて
+ * シンクを差さないと、その間の呼び出しは1件残らず捨てられる。
+ *
+ * レート枠も gh の認証情報も接続先のものなので、クライアントは接続中このチャネルへ聞く
+ * (ccusage / rtk / hostResources と同じ振り分け)。サーバー側は configurationService/args を
+ * 持たないため、シェル環境の解決は行わずサーバープロセスが継承した PATH をそのまま使う。
+ * このサービスは要求されたときにしか gh を起動しない(定期処理を持たない)ので、接続が切れた
+ * あとサーバーが延命されても裏で動き続けることはない。
+ */
+export function registerParadisGithubMetricsForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	const service = new ParadisGithubMetricsService(logService);
+	server.registerChannel(PARADIS_GITHUB_METRICS_CHANNEL, new ParadisGithubMetricsChannel<TContext>(service));
 	return { dispose: () => service.dispose() };
 }

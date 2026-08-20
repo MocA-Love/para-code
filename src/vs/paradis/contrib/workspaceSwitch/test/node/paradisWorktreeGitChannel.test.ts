@@ -8,10 +8,18 @@
 
 import assert from 'assert';
 import * as cp from 'child_process';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
+import { isCancellationError } from '../../../../../base/common/errors.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisCachedShellEnv } from '../../../../../platform/shell/node/paradisCachedShellEnv.js';
-import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.js';
+import { IDisposable } from '../../../../../base/common/lifecycle.js';
+import { IPCServer } from '../../../../../base/parts/ipc/common/ipc.js';
+import { NativeParsedArgs } from '../../../../../platform/environment/common/argv.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { ParadisWorktreeGitChannel, ParadisWorktreeGitService, registerParadisWorktreeGit, registerParadisWorktreeGitForServer } from '../../node/paradisWorktreeGitChannel.js';
 
 interface IExecFileCall {
 	command: string;
@@ -379,6 +387,155 @@ suite('ParadisWorktreeGitService', () => {
 			const result = await service.runGit('/repo', ['status', '--porcelain=v1']);
 
 			assert.deepStrictEqual(result, { code: 128, stdout: '', stderr: 'fatal: not a git repository' });
+		});
+	});
+
+	// clone は他のコマンドと違って長く走り続けるうえ、進捗を見ている相手が居なくなっても
+	// 自分では止まらない。畳む道を塞ぐと、接続先で git clone だけが走り続ける。
+	suite('clone lifetime', () => {
+
+		interface IFakeClone {
+			readonly targetPath: string;
+			readonly kills: string[];
+			close(code: number): void;
+		}
+
+		function createSpawn(clones: IFakeClone[]): typeof cp.spawn {
+			return ((_file: string, args: readonly string[]) => {
+				const handlers = new Map<string, (arg: number) => void>();
+				const child = {
+					stderr: { setEncoding: () => { }, on: () => { } },
+					kill: (signal: string) => { record.kills.push(signal); },
+					on: (event: string, handler: (arg: number) => void) => { handlers.set(event, handler); },
+				};
+				const record: IFakeClone = {
+					targetPath: args[args.length - 1],
+					kills: [],
+					close: (code: number) => handlers.get('close')?.(code),
+				};
+				clones.push(record);
+				return child as unknown as cp.ChildProcess;
+			}) as typeof cp.spawn;
+		}
+
+		/** spawn までには環境変数の解決と親ディレクトリ作成が挟まるので、実際に起動されるまで待つ。 */
+		async function untilStarted(clones: IFakeClone[], count: number): Promise<void> {
+			for (let i = 0; i < 200 && clones.length < count; i++) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+			}
+			assert.strictEqual(clones.length, count);
+		}
+
+		/** 実在しない (= clone が作ってよい) 置き場所。開始前の未存在チェックを通すため。 */
+		function freshTarget(): string {
+			return join(tmpdir(), `paradis-clone-test-${generateUuid()}`);
+		}
+
+		function createService(clones: IFakeClone[]): ParadisWorktreeGitService {
+			return new ParadisWorktreeGitService(
+				new NullLogService(),
+				undefined,
+				undefined,
+				createExecFile([]),
+				async () => ({}),
+				false,
+				createSpawn(clones),
+			);
+		}
+
+		test('stops the clones a departed client started, and leaves the other clients alone', async () => {
+			const clones: IFakeClone[] = [];
+			const service = createService(clones);
+			const channel = new ParadisWorktreeGitChannel<{ clientId: string }>(service);
+			const leaving = { clientId: 'window-1' };
+			const staying = { clientId: 'window-2' };
+
+			// 1本ずつ起動を待つ。まとめて始めると、環境変数の解決とディレクトリ作成の
+			// 終わる順で clones の並びが入れ替わり、どちらを見ているのか決まらない。
+			const abandoned = channel.call<void>(leaving, 'cloneRepository', [{ url: 'https://example.invalid/big.git', targetPath: freshTarget(), cloneId: 'a' }]);
+			await untilStarted(clones, 1);
+			const kept = channel.call<void>(staying, 'cloneRepository', [{ url: 'https://example.invalid/other.git', targetPath: freshTarget(), cloneId: 'b' }]);
+			await untilStarted(clones, 2);
+
+			service.cancelClonesFor(leaving);
+			clones[0].close(143);
+
+			await assert.rejects(abandoned, error => isCancellationError(error));
+			assert.deepStrictEqual([clones[0].kills, clones[1].kills], [['SIGTERM'], []]);
+
+			// 残った側は最後まで走らせる
+			clones[1].close(0);
+			await kept;
+		});
+
+		test('stops the running clones when the service is torn down', async () => {
+			const clones: IFakeClone[] = [];
+			const service = createService(clones);
+
+			const running = service.cloneRepository({ url: 'https://example.invalid/big.git', targetPath: freshTarget(), cloneId: 'a' });
+			await untilStarted(clones, 1);
+
+			service.dispose();
+			clones[0].close(137);
+
+			await assert.rejects(running, error => isCancellationError(error));
+			assert.deepStrictEqual(clones[0].kills, ['SIGKILL']);
+		});
+
+		test('still lets a client cancel its own clone by id', async () => {
+			const clones: IFakeClone[] = [];
+			const service = createService(clones);
+
+			const running = service.cloneRepository({ url: 'https://example.invalid/big.git', targetPath: freshTarget(), cloneId: 'a' });
+			await untilStarted(clones, 1);
+
+			assert.deepStrictEqual([service.cancelClone('a'), service.cancelClone('nope')], [true, false]);
+			clones[0].close(143);
+
+			await assert.rejects(running, error => isCancellationError(error));
+		});
+	});
+
+	// 「接続が消えた」の意味が REH と shared process で違う。REH は再接続の猶予が尽きたときに
+	// しか来ないが、shared process のそれは MessagePort の close そのもので、**ウィンドウを
+	// 再読み込みしただけでも来る**。両方で clone を畳むと、手元でのクローン中にリロードした
+	// だけで作りかけのディレクトリごと消える（従来は完走していた）。
+	suite('who gets to cancel clones on disconnect', () => {
+
+		/**
+		 * 接続の消滅を購読したかどうかだけを見る IPCServer。`IPCServer` は private フィールドを
+		 * 持つので構造的には代入できず、ここだけ cast している。
+		 */
+		function createServer(): { server: IPCServer<string>; state: { channels: string[]; disconnectListeners: number } } {
+			const state = { channels: [] as string[], disconnectListeners: 0 };
+			const fake = {
+				registerChannel: (name: string) => { state.channels.push(name); },
+				onDidRemoveConnection: (): IDisposable => {
+					state.disconnectListeners++;
+					return { dispose: () => { } };
+				},
+			};
+			return { server: fake as unknown as IPCServer<string>, state };
+		}
+
+		test('ties clones to the connection on the remote server, but not in the shared process', () => {
+			const local = createServer();
+			const remote = createServer();
+
+			registerParadisWorktreeGit(local.server, new NullLogService(), new TestConfigurationService(), { _: [] } as NativeParsedArgs).dispose();
+			registerParadisWorktreeGitForServer(remote.server, new NullLogService()).dispose();
+
+			assert.deepStrictEqual({
+				localChannels: local.state.channels.length,
+				localDisconnectListeners: local.state.disconnectListeners,
+				remoteChannels: remote.state.channels.length,
+				remoteDisconnectListeners: remote.state.disconnectListeners,
+			}, {
+				localChannels: 1,
+				localDisconnectListeners: 0,
+				remoteChannels: 1,
+				remoteDisconnectListeners: 1,
+			});
 		});
 	});
 });

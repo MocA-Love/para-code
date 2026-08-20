@@ -184,9 +184,7 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 			// ホバーは短いテキストだけにする。ここに詳細（HTMLElement）を載せると、ステータスバーを
 			// 通り過ぎるだけで 500ms 後に開き（statusbarPart の dynamicDelay）、離れて閉じ、
 			// 直後は instantHover の猶予で遅延ゼロになって即また開く、を繰り返す。
-			tooltip: ratio !== undefined
-				? localize('paradis.githubMetrics.statusTooltip', "GitHub API rate limit: {0}% left — click for details", paradisGithubRoundedPercent(ratio))
-				: localize('paradis.githubMetrics.statusTooltipNoData', "GitHub API usage — click for details"),
+			tooltip: this.statusTooltip(ratio),
 			command: SHOW_POPOVER_COMMAND_ID,
 			content: this.entryAnchor,
 			kind,
@@ -197,6 +195,22 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 		} else {
 			this.entry.value = this.statusbarService.addEntry(properties, 'paradis.githubMetrics', StatusbarAlignment.RIGHT, STATUS_BAR_PRIORITY);
 		}
+	}
+
+	/**
+	 * 接続中は接続先の枠と接続先で走った呼び出しを見ているので、どのマシンの数字かが分かるようにする
+	 * （手元のウィンドウと数字が違って見えるのは、集計しているマシンが違うため）。
+	 */
+	private statusTooltip(ratio: number | undefined): string {
+		const remoteHost = this.client.remoteHostLabel;
+		if (ratio === undefined) {
+			return remoteHost
+				? localize('paradis.githubMetrics.statusTooltipNoDataRemote', "GitHub API usage on {0} — click for details", remoteHost)
+				: localize('paradis.githubMetrics.statusTooltipNoData', "GitHub API usage — click for details");
+		}
+		return remoteHost
+			? localize('paradis.githubMetrics.statusTooltipRemote', "GitHub API rate limit on {0}: {1}% left — click for details", remoteHost, paradisGithubRoundedPercent(ratio))
+			: localize('paradis.githubMetrics.statusTooltip', "GitHub API rate limit: {0}% left — click for details", paradisGithubRoundedPercent(ratio));
 	}
 
 	/**
