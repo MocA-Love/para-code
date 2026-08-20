@@ -40,22 +40,24 @@ suite('ParadisPtyDaemonPaths', () => {
 		);
 	});
 
-	test('uses a named pipe on Windows and XDG_RUNTIME_DIR only where it exists', () => {
+	test('keeps the socket beside the ledger so one 0700 directory guards both', () => {
 		const win = paradisPtyDaemonPaths({ ...MAC, platform: 'win32', userDataPath: 'C:\\Users\\example\\AppData\\Roaming\\Para Code' });
 		const linux = paradisPtyDaemonPaths({ ...MAC, platform: 'linux', userDataPath: '/home/example/.config/Para Code', xdgRuntimeDir: '/run/user/1000' });
-		const linuxNoXdg = paradisPtyDaemonPaths({ ...MAC, platform: 'linux', userDataPath: '/home/example/.config/Para Code' });
-		// macOS には XDG_RUNTIME_DIR に相当するものが無いので、渡されても使わない。
-		const macWithXdg = paradisPtyDaemonPaths({ ...MAC, xdgRuntimeDir: '/run/user/1000' });
+		const mac = paradisPtyDaemonPaths(MAC);
 
 		assert.deepStrictEqual(
 			{
+				// Windows は名前付きパイプで、ファイルとしての置き場所を持たない。
 				win: win.socketPath.startsWith('\\\\.\\pipe\\paracode-') && win.socketPath.endsWith('-ptyd'),
 				winLedger: win.ledgerFile.startsWith('C:\\Users\\example\\AppData\\Roaming\\Para Code\\ptyDaemon\\'),
-				linux: linux.socketPath.startsWith('/run/user/1000/paracode-'),
-				linuxNoXdg: linuxNoXdg.socketPath.startsWith('/home/example/.config/Para Code/paracode-'),
-				macIgnoresXdg: macWithXdg.socketPath === paradisPtyDaemonPaths(MAC).socketPath,
+				// `serve()` はソケットの権限を umask 任せにする (実測 0755) ので、守るのは
+				// 親ディレクトリの役目になる。台帳と同じ 0700 の場所へ寄せて、守る場所を1つにする。
+				macBesideLedger: mac.socketPath.startsWith(mac.ledgerDir + '/'),
+				// XDG_RUNTIME_DIR も使わない。置き場所が2つに割れると、どちらの権限で守られて
+				// いるかを毎回考えることになる。
+				linuxBesideLedger: linux.socketPath.startsWith(linux.ledgerDir + '/'),
 			},
-			{ win: true, winLedger: true, linux: true, linuxNoXdg: true, macIgnoresXdg: true },
+			{ win: true, winLedger: true, macBesideLedger: true, linuxBesideLedger: true },
 		);
 	});
 

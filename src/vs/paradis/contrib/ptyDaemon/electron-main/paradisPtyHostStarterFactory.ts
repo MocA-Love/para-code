@@ -74,6 +74,17 @@ export function paradisCreatePtyHostStarter(
 		return inApp();
 	}
 
+	// Windows は当面ここで止める。名前付きパイプの名前空間はマシン全体で共有で、名前は
+	// userDataPath とビルドから他のユーザーにも計算できる。作るのに特権は要らず、**先に作った側が
+	// 持ち主**になるが、こちらは繋いだ相手を確かめていない。偽の相手に繋ぐと、ターミナルの
+	// 環境変数一式と全打鍵 (sudo のパスワード、ssh のパスフレーズ、貼り付けたトークン) を
+	// そのまま渡すことになる。ソケットの名前で身元を名乗らせる仕組みを入れるまでは開けない。
+	// unix は置き場所が 0700 なので、他のユーザーはそもそもファイルを作れない。
+	if (currentPlatform() === 'win32') {
+		logService.info('[ParadisPtyDaemon] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
+		return inApp();
+	}
+
 	const paths = paradisPtyDaemonPathsFor(environmentMainService, productService);
 	if (paths.socketPathTooLong) {
 		// 黙って落とすと、症状は「毎回ターミナルが作り直される」だけになり原因に辿り着けない。

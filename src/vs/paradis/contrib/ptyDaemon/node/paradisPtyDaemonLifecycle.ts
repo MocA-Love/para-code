@@ -24,21 +24,24 @@
 
 import { promises as fs } from 'fs';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IPtyService } from '../../../../platform/terminal/common/terminal.js';
 import { IParadisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
+import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
 import { paradisShouldDaemonExit } from '../common/paradisPtyDaemonPolicy.js';
 import { paradisRemoveDaemonRecord, paradisWriteDaemonRecord } from './paradisPtyDaemonLedger.js';
 
 /** 終わり時を見に行く間隔。判断そのものは軽いので、細かく刻む意味は無い。 */
 const CHECK_INTERVAL = 60_000;
 
-/** 常駐が繋がりを数えるために必要な、サーバー側の見え方。 */
+/** 常駐が使う、サーバー側の見え方。繋がりを数えるのと、制御の口を出すのに要る。 */
 export interface IParadisDaemonConnections {
 	readonly connections: readonly unknown[];
 	readonly onDidAddConnection: Event<unknown>;
 	readonly onDidRemoveConnection: Event<unknown>;
+	registerChannel(channelName: string, channel: IServerChannel<string>): void;
 }
 
 export interface IParadisPtyDaemonLifecycleOptions {
@@ -51,14 +54,20 @@ export interface IParadisPtyDaemonLifecycleOptions {
 	readonly now?: () => number;
 }
 
-export class ParadisPtyDaemonLifecycle extends Disposable {
+export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPtyDaemonControl {
 
 	private idleSince: number;
+	private startedAt = 0;
 	private exiting = false;
 
 	constructor(private readonly options: IParadisPtyDaemonLifecycleOptions) {
 		super();
 		this.idleSince = this.now();
+
+		// 外から止めるための口。**pid ではなくここへ繋いで頼んでもらう**ため、常駐の側が
+		// 用意する (理由は paradisPtyDaemonControl.ts)。
+		const channelStore = this._register(new DisposableStore());
+		options.connections.registerChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL, ProxyChannel.fromService<string>(this, channelStore));
 
 		this._register(options.connections.onDidAddConnection(() => this.onConnectionsChanged()));
 		this._register(options.connections.onDidRemoveConnection(() => this.onConnectionsChanged()));
@@ -79,12 +88,13 @@ export class ParadisPtyDaemonLifecycle extends Disposable {
 
 	/** 台帳へ名乗る。ここに失敗したら常駐を続けない (誰にも見つけてもらえないため)。 */
 	async announce(): Promise<void> {
+		this.startedAt = this.now();
 		await paradisWriteDaemonRecord(this.options.env.ledgerFile, {
 			pid: process.pid,
 			socketPath: this.options.env.socketPath,
 			buildId: this.options.env.buildId,
 			buildKey: this.options.env.buildKey,
-			startedAt: this.now(),
+			startedAt: this.startedAt,
 		});
 		this.options.logService.info(`[ParadisPtyDaemon] listening on ${this.options.env.socketPath} (${this.options.env.buildId})`);
 	}
@@ -94,6 +104,23 @@ export class ParadisPtyDaemonLifecycle extends Disposable {
 		if (this.options.connections.connections.length === 0) {
 			this.idleSince = this.now();
 		}
+	}
+
+	/** 自分について答える。繋がった時点で身元は証明されているので、確認ではなく表示のため。 */
+	async describe(): Promise<IParadisPtyDaemonDescription> {
+		let terminalCount = 0;
+		try {
+			terminalCount = (await this.options.ptyService.listProcesses()).length;
+		} catch {
+			// 数えられないなら 0 とは言わずに…と言いたいところだが、ここは表示専用なので
+			// 0 を返して構わない。判断に使う `checkIdle` は別で、そちらは数えられないと動かない。
+		}
+		return {
+			pid: process.pid,
+			buildId: this.options.env.buildId,
+			startedAt: this.startedAt,
+			terminalCount,
+		};
 	}
 
 	private async checkIdle(): Promise<void> {
@@ -124,7 +151,7 @@ export class ParadisPtyDaemonLifecycle extends Disposable {
 	 * 台帳とソケットを先に消してから抱えているものを片付ける。逆にすると、片付けている間
 	 * (シェルの終了を待つ間) に新しいウィンドウが台帳を見て繋ぎに来る余地が残る。
 	 */
-	async shutdown(reason: string): Promise<void> {
+	async shutdown(reason: string = 'asked to stop'): Promise<void> {
 		if (this.exiting) {
 			return;
 		}

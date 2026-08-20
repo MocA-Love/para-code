@@ -50,7 +50,12 @@ export interface IParadisPtyDaemonPathInput {
 	/** 人が読めるビルドの名前。台帳にそのまま載り、UI にも出る。 */
 	readonly buildId: string;
 	readonly platform: ParadisDaemonPlatform;
-	/** linux の `XDG_RUNTIME_DIR`。無ければ undefined。 */
+	/**
+	 * linux の `XDG_RUNTIME_DIR`。
+	 *
+	 * 現在は使っていない (ソケットも台帳も userDataPath 配下の 0700 ディレクトリへ寄せた)。
+	 * 受け取りだけ残してあるのは、置き場所を戻したくなったときに呼び出し側を変えずに済むため。
+	 */
 	readonly xdgRuntimeDir?: string;
 }
 
@@ -100,10 +105,16 @@ export function paradisPtyDaemonPaths(input: IParadisPtyDaemonPathInput): IParad
 		};
 	}
 
-	// linux は XDG_RUNTIME_DIR を優先する (tmp より寿命と権限がはっきりしている)。macOS には
-	// 相当するものが無く、`tmpdir()` が `/var/folders/…` と長いので userDataPath に置く。
-	const socketDir = input.platform !== 'darwin' && input.xdgRuntimeDir ? input.xdgRuntimeDir : input.userDataPath;
-	const socketPath = path.join(socketDir, `paracode-${scopeKey}-${buildKey}.sock`);
+	// ソケットは台帳と同じ専用ディレクトリに置く。**ここは権限のための配置**で、見た目の
+	// 整理ではない。`serve()` は chmod も umask 操作もしないため、ソケット自体の権限は umask 任せ
+	// (実測 0755) になる。その向こうにあるのは `IPtyService` 全面 ＝ 任意のシェル起動と全打鍵の
+	// 読み書きなので、繋げた時点でそのユーザーとして任意コード実行になる。ディレクトリを 0700 で
+	// 作れば、ソケットの権限ビットに関わらず他ユーザーは辿り着けない
+	// (作る側は `paradisEnsurePtyDaemonDir`)。
+	//
+	// linux で XDG_RUNTIME_DIR を使わないのも同じ理由。あちらは既に 0700 だが、置き場所が2つに
+	// 割れると「どちらの権限で守られているか」を毎回考えることになる。1箇所に寄せる。
+	const socketPath = path.join(ledgerDir, `paracode-${scopeKey}-${buildKey}.sock`);
 	const limit = SOCKET_PATH_LIMIT[input.platform];
 
 	return {
