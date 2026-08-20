@@ -77,7 +77,13 @@ function buildHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>${xtermBundle.css}</style>
 <style>
-	html, body { margin: 0; padding: 0; background: ${TERM_BG}; height: 100%; }
+	/* overflow: hidden で WebView 自体のページスクロールを封じる。xterm 自身の
+	   .xterm-viewport は自前で overflow-y: scroll を持つので通常バッファのスクロールバックは
+	   これで壊れない。無いと、寸法計算の端数などでごく僅かに横へはみ出しただけで
+	   WebView のネイティブスクロールがその隙間を拾い、横方向にだけ意図せず動く
+	   （代替バッファのスワイプは touchmove ハンドラが専有する設計なので、ページ自体が
+	   動く余地を無くしておく）。 */
+	html, body { margin: 0; padding: 0; background: ${TERM_BG}; height: 100%; overflow: hidden; }
 	#wrap { padding: 4px; height: 100%; box-sizing: border-box; }
 	.xterm .xterm-viewport { background-color: ${TERM_BG} !important; }
 </style>
@@ -329,7 +335,6 @@ function buildHtml(): string {
 	window.addEventListener('resize', function () {
 		fit(currentCols, currentRows);
 		term.scrollToBottom();
-		window.scrollTo(0, document.body.scrollHeight);
 		reportMetricsSoon();
 	});
 	window.ReactNativeWebView.postMessage('ready');

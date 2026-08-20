@@ -9,7 +9,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisMobileRelayRendererLifecycle } from '../../electron-browser/paradisMobileRelayRendererLifecycle.js';
-import { IParadisMobileWarmLeaseScheduler, ParadisMobileWarmLeaseProvider, ParadisMobileWorkspaceProvider, paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
+import { IParadisMobileWarmLeaseScheduler, ParadisMobileWarmLeaseProvider, ParadisMobileWorkspaceProvider, paradisIsSgrMouseEncodingActive, paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
 import { parseParadisMobileWarmLeaseRequest } from '../../common/paradisMobileProtocol.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisWorkspaceRepository, IParadisWorktree } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -161,6 +161,111 @@ suite('ParadisMobileWorkspaceProvider', () => {
 				absent: false,
 				empty: false,
 			});
+		});
+	});
+
+	suite('SGRマウスホイールの符号化判定', () => {
+		function fakeRaw(activeEncoding: unknown) {
+			return { _core: { _inputHandler: { _mouseStateService: { activeEncoding } } } } as unknown as Parameters<typeof paradisIsSgrMouseEncodingActive>[0];
+		}
+
+		test('activeEncodingがSGRのときだけtrue', () => {
+			assert.deepStrictEqual({
+				sgr: paradisIsSgrMouseEncodingActive(fakeRaw('SGR')),
+				sgrPixels: paradisIsSgrMouseEncodingActive(fakeRaw('SGR_PIXELS')),
+				legacyDefault: paradisIsSgrMouseEncodingActive(fakeRaw('DEFAULT')),
+				missingInputHandler: paradisIsSgrMouseEncodingActive({ _core: {} } as unknown as Parameters<typeof paradisIsSgrMouseEncodingActive>[0]),
+				missingCore: paradisIsSgrMouseEncodingActive({} as unknown as Parameters<typeof paradisIsSgrMouseEncodingActive>[0]),
+			}, {
+				sgr: true,
+				sgrPixels: false,
+				legacyDefault: false,
+				missingInputHandler: false,
+				missingCore: false,
+			});
+		});
+	});
+
+	suite('モバイルスワイプのスクロール変換', () => {
+		interface IHandleTerminalScrollFixture {
+			handleTerminalScroll(instance: unknown, msg: { dir: 'up' | 'down'; lines: number }): Promise<void>;
+		}
+
+		function createScrollFixture(): IHandleTerminalScrollFixture {
+			return Object.create(ParadisMobileWorkspaceProvider.prototype) as unknown as IHandleTerminalScrollFixture;
+		}
+
+		/**
+		 * `xterm` が `undefined` なら未初期化端末を模す。それ以外は、SGRが効いているかを
+		 * `activeEncoding` で、行数計算に使う画面の行数を `rows` で指定する。
+		 */
+		function fakeInstance(xtermState: { activeEncoding?: string; applicationCursorKeysMode?: boolean; rows?: number } | undefined) {
+			const sent: { text: string; execute: boolean }[] = [];
+			return {
+				instance: {
+					xterm: xtermState === undefined ? undefined : {
+						raw: {
+							rows: xtermState.rows ?? 24,
+							modes: { applicationCursorKeysMode: xtermState.applicationCursorKeysMode === true },
+							_core: { _inputHandler: { _mouseStateService: { activeEncoding: xtermState.activeEncoding } } },
+						},
+					},
+					sendText: async (text: string, execute: boolean) => { sent.push({ text, execute }); },
+				},
+				sent,
+			};
+		}
+
+		test('SGR確認済みなら実物のマウスホイールを送る（矢印キーは無視されるため）。行数はホイール刻みへ換算する', async () => {
+			const provider = createScrollFixture();
+			const { instance, sent } = fakeInstance({ activeEncoding: 'SGR', rows: 30 });
+			await provider.handleTerminalScroll(instance, { dir: 'up', lines: 6 });
+			// 座標は入力欄があるカーソル位置ではなく画面中央（col 1, row = rows/2）を指す。
+			// 行数はTERM_SCROLL_LINES_PER_WHEEL_TICK(3)で割ってホイール刻み数にする: 6/3=2。
+			assert.deepStrictEqual(sent, [{ text: '\x1b[<64;1;15M'.repeat(2), execute: false }]);
+		});
+
+		test('下スワイプはボタン65、換算後も最低1刻みは送る', async () => {
+			const provider = createScrollFixture();
+			const { instance, sent } = fakeInstance({ activeEncoding: 'SGR', rows: 10 });
+			await provider.handleTerminalScroll(instance, { dir: 'down', lines: 1 });
+			assert.deepStrictEqual(sent, [{ text: '\x1b[<65;1;5M', execute: false }]);
+		});
+
+		test('行数はSGR換算前にTERM_SCROLL_MAX_LINES(40)で頭打ちにする（受信側の多重防御と同じ上限）', async () => {
+			const provider = createScrollFixture();
+			const { instance, sent } = fakeInstance({ activeEncoding: 'SGR', rows: 24 });
+			await provider.handleTerminalScroll(instance, { dir: 'down', lines: 999 });
+			// min(999, 40) / 3 を切り上げ = 14刻み。
+			assert.deepStrictEqual(sent, [{ text: '\x1b[<65;1;12M'.repeat(14), execute: false }]);
+		});
+
+		test('SGRが確認できない（legacyエンコーディング）ときは従来どおり矢印キーへ変換する', async () => {
+			const provider = createScrollFixture();
+			const { instance, sent } = fakeInstance({ activeEncoding: 'DEFAULT' });
+			await provider.handleTerminalScroll(instance, { dir: 'up', lines: 2 });
+			assert.deepStrictEqual(sent, [{ text: '\x1b[A\x1b[A', execute: false }]);
+		});
+
+		test('マウストラッキング自体が無いときも矢印キーへ変換する', async () => {
+			const provider = createScrollFixture();
+			const { instance, sent } = fakeInstance({ activeEncoding: undefined });
+			await provider.handleTerminalScroll(instance, { dir: 'up', lines: 2 });
+			assert.deepStrictEqual(sent, [{ text: '\x1b[A\x1b[A', execute: false }]);
+		});
+
+		test('アプリケーションカーソルキーモード中はSS3で矢印を送る', async () => {
+			const provider = createScrollFixture();
+			const { instance, sent } = fakeInstance({ activeEncoding: 'DEFAULT', applicationCursorKeysMode: true });
+			await provider.handleTerminalScroll(instance, { dir: 'down', lines: 1 });
+			assert.deepStrictEqual(sent, [{ text: '\x1bOB', execute: false }]);
+		});
+
+		test('xtermが無い（未初期化）ときも矢印キーへ落ちる', async () => {
+			const provider = createScrollFixture();
+			const { instance, sent } = fakeInstance(undefined);
+			await provider.handleTerminalScroll(instance, { dir: 'up', lines: 1 });
+			assert.deepStrictEqual(sent, [{ text: '\x1b[A', execute: false }]);
 		});
 	});
 
