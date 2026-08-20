@@ -1886,6 +1886,8 @@ export default defineConfig(
 						'vs/paradis/contrib/workspaceSwitch/~',
 						// PARA-PATCH: xtermTerminal.ts がウィンドウ透過時のターミナル背景透明化ヘルパーを呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/windowTransparency/~',
+						// PARA-PATCH: xtermTerminal.ts が GPU レンダラの復帰判定(ParadisWebglRecovery)を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/terminalRenderer/~',
 						// PARA-PATCH: webviewElement.ts が webview 致命エラー(service worker 登録失敗等)を
 						// Para Code Sentry へ報告 (reportParadisWebviewFatalError) するための唯一の逆方向 import
 						'vs/paradis/contrib/sentry/~',
