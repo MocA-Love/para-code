@@ -104,6 +104,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * park の保留を解除したか。`whenConnected` の完了で立てるが、復元経路が例外で落ちると
 	 * それは二度と来ない (まさに上のコメントが説明している壊れ方)。保留したままだと他スペースの
 	 * ターミナルがアクティブスペースに見え続けるため、上限時間でも必ず解除する。
+	 *
+	 * リモート接続時は `whenConnected` を待たず、接続完了 (`connectionState === Connected`) で
+	 * 先に解除する。理由と、local に広げてはいけない理由はコンストラクタのコメントを参照。
 	 */
 	private _parkDeferralReleased = false;
 
@@ -271,6 +274,35 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
 		this._register(this.terminalService.onDidChangeInstances(() => this.refreshAllStableScopes()));
 		this._register(this.terminalService.onDidChangeConnectionState(() => this.refreshAllStableScopes()));
+
+		// リモート接続 (SSH 等) のときだけ、接続完了の時点で park の保留を打ち切る。
+		// 下の `whenConnected` は復元した全端末の replay 完了まで待つため、リモートでは数分単位で
+		// 遅れる。その間ユーザーはスペースを切り替えたつもりなのに前のスペースのターミナルが
+		// 見えて操作できてしまい、前のスペースの作業ディレクトリでコマンドを打つ事故になる。
+		//
+		// local を除外しているのは upstream の復元経路の作りが左右で違うため。
+		// `_reconnectToRemoteTerminals` は `_recreateTerminalGroups` を await してから接続完了を
+		// 立てるので、Connected の時点で split を含むグループ構築は終わっている。対して
+		// `_reconnectToLocalTerminals` は `_recreateTerminalGroups` を await せずに進む
+		// (await するのは background 端末の復活だけ) ため、Connected はグループ構築の実行中に
+		// 立つ。local でここを解除すると、まさに `_deferredParkGroups` が防いでいる split 崩れ
+		// (`Cannot split a terminal without a group`) を自分で起こす。local は従来どおり
+		// `whenConnected` と上限時間に任せる。**この非対称を確認せずに local へ広げないこと。**
+		if (this.environmentService.remoteAuthority) {
+			const releaseParkDeferralWhenConnected = () => {
+				if (this.terminalService.connectionState !== TerminalConnectionState.Connected) {
+					return;
+				}
+				// どちらも冪等。タグ付けを直してから保留分を流す順序は `whenConnected` 側と揃える。
+				this.sweepRestoredGroups();
+				this.releaseParkDeferral();
+			};
+			this._register(this.terminalService.onDidChangeConnectionState(releaseParkDeferralWhenConnected));
+			// この contribution が作られた時点で既に Connected のことがある。購読だけだと
+			// 発火済みのイベントを取りこぼし、結局上限時間まで保留が続く。
+			releaseParkDeferralWhenConnected();
+		}
+
 		this._register(this.worktreeService.onDidChangeWorktrees(() => {
 			if (this._worktreeSnapshotReady) {
 				this.reevaluateActiveFallbackScopes();
@@ -1686,8 +1718,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	/**
-	 * park の保留を解除し、溜まっている分をまとめて実行する。復元の完了 (`whenConnected`) か、
-	 * それが来ない場合の上限時間のどちらか早い方で一度だけ呼ばれる。
+	 * park の保留を解除し、溜まっている分をまとめて実行する。復元の完了 (`whenConnected`)、
+	 * リモート接続時の接続完了、それらが来ない場合の上限時間のうち最も早いもので一度だけ実行される
+	 * (二度目以降は先頭のガードで落ちる)。
 	 * 保留中にタグ付けが変わったり (sweepRestoredGroups)、グループごと破棄されたりするため、
 	 * 溜めた時点の値ではなく実行時点の台帳とアクティブスコープで引き直す。
 	 */

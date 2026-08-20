@@ -579,6 +579,8 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly getTreeIndent: () => number,
 		private readonly openPrUrl: (url: string) => void,
 		private readonly hoverService: IHoverService,
+		/** そのスペースへの切り替えが進行中か (チェックの代わりにスピナーを出す) */
+		private readonly isSwitchTarget: (worktree: IParadisWorktree) => boolean = () => false,
 	) { }
 
 	renderTemplate(container: HTMLElement): IWorktreeTemplateData {
@@ -653,6 +655,9 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
 		const worktree = node.element;
 		const active = this.isActive(worktree);
+		// この行への切り替えが進行中。チェックはもう付いている (active) が、まだ着いていないことを
+		// 同時に伝える必要があるので、アイコンだけスピナーに差し替える
+		const switching = !worktree.missing && this.isSwitchTarget(worktree);
 		// 作成直後で setup 等がまだ走っている間は、エージェント状態の有無に関わらず稼働中として見せる
 		const pendingStage = worktree.missing ? undefined : this.getPendingStage(worktree);
 		// 作成中は実際のエージェント状態がまだ無いので、1体が動いている扱いで見せる
@@ -661,17 +666,28 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 				: this.getBreakdown(worktreeStateKeyFor(worktree));
 		const status = paradisAggregateAgentStatus(breakdown);
 		const fallback = worktree.missing ? Codicon.warning : active ? Codicon.check : worktree.isMainCheckout ? Codicon.repo : Codicon.gitBranch;
-		applyStatusIcon(templateData.icon, status, fallback);
+		// 切り替え中だけは回転を許す。常時動くエージェント状態と違って、ユーザーが今起こした
+		// 一過性の待ちであり、同時に回るのも1行だけなので、明滅より「まだ待ち」が伝わる
+		// (回転を避けている理由は applyStatusIcon のコメント参照)。エージェント状態のドットに
+		// 上書きされないよう、この間は status を渡さない
+		applyStatusIcon(templateData.icon, switching ? undefined : status, switching ? Codicon.loading : fallback);
+		templateData.icon.classList.toggle('codicon-modifier-spin', switching);
 		renderStatusDots(templateData.dots, breakdown);
 		const dotsTooltip = agentStatusSummaryTooltip(breakdown);
 		templateData.dotsHover.update(dotsTooltip);
 		// ドットは色と明滅だけで状態を表すので、支援技術向けに同じ内容を文字でも持たせる
 		templateData.dots.ariaLabel = dotsTooltip;
 		templateData.name.textContent = worktree.name;
+		// 2段目は「今この行に起きていること」の欄。切り替えは作成の工程より前に出す
+		// (ユーザーが今起こした操作なので、待たされている理由として先に読まれるべき)
+		const rowStage = switching
+			// allow-any-unicode-next-line
+			? localize('paradis.workspaceSwitch.switchingStage', "切り替えています…")
+			: pendingStage;
 		templateData.branch.textContent = worktree.missing
 			? localize('paradis.workspaceSwitch.worktreeMissing', "missing")
-			: pendingStage ?? worktree.branch ?? '';
-		templateData.branch.classList.toggle('paradis-creating-stage', pendingStage !== undefined);
+			: rowStage ?? worktree.branch ?? '';
+		templateData.branch.classList.toggle('paradis-creating-stage', rowStage !== undefined);
 		templateData.row.classList.toggle('active', active);
 		templateData.row.classList.toggle('missing', !!worktree.missing);
 		// 折りたたまれたリポジトリの下に残している控え行 (updateTree が差し込むルート要素)。
@@ -943,6 +959,9 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
+		// 切り替えの開始・終了。チェックを行き先へ前倒しし、進行中の行にスピナーを出すため、
+		// 完了 (onDidSwitchScope) を待たずにここでも描き直す
+		this._register(this.workspaceSwitchService.onDidChangeSwitchState(() => this.updateTree()));
 		// メモの未完了バッジは行の表示内容なので、メモが変わったらツリーを描き直す
 		this._register(this.spaceNotesService.onDidChangeNotes(() => this.updateTree()));
 		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
@@ -991,7 +1010,10 @@ export class ParadisWorkspacesView extends ViewPane {
 			this.hoverService
 		);
 		const worktreeRenderer = new WorktreeRenderer(
-			worktree => this.workspaceSwitchService.activeStateKey === worktreeStateKeyFor(worktree),
+			// 切り替えの最中は行き先を「今ここ」として見せる。activeStateKey は folders が
+			// 入れ替わるまで切り替え元を指したままなので、そのまま使うと**遅い切り替えの間ずっと
+			// 前のスペースにチェックが付いたまま**になり、もう切り替わったものとして操作されてしまう
+			worktree => (this.workspaceSwitchService.pendingSwitchTargetKey ?? this.workspaceSwitchService.activeStateKey) === worktreeStateKeyFor(worktree),
 			getBreakdown,
 			worktree => this._diffStats.get(worktree.uri.fsPath),
 			worktree => this._prStatuses.get(worktree.uri.fsPath),
@@ -1004,7 +1026,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			worktree => this.togglePin(worktree),
 			() => this.treeIndent,
 			url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
-			this.hoverService
+			this.hoverService,
+			worktree => this.workspaceSwitchService.pendingSwitchTargetKey === worktreeStateKeyFor(worktree)
 		);
 		const creatingRenderer = new CreatingSpaceRenderer(
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)

@@ -32,6 +32,9 @@ import { hasKey, isString } from '../../../../../base/common/types.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 // PARA-PATCH: 画像のみクリップボードのペーストをTUIへ中継するヘルパー（src/vs/paradis/contrib/terminalImagePaste/）
 import { paradisTryTerminalImagePaste } from '../../../../../paradis/contrib/terminalImagePaste/browser/paradisTerminalImagePaste.js';
+// PARA-PATCH: read the Para Code space-switch input gate so a paste is not delivered to a terminal
+// whose owning space is being swapped out from under the user
+import { paradisIsTerminalInputBlocked } from '../../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalInputGate.js';
 
 // #region Terminal Contributions
 
@@ -133,6 +136,14 @@ export class TerminalClipboardContribution extends Disposable implements ITermin
 
 	private async _paste(value: string): Promise<void> {
 		if (!this._xterm) {
+			return;
+		}
+
+		// PARA-PATCH: drop pastes while a Para Code space switch is in flight, for the same reason
+		// keystrokes are dropped in terminalInstance.ts: the visible terminal may still belong to
+		// the space being left. Checked before the confirmation prompt so the user is not asked
+		// about a paste that will be discarded anyway.
+		if (paradisIsTerminalInputBlocked()) {
 			return;
 		}
 

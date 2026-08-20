@@ -666,6 +666,20 @@ export interface IParadisWorkspaceSwitchService {
 	 * タブクローズ」を区別して dispose を veto するために使う。
 	 */
 	readonly isSwitching: boolean;
+
+	/**
+	 * 進行中の切り替えの行き先の状態キー (切り替えていなければ undefined)。
+	 *
+	 * `activeStateKey` は「実際に folders が指しているスペース」なので、切り替えの最中は
+	 * まだ切り替え元を指したままになる。一覧の「今ここ」表示のように**行き先を先に見せたい**
+	 * 用途だけがこちらを使うこと。park やスコープ解決など、状態の所属を決める判断は
+	 * 引き続き `activeStateKey` で行う (行き先を先出しすると、まだ退避していない状態を
+	 * 別スコープのものとして扱ってしまう)。
+	 */
+	readonly pendingSwitchTargetKey: string | undefined;
+
+	/** `pendingSwitchTargetKey` が変わったとき (切り替えの開始時と終了時) に発火する。 */
+	readonly onDidChangeSwitchState: Event<void>;
 	/** Scope keys whose approved retirement still has an external durable boundary to finalize. */
 	readonly pendingCommittedRetirementStateKeys: readonly string[];
 

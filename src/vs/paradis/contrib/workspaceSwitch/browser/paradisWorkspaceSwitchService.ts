@@ -6,7 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Sequencer } from '../../../../base/common/async.js';
+import { localize } from '../../../../nls.js';
+import { raceTimeout, Sequencer } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -33,6 +34,9 @@ import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } fr
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder, paradisTakeVerifiedWorkspaceFolderHits } from '../common/paradisWorkspaceFolderVerification.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { paradisBlockTerminalInput } from './paradisTerminalInputGate.js';
 
 interface ISerializedRepository {
 	readonly id: string;
@@ -159,6 +163,42 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private static readonly WORKING_SETS_STORAGE_KEY = 'paradis.workspaceSwitch.workingSets';
 	private static readonly RETIREMENT_JOURNAL_STORAGE_KEY = 'paradis.workspaceSwitch.scopeRetirementJournal';
 
+	/**
+	 * 進行表示を出すまでの待ち。ローカルの切り替えはこれより速く終わることが多く、
+	 * 即座に出すと「一瞬光って消える」だけの雑音になる。遅い切り替え (SSH 越しなど)
+	 * だけを掬うための下限。
+	 */
+	private static readonly SWITCH_PROGRESS_DELAY_MS = 300;
+
+	/**
+	 * 切り替え先フォルダの先行 stat を待つ上限。
+	 *
+	 * この待ちは**諦めても何も壊れない**。`verifyTargetFolder` は例外を握り潰して必ず解決し、
+	 * 結果は「upstream の stat を1回省ける」という最適化にしか使われないので、間に合わなければ
+	 * upstream が従来どおり自分で stat するだけ。SSH 越しで stat が固まったときに、切り替え全体が
+	 * そこで止まるのを防ぐ。
+	 */
+	private static readonly FOLDER_VERIFY_TIMEOUT_MS = 1500;
+
+	/**
+	 * 切り替えが終わらないとユーザーに知らせるまでの待ち。**ロールバックはしない** (下記参照)。
+	 */
+	private static readonly SWITCH_WATCHDOG_MS = 20_000;
+
+	/**
+	 * Sequencer のスロットを諦めるまでの待ち。
+	 *
+	 * 1回の切り替えが解決も棄却もしないまま止まると、`Sequencer` は次の要求を永久に流さない。
+	 * つまり**以後そのウィンドウでは二度とスペースを切り替えられない**。そこでスロットだけを
+	 * 時間で解放する。**ロールバックは走らせないこと**: 止まっている側の `updateFolders` は
+	 * キャンセル不能で後から完了しうるので、ここで戻しにいくと folders が不定になる。
+	 *
+	 * **解放するのはスロットだけで、呼び出し側へ返す promise は本体の完了を待たせること**
+	 * (`switchToTarget` の末尾)。ここで呼び出し側まで解決させると、「解決＝成立」を前提にした
+	 * 内部呼び出しが未成立のまま先へ進む。
+	 */
+	private static readonly SWITCH_SLOT_TIMEOUT_MS = 60_000;
+
 	private readonly _onDidChangeRepositories = this._register(new Emitter<void>());
 	readonly onDidChangeRepositories = this._onDidChangeRepositories.event;
 
@@ -170,6 +210,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	private readonly _onDidSwitchScope = this._register(new Emitter<string>());
 	readonly onDidSwitchScope = this._onDidSwitchScope.event;
+
+	private readonly _onDidChangeSwitchState = this._register(new Emitter<void>());
+	readonly onDidChangeSwitchState = this._onDidChangeSwitchState.event;
 	private readonly _switchCompletionParticipants = new Set<(stateKey: string) => void | Promise<void>>();
 
 	private readonly _repositories: IParadisWorkspaceRepository[];
@@ -208,6 +251,32 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		return this._switching;
 	}
 
+	/**
+	 * 進行中の切り替えの**行き先**の状態キー。`activeStateKey` (= 実際に folders が指している
+	 * スペース) とは別物で、切り替えを始めた瞬間から完了通知を配り終えるまでの間だけ入る。
+	 *
+	 * `_switching` より**広い区間**を覆うのが要点。`_switching` は finally の先頭で false に
+	 * 戻るが、パネル端末の park/unpark はその後の完了通知の中で走るため、`_switching` が
+	 * false でも可視状態はまだ混ざっている。一覧のチェックはこちらを優先して見せることで、
+	 * 「まだ前のスペースにチェックが付いているのに操作できてしまう」誤認を防ぐ。
+	 */
+	private _pendingSwitchKey: string | undefined;
+	get pendingSwitchTargetKey(): string | undefined {
+		return this._pendingSwitchKey;
+	}
+
+	/**
+	 * 進行中の切り替えの行き先を差し替える。切り替えの開始時と終了時に必ず1回ずつ通り、
+	 * 実際に変わったときだけ通知する (同じ値での再描画要求を配らない)。
+	 */
+	private setPendingSwitchKey(stateKey: string | undefined): void {
+		if (this._pendingSwitchKey === stateKey) {
+			return;
+		}
+		this._pendingSwitchKey = stateKey;
+		this._onDidChangeSwitchState.fire();
+	}
+
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
@@ -222,6 +291,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@ILogService private readonly logService: ILogService,
 		// スペース一覧を「今つながっている先のもの」だけに絞るために使う
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		// 切り替え中の進行表示。**省略可能な引数にはできない** (`registerSingleton` が要求する
+		// `BrandedService[]` に `undefined` が混ざらないため)。DI を通さず手組みで new する
+		// テストハーネスは素通しのスタブを渡すこと。
+		@IProgressService private readonly progressService: IProgressService,
+		// 切り替えが終わらないときの警告。進行表示 (`IProgressService`) と同じ理由で省略可能に
+		// できないので、手組みのテストハーネスはスタブを渡すこと。
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 
@@ -668,7 +744,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// という肝心の相関が取れない。
 		const terminalEditors = this.terminalEditorService.instances.length;
 		const editors = this.editorGroupsService.groups.reduce((total, group) => total + group.count, 0);
-		return this._switchSequencer.queue(() => {
+		// 切り替え本体への参照。**スロットの解放と、呼び出し側へ返す promise を分けるために持つ。**
+		// スロットは締め切りで手放すが、`switchRepository` の解決は「切り替えが成立してから」で
+		// なければならない (`paradisWorktreeHeadlessCreate` などの内部呼び出しは成立を前提に後続を
+		// 走らせる)。締め切りで `undefined` を返して解決してしまうと、未成立のまま先へ進む。
+		let switchBody: Promise<void> | undefined;
+		const queued = this._switchSequencer.queue(() => {
 			// 実行が始まる前に追い越されていたら、この回は何もしない。**span を張る前に判定する**：
 			// 飛ばした回まで計測に載せると、フェーズ内訳の分布に 0ms 付近の山ができて読めなくなる。
 			if (coalesceGeneration !== undefined && coalesceGeneration !== this._coalesceGeneration) {
@@ -676,7 +757,26 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				return Promise.resolve();
 			}
 
-			return runInParadisSpan('workspaceSwitch', 'switch', {
+			// ここから「切り替え中」。**一覧のチェックを行き先へ前倒しするのはこの1行**で、
+			// 解除は下の finally が一手に引き受ける (途中のどの経路で抜けても必ず通る位置に置くこと。
+			// 消し忘れると嘘のチェックが永久に残る)。
+			this.setPendingSwitchKey(stateKey);
+
+			// 同じ区間、ターミナルへの人間の入力を捨てる。可視状態が混ざっている間に打った
+			// コマンドが**前のスペースの作業ディレクトリで走る**のを防ぐのが目的なので、寿命は
+			// `_switching` ではなくこちらに揃える。`_switching` は下の finally の先頭で false に
+			// 戻るが、パネル端末の park/unpark はその後の `notify_scope_switched` の中で走るため、
+			// `_switching` に乗せると「一番混ざっている区間」が素通しになる。
+			//
+			// **ハンドルで受けること。** スロットを締め切りで手放すと切り替えが並走しうるので、
+			// 素朴に「降ろす」と先行世代の後始末が現役のゲートまで開けてしまう。ハンドルは自分が
+			// 現役のときだけ効く (`paradisTerminalInputGate.ts` の世代管理)。
+			const inputGate = paradisBlockTerminalInput({
+				onAutoRelease: () => this.logService.warn(`[ParadisWorkspaceSwitch] Terminal input gate auto-released; the switch to ${stateKey} never finished`),
+			});
+			const watchdog = setTimeout(() => this.onSwitchWatchdogFired(stateKey, uri, inputGate), ParadisWorkspaceSwitchService.SWITCH_WATCHDOG_MS);
+
+			const switching = this.withSwitchProgress(stateKey, uri, () => runInParadisSpan('workspaceSwitch', 'switch', {
 				safe_terminal_editors: terminalEditors,
 				safe_editors: editors,
 			}, async () => {
@@ -748,7 +848,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// 待つが、切り替えは park や PTY 問い合わせで数百ms使うので、その裏で済ませれば
 					// 本流の待ち時間から消える (詳細は paradisWorkspaceFolderVerification.ts)。
 					// await しないのが要点なので、ここで例外を外に出さないこと。
-					const folderVerified = this.verifyTargetFolder(uri).then(ms => { folderStatMs = ms; });
+					// `.catch` は**外さないこと**。下の待ちには締め切りがあり、締め切った側はこの promise を
+					// 持ったまま放置される。ハンドラが無いと、遅れて届いた失敗が未処理の rejection になる
+					// (今の `verifyTargetFolder` は投げないが、投げるようになった瞬間に黙って壊れる場所)。
+					const folderVerified = this.verifyTargetFolder(uri).then(ms => { folderStatMs = ms; }).catch(() => { });
 
 					// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 					if (previousKey !== undefined) {
@@ -893,7 +996,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					await timePhase('trust_uris', () => this.trustUris(uri));
 					// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
 					// stat 自体の時間ではなく「本流が待たされた時間」なので、そちらを測る。
-					await timePhase('verify_folder_wait', () => folderVerified);
+					// **締め切って構わない**。これは最適化の待ちで、間に合わなければ upstream が
+					// 自分で stat するだけ (`verifyTargetFolder` の説明参照)。逆に締め切りが無いと、
+					// リモートの stat が固まった回は切り替え全体がここで止まる。
+					await timePhase('verify_folder_wait', () => raceTimeout(folderVerified, ParadisWorkspaceSwitchService.FOLDER_VERIFY_TIMEOUT_MS));
 					// `update_folders` は本番の p95 で 1086ms、最遅群では 1〜2秒を占める最大の区間だが、
 					// 中身は upstream の `workspaceEditingService` なので、そのままでは「何に使われた
 					// 時間か」が分からない。upstream に手を入れずに切り分けるため、**upstream が公開して
@@ -1022,7 +1128,92 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						previousFolders: folders.length,
 					});
 				}
+			})).finally(() => {
+				// 解除は**この1箇所**に集約する。ここは `notify_scope_switched` を待ち終えた後で、
+				// かつ早期 return (同一URIの近道) や例外を含むどの経路も必ず通る唯一の場所。
+				clearTimeout(watchdog);
+				inputGate.dispose();
+				this.setPendingSwitchKey(undefined);
 			});
+			switchBody = switching;
+
+			// スロットは時間で必ず手放す。**ここでロールバックを走らせないこと** (定数のコメント参照)。
+			// 棄却は素通しする: `raceTimeout` は元の promise にハンドラを繋いだままなので、
+			// 締め切り後に届いた失敗が未処理の rejection になることもない。
+			return raceTimeout(switching, ParadisWorkspaceSwitchService.SWITCH_SLOT_TIMEOUT_MS, () => {
+				this.logService.error(`[ParadisWorkspaceSwitch] Releasing the switch queue slot; the switch to ${stateKey} is still running after ${ParadisWorkspaceSwitchService.SWITCH_SLOT_TIMEOUT_MS}ms`);
+			});
+		});
+
+		// **呼び出し側には本体の完了を返す。** 上の締め切りが解放するのは Sequencer のスロットだけで、
+		// 「解決＝切り替えが成立した」という契約は変えない。ここを `queued` のまま返すと、締め切りで
+		// 解決した回に未成立のまま後続処理が走る。
+		return queued.then(() => switchBody ?? Promise.resolve());
+	}
+
+	/**
+	 * 切り替えが所定時間で終わらなかったときの最終手段。
+	 *
+	 * **ロールバックはしない。** 止まっている区間の多くは `updateFolders` のようなキャンセル
+	 * 不能な状態変更で、後から完了しうる。ここで元へ戻しにいくと、遅れて完了した本体と競合して
+	 * folders が不定になる — 「切り替わらない」より確実に悪い壊れ方になる。
+	 * やることは2つだけ: 入力ゲートを降ろして操作を返し、止まっている事実をユーザーへ伝える。
+	 */
+	private onSwitchWatchdogFired(stateKey: string, uri: URI, inputGate: IDisposable): void {
+		// 自分が立てたゲートだけを降ろす。世代が進んでいれば (次の切り替えが始まっていれば)
+		// このハンドルは何もしない。
+		inputGate.dispose();
+		// **`_pendingSwitchKey` は降ろさない。** 切り替えはまだ走っており行き先も変わっていないので、
+		// 一覧のチェックは行き先を指したままが正しい。ここで降ろすと「終わったように見えるのに
+		// 実際は進行中」という、この機能が消したかった誤認を自分で作る。
+		this.logService.error(`[ParadisWorkspaceSwitch] Switch to ${stateKey} has not completed within ${ParadisWorkspaceSwitchService.SWITCH_WATCHDOG_MS}ms`);
+		this.notificationService.warn(localize(
+			'paradis.workspaceSwitch.stuck',
+			// allow-any-unicode-next-line
+			"「{0}」への切り替えに時間がかかっています。まだ処理中のため表示は前のスペースのままかもしれませんが、ターミナルの入力は使えるようにしました。作業中のスペースを確かめてから入力してください。",
+			this.switchDisplayName(stateKey, uri)));
+	}
+
+	/** 進行表示と警告で見せるスペース名。登録済みなら付けた名前、そうでなければフォルダ名。 */
+	private switchDisplayName(stateKey: string, uri: URI): string {
+		return this._repositories.find(repository => repository.id === stateKey)?.name ?? basename(uri);
+	}
+
+	/**
+	 * 切り替えの進行をステータスバーに出す。**モーダルにはしない**: 切り替えがハングしたときに
+	 * ユーザーをダイアログへ閉じ込めるのが最悪の挙動になるため、出っぱなしで済む表示に留める。
+	 * `ProgressLocation.Window` はコマンドを持たない場合 SILENT 通知として扱われ、トーストを
+	 * 出さずステータスバーにだけ現れる (`progressService.ts` の `withProgress`)。
+	 *
+	 * `delay` はローカルの一瞬で終わる切り替えでちらつかせないためのもの。upstream の
+	 * `IProgressWindowOptions` には宣言が無いが、実際に受けるのは `withNotificationProgress`
+	 * なので尊重される (既定の 150ms を上書きしている)。
+	 *
+	 * **`withProgress` には決して拒否しない promise を渡すこと。** upstream は渡された promise から
+	 * 派生させた `.finally()` を捨てており (`progressService.ts:227`)、進行表示の実体も catch の無い
+	 * 即時実行 async (`:417-434`) なので、拒否をそのまま渡すと**1回の失敗で未処理の rejection が
+	 * 2本**上がる。ハーネスのスタブは素通しなのでテストには出ないが、本番では Sentry に載る。
+	 * そこで結果をいったん受け止め、`withProgress` の外で投げ直す。
+	 */
+	private withSwitchProgress<T>(stateKey: string, uri: URI, run: () => Promise<T>): Promise<T> {
+		const name = this.switchDisplayName(stateKey, uri);
+		let outcome: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
+		return this.progressService.withProgress({
+			location: ProgressLocation.Window,
+			// allow-any-unicode-next-line
+			title: localize('paradis.workspaceSwitch.switchingProgress', "{0} に切り替えています…", name),
+			delay: ParadisWorkspaceSwitchService.SWITCH_PROGRESS_DELAY_MS,
+		}, async () => {
+			try {
+				outcome = { ok: true, value: await run() };
+			} catch (error) {
+				outcome = { ok: false, error };
+			}
+		}).then(() => {
+			if (outcome.ok) {
+				return outcome.value;
+			}
+			throw outcome.error;
 		});
 	}
 
