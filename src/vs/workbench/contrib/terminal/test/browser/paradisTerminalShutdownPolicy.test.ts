@@ -101,6 +101,23 @@ suite('ParadisTerminalShutdownPolicy', () => {
 		);
 	}
 
+	test('asks one policy at a time, not all at once', async () => {
+		// 並行に走らせると、画面に出ていないダイアログの待ち時間だけが減る。ダイアログは1つずつ
+		// しか出ないので、後ろに並んだ役は表示される前に上限を使い切り、押した答えが捨てられる。
+		// `Promise.all` に戻すと ['first:start', 'second:start', 'first:end'] になって落ちる。
+		const order: string[] = [];
+		store.add(paradisRegisterTerminalShutdownPolicy(policy({
+			prepare: async () => { order.push('first:start'); await timeout(0); order.push('first:end'); },
+		})));
+		store.add(paradisRegisterTerminalShutdownPolicy(policy({
+			prepare: async () => { order.push('second:start'); },
+		})));
+
+		await paradisPrepareTerminalShutdown(ShutdownReason.CLOSE);
+
+		assert.deepStrictEqual(order, ['first:start', 'first:end', 'second:start']);
+	});
+
 	test('answers no once every policy has gone away', () => {
 		// 判断役が居ないときは upstream の従来どおり (残さない) に倒れること。
 		// `policies` はモジュール全体で共有なので、これは前のテストの後始末も見ている

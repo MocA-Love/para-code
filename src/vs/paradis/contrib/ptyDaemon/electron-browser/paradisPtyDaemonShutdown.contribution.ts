@@ -64,9 +64,18 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 	 *
 	 * 閉じる瞬間に聞けなかったときの答えに使う。**聞けないことを「動いていない」と読んではいけない。**
 	 * 動いている常駐の端末を「動いていない」と扱うと `dispose()` へ回り、残せたはずの作業がその場で
-	 * 失われる。逆に「動いている」と誤っても、失うものは無い (常駐が居なければ切り離した端末は
-	 * アプリ内の pty host と一緒に終わるだけで、終わらせた場合と同じ結果になる)。天秤が
-	 * 傾いているので、分からないときは最後に見えていた姿を使う。
+	 * 失われる。
+	 *
+	 * 逆に誤った場合 (常駐は本当に死んでいた) に失うものはゼロではない。ウィンドウ単位の答えが
+	 * true になるので `terminalService` が `persistTerminalState()` を飛ばし、**次に開いたときの
+	 * タブとスクロールバックの復元が消える** (プロセスはどのみち死んでいるので、失うのは復元だけ。
+	 * レイアウト情報の方は、死んだ id を pty host が落とすので無害)。
+	 *
+	 * それでも天秤は楽観側に傾いている。悲観に倒して外すと**生きているエージェントの作業がその場で
+	 * 消える**のに対し、楽観に倒して外して失うのは、どのみち死んでいたプロセスの見た目だけだから。
+	 * 「失うものが無い」からではなく、**釣り合わない**から楽観に倒す。
+	 *
+	 * なお、この値は*最後に確かめられた*姿であって、確かめられなかった回数は数えていない。
 	 */
 	private lastKnownRunning: boolean | undefined;
 
@@ -89,10 +98,18 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 			warn: message => this.logService.warn(`[paradisPtyDaemonShutdown] ${message}`),
 		}));
 
-		// 起動時に一度確かめておく。この値が要るのは閉じる瞬間で、そのときに main が詰まって
-		// いると聞けない。**聞けてから覚えるのでは遅い**ので、余裕のある今のうちに読む
-		// (常駐が動いているかは起動時に決まり、途中で変わるのは停止を押したときくらい)。
+		// 閉じる瞬間に main が詰まっていると聞けないので、余裕のあるうちに読んでおく。
+		//
+		// **起動直後に1回だけ、では足りない。** 常駐が起きるのはウィンドウが接続を要求した
+		// ときで (`ptyHostService` の "Start the pty host when a window requests a connection")、
+		// 復元するターミナルが1本も無いウィンドウでは、この contribution が走る時点ではまだ
+		// 起きていない。そこで焼いた `false` を後から直す経路が無いと、フォールバックが
+		// 狙いと正反対 (動いている常駐の端末を終了させる) に働く。
+		//
+		// だから端末が作られたときにも読み直す。常駐が起きるのはまさにその瞬間なので、
+		// 「本当に常駐が居るウィンドウ」では必ず true が焼ける。
 		void this.isDaemonRunning();
+		this._register(this.terminalService.onDidCreateInstance(() => void this.isDaemonRunning()));
 	}
 
 	private async prepare(reason: ShutdownReason): Promise<void> {
@@ -125,10 +142,13 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 
 		// ここまで来て初めて聞く。設定より先に確かめるのは、`always` にしている人へ
 		// 「残した」と言って実際には消える、を避けるため。
-		if (!await this.isDaemonRunning()) {
+		const running = await this.isDaemonRunning();
+		if (!running) {
 			return;
 		}
-		const plan = paradisPlanTerminalKeep({ ...input, canOutliveWindow: true });
+		// `running` をそのまま渡す。ここに `true` と書くと、`paradisPlanTerminalKeep` が
+		// `canOutliveWindow` を見る条件を1つでも増やした瞬間、この呼び出しだけが嘘をつく。
+		const plan = paradisPlanTerminalKeep({ ...input, canOutliveWindow: running });
 		this.decision = { reason, keep: plan === 'keep' ? true : await this.askUser(keepable) };
 		// 閉じた後のウィンドウには何も残らないので、ここで書かないと後から追えない。
 		this.logService.info(`[paradisPtyDaemonShutdown] closing (reason ${reason}, ${keepable} keepable terminal(s)): ${this.decision.keep ? 'leaving them with the daemon' : 'ending them'}`);
