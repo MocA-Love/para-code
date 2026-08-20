@@ -74,20 +74,34 @@ export function paradisCreatePtyHostStarter(
 		return inApp();
 	}
 
-	// Windows は当面ここで止める。
+	// Windows はここで止める。**名前付きパイプを使う限り、こちらでは塞げない穴が残るため。**
 	//
 	// 名前付きパイプの名前空間はマシン全体で共有で、名前は userDataPath とビルドから他のユーザー
-	// にも計算できる。作るのに特権は要らず、**先に作った側が持ち主**になる。unix は置き場所が
-	// 0700 なので、他のユーザーはそもそもファイルを作れない。
+	// にも計算できる。作るのに特権は要らず、先に作った側が持ち主になる。unix は置き場所が 0700
+	// なので、他のユーザーはそもそもファイルを作れない。
 	//
-	// 「偽物に繋いで全打鍵を渡す」方は、名乗り合い (`paradisPtyDaemonAuth`) で塞いである。
-	// **残っているのは、名乗り合いでは塞げない方**: `uv_pipe_connect` が接続時に
-	// `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` を付けていない場合、偽のサーバーは
-	// `ImpersonateNamedPipeClient` で**繋ぎに来たユーザーになりすませる**。なりすましは接続の
-	// 時点で成立するので、その後こちらが相手を拒んでも遅い。
+	// 盗聴の方 (偽物に繋いで全打鍵と環境変数を渡す) は、名乗り合い (`paradisPtyDaemonAuth`) で
+	// 塞いである。残っているのは**接続した時点で成立してしまう方**で、こちらが相手を拒んでも
+	// 遅い。
 	//
-	// 開けてよいかは、Electron が同梱している libuv がそのフラグを付けているかで決まる。
-	// 付けていることを確かめるまでは開けない（付けていれば、ここを消すだけで済む）。
+	// 調査済み (2026-08-20):
+	//  - libuv の `src/win/pipe.c` `open_named_pipe()` にある `CreateFileW` は3箇所とも
+	//    `dwFlagsAndAttributes` が `FILE_FLAG_OVERLAPPED` のみ。ファイル全体に
+	//    `SECURITY_SQOS_PRESENT` も `SECURITY_IDENTIFICATION` も出てこない。接続の両パス
+	//    (即時・`ERROR_PIPE_BUSY` 後のリトライ) ともここを通る
+	//  - Microsoft の "Impersonating a Named Pipe Client" いわく
+	//    "By default, a server impersonates at the SecurityImpersonation impersonation level"。
+	//    つまり未指定は危険な側の既定
+	//
+	// ただし被害の範囲は限られる。`ImpersonateNamedPipeClient` が通るのは、偽サーバーが
+	// `SeImpersonatePrivilege` を持つ場合 (サービスアカウントなど) か、そもそも同じユーザーの
+	// 場合だけ。**一般ユーザーの別アカウントでは成立しない**。それでも、特権サービスが名前を
+	// 先に取って管理者の Para Code を待ち構える経路は残る。
+	//
+	// フラグを付けさせる手段はこちらに無い (Node の `net` にその口が無い)。開けるなら
+	// **Windows では名前付きパイプをやめてループバック TCP にする**のが筋で、TCP には偽装の
+	// 仕組み自体が無いので問題が丸ごと消える。認証は今の名乗り合いがそのまま使え、ポート番号は
+	// 台帳に書けばよい。`ipc.net` の `serve`/`connect` は両方に対応している。
 	if (currentPlatform() === 'win32') {
 		logService.info('[ParadisPtyDaemon] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
 		return inApp();
