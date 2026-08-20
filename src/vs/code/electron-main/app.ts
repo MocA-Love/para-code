@@ -50,6 +50,8 @@ import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourc
 import { paradisRegisterHealthBeacon } from '../../paradis/contrib/healthBeacon/electron-main/paradisHealthBeaconMain.js';
 // PARA-PATCH: on-demand main process heap snapshot for leak diagnosis
 import { paradisRegisterHeapSnapshot } from '../../paradis/contrib/heapSnapshot/electron-main/paradisHeapSnapshotMain.js';
+// PARA-PATCH: pty daemon status channel for the status bar entry (see paradis/contrib/ptyDaemon)
+import { paradisRegisterPtyDaemonStatus } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyDaemonStatusService.js';
 // PARA-PATCH: LocalPty channel that does not eagerly buffer the per-process pty events
 import { paradisCreateLocalPtyChannel } from '../../paradis/contrib/ptyChannel/electron-main/paradisLocalPtyChannel.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
@@ -1486,6 +1488,10 @@ export class CodeApplication extends Disposable {
 
 		// PARA-PATCH: on-demand main process heap snapshot (see paradis/contrib/heapSnapshot)
 		disposables.add(paradisRegisterHeapSnapshot(mainProcessElectronServer));
+
+		// PARA-PATCH: what the pty daemon is holding, for the status bar entry that makes terminals
+		// running outside the app visible (see paradis/contrib/ptyDaemon)
+		disposables.add(paradisRegisterPtyDaemonStatus(mainProcessElectronServer, accessor.get(ILocalPtyService), this.configurationService, this.environmentMainService, this.productService, this.logService));
 
 		// allow-any-unicode-next-line
 		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。

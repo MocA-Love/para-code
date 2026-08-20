@@ -11,6 +11,7 @@
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { localize } from '../../../../nls.js';
+import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis.terminal',
@@ -18,7 +19,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	type: 'object',
 	title: localize('paradis.terminal.title', "Para Code Terminal"),
 	properties: {
-		'paradis.terminal.daemon.enabled': {
+		[PARADIS_PTY_DAEMON_ENABLED]: {
 			type: 'boolean',
 			default: false,
 			// APPLICATION スコープ: ターミナルのプロセスを持つのは main プロセスなので、
