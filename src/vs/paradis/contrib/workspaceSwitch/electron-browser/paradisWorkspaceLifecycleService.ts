@@ -19,6 +19,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisRunLifecycleScriptRequest } from '../common/paradisWorktreeCreate.js';
 import { paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorkspaceLifecycleConfig, paradisParseWorkspaceLifecycleConfig, ParadisWorkspaceLifecycleKind } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -110,9 +111,10 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 		// allow-any-unicode-next-line
 		throw new Error(localize('paradis.worktree.unreachableHost', "「{0}」は今つないでいる接続先にありません。このリポジトリがあるマシンへ接続してから実行してください。", repository.name));
 	}
-	await host.channel.call('runLifecycleScript', [{
+	const scriptRequest: IParadisRunLifecycleScriptRequest = {
 		kind, repoPath: host.path(repository.uri), worktreePath: host.path(worktreeUri), script,
 		...(timeoutMinutes !== undefined ? { timeoutMinutes } : {})
-	}]);
+	};
+	await host.channel.call('runLifecycleScript', [scriptRequest]);
 	return true;
 }

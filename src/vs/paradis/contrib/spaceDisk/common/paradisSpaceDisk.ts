@@ -9,23 +9,32 @@
 // スペース(リポジトリ/worktree)がディスクをどれだけ使っているかの型と契約。
 // 計測の実体は node/paradisSpaceDiskChannel.ts、呼ぶ側は electron-browser/ の client。
 
+import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+
 export const PARADIS_SPACE_DISK_CHANNEL = 'paradisSpaceDisk';
 
-/** IPC の setWarmLease command が受け取る owner-scoped snapshot。 */
-export type ParadisSpaceDiskWarmLeasePayload = Readonly<{
+/** IPC の setWarmLease command が受け取る owner-scoped snapshot。`TPath` は {@link IParadisSpaceDiskTarget} と同じ意味。 */
+export type ParadisSpaceDiskWarmLeasePayload<TPath extends string = ParadisHostPath> = Readonly<{
 	readonly ownerId: string;
 	readonly active: boolean;
-	readonly targets: readonly IParadisSpaceDiskTarget[];
+	readonly targets: readonly IParadisSpaceDiskTarget<TPath>[];
 }>;
 
-/** 計測してほしいスペース1件。パスは呼ぶ側(renderer)が解決して渡す。 */
-export interface IParadisSpaceDiskTarget {
+/**
+ * 計測してほしいスペース1件。パスは呼ぶ側(renderer)が解決して渡す。
+ *
+ * 既定の `TPath` は {@link ParadisHostPath}。**送る側（renderer）は何も書き足さなくてよく**、
+ * パスを `paradisResolveHostPath` 経由で作らない限り型エラーになる。
+ * 電文を受け取って検証する側（node）だけが `IParadisSpaceDiskTarget<string>` と明示して、
+ * 検証前の素の文字列を扱う。
+ */
+export interface IParadisSpaceDiskTarget<TPath extends string = ParadisHostPath> {
 	/** スペースの識別子(リポジトリのid、またはworktreeのstateKey)。 */
 	readonly stateKey: string;
 	/** 画面に出す名前。 */
 	readonly name: string;
 	/** 実ファイルシステム上のパス。 */
-	readonly path: string;
+	readonly path: TPath;
 	/**
 	 * このスペースに属する worktree のパス。
 	 *
@@ -33,13 +42,13 @@ export interface IParadisSpaceDiskTarget {
 	 * 親フォルダの中に置く人もいれば外に置く人もいて、WSL の UNC パスのこともある。
 	 * 親の中にあるものは親の集計に含まれてしまうので、計測側で引いて二重計上を防ぐ。
 	 */
-	readonly worktrees: readonly IParadisSpaceDiskWorktree[];
+	readonly worktrees: readonly IParadisSpaceDiskWorktree<TPath>[];
 }
 
-export interface IParadisSpaceDiskWorktree {
+export interface IParadisSpaceDiskWorktree<TPath extends string = ParadisHostPath> {
 	readonly stateKey: string;
 	readonly name: string;
-	readonly path: string;
+	readonly path: TPath;
 }
 
 /** 1スペースぶんの計測結果。 */

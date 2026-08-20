@@ -15,17 +15,25 @@
  * electron-browser 側でのみ登録され、browser 側の Add Repository アクションは
  * このコマンドが登録されていれば委譲する (webビルドでは未登録なので従来のフォルダ選択になる)。
  */
+import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+
 export const PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID = 'paradis.workspaceSwitch.addRepositoryFlow';
 
 /** クローン先の親ディレクトリを指定する設定キー。空なら毎回フォルダ選択ダイアログを出す。 */
 export const PARADIS_CLONE_PARENT_DIR_SETTING = 'paradis.workspaceSwitch.cloneParentDirectory';
 
-/** git clone の要求。パスはネイティブファイルシステムパス。 */
-export interface IParadisCloneRepositoryRequest {
+/**
+ * git clone の要求。パスは「git を動かすマシン」から見たパス。
+ *
+ * 既定の `TPath` は {@link ParadisHostPath}。**送る側（renderer）は何も書き足さなくてよく**、
+ * パスを `paradisHostPathFor` 経由で作らない限り型エラーになる。
+ * 電文を受け取る側（node）だけが `IParadisCloneRepositoryRequest<string>` と明示して素の文字列を扱う。
+ */
+export interface IParadisCloneRepositoryRequest<TPath extends string = ParadisHostPath> {
 	/** クローン元URL (https / ssh / git / scp風 のいずれか。呼び出し側で検証済みであること)。 */
 	readonly url: string;
 	/** クローン先ディレクトリ (未存在であること。親は無ければ作成される)。 */
-	readonly targetPath: string;
+	readonly targetPath: TPath;
 	/** 進捗イベントの紐付けとキャンセルに使う一意ID。 */
 	readonly cloneId: string;
 }

@@ -53,7 +53,10 @@ interface ICatalogEntry {
 	touchedAt: number;
 }
 
-interface INormalizedParadisResumeListRequest extends IParadisResumeListRequest {
+// 以降 `<string>` を明示しているのは、ここが電文を受け取る側だからで、意味がある。
+// 共有の型の既定は `ParadisHostPath`（送る側が綴りの規則を通したことの印）で、素の文字列を
+// 扱えるのは検証するこちら側だけ。詳細は src/vs/paradis/common/paradisHostPath.ts を参照。
+interface INormalizedParadisResumeListRequest extends IParadisResumeListRequest<string> {
 	readonly includeArchived: boolean;
 }
 
@@ -322,7 +325,7 @@ export class ParadisSessionResumeService {
 		this.searchTextCache = new ParadisSessionSearchTextCache(dependencies?.searchCacheMaxBytes ?? DEFAULT_SEARCH_TEXT_CACHE_BYTES);
 	}
 
-	async list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
+	async list(request: IParadisResumeListRequest<string>): Promise<readonly IParadisResumeSession[]> {
 		const normalizedRequest = this.normalizeListRequest(request);
 		const requestKey = this.createListRequestKey(normalizedRequest);
 		const activeRequest = this.activeListRequests.get(requestKey);
@@ -339,7 +342,7 @@ export class ParadisSessionResumeService {
 		return listRequest;
 	}
 
-	private normalizeListRequest(request: IParadisResumeListRequest): INormalizedParadisResumeListRequest {
+	private normalizeListRequest(request: IParadisResumeListRequest<string>): INormalizedParadisResumeListRequest {
 		const seenStateKeys = new Set<string>();
 		const seenCwds = new Set<string>();
 		const spaces = Array.isArray(request?.spaces) ? request.spaces.filter(space => {
@@ -563,7 +566,7 @@ export class ParadisSessionResumeService {
 		}
 	}
 
-	private async collectClaude(space: IParadisResumeSpace, claudeHome: string, matchCwd: string, target: IParadisResumeSession[]): Promise<void> {
+	private async collectClaude(space: IParadisResumeSpace<string>, claudeHome: string, matchCwd: string, target: IParadisResumeSession[]): Promise<void> {
 		const resolvedCwd = await fs.realpath(space.cwd).catch(() => matchCwd);
 		const slug = (matchCwd === space.cwd ? resolvedCwd : matchCwd).replace(/[^a-zA-Z0-9]/g, '-');
 		const directory = join(claudeHome, 'projects', slug);
@@ -634,8 +637,8 @@ export class ParadisSessionResumeService {
 		await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, () => worker()));
 	}
 
-	private async createSpaceAliases(spaces: readonly IParadisResumeSpace[]): Promise<readonly { root: string; space: IParadisResumeSpace }[]> {
-		const aliases: { root: string; space: IParadisResumeSpace }[] = [];
+	private async createSpaceAliases(spaces: readonly IParadisResumeSpace<string>[]): Promise<readonly { root: string; space: IParadisResumeSpace<string> }[]> {
+		const aliases: { root: string; space: IParadisResumeSpace<string> }[] = [];
 		for (const space of spaces) {
 			const homes = this.resolveAgentHomes(space.cwd);
 			const realCwd = await fs.realpath(space.cwd).catch(() => space.cwd);
@@ -646,12 +649,12 @@ export class ParadisSessionResumeService {
 		return aliases.sort((a, b) => b.root.length - a.root.length);
 	}
 
-	private matchSpace(aliases: readonly { root: string; space: IParadisResumeSpace }[], cwd: string): IParadisResumeSpace | undefined {
+	private matchSpace(aliases: readonly { root: string; space: IParadisResumeSpace<string> }[], cwd: string): IParadisResumeSpace<string> | undefined {
 		const normalizedCwd = normalizePath(cwd);
 		return aliases.find(alias => pathInside(alias.root, normalizedCwd))?.space;
 	}
 
-	private async collectCodex(spaces: readonly IParadisResumeSpace[], codexHome: string, target: IParadisResumeSession[], includeArchived: boolean): Promise<boolean> {
+	private async collectCodex(spaces: readonly IParadisResumeSpace<string>[], codexHome: string, target: IParadisResumeSession[], includeArchived: boolean): Promise<boolean> {
 		let database: DatabaseSync | undefined;
 		try {
 			const spaceAliases = await this.createSpaceAliases(spaces);
@@ -722,7 +725,7 @@ export class ParadisSessionResumeService {
 		}
 	}
 
-	private async collectCodexRollouts(spaces: readonly IParadisResumeSpace[], codexHome: string, target: IParadisResumeSession[]): Promise<void> {
+	private async collectCodexRollouts(spaces: readonly IParadisResumeSpace<string>[], codexHome: string, target: IParadisResumeSession[]): Promise<void> {
 		const sessionsRoot = join(codexHome, 'sessions');
 		try {
 			const [realHome, realSessionsRoot] = await Promise.all([fs.realpath(codexHome), fs.realpath(sessionsRoot)]);
@@ -819,7 +822,7 @@ export class ParadisSessionResumeChannel<TContext = string> implements IServerCh
 	call<T>(ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest) as Promise<T>;
+			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest<string>) as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			default: throw new Error(`Method not found: ${command}`);

@@ -48,7 +48,7 @@ async function flushMicrotasks(): Promise<void> {
 	}
 }
 
-function target(id: string, worktreeCount = 0): IParadisSpaceDiskTarget {
+function target(id: string, worktreeCount = 0): IParadisSpaceDiskTarget<string> {
 	return {
 		stateKey: `repository-${id}`,
 		name: `Repository ${id}`,
@@ -86,7 +86,7 @@ function createService(
 async function renewUntilNextWarmPass(
 	clock: sinon.SinonFakeTimers,
 	channel: ParadisSpaceDiskChannel,
-	payloads: readonly { readonly ownerId: string; readonly active: true; readonly targets: readonly IParadisSpaceDiskTarget[] }[],
+	payloads: readonly { readonly ownerId: string; readonly active: true; readonly targets: readonly IParadisSpaceDiskTarget<string>[] }[],
 ): Promise<void> {
 	for (let elapsed = WARM_LEASE_RENEW_INTERVAL_MS; elapsed < WARM_INTERVAL_MS; elapsed += WARM_LEASE_RENEW_INTERVAL_MS) {
 		await clock.tickAsync(WARM_LEASE_RENEW_INTERVAL_MS);
@@ -101,7 +101,7 @@ async function assertWarmLeaseRejected(channel: ParadisSpaceDiskChannel, payload
 	await assert.rejects(() => Promise.resolve().then(() => channel.call('', 'setWarmLease', [payload, ...extraArgs])));
 }
 
-function targetsWithWorktrees(targetCount: number, worktreesPerTarget: number, stringSize = 1): IParadisSpaceDiskTarget[] {
+function targetsWithWorktrees(targetCount: number, worktreesPerTarget: number, stringSize = 1): IParadisSpaceDiskTarget<string>[] {
 	const fill = 'x'.repeat(stringSize);
 	return Array.from({ length: targetCount }, (_, targetIndex) => ({
 		stateKey: `repository-${targetIndex}-${fill}`,
@@ -115,7 +115,7 @@ function targetsWithWorktrees(targetCount: number, worktreesPerTarget: number, s
 	}));
 }
 
-function targetsAtSerializedSize(desiredBytes: number): IParadisSpaceDiskTarget[] {
+function targetsAtSerializedSize(desiredBytes: number): IParadisSpaceDiskTarget<string>[] {
 	const targets = targetsWithWorktrees(1, 200, 3000).map(value => ({
 		...value,
 		worktrees: value.worktrees.map(worktree => ({ ...worktree })),
@@ -603,9 +603,9 @@ suite('ParadisSpaceDiskChannel', () => {
 	teardown(() => sinon.restore());
 
 	test('accepts only exact bounded warm lease payload shapes', async () => {
-		const accepted: { readonly ownerId: string; readonly active: boolean; readonly targets: readonly IParadisSpaceDiskTarget[] }[] = [];
+		const accepted: { readonly ownerId: string; readonly active: boolean; readonly targets: readonly IParadisSpaceDiskTarget<string>[] }[] = [];
 		const service = {
-			setWarmLease(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget[]): void {
+			setWarmLease(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget<string>[]): void {
 				accepted.push({ ownerId, active, targets });
 			},
 		} as unknown as ParadisSpaceDiskService;

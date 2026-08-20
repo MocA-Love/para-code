@@ -12,25 +12,25 @@
 // `cannot change to '<相手側のパス>': No such file or directory` で必ず失敗する。振り分けを
 // ここ1箇所に集めてあるので、新しい呼び出しもこのファイル経由にすること。
 
-import { Schemas } from '../../../../base/common/network.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { ParadisHostPath, paradisHostPathFor, paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 
 /** git を動かすマシンと、そのマシンへ渡すパスの書き方。 */
 export interface IParadisWorktreeGitHost {
 	readonly channel: IChannel;
 	/**
-	 * チャネルの向こう側へ渡すパス文字列。
+	 * チャネルの向こう側へ渡すパス文字列。綴りの規則は `paradisHostPathFor` が1箇所で持つ。
 	 *
 	 * 接続先へ `fsPath` を渡してはいけない。`fsPath` は**このウィンドウが動いている OS** を見て
 	 * 区切りを付け替えるため、Windows から Linux の接続先へ繋いでいると
 	 * `/home/u/repo` が `\home\u\repo` に化けて、接続先の git が受け取れなくなる。
 	 */
-	path(resource: URI): string;
+	path(resource: URI): ParadisHostPath;
 }
 
 /**
@@ -85,29 +85,24 @@ export function paradisChannelHostResolver(accessor: ServicesAccessor, channelNa
 	const connection = accessor.get(IRemoteAgentService).getConnection();
 	const local: IParadisWorktreeGitHost = {
 		channel: accessor.get(ISharedProcessService).getChannel(channelName),
-		path: resource => resource.fsPath
+		path: resource => paradisHostPathFor(resource, 'local')
 	};
 	const fallback = unresolved === 'local' ? local : undefined;
-	if (!connection) {
-		// file 以外（vscode-remote はもちろん、vscode-vfs・untitled 等の非ファイルスキームも
-		// 含む）はどのマシンのものか確証が持てないため、'reject' では素通しで local にしない。
-		return resource => resource.scheme === Schemas.file ? local : fallback;
-	}
-	const remote: IParadisWorktreeGitHost = {
+	const remote: IParadisWorktreeGitHost | undefined = connection ? {
 		channel: connection.getChannel(channelName),
-		path: resource => resource.path
-	};
-	// authority まで見るのは、別のホストで作った古い登録が残っていたときに、今つないでいる
-	// 接続先を相手だと思って動かさないため（手元へ流せば「そんなパスは無い」で止まる —
-	// ただし読み取り専用に限る。書き込み系は unresolved: 'reject' で必ず弾くこと）
-	const authority = connection.remoteAuthority.toLowerCase();
+		path: resource => paradisHostPathFor(resource, 'remote')
+	} : undefined;
 	return resource => {
-		if (resource.scheme === Schemas.file) {
-			return local;
-		}
-		if (resource.scheme !== Schemas.vscodeRemote) {
+		// 「そのリソースがどのマシンのものか」の判定は paradisResolveHostPath が1箇所で持つ。
+		// undefined が返るのは、未接続なのに vscode-remote、別ホストの vscode-remote（別のホストで
+		// 作った古い登録が残っていた場合。今つないでいる接続先を相手だと思って動かさないため
+		// authority まで見る）、および file / vscode-remote 以外のスキーム（vscode-vfs・untitled 等）。
+		// そこを手元へ流すか弾くかだけが、このリゾルバ固有の判断。
+		const resolved = paradisResolveHostPath(resource, connection ?? undefined);
+		if (!resolved) {
 			return fallback;
 		}
-		return resource.authority.toLowerCase() === authority ? remote : fallback;
+		// host が 'remote' になるのは connection がある場合だけなので、remote は必ず存在する。
+		return resolved.host === 'remote' ? remote : local;
 	};
 }

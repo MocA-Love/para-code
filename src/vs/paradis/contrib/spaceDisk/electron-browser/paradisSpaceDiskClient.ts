@@ -11,13 +11,13 @@
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { Schemas } from '../../../../base/common/network.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ParadisWarmLeaseController, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS } from '../../../common/paradisWarmLease.js';
+import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisSpaceDiskEntry,
@@ -25,6 +25,7 @@ import {
 	IParadisSpaceDiskService,
 	IParadisSpaceDiskTarget,
 	IParadisSpaceDiskWorktree,
+	ParadisSpaceDiskWarmLeasePayload,
 	PARADIS_SPACE_DISK_CHANNEL,
 } from '../common/paradisSpaceDisk.js';
 
@@ -62,13 +63,15 @@ export class ParadisSpaceDiskClient {
 		this.local = { channel, service: ProxyChannel.toService<IParadisSpaceDiskService>(channel) };
 	}
 
-	private remoteHost(): { host: IHost; authority: string } | undefined {
+	// `remoteAuthority` という名前で持つのは、そのまま `paradisResolveHostPath` の接続情報として
+	// 渡せるようにするため（接続先の同定とパスの綴りを別々に書き下さない）。
+	private remoteHost(): { host: IHost; remoteAuthority: string } | undefined {
 		const connection = this.remoteAgentService.getConnection();
 		if (!connection) {
 			return undefined;
 		}
 		const channel = connection.getChannel<IChannel>(PARADIS_SPACE_DISK_CHANNEL);
-		return { host: { channel, service: ProxyChannel.toService<IParadisSpaceDiskService>(channel) }, authority: connection.remoteAuthority.toLowerCase() };
+		return { host: { channel, service: ProxyChannel.toService<IParadisSpaceDiskService>(channel) }, remoteAuthority: connection.remoteAuthority.toLowerCase() };
 	}
 
 	/**
@@ -154,9 +157,14 @@ export class ParadisSpaceDiskClient {
 		// 対象が0件のマシンには active: false を送る。targets が空でも active: true のまま送ると、
 		// そのマシンに向けた無意味な warm lease を都度更新し続けることになる上、以前そのマシンに
 		// 対象があった場合の古いリースを残す側にもなりうる。
-		const attempts: Promise<void>[] = [this.local.channel.call<void>('setWarmLease', [{ ownerId, active: active && localTargets.length > 0, targets: localTargets }])];
+		//
+		// `IChannel.call` の引数は any なので、型注釈を省くとパスの綴りの検査が効かない。
+		// リクエストは必ず名前付きの型を通してから渡すこと。
+		const localPayload: ParadisSpaceDiskWarmLeasePayload = { ownerId, active: active && localTargets.length > 0, targets: localTargets };
+		const attempts: Promise<void>[] = [this.local.channel.call<void>('setWarmLease', [localPayload])];
 		if (remote !== undefined) {
-			attempts.push(remote.host.channel.call<void>('setWarmLease', [{ ownerId, active: active && remoteTargets.length > 0, targets: remoteTargets }]));
+			const remotePayload: ParadisSpaceDiskWarmLeasePayload = { ownerId, active: active && remoteTargets.length > 0, targets: remoteTargets };
+			attempts.push(remote.host.channel.call<void>('setWarmLease', [remotePayload]));
 		}
 		const results = await Promise.allSettled(attempts);
 		// 片方のマシンが失敗しても、もう片方が受理していれば lease 自体は成立している。
@@ -265,14 +273,16 @@ export class ParadisSpaceDiskClient {
 	 * リポジトリと worktree で行き先のマシンが割れることは無い (worktree は親と同じ接続の中にしか
 	 * 作れない) が、念のため worktree ごとにも判定し、一致しない場合は対象から外す。
 	 */
-	private collectTargets(remote: { readonly host: IHost; readonly authority: string } | undefined): { localTargets: IParadisSpaceDiskTarget[]; remoteTargets: IParadisSpaceDiskTarget[] } {
+	private collectTargets(remote: { readonly host: IHost; readonly remoteAuthority: string } | undefined): { localTargets: IParadisSpaceDiskTarget[]; remoteTargets: IParadisSpaceDiskTarget[] } {
 		const localTargets: IParadisSpaceDiskTarget[] = [];
 		const remoteTargets: IParadisSpaceDiskTarget[] = [];
 		for (const repository of this.workspaceSwitchService.repositories) {
-			const isRemote = remote !== undefined && repository.uri.scheme === Schemas.vscodeRemote && repository.uri.authority.toLowerCase() === remote.authority;
-			if (!isRemote && repository.uri.scheme !== Schemas.file) {
-				// 別ホストの vscode-remote、または未接続なのに vscode-remote — どちらのマシンの
-				// ものとも確証が持てないため、手元へ流さずスキップする。
+			// 別ホストの vscode-remote、または未接続なのに vscode-remote — どちらのマシンの
+			// ものとも確証が持てないため、手元へ流さずスキップする（undefined が返る）。
+			const resolved = paradisResolveHostPath(repository.uri, remote);
+			if (!resolved) {
+				// 黙って落とすと「一覧にあるのに容量だけ出ない」の切り分けができないので痕跡を残す。
+				this.logService.trace(`[ParadisSpaceDisk] skipping a space that belongs to no reachable machine: ${repository.uri.toString()}`);
 				continue;
 			}
 			const worktrees: IParadisSpaceDiskWorktree[] = [];
@@ -282,26 +292,27 @@ export class ParadisSpaceDiskClient {
 				if (worktree.isMainCheckout || worktree.missing) {
 					continue;
 				}
-				// worktree 自身の scheme を独立して判定する（`isRemote` が false だからといって
-				// worktree が file とは限らない — 親と違うマシンの worktree が紛れていた場合、
-				// isRemote だけで早期判定すると素通りして誤って手元の fsPath を返してしまう）。
-				const worktreeIsRemote = remote !== undefined && worktree.uri.scheme === Schemas.vscodeRemote && worktree.uri.authority.toLowerCase() === remote.authority;
-				if ((!worktreeIsRemote && worktree.uri.scheme !== Schemas.file) || worktreeIsRemote !== isRemote) {
+				// worktree 自身の scheme を独立して判定する（親が手元だからといって worktree が
+				// file とは限らない — 親と違うマシンの worktree が紛れていた場合、親の判定だけで
+				// 済ませると素通りして誤って手元の fsPath を返してしまう）。
+				const resolvedWorktree = paradisResolveHostPath(worktree.uri, remote);
+				if (!resolvedWorktree || resolvedWorktree.host !== resolved.host) {
+					this.logService.trace(`[ParadisSpaceDisk] skipping a worktree that is not on the same machine as its repository: ${worktree.uri.toString()}`);
 					continue;
 				}
 				worktrees.push({
 					stateKey: paradisWorktreeStateKey(worktree.uri),
 					name: worktree.name,
-					path: isRemote ? worktree.uri.path : worktree.uri.fsPath,
+					path: resolvedWorktree.path,
 				});
 			}
 			const target: IParadisSpaceDiskTarget = {
 				stateKey: repository.id,
 				name: repository.name,
-				path: isRemote ? repository.uri.path : repository.uri.fsPath,
+				path: resolved.path,
 				worktrees,
 			};
-			(isRemote ? remoteTargets : localTargets).push(target);
+			(resolved.host === 'remote' ? remoteTargets : localTargets).push(target);
 		}
 		return { localTargets, remoteTargets };
 	}
