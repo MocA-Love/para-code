@@ -190,6 +190,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: 'ファイルを開いたときの右上のボタンで画面いっぱいの表示に切り替えられます。ブラウザもURL欄の右のボタンから同じように広げられます。',
 				tone: 'green',
 			},
+			{
+				icon: 'swap-vertical-outline',
+				title: 'Claude Codeなどの画面を縦スワイプでスクロールできるようになりました',
+				body: 'マウス操作を受け付ける画面で、指の上下の動きがそのままスクロールとして届くようになりました。今までは何も起きませんでした。',
+				tone: 'green',
+			},
 		],
 	},
 	{
