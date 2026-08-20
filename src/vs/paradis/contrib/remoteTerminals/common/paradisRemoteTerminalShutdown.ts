@@ -13,60 +13,50 @@
 // 気づきにくく（実機で確かめるには毎回ウィンドウを閉じることになる）、ここだけは単体で
 // 確かめられるようにしておく。
 
-/** 閉じたときに接続先のターミナルをどうするか、というユーザーの設定。 */
-export type ParadisKeepRemoteTerminalsChoice = 'ask' | 'always' | 'never';
+import { ParadisKeepTerminalsChoice, ParadisTerminalKeepPlan, paradisParseKeepTerminalsChoice, paradisPlanTerminalKeep, paradisRememberedKeepChoice } from '../../../common/paradisTerminalKeepPlan.js';
+
+/**
+ * 閉じたときに接続先のターミナルをどうするか、というユーザーの設定。
+ *
+ * 判断そのものは `vs/paradis/common/paradisTerminalKeepPlan.ts` に移してある。同じ判断を
+ * この PC の常駐 (pty デーモン) 側でも使うためで、ここに残っているのは接続先向けの名前と、
+ * 「接続先か」を「残せる置き場所があるか」へ読み替える部分だけ。
+ */
+export type ParadisKeepRemoteTerminalsChoice = ParadisKeepTerminalsChoice;
 
 export interface IParadisRemoteTerminalShutdownInput {
 	/** 接続先（SSH など）を開いているウィンドウか。ローカルのウィンドウには関わらない。 */
 	readonly hasRemoteAuthority: boolean;
-	/**
-	 * 閉じる理由がリロードか。リロードは upstream が既にプロセスを残すので、ここは何もしない
-	 * （重ねて尋ねると、リロードのたびにダイアログが出るだけになる）。
-	 */
 	readonly isReload: boolean;
-	/**
-	 * アプリごと終了しようとしているか。
-	 *
-	 * ここでは尋ねない。終了は開いているウィンドウすべてで同時に起きるので、尋ねると接続先の
-	 * ウィンドウの数だけダイアログが並び、しかも背面のウィンドウのダイアログは見えないまま
-	 * 終了できなくなる。覚えている選択があればそれに従い、無ければ残す側へ倒す
-	 * （残したものは猶予時間で片付くが、終わらせた作業は戻らない）。
-	 */
 	readonly isQuit: boolean;
 	readonly choice: ParadisKeepRemoteTerminalsChoice;
 	/** 残せるターミナルの本数（表示中・背面・別スペースへ待避中を合わせた数）。 */
 	readonly persistentTerminalCount: number;
 }
 
-/**
- * `end` = 今までどおりプロセスを終える / `keep` = 接続先へ残す / `ask` = ユーザーに尋ねる。
- */
-export type ParadisRemoteTerminalShutdownPlan = 'end' | 'keep' | 'ask';
+export type ParadisRemoteTerminalShutdownPlan = ParadisTerminalKeepPlan;
 
 export function paradisPlanRemoteTerminalShutdown(input: IParadisRemoteTerminalShutdownInput): ParadisRemoteTerminalShutdownPlan {
-	if (!input.hasRemoteAuthority || input.isReload || input.choice === 'never') {
-		return 'end';
-	}
-	// 残す相手が居ないなら尋ねない。数えるのは待避中も含めた全部なので、「見えている端末が
-	// 無いだけ」と「本当に1本も無い」を取り違えない。
-	if (input.persistentTerminalCount === 0) {
-		return 'end';
-	}
-	if (input.choice === 'always') {
-		return 'keep';
-	}
-	return input.isQuit ? 'keep' : 'ask';
+	return paradisPlanTerminalKeep({
+		// 接続先を開いていることが、ここでの「残せる置き場所がある」。
+		canOutliveWindow: input.hasRemoteAuthority,
+		isReload: input.isReload,
+		isQuit: input.isQuit,
+		choice: input.choice,
+		persistentTerminalCount: input.persistentTerminalCount,
+	});
 }
 
 /** 覚えておく選択（尋ねた結果を設定へ書き戻すときの値）。 */
 export function paradisRememberedChoice(keep: boolean): ParadisKeepRemoteTerminalsChoice {
-	return keep ? 'always' : 'never';
+	return paradisRememberedKeepChoice(keep);
 }
 
 /** 設定値を読む。想定外の値は既定（毎回尋ねる）へ倒す。 */
 export function paradisParseKeepRemoteTerminalsChoice(value: unknown): ParadisKeepRemoteTerminalsChoice {
-	return value === 'always' || value === 'never' ? value : 'ask';
+	return paradisParseKeepTerminalsChoice(value);
 }
+
 
 // --- アプリを更新すると、残したターミナルは取り残される ----------------------------------------
 //

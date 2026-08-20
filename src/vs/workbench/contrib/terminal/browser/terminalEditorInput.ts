@@ -192,7 +192,7 @@ export class TerminalEditorInput extends EditorInput implements IEditorCloseHand
 			if (paradisShouldKeepTerminalProcessAlive(e.reason, instance)) {
 				e.join(paradisJoinKeptDetaches([instance.detachProcessAndDispose(TerminalExitReason.Shutdown, true)]), {
 					id: 'paradis.keepRemoteTerminals.editor',
-					label: localize('paradis.keepRemoteTerminals.editorJoiner', "Leaving a terminal running on the remote"),
+					label: localize('paradis.keepTerminals.editorJoiner', "Leaving a terminal running"),
 				});
 			} else if (shouldPersistTerminals) {
 				instance.detachProcessAndDispose(TerminalExitReason.Shutdown);

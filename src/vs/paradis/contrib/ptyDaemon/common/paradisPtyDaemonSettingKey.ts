@@ -12,3 +12,12 @@
 
 /** 常駐を使うかどうか。既定は false（opt-in）。 */
 export const PARADIS_PTY_DAEMON_ENABLED = 'paradis.terminal.daemon.enabled';
+
+/**
+ * 閉じたときにターミナルを常駐へ残すか。`ask` / `always` / `never`、既定は `ask`。
+ *
+ * 接続先 (SSH) 側の同じ設定とは**別に持つ**。名前が示すとおり片方は接続先の、もう片方は
+ * この PC の話で、1つにまとめると設定名がどちらかの実態と合わなくなる。判断の中身は
+ * `vs/paradis/common/paradisTerminalKeepPlan.ts` で共有しているので、挙動は揃う。
+ */
+export const PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE = 'paradis.terminal.daemon.keepAliveOnClose';
