@@ -11,6 +11,22 @@
 # 自分と同じ commit のサーバーだけを取りに来るので、クライアントとサーバーの版ずれが
 # 原理的に起きない。R2 側の配信URLは secret 管理なので、公開リポジトリに書かずに済む
 # GitHub Release を配信先にしている（このリポジトリは public なので認証なしで取得できる）。
+#
+# ## 配布しているのは linux-x64 だけ（既知の制限）
+#
+# ここで作るのは glibc の linux-x64 サーバー1本のみ。一方 product.json の
+# serverDownloadUrlTemplate は `para-code-server-${os}-${arch}-${commit}.tar.gz` という
+# テンプレートで、${os}/${arch} には接続先で `uname` した結果が入る。つまり linux-x64 以外
+# （linux-arm64 = Graviton / Ampere / Raspberry Pi、Alpine などの musl 系）へ繋ぐと、
+# 存在しないURLを取りに行って 404 の HTML が落ちてくる。open-remote-ssh 側の
+# server-setup.sh はそれを tar に食わせて失敗し、「サーバーのインストールに失敗しました」
+# 相当の汎用エラーで終わる。ユーザーからは自分の SSH 設定や鍵の問題に見えるが、
+# 実際には「その CPU 向けのサーバーを配っていない」だけ。
+#
+# server-setup.sh は同梱拡張 jeanp413.open-remote-ssh の中にあり、このリポジトリからは
+# エラーメッセージを変えられない。arch を増やす場合は、このジョブを matrix 化して
+# VSCODE_ARCH / NPM_ARCH と tarball 名の `linux-x64` を差し替えること（ネイティブ依存が
+# あるので arm64 は arm64 ランナーか正しくセットアップしたクロスコンパイルが要る）。
 name: Para Code REH (remote server)
 
 on:
@@ -132,7 +148,7 @@ jobs:
           if ! gh release view reh >/dev/null 2>&1; then
             gh release create reh \
               --title "Remote server (REH) builds" \
-              --notes "SSH 接続先で動く Para Code サーバー本体。ファイル名の commit がクライアント側の commit と一致するものが自動で取得される。手動で入れる必要はない。" \
+              --notes "SSH 接続先で動く Para Code サーバー本体。ファイル名の commit がクライアント側の commit と一致するものが自動で取得される。手動で入れる必要はない。対応しているのは linux-x64 (glibc) のみで、linux-arm64 (Graviton / Ampere / Raspberry Pi) や Alpine などの musl 系へ接続すると、ここに置いていないファイルを取りに行くため接続がサーバーのインストールで失敗する (SSH の設定や鍵の問題ではない)。" \
               --latest=false
           fi
           gh release upload reh \

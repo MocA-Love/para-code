@@ -22,7 +22,7 @@ import { Disposable, IDisposable, toDisposable } from '../../../../base/common/l
 import { findExecutable } from '../../../../base/node/processes.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
-import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from './paradisAgentHome.js';
 
@@ -33,13 +33,19 @@ import { paradisClaudeConfigDir, paradisCodexHome } from './paradisAgentHome.js'
  *   パース失敗時は黙って捨てる (誤った完了通知より安全)
  * - curl の失敗が hook 全体を fail させないよう `|| true` で必ず正常終了する
  */
-export function paradisGetNotifyScriptContent(fixedPortFilePath?: string): string {
+export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remoteHostId?: string): string {
 	// SSH で繋いだ先に置く版は、ポートファイルの場所を焼き込む。env（PARA_CODE_MCP_PORT_FILE）は
 	// 手元のパスのまま接続先へ渡ってしまい、そこには存在しないので必ず素通りしてしまうため。
 	// 焼き込む値は我々が組み立てた絶対パスで、ユーザー入力は混ざらない。
 	const portFileRef = fixedPortFilePath !== undefined
 		? `"${fixedPortFilePath}"`
 		: `"$${PARADIS_MCP_PORT_FILE_ENV_VAR}"`;
+	// 接続先へ置く版にだけ「どの接続先から来たか」の印を焼き込む。受け手はこの印だけを根拠に
+	// 「手元では開けないパス」と判断する（パスの綴りで見分けると、接続先とユーザー名が同じ
+	// 機械では手元のホーム配下と区別が付かず、会話が丸ごと出なくなる）。
+	const hostQuery = paradisIsAgentHookRemoteHostId(remoteHostId)
+		? `&${PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM}=${remoteHostId}`
+		: '';
 	const guard = fixedPortFilePath !== undefined
 		? `if [ -z "\${${PARADIS_PANE_TOKEN_ENV_VAR}:-}" ] || [ ! -f ${portFileRef} ]; then`
 		: `if [ -z "\${${PARADIS_PANE_TOKEN_ENV_VAR}:-}" ] || [ -z "\${${PARADIS_MCP_PORT_FILE_ENV_VAR}:-}" ] || [ ! -f ${portFileRef} ]; then`;
@@ -104,7 +110,8 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string): strin
 		'# pid ($$ = this script) lets the shared process resolve the emitting agent',
 		'# process via the ancestor chain, so hooks from nested child agents (an agent',
 		'# CLI spawned inside another agent) cannot hijack the pane session (schema v3).',
-		`HOOK_URL="http://127.0.0.1:$PORT/agent-hook?pane=$${PARADIS_PANE_TOKEN_ENV_VAR}&event=$EVENT&pid=$$"`,
+		// host は SSH の接続先へ置いた版にだけ入る（手元の版では空文字になる）。
+		`HOOK_URL="http://127.0.0.1:$PORT/agent-hook?pane=$${PARADIS_PANE_TOKEN_ENV_VAR}&event=$EVENT&pid=$$${hostQuery}"`,
 		'INPUT_BYTES=$(wc -c <"$INPUT_FILE" 2>/dev/null | tr -d \'[:space:]\')',
 		'case "$INPUT_BYTES" in',
 		'  ""|*[!0-9]*) exit 0 ;;',

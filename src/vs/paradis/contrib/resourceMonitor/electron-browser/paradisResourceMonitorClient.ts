@@ -59,6 +59,11 @@ export class ParadisResourceMonitorClient {
 		return remoteConnection.getChannel(PARADIS_HOST_RESOURCES_CHANNEL).call<IParadisHostResources>('getHostResources', { force: request.force });
 	}
 
+	/**
+	 * Para Code 自身の内訳を答える側。Para Code は手元で動いているので、問い合わせ先は
+	 * 常に手元のメインプロセスでよい。ただしターミナルは接続先で動きうるので、
+	 * {@link collectSessionRequests} が手元の PID だけを渡す。
+	 */
 	getSnapshot(force: boolean, freshness: ParadisResourceMonitorFreshness = 'active'): Promise<IParadisResourceMonitorSnapshot> {
 		return this.resourceMonitorService.getSnapshot({ sessions: this.collectSessionRequests(), force, freshness });
 	}
@@ -125,6 +130,14 @@ export class ParadisResourceMonitorClient {
 
 		const sessions: IParadisResourceMonitorSessionRequest[] = [];
 		for (const instance of instances) {
+			// 接続先で動いているターミナルの PID を手元のプロセス表に当ててはいけない。
+			// 手元にその PID が無ければ全部 0 で並ぶだけだが、たまたま別のプロセスと番号が
+			// ぶつかると、そのプロセスのツリーの使用量が「このターミナルの使用量」として出る。
+			// 数字が無いより、嘘の数字が出るほうが悪い。
+			// (接続先の内訳を本当に出すには、接続先チャネルに集計を足す必要がある)
+			if (instance.hasRemoteAuthority) {
+				continue;
+			}
 			const pid = instance.processId;
 			if (typeof pid !== 'number' || pid <= 0) {
 				continue;

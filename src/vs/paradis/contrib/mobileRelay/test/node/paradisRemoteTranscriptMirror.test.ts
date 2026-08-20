@@ -14,7 +14,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { paradisClaudeConfigDir } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE, ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptPath, paradisRemoteTranscriptMirrorPathFor, paradisRemoteTranscriptMirrorRoots } from '../../node/paradisRemoteTranscriptMirror.js';
+import { PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE, ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisIsRemoteAgentTranscriptPath, paradisRemoteTranscriptMirrorPathFor, paradisRemoteTranscriptMirrorRoots } from '../../node/paradisRemoteTranscriptMirror.js';
 
 const REMOTE_PATH = '/home/other/.claude/projects/-srv-app/9d1f.jsonl';
 
@@ -36,7 +36,8 @@ suite('ParadisRemoteTranscriptMirror', () => {
 		assert.deepStrictEqual([
 			paradisIsRemoteAgentTranscriptPath(REMOTE_PATH),
 			paradisIsRemoteAgentTranscriptPath('/home/other/.codex/sessions/2026/08/12/rollout-1.jsonl'),
-			// 手元のホーム配下はそのまま読めるので写さない（同じ機械へ ssh した場合も含む）
+			// 印の無い hook（手元、または印を持たない旧版のスクリプトが残っている接続先）は、
+			// 従来どおり綴りで見分ける。手元のホーム配下はそのまま読めるので写さない
 			paradisIsRemoteAgentTranscriptPath(join(paradisClaudeConfigDir(), 'projects', 'p', 'a.jsonl')),
 			paradisIsRemoteAgentTranscriptPath('/home/other/.claude/projects/../../../etc/shadow.jsonl'),
 			// Windows で動く shared process だと、この一片が写し置き場の外へ抜ける
@@ -47,6 +48,34 @@ suite('ParadisRemoteTranscriptMirror', () => {
 			paradisIsRemoteAgentTranscriptPath('relative/.claude/a.jsonl'),
 			paradisIsRemoteAgentTranscriptPath(undefined),
 		], [true, true, false, false, false, false, false, false, false, false]);
+	});
+
+	test('trusts the host marker over the spelling of the path', () => {
+		// 手元と接続先でユーザー名が同じ構成（Linux から同名ユーザーのサーバーへ ssh する等）では、
+		// 接続先の transcript が手元のホームと同じ綴りになる。綴りだけで見分けていた頃は、これが
+		// 手元のものと判定されて写しが作られず、会話がモバイルにも詳細画面にも一切出なかった。
+		// 手元のホームは環境変数で決まるので、走らせるOSに依らないよう固定して確かめる
+		const previousHome = process.env['CLAUDE_CONFIG_DIR'];
+		process.env['CLAUDE_CONFIG_DIR'] = '/home/alice/.claude';
+		try {
+			const sameSpellingAsLocal = '/home/alice/.claude/projects/-srv-app/9d1f.jsonl';
+			assert.deepStrictEqual([
+				paradisIsRemoteAgentTranscriptPath(sameSpellingAsLocal, 'ssh-remote-server'),
+				// 印が無ければ従来どおり。手元のホーム配下はそのまま読めるので写さない
+				paradisIsRemoteAgentTranscriptPath(sameSpellingAsLocal),
+				// 印があっても、写し先を組み立てる前の字面の確認はそのまま通す
+				paradisIsRemoteAgentTranscriptPath('/home/alice/.claude/projects/../../../etc/shadow.jsonl', 'ssh-remote-server'),
+				paradisIsRemoteAgentTranscriptPath('/home/alice/notes/a.jsonl', 'ssh-remote-server'),
+				// 形の違う印は名乗りとして受けない（従来どおり綴りで見分ける）
+				paradisIsRemoteAgentTranscriptPath(sameSpellingAsLocal, 'ssh remote/server'),
+			], [true, false, false, false, false]);
+		} finally {
+			if (previousHome === undefined) {
+				delete process.env['CLAUDE_CONFIG_DIR'];
+			} else {
+				process.env['CLAUDE_CONFIG_DIR'] = previousHome;
+			}
+		}
 	});
 
 	test('keeps the directory layout so sibling lookups still work', () => {
@@ -60,10 +89,16 @@ suite('ParadisRemoteTranscriptMirror', () => {
 	test('registers the copy folder as it really is on disk', async () => {
 		await withStore(async (store, root) => {
 			// user-data が symlink 越しにあると（macOS の `/tmp` など）、字面だけの許可判定では
-			// 自分で書いた写しを弾いてしまう。実体を辿った綴りも許可 root に入れておく
-			const real = await fs.realpath(root);
+			// 自分で書いた写しを弾いてしまう。実体を辿った綴りも許可 root に入れておく。
+			// 置き場を作るのは台帳側の非同期処理なので、実体を辿れるようになるまで待つ
+			// （待たずに realpath すると ENOENT で落ちることがある）
 			const deadline = Date.now() + 2_000;
-			while (!paradisRemoteTranscriptMirrorRoots().includes(real) && Date.now() < deadline) {
+			let real = '';
+			while (Date.now() < deadline) {
+				real = await fs.realpath(root).catch(() => '');
+				if (real.length > 0 && paradisRemoteTranscriptMirrorRoots().includes(real)) {
+					break;
+				}
 				await new Promise<void>(resolve => setTimeout(resolve, 5));
 			}
 			const roots = paradisRemoteTranscriptMirrorRoots();
@@ -76,6 +111,12 @@ suite('ParadisRemoteTranscriptMirror', () => {
 			const localPath = store.localPathForHookPath(REMOTE_PATH, 'pane-1');
 			assert.strictEqual(localPath, join(root, 'home', 'other', '.claude', 'projects', '-srv-app', '9d1f.jsonl'));
 			assert.deepStrictEqual(store.list('window-a'), [REMOTE_PATH]);
+			// 写し置き場の中だと見分けられることが、shared process が上がり直して hook の印を
+			// 失った後に「これは接続先のセッション」と分かる唯一の手掛かりになる
+			assert.deepStrictEqual(
+				[paradisIsRemoteAgentTranscriptMirrorPath(localPath), paradisIsRemoteAgentTranscriptMirrorPath(REMOTE_PATH)],
+				[true, false],
+			);
 
 			assert.strictEqual(await store.begin('window-a', REMOTE_PATH), 0);
 			assert.strictEqual(await store.append('window-a', REMOTE_PATH, Buffer.from('{"a":1}\n')), 8);
@@ -155,6 +196,31 @@ suite('ParadisRemoteTranscriptMirror', () => {
 				clock.restore();
 			}
 			assert.deepStrictEqual(store.list('window-a'), []);
+		});
+	});
+
+	test('keeps the copy on disk after it stops following, so a parked pane resumes', async () => {
+		await withStore(async store => {
+			// 追いかけるのをやめる猶予は10分だが、退避したペインが戻ってくる猶予は7日ある。
+			// ここで消すと、15分後に戻したペインの会話が空になり、次のhookで接続先の
+			// transcript を先頭から丸ごと取り直す（1本で最大64MB）
+			const localPath = store.localPathForHookPath(REMOTE_PATH, 'pane-1')!;
+			await store.begin('window-a', REMOTE_PATH);
+			await store.append('window-a', REMOTE_PATH, Buffer.from('{"a":1}\n'));
+
+			const clock = sinon.useFakeTimers({ now: Date.now() + 11 * 60_000 });
+			try {
+				store.retainLiveTokens(() => false);
+			} finally {
+				clock.restore();
+			}
+			// 接続先を読みに行くのはやめる（一覧から消える）が、写しはそのまま残す
+			assert.deepStrictEqual(store.list('window-a'), []);
+			assert.strictEqual(await fs.readFile(localPath, 'utf8'), '{"a":1}\n');
+
+			// ペインが戻ってきたら、写しの続きから再開する（先頭から取り直さない）
+			store.localPathForHookPath(REMOTE_PATH, 'pane-1');
+			assert.strictEqual(await store.begin('window-a', REMOTE_PATH), 8);
 		});
 	});
 });

@@ -25,8 +25,9 @@
 
 import { promises as fs } from 'fs';
 import { dirname, isAbsolute, join, sep } from '../../../../base/common/path.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisIsAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 
 /** userDataPath 直下に作る、写しの置き場の名前。 */
@@ -54,6 +55,12 @@ const PRUNE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 /** 掃除するかを決める、写し全体の合計サイズ。 */
 const PRUNE_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 
+/**
+ * 掃除を回す間隔。shared process は再起動せず何週間も動き続けるので、起動時の1回だけだと
+ * 取りこぼした写し（削除に失敗した分、前回の異常終了で残った分）がずっと残る。
+ */
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 /** 台帳が使えないことを担当ウィンドウへ伝える戻り値（担当を失った・上限に達した）。 */
 export const PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE = -1;
 
@@ -73,13 +80,35 @@ export function paradisRemoteTranscriptMirrorRoots(): readonly string[] {
 }
 
 /**
+ * 写し置き場の中のパスか（＝接続先の transcript の写しか）。
+ *
+ * 写しを作るのは私たちだけなので、置き場の中にあること自体が「元は接続先のもの」の証拠になる。
+ * hook に付く接続先の印は shared process の再起動で失われるが、こちらは復元したセッションの
+ * transcript の綴りだけで判る（手元の設定を接続先のセッションへ当てないための拠り所）。
+ */
+export function paradisIsRemoteAgentTranscriptMirrorPath(path: string | undefined): boolean {
+	if (typeof path !== 'string' || path.length === 0) {
+		return false;
+	}
+	return mirrorRoots.some(root => path.startsWith(root + sep) || (sep !== '/' && path.startsWith(root + '/')));
+}
+
+/**
  * 接続先のエージェントが書いた transcript のパスか。
  *
- * 「手元では開けない」ことが本質なので、まず手元のエージェントホーム配下かを見る。同じ機械へ
- * ssh したときは本当にローカルのファイルなので、ここで false になり写しは作られない（そのまま
- * 直接読める）。
+ * 判定の根拠は **hook が接続先から届いたという事実**（{@link paradisIsAgentHookRemoteHostId} が
+ * 通る印が付いていたか）で、パスの綴りではない。綴りだけで見分けていた頃は、手元と接続先で
+ * ユーザー名が同じ構成（Linux から同名ユーザーのサーバーへ ssh する、macOS 同士など）で
+ * `/home/alice/.claude/...` が手元のホーム配下と一致してしまい、写しが作られず会話が
+ * どこにも出なかった。
+ *
+ * `remoteHostId` が無いときは従来どおり綴りで見分ける。手元の hook と、印を持たない旧版の
+ * スクリプトが残っている接続先の両方が、これまでと同じ扱いになる（安全側）。
+ *
+ * パスの安全確認（`..` や `\`、`:` を弾く）は印の有無に関わらず必ず通す。あれは写し先を
+ * 組み立てる前に字面を信用しないための別の防御で、こちらの判定とは目的が違う。
  */
-export function paradisIsRemoteAgentTranscriptPath(path: string | undefined): path is string {
+export function paradisIsRemoteAgentTranscriptPath(path: string | undefined, remoteHostId?: string): path is string {
 	// 接続先は Linux / macOS のみ。Windows 表記や相対パスは扱わない
 	if (path === undefined || !path.startsWith('/') || !path.endsWith('.jsonl')) {
 		return false;
@@ -98,6 +127,11 @@ export function paradisIsRemoteAgentTranscriptPath(path: string | undefined): pa
 	if (!path.includes('/.claude/') && !path.includes('/.codex/')) {
 		return false;
 	}
+	// 接続先から届いたと分かっている hook は、綴りが手元のホームと重なっていても接続先のもの。
+	// ここで手元のホーム配下かを見てしまうと、ユーザー名が同じ機械では必ず取りこぼす
+	if (paradisIsAgentHookRemoteHostId(remoteHostId)) {
+		return true;
+	}
 	for (const root of [paradisClaudeConfigDir(), paradisCodexHome()]) {
 		if (path === root || path.startsWith(root + sep) || (sep !== '/' && path.startsWith(root + '/'))) {
 			return false;
@@ -112,8 +146,8 @@ export function paradisIsRemoteAgentTranscriptPath(path: string | undefined): pa
  * 別々のホストで同じ絶対パスが使われると写し先がぶつかるが、ファイル名は Claude も Codex も
  * UUID を含むため実際には起こらない。念のため担当は1ウィンドウに限っており、二重書きにはならない。
  */
-export function paradisRemoteTranscriptMirrorPathFor(root: string, remotePath: string): string | undefined {
-	if (!paradisIsRemoteAgentTranscriptPath(remotePath) || !isAbsolute(root)) {
+export function paradisRemoteTranscriptMirrorPathFor(root: string, remotePath: string, remoteHostId?: string): string | undefined {
+	if (!paradisIsRemoteAgentTranscriptPath(remotePath, remoteHostId) || !isAbsolute(root)) {
 		return undefined;
 	}
 	return join(root, ...remotePath.split('/').filter(segment => segment.length > 0));
@@ -168,6 +202,13 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		});
 		void this.resolveRealRoot();
 		void this.prune();
+		const pruneTimer = setInterval(() => void this.prune(), PRUNE_INTERVAL_MS);
+		// 掃除のためにプロセスを生かし続けない。`unref` のキャストは dom/node の
+		// `setInterval` 型衝突を避けるため（`wslRemoteAgentHostService.ts` と同じ書き方）。
+		// 呼べるかは実行時に確かめる: 単体テストの実行環境の `setInterval` は数値を返すので、
+		// 無条件に呼ぶとこのクラスを作るところで必ず落ちる
+		(pruneTimer as unknown as NodeJS.Timeout).unref?.();
+		this._register(toDisposable(() => clearInterval(pruneTimer)));
 	}
 
 	/** 実体を辿った綴りも許可rootに加える（user-data が symlink 越しにあるとき用）。 */
@@ -187,9 +228,12 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 	/**
 	 * hook で届いた transcript のパスを、手元で読めるパスへ読み替える。
 	 * 接続先のものでなければ undefined（呼び出し側はそのままのパスを使う）。
+	 *
+	 * @param remoteHostId hook に付いていた接続先の印。これがあると、綴りが手元のホーム配下と
+	 * 重なっていても接続先のものとして写す（同名ホームの別マシンを取りこぼさないため）。
 	 */
-	localPathForHookPath(remotePath: string | undefined, token: string): string | undefined {
-		if (this.disposed || !paradisIsRemoteAgentTranscriptPath(remotePath)) {
+	localPathForHookPath(remotePath: string | undefined, token: string, remoteHostId?: string): string | undefined {
+		if (this.disposed || !paradisIsRemoteAgentTranscriptPath(remotePath, remoteHostId)) {
 			return undefined;
 		}
 		const existing = this.entries.get(remotePath);
@@ -198,7 +242,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			existing.token = token;
 			return existing.localPath;
 		}
-		const localPath = paradisRemoteTranscriptMirrorPathFor(this.root, remotePath);
+		const localPath = paradisRemoteTranscriptMirrorPathFor(this.root, remotePath, remoteHostId);
 		if (localPath === undefined) {
 			return undefined;
 		}
@@ -333,6 +377,13 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 	 *
 	 * ウィンドウの再読み込み中はペインが一時的に「居ない」ことになる。そこで落とすと、次のhookが
 	 * 来るまで会話が黙って止まるので、最近まで動いていたものは残す。
+	 *
+	 * **やめるのは「接続先を読みに行くこと」だけで、写しはディスクに残す。** ペインを退避
+	 * （park）してから戻すまでの猶予は7日（paradisMobileAgentChat の退避セッションTTL）ある
+	 * のに対し、こちらの猶予は10分。ここで消してしまうと、15分後に戻したペインの写しが無く
+	 * なっていて会話が空になり、次のhookで {@link begin} が 0 を返して接続先の transcript を
+	 * 先頭から丸ごと取り直す（1本で最大 {@link MIRROR_MAX_BYTES}）。
+	 * 使わなくなった写しの回収は {@link prune}（14日 / 合計512MB）に任せる。
 	 */
 	retainLiveTokens(isLive: (token: string) => boolean): void {
 		const now = Date.now();
@@ -353,6 +404,12 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		});
 	}
 
+	/**
+	 * 台帳に載せる本数の上限を守る。古いものから外す。
+	 *
+	 * 外すのは台帳からだけで、写しはディスクに残す（{@link retainLiveTokens} と同じ理由。
+	 * 他のセッションが増えたせいで、退避中のペインの写しを失わせない）。回収は {@link prune}。
+	 */
 	private evictOverflow(): void {
 		while (this.entries.size > MAX_ENTRIES) {
 			let oldestPath: string | undefined;
@@ -371,21 +428,31 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 	}
 
 	/**
-	 * 起動時の掃除。使わなくなった写しがディスクに残り続けないようにする。
+	 * 取りこぼしの掃除。使わなくなった写しがディスクに残り続けないようにする。
 	 * 古いものから消し、それでも大きすぎるときは合計が収まるまで消す。
+	 *
+	 * 今も台帳に載っている写しは対象外。起動時は台帳が空なので結果は変わらないが、
+	 * 周期実行では「写している最中のファイル」を巻き込みうる（消えたことに気付かないまま
+	 * `entry.size` を続きの位置として使い、穴の空いた写しになる）。
 	 */
 	private async prune(): Promise<void> {
+		if (this.disposed) {
+			return;
+		}
 		const files: { path: string; size: number; mtime: number }[] = [];
+		const directories: string[] = [];
+		const tracked = new Set([...this.entries.values()].map(entry => entry.localPath));
 		const walk = async (dir: string, depth: number): Promise<void> => {
-			if (depth > 12) {
+			if (depth > 12 || this.disposed) {
 				return;
 			}
 			const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => undefined);
 			for (const entry of entries ?? []) {
 				const path = join(dir, entry.name);
 				if (entry.isDirectory()) {
+					directories.push(path);
 					await walk(path, depth + 1);
-				} else if (entry.isFile()) {
+				} else if (entry.isFile() && !tracked.has(path)) {
 					const stat = await fs.stat(path).catch(() => undefined);
 					if (stat !== undefined) {
 						files.push({ path, size: stat.size, mtime: stat.mtimeMs });
@@ -394,7 +461,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			}
 		};
 		await walk(this.root, 0);
-		if (this.disposed || files.length === 0) {
+		if (this.disposed) {
 			return;
 		}
 		const now = Date.now();
@@ -409,11 +476,31 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 				total -= file.size;
 			}
 		}
+		// 走査の途中で hook が来ると、写し始めたばかりのファイルが doomed に入っていることがある。
+		// 消す直前の台帳でもう一度確かめる
+		let removed = 0;
 		for (const path of doomed) {
-			await fs.rm(path, { force: true }).catch(() => undefined);
+			if ([...this.entries.values()].some(entry => entry.localPath === path)) {
+				continue;
+			}
+			// 消せなかったぶんを数えない。件数がずれると、ログを見て「掃除は効いている」と
+			// 読んでしまい、権限などで実際には減っていないことに気付けなくなる
+			const succeeded = await fs.rm(path, { force: true }).then(() => true, () => false);
+			if (succeeded) {
+				removed++;
+			}
 		}
-		if (doomed.size > 0) {
-			this.logService.info(`[paradisRemoteTranscript] removed ${doomed.size} stale copies`);
+		// 写しはディレクトリ構成を保つので、ファイルだけ消しても骨組みが残り続ける。深い方から
+		// 空になったものを畳む（中身が残っていれば ENOTEMPTY で失敗し、そのまま残る）
+		let removedDirectories = 0;
+		for (const directory of directories.sort((a, b) => b.length - a.length)) {
+			const succeeded = await fs.rmdir(directory).then(() => true, () => false);
+			if (succeeded) {
+				removedDirectories++;
+			}
+		}
+		if (removed > 0 || removedDirectories > 0) {
+			this.logService.info(`[paradisRemoteTranscript] removed ${removed} stale copies and ${removedDirectories} empty folders`);
 		}
 	}
 }

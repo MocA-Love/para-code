@@ -17,6 +17,7 @@
 
 import { disposableWindowInterval } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { streamToBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -169,7 +170,9 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		}
 		this.reading.add(remotePath);
 		this.readAppended(remotePath)
-			.catch(error => this.logService.trace(`[paradis] could not read ${remotePath} on the host`, error))
+			// 読めないと会話が黙って止まる（上限超過など、原因が出ないと気付けない）。
+			// stat が通らない間は readAppended が静かに戻るので、ここは実際の失敗だけが来る
+			.catch(error => this.logService.warn(`[paradis] could not read ${remotePath} on the host`, error))
 			.finally(() => {
 				this.reading.delete(remotePath);
 				if (this.readAgain.delete(remotePath) && this.tracked.has(remotePath)) {
@@ -198,11 +201,16 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		}
 		while (offset < size && this.tracked.has(remotePath) && !this._store.isDisposed) {
 			const length = Math.min(READ_CHUNK_BYTES, size - offset);
-			const content = await this.fileService.readFile(uri, { position: offset, length });
-			if (content.value.byteLength === 0) {
+			// readFile ではなく readFileStream を使う。readFile は「呼び手は分割を気にしない」と
+			// 見なして unbuffered 読みを選ぶため、接続先プロバイダでは transcript 全体を取り寄せて
+			// から手元で position/length を切り出す。追記1回ごとに会話全部が SSH を流れることに
+			// なり、ターン実行中は読みが恒常的に詰まる。readFileStream は接続先で範囲だけを読む。
+			const stream = await this.fileService.readFileStream(uri, { position: offset, length });
+			const data = await streamToBuffer(stream.value);
+			if (data.byteLength === 0) {
 				return;
 			}
-			const next = await this.service.appendRemoteTranscriptMirror(this.ownerId, remotePath, content.value);
+			const next = await this.service.appendRemoteTranscriptMirror(this.ownerId, remotePath, data);
 			if (next === UNAVAILABLE) {
 				this.stop(remotePath);
 				return;

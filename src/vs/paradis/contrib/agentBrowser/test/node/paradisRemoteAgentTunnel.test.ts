@@ -6,11 +6,12 @@
 import * as assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import * as sinon from 'sinon';
 import { join } from '../../../../../base/common/path.js';
 import type { ChildProcess } from 'child_process';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ILogService } from '../../../../../platform/log/common/log.js';
-import { ParadisRemoteAgentTunnels, paradisSshHostFromAuthority } from '../../node/paradisRemoteAgentTunnel.js';
+import { ParadisRemoteAgentTunnels, paradisShellQuote, paradisSshHostFromAuthority } from '../../node/paradisRemoteAgentTunnel.js';
 
 const nullLog = {
 	trace: () => { }, debug: () => { }, info: () => { }, warn: () => { }, error: () => { }
@@ -180,23 +181,66 @@ suite('ParadisRemoteAgentTunnel', () => {
 		tunnels.dispose();
 	});
 
-	/** `-O` の要求だけ「成功して終了」を返す偽 ssh（戻り経路の常駐プロセスは生かしたまま）。 */
-	function fakeSshWithControl() {
+	/** 呼び出しごとに独立した偽の子プロセス。'stderr:data'/'close'/'exit' を後から起こせる。 */
+	function fakeControlChild() {
+		const handlers = new Map<string, Array<(arg?: unknown) => void>>();
+		const on = (event: string, handler: (arg?: unknown) => void) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		};
+		const child = {
+			stderr: { on: (event: string, handler: (chunk: Buffer) => void) => { if (event === 'data') { on('stderr:data', handler as (arg?: unknown) => void); } } },
+			stdout: { on: () => { } },
+			on,
+			kill: () => { }
+		} as unknown as ChildProcess;
+		return {
+			child,
+			emit: (event: string, arg?: unknown) => {
+				for (const handler of [...(handlers.get(event) ?? [])]) {
+					handler(arg);
+				}
+			},
+		};
+	}
+
+	/**
+	 * `-O` の要求だけ「成功して終了」を返す偽 ssh（戻り経路の常駐プロセスは生かしたまま）。
+	 * @param options.deferForwardExit `-O` の返事を自動で返さず、`settleControlRequests()` を待つ
+	 */
+	function fakeSshWithControl(options?: { readonly deferForwardExit?: boolean }) {
 		const calls: string[][] = [];
+		const masters: Array<ReturnType<typeof fakeControlChild>> = [];
+		const pendingControlExits: Array<() => void> = [];
 		const spawn = (args: string[]) => {
 			calls.push(args);
-			const handlers = new Map<string, (code: number) => void>();
-			const child = {
-				stderr: { on: () => { } },
-				on: (event: string, handler: (code: number) => void) => { handlers.set(event, handler); },
-				kill: () => { }
-			} as unknown as ChildProcess;
+			const entry = fakeControlChild();
 			if (args.includes('-O')) {
-				queueMicrotask(() => handlers.get('exit')?.(0));
+				const settle = () => entry.emit('exit', 0);
+				if (options?.deferForwardExit === true) {
+					pendingControlExits.push(settle);
+				} else {
+					queueMicrotask(settle);
+				}
+			} else {
+				masters.push(entry);
 			}
-			return child;
+			return entry.child;
 		};
-		return { calls, spawn };
+		return {
+			calls,
+			spawn,
+			/** 実際の ssh が動的ポートの割り当てを stderr へ書くのを模す（最後に起こしたマスター）。 */
+			allocatePort: (port: number) => masters[masters.length - 1]
+				.emit('stderr:data', Buffer.from(`Allocated port ${port} for remote forward to 127.0.0.1:47286\n`)),
+			/** マスターが落ちたことを模す（切断・鍵の失効など）。 */
+			closeMaster: () => masters[masters.length - 1].emit('close', 1),
+			/** 溜めておいた `-O` の返事をまとめて返す。 */
+			settleControlRequests: () => {
+				for (const settle of pendingControlExits.splice(0)) {
+					settle();
+				}
+			},
+		};
 	}
 
 	test('rides the tunnel already open instead of dialling once per pane', async () => {
@@ -263,5 +307,145 @@ suite('ParadisRemoteAgentTunnel', () => {
 			tunnels.dispose();
 			await fs.rm(dir, { recursive: true, force: true });
 		}
+	});
+
+	test('keeps the tunnel up until the last window that asked for it lets go', async () => {
+		// 同じホストへ2枚開いているとき、1枚閉じただけで畳むと残った側の hook が黙って死ぬ
+		const ssh = fakeSsh();
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn);
+
+		const first = tunnels.ensure('ssh-remote+paradis-pc', 47286, 'window:1');
+		const second = tunnels.ensure('ssh-remote+paradis-pc', 47286, 'window:2');
+		ssh.emitAllocatedPort(51234);
+		await Promise.all([first, second]);
+
+		tunnels.close('ssh-remote+paradis-pc', 'window:1');
+		const afterFirst = { killed: ssh.killed, authorities: [...tunnels.authorities] };
+		tunnels.close('ssh-remote+paradis-pc', 'window:2');
+
+		assert.deepStrictEqual(
+			{ afterFirst, afterLast: { killed: ssh.killed, authorities: [...tunnels.authorities] }, spawnCount: ssh.calls.length },
+			{
+				afterFirst: { killed: 0, authorities: ['ssh-remote+paradis-pc'] },
+				afterLast: { killed: 1, authorities: [] },
+				spawnCount: 1,
+			}
+		);
+		tunnels.dispose();
+	});
+
+	test('re-opens the Codex socket forwards after the ssh master is replaced', async () => {
+		// 新しいマスターは旧マスターの `-L` を何も引き継いでいない。希望一覧の差分を基準にすると
+		// 「前回と同じ希望」で差分ゼロになり、誰も張り直さないままペインが黙って死ぬ
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		const ssh = fakeSshWithControl();
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
+		try {
+			const a = join(dir, 'a.sock');
+			tunnels.ensure('ssh-remote+paradis-pc', 47286, 'window:1');
+			ssh.allocatePort(51234);
+			tunnels.syncSocketForwards('window:1', 'ssh-remote+paradis-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
+			await new Promise<void>(resolve => queueMicrotask(resolve));
+			const beforeReconnect = ssh.calls.filter(args => args.includes('forward')).length;
+
+			ssh.closeMaster();
+			clock.tick(5000); // 張り直しまでの待ち時間
+			ssh.allocatePort(51235);
+			await new Promise<void>(resolve => queueMicrotask(resolve));
+
+			assert.deepStrictEqual({
+				beforeReconnect,
+				afterReconnect: ssh.calls.filter(args => args.includes('forward')).map(args => args[args.indexOf('-L') + 1]),
+				masters: ssh.calls.filter(args => args.includes('-M')).length,
+			}, {
+				beforeReconnect: 1,
+				afterReconnect: [`${a}:/home/u/.para-code/pcx/a.sock`, `${a}:/home/u/.para-code/pcx/a.sock`],
+				masters: 2,
+			});
+		} finally {
+			tunnels.dispose();
+			clock.restore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('cancels a forward whose reply lands after the pane that wanted it went away', async () => {
+		// 返事待ちの転送は「張れている一覧」にまだ載っていないため、取り下げループから漏れる
+		const ssh = fakeSshWithControl({ deferForwardExit: true });
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
+		try {
+			const a = join(dir, 'a.sock');
+			tunnels.ensure('ssh-remote+paradis-pc', 47286, 'window:1');
+			tunnels.syncSocketForwards('window:1', 'ssh-remote+paradis-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
+			tunnels.syncSocketForwards('window:1', 'ssh-remote+paradis-pc', new Map());
+			ssh.settleControlRequests();
+
+			assert.deepStrictEqual(
+				ssh.calls.filter(args => args.includes('cancel')).map(args => args[args.indexOf('-L') + 1]),
+				[`${a}:/home/u/.para-code/pcx/a.sock`],
+			);
+		} finally {
+			// 溜めたままの `-O` は打ち切り待ちのタイマーを抱えている。返事を返して片付ける
+			ssh.settleControlRequests();
+			tunnels.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('lets go of everything a destroyed window owned without waiting for its goodbye', async () => {
+		// 取り下げの知らせはウィンドウの dispose から投げっぱなしなので、クラッシュでは届かない。
+		// 残ったままだと、次に同じホストへ繋いだ別のウィンドウが死んだペインのソケットまで張り直す
+		const ssh = fakeSshWithControl();
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
+		try {
+			const a = join(dir, 'a.sock');
+			tunnels.ensure('ssh-remote+paradis-pc', 47286, 'window:1');
+			ssh.allocatePort(51234);
+			tunnels.syncSocketForwards('window:1', 'ssh-remote+paradis-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
+			await new Promise<void>(resolve => queueMicrotask(resolve));
+
+			tunnels.releaseWindow('window:1');
+			tunnels.ensure('ssh-remote+paradis-pc', 47286, 'window:2');
+			ssh.allocatePort(51235);
+			await new Promise<void>(resolve => queueMicrotask(resolve));
+
+			assert.deepStrictEqual({
+				cancelled: ssh.calls.filter(args => args.includes('cancel')).map(args => args[args.indexOf('-L') + 1]),
+				forwards: ssh.calls.filter(args => args.includes('forward')).length,
+				authorities: [...tunnels.authorities],
+			}, {
+				cancelled: [`${a}:/home/u/.para-code/pcx/a.sock`],
+				// 死んだウィンドウの希望は消えているので、新しいウィンドウの接続では張り直されない
+				forwards: 1,
+				authorities: ['ssh-remote+paradis-pc'],
+			});
+		} finally {
+			tunnels.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('paradisShellQuote', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('wraps values so the login shell on the host treats them as one word', () => {
+		// ssh はホスト名より後ろの引数を空白で繋いで送り、接続先の sshd がログインシェルへ渡す。
+		// argv へ分けても単語分割は防げないので、ここでクォートしないとスペース入りのホームで壊れる
+		assert.deepStrictEqual(
+			[
+				paradisShellQuote('/Users/john doe/.para-code/notify-v1.sh'),
+				paradisShellQuote(`/tmp/it's here/x`),
+				paradisShellQuote('/tmp/$(touch pwned);rm -rf ~'),
+			],
+			[
+				`'/Users/john doe/.para-code/notify-v1.sh'`,
+				`'/tmp/it'\\''s here/x'`,
+				`'/tmp/$(touch pwned);rm -rf ~'`,
+			]
+		);
 	});
 });

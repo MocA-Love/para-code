@@ -45,7 +45,7 @@ import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
-import { ParadisRemoteTranscriptMirrorStore, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
+import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
@@ -2311,13 +2311,21 @@ class TranscriptTailer {
 		readonly agent: ParadisAgentKind,
 		private readonly delegate: ITailerDelegate,
 		private readonly logService: ILogService,
+		/**
+		 * このセッションが SSH の接続先で動いているか（読んでいるのは接続先 transcript の写し）。
+		 * 手元の設定ファイルは向こうのエージェントとは無関係なので、既定値の補完をやめる。
+		 */
+		remote: boolean = false,
 	) {
 		this.ready = this.enqueue(() => this.initialLoad());
 		this.startWatching();
 		this.pollTimer = setInterval(() => this.enqueue(() => this.readAppended()), POLL_INTERVAL_MS);
-		if (agent === 'claude') {
+		if (agent === 'claude' && !remote) {
 			// Claude の transcript は effort を直接記録しない。既定値を settings.json から
 			// 補完する（セッション内の /effort 変更は transcript の実行記録が上書きする）。
+			// 接続先のセッションでは補完しない: 手元の settings.json を読んで配ると、向こうで
+			// /effort を打っていないセッションに **PC本体の設定値** が現在値として出てしまう。
+			// 分からないものは分からないままにする。
 			this.loadClaudeDefaultEffort().catch(() => { /* settings.json 無し・壊れは無視 */ });
 		}
 	}
@@ -3111,6 +3119,16 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly tokenToCwd = new Map<string, string>();
 	/** ペイントークン → workspace状態キー（通知タップ先の一意化用）。 */
 	private readonly tokenToWorkspace = new Map<string, string>();
+	/**
+	 * ペイントークン → そのペインのエージェントが動いている接続先の印と、最後に届いた時刻
+	 * （SSH 接続先の hook だけが名乗る）。
+	 *
+	 * 手元にあるのは接続先 transcript の写しだけで、設定ファイルもセッション置き場も向こうの
+	 * ディスクにある。この印が付いているペインでは、cwd からの探索も手元の設定の読み出しも
+	 * **やらない**（同じ絶対パスが両側に存在すると、手元のセッションや設定を接続先のものとして
+	 * 見せてしまう。誤ったものを出すくらいなら出さない）。
+	 */
+	private readonly tokenToRemoteHost = new Map<string, { readonly host: string; readonly at: number }>();
 	/** ペイントークン → 稼働中の tailer (購読者がいる間のみ)。 */
 	private readonly tailers = new Map<string, TranscriptTailer>();
 	/** ペイントークン → 購読中モバイルIDとattach時のexact owner。Renderer交代後は
@@ -3504,6 +3522,16 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.activityTrackers.delete(token);
 				this.clearClaudeSubagentTranscripts(token);
 				this.activeTurnTokens.delete(token);
+			}
+		}
+		// 接続先の印は、ウィンドウのリロードでtokenが一瞬liveでなくなる隙間では捨てない
+		// （捨てると復活したペインが「手元のもの」に戻り、次のhookが来るまでの間だけ手元の
+		// セッションや設定を探しに行ってしまう）。セッションが確定していれば退避に載るのでそれを
+		// 根拠にできるが、hookは来たがtranscriptがまだ無いペインはどこにも載らないため、
+		// 直近に印が届いていたものも残す。
+		for (const [token, remote] of [...this.tokenToRemoteHost]) {
+			if (!liveTokens.has(token) && !this.retiredSessions.has(token) && now - remote.at > PENDING_HOOK_TTL_MS) {
+				this.tokenToRemoteHost.delete(token);
 			}
 		}
 		// 常駐スキャンは世代の記録だけを残すことがある（セッションもタイマーも持たないので、
@@ -3914,7 +3942,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		try {
 			return (await this.codexLiveClient.readThreadMessages(activityId, ownerThreadId)).map(ParadisMobileAgentChat.codexDetailMessage);
 		} catch {
-			const transcriptPath = await discoverCodexTranscriptByThreadId(activityId, this.agentHomesForToken(token));
+			// 接続先のペインはホームが引けない（手元を探しに行かせない）。写しの無い SubAgent の
+			// 本文は取りようがないので、そのまま「取得できませんでした」を返す
+			const homes = this.agentHomesForToken(token);
+			const transcriptPath = homes === undefined ? undefined : await discoverCodexTranscriptByThreadId(activityId, homes);
 			if (transcriptPath === undefined || !(await isAllowedTranscriptPath(transcriptPath))) { throw new Error('Codex SubAgent transcript not found'); }
 			const stat = await fs.stat(transcriptPath);
 			const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
@@ -5175,7 +5206,10 @@ export class ParadisMobileAgentChat extends Disposable {
 				});
 			}
 		} else if (session.sessionId !== undefined) {
-			const files = await discoverCodexPersistedSubagentFiles(session.sessionId, this.agentHomesForToken(token));
+			// homes が引けないのは接続先のペイン。SubAgent の記録は向こうのディスクにあるので、
+			// 手元の ~/.codex を探しに行かせない（同じ綴りの別マシンの記録を並べてしまう）
+			const homes = this.agentHomesForToken(token);
+			const files = homes === undefined ? [] : await discoverCodexPersistedSubagentFiles(session.sessionId, homes);
 			for (const file of files) {
 				const parsed = paradisParseCodexPersistedActivity(file.id, file.source, await readPersistedTranscriptLines(file.path), file.mtime, now);
 				if (parsed === undefined) { continue; }
@@ -5204,7 +5238,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private async enrichCodexActivityRelationship(token: string, activityId: string, at: number): Promise<void> {
-		const source = await discoverCodexThreadSourceById(activityId, this.agentHomesForToken(token));
+		// homes が引けないのは接続先のペイン。親子関係は向こうのディスクを読まないと分からないので、
+		// 手元の ~/.codex から拾った同名 thread を親として付けてしまわないよう、ここで止める
+		const homes = this.agentHomesForToken(token);
+		if (homes === undefined) { return; }
+		const source = await discoverCodexThreadSourceById(activityId, homes);
 		if (source === undefined || !this.isLiveToken(token)) { return; }
 		const rootThreadId = this.paneSessions.get(token)?.sessionId;
 		const parentId = source.parentThreadId === rootThreadId ? undefined : source.parentThreadId;
@@ -5265,6 +5303,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (this.isLiveToken(event.token)) {
 			this.rememberAgentEvidence(event.token);
 		}
+		// 印が付いていれば、このペインのエージェントは接続先で動いている。transcript の有無に
+		// 関わらず覚えておく（手元のディスクを探しに行かせないための唯一の根拠になる）。
+		if (event.remoteHostId !== undefined) {
+			this.tokenToRemoteHost.set(event.token, { host: event.remoteHostId, at: Date.now() });
+		}
 		if (event.transcriptPath === undefined || event.transcriptPath.length === 0) {
 			// agent種別を確定できないため、transcript_path無しのhookだけではcwd探索しない。
 			// CLI検知経路がagent種別付きで鮮度検証済み探索を行う。
@@ -5273,8 +5316,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		// SSH 接続先の hook が名乗るのは接続先のパスで、ここからは開けない。写し先のパスへ
 		// 読み替えて、以降はローカルの transcript と全く同じ経路に乗せる。写しがまだ無くても
 		// tailer はファイルの出現を待てるので、ここで足踏みする必要はない。
-		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token) ?? event.transcriptPath;
+		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token, event.remoteHostId) ?? event.transcriptPath;
 		this.enqueueHookEvent(event, transcriptPath, false);
+	}
+
+	/**
+	 * そのペインのエージェントが SSH の接続先で動いているか。
+	 *
+	 * 根拠は hook に付いてきた接続先の印。shared process が上がり直した直後は印が無いので、
+	 * ディスクから復元したセッションについては transcript が写し置き場の中にあるかも見る
+	 * （写しを作るのは私たちだけなので、置き場の中にあること自体が接続先のものである証拠）。
+	 */
+	private isRemoteAgentPane(token: string): boolean {
+		return this.tokenToRemoteHost.has(token)
+			|| paradisIsRemoteAgentTranscriptMirrorPath(this.paneSessions.get(token)?.transcriptPath)
+			|| paradisIsRemoteAgentTranscriptMirrorPath(this.retiredSessions.get(token)?.session.transcriptPath);
 	}
 
 	/**
@@ -5302,6 +5358,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * Agent tree & Tasks へ投影する。ペインの親セッション・tailer・ライブ状態は触らない。
 	 */
 	private onNestedHookEvent(event: IParadisAgentNestedHookEvent): void {
+		// 印は親のhookと同じように覚える。子のhookが先に届くことがあり（shared process の
+		// 再起動直後など）、そこで取りこぼすと親の初回hookが来るまで手元のペイン扱いのままになる。
+		if (event.remoteHostId !== undefined) {
+			this.tokenToRemoteHost.set(event.token, { host: event.remoteHostId, at: Date.now() });
+		}
 		if (!this.isLiveToken(event.token)) {
 			return;
 		}
@@ -5319,8 +5380,15 @@ export class ParadisMobileAgentChat extends Disposable {
 	/**
 	 * そのターミナルで動くエージェントCLIのホーム。作業ディレクトリが分からないうちは
 	 * 従来どおりこのプロセスのホームを指す。
+	 *
+	 * 接続先で動いているペインでは undefined を返す。向こうのホームは手元から開けず、代わりに
+	 * 手元のホームを返すと、同じ綴りの別マシンの記録を「このペインのもの」として見せてしまう
+	 * （SubAgent の一覧・詳細は、間違ったものを出すくらいなら出ない方がよい）。
 	 */
-	private agentHomesForToken(token: string): IParadisAgentHomes {
+	private agentHomesForToken(token: string): IParadisAgentHomes | undefined {
+		if (this.isRemoteAgentPane(token)) {
+			return undefined;
+		}
 		return paradisResolveAgentHomes(this.tokenToCwd.get(token) ?? '');
 	}
 
@@ -5351,6 +5419,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tokensByCwd = new Map<string, { readonly token: string; readonly cwd: string }[]>();
 		for (const [token, cwd] of this.tokenToCwd) {
 			if (!this.isLiveToken(token) || this.paneSessions.has(token)) {
+				continue;
+			}
+			// 接続先で動いているペインの作業フォルダは向こうの綴り。手元に同じ綴りがあると
+			// （同名ユーザーの Linux 同士など）手元のセッションを掴んでしまうので探索しない。
+			// このペインは hook（＝接続先からの唯一の経路）でしか確定させない。
+			if (this.isRemoteAgentPane(token)) {
 				continue;
 			}
 			const key = paradisCwdGroupKey(cwd);
@@ -5417,6 +5491,12 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
 	private async discoverAndNotify(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string, minMtime: number | undefined, generation: number, requestedSessionId?: string, additionalExcludedPaths?: ReadonlySet<string>, allowCodexDirectoryWalk: boolean = true, onCodexDirectoryWalk?: () => void): Promise<void> {
+		// 探索先はどれも手元のディスク（~/.claude/projects と ~/.codex/sessions）。接続先で
+		// 動いているペインに当てると、たまたま同じ綴りの手元のセッションを結び付けてしまう。
+		// shell integration 由来の cwd も向こうの綴りなので、ここが最後の関所になる。
+		if (this.isRemoteAgentPane(token)) {
+			return;
+		}
 		const previous = this.paneSessions.get(token);
 		if (requestedSessionId !== undefined && previous?.sessionId === requestedSessionId) {
 			return;
@@ -5869,7 +5949,10 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.clearLiveState(token);
 				fireParadisAgentTurnEnded(token);
 			},
-		}, this.logService);
+			// 接続先かどうかは、これから読むファイルそのものでも見る。`isRemoteAgentPane` は
+			// 「今このペインに載っているセッション」を見るが、ここへは差し替え中の新しい
+			// セッションが渡ってくることがあり、その一瞬だけ判定が食い違う
+		}, this.logService, this.isRemoteAgentPane(token) || paradisIsRemoteAgentTranscriptMirrorPath(session.transcriptPath));
 		this.tailers.set(token, tailer);
 		tailer.ready.then(() => {
 			if (this.tailers.get(token) === tailer) { this.schedulePersistedAgentActivityReconcile(token, 0); }

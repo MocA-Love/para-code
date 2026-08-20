@@ -17,7 +17,7 @@
 
 import type * as http from 'http';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
-import { Emitter } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -30,7 +30,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
-import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS } from '../common/paradisAgentHooks.js';
+import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
@@ -580,8 +580,20 @@ export class ParadisAgentBrowserService extends Disposable {
 			logService,
 		));
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService));
-		// 制御ソケット（Codex ソケットの引き込みに使う）は、ペイン用ソケットと同じ場所へ置く
-		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, join(this._userDataPath, 'pcx')));
+		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
+		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
+		const cachedShellEnv = new ParadisCachedShellEnv(
+			logService,
+			'ParadisAgentHooks',
+			createParadisShellEnvResolver(logService, configurationService, args),
+			Date.now,
+			reportParadisShellEnvDiagnosticError,
+		);
+		// 制御ソケット（Codex ソケットの引き込みに使う）は、ペイン用ソケットと同じ場所へ置く。
+		// ssh はログインシェル由来の環境で起こす: `SSH_AUTH_SOCK` を rc で設定する鍵エージェント
+		// 構成（1Password / gpg-agent 等）だと、shared process が継いだ環境のままでは公開鍵認証が
+		// 黙って失敗し、拡張機能側の接続だけ成功して戻り経路が張れない状態になる
+		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, join(this._userDataPath, 'pcx'), () => cachedShellEnv.getEnv()));
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
 		// Renderer IPC切断はreloadでも発生するため、退役根拠にはしない。実windowの生存権威は
 		// Electron Mainのmanifestであり、reload gap中はpending entryが残り、destroy時だけ消える。
@@ -599,15 +611,6 @@ export class ParadisAgentBrowserService extends Disposable {
 			reportParadisDiagnosticError('owned', 'agent-browser', 'start-mcp-server', error, { phase: 'startup' });
 			this._runNonThrowingDiagnostic(() => this.logService.error('[ParadisAgentBrowser] Failed to start MCP server', error));
 		});
-		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
-		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
-		const cachedShellEnv = new ParadisCachedShellEnv(
-			logService,
-			'ParadisAgentHooks',
-			createParadisShellEnvResolver(logService, configurationService, args),
-			Date.now,
-			reportParadisShellEnvDiagnosticError,
-		);
 		this._mcpSetupController = createParadisMcpSetupController(
 			() => cachedShellEnv.getEnv(),
 			paradisCodexHome(),
@@ -979,6 +982,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._knownRendererContexts.delete(windowCtx);
 			const preservedTokens = this._processOwnerRelease(this._bindingAuthority.destroyWindow(windowCtx));
 			this._cleanupRemainingWindowState(windowCtx, preservedTokens);
+			// 戻りトンネルとソケット転送の所有者からも外す。ウィンドウ側の取り下げは投げっぱなしで
+			// クラッシュ時には届かないので、window の生死を知っている唯一の権威であるここで必ず外す
+			// （reload でも起きる IPC 切断を根拠にすると、リロードのたびにトンネルが落ちて番号が変わる）
+			this._runNonThrowingCleanup('remote-agent-tunnel', () => this._releaseRemoteAgentTunnelsForWindow(windowCtx));
 		}
 	}
 
@@ -1583,32 +1590,72 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * @returns 接続先で実際に割り当てられた番号。失敗しても投げない:
 	 * 張れない状態は「接続先の hook が届かない」だけで、手元の動きには何も影響しない。
 	 */
-	async ensureRemoteAgentTunnel(remoteAuthority: string): Promise<number | undefined> {
+	async ensureRemoteAgentTunnel(remoteAuthority: string, windowCtx?: string): Promise<number | undefined> {
 		if (typeof remoteAuthority !== 'string' || remoteAuthority.length === 0) {
 			return undefined;
 		}
 		try {
 			const { port } = await this.getGatewayEndpoint();
-			return await this._remoteTunnels.ensure(remoteAuthority, port);
+			return await this._remoteTunnels.ensure(remoteAuthority, port, windowCtx);
 		} catch (error) {
 			this.logService.trace('[ParadisAgentBrowser] could not set up the return tunnel', error);
 			return undefined;
 		}
 	}
 
-	/** 接続が切れたら畳む。張っていなければ何もしない。 */
-	async closeRemoteAgentTunnel(remoteAuthority: string): Promise<void> {
+	/**
+	 * 接続が切れたら畳む。張っていなければ何もしない。
+	 *
+	 * 同じ接続先へは複数のウィンドウが繋げるので、**畳むのは最後の1枚が閉じたときだけ**
+	 * （2枚開いていて片方を閉じただけで、残った側の hook まで止まらないように）。
+	 */
+	async closeRemoteAgentTunnel(remoteAuthority: string, windowCtx?: string): Promise<void> {
 		if (typeof remoteAuthority === 'string' && remoteAuthority.length > 0) {
-			this._remoteTunnels.close(remoteAuthority);
+			this._remoteTunnels.close(remoteAuthority, windowCtx);
 		}
+	}
+
+	/**
+	 * 接続先で割り当てられた戻りトンネルの番号が変わったことを知らせる。
+	 *
+	 * 番号は張り直しのたびに変わる。接続先のポートファイルを書き換える側が定期の見直しで
+	 * 気付くのを待っていると、その間の通知（承認待ち・完了）が届く先を失って丸ごと消える。
+	 *
+	 * 絞り込みは `Event.filter`/`Event.map` を使わず購読側で行う。あれは合成のたびに Emitter を
+	 * 1つ作るので、購読が張り直されるたび（＝ウィンドウの reload ごと）に捨て場の無い Emitter が
+	 * 積み上がる。ここは中継を挟まず、渡された購読をそのまま元のイベントへ繋ぐ。
+	 */
+	onDidChangeRemoteAgentTunnelPort(remoteAuthority: string): Event<number | undefined> {
+		return (listener, thisArgs, disposables) => this._remoteTunnels.onDidChangePort(change => {
+			if (change.remoteAuthority === remoteAuthority) {
+				listener.call(thisArgs, change.port);
+			}
+		}, undefined, disposables);
+	}
+
+	/**
+	 * ウィンドウが destroy されたら、そのウィンドウ名義の戻りトンネルと Codex ソケットの転送を手放す。
+	 *
+	 * ウィンドウ側からの取り下げは dispose 時の投げっぱなしなので、クラッシュや終了中の切断では
+	 * 届かない。届かないまま所有者として残ると、トンネルは誰も使っていないのに畳まれず、次に同じ
+	 * 接続先へ別のウィンドウが繋いだ瞬間に死んだウィンドウのソケットまで張り直される。
+	 */
+	private _releaseRemoteAgentTunnelsForWindow(windowCtx: string): void {
+		this._remoteTunnels.releaseWindow(windowCtx);
 	}
 
 	/**
 	 * 接続先へ置く notify スクリプトの本文。手元に置くものと同じで、生成はここに一本化してある
 	 * （renderer 側で作り直すと、手元と接続先で中身がずれる）。
+	 *
+	 * @param remoteAuthority 接続先を渡すと「接続先から届いた hook」の印を焼き込む。手元へ置く
+	 * ぶんは渡さない（印の有無がそのまま、届いた hook をどちらのディスクのものと見るかになる）。
 	 */
-	async getNotifyScriptContent(fixedPortFilePath?: string): Promise<string> {
-		return paradisGetNotifyScriptContent(typeof fixedPortFilePath === 'string' && fixedPortFilePath.startsWith('/') ? fixedPortFilePath : undefined);
+	async getNotifyScriptContent(fixedPortFilePath?: string, remoteAuthority?: string): Promise<string> {
+		return paradisGetNotifyScriptContent(
+			typeof fixedPortFilePath === 'string' && fixedPortFilePath.startsWith('/') ? fixedPortFilePath : undefined,
+			paradisAgentHookRemoteHostId(typeof remoteAuthority === 'string' && remoteAuthority.length > 0 ? remoteAuthority : undefined),
+		);
 	}
 
 	/**
@@ -2084,6 +2131,11 @@ export class ParadisAgentBrowserService extends Disposable {
 
 		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 		const eventType = url.searchParams.get('event') ?? '';
+		// SSH の接続先へ置いた notify スクリプトだけが名乗る印。これが付いていれば、載っている
+		// transcript_path は接続先のディスクのもので、手元では開けない（同じ綴りが手元にあっても別物）。
+		// 印の無い hook は従来どおり手元のものとして扱う（旧版のスクリプトが残っていても壊さない）。
+		const remoteHostParam = url.searchParams.get(PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM);
+		const remoteHostId = paradisIsAgentHookRemoteHostId(remoteHostParam) ? remoteHostParam : undefined;
 		if (eventType.length > MAX_HOOK_EVENT_LENGTH) {
 			res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 			res.end(JSON.stringify({ error: 'Agent hook rejected.' }));
@@ -2151,7 +2203,13 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._hookOwnership.clear(token);
 			} else if (eventType) {
 				const pidParam = url.searchParams.get('pid');
-				const hookPid = pidParam !== null && /^\d{1,10}$/.test(pidParam) ? Number.parseInt(pidParam, 10) : undefined;
+				const parsedPid = pidParam !== null && /^\d{1,10}$/.test(pidParam) ? Number.parseInt(pidParam, 10) : undefined;
+				// 接続先から届いた hook の pid は**向こうの機械の番号**。所有権の分類が辿るのは
+				// 手元のプロセス表なので、そのまま渡すと無関係な手元のプロセスに当たりうる。
+				// 番号が偶然ぶつかると、そのプロセスが所有者として焼かれ、以後この接続先の hook が
+				// 丸ごと 'invalid' で無言に落ち続ける（接続先の会話が一切出ない状態に戻る）。
+				// 素性の分からない発信元として、pid を使わない fail-closed 側の判定へ倒す。
+				const hookPid = remoteHostId !== undefined ? undefined : parsedPid;
 				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now() });
 				if (controller.signal.aborted) {
 					return;
@@ -2170,7 +2228,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					fireParadisAgentNestedHookEvent({
 						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
 						toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
-						at: Date.now(), nestedAgent: hookOrigin.agentKind,
+						remoteHostId, at: Date.now(), nestedAgent: hookOrigin.agentKind,
 					});
 					this._runNonThrowingDiagnostic(() => this.logService.trace(`[ParadisAgentBrowser] agent-hook (nested ${hookOrigin.agentKind ?? 'unknown'}): ${eventType}`));
 					res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2186,7 +2244,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				fireParadisAgentHookEvent({
 					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
-					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload, at: Date.now(),
+					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
+					remoteHostId, at: Date.now(),
 				});
 			}
 			if (!this.isIngressLeaseCurrent(ingressLease)) {

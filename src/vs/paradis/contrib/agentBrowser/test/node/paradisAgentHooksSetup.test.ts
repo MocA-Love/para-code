@@ -88,6 +88,23 @@ suite('ParadisAgentHooksSetup', () => {
 		);
 	});
 
+	test('marks the hooks it installs on an SSH host as coming from that host', () => {
+		// 受け手はこの印だけで「手元では開けない記録」と判断する。綴りで見分けると、
+		// 接続先とユーザー名が同じ機械では手元のホーム配下と区別が付かない
+		const remote = paradisGetNotifyScriptContent('/home/example/.para-code/paradis-browser-mcp.json', 'ssh-remote-server');
+		const local = paradisGetNotifyScriptContent();
+
+		assert.deepStrictEqual(
+			{
+				remoteNamesItsHost: remote.includes('&host=ssh-remote-server"'),
+				localNamesNoHost: !local.includes('&host='),
+				// 印を付けずに置いた接続先版は、これまでどおり印無しで届く（旧版が残っていても壊れない）
+				unmarkedRemoteNamesNoHost: !paradisGetNotifyScriptContent('/home/example/.para-code/paradis-browser-mcp.json').includes('&host='),
+			},
+			{ remoteNamesItsHost: true, localNamesNoHost: true, unmarkedRemoteNamesNoHost: true }
+		);
+	});
+
 	test('migrates older-schema managed hooks to the current schema without removing user hooks', () => {
 		const schema1Command = '[ -x "$HOME/.para-code/hooks/notify-v1.sh" ] && "$HOME/.para-code/hooks/notify-v1.sh" || true';
 		const userHook = { type: 'command', command: '/tmp/user-hook.sh' };

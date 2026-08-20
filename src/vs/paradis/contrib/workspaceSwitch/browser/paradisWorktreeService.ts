@@ -12,13 +12,25 @@ import { Disposable, DisposableMap, DisposableStore } from '../../../../base/com
 import { basename, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisResolveExternalPath, paradisWorktreePathFromGitdir } from '../../../common/paradisPathUri.js';
 import { paradisIsOrphanTerminalRevivalComplete } from './paradisTerminalEditorPark.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_PINNED_WORKTREES_STORAGE_KEY, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisSerializePinnedWorktreeKeys } from '../common/paradisWorkspaceTreeState.js';
+
+/**
+ * 1リポジトリ分のスキャン結果。
+ *
+ * `complete` が false のときは「worktree が無かった」ではなく「読めなかった」。接続先の
+ * ファイルシステムは接続断・再接続中・サーバー再起動で普通に失敗するので、この2つを
+ * 混同すると、つないでいないあいだに既知の worktree を「消えた」と判定して台帳から削ってしまう。
+ */
+interface IParadisWorktreeScan {
+	readonly worktrees: IParadisWorktree[];
+	readonly complete: boolean;
+}
 
 interface ISerializedKnownWorktree {
 	readonly repositoryId: string;
@@ -291,12 +303,17 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		const retiredStateKeys = new Set<string>();
 
 		for (const repository of repositories) {
-			const branch = await this.readRepositoryBranch(repository);
+			const scan = await this.scanWorktrees(repository);
+			const scanned = scan.worktrees;
+			// .git を読めなかった回は、ブランチ名も「無い」ではなく「分からない」。前回の値を
+			// 引き継がないと、接続が不安定なあいだブランチ表示だけが点滅する
+			const branch = await this.readRepositoryBranch(repository) ?? (scan.complete ? undefined : this._branches.get(repository.id));
 			if (branch !== undefined) {
 				branches.set(repository.id, branch);
 			}
-			const scanned = await this.scanWorktrees(repository);
-			detectedWorktrees.set(repository.id, scanned);
+			// 読めなかった回の欠けた一覧で上書きすると、名前解決 (paradisWorktreeStateKey の逆引き)
+			// まで一時的に外れる。前回の見え方を残す
+			detectedWorktrees.set(repository.id, scan.complete ? scanned : (this._detectedWorktrees.get(repository.id) ?? scanned));
 			const scannedPaths = new Set(scanned.map(worktree => worktree.uri.toString()));
 			const knownForRepository = this._known.filter(known => known.repositoryId === repository.id);
 			const list: IParadisWorktree[] = [];
@@ -317,6 +334,14 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			// OFF なら missing として残す (手動 removeKnownWorktree 可能)
 			for (const known of knownForRepository) {
 				if (!scannedPaths.has(known.path)) {
+					if (!scan.complete) {
+						// ディスクを読めていないので「消えた」とは言えない。missing にすると
+						// switchToWorktree も弾かれるため、前回どおり使える扱いで残す。
+						// ブランチ名も前回の値を引き継ぐ (読めない間だけ表示が消えるのを防ぐ)
+						const previous = this._worktrees.get(repository.id)?.find(worktree => worktree.uri.toString() === known.path);
+						list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), branch: previous?.branch });
+						continue;
+					}
 					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
 					const hasRetirementData = autoRemove ? await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey) : false;
 					if (canAutoRetire && paradisShouldAutoRetireMissingWorktree(autoRemove, hasRetirementData, this.workspaceSwitchService.activeStateKey === missingStateKey)) {
@@ -404,8 +429,37 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		}
 	}
 
-	private async scanWorktrees(repository: IParadisWorkspaceRepository): Promise<IParadisWorktree[]> {
+	/**
+	 * 「無い」と言い切れる失敗か。それ以外 (接続断・サーバー再起動など) は結果を信用しない。
+	 *
+	 * FILE_NOT_DIRECTORY も「無い」側に入れる。リポジトリとして登録したものが worktree だと
+	 * `.git` はディレクトリではなくファイルなので、`.git/worktrees` の解決はこちらで返る。
+	 * ここを取りこぼすと恒久的に「読めなかった」扱いになり、自動 prune が二度と効かなくなる。
+	 */
+	private static isMissingError(error: unknown): boolean {
+		if (!(error instanceof Error)) {
+			return false;
+		}
+		const result = toFileOperationResult(error);
+		return result === FileOperationResult.FILE_NOT_FOUND || result === FileOperationResult.FILE_NOT_DIRECTORY;
+	}
+
+	/**
+	 * 存在確認。判断できなかった場合は undefined を返す。
+	 * `fileService.exists` は理由を問わず false になるため、接続断が「消えた」に化ける。
+	 */
+	private async probeExists(uri: URI): Promise<boolean | undefined> {
+		try {
+			await this.fileService.stat(uri);
+			return true;
+		} catch (error) {
+			return ParadisWorktreeService.isMissingError(error) ? false : undefined;
+		}
+	}
+
+	private async scanWorktrees(repository: IParadisWorkspaceRepository): Promise<IParadisWorktreeScan> {
 		const result: IParadisWorktree[] = [];
+		let complete = true;
 		try {
 			const worktreesDir = joinPath(repository.uri, '.git', 'worktrees');
 			const stat = await this.fileService.resolve(worktreesDir);
@@ -426,7 +480,13 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						this.logService.warn(`[ParadisWorktreeService] Could not resolve a worktree path against ${child.resource.toString()}: ${gitdirContent.trim().slice(0, 200)}`);
 						continue;
 					}
-					if (!(await this.fileService.exists(uri))) {
+					const exists = await this.probeExists(uri);
+					if (exists === undefined) {
+						// 作業ツリーの在処を確かめられなかった。無いことにはできない
+						complete = false;
+						continue;
+					}
+					if (!exists) {
 						// prune 可能な残骸。git worktree prune 前は毎 refresh で通る正常な状態なので
 						// warn では騒がしすぎる。名前空間の取り違えを追うときだけ見られればよい
 						this.logService.trace(`[ParadisWorktreeService] Resolved worktree does not exist: ${uri.toString()}`);
@@ -442,14 +502,21 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 					}
 
 					result.push({ repositoryId: repository.id, name: basename(uri), branch, uri });
-				} catch {
-					// worktree 作成直後で gitdir 未書込み等はスキップ (upstream 同様)
+				} catch (error) {
+					// worktree 作成直後で gitdir 未書込み等はスキップ (upstream 同様)。
+					// 「無い」以外の理由で読めなかったなら、この回の結果は当てにしない
+					if (!ParadisWorktreeService.isMissingError(error)) {
+						complete = false;
+					}
 				}
 			}
-		} catch {
-			// .git/worktrees が存在しない (worktree なし)
+		} catch (error) {
+			// .git/worktrees が存在しない (worktree なし)。それ以外は読めなかっただけ
+			if (!ParadisWorktreeService.isMissingError(error)) {
+				complete = false;
+			}
 		}
-		return result;
+		return { worktrees: result, complete };
 	}
 
 	private loadKnown(): ISerializedKnownWorktree[] {

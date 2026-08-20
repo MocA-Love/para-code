@@ -287,6 +287,9 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 	 *
 	 * 接続先を選ぶと git は接続先で動く（REH に生やした同名チャネル経由）。手元を選ぶと
 	 * 従来どおり shared process で動く。
+	 *
+	 * 手元を選んだ場合、クローンはできるがこのウィンドウのスペース一覧には載らない
+	 * （一覧は繋がっている先のものだけを出す）。選ぶ前に分かるよう、その旨を書いておく。
 	 */
 	private async pickCloneLocation(quickInputService: IQuickInputService, remoteAuthority: string | undefined): Promise<boolean | undefined> {
 		if (!remoteAuthority) {
@@ -297,8 +300,13 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		const picked = await quickInputService.pick<LocationItem>([
 			// allow-any-unicode-next-line
 			{ label: localize('paradis.repositoryClone.toRemote', "接続先"), description: remoteLabel, toRemote: true },
-			// allow-any-unicode-next-line
-			{ label: localize('paradis.repositoryClone.toLocal', "このPC"), toRemote: false }
+			{
+				// allow-any-unicode-next-line
+				label: localize('paradis.repositoryClone.toLocal', "このPC"),
+				// allow-any-unicode-next-line
+				description: localize('paradis.repositoryClone.toLocalDescription', "クローンだけ行います（このウィンドウの一覧には追加されません）"),
+				toRemote: false
+			}
 		], {
 			// allow-any-unicode-next-line
 			title: localize('paradis.repositoryClone.locationTitle', "どこにクローンしますか"),
@@ -392,6 +400,17 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 				// allow-any-unicode-next-line
 				notificationService.error(localize('paradis.repositoryClone.failedNotification', "{0} のクローンに失敗しました: {1}", url, toErrorMessage(error)));
 			}
+			return;
+		}
+
+		// 接続中のウィンドウのスペース一覧には、繋がっている先のものしか載らない
+		// (paradisWorkspaceSwitchService の belongsToThisHost)。ここで addRepository を呼ぶと、
+		// その場では一覧に出るのに保存時に落とされ、次に開いたときへ引き継がれない。
+		// クローン自体は成功しているので、置いた場所だけ伝えて一覧には足さない
+		// （足すのは手元のウィンドウの仕事）。
+		if (!cloneToRemote && remoteAgentService.getConnection()) {
+			// allow-any-unicode-next-line
+			notificationService.info(localize('paradis.repositoryClone.doneLocalWhileRemote', "{0} をこのPCの {1} にクローンしました。このウィンドウは接続先のスペースだけを扱うため、一覧には追加していません。手元のウィンドウで「リポジトリを追加」から選んでください。", name, target.fsPath));
 			return;
 		}
 

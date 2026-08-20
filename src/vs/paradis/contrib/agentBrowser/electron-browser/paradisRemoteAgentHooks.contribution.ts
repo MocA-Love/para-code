@@ -9,6 +9,7 @@
 import { disposableWindowInterval } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -42,6 +43,8 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 	/** 接続先へ書き込んだゲートウェイの番号。変わったら書き直す目印。 */
 	private installedPort: number | undefined;
 	private isPolling = false;
+	/** 最初の導入（4段階の再試行）が決着したか。決着まで外からの知らせは受け取らない。 */
+	private hasSettledInitialInstall = false;
 
 	constructor(
 		private readonly install: () => Promise<number | undefined>,
@@ -49,8 +52,19 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 		private readonly delay: (delayMs: number) => Promise<void>,
 		private readonly interval: (callback: () => Promise<void>, intervalMs: number) => IDisposable,
 		private readonly logService: Pick<ILogService, 'info' | 'warn'>,
+		/**
+		 * 番号が変わったことを向こうから知らせてくる経路。
+		 *
+		 * 番号は戻りトンネルが張り直されるたびに変わる。定期の見直しだけに任せると、気付くまでの
+		 * 間、接続先の通知スクリプトは死んだ番号へ投げ続ける。再送は無いので、承認待ちや完了の
+		 * ような一度きりの知らせはそのまま消える。無くても見直しで追いつくので任意。
+		 */
+		onDidChangePort?: Event<number | undefined>,
 	) {
 		super();
+		if (onDidChangePort !== undefined) {
+			this._register(onDidChangePort(port => void this.onPortAnnounced(port)));
+		}
 		void this.installWithRetry();
 	}
 
@@ -73,13 +87,25 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 					return;
 				}
 				this.installedPort = installedPort;
-				this.watchForPortChanges();
+				this.startWatching();
 				return;
 			}
 		}
 		// 4段階とも張れなかった。ここで諦めきらず、後段のポーリングへ引き継ぐ。トンネル側は
 		// クールダウン明けに自分から追い直すので、いずれ番号が付けばここで拾える
 		this.logService.warn('[paradis] could not install the agent hooks after the initial retries; will keep checking');
+		this.startWatching();
+	}
+
+	/**
+	 * 最初の導入が決着したので、以後の見直しを受け付ける。
+	 *
+	 * ここより前は `installWithRetry` が唯一の導入者で、その待ち時間中に番号の知らせが来ても
+	 * 受け取らない（受け取ると `install()` が二重に走る）。知らせを取りこぼしても、`installWithRetry`
+	 * 自身が毎回その時点の番号を読みに行くので同じ結果に落ち着く。
+	 */
+	private startWatching(): void {
+		this.hasSettledInitialInstall = true;
 		this.watchForPortChanges();
 	}
 
@@ -91,23 +117,49 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 			}
 			this.isPolling = true;
 			try {
-				const port = await this.readEndpoint();
-				// port が undefined はまだ張れていないだけ。installedPort も undefined ならこれまでと
-				// 変わっていないので、install() を空振りさせない
-				if (this._store.isDisposed || port === undefined || port === this.installedPort) {
-					return;
-				}
-				this.logService.info(`[paradis] host port changed (${this.installedPort} -> ${port}); updating the host`);
-				const installedPort = await this.install();
-				if (!this._store.isDisposed && installedPort !== undefined) {
-					this.installedPort = installedPort;
-				}
+				await this.reinstallIfChanged(await this.readEndpoint());
 			} catch {
 				// 取れないときは次の周期で試す
 			} finally {
 				this.isPolling = false;
 			}
 		}, 30_000));
+	}
+
+	/** 向こうから番号の変化を知らされたとき。定期の見直しと同じ道を、同じく1本だけ通す。 */
+	private async onPortAnnounced(port: number | undefined): Promise<void> {
+		if (this._store.isDisposed || !this.hasSettledInitialInstall || this.isPolling) {
+			// 最初の導入の最中、または今まさに書き直している最中。取りこぼしても
+			// 導入側／直後の見直しが同じ番号を読み直すので拾える
+			return;
+		}
+		this.isPolling = true;
+		try {
+			await this.reinstallIfChanged(port);
+		} catch {
+			// 書けなかったときは次の周期で試す
+		} finally {
+			this.isPolling = false;
+		}
+	}
+
+	/**
+	 * 知らされた番号が今書いてあるものと違えば、hook 一式を書き直す。
+	 *
+	 * 呼び口は「向こうからの知らせ」と「定期の見直し」の2つ。どちらから来ても同じ判断をさせ、
+	 * 走るのは常に1本だけにする（古い導入が新しい番号を上書きしないため）。
+	 */
+	private async reinstallIfChanged(port: number | undefined): Promise<void> {
+		// port が undefined はまだ張れていないだけ。installedPort も undefined ならこれまでと
+		// 変わっていないので、install() を空振りさせない
+		if (this._store.isDisposed || port === undefined || port === this.installedPort) {
+			return;
+		}
+		this.logService.info(`[paradis] host port changed (${this.installedPort} -> ${port}); updating the host`);
+		const installedPort = await this.install();
+		if (!this._store.isDisposed && installedPort !== undefined) {
+			this.installedPort = installedPort;
+		}
 	}
 }
 
@@ -134,6 +186,12 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 	/** 接続先のホームが取れない旨のログを、30秒ごとの見直しで出し続けないための目印。 */
 	private hasWarnedAboutUnresolvedHome = false;
+
+	/** 直前にこのウィンドウがポートファイルへ書いた番号。他人の番号を上書きしたか見分けるのに使う。 */
+	private lastWrittenPort: number | undefined;
+
+	/** 上書きの警告を、30秒ごとの見直しで出し続けないための目印。 */
+	private hasWarnedAboutForeignPortFile = false;
 
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
@@ -174,6 +232,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 				delayMs => new Promise(resolve => setTimeout(resolve, delayMs)),
 				(callback, intervalMs) => disposableWindowInterval(mainWindow, callback, intervalMs),
 				this.logService,
+				channel.listen<number | undefined>('remoteAgentTunnelPort', [this.environmentService.remoteAuthority]),
 			));
 		}
 	}
@@ -209,7 +268,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			// 場所をスクリプトへ焼き込んでもらう
 			const portFile = joinPath(home, '.para-code', 'paradis-browser-mcp.json');
 			const [script, remotePort] = await Promise.all([
-				channel.call<string>('getNotifyScriptContent', [portFile.path]),
+				// 接続先を渡すと、置くスクリプトに「接続先から届いた hook」の印が焼き込まれる。
+				// 受け手はこの印だけで会話の記録がどちらのディスクにあるかを決める
+				channel.call<string>('getNotifyScriptContent', [portFile.path, this.environmentService.remoteAuthority]),
 				channel.call<number | undefined>('ensureRemoteAgentTunnel', [this.environmentService.remoteAuthority]),
 			]);
 			if (remotePort === undefined) {
@@ -225,7 +286,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 			// 戻りトンネルが接続先で実際に受け取った番号を書いておく。固定番号ではないので、
 			// 同じホストへ他ユーザーが同時に SSH していても衝突しない
+			await this.warnIfPortFileBelongsToAnotherSource(portFile, remotePort);
 			await this.fileService.writeFile(portFile, VSBuffer.fromString(JSON.stringify({ protocolVersion: 1, port: remotePort })));
+			this.lastWrittenPort = remotePort;
 
 			await this.installCodexLauncher(home, channel);
 
@@ -240,6 +303,37 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			// 置けなくても接続そのものは使える。実行状態が出ないだけ
 			this.logService.warn('[paradis] could not install the agent hooks on the host (will retry)', error);
 			return undefined;
+		}
+	}
+
+	/**
+	 * 接続先のポートファイルが、別の接続元のものらしければ警告する。
+	 *
+	 * このファイルは接続先のホーム直下の決め打ちの場所で、接続元を区別しない。同じ接続先へ
+	 * 2台のPCから繋ぐと後から書いた側が勝ち、先客の通知はこちらのゲートウェイへ飛んでくる
+	 * （トークンを知らないので捨てられ、先客側では実行状態が黙って止まる）。
+	 *
+	 * 分けるには接続先で動く通知スクリプト側にも「自分はどの接続元のものか」を選ばせる必要があり、
+	 * ここだけでは直せない。せめて起きていることが分かるようにログへ残す。
+	 */
+	private async warnIfPortFileBelongsToAnotherSource(portFile: URI, port: number): Promise<void> {
+		if (this.hasWarnedAboutForeignPortFile) {
+			return;
+		}
+		try {
+			if (!await this.fileService.exists(portFile)) {
+				return;
+			}
+			const content = await this.fileService.readFile(portFile);
+			const existingPort: unknown = JSON.parse(content.value.toString())?.port;
+			// 自分が前に書いた番号ならこれまでどおり。どちらでもない番号は他の接続元のもの
+			if (typeof existingPort !== 'number' || existingPort === port || existingPort === this.lastWrittenPort) {
+				return;
+			}
+			this.hasWarnedAboutForeignPortFile = true;
+			this.logService.warn(`[paradis] the host already points its agent hooks at port ${existingPort}; another Para Code may be connected to this host and will stop receiving them`);
+		} catch {
+			// 読めない・壊れている場合は判定しない。そのまま書き直す
 		}
 	}
 

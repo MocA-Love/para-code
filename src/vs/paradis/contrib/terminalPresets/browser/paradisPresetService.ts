@@ -19,6 +19,7 @@ import { parse as parseJsonc } from '../../../../base/common/jsonc.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, joinPath } from '../../../../base/common/resources.js';
 import { isAbsolute } from '../../../../base/common/path.js';
+import { isWindows, OperatingSystem } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -197,13 +198,24 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			});
 	}
 
+	/**
+	 * `appliesTo` の 1 エントリがこのフォルダを指しているか。
+	 *
+	 * 絶対パス指定は `uri.path`（POSIX 表記）でも受ける。SSH で繋いだフォルダは
+	 * `vscode-remote://ssh-remote+host/home/u/repo` なので、`fsPath` だけで比べると
+	 * Windows クライアントでは `\home\u\repo` になり、ユーザーが書いた `/home/u/repo` と
+	 * 一致しない。ローカルの Windows パス指定も引き続き通るよう、両方を許容する。
+	 */
+	private _appliesToFolder(entry: string, folderUri: URI): boolean {
+		return entry === basename(folderUri) || entry === folderUri.fsPath || entry === folderUri.path;
+	}
+
 	private _matchesCurrentWorkspace(preset: IParadisPresetDefinition): boolean {
 		if (!Array.isArray(preset.appliesTo) || preset.appliesTo.length === 0) {
 			return true;
 		}
 		const folders = this.contextService.getWorkspace().folders;
-		return preset.appliesTo.some(entry => folders.some(folder =>
-			entry === basename(folder.uri) || entry === folder.uri.fsPath));
+		return preset.appliesTo.some(entry => folders.some(folder => this._appliesToFolder(entry, folder.uri)));
 	}
 
 	async getPresetsForFolder(folderUri: URI): Promise<readonly IParadisResolvedPreset[]> {
@@ -219,7 +231,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			if (!Array.isArray(preset.appliesTo) || preset.appliesTo.length === 0) {
 				return true;
 			}
-			return preset.appliesTo.some(entry => entry === basename(folderUri) || entry === folderUri.fsPath);
+			return preset.appliesTo.some(entry => this._appliesToFolder(entry, folderUri));
 		}));
 		return result;
 	}
@@ -833,14 +845,32 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return cwd.replace(/\\/g, '/').replace(/^\.\//, '');
 	}
 
+	/**
+	 * cd に載せるパス。`URI.fsPath` は「手元の OS」の区切りで組み立てるので、SSH で繋いでいる
+	 * ときのように pty が別 OS 上にあると、そのままでは通らない（Windows から Linux へ繋ぐと
+	 * `\home\u\repo` になる）。upstream の `preparePathForShell` は URI を渡したときだけ同じ
+	 * 補正をするが、こちらは文字列を渡す都合上ここで先に直しておく。
+	 */
+	private _pathForShell(instance: ITerminalInstance, uri: URI): string {
+		const path = uri.fsPath;
+		if (isWindows && instance.os !== OperatingSystem.Windows) {
+			return path.replace(/\\/g, '/');
+		}
+		if (!isWindows && instance.os === OperatingSystem.Windows) {
+			return path.replace(/\//g, '\\');
+		}
+		return path;
+	}
+
 	private async _buildChangeDirectoryCommand(instance: ITerminalInstance, cwd: URI): Promise<string> {
+		const path = this._pathForShell(instance, cwd);
 		if (instance.shellType === GeneralShellType.PowerShell) {
-			return `Set-Location -LiteralPath '${cwd.fsPath.replace(/'/g, '$&$&')}'`;
+			return `Set-Location -LiteralPath '${path.replace(/'/g, '$&$&')}'`;
 		}
 		if (instance.shellType === WindowsShellType.CommandPrompt) {
-			return `cd /d "${cwd.fsPath.replace(/"/g, '""')}"`;
+			return `cd /d "${path.replace(/"/g, '""')}"`;
 		}
-		return `cd ${await instance.preparePathForShell(cwd.fsPath)}`;
+		return `cd ${await instance.preparePathForShell(path)}`;
 	}
 
 	private async _createTerminalInActiveGroup(cwd: URI | undefined, name?: string, env?: ITerminalEnvironment): Promise<ITerminalInstance> {

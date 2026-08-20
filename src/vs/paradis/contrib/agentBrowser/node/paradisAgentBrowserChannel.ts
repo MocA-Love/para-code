@@ -26,7 +26,21 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 		private readonly rendererConnection?: object,
 	) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(ctx: string, event: string, arg?: unknown): Event<T> {
+		// 接続先の戻りトンネルの番号は張り直しのたびに変わる。定期の見直しで気付くのを待つと、
+		// その間の通知が届く先を失うので、変わった時点でウィンドウ側へ知らせる
+		if (event === 'remoteAgentTunnelPort') {
+			// ここで投げてはいけない。ChannelServer の購読受付（onEventListen）は call と違って
+			// try/catch されておらず、例外はメッセージ処理ループを抜けて onUnexpectedError 送りになる。
+			// reload 直後など、まだ現行の接続として認められていない間に購読が来ることは普通にあるので、
+			// 何も流れない Event を返して黙って空振りさせる（次の購読でやり直せる）
+			if (this.rendererConnection === undefined
+				|| !this.service.isCurrentRendererConnection(ctx, this.rendererConnection)
+				|| !Array.isArray(arg) || arg.length !== 1 || typeof arg[0] !== 'string') {
+				return Event.None;
+			}
+			return this.service.onDidChangeRemoteAgentTunnelPort(arg[0]) as Event<T>;
+		}
 		throw new Error(`Event not found: ${event}`);
 	}
 
@@ -99,17 +113,21 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 			case 'getGatewayEndpoint':
 				requireArgs(arg, 0);
 				return this.service.getGatewayEndpoint() as Promise<T>;
+			// どのウィンドウの求めかは ctx で決める。同じ接続先へ何枚でも開けるので、1枚が
+			// 閉じただけで畳んでしまうと、残ったウィンドウの hook が黙って死ぬ
 			case 'ensureRemoteAgentTunnel': {
 				const args = requireArgs(arg, 1);
-				return this.service.ensureRemoteAgentTunnel(String(args[0])) as Promise<T>;
+				return this.service.ensureRemoteAgentTunnel(String(args[0]), ctx) as Promise<T>;
 			}
 			case 'closeRemoteAgentTunnel': {
 				const args = requireArgs(arg, 1);
-				return this.service.closeRemoteAgentTunnel(String(args[0])) as Promise<T>;
+				return this.service.closeRemoteAgentTunnel(String(args[0]), ctx) as Promise<T>;
 			}
+			// 接続先を第2引数で受け、そのスクリプトへ「接続先から届いた hook」の印を焼き込ませる
 			case 'getNotifyScriptContent': {
-				const args = requireArgs(arg, 1);
-				return this.service.getNotifyScriptContent(String(args[0])) as Promise<T>;
+				const args = requireArgs(arg, 2);
+				const remoteAuthority = typeof args[1] === 'string' ? args[1] : undefined;
+				return this.service.getNotifyScriptContent(String(args[0]), remoteAuthority) as Promise<T>;
 			}
 			case 'markRemoteHookExecutable': {
 				const args = requireArgs(arg, 2);
@@ -128,7 +146,10 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				return this.service.syncRemoteCodexSockets(ctx, String(args[0]), String(args[1]), tokens) as Promise<T>;
 			}
 			case 'releaseRemoteCodexSockets': {
-				requireArgs(arg, 0);
+				// 呼び出し側は syncRemoteCodexSockets と揃えて接続先を1つ渡してくる。数が合わないと
+				// protocolError で必ず失敗し、握り潰されて転送の台帳にだけ幽霊が残る。
+				// どのウィンドウの要求かは（同期側と同じく）引数ではなく ctx で決める
+				requireArgs(arg, 1);
 				return this.service.releaseRemoteCodexSockets(ctx) as Promise<T>;
 			}
 			case 'setupMcp': {
