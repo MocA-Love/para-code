@@ -50,6 +50,8 @@ import { isNumber } from '../../../../../base/common/types.js';
 import { clamp } from '../../../../../base/common/numbers.js';
 // PARA-PATCH: helpers to make the terminal background translucent under window transparency (fork-owned, see vs/paradis)
 import { installParadisWebglBackgroundAlphaPatch, isParadisTransparentActive, paradisXtermBackground } from '../../../../../paradis/contrib/windowTransparency/browser/paradisTerminalTransparency.js';
+// PARA-PATCH: tell a terminal that lost its GPU context apart from a machine that cannot render at all (fork-owned, see vs/paradis)
+import { ParadisWebglRecovery, paradisWebglSupport } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisWebglRecovery.js';
 import { LayoutSettings } from '../../../../services/layout/browser/layoutService.js';
 
 const enum RenderConstants {
@@ -147,6 +149,12 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	private _unicode11Addon?: Unicode11AddonType;
 	private _webglAddon?: WebglAddonType;
 	private _webglAddonCustomGlyphs?: boolean = false;
+	// PARA-PATCH: remembers whether this terminal lost its GPU context, so it can take one back
+	private readonly _paradisWebglRecovery = new ParadisWebglRecovery();
+	// PARA-PATCH: the webgl renderer is now re-acquired every time a focused terminal takes a
+	// context back, so hold this listener in one slot instead of letting a new one pile up on the
+	// terminal's own store on each acquisition
+	private readonly _paradisWebglContextLoss = this._register(new MutableDisposable());
 	private _serializeAddon?: SerializeAddonType;
 	private _imageAddon?: ImageAddonType;
 	private readonly _ligaturesAddon: MutableDisposable<LigaturesAddonType> = this._register(new MutableDisposable());
@@ -549,9 +557,28 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	}
 
 	private _setFocused(isFocused: boolean) {
+		// PARA-PATCH: give the GPU renderer back to the terminal being used (see below)
+		if (isFocused) {
+			this._paradisTryRecoverGpuRenderer();
+		}
 		this._onDidChangeFocus.fire(isFocused);
 		this._anyTerminalFocusContextKey.set(isFocused);
 		this._anyFocusedTerminalHasSelection.set(isFocused && this.raw.hasSelection());
+	}
+
+	/**
+	 * PARA-PATCH: take a GPU context back for a terminal that lost one. Only the terminal being
+	 * looked at tries, so the limited number of contexts goes to the one in use instead of being
+	 * fought over by every background tile. Attempts are capped and spaced out by
+	 * vs/paradis/contrib/terminalRenderer so a busy window cannot flip renderers repeatedly.
+	 */
+	private _paradisTryRecoverGpuRenderer(): void {
+		if (this._webglAddon || !this._attached?.options.enableGpu || !this._shouldLoadWebgl()) {
+			return;
+		}
+		if (this._paradisWebglRecovery.shouldRetryNow()) {
+			void this._enableWebglRenderer();
+		}
 	}
 
 	write(data: string | Uint8Array, callback?: () => void): void {
@@ -911,10 +938,22 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			// PARA-PATCH: make the WebGL renderer honor the theme background alpha when window transparency is active (fork-owned, see vs/paradis)
 			installParadisWebglBackgroundAlphaPatch(this._webglAddon);
 			this._logService.trace('Webgl was loaded');
-			this._store.add(this._webglAddon.onContextLoss(() => {
+			// PARA-PATCH: webgl works on this machine. Recorded so that a later failure is read as a
+			// terminal losing the contest for a limited number of GPU contexts, not as the machine
+			// being unable to render (see vs/paradis/contrib/terminalRenderer).
+			paradisWebglSupport.noteSucceeded();
+			this._paradisWebglRecovery.noteEnabled();
+			// PARA-PATCH: upstream adds this listener to the terminal's own store, which only ever
+			// held one because the renderer was acquired once. It is now re-acquired every time a
+			// focused terminal takes a context back, so keep it in a single slot instead.
+			this._paradisWebglContextLoss.value = this._webglAddon.onContextLoss(() => {
 				this._logService.info(`Webgl lost context, disposing of webgl renderer`);
 				this._disposeOfWebglRenderer();
-			}));
+				// PARA-PATCH: losing a context is usually recoverable — the browser takes the oldest
+				// one when too many are alive. Remembered so this terminal can take one back once it
+				// is the one being looked at.
+				this._paradisWebglRecovery.noteLost();
+			});
 			this._refreshImageAddon();
 			// WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal
 			// gets resized after the webgl addon is loaded
@@ -927,7 +966,15 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			// }, 5000);
 		} catch (e) {
 			this._logService.warn(`Webgl could not be loaded. Falling back to the DOM renderer`, e);
-			XtermTerminal._suggestedRendererType = 'dom';
+			// PARA-PATCH: `_suggestedRendererType` is static, so setting it here drops every terminal
+			// created afterwards in this window to the DOM renderer until the setting is touched.
+			// Para Code keeps many terminals on screen at once (2D grid, agent tiles), where failing
+			// to get a context is normally the contest for a limited number of them — only treat it
+			// as "this machine cannot render" while webgl has never once worked here.
+			if (paradisWebglSupport.shouldDisableGlobally()) {
+				XtermTerminal._suggestedRendererType = 'dom';
+			}
+			this._paradisWebglRecovery.noteLost();
 			this._disposeOfWebglRenderer();
 		}
 	}
