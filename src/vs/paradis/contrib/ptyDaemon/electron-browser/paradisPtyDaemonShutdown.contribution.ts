@@ -31,7 +31,7 @@ import { IParadisShutdownTerminal, paradisRegisterTerminalShutdownPolicy } from 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
-import { paradisParseKeepTerminalsChoice, paradisPlanTerminalKeep, paradisRememberedKeepChoice } from '../../../common/paradisTerminalKeepPlan.js';
+import { paradisDaemonHandlesTerminal, paradisParseKeepTerminalsChoice, paradisPlanTerminalKeep, paradisRememberedKeepChoice } from '../../../common/paradisTerminalKeepPlan.js';
 import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
 import { PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE } from '../common/paradisPtyDaemonSettingKey.js';
 
@@ -179,10 +179,9 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		return this.decision?.reason === reason
 			&& this.decision.keep
 			// `prepare` でも降りているが、ここでも見る。`decision` が何かの拍子に残っても、
-			// 担当外の端末へ true を返さないため。
-			&& this.environmentService.remoteAuthority === undefined
-			&& !terminal.hasRemoteAuthority
-			&& terminal.shouldPersist;
+			// 担当外の端末へ true を返さないため。判定そのものは接続先側と同じ場所に置いてある
+			// (2つが同時に true にならないことを、表にして固定できるようにするため)。
+			&& paradisDaemonHandlesTerminal(this.environmentService.remoteAuthority !== undefined, terminal);
 	}
 
 	/**
@@ -201,7 +200,7 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		}
 		const counted = new Set<number>();
 		const add = (instance: ITerminalInstance): void => {
-			if (!instance.isDisposed && instance.shouldPersist && !instance.hasRemoteAuthority) {
+			if (!instance.isDisposed && paradisDaemonHandlesTerminal(false, instance)) {
 				counted.add(instance.instanceId);
 			}
 		};
