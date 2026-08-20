@@ -38,12 +38,33 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		fixture.scopeByInstance.set(7, { kind: 'managed', stateKey: 'space-a' });
 
 		fixture.producer.publish(success(1, [
-			pane('pane-a', 'working', undefined, ['https://github.com/owner/repo/issues/1', 'https://github.com/owner/repo/issues/2']),
-		], ['pane-a']));
+			pane('pane-a', 'working'),
+		], ['pane-a'], [
+			{ token: 'pane-a', issueUrls: ['https://github.com/owner/repo/issues/1', 'https://github.com/owner/repo/issues/2'] },
+		]));
 
 		assert.deepStrictEqual(entries(fixture.statusStore.scopeIssueUrls), [
 			['space-a', ['https://github.com/owner/repo/issues/1', 'https://github.com/owner/repo/issues/2']],
 		]);
+	});
+
+	// フィードバック対応の回帰テスト: エージェントが起動中でも一時的にアイドル (working 等の
+	// 状態エントリが無い) になると、そのペインは paneStatuses から消える。それでも
+	// agentHookTokenIssueUrls (ペインが終了するまで消えない) 経由で検出済み Issue はスコープへ
+	// 引き続き紐付く一方、実行状態ドット (scopeBreakdowns) はアイドル化どおり空になること。
+	test('keeps issue URLs attributed to a scope while its pane is idle (no working status entry)', () => {
+		const fixture = createFixture();
+		fixture.instanceByToken.set('pane-a', 7);
+		fixture.scopeByInstance.set(7, { kind: 'managed', stateKey: 'space-a' });
+
+		fixture.producer.publish(success(1, [], ['pane-a'], [
+			{ token: 'pane-a', issueUrls: ['https://github.com/owner/repo/issues/1'] },
+		]));
+
+		assert.deepStrictEqual(entries(fixture.statusStore.scopeIssueUrls), [
+			['space-a', ['https://github.com/owner/repo/issues/1']],
+		]);
+		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), []);
 	});
 
 	// Critical#2 の温床だった誤帰属ガードの回帰テスト: instance が取れず cwd 最長一致だけで
@@ -55,8 +76,10 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		const stateKey = paradisWorktreeStateKey(worktree.uri);
 
 		fixture.producer.publish(success(1, [
-			pane('cwd-only', 'working', worktree.uri.fsPath + '/src', ['https://github.com/owner/repo/issues/1']),
-		], []));
+			pane('cwd-only', 'working', worktree.uri.fsPath + '/src'),
+		], [], [
+			{ token: 'cwd-only', issueUrls: ['https://github.com/owner/repo/issues/1'] },
+		]));
 
 		// 実行状態のドット自体は cwd 一致でも従来どおり反映される (Issue マークの話とは別)
 		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), [[stateKey, ['working']]]);
@@ -257,12 +280,24 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 	}
 });
 
-function pane(token: string, status: ParadisAgentStatus, cwd?: string, issueUrls?: readonly string[]): IParadisAgentPaneStatus {
-	return { token, status, changedAt: 1, cwd, ...(issueUrls !== undefined ? { issueUrls } : {}) };
+function pane(token: string, status: ParadisAgentStatus, cwd?: string): IParadisAgentPaneStatus {
+	return { token, status, changedAt: 1, cwd };
 }
 
-function success(sequence: number, paneStatuses: readonly IParadisAgentPaneStatus[], agentHookTokens: readonly string[]): IParadisAgentStatusSnapshotOutcome {
-	return { sequence, snapshot: { paneStatuses, agentHookTokens } };
+/**
+ * agentHookTokenIssueUrls は実物 (listAgentStatusSnapshot) では
+ * agentHookTokens ∪ paneStatuses のトークン集合ぶんが載りうる (hook を送らないエージェントでも
+ * paneStatuses だけには現れるトークンがあるため)。テストでは呼び出し側が明示的に渡す
+ * (pane() 側からの自動導出はしない — 実物が作れないスナップショットをテストが検証してしまう
+ * 事故を防ぐため)。
+ */
+function success(
+	sequence: number,
+	paneStatuses: readonly IParadisAgentPaneStatus[],
+	agentHookTokens: readonly string[],
+	agentHookTokenIssueUrls?: readonly { readonly token: string; readonly issueUrls: readonly string[] }[],
+): IParadisAgentStatusSnapshotOutcome {
+	return { sequence, snapshot: { paneStatuses, agentHookTokens, ...(agentHookTokenIssueUrls !== undefined && agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls } : {}) } };
 }
 
 function failure(sequence: number): IParadisAgentStatusSnapshotOutcome {

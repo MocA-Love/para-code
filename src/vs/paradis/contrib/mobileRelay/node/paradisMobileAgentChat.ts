@@ -5972,6 +5972,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			tailer.dispose();
 			this.tailers.delete(token);
 			setParadisAgentPaneActivity(token, { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false });
+			// tailer 破棄時点で検出済みIssueもリセットする。/clear や resume でこのトークンに
+			// 新しい tailer が張られたとき、新会話が1件もIssueへ触れなければ onIssueUrlsUpdated が
+			// 一度も呼ばれず、ここでクリアしないと前の会話のIssue URLが (Issueマークがアイドル中も
+			// 消えなくなった今は) ペイン終了まで恒久的に残ってしまう。
+			setParadisAgentPaneIssueUrls(token, new Set());
 		}
 	}
 

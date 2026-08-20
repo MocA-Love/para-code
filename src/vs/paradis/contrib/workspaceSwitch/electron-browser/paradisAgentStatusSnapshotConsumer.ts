@@ -131,6 +131,27 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 				agentInstanceIds.add(instanceId);
 			}
 		}
+		// Issueマークは「稼働中(working等)か」ではなく「そのペインがまだ生きているか」で出す
+		// (フィードバック対応: 起動中のエージェントが一時的にアイドルになるとマークが消えるのは
+		// 分かりにくい)。agentHookTokenIssueUrls は agentHookTokens と同じ寿命 (ペイン終了時のみ
+		// 消える) を持つため、稼働中/アイドル中を問わずここで一括して解決する。誤帰属防止の
+		// ガードは維持: instance 経由でスコープが直接 'managed' に解決できた時だけ採用する
+		// (cwd最長一致・記憶されたスコープ経由では紐付けない)。
+		for (const entry of snapshot.agentHookTokenIssueUrls ?? []) {
+			const instanceId = this._options.paneTokenService.getInstanceForToken(entry.token);
+			if (instanceId === undefined) {
+				continue;
+			}
+			const scope = this._options.terminalScopeService.resolveScope(instanceId);
+			if (scope.kind !== 'managed') {
+				continue;
+			}
+			const urls = scopeIssueUrls.get(scope.stateKey) ?? new Set<string>();
+			for (const url of entry.issueUrls) {
+				urls.add(url);
+			}
+			scopeIssueUrls.set(scope.stateKey, urls);
+		}
 
 		for (const paneStatus of statuses) {
 			const instanceId = this._options.paneTokenService.getInstanceForToken(paneStatus.token);
@@ -140,12 +161,10 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 			}
 			let stateKey: string | undefined;
 			let allowRememberedScope = instanceId === undefined;
-			let resolvedViaManagedInstance = false;
 			if (instanceId !== undefined) {
 				const scope = this._options.terminalScopeService.resolveScope(instanceId);
 				if (scope.kind === 'managed') {
 					stateKey = scope.stateKey;
-					resolvedViaManagedInstance = true;
 				} else if (scope.kind === 'pending') {
 					allowRememberedScope = true;
 				}
@@ -164,17 +183,6 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 					instanceStatuses.delete(instanceId);
 				}
 				continue;
-			}
-
-			// Issueマークは scopeBreakdowns に載る（＝行のドット列に「動作中」として現れる）
-			// ペインとだけ連動させる。誤ったスペースへの紐付けを避けるため instance 経由で
-			// 'managed' に直接解決できた時だけ採用する (cwd最長一致・記憶されたスコープは対象外)。
-			if (resolvedViaManagedInstance && paneStatus.issueUrls !== undefined && paneStatus.issueUrls.length > 0) {
-				const urls = scopeIssueUrls.get(stateKey) ?? new Set<string>();
-				for (const url of paneStatus.issueUrls) {
-					urls.add(url);
-				}
-				scopeIssueUrls.set(stateKey, urls);
 			}
 
 			const breakdown = scopeBreakdowns.get(stateKey);

@@ -2377,14 +2377,25 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._sweepStalePaneStatuses(eligibleTokens);
 		const paneStatuses = [...this._paneStatuses]
 			.filter(([token]) => eligibleTokens.has(token))
-			.map(([token, entry]) => {
-				const issueUrls = getParadisAgentPaneIssueUrls(token);
-				return Object.freeze({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}), ...(issueUrls.size > 0 ? { issueUrls: Object.freeze([...issueUrls]) } : {}) });
-			});
+			.map(([token, entry]) => Object.freeze({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) }));
 		const agentHookTokens = [...this._agentHookTokens].filter(token => eligibleTokens.has(token));
+		// hook実績のある全ペインぶんの Issue URL を同梱する。getParadisAgentPaneIssueUrls は
+		// アイドル化しても消えない (paneToken 終了時のみ) ため、ワークスペース一覧側で
+		// 「エージェント稼働中」ではなく「ペイン生存中」でマークを出し続けられるようにする。
+		// 対象トークンは agentHookTokens ∪ paneStatuses のトークン集合にする必要がある:
+		// agentHookTokens は hook イベント (主に Claude) 経由でしか増えず、Codex 等 transcript
+		// tailer 由来で _paneStatuses だけに現れるトークンはここに乗らないため
+		// (実機レビューで指摘: 素朴に agentHookTokens だけを回すと、hook を送らないエージェント
+		// で検出した Issue が一覧から丸ごと落ちる)。
+		const issueUrlTokens = new Set<string>([...agentHookTokens, ...paneStatuses.map(status => status.token)]);
+		const agentHookTokenIssueUrls = [...issueUrlTokens]
+			.map(token => ({ token, issueUrls: [...getParadisAgentPaneIssueUrls(token)] }))
+			.filter(entry => entry.issueUrls.length > 0)
+			.map(entry => Object.freeze({ token: entry.token, issueUrls: Object.freeze(entry.issueUrls) }));
 		return Object.freeze({
 			paneStatuses: Object.freeze(paneStatuses),
 			agentHookTokens: Object.freeze(agentHookTokens),
+			...(agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls: Object.freeze(agentHookTokenIssueUrls) } : {}),
 		});
 	}
 

@@ -881,18 +881,20 @@ export interface IParadisAgentPaneStatus {
 	 * スコープ解決フォールバック (cwd→リポジトリ/worktreeルートの最長一致) に使う。
 	 */
 	readonly cwd?: string;
-	/**
-	 * このペインで現在動作中のエージェントの対話から検出した GitHub Issue URL (出現順、重複無し)。
-	 * 空・未検出なら省略する (ワークスペース一覧のIssueマークは、動作中のペインでのみ表示するため
-	 * アイドル化すると自然に消える — hook活動の欠落時と区別する必要はない)。
-	 */
-	readonly issueUrls?: readonly string[];
 }
 
 /** 1回のowner解決とstale sweepから作る、renderer-local status producer向けsnapshot。 */
 export interface IParadisAgentStatusSnapshot {
 	readonly paneStatuses: readonly IParadisAgentPaneStatus[];
 	readonly agentHookTokens: readonly string[];
+	/**
+	 * hook実績のあるペイン、および (Codex 等 hook を送らないエージェントでも) paneStatuses に
+	 * 現れたペインぶんの、検出済み Issue URL。ペインが終了するまで消えない (paneStatuses と違い
+	 * 稼働中/アイドル中を問わない)。ワークスペース一覧のIssueマークは「エージェントが今動いて
+	 * いるか」ではなく「そのペインがまだ生きているか」で出し分けたいというフィードバックへの
+	 * 対応で、次のターン待ち等の一時的なアイドルでは消えない。空配列のエントリは含めない。
+	 */
+	readonly agentHookTokenIssueUrls?: readonly { readonly token: string; readonly issueUrls: readonly string[] }[];
 }
 
 /**
