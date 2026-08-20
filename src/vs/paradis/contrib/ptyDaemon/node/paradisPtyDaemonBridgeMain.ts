@@ -27,10 +27,13 @@
 
 import { createConnection } from 'net';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { Protocol as SocketProtocol } from '../../../../base/parts/ipc/common/ipc.net.js';
+import { Client as SocketClient, Protocol as SocketProtocol } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { MessageEvent, MessagePortMain, isUtilityProcess } from '../../../../base/parts/sandbox/node/electronTypes.js';
-import { PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
+import { PARADIS_PTY_DAEMON_LEDGER, PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
+import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
+import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
+import { dirname } from '../../../../base/common/path.js';
 
 /**
  * ポート1本と、それに対応するソケット1本を繋ぐ。
@@ -38,6 +41,37 @@ import { PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
  * 片側が閉じたらもう片側も閉じる。片方だけ残すと、ウィンドウが閉じたあとも常駐から見ると
  * クライアントが繋がったままになり、**何も抱えていないのに終われない常駐**ができる。
  */
+/**
+ * 繋ぎ先が本物かを、流し始める前に確かめる。
+ *
+ * 確認は使い捨ての接続で行う。この橋が流すのは中身を解釈しないバイト列なので、同じ接続の上で
+ * 先に名乗り合うことができない（名乗り合いはチャネルの上の呼び出しで、それを読んだ時点で
+ * 素通しではなくなる）。確認が通れば、同じ名前で待ち受けているのは同じ相手なので、続けて
+ * 開く接続もその相手に届く。
+ */
+async function paradisDaemonIsGenuine(socketPath: string, ledgerFile: string): Promise<boolean> {
+	const records = await paradisReadDaemonRecords(dirname(ledgerFile));
+	const socket = await new Promise<NodeSocket | undefined>(resolve => {
+		const raw = createConnection({ path: socketPath });
+		raw.once('connect', () => resolve(new NodeSocket(raw, 'paradis-pty-daemon-bridge-auth')));
+		raw.once('error', () => { raw.destroy(); resolve(undefined); });
+	});
+	if (!socket) {
+		return false;
+	}
+	const client = SocketClient.fromSocket(socket, 'paradis-bridge');
+	try {
+		for (const record of records) {
+			if (record.socketPath === socketPath && await paradisAuthenticateDaemon(client, record.token)) {
+				return true;
+			}
+		}
+		return false;
+	} finally {
+		client.dispose();
+	}
+}
+
 function paradisPipePortToDaemon(port: MessagePortMain, socketPath: string): void {
 	const socket = createConnection({ path: socketPath });
 	const protocol = new SocketProtocol(new NodeSocket(socket, 'paradis-pty-daemon-bridge'));
@@ -81,11 +115,24 @@ function paradisStartBridge(): void {
 	if (!socketPath) {
 		throw new Error(`${PARADIS_PTY_DAEMON_SOCKET} is required to reach the pty daemon`);
 	}
+	const ledgerFile = process.env[PARADIS_PTY_DAEMON_LEDGER];
+	if (!ledgerFile) {
+		throw new Error(`${PARADIS_PTY_DAEMON_LEDGER} is required to tell who is on the socket`);
+	}
 	process.parentPort.on('message', (e: MessageEvent) => {
 		const port = e.ports.at(0);
-		if (port) {
-			paradisPipePortToDaemon(port, socketPath);
+		if (!port) {
+			return;
 		}
+		// 確かめてから流す。確かめられない相手にはポートを閉じる。**その窓のターミナルは
+		// 動かなくなるが、偽物へ全打鍵を渡すよりはるかにましである。**
+		paradisDaemonIsGenuine(socketPath, ledgerFile).then(genuine => {
+			if (genuine) {
+				paradisPipePortToDaemon(port, socketPath);
+			} else {
+				port.close();
+			}
+		}, () => port.close());
 	});
 }
 

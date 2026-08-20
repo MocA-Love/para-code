@@ -52,6 +52,13 @@ export interface IParadisPtyDaemonRecord {
 	/** ソケット名に使った短い鍵。自分のものかどうかはこれで見る。 */
 	readonly buildKey: string;
 	readonly startedAt: number;
+	/**
+	 * この常駐の身元。繋ぎに来た側とこれを示し合って、互いが本物であることを確かめる。
+	 *
+	 * **台帳が 0600 であることが前提。** 読めた相手はこの常駐になりすませるし、逆に本物として
+	 * 振る舞える。台帳の権限を緩めることは、この仕組みを外すことと同じ。
+	 */
+	readonly token: string;
 }
 
 /** 台帳の1件に対して、これから何をするか。 */
@@ -168,12 +175,19 @@ export function paradisParseDaemonRecord(value: unknown): IParadisPtyDaemonRecor
 	if (typeof raw.startedAt !== 'number' || !isFinite(raw.startedAt)) {
 		return undefined;
 	}
+	// token が無い台帳は受け付けない。**「確かめられないが使う」経路を作らない**ため。
+	// 身元を確かめる前のビルドが書いた台帳はここで弾かれるが、そのビルドの常駐はソケットの
+	// 名前が違う (名前にビルドを混ぜてある) ので、そもそも繋ぐ相手ではない。
+	if (typeof raw.token !== 'string' || raw.token.length === 0) {
+		return undefined;
+	}
 	return {
 		pid: raw.pid,
 		socketPath: raw.socketPath,
 		buildId: raw.buildId,
 		buildKey: raw.buildKey,
 		startedAt: raw.startedAt,
+		token: raw.token,
 	};
 }
 

@@ -30,6 +30,7 @@ const RECORD: IParadisPtyDaemonRecord = {
 	buildId: '1.132.0-paracode-72',
 	buildKey: OWN,
 	startedAt: 1_000,
+	token: 'deadbeef',
 };
 
 suite('ParadisPtyDaemonPolicy', () => {
@@ -141,6 +142,8 @@ suite('ParadisPtyDaemonPolicy', () => {
 				missingField: paradisParseDaemonRecord({ ...RECORD, socketPath: undefined }),
 				emptyBuild: paradisParseDaemonRecord({ ...RECORD, buildId: '' }),
 				badPid: paradisParseDaemonRecord({ ...RECORD, pid: 0 }),
+				// 身元の無い台帳は受け付けない。「確かめられないが使う」経路を作らないため。
+				noToken: paradisParseDaemonRecord({ ...RECORD, token: undefined }),
 				notAnObject: paradisParseDaemonRecord('{"pid":1}'),
 				nothing: paradisParseDaemonRecord(null),
 			},
@@ -149,6 +152,7 @@ suite('ParadisPtyDaemonPolicy', () => {
 				missingField: undefined,
 				emptyBuild: undefined,
 				badPid: undefined,
+				noToken: undefined,
 				notAnObject: undefined,
 				nothing: undefined,
 			},
