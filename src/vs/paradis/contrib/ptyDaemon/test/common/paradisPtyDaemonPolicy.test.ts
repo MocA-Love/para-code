@@ -10,11 +10,14 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisPtyDaemonRecord,
+	PARADIS_DAEMON_BIND_LOCK_TIMEOUT,
 	PARADIS_DAEMON_IDLE_TIMEOUT,
 	PARADIS_DAEMON_TERMINAL_GRACE_TIME,
 	ParadisDaemonAction,
 	paradisJudgeForeignDaemon,
+	paradisIsBindLockStale,
 	paradisJudgeUnreachableDaemon,
+	paradisParseBindLock,
 	paradisParseDaemonRecord,
 	paradisProbeDaemonRecord,
 	paradisShouldDaemonExit,
@@ -97,6 +100,37 @@ suite('ParadisPtyDaemonPolicy', () => {
 				holdingWithinGrace: false,
 				holdingPastGrace: true,
 			},
+		);
+	});
+
+	test('lets one daemon at a time clear a stale socket', () => {
+		const now = 1_000_000;
+		const fresh = { pid: 4321, createdAt: now };
+		assert.deepStrictEqual(
+			{
+				// 掃除中の相手が居るなら待つ。ここを緩めると、相手が置いたばかりのソケットを
+				// 消して自分の物を置き、相手は誰からも届かないソケットで待ち続けることになる。
+				held: paradisIsBindLockStale(fresh, true, now),
+				// 札を持ったまま死んだ跡は無視してよい。
+				holderGone: paradisIsBindLockStale(fresh, false, now),
+				// 生きていても長すぎるなら無視する (固まっている相手に永久に待たされない)。
+				tooOld: paradisIsBindLockStale({ ...fresh, createdAt: now - PARADIS_DAEMON_BIND_LOCK_TIMEOUT }, true, now),
+				// 書きかけで死んだ札。
+				unreadable: paradisIsBindLockStale(undefined, false, now),
+			},
+			{ held: false, holderGone: true, tooOld: true, unreadable: true },
+		);
+	});
+
+	test('reads a half-written bind lock without throwing', () => {
+		assert.deepStrictEqual(
+			{
+				good: paradisParseBindLock({ pid: 12, createdAt: 34 }),
+				badPid: paradisParseBindLock({ pid: 0, createdAt: 34 }),
+				missing: paradisParseBindLock({ pid: 12 }),
+				notAnObject: paradisParseBindLock('{"pid":12}'),
+			},
+			{ good: { pid: 12, createdAt: 34 }, badPid: undefined, missing: undefined, notAnObject: undefined },
 		);
 	});
 

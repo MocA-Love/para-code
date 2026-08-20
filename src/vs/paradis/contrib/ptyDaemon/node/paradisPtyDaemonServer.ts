@@ -21,13 +21,25 @@
 // いけない (消すと先客が誰からも見つけられなくなり、抱えているターミナルごと迷子になる)。
 //
 // Windows の名前付きパイプは持ち主が死ぬと消えるので、この後始末は要らない。
+//
+// **残骸の掃除そのものが取り合いになる。** 残骸が残った状態で2つが同時に起きると、両方が
+// 「応答なし＝残骸」と判断し、片方が消してから bind し、もう片方が**その新しいソケットを
+// 消して**自分の物を置く。負けた側は誰からも届かないソケットで待ち受け続け、自分が外れている
+// ことにも気づかない。だから掃除の間だけ札を置いて、1人ずつ通す。
 
 import { createConnection } from 'net';
 import { promises as fs } from 'fs';
 import { Server as SocketServer, serve } from '../../../../base/parts/ipc/node/ipc.net.js';
+import { IParadisBindLock, paradisIsBindLockStale, paradisParseBindLock } from '../common/paradisPtyDaemonPolicy.js';
 
 /** 先客が居るかを確かめるのに待つ時間。応答しない相手をいつまでも待たない。 */
 const PROBE_TIMEOUT = 1000;
+
+/** 取り合いをやり直す回数。増やしても勝者は増えないので、少なくてよい。 */
+const BIND_ATTEMPTS = 3;
+
+/** 掃除中の相手を待つ時間。掃除は unlink と bind だけなので、これで足りる。 */
+const BIND_LOCK_WAIT = 200;
 
 export type ParadisServeResult =
 	/** 自分が持ち主になれた。 */
@@ -78,36 +90,125 @@ function paradisProbeSocket(socketPath: string): Promise<boolean> {
  */
 export async function paradisServePtyDaemon(socketPath: string): Promise<ParadisServeResult> {
 	const notes: string[] = [];
-	try {
-		return { outcome: 'bound', server: await serve(socketPath), notes };
-	} catch (error) {
-		if (errorCode(error) !== 'EADDRINUSE') {
-			throw error;
+
+	for (let attempt = 1; attempt <= BIND_ATTEMPTS; attempt++) {
+		// 素直に取れるなら取る。ほとんどの起動はここで終わる。
+		const bound = await paradisTryServe(socketPath);
+		if (bound) {
+			return { outcome: 'bound', server: bound, notes };
+		}
+
+		// 名前は埋まっている。応答があれば本物の先客なので退く。**消してはいけない**
+		// (消すと先客が誰からも見つけられなくなり、抱えているターミナルごと迷子になる)。
+		if (await paradisProbeSocket(socketPath)) {
+			notes.push(`[ParadisPtyDaemon] another daemon already owns ${socketPath}; standing down`);
+			return { outcome: 'taken', notes };
+		}
+
+		// 応答が無い＝残骸。掃除は1人ずつ通す。
+		const lockPath = await paradisAcquireBindLock(socketPath, notes);
+		if (!lockPath) {
+			// 誰かが掃除中。少し待てば、その相手が先客として応答するようになる。
+			await paradisDelay(BIND_LOCK_WAIT);
+			continue;
+		}
+		try {
+			// 待っている間に勝者が現れたかもしれない。札を取ってからもう一度確かめる。
+			if (await paradisProbeSocket(socketPath)) {
+				notes.push(`[ParadisPtyDaemon] another daemon took ${socketPath} while we waited; standing down`);
+				return { outcome: 'taken', notes };
+			}
+			notes.push(`[ParadisPtyDaemon] clearing a stale socket at ${socketPath}`);
+			await paradisUnlinkIfPresent(socketPath);
+			const rebound = await paradisTryServe(socketPath);
+			if (rebound) {
+				return { outcome: 'bound', server: rebound, notes };
+			}
+		} finally {
+			await paradisUnlinkIfPresent(lockPath);
 		}
 	}
 
-	if (await paradisProbeSocket(socketPath)) {
-		notes.push(`[ParadisPtyDaemon] another daemon already owns ${socketPath}; standing down`);
-		return { outcome: 'taken', notes };
-	}
+	// 札を取っても bind できない状態が続く。原因は分からないが、無理に取り続けても勝者は増えない。
+	notes.push(`[ParadisPtyDaemon] could not take ${socketPath} after ${BIND_ATTEMPTS} attempts; standing down`);
+	return { outcome: 'taken', notes };
+}
 
-	// 応答が無い＝残骸。消して取り直す。ここで失敗したら、消した直後に他人が入った可能性が
-	// あるので、もう一度は試さずに退く (取り合いを繰り返しても勝者は増えない)。
-	notes.push(`[ParadisPtyDaemon] clearing a stale socket at ${socketPath}`);
+/** 取れたらサーバー、名前が埋まっていれば undefined。それ以外の失敗は投げる。 */
+async function paradisTryServe(socketPath: string): Promise<SocketServer | undefined> {
 	try {
-		await fs.unlink(socketPath);
+		return await serve(socketPath);
+	} catch (error) {
+		if (errorCode(error) === 'EADDRINUSE') {
+			return undefined;
+		}
+		throw error;
+	}
+}
+
+async function paradisUnlinkIfPresent(path: string): Promise<void> {
+	try {
+		await fs.unlink(path);
 	} catch (error) {
 		if (errorCode(error) !== 'ENOENT') {
 			throw error;
 		}
 	}
+}
+
+function paradisDelay(ms: number): Promise<void> {
+	return new Promise<void>(resolve => setTimeout(resolve, ms));
+}
+
+function paradisIsProcessAlive(pid: number): boolean {
 	try {
-		return { outcome: 'bound', server: await serve(socketPath), notes };
+		process.kill(pid, 0);
+		return true;
 	} catch (error) {
-		if (errorCode(error) === 'EADDRINUSE') {
-			notes.push(`[ParadisPtyDaemon] lost the race for ${socketPath}; standing down`);
-			return { outcome: 'taken', notes };
+		return errorCode(error) === 'EPERM';
+	}
+}
+
+/**
+ * 掃除の札を取る。取れなければ undefined (誰かが掃除中)。
+ *
+ * 札は `wx` (既にあれば失敗) で作る。「見てから作る」と、見た直後に相手が作る隙間が残る。
+ */
+async function paradisAcquireBindLock(socketPath: string, notes: string[]): Promise<string | undefined> {
+	const lockPath = `${socketPath}.lock`;
+	// 1回目で取れなければ、古い札を捨ててもう1回だけ試す。捨てた直後に他人が取ることは
+	// あるが、そのときは掃除中の相手が居るということなので、待って出直せばよい。
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			const handle = await fs.open(lockPath, 'wx', 0o600);
+			try {
+				const lock: IParadisBindLock = { pid: process.pid, createdAt: Date.now() };
+				await handle.writeFile(JSON.stringify(lock), 'utf8');
+			} finally {
+				await handle.close();
+			}
+			return lockPath;
+		} catch (error) {
+			if (errorCode(error) !== 'EEXIST') {
+				throw error;
+			}
 		}
-		throw error;
+
+		const existing = await paradisReadBindLock(lockPath);
+		if (!paradisIsBindLockStale(existing, existing !== undefined && paradisIsProcessAlive(existing.pid), Date.now())) {
+			return undefined;
+		}
+		notes.push(`[ParadisPtyDaemon] clearing a stale bind lock at ${lockPath}`);
+		await paradisUnlinkIfPresent(lockPath);
+	}
+	return undefined;
+}
+
+async function paradisReadBindLock(lockPath: string): Promise<IParadisBindLock | undefined> {
+	try {
+		return paradisParseBindLock(JSON.parse(await fs.readFile(lockPath, 'utf8')));
+	} catch {
+		// 読めない・壊れている札は無いものとして扱う (`paradisIsBindLockStale` が古いと答える)。
+		return undefined;
 	}
 }
