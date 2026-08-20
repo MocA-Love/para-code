@@ -71,3 +71,50 @@ export function paradisRememberedKeepChoice(keep: boolean): ParadisKeepTerminals
 export function paradisParseKeepTerminalsChoice(value: unknown): ParadisKeepTerminalsChoice {
 	return value === 'always' || value === 'never' ? value : 'ask';
 }
+
+/**
+ * 残すかどうかの判断に要る、端末の素性。
+ *
+ * `IParadisShutdownTerminal`（workbench 側）と同じ形。型そのものを持ち込まないのは、
+ * ここが `vs/paradis/common` で workbench を読めないため。
+ */
+export interface IParadisKeepCandidate {
+	/** 接続先の端末か。 */
+	readonly hasRemoteAuthority: boolean;
+	/** そもそも残せる端末か（タスク端末などは残せない）。 */
+	readonly shouldPersist: boolean;
+}
+
+// 残す役が複数居るときの担当分け。
+//
+// **この2つが同じ (ウィンドウ, 端末) の組で同時に true になってはいけない。** 残すかどうかは
+// 全員の答えを OR で束ねるので、引き受けられない端末に true を答えると、誰も繋ぎ直せない端末が
+// 「残す」扱いになり、猶予時間ぶん孤児として残るだけになる。
+//
+// 表にすると4通りしかない。ここを関数にしてあるのは、その4通りをテストで固定するため
+// （実際、接続先ウィンドウ × ローカル端末のマスを埋め忘れて事故になった）。
+//
+//                        | ローカル端末 | 接続先端末
+//   ローカルのウィンドウ |    常駐      |   ——
+//   接続先のウィンドウ   |    ——        |  接続先
+
+/**
+ * この PC の常駐が引き受ける端末か。
+ *
+ * 接続先のウィンドウでは、ローカル端末であっても引き受けない。そのウィンドウは開くときに
+ * 接続先のバックエンドしか見ず（`_reconnectToLocalTerminals` が走らない）、レイアウトも
+ * 接続先にしか書かないので、残しても誰も拾わない。
+ */
+export function paradisDaemonHandlesTerminal(windowHasRemoteAuthority: boolean, terminal: IParadisKeepCandidate): boolean {
+	return !windowHasRemoteAuthority && !terminal.hasRemoteAuthority && terminal.shouldPersist;
+}
+
+/**
+ * 接続先のサーバーが引き受ける端末か。
+ *
+ * 接続先のウィンドウの中にも手元の端末は混ざるが、そちらは引き受けない（手元の pty host に
+ * 孤児として残るだけになる）。
+ */
+export function paradisRemoteHandlesTerminal(windowHasRemoteAuthority: boolean, terminal: IParadisKeepCandidate): boolean {
+	return windowHasRemoteAuthority && terminal.hasRemoteAuthority && terminal.shouldPersist;
+}

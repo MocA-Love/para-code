@@ -36,6 +36,7 @@ import { ILifecycleService, ShutdownReason } from '../../../../workbench/service
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisKeptRemoteTerminals, paradisParseKeepRemoteTerminalsChoice, paradisPlanRemoteTerminalShutdown, paradisRememberedChoice, paradisShouldReportStrandedTerminals } from '../common/paradisRemoteTerminalShutdown.js';
 import { PARADIS_TERMINAL_RECONNECTION_GRACE_TIME } from '../common/paradisTerminalGraceTime.js';
+import { paradisRemoteHandlesTerminal } from '../../../common/paradisTerminalKeepPlan.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -234,9 +235,10 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 	private shouldKeepProcessAlive(reason: ShutdownReason, terminal: IParadisShutdownTerminal): boolean {
 		return this._decision?.reason === reason && this._decision.keep
 			// 接続先の端末だけ。同じウィンドウの中の手元の端末を残しても、次に開いたときに
-			// 繋ぎ直す相手が居ない（手元の pty host に孤児として残るだけになる）。
-			&& terminal.hasRemoteAuthority
-			&& terminal.shouldPersist;
+			// 繋ぎ直す相手が居ない（手元の pty host に孤児として残るだけになる）。判定そのものは
+			// この PC の常駐側と同じ場所に置いてある（2つが同時に true にならないことを、
+			// 表にして固定できるようにするため）。
+			&& paradisRemoteHandlesTerminal(this.environmentService.remoteAuthority !== undefined, terminal);
 	}
 
 	/**
