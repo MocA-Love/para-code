@@ -22,6 +22,7 @@ import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { IParadisPtyDaemonControl, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
+import { paradisAuthenticateDaemon } from '../node/paradisPtyDaemonAuth.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -134,7 +135,12 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 
 	async stop(): Promise<void> {
 		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
-		await this.askToStop(paths.socketPath);
+		const records = await paradisReadDaemonRecords(paths.ledgerDir);
+		const own = records.find(record => record.buildKey === paths.buildKey);
+		if (!own) {
+			return;
+		}
+		await this.askToStop(own.socketPath, own.token);
 	}
 
 	/**
@@ -152,7 +158,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 			this.logService.info(`[ParadisPtyDaemon] no ledger entry for pid ${pid} any more; nothing to stop`);
 			return;
 		}
-		await this.askToStop(record.socketPath);
+		await this.askToStop(record.socketPath, record.token);
 	}
 
 	/**
@@ -166,7 +172,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 * 繋がらない相手には**何もしない**。固まっているのか、番号が使い回されたのか、こちらからは
 	 * 区別できない。区別できないものを殺してよい理由が無い (`paradisJudgeUnreachableDaemon`)。
 	 */
-	private async askToStop(socketPath: string): Promise<void> {
+	private async askToStop(socketPath: string, token: string): Promise<void> {
 		const socket = await this.connect(socketPath);
 		if (!socket) {
 			this.logService.warn(`[ParadisPtyDaemon] nothing answered at ${socketPath}; leaving it alone`);
@@ -174,6 +180,12 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 		}
 		const client = SocketClient.fromSocket(socket, 'paradis-daemon-control');
 		try {
+			// 繋がっただけでは身元にならない。名乗り合いを通らない相手を止めに行かない
+			// (その名前を持っているのが誰なのか、こちらには分からない)。
+			if (!await paradisAuthenticateDaemon(client, token)) {
+				this.logService.warn(`[ParadisPtyDaemon] whatever answers at ${socketPath} is not one of ours; leaving it alone`);
+				return;
+			}
 			const control = ProxyChannel.toService<IParadisPtyDaemonControl>(client.getChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL));
 			// 返事は待てない。常駐は片付けてから `process.exit` するので、返事が返る前に
 			// 接続が切れる。届いたことは、繋がった時点で分かっている。

@@ -74,12 +74,20 @@ export function paradisCreatePtyHostStarter(
 		return inApp();
 	}
 
-	// Windows は当面ここで止める。名前付きパイプの名前空間はマシン全体で共有で、名前は
-	// userDataPath とビルドから他のユーザーにも計算できる。作るのに特権は要らず、**先に作った側が
-	// 持ち主**になるが、こちらは繋いだ相手を確かめていない。偽の相手に繋ぐと、ターミナルの
-	// 環境変数一式と全打鍵 (sudo のパスワード、ssh のパスフレーズ、貼り付けたトークン) を
-	// そのまま渡すことになる。ソケットの名前で身元を名乗らせる仕組みを入れるまでは開けない。
-	// unix は置き場所が 0700 なので、他のユーザーはそもそもファイルを作れない。
+	// Windows は当面ここで止める。
+	//
+	// 名前付きパイプの名前空間はマシン全体で共有で、名前は userDataPath とビルドから他のユーザー
+	// にも計算できる。作るのに特権は要らず、**先に作った側が持ち主**になる。unix は置き場所が
+	// 0700 なので、他のユーザーはそもそもファイルを作れない。
+	//
+	// 「偽物に繋いで全打鍵を渡す」方は、名乗り合い (`paradisPtyDaemonAuth`) で塞いである。
+	// **残っているのは、名乗り合いでは塞げない方**: `uv_pipe_connect` が接続時に
+	// `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` を付けていない場合、偽のサーバーは
+	// `ImpersonateNamedPipeClient` で**繋ぎに来たユーザーになりすませる**。なりすましは接続の
+	// 時点で成立するので、その後こちらが相手を拒んでも遅い。
+	//
+	// 開けてよいかは、Electron が同梱している libuv がそのフラグを付けているかで決まる。
+	// 付けていることを確かめるまでは開けない（付けていれば、ここを消すだけで済む）。
 	if (currentPlatform() === 'win32') {
 		logService.info('[ParadisPtyDaemon] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
 		return inApp();

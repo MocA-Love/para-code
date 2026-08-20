@@ -45,3 +45,33 @@ export interface IParadisPtyDaemonDescription {
 	readonly startedAt: number;
 	readonly terminalCount: number;
 }
+
+export const PARADIS_PTY_DAEMON_AUTH_CHANNEL = 'paradisPtyDaemonAuth';
+
+/**
+ * 常駐と、繋ぎに来た側が名乗り合う口。
+ *
+ * **繋がることは身元の証明にならない。** ソケットの名前は userDataPath とビルドから作っていて、
+ * その材料は同じマシンの他のユーザーにも計算できる。作るのに特権も要らず、先に作った側が
+ * 持ち主になる。unix では置き場所を 0700 にしてあるので他人はファイルを作れないが、Windows の
+ * 名前付きパイプにはその守りが無い。
+ *
+ * 偽物に繋ぐと何が渡るかというと、`createProcess` の引数にあるターミナルの環境変数一式と、
+ * `input` に流れる全打鍵 (sudo のパスワード、ssh のパスフレーズ、貼り付けたトークン) で、
+ * 出力の方は好きに捏造される。ソケットの向こうが本物であることを確かめないまま使ってよい
+ * 経路ではない。
+ *
+ * 確かめ方は、共有している秘密 (台帳に 0600 で置いた token) を**流さずに**、知っていることだけを
+ * 示し合う。互いに一度ずつ証明するので、偽のサーバーも偽のクライアントも弾ける。
+ */
+export interface IParadisPtyDaemonAuth {
+	/**
+	 * 名乗り合う。
+	 *
+	 * @param nonce 繋ぎに来た側が作る使い捨ての値。毎回変えること（変えないと、一度盗んだ
+	 *              やり取りをそのまま繰り返されて通ってしまう）。
+	 * @param clientProof 繋ぎに来た側の証明。token を知らなければ作れない。
+	 * @returns 常駐の側の証明。呼んだ側はこれを検証してから使うこと。
+	 */
+	authenticate(nonce: string, clientProof: string): Promise<string>;
+}

@@ -40,8 +40,10 @@ import { IPtyHostConnection, IPtyHostStarter } from '../../../../platform/termin
 import { UtilityProcess } from '../../../../platform/utilityProcess/electron-main/utilityProcess.js';
 import { IpcMainEvent } from 'electron';
 import { IParadisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
-import { paradisPtyDaemonEnv, PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
+import { paradisPtyDaemonEnv, PARADIS_PTY_DAEMON_LEDGER, PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
 import { PARADIS_DAEMON_TERMINAL_GRACE_TIME } from '../common/paradisPtyDaemonPolicy.js';
+import { paradisAuthenticateDaemon } from '../node/paradisPtyDaemonAuth.js';
+import { paradisReadDaemonRecords } from '../node/paradisPtyDaemonLedger.js';
 
 /** 起こしてから繋がるまで待つ上限。ここを超えたら常駐は諦める。 */
 const CONNECT_TIMEOUT = 20_000;
@@ -51,6 +53,15 @@ const CONNECT_RETRY_DELAY = 100;
 
 /** 橋渡しプロセスの入口。ビルドのエントリ一覧 (build/buildfile.ts) にも同じ名前が要る。 */
 const BRIDGE_ENTRY_POINT = 'vs/paradis/contrib/ptyDaemon/node/paradisPtyDaemonBridgeMain';
+
+/**
+ * 名乗り合いに失敗したあと、次に試すまで待つ時間。
+ *
+ * 失敗の意味は「その名前を別の誰かが持っている」で、繋ぎ直しても同じ相手に当たる。すぐ
+ * やり直すと、繋ぐ→拒む→やり直すの空回りになるので間を置く。永久に諦めないのは、常駐が
+ * 入れ替わる途中に当たっただけ、という可能性を残すため。
+ */
+const AUTH_FAILURE_COOLDOWN = 30_000;
 
 function paradisTryConnect(socketPath: string): Promise<NodeSocket | undefined> {
 	return new Promise<NodeSocket | undefined>(resolve => {
@@ -90,6 +101,9 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	 * 返らなくなる。
 	 */
 	private daemonReady: Promise<void> | undefined;
+
+	/** 最後に名乗り合いを断られた時刻。空回りを止めるためだけに持つ。 */
+	private lastAuthFailureAt = 0;
 
 	constructor(
 		private readonly reconnectConstants: IReconnectConstants,
@@ -140,7 +154,32 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		if (!socket) {
 			throw new Error(`the pty daemon stopped answering on ${this.paths.socketPath}`);
 		}
-		return SocketClient.fromSocket(socket, 'main');
+		const client = SocketClient.fromSocket(socket, 'main');
+		if (!await this.isGenuine(client)) {
+			client.dispose();
+			this.lastAuthFailureAt = Date.now();
+			// **繋がったことを身元だと思わない。** ソケットの名前は他のユーザーにも計算でき、
+			// 先に作った側が持ち主になる。偽物へ繋ぐと、ターミナルの環境変数一式と全打鍵が
+			// そのまま渡る。確かめられない相手は使わない。
+			throw new Error(`whatever is listening on ${this.paths.socketPath} is not this build's pty daemon`);
+		}
+		return client;
+	}
+
+	/**
+	 * 繋いだ相手が本物か。台帳に置いた身元を、流さずに示し合って確かめる。
+	 *
+	 * 台帳が読めない・自分のビルドの記録が無いときは確かめようがないので false。ここを
+	 * 「読めないから通す」にすると、確かめる仕組み自体が無いのと同じになる。
+	 */
+	private async isGenuine(client: SocketClient<string>): Promise<boolean> {
+		const records = await paradisReadDaemonRecords(this.paths.ledgerDir);
+		const own = records.find(record => record.buildKey === this.paths.buildKey);
+		if (!own) {
+			this.logService.warn(`[ParadisPtyDaemon] no ledger entry for this build; cannot tell who is on ${this.paths.socketPath}`);
+			return false;
+		}
+		return paradisAuthenticateDaemon(client, own.token);
 	}
 
 	/**
@@ -163,6 +202,9 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	}
 
 	private async startDaemonIfNeeded(): Promise<void> {
+		if (Date.now() - this.lastAuthFailureAt < AUTH_FAILURE_COOLDOWN) {
+			throw new Error(`not retrying ${this.paths.socketPath} yet; the last handshake was refused`);
+		}
 		const existing = await paradisTryConnect(this.paths.socketPath);
 		if (existing) {
 			existing.dispose();
@@ -281,6 +323,9 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			}
 		}
 		env[PARADIS_PTY_DAEMON_SOCKET] = this.paths.socketPath;
+		// 橋も相手が本物かを確かめる。token は台帳から読むので、その場所を渡す
+		// (token そのものを環境変数で渡すと、`ps` から見えるプラットフォームがある)。
+		env[PARADIS_PTY_DAEMON_LEDGER] = this.paths.ledgerFile;
 		env['VSCODE_ESM_ENTRYPOINT'] = BRIDGE_ENTRY_POINT;
 
 		const bridge = new UtilityProcess(this.logService, NullTelemetryService, this.lifecycleMainService);

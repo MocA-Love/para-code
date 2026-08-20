@@ -29,7 +29,8 @@ import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IPtyService } from '../../../../platform/terminal/common/terminal.js';
 import { IParadisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
-import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
+import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_AUTH_CHANNEL, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
+import { ParadisPtyDaemonAuth, paradisCreateDaemonToken } from './paradisPtyDaemonAuth.js';
 import { paradisShouldDaemonExit } from '../common/paradisPtyDaemonPolicy.js';
 import { paradisRemoveDaemonRecord, paradisWriteDaemonRecord } from './paradisPtyDaemonLedger.js';
 
@@ -60,6 +61,14 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 	private startedAt = 0;
 	private exiting = false;
 
+	/**
+	 * この常駐の身元。**台帳にしか書かない**（引数やプロセス一覧に出さない）。
+	 *
+	 * 環境変数で渡さないのは、`ps` や `/proc` から他のユーザーに見えるプラットフォームが
+	 * あるため。台帳なら 0600 で守れる。
+	 */
+	private readonly token = paradisCreateDaemonToken();
+
 	constructor(private readonly options: IParadisPtyDaemonLifecycleOptions) {
 		super();
 		this.idleSince = this.now();
@@ -68,6 +77,8 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 		// 用意する (理由は paradisPtyDaemonControl.ts)。
 		const channelStore = this._register(new DisposableStore());
 		options.connections.registerChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL, ProxyChannel.fromService<string>(this, channelStore));
+		// 名乗り合う口。繋ぎに来た側はここを通ってから本題に入る。
+		options.connections.registerChannel(PARADIS_PTY_DAEMON_AUTH_CHANNEL, ProxyChannel.fromService<string>(new ParadisPtyDaemonAuth(this.token), channelStore));
 
 		this._register(options.connections.onDidAddConnection(() => this.onConnectionsChanged()));
 		this._register(options.connections.onDidRemoveConnection(() => this.onConnectionsChanged()));
@@ -95,6 +106,7 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 			buildId: this.options.env.buildId,
 			buildKey: this.options.env.buildKey,
 			startedAt: this.startedAt,
+			token: this.token,
 		});
 		this.options.logService.info(`[ParadisPtyDaemon] listening on ${this.options.env.socketPath} (${this.options.env.buildId})`);
 	}
