@@ -12,6 +12,8 @@ import { IRemoteConnectionData, RemoteConnectionType } from '../../../platform/r
 import { IRemoteSocketFactoryService } from '../../../platform/remote/common/remoteSocketFactoryService.js';
 import { nodeSocketFactory } from '../../../platform/remote/node/nodeSocketFactory.js';
 import { TunnelProxy } from '../../../platform/tunnel/node/tunnelProxy.js';
+// PARA-PATCH: bound the remote agent tunnel handshake so a wedged remote cannot hang the browser view's proxy connections forever
+import { paraConnectTunnelWithTimeout } from '../../../platform/tunnel/common/paraTunnelConnect.js';
 import { MainContext, MainThreadBrowserTunnelProxyShape } from '../common/extHost.protocol.js';
 import { IExtHostBrowserTunnelProxy } from '../common/extHostBrowserTunnelProxy.js';
 import { IExtHostExtensionService } from '../common/extHostExtensionService.js';
@@ -118,7 +120,8 @@ export class NodeExtHostBrowserTunnelProxy extends Disposable implements IExtHos
 	private _start(): void {
 		const options = this._createConnectionOptions();
 		const tunnelProxy = new TunnelProxy(
-			(host, port) => connectRemoteAgentTunnel(options, host, port),
+			// PARA-PATCH: bound the handshake. `connectRemoteAgentTunnel` waits forever for the remote agent's control message; a wedged remote would otherwise hold the browser's CONNECT socket open with no response (an endless spinner, since `did-fail-load` never fires) and permanently occupy one of the proxy's concurrent-connect slots.
+			(host, port) => paraConnectTunnelWithTimeout(() => connectRemoteAgentTunnel(options, host, port), `${host}:${port}`, this._logService),
 			this._logService,
 		);
 		const startPromise: Promise<void> = tunnelProxy.start().then(info => {
