@@ -6,12 +6,12 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Schemas } from '../../../../base/common/network.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSpace, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
 
 const MAX_MERGED_SESSIONS = 600;
@@ -52,7 +52,9 @@ export class ParadisSessionResumeClient {
 		@ILogService private readonly logService: ILogService,
 	) { }
 
-	private hosts(): { local: IChannel; remote?: { channel: IChannel; authority: string } } {
+	// `remoteAuthority` という名前で持つのは、そのまま `paradisResolveHostPath` の接続情報として
+	// 渡せるようにするため（接続先の同定とパスの綴りを別々に書き下さない）。
+	private hosts(): { local: IChannel; remote?: { channel: IChannel; remoteAuthority: string } } {
 		const local = this.sharedProcessService.getChannel(PARADIS_SESSION_RESUME_CHANNEL);
 		const connection = this.remoteAgentService.getConnection();
 		if (!connection) {
@@ -60,7 +62,7 @@ export class ParadisSessionResumeClient {
 		}
 		return {
 			local,
-			remote: { channel: connection.getChannel(PARADIS_SESSION_RESUME_CHANNEL), authority: connection.remoteAuthority.toLowerCase() },
+			remote: { channel: connection.getChannel(PARADIS_SESSION_RESUME_CHANNEL), remoteAuthority: connection.remoteAuthority.toLowerCase() },
 		};
 	}
 
@@ -69,14 +71,18 @@ export class ParadisSessionResumeClient {
 		const localSpaces: IParadisResumeSpace[] = [];
 		const remoteSpaces: IParadisResumeSpace[] = [];
 		for (const space of request.spaces) {
-			if (space.uri.scheme === Schemas.file) {
-				localSpaces.push({ stateKey: space.stateKey, name: space.name, cwd: space.uri.fsPath, current: space.current });
-			} else if (remote !== undefined && space.uri.scheme === Schemas.vscodeRemote && space.uri.authority.toLowerCase() === remote.authority) {
-				remoteSpaces.push({ stateKey: space.stateKey, name: space.name, cwd: space.uri.path, current: space.current });
+			// 別ホストの vscode-remote、または未接続なのに vscode-remote なスペースは、どちらの
+			// マシンのものとも確証が持てないため、手元へ流さずスキップする（undefined が返る）。
+			// fsPath は vscode-remote でもパスをそのまま返してしまい、無関係な手元の同名パスを
+			// 拾いかねない。
+			const resolved = paradisResolveHostPath(space.uri, remote);
+			if (!resolved) {
+				// 黙って落とすと「スペースはあるのに履歴だけ出ない」の切り分けができないので痕跡を残す。
+				this.logService.trace(`[ParadisSessionResume] skipping a space that belongs to no reachable machine: ${space.uri.toString()}`);
+				continue;
 			}
-			// それ以外（別ホストの vscode-remote、または未接続なのに vscode-remote なスペース）は
-			// どちらのマシンのものとも確証が持てないため、手元へ流さずスキップする（fsPath は
-			// vscode-remote でもパスをそのまま返してしまい、無関係な手元の同名パスを拾いかねない）。
+			const resumeSpace: IParadisResumeSpace = { stateKey: space.stateKey, name: space.name, cwd: resolved.path, current: space.current };
+			(resolved.host === 'remote' ? remoteSpaces : localSpaces).push(resumeSpace);
 		}
 		// 「呼び出さなかった（該当スペースが無い）」と「呼び出して失敗した」を区別するため、実際に
 		// 呼び出したものだけを集める。区別しないと、片方のマシンにしかスペースが無い構成で、その

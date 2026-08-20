@@ -25,7 +25,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
+import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
@@ -359,7 +359,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						//    いる」という主張なので、2段目を黙って付けず、誰が掴んでいるのかを見せたうえで
 						//    unlock の同意を取る
 						// ロックの判定に git のエラー文言を使わないのは、それが翻訳対象で環境依存のため。
-						const lock = await channel.call<IParadisWorktreeLockInfo>('readWorktreeLock', [{ repoPath: removeRequest.repoPath, worktreePath: removeRequest.worktreePath }])
+						const lockQuery: IParadisWorktreeLockQuery = { repoPath: removeRequest.repoPath, worktreePath: removeRequest.worktreePath };
+						const lock = await channel.call<IParadisWorktreeLockInfo>('readWorktreeLock', [lockQuery])
 							.catch(() => ({ locked: false, reason: '' }));
 						// ロックが理由とは限らない（掴んでいるプロセス、権限、ネットワークボリューム等）。
 						// locked 側はダイアログに元のエラーを載せないので、調査できるようログへ残す。

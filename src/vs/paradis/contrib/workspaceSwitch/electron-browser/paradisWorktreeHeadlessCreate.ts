@@ -38,6 +38,7 @@ import {
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
+	IParadisAddWorktreeRequest,
 	IParadisAgentCommandTemplate,
 	IParadisGitBranches,
 	PARADIS_DEFAULT_AGENT_COMMANDS,
@@ -534,12 +535,13 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const worktreeUri = computeWorktreeUri(configurationService, repository, dirName);
 	// ダイアログ実装と同じく、これから作るターミナルを常にこのworktreeへ明示的に紐付ける
 	const targetStateKey = paradisWorktreeStateKey(worktreeUri);
-	await gitHost.channel.call('addWorktree', [{
+	const addRequest: IParadisAddWorktreeRequest = {
 		repoPath: gitHost.path(repository.uri),
 		worktreePath: gitHost.path(worktreeUri),
 		newBranch: branch,
 		baseRef,
-	}]);
+	};
+	await gitHost.channel.call('addWorktree', [addRequest]);
 
 	const createdWorktree: IParadisWorktree = {
 		repositoryId: repository.id,

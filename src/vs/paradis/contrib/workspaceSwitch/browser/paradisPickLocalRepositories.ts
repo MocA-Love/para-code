@@ -32,6 +32,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { PARADIS_CLONE_PARENT_DIR_SETTING } from '../common/paradisRepositoryClone.js';
+import { paradisHostPathFor } from '../../../common/paradisHostPath.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 
 /**
@@ -413,7 +414,13 @@ async function browseForFolders(context: IParadisLocalRepositoryPickContext, sch
 	return uris ?? [];
 }
 
-/** 画面に出すパス。接続先のパスは fsPath に通すと Windows 側の区切りに化けるので path を使う。 */
+/**
+ * 画面に出すパス。接続先のパスは fsPath に通すと Windows 側の区切りに化けるので path を使う。
+ *
+ * 表示専用だが、綴りの規則そのものは `paradisHostPathFor` に一本化してある（規則を手書きで
+ * 複製しないため）。`vscode-vfs:` 等どちらのマシンとも確証が持てないものも一覧には出したいので、
+ * ここでは `paradisResolveHostPath` ではなく scheme から直接ホストを決める。
+ */
 function displayPath(uri: URI): string {
-	return uri.scheme === Schemas.file ? uri.fsPath : uri.path;
+	return paradisHostPathFor(uri, uri.scheme === Schemas.file ? 'local' : 'remote');
 }

@@ -37,6 +37,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { paradisCollectAllTerminalInstances, paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
+import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
@@ -1868,9 +1869,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 				// git: スキームの FileSystemProvider は git 拡張（workspace kind）が処理するため、
 				// SSH 接続中はリモート側で解決される。fsPath は常にこのウィンドウ（ローカル）の
-				// OS で区切りを付け替えるため、接続先へ渡すと区切りが化ける。
-				const modifiedGitQueryPath = modified.scheme === Schemas.file ? modified.fsPath : modified.path;
-				const original = modified.with({ scheme: 'git', query: JSON.stringify({ path: modifiedGitQueryPath, ref: 'HEAD' }) });
+				// OS で区切りを付け替えるため、接続先へ渡すと区切りが化ける。綴りは
+				// paradisResolveHostPath に一本化してある。
+				const resolvedModified = paradisResolveHostPath(modified, this.remoteAgentService?.getConnection() ?? undefined);
+				if (!resolvedModified) {
+					reply({ error: `unreachable path: ${msg.path}` });
+					return;
+				}
+				const original = modified.with({ scheme: 'git', query: JSON.stringify({ path: resolvedModified.path, ref: 'HEAD' }) });
 				const html = await renderSpreadsheetDiffMobileHtml(this.fileService, this.sharedProcessService, original, modified, 'HEAD', '作業ツリー');
 				await replyCompressed({ t: 'xlsxDiff', html });
 			} else if (msg.t === 'log') {

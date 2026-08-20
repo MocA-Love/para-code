@@ -15,6 +15,7 @@ import { TestInstantiationService } from '../../../../../platform/instantiation/
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { GeneralShellType, ITerminalEnvironment, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
+import { paradisHostPathFor } from '../../../../common/paradisHostPath.js';
 import { paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
 import {
 	IParadisPresetDefinition,
@@ -32,6 +33,10 @@ import {
 } from '../../common/paradisTerminalPresets.js';
 
 const TEST_FOLDER = URI.file('/repo-worktrees/feature');
+// 親リポジトリのパスは「プリセットが動くマシンから見た綴り」で渡す規約（paradisHostPathFor）。
+// 接続先の綴りを使うのは、どのプラットフォームで走らせても '/repo' のままにするため
+// （URI.file('/repo').fsPath は Windows ではバックスラッシュ区切りになり、期待値が揺れる）。
+const TEST_REPO_PATH = paradisHostPathFor(URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/repo' }), 'remote');
 
 function createPreset(name: string): IParadisResolvedPreset {
 	return { key: `user:${name}`, name, commands: [`run-${name}`], source: 'user', sourceIndex: 0, autoRun: true };
@@ -74,7 +79,7 @@ suite('paradisRunAutoRunPresets', () => {
 	test('preserves partial success and continues after a preset fails', async () => {
 		const { instantiationService, runs, forceNewTerminal } = createInstantiationService(new Set(['second']));
 
-		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
+		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH);
 
 		assert.deepStrictEqual({ ranAny, runs, forceNewTerminal }, {
 			ranAny: true,
@@ -86,7 +91,7 @@ suite('paradisRunAutoRunPresets', () => {
 	test('returns false when every preset fails', async () => {
 		const { instantiationService, runs } = createInstantiationService(new Set(['first', 'second', 'third']));
 
-		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
+		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH);
 
 		assert.deepStrictEqual({ ranAny, runs }, { ranAny: false, runs: ['first', 'second', 'third'] });
 	});
@@ -97,7 +102,7 @@ suite('paradisRunAutoRunPresets', () => {
 			new Set(['second']),
 		);
 
-		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
+		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH);
 
 		assert.deepStrictEqual({ ranAny, runs }, { ranAny: true, runs: ['first', 'second', 'third'] });
 	});
@@ -105,7 +110,7 @@ suite('paradisRunAutoRunPresets', () => {
 	test('forwards the explicit stateKey to every preset run, so terminals are tagged to the target scope regardless of what is active on the PC when they finish starting', async () => {
 		const { instantiationService, stateKeys } = createInstantiationService(new Set());
 
-		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo', 'worktree:test-scope');
+		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH, 'worktree:test-scope');
 
 		assert.deepStrictEqual(stateKeys, ['worktree:test-scope', 'worktree:test-scope', 'worktree:test-scope']);
 	});
@@ -113,7 +118,7 @@ suite('paradisRunAutoRunPresets', () => {
 	test('forwards the parent repository path to every preset run, so commands can reach the parent repository the same way setup scripts do', async () => {
 		const { instantiationService, envs } = createInstantiationService(new Set());
 
-		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
+		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH);
 
 		assert.deepStrictEqual(envs, Array(3).fill({ [PARADIS_PROJECT_ROOT_ENV_VAR]: '/repo' }));
 	});

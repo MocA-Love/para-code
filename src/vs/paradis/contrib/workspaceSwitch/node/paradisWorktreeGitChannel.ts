@@ -46,7 +46,7 @@ import { ParadisCommandArgument, paradisBuildWslInvocationArgs, paradisMergeWslE
  * ボリュームまで落とす `docker compose down --rmi all --volumes` のように、既定では
  * 足りない後片付けがあるため）。
  */
-function paradisLifecycleScriptTimeoutMs(request: IParadisRunLifecycleScriptRequest): number {
+function paradisLifecycleScriptTimeoutMs(request: IParadisRunLifecycleScriptRequest<string>): number {
 	return paradisResolveLifecycleTimeoutMinutes(request.timeoutMinutes) * 60_000;
 }
 
@@ -468,7 +468,10 @@ export class ParadisWorktreeGitService {
 	}
 
 	/** git worktree add --no-track -b <newBranch> <worktreePath> <baseRef> を実行する。 */
-	async addWorktree(request: IParadisAddWorktreeRequest): Promise<void> {
+	// リクエスト型に `<string>` を明示しているのは、ここが電文を受け取る側だからで、意味がある。
+	// 共有の型の既定は `ParadisHostPath`（送る側が綴りの規則を通したことの印）で、素の文字列を
+	// 扱えるのは検証するこちら側だけ。詳細は src/vs/paradis/common/paradisHostPath.ts を参照。
+	async addWorktree(request: IParadisAddWorktreeRequest<string>): Promise<void> {
 		// IPC 境界の防御: 呼び出し側でサニタイズ済みだが、位置引数が git のオプションとして
 		// 解釈されないことをここでも保証する（execFile なのでシェル注入は元々不可）
 		for (const value of [request.newBranch, request.worktreePath, request.baseRef]) {
@@ -492,10 +495,10 @@ export class ParadisWorktreeGitService {
 	 *
 	 * `unlock` が立っている場合は先に `git worktree unlock` を試す。ロック済みの作業ツリーは
 	 * `--force` を1つ付けても消えず、git は `-f -f` を要求するため（詳細は
-	 * {@link IParadisRemoveWorktreeRequest.unlock}）。`-f` を2つ渡す代わりに unlock を挟むのは、
+	 * {@link IParadisRemoveWorktreeRequest<string>.unlock}）。`-f` を2つ渡す代わりに unlock を挟むのは、
 	 * ロックの解除という取り消せない操作を、呼び出し側がユーザーの同意を得た場合だけに限るため。
 	 */
-	async removeWorktree(request: IParadisRemoveWorktreeRequest): Promise<void> {
+	async removeWorktree(request: IParadisRemoveWorktreeRequest<string>): Promise<void> {
 		// IPC 境界の防御: 位置引数が git のオプションとして解釈されないことを保証する
 		if (typeof request.worktreePath !== 'string' || request.worktreePath.length === 0 || request.worktreePath.startsWith('-')) {
 			throw new Error(`Invalid argument: ${String(request.worktreePath)}`);
@@ -554,7 +557,7 @@ export class ParadisWorktreeGitService {
 	 * 判定に git のエラー文言を使わないのは、それが翻訳対象で環境の locale に左右されるため。
 	 * `--porcelain` は機械可読で翻訳されない。
 	 */
-	async readWorktreeLock(request: IParadisWorktreeLockQuery): Promise<IParadisWorktreeLockInfo> {
+	async readWorktreeLock(request: IParadisWorktreeLockQuery<string>): Promise<IParadisWorktreeLockInfo> {
 		const notLocked: IParadisWorktreeLockInfo = { locked: false, reason: '' };
 		if (typeof request.worktreePath !== 'string' || request.worktreePath.length === 0) {
 			return notLocked;
@@ -616,7 +619,7 @@ export class ParadisWorktreeGitService {
 	 * リポジトリ定義の setup/teardown スクリプトを、対象 worktree を cwd として解決済みシェルで実行する。
 	 * 環境変数 PARACODE_PROJECT_ROOT_PATH に親リポジトリの絶対パスを渡す。
 	 */
-	async runLifecycleScript(request: IParadisRunLifecycleScriptRequest): Promise<void> {
+	async runLifecycleScript(request: IParadisRunLifecycleScriptRequest<string>): Promise<void> {
 		if (!request.script.trim() || !request.repoPath || !request.worktreePath) {
 			throw new Error('Invalid lifecycle script request.');
 		}
@@ -707,7 +710,7 @@ export class ParadisWorktreeGitService {
 	 * {@link cancelClonesFor} で畳める。省略すると誰のものでもない clone になり、
 	 * サービスが畳まれるまで走り続ける。
 	 */
-	async cloneRepository(request: IParadisCloneRepositoryRequest, owner?: ParadisCloneOwner): Promise<void> {
+	async cloneRepository(request: IParadisCloneRepositoryRequest<string>, owner?: ParadisCloneOwner): Promise<void> {
 		const { url, targetPath, cloneId } = request ?? {};
 		// IPC 境界の防御: 位置引数が git のオプションとして解釈されないことを保証する
 		// (url は '--' の後ろに置くが、多層防御として '-' 始まりも拒否する)
@@ -964,16 +967,16 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 		switch (command) {
 			// ctx をそのまま渡すのは、これが接続の間ずっと同じ値だから。接続が消えたときに
 			// 「その接続が始めた clone」を選び出す印になる（登録側の onDidRemoveConnection 参照）。
-			case 'cloneRepository': return this.service.cloneRepository(args[0] as IParadisCloneRepositoryRequest, ctx) as Promise<T>;
+			case 'cloneRepository': return this.service.cloneRepository(args[0] as IParadisCloneRepositoryRequest<string>, ctx) as Promise<T>;
 			case 'cancelClone': return Promise.resolve(this.service.cancelClone(String(args[0]))) as Promise<T>;
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
-			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
+			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest<string>) as Promise<T>;
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'getPrStatus': return this.service.getPrStatus(String(args[0])) as Promise<T>;
 			case 'getIssueStatuses': return this.service.getIssueStatuses(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
-			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
-			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery) as Promise<T>;
-			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest) as Promise<T>;
+			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest<string>) as Promise<T>;
+			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery<string>) as Promise<T>;
+			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest<string>) as Promise<T>;
 			case 'runGit': return this.service.runGit(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);

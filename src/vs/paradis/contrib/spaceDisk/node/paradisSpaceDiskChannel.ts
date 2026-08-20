@@ -146,7 +146,10 @@ interface ICacheEntry {
  * 順序は呼ぶ側の都合で変わりうるので、構造を正規化してから JSON 化する。
  * 区切り文字による連結では、値自身に同じ文字が含まれたときに異なる構造が衝突する。
  */
-function signatureOf(targets: readonly IParadisSpaceDiskTarget[]): string {
+// 以降 `<string>` を明示しているのは、ここが電文を受け取る側だからで、意味がある。
+// 共有の型の既定は `ParadisHostPath`（送る側が綴りの規則を通したことの印）で、素の文字列を
+// 扱えるのは検証するこちら側だけ。詳細は src/vs/paradis/common/paradisHostPath.ts を参照。
+function signatureOf(targets: readonly IParadisSpaceDiskTarget<string>[]): string {
 	const normalizedTargets = targets.map(target => ({
 		stateKey: target.stateKey,
 		// 表示名も署名に含める。含めないと、リポジトリや worktree をリネームしても
@@ -161,11 +164,11 @@ function signatureOf(targets: readonly IParadisSpaceDiskTarget[]): string {
 	return JSON.stringify(normalizedTargets);
 }
 
-function payloadCost(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget[]): number {
+function payloadCost(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget<string>[]): number {
 	return Buffer.byteLength(JSON.stringify({ ownerId, active, targets }), 'utf8');
 }
 
-function warmLeaseMetrics(ownerId: string, targets: readonly IParadisSpaceDiskTarget[]): IWarmLeaseMetrics {
+function warmLeaseMetrics(ownerId: string, targets: readonly IParadisSpaceDiskTarget<string>[]): IWarmLeaseMetrics {
 	return {
 		targetCount: targets.length,
 		worktreeCount: targets.reduce((total, target) => total + target.worktrees.length, 0),
@@ -221,7 +224,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		this.warmLeaseListener = this.warmLeaseTracker.onDidChange(() => this.syncWarmTimer());
 	}
 
-	setWarmLease(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget[]): void {
+	setWarmLease(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget<string>[]): void {
 		if (this.disposed) {
 			return;
 		}
@@ -245,7 +248,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		});
 	}
 
-	async measure(targets: readonly IParadisSpaceDiskTarget[], bypassCache = false): Promise<IParadisSpaceDiskResult> {
+	async measure(targets: readonly IParadisSpaceDiskTarget<string>[], bypassCache = false): Promise<IParadisSpaceDiskResult> {
 		const signature = signatureOf(targets);
 		// 諦めた対象を再開してよいのは、ユーザーが明示的に測り直したときだけ。
 		// 画面を開くたびにリセットすると、失敗し続ける環境で永久にリトライすることになる。
@@ -332,7 +335,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 	 * 防ぐための門であり、今は**数分かけて完走した正しい計測を捨てるだけ**になる。裏の周回が
 	 * 走っている最中に別のウィンドウが lease を更新すると世代が上がるので、これは日常的に起きる。
 	 */
-	private run(targets: readonly IParadisSpaceDiskTarget[], signature: string): Promise<IParadisSpaceDiskResult> {
+	private run(targets: readonly IParadisSpaceDiskTarget<string>[], signature: string): Promise<IParadisSpaceDiskResult> {
 		const inflight = this.inflight;
 		if (inflight && this.inflightSignature === signature) {
 			return inflight;
@@ -370,7 +373,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		return promise;
 	}
 
-	private async doMeasure(targets: readonly IParadisSpaceDiskTarget[]): Promise<IParadisSpaceDiskResult> {
+	private async doMeasure(targets: readonly IParadisSpaceDiskTarget<string>[]): Promise<IParadisSpaceDiskResult> {
 		const started = this.now();
 		const spaces: IParadisSpaceDiskEntry[] = [];
 
@@ -395,7 +398,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		return { spaces, measuredAt, durationMs: measuredAt - started };
 	}
 
-	private async measureOne(target: IParadisSpaceDiskTarget): Promise<IParadisSpaceDiskEntry> {
+	private async measureOne(target: IParadisSpaceDiskTarget<string>): Promise<IParadisSpaceDiskEntry> {
 		const worktrees: IParadisSpaceDiskWorktreeEntry[] = [];
 		// 親の中にある worktree だけを親の集計から外す。外に置かれているものは
 		// そもそも親を歩いても出てこないので引いてはいけない(引くと本体が小さく出る)。
@@ -582,7 +585,7 @@ export class ParadisSpaceDiskChannel<TContext = string> implements IServerChanne
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'measure': {
-				const targets = (args[0] ?? []) as IParadisSpaceDiskTarget[];
+				const targets = (args[0] ?? []) as IParadisSpaceDiskTarget<string>[];
 				const bypassCache = args[1] === true;
 				return this.service.measure(targets, bypassCache) as Promise<T>;
 			}
@@ -592,7 +595,7 @@ export class ParadisSpaceDiskChannel<TContext = string> implements IServerChanne
 	}
 }
 
-function parseWarmLeasePayload(arg: unknown): ParadisSpaceDiskWarmLeasePayload {
+function parseWarmLeasePayload(arg: unknown): ParadisSpaceDiskWarmLeasePayload<string> {
 	if (!isExactPlainArray(arg) || arg.length !== 1 || !isExactPlainRecord(arg[0], ['ownerId', 'active', 'targets'])) {
 		throw new Error('Invalid setWarmLease arguments');
 	}
@@ -611,7 +614,7 @@ function parseWarmLeasePayload(arg: unknown): ParadisSpaceDiskWarmLeasePayload {
 	}
 
 	let worktreeCount = 0;
-	const targets: IParadisSpaceDiskTarget[] = [];
+	const targets: IParadisSpaceDiskTarget<string>[] = [];
 	for (const value of payload.targets) {
 		const target = parseWarmTarget(value);
 		worktreeCount += target.worktrees.length;
@@ -626,7 +629,7 @@ function parseWarmLeasePayload(arg: unknown): ParadisSpaceDiskWarmLeasePayload {
 	return { ownerId: payload.ownerId, active: payload.active, targets };
 }
 
-function parseWarmTarget(value: unknown): IParadisSpaceDiskTarget {
+function parseWarmTarget(value: unknown): IParadisSpaceDiskTarget<string> {
 	if (!isExactPlainRecord(value, ['stateKey', 'name', 'path', 'worktrees'])
 		|| !isBoundedString(value.stateKey)
 		|| !isBoundedString(value.name)
@@ -635,11 +638,11 @@ function parseWarmTarget(value: unknown): IParadisSpaceDiskTarget {
 		|| value.worktrees.length > WARM_LEASE_MAX_WORKTREES_PER_TARGET) {
 		throw new Error('Invalid warm lease target');
 	}
-	const worktrees: IParadisSpaceDiskWorktree[] = value.worktrees.map(parseWarmWorktree);
+	const worktrees: IParadisSpaceDiskWorktree<string>[] = value.worktrees.map(parseWarmWorktree);
 	return { stateKey: value.stateKey, name: value.name, path: value.path, worktrees };
 }
 
-function parseWarmWorktree(value: unknown): IParadisSpaceDiskWorktree {
+function parseWarmWorktree(value: unknown): IParadisSpaceDiskWorktree<string> {
 	if (!isExactPlainRecord(value, ['stateKey', 'name', 'path'])
 		|| !isBoundedString(value.stateKey)
 		|| !isBoundedString(value.name)

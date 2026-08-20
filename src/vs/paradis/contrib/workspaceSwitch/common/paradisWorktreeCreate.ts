@@ -16,6 +16,7 @@ import { isLinux } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { GeneralShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { ParadisWorkspaceLifecycleKind } from './paradisWorkspaceLifecycle.js';
 
 /** shared process 上で git worktree 操作を行う IPC チャネル名。 */
@@ -29,12 +30,18 @@ export interface IParadisGitBranches {
 	readonly head: string | undefined;
 }
 
-/** git worktree add の要求。パスはすべてネイティブファイルシステムパス。 */
-export interface IParadisAddWorktreeRequest {
+/**
+ * git worktree add の要求。パスはすべて「git を動かすマシン」から見たパス。
+ *
+ * 既定の `TPath` は {@link ParadisHostPath}。**送る側（renderer）は何も書き足さなくてよく**、
+ * パスを `IParadisWorktreeGitHost.path()` 経由で作らない限り型エラーになる。
+ * 電文を受け取る側（node）だけが `IParadisAddWorktreeRequest<string>` と明示して素の文字列を扱う。
+ */
+export interface IParadisAddWorktreeRequest<TPath extends string = ParadisHostPath> {
 	/** 親リポジトリのルートパス。 */
-	readonly repoPath: string;
+	readonly repoPath: TPath;
 	/** 作成する worktree のディレクトリパス（未存在であること）。 */
-	readonly worktreePath: string;
+	readonly worktreePath: TPath;
 	/** 新規作成するブランチ名。 */
 	readonly newBranch: string;
 	/** 分岐元 ref（ブランチ名・タグ・SHA）。 */
@@ -105,14 +112,14 @@ export function paradisParseGhPrStatus(stdout: string, currentBranch: string): I
 	return { number: pr.number, title: typeof pr.title === 'string' ? pr.title : '', url: pr.url, state };
 }
 
-/** リポジトリ定義の setup/teardown スクリプトを worktree 上で実行する要求。 */
-export interface IParadisRunLifecycleScriptRequest {
+/** リポジトリ定義の setup/teardown スクリプトを worktree 上で実行する要求。`TPath` は {@link IParadisAddWorktreeRequest} と同じ意味。 */
+export interface IParadisRunLifecycleScriptRequest<TPath extends string = ParadisHostPath> {
 	/** 実行するスクリプトの種別。 */
 	readonly kind: ParadisWorkspaceLifecycleKind;
 	/** 親リポジトリのルートパス（PARACODE_PROJECT_ROOT_PATH に渡す）。 */
-	readonly repoPath: string;
+	readonly repoPath: TPath;
 	/** スクリプトを実行する worktree のディレクトリパス（cwd になる）。 */
-	readonly worktreePath: string;
+	readonly worktreePath: TPath;
 	/** シェル経由で実行するスクリプト本文。 */
 	readonly script: string;
 	/**
@@ -122,12 +129,12 @@ export interface IParadisRunLifecycleScriptRequest {
 	readonly timeoutMinutes?: number;
 }
 
-/** git worktree remove の要求。パスはすべてネイティブファイルシステムパス。 */
-export interface IParadisRemoveWorktreeRequest {
+/** git worktree remove の要求。`TPath` は {@link IParadisAddWorktreeRequest} と同じ意味。 */
+export interface IParadisRemoveWorktreeRequest<TPath extends string = ParadisHostPath> {
 	/** 親リポジトリのルートパス。 */
-	readonly repoPath: string;
+	readonly repoPath: TPath;
 	/** 削除対象の worktree のディレクトリパス。 */
-	readonly worktreePath: string;
+	readonly worktreePath: TPath;
 	/** true の場合 `git worktree remove --force`（未コミット変更や未追跡ファイルがあっても強制削除）。 */
 	readonly force: boolean;
 	/**
@@ -162,9 +169,9 @@ export interface IParadisWorktreeLockInfo {
 }
 
 /** ロック状態を問い合わせる要求（読み取り専用なので削除要求とは別の型にする）。 */
-export interface IParadisWorktreeLockQuery {
-	readonly repoPath: string;
-	readonly worktreePath: string;
+export interface IParadisWorktreeLockQuery<TPath extends string = ParadisHostPath> {
+	readonly repoPath: TPath;
+	readonly worktreePath: TPath;
 }
 
 /** ロック理由を確認ダイアログに載せる上限。これを超えたぶんは切る。 */

@@ -36,6 +36,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisLocalRepositoryPickContext, paradisPickAndAddLocalRepositories } from '../browser/paradisPickLocalRepositories.js';
+import { paradisHostPathFor } from '../../../common/paradisHostPath.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID, PARADIS_CLONE_PARENT_DIR_SETTING, paradisParseGitUrl } from '../common/paradisRepositoryClone.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
@@ -385,8 +386,12 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 					}));
 					// 接続先へ渡すパスに fsPath を使ってはいけない。fsPath はこのウィンドウが動いている
 					// OS を見て区切りを付け替えるので、Windows から Linux の接続先へ繋いでいると
-					// /home/u/x が \home\u\x に化ける
-					const targetPath = remoteConnection ? target.path : target.fsPath;
+					// /home/u/x が \home\u\x に化ける。綴りは paradisHostPathFor に一本化してある。
+					//
+					// ここだけは URI の scheme ではなく「どちらのチャネルへ投げるか」で綴りを決める。
+					// クローン先はまだ存在しないディレクトリで、その URI は上で選んだ接続先の名前空間で
+					// 組み立てたものだから、行き先のマシンと必ず一致する。
+					const targetPath = paradisHostPathFor(target, remoteConnection ? 'remote' : 'local');
 					const request: IParadisCloneRepositoryRequest = { url, targetPath, cloneId };
 					await channel.call('cloneRepository', [request]);
 				} finally {

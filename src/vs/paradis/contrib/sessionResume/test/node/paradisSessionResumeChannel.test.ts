@@ -66,7 +66,7 @@ suite('ParadisSessionResume', () => {
 		return new ParadisSessionResumeService(dependencies, new NullLogService());
 	}
 
-	function createListRequest(space: Partial<IParadisResumeSpace> = {}, includeArchived = false): IParadisResumeListRequest {
+	function createListRequest(space: Partial<IParadisResumeSpace<string>> = {}, includeArchived = false): IParadisResumeListRequest<string> {
 		return {
 			spaces: [{ stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true, ...space }],
 			includeArchived,
@@ -350,9 +350,9 @@ suite('ParadisSessionResume', () => {
 			fs.mkdir(secondaryProject, { recursive: true }).then(() => writeLines(secondaryTranscriptPath, [claudeMessage('user', 'Secondary distinct active scan')])),
 		]);
 
-		const primarySpace: IParadisResumeSpace = { stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true };
-		const secondarySpace: IParadisResumeSpace = { stateKey: 'secondary-state', name: 'Secondary Workspace', cwd: secondaryWorkspace, current: false };
-		const cases: readonly { readonly name: string; readonly first: IParadisResumeListRequest; readonly second: IParadisResumeListRequest; readonly expectedSummaryReads: number }[] = [
+		const primarySpace: IParadisResumeSpace<string> = { stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true };
+		const secondarySpace: IParadisResumeSpace<string> = { stateKey: 'secondary-state', name: 'Secondary Workspace', cwd: secondaryWorkspace, current: false };
+		const cases: readonly { readonly name: string; readonly first: IParadisResumeListRequest<string>; readonly second: IParadisResumeListRequest<string>; readonly expectedSummaryReads: number }[] = [
 			{ name: 'state key', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, stateKey: 'other-state' }], includeArchived: false }, expectedSummaryReads: 2 },
 			{ name: 'name', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, name: 'Other Workspace' }], includeArchived: false }, expectedSummaryReads: 2 },
 			{ name: 'cwd', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [secondarySpace], includeArchived: false }, expectedSummaryReads: 2 },

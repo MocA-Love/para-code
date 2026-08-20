@@ -6,19 +6,28 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
 
 export type ParadisResumeAgent = 'claude' | 'codex';
 
-export interface IParadisResumeSpace {
+/**
+ * transcript を探す対象の空間。
+ *
+ * 既定の `TPath` は {@link ParadisHostPath}。**送る側（renderer）は何も書き足さなくてよく**、
+ * `cwd` を `paradisResolveHostPath` 経由で作らない限り型エラーになる。
+ * 電文を受け取る側（node）だけが `IParadisResumeSpace<string>` と明示して素の文字列を扱う。
+ */
+export interface IParadisResumeSpace<TPath extends string = ParadisHostPath> {
 	readonly stateKey: string;
 	readonly name: string;
-	readonly cwd: string;
+	readonly cwd: TPath;
 	readonly current: boolean;
 }
 
-export interface IParadisResumeListRequest {
-	readonly spaces: readonly IParadisResumeSpace[];
+export interface IParadisResumeListRequest<TPath extends string = ParadisHostPath> {
+	readonly spaces: readonly IParadisResumeSpace<TPath>[];
 	readonly includeArchived?: boolean;
 }
 
