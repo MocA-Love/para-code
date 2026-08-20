@@ -24,7 +24,7 @@ import { timeout } from '../../../base/common/async.js';
 import { DisposableStore } from '../../../base/common/lifecycle.js';
 // PARA-PATCH: this same process also runs as the pty daemon that outlives the app (see below)
 import { Server as SocketServer } from '../../../base/parts/ipc/node/ipc.net.js';
-import { paradisReadPtyDaemonEnv } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyDaemonEnv.js';
+import { paradisPtyDaemonPathsMatch, paradisReadPtyDaemonEnv } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyDaemonEnv.js';
 import { paradisServePtyDaemon } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyDaemonServer.js';
 import { paradisRunPtyDaemonLifecycle } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyDaemonLifecycle.js';
 
@@ -92,6 +92,20 @@ async function startPtyHost() {
 	// PARA-PATCH: taking the socket happens before logging exists, so replay what it recorded
 	for (const note of paradisBind?.notes ?? []) {
 		logService.info(note);
+	}
+
+	// PARA-PATCH: only run as a daemon at the place this build would put one. Whether we are a
+	// daemon is decided by environment variables, which are not a secret only the launcher knows —
+	// left unchecked, a forged environment picks where we listen and, more sharply, which file we
+	// unlink on the way out. See vs/paradis/contrib/ptyDaemon.
+	if (paradisDaemon && !paradisPtyDaemonPathsMatch(paradisDaemon, {
+		userDataPath: environmentService.userDataPath,
+		buildId: paradisDaemon.buildId,
+		platform: process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
+		xdgRuntimeDir: process.env['XDG_RUNTIME_DIR'],
+	})) {
+		logService.error(`[ParadisPtyDaemon] refusing to run as a daemon: ${paradisDaemon.socketPath} is not where this build keeps one`);
+		process.exit(1);
 	}
 
 	// Log developer config

@@ -15,7 +15,7 @@
 // このうち `PARADIS_PTY_DAEMON_SOCKET` が入っているかどうかが、`ptyHostMain.ts` にとっての
 // 「自分は常駐として起きたのか、アプリの中の pty host として起きたのか」の判定でもある。
 
-import { IParadisPtyDaemonPaths } from './paradisPtyDaemonPaths.js';
+import { IParadisPtyDaemonPathInput, IParadisPtyDaemonPaths, paradisPtyDaemonPaths } from './paradisPtyDaemonPaths.js';
 
 export const PARADIS_PTY_DAEMON_SOCKET = 'PARADIS_PTY_DAEMON_SOCKET';
 export const PARADIS_PTY_DAEMON_LEDGER = 'PARADIS_PTY_DAEMON_LEDGER';
@@ -54,4 +54,23 @@ export function paradisPtyDaemonEnv(paths: IParadisPtyDaemonPaths, buildId: stri
 		[PARADIS_PTY_DAEMON_BUILD_ID]: buildId,
 		[PARADIS_PTY_DAEMON_BUILD_KEY]: paths.buildKey,
 	};
+}
+
+/**
+ * 渡された置き場所が、自分で計算したものと一致するか。
+ *
+ * デーモンになるかどうかの判定は環境変数だけを見ている。環境変数は起こす側だけが知る秘密では
+ * ないので、これを信じたまま使うと**任意のパスで listen し、終わるときに任意のパスを unlink
+ * する**ことになる (`paradisPtyDaemonLifecycle` の後始末)。ファイルを消す方は、権限の境界を
+ * 越えないとはいえ渡してよい力ではない。
+ *
+ * そこで、受け取った場所が自分の userDataPath とビルドから計算した場所と同じかを確かめる。
+ * 一致しなければ常駐にならない。**設定の代わりにはならない**ことに注意 (env を仕込める者は
+ * 正しい場所での常駐なら起こせる)。ここで塞ぐのは、置き場所を勝手に決められることだけ。
+ */
+export function paradisPtyDaemonPathsMatch(env: IParadisPtyDaemonEnv, expected: IParadisPtyDaemonPathInput): boolean {
+	const paths = paradisPtyDaemonPaths(expected);
+	return env.socketPath === paths.socketPath
+		&& env.ledgerFile === paths.ledgerFile
+		&& env.buildKey === paths.buildKey;
 }

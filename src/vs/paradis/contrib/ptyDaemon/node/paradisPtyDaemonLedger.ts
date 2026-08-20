@@ -29,10 +29,35 @@ import { IParadisPtyDaemonRecord, paradisParseDaemonRecord } from '../common/par
  * 壊れたものを見せない。
  */
 export async function paradisWriteDaemonRecord(file: string, record: IParadisPtyDaemonRecord): Promise<void> {
-	await fs.mkdir(dirname(file), { recursive: true });
+	await paradisEnsurePtyDaemonDir(dirname(file));
 	const temp = `${file}.${record.pid}.tmp`;
-	await fs.writeFile(temp, JSON.stringify(record), 'utf8');
+	// 前回の書き込みが途中で死んで残っていることがある。`wx` はそれを失敗として扱うので先に消す。
+	try {
+		await fs.unlink(temp);
+	} catch {
+		// 無ければそれでよい。
+	}
+	// 0600 で作る。台帳には常駐の身元 (token) が入るので、読めた相手はその常駐になりすませる。
+	// `writeFile` の mode は**作成時にしか効かない**ので、既にある一時ファイルを掴まされた場合に
+	// 備えて `wx` (既にあれば失敗) で開く。
+	await fs.writeFile(temp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 	await fs.rename(temp, file);
+}
+
+/**
+ * 常駐の置き場所を用意する。**0700 で作ること**が要点。
+ *
+ * ソケットも台帳もここに置く。ソケットの権限は `serve()` が何もしないので umask 任せになるが、
+ * 親が 0700 なら他ユーザーは辿り着けない。既にあるディレクトリの権限も直す (以前のバージョンが
+ * 既定の権限で作っている可能性があるため)。
+ */
+export async function paradisEnsurePtyDaemonDir(dir: string): Promise<void> {
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	try {
+		await fs.chmod(dir, 0o700);
+	} catch {
+		// 自分のものでないなら直せない。呼び出し側 (`paradisServePtyDaemon`) が所有者を確かめる。
+	}
 }
 
 /** 台帳から名前を消す。既に無ければ何もしない。 */

@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisPtyDaemonRecord,
 	PARADIS_DAEMON_IDLE_TIMEOUT,
+	PARADIS_DAEMON_TERMINAL_GRACE_TIME,
 	ParadisDaemonAction,
 	paradisJudgeForeignDaemon,
 	paradisJudgeUnreachableDaemon,
@@ -67,19 +68,35 @@ suite('ParadisPtyDaemonPolicy', () => {
 		);
 	});
 
-	test('lets an empty daemon time itself out without ever abandoning terminals', () => {
-		const now = 100_000_000;
+	test('waits longer while holding terminals, but never forever', () => {
+		const now = 1_000_000_000;
 		const idle = { terminalCount: 0, clientCount: 0, idleSince: now - PARADIS_DAEMON_IDLE_TIMEOUT };
 		assert.deepStrictEqual(
 			{
-				holdingTerminals: paradisShouldDaemonExit({ ...idle, terminalCount: 1 }, now),
+				// 繋がっている間は終わらない。抱えているかどうかに関わらず。
 				stillConnected: paradisShouldDaemonExit({ ...idle, clientCount: 1 }, now),
 				withinTimeout: paradisShouldDaemonExit({ ...idle, idleSince: now - PARADIS_DAEMON_IDLE_TIMEOUT + 1 }, now),
 				timedOut: paradisShouldDaemonExit(idle, now),
 				// 一度も繋がれないまま放置された常駐 (アプリが起動直後に落ちた場合) も拾う。
 				neverConnected: paradisShouldDaemonExit({ terminalCount: 0, clientCount: 0, idleSince: 0 }, now),
+				// 抱えていれば長く待つが、
+				holdingWithinGrace: paradisShouldDaemonExit({ ...idle, terminalCount: 1 }, now),
+				// 待ち切ったら終わる。ここを「抱えている間は終わらない」にすると、アプリが
+				// 正常に終わらなかったとき (detach が届かず猶予タイマーも回らない) に、誰も
+				// 繋いでいない常駐が永久に居座る。
+				holdingPastGrace: paradisShouldDaemonExit(
+					{ terminalCount: 1, clientCount: 0, idleSince: now - PARADIS_DAEMON_TERMINAL_GRACE_TIME },
+					now,
+				),
 			},
-			{ holdingTerminals: false, stillConnected: false, withinTimeout: false, timedOut: true, neverConnected: true },
+			{
+				stillConnected: false,
+				withinTimeout: false,
+				timedOut: true,
+				neverConnected: true,
+				holdingWithinGrace: false,
+				holdingPastGrace: true,
+			},
 		);
 	});
 

@@ -120,18 +120,26 @@ export interface IParadisDaemonIdleState {
 /**
  * 常駐が自分から終わるべきか。
  *
- * ターミナルを抱えている限り終わらない。抱えていない状態が
- * {@link PARADIS_DAEMON_IDLE_TIMEOUT} 続いたときだけ終わる。
+ * 繋がっている間は終わらない。繋がりが無くなってからの待ち時間だけが、抱えているかどうかで
+ * 変わる。抱えていなければ {@link PARADIS_DAEMON_IDLE_TIMEOUT}、抱えていれば
+ * {@link PARADIS_DAEMON_TERMINAL_GRACE_TIME}。
+ *
+ * **抱えている間は終わらない、にしてはいけない。** 猶予タイマー
+ * (`PersistentTerminalProcess._disconnectRunner`) を動かすのは、クライアントが `detachFromProcess`
+ * を呼んだときだけで、アプリが正常に終わらなかった場合 (クラッシュ・強制終了・電源断) には
+ * 届かない。そのとき「抱えているから終わらない」と読むと、猶予タイマーも回らず自分も終われず、
+ * **誰も繋いでいないのに永久に居座る常駐**ができる。常駐にした以上、上限はこちら側にも要る。
  *
  * `idleSince` に起動時刻も入れてあるのは、**一度も繋がれないまま放置された常駐**を拾うため。
  * アプリが起動直後に落ちると、起こされた常駐だけが残る。これを「クライアントが切れたことが
- * ない＝まだ待つべき」と読むと、そのまま永久に居座る。
+ * ない＝まだ待つべき」と読むと、同じく永久に居座る。
  */
 export function paradisShouldDaemonExit(state: IParadisDaemonIdleState, now: number): boolean {
-	if (state.terminalCount > 0 || state.clientCount > 0) {
+	if (state.clientCount > 0) {
 		return false;
 	}
-	return now - state.idleSince >= PARADIS_DAEMON_IDLE_TIMEOUT;
+	const limit = state.terminalCount > 0 ? PARADIS_DAEMON_TERMINAL_GRACE_TIME : PARADIS_DAEMON_IDLE_TIMEOUT;
+	return now - state.idleSince >= limit;
 }
 
 /**

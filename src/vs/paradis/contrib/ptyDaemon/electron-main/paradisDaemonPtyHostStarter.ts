@@ -26,6 +26,7 @@ import { createConnection } from 'net';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
+import { removeDangerousEnvVariables } from '../../../../base/common/processes.js';
 import { IChannel, IChannelClient, getDelayedChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
@@ -80,6 +81,16 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	/** ウィンドウ用の橋渡し。状態を持たないので、アプリと一緒に死んでよい。 */
 	private bridge: UtilityProcess | undefined;
 
+	/**
+	 * 常駐が応答するようになるまでの約束。main もウィンドウもこれを待ってから繋ぐ。
+	 *
+	 * ウィンドウ側がこれを待たないと、**ターミナルの操作が黙って固まる**。橋は繋がらなければ
+	 * ポートを閉じるが、renderer はポートを受け取った時点で `_directProxy` を完成させてしまう
+	 * (`localTerminalBackend.ts`)。閉じた口の向こうからは返事が来ないので、以後の呼び出しが
+	 * 返らなくなる。
+	 */
+	private daemonReady: Promise<void> | undefined;
+
 	constructor(
 		private readonly reconnectConstants: IReconnectConstants,
 		private readonly paths: IParadisPtyDaemonPaths,
@@ -96,6 +107,8 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	}
 
 	start(): IPtyHostConnection {
+		// 繋ぎ直し (常駐が落ちた後の立て直し) では、前回の「もう起きている」を持ち越さない。
+		this.daemonReady = undefined;
 		const store = new DisposableStore();
 		const onDidProcessExit = store.add(new Emitter<{ code: number; signal: string }>());
 
@@ -122,10 +135,39 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 
 	/** 既に居ればそれへ、居なければ起こしてから繋ぐ。 */
 	private async connect(): Promise<SocketClient<string>> {
+		await this.ensureDaemonReady();
+		const socket = await paradisTryConnect(this.paths.socketPath);
+		if (!socket) {
+			throw new Error(`the pty daemon stopped answering on ${this.paths.socketPath}`);
+		}
+		return SocketClient.fromSocket(socket, 'main');
+	}
+
+	/**
+	 * 常駐が応答する状態にする。何度呼んでも起こすのは1回。
+	 *
+	 * 失敗したら約束を捨てる。捨てないと、一度の失敗 (起動が間に合わなかった等) がそのまま
+	 * 焼き付いて、以後どのウィンドウも二度と繋がらなくなる。
+	 */
+	private ensureDaemonReady(): Promise<void> {
+		if (!this.daemonReady) {
+			const attempt = this.startDaemonIfNeeded();
+			this.daemonReady = attempt;
+			attempt.catch(() => {
+				if (this.daemonReady === attempt) {
+					this.daemonReady = undefined;
+				}
+			});
+		}
+		return this.daemonReady;
+	}
+
+	private async startDaemonIfNeeded(): Promise<void> {
 		const existing = await paradisTryConnect(this.paths.socketPath);
 		if (existing) {
+			existing.dispose();
 			this.logService.info(`[ParadisPtyDaemon] joined the daemon already running at ${this.paths.socketPath}`);
-			return SocketClient.fromSocket(existing, 'main');
+			return;
 		}
 
 		this.spawnDaemon();
@@ -135,8 +177,9 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			await new Promise<void>(resolve => setTimeout(resolve, CONNECT_RETRY_DELAY));
 			const socket = await paradisTryConnect(this.paths.socketPath);
 			if (socket) {
+				socket.dispose();
 				this.logService.info(`[ParadisPtyDaemon] started a daemon at ${this.paths.socketPath}`);
-				return SocketClient.fromSocket(socket, 'main');
+				return;
 			}
 			if (Date.now() >= deadline) {
 				throw new Error(`the pty daemon did not answer on ${this.paths.socketPath}`);
@@ -156,6 +199,9 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			...paradisPtyDaemonEnv(this.paths, this.buildId),
 			ELECTRON_RUN_AS_NODE: '1',
 			VSCODE_ESM_ENTRYPOINT: 'vs/platform/terminal/node/ptyHostMain',
+			// 接続先 (SSH) と同じ長さ。ローカルには `--reconnection-grace-time` に相当する
+			// 利用者の指定が無い (あれはサーバー側の引数で、こちらは
+			// `LocalReconnectConstants.GraceTime` の 60 秒固定) ので、上書きしている指定は無い。
 			VSCODE_RECONNECT_GRACE_TIME: String(PARADIS_DAEMON_TERMINAL_GRACE_TIME),
 			VSCODE_RECONNECT_SHORT_GRACE_TIME: String(this.reconnectConstants.shortGraceTime),
 			VSCODE_RECONNECT_SCROLLBACK: String(this.reconnectConstants.scrollback),
@@ -165,7 +211,16 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		delete env['VSCODE_PARENT_PID'];
 		// ログをパイプで親へ返す仕掛けも外す。受け取る親がもう居ない。
 		delete env['VSCODE_PIPE_LOGGING'];
+		// upstream が fork するときに通している前処理 (`DEBUG` と `NODE_OPTIONS` を落とす)。
+		// アプリの中で動く pty host では「起動が壊れる」程度の話だが、常駐では意味が変わる。
+		// `.envrc` などから `NODE_OPTIONS=--inspect=…` が紛れ込むと、**アプリを終了した後も
+		// 開いたままのデバッガポート**になる。
+		removeDangerousEnvVariables(env);
 
+		// Snap の Linux では、アプリの起動時に注入されたライブラリパスがそのまま子へ伝わり、
+		// そこから起きるシェルにまで波及する。upstream の `ElectronPtyHostStarter` と同じ手順で、
+		// 渡す間だけ外す。
+		this.environmentMainService.unsetSnapExportedVariables();
 		const child = spawn(process.execPath, [
 			FileAccess.asFileUri('bootstrap-fork').fsPath,
 			'--type=ptyHost',
@@ -175,6 +230,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			stdio: 'ignore',
 			env,
 		});
+		this.environmentMainService.restoreSnapExportedVariables();
 		child.unref();
 	}
 
@@ -186,7 +242,26 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	 */
 	private onWindowConnection(e: IpcMainEvent, nonce: string): void {
 		this._onRequestConnection.fire();
+		void this.postBridgePort(e, nonce);
+	}
 
+	/**
+	 * 橋のポートを渡す。**常駐が応答するようになってから**渡す。
+	 *
+	 * 先に渡すと、橋は繋ぎ先が無いのでポートを閉じるが、renderer は受け取った時点で直結の
+	 * proxy を完成させてしまい、以後ターミナルの操作が返らなくなる。届かなかったときは渡さない
+	 * (渡さなければ renderer は `_localPtyService` 側で動き続ける)。
+	 */
+	private async postBridgePort(e: IpcMainEvent, nonce: string): Promise<void> {
+		try {
+			await this.ensureDaemonReady();
+		} catch (error) {
+			this.logService.error('[ParadisPtyDaemon] not handing a port to the window; the daemon never answered', error);
+			return;
+		}
+		if (this._store.isDisposed || e.sender.isDestroyed()) {
+			return;
+		}
 		const port = this.ensureBridge().connect();
 		if (e.sender.isDestroyed()) {
 			port.close();
