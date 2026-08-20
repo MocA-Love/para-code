@@ -54,6 +54,14 @@ const WARM_SKIP_IF_FRESHER_THAN_MS = 5 * 60 * 1000;
 const CACHE_TTL_MS = WARM_INTERVAL_MS + WARM_SKIP_IF_FRESHER_THAN_MS + 10 * 60 * 1000;
 /** 続けて失敗する対象を諦める回数。 */
 const MAX_CONSECUTIVE_FAILURES = 3;
+/**
+ * 顔ぶれ(署名)ごとに残す計測結果の上限。
+ *
+ * 1つのサーバーへ複数のウィンドウが繋ぐと、ウィンドウごとに開いているスペースの集合が違う。
+ * 枠が1つしか無いと互いのキャッシュを踏み潰し合い、どのウィンドウも毎回ディスクを全走査する。
+ * 一方で署名は顔ぶれが変わるたびに増えるので、無制限には持たない。
+ */
+const MAX_CACHE_ENTRIES = 8;
 const WARM_LEASE_MAX_OWNERS = 128;
 const WARM_LEASE_MAX_TARGETS_PER_OWNER = 200;
 const WARM_LEASE_MAX_WORKTREES_PER_TARGET = 200;
@@ -125,9 +133,10 @@ interface IWarmLeaseMetrics {
 
 interface ICacheEntry {
 	readonly result: IParadisSpaceDiskResult;
+	/** 測り終えた時刻。寿命の判定と、裏の周回を飛ばすかの判定に使う。 */
 	readonly at: number;
-	/** どの顔ぶれを測った結果か。違う署名の要求には使い回さない。 */
-	readonly signature: string;
+	/** 最後にこの結果を返した時刻。上限を超えたときは、いちばん長く使われていないものから捨てる。 */
+	lastUsedAt: number;
 }
 
 /**
@@ -166,12 +175,17 @@ function warmLeaseMetrics(ownerId: string, targets: readonly IParadisSpaceDiskTa
 
 export class ParadisSpaceDiskService implements IDisposable {
 
-	/** 直近の計測結果。対象の顔ぶれが変わってもキーは1つ(画面は常に全スペースを見る)。 */
-	private cache: ICacheEntry | undefined;
+	/**
+	 * 直近の計測結果を顔ぶれ(署名)ごとに持つ。
+	 *
+	 * 1ウィンドウしか繋がらない前提なら枠は1つで足りるが、接続先(REH)には複数のウィンドウが
+	 * 同時に繋がりうる。それぞれが別のスペース集合を開いていると、枠が1つでは書いた側と違う
+	 * 署名の要求が毎回外れ、双方が数十秒のディスク全走査を延々と繰り返すことになる。
+	 */
+	private readonly cache = new Map<string, ICacheEntry>();
 	/** 実行中の計測(同じ顔ぶれの同時要求を1本にまとめる)。 */
 	private inflight: Promise<IParadisSpaceDiskResult> | undefined;
 	private inflightSignature: string | undefined;
-	private inflightForegroundCacheInterest = false;
 	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<WarmLeaseSnapshot>;
 	private readonly warmLeaseOwners = new Map<string, IWarmLeaseOwner>();
 	private readonly warmLeaseListener: IDisposable;
@@ -241,12 +255,67 @@ export class ParadisSpaceDiskService implements IDisposable {
 		}
 
 		if (!bypassCache) {
-			const cached = this.cache;
-			if (cached && cached.signature === signature && this.now() - cached.at < CACHE_TTL_MS) {
-				return cached.result;
+			const cached = this.cachedResult(signature);
+			if (cached) {
+				return cached;
 			}
 		}
 		return this.run(targets, signature);
+	}
+
+	/**
+	 * 使える結果があれば返す。`measuredSince` を渡すと、その時刻以降に測られた結果だけを使う
+	 * (順番待ちしていた走行が「待っている間に出た結果」だけを拾うため)。
+	 */
+	private cachedResult(signature: string, measuredSince = 0): IParadisSpaceDiskResult | undefined {
+		const entry = this.cache.get(signature);
+		if (!entry) {
+			return undefined;
+		}
+		const now = this.now();
+		if (now - entry.at >= CACHE_TTL_MS) {
+			this.cache.delete(signature);
+			return undefined;
+		}
+		if (entry.at < measuredSince) {
+			return undefined;
+		}
+		entry.lastUsedAt = now;
+		return entry.result;
+	}
+
+	private storeResult(signature: string, result: IParadisSpaceDiskResult): void {
+		const now = this.now();
+		this.cache.set(signature, { result, at: now, lastUsedAt: now });
+		this.pruneCache();
+	}
+
+	/**
+	 * 期限切れを捨て、それでも上限を超えていれば「いちばん長く使われていない」ものから捨てる。
+	 * 測った時刻で捨てると、古くから使われ続けているウィンドウの枠が、最近たまたま一度開いただけの
+	 * 枠に押し出される(押し出された側は次の要求で数十秒の全走査に戻る)。件数が少ないので毎回なめてよい。
+	 */
+	private pruneCache(): void {
+		const now = this.now();
+		for (const [key, entry] of this.cache) {
+			if (now - entry.at >= CACHE_TTL_MS) {
+				this.cache.delete(key);
+			}
+		}
+		while (this.cache.size > MAX_CACHE_ENTRIES) {
+			let stalestKey: string | undefined;
+			let stalestUse = Number.POSITIVE_INFINITY;
+			for (const [key, entry] of this.cache) {
+				if (entry.lastUsedAt < stalestUse) {
+					stalestUse = entry.lastUsedAt;
+					stalestKey = key;
+				}
+			}
+			if (stalestKey === undefined) {
+				return;
+			}
+			this.cache.delete(stalestKey);
+		}
 	}
 
 	/**
@@ -254,31 +323,38 @@ export class ParadisSpaceDiskService implements IDisposable {
 	 * 顔ぶれが違えば相乗りしない。裏の計測に手動更新が相乗りすると、古い顔ぶれの結果が
 	 * 「今測り直した値」として返り、そのまま新しい時刻でキャッシュに書かれてしまう。
 	 *
-	 * 顔ぶれが違う場合も**同時には走らせず、前の走行の後ろに繋ぐ**。理由は2つ:
-	 * - `doMeasure` はスペースを1つずつ処理する設計(中は並列)。2本同時に走らせると
-	 *   ディスクが飽和して両方とも遅くなる
-	 * - 先に始まった古い顔ぶれの走行が後から終わると、新しい結果をキャッシュから
-	 *   上書きしてしまう(値が巻き戻り、次の要求がまた数十秒の走行を起こす)
-	 * キャッシュを書くのは「自分がまだ最新の走行である」場合だけに限定する。
+	 * 顔ぶれが違う場合も**同時には走らせず、前の走行の後ろに繋ぐ**。`doMeasure` はスペースを
+	 * 1つずつ処理する設計(中は並列)なので、2本同時に走らせるとディスクが飽和して両方とも遅くなる。
+	 *
+	 * 測り終えた結果は**無条件に**自分の署名の枠へ書く。キャッシュが署名ごとに分かれているので、
+	 * 誰の走行が後から終わっても他の顔ぶれの結果を潰しようがない。かつて「最新の走行だけが書く」
+	 * 「warm lease の世代が変わっていなければ書く」と絞っていたが、枠が1つだった頃の潰し合いを
+	 * 防ぐための門であり、今は**数分かけて完走した正しい計測を捨てるだけ**になる。裏の周回が
+	 * 走っている最中に別のウィンドウが lease を更新すると世代が上がるので、これは日常的に起きる。
 	 */
-	private run(
-		targets: readonly IParadisSpaceDiskTarget[],
-		signature: string,
-		shouldCache: () => boolean = () => true,
-		foregroundCacheInterest = true,
-	): Promise<IParadisSpaceDiskResult> {
+	private run(targets: readonly IParadisSpaceDiskTarget[], signature: string): Promise<IParadisSpaceDiskResult> {
 		const inflight = this.inflight;
 		if (inflight && this.inflightSignature === signature) {
-			this.inflightForegroundCacheInterest ||= foregroundCacheInterest;
 			return inflight;
 		}
 		// 前の走行の失敗はここでは扱わない(その走行の呼び出し元が受け取っている)。
 		const previous = inflight ? inflight.then(() => { }, () => { }) : Promise.resolve();
+		const queuedAt = this.now();
 		const promise: Promise<IParadisSpaceDiskResult> = previous
-			.then(() => this.doMeasure(targets))
-			.then(result => {
-				if (!this.disposed && this.inflight === promise && (this.inflightForegroundCacheInterest || shouldCache())) {
-					this.cache = { result, at: this.now(), signature };
+			.then(async () => {
+				// 順番待ちしている間に、同じ顔ぶれが別の走行で測り終わっているかもしれない
+				// (A の走行中に B が並び、さらに A が要求されると A は3本目として並ぶ)。
+				// ここで見ないと、たった今出たばかりの結果を無視して測り直すことになる。
+				// 見るのは待たされた場合だけで、待つものが無ければ必ず測る — この経路には
+				// 明示的な測り直し(bypassCache)の要求も来るため、既存の枠を拾ってはいけない。
+				// 自分が並ぶより前に測られた結果も使わない。
+				const measuredWhileWaiting = inflight ? this.cachedResult(signature, queuedAt) : undefined;
+				if (measuredWhileWaiting) {
+					return measuredWhileWaiting;
+				}
+				const result = await this.doMeasure(targets);
+				if (!this.disposed) {
+					this.storeResult(signature, result);
 					this.failuresBySignature.delete(signature);
 				}
 				return result;
@@ -287,12 +363,10 @@ export class ParadisSpaceDiskService implements IDisposable {
 				if (this.inflight === promise) {
 					this.inflight = undefined;
 					this.inflightSignature = undefined;
-					this.inflightForegroundCacheInterest = false;
 				}
 			});
 		this.inflight = promise;
 		this.inflightSignature = signature;
-		this.inflightForegroundCacheInterest = foregroundCacheInterest;
 		return promise;
 	}
 
@@ -378,18 +452,24 @@ export class ParadisSpaceDiskService implements IDisposable {
 			this.syncWarmTimer();
 			return;
 		}
-		const { generation, key, target: { targets } } = snapshot;
+		const { target: { targets } } = snapshot;
 		const signature = signatureOf(targets);
 		if ((this.failuresBySignature.get(signature) ?? 0) >= MAX_CONSECUTIVE_FAILURES || targets.length === 0 || this.inflight !== undefined) {
 			this.syncWarmTimer();
 			return;
 		}
 		// 手動更新の直後などで十分新しいなら、この周回は何もしない。
-		if (this.cache?.signature === signature && this.now() - this.cache.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
+		const cached = this.cache.get(signature);
+		if (cached && this.now() - cached.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
 			return;
 		}
 		try {
-			await this.run(targets, signature, () => this.warmLeaseTracker.isCurrent(key, generation), false);
+			// 走り切ったら必ず自分の署名の枠へ書く。以前はここで「まだ自分が warm の当番か」を
+			// 見て、当番が移っていたら結果を捨てていた。当番は5分ごとの renew で入れ替わるので、
+			// 数十秒かかる計測の最中に別ウィンドウが renew しただけで**測り終えた値が消えて**
+			// いた。キャッシュを署名ごとに分けた今、別の顔ぶれの枠を潰す心配は無いので捨てる
+			// 理由が無い。
+			await this.run(targets, signature);
 			if (!this.disposed) {
 				this.failuresBySignature.delete(signature);
 			}
@@ -481,6 +561,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		this.warmLeaseListener.dispose();
 		this.warmLeaseTracker.dispose();
 		this.warmLeaseOwners.clear();
+		this.cache.clear();
 	}
 }
 

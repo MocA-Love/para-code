@@ -67,3 +67,74 @@ export function paradisRememberedChoice(keep: boolean): ParadisKeepRemoteTermina
 export function paradisParseKeepRemoteTerminalsChoice(value: unknown): ParadisKeepRemoteTerminalsChoice {
 	return value === 'always' || value === 'never' ? value : 'ask';
 }
+
+// --- アプリを更新すると、残したターミナルは取り残される ----------------------------------------
+//
+// 接続先のサーバーは版ごとに別物として入る。`product.json` の serverDownloadUrlTemplate が
+// `${commit}` を含むため、置き場所は `~/.para-code-server/bin/<commit>/` と版ごとに分かれ、
+// 起動されるのも版ごとに別プロセスになる（これは意図した作りで、クライアントとサーバーの
+// 版ずれを原理的に防いでいる）。
+//
+// その結果、「残す」と「更新」が噛み合わない:
+//
+//   1. ターミナルを残してウィンドウを閉じる → 前の版のサーバーがそれを抱えたまま生き続ける
+//   2. Para Code を更新する
+//   3. 同じ接続先へ繋ぎ直す → 新しい版のサーバーが立ち上がり、そちらへ繋がる
+//
+// 3 のサーバーは 1 のサーバーの pty host を知らない。残したターミナルは前の版のプロセスの中に
+// あり、新しい版からは**二度と開けない**。
+//
+// 直せないのはなぜか: 拾い直しの経路は「同じサーバーの pty host に繋ぎ直す」しかなく、これは
+// 版が変わった時点で成立しない。前の版のサーバーを新しい版から乗っ取ることもできない
+// （pty host はそのサーバーの子プロセスで、外から引き継ぐ口が無い）。前の版のサーバーを
+// 自動で終了させるのも避けている——同じ接続先へ、まだ更新していない別のクライアントが
+// 繋ぎに戻ってくることがあり、そちらから見れば拾い直せるターミナルだから。**取り残された
+// ものは、猶予時間が尽きて自分から片付くのを待つしかない。**
+//
+// できるのは、そうなったと分かった時点でユーザーへ伝えることだけ。判断に要るのは
+// 「残したときの版」と「今の版」の2つで、どちらもクライアント側が知っている。前の版の
+// サーバーへ問い合わせる必要は無い（問い合わせられもしない）。
+
+/** ターミナルを残したまま閉じたときに、クライアント側へ控えておく記録。 */
+export interface IParadisKeptRemoteTerminals {
+	/** 残したときに動いていた Para Code の版（`product.commit`）。これが変わると回収できない。 */
+	readonly commit: string;
+	/** 残したときの時刻。猶予が尽きたあとの遅い通知を抑えるのに使う。 */
+	readonly at: number;
+	/** 残した本数。最後に閉じたウィンドウのぶんで、ログの手掛かり用。 */
+	readonly count: number;
+}
+
+export interface IParadisStrandedTerminalNoticeInput {
+	/** 控えてあった記録（無ければ undefined）。 */
+	readonly record: IParadisKeptRemoteTerminals | undefined;
+	/** 今の Para Code の版。ソースから動かしている場合は undefined。 */
+	readonly commit: string | undefined;
+	readonly now: number;
+	/** ターミナルへ与えている猶予時間。これを過ぎた記録は、更新の有無に関わらず意味が無い。 */
+	readonly graceTime: number;
+}
+
+/**
+ * 「前の版で残したターミナルは引き継げない」と伝えるべきか。
+ *
+ * 版が同じなら伝えない（拾い直せるので何も起きていない）。版が分からない
+ * （ソースから動かしている）ときも伝えない——版で区切られた置き場所そのものが無く、
+ * 判断の根拠が無いため。
+ */
+export function paradisShouldReportStrandedTerminals(input: IParadisStrandedTerminalNoticeInput): boolean {
+	const { record, commit, now, graceTime } = input;
+	if (record === undefined || typeof record.commit !== 'string' || record.commit.length === 0) {
+		return false;
+	}
+	if (typeof commit !== 'string' || commit.length === 0 || record.commit === commit) {
+		return false;
+	}
+	if (!(record.count > 0)) {
+		return false;
+	}
+	// 猶予が尽きていれば、更新していなくても同じように消えている。更新のせいだと伝えると
+	// かえって誤解させる。時計が巻き戻った場合 (now < at) も、判断できないので黙る。
+	const elapsed = now - record.at;
+	return elapsed >= 0 && elapsed <= graceTime;
+}

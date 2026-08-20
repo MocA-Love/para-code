@@ -18,7 +18,7 @@ import { homedir } from 'os';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { basename, dirname, join } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isLinux, isWindows } from '../../../../base/common/platform.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -59,6 +59,28 @@ const PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
  * ネットワークストール等で close が永久に来ないケースの保険。
  */
 const PARADIS_CLONE_IDLE_TIMEOUT_MS = 5 * 60_000;
+
+/** SIGTERM で終わらなかった clone を強制終了するまでの待ち時間。 */
+const PARADIS_CLONE_KILL_GRACE_MS = 5_000;
+
+/**
+ * clone を始めた相手を見分ける印。
+ *
+ * IPC のチャネルは呼び出しごとに接続の `ctx` を渡してくる。`ctx` は接続の間ずっと同じ値
+ * （同じオブジェクト）なので、そのまま「誰が始めたか」の印として使える。REH では
+ * `RemoteAgentConnectionContext`、shared process ではクライアント ID の文字列。
+ */
+export type ParadisCloneOwner = object | string;
+
+/** 走行中の clone 1本ぶん。 */
+interface IParadisRunningClone {
+	readonly child: cp.ChildProcess;
+	/** この clone を始めた接続。接続が消えたときに、その接続のぶんだけを畳むのに使う。 */
+	readonly owner: ParadisCloneOwner | undefined;
+	canceled: boolean;
+	/** SIGTERM で終わらなかったときの保険。先に終わったら引き取る。 */
+	killTimer: Timeout | undefined;
+}
 
 /**
  * gh が見つからないと判断してから、次に試すまでの待ち時間。恒久的に諦めないのは、
@@ -113,6 +135,8 @@ export class ParadisWorktreeGitService {
 		shellEnvResolver?: ParadisRawShellEnvResolver,
 		/** WSL への振り分けを行うか。既定はホスト OS 判定で、テストからのみ差し替える。 */
 		private readonly isWindowsHost: boolean = isWindows,
+		/** git clone の起動口。テストからのみ差し替える。 */
+		private readonly spawn: typeof cp.spawn = cp.spawn,
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -654,19 +678,36 @@ export class ParadisWorktreeGitService {
 	// --- git clone -----------------------------------------------------------------------------
 
 	private readonly _onCloneProgress = new Emitter<IParadisCloneProgressEvent>();
-	/** git clone の進捗 (プロセス寿命のサービスのため Emitter は dispose しない)。 */
+	/** git clone の進捗。 */
 	readonly onCloneProgress = this._onCloneProgress.event;
 
-	/** 実行中の clone。cloneId → プロセスとキャンセル済みフラグ。 */
-	private readonly runningClones = new Map<string, { child: cp.ChildProcess; canceled: boolean }>();
+	/** 実行中の clone。cloneId → プロセス・依頼元・キャンセル済みフラグ。 */
+	private readonly runningClones = new Map<string, IParadisRunningClone>();
+
+	/**
+	 * プロセスが終わる直前に走行中の clone を始末する係。走行中の clone が1本も無い間は
+	 * 取り付けない（テストや、clone を一度も使わないプロセスに listener を残さないため）。
+	 */
+	private exitGuard: (() => void) | undefined;
+
+	/**
+	 * このプロセス（または、このサービス）が終わろうとしているか。立っている間は作りかけの
+	 * ディレクトリを消さない——削除を始めても最後まで走り切れる保証が無く、途中で止まると
+	 * 中途半端に削られたディレクトリが残るため。
+	 */
+	private shuttingDown = false;
 
 	/**
 	 * git clone --progress を実行する。stderr のステージ進捗を onCloneProgress で配信し、
 	 * 完了/失敗はこの呼び出しの resolve/reject で伝える。キャンセル時は CancellationError
 	 * (name: 'Canceled') で reject する。失敗・キャンセル時は作りかけのディレクトリを削除する
 	 * (開始前に未存在を確認しているので、消してよいのはこの clone が作ったものに限られる)。
+	 *
+	 * @param owner この clone を依頼した接続。渡しておくと、その接続が消えたときに
+	 * {@link cancelClonesFor} で畳める。省略すると誰のものでもない clone になり、
+	 * サービスが畳まれるまで走り続ける。
 	 */
-	async cloneRepository(request: IParadisCloneRepositoryRequest): Promise<void> {
+	async cloneRepository(request: IParadisCloneRepositoryRequest, owner?: ParadisCloneOwner): Promise<void> {
 		const { url, targetPath, cloneId } = request ?? {};
 		// IPC 境界の防御: 位置引数が git のオプションとして解釈されないことを保証する
 		// (url は '--' の後ろに置くが、多層防御として '-' 始まりも拒否する)
@@ -674,6 +715,9 @@ export class ParadisWorktreeGitService {
 			if (typeof value !== 'string' || value.length === 0 || value.startsWith('-')) {
 				throw new Error(`Invalid argument: ${String(value)}`);
 			}
+		}
+		if (this.shuttingDown) {
+			throw new CancellationError();
 		}
 		if (this.runningClones.has(cloneId)) {
 			throw new Error(`Clone already running: ${cloneId}`);
@@ -687,12 +731,12 @@ export class ParadisWorktreeGitService {
 
 		try {
 			await new Promise<void>((resolve, reject) => {
-				const child = cp.spawn('git', ['clone', '--progress', '--', url, targetPath], {
+				const child = this.spawn('git', ['clone', '--progress', '--', url, targetPath], {
 					env: { ...env, GIT_TERMINAL_PROMPT: '0' },
 					stdio: ['ignore', 'ignore', 'pipe'],
 				});
-				const entry = { child, canceled: false };
-				this.runningClones.set(cloneId, entry);
+				const entry: IParadisRunningClone = { child, owner, canceled: false, killTimer: undefined };
+				this.trackClone(cloneId, entry);
 
 				let idleTimedOut = false;
 				let idleTimer: Timeout | undefined;
@@ -741,7 +785,7 @@ export class ParadisWorktreeGitService {
 					}
 					settled = true;
 					clearTimeout(idleTimer);
-					this.runningClones.delete(cloneId);
+					this.untrackClone(cloneId);
 					if (error) {
 						reject(error);
 					} else {
@@ -770,12 +814,18 @@ export class ParadisWorktreeGitService {
 				});
 			});
 		} catch (error) {
-			// 開始前に targetPath の未存在を確認済みなので、残骸はこの clone が作ったもの。
-			// git は kill 時にディレクトリを掃除しないことがあるため明示的に消す (ベストエフォート)
-			try {
-				await fs.rm(targetPath, { recursive: true, force: true });
-			} catch {
-				// 削除失敗は元のエラーを優先する
+			// このプロセス自体が終わろうとしている間は消さない。数 GB の再帰削除は途中で
+			// プロセスごと消えるほうが普通で、そうなると「中途半端に削られたディレクトリ」が
+			// 残る——手を付けずに残すより悪い。畳む道 (dispose と exit ガード) が消さないのと
+			// 同じ扱いに揃えてある。残骸は次の clone が「フォルダが既に存在します」として見せる。
+			if (!this.shuttingDown) {
+				// 開始前に targetPath の未存在を確認済みなので、残骸はこの clone が作ったもの。
+				// git は kill 時にディレクトリを掃除しないことがあるため明示的に消す (ベストエフォート)
+				try {
+					await fs.rm(targetPath, { recursive: true, force: true });
+				} catch {
+					// 削除失敗は元のエラーを優先する
+				}
 			}
 			throw error;
 		}
@@ -787,19 +837,118 @@ export class ParadisWorktreeGitService {
 		if (!entry) {
 			return false;
 		}
+		// 誰の clone かは記録しているが、ここでは照合しない（依頼元以外からの cancel を
+		// 拒むのは別の話——このチャネルの権限分けとして扱う）。畳む側の入り口はここに集約して
+		// あるので、照合を足すならこの1箇所で済む。
+		this.stopClone(entry);
+		return true;
+	}
+
+	/**
+	 * ある接続が始めた clone をまとめて畳む。
+	 *
+	 * 接続が消えたということは、進捗を受け取る相手も、途中でやめる口も無くなったということ。
+	 * 放っておくと `git clone` は最後まで走り切るか、無進捗タイムアウトまで居座る。巨大な
+	 * リポジトリだと、その間ずっと接続先の帯域とディスクを使い続ける。
+	 */
+	cancelClonesFor(owner: ParadisCloneOwner): void {
+		for (const [cloneId, entry] of this.runningClones) {
+			if (entry.owner === owner) {
+				this.logService.info(`[ParadisWorktreeGit] the client that started clone ${cloneId} is gone; stopping it`);
+				this.stopClone(entry);
+			}
+		}
+	}
+
+	/**
+	 * 走行中の clone を1本畳む。
+	 *
+	 * 先に `canceled` を立てるのは、close ハンドラがこれを見て CancellationError で settle し、
+	 * 作りかけのディレクトリを消すため。ここで台帳から消さないのも同じ理由で、後始末は
+	 * close の側に一本化してある。
+	 */
+	private stopClone(entry: IParadisRunningClone): void {
+		if (entry.canceled) {
+			return;
+		}
 		entry.canceled = true;
 		entry.child.kill('SIGTERM');
-		// SIGTERM で終了しない場合の保険。close 済みなら kill は no-op
-		// (shared process は常駐のため、この短命タイマーが寿命へ影響することはない)
-		setTimeout(() => entry.child.kill('SIGKILL'), 5000);
-		return true;
+		// SIGTERM で終了しない場合の保険。素直に終わったときは close 側で引き取る
+		// （無進捗タイマーと同じ扱い。放っておくと 5 秒ぶんプロセスを終われなくする）。
+		entry.killTimer = setTimeout(() => entry.child.kill('SIGKILL'), PARADIS_CLONE_KILL_GRACE_MS);
+	}
+
+	private trackClone(cloneId: string, entry: IParadisRunningClone): void {
+		this.runningClones.set(cloneId, entry);
+		if (this.exitGuard === undefined) {
+			// このプロセスが終わるときに、走行中の clone を道連れにする。
+			//
+			// dispose 側の後始末だけでは足りない。REH のサーバーは寿命が尽きると
+			// `serverLifetimeService` がその場で `process.exit(0)` を呼ぶだけで、
+			// `setupServerServices` が積んだ DisposableStore は誰も畳まない
+			// （src/vs/server/node/remoteExtensionHostAgentServer.ts の `disposables` は
+			// 作られるだけで dispose される場所が無い）。POSIX では親が終わっても子は
+			// 死なないので、ここで殺さないと `git clone` だけが接続先に残る。
+			//
+			// ここでは作りかけのディレクトリは消さない。終了処理の中で数 GB の再帰削除を
+			// 同期で始めるほうが危ないので、残骸は次の clone が「フォルダが既に存在します」
+			// として見せる側に倒す（外から SIGKILL された場合も同じ結果になる）。
+			this.exitGuard = () => {
+				this.shuttingDown = true;
+				for (const running of this.runningClones.values()) {
+					running.canceled = true;
+					running.child.kill('SIGKILL');
+				}
+			};
+			process.once('exit', this.exitGuard);
+		}
+	}
+
+	private untrackClone(cloneId: string): void {
+		const entry = this.runningClones.get(cloneId);
+		if (entry !== undefined) {
+			clearTimeout(entry.killTimer);
+			entry.killTimer = undefined;
+		}
+		this.runningClones.delete(cloneId);
+		if (this.runningClones.size === 0 && this.exitGuard !== undefined) {
+			process.removeListener('exit', this.exitGuard);
+			this.exitGuard = undefined;
+		}
+	}
+
+	/**
+	 * サービスを畳む。走行中の clone は、購読者がもう居ないので止める。
+	 *
+	 * SIGTERM ではなく SIGKILL なのは、畳むと決めた後に猶予を待つ相手が居ないため
+	 * （猶予タイマーが動く前にプロセスごと終わることがある）。
+	 *
+	 * ここから先は作りかけのディレクトリを消さない（`shuttingDown` を立てる）。畳むのは
+	 * プロセスが終わる直前で、数 GB の再帰削除は途中で打ち切られるほうが普通だから——
+	 * 中途半端に削られたディレクトリは、手を付けずに残すより悪い。exit ガードと同じ扱い。
+	 */
+	dispose(): void {
+		this.shuttingDown = true;
+		for (const [cloneId, entry] of this.runningClones) {
+			this.logService.info(`[ParadisWorktreeGit] shutting down while clone ${cloneId} is running; stopping it`);
+			entry.canceled = true;
+			clearTimeout(entry.killTimer);
+			entry.killTimer = undefined;
+			entry.child.kill('SIGKILL');
+		}
+		this.runningClones.clear();
+		if (this.exitGuard !== undefined) {
+			process.removeListener('exit', this.exitGuard);
+			this.exitGuard = undefined;
+		}
+		this._onCloneProgress.dispose();
 	}
 }
 
 // TContext をジェネリックにしてあるのは、shared process（IPCServer<string>）だけでなく
 // リモートサーバー（REH の SocketServer<RemoteAgentConnectionContext>）にも同じチャネルを
 // 登録するため。SSH 接続中に「接続先へクローンする」を選べるようにするのに必要。
-export class ParadisWorktreeGitChannel<TContext = string> implements IServerChannel<TContext> {
+export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisWorktreeGitService) { }
 
@@ -810,10 +959,12 @@ export class ParadisWorktreeGitChannel<TContext = string> implements IServerChan
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
+	call<T>(ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			case 'cloneRepository': return this.service.cloneRepository(args[0] as IParadisCloneRepositoryRequest) as Promise<T>;
+			// ctx をそのまま渡すのは、これが接続の間ずっと同じ値だから。接続が消えたときに
+			// 「その接続が始めた clone」を選び出す印になる（登録側の onDidRemoveConnection 参照）。
+			case 'cloneRepository': return this.service.cloneRepository(args[0] as IParadisCloneRepositoryRequest, ctx) as Promise<T>;
 			case 'cancelClone': return Promise.resolve(this.service.cancelClone(String(args[0]))) as Promise<T>;
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
@@ -831,12 +982,32 @@ export class ParadisWorktreeGitChannel<TContext = string> implements IServerChan
 }
 
 /**
+ * 「このチャネルを畳んだら、走行中の clone も畳む」を両方の登録口で共通にする。
+ *
+ * @param cancelClonesOnDisconnect 接続が消えたら、その接続が始めた clone を止めるか。
+ * **REH でだけ true にすること。** REH の接続が消えるのは再接続の猶予が尽きたときか
+ * graceful disconnect のときで（`ManagementConnection.onClose`）、一瞬の回線断では消えない。
+ * つまり「進捗を見ている人も、途中でやめる口も、もう無い」が本当に成り立つ。
+ * 対して shared process の接続は MessagePort の `close` そのものなので、**ウィンドウを
+ * 再読み込みしただけでも消える**。そこで止めると、手元での clone 中に Reload Window した
+ * だけで作りかけのディレクトリごと消える（従来は完走していた）。手元は畳むのを dispose に
+ * 任せる。
+ */
+function paradisRegisterWorktreeGitChannel<TContext extends ParadisCloneOwner>(server: IPCServer<TContext>, service: ParadisWorktreeGitService, cancelClonesOnDisconnect: boolean): IDisposable {
+	const store = new DisposableStore();
+	if (cancelClonesOnDisconnect) {
+		store.add(server.onDidRemoveConnection(connection => service.cancelClonesFor(connection.ctx)));
+	}
+	server.registerChannel(PARADIS_WORKTREE_GIT_CHANNEL, new ParadisWorktreeGitChannel<TContext>(service));
+	store.add(toDisposable(() => service.dispose()));
+	return store;
+}
+
+/**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
 export function registerParadisWorktreeGit(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
-	const service = new ParadisWorktreeGitService(logService, configurationService, args);
-	server.registerChannel(PARADIS_WORKTREE_GIT_CHANNEL, new ParadisWorktreeGitChannel(service));
-	return { dispose: () => { } };
+	return paradisRegisterWorktreeGitChannel(server, new ParadisWorktreeGitService(logService, configurationService, args), false);
 }
 
 /**
@@ -851,8 +1022,6 @@ export function registerParadisWorktreeGit(server: IPCServer<string>, logService
  * 戻るが、execFile 直叩きの git / gh は接続先の PATH に載っている必要がある（gh を
  * ~/.local/bin などに入れている接続先では、PR 状態が取れないことがある）。
  */
-export function registerParadisWorktreeGitForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
-	const service = new ParadisWorktreeGitService(logService);
-	server.registerChannel(PARADIS_WORKTREE_GIT_CHANNEL, new ParadisWorktreeGitChannel<TContext>(service));
-	return { dispose: () => { } };
+export function registerParadisWorktreeGitForServer<TContext extends ParadisCloneOwner>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	return paradisRegisterWorktreeGitChannel(server, new ParadisWorktreeGitService(logService), true);
 }

@@ -86,8 +86,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH]: {
 			type: 'string',
 			default: '',
-			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.ccusage.executablePath', "Absolute path to the `ccusage` executable. When empty, Para Code looks for `ccusage` on PATH and common install locations, and falls back to `npx` with a pinned `ccusage` version for supply-chain safety. Set this path explicitly if you want to use a different (e.g. newer) version."),
+			// SSH/WSL 接続中は接続先の ccusage を実行するため、パスも接続先ごとに決まる必要がある。
+			// マシンスコープにすると、接続中は手元の値が使われず接続先のマシン設定だけが効く
+			// (手元の絶対パスを接続先へ送りつける事故が起きない)。この設定が明示されていると
+			// サーバー側は自動探索も npx フォールバックも行わないため、手元のパスが渡ると接続中は
+			// 常に ENOENT になり、しかもアプリケーションスコープでは接続先から上書きもできない。
+			// rtk 側と同じ扱いに揃えてある。逆に、既定プロファイル以外を使っていて以前この設定を
+			// 入れていた場合は、そのプロファイルの設定へ入れ直しになる(値そのものは消えない)。
+			scope: ConfigurationScope.MACHINE,
+			markdownDescription: localize('paradis.ccusage.executablePath', "Absolute path to the `ccusage` executable. When empty, Para Code looks for `ccusage` on PATH and common install locations, and falls back to `npx` with a pinned `ccusage` version for supply-chain safety. Set this path explicitly if you want to use a different (e.g. newer) version. While you are connected over SSH, the `ccusage` on the machine you are connected to is used, so set this in the remote settings if its path differs there."),
 		},
 		[SETTING_STATUS_BAR_ENABLED]: {
 			type: 'boolean',

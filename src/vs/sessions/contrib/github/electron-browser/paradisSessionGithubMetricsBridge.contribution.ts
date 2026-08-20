@@ -31,6 +31,10 @@ export class ParadisSessionGithubMetricsBridge extends Disposable implements IWo
 	) {
 		super();
 
+		// 転送先は常に手元の shared process にする。Agent Sessions ウィンドウの GitHub API 呼び出しは
+		// 接続先ではなくこのマシンから出ていくので、記録もこのマシンに置くのが実態に合う。
+		// 割り切りとして、SSH 接続中のウィンドウのダッシュボードは接続先の集計を見るため、
+		// ここで記録した分はそちらには出てこない(両方を足すには集計のマージが要る)。
 		const channel = sharedProcessService.getChannel(PARADIS_GITHUB_METRICS_CHANNEL);
 		paradisSetGithubCallTransport((event: IParadisGithubCallEvent) => {
 			channel.call('recordCall', [event]).catch(() => {

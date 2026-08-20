@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisRemoteTerminalShutdownInput, paradisParseKeepRemoteTerminalsChoice, paradisPlanRemoteTerminalShutdown } from '../../common/paradisRemoteTerminalShutdown.js';
+import { IParadisRemoteTerminalShutdownInput, IParadisStrandedTerminalNoticeInput, paradisParseKeepRemoteTerminalsChoice, paradisPlanRemoteTerminalShutdown, paradisShouldReportStrandedTerminals } from '../../common/paradisRemoteTerminalShutdown.js';
 import { PARADIS_TERMINAL_RECONNECTION_GRACE_TIME, paradisTerminalReconnectionGraceTime } from '../../common/paradisTerminalGraceTime.js';
 
 suite('ParadisRemoteTerminalShutdown', () => {
@@ -95,6 +95,43 @@ suite('ParadisRemoteTerminalShutdown', () => {
 			PARADIS_TERMINAL_RECONNECTION_GRACE_TIME,
 			PARADIS_TERMINAL_RECONNECTION_GRACE_TIME,
 		]);
+	});
+
+	// アプリを更新すると、残したターミナルは前の版のサーバーに取り残される。伝えられるのは
+	// クライアント側だけなので、ここを間違えると「黙って消えた」だけがユーザーに残る。
+	suite('stranded by an app update', () => {
+
+		function shouldReport(overrides: Partial<IParadisStrandedTerminalNoticeInput> = {}): boolean {
+			return paradisShouldReportStrandedTerminals({
+				record: { commit: 'aaaaaaaa', at: 1_000, count: 3 },
+				commit: 'bbbbbbbb',
+				now: 1_000 + 60_000,
+				graceTime: PARADIS_TERMINAL_RECONNECTION_GRACE_TIME,
+				...overrides,
+			});
+		}
+
+		test('tells the user only when the build actually changed under them', () => {
+			assert.deepStrictEqual([
+				shouldReport(),
+				shouldReport({ commit: 'aaaaaaaa' }),
+				shouldReport({ record: undefined }),
+				shouldReport({ record: { commit: 'aaaaaaaa', at: 1_000, count: 0 } }),
+				// ソースから動かしていると版で区切られた置き場所自体が無く、判断の根拠が無い
+				shouldReport({ commit: undefined }),
+				shouldReport({ record: { commit: '', at: 1_000, count: 3 } }),
+			], [true, false, false, false, false, false]);
+		});
+
+		// 猶予が尽きたあとは、更新していなくても同じように消えている。更新のせいだと伝えると
+		// かえって誤解させる。時計が巻き戻ったときも判断できないので黙る。
+		test('stays quiet once the terminals would have expired on their own', () => {
+			assert.deepStrictEqual([
+				shouldReport({ now: 1_000 + PARADIS_TERMINAL_RECONNECTION_GRACE_TIME }),
+				shouldReport({ now: 1_000 + PARADIS_TERMINAL_RECONNECTION_GRACE_TIME + 1 }),
+				shouldReport({ now: 0 }),
+			], [true, false, false]);
+		});
 	});
 
 	// 設定が壊れていても閉じられなくなってはいけない。読めない値は「毎回尋ねる」に倒す。
