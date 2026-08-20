@@ -101,9 +101,16 @@ function reuseResources(previous: DesktopResources | undefined, next: DesktopRes
 }
 
 function reuseRenderer(previous: Renderer, next: Renderer): Renderer {
+	// host（「接続先セグメント」向け）も比較する。これを見ないと、PC側がホストラベルを
+	// authority生値から整形済みへ差し替えて再送しても（onDidChangeFormatters）、
+	// windowId/generation/readyが不変のため previous がそのまま採用され、
+	// モバイルのピルに古いラベル（例: ssh-remote+myserver）が永久に残る。
 	return previous.windowId === next.windowId
 		&& previous.rendererGeneration === next.rendererGeneration
 		&& previous.ready === next.ready
+		&& previous.host?.kind === next.host?.kind
+		&& previous.host?.id === next.host?.id
+		&& previous.host?.label === next.host?.label
 		? previous
 		: next;
 }

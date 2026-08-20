@@ -56,6 +56,8 @@ import { IParadisPresetService } from '../../terminalPresets/common/paradisTermi
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { ILabelService } from '../../../../platform/label/common/label.js';
+import { IParadisMobileWindowHost, paradisResolveMobileWindowHost } from '../common/paradisMobileHost.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { PARADIS_REMOTE_SEARCH_CHANNEL } from '../common/paradisRemoteSearch.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -134,6 +136,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@ICommandService commandService: ICommandService,
 		@IParadisPresetService presetService: IParadisPresetService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
+		@ILabelService private readonly labelService: ILabelService,
 	) {
 		super();
 
@@ -305,6 +308,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// コマンドプリセット。PC版のピン留めボタンと同じサービスをそのまま使う
 			// （定義の解決も実行経路も1つに保ち、PCとスマホで挙動が割れないようにする）
 			presetService,
+			// モバイルからの添付は、エージェントが実際に動いている側（SSH 接続中は接続先）へ置く
+			this.remoteAgentService,
+			// 「接続先セグメント」(rtk/ccusage/rate limit/GitHub API)向け。SSH接続中は remoteAuthority から
+			// ホストラベルを解決する。拡張機能のフォーマッタ登録が遅れて届く間、getHostLabel は authority
+			// をそのまま返す（未整形）ので、その場合は undefined を渡して paradisResolveMobileWindowHost の
+			// フォールバック整形に任せる（下の onDidChangeFormatters 購読で、フォーマッタが届いたら再送する）。
+			() => this.resolveWindowHost(),
 		));
 		const rendererLifecycle = new ParadisMobileRelayRendererLifecycle(
 			focusHeartbeat,
@@ -315,6 +325,11 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 初回同期。この push の完了が terminalStateReady（=markRendererReady の前提）を
 		// 解決するため、無変化打ち切りの対象にしない。
 		this.provider.pushState(true);
+		// SSH接続先のホストラベルは、対応する拡張機能（open-remote-ssh 等）のフォーマッタ登録が
+		// 起動後に遅れて届く。`resolveWindowHost` は届く前は authority のままの値を返しているので、
+		// 届いた時点で再送し、モバイルの「接続先セグメント」の表示名を整形済みへ差し替える。
+		// 起動時に複数回発火しうるため、他のイベントと同じく100ms集約（pushStateSoon）に乗せる。
+		this._register(this.labelService.onDidChangeFormatters(() => this.provider.pushStateSoon()));
 		this._register(this.service.onDidRequestAgentPaneSync(request => {
 			withCurrentRendererLease(async lease => {
 				if (lease.windowId === request.windowId
@@ -548,6 +563,22 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 	private isEnabled(): boolean {
 		return this.configurationService.getValue<boolean>(PARADIS_MOBILE_ENABLED_KEY) === true;
+	}
+
+	/**
+	 * このウィンドウの接続先（ローカル/SSHリモート等）。モバイルの「接続先セグメント」
+	 * (rtk/ccusage/rate limit/GitHub API) 向け。`getHostLabel` は対応するフォーマッタ
+	 * （open-remote-ssh 等の拡張機能が起動後に登録）が届くまで authority をそのまま返すため、
+	 * その場合は未整形とみなして undefined を渡し、`paradisResolveMobileWindowHost` 側の
+	 * フォールバック整形に任せる。
+	 */
+	private resolveWindowHost(): IParadisMobileWindowHost {
+		const connection = this.remoteAgentService.getConnection();
+		if (connection === null) {
+			return paradisResolveMobileWindowHost(undefined, undefined);
+		}
+		const rawLabel = this.labelService.getHostLabel(Schemas.vscodeRemote, connection.remoteAuthority);
+		return paradisResolveMobileWindowHost(connection.remoteAuthority, rawLabel === connection.remoteAuthority ? undefined : rawLabel);
 	}
 
 	/**

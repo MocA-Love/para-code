@@ -41,6 +41,7 @@ import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from '.
 import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind, NotifyPayload, ParadisMobileWarmLeaseRequest } from '../common/paradisMobileProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
+import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 // PARA-PATCH: RTK節約データのモバイル配信
 import { localize } from '../../../../nls.js';
@@ -726,6 +727,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		setSpaceDiskWarmLease: (ownerId: string, active: boolean, cancellation?: AbortSignal) => Promise<void>,
 		// コマンドプリセット（PC版と同一の定義・同一の実行経路）。モバイルの一覧と実行はここを通す
 		private readonly presetService: IParadisPresetService,
+		// このウィンドウの接続先（ローカル/SSHリモート等）を都度解決する。モバイルの「接続先セグメント」
+		// (rtk/ccusage/rate limit/GitHub API)向け。ラベルは拡張機能のフォーマッタ登録が遅れて届くため、
+		// 呼び出し元（contribution）が onDidChangeFormatters で pushState() を呼び直す前提のコールバック。
+		private readonly resolveWindowHost?: () => IParadisMobileWindowHost,
 	) {
 		super();
 		this.mobileWarmLeases = this._register(new ParadisMobileWarmLeaseProvider(setUsageWarmLease, setSpaceDiskWarmLease));
@@ -916,8 +921,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 */
 	private readonly pushStateCosmeticScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 500));
 
-	/** イベント起点のスナップショット再送（100msに集約）。 */
-	private pushStateSoon(): void {
+	/**
+	 * イベント起点のスナップショット再送（100msに集約）。
+	 * public: contribution側の外部イベント（例: `ILabelService.onDidChangeFormatters`）からも
+	 * 合流させたいため。呼び出し元を増やす場合も、この100ms集約に乗せることを優先すること
+	 * （`pushState()`を直接呼ぶと、連続発火時にフルスナップショット構築が都度走る）。
+	 */
+	pushStateSoon(): void {
 		// 構造変化のスナップショットには見た目の変化も入るので、待たせていたぶんは取り下げる。
 		this.pushStateCosmeticScheduler.cancel();
 		if (!this.pushStateScheduler.isScheduled()) {
@@ -1278,6 +1288,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			workspaces,
 			terminals,
 			...(this.battery !== undefined ? { battery: this.battery } : {}),
+			...(this.resolveWindowHost !== undefined ? { host: this.resolveWindowHost() } : {}),
 		};
 	}
 

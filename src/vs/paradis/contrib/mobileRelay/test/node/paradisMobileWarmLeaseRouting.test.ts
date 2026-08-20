@@ -85,4 +85,62 @@ suite('ParadisMobileRelay warm lease routing', () => {
 			[Channels.Scm, 'window:7:2:new-session'],
 		]);
 	});
+
+	// 「接続先セグメント」(usage/rtk/limits/github) は ws を持たず、windowId + rendererGeneration
+	// だけで対象ウィンドウを指定する。ws解決とは別の検証経路なので個別に確認する。
+	test('routes workspace-less requests (usage/rtk/limits) by windowId + rendererGeneration alone', async () => {
+		const { registry, delivered, send } = createHarness();
+		registry.syncWindow(7, 'new-session', 2, {
+			activeWs: 'repo',
+			workspaces: [{ id: 'repo', name: 'Repo' }],
+			terminals: [],
+		});
+		const target = { protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 2 };
+		await send(Channels.Fs, { t: 'usage', id: 'usage-1', ...target });
+
+		assert.deepStrictEqual(delivered.map(frame => [frame[0], frame[1]]), [
+			[Channels.Fs, 'window:7:2:new-session'],
+		]);
+	});
+
+	test('does not route workspace-less requests when rendererGeneration is stale (reload boundary)', async () => {
+		const { registry, delivered, send } = createHarness();
+		registry.syncWindow(7, 'new-session', 2, {
+			activeWs: 'repo',
+			workspaces: [{ id: 'repo', name: 'Repo' }],
+			terminals: [],
+		});
+		const target = { protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 1 };
+		await send(Channels.Fs, { t: 'usage', id: 'usage-1', ...target });
+
+		assert.deepStrictEqual(delivered, []);
+	});
+
+	// ws無し+rendererGeneration一致の経路は「接続先セグメント」向けの型だけに絞る。
+	// 許可リストに無い型（uploadのように本来 ws による所有権検証を必要とする操作）が
+	// ws を省略するだけでこの経路を通れてしまうと、ws解決の検証を素通りすることになる。
+	test('does not route a request whose type is outside the workspace-less allowlist even with a valid windowId + rendererGeneration', async () => {
+		const { registry, delivered, send } = createHarness();
+		registry.syncWindow(7, 'new-session', 2, {
+			activeWs: 'repo',
+			workspaces: [{ id: 'repo', name: 'Repo' }],
+			terminals: [],
+		});
+		const target = { protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 2 };
+		await send(Channels.Fs, { t: 'upload', id: 'upload-1', name: 'a.png', data: 'AA==', ...target });
+
+		assert.deepStrictEqual(delivered, []);
+	});
+
+	test('does not route a request with neither ws nor rendererGeneration', async () => {
+		const { registry, delivered, send } = createHarness();
+		registry.syncWindow(7, 'new-session', 2, {
+			activeWs: 'repo',
+			workspaces: [{ id: 'repo', name: 'Repo' }],
+			terminals: [],
+		});
+		await send(Channels.Fs, { t: 'usage', id: 'usage-1', protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7 });
+
+		assert.deepStrictEqual(delivered, []);
+	});
 });

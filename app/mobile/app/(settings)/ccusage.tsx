@@ -6,8 +6,10 @@ import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { HostSegment } from '../../src/components/hostSegment.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
+import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
@@ -164,6 +166,16 @@ export default function CcusageScreen() {
 	})));
 	const isFocused = useIsFocused();
 	const isAppActive = useAppIsActive();
+	// 「接続先セグメント」: PCが複数のウィンドウ（ローカル/SSHリモート）を同時に開いているとき、
+	// どのホストのccusageを見ているかを選ぶ。1台しかなければ hosts は空でセグメントは出ない。
+	const { hosts, effectiveHostId, selectHost } = useRelayHostSelection();
+	const selectedHost = hosts.find(host => host.id === effectiveHostId);
+	// hosts が空（旧PC・host未同期）のときは接続先を選べないので、常に従来経路（windowId未指定）
+	// で取得する。hosts があるのに選んだホストが一覧に無い（消えた）・未readyのときだけ
+	// stale扱いにする（取得を止め、直近値を薄く残す）。
+	const hostStale = hosts.length > 0 && selectedHost?.ready !== true;
+	// hosts が空の間は接続先という概念が無いので、単一の既定キーへ統一する。
+	const hostKey = effectiveHostId ?? 'default';
 	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
 	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
 	useEffect(() => {
@@ -174,11 +186,15 @@ export default function CcusageScreen() {
 			online: warmLeaseReady,
 			activePcId,
 			controllerRevision,
-		}, acquireUsageWarmLease);
-		return () => lifecycle.update(false, acquireUsageWarmLease);
-	}, [isFocused, isAppActive, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease]);
+		}, () => acquireUsageWarmLease(selectedHost?.windowId));
+		// active=false の update はこの factory を呼ばない（既存のleaseへ非活性を送るだけ）ので、
+		// ここは「何も取得しない」ことが分かるダミーを渡す。
+		return () => lifecycle.update(false, () => ({ dispose: () => { } }));
+	}, [isFocused, isAppActive, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease, selectedHost?.windowId]);
 
-	const [data, setData] = useState<UsageDashboardResult | undefined>();
+	// ホストごとに直近の値を持つ。切り替えても他ホストの値は消えない。
+	const [dataByHost, setDataByHost] = useState<Record<string, UsageDashboardResult>>({});
+	const data = dataByHost[hostKey];
 	const [loading, setLoading] = useState(false);
 	// pull-to-refresh 由来の読み込みだけ RefreshControl のスピナーに紐付ける
 	// （初回ロードを refreshing にすると中央の ActivityIndicator と二重表示になる）。
@@ -187,19 +203,23 @@ export default function CcusageScreen() {
 	const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
 	const [agentFilter, setAgentFilter] = useState<AgentFilter>('all');
 
+	// PCを切り替えてもこの画面を開いたままだと、切り替え直後は前のPCの値が「今のPC」の顔で
+	// 残ってしまう（hostId はPCごとの意味しか持たず、'local'/'default' はPCをまたいで衝突する）。
+	useEffect(() => { setDataByHost({}); }, [activePcId]);
+
 	const refresh = useCallback(async (bypassCache = false) => {
-		if (connection !== 'online') { return; }
+		if (connection !== 'online' || hostStale) { return; }
 		setLoading(true);
 		setError(undefined);
 		try {
-			const result = await usageDashboard(bypassCache);
-			setData(result);
+			const result = await usageDashboard(bypassCache, selectedHost?.windowId);
+			setDataByHost(prev => ({ ...prev, [hostKey]: result }));
 		} catch (e) {
 			setError(String(e instanceof Error ? e.message : e));
 		} finally {
 			setLoading(false);
 		}
-	}, [usageDashboard, connection]);
+	}, [usageDashboard, connection, hostStale, hostKey, selectedHost?.windowId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
 
@@ -263,6 +283,12 @@ export default function CcusageScreen() {
 					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
+					<HostSegment hosts={hosts} selectedId={effectiveHostId} onSelect={selectHost} />
+					{hostStale ? (
+						<Text style={styles.warn}>{selectedHost === undefined
+							? 'この接続先のウィンドウは閉じられました。上のボタンで別の接続先を選んでください。'
+							: 'この接続先のPC画面はいま応答していません。PC側でウィンドウを開き直すと再取得できます。'}</Text>
+					) : null}
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{data && (data.failedReports?.length ?? 0) > 0 ? (
@@ -270,7 +296,7 @@ export default function CcusageScreen() {
 					) : null}
 
 					{data ? (
-						<>
+						<View style={hostStale ? styles.stale : undefined}>
 							{/* 絞り込みは、それが効く数字より先に出す。後ろに置くと、押しても
 							    上の数字が変わったことに気づけない。 */}
 							{availableAgents.length > 1 ? (
@@ -402,7 +428,7 @@ export default function CcusageScreen() {
 									</View>
 								))}
 							</View>
-						</>
+						</View>
 					) : null}
 				</ScrollView>
 			</View>
@@ -416,6 +442,8 @@ const styles = StyleSheet.create({
 	spinner: { marginTop: 24 },
 	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
 	warn: { color: colors.yellow, fontSize: 11.5, marginTop: 8, marginBottom: 4 },
+	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
+	stale: { opacity: 0.5 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },

@@ -5,7 +5,9 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View }
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { HostSegment } from '../../src/components/hostSegment.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
+import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
@@ -56,28 +58,44 @@ export default function RtkScreen() {
 	const column = useContentColumnStyle();
 	// 取得時刻の相対表示を、画面を開いたままでも追従させる
 	const now = useNow();
-	const { rtkSavings, connection } = useAppStore(useShallow(s => ({ rtkSavings: s.rtkSavings, connection: s.connection })));
+	const { rtkSavings, connection, activePcId } = useAppStore(useShallow(s => ({ rtkSavings: s.rtkSavings, connection: s.connection, activePcId: s.activePcId })));
+	// 「接続先セグメント」: rtkはコマンドを実行したホストのローカルDBに記録するため、
+	// PCが複数のウィンドウ（ローカル/SSHリモート）を同時に開いていると値が別物になる。
+	const { hosts, effectiveHostId, selectHost } = useRelayHostSelection();
+	const selectedHost = hosts.find(host => host.id === effectiveHostId);
+	// hosts が空（旧PC・host未同期）のときは接続先を選べないので、常に従来経路（windowId未指定）
+	// で取得する。hosts があるのに選んだホストが一覧に無い（消えた）・未readyのときだけ
+	// stale扱いにする（取得を止め、直近値を薄く残す）。
+	const hostStale = hosts.length > 0 && selectedHost?.ready !== true;
+	// hosts が空の間は接続先という概念が無いので、単一の既定キーへ統一する。
+	const hostKey = effectiveHostId ?? 'default';
 
-	const [data, setData] = useState<RtkSavingsResult | undefined>();
+	// ホストごとに直近の値を持つ。切り替えても他ホストの値は消えない。
+	const [dataByHost, setDataByHost] = useState<Record<string, RtkSavingsResult>>({});
+	const data = dataByHost[hostKey];
 	const [loading, setLoading] = useState(false);
 	// pull-to-refresh 由来の読み込みだけ RefreshControl のスピナーに紐付ける
 	// （初回ロードを refreshing にすると中央の ActivityIndicator と二重表示になる）。
 	const [pullRefreshing, setPullRefreshing] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 
+	// PCを切り替えてもこの画面を開いたままだと、切り替え直後は前のPCの値が「今のPC」の顔で
+	// 残ってしまう（hostId はPCごとの意味しか持たず、'local'/'default' はPCをまたいで衝突する）。
+	useEffect(() => { setDataByHost({}); }, [activePcId]);
+
 	const refresh = useCallback(async (bypassCache = false) => {
-		if (connection !== 'online') { return; }
+		if (connection !== 'online' || hostStale) { return; }
 		setLoading(true);
 		setError(undefined);
 		try {
-			const result = await rtkSavings(bypassCache);
-			setData(result);
+			const result = await rtkSavings(bypassCache, selectedHost?.windowId);
+			setDataByHost(prev => ({ ...prev, [hostKey]: result }));
 		} catch (e) {
 			setError(String(e instanceof Error ? e.message : e));
 		} finally {
 			setLoading(false);
 		}
-	}, [rtkSavings, connection]);
+	}, [rtkSavings, connection, hostStale, hostKey, selectedHost?.windowId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
 
@@ -124,6 +142,12 @@ export default function RtkScreen() {
 					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
+					<HostSegment hosts={hosts} selectedId={effectiveHostId} onSelect={selectHost} />
+					{hostStale ? (
+						<Text style={styles.warn}>{selectedHost === undefined
+							? 'この接続先のウィンドウは閉じられました。上のボタンで別の接続先を選んでください。'
+							: 'この接続先のPC画面はいま応答していません。PC側でウィンドウを開き直すと再取得できます。'}</Text>
+					) : null}
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{data && data.failedReports.length > 0 ? (
@@ -131,7 +155,7 @@ export default function RtkScreen() {
 					) : null}
 
 					{data ? (
-						<>
+						<View style={hostStale ? styles.stale : undefined}>
 							<View style={styles.kpiRow}>
 								<View style={styles.kpiCard}>
 									<Text style={styles.kpiLabel}>今日の節約</Text>
@@ -190,7 +214,7 @@ export default function RtkScreen() {
 									</View>
 								))}
 							</View>
-						</>
+						</View>
 					) : null}
 				</ScrollView>
 			</View>
@@ -204,6 +228,8 @@ const styles = StyleSheet.create({
 	spinner: { marginTop: 24 },
 	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
 	warn: { color: colors.yellow, fontSize: 11.5, marginTop: 8, marginBottom: 4 },
+	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
+	stale: { opacity: 0.5 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },

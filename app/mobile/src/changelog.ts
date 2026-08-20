@@ -86,6 +86,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '1MBを超えるファイルは先頭までしか表示できませんでしたが、20MBまで読み込めるようになりました。単一ページのHTMLレポートやダッシュボード出力も最後まで表示できます。',
 				tone: 'green',
 			},
+			{
+				icon: 'laptop-outline',
+				title: 'RTK・Ccusage・Rate LimitがPCの接続先ごとに見られるようになりました',
+				body: 'PCでローカルとSSH先のウィンドウを同時に開いているとき、画面上部で見たい接続先を選べます。GitHub APIはPC全体で共有される値のため、これまで通り1つの数字を表示します。',
+				tone: 'accent',
+			},
 		],
 	},
 	{
