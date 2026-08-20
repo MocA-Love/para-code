@@ -1,0 +1,162 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+.paradis-pty-daemon-popover {
+	position: absolute;
+	z-index: 2600;
+	border-radius: 8px;
+	overflow: hidden;
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	box-shadow: 0 8px 26px var(--vscode-widget-shadow);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	font-size: 12px;
+	outline: none;
+}
+
+.paradis-pty-daemon-popover .ppd-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 12px 14px 10px;
+}
+
+.paradis-pty-daemon-popover .ppd-title {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.paradis-pty-daemon-popover .ppd-state {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-pty-daemon-popover .ppd-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background-color: var(--vscode-charts-green, #89d185);
+}
+
+.paradis-pty-daemon-popover .ppd-state.ppd-bad .ppd-dot {
+	background-color: var(--vscode-errorForeground);
+}
+
+.paradis-pty-daemon-popover .ppd-lead {
+	padding: 0 14px 12px;
+	line-height: 1.65;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-pty-daemon-popover .ppd-sep {
+	height: 1px;
+	background-color: var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.paradis-pty-daemon-popover .ppd-facts {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 6px 16px;
+	padding: 11px 14px;
+	margin: 0;
+}
+
+.paradis-pty-daemon-popover .ppd-facts dt {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-pty-daemon-popover .ppd-facts dd {
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-pty-daemon-popover .ppd-rows {
+	padding: 6px;
+}
+
+.paradis-pty-daemon-popover .ppd-row {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 6px 8px;
+	border-radius: 5px;
+}
+
+.paradis-pty-daemon-popover .ppd-row .ppd-name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-pty-daemon-popover .ppd-row .ppd-count {
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-pty-daemon-popover .ppd-alert {
+	margin: 10px 10px 4px;
+	padding: 10px 11px;
+	border-radius: 6px;
+	line-height: 1.6;
+	background-color: var(--vscode-inputValidation-warningBackground);
+	border: 1px solid var(--vscode-inputValidation-warningBorder);
+}
+
+.paradis-pty-daemon-popover .ppd-alert.ppd-alert-error {
+	background-color: var(--vscode-inputValidation-errorBackground);
+	border-color: var(--vscode-inputValidation-errorBorder);
+}
+
+.paradis-pty-daemon-popover .ppd-alert-title {
+	font-weight: 600;
+}
+
+.paradis-pty-daemon-popover .ppd-alert-sub {
+	margin-top: 3px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-pty-daemon-popover .ppd-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px 12px;
+}
+
+.paradis-pty-daemon-popover .ppd-spacer {
+	flex: 1;
+}
+
+.paradis-pty-daemon-popover .ppd-button {
+	padding: 5px 13px;
+	border-radius: 5px;
+	cursor: pointer;
+	border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+	background-color: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.paradis-pty-daemon-popover .ppd-button:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-pty-daemon-popover .ppd-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+.paradis-pty-daemon-popover .ppd-button.ppd-mini {
+	padding: 3px 9px;
+	font-size: 11.5px;
+}

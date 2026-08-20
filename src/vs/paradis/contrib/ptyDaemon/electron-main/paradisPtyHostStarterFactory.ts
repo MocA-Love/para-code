@@ -24,9 +24,7 @@ import { ElectronPtyHostStarter } from '../../../../platform/terminal/electron-m
 import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
-
-/** 常駐を使うかどうかの設定。既定は false。 */
-export const PARADIS_PTY_DAEMON_ENABLED = 'paradis.terminal.daemon.enabled';
+import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
 /**
  * 常駐の身元。ビルドが変われば別の常駐になる。
