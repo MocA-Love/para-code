@@ -34,6 +34,20 @@ export interface IParadisShutdownTerminal {
 	readonly shouldPersist: boolean;
 }
 
+/**
+ * 残すかどうかを答える役。**複数居てよい**（接続先のサーバー用と、この PC の常駐用）。
+ *
+ * 複数居るときの決まりは2つ。
+ *
+ * 1. **自分が引き受けられない端末には `false` を答えること** (`shouldKeepProcessAlive`)。
+ *    全員の答えを OR で束ねるので、引き受けられない端末にうっかり `true` と答えると、
+ *    誰も繋ぎ直せない端末が「残す」扱いになり、猶予時間ぶん孤児として残るだけになる。
+ * 2. **自分が引き受けるバックエンドについてしか `true` を答えないこと**
+ *    (`shouldKeepProcessesAlive`)。こちらの答えは端末ごとではなく `_primaryBackend` 全体に
+ *    効く。`true` になると、そのウィンドウでは終了させる側の端末のバッファ保存
+ *    (`persistTerminalState`) が飛び、レイアウト情報も消されずに残る。担当外のウィンドウで
+ *    `true` を返すと、**自分が一切関わっていない端末の復元を壊す**。
+ */
 export interface IParadisTerminalShutdownPolicy {
 	/**
 	 * 閉じる前に一度だけ呼ばれる。ここで設定を読み、必要ならユーザーに尋ねて答えを決めておく。
@@ -48,14 +62,12 @@ export interface IParadisTerminalShutdownPolicy {
 	warn(message: string): void;
 }
 
-let policy: IParadisTerminalShutdownPolicy | undefined;
+const policies = new Set<IParadisTerminalShutdownPolicy>();
 
 export function paradisRegisterTerminalShutdownPolicy(value: IParadisTerminalShutdownPolicy): IDisposable {
-	policy = value;
+	policies.add(value);
 	return toDisposable(() => {
-		if (policy === value) {
-			policy = undefined;
-		}
+		policies.delete(value);
 	});
 }
 
@@ -66,10 +78,21 @@ export function paradisRegisterTerminalShutdownPolicy(value: IParadisTerminalShu
  * 巻き添えで飛ぶ。判断できないことの実害は「今までどおりプロセスが終了する」だけ。
  */
 export async function paradisPrepareTerminalShutdown(reason: ShutdownReason): Promise<void> {
-	try {
-		await policy?.prepare(reason);
-	} catch (error) {
-		onUnexpectedError(error);
+	// 1つずつ、順に待つ。
+	//
+	// 並行に走らせると、**画面に出ていないダイアログの待ち時間だけが減る**。ダイアログ自体は
+	// 1つずつしか出ない (`DialogHandlerContribution.processDialogs`) ので、後ろに並んだ役は
+	// 表示される前から自分の上限を消費し、表示された頃には残りが尽きていて、押した答えが
+	// 捨てられることになる。
+	//
+	// 1つずつ包むのは、投げた1つで残りの `prepare` を止めないため。止めると、尋ねてもいない
+	// 答えで端末を畳むことになる。
+	for (const current of policies) {
+		try {
+			await current.prepare(reason);
+		} catch (error) {
+			onUnexpectedError(error);
+		}
 	}
 }
 
@@ -78,12 +101,7 @@ export async function paradisPrepareTerminalShutdown(reason: ShutdownReason): Pr
  * 端末を1本ずつ畳むかどうかではなく、レイアウトや復元の扱いを決めるのに使う。
  */
 export function paradisShouldKeepTerminalProcessesAlive(reason: ShutdownReason): boolean {
-	try {
-		return policy?.shouldKeepProcessesAlive(reason) === true;
-	} catch (error) {
-		onUnexpectedError(error);
-		return false;
-	}
+	return paradisAnyPolicy(current => current.shouldKeepProcessesAlive(reason));
 }
 
 /**
@@ -94,12 +112,25 @@ export function paradisShouldKeepTerminalProcessesAlive(reason: ShutdownReason):
  * （手元の pty host に、誰も復元しない孤児として猶予時間ぶん残るだけになる）。
  */
 export function paradisShouldKeepTerminalProcessAlive(reason: ShutdownReason, terminal: IParadisShutdownTerminal): boolean {
-	try {
-		return policy?.shouldKeepProcessAlive(reason, terminal) === true;
-	} catch (error) {
-		onUnexpectedError(error);
-		return false;
+	return paradisAnyPolicy(current => current.shouldKeepProcessAlive(reason, terminal));
+}
+
+/**
+ * 1人でも「残す」と答えたら残す。
+ *
+ * OR で束ねてよいのは、各自が自分の引き受けられる端末にしか `true` を答えないという決まりが
+ * あるから（{@link IParadisTerminalShutdownPolicy}）。投げた1人のせいで他の答えを落とさない。
+ */
+function paradisAnyPolicy(ask: (policy: IParadisTerminalShutdownPolicy) => boolean): boolean {
+	let keep = false;
+	for (const current of policies) {
+		try {
+			keep = ask(current) || keep;
+		} catch (error) {
+			onUnexpectedError(error);
+		}
 	}
+	return keep;
 }
 
 /** 「残す」の合図が届くのを待つ上限。生きている接続なら1往復で済むので、これで十分足りる。 */
@@ -121,16 +152,22 @@ const PARADIS_KEEP_DETACH_TIMEOUT_MS = 5_000;
  * （そこは受け入れている。上限を外して待ち続け、ウィンドウが閉じなくなる方が悪い）。
  */
 export function paradisJoinKeptDetaches(detaches: readonly Promise<void>[]): Promise<void> {
+	// 全員に配る。どの役の端末が届かなかったかまでは分けられない (待っているのは
+	// `detachProcessAndDispose` の約束の束で、そこに出どころは残っていない)。だから文言に
+	// 行き先を書かない。「接続先へ伝えられなかった」と書くと、常駐へ残した端末の話にも
+	// 同じ文が出て、ログを読む側を誤らせる。
 	const warn = (message: string) => {
-		try {
-			policy?.warn(message);
-		} catch (error) {
-			onUnexpectedError(error);
+		for (const current of policies) {
+			try {
+				current.warn(message);
+			} catch (error) {
+				onUnexpectedError(error);
+			}
 		}
 	};
 	return raceTimeout(
-		Promises.settled(detaches.slice()).then(() => undefined, error => warn(`Para Code could not tell the remote to keep every terminal: ${error}`)),
+		Promises.settled(detaches.slice()).then(() => undefined, error => warn(`Para Code could not ask for every terminal to be kept: ${error}`)),
 		PARADIS_KEEP_DETACH_TIMEOUT_MS,
-		() => warn('Para Code could not tell the remote to keep its terminals in time; closing anyway'),
+		() => warn('Para Code could not ask for its terminals to be kept in time; closing anyway'),
 	).then(() => undefined);
 }

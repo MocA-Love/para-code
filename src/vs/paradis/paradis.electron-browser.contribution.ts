@@ -59,3 +59,4 @@ import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mob
 registerParadisRemoteTranscriptMirrorContribution();
 import './contrib/remoteTerminals/electron-browser/paradisRemoteTerminalShutdown.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonStatusBar.contribution.js';
+import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonShutdown.contribution.js';

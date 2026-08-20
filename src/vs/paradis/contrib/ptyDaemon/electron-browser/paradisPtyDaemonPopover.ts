@@ -183,10 +183,9 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		if (this.status.terminalCount === 0) {
 			return localize('paradis.ptyDaemon.popover.leadIdle', "常駐は動いていますが、抱えているターミナルはありません。このまま誰も使わなければ、しばらくして自分から終了します。");
 		}
-		// 「終了しても残ります」とはまだ書かない。常駐がターミナルを抱えているのは本当だが、
-		// 閉じるときに畳む側 (terminalService の _onWillShutdown) はまだ常駐を知らないので、
-		// 実際には終了時に畳まれる。書けるようになるのは、そちらを繋いでから。
-		return localize('paradis.ptyDaemon.popover.leadRunning', "{0}本のターミナルを、Para Code の外の常駐が抱えています。ウィンドウを再読み込みしても、同じターミナルへ繋ぎ直します。", this.status.terminalCount);
+		// 「残ります」と言い切らず「残せます」にしてある。閉じるときに残すかどうかは設定
+		// (`keepAliveOnClose`) と、尋ねたときの答え次第で、`never` にしている人には嘘になる。
+		return localize('paradis.ptyDaemon.popover.leadRunning', "{0}本のターミナルを、Para Code の外の常駐が抱えています。ウィンドウを閉じても Para Code を終了しても、実行したまま残せます。", this.status.terminalCount);
 	}
 
 	private appendFact(list: HTMLElement, label: string, value: string): void {

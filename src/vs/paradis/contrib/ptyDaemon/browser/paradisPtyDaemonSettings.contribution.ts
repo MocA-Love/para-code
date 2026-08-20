@@ -11,7 +11,7 @@
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE } from '../common/paradisPtyDaemonSettingKey.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis.terminal',
@@ -25,8 +25,20 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// APPLICATION スコープ: ターミナルのプロセスを持つのは main プロセスなので、
 			// ウィンドウやワークスペースごとに切り替えられる設定にはできない。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.terminal.daemon.enabled', "ターミナルを Para Code の外の常駐プロセスで動かします。有効にすると、ウィンドウを閉じても Para Code を終了しても、実行中のコマンドやエージェントはそのまま動き続け、次に開いたときに元の画面のまま繋ぎ直せます。\n\n変更は Para Code の再起動後に反映されます。PC を再起動すると常駐も終了します。"),
+			markdownDescription: localize('paradis.terminal.daemon.enabled', "ターミナルを Para Code の外の常駐プロセスで動かします。有効にすると、ウィンドウを閉じても Para Code を終了しても、実行中のコマンドやエージェントはそのまま動き続け、次に開いたときに元の画面のまま繋ぎ直せます。\n\n変更は Para Code の再起動後に反映されます。PC を再起動すると常駐も終了します。残したターミナルは、24時間どのウィンドウからも開かれなければ終了します。"),
 			tags: ['experimental'],
+		},
+		[PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE]: {
+			type: 'string',
+			enum: ['ask', 'always', 'never'],
+			default: 'ask',
+			scope: ConfigurationScope.APPLICATION,
+			enumDescriptions: [
+				localize('paradis.terminal.daemon.keepAliveOnClose.ask', "閉じるたびに尋ねます。"),
+				localize('paradis.terminal.daemon.keepAliveOnClose.always', "尋ねずに残します。"),
+				localize('paradis.terminal.daemon.keepAliveOnClose.never', "尋ねずに終了します（常駐を使わないのと同じ結果になります）。"),
+			],
+			markdownDescription: localize('paradis.terminal.daemon.keepAliveOnClose', "ウィンドウを閉じるときに、実行中のターミナルを常駐へ残すかどうかです。{0} が有効なときだけ意味を持ちます。\n\nPara Code を終了するときは尋ねません（開いているウィンドウの数だけダイアログが並ぶため）。覚えている選択があればそれに従い、無ければ残します。\n\n残したターミナルは、24時間どのウィンドウからも開かれなければ終了します。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
 		},
 	},
 });

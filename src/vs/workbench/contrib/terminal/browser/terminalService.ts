@@ -759,10 +759,13 @@ export class TerminalService extends Disposable implements ITerminalService {
 		// else starts the reconnection timer over there, so a message lost to the closing socket
 		// leaves the process running with no timer and no way to reclaim it.
 		if (paradisKeptDetaches.length > 0) {
+			// allow-any-unicode-next-line
 			// 待ち方は paradisJoinKeptDetaches に一本化してある（上限とログの理由はそちら）。
 			e.join(paradisJoinKeptDetaches(paradisKeptDetaches), {
 				id: 'paradis.keepRemoteTerminals',
-				label: nls.localize('paradis.keepRemoteTerminals.joiner', "Leaving terminals running on the remote"),
+				// PARA-PATCH: this waits for local terminals kept by the pty daemon too, not just
+				// remote ones, so the label cannot name a destination.
+				label: nls.localize('paradis.keepTerminals.joiner', "Leaving terminals running"),
 			});
 		}
 
