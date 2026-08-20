@@ -24,7 +24,8 @@ import { SyncDescriptor } from '../../../../../platform/instantiation/common/des
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService } from '../../../../../workbench/services/layout/browser/layoutService.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
+import { paradisIsTerminalInputBlocked, paradisResetTerminalInputGateForTest } from '../../browser/paradisTerminalInputGate.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
@@ -39,11 +40,16 @@ import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalE
 import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
 import { paradisParseTerminalNonceScopeStorage } from '../../common/paradisTerminalNonceScope.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from '../../browser/paradisTerminalEditorRevive.js';
+import { IProgressService } from '../../../../../platform/progress/common/progress.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
 
 suite('ParadisWorkspaceSwitchService integration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// 入力ゲートはモジュールスコープの状態なので、途中で落ちた回に立てっぱなしのまま残ると
+	// 最大20秒(実時間)ほかの suite のターミナル入力まで塞ぐ。suite 単位でも必ず戻す。
+	teardown(() => paradisResetTerminalInputGateForTest());
 
 	test('restores only the source live editor and preserves its parked terminal ownership after a round trip', async () => {
 		const testDisposables = new DisposableStore();
@@ -125,6 +131,179 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 					testDisposables.dispose();
 				}
 			}
+		}
+	});
+
+	test('points at the target space for the whole switch, including after the switching flag drops', async () => {
+		const testDisposables = new DisposableStore();
+		const updateStarted = new DeferredPromise<void>();
+		const releaseUpdate = new DeferredPromise<void>();
+		const timeline: string[] = [];
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b'],
+				testDisposables,
+				async (phase, uri) => {
+					if (phase === 'start' && uri.path === '/workspace-b') {
+						updateStarted.complete();
+						await releaseUpdate.p;
+					}
+				}
+			);
+			const service = harness.workspaceSwitchService;
+			const snapshot = (label: string) => timeline.push(
+				`${label}:pending=${service.pendingSwitchTargetKey}:active=${service.activeStateKey}:switching=${service.isSwitching}`);
+			testDisposables.add(service.onDidChangeSwitchState(() => snapshot('changed')));
+			testDisposables.add(service.onWillSwitchScope(() => snapshot('will')));
+			testDisposables.add(service.onDidSwitchScope(() => snapshot('did')));
+
+			const switchPromise = service.switchRepository('space-b');
+			await updateStarted.p;
+			snapshot('mid-folders');
+			releaseUpdate.complete();
+			await switchPromise;
+			snapshot('settled');
+
+			assert.deepStrictEqual(timeline, [
+				// 退避を始める前から行き先を指す (一覧のチェックを前倒しできる)
+				'changed:pending=space-b:active=space-a:switching=false',
+				'will:pending=space-b:active=space-a:switching=true',
+				'mid-folders:pending=space-b:active=space-a:switching=true',
+				// **ここが肝**: 完了通知の時点で isSwitching は既に false だが、パネル端末の
+				// 出し入れはこの通知の中で走る。行き先を指し続けているのはこちらだけ
+				'did:pending=space-b:active=space-b:switching=false',
+				'changed:pending=undefined:active=space-b:switching=false',
+				'settled:pending=undefined:active=space-b:switching=false',
+			]);
+		} finally {
+			releaseUpdate.complete();
+			testDisposables.dispose();
+		}
+	});
+
+	test('keeps terminal keystrokes out until the completion participants have run', async () => {
+		const testDisposables = new DisposableStore();
+		const updateStarted = new DeferredPromise<void>();
+		const releaseUpdate = new DeferredPromise<void>();
+		const timeline: string[] = [];
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b'],
+				testDisposables,
+				async (phase, uri) => {
+					if (phase === 'start' && uri.path === '/workspace-b') {
+						updateStarted.complete();
+						await releaseUpdate.p;
+					}
+				}
+			);
+			const service = harness.workspaceSwitchService;
+			const snapshot = (label: string) => timeline.push(
+				`${label}:blocked=${paradisIsTerminalInputBlocked()}:switching=${service.isSwitching}`);
+			testDisposables.add(service.registerSwitchCompletionParticipant(() => { snapshot('participant'); }));
+
+			snapshot('before');
+			const switchPromise = service.switchRepository('space-b');
+			await updateStarted.p;
+			snapshot('mid-folders');
+			releaseUpdate.complete();
+			await switchPromise;
+			snapshot('settled');
+
+			assert.deepStrictEqual(timeline, [
+				'before:blocked=false:switching=false',
+				'mid-folders:blocked=true:switching=true',
+				// **ここが肝**: 完了 participant の時点で isSwitching は既に false なのに、
+				// パネル端末の park/unpark はこの中で走る。ゲートを isSwitching に乗せると
+				// 「一番混ざっている区間」が素通しになり、前のスペースでコマンドが走る
+				'participant:blocked=true:switching=false',
+				'settled:blocked=false:switching=false',
+			]);
+		} finally {
+			releaseUpdate.complete();
+			paradisResetTerminalInputGateForTest();
+			testDisposables.dispose();
+		}
+	});
+
+	test('lets terminal input back in when the switch fails', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b'],
+				testDisposables,
+				async (phase, uri) => {
+					if (phase === 'end' && uri.path === '/workspace-b') {
+						throw new Error('target deleted');
+					}
+				}
+			);
+			const result = await Promise.allSettled([harness.workspaceSwitchService.switchRepository('space-b')]);
+
+			// 降ろし損ねると、このレンダラーの全ターミナルが入力不能のまま残る
+			assert.deepStrictEqual(
+				{ switchStatus: result[0].status, blocked: paradisIsTerminalInputBlocked() },
+				{ switchStatus: 'rejected', blocked: false });
+		} finally {
+			paradisResetTerminalInputGateForTest();
+			testDisposables.dispose();
+		}
+	});
+
+	// 先行 stat の締め切り (1500ms) を実時間で待つので、この suite の中では遅いテスト。
+	// 締め切りを注入可能にすると本番側に本番で使わない口が増えるので、待つ側を選んでいる。
+	test('completes the switch even when the target folder stat never answers', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b'],
+				testDisposables,
+				undefined,
+				undefined,
+				() => new Promise<Partial<IFileStat>>(() => { })
+			);
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			assert.deepStrictEqual({
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				blocked: paradisIsTerminalInputBlocked(),
+			}, {
+				activeStateKey: 'space-b',
+				blocked: false,
+			});
+		} finally {
+			paradisResetTerminalInputGateForTest();
+			testDisposables.dispose();
+		}
+	});
+
+	test('stops pointing at the target space when the switch fails', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b'],
+				testDisposables,
+				async (phase, uri) => {
+					if (phase === 'end' && uri.path === '/workspace-b') {
+						throw new Error('target deleted');
+					}
+				}
+			);
+			const service = harness.workspaceSwitchService;
+			const result = await Promise.allSettled([service.switchRepository('space-b')]);
+
+			// 解除し損ねると、二度と消えない嘘のチェックが一覧に残る
+			assert.deepStrictEqual({
+				switchStatus: result[0].status,
+				pendingSwitchTargetKey: service.pendingSwitchTargetKey,
+				activeStateKey: service.activeStateKey,
+			}, {
+				switchStatus: 'rejected',
+				pendingSwitchTargetKey: undefined,
+				activeStateKey: 'space-a',
+			});
+		} finally {
+			testDisposables.dispose();
 		}
 	});
 
@@ -925,8 +1104,15 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			const released = scope.undoLastTerminalAdoption();
 
 			// 取り消しは「取り消せる間だけ」が価値なので、案内が自動で消えてはいけない。
-			const undoNotice = harness.notifications.find(notification => notification.choices.some(choice => choice.label === 'Undo'));
-			assert.strictEqual(undoNotice?.sticky, true, '取り消しの案内は自動で消さない');
+			// 探すのは表示ラベルそのもの。`localize` はキー指定だと第2引数をそのまま返すので、
+			// ここは実装に書いてある文言と一字一句同じでなければ**黙って1件も見つからない**。
+			// 実際 045ae08122c で実装のラベルが英語から日本語になった際にここが追随せず、
+			// 以下の assert は毎回 undefined と比較して失敗し続けていた。文言を変えるときは対で直すこと。
+			// allow-any-unicode-next-line
+			const undoLabel = '元に戻す';
+			const undoNotice = harness.notifications.find(notification => notification.choices.some(choice => choice.label === undoLabel));
+			assert.ok(undoNotice, `取り消しの案内が見つからない (出ていたラベル: ${JSON.stringify(harness.notifications.map(notification => notification.choices.map(choice => choice.label)))})`);
+			assert.strictEqual(undoNotice.sticky, true, '取り消しの案内は自動で消さない');
 
 			assert.deepStrictEqual({
 				released,
@@ -1066,6 +1252,84 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// リモートでは `whenConnected` が復元端末全ての replay 完了まで待つため、数分単位で遅れる。
+	// それまで park を保留したままだと、切り替えたはずの前のスペースのターミナルが見えて操作でき、
+	// 前のスペースの作業ディレクトリでコマンドを打つ事故になる。接続完了で先に打ち切る。
+	test('parks other spaces once the remote connection is up, without waiting for the replay to finish', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createRestoredTerminalGroup(4020);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReady: true,
+				// `whenConnected` は解決させない。replay 待ちで残り続ける状況そのもの。
+				persistentProcessScopes: [[4020, 'space-b']],
+				remoteAuthority: 'ssh-remote+example',
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			const parkedWhileConnecting = harness.parkedGroups.has(group);
+
+			// 接続完了だけが先に来る（`whenConnected` はまだ pending のまま）。
+			harness.markTerminalsConnected();
+			await settle();
+
+			assert.deepStrictEqual({
+				parkedWhileConnecting,
+				parkedOnceConnected: harness.parkedGroups.has(group),
+				stateKey: scope.getStateKeyForInstance(4020),
+			}, {
+				// 復元中の park は split を壊すので、接続が立つまでは保留のまま。
+				parkedWhileConnecting: false,
+				parkedOnceConnected: true,
+				stateKey: 'space-b',
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// local では upstream の `_reconnectToLocalTerminals` が `_recreateTerminalGroups` を
+	// await せずに接続完了を立てるため、接続完了はグループ構築の実行中に来る。ここで park を
+	// 解除すると 2枚目以降の split が `Cannot split a terminal without a group` で落ちる。
+	// 早期解除をリモート限定にしている理由がこれで、うっかり local へ広げると再発する。
+	test('keeps parking deferred on a local connection, where groups are still being rebuilt', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createRestoredTerminalGroup(4021);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReady: true,
+				persistentProcessScopes: [[4021, 'space-b']],
+				// remoteAuthority を渡さない = local。
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			harness.markTerminalsConnected();
+			await settle();
+
+			assert.deepStrictEqual({
+				parkedOnceConnected: harness.parkedGroups.has(group),
+				// 台帳は正しいままで、見え方だけが `whenConnected` まで遅れて追いつく。
+				stateKey: scope.getStateKeyForInstance(4021),
+			}, {
+				parkedOnceConnected: false,
+				stateKey: 'space-b',
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 	// 借り物の端末を cwd で訂正するとき、同居している「自前の根拠を持つ端末」を巻き添えに
 	// 上書きしてはいけない。訂正はユーザーの明示指定ではないので、グループごと動かさない。
 	test('correcting a borrowed space does not overwrite the space of the terminal beside it', async () => {
@@ -1178,6 +1442,11 @@ interface IWorkspaceSwitchIntegrationHarness {
 	addGroup(group: ITerminalGroup): void;
 	/** `connectLater` で止めていたターミナルの復元完了を進める。 */
 	finishConnecting(): void;
+	/**
+	 * ターミナルの接続完了だけを知らせる（`whenConnected` は進めない）。リモートで
+	 * replay 待ちが長引き、接続完了だけが先に来る状況を踏むのに使う。
+	 */
+	markTerminalsConnected(): void;
 	/** worktree を1つ増やして知らせる（cwd から所属を引けるようになる契機）。 */
 	addWorktree(repositoryId: string, path: string): void;
 	/** 出された通知。待避を知らせたか、閉じた後にまた知らせるかを見るのに使う。 */
@@ -1203,6 +1472,13 @@ interface IParadisTerminalScopeHarnessOptions {
 	readonly connectLater?: boolean;
 	/** 前セッションから引き継いだ {pty id → スペース} の台帳。 */
 	readonly persistentProcessScopes?: readonly (readonly [number, string])[];
+	/**
+	 * リモート接続 (SSH 等) として組み立てるか。park 保留の早期解除はリモートでしか
+	 * 走らない（local は復元中に接続完了が立つため）。
+	 */
+	readonly remoteAuthority?: string;
+	/** 組み立てた時点の接続状態。既に Connected な状態から始めるのに使う。 */
+	readonly connectionState?: TerminalConnectionState;
 }
 
 /** マイクロタスクとタイマーを数回まわして、非同期の解決を落ち着かせる。 */
@@ -1326,6 +1602,8 @@ async function createHarness(
 	onFolderUpdate: (phase: 'start' | 'end', uri: URI, updateIndex: number) => Promise<void> = async () => { },
 	/** 保存済み一覧に混ざっている、別の接続先のスペース。 */
 	foreignRepositories: readonly { id: string; name: string; uri: string }[] = [],
+	/** 切り替え先フォルダの先行確認。答えない stat (リモートの詰まり) を作るために差し替える。 */
+	statTargetFolder: () => Promise<Partial<IFileStat>> = async () => ({ isDirectory: true }),
 ): Promise<IWorkspaceSwitchIntegrationHarness> {
 	const repositories = stateKeys.map(stateKey => ({
 		id: stateKey,
@@ -1411,6 +1689,9 @@ async function createHarness(
 		},
 	} satisfies Pick<ITerminalEditorService, 'instances' | 'openEditor' | 'getInputFromResource' | 'detachInstance'>;
 
+	const notifications: IRecordedNotification[] = [];
+	const notificationService = new RecordingNotificationService(notifications) as unknown as INotificationService;
+
 	const workspaceSwitchService = testDisposables.add(new ParadisWorkspaceSwitchService(
 		storageService,
 		contextService,
@@ -1421,12 +1702,16 @@ async function createHarness(
 		terminalEditorService as unknown as ITerminalEditorService,
 		// 切り替え先フォルダの事前確認。ディレクトリを返せば upstream 側の stat が省かれる経路に
 		// 入り、返さなければ従来どおり upstream が自分で確かめる。
-		{ stat: async () => ({ isDirectory: true }) } as unknown as IFileService,
+		{ stat: statTargetFolder } as unknown as IFileService,
 		editorScopeService,
 		auxiliaryWindowScopeService as unknown as IParadisAuxiliaryWindowScopeService,
 		instantiationService.get(ILogService),
 		// 一覧を絞る基準になる。ここは「どこにも繋がっていない」ウィンドウとして振る舞わせる
 		{ remoteAuthority: undefined } as unknown as IWorkbenchEnvironmentService,
+		// 進行表示は素通し。切り替え本体を包む位置に居るので、包んだ結果が素の呼び出しと
+		// 同じであることをここで担保する (表示そのものはこのハーネスの対象外)
+		{ withProgress: (_options, task) => task({ report: () => { } }) } as IProgressService,
+		notificationService,
 	));
 
 	const parkedGroups = new Set<ITerminalGroup>();
@@ -1434,10 +1719,10 @@ async function createHarness(
 	const onDidChangeInstances = testDisposables.add(new Emitter<void>());
 	const liveGroups: ITerminalGroup[] = [];
 	const deferredConnection = new DeferredPromise<void>();
+	const onDidChangeConnectionState = testDisposables.add(new Emitter<void>());
+	let connectionState = TerminalConnectionState.Connecting;
 	const onDidChangeWorktrees = testDisposables.add(new Emitter<void>());
 	const worktrees = new Map<string, IParadisWorktree[]>();
-	const notifications: IRecordedNotification[] = [];
-	const notificationService = new RecordingNotificationService(notifications) as unknown as INotificationService;
 	const onDidDisposeGroup = testDisposables.add(new Emitter<ITerminalGroup>());
 
 	return {
@@ -1451,6 +1736,10 @@ async function createHarness(
 		fireGroupsChanged: () => onDidChangeGroups.fire(),
 		fireInstancesChanged: () => onDidChangeInstances.fire(),
 		finishConnecting: () => deferredConnection.complete(),
+		markTerminalsConnected: () => {
+			connectionState = TerminalConnectionState.Connected;
+			onDidChangeConnectionState.fire();
+		},
 		addWorktree: (repositoryId: string, path: string) => {
 			const existing = worktrees.get(repositoryId) ?? [];
 			existing.push({ repositoryId, name: path, uri: URI.file(path), missing: false } satisfies Partial<IParadisWorktree> as unknown as IParadisWorktree);
@@ -1491,15 +1780,18 @@ async function createHarness(
 					StorageTarget.MACHINE,
 				);
 			}
+			// `connectionState` は後から Connected へ動かせるようにする。`whenConnected` が
+			// 永久 pending でも接続完了だけが先に来る（リモートの実際の順序）を再現するため。
+			connectionState = options.connectionState ?? TerminalConnectionState.Connecting;
 			const terminalService = {
 				// スナップショットにしない。グループを足したり分割したりした後の検査で嘘をつく。
 				get instances() { return groups.flatMap(group => group.terminalInstances); },
 				whenConnected: options.connectLater === true
 					? deferredConnection.p
 					: (options.connected === true ? Promise.resolve() : new Promise<void>(() => { })),
-				connectionState: TerminalConnectionState.Connecting,
+				get connectionState() { return connectionState; },
 				onDidChangeInstances: onDidChangeInstances.event,
-				onDidChangeConnectionState: Event.None,
+				onDidChangeConnectionState: onDidChangeConnectionState.event,
 				onAnyInstanceProcessIdReady: Event.None,
 			} satisfies Partial<ITerminalService> as unknown as ITerminalService;
 			const worktreeService = {
@@ -1516,7 +1808,7 @@ async function createHarness(
 				worktreeService,
 				storageService,
 				{ getBackend: async () => undefined } as ITerminalInstanceService,
-				{} as IWorkbenchEnvironmentService,
+				{ remoteAuthority: options.remoteAuthority } as IWorkbenchEnvironmentService,
 				contextService,
 				parts,
 				new NullLogService(),

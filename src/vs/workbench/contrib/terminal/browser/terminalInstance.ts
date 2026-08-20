@@ -94,6 +94,9 @@ import type { IProgressState } from '@xterm/addon-progress';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { PromptInputState } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { hasKey, isNumber, isString } from '../../../../base/common/types.js';
+// PARA-PATCH: read the Para Code space-switch input gate so keystrokes are not delivered to a
+// terminal whose owning space is being swapped out from under the user
+import { paradisIsTerminalInputBlocked } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalInputGate.js';
 
 const enum Constants {
 	/**
@@ -1158,6 +1161,16 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		xterm.raw.attachCustomKeyEventHandler((event: KeyboardEvent): boolean => {
 			// Disable all input if the terminal is exiting
 			if (this._isExiting) {
+				return false;
+			}
+
+			// PARA-PATCH: drop keystrokes while a Para Code space switch is in flight, so a command
+			// cannot be typed into a terminal that still belongs to the space being left. Gating here
+			// rather than on `onData` is deliberate: `onData` also carries the terminal's automatic
+			// replies (DA/DSR/CPR/XTVERSION/focus reports), and swallowing those hangs or
+			// mis-configures the running program. Returning false without preventDefault matches the
+			// `_isExiting` guard above, so VS Code keybindings still work while the switch runs.
+			if (paradisIsTerminalInputBlocked()) {
 				return false;
 			}
 

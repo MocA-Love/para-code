@@ -1881,7 +1881,8 @@ export default defineConfig(
 						'vs/paradis/contrib/mobileRelay/~',
 						// PARA-PATCH: relauncher.contribution.ts がワークスペース切替時の拡張ホスト再起動抑止フラグ
 						// (isParadisManagedWorkspaceWindow) を読むための逆方向 import。
-						// scm.service.contribution.ts のスコープ付き ISCMViewService 差し替えも同じ許可を使う
+						// scm.service.contribution.ts のスコープ付き ISCMViewService 差し替えも同じ許可を使う。
+						// terminalInstance.ts の切り替え中入力ゲート (paradisIsTerminalInputBlocked) も同じ許可
 						'vs/paradis/contrib/workspaceSwitch/~',
 						// PARA-PATCH: xtermTerminal.ts がウィンドウ透過時のターミナル背景透明化ヘルパーを呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/windowTransparency/~',
@@ -1980,6 +1981,9 @@ export default defineConfig(
 						// PARA-PATCH: terminalLinkManager.ts が authority付き file:// リンク(SMB/UNC)を
 						// 外部ブラウザで開くdetector (ParadisTerminalFileUriLinkDetector) を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/terminalFileUriLinks/~',
+						// PARA-PATCH: terminal.clipboard.contribution.ts が切り替え中の入力ゲート
+						// (paradisIsTerminalInputBlocked) を読み、ペーストを捨てるための逆方向 import
+						'vs/paradis/contrib/workspaceSwitch/~',
 						'vscode-notebook-renderer', // Type only import
 						'@vscode/tree-sitter-wasm', // type import
 						{
