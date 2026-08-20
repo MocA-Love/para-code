@@ -32,6 +32,9 @@ export const PARADIS_PDF_INPUT_TYPE_ID = 'paradis.input.pdfPreview';
 /** Word(.docx)ビューアの EditorPane / EditorInput 識別子。 */
 export const PARADIS_DOCX_EDITOR_ID = 'paradis.editor.docxPreview';
 export const PARADIS_DOCX_INPUT_TYPE_ID = 'paradis.input.docxPreview';
+/** Word(.docx)差分ビューアの EditorPane / EditorInput 識別子。 */
+export const PARADIS_DOCX_DIFF_EDITOR_ID = 'paradis.editor.docxDiff';
+export const PARADIS_DOCX_DIFF_INPUT_TYPE_ID = 'paradis.input.docxDiff';
 
 /** Excel(スプレッドシート)ビューアの EditorPane / EditorInput 識別子。 */
 export const PARADIS_SPREADSHEET_EDITOR_ID = 'paradis.editor.spreadsheet';
