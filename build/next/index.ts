@@ -104,6 +104,8 @@ const desktopEntryPoints = [
 	'vs/platform/files/node/watcher/watcherMain',
 	'vs/platform/localTranscription/node/localTranscriptionMain',
 	'vs/platform/terminal/node/ptyHostMain',
+	// PARA-PATCH: pipes a window's message port to the pty daemon that outlives the app
+	'vs/paradis/contrib/ptyDaemon/node/paradisPtyDaemonBridgeMain',
 	'vs/platform/agentHost/node/agentHostMain',
 	'vs/platform/agentHost/node/diffWorkerMain',
 	'vs/workbench/api/node/extensionHostProcess',

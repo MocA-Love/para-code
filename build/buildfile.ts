@@ -25,6 +25,8 @@ export const workbenchDesktop = [
 	createModuleDescription('vs/platform/files/node/watcher/watcherMain'),
 	createModuleDescription('vs/platform/localTranscription/node/localTranscriptionMain'),
 	createModuleDescription('vs/platform/terminal/node/ptyHostMain'),
+	// PARA-PATCH: pipes a window's message port to the pty daemon that outlives the app
+	createModuleDescription('vs/paradis/contrib/ptyDaemon/node/paradisPtyDaemonBridgeMain'),
 	createModuleDescription('vs/platform/agentHost/node/agentHostMain'),
 	createModuleDescription('vs/platform/agentHost/node/diffWorkerMain'),
 	createModuleDescription('vs/workbench/api/node/extensionHostProcess'),
