@@ -476,6 +476,18 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 
 **「残したはずの端末が消えた」という報告が来たら、まずここを疑うこと。** これを知らないと、常駐側の猶予やアイドル終了を延々と調べることになる（そちらは無実）。
 
+### Windows で常駐を無効にしている理由（2026-08-20 調査済み。再調査不要）
+
+`paradisPtyHostStarterFactory.ts` は Windows で常駐を使わず、アプリ内の pty host に倒している。理由は名前付きパイプの偽装で、**こちら側では塞げない**ことを確認済み。
+
+- libuv `src/win/pipe.c` の `open_named_pipe()` にある `CreateFileW` は3箇所とも `dwFlagsAndAttributes` が `FILE_FLAG_OVERLAPPED` のみ。ファイル全体に `SECURITY_SQOS_PRESENT` / `SECURITY_IDENTIFICATION` が存在しない。接続の両パス（即時、`ERROR_PIPE_BUSY` 後のリトライ）ともここを通る
+- Microsoft の "Impersonating a Named Pipe Client" に「By default, a server impersonates at the SecurityImpersonation impersonation level」とあり、未指定は危険な側の既定
+- ただし `ImpersonateNamedPipeClient` の Remarks より、実際に通るのは偽サーバーが `SeImpersonatePrivilege` を持つ場合（サービスアカウント）か同一ユーザーの場合のみ。**一般ユーザーの別アカウントでは成立しない**
+
+盗聴（打鍵と環境変数を偽物へ渡す）の方は名乗り合い（`paradisPtyDaemonAuth`）で塞いである。残るのは接続時点で成立する偽装だけ。
+
+**開けるときの筋道**: Node の `net` から SQOS フラグを渡す口は無いので、パイプにこだわる限り解決しない。Windows だけループバック TCP に切り替えるのが現実的で、TCP には偽装の仕組みが無いため問題が消える。認証は既存の名乗り合いをそのまま使い、ポート番号は台帳に書く。`ipc.net` の `serve`/`connect` はポートにも対応している。
+
 ### `terminal.integrated.enablePersistentSessions` をセッション途中で off にした場合
 
 既に開いている端末は生成時の値で `shouldPersist=true` のままなので「残す」と答えられるが、次回起動時は `_reconnectToLocalTerminals()` が走らないため、24時間の孤児になる。設定を触ってから再起動しない、という狭い条件。塞ぐなら常駐側の `prepare` でこの設定を見て `end` へ倒す（接続先側にも同じ穴がある）。
