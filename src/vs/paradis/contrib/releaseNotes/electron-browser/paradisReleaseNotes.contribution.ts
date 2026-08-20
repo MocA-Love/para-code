@@ -7,18 +7,20 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { FileAccess } from '../../../../base/common/network.js';
+import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IBaseSerializableStorageRequest, ISerializableCompareAndSwapRequest, ISerializableCompareAndSwapResult, ISerializableGetValueRequest } from '../../../../platform/storage/common/storageIpc.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 
 /**
  * 歯車メニュー(左下)の「更新の確認...」の下に「更新履歴」を追加する。
@@ -99,11 +101,21 @@ class ParadisShowChangelogOnUpdate implements IWorkbenchContribution {
 
 	private static readonly LAST_COMMIT_KEY = 'paradis.releaseNotes.lastKnownCommit';
 
+	/**
+	 * APPLICATION スコープの storage を、ウィンドウのキャッシュ越しではなくメインプロセスへ
+	 * 直接読み書きするための宛先。profile / workspace を渡さないと
+	 * `storageMainService.applicationStorage`（= StorageScope.APPLICATION の実体）に当たる。
+	 */
+	private static readonly APPLICATION_STORAGE_REQUEST: IBaseSerializableStorageRequest = {
+		profile: undefined,
+		workspace: undefined,
+	};
+
 	constructor(
 		@IStorageService storageService: IStorageService,
 		@IProductService productService: IProductService,
 		@IConfigurationService configurationService: IConfigurationService,
-		@IHostService hostService: IHostService,
+		@IMainProcessService mainProcessService: IMainProcessService,
 		@ICommandService commandService: ICommandService,
 	) {
 		const commit = productService.commit;
@@ -112,27 +124,62 @@ class ParadisShowChangelogOnUpdate implements IWorkbenchContribution {
 			return;
 		}
 
-		// 複数ウィンドウが同時に復元されても、最後にフォーカスのあったウィンドウ 1 つでだけ開く
-		// (upstream の ProductContribution と同じガード)
-		hostService.hadLastFocus().then(hadLastFocus => {
-			if (!hadLastFocus) {
-				return;
-			}
+		const storageChannel = mainProcessService.getChannel('storage');
 
-			const lastCommit = storageService.get(ParadisShowChangelogOnUpdate.LAST_COMMIT_KEY, StorageScope.APPLICATION);
-			storageService.store(ParadisShowChangelogOnUpdate.LAST_COMMIT_KEY, commit, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		// 複数ウィンドウが同時に復元されても、更新履歴は 1 回だけ開きたい。
+		//
+		// 以前は「最後にフォーカスのあったウィンドウか」(hadLastFocus) で 1 つに絞っていたが、
+		// これは「更新後の最初のウィンドウか」ではなく「いま最後にアクティブか」を見る判定なので、
+		// 復元の途中で生まれたウィンドウ（SSH ウィンドウなど）が最後のアクティブを奪う。
+		// すると本来のウィンドウは記録を残さずに終わり、後から来たウィンドウが古い commit を
+		// 読んで開いてしまう。
+		//
+		// 記録はガードの外へ出し、メインプロセス側の compare-and-swap で「記録できた
+		// ウィンドウだけが開く」形にして、どのウィンドウが先に来ても必ず 1 回になるようにする。
+		this.claimAndShow(storageChannel, commit, storageService, configurationService, commandService)
+			.catch(() => { /* storage への問い合わせが失敗したら、更新履歴は出さないだけにする */ });
+	}
 
-			// 記録が無い = 新規インストール直後は開かない。commit が同じ = 更新されていない
-			if (lastCommit === undefined || lastCommit === commit) {
-				return;
-			}
+	private async claimAndShow(
+		storageChannel: IChannel,
+		commit: string,
+		storageService: IStorageService,
+		configurationService: IConfigurationService,
+		commandService: ICommandService,
+	): Promise<void> {
+		const getValueRequest: ISerializableGetValueRequest = {
+			...ParadisShowChangelogOnUpdate.APPLICATION_STORAGE_REQUEST,
+			key: ParadisShowChangelogOnUpdate.LAST_COMMIT_KEY,
+		};
+		// ウィンドウの storage は起動時のスナップショットなので、他のウィンドウが書いた値が
+		// 見えない。メインプロセスの現在値を読む。
+		const lastCommit = await storageChannel.call<string | undefined>('getValue', getValueRequest);
 
-			if (configurationService.getValue<boolean>('paradis.releaseNotes.showOnUpdate') === false) {
-				return;
-			}
+		const compareAndSwapRequest: ISerializableCompareAndSwapRequest = {
+			...ParadisShowChangelogOnUpdate.APPLICATION_STORAGE_REQUEST,
+			key: ParadisShowChangelogOnUpdate.LAST_COMMIT_KEY,
+			expectedValue: lastCommit,
+			newValue: commit,
+		};
+		const result = await storageChannel.call<ISerializableCompareAndSwapResult>('compareAndSwap', compareAndSwapRequest);
+		if (!result.swapped) {
+			// 別のウィンドウが先に記録した = そちらが開く（or 開かないと判断した）
+			return;
+		}
 
-			commandService.executeCommand(PARADIS_SHOW_CHANGELOG_COMMAND_ID);
-		});
+		// 同期対象から外すための key target を登録し直す（値は上で確定済みなので実質再書き込み）
+		storageService.store(ParadisShowChangelogOnUpdate.LAST_COMMIT_KEY, commit, StorageScope.APPLICATION, StorageTarget.MACHINE);
+
+		// 記録が無い = 新規インストール直後は開かない。commit が同じ = 更新されていない
+		if (lastCommit === undefined || lastCommit === commit) {
+			return;
+		}
+
+		if (configurationService.getValue<boolean>('paradis.releaseNotes.showOnUpdate') === false) {
+			return;
+		}
+
+		commandService.executeCommand(PARADIS_SHOW_CHANGELOG_COMMAND_ID);
 	}
 }
 

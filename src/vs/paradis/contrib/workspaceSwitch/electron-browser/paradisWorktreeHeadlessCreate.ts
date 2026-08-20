@@ -569,7 +569,11 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 			runAutoRun: async () => {
 				callbacks?.onStage?.('starting');
 				try {
-					return await instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath, targetStateKey);
+					// リポジトリのパスは PARACODE_PROJECT_ROOT_PATH としてプリセットの動くマシンの
+					// シェルへ渡る。fsPath はこのウィンドウの OS を見て区切りを付け替えるので、
+					// Windows から Linux の接続先へ繋いでいると /home/u/repo が \home\u\repo に化ける。
+					// setup スクリプト側 (paradisRunWorkspaceLifecycleScript) と同じ導出に揃える
+					return await instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, gitHost.path(repository.uri), targetStateKey);
 				} catch (error) {
 					logService.warn('[ParadisWorktreeHeadlessCreate] auto-run presets failed', error);
 					return false;

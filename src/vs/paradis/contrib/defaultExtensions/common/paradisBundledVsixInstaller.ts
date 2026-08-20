@@ -40,6 +40,11 @@ export interface IParadisBundledVsixInstallerOptions {
 	readonly files: readonly string[];
 	readonly appRoot: string;
 	readonly storageService: IStorageService;
+	/**
+	 * 導入済みファイルの台帳キー。省略時は {@link INSTALLED_VSIX_STORAGE_KEY}。
+	 * インストール先はウィンドウの接続先に従うので、呼び出し側は接続先ごとに別のキーを渡す。
+	 */
+	readonly storageKey?: string;
 	readonly exists: (location: URI) => Promise<boolean>;
 	readonly install: (location: URI) => Promise<void>;
 	readonly warn: (message: string, error?: unknown) => void;
@@ -48,7 +53,11 @@ export interface IParadisBundledVsixInstallerOptions {
 
 export class ParadisBundledVsixInstaller {
 
-	constructor(private readonly options: IParadisBundledVsixInstallerOptions) { }
+	private readonly storageKey: string;
+
+	constructor(private readonly options: IParadisBundledVsixInstallerOptions) {
+		this.storageKey = options.storageKey ?? INSTALLED_VSIX_STORAGE_KEY;
+	}
 
 	hasPendingInstalls(): boolean {
 		const done = this.readDone();
@@ -77,7 +86,7 @@ export class ParadisBundledVsixInstaller {
 			}
 		}
 
-		this.options.storageService.store(INSTALLED_VSIX_STORAGE_KEY, JSON.stringify([...done]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this.options.storageService.store(this.storageKey, JSON.stringify([...done]), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
 	private uniqueFiles(): readonly string[] {
@@ -86,7 +95,7 @@ export class ParadisBundledVsixInstaller {
 
 	private readDone(): Set<string> {
 		try {
-			const raw = this.options.storageService.get(INSTALLED_VSIX_STORAGE_KEY, StorageScope.APPLICATION, '[]');
+			const raw = this.options.storageService.get(this.storageKey, StorageScope.APPLICATION, '[]');
 			const parsed = JSON.parse(raw);
 			return new Set<string>(Array.isArray(parsed) ? parsed.filter(item => typeof item === 'string') : []);
 		} catch {

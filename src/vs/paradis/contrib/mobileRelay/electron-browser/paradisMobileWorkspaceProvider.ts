@@ -14,7 +14,8 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+import { dirname as uriDirname, extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+import { OperatingSystem } from '../../../../base/common/platform.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
@@ -30,6 +31,7 @@ import { TerminalCapability } from '../../../../platform/terminal/common/capabil
 import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/browser/xterm/xtermAddonImporter.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisCollectAllTerminalInstances, paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
@@ -268,6 +270,21 @@ export async function paradisResolveLocalAgentPaneCwd(instance: Pick<ITerminalIn
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * 接続先の URI を、接続先のOSで通用する絶対パスへ直す。
+ *
+ * `URI.fsPath` は「このPCのOS」で区切りを決めるので、Windows のPCから Linux へ繋いでいると
+ * `/home/u/x` が `\home\u\x` になり、接続先のエージェントが開けないパスになる。
+ */
+function paradisRemoteAbsolutePath(uri: URI, os: OperatingSystem): string {
+	if (os !== OperatingSystem.Windows) {
+		return uri.path;
+	}
+	// Windows のパスは URI 上では `/c:/Users/...` の形で載っている
+	const path = /^\/[A-Za-z]:/.test(uri.path) ? uri.path.slice(1) : uri.path;
+	return path.replace(/\//g, '\\');
 }
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
@@ -727,6 +744,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		setSpaceDiskWarmLease: (ownerId: string, active: boolean, cancellation?: AbortSignal) => Promise<void>,
 		// コマンドプリセット（PC版と同一の定義・同一の実行経路）。モバイルの一覧と実行はここを通す
 		private readonly presetService: IParadisPresetService,
+		// SSH 接続先の環境を引くのに使う。モバイルからの添付は「エージェントが実際に動いている側」
+		// へ置かないと、接続先のエージェントが開けないパスを渡すことになる（未指定なら常に手元へ置く）
+		private readonly remoteAgentService?: IRemoteAgentService,
 		// このウィンドウの接続先（ローカル/SSHリモート等）を都度解決する。モバイルの「接続先セグメント」
 		// (rtk/ccusage/rate limit/GitHub API)向け。ラベルは拡張機能のフォーマッタ登録が遅れて届くため、
 		// 呼び出し元（contribution）が onDidChangeFormatters で pushState() を呼び直す前提のコールバック。
@@ -1997,6 +2017,39 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		};
 	}
 
+	/**
+	 * モバイルからの添付の置き場と、エージェントへ渡す絶対パスを決める。
+	 *
+	 * 添付を読むのはこのウィンドウのペインで動くエージェントなので、SSH 接続中は接続先へ置く。
+	 * 置き場はローカルと同じ「userData 配下の専用ディレクトリ」に揃える（ワークスペースを汚さず、
+	 * 掃除の対象も一箇所にまとまる）。接続先の userData は環境が持つ globalStorageHome の親。
+	 *
+	 * 接続中なのに置き場が接続先を指していないときは、手元へ落とさず失敗させる。
+	 * `getEnvironment()` は失敗を握り潰して null を返すので、そこで手元へ落とすと
+	 * 「接続先のつもりで手元に書き、しかも成功として返す」ことになる（同種の事故は
+	 * `agentBrowser/common/paradisRemoteUserHome.ts` に記録がある）。判断は「接続中かどうか」ではなく
+	 * 「今この置き場が接続先を指しているか」で行う。
+	 */
+	private async resolveUploadTarget(name: string): Promise<{ uri: URI; path: string }> {
+		const connection = this.remoteAgentService?.getConnection();
+		if (connection) {
+			const environment = await this.remoteAgentService?.getEnvironment();
+			// 接続先の環境は、こちらが送った authority を焼き込んだ URI で返ってくる。別物なら接続先ではない
+			const userData = environment ? uriDirname(environment.globalStorageHome) : undefined;
+			if (!environment || userData === undefined
+				|| userData.scheme !== Schemas.vscodeRemote
+				|| userData.authority.toLowerCase() !== connection.remoteAuthority.toLowerCase()
+			) {
+				// allow-any-unicode-next-line
+				throw new Error(localize('paradis.mobile.uploadRemoteUnavailable', "接続先（{0}）の保存先が確認できないため、添付を送れませんでした。接続が復帰してからやり直してください。", connection.remoteAuthority));
+			}
+			const uri = paradisCreateMobileUploadTarget(userData, name);
+			return { uri, path: paradisRemoteAbsolutePath(uri, environment.os) };
+		}
+		const uri = paradisCreateMobileUploadTarget(this.environmentService.userRoamingDataHome, name);
+		return { uri, path: uri.fsPath };
+	}
+
 	private async handleFsInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
 		let msg: FsInbound;
 		const binaryUpload = paradisDecodeBinaryFsUpload(payload.buffer);
@@ -2046,7 +2099,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		};
 		// 画像アップロード（エージェントへの添付用）。ワークスペースを汚さないよう
 		// userData 配下の専用ディレクトリへ保存し、フルパスを返す（モバイル側がPTYへ
-		// パスを貼り付け、エージェントCLIがそのパスの画像を読む）。パスは取らないため
+		// パスを貼り付け、エージェントCLIがそのパスの画像を読む）。SSH 接続中のウィンドウでは
+		// エージェントも接続先で動いているので、置き場もパスも接続先のものにする（手元へ置くと
+		// 「ファイルが無い」と返るだけで、モバイル側には成功として見える）。パスは取らないため
 		// パス解決の前に処理する。ファイル名はサニタイズし、脱出の余地を残さない。
 		if (msg.t === 'upload') {
 			try {
@@ -2058,9 +2113,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 				const content = typeof msg.data === 'string' ? decodeBase64(msg.data) : VSBuffer.wrap(msg.data);
 				// 同ミリ秒の連続アップロードで上書きしないよう乱数サフィックスを付ける
-				const target = paradisCreateMobileUploadTarget(this.environmentService.userRoamingDataHome, msg.name);
-				await this.fileService.writeFile(target, content);
-				reply({ t: 'upload', path: target.fsPath });
+				const target = await this.resolveUploadTarget(msg.name);
+				await this.fileService.writeFile(target.uri, content);
+				reply({ t: 'upload', path: target.path });
 			} catch (err) {
 				reply({ error: String(err) });
 			}

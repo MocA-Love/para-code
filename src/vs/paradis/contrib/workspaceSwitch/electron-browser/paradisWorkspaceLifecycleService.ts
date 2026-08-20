@@ -72,7 +72,11 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 	// 承認はスクリプト本文だけでなく打ち切り時間も含めて取る。時間はリポジトリ側から
 	// 書き換えられる値で、承認済みのスクリプトのまま上限だけ最大まで伸ばされると、
 	// 作成・削除のフローをそのぶん止められる（内容は変わらないので再承認も挟まらない）。
-	const approvalKey = `${repository.uri.fsPath}:${kind}:${hash(script)}${timeoutMinutes !== undefined ? `:${timeoutMinutes}` : ''}`;
+	// 鍵は必ず uri.toString() で作る。fsPath は scheme も authority も落とすため、
+	// file:///home/u/proj と vscode-remote://ssh-remote+hostA/home/u/proj と
+	// 同 hostB が全部同じ鍵になり、手元で一度承認しただけで、絶対パスの一致する
+	// 別の接続先のリポジトリのスクリプトが無確認で動いてしまう。
+	const approvalKey = `${repository.uri.toString()}:${kind}:${hash(script)}${timeoutMinutes !== undefined ? `:${timeoutMinutes}` : ''}`;
 	let approved: string[];
 	try {
 		approved = JSON.parse(storageService.get(LIFECYCLE_APPROVED_STORAGE_KEY, StorageScope.APPLICATION, '[]'));

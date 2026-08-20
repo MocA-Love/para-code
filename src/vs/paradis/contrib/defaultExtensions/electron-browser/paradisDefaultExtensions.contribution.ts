@@ -22,7 +22,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { IWorkbenchExtensionManagementService } from '../../../../workbench/services/extensionManagement/common/extensionManagement.js';
 import { ILocaleService } from '../../../../workbench/services/localization/common/locale.js';
-import { BUNDLED_VSIX_FILES, ParadisBundledVsixInstaller } from '../common/paradisBundledVsixInstaller.js';
+import { BUNDLED_VSIX_FILES, INSTALLED_VSIX_STORAGE_KEY, ParadisBundledVsixInstaller } from '../common/paradisBundledVsixInstaller.js';
 
 /**
  * Para Code が全ユーザーへデフォルト導入する拡張機能のID一覧（ギャラリー = Open VSX）。
@@ -80,6 +80,18 @@ const INSTALLED_IDS_STORAGE_KEY = 'paradis.defaultExtensions.installedIds';
 const JA_LANGUAGE_ID = 'ja';
 
 /**
+ * 導入済みの台帳キー。インストール先はウィンドウの接続先に従う（workspace 種別の拡張は
+ * SSH ウィンドウなら接続先サーバーへ入る）ので、台帳も接続先ごとに分ける。
+ * 1つの台帳を共有すると、SSH ウィンドウで入れた分が「手元にも入っている」ことになり、
+ * ローカルウィンドウでは二度と導入されなくなる（逆に、手元で入れ損ねた分が接続先へ
+ * まとめて入ってしまうこともある）。
+ * ローカルはキーを変えず、既存ユーザーの台帳をそのまま引き継ぐ。
+ */
+function storageKeyForRemote(baseKey: string, remoteAuthority: string | undefined): string {
+	return remoteAuthority ? `${baseKey}.${remoteAuthority.toLowerCase()}` : baseKey;
+}
+
+/**
  * 初回起動時（アイドル時）にデフォルト拡張機能を Open VSX から自動インストールし、
  * 日本語言語パック導入後は再起動を促す通知を表示する contribution。
  * 成功したIDを storage(APPLICATION) に記録し、未完了分のみ次回起動時に再試行する。
@@ -88,6 +100,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 
 	static readonly ID = 'workbench.contrib.paradisDefaultExtensions';
 	private readonly bundledVsixInstaller: ParadisBundledVsixInstaller;
+	private readonly installedIdsStorageKey: string;
 
 	constructor(
 		@IWorkbenchExtensionManagementService private readonly extensionManagementService: IWorkbenchExtensionManagementService,
@@ -102,10 +115,13 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		@IProgressService private readonly progressService: IProgressService,
 	) {
 		super();
+		const remoteAuthority = this.environmentService.remoteAuthority;
+		this.installedIdsStorageKey = storageKeyForRemote(INSTALLED_IDS_STORAGE_KEY, remoteAuthority);
 		this.bundledVsixInstaller = new ParadisBundledVsixInstaller({
 			files: BUNDLED_VSIX_FILES,
 			appRoot: this.environmentService.appRoot,
 			storageService: this.storageService,
+			storageKey: storageKeyForRemote(INSTALLED_VSIX_STORAGE_KEY, remoteAuthority),
 			exists: location => this.fileService.exists(location),
 			install: location => this.extensionManagementService.install(location, { installGivenVersion: true }).then(() => undefined),
 			warn: (message, error) => this.logService.warn(message, error),
@@ -161,7 +177,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 
 	private readDoneIds(): Set<string> {
 		try {
-			const raw = this.storageService.get(INSTALLED_IDS_STORAGE_KEY, StorageScope.APPLICATION, '[]');
+			const raw = this.storageService.get(this.installedIdsStorageKey, StorageScope.APPLICATION, '[]');
 			return new Set<string>(JSON.parse(raw));
 		} catch {
 			return new Set<string>();
@@ -169,7 +185,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 	}
 
 	private storeDoneIds(ids: Set<string>): void {
-		this.storageService.store(INSTALLED_IDS_STORAGE_KEY, JSON.stringify([...ids]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this.storageService.store(this.installedIdsStorageKey, JSON.stringify([...ids]), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
 	private async installDefaultExtensions(): Promise<void> {

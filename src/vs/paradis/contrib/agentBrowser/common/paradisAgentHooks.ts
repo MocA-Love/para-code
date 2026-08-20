@@ -34,6 +34,48 @@ export const PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS = [
 ] as const;
 
 /**
+ * 「この hook は SSH で繋いだ先から届いた」ことを示す印を載せる、hook URL のクエリ名。
+ *
+ * 接続先へ置く notify スクリプトにだけ焼き込む（生成経路が手元用と分かれている）。印が無い
+ * hook は従来どおり手元のものとして扱うので、旧版のスクリプトが残っている接続先でも壊れない。
+ */
+export const PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM = 'host';
+
+/** 印の長さの上限。URLに載る値なので短く切る。 */
+const PARADIS_AGENT_HOOK_REMOTE_HOST_MAX_LENGTH = 64;
+
+/**
+ * 接続先を表す印を、リモートオーソリティ (`ssh-remote+<host>`) から組み立てる。
+ *
+ * 値はそのまま URL のクエリに載るので、英数と `._-` だけに畳む。畳んだ結果として別々の
+ * 接続先が同じ印になることはあり得るが、この印の用いどころは「接続先のものか」の判定と
+ * 記録の区別だけなので実害はない。
+ *
+ * @returns 印。組み立てられない (空・記号だけ) ときは undefined
+ */
+export function paradisAgentHookRemoteHostId(remoteAuthority: string | undefined): string | undefined {
+	if (typeof remoteAuthority !== 'string') {
+		return undefined;
+	}
+	const sanitized = remoteAuthority.trim().replace(/[^A-Za-z0-9._-]/g, '-').slice(0, PARADIS_AGENT_HOOK_REMOTE_HOST_MAX_LENGTH);
+	return /[A-Za-z0-9]/.test(sanitized) ? sanitized : undefined;
+}
+
+/**
+ * 受け取った印が、こちらが組み立てた形かどうか。
+ *
+ * hook はペインの環境変数を継いだプロセスなら誰でも名乗れる前提なので、形だけを確かめて
+ * 受ける（この印は「接続先のパスを写す対象にしてよい」の判断にしか使わず、パスそのものの
+ * 安全確認は従来どおり別に行う）。
+ */
+export function paradisIsAgentHookRemoteHostId(value: string | null | undefined): value is string {
+	return typeof value === 'string'
+		&& value.length > 0
+		&& value.length <= PARADIS_AGENT_HOOK_REMOTE_HOST_MAX_LENGTH
+		&& /^[A-Za-z0-9._-]+$/.test(value);
+}
+
+/**
  * hook登録イベント1件 (Claude Code の settings.json / Codex の hooks.json は同じ
  * `{ hooks: { EventName: [{ matcher?, hooks: [{ type, command }] }] } }` 構造)。
  */

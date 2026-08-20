@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { Emitter } from '../../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -155,6 +156,50 @@ suite('ParadisRemoteAgentHooksController', () => {
 		await callback!();
 
 		assert.deepStrictEqual({ installCount, endpointReadCount }, { installCount: 3, endpointReadCount: 3 });
+		controller.dispose();
+	});
+
+	test('ignores an announced port until the first installation has settled', async () => {
+		// 最初の導入は再試行の待ち時間を挟む。その間に「番号が変わった」が届いて割り込むと、
+		// install() が二重に走って古い導入が新しい番号を上書きしうる
+		const events: string[] = [];
+		const announcements = store.add(new Emitter<number | undefined>());
+		const watching = deferred();
+		const insideFirstDelay = deferred();
+		const releaseFirstDelay = deferred();
+		let attempts = 0;
+		const controller = store.add(new ParadisRemoteAgentHooksController(
+			async () => {
+				attempts++;
+				events.push(`install:${attempts}`);
+				return attempts === 2 ? 4200 : undefined;
+			},
+			async () => 4200,
+			async delayMs => {
+				events.push(`delay:${delayMs}`);
+				insideFirstDelay.resolve();
+				await releaseFirstDelay.promise;
+			},
+			(_callback, intervalMs): IDisposable => {
+				events.push(`interval:${intervalMs}`);
+				watching.resolve();
+				return toDisposable(() => undefined);
+			},
+			new NullLogService(),
+			announcements.event,
+		));
+
+		await insideFirstDelay.promise;
+		announcements.fire(4200);
+		releaseFirstDelay.resolve();
+		await watching.promise;
+
+		assert.deepStrictEqual(events, [
+			'install:1',
+			'delay:2000',
+			'install:2',
+			'interval:30000',
+		]);
 		controller.dispose();
 	});
 

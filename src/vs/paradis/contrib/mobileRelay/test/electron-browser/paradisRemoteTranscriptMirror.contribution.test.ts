@@ -7,13 +7,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { bufferToStream, VSBuffer } from '../../../../../base/common/buffer.js';
 import { Event } from '../../../../../base/common/event.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { FileChangesEvent, FileChangeType, IFileContent, IFileStatWithPartialMetadata, IFileSystemWatcher, IReadFileOptions, IWatchOptionsWithCorrelation } from '../../../../../platform/files/common/files.js';
+import { FileChangesEvent, FileChangeType, IFileStatWithPartialMetadata, IFileStreamContent, IFileSystemWatcher, IReadFileStreamOptions, IWatchOptionsWithCorrelation } from '../../../../../platform/files/common/files.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { WorkbenchPhase } from '../../../../../workbench/common/contributions.js';
 import { BrowserWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/browser/environmentService.js';
@@ -59,14 +59,16 @@ class TranscriptFileService extends TestFileService {
 		return { ...await super.stat(resource), size: this.data.byteLength };
 	}
 
-	override async readFile(resource: URI, options?: IReadFileOptions): Promise<IFileContent> {
+	// 写しは readFileStream で読む（readFile だと接続先で範囲読みにならず、追記のたびに
+	// transcript 全体が SSH を流れる）。ここも同じ入口を模して範囲読みを記録する。
+	override async readFileStream(resource: URI, options?: IReadFileStreamOptions): Promise<IFileStreamContent> {
 		const position = options?.position ?? 0;
 		const requestedLength = options?.length ?? this.data.byteLength - position;
 		const returnedLength = Math.min(requestedLength, this.shortReadBytes ?? requestedLength);
 		this.rangeReads.push({ position, length: requestedLength });
 		return {
-			...await super.readFile(resource, options),
-			value: this.data.slice(position, position + returnedLength),
+			...await super.readFileStream(resource, options),
+			value: bufferToStream(this.data.slice(position, position + returnedLength)),
 		};
 	}
 

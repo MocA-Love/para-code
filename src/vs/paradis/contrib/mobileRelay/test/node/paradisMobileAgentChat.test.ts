@@ -7,6 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
 import * as sinon from 'sinon';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -15,6 +17,7 @@ import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAge
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
+import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
 	const deadline = Date.now() + 2_000;
@@ -191,6 +194,132 @@ suite('ParadisMobileAgentChat', () => {
 			assert.strictEqual(access.tailers.get(token)?.currentInteraction()?.kind, 'question');
 		} finally {
 			chat.dispose();
+		}
+	});
+
+	test('leaves a host pane out of the local session search, even at the same absolute path', async () => {
+		// 手元と接続先でユーザー名もリポジトリの場所も同じ構成（同名ユーザーの Linux 同士など）だと、
+		// 接続先ペインの作業フォルダが手元にもそのまま存在する。ここを探しに行かせると、手元の
+		// 別のセッションを接続先ペインの会話として結び付けてしまう
+		const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-home-')));
+		const workspace = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-cwd-')));
+		const previousHome = process.env['CLAUDE_CONFIG_DIR'];
+		process.env['CLAUDE_CONFIG_DIR'] = home;
+		const projectDir = join(home, 'projects', workspace.replace(/[^a-zA-Z0-9]/g, '-'));
+		await mkdir(projectDir, { recursive: true });
+		const localTranscript = join(projectDir, 'local-session.jsonl');
+		await writeFile(localTranscript, '');
+
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			paneSessions: Map<string, { readonly transcriptPath: string }>;
+			tokenToRemoteHost: Map<string, { readonly host: string }>;
+			cliDiscoveryGenerations: Map<string, number>;
+			agentHomesForToken(token: string): unknown;
+			discoverAndNotify(token: string, agent: 'claude' | 'codex', mode: 'resume', cwd: string, minMtime: undefined, generation: number): Promise<void>;
+		};
+		try {
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+				{ terminalId: 1, token: 'pane-local', cwd: workspace },
+				{ terminalId: 2, token: 'pane-host', cwd: workspace },
+			]), true);
+			// 接続先の印が付いた hook が1本届いた時点で、このペインは接続先のものだと分かる
+			// （transcript が無いイベントでも印だけは覚える）
+			fireParadisAgentHookEvent({
+				token: 'pane-host', event: 'SessionStart', sessionId: 'host-session',
+				transcriptPath: undefined, cwd: undefined, remoteHostId: 'ssh-remote-server', at: Date.now(),
+			});
+
+			// 世代の登録は常駐スキャンやコマンド検知が探索前に必ず行う（未登録のままだと
+			// 世代ガードで即 return されるので、ここでも同じ前提を作ってから呼ぶ）
+			for (const token of ['pane-local', 'pane-host']) {
+				access.cliDiscoveryGenerations.set(token, 0);
+				await access.discoverAndNotify(token, 'claude', 'resume', workspace, undefined, 0);
+			}
+
+			assert.deepStrictEqual({
+				// 手元のペインはこれまでどおり見つかる（探索そのものは効いている）
+				local: access.paneSessions.get('pane-local')?.transcriptPath,
+				host: access.paneSessions.get('pane-host')?.transcriptPath,
+				// エージェントのホームも手元のものを当てない（Codex の SubAgent 復元の入口）
+				localHomes: access.agentHomesForToken('pane-local') !== undefined,
+				hostHomes: access.agentHomesForToken('pane-host'),
+			}, {
+				local: localTranscript,
+				host: undefined,
+				localHomes: true,
+				hostHomes: undefined,
+			});
+
+			// ウィンドウのリロードで token が一瞬 live でなくなっても印は残す（ここで落とすと、
+			// 復活した接続先ペインが次の hook まで手元のものとして扱われる）
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 2, [{ terminalId: 1, token: 'pane-local', cwd: workspace }]), true);
+			assert.strictEqual(access.tokenToRemoteHost.get('pane-host')?.host, 'ssh-remote-server');
+		} finally {
+			chat.dispose();
+			if (previousHome === undefined) {
+				delete process.env['CLAUDE_CONFIG_DIR'];
+			} else {
+				process.env['CLAUDE_CONFIG_DIR'] = previousHome;
+			}
+			await rm(home, { recursive: true, force: true });
+			await rm(workspace, { recursive: true, force: true });
+		}
+	});
+
+	test('does not put this machine\'s effort setting on a host session', async () => {
+		// Claude の transcript は effort を記録しないので、手元では settings.json で補う。接続先の
+		// セッションにこれを当てると、向こうで /effort を打っていないのに **PC本体の設定値** が
+		// 「現在の effort」として出てしまう
+		const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-effort-home-')));
+		const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-effort-data-')));
+		const previousHome = process.env['CLAUDE_CONFIG_DIR'];
+		process.env['CLAUDE_CONFIG_DIR'] = home;
+		await mkdir(join(home, 'projects', 'para-code-tests'), { recursive: true });
+		await writeFile(join(home, 'settings.json'), JSON.stringify({ effortLevel: 'high' }));
+		const localTranscript = join(home, 'projects', 'para-code-tests', 'effort-local.jsonl');
+		await writeFile(localTranscript, '');
+
+		const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
+		const chat = new ParadisMobileAgentChat(
+			() => { }, () => { }, () => { }, new NullLogService(),
+			undefined, async () => true, () => { }, undefined, mirror,
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly effort: string | undefined }> };
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+				{ terminalId: 1, token: 'pane-local' },
+				{ terminalId: 2, token: 'pane-host' },
+			]), true);
+
+			fireParadisAgentHookEvent({
+				token: 'pane-local', event: 'SessionStart', sessionId: 'local-session',
+				transcriptPath: localTranscript, cwd: '/workspace', at: Date.now(),
+			});
+			fireParadisAgentHookEvent({
+				token: 'pane-host', event: 'SessionStart', sessionId: 'host-session',
+				transcriptPath: '/home/alice/.claude/projects/-srv-app/effort-host.jsonl',
+				cwd: '/srv/app', remoteHostId: 'ssh-remote-server', at: Date.now(),
+			});
+
+			// 手元のぶんが読み終わるのを待つ。ここが「settings.json を読む時間はあった」の目印になり、
+			// 接続先のぶんが未設定のままであることを意味のある形で確かめられる
+			await waitFor(() => access.tailers.get('pane-local')?.effort === 'high', 'the local session never picked up the default effort');
+			assert.deepStrictEqual([
+				access.tailers.get('pane-local')?.effort,
+				access.tailers.get('pane-host')?.effort,
+			], ['high', undefined]);
+		} finally {
+			chat.dispose();
+			mirror.dispose();
+			if (previousHome === undefined) {
+				delete process.env['CLAUDE_CONFIG_DIR'];
+			} else {
+				process.env['CLAUDE_CONFIG_DIR'] = previousHome;
+			}
+			await rm(home, { recursive: true, force: true });
+			await rm(userData, { recursive: true, force: true });
 		}
 	});
 

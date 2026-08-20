@@ -44,6 +44,14 @@ export interface IParadisAgentHookEvent {
 	readonly messageFinal?: boolean;
 	/** イベント固有フィールドを保持した、サイズ制限済みのhook stdin JSON。 */
 	readonly payload?: Readonly<Record<string, unknown>>;
+	/**
+	 * SSH で繋いだ先から届いた hook のとき、その接続先を表す印。
+	 *
+	 * 接続先へ置いた notify スクリプトだけがこれを名乗る。付いていれば transcriptPath / cwd は
+	 * 接続先のディスクの綴りで、この shared process からは開けない（同じ綴りのファイルが手元に
+	 * あっても別物）。手元の hook と旧版スクリプトの hook では undefined になる。
+	 */
+	readonly remoteHostId?: string;
 	/** 受信時刻（epoch ms）。 */
 	readonly at: number;
 }
