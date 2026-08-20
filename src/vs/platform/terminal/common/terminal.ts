@@ -916,7 +916,14 @@ export const enum FlowControlConstants {
 	 * The number of _unacknowledged_ chars to have been sent before the pty is paused in order for
 	 * the client to catch up.
 	 */
-	HighWatermarkChars = 100000,
+	// PARA-PATCH: upstream sizes this window for responsiveness on any machine (100K chars). Para
+	// Code's terminals mostly carry long agent output, where the small window costs about half the
+	// achievable throughput: measured on a 50 MiB `cat` through a real shell, 100 KB gives
+	// ~10.6 MB/s and 1 MiB gives ~23 MB/s, while the interrupt (Ctrl+C) response only moves from
+	// ~17ms to ~28ms. Larger windows than this stop buying throughput and keep hurting interrupts
+	// (8 MiB: ~22 MB/s / ~69ms, 32 MiB: ~21 MB/s / ~1000ms), so 1 MiB is the turning point rather
+	// than a step along a scale. The low watermark and the ack size keep upstream's 1/20 ratio.
+	HighWatermarkChars = 1000000,
 	/**
 	 * After flow control pauses the pty for the client the catch up, this is the number of
 	 * _unacknowledged_ chars to have been caught up to on the client before resuming the pty again.
@@ -926,12 +933,12 @@ export const enum FlowControlConstants {
 	 * will likely pause as latency grows, not flooding the connection is the important thing as
 	 * it's shared with other core functionality.
 	 */
-	LowWatermarkChars = 5000,
+	LowWatermarkChars = 50000,
 	/**
 	 * The number characters that are accumulated on the client side before sending an ack event.
 	 * This must be less than or equal to LowWatermarkChars or the terminal max never unpause.
 	 */
-	CharCountAckSize = 5000
+	CharCountAckSize = 50000
 }
 
 export interface IProcessDataEvent {
