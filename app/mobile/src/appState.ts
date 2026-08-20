@@ -95,7 +95,8 @@ interface AppState extends StoreState {
 	activePcId: string | undefined;
 	/** 同じPCの再pairを含む active controller オブジェクトの交代世代。 */
 	controllerRevision: number;
-	acquireUsageWarmLease(): MobileDisposable;
+	/** windowId を指定すると、その接続先（ローカル/SSHリモート）へ warm lease を固定する。 */
+	acquireUsageWarmLease(windowId?: number): MobileDisposable;
 	acquireSpaceDiskWarmLease(): MobileDisposable;
 	/**
 	 * 見ていないPCとも接続を保つか。オフにすると、いま見ているPC以外は切断して
@@ -146,6 +147,14 @@ interface AppState extends StoreState {
 	/** ワークスペースバーで選択中のワークスペースID（全画面で連動）。 */
 	selectedWs: string | undefined;
 	setSelectedWs(ws: string): void;
+	/**
+	 * 「接続先セグメント」(rtk/ccusage/rate limit) で選択中の接続先ID（`RelayHost.id`）。
+	 * 4画面で共有する（`selectedWs` と同じ作法。永続化しない、PC切替・ペアリング解除で
+	 * リセットする）。選んだ接続先が一覧から消えても自動で他へは移さない
+	 * （別マシンの数字を同じUIで見せてしまう取り違えを避けるため）。
+	 */
+	selectedHostId: string | undefined;
+	setSelectedHost(id: string): void;
 	/**
 	 * ホームのエージェント一覧を全ワークスペース横断で表示するか。falseの間はドロワーの
 	 * 選択中ワークスペース（selectedWs）に絞り込む。既定はtrue（アプリ再起動時はここに戻る。
@@ -316,12 +325,15 @@ interface AppState extends StoreState {
 	/** コード断片のシンタックスハイライト（PCの現行テーマ）。 */
 	fsHighlight(text: string, lang?: string): Promise<FsHighlightResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
-	/** ccusage 使用量ダッシュボード。bypassCache=true で shared process 側の TTL キャッシュを無視して再取得する。 */
-	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult>;
-	/** RTK(Rust Token Killer)の節約状況。bypassCache の意味は usageDashboard と同じ。 */
-	rtkSavings(bypassCache?: boolean): Promise<RtkSavingsResult>;
-	/** Rate Limit(AIリミット)スナップショット。bypassCache の意味は usageDashboard と同じ。 */
-	rateLimits(bypassCache?: boolean): Promise<RateLimitsResult>;
+	/**
+	 * ccusage 使用量ダッシュボード。bypassCache=true で shared process 側の TTL キャッシュを無視して再取得する。
+	 * windowId を指定すると、その接続先（ローカル/SSHリモート）で取得した値を返す（「接続先セグメント」向け）。
+	 */
+	usageDashboard(bypassCache?: boolean, windowId?: number): Promise<UsageDashboardResult>;
+	/** RTK(Rust Token Killer)の節約状況。bypassCache/windowId の意味は usageDashboard と同じ。 */
+	rtkSavings(bypassCache?: boolean, windowId?: number): Promise<RtkSavingsResult>;
+	/** Rate Limit(AIリミット)スナップショット。bypassCache/windowId の意味は usageDashboard と同じ。 */
+	rateLimits(bypassCache?: boolean, windowId?: number): Promise<RateLimitsResult>;
 	/** GitHub API利用状況。bypassCache の意味は usageDashboard と同じ。 */
 	githubUsage(bypassCache?: boolean): Promise<GithubUsageResult>;
 	/** PC本体のリソース内訳（「システム」画面）。bypassCache の意味は usageDashboard と同じ。 */
@@ -406,8 +418,8 @@ export class MobileWarmLeaseAppStateBridge<T extends MobileWarmLeaseController =
 		return { controller: this.controller, controllerRevision: this.controllers.revision };
 	}
 
-	acquireUsageWarmLease(): MobileDisposable {
-		return this.controllers.acquire('ccusage');
+	acquireUsageWarmLease(windowId?: number): MobileDisposable {
+		return this.controllers.acquire('ccusage', windowId);
 	}
 
 	acquireSpaceDiskWarmLease(): MobileDisposable {
@@ -826,6 +838,7 @@ function activatePc(id: string, notice?: { readonly previousPcId: string | undef
 		controllerRevision: nextControllerRevision,
 		pcs: pcSummaries(),
 		selectedWs: undefined,
+		selectedHostId: undefined,
 		selectedTerminalKey: undefined,
 		browserSelection: undefined,
 		homeShowAllWorkspaces: true,
@@ -931,6 +944,7 @@ export const useAppStore = create<AppState>(set => ({
 	manualOffline: false,
 	voiceNotifications: { desired: false, status: 'idle' },
 	selectedWs: undefined,
+	selectedHostId: undefined,
 	homeShowAllWorkspaces: true,
 	homePreferences: DEFAULT_HOME_PREFERENCES,
 	sidebarCollapsed: false,
@@ -958,8 +972,8 @@ export const useAppStore = create<AppState>(set => ({
 		endVoiceNotifications();
 	},
 
-	acquireUsageWarmLease() {
-		return warmLeaseAppState.acquireUsageWarmLease();
+	acquireUsageWarmLease(windowId?: number) {
+		return warmLeaseAppState.acquireUsageWarmLease(windowId);
 	},
 
 	acquireSpaceDiskWarmLease() {
@@ -1384,6 +1398,7 @@ export const useAppStore = create<AppState>(set => ({
 				activePcId: undefined,
 				controllerRevision: nextControllerRevision,
 				selectedWs: undefined,
+				selectedHostId: undefined,
 				homeShowAllWorkspaces: true,
 				selectedTerminalKey: undefined,
 				browserSelection: undefined,
@@ -1631,6 +1646,10 @@ export const useAppStore = create<AppState>(set => ({
 		set({ selectedWs: ws, selectedTerminalKey: undefined });
 	},
 
+	setSelectedHost(id: string) {
+		set({ selectedHostId: id });
+	},
+
 	setHomeShowAllWorkspaces(value: boolean) {
 		set({ homeShowAllWorkspaces: value });
 	},
@@ -1845,19 +1864,19 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.scmXlsxDiff(ws, path);
 	},
 
-	usageDashboard(bypassCache?: boolean) {
+	usageDashboard(bypassCache?: boolean, windowId?: number) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.usageDashboard(bypassCache);
+		return controller.usageDashboard(bypassCache, windowId);
 	},
 
-	rtkSavings(bypassCache?: boolean) {
+	rtkSavings(bypassCache?: boolean, windowId?: number) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.rtkSavings(bypassCache);
+		return controller.rtkSavings(bypassCache, windowId);
 	},
 
-	rateLimits(bypassCache?: boolean) {
+	rateLimits(bypassCache?: boolean, windowId?: number) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.rateLimits(bypassCache);
+		return controller.rateLimits(bypassCache, windowId);
 	},
 
 	githubUsage(bypassCache?: boolean) {

@@ -322,6 +322,35 @@ describe('MobileController', () => {
 		}
 	});
 
+	it('routes a windowId-targeted request (rtk/ccusage/rate limit "接続先セグメント") without a workspace, and rejects an unready target', async () => {
+		const { controller, pcMux } = await readyWarmLeaseHarness();
+		// 「接続先セグメント」向け: window 2 をSSHリモート先として追加する（host自体はモバイル側では
+		// 未使用の表示情報のため、ここではルーティングに関わる windowId/rendererGeneration だけを持たせる）。
+		const withRemote = {
+			...desktopState([], 2),
+			renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }, { windowId: 2, rendererGeneration: 5, ready: true }],
+		};
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(withRemote)));
+		await flush();
+
+		const requests: Array<{ id: string; t: string; windowId?: number; rendererGeneration?: number; ws?: string }> = [];
+		pcMux.on(Channels.Fs, frame => {
+			const request = JSON.parse(new TextDecoder().decode(frame.payload)) as typeof requests[number];
+			requests.push(request);
+			pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: request.id, t: 'rtk', data: { fetchedAt: 1, days: [], commands: [], history: [], totals: { savedTokens: 0, inputTokens: 0 }, failedReports: [] } })));
+		});
+
+		await expect(controller.rtkSavings(false, 2)).resolves.toMatchObject({ totals: { savedTokens: 0 } });
+		expect(requests).toHaveLength(1);
+		// ws を持たず windowId + rendererGeneration だけで対象を指定する（ワークスペースに紐付かないリクエスト）。
+		expect(requests[0]?.windowId).toBe(2);
+		expect(requests[0]?.rendererGeneration).toBe(5);
+		expect(requests[0]?.ws).toBeUndefined();
+
+		// 存在しないwindowIdは「この接続先のPC画面はいま応答していません」で reject する。
+		await expect(controller.rtkSavings(false, 999)).rejects.toThrow('この接続先のPC画面はいま応答していません');
+	});
+
 	it('detaches a directly disposed warm lease even when its release send throws', async () => {
 		const { controller, pair } = await readyWarmLeaseHarness();
 		vi.useFakeTimers();

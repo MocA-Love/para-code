@@ -17,6 +17,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IParadisWorktreeGitCommandResult } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { IParadisMobileWindowHost } from './paradisMobileHost.js';
 import { ChannelId } from './paradisMobileProtocol.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
@@ -155,6 +156,8 @@ export interface IParadisMobileWindowStateV2 {
 	readonly terminals: readonly IParadisMobileWindowTerminalV2[];
 	/** PC本体のバッテリー（取得できたrendererのみ付与。同一PCなので全windowで同値）。 */
 	readonly battery?: IParadisMobileDesktopBattery;
+	/** このウィンドウが繋がっている接続先（ローカル/SSHリモート等）。未配信＝接続先不明。 */
+	readonly host?: IParadisMobileWindowHost;
 }
 
 /** protocol v2: shared process が付与する、全ウィンドウで一意なワークスペース。 */
@@ -176,6 +179,8 @@ export interface IParadisMobileRendererStateV3 {
 	readonly windowId: number;
 	readonly rendererGeneration: number;
 	readonly ready: boolean;
+	/** このウィンドウが繋がっている接続先（ローカル/SSHリモート等）。未配信＝接続先不明。 */
+	readonly host?: IParadisMobileWindowHost;
 }
 
 /** protocol v3: モバイルへ送る全PCウィンドウの統合状態。 */

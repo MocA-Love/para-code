@@ -151,6 +151,10 @@ export default function GithubUsageScreen() {
 			<View style={styles.screen}>
 				<ScreenHeader
 					title="GitHub API"
+					// GitHub APIのレート枠はPC(マシン)単位で共有され、rtk/ccusage/rate limitと違い
+					// 「どのウィンドウ（ローカル/SSHリモート）から見ても同じ値」になる。接続先セグメントは
+					// 出さず、その旨をここで明示する。
+					subtitle="PC全体の値です"
 					actions={
 						<HeaderCircleButton
 							icon="refresh-outline"

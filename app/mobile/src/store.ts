@@ -16,6 +16,7 @@ import { isValidPresetDef } from './presets.js';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 import { reuseWorkspaceState } from './workspaceIdentity.js';
 import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
+import type { RelayWindowHost } from './relayHosts.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
 export interface WorkspacePrStatus {
@@ -40,7 +41,9 @@ export interface WorkspaceState {
 	desktopEpoch: string;
 	revision: number;
 	complete: boolean;
-	renderers: { windowId: number; rendererGeneration: number; ready: boolean }[];
+	// host: そのウィンドウが繋がっている接続先（ローカル/SSHリモート等）。「接続先セグメント」
+	// (rtk/ccusage/rate limit)向け。旧PCや、まだ state を同期していないウィンドウでは未配信。
+	renderers: { windowId: number; rendererGeneration: number; ready: boolean; host?: RelayWindowHost }[];
 	activeWs: string | undefined;
 	// parent: worktree（スペース）の親リポジトリid。ドロワーの親子グルーピング（開閉表示）に使う。
 	// 旧PC（parent未配信）ではundefinedのままフラット表示にフォールバックする。
@@ -77,14 +80,14 @@ export interface MobileDisposable {
 }
 
 export interface MobileWarmLeaseController {
-	createWarmLease(resource: MobileWarmLeaseResource): MobileDisposable;
+	createWarmLease(resource: MobileWarmLeaseResource, windowId?: number): MobileDisposable;
 	releaseAllWarmLeases(): void;
 }
 
 /** controller lookup は1回だけ行い、cleanupを取得時点の controller へ固定する。 */
-export function acquireCapturedWarmLease(getCurrentController: () => MobileWarmLeaseController | undefined, resource: MobileWarmLeaseResource): MobileDisposable {
+export function acquireCapturedWarmLease(getCurrentController: () => MobileWarmLeaseController | undefined, resource: MobileWarmLeaseResource, windowId?: number): MobileDisposable {
 	const captured = getCurrentController();
-	return captured?.createWarmLease(resource) ?? { dispose: () => { } };
+	return captured?.createWarmLease(resource, windowId) ?? { dispose: () => { } };
 }
 
 /** AppState の active controller と、同一PC再pairを含む交代世代を一緒に管理する。 */
@@ -109,8 +112,8 @@ export class MobileWarmLeaseControllerRegistry {
 		return ++this.currentRevision;
 	}
 
-	acquire(resource: MobileWarmLeaseResource): MobileDisposable {
-		return acquireCapturedWarmLease(() => this.current, resource);
+	acquire(resource: MobileWarmLeaseResource, windowId?: number): MobileDisposable {
+		return acquireCapturedWarmLease(() => this.current, resource, windowId);
 	}
 }
 
@@ -157,6 +160,12 @@ interface MobileWarmLease {
 	readonly timer: ReturnType<typeof setInterval>;
 	target: RendererRequestTarget | undefined;
 	disposed: boolean;
+	/**
+	 * 「接続先セグメント」で選んだウィンドウに固定する（未指定時は既存どおり
+	 * activeWs のウィンドウ→最初の ready ウィンドウ）。ccusage 画面が選択ホストを
+	 * 切り替えたときに、温めておくキャッシュもそのホストへ追従させるために使う。
+	 */
+	fixedWindowId: number | undefined;
 }
 
 /** partial stateはready windowだけを置換し、pending windowの最後の表示を保持する。 */
@@ -1486,13 +1495,14 @@ export class MobileController {
 		this.emit();
 	}
 
-	createWarmLease(resource: MobileWarmLeaseResource): MobileDisposable {
+	createWarmLease(resource: MobileWarmLeaseResource, windowId?: number): MobileDisposable {
 		const leaseId = `mobile-${++this.warmLeaseCounter}-${toBase64Url(randomToken(9))}`;
 		const lease: MobileWarmLease = {
 			leaseId,
 			resource,
 			target: undefined,
 			disposed: false,
+			fixedWindowId: windowId,
 			timer: setInterval(() => this.sendWarmLease(lease, true), MobileController.WARM_LEASE_HEARTBEAT_MS),
 		};
 		this.warmLeases.set(leaseId, lease);
@@ -1535,7 +1545,7 @@ export class MobileController {
 			if (!this.isLiveAvailable()) {
 				return;
 			}
-			const current = this.warmLeaseTarget();
+			const current = this.warmLeaseTarget(lease.fixedWindowId);
 			if (current === undefined) {
 				return;
 			}
@@ -1565,10 +1575,23 @@ export class MobileController {
 		}
 	}
 
-	private warmLeaseTarget(): RendererRequestTarget | undefined {
+	/**
+	 * `fixedWindowId` を渡すと、そのウィンドウが ready な間だけそこへ固定する
+	 * （「接続先セグメント」で選んだホストへ ccusage warm lease を追従させるため）。
+	 * 未指定時は既存どおり、いま見ているワークスペース(activeWs)のウィンドウを優先する。
+	 */
+	private warmLeaseTarget(fixedWindowId?: number): RendererRequestTarget | undefined {
 		const desktop = this.state.workspace;
 		if (desktop === undefined) {
 			return undefined;
+		}
+		if (fixedWindowId !== undefined) {
+			const renderer = desktop.renderers.find(candidate => candidate.ready && candidate.windowId === fixedWindowId);
+			return renderer === undefined ? undefined : {
+				desktopEpoch: desktop.desktopEpoch,
+				windowId: renderer.windowId,
+				rendererGeneration: renderer.rendererGeneration,
+			};
 		}
 		const activeWindowId = desktop.activeWs === undefined
 			? undefined
@@ -2996,7 +3019,13 @@ export class MobileController {
 	private requestCounter = 0;
 	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; rendererTarget?: RendererRequestTarget; contentHash?: { readonly key: string; readonly prepared: PreparedContentHashRequest } }>();
 
-	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000, encodePayload?: (id: string, requestBody: object) => Uint8Array | undefined, contentHashCacheKey?: string): Promise<T> {
+	/**
+	 * `targetWindowId` を渡すと、ワークスペースの解決を行わずそのウィンドウへ直接配送する
+	 * （「接続先セグメント」— usage/rtk/limits のように、ワークスペースに紐付かないリクエスト向け）。
+	 * PC側は ws の代わりに rendererGeneration で対象ウィンドウを検証する
+	 * (`paradisMobileRelayService.ts` の `readyOwnerOfWindow`)。
+	 */
+	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000, encodePayload?: (id: string, requestBody: object) => Uint8Array | undefined, contentHashCacheKey?: string, targetWindowId?: number): Promise<T> {
 		const client = this.client;
 		if (!client || !this.isLiveAvailable()) {
 			return Promise.reject(new Error('PCへ再接続してから操作してください'));
@@ -3006,7 +3035,21 @@ export class MobileController {
 			: undefined;
 		let requestBody = contentHash !== undefined ? { ...body, ...contentHash.prepared.fields } : body;
 		let rendererTarget: RendererRequestTarget | undefined;
-		if (channel === 'scm' || channel === 'fs') {
+		if (targetWindowId !== undefined) {
+			const desktop = this.state.workspace;
+			const renderer = desktop?.renderers.find(candidate => candidate.windowId === targetWindowId);
+			if (desktop === undefined || renderer?.ready !== true) {
+				return Promise.reject(new Error('この接続先のPC画面はいま応答していません'));
+			}
+			rendererTarget = { desktopEpoch: desktop.desktopEpoch, windowId: renderer.windowId, rendererGeneration: renderer.rendererGeneration };
+			requestBody = {
+				...requestBody,
+				protocolVersion: 3,
+				desktopEpoch: desktop.desktopEpoch,
+				windowId: renderer.windowId,
+				rendererGeneration: renderer.rendererGeneration,
+			};
+		} else if (channel === 'scm' || channel === 'fs') {
 			const desktop = this.state.workspace;
 			const requestedWs = (body as { ws?: unknown }).ws;
 			const workspace = typeof requestedWs === 'string'
@@ -3364,12 +3407,16 @@ export class MobileController {
 		return this.request<FsHighlightResult>('fs', { t: 'hl', text, ...(lang !== undefined && lang.length > 0 ? { lang } : {}) }, 15_000);
 	}
 
-	/** ccusage 使用量ダッシュボード（PC版フッターの Ccusage と同じ集計データ）。 */
-	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult> {
+	/**
+	 * ccusage 使用量ダッシュボード（PC版フッターの Ccusage と同じ集計データ）。
+	 * `windowId` を指定すると、その接続先（ローカル/SSHリモート）で取得した値を返す
+	 * （「接続先セグメント」向け。未指定時は既定のウィンドウ）。
+	 */
+	usageDashboard(bypassCache?: boolean, windowId?: number): Promise<UsageDashboardResult> {
 		// PC側は他のfs応答と違い結果を data フィールドにネストして返す（reply({ t: 'usage', data })）。
 		// 応答オブジェクトをそのまま結果として扱うと days/failedReports が undefined になり
 		// 画面側の参照でクラッシュするため、ここで必ず剥がす。
-		return this.request<{ data?: UsageDashboardResult }>('fs', { t: 'usage', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+		return this.request<{ data?: UsageDashboardResult }>('fs', { t: 'usage', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000, undefined, undefined, windowId)
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty usage response');
@@ -3378,10 +3425,14 @@ export class MobileController {
 			});
 	}
 
-	/** RTK(Rust Token Killer)の節約状況（PC版のRTKダッシュボードと同じ集計データ）。 */
-	rtkSavings(bypassCache?: boolean): Promise<RtkSavingsResult> {
+	/**
+	 * RTK(Rust Token Killer)の節約状況（PC版のRTKダッシュボードと同じ集計データ）。
+	 * `windowId` を指定すると、その接続先（ローカル/SSHリモート）で取得した値を返す
+	 * （rtkはコマンドを実行したホストのローカルDBに記録するため、接続先ごとに値が異なる）。
+	 */
+	rtkSavings(bypassCache?: boolean, windowId?: number): Promise<RtkSavingsResult> {
 		// usageDashboard と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
-		return this.request<{ data?: RtkSavingsResult }>('fs', { t: 'rtk', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+		return this.request<{ data?: RtkSavingsResult }>('fs', { t: 'rtk', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000, undefined, undefined, windowId)
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty rtk response');
@@ -3390,10 +3441,13 @@ export class MobileController {
 			});
 	}
 
-	/** Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）。 */
-	rateLimits(bypassCache?: boolean): Promise<RateLimitsResult> {
+	/**
+	 * Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）。
+	 * `windowId` を指定すると、その接続先（ローカル/SSHリモート）で取得した値を返す。
+	 */
+	rateLimits(bypassCache?: boolean, windowId?: number): Promise<RateLimitsResult> {
 		// usageDashboard と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
-		return this.request<{ data?: RateLimitsResult }>('fs', { t: 'limits', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+		return this.request<{ data?: RateLimitsResult }>('fs', { t: 'limits', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000, undefined, undefined, windowId)
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty limits response');

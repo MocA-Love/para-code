@@ -117,6 +117,48 @@ suite('ParadisMobileTerminalRegistry', () => {
 		assert.strictEqual(registry.ownerOfWorkspace(3, 'missing'), undefined);
 	});
 
+	test('windowのhostをdesktopStateのrenderersへそのまま載せる（「接続先セグメント」向け）', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(1, 'session-local', 1, {
+			activeWs: undefined, workspaces: [], terminals: [], host: { kind: 'local', id: 'local' },
+		});
+		registry.syncWindow(2, 'session-remote', 1, {
+			activeWs: undefined, workspaces: [], terminals: [], host: { kind: 'remote', id: 'ssh-remote+myserver', label: 'myserver' },
+		});
+
+		assert.deepStrictEqual(registry.desktopState().renderers, [
+			{ windowId: 1, rendererGeneration: 1, ready: true, host: { kind: 'local', id: 'local' } },
+			{ windowId: 2, rendererGeneration: 1, ready: true, host: { kind: 'remote', id: 'ssh-remote+myserver', label: 'myserver' } },
+		]);
+	});
+
+	test('host未配信のウィンドウ（旧PC・state未同期）はrenderersにhostを持たない', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(1, 'session', 1, { activeWs: undefined, workspaces: [], terminals: [] });
+
+		assert.deepStrictEqual(registry.desktopState().renderers, [{ windowId: 1, rendererGeneration: 1, ready: true }]);
+	});
+
+	test('readyOwnerOfWindowはワークスペースを持たないウィンドウ宛のリクエストをrendererGeneration一致でだけ配送する', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(3, 'session', 2, { activeWs: undefined, workspaces: [], terminals: [] });
+
+		assert.deepStrictEqual(registry.readyOwnerOfWindow(3, 2), { windowId: 3, windowSession: 'session', rendererGeneration: 2 });
+		// 世代不一致（reload後の古い宛先）は配送しない。
+		assert.strictEqual(registry.readyOwnerOfWindow(3, 1), undefined);
+		// 未登録のwindowIdも配送しない。
+		assert.strictEqual(registry.readyOwnerOfWindow(4, 2), undefined);
+	});
+
+	test('readyOwnerOfWindowはpane同期完了前（未ready）のウィンドウへ配送しない', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(1, 'session', 1, { activeWs: undefined, workspaces: [], terminals: [] }, undefined, false);
+
+		assert.strictEqual(registry.readyOwnerOfWindow(1, 1), undefined);
+		assert.strictEqual(registry.markWindowReady(1, 'session', 1), true);
+		assert.deepStrictEqual(registry.readyOwnerOfWindow(1, 1), { windowId: 1, windowSession: 'session', rendererGeneration: 1 });
+	});
+
 	test('交代済みRenderer sessionを現在のleaseとして返さない', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
 		registry.syncWindow(3, 'old-session', 1, { activeWs: undefined, workspaces: [], terminals: [] });

@@ -180,6 +180,18 @@ export class ParadisMobileTerminalRegistry {
 			: undefined;
 	}
 
+	/**
+	 * ワークスペースに紐付かないリクエスト（`usage`/`rtk`/`limits`/`github` 等の「接続先セグメント」向け）を
+	 * windowId だけで配送する。`rendererGeneration` の一致を必須にするのは warm lease（`leaseOfWindow` の
+	 * 呼び出し側）と同じ理由——reload をまたいで古い宛先へ配らないため。
+	 */
+	readyOwnerOfWindow(windowId: number, rendererGeneration: number): IParadisMobileWindowOwner | undefined {
+		const lease = this.windows.get(windowId);
+		return lease?.ready === true && lease.rendererGeneration === rendererGeneration
+			? { windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration }
+			: undefined;
+	}
+
 	conflictingTerminalKeys(): string[] {
 		return [...this.conflicts].sort();
 	}
@@ -286,16 +298,25 @@ export class ParadisMobileTerminalRegistry {
 				});
 			}
 		}
-		const rendererByWindow = new Map(this.manifest.entries.map(entry => [entry.windowId, {
-			windowId: entry.windowId,
-			rendererGeneration: entry.rendererGeneration,
-			ready: entry.claimed && this.windows.get(entry.windowId)?.rendererGeneration === entry.rendererGeneration
-				&& this.windows.get(entry.windowId)?.windowSession === entry.windowSession
-				&& this.windows.get(entry.windowId)?.ready === true,
-		}]));
+		const rendererByWindow = new Map(this.manifest.entries.map(entry => {
+			const lease = this.windows.get(entry.windowId);
+			// hostはleaseのrendererGenerationがentryと一致するときだけ採用する（readyと同じ
+			// 世代照合）。一致を見ずに採用すると、交代済み（古い世代）のleaseに残ったhostを
+			// 新しいentryへ誤って載せかねない。
+			const generationMatches = lease?.rendererGeneration === entry.rendererGeneration;
+			return [entry.windowId, {
+				windowId: entry.windowId,
+				rendererGeneration: entry.rendererGeneration,
+				ready: entry.claimed && generationMatches && lease?.windowSession === entry.windowSession && lease?.ready === true,
+				...(generationMatches && lease?.state.host !== undefined ? { host: lease.state.host } : {}),
+			}];
+		}));
 		for (const [windowId, lease] of this.windows) {
 			if (!rendererByWindow.has(windowId)) {
-				rendererByWindow.set(windowId, { windowId, rendererGeneration: lease.rendererGeneration, ready: lease.ready });
+				rendererByWindow.set(windowId, {
+					windowId, rendererGeneration: lease.rendererGeneration, ready: lease.ready,
+					...(lease.state.host !== undefined ? { host: lease.state.host } : {}),
+				});
 			}
 		}
 		return {

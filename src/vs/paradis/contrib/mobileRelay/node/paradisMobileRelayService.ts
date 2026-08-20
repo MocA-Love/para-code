@@ -103,6 +103,14 @@ const RELAY_CONNECT_TIMEOUT_MS = 15_000;
 /** これだけ連続でpongが返らなければ「このリレーは保活に応答しない」と学習し直す。 */
 const RELAY_KEEPALIVE_TIMEOUT_GIVE_UP = 3;
 /**
+ * ws（ワークスペース）を持たないリクエストを windowId + rendererGeneration だけで配送してよい
+ * 「接続先セグメント」向けの型一覧。provider(`paradisMobileWorkspaceProvider.ts`)側で
+ * ws を見ずに処理する分岐と対応させること。ここに無い型（upload・worktree作成等、本来 ws による
+ * 所有権検証を必要とする操作）は、ws を省略しても ws 経路の検証（`ownerOfWorkspace`）を通らず
+ * 弾かれるようにする。
+ */
+const PARADIS_WORKSPACE_LESS_REQUEST_TYPES: ReadonlySet<string> = new Set(['usage', 'rtk', 'limits', 'github', 'sysres', 'spacedisk', 'hl']);
+/**
  * 切断してからSentryへ報告するまでの猶予。
  *
  * 実測ではこの接続の切断はほぼ全てが経路側の異常切断（close code 1006、closeフレーム無し）で、
@@ -1915,7 +1923,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			});
 			return;
 		}
-		let message: { id?: unknown; protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown; ws?: unknown };
+		let message: { id?: unknown; protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown; ws?: unknown; rendererGeneration?: unknown; t?: unknown };
 		const binaryUpload = frame.ch === Channels.Fs ? paradisDecodeBinaryFsUpload(frame.payload.buffer) : undefined;
 		if (binaryUpload !== undefined) {
 			message = binaryUpload;
@@ -1930,12 +1938,26 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		if (message.protocolVersion !== PARADIS_MOBILE_PROTOCOL_VERSION || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
-			|| typeof message.windowId !== 'number' || !Number.isInteger(message.windowId)
-			|| typeof message.ws !== 'string' || message.ws.length === 0) {
+			|| typeof message.windowId !== 'number' || !Number.isInteger(message.windowId)) {
 			this.sendWindowFrameError(frame, message.id, 'PC画面の状態が更新されました。もう一度お試しください');
 			return;
 		}
-		const owner = this.terminalRegistry.ownerOfWorkspace(message.windowId, message.ws);
+		const hasWorkspace = typeof message.ws === 'string' && message.ws.length > 0;
+		// ワークスペースに紐付かないリクエスト（「接続先セグメント」の usage/rtk/limits/github 等）は
+		// ws を持たず、代わりに rendererGeneration で対象ウィンドウを直接指定する。`t` を
+		// PARADIS_WORKSPACE_LESS_REQUEST_TYPES で絞るのは、この経路が本来 ws による所有権検証を
+		// 必要とする操作（upload・worktree作成等）へ誤って使われないようにするため
+		// （provider側は t で分岐するだけで ws の有無自体はここまで来ると検証しないため、
+		// 許可リストが無いと「ws を送らなければ検証を素通りできる」形になってしまう）。
+		const hasRendererGeneration = typeof message.rendererGeneration === 'number' && Number.isInteger(message.rendererGeneration)
+			&& typeof message.t === 'string' && PARADIS_WORKSPACE_LESS_REQUEST_TYPES.has(message.t);
+		if (!hasWorkspace && !hasRendererGeneration) {
+			this.sendWindowFrameError(frame, message.id, 'PC画面の状態が更新されました。もう一度お試しください');
+			return;
+		}
+		const owner = hasWorkspace
+			? this.terminalRegistry.ownerOfWorkspace(message.windowId, message.ws as string)
+			: this.terminalRegistry.readyOwnerOfWindow(message.windowId, message.rendererGeneration as number);
 		if (owner === undefined) {
 			this.sendWindowFrameError(frame, message.id, 'PC画面の再接続が完了してから操作してください');
 			return;
