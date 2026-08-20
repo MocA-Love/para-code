@@ -1695,15 +1695,21 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		// a listener for when individual data events are parsed, only `onWriteParsed` which fires
 		// when the write buffer is flushed.
 		const leadingSegmentedData: string[] = [];
-		const matches = ev.data.matchAll(/(?<seq>\x1b\][16]33;(?:C|D(?:;\d+)?)\x07)/g);
 		let i = 0;
-		for (const match of matches) {
-			if (match.groups?.seq === undefined) {
-				throw new BugIndicatingError('seq must be defined');
+		// PARA-PATCH: only run the scan when the chunk could contain one of these sequences. The
+		// regex reads every byte of every chunk, and this is the path all agent output flows
+		// through, but each sequence must start with the two bytes below. A miss means the loop
+		// below would not have run at all, so skipping it cannot change what gets written.
+		if (ev.data.includes('\x1b]')) {
+			const matches = ev.data.matchAll(/(?<seq>\x1b\][16]33;(?:C|D(?:;\d+)?)\x07)/g);
+			for (const match of matches) {
+				if (match.groups?.seq === undefined) {
+					throw new BugIndicatingError('seq must be defined');
+				}
+				leadingSegmentedData.push(ev.data.substring(i, match.index));
+				leadingSegmentedData.push(match.groups?.seq ?? '');
+				i = match.index + match[0].length;
 			}
-			leadingSegmentedData.push(ev.data.substring(i, match.index));
-			leadingSegmentedData.push(match.groups?.seq ?? '');
-			i = match.index + match[0].length;
 		}
 		const lastData = ev.data.substring(i);
 
