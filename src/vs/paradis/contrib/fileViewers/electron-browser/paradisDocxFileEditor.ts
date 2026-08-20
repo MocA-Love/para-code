@@ -16,6 +16,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
@@ -37,6 +38,7 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { PARADIS_DOCX_MAX_BYTES } from '../common/paradisDocx.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
@@ -207,28 +209,51 @@ export class ParadisDocxFileEditor extends EditorPane {
 			localResourceRoots: this._localResourceRoots(resource)
 		};
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
-		const decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
+		let decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
 		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
 			return;
+		}
+		// SCM の旧版など、webview のリソース URL では取れないスキーム(git: 等)は中身を読んで直接埋め込む。
+		// asWebviewUri は scheme を authority に押し込む形で URL 化するが、その解決は service worker と
+		// localResourceRoots の判定に依存し、query に JSON を持つ git: では通る保証が無い。
+		let inlineData: string | undefined;
+		if (decision === 'viewer' && !this._canFetchViaWebviewUri(resource)) {
+			try {
+				// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリへ
+				// 載せた上に base64 で 4/3 に膨らませた文字列まで作ってしまう。
+				const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
+				inlineData = encodeBase64(content.value);
+			} catch {
+				decision = 'rejected';
+			}
+			if (generation !== this._renderGeneration || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
+				return;
+			}
 		}
 		switch (decision) {
 			case 'rejected':
 				webview.setHtml(this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
-				webview.setHtml(this._buildHtml(resource));
+				webview.setHtml(this._buildHtml(resource, inlineData));
 				return;
 		}
+	}
+
+	private _canFetchViaWebviewUri(resource: URI): boolean {
+		return resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote;
 	}
 
 	private _buildRejectedFileHtml(): string {
 		return '<!DOCTYPE html><html><body>Word 文書を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
-	private _buildHtml(resource: URI): string {
+	private _buildHtml(resource: URI, inlineData?: string): string {
 		const nonce = generateUuid();
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
-		const docxUrl = asWebviewUri(resource, remoteInfo).toString(true);
+		const docxUrl = inlineData
+			? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${inlineData}`
+			: asWebviewUri(resource, remoteInfo).toString(true);
 		const libBase = asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
 
 		// CSP: スクリプトは nonce 付き inline と webview リソース(https:)のみ。docx-preview が本文中に

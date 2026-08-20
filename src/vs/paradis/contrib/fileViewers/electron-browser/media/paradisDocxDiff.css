@@ -1,0 +1,183 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Word 差分ビューアのツールバー（renderer 側の DOM）。
+ * 本文は webview の中なので、ここには含まれない（本文側の CSS は paradisDocxDiffWebview.ts が持つ）。
+ * 見た目と色の語彙は Excel 差分（paradisSpreadsheet.css）に揃えてある。
+ */
+
+.paradis-docx-diff {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+}
+
+.paradis-docx-diff-toolbar {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 4px 12px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	font-size: 12px;
+}
+
+.paradis-docx-diff-toolbar-left {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+}
+
+.paradis-docx-diff-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex: 0 0 auto;
+}
+
+.paradis-docx-diff-count {
+	white-space: nowrap;
+}
+
+.paradis-docx-diff-notice {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-docx-diff-legend {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-docx-diff-legend-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.paradis-docx-diff-legend-swatch {
+	width: 9px;
+	height: 9px;
+	border-radius: 2px;
+	flex: 0 0 auto;
+}
+
+.paradis-docx-diff-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 24px;
+	padding: 2px 8px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 3px;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.paradis-docx-diff-toggle:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-docx-diff-toggle.active {
+	border-color: var(--vscode-focusBorder);
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+
+.paradis-docx-diff-zoom {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.paradis-docx-diff-iconbtn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+}
+
+.paradis-docx-diff-iconbtn:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-docx-diff-percent {
+	min-width: 42px;
+	height: 22px;
+	padding: 0 4px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.paradis-docx-diff-percent:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-docx-diff-nav {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.paradis-docx-diff-navbtn {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 4px;
+	padding: 2px 10px;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.paradis-docx-diff-navbtn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-docx-diff-navpos {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	min-width: 44px;
+	text-align: center;
+}
+
+.paradis-docx-diff-openapp {
+	display: flex;
+	align-items: center;
+}
+
+/* overlay webview を重ねる位置合わせ用のアンカー。 */
+.paradis-docx-diff-body {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}

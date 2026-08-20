@@ -6,9 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Word(.docx)ビューア(vendored docx-preview 依存)の登録入り口。paradis.electron-browser.contribution.ts から import。
+// Word(.docx)ビューア/差分(vendored docx-preview 依存)の登録入り口。paradis.electron-browser.contribution.ts から import。
 // exclusive 登録により、標準のバイナリ警告(BinaryFileEditor)より優先して .docx をレンダリング表示する。
-// docx の差分表示は非対応(createDiffEditorInput を登録しないため標準のバイナリ差分にフォールバックする)。
+// 通常オープン(createEditorInput)と SCM の差分オープン(createDiffEditorInput)の両方を横取りする。
 
 import { localize } from '../../../../nls.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -20,8 +20,16 @@ import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorResolverService, RegisteredEditorPriority } from '../../../../workbench/services/editor/common/editorResolverService.js';
 import { ParadisDocxFileEditor } from './paradisDocxFileEditor.js';
-import { ParadisDocxInput, ParadisDocxInputSerializer } from './paradisDocxInput.js';
+import { ParadisDocxDiffEditor } from './paradisDocxDiffEditor.js';
 import {
+	ParadisDocxDiffInput,
+	ParadisDocxDiffInputSerializer,
+	ParadisDocxInput,
+	ParadisDocxInputSerializer,
+} from './paradisDocxInput.js';
+import {
+	PARADIS_DOCX_DIFF_EDITOR_ID,
+	PARADIS_DOCX_DIFF_INPUT_TYPE_ID,
 	PARADIS_DOCX_EDITOR_ID,
 	PARADIS_DOCX_EXTENSIONS,
 	PARADIS_DOCX_INPUT_TYPE_ID,
@@ -37,10 +45,26 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	[new SyncDescriptor(ParadisDocxInput)]
 );
 
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	// allow-any-unicode-next-line
+	EditorPaneDescriptor.create(ParadisDocxDiffEditor, PARADIS_DOCX_DIFF_EDITOR_ID, localize('paradis.docxDiff', "Word 差分")),
+	[new SyncDescriptor(ParadisDocxDiffInput)]
+);
+
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
 	PARADIS_DOCX_INPUT_TYPE_ID,
 	ParadisDocxInputSerializer
 );
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
+	PARADIS_DOCX_DIFF_INPUT_TYPE_ID,
+	ParadisDocxDiffInputSerializer
+);
+
+// 差分の旧版は git: スキーム(git拡張のreadonly FSプロバイダ)で渡ってくるため、canSupportResource で許可する必要がある。
+// これが無いと editorResolverService が「両サイドが同じ editor に解決されない」と判断し、
+// createDiffEditorInput は一度も呼ばれずに標準のバイナリ差分へフォールバックする。
+const SUPPORTED_SCHEMES = new Set<string>([Schemas.file, Schemas.vscodeRemote, 'git']);
 
 class ParadisDocxViewerResolverContribution implements IWorkbenchContribution {
 	static readonly ID = 'paradis.contrib.docxViewerResolver';
@@ -59,15 +83,24 @@ class ParadisDocxViewerResolverContribution implements IWorkbenchContribution {
 					priority: RegisteredEditorPriority.exclusive
 				},
 				{
-					canSupportResource: resource =>
-						(resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote) && isParadisDocxResource(resource),
+					canSupportResource: resource => SUPPORTED_SCHEMES.has(resource.scheme) && isParadisDocxResource(resource),
 					singlePerResource: true
 				},
 				{
 					createEditorInput: ({ resource, options }) => ({
 						editor: instantiationService.createInstance(ParadisDocxInput, resource),
 						options
-					})
+					}),
+					createDiffEditorInput: diffEditorInput => {
+						const original = diffEditorInput.original.resource;
+						const modified = diffEditorInput.modified.resource;
+						if (!original || !modified) {
+							throw new Error('Para Code docx diff requires both original and modified resources');
+						}
+						return {
+							editor: instantiationService.createInstance(ParadisDocxDiffInput, original, modified, diffEditorInput.label)
+						};
+					}
 				}
 			);
 		}
