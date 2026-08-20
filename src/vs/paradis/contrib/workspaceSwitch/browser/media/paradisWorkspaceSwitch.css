@@ -391,10 +391,12 @@
 .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed { --paradis-pr-color: #f85149; }
 
 /* allow-any-unicode-next-line */
-/* 現在動作中のエージェントが対話から検出した GitHub Issue のマーク。PR チップの隣 (同じ下段) に
- * 置く。PR と違い個々の番号は持たず、アイコン＋検出件数のみ（.paradis-worktree-note と同じ
- * 語彙）。詳細（番号・タイトル一覧）はホバーでのみ出す。色は PR チップの固定パレットと衝突
- * しない青 (textLink.foreground) にして、一目で「PRではなくIssue」と分かるようにする。 */
+/* そのスペースのペイン(生存中、一時的なアイドルも含む)でエージェントが対話から検出した
+ * GitHub Issue のマーク。PR チップの隣 (同じ下段) に置く。PR と違い個々の番号は持たず、
+ * アイコン＋検出件数のみ（.paradis-worktree-note と同じ語彙）。詳細（番号・タイトル一覧）は
+ * ホバーまたはクリックで出す (cursor: pointer でクリックできることを示す)。色は PR チップの
+ * 固定パレットと衝突しない青 (textLink.foreground) にして、一目で「PRではなくIssue」と
+ * 分かるようにする。 */
 .paradis-workspaces-list .paradis-worktree-issue {
 	display: flex;
 	align-items: center;
@@ -405,7 +407,7 @@
 	font-size: 0.8em;
 	font-variant-numeric: tabular-nums;
 	line-height: 1;
-	cursor: default;
+	cursor: pointer;
 	color: var(--vscode-textLink-foreground);
 	background-color: color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent);
 }

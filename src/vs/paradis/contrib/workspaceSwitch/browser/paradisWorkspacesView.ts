@@ -20,6 +20,7 @@ import { FuzzyScore } from '../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { createMarkdownLink, escapeMarkdownSyntaxTokens, MarkdownString } from '../../../../base/common/htmlContent.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -346,8 +347,9 @@ interface IWorktreeTemplateData {
 	/** クリックリスナーが renderElement 後の最新 PR URL を参照するためのホルダー */
 	readonly prContext: { url?: string };
 	/**
-	 * 現在動作中のエージェントが対話から検出した GitHub Issue のマーク。PR と違い個々の番号は
-	 * 出さず、アイコン＋検出件数のみ（.paradis-worktree-note と同じ語彙）。ホバーで一覧を出す。
+	 * そのスペースのペインでエージェントが対話から検出した GitHub Issue のマーク。ペインが
+	 * 生きている限り（一時的にアイドルでも）出る。PR と違い個々の番号は出さず、アイコン＋
+	 * 検出件数のみ（.paradis-worktree-note と同じ語彙）。ホバーまたはクリックで一覧を出す。
 	 */
 	readonly issue: HTMLElement;
 	readonly issueCount: HTMLElement;
@@ -383,6 +385,20 @@ function issueStateLabel(state: ParadisIssueState): string {
 		case 'closed': return localize('paradis.issue.closed', "Closed");
 		default: return localize('paradis.issue.open', "Open");
 	}
+}
+
+/**
+ * Issueマーク用の低遅延ホバーdelegate。既存の共有 'mouse' delegate (getDefaultHoverDelegate)
+ * の showHover をそのまま使い、delay だけ固定の短い値へ差し替える。呼び出しごとに new する
+ * だけで dispose 不要 (中身は使い回しの共有インスタンスへの薄いラッパーのため)。
+ */
+function lowDelayHoverDelegate(): IHoverDelegate {
+	const base = getDefaultHoverDelegate('mouse');
+	return {
+		showHover: (options, focus) => base.showHover(options, focus),
+		placement: base.placement,
+		delay: 200,
+	};
 }
 
 /**
@@ -566,7 +582,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly getBreakdown: (stateKey: string) => readonly ParadisAgentStatus[],
 		private readonly getDiffStat: (worktree: IParadisWorktree) => IParadisDiffStat | undefined,
 		private readonly getPrStatus: (worktree: IParadisWorktree) => IParadisPrStatus | undefined,
-		/** 現在動作中のエージェントがそのスペースの対話から検出した Issue URL (未検出なら空配列)。 */
+		/** そのスペースのペインでエージェントが対話から検出した Issue URL (未検出なら空配列)。 */
 		private readonly getIssueUrls: (worktree: IParadisWorktree) => readonly string[],
 		private readonly getIssueStatus: (url: string) => IParadisIssueStatus | undefined,
 		private readonly getNoteSummary: (worktree: IParadisWorktree) => IParadisSpaceNoteSummary,
@@ -617,13 +633,24 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		}
 		const prHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pr, ''));
 		// 検出済み Issue のマーク。PR チップのすぐ隣 (同じ下段) に置く。番号は持たず、
-		// アイコン＋件数のみ（メモ件数バッジと同じ語彙）。クリックでの遷移は無い
-		// (複数件を束ねているため、開くリンクの選択はホバー内の各番号で行う)。
+		// アイコン＋件数のみ（メモ件数バッジと同じ語彙）。行の切り替えには繋げず、
+		// クリックでホバーカードを即時表示する (ホバー待ちが長いというフィードバックへの対応。
+		// 複数件を束ねているため、開くリンクの選択はホバー内の各番号で行う)。
 		const issue = DOM.append(lowerTier, DOM.$('.paradis-worktree-issue'));
+		issue.setAttribute('role', 'button');
 		const issueIcon = DOM.append(issue, DOM.$('.codicon'));
 		issueIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.issueOpened).replace('codicon ', '')}`;
 		const issueCount = DOM.append(issue, DOM.$('span.paradis-worktree-issue-count'));
-		const issueHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), issue, ''));
+		// 通常のホバー遅延 (workbench.hover.delay、macOS既定で1500ms) だと「検出されているのか
+		// 反応が無いのか」が分かりにくいというフィードバックがあったため、他の行内ホバー
+		// (dots/pr/note/pin) とは別に短い固定遅延にする。createInstantHoverDelegate() は
+		// 「直前のホバーが隠れてから200ms以内」だけ delay=0 になる仕組みで、単発の初回ホバーには
+		// 効かないため使わない (lowDelayHoverDelegate 参照)。
+		const issueHover = templateDisposables.add(this.hoverService.setupManagedHover(lowDelayHoverDelegate(), issue, ''));
+		templateDisposables.add(DOM.addDisposableListener(issue, DOM.EventType.CLICK, event => {
+			DOM.EventHelper.stop(event, true);
+			issueHover.show(true);
+		}));
 		// メモの未完了件数。行の情報量を増やしすぎないよう、未完了が1件以上あるときだけ出す
 		const note = DOM.append(upperTier, DOM.$('.paradis-worktree-note'));
 		const noteIcon = DOM.append(note, DOM.$('.codicon'));
@@ -751,16 +778,22 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			templateData.prHover.update('');
 		}
 
-		// Issueマーク: 現在動作中のエージェントがいるスペースにのみ出す。件数の変化がなくても
-		// getIssueUrls は毎回配列を作るため、空配列との比較で hidden の付け外しだけ行う。
+		// Issueマーク: そのスペースにペイン(生存中、一時的なアイドルも含む)があるときだけ出す。
+		// 件数の変化がなくても getIssueUrls は毎回配列を作るため、空配列との比較で
+		// hidden の付け外しだけ行う。
 		const issueUrls = worktree.missing ? [] : this.getIssueUrls(worktree);
 		templateData.issue.classList.toggle('hidden', issueUrls.length === 0);
 		if (issueUrls.length > 0) {
 			templateData.issueCount.textContent = String(issueUrls.length);
-			templateData.issueHover.update(issueHoverContent(issueUrls, this.getIssueStatus));
+			const content = issueHoverContent(issueUrls, this.getIssueStatus);
+			templateData.issueHover.update(content);
+			// マークはアイコン＋件数のみで文字情報が乏しいので、支援技術向けに同じ内容を
+			// aria-label でも持たせる (dots.ariaLabel と同じ考え方)。
+			templateData.issue.ariaLabel = content.markdownNotSupportedFallback;
 		} else {
 			templateData.issueCount.textContent = '';
 			templateData.issueHover.update('');
+			templateData.issue.ariaLabel = '';
 		}
 	}
 
@@ -1206,12 +1239,23 @@ export class ParadisWorkspacesView extends ViewPane {
 	}
 
 	/**
-	 * 現在動作中のスペースぶんだけ「そのworktreeで検出済みのIssue URL」をまとめる。
-	 * pollTargets と違いリポジトリ行は対象外（Issueはworktree=スペース単位の検出のため）。
+	 * ペインが存在するスペースぶんだけ「そのworktree(main checkout含む)で検出済みのIssue URL」を
+	 * まとめる(一時的なアイドルでは対象から外れない)。pollTargets と同じく main checkout も
+	 * 対象に含める(main checkout も1つのスペースであり、
+	 * そこで動くエージェントの対話からも Issue を検出するため)。
 	 */
 	private pollIssueTargets(): { resource: UriComponents; issueUrls: readonly string[] }[] {
 		const targets: { resource: UriComponents; issueUrls: readonly string[] }[] = [];
 		for (const repository of this.workspaceSwitchService.repositories) {
+			// main checkout は getWorktrees() に含まれず、updateTree() が毎回合成行として描き足す
+			// (WorktreeRenderer 参照)。ここでも同じ合成をしないと、main checkout での対話から
+			// 検出した Issue が一覧には表示されるのに永遠に番号・タイトルへ解決されなくなる
+			// (実機で確認: 表示側は worktreeStateKeyFor(合成行) を見るのに、ポーリング側は
+			// getWorktrees() だけを見ていて main checkout を素通りしていた)。
+			const mainCheckoutIssueUrls = this.agentStatusStore.getScopeIssueUrls(repository.id);
+			if (mainCheckoutIssueUrls.length > 0) {
+				targets.push({ resource: repository.uri, issueUrls: mainCheckoutIssueUrls });
+			}
 			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
 				if (worktree.missing) {
 					continue;
