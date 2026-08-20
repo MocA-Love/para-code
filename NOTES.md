@@ -464,6 +464,22 @@ iPad対応で実際に手で当てた設定:
 
 **未対応（v2以降）**: ブラウザ/ターミナルを会話の横に並べるフローティングパネル（`app/mobile/mock/ipad.html` の案Bにあるドラッグ幅変更パネル）、Filesタブの2ペイン化、サイドバーの折りたたみ。現状は右カラム全体を覆うpush遷移。
 
+## 常駐ターミナル（pty デーモン）で踏みうる罠（2026-08-20）
+
+設定 `paradis.terminal.daemon.enabled` を有効にすると、ターミナルのプロセスは Para Code の外の常駐プロセスが持つ。閉じても残せるようになった代わりに、**ローカルの端末が最大24時間 detach 状態で置かれる**という、今まで無かった状態が生まれる。そこに upstream の既存挙動がぶつかる箇所がある。
+
+### 「Terminal: Attach to Session」は、残した端末を巻き添えで殺す
+
+`terminalActions.ts` の Attach to Session は `backend.reduceConnectionGraceTime()` を呼ぶ。これは `ptyService.ts` の `reduceConnectionGraceTime()` で、**猶予待ちの pty を全部**短い猶予（`shortGraceTime`、既定6秒）へ移す。アタッチした1本以外は誰も拾わないので、**別のスペースで残しておいた端末が6秒後に全滅する**。
+
+upstream の挙動そのもので、接続先（SSH）側も同じ露出を持っている。ただしあちらは `_reconnectToRemoteTerminals()` をウィンドウを開くたびに呼ぶので「開いたら拾う」で成立している。ローカルは `_reconnectToLocalTerminals()` がこのコマンド経路では呼ばれないため、事故るのはこのコマンドだけ。
+
+**「残したはずの端末が消えた」という報告が来たら、まずここを疑うこと。** これを知らないと、常駐側の猶予やアイドル終了を延々と調べることになる（そちらは無実）。
+
+### `terminal.integrated.enablePersistentSessions` をセッション途中で off にした場合
+
+既に開いている端末は生成時の値で `shouldPersist=true` のままなので「残す」と答えられるが、次回起動時は `_reconnectToLocalTerminals()` が走らないため、24時間の孤児になる。設定を触ってから再起動しない、という狭い条件。塞ぐなら常駐側の `prepare` でこの設定を見て `end` へ倒す（接続先側にも同じ穴がある）。
+
 ## ビルド環境（macOS / Apple Silicon）
 
 - Node: `.nvmrc`が指定する`24.17.0`を`mise`でプロジェクト固定（`mise.toml`）。システムのNode（v26.3.0）とは別
