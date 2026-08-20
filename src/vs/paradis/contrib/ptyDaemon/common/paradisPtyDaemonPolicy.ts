@@ -176,3 +176,51 @@ export function paradisParseDaemonRecord(value: unknown): IParadisPtyDaemonRecor
 		startedAt: raw.startedAt,
 	};
 }
+
+/**
+ * ソケットの掃除を1人ずつにするための札を、いつ無効と見なすか。
+ *
+ * 札を持ったまま死ぬ (掃除の途中でプロセスが落ちる) ことがあるので、永久に有効にはできない。
+ * かといって短くしすぎると、掃除中の相手を追い出して取り合いに戻る。掃除は unlink と bind の
+ * 2回のシステムコールだけなので、実際に握っている時間はミリ秒。秒の単位で切れば十分足りる。
+ */
+export const PARADIS_DAEMON_BIND_LOCK_TIMEOUT = 5_000;
+
+/** 掃除中の札。誰が、いつから持っているか。 */
+export interface IParadisBindLock {
+	readonly pid: number;
+	readonly createdAt: number;
+}
+
+/**
+ * その札を無視して掃除に入ってよいか。
+ *
+ * 読めない札は無効として扱う (書きかけで死んだ跡)。pid の生死も見るが、**pid は身元の証明では
+ * ない**ので、使い回された番号を「生きている」と読んで待たされることはある。その場合も
+ * 時間で切れるので、待ち続けにはならない。誤って古いと判断したときの実害は「取り合いに戻る」
+ * だけで、これは札を入れる前の状態と同じ。
+ */
+export function paradisIsBindLockStale(lock: IParadisBindLock | undefined, isProcessAlive: boolean, now: number): boolean {
+	if (!lock) {
+		return true;
+	}
+	if (!isProcessAlive) {
+		return true;
+	}
+	return now - lock.createdAt >= PARADIS_DAEMON_BIND_LOCK_TIMEOUT;
+}
+
+/** 札を読む。壊れていれば undefined。 */
+export function paradisParseBindLock(value: unknown): IParadisBindLock | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const raw = value as Partial<IParadisBindLock>;
+	if (typeof raw.pid !== 'number' || !isFinite(raw.pid) || raw.pid <= 0) {
+		return undefined;
+	}
+	if (typeof raw.createdAt !== 'number' || !isFinite(raw.createdAt)) {
+		return undefined;
+	}
+	return { pid: raw.pid, createdAt: raw.createdAt };
+}
