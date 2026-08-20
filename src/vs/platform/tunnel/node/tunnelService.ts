@@ -19,6 +19,8 @@ import { IAddressProvider, IConnectionOptions, connectRemoteAgentTunnel } from '
 import { IRemoteSocketFactoryService } from '../../remote/common/remoteSocketFactoryService.js';
 import { ISignService } from '../../sign/common/sign.js';
 import { AbstractTunnelService, ISharedTunnelsService, ITunnelProvider, ITunnelService, RemoteTunnel, TunnelPrivacyId, isAllInterfaces, isLocalhost, isPortPrivileged, isTunnelProvider } from '../common/tunnel.js';
+// PARA-PATCH: bound the remote agent tunnel handshake so a wedged remote cannot hang an already-accepted local socket forever
+import { paraConnectTunnelWithTimeout } from '../common/paraTunnelConnect.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 
 async function createRemoteTunnel(options: IConnectionOptions, defaultTunnelHost: string, tunnelRemoteHost: string, tunnelRemotePort: number, tunnelLocalPort?: number): Promise<RemoteTunnel> {
@@ -61,7 +63,11 @@ export class NodeRemoteTunnel extends Disposable implements RemoteTunnel {
 		this._listeningListener = () => this._barrier.open();
 		this._server.on('listening', this._listeningListener);
 
-		this._connectionListener = (socket) => this._onConnection(socket);
+		// PARA-PATCH: `_onConnection` is async and the server has already accepted the TCP connection before it awaits. Without this handler a rejected (or timed out) tunnel would leave the local socket paused and open forever, which the client sees as a connection that never answers rather than as an error. `resetAndDestroy` (not `destroy`) so the client gets ECONNRESET: a plain FIN would close with no response at all, which a browser reports as ERR_EMPTY_RESPONSE and which wrongly points the blame at the target server.
+		this._connectionListener = (socket) => this._onConnection(socket).catch(err => {
+			this._options.logService.error(`[ParaTunnel] Failed to forward a connection to ${this.tunnelRemoteHost}:${this.tunnelRemotePort}; resetting the local socket:`, err);
+			socket.resetAndDestroy();
+		});
 		this._server.on('connection', this._connectionListener);
 
 		// If there is no error listener and there is an error it will crash the whole window
@@ -114,7 +120,12 @@ export class NodeRemoteTunnel extends Disposable implements RemoteTunnel {
 		localSocket.pause();
 
 		const tunnelRemoteHost = (isLocalhost(this.tunnelRemoteHost) || isAllInterfaces(this.tunnelRemoteHost)) ? 'localhost' : this.tunnelRemoteHost;
-		const protocol = await connectRemoteAgentTunnel(this._options, tunnelRemoteHost, this.tunnelRemotePort);
+		// PARA-PATCH: bound the handshake. `connectRemoteAgentTunnel` waits forever for the remote agent's control message, so a wedged remote would hang here with the local socket already accepted.
+		const protocol = await paraConnectTunnelWithTimeout(
+			() => connectRemoteAgentTunnel(this._options, tunnelRemoteHost, this.tunnelRemotePort),
+			`${tunnelRemoteHost}:${this.tunnelRemotePort}`,
+			this._options.logService
+		);
 		const remoteSocket = protocol.getSocket();
 		const dataChunk = protocol.readEntireBuffer();
 		protocol.dispose();
