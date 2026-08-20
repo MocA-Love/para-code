@@ -146,7 +146,8 @@ import { IInitialProtocolUrls, IProtocolUrl } from '../../platform/url/electron-
 import { IUtilityProcessWorkerMainService, UtilityProcessWorkerMainService } from '../../platform/utilityProcess/electron-main/utilityProcessWorkerMainService.js';
 import { ipcUtilityProcessWorkerChannelName } from '../../platform/utilityProcess/common/utilityProcessWorkerService.js';
 import { ILocalPtyService, LocalReconnectConstants, TerminalIpcChannels, TerminalSettingId } from '../../platform/terminal/common/terminal.js';
-import { ElectronPtyHostStarter } from '../../platform/terminal/electron-main/electronPtyHostStarter.js';
+// PARA-PATCH: picks between the in-app pty host and the daemon that outlives the app (see below)
+import { paradisCreatePtyHostStarter } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyHostStarterFactory.js';
 import { PtyHostService } from '../../platform/terminal/node/ptyHostService.js';
 import { ElectronAgentHostStarter } from '../../platform/agentHost/electron-main/electronAgentHostStarter.js';
 import { AgentHostProcessManager } from '../../platform/agentHost/node/agentHostService.js';
@@ -1305,11 +1306,14 @@ export class CodeApplication extends Disposable {
 		services.set(IApplicationStorageMainService, new SyncDescriptor(ApplicationStorageMainService));
 
 		// Terminal
-		const ptyHostStarter = new ElectronPtyHostStarter({
+		// PARA-PATCH: terminals can run in a daemon outside the app so they survive quitting it.
+		// The choice (and falling back to the in-app pty host when a daemon cannot work here) lives
+		// in vs/paradis/contrib/ptyDaemon so it stays one expression on this side.
+		const ptyHostStarter = paradisCreatePtyHostStarter({
 			graceTime: LocalReconnectConstants.GraceTime,
 			shortGraceTime: LocalReconnectConstants.ShortGraceTime,
 			scrollback: this.configurationService.getValue<number>(TerminalSettingId.PersistentSessionScrollback) ?? 100
-		}, this.configurationService, this.environmentMainService, this.lifecycleMainService, this.logService);
+		}, this.configurationService, this.environmentMainService, this.lifecycleMainService, this.logService, this.productService);
 		const ptyHostService = new PtyHostService(
 			ptyHostStarter,
 			this.configurationService,

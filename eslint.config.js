@@ -1715,6 +1715,9 @@ export default defineConfig(
 						// PARA-PATCH: browserSession.ts が内蔵ブラウザのダウンロード自動保存
 						// (paradisConfigureBrowserDownloads) を呼ぶための逆方向 import
 						'vs/paradis/contrib/browserDownloads/~',
+						// PARA-PATCH: ptyHostMain.ts が常駐ターミナル(pty デーモン)として起きたときの
+						// ソケット確保と寿命管理を呼ぶための逆方向 import
+						'vs/paradis/contrib/ptyDaemon/~',
 						'tas-client', // node module allowed even in /common/
 						'@microsoft/1ds-core-js', // node module allowed even in /common/
 						'@microsoft/1ds-post-js', // node module allowed even in /common/

@@ -1,0 +1,106 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import {
+	IParadisPtyDaemonRecord,
+	PARADIS_DAEMON_IDLE_TIMEOUT,
+	ParadisDaemonAction,
+	paradisJudgeForeignDaemon,
+	paradisJudgeUnreachableDaemon,
+	paradisParseDaemonRecord,
+	paradisProbeDaemonRecord,
+	paradisShouldDaemonExit,
+} from '../../common/paradisPtyDaemonPolicy.js';
+
+const OWN = 'aaaa1111';
+const RECORD: IParadisPtyDaemonRecord = {
+	pid: 4321,
+	socketPath: '/tmp/paracode-x.sock',
+	buildId: '1.132.0-paracode-72',
+	buildKey: OWN,
+	startedAt: 1_000,
+};
+
+suite('ParadisPtyDaemonPolicy', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('decides what to do with a ledger entry before connecting to it', () => {
+		assert.deepStrictEqual(
+			{
+				gone: paradisProbeDaemonRecord(RECORD, OWN, false),
+				sameBuild: paradisProbeDaemonRecord(RECORD, OWN, true),
+				otherBuild: paradisProbeDaemonRecord({ ...RECORD, buildKey: 'bbbb2222' }, OWN, true),
+			},
+			{
+				gone: ParadisDaemonAction.Discard,
+				sameBuild: ParadisDaemonAction.Adopt,
+				otherBuild: ParadisDaemonAction.Inspect,
+			},
+		);
+	});
+
+	test('never disposes of a daemon whose contents are unknown or in use', () => {
+		assert.deepStrictEqual(
+			{
+				// 何も抱えていないと確認できた古いビルドだけ、黙って片付ける。
+				emptyForeign: paradisJudgeForeignDaemon(0),
+				// 更新前に残したターミナルはここに居る。殺すのは「更新したら作業が消えた」と同じ。
+				busyForeign: paradisJudgeForeignDaemon(1),
+				// 生きているのに応答しない。何が起きているか分からないので触らない。
+				aliveButSilent: paradisJudgeUnreachableDaemon(true),
+				// pid も居ない。ただの残骸。
+				rubble: paradisJudgeUnreachableDaemon(false),
+			},
+			{
+				emptyForeign: ParadisDaemonAction.Reap,
+				busyForeign: ParadisDaemonAction.Surface,
+				aliveButSilent: ParadisDaemonAction.Surface,
+				rubble: ParadisDaemonAction.Discard,
+			},
+		);
+	});
+
+	test('lets an empty daemon time itself out without ever abandoning terminals', () => {
+		const now = 100_000_000;
+		const idle = { terminalCount: 0, clientCount: 0, idleSince: now - PARADIS_DAEMON_IDLE_TIMEOUT };
+		assert.deepStrictEqual(
+			{
+				holdingTerminals: paradisShouldDaemonExit({ ...idle, terminalCount: 1 }, now),
+				stillConnected: paradisShouldDaemonExit({ ...idle, clientCount: 1 }, now),
+				withinTimeout: paradisShouldDaemonExit({ ...idle, idleSince: now - PARADIS_DAEMON_IDLE_TIMEOUT + 1 }, now),
+				timedOut: paradisShouldDaemonExit(idle, now),
+				// 一度も繋がれないまま放置された常駐 (アプリが起動直後に落ちた場合) も拾う。
+				neverConnected: paradisShouldDaemonExit({ terminalCount: 0, clientCount: 0, idleSince: 0 }, now),
+			},
+			{ holdingTerminals: false, stillConnected: false, withinTimeout: false, timedOut: true, neverConnected: true },
+		);
+	});
+
+	test('reads a half-written ledger without throwing', () => {
+		assert.deepStrictEqual(
+			{
+				good: paradisParseDaemonRecord({ ...RECORD }),
+				missingField: paradisParseDaemonRecord({ ...RECORD, socketPath: undefined }),
+				emptyBuild: paradisParseDaemonRecord({ ...RECORD, buildId: '' }),
+				badPid: paradisParseDaemonRecord({ ...RECORD, pid: 0 }),
+				notAnObject: paradisParseDaemonRecord('{"pid":1}'),
+				nothing: paradisParseDaemonRecord(null),
+			},
+			{
+				good: RECORD,
+				missingField: undefined,
+				emptyBuild: undefined,
+				badPid: undefined,
+				notAnObject: undefined,
+				nothing: undefined,
+			},
+		);
+	});
+});
