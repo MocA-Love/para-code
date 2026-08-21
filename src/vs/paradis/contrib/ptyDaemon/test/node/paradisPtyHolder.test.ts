@@ -64,6 +64,9 @@ const SCROLLBACK_LIMIT = 10 * 1024 * 1024;
 /** 題名を見に行く間隔。実装と同じ値。 */
 const TITLE_POLL_INTERVAL = 200;
 
+/** 終了を告げる前に出力の途切れを待つ時間。実装と同じ値。 */
+const DATA_FLUSH_TIMEOUT = 250;
+
 suite('ParadisPtyHolder', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -191,6 +194,26 @@ suite('ParadisPtyHolder', () => {
 				// 聞かれた時点で読むので、見張っていなくても古い値は返さない。
 				summaryWhileAway: 'changed while away',
 			},
+		);
+	});
+
+	test('終了は出力が途切れてから告げる。末尾を切り落とさない', async () => {
+		const { pty, holder } = create();
+		const exits: (number | undefined)[] = [];
+		store.add(holder.onDidExit(event => exits.push(event.code)));
+		holder.attach();
+
+		pty.quit(0);
+		// node-pty は終了イベントの後にも出してくる。ここで告げてしまうと、決まって末尾＝
+		// 結果が書かれている場所が切れる。
+		pty.emit('the answer is 42\n');
+		const beforeFlush = exits.length;
+
+		await timeout(DATA_FLUSH_TIMEOUT * 2);
+
+		assert.deepStrictEqual(
+			{ beforeFlush, exits, tail: holder.attach().frames.map(f => f.data).join('').endsWith('the answer is 42\n') },
+			{ beforeFlush: 0, exits: [0], tail: true },
 		);
 	});
 

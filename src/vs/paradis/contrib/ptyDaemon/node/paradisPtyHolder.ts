@@ -57,6 +57,16 @@ export interface IParadisPtyProcess {
 /** 題名を見に行く間隔。upstream の `TerminalProcess` と同じ。 */
 const TITLE_POLL_INTERVAL = 200;
 
+/**
+ * 終了を告げる前に、出力が途切れるのを待つ時間。upstream の `ShutdownConstants.DataFlushTimeout`
+ * と同じ 250ms。
+ *
+ * node-pty は終了イベントの後にもデータを出しきれないことがある (node-pty#72)。**待たずに終了を
+ * 告げると、最後の出力が切れる**。切れるのは決まって末尾＝結果が書かれている場所なので、
+ * 走り切らせる方針を採った以上ここを削ってはいけない。
+ */
+const DATA_FLUSH_TIMEOUT = 250;
+
 export class ParadisPtyHolder extends Disposable {
 
 	private readonly scrollback: ParadisPtyScrollback;
@@ -67,6 +77,12 @@ export class ParadisPtyHolder extends Disposable {
 	private attached = false;
 	private alive = true;
 	private exitCode: number | undefined;
+	private exitSignal: string | undefined;
+
+	/**
+	 * 終了を告げるのを待っている間の予約。出力が来るたびに取り直す（{@link queueExit}）。
+	 */
+	private readonly pendingExit = this._register(new MutableDisposable());
 
 	private cols: number;
 	private rows: number;
@@ -112,7 +128,8 @@ export class ParadisPtyHolder extends Disposable {
 			this.alive = false;
 			this.titleWatch.clear();
 			this.exitCode = event.exitCode;
-			this._onDidExit.fire({ code: event.exitCode, signal: event.signal === undefined ? undefined : String(event.signal) });
+			this.exitSignal = event.signal === undefined ? undefined : String(event.signal);
+			this.queueExit();
 		}));
 		this._register(toDisposable(() => {
 			if (this.alive) {
@@ -163,8 +180,22 @@ export class ParadisPtyHolder extends Disposable {
 		}
 	}
 
+	/**
+	 * 出力が途切れてから終了を告げる。**途切れないうちは何度でも先延ばしにする。**
+	 */
+	private queueExit(): void {
+		this.pendingExit.value = disposableTimeout(() => {
+			this.pendingExit.clear();
+			this._onDidExit.fire({ code: this.exitCode, signal: this.exitSignal });
+		}, DATA_FLUSH_TIMEOUT);
+	}
+
 	private handleData(data: string): void {
 		this.scrollback.handleData(data);
+		if (this.pendingExit.value) {
+			// 終了した後にも出てくる。出し切るまで告げるのを待つ。
+			this.queueExit();
+		}
 		if (!this.attached) {
 			// 誰も見ていない。**待たせずに走らせる。** 未確認として数えないので高水位に達さず、
 			// pty は止まらない。溢れたぶんは控えからこぼれ、こぼれたことは繋ぎ直しで伝える。

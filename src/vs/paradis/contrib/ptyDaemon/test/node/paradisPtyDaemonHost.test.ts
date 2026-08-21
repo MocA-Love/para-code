@@ -14,6 +14,7 @@
 // 手ぶらで終わる形になる。
 
 import assert from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -44,6 +45,9 @@ class FakePty implements IParadisPtyProcess {
 	quit(exitCode: number): void { this.exit.fire({ exitCode }); }
 }
 
+/** 終了を告げる前に出力の途切れを待つ時間。実装と同じ値。 */
+const DATA_FLUSH_TIMEOUT = 250;
+
 function request(metadata: string): IParadisPtySpawnRequest {
 	return { file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, metadata };
 }
@@ -64,7 +68,7 @@ suite('ParadisPtyDaemonHost', () => {
 
 	test('抱えたものを一覧で返し、預かりものは中身を見ずにそのまま返す', async () => {
 		const { host } = create();
-		const first = await host.spawn(request('{"space":"para"}'));
+		const first = (await host.spawn(request('{"space":"para"}'))).handle;
 		await host.spawn(request('second'));
 		await host.setMetadata(first, 'changed');
 
@@ -85,13 +89,14 @@ suite('ParadisPtyDaemonHost', () => {
 
 	test('終わったターミナルを勝手に捨てない。閉じている間に走り切った結果は戻ってから読める', async () => {
 		const { host, ptys } = create();
-		const handle = await host.spawn(request('build'));
+		const handle = (await host.spawn(request('build'))).handle;
 		await host.attach(handle);
 		await host.detach(handle);
 
 		// 閉じている間に走り切った。
 		ptys[0].emit('build finished\n');
 		ptys[0].quit(0);
+		await timeout(DATA_FLUSH_TIMEOUT * 2);
 
 		const afterExit = await host.list();
 		const attachment = await host.attach(handle);
@@ -116,7 +121,7 @@ suite('ParadisPtyDaemonHost', () => {
 
 	test('まだ生きているものを手放すときは殺してから外す', async () => {
 		const { host, ptys } = create();
-		const handle = await host.spawn(request('running'));
+		const handle = (await host.spawn(request('running'))).handle;
 
 		await host.release(handle);
 
@@ -165,13 +170,15 @@ suite('ParadisPtyDaemonHost', () => {
 		store.add(host.onDidChangeData(event => data.push(`${event.handle}:${event.data}`)));
 		store.add(host.onDidExit(event => exits.push(event.handle)));
 
-		const first = await host.spawn(request('a'));
-		const second = await host.spawn(request('b'));
+		const first = (await host.spawn(request('a'))).handle;
+		const second = (await host.spawn(request('b'))).handle;
 		await host.attach(first);
 		await host.attach(second);
 		ptys[0].emit('from first');
 		ptys[1].emit('from second');
 		ptys[1].quit(3);
+		// 終了は出力が途切れてから告げられる（末尾を切り落とさないため）。
+		await timeout(DATA_FLUSH_TIMEOUT * 2);
 
 		assert.deepStrictEqual({ data, exits }, { data: ['1:from first', '2:from second'], exits: [second] });
 	});

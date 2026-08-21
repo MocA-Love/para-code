@@ -42,6 +42,8 @@
 // {@link PARADIS_PTY_PROTOCOL_VERSION} を上げること。上げれば置き場所の名前が変わり、
 // 新旧が出会わなくなる (`paradisPtyDaemonPaths.ts`)。
 
+import { Event } from '../../../../base/common/event.js';
+
 /**
  * 話が通じる相手かを決める版。
  *
@@ -131,4 +133,41 @@ export interface IParadisPtyExitEvent {
 export interface IParadisPtyGreeting {
 	readonly protocolVersion: number;
 	readonly daemonPid: number;
+}
+
+/** 常駐と話すチャネルの名前。 */
+export const PARADIS_PTY_HOST_CHANNEL = 'paradisPtyHost';
+
+/**
+ * 常駐にできること。**これが凍結する面そのもの。**
+ *
+ * ここに VS Code の型が1つも出てこないことが、更新をまたいで繋ぎ直せる理由。増やすときは
+ * 省略可能な項目の追加だけにし、互換を壊すなら {@link PARADIS_PTY_PROTOCOL_VERSION} を上げる。
+ */
+export interface IParadisPtyHost {
+	readonly onDidChangeData: Event<IParadisPtyDataEvent>;
+	readonly onDidChangeTitle: Event<IParadisPtyTitleEvent>;
+	readonly onDidExit: Event<IParadisPtyExitEvent>;
+
+	hello(): Promise<IParadisPtyGreeting>;
+	list(): Promise<readonly IParadisPtySummary[]>;
+
+	/** 起こす。**要約ごと返す**のは、直後に pid が要るため（往復を1回に）。 */
+	spawn(request: IParadisPtySpawnRequest): Promise<IParadisPtySummary>;
+
+	/** 繋ぎ直す。控えを受け取り、以後の出力が流れ始める。 */
+	attach(handle: number): Promise<IParadisPtyAttachment>;
+	/** 見るのをやめる。**pty は止まらない。** */
+	detach(handle: number): Promise<void>;
+
+	input(handle: number, data: string): Promise<void>;
+	acknowledge(handle: number, charCount: number): Promise<void>;
+	resize(handle: number, cols: number, rows: number): Promise<void>;
+	setMetadata(handle: number, metadata: string): Promise<void>;
+	kill(handle: number, signal?: string): Promise<void>;
+	/** 抱えるのをやめる。終わったものを片付ける合図。 */
+	release(handle: number): Promise<void>;
+
+	setLayout(scopeId: string, layout: string): Promise<void>;
+	getLayout(scopeId: string): Promise<string | undefined>;
 }
