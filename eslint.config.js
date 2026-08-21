@@ -2405,6 +2405,11 @@ export default defineConfig(
 						'vs/sessions/contrib/*/~',
 						'vs/sessions/contrib/providers/*/~',
 						'vs/sessions/services/*/~',
+						// PARA-PATCH: agentHost プロバイダがセッション一覧タイトルからハーネス内部タグ
+						// （<command-name>等）を除去するヘルパー（paradisHumanizeAgentSessionTitle）を
+						// 呼ぶための共通型/関数import（common層のみ。末尾は既にcommonという末端レイヤー名
+						// なので'~'にせず'**'で完結させる）
+						'vs/paradis/contrib/agentSessionTitle/common/**',
 					]
 				},
 				{
