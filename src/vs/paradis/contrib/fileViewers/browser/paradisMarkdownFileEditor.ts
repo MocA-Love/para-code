@@ -69,7 +69,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	// 画像は data: で埋め込むので、`vscode-resource` を解決する service worker は要らない。
-	protected override get disableServiceWorker(): boolean {
+	protected override disableServiceWorkerFor(_resource: URI): boolean {
 		return true;
 	}
 

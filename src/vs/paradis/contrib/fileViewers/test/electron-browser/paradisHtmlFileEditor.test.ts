@@ -15,6 +15,8 @@ import { ITextModelService } from '../../../../../editor/common/services/resolve
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
+import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
@@ -32,15 +34,41 @@ class TestParadisHtmlFileEditor extends ParadisHtmlFileEditor {
 		return this.allowScripts;
 	}
 
-	render(text: string, resource: URI): string {
-		return this.renderDocument(text, resource, Object.create(null) as IOverlayWebview);
+	serviceWorkerDisabledFor(resource: URI): boolean {
+		return this.disableServiceWorkerFor(resource);
 	}
+
+	render(text: string, resource: URI): Promise<string> {
+		return Promise.resolve(this.renderDocument(text, resource, Object.create(null) as IOverlayWebview));
+	}
+}
+
+/** ローカルサーバに載せたことにして、決め打ちの base URL を返す shared process。 */
+const PREVIEW_BASE = 'http://127.0.0.1:56789/0123456789abcdef0123456789abcdef/';
+
+function createSharedProcessService(mount: (directory: string) => Promise<string> = () => Promise.resolve(PREVIEW_BASE)): ISharedProcessService {
+	return {
+		getChannel: () => ({
+			call: (_command: string, args: unknown) => mount(String((args as string[])[0])),
+			listen: () => { throw new Error('not used'); },
+		}),
+	} as unknown as ISharedProcessService;
+}
+
+/** ワークスペースフォルダーを1つだけ持つ context service。 */
+function createWorkspaceContextService(folder: URI | undefined): IWorkspaceContextService {
+	return {
+		getWorkspaceFolder: (resource: URI) => folder && resource.path.startsWith(`${folder.path}/`) ? { uri: folder } : null,
+	} as unknown as IWorkspaceContextService;
 }
 
 suite('ParadisHtmlFileEditor', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createGenerationEditor(): TestParadisHtmlFileEditor {
+	function createGenerationEditor(
+		sharedProcessService: ISharedProcessService = createSharedProcessService(),
+		workspaceFolder: URI | undefined = undefined,
+	): TestParadisHtmlFileEditor {
 		return disposables.add(new TestParadisHtmlFileEditor(
 			new TestEditorGroupView(1),
 			NullTelemetryService,
@@ -54,6 +82,8 @@ suite('ParadisHtmlFileEditor', () => {
 			new TestLayoutService(),
 			new TestConfigurationService(),
 			new TestNotificationService(),
+			sharedProcessService,
+			createWorkspaceContextService(workspaceFolder),
 		));
 	}
 
@@ -71,6 +101,8 @@ suite('ParadisHtmlFileEditor', () => {
 			new TestLayoutService(),
 			new TestConfigurationService(),
 			new TestNotificationService(),
+			createSharedProcessService(),
+			createWorkspaceContextService(undefined),
 		));
 	}
 
@@ -114,13 +146,13 @@ suite('ParadisHtmlFileEditor', () => {
 		});
 		ok(renderedHtml);
 		const document = new DOMParser().parseFromString(renderedHtml, 'text/html');
-		strictEqual(document.querySelector('base')?.getAttribute('href'), 'https://file+.vscode-resource.vscode-cdn.net/workspace/site/');
+		strictEqual(document.querySelector('base')?.getAttribute('href'), PREVIEW_BASE);
 		strictEqual(document.querySelector('img')?.getAttribute('src'), './assets/logo.png');
 	});
 
 	suite('renderDocument generation contract', () => {
 
-		test('preserves the author CSP and external script URL', () => {
+		test('preserves the author CSP and external script URL', async () => {
 			const editor = createGenerationEditor();
 			const source = `<!DOCTYPE html>
 <html>
@@ -131,7 +163,7 @@ suite('ParadisHtmlFileEditor', () => {
 <body></body>
 </html>`;
 
-			const document = new DOMParser().parseFromString(editor.render(source, URI.file('/workspace/site/index.html')), 'text/html');
+			const document = new DOMParser().parseFromString(await editor.render(source, URI.file('/workspace/site/index.html')), 'text/html');
 			const csp = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
 			const externalScript = document.querySelector('script[src]');
 
@@ -140,11 +172,16 @@ suite('ParadisHtmlFileEditor', () => {
 			strictEqual(externalScript?.getAttribute('src'), 'https://trusted.example/app.js');
 		});
 
-		test('resolves relative document assets from the viewed file directory', () => {
-			const editor = createGenerationEditor();
+		test('resolves relative document assets through the local preview server', async () => {
+			// ワークスペースフォルダーごと載せるので、`../` の参照も URL のトークンの内側に収まる。
+			let mounted: string | undefined;
+			const editor = createGenerationEditor(
+				createSharedProcessService(directory => { mounted = directory; return Promise.resolve(PREVIEW_BASE); }),
+				URI.file('/workspace'));
 			const source = '<main><img id="logo" src="./assets/logo.png"><a id="guide" href="../guide.html">Guide</a></main>';
 
-			const document = new DOMParser().parseFromString(editor.render(source, URI.file('/workspace/site/index.html')), 'text/html');
+			const document = new DOMParser().parseFromString(await editor.render(source, URI.file('/workspace/site/index.html')), 'text/html');
+			strictEqual(mounted, URI.file('/workspace').fsPath);
 			const base = document.querySelector('base');
 			const image = document.querySelector<HTMLImageElement>('#logo');
 			const link = document.querySelector<HTMLAnchorElement>('#guide');
@@ -152,9 +189,34 @@ suite('ParadisHtmlFileEditor', () => {
 			ok(base);
 			ok(image);
 			ok(link);
-			strictEqual(base.getAttribute('href'), 'https://file+.vscode-resource.vscode-cdn.net/workspace/site/');
-			strictEqual(new URL(image.getAttribute('src')!, base.href).toString(), 'https://file+.vscode-resource.vscode-cdn.net/workspace/site/assets/logo.png');
-			strictEqual(new URL(link.getAttribute('href')!, base.href).toString(), 'https://file+.vscode-resource.vscode-cdn.net/workspace/guide.html');
+			strictEqual(base.getAttribute('href'), `${PREVIEW_BASE}site/`);
+			strictEqual(new URL(image.getAttribute('src')!, base.href).toString(), `${PREVIEW_BASE}site/assets/logo.png`);
+			strictEqual(new URL(link.getAttribute('href')!, base.href).toString(), `${PREVIEW_BASE}guide.html`);
+		});
+
+		test('keeps the webview resource url for resources the local server cannot reach', async () => {
+			const editor = createGenerationEditor();
+			const remote = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+box', path: '/home/user/site/index.html' });
+
+			strictEqual(editor.serviceWorkerDisabledFor(remote), false);
+			const document = new DOMParser().parseFromString(await editor.render('<img src="a.png">', remote), 'text/html');
+			const href = document.querySelector('base')?.getAttribute('href');
+
+			ok(href?.startsWith('https://'), String(href));
+			ok(href?.includes('vscode-resource'), String(href));
+			ok(href?.endsWith('/home/user/site/'), String(href));
+		});
+
+		test('falls back to the service worker once the local server cannot be reached', async () => {
+			const editor = createGenerationEditor(createSharedProcessService(() => Promise.reject(new Error('shared process is gone'))));
+			const resource = URI.file('/workspace/site/index.html');
+
+			strictEqual(editor.serviceWorkerDisabledFor(resource), true);
+			const document = new DOMParser().parseFromString(await editor.render('<img src="a.png">', resource), 'text/html');
+
+			strictEqual(document.querySelector('base')?.getAttribute('href'), 'https://file+.vscode-resource.vscode-cdn.net/workspace/site/');
+			// 次に描くときは service worker のある webview へ作り直させる。
+			strictEqual(editor.serviceWorkerDisabledFor(resource), false);
 		});
 	});
 });

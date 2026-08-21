@@ -155,6 +155,8 @@ import { registerParadisNotifications } from '../../../paradis/contrib/notificat
 import { registerParadisAivisMuteBridge } from '../../../paradis/contrib/notifications/node/paradisAivisMuteBridgeChannel.js';
 // PARA-PATCH: Excelビューア/差分用の xlsx パースバックエンド（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
 import { registerParadisSpreadsheet } from '../../../paradis/contrib/fileViewers/node/paradisSpreadsheetChannel.js';
+// PARA-PATCH: HTMLプレビューの配信サーバ（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
+import { registerParadisHtmlPreview } from '../../../paradis/contrib/fileViewers/node/paradisHtmlPreviewChannel.js';
 // PARA-PATCH: worktree作成用の git 実行バックエンド（fork独自、src/vs/paradis/contrib/workspaceSwitch/ 参照）
 import { registerParadisWorktreeGit } from '../../../paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.js';
 // PARA-PATCH: モバイルリレー接続（fork独自、src/vs/paradis/contrib/mobileRelay/ 参照）。リレーへのoutbound WSSと
@@ -564,6 +566,10 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: Excelビューア/差分の xlsx パースバックエンド（exceljs。rendererでは動かないためshared processで実行）
 		this._register(registerParadisSpreadsheet(this.server));
+
+		// PARA-PATCH: HTMLプレビューが読むファイルを 127.0.0.1 だけに配るローカルサーバ
+		// （最初にプレビューを開くまで listen しない）
+		this._register(registerParadisHtmlPreview(this.server));
 
 		// PARA-PATCH: worktree作成用の git 実行バックエンド（git worktree add / ブランチ列挙）
 		this._register(registerParadisWorktreeGit(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
