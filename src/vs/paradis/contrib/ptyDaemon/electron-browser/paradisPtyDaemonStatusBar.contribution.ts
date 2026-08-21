@@ -110,13 +110,31 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 			// main と話せないのは、まだ立ち上がっていないときか、閉じている最中。次の周期で拾う。
 			return;
 		}
-		if (!status || this._store.isDisposed) {
-			// 返事が来なかった。前の値を出したまま、次の周期でもう一度聞く。
+		if (this._store.isDisposed) {
+			return;
+		}
+		if (!status) {
+			// 返事が来なかった。前の値は出したまま次の周期でもう一度聞くが、**本数だけは
+			// 分からないものへ倒す**。聞けていないのに古い数字を残すと、停止の確認が
+			// 「いま抱えているターミナルはありません。」と断言したまま押させ得る。
+			this.forgetTerminalCount();
 			return;
 		}
 		this.status = status;
 		this.renderEntry(status);
 		this.popover.value?.update(status);
+	}
+
+	/**
+	 * 本数を「分からない」へ倒す。数える手段を失っただけで、抱えていないとは限らない。
+	 */
+	private forgetTerminalCount(): void {
+		if (!this.status || this.status.terminalCount === undefined) {
+			return;
+		}
+		this.status = { ...this.status, terminalCount: undefined, spaces: [] };
+		this.renderEntry(this.status);
+		this.popover.value?.update(this.status);
 	}
 
 	private renderEntry(status: IParadisPtyDaemonStatus): void {
