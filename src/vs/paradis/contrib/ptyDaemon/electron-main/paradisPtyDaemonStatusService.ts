@@ -20,9 +20,9 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
-import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
-import { paradisAuthenticateDaemon } from '../node/paradisPtyDaemonAuth.js';
-import { paradisAskDaemonToStop, paradisConnectToDaemon } from '../node/paradisPtyDaemonStop.js';
+import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription } from '../common/paradisPtyDaemonControl.js';
+import { paradisOpenDaemonControl } from '../node/paradisPtyDaemonControlClient.js';
+import { paradisAskDaemonToStop } from '../node/paradisPtyDaemonStop.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -129,7 +129,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 * 定期更新の待ちが積み上がってパネルが古い値で凍る。
 	 */
 	private async describeDaemon(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonDescription> {
-		const control = await this.ensureControl(record);
+		const { control } = await this.ensureControl(record);
 
 		// **同じ問いを重ねない。** 上限は待つのをやめるだけで、投げた要求は相手に残る
 		// (`raceTimeout` は元の約束を止めない)。待たずに次を投げると、固まっている常駐の
@@ -161,31 +161,32 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 *
 	 * pid が変わったら別の常駐なので、前の接続は捨てる。名乗り合いも毎回通す (繋がることは
 	 * 身元の証明にならない)。
+	 *
+	 * **話し相手そのものを返さず、入れ物に入れて返す。** 理由は
+	 * {@link paradisOpenDaemonControl} の冒頭に書いた。ここを `Promise<IParadisPtyDaemonControl>`
+	 * にしていたために、実機で状態パネルが最初の値のまま凍り続けた。
 	 */
-	private async ensureControl(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonControl> {
+	private async ensureControl(record: IParadisPtyDaemonRecord): Promise<{ readonly control: IParadisPtyDaemonControl }> {
 		if (this.control && this.control.pid === record.pid) {
-			return this.control.service;
+			return { control: this.control.service };
 		}
 		this.disposeControl();
 
-		const socket = await paradisConnectToDaemon(record.socketPath);
-		if (!socket) {
-			throw new Error(`nothing answered at ${record.socketPath}`);
+		const opened = await paradisOpenDaemonControl(record.socketPath, record.token);
+		if (!opened.ok) {
+			throw new Error(opened.reason === 'unreachable'
+				? `nothing answered at ${record.socketPath}`
+				: `whatever answers at ${record.socketPath} is not one of ours`);
 		}
-		const client = SocketClient.fromSocket(socket, 'paradis-daemon-status');
-		if (!await paradisAuthenticateDaemon(client, record.token)) {
-			client.dispose();
-			throw new Error(`whatever answers at ${record.socketPath} is not one of ours`);
-		}
-		const service = ProxyChannel.toService<IParadisPtyDaemonControl>(client.getChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL));
-		this.control = { client, service, pid: record.pid };
+		const { client, control } = opened;
+		this.control = { client, service: control, pid: record.pid };
 		// 相手が落ちたら捨てる。掴んだままだと、次の常駐へ繋ぎ直さずに黙って失敗し続ける。
 		client.onDidDispose(() => {
 			if (this.control?.client === client) {
 				this.control = undefined;
 			}
 		});
-		return service;
+		return { control };
 	}
 
 	private disposeControl(): void {
