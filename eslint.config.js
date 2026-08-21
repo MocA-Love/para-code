@@ -2082,6 +2082,9 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts が接続先の Codex state DB を答えるチャネル
 						// (registerParadisCodexTerminalTitleForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/codexTerminalTitle/~',
+						// PARA-PATCH: serverServices.ts が接続先のファイルを 127.0.0.1 に配るチャネル
+						// (registerParadisHtmlPreviewForServer) を登録するための逆方向 import
+						'vs/paradis/contrib/fileViewers/~',
 						// PARA-PATCH: serverServices.ts が接続先で ripgrep を動かすチャネル
 						// (registerParadisRemoteSearchForServer) を登録するための逆方向 import。
 						// mobileRelay 全体（ペアリング・E2E暗号・リレー本体等）を許可すると誤 import を

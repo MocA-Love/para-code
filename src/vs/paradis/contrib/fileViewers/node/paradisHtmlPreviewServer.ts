@@ -36,7 +36,7 @@ import { createReadStream, promises as fs } from 'fs';
 import { randomBytes } from 'crypto';
 import { extname, join, sep } from '../../../../base/common/path.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IParadisHtmlPreviewService } from '../common/paradisHtmlPreview.js';
+import { IParadisHtmlPreviewService, IParadisPreviewMount } from '../common/paradisHtmlPreview.js';
 
 /** 同時に載せておくフォルダーの上限。超えたら古いものから外す。 */
 const PARADIS_HTML_PREVIEW_MAX_MOUNTS = 64;
@@ -133,7 +133,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 	/** トークン → 実パス。 */
 	private readonly _rootByToken = new Map<string, string>();
 
-	async mount(directory: string): Promise<string> {
+	async mount(directory: string): Promise<IParadisPreviewMount> {
 		const root = await fs.realpath(directory);
 		const port = await this._listen();
 
@@ -148,7 +148,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		this._tokenByRoot.set(root, token);
 		this._evictOldMounts();
 
-		return `http://127.0.0.1:${port}/${token}/`;
+		return { port, token };
 	}
 
 	override dispose(): void {

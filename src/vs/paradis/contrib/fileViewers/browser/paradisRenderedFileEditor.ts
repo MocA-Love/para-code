@@ -509,6 +509,22 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		return generation === this._renderGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource);
 	}
 
+	/**
+	 * サブクラスから描き直しを頼む口。
+	 *
+	 * 描画の途中で「この作り方では表示できない」と分かったとき（配信サーバに載せられなかった等）に
+	 * 使う。**サブクラスが自分で蹴らないと誰も蹴らない** — 失敗しても `setHtml` 自体は成功するので、
+	 * 白紙検知は鳴らないため。
+	 */
+	protected requestRerender(): void {
+		// いまの内容は当てにならないので、同一内容の抑止を外してから描き直す。
+		this._renderedSource = undefined;
+		const resource = this._currentResource;
+		if (resource && this._webviewClaimed && this._mode === 'rendered') {
+			this._renderResourceInBackground(resource);
+		}
+	}
+
 	/** UI イベント由来の再描画。失敗時は現在の HTML を保持し、未処理の Promise を残さない。 */
 	private _renderResourceInBackground(resource: URI): void {
 		this.renderResource(resource, CancellationToken.None).catch(onUnexpectedError);

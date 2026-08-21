@@ -26,6 +26,8 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
+import { paradisPreviewOrigins, resolveParadisViewerDocumentUrl, resolveParadisViewerLibBase } from './paradisViewerAssets.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
@@ -86,6 +88,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	constructor(
 		group: IEditorGroup,
+		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
@@ -111,6 +114,23 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const invocationEpoch = ++this._inputEpoch;
 		const previousInput = this._input;
 		const previousOptions = this._options;
+		// 配信先はここで決めておく（描画経路で待つと追い越し制御の順序が変わる）。失敗しても
+		// 従来の webview リソース経路に倒れるだけなので、結果は見ずに済ませる。
+		if (input instanceof ParadisDocxInput && input.resource) {
+			const resource = input.resource;
+			await this._resolveLibBase();
+			const documentUrl = this._canServe(resource) ? await resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : undefined;
+			if (this._canServe(resource) && documentUrl === undefined) {
+				// 文書だけ載らなかった。この webview の作り方では読めないので、以後サーバを使わない。
+				this._documentServeFailed = true;
+			}
+			// **エポックで守ること。** 追い越された古い入力の URL を後から代入すると、
+			// 新しく開いたファイルの位置に前のファイルが表示される。
+			if (invocationEpoch !== this._inputEpoch) {
+				return;
+			}
+			this._documentUrl = documentUrl;
+		}
 		await super.setInput(input, options, context, token);
 		if (this._disposed || invocationEpoch !== this._inputEpoch) {
 			return;
@@ -163,12 +183,70 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._updateWebviewPlacement();
 	}
 
+	/**
+	 * 同梱ライブラリの置き場。**ペインにつき一度だけ**決める（アプリの中にあるので入力に依らない）。
+	 * 文書の URL は入力ごとに解決する（使い回されるペインで焼き付けると、2件目に1件目が出る）。
+	 *
+	 * 解決は**描画経路からは待たない。** 描画の入口で待つと、そこにある世代・エポックによる
+	 * 追い越し制御の順序が変わってしまう（実際にテストが落ちた）。入力を受け取った時点と
+	 * placement から先に決めておき、描画中は結果を同期で読むだけにする。
+	 */
+	private _libBase: Promise<string | undefined> | undefined;
+	private _libBaseResolved = false;
+	private _resolvedLibBase: string | undefined;
+	/** いまの webview を作ったときに service worker を切ったか。要否が変わったら作り直す。 */
+	private _webviewServiceWorkerDisabled = false;
+	/** 入力ごとに解決した文書の URL（配信サーバから出せないときは undefined）。 */
+	private _documentUrl: string | undefined;
+	/** webview とその貸し出し origin。作り直せるようにまとめて捨てられる形で持つ。 */
+	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
+
+	private async _resolveLibBase(): Promise<string | undefined> {
+		this._libBase ??= resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT));
+		const libBase = await this._libBase;
+		this._resolvedLibBase = libBase;
+		this._libBaseResolved = true;
+		return libBase;
+	}
+
+	/**
+	 * 文書だけ載せられなかったことがあるか。
+	 *
+	 * ライブラリは載ったが文書の mount だけ失敗すると、「service worker を切った webview に、
+	 * service worker でしか解決できない URL を渡す」状態になり、ライブラリすら読めなくなる。
+	 * **真偽値を毎回計算し直すと placement 側（文書 URL を知らない）と食い違って作り直しが
+	 * 往復する**ので、一度失敗したらラッチして以後はサーバを使わない。
+	 */
+	private _documentServeFailed = false;
+
+	/** このリソースを配信サーバから出せるか（ライブラリを載せられて、文書が手元にある）。 */
+	private _canServe(resource: URI): boolean {
+		return !!this._resolvedLibBase && !this._documentServeFailed && resource.scheme === Schemas.file;
+	}
+
+	private _disposeWebview(): void {
+		if (this._webview && this._webviewClaimed) {
+			this._webview.release(this);
+		}
+		this._webviewClaimed = false;
+		this._webview = undefined;
+		this._webviewStore.clear();
+	}
+
 	private _ensureWebview(resource: URI): IOverlayWebview {
+		const wantsServiceWorkerDisabled = this._canServe(resource);
+		if (this._webview && this._webviewServiceWorkerDisabled !== wantsServiceWorkerDisabled) {
+			// 生成時オプションなので、要否が変わったら作り直すしかない（別のファイルを開いたとき等）。
+			this._disposeWebview();
+		}
 		if (this._webview) {
 			return this._webview;
 		}
+		const store = new DisposableStore();
+		this._webviewStore.value = store;
+		this._webviewServiceWorkerDisabled = wantsServiceWorkerDisabled;
 		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。
-		const originLease = this._register(this._originPool.acquire(PARADIS_DOCX_EDITOR_ID));
+		const originLease = store.add(this._originPool.acquire(PARADIS_DOCX_EDITOR_ID));
 		const webview = this._webviewService.createWebviewOverlay({
 			origin: originLease.origin,
 			title: undefined,
@@ -179,7 +257,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
 				// （paradisRenderedFileEditor.ts と同じ「間欠的に白紙になる」フィールド報告の主因）。
 				// 生かしたまま隠すことでその窓を無くす。
-				retainContextWhenHidden: true
+				retainContextWhenHidden: true,
+				// ローカルサーバから配れるなら service worker は要らない（60秒待ちの経路に入らない）。
+				disableServiceWorker: wantsServiceWorkerDisabled
 			},
 			contentOptions: {
 				allowScripts: true,
@@ -188,7 +268,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			extension: undefined
 		});
 		this._webview = webview;
-		this._register(webview);
+		store.add(webview);
 		return webview;
 	}
 
@@ -204,6 +284,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number): Promise<void> {
 		const webview = this._ensureWebview(resource);
+		// `_ensureWebview` は要否が変わると webview を捨てるので、claim を取り戻しておく
+		// （PDF と同じ。setInput の呼び出し順に頼らない）。
+		this._updateWebviewPlacement();
 		webview.contentOptions = {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
@@ -249,12 +332,19 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	private _buildHtml(resource: URI, inlineData?: string): string {
+		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
+		// service worker を切った webview に解決できない URL を渡すことになる。
+		const served = this._webviewServiceWorkerDisabled && this._documentUrl !== undefined;
 		const nonce = generateUuid();
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		const docxUrl = inlineData
 			? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${inlineData}`
-			: asWebviewUri(resource, remoteInfo).toString(true);
-		const libBase = asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
+			: (served ? this._documentUrl! : asWebviewUri(resource, remoteInfo).toString(true));
+		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
+		// CSP は実際に使うポートまで絞る（`http://127.0.0.1:*` だと他プロセスのサーバまで許してしまう）。
+		const serverOrigin = served ? paradisPreviewOrigins(libBase, docxUrl) : '';
+		// 空のときは CSP に余分な空白を残さない。
+		const serverSrc = serverOrigin ? ` ${serverOrigin}` : '';
 
 		// CSP: スクリプトは nonce 付き inline と webview リソース(https:)のみ。docx-preview が本文中に
 		// 埋め込む style は要素インライン + 動的 <style> なので style-src に 'unsafe-inline' を許可する
@@ -270,7 +360,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	後方互換ルールがあるため、nonce と unsafe-inline を併記しても nonce の無い動的 style は
 	ブロックされる(sheet=null になり書式が丸ごと無効化される)。ここでは nonce を使わず
 	'unsafe-inline' のみを指定し、docx-preview 由来のスタイルも含めて確実に適用させる。 -->
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:; style-src 'unsafe-inline'; img-src blob: data: https:; font-src https: data: blob:; connect-src https: blob: data:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:${serverSrc}; style-src 'unsafe-inline'; img-src blob: data: https:; font-src https:${serverSrc} data: blob:; connect-src https:${serverSrc} blob: data:;">
 	<style nonce="${nonce}">
 		/* docx-preview はページ要素(section.docx)に「width(=ページ幅) + padding(=左右余白)」を設定する
 		("createPageElement": ignoreWidth未指定時に r.style.width = pageSize.width、余白は paddingLeft/Right)。
@@ -424,6 +514,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 				this._webview.release(this);
 				this._webviewClaimed = false;
 			}
+			return;
+		}
+		if (!this._webview && !this._libBaseResolved) {
+			// 配信先が決まる前に作ると service worker の要否を間違える。**ここで自分で解決を蹴ること。**
+			// 描画側に任せると、描画は claim 済みでないと走らないので、初回は誰も蹴らずに白紙のまま止まる。
+			void this._resolveLibBase().then(() => this._updateWebviewPlacement());
 			return;
 		}
 		const webview = this._ensureWebview(resource);

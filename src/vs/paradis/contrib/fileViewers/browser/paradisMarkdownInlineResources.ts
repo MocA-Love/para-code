@@ -189,31 +189,36 @@ export async function inlineParadisMarkdownMedia(
 	const doc = new DOMParser().parseFromString(rendered as string, 'text/html');
 	const elements = collectMediaElements(doc.body);
 
-	let inlined = 0;
-	let skipped = 0;
-	let totalBytes = 0;
-	// 同じ画像を何度も貼っている文書で、読み込みと base64 化を1回で済ませる。
-	const cache = new Map<string, string | ParadisMediaFailure>();
-
+	// 先に「どの要素がどのファイルを指すか」を出し切ってから、まとめて読む。
+	// 1枚ずつ順番に読むと、SSH 越しでは画像の枚数だけ往復が積み上がり、そのぶん最初の描画が
+	// 遅れる（ローカルでは誤差だが、遠いほど効く）。
+	const wanted: { readonly element: Element; readonly src: string; readonly target: URI }[] = [];
 	for (const element of elements) {
-		if (token.isCancellationRequested) {
-			break;
-		}
 		const src = element.getAttribute('src');
 		if (!src || isAlreadyLoadable(src)) {
 			continue;
 		}
-
 		const target = resolveParadisMediaUri(src, documentUri, workspaceFolder);
-		if (!target) {
-			continue;
+		if (target) {
+			wanted.push({ element, src, target });
 		}
+	}
 
-		const key = target.toString();
-		let resolved = cache.get(key);
+	// 同じ画像を何度も貼っている文書でも、読み込みと base64 化は1回で済ませる。
+	const cache = await readMediaInParallel(wanted.map(item => item.target), fileService, limits, token);
+
+	let inlined = 0;
+	let skipped = 0;
+	let totalBytes = 0;
+
+	for (const { element, src, target } of wanted) {
+		if (token.isCancellationRequested) {
+			break;
+		}
+		let resolved = cache.get(target.toString());
 		if (resolved === undefined) {
-			resolved = await readAsDataUri(target, fileService, limits);
-			cache.set(key, resolved);
+			// 予算切れで読まなかった、またはキャンセルされた。どちらも埋め込まない扱いにする。
+			resolved = 'too-large';
 		}
 
 		// 予算は「読んだ量」ではなく「埋め込んだ量」で数える。同じ画像を何度も貼っている文書では
@@ -242,6 +247,44 @@ export async function inlineParadisMarkdownMedia(
 	}
 
 	return { html: doc.body.innerHTML, inlined, skipped };
+}
+
+/** 一度に走らせる読み込みの数。遠いファイルシステムで往復を重ねないための並列度。 */
+const PARADIS_INLINE_MEDIA_CONCURRENCY = 8;
+
+/**
+ * 重複を除いた対象をまとめて読み、URI 文字列で引ける表にして返す。
+ *
+ * 並列度を上げると往復は隠れるが、無制限に投げるとリモートのファイルシステムを詰まらせるので
+ * 上限を設ける。読み込み自体は失敗しても投げない（結果に理由が入る）。
+ */
+async function readMediaInParallel(
+	targets: readonly URI[],
+	fileService: IFileService,
+	limits: IParadisInlineMediaLimits,
+	token: CancellationToken,
+): Promise<Map<string, string | ParadisMediaFailure>> {
+	const unique = [...new Set(targets.map(target => target.toString()))];
+	const results = new Map<string, string | ParadisMediaFailure>();
+	let next = 0;
+	// 読んだ量。**予算を超えたら読むのをやめる。** 並列にしたぶん、止めないと予算外の画像まで
+	// 全部メモリに載せてしまう（1枚の上限が 8MiB なので、枚数次第で数百MBになる）。
+	let readBytes = 0;
+
+	const worker = async () => {
+		while (next < unique.length && !token.isCancellationRequested && readBytes < limits.maxBytesTotal) {
+			const key = unique[next++];
+			const resolved = await readAsDataUri(URI.parse(key), fileService, limits);
+			if (resolved !== 'missing' && resolved !== 'too-large') {
+				readBytes += resolved.length;
+			}
+			results.set(key, resolved);
+		}
+	};
+
+	await Promise.all(
+		Array.from({ length: Math.min(PARADIS_INLINE_MEDIA_CONCURRENCY, unique.length) }, () => worker()));
+	return results;
 }
 
 /** 1ファイルを読んで data: URI にする。読めない・大きすぎるときは理由を返す。 */

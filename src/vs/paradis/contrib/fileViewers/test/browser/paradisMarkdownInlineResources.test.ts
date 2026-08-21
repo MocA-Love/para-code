@@ -26,12 +26,52 @@ suite('paradisMarkdownInlineResources', () => {
 	// 1x1 の透明 GIF。中身は問わないが、base64 の往復がそのまま確かめられる大きさにしておく。
 	const GIF = VSBuffer.fromString('GIF89a-tiny');
 
-	/** 実際に何回ディスクを読んだかを数えるためだけの provider。挙動は素のものと同じ。 */
+	/**
+	 * 読み込みの回数を数え、必要なら途中で止められる provider。挙動は素のものと同じ。
+	 * 「同時に何本走ったか」を見るために、止めている間の本数を数える。
+	 */
 	class CountingFileSystemProvider extends InMemoryFileSystemProvider {
 		reads = 0;
+		inFlight = 0;
+		private _gate: Promise<void> | undefined;
+		private _open: (() => void) | undefined;
+		private _started: (() => void) | undefined;
+		private _startedTarget = 0;
+
+		/** これ以降の読み込みを `releaseReads()` まで待たせる。 */
+		blockReads(): void {
+			this._gate = new Promise<void>(resolve => { this._open = resolve; });
+		}
+
+		releaseReads(): void {
+			this._open?.();
+			this._gate = undefined;
+			this._open = undefined;
+		}
+
+		/** `count` 本の読み込みが同時に始まるまで待つ。 */
+		whenReadsStarted(count: number): Promise<void> {
+			if (this.inFlight >= count) {
+				return Promise.resolve();
+			}
+			this._startedTarget = count;
+			return new Promise<void>(resolve => { this._started = resolve; });
+		}
+
 		override async readFile(resource: URI): Promise<Uint8Array> {
 			this.reads++;
-			return super.readFile(resource);
+			this.inFlight++;
+			if (this._startedTarget > 0 && this.inFlight >= this._startedTarget) {
+				this._started?.();
+				this._started = undefined;
+				this._startedTarget = 0;
+			}
+			try {
+				await this._gate;
+				return await super.readFile(resource);
+			} finally {
+				this.inFlight--;
+			}
 		}
 	}
 
@@ -142,6 +182,26 @@ suite('paradisMarkdownInlineResources', () => {
 
 			strictEqual(result.inlined, 1);
 			strictEqual(result.skipped, 1);
+		});
+
+		test('reads the images at the same time instead of one after another', async () => {
+			// 遠いファイルシステムでは、読み込みが直列だと枚数だけ往復が積み上がる。
+			const disposables = store.add(new DisposableStore());
+			const files: [string, VSBuffer][] = [];
+			for (let index = 0; index < 6; index++) {
+				files.push([`/repo/docs/img${index}.png`, GIF]);
+			}
+			const { fileService, provider } = await createFileService(disposables, files);
+			provider.blockReads();
+
+			const html = files.map((_, index) => `<img src="img${index}.png">`).join('');
+			const pending = inlineParadisMarkdownMedia(html, DOC, FOLDER, fileService, CancellationToken.None);
+
+			await provider.whenReadsStarted(6);
+			strictEqual(provider.inFlight, 6);
+			provider.releaseReads();
+
+			strictEqual((await pending).inlined, 6);
 		});
 
 		test('reads a repeated image only once', async () => {

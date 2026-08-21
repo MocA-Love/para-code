@@ -37,14 +37,45 @@
 // 実測でも default session の登録は382件すべてが `vscode-webview://` だった。`storages` を
 // service worker だけに絞っているので、同じ origin の localStorage 等は残る（これも実測で確認）。
 //
-// なぜ「起動ごとに1回」で、しかも最初のウィンドウより前なのか:
+// なぜ最初のウィンドウより前なのか:
 // 消してよいのは「まだ誰も使っていない登録」だけ。ウィンドウが開いたあとに消すと、復元された
 // タブが登録したばかりの worker を巻き込み、直そうとしている白紙を自分で作ってしまう。
-// 起動直後なら生きている webview は1つも無い。webview 側は次に開かれたときに登録し直すので、
-// 失うのは配信キャッシュだけで機能的な影響は無い。
+// 起動直後なら生きている webview は1つも無い。
+//
+// なぜ「一度だけ」なのか（2026-08-21 に毎回から変更）:
+// 掃除は「溜まってしまった登録を捨てる」ための後始末であって、常時必要な処置ではない。増える
+// 経路はもう塞がっている — upstream の webview は origin を保存して使い回すか service worker を
+// 使わないかのどちらかで、fork のビューアも origin を使い回し、Markdown とローカル HTML は
+// service worker 自体を使わなくなった。
+//
+// 一方で毎回消す副作用は残る。**消すということは、起動後に最初に開いた webview が必ず
+// 「登録ゼロからのインストール」を踏むということ**で、実機で観測した60秒停止が起きるのは
+// まさにその瞬間だった（`index.html` / `fake.html` の読み込みが止まる）。守る相手がいないのに
+// 一番危ない瞬間を毎回自分で作っていることになるため、済んだ profile では二度と実行しない。
+//
+// 版番号で管理する理由: 将来また掃除が必要になったときに、番号を上げるだけでもう一度だけ走らせ
+// られるようにするため。
 
 import { raceTimeout } from '../../../../base/common/async.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+
+/**
+ * 掃除を済ませたことを覚えておく最小の入れ物。main プロセスの state をそのまま渡せる形にして、
+ * テストからは素の Map で差し替えられるようにする。
+ */
+export interface IParadisWebviewServiceWorkerResetLedger {
+	getItem<T>(key: string, defaultValue: T): T;
+	setItem(key: string, data?: object | string | number | boolean | undefined | null): void;
+}
+
+/** 済み印のキー。 */
+export const PARADIS_SERVICE_WORKER_RESET_KEY = 'paradis.webviewServiceWorkers.clearedVersion';
+
+/**
+ * 掃除の版。**上げるともう一度だけ全 profile で走る。** 上げるのは、登録が再び溜まる不具合を
+ * 出してしまったときだけにすること。
+ */
+export const PARADIS_SERVICE_WORKER_RESET_VERSION = 1;
 
 /**
  * 掃除に許す時間。起動シーケンスを止めて待つ以上、無制限には待てない。溜まった登録が
@@ -59,16 +90,28 @@ const PARADIS_SERVICE_WORKER_RESET_TIMEOUT_MS = 5000;
  *
  * @param targetSession ワークベンチのウィンドウが使うセッション（`session.defaultSession`）
  */
-export async function paradisResetWebviewServiceWorkers(targetSession: Electron.Session, logService: ILogService): Promise<void> {
+export async function paradisResetWebviewServiceWorkers(
+	targetSession: Electron.Session,
+	logService: ILogService,
+	ledger: IParadisWebviewServiceWorkerResetLedger,
+	// 待ち時間はテストから縮められるようにする（既定は本番の値）。
+	timeoutMs: number = PARADIS_SERVICE_WORKER_RESET_TIMEOUT_MS,
+): Promise<void> {
+	if (ledger.getItem<number>(PARADIS_SERVICE_WORKER_RESET_KEY, 0) >= PARADIS_SERVICE_WORKER_RESET_VERSION) {
+		return;
+	}
 	try {
 		// `clearStorageData` は `Promise<void>` なので、そのまま渡すと解決値もタイムアウトも
 		// `undefined` になって区別できない。完了を真値に写してから渡す。
 		const cleared = await raceTimeout(
 			targetSession.clearStorageData({ storages: ['serviceworkers'] }).then(() => true),
-			PARADIS_SERVICE_WORKER_RESET_TIMEOUT_MS,
-			() => logService.warn(`[ParadisWebviewServiceWorkerReset] clearing webview service worker registrations did not finish within ${PARADIS_SERVICE_WORKER_RESET_TIMEOUT_MS}ms, continuing startup`)
+			timeoutMs,
+			() => logService.warn(`[ParadisWebviewServiceWorkerReset] clearing webview service worker registrations did not finish within ${timeoutMs}ms, continuing startup`)
 		);
 		if (cleared) {
+			// 済み印は消えたときだけ立てる。時間切れで消しきれていない可能性がある回を「済み」に
+			// してしまうと、溜まったままの profile が二度と掃除されなくなる。
+			ledger.setItem(PARADIS_SERVICE_WORKER_RESET_KEY, PARADIS_SERVICE_WORKER_RESET_VERSION);
 			logService.trace('[ParadisWebviewServiceWorkerReset] cleared the webview service worker registrations left over from previous runs');
 		}
 	} catch (error) {
