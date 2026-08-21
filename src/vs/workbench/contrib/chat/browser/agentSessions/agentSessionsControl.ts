@@ -32,7 +32,7 @@ import { RenderIndentGuides, TreeFindMode } from '../../../../../base/browser/ui
 import { IAgentSessionsService } from './agentSessionsService.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
 import { IListStyles } from '../../../../../base/browser/ui/list/listWidget.js';
-import { IStyleOverride } from '../../../../../platform/theme/browser/defaultStyles.js';
+import { IStyleOverride, defaultFindWidgetStyles, defaultToggleStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
 import { IAgentSessionsControl } from './agentSessions.js';
 import { HoverPosition } from '../../../../../base/browser/ui/hover/hoverWidget.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -302,6 +302,17 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 				multipleSelectionSupport: true,
 				findWidgetEnabled: true,
 				defaultFindMode: TreeFindMode.Filter,
+				// allow-any-unicode-next-line
+				// PARA-PATCH: 既定のトグルボタン枠線が入力欄の枠線と重なって二重線に見えるのを防ぐ
+				// allow-any-unicode-next-line
+				// （src/vs/sessions/contrib/sessions/browser/views/sessionsList.ts の同種の対処と揃えた）
+				findWidgetStyles: {
+					...defaultFindWidgetStyles,
+					toggleStyles: {
+						...defaultToggleStyles,
+						inputActiveOptionBorder: 'transparent',
+					},
+				},
 				keyboardNavigationLabelProvider: new AgentSessionsKeyboardNavigationLabelProvider(),
 				overrideStyles: this.options.overrideStyles,
 				twistieAdditionalCssClass: () => 'force-no-twistie',

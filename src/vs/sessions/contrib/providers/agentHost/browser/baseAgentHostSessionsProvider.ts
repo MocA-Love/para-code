@@ -17,6 +17,9 @@ import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { localize } from '../../../../../nls.js';
+// allow-any-unicode-next-line
+// PARA-PATCH: セッション一覧のタイトルからハーネス内部タグ（<command-name>等）を除去するための import
+import { paradisHumanizeAgentSessionTitle } from '../../../../../paradis/contrib/agentSessionTitle/common/paradisAgentSessionTitle.js';
 import { AgentSession, AuthenticateParams, AuthenticateResult, IAgentConnection, IAgentSessionMetadata } from '../../../../../platform/agentHost/common/agentService.js';
 import { buildAnnotationsUri } from '../../../../../platform/agentHost/common/annotationsUri.js';
 import { parseGitHubIssueUrl } from '../../../../../platform/agentHost/common/githubIssueReferences.js';
@@ -338,7 +341,9 @@ class AdditionalChat extends Disposable {
 	constructor(resource: URI, summary: ChatSummary, isNew: boolean = false, parentChat?: URI, sessionIsArchived: IObservable<boolean> = constObservable(false), lastTurnChanges?: IObservable<readonly ISessionFileChange[]>) {
 		super();
 		const modifiedAt = summary.modifiedAt ? new Date(summary.modifiedAt) : new Date();
-		this._title = observableValue('chatTitle', summary.title || localize('newChatTab', "New Chat"));
+		// allow-any-unicode-next-line
+		// PARA-PATCH: summary.title はハーネスが書いた生の先頭メッセージなので内部タグを変換してから使う
+		this._title = observableValue('chatTitle', paradisHumanizeAgentSessionTitle(summary.title) ?? localize('newChatTab', "New Chat"));
 		this._status = observableValue<SessionStatus>('chatStatus', mapProtocolStatus(summary.status));
 		this._updatedAt = observableValue('chatUpdatedAt', modifiedAt);
 		this._modelId = observableValue<string | undefined>('chatModelId', undefined);
@@ -382,7 +387,9 @@ class AdditionalChat extends Disposable {
 	update(summary: ChatSummary): void {
 		const modifiedAt = summary.modifiedAt ? new Date(summary.modifiedAt) : this._updatedAt.get();
 		transaction(tx => {
-			this._title.set(summary.title || localize('newChatTab', "New Chat"), tx);
+			// allow-any-unicode-next-line
+			// PARA-PATCH: summary.title はハーネスが書いた生の先頭メッセージなので内部タグを変換してから使う
+			this._title.set(paradisHumanizeAgentSessionTitle(summary.title) ?? localize('newChatTab', "New Chat"), tx);
 			this._status.set(mapProtocolStatus(summary.status), tx);
 			this._updatedAt.set(modifiedAt, tx);
 			this._description.set(summary.activity ? new MarkdownString().appendText(summary.activity) : undefined, tx);
@@ -630,7 +637,9 @@ export class AgentHostSessionAdapter extends Disposable implements ISession {
 		this._isQuickChat = observableValue('isQuickChat', readSessionWorkspaceless(metadata._meta));
 		this.icon = _options.icon;
 		this.createdAt = new Date(metadata.startTime);
-		this.title = observableValue('title', metadata.summary || `Session ${rawId.substring(0, 8)}`);
+		// allow-any-unicode-next-line
+		// PARA-PATCH: metadata.summary はハーネスが書いた生の先頭メッセージなので内部タグを変換してから使う
+		this.title = observableValue('title', paradisHumanizeAgentSessionTitle(metadata.summary) ?? `Session ${rawId.substring(0, 8)}`);
 		this.updatedAt = observableValue('updatedAt', new Date(metadata.modifiedTime));
 		this.modelSelection = undefined;
 		this.status = observableValue<SessionStatus>('status', metadata.status !== undefined ? mapProtocolStatus(metadata.status) : SessionStatus.Completed);
@@ -1140,7 +1149,9 @@ export class AgentHostSessionAdapter extends Disposable implements ISession {
 		let didChange = false;
 
 		transaction(tx => {
-			const summary = metadata.summary;
+			// allow-any-unicode-next-line
+			// PARA-PATCH: metadata.summary はハーネスが書いた生の先頭メッセージなので内部タグを変換してから使う
+			const summary = paradisHumanizeAgentSessionTitle(metadata.summary);
 			if (summary !== undefined && summary !== this.title.get()) {
 				this.title.set(summary, tx);
 				didChange = true;
