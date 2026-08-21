@@ -69,7 +69,7 @@ const DATA_FLUSH_TIMEOUT = 250;
 
 export class ParadisPtyHolder extends Disposable {
 
-	private readonly scrollback: ParadisPtyScrollback;
+	private scrollback: ParadisPtyScrollback;
 
 	/** 受け取ったと言われていない量。**繋がっている間だけ増える**。 */
 	private unacknowledged = 0;
@@ -78,6 +78,9 @@ export class ParadisPtyHolder extends Disposable {
 	private alive = true;
 	private exitCode: number | undefined;
 	private exitSignal: string | undefined;
+
+	/** 前回繋いだ時点の目印。ここからこぼれたかを見る。 */
+	private droppedMark = 0;
 
 	/**
 	 * 終了を告げるのを待っている間の予約。出力が来るたびに取り直す（{@link queueExit}）。
@@ -145,6 +148,8 @@ export class ParadisPtyHolder extends Disposable {
 			cols: this.cols,
 			rows: this.rows,
 			alive: this.alive,
+			exitCode: this.exitCode,
+			exitSignal: this.exitSignal,
 			// 繋がっていない間は見張っていないので、聞かれた時点で読む。
 			title: this.alive ? this.pty.process : this.lastTitle,
 			metadata: this.metadata,
@@ -216,7 +221,14 @@ export class ParadisPtyHolder extends Disposable {
 	 * 呼び出し側へは「この戻り値 → その後のイベント」の順で届く（同じ接続の上を順に流れる）。
 	 */
 	attach(): IParadisPtyAttachment {
-		const attachment: IParadisPtyAttachment = { frames: this.scrollback.frames(), dropped: this.scrollback.dropped };
+		// **こぼれは「前回繋いだ以降」で見る。** 累積で見ると、一度でも上限を超えた端末は以後
+		// ずっと「こぼれた」と言い続け、実際には1文字も失っていない繋ぎ直しでも断りが出る。
+		// 毎回オオカミ少年になる方向の誤りで、断りそのものが読み飛ばされるようになる。
+		const attachment: IParadisPtyAttachment = {
+			frames: this.scrollback.frames(),
+			dropped: this.scrollback.droppedSince(this.droppedMark),
+		};
+		this.droppedMark = this.scrollback.mark();
 		this.attached = true;
 		// 見る側が代わったので、前の相手あての未確認は数え直す。持ち越すと、繋ぎ直した直後に
 		// 身に覚えのない高水位で止まる。
@@ -254,10 +266,13 @@ export class ParadisPtyHolder extends Disposable {
 		}
 	}
 
-	input(data: string): void {
-		if (this.alive) {
-			this.pty.write(data);
+	input(data: string, binary?: boolean): void {
+		if (!this.alive) {
+			return;
 		}
+		// バイナリは1文字＝1バイトとして書く。UTF-8 として書くと 0x80-0xFF が別のバイト列に
+		// なり、マウス報告や貼り付けが静かに壊れる（upstream と同じ使い分け）。
+		this.pty.write(binary ? Buffer.from(data, 'binary').toString('binary') : data);
 	}
 
 	resize(cols: number, rows: number): void {
@@ -274,6 +289,12 @@ export class ParadisPtyHolder extends Disposable {
 
 	setMetadata(metadata: string): void {
 		this.metadata = metadata;
+	}
+
+	/** 控えを捨てる。以後の繋ぎ直しは、ここから先だけを見せる。 */
+	clearScrollback(): void {
+		this.scrollback = new ParadisPtyScrollback(this.cols, this.rows);
+		this.droppedMark = 0;
 	}
 
 	kill(signal?: string): void {

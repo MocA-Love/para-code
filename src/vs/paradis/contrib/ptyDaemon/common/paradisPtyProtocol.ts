@@ -65,6 +65,15 @@ export interface IParadisPtySpawnRequest {
 	readonly cwd: string;
 	readonly cols: number;
 	readonly rows: number;
+	/**
+	 * 端末の種類（TERM）。
+	 *
+	 * **渡さないと `xterm` に落ちる。** node-pty は `name` が無ければ `TERM` 環境変数を見るが、
+	 * VS Code は env に `TERM` を入れないので、既定の `xterm` になる。upstream は非 Windows で
+	 * `xterm-256color` を渡しており、Linux の既定 `~/.bashrc` の色付きプロンプトはこれを見て
+	 * 判断する。**黙って色が落ちる**類の差なので、面に載せて渡す側が決める。
+	 */
+	readonly term: string;
 	/** 常駐は中身を見ない。 */
 	readonly metadata: string;
 }
@@ -82,6 +91,15 @@ export interface IParadisPtySummary {
 	readonly cols: number;
 	readonly rows: number;
 	readonly alive: boolean;
+	/**
+	 * 終わっていたときの終了コードと signal。
+	 *
+	 * **イベントでは足りない。** イベントは繋がっている相手にしか届かないが、この機能の主目的は
+	 * 「閉じている間に走り切らせ、戻ってきて結果を読む」こと。戻ってきた側が
+	 * 「死んでいる」しか分からないのでは、その主目的の経路で肝心の答えが落ちる。
+	 */
+	readonly exitCode: number | undefined;
+	readonly exitSignal: string | undefined;
 	/**
 	 * 前面で動いているものの名前。
 	 *
@@ -160,10 +178,23 @@ export interface IParadisPtyHost {
 	/** 見るのをやめる。**pty は止まらない。** */
 	detach(handle: number): Promise<void>;
 
-	input(handle: number, data: string): Promise<void>;
+	/**
+	 * 打鍵などを送る。
+	 *
+	 * `binary` を立てたときは、`data` を **latin1（1文字＝1バイト）** として書く。立てない
+	 * ときは UTF-8。分けないと 0x80-0xFF が別のバイト列になり、**マウス報告や貼り付けが
+	 * 静かに壊れる**（upstream も `Buffer.from(data, 'binary')` と使い分けている）。
+	 */
+	input(handle: number, data: string, binary?: boolean): Promise<void>;
 	acknowledge(handle: number, charCount: number): Promise<void>;
 	resize(handle: number, cols: number, rows: number): Promise<void>;
 	setMetadata(handle: number, metadata: string): Promise<void>;
+	/**
+	 * 控えを捨てる。画面を消したときに呼ぶ。
+	 *
+	 * 効かせないと、消したはずの出力が繋ぎ直したときに戻ってくる。
+	 */
+	clearScrollback(handle: number): Promise<void>;
 	kill(handle: number, signal?: string): Promise<void>;
 	/** 抱えるのをやめる。終わったものを片付ける合図。 */
 	release(handle: number): Promise<void>;

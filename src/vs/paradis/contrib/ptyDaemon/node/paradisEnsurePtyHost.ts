@@ -28,6 +28,8 @@ import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.ne
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
+import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
+import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
 import { IParadisPtyHost, PARADIS_PTY_HOST_CHANNEL, PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 
 /** 1回の接続試行を待つ上限。 */
@@ -67,7 +69,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 		return undefined;
 	}
 
-	const existing = await paradisConnect(paths.socketPath);
+	const existing = await paradisConnect(paths);
 	if (existing) {
 		logService.info(`[ParadisPtyHost] joined the daemon already serving ${paths.socketPath}`);
 		return existing;
@@ -78,7 +80,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 	const deadline = Date.now() + STARTUP_TIMEOUT;
 	while (Date.now() < deadline) {
 		await timeout(RETRY_INTERVAL);
-		const connection = await paradisConnect(paths.socketPath);
+		const connection = await paradisConnect(paths);
 		if (connection) {
 			logService.info(`[ParadisPtyHost] started a daemon at ${paths.socketPath}`);
 			return connection;
@@ -89,12 +91,25 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 	return undefined;
 }
 
-async function paradisConnect(socketPath: string): Promise<IParadisPtyHostConnection | undefined> {
-	const socket = await paradisOpenSocket(socketPath);
+/**
+ * 常駐の身元を確かめてから繋ぐ。
+ *
+ * **繋がることは身元の証明にならない。** 向こうにあるのは任意のシェルを起こせる口と全打鍵なので、
+ * 繋げた時点でそのユーザーとして任意コード実行になる。置き場所の 0700 だけを頼りにせず、
+ * 台帳にしか書かれていない合言葉で確かめる（旧い常駐と同じ扱い。**片方だけ薄くしない**）。
+ */
+async function paradisConnect(paths: IParadisPtyHostPaths): Promise<IParadisPtyHostConnection | undefined> {
+	const socket = await paradisOpenSocket(paths.socketPath);
 	if (!socket) {
 		return undefined;
 	}
 	const client = SocketClient.fromSocket(socket, 'paradis-pty-host');
+	const record = (await paradisReadDaemonRecords(paths.ledgerDir)).find(entry => entry.socketPath === paths.socketPath);
+	if (!record || !await paradisAuthenticateDaemon(client, record.token)) {
+		// 台帳がまだ無い（起こした直後）か、名乗れない相手。どちらも繋がない。
+		client.dispose();
+		return undefined;
+	}
 	const host = ProxyChannel.toService<IParadisPtyHost>(client.getChannel(PARADIS_PTY_HOST_CHANNEL));
 	try {
 		const greeting = await host.hello();

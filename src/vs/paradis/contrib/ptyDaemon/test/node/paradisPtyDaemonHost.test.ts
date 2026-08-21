@@ -49,7 +49,7 @@ class FakePty implements IParadisPtyProcess {
 const DATA_FLUSH_TIMEOUT = 250;
 
 function request(metadata: string): IParadisPtySpawnRequest {
-	return { file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, metadata };
+	return { file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, term: 'xterm-256color', metadata };
 }
 
 suite('ParadisPtyDaemonHost', () => {

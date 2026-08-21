@@ -60,6 +60,9 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 
 	private nextHandle = 1;
 
+	/** いま誰かが見ているもの。接続が切れたときに離すために持つ（{@link releaseViewers}）。 */
+	private readonly attachedHandles = new Set<number>();
+
 	private readonly _onDidChangeData = this._register(new Emitter<IParadisPtyDataEvent>());
 	readonly onDidChangeData = this._onDidChangeData.event;
 
@@ -74,7 +77,9 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	}
 
 	override dispose(): void {
+		// 実際に畳むのは `perHandle`（holder 本体もその中に居る）。ここは引ける表を空にするだけ。
 		this.holders.clear();
+		this.attachedHandles.clear();
 		super.dispose();
 	}
 
@@ -103,15 +108,34 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		if (!holder) {
 			throw new Error(`no terminal with handle ${handle}`);
 		}
+		this.attachedHandles.add(handle);
 		return holder.attach();
 	}
 
+	/**
+	 * 見ている相手が消えた。**繋いでいた全部を離す。**
+	 *
+	 * これが無いと、アプリが落ちた・強制終了された・機械ごと寝たときに、常駐側は「まだ誰かが
+	 * 見ている」と思い続ける。すると未確認の文字が数え上がり、誰も受け取ったと言わないので
+	 * 高水位で pty が止まる。**閉じている間も走り切らせるという判断が、そこで無言で覆る。**
+	 *
+	 * アプリ側からの `detach` はあくまで行儀の良い場合の話で、落ちた場合には届かない。
+	 * 接続が切れたこと自体を合図にしないと、この設計は成立しない。
+	 */
+	releaseViewers(): void {
+		for (const handle of this.attachedHandles) {
+			this.holders.get(handle)?.detach();
+		}
+		this.attachedHandles.clear();
+	}
+
 	async detach(handle: number): Promise<void> {
+		this.attachedHandles.delete(handle);
 		this.holders.get(handle)?.detach();
 	}
 
-	async input(handle: number, data: string): Promise<void> {
-		this.holders.get(handle)?.input(data);
+	async input(handle: number, data: string, binary?: boolean): Promise<void> {
+		this.holders.get(handle)?.input(data, binary);
 	}
 
 	async acknowledge(handle: number, charCount: number): Promise<void> {
@@ -124,6 +148,10 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 
 	async setMetadata(handle: number, metadata: string): Promise<void> {
 		this.holders.get(handle)?.setMetadata(metadata);
+	}
+
+	async clearScrollback(handle: number): Promise<void> {
+		this.holders.get(handle)?.clearScrollback();
 	}
 
 	async kill(handle: number, signal?: string): Promise<void> {
@@ -142,6 +170,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 			return;
 		}
 		this.holders.delete(handle);
+		this.attachedHandles.delete(handle);
 		// holder 本体もこの中に居る。畳むのはここ1箇所。
 		this.perHandle.deleteAndDispose(handle);
 	}

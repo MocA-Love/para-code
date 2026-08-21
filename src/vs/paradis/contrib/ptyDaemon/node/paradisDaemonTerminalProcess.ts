@@ -26,8 +26,10 @@
 // スクリプトはアプリの中に留め、常駐へは解決し切った argv/env を渡す。
 
 import * as fs from 'fs';
-import { Emitter } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { isNumber } from '../../../../base/common/types.js';
 import { URI } from '../../../../base/common/uri.js';
 import * as path from '../../../../base/common/path.js';
 import { localize } from '../../../../nls.js';
@@ -49,9 +51,37 @@ import {
 	TerminalShellType,
 } from '../../../../platform/terminal/common/terminal.js';
 import { IProcessEnvironment } from '../../../../base/common/platform.js';
-import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
+import { IParadisPtyAttachment, IParadisPtyHost } from '../common/paradisPtyProtocol.js';
+import { paradisEncodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
+import { paradisShellTypeFromTitle } from './paradisShellType.js';
+
+/** ターミナルの持ち主。常駐へ預けて、引き取るときに読み戻す。 */
+export interface IParadisTerminalOrigin {
+	readonly workspaceId: string;
+	readonly workspaceName: string;
+	readonly shouldPersist: boolean;
+}
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
+
+/**
+ * 端末の種類（TERM）。
+ *
+ * 非 Windows で `xterm-256color` を名乗るのは upstream と同じ。渡さないと node-pty の既定
+ * `xterm` になり、Linux の既定 `~/.bashrc` の色付きプロンプトが黙って落ちる。
+ */
+const PARADIS_TERM_NAME = 'xterm-256color';
+
+/** `shutdown(false)` のあと、終わったと言い切るまで待つ時間。upstream の強制 kill と同じ 5 秒。 */
+const GRACEFUL_EXIT_TIMEOUT = 5_000;
+
+/** `shutdown(true)` のあと。すぐ死ぬはずなので短い。 */
+const IMMEDIATE_EXIT_TIMEOUT = 1_000;
+
+/** こぼれたことの断り。**出力そのものと見分けが付く形**にする。 */
+function paradisDroppedNotice(): string {
+	return `\r\n\x1b[2m[${localize('paradis.ptyDaemon.droppedOutput', "earlier output was discarded while this terminal ran unattended")}]\x1b[0m\r\n`;
+}
 
 export class ParadisDaemonTerminalProcess extends Disposable implements IParadisTerminalProcessLike {
 
@@ -62,7 +92,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	private pid = -1;
 	private initialCwd: string;
 
-	private readonly childProcesses = this._register(new MutableDisposable<ChildProcessMonitor>());
+	/** いまの監視。畳むのは {@link wiring} の仕事で、ここは参照を持つだけ。 */
+	private childProcesses: { value: ChildProcessMonitor | undefined } = { value: undefined };
 
 	/**
 	 * 常駐から流れてくるものの購読。**抱える相手が決まってから張る。**
@@ -84,7 +115,12 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	private readonly _onProcessExit = this._register(new Emitter<number | undefined>());
 	readonly onProcessExit = this._onProcessExit.event;
 
+	/** 終わったと言い切るまでの保険（{@link shutdown}）。 */
+	private readonly forceExit = this._register(new MutableDisposable());
+	private exitFired = false;
+
 	private title = '';
+	private reportedTitle: string | undefined;
 
 	constructor(
 		private readonly host: IParadisPtyHost,
@@ -97,12 +133,41 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		private readonly options: ITerminalProcessOptions,
 		private readonly logService: ILogService,
 		private readonly productService: IProductService,
+		/**
+		 * このターミナルが誰のものか。**常駐へ預けるのはこれ。**
+		 *
+		 * 預けないと、引き取ったときに所属が空になる。所属が空だと、どのウィンドウの配置にも
+		 * 載らない（配置は workspaceId で引く）ので、**プロセスは生きているのに画面に出てくる
+		 * 経路そのものが無い**という形になる。
+		 */
+		private readonly origin?: IParadisTerminalOrigin,
+		/**
+		 * 常駐との繋がりの生死。切れたら、開いている端末は終わったものとして畳む。
+		 *
+		 * 省略できるのは、テストや常駐が無い経路で邪魔にならないようにするため。
+		 */
+		private readonly hostLifetime?: { onDidDispose: Event<void> },
+		/**
+		 * すでに常駐が抱えているものを引き取る場合の相手。
+		 *
+		 * これが在るときは**起こさない**。引き取りは「走っているものに繋ぎ直す」ことなので、
+		 * ここで新しく起こしてしまうと、残っていたプロセスは行方不明のまま二重に増える。
+		 */
+		private readonly adoptTarget?: { readonly handle: number; readonly pid: number; readonly title: string },
 	) {
 		super();
 		this.initialCwd = cwd;
 	}
 
 	async start(): Promise<ITerminalLaunchError | ITerminalLaunchResult | undefined> {
+		if (this.adoptTarget) {
+			// 走っているものに繋ぎ直すだけ。起動先の検査もシェル統合の注入もしない
+			// (どちらも起こすときの話で、すでに起きているものには当てはまらない)。
+			this.adopt(this.adoptTarget.handle, this.adoptTarget.pid, this.adoptTarget.title);
+			this.emitAttachment(await this.host.attach(this.adoptTarget.handle));
+			return undefined;
+		}
+
 		const invalid = await this.validate();
 		if (invalid) {
 			return invalid;
@@ -128,20 +193,35 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		}
 
 		const args = injectedArgs ?? this.toArgs(this.shellLaunchConfig.args);
+		let summary;
 		try {
-			const summary = await this.host.spawn({
+			summary = await this.host.spawn({
 				file: this.shellLaunchConfig.executable!,
 				args,
 				env: paradisPlainEnv(env),
 				cwd: this.initialCwd,
 				cols: this.cols,
 				rows: this.rows,
-				metadata: '',
+				term: PARADIS_TERM_NAME,
+				metadata: this.describeSelf(),
 			});
-			this.adopt(summary.handle, summary.pid, summary.title);
-			await this.host.attach(summary.handle);
 		} catch (error) {
 			return { message: localize('paradis.ptyDaemon.launchFailed', "The terminal could not be started ({0})", String(error)) };
+		}
+
+		try {
+			this.adopt(summary.handle, summary.pid, summary.title);
+			// **戻り値を捨ててはいけない。** 常駐は繋がるまで出力を流さないので、起こしてから
+			// 繋ぐまでの間に出たものはここにしか無い。捨てると、消えるのは決まって
+			// 「シェルの起動直後」＝プロンプトと初期エスケープ列になり、症状は
+			// 「たまに1行目が出ない」という辿れない形になる。
+			this.emitAttachment(await this.host.attach(summary.handle));
+		} catch (error) {
+			// 起こしはしたが繋げなかった。**常駐に置き去りにしない。** 残すと誰も見ていない
+			// holder が一覧にだけ残り、次の引き取りで身に覚えのないターミナルとして現れる。
+			this.logService.error('[ParadisPtyDaemon] could not attach to the terminal just started; releasing it', error);
+			await this.host.release(summary.handle).catch(() => { });
+			return { message: localize('paradis.ptyDaemon.attachFailed', "The terminal started but could not be connected to ({0})", String(error)) };
 		}
 
 		return injectedArgs ? { injectedArgs } : undefined;
@@ -157,11 +237,12 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		this.pid = pid;
 		this.title = title;
 
-		const monitor = new ChildProcessMonitor(pid, this.logService);
-		this.childProcesses.value = monitor;
-
 		const wiring = new DisposableStore();
 		this.wiring.value = wiring;
+		// 本体も購読も同じところに入れる。別々にすると、片方だけ差し替えたときに
+		// 畳まれた相手への購読が残る。
+		const monitor = wiring.add(new ChildProcessMonitor(pid, this.logService));
+		this.childProcesses.value = monitor;
 		wiring.add(monitor.onDidChangeHasChildProcesses(value => this._onDidChangeProperty.fire({ type: ProcessPropertyType.HasChildProcesses, value })));
 		wiring.add(this.host.onDidChangeData(event => {
 			if (event.handle !== handle) {
@@ -174,26 +255,82 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			if (event.handle !== handle) {
 				return;
 			}
-			this.title = event.title;
-			this._onDidChangeProperty.fire({ type: ProcessPropertyType.Title, value: event.title });
+			this.reportTitle(event.title);
 		}));
+		// **常駐が落ちたら、終わったことにする。** 繋がりが切れると出力も終了も二度と来ない。
+		// 黙って無反応のままにすると、器が畳まれずタブも閉じられなくなる。プロセス自体は
+		// 常駐と一緒に落ちているので、終わったと伝えるのが実態に合う。
+		if (this.hostLifetime) {
+			wiring.add(this.hostLifetime.onDidDispose(() => this.fireExitOnce(undefined)));
+		}
 		wiring.add(this.host.onDidExit(event => {
 			if (event.handle !== handle) {
 				return;
 			}
-			this._onProcessExit.fire(event.code);
+			this.fireExitOnce(event.code);
 		}));
 
 		this._onProcessReady.fire({ pid, cwd: this.initialCwd, windowsPty: undefined });
+		// **引き取りでは常駐側が題名の変化を出さない**（向こうは既に同じ値を覚えているため）。
+		// ここで出しておかないと、更新をまたいだ直後だけタブ名が空になる。
+		this.reportTitle(title);
+	}
+
+	/**
+	 * 繋いだ時点で常駐が持っていたものを流す。
+	 *
+	 * こぼれていた断りもここで出す。**歯抜けの画面を黙って見せない**ため。
+	 */
+	private emitAttachment(attachment: IParadisPtyAttachment): void {
+		if (attachment.dropped) {
+			this._onProcessData.fire(paradisDroppedNotice());
+		}
+		for (const frame of attachment.frames) {
+			if (frame.data.length > 0) {
+				this._onProcessData.fire(frame.data);
+			}
+		}
+	}
+
+	/**
+	 * 題名と、そこから読めるシェルの種類を伝える。
+	 *
+	 * 種類も一緒に出すのは upstream と同じ。片方だけだと、タブ名の `${sequence}` やシェル統合の
+	 * 質が常駐経由のときだけ変わる。
+	 */
+	private reportTitle(title: string): void {
+		this.title = title;
+		if (title === this.reportedTitle) {
+			// 起こした直後は、こちらと常駐の両方から同じ題名が来る（引き取りでは常駐から来ない
+			// ので、こちらから出す必要がある）。同じ値なら黙る。
+			return;
+		}
+		this.reportedTitle = title;
+		this._onDidChangeProperty.fire({ type: ProcessPropertyType.Title, value: title });
+		this._onDidChangeProperty.fire({ type: ProcessPropertyType.ShellType, value: paradisShellTypeFromTitle(title) });
+	}
+
+	/** 終わったと言うのは一度だけ。保険と本物の両方から来る。 */
+	private fireExitOnce(code: number | undefined): void {
+		if (this.exitFired) {
+			return;
+		}
+		this.exitFired = true;
+		this.forceExit.clear();
+		this._onProcessExit.fire(code);
 	}
 
 	private toArgs(args: string | string[] | undefined): string[] {
 		if (args === undefined) {
 			return [];
 		}
-		// 常駐へ渡す面は配列だけにしてある。文字列のまま渡すと、どちら側が区切るのかが
-		// 曖昧になり、引用の扱いが2箇所に分かれる。
-		return typeof args === 'string' ? [args] : args;
+		if (typeof args === 'string') {
+			// 文字列の `args` は「エスケープ済みの CommandLine で Windows 専用」と upstream が
+			// 明記している形。**配列に包むと意味が静かに変わる**（1個の argv 要素になる）ので
+			// 包まない。この常駐は Windows では動かないため、ここへは来ない想定。
+			throw new Error('a pre-escaped command line is only meaningful on Windows, where this daemon does not run');
+		}
+		return args;
 	}
 
 	private async copyInjectionFiles(files: readonly { source: string; dest: string }[] | undefined): Promise<void> {
@@ -233,11 +370,26 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		return undefined;
 	}
 
+	/**
+	 * 常駐へ言うだけで返事を待たない呼び出しを、まとめて受ける。
+	 *
+	 * **`void` で投げっぱなしにしない。** 常駐が落ちた・繋がりが切れた・すでに終わった相手に
+	 * resize した、といった場合に拒否が返るが、投げっぱなしだと**打鍵1回ごとに未処理の拒否**が
+	 * 積み上がる。できることは無いので、記録して進む。
+	 */
+	private tell(what: string, work: Promise<unknown>): void {
+		work.catch(error => this.logService.trace(`[ParadisPtyDaemon] ${what} did not reach the daemon`, error));
+	}
+
 	shutdown(immediate: boolean): void {
 		if (this.handle === undefined) {
 			return;
 		}
-		void this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined);
+		this.tell('shutdown', this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined));
+		// **終わったことを必ず伝える。** SIGHUP を握り潰すプロセスだと exit が来ないことがあり、
+		// 来ないと器が畳まれず、タブが閉じないまま台帳に残り続ける。upstream も、pty が本当に
+		// 死んだかに関わらず最後は必ず exit を出す。
+		this.forceExit.value = disposableTimeout(() => this.fireExitOnce(undefined), immediate ? IMMEDIATE_EXIT_TIMEOUT : GRACEFUL_EXIT_TIMEOUT);
 	}
 
 	input(data: string): void {
@@ -245,31 +397,40 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			return;
 		}
 		this.childProcesses.value?.handleInput();
-		void this.host.input(this.handle, data);
+		this.tell('input', this.host.input(this.handle, data));
 	}
 
 	sendSignal(signal: string): void {
 		if (this.handle !== undefined) {
-			void this.host.kill(this.handle, signal);
+			this.tell('signal', this.host.kill(this.handle, signal));
 		}
 	}
 
 	async processBinary(data: string): Promise<void> {
 		if (this.handle !== undefined) {
-			await this.host.input(this.handle, data);
+			// バイト列として書かせる。UTF-8 として書かれると 0x80-0xFF が変わってしまう。
+			await this.host.input(this.handle, data, true);
 		}
 	}
 
 	resize(cols: number, rows: number): void {
-		this.cols = cols;
-		this.rows = rows;
+		if (!isNumber(cols) || !isNumber(rows) || isNaN(cols) || isNaN(rows)) {
+			return;
+		}
+		// 0 は「まだ大きさが決まっていない」の意味で来る。そのまま渡すと pty が困る。
+		this.cols = Math.max(cols, 1);
+		this.rows = Math.max(rows, 1);
 		if (this.handle !== undefined) {
-			void this.host.resize(this.handle, cols, rows);
+			this.tell('resize', this.host.resize(this.handle, this.cols, this.rows));
 		}
 	}
 
 	clearBuffer(): void {
-		// 画面の消去は表示側の仕事で、pty には関係が無い。
+		// pty には関係が無いが、**控えには効かせる**。効かせないと、消したはずの出力が
+		// 繋ぎ直したときに戻ってくる。
+		if (this.handle !== undefined) {
+			this.tell('clearBuffer', this.host.clearScrollback(this.handle));
+		}
 	}
 
 	acknowledgeDataEvent(charCount: number): void {
@@ -304,7 +465,9 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			case ProcessPropertyType.HasChildProcesses:
 				return (this.childProcesses.value?.hasChildProcesses ?? false) as IProcessPropertyMap[T];
 			default:
-				throw new Error(`unsupported property: ${property}`);
+				// upstream も既定は種類を返す。投げると、知らない種類を聞かれただけで
+				// 呼び出し側が壊れる。
+				return this.shellType as IProcessPropertyMap[T];
 		}
 	}
 
@@ -323,8 +486,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	}
 
 	get shellType(): TerminalShellType | undefined {
-		// シェルの種類はシェル統合が名乗ってきて初めて分かるもので、上の層が持つ。
-		return undefined;
+		return paradisShellTypeFromTitle(this.title);
 	}
 
 	get hasChildProcesses(): boolean {
@@ -342,6 +504,28 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		return undefined;
 	}
 
+	/**
+	 * 常駐へ預ける、引き取りに要るもの。
+	 *
+	 * 起動時の材料（シェル設定と環境）まで入れるのは、引き取った器を後で「保存して復元」する
+	 * ときに要るため。無くても引き取りはできるが、そのときは材料が空の器になる。
+	 */
+	private describeSelf(): string {
+		return paradisEncodeTerminalMetadata({
+			workspaceId: this.origin?.workspaceId ?? '',
+			workspaceName: this.origin?.workspaceName ?? '',
+			shouldPersist: this.origin?.shouldPersist ?? true,
+			name: this.shellLaunchConfig.name,
+			appearance: { icon: this.shellLaunchConfig.icon, color: this.shellLaunchConfig.color },
+			launch: {
+				shellLaunchConfig: this.shellLaunchConfig,
+				env: this.env,
+				executableEnv: this.executableEnv,
+				options: this.options,
+			},
+		});
+	}
+
 	/** 常駐に預けておくもの。中身は常駐から見ればただの文字列（引き取りで読む）。 */
 	async paradisSetMetadata(metadata: string): Promise<void> {
 		if (this.handle !== undefined) {
@@ -349,9 +533,27 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		}
 	}
 
+	/**
+	 * 見るのをやめる。**pty は止めない。**
+	 *
+	 * `ITerminalChildProcess.detach` として呼ばれる経路のほかに、{@link dispose} からも通る。
+	 */
+	async detach(): Promise<void> {
+		if (this.handle !== undefined) {
+			await this.host.detach(this.handle).catch(() => { });
+		}
+	}
+
 	override dispose(): void {
-		// **常駐へは何も言わない。** ここが畳まれるのはウィンドウが閉じるときで、
-		// pty を道連れにしてよい理由が無い（それを避けるために常駐がある）。
+		// **pty は道連れにしないが、見るのをやめたことは伝える。** 伝えないと、常駐側は
+		// 「まだ誰かが見ている」と思って未確認の文字を数え続け、誰も受け取ったと言わないので
+		// 高水位で pty が止まる。閉じている間も走り切らせるという判断が、そこで無言で覆る。
+		//
+		// なお、落ちた・強制終了された場合はここを通らない。そちらは常駐側が接続の切断を
+		// 合図にして離す（`paradisPtyHostDaemonMain.ts`）。**片方だけでは足りない。**
+		if (this.handle !== undefined) {
+			this.tell('detach', this.host.detach(this.handle));
+		}
 		super.dispose();
 	}
 }

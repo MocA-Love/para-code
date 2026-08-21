@@ -245,15 +245,39 @@ terminalProcess.ts:325  _unacknowledgedCharCount += data.length
 - **upstream が `ITerminalChildProcess` を変えたとき**は protocol も変える必要がある。42 個より
   ずっと変わりにくいはずだが、これも upstream 側の履歴が無いので**未確認**。
 
-## 段取り
+## 段取り（2026-08-22 実装済み）
 
-1. protocol を確定して凍結する（この文書の「凍結する protocol」を仕様として固める）
-2. `ITerminalChildProcess` 準拠の新実装を新規ファイルに書き、`ptyService.ts:353` の 1 行を差し替える。
-   常駐側に node-pty と輪バッファを持たせる
-3. シェル統合の注入をアプリ側へ寄せる
-4. 「生きているターミナルの引き取り」を作る。ここで初めて更新をまたげるようになる
-5. リモートへ配る。差し替えは `serverServices.ts:256` の 1 行。`enable-linger` を含む寿命管理を
-   最初から入れる
+1. ~~protocol を確定して凍結する~~ ✅ `common/paradisPtyProtocol.ts`
+2. ~~`ITerminalChildProcess` 準拠の新実装と、常駐側の node-pty ＋輪バッファ~~ ✅
+   `node/paradisDaemonTerminalProcess.ts` / `node/paradisPtyHolder.ts` / `node/paradisPtyDaemonHost.ts`
+3. ~~シェル統合の注入をアプリ側へ寄せる~~ ✅ `ParadisDaemonTerminalProcess.start()`
+4. ~~生きているターミナルの引き取り~~ ✅ `node/paradisTerminalAdoption.ts` /
+   `node/paradisAdoptIntoPtyService.ts`
+5. ~~リモートへ配る~~ ✅ `node/paradisRemotePtyHost.ts`。差し替えは `serverServices.ts` の 1 行
 
-1〜4 がローカル、5 が SSH。**4 まで来れば 5 は差し替え口 1 行と配布経路の追加**で、
-実体は同じものになる。
+upstream 側に入った変更は次の 4 行だけ（すべて PARA-PATCH 付き）。
+
+| ファイル | 変更 |
+| --- | --- |
+| `platform/terminal/node/ptyService.ts` | 器が受け取る型を具象クラスから同じ形のインターフェースへ／生成点 1 行／引き取り用のオプショナル引数 1 つ |
+| `platform/terminal/node/ptyHostMain.ts` | 起動時に常駐へ繋ぎ、抱えているものを引き取る |
+| `server/node/serverServices.ts` | 接続先で常駐を使うかを決める 1 行 |
+
+## まだ埋まっていないこと
+
+- **版合わせが、凍結したい層の内側にある（2026-08-22 のレビューで判明、未対処）。**
+  鍵をビルドから protocol の版へ移した結果、**新旧のビルドが同じソケットで出会うことが前提**に
+  なった。すると `base/parts/ipc` の framing とシリアライズの互換が、新旧を跨ぐ唯一の生命線に
+  なる。ここは upstream 所有のコードで、常駐は「自分を起こしたビルド」のものを抱えたまま
+  長生きする。
+  壊れると `hello()` すら通らないので、**「話が通じないこと」を版で説明できない**（版の
+  突き合わせは `hello()` の中に居るため、そこへ到達しない）。生のソケット上で1行だけ版を
+  交換してから ChannelClient に入る前置きを検討する価値がある。いまは実害が出ていないが、
+  出たときに原因が読めない形になっている。
+
+- **`systemd` の `KillUserProcesses`。** Linux のリモートでは、SSH を切ると切り離した常駐ごと
+  殺される配布物がある。`loginctl enable-linger` 等が要るが、**判定も対処も入っていない**
+  (`node/paradisRemotePtyHost.ts` の冒頭に書いてある)。リモートで有効にする前にここを埋めること
+- **実機での確認**。ここまでは偽 pty での通しテストのみ。本物のシェルを起こしての確認は未実施
+- **前の常駐との統合**。いまは設定が2つあり、新しい方は選んだ人だけが使う。新しい方が実機で
+  確かめられたら、古い方を畳んで1つにする
