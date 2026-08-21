@@ -19,13 +19,14 @@ import type { ISerializeOptions, SerializeAddon as XtermSerializeAddon } from '@
 import type { Unicode11Addon as XtermUnicode11Addon } from '@xterm/addon-unicode11';
 import { IGetTerminalLayoutInfoArgs, IProcessDetails, ISetTerminalLayoutInfoArgs, ITerminalTabLayoutInfoDto } from '../common/terminalProcess.js';
 import { sanitizeEnvForLogging } from './terminalEnvironment.js';
-import { TerminalProcess } from './terminalProcess.js';
 import { localize } from '../../../nls.js';
 import { ignoreProcessNames } from './childProcessMonitor.js';
 import { ErrorNoTelemetry } from '../../../base/common/errors.js';
 import { ShellIntegrationAddon } from '../common/xterm/shellIntegrationAddon.js';
 import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
+import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
+import { paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -350,7 +351,9 @@ export class PtyService extends Disposable implements IPtyService {
 			throw new Error('Attempt to create a process when attach object was provided');
 		}
 		const id = ++this._lastPtyId;
-		const process = new TerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService);
+		// PARA-PATCH: the pty may belong to a daemon that outlives this process, so the decision of
+		// where it runs is made in one place. See paradisTerminalProcessFactory.ts.
+		const process = paradisCreateTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService);
 		const processLaunchOptions: IPersistentTerminalProcessLaunchConfig = {
 			env,
 			executableEnv,
@@ -846,7 +849,9 @@ class PersistentTerminalProcess extends Disposable {
 
 	constructor(
 		private _persistentProcessId: number,
-		private readonly _terminalProcess: TerminalProcess,
+		// PARA-PATCH: terminals may live in a daemon that outlives this process, so what is held here
+		// is not always the local one. See paradisTerminalProcessLike.ts.
+		private readonly _terminalProcess: IParadisTerminalProcessLike,
 		readonly workspaceId: string,
 		readonly workspaceName: string,
 		readonly shouldPersistTerminal: boolean,
