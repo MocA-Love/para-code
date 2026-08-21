@@ -16,14 +16,13 @@
 // 確認は画面側の仕事にして、こちらは言われたことだけをする（確認をここに置くと、
 // コマンドや将来の別経路から確認なしで呼べてしまう）。
 
-import { createConnection } from 'net';
 import { raceTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
-import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
 import { paradisAuthenticateDaemon } from '../node/paradisPtyDaemonAuth.js';
+import { paradisAskDaemonToStop, paradisConnectToDaemon } from '../node/paradisPtyDaemonStop.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -46,9 +45,6 @@ export interface IParadisDaemonPtyAccess {
 	listProcesses(): Promise<IProcessDetails[]>;
 	restartPtyHost(): Promise<void>;
 }
-
-/** 止めるときに常駐の応答を待つ上限。応答しない相手をいつまでも待たない。 */
-const CONNECT_TIMEOUT = 2_000;
 
 /** 状態を聞いたときの返事を待つ上限。閉じる処理には関わらないが、画面が凍るのを防ぐ。 */
 const DESCRIBE_TIMEOUT = 3_000;
@@ -172,7 +168,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 		}
 		this.disposeControl();
 
-		const socket = await this.connect(record.socketPath);
+		const socket = await paradisConnectToDaemon(record.socketPath);
 		if (!socket) {
 			throw new Error(`nothing answered at ${record.socketPath}`);
 		}
@@ -261,61 +257,27 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	}
 
 	/**
-	 * 常駐へ終了を頼む。**繋いで頼む。番号で殺さない。**
-	 *
-	 * 以前はここで台帳の pid へ `SIGTERM` を送っていたが、pid は身元ではない。常駐が異常終了
-	 * すると台帳が残り、OS が pid を使い回すので、残った番号は無関係の生きたプロセスを指す
-	 * (PC を再起動した後は特に起きやすい)。その状態で「停止」を押すと、進行中のビルドや
-	 * ssh-agent が落ちる。繋がるかどうかそのものが身元の証明になるので、繋いで頼む。
-	 *
-	 * 繋がらない相手には**何もしない**。固まっているのか、番号が使い回されたのか、こちらからは
-	 * 区別できない。区別できないものを殺してよい理由が無い (`paradisJudgeUnreachableDaemon`)。
+	 * 常駐へ終了を頼む。実体は `paradisPtyDaemonStop.ts`（本物のソケット相手に確かめられる
+	 * ようにするため切り出してある）。ここは結果を記録するだけ。
 	 */
 	private async askToStop(socketPath: string, token: string): Promise<void> {
-		const socket = await this.connect(socketPath);
-		if (!socket) {
-			this.logService.warn(`[ParadisPtyDaemon] nothing answered at ${socketPath}; leaving it alone`);
-			return;
-		}
-		const client = SocketClient.fromSocket(socket, 'paradis-daemon-control');
-		try {
-			// 繋がっただけでは身元にならない。名乗り合いを通らない相手を止めに行かない
-			// (その名前を持っているのが誰なのか、こちらには分からない)。
-			if (!await paradisAuthenticateDaemon(client, token)) {
+		const outcome = await paradisAskDaemonToStop(socketPath, token);
+		switch (outcome) {
+			case 'stopped':
+				this.logService.info(`[ParadisPtyDaemon] the daemon at ${socketPath} took the stop request`);
+				return;
+			case 'unreachable':
+				this.logService.warn(`[ParadisPtyDaemon] nothing answered at ${socketPath}; leaving it alone`);
+				return;
+			case 'not-ours':
 				this.logService.warn(`[ParadisPtyDaemon] whatever answers at ${socketPath} is not one of ours; leaving it alone`);
 				return;
-			}
-			const control = ProxyChannel.toService<IParadisPtyDaemonControl>(client.getChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL));
-			// 返事は待てない。常駐は片付けてから `process.exit` するので、返事が返る前に
-			// 接続が切れる。届いたことは、繋がった時点で分かっている。
-			control.shutdown().catch(() => { });
-			this.logService.info(`[ParadisPtyDaemon] asked the daemon at ${socketPath} to stop`);
-		} finally {
-			client.dispose();
+			case 'timeout':
+				this.logService.warn(`[ParadisPtyDaemon] the daemon at ${socketPath} did not act on the stop request in time`);
+				return;
 		}
 	}
 
-	/** 常駐のソケットへ繋ぐ。応答しなければ undefined。 */
-	private connect(socketPath: string): Promise<NodeSocket | undefined> {
-		return new Promise<NodeSocket | undefined>(resolve => {
-			let settled = false;
-			const done = (result: NodeSocket | undefined) => {
-				if (settled) {
-					return;
-				}
-				settled = true;
-				clearTimeout(timer);
-				if (!result) {
-					socket.destroy();
-				}
-				resolve(result);
-			};
-			const socket = createConnection({ path: socketPath });
-			const timer = setTimeout(() => done(undefined), CONNECT_TIMEOUT);
-			socket.once('connect', () => done(new NodeSocket(socket, 'paradis-daemon-control')));
-			socket.once('error', () => done(undefined));
-		});
-	}
 }
 
 /** `app.ts` から1行で呼べる登録。 */
