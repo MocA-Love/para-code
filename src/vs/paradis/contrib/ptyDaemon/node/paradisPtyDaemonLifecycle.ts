@@ -27,7 +27,6 @@ import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IPtyService } from '../../../../platform/terminal/common/terminal.js';
 import { IParadisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
 import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_AUTH_CHANNEL, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
 import { ParadisPtyDaemonAuth, paradisCreateDaemonToken } from './paradisPtyDaemonAuth.js';
@@ -49,13 +48,12 @@ export interface IParadisPtyDaemonLifecycleOptions {
 	readonly env: IParadisPtyDaemonEnv;
 	readonly connections: IParadisDaemonConnections;
 	/**
-	 * 常駐が抱えているものを数える相手。
+	 * いま抱えているものを数える。**繋がっているものも含めて数えること。**
 	 *
-	 * `paradisListHeldTerminals` は `PtyService` の fork 追加分 (upstream の `listProcesses` は
-	 * 繋がっていないものしか返さない)。無い場合に備えて任意にしてあるが、実際には
-	 * `ptyHostMain.ts` が実体を渡すので必ず在る。
+	 * 関数で受けるのは、常駐が2種類あるため。`IPtyService` を丸ごと持つ古い形と、pty だけを
+	 * 持つ薄い形とで数え方が違うが、**寿命の決め方は同じ**なので、違いはここ1点に閉じ込める。
 	 */
-	readonly ptyService: IPtyService & { paradisListHeldTerminals?(): Promise<{ workspaceName: string }[]> };
+	readonly heldTerminals: () => Promise<readonly { readonly workspaceName: string }[]>;
 	readonly logService: ILogService;
 	/** 終わるときに呼ぶ。既定は `process.exit`。テストでは差し替える。 */
 	readonly exit?: () => void;
@@ -127,9 +125,9 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 
 	/** 自分について答える。繋がった時点で身元は証明されているので、確認ではなく表示のため。 */
 	async describe(): Promise<IParadisPtyDaemonDescription> {
-		let terminals: { workspaceName: string }[] = [];
+		let terminals: readonly { readonly workspaceName: string }[] = [];
 		try {
-			terminals = await this.heldTerminals();
+			terminals = await this.options.heldTerminals();
 		} catch {
 			// 数えられないなら 0 とは言わずに…と言いたいところだが、ここは表示専用なので
 			// 空を返して構わない。判断に使う `checkIdle` は別で、そちらは数えられないと動かない。
@@ -142,24 +140,13 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 		};
 	}
 
-	/**
-	 * 抱えているターミナル。**繋がっているものも含める。**
-	 *
-	 * `listProcesses()` へ落ちるのは、fork の追加分が無い相手を渡された場合だけ。そのときは
-	 * 繋がっていないものしか数えられないが、何も数えられないよりはよい。
-	 */
-	private async heldTerminals(): Promise<{ workspaceName: string }[]> {
-		const pty = this.options.ptyService;
-		return pty.paradisListHeldTerminals ? pty.paradisListHeldTerminals() : pty.listProcesses();
-	}
-
 	private async checkIdle(): Promise<void> {
 		if (this.exiting) {
 			return;
 		}
 		let terminalCount: number;
 		try {
-			terminalCount = (await this.heldTerminals()).length;
+			terminalCount = (await this.options.heldTerminals()).length;
 		} catch (error) {
 			// 数えられないなら、抱えているものが分からないということ。分からないまま終わらない。
 			this.options.logService.warn('[ParadisPtyDaemon] could not count terminals', error);

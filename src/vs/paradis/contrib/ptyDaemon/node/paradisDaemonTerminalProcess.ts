@@ -40,18 +40,20 @@ import {
 	IProcessProperty,
 	IProcessPropertyMap,
 	IProcessReadyEvent,
+	IProcessReadyWindowsPty,
 	IShellLaunchConfig,
-	ITerminalChildProcess,
 	ITerminalLaunchError,
 	ITerminalLaunchResult,
 	ITerminalProcessOptions,
 	ProcessPropertyType,
+	TerminalShellType,
 } from '../../../../platform/terminal/common/terminal.js';
 import { IProcessEnvironment } from '../../../../base/common/platform.js';
 import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
+import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
 
-export class ParadisDaemonTerminalProcess extends Disposable implements ITerminalChildProcess {
+export class ParadisDaemonTerminalProcess extends Disposable implements IParadisTerminalProcessLike {
 
 	id = 0;
 	shouldPersist = false;
@@ -86,7 +88,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements ITermina
 
 	constructor(
 		private readonly host: IParadisPtyHost,
-		private readonly shellLaunchConfig: IShellLaunchConfig,
+		readonly shellLaunchConfig: IShellLaunchConfig,
 		cwd: string,
 		private cols: number,
 		private rows: number,
@@ -308,6 +310,36 @@ export class ParadisDaemonTerminalProcess extends Disposable implements ITermina
 
 	async updateProperty(): Promise<void> {
 		// 書き込まれる種類（固定サイズなど）はこちら側の状態で、常駐は関知しない。
+	}
+
+	/**
+	 * 抱える器（`PersistentTerminalProcess`）が、`ITerminalChildProcess` に加えて欲しがるもの。
+	 *
+	 * どれも「pty を持っている側が知っていること」で、常駐版では `currentTitle` だけが常駐から
+	 * 文字列で届き、残りはこちら側で作れる。
+	 */
+	get currentTitle(): string {
+		return this.title;
+	}
+
+	get shellType(): TerminalShellType | undefined {
+		// シェルの種類はシェル統合が名乗ってきて初めて分かるもので、上の層が持つ。
+		return undefined;
+	}
+
+	get hasChildProcesses(): boolean {
+		return this.childProcesses.value?.hasChildProcesses ?? false;
+	}
+
+	clearUnacknowledgedChars(): void {
+		// 数え直しは常駐側で起きる。**繋ぎ直した時点で向こうが 0 にする**ので、こちらから
+		// 言うことは無い（`ParadisPtyHolder.attach`）。
+	}
+
+	getWindowsPty(): IProcessReadyWindowsPty | undefined {
+		// この常駐は Windows では動かない。動かす日には、pty を持っている常駐側から
+		// 受け取る形になる（こちらからは見えない）。
+		return undefined;
 	}
 
 	/** 常駐に預けておくもの。中身は常駐から見ればただの文字列（引き取りで読む）。 */

@@ -138,7 +138,8 @@ async function startPtyHost() {
 		disposables.add(paradisRunPtyDaemonLifecycle({
 			env: paradisDaemon,
 			connections: paradisDaemonServer,
-			ptyService,
+			// Count what is attached too; the upstream listing only returns orphans.
+			heldTerminals: () => ptyService.paradisListHeldTerminals(),
 			logService,
 		}));
 	}
