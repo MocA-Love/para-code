@@ -23,11 +23,15 @@
 // 同じく `disableServiceWorker: true` にしている。
 //
 // なぜ DOMParser なのか:
-// ワークベンチのページは Trusted Types を要求する（`require-trusted-types-for 'script'`）ため、
-// 素の文字列を `innerHTML` へ入れられない。`DOMParser.parseFromString` は Trusted Types の
-// シンクではなく、しかも出来上がる document はブラウジングコンテキストを持たないので、
-// **走査中にワークベンチ側が画像を読みにいくことがない**。upstream も webview の
-// `toContentHtml` で同じ手を使っている。
+// 出来上がる document はブラウジングコンテキストを持たないので、**走査中にワークベンチ側が
+// 画像を読みにいくことがない**。upstream も webview の `toContentHtml` で同じ手を使っている。
+//
+// **`parseFromString` は Trusted Types のシンクである。** ワークベンチのページは
+// `require-trusted-types-for 'script'` を要求するので、素の文字列を渡すと
+// 「This document requires 'TrustedHTML' assignment」で落ちる（paracode-121 で実際に落ちた）。
+// `renderMarkdownDocument` が返す `TrustedHTML` を **そのまま** 渡すこと。`String()` などで
+// 文字列へ落としてはいけない。ここを緩める新しいポリシーを足すには workbench.html の
+// `trusted-types` 許可リストに名前を足す必要があり、そこまでする理由が無い。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { encodeBase64 } from '../../../../base/common/buffer.js';
@@ -180,7 +184,9 @@ export async function inlineParadisMarkdownMedia(
 	token: CancellationToken,
 	limits: IParadisInlineMediaLimits = PARADIS_INLINE_MEDIA_LIMITS,
 ): Promise<IParadisInlineMediaResult> {
-	const doc = new DOMParser().parseFromString(String(rendered), 'text/html');
+	// TrustedHTML はそのまま渡す（文字列化すると Trusted Types に弾かれる）。
+	// 型定義は string しか受け付けないので、その1点だけキャストする。
+	const doc = new DOMParser().parseFromString(rendered as string, 'text/html');
 	const elements = collectMediaElements(doc.body);
 
 	let inlined = 0;

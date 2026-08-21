@@ -134,9 +134,11 @@ suite('paradisMarkdownInlineResources', () => {
 				['/repo/docs/b.png', VSBuffer.fromString('bbbbbbbbbb')],
 			]);
 
+			// 予算は「埋め込んだ文字列の長さ」で数える。10バイトの画像は
+			// `data:image/png;base64,` (22) + base64 (16) = 38 文字になるので、1枚は通り2枚は通らない値にする。
 			const result = await inlineParadisMarkdownMedia(
 				'<img src="a.png"><img src="b.png">', DOC, FOLDER, fileService, CancellationToken.None,
-				{ maxBytesPerFile: 1024, maxBytesTotal: 20 });
+				{ maxBytesPerFile: 1024, maxBytesTotal: 50 });
 
 			strictEqual(result.inlined, 1);
 			strictEqual(result.skipped, 1);
