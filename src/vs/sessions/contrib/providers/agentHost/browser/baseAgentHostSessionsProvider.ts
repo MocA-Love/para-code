@@ -348,7 +348,10 @@ class AdditionalChat extends Disposable {
 		this._updatedAt = observableValue('chatUpdatedAt', modifiedAt);
 		this._modelId = observableValue<string | undefined>('chatModelId', undefined);
 		this._mode = observableValue<{ readonly id: string; readonly kind: string } | undefined>('chatMode', undefined);
-		this._description = observableValue<IMarkdownString | undefined>('chatDescription', summary.activity ? new MarkdownString().appendText(summary.activity) : undefined);
+		// allow-any-unicode-next-line
+		// PARA-PATCH: summary.activity もハーネスが書いた生の文字列を含みうるので内部タグを変換してから使う
+		const initialActivity = paradisHumanizeAgentSessionTitle(summary.activity);
+		this._description = observableValue<IMarkdownString | undefined>('chatDescription', initialActivity ? new MarkdownString().appendText(initialActivity) : undefined);
 		this._lastTurnEnd = observableValue<Date | undefined>('chatLastTurnEnd', modifiedAt);
 		this._interactivity = observableValue<ChatInteractivity>('chatInteractivity', toChatInteractivity(summary.interactivity));
 		this._isNew = observableValue<boolean>('chatIsNew', isNew);
@@ -392,7 +395,10 @@ class AdditionalChat extends Disposable {
 			this._title.set(paradisHumanizeAgentSessionTitle(summary.title) ?? localize('newChatTab', "New Chat"), tx);
 			this._status.set(mapProtocolStatus(summary.status), tx);
 			this._updatedAt.set(modifiedAt, tx);
-			this._description.set(summary.activity ? new MarkdownString().appendText(summary.activity) : undefined, tx);
+			// allow-any-unicode-next-line
+			// PARA-PATCH: summary.activity もハーネスが書いた生の文字列を含みうるので内部タグを変換してから使う
+			const updatedActivity = paradisHumanizeAgentSessionTitle(summary.activity);
+			this._description.set(updatedActivity ? new MarkdownString().appendText(updatedActivity) : undefined, tx);
 			this._lastTurnEnd.set(modifiedAt, tx);
 			this._interactivity.set(toChatInteractivity(summary.interactivity), tx);
 		});
@@ -646,7 +652,9 @@ export class AgentHostSessionAdapter extends Disposable implements ISession {
 		this.modelId = observableValue<string | undefined>('modelId', undefined);
 		this.mode = observableValue<{ readonly id: string; readonly kind: string } | undefined>('mode', undefined);
 		this.lastTurnEnd = observableValue('lastTurnEnd', metadata.modifiedTime ? new Date(metadata.modifiedTime) : undefined);
-		this._activity = observableValue('activity', metadata.activity);
+		// allow-any-unicode-next-line
+		// PARA-PATCH: metadata.activity もハーネスが書いた生の文字列を含みうるので内部タグを変換してから使う
+		this._activity = observableValue('activity', paradisHumanizeAgentSessionTitle(metadata.activity));
 		this._project = metadata.project;
 		this._workingDirectories = metadata.workingDirectories;
 
@@ -1222,8 +1230,11 @@ export class AgentHostSessionAdapter extends Disposable implements ISession {
 				didChange = true;
 			}
 
-			if (this._activity.get() !== metadata.activity) {
-				this._activity.set(metadata.activity, tx);
+			// allow-any-unicode-next-line
+			// PARA-PATCH: metadata.activity もハーネスが書いた生の文字列を含みうるので内部タグを変換してから使う
+			const activity = paradisHumanizeAgentSessionTitle(metadata.activity);
+			if (this._activity.get() !== activity) {
+				this._activity.set(activity, tx);
 				didChange = true;
 			}
 		});
@@ -1237,8 +1248,11 @@ export class AgentHostSessionAdapter extends Disposable implements ISession {
 	 * transaction MUST pass it — see {@link setChangesSummary}.
 	 */
 	setActivity(activity: string | undefined, tx?: ITransaction): boolean {
-		if (this._activity.get() !== activity) {
-			this._activity.set(activity, tx);
+		// allow-any-unicode-next-line
+		// PARA-PATCH: activity もハーネスが書いた生の文字列を含みうるので内部タグを変換してから使う
+		const humanized = paradisHumanizeAgentSessionTitle(activity);
+		if (this._activity.get() !== humanized) {
+			this._activity.set(humanized, tx);
 			return true;
 		}
 
