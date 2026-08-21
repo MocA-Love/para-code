@@ -20,6 +20,10 @@
 // **永久に返ってこない**。しかも例外は待っている側の try/catch には入らず、main の
 // uncaught として出るだけなので、呼び出し側からは「ただ静かに固まった」ようにしか見えない。
 // 実機でこれを踏み、状態パネルが最初の一瞬の値のまま何時間も凍った。
+//
+// 表に出た症状は2つで、周期が別なので混ぜないこと。**画面が更新されない**のは、開いている間の
+// 更新が前の問い合わせの決着を待って積まれるため (解けないので次が積まれない)。**30秒ごとに
+// uncaught が出続けた**のは、別に走っている30秒間隔の更新が毎回新しい問い合わせを投げていたため。
 
 import { createConnection } from 'net';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -32,7 +36,7 @@ import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
 const CONNECT_TIMEOUT = 2_000;
 
 /** 常駐のソケットへ繋ぐ。応答しなければ undefined。 */
-export function paradisConnectToDaemon(socketPath: string): Promise<NodeSocket | undefined> {
+function paradisConnectToDaemon(socketPath: string): Promise<NodeSocket | undefined> {
 	return new Promise<NodeSocket | undefined>(resolve => {
 		let settled = false;
 		const done = (result: NodeSocket | undefined) => {

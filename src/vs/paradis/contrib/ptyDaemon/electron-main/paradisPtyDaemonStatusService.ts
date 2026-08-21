@@ -21,7 +21,7 @@ import { Disposable, DisposableStore, IDisposable } from '../../../../base/commo
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription } from '../common/paradisPtyDaemonControl.js';
-import { paradisOpenDaemonControl } from '../node/paradisPtyDaemonControlClient.js';
+import { ParadisControlOpen, paradisOpenDaemonControl } from '../node/paradisPtyDaemonControlClient.js';
 import { paradisAskDaemonToStop } from '../node/paradisPtyDaemonStop.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
@@ -70,6 +70,18 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 * 増え続けるのは避ける。
 	 */
 	private control: { readonly client: SocketClient<string>; readonly service: IParadisPtyDaemonControl; readonly pid: number } | undefined;
+
+	/**
+	 * 進行中の接続。
+	 *
+	 * 番人が要るのは、**開いている最中がまるごと競合の窓**だから。繋ぐのに最大2秒、名乗り合いに
+	 * 1往復かかる間に別の呼び出しが来ると、両方が別々のソケットを開く。状態を聞く口はウィンドウ
+	 * ごとに2つあるので (ステータスバーと終了ポリシー)、ウィンドウが同時に立ち上がれば普通に
+	 * 重なる。後から据えた方で上書きすると先に開いた接続は誰も畳まず、しかも**畳んでも常駐側の
+	 * `Protocol` は残る**ので、{@link control} が避けようとしているものがそのまま起きる。
+	 * 開くこと自体を1本に畳む。
+	 */
+	private openingControl: { readonly pid: number; readonly opening: Promise<ParadisControlOpen> } | undefined;
 
 	/** 進行中の問い合わせ。返事を待っている間に次を投げないための番人（{@link describeDaemon}）。 */
 	private pendingDescribe: Promise<IParadisPtyDaemonDescription> | undefined;
@@ -170,23 +182,48 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 		if (this.control && this.control.pid === record.pid) {
 			return { control: this.control.service };
 		}
-		this.disposeControl();
 
-		const opened = await paradisOpenDaemonControl(record.socketPath, record.token);
+		let opening = this.openingControl;
+		if (!opening || opening.pid !== record.pid) {
+			this.disposeControl();
+			const started = { pid: record.pid, opening: paradisOpenDaemonControl(record.socketPath, record.token) };
+			this.openingControl = started;
+			// 後始末は別の枝で。ここで拒否を拾わないと、開けなかったときに未処理の rejection になる。
+			started.opening.then(() => { }, () => { }).finally(() => {
+				if (this.openingControl === started) {
+					this.openingControl = undefined;
+				}
+			});
+			opening = started;
+		}
+
+		const opened = await opening.opening;
 		if (!opened.ok) {
 			throw new Error(opened.reason === 'unreachable'
 				? `nothing answered at ${record.socketPath}`
 				: `whatever answers at ${record.socketPath} is not one of ours`);
 		}
-		const { client, control } = opened;
-		this.control = { client, service: control, pid: record.pid };
+		this.seatControl(opened.client, opened.control, opening.pid);
+		return { control: opened.control };
+	}
+
+	/**
+	 * 開いた接続を据える。**同じ約束を待っていた全員がここを通る**ので、二重に据えない。
+	 *
+	 * 据える前に前の相手を畳むので、どの順で来ても掴みっぱなしにはならない。
+	 */
+	private seatControl(client: SocketClient<string>, control: IParadisPtyDaemonControl, pid: number): void {
+		if (this.control?.client === client) {
+			return;
+		}
+		this.disposeControl();
+		this.control = { client, service: control, pid };
 		// 相手が落ちたら捨てる。掴んだままだと、次の常駐へ繋ぎ直さずに黙って失敗し続ける。
 		client.onDidDispose(() => {
 			if (this.control?.client === client) {
 				this.control = undefined;
 			}
 		});
-		return { control };
 	}
 
 	private disposeControl(): void {

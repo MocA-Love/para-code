@@ -28,8 +28,15 @@ import { PARADIS_PTY_DAEMON_AUTH_CHANNEL, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } f
 import { ParadisPtyDaemonAuth, paradisCreateDaemonToken } from '../../node/paradisPtyDaemonAuth.js';
 import { paradisOpenDaemonControl } from '../../node/paradisPtyDaemonControlClient.js';
 
-/** 待ち続けたら失敗させる。凍る不具合を「遅い」で見逃さないため、テスト側の上限より短くする。 */
-const ANSWER_TIMEOUT = 5_000;
+/**
+ * 待ち続けたら失敗させる上限。
+ *
+ * **mocha の既定 (2000ms) より短くしないと、こちらは一度も発火しない。** node のランナーは
+ * `new Mocha({ ui: 'tdd' })` としか書いておらず、`--timeout` を渡さない限り既定が効く
+ * (`.mocharc` も無い)。長く取ると、凍ったときの失敗が汎用の `Timeout of 2000ms exceeded` に
+ * なってしまい、**何が凍ったのか読めない**。
+ */
+const ANSWER_TIMEOUT = 1_000;
 
 // 受理した接続ぶんの `Protocol` は `IPCServer` が畳まないので、リーク検査は外してある
 // (`paradisPtyDaemonStop.test.ts` と同じ理由)。
@@ -68,7 +75,9 @@ suite('ParadisPtyDaemonControlClient', () => {
 			async shutdown() { throw new Error('not used here'); },
 		}, store));
 
-		const opened = await paradisOpenDaemonControl(socketPath, token);
+		// 開くところ自体に上限を置く。**実機で凍ったのはまさにこの待ち**なので、ここが解けない
+		// ことを `answered` として結果に出す。上限が無いとランナーの汎用の時間切れになる。
+		const opened = await raceTimeout(paradisOpenDaemonControl(socketPath, token), ANSWER_TIMEOUT);
 
 		// **これが本題。** `then` を読んで関数が返る値は、`await` した時点でその呼び出しが
 		// 常駐へ送られ、返事は永久に来ない。
@@ -76,9 +85,9 @@ suite('ParadisPtyDaemonControlClient', () => {
 		// 読み取りで確かめるのは、`Proxy` に対しては `in` も `Object.hasOwn` も **false を返す**
 		// から。危ないのは所有していることではなく、聞かれたら関数を返すこと。`Promise` も
 		// まさにこの読み取りで thenable かどうかを決める。
-		const thenable = typeof (opened as { then?: unknown }).then === 'function';
-		const described = opened.ok ? await raceTimeout(opened.control.describe(), ANSWER_TIMEOUT) : undefined;
-		if (opened.ok) {
+		const thenable = typeof (opened as { then?: unknown } | undefined)?.then === 'function';
+		const described = opened?.ok ? await raceTimeout(opened.control.describe(), ANSWER_TIMEOUT) : undefined;
+		if (opened?.ok) {
 			opened.client.dispose();
 		}
 
@@ -90,13 +99,15 @@ suite('ParadisPtyDaemonControlClient', () => {
 
 		assert.deepStrictEqual(
 			{
-				opened: opened.ok,
+				answered: opened !== undefined,
+				opened: opened?.ok,
 				thenable,
 				terminals: described?.terminals.map(terminal => terminal.workspaceName),
 				wrongToken: wrongToken.ok ? 'opened' : wrongToken.reason,
 				missing: missing.ok ? 'opened' : missing.reason,
 			},
 			{
+				answered: true,
 				opened: true,
 				thenable: false,
 				terminals: ['one', 'two'],
