@@ -20,9 +20,29 @@
 .paradis-pty-daemon-popover .ppd-head {
 	display: flex;
 	align-items: baseline;
-	justify-content: space-between;
 	gap: 10px;
-	padding: 12px 14px 10px;
+	padding: 11px 14px 10px;
+}
+
+/* 合計は右端。ここが「何本抱えているか」の答えで、探さずに読めるべき値。 */
+.paradis-pty-daemon-popover .ppd-total {
+	margin-left: auto;
+	font-size: 13px;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+/*
+ * 見出しの3つは縮ませない。日本語はどこでも改行できるので、flex の最小幅が1文字まで落ちる。
+ * 実際にそれで、値の側に長いものが来たときラベルが縦1列に崩れた。算術で足りているうちは
+ * 気づけないので、構造で禁じておく。
+ */
+.paradis-pty-daemon-popover .ppd-title,
+.paradis-pty-daemon-popover .ppd-state,
+.paradis-pty-daemon-popover .ppd-dot {
+	flex: 0 0 auto;
+	white-space: nowrap;
 }
 
 .paradis-pty-daemon-popover .ppd-title {
@@ -49,10 +69,24 @@
 	background-color: var(--vscode-errorForeground);
 }
 
-.paradis-pty-daemon-popover .ppd-lead {
-	padding: 0 14px 12px;
+/* 並べるものが無いときの本体。脚注ではなく本文なので、色を落とさない。 */
+.paradis-pty-daemon-popover .ppd-empty {
+	padding: 12px 14px;
+	line-height: 1.65;
+}
+
+/* 本体の下に添える補足。前に出ない。 */
+.paradis-pty-daemon-popover .ppd-foot {
+	padding: 10px 14px;
 	line-height: 1.65;
 	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-pty-daemon-popover .ppd-meta {
+	margin-top: 4px;
+	font-size: 11.5px;
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
 }
 
 .paradis-pty-daemon-popover .ppd-sep {
@@ -60,30 +94,15 @@
 	background-color: var(--vscode-widget-border, var(--vscode-editorWidget-border));
 }
 
-.paradis-pty-daemon-popover .ppd-facts {
-	display: grid;
-	grid-template-columns: auto 1fr;
-	gap: 6px 16px;
-	padding: 11px 14px;
-	margin: 0;
-}
-
-.paradis-pty-daemon-popover .ppd-facts dt {
-	color: var(--vscode-descriptionForeground);
-	/* 折り返さない。値の側に長いものが来ると `auto` の列が1文字幅まで潰れ、ラベルが縦に並ぶ。 */
-	white-space: nowrap;
-}
-
-.paradis-pty-daemon-popover .ppd-facts dd {
-	margin: 0;
-	font-variant-numeric: tabular-nums;
-	/* 区切りの無い長い値 (コミットハッシュ等) でも、列を押し広げずに折り返す。 */
-	overflow-wrap: anywhere;
-	min-width: 0;
-}
-
 .paradis-pty-daemon-popover .ppd-rows {
 	padding: 6px;
+	/*
+	 * 本体だけをスクロールさせる。上限が無いと、スペースが増えたぶんパネルが縦に伸び、
+	 * はみ出すのは下端＝再起動・停止・設定の並びになる（位置決めは上端で止まる）。
+	 * 一覧が読めなくなるより、操作できなくなる方が困る。
+	 */
+	max-height: 240px;
+	overflow-y: auto;
 }
 
 .paradis-pty-daemon-popover .ppd-row {
