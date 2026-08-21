@@ -18,16 +18,8 @@
 //
 // サービスから切り出してあるのは、ここだけを本物のソケット相手に確かめられるようにするため。
 
-import { createConnection } from 'net';
 import { raceTimeout } from '../../../../base/common/async.js';
-import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
-import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
-import { IParadisPtyDaemonControl, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
-import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
-
-/** 繋ぐのを待つ上限。応答しない相手をいつまでも待たない。 */
-const CONNECT_TIMEOUT = 2_000;
+import { paradisOpenDaemonControl } from './paradisPtyDaemonControlClient.js';
 
 /**
  * 頼んでから相手が消えるのを待つ上限。
@@ -46,28 +38,6 @@ export type ParadisStopOutcome =
 	/** 届いたかどうか分からないまま時間切れ。 */
 	| 'timeout';
 
-/** 常駐のソケットへ繋ぐ。応答しなければ undefined。状態を聞く側とも共有する。 */
-export function paradisConnectToDaemon(socketPath: string): Promise<NodeSocket | undefined> {
-	return new Promise<NodeSocket | undefined>(resolve => {
-		let settled = false;
-		const done = (result: NodeSocket | undefined) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(timer);
-			if (!result) {
-				socket.destroy();
-			}
-			resolve(result);
-		};
-		const socket = createConnection({ path: socketPath });
-		const timer = setTimeout(() => done(undefined), CONNECT_TIMEOUT);
-		socket.once('connect', () => done(new NodeSocket(socket, 'paradis-daemon-control')));
-		socket.once('error', () => done(undefined));
-	});
-}
-
 /**
  * 常駐へ終了を頼む。**繋いで頼む。番号で殺さない。**
  *
@@ -75,22 +45,17 @@ export function paradisConnectToDaemon(socketPath: string): Promise<NodeSocket |
  * 殺してよい理由が無い（`paradisJudgeUnreachableDaemon` と同じ立場）。
  */
 export async function paradisAskDaemonToStop(socketPath: string, token: string): Promise<ParadisStopOutcome> {
-	const socket = await paradisConnectToDaemon(socketPath);
-	if (!socket) {
-		return 'unreachable';
+	const opened = await paradisOpenDaemonControl(socketPath, token);
+	if (!opened.ok) {
+		return opened.reason;
 	}
-	const client = SocketClient.fromSocket(socket, 'paradis-daemon-control');
 	try {
-		if (!await paradisAuthenticateDaemon(client, token)) {
-			return 'not-ours';
-		}
-		const control = ProxyChannel.toService<IParadisPtyDaemonControl>(client.getChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL));
 		const outcome = await raceTimeout(
-			control.shutdown().then(() => 'stopped' as const, () => 'stopped' as const),
+			opened.control.shutdown().then(() => 'stopped' as const, () => 'stopped' as const),
 			STOP_TIMEOUT,
 		);
 		return outcome ?? 'timeout';
 	} finally {
-		client.dispose();
+		opened.client.dispose();
 	}
 }

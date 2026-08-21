@@ -19,6 +19,7 @@
 // 設定が無効なら**何も出さない**。使っていない機能の痕跡をステータスバーに残さない。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { localize } from '../../../../nls.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
@@ -46,6 +47,16 @@ const IDLE_REFRESH = 30_000;
 
 /** 詳細を開いている間の間隔。押した結果がその場で見えてほしい。 */
 const OPEN_REFRESH = 3_000;
+
+/**
+ * 状態の返事を待つ上限。
+ *
+ * 上限が要るのは相手が遅いからではなく、**解決しない待ちが一度でも生まれると画面が二度と
+ * 動かなくなる**から。開いている間の更新は前の問い合わせが終わってから次を積むので、
+ * 待ちが解けなければ次が積まれない。実際にそれが起き、パネルが最初の一瞬の値のまま
+ * 何時間も凍った (原因は `paradisPtyDaemonControlClient.ts` の冒頭)。
+ */
+const STATUS_TIMEOUT = 5_000;
 
 class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkbenchContribution {
 
@@ -92,14 +103,15 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 	}
 
 	private async refresh(): Promise<void> {
-		let status: IParadisPtyDaemonStatus;
+		let status: IParadisPtyDaemonStatus | undefined;
 		try {
-			status = await this.service.getStatus();
+			status = await raceTimeout(this.service.getStatus(), STATUS_TIMEOUT);
 		} catch {
 			// main と話せないのは、まだ立ち上がっていないときか、閉じている最中。次の周期で拾う。
 			return;
 		}
-		if (this._store.isDisposed) {
+		if (!status || this._store.isDisposed) {
+			// 返事が来なかった。前の値を出したまま、次の周期でもう一度聞く。
 			return;
 		}
 		this.status = status;
