@@ -9,13 +9,13 @@
 // Markdown レンダリングビューア（読み取り専用）。VS Code 標準の renderMarkdownDocument
 // （extensions/markdown-language-features と同じ marked ベースのレンダラ + シンタックスハイライト）
 // と標準プレビュー CSS（DEFAULT_MARKDOWN_STYLES）を流用し、webview に表示する。
-// 相対パスの画像は <base href> と localResourceRoots で解決する。
+//
+// この webview は service worker を使わない（`disableServiceWorker`）。そのぶん相対パスの画像は
+// 読み込みの時点で data: URI へ埋め込む（paradisMarkdownInlineResources）。書く側から見た記法は
+// 変わらない。理由の詳細は同モジュールの冒頭を参照。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { Schemas } from '../../../../base/common/network.js';
-import { escape } from '../../../../base/common/strings.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
-import { dirname } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
@@ -31,11 +31,12 @@ import { ITextModelService } from '../../../../editor/common/services/resolverSe
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
+import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 
@@ -58,12 +59,18 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		@INotificationService notificationService: INotificationService,
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@ILanguageService private readonly _languageService: ILanguageService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
 	}
 
 	protected override get allowScripts(): boolean {
 		return false;
+	}
+
+	// 画像は data: で埋め込むので、`vscode-resource` を解決する service worker は要らない。
+	protected override get disableServiceWorker(): boolean {
+		return true;
 	}
 
 	/** 標準 Markdown プレビューと同じ `markdown.preview.frontMatter` 設定を読む（不正値は既定の table 扱い）。 */
@@ -91,31 +98,35 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			}
 		}, token);
 
-		const nonce = generateUuid();
-		const dir = dirname(resource);
-		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
-		// skipEncoding=true は `"` 等をそのまま残すため、属性値に埋める前に HTML エスケープする
-		// (" を含むディレクトリ名で <base href> 属性を突き破る任意マークアップ注入を防ぐ)。
-		const baseHref = escape(asWebviewUri(dir, remoteInfo).toString(true)).replace(/"/g, '&quot;');
+		// サニタイズ済みの HTML を受け取ってから、ローカルの画像だけを data: に差し替える。
+		// <base href> は置かない。置いても service worker が無ければ解決できず、その一方で
+		// 文書内アンカー（#見出し）の解決先を歪めるだけになるため。
+		const media = await inlineParadisMarkdownMedia(
+			rendered,
+			resource,
+			this._workspaceContextService.getWorkspaceFolder(resource)?.uri,
+			this._fileService,
+			token);
 
+		const nonce = generateUuid();
 		const colorMap = TokenizationRegistry.getColorMap();
 		const tokenCss = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
 
 		return `<!DOCTYPE html>
 <html>
 	<head>
-		<base href="${baseHref}/">
 		<meta charset="utf-8">
 		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;">
 		<style nonce="${nonce}">
 			${DEFAULT_MARKDOWN_STYLES}
 			${PARADIS_FRONTMATTER_STYLES}
+			${PARADIS_INLINE_MEDIA_STYLES}
 			${tokenCss}
 			${this.getTransparencyBackgroundCssRule('body.paradis-markdown-body')}
 		</style>
 	</head>
 	<body class="paradis-markdown-body">
-		${frontMatter.htmlPrefix}${rendered}
+		${frontMatter.htmlPrefix}${media.html}
 	</body>
 </html>`;
 	}
