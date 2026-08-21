@@ -28,6 +28,7 @@ import {
 	IParadisPtyDataEvent,
 	IParadisPtyExitEvent,
 	IParadisPtyGreeting,
+	IParadisPtyHost,
 	IParadisPtySpawnRequest,
 	IParadisPtySummary,
 	IParadisPtyTitleEvent,
@@ -42,7 +43,7 @@ import { IParadisPtyProcess, ParadisPtyHolder } from './paradisPtyHolder.js';
  */
 export type ParadisPtySpawner = (request: IParadisPtySpawnRequest) => IParadisPtyProcess;
 
-export class ParadisPtyDaemonHost extends Disposable {
+export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost {
 
 	private readonly holders = new Map<number, ParadisPtyHolder>();
 
@@ -85,7 +86,7 @@ export class ParadisPtyDaemonHost extends Disposable {
 		return [...this.holders.values()].map(holder => holder.summary());
 	}
 
-	async spawn(request: IParadisPtySpawnRequest): Promise<number> {
+	async spawn(request: IParadisPtySpawnRequest): Promise<IParadisPtySummary> {
 		const handle = this.nextHandle++;
 		const store = new DisposableStore();
 		const holder = store.add(new ParadisPtyHolder(handle, this.spawner(request), request.cols, request.rows, request.metadata));
@@ -94,7 +95,7 @@ export class ParadisPtyDaemonHost extends Disposable {
 		store.add(holder.onDidChangeTitle(title => this._onDidChangeTitle.fire({ handle, title })));
 		this.holders.set(handle, holder);
 		this.perHandle.set(handle, store);
-		return handle;
+		return holder.summary();
 	}
 
 	async attach(handle: number): Promise<IParadisPtyAttachment> {
