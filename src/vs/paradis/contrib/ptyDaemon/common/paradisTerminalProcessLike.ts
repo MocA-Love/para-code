@@ -19,6 +19,7 @@
 // そのうち `currentTitle` だけが常駐から文字列で届き、残りはこちら側で作れる
 // (`paradisPtyProtocol.ts` の冒頭)。
 
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import {
 	IProcessReadyWindowsPty,
 	IShellLaunchConfig,
@@ -26,7 +27,7 @@ import {
 	TerminalShellType,
 } from '../../../../platform/terminal/common/terminal.js';
 
-export interface IParadisTerminalProcessLike extends ITerminalChildProcess {
+export interface IParadisTerminalProcessLike extends ITerminalChildProcess, IDisposable {
 	readonly shellLaunchConfig: IShellLaunchConfig;
 	readonly currentTitle: string;
 	readonly shellType: TerminalShellType | undefined;

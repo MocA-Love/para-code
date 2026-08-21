@@ -22,9 +22,10 @@ import { IProductService } from '../../../../platform/product/common/productServ
 import { IReconnectConstants } from '../../../../platform/terminal/common/terminal.js';
 import { ElectronPtyHostStarter } from '../../../../platform/terminal/electron-main/electronPtyHostStarter.js';
 import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
+import { PARADIS_PTY_HOST_STATE_DIR } from '../node/paradisPtyHostBootstrap.js';
 import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
-import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
 /**
  * 常駐の身元。ビルドが変われば別の常駐になる。
@@ -69,6 +70,14 @@ export function paradisCreatePtyHostStarter(
 	productService: IProductService,
 ): IPtyHostStarter {
 	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService);
+
+	// 更新をまたいで繋ぎ直せる薄い常駐。**pty ホストはアプリの中のまま**で、その中から常駐へ
+	// 繋ぐので、ここは今までどおりの起こし方でよい。渡すのは置き場所だけ
+	// (`paradisPtyHostBootstrap.ts` が受け取る)。
+	if (configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true) {
+		process.env[PARADIS_PTY_HOST_STATE_DIR] = environmentMainService.userDataPath;
+		return inApp();
+	}
 
 	if (configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) !== true) {
 		return inApp();

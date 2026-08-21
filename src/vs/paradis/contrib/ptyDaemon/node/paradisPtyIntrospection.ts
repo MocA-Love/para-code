@@ -45,6 +45,11 @@ export async function paradisStatKind(path: string): Promise<ParadisPathKind> {
  * 理由ごと引き継いでいる。
  */
 export async function paradisReadCwd(pid: number, logService: ILogService): Promise<string | undefined> {
+	// pid は「別のビルドの、別のプロセス」から届いた値。コマンドラインに混ぜる前に形を確かめる。
+	// 同じユーザー同士なので権限の境界ではないが、確かめるのが安い以上、確かめない理由が無い。
+	if (!Number.isInteger(pid) || pid <= 0) {
+		return undefined;
+	}
 	if (isMacintosh) {
 		return new Promise<string | undefined>(resolve => {
 			exec(`lsof -OPln -p ${pid} | grep cwd`, { env: { ...process.env, LANG: 'en_US.UTF-8' } }, (error, stdout, stderr) => {

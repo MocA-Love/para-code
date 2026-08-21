@@ -22,6 +22,7 @@ import { IProductService } from '../../../../../platform/product/common/productS
 import { IShellLaunchConfig, ITerminalLaunchError, ITerminalProcessOptions, ProcessPropertyType } from '../../../../../platform/terminal/common/terminal.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisPtySpawnRequest } from '../../common/paradisPtyProtocol.js';
+import { paradisDecodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
 import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalProcess.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
@@ -60,7 +61,7 @@ const OPTIONS: ITerminalProcessOptions = {
 suite('ParadisDaemonTerminalProcess', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(): { host: ParadisPtyDaemonHost; ptys: FakePty[]; requests: IParadisPtySpawnRequest[]; process: ParadisDaemonTerminalProcess } {
+	function create(cwd: string = '/'): { host: ParadisPtyDaemonHost; ptys: FakePty[]; requests: IParadisPtySpawnRequest[]; process: ParadisDaemonTerminalProcess } {
 		const disposables = store.add(new DisposableStore());
 		const ptys: FakePty[] = [];
 		const requests: IParadisPtySpawnRequest[] = [];
@@ -74,7 +75,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 		const process = disposables.add(new ParadisDaemonTerminalProcess(
 			host,
 			shellLaunchConfig,
-			'/',
+			cwd,
 			80, 24,
 			{ PATH: '/usr/bin', EMPTY: undefined } as unknown as Record<string, string>,
 			{},
@@ -98,13 +99,17 @@ suite('ParadisDaemonTerminalProcess', () => {
 				argsIsArray: Array.isArray(request.args),
 				// undefined を含む形のまま渡すと、受け取る側が「文字列だけ」と思えなくなる。
 				envHasOnlyStrings: values.every(value => typeof value === 'string'),
-				metadata: request.metadata,
+				// 常駐はこれを読まない。読まないものは形が変わっても壊れない。
+				metadataIsOpaqueString: typeof request.metadata === 'string',
+				// TERM を渡さないと node-pty の既定 `xterm` に落ち、色付きプロンプトが黙って死ぬ。
+				term: request.term,
 			},
 			{
-				shape: ['args', 'cols', 'cwd', 'env', 'file', 'metadata', 'rows'],
+				shape: ['args', 'cols', 'cwd', 'env', 'file', 'metadata', 'rows', 'term'],
 				argsIsArray: true,
 				envHasOnlyStrings: true,
-				metadata: '',
+				metadataIsOpaqueString: true,
+				term: 'xterm-256color',
 			},
 		);
 	});
@@ -134,7 +139,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 		await timeout(50);
 
 		assert.deepStrictEqual(
-			{ ready, data, titles, killed: ptys[0].killed, cols: (await host.list())[0].cols, exits },
+			{ ready, data, titles, killed: ptys[0].killed, cols: (await host.list())[0].cols },
 			{
 				ready: 7777,
 				data: ['hello from the shell'],
@@ -142,7 +147,6 @@ suite('ParadisDaemonTerminalProcess', () => {
 				titles: ['zsh', 'npm'],
 				killed: 'SIGKILL',
 				cols: 120,
-				exits: [],
 			},
 		);
 	});
@@ -160,9 +164,93 @@ suite('ParadisDaemonTerminalProcess', () => {
 		);
 	});
 
+	test('誰のターミナルかを常駐へ預ける。預けないと引き取っても画面に出てこない', async () => {
+		const disposables = store.add(new DisposableStore());
+		const ptys: FakePty[] = [];
+		const requests: IParadisPtySpawnRequest[] = [];
+		const host = disposables.add(new ParadisPtyDaemonHost(request => {
+			requests.push(request);
+			const pty = new FakePty(disposables);
+			ptys.push(pty);
+			return pty;
+		}));
+		const process = disposables.add(new ParadisDaemonTerminalProcess(
+			host, { executable: '/bin/sh', args: [], env: {}, name: 'build' }, '/', 80, 24, {}, {}, OPTIONS,
+			new NullLogService(), { quality: 'stable' } as IProductService,
+			{ workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true },
+		));
+
+		await process.start();
+		const metadata = paradisDecodeTerminalMetadata(requests[0].metadata);
+
+		assert.deepStrictEqual(
+			{ workspaceId: metadata.workspaceId, workspaceName: metadata.workspaceName, shouldPersist: metadata.shouldPersist, name: metadata.name, hasLaunch: metadata.launch !== undefined },
+			{
+				// 所属が空だと、配置は workspaceId で引くのでどのウィンドウにも載らない。
+				// プロセスは生きているのに、画面に出てくる経路そのものが無くなる。
+				workspaceId: 'ws-1',
+				workspaceName: 'para',
+				shouldPersist: true,
+				name: 'build',
+				// 後で「保存して復元」するときの材料。
+				hasLaunch: true,
+			},
+		);
+	});
+
+	test('起こしてから繋ぐまでの間に出た分も届く。プロンプトを落とさない', async () => {
+		const { ptys, host, process } = create();
+		const data: string[] = [];
+		store.add(process.onProcessData(value => data.push(value)));
+
+		// 常駐が別プロセスに居る本番では、起こした応答が返ってから繋ぎが届くまでに実時間がある。
+		// その間に pty はもう出力していて、**その分は控えにしか無い**。
+		const original = host.attach.bind(host);
+		(host as unknown as { attach(handle: number): Promise<unknown> }).attach = async handle => {
+			ptys[0]?.emit('PROMPT$ ');
+			return original(handle);
+		};
+
+		await process.start();
+
+		// 捨てると、消えるのは決まってシェルの起動直後＝プロンプトと初期エスケープ列になる。
+		assert.deepStrictEqual({ data }, { data: ['PROMPT$ '] });
+	});
+
+	test('閉じたら常駐へ「見るのをやめた」と伝える', async () => {
+		const { host, process } = create();
+		await process.start();
+		const detached: number[] = [];
+		const original = host.detach.bind(host);
+		(host as unknown as { detach(handle: number): Promise<void> }).detach = async handle => {
+			detached.push(handle);
+			return original(handle);
+		};
+
+		process.dispose();
+		await timeout(10);
+
+		// 伝えないと常駐は「まだ誰かが見ている」と思い、未確認の文字が高水位に達して pty が止まる。
+		assert.deepStrictEqual({ detached }, { detached: [1] });
+	});
+
+	test('終了が来なくても、終わったことは必ず伝える', async () => {
+		const { process } = create();
+		await process.start();
+		const exits: (number | undefined)[] = [];
+		store.add(process.onProcessExit(code => exits.push(code)));
+
+		// SIGHUP を握り潰すプロセスだと exit が来ない。来ないままだと器が畳まれず、
+		// タブが閉じないまま台帳に残り続ける。
+		process.shutdown(true);
+		const immediately = exits.length;
+		await timeout(1200);
+
+		assert.deepStrictEqual({ immediately, exits }, { immediately: 0, exits: [undefined] });
+	});
+
 	test('起動先が無ければ、起こす前に断る', async () => {
-		const { requests, process } = create();
-		(process as unknown as { initialCwd: string }).initialCwd = '/definitely/not/here';
+		const { requests, process } = create('/definitely/not/here');
 
 		const result = await process.start() as ITerminalLaunchError | undefined;
 

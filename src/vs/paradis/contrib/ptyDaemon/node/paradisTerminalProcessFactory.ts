@@ -18,6 +18,7 @@
 // **常駐が使えないことは、ターミナルが使えないことではない。** 繋げなければ黙って今までどおり
 // 自分の中で起こす。ここで諦めずに投げると、常駐まわりの些細な不調がターミナル全滅になる。
 
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IProcessEnvironment } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
@@ -25,7 +26,14 @@ import { IShellLaunchConfig, ITerminalProcessOptions } from '../../../../platfor
 import { TerminalProcess } from '../../../../platform/terminal/node/terminalProcess.js';
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
 import { IParadisPtyHostConnection } from './paradisEnsurePtyHost.js';
-import { ParadisDaemonTerminalProcess } from './paradisDaemonTerminalProcess.js';
+import { IParadisTerminalOrigin, ParadisDaemonTerminalProcess } from './paradisDaemonTerminalProcess.js';
+
+/** 引き取る相手。常駐が抱えている1本を名指しする。 */
+export interface IParadisAdoptTarget {
+	readonly handle: number;
+	readonly pid: number;
+	readonly title: string;
+}
 
 /**
  * 常駐への接続。**このプロセスに1つ。**
@@ -34,9 +42,47 @@ import { ParadisDaemonTerminalProcess } from './paradisDaemonTerminalProcess.js'
  */
 let connection: IParadisPtyHostConnection | undefined;
 
-/** 常駐を使うと決まったときに、繋いだものをここへ預ける。 */
+/**
+ * 常駐に繋ぐ作業。**進行中はここに居る。**
+ *
+ * 待つのをターミナルを作るときだけに閉じ込めるための番人。起動そのものを待たせてはいけない:
+ * pty ホストのチャネルが登録されるまで、窓から来た要求は `ChannelServer` に溜まるが、
+ * **1秒で「Unknown channel」として失敗する**。常駐を起こすのに10秒かかり得る以上、
+ * 起動の途中で待つと、常駐を初めて有効にした起動が必ず壊れる。
+ */
+let arriving: Promise<unknown> | undefined;
+
+/** 接続の生死の見張り。**預け替えたら畳む**（畳まないと購読が積み上がる）。 */
+let watching: IDisposable | undefined;
+
+/**
+ * 常駐を使うと決まったときに、繋いだものをここへ預ける。
+ *
+ * **切れたら手放す。** 常駐が落ちた後も掴んだままだと、以後に作るターミナルが全部そこへ行こうと
+ * して失敗し続ける。手放しておけば、次からは今までどおりこのプロセスの中で起こせる——
+ * 常駐が使えないことを、ターミナルが使えないことにしない。
+ */
 export function paradisUsePtyDaemon(value: IParadisPtyHostConnection | undefined): void {
+	watching?.dispose();
+	watching = undefined;
 	connection = value;
+	if (!value) {
+		return;
+	}
+	watching = value.client.onDidDispose(() => {
+		if (connection !== value) {
+			return;
+		}
+		connection = undefined;
+		arriving = undefined;
+		watching?.dispose();
+		watching = undefined;
+	});
+}
+
+/** 常駐へ繋ぐ作業を預ける。ターミナルを作るときだけ、これの完了を待つ。 */
+export function paradisAwaitPtyDaemon(work: Promise<unknown> | undefined): void {
+	arriving = work;
 }
 
 /** いま常駐に持たせているか。引き取りや状態表示が同じ答えを見るための唯一の口。 */
@@ -50,7 +96,7 @@ export function paradisPtyDaemonConnection(): IParadisPtyHostConnection | undefi
  * 引数は `TerminalProcess` のコンストラクタと同じ並びにしてある。**呼び出し側の1行を
  * 置き換えるだけで済ませる**ため。
  */
-export function paradisCreateTerminalProcess(
+export async function paradisCreateTerminalProcess(
 	shellLaunchConfig: IShellLaunchConfig,
 	cwd: string,
 	cols: number,
@@ -60,11 +106,27 @@ export function paradisCreateTerminalProcess(
 	options: ITerminalProcessOptions,
 	logService: ILogService,
 	productService: IProductService,
-): IParadisTerminalProcessLike {
+	/** 誰のターミナルか。常駐へ預けて、引き取るときに読み戻す。 */
+	origin?: IParadisTerminalOrigin,
+	/**
+	 * 常駐がすでに抱えているものを引き取る場合の相手。
+	 *
+	 * **常駐に繋がっていないのにこれが渡ってきたら、作れない。** 引き取り先が居ないのに
+	 * 新しく起こすと、残っているプロセスは行方不明のまま二重に増えるので、投げて気づかせる。
+	 */
+	adoptTarget?: IParadisAdoptTarget,
+): Promise<IParadisTerminalProcessLike> {
+	if (arriving) {
+		// 繋ぎ終わるまで待つ。**ここで待つのは安全**で、この時点ではチャネルは登録済み。
+		await arriving;
+	}
 	if (connection) {
 		return new ParadisDaemonTerminalProcess(
-			connection.host, shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService,
+			connection.host, shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService, origin, connection.client, adoptTarget,
 		);
+	}
+	if (adoptTarget) {
+		throw new Error('cannot adopt a terminal without a daemon to adopt it from');
 	}
 	return new TerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService);
 }

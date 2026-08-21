@@ -65,6 +65,27 @@ suite('ParadisPtyScrollback', () => {
 		);
 	});
 
+	test('こぼれは区間で見る。一度あふれた端末が以後ずっと言い続けない', () => {
+		const scrollback = new ParadisPtyScrollback(80, 24);
+		scrollback.handleData('x'.repeat(LIMIT + 1));
+
+		// ここまでで一度あふれた。以後の判断はこの時点を基準にする。
+		const mark = scrollback.mark();
+		scrollback.handleData('a little more');
+
+		assert.deepStrictEqual(
+			{ cumulative: scrollback.dropped, sinceMark: scrollback.droppedSince(mark), sinceStart: scrollback.droppedSince(0) },
+			{
+				// 累積では「あふれたことがある」。
+				cumulative: true,
+				// **区間では失っていない。** ここを累積で見ると、長く走った端末は繋ぎ直すたびに
+				// 断りが出て、断り自体が読み飛ばされるようになる。
+				sinceMark: false,
+				sinceStart: true,
+			},
+		);
+	});
+
 	test('こぼれるのは古い方からで、新しい出力は残る', () => {
 		const scrollback = new ParadisPtyScrollback(80, 24);
 		scrollback.handleData('OLDEST');

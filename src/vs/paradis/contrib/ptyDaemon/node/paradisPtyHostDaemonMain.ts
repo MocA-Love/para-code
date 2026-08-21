@@ -72,6 +72,16 @@ export async function paradisRunPtyHostDaemon(options: IParadisPtyHostDaemonOpti
 		ProxyChannel.fromService(host, disposables, { unbufferedEvents: PARADIS_UNBUFFERED_EVENTS }),
 	);
 
+	// **見ている相手が消えたら、繋いでいたものを離す。** アプリが行儀よく `detach` して閉じるとは
+	// 限らない（落ちる・強制終了される・機械が寝る）。届かなかった場合に「まだ誰かが見ている」と
+	// 思い続けると、未確認の文字が数え上がって高水位で pty が止まり、閉じている間も走り切らせる
+	// という判断が無言で覆る。接続が切れたこと自体を合図にする。
+	disposables.add(served.server.onDidRemoveConnection(() => {
+		if (served.server.connections.length === 0) {
+			host.releaseViewers();
+		}
+	}));
+
 	disposables.add(paradisRunPtyDaemonLifecycle({
 		env,
 		connections: served.server,

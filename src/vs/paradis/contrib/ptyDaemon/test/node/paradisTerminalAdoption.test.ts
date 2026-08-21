@@ -82,6 +82,7 @@ suite('ParadisTerminalAdoption', () => {
 			acknowledge: (handle, charCount) => host.acknowledge(handle, charCount),
 			resize: (handle, cols, rows) => host.resize(handle, cols, rows),
 			setMetadata: (handle, metadata) => host.setMetadata(handle, metadata),
+			clearScrollback: handle => host.clearScrollback(handle),
 			kill: (handle, signal) => host.kill(handle, signal),
 			release: handle => host.release(handle),
 			setLayout: (scopeId, layout) => host.setLayout(scopeId, layout),
@@ -91,7 +92,7 @@ suite('ParadisTerminalAdoption', () => {
 	}
 
 	function spawnRequest(metadata: string) {
-		return { file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, metadata };
+		return { file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, term: 'xterm-256color', metadata };
 	}
 
 	test('前のアプリが残したものを、新しいアプリが預かりものごと引き取る', async () => {
@@ -103,7 +104,7 @@ suite('ParadisTerminalAdoption', () => {
 			workspaceName: 'para',
 			shouldPersist: true,
 			name: 'build',
-			appearance: { icon: 'terminal-bash' },
+			appearance: { icon: 'terminal-bash' }, launch: undefined,
 		})))).handle;
 		await host.attach(handle);
 		ptys[0].emit('$ npm run build\r\n');
@@ -124,6 +125,7 @@ suite('ParadisTerminalAdoption', () => {
 				workspace: [adopted.metadata.workspaceId, adopted.metadata.workspaceName],
 				name: adopted.metadata.name,
 				appearance: adopted.metadata.appearance,
+				launch: adopted.metadata.launch,
 				// 閉じている間の出力も含めて、画面を作り直せる。
 				replay: adopted.replay,
 				dropped: adopted.dropped,
@@ -135,7 +137,7 @@ suite('ParadisTerminalAdoption', () => {
 				pid: 9000,
 				workspace: ['ws-1', 'para'],
 				name: 'build',
-				appearance: { icon: 'terminal-bash' },
+				appearance: { icon: 'terminal-bash' }, launch: undefined,
 				replay: '$ npm run build\r\ndone in 12s\r\n',
 				dropped: false,
 			},
@@ -158,8 +160,13 @@ suite('ParadisTerminalAdoption', () => {
 		const adopted = (await paradisAdoptTerminals(host)).adopted[0];
 
 		assert.deepStrictEqual(
-			{ dropped: adopted.dropped, hasNotice: adopted.replay.includes('discarded'), noticeFirst: adopted.replay.indexOf('discarded') < 200 },
-			{ dropped: true, hasNotice: true, noticeFirst: true },
+			{ dropped: adopted.dropped, mixedIntoReplay: adopted.replay.includes('discarded') },
+			{
+				// こぼれたことは伝える。
+				dropped: true,
+				// **断りは中身に混ぜない。** 混ぜると、実際に画面へ流す側が出す分と二重になる。
+				mixedIntoReplay: false,
+			},
 		);
 	});
 

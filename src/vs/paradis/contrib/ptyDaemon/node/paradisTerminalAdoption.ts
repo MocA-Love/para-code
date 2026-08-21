@@ -21,7 +21,6 @@
 //  3. **勝手に殺さない。** 引き取れなかったものは常駐に残す。こちらが分からないというだけで
 //     走っているプロセスを畳む理由が無い
 
-import { localize } from '../../../../nls.js';
 import { IParadisPtyHost, IParadisPtySummary } from '../common/paradisPtyProtocol.js';
 import { IParadisTerminalMetadata, paradisDecodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
 
@@ -29,7 +28,13 @@ import { IParadisTerminalMetadata, paradisDecodeTerminalMetadata } from '../comm
 export interface IParadisAdoptedTerminal {
 	readonly summary: IParadisPtySummary;
 	readonly metadata: IParadisTerminalMetadata;
-	/** 画面を作り直すための中身。**こぼれていた場合はその断りが先頭に入る。** */
+	/**
+	 * 画面を作り直すための中身。
+	 *
+	 * **断りはここに混ぜない。** 混ぜると、繋ぎ直したときに出す分と二重になる。断りを出すのは
+	 * 実際に画面へ流す側（`ParadisDaemonTerminalProcess`）の仕事で、こちらは {@link dropped} を
+	 * 伝えるだけにする。
+	 */
 	readonly replay: string;
 	/** 古い出力が捨てられていたか。呼び出し側が更に断りを出したいときのために残す。 */
 	readonly dropped: boolean;
@@ -51,16 +56,6 @@ export interface IParadisAdoptionResult {
 	 * 数を返すのは、黙って減っているのが一番困るため。呼び出し側がログにも画面にも出せる。
 	 */
 	readonly skipped: number;
-}
-
-/**
- * こぼれたときの断り。
- *
- * 画面の先頭に置く。**出力そのものと見分けが付く形**にしないと、プログラムが出した文字と
- * 混ざって読まれる。
- */
-function droppedNotice(): string {
-	return `\r\n\x1b[2m[${localize('paradis.ptyDaemon.dropped', "earlier output was discarded while Para Code was closed")}]\x1b[0m\r\n`;
 }
 
 /**
@@ -87,7 +82,7 @@ export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IPar
 			adopted.push({
 				summary,
 				metadata: paradisDecodeTerminalMetadata(summary.metadata),
-				replay: attachment.dropped ? droppedNotice() + replay : replay,
+				replay,
 				dropped: attachment.dropped,
 			});
 		} catch {

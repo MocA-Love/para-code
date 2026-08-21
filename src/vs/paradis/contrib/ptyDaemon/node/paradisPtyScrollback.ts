@@ -49,13 +49,33 @@ export class ParadisPtyScrollback {
 	}
 
 	/**
-	 * 古い出力を捨てたか。
+	 * 古い出力を捨てたか（これまでの全体で）。
 	 *
 	 * 上限ちょうどでは捨てていない (`TerminalRecorder` は超えた分だけ削る) ので、判定は
 	 * 「超えたか」であって「達したか」ではない。
 	 */
 	get dropped(): boolean {
 		return this.written > PARADIS_SCROLLBACK_LIMIT;
+	}
+
+	/**
+	 * いまの目印。{@link droppedSince} と組で使う。
+	 */
+	mark(): number {
+		return this.written;
+	}
+
+	/**
+	 * **その目印以降に**古い出力を捨てたか。
+	 *
+	 * 区間で見られるようにしてあるのは、繋ぎ直すたびに「こぼれた」と言わないため。累積で見ると、
+	 * 一度でも上限を超えた端末は以後ずっと true になり、断りが毎回出て読み飛ばされる。
+	 *
+	 * 目印以降に上限ぶんを超えて書かれていれば、目印の時点で持っていたものは押し出されている。
+	 */
+	droppedSince(mark: number): boolean {
+		return this.written - mark > 0 && this.written > PARADIS_SCROLLBACK_LIMIT
+			&& (this.written - mark >= PARADIS_SCROLLBACK_LIMIT || mark < this.written - PARADIS_SCROLLBACK_LIMIT);
 	}
 
 	handleData(data: string): void {

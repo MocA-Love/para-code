@@ -32,6 +32,13 @@ export interface IParadisTerminalMetadata {
 	readonly name: string | undefined;
 	/** アイコンや色のような「見た目」。読めなければ捨てる。**繋げることを優先する。** */
 	readonly appearance: unknown;
+	/**
+	 * 器を作り直すための材料（起動時のシェル設定と環境）。
+	 *
+	 * **無くても引き取れる**。無いまま引き取ると、後でこのターミナルを「保存して復元」する際の
+	 * 材料が空になるが、それは走っているプロセスを失うのに比べれば些細なこと。
+	 */
+	readonly launch: unknown;
 }
 
 const FALLBACK: IParadisTerminalMetadata = {
@@ -40,6 +47,7 @@ const FALLBACK: IParadisTerminalMetadata = {
 	shouldPersist: true,
 	name: undefined,
 	appearance: undefined,
+	launch: undefined,
 };
 
 export function paradisEncodeTerminalMetadata(metadata: IParadisTerminalMetadata): string {
@@ -70,5 +78,6 @@ export function paradisDecodeTerminalMetadata(raw: string): IParadisTerminalMeta
 		name: typeof value.name === 'string' ? value.name : undefined,
 		// 中身は見ない。使う側が読めなければ捨てる。
 		appearance: value.appearance,
+		launch: value.launch,
 	};
 }

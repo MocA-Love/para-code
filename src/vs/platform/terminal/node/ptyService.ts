@@ -26,7 +26,7 @@ import { ShellIntegrationAddon } from '../common/xterm/shellIntegrationAddon.js'
 import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
 import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
-import { paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -345,7 +345,10 @@ export class PtyService extends Disposable implements IPtyService {
 		workspaceId: string,
 		workspaceName: string,
 		isReviving?: boolean,
-		rawReviveBuffer?: string
+		rawReviveBuffer?: string,
+		// PARA-PATCH: adopt a terminal the daemon is already holding instead of starting one.
+		// See paradisTerminalProcessFactory.ts.
+		paradisAdoptTarget?: IParadisAdoptTarget
 	): Promise<number> {
 		if (shellLaunchConfig.attachPersistentProcess) {
 			throw new Error('Attempt to create a process when attach object was provided');
@@ -353,7 +356,7 @@ export class PtyService extends Disposable implements IPtyService {
 		const id = ++this._lastPtyId;
 		// PARA-PATCH: the pty may belong to a daemon that outlives this process, so the decision of
 		// where it runs is made in one place. See paradisTerminalProcessFactory.ts.
-		const process = paradisCreateTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService);
+		const process = await paradisCreateTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService, { workspaceId, workspaceName, shouldPersist }, paradisAdoptTarget);
 		const processLaunchOptions: IPersistentTerminalProcessLaunchConfig = {
 			env,
 			executableEnv,
