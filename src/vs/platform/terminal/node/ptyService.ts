@@ -429,6 +429,19 @@ export class PtyService extends Disposable implements IPtyService {
 	}
 
 	@traceRpc
+	/**
+	 * PARA-PATCH: everything this host is holding, including terminals a window is attached to.
+	 *
+	 * `listProcesses` below cannot answer that: it ends with `filter(entry => entry.isOrphan)`,
+	 * because it exists to offer terminals that can still be attached to. The pty daemon needs the
+	 * other question — what is being held right now — for the count it shows and for deciding
+	 * when it may stop. See vs/paradis/contrib/ptyDaemon.
+	 */
+	async paradisListHeldTerminals(): Promise<IProcessDetails[]> {
+		const held = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
+		return Promise.all(held.map(([id, data]) => this._buildProcessDetails(id, data)));
+	}
+
 	async listProcesses(): Promise<IProcessDetails[]> {
 		const persistentProcesses = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
 

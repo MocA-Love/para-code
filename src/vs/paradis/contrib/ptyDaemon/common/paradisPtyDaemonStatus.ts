@@ -137,3 +137,19 @@ export function paradisGroupTerminalsBySpace(
 	}
 	return grouped;
 }
+
+/** 画面に出すビルドの名前。コミットは頭だけにする。 */
+export function paradisShortBuildId(buildId: string | undefined): string {
+	if (!buildId) {
+		return '—';
+	}
+	// `<version>-<commit>` の形。コミットは40文字あり、そのまま出すと桁が読めなくなるうえ、
+	// 折り返して欄が縦に伸びる。見分けがつけば十分なので頭だけにする。
+	const separator = buildId.indexOf('-');
+	if (separator === -1) {
+		return buildId;
+	}
+	const version = buildId.slice(0, separator);
+	const commit = buildId.slice(separator + 1);
+	return commit.length > 8 ? `${version}-${commit.slice(0, 8)}` : buildId;
+}
