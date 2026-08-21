@@ -1894,6 +1894,10 @@ export default defineConfig(
 						// PARA-PATCH: webviewElement.ts が webview 致命エラー(service worker 登録失敗等)を
 						// Para Code Sentry へ報告 (reportParadisWebviewFatalError) するための唯一の逆方向 import
 						'vs/paradis/contrib/sentry/~',
+						// PARA-PATCH: agentHostSessionListController.ts がチャットセッションのタイトル/説明から
+						// ハーネス内部タグを除去するヘルパー(paradisHumanizeAgentSessionTitle)を呼ぶための
+						// 共通型/関数import（common層のみ。末尾は既にcommonという末端レイヤー名なので'~'にせず'**'で完結させる）
+						'vs/paradis/contrib/agentSessionTitle/common/**',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import

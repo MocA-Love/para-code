@@ -18,6 +18,9 @@ import { IAgentHostUntitledProvisionalSessionService } from './agentHostUntitled
 import { IAgentHostImportConversationStore } from './agentHostImportConversationStore.js';
 import { IAgentHostNewSessionFolderService } from './agentHostNewSessionFolderService.js';
 import { AgentHostSessionListStore, type IAgentHostSessionListDelta } from './agentHostSessionListStore.js';
+// allow-any-unicode-next-line
+// PARA-PATCH: セッションのタイトル/説明からハーネス内部タグ（<command-name>等）を除去するための import
+import { paradisHumanizeAgentSessionTitle } from '../../../../../../paradis/contrib/agentSessionTitle/common/paradisAgentSessionTitle.js';
 
 function mapSessionStatus(status: SessionStatus | undefined): ChatSessionStatus {
 	if (status !== undefined && (status & SessionStatus.InputNeeded) === SessionStatus.InputNeeded) {
@@ -208,10 +211,12 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 		changesSummary?: ChangesSummary;
 	}): IChatSessionItem {
 		const inProgress = opts.status !== undefined && (opts.status & SessionStatus.InProgress) !== 0;
-		const description = inProgress && opts.activity ? opts.activity : this._description;
+		// allow-any-unicode-next-line
+		// PARA-PATCH: opts.title/opts.activity はハーネスが書いた生の文字列なので内部タグを変換してから使う
+		const description = inProgress && opts.activity ? paradisHumanizeAgentSessionTitle(opts.activity) ?? this._description : this._description;
 		return {
 			resource: this._resource(rawId),
-			label: opts.title || `Session ${rawId.substring(0, 8)}`,
+			label: paradisHumanizeAgentSessionTitle(opts.title) ?? `Session ${rawId.substring(0, 8)}`,
 			description,
 			iconPath: getAgentSessionProviderIcon(this._sessionType),
 			status: mapSessionStatus(opts.status),
