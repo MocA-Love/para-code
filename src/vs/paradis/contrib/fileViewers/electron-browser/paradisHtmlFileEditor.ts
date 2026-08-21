@@ -203,12 +203,10 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 			html = `<head>${headInjection}</head>${html}`;
 		}
 
-		if (/<\/body>/i.test(html)) {
-			html = html.replace(/<\/body>/i, `${zoomScript}</body>`);
-		} else {
-			html = `${html}${zoomScript}`;
-		}
-
-		return html;
+		// 末尾に足す。`</body>` を探して差し込むと、**ページ自身のスクリプトの中にある文字列**の
+		// `</body>` に当たることがあり、注入した `</script>` がそのスクリプトを途中で終わらせて
+		// 以降が全部本文として表示される（paracode-121 で実際に起きた）。閉じタグの後ろに置いても
+		// パーサーが body の中へ入れてくれるので、探さないのが正しい。
+		return `${html}${zoomScript}`;
 	}
 }

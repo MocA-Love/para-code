@@ -194,6 +194,20 @@ suite('ParadisHtmlFileEditor', () => {
 			strictEqual(new URL(link.getAttribute('href')!, base.href).toString(), `${PREVIEW_BASE}guide.html`);
 		});
 
+		test('appends the zoom hook instead of splicing it into the first closing body tag', async () => {
+			const editor = createGenerationEditor();
+			// ページ自身のスクリプトの中に `</body>` という文字列があるページ。閉じタグを探して
+			// 差し込むと、注入した `</script>` がこのスクリプトを途中で終わらせてしまう。
+			const ownScript = 'const raw = ["</body>", "</html>"];';
+			const source = `<html><head></head><body><script>${ownScript}</script></body></html>`;
+
+			const html = await editor.render(source, URI.file('/workspace/site/index.html'));
+
+			ok(html.includes(ownScript), html);
+			ok(html.indexOf('__paradisZoom') > html.indexOf('</html>'), html);
+			strictEqual(html.trimEnd().endsWith('</script>'), true);
+		});
+
 		test('keeps the webview resource url for resources the local server cannot reach', async () => {
 			const editor = createGenerationEditor();
 			const remote = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+box', path: '/home/user/site/index.html' });
