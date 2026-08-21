@@ -30,6 +30,7 @@ import {
 	IParadisPtyGreeting,
 	IParadisPtySpawnRequest,
 	IParadisPtySummary,
+	IParadisPtyTitleEvent,
 	PARADIS_PTY_PROTOCOL_VERSION,
 } from '../common/paradisPtyProtocol.js';
 import { IParadisPtyProcess, ParadisPtyHolder } from './paradisPtyHolder.js';
@@ -64,6 +65,9 @@ export class ParadisPtyDaemonHost extends Disposable {
 	private readonly _onDidExit = this._register(new Emitter<IParadisPtyExitEvent>());
 	readonly onDidExit = this._onDidExit.event;
 
+	private readonly _onDidChangeTitle = this._register(new Emitter<IParadisPtyTitleEvent>());
+	readonly onDidChangeTitle = this._onDidChangeTitle.event;
+
 	constructor(private readonly spawner: ParadisPtySpawner) {
 		super();
 	}
@@ -87,6 +91,7 @@ export class ParadisPtyDaemonHost extends Disposable {
 		const holder = store.add(new ParadisPtyHolder(handle, this.spawner(request), request.cols, request.rows, request.metadata));
 		store.add(holder.onDidChangeData(data => this._onDidChangeData.fire({ handle, data })));
 		store.add(holder.onDidExit(event => this._onDidExit.fire({ handle, code: event.code, signal: event.signal })));
+		store.add(holder.onDidChangeTitle(title => this._onDidChangeTitle.fire({ handle, title })));
 		this.holders.set(handle, holder);
 		this.perHandle.set(handle, store);
 		return handle;

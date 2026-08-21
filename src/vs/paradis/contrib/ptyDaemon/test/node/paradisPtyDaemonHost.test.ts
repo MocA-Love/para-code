@@ -23,6 +23,7 @@ import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 
 class FakePty implements IParadisPtyProcess {
 	killed = false;
+	process = 'zsh';
 	private readonly data: Emitter<string>;
 	private readonly exit: Emitter<{ exitCode: number; signal?: number }>;
 

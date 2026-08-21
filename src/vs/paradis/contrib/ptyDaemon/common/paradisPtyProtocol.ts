@@ -18,9 +18,12 @@
 // 原始的な操作で、VS Code の型を運ばない。残る2つ (`refreshProperty` / `updateProperty`) は
 // `IProcessPropertyMap` を運ぶが、**あれは常駐を越える必要が無い**:
 //
-//  - `Cwd` / `InitialCwd` / `Title` / `ShellType` / `HasChildProcesses` は pid から引ける。
-//    常駐とアプリ側は常に同じ機械の上に居る (ローカルは当然、SSH でも「アプリ側」＝ REH サーバーは
-//    リモート上に居る) ので、{@link IParadisPtySummary.pid} さえ渡ればアプリ側で引ける
+//  - `Cwd` / `InitialCwd` / `HasChildProcesses` は pid から引ける。常駐とアプリ側は常に同じ機械の
+//    上に居る (ローカルは当然、SSH でも「アプリ側」＝ REH サーバーはリモート上に居る) ので、
+//    {@link IParadisPtySummary.pid} さえ渡ればアプリ側で引ける
+//  - `Title` だけは pid では引けない。前面プロセスの名前は pty を持っている側にしか見えないため
+//    (node-pty の `IPty.process`)。**ただの文字列**なので、常駐から文字列として渡す
+//    ({@link IParadisPtySummary.title})。`IProcessPropertyMap` に組み立てるのはアプリ側のまま
 //  - `FixedDimensions` / `OverrideDimensions` はもともとアプリ側の状態
 //  - `ResolvedShellLaunchConfig` / `UsedShellIntegrationInjection` / `FailedShellIntegrationActivation` /
 //    `ShellIntegrationInjectionFailureReason` はシェル統合の注入の結果で、注入自体をアプリ側へ
@@ -77,6 +80,13 @@ export interface IParadisPtySummary {
 	readonly cols: number;
 	readonly rows: number;
 	readonly alive: boolean;
+	/**
+	 * 前面で動いているものの名前。
+	 *
+	 * **ここだけは pid から引けない**ので常駐が渡す（冒頭参照）。文字列なので、この面に
+	 * VS Code の型は増えない。
+	 */
+	readonly title: string;
 	/** 預かったものをそのまま返す。 */
 	readonly metadata: string;
 }
@@ -104,6 +114,11 @@ export interface IParadisPtyAttachment {
 export interface IParadisPtyDataEvent {
 	readonly handle: number;
 	readonly data: string;
+}
+
+export interface IParadisPtyTitleEvent {
+	readonly handle: number;
+	readonly title: string;
 }
 
 export interface IParadisPtyExitEvent {
