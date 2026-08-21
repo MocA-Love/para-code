@@ -2083,8 +2083,10 @@ export default defineConfig(
 						// (registerParadisCodexTerminalTitleForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/codexTerminalTitle/~',
 						// PARA-PATCH: serverServices.ts が接続先のファイルを 127.0.0.1 に配るチャネル
-						// (registerParadisHtmlPreviewForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/fileViewers/~',
+						// (registerParadisHtmlPreviewForServer) を登録するための逆方向 import。
+						// fileViewers はエディタペイン本体（browser / electron-browser）も抱えるので、
+						// Node 層から誤って DOM 依存のコードを import しないよう common/node に絞る。
+						'vs/paradis/contrib/fileViewers/{common,node}/**',
 						// PARA-PATCH: serverServices.ts が接続先で ripgrep を動かすチャネル
 						// (registerParadisRemoteSearchForServer) を登録するための逆方向 import。
 						// mobileRelay 全体（ペアリング・E2E暗号・リレー本体等）を許可すると誤 import を

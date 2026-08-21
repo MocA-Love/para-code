@@ -26,6 +26,25 @@ suite('ParadisHtmlPreviewServer', () => {
 		return root;
 	}
 
+	/** 任意のヘッダーを付けて叩く（`Host` や `Origin` は fetch から確実に送れないため）。 */
+	async function requestWith(url: string, headers: Record<string, string>): Promise<{ status: number; allowOrigin: string | undefined }> {
+		const { request } = await import('http');
+		const target = new URL(url);
+		return new Promise((resolve, reject) => {
+			const call = request(
+				{ hostname: target.hostname, port: target.port, path: target.pathname, method: 'GET', headers: { Host: `127.0.0.1:${target.port}`, ...headers } },
+				response => {
+					response.resume();
+					response.on('end', () => resolve({
+						status: response.statusCode ?? 0,
+						allowOrigin: response.headers['access-control-allow-origin'] as string | undefined,
+					}));
+				});
+			call.on('error', reject);
+			call.end();
+		});
+	}
+
 	/** `Host` は fetch から確実には送れないので、この検査だけ生の http で行う。 */
 	async function statusWithHost(url: string, host: string): Promise<number> {
 		const { request } = await import('http');
@@ -75,7 +94,7 @@ suite('ParadisHtmlPreviewServer', () => {
 
 	suite('serving', () => {
 
-		test('serves files under the mounted folder with permissive CORS', async () => {
+		test('serves files under the mounted folder', async () => {
 			const disposables = store.add(new DisposableStore());
 			const { base } = await mount(disposables);
 
@@ -84,7 +103,9 @@ suite('ParadisHtmlPreviewServer', () => {
 			const page = await fetch(`${base}index.html`);
 			strictEqual(page.status, 200);
 			strictEqual(page.headers.get('content-type'), 'text/html; charset=utf-8');
-			strictEqual(page.headers.get('access-control-allow-origin'), '*');
+			// Origin を送らない取得（`<img>` や `<script src>`）には許可ヘッダーを付けない。
+			strictEqual(page.headers.get('access-control-allow-origin'), null);
+			strictEqual(page.headers.get('referrer-policy'), 'no-referrer');
 			strictEqual(await page.text(), '<h1>hello</h1>');
 
 			const script = await fetch(`${base}assets/app.js`);
@@ -134,6 +155,43 @@ suite('ParadisHtmlPreviewServer', () => {
 			await fs.symlink(join(outside, 'secret.txt'), join(root, 'escape.txt'));
 
 			strictEqual((await fetch(`${base}escape.txt`)).status, 403);
+		});
+
+		test('lets a webview read the response but not another site', async () => {
+			// トークンは `<base href>` としてページに渡るので、ページにとって秘密ではない。
+			// 持ち出された後に**別のブラウザのタブ**から読めてしまわないよう、読み取りを許すのは
+			// webview だけに絞る。
+			const disposables = store.add(new DisposableStore());
+			const { base } = await mount(disposables);
+
+			const webview = await requestWith(`${base}index.html`, { Origin: 'vscode-webview://abcdef' });
+			strictEqual(webview.status, 200);
+			strictEqual(webview.allowOrigin, 'vscode-webview://abcdef');
+
+			const site = await requestWith(`${base}index.html`, { Origin: 'https://evil.example' });
+			strictEqual(site.status, 403);
+
+			// `<img>` や `<script src>` は Origin を送らない。ここを塞ぐとページが壊れる。
+			const subresource = await requestWith(`${base}assets/app.js`, {});
+			strictEqual(subresource.status, 200);
+			strictEqual(subresource.allowOrigin, undefined);
+		});
+
+		test('serves only the one file when a file was mounted', async () => {
+			// PDF / Word は1ファイルしか要らない。親フォルダーごと載せると、`~/x.pdf` を開いた
+			// だけでホーム全体が配信対象になる。
+			const disposables = store.add(new DisposableStore());
+			const server = disposables.add(new ParadisHtmlPreviewServer());
+			const root = await createRoot();
+			disposables.add({ dispose: () => { void fs.rm(root, { recursive: true, force: true }); } });
+
+			const mounted = await server.mount(join(root, 'index.html'));
+			const base = `http://127.0.0.1:${mounted.port}/${mounted.token}/`;
+
+			strictEqual((await fetch(`${base}index.html`)).status, 200);
+			strictEqual((await fetch(`${base}secret.txt`)).status, 404);
+			strictEqual((await fetch(`${base}assets/app.js`)).status, 404);
+			strictEqual((await fetch(base)).status, 404);
 		});
 
 		test('refuses requests that did not come through loopback', async () => {

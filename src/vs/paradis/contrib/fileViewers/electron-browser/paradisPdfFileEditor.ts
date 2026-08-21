@@ -92,6 +92,9 @@ export class ParadisPdfFileEditor extends EditorPane {
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 	) {
 		super(PARADIS_PDF_EDITOR_ID, group, telemetryService, themeService, storageService);
+		// ライブラリの置き場は入力に依らないので、ここで先に決めておく。開く操作が
+		// 共有プロセスの応答を待たされる最悪値が、そのぶん短くなる。
+		void this._resolveLibBase();
 		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
 	}
 
