@@ -32,6 +32,7 @@
 import { FileAccess } from '../../../../base/common/network.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
+import { paradisPreviewOrigins } from './paradisViewerAssets.js';
 import {
 	IParadisDocxAnnotation,
 	IParadisDocxBlock,
@@ -1013,9 +1014,15 @@ function escapeHtml(value: string): string {
 }
 
 /** 差分ビューアの webview HTML を組み立てる。 */
-export function buildParadisDocxDiffHtml(labels: { original: string; modified: string; loading: string }): string {
+export function buildParadisDocxDiffHtml(labels: { original: string; modified: string; loading: string }, libBaseOverride?: string): string {
 	const nonce = generateUuid();
-	const libBase = asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
+	// 同梱ライブラリの置き場。ローカルサーバから配れる場合はそちらを使う（service worker を
+	// 使わずに済み、60秒待ちの経路に入らない）。渡されなければ従来どおり webview リソース。
+	const libBase = libBaseOverride ?? asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
+	// CSP は実際に使うポートまで絞る（`http://127.0.0.1:*` だと他プロセスのサーバまで許してしまう）。
+	const serverOrigin = paradisPreviewOrigins(libBase);
+	// 空のときは CSP に余分な空白を残さない。
+	const serverSrc = serverOrigin ? ` ${serverOrigin}` : '';
 	const context = JSON.stringify(buildParadisDocxDiffContext(labels.loading));
 
 	// CSP の style-src について: docx-preview は文書ごとの CSS を nonce 無しの動的 <style> として
@@ -1026,7 +1033,7 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 <html>
 <head>
 	<meta charset="utf-8">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:; style-src 'unsafe-inline'; img-src blob: data: https:; font-src https: data: blob:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:${serverSrc}; style-src 'unsafe-inline'; img-src blob: data: https:; font-src https:${serverSrc} data: blob:;">
 	<style>
 		*, *::before, *::after { box-sizing: border-box; }
 		html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }

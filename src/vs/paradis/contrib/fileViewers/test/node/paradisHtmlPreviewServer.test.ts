@@ -46,7 +46,8 @@ suite('ParadisHtmlPreviewServer', () => {
 		const server = disposables.add(new ParadisHtmlPreviewServer());
 		const root = await createRoot();
 		disposables.add({ dispose: () => { void fs.rm(root, { recursive: true, force: true }); } });
-		return { base: await server.mount(root), root, server };
+		const location = await server.mount(root);
+		return { base: `http://127.0.0.1:${location.port}/${location.token}/`, root, server };
 	}
 
 	suite('parseParadisPreviewPath', () => {
@@ -98,11 +99,12 @@ suite('ParadisHtmlPreviewServer', () => {
 			strictEqual(await (await fetch(base)).text(), '<h1>hello</h1>');
 		});
 
-		test('hands out the same url for the same folder', async () => {
+		test('hands out the same token for the same folder', async () => {
 			const disposables = store.add(new DisposableStore());
 			const { base, root, server } = await mount(disposables);
 
-			strictEqual(await server.mount(root), base);
+			const again = await server.mount(root);
+			strictEqual(`http://127.0.0.1:${again.port}/${again.token}/`, base);
 		});
 
 		test('refuses an unknown token, a missing file and a folder listing', async () => {

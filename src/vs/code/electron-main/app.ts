@@ -802,9 +802,10 @@ export class CodeApplication extends Disposable {
 		// Setup vscode-remote-resource protocol handler
 		this.setupManagedRemoteResourceUrlHandler(mainProcessElectronServer);
 
-		// PARA-PATCH: drop the webview service worker registrations left over from previous runs.
-		// Must happen before any window can open a webview of its own — see paradisResetWebviewServiceWorkers.
-		await paradisResetWebviewServiceWorkers(session.defaultSession, this.logService);
+		// PARA-PATCH: drop the webview service worker registrations left over from previous runs, once
+		// per profile. Must happen before any window can open a webview of its own — see
+		// paradisResetWebviewServiceWorkers for why it is no longer done on every launch.
+		await paradisResetWebviewServiceWorkers(session.defaultSession, this.logService, this.stateService);
 
 		// PARA-PATCH: watch webview service workers that never finish starting. Diagnostics only — see
 		// paradisWebviewServiceWorkerWatch.ts for why the page side cannot see this. Must stay after the

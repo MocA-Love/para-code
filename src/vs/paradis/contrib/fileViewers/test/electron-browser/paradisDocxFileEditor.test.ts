@@ -15,6 +15,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/index.js';
 import { FileChangesEvent, FileChangeType, IFileService, IFileSystemWatcher } from '../../../../../platform/files/common/files.js';
+import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../../workbench/contrib/webview/browser/webview.js';
@@ -187,6 +188,8 @@ suite('ParadisDocxFileEditor', () => {
 		} as unknown as IFileService;
 		const editor = disposables.add(new ParadisDocxFileEditor(
 			new TestEditorGroupView(1),
+			// ローカルサーバは使えないことにする（従来どおり webview リソースで解決する経路を見る）。
+			{ getChannel: () => ({ call: () => Promise.reject(new Error('no preview server')), listen: () => { throw new Error('not used'); } }) } as unknown as ISharedProcessService,
 			NullTelemetryService,
 			new TestThemeService(),
 			disposables.add(new TestStorageService()),

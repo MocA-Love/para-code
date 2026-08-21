@@ -15,8 +15,8 @@
 // 相対パスの読み込みだけでなく **実行時の `fetch` や動的 import までそのまま動く**。あわせて webview の
 // service worker を切れるので、起動が 60 秒待たされて白紙になる経路（詳細は paradisHtmlPreviewServer の
 // 冒頭）を通らなくなる。
-// リモート（vscode-remote: など）はローカルサーバから配れないため、従来どおり webview のリソース URL
-// ＋ service worker で解決する。
+// SSH 先（vscode-remote:）のファイルは、同じサーバを**リモート側にも立てて**ポート転送で手元へ
+// 出す。転送が張れない環境では従来どおり webview のリソース URL ＋ service worker へ戻す。
 // ズームは Superset 同様に倍率 1.2^level（範囲 -3〜+5）で、CSS zoom を webview 内に適用する。
 
 import * as dom from '../../../../base/browser/dom.js';
@@ -38,13 +38,17 @@ import { ITextModelService } from '../../../../editor/common/services/resolverSe
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IRemoteAuthorityResolverService } from '../../../../platform/remote/common/remoteAuthorityResolver.js';
+import { ITunnelService } from '../../../../platform/tunnel/common/tunnel.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { paradisMountHtmlPreviewDirectory } from './paradisHtmlPreviewClient.js';
+import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
+import { paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
@@ -66,6 +70,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	private _zoomLevel = 0;
 	/** ローカルサーバを立てられなかった。以後はこのペインでは使わない。 */
 	private _previewServerUnavailable = false;
+	/** SSH 先のフォルダーを載せる係（ペインと寿命を共にし、転送もここで閉じる）。 */
+	private readonly _remoteMounter: ParadisRemotePreviewMounter;
 	private _zoomOutButton: HTMLButtonElement | undefined;
 	private _zoomInButton: HTMLButtonElement | undefined;
 	private _percentButton: HTMLButtonElement | undefined;
@@ -85,8 +91,12 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@INotificationService notificationService: INotificationService,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IRemoteAgentService private readonly _remoteAgentService: IRemoteAgentService,
+		@IRemoteAuthorityResolverService private readonly _remoteAuthorityResolverService: IRemoteAuthorityResolverService,
+		@ITunnelService private readonly _tunnelService: ITunnelService,
 	) {
 		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
+		this._remoteMounter = this._register(new ParadisRemotePreviewMounter(this._remoteAgentService, this._remoteAuthorityResolverService, this._tunnelService));
 	}
 
 	protected override get allowScripts(): boolean {
@@ -100,7 +110,16 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	 * （基底クラスが判断の変化を見て webview を作り直す）。
 	 */
 	protected override disableServiceWorkerFor(resource: URI): boolean {
-		return resource.scheme === Schemas.file && !this._previewServerUnavailable;
+		return this._canServeFromPreviewServer(resource);
+	}
+
+	/** このリソースを配信サーバから出せるか（手元のファイル、または SSH 先のファイル）。 */
+	private _canServeFromPreviewServer(resource: URI): boolean {
+		if (this._previewServerUnavailable) {
+			return false;
+		}
+		return resource.scheme === Schemas.file
+			|| (resource.scheme === Schemas.vscodeRemote && !!this._remoteAgentService.getConnection());
 	}
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
@@ -126,27 +145,47 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	 * ローカルファイルはローカルサーバ、それ以外（リモート等）は webview のリソース URL。
 	 */
 	private async _resolveBaseHref(resource: URI): Promise<string> {
-		if (resource.scheme === Schemas.file && !this._previewServerUnavailable) {
+		if (this._canServeFromPreviewServer(resource)) {
 			try {
 				// 載せるのは、そのファイルが属するワークスペースフォルダー（無ければファイルのフォルダー）。
 				// ページの中の `../assets/style.css` のような参照はごく普通なので、フォルダー1つだけを
 				// 載せると URL のトークンより上へ出てしまい読めなくなる。
-				const folder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
 				const documentDirectory = dirname(resource);
-				const root = folder && folder.scheme === Schemas.file ? folder : documentDirectory;
-				const base = await paradisMountHtmlPreviewDirectory(this._sharedProcessService, root);
-				const relative = relativePath(root, documentDirectory);
-				const suffix = relative ? `${relative.split('/').map(encodeURIComponent).join('/')}/` : '';
-				return escapeAttribute(`${base}${suffix}`);
+				const folder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
+				// フォルダーの中での位置が「素直に下る道」で出せないときは、そのフォルダーを
+				// 載せてはいけない。`getWorkspaceFolder` は大文字小文字を無視して照合する環境が
+				// あるのに対し `relativePath` は区別するため、**属していると判定されたのに
+				// `../` で上へ抜ける相対パスが返る**ことが起こり得る。そのまま base に足すと
+				// URL のトークンより外を指してページの読み込みが全部落ちる。
+				const candidate = folder && folder.scheme === resource.scheme ? folder : undefined;
+				const relative = candidate ? relativePath(candidate, documentDirectory) : undefined;
+				const descends = relative !== undefined && !relative.startsWith('..');
+				const root = descends ? candidate! : documentDirectory;
+				const suffix = descends && relative ? relative.split('/') : [];
+
+				const located = await this._mountPreview(root);
+				return escapeAttribute(paradisPreviewUrl(located.mount, located.port, suffix));
 			} catch (error) {
-				// shared process が落ちている等。今回は相対リソース無しで描画し、次の描画からは
-				// service worker 経由へ戻す（基底クラスが webview を作り直す）。
+				// shared process が落ちている、SSH のポート転送が張れない等。
 				this._previewServerUnavailable = true;
 				reportParadisDiagnosticError('owned', 'file-viewers', 'html-preview-server', error);
+				// **自分で描き直しを蹴ること。** この回は「service worker を切った webview に、
+				// service worker でしか解決できない URL を渡す」状態になり、画像も CSS も
+				// スクリプトも全部読めない。setHtml は成功するので白紙検知も鳴らず、
+				// ユーザーがタブを切り替えるまで壊れた表示が残ってしまう。
+				queueMicrotask(() => this.requestRerender());
 			}
 		}
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		return escapeAttribute(`${asWebviewUri(dirname(resource), remoteInfo).toString(true)}/`);
+	}
+
+	/** 手元か SSH 先か、フォルダーの scheme で配信先を選ぶ。 */
+	private _mountPreview(root: URI): Promise<IParadisPreviewLocation> {
+		if (root.scheme === Schemas.vscodeRemote) {
+			return this._remoteMounter.mount(root);
+		}
+		return paradisMountLocalPreview(this._sharedProcessService, root);
 	}
 
 	private _createIconButton(parent: HTMLElement, icon: ThemeIcon, title: string): HTMLButtonElement {

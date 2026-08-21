@@ -43,6 +43,8 @@ import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../.
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
+import { resolveParadisViewerLibBase } from './paradisViewerAssets.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { PARADIS_DOCX_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import {
 	IParadisDocxChange,
@@ -114,6 +116,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	constructor(
 		group: IEditorGroup,
+		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
@@ -256,6 +259,23 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	// ── webview ───────────────────────────────────────────────────────────
 
+	/**
+	 * 同梱ライブラリをローカルサーバに載せた結果。**ペインにつき一度だけ**決める
+	 * （`disableServiceWorker` は webview の生成時にしか渡せない。paradisViewerAssets.ts 参照）。
+	 * 文書そのものは postMessage で渡すので、ここで載せるのはライブラリだけ。
+	 */
+	private _libBase: Promise<string | undefined> | undefined;
+	private _libBaseResolved = false;
+	private _resolvedLibBase: string | undefined;
+
+	private async _resolveLibBase(): Promise<string | undefined> {
+		this._libBase ??= resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT));
+		const libBase = await this._libBase;
+		this._resolvedLibBase = libBase;
+		this._libBaseResolved = true;
+		return libBase;
+	}
+
 	private _ensureWebview(): IOverlayWebview {
 		if (this._webview) {
 			return this._webview;
@@ -270,7 +290,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				enableFindWidget: false,
 				tryRestoreScrollPosition: true,
 				// 隠すたびに service worker 登録からやり直すと白紙で止まる窓ができる。
-				retainContextWhenHidden: true
+				retainContextWhenHidden: true,
+				// ローカルサーバから配れるなら service worker は要らない。
+				disableServiceWorker: !!this._resolvedLibBase
 			},
 			contentOptions: {
 				allowScripts: true,
@@ -287,6 +309,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	/** webview を作り直して読み込みからやり直す。 */
 	private _reload(): void {
+		void this._reloadAfterAssets();
+	}
+
+	private async _reloadAfterAssets(): Promise<void> {
+		const libBase = await this._resolveLibBase();
 		const original = this._originalResource;
 		const modified = this._modifiedResource;
 		if (!original || !modified || !this._webviewClaimed) {
@@ -301,7 +328,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			modified: localize('paradis.docxDiff.paneModified', "新版 — {0}", basename(modified)),
 			// allow-any-unicode-next-line
 			loading: localize('paradis.docxDiff.loading', "読み込み中…"),
-		}));
+		}, libBase));
 	}
 
 	/** webview の受信準備ができてから .docx の中身を送る（先に送ると取りこぼす）。 */
@@ -532,6 +559,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				this._webview.release(this);
 				this._webviewClaimed = false;
 			}
+			return;
+		}
+		if (!this._webview && !this._libBaseResolved) {
+			// 配信先が決まる前に作ると service worker の要否を間違える。ここで自分で解決を蹴る。
+			void this._resolveLibBase().then(() => this._updateWebviewPlacement());
 			return;
 		}
 		const webview = this._ensureWebview();

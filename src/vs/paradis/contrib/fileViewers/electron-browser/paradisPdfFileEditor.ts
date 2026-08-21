@@ -25,6 +25,8 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
+import { paradisPreviewOrigins, resolveParadisViewerDocumentUrl, resolveParadisViewerLibBase } from './paradisViewerAssets.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
@@ -81,6 +83,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 
 	constructor(
 		group: IEditorGroup,
+		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
@@ -130,12 +133,65 @@ export class ParadisPdfFileEditor extends EditorPane {
 		this._updateWebviewPlacement();
 	}
 
+	/**
+	 * 同梱ライブラリの置き場。**ペインにつき一度だけ**決める（アプリの中にあるので入力に依らない）。
+	 * 文書の URL はこれとは別に、入力ごとに解決する（使い回されるペインで焼き付けないため）。
+	 */
+	private _libBase: Promise<string | undefined> | undefined;
+	/** 上の答えが出たか。webview の生成は答えが出るまで待つ（生成時にしか渡せないため）。 */
+	private _libBaseResolved = false;
+	private _resolvedLibBase: string | undefined;
+	/** いまの webview を作ったときに service worker を切ったか。要否が変わったら作り直す。 */
+	private _webviewServiceWorkerDisabled = false;
+	/** webview とその貸し出し origin。作り直せるようにまとめて捨てられる形で持つ。 */
+	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
+
+	private async _resolveLibBase(): Promise<string | undefined> {
+		this._libBase ??= resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(PDFJS_MEDIA_ROOT));
+		const libBase = await this._libBase;
+		this._resolvedLibBase = libBase;
+		this._libBaseResolved = true;
+		return libBase;
+	}
+
+	/**
+	 * 文書だけ載せられなかったことがあるか。
+	 *
+	 * ライブラリは載ったが文書の mount だけ失敗すると、「service worker を切った webview に、
+	 * service worker でしか解決できない URL を渡す」状態になり、ライブラリすら読めなくなる。
+	 * **真偽値を毎回計算し直すと placement 側（文書 URL を知らない）と食い違って作り直しが
+	 * 往復する**ので、一度失敗したらラッチして以後はサーバを使わない。
+	 */
+	private _documentServeFailed = false;
+
+	/** このリソースを配信サーバから出せるか（ライブラリを載せられて、文書が手元にある）。 */
+	private _canServe(resource: URI): boolean {
+		return !!this._resolvedLibBase && !this._documentServeFailed && resource.scheme === Schemas.file;
+	}
+
+	private _disposeWebview(): void {
+		if (this._webview && this._webviewClaimed) {
+			this._webview.release(this);
+		}
+		this._webviewClaimed = false;
+		this._webview = undefined;
+		this._webviewStore.clear();
+	}
+
 	private _ensureWebview(resource: URI): IOverlayWebview {
+		const wantsServiceWorkerDisabled = this._canServe(resource);
+		if (this._webview && this._webviewServiceWorkerDisabled !== wantsServiceWorkerDisabled) {
+			// 生成時オプションなので、要否が変わったら作り直すしかない（別のファイルを開いたとき等）。
+			this._disposeWebview();
+		}
 		if (this._webview) {
 			return this._webview;
 		}
+		const store = new DisposableStore();
+		this._webviewStore.value = store;
+		this._webviewServiceWorkerDisabled = wantsServiceWorkerDisabled;
 		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。
-		const originLease = this._register(this._originPool.acquire(PARADIS_PDF_EDITOR_ID));
+		const originLease = store.add(this._originPool.acquire(PARADIS_PDF_EDITOR_ID));
 		const webview = this._webviewService.createWebviewOverlay({
 			origin: originLease.origin,
 			title: undefined,
@@ -146,7 +202,9 @@ export class ParadisPdfFileEditor extends EditorPane {
 				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
 				// （paradisRenderedFileEditor.ts と同じ「間欠的に白紙になる」フィールド報告の主因）。
 				// 生かしたまま隠すことでその窓を無くす。
-				retainContextWhenHidden: true
+				retainContextWhenHidden: true,
+				// ローカルサーバから配れるなら service worker は要らない（60秒待ちの経路に入らない）。
+				disableServiceWorker: wantsServiceWorkerDisabled
 			},
 			contentOptions: {
 				allowScripts: true,
@@ -155,7 +213,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 			extension: undefined
 		});
 		this._webview = webview;
-		this._register(webview);
+		store.add(webview);
 		return webview;
 	}
 
@@ -169,7 +227,20 @@ export class ParadisPdfFileEditor extends EditorPane {
 	}
 
 	private async _renderResourceAfterPreflight(resource: URI, generation: number): Promise<void> {
+		await this._resolveLibBase();
+		const documentUrl = this._canServe(resource) ? await resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : undefined;
+		if (this._canServe(resource) && documentUrl === undefined) {
+			// 文書だけ載らなかった。この webview の作り方では読めないので、以後サーバを使わない。
+			this._documentServeFailed = true;
+		}
+		// `_ensureWebview` は要否が変わると webview を捨てる破壊的な操作になったので、
+		// 追い越された描画がここへ来て新しい webview を捨てないよう先に落とす。
+		if (generation !== this._renderGeneration || !isEqual(this._currentResource, resource)) {
+			return;
+		}
 		const webview = this._ensureWebview(resource);
+		// 配信先が決まる前に見送った claim をここで拾う。
+		this._updateWebviewPlacement();
 		webview.contentOptions = {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
@@ -180,7 +251,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 				webview.setHtml(this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
-				webview.setHtml(this._buildHtml(resource));
+				webview.setHtml(this._buildHtml(resource, documentUrl));
 				return;
 			case 'stale':
 				return;
@@ -191,11 +262,19 @@ export class ParadisPdfFileEditor extends EditorPane {
 		return '<!DOCTYPE html><html><body>PDF を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
-	private _buildHtml(resource: URI): string {
+	private _buildHtml(resource: URI, documentUrl: string | undefined): string {
 		const nonce = generateUuid();
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
-		const pdfUrl = asWebviewUri(resource, remoteInfo).toString(true);
-		const libBase = asWebviewUri(FileAccess.asFileUri(PDFJS_MEDIA_ROOT)).toString(true);
+		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
+		// service worker を切った webview に解決できない URL を渡すことになる。
+		const served = this._webviewServiceWorkerDisabled && documentUrl !== undefined;
+		const pdfUrl = served ? documentUrl : asWebviewUri(resource, remoteInfo).toString(true);
+		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(PDFJS_MEDIA_ROOT)).toString(true);
+		// CSP は実際に使うポートまで絞る。`http://127.0.0.1:*` にすると、他のプロセスが立てた
+		// ローカルサーバまで script-src に含めてしまう。
+		const serverOrigin = served ? paradisPreviewOrigins(libBase, pdfUrl) : '';
+		// 空のときは CSP に余分な空白を残さない。
+		const serverSrc = serverOrigin ? ` ${serverOrigin}` : '';
 
 		// CSP: スクリプトは nonce 付き inline module と webview リソース(https:)のみ。worker は
 		// クロスオリジン制約を避けるため blob 化して起動する（worker-src blob:）。connect-src は
@@ -204,7 +283,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 <html>
 <head>
 	<meta charset="utf-8">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https: blob:; style-src 'nonce-${nonce}'; img-src blob: data:; font-src https: data: blob:; connect-src https: blob: data:; worker-src blob:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:${serverSrc} blob:; style-src 'nonce-${nonce}'; img-src blob: data:; font-src https:${serverSrc} data: blob:; connect-src https:${serverSrc} blob: data:; worker-src blob:;">
 	<style nonce="${nonce}">
 		html, body { margin: 0; padding: 0; height: 100%; }
 		body {
@@ -389,6 +468,12 @@ export class ParadisPdfFileEditor extends EditorPane {
 				this._webview.release(this);
 				this._webviewClaimed = false;
 			}
+			return;
+		}
+		if (!this._webview && !this._libBaseResolved) {
+			// 配信先が決まる前に作ると service worker の要否を間違える。**ここで自分で解決を蹴ること。**
+			// 描画側に任せると、描画は claim 済みでないと走らないので、初回は誰も蹴らずに白紙のまま止まる。
+			void this._resolveLibBase().then(() => this._updateWebviewPlacement());
 			return;
 		}
 		const webview = this._ensureWebview(resource);
