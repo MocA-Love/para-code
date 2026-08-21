@@ -75,6 +75,9 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 */
 	private control: { readonly client: SocketClient<string>; readonly service: IParadisPtyDaemonControl; readonly pid: number } | undefined;
 
+	/** 進行中の問い合わせ。返事を待っている間に次を投げないための番人（{@link describeDaemon}）。 */
+	private pendingDescribe: Promise<IParadisPtyDaemonDescription> | undefined;
+
 	constructor(
 		private readonly pty: IParadisDaemonPtyAccess,
 		private readonly configurationService: IConfigurationService,
@@ -131,7 +134,26 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 */
 	private async describeDaemon(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonDescription> {
 		const control = await this.ensureControl(record);
-		const described = await raceTimeout(control.describe(), DESCRIBE_TIMEOUT);
+
+		// **同じ問いを重ねない。** 上限は待つのをやめるだけで、投げた要求は相手に残る
+		// (`raceTimeout` は元の約束を止めない)。待たずに次を投げると、固まっている常駐の
+		// チャネルへ要求が数秒ごとに1本ずつ積み上がる。接続を使い回しているのは溜めないため
+		// なので、ここで溜めては元も子もない。
+		let pending = this.pendingDescribe;
+		if (!pending) {
+			pending = control.describe();
+			this.pendingDescribe = pending;
+			const settled = pending;
+			// 後始末は別の枝で。ここで拒否を拾っておかないと、期限切れで誰も待っていない
+			// ときに未処理の rejection になる。
+			settled.then(() => { }, () => { }).finally(() => {
+				if (this.pendingDescribe === settled) {
+					this.pendingDescribe = undefined;
+				}
+			});
+		}
+
+		const described = await raceTimeout(pending, DESCRIBE_TIMEOUT);
 		if (!described) {
 			throw new Error(`the daemon at ${record.socketPath} did not answer in time`);
 		}

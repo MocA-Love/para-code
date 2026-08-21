@@ -67,6 +67,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		this.element.tabIndex = -1;
 		layoutService.activeContainer.appendChild(this.element);
 		this.render();
+		this.signature = this.computeSignature();
 		this.reposition();
 		this.element.focus();
 
@@ -88,19 +89,34 @@ export class ParadisPtyDaemonPopover extends Disposable {
 
 	update(status: IParadisPtyDaemonStatus): void {
 		this.status = status;
-		// 中身が変わっていなければ描き直さない。開いている間は数秒ごとに更新が来るので、毎回
-		// 作り直すと**キーボードで辿ったフォーカスが `<body>` へ落ち**、Escape も効かなくなる。
-		// ポインタの下のボタンのホバーも消え、高さが変われば位置も跳ねる。
-		const signature = JSON.stringify([
-			status.enabled, status.running, status.terminalCount, status.spaces,
-			status.foreign.map(foreign => foreign.pid), status.pid, status.buildId,
-		]);
+		const signature = this.computeSignature();
 		if (signature === this.signature) {
 			return;
 		}
 		this.signature = signature;
 		this.render();
 		this.reposition();
+	}
+
+	/**
+	 * いま描くはずの内容。同じなら描き直さない。
+	 *
+	 * 毎回作り直すと、**キーボードで辿ったフォーカスが `<body>` へ落ちて** Escape も効かなく
+	 * なり、ポインタの下のボタンのホバーも消え、高さが変われば位置も跳ねる。
+	 *
+	 * **見えている文字列そのもので比べる。** 生の状態だけで比べると、稼働時間のように時刻から
+	 * 作る文字列が変わっても描き直されず、開いたままのパネルが開いた瞬間の時間を出し続ける
+	 * (分単位にしたのは1分ごとに動いてほしいからで、その意図ごと止まる)。
+	 */
+	private computeSignature(): string {
+		return JSON.stringify([
+			this.status.enabled,
+			this.status.running,
+			this.status.terminalCount,
+			this.status.spaces,
+			this.metaText(),
+			this.status.foreign.map(foreign => [foreign.pid, this.foreignSubText(foreign.buildId, foreign.startedAt)]),
+		]);
 	}
 
 	private onWindowMouseDown(e: MouseEvent): void {
@@ -156,9 +172,12 @@ export class ParadisPtyDaemonPopover extends Disposable {
 				dom.append(row, $('.ppd-name')).textContent = space.name;
 				dom.append(row, $('.ppd-count')).textContent = localize('paradis.ptyDaemon.popover.count', "{0}本", space.count);
 			}
-		} else {
+		} else if (running) {
 			// 並べるものが無いときだけ、なぜ空なのかを本体に書く。ここは補足ではなく本体なので、
 			// 脚注の色にしない。
+			//
+			// 停止中はここを出さない。すぐ下の警告が同じことを言うので、ほぼ同じ文が2段落
+			// 続くことになる。
 			dom.append(this.element, $('.ppd-empty')).textContent = this.leadText();
 		}
 
