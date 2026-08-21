@@ -13,6 +13,7 @@
 // 差し替えている（`IParadisPtyProcess`）。
 
 import assert from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { FlowControlConstants } from '../../../../../platform/terminal/common/terminal.js';
@@ -21,6 +22,8 @@ import { IParadisPtyProcess, ParadisPtyHolder } from '../../node/paradisPtyHolde
 
 class FakePty implements IParadisPtyProcess {
 	readonly pid = 4321;
+	/** 前面プロセスの名前。pty を持っている側にしか見えないもの。 */
+	process = 'zsh';
 	readonly writes: string[] = [];
 	readonly resizes: [number, number][] = [];
 	killed = false;
@@ -57,6 +60,9 @@ const FLOOD = 'x'.repeat(FlowControlConstants.HighWatermarkChars + 1);
  * 2つを取り違えると「あふれさせたつもりで、あふれていない」テストになる（一度やった）。
  */
 const SCROLLBACK_LIMIT = 10 * 1024 * 1024;
+
+/** 題名を見に行く間隔。実装と同じ値。 */
+const TITLE_POLL_INTERVAL = 200;
 
 suite('ParadisPtyHolder', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -153,6 +159,37 @@ suite('ParadisPtyHolder', () => {
 				streamed: ['after attach'],
 				// 控えには全部残っている。繋ぎ直せば画面は作り直せる。
 				frames: 'before attachafter attachafter detach',
+			},
+		);
+	});
+
+	test('題名は見ている間だけ見張る。離れている間は聞かれたときに読む', async () => {
+		const { pty, holder } = create();
+		const titles: string[] = [];
+		store.add(holder.onDidChangeTitle(title => titles.push(title)));
+
+		// 繋いだ時点の題名は、待たずにその場で分かる。
+		holder.attach();
+		const onAttach = [...titles];
+
+		pty.process = 'npm run build';
+		await timeout(TITLE_POLL_INTERVAL * 2);
+		const whileWatching = [...titles];
+
+		holder.detach();
+		pty.process = 'changed while away';
+		await timeout(TITLE_POLL_INTERVAL * 2);
+
+		assert.deepStrictEqual(
+			{ onAttach, whileWatching, whileAway: titles.length, summaryWhileAway: holder.summary().title },
+			{
+				onAttach: ['zsh'],
+				whileWatching: ['zsh', 'npm run build'],
+				// 見ている人が居ないのに 200ms ごとに起こす理由が無い。常駐は長生きするので、
+				// 抱えている本数ぶんの周期が回りっぱなしになるのは避ける。
+				whileAway: 2,
+				// 聞かれた時点で読むので、見張っていなくても古い値は返さない。
+				summaryWhileAway: 'changed while away',
 			},
 		);
 	});

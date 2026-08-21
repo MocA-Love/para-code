@@ -60,9 +60,12 @@ VS Code の型を運ぶ**（`IShellLaunchConfig` / `TerminalShellType` /
 調べたところ、**この 2 個は常駐を越える必要が無い**。11 種類の property を1つずつ見ると、
 出どころは次の 3 つしかない。
 
-- **pid から引けるもの** — `Cwd` / `InitialCwd` / `Title` / `ShellType` / `HasChildProcesses`。
-  常駐とアプリ側は常に同じ機械の上に居るので、pid さえ分かればアプリ側で引ける
-  （`list()` が pid を返す）
+- **pid から引けるもの** — `Cwd` / `InitialCwd` / `HasChildProcesses`。常駐とアプリ側は常に
+  同じ機械の上に居るので、pid さえ分かればアプリ側で引ける（`list()` が pid を返す）
+- **pid では引けないが、ただの文字列であるもの** — `Title`。前面プロセスの名前は **pty を
+  持っている側にしか見えない**（node-pty の `IPty.process`。当初「pid から引ける」と書いたのは
+  誤りで、実装時に判明した）。常駐から文字列として渡す。**文字列なので、この面に VS Code の型は
+  増えない**——ここが崩れていないことが重要で、崩れていたら分割線を引き直す必要があった
 - **もともとアプリ側の状態** — `FixedDimensions` / `OverrideDimensions`
 - **注入の結果** — `ResolvedShellLaunchConfig` / `UsedShellIntegrationInjection` /
   `FailedShellIntegrationActivation` / `ShellIntegrationInjectionFailureReason`。
@@ -92,7 +95,8 @@ CLAUDE.md が繰り返し勧めている形（ターミナル 2D グリッドと
 | 不透明なメタデータ | **常駐** | 預かってそのまま返すだけ。**常駐は中身を読まない** |
 | シェル統合の注入 | アプリ | 後述。**ここが設計の要** |
 | 環境変数コレクションの解決 | アプリ | すでにアプリ側（`terminalProcessManager.ts:488`）。`createProcess` には解決済みの env が届く |
-| 題名・cwd・子プロセスの有無・シェル種別 | アプリ | どれも pid から引ける。常駐とアプリは常に同じ機械の上に居る（後述） |
+| cwd・子プロセスの有無 | アプリ | pid から引ける。常駐とアプリは常に同じ機械の上に居る（後述） |
+| 題名 | **常駐**（文字列として渡すだけ） | pty を持つ側にしか見えない。見張るのは繋がっている間だけでよい |
 | `refreshProperty` / `updateProperty` の面 | アプリ | 上記のとおり全 11 種類がアプリ側で作れる。**常駐へ通さない** |
 | `PtyService` / `PersistentTerminalProcess` | アプリ | 台帳・猶予時間・孤児の問い合わせ・レイアウト情報はすべて作り直せる |
 | serialize / revive | アプリ | 常駐とは無関係。今のまま |

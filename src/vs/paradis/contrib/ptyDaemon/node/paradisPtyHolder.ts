@@ -25,8 +25,10 @@
 // 逆に **繋がっている間は代理しない**。見ている相手が追いつけていないのに流し続ける理由が無く、
 // そこはアプリの ack をそのまま pty へ通す (今までどおり)。
 
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter } from '../../../../base/common/event.js';
+import { isWindows } from '../../../../base/common/platform.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { FlowControlConstants } from '../../../../platform/terminal/common/terminal.js';
 import { IParadisPtyAttachment, IParadisPtySummary } from '../common/paradisPtyProtocol.js';
 import { ParadisPtyScrollback } from './paradisPtyScrollback.js';
@@ -40,6 +42,8 @@ import { ParadisPtyScrollback } from './paradisPtyScrollback.js';
  */
 export interface IParadisPtyProcess {
 	readonly pid: number;
+	/** 前面で動いているものの名前。**pty を持っている側にしか見えない。** */
+	readonly process: string;
 	onData(listener: (data: string) => void): IDisposable;
 	onExit(listener: (event: { readonly exitCode: number; readonly signal?: number }) => void): IDisposable;
 	write(data: string): void;
@@ -49,6 +53,9 @@ export interface IParadisPtyProcess {
 	pause(): void;
 	resume(): void;
 }
+
+/** 題名を見に行く間隔。upstream の `TerminalProcess` と同じ。 */
+const TITLE_POLL_INTERVAL = 200;
 
 export class ParadisPtyHolder extends Disposable {
 
@@ -74,6 +81,19 @@ export class ParadisPtyHolder extends Disposable {
 	private readonly _onDidExit = this._register(new Emitter<{ readonly code: number | undefined; readonly signal: string | undefined }>());
 	readonly onDidExit = this._onDidExit.event;
 
+	private readonly _onDidChangeTitle = this._register(new Emitter<string>());
+	readonly onDidChangeTitle = this._onDidChangeTitle.event;
+
+	/**
+	 * 題名の見張り。**繋がっている間だけ回す。**
+	 *
+	 * 見ている人が居ないときに 200ms ごとに起こす理由が無い。抱えている本数ぶんの周期が
+	 * 常に回っているのは、常駐が長生きすることを思えば無駄が積み上がる側の設計。
+	 * 繋がっていないときの題名は {@link summary} がその場で読む。
+	 */
+	private readonly titleWatch = this._register(new MutableDisposable());
+	private lastTitle = '';
+
 	constructor(
 		readonly handle: number,
 		private readonly pty: IParadisPtyProcess,
@@ -90,6 +110,7 @@ export class ParadisPtyHolder extends Disposable {
 		this._register(this.pty.onData(data => this.handleData(data)));
 		this._register(this.pty.onExit(event => {
 			this.alive = false;
+			this.titleWatch.clear();
 			this.exitCode = event.exitCode;
 			this._onDidExit.fire({ code: event.exitCode, signal: event.signal === undefined ? undefined : String(event.signal) });
 		}));
@@ -101,7 +122,45 @@ export class ParadisPtyHolder extends Disposable {
 	}
 
 	summary(): IParadisPtySummary {
-		return { handle: this.handle, pid: this.pty.pid, cols: this.cols, rows: this.rows, alive: this.alive, metadata: this.metadata };
+		return {
+			handle: this.handle,
+			pid: this.pty.pid,
+			cols: this.cols,
+			rows: this.rows,
+			alive: this.alive,
+			// 繋がっていない間は見張っていないので、聞かれた時点で読む。
+			title: this.alive ? this.pty.process : this.lastTitle,
+			metadata: this.metadata,
+		};
+	}
+
+	/**
+	 * 題名が変わったら知らせる。
+	 *
+	 * Windows では前面プロセスが変わらないので回さない（upstream の `TerminalProcess` と同じ
+	 * 判断）。いまの常駐は Windows では動かないが、判断の理由ごと残しておく。
+	 */
+	private watchTitle(): void {
+		this.reportTitle();
+		if (isWindows || !this.alive) {
+			return;
+		}
+		this.titleWatch.value = disposableTimeout(() => {
+			if (this.attached) {
+				this.watchTitle();
+			}
+		}, TITLE_POLL_INTERVAL);
+	}
+
+	private reportTitle(): void {
+		if (!this.alive) {
+			return;
+		}
+		const title = this.pty.process;
+		if (title !== this.lastTitle) {
+			this.lastTitle = title;
+			this._onDidChangeTitle.fire(title);
+		}
 	}
 
 	private handleData(data: string): void {
@@ -132,6 +191,7 @@ export class ParadisPtyHolder extends Disposable {
 		// 身に覚えのない高水位で止まる。
 		this.unacknowledged = 0;
 		this.resumeIfPaused();
+		this.watchTitle();
 		return attachment;
 	}
 
@@ -140,6 +200,7 @@ export class ParadisPtyHolder extends Disposable {
 	 */
 	detach(): void {
 		this.attached = false;
+		this.titleWatch.clear();
 		this.unacknowledged = 0;
 		// 止まったまま離れると、閉じている間まったく進まなくなる。
 		this.resumeIfPaused();
