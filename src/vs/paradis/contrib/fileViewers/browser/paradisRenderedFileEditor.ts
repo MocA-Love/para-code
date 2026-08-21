@@ -77,6 +77,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	// webview 本体とその購読をまとめて捨てられるようにする（白紙からの復帰で作り直すため）。
 	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
 	private _webviewClaimed = false;
+	/** いまの webview を作ったときの {@link disableServiceWorkerFor} の答え。 */
+	private _webviewServiceWorkerDisabled = false;
 	private _editorVisible = false;
 	// setHtml しても内容が届かない（白紙）ことを検知するウォッチドッグ。
 	private readonly _contentWatchdog = this._register(new MutableDisposable<IDisposable>());
@@ -206,15 +208,18 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	protected abstract get allowScripts(): boolean;
 
 	/**
-	 * webview の service worker を止めるか。
+	 * このリソースを表示する webview で service worker を止めるか。
 	 *
 	 * service worker は `vscode-resource` の URL（相対パスの画像など）を解決するためだけに要る。
 	 * 一方で、origin に登録があるとその scope へのナビゲーションが worker の起動完了を待たされ、
 	 * 実機では `index.html` / `fake.html` の読み込みが 60 秒止まるのを観測した（ビューアが白紙に
-	 * なり Raw へ落ちる主因）。**リソースを自前で埋め込めるビューアは切ること。** upstream も
+	 * なり Raw へ落ちる主因）。**リソースを自前で用意できるビューアは切ること。** upstream も
 	 * 拡張機能の README・リリースノート・ウォークスルー・画像プレビューでは切っている。
+	 *
+	 * リソースごとに変わり得る（HTML はローカルファイルだけをローカルサーバから配れる）ので、
+	 * 判断が前回と変わったときは webview を作り直す。生成時のオプションなので後から変えられない。
 	 */
-	protected get disableServiceWorker(): boolean {
+	protected disableServiceWorkerFor(_resource: URI): boolean {
 		return false;
 	}
 
@@ -368,6 +373,12 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			return;
 		}
 
+		// service worker の要否が前回と変わっていたら、生成時オプションなので作り直すしかない。
+		if (this._webview && this._webviewServiceWorkerDisabled !== this.disableServiceWorkerFor(resource)) {
+			this._disposeWebview();
+			this._updateWebviewPlacement();
+		}
+
 		// 既に同じ内容を表示している（可視化のたびの claim など）なら送り直さない。
 		if (this._webview && this._renderedSource && isEqual(this._renderedSource.resource, resource) && this._renderedSource.text === text) {
 			return;
@@ -513,6 +524,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		// スロットを借りるので、同時に開いている他のビューアとは必ず別の origin になる
 		// （下のシグナル照合が origin の一意性に依存している）。
 		const originLease = store.add(this._originPool.acquire(this.getId()));
+		this._webviewServiceWorkerDisabled = this.disableServiceWorkerFor(resource);
 		const webview = store.add(this._webviewService.createWebviewOverlay({
 			origin: originLease.origin,
 			title: undefined,
@@ -524,7 +536,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 				// （「Rendered だけ間欠的に白紙になる」フィールド報告の主因、上の onFatalError 参照）。
 				// 生かしたまま隠すことでその窓を無くす。
 				retainContextWhenHidden: true,
-				disableServiceWorker: this.disableServiceWorker
+				disableServiceWorker: this._webviewServiceWorkerDisabled
 			},
 			contentOptions: {
 				allowScripts: this.allowScripts,

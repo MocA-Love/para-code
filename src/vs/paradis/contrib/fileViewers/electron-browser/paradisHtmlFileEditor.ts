@@ -7,8 +7,16 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // HTML レンダリングビューア（Superset apps/desktop の HtmlPreviewWebview 相当）。
-// ローカル HTML を webview に読み込み、スクリプト実行を許可しつつワークスペース外へ影響しないよう
-// localResourceRoots を対象ファイルのディレクトリに限定する。相対リソースは <base href> で解決する。
+// ローカル HTML を webview に読み込み、スクリプト実行を許可する。
+//
+// 相対リソースの解決:
+// ローカルファイル（file:）のときは、そのフォルダーを 127.0.0.1 だけに開いたローカルサーバへ載せ、
+// `<base href>` をそこへ向ける（paradisHtmlPreviewServer）。ブラウザで開いたときと同じ解決になるので、
+// 相対パスの読み込みだけでなく **実行時の `fetch` や動的 import までそのまま動く**。あわせて webview の
+// service worker を切れるので、起動が 60 秒待たされて白紙になる経路（詳細は paradisHtmlPreviewServer の
+// 冒頭）を通らなくなる。
+// リモート（vscode-remote: など）はローカルサーバから配れないため、従来どおり webview のリソース URL
+// ＋ service worker で解決する。
 // ズームは Superset 同様に倍率 1.2^level（範囲 -3〜+5）で、CSS zoom を webview 内に適用する。
 
 import * as dom from '../../../../base/browser/dom.js';
@@ -16,7 +24,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
-import { dirname } from '../../../../base/common/resources.js';
+import { dirname, relativePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -29,11 +37,23 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { paradisMountHtmlPreviewDirectory } from './paradisHtmlPreviewClient.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+
+/**
+ * 属性値に埋める前のエスケープ。`toString(true)`(skipEncoding) は `"` 等をそのまま残すため、
+ * `"` を含むフォルダー名で `<base href>` の属性を突き破る任意マークアップ注入を防ぐ。
+ */
+function escapeAttribute(value: string): string {
+	return escape(value).replace(/"/g, '&quot;');
+}
 
 const ZOOM_MIN = -3;
 const ZOOM_MAX = 5;
@@ -44,6 +64,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	static readonly ID = PARADIS_HTML_EDITOR_ID;
 
 	private _zoomLevel = 0;
+	/** ローカルサーバを立てられなかった。以後はこのペインでは使わない。 */
+	private _previewServerUnavailable = false;
 	private _zoomOutButton: HTMLButtonElement | undefined;
 	private _zoomInButton: HTMLButtonElement | undefined;
 	private _percentButton: HTMLButtonElement | undefined;
@@ -61,12 +83,24 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IConfigurationService configurationService: IConfigurationService,
 		@INotificationService notificationService: INotificationService,
+		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
 	}
 
 	protected override get allowScripts(): boolean {
 		return true;
+	}
+
+	/**
+	 * ローカルファイルはローカルサーバから配れるので service worker は要らない。
+	 *
+	 * サーバを立てられなかったときは次の描画から従来どおり service worker で解決する
+	 * （基底クラスが判断の変化を見て webview を作り直す）。
+	 */
+	protected override disableServiceWorkerFor(resource: URI): boolean {
+		return resource.scheme === Schemas.file && !this._previewServerUnavailable;
 	}
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
@@ -84,6 +118,35 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		this._register(dom.addDisposableListener(refreshButton, dom.EventType.CLICK, () => this.webview?.reload()));
 
 		this._updateZoomUI();
+	}
+
+	/**
+	 * 相対リソースの解決先。末尾は必ず `/`。
+	 *
+	 * ローカルファイルはローカルサーバ、それ以外（リモート等）は webview のリソース URL。
+	 */
+	private async _resolveBaseHref(resource: URI): Promise<string> {
+		if (resource.scheme === Schemas.file && !this._previewServerUnavailable) {
+			try {
+				// 載せるのは、そのファイルが属するワークスペースフォルダー（無ければファイルのフォルダー）。
+				// ページの中の `../assets/style.css` のような参照はごく普通なので、フォルダー1つだけを
+				// 載せると URL のトークンより上へ出てしまい読めなくなる。
+				const folder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
+				const documentDirectory = dirname(resource);
+				const root = folder && folder.scheme === Schemas.file ? folder : documentDirectory;
+				const base = await paradisMountHtmlPreviewDirectory(this._sharedProcessService, root);
+				const relative = relativePath(root, documentDirectory);
+				const suffix = relative ? `${relative.split('/').map(encodeURIComponent).join('/')}/` : '';
+				return escapeAttribute(`${base}${suffix}`);
+			} catch (error) {
+				// shared process が落ちている等。今回は相対リソース無しで描画し、次の描画からは
+				// service worker 経由へ戻す（基底クラスが webview を作り直す）。
+				this._previewServerUnavailable = true;
+				reportParadisDiagnosticError('owned', 'file-viewers', 'html-preview-server', error);
+			}
+		}
+		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
+		return escapeAttribute(`${asWebviewUri(dirname(resource), remoteInfo).toString(true)}/`);
 	}
 
 	private _createIconButton(parent: HTMLElement, icon: ThemeIcon, title: string): HTMLButtonElement {
@@ -120,16 +183,14 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		}
 	}
 
-	protected override renderDocument(text: string, resource: URI, _webview: IOverlayWebview): string {
-		const dir = dirname(resource);
-		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
-		// skipEncoding=true は `"` 等をそのまま残すため、属性値に埋める前に HTML エスケープする。
-		const baseHref = escape(asWebviewUri(dir, remoteInfo).toString(true)).replace(/"/g, '&quot;');
+	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview): Promise<string> {
+		const baseHref = await this._resolveBaseHref(resource);
 
-		// <base> で相対リソースを webview リソース URI に解決し、初期ズームを CSS zoom で焼き込む。
+		// <base> で相対リソースの解決先を決め（ローカルサーバ、またはリモート用の webview リソース URL）、
+		// 初期ズームを CSS zoom で焼き込む。
 		// 背景色: webview の body は既定で透明のため、背景無指定の HTML はエディタ背景（＋ウィンドウ透過）が
 		// 透けて読めなくなる。ブラウザ既定と同じ白を html に敷く。著者が背景を指定していればそちらが勝つ。
-		const headInjection = `<base href="${baseHref}/"><style>html{zoom:${this._zoomFactor};background-color:#ffffff;}</style>`;
+		const headInjection = `<base href="${baseHref}"><style>html{zoom:${this._zoomFactor};background-color:#ffffff;}</style>`;
 		// ライブなズーム変更（ボタン操作）を postMessage で受け取り、スクロール位置を保ったまま反映する。
 		const zoomScript = `<script>(function(){try{window.addEventListener('message',function(e){var d=e.data;if(d&&typeof d.__paradisZoom==='number'){document.documentElement.style.zoom=String(d.__paradisZoom);}});}catch(err){}})();</script>`;
 
