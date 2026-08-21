@@ -161,7 +161,7 @@ export function paradisShortBuildId(buildId: string | undefined): string {
 	// **切るのはコミットハッシュだけ。** 長さだけで切ると、`1.132.0-paracode-72` と
 	// `1.132.0-paracode-73` がどちらも `1.132.0-paracode` に潰れる。古い常駐と新しい常駐を
 	// 見分けるための表示なので、潰れた時点で用を成さない。
-	if (!/^[0-9a-f]{32,}$/.test(commit)) {
+	if (!/^[0-9a-f]{32,}$/i.test(commit)) {
 		return buildId;
 	}
 	return `${buildId.slice(0, separator)}-${commit.slice(0, 8)}`;

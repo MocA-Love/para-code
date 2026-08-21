@@ -191,8 +191,13 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 			if (!this.popover.value) {
 				return;
 			}
-			void this.refresh();
-			this.scheduleOpenRefresh();
+			// 前の問い合わせが終わってから次を積む。待たずに積むと、常駐の返事が遅いときに
+			// 更新同士が重なる。
+			void this.refresh().finally(() => {
+				if (this.popover.value) {
+					this.scheduleOpenRefresh();
+				}
+			});
 		}, OPEN_REFRESH);
 	}
 
