@@ -110,6 +110,16 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	 */
 	private _missingResource: URI | undefined;
 	private _mode: ParadisFileViewerMode = 'rendered';
+	/**
+	 * いま webview が保持している描画の元になったテキスト。
+	 *
+	 * ペインは可視性が変わるたびに overlay を claim し直し、そのたびに描き直していた。
+	 * `retainContextWhenHidden` を入れた今は隠しても中身が生き残る（ウィンドウ間の移動で
+	 * 作り直される場合も `OverlayWebview` が保持している HTML を自分で貼り直す）ので、内容が
+	 * 変わっていないのに送り直す意味はない。**送り直すたびに iframe が作り直されてスクロール
+	 * 位置が飛び、画像の埋め込みもやり直しになる**ため、同一なら黙って見送る。
+	 */
+	private _renderedSource: { readonly resource: URI; readonly text: string } | undefined;
 	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
 	private _renderGeneration = 0;
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
@@ -123,7 +133,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@ITextFileService private readonly _textFileService: ITextFileService,
-		@IFileService private readonly _fileService: IFileService,
+		@IFileService protected readonly _fileService: IFileService,
 		@ITextModelService private readonly _textModelService: ITextModelService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
@@ -156,8 +166,22 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		this._register(toDisposable(() => classObserver.disconnect()));
 	}
 
+	/**
+	 * テーマが変わったら Rendered を描き直す。
+	 *
+	 * コードブロックの配色は `generateTokensCSSForColorMap` で生成した CSS として **HTML に焼き
+	 * 込んでいる**ため、webview へ配られるテーマ変数の更新だけでは追従しない。同じ内容の描き直しは
+	 * 抑止しているので、ここで明示的に無効化しないと配色が古いまま残る。
+	 */
+	override updateStyles(): void {
+		super.updateStyles();
+		this._rerenderIfShowingRendered();
+	}
+
 	/** 透過状態の変化時、Rendered 表示中なら現在のリソースを描き直す。 */
 	private _rerenderIfShowingRendered(): void {
+		// 透過は HTML へ焼き込んでいるので、テキストが同じでも作り直す必要がある。
+		this._renderedSource = undefined;
 		const resource = this._currentResource;
 		if (resource && this._webviewClaimed && this._mode === 'rendered') {
 			this._renderResourceInBackground(resource);
@@ -180,6 +204,19 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	/** webview 内でスクリプト実行を許可するか（HTML=true / Markdown=false）。 */
 	protected abstract get allowScripts(): boolean;
+
+	/**
+	 * webview の service worker を止めるか。
+	 *
+	 * service worker は `vscode-resource` の URL（相対パスの画像など）を解決するためだけに要る。
+	 * 一方で、origin に登録があるとその scope へのナビゲーションが worker の起動完了を待たされ、
+	 * 実機では `index.html` / `fake.html` の読み込みが 60 秒止まるのを観測した（ビューアが白紙に
+	 * なり Raw へ落ちる主因）。**リソースを自前で埋め込めるビューアは切ること。** upstream も
+	 * 拡張機能の README・リリースノート・ウォークスルー・画像プレビューでは切っている。
+	 */
+	protected get disableServiceWorker(): boolean {
+		return false;
+	}
 
 	/** 読み込んだテキストから webview に表示する完全な HTML ドキュメント文字列を生成する。 */
 	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview, token: CancellationToken): Promise<string> | string;
@@ -237,6 +274,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		// 別のファイルを開いたので、前のファイルが無かったことは引き継がない。
 		this._missingResource = undefined;
 		// 別ファイルに切り替わったので前のモデル参照を解放する。
+		this._renderedSource = undefined;
 		this._modelRef.clear();
 		this._codeEditor?.setModel(null);
 
@@ -330,6 +368,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			return;
 		}
 
+		// 既に同じ内容を表示している（可視化のたびの claim など）なら送り直さない。
+		if (this._webview && this._renderedSource && isEqual(this._renderedSource.resource, resource) && this._renderedSource.text === text) {
+			return;
+		}
+
 		const webview = this.ensureWebview(resource);
 		webview.contentOptions = {
 			allowScripts: this.allowScripts,
@@ -341,6 +384,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			return;
 		}
 		webview.setHtml(html);
+		this._renderedSource = { resource, text };
 		// setHtml は「送った」だけで「表示された」ことは保証しない。webview 側が内容を書き終えたら
 		// content-applied シグナルが返るので、それが来なければ白紙とみなして立て直す。
 		this._startContentWatchdog(generation, paradisViewerContentTimeout(html.length));
@@ -445,6 +489,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 		this._webviewClaimed = false;
 		this._webview = undefined;
+		this._renderedSource = undefined;
 		this._contentWatchdog.clear();
 		this._webviewStore.clear();
 	}
@@ -478,7 +523,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
 				// （「Rendered だけ間欠的に白紙になる」フィールド報告の主因、上の onFatalError 参照）。
 				// 生かしたまま隠すことでその窓を無くす。
-				retainContextWhenHidden: true
+				retainContextWhenHidden: true,
+				disableServiceWorker: this.disableServiceWorker
 			},
 			contentOptions: {
 				allowScripts: this.allowScripts,
@@ -641,6 +687,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 		// 次の入力を claim した直後に前ファイルの内容が一瞬表示されないよう、保持 HTML も消去する。
 		this._webview?.setHtml('');
+		this._renderedSource = undefined;
 		super.clearInput();
 	}
 
