@@ -23,7 +23,7 @@
 // 効果のわりに壊せる範囲が広いので、リモートの文書は従来どおり service worker に任せる。
 
 import { raceTimeout } from '../../../../base/common/async.js';
-import { basename, dirname } from '../../../../base/common/resources.js';
+import { basename } from '../../../../base/common/resources.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -75,9 +75,11 @@ export async function resolveParadisViewerDocumentUrl(
 	if (documentResource.scheme !== Schemas.file) {
 		return undefined;
 	}
-	const folder = await mountWithDeadline(sharedProcessService, dirname(documentResource));
+	// **フォルダーではなくファイルを渡す。** 親フォルダーごと載せると、`~/契約書.pdf` を一度開いた
+	// だけでホーム全体が配信対象になる。サーバはファイルを渡されたらその1つしか返さない。
+	const mounted = await mountWithDeadline(sharedProcessService, documentResource);
 	// URL 組み立ては「フォルダー」を想定して末尾に `/` を足すので、ファイル名を足して整える。
-	return folder ? `${folder}${encodeURIComponent(basename(documentResource))}` : undefined;
+	return mounted ? `${mounted}${encodeURIComponent(basename(documentResource))}` : undefined;
 }
 
 /**
