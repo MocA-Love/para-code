@@ -42,7 +42,15 @@ export interface IParadisPtyDaemonStatus {
 	readonly pid: number | undefined;
 	readonly buildId: string | undefined;
 	readonly startedAt: number | undefined;
-	readonly terminalCount: number;
+	/**
+	 * 抱えている本数。**常駐に聞けなかったときは undefined。**
+	 *
+	 * `number` にして 0 を入れてはいけない。受け取る側から「本当に0本」と「聞けなかった」が
+	 * 区別できなくなり、20本抱えている常駐に対して「0本」「失うものはありません」と言って
+	 * 停止させることになる。分からないことは分からないと持ち回る。
+	 */
+	readonly terminalCount: number | undefined;
+	/** スペースごとの内訳。聞けなかったときは空（本数の undefined と合わせて読むこと）。 */
 	readonly spaces: readonly IParadisDaemonSpaceCount[];
 	readonly foreign: readonly IParadisForeignDaemonInfo[];
 }
@@ -149,7 +157,12 @@ export function paradisShortBuildId(buildId: string | undefined): string {
 	if (separator === -1) {
 		return buildId;
 	}
-	const version = buildId.slice(0, separator);
 	const commit = buildId.slice(separator + 1);
-	return commit.length > 8 ? `${version}-${commit.slice(0, 8)}` : buildId;
+	// **切るのはコミットハッシュだけ。** 長さだけで切ると、`1.132.0-paracode-72` と
+	// `1.132.0-paracode-73` がどちらも `1.132.0-paracode` に潰れる。古い常駐と新しい常駐を
+	// 見分けるための表示なので、潰れた時点で用を成さない。
+	if (!/^[0-9a-f]{32,}$/.test(commit)) {
+		return buildId;
+	}
+	return `${buildId.slice(0, separator)}-${commit.slice(0, 8)}`;
 }

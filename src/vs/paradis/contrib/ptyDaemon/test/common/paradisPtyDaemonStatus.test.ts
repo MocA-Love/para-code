@@ -13,6 +13,7 @@ import {
 	paradisDaemonSeverity,
 	paradisFormatUptime,
 	paradisGroupTerminalsBySpace,
+	paradisShortBuildId,
 	paradisSpacelessLabel,
 } from '../../common/paradisPtyDaemonStatus.js';
 
@@ -57,6 +58,32 @@ suite('ParadisPtyDaemonStatus', () => {
 				paradisFormatUptime(-1),
 			],
 			['1分未満', '12分', '3時間', '2日', '2日 4時間', '不明'],
+		);
+	});
+
+	test('shortens the build enough to read, but not so far that builds collide', () => {
+		assert.deepStrictEqual(
+			{
+				// 実運用の形。コミットは40文字あり、そのままでは桁が読めず欄が縦に伸びる。
+				release: paradisShortBuildId('1.132.0-edc0d8b80de62fa58e1bcab5a153a337aaa1d7fa'),
+				// 開発ビルドはコミットが無い。切る必要も無い。
+				dev: paradisShortBuildId('1.132.0-dev'),
+				// **切ってはいけない形。** リリース名を版として使うと `-` の後が短く、
+				// 8文字で切ると paracode-72 と paracode-73 が同じ文字列に潰れる。
+				// 古い常駐と新しい常駐を見分けるための表示なので、ここが潰れると用を成さない。
+				tagged: paradisShortBuildId('1.132.0-paracode-72'),
+				taggedNext: paradisShortBuildId('1.132.0-paracode-73'),
+				noSeparator: paradisShortBuildId('1.132.0'),
+				missing: paradisShortBuildId(undefined),
+			},
+			{
+				release: '1.132.0-edc0d8b8',
+				dev: '1.132.0-dev',
+				tagged: '1.132.0-paracode-72',
+				taggedNext: '1.132.0-paracode-73',
+				noSeparator: '1.132.0',
+				missing: '—',
+			},
 		);
 	});
 

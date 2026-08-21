@@ -109,25 +109,33 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 
 	private renderEntry(status: IParadisPtyDaemonStatus): void {
 		if (!status.enabled) {
-			// 使っていない機能の痕跡を残さない。
+			// 使っていない機能の痕跡を残さない。開いたままの詳細も閉じる（項目が消えるので、
+			// 残すと寄り添う先を失って画面の隅へ飛ぶ）。
+			this.closePopover();
 			this.entry.clear();
 			return;
 		}
 
 		const severity = paradisDaemonSeverity(status);
+		// 本数が分からないときに 0 と出さない。聞けなかっただけで、抱えていないとは限らない。
+		const count = status.terminalCount === undefined ? '?' : String(status.terminalCount);
 		const text = status.running
-			? `$(server-process) ${status.terminalCount}`
+			? `$(server-process) ${count}`
 			: `$(debug-disconnect) !`;
 
 		const properties: IStatusbarEntry = {
 			name: localize('paradis.ptyDaemon.status.name', "常駐ターミナル"),
 			text: severity === 'warn' ? `${text} $(warning)` : text,
-			ariaLabel: status.running
-				? localize('paradis.ptyDaemon.status.aria', "常駐ターミナル {0}本", status.terminalCount)
-				: localize('paradis.ptyDaemon.status.ariaStopped', "常駐ターミナルは停止しています"),
-			tooltip: status.running
-				? localize('paradis.ptyDaemon.status.tooltip', "{0}本のターミナルを、Para Code の外の常駐が抱えています。クリックで詳細。", status.terminalCount)
-				: localize('paradis.ptyDaemon.status.tooltipStopped', "常駐が動いていません。いまのターミナルは Para Code の中で動いています。クリックで詳細。"),
+			ariaLabel: !status.running
+				? localize('paradis.ptyDaemon.status.ariaStopped', "常駐ターミナルは停止しています")
+				: status.terminalCount === undefined
+					? localize('paradis.ptyDaemon.status.ariaUnknown', "常駐ターミナルの本数を取得できていません")
+					: localize('paradis.ptyDaemon.status.aria', "常駐ターミナル {0}本", status.terminalCount),
+			tooltip: !status.running
+				? localize('paradis.ptyDaemon.status.tooltipStopped', "常駐が動いていません。いまのターミナルは Para Code の中で動いています。クリックで詳細。")
+				: status.terminalCount === undefined
+					? localize('paradis.ptyDaemon.status.tooltipUnknown', "常駐は動いていますが、いま何を抱えているかを聞き出せていません。クリックで詳細。")
+					: localize('paradis.ptyDaemon.status.tooltip', "{0}本のターミナルを、Para Code の外の常駐が抱えています。クリックで詳細。", status.terminalCount),
 			command: TOGGLE_COMMAND,
 			kind: severity === 'error' ? 'error' : undefined,
 		};

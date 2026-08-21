@@ -49,6 +49,8 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	private readonly element: HTMLElement;
 	private readonly bodyListeners = this._register(new DisposableStore());
 	private status: IParadisPtyDaemonStatus;
+	/** 直前に描いた内容。同じなら描き直さない（{@link update} 参照）。 */
+	private signature: string | undefined;
 
 	constructor(
 		private readonly anchor: HTMLElement,
@@ -86,6 +88,17 @@ export class ParadisPtyDaemonPopover extends Disposable {
 
 	update(status: IParadisPtyDaemonStatus): void {
 		this.status = status;
+		// 中身が変わっていなければ描き直さない。開いている間は数秒ごとに更新が来るので、毎回
+		// 作り直すと**キーボードで辿ったフォーカスが `<body>` へ落ち**、Escape も効かなくなる。
+		// ポインタの下のボタンのホバーも消え、高さが変われば位置も跳ねる。
+		const signature = JSON.stringify([
+			status.enabled, status.running, status.terminalCount, status.spaces,
+			status.foreign.map(foreign => foreign.pid), status.pid, status.buildId,
+		]);
+		if (signature === this.signature) {
+			return;
+		}
+		this.signature = signature;
 		this.render();
 		this.reposition();
 	}
@@ -111,11 +124,19 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		this.element.style.top = `${Math.round(top)}px`;
 	}
 
+	/**
+	 * 抱えているものを本体に据える。
+	 *
+	 * このパネルを開く理由は「何が残っているか」で、稼働時間や pid はそのついでに見るもの。
+	 * 見出しに合計、本体にスペースごとの内訳、下に補足という並びにしてある。以前は逆で、
+	 * 本数が文章の中に埋もれ、pid とコミットハッシュが場所の半分を取っていた。
+	 */
 	private render(): void {
 		this.bodyListeners.clear();
 		dom.clearNode(this.element);
 
 		const running = this.status.running;
+
 		const head = dom.append(this.element, $('.ppd-head'));
 		dom.append(head, $('.ppd-title')).textContent = localize('paradis.ptyDaemon.popover.title', "常駐ターミナル");
 		const state = dom.append(head, $(running ? '.ppd-state' : '.ppd-state.ppd-bad'));
@@ -123,16 +144,9 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		dom.append(state, $('span')).textContent = running
 			? localize('paradis.ptyDaemon.popover.running', "稼働中")
 			: localize('paradis.ptyDaemon.popover.stopped', "停止中");
-
-		dom.append(this.element, $('.ppd-lead')).textContent = this.leadText();
-
-		if (running) {
-			dom.append(this.element, $('.ppd-sep'));
-			const facts = dom.append(this.element, $('dl.ppd-facts'));
-			this.appendFact(facts, localize('paradis.ptyDaemon.popover.uptime', "稼働時間"), this.status.startedAt === undefined ? '—' : paradisFormatUptime(Date.now() - this.status.startedAt));
-			this.appendFact(facts, localize('paradis.ptyDaemon.popover.pid', "プロセス"), this.status.pid === undefined ? '—' : String(this.status.pid));
-			this.appendFact(facts, localize('paradis.ptyDaemon.popover.build', "ビルド"), paradisShortBuildId(this.status.buildId));
-		}
+		dom.append(head, $('.ppd-total')).textContent = this.status.terminalCount === undefined
+			? '—'
+			: localize('paradis.ptyDaemon.popover.count', "{0}本", this.status.terminalCount);
 
 		if (this.status.spaces.length > 0) {
 			dom.append(this.element, $('.ppd-sep'));
@@ -142,6 +156,10 @@ export class ParadisPtyDaemonPopover extends Disposable {
 				dom.append(row, $('.ppd-name')).textContent = space.name;
 				dom.append(row, $('.ppd-count')).textContent = localize('paradis.ptyDaemon.popover.count', "{0}本", space.count);
 			}
+		} else {
+			// 並べるものが無いときだけ、なぜ空なのかを本体に書く。ここは補足ではなく本体なので、
+			// 脚注の色にしない。
+			dom.append(this.element, $('.ppd-empty')).textContent = this.leadText();
 		}
 
 		if (!running) {
@@ -157,12 +175,25 @@ export class ParadisPtyDaemonPopover extends Disposable {
 			this.appendAlert(
 				false,
 				localize('paradis.ptyDaemon.popover.foreignTitle', "古いバージョンの常駐が残っています"),
-				localize('paradis.ptyDaemon.popover.foreignSub', "{0} · {1}前から。更新前に残したターミナルはこちらにいます。", foreign.buildId, paradisFormatUptime(Date.now() - foreign.startedAt)),
+				this.foreignSubText(foreign.buildId, foreign.startedAt),
 				[{
 					label: localize('paradis.ptyDaemon.popover.foreignStop', "停止"),
 					run: () => this.confirmAndStopForeign(foreign.pid, foreign.buildId),
 				}],
 			);
+		}
+
+		const meta = this.metaText();
+		const lead = running && this.status.spaces.length > 0 ? this.leadText() : undefined;
+		if (meta !== undefined || lead !== undefined) {
+			dom.append(this.element, $('.ppd-sep'));
+			const foot = dom.append(this.element, $('.ppd-foot'));
+			if (lead !== undefined) {
+				dom.append(foot, $('div')).textContent = lead;
+			}
+			if (meta !== undefined) {
+				dom.append(foot, $('.ppd-meta')).textContent = meta;
+			}
 		}
 
 		const actions = dom.append(this.element, $('.ppd-actions'));
@@ -177,9 +208,44 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		});
 	}
 
+	/**
+	 * 古い常駐の説明。
+	 *
+	 * 経過時間は分からないことがある (時計が進んだ後など、`paradisFormatUptime` が「不明」を
+	 * 返す)。そのまま差し込むと「**不明前から**」という読めない日本語になるので、分からない
+	 * ときは時間の話ごと落とす。
+	 */
+	private foreignSubText(buildId: string, startedAt: number): string {
+		const elapsed = Date.now() - startedAt;
+		const build = paradisShortBuildId(buildId);
+		if (!isFinite(elapsed) || elapsed < 0) {
+			return localize('paradis.ptyDaemon.popover.foreignSubPlain', "{0}。更新前に残したターミナルはこちらにいます。", build);
+		}
+		return localize('paradis.ptyDaemon.popover.foreignSub', "{0} · {1}前から。更新前に残したターミナルはこちらにいます。", build, paradisFormatUptime(elapsed));
+	}
+
+	/**
+	 * 下に1行で添える素性。困ったときに要るもので、普段は読み飛ばしてよい。
+	 *
+	 * 停止中は返さない。そのとき `pid` も `buildId` も無い (どれも動いている常駐の台帳から
+	 * 来る) ので、出しても「—」だけの行が1本増えるだけになる。
+	 */
+	private metaText(): string | undefined {
+		if (!this.status.running) {
+			return undefined;
+		}
+		const uptime = this.status.startedAt === undefined ? '—' : paradisFormatUptime(Date.now() - this.status.startedAt);
+		const pid = this.status.pid === undefined ? '—' : String(this.status.pid);
+		return localize('paradis.ptyDaemon.popover.meta', "稼働 {0} · pid {1} · {2}", uptime, pid, paradisShortBuildId(this.status.buildId));
+	}
+
 	private leadText(): string {
 		if (!this.status.running) {
 			return localize('paradis.ptyDaemon.popover.leadStopped', "常駐が動いていません。設定は有効ですが、いまはターミナルを Para Code の中で動かしています。");
+		}
+		if (this.status.terminalCount === undefined) {
+			// **「ありません」と言わない。** 聞けなかっただけで、抱えていないとは限らない。
+			return localize('paradis.ptyDaemon.popover.leadUnknown', "常駐は動いていますが、いま何を抱えているかを聞き出せていません。しばらくすると取り直します。");
 		}
 		if (this.status.terminalCount === 0) {
 			return localize('paradis.ptyDaemon.popover.leadIdle', "常駐は動いていますが、抱えているターミナルはありません。このまま誰も使わなければ、しばらくして自分から終了します。");
@@ -187,11 +253,6 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		// 「残ります」と言い切らず「残せます」にしてある。閉じるときに残すかどうかは設定
 		// (`keepAliveOnClose`) と、尋ねたときの答え次第で、`never` にしている人には嘘になる。
 		return localize('paradis.ptyDaemon.popover.leadRunning', "{0}本のターミナルを、Para Code の外の常駐が抱えています。ウィンドウを閉じても Para Code を終了しても、実行したまま残せます。", this.status.terminalCount);
-	}
-
-	private appendFact(list: HTMLElement, label: string, value: string): void {
-		dom.append(list, $('dt')).textContent = label;
-		dom.append(list, $('dd')).textContent = value;
 	}
 
 	private appendAlert(isError: boolean, title: string, sub: string, buttons: readonly { label: string; run: () => unknown }[]): void {
@@ -224,9 +285,13 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	 */
 	private async confirm(message: string, primaryButton: string): Promise<boolean> {
 		const count = this.status.terminalCount;
-		const detail = count === 0
-			? localize('paradis.ptyDaemon.confirm.detailEmpty', "いま抱えているターミナルはありません。")
-			: localize('paradis.ptyDaemon.confirm.detail', "動いている{0}本のターミナルが終了します。実行中のコマンドやエージェントも一緒に終わり、元には戻せません。", count);
+		// 分からないときに「ありません」と言わない。聞けなかっただけで、抱えていないとは
+		// 限らない。**押した結果が取り返しのつかない操作**なので、ここで嘘をつくのが一番まずい。
+		const detail = count === undefined
+			? localize('paradis.ptyDaemon.confirm.detailUnknown', "動いているターミナルはすべて終了します。何本抱えているかは、いま聞き出せていません。実行中のコマンドやエージェントも一緒に終わり、元には戻せません。")
+			: count === 0
+				? localize('paradis.ptyDaemon.confirm.detailEmpty', "いま抱えているターミナルはありません。")
+				: localize('paradis.ptyDaemon.confirm.detail', "動いている{0}本のターミナルが終了します。実行中のコマンドやエージェントも一緒に終わり、元には戻せません。", count);
 		const { confirmed } = await this.dialogService.confirm({ type: Severity.Warning, message, detail, primaryButton });
 		return confirmed;
 	}
@@ -261,7 +326,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		const { confirmed } = await this.dialogService.confirm({
 			type: Severity.Warning,
 			message: localize('paradis.ptyDaemon.confirm.foreign', "古いバージョンの常駐を停止しますか?"),
-			detail: localize('paradis.ptyDaemon.confirm.foreignDetail', "{0} が抱えているターミナルはすべて終了します。何本残っているかは、こちらからは分かりません。", buildId),
+			detail: localize('paradis.ptyDaemon.confirm.foreignDetail', "{0} が抱えているターミナルはすべて終了します。何本残っているかは、こちらからは分かりません。", paradisShortBuildId(buildId)),
 			primaryButton: localize('paradis.ptyDaemon.confirm.foreignButton', "停止"),
 		});
 		if (!confirmed) {

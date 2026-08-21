@@ -17,6 +17,7 @@
 // コマンドや将来の別経路から確認なしで呼べてしまう）。
 
 import { createConnection } from 'net';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
@@ -48,6 +49,9 @@ export interface IParadisDaemonPtyAccess {
 
 /** 止めるときに常駐の応答を待つ上限。応答しない相手をいつまでも待たない。 */
 const CONNECT_TIMEOUT = 2_000;
+
+/** 状態を聞いたときの返事を待つ上限。閉じる処理には関わらないが、画面が凍るのを防ぐ。 */
+const DESCRIBE_TIMEOUT = 3_000;
 
 function isProcessAlive(pid: number): boolean {
 	try {
@@ -84,7 +88,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	async getStatus(): Promise<IParadisPtyDaemonStatus> {
 		const enabled = this.configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true;
 		if (!enabled) {
-			return { enabled: false, running: false, pid: undefined, buildId: undefined, startedAt: undefined, terminalCount: 0, spaces: [], foreign: [] };
+			return { enabled: false, running: false, pid: undefined, buildId: undefined, startedAt: undefined, terminalCount: undefined, spaces: [], foreign: [] };
 		}
 
 		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
@@ -94,13 +98,14 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 		// **`listProcesses()` では数えられない。** あちらは `isOrphan` で絞るので、ウィンドウが
 		// 繋がっているターミナル (つまり普通に使っている最中のもの) は1本も出てこない。常駐へ
 		// 直接聞く。
-		let terminals: readonly { readonly workspaceName: string }[] = [];
+		// **聞けなかったときは undefined のまま返す。** `[]` で初期化すると本数が 0 になり、
+		// 受け取る側は「本当に0本」と区別できない。
+		let terminals: readonly { readonly workspaceName: string }[] | undefined;
 		if (own) {
 			try {
 				terminals = (await this.describeDaemon(own)).terminals;
 			} catch (error) {
-				// 聞けないのは、繋がっていないか常駐が固まっているとき。本数を 0 と書かずに
-				// 空のまま返し、`running` で状態を語らせる。
+				// 繋がっていないか、常駐が固まっている。分からないままにする。
 				this.logService.trace('[ParadisPtyDaemon] could not ask the daemon what it holds', error);
 			}
 		}
@@ -111,16 +116,26 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 			pid: own?.pid,
 			buildId: own?.buildId,
 			startedAt: own?.startedAt,
-			terminalCount: terminals.length,
-			spaces: paradisGroupTerminalsBySpace(terminals),
+			terminalCount: terminals?.length,
+			spaces: terminals ? paradisGroupTerminalsBySpace(terminals) : [],
 			foreign: await this.describeForeign(records, paths.buildKey),
 		};
 	}
 
-	/** 常駐に、いま何を抱えているかを聞く。接続は保ったまま使い回す。 */
+	/**
+	 * 常駐に、いま何を抱えているかを聞く。接続は保ったまま使い回す。
+	 *
+	 * 返事にも上限を置く。繋ぐところだけ上限を付けても、**繋がったのに答えない**常駐
+	 * (固まっている場合) には効かない。上限が無いと `getStatus()` が解決しないまま、
+	 * 定期更新の待ちが積み上がってパネルが古い値で凍る。
+	 */
 	private async describeDaemon(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonDescription> {
 		const control = await this.ensureControl(record);
-		return control.describe();
+		const described = await raceTimeout(control.describe(), DESCRIBE_TIMEOUT);
+		if (!described) {
+			throw new Error(`the daemon at ${record.socketPath} did not answer in time`);
+		}
+		return described;
 	}
 
 	/**
