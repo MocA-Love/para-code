@@ -70,11 +70,16 @@
 
 .paradis-pty-daemon-popover .ppd-facts dt {
 	color: var(--vscode-descriptionForeground);
+	/* 折り返さない。値の側に長いものが来ると `auto` の列が1文字幅まで潰れ、ラベルが縦に並ぶ。 */
+	white-space: nowrap;
 }
 
 .paradis-pty-daemon-popover .ppd-facts dd {
 	margin: 0;
 	font-variant-numeric: tabular-nums;
+	/* 区切りの無い長い値 (コミットハッシュ等) でも、列を押し広げずに折り返す。 */
+	overflow-wrap: anywhere;
+	min-width: 0;
 }
 
 .paradis-pty-daemon-popover .ppd-rows {

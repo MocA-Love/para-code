@@ -28,6 +28,7 @@ import {
 	IParadisPtyDaemonStatus,
 	IParadisPtyDaemonStatusService,
 	paradisFormatUptime,
+	paradisShortBuildId,
 } from '../common/paradisPtyDaemonStatus.js';
 import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
@@ -130,7 +131,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 			const facts = dom.append(this.element, $('dl.ppd-facts'));
 			this.appendFact(facts, localize('paradis.ptyDaemon.popover.uptime', "稼働時間"), this.status.startedAt === undefined ? '—' : paradisFormatUptime(Date.now() - this.status.startedAt));
 			this.appendFact(facts, localize('paradis.ptyDaemon.popover.pid', "プロセス"), this.status.pid === undefined ? '—' : String(this.status.pid));
-			this.appendFact(facts, localize('paradis.ptyDaemon.popover.build', "ビルド"), this.status.buildId ?? '—');
+			this.appendFact(facts, localize('paradis.ptyDaemon.popover.build', "ビルド"), paradisShortBuildId(this.status.buildId));
 		}
 
 		if (this.status.spaces.length > 0) {

@@ -21,7 +21,7 @@ import { Disposable, DisposableStore, IDisposable } from '../../../../base/commo
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
-import { IParadisPtyDaemonControl, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
+import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
 import { paradisAuthenticateDaemon } from '../node/paradisPtyDaemonAuth.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
@@ -62,6 +62,15 @@ function isProcessAlive(pid: number): boolean {
 
 export class ParadisPtyDaemonStatusService extends Disposable implements IParadisPtyDaemonStatusService {
 
+	/**
+	 * 常駐へ繋いだままにする制御用の接続。
+	 *
+	 * 数を聞くたびに繋ぎ直さないのは、接続のたびに常駐側へ後始末されない `Protocol` が
+	 * 溜まるため (`IPCServer` は切断時にチャネルは畳むが Protocol は畳まない)。30秒ごとに
+	 * 増え続けるのは避ける。
+	 */
+	private control: { readonly client: SocketClient<string>; readonly service: IParadisPtyDaemonControl; readonly pid: number } | undefined;
+
 	constructor(
 		private readonly pty: IParadisDaemonPtyAccess,
 		private readonly configurationService: IConfigurationService,
@@ -82,13 +91,18 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 		const records = await paradisReadDaemonRecords(paths.ledgerDir);
 		const own = records.find(record => record.buildKey === paths.buildKey && isProcessAlive(record.pid));
 
-		let terminals: IProcessDetails[] = [];
-		try {
-			terminals = await this.pty.listProcesses();
-		} catch (error) {
-			// 一覧が取れないのは、繋がっていないか常駐が固まっているとき。本数を 0 と書かずに
-			// 空のまま返し、`running` で状態を語らせる。
-			this.logService.trace('[ParadisPtyDaemon] could not list terminals for the status entry', error);
+		// **`listProcesses()` では数えられない。** あちらは `isOrphan` で絞るので、ウィンドウが
+		// 繋がっているターミナル (つまり普通に使っている最中のもの) は1本も出てこない。常駐へ
+		// 直接聞く。
+		let terminals: readonly { readonly workspaceName: string }[] = [];
+		if (own) {
+			try {
+				terminals = (await this.describeDaemon(own)).terminals;
+			} catch (error) {
+				// 聞けないのは、繋がっていないか常駐が固まっているとき。本数を 0 と書かずに
+				// 空のまま返し、`running` で状態を語らせる。
+				this.logService.trace('[ParadisPtyDaemon] could not ask the daemon what it holds', error);
+			}
 		}
 
 		return {
@@ -101,6 +115,54 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 			spaces: paradisGroupTerminalsBySpace(terminals),
 			foreign: await this.describeForeign(records, paths.buildKey),
 		};
+	}
+
+	/** 常駐に、いま何を抱えているかを聞く。接続は保ったまま使い回す。 */
+	private async describeDaemon(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonDescription> {
+		const control = await this.ensureControl(record);
+		return control.describe();
+	}
+
+	/**
+	 * 制御用の接続を用意する。相手が入れ替わっていたら繋ぎ直す。
+	 *
+	 * pid が変わったら別の常駐なので、前の接続は捨てる。名乗り合いも毎回通す (繋がることは
+	 * 身元の証明にならない)。
+	 */
+	private async ensureControl(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonControl> {
+		if (this.control && this.control.pid === record.pid) {
+			return this.control.service;
+		}
+		this.disposeControl();
+
+		const socket = await this.connect(record.socketPath);
+		if (!socket) {
+			throw new Error(`nothing answered at ${record.socketPath}`);
+		}
+		const client = SocketClient.fromSocket(socket, 'paradis-daemon-status');
+		if (!await paradisAuthenticateDaemon(client, record.token)) {
+			client.dispose();
+			throw new Error(`whatever answers at ${record.socketPath} is not one of ours`);
+		}
+		const service = ProxyChannel.toService<IParadisPtyDaemonControl>(client.getChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL));
+		this.control = { client, service, pid: record.pid };
+		// 相手が落ちたら捨てる。掴んだままだと、次の常駐へ繋ぎ直さずに黙って失敗し続ける。
+		client.onDidDispose(() => {
+			if (this.control?.client === client) {
+				this.control = undefined;
+			}
+		});
+		return service;
+	}
+
+	private disposeControl(): void {
+		this.control?.client.dispose();
+		this.control = undefined;
+	}
+
+	override dispose(): void {
+		this.disposeControl();
+		super.dispose();
 	}
 
 	/**

@@ -43,7 +43,13 @@ export interface IParadisPtyDaemonDescription {
 	readonly pid: number;
 	readonly buildId: string;
 	readonly startedAt: number;
-	readonly terminalCount: number;
+	/**
+	 * いま抱えているターミナル。**ウィンドウが繋がっているものも含む。**
+	 *
+	 * `IPtyService.listProcesses()` では答えられない。あちらは `isOrphan` で絞る (繋ぎ直せる
+	 * ものを挙げるための API) ので、普通に使っている最中のターミナルは1本も出てこない。
+	 */
+	readonly terminals: readonly { readonly workspaceName: string }[];
 }
 
 export const PARADIS_PTY_DAEMON_AUTH_CHANNEL = 'paradisPtyDaemonAuth';
