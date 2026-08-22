@@ -4,8 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { deepStrictEqual, strictEqual } from 'assert';
+import { Schemas } from '../../../../../base/common/network.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
+import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand, resolveWritableCodexHome } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
 
 suite('ParadisCodexTerminalTitle', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -95,6 +97,32 @@ suite('ParadisCodexTerminalTitle', () => {
 
 		test('removes terminal controls and bidirectional formatting', () => {
 			strictEqual(createCodexTerminalTitle('Fix\u001b[31m title\u202e'), 'Fix title');
+		});
+	});
+
+	suite('resolveWritableCodexHome', () => {
+		const localHome = URI.file('/Users/example');
+		const remoteAuthority = 'ssh-remote+box';
+		const resolvedRemoteHome = URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: '/home/example' });
+
+		test('uses the raw home unchanged on a local window', () => {
+			strictEqual(resolveWritableCodexHome(undefined, localHome)?.toString(), localHome.toString());
+		});
+
+		test('uses the remote home once it resolves to the connected host', () => {
+			const result = resolveWritableCodexHome(remoteAuthority, resolvedRemoteHome);
+			strictEqual(result?.toString(), resolvedRemoteHome.toString());
+		});
+
+		// userHome() が未解決の間に黙って手元へフォールバックした値をそのまま使うと、
+		// 手元の ~/.codex/config.toml を書き換えてしまう (2026-08-19 のインシデント)。
+		test('refuses to write when the remote window has not resolved its host yet', () => {
+			strictEqual(resolveWritableCodexHome(remoteAuthority, localHome), undefined);
+		});
+
+		test('refuses a home that resolved to a different remote host', () => {
+			const otherHost = URI.from({ scheme: Schemas.vscodeRemote, authority: 'ssh-remote+other', path: '/home/example' });
+			strictEqual(resolveWritableCodexHome(remoteAuthority, otherHost), undefined);
 		});
 	});
 });

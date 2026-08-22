@@ -162,7 +162,12 @@ export default function TerminalScreen() {
 
 	// フォールバックのタブ列。ネイティブの標準メニューが無いビルド（Android・このモジュールを
 	// 含まない旧バイナリ）でだけ帯に出す。
-	const chipBand = terminalPickerIsNative || terminals.length === 0 ? undefined : (
+	// **useMemo で安定させる。** 素の JSX のままだと毎レンダー新しい要素になり、useWsHeader 内
+	// の spec useMemo が below 依存で毎回切れる。spec が新しくなると left/rightA も新オブジェクト
+	// として組み直され、useNativeWsHeader の useCallback→useEffect が切れて **setOptions（バーの
+	// 全項目付け替え）が再送のたびに発火する**。deps は構造共有済みの terminals と
+	// terminalPickerIsNative / activeKey のプリミティブ、store メソッドだけ。
+	const chipBand = useMemo(() => (terminalPickerIsNative || terminals.length === 0 ? undefined : (
 		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
 			{terminals.map((t, i) => {
 				const active = t.terminalKey === activeKey;
@@ -180,7 +185,7 @@ export default function TerminalScreen() {
 					: <GlassSurface key={t.terminalKey} style={styles.tabChip} interactive>{body}</GlassSurface>;
 			})}
 		</ScrollView>
-	);
+	)), [terminalPickerIsNative, terminals, activeKey, setSelectedTerminalKey]);
 
 	const send = (data: string) => {
 		if (activeKey !== undefined) {

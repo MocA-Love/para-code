@@ -119,6 +119,19 @@ export default function RtkScreen() {
 	const maxCommandSaved = useMemo(() => Math.max(1, ...commands.map(c => c.savedTokens)), [commands]);
 	const history = useMemo(() => (data?.history ?? []).slice(0, TOP_HISTORY), [data]);
 
+	// **actions は参照を安定させる。** インライン JSX のままだと毎レンダー新しい要素になり、
+	// ScreenHeader 内の headerRight→options が毎回切れてバーの全項目付け替えが走る。
+	// screenHeader.tsx は自ら「参照を安定させる」と明言しており、呼び出し側がそれを崩していた形
+	// （deps は useCallback 済みの onPullRefresh とプリミティブだけ）。
+	const headerActions = useMemo(() => (
+		<HeaderCircleButton
+			icon="refresh-outline"
+			label="再取得"
+			onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+			disabled={pullRefreshing || loading}
+		/>
+	), [onPullRefresh, pullRefreshing, loading]);
+
 	return (
 		<ConnectionGate>
 			<View style={styles.screen}>
@@ -127,14 +140,7 @@ export default function RtkScreen() {
 					// PC側はTTL付きのキャッシュを返す。いつの数字を見ているかが分からないと
 					// 「更新すべきか」を判断できないので、取得時刻を必ず添える。
 					subtitle={data ? `${formatRelativeTime(data.fetchedAt, now)}に取得` : undefined}
-					actions={
-						<HeaderCircleButton
-							icon="refresh-outline"
-							label="再取得"
-							onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
-							disabled={pullRefreshing || loading}
-						/>
-					}
+					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
 				<ScrollView
