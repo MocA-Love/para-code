@@ -13,8 +13,7 @@ import { GlassComposer } from '../../src/components/glassComposer.js';
 import { TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
 import { PresetSheet } from '../../src/components/presetSheet.js';
 import { useKeyboardCoverage, useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
-import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
-import { useStableInsets } from '../../src/hooks/useStableInsets.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { colors, radius, squircle } from '../../src/theme.js';
@@ -46,12 +45,12 @@ export default function TerminalScreen() {
 	const [outputHeight, setOutputHeight] = useState(0);
 	const [input, setInput] = useState('');
 	const [submitting, setSubmitting] = useState(false);
-	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
 	// 下端がキーボードに食われる高さ。枠をこのぶん縮める（ターミナルの中身の高さは変えない）。
 	const keyboardCover = useKeyboardCoverage();
-	// iPad幅ではタブバーがサイドバー側にあり、入力欄の下に避けるものが無い。
-	const regular = useIsRegularWidth();
+	// 特殊キー列（Esc/^C/矢印）がフローティングタブバーの裏へ潜らないぶんの下余白。
+	// index/files/scm と同じ規範値を使う（regular=12 はタブバーがサイドバー側にあるため）。
+	const tabBarSpacer = useTabBarSpacer();
 	const isFocused = useIsFocused();
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
@@ -294,7 +293,7 @@ export default function TerminalScreen() {
 					)}
 				</View>
 			</View>
-			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + (regular ? 12 : 30) }]}>
+			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : tabBarSpacer }]}>
 				<GlassComposer
 					value={input}
 					onChangeText={setInput}

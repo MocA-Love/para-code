@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { BottomSheet } from './bottomSheet.js';
+import { BottomSheet, useSheetCloseThen } from './bottomSheet.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { presetApprovalKey, presetCommandSummary, presetIonicon, presetTerminalCount, visiblePresets } from '../presets.js';
 import { runPresetInBackground } from '../presetLaunch.js';
@@ -35,6 +35,9 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 }) {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// 「表示する項目を選ぶ…」は設定画面への遷移を伴う。シートの暗幕が閉じアニメのあいだ
+	// 残るため、閉じ切ってから遷移しないと遷移先の最初のタップが吸われる。
+	const closeThen = useSheetCloseThen(onClose);
 	const { presetList, hiddenKeys, approvedKeys, approvePreset } = useAppStore(useShallow(s => ({
 		presetList: s.presetList,
 		hiddenKeys: s.presetHiddenKeys,
@@ -170,7 +173,7 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 				)}
 				<Pressable
 					style={styles.secondary}
-					onPress={() => { onClose(); router.push('/presets'); }}
+					onPress={() => closeThen(() => router.push('/presets'))}
 					accessibilityRole="button"
 				>
 					<Text style={styles.secondaryText}>表示する項目を選ぶ…</Text>

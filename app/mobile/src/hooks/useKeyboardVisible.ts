@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Dimensions, Keyboard, KeyboardEvent, Platform } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import { keyboardCoverage } from '../keyboardCoverage.js';
@@ -33,10 +33,18 @@ export function useKeyboardVisible(): boolean {
  * 空けない（エージェント詳細で入力欄がキーボードに隠れた）。バーの高さを取る
  * `useHeaderHeight` は expo-router からは使えないので、こちらで「下端から何pt隠れるか」を
  * 直接測り、下余白として渡す。この値は画面上のどこに置かれていても変わらない。
+ *
+ * `elementTop`（下端に置いた入力バーなどの画面座標上端。`measureInWindow` で測る）を
+ * 渡すと、iPadのフローティングキーボードのように下端へ接地していないフレームでも、
+ * そのUIへ食い込んでいるぶんは被覆として扱う。
  */
-export function useKeyboardCoverage(): number {
+export function useKeyboardCoverage(elementTop?: number): number {
 	const [coverage, setCoverage] = useState(0);
 	const isFocused = useIsFocused();
+	// リスナー登録を1回だけに保つため elementTop は ref 経由で読む（再測定のたびに
+	// リスナーが張り直されない。次に来たイベントから反映される）。
+	const elementTopRef = useRef(elementTop);
+	elementTopRef.current = elementTop;
 	useEffect(() => {
 		if (!isFocused) {
 			setCoverage(0);
@@ -50,7 +58,7 @@ export function useKeyboardCoverage(): number {
 			const change = Keyboard.addListener('keyboardWillChangeFrame', (e: KeyboardEvent) => {
 				// アクセサリバーのみ・画面外に加え、iPadのフローティングキーボード
 				// （下端に接していない）も「覆っていない」扱いにする。
-				setCoverage(keyboardCoverage(e.endCoordinates, Dimensions.get('window').height));
+				setCoverage(keyboardCoverage(e.endCoordinates, Dimensions.get('window').height, elementTopRef.current));
 			});
 			const hide = Keyboard.addListener('keyboardWillHide', () => setCoverage(0));
 			return () => {

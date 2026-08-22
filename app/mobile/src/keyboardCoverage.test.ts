@@ -47,4 +47,25 @@ describe('keyboardCoverage', () => {
 	test('screenY=0でもショートカットバー程度の高さなら覆っていない', () => {
 		expect(keyboardCoverage({ screenY: 0, height: 55 }, IPHONE_HEIGHT)).toBe(0);
 	});
+
+	test('elementTopを渡しても通常の接地キーボードの判定は従来どおり', () => {
+		// 入力バー（上端y=700）が分かっていても、戻り値は「下端からの隠れ量」のまま。
+		expect(keyboardCoverage({ screenY: 516, height: 336 }, IPHONE_HEIGHT, 700)).toBe(336);
+	});
+
+	test('iPadのフローティングキーボードでも入力バーへ食い込むぶんは覆っている扱いにする', () => {
+		// 下端から4pt浮いた高さ230のキーボード（下端=830）。入力バーの上端（y=718）へ
+		// 届いているため、elementTop未指定の従来判定では0だったのが持ち上げ量を返す。
+		expect(keyboardCoverage({ screenY: 600, height: 230 }, IPAD_HEIGHT, 718)).toBe(234);
+	});
+
+	test('入力バーへ届かない位置に浮いたフローティングキーボードはelementTop指定でも0', () => {
+		// 画面中央に浮いたキーボード（下端=455）は入力バー（上端y=718）に届かない。
+		expect(keyboardCoverage({ screenY: 200, height: 255 }, IPAD_HEIGHT, 718)).toBe(0);
+	});
+
+	test('キーボードの下端が入力バーの上端とちょうど接している場合は覆っていない', () => {
+		// 食い込みは「下端 > 上端」で判定する。接しているだけなら隠れていない。
+		expect(keyboardCoverage({ screenY: 604, height: 114 }, IPAD_HEIGHT, 718)).toBe(0);
+	});
 });

@@ -83,6 +83,9 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 	}
 
 	const commitDelete = () => {
+		// 破壊的操作の手応えは「実行時」に鳴すのが規約（agentInfoSheet と同じ。確認ダイアログ
+		// 表示時にも鳴っているので、ここで二重に鳴るのは意図した統一）。
+		hapticWarning();
 		onDelete(target.terminalKey);
 		close();
 	};
