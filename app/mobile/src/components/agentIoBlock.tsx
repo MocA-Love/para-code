@@ -53,7 +53,13 @@ function clipForDisplay(body: string): { text: string; omittedLines: number } {
 	if (text.length > IO_DISPLAY_CHARS) {
 		text = text.slice(0, IO_DISPLAY_CHARS);
 	}
-	return { text, omittedLines: Math.max(0, lines.length - kept.length) };
+	// 行数上限で切れたぶんに加え、文字数上限でさらに切ったぶんも省略として数える。
+	// 改行無しの巨大1行（minified JSON 等）は行数では1行しか減らず、省略表示なしで
+	// 黙って切れてしまうため。残りのバイト数から概算する（切り口が行の途中でも
+	// 「省略している」ことの提示としては十分）。
+	const lineOmitted = Math.max(0, lines.length - kept.length);
+	const charOmitted = text.length < body.length && lineOmitted === 0 ? 1 : 0;
+	return { text, omittedLines: lineOmitted + charOmitted };
 }
 
 /**
