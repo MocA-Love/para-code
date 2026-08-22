@@ -149,13 +149,34 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		}
 		this.viewers.delete(viewer);
 		for (const handle of watched) {
-			this.holders.get(handle)?.detach();
+			// **最後の1人かを確かめる。** holder が持つ「見られている」は真偽値なので、
+			// 同じ端末を2者が見ていた場合に片方の離脱でそれを倒すと、**残っている側への出力が
+			// 止まって窓が無音になる**（見えないうえ直せない）。誰も見ていなくなったときだけ倒す。
+			if (!this.isWatched(handle)) {
+				this.holders.get(handle)?.detach();
+			}
 		}
 	}
 
-	async detach(handle: number): Promise<void> {
-		this.forgetHandle(handle);
-		this.holders.get(handle)?.detach();
+	/** その端末を、まだ誰かが見ているか。 */
+	private isWatched(handle: number): boolean {
+		for (const watched of this.viewers.values()) {
+			if (watched.has(handle)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	async detach(handle: number, viewer?: string): Promise<void> {
+		if (viewer) {
+			this.viewers.get(viewer)?.delete(handle);
+		} else {
+			this.forgetHandle(handle);
+		}
+		if (!this.isWatched(handle)) {
+			this.holders.get(handle)?.detach();
+		}
 	}
 
 	/** どの相手の持ち分からも外す。 */

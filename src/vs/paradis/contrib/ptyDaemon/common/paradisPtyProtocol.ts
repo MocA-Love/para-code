@@ -215,8 +215,12 @@ export interface IParadisPtyHost {
 	 * 誰も ack しないので高水位で止まったうえ、引き取りからも飛ばされて**永久に戻らない**。
 	 */
 	attach(handle: number, viewer: string): Promise<IParadisPtyAttachment>;
-	/** 見るのをやめる。**pty は止まらない。** */
-	detach(handle: number): Promise<void>;
+	/**
+	 * 見るのをやめる。**pty は止まらない。**
+	 *
+	 * `viewer` を渡すと、その相手の持ち分からだけ外す。渡さないと全員の持ち分から外れる。
+	 */
+	detach(handle: number, viewer?: string): Promise<void>;
 
 	/**
 	 * 打鍵などを送る。
