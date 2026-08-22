@@ -128,6 +128,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 						type: 'array',
 						items: { type: 'string' },
 						description: localize('paradis.terminal.presets.appliesTo', "このプリセットを有効にするリポジトリ（フォルダ名または絶対パス）。未指定は全リポジトリ。")
+					},
+					hosts: {
+						type: 'array',
+						items: { type: 'string' },
+						description: localize('paradis.terminal.presets.hosts', "このプリセットを有効にする実行環境。「local」= SSH 未接続のとき、「remote」= SSH 接続中ならどのホストでも、それ以外 = ~/.ssh/config の Host 名（そのホストへの接続中のみ）。未指定はすべての場所。")
 					}
 				}
 			},
@@ -217,7 +222,9 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 	/** 「全プリセット」ドロップダウン（ParadisPresetsSubmenu）の実行コマンドとメニュー項目だけを持つ。 */
 	private _update(): void {
 		this._registrations.clear();
-		const presets = this.presetService.presets;
+		// hosts 条件が現在の接続先と一致しないプリセット（envInactive）はドロップダウンにも出さない。
+		// 管理ダイアログには薄く残るので、編集・実行の入り口はそちらにある。
+		const presets = this.presetService.presets.filter(preset => !preset.envInactive);
 		const qualifiers = paradisPresetQualifiers(presets);
 		for (const preset of presets) {
 			const commandId = `paradis.preset.run.${preset.key}`;
@@ -256,7 +263,7 @@ registerAction2(class extends Action2 {
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const presetService = accessor.get(IParadisPresetService);
 		const quickInputService = accessor.get(IQuickInputService);
-		const presets = presetService.presets;
+		const presets = presetService.presets.filter(preset => !preset.envInactive);
 		if (presets.length === 0) {
 			void accessor.get(IDialogService).info(
 				// allow-any-unicode-next-line
@@ -331,7 +338,9 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 	let ranAny = false;
 	const presets = await presetService.getPresetsForFolder(folderUri);
 	for (const preset of presets) {
-		if (!preset.autoRun) {
+		// hosts 条件が現在の接続先と一致しないものは自動実行しない（スペース作成はそのウィンドウと
+		// 同じマシン上で起きるため、envInactive ならユーザーが「この環境では動かない」と指定したもの）。
+		if (!preset.autoRun || preset.envInactive) {
 			continue;
 		}
 		if (preset.source === 'workspace') {
