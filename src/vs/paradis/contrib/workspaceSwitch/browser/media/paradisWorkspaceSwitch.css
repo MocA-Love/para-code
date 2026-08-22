@@ -836,3 +836,51 @@
 .paradis-space-notes-editor.hidden {
 	display: none;
 }
+
+/* allow-any-unicode-next-line */
+/* ---------------------------------------------------------------------------
+ * コンテキストメニュー (案C)。このビューの buildRepositoryContextMenuActions /
+ * buildWorktreeContextMenuActions が Action の cssClass として付与するカスタムクラス。
+ * .monaco-menu はコンテキストビュー (HTML メニュー, window.menuStyle: custom) 内に
+ * レンダリングされるため、ここに書いた CSS がそのまま効く。
+ * ネイティブメニュー (window.menuStyle: native) では HTML でないため効かない。 */
+
+/* allow-any-unicode-next-line */
+/* 破壊系操作 (リストから削除 / ワークツリーを削除) は赤字で隔離する */
+.monaco-menu .paradis-menu-danger {
+	color: var(--vscode-errorForeground);
+}
+
+/* allow-any-unicode-next-line */
+/* 色サブメニューの項目先頭に色ドットを描く (縦並びのカラーリスト) */
+.monaco-menu .action-label.paradis-menu-color::before {
+	content: '';
+	display: inline-block;
+	width: 13px;
+	height: 13px;
+	margin-right: 6px;
+	border-radius: 50%;
+	box-sizing: border-box;
+	vertical-align: text-bottom;
+}
+
+/* allow-any-unicode-next-line */
+/* Default (色なし) は破線の空円。パレットは common/paradisWorkspaceSwitch.ts の
+ * PARADIS_WORKSPACE_COLORS と対になっているので、色を変える場合は両方を更新すること */
+.monaco-menu .paradis-color-default::before {
+	border: 1.5px dashed var(--vscode-foreground);
+	opacity: 0.7;
+}
+
+.monaco-menu .paradis-color-red::before { background-color: #ef4444; }
+.monaco-menu .paradis-color-orange::before { background-color: #f97316; }
+.monaco-menu .paradis-color-yellow::before { background-color: #eab308; }
+.monaco-menu .paradis-color-lime::before { background-color: #84cc16; }
+.monaco-menu .paradis-color-green::before { background-color: #22c55e; }
+.monaco-menu .paradis-color-teal::before { background-color: #14b8a6; }
+.monaco-menu .paradis-color-cyan::before { background-color: #06b6d4; }
+.monaco-menu .paradis-color-blue::before { background-color: #3b82f6; }
+.monaco-menu .paradis-color-indigo::before { background-color: #6366f1; }
+.monaco-menu .paradis-color-purple::before { background-color: #a855f7; }
+.monaco-menu .paradis-color-pink::before { background-color: #ec4899; }
+.monaco-menu .paradis-color-slate::before { background-color: #64748b; }
