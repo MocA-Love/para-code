@@ -1,0 +1,107 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. */
+
+/* --- 行共通 --------------------------------------------------------------------------------- */
+
+.para-rh-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+	padding-right: 8px;
+}
+
+.para-rh-icon {
+	flex-shrink: 0;
+	opacity: 0.9;
+}
+
+.para-rh-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
+
+.para-rh-meta {
+	margin-left: auto;
+	flex-shrink: 0;
+	font-size: 0.85em;
+	opacity: 0.6;
+	font-variant-numeric: tabular-nums;
+}
+
+/* --- ホスト行 ------------------------------------------------------------------------------- */
+
+.para-rh-row .para-rh-host-label {
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.para-rh-icon.host-local,
+.para-rh-icon.host-ssh {
+	color: var(--vscode-charts-blue);
+}
+
+.para-rh-icon.connected-dot {
+	color: var(--vscode-charts-green);
+	font-size: 10px !important;
+}
+
+/* --- スペース行 ------------------------------------------------------------------------------ */
+
+/* Workspaces ビューと同じく、色はカスタムプロパティで渡して左端の帯に反映する */
+.para-rh-list .monaco-tl-row:has(.para-rh-space-row) {
+	--para-rh-color: transparent;
+}
+
+.para-rh-list .monaco-tl-row::before {
+	content: '';
+	width: 3px;
+	height: 100%;
+	position: absolute;
+	left: 0;
+	top: 0;
+	background-color: var(--para-rh-color, transparent);
+	z-index: 1;
+}
+
+.para-rh-icon.space {
+	color: var(--vscode-charts-blue);
+	opacity: 0.85;
+}
+
+/* --- ファイル / フォルダ行 --------------------------------------------------------------------- */
+
+.para-rh-icon.dir {
+	color: #c09553;
+}
+
+.para-rh-icon.file {
+	opacity: 0.7;
+}
+
+/* --- ホバーアクション ------------------------------------------------------------------------- */
+/* 転送ボタンは常時表示せず、ホバー/フォーカス時のみ出す (Explorer 等の慣習と同じ) */
+
+.para-rh-actions {
+	margin-left: auto;
+	flex-shrink: 0;
+	opacity: 0;
+}
+
+.para-rh-actions.has-meta {
+	margin-left: 4px;
+}
+
+.para-rh-list .monaco-tl-row:hover .para-rh-actions,
+.para-rh-list .monaco-list-row.focused .para-rh-actions {
+	opacity: 1;
+}
