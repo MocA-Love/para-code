@@ -220,11 +220,11 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 
 				{images.length > 1 ? (
 					<GlassSurface style={styles.pager}>
-						<Pressable onPress={() => step(-1)} disabled={index === 0} hitSlop={8} accessibilityRole="button" accessibilityLabel="前の画像">
+						<Pressable onPress={() => step(-1)} disabled={index === 0} hitSlop={13} accessibilityRole="button" accessibilityLabel="前の画像">
 							<Ionicons name="chevron-back" size={18} color={index === 0 ? colors.textDim : colors.text} />
 						</Pressable>
 						<Text style={styles.pagerText}>{index + 1} / {images.length}</Text>
-						<Pressable onPress={() => step(1)} disabled={index >= images.length - 1} hitSlop={8} accessibilityRole="button" accessibilityLabel="次の画像">
+						<Pressable onPress={() => step(1)} disabled={index >= images.length - 1} hitSlop={13} accessibilityRole="button" accessibilityLabel="次の画像">
 							<Ionicons name="chevron-forward" size={18} color={index >= images.length - 1 ? colors.textDim : colors.text} />
 						</Pressable>
 					</GlassSurface>

@@ -99,7 +99,9 @@ export default function TabsLayout() {
 				tintColor={colors.accent}
 				iconColor={{ default: colors.textDim, selected: colors.accent }}
 				labelStyle={{ default: { color: colors.textDim }, selected: { color: colors.text } }}
-				badgeBackgroundColor={colors.red}
+				// 白抜きの件数バッジを載せる面は暗い赤に揃える(iPadサイドバーのバッジと同じ規範)。
+				badgeBackgroundColor={"#c0413f"}
+				badgeTextColor="#ffffff"
 			>
 				<NativeTabs.Trigger name="index" contentStyle={{ backgroundColor: colors.bg }}>
 					<NativeTabs.Trigger.Label>ホーム</NativeTabs.Trigger.Label>

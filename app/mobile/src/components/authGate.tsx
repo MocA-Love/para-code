@@ -109,7 +109,7 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 			<Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
 			<Text style={styles.title}>Para Code はロックされています</Text>
 			{state === 'locked' ? (
-				<Pressable style={styles.unlockBtn} onPress={() => { hapticImpact('medium'); void authenticate(); }}>
+				<Pressable style={styles.unlockBtn} accessibilityRole="button" accessibilityLabel="ロック解除" onPress={() => { hapticImpact('medium'); void authenticate(); }}>
 					<Text style={styles.unlockText}>ロック解除</Text>
 				</Pressable>
 			) : (
@@ -124,5 +124,5 @@ const styles = StyleSheet.create({
 	title: { color: colors.text, fontSize: 15, fontWeight: '600' },
 	dim: { color: colors.textDim, fontSize: 13 },
 	unlockBtn: { backgroundColor: colors.accent2, borderRadius: 10, paddingHorizontal: 24, paddingVertical: 12 },
-	unlockText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+	unlockText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
 });

@@ -132,5 +132,5 @@ const styles = StyleSheet.create({
 	title: { color: colors.text, fontSize: 17, fontWeight: '700' },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', lineHeight: 20 },
 	btn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 11, paddingHorizontal: 26, marginTop: 4 },
-	btnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+	btnText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
 });

@@ -305,6 +305,7 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 				<Pressable
 					style={styles.settingsBtnHit}
 					onPress={() => { hapticSelection(); onOpenSettings(); }}
+					accessibilityRole="button"
 					accessibilityLabel="設定"
 				>
 					<Ionicons name="settings-outline" size={17} color={colors.textDim} />

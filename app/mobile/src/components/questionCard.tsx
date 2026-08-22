@@ -137,7 +137,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit('text', () => onFreeText(interactionId, question, freeText.trim())); } }}
 						accessibilityLabel="自由入力で回答"
 					>
-						<Ionicons name="arrow-up" size={16} color="#fff" />
+						<Ionicons name="arrow-up" size={16} color="#00222c" />
 					</Pressable>
 				</View>
 			) : null}
@@ -350,7 +350,7 @@ const styles = StyleSheet.create({
 	questionFreeInput: { flex: 1, backgroundColor: colors.surface2, borderRadius: 12, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 12.5, paddingHorizontal: 13, paddingVertical: 10 },
 	questionFreeSend: { backgroundColor: colors.accent2, borderRadius: 12, width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
 	confirmBtnDisabled: { opacity: 0.4 },
-	confirmBtnText: { color: '#fff', fontSize: 12.5, fontWeight: '700' },
+	confirmBtnText: { color: '#00222c', fontSize: 12.5, fontWeight: '700' },
 	hint: { color: colors.textDim, fontSize: 10 },
 	questionError: { color: colors.red, fontSize: 11, lineHeight: 15 },
 	stepTabs: { flexDirection: 'row', gap: 6 },
