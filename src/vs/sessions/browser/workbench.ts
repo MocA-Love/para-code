@@ -14,7 +14,7 @@ import { DeferredPromise, RunOnceScheduler } from '../../base/common/async.js';
 import { isFullscreen, onDidChangeFullscreen, isChrome, isFirefox, isSafari } from '../../base/browser/browser.js';
 import { mark } from '../../base/common/performance.js';
 import { onUnexpectedError, setUnexpectedErrorHandler } from '../../base/common/errors.js';
-import { isWindows, isLinux, isWeb, isNative, isMacintosh } from '../../base/common/platform.js';
+import { isWindows, isLinux, isWeb, isNative, isMacintosh, isIOS, isMobile } from '../../base/common/platform.js';
 import { Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW_PARTS, MULTI_WINDOW_PARTS, IPartVisibilityChangeEvent, positionToString } from '../../workbench/services/layout/browser/layoutService.js';
 import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.js';
 import { Part } from '../../workbench/browser/part.js';
@@ -622,6 +622,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 				// Register Listeners
 				this.registerListeners(lifecycleService, storageService, configurationService, hostService, dialogService);
+
+				// Register layout listeners. Must run **after** the visual viewport
+				// service is resolved above — the subscription below reads
+				// `this.mobileVisualViewport`, and initLayout (which calls this
+				// historically) runs earlier in start().
+				this.registerLayoutListeners();
 
 				// Render Workbench
 				this.renderWorkbench(instantiationService, notificationService, storageService, configurationService);
@@ -1239,9 +1245,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Resolve the single-pane layout mode once (reload to toggle).
 		this.layoutPolicy.setSinglePane(this.isSinglePaneLayoutEnabled);
 
-		// Register layout listeners
-		this.registerLayoutListeners();
-
 		// A custom view replaces the sessions grid (and the editor, side panel and
 		// bottom panel) for as long as it is shown.
 		this._customViewVisibleKey = CustomViewVisibleContext.bindTo(accessor.get(IContextKeyService));
@@ -1528,17 +1531,24 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// the visual viewport on iOS, so re-running layout() here keeps the
 		// grid — and everything anchored to it (chat input, quick pick) — in
 		// sync with the actually visible area.
-		let viewportLayoutScheduled = false;
-		this._register(this.mobileVisualViewport.onDidChangeVisualViewport(() => {
-			if (!this.workbenchGrid || viewportLayoutScheduled) {
-				return;
-			}
-			viewportLayoutScheduled = true;
-			scheduleAtNextAnimationFrame(getWindow(this.mainContainer), () => {
-				viewportLayoutScheduled = false;
-				this.layout();
-			});
-		}));
+		//
+		// Mobile platforms only: desktop browsers also have a visualViewport,
+		// and subscribing there would double-layout every window resize
+		// alongside the plain resize listener above (and re-layout every frame
+		// during pinch zoom).
+		if (isMobile || isIOS) {
+			let viewportLayoutScheduled = false;
+			this._register(this.mobileVisualViewport.onDidChangeVisualViewport(() => {
+				if (!this.workbenchGrid || viewportLayoutScheduled) {
+					return;
+				}
+				viewportLayoutScheduled = true;
+				scheduleAtNextAnimationFrame(getWindow(this.mainContainer), () => {
+					viewportLayoutScheduled = false;
+					this.layout();
+				});
+			}));
+		}
 	}
 
 	private updateFullscreenClass(): void {

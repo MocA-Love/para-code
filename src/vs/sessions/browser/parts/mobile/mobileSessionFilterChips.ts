@@ -94,7 +94,7 @@ export class MobileSessionFilterChips extends Disposable {
 		parent: HTMLElement,
 		private readonly host: IMobileSessionFilterChipHost,
 		// The lane drag helper needs the viewport class (phone only).
-		private readonly layoutService: IWorkbenchLayoutService,
+		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 	) {
 		super();
 
