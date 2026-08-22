@@ -497,4 +497,99 @@ suite('AudioScheduler', () => {
 			'play:next',
 		]);
 	});
+
+	suite('queue limit', () => {
+		test('drops normal-priority tasks when the queue is full', async () => {
+			const infos: string[] = [];
+			const gate = new DeferredPromise<void>();
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ maxQueuedAivisTasks: 2, logInfo: message => infos.push(message) }));
+
+			scheduler.enqueueAivis({
+				synthesize: () => { events.push('synthesize:blocking'); return Promise.resolve({ audio: EMPTY_AUDIO }); },
+				play: () => { events.push('play:blocking'); return gate.p; },
+			});
+			await Promise.resolve();
+			// 実行中の1件は queue の外なので、待機キュー2件まで受け付ける
+			scheduler.enqueueAivis(successfulRunner('queued-1', events));
+			scheduler.enqueueAivis(successfulRunner('queued-2', events));
+			assert.strictEqual(scheduler.aivisQueueSize, 2);
+			scheduler.enqueueAivis(successfulRunner('dropped', events));
+			assert.strictEqual(scheduler.aivisQueueSize, 2);
+
+			gate.complete();
+			await waitForIdle(scheduler);
+			assert.ok(infos.some(message => message.includes('queue is full')));
+			assert.deepStrictEqual(events, [
+				'synthesize:blocking',
+				'play:blocking',
+				'synthesize:queued-1',
+				'play:queued-1',
+				'synthesize:queued-2',
+				'play:queued-2',
+			]);
+			assert.strictEqual(events.includes('synthesize:dropped'), false);
+		});
+
+		test('a high-priority task evicts the oldest normal task instead of being dropped', async () => {
+			const gate = new DeferredPromise<void>();
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ maxQueuedAivisTasks: 2 }));
+
+			scheduler.enqueueAivis({
+				synthesize: () => { events.push('synthesize:blocking'); return Promise.resolve({ audio: EMPTY_AUDIO }); },
+				play: () => { events.push('play:blocking'); return gate.p; },
+			});
+			await Promise.resolve();
+			scheduler.enqueueAivis(successfulRunner('old-normal', events));
+			scheduler.enqueueAivis(successfulRunner('other-normal', events));
+			assert.strictEqual(scheduler.aivisQueueSize, 2);
+
+			scheduler.enqueueAivis(successfulRunner('urgent', events), 'high');
+			assert.strictEqual(scheduler.aivisQueueSize, 2);
+
+			gate.complete();
+			await waitForIdle(scheduler);
+			// old-normal が追い出され、urgent は other-normal より先に処理される
+			assert.deepStrictEqual(events, [
+				'synthesize:blocking',
+				'play:blocking',
+				'synthesize:urgent',
+				'play:urgent',
+				'synthesize:other-normal',
+				'play:other-normal',
+			]);
+			assert.strictEqual(events.includes('synthesize:old-normal'), false);
+		});
+
+		test('an all-high full queue evicts the oldest high entry for a new high task', async () => {
+			const gates = [new DeferredPromise<void>(), new DeferredPromise<void>(), new DeferredPromise<void>()];
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ maxQueuedAivisTasks: 2 }));
+
+			for (let i = 0; i < 3; i++) {
+				scheduler.enqueueAivis({
+					synthesize: () => { events.push(`synthesize:h${i}`); return Promise.resolve({ audio: Buffer.from(`h${i}`) }); },
+					play: () => { events.push(`play:h${i}`); return gates[i].p; },
+				}, 'high');
+			}
+			// 先頭(h0)だけ実行に入り、h1/h2 が待機。上限2の状態で h3 を投げると最古の h1 が追い出される
+			assert.strictEqual(scheduler.aivisQueueSize, 2);
+
+			scheduler.enqueueAivis(successfulRunner('h3', events), 'high');
+			assert.strictEqual(scheduler.aivisQueueSize, 2);
+
+			for (const gate of gates) { gate.complete(); }
+			await waitForIdle(scheduler);
+			// h0(実行中) → h2 → h3 の順。h1 は追い出されたため再生されない
+			assert.deepStrictEqual(events, [
+				'synthesize:h0',
+				'play:h0',
+				'synthesize:h2',
+				'play:h2',
+				'synthesize:h3',
+				'play:h3',
+			]);
+		});
+	});
 });

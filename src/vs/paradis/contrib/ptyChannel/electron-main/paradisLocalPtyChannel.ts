@@ -12,13 +12,13 @@
 // 稼働19.8時間のヒープ 642MB のうち **602MB(94%) が単一の未消費イベントバッファ**だった。
 // 中身は `{ id, event }` が 253,359 件で、`event` はターミナルの生出力そのもの。
 //
-// 成立条件は4つで、いずれも upstream 側にある（1.130 / 1.132 / main で同一なのを確認済み）:
+// 成立条件は4つで、いずれも upstream 側にある:
 //  1. `PtyHostService` が pty host の `onProcessData` を購読し、main 側の Emitter へ再発火する
 //     (`platform/terminal/node/ptyHostService.ts`)。データ経路が MessagePort 直結へ移った後も
 //     この購読だけが残っている
-//  2. `ProxyChannel.fromService` は **サービスの全イベントを無条件に `Event.buffer()` で包む**
+//  2. `ProxyChannel.fromService` は既定で **サービスの全イベントを `Event.buffer()` で包む**
 //     (`base/parts/ipc/common/ipc.ts`)。`LocalPty` チャネルの登録時に onProcessData も対象になる
-//  3. `Event.buffer` は最初のリスナーが付くまで溜め、上限が無い（警告は `VSCODE_DEV` 限定）
+//  3. `Event.buffer` は最初のリスナーが付くまで溜め、上限が無い（警告は開発ビルド限定）
 //  4. **その最初のリスナーが永久に来ない**。renderer は per-process のイベントを
 //     MessagePort 直結の proxy から購読しており（`localTerminalBackend.ts`）、
 //     `LocalPty` 経由では pty host のライフサイクル系しか購読しない
@@ -26,21 +26,23 @@
 //
 // つまり main は使いもしないデータを受け取り、一切捨てずに積み上げていた。
 //
-// 直し方: 列挙から外して「先回りのバッファ」を作らせない。`fromService` は
-// `for (const key in handler)` で列挙したイベントだけを先に包むので、非列挙にすれば対象から外れる。
-// **イベントを消すわけではない**。誰かが `listen('onProcessData')` を呼んだ場合は
-// `fromService` の遅延経路が同じ `Event.buffer` をその場で作るので、機能は今までどおり動く
-// （その時点で購読者が居るため、溜まらずに素通りする）。
+// 直し方: `fromService` の `unbufferedEvents` に渡す。**upstream が用意している口**で
+// (`ICreateServiceChannelOptions`)、渡したイベントは先回りで包まれず、`listen` されるまで
+// 元のイベントを購読すらしない。誰も聞いていない間、main 側の Emitter は購読者ゼロなので
+// 発火は素通りする。
 //
-// **この関数はサービスインスタンスのプロパティ記述子を書き換える**（`enumerable` だけ）。
-// `Object.create` のシムに逃がす手も考えたが、`fromService` の `call()` が
-// `target.apply(handler, args)` で `this` をシムにしてしまい、`_lastPtyId` のような内部状態が
-// シム側へ書き込まれて実体と分裂する。DI シングルトン自体を直すほうが安全。
+// **イベントを消すわけではない**。`listen('onProcessData')` を呼べば、その時点で元のイベントを
+// 購読し、以後の発火は**そのまま同期で**届く（間に `Event.buffer` を挟まないので、最初の1回が
+// タイマーまで遅れることも無い）。
 //
 // **直るのは「保持」だけで「転送」は残る**。`ptyHostService.ts` の購読は残るので、pty host は
 // 今後も全出力を main へ送り続け、main は毎回デシリアライズして即捨てる（CPU/GC は変わらない）。
 // その購読を消すと、今度は pty host 側チャネルのバッファに最初の購読者が居なくなり、
 // 同じリークが pty host プロセスへ引っ越すだけなので、単独では触らないこと。
+//
+// 以前はサービスインスタンスのプロパティ記述子を書き換えて列挙から外していた（`unbufferedEvents`
+// が入る前の upstream に対する回避策）。DI シングルトンを書き換えるうえ、`listen` した最初の
+// 1回がタイマーまで遅れる差も残っていたので、正規の口へ寄せた。
 
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -94,42 +96,26 @@ function isEventName(name: string): boolean {
 /**
  * `LocalPty` チャネルを作る。`ProxyChannel.fromService` の置き換え。
  *
- * 想定の own property が見つからない場合は**何もしない**。機能は壊れないが、
- * **戻る先は「20時間で600MB 溜まる」状態**なので安全ではない。だから握り潰さず
- * `error` で残す。ここがログに出たら upstream の形が変わった合図なので、必ず追随すること。
+ * 知らないイベントが増えていたら `error` で残す。**握り潰すと、戻る先は「20時間で600MB 溜まる」
+ * 状態**なので黙って通さない。ここがログに出たら upstream が高頻度イベントを追加した合図で、
+ * {@link PARADIS_DIRECT_PTY_EVENTS} に足すか、バッファしてよい理由を確かめること。
  */
 export function paradisCreateLocalPtyChannel(
 	service: ILocalPtyService,
 	disposables: DisposableStore,
 	logService: ILogService,
 ): IServerChannel<string> {
-	for (const name of PARADIS_DIRECT_PTY_EVENTS) {
-		const descriptor = Object.getOwnPropertyDescriptor(service, name);
-		if (!descriptor) {
-			logService.error(`[ParadisLocalPtyChannel] ${name} is not an own property; terminal output will accumulate in the main process again`);
-			continue;
-		}
-		if (!descriptor.enumerable) {
-			continue;
-		}
-		if (!descriptor.configurable) {
-			logService.error(`[ParadisLocalPtyChannel] ${name} is not configurable; terminal output will accumulate in the main process again`);
-			continue;
-		}
-		Object.defineProperty(service, name, { ...descriptor, enumerable: false });
-	}
-
-	// 「増えた側」の検知。まだ列挙に残っているイベントが、バッファしてよいと分かっている
-	// ものだけかを確かめる。upstream が高頻度イベントを追加した場合はここで気づける。
-	const stillBuffered: string[] = [];
+	const known = new Set<string>([...PARADIS_DIRECT_PTY_EVENTS, ...PARADIS_BUFFERED_PTY_EVENTS]);
+	const unexpected: string[] = [];
+	// `fromService` が先回りで包む対象と同じ見方をする（`for...in` ＝ 列挙可能なプロパティ）。
 	for (const key in service as object) {
-		if (isEventName(key) && !(PARADIS_BUFFERED_PTY_EVENTS as readonly string[]).includes(key)) {
-			stillBuffered.push(key);
+		if (isEventName(key) && !known.has(key)) {
+			unexpected.push(key);
 		}
 	}
-	if (stillBuffered.length > 0) {
-		logService.error(`[ParadisLocalPtyChannel] unexpected eagerly buffered pty events: ${stillBuffered.join(', ')}`);
+	if (unexpected.length > 0) {
+		logService.error(`[ParadisLocalPtyChannel] unexpected eagerly buffered pty events: ${unexpected.join(', ')}`);
 	}
 
-	return ProxyChannel.fromService<string>(service, disposables);
+	return ProxyChannel.fromService<string>(service, disposables, { unbufferedEvents: PARADIS_DIRECT_PTY_EVENTS });
 }
