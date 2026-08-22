@@ -18,6 +18,7 @@
 // **常駐が使えないことは、ターミナルが使えないことではない。** 繋げなければ黙って今までどおり
 // 自分の中で起こす。ここで諦めずに投げると、常駐まわりの些細な不調がターミナル全滅になる。
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IProcessEnvironment } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -119,11 +120,20 @@ export function paradisAwaitAdoption(work: Promise<unknown> | undefined): void {
 	settling = work;
 }
 
+/**
+ * 引き取りが終わるのを待つ上限。
+ *
+ * 待つ鎖には常駐の起動待ち（最大10秒）が含まれる。**初めて常駐を起こす起動で、ターミナルの
+ * 復元がそれだけ止まるのは重い。** 間に合わなければ諦めて先へ進む — 引き取ったぶんは次に
+ * 配置を聞かれたときに出る。
+ */
+const ADOPTION_TIMEOUT = 3_000;
+
 /** 引き取りが終わるのを待つ。常駐を使っていなければ即座に戻る。 */
 export async function paradisAdoptionSettled(): Promise<void> {
 	if (settling) {
 		// 拒否は飲む。引き取れなかったことを、配置を答えられないことにしない。
-		await settling.catch(() => { });
+		await raceTimeout(settling.catch(() => { }), ADOPTION_TIMEOUT);
 	}
 }
 

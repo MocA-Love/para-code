@@ -64,6 +64,25 @@ export function paradisPtyDaemonPathsFor(
  * どちらを見るかの判断は1箇所に置く。分かれていると、新しい方を有効にした人には
  * 「動いていない」と見え、**終了時に全部のターミナルが畳まれる**（実際にそうなっていた）。
  */
+/**
+ * 見るべき台帳のすべて。
+ *
+ * **切り替えの途中では両方見る。** 旧い常駐が端末を抱えたまま走っている状態で新しい方へ
+ * 切り替えると、片方しか見ていないと旧い常駐は状態パネルにも出ず、**止める手立ても無くなる**。
+ * 掃除の導線を残すために、いま使う方に加えてもう片方も読む。
+ */
+export function paradisAllDaemonLedgers(
+	configurationService: IConfigurationService,
+	environmentMainService: IEnvironmentMainService,
+	productService: IProductService,
+): readonly string[] {
+	const active = paradisActiveDaemonLedger(configurationService, environmentMainService, productService);
+	const other = configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true
+		? paradisPtyDaemonPathsFor(environmentMainService, productService).ledgerDir
+		: paradisPtyHostPaths({ stateDir: environmentMainService.userDataPath, platform: currentPlatform() }).ledgerDir;
+	return active.ledgerDir === other ? [active.ledgerDir] : [active.ledgerDir, other];
+}
+
 export function paradisActiveDaemonLedger(
 	configurationService: IConfigurationService,
 	environmentMainService: IEnvironmentMainService,

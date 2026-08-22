@@ -24,6 +24,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisPtySpawnRequest } from '../../common/paradisPtyProtocol.js';
 import { paradisDecodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
 import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalProcess.js';
+import { paradisHandleOf } from '../../node/paradisTerminalProcessFactory.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
 
@@ -48,6 +49,7 @@ class FakePty implements IParadisPtyProcess {
 	resume(): void { }
 
 	emit(data: string): void { this.data.fire(data); }
+	quit(exitCode: number): void { this.exit.fire({ exitCode }); }
 }
 
 const OPTIONS: ITerminalProcessOptions = {
@@ -177,7 +179,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 		const process = disposables.add(new ParadisDaemonTerminalProcess(
 			host, { executable: '/bin/sh', args: [], env: {}, name: 'build' }, '/', 80, 24, {}, {}, OPTIONS,
 			new NullLogService(), { quality: 'stable' } as IProductService,
-			{ workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true },
+			{ id: 1, workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true },
 		));
 
 		await process.start();
@@ -194,6 +196,52 @@ suite('ParadisDaemonTerminalProcess', () => {
 				name: 'build',
 				// 後で「保存して復元」するときの材料。
 				hasLaunch: true,
+			},
+		);
+	});
+
+	test('起こしたときにも handle を覚える。覚えないと配置が空になり、次の起動で誰も繋ぎに来ない', async () => {
+		const disposables = store.add(new DisposableStore());
+		const ptys: FakePty[] = [];
+		const host = disposables.add(new ParadisPtyDaemonHost(() => {
+			const pty = new FakePty(disposables);
+			ptys.push(pty);
+			return pty;
+		}));
+		const process = disposables.add(new ParadisDaemonTerminalProcess(
+			host, { executable: '/bin/sh', args: [], env: {} }, '/', 80, 24, {}, {}, OPTIONS,
+			new NullLogService(), { quality: 'stable' } as IProductService,
+			{ id: 42, workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true },
+		));
+
+		await process.start();
+		const remembered = paradisHandleOf(42);
+		process.dispose();
+
+		assert.deepStrictEqual(
+			{ remembered, forgotten: paradisHandleOf(42) },
+			{
+				// 引き取った端末だけを覚えていると、1周目が成立しないので永久に始まらない。
+				remembered: 1,
+				// 畳んだら忘れる。忘れないと表が増え続ける。
+				forgotten: undefined,
+			},
+		);
+	});
+
+	test('終了したら自分で畳む。抱えている器は畳んでくれない', async () => {
+		const { ptys, host, process } = create();
+		await process.start();
+
+		ptys[0].quit(0);
+		await timeout(600);
+
+		assert.deepStrictEqual(
+			{ held: (await host.list()).length },
+			{
+				// 畳まないと常駐へ何も伝わらず、終わった端末が抱えられたまま残り、
+				// 次の起動でタブとして戻ってくる。
+				held: 0,
 			},
 		);
 	});

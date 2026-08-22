@@ -22,7 +22,7 @@ import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { IParadisAdoptedTerminal, paradisAdoptTerminals } from './paradisTerminalAdoption.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisDecodeLayout } from './paradisTerminalLayout.js';
-import { IParadisAdoptTarget, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget } from './paradisTerminalProcessFactory.js';
 
 /** 器を作れる相手。`PtyService` のうち、ここが使う部分だけ。 */
 export interface IParadisAdoptionTarget {
@@ -61,8 +61,12 @@ interface IParadisLaunchRemains {
  */
 function remainsOf(adopted: IParadisAdoptedTerminal): IParadisLaunchRemains {
 	const launch = adopted.metadata.launch as Partial<IParadisLaunchRemains> | undefined;
+	// **名前を必ず付ける。** 器は「一度も触られていない」端末を、窓のリロード時に畳んでよいものと
+	// 見なす。引き取った端末は誰も打鍵していないのでそのままだと該当し、**ビルドを眺めていた
+	// だけの端末がリロードで死ぬ**。名前が付いていれば器の側で触られた扱いになる。
+	const name = adopted.metadata.name || adopted.summary.title || 'terminal';
 	return {
-		shellLaunchConfig: launch?.shellLaunchConfig ?? { name: adopted.metadata.name ?? adopted.summary.title },
+		shellLaunchConfig: { ...(launch?.shellLaunchConfig ?? {}), name },
 		env: launch?.env ?? {},
 		executableEnv: launch?.executableEnv ?? {},
 		options: launch?.options ?? {
@@ -145,8 +149,8 @@ export async function paradisAdoptIntoPtyService(
 					exited: terminal.summary.alive ? undefined : { code: terminal.summary.exitCode },
 				},
 			);
+			// handle の登録は器の `adopt()` が行う（起こす経路と同じ道を通る）。
 			idByHandle.set(terminal.summary.handle, id);
-			paradisRememberHandle(id, terminal.summary.handle);
 			adopted++;
 		} catch (error) {
 			// **常駐からは外さない。** こちらが器を作れないというだけで、走っているプロセスを

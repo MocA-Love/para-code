@@ -165,6 +165,15 @@ export interface IParadisPtyGreeting {
 export const PARADIS_PTY_HOST_CHANNEL = 'paradisPtyHost';
 
 /**
+ * ターミナルを見に来た相手が名乗る名前。
+ *
+ * **見ている相手と、様子を見に来ただけの相手を区別するために要る。** 状態パネルや停止 UI も
+ * 同じソケットへ繋ぐので、接続の数だけでは「もう誰も見ていない」を判断できない。名乗りが
+ * 一致する接続が消えたときだけ、抱えているものを離す。
+ */
+export const PARADIS_PTY_HOST_CLIENT = 'paradis-pty-host';
+
+/**
  * 常駐にできること。**これが凍結する面そのもの。**
  *
  * ここに VS Code の型が1つも出てこないことが、更新をまたいで繋ぎ直せる理由。増やすときは
