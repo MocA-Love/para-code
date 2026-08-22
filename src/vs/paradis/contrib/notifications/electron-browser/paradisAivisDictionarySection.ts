@@ -108,13 +108,14 @@ export class ParadisAivisDictionarySection extends Disposable {
 		dom.clearNode(this.container);
 		this._renderDisposables.clear();
 
-		const header = dom.append(this.container, $('.pns-row'));
-		const titles = dom.append(header, $('div'));
+		const header = dom.append(this.container, $('.setting-row'));
+		const titles = dom.append(header, $('.sr-main'));
 		dom.append(titles, $('.pns-section-title')).textContent = STR_TITLE;
 		dom.append(titles, $('.pns-section-desc')).textContent = STR_DESC;
 
 		const settings = this.settingsService.getAivisSettings();
 		const newBtn = dom.append(header, $('button.pns-btn')) as HTMLButtonElement;
+		newBtn.style.flexShrink = '0';
 		newBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
 		newBtn.append(STR_NEW);
 		newBtn.disabled = !settings.apiKey;

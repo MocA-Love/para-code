@@ -8,7 +8,9 @@
 
 // 通知設定ダイアログの「Aivis Voice Announcement」セクション（Superset apps/desktop の
 // AivisSettings.tsx の移植）。有効化トグル、音量/speaking rateスライダー、APIキー、
-// モデルプリセット、Model UUID、適用辞書、プレースホルダ挿入、完了/許可要求フォーマットを扱う。
+// モデルプリセット、Model UUID（入力時バリデーション）、適用辞書、プレースホルダ挿入、
+// 完了/許可要求フォーマットとテスト再生（再生中表示）を扱う。
+// 無効化トグルがオフのときはフィールドを非表示ではなく無効化（opacity+pointer-events）する。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -52,6 +54,8 @@ const STR_API_KEY_LABEL = localize('paradis.notif.aivis.apiKeyLabel', "API Key")
 // allow-any-unicode-next-line
 const STR_TOGGLE_API_KEY_VISIBILITY = localize('paradis.notif.aivis.toggleApiKeyVisibility', "API キーの表示/非表示を切り替え");
 // allow-any-unicode-next-line
+const STR_PRESETS_LABEL = localize('paradis.notif.aivis.presetsLabel', "モデルプリセット");
+// allow-any-unicode-next-line
 const STR_MODEL_UUID_LABEL = localize('paradis.notif.aivis.modelUuidLabel', "Model UUID");
 // allow-any-unicode-next-line
 const STR_DICTIONARY_LABEL = localize('paradis.notif.aivis.dictionaryLabel', "適用するユーザー辞書");
@@ -64,7 +68,11 @@ const STR_FORMAT_LABEL = localize('paradis.notif.aivis.formatLabel', "完了フ�
 // allow-any-unicode-next-line
 const STR_FORMAT_PERMISSION_LABEL = localize('paradis.notif.aivis.formatPermissionLabel', "許可要求フォーマット");
 // allow-any-unicode-next-line
+const STR_FORMAT_HINT = localize('paradis.notif.aivis.formatHint', "{space} {branch} {worktree} {tab} {event} のプレースホルダが使えます");
+// allow-any-unicode-next-line
 const STR_TEST_PLAY = localize('paradis.notif.aivis.testPlay', "テスト再生");
+// allow-any-unicode-next-line
+const STR_TEST_PLAYING = localize('paradis.notif.aivis.testPlaying', "再生中…");
 // allow-any-unicode-next-line
 const STR_MODEL_INFO_LOADING = localize('paradis.notif.aivis.modelInfoLoading', "モデル情報を取得中…");
 // allow-any-unicode-next-line
@@ -78,6 +86,9 @@ const STR_PLAY_SAMPLE_ARIA = localize('paradis.notif.aivis.playSampleAria', "サ
 const STR_STOP_SAMPLE_ARIA = localize('paradis.notif.aivis.stopSampleAria', "サンプル音声を停止");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** UUID hint の状態。空=中立、不正=ng、有効=ok。 */
+type UuidHintState = 'empty' | 'invalid' | 'valid';
 
 /**
  * Aivisモデルプリセットのモデル情報(アイコン・サンプル音声URL等)取得結果キャッシュ。
@@ -152,10 +163,11 @@ export class ParadisAivisVoiceSection extends Disposable {
 
 		const settings = this.settingsService.getAivisSettings();
 
-		const toggleRow = dom.append(this.container, $('.pns-row'));
-		const toggleLabels = dom.append(toggleRow, $('div'));
-		dom.append(toggleLabels, $('.pns-row-label')).textContent = STR_ENABLE_LABEL;
-		dom.append(toggleLabels, $('.pns-row-hint')).textContent = STR_ENABLE_HINT;
+		// --- 有効化トグル ---
+		const toggleRow = dom.append(this.container, $('.setting-row'));
+		const toggleLabels = dom.append(toggleRow, $('.sr-main'));
+		dom.append(toggleLabels, $('.sr-label')).textContent = STR_ENABLE_LABEL;
+		dom.append(toggleLabels, $('.sr-desc')).textContent = STR_ENABLE_HINT;
 		const toggle = dom.append(toggleRow, $('input.pns-toggle')) as HTMLInputElement;
 		toggle.type = 'checkbox';
 		toggle.checked = settings.enabled;
@@ -163,50 +175,43 @@ export class ParadisAivisVoiceSection extends Disposable {
 			this.settingsService.setAivisSettings({ enabled: toggle.checked });
 		}));
 
-		if (!settings.enabled) {
-			return;
-		}
+		// --- フィールド群（無効のときは非表示ではなく opacity+pointer-events で無効化） ---
+		const fields = dom.append(this.container, $('.pns-fields'));
+		fields.classList.toggle('disabled', !settings.enabled);
 
-		this._renderSlider(STR_VOLUME_LABEL, settings.volume, 0, 100, 1, v => `${v}%`, v => this.settingsService.setAivisSettings({ volume: v }));
-		this._renderSlider(STR_RATE_LABEL, settings.speakingRate, 0.5, 2.0, 0.1, v => `${v.toFixed(1)}x`, v => this.settingsService.setAivisSettings({ speakingRate: v }));
+		this._renderSlider(fields, STR_VOLUME_LABEL, settings.volume, 0, 100, 1, v => `${v}%`, v => this.settingsService.setAivisSettings({ volume: v }));
+		this._renderSlider(fields, STR_RATE_LABEL, settings.speakingRate, 0.5, 2.0, 0.1, v => `${v.toFixed(1)}x`, v => this.settingsService.setAivisSettings({ speakingRate: v }));
 
-		const apiKeyField = this._field(STR_API_KEY_LABEL);
-		const apiKeyRow = dom.append(apiKeyField, $('.pns-input-group'));
-		const apiKeyInput = dom.append(apiKeyRow, $('input')) as HTMLInputElement;
-		apiKeyInput.type = 'password';
-		apiKeyInput.autocomplete = 'off';
-		apiKeyInput.placeholder = 'aivis_...';
-		apiKeyInput.value = settings.apiKey;
-		this._renderDisposables.add(dom.addDisposableListener(apiKeyInput, 'blur', () => {
-			this.settingsService.setAivisSettings({ apiKey: apiKeyInput.value });
-		}));
-		const toggleVisibilityBtn = dom.append(apiKeyRow, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
-		toggleVisibilityBtn.setAttribute('aria-label', STR_TOGGLE_API_KEY_VISIBILITY);
-		toggleVisibilityBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.eye)}`));
-		this._renderDisposables.add(dom.addDisposableListener(toggleVisibilityBtn, 'click', () => {
-			const willShow = apiKeyInput.type === 'password';
-			apiKeyInput.type = willShow ? 'text' : 'password';
-			dom.clearNode(toggleVisibilityBtn);
-			toggleVisibilityBtn.appendChild($(`span${ThemeIcon.asCSSSelector(willShow ? Codicon.eyeClosed : Codicon.eye)}`));
-		}));
+		this._renderPresetTiles(fields, settings.modelUuid, settings.apiKey);
 
-		this._renderPresetTiles(settings.modelUuid, settings.apiKey);
-
-		const modelUuidField = this._field(STR_MODEL_UUID_LABEL);
+		// --- Model UUID（入力時に正規表現検証して hint を ok/ng で色分け） ---
+		const modelUuidField = dom.append(fields, $('.setting-row'));
+		const modelUuidLabels = dom.append(modelUuidField, $('.sr-main'));
+		dom.append(modelUuidLabels, $('.sr-label')).textContent = STR_MODEL_UUID_LABEL;
+		const modelInfoEl = dom.append(modelUuidLabels, $('.pns-uuid-hint'));
 		const modelUuidInput = dom.append(modelUuidField, $('input')) as HTMLInputElement;
 		modelUuidInput.placeholder = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+		modelUuidInput.style.width = '290px';
+		modelUuidInput.style.fontFamily = 'var(--monaco-monospace-font)';
+		modelUuidInput.style.fontSize = '11px';
 		modelUuidInput.value = settings.modelUuid;
+		this._renderUuidHint(modelInfoEl, settings.modelUuid.trim(), settings.apiKey);
+		this._renderDisposables.add(dom.addDisposableListener(modelUuidInput, 'input', () => {
+			this._renderUuidHint(modelInfoEl, modelUuidInput.value.trim(), settings.apiKey);
+		}));
 		this._renderDisposables.add(dom.addDisposableListener(modelUuidInput, 'blur', () => {
 			this.settingsService.setAivisSettings({ modelUuid: modelUuidInput.value.trim() });
 		}));
-		const modelInfoEl = dom.append(modelUuidField, $('.pns-row-hint'));
-		this._renderModelInfo(modelInfoEl, settings.modelUuid, settings.apiKey);
 
-		this._renderDictionarySelect(settings);
+		this._renderApiKeyField(fields, settings.apiKey);
+		this._renderDictionarySelect(fields, settings);
 
 		// --- プレースホルダ ---
-		const placeholderField = this._field(STR_PLACEHOLDER_LABEL);
+		const placeholderField = dom.append(fields, $('.setting-row'));
+		const placeholderMain = dom.append(placeholderField, $('.sr-main'));
+		dom.append(placeholderMain, $('.sr-label')).textContent = STR_PLACEHOLDER_LABEL;
 		const chipRow = dom.append(placeholderField, $('.pns-chip-row'));
+		chipRow.style.justifyContent = 'flex-end';
 		for (const key of PARADIS_AIVIS_PLACEHOLDER_KEYS) {
 			const chip = dom.append(chipRow, $('button.pns-btn')) as HTMLButtonElement;
 			chip.textContent = `{{${key}}} / ${PARADIS_AIVIS_PLACEHOLDER_LABELS[key]}`;
@@ -221,37 +226,106 @@ export class ParadisAivisVoiceSection extends Disposable {
 		}
 
 		// --- 完了フォーマット ---
-		this._formatInput = this._renderFormatField(STR_FORMAT_LABEL, settings.format, 'format', next => this.settingsService.setAivisSettings({ format: next }), () => this._testPlay('complete'));
+		this._formatInput = this._renderFormatField(fields, STR_FORMAT_LABEL, settings.format, 'format', next => this.settingsService.setAivisSettings({ format: next }), btn => this._testPlay(btn, 'complete'));
 		// --- 許可要求フォーマット ---
-		this._formatPermissionInput = this._renderFormatField(STR_FORMAT_PERMISSION_LABEL, settings.formatPermission, 'permission', next => this.settingsService.setAivisSettings({ formatPermission: next }), () => this._testPlay('permission'));
+		this._formatPermissionInput = this._renderFormatField(fields, STR_FORMAT_PERMISSION_LABEL, settings.formatPermission, 'permission', next => this.settingsService.setAivisSettings({ formatPermission: next }), btn => this._testPlay(btn, 'permission'));
 	}
 
-	private _field(labelText: string): HTMLElement {
-		const field = dom.append(this.container, $('.pns-field'));
-		dom.append(field, $('label.pns-label')).textContent = labelText;
-		return field;
-	}
-
-	private _renderSlider(labelText: string, value: number, min: number, max: number, step: number, format: (v: number) => string, onCommit: (v: number) => void): void {
-		const field = dom.append(this.container, $('.pns-field'));
-		const label = dom.append(field, $('label.pns-label'));
-		label.textContent = `${labelText}: ${format(value)}`;
+	private _renderSlider(parent: HTMLElement, labelText: string, value: number, min: number, max: number, step: number, format: (v: number) => string, onCommit: (v: number) => void): void {
+		const field = dom.append(parent, $('.setting-row'));
+		const main = dom.append(field, $('.sr-main'));
+		dom.append(main, $('.sr-label')).textContent = labelText;
+		const valueHint = dom.append(main, $('.sr-desc'));
+		valueHint.textContent = format(value);
 		const slider = dom.append(field, $('input')) as HTMLInputElement;
 		slider.type = 'range';
+		slider.style.width = '200px';
 		slider.min = String(min);
 		slider.max = String(max);
 		slider.step = String(step);
 		slider.value = String(value);
 		this._renderDisposables.add(dom.addDisposableListener(slider, 'input', () => {
-			label.textContent = `${labelText}: ${format(Number(slider.value))}`;
+			valueHint.textContent = format(Number(slider.value));
 		}));
 		this._renderDisposables.add(dom.addDisposableListener(slider, 'change', () => {
 			onCommit(Number(slider.value));
 		}));
 	}
 
-	private _renderPresetTiles(currentModelUuid: string, apiKey: string): void {
-		const field = dom.append(this.container, $('.pns-field'));
+	private _renderApiKeyField(parent: HTMLElement, apiKey: string): void {
+		const field = dom.append(parent, $('.setting-row'));
+		const main = dom.append(field, $('.sr-main'));
+		dom.append(main, $('.sr-label')).textContent = STR_API_KEY_LABEL;
+		const group = dom.append(field, $('.pns-input-group'));
+		group.style.width = '320px';
+		const input = dom.append(group, $('input')) as HTMLInputElement;
+		input.type = 'password';
+		input.autocomplete = 'off';
+		input.placeholder = 'aivis_...';
+		input.value = apiKey;
+		this._renderDisposables.add(dom.addDisposableListener(input, 'blur', () => {
+			this.settingsService.setAivisSettings({ apiKey: input.value });
+		}));
+		const toggleVisibilityBtn = dom.append(group, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
+		toggleVisibilityBtn.setAttribute('aria-label', STR_TOGGLE_API_KEY_VISIBILITY);
+		toggleVisibilityBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.eye)}`));
+		this._renderDisposables.add(dom.addDisposableListener(toggleVisibilityBtn, 'click', () => {
+			const willShow = input.type === 'password';
+			input.type = willShow ? 'text' : 'password';
+			dom.clearNode(toggleVisibilityBtn);
+			toggleVisibilityBtn.appendChild($(`span${ThemeIcon.asCSSSelector(willShow ? Codicon.eyeClosed : Codicon.eye)}`));
+		}));
+	}
+
+	/** UUID 入力の正規表現検証。hint を ok / ng で色分けし、有効ならモデル情報を表示する。 */
+	private _renderUuidHint(container: HTMLElement, uuid: string, apiKey: string): void {
+		const state: UuidHintState = uuid.length === 0 ? 'empty' : (UUID_RE.test(uuid) ? 'valid' : 'invalid');
+		container.className = `pns-uuid-hint ${state}`;
+		if (state === 'invalid') {
+			container.textContent = STR_MODEL_INFO_INVALID;
+			return;
+		}
+		if (state === 'empty') {
+			container.textContent = '';
+			return;
+		}
+		container.textContent = '';
+		// フォーマット文字列の編集など、UUID自体は変わっていない 'aivis' スコープの変更でも
+		// このセクションは再描画される。キャッシュ済みなら再フェッチせず即座に表示する。
+		const cached = getCachedAivisModelInfo(apiKey, uuid);
+		if (cached !== undefined) {
+			this._applyModelInfo(container, cached);
+			return;
+		}
+		container.textContent = STR_MODEL_INFO_LOADING;
+		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisModelSummary | null>('getAivisModel', [apiKey, uuid]).then(model => {
+			setCachedAivisModelInfo(apiKey, uuid, model);
+			if (this._store.isDisposed || container.isConnected === false) {
+				return;
+			}
+			this._applyModelInfo(container, model);
+		}, error => {
+			if (this._store.isDisposed) {
+				return;
+			}
+			// allow-any-unicode-next-line
+			container.textContent = `モデル取得失敗: ${error instanceof Error ? error.message : String(error)}`;
+		});
+	}
+
+	private _applyModelInfo(container: HTMLElement, model: IParadisAivisModelSummary | null): void {
+		if (!model) {
+			container.textContent = '';
+			container.classList.remove('ok');
+			return;
+		}
+		// allow-any-unicode-next-line
+		container.textContent = `選択中: ${model.name}${model.authorName ? ` / by ${model.authorName}` : ''}`;
+	}
+
+	private _renderPresetTiles(parent: HTMLElement, currentModelUuid: string, apiKey: string): void {
+		const field = dom.append(parent, $('.setting-row.pns-field-block'));
+		dom.append(field, $('.sr-label')).textContent = STR_PRESETS_LABEL;
 		const grid = dom.append(field, $('.pns-preset-grid'));
 		const presets: readonly IParadisAivisModelPreset[] = [...PARADIS_AIVIS_BUILTIN_PRESETS, ...this.settingsService.getCustomAivisModelPresets()];
 		for (const preset of presets) {
@@ -404,52 +478,12 @@ export class ParadisAivisVoiceSection extends Disposable {
 		this._playingSampleButton = undefined;
 	}
 
-	private _renderModelInfo(container: HTMLElement, uuid: string, apiKey: string): void {
-		const trimmed = uuid.trim();
-		if (!trimmed) {
-			return;
-		}
-		if (!UUID_RE.test(trimmed)) {
-			container.textContent = STR_MODEL_INFO_INVALID;
-			return;
-		}
-
-		// フォーマット文字列の編集など、UUID自体は変わっていない 'aivis' スコープの変更でも
-		// このセクションは再描画される。キャッシュ済みなら再フェッチせず即座に表示する。
-		const cached = getCachedAivisModelInfo(apiKey, trimmed);
-		if (cached !== undefined) {
-			this._applyModelInfo(container, cached);
-			return;
-		}
-
-		container.textContent = STR_MODEL_INFO_LOADING;
-		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisModelSummary | null>('getAivisModel', [apiKey, trimmed]).then(model => {
-			setCachedAivisModelInfo(apiKey, trimmed, model);
-			if (this._store.isDisposed || container.isConnected === false) {
-				return;
-			}
-			this._applyModelInfo(container, model);
-		}, error => {
-			if (this._store.isDisposed) {
-				return;
-			}
-			// allow-any-unicode-next-line
-			container.textContent = `モデル取得失敗: ${error instanceof Error ? error.message : String(error)}`;
-		});
-	}
-
-	private _applyModelInfo(container: HTMLElement, model: IParadisAivisModelSummary | null): void {
-		if (!model) {
-			container.textContent = '';
-			return;
-		}
-		// allow-any-unicode-next-line
-		container.textContent = `選択中: ${model.name}${model.authorName ? ` / by ${model.authorName}` : ''}`;
-	}
-
-	private _renderDictionarySelect(settings: { readonly apiKey: string; readonly userDictionaryUuid: string }): void {
-		const field = this._field(STR_DICTIONARY_LABEL);
+	private _renderDictionarySelect(parent: HTMLElement, settings: { readonly apiKey: string; readonly userDictionaryUuid: string }): void {
+		const field = dom.append(parent, $('.setting-row'));
+		const main = dom.append(field, $('.sr-main'));
+		dom.append(main, $('.sr-label')).textContent = STR_DICTIONARY_LABEL;
 		const select = dom.append(field, $('select')) as HTMLSelectElement;
+		select.style.width = '230px';
 		select.disabled = !settings.apiKey;
 		const noneOption = dom.append(select, $('option')) as HTMLOptionElement;
 		noneOption.value = '';
@@ -509,36 +543,47 @@ export class ParadisAivisVoiceSection extends Disposable {
 		}
 	}
 
-	private _renderFormatField(labelText: string, value: string, field: 'format' | 'permission', onCommit: (next: string) => void, onTest: () => void): HTMLTextAreaElement {
-		const row = dom.append(this.container, $('.pns-field'));
-		const header = dom.append(row, $('.pns-row'));
-		header.style.marginBottom = '5px';
-		dom.append(header, $('label.pns-label')).textContent = labelText;
-		const testBtn = dom.append(header, $('button.pns-btn')) as HTMLButtonElement;
-		testBtn.textContent = STR_TEST_PLAY;
-		this._renderDisposables.add(dom.addDisposableListener(testBtn, 'click', onTest));
-
-		const textarea = dom.append(row, $('textarea')) as HTMLTextAreaElement;
+	private _renderFormatField(parent: HTMLElement, labelText: string, value: string, field: 'format' | 'permission', onCommit: (next: string) => void, onTest: (btn: HTMLButtonElement) => void): HTMLTextAreaElement {
+		const fieldEl = dom.append(parent, $('.setting-row'));
+		const main = dom.append(fieldEl, $('.sr-main'));
+		dom.append(main, $('.sr-label')).textContent = labelText;
+		dom.append(main, $('.sr-desc')).textContent = STR_FORMAT_HINT;
+		const controlCol = dom.append(fieldEl, $('div'));
+		controlCol.className = 'pns-format-control';
+		const textarea = dom.append(controlCol, $('textarea')) as HTMLTextAreaElement;
 		textarea.rows = 2;
 		textarea.value = value;
+		const testBtn = dom.append(controlCol, $('button.pns-btn.pns-test-play')) as HTMLButtonElement;
+		testBtn.textContent = STR_TEST_PLAY;
+		this._renderDisposables.add(dom.addDisposableListener(testBtn, 'click', () => onTest(testBtn)));
+
 		this._renderDisposables.add(dom.addDisposableListener(textarea, 'focus', () => { this._activeField = field; }));
 		this._renderDisposables.add(dom.addDisposableListener(textarea, 'blur', () => onCommit(textarea.value)));
 		return textarea;
 	}
 
-	private async _testPlay(kind: 'complete' | 'permission'): Promise<void> {
-		const settings = this.settingsService.getAivisSettings();
-		if (!settings.apiKey || !settings.modelUuid) {
+	/**
+	 * テスト再生。ボタンは「再生中…」の間押せなくなり、shared process の
+	 * `playAivis`（合成＋再生の完了を待つ）が解決したら元に戻る。
+	 */
+	private async _testPlay(button: HTMLButtonElement, kind: 'complete' | 'permission'): Promise<void> {
+		if (button.disabled) {
 			return;
 		}
-		const template = kind === 'permission' ? settings.formatPermission : settings.format;
-		// 本番 (paradisNotificationTrigger) と同じ置換関数を使い、プレビューと実際の読み上げの挙動を一致させる
-		const rendered = renderParadisAivisTemplate(template, {
-			...SAMPLE_PLACEHOLDER_VALUES,
-			// allow-any-unicode-next-line
-			event: kind === 'permission' ? '許可要求' : '作業完了',
-		});
+		button.disabled = true;
+		button.textContent = STR_TEST_PLAYING;
 		try {
+			const settings = this.settingsService.getAivisSettings();
+			if (!settings.apiKey || !settings.modelUuid) {
+				return;
+			}
+			const template = kind === 'permission' ? settings.formatPermission : settings.format;
+			// 本番 (paradisNotificationTrigger) と同じ置換関数を使い、プレビューと実際の読み上げの挙動を一致させる
+			const rendered = renderParadisAivisTemplate(template, {
+				...SAMPLE_PLACEHOLDER_VALUES,
+				// allow-any-unicode-next-line
+				event: kind === 'permission' ? '許可要求' : '作業完了',
+			});
 			await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('playAivis', [{
 				apiKey: settings.apiKey,
 				modelUuid: settings.modelUuid,
@@ -550,6 +595,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 			}]);
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] Aivis test playback failed', error);
+		} finally {
+			button.disabled = false;
+			button.textContent = STR_TEST_PLAY;
 		}
 	}
 }

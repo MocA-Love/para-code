@@ -286,6 +286,13 @@ function createContainer(title: string): HTMLElement {
 	return document.createElement('div');
 }
 
+/** テスト用ドキュメント（`Event` が VS Code の Event 型でシャドウされるため createEvent 経由で発火） */
+function dispatchChangeEvent(element: Element): void {
+	const event = element.ownerDocument.createEvent('Event');
+	event.initEvent('change', true, true);
+	element.dispatchEvent(event);
+}
+
 suite('Paradis DND actual surfaces', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -421,11 +428,11 @@ suite('Paradis DND actual surfaces', () => {
 				{ tag: 'div', className: 'pns-section-title', text: 'おやすみモード', children: [] },
 				{ tag: 'div', className: 'pns-section-desc', text: 'オンの間はこのPCの通知音・デスクトップ通知・音声読み上げをすべて止めます（作業自体は止まりません）。', children: [] },
 				{
-					tag: 'div', className: 'pns-row', text: '', children: [
+					tag: 'div', className: 'setting-row', text: '', children: [
 						{
-							tag: 'div', className: '', text: '', children: [
-								{ tag: 'div', className: 'pns-row-label', text: 'おやすみモード', children: [] },
-								{ tag: 'div', className: 'pns-row-hint', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
+							tag: 'div', className: 'sr-main', text: '', children: [
+								{ tag: 'div', className: 'sr-label', text: 'おやすみモード', children: [] },
+								{ tag: 'div', className: 'sr-desc', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
 							],
 						},
 						{ tag: 'input', className: 'pns-toggle', text: '', children: [], type: 'checkbox', checked: false },
@@ -436,28 +443,33 @@ suite('Paradis DND actual surfaces', () => {
 				{ tag: 'div', className: 'pns-section-title', text: 'おやすみモード', children: [] },
 				{ tag: 'div', className: 'pns-section-desc', text: 'オンの間はこのPCの通知音・デスクトップ通知・音声読み上げをすべて止めます（作業自体は止まりません）。', children: [] },
 				{
-					tag: 'div', className: 'pns-row', text: '', children: [
+					tag: 'div', className: 'setting-row', text: '', children: [
 						{
-							tag: 'div', className: '', text: '', children: [
-								{ tag: 'div', className: 'pns-row-label', text: 'おやすみモード', children: [] },
-								{ tag: 'div', className: 'pns-row-hint', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
+							tag: 'div', className: 'sr-main', text: '', children: [
+								{ tag: 'div', className: 'sr-label', text: 'おやすみモード', children: [] },
+								{ tag: 'div', className: 'sr-desc', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
 							],
 						},
 						{ tag: 'input', className: 'pns-toggle', text: '', children: [], type: 'checkbox', checked: true },
 					],
 				},
 				{
-					tag: 'div', className: 'pns-field', text: '', children: [
-						{ tag: 'label', className: 'pns-label', text: '解除するタイミング', children: [] },
+					tag: 'div', className: 'setting-row', text: '', children: [
 						{
-							tag: 'div', className: 'pns-chip-row', text: '', children: [
-								{ tag: 'button', className: 'pns-btn', text: '30分', children: [] },
-								{ tag: 'button', className: 'pns-btn', text: '1時間', children: [] },
-								{ tag: 'button', className: 'pns-btn', text: '朝まで（7:00）', children: [] },
-								{ tag: 'button', className: 'pns-btn pns-btn-primary', text: '自分でオフにするまで', children: [] },
+							tag: 'div', className: 'sr-main', text: '', children: [
+								{ tag: 'div', className: 'sr-label', text: '解除するタイミング', children: [] },
+								{ tag: 'div', className: 'sr-desc', text: '自分でオフにするまで止め続けます。', children: [] },
 							],
 						},
-						{ tag: 'div', className: 'pns-row-hint', text: '自分でオフにするまで止め続けます。', children: [] },
+						{
+							tag: 'select', className: 'pns-select', text: '', children: [
+								// 選択肢は common の PARADIS_DO_NOT_DISTURB_DURATIONS 順（ステータスバーと共通）
+								{ tag: 'option', className: '', text: '30分', children: [] },
+								{ tag: 'option', className: '', text: '1時間', children: [] },
+								{ tag: 'option', className: '', text: '朝まで（7:00）', children: [] },
+								{ tag: 'option', className: '', text: '自分でオフにするまで', children: [] },
+							],
+						},
 					],
 				},
 			],
@@ -465,35 +477,43 @@ suite('Paradis DND actual surfaces', () => {
 				{ tag: 'div', className: 'pns-section-title', text: 'おやすみモード', children: [] },
 				{ tag: 'div', className: 'pns-section-desc', text: 'オンの間はこのPCの通知音・デスクトップ通知・音声読み上げをすべて止めます（作業自体は止まりません）。', children: [] },
 				{
-					tag: 'div', className: 'pns-row', text: '', children: [
+					tag: 'div', className: 'setting-row', text: '', children: [
 						{
-							tag: 'div', className: '', text: '', children: [
-								{ tag: 'div', className: 'pns-row-label', text: 'おやすみモード', children: [] },
-								{ tag: 'div', className: 'pns-row-hint', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
+							tag: 'div', className: 'sr-main', text: '', children: [
+								{ tag: 'div', className: 'sr-label', text: 'おやすみモード', children: [] },
+								{ tag: 'div', className: 'sr-desc', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
 							],
 						},
 						{ tag: 'input', className: 'pns-toggle', text: '', children: [], type: 'checkbox', checked: true },
 					],
 				},
 				{
-					tag: 'div', className: 'pns-field', text: '', children: [
-						{ tag: 'label', className: 'pns-label', text: '解除するタイミング', children: [] },
+					tag: 'div', className: 'setting-row', text: '', children: [
 						{
-							tag: 'div', className: 'pns-chip-row', text: '', children: [
-								{ tag: 'button', className: 'pns-btn', text: '30分', children: [] },
-								{ tag: 'button', className: 'pns-btn', text: '1時間', children: [] },
-								{ tag: 'button', className: 'pns-btn', text: '朝まで（7:00）', children: [] },
-								{ tag: 'button', className: 'pns-btn', text: '自分でオフにするまで', children: [] },
+							tag: 'div', className: 'sr-main', text: '', children: [
+								{ tag: 'div', className: 'sr-label', text: '解除するタイミング', children: [] },
+								{ tag: 'div', className: 'sr-desc', text: 'あと2分で自動的に解除されます。', children: [] },
 							],
 						},
-						{ tag: 'div', className: 'pns-row-hint', text: 'あと2分で自動的に解除されます。', children: [] },
+						{
+							tag: 'select', className: 'pns-select', text: '', children: [
+								{ tag: 'option', className: '', text: '30分', children: [] },
+								{ tag: 'option', className: '', text: '1時間', children: [] },
+								{ tag: 'option', className: '', text: '朝まで（7:00）', children: [] },
+								{ tag: 'option', className: '', text: '自分でオフにするまで', children: [] },
+							],
+						},
 					],
 				},
 			],
 		});
 
+		const select = container.querySelector('select') as HTMLSelectElement;
+
+		// 「30分」を選択して change を発火 → resolveUntil(Date.now()) で設定される
 		const beforeClick = Date.now();
-		(container.querySelectorAll('button')[0] as HTMLButtonElement).click();
+		select.value = 'minutes30';
+		dispatchChangeEvent(select);
 		const afterClick = Date.now();
 		const timedCall = settings.setDoNotDisturbCalls[0];
 		assert.strictEqual(timedCall.enabled, true);
@@ -503,12 +523,11 @@ suite('Paradis DND actual surfaces', () => {
 
 		settings.setState({ enabled: true, until: undefined });
 		settings.fireDedicated(false);
-		(container.querySelectorAll('button')[3] as HTMLButtonElement).click();
+		select.value = 'manual';
+		dispatchChangeEvent(select);
 		const toggle = container.querySelector('input.pns-toggle') as HTMLInputElement;
 		toggle.checked = false;
-		const changeEvent = toggle.ownerDocument.createEvent('Event');
-		changeEvent.initEvent('change', true, true);
-		toggle.dispatchEvent(changeEvent);
+		dispatchChangeEvent(toggle);
 		assert.deepStrictEqual(settings.setDoNotDisturbCalls.slice(1), [
 			{ enabled: true, until: undefined },
 			{ enabled: false, until: undefined },
@@ -823,7 +842,7 @@ suite('Paradis DND actual surfaces', () => {
 			readDelta: settings.getDoNotDisturbReadCount - beforeLateWork.reads,
 			children: reopenedContainer.childElementCount,
 			toggleChecked: (reopenedContainer.querySelector('input.pns-toggle') as HTMLInputElement).checked,
-			hint: reopenedContainer.querySelector('.pns-field > .pns-row-hint')?.textContent,
+			hint: reopenedContainer.querySelectorAll('.setting-row')[1]?.querySelector('.sr-desc')?.textContent,
 		}, { pending: 1, readDelta: 1, children: 4, toggleChecked: true, hint: 'あと1分で自動的に解除されます。' });
 	});
 });
