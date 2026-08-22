@@ -214,4 +214,38 @@ suite('ParadisNotificationsService boundaries', () => {
 			}
 		});
 	});
+
+	suite('install state cap', () => {
+		const UNAVAILABLE_MESSAGE = 'Homebrewによる自動インストールはmacOSのみ対応しています。yt-dlpとffmpegを手動でインストールしてください。';
+
+		// installYtDlp spawns a real `brew install` on darwin once Homebrew resolves. Forcing a
+		// non-darwin platform keeps every call on the synchronous "unsupported platform" branch, so
+		// the cap/eviction logic below is exercised without ever touching the real package manager.
+		setup(() => { sinon.stub(process, 'platform').value('linux'); });
+
+		test('evicts the oldest install state once more than the cap have been started', async () => {
+			const service = createService();
+			for (const id of ['a', 'b', 'c', 'd', 'e']) {
+				await service.installYtDlp(id);
+			}
+
+			const evicted = await service.getInstallLog('a', 0);
+			assert.deepStrictEqual(evicted, { lines: [], done: true, error: 'unknown installId' });
+
+			const kept = await service.getInstallLog('e', 0);
+			assert.strictEqual(kept.done, true);
+			assert.strictEqual(kept.error, UNAVAILABLE_MESSAGE);
+		});
+
+		test('does not evict anything while at or under the cap', async () => {
+			const service = createService();
+			for (const id of ['w', 'x', 'y', 'z']) {
+				await service.installYtDlp(id);
+			}
+
+			const oldest = await service.getInstallLog('w', 0);
+			assert.strictEqual(oldest.error, UNAVAILABLE_MESSAGE);
+			assert.notDeepStrictEqual(oldest, { lines: [], done: true, error: 'unknown installId' });
+		});
+	});
 });
