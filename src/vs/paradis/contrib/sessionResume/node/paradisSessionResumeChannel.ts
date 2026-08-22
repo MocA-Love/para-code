@@ -23,6 +23,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
+	IParadisResumeLatestMessage,
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
 	IParadisResumePreview,
@@ -31,6 +32,7 @@ import {
 	IParadisResumeSpace,
 	PARADIS_RESUME_SESSION_ID_PATTERN,
 	PARADIS_SESSION_RESUME_CHANNEL,
+	ParadisResumeAgent,
 } from '../common/paradisSessionResume.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -39,6 +41,12 @@ const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEW_MESSAGES = 200;
 const MAX_MESSAGE_CHARS = 12_000;
 const MAX_CLAUDE_SESSIONS_PER_SPACE = 200;
+// 一覧行の「最新の会話」プレビュー用に transcript の末尾から読む量。
+// 最後のメッセージ行がこの長さを超えると採取できないが、その場合は preview(最初のプロンプト)へフォールバックする。
+const LAST_MESSAGE_TAIL_BYTES = 16 * 1024;
+// 一覧のプレビューは1行表示なので十分な長さ。電文を膨らませないため preview と同じ上限に切り詰める。
+const LAST_MESSAGE_CHARS = 260;
+const MAX_CONCURRENT_LAST_MESSAGE_READS = 8;
 const SUMMARY_HEAD_BYTES = 512 * 1024;
 const MAX_SEARCH_TEXT_CHARS = 64 * 1024;
 const MAX_CATALOG_ENTRIES = 2400;
@@ -274,6 +282,43 @@ async function readBoundedFile(filePath: string, allowedRoot: string, beforeOpen
 		await handle.close();
 	}
 }
+
+async function readFileTail(filePath: string, allowedRoot: string, limit: number, beforeOpen?: (filePath: string) => Promise<void>): Promise<string> {
+	const { handle, stat } = await openVerifiedFile(filePath, allowedRoot, undefined, beforeOpen);
+	try {
+		if (stat.size === 0) {
+			return '';
+		}
+		const length = Math.min(stat.size, limit);
+		const buffer = Buffer.alloc(length);
+		const { bytesRead } = await handle.read(buffer, 0, length, stat.size - length);
+		const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
+		// 先頭は読み飛ばし境界で切れている可能性があるため捨てる。全体を読み切ったときは不要。
+		if (stat.size > limit) {
+			lines.shift();
+		}
+		return lines.join('\n');
+	} finally {
+		await handle.close();
+	}
+}
+
+/**
+ * transcript の末尾から「最新の会話メッセージ」を採取する。末尾から逆順に走査するため、
+ * tail 先頭の不完全行や、最後の行が巨大で採取できなかった場合でも、その手前の完全な行に落ち着く。
+ */
+function extractLatestMessage(tailText: string, agent: ParadisResumeAgent): IParadisResumeLatestMessage | undefined {
+	const lines = tailText.split('\n');
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const message = parseLine(lines[index], agent);
+		if (message) {
+			// 一覧では1行で表示するため改行を潰す。
+			return { role: message.role, text: clipped(message.text.replace(/\s+/g, ' ').trim(), LAST_MESSAGE_CHARS) };
+		}
+	}
+	return undefined;
+}
+
 async function readFileHead(filePath: string, allowedRoot: string, expected: IFileIdentity, limit: number, beforeOpen?: (filePath: string) => Promise<void>): Promise<string> {
 	const { handle, stat } = await openVerifiedFile(filePath, allowedRoot, expected, beforeOpen);
 	try {
@@ -396,7 +441,42 @@ export class ParadisSessionResumeService {
 		}
 		const visible = sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
 		this.trimCatalog(new Set(visible.map(session => session.catalogId)));
-		return visible;
+		return await this.attachLatestMessages(visible);
+	}
+
+	/**
+	 * 一覧行のプレビューを「最新(最後)の会話」にするため、各 transcript の末尾から
+	 * 最新メッセージを採取して上書きする。読めないセッションは latestMessage なしのまま
+	 * 返り、エディタ側で最初のプロンプトへフォールバックする。
+	 */
+	private async attachLatestMessages(visible: readonly IParadisResumeSession[]): Promise<readonly IParadisResumeSession[]> {
+		const entries = visible.map(session => [session.catalogId, this.catalog.get(session.catalogId)] as const)
+			.filter((entry): entry is readonly [string, ICatalogEntry] => entry[1] !== undefined);
+		if (entries.length === 0) {
+			return visible;
+		}
+		const latestMessages = new Map<string, IParadisResumeLatestMessage>();
+		let cursor = 0;
+		const worker = async (): Promise<void> => {
+			while (cursor < entries.length) {
+				const [catalogId, entry] = entries[cursor++];
+				try {
+					const tail = await readFileTail(entry.transcriptPath, entry.allowedRoot, LAST_MESSAGE_TAIL_BYTES, this.beforeSummaryRead);
+					const message = extractLatestMessage(tail, entry.session.agent);
+					if (message) {
+						latestMessages.set(catalogId, message);
+					}
+				} catch { /* 採取できないセッションは preview へフォールバックさせる */ }
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_LAST_MESSAGE_READS, entries.length) }, () => worker()));
+		if (latestMessages.size === 0) {
+			return visible;
+		}
+		return visible.map(session => {
+			const latestMessage = latestMessages.get(session.catalogId);
+			return latestMessage ? { ...session, latestMessage } : session;
+		});
 	}
 
 	async preview(catalogId: string, rawQuery?: string): Promise<IParadisResumePreview> {
