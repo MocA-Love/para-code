@@ -7,8 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from '../../node/paradisScreenshotHandoff.js';
+import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from '../../node/paradisScreenshotHandoff.js';
 
 function toolResult(...lines: string[]): unknown {
 	return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -97,5 +100,56 @@ suite('ParadisScreenshotHandoff', () => {
 			paradisScreenshotContentType('/tmp/a.webp'),
 			paradisScreenshotContentType('/tmp/a'),
 		], ['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream']);
+	});
+
+	suite('paradisReadScreenshotFile', () => {
+		let dir: string;
+
+		setup(() => {
+			dir = mkdtempSync(join(tmpdir(), 'paradis-screenshot-read-'));
+		});
+
+		teardown(() => {
+			rmSync(dir, { recursive: true, force: true });
+		});
+
+		test('reads a normal file', async () => {
+			const path = join(dir, 'a.png');
+			writeFileSync(path, 'fake-png-bytes');
+
+			const body = await paradisReadScreenshotFile(path);
+
+			assert.strictEqual(body?.toString(), 'fake-png-bytes');
+		});
+
+		test('returns undefined for a missing file instead of throwing', async () => {
+			const body = await paradisReadScreenshotFile(join(dir, 'missing.png'));
+
+			assert.strictEqual(body, undefined);
+		});
+
+		// クライアント切断時に呼び出し側が signal を abort する経路の代わり。ingress 枠の
+		// dispose 待ちを止めるための AbortSignal 接続が実際に効いていることを確認する。
+		test('does not return file contents once the signal is already aborted', async () => {
+			const path = join(dir, 'b.png');
+			writeFileSync(path, 'fake-png-bytes');
+			const controller = new AbortController();
+			controller.abort();
+
+			const body = await paradisReadScreenshotFile(path, controller.signal);
+
+			assert.strictEqual(body, undefined);
+		});
+
+		test('aborts an in-flight read when the signal fires', async () => {
+			const path = join(dir, 'c.png');
+			writeFileSync(path, Buffer.alloc(8 * 1024 * 1024, 1));
+			const controller = new AbortController();
+
+			const pending = paradisReadScreenshotFile(path, controller.signal);
+			controller.abort();
+
+			assert.strictEqual(await pending, undefined);
+		});
 	});
 });
