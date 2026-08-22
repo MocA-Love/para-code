@@ -9,6 +9,8 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+// PARA-PATCH: upstream added IDefaultAccountService to GitHubApiClient's constructor (GH Enterprise endpoint derivation)
+import { IDefaultAccountService } from '../../../../platform/defaultAccount/common/defaultAccount.js';
 import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
 // Feeds the GitHub API Usage dashboard (paradis/contrib/githubMetrics) so its "space" breakdown
@@ -435,9 +437,10 @@ export class SessionGithubGatedApiClient extends GitHubApiClient {
 	constructor(
 		@IRequestService requestService: IRequestService,
 		@IAuthenticationService authenticationService: IAuthenticationService,
+		@IDefaultAccountService defaultAccountService: IDefaultAccountService,
 		@ILogService logService: ILogService,
 	) {
-		super(requestService, authenticationService, logService);
+		super(requestService, authenticationService, defaultAccountService, logService);
 		this._gate = this._register(new SessionGithubRequestGate(logService));
 	}
 
@@ -445,8 +448,8 @@ export class SessionGithubGatedApiClient extends GitHubApiClient {
 		return this._gate.run(callSite, () => super.request<T>(method, path, callSite, options), 'rest');
 	}
 
-	override async graphql<T>(query: string, callSite: string, variables?: Record<string, unknown>): Promise<T> {
-		return this._gate.run(callSite, () => super.graphql<T>(query, callSite, variables), 'graphql');
+	override async graphql<T>(query: string, callSite: string, variables?: Record<string, unknown>, options?: Pick<IGitHubApiRequestOptions, 'token' | 'createAuthenticationSession'>): Promise<T> {
+		return this._gate.run(callSite, () => super.graphql<T>(query, callSite, variables, options), 'graphql');
 	}
 
 	protected override _onRateLimitSnapshot(snapshot: IGitHubRateLimitSnapshot): void {
