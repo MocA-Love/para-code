@@ -167,7 +167,15 @@ function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): void {
 		logService.warn('[ParadisPtyHost] could not open the startup log; the daemon will start without one', error);
 	}
 
-	const env = { ...process.env, ...launch.env };
+	const env: { [key: string]: string | undefined } = {
+		...process.env,
+		// **これが無いと node ではなく Electron アプリとして起きる。** ローカルでの実行ファイルは
+		// Para Code 本体なので、付け忘れると2つ目の Para Code が起動しようとして常駐は上がらず、
+		// 10秒待って縮退する。main の env にも入っていないので、ここで必ず付ける
+		// (リモートは素の node なので影響しないが、経路を分けない)。
+		ELECTRON_RUN_AS_NODE: '1',
+		...launch.env,
+	};
 	// 親の生死を見て自分を殺す仕掛けが動くと、常駐にならない。
 	delete env['VSCODE_PARENT_PID'];
 	delete env['VSCODE_PIPE_LOGGING'];

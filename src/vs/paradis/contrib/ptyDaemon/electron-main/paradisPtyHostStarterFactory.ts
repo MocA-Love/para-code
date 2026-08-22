@@ -23,6 +23,8 @@ import { IReconnectConstants } from '../../../../platform/terminal/common/termin
 import { ElectronPtyHostStarter } from '../../../../platform/terminal/electron-main/electronPtyHostStarter.js';
 import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { PARADIS_PTY_HOST_STATE_DIR } from '../node/paradisPtyHostBootstrap.js';
+import { paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
+import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
@@ -53,6 +55,32 @@ export function paradisPtyDaemonPathsFor(
 		platform: currentPlatform(),
 		xdgRuntimeDir: process.env['XDG_RUNTIME_DIR'],
 	});
+}
+
+/**
+ * いま使う常駐の置き場所と、その台帳での鍵。
+ *
+ * **常駐は2種類ある。** 状態を見る・止める・終了時に残すかを決める、のどれもがここを通るので、
+ * どちらを見るかの判断は1箇所に置く。分かれていると、新しい方を有効にした人には
+ * 「動いていない」と見え、**終了時に全部のターミナルが畳まれる**（実際にそうなっていた）。
+ */
+export function paradisActiveDaemonLedger(
+	configurationService: IConfigurationService,
+	environmentMainService: IEnvironmentMainService,
+	productService: IProductService,
+): { readonly ledgerDir: string; readonly buildKey: string } {
+	if (configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true) {
+		const paths = paradisPtyHostPaths({ stateDir: environmentMainService.userDataPath, platform: currentPlatform() });
+		return { ledgerDir: paths.ledgerDir, buildKey: `v${PARADIS_PTY_PROTOCOL_VERSION}` };
+	}
+	const paths = paradisPtyDaemonPathsFor(environmentMainService, productService);
+	return { ledgerDir: paths.ledgerDir, buildKey: paths.buildKey };
+}
+
+/** どちらかの常駐が使われる設定になっているか。 */
+export function paradisAnyDaemonEnabled(configurationService: IConfigurationService): boolean {
+	return configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true
+		|| configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true;
 }
 
 /**

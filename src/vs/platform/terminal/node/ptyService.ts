@@ -27,6 +27,7 @@ import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
 import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
 import { IParadisAdoptTarget, paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -647,6 +648,9 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void> {
 		this._workspaceLayoutInfos.set(args.workspaceId, args);
+		// PARA-PATCH: this only lives as long as the process, so terminals kept by a daemon would
+		// come back with nowhere to appear. See paradisTerminalLayout.ts.
+		paradisRememberLayout(args);
 	}
 
 	@traceRpc

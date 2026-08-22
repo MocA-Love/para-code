@@ -37,8 +37,7 @@ import {
 } from '../common/paradisPtyDaemonStatus.js';
 import { IParadisPtyDaemonRecord } from '../common/paradisPtyDaemonPolicy.js';
 import { paradisReadDaemonRecords } from '../node/paradisPtyDaemonLedger.js';
-import { paradisPtyDaemonPathsFor } from './paradisPtyHostStarterFactory.js';
-import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { paradisActiveDaemonLedger, paradisAnyDaemonEnabled } from './paradisPtyHostStarterFactory.js';
 
 /** 状態を集めるのに必要な、ターミナル側の見え方。 */
 export interface IParadisDaemonPtyAccess {
@@ -97,12 +96,14 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	}
 
 	async getStatus(): Promise<IParadisPtyDaemonStatus> {
-		const enabled = this.configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true;
+		// **どちらの常駐でも同じ答えを返す。** 片方しか見ないと、新しい方を選んだ人には
+		// 「動いていない」と見え、終了時に残すかの判断がそこで false に倒れて全部畳まれる。
+		const enabled = paradisAnyDaemonEnabled(this.configurationService);
 		if (!enabled) {
 			return { enabled: false, running: false, pid: undefined, buildId: undefined, startedAt: undefined, terminalCount: undefined, spaces: [], foreign: [] };
 		}
 
-		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
+		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
 		const records = await paradisReadDaemonRecords(paths.ledgerDir);
 		const own = records.find(record => record.buildKey === paths.buildKey && isProcessAlive(record.pid));
 
@@ -267,7 +268,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	}
 
 	async stop(): Promise<void> {
-		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
+		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
 		const records = await paradisReadDaemonRecords(paths.ledgerDir);
 		const own = records.find(record => record.buildKey === paths.buildKey);
 		if (!own) {
@@ -284,7 +285,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 * 信じると、呼び出し側の間違いや古い画面の情報で、関係のない相手に手を出すことになる。
 	 */
 	async stopForeign(pid: number): Promise<void> {
-		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
+		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
 		const records = await paradisReadDaemonRecords(paths.ledgerDir);
 		const record = records.find(candidate => candidate.pid === pid && candidate.buildKey !== paths.buildKey);
 		if (!record) {

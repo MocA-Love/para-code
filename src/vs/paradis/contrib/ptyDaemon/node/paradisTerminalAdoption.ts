@@ -28,16 +28,6 @@ import { IParadisTerminalMetadata, paradisDecodeTerminalMetadata } from '../comm
 export interface IParadisAdoptedTerminal {
 	readonly summary: IParadisPtySummary;
 	readonly metadata: IParadisTerminalMetadata;
-	/**
-	 * 画面を作り直すための中身。
-	 *
-	 * **断りはここに混ぜない。** 混ぜると、繋ぎ直したときに出す分と二重になる。断りを出すのは
-	 * 実際に画面へ流す側（`ParadisDaemonTerminalProcess`）の仕事で、こちらは {@link dropped} を
-	 * 伝えるだけにする。
-	 */
-	readonly replay: string;
-	/** 古い出力が捨てられていたか。呼び出し側が更に断りを出したいときのために残す。 */
-	readonly dropped: boolean;
 }
 
 export interface IParadisAdoptionResult {
@@ -59,10 +49,18 @@ export interface IParadisAdoptionResult {
 }
 
 /**
- * 常駐が抱えているものを一通り引き取る。
+ * 常駐が抱えているものを一通り数え上げる。
  *
- * 繋ぎ直し (`attach`) までここで済ませる。控えを受け取ることと流し始めることが同じ往復で
- * 起きるので、間の出力が落ちない。
+ * **ここでは繋ぎ直さない（`attach` しない）。** 一度ここで繋ぐと、次の2つが同時に起きる:
+ *
+ *  1. 器の `start()` がもう一度繋ぐので、控えが**二重に**流れる（画面に履歴が2回出る）。
+ *     こぼれの判断は前回繋いだ時点からの区間で見るので、**2回目は必ず「こぼれていない」に
+ *     なり、いちばん断りが要る場面で黙る**
+ *  2. 見る人が現れる前に「見られている」状態になる。すると未確認の文字が数え上がり、誰も
+ *     ack しないので高水位で pty が止まる。**閉じている間も走り切らせるという判断が、
+ *     引き取った直後に無言で覆る**
+ *
+ * 繋ぐのは、窓が実際に開きに来たとき（器の `start()`）に1回だけ。
  */
 export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IParadisAdoptionResult> {
 	let summaries: readonly IParadisPtySummary[];
@@ -77,14 +75,7 @@ export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IPar
 	let skipped = 0;
 	for (const summary of summaries) {
 		try {
-			const attachment = await host.attach(summary.handle);
-			const replay = attachment.frames.map(frame => frame.data).join('');
-			adopted.push({
-				summary,
-				metadata: paradisDecodeTerminalMetadata(summary.metadata),
-				replay,
-				dropped: attachment.dropped,
-			});
+			adopted.push({ summary, metadata: paradisDecodeTerminalMetadata(summary.metadata) });
 		} catch {
 			// 1本ずつ独立に。隣で元気に走っているものを道連れにしない。
 			skipped++;

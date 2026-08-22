@@ -46,7 +46,7 @@ export interface IParadisPtyProcess {
 	readonly process: string;
 	onData(listener: (data: string) => void): IDisposable;
 	onExit(listener: (event: { readonly exitCode: number; readonly signal?: number }) => void): IDisposable;
-	write(data: string): void;
+	write(data: string | Buffer): void;
 	resize(cols: number, rows: number): void;
 	kill(signal?: string): void;
 	/** 読み出しを止める／再開する。フロー制御の実体。 */
@@ -270,9 +270,10 @@ export class ParadisPtyHolder extends Disposable {
 		if (!this.alive) {
 			return;
 		}
-		// バイナリは1文字＝1バイトとして書く。UTF-8 として書くと 0x80-0xFF が別のバイト列に
-		// なり、マウス報告や貼り付けが静かに壊れる（upstream と同じ使い分け）。
-		this.pty.write(binary ? Buffer.from(data, 'binary').toString('binary') : data);
+		// バイナリは **Buffer のまま** 渡す。`toString('binary')` で文字列に戻すと元に戻るだけで、
+		// node-pty はそれを UTF-8 で書くので 0x80-0xFF が2バイトに化ける（upstream も Buffer の
+		// まま渡している）。**「変換して戻す」は何もしていないのと同じ。**
+		this.pty.write(binary ? Buffer.from(data, 'binary') : data);
 	}
 
 	resize(cols: number, rows: number): void {
