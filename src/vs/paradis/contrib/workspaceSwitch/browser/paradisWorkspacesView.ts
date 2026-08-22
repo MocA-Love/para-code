@@ -13,7 +13,7 @@ import { IListVirtualDelegate, ListDragOverEffectPosition, ListDragOverEffectTyp
 import { ElementsDragAndDropData, ListViewTargetSector } from '../../../../base/browser/ui/list/listView.js';
 import { IDragAndDropData } from '../../../../base/browser/dnd.js';
 import { IObjectTreeElement, ITreeDragAndDrop, ITreeDragOverReaction, ITreeNode, ITreeRenderer, ObjectTreeElementCollapseState } from '../../../../base/browser/ui/tree/tree.js';
-import { Action, IAction, Separator } from '../../../../base/common/actions.js';
+import { Action, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
@@ -40,7 +40,7 @@ import { WorkbenchObjectTree } from '../../../../platform/list/browser/listServi
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
-import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
@@ -145,10 +145,13 @@ function worktreeStateKeyFor(worktree: IParadisWorktree): string {
 /** OSごとの「Finder/Explorerで表示」ラベル (upstream の revealFileInOS と同じ出し分け) */
 function revealLabel(): string {
 	return isWindows
-		? localize('paradis.workspaceSwitch.revealWindows', "Reveal in File Explorer")
+		// allow-any-unicode-next-line
+		? localize('paradis.workspaceSwitch.revealWindows', "エクスプローラーで表示")
 		: isMacintosh
-			? localize('paradis.workspaceSwitch.revealMac', "Reveal in Finder")
-			: localize('paradis.workspaceSwitch.revealLinux', "Open Containing Folder");
+			// allow-any-unicode-next-line
+			? localize('paradis.workspaceSwitch.revealMac', "Finder で表示")
+			// allow-any-unicode-next-line
+			: localize('paradis.workspaceSwitch.revealLinux', "含むフォルダーを開く");
 }
 
 /** ドット列に並べる上限。これを超えた分は「+n」に畳む (狭いサイドバーで溢れさせない) */
@@ -1479,49 +1482,81 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 	}
 
+	/**
+	 * 「色を設定」サブメニュー。12色 + Default を縦並びで出し、現在色にチェックを付ける。
+	 * 色ドットは Action の cssClass (paradis-color-*) 経由で media/paradisWorkspaceSwitch.css が
+	 * 描画する。HTML コンテキストメニュー (window.menuStyle: custom) のみ色が見える —
+	 * ネイティブメニューでは以前と同様に CSS が効かないため色名のみ表示される。
+	 */
+	private buildColorSubmenuActions(repository: IParadisWorkspaceRepository): IAction[] {
+		const colorActions = PARADIS_WORKSPACE_COLORS.map(color => {
+			const action = new Action(
+				`paradis.workspaceSwitch.color.${color.id}`,
+				colorLabel(color.id),
+				`paradis-menu-icon paradis-menu-color paradis-color-${color.id}`,
+				true,
+				() => this.workspaceSwitchService.setRepositoryColor(repository.id, color.id)
+			);
+			action.checked = repository.color === color.id;
+			return action;
+		});
+		const defaultAction = new Action(
+			'paradis.workspaceSwitch.color.default',
+			localize('paradis.workspaceSwitch.colorDefault', "Default"),
+			'paradis-menu-icon paradis-menu-color paradis-color-default',
+			true,
+			() => this.workspaceSwitchService.setRepositoryColor(repository.id, undefined)
+		);
+		// パレット外の colorId (削済みID等) が残っている場合は Default 側にチェックを置く
+		defaultAction.checked = repository.color === undefined ||
+			!PARADIS_WORKSPACE_COLORS.some(color => color.id === repository.color);
+		return [...colorActions, new Separator(), defaultAction];
+	}
+
 	private buildRepositoryContextMenuActions(repository: IParadisWorkspaceRepository): IAction[] {
 		const { repositories, index } = this.repositorySiblingIndex(repository);
 		return [
 			new Action(
 				'paradis.workspaceSwitch.createWorktreeContext',
 				localize('paradis.workspaceSwitch.createWorktreeContext', "New Worktree Space..."),
-				undefined,
+				'paradis-menu-icon codicon codicon-add',
 				true,
 				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
 				// browser 層のこのビューからは ID 経由で呼ぶ (web ビルドでは未登録のため no-op)
 				() => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id)
 			),
 			new Separator(),
+			// 色選択はサブメニュー内の縦並びカラーリスト (buildColorSubmenuActions 参照)。
+			// 以前は QuickPick で行っていたが、モック (案C) の通りメニュー内で完結させる形に戻した。
+			// HTML メニューなら cssClass 経由で色ドットが描画できる
+			new SubmenuAction(
+				'paradis.workspaceSwitch.setColor',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.setColorPick', "色を設定"),
+				this.buildColorSubmenuActions(repository)
+			),
 			new Action(
 				'paradis.workspaceSwitch.rename',
-				localize('paradis.workspaceSwitch.renameContext', "Rename..."),
-				undefined,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.renameContext', "名前を変更..."),
+				'paradis-menu-icon codicon codicon-edit',
 				true,
 				() => this.promptRename(repository)
-			),
-			// 色選択は QuickPick で行う。以前はコンテキストメニューのサブメニュー + CSS の
-			// aria-label 属性セレクタでスウォッチを描画していたが、macOS のコンテキストメニューは
-			// ネイティブ (HTML でない) ため色が一切表示されなかった。QuickPick なら全プラットフォームで
-			// SVG data URI のスウォッチを表示できる
-			new Action(
-				'paradis.workspaceSwitch.setColor',
-				localize('paradis.workspaceSwitch.setColorPick', "Set Color..."),
-				undefined,
-				true,
-				() => this.promptColor(repository)
 			),
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.repository.moveUp',
-				localize('paradis.workspaceSwitch.moveUp', "Move Up"),
-				undefined,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
+				'paradis-menu-icon codicon codicon-arrow-up',
 				index > 0,
 				() => this.moveRepository(repository, -1)
 			),
 			new Action(
 				'paradis.workspaceSwitch.repository.moveDown',
-				localize('paradis.workspaceSwitch.moveDown', "Move Down"),
-				undefined,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
+				'paradis-menu-icon codicon codicon-arrow-down',
 				index >= 0 && index < repositories.length - 1,
 				() => this.moveRepository(repository, 1)
 			),
@@ -1529,14 +1564,15 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Action(
 				'paradis.workspaceSwitch.reveal',
 				revealLabel(),
-				undefined,
+				'paradis-menu-icon codicon codicon-folder-opened',
 				true,
 				() => this.commandService.executeCommand('revealFileInOS', repository.uri)
 			),
 			new Action(
 				'paradis.workspaceSwitch.copyPath',
-				localize('paradis.workspaceSwitch.copyPath', "Copy Path"),
-				undefined,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.copyPath', "パスをコピー"),
+				'paradis-menu-icon codicon codicon-copy',
 				true,
 				() => this.clipboardService.writeText(repository.uri.fsPath)
 			),
@@ -1544,7 +1580,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Action(
 				'paradis.workspaceSwitch.configureLifecycleScripts',
 				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup/Teardown Scripts..."),
-				undefined,
+				'paradis-menu-icon codicon codicon-tools',
 				true,
 				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
 				// browser 層のこのビューからは ID 経由で呼ぶ (web ビルドでは未登録のため no-op)
@@ -1553,8 +1589,9 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.removeFromList',
-				localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
-				undefined,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.removeContext', "リストから削除"),
+				'paradis-menu-icon codicon codicon-trash paradis-menu-danger',
 				true,
 				() => this.workspaceSwitchService.removeRepository(
 					repository.id,
@@ -1590,7 +1627,7 @@ export class ParadisWorkspacesView extends ViewPane {
 					? localize('paradis.workspaceSwitch.unpinContext', "ピン留めを解除")
 					// allow-any-unicode-next-line
 					: localize('paradis.workspaceSwitch.pinContext', "ピン留め"),
-				undefined,
+				`paradis-menu-icon ${ThemeIcon.asClassName(pinned ? Codicon.pinned : Codicon.pin)}`,
 				// 実体が消えた (missing) 行でもピンは外せるようにする。外せないと、リストから
 				// 消すまでピン留めが残り続けてしまう
 				true,
@@ -1598,25 +1635,27 @@ export class ParadisWorkspacesView extends ViewPane {
 			),
 			new Separator(),
 			new Action(
-				'paradis.workspaceSwitch.worktree.reveal',
-				revealLabel(),
-				undefined,
-				!worktree.missing,
-				() => this.commandService.executeCommand('revealFileInOS', worktree.uri)
+				'paradis.workspaceSwitch.worktree.copyBranchName',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.copyBranchName', "ブランチ名をコピー"),
+				'paradis-menu-icon codicon codicon-git-branch',
+				!!worktree.branch,
+				() => this.clipboardService.writeText(worktree.branch ?? '')
 			),
 			new Action(
 				'paradis.workspaceSwitch.worktree.copyPath',
-				localize('paradis.workspaceSwitch.copyPath', "Copy Path"),
-				undefined,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.copyPath', "パスをコピー"),
+				'paradis-menu-icon codicon codicon-copy',
 				true,
 				() => this.clipboardService.writeText(worktree.uri.fsPath)
 			),
 			new Action(
-				'paradis.workspaceSwitch.worktree.copyBranchName',
-				localize('paradis.workspaceSwitch.copyBranchName', "Copy Branch Name"),
-				undefined,
-				!!worktree.branch,
-				() => this.clipboardService.writeText(worktree.branch ?? '')
+				'paradis.workspaceSwitch.worktree.reveal',
+				revealLabel(),
+				'paradis-menu-icon codicon codicon-folder-opened',
+				!worktree.missing,
+				() => this.commandService.executeCommand('revealFileInOS', worktree.uri)
 			)
 		];
 
@@ -1631,8 +1670,9 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.worktree.rename',
-				localize('paradis.workspaceSwitch.worktreeRenameContext', "Rename..."),
-				undefined,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.worktreeRenameContext', "名前を変更..."),
+				'paradis-menu-icon codicon codicon-edit',
 				!worktree.missing,
 				() => this.promptRenameWorktree(worktree)
 			)
@@ -1645,15 +1685,17 @@ export class ParadisWorkspacesView extends ViewPane {
 				new Separator(),
 				new Action(
 					'paradis.workspaceSwitch.worktree.moveUp',
-					localize('paradis.workspaceSwitch.moveUp', "Move Up"),
-					undefined,
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
+					'paradis-menu-icon codicon codicon-arrow-up',
 					index > 0,
 					() => this.moveWorktree(worktree, -1)
 				),
 				new Action(
 					'paradis.workspaceSwitch.worktree.moveDown',
-					localize('paradis.workspaceSwitch.moveDown', "Move Down"),
-					undefined,
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
+					'paradis-menu-icon codicon codicon-arrow-down',
 					index >= 0 && index < siblings.length - 1,
 					() => this.moveWorktree(worktree, 1)
 				)
@@ -1665,8 +1707,9 @@ export class ParadisWorkspacesView extends ViewPane {
 				new Separator(),
 				new Action(
 					'paradis.workspaceSwitch.worktree.removeFromList',
-					localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
-					undefined,
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.removeContext', "リストから削除"),
+					'paradis-menu-icon codicon codicon-trash paradis-menu-danger',
 					true,
 					async () => this.worktreeService.removeKnownWorktree(worktree)
 				)
@@ -1678,7 +1721,7 @@ export class ParadisWorkspacesView extends ViewPane {
 					'paradis.workspaceSwitch.worktree.remove',
 					// allow-any-unicode-next-line
 					localize('paradis.workspaceSwitch.worktreeRemoveContext', "ワークツリーを削除"),
-					undefined,
+					'paradis-menu-icon codicon codicon-trash paradis-menu-danger',
 					true,
 					// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
 					// browser 層のこのビューからは ID 経由で呼ぶ (web ビルドでは未登録のため no-op)
@@ -1688,38 +1731,6 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 
 		return actions;
-	}
-
-	/**
-	 * 色選択 QuickPick。スウォッチ (色見本) は SVG の data URI を iconPath として渡して描画する
-	 * (QuickPick は HTML 描画なので macOS でも確実に色が見える)。
-	 */
-	private async promptColor(repository: IParadisWorkspaceRepository): Promise<void> {
-		type ColorPickItem = IQuickPickItem & { readonly colorId: string | undefined };
-		const swatchIcon = (hex: string): { dark: URI } => {
-			const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="5" fill="${hex}"/></svg>`;
-			return { dark: URI.parse(`data:image/svg+xml;base64,${btoa(svg)}`) };
-		};
-		const items: ColorPickItem[] = PARADIS_WORKSPACE_COLORS.map(color => ({
-			colorId: color.id,
-			label: colorLabel(color.id),
-			iconPath: swatchIcon(color.hex),
-			description: repository.color === color.id ? localize('paradis.workspaceSwitch.colorCurrent', "current") : undefined
-		}));
-		items.push({
-			colorId: undefined,
-			label: localize('paradis.workspaceSwitch.colorDefault', "Default"),
-			iconClass: ThemeIcon.asClassName(Codicon.circleSlash),
-			description: repository.color === undefined ? localize('paradis.workspaceSwitch.colorCurrent', "current") : undefined
-		});
-
-		const picked = await this.quickInputService.pick(items, {
-			placeHolder: localize('paradis.workspaceSwitch.setColorPlaceholder', "Select a color for '{0}'", repository.name),
-			activeItem: items.find(item => item.colorId === repository.color)
-		});
-		if (picked) {
-			await this.workspaceSwitchService.setRepositoryColor(repository.id, picked.colorId);
-		}
 	}
 
 	private async promptRename(repository: IParadisWorkspaceRepository): Promise<void> {
