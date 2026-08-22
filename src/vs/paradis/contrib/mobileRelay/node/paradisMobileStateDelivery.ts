@@ -22,7 +22,7 @@ export class ParadisMobileStateDelivery {
 
 	/**
 	 * payloadを配送する。`force`がfalseで直近の成功payloadと完全一致する場合だけ省略する。
-	 * 送信成功後にのみコピーを記録し、実際に送信した場合はtrue、省略時はfalseを返す。
+	 * 送信成功後にのみpayloadを記録し（参照を受け取る）、実際に送信した場合はtrue、省略時はfalseを返す。
 	 */
 	async deliver(payload: Uint8Array, force: boolean, send: (payload: Uint8Array) => Promise<void>): Promise<boolean> {
 		if (!force && equalBytes(this.lastDelivered, payload)) {
@@ -30,10 +30,11 @@ export class ParadisMobileStateDelivery {
 		}
 
 		const generation = this.generation;
-		const snapshot = payload.slice();
-		await send(snapshot);
+		// payload は呼び出し元（sendDesktopState）が都度新規生成するため、ここで所有権を
+		// 受け取る。防御コピーは不要で、lastDelivered が同じ参照を保持する。
+		await send(payload);
 		if (this.generation === generation) {
-			this.lastDelivered = snapshot;
+			this.lastDelivered = payload;
 		}
 		return true;
 	}

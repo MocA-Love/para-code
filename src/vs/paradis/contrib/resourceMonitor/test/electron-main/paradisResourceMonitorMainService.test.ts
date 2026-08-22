@@ -122,7 +122,9 @@ suite('ParadisResourceMonitorMainService', () => {
 		resolveInitialCapture(createRawSample([], 6_000, 1));
 		await initial;
 
-		clock.advance(4_999);
+		// idle鮮度は3ポーリング分(15秒)。境界の直前まではキャッシュヒットし、
+		// 窓を超えた最初の要求でのみ再収集する
+		clock.advance(14_999);
 		const beforeBoundary = await service.getSnapshot({ sessions: [], freshness: 'idle' });
 		clock.advance(1);
 		const atBoundary = await service.getSnapshot({ sessions: [], freshness: 'idle' });
@@ -201,12 +203,12 @@ suite('ParadisResourceMonitorMainService', () => {
 
 		const initial = await service.getSnapshot({ sessions: [] });
 		failCapture = true;
-		clock.advance(5_001);
+		clock.advance(15_001);
 		const afterExpiryFailure = await service.getSnapshot({ sessions: [], force: true });
 
 		assert.strictEqual(initial.app.cpu, 9);
 		assert.strictEqual(afterExpiryFailure.app.cpu, 0);
-		assert.strictEqual(afterExpiryFailure.collectedAt, 5_001);
+		assert.strictEqual(afterExpiryFailure.collectedAt, 15_001);
 	});
 
 	test('failed refresh does not extend the previous raw generation expiry', async () => {
@@ -227,12 +229,14 @@ suite('ParadisResourceMonitorMainService', () => {
 		await service.getSnapshot({ sessions: [] });
 		clock.advance(2_600);
 		const firstFallback = await service.getSnapshot({ sessions: [], force: true });
-		clock.advance(2_401);
+		// 失敗したrefreshは元の世代の失効時刻(開始+15秒)を延長しない。そのため
+		// 元の失効を過ぎた時点での強制再取得は、fallbackが空のサンプルになる
+		clock.advance(12_401);
 		const afterOriginalExpiry = await service.getSnapshot({ sessions: [], force: true });
 
 		assert.strictEqual(firstFallback.app.cpu, 9);
 		assert.strictEqual(afterOriginalExpiry.app.cpu, 0);
-		assert.strictEqual(afterOriginalExpiry.collectedAt, 5_001);
+		assert.strictEqual(afterOriginalExpiry.collectedAt, 15_001);
 		assert.strictEqual(captureCount, 3);
 	});
 
@@ -248,7 +252,9 @@ suite('ParadisResourceMonitorMainService', () => {
 		await service.getSnapshot({ sessions: [] });
 		clock.advance(1_000);
 		const forced = await service.getSnapshot({ sessions: [], force: true });
-		clock.advance(4_000);
+		// 旧世代の失効タイマー(開始+15秒)が発火する時刻まで進める。honorDisposal=false により
+		// dispose 済みの旧タイマーも発火し続けるが、revision 不一致ガードで現世代は解放されない
+		clock.advance(14_000);
 		const idle = await service.getSnapshot({ sessions: [], freshness: 'idle' });
 
 		assert.strictEqual(forced.app.cpu, 2);
