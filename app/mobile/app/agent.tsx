@@ -57,8 +57,17 @@ import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
-		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
+	const { terminals, workspaces, activeWs, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
+		// **workspace 本体ではなく部分を購読する。** state 全体の参照は revision が進む限り毎回
+		// 新しくなる（`workspaceIdentity.ts`）ので、本体を選ぶと裏に回った（非フォーカスの）この画面が
+		// PC再送（最大10Hz）のたびに再レンダーし続け、ヘッダー options の再生成＝バーの全項目
+		// 付け替えの発火母数を増やしていた。`terminals` / `workspaces` は構造共有の中身が同じ間は
+		// 同じ参照が据え置かれ、`activeWs` はプリミティブ。useShallow の浅比較が通るのは
+		// 本当に表示に関わる部分が変わったときだけになる（`useRelayHostSelection.ts` と同型）。
+		terminals: s.workspace?.terminals,
+		workspaces: s.workspace?.workspaces,
+		activeWs: s.workspace?.activeWs,
+		agentChats: s.agentChats, selectedWs: s.selectedWs,
 		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, requestAgentCommandCatalog: s.requestAgentCommandCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
@@ -84,13 +93,13 @@ export default function AgentDetailScreen() {
 
 	// 表示対象: selectedTerminalKey（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
-	const allTerminals = workspace?.terminals ?? [];
-	const wsList = workspace?.workspaces ?? [];
+	const allTerminals = terminals ?? [];
+	const wsList = workspaces ?? [];
 	const effectiveWsId = (selectedWs !== undefined && wsList.some(w => w.id === selectedWs) ? selectedWs : wsList[0]?.id);
 	const activeTerminal = resolveExplicitTerminalSelection(
 		allTerminals,
 		selectedTerminalKey,
-		terminal => (terminal.ws ?? workspace?.activeWs) === effectiveWsId,
+		terminal => (terminal.ws ?? activeWs) === effectiveWsId,
 	);
 	const activeKey = activeTerminal?.terminalKey;
 	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
@@ -165,7 +174,7 @@ export default function AgentDetailScreen() {
 
 	// ヘッダー表示用: このターミナルの所属ワークスペース
 	const agentWs = activeTerminal !== undefined
-		? wsList.find(w => w.id === (activeTerminal.ws ?? workspace?.activeWs))
+		? wsList.find(w => w.id === (activeTerminal.ws ?? activeWs))
 		: undefined;
 
 	// コンポーザーのPRピル用。workspace state はpushごとに丸ごと差し替わり pr も毎回新規
