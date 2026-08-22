@@ -21,6 +21,7 @@ import { GitHubService, IGitHubService } from './githubService.js';
 import { IPullRequestIconCache, PullRequestIconCache } from './pullRequestIconCache.js';
 
 import './pullRequestActions.js';
+import './createSessionFromPullRequestAction.js';
 import './issueActions.js';
 
 // PARA-PATCH: tiered PR polling + one-shot settings migration (GitHub rate-limit work)
@@ -44,12 +45,24 @@ type PullRequestIdentityState =
 	| { readonly kind: 'no-git-repository' }
 	| { readonly kind: 'no-pull-request' };
 
+/** Owns the poller for one concrete session's reactive inputs. */
+class SessionPollingTracker extends Disposable {
+
+	constructor(
+		readonly session: ISession,
+		poller: IDisposable,
+	) {
+		super();
+		this._register(poller);
+	}
+}
+
 export class GitHubPullRequestPollingContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'sessions.contrib.githubPullRequestPolling';
 
 	/** Per-session pollers, keyed by `session.sessionId`. */
-	private readonly _sessionTrackers = this._register(new DisposableMap<string>());
+	private readonly _sessionTrackers = this._register(new DisposableMap<string, SessionPollingTracker>());
 
 	// PARA-PATCH: shared round-robin refresher for non-active sessions' PR models
 	// (bounded background traffic regardless of session count)
@@ -158,7 +171,8 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 
 		// Removed sessions
 		for (const session of e.removed) {
-			if (this._sessionTrackers.has(session.sessionId)) {
+			const tracker = this._sessionTrackers.get(session.sessionId);
+			if (tracker && this._hasSamePollingSource(tracker.session, session)) {
 				this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} removed; disposing its poller (PR model no longer kept warm)`);
 				this._sessionTrackers.deleteAndDispose(session.sessionId);
 			}
@@ -172,12 +186,22 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 	}
 
 	private _trackSession(session: ISession): void {
-		if (this._sessionTrackers.has(session.sessionId)) {
+		const existing = this._sessionTrackers.get(session.sessionId);
+		if (existing && this._hasSamePollingSource(existing.session, session)) {
 			return;
 		}
 
+		if (existing) {
+			this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} polling source changed; replacing its poller`);
+		}
 		this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} now tracked; poller will keep its PR model warm once a PR number resolves`);
-		this._sessionTrackers.set(session.sessionId, this._createSessionPoller(session));
+		this._sessionTrackers.set(session.sessionId, new SessionPollingTracker(session, this._createSessionPoller(session)));
+	}
+
+	private _hasSamePollingSource(first: ISession, second: ISession): boolean {
+		return isEqual(first.resource, second.resource)
+			&& first.workspace === second.workspace
+			&& first.isArchived === second.isArchived;
 	}
 
 	/**

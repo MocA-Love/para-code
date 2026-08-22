@@ -9,9 +9,8 @@
 // Excelビューア/差分で共有する DOM 描画ヘルパー(Vanilla DOM。Superset の SpreadsheetViewer.tsx 相当)。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { localize } from '../../../../nls.js';
 import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
-import { IParadisPageBreakLine, IParadisPageLabelBox, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
+import { IParadisPageBreakLine, IParadisPageLabelBox, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import type { IParadisDiffDetail } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 
@@ -80,7 +79,10 @@ export function applyBaseCellStyle(td: HTMLElement, cell: IParadisCellData): voi
 	applyStyleObject(td, cell.style);
 	if (cell.wrapText) {
 		s.whiteSpace = 'pre-wrap';
-		s.wordBreak = 'break-all';
+		// Excel は CJK は文字単位・英単語は語境界で折返す。break-all だと英単語の途中で切れるため、
+		// 標準の改行規則 + 長い語だけ緊急折返し(break-word)にする。
+		s.wordBreak = 'normal';
+		s.overflowWrap = 'break-word';
 		s.overflow = 'visible';
 	}
 	if (cell.verticalText) {
@@ -141,11 +143,32 @@ export function makeAnchorResolver(
 	for (let i = 0; i < columnWidths.length; i++) {
 		cumCol.push(cumCol[i] + columnWidths[i]);
 	}
+	// 非表示行・打ち切り行など位置を持たない行を参照した図形が y=0(シート最上部)へ飛ぶのを防ぐ。
+	// 改ページ線と同じ「次に来る行の上端へ寄せる」二分探索に揃え、末尾以降は最終Yへクランプする。
+	const sortedRows = Array.from(rowYByExcelRow.keys()).sort((a, b) => a - b);
+	const bottomEdgeY = sortedRows.length > 0 ? (rowYByExcelRow.get(sortedRows[sortedRows.length - 1]) ?? 0) : 0;
+	const rowTopY = (excelRow: number): number => {
+		const hit = rowYByExcelRow.get(excelRow);
+		if (hit !== undefined) {
+			return hit;
+		}
+		let lo = 0;
+		let hi = sortedRows.length;
+		while (lo < hi) {
+			const mid = (lo + hi) >> 1;
+			if (sortedRows[mid] > excelRow) {
+				hi = mid;
+			} else {
+				lo = mid + 1;
+			}
+		}
+		return lo < sortedRows.length ? (rowYByExcelRow.get(sortedRows[lo]) ?? bottomEdgeY) : bottomEdgeY;
+	};
 	return (a: IParadisRenderAnchor) => {
 		const colIdx = Math.max(0, Math.min(a.c - (minCol - 1), cumCol.length - 1));
 		return {
 			x: PARADIS_ROW_NUM_COL_WIDTH + cumCol[colIdx] + emuToPx(a.co),
-			y: (rowYByExcelRow.get(a.r + 1) ?? 0) + emuToPx(a.ro),
+			y: rowTopY(a.r + 1) + emuToPx(a.ro),
 		};
 	};
 }
@@ -379,11 +402,6 @@ export function applyOverflow(items: readonly IParadisOverflowItem[]): void {
 			span.style.justifyContent = 'center';
 		}
 	}
-}
-
-/** ページ番号の透かしの文言。 */
-export function pageLabelText(page: number): string {
-	return localize('paradis.spreadsheet.pageLabel', "{0} ページ", page);
 }
 
 /**
@@ -735,7 +753,8 @@ export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTable
 	dom.append(headRow, $('th.paradis-spreadsheet-corner'));
 	for (let i = 0; i < sheet.columnCount; i++) {
 		const th = dom.append(headRow, $('th.paradis-spreadsheet-colhead'));
-		th.textContent = getColumnLabel(i);
+		// 使用範囲が D 列始まりのシートでは Excel も「D,E,F…」を表示するため、minCol を起点にする。
+		th.textContent = getColumnLabel(sheet.minCol - 1 + i);
 		headCells.push(th);
 	}
 
@@ -750,7 +769,9 @@ export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTable
 		tr.style.height = `${row.height}px`;
 		dataRows.push({ excelRow: row.excelRow, tr });
 		const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
-		rowHead.textContent = String(displayRowNum);
+		// Excel の行番号は絶対番号。フィルタで隠れた行があると可視行の通し番号とはズレる
+		// (Excel は「1,2,5,6…」と表示する)。excelRow が無い呼び出し元(旧データ)のみ連番へフォールバック。
+		rowHead.textContent = String(row.excelRow ?? displayRowNum);
 		for (let ci = 0; ci < row.cells.length; ci++) {
 			const cell = row.cells[ci];
 			if (cell.hidden) {
