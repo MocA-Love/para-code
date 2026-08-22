@@ -114,6 +114,8 @@ export class ParadisAivisVoiceSection extends Disposable {
 	private _activeField: 'format' | 'permission' = 'format';
 	private _formatInput: HTMLTextAreaElement | undefined;
 	private _formatPermissionInput: HTMLTextAreaElement | undefined;
+	/** UUID モデル情報フェッチの最新性トークン。古い入力へのレスポンス破棄に使う。 */
+	private _uuidHintToken = 0;
 
 	private _sampleAudio: HTMLAudioElement | undefined;
 	private _sampleBlobUrl: string | undefined;
@@ -277,10 +279,15 @@ export class ParadisAivisVoiceSection extends Disposable {
 		}));
 	}
 
-	/** UUID 入力の正規表現検証。hint を ok / ng で色分けし、有効ならモデル情報を表示する。 */
+	/**
+	 * UUID 入力の正規表現検証。hint を ok / ng で色分けし、有効ならモデル情報を表示する。
+	 * 呼び出しごとにトークンを進め、解決したレスポンスが古い入力のものなら破棄する
+	 * （旧 UUID の解決結果が新入力の表示を上書きする競合を避ける）。
+	 */
 	private _renderUuidHint(container: HTMLElement, uuid: string, apiKey: string): void {
+		const token = ++this._uuidHintToken;
 		const state: UuidHintState = uuid.length === 0 ? 'empty' : (UUID_RE.test(uuid) ? 'valid' : 'invalid');
-		container.className = `pns-uuid-hint ${state}`;
+		container.className = state === 'valid' ? 'pns-uuid-hint ok' : state === 'invalid' ? 'pns-uuid-hint ng' : 'pns-uuid-hint';
 		if (state === 'invalid') {
 			container.textContent = STR_MODEL_INFO_INVALID;
 			return;
@@ -300,14 +307,15 @@ export class ParadisAivisVoiceSection extends Disposable {
 		container.textContent = STR_MODEL_INFO_LOADING;
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisModelSummary | null>('getAivisModel', [apiKey, uuid]).then(model => {
 			setCachedAivisModelInfo(apiKey, uuid, model);
-			if (this._store.isDisposed || container.isConnected === false) {
+			if (token !== this._uuidHintToken || this._store.isDisposed || container.isConnected === false) {
 				return;
 			}
 			this._applyModelInfo(container, model);
 		}, error => {
-			if (this._store.isDisposed) {
+			if (token !== this._uuidHintToken || this._store.isDisposed || container.isConnected === false) {
 				return;
 			}
+			container.className = 'pns-uuid-hint ng';
 			// allow-any-unicode-next-line
 			container.textContent = `モデル取得失敗: ${error instanceof Error ? error.message : String(error)}`;
 		});

@@ -523,8 +523,11 @@ suite('Paradis DND actual surfaces', () => {
 
 		settings.setState({ enabled: true, until: undefined });
 		settings.fireDedicated(false);
-		select.value = 'manual';
-		dispatchChangeEvent(select);
+		// fireDedicated でセクションDOMが作り直されるため、select は取り直してから操作する。
+		// （再描画前に取得した要素はリスナーごと破棄されており、dispatch しても何も起こらない）
+		const manualSelect = container.querySelector('select') as HTMLSelectElement;
+		manualSelect.value = 'manual';
+		dispatchChangeEvent(manualSelect);
 		const toggle = container.querySelector('input.pns-toggle') as HTMLInputElement;
 		toggle.checked = false;
 		dispatchChangeEvent(toggle);
@@ -532,6 +535,49 @@ suite('Paradis DND actual surfaces', () => {
 			{ enabled: true, until: undefined },
 			{ enabled: false, until: undefined },
 		]);
+	});
+
+	test('matches initial select values to saved durations and keeps the picked one across minute refreshes', () => {
+		let clock = 1_000;
+		const manualTimer = new ManualTimer(() => clock, value => clock = value);
+		class TestSection extends ParadisDoNotDisturbSection {
+			protected static override readonly refreshControllerFactory: ParadisDoNotDisturbRefreshControllerFactory
+				= refresh => paradisCreateDoNotDisturbRefreshController(refresh, { timer: manualTimer, now: () => clock });
+		}
+
+		const settings = store.add(new TestSettingsService({ enabled: true, until: clock + 90_000 }, () => clock));
+		const container = createContainer('DND duration match');
+		store.add(new TestSection(container, settings));
+		const readSelectValue = () => (container.querySelector('select') as HTMLSelectElement).value;
+
+		// どの時限とも一致しない until は先頭の時限選択肢へフォールバックする
+		assert.strictEqual(readSelectValue(), 'minutes30');
+
+		// 初期値は保存済み until に対応する選択肢（許容差5分）と一致する
+		settings.setState({ enabled: true, until: clock + 29 * 60_000 });
+		settings.fireDedicated(false);
+		assert.strictEqual(readSelectValue(), 'minutes30');
+		settings.setState({ enabled: true, until: clock + 61 * 60_000 });
+		settings.fireDedicated(false);
+		assert.strictEqual(readSelectValue(), 'hours1');
+		settings.setState({ enabled: true, until: undefined });
+		settings.fireDedicated(false);
+		assert.strictEqual(readSelectValue(), 'manual');
+
+		// 「1時間」を選択したあとは、経過で resolveUntil の差分が許容差を超えても表示が変わらない
+		settings.setState({ enabled: true, until: clock + 90_000 });
+		settings.fireDedicated(false);
+		const select = container.querySelector('select') as HTMLSelectElement;
+		select.value = 'hours1';
+		dispatchChangeEvent(select);
+		assert.strictEqual(readSelectValue(), 'hours1');
+		manualTimer.advanceBy(6 * 60_000);
+		assert.strictEqual(readSelectValue(), 'hours1');
+
+		// 選択記憶と無関係な外部変更は従来どおりフォールバックで解決される
+		settings.setState({ enabled: true, until: clock + 29 * 60_000 });
+		settings.fireDedicated(false);
+		assert.strictEqual(readSelectValue(), 'minutes30');
 	});
 
 	test('keeps OFF and manual surfaces unchanged for ten minutes with no host timer', () => {

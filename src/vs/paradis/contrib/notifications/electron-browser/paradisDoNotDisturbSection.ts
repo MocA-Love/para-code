@@ -42,6 +42,13 @@ export class ParadisDoNotDisturbSection extends Disposable {
 
 	private readonly _renderDisposables = this._register(new DisposableStore());
 
+	/**
+	 * このダイアログで時限を選択した際の `{ until, id }`。経過に伴う再計算では
+	 * resolveUntil の基準時刻がずれて許容差を超えるため、保存済み until が同一の間は
+	 * 選択時の id を優先して select の表示を固定する。
+	 */
+	private _rememberedDurationSelection: { readonly until: number; readonly id: string } | undefined;
+
 	constructor(
 		private readonly container: HTMLElement,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
@@ -100,20 +107,31 @@ export class ParadisDoNotDisturbSection extends Disposable {
 			option.textContent = duration.label;
 		}
 		// 「自分でオフにするまで」だけは保存された状態（until 未設定）から現在の選択と判別できる。
-		// 時限の3つは経過に伴って残り時間が変わるため、選択中の強調ではなく左の残り時間 hint で示す。
+		// 時限の3つは選択した時点から残り時間が減っていくため、選択中の強調ではなく左の残り時間 hint で示す。
 		select.value = this._matchDurationId(state.until, renderNow);
 		this._renderDisposables.add(dom.addDisposableListener(select, 'change', () => {
 			const duration = PARADIS_DO_NOT_DISTURB_DURATIONS.find(d => d.id === select.value);
 			if (duration) {
-				this.settingsService.setDoNotDisturb(true, duration.resolveUntil(Date.now()));
+				const until = duration.resolveUntil(Date.now());
+				this._rememberedDurationSelection = until === undefined ? undefined : { until, id: duration.id };
+				this.settingsService.setDoNotDisturb(true, until);
 			}
 		}));
 	}
 
-	/** 保存済みの解除予定時刻に対応する選択肢の id。一致しない場合は最初の時限選択肢にフォールバックする。 */
+	/**
+	 * 保存済みの解除予定時刻に対応する選択肢の id。一致しない場合は最初の時限選択肢にフォールバックする。
+	 * ユーザーがこのダイアログで選択した時限は `_rememberedDurationSelection` の until と完全一致する間は
+	 * その id を返す。resolveUntil を現在時刻で再計算すると経過のたびに差分が膨らみ
+	 * （例:「1時間」選択から6分経過で許容差5分を超えて「30分」へフォールバック）、
+	 * 60秒ごとの再描画で select 表示が勝手に切り替わって見えるため。
+	 */
 	private _matchDurationId(until: number | undefined, renderNow: number): string {
 		if (until === undefined) {
 			return 'manual';
+		}
+		if (this._rememberedDurationSelection?.until === until) {
+			return this._rememberedDurationSelection.id;
 		}
 		for (const duration of PARADIS_DO_NOT_DISTURB_DURATIONS) {
 			const resolved = duration.resolveUntil(renderNow);

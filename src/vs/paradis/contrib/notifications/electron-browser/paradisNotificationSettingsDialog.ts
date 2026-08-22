@@ -26,7 +26,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { CUSTOM_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES, getRingtoneById } from '../common/paradisNotifications.js';
+import { CUSTOM_RINGTONE_ID, DEFAULT_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, PARADIS_AIVIS_DEFAULT_FORMAT, PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES, getRingtoneById } from '../common/paradisNotifications.js';
 import { clearAivisApiCaches } from './paradisAivisApiCache.js';
 import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
@@ -46,6 +46,12 @@ const STR_CLOSE_ARIA = localize('paradis.notif.closeAria', "閉じる");
 const STR_SEARCH_PLACEHOLDER = localize('paradis.notif.searchPlaceholder', "設定を検索");
 // allow-any-unicode-next-line
 const STR_SAVED = localize('paradis.notif.saved', "✓ 自動保存");
+
+// --- フッター ---
+// allow-any-unicode-next-line
+const STR_RESET_DEFAULTS = localize('paradis.notif.resetDefaults', "すべて既定へ戻す");
+// allow-any-unicode-next-line
+const STR_FOOTER_CLOSE = localize('paradis.notif.footerClose', "閉じる");
 
 // --- 左ナビ ---
 // allow-any-unicode-next-line
@@ -164,6 +170,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 	private _savedFlashTimer: ReturnType<typeof setTimeout> | undefined;
 	private _filterRenderToken = 0;
+	/** 通知セクション再描画の最新性トークン（非同期の着信音リスト構築後の復元を最新だけ有効化）。 */
+	private _notifRenderToken = 0;
 
 	// --- 試聴（着信音プレビュー）の状態 ---
 	private _playingRingtoneId: string | undefined;
@@ -230,6 +238,15 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		const body = dom.append(modal, $('.pns-body'));
 		this._buildNav(dom.append(body, $('nav.pns-nav')));
 		this._contentEl = dom.append(body, $('.pns-content'));
+
+		// ---------- footer ----------
+		const footer = dom.append(modal, $('.pns-footer'));
+		const resetBtn = dom.append(footer, $('button.pns-btn.pns-btn-danger.pns-reset-defaults')) as HTMLButtonElement;
+		resetBtn.textContent = STR_RESET_DEFAULTS;
+		this._register(dom.addDisposableListener(resetBtn, 'click', () => this._resetAllToDefaults()));
+		const footerCloseBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary.pns-footer-close')) as HTMLButtonElement;
+		footerCloseBtn.textContent = STR_FOOTER_CLOSE;
+		this._register(dom.addDisposableListener(footerCloseBtn, 'click', () => this.close()));
 
 		modal.tabIndex = -1;
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
@@ -311,7 +328,6 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	private _addNavItem(nav: HTMLElement, label: string, targetId: string, opts: { status?: boolean }): void {
 		const item = dom.append(nav, $('.pns-nav-item'));
 		item.setAttribute('role', 'button');
-		item.setAttribute('data-target', targetId);
 		dom.append(item, $('span.pns-nav-label')).textContent = label;
 		const status = opts.status ? dom.append(item, $('span.pns-nav-status')) : undefined;
 		const chip = dom.append(item, $('span.pns-nav-chip'));
@@ -322,11 +338,16 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	}
 
 	private _navigateTo(targetId: string): void {
+		this._activateNavItem(targetId);
+		this._sectionEls.find(section => section.id === targetId)?.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+
+	/** ナビ項目の active 表示だけを切り替える（初回オープン時の初期選択でも使う）。 */
+	private _activateNavItem(targetId: string): void {
 		for (const entry of this._navItems.values()) {
 			entry.item.classList.remove('active');
 		}
 		this._navItems.get(targetId)?.item.classList.add('active');
-		this._sectionEls.find(section => section.id === targetId)?.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 
 	private _createSection(id: string, keywords: string): HTMLElement {
@@ -381,6 +402,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		this._renderNotificationsSections();
 		this._updateDndSeal();
 		this._updateNavStatuses();
+		// 初回オープン時は先頭（おやすみモード）を選択状態にしておく
+		this._activateNavItem('pns-sec-dnd');
 	}
 
 	// ==========================================================================================
@@ -415,6 +438,35 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 				: (getRingtoneById(id)?.name ?? id);
 			soundEntry.status.className = 'pns-nav-status st-ok';
 		}
+	}
+
+	// ==========================================================================================
+	// すべて既定へ戻す
+	// ==========================================================================================
+
+	/**
+	 * 全設定を既定値へ書き戻す。カスタム音源ファイル・ユーザー辞書・カスタムモデルプリセットは
+	 * 「データ」であり設定値ではないため対象外。
+	 */
+	private _resetAllToDefaults(): void {
+		this.settingsService.setDoNotDisturb(false, undefined);
+		this.settingsService.setOsNotificationsEnabled(true);
+		this.settingsService.setOsNotifyOnPermission(true);
+		this.settingsService.setOsNotifyOnReview(true);
+		this.settingsService.setNotifyWhileFocused(false);
+		this.settingsService.setSoundsMuted(false);
+		this.settingsService.setVolume(100);
+		this.settingsService.setSelectedRingtoneId(DEFAULT_RINGTONE_ID);
+		this.settingsService.setAivisSettings({
+			enabled: false,
+			apiKey: '',
+			modelUuid: '',
+			userDictionaryUuid: '',
+			format: PARADIS_AIVIS_DEFAULT_FORMAT,
+			formatPermission: PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION,
+			volume: 100,
+			speakingRate: 1.0,
+		});
 	}
 
 	// ==========================================================================================
@@ -475,8 +527,6 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	// デスクトップ通知・通知サウンドセクション（ダイアログ本体が描画）
 	// ==========================================================================================
 
-	private _notifRenderToken = 0;
-
 	private _renderNotificationsSections(): void {
 		// 再描画で直前にフォーカスされていた要素(チェックボックス等)がDOMから外れると、
 		// ブラウザの既定のフォーカス移動により .pns-content が先頭までスクロールされてしまう
@@ -523,7 +573,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		// --- 通知するイベント (デスクトップ通知が有効なときのみ) ---
 		if (osEnabled) {
 			const eventsRow = dom.append(container, $('.setting-row'));
-			dom.append(eventsRow, $('.sr-label')).textContent = STR_OS_EVENTS_LABEL;
+			const eventsMain = dom.append(eventsRow, $('.sr-main'));
+			dom.append(eventsMain, $('.sr-label')).textContent = STR_OS_EVENTS_LABEL;
 			const eventsBox = dom.append(eventsRow, $('div.pns-events-box'));
 			const eventCheckbox = (label: string, checked: boolean, onChange: (value: boolean) => void) => {
 				const wrap = dom.append(eventsBox, $('label'));
@@ -580,7 +631,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 		// --- 音量 ---
 		const volumeRow = dom.append(container, $('.setting-row'));
-		dom.append(volumeRow, $('.sr-label')).textContent = STR_VOLUME_LABEL;
+		const volumeMain = dom.append(volumeRow, $('.sr-main'));
+		dom.append(volumeMain, $('.sr-label')).textContent = STR_VOLUME_LABEL;
 		const volumeSelect = dom.append(volumeRow, $('select')) as HTMLSelectElement;
 		volumeSelect.style.width = '170px';
 		volumeSelect.style.flexShrink = '0';

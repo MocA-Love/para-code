@@ -123,6 +123,21 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
+/* ---------- footer（すべて既定へ戻す / 閉じる） ---------- */
+
+.paradis-notif-settings .pns-footer {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 18px;
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-notif-settings .pns-footer-close {
+	margin-left: auto;
+}
+
 /* ---------- body（左ナビ + 右コンテンツ） ---------- */
 
 .paradis-notif-settings .pns-body {
@@ -437,6 +452,12 @@
 .paradis-notif-nested-dialog textarea:focus {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
+}
+
+/* 検索欄の input は枠側の :focus-within 輪郭に任せるため、上の汎用 input:focus（同特異度で
+   後から定義されており outline: none に勝てなかった）より特異度を上げて打ち消す。 */
+.paradis-notif-settings .pns-search input:focus {
+	outline: none;
 }
 
 .paradis-notif-settings input[type="range"],
@@ -901,6 +922,14 @@
 	margin-bottom: 12px;
 }
 
+/* 使用量のAPIキー別内訳・音声エディタ等で使う補助テキスト（旧版から復元）。 */
+.paradis-notif-settings .pns-row-hint,
+.paradis-notif-nested-dialog .pns-row-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
 .paradis-notif-settings .pns-field,
 .paradis-notif-nested-dialog .pns-field {
 	margin-bottom: 14px;
@@ -970,5 +999,3 @@
 	gap: 8px;
 	margin-top: 16px;
 }
-
-
