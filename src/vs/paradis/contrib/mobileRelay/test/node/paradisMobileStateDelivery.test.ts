@@ -57,15 +57,17 @@ suite('ParadisMobileStateDelivery', () => {
 		assert.strictEqual(attempts, 2);
 	});
 
-	test('配送成功payloadをコピーして保持する', async () => {
+	test('配送成功payloadの参照を保持する(呼び出し元から所有権を受け取る)', async () => {
 		const delivery = new ParadisMobileStateDelivery();
-		const payload = Uint8Array.of(1, 2, 3);
 		let sends = 0;
+		const send = async () => { sends++; };
 
-		await delivery.deliver(payload, false, async () => { sends++; });
-		payload[0] = 9;
-		assert.strictEqual(await delivery.deliver(Uint8Array.of(1, 2, 3), false, async () => { sends++; }), false);
-		assert.strictEqual(sends, 1);
+		await delivery.deliver(Uint8Array.of(1, 2, 3), false, send);
+		// payloadの参照をそのまま保持するため、呼び出し側は配送後に書き換えてはいけない。
+		// 同一内容の別インスタンスとの比較は内容等価で行われ、再送は省略される
+		assert.strictEqual(await delivery.deliver(new Uint8Array([1, 2, 3]), false, send), false);
+		assert.strictEqual(await delivery.deliver(Uint8Array.of(1, 2, 4), false, send), true);
+		assert.strictEqual(sends, 2);
 	});
 
 	test('reset後は同じpayloadも配送する', async () => {

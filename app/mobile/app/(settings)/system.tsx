@@ -11,7 +11,7 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
-import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
@@ -105,7 +105,9 @@ function RingCard({ name, percent, value, sub, color }: {
 }
 
 export default function SystemScreen() {
-	const tabBarSpacer = useTabBarSpacer();
+	// この画面は設定モーダル内に提示されタブバーが存在しない。NativeTabs 前提の
+	// tabBarSpacer を使うと約40ptの死に余白になるため、モーダル内他画面と同じ値を直接使う。
+	const insets = useStableInsets();
 	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
@@ -159,9 +161,23 @@ export default function SystemScreen() {
 				setLoading(false);
 			}
 		}
-	}, [systemResources, connection]);
+	}, [systemResources, connection, activePcId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
+
+	// PC切替時に前PCの数字を破棄する（ccusage/rtk/ratelimit と同じ扱い）。
+	// 切替では connection が online のままなので refresh の再発火が起きず、
+	// 破棄しないと前PCの値を今のPCの顔で見せ続ける。スペース容量も同時に捨てて
+	// 取得世代を進める——volume軸が開いていれば effect が新しいPCに対して取り直し、
+	// 計測中だった旧PCの応答は着地時に破棄される。
+	useEffect(() => {
+		setData(undefined);
+		setSpaceDisk(undefined);
+		setOpenSpaces(new Set());
+		setError(undefined);
+		setSpaceError(undefined);
+		spaceRequestGen.current++;
+	}, [activePcId]);
 
 	// 表示中だけ自動更新する。リソースは数秒で意味が変わる値なので、開きっぱなしの画面が
 	// 固まった数字を出し続けないようにする（画面を離れる・アプリが背面に回ったら止める）。
@@ -196,24 +212,37 @@ export default function SystemScreen() {
 	 * 多重発火の抑止は state ではなく ref で持つ。state だとレンダー境界に依存するうえ、
 	 * 「失敗した」ことを抑止条件に混ぜると、瞬断で1回失敗しただけで自動取得が二度と
 	 * 走らなくなる（復旧手段が数分かかる強制再計測しか残らない）。
+	 *
+	 * 抑止は「同じ世代への重複要求」だけに効かせる。PC切替で世代を進めるため、
+	 * 計測中（数十秒かかりうる）に切り替えても新しいPCへの再取得は抑止されず、
+	 * 旧PCの応答は着地時に破棄される。
 	 */
-	const spaceInflight = useRef(false);
+	const spaceRequestGen = useRef(0);
+	const spaceLoadingGen = useRef(-1);
 	const loadSpaceDisk = useCallback(async (force = false) => {
-		if (connection !== 'online' || spaceInflight.current) { return; }
-		spaceInflight.current = true;
+		if (connection !== 'online' || spaceLoadingGen.current === spaceRequestGen.current) { return; }
+		const gen = ++spaceRequestGen.current;
+		spaceLoadingGen.current = gen;
 		setSpaceLoading(true);
 		setSpaceError(undefined);
 		try {
-			setSpaceDisk(await spaceDiskUsage(force));
+			const result = await spaceDiskUsage(force);
+			if (gen !== spaceRequestGen.current) { return; }
+			setSpaceDisk(result);
 		} catch (e) {
+			if (gen !== spaceRequestGen.current) { return; }
 			const message = String(e instanceof Error ? e.message : e);
 			// 旧PCはこのリクエストを知らない（PC側のフェイルセーフがこの文言で返す）
 			setSpaceError(message.includes('unsupported request')
 				? 'このPCのPara Codeはまだスペースごとの容量に対応していません。PC側を更新してください。'
 				: message);
 		} finally {
-			spaceInflight.current = false;
-			setSpaceLoading(false);
+			if (gen === spaceRequestGen.current) {
+				setSpaceLoading(false);
+			}
+			if (spaceLoadingGen.current === gen) {
+				spaceLoadingGen.current = -1;
+			}
 		}
 	}, [spaceDiskUsage, connection]);
 
@@ -434,7 +463,7 @@ export default function SystemScreen() {
 				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}

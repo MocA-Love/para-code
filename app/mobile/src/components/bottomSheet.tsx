@@ -76,6 +76,37 @@ const DISMISS_VELOCITY = 0.8;
  * 落ちる既知の不具合を踏む（swipeRow.tsx のコメント参照）。ここは素のJSで足りる。
  */
 
+/** シートの閉じアニメーションの所要時間（ms）。開閉の timing と遷移待ちで1箇所に持つ。 */
+export const SHEET_CLOSE_MS = 200;
+
+/**
+ * 「シートを閉じ切ってから遷移する」ためのヘルパー。Modalの暗幕は閉じアニメーションの
+ * あいだ画面全体を覆ったままなので、同じtickで `router.push` すると遷移先の最初のタップが
+ * 暗幕（overlay の Pressable）に吸われる。
+ *
+ * 呼ぶのは**シートの中身ではなく、その親コンポーネント**にすること。中身は閉じアニメの
+ * 終了とともに木から外れるため、そこでタイマーを持つと unmount の cleanup で遷移ごと
+ * 消えてしまう。また使えるのは**シートの親が残る遷移**だけ（削除のようにシートごと消える
+ * 操作では、同じ理由で遷移が実行されないまま取り残される）。
+ */
+export function useSheetCloseThen(onClose: () => void): (go: () => void) => void {
+	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const onCloseRef = useRef(onClose);
+	onCloseRef.current = onClose;
+	useEffect(() => () => {
+		if (timer.current !== undefined) {
+			clearTimeout(timer.current);
+		}
+	}, []);
+	return go => {
+		onCloseRef.current();
+		if (timer.current !== undefined) {
+			clearTimeout(timer.current);
+		}
+		timer.current = setTimeout(() => { timer.current = undefined; go(); }, SHEET_CLOSE_MS);
+	};
+}
+
 /** iOSのキーボード被覆高さ（画面下端から）。シートの持ち上げ量に使う。 */
 function useKeyboardInset(): number {
 	const [inset, setInset] = useState(0);
@@ -166,7 +197,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 			// 目標より小さく凹んで見えて気持ち悪いので、閉じは弾ませない。
 			Animated.spring(anim, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start();
 		} else {
-			Animated.timing(anim, { toValue: 0, duration: 200, easing: Easing.in(Easing.cubic), useNativeDriver: true })
+			Animated.timing(anim, { toValue: 0, duration: SHEET_CLOSE_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true })
 				.start(({ finished }) => { if (finished) { setMounted(false); } });
 		}
 	}, [visible, anim, sheetHeight]);

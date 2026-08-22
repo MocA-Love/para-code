@@ -66,6 +66,12 @@ import { paradisScopeRootPath } from '../common/paradisWorkspaceSwitch.js';
  *    (repository.ts)。ワークスペースフォルダから外れたものは git 拡張自身が dispose するが、
  *    auto-detection で開かれた親リポジトリと兄弟 worktree は `removed` フォルダに紐づかないため
  *    残る。監視ハンドルが増える方向なので、多スペース運用では実機で確認する価値がある
+ *
+ *   → 2点目は 2026-08 に model.ts 側の PARA-PATCH で解消した。フォルダ入れ替え時に「どの
+ *   フォルダにも紐づかない open repository」も park 対象になり (parking lot LRU 4件、超過分は
+ *   dispose)、監視ハンドルは回収される。park 中は `openRepositories` から外れるため pickRepository
+ *   候補にも出ない。1点目の picker 表示は park されたリポジトリでは自然に消え、フォルダイベントと
+ *   editor イベントの間だけ残る (editor での自動再オープンは既定の autoRepositoryDetection 時)。
  *  - {@link ParadisScopedScmViewService} が絞るのは `ISCMViewService` 経由の参照だけなので、
  *    `ISCMService` を直接読む画面はスコープ外を見る (履歴/グラフビューの初期リポジトリ選択、
  *    検索の「変更されたファイルのみ」等)。アクティビティバーのバッジは `visibleRepositories`

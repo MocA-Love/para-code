@@ -15,6 +15,8 @@ export interface AgentStatusPopoverTarget {
 }
 
 const POPOVER_WIDTH = 200;
+// 項目2つ+区切り線の概算高さ（実測値を使わずクランプするための見積もり。terminalActionsMenuと同じ流儀）。
+const POPOVER_HEIGHT_ESTIMATE = 120;
 
 function statusLabel(status: string): string {
 	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : 'レビュー';
@@ -55,10 +57,11 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 		return null;
 	}
 
-	const { width: screenWidth } = Dimensions.get('window');
+	const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 	// バッジは行の右端にあるため、タップ位置の右寄りにぶら下げる
 	const left = Math.min(Math.max(anchor.x - POPOVER_WIDTH + 32, 16), screenWidth - POPOVER_WIDTH - 16);
-	const top = anchor.y + 14;
+	// 一覧最下行のバッジから開くと2項目目が画面外へ切れるため、縦もクランプする（水平と同じ流儀）。
+	const top = Math.min(Math.max(anchor.y + 14, 16), screenHeight - POPOVER_HEIGHT_ESTIMATE - 16);
 
 	return (
 		<OverlayPortal>

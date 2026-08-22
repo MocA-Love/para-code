@@ -13,8 +13,7 @@ import { GlassComposer } from '../../src/components/glassComposer.js';
 import { TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
 import { PresetSheet } from '../../src/components/presetSheet.js';
 import { useKeyboardCoverage, useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
-import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
-import { useStableInsets } from '../../src/hooks/useStableInsets.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { colors, radius, squircle } from '../../src/theme.js';
@@ -44,14 +43,16 @@ export default function TerminalScreen() {
 	// ターミナルの箱の高さ。キーボードを閉じているときの枠の高さを測って固定し、
 	// キーボードが出ている間はこの値を保つ（縮めるとPTYのリサイズを誘発するため）。
 	const [outputHeight, setOutputHeight] = useState(0);
+	// 枠の幅。回転・Split View 変更（＝PTYの再申告が必要な寸法変化）を検知するための控え。
+	const outputWidthRef = useRef(0);
 	const [input, setInput] = useState('');
 	const [submitting, setSubmitting] = useState(false);
-	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
 	// 下端がキーボードに食われる高さ。枠をこのぶん縮める（ターミナルの中身の高さは変えない）。
 	const keyboardCover = useKeyboardCoverage();
-	// iPad幅ではタブバーがサイドバー側にあり、入力欄の下に避けるものが無い。
-	const regular = useIsRegularWidth();
+	// 特殊キー列（Esc/^C/矢印）がフローティングタブバーの裏へ潜らないぶんの下余白。
+	// index/files/scm と同じ規範値を使う（regular=12 はタブバーがサイドバー側にあるため）。
+	const tabBarSpacer = useTabBarSpacer();
 	const isFocused = useIsFocused();
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
@@ -247,11 +248,12 @@ export default function TerminalScreen() {
 			    枠だけを縮めて中身を下端で揃え、はみ出した上側を切って「上へずれた」ように
 			    見せる（下端のプロンプトは常に見えるので実用上これで足りる）。
 
-			    高さは「キーボードが閉じているとき」の枠の高さを採る。広がる向きの変化は
-			    常に採るのは、初回マウント時に既にキーボードが出ていた場合（他画面から戻る等）に
-			    0 のまま固定されるのを避けるため。回転や Split View の幅変更でも測り直されるが、
-			    それはキーボードを閉じている間に限る（出したまま回すと、閉じるまで旧い高さのまま
-			    上へはみ出す。閉じれば直る）。 */}
+ 			    高さは「キーボードが閉じているとき」の枠の高さを採る。広がる向きの変化は
+ 			    常に採るのは、初回マウント時に既にキーボードが出ていた場合（他画面から戻る等）に
+ 			    0 のまま固定されるのを避けるため。回転や Split View の幅変更でも測り直される。
+ 			    キーボードを出したまま回すと、旧い実装では閉じるまで旧い高さのまま上へはみ出した
+ 			    ——**幅の変化は回転・Split View 変更の確実な合図**なので（キーボード出し入れでは
+ 			    幅は変わらない）、幅が動いたときだけは表示中でも採り直して即座に追従させる。 */}
 			<View
 				// ヘッダーは浮いているので、その高さぶん上を空ける（ここを変えると箱の高さ＝
 				// PCへ申告するPTYの行数まで変わる点に注意）。
@@ -267,7 +269,10 @@ export default function TerminalScreen() {
 						return;
 					}
 					const next = event.nativeEvent.layout.height;
-					if (!keyboardVisible || next > outputHeight) {
+					const nextWidth = event.nativeEvent.layout.width;
+					const widthChanged = outputWidthRef.current !== 0 && Math.abs(outputWidthRef.current - nextWidth) > 0.5;
+					outputWidthRef.current = nextWidth;
+					if (!keyboardVisible || next > outputHeight || widthChanged) {
 						setOutputHeight(next);
 					}
 				}}
@@ -294,7 +299,7 @@ export default function TerminalScreen() {
 					)}
 				</View>
 			</View>
-			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + (regular ? 12 : 30) }]}>
+			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : tabBarSpacer }]}>
 				<GlassComposer
 					value={input}
 					onChangeText={setInput}

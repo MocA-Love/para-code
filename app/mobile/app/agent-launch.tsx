@@ -319,6 +319,7 @@ export default function AgentLaunchScreen() {
 											placeholder="スペース名（任意）"
 											placeholderTextColor={colors.textDim}
 											autoCapitalize="none"
+											autoCorrect={false}
 										/>
 										<TextInput
 											style={[styles.input, styles.fieldHalf]}
@@ -425,10 +426,14 @@ export default function AgentLaunchScreen() {
 								<Text style={styles.hint}>PC側の Para Code が古いため、既存スペースへの起動には未対応です。PCを更新するか「新規スペース」を選んでください。</Text>
 							) : null}
 							<Pressable
-								style={[styles.launchBtn, { backgroundColor: agentId === 'claude' ? colors.claude : colors.accent2 }, !canLaunch && styles.launchBtnDisabled]}
+								// claude面はブランドオレンジ(#d97757)のままだと白文字が3.12:1で読めないため、
+								// swipeActionColors と同じ「白抜きを載せる面として暗くした」考え方の専用色
+								// (#bf5033 = 4.76:1。色相はオレンジ側に保つ)にする。
+								style={[styles.launchBtn, { backgroundColor: agentId === 'claude' ? '#bf5033' : colors.accent2 }, !canLaunch && styles.launchBtnDisabled]}
 								onPress={launch}
 								disabled={!canLaunch}
 								accessibilityRole="button"
+								accessibilityState={{ disabled: !canLaunch }}
 							>
 								<Text style={styles.launchBtnText}>起動する</Text>
 							</Pressable>
