@@ -33,6 +33,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
@@ -44,6 +45,7 @@ import {
 	isValidPresetDefinition,
 	paradisGetPresetTasks,
 	paradisPresetFingerprint,
+	paradisPresetHostsMatch,
 	paradisPresetKey,
 	paradisResolvePresetIndex,
 	paradisUsablePresetId,
@@ -105,6 +107,15 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	/** `${定義元ファイルのURI}::${指紋}` の集合。LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY 参照。 */
 	private readonly _locallyHiddenWorkspacePresets = new Set<string>();
 
+	/**
+	 * 現在のウィンドウの remote authority。未接続（ローカル）は undefined に正規化する。
+	 * authority は起動時に確定して以後変わらないため、hosts 条件（{@link paradisPresetHostsMatch}）
+	 * の再評価は設定・ファイル変更時だけで足りる。
+	 */
+	private get _currentRemoteAuthority(): string | undefined {
+		return this.environmentService.remoteAuthority || undefined;
+	}
+
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
@@ -115,6 +126,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@ILogService private readonly logService: ILogService,
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 
@@ -194,6 +206,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 					source: 'user' as const,
 					sourceIndex: index,
 					key: paradisPresetKey('user', undefined, entry, index),
+					envInactive: !paradisPresetHostsMatch(entry.hosts, this._currentRemoteAuthority),
 				};
 			});
 	}
@@ -286,6 +299,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 						sourceIndex: index,
 						key: paradisPresetKey('workspace', presetFile, entry, index),
 						locallyHidden: this._locallyHiddenWorkspacePresets.has(this._locallyHiddenKey(presetFile, entry)),
+						envInactive: !paradisPresetHostsMatch(entry.hosts, this._currentRemoteAuthority),
 					};
 				});
 		} catch (error) {

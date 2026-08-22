@@ -1752,7 +1752,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 				// キャッシュではなく毎回読み直す（getPresetsForFolder）。モバイルが見ているスペースは
 				// PC 側でアクティブとは限らず、キャッシュはアクティブなフォルダの解決結果を指すため。
-				const presets = await this.presetService.getPresetsForFolder(root);
+				// hosts 条件が現在の接続先と一致しないもの（envInactive）は PC 側のタブバーと同じく
+				// 一覧・実行の両方から外す。
+				const presets = (await this.presetService.getPresetsForFolder(root)).filter(preset => !preset.envInactive);
 				// 区別語は切り詰める前の一覧全体で決める（PC版の一覧・ボタンと同じ見え方にする）
 				const qualifiers = paradisPresetQualifiers(presets);
 				if (msg.t === 'presets') {
