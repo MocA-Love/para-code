@@ -7,7 +7,7 @@ import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
-import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
@@ -97,12 +97,14 @@ function formatCountdown(resetAt: number, now: number): string {
 }
 
 export default function GithubUsageScreen() {
-	const tabBarSpacer = useTabBarSpacer();
+	// この画面は設定モーダル内に提示されタブバーが存在しない。NativeTabs 前提の
+	// tabBarSpacer を使うと約40ptの死に余白になるため、モーダル内他画面と同じ値を直接使う。
+	const insets = useStableInsets();
 	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
-	const { githubUsage, connection } = useAppStore(useShallow(s => ({ githubUsage: s.githubUsage, connection: s.connection })));
+	const { githubUsage, connection, activePcId } = useAppStore(useShallow(s => ({ githubUsage: s.githubUsage, connection: s.connection, activePcId: s.activePcId })));
 
 	const [data, setData] = useState<GithubUsageResult | undefined>();
 	const [loading, setLoading] = useState(false);
@@ -123,9 +125,17 @@ export default function GithubUsageScreen() {
 		} finally {
 			setLoading(false);
 		}
-	}, [githubUsage, connection]);
+	}, [githubUsage, connection, activePcId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
+
+	// PC切替時に前PCの数字を破棄する（ccusage/rtk/ratelimit と同じ扱い）。
+	// 切替では connection が online のままなので refresh の再発火が起きず、
+	// 破棄しないと前PCの値を今のPCの顔で見せてしまう。
+	useEffect(() => {
+		setData(undefined);
+		setError(undefined);
+	}, [activePcId]);
 
 	const onPullRefresh = useCallback(async () => {
 		setPullRefreshing(true);
@@ -167,7 +177,7 @@ export default function GithubUsageScreen() {
 				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}

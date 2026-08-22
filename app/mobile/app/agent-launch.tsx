@@ -319,6 +319,7 @@ export default function AgentLaunchScreen() {
 											placeholder="スペース名（任意）"
 											placeholderTextColor={colors.textDim}
 											autoCapitalize="none"
+											autoCorrect={false}
 										/>
 										<TextInput
 											style={[styles.input, styles.fieldHalf]}

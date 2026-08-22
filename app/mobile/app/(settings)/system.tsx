@@ -11,7 +11,7 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
-import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
@@ -105,7 +105,9 @@ function RingCard({ name, percent, value, sub, color }: {
 }
 
 export default function SystemScreen() {
-	const tabBarSpacer = useTabBarSpacer();
+	// この画面は設定モーダル内に提示されタブバーが存在しない。NativeTabs 前提の
+	// tabBarSpacer を使うと約40ptの死に余白になるため、モーダル内他画面と同じ値を直接使う。
+	const insets = useStableInsets();
 	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
@@ -159,9 +161,22 @@ export default function SystemScreen() {
 				setLoading(false);
 			}
 		}
-	}, [systemResources, connection]);
+	}, [systemResources, connection, activePcId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
+
+	// PC切替時に前PCの数字を破棄する（ccusage/rtk/ratelimit と同じ扱い）。
+	// 切替では connection が online のままなので refresh の再発火が起きず、
+	// 破棄しないと前PCの値を今のPCの顔で見せ続ける。スペース容量も同時に捨てる
+	// （一度測ったら残り続ける性質があるため、volume軸が開いていれば effect が
+	// 新しいPCに対して取り直す）。
+	useEffect(() => {
+		setData(undefined);
+		setSpaceDisk(undefined);
+		setOpenSpaces(new Set());
+		setError(undefined);
+		setSpaceError(undefined);
+	}, [activePcId]);
 
 	// 表示中だけ自動更新する。リソースは数秒で意味が変わる値なので、開きっぱなしの画面が
 	// 固まった数字を出し続けないようにする（画面を離れる・アプリが背面に回ったら止める）。
@@ -434,7 +449,7 @@ export default function SystemScreen() {
 				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}

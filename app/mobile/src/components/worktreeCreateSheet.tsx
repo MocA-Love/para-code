@@ -169,6 +169,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 									placeholder="スペース名（表示名・任意）"
 									placeholderTextColor={colors.textDim}
 									autoCapitalize="none"
+									autoCorrect={false}
 									editable={!busy}
 								/>
 								<TextInput

@@ -70,8 +70,12 @@ export default function AgentDetailScreen() {
 	const offline = useOfflineNotice();
 	const gated = useConnectionGateBlocked();
 	const keyboardVisible = useKeyboardVisible();
+	// 入力バー（画面下端に置かれる）の画面座標上端。フローティングキーボードが
+	// 食い込んでいる判定に使う（下端へ接地していなくても覆われたら持ち上げる）。
+	const inputBarRef = useRef<View>(null);
+	const [inputBarTop, setInputBarTop] = useState<number | undefined>(undefined);
 	// 下端がキーボードに食われる高さ。`KeyboardAvoidingView` の代わりに自分で下余白へ入れる。
-	const keyboardCover = useKeyboardCoverage();
+	const keyboardCover = useKeyboardCoverage(inputBarTop);
 	// iPadの広い幅では会話の列幅を制限して中央へ寄せる。1行が長すぎると次の行頭へ
 	// 目線を戻す距離が伸びて読みづらいため（ヘッダーとブラーは全幅のまま）。
 	const regular = useIsRegularWidth();
@@ -588,7 +592,16 @@ export default function AgentDetailScreen() {
 				/>
 			) : null}
 
-			<View style={[styles.inputBar, regular && styles.readingColumn, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
+			<View
+				ref={inputBarRef}
+				onLayout={() => {
+					// 入力バーの上端はウィンドウ座標で測る（親基準の layout.y では screen 自身の
+					// paddingBottom 分が消えるため）。keyboardCover の変化で動くたびに再計測され、
+					// 値が変わらない間は再レンダーも起きない。
+					inputBarRef.current?.measureInWindow((_x, y) => setInputBarTop(y));
+				}}
+				style={[styles.inputBar, regular && styles.readingColumn, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}
+			>
 				<AgentComposer
 					draftKey={draftKey}
 					activeTerminalKey={activeKey}
