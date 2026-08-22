@@ -273,5 +273,5 @@ const styles = StyleSheet.create({
 	btnCancelText: { color: colors.text, fontSize: 14, fontWeight: '700' },
 	btnCreate: { backgroundColor: colors.accent2 },
 	btnDisabled: { opacity: 0.5 },
-	btnCreateText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+	btnCreateText: { color: '#00222c', fontSize: 14, fontWeight: '700' },
 });

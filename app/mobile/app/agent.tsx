@@ -511,7 +511,7 @@ export default function AgentDetailScreen() {
 				{!sticky && chat !== undefined && !chat.none ? (
 					<View style={[styles.jumpWrap, regular && styles.overlayCenter]} pointerEvents="box-none">
 						<View style={regular ? styles.overlayColumnRight : undefined}>
-							<Pressable onPress={jumpToLatest} accessibilityLabel="最新のメッセージへ移動">
+							<Pressable onPress={jumpToLatest} accessibilityRole="button" accessibilityLabel="最新のメッセージへ移動">
 								<GlassSurface style={styles.jumpBtn} interactive>
 									<Ionicons name="chevron-down" size={16} color={colors.text} />
 									{newCount > 0 ? <Text style={styles.jumpText}>{newCount > 99 ? '99+' : String(newCount)}</Text> : null}

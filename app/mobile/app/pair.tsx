@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppStore } from '../src/appState.js';
+import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
@@ -107,13 +108,13 @@ export default function PairScreen() {
 					multiline
 				/>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
-				<Pressable style={styles.primaryBtn} onPress={() => { hapticImpact('medium'); void onSubmitPasted(); }} disabled={connecting}>
+				<Pressable style={styles.primaryBtn} accessibilityRole="button" accessibilityState={{ disabled: connecting }} onPress={() => { hapticImpact('medium'); void onSubmitPasted(); }} disabled={connecting}>
 					<Text style={styles.primaryBtnText}>{connecting ? '接続中…' : '接続'}</Text>
 				</Pressable>
 				{!permission.granted ? (
-					<Pressable onPress={() => { hapticImpact('light'); void requestPermission(); }}><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
+					<Pressable onPress={() => { hapticImpact('light'); void requestPermission(); }} accessibilityRole="button"><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
 				) : (
-					<Pressable onPress={() => { hapticImpact('light'); setPasteMode(false); }}><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
+					<Pressable onPress={() => { hapticImpact('light'); setPasteMode(false); }} accessibilityRole="button"><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
 				)}
 			</KeyboardAvoidingView>
 		);
@@ -129,7 +130,7 @@ export default function PairScreen() {
 			<View style={styles.overlay}>
 				<Text style={styles.scanHint}>PC の Para Code に表示された QR を枠に収めてください</Text>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
-				<Pressable onPress={() => { hapticSelection(); setPasteMode(true); }}><Text style={styles.linkTextLight}>リンクを貼り付けて接続</Text></Pressable>
+				<Pressable onPress={() => { hapticSelection(); setPasteMode(true); }} accessibilityRole="button"><Text style={styles.linkTextLight}>リンクを貼り付けて接続</Text></Pressable>
 			</View>
 		</View>
 	);
@@ -153,8 +154,8 @@ const styles = StyleSheet.create({
 	overlay: { position: 'absolute', bottom: 60, left: 20, right: 20, alignItems: 'center', gap: 8 },
 	scanHint: { color: '#fff', fontSize: 13, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, overflow: 'hidden' },
 	error: { color: '#f48771', fontSize: 12, textAlign: 'center' },
-	primaryBtn: { backgroundColor: '#0598BD', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
-	primaryBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+	primaryBtn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
+	primaryBtnText: { color: '#00222c', fontWeight: '600', fontSize: 15 },
 	input: { width: '100%', maxWidth: PAIR_MAX_WIDTH, minHeight: 90, backgroundColor: '#252526', borderRadius: 10, borderWidth: 1, borderColor: '#3c3c3c', color: '#cccccc', fontSize: 13, padding: 12, textAlignVertical: 'top' },
 	linkText: { color: '#09AFD9', fontSize: 13, marginTop: 4 },
 	linkTextLight: { color: '#fff', fontSize: 13, textDecorationLine: 'underline' },

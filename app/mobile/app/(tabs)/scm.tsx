@@ -403,7 +403,7 @@ const styles = StyleSheet.create({
 	commitInput: { backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top' },
 	commitBtn: { backgroundColor: colors.accent2, borderRadius: radius.control, ...squircle, paddingVertical: 12, alignItems: 'center' },
 	commitBtnDisabled: { opacity: 0.45 },
-	commitBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+	commitBtnText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
 	commitResult: { color: colors.green, fontSize: 11, marginTop: 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	error: { color: colors.red, fontSize: 12, marginTop: 8 },
 	// 見出しの上下の余白はここ1箇所に持たせる（画面ごとに数字を発明しない）。

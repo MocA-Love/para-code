@@ -425,7 +425,10 @@ export default function AgentLaunchScreen() {
 								<Text style={styles.hint}>PC側の Para Code が古いため、既存スペースへの起動には未対応です。PCを更新するか「新規スペース」を選んでください。</Text>
 							) : null}
 							<Pressable
-								style={[styles.launchBtn, { backgroundColor: agentId === 'claude' ? colors.claude : colors.accent2 }, !canLaunch && styles.launchBtnDisabled]}
+								// claude面はブランドオレンジをそのまま使うと白文字が3.12:1で読めないため、
+								// swipeActionColors と同じ「白抜きを載せる面として暗くした」専用色にする
+								// (#bf5033 = 4.76:1)。
+								style={[styles.launchBtn, { backgroundColor: agentId === 'claude' ? '#bf5033' : colors.accent2 }, !canLaunch && styles.launchBtnDisabled]}
 								onPress={launch}
 								disabled={!canLaunch}
 								accessibilityRole="button"
