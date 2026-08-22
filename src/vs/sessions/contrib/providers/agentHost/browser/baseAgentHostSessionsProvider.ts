@@ -4418,14 +4418,50 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		this._refreshSessions();
 	}
 
+	/**
+	 * Trailing-rerun booking for the ChatTurnComplete burst coalescing below.
+	 * While a pass is in flight, further requests book one rerun instead of
+	 * starting their own concurrent pass.
+	 */
+	private _refreshRerunPending = false;
+	private _refreshRerunAnnounceExisting = false;
+
 	protected async _refreshSessions(announceExistingAsAdded = false): Promise<void> {
+		// PARA-PATCH: coalesce the ChatTurnComplete burst. K sessions completing turns at
+		// nearly the same time used to fire this K times concurrently, each doing its own
+		// listSessions() round-trip and full cache re-adjustment. While a pass is in
+		// flight, further requests just book a single trailing rerun (announce flags merge).
+		// _sessionRefreshInFlight covers the reruns too so no bare pass can slip into the
+		// microtask window between passes.
+		if (this._sessionRefreshInFlight) {
+			this._refreshRerunPending = true;
+			this._refreshRerunAnnounceExisting = this._refreshRerunAnnounceExisting || announceExistingAsAdded;
+			return;
+		}
+		this._sessionRefreshInFlight = true;
+		try {
+			await this.doRefreshSessions(announceExistingAsAdded);
+			while (this._refreshRerunPending && !this._sessionRefreshRetry.value) {
+				// A failed pass armed a backoff retry; let the retry carry the refresh instead
+				// of immediately re-hitting the backend past its backoff.
+				this._refreshRerunPending = false;
+				const announce = this._refreshRerunAnnounceExisting;
+				this._refreshRerunAnnounceExisting = false;
+				await this.doRefreshSessions(announce);
+			}
+		} finally {
+			this._sessionRefreshInFlight = false;
+			this._refreshRerunPending = false;
+		}
+	}
+
+	private async doRefreshSessions(announceExistingAsAdded: boolean): Promise<void> {
 		const connection = this.connection;
 		if (!connection) {
 			return;
 		}
 		// Cancel any pending retry; this attempt supersedes it.
 		this._sessionRefreshRetry.clear();
-		this._sessionRefreshInFlight = true;
 		try {
 			const sessions = await connection.listSessions();
 			// A successful return (even an empty list) means the cache is
@@ -4508,8 +4544,6 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 			// list. Instead, retry silently in the background with backoff.
 			this._logService.trace(`[AgentHostSessionsProvider] listSessions failed; scheduling retry: ${err}`);
 			this._scheduleSessionRefreshRetry(announceExistingAsAdded);
-		} finally {
-			this._sessionRefreshInFlight = false;
 		}
 	}
 
