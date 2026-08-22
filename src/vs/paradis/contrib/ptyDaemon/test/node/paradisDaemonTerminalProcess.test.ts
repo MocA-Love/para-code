@@ -254,9 +254,9 @@ suite('ParadisDaemonTerminalProcess', () => {
 		// 常駐が別プロセスに居る本番では、起こした応答が返ってから繋ぎが届くまでに実時間がある。
 		// その間に pty はもう出力していて、**その分は控えにしか無い**。
 		const original = host.attach.bind(host);
-		(host as unknown as { attach(handle: number): Promise<unknown> }).attach = async handle => {
+		(host as unknown as { attach(handle: number, viewer: string): Promise<unknown> }).attach = async (handle, viewer) => {
 			ptys[0]?.emit('PROMPT$ ');
-			return original(handle);
+			return original(handle, viewer);
 		};
 
 		await process.start();

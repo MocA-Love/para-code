@@ -174,6 +174,21 @@ export const PARADIS_PTY_HOST_CHANNEL = 'paradisPtyHost';
 export const PARADIS_PTY_HOST_CLIENT = 'paradis-pty-host';
 
 /**
+ * この pty ホストの名札を作る。
+ *
+ * 接続の名乗りと `attach` の `viewer` に同じものを使う。**プロセスごとに違う値**でなければ、
+ * 2つのサーバーが同じ常駐に繋いだときに見分けが付かない。
+ */
+export function paradisPtyHostClientId(): string {
+	return `${PARADIS_PTY_HOST_CLIENT}:${process.pid}:${Math.floor(Math.random() * 0xffffffff).toString(16)}`;
+}
+
+/** その名乗りが pty ホストのものか。接続が消えたときの判断に使う。 */
+export function paradisIsPtyHostClient(ctx: string): boolean {
+	return ctx.startsWith(`${PARADIS_PTY_HOST_CLIENT}:`);
+}
+
+/**
  * 常駐にできること。**これが凍結する面そのもの。**
  *
  * ここに VS Code の型が1つも出てこないことが、更新をまたいで繋ぎ直せる理由。増やすときは
@@ -190,8 +205,16 @@ export interface IParadisPtyHost {
 	/** 起こす。**要約ごと返す**のは、直後に pid が要るため（往復を1回に）。 */
 	spawn(request: IParadisPtySpawnRequest): Promise<IParadisPtySummary>;
 
-	/** 繋ぎ直す。控えを受け取り、以後の出力が流れ始める。 */
-	attach(handle: number): Promise<IParadisPtyAttachment>;
+	/**
+	 * 繋ぎ直す。控えを受け取り、以後の出力が流れ始める。
+	 *
+	 * `viewer` は見に来た相手の名札で、繋いだときの名乗りと同じ文字列を渡す。**誰が見ているかを
+	 * 持たないと、離すときに粒度が合わない。** 同じ機械で2つのサーバーが生き残ることがあり
+	 * （更新のあと古い方が居座る）、片方が消えたときにもう片方の分まで離すと、動いている窓が
+	 * 無音になる。逆に何も離さないと、消えた側が見ていた端末は「まだ見られている」ままになり、
+	 * 誰も ack しないので高水位で止まったうえ、引き取りからも飛ばされて**永久に戻らない**。
+	 */
+	attach(handle: number, viewer: string): Promise<IParadisPtyAttachment>;
 	/** 見るのをやめる。**pty は止まらない。** */
 	detach(handle: number): Promise<void>;
 

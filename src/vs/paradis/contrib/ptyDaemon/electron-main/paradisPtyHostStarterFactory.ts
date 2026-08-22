@@ -115,6 +115,21 @@ export function paradisCreatePtyHostStarter(
 	// 繋ぐので、ここは今までどおりの起こし方でよい。渡すのは置き場所だけ
 	// (`paradisPtyHostBootstrap.ts` が受け取る)。
 	if (configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true) {
+		// **Windows はここでも止める。** 塞ぐ理由は旧い常駐とまったく同じ（下の判断を参照）で、
+		// 名前付きパイプが相手を確かめられないという protocol より下の話なので、薄くしたことでは
+		// 何も変わらない。加えて、こちらは題名も cwd も ConPTY も Windows では機能しない前提で
+		// 書いてあり、文字列の引数（Windows 専用の形）を渡されると起動を断る。
+		// **「動かない前提」で書いたものが、実際には止められていなかった。**
+		if (currentPlatform() === 'win32') {
+			logService.info('[ParadisPtyHost] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
+			return inApp();
+		}
+		const hostPaths = paradisPtyHostPaths({ stateDir: environmentMainService.userDataPath, platform: currentPlatform() });
+		if (hostPaths.socketPathTooLong) {
+			// 黙って落とすと、症状は「毎回ターミナルが作り直される」だけになり原因に辿り着けない。
+			logService.warn(`[ParadisPtyHost] not using a daemon: the socket path is too long for this platform (${hostPaths.socketPath.length} chars at ${hostPaths.socketPath}). Try a shorter --user-data-dir.`);
+			return inApp();
+		}
 		process.env[PARADIS_PTY_HOST_STATE_DIR] = environmentMainService.userDataPath;
 		return inApp();
 	}

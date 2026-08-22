@@ -61,8 +61,14 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 
 	private nextHandle = 1;
 
-	/** いま誰かが見ているもの。接続が切れたときに離すために持つ（{@link releaseViewers}）。 */
-	private readonly attachedHandles = new Set<number>();
+	/**
+	 * いま誰が何を見ているか。
+	 *
+	 * **相手ごとに持つ。** ひとまとめにすると、2つのサーバーが繋いでいるときに片方が消えた
+	 * 場合の扱いを誤る。全部離せば生きている側の窓が無音になり、何も離さなければ消えた側の
+	 * 端末が永久に戻らない。持ち分は互いに素なので、消えた相手の分だけ離せば両方避けられる。
+	 */
+	private readonly viewers = new Map<string, Set<number>>();
 
 	/** どのスペースのものか。預けられた時点でほぐしておく（{@link heldSpaces}）。 */
 	private readonly spaces = new Map<number, string>();
@@ -83,7 +89,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	override dispose(): void {
 		// 実際に畳むのは `perHandle`（holder 本体もその中に居る）。ここは引ける表を空にするだけ。
 		this.holders.clear();
-		this.attachedHandles.clear();
+		this.viewers.clear();
 		this.spaces.clear();
 		super.dispose();
 	}
@@ -109,12 +115,17 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		return holder.summary();
 	}
 
-	async attach(handle: number): Promise<IParadisPtyAttachment> {
+	async attach(handle: number, viewer: string): Promise<IParadisPtyAttachment> {
 		const holder = this.holders.get(handle);
 		if (!holder) {
 			throw new Error(`no terminal with handle ${handle}`);
 		}
-		this.attachedHandles.add(handle);
+		let watched = this.viewers.get(viewer);
+		if (!watched) {
+			watched = new Set<number>();
+			this.viewers.set(viewer, watched);
+		}
+		watched.add(handle);
 		return holder.attach();
 	}
 
@@ -128,16 +139,27 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	 * アプリ側からの `detach` はあくまで行儀の良い場合の話で、落ちた場合には届かない。
 	 * 接続が切れたこと自体を合図にしないと、この設計は成立しない。
 	 */
-	releaseViewers(): void {
-		for (const handle of this.attachedHandles) {
+	releaseViewers(viewer: string): void {
+		const watched = this.viewers.get(viewer);
+		if (!watched) {
+			return;
+		}
+		this.viewers.delete(viewer);
+		for (const handle of watched) {
 			this.holders.get(handle)?.detach();
 		}
-		this.attachedHandles.clear();
 	}
 
 	async detach(handle: number): Promise<void> {
-		this.attachedHandles.delete(handle);
+		this.forgetHandle(handle);
 		this.holders.get(handle)?.detach();
+	}
+
+	/** どの相手の持ち分からも外す。 */
+	private forgetHandle(handle: number): void {
+		for (const watched of this.viewers.values()) {
+			watched.delete(handle);
+		}
 	}
 
 	async input(handle: number, data: string, binary?: boolean): Promise<void> {
@@ -180,7 +202,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 			return;
 		}
 		this.holders.delete(handle);
-		this.attachedHandles.delete(handle);
+		this.forgetHandle(handle);
 		this.spaces.delete(handle);
 		// holder 本体もこの中に居る。畳むのはここ1箇所。
 		this.perHandle.deleteAndDispose(handle);

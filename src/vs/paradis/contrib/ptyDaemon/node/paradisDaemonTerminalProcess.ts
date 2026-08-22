@@ -161,6 +161,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		private readonly hostLifetime?: { onDidDispose: Event<void> },
 		/** 常駐から流れてくるものを配る人。省略時はこの端末だけの使い捨てを作る。 */
 		dispatch?: ParadisPtyDispatch,
+		/** この pty ホストの名札。常駐が「誰が見ているか」を持つのに使う。 */
+		private readonly viewer: string = '',
 		/**
 		 * すでに常駐が抱えているものを引き取る場合の相手。
 		 *
@@ -181,7 +183,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 走っているものに繋ぎ直すだけ。起動先の検査もシェル統合の注入もしない
 			// (どちらも起こすときの話で、すでに起きているものには当てはまらない)。
 			this.adopt(this.adoptTarget.handle, this.adoptTarget.pid, this.adoptTarget.title);
-			this.emitAttachment(await this.host.attach(this.adoptTarget.handle));
+			this.emitAttachment(await this.host.attach(this.adoptTarget.handle, this.viewer));
 			if (this.adoptTarget.exited) {
 				// **もう終わっている。** イベントを待っても来ないので、ここで言う。画面には
 				// 走り切った結果が出ているので、あとは終わったことが伝われば読める。
@@ -238,7 +240,13 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 繋ぐまでの間に出たものはここにしか無い。捨てると、消えるのは決まって
 			// 「シェルの起動直後」＝プロンプトと初期エスケープ列になり、症状は
 			// 「たまに1行目が出ない」という辿れない形になる。
-			this.emitAttachment(await this.host.attach(summary.handle));
+			this.emitAttachment(await this.host.attach(summary.handle, this.viewer));
+			if (this._store.isDisposed || this.exitFired) {
+				// 起こしている間に閉じられていた。抱えたまま放置すると、誰も見ていない端末が
+				// 常駐に残り、次の起動で身に覚えのないタブとして現れる。
+				await this.host.release(summary.handle).catch(() => { });
+				return undefined;
+			}
 		} catch (error) {
 			// 起こしはしたが繋げなかった。**常駐に置き去りにしない。** 残すと誰も見ていない
 			// holder が一覧にだけ残り、次の引き取りで身に覚えのないターミナルとして現れる。
@@ -414,13 +422,17 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	}
 
 	shutdown(immediate: boolean): void {
-		if (this.handle === undefined) {
-			return;
-		}
 		// **終わらせろと言われたことを覚える。** 覚えないと、握り潰すプロセスで時間切れ経由の
 		// 終了になったときに「見るのをやめただけ」として常駐に残り、閉じたはずの端末が次の
 		// 起動で復活する。
 		this.exited = true;
+		if (this.handle === undefined) {
+			// まだ常駐に繋がっていない（起こしている最中に閉じられた）。**それでも終わったとは
+			// 言う**（upstream の `_kill` も pty の有無に関わらず必ず言う）。言わないと器が
+			// 畳まれずタブが閉じられないうえ、後から起動が完走したぶんが常駐に孤児として残る。
+			this.fireExitOnce(undefined);
+			return;
+		}
 		this.tell('shutdown', this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined));
 		// **終わったことを必ず伝える。** SIGHUP を握り潰すプロセスだと exit が来ないことがあり、
 		// 来ないと器が畳まれず、タブが閉じないまま台帳に残り続ける。upstream も、pty が本当に
@@ -546,6 +558,17 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	 * 起動時の材料（シェル設定と環境）まで入れるのは、引き取った器を後で「保存して復元」する
 	 * ときに要るため。無くても引き取りはできるが、そのときは材料が空の器になる。
 	 */
+	/**
+	 * 預かりものは**起こしたときの1回きり**で、以後は更新しない。
+	 *
+	 * したがって更新をまたいで引き取ると、**タブのリネームやアイコンの変更は起動時の値に戻る**。
+	 * 追従させるには、題名やアイコンが変わるたびに常駐へ書き戻す口を上の層から引く必要があり、
+	 * 触る面が増える。**走っているプロセスを失わないことに比べれば、名前が戻るのは軽い**ので、
+	 * いまは追従させない側を選んでいる。
+	 *
+	 * 追従させないと決めた以上、書き戻す口は置かない（置くと、次に読む人が「効いているはず」と
+	 * 読む）。必要になったら、ここを起点に足すこと。
+	 */
 	private describeSelf(): string {
 		return paradisEncodeTerminalMetadata({
 			workspaceId: this.origin?.workspaceId ?? '',
@@ -559,13 +582,6 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 				options: this.options,
 			},
 		});
-	}
-
-	/** 常駐に預けておくもの。中身は常駐から見ればただの文字列（引き取りで読む）。 */
-	async paradisSetMetadata(metadata: string): Promise<void> {
-		if (this.handle !== undefined) {
-			await this.host.setMetadata(this.handle, metadata);
-		}
 	}
 
 	/**

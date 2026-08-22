@@ -82,7 +82,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 				launch: undefined,
 			}),
 		});
-		await host.attach(summary.handle);
+		await host.attach(summary.handle, 'viewer');
 		await host.detach(summary.handle);
 		ptys[0].emit('done in 12s\r\n');
 
@@ -122,7 +122,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 				workspaceId: 'ws-A', workspaceName: 'para', shouldPersist: true, name: undefined, launch: undefined,
 			}),
 		});
-		await host.attach(summary.handle);
+		await host.attach(summary.handle, 'viewer');
 		await host.detach(summary.handle);
 		void ptys;
 
