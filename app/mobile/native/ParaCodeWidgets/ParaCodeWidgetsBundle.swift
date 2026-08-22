@@ -26,6 +26,10 @@ struct ParaCodeLiveActivity: Widget {
 			LockScreenView(context: context)
 				.activityBackgroundTint(Color.black.opacity(0.55))
 				.activitySystemActionForegroundColor(.white)
+				// タップでエージェント画面まで開く（通知タップと同じ導線）。公式ガイドどおり、
+				// ロック画面・compact・minimal の各面に同一 URL の widgetURL を付け、
+				// どこを押しても同じ画面に到達することを保証する。
+				.widgetURL(URL(string: "paracode-mobile:///agent"))
 		} dynamicIsland: { context in
 			DynamicIsland {
 				DynamicIslandExpandedRegion(.leading) {
@@ -52,24 +56,29 @@ struct ParaCodeLiveActivity: Widget {
 								.padding(8)
 								.frame(maxWidth: .infinity, alignment: .leading)
 								.background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.14)))
+								.privacySensitive()
 						}
 					}
 					.padding(.top, 4)
 				}
 			} compactLeading: {
 				LogoBadge()
+					.widgetURL(URL(string: "paracode-mobile:///agent"))
 			} compactTrailing: {
 				CountsView(state: context.state)
+					.widgetURL(URL(string: "paracode-mobile:///agent"))
 			} minimal: {
 				if context.state.waitingCount > 0 {
 					Text("\(context.state.waitingCount)")
 						.font(.caption2.bold())
 						.foregroundStyle(.red)
+						.widgetURL(URL(string: "paracode-mobile:///agent"))
 				} else {
 					Image(systemName: "play.circle.fill")
 						.font(.system(size: 12))
 						.foregroundStyle(.green)
 						.frame(width: 14, height: 14)
+						.widgetURL(URL(string: "paracode-mobile:///agent"))
 				}
 			}
 			// 低残量時は展開面の縁（keyline）を赤にして異常を示す（B-2: 文言警告は出さない）
@@ -260,7 +269,9 @@ private struct AgentRowView: View {
 				.frame(width: 8, height: 8)
 			VStack(alignment: .leading, spacing: 1) {
 				Text(agent.name).font(.caption.bold()).foregroundStyle(.white).lineLimit(1)
+					.privacySensitive()
 				Text(agent.ws).font(.caption2).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+					.privacySensitive()
 			}
 			Spacer(minLength: 0)
 			Text(agent.status == "waiting" ? "応答待ち" : "実行中")
@@ -290,6 +301,9 @@ private struct LockScreenView: View {
 				Text(context.attributes.pcName)
 					.font(.caption2)
 					.foregroundStyle(.white.opacity(0.6))
+					// ロック画面の非公開設定（redaction）では内容をぼかす。質問文・PC名・
+					// エージェント名/ワークスペース名が肩越しに読める状態を防ぐ（N-01）。
+					.privacySensitive()
 				if let battery = state.battery {
 					Text("・")
 						.font(.caption2)
@@ -315,6 +329,7 @@ private struct LockScreenView: View {
 					.padding(9)
 					.frame(maxWidth: .infinity, alignment: .leading)
 					.background(RoundedRectangle(cornerRadius: 11).fill(Color.red.opacity(0.13)))
+					.privacySensitive()
 			}
 		}
 		.padding(14)
