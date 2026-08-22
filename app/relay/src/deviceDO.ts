@@ -38,6 +38,8 @@ interface PendingPairing {
 }
 
 const PAIRING_TTL_MS = 5 * 60 * 1000;
+/** alarm を pending の失効時刻より少し後ろにずらすための余裕（expiresAt < now 比較を確実に通す）。 */
+const PAIRING_SWEEP_MARGIN_MS = 1_000;
 // APNsのペイロード上限は4KB。base64url暗号文はそのまま `e` に載るため、余裕をみて上限を設ける。
 const MAX_PUSH_PAYLOAD_BYTES = 3800;
 
@@ -166,6 +168,7 @@ export class DeviceDO implements DurableObject {
 		const pairingToken = randomTokenB64u(32);
 		const tokenHash = await hashToken(pairingToken);
 		this.sql.exec('INSERT INTO pending (pairId, tokenHash, expiresAt) VALUES (?, ?, ?)', pairId, tokenHash, Date.now() + PAIRING_TTL_MS);
+		await this.schedulePairingSweep();
 		return Response.json({ pairId, pairingToken, expiresAt: Date.now() + PAIRING_TTL_MS });
 	}
 
@@ -185,7 +188,44 @@ export class DeviceDO implements DurableObject {
 	}
 
 	private cleanupPairings(): void {
+		const expired = this.sql.exec('SELECT pairId FROM pending WHERE expiresAt < ?', Date.now()).toArray();
+		if (expired.length === 0) {
+			return;
+		}
 		this.sql.exec('DELETE FROM pending WHERE expiresAt < ?', Date.now());
+		// SQL行だけ消してもソケットは残る。モバイル側のPairingClientは正常フローでは必ず
+		// 自己closeするが、強制終了・half-open等の異常系では hibernated WS として積み上がる。
+		// TTL切れの pair ソケットをサーバ側からも閉じる（QR再読込のたびに積み上がる問題）。
+		for (const row of expired) {
+			for (const ws of this.state.getWebSockets(`pair:${row.pairId}`)) {
+				try { ws.close(1000, 'expired'); } catch { /* ignore */ }
+			}
+		}
+	}
+
+	/**
+	 * 次の pending 失効時刻に alarm を張り、TTL切れの掃除を起こさせる。
+	 * cleanupPairings が呼ばれるのは PC/モバイル起点のリクエスト時だけなので、誰も
+	 * リクエストしなくても失効時に確実に掃除が走るようにするためのもの。
+	 */
+	private async schedulePairingSweep(): Promise<void> {
+		const row = this.sql.exec('SELECT MIN(expiresAt) AS next FROM pending').toArray()[0] as { next?: unknown } | undefined;
+		const next = row?.next;
+		if (typeof next !== 'number' || !Number.isFinite(next)) {
+			return;
+		}
+		const target = next + PAIRING_SWEEP_MARGIN_MS;
+		// アラームは storage 配下のAPIで管理する（state 直下には存在しない）。
+		const current = await this.state.storage.getAlarm();
+		if (current === null || current > target) {
+			await this.state.storage.setAlarm(target);
+		}
+	}
+
+	/** Durable Objects のアラーム。pending のTTL切れ掃除（pair ソケット close 含む）に使う。 */
+	async alarm(): Promise<void> {
+		this.cleanupPairings();
+		await this.schedulePairingSweep();
 	}
 
 	// M-1: PC(pcToken保持者)からのデバイス失効。資格情報を削除し、既存のモバイル接続を切断する。
