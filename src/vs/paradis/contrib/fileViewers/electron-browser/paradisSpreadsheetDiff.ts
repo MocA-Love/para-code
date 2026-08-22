@@ -15,8 +15,8 @@ import { stringHash } from '../../../../base/common/hash.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { localize } from '../../../../nls.js';
 import { IParadisCellData, IParadisDataValidationEntry, IParadisRenderShape, IParadisSheetData, canonicalizeDataValidationEntries, dataValidationEntriesCoverSame } from '../common/paradisSpreadsheet.js';
-import { IParadisPageBreakLine, IParadisPageLabelBox, IParadisPageLayout, IParadisPageRectangle, ParadisPageBreakStatus, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
-import { pageLabelText } from './paradisSpreadsheetRender.js';
+import { computeLcsRowPairs, rowFingerprint } from '../common/paradisSpreadsheetRowAlign.js';
+import { IParadisPageBreakLine, IParadisPageLabelBox, IParadisPageLayout, IParadisPageRectangle, ParadisPageBreakStatus, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 
 export type ParadisDiffStatus = 'added' | 'removed' | 'modified';
 
@@ -36,6 +36,7 @@ export type ParadisDiffDetailKind =
 	| 'borderBottom'
 	| 'borderLeft'
 	| 'paddingLeft'
+	| 'paddingRight'
 	| 'otherStyle'
 	| 'mergedColumns'
 	| 'mergedRows'
@@ -102,6 +103,8 @@ export interface IParadisDiffSheet {
 	readonly tabColor?: string;
 	/** シート保護が有効か(新版優先、無ければ旧版)。 */
 	readonly protectedSheet?: boolean;
+	/** どちらかの版で MAX_ROWS を超えて打ち切られているか。差分UIに通知を出すために使う。 */
+	readonly truncated?: boolean;
 }
 
 export interface IParadisDataValidationDiff {
@@ -177,6 +180,7 @@ const STYLE_DETAIL_KINDS: Record<string, ParadisDiffDetailKind> = {
 	borderBottom: 'borderBottom',
 	borderLeft: 'borderLeft',
 	paddingLeft: 'paddingLeft',
+	paddingRight: 'paddingRight',
 };
 
 const STYLE_ORDER = [
@@ -190,6 +194,7 @@ const STYLE_ORDER = [
 	'color',
 	'backgroundColor',
 	'paddingLeft',
+	'paddingRight',
 	'borderTop',
 	'borderRight',
 	'borderBottom',
@@ -495,6 +500,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				modifiedMinCol: mod.minCol,
 				...(mod.tabColor ? { tabColor: mod.tabColor } : {}),
 				...(mod.protectedSheet ? { protectedSheet: true } : {}),
+				...(mod.truncated ? { truncated: true } : {}),
 			});
 			continue;
 		}
@@ -511,6 +517,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				originalMinCol: orig.minCol,
 				...(orig.tabColor ? { tabColor: orig.tabColor } : {}),
 				...(orig.protectedSheet ? { protectedSheet: true } : {}),
+				...(orig.truncated ? { truncated: true } : {}),
 			});
 			continue;
 		}
@@ -532,14 +539,8 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 		const origRows: IParadisDiffRow[] = [];
 		const modRows: IParadisDiffRow[] = [];
 
-		// 既知の弱点(2026-07-03、検証済み): 行の対応付けは「位置(index)ペアリング」である(LCS等の行アライメントはしていない)。
-		// 実セル編集で行が挿入/削除されると以降の行が全体的にズレ、塗り付き結合行が短い/空の行と対になって
-		// 片側(通常は modified)が emptyCell(白・style空)になり、背景/枠線が非対称に見えることがある。
-		// 現状のフィクスチャ(図形XMLのみ差分=両版セル同一)では発生しないが、実編集diffで顕在化する。
-		// 顕在化した場合は、ここを LCS ベースの行アライメントに置き換えること。
-		for (let r = 0; r < maxRows; r++) {
-			const origRow = orig.rows[r];
-			const modRow = mod.rows[r];
+		/** 1行ぶんの左右セルを比較して DiffRow の組を作る。片側 undefined は「相手側にしか無い行」(ゴースト)。 */
+		const pushAlignedRow = (origRow: IParadisSheetData['rows'][number] | undefined, modRow: IParadisSheetData['rows'][number] | undefined): void => {
 			const origCells: IParadisDiffCell[] = [];
 			const modCells: IParadisDiffCell[] = [];
 
@@ -579,8 +580,47 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				}
 			}
 
+			// ゴースト(相手側にしか無い行)は相手の行高を借りる。左右の累積高さを揃えて
+			// スクロール同期・ナビハイライトがズレないようにする。
 			origRows.push({ cells: origCells, height: origRow?.height ?? modRow?.height ?? 20, excelRow: origRow?.excelRow });
 			modRows.push({ cells: modCells, height: modRow?.height ?? origRow?.height ?? 20, excelRow: modRow?.excelRow });
+		};
+
+		// 行アライメント(LCS): 行の表示値フィンガープリントの最長共通部分列で対応行を見つけ、
+		// 挿入/削除行を「相手側がゴーストの独立行」として切り出す。旧来のインデックス対比では
+		// 1行の挿入で以降の全行が偽の modified になっていた。左右の行数はゴースト込みで常に一致するため、
+		// 差分エディタのナビ・スクロール同期・ハイライトはこれまでどおり表示インデックス基準で動く。
+		// 行数が多くDPテーブルが上限を超える場合は、従来のインデックス対比へフォールバックする。
+		// この経路では「行挿入/削除以降が偽のmodifiedになる」既知の弱点が残る(巨大シート限定)。
+		const lcsPairs = computeLcsRowPairs(orig.rows.map(rowFingerprint), mod.rows.map(rowFingerprint));
+		if (!lcsPairs) {
+			for (let r = 0; r < maxRows; r++) {
+				pushAlignedRow(orig.rows[r], mod.rows[r]);
+			}
+		} else {
+			let oi = 0;
+			let mi = 0;
+			for (const pair of lcsPairs) {
+				while (mi < pair.m) {
+					pushAlignedRow(undefined, mod.rows[mi]);
+					mi++;
+				}
+				while (oi < pair.o) {
+					pushAlignedRow(orig.rows[oi], undefined);
+					oi++;
+				}
+				pushAlignedRow(orig.rows[pair.o], mod.rows[pair.m]);
+				oi = pair.o + 1;
+				mi = pair.m + 1;
+			}
+			while (mi < mod.rows.length) {
+				pushAlignedRow(undefined, mod.rows[mi]);
+				mi++;
+			}
+			while (oi < orig.rows.length) {
+				pushAlignedRow(orig.rows[oi], undefined);
+				oi++;
+			}
 		}
 
 		result.push({
@@ -597,6 +637,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 			modifiedMinCol: minCol,
 			...((mod.tabColor ?? orig.tabColor) ? { tabColor: mod.tabColor ?? orig.tabColor } : {}),
 			...((mod.protectedSheet || orig.protectedSheet) ? { protectedSheet: true } : {}),
+			...((orig.truncated || mod.truncated) ? { truncated: true } : {}),
 		});
 	}
 
