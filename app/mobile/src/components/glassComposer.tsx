@@ -44,9 +44,11 @@ export function GlassComposer({ value, defaultValue, inputKey, inputRef, onChang
 					style={({ pressed }) => [styles.sendBtn, sendDisabled && styles.sendBtnDisabled, pressed && styles.sendBtnPressed]}
 					onPress={() => { hapticImpact('medium'); onSubmit(); }}
 					disabled={sendDisabled}
+					accessibilityRole="button"
+					accessibilityState={{ disabled: sendDisabled }}
 					accessibilityLabel="送信"
 				>
-					<Ionicons name={sendIcon} size={18} color="#fff" />
+					<Ionicons name={sendIcon} size={18} color="#00222c" />
 				</Pressable>
 			</View>
 		</GlassSurface>

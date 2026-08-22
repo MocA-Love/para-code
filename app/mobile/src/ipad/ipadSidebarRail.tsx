@@ -8,6 +8,7 @@ import { isAgentWaiting } from '../store.js';
 import { colors } from '../theme.js';
 import { activeSidebarTab, SIDEBAR_TABS } from './ipadTabs.js';
 import { selectTab } from './ipadSelectTab.js';
+import { swipeActionColors } from '../components/swipeRow.js';
 
 /**
  * サイドバーを畳んだときの「レール」（`IpadShell` の開閉ボタンで切り替わる）。
@@ -51,7 +52,9 @@ const styles = StyleSheet.create({
 	tab: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
 	badge: {
 		position: 'absolute', top: -5, right: -9, minWidth: 15, height: 15, borderRadius: 8,
-		backgroundColor: colors.red, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
+		// 白抜きの件数バッジを載せる面。明るいred(#f47272)のままだと白文字が2.80:1で読めないため、
+		// 「白抜きを載せる面として暗くした赤」(swipeActionColors.destructive、5.16:1)を使う。
+		backgroundColor: swipeActionColors.destructive, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
 	},
 	badgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
 });
