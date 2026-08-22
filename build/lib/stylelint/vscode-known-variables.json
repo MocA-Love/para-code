@@ -1210,6 +1210,7 @@
 		"--vg-ring-opacity",
 		"--vg-corner-alpha",
 		"--vg-inner-fade",
+		"--paradis-agent-color",
 		"--paradis-agent-live-row-height",
 		"--paradis-cursor-duration",
 		"--paradis-pr-color",

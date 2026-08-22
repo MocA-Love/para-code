@@ -36,7 +36,7 @@ import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js'
 import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneBinding, paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
-import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserBindingModel, PARADIS_PANE_AGENT_ACCENT } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
@@ -417,6 +417,15 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 						this.notificationService.error(localize('paradis.revealBinding.failed', "Could not open the shared browser page: {0}", toErrorMessage(error)));
 					});
 				}
+			},
+			// 背面ハイライトのパターンB（エージェント色ティント）用。ペインで動くCLIのブランド色。
+			getPaneAccentColor: instanceId => {
+				for (const pane of this.bindingModel.getPanes()) {
+					if (pane.instanceId === instanceId) {
+						return PARADIS_PANE_AGENT_ACCENT[pane.agentKind];
+					}
+				}
+				return undefined;
 			},
 		});
 		this._register({ dispose: () => setParadisPaneIndicatorHost(undefined) });
