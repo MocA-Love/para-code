@@ -22,7 +22,7 @@ import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { IParadisAdoptedTerminal, paradisAdoptTerminals } from './paradisTerminalAdoption.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisDecodeLayout } from './paradisTerminalLayout.js';
-import { IParadisAdoptTarget } from './paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
 
 /** 器を作れる相手。`PtyService` のうち、ここが使う部分だけ。 */
 export interface IParadisAdoptionTarget {
@@ -61,12 +61,12 @@ interface IParadisLaunchRemains {
  */
 function remainsOf(adopted: IParadisAdoptedTerminal): IParadisLaunchRemains {
 	const launch = adopted.metadata.launch as Partial<IParadisLaunchRemains> | undefined;
-	// **名前を必ず付ける。** 器は「一度も触られていない」端末を、窓のリロード時に畳んでよいものと
-	// 見なす。引き取った端末は誰も打鍵していないのでそのままだと該当し、**ビルドを眺めていた
-	// だけの端末がリロードで死ぬ**。名前が付いていれば器の側で触られた扱いになる。
-	const name = adopted.metadata.name || adopted.summary.title || 'terminal';
+	// **名前は捏造しない。** 名前を付けると器が題名の出どころを「API が決めた」に倒し、以後
+	// **前面プロセス由来の題名更新が全部捨てられる**。題名を自分で出さないエージェント CLI では
+	// そこだけが頼りなので、この機能がいちばん守りたい端末のタブ名が固まってしまう。
+	// リロードで畳まれないようにするのは、器へ「引き取ったものだ」と伝える別の道で行う。
 	return {
-		shellLaunchConfig: { ...(launch?.shellLaunchConfig ?? {}), name },
+		shellLaunchConfig: launch?.shellLaunchConfig ?? { name: adopted.metadata.name },
 		env: launch?.env ?? {},
 		executableEnv: launch?.executableEnv ?? {},
 		options: launch?.options ?? {
@@ -149,8 +149,16 @@ export async function paradisAdoptIntoPtyService(
 					exited: terminal.summary.alive ? undefined : { code: terminal.summary.exitCode },
 				},
 			);
-			// handle の登録は器の `adopt()` が行う（起こす経路と同じ道を通る）。
 			idByHandle.set(terminal.summary.handle, id);
+			// **ここでも登録する。** 器の `adopt()` も同じことをするが、あちらが走るのは
+			// `start()` の中＝**窓が実際にその端末を開きに来たとき**で、この後の
+			// `paradisRestoreLayouts` には間に合わない。間に合わないと、戻した配置を書き込む
+			// ときに登録簿が空で、**読んだばかりの配置を空で上書きする**。
+			//
+			// 窓が開けば `adopt()` が同じ値を入れ直して自己修復するが、**いま開いていない
+			// スペースの端末は誰も開かない**ので直らない。毎回引き取って毎回空で潰すことになり、
+			// そのスペースの端末は永久に画面へ出てこない。
+			paradisRememberHandle(id, terminal.summary.handle);
 			adopted++;
 		} catch (error) {
 			// **常駐からは外さない。** こちらが器を作れないというだけで、走っているプロセスを

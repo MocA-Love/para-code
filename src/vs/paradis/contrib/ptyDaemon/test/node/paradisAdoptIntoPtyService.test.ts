@@ -18,6 +18,8 @@ import { DisposableStore, IDisposable } from '../../../../../base/common/lifecyc
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisEncodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
+import { paradisEncodeLayout } from '../../node/paradisTerminalLayout.js';
+import { paradisHandleOf } from '../../node/paradisTerminalProcessFactory.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../../platform/terminal/common/terminalProcess.js';
 import { IParadisAdoptionTarget, paradisAdoptIntoPtyService } from '../../node/paradisAdoptIntoPtyService.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
@@ -108,6 +110,49 @@ suite('ParadisAdoptIntoPtyService', () => {
 					// **これが本題。** 引き取り先を名指ししているので、器は起こさずに繋ぐ。
 					adopt: { handle: summary.handle, pid: 5000, title: 'zsh', exited: undefined },
 				}],
+			},
+		);
+	});
+
+	test('配置を戻したときに、読んだばかりの配置を空で潰さない', async () => {
+		const { host, ptys } = daemon();
+		const summary = await host.spawn({
+			file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, term: 'xterm-256color',
+			metadata: paradisEncodeTerminalMetadata({
+				workspaceId: 'ws-A', workspaceName: 'para', shouldPersist: true, name: undefined, launch: undefined,
+			}),
+		});
+		await host.attach(summary.handle);
+		await host.detach(summary.handle);
+		void ptys;
+
+		// 前の世代が預けた配置。handle で書かれている。
+		await host.setLayout('ws-A', JSON.stringify({
+			workspaceId: 'ws-A',
+			tabs: [{ isActive: true, activePersistentProcessId: summary.handle, terminals: [{ relativeSize: 1, terminal: summary.handle }] }],
+			background: [],
+		}));
+
+		// 器は本物と同じく「配置を書いたら常駐へ預け直す」ふるまいをする。
+		const written: string[] = [];
+		const service: IParadisAdoptionTarget = {
+			async createProcess() { return 7; },
+			async setTerminalLayoutInfo(args) {
+				written.push(paradisEncodeLayout(args, paradisHandleOf));
+			},
+		};
+
+		await paradisAdoptIntoPtyService(service, host, new NullLogService());
+
+		const rewritten = JSON.parse(written[0]) as { tabs: unknown[] };
+
+		assert.deepStrictEqual(
+			{ restored: written.length, keptTabs: rewritten.tabs.length },
+			{
+				restored: 1,
+				// **ここが本題。** 登録簿が空のまま書き戻すと、戻したばかりの配置が空になる。
+				// いま開いていないスペースは誰も開き直さないので、永久に画面へ出てこなくなる。
+				keptTabs: 1,
 			},
 		);
 	});
