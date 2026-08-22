@@ -20,9 +20,9 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
-import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
-import { paradisAuthenticateDaemon } from '../node/paradisPtyDaemonAuth.js';
-import { paradisAskDaemonToStop, paradisConnectToDaemon } from '../node/paradisPtyDaemonStop.js';
+import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription } from '../common/paradisPtyDaemonControl.js';
+import { ParadisControlOpen, paradisOpenDaemonControl } from '../node/paradisPtyDaemonControlClient.js';
+import { paradisAskDaemonToStop } from '../node/paradisPtyDaemonStop.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -37,8 +37,7 @@ import {
 } from '../common/paradisPtyDaemonStatus.js';
 import { IParadisPtyDaemonRecord } from '../common/paradisPtyDaemonPolicy.js';
 import { paradisReadDaemonRecords } from '../node/paradisPtyDaemonLedger.js';
-import { paradisPtyDaemonPathsFor } from './paradisPtyHostStarterFactory.js';
-import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { paradisActiveDaemonLedger, paradisAllDaemonLedgers, paradisAnyDaemonEnabled } from './paradisPtyHostStarterFactory.js';
 
 /** 状態を集めるのに必要な、ターミナル側の見え方。 */
 export interface IParadisDaemonPtyAccess {
@@ -71,6 +70,18 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 */
 	private control: { readonly client: SocketClient<string>; readonly service: IParadisPtyDaemonControl; readonly pid: number } | undefined;
 
+	/**
+	 * 進行中の接続。
+	 *
+	 * 番人が要るのは、**開いている最中がまるごと競合の窓**だから。繋ぐのに最大2秒、名乗り合いに
+	 * 1往復かかる間に別の呼び出しが来ると、両方が別々のソケットを開く。状態を聞く口はウィンドウ
+	 * ごとに2つあるので (ステータスバーと終了ポリシー)、ウィンドウが同時に立ち上がれば普通に
+	 * 重なる。後から据えた方で上書きすると先に開いた接続は誰も畳まず、しかも**畳んでも常駐側の
+	 * `Protocol` は残る**ので、{@link control} が避けようとしているものがそのまま起きる。
+	 * 開くこと自体を1本に畳む。
+	 */
+	private openingControl: { readonly pid: number; readonly opening: Promise<ParadisControlOpen> } | undefined;
+
 	/** 進行中の問い合わせ。返事を待っている間に次を投げないための番人（{@link describeDaemon}）。 */
 	private pendingDescribe: Promise<IParadisPtyDaemonDescription> | undefined;
 
@@ -85,13 +96,17 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	}
 
 	async getStatus(): Promise<IParadisPtyDaemonStatus> {
-		const enabled = this.configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true;
+		// **どちらの常駐でも同じ答えを返す。** 片方しか見ないと、新しい方を選んだ人には
+		// 「動いていない」と見え、終了時に残すかの判断がそこで false に倒れて全部畳まれる。
+		const enabled = paradisAnyDaemonEnabled(this.configurationService);
 		if (!enabled) {
 			return { enabled: false, running: false, pid: undefined, buildId: undefined, startedAt: undefined, terminalCount: undefined, spaces: [], foreign: [] };
 		}
 
-		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
-		const records = await paradisReadDaemonRecords(paths.ledgerDir);
+		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
+		// **画面に出したものは止められなければならない。** 一覧は両方の台帳から作るので、
+		// 探す側も同じ範囲を見る。片方だけだと「出るが止められない」になる。
+		const records = await this.allRecords();
 		const own = records.find(record => record.buildKey === paths.buildKey && isProcessAlive(record.pid));
 
 		// **`listProcesses()` では数えられない。** あちらは `isOrphan` で絞るので、ウィンドウが
@@ -117,7 +132,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 			startedAt: own?.startedAt,
 			terminalCount: terminals?.length,
 			spaces: terminals ? paradisGroupTerminalsBySpace(terminals) : [],
-			foreign: await this.describeForeign(records, paths.buildKey),
+			foreign: await this.describeForeign(await this.allRecords(), paths.buildKey),
 		};
 	}
 
@@ -129,7 +144,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 * 定期更新の待ちが積み上がってパネルが古い値で凍る。
 	 */
 	private async describeDaemon(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonDescription> {
-		const control = await this.ensureControl(record);
+		const { control } = await this.ensureControl(record);
 
 		// **同じ問いを重ねない。** 上限は待つのをやめるだけで、投げた要求は相手に残る
 		// (`raceTimeout` は元の約束を止めない)。待たずに次を投げると、固まっている常駐の
@@ -161,31 +176,57 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 *
 	 * pid が変わったら別の常駐なので、前の接続は捨てる。名乗り合いも毎回通す (繋がることは
 	 * 身元の証明にならない)。
+	 *
+	 * **話し相手そのものを返さず、入れ物に入れて返す。** 理由は
+	 * {@link paradisOpenDaemonControl} の冒頭に書いた。ここを `Promise<IParadisPtyDaemonControl>`
+	 * にしていたために、実機で状態パネルが最初の値のまま凍り続けた。
 	 */
-	private async ensureControl(record: IParadisPtyDaemonRecord): Promise<IParadisPtyDaemonControl> {
+	private async ensureControl(record: IParadisPtyDaemonRecord): Promise<{ readonly control: IParadisPtyDaemonControl }> {
 		if (this.control && this.control.pid === record.pid) {
-			return this.control.service;
+			return { control: this.control.service };
+		}
+
+		let opening = this.openingControl;
+		if (!opening || opening.pid !== record.pid) {
+			this.disposeControl();
+			const started = { pid: record.pid, opening: paradisOpenDaemonControl(record.socketPath, record.token) };
+			this.openingControl = started;
+			// 後始末は別の枝で。ここで拒否を拾わないと、開けなかったときに未処理の rejection になる。
+			started.opening.then(() => { }, () => { }).finally(() => {
+				if (this.openingControl === started) {
+					this.openingControl = undefined;
+				}
+			});
+			opening = started;
+		}
+
+		const opened = await opening.opening;
+		if (!opened.ok) {
+			throw new Error(opened.reason === 'unreachable'
+				? `nothing answered at ${record.socketPath}`
+				: `whatever answers at ${record.socketPath} is not one of ours`);
+		}
+		this.seatControl(opened.client, opened.control, opening.pid);
+		return { control: opened.control };
+	}
+
+	/**
+	 * 開いた接続を据える。**同じ約束を待っていた全員がここを通る**ので、二重に据えない。
+	 *
+	 * 据える前に前の相手を畳むので、どの順で来ても掴みっぱなしにはならない。
+	 */
+	private seatControl(client: SocketClient<string>, control: IParadisPtyDaemonControl, pid: number): void {
+		if (this.control?.client === client) {
+			return;
 		}
 		this.disposeControl();
-
-		const socket = await paradisConnectToDaemon(record.socketPath);
-		if (!socket) {
-			throw new Error(`nothing answered at ${record.socketPath}`);
-		}
-		const client = SocketClient.fromSocket(socket, 'paradis-daemon-status');
-		if (!await paradisAuthenticateDaemon(client, record.token)) {
-			client.dispose();
-			throw new Error(`whatever answers at ${record.socketPath} is not one of ours`);
-		}
-		const service = ProxyChannel.toService<IParadisPtyDaemonControl>(client.getChannel(PARADIS_PTY_DAEMON_CONTROL_CHANNEL));
-		this.control = { client, service, pid: record.pid };
+		this.control = { client, service: control, pid };
 		// 相手が落ちたら捨てる。掴んだままだと、次の常駐へ繋ぎ直さずに黙って失敗し続ける。
 		client.onDidDispose(() => {
 			if (this.control?.client === client) {
 				this.control = undefined;
 			}
 		});
-		return service;
 	}
 
 	private disposeControl(): void {
@@ -196,6 +237,20 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	override dispose(): void {
 		this.disposeControl();
 		super.dispose();
+	}
+
+	/**
+	 * 見えるところにある常駐の記録すべて。
+	 *
+	 * 切り替えの途中では、いま使う方の台帳だけでは足りない（もう片方が端末を抱えたまま残る）。
+	 */
+	private async allRecords(): Promise<IParadisPtyDaemonRecord[]> {
+		const dirs = paradisAllDaemonLedgers(this.configurationService, this.environmentMainService, this.productService);
+		const records: IParadisPtyDaemonRecord[] = [];
+		for (const dir of dirs) {
+			records.push(...await paradisReadDaemonRecords(dir));
+		}
+		return records;
 	}
 
 	/**
@@ -229,8 +284,10 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	}
 
 	async stop(): Promise<void> {
-		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
-		const records = await paradisReadDaemonRecords(paths.ledgerDir);
+		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
+		// **画面に出したものは止められなければならない。** 一覧は両方の台帳から作るので、
+		// 探す側も同じ範囲を見る。片方だけだと「出るが止められない」になる。
+		const records = await this.allRecords();
 		const own = records.find(record => record.buildKey === paths.buildKey);
 		if (!own) {
 			return;
@@ -246,8 +303,10 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 * 信じると、呼び出し側の間違いや古い画面の情報で、関係のない相手に手を出すことになる。
 	 */
 	async stopForeign(pid: number): Promise<void> {
-		const paths = paradisPtyDaemonPathsFor(this.environmentMainService, this.productService);
-		const records = await paradisReadDaemonRecords(paths.ledgerDir);
+		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
+		// **画面に出したものは止められなければならない。** 一覧は両方の台帳から作るので、
+		// 探す側も同じ範囲を見る。片方だけだと「出るが止められない」になる。
+		const records = await this.allRecords();
 		const record = records.find(candidate => candidate.pid === pid && candidate.buildKey !== paths.buildKey);
 		if (!record) {
 			this.logService.info(`[ParadisPtyDaemon] no ledger entry for pid ${pid} any more; nothing to stop`);
