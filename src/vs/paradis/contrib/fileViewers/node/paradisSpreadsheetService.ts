@@ -628,7 +628,18 @@ function getCellDisplayValue(cell: ExcelJS.Cell): string {
 	}
 	const asFormula = value as { formula?: string; result?: unknown } | null | undefined;
 	if (asFormula && typeof asFormula === 'object' && asFormula.formula !== undefined) {
-		return isNotNil(asFormula.result) ? String(asFormula.result) : '';
+		const result = asFormula.result;
+		// 数式の計算結果も、直値のセルと同じ表示規則に合わせる。日付は決定論的フォールバックを通し
+		// (でなければ toString の環境依存表示に戻ってしまう)、エラーは #DIV/0! 等の文字列をそのまま出す
+		// (でなければ [object Object] になる)。
+		if (result instanceof Date) {
+			return formatDateFallback(result);
+		}
+		const asError = result as { error?: unknown } | null | undefined;
+		if (asError && typeof asError === 'object' && typeof asError.error === 'string') {
+			return asError.error;
+		}
+		return isNotNil(result) ? String(result) : '';
 	}
 	// exceljs の cell.text は数値フォーマット等を反映した表示文字列を返す。
 	if (isNotNil(cell.text)) {

@@ -360,6 +360,18 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 	}
 
+	/** excelRow → アライメント後の行インデックス。行插入/削除で片側だけがゴーストになりうるため、
+	 * 呼び出し側は変更が属する側(original/modified)のマップを選んで引く。 */
+	private _buildRowIndexByExcel(rows: IParadisDiffSheet['originalRows']): Map<number, number> {
+		const map = new Map<number, number>();
+		rows.forEach((row, index) => {
+			if (row.excelRow !== undefined && !map.has(row.excelRow)) {
+				map.set(row.excelRow, index);
+			}
+		});
+		return map;
+	}
+
 	/** 1シート分の変更位置(セル行 + 図形)を行位置順にまとめて返す。 */
 	private _buildSheetLocations(sheet: IParadisDiffSheet, sheetIndex: number): IDiffLocation[] {
 		const locs: IDiffLocation[] = [];
@@ -367,20 +379,22 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			locs.push({ sheetIndex, rowIndex });
 		}
 		const maxRows = Math.max(sheet.originalRows.length, sheet.modifiedRows.length);
-		const rowIndexByExcel = new Map<number, number>();
-		for (let i = 0; i < maxRows; i++) {
-			const er = sheet.modifiedRows[i]?.excelRow ?? sheet.originalRows[i]?.excelRow;
-			if (er !== undefined && !rowIndexByExcel.has(er)) {
-				rowIndexByExcel.set(er, i);
-			}
-		}
+		// anchorRow は change.side 側の Excel 行番号。行アライメントで挿入/削除があると
+		// original/modified で同じアライメント位置が別の Excel 行を指すため、他方優先のマップ
+		// 1つに寄せるとナビ先が本来の行からズレる。side ごとに別マップを引く。
+		const rowIndexByExcelOriginal = this._buildRowIndexByExcel(sheet.originalRows);
+		const rowIndexByExcelModified = this._buildRowIndexByExcel(sheet.modifiedRows);
+		const resolveRowIndex = (change: { readonly anchorRow: number; readonly side: 'original' | 'modified' }): number => {
+			const byExcel = change.side === 'original' ? rowIndexByExcelOriginal : rowIndexByExcelModified;
+			return byExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
+		};
 		for (const change of this._shapeDiffs[sheetIndex].changes) {
-			const rowIndex = rowIndexByExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
+			const rowIndex = resolveRowIndex(change);
 			locs.push({ sheetIndex, rowIndex, shape: { render: change.shape, side: change.side } });
 		}
 		// 改ページの変更も Prev/Next の対象にする(該当行へスクロールすると、色分けした線が見える)。
 		for (const change of this._pageBreakDiffs[sheetIndex]?.changes ?? []) {
-			const rowIndex = rowIndexByExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
+			const rowIndex = resolveRowIndex(change);
 			locs.push({ sheetIndex, rowIndex });
 		}
 		locs.sort((a, b) => a.rowIndex - b.rowIndex);
@@ -391,9 +405,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _buildValidationLocations(sheet: IParadisDiffSheet, sheetIndex: number): IDiffLocation[] {
 		const locations: IDiffLocation[] = [];
 		const minColumn = sheet.modifiedMinCol ?? sheet.originalMinCol ?? 1;
-		const rows = sheet.modifiedRows.length > 0 ? sheet.modifiedRows : sheet.originalRows;
-		const rowPositions = rows.flatMap((row, index) => row.excelRow === undefined ? [] : [{ excelRow: row.excelRow, index }]);
-		const nearestRowIndex = (excelRow: number): number => {
+		const buildRowPositions = (rows: IParadisDiffSheet['originalRows']) =>
+			rows.flatMap((row, index) => row.excelRow === undefined ? [] : [{ excelRow: row.excelRow, index }]);
+		const modifiedRowPositions = buildRowPositions(sheet.modifiedRows);
+		const originalRowPositions = buildRowPositions(sheet.originalRows);
+		const nearestRowIndex = (rowPositions: readonly { readonly excelRow: number; readonly index: number }[], excelRow: number): number => {
 			if (rowPositions.length === 0) {
 				return 0;
 			}
@@ -412,7 +428,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return Math.abs(before.excelRow - excelRow) <= Math.abs(after.excelRow - excelRow) ? before.index : after.index;
 		};
 		for (const change of buildDataValidationDiff(sheet.originalDataValidations, sheet.modifiedDataValidations)) {
-			const rowIndex = nearestRowIndex(change.range.minR);
+			// change.range は modified 優先(無ければ original)なので(buildDataValidationDiff参照)、
+			// 行位置も同じ側から探す。'removed' は original にしか行が無い。
+			const preferred = change.status === 'removed' ? originalRowPositions : modifiedRowPositions;
+			const fallback = change.status === 'removed' ? modifiedRowPositions : originalRowPositions;
+			const rowIndex = nearestRowIndex(preferred.length > 0 ? preferred : fallback, change.range.minR);
 			const validation: IValidationChange = {
 				sheetIndex,
 				sheetName: sheet.name,

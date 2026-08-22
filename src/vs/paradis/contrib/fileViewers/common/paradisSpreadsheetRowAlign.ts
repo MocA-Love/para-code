@@ -15,8 +15,21 @@ import { IParadisRowData } from './paradisSpreadsheet.js';
 /** LCS DP テーブルのセル数上限。超過時は呼び出し側がインデックス対比へフォールバックする(2000×2000+1 を許容)。 */
 const MAX_LCS_CELLS = 4_000_000;
 
-/** フィンガープリントの最大長。極端に長い行でメモリ・比較コストが爆発しないよう打ち切る。 */
+/** フィンガープリントの打ち切り前の最大長。極端に長い行でメモリ・比較コストが爆発しないよう打ち切る。 */
 const FINGERPRINT_MAX_LENGTH = 2000;
+
+/**
+ * 32bit FNV-1a。暗号強度は不要——先頭 {@link FINGERPRINT_MAX_LENGTH} 文字が同じで
+ * それ以降だけ違う行を区別できれば十分。
+ */
+function fnv1aHex(value: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(16).padStart(8, '0');
+}
 
 /**
  * 行のフィンガープリント=全セル表示値の連結。
@@ -26,13 +39,15 @@ const FINGERPRINT_MAX_LENGTH = 2000;
 export function rowFingerprint(row: IParadisRowData): string {
 	let out = '';
 	for (const cell of row.cells) {
-		if (out.length > FINGERPRINT_MAX_LENGTH) {
-			break;
-		}
 		out += cell.value;
 		out += '\u001F';
 	}
-	return out.slice(0, FINGERPRINT_MAX_LENGTH);
+	if (out.length <= FINGERPRINT_MAX_LENGTH) {
+		return out;
+	}
+	// 打ち切った分だけ全体のハッシュを足す。先頭 FINGERPRINT_MAX_LENGTH 文字が同じでも
+	// それ以降が違う行同士が、同じフィンガープリントとして誤ってペアリングされるのを防ぐ。
+	return `${out.slice(0, FINGERPRINT_MAX_LENGTH)}${fnv1aHex(out)}`;
 }
 
 /** 対応づけられた行の組(original側インデックス / modified側インデックス、ともに昇順)。 */
