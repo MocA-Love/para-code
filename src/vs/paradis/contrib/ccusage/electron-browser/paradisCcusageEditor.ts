@@ -8,6 +8,8 @@
 
 // ccusage ダッシュボードの EditorPane。ccusage CLI の集計結果(shared process 経由)を
 // KPI カード・モデル別積み上げバー・トークン推移・プロジェクト/セッション一覧として描画する。
+// ツールバーの Cost/Tokens セグメントでメトリックを切り替えられる。系列色は常にコスト降順で
+// 固定割り当てし、メトリック切替で色が入れ替わらないようにしている。
 // チャートは素の SVG DOM で構築し、workbench テーマのCSS変数+固定のカテゴリカルパレット
 // (ダーク/ライト両方で色覚多様性・コントラスト検証済み)を使う。
 
@@ -55,6 +57,9 @@ const MAX_SESSION_ROWS = 8;
 
 type AgentFilter = 'all' | ParadisCcusageAgent;
 
+/** ダッシュボードの表示メトリック。コスト換算(USD)か token 消費量か。 */
+type ParadisCcusageMetric = 'cost' | 'tokens';
+
 /** 期間プリセット。'custom' のときは常に customRange が設定されている。 */
 type ParadisCcusagePresetKey = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | '7d' | '30d' | '90d' | 'custom';
 /** チャートの表示単位。7日未満の期間では daily に強制される(effectiveGranularity 参照)。 */
@@ -99,6 +104,7 @@ export class ParadisCcusageEditor extends EditorPane {
 	private refreshIcon: HTMLElement | undefined;
 	private presetButtons: { key: ParadisCcusagePresetKey; button: HTMLButtonElement }[] = [];
 	private granularityButtons: { granularity: ParadisCcusageGranularity; button: HTMLButtonElement }[] = [];
+	private metricButtons: { metric: ParadisCcusageMetric; button: HTMLButtonElement }[] = [];
 	private agentButtons: { agent: AgentFilter; button: HTMLButtonElement }[] = [];
 	private customRangeRow: HTMLElement | undefined;
 	private customFromInput: HTMLInputElement | undefined;
@@ -112,6 +118,7 @@ export class ParadisCcusageEditor extends EditorPane {
 	private presetKey: ParadisCcusagePresetKey = '30d';
 	private customRange: IDateRange | undefined;
 	private granularity: ParadisCcusageGranularity = 'daily';
+	private metric: ParadisCcusageMetric = 'cost';
 	private agentFilter: AgentFilter = 'all';
 	private data: IParadisCcusageDashboardData | undefined;
 	private lastError: string | undefined;
@@ -183,6 +190,18 @@ export class ParadisCcusageEditor extends EditorPane {
 			button.textContent = g.label;
 			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setGranularity(g.granularity)));
 			this.granularityButtons.push({ granularity: g.granularity, button });
+		}
+
+		const metricSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
+		const metrics: { metric: ParadisCcusageMetric; label: string }[] = [
+			{ metric: 'cost', label: localize('paradis.ccusage.metric.cost', "Cost") },
+			{ metric: 'tokens', label: localize('paradis.ccusage.metric.tokens', "Tokens") },
+		];
+		for (const m of metrics) {
+			const button = dom.append(metricSeg, $('button')) as HTMLButtonElement;
+			button.textContent = m.label;
+			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setMetric(m.metric)));
+			this.metricButtons.push({ metric: m.metric, button });
 		}
 
 		const agentSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
@@ -283,6 +302,16 @@ export class ParadisCcusageEditor extends EditorPane {
 		this.renderBody();
 	}
 
+	private setMetric(metric: ParadisCcusageMetric): void {
+		if (this.metric === metric) {
+			return;
+		}
+		this.metric = metric;
+		this.updateFilterButtons();
+		// データは同じ90日窓を使い回すので、切替は再描画だけで済む
+		this.renderBody();
+	}
+
 	private toggleCustomRangePanel(): void {
 		if (!this.customRangeRow || !this.customFromInput || !this.customToInput) {
 			return;
@@ -335,21 +364,26 @@ export class ParadisCcusageEditor extends EditorPane {
 		return rangeDays < 7 ? 'daily' : this.granularity;
 	}
 
-	/** KPI カードの「コスト」ラベルを選択中のプリセットに合わせて出し分ける。 */
-	private periodLabel(): string {
+	/** 選択中のプリセットに対応する期間の説明(「last 30 days」等)。 */
+	private periodSuffix(): string {
 		if (this.customRange) {
-			return localize('paradis.ccusage.kpi.costCustom', "Cost (custom range)");
+			return localize('paradis.ccusage.kpi.periodCustom', "custom range");
 		}
 		switch (this.presetKey) {
-			case 'today': return localize('paradis.ccusage.kpi.costToday', "Cost (today)");
-			case 'yesterday': return localize('paradis.ccusage.kpi.costYesterday', "Cost (yesterday)");
-			case 'thisWeek': return localize('paradis.ccusage.kpi.costThisWeek', "Cost (this week)");
-			case 'lastWeek': return localize('paradis.ccusage.kpi.costLastWeek', "Cost (last week)");
-			case '7d': return localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", 7);
-			case '30d': return localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", 30);
-			case '90d': return localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", 90);
-			case 'custom': return localize('paradis.ccusage.kpi.costCustom', "Cost (custom range)");
+			case 'today': return localize('paradis.ccusage.kpi.periodToday', "today");
+			case 'yesterday': return localize('paradis.ccusage.kpi.periodYesterday', "yesterday");
+			case 'thisWeek': return localize('paradis.ccusage.kpi.periodThisWeek', "this week");
+			case 'lastWeek': return localize('paradis.ccusage.kpi.periodLastWeek', "last week");
+			case '7d': return localize('paradis.ccusage.kpi.periodDays', "last {0} days", 7);
+			case '30d': return localize('paradis.ccusage.kpi.periodDays', "last {0} days", 30);
+			case '90d': return localize('paradis.ccusage.kpi.periodDays', "last {0} days", 90);
+			case 'custom': return localize('paradis.ccusage.kpi.periodCustom', "custom range");
 		}
+	}
+
+	/** KPI カードの「コスト/token」見出しを選択中のプリセットに合わせて出し分ける。 */
+	private periodLabel(noun: string): string {
+		return localize('paradis.ccusage.kpi.labeled', "{0} ({1})", noun, this.periodSuffix());
 	}
 
 	private setAgentFilter(agent: AgentFilter): void {
@@ -379,6 +413,10 @@ export class ParadisCcusageEditor extends EditorPane {
 
 		for (const { agent, button } of this.agentButtons) {
 			button.classList.toggle('checked', agent === this.agentFilter);
+		}
+
+		for (const { metric, button } of this.metricButtons) {
+			button.classList.toggle('checked', metric === this.metric);
 		}
 	}
 
@@ -533,6 +571,24 @@ export class ParadisCcusageEditor extends EditorPane {
 		return map;
 	}
 
+	/** 選択中メトリックでのスライス値(token 合計 or コスト)。 */
+	private sliceValue(slice: IModelTotal): number {
+		return this.metric === 'tokens' ? totalTokensOf(slice) : slice.cost;
+	}
+
+	/** 選択中メトリックでの値整形。 */
+	private formatMetricValue(value: number): string {
+		return this.metric === 'tokens' ? formatTokens(value) : formatUsd(value);
+	}
+
+	/**
+	 * 表示順(選択中メトリックの降順)。系列色は buildModelColorMap が常にコスト降順で
+	 * 割り当てるため、メトリックを切り替えてもモデルの色が入れ替わらない。
+	 */
+	private sortTotalsForDisplay(totals: IModelTotal[]): IModelTotal[] {
+		return [...totals].sort((a, b) => this.sliceValue(b) - this.sliceValue(a));
+	}
+
 	private renderKpis(container: HTMLElement, days: IParadisCcusageDayData[], totals: IModelTotal[]): void {
 		const kpis = dom.append(container, $('.paradis-ccusage-kpis'));
 
@@ -545,24 +601,46 @@ export class ParadisCcusageEditor extends EditorPane {
 		const cacheDenominator = inputTokens + cacheCreation + cacheRead;
 		const cacheRate = cacheDenominator > 0 ? (cacheRead / cacheDenominator) * 100 : 0;
 
-		// 期間コスト(ヒーロー数値) + エージェント内訳
-		const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
-		dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel();
-		dom.append(costTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatUsd(totalCost);
 		const agentCosts = new Map<ParadisCcusageAgent, number>();
 		for (const total of totals) {
 			agentCosts.set(total.agent, (agentCosts.get(total.agent) ?? 0) + total.cost);
 		}
-		if (this.agentFilter === 'all' && agentCosts.size > 1) {
-			const parts = [...agentCosts.entries()].sort((a, b) => b[1] - a[1]).map(([agent, cost]) => `${agentDisplayName(agent)} ${formatUsd(cost)}`);
-			dom.append(costTile, $('.paradis-ccusage-stat-sub')).textContent = parts.join(' · ');
-		}
+		const agentSplit = this.agentFilter === 'all' && agentCosts.size > 1
+			? [...agentCosts.entries()].sort((a, b) => b[1] - a[1]).map(([agent, cost]) => `${agentDisplayName(agent)} ${formatUsd(cost)}`).join(' · ')
+			: undefined;
 
-		const tokensTile = dom.append(kpis, $('.paradis-ccusage-card'));
-		dom.append(tokensTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.tokens', "Total tokens");
-		dom.append(tokensTile, $('.paradis-ccusage-stat-value')).textContent = formatTokens(allTokens);
-		dom.append(tokensTile, $('.paradis-ccusage-stat-sub')).textContent =
-			localize('paradis.ccusage.kpi.tokensSub', "Input {0} · Output {1}", formatTokens(inputTokens), formatTokens(outputTokens));
+		const costNoun = localize('paradis.ccusage.kpi.cost', "Cost");
+		const tokensNoun = localize('paradis.ccusage.kpi.tokens', "Total tokens");
+
+		if (this.metric === 'tokens') {
+			// ヒーロー=Total tokens。コストは 2 枚目に回す(free モデルなど cost $0 の消費も見えるようにするため)。
+			const tokensTile = dom.append(kpis, $('.paradis-ccusage-card'));
+			dom.append(tokensTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(tokensNoun);
+			dom.append(tokensTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatTokens(allTokens);
+			dom.append(tokensTile, $('.paradis-ccusage-stat-sub')).textContent =
+				localize('paradis.ccusage.kpi.tokensSub', "Input {0} · Output {1}", formatTokens(inputTokens), formatTokens(outputTokens));
+
+			const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
+			dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(costNoun);
+			dom.append(costTile, $('.paradis-ccusage-stat-value')).textContent = formatUsd(totalCost);
+			if (agentSplit !== undefined) {
+				dom.append(costTile, $('.paradis-ccusage-stat-sub')).textContent = agentSplit;
+			}
+		} else {
+			// 期間コスト(ヒーロー数値) + エージェント内訳
+			const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
+			dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(costNoun);
+			dom.append(costTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatUsd(totalCost);
+			if (agentSplit !== undefined) {
+				dom.append(costTile, $('.paradis-ccusage-stat-sub')).textContent = agentSplit;
+			}
+
+			const tokensTile = dom.append(kpis, $('.paradis-ccusage-card'));
+			dom.append(tokensTile, $('.paradis-ccusage-stat-label')).textContent = tokensNoun;
+			dom.append(tokensTile, $('.paradis-ccusage-stat-value')).textContent = formatTokens(allTokens);
+			dom.append(tokensTile, $('.paradis-ccusage-stat-sub')).textContent =
+				localize('paradis.ccusage.kpi.tokensSub', "Input {0} · Output {1}", formatTokens(inputTokens), formatTokens(outputTokens));
+		}
 
 		const cacheTile = dom.append(kpis, $('.paradis-ccusage-card'));
 		dom.append(cacheTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.cacheRate', "Cache read rate");
@@ -633,11 +711,22 @@ export class ParadisCcusageEditor extends EditorPane {
 	// ---------- daily stacked bar ----------
 
 	private renderDailyChart(card: HTMLElement, buckets: IBucket[], totals: IModelTotal[], granularity: ParadisCcusageGranularity): void {
-		dom.append(card, $('h3')).textContent = granularity === 'weekly'
-			? localize('paradis.ccusage.weekly.title', "Weekly Cost")
-			: localize('paradis.ccusage.daily.title', "Daily Cost");
-		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.daily.desc', "Per-model breakdown (USD). Hover a bar for details.");
+		if (granularity === 'weekly') {
+			dom.append(card, $('h3')).textContent = this.metric === 'tokens'
+				? localize('paradis.ccusage.weekly.titleTokens', "Weekly Tokens")
+				: localize('paradis.ccusage.weekly.title', "Weekly Cost");
+		} else {
+			dom.append(card, $('h3')).textContent = this.metric === 'tokens'
+				? localize('paradis.ccusage.daily.titleTokens', "Daily Tokens")
+				: localize('paradis.ccusage.daily.title', "Daily Cost");
+		}
+		dom.append(card, $('.desc')).textContent = this.metric === 'tokens'
+			? localize('paradis.ccusage.daily.descTokens', "Per-model breakdown (tokens). Hover a bar for details.")
+			: localize('paradis.ccusage.daily.desc', "Per-model breakdown (USD). Hover a bar for details.");
 
+		// 色と系列の両方を常にコスト降順トップ N で固定する。tokens モードで表示順だけ変える場合、
+		// コスト圏外のモデルが OTHER_COLOR を拾って「その他」系列と同色衝突するため。
+		// 積み上げ順・凡例順もコスト降順を維持し、メトリック切替で色が入れ替わらないようにする。
 		const colorMap = this.buildModelColorMap(totals);
 		const seriesModels = totals.slice(0, MAX_MODEL_SERIES).map(t => t.model);
 		const hasOther = totals.length > MAX_MODEL_SERIES;
@@ -669,13 +758,14 @@ export class ParadisCcusageEditor extends EditorPane {
 			const perModel = new Map<string, number>();
 			let other = 0;
 			for (const slice of bucket.models) {
+				const value = this.sliceValue(slice);
 				if (seriesModels.includes(slice.model)) {
-					perModel.set(slice.model, (perModel.get(slice.model) ?? 0) + slice.cost);
+					perModel.set(slice.model, (perModel.get(slice.model) ?? 0) + value);
 				} else {
-					other += slice.cost;
+					other += value;
 				}
 			}
-			const total = bucket.models.reduce((sum, slice) => sum + slice.cost, 0);
+			const total = bucket.models.reduce((sum, slice) => sum + this.sliceValue(slice), 0);
 			return { axisLabel: bucket.axisLabel, tooltipLabel: bucket.tooltipLabel, perModel, other, total };
 		});
 
@@ -690,7 +780,7 @@ export class ParadisCcusageEditor extends EditorPane {
 			line.style.stroke = i === 0 ? 'color-mix(in srgb, var(--vscode-foreground) 28%, transparent)' : 'color-mix(in srgb, var(--vscode-foreground) 10%, transparent)';
 			svg.appendChild(line);
 			const tick = svgEl(doc, 'text', { x: String(padL - 6), y: String(y(value) + 3), 'text-anchor': 'end', class: 'paradis-ccusage-axis-text' });
-			tick.textContent = `$${formatAxisNumber(value)}`;
+			tick.textContent = this.metric === 'tokens' ? formatTokens(value) : `$${formatAxisNumber(value)}`;
 			svg.appendChild(tick);
 		}
 
@@ -742,7 +832,7 @@ export class ParadisCcusageEditor extends EditorPane {
 			}
 			if (index === maxIndex && bar.total > 0) {
 				const label = svgEl(doc, 'text', { x: String(cx), y: String(y(bar.total) - 5), 'text-anchor': 'middle', class: 'paradis-ccusage-direct-label' });
-				label.textContent = formatUsd(bar.total);
+				label.textContent = this.formatMetricValue(bar.total);
 				svg.appendChild(label);
 			}
 
@@ -753,13 +843,13 @@ export class ParadisCcusageEditor extends EditorPane {
 				for (const model of seriesModels) {
 					const value = bar.perModel.get(model);
 					if (value !== undefined && value > 0) {
-						rows.push({ color: colorMap.get(model), name: prettyModelName(model), value: formatUsd(value) });
+						rows.push({ color: colorMap.get(model), name: prettyModelName(model), value: this.formatMetricValue(value) });
 					}
 				}
 				if (bar.other > 0) {
-					rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "Other"), value: formatUsd(bar.other) });
+					rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "Other"), value: this.formatMetricValue(bar.other) });
 				}
-				rows.push({ name: localize('paradis.ccusage.total', "Total"), value: formatUsd(bar.total), isTotal: true });
+				rows.push({ name: localize('paradis.ccusage.total', "Total"), value: this.formatMetricValue(bar.total), isTotal: true });
 				this.showTooltip(e, bar.tooltipLabel, rows);
 			}));
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_LEAVE, () => this.hideTooltip()));
@@ -867,26 +957,30 @@ export class ParadisCcusageEditor extends EditorPane {
 	// ---------- model / project lists ----------
 
 	private renderModelBreakdown(card: HTMLElement, totals: IModelTotal[]): void {
-		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.models.title', "Cost by Model");
-		const totalCost = totals.reduce((sum, t) => sum + t.cost, 0);
-		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.models.desc', "Total {0}", formatUsd(totalCost));
+		dom.append(card, $('h3')).textContent = this.metric === 'tokens'
+			? localize('paradis.ccusage.models.titleTokens', "Tokens by Model")
+			: localize('paradis.ccusage.models.title', "Cost by Model");
+		const totalValue = totals.reduce((sum, t) => sum + this.sliceValue(t), 0);
+		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.models.desc', "Total {0}", this.formatMetricValue(totalValue));
 
+		// 色はコスト降順の固定割り当て、表示順は選択中メトリックの降順(メトリック切替で色が動かないように)
 		const colorMap = this.buildModelColorMap(totals);
-		const maxCost = Math.max(0.01, ...totals.map(t => t.cost));
+		const displayTotals = this.sortTotalsForDisplay(totals);
+		const maxValue = Math.max(0.01, ...displayTotals.map(t => this.sliceValue(t)));
 
 		const agentOrder: ParadisCcusageAgent[] = ['claude', 'codex', 'gemini', 'other'];
 		for (const agent of agentOrder) {
-			const agentTotals = totals.filter(t => t.agent === agent);
+			const agentTotals = displayTotals.filter(t => t.agent === agent);
 			if (agentTotals.length === 0) {
 				continue;
 			}
 			if (this.agentFilter === 'all') {
 				const head = dom.append(card, $('.paradis-ccusage-agent-head'));
 				dom.append(head, $('span')).textContent = agentDisplayName(agent);
-				dom.append(head, $('span.total')).textContent = formatUsd(agentTotals.reduce((sum, t) => sum + t.cost, 0));
+				dom.append(head, $('span.total')).textContent = this.formatMetricValue(agentTotals.reduce((sum, t) => sum + this.sliceValue(t), 0));
 			}
 			for (const total of agentTotals) {
-				appendHBarRow(card, prettyModelName(total.model), total.model, total.cost, maxCost, colorMap.get(total.model) ?? OTHER_COLOR, formatUsd(total.cost));
+				appendHBarRow(card, prettyModelName(total.model), total.model, this.sliceValue(total), maxValue, colorMap.get(total.model) ?? OTHER_COLOR, this.formatMetricValue(this.sliceValue(total)));
 			}
 		}
 	}
@@ -1084,6 +1178,11 @@ function formatUsd(value: number): string {
 		return `$${Math.round(value).toLocaleString('en-US')}`;
 	}
 	return `$${value.toFixed(2)}`;
+}
+
+/** input+output+cache(作成/読み) の合計 token 数。 */
+function totalTokensOf(t: { readonly inputTokens: number; readonly outputTokens: number; readonly cacheCreationTokens: number; readonly cacheReadTokens: number }): number {
+	return t.inputTokens + t.outputTokens + t.cacheCreationTokens + t.cacheReadTokens;
 }
 
 function formatTokens(value: number): string {
