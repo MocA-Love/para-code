@@ -1267,6 +1267,77 @@ suite('LocalAgentHostSessionsProvider', () => {
 		});
 	}));
 
+	test('coalesces a same-tick ChatTurnComplete burst into a single trailing rerun', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+		// K sessions completing turns at nearly the same time used to fire K
+		// concurrent listSessions() passes; they must now share one pass plus
+		// (at most) one trailing rerun for whatever arrived while it ran.
+		agentHost.addSession(createSession('burst-1', { summary: 'Burst' }));
+		const provider = createProvider(disposables, agentHost);
+		await timeout(0);
+		const callsAfterEagerLoad = agentHost.listSessionsCallCount;
+
+		agentHost.listSessionsBarrier = new DeferredPromise<void>();
+		const fireTurnComplete = () => agentHost.fireAction({
+			channel: buildDefaultChatUri(AgentSession.uri('copilotcli', 'burst-1').toString()),
+			action: { type: ActionType.ChatTurnComplete },
+			serverSeq: 1,
+			origin: undefined,
+		} as ActionEnvelope);
+
+		fireTurnComplete();
+		await timeout(0);
+		assert.strictEqual(agentHost.listSessionsCallCount, callsAfterEagerLoad + 1, 'the first request starts a pass');
+
+		// These arrive while that pass is still awaiting listSessions().
+		fireTurnComplete();
+		fireTurnComplete();
+		fireTurnComplete();
+		assert.strictEqual(agentHost.listSessionsCallCount, callsAfterEagerLoad + 1, 'the burst books a trailing rerun instead of starting its own passes');
+
+		agentHost.listSessionsBarrier.complete();
+		await timeout(0);
+		assert.strictEqual(agentHost.listSessionsCallCount, callsAfterEagerLoad + 2, 'exactly one trailing rerun for the whole burst');
+		assert.deepStrictEqual(provider.getSessions().map(s => s.title.get()), ['Burst'], 'the session cache still reflects the burst correctly');
+	}));
+
+	test('a trailing rerun booked mid-failure has its announce flag folded into the retry', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+		// Regression test: a failed pass used to arm a backoff retry with only
+		// its own announce flag, silently dropping the announce=true a
+		// trailing rerun had booked while the pass was in flight.
+		agentHost.addSession(createSession('retry-announce-1', { summary: 'Retry' }));
+		const provider = createProvider(disposables, agentHost);
+		await timeout(0);
+		const changes: ISessionChangeEvent[] = [];
+		disposables.add(provider.onDidChangeSessions(e => changes.push(e)));
+
+		const refreshSessions = (announce?: boolean) =>
+			(provider as unknown as { _refreshSessions(a?: boolean): Promise<void> })._refreshSessions(announce);
+
+		agentHost.listSessionsBarrier = new DeferredPromise<void>();
+		agentHost.failListSessionsCount = 1;
+		const firstPass = refreshSessions(false);
+		await timeout(0);
+		// Booked while the first pass is still awaiting listSessions() — becomes
+		// a trailing rerun instead of its own concurrent pass.
+		await refreshSessions(true);
+
+		agentHost.listSessionsBarrier.complete();
+		await firstPass;
+
+		// The first pass failed and armed a backoff retry before the trailing
+		// rerun could run. Its announce=true must reach the retry instead of
+		// silently downgrading it to a plain (non-announcing) refresh.
+		await timeout(1_100);
+
+		assert.deepStrictEqual({
+			eventCount: changes.length,
+			added: changes[0]?.added.map(s => s.title.get()),
+		}, {
+			eventCount: 1,
+			added: ['Retry'],
+		});
+	}));
+
 	// ---- Startup session cache (persistence) -------
 
 	test('hydrates persisted sessions on startup before the live list is available', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
