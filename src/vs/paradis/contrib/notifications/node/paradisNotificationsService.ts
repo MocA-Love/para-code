@@ -61,6 +61,8 @@ const AIVIS_SYNTHESIZE_TIMEOUT_MS = 30_000;
 const YT_DLP_TIMEOUT_MS = 120_000;
 const FULL_DOWNLOAD_TIMEOUT_MS = 300_000;
 const MAX_FULL_DOWNLOAD_DURATION_SECONDS = 600;
+/** 保持する yt-dlp インストール状態の上限。通常は1件しか走らない。 */
+const PARADIS_MAX_INSTALL_STATES = 4;
 const FETCH_AUDIO_TIMEOUT_MS = 15_000;
 const REQUIRED_BINARIES = ['yt-dlp', 'ffmpeg', 'ffprobe'] as const;
 
@@ -561,6 +563,23 @@ export class ParadisNotificationsService extends Disposable {
 	}
 
 	async installYtDlp(installId: string): Promise<void> {
+		// 通常は同時1件だが、ダイアログを閉じるとポーリングが止まり done 済みエントリが
+		// 残り続ける（ログ最大1000行分）。少数上限で最も古いものから破棄する。done が無ければ
+		// アクティブなものも破棄し得る（その installId のポーリングは unknown-id 契約に乗る）。
+		while (this._installStates.size >= PARADIS_MAX_INSTALL_STATES) {
+			let victim: string | undefined;
+			for (const [key, value] of this._installStates) {
+				if (value.done) {
+					victim = key;
+					break;
+				}
+			}
+			victim ??= this._installStates.keys().next().value;
+			if (victim === undefined) {
+				break;
+			}
+			this._installStates.delete(victim);
+		}
 		this._installStates.set(installId, { lines: [], done: false, nextSeq: 1 });
 
 		if (process.platform !== 'darwin') {
