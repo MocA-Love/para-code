@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { pinKeyForTerminal } from '../src/store.js';
 import { AgentRowContent, agentRowStyles, type AgentRowData } from '../src/components/agentRow.js';
-import { SwipeRow } from '../src/components/swipeRow.js';
+import { closeOpenedSwipeRow, SwipeRow } from '../src/components/swipeRow.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useParaHeader, useParaHeaderHeight, type ParaHeaderSpec } from '../src/paraHeader.js';
@@ -66,7 +66,8 @@ export default function ArchiveScreen() {
 
 	return (
 		<View style={styles.screen}>
-			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
+			{/* スクロールし始めたら開きっぱなしのスワイプ行を畳む（ホーム一覧と同じ流儀）。 */}
+			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]} onScrollBeginDrag={closeOpenedSwipeRow}>
 				{rows.length === 0 ? (
 					<Text style={styles.empty}>アーカイブしたエージェントはありません{'\n'}ホームの一覧を左へスワイプするとここに入ります</Text>
 				) : (
