@@ -571,6 +571,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 						disabled={!online}
 						style={styles.addSpaceHit}
 						onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
+						accessibilityRole="button"
 						accessibilityLabel="新しいスペースを作成"
 						accessibilityState={{ disabled: !online }}
 					>

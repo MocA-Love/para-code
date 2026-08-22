@@ -48,7 +48,7 @@ export function GlassComposer({ value, defaultValue, inputKey, inputRef, onChang
 					accessibilityState={{ disabled: sendDisabled }}
 					accessibilityLabel="送信"
 				>
-					<Ionicons name={sendIcon} size={18} color="#fff" />
+					<Ionicons name={sendIcon} size={18} color="#00222c" />
 				</Pressable>
 			</View>
 		</GlassSurface>

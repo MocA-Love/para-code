@@ -8,6 +8,7 @@ import { isAgentWaiting } from '../store.js';
 import { GlassSurface } from '../components/glassSurface.js';
 import { WsDrawerContent } from '../components/wsDrawer.js';
 import { colors, radius, squircle } from '../theme.js';
+import { swipeActionColors } from '../components/swipeRow.js';
 import { activeSidebarTab, SIDEBAR_TABS, type SidebarTab } from './ipadTabs.js';
 import { IpadSidebarRail } from './ipadSidebarRail.js';
 import { selectTab } from './ipadSelectTab.js';
@@ -97,8 +98,8 @@ const styles = StyleSheet.create({
 	badge: {
 		position: 'absolute', top: -5, right: -9, minWidth: 15, height: 15, borderRadius: 8,
 		// 白抜きの件数バッジを載せる面。明るいred(#f47272)のままだと白文字が2.80:1で読めないため、
-		// swipeActionColors.destructive と同じ「白抜きを載せる面として暗くした赤」にする(5.16:1)。
-		backgroundColor: '#c0413f', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
+		// 「白抜きを載せる面として暗くした赤」(swipeActionColors.destructive、5.16:1)を使う。
+		backgroundColor: swipeActionColors.destructive, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
 	},
 	badgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
 });
