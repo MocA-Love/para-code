@@ -56,7 +56,7 @@ export function IpadShell({ children }: { children: ReactNode }) {
 			{showSidebar ? (
 				<Pressable
 					// サイドバー右端に左右跨ぎで置く。内側寄り(-34)だとサイドバー内のPCカード
-					// 右端の「設定」歯車(40×40、右端=幅-19)と15×22pt重なり、zIndexでトグルが
+					// 右端の「設定」歯車(40×40、右端=幅-18)と15×22pt重なり、zIndexでトグルが
 					// 勝って歯車が押せなくなっていた。
 					style={[styles.toggle, { left: sidebarWidth - 18, top: insets.top + 8 }]}
 					onPress={() => { hapticSelection(); setSidebarCollapsed(!collapsed); }}

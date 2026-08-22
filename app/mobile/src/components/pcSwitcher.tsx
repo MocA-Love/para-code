@@ -1,7 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect } from 'react';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- placeholder
 import { BackHandler, Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';

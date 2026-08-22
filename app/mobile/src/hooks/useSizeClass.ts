@@ -33,6 +33,8 @@ const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void): () => void {
 	listeners.add(listener);
+	// リスナー登録前に幅が変わっていた場合の取りこぼしを防ぐ（初回購読時に再同期）。
+	applyWidth(Dimensions.get('window').width);
 	return () => { listeners.delete(listener); };
 }
 

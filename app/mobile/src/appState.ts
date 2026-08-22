@@ -1173,6 +1173,9 @@ export const useAppStore = create<AppState>(set => ({
 			}
 			set({
 				initializing: false,
+				// 再試行で成功したら失敗理由を明示的に消す（現状の消費者は !ready ガードで
+				// 見えないが、成功後に古い理由が残るのは事故のもと）。
+				initError: undefined,
 				ready: true,
 				paired: storedPcs.length > 0,
 				pcs: pcSummaries(),
