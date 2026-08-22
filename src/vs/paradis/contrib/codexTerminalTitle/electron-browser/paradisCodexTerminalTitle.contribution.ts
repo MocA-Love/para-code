@@ -23,8 +23,10 @@ import { ICommandDetectionCapability, ITerminalCommand, TerminalCapability } fro
 import { ITerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisRemoteUserHome } from '../../agentBrowser/common/paradisRemoteUserHome.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -535,6 +537,7 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IPathService private readonly pathService: IPathService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this.applySetting();
@@ -558,7 +561,20 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 	}
 
 	private async writeCodexConfig(): Promise<void> {
-		const userHome = await this.pathService.userHome();
+		// IPathService.userHome() は接続先の環境が未解決の間、黙って手元のホームを返す。
+		// そのまま書き込むと SSH 接続直後の手元の ~/.codex/config.toml を作成・改変してしまう
+		// (2026-08-19 のインシデントと同型。agentBrowser/common/paradisRemoteUserHome.ts 参照)。
+		// 共通ヘルパーで「このホームが本当に接続先を指している」ことを確認してからにする。
+		const remoteAuthority = this.environmentService.remoteAuthority;
+		const rawHome = await this.pathService.userHome();
+		let userHome = paradisRemoteUserHome(remoteAuthority, rawHome);
+		if (userHome === undefined) {
+			if (remoteAuthority !== undefined) {
+				this.logService.warn('[ParadisCodexTerminalTitle] the host home is not resolved yet; skipping the Codex terminal title config update');
+				return;
+			}
+			userHome = rawHome;
+		}
 		const codexHome = joinPath(userHome, '.codex');
 		const configFile = joinPath(codexHome, 'config.toml');
 		if (!(await this.fileService.exists(codexHome))) {
