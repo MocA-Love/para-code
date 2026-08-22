@@ -4,7 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import * as sinon from 'sinon';
+import { timeout } from '../../../../../base/common/async.js';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES } from '../../common/paradisNotifications.js';
@@ -132,5 +136,82 @@ suite('ParadisNotificationsService boundaries', () => {
 				},
 			);
 		}
+	});
+
+	suite('orphan temp work dir sweep', () => {
+
+		/** rm() は fire-and-forget なので、消えるまで(または諦めるまで)短い間隔で見に行く。 */
+		async function waitUntilGone(path: string): Promise<void> {
+			const deadline = Date.now() + 2_000;
+			while (existsSync(path)) {
+				if (Date.now() > deadline) {
+					assert.fail(`expected ${path} to be swept away`);
+				}
+				await timeout(20);
+			}
+		}
+
+		function makeDir(name: string, ageMs: number): string {
+			const dir = join(tmpdir(), name);
+			mkdirSync(dir, { recursive: true });
+			const mtime = new Date(Date.now() - ageMs);
+			utimesSync(dir, mtime, mtime);
+			return dir;
+		}
+
+		test('sweeps orphaned yt-dlp/ffmpeg work dirs older than the minimum age', async () => {
+			const old = mkdtempSync(join(tmpdir(), 'paradis-ytfull-'));
+			utimesSync(old, new Date(Date.now() - 31 * 60 * 1000), new Date(Date.now() - 31 * 60 * 1000));
+
+			createService();
+
+			await waitUntilGone(old);
+		});
+
+		test('sweeps orphaned ytclip work dirs too, as insurance against hard crashes', async () => {
+			const old = mkdtempSync(join(tmpdir(), 'paradis-ytclip-'));
+			utimesSync(old, new Date(Date.now() - 31 * 60 * 1000), new Date(Date.now() - 31 * 60 * 1000));
+
+			createService();
+
+			await waitUntilGone(old);
+		});
+
+		test('leaves a recent work dir alone so it does not race another instance downloading', async () => {
+			const recent = makeDir(`paradis-ytfull-recent-${Date.now()}`, 5 * 60 * 1000);
+			try {
+				createService();
+				// 掃除対象があれば非同期に消えるはずなので、少し待ってから「消えていない」ことを確認する
+				await timeout(200);
+				assert.strictEqual(existsSync(recent), true);
+			} finally {
+				rmSync(recent, { recursive: true, force: true });
+			}
+		});
+
+		test('leaves a same-named file alone, only directories are swept', async () => {
+			const file = join(tmpdir(), `paradis-ytfull-file-${Date.now()}`);
+			writeFileSync(file, 'not a directory');
+			const oldTime = new Date(Date.now() - 31 * 60 * 1000);
+			utimesSync(file, oldTime, oldTime);
+			try {
+				createService();
+				await timeout(200);
+				assert.strictEqual(existsSync(file), true);
+			} finally {
+				rmSync(file, { force: true });
+			}
+		});
+
+		test('leaves unrelated old directories alone', async () => {
+			const unrelated = makeDir(`paradis-unrelated-${Date.now()}`, 60 * 60 * 1000);
+			try {
+				createService();
+				await timeout(200);
+				assert.strictEqual(existsSync(unrelated), true);
+			} finally {
+				rmSync(unrelated, { recursive: true, force: true });
+			}
+		});
 	});
 });
