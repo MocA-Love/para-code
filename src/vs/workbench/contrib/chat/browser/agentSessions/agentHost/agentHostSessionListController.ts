@@ -10,7 +10,7 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../../base/common/uuid.js';
 import { AgentSession } from '../../../../../../platform/agentHost/common/agentService.js';
 import type { ChangesSummary } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
-import { SessionStatus, type SessionSummary } from '../../../../../../platform/agentHost/common/state/sessionState.js';
+import { SessionStatus, readSessionEhcliAdoptable, SESSION_META_EHCLI_ADOPTABLE_KEY, type SessionSummary } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ChatSessionStatus, IChatNewSessionRequest, IChatSessionItem, IChatSessionItemController, IChatSessionItemsDelta } from '../../../common/chatSessionsService.js';
 import { getAgentSessionProviderIcon } from '../agentSessions.js';
@@ -99,9 +99,8 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 		// resource. The provisional service is the source of truth for the
 		// `state.config.values` the user picked via chips; copying them
 		// here means the agent's `_materializeProvisional` will see them on
-		// first send. Best-effort — if no provisional exists or the rebind
-		// fails, the handler falls through to its standard
-		// `_createAndSubscribe` path with no user selections.
+		// first send. Recoverable failure falls through to the handler's standard
+		// create path; ambiguous final-URI cleanup rejects to prevent unsafe reuse.
 		if (request.untitledResource) {
 			const workingDirectory = this._newSessionFolderService.getFolder(request.untitledResource)
 				?? this._newSessionFolderService.getDefaultFolder()
@@ -119,7 +118,7 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 			// untitled chat-input resource to the freshly-minted real resource so
 			// the provisional `getOrCreate` for the real resource seeds it.
 			this._importConversationStore.rename(request.untitledResource, item.resource);
-			await this._provisional.tryRebind(request.untitledResource, item.resource, this._provider, workingDirectory);
+			await this._provisional.tryRebind(request.untitledResource, item.resource, this._provider);
 		}
 
 		return item;
@@ -196,6 +195,7 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 			createdAt: Date.parse(summary.createdAt),
 			modifiedAt: Date.parse(summary.modifiedAt),
 			changesSummary: summary.changes,
+			adoptable: readSessionEhcliAdoptable(summary._meta),
 		});
 	}
 
@@ -209,11 +209,16 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 		createdAt: number;
 		modifiedAt: number;
 		changesSummary?: ChangesSummary;
+		/** Un-adopted legacy Copilot CLI session surfaced as adoptable; must not be passively restored. */
+		adoptable?: boolean;
 	}): IChatSessionItem {
 		const inProgress = opts.status !== undefined && (opts.status & SessionStatus.InProgress) !== 0;
 		// allow-any-unicode-next-line
 		// PARA-PATCH: opts.title/opts.activity はハーネスが書いた生の文字列なので内部タグを変換してから使う
 		const description = inProgress && opts.activity ? paradisHumanizeAgentSessionTitle(opts.activity) ?? this._description : this._description;
+		const metadata = opts.adoptable
+			? { ...(this._buildMetadata(opts.workingDirectory) ?? {}), [SESSION_META_EHCLI_ADOPTABLE_KEY]: true }
+			: this._buildMetadata(opts.workingDirectory);
 		return {
 			resource: this._resource(rawId),
 			label: paradisHumanizeAgentSessionTitle(opts.title) ?? `Session ${rawId.substring(0, 8)}`,
@@ -227,7 +232,7 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 			isRead: opts.status !== undefined && opts.statusKnown !== false
 				? (opts.status & SessionStatus.IsRead) === SessionStatus.IsRead
 				: undefined,
-			metadata: this._buildMetadata(opts.workingDirectory),
+			metadata,
 			timing: {
 				created: opts.createdAt,
 				lastRequestStarted: opts.modifiedAt,

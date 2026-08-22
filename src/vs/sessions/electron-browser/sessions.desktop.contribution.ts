@@ -5,7 +5,7 @@
 
 import { registerAction2 } from '../../platform/actions/common/actions.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../workbench/common/contributions.js';
-import { OpenSessionInVSCodeAction, OpenInVSCodeWidgetContribution, OpenVSCodeWindowAction } from './actions/vscodeActions.js';
+import { OpenSessionInVSCodeAction, OpenInVSCodeWidgetContribution, OpenVSCodeWindowAction, ReturnToVSCodeEditorAction, ShouldShowReturnToVSCodeEditorAction } from './actions/vscodeActions.js';
 // PARA-PATCH: registers this window's GitHub API Usage metrics bridge (electron-browser-only; see the contribution file)
 import '../contrib/github/electron-browser/paradisSessionGithubMetricsBridge.contribution.js';
 
@@ -13,6 +13,8 @@ import '../contrib/github/electron-browser/paradisSessionGithubMetricsBridge.con
 (function registerActions(): void {
 	registerAction2(OpenSessionInVSCodeAction);
 	registerAction2(OpenVSCodeWindowAction);
+	registerAction2(ReturnToVSCodeEditorAction);
+	registerAction2(ShouldShowReturnToVSCodeEditorAction);
 })();
 
 (function registerWorkbenchContributions(): void {
