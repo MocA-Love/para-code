@@ -17,6 +17,8 @@ import { SIDE_BAR_TITLE_FOREGROUND, SIDE_BAR_TITLE_BORDER, SIDE_BAR_BACKGROUND, 
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { AnchorAlignment } from '../../../../base/browser/ui/contextview/contextview.js';
+import { IBoundarySashes } from '../../../../base/browser/ui/sash/sash.js';
+import { MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { LayoutPriority } from '../../../../base/browser/ui/grid/grid.js';
 import { assertReturnsDefined } from '../../../../base/common/types.js';
@@ -34,6 +36,8 @@ import { localize2 } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { VisibleViewContainersTracker } from '../visibleViewContainersTracker.js';
 import { Extensions } from '../../panecomposite.js';
+
+const PRIMARY_SIDE_BAR_SASH_CLASS = 'primary-sidebar-sash';
 
 export class SidebarPart extends AbstractPaneCompositePart {
 
@@ -68,6 +72,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	// constructor's leading argument count matches and no service-argument mismatch trace is logged at startup.
 	private readonly activityBarPart = this._register(this.instantiationService.createInstance(ActivitybarPart, this.location, this, Parts.ACTIVITYBAR_PART, ActivitybarPart.pinnedViewContainersKey, ActivitybarPart.placeholderViewContainersKey, ActivitybarPart.viewContainersWorkspaceStateKey));
 	private readonly visibleViewContainersTracker: VisibleViewContainersTracker;
+	private readonly primarySideBarSashClassDisposable = this._register(new MutableDisposable());
 
 	//#endregion
 
@@ -186,6 +191,14 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		}
 
 		super.layout(width, height, top, left);
+	}
+
+	override setBoundarySashes(sashes: IBoundarySashes): void {
+		super.setBoundarySashes?.(sashes);
+
+		this.primarySideBarSashClassDisposable.clear();
+		const primarySideBarSash = this.layoutService.getSideBarPosition() === SideBarPosition.LEFT ? sashes.right : sashes.left;
+		this.primarySideBarSashClassDisposable.value = primarySideBarSash?.addClass(PRIMARY_SIDE_BAR_SASH_CLASS);
 	}
 
 	protected override getTitleAreaDropDownAnchorAlignment(): AnchorAlignment {

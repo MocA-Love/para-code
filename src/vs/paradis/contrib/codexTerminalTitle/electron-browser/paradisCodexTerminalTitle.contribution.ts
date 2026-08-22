@@ -15,6 +15,7 @@ import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
+import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -235,6 +236,23 @@ export function createCodexTerminalTitle(prompt: string): string | undefined {
 	// 接頭辞は付けない。ここで作るのがタブに出る唯一の「読めるタイトル」で、`codex | ` は
 	// どのタブにも同じように付くぶん、肝心のタイトルを読みにくくするだけだから。
 	return characters.length > 36 ? `${characters.slice(0, 36).join('')}…` : cleaned;
+}
+
+/**
+ * このウィンドウで Codex 設定を書き込んでよいホームディレクトリ。書き込んではいけない
+ * (接続先の環境がまだ解決できていない)なら undefined。
+ *
+ * `IPathService.userHome()` は接続先の環境が未解決の間、黙って手元のホームを返す
+ * (2026-08-19 のインシデントと同型。paradisRemoteUserHome.ts 参照)。ローカルウィンドウ
+ * (remoteAuthority が undefined)は常に rawHome をそのまま使ってよい。リモートウィンドウは、
+ * rawHome が本当に接続先を指しているときだけ使う。
+ */
+export function resolveWritableCodexHome(remoteAuthority: string | undefined, rawHome: URI): URI | undefined {
+	const remoteHome = paradisRemoteUserHome(remoteAuthority, rawHome);
+	if (remoteHome !== undefined) {
+		return remoteHome;
+	}
+	return remoteAuthority === undefined ? rawHome : undefined;
 }
 
 interface ICodexTerminalRunState {
@@ -561,19 +579,11 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 	}
 
 	private async writeCodexConfig(): Promise<void> {
-		// IPathService.userHome() は接続先の環境が未解決の間、黙って手元のホームを返す。
-		// そのまま書き込むと SSH 接続直後の手元の ~/.codex/config.toml を作成・改変してしまう
-		// (2026-08-19 のインシデントと同型。agentBrowser/common/paradisRemoteUserHome.ts 参照)。
-		// 共通ヘルパーで「このホームが本当に接続先を指している」ことを確認してからにする。
-		const remoteAuthority = this.environmentService.remoteAuthority;
 		const rawHome = await this.pathService.userHome();
-		let userHome = paradisRemoteUserHome(remoteAuthority, rawHome);
+		const userHome = resolveWritableCodexHome(this.environmentService.remoteAuthority, rawHome);
 		if (userHome === undefined) {
-			if (remoteAuthority !== undefined) {
-				this.logService.warn('[ParadisCodexTerminalTitle] the host home is not resolved yet; skipping the Codex terminal title config update');
-				return;
-			}
-			userHome = rawHome;
+			this.logService.warn('[ParadisCodexTerminalTitle] the host home is not resolved yet; skipping the Codex terminal title config update');
+			return;
 		}
 		const codexHome = joinPath(userHome, '.codex');
 		const configFile = joinPath(codexHome, 'config.toml');
