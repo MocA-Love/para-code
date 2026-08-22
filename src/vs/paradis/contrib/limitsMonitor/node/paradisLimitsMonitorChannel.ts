@@ -56,8 +56,12 @@ import {
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
 
-/** スナップショットのTTL。リミットの変化は緩やかなので1分共有で十分。 */
-const SNAPSHOT_CACHE_TTL_MS = 60_000;
+/**
+ * スナップショットのTTL。ウィジェット表示中(30秒ポーリング)・非表示中(120秒ポーリング)の
+ * いずれもTTL内の要求はキャッシュで応答されるため、実取得は最短でも約2.5分に1回になる。
+ * リミットの変化は緩やかなので十分で、手動更新(bypassCache)は常に実取得する。
+ */
+const SNAPSHOT_CACHE_TTL_MS = 150_000;
 /** cswap実行のタイムアウト(全スロットのusage取得でネットワークを跨ぐため長め)。 */
 const CSWAP_TIMEOUT_MS = 60_000;
 /** wham/usage HTTPタイムアウト。 */

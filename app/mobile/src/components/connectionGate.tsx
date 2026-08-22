@@ -66,10 +66,11 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	const canGoBack = router.canGoBack();
 	// workspace 本体ではなく「キャッシュがあるか」だけを購読する（判定に使うのは有無のみ）。
 	// 本体を購読すると、PCからのstate再送のたびに全タブの中身が再構築される。
-	const { connection, pcOnline, sessionProtocolReady, hasWorkspace, paired, ready, manualOffline, protocolError, connectRelay } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, sessionProtocolReady, hasWorkspace, paired, ready, manualOffline, protocolError, initializing, initError, connectRelay } = useAppStore(useShallow(s => ({
 		connection: s.connection, pcOnline: s.pcOnline, paired: s.paired, ready: s.ready,
 		sessionProtocolReady: s.sessionProtocolReady, hasWorkspace: s.workspace !== undefined,
-		manualOffline: s.manualOffline, protocolError: s.protocolError, connectRelay: s.connectRelay,
+		manualOffline: s.manualOffline, protocolError: s.protocolError,
+		initializing: s.initializing, initError: s.initError, connectRelay: s.connectRelay,
 	})));
 
 	if (protocolError !== undefined) {
@@ -77,6 +78,30 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 			<Ionicons name="refresh-circle-outline" size={40} color={colors.red} />
 			<Text style={styles.title}>アップデートが必要です</Text>
 			<Text style={styles.dim}>{protocolError}</Text>
+		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
+	}
+
+	// **起動処理の間は「未接続」を出さない。** コールドスタート直後（Keychain読取・台帳復元が
+	// 終わる前）は ready も paired も false で、ここを通らないと一瞬「PCに接続できていません」
+	// +再接続ボタン（実質 no-op）がちらつく。
+	if (initializing) {
+		return <View style={styles.gated}><View style={styles.center}>
+			<ActivityIndicator accessibilityLabel="起動中" size="large" color={colors.accent} />
+			<Text style={styles.dim}>起動しています…</Text>
+		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
+	}
+
+	// **起動処理の失敗。** 記録していないと初期 state のまま「未接続」で固まり、
+	// 再接続ボタン（connectRelay）は runtimes が空で何もせず復帰不能だった。
+	if (initError !== undefined && !ready) {
+		const retry = () => { void useAppStore.getState().init().catch(() => { /* 失敗は initError へ記録される */ }); };
+		return <View style={styles.gated}><View style={styles.center} accessibilityLiveRegion="polite">
+			<Ionicons name="cloud-offline-outline" size={40} color={colors.red} />
+			<Text style={styles.title}>起動に失敗しました</Text>
+			<Text style={styles.dim}>{initError}</Text>
+			<Pressable style={styles.btn} accessibilityRole="button" onPress={() => { hapticImpact('light'); retry(); }}>
+				<Text style={styles.btnText}>再試行</Text>
+			</Pressable>
 		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
 	}
 
@@ -132,5 +157,5 @@ const styles = StyleSheet.create({
 	title: { color: colors.text, fontSize: 17, fontWeight: '700' },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', lineHeight: 20 },
 	btn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 11, paddingHorizontal: 26, marginTop: 4 },
-	btnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+	btnText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
 });

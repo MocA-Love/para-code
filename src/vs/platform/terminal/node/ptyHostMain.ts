@@ -166,8 +166,10 @@ async function startPtyHost() {
 		disposables.add(paradisRunPtyDaemonLifecycle({
 			env: paradisDaemon,
 			connections: paradisDaemonServer,
-			// Count what is attached too; the upstream listing only returns orphans.
-			heldTerminals: () => ptyService.paradisListHeldTerminals(),
+			// Count what is attached too; the upstream listing only returns orphans. The lightweight
+			// workspace-name-only query skips the per-terminal getCwd/orphan-barrier work the full
+			// listing does, which these pollers (status display, idle check) don't need.
+			heldTerminals: () => ptyService.paradisListHeldWorkspaceNames(),
 			logService,
 		}));
 	}

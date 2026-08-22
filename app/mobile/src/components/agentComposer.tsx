@@ -219,7 +219,7 @@ export const AgentComposer = memo(function AgentComposer({
 				sendDisabled={submitting || !sendable || codexSlashCatalogPending}
 				tools={
 					<>
-						<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">
+						<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityRole="button" accessibilityState={{ disabled: uploading }} accessibilityLabel="画像を添付">
 							<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
 						</Pressable>
 						<ModelPill

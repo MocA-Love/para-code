@@ -175,7 +175,9 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 	}, []);
 	useEffect(() => {
 		if (locked && openRef.current) {
-			ref.current?.closeDrawer();
+			// 幅がしきい値を跨いで regular へ切り替わった直後は、中身が null になった空の板が
+			// ばね（約200ms）で戻るのが見えるため、ほぼ即時で閉じる。
+			ref.current?.closeDrawer({ animationSpeed: 80 });
 		}
 	}, [locked]);
 
@@ -571,6 +573,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 						disabled={!online}
 						style={styles.addSpaceHit}
 						onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
+						accessibilityRole="button"
 						accessibilityLabel="新しいスペースを作成"
 						accessibilityState={{ disabled: !online }}
 					>
@@ -917,7 +920,10 @@ const styles = StyleSheet.create({
 	},
 	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
 	// 10.5ptの小さな見出しに36ptのボタンは大きすぎる。30ptへ落として行の主役を見出しに戻す。
-	addSpaceBtn: { width: 30, height: 30, borderRadius: 10, ...squircle },
+	// 44ptの当たり判定規範には届かないが、ヘッダーのピルボタン(PARA_HEADER_PILL_BUTTON=34)
+	// と寸法を揃え、最低限の大きさを確保する。GlassSurface の内側では hitSlop が効かない
+	// (hitTest を上書きしないため)ため、箱ごと広げる。
+	addSpaceBtn: { width: 34, height: 34, borderRadius: 10, ...squircle },
 	addSpaceHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },
