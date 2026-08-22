@@ -18,12 +18,13 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename } from '../../../../base/common/resources.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
-import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -102,26 +103,6 @@ function asTransferSource(element: TransferableElement): IParadisRemoteTransferS
 // allow-any-unicode-next-line
 function hostLabelFromAuthority(authority: string): string {
 	return authority.replace(/^ssh-remote\+/, '');
-}
-
-/** サイズを人間に読める形へ。KB / MB / GB は1桁。 */
-function formatSize(size: number | undefined): string {
-	if (!size || size < 0) {
-		return '';
-	}
-	const kb = size / 1024;
-	if (kb < 1) {
-		return localize('paraRemoteHosts.size.bytes', "{0} B", size);
-	}
-	const mb = kb / 1024;
-	if (mb < 1) {
-		return localize('paraRemoteHosts.size.kb', "{0} KB", kb.toFixed(1));
-	}
-	const gb = mb / 1024;
-	if (gb < 1) {
-		return localize('paraRemoteHosts.size.mb', "{0} MB", mb.toFixed(1));
-	}
-	return localize('paraRemoteHosts.size.gb', "{0} GB", gb.toFixed(1));
 }
 
 // --- データソース --------------------------------------------------------------------------------
@@ -280,9 +261,8 @@ class FileRenderer extends RowRenderer<ParadisRemoteFileEntry> {
 		templateData.icon.className = `para-rh-icon ${isDir ? 'dir' : 'file'} ${ThemeIcon.asClassName(isDir ? Codicon.folder : Codicon.file)}`;
 		templateData.icon.title = '';
 		templateData.name.textContent = element.name;
-		templateData.meta.textContent = formatSize(element.type === 'file' ? element.size : undefined);
+		templateData.meta.textContent = '';
 		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--para-rh-color', 'transparent');
-		templateData.actionsContainer.classList.toggle('has-meta', templateData.meta.textContent !== '');
 	}
 }
 
@@ -361,6 +341,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@ILabelService private readonly labelService: ILabelService,
 		@IEditorService private readonly editorService: IEditorService,
+		@IDialogService dialogService: IDialogService,
 		@IFileDialogService fileDialogService: IFileDialogService,
 		@IFileService private readonly fileService: IFileService,
 		@INotificationService private readonly notificationService: INotificationService,
@@ -373,7 +354,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		this.transferServices = { fileDialogService, fileService, notificationService, progressService };
+		this.transferServices = { dialogService, fileDialogService, fileService, notificationService, progressService };
 
 		// スペース台帳が変わったら一覧を追従させる (登録・削除・色変更など)
 		this._register(workspaceSwitchService.onDidChangeRepositories(() => { this.refresh(); }));
@@ -472,13 +453,13 @@ export class ParadisRemoteHostsView extends ViewPane {
 	 */
 	async computeHostElements(): Promise<readonly ParadisRemoteHost[]> {
 		const hosts: ParadisRemoteHost[] = [];
-		const localHome = this.pathService.userHome({ preferLocal: true });
 		hosts.push({
 			type: 'host',
 			hostKey: '',
 			label: localize('paraRemoteHosts.thisMachine', "このマシン"),
-			connected: !this.remoteAuthority,
-			homeUri: localHome ?? undefined,
+			// 緑ドットは SSH 側専用のため手元は常に false。renderer でも隠れる
+			connected: false,
+			homeUri: this.getLocalUserHome(),
 		});
 		const authority = this.remoteAuthority;
 		if (authority) {
@@ -521,9 +502,9 @@ export class ParadisRemoteHostsView extends ViewPane {
 
 	async computeFileEntries(element: ParadisRemoteSpace | ParadisRemoteFileEntry): Promise<readonly ParadisRemoteFileEntry[]> {
 		try {
-			// resolveMetadata を付けてサイズを取る。エクスプローラーほど巨大なディレクトリを
-			// 開かない前提なので、サイズ表示を優先する
-			const stat = await this.fileService.resolve(element.uri, { resolveMetadata: true });
+			// resolveMetadata は子ごとに stat が飛ぶため SSH 越しでは往復が跳ねる。
+			// エクスプローラーと同じくメタデータなしの一覧解決に留める
+			const stat = await this.fileService.resolve(element.uri);
 			const children = [...stat.children ?? []].sort((a, b) =>
 				Number(b.isDirectory) - Number(a.isDirectory) ||
 				a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
@@ -532,7 +513,6 @@ export class ParadisRemoteHostsView extends ViewPane {
 				hostKey: element.hostKey,
 				uri: child.resource,
 				name: child.name,
-				size: child.size,
 			}));
 		} catch (error) {
 			this.notificationService.error(error);
@@ -546,38 +526,72 @@ export class ParadisRemoteHostsView extends ViewPane {
 		await this.editorService.openEditor({ resource: element.uri }).catch(error => this.notificationService.error(error));
 	}
 
+	/**
+	 * 手元 (ローカルマシン) のユーザーホーム。web ウィンドウでは接続先 URI が返ることがある
+	 * (guessLocalUserHome がワークスペースフォルダにフォールバックするため) ので、
+	 * file スキームのときだけ使う。
+	 */
+	private getLocalUserHome(): URI | undefined {
+		const home = this.pathService.userHome({ preferLocal: true });
+		return home?.scheme === Schemas.file ? home : undefined;
+	}
+
 	private async saveToMachine(element: TransferableElement): Promise<void> {
-		const localUserHome = this.pathService.userHome({ preferLocal: true });
-		await paradisSaveToMachine(this.transferServices, asTransferSource(element), localUserHome ?? undefined);
+		try {
+			const localUserHome = this.getLocalUserHome();
+			if (!localUserHome) {
+				this.notificationService.info(localize('paraRemoteHosts.saveUnavailable', "このウィンドウでは手元への保存を利用できません"));
+				return;
+			}
+			await paradisSaveToMachine(this.transferServices, asTransferSource(element), localUserHome);
+		} catch (error) {
+			this.notificationService.error(error);
+		}
 	}
 
 	private async sendToHost(element: TransferableElement): Promise<void> {
 		if (!this.remoteAuthority) {
 			return;
 		}
-		await paradisSendToHost(this.transferServices, asTransferSource(element), this.remoteUserHome);
+		try {
+			await paradisSendToHost(this.transferServices, asTransferSource(element), this.remoteUserHome);
+		} catch (error) {
+			this.notificationService.error(error);
+		}
 	}
 
 	private async uploadInto(target: DropTarget): Promise<void> {
-		const localUserHome = this.pathService.userHome({ preferLocal: true });
-		const files = await paradisPickLocalFiles(this.transferServices, localUserHome ?? undefined);
-		if (!files.length) {
-			return;
+		try {
+			const localUserHome = this.getLocalUserHome();
+			if (!localUserHome) {
+				this.notificationService.info(localize('paraRemoteHosts.uploadUnavailable', "このウィンドウでは手元からのアップロードを利用できません"));
+				return;
+			}
+			const files = await paradisPickLocalFiles(this.transferServices, localUserHome);
+			if (!files.length) {
+				return;
+			}
+			await paradisCopyToDirectory(
+				this.transferServices,
+				files.map(uri => ({ uri, name: basename(uri), isDirectory: false })),
+				target.uri,
+			);
+			this.refresh();
+		} catch (error) {
+			this.notificationService.error(error);
 		}
-		await paradisCopyToDirectory(
-			this.transferServices,
-			files.map(uri => ({ uri, name: basename(uri), isDirectory: false })),
-			target.uri,
-		);
-		this.refresh();
 	}
 
 	private async dropInto(sources: readonly TransferableElement[], target: DropTarget): Promise<void> {
 		if (!sources.length) {
 			return;
 		}
-		await paradisCopyToDirectory(this.transferServices, sources.map(source => asTransferSource(source)), target.uri);
-		this.refresh();
+		try {
+			await paradisCopyToDirectory(this.transferServices, sources.map(source => asTransferSource(source)), target.uri);
+			this.refresh();
+		} catch (error) {
+			this.notificationService.error(error);
+		}
 	}
 
 	// --- アクション ----------------------------------------------------------------------------------

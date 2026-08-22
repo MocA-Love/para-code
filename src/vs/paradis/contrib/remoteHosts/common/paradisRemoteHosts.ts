@@ -59,7 +59,6 @@ export interface ParadisRemoteFileEntry {
 	readonly hostKey: string;
 	readonly uri: URI;
 	readonly name: string;
-	readonly size?: number;
 }
 
 export function isParadisRemoteHost(element: ParadisRemoteHostsElement): element is ParadisRemoteHost {
