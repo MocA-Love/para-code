@@ -52,19 +52,22 @@ suite('WorkingCopyBackupRestoreRouter', () => {
 		const router = disposables.add(new WorkingCopyBackupRestoreRouter());
 		const calls: number[] = [];
 		let release: (() => void) | undefined;
+		let notifyStarted: (() => void) | undefined;
 		let observedFlag = false;
 		let flag = false;
 		disposables.add(router.registerRestorer(async () => {
 			calls.push(1);
 			observedFlag = flag;
+			notifyStarted?.();
 			await new Promise<void>(resolve => { release = resolve; });
 		}));
 
 		// 同tickのバーストは1パスに合流する(ハンドラ登録+スペース切替が同tickに重なるケース)
+		const firstStarted = new Promise<void>(resolve => { notifyStarted = resolve; });
 		const first = router.requestRestore();
 		const joined = router.requestRestore();
 		assert.strictEqual(joined, first, 'same-tick requests share the pending pass');
-		await Promise.resolve();
+		await firstStarted;
 		flag = true;
 
 		release?.();
@@ -72,7 +75,11 @@ suite('WorkingCopyBackupRestoreRouter', () => {
 		assert.strictEqual(observedFlag, false);
 
 		// パス開始後に状態を変えて要求した場合は、その変更を観測する新しいパスが走る
-		const afterFlip = await router.requestRestore();
+		const secondStarted = new Promise<void>(resolve => { notifyStarted = resolve; });
+		const afterFlipPromise = router.requestRestore();
+		await secondStarted;
+		release?.();
+		const afterFlip = await afterFlipPromise;
 		assert.strictEqual(afterFlip, undefined);
 		assert.ok(calls.length >= 2);
 		assert.strictEqual(flag, true);
