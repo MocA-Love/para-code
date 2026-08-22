@@ -186,10 +186,11 @@ export function paradisScreenshotContentType(path: string): string {
 }
 
 /** 登録済みの保存先を読む。大きすぎるもの・消えているものは渡さない。 */
-export async function paradisReadScreenshotFile(path: string): Promise<Buffer | undefined> {
+export async function paradisReadScreenshotFile(path: string, signal?: AbortSignal): Promise<Buffer | undefined> {
 	const stat = await fs.stat(path).catch(() => undefined);
 	if (stat === undefined || !stat.isFile() || stat.size > MAX_FILE_BYTES) {
 		return undefined;
 	}
-	return fs.readFile(path).catch(() => undefined);
+	// クライアント切断時は signal 経由で読み込みを中断させる（呼び出し側の枠管理が解放を待つ）。
+	return fs.readFile(path, { signal }).catch(() => undefined);
 }
