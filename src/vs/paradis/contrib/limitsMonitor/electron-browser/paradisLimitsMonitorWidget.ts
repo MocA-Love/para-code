@@ -186,24 +186,36 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		try {
 			const accountName = account.email ?? localize('paradis.limitsMonitor.unknownAccount', "不明なアカウント");
 			const homeLabel = account.homeLabel ?? account.id;
+			const remote = this.client.connectedToRemote;
 			const { confirmed } = await this.dialogService.confirm({
 				message: localize('paradis.limitsMonitor.removeConfirm', "このCodexアカウントを削除しますか？"),
-				detail: localize(
-					'paradis.limitsMonitor.removeDetail',
-					"{0} ({1}) の認証情報、設定、セッション履歴を含むホーム全体をゴミ箱へ移動します。利用中のCodexプロセスに影響する可能性があります。ゴミ箱から復元できます。",
-					accountName,
-					homeLabel,
-				),
-				primaryButton: localize('paradis.limitsMonitor.moveToTrash', "ゴミ箱へ移動"),
+				detail: remote
+					? localize(
+						'paradis.limitsMonitor.removeDetailPermanent',
+						"{0} ({1}) の認証情報、設定、セッション履歴を含むホーム全体を接続先マシン上で完全に削除します。利用中のCodexプロセスに影響する可能性があります。リモートにはゴミ箱がないため復元できません。",
+						accountName,
+						homeLabel,
+					)
+					: localize(
+						'paradis.limitsMonitor.removeDetail',
+						"{0} ({1}) の認証情報、設定、セッション履歴を含むホーム全体をゴミ箱へ移動します。利用中のCodexプロセスに影響する可能性があります。ゴミ箱から復元できます。",
+						accountName,
+						homeLabel,
+					),
+				primaryButton: remote
+					? localize('paradis.limitsMonitor.removePermanently', "完全に削除")
+					: localize('paradis.limitsMonitor.moveToTrash', "ゴミ箱へ移動"),
 			});
 			if (!confirmed) {
 				return;
 			}
-			await this.client.moveCodexHomeToTrash(account.id);
+			await this.client.removeCodexHome(account.id, remote);
 			await this.poll(true);
 		} catch (error) {
-			this.logService.error('[ParadisLimitsMonitor] Failed to move Codex home to trash', error);
-			this.notificationService.error(localize('paradis.limitsMonitor.removeFailed', "Codexアカウントをゴミ箱へ移動できませんでした。もう一度お試しください。"));
+			this.logService.error('[ParadisLimitsMonitor] Failed to remove Codex home', error);
+			this.notificationService.error(this.client.connectedToRemote
+				? localize('paradis.limitsMonitor.removeFailedPermanent', "Codexアカウントを削除できませんでした。もう一度お試しください。")
+				: localize('paradis.limitsMonitor.removeFailed', "Codexアカウントをゴミ箱へ移動できませんでした。もう一度お試しください。"));
 		} finally {
 			this.removingHomes.delete(account.id);
 		}

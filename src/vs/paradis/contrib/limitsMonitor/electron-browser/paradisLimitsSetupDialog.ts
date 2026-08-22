@@ -56,7 +56,9 @@ export class ParadisLimitsSetupDialog extends Disposable {
 	private latestState: IParadisLimitsSetupState = { phase: 'starting' };
 	private codeSubmitted = false;
 	private resolvingDuplicate = false;
-	private duplicateHomeTrashed = false;
+	private duplicateHomeRemoved = false;
+	/** 重複ホーム削除ボタンを描画した時点の接続経路。実行時にこれと不一致なら削除は中断される。 */
+	private duplicateViaRemote = false;
 	private closed = false;
 
 	constructor(
@@ -213,9 +215,9 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		}
 		this.setDuplicateResolving(true);
 		try {
-			if (!this.duplicateHomeTrashed) {
-				await this.client.moveCodexHomeToTrash(this.latestState.homePath);
-				this.duplicateHomeTrashed = true;
+			if (!this.duplicateHomeRemoved) {
+				await this.client.removeCodexHome(this.latestState.homePath, this.duplicateViaRemote);
+				this.duplicateHomeRemoved = true;
 			}
 			await this.client.resolveCodexDuplicate(this.sessionId, 'discard');
 			await this.pollState();
@@ -331,9 +333,12 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateNewHome', "新しい保存先"), state.homeLabel ?? '');
 
 		this.keepDuplicateButton.textContent = localize('paradis.limitsSetup.keepDuplicate', "それでも追加");
-		this.submitButton.textContent = this.duplicateHomeTrashed
+		this.duplicateViaRemote = this.client.connectedToRemote;
+		this.submitButton.textContent = this.duplicateHomeRemoved
 			? localize('paradis.limitsSetup.finishDiscardDuplicate', "削除を完了")
-			: localize('paradis.limitsSetup.discardDuplicate', "新規ホームをゴミ箱へ移動");
+			: this.duplicateViaRemote
+				? localize('paradis.limitsSetup.discardDuplicatePermanent', "新規ホームを完全に削除")
+				: localize('paradis.limitsSetup.discardDuplicate', "新規ホームをゴミ箱へ移動");
 		this.setDuplicateResolving(this.resolvingDuplicate);
 	}
 
