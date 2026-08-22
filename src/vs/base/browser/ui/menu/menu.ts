@@ -420,6 +420,11 @@ export class Menu extends ActionBar {
 				enableMnemonics: options.enableMnemonics,
 				useEventAsContext: options.useEventAsContext,
 				keybinding: keybindingLabel,
+				// PARA-PATCH (Para Code): upstream drops action.class entirely for normal HTML
+				// menu items, which makes per-item styling (e.g. the workspace list's color dots)
+				// impossible. Opt in to icon rendering only for actions that explicitly mark
+				// themselves with the 'paradis-menu-icon' class so all other menus are unaffected.
+				icon: !!action.class?.includes('paradis-menu-icon'),
 			};
 
 			const menuActionViewItem = new BaseMenuActionViewItem(options.context, action, menuItemOptions, this.menuStyles);
