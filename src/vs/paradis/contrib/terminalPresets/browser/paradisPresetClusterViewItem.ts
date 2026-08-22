@@ -170,7 +170,8 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		this.collapsedWrap = undefined;
 		this.closeScheduler = undefined;
 
-		const pinned = this.presetService.presets.filter(preset => preset.pinned !== false && !preset.locallyHidden);
+		// hosts 条件が現在の接続先と一致しないプリセット（envInactive）はタブバーにも出さない。
+		const pinned = this.presetService.presets.filter(preset => preset.pinned !== false && !preset.locallyHidden && !preset.envInactive);
 		if (pinned.length === 0) {
 			container.style.display = 'none';
 			this.groupCount = 0;

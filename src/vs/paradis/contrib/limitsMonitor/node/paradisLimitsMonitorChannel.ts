@@ -40,6 +40,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsCodexRemovalTarget,
@@ -199,6 +200,9 @@ export class ParadisLimitsMonitorService {
 		// 使わないので、無ければ既定の解決に任せる。
 		configurationService?: IConfigurationService,
 		args?: NativeParsedArgs,
+		// Codex ホーム探索・削除のテストで実ホームディレクトリに触れずに済むようにするための注入点。
+		// 本番は既定の os.homedir のまま。
+		private readonly _homedir: () => string = os.homedir,
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -355,7 +359,7 @@ export class ParadisLimitsMonitorService {
 
 	private async discoverCodexHomes(extraHomes: readonly string[] | undefined): Promise<string[]> {
 		const homes = new Set<string>();
-		const home = os.homedir();
+		const home = this._homedir();
 		let entries: string[] = [];
 		try {
 			entries = await fs.promises.readdir(home);
@@ -386,13 +390,13 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private codexHomeLabel(homePath: string): string {
-		const home = os.homedir();
+		const home = this._homedir();
 		return homePath.startsWith(home) ? `~${homePath.slice(home.length)}` : homePath;
 	}
 
 	private async isRemovableCodexHome(homePath: string): Promise<boolean> {
 		try {
-			const resolvedHome = path.resolve(os.homedir());
+			const resolvedHome = path.resolve(this._homedir());
 			const resolvedCandidate = path.resolve(homePath);
 			if (path.dirname(resolvedCandidate) !== resolvedHome) {
 				return false;
@@ -421,6 +425,23 @@ export class ParadisLimitsMonitorService {
 			throw new Error('Codex home is not removable');
 		}
 		return { homePath: resolved };
+	}
+
+	/**
+	 * 検証済みの Codex ホームを、このチャネルを提供しているマシン側で完全に削除する。
+	 *
+	 * 検証と削除を同じプロセス（=同じマシン）で完結させるのが要点。renderer 側で
+	 * 「検証は routed channel（SSH 中はリモート）、削除は URI.file() + fileService.del（常に
+	 * ローカル）」と分離すると、絶対パスが一致した別マシンのディレクトリを手元のゴミ箱へ
+	 * 移動してしまう（データ消失）。
+	 *
+	 * ゴミ箱への移動は Electron main プロセスの機能のため REH からは使えない（upstream も
+	 * リモートの削除は永久削除）。対象は ~/.codex-2 以降の検証済みホームのみであり、
+	 * 既定の ~/.codex は決して消えない。
+	 */
+	async removeCodexHome(homePath: string): Promise<void> {
+		const resolved = (await this.validateCodexHomeRemoval(homePath)).homePath;
+		await fs.promises.rm(resolved, { recursive: true });
 	}
 
 	private async readCodexIdentity(homePath: string): Promise<{ accountId?: string; email?: string }> {
@@ -695,7 +716,15 @@ export class ParadisLimitsMonitorService {
 
 		const command = await this.resolveCommand('codex', undefined);
 		const env = { ...await this.getExecEnv(), CODEX_HOME: homePath };
-		const child = cp.spawn(command, ['login'], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
+		// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
+		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['login']) : undefined;
+		const child = cp.spawn(shimInvocation?.file ?? command, shimInvocation?.args ?? ['login'], {
+			env,
+			stdio: ['ignore', 'pipe', 'pipe'],
+			windowsHide: true,
+			windowsVerbatimArguments: shimInvocation !== undefined,
+		});
 		let output = '';
 		const onData = (chunk: Buffer) => {
 			output += chunk.toString('utf8');
@@ -803,8 +832,10 @@ export class ParadisLimitsMonitorService {
 		}
 		// Windowsのnode-pty(ConPTY)はfileをそのままCreateProcessWへ渡すため、npmが
 		// 生成する.cmdシムを直接起動できない(起動失敗)。cmd.exe /c経由にラップして解決する。
-		// 通常のchild_process系はlibuvが.cmd/.batを検知してcmd.exe経由に切り替えるため
-		// この問題が起きない(resolveCommand/canExecuteが成功と判定するのはこのため)。
+		// 注意: 通常のchild_process系は旧Nodeがlibuv経由で.cmd/.batを検知してcmd.exeへ
+		// 自動委譲していたが、この挙動はCVE-2024-27980対策で撤去済みであり、現行Nodeでは
+		// shell指定なしのspawn自体がEINVALになる。child_process系は各呼び出し口で
+		// paradisWrapWindowsScriptShim による明示的なcmd.exeラップを行うこと。
 		// /cの引数はcmdが自前の"/"クォート規則で再解釈するため、args文字列側をもう一重
 		// 丸ごとクォートしないと(/s指定でも)外側のクォートが剥がれてパス中の空白で壊れる
 		// (Node.jsのchild_process内部が同じ組み立てを行っている実装に合わせた)
@@ -921,7 +952,7 @@ export class ParadisLimitsMonitorService {
 			throw new Error('setup session is not waiting for a duplicate-account decision');
 		}
 		if (decision === 'discard' && await this.fileExists(session.codexHomePath)) {
-			throw new Error('Codex home must be moved to the trash before discarding the duplicate account');
+			throw new Error('Codex home must be removed before discarding the duplicate account');
 		}
 		this.snapshotCache = undefined;
 		this.rpcFailureAt.delete(session.codexHomePath);
@@ -984,11 +1015,15 @@ export class ParadisLimitsMonitorService {
 	private execFile(command: string, args: string[], options: { timeoutMs: number; stdin?: string }): Promise<string> {
 		return new Promise<string>((resolve, reject) => {
 			this.getExecEnv().then(env => {
-				const child = cp.execFile(command, args, {
+				// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
+				// (shell 指定なしの execFile は CVE-2024-27980 対策後の Node では EINVAL になる)。
+				const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
+				const child = cp.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
 					encoding: 'utf8',
 					timeout: options.timeoutMs,
 					maxBuffer: 16 * 1024 * 1024,
 					windowsHide: true,
+					windowsVerbatimArguments: shimInvocation !== undefined,
 					env: { ...env, NO_COLOR: '1' },
 				}, (err, stdout, stderr) => {
 					if (err) {
@@ -1040,8 +1075,11 @@ export class ParadisLimitsMonitorService {
 
 	private async canExecute(command: string): Promise<boolean> {
 		const env = await this.getExecEnv();
+		// .cmd シム候補も EINVAL ではなく実際の終了コードで判定できるよう、
+		// 実行時と同じ cmd.exe ラップを通す。
+		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['--version']) : undefined;
 		return new Promise<boolean>(resolve => {
-			cp.execFile(command, ['--version'], { timeout: 10_000, windowsHide: true, env }, err => resolve(!err));
+			cp.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { timeout: 10_000, windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, err => resolve(!err));
 		});
 	}
 
@@ -1067,10 +1105,15 @@ class ParadisCodexRpcSession extends Disposable {
 
 	constructor(command: string, env: NodeJS.ProcessEnv, logService: ILogService) {
 		super();
-		this.child = cp.spawn(command, ['-s', 'read-only', '-a', 'untrusted', 'app-server'], {
+		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
+		// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
+		const args = ['-s', 'read-only', '-a', 'untrusted', 'app-server'];
+		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
+		this.child = cp.spawn(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
 			env,
 			stdio: ['pipe', 'pipe', 'pipe'],
 			windowsHide: true,
+			windowsVerbatimArguments: shimInvocation !== undefined,
 		});
 		this.child.stdout?.on('data', (chunk: Buffer) => this.onStdout(chunk));
 		this.child.stderr?.on('data', (chunk: Buffer) => {
@@ -1168,6 +1211,7 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 				Array.isArray(args[1]) ? args[1].filter((entry): entry is string => typeof entry === 'string') : undefined,
 			) as Promise<T>;
 			case 'validateCodexHomeRemoval': return this.service.validateCodexHomeRemoval(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			case 'removeCodexHome': return this.service.removeCodexHome(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
 			case 'startClaudeSetup': return this.service.startClaudeSetup(typeof args[0] === 'number' ? args[0] : undefined) as Promise<T>;
 			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
