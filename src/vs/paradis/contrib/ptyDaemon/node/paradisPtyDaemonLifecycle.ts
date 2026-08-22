@@ -27,7 +27,6 @@ import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IPtyService } from '../../../../platform/terminal/common/terminal.js';
 import { IParadisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
 import { IParadisPtyDaemonControl, IParadisPtyDaemonDescription, PARADIS_PTY_DAEMON_AUTH_CHANNEL, PARADIS_PTY_DAEMON_CONTROL_CHANNEL } from '../common/paradisPtyDaemonControl.js';
 import { ParadisPtyDaemonAuth, paradisCreateDaemonToken } from './paradisPtyDaemonAuth.js';
@@ -49,21 +48,25 @@ export interface IParadisPtyDaemonLifecycleOptions {
 	readonly env: IParadisPtyDaemonEnv;
 	readonly connections: IParadisDaemonConnections;
 	/**
-	 * 常駐が抱えているものを数える相手。
+	 * いま抱えているものを数える。**繋がっているものも含めて数えること。**
 	 *
-	 * `paradisListHeldTerminals` は `PtyService` の fork 追加分 (upstream の `listProcesses` は
-	 * 繋がっていないものしか返さない)。無い場合に備えて任意にしてあるが、実際には
-	 * `ptyHostMain.ts` が実体を渡すので必ず在る。
-	 *
+	 * 関数で受けるのは、常駐が2種類あるため。`IPtyService` を丸ごと持つ古い形と、pty だけを
+	 * 持つ薄い形とで数え方が違うが、**寿命の決め方は同じ**なので、違いはここ1点に閉じ込める。
 	 * ポーリング (ステータス表示と idle 判定) が必要なのは workspaceName だけなので、
-	 * 軽量版の `paradisListHeldWorkspaceNames` を優先する。完全版は端末ごとに getCwd (macOS は
-	 * lsof 起動) と orphan 判定 (最大4秒のバリア) を実行するため、定期ポーリングには過剰。
+	 * `IPtyService` を渡す側 (`ptyHostMain.ts`) は端末ごとに getCwd/orphan 判定まで行う完全版
+	 * ではなく、軽量な `paradisListHeldWorkspaceNames` を渡す。
 	 */
-	readonly ptyService: IPtyService & {
-		paradisListHeldTerminals?(): Promise<{ workspaceName: string }[]>;
-		paradisListHeldWorkspaceNames?(): Promise<{ workspaceName: string }[]>;
-	};
+	readonly heldTerminals: () => Promise<readonly { readonly workspaceName: string }[]>;
 	readonly logService: ILogService;
+	/**
+	 * 終わる前に、抱えているものを片付ける。
+	 *
+	 * **これが無いと、握り潰すプロセスが孤児として残る。** ふつうは master fd が閉じた時点で
+	 * SIGHUP が飛んで子も終わるが、`nohup` されたものや自分でハンドラを持つものは残る。
+	 * 常駐を止めたのに走り続け、しかも誰からも見えない状態になるので、明示的に片付ける。
+	 */
+	readonly releaseHeld?: () => void;
+
 	/** 終わるときに呼ぶ。既定は `process.exit`。テストでは差し替える。 */
 	readonly exit?: () => void;
 	readonly now?: () => number;
@@ -134,9 +137,9 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 
 	/** 自分について答える。繋がった時点で身元は証明されているので、確認ではなく表示のため。 */
 	async describe(): Promise<IParadisPtyDaemonDescription> {
-		let terminals: { workspaceName: string }[] = [];
+		let terminals: readonly { readonly workspaceName: string }[] = [];
 		try {
-			terminals = await this.heldTerminals();
+			terminals = await this.options.heldTerminals();
 		} catch {
 			// 数えられないなら 0 とは言わずに…と言いたいところだが、ここは表示専用なので
 			// 空を返して構わない。判断に使う `checkIdle` は別で、そちらは数えられないと動かない。
@@ -149,28 +152,13 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 		};
 	}
 
-	/**
-	 * 抱えているターミナル。**繋がっているものも含める。**
-	 *
-	 * 軽量版 (`paradisListHeldWorkspaceNames`) を優先する。`listProcesses()` へ落ちるのは、
-	 * fork の追加分がどちらも無い相手を渡された場合だけ。そのときは繋がっていないものしか
-	 * 数えられないが、何も数えられないよりはよい。
-	 */
-	private async heldTerminals(): Promise<{ workspaceName: string }[]> {
-		const pty = this.options.ptyService;
-		if (pty.paradisListHeldWorkspaceNames) {
-			return pty.paradisListHeldWorkspaceNames();
-		}
-		return pty.paradisListHeldTerminals ? pty.paradisListHeldTerminals() : pty.listProcesses();
-	}
-
 	private async checkIdle(): Promise<void> {
 		if (this.exiting) {
 			return;
 		}
 		let terminalCount: number;
 		try {
-			terminalCount = (await this.heldTerminals()).length;
+			terminalCount = (await this.options.heldTerminals()).length;
 		} catch (error) {
 			// 数えられないなら、抱えているものが分からないということ。分からないまま終わらない。
 			this.options.logService.warn('[ParadisPtyDaemon] could not count terminals', error);
@@ -203,6 +191,13 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 			await fs.unlink(this.options.env.socketPath);
 		} catch {
 			// Windows の名前付きパイプには実体が無い。unix でも既に消えていることがある。
+		}
+		// **終わる前に抱えているものを片付ける。** ここを飛ばすと、SIGHUP を握り潰すプロセスは
+		// 常駐が消えた後も走り続け、誰からも見えない孤児になる。
+		try {
+			this.options.releaseHeld?.();
+		} catch (error) {
+			this.options.logService.warn('[ParadisPtyDaemon] could not release what it was holding', error);
 		}
 		this.dispose();
 		(this.options.exit ?? (() => process.exit(0)))();

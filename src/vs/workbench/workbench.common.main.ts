@@ -229,6 +229,7 @@ import './contrib/speech/browser/speech.contribution.js';
 // Chat
 import './contrib/chat/browser/chat.shared.contribution.js';
 import './contrib/chat/browser/chat.contribution.js';
+import './contrib/chat/browser/agentSessions/agentHost/agentHost.contribution.js';
 import './contrib/chat/browser/chat.view.contribution.js';
 import './contrib/inlineChat/browser/inlineChat.contribution.js';
 
@@ -340,8 +341,8 @@ import './contrib/externalTerminal/browser/externalTerminal.contribution.js';
 // Relauncher
 import './contrib/relauncher/browser/relauncher.contribution.js';
 
-// Style Overrides (experimental)
-import './contrib/styleOverrides/browser/styleOverrides.contribution.js';
+// Modern UI (experimental)
+import './contrib/modernUI/browser/modernUI.contribution.js';
 
 // Tasks
 import './contrib/tasks/browser/task.contribution.js';
