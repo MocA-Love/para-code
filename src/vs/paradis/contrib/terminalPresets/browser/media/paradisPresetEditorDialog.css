@@ -114,6 +114,94 @@
 	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
 }
 
+/* hosts 条件が現在の接続先と一致しない行（このウィンドウでは非表示）。消さずに薄く見せて、
+	編集だけはできる状態を保つ。実行ボタンは個別に disabled になる。 */
+.paradis-preset-editor-dialog .ppe-row.dim {
+	opacity: 0.55;
+}
+
+/* 「このウィンドウでは非表示」バッジ。点線で「一時的な状態」であることを示す。 */
+.paradis-preset-editor-dialog .ppe-badge.inactive-warn {
+	background: transparent;
+	border: 1px dashed var(--vscode-editorWarning-foreground, var(--vscode-widget-border));
+	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
+/* ---------- 実行環境（hosts 条件）: ホストチップ入力 ---------- */
+
+.paradis-preset-editor-dialog .ppe-host-chips {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	margin-top: 2px;
+}
+
+/* リモート未チェック時。触っても効かないことを視覚でも示す。 */
+.paradis-preset-editor-dialog .ppe-host-chips.disabled {
+	opacity: 0.45;
+}
+.paradis-preset-editor-dialog .ppe-host-chips.disabled .ppe-chips-row,
+.paradis-preset-editor-dialog .ppe-host-chips.disabled .ppe-chip-x {
+	pointer-events: none;
+}
+
+.paradis-preset-editor-dialog .ppe-chips-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 5px;
+	min-height: 28px;
+	padding: 3px 4px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+}
+
+.paradis-preset-editor-dialog .ppe-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+	line-height: 1.4;
+	padding: 1px 4px 1px 8px;
+	border-radius: 10px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	background: var(--vscode-editorWidget-background, transparent);
+	color: var(--vscode-foreground);
+	max-width: 220px;
+}
+
+.paradis-preset-editor-dialog .ppe-chip {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-preset-editor-dialog .ppe-chip-x {
+	background: transparent;
+	border: none;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	font-size: 11px;
+	padding: 0 3px;
+	flex-shrink: 0;
+	font-family: inherit;
+}
+
+.paradis-preset-editor-dialog .ppe-chip-x:hover {
+	color: var(--vscode-foreground);
+}
+
+.paradis-preset-editor-dialog .ppe-chip-input {
+	flex: 1;
+	min-width: 120px;
+	background: transparent !important;
+	border: none !important;
+	padding: 2px 4px !important;
+	font-family: var(--monaco-monospace-font);
+	font-size: 12px;
+}
+
 .paradis-preset-editor-dialog .ppe-row-detail {
 	color: var(--vscode-descriptionForeground);
 	font-size: 11px;

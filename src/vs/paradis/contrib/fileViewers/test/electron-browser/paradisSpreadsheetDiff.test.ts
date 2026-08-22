@@ -48,6 +48,37 @@ function lineShape(extra: Partial<IParadisRenderShape> = {}): IParadisRenderShap
 suite('paradisSpreadsheetDiff', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('propagates the truncation flag when either side is truncated', () => {
+		const original = sheet([cell('a')]);
+		const modifiedTruncated: IParadisSheetData = { ...sheet([cell('b')]), truncated: true };
+
+		const [diff] = buildDiffSheets([original], [modifiedTruncated]);
+		ok(diff.truncated, 'truncation on the modified side must surface in the diff sheet');
+
+		const originalTruncated: IParadisSheetData = { ...sheet([cell('a')]), truncated: true };
+		const [diff2] = buildDiffSheets([originalTruncated], [sheet([cell('a')])]);
+		ok(diff2.truncated, 'truncation on the original side must surface too');
+
+		const [diff3] = buildDiffSheets([sheet([cell('a')])], [sheet([cell('a')])]);
+		strictEqual(diff3.truncated, undefined);
+	});
+
+	test('marks added sheets and their rows as truncated when needed', () => {
+		const added: IParadisSheetData = { ...sheet([cell('new')]), name: 'NewSheet', truncated: true };
+		const [diff] = buildDiffSheets([], [added]);
+
+		strictEqual(diff.sheetStatus, 'added');
+		ok(diff.truncated);
+	});
+
+	test('marks removed sheets as truncated when the original was truncated', () => {
+		const removed: IParadisSheetData = { ...sheet([cell('old')]), name: 'GoneSheet', truncated: true };
+		const [diff] = buildDiffSheets([removed], []);
+
+		strictEqual(diff.sheetStatus, 'removed');
+		ok(diff.truncated);
+	});
+
 	test('marks style-only cell changes and records hover details', () => {
 		const original = sheet([
 			cell('Total', { fontFamily: "'Calibri', sans-serif", fontSize: '11pt', textAlign: 'left' }),
