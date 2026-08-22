@@ -37,7 +37,13 @@ export default function ArchiveScreen() {
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
 	})));
 
-	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t)));
+	// **rows は useMemo で安定させる。** filter は毎レンダー新配列になるので、素のままだと
+	// 下の headerSpec の useMemo が毎回切れて層への spec 登録（useEffect）が再送のたびに走る。
+	// `workspace?.terminals` は構造共有で中身が同じ間は同じ参照が据え置かれ、archivedKeys も
+	// 値が変わったときだけ新 Set になる（appState の setArchived）ため、deps の浅い比較が効く。
+	const rows = useMemo(
+		() => (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))),
+		[workspace?.terminals, archivedKeys]);
 	const resolveWs = (terminal: { ws?: string }) =>
 		(workspace?.workspaces ?? []).find(w => w.id === (terminal.ws ?? workspace?.activeWs));
 

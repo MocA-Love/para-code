@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	IParadisGithubCallEvent,
 	paradisCoerceGithubCallEvent,
 	paradisGithubCallSiteFromArgs,
 	paradisGithubFormatCountdown,
@@ -224,6 +225,32 @@ suite('ParadisGithubMetrics', () => {
 		// callSiteは長さ上限で切り詰められる
 		const longCallSite = paradisCoerceGithubCallEvent({ at: 1, callSite: 'x'.repeat(500), resource: 'core', durationMs: 1, success: true, rateLimited: false });
 		assert.strictEqual(longCallSite?.callSite.length, 200);
+
+		// worktreePathも長さ上限で切り詰められる
+		const longWorktree = paradisCoerceGithubCallEvent({ at: 1, callSite: 'x', resource: 'core', durationMs: 1, success: true, rateLimited: false, worktreePath: `/w/${'b'.repeat(500)}` });
+		assert.strictEqual(longWorktree?.worktreePath?.length, 200);
+	});
+
+	test('caps the per-call-site worktree breakdown and truncates same-process long paths', () => {
+		const now = 10_000_000;
+		const log = new ParadisGithubCallLog(now - 3_600_000);
+		const event = (worktreePath: string): IParadisGithubCallEvent => ({ at: now, callSite: 'gh pr view', resource: 'core', durationMs: 10, success: true, rateLimited: false, worktreePath });
+		for (let i = 0; i < 250; i++) {
+			log.record(event(`/w/site-${i}`));
+		}
+		// 上限(200)到達後の新規パスは内訳に載らないが、既存パスの再カウントは生きる
+		log.record(event('/w/site-7'));
+		log.record(event('/w/site-7'));
+		log.record(event('/w/after-cap'));
+
+		const prView = log.snapshot(now).operations.find(operation => operation.callSite === 'gh pr view');
+		assert.strictEqual(prView?.session.calls, 253);
+		assert.strictEqual(prView?.topWorktreePath, '/w/site-7');
+
+		// record 直呼び（同一プロセス）でも長いパスは lastErrors 向けに丸められる
+		log.record({ at: now, callSite: 'gh other', resource: 'core', durationMs: 1, success: false, rateLimited: false, errorMessage: 'boom', worktreePath: `/w/${'c'.repeat(500)}` });
+		const [lastError] = log.snapshot(now).lastErrors;
+		assert.strictEqual(lastError.worktreePath?.length, 200);
 	});
 
 	test('derives consumption and exhaustion estimates from rate limit samples', () => {

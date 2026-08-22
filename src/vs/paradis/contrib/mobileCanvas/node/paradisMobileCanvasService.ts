@@ -150,16 +150,49 @@ const TOOLS: IParadisMcpToolDefinition[] = [
 	},
 ];
 
+/** アタッチがアイドル扱いになるまでの時間。ウィンドウを閉じたペインの幽霊行を掃除するためのもの。 */
+const PARADIS_MOBILE_ATTACHMENT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+/** アイドルアタッチの掃除周期。 */
+const PARADIS_MOBILE_ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * 台帳1件分。attachment に加えて最終利用時刻を持ち、MCPツール経由の実利用でのみ更新される
+ * （snapshot/list のUI表示では更新しない: 表示しているだけで使っていないペインは掃除対象にする）。
+ */
+interface ILedgerEntry {
+	readonly attachment: IParadisMobileAttachment;
+	lastActiveAt: number;
+}
+
 export class ParadisMobileCanvasService extends Disposable implements IParadisMcpToolProvider {
 
 	/** ペイントークン → アタッチ内容。1ペインにつき同時に1台まで。 */
-	private readonly _attachments = new Map<string, IParadisMobileAttachment>();
+	private readonly _attachments = new Map<string, ILedgerEntry>();
 
 	constructor(
 		private readonly _hostClient: ParadisMobileCanvasHostClient,
 		private readonly _logService: ILogService,
 	) {
 		super();
+		// アタッチ台帳の定期掃除。renderer 側は「自分のウィンドウで実際に消えたトークン」しか
+		// detach しないため、ウィンドウごと閉じられたペインのエントリは誰にも解除されず
+		// shared process 寿命分残る（UIには「別のペインが使用中」の幽霊行として映る）。
+		// 実利用（MCPツール呼び出し）がないまま TTL を過ぎたエントリを自前で落とす。
+		const sweepTimer = setInterval(() => this._sweepIdleAttachments(), PARADIS_MOBILE_ATTACHMENT_SWEEP_INTERVAL_MS);
+		// 掃除だけで shared process を起こし続けないようにする（mobileRelayService と同じ手当て。
+		// キャストは dom/node の setInterval 型衝突を避けるため）。
+		(sweepTimer as unknown as NodeJS.Timeout).unref();
+		this._register({ dispose: () => clearInterval(sweepTimer) });
+	}
+
+	private _sweepIdleAttachments(): void {
+		const cutoff = Date.now() - PARADIS_MOBILE_ATTACHMENT_IDLE_TTL_MS;
+		for (const [paneToken, entry] of [...this._attachments]) {
+			if (entry.lastActiveAt < cutoff) {
+				this._attachments.delete(paneToken);
+				this._logService.info(`[paradis-mobile-canvas] dropped an idle attachment (idle since ${new Date(entry.lastActiveAt).toISOString()})`);
+			}
+		}
 	}
 
 	// --- アタッチ台帳（renderer のアタッチUIから IPC 経由で操作される） ---
@@ -169,7 +202,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	 * 例外にせず `unavailableReason` を載せて返し、UIが理由を出せるようにする。
 	 */
 	async getSnapshot(signal?: AbortSignal): Promise<IParadisMobileCanvasSnapshot> {
-		const attachments = [...this._attachments.values()];
+		const attachments = [...this._attachments.values()].map(entry => entry.attachment);
 		try {
 			return { devices: await this._listDevices(signal), attachments };
 		} catch (error) {
@@ -198,7 +231,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			stateKey,
 			attachedAt: Date.now(),
 		};
-		this._attachments.set(paneToken, attachment);
+		this._attachments.set(paneToken, { attachment, lastActiveAt: attachment.attachedAt });
 		this._logService.info(`[paradis-mobile-canvas] attached ${device.name} to a terminal pane`);
 		return attachment;
 	}
@@ -212,7 +245,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 
 	/** 現在のアタッチ一覧（UIの表示用）。 */
 	listAttachments(): readonly IParadisMobileAttachment[] {
-		return [...this._attachments.values()];
+		return [...this._attachments.values()].map(entry => entry.attachment);
 	}
 
 	// --- MCPツールプロバイダ ---
@@ -239,7 +272,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	private async _callTool(paneToken: string, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
 		if (name === 'mobile_list_devices') {
 			const devices = await this._listDevices(signal);
-			const attached = this._attachments.get(paneToken);
+			const attached = this._attachments.get(paneToken)?.attachment;
+			this._touchLedgerEntry(paneToken);
 			return jsonResult({
 				devices: devices.map(device => ({ ...device, attachedToThisPane: device.id === attached?.deviceId })),
 				attachedToThisPane: attached ? { deviceId: attached.deviceId, name: attached.deviceName } : null,
@@ -366,11 +400,20 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	}
 
 	private _requireAttachment(paneToken: string): IParadisMobileAttachment {
-		const attachment = this._attachments.get(paneToken);
-		if (!attachment) {
+		this._touchLedgerEntry(paneToken);
+		const entry = this._attachments.get(paneToken);
+		if (!entry) {
 			throw new Error('No mobile device is attached to this terminal pane. Ask the user to attach one from Para Code (the "Mobile Devices" tab of the sharing dialog), then try again.');
 		}
-		return attachment;
+		return entry.attachment;
+	}
+
+	/** MCPツール経由の実利用として台帳の最終利用時刻を更新する（idle TTL の起算点）。 */
+	private _touchLedgerEntry(paneToken: string): void {
+		const entry = this._attachments.get(paneToken);
+		if (entry) {
+			entry.lastActiveAt = Date.now();
+		}
 	}
 
 	private async _listDevices(signal?: AbortSignal): Promise<IParadisMobileDevice[]> {

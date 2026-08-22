@@ -196,10 +196,41 @@
 	font-size: 12px;
 }
 
+.paradis-spreadsheet-diff-toolbar-left {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+}
+
 .paradis-spreadsheet-diff-toolbar-right {
 	display: flex;
 	align-items: center;
 	gap: 12px;
+}
+
+/* allow-any-unicode-next-line */
+/* 差分色の凡例(追加/削除/変更)。Word 差分(paradisDocxDiff.css)と同じ語彙・スウォッチ。 */
+.paradis-spreadsheet-diff-legend {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #616161);
+	white-space: nowrap;
+}
+
+.paradis-spreadsheet-diff-legend-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.paradis-spreadsheet-diff-legend-swatch {
+	width: 9px;
+	height: 9px;
+	border-radius: 2px;
+	flex: 0 0 auto;
 }
 
 .paradis-spreadsheet-validation-filter {
@@ -266,7 +297,17 @@
 
 .paradis-spreadsheet-diff-body {
 	display: flex;
+	flex-direction: column;
 	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* allow-any-unicode-next-line */
+/* ペイン+入力規則インスペクタの横並び。打ち切り通知帯はこの下(縦方向)に置く。 */
+.paradis-spreadsheet-diff-main {
+	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
 	min-height: 0;
 }
 

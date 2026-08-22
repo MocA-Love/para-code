@@ -12,8 +12,9 @@
 // ルール:
 // - 通知音: いずれかの音声チャネルがビジーなら「捨てる」。通知音自体は情報を持たないので、
 //   2つ目を無音でスキップしても安全（重ねない・切断しない）。
-// - Aivis: FIFOキューで発話を絶対に失わない。PermissionRequest（要対応）は待機中の Stop（完了）より
-//   前に割り込むが、再生中の発話は中断しない。
+// - Aivis: FIFOキューで発話を処理する。PermissionRequest（要対応）は待機中の Stop（完了）より
+//   前に割り込むが、再生中の発話は中断しない。ただし待機キューには上限があり、超過した
+//   normal は捨てられる（high を受け入れるために最古の normal が追い出されることもある）。
 // - レート制限: Aivis Cloud は X-Aivis-RateLimit-Requests-* ヘッダーを返す。Remaining が 0 になったら
 //   429 を踏む前に Reset + 0.5s 待ってから次のリクエストを送る。
 // - エラーポリシー:
@@ -94,6 +95,12 @@ export interface AudioSchedulerDeps {
 	 * スケジューラは再生をあきらめて次の Aivis タスクへ進む（aivisBusy の張り付きを防ぐ）。既定 30s。
 	 */
 	aivisPlaySafetyTimeoutMs?: number;
+	/**
+	 * 待機キューの上限。通知爆発×レート制限滞留の組合せでキュー（テキスト+APIキーを capture した
+	 * クロージャ）が単調増加しないようにする。超過時は normal を落とし、high は最も古い normal を
+	 * 追い出して割り込む。既定 20。
+	 */
+	maxQueuedAivisTasks?: number;
 }
 
 const MAX_RETRY_ATTEMPTS = 3;
@@ -106,6 +113,9 @@ const RINGTONE_SAFETY_TIMEOUT_MS = 30_000;
 // 発話音声1件として十分長く、正常な再生（通常は数秒）が誤って打ち切られることはない一方、
 // OS の再生プロセス（afplay 等）がハングしてもこの期限で必ずキューが前進する。
 const AIVIS_PLAY_SAFETY_TIMEOUT_MS = 30_000;
+// 待機キューの上限。発話1件は数秒〜数十秒の再生を伴うため、この値でもバックログとしては
+// 十分に長い。上限なしだと通知爆発×レート制限滞留でメモリと読み上げ遅延が単調増加する。
+const MAX_AIVIS_QUEUE_SIZE = 20;
 
 function defaultSleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -171,6 +181,19 @@ export class AudioScheduler {
 
 	enqueueAivis(runner: AivisTaskRunner, priority: AivisPriority = 'normal'): void {
 		if (this.disposed || this.paused) { return; }
+		const max = Math.max(1, this.deps.maxQueuedAivisTasks ?? MAX_AIVIS_QUEUE_SIZE);
+		if (this.queue.length >= max) {
+			if (priority === 'high') {
+				// 要対応の通知は可能な限り生かす。最も古い normal を追い出して割り込む
+				// （normal が1件もなければ最も古いエントリを追い出す=新しめの要対応を優先）。
+				const oldestNormal = this.queue.findIndex(e => e.priority === 'normal');
+				this.queue.splice(oldestNormal >= 0 ? oldestNormal : 0, 1);
+				this.deps.logInfo?.('[audio-scheduler] evicted a queued Aivis task to admit a high-priority one');
+			} else {
+				this.deps.logInfo?.('[audio-scheduler] dropped a normal-priority Aivis task because the queue is full');
+				return;
+			}
+		}
 		const entry: QueueEntry = { priority, runner };
 		if (priority === 'high') {
 			const firstNormal = this.queue.findIndex(e => e.priority === 'normal');
