@@ -165,6 +165,19 @@ export default function GithubUsageScreen() {
 	// 画面を開いたままでもリセットまでのカウントダウンが進むよう、取得時刻ではなく現在時刻を使う
 	const now = useNow();
 
+	// **actions は参照を安定させる。** インライン JSX のままだと毎レンダー新しい要素になり、
+	// ScreenHeader 内の headerRight→options が毎回切れてバーの全項目付け替えが走る。
+	// screenHeader.tsx は自ら「参照を安定させる」と明言しており、呼び出し側がそれを崩していた形
+	// （deps は useCallback 済みの onPullRefresh とプリミティブだけ）。
+	const headerActions = useMemo(() => (
+		<HeaderCircleButton
+			icon="refresh-outline"
+			label="再取得"
+			onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+			disabled={pullRefreshing || loading}
+		/>
+	), [onPullRefresh, pullRefreshing, loading]);
+
 	return (
 		<ConnectionGate>
 			<View style={styles.screen}>
@@ -174,14 +187,7 @@ export default function GithubUsageScreen() {
 					// 「どのウィンドウ（ローカル/SSHリモート）から見ても同じ値」になる。接続先セグメントは
 					// 出さず、その旨をここで明示する。
 					subtitle="PC全体の値です"
-					actions={
-						<HeaderCircleButton
-							icon="refresh-outline"
-							label="再取得"
-							onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
-							disabled={pullRefreshing || loading}
-						/>
-					}
+					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
 				<ScrollView

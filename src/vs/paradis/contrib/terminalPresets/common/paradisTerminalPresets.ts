@@ -17,6 +17,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { GeneralShellType, ITerminalEnvironment, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
+import { paradisSshHostFromAuthority } from '../../../common/paradisHostPath.js';
 
 /** ワークスペースフォルダ直下で認識する設定ファイル名。 */
 export const PARADIS_WORKSPACE_PRESET_FILE = '.paracode.json';
@@ -31,6 +32,21 @@ export const PARADIS_PROJECT_ROOT_ENV_VAR = 'PARACODE_PROJECT_ROOT_PATH';
 
 /** 設定キー（ユーザーレベルのプリセット定義）。 */
 export const PARADIS_PRESETS_SETTING = 'paradis.terminal.presets';
+
+/**
+ * hosts 条件の特殊値: SSH 未接続（ローカル）のウィンドウでのみ有効。
+ * ホスト名との衝突は受け入れる——`local` という名前の SSH ホストを「hosts: ["local"]」で
+ * 指した場合もローカル扱いになるが、その運用は設定側でホスト別名を変えて避ける。
+ */
+export const PARADIS_PRESET_HOST_LOCAL = 'local';
+
+/**
+ * hosts 条件の特殊値: リモート接続中ならどのホストでも有効。
+ *
+ * SSH 以外の接続先（WSL・devcontainer 等）も含む——条件の実体は「未接続でない」ことであって、
+ * 接続方式は問わない。「SSH」という呼び名は主な利用形態に合わせたもの。
+ */
+export const PARADIS_PRESET_HOST_REMOTE = 'remote';
 
 /**
  * プリセットの起動モード（旧形式）。
@@ -102,6 +118,20 @@ export interface IParadisPresetDefinition {
 	 * フォルダ名（basename）または絶対パスで指定。未指定は全リポジトリで有効。
 	 */
 	readonly appliesTo?: readonly string[];
+	/**
+	 * このプリセットを有効にする実行環境（接続先マシン）の条件。複数指定は OR、
+	 * {@link IParadisPresetDefinition.appliesTo} とは AND。未指定はどこでも有効。
+	 *
+	 * 値は次のいずれか:
+	 *   - {@link PARADIS_PRESET_HOST_LOCAL}（"local"）: SSH 未接続のウィンドウで有効
+	 *   - {@link PARADIS_PRESET_HOST_REMOTE}（"remote"）: SSH 接続中ならどのホストでも有効
+	 *   - それ以外: ~/.ssh/config の Host エントリ名（authority `ssh-remote+<host>` の後半）と
+	 *     大小文字を無視して比較し、一致する接続先のウィンドウでのみ有効
+	 *
+	 * appliesTo と違い .paracode.json 側でも意味を持つ——同じリポジトリを手元と SSH 先の両方に
+	 * clone している構成では、リポジトリ名やパスの一致では両者を区別できないため。
+	 */
+	readonly hosts?: readonly string[];
 }
 
 /** プリセットの保存元。 */
@@ -129,6 +159,16 @@ export interface IParadisResolvedPreset extends IParadisPresetDefinition {
 	 * 台帳へ記録する。
 	 */
 	readonly locallyHidden?: boolean;
+	/**
+	 * hosts 条件（{@link IParadisPresetDefinition.hosts}）が現在のウィンドウの接続先と
+	 * 一致しないことを示す計算値。定義そのものには存在しないフィールドで、設定には書き込まれない。
+	 *
+	 * appliesTo と違い、この条件は「同一設定を別ウィンドウで見たときの差」なので、条件不一致でも
+	 * 管理ダイアログからは消さない——完全に消すと「SSH 先でしか出ないプリセット」を手元から
+	 * 編集する手段が失われる。代わりにタブバー・QuickPick・モバイル・autoRun といった
+	 * **実行の入り口側で `envInactive` を除外し**、ダイアログでは薄表示＋実行不可で示す。
+	 */
+	readonly envInactive?: boolean;
 }
 
 /** プリセット実行時に呼び出し側が指定できる一時的な実行条件。 */
@@ -307,6 +347,7 @@ export function paradisPresetFingerprint(definition: IParadisPresetDefinition, o
 		// リポジトリレベルでは appliesTo は読み込み時に捨てられる（そのリポジトリ自体が対象）。
 		// 解決済みの側には残っていないので、突き合わせからも外す。
 		options?.ignoreAppliesTo ? [] : definition.appliesTo?.map(entry => entry.trim()) ?? [],
+		definition.hosts?.map(entry => entry.trim()) ?? [],
 		(definition.folder ?? '').trim(),
 		definition.pinned !== false,
 		definition.pinnedLabel === true,
@@ -314,6 +355,55 @@ export function paradisPresetFingerprint(definition: IParadisPresetDefinition, o
 		layout,
 		tasks.map(task => [task.name ?? '', task.cwd ?? '', task.commands]),
 	]);
+}
+
+/**
+ * hosts 条件を人間向けの短い語に整える（同名区別語・実行不可の説明など表示共用）。
+ * 特殊値は表示語へ、それ以外はホスト名そのもの。重複は除去する。
+ */
+export function paradisPresetHostsLabel(hosts: readonly string[] | undefined): string | undefined {
+	const entries = (hosts ?? []).map(entry => entry.trim()).filter(entry => entry.length > 0);
+	if (entries.length === 0) {
+		return undefined;
+	}
+	const labels = entries.map(host => {
+		if (host === PARADIS_PRESET_HOST_LOCAL) {
+			// allow-any-unicode-next-line
+			return localize('paradis.presetHostQualifier.local', "ローカル");
+		}
+		if (host === PARADIS_PRESET_HOST_REMOTE) {
+			// allow-any-unicode-next-line
+			return localize('paradis.presetHostQualifier.remote', "リモート");
+		}
+		return host;
+	});
+	const unique = [...new Set(labels)];
+	return unique.length > 0 ? unique.join(', ') : undefined;
+}
+
+/**
+ * hosts 条件（{@link IParadisPresetDefinition.hosts}）が現在の接続先と一致するか。
+ *
+ * @param currentAuthority 現在のウィンドウの remote authority。未接続（ローカル）なら undefined
+ *   （`environmentService.remoteAuthority` は未接続で空文字になるため呼び出し側で空を落とす）。
+ *   接続先は 1 ウィンドウにつき 1 つで起動後に変わらないため、再評価は設定変更時だけで足りる。
+ */
+export function paradisPresetHostsMatch(hosts: readonly string[] | undefined, currentAuthority: string | undefined): boolean {
+	const entries = (hosts ?? []).map(entry => entry.trim()).filter(entry => entry.length > 0);
+	if (entries.length === 0) {
+		return true;
+	}
+	const sshHost = paradisSshHostFromAuthority(currentAuthority)?.toLowerCase();
+	return entries.some(entry => {
+		if (entry === PARADIS_PRESET_HOST_LOCAL) {
+			return !currentAuthority;
+		}
+		if (entry === PARADIS_PRESET_HOST_REMOTE) {
+			return !!currentAuthority;
+		}
+		// 特定ホスト名。ssh-remote 以外の接続先（devcontainer 等）にはホスト名が無いので不一致。
+		return !!sshHost && entry.toLowerCase() === sshHost;
+	});
 }
 
 /**
@@ -353,6 +443,12 @@ export function paradisPresetQualifier(preset: IParadisResolvedPreset): string |
 	const appliesTo = preset.appliesTo?.map(entry => entry.trim()).filter(entry => entry.length > 0) ?? [];
 	if (appliesTo.length > 0) {
 		return appliesTo.map(lastSegment).join(', ');
+	}
+	// hosts 条件は「このプリセットを他と分けている値」の筆頭。同名が「ローカル用 / gpu-node01 用」
+	// と並ぶとき、その違いをここで短い語にして見せる。
+	const hostsLabel = paradisPresetHostsLabel(preset.hosts);
+	if (hostsLabel) {
+		return hostsLabel;
 	}
 	const folder = preset.folder?.trim();
 	if (folder) {
@@ -503,6 +599,7 @@ export function paradisFindPresetNameConflict(definition: IParadisPresetDefiniti
 	// ここでは「見分けに使える値」を全部並べた合成キーで比較する——1つでも違えば区別できる。
 	const distinctnessKeyOf = (candidate: IParadisPresetDefinition): string => JSON.stringify([
 		(candidate.appliesTo ?? []).map(entry => entry.trim()).filter(entry => entry.length > 0).sort(),
+		(candidate.hosts ?? []).map(entry => entry.trim()).filter(entry => entry.length > 0).sort(),
 		(candidate.folder ?? '').trim(),
 		(candidate.cwd ?? '').trim(),
 		[...new Set(paradisGetPresetTasks(candidate).tasks.map(task => task.cwd?.trim()).filter((cwd): cwd is string => !!cwd))].sort(),
@@ -535,6 +632,11 @@ function isValidCommandList(value: unknown): value is readonly string[] {
 		&& value.every(command => typeof command === 'string' && command.trim().length > 0);
 }
 
+/** hosts 条件の 1 エントリ。特殊値（local/remote）か、空でないホスト名の文字列。 */
+function isValidHostEntry(value: unknown): value is string {
+	return typeof value === 'string' && value.trim().length > 0;
+}
+
 function isValidPresetTask(value: unknown): value is IParadisPresetTask {
 	if (!value || typeof value !== 'object') {
 		return false;
@@ -555,6 +657,9 @@ export function isValidPresetDefinition(value: unknown): value is IParadisPreset
 		return false;
 	}
 	if (candidate.folder !== undefined && candidate.folder !== null && typeof candidate.folder !== 'string') {
+		return false;
+	}
+	if (candidate.hosts !== undefined && (!Array.isArray(candidate.hosts) || !candidate.hosts.every(isValidHostEntry))) {
 		return false;
 	}
 	if (Array.isArray(candidate.tasks)) {
