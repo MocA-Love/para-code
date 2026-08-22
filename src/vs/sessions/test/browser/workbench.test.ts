@@ -10,6 +10,7 @@ import { Part } from '../../../workbench/browser/part.js';
 import { IPartVisibilityChangeEvent, Parts } from '../../../workbench/services/layout/browser/layoutService.js';
 import { DockedAuxiliaryBarController, IDockedAuxiliaryBarHost } from '../../browser/dockedAuxiliaryBarController.js';
 import { ISidePaneToggleEvent, Workbench } from '../../browser/workbench.js';
+import { MobileNavigationLayer } from '../../browser/mobileNavigationStack.js';
 import { DockedEditorSizeMemento, SinglePaneWorkbench } from '../../browser/singlePaneWorkbench.js';
 import { SinglePaneMainEditorPart } from '../../browser/parts/singlePaneEditorPart.js';
 import { DockedEditorInput } from '../../common/dockedEditorInput.js';
@@ -62,6 +63,7 @@ suite('Sessions - Workbench', () => {
 	const applyCustomViewGridVisibility = Reflect.get(Workbench.prototype, '_applyCustomViewGridVisibility') as (this: ITestWorkbench, descriptor: object | undefined) => void;
 	const setSessionsHidden = Reflect.get(Workbench.prototype, 'setSessionsHidden') as (this: ITestWorkbench, hidden: boolean) => void;
 	const setPanelHidden = Reflect.get(Workbench.prototype, 'setPanelHidden') as (this: ITestWorkbench, hidden: boolean) => void;
+	const handleMobileNavPop = Reflect.get(Workbench.prototype, 'handleMobileNavPop') as (this: ITestWorkbench, layer: MobileNavigationLayer) => void;
 	const updateMobileCustomViewNavigation = Reflect.get(Workbench.prototype, '_updateMobileCustomViewNavigation') as (this: ITestWorkbench) => void;
 	const isVisible = Workbench.prototype.isVisible as (this: ITestWorkbench, part: Parts) => boolean;
 	const toggleSecondarySideBar = Workbench.prototype.toggleSecondarySideBar as (this: ITestWorkbench) => void;
@@ -2749,5 +2751,41 @@ suite('Sessions - Workbench', () => {
 		savePartVisibility.call(workbench);
 
 		assert.strictEqual(storeCalled, false);
+	});
+
+	// --- Mobile nav stack pop routing ---------------------------------------
+
+	function createMobileNavPopHost(viewportClass: 'phone' | 'tablet' | 'desktop') {
+		const calls: string[] = [];
+		const host = {
+			layoutPolicy: { viewportClass: { get: () => viewportClass } },
+			closeMobileSidebarDrawer: () => { calls.push('sidebar'); },
+			setPanelHidden: (hidden: boolean) => { calls.push(`panel:${hidden}`); },
+			setAuxiliaryBarHidden: (hidden: boolean) => { calls.push(`auxbar:${hidden}`); },
+			customViewService: { hideCustomView: () => { calls.push('customView'); } },
+		};
+		return { host, calls };
+	}
+
+	test('handleMobileNavPop ignores a stale pop outside phone layout', () => {
+		// A drawer/back-button pop surviving a rotation into desktop/tablet
+		// must not close the desktop sidebar it never opened.
+		const { host, calls } = createMobileNavPopHost('desktop');
+
+		for (const layer of ['sidebar', 'panel', 'auxbar', 'customView', 'editor'] as MobileNavigationLayer[]) {
+			handleMobileNavPop.call(host as unknown as ITestWorkbench, layer);
+		}
+
+		assert.deepStrictEqual(calls, []);
+	});
+
+	test('handleMobileNavPop routes each layer to its part while phone layout is active', () => {
+		const { host, calls } = createMobileNavPopHost('phone');
+
+		for (const layer of ['sidebar', 'panel', 'auxbar', 'customView', 'editor'] as MobileNavigationLayer[]) {
+			handleMobileNavPop.call(host as unknown as ITestWorkbench, layer);
+		}
+
+		assert.deepStrictEqual(calls, ['sidebar', 'panel:true', 'auxbar:true', 'customView']);
 	});
 });

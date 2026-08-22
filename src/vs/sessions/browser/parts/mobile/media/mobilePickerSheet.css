@@ -232,6 +232,8 @@
 .mobile-picker-sheet-list {
 	flex: 1 1 auto;
 	overflow-y: auto;
+	/* Keep the page behind from scrolling along when the list hits its edge. */
+	overscroll-behavior: contain;
 	-webkit-overflow-scrolling: touch;
 	padding: 4px 8px 12px;
 }

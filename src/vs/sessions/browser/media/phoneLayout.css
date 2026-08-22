@@ -76,6 +76,16 @@
 	width: auto !important;
 }
 
+.agent-sessions-workbench.phone-layout .notifications-center {
+	/* The inline `top: 40px` set by applySessionsNotificationOffsets sits under the
+	 * notch / Dynamic Island on phones; only toasts had an override so far. */
+	left: 8px !important;
+	right: 8px !important;
+	bottom: auto !important;
+	top: calc(env(safe-area-inset-top) + 48px) !important;
+	width: auto !important;
+}
+
 .agent-sessions-workbench.phone-layout .notifications-toasts .notification-toast {
 	width: 100%;
 	max-width: 100%;

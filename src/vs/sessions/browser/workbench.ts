@@ -9,12 +9,12 @@ import './media/workbench.css';
 import './media/phoneLayout.css';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { Emitter, Event, setGlobalLeakWarningThreshold } from '../../base/common/event.js';
-import { addDisposableGenericMouseDownListener, addDisposableListener, EventType, getActiveDocument, getActiveElement, getClientArea, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, size, Dimension, runWhenWindowIdle } from '../../base/browser/dom.js';
+import { addDisposableGenericMouseDownListener, addDisposableListener, EventType, getActiveDocument, getActiveElement, getClientArea, getWindow, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, scheduleAtNextAnimationFrame, size, Dimension, runWhenWindowIdle } from '../../base/browser/dom.js';
 import { DeferredPromise, RunOnceScheduler } from '../../base/common/async.js';
 import { isFullscreen, onDidChangeFullscreen, isChrome, isFirefox, isSafari } from '../../base/browser/browser.js';
 import { mark } from '../../base/common/performance.js';
 import { onUnexpectedError, setUnexpectedErrorHandler } from '../../base/common/errors.js';
-import { isWindows, isLinux, isWeb, isNative, isMacintosh } from '../../base/common/platform.js';
+import { isWindows, isLinux, isWeb, isNative, isMacintosh, isIOS, isMobile } from '../../base/common/platform.js';
 import { Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW_PARTS, MULTI_WINDOW_PARTS, IPartVisibilityChangeEvent, positionToString } from '../../workbench/services/layout/browser/layoutService.js';
 import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.js';
 import { Part } from '../../workbench/browser/part.js';
@@ -75,7 +75,7 @@ import {
 } from '../../workbench/common/notifications.js';
 import { SessionsLayoutPolicy } from './layoutPolicy.js';
 import { AGENTS_PART_CARD_CLASS } from './parts/agentsPartCard.js';
-import { MobileNavigationStack } from './mobileNavigationStack.js';
+import { MobileNavigationLayer, MobileNavigationStack } from './mobileNavigationStack.js';
 import { MobileTitlebarPart } from './parts/mobile/mobileTitlebarPart.js';
 import { IMobileVisualViewport } from './parts/mobile/mobileVisualViewport.js';
 import { autorun } from '../../base/common/observable.js';
@@ -613,7 +613,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// resolving it here is what triggers its constructor —
 				// the registry hands ownership/disposal to the
 				// instantiation service so we don't `_register` it.
-				accessor.get(IMobileVisualViewport);
+				this.mobileVisualViewport = accessor.get(IMobileVisualViewport);
 
 				// Orientation changes produce a window `resize` event which
 				// is already handled by `registerLayoutListeners()`. No
@@ -622,6 +622,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 				// Register Listeners
 				this.registerListeners(lifecycleService, storageService, configurationService, hostService, dialogService);
+
+				// Register layout listeners. Must run **after** the visual viewport
+				// service is resolved above — the subscription below reads
+				// `this.mobileVisualViewport`, and initLayout (which calls this
+				// historically) runs earlier in start().
+				this.registerLayoutListeners();
 
 				// Render Workbench
 				this.renderWorkbench(instantiationService, notificationService, storageService, configurationService);
@@ -1239,9 +1245,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Resolve the single-pane layout mode once (reload to toggle).
 		this.layoutPolicy.setSinglePane(this.isSinglePaneLayoutEnabled);
 
-		// Register layout listeners
-		this.registerLayoutListeners();
-
 		// A custom view replaces the sessions grid (and the editor, side panel and
 		// bottom panel) for as long as it is shown.
 		this._customViewVisibleKey = CustomViewVisibleContext.bindTo(accessor.get(IContextKeyService));
@@ -1503,6 +1506,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	//#endregion
 
+	/**
+	 * Visual viewport tracking (iOS URL bar / virtual keyboard). Resolved
+	 * during `start()` and subscribed to in {@link registerLayoutListeners}.
+	 */
+	private mobileVisualViewport!: IMobileVisualViewport;
+
 	private registerLayoutListeners(): void {
 		// Fullscreen changes
 		this._register(onDidChangeFullscreen(windowId => {
@@ -1516,6 +1525,30 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Window resize — needed for device emulation and mobile viewport changes
 		const onWindowResize = () => this.layout();
 		this._register(addDisposableListener(mainWindow, 'resize', onWindowResize));
+
+		// Visual viewport changes (iOS Safari URL bar collapse, virtual
+		// keyboard) do not fire a window resize. `getClientArea` already reads
+		// the visual viewport on iOS, so re-running layout() here keeps the
+		// grid — and everything anchored to it (chat input, quick pick) — in
+		// sync with the actually visible area.
+		//
+		// Mobile platforms only: desktop browsers also have a visualViewport,
+		// and subscribing there would double-layout every window resize
+		// alongside the plain resize listener above (and re-layout every frame
+		// during pinch zoom).
+		if (isMobile || isIOS) {
+			let viewportLayoutScheduled = false;
+			this._register(this.mobileVisualViewport.onDidChangeVisualViewport(() => {
+				if (!this.workbenchGrid || viewportLayoutScheduled) {
+					return;
+				}
+				viewportLayoutScheduled = true;
+				scheduleAtNextAnimationFrame(getWindow(this.mainContainer), () => {
+					viewportLayoutScheduled = false;
+					this.layout();
+				});
+			}));
+		}
 	}
 
 	private updateFullscreenClass(): void {
@@ -1617,25 +1650,33 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 
 		// Wire up mobile nav stack: back-button pops close the corresponding part
-		this._register(this.mobileNavStack.onDidPop(layer => {
-			switch (layer) {
-				case 'sidebar':
-					this.closeMobileSidebarDrawer();
-					break;
-				case 'panel':
-					this.setPanelHidden(true);
-					break;
-				case 'auxbar':
-					this.setAuxiliaryBarHidden(true);
-					break;
-				case 'customView':
-					this.customViewService.hideCustomView();
-					break;
-				case 'editor':
-					// Editor modal close is handled by the editor service
-					break;
-			}
-		}));
+		this._register(this.mobileNavStack.onDidPop(layer => this.handleMobileNavPop(layer)));
+	}
+
+	private handleMobileNavPop(layer: MobileNavigationLayer): void {
+		// Drawer/back-button pops only make sense while the phone layout is
+		// active; a stale entry surviving a rotation must not close the
+		// desktop sidebar.
+		if (this.layoutPolicy.viewportClass.get() !== 'phone') {
+			return;
+		}
+		switch (layer) {
+			case 'sidebar':
+				this.closeMobileSidebarDrawer();
+				break;
+			case 'panel':
+				this.setPanelHidden(true);
+				break;
+			case 'auxbar':
+				this.setAuxiliaryBarHidden(true);
+				break;
+			case 'customView':
+				this.customViewService.hideCustomView();
+				break;
+			case 'editor':
+				// Editor modal close is handled by the editor service
+				break;
+		}
 	}
 
 	createWorkbenchManagement(instantiationService: IInstantiationService): void {
@@ -1838,6 +1879,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// Remove mobile components when leaving phone layout
 				this.mobileTopBarDisposables.clear();
 				this.mobileTopBarElement = undefined;
+				// Drop the drawer's history entry. Leaving it behind made a later
+				// back gesture close the desktop sidebar that had never been opened.
+				if (this.mobileNavStack.has('sidebar')) {
+					this.mobileNavStack.popSilently('sidebar');
+				}
 				// Restore titlebar in grid
 				this.workbenchGrid.setViewVisible(this.titleBarPartView, true);
 				// Restore desktop part visibility

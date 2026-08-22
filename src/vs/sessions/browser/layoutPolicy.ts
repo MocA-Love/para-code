@@ -36,8 +36,14 @@ const TABLET_MAX_WIDTH = 1024;
  * Whether the current platform is a phone/tablet OS. The phone layout is
  * only applied on actual mobile devices so that resizing a desktop window
  * below 640px does not switch the agents workbench into phone mode.
+ *
+ * iPadOS Safari reports a desktop-like "Macintosh" UA without "Mobi", so
+ * `isMobile` alone never matches there. Fold in `isIOS` (Macintosh UA +
+ * maxTouchPoints>1) so iPads get tablet/phone classification; the iPad's
+ * minimum width (768pt) is above PHONE_MAX_WIDTH, so normal use stays
+ * `tablet` and only narrow Split View panes become `phone`.
  */
-const isMobilePlatform = isMobile;
+const isMobilePlatform = isMobile || isIOS;
 
 /**
  * Classifies the viewport into one of three classes based on width.

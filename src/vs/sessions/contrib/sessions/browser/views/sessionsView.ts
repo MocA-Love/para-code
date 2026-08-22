@@ -277,7 +277,7 @@ export class SessionsView extends ViewPane {
 		// Mobile filter chips (phone layout only) — created after sessionsControl
 		// so we can wire it as the filter host.
 		if (filterChipsContainer) {
-			const chips = this._register(new MobileSessionFilterChips(filterChipsContainer, sessionsControl));
+			const chips = this._register(this.instantiationService.createInstance(MobileSessionFilterChips, filterChipsContainer, sessionsControl));
 			this._register(chips.onDidRequestSortGroup(() => {
 				this.openSortGroupSheet();
 			}));
