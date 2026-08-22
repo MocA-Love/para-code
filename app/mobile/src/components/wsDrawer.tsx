@@ -175,7 +175,9 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 	}, []);
 	useEffect(() => {
 		if (locked && openRef.current) {
-			ref.current?.closeDrawer();
+			// 幅がしきい値を跨いで regular へ切り替わった直後は、中身が null になった空の板が
+			// ばね（約200ms）で戻るのが見えるため、ほぼ即時で閉じる。
+			ref.current?.closeDrawer({ animationSpeed: 80 });
 		}
 	}, [locked]);
 
