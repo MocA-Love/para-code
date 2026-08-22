@@ -19,6 +19,8 @@ import { buildMarkdownHtml } from './fileViewer.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
+import { guardWebViewNavigation } from './webViewLinkGuard.js';
+import { parseUnifiedDiff } from './diffParser.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 
 interface DiffViewProps {
@@ -45,54 +47,7 @@ function currentRendererTarget(ws: string): string | undefined {
 		: undefined;
 }
 
-type DiffRowKind = 'hunk' | 'add' | 'del' | 'ctx';
 type ViewMode = 'diff' | 'render';
-
-interface DiffRow {
-	kind: DiffRowKind;
-	oldNo?: number;
-	newNo?: number;
-	text: string;
-}
-
-/** unified diff を表示行の配列にパースする（ファイルヘッダ行は省く）。 */
-export function parseUnifiedDiff(diff: string): DiffRow[] {
-	const rows: DiffRow[] = [];
-	let oldNo = 0;
-	let newNo = 0;
-	for (const line of diff.split('\n')) {
-		if (line.startsWith('@@')) {
-			const m = line.match(/^@@ -(?<oldStart>\d+)(?:,\d+)? \+(?<newStart>\d+)(?:,\d+)? @@(?<rest>.*)$/);
-			if (m?.groups) {
-				oldNo = parseInt(m.groups.oldStart ?? '1', 10);
-				newNo = parseInt(m.groups.newStart ?? '1', 10);
-				rows.push({ kind: 'hunk', text: line });
-			}
-		} else if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') || line.startsWith('rename ') || line.startsWith('Binary files') || line.startsWith('\\')) {
-			// ファイルメタ情報はビューアのヘッダで代替する（Binary等は文脈行として出さない）
-			if (line.startsWith('Binary files')) {
-				rows.push({ kind: 'hunk', text: line });
-			}
-		} else if (line.startsWith('+')) {
-			// 未追跡ファイルの擬似diff（全行+でハンク見出しなし）は1行目から数える
-			if (newNo === 0) {
-				newNo = 1;
-			}
-			rows.push({ kind: 'add', newNo: newNo++, text: line.slice(1) });
-		} else if (line.startsWith('-')) {
-			if (oldNo === 0) {
-				oldNo = 1;
-			}
-			rows.push({ kind: 'del', oldNo: oldNo++, text: line.slice(1) });
-		} else if (line.startsWith(' ') || line === '') {
-			// ハンク開始前の空行などは無視（ハンク内の文脈行のみ番号を進める）
-			if (oldNo > 0 || newNo > 0) {
-				rows.push({ kind: 'ctx', oldNo: oldNo++, newNo: newNo++, text: line.slice(1) });
-			}
-		}
-	}
-	return rows;
-}
 
 export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewProps) {
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
@@ -285,6 +240,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 						source={{ html: showWebView }}
 						originWhitelist={['*']}
 						javaScriptEnabled={isDiffViewerJavaScriptEnabled(kind)}
+						onShouldStartLoadWithRequest={guardWebViewNavigation}
 					/>
 				) : loading && !error ? (
 					<Text style={styles.dim}>読み込み中…</Text>
@@ -333,7 +289,10 @@ const styles = StyleSheet.create({
 	segmentBtnActive: { backgroundColor: 'rgba(9,175,217,.25)' },
 	segmentText: { color: colors.textDim, fontSize: 12 },
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
-	web: { flex: 1 },
+	// WKWebView は初回ペイント前の既定背景が不透明白のため、開いた瞬間に白フラッシュする。
+	// fileViewer と同じく alpha 1.0 の backgroundColor を指定して初回ペイント前も暗く保つ
+	// （screen の地色 #0d1117 に揃える）。
+	web: { flex: 1, backgroundColor: '#0d1117' },
 	error: { color: colors.red, fontSize: 12, paddingHorizontal: 16, paddingVertical: 8 },
 	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
 	body: { flex: 1 },

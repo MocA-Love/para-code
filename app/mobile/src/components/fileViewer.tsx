@@ -19,6 +19,7 @@ import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
+import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 
 interface FileViewerProps {
@@ -389,7 +390,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 			originWhitelist={['*']}
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
-			opaque={false}
+			onShouldStartLoadWithRequest={guardWebViewNavigation}
 		/>
 	);
 }
@@ -547,7 +548,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						source={{ html }}
 						originWhitelist={['*']}
 						javaScriptEnabled={allowJs}
-						opaque={false}
+						onShouldStartLoadWithRequest={guardWebViewNavigation}
 					/>
 				) : (
 					<View style={styles.loadingBox}>
@@ -573,7 +574,8 @@ const styles = StyleSheet.create({
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
 	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
 	// WKWebView は初回ペイント前の既定背景が不透明白のため、開いた瞬間に白フラッシュする。
-	// opaque={false}（Androidでは無視される）とこの背景色で初回ペイント前もダーク面が見えるようにする。
+	// alpha 1.0 の backgroundColor を指定するとネイティブ側が WKWebView 自体を opaque 化して
+	// 背景色を適用するため、初回ペイント前もダーク面が見える（opaque prop には効果が無い）。
 	web: { flex: 1, backgroundColor: colors.bg },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
 	loadingBox: { alignItems: 'center', gap: 8, marginTop: 24 },

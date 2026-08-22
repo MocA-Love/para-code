@@ -21,6 +21,7 @@ import {
 import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
 import { type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
 import { HomeAgentRow, type HomeAgentRowHandlers } from '../../src/components/homeAgentRow.js';
+import { closeOpenedSwipeRow } from '../../src/components/swipeRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
@@ -388,9 +389,12 @@ export default function HomeScreen() {
 
 	return (
 		<ConnectionGate><GestureDetector gesture={openDrawerPan}><View style={styles.screen}>
+			{/* スクロールし始めたら開きっぱなしのスワイプ行を畳む。開いたままのアクションカードは
+			    「押し忘れ」であり、その近くを狙ったタップがカードの即時実行を踏み得る。 */}
 			<ScrollView
 				style={styles.scroll}
 				contentContainerStyle={[styles.content, { paddingTop: headerHeight + bandHeight, paddingBottom: tabBarSpacer }]}
+				onScrollBeginDrag={closeOpenedSwipeRow}
 				// 幅の測定はiPad幅のときだけ。iPhoneでは列数が常に1なので測る必要が無く、
 				// onLayoutを付けるとマウント時に無駄な再描画が1回増える。
 				onLayout={regular ? e => setListWidth(e.nativeEvent.layout.width) : undefined}
@@ -435,6 +439,9 @@ export default function HomeScreen() {
 							pinned={pinnedKeys.has(pinKeyForTerminal(t))}
 							agentStatus={t.agentStatus}
 							handlers={rowHandlers}
+							// 長押しメニューが開いている行はスワイプを止める。メニュー成立後に指が
+							// 横へずれると、背面の行だけが動いて浮かせたクローンとズレるため。
+							locked={menu?.target.terminalKey === t.terminalKey}
 						/>
 					);
 				}), columns)}

@@ -50,13 +50,24 @@ export interface SwipeAction {
  * 何もしないと開きっぱなしの行が一覧に散らばる。次を開くとき前のを閉じることで、
  * 画面のどこかに押し忘れたカードが残っている状態を作らない。
  */
-let closeOpenedRow: (() => void) | undefined;
+let openedRowCloser: (() => void) | undefined;
 
-export function SwipeRow({ direction, actions, children }: {
+/**
+ * 開いている行があれば閉じる。スクロール開始（`onScrollBeginDrag`）など、一覧全体の操作の
+ * 契機で呼ぶ。開いたままのアクションカードは「押し忘れ」であり、その近くを狙ったタップが
+ * カードの即時実行（ack/archive）を踏んでしまうため、スクロールし始めたら畳ませる。
+ */
+export function closeOpenedSwipeRow(): void {
+	openedRowCloser?.();
+}
+
+export function SwipeRow({ direction, actions, children, panLocked }: {
 	/** 'left' は指を左へ引く（右側からアクションが出る）。'right' はその逆。 */
 	direction: 'left' | 'right';
 	actions: readonly SwipeAction[];
 	children: ReactNode;
+	/** 長押しメニュー表示中など、この行のPanを一時的に無効化したいときに立てる。 */
+	panLocked?: boolean;
 }) {
 	const dx = useSharedValue(0);
 	const toLeft = direction === 'left';
@@ -71,22 +82,22 @@ export function SwipeRow({ direction, actions, children }: {
 	closeRef.current = close;
 	// 画面から消えるときは台帳からも外す。消えた行の閉じる処理を後から呼ぶと、
 	// 別の行が閉じられないまま残る。
-	useEffect(() => () => { if (closeOpenedRow === closeRef.current) { closeOpenedRow = undefined; } }, []);
+	useEffect(() => () => { if (openedRowCloser === closeRef.current) { openedRowCloser = undefined; } }, []);
 
 	/** 台帳から自分を外す。**自分が登録者のときだけ**外すこと（他の行の記録を消すと、
 	    その行が開いたまま誰にも閉じられなくなる）。 */
 	const unregister = useCallback(() => {
-		if (closeOpenedRow === closeRef.current) {
-			closeOpenedRow = undefined;
+		if (openedRowCloser === closeRef.current) {
+			openedRowCloser = undefined;
 		}
 	}, []);
 
 	const settle = useCallback((next: 'open' | 'closed' | 'full') => {
 		if (next === 'open') {
-			if (closeOpenedRow !== undefined && closeOpenedRow !== closeRef.current) {
-				closeOpenedRow();
+			if (openedRowCloser !== undefined && openedRowCloser !== closeRef.current) {
+				openedRowCloser();
 			}
-			closeOpenedRow = closeRef.current;
+			openedRowCloser = closeRef.current;
 			setOpened(true);
 			hapticSelection();
 			dx.value = withSpring(toLeft ? -openDistance : openDistance, spring.swipe);
@@ -117,6 +128,9 @@ export function SwipeRow({ direction, actions, children }: {
 		// 予約した側が木から外れた後に走ると解放済みの参照を触って落ちる（worklets の
 		// 既知の不具合）。片付けた行はまさにその場で消えるので、ここが最も踏みやすい。
 		.runOnJS(true)
+		// 長押しメニューの表示中は掴まない。メニュー成立後に指が横へずれると、背面の
+		// 行だけが動いて浮かせたクローン（メニュー側で固定描画）とズレるため。
+		.enabled(!panLocked)
 		// 閉じている間はこの向きのときだけ掴む。逆向きは触らないので、ドロワーや縦スクロールを
 		// 妨げない。開いている間だけ両方向を掴んで、引き戻して閉じられるようにする。
 		.activeOffsetX(opened ? [-14, 14] : toLeft ? -14 : 14)
@@ -135,7 +149,14 @@ export function SwipeRow({ direction, actions, children }: {
 				}
 			}
 		})
-		.onEnd(event => {
+		.onEnd((event, success) => {
+			// success=false はシステムに奪われた終了（着信バナー等による CANCELLED）。
+			// 指を離した判断ではないので fullSwipe は発火させない——アーカイブが「押して
+			// もいないのに実行される」より、開いたまま止まるほうが被害が小さい。
+			if (!success) {
+				settle(Math.abs(dx.value) > openDistance * 0.5 ? 'open' : 'closed');
+				return;
+			}
 			const travelled = Math.abs(dx.value);
 			const flung = toLeft ? event.velocityX < -700 : event.velocityX > 700;
 			if (fullSwipeAction !== undefined && travelled >= fullSwipeAt) {
@@ -143,7 +164,7 @@ export function SwipeRow({ direction, actions, children }: {
 				return;
 			}
 			settle(travelled > openDistance * 0.5 || flung ? 'open' : 'closed');
-		}), [dx, startX, passedFull, toLeft, opened, limit, fullSwipeAt, fullSwipeAction, openDistance, settle]);
+		}), [dx, startX, passedFull, toLeft, opened, panLocked, limit, fullSwipeAt, fullSwipeAction, openDistance, settle]);
 
 	const rowStyle = useAnimatedStyle(() => ({ transform: [{ translateX: dx.value }] }));
 	// 引き切ったときに窓いっぱいへ広がる面。ここだけは従来どおり幅そのものを引いた距離に
