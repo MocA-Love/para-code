@@ -22,6 +22,7 @@ import { IBranchProtectionProviderRegistry } from './branchProtection';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
 import { RepositoryCache } from './repositoryCache';
 import { ParadisRepositoryParkingLot } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
+import { selectUnaccountedForParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
 
 class RepositoryPick implements QuickPickItem {
 	@memoize get label(): string {
@@ -506,6 +507,29 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			// (pickRepository, the `git.mergeChanges` and `operationInProgress` contexts,
 			// getRepository) behaves exactly as it did when the repository was disposed here.
 			openRepositoriesToPark.forEach(r => r.park());
+
+			// PARA-PATCH: repositories no folder accounts for were opened by auto-detection
+			// (`onDidChangeVisibleTextEditors`, parent/sibling worktree detection) and upstream used
+			// to keep them fully active forever — recursive watcher, `.git` watcher and auto-fetcher
+			// included — because the park/dispose pass above only ever matched *removed* folders.
+			// Para Code switches spaces by swapping a single folder, so visiting several worktrees
+			// accumulated one live Repository per visited space. Park them too: parking keeps the
+			// instance warm for a fast return (LRU limit 4, eviction disposes) while stopping the
+			// background work, and repos backing currently visible editors stay untouched via the
+			// same active-repositories exclusion as above. A parked repository comes back through
+			// `unparkForFolder` when its space is revisited, or is re-opened by auto-detection the
+			// next time one of its files becomes visible again (default detection settings).
+			// The containment check mirrors `unparkForFolder`'s bidirectional match: a workspace
+			// folder may sit *inside* an ancestor repository (`paradisRepositoryPark.ts`), and
+			// parking that ancestor would fight the unpark on every return trip.
+			const currentFolderPaths = (workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+			const candidatesToPark = this.openRepositories.filter(r => !activeRepositories.has(r.repository));
+			// Compare against rootRealPath too: `git rev-parse --show-toplevel` can disagree with the
+			// workspace folder across symlinks, and parking a repo that a current folder actually
+			// covers would drop it from the SCM view on every switch. See paradisUnaccountedToPark.ts.
+			const unaccountedToPark = selectUnaccountedForParking(candidatesToPark, currentFolderPaths, isDescendant);
+			unaccountedToPark.forEach(r => r.park());
+
 			this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${possibleRepositoryFolders.map(p => p.uri.fsPath).join(', ')}]`);
 			await Promise.all(possibleRepositoryFolders.map(p => this.openRepository(p.uri.fsPath)));
 		}
