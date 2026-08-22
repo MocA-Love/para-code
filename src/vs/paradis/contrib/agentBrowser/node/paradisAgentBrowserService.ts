@@ -2637,19 +2637,39 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._sendIngressRejected(res);
 			return;
 		}
-		const path = this._screenshotHandoff.resolve(token, id);
-		const body = path === undefined ? undefined : await paradisReadScreenshotFile(path);
-		if (path === undefined || body === undefined) {
-			res.writeHead(404, { 'Content-Type': 'application/json' });
-			res.end(JSON.stringify({ error: 'No screenshot is available for that id.' }));
+		// MCP/hook/voice と同じ ingress 枠管理に組み込む。この経路だけ外側だと
+		// server.maxConnections 分の同時 fs.readFile が可能で、AbortSignal も無いため
+		// クライアント切断しても読み込みが最後まで走ってしまう。
+		const ingressReservation = this._reserveIngressRequest(token);
+		if (ingressReservation === undefined) {
+			this._sendIngressCapacityRejected(res);
 			return;
 		}
-		res.writeHead(200, {
-			'Content-Type': paradisScreenshotContentType(path),
-			'Content-Length': body.byteLength,
-			'Cache-Control': 'no-store',
-		});
-		res.end(body);
+		let activeRequest: ReturnType<ParadisAgentBrowserService['_trackActiveRequest']> | undefined;
+		try {
+			activeRequest = this._trackActiveRequest(req, res);
+			const path = this._screenshotHandoff.resolve(token, id);
+			const body = path === undefined ? undefined : await paradisReadScreenshotFile(path, activeRequest.controller.signal);
+			// クライアント切断時は読み込みが signal で止まって undefined になり得る。その場合
+			// レスポンスはもう書けないので、404 と混同せずに静かに諦める。
+			if (activeRequest.controller.signal.aborted) {
+				return;
+			}
+			if (path === undefined || body === undefined) {
+				res.writeHead(404, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ error: 'No screenshot is available for that id.' }));
+				return;
+			}
+			res.writeHead(200, {
+				'Content-Type': paradisScreenshotContentType(path),
+				'Content-Length': body.byteLength,
+				'Cache-Control': 'no-store',
+			});
+			res.end(body);
+		} finally {
+			activeRequest?.dispose();
+			ingressReservation.dispose();
+		}
 	}
 
 	/**
