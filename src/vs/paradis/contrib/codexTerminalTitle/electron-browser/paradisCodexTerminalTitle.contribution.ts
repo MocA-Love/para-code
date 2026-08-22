@@ -15,6 +15,7 @@ import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
+import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -23,8 +24,10 @@ import { ICommandDetectionCapability, ITerminalCommand, TerminalCapability } fro
 import { ITerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisRemoteUserHome } from '../../agentBrowser/common/paradisRemoteUserHome.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -233,6 +236,23 @@ export function createCodexTerminalTitle(prompt: string): string | undefined {
 	// 接頭辞は付けない。ここで作るのがタブに出る唯一の「読めるタイトル」で、`codex | ` は
 	// どのタブにも同じように付くぶん、肝心のタイトルを読みにくくするだけだから。
 	return characters.length > 36 ? `${characters.slice(0, 36).join('')}…` : cleaned;
+}
+
+/**
+ * このウィンドウで Codex 設定を書き込んでよいホームディレクトリ。書き込んではいけない
+ * (接続先の環境がまだ解決できていない)なら undefined。
+ *
+ * `IPathService.userHome()` は接続先の環境が未解決の間、黙って手元のホームを返す
+ * (2026-08-19 のインシデントと同型。paradisRemoteUserHome.ts 参照)。ローカルウィンドウ
+ * (remoteAuthority が undefined)は常に rawHome をそのまま使ってよい。リモートウィンドウは、
+ * rawHome が本当に接続先を指しているときだけ使う。
+ */
+export function resolveWritableCodexHome(remoteAuthority: string | undefined, rawHome: URI): URI | undefined {
+	const remoteHome = paradisRemoteUserHome(remoteAuthority, rawHome);
+	if (remoteHome !== undefined) {
+		return remoteHome;
+	}
+	return remoteAuthority === undefined ? rawHome : undefined;
 }
 
 interface ICodexTerminalRunState {
@@ -535,6 +555,7 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IPathService private readonly pathService: IPathService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this.applySetting();
@@ -558,7 +579,12 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 	}
 
 	private async writeCodexConfig(): Promise<void> {
-		const userHome = await this.pathService.userHome();
+		const rawHome = await this.pathService.userHome();
+		const userHome = resolveWritableCodexHome(this.environmentService.remoteAuthority, rawHome);
+		if (userHome === undefined) {
+			this.logService.warn('[ParadisCodexTerminalTitle] the host home is not resolved yet; skipping the Codex terminal title config update');
+			return;
+		}
 		const codexHome = joinPath(userHome, '.codex');
 		const configFile = joinPath(codexHome, 'config.toml');
 		if (!(await this.fileService.exists(codexHome))) {
