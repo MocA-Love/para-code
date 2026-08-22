@@ -197,10 +197,16 @@ export default function AgentDetailScreen() {
 			.catch(() => undefined);
 		return () => { cancelled = true; };
 	}, [agentToken, connection, pcOnline, sessionProtocolReady, browserTargets]);
-	const openBrowser = () => {
+	// **参照を安定させる。** 素の関数のままだと毎レンダー新しい関数になり、下の headerActions の
+	// useMemo が常に切れて NativeScreenHeader の options 再生成（＝バーの全項目付け替え）が
+	// 遷移のたびに走る。iOS 26 の標準バーは push/pop の開始時点で新旧バー項目の対応付けを
+	// 確定させるため、遷移と同刻の全付け替えはモーフ不発・ボタン消失の原因になる
+	// （経緯は `nativeHeaderItems.tsx` と `screenHeader.tsx` の説明を読むこと）。
+	// deps はプリミティブと安定参照だけ: router は useRouter() の返却値で安定、agentToken は文字列。
+	const openBrowser = useCallback(() => {
 		hapticSelection();
 		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');
-	};
+	}, [router, agentToken]);
 
 	// ヘッダーのタイトルから開く情報シート（名前の変更・スペースのメモ・ピン/アーカイブ/削除）。
 	// それまで名前はホーム長押し、メモはドロワーからしか触れず、会話を読みながらでは手が届かなかった。
