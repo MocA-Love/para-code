@@ -12,6 +12,8 @@ import { EventType } from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { installMobileChipLaneScroll } from './mobileChipLaneScroll.js';
 import { SessionStatus } from '../../../services/sessions/common/session.js';
 
 const $ = DOM.$;
@@ -91,6 +93,8 @@ export class MobileSessionFilterChips extends Disposable {
 	constructor(
 		parent: HTMLElement,
 		private readonly host: IMobileSessionFilterChipHost,
+		// The lane drag helper needs the viewport class (phone only).
+		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 	) {
 		super();
 
@@ -101,6 +105,12 @@ export class MobileSessionFilterChips extends Disposable {
 		this.scrollContainer = DOM.append(this.container, $('.mobile-session-filter-chips-scroll'));
 
 		this.renderChips();
+
+		// The monaco Gesture on every chip swallows touchmove, so the
+		// native horizontal pan never starts and chips beyond the right
+		// edge are unreachable on narrow phones. Reuse the same drag-to-
+		// scroll helper the chat input chip lane uses.
+		this._register(installMobileChipLaneScroll(this.scrollContainer, this.layoutService));
 
 		// Re-sync active state when the list updates (filters may have
 		// changed via the full filter menu or programmatic reset).
