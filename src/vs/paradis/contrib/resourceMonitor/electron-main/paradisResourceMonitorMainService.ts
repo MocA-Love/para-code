@@ -32,8 +32,13 @@ import { captureParadisProcessSnapshot, getParadisSubtreeResources, IParadisProc
 
 /** パネル表示中のポーリング間隔(2秒)より短い鮮度でキャッシュを再利用する。 */
 const ACTIVE_SNAPSHOT_MAX_AGE_MS = 2_500;
-/** 閉じたパネルの5秒ポーリングをwindow間で同じraw世代へ集約する。 */
-const IDLE_SNAPSHOT_MAX_AGE_MS = 5_000;
+/**
+ * 閉じたパネルの5秒ポーリングをwindow間で同じraw世代へ集約する。
+ * JSタイマーは必ずインターバル以上の時間が経ってから発火するため、鮮度をポーリング間隔と
+ * 同じ5秒にすると厳密比較では毎回ミスして ps 全走査が常時走ってしまう。3ポーリング分(15秒)
+ * の窓で集約し、非表示中の収集頻度を実質1/3に抑える(表示中は ACTIVE 側が支配するため影響なし)。
+ */
+const IDLE_SNAPSHOT_MAX_AGE_MS = 15_000;
 /** モバイルのhost resources取得は従来の2.5秒cacheを維持する。 */
 const HOST_RESOURCES_MAX_AGE_MS = 2_500;
 

@@ -2608,9 +2608,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private sendBinaryToMobile(mobileId: Uint8Array, sealed: Uint8Array): boolean {
 		if (this.socket && this.socket.readyState === 1) {
 			const framed = packPcData(mobileId, sealed);
-			// WebSocket.send の型は ArrayBuffer を要求するため、生成済みバッファをそのまま渡す
-			// （packPcData は offset 0 の専有バッファを返す）。
-			this.socket.send(framed.buffer.slice(framed.byteOffset, framed.byteOffset + framed.byteLength) as ArrayBuffer);
+			// WebSocket.send の型は ArrayBuffer を要求する。packPcData は offset 0・全長一致の
+			// 専有バッファを直接構築して返すため、コピーせずそのまま渡せる。
+			this.socket.send(framed.buffer as ArrayBuffer);
 			return true;
 		}
 		return false;
