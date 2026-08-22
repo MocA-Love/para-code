@@ -159,6 +159,32 @@ export interface IByokLmModelInfo {
 	readonly defaultReasoningEffort?: string;
 }
 
+/**
+ * Returns the provider-local selection id used by the agent host. Configured
+ * provider groups remain part of the id so models with the same vendor and
+ * provider-local id do not collide.
+ */
+export function getByokLmSelectionModelId(model: IByokLmModelInfo): string {
+	const vendorPrefix = `${model.vendor}/`;
+	return model.modelIdentifier?.startsWith(vendorPrefix)
+		? model.modelIdentifier.slice(vendorPrefix.length)
+		: model.id;
+}
+
+/** Returns the provider-qualified model id advertised by the agent host. */
+export function getByokLmAgentModelId(model: IByokLmModelInfo): string {
+	return `${model.vendor}/${getByokLmSelectionModelId(model)}`;
+}
+
+/** Resolves BYOK enablement and trace context from synchronized root configuration. */
+export function resolveByokLmEnablement(rootConfigValue: boolean | undefined): { readonly enabled: boolean; readonly trace: string } {
+	const enabled = rootConfigValue === true;
+	return {
+		enabled,
+		trace: `enabled: ${enabled} (root config: ${rootConfigValue ?? 'unset'})`,
+	};
+}
+
 export const IAgentHostByokLmHandler = createDecorator<IAgentHostByokLmHandler>('agentHostByokLmHandler');
 
 /**
