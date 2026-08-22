@@ -47,6 +47,11 @@ export class ParadisLimitsMonitorClient {
 			: this.sharedProcessService.getChannel(PARADIS_LIMITS_MONITOR_CHANNEL);
 	}
 
+	/** 接続先(REH)経由で動作しているか。アカウント削除の確認文言と削除経路の提示に使う。 */
+	get connectedToRemote(): boolean {
+		return this.remoteAgentService.getConnection() !== undefined;
+	}
+
 	private fetchOptions(bypassCache: boolean): IParadisLimitsFetchOptions {
 		const options: { bypassCache?: boolean; cswapPath?: string; codexHomes?: string[] } = {};
 		const cswapPath = this.configurationService.getValue<string>(PARADIS_LIMITS_SETTING_CSWAP_PATH);
@@ -72,8 +77,34 @@ export class ParadisLimitsMonitorClient {
 		return this.channel.call<IParadisLimitsSetupHandle>('startCodexLogin', [existingHome, this.fetchOptions(false).codexHomes]);
 	}
 
-	async moveCodexHomeToTrash(homePath: string): Promise<void> {
-		const target = await this.channel.call<IParadisLimitsCodexRemovalTarget>('validateCodexHomeRemoval', [homePath]);
+	/**
+	 * Codex ホームを検証した上で、そのホームが存在するマシン側から取り除く。
+	 *
+	 * 検証と削除は必ず同じマシンで行う。検証はこのチャネル（SSH 中はリモート）経由なのに
+	 * 対して `URI.file()` + `fileService.del` は常にローカルを指すため、両者を混線させると
+	 * 絶対パスが一致した別マシンのディレクトリを手元のゴミ箱へ移動してしまう（データ消失）。
+	 *
+	 * - ローカル: 検証もゴミ箱への移動も手元で完結する（復元可能）。
+	 * - リモート: 検証も削除も REH 側で完結する。REH にゴミ箱の仕組みはないため完全削除
+	 *   になる（UI 側はその旨を案内する）。
+	 *
+	 * @param expectedViaRemote 呼び出し元がユーザーに提示した経路（ダイアログ表示時点での
+	 * 接続状態）。実行時の接続状態と不一致なら続行しない（fail-closed）。続行すると承認内容と
+	 * 異なるマシンへの削除が走りうる。接続状態はここで一度だけ評価し、以後再評価しない。
+	 */
+	async removeCodexHome(homePath: string, expectedViaRemote: boolean): Promise<void> {
+		const remoteConnection = this.remoteAgentService.getConnection();
+		if ((remoteConnection !== undefined) !== expectedViaRemote) {
+			throw new Error('Codex home removal aborted: the remote connection state changed');
+		}
+		if (remoteConnection) {
+			await remoteConnection.getChannel(PARADIS_LIMITS_MONITOR_CHANNEL).call<void>('removeCodexHome', [homePath]);
+			return;
+		}
+		// this.channel は接続状態を再評価するため、ローカル経路では使わず明示的に
+		// shared process へ出す（1回目の評価と2回目の評価の間で接続が始まると、検証だけ
+		// リモート・削除だけローカルという混線になりうる）。
+		const target = await this.sharedProcessService.getChannel(PARADIS_LIMITS_MONITOR_CHANNEL).call<IParadisLimitsCodexRemovalTarget>('validateCodexHomeRemoval', [homePath]);
 		await this.fileService.del(URI.file(target.homePath), { recursive: true, useTrash: true });
 	}
 

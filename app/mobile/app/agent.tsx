@@ -57,8 +57,18 @@ import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
-		workspace: s.workspace, selectedWs: s.selectedWs,
+	const { terminals, workspaces, activeWs, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
+		// **workspace 本体ではなく部分を購読する。** state 全体の参照は revision が進む限り毎回
+		// 新しくなる（`workspaceIdentity.ts`）ので、本体を選ぶと裏に回った（非フォーカスの）この画面が
+		// PC再送（最大10Hz）のたびに再レンダーし続け、ヘッダー options の再生成＝バーの全項目
+		// 付け替えの発火母数を増やしていた。`terminals` / `workspaces` は構造共有の中身が同じ間は
+		// 同じ参照が据え置かれ、`activeWs` はプリミティブ。useShallow の浅比較が通るのは
+		// 本当に表示に関わる部分が変わったときだけになる（`useRelayHostSelection.ts` と同型）。
+		// `agentChats` はここでは購読しない。理由は下の `chat` 個別購読のコメント参照。
+		terminals: s.workspace?.terminals,
+		workspaces: s.workspace?.workspaces,
+		activeWs: s.workspace?.activeWs,
+		selectedWs: s.selectedWs,
 		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, requestAgentCommandCatalog: s.requestAgentCommandCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
@@ -84,13 +94,13 @@ export default function AgentDetailScreen() {
 
 	// 表示対象: selectedTerminalKey（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
-	const allTerminals = workspace?.terminals ?? [];
-	const wsList = workspace?.workspaces ?? [];
+	const allTerminals = terminals ?? [];
+	const wsList = workspaces ?? [];
 	const effectiveWsId = (selectedWs !== undefined && wsList.some(w => w.id === selectedWs) ? selectedWs : wsList[0]?.id);
 	const activeTerminal = resolveExplicitTerminalSelection(
 		allTerminals,
 		selectedTerminalKey,
-		terminal => (terminal.ws ?? workspace?.activeWs) === effectiveWsId,
+		terminal => (terminal.ws ?? activeWs) === effectiveWsId,
 	);
 	const activeKey = activeTerminal?.terminalKey;
 	// agentChats は **Map本体を購読しない**。emit は更新のたびに新しい Map を作るため、
@@ -169,7 +179,7 @@ export default function AgentDetailScreen() {
 
 	// ヘッダー表示用: このターミナルの所属ワークスペース
 	const agentWs = activeTerminal !== undefined
-		? wsList.find(w => w.id === (activeTerminal.ws ?? workspace?.activeWs))
+		? wsList.find(w => w.id === (activeTerminal.ws ?? activeWs))
 		: undefined;
 
 	// コンポーザーのPRピル用。workspace state はpushごとに丸ごと差し替わり pr も毎回新規
@@ -201,10 +211,16 @@ export default function AgentDetailScreen() {
 			.catch(() => undefined);
 		return () => { cancelled = true; };
 	}, [agentToken, connection, pcOnline, sessionProtocolReady, browserTargets]);
-	const openBrowser = () => {
+	// **参照を安定させる。** 素の関数のままだと毎レンダー新しい関数になり、下の headerActions の
+	// useMemo が常に切れて NativeScreenHeader の options 再生成（＝バーの全項目付け替え）が
+	// 遷移のたびに走る。iOS 26 の標準バーは push/pop の開始時点で新旧バー項目の対応付けを
+	// 確定させるため、遷移と同刻の全付け替えはモーフ不発・ボタン消失の原因になる
+	// （経緯は `nativeHeaderItems.tsx` と `screenHeader.tsx` の説明を読むこと）。
+	// deps はプリミティブと安定参照だけ: router は useRouter() の返却値で安定、agentToken は文字列。
+	const openBrowser = useCallback(() => {
 		hapticSelection();
 		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');
-	};
+	}, [router, agentToken]);
 
 	// ヘッダーのタイトルから開く情報シート（名前の変更・スペースのメモ・ピン/アーカイブ/削除）。
 	// それまで名前はホーム長押し、メモはドロワーからしか触れず、会話を読みながらでは手が届かなかった。
