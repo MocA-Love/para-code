@@ -200,6 +200,9 @@ export class ParadisLimitsMonitorService {
 		// 使わないので、無ければ既定の解決に任せる。
 		configurationService?: IConfigurationService,
 		args?: NativeParsedArgs,
+		// Codex ホーム探索・削除のテストで実ホームディレクトリに触れずに済むようにするための注入点。
+		// 本番は既定の os.homedir のまま。
+		private readonly _homedir: () => string = os.homedir,
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -356,7 +359,7 @@ export class ParadisLimitsMonitorService {
 
 	private async discoverCodexHomes(extraHomes: readonly string[] | undefined): Promise<string[]> {
 		const homes = new Set<string>();
-		const home = os.homedir();
+		const home = this._homedir();
 		let entries: string[] = [];
 		try {
 			entries = await fs.promises.readdir(home);
@@ -387,13 +390,13 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private codexHomeLabel(homePath: string): string {
-		const home = os.homedir();
+		const home = this._homedir();
 		return homePath.startsWith(home) ? `~${homePath.slice(home.length)}` : homePath;
 	}
 
 	private async isRemovableCodexHome(homePath: string): Promise<boolean> {
 		try {
-			const resolvedHome = path.resolve(os.homedir());
+			const resolvedHome = path.resolve(this._homedir());
 			const resolvedCandidate = path.resolve(homePath);
 			if (path.dirname(resolvedCandidate) !== resolvedHome) {
 				return false;
