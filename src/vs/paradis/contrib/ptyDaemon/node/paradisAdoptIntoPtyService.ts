@@ -20,6 +20,9 @@ import { IShellLaunchConfig, ITerminalProcessOptions } from '../../../../platfor
 import { IProcessEnvironment } from '../../../../base/common/platform.js';
 import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { IParadisAdoptedTerminal, paradisAdoptTerminals } from './paradisTerminalAdoption.js';
+import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
+import { paradisDecodeLayout } from './paradisTerminalLayout.js';
+import { IParadisAdoptTarget, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
 
 /** 器を作れる相手。`PtyService` のうち、ここが使う部分だけ。 */
 export interface IParadisAdoptionTarget {
@@ -37,8 +40,9 @@ export interface IParadisAdoptionTarget {
 		workspaceName: string,
 		isReviving?: boolean,
 		rawReviveBuffer?: string,
-		paradisAdoptTarget?: { readonly handle: number; readonly pid: number; readonly title: string },
+		paradisAdoptTarget?: IParadisAdoptTarget,
 	): Promise<number>;
+	setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void>;
 }
 
 /** 預かりものから取り出せた起動時の材料。読めなければ既定へ倒す。 */
@@ -71,6 +75,21 @@ function remainsOf(adopted: IParadisAdoptedTerminal): IParadisLaunchRemains {
 	};
 }
 
+/**
+ * 起動時の場所を文字列にする。
+ *
+ * **`toString()` では足りない。** 預かりものは JSON を往復しているので、`URI` だったものは
+ * ただのオブジェクトに戻っており、`toString()` は `[object Object]` になる。それがそのまま
+ * 「起動時の場所」として画面へ出る。
+ */
+function paradisCwdOf(cwd: unknown): string {
+	if (typeof cwd === 'string') {
+		return cwd;
+	}
+	const revived = cwd as { path?: unknown } | undefined;
+	return typeof revived?.path === 'string' ? revived.path : '';
+}
+
 export interface IParadisAdoptionOutcome {
 	/** 常駐に聞けたか。**空と不明を混ぜない。** */
 	readonly reachable: boolean;
@@ -98,16 +117,14 @@ export async function paradisAdoptIntoPtyService(
 
 	let adopted = 0;
 	let skipped = result.skipped;
+	/** 常駐側の handle と、こちら側で振り直した番号の対応。配置を戻すのに要る。 */
+	const idByHandle = new Map<number, number>();
 	for (const terminal of result.adopted) {
 		const remains = remainsOf(terminal);
 		try {
-			await ptyService.createProcess(
-				{
-					...remains.shellLaunchConfig,
-					// 器の中の直列化に流し込まれる（`isReviving` と組で効く）。
-					initialText: terminal.replay,
-				},
-				remains.shellLaunchConfig.cwd?.toString() ?? '',
+			const id = await ptyService.createProcess(
+				remains.shellLaunchConfig,
+				paradisCwdOf(remains.shellLaunchConfig.cwd),
 				terminal.summary.cols,
 				terminal.summary.rows,
 				'11',
@@ -117,18 +134,19 @@ export async function paradisAdoptIntoPtyService(
 				terminal.metadata.shouldPersist,
 				terminal.metadata.workspaceId,
 				terminal.metadata.workspaceName,
-				// **この2つを渡さないと、引き取った画面が空になる。**
-				//
-				// `initialText` だけでは届かない。あれは `IProcessDetails` に含まれないので、
-				// ウィンドウへ渡る経路に乗らない。器の中の直列化に入れるには、upstream の復元と
-				// 同じ形——「復元である」と「復元の中身」——で渡す必要がある。
-				//
-				// 渡らないと、走っているプロセスには繋がるのに画面だけ真っ白になる。
-				// 「動いてはいる」形の壊れ方で、しかも見た人は出力が無かったと読む。
-				true,
-				terminal.replay,
-				{ handle: terminal.summary.handle, pid: terminal.summary.pid, title: terminal.summary.title },
+				// 復元ではない。**走っているものに繋ぎ直す**ので、画面は繋いだときに常駐から
+				// そのまま流れてくる（器の直列化はそれを受けて埋まる）。
+				undefined,
+				undefined,
+				{
+					handle: terminal.summary.handle,
+					pid: terminal.summary.pid,
+					title: terminal.summary.title,
+					exited: terminal.summary.alive ? undefined : { code: terminal.summary.exitCode },
+				},
 			);
+			idByHandle.set(terminal.summary.handle, id);
+			paradisRememberHandle(id, terminal.summary.handle);
 			adopted++;
 		} catch (error) {
 			// **常駐からは外さない。** こちらが器を作れないというだけで、走っているプロセスを
@@ -138,6 +156,37 @@ export async function paradisAdoptIntoPtyService(
 		}
 	}
 
+	// **配置を戻すまでが引き取り。** 戻さないと、器はできているのに窓が繋ぎに来ないので、
+	// 走っているプロセスはあるのに画面には何も出ない。
+	await paradisRestoreLayouts(ptyService, host, result.adopted, idByHandle, logService);
+
 	logService.info(`[ParadisPtyHost] took over ${adopted} terminal(s) from the daemon${skipped > 0 ? `, left ${skipped} behind` : ''}`);
 	return { reachable: true, adopted, skipped };
+}
+
+/**
+ * 預けておいた配置を、新しい番号で戻す。
+ *
+ * スペースごとに1回。読めなかったものは黙って飛ばす——配置は作り直せるが、走っている
+ * プロセスは作り直せないので、ここで諦めて全体を落とさない。
+ */
+async function paradisRestoreLayouts(
+	ptyService: IParadisAdoptionTarget,
+	host: IParadisPtyHost,
+	adopted: readonly IParadisAdoptedTerminal[],
+	idByHandle: Map<number, number>,
+	logService: ILogService,
+): Promise<void> {
+	const workspaces = new Set(adopted.map(terminal => terminal.metadata.workspaceId).filter(id => id.length > 0));
+	for (const workspaceId of workspaces) {
+		try {
+			const raw = await host.getLayout(workspaceId);
+			const layout = raw === undefined ? undefined : paradisDecodeLayout(raw, handle => idByHandle.get(handle));
+			if (layout) {
+				await ptyService.setTerminalLayoutInfo(layout);
+			}
+		} catch (error) {
+			logService.warn(`[ParadisPtyHost] could not restore the layout for ${workspaceId}`, error);
+		}
+	}
 }

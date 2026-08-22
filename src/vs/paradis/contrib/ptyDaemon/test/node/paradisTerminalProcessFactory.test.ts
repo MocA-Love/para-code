@@ -120,7 +120,7 @@ suite('ParadisTerminalProcessFactory', () => {
 			await paradisCreateTerminalProcess(
 				SHELL, '/', 80, 24, {}, {}, OPTIONS, new NullLogService(), { quality: 'stable' } as IProductService,
 				undefined,
-				{ handle: 1, pid: 2, title: 'zsh' },
+				{ handle: 1, pid: 2, title: 'zsh', exited: undefined },
 			).then(process => disposables.add(process));
 		} catch {
 			threw = true;

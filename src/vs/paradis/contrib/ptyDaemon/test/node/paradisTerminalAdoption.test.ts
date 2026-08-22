@@ -44,9 +44,8 @@ class FakePty implements IParadisPtyProcess {
 	pause(): void { }
 	resume(): void { }
 	emit(data: string): void { this.data.fire(data); }
+	quit(exitCode: number): void { this.exit.fire({ exitCode }); }
 }
-
-const SCROLLBACK_LIMIT = 10 * 1024 * 1024;
 
 suite('ParadisTerminalAdoption', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -126,9 +125,6 @@ suite('ParadisTerminalAdoption', () => {
 				name: adopted.metadata.name,
 				appearance: adopted.metadata.appearance,
 				launch: adopted.metadata.launch,
-				// 閉じている間の出力も含めて、画面を作り直せる。
-				replay: adopted.replay,
-				dropped: adopted.dropped,
 			},
 			{
 				count: 1,
@@ -138,35 +134,26 @@ suite('ParadisTerminalAdoption', () => {
 				workspace: ['ws-1', 'para'],
 				name: 'build',
 				appearance: { icon: 'terminal-bash' }, launch: undefined,
-				replay: '$ npm run build\r\ndone in 12s\r\n',
-				dropped: false,
 			},
 		);
 	});
 
-	test('こぼれていたら黙らない。歯抜けの画面を「出力が無かった」と読ませない', async () => {
+	test('数え上げるだけで繋ぎ直さない。繋ぐのは窓が開きに来たとき1回だけ', async () => {
 		const { host, ptys } = daemon();
 		const handle = (await host.spawn(spawnRequest('{}'))).handle;
 		await host.attach(handle);
 		await host.detach(handle);
+		ptys[0].emit('while nobody was watching\r\n');
 
-		let emitted = 0;
-		while (emitted <= SCROLLBACK_LIMIT) {
-			const chunk = 'x'.repeat(1024 * 1024);
-			ptys[0].emit(chunk);
-			emitted += chunk.length;
-		}
+		await paradisAdoptTerminals(host);
 
-		const adopted = (await paradisAdoptTerminals(host)).adopted[0];
+		// ここで繋いでしまうと、(1) 器が繋ぐときに控えが二重に流れ、(2) 見る人が現れる前に
+		// 「見られている」状態になって、誰も ack しないまま高水位で pty が止まる。
+		const attachment = await host.attach(handle);
 
 		assert.deepStrictEqual(
-			{ dropped: adopted.dropped, mixedIntoReplay: adopted.replay.includes('discarded') },
-			{
-				// こぼれたことは伝える。
-				dropped: true,
-				// **断りは中身に混ぜない。** 混ぜると、実際に画面へ流す側が出す分と二重になる。
-				mixedIntoReplay: false,
-			},
+			{ frames: attachment.frames.map(frame => frame.data).join(''), dropped: attachment.dropped },
+			{ frames: 'while nobody was watching\r\n', dropped: false },
 		);
 	});
 
@@ -189,24 +176,6 @@ suite('ParadisTerminalAdoption', () => {
 		);
 	});
 
-	test('1本引き取れなくても、隣で走っているものを道連れにしない', async () => {
-		const { host } = daemon();
-		await host.spawn(spawnRequest('{}'));
-		await host.spawn(spawnRequest('{}'));
-
-		// 1本目だけ繋ぎ直せない常駐を演じる。
-		const broken = partlyBroken(host, {
-			attach: handle => handle === 1 ? Promise.reject(new Error('nope')) : host.attach(handle),
-		});
-
-		const result = await paradisAdoptTerminals(broken);
-
-		assert.deepStrictEqual(
-			{ adopted: result.adopted.map(a => a.summary.handle), skipped: result.skipped },
-			{ adopted: [2], skipped: 1 },
-		);
-	});
-
 	test('常駐と話せないことを「抱えているものが無い」と混同しない', async () => {
 		const { host } = daemon();
 		const unreachable = partlyBroken(host, { list: () => Promise.reject(new Error('socket is gone')) });
@@ -224,20 +193,26 @@ suite('ParadisTerminalAdoption', () => {
 		);
 	});
 
-	test('閉じている間に走り切ったものも引き取れる。結果を読める', async () => {
+	test('閉じている間に走り切ったものは、終わったことと終了コードごと引き取れる', async () => {
 		const { host, ptys } = daemon();
 		const handle = (await host.spawn(spawnRequest('{}'))).handle;
 		await host.attach(handle);
 		await host.detach(handle);
 
 		ptys[0].emit('BUILD SUCCESS\r\n');
+		ptys[0].quit(0);
 		await timeout(600);
 
 		const adopted = (await paradisAdoptTerminals(host)).adopted[0];
 
 		assert.deepStrictEqual(
-			{ count: 1, replay: adopted.replay },
-			{ count: 1, replay: 'BUILD SUCCESS\r\n' },
+			{ alive: adopted.summary.alive, exitCode: adopted.summary.exitCode },
+			{
+				// **イベントを待っても来ない。** 戻ってきた側が結果を読むのがこの機能の主目的
+				// なので、終わり方は要約に載っていなければならない。
+				alive: false,
+				exitCode: 0,
+			},
 		);
 	});
 });

@@ -30,7 +30,9 @@ const TERM_NAME = 'xterm-256color';
 
 export function paradisSpawnNodePty(request: IParadisPtySpawnRequest): IParadisPtyProcess {
 	const pty = spawn(request.file, [...request.args], {
-		name: TERM_NAME,
+		// **面に載っているものは読む。** 自前の定数を使うと、版が分かれたときに新しいアプリが
+		// 指定した TERM が黙って無視される。
+		name: request.term || TERM_NAME,
 		cwd: request.cwd,
 		env: { ...request.env },
 		cols: request.cols,
@@ -56,7 +58,9 @@ class ParadisNodePty implements IParadisPtyProcess {
 		return toDisposable(() => subscription.dispose());
 	}
 
-	write(data: string): void { this.pty.write(data); }
+	// Buffer をそのまま渡す。node-pty の型は string だが、実体は Buffer を受ける
+	// (upstream も同じ渡し方をしている)。
+	write(data: string | Buffer): void { this.pty.write(data as string); }
 	resize(cols: number, rows: number): void { this.pty.resize(cols, rows); }
 	kill(signal?: string): void { this.pty.kill(signal); }
 	pause(): void { this.pty.pause(); }

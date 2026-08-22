@@ -18,6 +18,7 @@ import { DisposableStore, IDisposable } from '../../../../../base/common/lifecyc
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisEncodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
+import { ISetTerminalLayoutInfoArgs } from '../../../../../platform/terminal/common/terminalProcess.js';
 import { IParadisAdoptionTarget, paradisAdoptIntoPtyService } from '../../node/paradisAdoptIntoPtyService.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
@@ -43,15 +44,17 @@ class FakePty implements IParadisPtyProcess {
 }
 
 /** 器の代わり。**何を渡されたか**だけを覚える。 */
-function recordingPtyService(): { service: IParadisAdoptionTarget; calls: Record<string, unknown>[] } {
+function recordingPtyService(): { service: IParadisAdoptionTarget; calls: Record<string, unknown>[]; layouts: ISetTerminalLayoutInfoArgs[] } {
 	const calls: Record<string, unknown>[] = [];
+	const layouts: ISetTerminalLayoutInfoArgs[] = [];
 	const service: IParadisAdoptionTarget = {
+		async setTerminalLayoutInfo(args) { layouts.push(args); },
 		async createProcess(shellLaunchConfig, cwd, cols, rows, unicodeVersion, env, executableEnv, options, shouldPersist, workspaceId, workspaceName, isReviving, rawReviveBuffer, paradisAdoptTarget) {
 			calls.push({ initialText: shellLaunchConfig.initialText, name: shellLaunchConfig.name, cols, rows, shouldPersist, workspaceId, workspaceName, isReviving, rawReviveBuffer, adopt: paradisAdoptTarget });
 			return calls.length;
 		},
 	};
-	return { service, calls };
+	return { service, calls, layouts };
 }
 
 suite('ParadisAdoptIntoPtyService', () => {
@@ -89,8 +92,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 			{
 				outcome: { reachable: true, adopted: 1, skipped: 0 },
 				calls: [{
-					// 画面はそのまま作り直せる。
-					initialText: 'done in 12s\r\n',
+					initialText: undefined,
 					name: 'build',
 					cols: 100,
 					rows: 30,
@@ -100,10 +102,11 @@ suite('ParadisAdoptIntoPtyService', () => {
 					// **この2つが要る。** `initialText` は `IProcessDetails` に含まれないので、
 					// これだけではウィンドウへ渡る経路に乗らず、画面は空になる。器の中の
 					// 直列化へ流し込むには upstream の復元と同じ形で渡す必要がある。
-					isReviving: true,
-					rawReviveBuffer: 'done in 12s\r\n',
+					// 復元ではない。走っているものに繋ぎ直すので、画面は繋いだときに流れてくる。
+					isReviving: undefined,
+					rawReviveBuffer: undefined,
 					// **これが本題。** 引き取り先を名指ししているので、器は起こさずに繋ぐ。
-					adopt: { handle: summary.handle, pid: 5000, title: 'zsh' },
+					adopt: { handle: summary.handle, pid: 5000, title: 'zsh', exited: undefined },
 				}],
 			},
 		);
@@ -116,6 +119,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 
 		let first = true;
 		const service: IParadisAdoptionTarget = {
+			async setTerminalLayoutInfo() { },
 			async createProcess() {
 				if (first) {
 					first = false;

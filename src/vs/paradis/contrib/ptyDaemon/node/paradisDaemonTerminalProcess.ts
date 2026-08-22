@@ -62,6 +62,7 @@ export interface IParadisTerminalOrigin {
 	readonly shouldPersist: boolean;
 }
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
+import { IParadisAdoptTarget } from './paradisTerminalProcessFactory.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
 
 /**
@@ -118,6 +119,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	/** 終わったと言い切るまでの保険（{@link shutdown}）。 */
 	private readonly forceExit = this._register(new MutableDisposable());
 	private exitFired = false;
+	/** pty が本当に終わったか。**閉じただけとは区別する**（{@link dispose}）。 */
+	private exited = false;
 
 	private title = '';
 	private reportedTitle: string | undefined;
@@ -153,7 +156,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		 * これが在るときは**起こさない**。引き取りは「走っているものに繋ぎ直す」ことなので、
 		 * ここで新しく起こしてしまうと、残っていたプロセスは行方不明のまま二重に増える。
 		 */
-		private readonly adoptTarget?: { readonly handle: number; readonly pid: number; readonly title: string },
+		private readonly adoptTarget?: IParadisAdoptTarget,
 	) {
 		super();
 		this.initialCwd = cwd;
@@ -165,6 +168,12 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// (どちらも起こすときの話で、すでに起きているものには当てはまらない)。
 			this.adopt(this.adoptTarget.handle, this.adoptTarget.pid, this.adoptTarget.title);
 			this.emitAttachment(await this.host.attach(this.adoptTarget.handle));
+			if (this.adoptTarget.exited) {
+				// **もう終わっている。** イベントを待っても来ないので、ここで言う。画面には
+				// 走り切った結果が出ているので、あとは終わったことが伝われば読める。
+				this.exited = true;
+				this.fireExitOnce(this.adoptTarget.exited.code);
+			}
 			return undefined;
 		}
 
@@ -267,6 +276,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			if (event.handle !== handle) {
 				return;
 			}
+			this.exited = true;
 			this.fireExitOnce(event.code);
 		}));
 
@@ -552,7 +562,11 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		// なお、落ちた・強制終了された場合はここを通らない。そちらは常駐側が接続の切断を
 		// 合図にして離す（`paradisPtyHostDaemonMain.ts`）。**片方だけでは足りない。**
 		if (this.handle !== undefined) {
-			this.tell('detach', this.host.detach(this.handle));
+			// **終わったものは手放し、閉じただけなら残す。** ここを取り違えると、片方は
+			// 「閉じたら殺される」（常駐にした意味が消える）、もう片方は「終わった端末が
+			// 常駐に残り続け、次の起動でタブとして全部戻ってくる」になる。手放さないと
+			// 抱えている本数が減らないので、常駐が畳まれる判断も効かなくなる。
+			this.tell(this.exited ? 'release' : 'detach', this.exited ? this.host.release(this.handle) : this.host.detach(this.handle));
 		}
 		super.dispose();
 	}

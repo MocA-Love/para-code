@@ -33,6 +33,14 @@ export interface IParadisAdoptTarget {
 	readonly handle: number;
 	readonly pid: number;
 	readonly title: string;
+	/**
+	 * すでに終わっていたなら、その終わり方。
+	 *
+	 * **イベントを待っても来ない。** 閉じている間に走り切ったものは、繋ぎ直したときには
+	 * とっくに終わっている。これを渡さないと、器は生きているつもりのまま終了を一度も出さず、
+	 * **戻ってきて結果を読むというこの機能の主目的の経路で、肝心の答えが落ちる**。
+	 */
+	readonly exited: { readonly code: number | undefined } | undefined;
 }
 
 /**
@@ -91,6 +99,27 @@ export function paradisPtyDaemonConnection(): IParadisPtyHostConnection | undefi
 }
 
 /**
+ * ターミナルの番号と、常駐側の handle の対応。
+ *
+ * 配置を預けるときに要る。番号はアプリを起こすたびに振り直されるので、**そのまま預けても
+ * 次の起動では何も指さない**（`paradisTerminalLayout.ts`）。
+ */
+const handles = new Map<number, number>();
+
+/** 番号に handle を結び付ける。器ができた時点で呼ぶ。 */
+export function paradisRememberHandle(id: number, handle: number): void {
+	handles.set(id, handle);
+}
+
+export function paradisForgetHandle(id: number): void {
+	handles.delete(id);
+}
+
+export function paradisHandleOf(id: number): number | undefined {
+	return handles.get(id);
+}
+
+/**
  * ターミナル1本を作る。`ptyService.ts` の唯一の生成点から呼ばれる。
  *
  * 引数は `TerminalProcess` のコンストラクタと同じ並びにしてある。**呼び出し側の1行を
@@ -118,7 +147,8 @@ export async function paradisCreateTerminalProcess(
 ): Promise<IParadisTerminalProcessLike> {
 	if (arriving) {
 		// 繋ぎ終わるまで待つ。**ここで待つのは安全**で、この時点ではチャネルは登録済み。
-		await arriving;
+		// 拒否は飲む。常駐に繋げなかったことを、ターミナルを作れないことにしない。
+		await arriving.catch(() => { });
 	}
 	if (connection) {
 		return new ParadisDaemonTerminalProcess(
