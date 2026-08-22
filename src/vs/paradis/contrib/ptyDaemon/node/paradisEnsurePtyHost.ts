@@ -151,6 +151,61 @@ function paradisOpenSocket(socketPath: string): Promise<NodeSocket | undefined> 
 }
 
 /**
+ * 常駐へ渡す環境を作る。
+ *
+ * 切り出してあるのは、**ここの間違いがいちばん辿りにくい形で出る**ため（常駐が上がらない、
+ * あるいは常駐の先のシェルだけ足元が違う）。値の判断だけを見られるようにしておく。
+ */
+export function paradisPtyHostDaemonEnv(
+	base: { readonly [key: string]: string | undefined },
+	extra: { readonly [key: string]: string },
+): { [key: string]: string | undefined } {
+	const env: { [key: string]: string | undefined } = {
+		...base,
+		// **これが無いと node ではなく Electron アプリとして起きる。** ローカルでの実行ファイルは
+		// Para Code 本体なので、付け忘れると2つ目の Para Code が起動しようとして常駐は上がらず、
+		// 10秒待って縮退する。main の env にも入っていないので、ここで必ず付ける
+		// (リモートは素の node なので影響しないが、経路を分けない)。
+		ELECTRON_RUN_AS_NODE: '1',
+		...extra,
+	};
+	// 親の生死を見て自分を殺す仕掛けが動くと、常駐にならない。
+	delete env['VSCODE_PARENT_PID'];
+	delete env['VSCODE_PIPE_LOGGING'];
+	paradisUndoSnapEnv(env);
+	removeDangerousEnvVariables(env);
+	return env;
+}
+
+/**
+ * Snap の中で書き換えられた環境変数を、元の値へ戻す。
+ *
+ * Snap は `LD_LIBRARY_PATH` などを自分のものへ差し替え、元の値を `*_VSCODE_SNAP_ORIG` に
+ * 退避する。そのまま渡すと、**常駐から起きるシェルまで Snap のライブラリパスが伝わり**、
+ * 利用者が起動したコマンドが Snap の中の共有ライブラリを掴む。アプリの中で起こしていた頃は
+ * 起動側が同じ手当てをしていたので、経路を分けた以上こちらでも要る。
+ *
+ * `electron-main` の実装を使わないのは、この関数がローカルでもリモートでも同じ道を通るため。
+ * 見ているのは自分に渡ってきた env だけなので、素の node でも成立する。
+ */
+function paradisUndoSnapEnv(env: { [key: string]: string | undefined }): void {
+	for (const key of Object.keys(env)) {
+		if (!key.endsWith('_VSCODE_SNAP_ORIG')) {
+			continue;
+		}
+		const original = key.slice(0, -'_VSCODE_SNAP_ORIG'.length);
+		const saved = env[key];
+		if (saved) {
+			env[original] = saved;
+		} else {
+			// 退避が空なら、Snap に入る前はその変数自体が無かったということ。
+			delete env[original];
+		}
+		delete env[key];
+	}
+}
+
+/**
  * 常駐を起こす。**切り離して起こす。**
  *
  * 親が消えても生き残らなければ意味が無いので、プロセスグループを分け、標準入出力は握らない。
@@ -167,19 +222,7 @@ function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): void {
 		logService.warn('[ParadisPtyHost] could not open the startup log; the daemon will start without one', error);
 	}
 
-	const env: { [key: string]: string | undefined } = {
-		...process.env,
-		// **これが無いと node ではなく Electron アプリとして起きる。** ローカルでの実行ファイルは
-		// Para Code 本体なので、付け忘れると2つ目の Para Code が起動しようとして常駐は上がらず、
-		// 10秒待って縮退する。main の env にも入っていないので、ここで必ず付ける
-		// (リモートは素の node なので影響しないが、経路を分けない)。
-		ELECTRON_RUN_AS_NODE: '1',
-		...launch.env,
-	};
-	// 親の生死を見て自分を殺す仕掛けが動くと、常駐にならない。
-	delete env['VSCODE_PARENT_PID'];
-	delete env['VSCODE_PIPE_LOGGING'];
-	removeDangerousEnvVariables(env);
+	const env = paradisPtyHostDaemonEnv(process.env, launch.env);
 
 	const child = spawn(launch.execPath, [...launch.args], {
 		detached: true,
