@@ -2078,6 +2078,10 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts がターミナルの猶予時間を決めるための逆方向 import
 						// (paradisTerminalReconnectionGraceTime)
 						'vs/paradis/contrib/remoteTerminals/~',
+						// PARA-PATCH: serverServices.ts が、接続先のターミナルをサーバーより長生きする
+						// 常駐へ出すかどうかを決めるための逆方向 import
+						// (paradisEnableRemotePtyHostDaemon)
+						'vs/paradis/contrib/ptyDaemon/~',
 						// PARA-PATCH: serverServices.ts が接続先の ~/.claude・~/.codex を答えるチャネル
 						// (registerParadisSessionResumeForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/sessionResume/~',
