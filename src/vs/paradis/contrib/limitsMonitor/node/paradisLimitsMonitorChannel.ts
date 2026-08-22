@@ -423,6 +423,23 @@ export class ParadisLimitsMonitorService {
 		return { homePath: resolved };
 	}
 
+	/**
+	 * 検証済みの Codex ホームを、このチャネルを提供しているマシン側で完全に削除する。
+	 *
+	 * 検証と削除を同じプロセス（=同じマシン）で完結させるのが要点。renderer 側で
+	 * 「検証は routed channel（SSH 中はリモート）、削除は URI.file() + fileService.del（常に
+	 * ローカル）」と分離すると、絶対パスが一致した別マシンのディレクトリを手元のゴミ箱へ
+	 * 移動してしまう（データ消失）。
+	 *
+	 * ゴミ箱への移動は Electron main プロセスの機能のため REH からは使えない（upstream も
+	 * リモートの削除は永久削除）。対象は ~/.codex-2 以降の検証済みホームのみであり、
+	 * 既定の ~/.codex は決して消えない。
+	 */
+	async removeCodexHome(homePath: string): Promise<void> {
+		const resolved = (await this.validateCodexHomeRemoval(homePath)).homePath;
+		await fs.promises.rm(resolved, { recursive: true });
+	}
+
 	private async readCodexIdentity(homePath: string): Promise<{ accountId?: string; email?: string }> {
 		try {
 			const auth = JSON.parse(await fs.promises.readFile(path.join(homePath, 'auth.json'), 'utf8')) as ICodexAuthJson;
@@ -921,7 +938,7 @@ export class ParadisLimitsMonitorService {
 			throw new Error('setup session is not waiting for a duplicate-account decision');
 		}
 		if (decision === 'discard' && await this.fileExists(session.codexHomePath)) {
-			throw new Error('Codex home must be moved to the trash before discarding the duplicate account');
+			throw new Error('Codex home must be removed before discarding the duplicate account');
 		}
 		this.snapshotCache = undefined;
 		this.rpcFailureAt.delete(session.codexHomePath);
@@ -1168,6 +1185,7 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 				Array.isArray(args[1]) ? args[1].filter((entry): entry is string => typeof entry === 'string') : undefined,
 			) as Promise<T>;
 			case 'validateCodexHomeRemoval': return this.service.validateCodexHomeRemoval(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			case 'removeCodexHome': return this.service.removeCodexHome(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
 			case 'startClaudeSetup': return this.service.startClaudeSetup(typeof args[0] === 'number' ? args[0] : undefined) as Promise<T>;
 			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
