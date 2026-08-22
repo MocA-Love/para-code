@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -113,17 +113,26 @@ export default function GithubUsageScreen() {
 	const [windowKey, setWindowKey] = useState<WindowKey>('5m');
 	const [groupKey, setGroupKey] = useState<GroupKey>('caller');
 
+	// 自動再取得（PC切替）と手動更新が前後したときに古い応答で新しい結果を上書きしないよう、
+	// 最後に投げた要求だけを採用する（待機中の他PCも接続を保つため、切替後でも旧PC向けの
+	// RPCが正常に応答しうる。system.tsx と同じ流儀）。
+	const requestSeq = useRef(0);
 	const refresh = useCallback(async (bypassCache = false) => {
 		if (connection !== 'online') { return; }
+		const seq = ++requestSeq.current;
 		setLoading(true);
 		setError(undefined);
 		try {
 			const result = await githubUsage(bypassCache);
+			if (seq !== requestSeq.current) { return; }
 			setData(result);
 		} catch (e) {
+			if (seq !== requestSeq.current) { return; }
 			setError(String(e instanceof Error ? e.message : e));
 		} finally {
-			setLoading(false);
+			if (seq === requestSeq.current) {
+				setLoading(false);
+			}
 		}
 	}, [githubUsage, connection, activePcId]);
 

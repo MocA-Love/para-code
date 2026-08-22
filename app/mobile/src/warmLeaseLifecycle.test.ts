@@ -103,7 +103,6 @@ vi.mock('./components/screenHeader.js', () => ({ HeaderCircleButton: () => null,
 vi.mock('./components/selectablePill.js', () => ({ SelectablePill: 'SelectablePill' }));
 vi.mock('./hooks/useAppIsActive.js', () => ({ useAppIsActive: () => componentHarness.appActive }));
 vi.mock('./hooks/useStableInsets.js', () => ({ useStableInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
-vi.mock('./hooks/useTabBarSpacer.js', () => ({ useTabBarSpacer: () => 0 }));
 vi.mock('./ipad/useContentColumn.js', () => ({ useContentColumnStyle: () => ({}) }));
 vi.mock('./theme.js', () => ({
 	colors: new Proxy({}, { get: () => '#000000' }),
