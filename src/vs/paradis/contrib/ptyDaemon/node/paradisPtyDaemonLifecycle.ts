@@ -54,8 +54,15 @@ export interface IParadisPtyDaemonLifecycleOptions {
 	 * `paradisListHeldTerminals` は `PtyService` の fork 追加分 (upstream の `listProcesses` は
 	 * 繋がっていないものしか返さない)。無い場合に備えて任意にしてあるが、実際には
 	 * `ptyHostMain.ts` が実体を渡すので必ず在る。
+	 *
+	 * ポーリング (ステータス表示と idle 判定) が必要なのは workspaceName だけなので、
+	 * 軽量版の `paradisListHeldWorkspaceNames` を優先する。完全版は端末ごとに getCwd (macOS は
+	 * lsof 起動) と orphan 判定 (最大4秒のバリア) を実行するため、定期ポーリングには過剰。
 	 */
-	readonly ptyService: IPtyService & { paradisListHeldTerminals?(): Promise<{ workspaceName: string }[]> };
+	readonly ptyService: IPtyService & {
+		paradisListHeldTerminals?(): Promise<{ workspaceName: string }[]>;
+		paradisListHeldWorkspaceNames?(): Promise<{ workspaceName: string }[]>;
+	};
 	readonly logService: ILogService;
 	/** 終わるときに呼ぶ。既定は `process.exit`。テストでは差し替える。 */
 	readonly exit?: () => void;
@@ -145,11 +152,15 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 	/**
 	 * 抱えているターミナル。**繋がっているものも含める。**
 	 *
-	 * `listProcesses()` へ落ちるのは、fork の追加分が無い相手を渡された場合だけ。そのときは
-	 * 繋がっていないものしか数えられないが、何も数えられないよりはよい。
+	 * 軽量版 (`paradisListHeldWorkspaceNames`) を優先する。`listProcesses()` へ落ちるのは、
+	 * fork の追加分がどちらも無い相手を渡された場合だけ。そのときは繋がっていないものしか
+	 * 数えられないが、何も数えられないよりはよい。
 	 */
 	private async heldTerminals(): Promise<{ workspaceName: string }[]> {
 		const pty = this.options.ptyService;
+		if (pty.paradisListHeldWorkspaceNames) {
+			return pty.paradisListHeldWorkspaceNames();
+		}
 		return pty.paradisListHeldTerminals ? pty.paradisListHeldTerminals() : pty.listProcesses();
 	}
 
