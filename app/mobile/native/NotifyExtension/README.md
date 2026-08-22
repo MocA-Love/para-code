@@ -23,6 +23,10 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
    `Info.plist` に `UIBackgroundModes: [remote-notification]` があることを確認
    （app.json にも設定済みだが、prebuild が反映しない場合は手動で）
 5. NSE ターゲットの iOS Deployment Target をメインアプリと揃える
+6. 復元後、NSE の `Info.plist` にある `CFBundleShortVersionString`（ハードコード `0.1.0`）を
+   メインアプリのバージョン（app.json の `version`）と揃える。App Store 提出時、
+   メインアプリと Extension の `CFBundleShortVersionString` が一致していないと
+   ITMS エラーになる。Xcode 上でターゲットの Version を書き換え、このコピーへも反映すること
 
 ## 鍵の受け渡し（設計）
 

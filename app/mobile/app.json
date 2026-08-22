@@ -27,7 +27,7 @@
 				"ITSAppUsesNonExemptEncryption": false,
 				"UIBackgroundModes": ["remote-notification", "audio"],
 				"NSSupportsLiveActivities": true,
-				"NSMicrophoneUsageDescription": "このアプリはマイクを使用しません（画面ミラー受信ライブラリが参照するため記載しています）。"
+				"NSMicrophoneUsageDescription": "画面ミラー機能の利用時にシステムがマイクへのアクセスを確認する場合があります。アプリ自身は録音を行いません。"
 			}
 		},
 		"plugins": [
