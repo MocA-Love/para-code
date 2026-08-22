@@ -98,4 +98,31 @@ suite('ChangesEditorLabels', () => {
 			unrelated: undefined,
 		});
 	});
+
+	test('file stats resolve the first change when a URI appears in several changes', () => {
+		// 索引化(先勝ちルール)でも旧 find と同じ「最初の要素」を採用する
+		const changes = [
+			{ originalUri: undefined, modifiedUri: URI.file('/workspace/dup.ts'), insertions: 1, deletions: 2 },
+			{ originalUri: undefined, modifiedUri: URI.file('/workspace/dup.ts'), insertions: 30, deletions: 40 },
+		];
+		assert.deepStrictEqual(getChangesEditorFileStats(URI.file('/workspace/dup.ts'), changes), { insertions: 1, deletions: 2 });
+	});
+
+	test('chat session file changes resolve from all three resources with optional ones missing', () => {
+		const changes = [{
+			uri: URI.file('/workspace/chat-uri.ts'),
+			modifiedUri: URI.file('/workspace/b2.ts'),
+			insertions: 5,
+			deletions: 6,
+		}];
+		assert.deepStrictEqual({
+			chatUri: getChangesEditorFileStats(URI.file('/workspace/chat-uri.ts'), changes),
+			modified: getChangesEditorFileStats(URI.file('/workspace/b2.ts'), changes),
+			missingOriginal: getChangesEditorFileStats(URI.file('/workspace/original-missing.ts'), changes),
+		}, {
+			chatUri: { insertions: 5, deletions: 6 },
+			modified: { insertions: 5, deletions: 6 },
+			missingOriginal: undefined,
+		});
+	});
 });
