@@ -57,11 +57,6 @@
 
 /* --- スペース行 ------------------------------------------------------------------------------ */
 
-/* Workspaces ビューと同じく、色はカスタムプロパティで渡して左端の帯に反映する */
-.para-rh-list .monaco-tl-row:has(.para-rh-space-row) {
-	--para-rh-color: transparent;
-}
-
 /* 行左端の色バー。Workspaces ビューと同じく .monaco-tl-row の先頭 flex アイテム (::before) として描く */
 .para-rh-list .monaco-tl-row::before {
 	content: '';
@@ -99,10 +94,6 @@
 	margin-left: auto;
 	flex-shrink: 0;
 	opacity: 0;
-}
-
-.para-rh-actions.has-meta {
-	margin-left: 4px;
 }
 
 .para-rh-list .monaco-tl-row:hover .para-rh-actions,

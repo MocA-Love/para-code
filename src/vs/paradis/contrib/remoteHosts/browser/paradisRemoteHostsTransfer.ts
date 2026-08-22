@@ -45,7 +45,9 @@ async function confirmOverwrite(services: IParadisRemoteTransferServices, names:
 	const { confirmed } = await services.dialogService.confirm({
 		type: 'warning',
 		message,
-		detail: localize('paraRemoteHosts.overwriteIrreversible', "この操作は元に戻せません。既存の内容は失われます。"),
+		// 「何が置き換えられるのか」が分からないと確認として機能しないため、名前も出す
+		detail: names.join('\n') + '\n'
+			+ localize('paraRemoteHosts.overwriteIrreversible', "この操作は元に戻せません。既存の内容は失われます。"),
 		primaryButton: localize('paraRemoteHosts.replaceButton', "置き換える"),
 	});
 	return confirmed;
@@ -129,7 +131,7 @@ export async function paradisSendToHost(
 }
 
 /** 単一項目のコピー。上書きが必要なときだけ確認ダイアログを出す。エラーは投げて戻す (ビューが通知する)。 */
-export async function paradisCopyEntry(
+async function paradisCopyEntry(
 	services: IParadisRemoteTransferServices,
 	source: IParadisRemoteTransferSource,
 	target: URI,
@@ -177,6 +179,7 @@ export async function paradisCopyToDirectory(
 	}
 
 	const failedNames: string[] = [];
+	let firstError: Error | string | undefined;
 	try {
 		await services.progressService.withProgress(
 			{
@@ -189,15 +192,17 @@ export async function paradisCopyToDirectory(
 				for (let index = 0; index < sources.length; index++) {
 					try {
 						await services.fileService.copy(sources[index].uri, targets[index], overwrite);
-					} catch {
+					} catch (error) {
 						failedNames.push(sources[index].name);
+						firstError ??= error instanceof Error ? error : String(error);
 					}
 				}
 			},
 		);
 	} finally {
-		if (failedNames.length === sources.length) {
-			services.notificationService.error(localize('paraRemoteHosts.allTransfersFailed', "転送に失敗しました"));
+		if (failedNames.length === sources.length && firstError !== undefined) {
+			// 全件失敗。原因 (SSH 切断・権限など) を握りつぶさないよう生のエラーをそのまま出す
+			services.notificationService.error(firstError);
 		} else if (failedNames.length) {
 			services.notificationService.notify({
 				severity: Severity.Warning,

@@ -25,7 +25,7 @@ import { ParadisRemoteHostsView } from './paradisRemoteHostsView.js';
 const paradisRemoteHostsViewIcon = registerIcon(
 	'paradis-remote-hosts-view-icon',
 	Codicon.remoteExplorer,
-	localize('paradisRemoteHosts.viewIcon', "View icon of the Para hosts view."),
+	localize('paraRemoteHosts.viewIcon', "View icon of the Para hosts view."),
 );
 
 /**
@@ -45,7 +45,7 @@ class ParadisRemoteHostsContribution extends Disposable implements IWorkbenchCon
 		// remote contrib の評価前にこのモジュールへ到達することはない想定。万一無ければ
 		// サイレントに諦めず、壊れたことが分かるようにしておく
 		if (!container) {
-			logService.warn('[ParadisRemoteHosts] リモートエクスプローラーコンテナが見つからず、ビューを登録できませんでした');
+			logService.warn('[ParadisRemoteHosts] Remote Explorer container not found; the Para Hosts view was not registered');
 			return;
 		}
 
