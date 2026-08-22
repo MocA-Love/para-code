@@ -12,10 +12,14 @@ import { matchRanges, useFilesSearch } from '../filesSearch.js';
 import { useFilesLive } from '../filesLive.js';
 import { colors, radius, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
-import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';
+import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult, StoreState } from '../store.js';
 
-function currentRendererTarget(wsId: string | undefined): string | undefined {
-	const state = useAppStore.getState();
+/**
+ * rendererTarget（どのrendererへ出した要求かの照合キー）の導出。セレクタ内からは
+ * `currentRendererTargetOf(store状態)` で、命令的に取りたいときは
+ * `currentRendererTarget()` を使う。ロジックを2箇所に書くと静かにずれるため共通化。
+ */
+function currentRendererTargetOf(state: StoreState, wsId: string | undefined): string | undefined {
 	if (wsId === undefined || state.connection !== 'online' || !state.pcOnline || !state.sessionProtocolReady) {
 		return undefined;
 	}
@@ -24,6 +28,10 @@ function currentRendererTarget(wsId: string | undefined): string | undefined {
 	return renderer?.ready === true && state.workspace !== undefined
 		? `${state.workspace.desktopEpoch}:${renderer.windowId}:${renderer.rendererGeneration}`
 		: undefined;
+}
+
+function currentRendererTarget(wsId: string | undefined): string | undefined {
+	return currentRendererTargetOf(useAppStore.getState(), wsId);
 }
 
 /**
@@ -49,12 +57,11 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 	searchOpen?: boolean;
 }) {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, workspace } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, workspace: s.workspace })));
-	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
-	const selectedRenderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
-	const rendererTarget = selectedRenderer?.ready === true && workspace !== undefined
-		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
-		: undefined;
+	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep })));
+	// **`s.workspace` 本体を購読しない。** 必要なのは rendererTarget という文字列1つだけ。
+	// 本体を買うと10Hz再送のたびに画面全体が再描画していた。セレクタの中で文字列まで
+	// 導出すれば、中身が変わらない再送では同値判定が止まる（markdownText と同じ流儀）。
+	const rendererTarget = useAppStore(s => currentRendererTargetOf(s, ws?.id));
 	// **判定は `useFilesLive()` に寄せる。** 検索欄（ヘッダーの帯）と同じ規則を2箇所に
 	// 書いておくと、どちらか片方に条件が増えたときに静かにずれる（欄だけ編集できてしまう等）。
 	// `rendererTarget` は「どのrendererへ出した要求か」の照合に使うので、こちらは残す。

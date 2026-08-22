@@ -12,7 +12,7 @@
  * それ以外はプレーンテキストとして安全に表示する（未対応記法で壊れない）。
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -216,7 +216,55 @@ const HIGHLIGHT_REQUEST_DELAY_MS = 250;
  * （fs hl 要求 → Monacoトークナイザ + カラーマップ）が取れ次第、色付きに差し替える。
  * 取得失敗・未接続時はプレーンのまま（機能は損なわない）。
  */
-function CodeBlock({ text, lang }: { text: string; lang?: string }) {
+/**
+ * ブロック単位の memo 子。親（MarkdownText）はストリーミング中・ローカルstate更新のたびに
+ * 再描画されるため、本文が不変なブロックはここで止める（見出しやテーブルの
+ * parseInline/renderInlineTokens が毎回走ると多数の Text ノードを組み直す）。
+ * `onOpenLocal` は呼び出し側で useCallback 済みという前提。
+ */
+const HeadingBlock = memo(function HeadingBlock({ text, level, onOpenLocal }: { text: string; level: number; onOpenLocal: (target: LocalFileTarget) => void }) {
+	return (
+		<Text style={[styles.body, styles.heading, level === 1 ? styles.h1 : level === 2 ? styles.h2 : null]} selectable>
+			{renderInlineTokens(parseInline(text), styles.body, onOpenLocal)}
+		</Text>
+	);
+});
+
+const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Extract<Block, { kind: 'table' }>; onOpenLocal: (target: LocalFileTarget) => void }) {
+	// 列数はヘッダー基準（本体行の過不足セルは空/切り捨てで揃える）
+	const cols = block.header.length;
+	// 列幅は内容から見積もって固定する。flex:1 で画面幅へ押し込むと列が潰れて
+	// 縦に折り返し、桁が崩れるため（本家Claudeアプリと同じく表だけ横に流す）。
+	const widths = tableColumnWidths(block, cols);
+	return (
+		<HorizontalScrollFade style={styles.tableWrap}>
+			<View style={styles.table}>
+				<View style={[styles.tableRow, styles.tableHead]}>
+					{block.header.map((cell, c) => (
+						<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
+							<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+								{renderInlineTokens(parseInline(cell), styles.body, onOpenLocal)}
+							</Text>
+						</View>
+					))}
+				</View>
+				{block.rows.map((row, r) => (
+					<View key={r} style={[styles.tableRow, r % 2 === 1 ? styles.tableRowAlt : null]}>
+						{Array.from({ length: cols }, (_, c) => (
+							<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
+								<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+									{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, onOpenLocal)}
+								</Text>
+							</View>
+						))}
+					</View>
+				))}
+			</View>
+		</HorizontalScrollFade>
+	);
+});
+
+const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 	const fsHighlight = useAppStore(s => s.fsHighlight);
 	const cacheKey = `${lang ?? ''} ${text}`;
 	// 結果は「どの内容に対するものか」と一緒に持つ。紐づけずに持つと、ストリーミングで本文が
@@ -310,7 +358,7 @@ function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 			</Text>
 		</HorizontalScrollFade>
 	);
-}
+});
 
 interface LocalFileTarget {
 	path: string;
@@ -505,7 +553,7 @@ function LocalFileCard({ label, target, opening, onPress }: { label: string; tar
 	);
 }
 
-function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLocal: (target: LocalFileTarget) => void; openingKey?: string }) {
+const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLocal: (target: LocalFileTarget) => void; openingKey?: string }) {
 	const tokens = parseInline(text);
 	if (!tokens.some(token => token.kind === 'local')) {
 		return <Text style={styles.body} selectable>{renderInlineTokens(tokens, styles.body, onOpenLocal)}</Text>;
@@ -531,7 +579,7 @@ function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLo
 			})}
 		</View>
 	);
-}
+});
 
 export function MarkdownText({ text }: { text: string }) {
 	// **`s.workspace` 本体を購読してはいけない。** ここが必要としているのは「ファイルリンクを
@@ -547,14 +595,16 @@ export function MarkdownText({ text }: { text: string }) {
 			fsResolveLink: s.fsResolveLink,
 		};
 	}));
-	const [openingKey, setOpeningKey] = useState<string | undefined>();
+const [openingKey, setOpeningKey] = useState<string | undefined>();
 	const [viewer, setViewer] = useState<{ ws: string; path: string; line?: number } | undefined>();
 	const openGeneration = useRef(0);
 	useEffect(() => () => { openGeneration.current++; }, []);
 	// 本文が変わらない再レンダー（リンクを押したときのローカルstate更新など）で
 	// パースし直さない。`parseBlocks` は `text` だけの純粋関数。
 	const blocks = useMemo(() => parseBlocks(text), [text]);
-	const openLocal = (target: LocalFileTarget) => {
+	// **参照を安定させる。** 見出し・テーブル・段落はブロック単位で memo 化した子へ渡すため、
+	// 毎レンダー新しい関数を渡すと memo が素通りしてインラインの再パースが毎回走る。
+	const openLocal = useCallback((target: LocalFileTarget) => {
 		if (ws === undefined) {
 			Alert.alert('ファイルを開けません', '対応するワークスペースが見つかりません。');
 			return;
@@ -576,7 +626,7 @@ export function MarkdownText({ text }: { text: string }) {
 				setOpeningKey(current => current === key ? undefined : current);
 			}
 		});
-	};
+	}, [ws, fsResolveLink]);
 	return (
 		<View style={styles.root}>
 			{blocks.map((block, i) => {
@@ -584,11 +634,7 @@ export function MarkdownText({ text }: { text: string }) {
 					return <CodeBlock key={i} text={block.text} lang={block.lang} />;
 				}
 				if (block.kind === 'heading') {
-					return (
-						<Text key={i} style={[styles.body, styles.heading, block.level === 1 ? styles.h1 : block.level === 2 ? styles.h2 : null]} selectable>
-							{renderInlineTokens(parseInline(block.text), styles.body, openLocal)}
-						</Text>
-					);
+					return <HeadingBlock key={i} text={block.text} level={block.level} onOpenLocal={openLocal} />;
 				}
 				if (block.kind === 'bullet') {
 					return (
@@ -599,37 +645,7 @@ export function MarkdownText({ text }: { text: string }) {
 					);
 				}
 				if (block.kind === 'table') {
-					// 列数はヘッダー基準（本体行の過不足セルは空/切り捨てで揃える）
-					const cols = block.header.length;
-					// 列幅は内容から見積もって固定する。flex:1 で画面幅へ押し込むと列が潰れて
-					// 縦に折り返し、桁が崩れるため（本家Claudeアプリと同じく表だけ横に流す）。
-					const widths = tableColumnWidths(block, cols);
-					return (
-						<HorizontalScrollFade key={i} style={styles.tableWrap}>
-							<View style={styles.table}>
-								<View style={[styles.tableRow, styles.tableHead]}>
-									{block.header.map((cell, c) => (
-										<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
-											<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-												{renderInlineTokens(parseInline(cell), styles.body, openLocal)}
-											</Text>
-										</View>
-									))}
-								</View>
-								{block.rows.map((row, r) => (
-									<View key={r} style={[styles.tableRow, r % 2 === 1 ? styles.tableRowAlt : null]}>
-										{Array.from({ length: cols }, (_, c) => (
-											<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
-												<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-													{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, openLocal)}
-												</Text>
-											</View>
-										))}
-									</View>
-								))}
-							</View>
-						</HorizontalScrollFade>
-					);
+					return <TableBlock key={i} block={block} onOpenLocal={openLocal} />;
 				}
 				return <InlineBlock key={i} text={block.text} onOpenLocal={openLocal} openingKey={openingKey} />;
 			})}

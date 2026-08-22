@@ -61,8 +61,34 @@ export function splitMcpTool(tool: string): { server: string; tool: string } | u
 	return mcp !== null && mcp[1] !== undefined && mcp[2] !== undefined ? { server: mcp[1], tool: mcp[2] } : undefined;
 }
 
+/**
+ * parseToolInput の結果キャッシュ（上限つきMap。markdownText の highlightCache と同じ流儀）。
+ * describeStep/describeMeta が同じ tool_use の text を別々にパースするため、展開中の
+ * タイムラインはステップあたり2回 JSON.parse していた。入力JSONは不変なので、
+ * 2回目以降はキャッシュで消える。
+ */
+const parseToolInputCache = new Map<string, Record<string, unknown> | undefined>();
+/** キャッシュの上限件数。tool入力は長大になり得るため、エントリ数で頭打ちにする。 */
+const PARSE_TOOL_INPUT_CACHE_LIMIT = 200;
+
 /** tool_use の text（入力JSON）をオブジェクトへ戻す。JSONでなければ undefined。 */
 export function parseToolInput(text: string): Record<string, unknown> | undefined {
+	if (parseToolInputCache.has(text)) {
+		return parseToolInputCache.get(text);
+	}
+	const parsed = computeToolInput(text);
+	if (parseToolInputCache.size >= PARSE_TOOL_INPUT_CACHE_LIMIT) {
+		// 先頭（最も古い）の1件を落として伸び続けないようにする。
+		const oldest = parseToolInputCache.keys().next().value;
+		if (oldest !== undefined) {
+			parseToolInputCache.delete(oldest);
+		}
+	}
+	parseToolInputCache.set(text, parsed);
+	return parsed;
+}
+
+function computeToolInput(text: string): Record<string, unknown> | undefined {
 	const trimmed = text.trim();
 	if (!trimmed.startsWith('{')) {
 		return undefined;

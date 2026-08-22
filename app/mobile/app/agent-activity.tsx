@@ -50,9 +50,11 @@ export default function AgentActivityScreen() {
 	const now = useNow();
 	const params = useLocalSearchParams<{ terminalKey?: string; epoch?: string }>();
 	const terminalKey = params.terminalKey;
-	const workspace = useAppStore(s => s.workspace);
+	// **`s.workspace` 本体を購読しない。** 必要なのはこのターミナルの title ぶんだけ。
+	// 本体を買うと10Hz再送のたびに画面全体が再描画していた（Terminal要素は構造共有で
+	// 据え置かれるため、個別 find なら同値で止まる）。
+	const terminal = useAppStore(s => s.workspace?.terminals.find(item => item.terminalKey === terminalKey));
 	const chat = useAppStore(s => terminalKey !== undefined ? s.agentChats.get(terminalKey) : undefined);
-	const terminal = workspace?.terminals.find(item => item.terminalKey === terminalKey);
 	const parentMissing = terminalKey === undefined || terminal === undefined;
 	const chatLoading = !parentMissing && chat === undefined;
 	const activity = chat?.activity;

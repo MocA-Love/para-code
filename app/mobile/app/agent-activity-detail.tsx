@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -63,10 +63,11 @@ export default function AgentActivityDetailScreen() {
 	const column = useContentColumnStyle();
 	const now = useNow();
 	const { terminalKey, agentId, epoch } = useLocalSearchParams<{ terminalKey?: string; agentId?: string; epoch?: string }>();
-	const workspace = useAppStore(state => state.workspace);
+	// **`s.workspace` 本体を購読しない。** 必要なのはこのターミナルの title ぶんだけ
+	// （本体を買うと10Hz再送のたびに再描画していた。agent-activity.tsx と同じ流儀）。
+	const terminal = useAppStore(state => state.workspace?.terminals.find(item => item.terminalKey === terminalKey));
 	const chat = useAppStore(state => terminalKey !== undefined ? state.agentChats.get(terminalKey) : undefined);
 	const requestDetail = useAppStore(state => state.requestAgentActivityDetail);
-	const terminal = workspace?.terminals.find(item => item.terminalKey === terminalKey);
 	const sessionChanged = chat !== undefined && typeof epoch === 'string' && chat.epoch !== epoch;
 	const agents = !sessionChanged ? chat?.activity?.agents ?? [] : [];
 	const agent = typeof agentId === 'string' ? agents.find(item => item.id === agentId) : undefined;
@@ -74,8 +75,6 @@ export default function AgentActivityDetailScreen() {
 	const parent = agent?.parentId !== undefined ? agents.find(item => item.id === agent.parentId) : undefined;
 	const parentLabel = parent?.label ?? terminal?.title ?? '親Agent';
 	const ancestors = agent !== undefined ? agentActivityAncestors(agents, agent.id) : [];
-	const children = agent !== undefined ? agentActivityChildren(agents, agent.id) : [];
-	const descendants = agent !== undefined ? agentActivityDescendants(agents, agent.id) : [];
 	const tasks = agent === undefined ? [] : agentActivityTasksForAgent(chat?.activity?.tasks ?? [], agent);
 	const [messages, setMessages] = useState<AgentActivityDetailMessage[]>([]);
 	const [loading, setLoading] = useState(false);
@@ -93,10 +92,19 @@ export default function AgentActivityDetailScreen() {
 
 	const elapsedEnd = agent?.status === 'running' || agent?.status === 'idle' ? now : agent?.updatedAt;
 	const elapsed = agent !== undefined && elapsedEnd !== undefined ? Math.max(0, Math.round((elapsedEnd - agent.startedAt) / 1000)) : 0;
-	const conversation: ConversationItem[] = [
+	// **レンダーのたびに作り直さない。** conversation は FlatList の data なので、ここが
+	// 毎回新品だと全マウント済みセルの props が新しくなり、'activity' セルでは
+	// detailToChatMessages（O(n) 変換）まで毎回走っていた。useNow(60秒) の経過時間更新でも
+	// 再描画は来るため、データ由来の値だけで memo する。
+	const children = useMemo(() => (agent !== undefined ? agentActivityChildren(agents, agent.id) : []), [agents, agent]);
+	const descendants = useMemo(() => (agent !== undefined ? agentActivityDescendants(agents, agent.id) : []), [agents, agent]);
+	// 子カードの「配下 N」表示用。renderItem の中で都度 O(n×深さ) の子孫計算をしないため
+	// 先に1回だけ数えておく。
+	const descendantCounts = useMemo(() => new Map(children.map(value => [value.id, agentActivityDescendants(agents, value.id).length])), [children, agents]);
+	const conversation = useMemo<ConversationItem[]>(() => [
 		...groupConversation(messages),
 		...children.map(value => ({ kind: 'child' as const, value })),
-	];
+	], [messages, children]);
 	const navigateAgent = (target: AgentActivityAgent) => {
 		hapticSelection();
 		router.push({ pathname: '/agent-activity-detail', params: { terminalKey, agentId: target.id, epoch: epoch ?? '' } });
@@ -127,7 +135,7 @@ export default function AgentActivityDetailScreen() {
 				<Text style={styles.section}>会話・ツール履歴</Text>
 			</View> : null}
 			ListEmptyComponent={<View style={styles.empty}>{sessionChanged ? <Text style={styles.error}>親セッションが切り替わりました。親エージェントから開き直してください。</Text> : loading ? <Text style={styles.emptyText}>SubAgent transcriptを読み込み中…</Text> : error !== undefined ? <Text style={styles.error}>{error}</Text> : <Text style={styles.emptyText}>保存済みの子セッション履歴はありません</Text>}</View>}
-			renderItem={({ item }) => item.kind === 'message' ? <ActivityMessage message={item.value} parentLabel={parentLabel} /> : item.kind === 'activity' ? <View style={styles.timelineLane}><AgentTimeline msgs={detailToChatMessages(item.values)} /></View> : <View style={styles.leftLane}><Pressable accessibilityRole="button" accessibilityLabel={`${item.value.label}を開く`} onPress={() => navigateAgent(item.value)} style={styles.childCard}><View style={styles.childIcon}><Ionicons name="git-branch-outline" size={14} color={colors.purple} /></View><View style={styles.childBody}><Text style={styles.childCaption}>子Agentを起動</Text><Text style={styles.childTitle} numberOfLines={1}>{item.value.label}</Text><Text style={styles.childMeta}>{statusLabel(item.value.status)} · 配下 {agentActivityDescendants(agents, item.value.id).length}</Text></View><Ionicons name="chevron-forward" size={14} color={colors.textDim} /></Pressable></View>}
+			renderItem={({ item }) => item.kind === 'message' ? <ActivityMessage message={item.value} parentLabel={parentLabel} /> : item.kind === 'activity' ? <View style={styles.timelineLane}><AgentTimeline msgs={detailToChatMessages(item.values)} /></View> : <View style={styles.leftLane}><Pressable accessibilityRole="button" accessibilityLabel={`${item.value.label}を開く`} onPress={() => navigateAgent(item.value)} style={styles.childCard}><View style={styles.childIcon}><Ionicons name="git-branch-outline" size={14} color={colors.purple} /></View><View style={styles.childBody}><Text style={styles.childCaption}>子Agentを起動</Text><Text style={styles.childTitle} numberOfLines={1}>{item.value.label}</Text><Text style={styles.childMeta}>{statusLabel(item.value.status)} · 配下 {descendantCounts.get(item.value.id) ?? 0}</Text></View><Ionicons name="chevron-forward" size={14} color={colors.textDim} /></Pressable></View>}
 		/>
 	</View></ConnectionGate>;
 }

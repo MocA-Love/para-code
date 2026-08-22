@@ -7,6 +7,7 @@ import { useAppStore } from '../appState.js';
 import type { AgentChatMessage } from '../store.js';
 import { colors, mono } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
+import { clipForDisplay } from './agentIoClip.js';
 
 /**
  * タイムラインのステップを開いたときに出す「入力／結果」の枠。
@@ -61,9 +62,11 @@ export function useFullText(message: AgentChatMessage, terminalKey: string | und
  */
 export function ExpandableText({ message, terminalKey, style }: { message: AgentChatMessage; terminalKey?: string; style?: StyleProp<TextStyle> }) {
 	const { full, loading, error, load, available } = useFullText(message, terminalKey);
+	const clipped = clipForDisplay(full ?? message.text);
 	return (
 		<View>
-			<Text style={style} selectable>{full ?? message.text}</Text>
+			<Text style={style} selectable>{clipped.text}</Text>
+			{clipped.omittedLines > 0 ? <Text style={styles.plainNote}>ほか {clipped.omittedLines} 行を省略しています</Text> : null}
 			{message.truncated === true && full === undefined ? (
 				<Pressable onPress={load} disabled={!available || loading} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={styles.plainNote}>
@@ -91,6 +94,8 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 			setTimeout(() => setCopied(false), 1200);
 		}).catch(() => { /* コピー不可の環境では黙って何もしない */ });
 	};
+	// 表示は上限ぶんだけ測らせる（Yogaの測定コストは全文サイズに比例する）。コピーは全文。
+	const { text: displayBody, omittedLines } = clipForDisplay(body);
 	return (
 		<View style={styles.io}>
 			<View style={styles.ioBar}>
@@ -111,13 +116,14 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 			</View>
 			<ScrollView style={styles.ioScroll} nestedScrollEnabled contentContainerStyle={styles.ioScrollContent}>
 				{wrap
-					? <Text style={[styles.ioText, styles.ioWrapText]} selectable>{body}</Text>
+					? <Text style={[styles.ioText, styles.ioWrapText]} selectable>{displayBody}</Text>
 					: (
 						<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.ioWide}>
-							<Text style={styles.ioText} selectable>{body}</Text>
+							<Text style={styles.ioText} selectable>{displayBody}</Text>
 						</ScrollView>
 					)}
 			</ScrollView>
+			{omittedLines > 0 ? <Text style={styles.ioFootText}>ほか {omittedLines} 行を省略しています（コピーは全体が対象）</Text> : null}
 			{message.truncated === true && full === undefined ? (
 				<Pressable style={styles.ioFoot} onPress={load} disabled={!available || loading} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={styles.ioFootText}>{loading ? '全文を取得しています…' : error ?? 'PC側で切り詰め済み'}</Text>
