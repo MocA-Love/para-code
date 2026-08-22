@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentQuestionShape } from '../agentQuestionKeys.js';
@@ -19,7 +19,7 @@ import { setMobileSpanAttributes, startMobileSpan } from '../sentry.js';
  * 同じ toolUseId の tool_result が届いたら回答済み表示になる。
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-export function QuestionCard({ message, answered, refreshing, onAnswer, onMulti, onFreeText }: {
+export const QuestionCard = memo(function QuestionCard({ message, answered, refreshing, onAnswer, onMulti, onFreeText }: {
 	message: AgentChatMessage;
 	answered: boolean;
 	/** 再取得の応答待ち。表示は残したまま操作だけ止める（回答済みとは別の状態）。 */
@@ -150,7 +150,7 @@ export function QuestionCard({ message, answered, refreshing, onAnswer, onMulti,
 			{!disabled && options.length > 0 ? <Text style={styles.hint}>{multiSelect ? 'タップで選択し「決定」で回答します' : 'タップで回答します'}</Text> : null}
 		</View>
 	);
-}
+});
 
 /**
  * 複数質問グループ（AskUserQuestion の questions が2つ以上）のステップ式カード。
@@ -158,7 +158,7 @@ export function QuestionCard({ message, answered, refreshing, onAnswer, onMulti,
  * TUIでは1問ごとのEnterがフォーム全体をSubmitしてしまうため、1問ずつの即時注入はしない
  * （送信キー列の組み立ては useAgentActions.answerQuestionGroup 側）。
  */
-export function QuestionGroupCard({ messages, answered, refreshing, onSubmit }: {
+export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, answered, refreshing, onSubmit }: {
 	/** 同一 questionGroup の質問（questionIndex 順）。 */
 	messages: AgentChatMessage[];
 	answered: boolean;
@@ -325,7 +325,13 @@ export function QuestionGroupCard({ messages, answered, refreshing, onSubmit }: 
 			{error !== undefined ? <Text style={styles.questionError}>{error}</Text> : null}
 		</View>
 	);
-}
+}, (prev, next) =>
+	prev.answered === next.answered
+	&& prev.refreshing === next.refreshing
+	&& prev.onSubmit === next.onSubmit
+	// messages は rows 再計算のたびに作り直される配列なので、要素の同一性で比較する。
+	&& prev.messages.length === next.messages.length
+	&& prev.messages.every((m, i) => m === next.messages[i]));
 
 const styles = StyleSheet.create({
 	questionCard: { backgroundColor: 'rgba(9,175,217,.10)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 16, padding: 14, gap: 8 },

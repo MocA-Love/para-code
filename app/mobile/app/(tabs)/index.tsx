@@ -64,8 +64,8 @@ function renderAgentRows(nodes: readonly ReactElement[], columns: 1 | 2) {
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, createTerminal, homeShowAllWorkspaces, homePreferences, setHomePreferences, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus, archivedKeys, setArchived } = useAppStore(useShallow(s => ({
-		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
+	const { paired, ready, notifications, createTerminal, homeShowAllWorkspaces, homePreferences, setHomePreferences, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus, archivedKeys, setArchived } = useAppStore(useShallow(s => ({
+		paired: s.paired, ready: s.ready, notifications: s.notifications,
 		createTerminal: s.createTerminal,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
 		homePreferences: s.homePreferences, setHomePreferences: s.setHomePreferences,
@@ -73,6 +73,13 @@ export default function HomeScreen() {
 		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin, closeTerminal: s.closeTerminal,
 		ackAgentStatus: s.ackAgentStatus, archivedKeys: s.archivedKeys, setArchived: s.setArchived,
 	})));
+	// **`s.workspace` 本体を購読しない。** 本体は10Hz再送のたびに新参照になるため、本体を
+	// 買うと画面関数と非memo部（arrangeHomeRows 等）がそのたび再実行していた。必要なのは
+	// この3つだけで、いずれも workspaceIdentity.ts の構造共有により中身不変なら参照が
+	// 据え置かれるため、個別に受ければ再送では止まる。
+	const terminals = useAppStore(s => s.workspace?.terminals);
+	const workspaces = useAppStore(s => s.workspace?.workspaces);
+	const activeWs = useAppStore(s => s.workspace?.activeWs);
 	const effectiveWs = useEffectiveWs();
 	// 長押しで開くアクションメニュー（名前を変更/ピン留め/削除）の表示状態。
 	// rect/rowData は「リフト&ディム」で対象行を前面へ浮かせるクローン描画に使う
@@ -106,7 +113,7 @@ export default function HomeScreen() {
 	// memo が毎回外れ、その下流（＋メニュー・絞り込みチップ・ヘッダーの仕様）まで全部作り直しに
 	// なる。先に文字列のキーを作り、それが変わったときだけ `Set` を組む。
 	const scopeKey = !homeShowAllWorkspaces && effectiveWs !== undefined
-		? [effectiveWs.id, ...(workspace?.workspaces ?? []).filter(w => w.parent === effectiveWs.id).map(w => w.id)].join('\n')
+		? [effectiveWs.id, ...(workspaces ?? []).filter(w => w.parent === effectiveWs.id).map(w => w.id)].join('\n')
 		: undefined;
 	const scopeIds = useMemo(
 		() => (scopeKey === undefined ? undefined : new Set(scopeKey.split('\n'))),
@@ -114,13 +121,13 @@ export default function HomeScreen() {
 	// 以下の derive は memo 済みの行へ渡る値の出どころなので、参照を安定させておく。
 	// state 側で中身の参照が据え置かれる（workspaceIdentity.ts）ため、PCから同じ内容が
 	// 再送された場合はここも丸ごと据え置かれ、行の memo が実際に効くようになる。
-	const wsById = useMemo(() => new Map((workspace?.workspaces ?? []).map(w => [w.id, w])), [workspace?.workspaces]);
+	const wsById = useMemo(() => new Map((workspaces ?? []).map(w => [w.id, w])), [workspaces]);
 	/** ws未タグのターミナルはPC側アクティブワークスペース所属として扱う（ホーム全体で共通のフォールバック順）。 */
 	const resolveWs = useCallback((t: { ws?: string }) =>
 		(t.ws !== undefined ? wsById.get(t.ws) : undefined)
-		?? (workspace?.activeWs !== undefined ? wsById.get(workspace.activeWs) : undefined)
-		?? workspace?.workspaces[0],
-		[wsById, workspace?.activeWs, workspace?.workspaces]);
+		?? (activeWs !== undefined ? wsById.get(activeWs) : undefined)
+		?? workspaces?.[0],
+		[wsById, activeWs, workspaces]);
 	const inScope = useCallback((t: { ws?: string }) => {
 		if (scopeIds === undefined) {
 			return true;
@@ -135,12 +142,12 @@ export default function HomeScreen() {
 	// 一覧と同じく、エージェントCLIが動いた実績のあるターミナルだけを対象にする
 	// （プレーンなターミナルが状態を拾って最上部に居座るのを防ぐ）。
 	const waitingTerminals = useMemo(
-		() => sortWaiting((workspace?.terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus) && inScope(t))),
-		[workspace?.terminals, inScope]);
+		() => sortWaiting((terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus) && inScope(t))),
+		[terminals, inScope]);
 	const waitingKeys = waitingTerminals.map(t => t.terminalKey);
 	// 「見たことがある」の記録は絞り込みの外側で取る（ドロワーで表示範囲を往復しただけで
 	// 記録が消え、自分で畳んだ1件が開き直るのを防ぐ）。
-	const knownWaitingKeys = (workspace?.terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus)).map(t => t.terminalKey);
+	const knownWaitingKeys = (terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus)).map(t => t.terminalKey);
 	const [attention, setAttention] = useState<AttentionOpenState>(CLOSED_ATTENTION);
 	const [attentionExpanded, setAttentionExpanded] = useState(false);
 	// 顔ぶれの変化に合わせた開閉は描画に即反映したいので、レンダー中に解決してから状態へ書き戻す
@@ -279,7 +286,7 @@ export default function HomeScreen() {
 	// 流れるので、毎レンダー新しいと下流の `useCallback`/`useMemo` が全部無効になり、
 	// PCからのstate再送（最大10Hz）ごとにヘッダー層へ書き込みが走る。
 	const listable = useMemo(
-		() => (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus)),
+		() => (terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus)),
 		// `inScope` 自体が useCallback で安定しているので、依存はそれを直接書けば足りる
 		// （以前はここに `inScope` の依存を手で写していたため、向こうに条件を1つ足すと
 		// この一覧だけ古い判定を使い続ける、という気付きにくい壊れ方をする形だった）。
@@ -287,13 +294,13 @@ export default function HomeScreen() {
 		// なお `workspace.terminals` は、中身が同じなら再送のたびに**同じ参照が据え置かれる**
 		// （`workspaceIdentity.ts` の構造共有）。以前は毎回新品になっていたため、エージェントが
 		// 走っている間の再送（最大10Hz）でここが通り抜けていた。今は中身が本当に変わったときだけ通る。
-		[workspace?.terminals, inScope, archivedKeys]);
+		[terminals, inScope, archivedKeys]);
 	// 「すべて確認済みにする」の対象。既読の概念があるのはレビュー待ちだけで、実行中や
 	// アイドルには確認するものが無い。応答待ちは回答して解消するものなので含めない。
 	const reviewable = useMemo(() => listable.filter(t => t.agentStatus === 'review'), [listable]);
 
 	// アーカイブ入口は、しまってあるものが1件でもある時だけ出す（常設だと空のボタンが並ぶ）。
-	const archivedCount = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))).length;
+	const archivedCount = (terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))).length;
 
 	/**
 	 * ヘッダーの＋メニューで選んだ項目の行き先。
@@ -379,7 +386,7 @@ export default function HomeScreen() {
 	// スペース順の基準はドロワーのワークスペース一覧と同じ並びにする。所属の解決は
 	// resolveWs を通す（ws未タグをPC側アクティブスペース所属として扱う共通の規則。
 	// ここを飛ばすと、行に出ているスペース名と並び順がずれる）。
-	const spaceIndex = new Map((workspace?.workspaces ?? []).map((w, index) => [w.id, index]));
+	const spaceIndex = new Map((workspaces ?? []).map((w, index) => [w.id, index]));
 	const rows = arrangeHomeRows(listable, homePreferences, {
 		spaceIndexOf: t => { const ws = resolveWs(t); return ws !== undefined ? spaceIndex.get(ws.id) : undefined; },
 		isPinned: t => pinnedKeys.has(pinKeyForTerminal(t)),
@@ -448,7 +455,7 @@ export default function HomeScreen() {
 							: `${effectiveWs.name} のエージェントはまだありません。ドロワー上部の「すべて表示」で他のワークスペースも確認できます。`}
 					</Text>
 				) : null}
-				{(workspace?.workspaces.length ?? 0) === 0 ? (
+				{(workspaces?.length ?? 0) === 0 ? (
 					<Text style={styles.dimSmall}>ワークスペース情報を取得中… PCの Para Code でリポジトリを登録すると表示されます。</Text>
 				) : null}
 			</ScrollView>
@@ -484,7 +491,7 @@ export default function HomeScreen() {
 				onClose={() => setMenu(undefined)}
 				onRename={(terminalKey, title) => renameTerminal(terminalKey, title)}
 				onTogglePin={terminalKey => {
-					const terminal = workspace?.terminals.find(term => term.terminalKey === terminalKey);
+					const terminal = terminals?.find(term => term.terminalKey === terminalKey);
 					if (terminal) {
 						togglePin(pinKeyForTerminal(terminal));
 					}

@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentChatMessage } from '../store.js';
@@ -23,7 +23,12 @@ import { hapticSelection } from '../haptics.js';
  * 中身は行数で切らず、枠の高さ上限＋枠内スクロールで抑える。旧実装は展開しても
  * numberOfLines で切っていたため「展開したのに続きが読めない」状態だった。
  */
-export function AgentTimeline({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey?: string }) {
+/**
+ * **memo する。** ストリーミング中は親（agent.tsx）が delta ごとに再描画されるうえ、
+ * 集約行の `msgs` 配列は rows 再計算のたびに作り直される。コンパレータで要素の同一性まで
+ * 見ないと memo が素通りし、折りたたみ中も buildTimelineSteps/summarizeSteps が走り続ける。
+ */
+export const AgentTimeline = memo(function AgentTimeline({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey?: string }) {
 	const [expanded, setExpanded] = useState(false);
 	const steps = buildTimelineSteps(msgs);
 	return (
@@ -47,7 +52,10 @@ export function AgentTimeline({ msgs, terminalKey }: { msgs: AgentChatMessage[];
 			) : null}
 		</View>
 	);
-}
+}, (prev, next) =>
+	prev.terminalKey === next.terminalKey
+	&& prev.msgs.length === next.msgs.length
+	&& prev.msgs.every((m, i) => m === next.msgs[i]));
 
 /** ステップ1件（ヘッダー行＋開いた中身）。 */
 function TimelineStepRow({ step, terminalKey, first, last }: { step: AgentTimelineStep; terminalKey?: string; first: boolean; last: boolean }) {

@@ -32,6 +32,31 @@ function clipboard(): { setStringAsync(text: string): Promise<boolean> } | undef
 }
 
 /**
+ * 枠内表示に載せる本文の上限。Yoga/TextKit の測定は可視領域（200pt枠）ではなく**全文サイズ**
+ * に対して走るため、数万字級を単一 Text へ流し込むと展開した瞬間に数百ms〜固まり得る。
+ * 行数で切ると改行無しの巨大1行（minified JSON 等）を救えないので、文字数でも切る二段構え。
+ *
+ * クリップボードへのコピーは**全文が対象**（データとしては全文を持っている。EditDiff /
+ * HitList の「ほか N 行」パターンと同じ割り切り）。PC側も FULL_TEXT_LIMIT(64KB) で
+ * 打ち切っているため、ここより大きくなることはない。
+ */
+const IO_DISPLAY_LINES = 500;
+const IO_DISPLAY_CHARS = 20_000;
+
+function clipForDisplay(body: string): { text: string; omittedLines: number } {
+	const lines = body.split('\n');
+	if (lines.length <= IO_DISPLAY_LINES && body.length <= IO_DISPLAY_CHARS) {
+		return { text: body, omittedLines: 0 };
+	}
+	const kept = lines.slice(0, IO_DISPLAY_LINES);
+	let text = kept.join('\n');
+	if (text.length > IO_DISPLAY_CHARS) {
+		text = text.slice(0, IO_DISPLAY_CHARS);
+	}
+	return { text, omittedLines: Math.max(0, lines.length - kept.length) };
+}
+
+/**
  * PC側で切り詰められた本文の全文取り寄せ。展開したときだけ通信するので、
  * 常時全文を送るより転送量が小さい（PC側は rev 単位で全文を退避している）。
  */
@@ -61,9 +86,11 @@ export function useFullText(message: AgentChatMessage, terminalKey: string | und
  */
 export function ExpandableText({ message, terminalKey, style }: { message: AgentChatMessage; terminalKey?: string; style?: StyleProp<TextStyle> }) {
 	const { full, loading, error, load, available } = useFullText(message, terminalKey);
+	const clipped = clipForDisplay(full ?? message.text);
 	return (
 		<View>
-			<Text style={style} selectable>{full ?? message.text}</Text>
+			<Text style={style} selectable>{clipped.text}</Text>
+			{clipped.omittedLines > 0 ? <Text style={styles.plainNote}>ほか {clipped.omittedLines} 行を省略しています</Text> : null}
 			{message.truncated === true && full === undefined ? (
 				<Pressable onPress={load} disabled={!available || loading} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={styles.plainNote}>
@@ -91,6 +118,8 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 			setTimeout(() => setCopied(false), 1200);
 		}).catch(() => { /* コピー不可の環境では黙って何もしない */ });
 	};
+	// 表示は上限ぶんだけ測らせる（Yogaの測定コストは全文サイズに比例する）。コピーは全文。
+	const { text: displayBody, omittedLines } = clipForDisplay(body);
 	return (
 		<View style={styles.io}>
 			<View style={styles.ioBar}>
@@ -111,13 +140,14 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 			</View>
 			<ScrollView style={styles.ioScroll} nestedScrollEnabled contentContainerStyle={styles.ioScrollContent}>
 				{wrap
-					? <Text style={[styles.ioText, styles.ioWrapText]} selectable>{body}</Text>
+					? <Text style={[styles.ioText, styles.ioWrapText]} selectable>{displayBody}</Text>
 					: (
 						<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.ioWide}>
-							<Text style={styles.ioText} selectable>{body}</Text>
+							<Text style={styles.ioText} selectable>{displayBody}</Text>
 						</ScrollView>
 					)}
 			</ScrollView>
+			{omittedLines > 0 ? <Text style={styles.ioFootText}>ほか {omittedLines} 行を省略しています（コピーは全体が対象）</Text> : null}
 			{message.truncated === true && full === undefined ? (
 				<Pressable style={styles.ioFoot} onPress={load} disabled={!available || loading} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={styles.ioFootText}>{loading ? '全文を取得しています…' : error ?? 'PC側で切り詰め済み'}</Text>

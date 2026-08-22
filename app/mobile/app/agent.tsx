@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -57,8 +57,8 @@ import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
-		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
+	const { workspace, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
+		workspace: s.workspace, selectedWs: s.selectedWs,
 		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, requestAgentCommandCatalog: s.requestAgentCommandCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
@@ -93,7 +93,11 @@ export default function AgentDetailScreen() {
 		terminal => (terminal.ws ?? workspace?.activeWs) === effectiveWsId,
 	);
 	const activeKey = activeTerminal?.terminalKey;
-	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
+	// agentChats は **Map本体を購読しない**。emit は更新のたびに新しい Map を作るため、
+	// 本体を買うと「他のエージェントが出力している間ずっと（≈8Hzで）」この画面が
+	// 再描画される。必要なのは表示中ターミナル1件だけなので、個別に購読する
+	// （useAgentActions.ts の useAgentChatSubscription と同じ回避パターン）。
+	const chat = useAppStore(s => (activeKey !== undefined ? s.agentChats.get(activeKey) : undefined));
 	const chatReady = chat !== undefined && !chat.none;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
@@ -642,7 +646,7 @@ function Favicon({ domain }: { domain: string }) {
 }
 
 /** ChatGPTの検索中表示に近い、クエリ＋発見サイトfaviconの専用アクティビティ。 */
-function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey?: string }) {
+const WebSearchActivity = memo(function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey?: string }) {
 	const [expanded, setExpanded] = useState(false);
 	const query = msgs.find(message => message.kind === 'tool_use' && message.tool === 'web_search')?.text ?? 'Web検索';
 	const sites = webSites(msgs);
@@ -658,9 +662,13 @@ function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; te
 		    numberOfLines で切っていたため、開いても続きが読めなかった */}
 		{expanded ? <View style={styles.activityBody}>{msgs.filter(message => message.kind === 'tool_result').map(message => <IOBlock key={message.rev} label="検索結果" message={message} terminalKey={terminalKey} lines />)}{sites.map(site => <Pressable key={site.domain} style={styles.domainRow} onPress={() => { hapticSelection(); void Linking.openURL(site.url).catch(() => { /* 開けないURLは無視 */ }); }} accessibilityRole="link" accessibilityLabel={`${site.domain} をブラウザで開く`}><Favicon domain={site.domain} /><Text style={styles.domainText}>{site.domain}</Text><Ionicons name="open-outline" size={11} color={colors.textDim} /></Pressable>)}</View> : null}
 	</View>;
-}
+}, (prev, next) =>
+	prev.terminalKey === next.terminalKey
+	// msgs は rows 再計算のたびに作り直される配列なので、要素の同一性で比較する。
+	&& prev.msgs.length === next.msgs.length
+	&& prev.msgs.every((m, i) => m === next.msgs[i]));
 
-function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
+const MessageBubble = memo(function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
 	if (message.kind === 'peer_message') {
 		return (
 			<View style={styles.peerMessageCard}>
@@ -687,7 +695,7 @@ function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; te
 			{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
 		</View>
 	);
-}
+});
 
 /** エージェントがターン実行中に出す「考え中」インジケータ（ドットの脈動アニメーション）。 */
 function WorkingIndicator({ live, pendingCount = 0, onOpenPending }: {
