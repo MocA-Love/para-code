@@ -27,6 +27,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import {
 	IParadisRtkCommandRow,
 	IParadisRtkDailyRow,
@@ -291,13 +292,19 @@ export class ParadisRtkService implements IParadisRtkService {
 	private async exec(explicitPath: string | undefined, args: string[]): Promise<string> {
 		const command = this.resolveCommand(explicitPath);
 		const env = await this.cachedShellEnv.getEnv();
+		// 明示パスが Windows の .cmd/.bat シムを指す場合は cmd.exe 経由にラップする
+		// (shell 指定なしの execFile は CVE-2024-27980 対策後の Node では EINVAL になる)。
+		// PATH 上の素のコマンド名 'rtk' は拡張子を持たないため対象外(npm 由来の rtk.cmd は
+		// execFile('rtk') の解決対象にならない=従来どおり未インストール扱い)。
+		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
 		return new Promise<string>((resolve, reject) => {
 			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
-			execution.child = this.execFile(command, args, {
+			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
 				encoding: 'utf8',
 				timeout: EXEC_TIMEOUT_MS,
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
+				windowsVerbatimArguments: shimInvocation !== undefined,
 				env: { ...env, NO_COLOR: '1' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;

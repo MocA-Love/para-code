@@ -31,27 +31,11 @@ import { dirname, join } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisSshHostFromAuthority } from '../../../common/paradisHostPath.js';
 
-/** `ssh-remote+<host>` から ssh に渡すホスト名を取り出す。他の種類の authority は扱わない。 */
-export function paradisSshHostFromAuthority(remoteAuthority: string | undefined): string | undefined {
-	if (!remoteAuthority) {
-		return undefined;
-	}
-	const separator = remoteAuthority.indexOf('+');
-	if (separator < 0) {
-		return undefined;
-	}
-	const kind = remoteAuthority.slice(0, separator);
-	const host = remoteAuthority.slice(separator + 1);
-	if (kind !== 'ssh-remote' || host.length === 0) {
-		return undefined;
-	}
-	// ssh の引数に渡すので、ホスト名として妥当な文字だけを通す（オプション注入を防ぐ）
-	if (host.startsWith('-') || !/^[A-Za-z0-9._@%:\-[\]]+$/.test(host)) {
-		return undefined;
-	}
-	return host;
-}
+// かつてこのファイルにあった paradisSshHostFromAuthority は、browser 側（コマンドプリセットの
+// 実行環境条件）でも必要になったため common へ移した。既存の import 経路を壊さないよう再エクスポートする。
+export { paradisSshHostFromAuthority };
 
 /**
  * 接続先のシェルへ1語として渡すためのクォート。
