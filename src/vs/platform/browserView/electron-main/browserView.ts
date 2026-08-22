@@ -9,7 +9,7 @@ import { nativeImage, screen, WebContentsView, webContents, type NativeImage, ty
 import { Disposable, MutableDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
-import { IBrowserViewBounds, IBrowserViewDevToolsStateEvent, IBrowserViewFocusEvent, IBrowserViewKeyDownEvent, IBrowserViewState, IBrowserViewNavigationEvent, IBrowserViewLoadingEvent, IBrowserViewLoadError, IBrowserViewTitleChangeEvent, IBrowserViewFaviconChangeEvent, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, IBrowserViewFindInPageResult, IBrowserViewVisibilityEvent, browserViewIsolatedWorldId, browserZoomFactors, browserZoomDefaultIndex, IBrowserViewOwner, IBrowserViewOpenOptions, IBrowserViewPermissionRequestEvent } from '../common/browserView.js';
+import { IBrowserViewAudience, IBrowserViewBounds, IBrowserViewDevToolsStateEvent, IBrowserViewFocusEvent, IBrowserViewKeyDownEvent, IBrowserViewState, IBrowserViewNavigationEvent, IBrowserViewLoadingEvent, IBrowserViewLoadError, IBrowserViewTitleChangeEvent, IBrowserViewFaviconChangeEvent, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, IBrowserViewFindInPageResult, IBrowserViewVisibilityEvent, browserViewIsolatedWorldId, browserZoomFactors, browserZoomDefaultIndex, IBrowserViewOwner, IBrowserViewOpenOptions, IBrowserViewPermissionRequestEvent, equalsBrowserViewAudience, isBrowserViewAssociatedResourceNavigation, matchesBrowserViewAudience } from '../common/browserView.js';
 import { BrowserViewEmulator } from './browserViewEmulator.js';
 import { BrowserViewInspector } from './browserViewInspector.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
@@ -24,6 +24,7 @@ import { IAuxiliaryWindow } from '../../auxiliaryWindow/electron-main/auxiliaryW
 import { SCAN_CODE_STR_TO_EVENT_KEY_CODE } from '../../../base/common/keyCodes.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { logBrowserOpen } from '../common/browserViewTelemetry.js';
+import { URI } from '../../../base/common/uri.js';
 // PARA-PATCH: import the fork's screenshot policy helpers (route selection, pixel-budget guard, bounded scale, retry/restore) for the hardened capture pipeline (Para Browser MCP screenshot hardening)
 import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/browserViewScreenshot.js';
 // PARA-PATCH: import automation-key signature helpers and the expectation queue used to isolate injected keystrokes (Para Browser MCP automation input isolation)
@@ -41,6 +42,7 @@ interface IPendingAutomationKeyAck {
 	readonly resolve: (accepted: boolean) => void;
 	readonly timer: ReturnType<typeof setTimeout>;
 }
+
 
 enum NewPageLocation {
 	Foreground = 'foreground',
@@ -77,6 +79,7 @@ export class BrowserView extends Disposable {
 	private _ownerWindow: ICodeWindow;
 	private _currentWindow: ICodeWindow | IAuxiliaryWindow | undefined;
 	private _isDisposed = false;
+	private _audiences: readonly IBrowserViewAudience[] = [];
 
 	private _wantsVisibility = false;
 	// PARA-PATCH: at most one deferred focus hand-back per view (setVisible is called repeatedly; registering a disposable per call would pile them up on the view)
@@ -140,11 +143,15 @@ export class BrowserView extends Disposable {
 	private readonly _onDidChangePermissions = this._register(new Emitter<ISerializedBrowserPermissionsSnapshot>());
 	readonly onDidChangePermissions: Event<ISerializedBrowserPermissionsSnapshot> = this._onDidChangePermissions.event;
 
+	private readonly _onDidChangeAudiences = this._register(new Emitter<IBrowserViewAudience[]>());
+	readonly onDidChangeAudiences: Event<IBrowserViewAudience[]> = this._onDidChangeAudiences.event;
+
 	constructor(
 		public readonly id: string,
 		public readonly owner: IBrowserViewOwner,
+		public readonly associatedResource: URI | undefined,
 		public readonly session: BrowserSession,
-		createChildView: (url: string, electronOptions: Electron.WebContentsViewConstructorOptions | undefined, openOptions: IBrowserViewOpenOptions) => BrowserView,
+		private readonly _createChildView: (url: string, electronOptions: Electron.WebContentsViewConstructorOptions | undefined, openOptions: IBrowserViewOpenOptions) => BrowserView,
 		openContextMenu: (view: BrowserView, params: Electron.ContextMenuParams) => void,
 		options: Electron.WebContentsViewConstructorOptions | undefined,
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
@@ -225,7 +232,7 @@ export class BrowserView extends Disposable {
 						}
 					})());
 
-					const childView = createChildView(details.url, options, {
+					const childView = this._createChildView(details.url, options, {
 						pinned: true,
 						background: location === NewPageLocation.Background,
 						parentViewId: id,
@@ -251,7 +258,7 @@ export class BrowserView extends Disposable {
 			this.dispose();
 		});
 
-		this.debugger = new BrowserViewDebugger(this, this.logService);
+		this.debugger = new BrowserViewDebugger(this);
 		// PARA-PATCH: drop stale automation key expectations when the debugger detaches so recovery starts clean (Para Browser MCP automation input isolation)
 		this._register(this.debugger.onDidDetach(() => this.clearAutomationKeyExpectations()));
 		this.emulator = this._register(new BrowserViewEmulator(this, this.logService));
@@ -344,11 +351,20 @@ export class BrowserView extends Disposable {
 			}
 		});
 		webContents.on('will-navigate', (event) => {
+			if (this._redirectPinnedNavigation(event.url)) {
+				event.preventDefault();
+				return;
+			}
 			// URL.parse (vs `new URL`) tolerates about:/blob:/empty strings without throwing.
 			const host = URL.parse(event.url)?.host;
 			const currHost = URL.parse(this.webContents.getURL())?.host;
 			if (host !== currHost) {
 				this._lastFavicon = undefined;
+			}
+		});
+		webContents.on('will-redirect', event => {
+			if (this._redirectPinnedNavigation(event.url)) {
+				event.preventDefault();
 			}
 		});
 
@@ -948,8 +964,37 @@ export class BrowserView extends Disposable {
 			elementSelectionState: this.inspector.elementSelectionState,
 			isRemoteSession: this.session.remote.isRemote,
 			isAreaSelectionActive: this.inspector.isAreaSelectionActive,
-			device: this.emulator.device
+			device: this.emulator.device,
+			audiences: [...this._audiences]
 		};
+	}
+
+	get audiences(): readonly IBrowserViewAudience[] {
+		return this._audiences;
+	}
+
+	setAudience(audience: IBrowserViewAudience, enabled: boolean): void {
+		if (enabled) {
+			if (!this._audiences.some(candidate => equalsBrowserViewAudience(candidate, audience))) {
+				this._audiences = [...this._audiences, audience];
+				this._onDidChangeAudiences.fire([...this._audiences]);
+			}
+		} else {
+			const audiences = this._audiences.filter(candidate => !matchesBrowserViewAudience(candidate, audience));
+			if (audiences.length !== this._audiences.length) {
+				this._audiences = audiences;
+				this._onDidChangeAudiences.fire([...this._audiences]);
+			}
+		}
+	}
+
+	setAudiences(audiences: readonly IBrowserViewAudience[]): void {
+		if (audiences.length === this._audiences.length && audiences.every(audience => this._audiences.some(candidate => equalsBrowserViewAudience(candidate, audience)))) {
+			return;
+		}
+
+		this._audiences = [...audiences];
+		this._onDidChangeAudiences.fire([...this._audiences]);
 	}
 
 	/**
@@ -1057,11 +1102,27 @@ export class BrowserView extends Disposable {
 	 * Load a URL in this view
 	 */
 	async loadURL(url: string): Promise<void> {
+		if (this._redirectPinnedNavigation(url)) {
+			return;
+		}
 		this._explicitNavigationPending = true;
 		// Wait for the tunnel proxy (if any) to be applied so the navigation
 		// and the requests it triggers flow through the proxy.
 		await this.session.remote.whenReady;
 		await this._view.webContents.loadURL(url);
+	}
+
+	private _redirectPinnedNavigation(url: string): boolean {
+		if (!this.associatedResource || isBrowserViewAssociatedResourceNavigation(this.associatedResource, url)) {
+			return false;
+		}
+
+		logBrowserOpen(this.telemetryService, 'browserLinkForeground');
+		this._createChildView(url, undefined, {
+			pinned: true,
+			parentViewId: this.id
+		});
+		return true;
 	}
 
 	/**

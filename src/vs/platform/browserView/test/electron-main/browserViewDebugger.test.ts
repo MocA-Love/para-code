@@ -35,7 +35,7 @@ suite('BrowserViewDebugger', () => {
 				isDestroyed: () => false,
 			},
 		} as unknown as BrowserView;
-		const browserDebugger = new BrowserViewDebugger(view, {} as never);
+		const browserDebugger = new BrowserViewDebugger(view);
 		let detachEvents = 0;
 		const listener = browserDebugger.onDidDetach(() => detachEvents++);
 
