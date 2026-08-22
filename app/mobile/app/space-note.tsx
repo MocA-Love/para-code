@@ -284,6 +284,12 @@ export default function SpaceNoteScreen() {
 		addDraft.current = '';
 		setError(undefined);
 		setAdding(true);
+		// 追加行は autoFocus でキーボードを出すが、その間にレイアウトが伸びても自動では
+		// 見えない（キーボード裏のまま）。確定後の scrollToEnd と同じく、キーボード出現の
+		// アニメが落ち着いてから末尾へ寄せる。
+		setTimeout(() => {
+			requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+		}, 320);
 	};
 
 	const stopAdding = useCallback(() => {

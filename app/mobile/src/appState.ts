@@ -931,6 +931,9 @@ export const useAppStore = create<AppState>(set => ({
 	notifications: [],
 	browserFrame: undefined,
 	agentChats: new Map(),
+	// アプリ起動直後は「初期化中」。init 完了までゲートに誤った未接続画面を出さない。
+	initializing: true,
+	initError: undefined,
 	ready: false,
 	paired: false,
 	pcs: [],
@@ -987,6 +990,7 @@ export const useAppStore = create<AppState>(set => ({
 			return;
 		}
 		initStarted = true;
+		set({ initializing: true, initError: undefined });
 		try {
 			configureNotificationHandler();
 			const loaded = await loadOrCreateIdentity(secureKeyStore);
@@ -1168,6 +1172,7 @@ export const useAppStore = create<AppState>(set => ({
 				startConnectionHeartbeat();
 			}
 			set({
+				initializing: false,
 				ready: true,
 				paired: storedPcs.length > 0,
 				pcs: pcSummaries(),
@@ -1189,6 +1194,9 @@ export const useAppStore = create<AppState>(set => ({
 			// 次回の init() で再試行できるようにガードを戻す（特に dev の Fast Refresh は
 			// モジュール状態が保持されるため、戻さないと復帰不能になる）。
 			initStarted = false;
+			// 失敗したことをゲートへ伝える。記録しないと「PCに接続できていません」のまま固まり、
+			// 再接続ボタン（connectRelay）は runtimes が空で何もしないため復帰不能だった。
+			set({ initializing: false, initError: String(err instanceof Error ? err.message : err) });
 			throw err;
 		}
 	},
