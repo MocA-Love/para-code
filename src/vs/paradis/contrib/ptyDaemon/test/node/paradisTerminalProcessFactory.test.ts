@@ -55,7 +55,13 @@ suite('ParadisTerminalProcessFactory', () => {
 	 */
 	function useDaemon(): Emitter<void> {
 		const gone = store.add(new Emitter<void>());
-		paradisUsePtyDaemon({ host: {} as never, client: { onDidDispose: gone.event } as never });
+		// 配る人がここを購読するので、イベントの口は本物にしておく。
+		const host = {
+			onDidChangeData: store.add(new Emitter<never>()).event,
+			onDidChangeTitle: store.add(new Emitter<never>()).event,
+			onDidExit: store.add(new Emitter<never>()).event,
+		} as never;
+		paradisUsePtyDaemon({ host, client: { onDidDispose: gone.event } as never });
 		store.add(toDisposable(() => paradisUsePtyDaemon(undefined)));
 		return gone;
 	}

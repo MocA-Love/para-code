@@ -60,6 +60,8 @@ export async function paradisBootstrapPtyHost(options: IParadisPtyHostBootstrapO
 			args: [options.bootstrapPath],
 			env: {
 				VSCODE_ESM_ENTRYPOINT: 'vs/paradis/contrib/ptyDaemon/node/paradisPtyHostDaemonEntry',
+				// 常駐が自分で置き場所を計算し直して、渡された値と突き合わせるために要る。
+				[PARADIS_PTY_HOST_STATE_DIR]: stateDir,
 				// 台帳と身元の仕組みは前の常駐と共通。版を「ビルド」の位置に入れるのは、
 				// **この常駐にとってビルドに当たるものが protocol の版だから**。
 				...paradisPtyDaemonEnv(

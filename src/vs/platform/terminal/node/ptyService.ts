@@ -26,7 +26,7 @@ import { ShellIntegrationAddon } from '../common/xterm/shellIntegrationAddon.js'
 import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
 import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
-import { IParadisAdoptTarget, paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
@@ -656,6 +656,9 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async getTerminalLayoutInfo(args: IGetTerminalLayoutInfoArgs): Promise<ITerminalsLayoutInfo | undefined> {
 		performance.mark('code/willGetTerminalLayoutInfo');
+		// PARA-PATCH: a window asked before terminals kept by a daemon were taken back would see
+		// none of them, and nothing tells it later. See paradisTerminalProcessFactory.ts.
+		await paradisAdoptionSettled();
 		const layout = this._workspaceLayoutInfos.get(args.workspaceId);
 		if (layout) {
 			const doneSet: Set<number> = new Set();

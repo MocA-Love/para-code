@@ -29,7 +29,7 @@ import { paradisServePtyDaemon } from '../../../paradis/contrib/ptyDaemon/node/p
 import { paradisRunPtyDaemonLifecycle } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyDaemonLifecycle.js';
 import { FileAccess } from '../../../base/common/network.js';
 import { paradisBootstrapPtyHost } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyHostBootstrap.js';
-import { paradisAwaitPtyDaemon, paradisPtyDaemonConnection } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { paradisAwaitAdoption, paradisAwaitPtyDaemon, paradisPtyDaemonConnection } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisAdoptIntoPtyService } from '../../../paradis/contrib/ptyDaemon/node/paradisAdoptIntoPtyService.js';
 
 startPtyHost();
@@ -153,12 +153,12 @@ async function startPtyHost() {
 	// PARA-PATCH: take back terminals the daemon kept running while no app was here. This runs after
 	// the channels are registered, so a window that connects meanwhile is answered rather than timed
 	// out; the terminals it does not see yet show up once this finishes.
-	paradisJoiningDaemon.then(async joined => {
+	paradisAwaitAdoption(paradisJoiningDaemon.then(async joined => {
 		const paradisConnection = joined ? paradisPtyDaemonConnection() : undefined;
 		if (paradisConnection) {
 			await paradisAdoptIntoPtyService(ptyService, paradisConnection.host, logService);
 		}
-	}, error => logService.error('[ParadisPtyHost] could not join the daemon', error));
+	}, error => logService.error('[ParadisPtyHost] could not join the daemon', error)));
 
 	// PARA-PATCH: nothing outlives the app to clean up after the in-app pty host, but the daemon has
 	// to decide its own end: write itself into the ledger, and step down once no one needs it.

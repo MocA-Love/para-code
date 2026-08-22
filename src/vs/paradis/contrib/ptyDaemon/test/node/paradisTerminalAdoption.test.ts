@@ -176,6 +176,23 @@ suite('ParadisTerminalAdoption', () => {
 		);
 	});
 
+	test('すでに誰かが見ているものは引き取らない。二重に持たない', async () => {
+		const { host } = daemon();
+		const watched = (await host.spawn(spawnRequest('{}'))).handle;
+		await host.spawn(spawnRequest('{}'));
+
+		// 更新のあと古いサーバーが居座ると、両方が同じ置き場所を見る。両方が引き取ると
+		// 入力も出力も二重になり、こちらの終了操作が向こうの端末を殺す。
+		await host.attach(watched);
+
+		const result = await paradisAdoptTerminals(host);
+
+		assert.deepStrictEqual(
+			{ adopted: result.adopted.map(terminal => terminal.summary.handle), skipped: result.skipped },
+			{ adopted: [2], skipped: 1 },
+		);
+	});
+
 	test('常駐と話せないことを「抱えているものが無い」と混同しない', async () => {
 		const { host } = daemon();
 		const unreachable = partlyBroken(host, { list: () => Promise.reject(new Error('socket is gone')) });

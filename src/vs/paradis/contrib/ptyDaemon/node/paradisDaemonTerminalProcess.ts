@@ -53,6 +53,7 @@ import {
 import { IProcessEnvironment } from '../../../../base/common/platform.js';
 import { IParadisPtyAttachment, IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { paradisEncodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
+import { ParadisPtyDispatch } from './paradisPtyDispatch.js';
 import { paradisShellTypeFromTitle } from './paradisShellType.js';
 
 /** ターミナルの持ち主。常駐へ預けて、引き取るときに読み戻す。 */
@@ -150,6 +151,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		 * 省略できるのは、テストや常駐が無い経路で邪魔にならないようにするため。
 		 */
 		private readonly hostLifetime?: { onDidDispose: Event<void> },
+		/** 常駐から流れてくるものを配る人。省略時はこの端末だけの使い捨てを作る。 */
+		dispatch?: ParadisPtyDispatch,
 		/**
 		 * すでに常駐が抱えているものを引き取る場合の相手。
 		 *
@@ -160,7 +163,10 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	) {
 		super();
 		this.initialCwd = cwd;
+		this.dispatch = dispatch ?? this._register(new ParadisPtyDispatch(host));
 	}
+
+	private readonly dispatch: ParadisPtyDispatch;
 
 	async start(): Promise<ITerminalLaunchError | ITerminalLaunchResult | undefined> {
 		if (this.adoptTarget) {
@@ -253,31 +259,22 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		const monitor = wiring.add(new ChildProcessMonitor(pid, this.logService));
 		this.childProcesses.value = monitor;
 		wiring.add(monitor.onDidChangeHasChildProcesses(value => this._onDidChangeProperty.fire({ type: ProcessPropertyType.HasChildProcesses, value })));
-		wiring.add(this.host.onDidChangeData(event => {
-			if (event.handle !== handle) {
-				return;
-			}
-			this._onProcessData.fire(event.data);
+		// **配る側は1つ。** 端末ごとに常駐を購読すると、全端末の全出力が本数ぶんソケットを通る。
+		const stream = wiring.add(this.dispatch.listen(handle));
+		wiring.add(stream.onData(data => {
+			this._onProcessData.fire(data);
 			this.childProcesses.value?.handleOutput();
 		}));
-		wiring.add(this.host.onDidChangeTitle(event => {
-			if (event.handle !== handle) {
-				return;
-			}
-			this.reportTitle(event.title);
-		}));
+		wiring.add(stream.onTitle(title => this.reportTitle(title)));
 		// **常駐が落ちたら、終わったことにする。** 繋がりが切れると出力も終了も二度と来ない。
 		// 黙って無反応のままにすると、器が畳まれずタブも閉じられなくなる。プロセス自体は
 		// 常駐と一緒に落ちているので、終わったと伝えるのが実態に合う。
 		if (this.hostLifetime) {
 			wiring.add(this.hostLifetime.onDidDispose(() => this.fireExitOnce(undefined)));
 		}
-		wiring.add(this.host.onDidExit(event => {
-			if (event.handle !== handle) {
-				return;
-			}
+		wiring.add(stream.onExit(code => {
 			this.exited = true;
-			this.fireExitOnce(event.code);
+			this.fireExitOnce(code);
 		}));
 
 		this._onProcessReady.fire({ pid, cwd: this.initialCwd, windowsPty: undefined });
