@@ -147,6 +147,14 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		private readonly logService: ILogService,
 		private readonly productService: IProductService,
 		/**
+		 * この pty ホストの名札。常駐が「誰が見ているか」を持つのに使う。
+		 *
+		 * **必須にしてある。** 既定値を持たせると、渡し忘れが「誰の持ち分にも入らない端末」
+		 * という無音の形で出る（その相手が消えても離されず、引き取りからも飛ばされる）。
+		 * 渡し忘れは型で落ちるべきもの。
+		 */
+		private readonly viewer: string,
+		/**
 		 * このターミナルが誰のものか。**常駐へ預けるのはこれ。**
 		 *
 		 * 預けないと、引き取ったときに所属が空になる。所属が空だと、どのウィンドウの配置にも
@@ -162,8 +170,6 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		private readonly hostLifetime?: { onDidDispose: Event<void> },
 		/** 常駐から流れてくるものを配る人。省略時はこの端末だけの使い捨てを作る。 */
 		dispatch?: ParadisPtyDispatch,
-		/** この pty ホストの名札。常駐が「誰が見ているか」を持つのに使う。 */
-		private readonly viewer: string = '',
 		/**
 		 * すでに常駐が抱えているものを引き取る場合の相手。
 		 *
@@ -235,6 +241,16 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			return { message: localize('paradis.ptyDaemon.launchFailed', "The terminal could not be started ({0})", String(error)) };
 		}
 
+		if (this._store.isDisposed || this.exitFired) {
+			// 起こしている間に閉じられていた。**繋ぐ前に手放す。**
+			//
+			// 判定がここより後ろだと、`adopt()` の副作用が巻き戻らない。畳んだ後の
+			// `MutableDisposable` は代入値を畳まずに黙って捨てるので、そこへ入れるはずだった
+			// 購読（子プロセスの監視、常駐からの受け口、接続の生死）が全部孤児になる。
+			await this.host.release(summary.handle).catch(() => { });
+			return undefined;
+		}
+
 		try {
 			this.adopt(summary.handle, summary.pid, summary.title);
 			// **戻り値を捨ててはいけない。** 常駐は繋がるまで出力を流さないので、起こしてから
@@ -243,12 +259,12 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 「たまに1行目が出ない」という辿れない形になる。
 			this.emitAttachment(await this.host.attach(summary.handle, this.viewer));
 			if (this._store.isDisposed || this.exitFired) {
-				// 起こしている間に閉じられていた。抱えたまま放置すると、誰も見ていない端末が
-				// 常駐に残り、次の起動で身に覚えのないタブとして現れる。
+				// 繋いでいる最中に閉じられた。**ここまで来ると `adopt()` は走り切っている**ので、
+				// 入れた対応を明示的に外してから手放す。
 				if (this.origin) {
-					// `adopt()` が入れた対応も外す（畳んだのはそれより前なので残っている）。
 					paradisForgetHandle(this.origin.id);
 				}
+				this.wiring.clear();
 				await this.host.release(summary.handle).catch(() => { });
 				return undefined;
 			}

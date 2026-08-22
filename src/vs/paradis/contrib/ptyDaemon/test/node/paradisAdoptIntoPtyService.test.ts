@@ -14,12 +14,14 @@
 
 import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
-import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisEncodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
 import { paradisEncodeLayout } from '../../node/paradisTerminalLayout.js';
-import { paradisHandleOf } from '../../node/paradisTerminalProcessFactory.js';
+import { paradisHandleOf, paradisUsePtyDaemon } from '../../node/paradisTerminalProcessFactory.js';
+import { paradisRememberLayout } from '../../node/paradisTerminalLayoutStore.js';
+import { timeout } from '../../../../../base/common/async.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../../platform/terminal/common/terminalProcess.js';
 import { IParadisAdoptionTarget, paradisAdoptIntoPtyService } from '../../node/paradisAdoptIntoPtyService.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
@@ -155,6 +157,20 @@ suite('ParadisAdoptIntoPtyService', () => {
 				keptTabs: 1,
 			},
 		);
+	});
+
+	test('常駐の端末が無くなったスペースの配置は、忘れさせる', async () => {
+		const { host } = daemon();
+		await host.setLayout('ws-gone', '{"workspaceId":"ws-gone","tabs":[{"isActive":true,"terminals":[{"relativeSize":1,"terminal":9}]}],"background":[]}');
+
+		// 常駐に1本も無いスペースの配置を書く（窓が端末を全部閉じた後など）。
+		paradisUsePtyDaemon({ host, client: { onDidDispose: () => ({ dispose() { } }) } as never, viewer: 'viewer' });
+		store.add(toDisposable(() => paradisUsePtyDaemon(undefined)));
+		paradisRememberLayout({ workspaceId: 'ws-gone', tabs: [], background: [] });
+		await timeout(10);
+
+		// 忘れさせないと、常駐が持つ配置は増える一方になる（スペースを消しても常駐は知らない）。
+		assert.deepStrictEqual({ left: await host.getLayout('ws-gone') }, { left: undefined });
 	});
 
 	test('器を作れなかった1本のために、走っている残りを落とさない', async () => {
