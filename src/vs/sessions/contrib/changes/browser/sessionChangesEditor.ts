@@ -7,7 +7,7 @@ import './media/sessionChangesEditor.css';
 import { $, append, Dimension } from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { autorun, derivedObservableWithCache, IObservable, observableValue } from '../../../../base/common/observable.js';
+import { autorun, derived, derivedObservableWithCache, IObservable, observableValue } from '../../../../base/common/observable.js';
 import { Range } from '../../../../editor/common/core/range.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IDiffEditor } from '../../../../editor/common/editorCommon.js';
@@ -50,7 +50,7 @@ import { MenuItemAction } from '../../../../platform/actions/common/actions.js';
 import { CheckboxActionViewItem } from '../../../../base/browser/ui/toggle/toggle.js';
 import { defaultCheckboxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { localize } from '../../../../nls.js';
-import { getChangesEditorFileStats } from './changesEditorLabels.js';
+import { buildChangesEditorFileStatsIndex, lookupChangesEditorFileStats, type IChangesEditorFileStats } from './changesEditorLabels.js';
 
 const HEADER_HEIGHT = 35;
 
@@ -69,14 +69,14 @@ class SessionChangesUIElementFactory implements IWorkbenchUIElementFactory {
 	readonly headerClickToCollapse = true;
 
 	constructor(
-		private readonly changesObs: IObservable<readonly ISessionFileChange[]>,
+		private readonly statsIndexObs: IObservable<ReadonlyMap<string, IChangesEditorFileStats>>,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) { }
 
 	createResourceLabel(element: HTMLElement, kind: MultiDiffEditorItemLabelKind): IResourceLabel {
 		const label = this.instantiationService.createInstance(ResourceLabel, element, {});
 		const showDiffStats = kind === MultiDiffEditorItemLabelKind.Primary;
-		return new SessionChangesResourceLabel(label, element, showDiffStats, this.changesObs);
+		return new SessionChangesResourceLabel(label, element, showDiffStats, this.statsIndexObs);
 	}
 
 	createToolbarActionViewItem(action: IAction, options: IActionViewItemOptions): IActionViewItem | undefined {
@@ -95,7 +95,7 @@ class SessionChangesResourceLabel extends Disposable implements IResourceLabel {
 		private readonly label: ResourceLabel,
 		element: HTMLElement,
 		showDiffStats: boolean,
-		changesObs: IObservable<readonly ISessionFileChange[]>,
+		statsIndexObs: IObservable<ReadonlyMap<string, IChangesEditorFileStats>>,
 	) {
 		super();
 		this._register(label);
@@ -110,7 +110,7 @@ class SessionChangesResourceLabel extends Disposable implements IResourceLabel {
 			this._register(autorun(reader => {
 				const resource = this.resource.read(reader);
 				const stats = resource
-					? getChangesEditorFileStats(resource, changesObs.read(reader))
+					? lookupChangesEditorFileStats(statsIndexObs.read(reader), resource)
 					: undefined;
 				statsContainer.style.display = stats ? '' : 'none';
 				if (stats) {
@@ -167,6 +167,12 @@ export class SessionChangesEditor extends AbstractEditorWithViewState<IMultiDiff
 		}
 		return this.changesViewService.activeSessionChangesObs.read(reader);
 	});
+
+	/**
+	 * 変更配列の「比較キー → 行数stats」索引。各ファイルラベルの autorun がここへ O(1) 参照する。
+	 * ラベルごとに線形 find を回す O(N²) を、変更配列更新ごとの1回の索引構築に集約する。
+	 */
+	private readonly _scopedChangesStatsIndex = derived(this, reader => buildChangesEditorFileStatsIndex(this._scopedChangesObs.read(reader)));
 
 	/** Deferred focus request awaiting the active diff editor to be rendered. */
 	private readonly _pendingFocus = this._register(new MutableDisposable());
@@ -234,7 +240,7 @@ export class SessionChangesEditor extends AbstractEditorWithViewState<IMultiDiff
 		this.widget = this._register(paneInstantiationService.createInstance(
 			MultiDiffEditorWidget,
 			this.bodyContainer,
-			paneInstantiationService.createInstance(SessionChangesUIElementFactory, this._scopedChangesObs),
+			paneInstantiationService.createInstance(SessionChangesUIElementFactory, this._scopedChangesStatsIndex),
 			CHANGES_DIFF_EDITOR_OPTIONS,
 		));
 		this._applyRenderSideBySide();
