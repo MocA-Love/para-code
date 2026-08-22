@@ -57,3 +57,8 @@ dist
 # PARA-PATCH: ignore local tooling artifacts (Serena project state, ad-hoc screenshots)
 .serena/
 screenshots/
+
+# Throwaway Code OSS dev profiles created by the launch skill
+.v[0-9]*/
+# Local agent validation evidence
+.agent-validation/
