@@ -39,10 +39,27 @@ export interface IParadisWindowsScriptShimInvocation {
 }
 
 /**
+ * この文字を1つでも含む引数はクォートする。空白・タブ・引用符は CRT 側の argv 分割のため。
+ * `&|<>^()` は cmd.exe 自身がコマンド区切り・リダイレクト・グループ化として解釈する文字で、
+ * こちらは子プロセスの argv 分割とは無関係——`/S` 指定の `cmd.exe /C` は渡された文字列を
+ * 自分のコマンドラインとして再パースするため、空白を含まない引数でもこれらの文字が
+ * クォート無しで残っていると、意図しない別コマンドとして実行されうる(引数注入)。
+ * クォートで囲めば、その区間は cmd.exe にとって「引用符の内側」扱いになりこれらは
+ * リテラル文字になる(libuv の quote_cmd_arg・CPython の list2cmdline は CRT 側の分割のみを
+ * 見ており、この観点は対象外なので単独では不十分)。
+ *
+ * 対象外の既知の制限: `%` は cmd.exe の環境変数展開で、引用符の中でも展開されてしまう
+ * (これを閉じるにはクォートでは足りない)。このヘルパーは固定文字列・数値・許可文字を
+ * 限定した検証済みの値専用とし、`%` を含みうる値や信頼できない値を直接渡さないこと。
+ */
+const CMD_SPECIAL_CHAR_PATTERN = /[\s"&|<>^()]/;
+
+/**
  * Windows の引数クォート（MSVCRT 規約）。Node.js child_process 内部と同じ規則で、
- * 空白・タブ・引用符を含む要素だけを引用し、埋め込み引用符とその直前の連続バックスラッシュを
- * バックスラッシュでエスケープする。cmd.exe 自体はこの規約を解釈しないが、最終的に
- * CreateProcess → CRT 経由で argv 再構築される子プロセス側（node スクリプト等）で
+ * 空白・タブ・引用符(または cmd.exe の特殊文字。{@link CMD_SPECIAL_CHAR_PATTERN} 参照)を
+ * 含む要素だけを引用し、埋め込み引用符とその直前の連続バックスラッシュをバックスラッシュで
+ * エスケープする。cmd.exe 自体はこの規約(バックスラッシュエスケープ)を解釈しないが、
+ * 最終的に CreateProcess → CRT 経由で argv 再構築される子プロセス側（node スクリプト等）で
  * 正しく分割されるようにするためのもの。
  */
 function windowsQuoteArgument(argument: string): string {
@@ -50,7 +67,7 @@ function windowsQuoteArgument(argument: string): string {
 		// 空の引数が消えないように(libuv / CPython と同じ扱い)
 		return '""';
 	}
-	if (!/[\s"]/.test(argument)) {
+	if (!CMD_SPECIAL_CHAR_PATTERN.test(argument)) {
 		return argument;
 	}
 	let escaped = '"';
@@ -88,6 +105,10 @@ function windowsQuoteArgument(argument: string): string {
  * `/c` 直後の一重引用符は cmd.exe の古い挙動（先頭と末尾の引用符だけ剥ぐ）で剥がれるため、
  * 中身をもう一重丸ごと引用している。これは node-pty 経由の `claude setup-token` 起動で
  * 実機検証済みの組み立てと同じ形式。
+ *
+ * `command`/`args` は固定文字列・数値・許可文字を限定検証済みの値専用（{@link windowsQuoteArgument}
+ * のコメント参照）。`%` は cmd.exe がクォートの中でも展開してしまうため、この関数のクォートだけでは
+ * 閉じられない——ユーザー入力やリポジトリ由来の値など信頼できない文字列をそのまま渡さないこと。
  */
 export function paradisWrapWindowsScriptShim(
 	command: string,

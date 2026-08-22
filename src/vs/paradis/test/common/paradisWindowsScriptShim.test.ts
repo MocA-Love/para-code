@@ -82,6 +82,15 @@ suite('paradisWindowsScriptShim', () => {
 			assert.deepStrictEqual(invocation?.args[4], '"C:\\bin\\x.cmd --path "my dir\\\\""');
 		});
 
+		test('quotes arguments containing cmd.exe metacharacters even without whitespace', () => {
+			// 空白・引用符が無くても &|<>^() は cmd.exe 自身の区切り文字なので、クォート無しで
+			// 通すと /S 付き /C の再パースでコマンド区切りとして解釈されうる(引数注入)。
+			for (const dangerous of ['foo&calc&bar', 'a|b', 'a<b', 'a>b', 'a^b', 'a(b)']) {
+				const invocation = paradisWrapWindowsScriptShim('C:\\bin\\x.cmd', ['run', dangerous]);
+				assert.deepStrictEqual(invocation?.args[4], `"C:\\bin\\x.cmd run "${dangerous}""`, dangerous);
+			}
+		});
+
 		test('keeps empty argument lists and empty string arguments valid', () => {
 			const invocation = paradisWrapWindowsScriptShim('C:\\bin\\x.cmd', []);
 			assert.deepStrictEqual(invocation?.args, ['/d', '/s', '/v:off', '/c', '"C:\\bin\\x.cmd"']);
