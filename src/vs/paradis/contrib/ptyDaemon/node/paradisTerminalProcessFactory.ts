@@ -27,6 +27,7 @@ import { TerminalProcess } from '../../../../platform/terminal/node/terminalProc
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
 import { IParadisPtyHostConnection } from './paradisEnsurePtyHost.js';
 import { IParadisTerminalOrigin, ParadisDaemonTerminalProcess } from './paradisDaemonTerminalProcess.js';
+import { ParadisPtyDispatch } from './paradisPtyDispatch.js';
 
 /** 引き取る相手。常駐が抱えている1本を名指しする。 */
 export interface IParadisAdoptTarget {
@@ -64,6 +65,14 @@ let arriving: Promise<unknown> | undefined;
 let watching: IDisposable | undefined;
 
 /**
+ * 常駐から流れてくるものを配る人。**接続に1つ。**
+ *
+ * 端末ごとに作ると常駐への購読が端末の数だけ増え、全端末の全出力が本数ぶんソケットを通る
+ * （`paradisPtyDispatch.ts`）。
+ */
+let dispatch: ParadisPtyDispatch | undefined;
+
+/**
  * 常駐を使うと決まったときに、繋いだものをここへ預ける。
  *
  * **切れたら手放す。** 常駐が落ちた後も掴んだままだと、以後に作るターミナルが全部そこへ行こうと
@@ -73,6 +82,8 @@ let watching: IDisposable | undefined;
 export function paradisUsePtyDaemon(value: IParadisPtyHostConnection | undefined): void {
 	watching?.dispose();
 	watching = undefined;
+	dispatch?.dispose();
+	dispatch = undefined;
 	connection = value;
 	if (!value) {
 		return;
@@ -83,6 +94,8 @@ export function paradisUsePtyDaemon(value: IParadisPtyHostConnection | undefined
 		}
 		connection = undefined;
 		arriving = undefined;
+		dispatch?.dispose();
+		dispatch = undefined;
 		watching?.dispose();
 		watching = undefined;
 	});
@@ -91,6 +104,27 @@ export function paradisUsePtyDaemon(value: IParadisPtyHostConnection | undefined
 /** 常駐へ繋ぐ作業を預ける。ターミナルを作るときだけ、これの完了を待つ。 */
 export function paradisAwaitPtyDaemon(work: Promise<unknown> | undefined): void {
 	arriving = work;
+}
+
+/**
+ * 引き取りが終わるまでの待ち。
+ *
+ * **配置を聞かれたときに待つためのもの。** 窓は配置を見て繋ぎ先を決めるので、引き取りの途中で
+ * 聞かれて空を返すと、その窓は**引き取ったターミナルを一度も見ないまま**進む。あとから終わっても
+ * 知らせる手立てが無いので、聞かれた側で待つのが唯一の噛み合わせ方になる。
+ */
+let settling: Promise<unknown> | undefined;
+
+export function paradisAwaitAdoption(work: Promise<unknown> | undefined): void {
+	settling = work;
+}
+
+/** 引き取りが終わるのを待つ。常駐を使っていなければ即座に戻る。 */
+export async function paradisAdoptionSettled(): Promise<void> {
+	if (settling) {
+		// 拒否は飲む。引き取れなかったことを、配置を答えられないことにしない。
+		await settling.catch(() => { });
+	}
 }
 
 /** いま常駐に持たせているか。引き取りや状態表示が同じ答えを見るための唯一の口。 */
@@ -151,8 +185,10 @@ export async function paradisCreateTerminalProcess(
 		await arriving.catch(() => { });
 	}
 	if (connection) {
+		// 配る人はこの接続に1つ。端末ごとに作ると、常駐への購読が端末の数だけ増える。
+		dispatch ??= new ParadisPtyDispatch(connection.host);
 		return new ParadisDaemonTerminalProcess(
-			connection.host, shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService, origin, connection.client, adoptTarget,
+			connection.host, shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService, origin, connection.client, dispatch, adoptTarget,
 		);
 	}
 	if (adoptTarget) {

@@ -18,12 +18,27 @@
 import { ConsoleLogger, LogLevel } from '../../../../platform/log/common/log.js';
 import { LogService } from '../../../../platform/log/common/logService.js';
 import { paradisReadPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
+import { paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
+import { PARADIS_PTY_HOST_STATE_DIR } from './paradisPtyHostBootstrap.js';
 import { paradisRunPtyHostDaemon } from './paradisPtyHostDaemonMain.js';
 
 const env = paradisReadPtyDaemonEnv(process.env);
-if (!env) {
+const stateDir = process.env[PARADIS_PTY_HOST_STATE_DIR];
+if (!env || !stateDir) {
 	// 置き場所が分からないまま起きても、誰も繋いで来られない。
 	console.error('[ParadisPtyHost] refusing to start: the socket and ledger were not given');
+	process.exit(1);
+}
+
+// **渡された置き場所を鵜呑みにしない。** ここは終わるときにソケットを unlink し台帳を消すので、
+// 偽の env で起こされると任意のパスを消しに行ける。自分で計算し直して一致を確かめる
+// （旧い入口が同じ検算をしている。**片方だけ薄くしない**）。
+const expected = paradisPtyHostPaths({
+	stateDir,
+	platform: process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
+});
+if (env.socketPath !== expected.socketPath || env.ledgerFile !== expected.ledgerFile) {
+	console.error(`[ParadisPtyHost] refusing to start: ${env.socketPath} is not where this protocol version keeps one`);
 	process.exit(1);
 }
 

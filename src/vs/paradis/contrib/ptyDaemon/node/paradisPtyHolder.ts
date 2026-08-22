@@ -150,6 +150,7 @@ export class ParadisPtyHolder extends Disposable {
 			alive: this.alive,
 			exitCode: this.exitCode,
 			exitSignal: this.exitSignal,
+			attached: this.attached,
 			// 繋がっていない間は見張っていないので、聞かれた時点で読む。
 			title: this.alive ? this.pty.process : this.lastTitle,
 			metadata: this.metadata,

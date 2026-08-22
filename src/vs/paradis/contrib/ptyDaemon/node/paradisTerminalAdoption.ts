@@ -74,6 +74,12 @@ export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IPar
 	const adopted: IParadisAdoptedTerminal[] = [];
 	let skipped = 0;
 	for (const summary of summaries) {
+		if (summary.attached) {
+			// **すでに誰かが見ている。** 割り込むと、入力も出力も二重になり、こちらの終了操作が
+			// 向こうの端末を殺す。見ている相手が居なくなれば、次の起動で引き取れる。
+			skipped++;
+			continue;
+		}
 		try {
 			adopted.push({ summary, metadata: paradisDecodeTerminalMetadata(summary.metadata) });
 		} catch {

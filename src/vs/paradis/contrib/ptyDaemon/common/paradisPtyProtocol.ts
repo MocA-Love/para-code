@@ -101,6 +101,14 @@ export interface IParadisPtySummary {
 	readonly exitCode: number | undefined;
 	readonly exitSignal: string | undefined;
 	/**
+	 * すでに誰かが見ているか。
+	 *
+	 * **引き取る側が二重に引き取らないため。** 同じ機械で2つのサーバーが生き残ることがあり
+	 * （更新のあと古い方が居座る）、両方が同じ置き場所を見る。両方が同じ端末を引き取ると、
+	 * 入力も出力も二重になり、片方の終了操作がもう片方の端末を殺す。
+	 */
+	readonly attached: boolean;
+	/**
 	 * 前面で動いているものの名前。
 	 *
 	 * **ここだけは pid から引けない**ので常駐が渡す（冒頭参照）。文字列なので、この面に
