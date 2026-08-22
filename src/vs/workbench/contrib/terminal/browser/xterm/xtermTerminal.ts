@@ -125,6 +125,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	private readonly _xtermColorProvider: IXtermColorProvider;
 	private readonly _capabilities: ITerminalCapabilityStore;
 	private readonly _disableOverviewRuler: boolean;
+	private readonly _mainDocument: Document;
 
 	private static _suggestedRendererType: 'dom' | undefined = undefined;
 	private _attached?: { container: HTMLElement; options: IXtermAttachToElementOptions };
@@ -155,6 +156,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	// context back, so hold this listener in one slot instead of letting a new one pile up on the
 	// terminal's own store on each acquisition
 	private readonly _paradisWebglContextLoss = this._register(new MutableDisposable());
+	private _webglAddonLoading = false;
+	private _webglAddonLoadId = 0;
 	private _serializeAddon?: SerializeAddonType;
 	private _imageAddon?: ImageAddonType;
 	private readonly _ligaturesAddon: MutableDisposable<LigaturesAddonType> = this._register(new MutableDisposable());
@@ -238,6 +241,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this._xtermColorProvider = options.xtermColorProvider;
 		this._capabilities = options.capabilities;
 		this._disableOverviewRuler = options.disableOverviewRuler ?? false;
+		this._mainDocument = layoutService.mainContainer.ownerDocument;
 
 		const font = this._terminalConfigurationService.getFont(dom.getActiveWindow(), undefined, true);
 		const config = this._terminalConfigurationService.config;
@@ -247,7 +251,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			allowProposedApi: true,
 			cols: options.cols,
 			rows: options.rows,
-			documentOverride: layoutService.mainContainer.ownerDocument,
+			documentOverride: this._mainDocument,
 			altClickMovesCursor: config.altClickMovesCursor && editorOptions.multiCursorModifier === 'alt',
 			scrollback: config.scrollback,
 			theme: this.getXtermTheme(),
@@ -920,18 +924,50 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 
 	private async _enableWebglRenderer(): Promise<void> {
 		// Currently webgl options can only be specified on addon creation
-		if (!this.raw.element || this._webglAddon && this._webglAddonCustomGlyphs === this._terminalConfigurationService.config.customGlyphs) {
+		if (!this.raw.element) {
+			return;
+		}
+		const customGlyphs = this._getWebglCustomGlyphs();
+		if ((this._webglAddon || this._webglAddonLoading) && this._webglAddonCustomGlyphs === customGlyphs) {
 			return;
 		}
 
 		// Dispose of existing addon before creating a new one to avoid leaking WebGL contexts
 		this._disposeOfWebglRenderer();
 
-		this._webglAddonCustomGlyphs = this._terminalConfigurationService.config.customGlyphs;
+		const loadId = this._webglAddonLoadId;
+		this._webglAddonLoading = true;
+		this._webglAddonCustomGlyphs = customGlyphs;
 
-		const Addon = await this._xtermAddonLoader.importAddon('webgl');
+		let Addon: typeof WebglAddonType;
+		try {
+			Addon = await this._xtermAddonLoader.importAddon('webgl');
+		} catch (error) {
+			if (loadId === this._webglAddonLoadId) {
+				this._webglAddonLoading = false;
+				this._webglAddonCustomGlyphs = undefined;
+			}
+			throw error;
+		}
+		if (loadId !== this._webglAddonLoadId) {
+			return;
+		}
+
+		this._webglAddonLoading = false;
+		if (!this.raw.element) {
+			this._webglAddonCustomGlyphs = undefined;
+			return;
+		}
+
+		const currentCustomGlyphs = this._getWebglCustomGlyphs();
+		if (customGlyphs !== currentCustomGlyphs) {
+			this._webglAddonCustomGlyphs = undefined;
+			await this._enableWebglRenderer();
+			return;
+		}
+
 		this._webglAddon = new Addon({
-			customGlyphs: this._terminalConfigurationService.config.customGlyphs
+			customGlyphs
 		});
 		try {
 			this.raw.loadAddon(this._webglAddon);
@@ -977,6 +1013,11 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			this._paradisWebglRecovery.noteLost();
 			this._disposeOfWebglRenderer();
 		}
+	}
+
+	private _getWebglCustomGlyphs(): boolean {
+		// The custom glyph rasterizer creates a canvas through the rendering document, which is blocked in auxiliary windows.
+		return this._terminalConfigurationService.config.customGlyphs && this.raw.element?.ownerDocument === this._mainDocument;
 	}
 
 	@debounce(100)
@@ -1054,6 +1095,10 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	}
 
 	private _disposeOfWebglRenderer(): void {
+		this._webglAddonLoadId++;
+		this._webglAddonLoading = false;
+		this._webglAddonCustomGlyphs = undefined;
+		this._paradisWebglContextLoss.clear(); // PARA-PATCH: fork owns the context-loss listener slot (single MutableDisposable)
 		if (!this._webglAddon) {
 			return;
 		}
@@ -1063,7 +1108,6 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			// ignore
 		}
 		this._webglAddon = undefined;
-		this._webglAddonCustomGlyphs = undefined;
 		this._refreshImageAddon();
 		// WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal
 		// gets resized after the webgl addon is disposed
@@ -1161,6 +1205,9 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	refresh() {
 		this._updateTheme();
 		this._decorationAddon.refreshLayouts();
+		if (this._webglAddon || this._webglAddonLoading) {
+			this._enableWebglRenderer();
+		}
 	}
 
 	private async _updateUnicodeVersion(): Promise<void> {

@@ -20,6 +20,7 @@ import { homedir } from 'os';
 import { basename, dirname, join } from '../../../../base/common/path.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { findExecutable } from '../../../../base/node/processes.js';
+import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
@@ -530,8 +531,12 @@ async function probeClaudeVersion(shellEnvResolver: () => Promise<NodeJS.Process
 	if (executable === undefined) {
 		return { outcome: 'failure', stage: 'not-found' };
 	}
+	// Windows で解決先が npm 由来の .cmd/.bat シムのときは cmd.exe 経由にラップする。
+	// ラップしないと CVE-2024-27980 対策後の Node では EINVAL になり、activity/message
+	// 表示 hook の能力検出が常に失敗する。
+	const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(executable, ['--version']) : undefined;
 	return new Promise(resolve => {
-		execFile(executable, ['--version'], { encoding: 'utf8', timeout: PARADIS_CLAUDE_VERSION_TIMEOUT_MS, windowsHide: true, env }, (error, stdout, stderr) => {
+		execFile(shimInvocation?.file ?? executable, shimInvocation?.args ?? ['--version'], { encoding: 'utf8', timeout: PARADIS_CLAUDE_VERSION_TIMEOUT_MS, windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, (error, stdout, stderr) => {
 			if (error) {
 				const typedError = error as Error & { readonly code?: string | number; readonly killed?: boolean; readonly signal?: string };
 				const stage: ClaudeVersionProbeFailureStage = typedError.killed ? 'timeout' : typeof typedError.code === 'number' ? 'exit' : 'spawn';
