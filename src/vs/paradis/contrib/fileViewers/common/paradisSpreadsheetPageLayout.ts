@@ -10,8 +10,11 @@
 // ページ全体は決まらない（用紙に入りきらない分は Excel が自動で改ページを入れる）ため、用紙設定から
 // 1ページに載る大きさを出し、行・列を敷き詰めてページ境界を決める。
 //
-// このファイルは意図的に依存を持たない純関数だけで構成する（node 層でも renderer 層でも同じ結果を使う）。
+// このファイルは node 層でも renderer 層でも同じ結果を使う純関数だけで構成する。
+// 依存は nls(文言)のみを許容し、DOM や node 組み込みには触れない。
 // 長さの単位は全て pt（1pt = 1/72 inch）で統一する。
+
+import { localize } from '../../../../nls.js';
 
 /** 用紙・余白・倍率など、ページ割りの計算に必要な設定。 */
 export interface IParadisPageSetup {
@@ -405,4 +408,9 @@ export function computePageLayout(input: IParadisPageLayoutInput): IParadisPageL
 		usableWidth,
 		usableHeight,
 	};
+}
+
+/** ページ番号の透かしの文言。ビューア/差分で共有する(diff からも参照されるため common に置く)。 */
+export function pageLabelText(page: number): string {
+	return localize('paradis.spreadsheet.pageLabel', "{0} ページ", page);
 }

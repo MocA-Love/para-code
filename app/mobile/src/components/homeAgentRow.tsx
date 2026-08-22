@@ -37,7 +37,7 @@ export interface HomeAgentRowHandlers {
 }
 
 export const HomeAgentRow = memo(function HomeAgentRow({
-	terminalKey, wsId, title, wsName, wsColor, branch, pinned, agentStatus, handlers,
+	terminalKey, wsId, title, wsName, wsColor, branch, pinned, agentStatus, handlers, locked,
 }: {
 	terminalKey: string;
 	wsId: string | undefined;
@@ -48,6 +48,9 @@ export const HomeAgentRow = memo(function HomeAgentRow({
 	pinned: boolean;
 	agentStatus: string | undefined;
 	handlers: HomeAgentRowHandlers;
+	/** この行の長押しメニューが開いている間true。スワイプのPanを止めて、浮かせたクローンと
+	    行の実体がズレるのを防ぐ。 */
+	locked?: boolean;
 }) {
 	const rowData = useMemo<AgentRowData>(
 		() => ({ title, wsName, wsColor, branch, pinned, agentStatus }),
@@ -98,7 +101,7 @@ export const HomeAgentRow = memo(function HomeAgentRow({
 		</Pressable>
 	) : undefined;
 	return (
-		<SwipeRow direction="left" actions={actions}>
+		<SwipeRow direction="left" actions={actions} panLocked={locked === true}>
 			<Pressable
 				ref={node => handlers.registerRef(terminalKey, node)}
 				style={agentRowStyles.container}

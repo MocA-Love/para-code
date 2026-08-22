@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { pinKeyForTerminal } from '../src/store.js';
 import { AgentRowContent, agentRowStyles, type AgentRowData } from '../src/components/agentRow.js';
-import { SwipeRow } from '../src/components/swipeRow.js';
+import { closeOpenedSwipeRow, SwipeRow } from '../src/components/swipeRow.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useParaHeader, useParaHeaderHeight, type ParaHeaderSpec } from '../src/paraHeader.js';
@@ -37,7 +37,13 @@ export default function ArchiveScreen() {
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
 	})));
 
-	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t)));
+	// **rows は useMemo で安定させる。** filter は毎レンダー新配列になるので、素のままだと
+	// 下の headerSpec の useMemo が毎回切れて層への spec 登録（useEffect）が再送のたびに走る。
+	// `workspace?.terminals` は構造共有で中身が同じ間は同じ参照が据え置かれ、archivedKeys も
+	// 値が変わったときだけ新 Set になる（appState の setArchived）ため、deps の浅い比較が効く。
+	const rows = useMemo(
+		() => (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))),
+		[workspace?.terminals, archivedKeys]);
 	const resolveWs = (terminal: { ws?: string }) =>
 		(workspace?.workspaces ?? []).find(w => w.id === (terminal.ws ?? workspace?.activeWs));
 
@@ -66,7 +72,8 @@ export default function ArchiveScreen() {
 
 	return (
 		<View style={styles.screen}>
-			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
+			{/* スクロールし始めたら開きっぱなしのスワイプ行を畳む（ホーム一覧と同じ流儀）。 */}
+			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]} onScrollBeginDrag={closeOpenedSwipeRow}>
 				{rows.length === 0 ? (
 					<Text style={styles.empty}>アーカイブしたエージェントはありません{'\n'}ホームの一覧を左へスワイプするとここに入ります</Text>
 				) : (

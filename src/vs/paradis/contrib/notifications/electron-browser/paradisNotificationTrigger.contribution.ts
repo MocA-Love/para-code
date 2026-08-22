@@ -142,7 +142,8 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		const needsAction = status === 'permission' || status === 'question';
 
 		// OS通知は従来どおり即時。通知音と Aivis は shared process の AudioScheduler で調停する
-		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO で失わない）。
+		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO。ただし待機キューには
+		// 上限があり、超過した発話は捨てられる）。
 		const osEnabled = this.settingsService.getOsNotificationsEnabled()
 			&& (needsAction ? this.settingsService.getOsNotifyOnPermission() : this.settingsService.getOsNotifyOnReview());
 		if (osEnabled) {

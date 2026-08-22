@@ -21,3 +21,15 @@ export const PARADIS_PTY_DAEMON_ENABLED = 'paradis.terminal.daemon.enabled';
  * `vs/paradis/common/paradisTerminalKeepPlan.ts` で共有しているので、挙動は揃う。
  */
 export const PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE = 'paradis.terminal.daemon.keepAliveOnClose';
+
+/**
+ * 更新をまたいで繋ぎ直せる、薄い常駐を使うかどうか。
+ *
+ * {@link PARADIS_PTY_DAEMON_ENABLED} とは**別の常駐**を指す。あちらはアプリの pty ホスト一式を
+ * 常駐にしたもので、ビルドが変わると繋ぎ直せない。こちらは pty だけを持つ薄いもので、
+ * 話す言葉の版が同じならビルドが違っても繋ぎ直せる。
+ *
+ * 別の鍵にしてあるのは、**動いているものを黙って置き換えないため**。実機で確かめられるまで、
+ * 選んだ人だけが新しい方を使う。
+ */
+export const PARADIS_PTY_HOST_DAEMON_ENABLED = 'paradis.terminal.daemon.reattachAcrossUpdates';
