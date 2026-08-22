@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenCode 対応計画 — Para Code</title>
+<style>
+  :root {
+    --accent: #09AFD9;
+    --bg: #f6f8fa;
+    --card: #ffffff;
+    --text: #24292f;
+    --muted: #57606a;
+    --border: #d0d7de;
+    --ok: #1a7f37;
+    --warn-bg: #fff8c5;
+    --warn-border: #d4a72c;
+    --risk-high: #cf222e;
+    --risk-med: #9a6700;
+    --risk-low: #1a7f37;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 32px 16px 64px;
+  }
+  .container { max-width: 880px; margin: 0 auto; }
+  header { border-left: 6px solid var(--accent); padding-left: 20px; margin-bottom: 36px; }
+  h1 { font-size: 28px; letter-spacing: .02em; }
+  header p { color: var(--muted); margin-top: 6px; font-size: 14px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 24px 28px; margin-bottom: 24px; }
+  h2 { font-size: 19px; border-bottom: 2px solid var(--accent); display: inline-block; padding-bottom: 4px; margin-bottom: 16px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: var(--text); }
+  p, li { font-size: 14px; }
+  ul, ol { padding-left: 22px; }
+  li { margin-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); white-space: nowrap; }
+  code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+  .badge { display: inline-block; border-radius: 999px; font-size: 11px; font-weight: 700; padding: 2px 10px; margin-right: 6px; vertical-align: middle; }
+  .b-done { background: #dafbe1; color: var(--ok); }
+  .b-todo { background: #ffebe9; color: var(--risk-high); }
+  .b-partial { background: var(--warn-bg); color: var(--risk-med); }
+  .arch { background: var(--bg); border: 1px dashed var(--border); border-radius: 8px; padding: 14px 18px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.8; overflow-x: auto; white-space: pre; margin: 12px 0; }
+  .point { border-left: 4px solid var(--accent); background: var(--bg); border-radius: 0 8px 8px 0; padding: 10px 16px; margin: 10px 0; font-size: 13.5px; }
+  .risk-high { color: var(--risk-high); font-weight: 700; }
+  .risk-med { color: var(--risk-med); font-weight: 700; }
+  .risk-low { color: var(--risk-low); font-weight: 700; }
+  .phase { margin-bottom: 14px; }
+  .phase-title { font-weight: 700; font-size: 14px; }
+  .phase-title small { font-weight: 400; color: var(--muted); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 32px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>OpenCode 対応計画</h1>
+  <p>Para Code（VS Code fork）— PC 版・モバイル版への AI エージェント「OpenCode」統合 / 2026-08-22 時点</p>
+</header>
+
+<section>
+  <h2>現状：Claude Code / Codex の対応状況</h2>
+  <table>
+    <tr><th>機能</th><th>Claude Code</th><th>Codex</th><th>OpenCode</th></tr>
+    <tr>
+      <td>PC 版サイドバーの実行状態表示<br><small style="color:var(--muted)">スピナー／赤脈動／緑ドット</small></td>
+      <td><span class="badge b-done">対応済</span>hooks → <code>/agent-hook</code></td>
+      <td><span class="badge b-done">対応済</span>同左 + transcript 補完</td>
+      <td><span class="badge b-todo">未対応</span></td>
+    </tr>
+    <tr>
+      <td>セッション Resume（PC）</td>
+      <td><span class="badge b-done">対応済</span>jsonl transcript</td>
+      <td><span class="badge b-done">対応済</span>rollout jsonl</td>
+      <td><span class="badge b-todo">未対応</span><br><small style="color:var(--muted)">SQLite 移行済みのため要別経路</small></td>
+    </tr>
+    <tr>
+      <td>モバイル版チャットミラー<br><small style="color:var(--muted)">ライブ状態・承認・質問回答・送信・モデル切替</small></td>
+      <td><span class="badge b-done">対応済</span>hook + transcript tail</td>
+      <td><span class="badge b-done">対応済</span>daemon JSON-RPC 直答</td>
+      <td><span class="badge b-todo">未対応</span></td>
+    </tr>
+    <tr>
+      <td>通知（iOS Live Activity 等）</td>
+      <td colspan="2" style="text-align:center"><span class="badge b-done">対応済</span>共通基盤あり</td>
+      <td><span class="badge b-partial">基盤は流用可</span><br><small style="color:var(--muted)">表示名・ラベルの追加のみ</small></td>
+    </tr>
+  </table>
+  <div class="point">
+    <strong>ポイント:</strong> 検出・監視・制御の共通基盤（hook バス、relay サーバー、モバイルプロトコル v3）は完成しているため、
+    OpenCode は「新しいエージェント種別を既存の枠に接続する」作業になる。フルスクラッチではない。
+  </div>
+</section>
+
+<section>
+  <h2>OpenCode 側の調査結果（追い風の事実）</h2>
+  <ul>
+    <li>TUI 起動時に<strong>必ず HTTP サーバーを内包</strong>。<code>--port</code> 固定可 → 監視も制御も単一経路で可能</li>
+    <li><code>GET /event</code>（SSE）でメッセージ・実行状態・<strong>権限確認（permission）・質問</strong>イベントが取れる</li>
+    <li><code>POST /permission/:id/reply</code> 等で<strong>承認に API 直答できる</strong>（TUI キー注入不要 = Codex daemon と同等品質）</li>
+    <li>モデル一覧は <code>GET /config/providers</code>、送信時にモデル指定可</li>
+    <li>Plugin システム（JS/TS）で全イベントフック可 → <strong>Claude hooks 相当の「/agent-hook へ POST」プラグインを作れる</strong></li>
+    <li>Para Code 側の正規化テーブルに既に OpenCode 由来イベント名（<code>task_complete</code>, <code>permission.ask</code> 等）が登録済み</li>
+  </ul>
+  <div class="point">
+    <strong>注意点:</strong> リリース頻度が非常に高く API 改変が日常的（permission API は直近で移行済み）。
+    ポート発見の公式機構がないため、自前ランチャーでの固定が必要。
+  </div>
+</section>
+
+<section>
+  <h2>どう対応するか：推奨アーキテクチャ</h2>
+  <h3>「ランチャー + SSE ライブクライアント」を主経路、「hook プラグイン」を補助経路</h3>
+  <div class="arch">ターミナル → 自前ランチャー(resources/paradis/bin/opencode)
+  opencode --port &lt;確保したポート&gt; で起動
+  ├─ pcx/&lt;paneToken&gt;.endpoint.json に port/auth を書き出し   ← 検出
+  └─ ~/.config/opencode/plugins/para-code-hook.js を冪等設置  ← 補助
+       └─ 全イベントを /agent-hook?pane=&lt;token&gt; へ POST
+
+shared process
+  ├─ 既存 hook バス → サイドバー状態表示（ほぼ無変更で動く）
+  └─ 新規 paradisOpencodeLiveClient.ts ← SSE 接続
+       live 状態 / 承認・質問 interaction / モデルカタログ を relay へ供給
+       → モバイルへは既存プロトコルで配信</div>
+  <ul>
+    <li><strong>サイドバー状態表示</strong>: hook プラグインだけで成立（既存正規化テーブルが受け入れ済み）</li>
+    <li><strong>モバイルの承認・モデル切替</strong>: HTTP API 直答（Codex daemon 方式と同じ品質）</li>
+    <li><strong>フォールバック</strong>: プラグイン未導入でも transcript 補完経路で最低限は動く設計</li>
+  </ul>
+</section>
+
+<section>
+  <h2>実装フェーズ</h2>
+  <div class="phase">
+    <span class="phase-title">Phase 0 — 実機スパイク <small>（半日〜1日 / 最優先）</small></span>
+    <ol>
+      <li><code>opencode serve</code> / TUI 内蔵サーバーの挙動確認（<code>--port 0</code> 可否、プロセス構成）</li>
+      <li><code>/doc</code> の OpenAPI spec で permission・question・providers エンドポイントを実確認</li>
+      <li>SSE イベント payload 収集 → ライブ状態マッピング表作成</li>
+      <li>plugin からの外部 POST 動作とイベント名の一致確認</li>
+      <li>TUI 操作と API 応答の共存（first-response-wins）検証</li>
+    </ol>
+  </div>
+  <div class="phase">
+    <span class="phase-title">Phase 1 — PC 側 型・検出基盤 <small>（型ユニオン拡張で網羅）</small></span>
+    <ul>
+      <li><code>ParadisAgentKind</code> に <code>'opencode'</code> 追加 → 型エラーが出た箇所を順次解消</li>
+      <li>home 解決 / hook プラグイン設置 / 所有判定 / CLI コマンド解析 / worktree 既定コマンド / 表示名 'OpenCode'</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="phase-title">Phase 2 — PC 側 ライブ統合 <small>（新規ファイル中心・2〜3日）</small></span>
+    <ul>
+      <li><code>resources/paradis/bin/opencode</code> ランチャー（endpoint ファイル書き出し）</li>
+      <li><code>opencodeBridge/node/paradisOpencodeLiveClient.ts</code> 新規：SSE → live 状態・interaction 化（ID 形式 <code>opencode:s:&lt;id&gt;</code>）・モデルカタログ</li>
+      <li>relay へのディスパッチ組込み（承認 API 直答・質問回答・送信・settings-update）</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="phase-title">Phase 3 — PC 版 UI 統合 <small>（サイドバー等）</small></span>
+    <ul>
+      <li>Workspaces ビューの状態表示は Phase 1 の hook 経由で自動動作のはず → 実機確認中心</li>
+      <li>Resume エディタのバッジ CSS、ブラウザバインディング検出</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="phase-title">Phase 4 — モバイル版 <small>（PC とは別コミット・1.5〜2日）</small></span>
+    <ul>
+      <li>必須: 起動メニュー追加、modelPill 分岐、PTY フォールバック承認キーの実測値</li>
+      <li>推奨: ブランド色、Live Activity 表示名、activity provider 追加</li>
+    </ul>
+  </div>
+  <div class="phase">
+    <span class="phase-title">Phase 5 — テスト・検証・リリース <small>（0.5〜1日）</small></span>
+    <ul>
+      <li>parity テスト維持 / typecheck → eslint → compile / iPhone・iPad 両実機検証</li>
+      <li>更新履歴: PC 版 changelog + モバイル版 MOBILE_CHANGELOG に記載</li>
+    </ul>
+  </div>
+  <p style="margin-top:8px"><strong>合計想定工数: 約 5〜7 日</strong>（Phase 0 の結果次第で Phase 2 が増減）</p>
+</section>
+
+<section>
+  <h2>リスクと対策</h2>
+  <table>
+    <tr><th>レベル</th><th>リスク</th><th>対策</th></tr>
+    <tr>
+      <td><span class="risk-high">HIGH</span></td>
+      <td>API 改変頻度が高い（週複数リリース）</td>
+      <td><code>/doc</code> spec から機能検出・防御的パース・対応バージョン明記</td>
+    </tr>
+    <tr>
+      <td><span class="risk-high">HIGH</span></td>
+      <td>ポート発見の公式機構なし・複数インスタンス競合</td>
+      <td>ランチャー完全所有で回避（既存 MCP ポートファイルのパターンを踏襲）</td>
+    </tr>
+    <tr>
+      <td><span class="risk-med">MEDIUM</span></td>
+      <td>TUI と API の二重クライアント競合</td>
+      <td>Codex の first-response-wins 実装を流用</td>
+    </tr>
+    <tr>
+      <td><span class="risk-med">MEDIUM</span></td>
+      <td>plugin 未導入時の状態欠落</td>
+      <td>transcript 補完 + cwd ベースのセッション発見（既存経路）</td>
+    </tr>
+    <tr>
+      <td><span class="risk-low">LOW</span></td>
+      <td>Windows 対応</td>
+      <td>HTTP loopback で統一でき Codex Unix socket 問題は発生しない見込み</td>
+    </tr>
+  </table>
+</section>
+
+<footer>Para Code — OpenCode 対応計画（ドラフト）/ 作成: 2026-08-22</footer>
+
+</div>
+</body>
+</html>
