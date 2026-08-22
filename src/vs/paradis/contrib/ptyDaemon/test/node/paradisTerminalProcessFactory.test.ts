@@ -61,7 +61,7 @@ suite('ParadisTerminalProcessFactory', () => {
 			onDidChangeTitle: store.add(new Emitter<never>()).event,
 			onDidExit: store.add(new Emitter<never>()).event,
 		} as never;
-		paradisUsePtyDaemon({ host, client: { onDidDispose: gone.event } as never });
+		paradisUsePtyDaemon({ host, client: { onDidDispose: gone.event } as never, viewer: 'viewer' });
 		store.add(toDisposable(() => paradisUsePtyDaemon(undefined)));
 		return gone;
 	}

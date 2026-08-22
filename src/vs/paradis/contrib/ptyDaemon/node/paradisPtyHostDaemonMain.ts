@@ -19,7 +19,7 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
-import { PARADIS_PTY_HOST_CHANNEL, PARADIS_PTY_HOST_CLIENT } from '../common/paradisPtyProtocol.js';
+import { PARADIS_PTY_HOST_CHANNEL, paradisIsPtyHostClient } from '../common/paradisPtyProtocol.js';
 import { paradisSpawnNodePty } from './paradisNodePtySpawner.js';
 import { ParadisPtyDaemonHost } from './paradisPtyDaemonHost.js';
 import { paradisRunPtyDaemonLifecycle } from './paradisPtyDaemonLifecycle.js';
@@ -83,8 +83,11 @@ export async function paradisRunPtyHostDaemon(options: IParadisPtyHostDaemonOpti
 	//
 	// 名乗りで見分ける。見に来た相手が消えたときだけ離す。
 	disposables.add(served.server.onDidRemoveConnection(connection => {
-		if (connection.ctx === PARADIS_PTY_HOST_CLIENT && !served.server.connections.some(other => other.ctx === PARADIS_PTY_HOST_CLIENT)) {
-			host.releaseViewers();
+		if (paradisIsPtyHostClient(connection.ctx)) {
+			// **消えた相手の分だけ離す。** 全部離すと、同時に繋いでいるもう片方が見ている端末まで
+			// 止まって窓が無音になる。何も離さないと、消えた側の端末は「まだ見られている」まま
+			// 誰も ack せず高水位で止まり、引き取りからも飛ばされて永久に戻らない。
+			host.releaseViewers(connection.ctx);
 		}
 	}));
 

@@ -75,7 +75,7 @@ suite('ParadisTerminalAdoption', () => {
 			hello: () => host.hello(),
 			list: () => host.list(),
 			spawn: request => host.spawn(request),
-			attach: handle => host.attach(handle),
+			attach: (handle, viewer) => host.attach(handle, viewer),
 			detach: handle => host.detach(handle),
 			input: (handle, data) => host.input(handle, data),
 			acknowledge: (handle, charCount) => host.acknowledge(handle, charCount),
@@ -105,7 +105,7 @@ suite('ParadisTerminalAdoption', () => {
 			name: 'build',
 			launch: undefined,
 		})))).handle;
-		await host.attach(handle);
+		await host.attach(handle, 'viewer');
 		ptys[0].emit('$ npm run build\r\n');
 		// アプリが消える。**pty は生き残る。**
 		await host.detach(handle);
@@ -140,7 +140,7 @@ suite('ParadisTerminalAdoption', () => {
 	test('数え上げるだけで繋ぎ直さない。繋ぐのは窓が開きに来たとき1回だけ', async () => {
 		const { host, ptys } = daemon();
 		const handle = (await host.spawn(spawnRequest('{}'))).handle;
-		await host.attach(handle);
+		await host.attach(handle, 'viewer');
 		await host.detach(handle);
 		ptys[0].emit('while nobody was watching\r\n');
 
@@ -148,7 +148,7 @@ suite('ParadisTerminalAdoption', () => {
 
 		// ここで繋いでしまうと、(1) 器が繋ぐときに控えが二重に流れ、(2) 見る人が現れる前に
 		// 「見られている」状態になって、誰も ack しないまま高水位で pty が止まる。
-		const attachment = await host.attach(handle);
+		const attachment = await host.attach(handle, 'viewer');
 
 		assert.deepStrictEqual(
 			{ frames: attachment.frames.map(frame => frame.data).join(''), dropped: attachment.dropped },
@@ -182,7 +182,7 @@ suite('ParadisTerminalAdoption', () => {
 
 		// 更新のあと古いサーバーが居座ると、両方が同じ置き場所を見る。両方が引き取ると
 		// 入力も出力も二重になり、こちらの終了操作が向こうの端末を殺す。
-		await host.attach(watched);
+		await host.attach(watched, 'viewer');
 
 		const result = await paradisAdoptTerminals(host);
 
@@ -212,7 +212,7 @@ suite('ParadisTerminalAdoption', () => {
 	test('閉じている間に走り切ったものは、終わったことと終了コードごと引き取れる', async () => {
 		const { host, ptys } = daemon();
 		const handle = (await host.spawn(spawnRequest('{}'))).handle;
-		await host.attach(handle);
+		await host.attach(handle, 'viewer');
 		await host.detach(handle);
 
 		ptys[0].emit('BUILD SUCCESS\r\n');

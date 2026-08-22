@@ -104,7 +104,9 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 		}
 
 		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
-		const records = await paradisReadDaemonRecords(paths.ledgerDir);
+		// **画面に出したものは止められなければならない。** 一覧は両方の台帳から作るので、
+		// 探す側も同じ範囲を見る。片方だけだと「出るが止められない」になる。
+		const records = await this.allRecords();
 		const own = records.find(record => record.buildKey === paths.buildKey && isProcessAlive(record.pid));
 
 		// **`listProcesses()` では数えられない。** あちらは `isOrphan` で絞るので、ウィンドウが
@@ -283,7 +285,9 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 
 	async stop(): Promise<void> {
 		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
-		const records = await paradisReadDaemonRecords(paths.ledgerDir);
+		// **画面に出したものは止められなければならない。** 一覧は両方の台帳から作るので、
+		// 探す側も同じ範囲を見る。片方だけだと「出るが止められない」になる。
+		const records = await this.allRecords();
 		const own = records.find(record => record.buildKey === paths.buildKey);
 		if (!own) {
 			return;
@@ -300,7 +304,9 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	 */
 	async stopForeign(pid: number): Promise<void> {
 		const paths = paradisActiveDaemonLedger(this.configurationService, this.environmentMainService, this.productService);
-		const records = await paradisReadDaemonRecords(paths.ledgerDir);
+		// **画面に出したものは止められなければならない。** 一覧は両方の台帳から作るので、
+		// 探す側も同じ範囲を見る。片方だけだと「出るが止められない」になる。
+		const records = await this.allRecords();
 		const record = records.find(candidate => candidate.pid === pid && candidate.buildKey !== paths.buildKey);
 		if (!record) {
 			this.logService.info(`[ParadisPtyDaemon] no ledger entry for pid ${pid} any more; nothing to stop`);

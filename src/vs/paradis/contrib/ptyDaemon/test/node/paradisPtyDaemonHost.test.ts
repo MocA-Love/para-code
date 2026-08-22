@@ -90,7 +90,7 @@ suite('ParadisPtyDaemonHost', () => {
 	test('終わったターミナルを勝手に捨てない。閉じている間に走り切った結果は戻ってから読める', async () => {
 		const { host, ptys } = create();
 		const handle = (await host.spawn(request('build'))).handle;
-		await host.attach(handle);
+		await host.attach(handle, 'viewer');
 		await host.detach(handle);
 
 		// 閉じている間に走り切った。
@@ -99,7 +99,7 @@ suite('ParadisPtyDaemonHost', () => {
 		await timeout(DATA_FLUSH_TIMEOUT * 2);
 
 		const afterExit = await host.list();
-		const attachment = await host.attach(handle);
+		const attachment = await host.attach(handle, 'viewer');
 
 		// アプリが読み終えて手放したら、そこで初めて消える。
 		await host.release(handle);
@@ -145,12 +145,36 @@ suite('ParadisPtyDaemonHost', () => {
 		// 繋げなかったことを知らずに進むと、空の画面を「出力が無かった」と読む。
 		let attachThrew = false;
 		try {
-			await host.attach(99);
+			await host.attach(99, 'viewer');
 		} catch {
 			attachThrew = true;
 		}
 
 		assert.deepStrictEqual({ attachThrew }, { attachThrew: true });
+	});
+
+	test('見に来た相手ごとに離す。片方が消えても、もう片方の端末は止めない', async () => {
+		const { host } = create();
+		const mine = (await host.spawn(request('a'))).handle;
+		const theirs = (await host.spawn(request('b'))).handle;
+		await host.attach(mine, 'server-old');
+		await host.attach(theirs, 'server-new');
+
+		// 更新のあと古いサーバーが居座り、やがて消える状況。
+		host.releaseViewers('server-old');
+
+		const summaries = await host.list();
+
+		assert.deepStrictEqual(
+			summaries.map(summary => [summary.handle, summary.attached]),
+			[
+				// 消えた相手の分は離す。離さないと誰も ack せず高水位で止まり、
+				// 引き取りからも飛ばされて永久に戻らない。
+				[mine, false],
+				// **もう片方は止めない。** 全部離すと、動いている窓が無音になる。
+				[theirs, true],
+			],
+		);
 	});
 
 	test('配置は預かってそのまま返す。常駐は中身を見ない', async () => {
@@ -172,8 +196,8 @@ suite('ParadisPtyDaemonHost', () => {
 
 		const first = (await host.spawn(request('a'))).handle;
 		const second = (await host.spawn(request('b'))).handle;
-		await host.attach(first);
-		await host.attach(second);
+		await host.attach(first, 'viewer');
+		await host.attach(second, 'viewer');
 		ptys[0].emit('from first');
 		ptys[1].emit('from second');
 		ptys[1].quit(3);
