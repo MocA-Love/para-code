@@ -75,7 +75,7 @@ import {
 } from '../../workbench/common/notifications.js';
 import { SessionsLayoutPolicy } from './layoutPolicy.js';
 import { AGENTS_PART_CARD_CLASS } from './parts/agentsPartCard.js';
-import { MobileNavigationStack } from './mobileNavigationStack.js';
+import { MobileNavigationLayer, MobileNavigationStack } from './mobileNavigationStack.js';
 import { MobileTitlebarPart } from './parts/mobile/mobileTitlebarPart.js';
 import { IMobileVisualViewport } from './parts/mobile/mobileVisualViewport.js';
 import { autorun } from '../../base/common/observable.js';
@@ -1650,31 +1650,33 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 
 		// Wire up mobile nav stack: back-button pops close the corresponding part
-		this._register(this.mobileNavStack.onDidPop(layer => {
-			// Drawer/back-button pops only make sense while the phone layout is
-			// active; a stale entry surviving a rotation must not close the
-			// desktop sidebar.
-			if (this.layoutPolicy.viewportClass.get() !== 'phone') {
-				return;
-			}
-			switch (layer) {
-				case 'sidebar':
-					this.closeMobileSidebarDrawer();
-					break;
-				case 'panel':
-					this.setPanelHidden(true);
-					break;
-				case 'auxbar':
-					this.setAuxiliaryBarHidden(true);
-					break;
-				case 'customView':
-					this.customViewService.hideCustomView();
-					break;
-				case 'editor':
-					// Editor modal close is handled by the editor service
-					break;
-			}
-		}));
+		this._register(this.mobileNavStack.onDidPop(layer => this.handleMobileNavPop(layer)));
+	}
+
+	private handleMobileNavPop(layer: MobileNavigationLayer): void {
+		// Drawer/back-button pops only make sense while the phone layout is
+		// active; a stale entry surviving a rotation must not close the
+		// desktop sidebar.
+		if (this.layoutPolicy.viewportClass.get() !== 'phone') {
+			return;
+		}
+		switch (layer) {
+			case 'sidebar':
+				this.closeMobileSidebarDrawer();
+				break;
+			case 'panel':
+				this.setPanelHidden(true);
+				break;
+			case 'auxbar':
+				this.setAuxiliaryBarHidden(true);
+				break;
+			case 'customView':
+				this.customViewService.hideCustomView();
+				break;
+			case 'editor':
+				// Editor modal close is handled by the editor service
+				break;
+		}
 	}
 
 	createWorkbenchManagement(instantiationService: IInstantiationService): void {
