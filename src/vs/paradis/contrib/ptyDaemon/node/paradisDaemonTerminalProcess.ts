@@ -245,6 +245,10 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			if (this._store.isDisposed || this.exitFired) {
 				// 起こしている間に閉じられていた。抱えたまま放置すると、誰も見ていない端末が
 				// 常駐に残り、次の起動で身に覚えのないタブとして現れる。
+				if (this.origin) {
+					// `adopt()` が入れた対応も外す（畳んだのはそれより前なので残っている）。
+					paradisForgetHandle(this.origin.id);
+				}
 				await this.host.release(summary.handle).catch(() => { });
 				return undefined;
 			}
@@ -603,7 +607,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	 */
 	async detach(): Promise<void> {
 		if (this.handle !== undefined) {
-			await this.host.detach(this.handle).catch(() => { });
+			await this.host.detach(this.handle, this.viewer).catch(() => { });
 		}
 	}
 
@@ -622,7 +626,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 「閉じたら殺される」（常駐にした意味が消える）、もう片方は「終わった端末が
 			// 常駐に残り続け、次の起動でタブとして全部戻ってくる」になる。手放さないと
 			// 抱えている本数が減らないので、常駐が畳まれる判断も効かなくなる。
-			this.tell(this.exited ? 'release' : 'detach', this.exited ? this.host.release(this.handle) : this.host.detach(this.handle));
+			this.tell(this.exited ? 'release' : 'detach', this.exited ? this.host.release(this.handle) : this.host.detach(this.handle, this.viewer));
 		}
 		super.dispose();
 	}

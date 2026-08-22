@@ -177,6 +177,26 @@ suite('ParadisPtyDaemonHost', () => {
 		);
 	});
 
+	test('同じ端末を2者が見ていたら、片方が消えても止めない', async () => {
+		const { host, ptys } = create();
+		const shared = (await host.spawn(request('shared'))).handle;
+		await host.attach(shared, 'server-old');
+		await host.attach(shared, 'server-new');
+
+		const seen: string[] = [];
+		store.add(host.onDidChangeData(event => seen.push(event.data)));
+
+		host.releaseViewers('server-old');
+		ptys[0].emit('still watched');
+
+		// 「見られている」は真偽値なので、最後の1人か確かめずに倒すと、残っている側への出力が
+		// 止まって窓が無音になる。見えないうえ直せない形。
+		assert.deepStrictEqual(
+			{ seen, attached: (await host.list())[0].attached },
+			{ seen: ['still watched'], attached: true },
+		);
+	});
+
 	test('配置は預かってそのまま返す。空を渡されたら忘れる', async () => {
 		const { host } = create();
 		await host.setLayout('workspace-a', '{"tabs":[1,2]}');
