@@ -36,6 +36,7 @@ export type ParadisDiffDetailKind =
 	| 'borderBottom'
 	| 'borderLeft'
 	| 'paddingLeft'
+	| 'paddingRight'
 	| 'otherStyle'
 	| 'mergedColumns'
 	| 'mergedRows'
@@ -102,6 +103,8 @@ export interface IParadisDiffSheet {
 	readonly tabColor?: string;
 	/** シート保護が有効か(新版優先、無ければ旧版)。 */
 	readonly protectedSheet?: boolean;
+	/** どちらかの版で MAX_ROWS を超えて打ち切られているか。差分UIに通知を出すために使う。 */
+	readonly truncated?: boolean;
 }
 
 export interface IParadisDataValidationDiff {
@@ -177,6 +180,7 @@ const STYLE_DETAIL_KINDS: Record<string, ParadisDiffDetailKind> = {
 	borderBottom: 'borderBottom',
 	borderLeft: 'borderLeft',
 	paddingLeft: 'paddingLeft',
+	paddingRight: 'paddingRight',
 };
 
 const STYLE_ORDER = [
@@ -190,6 +194,7 @@ const STYLE_ORDER = [
 	'color',
 	'backgroundColor',
 	'paddingLeft',
+	'paddingRight',
 	'borderTop',
 	'borderRight',
 	'borderBottom',
@@ -495,6 +500,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				modifiedMinCol: mod.minCol,
 				...(mod.tabColor ? { tabColor: mod.tabColor } : {}),
 				...(mod.protectedSheet ? { protectedSheet: true } : {}),
+				...(mod.truncated ? { truncated: true } : {}),
 			});
 			continue;
 		}
@@ -511,6 +517,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				originalMinCol: orig.minCol,
 				...(orig.tabColor ? { tabColor: orig.tabColor } : {}),
 				...(orig.protectedSheet ? { protectedSheet: true } : {}),
+				...(orig.truncated ? { truncated: true } : {}),
 			});
 			continue;
 		}
@@ -597,6 +604,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 			modifiedMinCol: minCol,
 			...((mod.tabColor ?? orig.tabColor) ? { tabColor: mod.tabColor ?? orig.tabColor } : {}),
 			...((mod.protectedSheet || orig.protectedSheet) ? { protectedSheet: true } : {}),
+			...((orig.truncated || mod.truncated) ? { truncated: true } : {}),
 		});
 	}
 

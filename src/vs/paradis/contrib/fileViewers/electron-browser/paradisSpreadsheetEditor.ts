@@ -49,7 +49,7 @@ export function rebuildSpreadsheetStickyStrips(
 	rowInner: HTMLElement,
 	thead: HTMLElement,
 	headCells: readonly HTMLElement[],
-	dataRows: readonly { tr: HTMLElement }[],
+	dataRows: readonly { tr: HTMLElement; excelRow?: number }[],
 ): { headHeight: number; hasRows: boolean } {
 	const headHeight = thead.offsetHeight;
 	// 列ラベル(A,B,C...)。corner th は含まれない(角は固定の別要素)。
@@ -59,7 +59,8 @@ export function rebuildSpreadsheetStickyStrips(
 		label: th.textContent ?? '',
 	}));
 	// 行番号。データ行の実測位置(thead 分を差し引いた自然座標)に合わせる。
-	const rowMetrics = dataRows.map(({ tr }) => ({ top: tr.offsetTop - headHeight, height: tr.offsetHeight }));
+	// ラベルは Excel と同じ絶対行番号(excelRow)。非表示行があると通し番号とはズレる。
+	const rowMetrics = dataRows.map(({ tr, excelRow }) => ({ top: tr.offsetTop - headHeight, height: tr.offsetHeight, label: String(excelRow ?? '') }));
 
 	dom.clearNode(colInner);
 	dom.clearNode(rowInner);
@@ -84,7 +85,7 @@ export function rebuildSpreadsheetStickyStrips(
 		cell.style.top = `${rowMetrics[i].top}px`;
 		cell.style.width = `${PARADIS_ROW_NUM_COL_WIDTH}px`;
 		cell.style.height = `${rowMetrics[i].height}px`;
-		cell.textContent = String(i + 1);
+		cell.textContent = rowMetrics[i].label || String(i + 1);
 		rowFragment.appendChild(cell);
 	}
 	rowInner.appendChild(rowFragment);
