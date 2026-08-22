@@ -42,6 +42,8 @@ export class WorkingCopyBackupRestoreRouter extends Disposable implements IWorki
 	private readonly providers = new Set<IWorkingCopyBackupRestoreRouteProvider>();
 	private readonly restorers = new Set<() => Promise<void>>();
 	private readonly restoreSequencer = new Sequencer();
+	/** まだ始まっていない復元パス。同tick内の複数要求をこれに合流させる。 */
+	private pendingRestore: Promise<void> | undefined;
 
 	registerProvider(provider: IWorkingCopyBackupRestoreRouteProvider): IDisposable {
 		this.providers.add(provider);
@@ -63,10 +65,29 @@ export class WorkingCopyBackupRestoreRouter extends Disposable implements IWorki
 		return WorkingCopyBackupRestoreDecision.Restore;
 	}
 
+	/**
+	 * 復元パスを要求する。
+	 *
+	 * PARA-PATCH: パスが始まる前に届いた要求を同一パスへ合流する。ハンドラ登録とスペース
+	 * 切替が同じtickに複数回発火すると、旧実装はSequencerの直列化だけで合流しないため
+	 * 「Deferされた全バックアップの再評価」を要求回数分まるごと繰り返していた。マイクロタスクで
+	 * 合流することで1回の走査にまとまる。
+	 *
+	 * パスが**開始した後**に届いた要求は従来どおり次のパスとしてSequencerに並ぶ。route()の判定は
+	 * 呼び出し側の状態(切替中フラグ等)に依存するため、「状態を変えてからawaitする」呼び出しには
+	 * 自分の状態変更を観測する新しいパスが必要だから(合流の対象は未開始の要求だけ)。
+	 */
 	requestRestore(): Promise<void> {
-		return this.restoreSequencer.queue(async () => {
-			await Promise.allSettled([...this.restorers].map(restorer => restorer()));
-		});
+		if (!this.pendingRestore) {
+			this.pendingRestore = Promise.resolve().then(() => {
+				// ここで合流の窓を閉じる。以後の要求は新しいパスとしてSequencerに並ぶ
+				this.pendingRestore = undefined;
+				return this.restoreSequencer.queue(async () => {
+					await Promise.allSettled([...this.restorers].map(restorer => restorer()));
+				});
+			});
+		}
+		return this.pendingRestore;
 	}
 }
 
