@@ -55,6 +55,15 @@ export interface IParadisPtyDaemonLifecycleOptions {
 	 */
 	readonly heldTerminals: () => Promise<readonly { readonly workspaceName: string }[]>;
 	readonly logService: ILogService;
+	/**
+	 * 終わる前に、抱えているものを片付ける。
+	 *
+	 * **これが無いと、握り潰すプロセスが孤児として残る。** ふつうは master fd が閉じた時点で
+	 * SIGHUP が飛んで子も終わるが、`nohup` されたものや自分でハンドラを持つものは残る。
+	 * 常駐を止めたのに走り続け、しかも誰からも見えない状態になるので、明示的に片付ける。
+	 */
+	readonly releaseHeld?: () => void;
+
 	/** 終わるときに呼ぶ。既定は `process.exit`。テストでは差し替える。 */
 	readonly exit?: () => void;
 	readonly now?: () => number;
@@ -179,6 +188,13 @@ export class ParadisPtyDaemonLifecycle extends Disposable implements IParadisPty
 			await fs.unlink(this.options.env.socketPath);
 		} catch {
 			// Windows の名前付きパイプには実体が無い。unix でも既に消えていることがある。
+		}
+		// **終わる前に抱えているものを片付ける。** ここを飛ばすと、SIGHUP を握り潰すプロセスは
+		// 常駐が消えた後も走り続け、誰からも見えない孤児になる。
+		try {
+			this.options.releaseHeld?.();
+		} catch (error) {
+			this.options.logService.warn('[ParadisPtyDaemon] could not release what it was holding', error);
 		}
 		this.dispose();
 		(this.options.exit ?? (() => process.exit(0)))();

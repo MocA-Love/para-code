@@ -98,6 +98,8 @@ export async function paradisRunPtyHostDaemon(options: IParadisPtyHostDaemonOpti
 		// 時点でほぐしてあるので、寿命を見るたびに読み直さない（1分ごとに全件を parse する
 		// 必要が無い）。読めなくても本数は数えられ、寿命の判断は本数で決まる。
 		heldTerminals: async () => host.heldSpaces(),
+		// 終わる前に pty を畳む。畳まないと、SIGHUP を握り潰すプロセスが孤児として残る。
+		releaseHeld: () => host.dispose(),
 		logService,
 	}));
 

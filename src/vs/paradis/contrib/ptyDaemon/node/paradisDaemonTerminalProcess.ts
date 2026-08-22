@@ -133,6 +133,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 
 	private title = '';
 	private reportedTitle: string | undefined;
+	private lastCwd: string | undefined;
 
 	constructor(
 		private readonly host: IParadisPtyHost,
@@ -298,6 +299,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		}));
 
 		this._onProcessReady.fire({ pid, cwd: this.initialCwd, windowsPty: undefined });
+		// 引き取り経路は起動先の検査を通らないので、ここで出さないと**一度も出ない**。
+		this._onDidChangeProperty.fire({ type: ProcessPropertyType.InitialCwd, value: this.initialCwd });
 		// **引き取りでは常駐側が題名の変化を出さない**（向こうは既に同じ値を覚えているため）。
 		// ここで出しておかないと、更新をまたいだ直後だけタブ名が空になる。
 		this.reportTitle(title);
@@ -504,8 +507,16 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 
 	async refreshProperty<T extends ProcessPropertyType>(property: T): Promise<IProcessPropertyMap[T]> {
 		switch (property) {
-			case ProcessPropertyType.Cwd:
-				return await this.getCwd() as IProcessPropertyMap[T];
+			case ProcessPropertyType.Cwd: {
+				const cwd = await this.getCwd();
+				if (cwd !== this.lastCwd) {
+					// 戻り値だけを返すと、**イベントしか見ていない側**（タブの説明欄など）が
+					// 常駐経由のときだけ更新されない。upstream も両方出している。
+					this.lastCwd = cwd;
+					this._onDidChangeProperty.fire({ type: ProcessPropertyType.Cwd, value: cwd });
+				}
+				return cwd as IProcessPropertyMap[T];
+			}
 			case ProcessPropertyType.InitialCwd:
 				return this.initialCwd as IProcessPropertyMap[T];
 			case ProcessPropertyType.Title:

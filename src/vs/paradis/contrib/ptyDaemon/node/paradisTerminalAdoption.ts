@@ -80,12 +80,10 @@ export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IPar
 			skipped++;
 			continue;
 		}
-		try {
-			adopted.push({ summary, metadata: paradisDecodeTerminalMetadata(summary.metadata) });
-		} catch {
-			// 1本ずつ独立に。隣で元気に走っているものを道連れにしない。
-			skipped++;
-		}
+		// 読み取りは失敗しない設計（`paradisDecodeTerminalMetadata` は何が入っていても値を返す）
+		// なので、ここに try は無い。**1本ずつ独立に扱う**という約束は、器を作る側
+		// (`paradisAdoptIntoPtyService`) が引き受けている。
+		adopted.push({ summary, metadata: paradisDecodeTerminalMetadata(summary.metadata) });
 	}
 	return { reachable: true, adopted, skipped };
 }

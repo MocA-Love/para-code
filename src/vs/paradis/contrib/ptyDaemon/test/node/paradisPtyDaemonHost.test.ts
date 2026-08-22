@@ -177,14 +177,36 @@ suite('ParadisPtyDaemonHost', () => {
 		);
 	});
 
-	test('配置は預かってそのまま返す。常駐は中身を見ない', async () => {
+	test('配置は預かってそのまま返す。空を渡されたら忘れる', async () => {
 		const { host } = create();
 		await host.setLayout('workspace-a', '{"tabs":[1,2]}');
+		const kept = await host.getLayout('workspace-a');
+
+		// 消す道が他に無い。スペースを消しても常駐はそれを知らないので、ここが唯一の掃除口。
+		await host.setLayout('workspace-a', '');
 
 		assert.deepStrictEqual(
-			{ a: await host.getLayout('workspace-a'), missing: await host.getLayout('workspace-b') },
-			{ a: '{"tabs":[1,2]}', missing: undefined },
+			{ kept, cleared: await host.getLayout('workspace-a'), missing: await host.getLayout('workspace-b') },
+			{ kept: '{"tabs":[1,2]}', cleared: undefined, missing: undefined },
 		);
+	});
+
+	test('畳むときは抱えている pty も畳む。孤児を残さない', async () => {
+		const disposables = store.add(new DisposableStore());
+		const ptys: FakePty[] = [];
+		const host = new ParadisPtyDaemonHost(() => {
+			const pty = new FakePty(1000 + ptys.length, disposables);
+			ptys.push(pty);
+			return pty;
+		});
+		await host.spawn(request('a'));
+		await host.spawn(request('b'));
+
+		host.dispose();
+
+		// 畳まないと、SIGHUP を握り潰すプロセスは常駐が消えた後も走り続け、
+		// 誰からも見えない孤児になる。
+		assert.deepStrictEqual(ptys.map(pty => pty.killed), [true, true]);
 	});
 
 	test('出力と終了は handle を添えて流れる', async () => {

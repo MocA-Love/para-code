@@ -18,7 +18,7 @@
 // (`paradisPtyHostPaths.ts`)、ビルドが違っても同じ名前に辿り着く。
 
 import { spawn } from 'child_process';
-import { closeSync, mkdirSync, openSync } from 'fs';
+import { closeSync, mkdirSync, openSync, rmSync, statSync } from 'fs';
 import { createConnection } from 'net';
 import { timeout } from '../../../../base/common/async.js';
 import { dirname, join } from '../../../../base/common/path.js';
@@ -37,6 +37,9 @@ const CONNECT_TIMEOUT = 2_000;
 
 /** 起こしてから待つ上限。ここを過ぎたら常駐を諦めて、今までどおりアプリの中で動かす。 */
 const STARTUP_TIMEOUT = 10_000;
+
+/** 起動ログの上限。超えたら捨てて始め直す（常駐を起こすたびに追記されるため）。 */
+const STARTUP_LOG_LIMIT = 1024 * 1024;
 
 /** 起こした後に繋ぎ直しを試す間隔。 */
 const RETRY_INTERVAL = 100;
@@ -220,7 +223,17 @@ function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): void {
 	let stdio: 'ignore' | number = 'ignore';
 	try {
 		mkdirSync(dirname(paths.socketPath), { recursive: true, mode: 0o700 });
-		stdio = openSync(join(dirname(paths.socketPath), 'startup.log'), 'a');
+		const log = join(dirname(paths.socketPath), 'startup.log');
+		// 起こすたびに追記され続けるので、大きくなったら捨てて始め直す。**残す側に倒す**のは、
+		// ここが「常駐が上がらない理由」を書く唯一の場所だから（前の内容より直近が重要）。
+		try {
+			if (statSync(log).size > STARTUP_LOG_LIMIT) {
+				rmSync(log, { force: true });
+			}
+		} catch {
+			// まだ無い。
+		}
+		stdio = openSync(log, 'a');
 	} catch (error) {
 		logService.warn('[ParadisPtyHost] could not open the startup log; the daemon will start without one', error);
 	}
