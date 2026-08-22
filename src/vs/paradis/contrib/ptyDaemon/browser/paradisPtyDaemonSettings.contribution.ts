@@ -25,7 +25,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// APPLICATION スコープ: ターミナルのプロセスを持つのは main プロセスなので、
 			// ウィンドウやワークスペースごとに切り替えられる設定にはできない。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.terminal.daemon.enabled', "ターミナルを Para Code の外の常駐プロセスで動かします。有効にすると、ウィンドウを閉じても Para Code を終了しても、実行中のコマンドやエージェントはそのまま動き続け、次に開いたときに元の画面のまま繋ぎ直せます。\n\n変更は Para Code の再起動後に反映されます。PC を再起動すると常駐も終了します。残したターミナルは、24時間どのウィンドウからも開かれなければ終了します。"),
+			markdownDescription: localize('paradis.terminal.daemon.enabled', "ターミナルを Para Code の外の常駐プロセスで動かします。有効にすると、ウィンドウを閉じても Para Code を終了しても、実行中のコマンドやエージェントはそのまま動き続け、次に開いたときに元の画面のまま繋ぎ直せます。\n\n変更は Para Code の再起動後に反映されます。PC を再起動すると常駐も終了します。残したターミナルは、Para Code を終了したあと24時間どのウィンドウからも開かれなければ終了します（Para Code が起動している間は、開いていなくても残ります）。"),
 			tags: ['experimental'],
 		},
 		[PARADIS_PTY_HOST_DAEMON_ENABLED]: {
@@ -45,7 +45,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				localize('paradis.terminal.daemon.keepAliveOnClose.always', "尋ねずに残します。"),
 				localize('paradis.terminal.daemon.keepAliveOnClose.never', "尋ねずに終了します（常駐を使わないのと同じ結果になります）。"),
 			],
-			markdownDescription: localize('paradis.terminal.daemon.keepAliveOnClose', "ウィンドウを閉じるときに、実行中のターミナルを常駐へ残すかどうかです。{0} が有効なときだけ意味を持ちます。\n\nPara Code を終了するときは尋ねません（開いているウィンドウの数だけダイアログが並ぶため）。覚えている選択があればそれに従い、無ければ残します。\n\n残したターミナルは、24時間どのウィンドウからも開かれなければ終了します。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
+			markdownDescription: localize('paradis.terminal.daemon.keepAliveOnClose', "ウィンドウを閉じるときに、実行中のターミナルを常駐へ残すかどうかです。{0} または「更新をまたいで繋ぎ直す」が有効なときに意味を持ちます。\n\nPara Code を終了するときは尋ねません（開いているウィンドウの数だけダイアログが並ぶため）。覚えている選択があればそれに従い、無ければ残します。\n\n残したターミナルは、Para Code を終了したあと24時間どのウィンドウからも開かれなければ終了します（Para Code が起動している間は、開いていなくても残ります）。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
 		},
 	},
 });

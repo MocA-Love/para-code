@@ -104,8 +104,11 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 
 	async spawn(request: IParadisPtySpawnRequest): Promise<IParadisPtySummary> {
 		const handle = this.nextHandle++;
+		// **起こしてから入れ物を作る。** 逆にすると、起動が失敗したときに入れ物だけが誰にも
+		// 畳まれずに残る。
+		const pty = this.spawner(request);
 		const store = new DisposableStore();
-		const holder = store.add(new ParadisPtyHolder(handle, this.spawner(request), request.cols, request.rows, request.metadata));
+		const holder = store.add(new ParadisPtyHolder(handle, pty, request.cols, request.rows, request.metadata));
 		store.add(holder.onDidChangeData(data => this._onDidChangeData.fire({ handle, data })));
 		store.add(holder.onDidExit(event => this._onDidExit.fire({ handle, code: event.code, signal: event.signal })));
 		store.add(holder.onDidChangeTitle(title => this._onDidChangeTitle.fire({ handle, title })));
@@ -209,6 +212,12 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	}
 
 	async setLayout(scopeId: string, layout: string): Promise<void> {
+		// 空の配置は覚えない。**消す道が他に無い**ので、これが唯一の掃除口になる
+		// （スペースを消しても、常駐は消えたことを知らない）。
+		if (layout.length === 0) {
+			this.layouts.delete(scopeId);
+			return;
+		}
 		this.layouts.set(scopeId, layout);
 	}
 
