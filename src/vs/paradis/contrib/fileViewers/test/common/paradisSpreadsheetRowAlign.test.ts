@@ -29,7 +29,15 @@ suite('paradisSpreadsheetRowAlign', () => {
 		});
 
 		test('caps the fingerprint length', () => {
-			ok(rowFingerprint(row(['x'.repeat(5000)])).length <= 2000);
+			// 打ち切り時は末尾に固定長のハッシュが付くので、上限は打ち切り長ちょうどではなく
+			// それに少し余裕を持たせた値で見る(衝突回避のため。下のテスト参照)。
+			ok(rowFingerprint(row(['x'.repeat(5000)])).length <= 2010);
+		});
+
+		test('distinguishes long rows that share a prefix but differ only after the truncation point', () => {
+			const a = row(['x'.repeat(2500) + 'AAAA']);
+			const b = row(['x'.repeat(2500) + 'BBBB']);
+			ok(rowFingerprint(a) !== rowFingerprint(b));
 		});
 	});
 

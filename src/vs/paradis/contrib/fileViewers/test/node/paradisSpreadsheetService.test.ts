@@ -69,6 +69,30 @@ suite('ParadisSpreadsheetService', () => {
 		strictEqual(result.sheets[2].rows[0].cells[0].value, '');
 	});
 
+	test('formats a formula result that evaluates to a date like a direct date cell', async () => {
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Formulas');
+			sheet.getCell('A1').value = { formula: 'TODAY()', result: new Date(2026, 1, 3) } as ExcelJS.CellFormulaValue;
+		});
+
+		const result = await service.parseWorkbook(workbook);
+
+		strictEqual(result.sheets[0].rows[0].cells[0].value, formatDateFallback(new Date(2026, 1, 3)));
+	});
+
+	test('shows a formula error result as its error code instead of [object Object]', async () => {
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Formulas');
+			sheet.getCell('A1').value = { formula: 'A2/0', result: { error: '#DIV/0!' } } as ExcelJS.CellFormulaValue;
+		});
+
+		const result = await service.parseWorkbook(workbook);
+
+		strictEqual(result.sheets[0].rows[0].cells[0].value, '#DIV/0!');
+	});
+
 	test('returns at most 2000 rows and marks a larger worksheet as truncated', async () => {
 		const service = new ParadisSpreadsheetService();
 		const workbook = await encodeWorkbook(book => {
