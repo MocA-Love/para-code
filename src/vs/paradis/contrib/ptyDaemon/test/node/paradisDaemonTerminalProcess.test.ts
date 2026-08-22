@@ -84,6 +84,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 			OPTIONS,
 			new NullLogService(),
 			{ quality: 'stable' } as IProductService,
+			'test-viewer',
 		));
 		return { host, ptys, requests, process };
 	}
@@ -178,7 +179,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 		}));
 		const process = disposables.add(new ParadisDaemonTerminalProcess(
 			host, { executable: '/bin/sh', args: [], env: {}, name: 'build' }, '/', 80, 24, {}, {}, OPTIONS,
-			new NullLogService(), { quality: 'stable' } as IProductService,
+			new NullLogService(), { quality: 'stable' } as IProductService, 'test-viewer',
 			{ id: 1, workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true },
 		));
 
@@ -210,7 +211,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 		}));
 		const process = disposables.add(new ParadisDaemonTerminalProcess(
 			host, { executable: '/bin/sh', args: [], env: {} }, '/', 80, 24, {}, {}, OPTIONS,
-			new NullLogService(), { quality: 'stable' } as IProductService,
+			new NullLogService(), { quality: 'stable' } as IProductService, 'test-viewer',
 			{ id: 42, workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true },
 		));
 

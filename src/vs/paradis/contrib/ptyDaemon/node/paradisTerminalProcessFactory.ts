@@ -198,7 +198,7 @@ export async function paradisCreateTerminalProcess(
 		// 配る人はこの接続に1つ。端末ごとに作ると、常駐への購読が端末の数だけ増える。
 		dispatch ??= new ParadisPtyDispatch(connection.host);
 		return new ParadisDaemonTerminalProcess(
-			connection.host, shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService, origin, connection.client, dispatch, connection.viewer, adoptTarget,
+			connection.host, shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService, connection.viewer, origin, connection.client, dispatch, adoptTarget,
 		);
 	}
 	if (adoptTarget) {

@@ -11,6 +11,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisPtyHostPaths } from '../../common/paradisPtyHostPaths.js';
+import { PARADIS_PTY_PROTOCOL_VERSION } from '../../common/paradisPtyProtocol.js';
 import { paradisPtyDaemonPaths } from '../../common/paradisPtyDaemonPaths.js';
 
 suite('ParadisPtyHostPaths', () => {
@@ -29,7 +30,7 @@ suite('ParadisPtyHostPaths', () => {
 				// **ここが本題。** 名前を決める材料は「置き場所」と「protocol の版」だけで、ビルドは
 				// 入り込まない（そもそも引数に無い）。だから更新をまたいで同じ常駐に会える。
 				// 版が名前に入っているので、互換を壊すときだけ新旧が分かれる。
-				keyedByProtocol: again.socketPath.includes('-v1.') && again.ledgerFile.endsWith('v1.json'),
+				keyedByProtocol: again.socketPath.includes(`-v${PARADIS_PTY_PROTOCOL_VERSION}.`) && again.ledgerFile.endsWith(`v${PARADIS_PTY_PROTOCOL_VERSION}.json`),
 				separateProfiles: paradisPtyHostPaths(other).socketPath !== again.socketPath,
 				// 前の常駐とは別の場所。混ざると状態パネルが互いを別ビルドとして並べてしまう。
 				separateFromOldDaemon: !again.ledgerDir.endsWith('ptyDaemon'),

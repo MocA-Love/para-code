@@ -177,23 +177,34 @@ suite('ParadisPtyDaemonHost', () => {
 		);
 	});
 
-	test('同じ端末を2者が見ていたら、片方が消えても止めない', async () => {
-		const { host, ptys } = create();
+	test('二重に見せない。名札の無い相手も受けない', async () => {
+		const { host } = create();
 		const shared = (await host.spawn(request('shared'))).handle;
 		await host.attach(shared, 'server-old');
-		await host.attach(shared, 'server-new');
 
-		const seen: string[] = [];
-		store.add(host.onDidChangeData(event => seen.push(event.data)));
+		let twoViewers = false;
+		try {
+			await host.attach(shared, 'server-new');
+		} catch {
+			twoViewers = true;
+		}
+		let nameless = false;
+		try {
+			await host.attach(shared, '');
+		} catch {
+			nameless = true;
+		}
 
-		host.releaseViewers('server-old');
-		ptys[0].emit('still watched');
-
-		// 「見られている」は真偽値なので、最後の1人か確かめずに倒すと、残っている側への出力が
-		// 止まって窓が無音になる。見えないうえ直せない形。
 		assert.deepStrictEqual(
-			{ seen, attached: (await host.list())[0].attached },
-			{ seen: ['still watched'], attached: true },
+			{ twoViewers, nameless, stillTheirs: (await host.list())[0].attached },
+			{
+				// 「見られている」は真偽値1つなので、2者に見せると片方が離れたときに
+				// 残った側への出力が止まる。持ち分が互いに素であることを、ここで不変条件にする。
+				twoViewers: true,
+				// 名札が無いと誰の持ち分にも入らず、その相手が消えても離せない。
+				nameless: true,
+				stillTheirs: true,
+			},
 		);
 	});
 

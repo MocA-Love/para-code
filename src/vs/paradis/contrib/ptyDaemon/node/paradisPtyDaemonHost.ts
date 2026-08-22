@@ -123,6 +123,17 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		if (!holder) {
 			throw new Error(`no terminal with handle ${handle}`);
 		}
+		if (!viewer) {
+			// **名札なしは受けない。** 受けると誰の持ち分にも入らず、その相手が消えても離せない。
+			// 症状は「見ていないのに見られている端末」で、引き取りからも飛ばされて戻らなくなる。
+			throw new Error('a viewer must say who it is before attaching');
+		}
+		const owner = this.ownerOf(handle);
+		if (owner !== undefined && owner !== viewer) {
+			// **持ち分は互いに素**という前提を、ここで不変条件にする。二重に見ると、片方が
+			// 離れたときに残った側への出力が止まる（真偽値1つでは区別できない）。
+			throw new Error(`terminal ${handle} is already being watched by someone else`);
+		}
 		let watched = this.viewers.get(viewer);
 		if (!watched) {
 			watched = new Set<number>();
@@ -160,12 +171,17 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 
 	/** その端末を、まだ誰かが見ているか。 */
 	private isWatched(handle: number): boolean {
-		for (const watched of this.viewers.values()) {
+		return this.ownerOf(handle) !== undefined;
+	}
+
+	/** その端末を見ている相手。 */
+	private ownerOf(handle: number): string | undefined {
+		for (const [viewer, watched] of this.viewers) {
 			if (watched.has(handle)) {
-				return true;
+				return viewer;
 			}
 		}
-		return false;
+		return undefined;
 	}
 
 	async detach(handle: number, viewer?: string): Promise<void> {
