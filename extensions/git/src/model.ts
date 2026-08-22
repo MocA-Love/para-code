@@ -22,6 +22,7 @@ import { IBranchProtectionProviderRegistry } from './branchProtection';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
 import { RepositoryCache } from './repositoryCache';
 import { ParadisRepositoryParkingLot } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
+import { selectUnaccountedForParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
 
 class RepositoryPick implements QuickPickItem {
 	@memoize get label(): string {
@@ -522,15 +523,11 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			// folder may sit *inside* an ancestor repository (`paradisRepositoryPark.ts`), and
 			// parking that ancestor would fight the unpark on every return trip.
 			const currentFolderPaths = (workspace.workspaceFolders || []).map(f => f.uri.fsPath);
-			const unaccountedToPark = this.openRepositories
-				.filter(r => !activeRepositories.has(r.repository))
-				.filter(r => {
-					// Compare against rootRealPath too: `git rev-parse --show-toplevel` can disagree
-					// with the workspace folder across symlinks, and parking a repo that a current
-					// folder actually covers would drop it from the SCM view on every switch.
-					const roots = r.repository.rootRealPath !== undefined ? [r.repository.root, r.repository.rootRealPath] : [r.repository.root];
-					return !currentFolderPaths.some(folder => roots.some(root => isDescendant(folder, root) || isDescendant(root, folder)));
-				});
+			const candidatesToPark = this.openRepositories.filter(r => !activeRepositories.has(r.repository));
+			// Compare against rootRealPath too: `git rev-parse --show-toplevel` can disagree with the
+			// workspace folder across symlinks, and parking a repo that a current folder actually
+			// covers would drop it from the SCM view on every switch. See paradisUnaccountedToPark.ts.
+			const unaccountedToPark = selectUnaccountedForParking(candidatesToPark, currentFolderPaths, isDescendant);
 			unaccountedToPark.forEach(r => r.park());
 
 			this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${possibleRepositoryFolders.map(p => p.uri.fsPath).join(', ')}]`);
