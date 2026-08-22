@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -62,13 +62,16 @@ export default function NotificationsScreen() {
 	};
 
 	/** 全消去は取り返しがつかない（PC側の一覧からも消える）ので一度だけ聞く。 */
-	const confirmClear = () => {
+	// **参照を安定させる。** 素の関数のままだと下の headerSpec の useMemo が毎レンダー切れて、
+	// 層への spec 登録（useEffect）が再送のたびに走る。clearNotifications は store の
+	// メソッドで安定、notifications.length はプリミティブ。
+	const confirmClear = useCallback(() => {
 		hapticImpact('light');
 		Alert.alert('通知をすべて消す', `${notifications.length}件の通知を消します。この操作は取り消せません。`, [
 			{ text: 'キャンセル', style: 'cancel' },
 			{ text: 'すべて消す', style: 'destructive', onPress: () => clearNotifications() },
 		]);
-	};
+	}, [notifications.length, clearNotifications]);
 
 	// ヘッダーは常設のヘッダー層が描く。**この画面はズーム遷移（Link.AppleZoom）で開く**ので
 	// `instant` にしてモーフさせない——画面全体が拡大しているのに中のヘッダーだけ別の速度で
