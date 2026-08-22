@@ -77,7 +77,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 			file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 100, rows: 30, term: 'xterm-256color',
 			metadata: paradisEncodeTerminalMetadata({
 				workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true, name: 'build',
-				appearance: undefined, launch: undefined,
+				launch: undefined,
 			}),
 		});
 		await host.attach(summary.handle);

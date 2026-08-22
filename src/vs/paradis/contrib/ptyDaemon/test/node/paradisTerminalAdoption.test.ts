@@ -103,7 +103,7 @@ suite('ParadisTerminalAdoption', () => {
 			workspaceName: 'para',
 			shouldPersist: true,
 			name: 'build',
-			appearance: { icon: 'terminal-bash' }, launch: undefined,
+			launch: undefined,
 		})))).handle;
 		await host.attach(handle);
 		ptys[0].emit('$ npm run build\r\n');
@@ -123,7 +123,6 @@ suite('ParadisTerminalAdoption', () => {
 				pid: adopted.summary.pid,
 				workspace: [adopted.metadata.workspaceId, adopted.metadata.workspaceName],
 				name: adopted.metadata.name,
-				appearance: adopted.metadata.appearance,
 				launch: adopted.metadata.launch,
 			},
 			{
@@ -133,7 +132,7 @@ suite('ParadisTerminalAdoption', () => {
 				pid: 9000,
 				workspace: ['ws-1', 'para'],
 				name: 'build',
-				appearance: { icon: 'terminal-bash' }, launch: undefined,
+				launch: undefined,
 			},
 		);
 	});

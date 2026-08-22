@@ -523,7 +523,6 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			workspaceName: this.origin?.workspaceName ?? '',
 			shouldPersist: this.origin?.shouldPersist ?? true,
 			name: this.shellLaunchConfig.name,
-			appearance: { icon: this.shellLaunchConfig.icon, color: this.shellLaunchConfig.color },
 			launch: {
 				shellLaunchConfig: this.shellLaunchConfig,
 				env: this.env,
@@ -543,7 +542,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	/**
 	 * 見るのをやめる。**pty は止めない。**
 	 *
-	 * `ITerminalChildProcess.detach` として呼ばれる経路のほかに、{@link dispose} からも通る。
+	 * upstream の `ITerminalChildProcess` に `detach` は無いので、実際に通るのは {@link dispose}
+	 * だけ。将来 upstream 側に口ができたときに繋げられるよう、名前は合わせてある。
 	 */
 	async detach(): Promise<void> {
 		if (this.handle !== undefined) {
