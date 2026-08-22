@@ -12,6 +12,7 @@ import { constants as fsConstants, promises as fs, type Stats } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, extname, join } from '../../../../base/common/path.js';
 import { findExecutable, killTree } from '../../../../base/node/processes.js';
+import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { inspectParadisMcpTomlSection, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from './paradisMcpConfigStatus.js';
@@ -199,7 +200,16 @@ export function runParadisMcpSetupCommand(
 			}
 		}
 		try {
-			child = spawnProcess(command, args, { env, shell: false, windowsHide: true });
+			// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
+			// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
+			const isWindows = platform === 'win32';
+			const shimInvocation = isWindows ? paradisWrapWindowsScriptShim(command, args) : undefined;
+			child = spawnProcess(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
+				env,
+				shell: false,
+				windowsHide: true,
+				windowsVerbatimArguments: shimInvocation !== undefined,
+			});
 		} catch (error) {
 			finish({ kind: errorCode(error) === 'ENOENT' ? 'unavailable' : 'failure', output: '' });
 			return;
@@ -538,7 +548,9 @@ export class ParadisMcpSetupController {
 			this.options.log('Claude MCP executable resolution failed');
 			return { cli: 'claude', cliAvailable: false, servers: [] };
 		}
-		if (executable === undefined || (this.options.platform === 'win32' && !/\.(?:exe|com)$/i.test(extname(executable)))) {
+		// Windows の npm 版 Claude Code は claude.cmd シム。runParadisMcpSetupCommand 側が
+		// cmd.exe 経由へ安全にラップするため、.cmd/.bat も許可する(.exe/.com は従来どおり直接実行)。
+		if (executable === undefined || (this.options.platform === 'win32' && !/\.(?:exe|com|cmd|bat)$/i.test(extname(executable)))) {
 			return { cli: 'claude', cliAvailable: false, servers: [] };
 		}
 		const addArguments = [
