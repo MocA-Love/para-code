@@ -357,7 +357,7 @@ export class PtyService extends Disposable implements IPtyService {
 		const id = ++this._lastPtyId;
 		// PARA-PATCH: the pty may belong to a daemon that outlives this process, so the decision of
 		// where it runs is made in one place. See paradisTerminalProcessFactory.ts.
-		const process = await paradisCreateTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService, { workspaceId, workspaceName, shouldPersist }, paradisAdoptTarget);
+		const process = await paradisCreateTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService, { id, workspaceId, workspaceName, shouldPersist }, paradisAdoptTarget);
 		const processLaunchOptions: IPersistentTerminalProcessLaunchConfig = {
 			env,
 			executableEnv,

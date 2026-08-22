@@ -19,7 +19,7 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
-import { PARADIS_PTY_HOST_CHANNEL } from '../common/paradisPtyProtocol.js';
+import { PARADIS_PTY_HOST_CHANNEL, PARADIS_PTY_HOST_CLIENT } from '../common/paradisPtyProtocol.js';
 import { paradisSpawnNodePty } from './paradisNodePtySpawner.js';
 import { ParadisPtyDaemonHost } from './paradisPtyDaemonHost.js';
 import { paradisRunPtyDaemonLifecycle } from './paradisPtyDaemonLifecycle.js';
@@ -76,12 +76,14 @@ export async function paradisRunPtyHostDaemon(options: IParadisPtyHostDaemonOpti
 	// 思い続けると、未確認の文字が数え上がって高水位で pty が止まり、閉じている間も走り切らせる
 	// という判断が無言で覆る。接続が切れたこと自体を合図にする。
 	//
-	// 「全部いなくなったら」で判断するのは、**誰かがまだ見ている間は絶対に離さない**ため。
-	// この常駐に繋ぐのは pty ホスト1つだけ（ウィンドウは pty ホストに繋ぐので、こちらからは
-	// 見えない）なので、実際には1本目が消えた時点で 0 になる。将来2者以上が繋ぐ形になったら、
-	// どの接続がどれを見ていたかを持つ必要がある — そのときは、この条件では粗すぎる。
-	disposables.add(served.server.onDidRemoveConnection(() => {
-		if (served.server.connections.length === 0) {
+	// **接続の数では判断できない。** 状態パネルや停止 UI も同じソケットへ繋ぐので、アプリが
+	// 動いている限り接続は 0 にならない。数で見ていた頃は、pty ホストだけが落ちても「まだ
+	// 誰かが見ている」と判断してしまい、未確認の文字が数え上がって高水位で pty が止まり、
+	// しかも引き取りは「見られている」ものを飛ばすので**アプリを終了するまで復帰できなかった**。
+	//
+	// 名乗りで見分ける。見に来た相手が消えたときだけ離す。
+	disposables.add(served.server.onDidRemoveConnection(connection => {
+		if (connection.ctx === PARADIS_PTY_HOST_CLIENT && !served.server.connections.some(other => other.ctx === PARADIS_PTY_HOST_CLIENT)) {
 			host.releaseViewers();
 		}
 	}));

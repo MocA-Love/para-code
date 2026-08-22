@@ -58,12 +58,20 @@ import { paradisShellTypeFromTitle } from './paradisShellType.js';
 
 /** ターミナルの持ち主。常駐へ預けて、引き取るときに読み戻す。 */
 export interface IParadisTerminalOrigin {
+	/**
+	 * こちら側での番号。
+	 *
+	 * **配置を預けるのに要る。** 配置に入っているのは番号だが、番号は起動のたびに 1 から
+	 * 振り直されるので、常駐へは handle に置き換えて預ける。その対応表を作るのがここ。
+	 * 覚えないと預ける配置が空になり、**次の起動で誰も繋ぎに来ない**。
+	 */
+	readonly id: number;
 	readonly workspaceId: string;
 	readonly workspaceName: string;
 	readonly shouldPersist: boolean;
 }
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
-import { IParadisAdoptTarget } from './paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisForgetHandle, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
 
 /**
@@ -251,6 +259,10 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		this.handle = handle;
 		this.pid = pid;
 		this.title = title;
+		if (this.origin) {
+			// 起こしたときも引き取ったときも、同じここを通る。
+			paradisRememberHandle(this.origin.id, handle);
+		}
 
 		const wiring = new DisposableStore();
 		this.wiring.value = wiring;
@@ -325,6 +337,13 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		this.exitFired = true;
 		this.forceExit.clear();
 		this._onProcessExit.fire(code);
+		// **自分で畳む。** 抱えている器はこれを畳んでくれない（upstream の `TerminalProcess` も
+		// 終了を告げた直後に自分を畳んでいる）。畳まないと常駐へ何も伝わらず、終わった端末が
+		// 抱えられたまま残り、次の起動でタブとして戻ってくる。
+		//
+		// 溜まっていた出力より先に畳んでも取りこぼさない。器は終了を見た時点で溜めを止めて
+		// 掃き出すが、その購読はこちらより先に張られているので、掃き出しが先に走る。
+		this.dispose();
 	}
 
 	private toArgs(args: string | string[] | undefined): string[] {
@@ -392,6 +411,10 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		if (this.handle === undefined) {
 			return;
 		}
+		// **終わらせろと言われたことを覚える。** 覚えないと、握り潰すプロセスで時間切れ経由の
+		// 終了になったときに「見るのをやめただけ」として常駐に残り、閉じたはずの端末が次の
+		// 起動で復活する。
+		this.exited = true;
 		this.tell('shutdown', this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined));
 		// **終わったことを必ず伝える。** SIGHUP を握り潰すプロセスだと exit が来ないことがあり、
 		// 来ないと器が畳まれず、タブが閉じないまま台帳に残り続ける。upstream も、pty が本当に
@@ -558,6 +581,9 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		//
 		// なお、落ちた・強制終了された場合はここを通らない。そちらは常駐側が接続の切断を
 		// 合図にして離す（`paradisPtyHostDaemonMain.ts`）。**片方だけでは足りない。**
+		if (this.origin) {
+			paradisForgetHandle(this.origin.id);
+		}
 		if (this.handle !== undefined) {
 			// **終わったものは手放し、閉じただけなら残す。** ここを取り違えると、片方は
 			// 「閉じたら殺される」（常駐にした意味が消える）、もう片方は「終わった端末が

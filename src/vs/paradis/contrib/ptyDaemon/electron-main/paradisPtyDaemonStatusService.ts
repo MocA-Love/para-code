@@ -37,7 +37,7 @@ import {
 } from '../common/paradisPtyDaemonStatus.js';
 import { IParadisPtyDaemonRecord } from '../common/paradisPtyDaemonPolicy.js';
 import { paradisReadDaemonRecords } from '../node/paradisPtyDaemonLedger.js';
-import { paradisActiveDaemonLedger, paradisAnyDaemonEnabled } from './paradisPtyHostStarterFactory.js';
+import { paradisActiveDaemonLedger, paradisAllDaemonLedgers, paradisAnyDaemonEnabled } from './paradisPtyHostStarterFactory.js';
 
 /** 状態を集めるのに必要な、ターミナル側の見え方。 */
 export interface IParadisDaemonPtyAccess {
@@ -130,7 +130,7 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 			startedAt: own?.startedAt,
 			terminalCount: terminals?.length,
 			spaces: terminals ? paradisGroupTerminalsBySpace(terminals) : [],
-			foreign: await this.describeForeign(records, paths.buildKey),
+			foreign: await this.describeForeign(await this.allRecords(), paths.buildKey),
 		};
 	}
 
@@ -235,6 +235,20 @@ export class ParadisPtyDaemonStatusService extends Disposable implements IParadi
 	override dispose(): void {
 		this.disposeControl();
 		super.dispose();
+	}
+
+	/**
+	 * 見えるところにある常駐の記録すべて。
+	 *
+	 * 切り替えの途中では、いま使う方の台帳だけでは足りない（もう片方が端末を抱えたまま残る）。
+	 */
+	private async allRecords(): Promise<IParadisPtyDaemonRecord[]> {
+		const dirs = paradisAllDaemonLedgers(this.configurationService, this.environmentMainService, this.productService);
+		const records: IParadisPtyDaemonRecord[] = [];
+		for (const dir of dirs) {
+			records.push(...await paradisReadDaemonRecords(dir));
+		}
+		return records;
 	}
 
 	/**

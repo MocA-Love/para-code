@@ -30,7 +30,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
 import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
-import { IParadisPtyHost, PARADIS_PTY_HOST_CHANNEL, PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
+import { IParadisPtyHost, PARADIS_PTY_HOST_CHANNEL, PARADIS_PTY_HOST_CLIENT, PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 
 /** 1回の接続試行を待つ上限。 */
 const CONNECT_TIMEOUT = 2_000;
@@ -103,7 +103,7 @@ async function paradisConnect(paths: IParadisPtyHostPaths): Promise<IParadisPtyH
 	if (!socket) {
 		return undefined;
 	}
-	const client = SocketClient.fromSocket(socket, 'paradis-pty-host');
+	const client = SocketClient.fromSocket(socket, PARADIS_PTY_HOST_CLIENT);
 	const record = (await paradisReadDaemonRecords(paths.ledgerDir)).find(entry => entry.socketPath === paths.socketPath);
 	if (!record || !await paradisAuthenticateDaemon(client, record.token)) {
 		// 台帳がまだ無い（起こした直後）か、名乗れない相手。どちらも繋がない。
