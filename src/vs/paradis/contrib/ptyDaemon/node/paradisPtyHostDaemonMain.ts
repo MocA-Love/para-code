@@ -76,6 +76,11 @@ export async function paradisRunPtyHostDaemon(options: IParadisPtyHostDaemonOpti
 	// 限らない（落ちる・強制終了される・機械が寝る）。届かなかった場合に「まだ誰かが見ている」と
 	// 思い続けると、未確認の文字が数え上がって高水位で pty が止まり、閉じている間も走り切らせる
 	// という判断が無言で覆る。接続が切れたこと自体を合図にする。
+	//
+	// 「全部いなくなったら」で判断するのは、**誰かがまだ見ている間は絶対に離さない**ため。
+	// この常駐に繋ぐのは pty ホスト1つだけ（ウィンドウは pty ホストに繋ぐので、こちらからは
+	// 見えない）なので、実際には1本目が消えた時点で 0 になる。将来2者以上が繋ぐ形になったら、
+	// どの接続がどれを見ていたかを持つ必要がある — そのときは、この条件では粗すぎる。
 	disposables.add(served.server.onDidRemoveConnection(() => {
 		if (served.server.connections.length === 0) {
 			host.releaseViewers();
