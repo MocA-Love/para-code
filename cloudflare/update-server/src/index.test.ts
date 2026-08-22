@@ -18,13 +18,15 @@ const publishedRelease: IReleaseRecord = {
 
 interface TestEnv {
 	readonly RELEASES: {
-		get(key: string, type: 'json'): Promise<IReleaseRecord | null>;
+		get(key: string, type?: 'json'): Promise<IReleaseRecord | string | null>;
 	};
 	readonly CF_ACCESS_AUD?: string;
 }
 
-function createEnv(record: IReleaseRecord | null, cfAccessAudience?: string) {
-	const get = vi.fn(async (_key: string, _type: 'json') => record);
+function createEnv(record: IReleaseRecord | null, changelogMd: string | null = null, cfAccessAudience?: string) {
+	const get = vi.fn(async (key: string, type?: 'json') =>
+		type === 'json' ? record : changelogMd
+	);
 	const env: TestEnv = {
 		RELEASES: { get },
 		...(cfAccessAudience ? { CF_ACCESS_AUD: cfAccessAudience } : {})
@@ -51,7 +53,7 @@ describe('update feed', () => {
 	});
 
 	it('returns 401 when Cloudflare Access is configured and the assertion is missing', async () => {
-		const { env, get } = createEnv(publishedRelease, 'para-code-update-feed');
+		const { env, get } = createEnv(publishedRelease, null, 'para-code-update-feed');
 
 		const response = await fetchUpdate('/api/update/darwin-arm64/stable/old-commit', env);
 
@@ -61,7 +63,7 @@ describe('update feed', () => {
 	});
 
 	it('returns 200 when the Cloudflare Access assertion is present', async () => {
-		const { env } = createEnv(publishedRelease, 'para-code-update-feed');
+		const { env } = createEnv(publishedRelease, null, 'para-code-update-feed');
 
 		const response = await fetchUpdate(
 			'/api/update/darwin-arm64/stable/old-commit',
@@ -148,5 +150,54 @@ describe('update feed', () => {
 			timestamp: 1785294000000,
 			sha256hash: '8a67ff5aeab88d89adad6e792d3eb35f65c11cbb42a17f707e6261179a711a30'
 		});
+	});
+});
+
+describe('changelog feed', () => {
+	const changelogMd = '# Para Code 更新履歴\n\n## paracode-123（2026-08-22）\n';
+
+	function fetchChangelog(path: string, env: TestEnv, headers?: HeadersInit): Promise<Response> {
+		return worker.fetch(
+			new Request(`https://updates.para-code.dev${path}`, { headers }),
+			env as Env
+		);
+	}
+
+	it('returns the published changelog as text/markdown', async () => {
+		const { env, get } = createEnv(publishedRelease, changelogMd);
+
+		const response = await fetchChangelog('/api/changelog/stable', env);
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+		expect(await response.text()).toBe(changelogMd);
+		expect(get).toHaveBeenCalledWith('changelog:stable');
+	});
+
+	it('returns 204 when no changelog has been published yet', async () => {
+		const { env } = createEnv(publishedRelease, null);
+
+		const response = await fetchChangelog('/api/changelog/stable', env);
+
+		expect(response.status).toBe(204);
+		expect(await response.text()).toBe('');
+	});
+
+	it('returns 401 when Cloudflare Access is configured and the assertion is missing', async () => {
+		const { env, get } = createEnv(publishedRelease, changelogMd, 'para-code-update-feed');
+
+		const response = await fetchChangelog('/api/changelog/stable', env);
+
+		expect(response.status).toBe(401);
+		expect(await response.text()).toBe('Unauthorized');
+		expect(get).not.toHaveBeenCalled();
+	});
+
+	it('serves different qualities under separate KV keys', async () => {
+		const { env, get } = createEnv(null, changelogMd);
+
+		await fetchChangelog('/api/changelog/insider', env);
+
+		expect(get).toHaveBeenCalledWith('changelog:insider');
 	});
 });

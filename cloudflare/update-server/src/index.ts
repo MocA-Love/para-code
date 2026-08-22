@@ -2,8 +2,7 @@
 import type { Env, IReleaseRecord } from './types';
 
 /**
- * Implements the update feed contract expected by
- * src/vs/platform/update/electron-main/abstractUpdateService.ts:
+ * Implements two feed contracts consumed by Para Code clients:
  *
  *   GET /api/update/:platform/:quality/:commit
  *
@@ -13,7 +12,15 @@ import type { Env, IReleaseRecord } from './types';
  * sha256hash }) plus the `name` / `notes` pair that Squirrel.Mac reads on
  * macOS. The client treats any other shape as "no update".
  *
- * Access control for this route is enforced by a Cloudflare Access
+ *   GET /api/changelog/:quality
+ *
+ * Response: 200 with the full app changelog (`paradisChangelog.md`) as
+ * text/markdown, or 204 when nothing has been published yet. Consumed by the
+ * in-app changelog modal (src/vs/paradis/contrib/releaseNotes/) so users can
+ * read what a newer version changes before installing it. Written by the
+ * release CI next to the per-platform records (see para-release.yml).
+ *
+ * Access control for both routes is enforced by a Cloudflare Access
  * Application (Service Auth, non-interactive) configured separately in the
  * Zero Trust dashboard — this worker should never see unauthenticated
  * traffic in production. The CF_ACCESS_AUD check below is defense in depth
@@ -31,12 +38,16 @@ import type { Env, IReleaseRecord } from './types';
  *   wrangler deploy
  *   wrangler kv key put --binding RELEASES "stable:darwin-arm64" '{"commit":"...","version":"...","productVersion":"...","url":"https://.../CodeSetup.zip","sha256hash":"...","timestamp":0}'
  */
+const UPDATE_FEED_RE = /^\/api\/update\/([^/]+)\/([^/]+)\/([^/]+)$/;
+const CHANGELOG_RE = /^\/api\/changelog\/([^/]+)$/;
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
-		const match = url.pathname.match(/^\/api\/update\/([^/]+)\/([^/]+)\/([^/]+)$/);
+		const updateMatch = url.pathname.match(UPDATE_FEED_RE);
+		const changelogMatch = url.pathname.match(CHANGELOG_RE);
 
-		if (!match) {
+		if (!updateMatch && !changelogMatch) {
 			return new Response('Not found', { status: 404 });
 		}
 
@@ -44,33 +55,57 @@ export default {
 			return new Response('Unauthorized', { status: 401 });
 		}
 
-		const [, platform, quality, commit] = match;
-		const record = await env.RELEASES.get<IReleaseRecord>(`${quality}:${platform}`, 'json');
-
-		if (!record || record.commit === commit) {
-			return new Response(null, { status: 204 });
+		if (changelogMatch) {
+			return serveChangelog(env, changelogMatch[1]);
 		}
 
-		// The Windows updater uses IUpdate.version as a build-specific cache key.
-		// Keep the native updaters on their existing semantic-version contract.
-		const updateVersion = platform.startsWith('win32-') ? record.commit : record.version;
-
-		// macOS never parses this JSON itself: Squirrel.Mac reads only `notes` and
-		// `name` and hands them to Electron's `update-downloaded` event, which the
-		// client stores as IUpdate.version and IUpdate.productVersion respectively.
-		// The commit therefore has to travel in `notes` — without it the pending
-		// update carries an empty version, and the client's periodic "is the pending
-		// update still the latest?" re-check bails out on that empty value, pinning
-		// macOS to whichever build it downloaded first until the app is restarted.
-		// Windows and Linux parse the payload themselves and ignore both fields.
-		return Response.json({
-			url: record.url,
-			name: record.productVersion,
-			notes: record.commit,
-			version: updateVersion,
-			productVersion: record.productVersion,
-			timestamp: record.timestamp,
-			sha256hash: record.sha256hash
-		});
+		return serveUpdateFeed(env, updateMatch!);
 	}
 } satisfies ExportedHandler<Env>;
+
+async function serveChangelog(env: Env, quality: string): Promise<Response> {
+	const markdown = await env.RELEASES.get(`changelog:${quality}`);
+
+	if (!markdown) {
+		return new Response(null, { status: 204 });
+	}
+
+	return new Response(markdown, {
+		headers: {
+			'Content-Type': 'text/markdown; charset=utf-8',
+			// 更新はリリース時の KV 書き込みでのみ起こるので、キャッシュは再検証まで
+			'Cache-Control': 'no-cache'
+		}
+	});
+}
+
+async function serveUpdateFeed(env: Env, match: RegExpMatchArray): Promise<Response> {
+	const [, platform, quality, commit] = match;
+	const record = await env.RELEASES.get<IReleaseRecord>(`${quality}:${platform}`, 'json');
+
+	if (!record || record.commit === commit) {
+		return new Response(null, { status: 204 });
+	}
+
+	// The Windows updater uses IUpdate.version as a build-specific cache key.
+	// Keep the native updaters on their existing semantic-version contract.
+	const updateVersion = platform.startsWith('win32-') ? record.commit : record.version;
+
+	// macOS never parses this JSON itself: Squirrel.Mac reads only `notes` and
+	// `name` and hands them to Electron's `update-downloaded` event, which the
+	// client stores as IUpdate.version and IUpdate.productVersion respectively.
+	// The commit therefore has to travel in `notes` — without it the pending
+	// update carries an empty version, and the client's periodic "is the pending
+	// update still the latest?" re-check bails out on that empty value, pinning
+	// macOS to whichever build it downloaded first until the app is restarted.
+	// Windows and Linux parse the payload themselves and ignore both fields.
+	return Response.json({
+		url: record.url,
+		name: record.productVersion,
+		notes: record.commit,
+		version: updateVersion,
+		productVersion: record.productVersion,
+		timestamp: record.timestamp,
+		sha256hash: record.sha256hash
+	});
+}

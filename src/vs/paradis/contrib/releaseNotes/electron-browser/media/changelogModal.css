@@ -1,0 +1,380 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * アプリ内更新履歴モーダル (paradisChangelogModal.ts)。左にバージョン一覧、右に本文の
+ * ナビゲーター型ダイアログ。色は --vscode-* テーマトークンで統一し、固定の色は
+ * カテゴリチップ(charts.*)とオーバーレイ背景のみ。
+ */
+
+/* ---------- オーバーレイ ---------- */
+
+.para-cl-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 2580; /* モナコdialog(2575)と同程度。layer付きのContext View(2576以上)には負ける */
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.55);
+}
+
+@keyframes para-cl-dialog-in {
+	from {
+		opacity: 0;
+		transform: translateY(10px) scale(0.985);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.para-cl-dialog {
+	display: flex;
+	flex-direction: column;
+	width: min(980px, 94vw);
+	height: min(680px, 86vh);
+	background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: 8px;
+	box-shadow: var(--vscode-widget-shadow) 0 8px 24px;
+	overflow: hidden;
+	animation: para-cl-dialog-in 120ms ease;
+}
+
+/* ---------- ヘッダー ---------- */
+
+.para-cl-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px 14px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-separator-border));
+	flex-shrink: 0;
+}
+
+.para-cl-title-icon {
+	width: 32px;
+	height: 32px;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--vscode-focusBorder, var(--vscode-button-background)) 16%, transparent);
+	color: var(--vscode-focusBorder, var(--vscode-button-background));
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.para-cl-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.para-cl-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	background: color-mix(in srgb, var(--vscode-sideBar-background) 60%, transparent);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-separator-border));
+	border-radius: 10px;
+	padding: 2px 10px;
+	white-space: nowrap;
+}
+
+.para-cl-close {
+	background: none;
+	border: none;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	padding: 4px;
+	border-radius: 4px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.para-cl-close:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+/* ---------- レイアウト ---------- */
+
+.para-cl-layout {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+}
+
+.para-cl-nav {
+	width: 250px;
+	flex-shrink: 0;
+	border-right: 1px solid var(--vscode-widget-border, var(--vscode-separator-border));
+	background: var(--vscode-sideBar-background, transparent);
+	overflow-y: auto;
+	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.para-cl-item {
+	position: relative;
+	width: 100%;
+	text-align: left;
+	font-family: inherit;
+	font-size: inherit;
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+	background: none;
+	border: none;
+	border-radius: 5px;
+	padding: 8px 10px;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.para-cl-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.para-cl-item.active {
+	background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+	outline: 1px solid var(--vscode-focusBorder, transparent);
+	outline-offset: -1px;
+}
+
+.para-cl-item-name {
+	font-size: 12.5px;
+	font-weight: 600;
+}
+
+.para-cl-item-date {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.para-cl-item-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 2px;
+	min-height: 18px;
+}
+
+.para-cl-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 10px;
+	line-height: 1;
+	font-weight: 600;
+	border-radius: 3px;
+	padding: 3px 7px;
+}
+
+.para-cl-tag.codicon::before {
+	font-size: 11px;
+}
+
+.para-cl-tag-available {
+	color: var(--vscode-badge-foreground, #ffffff);
+	background: var(--vscode-badge-background, var(--vscode-button-background));
+}
+
+.para-cl-tag-current {
+	color: var(--vscode-descriptionForeground);
+	background: color-mix(in srgb, var(--vscode-descriptionForeground) 12%, transparent);
+}
+
+.para-cl-dot {
+	position: absolute;
+	top: 10px;
+	right: 10px;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--vscode-focusBorder, var(--vscode-charts-blue));
+}
+
+/* ---------- 本文 ---------- */
+
+.para-cl-main {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.para-cl-banner {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 12px 16px 0;
+	padding: 8px 12px;
+	border-radius: 5px;
+	background: var(--vscode-inputValidation-infoBackground);
+	border: 1px solid var(--vscode-inputValidation-infoBorder);
+	font-size: 12px;
+	flex-shrink: 0;
+}
+
+.para-cl-banner-text {
+	flex: 1;
+	min-width: 0;
+}
+
+.para-cl-content {
+	flex: 1;
+	overflow-y: auto;
+	padding: 14px 20px 20px;
+}
+
+.para-cl-ver-head {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	margin-bottom: 4px;
+}
+
+.para-cl-ver-label {
+	font-size: 17px;
+	font-weight: 700;
+	color: var(--vscode-foreground);
+}
+
+.para-cl-ver-date {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.para-cl-section-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin: 22px 0 10px;
+}
+
+.para-cl-chip {
+	display: inline-block;
+	font-size: 10.5px;
+	line-height: 1;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	padding: 4px 8px;
+	border-radius: 3px;
+	color: var(--chip-color, var(--vscode-descriptionForeground));
+	background: color-mix(in srgb, var(--chip-color, var(--vscode-descriptionForeground)) 13%, transparent);
+}
+
+.para-cl-count {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.para-cl-items {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 9px;
+}
+
+.para-cl-items li {
+	position: relative;
+	padding-left: 16px;
+	font-size: 13px;
+	line-height: 1.65;
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+}
+
+.para-cl-items li::before {
+	content: '';
+	position: absolute;
+	left: 4px;
+	top: 0.72em;
+	width: 4px;
+	height: 4px;
+	border-radius: 50%;
+	background: var(--vscode-descriptionForeground);
+	opacity: 0.7;
+}
+
+.para-cl-items code {
+	font-family: var(--monaco-monospace-font, monospace);
+	font-size: 11.5px;
+	background: color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent);
+	border-radius: 3px;
+	padding: 1px 5px;
+}
+
+.para-cl-empty {
+	color: var(--vscode-descriptionForeground);
+	font-size: 12.5px;
+	padding: 20px 0;
+	text-align: center;
+}
+
+/* ---------- フッター ---------- */
+
+.para-cl-footer {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 14px;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-separator-border));
+	flex-shrink: 0;
+}
+
+.para-cl-footnote {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	min-width: 0;
+}
+
+.para-cl-spacer {
+	flex: 1;
+}
+
+/* ---------- ボタン ---------- */
+
+.para-cl-btn {
+	font-family: inherit;
+	font-size: 12.5px;
+	line-height: 18px;
+	padding: 4px 13px;
+	border-radius: 2px;
+	cursor: pointer;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	background: var(--vscode-button-secondaryBackground, #313131);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	white-space: nowrap;
+}
+
+.para-cl-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, #3c3c3c);
+}
+
+.para-cl-btn.primary {
+	border: none;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.para-cl-btn.primary:hover {
+	background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}

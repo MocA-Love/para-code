@@ -426,6 +426,15 @@ jobs:
           publish "stable:win32-arm64-user" "win32-arm64-user" "win32-arm64-user-setup.exe" "win32-arm64"
           publish "stable:linux-x64"        "linux-x64"        "linux-x64.deb"              "linux-x64"
 
+          # Publish the app changelog for the in-app modal
+          # (src/vs/paradis/contrib/releaseNotes/). The checkout's paradisChangelog.md is
+          # finalized before tagging, so it IS this release's notes. Clients fetch it via
+          # GET /api/changelog/:quality (cloudflare/update-server) to read what newer
+          # versions change before installing them.
+          wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
+            --path src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md \
+            "changelog:stable"
+
       # Also attach the artifacts to a GitHub Release on the tag, so first-time
       # installs can be downloaded from the Releases page without digging into
       # R2. The auto-updater keeps using R2/KV above (Release asset URLs on a

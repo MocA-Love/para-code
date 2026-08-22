@@ -69,10 +69,11 @@ PC版・モバイルアプリ版のそれぞれに、ユーザーが読む更新
 
 歯車メニュー（左下）→「更新履歴」で、forkが加えた変更の一覧をユーザーがアプリ内で確認できる（`paradis.showChangelog` コマンド、`src/vs/paradis/contrib/releaseNotes/`）。
 
-- 実体は `src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md`（Markdownプレビューで表示される）。パッケージ版への同梱は `build/gulpfile.vscode.ts` の `vscodeResources` にPARA-PATCH済み
+- 実体は `src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md`。パッケージ版への同梱は `build/gulpfile.vscode.ts` の `vscodeResources` にPARA-PATCH済み
+- 表示はモーダル（バージョン一覧ナビゲーター、`paradisChangelogModal.ts`）。起動時に update サーバーの `GET /api/changelog/:quality`（cloudflare/update-server、リリース時に para-release.yml が KV へアップロード）から最新の md も取得し、同梱より新しいバージョンを「利用可能な更新」として表示する。取得できない場合は同梱分のみで静かに動く
 - **ユーザー向けの機能追加・改善・修正を実装したら、その作業の中で `## 未リリース` セクションに箇条書きを1行追記する**（コミットに含める）。内部整備のみ（ビルド修正・リファクタ等）は書かない
 - **リリースタグ（`v1.x.y-paracode-N`）を打つ前に、`## 未リリース` を `## paracode-N（YYYY-MM-DD）` に改名して確定する**（新しいバージョンが上）
-- 書き方: ユーザー視点で「何ができるようになったか / 何が直ったか」を日本語の箇条書きで書く。項目が多いリリースは `### 新機能` / `### 改善` / `### 修正` に分ける。ファイル名・クラス名など内部実装の用語は書かない
+- 書き方: ユーザー視点で「何ができるようになったか / 何が直ったか」を日本語の箇条書きで書く。項目が多いリリースは `### 新機能` / `### 改善` / `### 修正` に分ける。ファイル名・クラス名など内部実装の用語は書かない。項目本文で使える装飾は `` `コード` `` と **太字** のみ（リンク・画像・見出しなどはそのまま文字として表示される）
 
 ### モバイルアプリ版（Para Code Mobile）
 

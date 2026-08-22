@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
@@ -13,19 +14,24 @@ import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../plat
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
+import { asText, IRequestService } from '../../../../platform/request/common/request.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IBaseSerializableStorageRequest, ISerializableCompareAndSwapRequest, ISerializableCompareAndSwapResult, ISerializableGetValueRequest } from '../../../../platform/storage/common/storageIpc.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { mergeChangelogs, parseParadisChangelog } from '../common/paradisChangelogModel.js';
+import { ParadisChangelogModal, toViewReleases } from './paradisChangelogModal.js';
 
 /**
  * 歯車メニュー(左下)の「更新の確認...」の下に「更新履歴」を追加する。
- * Para Code (fork) が本家に加えた変更を、同梱の paradisChangelog.md の
- * Markdown プレビューでユーザーが確認できるようにする。
+ * Para Code (fork) が本家に加えた変更を、モーダルのバージョンナビゲーター
+ * (paradisChangelogModal.ts)でユーザーが確認できるようにする。
  * 履歴の追記ルールは CLAUDE.md の「更新履歴（アプリ内 changelog）の運用」を参照。
  */
 const PARADIS_SHOW_CHANGELOG_COMMAND_ID = 'paradis.showChangelog';
@@ -41,23 +47,187 @@ class ParadisShowChangelogAction extends Action2 {
 	}
 
 	async run(accessor: ServicesAccessor): Promise<void> {
+		// ServicesAccessor は await を挟むと無効になるため、全サービスを先に取り出す
 		const commandService = accessor.get(ICommandService);
 		const editorService = accessor.get(IEditorService);
+		const fileService = accessor.get(IFileService);
+		const layoutService = accessor.get(ILayoutService);
+		const storageService = accessor.get(IStorageService);
+		const productService = accessor.get(IProductService);
+		const requestService = accessor.get(IRequestService);
 
 		// パッケージ版では out-build へ .md を同梱している (build/gulpfile.vscode.ts の
 		// vscodeResources に PARA-PATCH でグロブを追加済み)
 		const changelogUri = FileAccess.asFileUri('vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md');
+		let bundledMd: string;
 		try {
-			// 内蔵 Markdown 拡張のプレビューでレンダリング表示する
-			await commandService.executeCommand('markdown.showPreview', changelogUri);
+			bundledMd = (await fileService.readFile(changelogUri)).value.toString();
 		} catch {
-			// Markdown 拡張が使えない場合はプレーンテキストとして開く
-			await editorService.openEditor({ resource: changelogUri, options: { pinned: true } });
+			// 同梱 md を読めない(リリース形態の想定外の変化)場合は従来の表示へフォールバックする
+			try {
+				await commandService.executeCommand('markdown.showPreview', changelogUri);
+			} catch {
+				await editorService.openEditor({ resource: changelogUri, options: { pinned: true } });
+			}
+			return;
 		}
+		openParadisChangelogModal(bundledMd, {
+			layoutService,
+			storageService,
+			productService,
+			requestService,
+			commandService
+		});
 	}
 }
 
 registerAction2(ParadisShowChangelogAction);
+
+/**
+ * モーダル(案B: バージョンナビゲーター型)で更新履歴を開く。
+ *
+ * 基本データは「このビルドに同梱された md」。そこへ update サーバー
+ * (cloudflare/update-server の GET /api/changelog/:quality)から最新の md を取得し、
+ * 同梱より新しいバージョンを「利用可能な更新」として一覧に足す。これにより、まだ
+ * 更新していないユーザーも次回リリースの中身を読める。取得結果は APPLICATION スコープに
+ * キャッシュし、オフライン時・取得失敗時は同梱分だけを静かに表示する。
+ */
+const PARADIS_CHANGELOG_REMOTE_CACHE_KEY = 'paradis.changelog.remoteCache';
+const PARADIS_CHANGELOG_FETCHED_AT_KEY = 'paradis.changelog.remoteFetchedAt';
+/** ユーザーがここまで読んだ paracode-N。これより新しい項目に未読ドットを出す。 */
+const PARADIS_CHANGELOG_LAST_READ_KEY = 'paradis.changelog.lastReadVersion';
+
+const CHANGELOG_SANITY_RE = /^##\s+paracode-\d+/m;
+
+/** 前回のモーダルの取得が未完了のまま再オープンされた場合に、そちらを打ち切るため。 */
+let activeFetchCts: CancellationTokenSource | undefined;
+/** 現在開いているモーダル。二重オープン時に閉じるために保持する。 */
+let activeModal: ParadisChangelogModal | undefined;
+
+function changelogFeedUrl(productService: IProductService): string | undefined {
+	if (!productService.updateUrl) {
+		return undefined;
+	}
+	return `${productService.updateUrl}/api/changelog/${productService.quality ?? 'stable'}`;
+}
+
+// abstractUpdateService.getUpdateAccessHeaders と同じ契約(CF Access サービストークン)。
+// electron-main 層の関数は renderer から import できないため、同じヘッダーをここで組む。
+function changelogRequestHeaders(productService: IProductService): Record<string, string> | undefined {
+	if (!productService.updateAccessClientId || !productService.updateAccessClientSecret) {
+		return undefined;
+	}
+	return {
+		'CF-Access-Client-Id': productService.updateAccessClientId,
+		'CF-Access-Client-Secret': productService.updateAccessClientSecret,
+	};
+}
+
+async function fetchRemoteChangelogMd(
+	requestService: IRequestService,
+	productService: IProductService,
+	token: CancellationToken
+): Promise<string | undefined> {
+	const url = changelogFeedUrl(productService);
+	if (!url) {
+		return undefined;
+	}
+	try {
+		const context = await requestService.request(
+			{ url, type: 'GET', headers: changelogRequestHeaders(productService), callSite: 'paradisChangelog.fetchRemote' },
+			token
+		);
+		// 200 以外(204=サーバー側にまだ無い、401、404 など)は同梱分のみで静かに表示する
+		if (context.res.statusCode !== 200) {
+			return undefined;
+		}
+		const text = await asText(context);
+		// キャプティブポータル等が返した HTML を弾くため、我々の見出し形式を含むかだけ確認する
+		return text && CHANGELOG_SANITY_RE.test(text) ? text : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+interface IParadisChangelogServices {
+	readonly layoutService: ILayoutService;
+	readonly storageService: IStorageService;
+	readonly productService: IProductService;
+	readonly requestService: IRequestService;
+	readonly commandService: ICommandService;
+}
+
+function openParadisChangelogModal(
+	bundledMd: string,
+	services: IParadisChangelogServices,
+): void {
+	const { layoutService, storageService, productService, requestService, commandService } = services;
+
+	const bundledReleases = parseParadisChangelog(bundledMd);
+	// 同梱 md の先頭が「このビルドが出荷された時点の最新リリース」= インストール済みバージョン
+	const installedVersion = bundledReleases[0]?.version ?? 0;
+
+	const cachedRemoteMd = storageService.get(PARADIS_CHANGELOG_REMOTE_CACHE_KEY, StorageScope.APPLICATION);
+	const cachedRemoteReleases = cachedRemoteMd ? parseParadisChangelog(cachedRemoteMd) : [];
+	const initialLastReadVersion = storageService.getNumber(PARADIS_CHANGELOG_LAST_READ_KEY, StorageScope.APPLICATION, 0);
+	const cachedFetchedAt = storageService.getNumber(PARADIS_CHANGELOG_FETCHED_AT_KEY, StorageScope.APPLICATION, 0);
+
+	// 二重オープンでは既存のモーダルを閉じて作り直す(重なって表示されないように)
+	activeModal?.dispose();
+	const modal = new ParadisChangelogModal(
+		layoutService.activeContainer,
+		{
+			releases: toViewReleases(mergeChangelogs(cachedRemoteReleases, bundledReleases), installedVersion),
+			installedVersion
+		},
+		{
+			initialLastReadVersion,
+			onSelectRelease: version => storageService.store(PARADIS_CHANGELOG_LAST_READ_KEY, version, StorageScope.APPLICATION, StorageTarget.MACHINE),
+			onCheckForUpdate: () => commandService.executeCommand('update.checkForUpdate')
+		}
+	);
+	activeModal = modal;
+
+	// 前回取得のキャッシュがある場合は、その時刻を出しておく(直後の再取得で更新される)
+	if (cachedFetchedAt > 0 && cachedRemoteReleases.length > 0) {
+		modal.setRemoteState({ kind: 'ok', fetchedAt: cachedFetchedAt });
+	}
+
+	// updateUrl 未設定(開発ビルド等)ではサーバー問い合わせをしない
+	if (!changelogFeedUrl(productService)) {
+		return;
+	}
+	activeFetchCts?.dispose();
+	activeFetchCts = new CancellationTokenSource();
+	const token = activeFetchCts.token;
+
+	modal.setRemoteState({ kind: 'fetching' });
+	fetchRemoteChangelogMd(requestService, productService, token).then(remoteMd => {
+		if (token.isCancellationRequested || modal.isDisposed) {
+			return;
+		}
+		if (!remoteMd) {
+			modal.setRemoteState({ kind: 'error' });
+			return;
+		}
+		storageService.store(PARADIS_CHANGELOG_REMOTE_CACHE_KEY, remoteMd, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		const fetchedAt = Date.now();
+		storageService.store(PARADIS_CHANGELOG_FETCHED_AT_KEY, fetchedAt, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		modal.setRemoteState({ kind: 'ok', fetchedAt });
+
+		const remoteReleases = parseParadisChangelog(remoteMd);
+		if (remoteReleases.length > 0) {
+			modal.applyReleases({
+				releases: toViewReleases(mergeChangelogs(remoteReleases, bundledReleases), installedVersion),
+				installedVersion
+			});
+		}
+	}).catch(() => {
+		if (!token.isCancellationRequested && !modal.isDisposed) {
+			modal.setRemoteState({ kind: 'error' });
+		}
+	});
+}
 
 // 歯車メニューの「更新の確認...」(update.ts の appendUpdateMenuItems が使う group '7_update') の
 // 直下に並べる。update 系の項目は order 未指定 (=0) なので order: 1 で最後に来る
