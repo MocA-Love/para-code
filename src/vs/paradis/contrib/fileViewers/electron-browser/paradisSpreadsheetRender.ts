@@ -9,9 +9,8 @@
 // Excelビューア/差分で共有する DOM 描画ヘルパー(Vanilla DOM。Superset の SpreadsheetViewer.tsx 相当)。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { localize } from '../../../../nls.js';
 import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
-import { IParadisPageBreakLine, IParadisPageLabelBox, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
+import { IParadisPageBreakLine, IParadisPageLabelBox, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import type { IParadisDiffDetail } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 
@@ -403,11 +402,6 @@ export function applyOverflow(items: readonly IParadisOverflowItem[]): void {
 			span.style.justifyContent = 'center';
 		}
 	}
-}
-
-/** ページ番号の透かしの文言。 */
-export function pageLabelText(page: number): string {
-	return localize('paradis.spreadsheet.pageLabel', "{0} ページ", page);
 }
 
 /**
