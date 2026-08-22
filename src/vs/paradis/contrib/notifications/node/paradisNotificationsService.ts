@@ -14,7 +14,7 @@
 
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, type Dirent } from 'fs';
 import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -164,6 +164,16 @@ function reasonForAivisStatus(status: number, bodyHint: string): string {
  */
 export class ParadisNotificationsService extends Disposable {
 
+	/** 起動時 sweep の対象となる yt-dlp / ffmpeg 作業ディレクトリのプレフィックス。 */
+	private static readonly TEMP_WORK_DIR_PREFIXES = ['paradis-ytfull-', 'paradis-ytclip-'];
+
+	/**
+	 * この年齢より新しい作業ディレクトリは sweep しない。フルダウンロードの上限(10分)より
+	 * 十分長い時間を置くことで、同一マシンの別アプリインスタンスが実行中の取得と衝突しない
+	 * ようにする(孤立した直後のものは次回起動以降で回収される)。
+	 */
+	private static readonly TEMP_WORK_DIR_MIN_AGE_MS = 30 * 60 * 1000;
+
 	private readonly _assetsDir = join(homedir(), '.para-code', 'assets', 'ringtones');
 	private readonly _metadataPath = join(this._assetsDir, `${CUSTOM_STEM}.json`);
 
@@ -204,6 +214,7 @@ export class ParadisNotificationsService extends Disposable {
 			logInfo: message => this.logService.info(message),
 		});
 		this._register({ dispose: () => this._scheduler.dispose() });
+		this._sweepOrphanTempWorkDirs();
 	}
 
 	override dispose(): void {
@@ -215,6 +226,46 @@ export class ParadisNotificationsService extends Disposable {
 		this._tempAudio.clear();
 		this._installStates.clear();
 		super.dispose();
+	}
+
+	/**
+	 * 前回までのプロセスが残した YouTube 取込の一時ディレクトリ ($TMPDIR/paradis-ytfull-*) を
+	 * 起動時に掃除する。
+	 *
+	 * ダウンロード完了前にダイアログが閉じられる（backdrop クリックやウィンドウリロード）と
+	 * renderer 側の参照は消えるため、正常終了なら quit 時の dispose() で回収されるものの、
+	 * shared process がクラッシュ・強制終了されると workDir は永久に残る。長時間セッションで
+	 * の蓄積も同じ場所に溜まる。dispose 時の掃除は _tempAudio に載ったものしか対象にできず、
+	 * この漏れを拾えない。
+	 *
+	 * 掃除はコンストラクタ（downloadYouTubeAudio をまだ受け付けていない時点）に1回だけ走り、
+	 * 最終更新から一定年齢を超えたディレクトリだけを対象にする。同一マシンで別インスタンスが
+	 * 実行中の取得を持っていても、その作業ディレクトリは更新され続けているため触られない。
+	 */
+	private _sweepOrphanTempWorkDirs(): void {
+		const tmp = tmpdir();
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(tmp, { withFileTypes: true });
+		} catch (error) {
+			this.logService.warn(`[ParadisNotifications] failed to list ${tmp} for the temp work dir sweep: ${getErrorMessage(error)}`);
+			return;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !ParadisNotificationsService.TEMP_WORK_DIR_PREFIXES.some(prefix => entry.name.startsWith(prefix))) {
+				continue;
+			}
+			const dirPath = join(tmp, entry.name);
+			try {
+				if (Date.now() - statSync(dirPath).mtimeMs < ParadisNotificationsService.TEMP_WORK_DIR_MIN_AGE_MS) {
+					continue;
+				}
+			} catch {
+				continue;
+			}
+			void rm(dirPath, { recursive: true, force: true })
+				.catch(error => this.logService.warn(`[ParadisNotifications] failed to sweep the orphan temp dir ${entry.name}: ${getErrorMessage(error)}`));
+		}
 	}
 
 	// === 通知音 + Aivis の再生調停 ================================================================

@@ -246,7 +246,7 @@ suite('Para Browser MCP setup', () => {
 		assert.strictEqual(timedOut.servers[0].outcome, 'error');
 	});
 
-	test('Windows refuses script shims instead of falling back to cmd.exe', async () => {
+	test('Windows accepts npm script shims because the runner wraps them in cmd.exe', async () => {
 		let runCount = 0;
 		const controller = new ParadisMcpSetupController({
 			platform: 'win32',
@@ -256,8 +256,56 @@ suite('Para Browser MCP setup', () => {
 			codexHome: 'C:\\unused',
 			log: () => undefined,
 		});
+		const result = await controller.setup('claude', PORT);
+		assert.strictEqual(result.cliAvailable, true);
+		assert.strictEqual(result.servers[0].outcome, 'success');
+		assert.strictEqual(runCount, 1);
+	});
+
+	test('Windows still rejects executables without a spawnable extension', async () => {
+		let runCount = 0;
+		const controller = new ParadisMcpSetupController({
+			platform: 'win32',
+			resolveShellEnv: async () => ({ PATH: 'C:\\bin' }),
+			findExecutable: async () => 'C:\\bin\\claude',
+			runCommand: async () => { runCount++; return { kind: 'exit', code: 0, output: '' }; },
+			codexHome: 'C:\\unused',
+			log: () => undefined,
+		});
 		assert.deepStrictEqual(await controller.setup('claude', PORT), { cli: 'claude', cliAvailable: false, servers: [] });
 		assert.strictEqual(runCount, 0);
+	});
+
+	test('wraps Windows script shims into a single verbatim cmd.exe invocation', async () => {
+		const calls: { command: string; args: readonly string[]; options: Record<string, unknown> }[] = [];
+		const child = new FakeChild();
+		const promise = runParadisMcpSetupCommand('C:\\Program Files\\nodejs\\claude.cmd', ['mcp', 'add'], {}, {
+			platform: 'win32',
+			spawn: (command, args, options) => {
+				calls.push({ command, args: [...args], options: { ...options } });
+				return child;
+			},
+		});
+		child.emit('close', 0, null);
+		await promise;
+		assert.deepStrictEqual(calls[0].command, 'cmd.exe');
+		assert.deepStrictEqual(calls[0].args, ['/d', '/s', '/v:off', '/c', '""C:\\Program Files\\nodejs\\claude.cmd" mcp add"']);
+		assert.strictEqual(calls[0].options.windowsVerbatimArguments, true);
+	});
+
+	test('does not wrap non-shim executables on Windows', async () => {
+		const calls: { command: string; args: readonly string[] }[] = [];
+		const child = new FakeChild();
+		const promise = runParadisMcpSetupCommand('C:\\bin\\claude.exe', ['mcp', 'add'], {}, {
+			platform: 'win32',
+			spawn: (command, args) => {
+				calls.push({ command, args: [...args] });
+				return child;
+			},
+		});
+		child.emit('close', 0, null);
+		await promise;
+		assert.deepStrictEqual(calls, [{ command: 'C:\\bin\\claude.exe', args: ['mcp', 'add'] }]);
 	});
 
 	test('coalesces concurrent setup attempts per CLI', async () => {

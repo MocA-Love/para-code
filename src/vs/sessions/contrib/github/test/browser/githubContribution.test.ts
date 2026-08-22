@@ -18,6 +18,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { GitHubPullRequestPollingContribution } from '../../browser/github.contribution.js';
+import { GitHubReferenceList, IGitHubReferenceListEntry } from '../../browser/githubReferenceList.js';
 import { IGitHubService } from '../../browser/githubService.js';
 import { ChatInteractivity, IChat, IGitHubInfo, ISession, ISessionCapabilities, ISessionChangeset, IChatCheckpoints, ISessionFileChange, ISessionWorkspace, SessionStatus } from '../../../../services/sessions/common/session.js';
 import { IActiveSession, ISessionsChangeEvent, ISessionsManagementService } from '../../../../services/sessions/common/sessionsManagement.js';
@@ -29,6 +30,60 @@ import { IHostService } from '../../../../../workbench/services/host/browser/hos
 // background round-robin scheduler instead, and CI / review-thread polling is
 // active-session-only. Tests that assert fast polling therefore mark their
 // session as active first.
+
+suite('GitHubReferenceList', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('updates rows in place so focus is preserved', () => {
+		const list = new GitHubReferenceList<IGitHubReferenceListEntry>([{
+			number: 12345,
+			title: undefined,
+			icon: Codicon.gitPullRequest,
+			ariaLabel: 'Pull Request #12345',
+		}, {
+			number: 1,
+			title: 'Short number',
+			icon: Codicon.gitPullRequest,
+			ariaLabel: 'Pull Request #1: Short number',
+		}], () => { });
+		document.body.appendChild(list.element);
+
+		try {
+			const button = list.element.querySelector('button')!;
+			const initialNumberWidth = button.querySelector<HTMLElement>('.sessions-github-reference-list-entry-number')!.style.width;
+			button.focus();
+
+			list.update([{
+				number: 1,
+				title: 'Updated title',
+				icon: Codicon.gitPullRequestDraft,
+				ariaLabel: 'Draft Pull Request #1: Updated title',
+			}]);
+
+			assert.deepStrictEqual({
+				sameButton: list.element.querySelector('button') === button,
+				focused: document.activeElement === button,
+				text: button.textContent,
+				ariaLabel: button.getAttribute('aria-label'),
+				iconClasses: [...button.querySelector('.sessions-github-reference-list-entry-icon')!.classList],
+				initialNumberWidth,
+				numberWidth: button.querySelector<HTMLElement>('.sessions-github-reference-list-entry-number')!.style.width,
+			}, {
+				sameButton: true,
+				focused: true,
+				text: '#1Updated title',
+				ariaLabel: 'Draft Pull Request #1: Updated title',
+				iconClasses: ['sessions-github-reference-list-entry-icon', 'codicon', 'codicon-git-pull-request-draft'],
+				initialNumberWidth: 'calc(5ch + 1em)',
+				numberWidth: 'calc(1ch + 1em)',
+			});
+		} finally {
+			list.element.remove();
+		}
+	});
+});
+
 suite('GitHubPullRequestPollingContribution', () => {
 
 	const store = new DisposableStore();
@@ -71,6 +126,20 @@ suite('GitHubPullRequestPollingContribution', () => {
 			'owner/repo/2': { startPollingCalls: 0, stopPollingCalls: 0, disposeCalls: 0 },
 		});
 		assert.strictEqual(existingSession.isArchived.get(), false);
+	});
+
+	test('rebinds polling when a session is replaced under the same session id', () => {
+		const provisionalSession = sessionsManagementService.addSession('session', makeGitHubInfo(1));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
+
+		const committedSession = sessionsManagementService.addSession('session', makeGitHubInfo(2));
+		sessionsManagementService.fireSessionsChanged({ changed: [committedSession] });
+		sessionsManagementService.fireSessionsChanged({ removed: [provisionalSession] });
+
+		assert.deepStrictEqual(gitHubService.snapshot(), {
+			'owner/repo/1': { startPollingCalls: 1, stopPollingCalls: 1, disposeCalls: 0 },
+			'owner/repo/2': { startPollingCalls: 1, stopPollingCalls: 0, disposeCalls: 0 },
+		});
 	});
 
 	test('stops polling when a session is archived, then resumes when unarchived', () => {
@@ -337,6 +406,7 @@ class TestSession implements ISession {
 			changes: this.changes,
 			checkpoints,
 			modelId: this.modelId,
+			modelSource: constObservable(undefined),
 			mode: this.mode,
 			isArchived: this.isArchived,
 			isRead: this.isRead,
