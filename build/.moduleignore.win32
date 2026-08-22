@@ -1,4 +1,5 @@
-
+@anthropic-ai/claude-agent-sdk/vendor/audio-capture/*-darwin/**
+@anthropic-ai/claude-agent-sdk/vendor/audio-capture/*-linux/**
 
 # PARA-PATCH: @sentry/node-native-stacktrace ships prebuilds for every platform; keep only win32 ones.
 @sentry/node-native-stacktrace/lib/*.node

@@ -11,6 +11,7 @@
 // (IParadisWorkbookData)へ変換する。図形(drawing)・対角罫線は今回はスコープ外。
 // exceljs は Buffer/stream 依存のため workbench(renderer, sandbox)では動かず、node層で実行する必要がある。
 
+import { localize } from '../../../../nls.js';
 import type ExcelJS from 'exceljs';
 import type JSZip from 'jszip';
 import {
@@ -209,13 +210,115 @@ function argbToHex(argb: string | undefined): string | null {
 	return `#${argb.slice(-6)}`;
 }
 
-function applyTint(hex: string, tint: number): string {
+// ── テーマ色の tint(OOXML 公式の HLS 輝度式) ──
+// MS Learn(DocumentFormat.OpenXml Spreadsheet ColorType.Tint)の定義:
+//   tint < 0: Lum' = Lum × (1 + tint)
+//   tint > 0: Lum' = Lum × (1 − tint) + HLSMAX × tint
+// 旧実装の RGB 各チャンネル線形補間は彩度を失い(青系がグレー寄りに)、Excel 実機の中間色とズレていた。
+
+/** RGB(0-255)→HLS。h は0-360、l/s は0-255(HLSMAX=255 スケール)。 */
+function rgbToHls(r: number, g: number, b: number): { h: number; s: number; l: number } {
+	const rn = r / 255;
+	const gn = g / 255;
+	const bn = b / 255;
+	const max = Math.max(rn, gn, bn);
+	const min = Math.min(rn, gn, bn);
+	const l01 = (max + min) / 2;
+	let h = 0;
+	let s = 0;
+	if (max !== min) {
+		const d = max - min;
+		s = l01 > 0.5 ? d / (2 - max - min) : d / (max + min);
+		switch (max) {
+			case rn: h = (gn - bn) / d + (gn < bn ? 6 : 0); break;
+			case gn: h = (bn - rn) / d + 2; break;
+			default: h = (rn - gn) / d + 4;
+		}
+		h *= 60;
+	}
+	return { h, s: s * 255, l: l01 * 255 };
+}
+
+/** HLS(h=0-360, l/s=0-255)→RGB(0-255)。 */
+function hlsToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+	const ln = l / 255;
+	const sn = s / 255;
+	if (sn === 0) {
+		const v = Math.round(l);
+		return { r: v, g: v, b: v };
+	}
+	const q = ln < 0.5 ? ln * (1 + sn) : ln + sn - ln * sn;
+	const p = 2 * ln - q;
+	const hk = (((h % 360) + 360) % 360) / 360;
+	const hue2rgb = (t: number): number => {
+		if (t < 0) {
+			t += 1;
+		}
+		if (t > 1) {
+			t -= 1;
+		}
+		if (t < 1 / 6) {
+			return p + (q - p) * 6 * t;
+		}
+		if (t < 1 / 2) {
+			return q;
+		}
+		if (t < 2 / 3) {
+			return p + (q - p) * (2 / 3 - t) * 6;
+		}
+		return p;
+	};
+	return {
+		r: Math.round(hue2rgb(hk + 1 / 3) * 255),
+		g: Math.round(hue2rgb(hk) * 255),
+		b: Math.round(hue2rgb(hk - 1 / 3) * 255),
+	};
+}
+
+/**
+ * テーマ色へ tint を適用する(OOXML 公式の HLS 輝度式)。
+ * 単体テストから直接参照するため export している。
+ */
+export function applyTint(hex: string, tint: number): string {
 	const r = Number.parseInt(hex.slice(1, 3), 16);
 	const g = Number.parseInt(hex.slice(3, 5), 16);
 	const b = Number.parseInt(hex.slice(5, 7), 16);
-	const apply = (c: number) => tint < 0 ? Math.round(c * (1 + tint)) : Math.round(c + (255 - c) * tint);
-	const clamp = (v: number) => Math.min(255, Math.max(0, v));
-	return `#${clamp(apply(r)).toString(16).padStart(2, '0')}${clamp(apply(g)).toString(16).padStart(2, '0')}${clamp(apply(b)).toString(16).padStart(2, '0')}`;
+	const { h, s, l } = rgbToHls(r, g, b);
+	const lum = tint < 0 ? l * (1 + tint) : l * (1 - tint) + 255 * tint;
+	const clamped = Math.min(255, Math.max(0, lum));
+	const out = hlsToRgb(h, s, clamped);
+	// テーマ色は parseThemeScheme で大文字化して保持するため、tint 結果も大文字で統一する。
+	const hex2 = (v: number) => v.toString(16).padStart(2, '0').toUpperCase();
+	return `#${hex2(out.r)}${hex2(out.g)}${hex2(out.b)}`;
+}
+
+// ── レガシー indexed カラーパレット(ECMA-376 §18.8.27 既定値)。 ──
+// 旧 BIFF 由来や一部生成ツールは罫線・フォント・塗りに indexed 0-63 を使う。
+// exceljs は生値のまま返すだけで解決してくれないため、ここで既定パレットへ解決する。
+const LEGACY_INDEXED_COLORS: readonly string[] = [
+	'000000', 'FFFFFF', 'FF0000', '00FF00', '0000FF', 'FFFF00', 'FF00FF', '00FFFF',
+	'000000', 'FFFFFF', 'FF0000', '00FF00', '0000FF', 'FFFF00', 'FF00FF', '00FFFF',
+	'800000', '008000', '000080', '808000', '800080', '008080', 'C0C0C0', '808080',
+	'9999FF', '993366', 'FFFFCC', 'CCFFFF', '660066', 'FF8080', '0066CC', 'CCCCFF',
+	'000080', 'FF00FF', 'FFFF00', '00FFFF', '800080', '800000', '008080', '0000FF',
+	'00CCFF', 'CCFFFF', 'CCFFCC', 'FFFF99', '99CCFF', 'FF99CC', 'CC99FF', 'FFCC99',
+	'3366FF', '33CCCC', '99CC00', 'FFCC00', 'FF9900', 'FF6600', '666699', '969696',
+	'003366', '339966', '003300', '333300', '993300', '993366', '333399', '333333',
+];
+
+/**
+ * indexed カラー番号 → hex 色。単体テストから参照するため export。
+ * 64=システム前景(黒として扱う)、65=システム背景(白として扱う)。範囲外は解決不可(null)。
+ */
+export function resolveIndexedColor(indexed: number): string | null {
+	if (indexed === 64) {
+		return '#000000';
+	}
+	if (indexed === 65) {
+		return '#FFFFFF';
+	}
+	const entry = LEGACY_INDEXED_COLORS[indexed];
+	return entry !== undefined ? `#${entry}` : null;
 }
 
 function resolveColor(color: IExcelColor | undefined): string | null {
@@ -230,7 +333,7 @@ function resolveColor(color: IExcelColor | undefined): string | null {
 		return color.tint ? applyTint(base, color.tint) : base;
 	}
 	if (color.indexed !== undefined) {
-		return color.indexed === 64 ? '#000000' : null;
+		return resolveIndexedColor(color.indexed);
 	}
 	return null;
 }
@@ -348,6 +451,9 @@ function richTextFontStyle(font: IExcelFont | undefined): IParadisCellStyle {
 
 function getCellStyle(cell: ExcelJS.Cell): IParadisCellStyle {
 	const style: Record<string, string> = { verticalAlign: 'bottom' };
+	// 先にフォントを適用し、後から配置を上書きする。逆順だと上付き/下付き(vertAlign)が
+	// セルの縦位置(bottom等)を破壊してしまうため、明示配置を優先させる。
+	fontToStyle(cell.font as IExcelFont | undefined, style);
 	const al = cell.alignment;
 	if (al) {
 		const hmap: Record<string, string> = {
@@ -359,16 +465,25 @@ function getCellStyle(cell: ExcelJS.Cell): IParadisCellStyle {
 			distributed: 'middle', justify: 'middle',
 		};
 		// general 配置は exceljs では horizontal=undefined になる。ここでは設定せず、
-		// 呼び出し側で「数値=右/文字=左」の規則に従って textAlign を決める。
+		// 呼び出し側で「数値/日付=右/文字=左/真偽値・エラー=中央」の規則に従って textAlign を決める。
 		if (al.horizontal) {
 			style.textAlign = hmap[al.horizontal] || 'left';
 		}
-		style.verticalAlign = (al.vertical && vmap[al.vertical]) || 'bottom';
-		if (al.indent) {
-			style.paddingLeft = `${al.indent * 8 + 3}px`;
+		// vertical 未指定のときは fontToStyle 由来の上付き/下付き(super/sub)を尊重する。
+		// 既定は bottom(Excel の初期縦位置)。
+		if (al.vertical) {
+			style.verticalAlign = vmap[al.vertical] || 'bottom';
+		}
+		// indent は左寄せ系なら左パディング、右寄せなら右パディングに効く(Excel の挙動に合わせる)。
+		if (al.indent && al.indent > 0) {
+			const pad = `${al.indent * 8 + 3}px`;
+			if (style.textAlign === 'right') {
+				style.paddingRight = pad;
+			} else {
+				style.paddingLeft = pad;
+			}
 		}
 	}
-	fontToStyle(cell.font as IExcelFont | undefined, style);
 	const fill = cell.fill;
 	if (fill?.type === 'pattern' && fill.pattern === 'solid') {
 		const bg = resolveColor(fill.fgColor as IExcelColor | undefined);
@@ -488,6 +603,20 @@ function isNotNil(v: unknown): boolean {
 	return v !== undefined && v !== null;
 }
 
+/**
+ * 日付の表示フォールバック。ホストロケール依存の toLocaleDateString ではなく
+ * 決定論的な「YYYY-MM-DD(時刻があれば HH:MM:SS)」で出す。表示が環境でブレると
+ * 差分ビューアで偽の値変更になってしまうため。
+ */
+export function formatDateFallback(value: Date): string {
+	const pad = (n: number) => String(n).padStart(2, '0');
+	let out = `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+	if (value.getHours() || value.getMinutes() || value.getSeconds() || value.getMilliseconds()) {
+		out += ` ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+	}
+	return out;
+}
+
 function getCellDisplayValue(cell: ExcelJS.Cell): string {
 	const runs = getRichTextRuns(cell);
 	if (runs) {
@@ -495,11 +624,22 @@ function getCellDisplayValue(cell: ExcelJS.Cell): string {
 	}
 	const value = cell.value;
 	if (value instanceof Date) {
-		return value.toLocaleDateString();
+		return formatDateFallback(value);
 	}
 	const asFormula = value as { formula?: string; result?: unknown } | null | undefined;
 	if (asFormula && typeof asFormula === 'object' && asFormula.formula !== undefined) {
-		return isNotNil(asFormula.result) ? String(asFormula.result) : '';
+		const result = asFormula.result;
+		// 数式の計算結果も、直値のセルと同じ表示規則に合わせる。日付は決定論的フォールバックを通し
+		// (でなければ toString の環境依存表示に戻ってしまう)、エラーは #DIV/0! 等の文字列をそのまま出す
+		// (でなければ [object Object] になる)。
+		if (result instanceof Date) {
+			return formatDateFallback(result);
+		}
+		const asError = result as { error?: unknown } | null | undefined;
+		if (asError && typeof asError === 'object' && typeof asError.error === 'string') {
+			return asError.error;
+		}
+		return isNotNil(result) ? String(result) : '';
 	}
 	// exceljs の cell.text は数値フォーマット等を反映した表示文字列を返す。
 	if (isNotNil(cell.text)) {
@@ -594,6 +734,44 @@ function isNumericCell(cell: ExcelJS.Cell, numberCellType: ExcelJS.ValueType): b
 		return typeof asFormula.result === 'number';
 	}
 	return false;
+}
+
+/** 日付セルか(exceljs は Date を ValueType.Date / Date オブジェクトで返す)。general 配置では数値と同じく右寄せ。 */
+function isDateCell(cell: ExcelJS.Cell): boolean {
+	if (cell.value instanceof Date) {
+		return true;
+	}
+	const asFormula = cell.value as { formula?: unknown; result?: unknown } | null | undefined;
+	return !!asFormula && typeof asFormula === 'object' && asFormula.formula !== undefined && asFormula.result instanceof Date;
+}
+
+/** 真偽値セルか。general 配置の既定寄せは中央(ECMA-376 ST_HorizontalAlignment「Boolean types are centered」)。 */
+function isBooleanCell(cell: ExcelJS.Cell, booleanCellType: ExcelJS.ValueType): boolean {
+	if (cell.type === booleanCellType) {
+		return true;
+	}
+	const v = cell.value;
+	if (typeof v === 'boolean') {
+		return true;
+	}
+	const asFormula = v as { formula?: unknown; result?: unknown } | null | undefined;
+	return !!asFormula && typeof asFormula === 'object' && typeof asFormula.result === 'boolean';
+}
+
+/** エラー値セルか(#DIV/0! 等)。general 配置の既定寄せは真偽値と同じく中央。 */
+function isErrorCell(cell: ExcelJS.Cell, errorCellType: ExcelJS.ValueType): boolean {
+	if (cell.type === errorCellType) {
+		return true;
+	}
+	const v = cell.value as { error?: unknown; formula?: unknown; result?: { error?: unknown } } | null | undefined;
+	if (!v || typeof v !== 'object') {
+		return false;
+	}
+	if (typeof v.error === 'string') {
+		return true;
+	}
+	const result = v.result as { error?: unknown } | undefined;
+	return !!result && typeof result === 'object' && typeof result.error === 'string';
 }
 
 /** 印刷したときに何か出るセルか(値・自分自身に設定された罫線・塗り)。ページ割りの範囲決めに使う。 */
@@ -837,6 +1015,12 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
 		const buffer = Buffer.from(base64Content, 'base64');
+		// CFB(Compound File Binary)コンテナ=暗号化ブック。zip ではないため jszip/exceljs からは
+		// 「central directory が見つからない」ような不親切なエラーで落ちる。先頭マジックで判別し、
+		// ビューア/差分がそのまま表示できる理由文言へ変換する(D0 CF 11 E0 = OLE2 標準シグネチャ)。
+		if (buffer.length >= 4 && buffer[0] === 0xD0 && buffer[1] === 0xCF && buffer[2] === 0x11 && buffer[3] === 0xE0) {
+			throw new Error(localize('paradis.spreadsheet.encryptedWorkbook', "このブックはパスワードで保護されているため開けません。パスワードを解除してから再度お試しください。"));
+		}
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
@@ -901,9 +1085,14 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 					const cell = worksheet.getRow(r).getCell(c);
 					const val = getCellDisplayValue(cell);
 					const style: Record<string, string> = getCellStyle(cell) as Record<string, string>;
-					// general 配置(明示指定なし)の数値は右寄せにする。
-					if (!style.textAlign && isNumericCell(cell, runtime.ExcelJS.ValueType.Number)) {
-						style.textAlign = 'right';
+					// general 配置(明示指定なし)の既定寄せ(ECMA-376): 数値・日付=右、真偽値・エラー値=中央。
+					if (!style.textAlign) {
+						const vt = runtime.ExcelJS.ValueType;
+						if (isNumericCell(cell, vt.Number) || isDateCell(cell)) {
+							style.textAlign = 'right';
+						} else if (isBooleanCell(cell, vt.Boolean) || isErrorCell(cell, vt.Error)) {
+							style.textAlign = 'center';
+						}
 					}
 					const mergeInfo = mergeEntry && mergeEntry.kind === 'origin' ? mergeEntry : null;
 					const colspan = mergeInfo?.colspan ?? 1;
