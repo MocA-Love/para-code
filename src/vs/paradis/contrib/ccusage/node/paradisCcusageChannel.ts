@@ -9,6 +9,8 @@
 // shared process 上で ccusage CLI (https://ccusage.com) を実行し、--json 出力を返すサービスと
 // IPC チャネル。workbench からは ISharedProcessService.getChannel(PARADIS_CCUSAGE_CHANNEL) 経由で呼ぶ。
 // 実装方式は paradisWorktreeGitChannel.ts と同じ execFile 直叩き(shell は使わない)。
+// Windows のみ、解決先が npm 由来の .cmd/.bat シムのときに cmd.exe /d /s /c へラップする
+// (paradisWindowsScriptShim.ts。shell 指定なしでは EINVAL になるため)。
 // 引数はここでレポート種別ごとに固定構築し、renderer から任意の CLI 引数は渡させない。
 
 import * as cp from 'child_process';
@@ -24,6 +26,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { IParadisWarmLeaseScheduler, ParadisWarmLeaseTracker, PARADIS_WARM_LEASE_DURATION_MS } from '../../../common/paradisWarmLease.js';
 import {
 	IParadisCcusageBlock,
@@ -510,13 +513,17 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private async exec(executable: IResolvedExecutable, args: string[]): Promise<string> {
 		const fullArgs = [...executable.prefixArgs, ...args];
 		const env = await this.getExecEnv();
+		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする。旧 Node の
+		// 自動委譲は CVE-2024-27980 対策で撤去済みで、ラップしないと EINVAL になる。
+		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(executable.command, fullArgs) : undefined;
 		return new Promise<string>((resolve, reject) => {
 			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
-			execution.child = this.execFile(executable.command, fullArgs, {
+			execution.child = this.execFile(shimInvocation?.file ?? executable.command, shimInvocation?.args ?? fullArgs, {
 				encoding: 'utf8',
 				timeout: EXEC_TIMEOUT_MS,
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
+				windowsVerbatimArguments: shimInvocation !== undefined,
 				env: { ...env, NO_COLOR: '1', LOG_LEVEL: '0' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;
@@ -612,9 +619,10 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	/** コマンド名が PATH 上で実行可能か(`<cmd> --version` の成否)を確認する。 */
 	private async canExecute(command: string): Promise<boolean> {
 		const env = await this.getExecEnv();
+		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['--version']) : undefined;
 		return new Promise<boolean>(resolve => {
 			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
-			execution.child = this.execFile(command, ['--version'], { timeout: 10_000, windowsHide: true, env }, err => {
+			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { timeout: 10_000, windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, err => {
 				execution.completed = true;
 				if (execution.child) {
 					this.activeChildren.delete(execution.child);

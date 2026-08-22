@@ -4,13 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH comments)
 // @ts-check
+import { fixupPluginRules } from '@eslint/compat';
 import { defineConfig } from 'eslint/config';
 import fs from 'fs';
 import { builtinModules } from 'module';
 import path from 'path';
 import tseslint from 'typescript-eslint';
 
-import stylisticTs from '@stylistic/eslint-plugin-ts';
+import stylistic from '@stylistic/eslint-plugin';
 import * as pluginLocal from './.eslint-plugin-local/index.ts';
 import * as pluginCopilotLocal from './extensions/copilot/.eslintplugin/index.ts';
 import pluginImport from 'eslint-plugin-import';
@@ -45,7 +46,7 @@ export default defineConfig(
 		},
 		plugins: {
 			'local': pluginLocal,
-			'header': pluginHeader,
+			'header': fixupPluginRules(/** @type {any} */ (pluginHeader)),
 		},
 		rules: {
 			'constructor-super': 'warn',
@@ -153,7 +154,7 @@ export default defineConfig(
 			parser: tseslint.parser,
 		},
 		plugins: {
-			'@stylistic/ts': stylisticTs,
+			'@stylistic': stylistic,
 			'@typescript-eslint': tseslint.plugin,
 			'local': pluginLocal,
 			'jsdoc': pluginJsdoc,
@@ -161,8 +162,8 @@ export default defineConfig(
 		rules: {
 			// Disable built-in semi rules in favor of stylistic
 			'semi': 'off',
-			'@stylistic/ts/semi': 'warn',
-			'@stylistic/ts/member-delimiter-style': 'warn',
+			'@stylistic/semi': 'warn',
+			'@stylistic/member-delimiter-style': 'warn',
 			'local/code-no-unused-expressions': [
 				'warn',
 				{
@@ -1894,6 +1895,10 @@ export default defineConfig(
 						// PARA-PATCH: webviewElement.ts が webview 致命エラー(service worker 登録失敗等)を
 						// Para Code Sentry へ報告 (reportParadisWebviewFatalError) するための唯一の逆方向 import
 						'vs/paradis/contrib/sentry/~',
+						// PARA-PATCH: agentHostSessionListController.ts がチャットセッションのタイトル/説明から
+						// ハーネス内部タグを除去するヘルパー(paradisHumanizeAgentSessionTitle)を呼ぶための
+						// 共通型/関数import（common層のみ。末尾は既にcommonという末端レイヤー名なので'~'にせず'**'で完結させる）
+						'vs/paradis/contrib/agentSessionTitle/common/**',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
@@ -2073,6 +2078,10 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts がターミナルの猶予時間を決めるための逆方向 import
 						// (paradisTerminalReconnectionGraceTime)
 						'vs/paradis/contrib/remoteTerminals/~',
+						// PARA-PATCH: serverServices.ts が、接続先のターミナルをサーバーより長生きする
+						// 常駐へ出すかどうかを決めるための逆方向 import
+						// (paradisEnableRemotePtyHostDaemon)
+						'vs/paradis/contrib/ptyDaemon/~',
 						// PARA-PATCH: serverServices.ts が接続先の ~/.claude・~/.codex を答えるチャネル
 						// (registerParadisSessionResumeForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/sessionResume/~',
@@ -2749,7 +2758,7 @@ export default defineConfig(
 			parser: tseslint.parser,
 		},
 		plugins: {
-			'import': pluginImport,
+			'import': fixupPluginRules(pluginImport),
 			'copilot-local': pluginCopilotLocal,
 		},
 		rules: {
