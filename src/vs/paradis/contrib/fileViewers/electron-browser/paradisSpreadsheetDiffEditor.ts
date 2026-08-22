@@ -34,8 +34,8 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
-import { IParadisDataValidation, IParadisRenderShape } from '../common/paradisSpreadsheet.js';
+import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
+import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
@@ -47,6 +47,14 @@ import './media/paradisSpreadsheet.css';
 const $ = dom.$;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 4;
+
+/**
+ * パース失敗の理由をユーザー向け文言へ整える。暗号化ブックは service 側が判別済みなので、
+ * それ以外(zip破損・サイズ超過等)は生メッセージをそのまま見せる。
+ */
+function describeSpreadsheetParseError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 
 interface IDiffLocation {
 	readonly sheetIndex: number;
@@ -173,7 +181,21 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._root = dom.append(parent, $('.paradis-spreadsheet-diff'));
 
 		const toolbar = dom.append(this._root, $('.paradis-spreadsheet-diff-toolbar'));
-		this._countEl = dom.append(toolbar, $('span.paradis-spreadsheet-diff-count'));
+		const left = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-left'));
+		this._countEl = dom.append(left, $('span.paradis-spreadsheet-diff-count'));
+		// 色の意味(緑=追加/赤=削除/青=変更)をツールバーに常時表示する。Word 差分と同じ語彙・配色。
+		const legend = dom.append(left, $('.paradis-spreadsheet-diff-legend'));
+		const legendEntries = [
+			{ color: '#22c55e', label: localize('paradis.spreadsheet.legendAdded', "追加") },
+			{ color: '#ef4444', label: localize('paradis.spreadsheet.legendRemoved', "削除") },
+			{ color: '#3b82f6', label: localize('paradis.spreadsheet.legendModified', "変更") },
+		];
+		for (const entry of legendEntries) {
+			const item = dom.append(legend, $('span.paradis-spreadsheet-diff-legend-item'));
+			const swatch = dom.append(item, $('span.paradis-spreadsheet-diff-legend-swatch'));
+			swatch.style.backgroundColor = entry.color;
+			dom.append(item, $('span')).textContent = entry.label;
+		}
 		const right = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-right'));
 
 		// 入力規則だけに絞り込み、セルマーカーと詳細ペインを表示する。
@@ -260,14 +282,37 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const previousValidation = this._selectedValidation;
 		this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "Loading diff..."));
 		try {
-			const [origWb, modWb] = await Promise.all([
-				parseSpreadsheetResource(this._fileService, this._sharedProcessService, original).catch(() => ({ sheets: [] })),
-				parseSpreadsheetResource(this._fileService, this._sharedProcessService, modified).catch(() => ({ sheets: [] })),
-			]);
+			// パース失敗(暗号化・破損・サイズ超過・git参照消失)を空ブックとして握りつぶすと、
+			// 「全行追加/削除/変更なし」という静かな誤差分になってしまう。失敗した側と理由を
+			// 明示して差分の表示自体を止める(Word 差分と同じ挙動)。
+			const loadSide = async (resource: URI): Promise<{ wb: IParadisWorkbookData; error?: unknown }> => {
+				try {
+					return { wb: await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource) };
+				} catch (error) {
+					return { wb: { sheets: [] }, error };
+				}
+			};
+			const [origResult, modResult] = await Promise.all([loadSide(original), loadSide(modified)]);
 			// 応答の逆順到着で古い結果が新しい結果を上書きしないよう、最新ロードでなければ破棄する。
 			if (generation !== this._loadGeneration || token.isCancellationRequested || !isEqual(this._modifiedResource, modified)) {
 				return;
 			}
+			if (origResult.error || modResult.error) {
+				// 失敗時は入力規則フィルタの見た目も落とす(エラー画面で active+disabled の
+				// 不整合を出さない。次回成功ロード時にユーザーが付け直せる)。
+				this._validationFilter = false;
+				const reasons: string[] = [];
+				if (origResult.error) {
+					reasons.push(localize('paradis.spreadsheet.originalSideFailed', "旧版: {0}", describeSpreadsheetParseError(origResult.error)));
+				}
+				if (modResult.error) {
+					reasons.push(localize('paradis.spreadsheet.modifiedSideFailed', "新版: {0}", describeSpreadsheetParseError(modResult.error)));
+				}
+				this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')));
+				return;
+			}
+			const origWb = origResult.wb;
+			const modWb = modResult.wb;
 			this._diffSheets = buildDiffSheets(origWb.sheets, modWb.sheets);
 			this._shapeDiffs = this._diffSheets.map(s => buildShapeDiff(s.originalShapes, s.modifiedShapes));
 			// 改ページは差分シート(行の対応付け済み)ではなく、元のシートの用紙設定から比べる。
@@ -552,6 +597,23 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		this._renderDisposables.clear();
 		dom.clearNode(this._bodyEl);
+		// メッセージ(Loading/失敗)表示中に旧い差分へタブやPrev/Nextで干渉できると、
+		// パース失敗後に古い結果が再描画されて「静かな誤差分」になる。状態もここで
+		// まるごと落とし、通常ビューアと同じくメッセージだけの画面にする。
+		this._diffSheets = [];
+		this._shapeDiffs = [];
+		this._pageBreakDiffs = [];
+		this._leftPageBreakOverlay = undefined;
+		this._rightPageBreakOverlay = undefined;
+		this._allDiffLocations = [];
+		this._validationLocations = [];
+		this._diffLocations = [];
+		this._selectedValidation = undefined;
+		this._currentDiffIdx = -1;
+		this._activeSheetIndex = 0;
+		this._updateValidationFilterButton();
+		this._updateNav();
+		this._renderTabs();
 		this._renderedValidationCells = [];
 		this._panesEl = undefined;
 		this._validationInspector = undefined;
@@ -577,7 +639,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._columnWidths = sheet.columnWidths;
 		this._naturalTableWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((s, w) => s + w, 0);
 		this._bodyEl.classList.toggle('validation-filter', this._validationFilter);
-		this._panesEl = dom.append(this._bodyEl, $('.paradis-spreadsheet-diff-panes'));
+		// main(横並び: ペイン+入力規則インスペクタ)の下に打ち切り通知帯を置くための縦積みラッパ。
+		const main = dom.append(this._bodyEl, $('.paradis-spreadsheet-diff-main'));
+		this._panesEl = dom.append(main, $('.paradis-spreadsheet-diff-panes'));
 		const validationByCell = new Map<string, IValidationChange>();
 		for (const location of this._validationLocations) {
 			if (location.sheetIndex === this._activeSheetIndex && location.validation) {
@@ -585,7 +649,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 		}
 
-		const left = this._buildDiffPane(sheet.originalRows, localize('paradis.spreadsheet.original', "Original"), 'original', validationByCell);
+		// 左右ペインとも diff シート側で minCol 揃え済み(originalMinCol === modifiedMinCol)。
+		const paneMinCol = sheet.originalMinCol ?? sheet.modifiedMinCol ?? 1;
+		const left = this._buildDiffPane(sheet.originalRows, localize('paradis.spreadsheet.original', "Original"), 'original', validationByCell, paneMinCol);
 		this._leftScroll = left.pane;
 		this._leftContent = left.content;
 		this._leftSizer = left.sizer;
@@ -595,7 +661,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._leftHighlight = left.highlight;
 		dom.append(this._panesEl, left.pane);
 		dom.append(this._panesEl, $('.paradis-spreadsheet-diff-separator'));
-		const right = this._buildDiffPane(sheet.modifiedRows, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), 'modified', validationByCell);
+		const right = this._buildDiffPane(sheet.modifiedRows, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), 'modified', validationByCell, paneMinCol);
 		this._rightScroll = right.pane;
 		this._rightContent = right.content;
 		this._rightSizer = right.sizer;
@@ -605,7 +671,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._rightHighlight = right.highlight;
 		dom.append(this._panesEl, right.pane);
 		if (this._validationFilter) {
-			this._validationInspector = dom.append(this._bodyEl, $('.paradis-spreadsheet-validation-inspector'));
+			this._validationInspector = dom.append(main, $('.paradis-spreadsheet-validation-inspector'));
 			this._validationInspector.tabIndex = -1;
 			this._validationInspector.setAttribute('role', 'region');
 			this._validationInspector.setAttribute('aria-label', localize('paradis.spreadsheet.validationChanges', "Input Rule Changes"));
@@ -613,6 +679,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			this._renderValidationInspector(this._selectedValidation);
 		} else {
 			this._validationInspector = undefined;
+		}
+		// どちらかの版が MAX_ROWS で打ち切られている場合は通知する。通常ビューアと同じ帯。
+		if (sheet.truncated) {
+			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
+			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
 		}
 
 		this._wireSyncScroll(this._leftScroll, this._rightScroll);
@@ -679,7 +750,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	}
 
 	/** ペインを組み立てる(測定・図形・スケールはまとめて呼び出し側の rAF で行う)。 */
-	private _buildDiffPane(rows: readonly IParadisDiffRow[], label: string, side: 'original' | 'modified', validationByCell: ReadonlyMap<string, IValidationChange>): { pane: HTMLElement; sizer: HTMLElement; content: HTMLElement; table: HTMLElement; rows: HTMLElement[]; highlight: HTMLElement; rowMeta: { excelRow: number; tr: HTMLElement }[]; overflowCells: IParadisOverflowItem[] } {
+	private _buildDiffPane(rows: readonly IParadisDiffRow[], label: string, side: 'original' | 'modified', validationByCell: ReadonlyMap<string, IValidationChange>, minCol: number): { pane: HTMLElement; sizer: HTMLElement; content: HTMLElement; table: HTMLElement; rows: HTMLElement[]; highlight: HTMLElement; rowMeta: { excelRow: number; tr: HTMLElement }[]; overflowCells: IParadisOverflowItem[] } {
 		const pane = $('.paradis-spreadsheet-diff-pane');
 		const labelEl = dom.append(pane, $('.paradis-spreadsheet-diff-label'));
 		labelEl.textContent = label;
@@ -703,6 +774,15 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 		}
 
+		// 列ヘッダ(A,B,C…)。通常ビューアと同じく使用範囲の先頭列(minCol)を起点にする。
+		const thead = dom.append(table, $('thead.paradis-spreadsheet-head'));
+		const headRow = dom.append(thead, $('tr'));
+		dom.append(headRow, $('th.paradis-spreadsheet-corner'));
+		for (let ci = 0; ci < columnWidths.length; ci++) {
+			const th = dom.append(headRow, $('th.paradis-spreadsheet-colhead'));
+			th.textContent = getColumnLabel(minCol - 1 + ci);
+		}
+
 		const tbody = dom.append(table, $('tbody'));
 		const rowEls: HTMLElement[] = [];
 		const rowMeta: { excelRow: number; tr: HTMLElement }[] = [];
@@ -715,7 +795,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			tr.style.height = `${row.height}px`;
 			const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
-			rowHead.textContent = String(rowIdx + 1);
+			// Excel の行番号は絶対番号(excelRow)。空行(相手側にのみ対応行がある)は番号を出さない。
+			rowHead.textContent = row.excelRow !== undefined ? String(row.excelRow) : '';
 			for (let ci = 0; ci < row.cells.length; ci++) {
 				const cell = row.cells[ci];
 				if (cell.hidden) {
@@ -831,9 +912,6 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (validationChange) {
 			td.classList.add('paradis-spreadsheet-validation-change', `validation-${validationChange.status}`);
 			td.dataset.validationAddress = validationChange.address;
-			if (cell.diffDetails?.every(detail => detail.kind === 'dataValidation')) {
-				td.classList.add('validation-only');
-			}
 			if (this._selectedValidation === validationChange) {
 				td.classList.add('selected');
 			}
