@@ -449,6 +449,25 @@ export class PtyService extends Disposable implements IPtyService {
 		return Promise.all(held.map(([id, data]) => this._buildProcessDetails(id, data)));
 	}
 
+	/**
+	 * PARA-PATCH: lightweight counterpart of {@link paradisListHeldTerminals} for pollers that
+	 * only need how many terminals are held and their workspace names. `_buildProcessDetails`
+	 * shells out per terminal (`getCwd` runs lsof on macOS) and waits on the orphan barrier,
+	 * which is pure waste when nothing but the name is going to be read.
+	 *
+	 * Deliberately not `@traceRpc`: this is an in-process query from the pty daemon's pollers,
+	 * so neither the trace log nor simulated latency injection should apply.
+	 */
+	async paradisListHeldWorkspaceNames(): Promise<{ workspaceName: string }[]> {
+		const names: { workspaceName: string }[] = [];
+		for (const [, data] of this._ptys.entries()) {
+			if (data.shouldPersistTerminal) {
+				names.push({ workspaceName: data.workspaceName });
+			}
+		}
+		return names;
+	}
+
 	async listProcesses(): Promise<IProcessDetails[]> {
 		const persistentProcesses = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
 

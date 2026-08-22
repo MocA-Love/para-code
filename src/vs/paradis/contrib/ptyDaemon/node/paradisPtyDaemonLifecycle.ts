@@ -52,6 +52,9 @@ export interface IParadisPtyDaemonLifecycleOptions {
 	 *
 	 * 関数で受けるのは、常駐が2種類あるため。`IPtyService` を丸ごと持つ古い形と、pty だけを
 	 * 持つ薄い形とで数え方が違うが、**寿命の決め方は同じ**なので、違いはここ1点に閉じ込める。
+	 * ポーリング (ステータス表示と idle 判定) が必要なのは workspaceName だけなので、
+	 * `IPtyService` を渡す側 (`ptyHostMain.ts`) は端末ごとに getCwd/orphan 判定まで行う完全版
+	 * ではなく、軽量な `paradisListHeldWorkspaceNames` を渡す。
 	 */
 	readonly heldTerminals: () => Promise<readonly { readonly workspaceName: string }[]>;
 	readonly logService: ILogService;
