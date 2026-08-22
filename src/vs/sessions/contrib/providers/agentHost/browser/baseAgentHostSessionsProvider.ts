@@ -5224,7 +5224,12 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 			// we deliberately do NOT pop a sign-in dialog just to render the
 			// list. Instead, retry silently in the background with backoff.
 			this._logService.trace(`[AgentHostSessionsProvider] listSessions failed; scheduling retry: ${err}`);
-			this._scheduleSessionRefreshRetry(announceExistingAsAdded);
+			// PARA-PATCH: a trailing rerun booked while this pass was in flight (see
+			// _refreshSessions) wants the retry to carry its announce flag too — the while
+			// loop there bails out without running that rerun once _sessionRefreshRetry is
+			// armed, so this is the only place left to fold it in before it's lost.
+			this._scheduleSessionRefreshRetry(announceExistingAsAdded || this._refreshRerunAnnounceExisting);
+			this._refreshRerunAnnounceExisting = false;
 		}
 	}
 
