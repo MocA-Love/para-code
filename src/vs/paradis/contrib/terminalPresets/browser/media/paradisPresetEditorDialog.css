@@ -60,6 +60,12 @@
 	gap: 8px;
 }
 
+/* 選択モード中の「選択」トグル。一括操作バーと同じ focusBorder 系のアクセント色で on を示す。 */
+.paradis-preset-editor-dialog .ppe-select-toggle.active {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent);
+	color: var(--vscode-focusBorder);
+}
+
 /* ---------- body: 左ナビ + 右コンテンツ ---------- */
 
 .paradis-preset-editor-dialog .ppe-body {
@@ -240,12 +246,16 @@
 	background: var(--vscode-list-hoverBackground);
 }
 
-/* ドラッグ中の行と、ドロップ可能な行 */
+/* ドラッグ中の行、ドロップ可能な行、ドロップ拒否中の行（フォルダ跨ぎ・保存先跨ぎ・フォルダ行自体） */
 .paradis-preset-editor-dialog .ppe-row.dragging {
 	opacity: 0.35;
 }
 .paradis-preset-editor-dialog .ppe-row.drop-target {
 	border-color: var(--vscode-focusBorder);
+}
+.paradis-preset-editor-dialog .ppe-row.drop-denied {
+	border-color: var(--vscode-errorForeground, var(--vscode-inputValidation-errorBorder));
+	border-style: dashed;
 }
 
 /* grip ハンドル（⋮⋮）。ここをつかんだときだけ行が draggable になる。 */
