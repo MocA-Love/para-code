@@ -264,7 +264,7 @@ export class ParadisRtkEditor extends EditorPane {
 				// 見つからないことがある。「入れてあるのに」で詰まらないよう設定へも誘導する。
 				this.lastError = this.client.isRemote
 					? localize('paradis.rtk.notFoundRemote', "接続先（{0}）の PATH に rtk が見つかりません。SSH 接続中は接続先に貯まった節約量を表示します。接続先へインストールするか、接続先のマシン設定 paradis.rtk.executablePath に rtk の絶対パスを指定してください。", this.client.remoteHostLabel ?? '')
-					: localize('paradis.rtk.notFound', "rtk が見つかりません。https://github.com/rtk-ai/rtk からインストールしてください。");
+					: localize('paradis.rtk.notFound', "rtk が見つかりません。https://github.com/rtk-ai/rtk からインストールしてください。（Windows の場合: PATH 上の npm 版は rtk.cmd シムのため解決できません。cargo install 等でネイティブバイナリを PATH に置くか、設定 paradis.rtk.executablePath に実行ファイルの絶対パスを指定してください。）");
 			} else {
 				this.lastError = localize('paradis.rtk.error', "rtk の実行に失敗しました: {0}", error instanceof Error ? error.message : String(error));
 			}
