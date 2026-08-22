@@ -65,7 +65,7 @@ On phone-sized viewports (`< 640px` width):
 ```
 
 - **MobileTitlebarPart** is a DOM element prepended above the grid. It has a hamburger (☰), session title, and a contextual right slot that swaps between the new session (+) button (when in a chat) and the account indicator 👤 (on the welcome / new session screen).
-- **Sidebar** is hidden by default and opens as an **85% width drawer overlay** with a backdrop when the hamburger is tapped. CSS makes its `split-view-view` absolutely positioned with `z-index: 250`. The workbench manually calls `sidebarPart.layout()` with drawer dimensions after opening. Closing the drawer clears the navigation stack.
+- **Sidebar** is hidden by default and opens as a **full-width (100%) drawer overlay without a backdrop** when the hamburger is tapped. The mobile top bar stays visible so the hamburger can close it again. CSS makes its `split-view-view` absolutely positioned with `z-index: 250`. The workbench manually calls `sidebarPart.layout()` with drawer dimensions after opening. Closing the drawer clears the navigation stack.
 - **Titlebar** is hidden in the grid (`visible: false`) and via CSS — replaced by MobileTitlebarPart.
 - **SessionCompositeBar** (chat tabs) is hidden via CSS.
 - The grid uses `display: flex; flex-direction: column` and all `split-view-view:has(> .part)` containers are positioned absolutely at `100% width/height`.
@@ -91,7 +91,7 @@ The workbench toggles the `phone-layout` CSS class on `layout()` and creates/des
 | Desktop Component | Mobile Equivalent | How Accessed |
 |---|---|---|
 | **Titlebar** (3-section toolbar) | **MobileTitlebarPart** (☰ / title / +|👤) | Always visible at top |
-| **Sidebar** (sessions list) | Drawer overlay (85% width) | Hamburger button (☰) |
+| **Sidebar** (sessions list) | Full-width drawer overlay | Hamburger button (☰) |
 | **Sessions Part** (chat views) | Same Part (`MobileSessionsPart`), edge-to-edge, no card chrome, single visible session | Default view (always visible) |
 | **AuxiliaryBar** (files, changes) | Gated — not shown on mobile | Planned: mobile-specific view |
 | **Panel** (terminal, output) | Gated — not shown on mobile | Planned: mobile-specific view |
@@ -123,9 +123,9 @@ The workbench toggles the `phone-layout` CSS class on `layout()` and creates/des
 | `mobileSessionFilterChips.ts` | Status filter-chip row shown below the sessions-list header on phone (Completed / In Progress / Failed). Drives the same filter API as `ISessionsList` so chips and the desktop filter menu stay in sync. |
 | `mobileSortGroupSheet.ts` | `showMobileSortGroupSheet(...)`: bottom sheet presenting the sort and group toggles (with a divider between groups) as the phone replacement for the desktop sort/group menus. |
 | `mobileVisualViewport.ts` | Tracks the `VisualViewport` to detect the virtual keyboard (threshold `KEYBOARD_VISIBLE_THRESHOLD_PX = 50`), drives the `sessionsKeyboardVisible` context key, and exposes the current keyboard height via the `--vscode-keyboard-height` CSS custom property. |
-| `mobileEdgeSwipe.ts` | Left-edge swipe gesture that opens the sidebar drawer (edge hit zone, commit-travel and vertical-tolerance thresholds). |
-| `mobilePulldownDismiss.ts` *(under `contributions/`)* | Pull-down-to-dismiss gesture for the full-screen overlays (commit by travel or flick velocity, with a dead-zone before visual feedback). |
-| `longPress.ts` | `installLongPress(...)`: long-press gesture helper (hold-time + move-threshold) used for touch context actions, with click suppression after the press fires. |
+| `mobileEdgeSwipe.ts` | Left-edge swipe gesture that opens the sidebar drawer (edge hit zone, commit-travel and vertical-tolerance thresholds). **Currently unwired**: no workbench code imports it yet. |
+| `mobilePulldownDismiss.ts` *(under `contributions/`)* | Pull-down-to-dismiss gesture for the full-screen overlays (commit by travel or flick velocity, with a dead-zone before visual feedback). **Currently unwired**: no workbench code imports it yet. |
+| `longPress.ts` | `installLongPress(...)`: long-press gesture helper (hold-time + move-threshold) used for touch context actions, with click suppression after the press fires. **Currently unwired**: no workbench code imports it yet. |
 | `contributions/mobileChangesView.ts` | Full-screen overlay listing every file changed in the active session (master view). Reactive over `ISessionsManagementService.activeSession.changes`. Each row uses a codicon change-type icon (`diffAdded` / `diffModified` / `diffRemoved` via `ThemeIcon.asClassNameArray`), filename, relative path, an A/M/D pill, and `+N -N` counters. Tapping a row invokes `MOBILE_OPEN_DIFF_VIEW_COMMAND_ID` with the per-file payload **plus** the full sibling list and index — the diff view uses that for prev/next chevrons. Replaces the legacy QuickPick the title-bar Changes pill used to open. |
 | `contributions/mobileDiffView.ts` | Full-screen overlay rendering a unified diff for one file (detail view). Uses `linesDiffComputers.getDefault()` for hunk computation and async `tokenizeToString` from `editor/common/languages/textToHtmlTokenizer.ts` for Monaco-quality syntax highlighting. After tokenization, a per-render `<style>` block is injected from `TokenizationRegistry.getColorMap()` so `<span class="mtkN">` token classes resolve to the active theme's colors. When no TextMate grammar is registered for the language (the agents window doesn't load language extensions), falls back to a regex tokenizer that emits `<span class="mobile-diff-tok-{kind}">` CSS-class spans; per-theme colors for those classes are defined in `mobileOverlayViews.css`. Header includes prev/next chevrons + "N / M" position when multiple siblings are passed; horizontal-swipe gesture as an alt navigation. Supports deletion-only diffs (`modifiedURI` undefined). |
 | `contributions/mobileMultiDiffView.ts` | Full-screen overlay rendering the diffs of **all** changed files in one scrollable surface (multi-file variant of `MobileDiffView`), virtualized via `mobileMultiDiffVirtualizer.ts`. |
@@ -183,13 +183,13 @@ Mobile picker subclasses live in `contrib/` alongside their base classes (not in
 | File | Purpose |
 |------|---------|
 | `browser/parts/mobile/mobileChatShell.css` | All phone-layout CSS (see above). |
-| `browser/parts/media/sidebarPart.css` | Sidebar drawer overlay CSS: 85% width, z-index 250, slide-in animation, backdrop. |
-| `browser/media/style.css` | Mobile overscroll containment, 44px touch targets, quick pick bottom sheets, context menu action sheets, dialog sizing, notification positioning, hover card suppression, editor modal full-screen. |
+| `browser/parts/media/sidebarPart.css` | Sidebar drawer overlay CSS: full (100%) width, z-index 250, slide-in animation. No backdrop (the top bar stays visible as the close affordance). |
+| `browser/media/phoneLayout.css`, `browser/parts/mobile/mobileChatShell.css` (+ per-widget CSS under `parts/mobile/media/`) | Phone-layout rules: safe-area offsets, overscroll containment, touch target sizing, quick pick positioning, context menu action sheets, dialog sizing, notification positioning, hover card suppression, editor modal full-screen. |
 
 ## Remaining Work
 
 - **Files & Terminal access**: Should become phone-specific views gated with `when: IsPhoneLayoutContext`. (The Changes view already has its phone equivalent — see `MobileChangesView`.)
 - **iOS keyboard handling**: Adjust layout when virtual keyboard appears (context key exists, but no layout response yet).
-- **Session list inline actions**: Make always-visible on touch devices (no hover-to-reveal).
+
 - **Customizations on mobile**: Currently hidden — needs a mobile-friendly alternative.
 - **Inline word-level diff highlighting** in `MobileDiffView`: the per-file tokenization cache is already in place to make this straightforward to layer on later.

@@ -9,7 +9,7 @@ import './media/workbench.css';
 import './media/phoneLayout.css';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { Emitter, Event, setGlobalLeakWarningThreshold } from '../../base/common/event.js';
-import { addDisposableGenericMouseDownListener, addDisposableListener, EventType, getActiveDocument, getActiveElement, getClientArea, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, size, Dimension, runWhenWindowIdle } from '../../base/browser/dom.js';
+import { addDisposableGenericMouseDownListener, addDisposableListener, EventType, getActiveDocument, getActiveElement, getClientArea, getWindow, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, scheduleAtNextAnimationFrame, size, Dimension, runWhenWindowIdle } from '../../base/browser/dom.js';
 import { DeferredPromise, RunOnceScheduler } from '../../base/common/async.js';
 import { isFullscreen, onDidChangeFullscreen, isChrome, isFirefox, isSafari } from '../../base/browser/browser.js';
 import { mark } from '../../base/common/performance.js';
@@ -613,7 +613,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// resolving it here is what triggers its constructor —
 				// the registry hands ownership/disposal to the
 				// instantiation service so we don't `_register` it.
-				accessor.get(IMobileVisualViewport);
+				this.mobileVisualViewport = accessor.get(IMobileVisualViewport);
 
 				// Orientation changes produce a window `resize` event which
 				// is already handled by `registerLayoutListeners()`. No
@@ -1503,6 +1503,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	//#endregion
 
+	/**
+	 * Visual viewport tracking (iOS URL bar / virtual keyboard). Resolved
+	 * during `start()` and subscribed to in {@link registerLayoutListeners}.
+	 */
+	private mobileVisualViewport!: IMobileVisualViewport;
+
 	private registerLayoutListeners(): void {
 		// Fullscreen changes
 		this._register(onDidChangeFullscreen(windowId => {
@@ -1516,6 +1522,23 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Window resize — needed for device emulation and mobile viewport changes
 		const onWindowResize = () => this.layout();
 		this._register(addDisposableListener(mainWindow, 'resize', onWindowResize));
+
+		// Visual viewport changes (iOS Safari URL bar collapse, virtual
+		// keyboard) do not fire a window resize. `getClientArea` already reads
+		// the visual viewport on iOS, so re-running layout() here keeps the
+		// grid — and everything anchored to it (chat input, quick pick) — in
+		// sync with the actually visible area.
+		let viewportLayoutScheduled = false;
+		this._register(this.mobileVisualViewport.onDidChangeVisualViewport(() => {
+			if (!this.workbenchGrid || viewportLayoutScheduled) {
+				return;
+			}
+			viewportLayoutScheduled = true;
+			scheduleAtNextAnimationFrame(getWindow(this.mainContainer), () => {
+				viewportLayoutScheduled = false;
+				this.layout();
+			});
+		}));
 	}
 
 	private updateFullscreenClass(): void {
@@ -1618,6 +1641,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 		// Wire up mobile nav stack: back-button pops close the corresponding part
 		this._register(this.mobileNavStack.onDidPop(layer => {
+			// Drawer/back-button pops only make sense while the phone layout is
+			// active; a stale entry surviving a rotation must not close the
+			// desktop sidebar.
+			if (this.layoutPolicy.viewportClass.get() !== 'phone') {
+				return;
+			}
 			switch (layer) {
 				case 'sidebar':
 					this.closeMobileSidebarDrawer();
@@ -1838,6 +1867,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// Remove mobile components when leaving phone layout
 				this.mobileTopBarDisposables.clear();
 				this.mobileTopBarElement = undefined;
+				// Drop the drawer's history entry. Leaving it behind made a later
+				// back gesture close the desktop sidebar that had never been opened.
+				if (this.mobileNavStack.has('sidebar')) {
+					this.mobileNavStack.popSilently('sidebar');
+				}
 				// Restore titlebar in grid
 				this.workbenchGrid.setViewVisible(this.titleBarPartView, true);
 				// Restore desktop part visibility

@@ -54,6 +54,7 @@ const SNAP_BACK_ANIM_MS = 200;
  * Returns an {@link IDisposable} that detaches all listeners and resets
  * inline styles applied to `overlayRoot`.
  */
+/** NOTE: currently unwired — no workbench code imports this helper yet (see MOBILE.md). */
 export function installPulldownDismiss(
 	overlayRoot: HTMLElement,
 	headerHandle: HTMLElement,

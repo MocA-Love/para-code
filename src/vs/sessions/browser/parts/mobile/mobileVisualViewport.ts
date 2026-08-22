@@ -5,6 +5,7 @@
 
 import * as DOM from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { derived, IObservable, observableValue } from '../../../../base/common/observable.js';
 import { IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -60,6 +61,17 @@ export interface IMobileVisualViewport {
 	 * keyboard open/close animation).
 	 */
 	readonly isKeyboardVisible: IObservable<boolean>;
+
+	/**
+	 * Fired whenever the visual viewport reports a change (resize/scroll).
+	 *
+	 * Note this fires on **every** update pass, not only when
+	 * {@link keyboardHeight} changes: on iOS Safari the URL bar collapse
+	 * changes `visualViewport.height` and `window.innerHeight` in lockstep,
+	 * so the computed keyboard height stays 0 while the visible area still
+	 * moved — consumers that re-layout must see those passes too.
+	 */
+	readonly onDidChangeVisualViewport: Event<void>;
 }
 
 /**
@@ -120,6 +132,9 @@ export class MobileVisualViewport extends Disposable implements IMobileVisualVie
 	private readonly _keyboardVisibleCtx: IContextKey<boolean>;
 	private readonly mainContainer: HTMLElement;
 
+	private readonly _onDidChangeVisualViewport = new Emitter<void>();
+	readonly onDidChangeVisualViewport = this._onDidChangeVisualViewport.event;
+
 	constructor(
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@ILayoutService layoutService: ILayoutService,
@@ -145,6 +160,9 @@ export class MobileVisualViewport extends Disposable implements IMobileVisualVie
 			}
 			this.mainContainer.style.setProperty(KEYBOARD_HEIGHT_CSS_VAR, `${height}px`);
 			this._keyboardVisibleCtx.set(height > KEYBOARD_VISIBLE_THRESHOLD_PX);
+			// Fire even when the height did not change (see interface note about
+			// URL-bar collapse keeping the keyboard height at zero).
+			this._onDidChangeVisualViewport.fire();
 		};
 
 		this._register(DOM.addDisposableListener(visualViewport, 'resize', update));
