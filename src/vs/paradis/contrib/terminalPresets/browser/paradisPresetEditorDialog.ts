@@ -42,12 +42,15 @@ import {
 	paradisGroupPresetsByFolder,
 	paradisPresetCommandSignature,
 	paradisPresetFingerprint,
+	paradisPresetHostsLabel,
 	paradisPresetQualifier,
 	paradisPresetQualifiers,
 	paradisPresetScopeKey,
 	ParadisPresetLayout,
 	ParadisPresetNameConflict,
 	ParadisPresetSource,
+	PARADIS_PRESET_HOST_LOCAL,
+	PARADIS_PRESET_HOST_REMOTE,
 	PARADIS_PROJECT_ROOT_ENV_VAR,
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
@@ -133,6 +136,30 @@ const STR_TARGET_USER = localize('paradis.presetEditor.targetUser', "ユーザ�
 const strTargetWorkspace = (repoName: string) => localize('paradis.presetEditor.targetWorkspace', "このリポジトリ（{0}/.paracode.json — コミットで共有できます）", repoName);
 // allow-any-unicode-next-line
 const STR_APPLIES_TO = localize('paradis.presetEditor.appliesTo', "対象リポジトリ（任意。1行に1つ、フォルダ名または絶対パス。空欄は全リポジトリ）");
+// allow-any-unicode-next-line
+const STR_HOST_ENV = localize('paradis.presetEditor.hostEnv', "実行環境");
+// allow-any-unicode-next-line
+const STR_HOST_LOCAL = localize('paradis.presetEditor.hostLocal', "ローカル（SSH 未接続）");
+// allow-any-unicode-next-line
+const STR_HOST_REMOTE = localize('paradis.presetEditor.hostRemote', "リモート（SSH 接続中）");
+// allow-any-unicode-next-line
+const STR_HOST_CHIPS_LABEL = localize('paradis.presetEditor.hostChipsLabel', "ホストの絞り込み（任意。空欄なら接続先を問わない）");
+// allow-any-unicode-next-line
+const STR_HOST_CHIP_INPUT_PLACEHOLDER = localize('paradis.presetEditor.hostChipInput', "~/.ssh/config の Host 名");
+// allow-any-unicode-next-line
+const STR_HOST_CHIP_REMOVE = localize('paradis.presetEditor.hostChipRemove', "削除");
+// allow-any-unicode-next-line
+const STR_HOST_ENV_HINT_ANY = localize('paradis.presetEditor.hostEnvHintAny', "どちらも未チェックの場合は、すべての場所で表示されます（条件なし）。チェックした環境との AND 条件として「対象リポジトリ」が効きます。");
+// allow-any-unicode-next-line
+const STR_HOST_CHIPS_HINT_REMOTE_OFF = localize('paradis.presetEditor.hostChipsHintRemoteOff', "「リモート」にチェックを付けると編集できます。");
+// allow-any-unicode-next-line
+const STR_INACTIVE_BADGE = localize('paradis.presetEditor.inactiveBadge', "このウィンドウでは非表示");
+// allow-any-unicode-next-line
+const strRunDisabledTooltip = (hostsLabel: string | undefined) => hostsLabel
+	// allow-any-unicode-next-line
+	? localize('paradis.presetEditor.runDisabledQualified', "実行環境（{0}）に一致するウィンドウでのみ実行できます", hostsLabel)
+	// allow-any-unicode-next-line
+	: localize('paradis.presetEditor.runDisabled', "現在の接続先では実行できないプリセットです");
 // allow-any-unicode-next-line
 const STR_BACK = localize('paradis.presetEditor.back', "戻る");
 // allow-any-unicode-next-line
@@ -225,6 +252,10 @@ const strBulkDeleteMessage = (count: number) => localize('paradis.presetEditor.b
 const strBulkRunMessage = (count: number) => localize('paradis.presetEditor.bulkRunMessage', "選択した{0}件を順番に実行しますか？", count);
 // allow-any-unicode-next-line
 const STR_BULK_RUN_FAILED = localize('paradis.presetEditor.bulkRunFailed', "一部のプリセットを実行できませんでした");
+// allow-any-unicode-next-line
+const STR_BULK_RUN_ALL_INACTIVE = localize('paradis.presetEditor.bulkRunAllInactive', "選択したプリセットは現在の接続先では実行できません");
+// allow-any-unicode-next-line
+const strBulkRunSkipped = (count: number) => localize('paradis.presetEditor.bulkRunSkipped', "（{0} 件は現在のウィンドウでは実行できないため除きます）", count);
 
 /** これ未満の件数なら「実行」は確認なしで即実行する（1〜2件は単発実行と同じ感覚で押せてよいため）。 */
 const BULK_RUN_CONFIRM_THRESHOLD = 3;
@@ -421,6 +452,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		},
 	): void {
 		const row = dom.append(container, $('.ppe-row'));
+		// hosts 条件が現在の接続先と一致しない行は薄く表示する。消さないのは「SSH 先でしか出ない
+		// プリセット」を手元から編集する手段を残すため（envInactive のコメント参照）。
+		row.classList.toggle('dim', !!preset.envInactive);
 		if (this._selecting) {
 			this._appendCheckbox(row, strSelectPreset(preset.name), this._selectedKeys.has(preset.key), checked => {
 				if (checked) {
@@ -445,6 +479,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		}
 		if (preset.locallyHidden) {
 			dom.append(nameLine, $('span.ppe-badge.locally-hidden')).textContent = STR_LOCALLY_HIDDEN_BADGE;
+		}
+		if (preset.envInactive) {
+			dom.append(nameLine, $('span.ppe-badge.inactive-warn')).textContent = STR_INACTIVE_BADGE;
 		}
 		dom.append(main, $('.ppe-row-detail')).textContent = preset.description || paradisPresetCommandSignature(preset, ' && ');
 
@@ -475,6 +512,12 @@ class ParadisPresetEditorDialog extends Disposable {
 		}
 		const runBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
 		runBtn.textContent = STR_RUN;
+		runBtn.disabled = !!preset.envInactive;
+		if (preset.envInactive) {
+			// 区別語（qualifier）ではなく hosts 由来の語を載せる。qualifier は appliesTo が優先されるため、
+			// リポジトリ指定持ちのプリセットで「実行環境（repo名）」という誤った説明になってしまう。
+			runBtn.title = strRunDisabledTooltip(paradisPresetHostsLabel(preset.hosts));
+		}
 		this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {
 			this.dispose();
 			await this.presetService.runPreset(preset);
@@ -601,16 +644,29 @@ class ParadisPresetEditorDialog extends Disposable {
 		dom.append(bar, $('span.ppe-bulk-count')).textContent = strBulkCount(selected.length);
 		const actions = dom.append(bar, $('.ppe-bulk-actions'));
 
+		// hosts 条件が現在の接続先と一致しないもの（envInactive）は一括実行からも外す。
+		// 行単位の実行ボタン（disabled にしてある）と同じガード。残りが実行可能なら実行させて
+		// よいが、除外があることは確認ダイアログに明示する（黙って一部だけ走るのを避ける）。
+		const runnable = selected.filter(preset => !preset.envInactive);
+		const skippedCount = selected.length - runnable.length;
+
 		const runBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
 		runBtn.type = 'button';
 		runBtn.textContent = STR_RUN;
+		if (runnable.length === 0) {
+			runBtn.disabled = true;
+			runBtn.title = STR_BULK_RUN_ALL_INACTIVE;
+		}
 		this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {
 			// 削除と同じく、まとまった数を1クリックでノークリック実行させない
 			// （layout: 'current' のプリセットが複数選ばれていると、同じ端末へ次々流し込むことにもなる）。
-			if (selected.length >= BULK_RUN_CONFIRM_THRESHOLD) {
+			if (selected.length >= BULK_RUN_CONFIRM_THRESHOLD || skippedCount > 0) {
 				const result = await this.dialogService.confirm({
-					message: strBulkRunMessage(selected.length),
-					detail: selected.map(preset => preset.name).join(', '),
+					message: strBulkRunMessage(runnable.length),
+					detail: [
+						runnable.map(preset => preset.name).join(', '),
+						skippedCount > 0 ? strBulkRunSkipped(skippedCount) : undefined,
+					].filter((line): line is string => !!line).join('\n'),
 					primaryButton: STR_RUN,
 				});
 				if (!result.confirmed) {
@@ -619,7 +675,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 			this.dispose();
 			const failed: string[] = [];
-			for (const preset of selected) {
+			for (const preset of runnable) {
 				try {
 					await this.presetService.runPreset(preset);
 				} catch {
@@ -1016,8 +1072,8 @@ class ParadisPresetEditorDialog extends Disposable {
 		cwdInput.spellcheck = false;
 		cwdInput.value = editing?.cwd ?? '';
 
-		const checkbox = (label: string, checked: boolean): HTMLInputElement => {
-			const wrap = dom.append(form, $('.ppe-check-row'));
+		const checkbox = (label: string, checked: boolean, parent: HTMLElement = form): HTMLInputElement => {
+			const wrap = dom.append(parent, $('.ppe-check-row'));
 			const input = dom.append(wrap, $('input.ppe-checkbox')) as HTMLInputElement;
 			input.type = 'checkbox';
 			input.checked = checked;
@@ -1025,7 +1081,8 @@ class ParadisPresetEditorDialog extends Disposable {
 			labelEl.textContent = label;
 			this._viewStore.add(dom.addDisposableListener(labelEl, 'click', () => {
 				input.checked = !input.checked;
-				// ラベルクリックでのトグルでも change 連動（pinnedLabel の表示切替）を効かせる
+				// ラベルクリックでのトグルでも change 連動（pinnedLabel の表示切替・ホスト欄の
+				// 出し崩しなど）を効かせる
 				input.dispatchEvent(new Event('change'));
 			}));
 			return input;
@@ -1073,6 +1130,91 @@ class ParadisPresetEditorDialog extends Disposable {
 			userRadio.checked = true;
 		}
 
+		// 実行環境（hosts 条件）。ローカル／リモートの2チェックに、リモート側だけホストの絞り込み
+		// （チップ）を組み合わせる。「local ∧ 特定ホスト」のような組合せを素直に表すため、
+		// 排他的なプルダウンではなくチェックの組合せにしている。
+		// 保存値との対応: ['local', <ホスト名…>] ⇔ ローカル☑ ＋ ホスト列挙（'remote' リテラルは
+		// 「ホスト未指定のリモート」のときだけ書く。ホスト列挙があれば remote は自明なので冗長）。
+		const initialHosts = editing?.hosts?.map(entry => entry.trim()).filter(entry => entry.length > 0) ?? [];
+		// 手編集された設定に 'remote' とホスト名が併記されていた場合（例: ['remote', 'gpu01']）、
+		// この UI では表現できない。'remote'（どのホストでも）の方が広い条件なのでそちらを採用し、
+		// チップを捨てる——逆（チップだけ残す）だと、保存時に「gpu01 のみ」へ静かに縮んでしまう。
+		const hasRemoteLiteral = initialHosts.includes(PARADIS_PRESET_HOST_REMOTE);
+		const hostChips = hasRemoteLiteral ? [] : initialHosts.filter(entry => entry !== PARADIS_PRESET_HOST_LOCAL && entry !== PARADIS_PRESET_HOST_REMOTE);
+		const hostEnvField = field(STR_HOST_ENV);
+		const hostLocalInput = checkbox(STR_HOST_LOCAL, initialHosts.includes(PARADIS_PRESET_HOST_LOCAL), hostEnvField);
+		const hostRemoteInput = checkbox(STR_HOST_REMOTE, hasRemoteLiteral || hostChips.length > 0, hostEnvField);
+		dom.append(hostEnvField, $('.ppe-check-hint')).textContent = STR_HOST_ENV_HINT_ANY;
+
+		const hostChipsWrap = dom.append(hostEnvField, $('.ppe-check-row-sub.ppe-host-chips'));
+		const hostChipsLabel = dom.append(hostChipsWrap, $('label.ppe-label'));
+		hostChipsLabel.textContent = STR_HOST_CHIPS_LABEL;
+		const chipsRow = dom.append(hostChipsWrap, $('.ppe-chips-row'));
+		// チップ群だけを作り直し、追加入力は作り直さない——input ごと再構成すると Enter 追加の
+		// たびにフォーカスが飛んで連続入力できない。
+		const chipsList = dom.append(chipsRow, $('span.ppe-chips-list'));
+		const chipInput = dom.append(chipsRow, $('input.ppe-input.ppe-chip-input')) as HTMLInputElement;
+		chipInput.type = 'text';
+		chipInput.placeholder = STR_HOST_CHIP_INPUT_PLACEHOLDER;
+		chipInput.spellcheck = false;
+		const addChipFromInput = (): void => {
+			const value = chipInput.value.trim();
+			chipInput.value = '';
+			if (!value || hostChips.some(existing => existing.toLowerCase() === value.toLowerCase())) {
+				return;
+			}
+			hostChips.push(value);
+			renderChips();
+			chipInput.focus();
+		};
+		this._viewStore.add(dom.addDisposableListener(chipInput, 'keydown', e => {
+			if (e.key === 'Enter') {
+				e.preventDefault();
+				addChipFromInput();
+			}
+		}));
+		const chipsHint = dom.append(hostChipsWrap, $('.ppe-hint'));
+		const renderChips = (): void => {
+			dom.clearNode(chipsList);
+			for (const [index, host] of hostChips.entries()) {
+				const chip = dom.append(chipsList, $('span.ppe-chip'));
+				chip.textContent = host;
+				const removeBtn = dom.append(chip, $('button.ppe-chip-x')) as HTMLButtonElement;
+				removeBtn.type = 'button';
+				removeBtn.textContent = '✕';
+				removeBtn.title = STR_HOST_CHIP_REMOVE;
+				removeBtn.setAttribute('aria-label', `${STR_HOST_CHIP_REMOVE}: ${host}`);
+				this._viewStore.add(dom.addDisposableListener(removeBtn, 'click', () => {
+					hostChips.splice(index, 1);
+					renderChips();
+					chipInput.focus();
+				}));
+			}
+		};
+		const updateHostChipsEnabled = (): void => {
+			// ホストの絞り込みはリモート側の話（SSH 先を列挙するもの）。ローカルのみなら無効化して
+			// 「触っても効かない」状態を見せる。
+			const enabled = hostRemoteInput.checked;
+			hostChipsWrap.classList.toggle('disabled', !enabled);
+			chipsHint.textContent = enabled ? '' : STR_HOST_CHIPS_HINT_REMOTE_OFF;
+		};
+		renderChips();
+		updateHostChipsEnabled();
+		this._viewStore.add(dom.addDisposableListener(hostRemoteInput, 'change', updateHostChipsEnabled));
+		// 手入力の補完候補は、既存プリセットが実際に使っているホスト名（特殊値を除く）。
+		// フォルダ欄と同じく、フォームを開いた時点の一覧で一度だけ作る。
+		const knownHosts = [...new Set(this.presetService.presets
+			.flatMap(preset => preset.hosts ?? [])
+			.filter(entry => entry !== PARADIS_PRESET_HOST_LOCAL && entry !== PARADIS_PRESET_HOST_REMOTE))]
+			.sort((a, b) => a.localeCompare(b));
+		if (knownHosts.length > 0) {
+			const datalist = dom.append(hostChipsWrap, $('datalist#ppe-host-datalist'));
+			for (const name of knownHosts) {
+				dom.append(datalist, $('option')).setAttribute('value', name);
+			}
+			chipInput.setAttribute('list', 'ppe-host-datalist');
+		}
+
 		// appliesTo（保存先がユーザー設定のときのみ表示）
 		const appliesToField = field(STR_APPLIES_TO);
 		const appliesToInput = dom.append(appliesToField, $('textarea.ppe-input')) as HTMLTextAreaElement;
@@ -1116,6 +1258,16 @@ class ParadisPresetEditorDialog extends Disposable {
 				return;
 			}
 			const appliesTo = appliesToInput.value.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+			// hosts 条件を UI の状態から組み立てる。ホスト列挙があるときは 'remote' リテラルを
+			// 書かない（列挙が「リモート有効＋絞り込み」を含意するため冗長。読み込み側は
+			// 列挙の存在で remote チェックを復元する）。
+			const hostEntries: string[] = [];
+			if (hostLocalInput.checked) {
+				hostEntries.push(PARADIS_PRESET_HOST_LOCAL);
+			}
+			if (hostRemoteInput.checked) {
+				hostEntries.push(...(hostChips.length > 0 ? hostChips : [PARADIS_PRESET_HOST_REMOTE]));
+			}
 			// 保存は常に新形式（tasks + layout）。旧形式の commands / launchMode はここで移行される
 			const definition: IParadisPresetDefinition = {
 				name,
@@ -1129,6 +1281,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				pinnedLabel: pinnedInput.checked && pinnedLabelInput.checked ? true : undefined,
 				autoRun: autoRunInput.checked,
 				appliesTo: userRadio.checked && appliesTo.length > 0 ? appliesTo : undefined,
+				hosts: hostEntries.length > 0 ? hostEntries : undefined,
 			};
 			const target: ParadisPresetSource = workspaceRadio.checked ? 'workspace' : 'user';
 			const decision = await this._resolveNameConflict(definition, target, editing);
