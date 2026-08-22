@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type PcSummary } from '../appState.js';
 import { BatteryGauge } from './batteryGauge.js';
-import { BottomSheet } from './bottomSheet.js';
+import { BottomSheet, useSheetCloseThen } from './bottomSheet.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface } from './glassSurface.js';
@@ -115,7 +115,7 @@ function PcRow({ pc, active, onPress }: { pc: PcSummary; active: boolean; onPres
 	);
 }
 
-function PcList({ onClose }: { onClose: () => void }) {
+function PcList({ onClose, closeThen }: { onClose: () => void; /** 遷移を伴う閉じ方（シート経路は暗幕が残るため遅延する。ポップオーバー経路は即時）。 */ closeThen: (go: () => void) => void }) {
 	const router = useRouter();
 	const { pcs, activePcId, switchPc } = useAppStore(useShallow(s => ({
 		pcs: s.pcs, activePcId: s.activePcId, switchPc: s.switchPc,
@@ -139,7 +139,7 @@ function PcList({ onClose }: { onClose: () => void }) {
 			<View style={styles.divider} />
 			<Pressable
 				style={styles.row}
-				onPress={() => { hapticSelection(); onClose(); router.push('/pair'); }}
+				onPress={() => { hapticSelection(); closeThen(() => router.push('/pair')); }}
 				accessibilityLabel="新しいPCとペアリング"
 			>
 				<View style={[styles.avatar, styles.addAvatar]}>
@@ -151,7 +151,7 @@ function PcList({ onClose }: { onClose: () => void }) {
 			</Pressable>
 			<Pressable
 				style={styles.row}
-				onPress={() => { hapticSelection(); onClose(); router.push('/settings'); }}
+				onPress={() => { hapticSelection(); closeThen(() => router.push('/settings')); }}
 				accessibilityLabel="PCの管理"
 			>
 				<View style={[styles.avatar, styles.addAvatar]}>
@@ -176,6 +176,18 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 }) {
 	const regular = useIsRegularWidth();
 	const insets = useStableInsets();
+	const inSheet = !(regular && anchor !== undefined);
+	// シート（iPhone）は暗幕が閉じアニメのあいだ残るため、遷移は閉じ切ってから。
+	// ポップオーバー（iPad）は OverlayPortal の暗幕が即アンマウントされるため遅延しない。
+	const sheetCloseThen = useSheetCloseThen(onClose);
+	const closeThen = (go: () => void) => {
+		if (inSheet) {
+			sheetCloseThen(go);
+		} else {
+			onClose();
+			go();
+		}
+	};
 
 	// Android物理戻るボタンで閉じる
 	useEffect(() => {
@@ -193,11 +205,11 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 	// 狭い幅は共通の {@link BottomSheet} に載せる（器・出方・グラバーのドラッグを1箇所に集約する）。
 	// `visible` はそのまま渡す——ここで早期returnすると閉じるアニメーションが再生されないまま
 	// 木から外れてしまう。
-	if (!(regular && anchor !== undefined)) {
+	if (inSheet) {
 		return (
 			<BottomSheet visible={visible} onClose={onClose} title="ペアリング済みのPC" glass>
 				<ScrollView style={styles.sheetScroll} contentContainerStyle={{ paddingBottom: insets.bottom + 16 }} bounces={false}>
-					<PcList onClose={onClose} />
+					<PcList onClose={onClose} closeThen={closeThen} />
 				</ScrollView>
 			</BottomSheet>
 		);
@@ -218,7 +230,7 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 					<GlassSurface style={styles.popover}>
 						<Text style={styles.head}>ペアリング済みのPC</Text>
 						<ScrollView style={styles.popoverScroll} bounces={false}>
-							<PcList onClose={onClose} />
+							<PcList onClose={onClose} closeThen={closeThen} />
 						</ScrollView>
 					</GlassSurface>
 				</PopIn>
