@@ -22,5 +22,10 @@ export function guardWebViewNavigation(request: ShouldStartLoadRequest): boolean
 		void Linking.openURL(request.url).catch(() => { });
 		return false;
 	}
+	// javascript: / data: への遷移は拒否する。markdownはmarked.parseの生結果を埋め込むため
+	// サニタイズされず、javascript: リンクのタップで任意スクリプトを実行され得る。
+	if (/^(?:javascript|data):/i.test(request.url)) {
+		return false;
+	}
 	return true;
 }

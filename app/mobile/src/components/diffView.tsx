@@ -20,7 +20,7 @@ import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
-import { parseUnifiedDiff, type DiffRow } from './diffParser.js';
+import { parseUnifiedDiff } from './diffParser.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 
 interface DiffViewProps {
@@ -47,7 +47,6 @@ function currentRendererTarget(ws: string): string | undefined {
 		: undefined;
 }
 
-type DiffRowKind = 'hunk' | 'add' | 'del' | 'ctx';
 type ViewMode = 'diff' | 'render';
 
 export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewProps) {
