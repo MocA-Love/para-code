@@ -10,13 +10,14 @@ import { localize } from '../../../../nls.js';
 import { basename, joinPath } from '../../../../base/common/resources.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
+import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 
 /** 転送処理に必要なサービスの束。ビューが注入したものをそのまま渡す。 */
 export interface IParadisRemoteTransferServices {
+	readonly dialogService: IDialogService;
 	readonly fileDialogService: IFileDialogService;
 	readonly fileService: IFileService;
 	readonly notificationService: INotificationService;
@@ -31,6 +32,41 @@ export interface IParadisRemoteTransferSource {
 }
 
 /**
+ * 上書き確認。fileImportExport.ts の getFileOverwriteConfirm と同じ趣旨。
+ * fileService.copy は overwrite 指定時に既存ターゲットを再帰的に削除してから
+ * 書き込むため、フォルダーの転送で無確認にすると中身が丸ごと失われる。必ず通すこと。
+ */
+async function confirmOverwrite(services: IParadisRemoteTransferServices, names: readonly string[]): Promise<boolean> {
+	const message = names.length === 1
+		// allow-any-unicode-next-line
+		? localize('paraRemoteHosts.confirmOverwrite', "{0} は転送先に既に存在します。置き換えますか?", names[0])
+		// allow-any-unicode-next-line
+		: localize('paraRemoteHosts.confirmOverwriteMany', "{0} 件の項目が転送先に既に存在します。置き換えますか?", names.length);
+	const { confirmed } = await services.dialogService.confirm({
+		type: 'warning',
+		message,
+		detail: localize('paraRemoteHosts.overwriteIrreversible', "この操作は元に戻せません。既存の内容は失われます。"),
+		primaryButton: localize('paraRemoteHosts.replaceButton', "置き換える"),
+	});
+	return confirmed;
+}
+
+async function copyWithProgress(
+	services: IParadisRemoteTransferServices,
+	source: IParadisRemoteTransferSource,
+	target: URI,
+	overwrite: boolean,
+): Promise<void> {
+	await services.progressService.withProgress(
+		{
+			location: ProgressLocation.Window,
+			title: localize('paraRemoteHosts.transferring', "{0} を転送しています…", source.name),
+		},
+		() => services.fileService.copy(source.uri, target, overwrite),
+	);
+}
+
+/**
  * 接続先 (または手元) から「このマシン」へ保存する。
  *
  * ファイルは保存ダイアログ、フォルダーは保存先フォルダーの選択後に
@@ -41,30 +77,29 @@ export interface IParadisRemoteTransferSource {
 export async function paradisSaveToMachine(
 	services: IParadisRemoteTransferServices,
 	source: IParadisRemoteTransferSource,
-	localUserHome: URI | undefined,
+	localUserHome: URI,
 ): Promise<void> {
-	const defaultDir = localUserHome ?? uriForLocalRoot();
 	let target: URI | undefined;
 	if (source.isDirectory) {
 		const folders = await services.fileDialogService.showOpenDialog({
 			canSelectFiles: false,
 			canSelectFolders: true,
 			canSelectMany: false,
-			defaultUri: defaultDir,
+			defaultUri: localUserHome,
 			availableFileSystems: [Schemas.file],
-			title: localize('paradisRemoteHosts.saveFolderTitle', "保存先フォルダーを選択"),
+			title: localize('paraRemoteHosts.saveFolderTitle', "保存先フォルダーを選択"),
 		});
 		target = folders?.length ? joinPath(folders[0], basename(source.uri)) : undefined;
 	} else {
 		target = await services.fileDialogService.pickFileToSave(
-			joinPath(defaultDir, basename(source.uri)),
+			joinPath(localUserHome, basename(source.uri)),
 			[Schemas.file],
 		);
 	}
 	if (!target) {
 		return;
 	}
-	await runTransfer(services, source, target, /* overwrite */ true);
+	await paradisCopyEntry(services, source, target);
 }
 
 /**
@@ -85,18 +120,36 @@ export async function paradisSendToHost(
 		canSelectMany: false,
 		defaultUri: remoteDefaultDir,
 		availableFileSystems: [Schemas.vscodeRemote],
-		title: localize('paradisRemoteHosts.sendFolderTitle', "転送先フォルダーを選択"),
+		title: localize('paraRemoteHosts.sendFolderTitle', "転送先フォルダーを選択"),
 	});
 	if (!folders?.length) {
 		return;
 	}
-	const target = joinPath(folders[0], basename(source.uri));
-	await runTransfer(services, source, target, /* overwrite */ true);
+	await paradisCopyEntry(services, source, joinPath(folders[0], basename(source.uri)));
+}
+
+/** 単一項目のコピー。上書きが必要なときだけ確認ダイアログを出す。エラーは投げて戻す (ビューが通知する)。 */
+export async function paradisCopyEntry(
+	services: IParadisRemoteTransferServices,
+	source: IParadisRemoteTransferSource,
+	target: URI,
+): Promise<void> {
+	let overwrite = false;
+	if (await services.fileService.exists(target)) {
+		const confirmed = await confirmOverwrite(services, [basename(target)]);
+		if (!confirmed) {
+			return;
+		}
+		overwrite = true;
+	}
+	await copyWithProgress(services, source, target, overwrite);
 }
 
 /**
- * ドラッグ&ドロップで複数項目をフォルダーへコピーする。
- * 上書きは許可する (ドロップは明示的な配置操作なので、同名ファイルを意図して置くケースが多い)。
+ * ドラッグ&ドロップ・まとめアップロード用。複数項目をフォルダーへコピーする。
+ *
+ * 上書きが必要なときは最初に一括確認する (項目ごとに出すと連続ダイアログになるため)。
+ * 1件が失敗しても残りを続け、最後に失敗した件数を警告する。
  */
 export async function paradisCopyToDirectory(
 	services: IParadisRemoteTransferServices,
@@ -106,29 +159,58 @@ export async function paradisCopyToDirectory(
 	if (!sources.length) {
 		return;
 	}
+	const targets = sources.map(source => joinPath(targetDir, basename(source.uri)));
+
+	// 既存チェック → 一括上書き確認。未確認なら overwrite=false なので競合時は安全側で失敗する
+	const existingNames: string[] = [];
+	for (const target of targets) {
+		if (await services.fileService.exists(target)) {
+			existingNames.push(basename(target));
+		}
+	}
+	let overwrite = false;
+	if (existingNames.length) {
+		overwrite = await confirmOverwrite(services, existingNames);
+		if (!overwrite) {
+			return;
+		}
+	}
+
+	const failedNames: string[] = [];
 	try {
 		await services.progressService.withProgress(
 			{
 				location: ProgressLocation.Window,
 				title: sources.length === 1
-					? localize('paradisRemoteHosts.transferring', "{0} を転送しています…", sources[0].name)
-					: localize('paradisRemoteHosts.transferringMany', "{0} 件を転送しています…", sources.length),
+					? localize('paraRemoteHosts.transferring', "{0} を転送しています…", sources[0].name)
+					: localize('paraRemoteHosts.transferringMany', "{0} 件を転送しています…", sources.length),
 			},
 			async () => {
-				for (const source of sources) {
-					await services.fileService.copy(source.uri, joinPath(targetDir, basename(source.uri)), /* overwrite */ true);
+				for (let index = 0; index < sources.length; index++) {
+					try {
+						await services.fileService.copy(sources[index].uri, targets[index], overwrite);
+					} catch {
+						failedNames.push(sources[index].name);
+					}
 				}
 			},
 		);
-	} catch (error) {
-		notifyTransferError(services, error, targetDir);
+	} finally {
+		if (failedNames.length === sources.length) {
+			services.notificationService.error(localize('paraRemoteHosts.allTransfersFailed', "転送に失敗しました"));
+		} else if (failedNames.length) {
+			services.notificationService.notify({
+				severity: Severity.Warning,
+				message: localize('paraRemoteHosts.someTransfersFailed', "{0} 件の転送に失敗しました ({1})", failedNames.length, failedNames.join(', ')),
+			});
+		}
 	}
 }
 
 /** 「ローカルからアップロード…」の手前半分。ローカルのファイルを選ばせて URI を返す。 */
 export async function paradisPickLocalFiles(
 	services: IParadisRemoteTransferServices,
-	localUserHome: URI | undefined,
+	localUserHome: URI,
 ): Promise<readonly URI[]> {
 	const files = await services.fileDialogService.showOpenDialog({
 		canSelectFiles: true,
@@ -136,42 +218,7 @@ export async function paradisPickLocalFiles(
 		canSelectMany: true,
 		defaultUri: localUserHome,
 		availableFileSystems: [Schemas.file],
-		title: localize('paradisRemoteHosts.pickUploadTitle', "アップロードするファイルを選択"),
+		title: localize('paraRemoteHosts.pickUploadTitle', "アップロードするファイルを選択"),
 	});
 	return files ?? [];
-}
-
-async function runTransfer(
-	services: IParadisRemoteTransferServices,
-	source: IParadisRemoteTransferSource,
-	target: URI,
-	overwrite: boolean,
-): Promise<void> {
-	try {
-		await services.progressService.withProgress(
-			{
-				location: ProgressLocation.Window,
-				title: localize('paradisRemoteHosts.transferring', "{0} を転送しています…", source.name),
-			},
-			() => services.fileService.copy(source.uri, target, overwrite),
-		);
-	} catch (error) {
-		notifyTransferError(services, error, target);
-	}
-}
-
-function notifyTransferError(services: IParadisRemoteTransferServices, error: unknown, target: URI): void {
-	if (error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_MOVE_CONFLICT) {
-		services.notificationService.notify({
-			severity: Severity.Warning,
-			message: localize('paradisRemoteHosts.targetExists', "{0} は転送先に既に存在します", basename(target)),
-		});
-		return;
-	}
-	throw error;
-}
-
-/** web ウィンドウなどローカルホームが取れない環境のための最低限の代替 (スキームのみのURI)。 */
-function uriForLocalRoot(): URI {
-	return URI.from({ scheme: Schemas.file, path: '/' });
 }

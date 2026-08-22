@@ -62,15 +62,19 @@
 	--para-rh-color: transparent;
 }
 
+/* 行左端の色バー。Workspaces ビューと同じく .monaco-tl-row の先頭 flex アイテム (::before) として描く */
 .para-rh-list .monaco-tl-row::before {
 	content: '';
-	width: 3px;
-	height: 100%;
-	position: absolute;
-	left: 0;
-	top: 0;
+	flex: 0 0 3px;
+	align-self: stretch;
 	background-color: var(--para-rh-color, transparent);
-	z-index: 1;
+}
+
+/* Modern UI (.style-override) は行に角丸を強制するため、色バーが上下端でクリップされて分断される。
+ * このビューだけ左2隅の角丸をフラットに戻す (paradisWorkspaceSwitch.css と同じ対策)。 */
+.style-override .para-rh-list .monaco-list .monaco-list-row:not(.separator) {
+	border-top-left-radius: 0 !important;
+	border-bottom-left-radius: 0 !important;
 }
 
 .para-rh-icon.space {
