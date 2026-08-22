@@ -34,6 +34,7 @@ import {
 	IParadisPtyTitleEvent,
 	PARADIS_PTY_PROTOCOL_VERSION,
 } from '../common/paradisPtyProtocol.js';
+import { paradisDecodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
 import { IParadisPtyProcess, ParadisPtyHolder } from './paradisPtyHolder.js';
 
 /**
@@ -63,6 +64,9 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	/** いま誰かが見ているもの。接続が切れたときに離すために持つ（{@link releaseViewers}）。 */
 	private readonly attachedHandles = new Set<number>();
 
+	/** どのスペースのものか。預けられた時点でほぐしておく（{@link heldSpaces}）。 */
+	private readonly spaces = new Map<number, string>();
+
 	private readonly _onDidChangeData = this._register(new Emitter<IParadisPtyDataEvent>());
 	readonly onDidChangeData = this._onDidChangeData.event;
 
@@ -80,6 +84,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		// 実際に畳むのは `perHandle`（holder 本体もその中に居る）。ここは引ける表を空にするだけ。
 		this.holders.clear();
 		this.attachedHandles.clear();
+		this.spaces.clear();
 		super.dispose();
 	}
 
@@ -100,6 +105,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		store.add(holder.onDidChangeTitle(title => this._onDidChangeTitle.fire({ handle, title })));
 		this.holders.set(handle, holder);
 		this.perHandle.set(handle, store);
+		this.spaces.set(handle, paradisDecodeTerminalMetadata(request.metadata).workspaceName);
 		return holder.summary();
 	}
 
@@ -147,7 +153,11 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	}
 
 	async setMetadata(handle: number, metadata: string): Promise<void> {
+		if (!this.holders.has(handle)) {
+			return;
+		}
 		this.holders.get(handle)?.setMetadata(metadata);
+		this.spaces.set(handle, paradisDecodeTerminalMetadata(metadata).workspaceName);
 	}
 
 	async clearScrollback(handle: number): Promise<void> {
@@ -171,6 +181,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		}
 		this.holders.delete(handle);
 		this.attachedHandles.delete(handle);
+		this.spaces.delete(handle);
 		// holder 本体もこの中に居る。畳むのはここ1箇所。
 		this.perHandle.deleteAndDispose(handle);
 	}
@@ -186,5 +197,16 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	/** 何本抱えているか。常駐の寿命の判断に使う。 */
 	heldCount(): number {
 		return this.holders.size;
+	}
+
+	/**
+	 * 抱えているものが、どのスペースのものか。
+	 *
+	 * **預けられた時点でほぐしておく。** 寿命は1分ごとに見るので、そのたびに預かりものを
+	 * 全件 parse する必要が無い。常駐が中身を読むのはここ1点だけで、読めなくても本数は
+	 * 数えられる（寿命の判断は名前ではなく本数で決まる）。
+	 */
+	heldSpaces(): readonly { readonly workspaceName: string }[] {
+		return [...this.spaces.values()].map(workspaceName => ({ workspaceName }));
 	}
 }

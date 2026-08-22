@@ -30,8 +30,6 @@ export interface IParadisTerminalMetadata {
 	readonly shouldPersist: boolean;
 	/** 表示名。無ければ常駐が知っている題名へ倒す。 */
 	readonly name: string | undefined;
-	/** アイコンや色のような「見た目」。読めなければ捨てる。**繋げることを優先する。** */
-	readonly appearance: unknown;
 	/**
 	 * 器を作り直すための材料（起動時のシェル設定と環境）。
 	 *
@@ -46,7 +44,6 @@ const FALLBACK: IParadisTerminalMetadata = {
 	workspaceName: '',
 	shouldPersist: true,
 	name: undefined,
-	appearance: undefined,
 	launch: undefined,
 };
 
@@ -76,8 +73,8 @@ export function paradisDecodeTerminalMetadata(raw: string): IParadisTerminalMeta
 		workspaceName: typeof value.workspaceName === 'string' ? value.workspaceName : FALLBACK.workspaceName,
 		shouldPersist: typeof value.shouldPersist === 'boolean' ? value.shouldPersist : FALLBACK.shouldPersist,
 		name: typeof value.name === 'string' ? value.name : undefined,
-		// 中身は見ない。使う側が読めなければ捨てる。
-		appearance: value.appearance,
+		// 中身は見ない。使う側が読めなければ捨てる。見た目（アイコン・色）は
+		// `launch.shellLaunchConfig` の中に丸ごと入っているので、別に持たない。
 		launch: value.launch,
 	};
 }

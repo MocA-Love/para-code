@@ -20,7 +20,6 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
 import { PARADIS_PTY_HOST_CHANNEL } from '../common/paradisPtyProtocol.js';
-import { paradisDecodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
 import { paradisSpawnNodePty } from './paradisNodePtySpawner.js';
 import { ParadisPtyDaemonHost } from './paradisPtyDaemonHost.js';
 import { paradisRunPtyDaemonLifecycle } from './paradisPtyDaemonLifecycle.js';
@@ -90,11 +89,10 @@ export async function paradisRunPtyHostDaemon(options: IParadisPtyHostDaemonOpti
 	disposables.add(paradisRunPtyDaemonLifecycle({
 		env,
 		connections: served.server,
-		// スペース名は預かりものの中にある。**常駐が読むのはここだけ**で、読めなくても
-		// 数は数えられる（寿命の判断は名前ではなく本数で決まる）。
-		heldTerminals: async () => (await host.list()).map(summary => ({
-			workspaceName: paradisDecodeTerminalMetadata(summary.metadata).workspaceName,
-		})),
+		// スペース名は預かりものの中にある。**常駐が中身を読むのはここだけ。** 預けられた
+		// 時点でほぐしてあるので、寿命を見るたびに読み直さない（1分ごとに全件を parse する
+		// 必要が無い）。読めなくても本数は数えられ、寿命の判断は本数で決まる。
+		heldTerminals: async () => host.heldSpaces(),
 		logService,
 	}));
 
