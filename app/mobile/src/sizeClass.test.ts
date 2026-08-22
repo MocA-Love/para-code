@@ -1,31 +1,26 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { REGULAR_WIDTH_THRESHOLD, sizeClassFor } from './sizeClass.js';
+import { REGULAR_RELEASE_THRESHOLD, REGULAR_WIDTH_THRESHOLD, sizeClassForWithHysteresis } from './sizeClass.js';
 
-/**
- * レイアウト分岐の条件を実機なしで固定するテスト。
- * 「iPadの全画面はサイドバーが出る」「Split Viewで狭くなればiPhoneと同じ1カラムに戻る」
- * 「iPhoneでは横に広くてもサイドバーを出さない」の3点が本質。
- */
-describe('sizeClassFor', () => {
-	test('iPhoneはどの幅でもcompact（横向き解禁時の誤爆を防ぐ）', () => {
-		expect([320, 393, 430, 932].map(width => sizeClassFor(width, false))).toEqual(['compact', 'compact', 'compact', 'compact']);
+describe('sizeClassForWithHysteresis', () => {
+	test('compact中に閾値を超えたらregularへ昇格する（iPhoneでは常にcompact）', () => {
+		expect(sizeClassForWithHysteresis('compact', REGULAR_WIDTH_THRESHOLD, true)).toBe('regular');
+		expect(sizeClassForWithHysteresis(undefined, REGULAR_WIDTH_THRESHOLD, true)).toBe('regular');
+		expect(sizeClassForWithHysteresis('regular', 900, false)).toBe('compact');
 	});
 
-	test('iPadの全画面はportrait/landscapeともregular', () => {
-		// iPad mini 6 / iPad Pro 11 / iPad Pro 13 のportrait短辺とlandscape長辺
-		expect([744, 834, 1024, 1133, 1194, 1366].map(width => sizeClassFor(width, true))).toEqual(
-			['regular', 'regular', 'regular', 'regular', 'regular', 'regular'],
-		);
+	test('regular維持中は解除閾値未満まで落ちない（Split View分割線ドラッグでの往復跨ぎ対策）', () => {
+		// 700→680への往復は型交換を起こさない。
+		expect(sizeClassForWithHysteresis('regular', REGULAR_WIDTH_THRESHOLD - 20, true)).toBe('regular');
+		// 解除閾値(660)ちょうどはまだregular。
+		expect(sizeClassForWithHysteresis('regular', REGULAR_RELEASE_THRESHOLD, true)).toBe('regular');
+		// 660を切ったときだけcompactへ降格する。
+		expect(sizeClassForWithHysteresis('regular', REGULAR_RELEASE_THRESHOLD - 1, true)).toBe('compact');
 	});
 
-	test('iPadでもSplit View 1/2やSlide Overの幅ではcompactへ落ちる', () => {
-		// Slide Over(320) / 11インチSplit View 1/2(507) / しきい値直下
-		expect([320, 507, REGULAR_WIDTH_THRESHOLD - 1].map(width => sizeClassFor(width, true))).toEqual(['compact', 'compact', 'compact']);
-	});
-
-	test('しきい値ちょうどはregular', () => {
-		expect(sizeClassFor(REGULAR_WIDTH_THRESHOLD, true)).toBe('regular');
+	test('compactからは解除閾値以上でも昇格しない（閾値700が必要）', () => {
+		expect(sizeClassForWithHysteresis('compact', REGULAR_RELEASE_THRESHOLD, true)).toBe('compact');
+		expect(sizeClassForWithHysteresis('compact', 690, true)).toBe('compact');
 	});
 });

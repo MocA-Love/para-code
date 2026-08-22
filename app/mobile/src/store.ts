@@ -1219,6 +1219,11 @@ export interface StoreState {
 	browserFrame: BrowserFrame | undefined;
 	/** ターミナルID → エージェントチャット状態（agentチャネル）。 */
 	agentChats: Map<string, AgentChatState>;
+	/** アプリ起動処理（init）が走っている間。コールドスタート直後に誤った「未接続」を
+	    出さないための準備中表示（connectionGate で消費する）。 */
+	initializing: boolean;
+	/** 起動処理が失敗したときの理由。ゲートに「再試行」付きで出す。 */
+	initError: string | undefined;
 }
 
 /**
@@ -1238,6 +1243,8 @@ export function createEmptyStoreState(): StoreState {
 		terminalOutput: new Map(),
 		notifications: [],
 		pushRegistered: undefined,
+		initializing: false,
+		initError: undefined,
 		browserFrame: undefined,
 		agentChats: new Map(),
 	};
@@ -4336,6 +4343,8 @@ export class MobileController {
 			terminalOperationIssue: this.state.terminalOperationIssue,
 			unknownTerminalOperationCount: this.state.unknownTerminalOperationCount,
 			browserFrame: this.state.browserFrame,
+			initializing: this.state.initializing,
+			initError: this.state.initError,
 			terminalOutput: (!prev || changed?.term) ? new Map(this.state.terminalOutput) : prev.terminalOutput,
 			notifications: (!prev || changed?.notifications) ? [...this.state.notifications] : prev.notifications,
 			agentChats: (!prev || changed?.agentChats) ? new Map(this.state.agentChats) : prev.agentChats,

@@ -43,6 +43,8 @@ export default function TerminalScreen() {
 	// ターミナルの箱の高さ。キーボードを閉じているときの枠の高さを測って固定し、
 	// キーボードが出ている間はこの値を保つ（縮めるとPTYのリサイズを誘発するため）。
 	const [outputHeight, setOutputHeight] = useState(0);
+	// 枠の幅。回転・Split View 変更（＝PTYの再申告が必要な寸法変化）を検知するための控え。
+	const outputWidthRef = useRef(0);
 	const [input, setInput] = useState('');
 	const [submitting, setSubmitting] = useState(false);
 	const keyboardVisible = useKeyboardVisible();
@@ -246,11 +248,12 @@ export default function TerminalScreen() {
 			    枠だけを縮めて中身を下端で揃え、はみ出した上側を切って「上へずれた」ように
 			    見せる（下端のプロンプトは常に見えるので実用上これで足りる）。
 
-			    高さは「キーボードが閉じているとき」の枠の高さを採る。広がる向きの変化は
-			    常に採るのは、初回マウント時に既にキーボードが出ていた場合（他画面から戻る等）に
-			    0 のまま固定されるのを避けるため。回転や Split View の幅変更でも測り直されるが、
-			    それはキーボードを閉じている間に限る（出したまま回すと、閉じるまで旧い高さのまま
-			    上へはみ出す。閉じれば直る）。 */}
+ 			    高さは「キーボードが閉じているとき」の枠の高さを採る。広がる向きの変化は
+ 			    常に採るのは、初回マウント時に既にキーボードが出ていた場合（他画面から戻る等）に
+ 			    0 のまま固定されるのを避けるため。回転や Split View の幅変更でも測り直される。
+ 			    キーボードを出したまま回すと、旧い実装では閉じるまで旧い高さのまま上へはみ出した
+ 			    ——**幅の変化は回転・Split View 変更の確実な合図**なので（キーボード出し入れでは
+ 			    幅は変わらない）、幅が動いたときだけは表示中でも採り直して即座に追従させる。 */}
 			<View
 				// ヘッダーは浮いているので、その高さぶん上を空ける（ここを変えると箱の高さ＝
 				// PCへ申告するPTYの行数まで変わる点に注意）。
@@ -266,7 +269,10 @@ export default function TerminalScreen() {
 						return;
 					}
 					const next = event.nativeEvent.layout.height;
-					if (!keyboardVisible || next > outputHeight) {
+					const nextWidth = event.nativeEvent.layout.width;
+					const widthChanged = outputWidthRef.current !== 0 && Math.abs(outputWidthRef.current - nextWidth) > 0.5;
+					outputWidthRef.current = nextWidth;
+					if (!keyboardVisible || next > outputHeight || widthChanged) {
 						setOutputHeight(next);
 					}
 				}}

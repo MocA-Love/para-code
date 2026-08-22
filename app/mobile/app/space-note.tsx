@@ -279,11 +279,21 @@ export default function SpaceNoteScreen() {
 		void save(next, previous);
 	};
 
+	// 追加行の初回スクロール合わせ用。停止時に消すため ref で持つ。
+	const addScrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => { if (addScrollTimer.current !== undefined) { clearTimeout(addScrollTimer.current); } }, []);
 	const startAdding = () => {
 		hapticImpact('light');
 		addDraft.current = '';
 		setError(undefined);
 		setAdding(true);
+		// 追加行は autoFocus でキーボードを出すが、その間にレイアウトが伸びても自動では
+		// 見えない（キーボード裏のまま）。確定後の scrollToEnd と同じく、キーボード出現の
+		// アニメが落ち着いてから末尾へ寄せる。
+		if (addScrollTimer.current !== undefined) { clearTimeout(addScrollTimer.current); }
+		addScrollTimer.current = setTimeout(() => {
+			requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+		}, 320);
 	};
 
 	const stopAdding = useCallback(() => {
