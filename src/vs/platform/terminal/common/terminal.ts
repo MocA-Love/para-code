@@ -526,6 +526,7 @@ export interface IHeartbeatService {
 	readonly onBeat: Event<void>;
 }
 
+export const remoteResolverTerminal = Symbol('remoteResolverTerminal');
 
 export interface IShellLaunchConfig {
 	/**
@@ -665,6 +666,9 @@ export interface IShellLaunchConfig {
 	 * Whether this terminal was created by an extension.
 	 */
 	isExtensionOwnedTerminal?: boolean;
+
+	/** Whether this terminal is used to bootstrap a remote authority resolver. */
+	[remoteResolverTerminal]?: true;
 
 	/**
 	 * The icon for the terminal, used primarily in the terminal tab.

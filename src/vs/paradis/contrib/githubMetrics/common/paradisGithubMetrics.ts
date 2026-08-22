@@ -37,6 +37,12 @@ const MAX_DISTINCT_CALL_SITES = 200;
 const MAX_DISTINCT_SPACES = 500;
 /** callSite として記録する文字列の最大長。 */
 const MAX_CALL_SITE_LENGTH = 200;
+/** worktreePath の上限。IPC経由の入力と同一プロセスの呼び出しの両方をここで抑える(callSite と対称)。 */
+const MAX_WORKTREE_PATH_LENGTH = 200;
+/** 1つの callSite 集計が保持する worktree キーの上限。超過後の新規パスは内訳に現れない(全体件数には数える)。 */
+const MAX_DISTINCT_WORKTREES_PER_SITE = 200;
+/** 1つのスペース集計が保持する callSite キーの上限。worktreeCounts と同じ admission control。 */
+const MAX_DISTINCT_CALL_SITES_PER_SPACE = 200;
 
 /**
  * gh の stderr 由来のメッセージを表示・保持できる長さへ丸める。
@@ -125,7 +131,7 @@ export function paradisCoerceGithubCallEvent(value: unknown): IParadisGithubCall
 		success: raw.success === true,
 		rateLimited: raw.rateLimited === true,
 		errorMessage: typeof raw.errorMessage === 'string' ? raw.errorMessage : undefined,
-		worktreePath: typeof raw.worktreePath === 'string' && raw.worktreePath.length > 0 ? raw.worktreePath : undefined,
+		worktreePath: typeof raw.worktreePath === 'string' && raw.worktreePath.length > 0 ? raw.worktreePath.slice(0, MAX_WORKTREE_PATH_LENGTH) : undefined,
 	};
 }
 
@@ -402,7 +408,12 @@ function applyEvent(aggregate: IOperationAggregate, event: IParadisGithubCallEve
 	aggregate.maxDurationMs = Math.max(aggregate.maxDurationMs, event.durationMs);
 	aggregate.lastRunAt = aggregate.lastRunAt === undefined ? event.at : Math.max(aggregate.lastRunAt, event.at);
 	if (event.worktreePath) {
-		aggregate.worktreeCounts.set(event.worktreePath, (aggregate.worktreeCounts.get(event.worktreePath) ?? 0) + 1);
+		// 上限に達した後の新規パスは内訳に現れない（calls等の全体件数には引き続き数える）。
+		// 既存パスのカウントは影響を受けない(sessionAggregates の MAX_DISTINCT_CALL_SITES と同じ設計)。
+		const counts = aggregate.worktreeCounts;
+		if (counts.has(event.worktreePath) || counts.size < MAX_DISTINCT_WORKTREES_PER_SITE) {
+			counts.set(event.worktreePath, (counts.get(event.worktreePath) ?? 0) + 1);
+		}
 	}
 }
 
@@ -420,7 +431,11 @@ function applySpaceEvent(aggregate: ISpaceAggregate, event: IParadisGithubCallEv
 	aggregate.totalDurationMs += event.durationMs;
 	aggregate.maxDurationMs = Math.max(aggregate.maxDurationMs, event.durationMs);
 	aggregate.lastRunAt = aggregate.lastRunAt === undefined ? event.at : Math.max(aggregate.lastRunAt, event.at);
-	aggregate.callSiteCounts.set(event.callSite, (aggregate.callSiteCounts.get(event.callSite) ?? 0) + 1);
+	// 上限に達した後の新規 callSite は内訳に現れない（calls等の全体件数には引き続き数える）。
+	// 既存 callSite のカウントは影響を受けない(worktreeCounts の MAX_DISTINCT_WORKTREES_PER_SITE と同じ設計)。
+	if (aggregate.callSiteCounts.has(event.callSite) || aggregate.callSiteCounts.size < MAX_DISTINCT_CALL_SITES_PER_SPACE) {
+		aggregate.callSiteCounts.set(event.callSite, (aggregate.callSiteCounts.get(event.callSite) ?? 0) + 1);
+	}
 }
 
 /** 件数マップの最頻キー（内訳の「most from」の手がかり）。 */
@@ -459,9 +474,14 @@ export class ParadisGithubCallLog {
 	constructor(readonly sessionStartedAt: number) { }
 
 	record(rawEvent: IParadisGithubCallEvent): void {
-		// エラーメッセージはデバッグバンドルにも載るので、記録の時点で長さを抑える
-		const truncated = rawEvent.errorMessage !== undefined ? paradisTruncateGithubErrorMessage(rawEvent.errorMessage) : undefined;
-		const event: IParadisGithubCallEvent = truncated !== rawEvent.errorMessage ? { ...rawEvent, errorMessage: truncated } : rawEvent;
+		// エラーメッセージと worktreePath は lastErrors やデバッグバンドルにも載るため、記録の時点で
+		// 長さを抑える。IPC 経由の入力は coerce で丸め済みだが、同一プロセスからの呼び出しは
+		// 素通りするため、ここでも効かせておく。
+		const errorMessage = rawEvent.errorMessage !== undefined ? paradisTruncateGithubErrorMessage(rawEvent.errorMessage) : undefined;
+		const worktreePath = rawEvent.worktreePath !== undefined ? rawEvent.worktreePath.slice(0, MAX_WORKTREE_PATH_LENGTH) : undefined;
+		const event: IParadisGithubCallEvent = errorMessage === rawEvent.errorMessage && worktreePath === rawEvent.worktreePath
+			? rawEvent
+			: { ...rawEvent, errorMessage, worktreePath };
 
 		this.events.push(event);
 		if (this.events.length > MAX_CALL_EVENTS) {

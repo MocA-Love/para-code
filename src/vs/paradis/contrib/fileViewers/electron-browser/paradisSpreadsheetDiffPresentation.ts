@@ -28,6 +28,7 @@ function detailLabel(detail: IParadisDiffDetail): string {
 		case 'borderBottom': return localize('paradis.spreadsheet.diff.borderBottom', "Bottom Border");
 		case 'borderLeft': return localize('paradis.spreadsheet.diff.borderLeft', "Left Border");
 		case 'paddingLeft': return localize('paradis.spreadsheet.diff.paddingLeft', "Indent");
+		case 'paddingRight': return localize('paradis.spreadsheet.diff.paddingRight', "Indent");
 		case 'otherStyle': return localize('paradis.spreadsheet.diff.otherStyle', "Style ({0})", detail.property ?? '');
 		case 'mergedColumns': return localize('paradis.spreadsheet.diff.mergedColumns', "Merged Columns");
 		case 'mergedRows': return localize('paradis.spreadsheet.diff.mergedRows', "Merged Rows");
