@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -10,6 +10,7 @@ import { DiffView } from '../../src/components/diffView.js';
 import { GestureDetector } from 'react-native-gesture-handler';
 import { useWsHeader, useOpenDrawerPan, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useKeyboardCoverage } from '../../src/hooks/useKeyboardVisible.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { colors, radius, squircle } from '../../src/theme.js';
@@ -48,6 +49,10 @@ export default function ScmScreen() {
 	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
 
 	const tabBarSpacer = useTabBarSpacer();
+	// 下端がキーボードに食われる高さ。terminal.tsx と同じく `KeyboardAvoidingView` は使わない
+	// （OS標準バーの下では keyboardVerticalOffset がずれる。固定90ptの頃はコミット欄が
+	// キーボードに潜った）。「下端から何pt隠れるか」を直接測って下余白にする。
+	const keyboardCover = useKeyboardCoverage();
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	// 相対時刻表示（最近のコミットの「〇分前」）を画面を開いたままでも追従させる
@@ -263,7 +268,7 @@ export default function ScmScreen() {
 	return (
 		<ConnectionGate>
 		<GestureDetector gesture={openDrawerPan}>
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+		<View style={[styles.screen, { paddingBottom: keyboardCover }]}>
 			<ScrollView
 				style={styles.list}
 				contentContainerStyle={[{ paddingTop: headerHeight }, column]}
@@ -384,7 +389,7 @@ export default function ScmScreen() {
 			{diffTarget !== undefined && wsId ? (
 				<DiffView ws={wsId} path={diffTarget.path} staged={diffTarget.staged} statusLetter={diffTarget.letter} onClose={() => setDiffTarget(undefined)} />
 			) : null}
-		</KeyboardAvoidingView>
+		</View>
 		</GestureDetector>
 		</ConnectionGate>
 	);
@@ -403,7 +408,7 @@ const styles = StyleSheet.create({
 	commitInput: { backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top' },
 	commitBtn: { backgroundColor: colors.accent2, borderRadius: radius.control, ...squircle, paddingVertical: 12, alignItems: 'center' },
 	commitBtnDisabled: { opacity: 0.45 },
-	commitBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+	commitBtnText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
 	commitResult: { color: colors.green, fontSize: 11, marginTop: 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	error: { color: colors.red, fontSize: 12, marginTop: 8 },
 	// 見出しの上下の余白はここ1箇所に持たせる（画面ごとに数字を発明しない）。

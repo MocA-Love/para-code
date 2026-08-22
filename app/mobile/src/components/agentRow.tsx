@@ -138,7 +138,9 @@ const styles = StyleSheet.create({
 	orbWaiting: { backgroundColor: colors.red },
 	orbRunning: { backgroundColor: colors.green },
 	orbReview: { backgroundColor: colors.yellow },
-	orbIdle: { backgroundColor: '#55555c' },
+	// idleは最も沈んだ状態。ただし非テキスト3:1規範には届かないと「描画漏れ」と
+	// 区別がつかないため、textDimより暗めのグレーに上げる(#6e7681 = 4.04:1)。
+	orbIdle: { backgroundColor: '#6e7681' },
 	agentBody: { flex: 1, minWidth: 0 },
 	agentTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
 	agentSub: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },

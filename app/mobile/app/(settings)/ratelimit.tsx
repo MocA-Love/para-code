@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -9,7 +9,7 @@ import { HostSegment } from '../../src/components/hostSegment.js';
 import { ProviderLogo } from '../../src/components/providerLogo.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
 import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
-import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { useNow } from '../../src/time.js';
@@ -71,7 +71,9 @@ function accountName(account: RateLimitAccount): string {
 }
 
 export default function RateLimitScreen() {
-	const tabBarSpacer = useTabBarSpacer();
+	// この画面は設定モーダル内に提示されタブバーが存在しないため、モーダル内他画面と
+	// 同じ下余白を直接使う（NativeTabs 前提の tabBarSpacer は約40ptの死に余白になる）。
+	const insets = useStableInsets();
 	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
@@ -193,24 +195,30 @@ export default function RateLimitScreen() {
 		</>
 	);
 
+	// **actions は参照を安定させる。** インライン JSX のままだと毎レンダー新しい要素になり、
+	// ScreenHeader 内の headerRight→options が毎回切れてバーの全項目付け替えが走る。
+	// screenHeader.tsx は自ら「参照を安定させる」と明言しており、呼び出し側がそれを崩していた形
+	// （deps は useCallback 済みの onPullRefresh とプリミティブだけ）。
+	const headerActions = useMemo(() => (
+		<HeaderCircleButton
+			icon="refresh-outline"
+			label="再取得"
+			onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+			disabled={pullRefreshing || loading}
+		/>
+	), [onPullRefresh, pullRefreshing, loading]);
+
 	return (
 		<ConnectionGate>
 			<View style={styles.screen}>
 				<ScreenHeader
 					title="Rate Limit"
-					actions={
-						<HeaderCircleButton
-							icon="refresh-outline"
-							label="再取得"
-							onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
-							disabled={pullRefreshing || loading}
-						/>
-					}
+					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					<HostSegment hosts={hosts} selectedId={effectiveHostId} onSelect={selectHost} />

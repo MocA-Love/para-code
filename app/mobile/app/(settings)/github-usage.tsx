@@ -1,13 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
-import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
@@ -97,12 +97,14 @@ function formatCountdown(resetAt: number, now: number): string {
 }
 
 export default function GithubUsageScreen() {
-	const tabBarSpacer = useTabBarSpacer();
+	// この画面は設定モーダル内に提示されタブバーが存在しない。NativeTabs 前提の
+	// tabBarSpacer を使うと約40ptの死に余白になるため、モーダル内他画面と同じ値を直接使う。
+	const insets = useStableInsets();
 	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
-	const { githubUsage, connection } = useAppStore(useShallow(s => ({ githubUsage: s.githubUsage, connection: s.connection })));
+	const { githubUsage, connection, activePcId } = useAppStore(useShallow(s => ({ githubUsage: s.githubUsage, connection: s.connection, activePcId: s.activePcId })));
 
 	const [data, setData] = useState<GithubUsageResult | undefined>();
 	const [loading, setLoading] = useState(false);
@@ -111,21 +113,38 @@ export default function GithubUsageScreen() {
 	const [windowKey, setWindowKey] = useState<WindowKey>('5m');
 	const [groupKey, setGroupKey] = useState<GroupKey>('caller');
 
+	// 自動再取得（PC切替）と手動更新が前後したときに古い応答で新しい結果を上書きしないよう、
+	// 最後に投げた要求だけを採用する（待機中の他PCも接続を保つため、切替後でも旧PC向けの
+	// RPCが正常に応答しうる。system.tsx と同じ流儀）。
+	const requestSeq = useRef(0);
 	const refresh = useCallback(async (bypassCache = false) => {
 		if (connection !== 'online') { return; }
+		const seq = ++requestSeq.current;
 		setLoading(true);
 		setError(undefined);
 		try {
 			const result = await githubUsage(bypassCache);
+			if (seq !== requestSeq.current) { return; }
 			setData(result);
 		} catch (e) {
+			if (seq !== requestSeq.current) { return; }
 			setError(String(e instanceof Error ? e.message : e));
 		} finally {
-			setLoading(false);
+			if (seq === requestSeq.current) {
+				setLoading(false);
+			}
 		}
-	}, [githubUsage, connection]);
+	}, [githubUsage, connection, activePcId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
+
+	// PC切替時に前PCの数字を破棄する（ccusage/rtk/ratelimit と同じ扱い）。
+	// 切替では connection が online のままなので refresh の再発火が起きず、
+	// 破棄しないと前PCの値を今のPCの顔で見せてしまう。
+	useEffect(() => {
+		setData(undefined);
+		setError(undefined);
+	}, [activePcId]);
 
 	const onPullRefresh = useCallback(async () => {
 		setPullRefreshing(true);
@@ -146,6 +165,19 @@ export default function GithubUsageScreen() {
 	// 画面を開いたままでもリセットまでのカウントダウンが進むよう、取得時刻ではなく現在時刻を使う
 	const now = useNow();
 
+	// **actions は参照を安定させる。** インライン JSX のままだと毎レンダー新しい要素になり、
+	// ScreenHeader 内の headerRight→options が毎回切れてバーの全項目付け替えが走る。
+	// screenHeader.tsx は自ら「参照を安定させる」と明言しており、呼び出し側がそれを崩していた形
+	// （deps は useCallback 済みの onPullRefresh とプリミティブだけ）。
+	const headerActions = useMemo(() => (
+		<HeaderCircleButton
+			icon="refresh-outline"
+			label="再取得"
+			onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+			disabled={pullRefreshing || loading}
+		/>
+	), [onPullRefresh, pullRefreshing, loading]);
+
 	return (
 		<ConnectionGate>
 			<View style={styles.screen}>
@@ -155,19 +187,12 @@ export default function GithubUsageScreen() {
 					// 「どのウィンドウ（ローカル/SSHリモート）から見ても同じ値」になる。接続先セグメントは
 					// 出さず、その旨をここで明示する。
 					subtitle="PC全体の値です"
-					actions={
-						<HeaderCircleButton
-							icon="refresh-outline"
-							label="再取得"
-							onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
-							disabled={pullRefreshing || loading}
-						/>
-					}
+					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}

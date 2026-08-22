@@ -2,10 +2,32 @@
 
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { usePathname } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { colors } from '../theme.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+
+/**
+ * OS標準バーが**本文をその下から始める**（不透明バー、`translucent` でない
+ * `headerShown: true`）画面のパス集合。こういう画面ではシーン原点が既にバー下端なので、
+ * バナー位置は「バー直下 + 8」基準になる——`insets.top + 52` のままだと insets.top 分が
+ * 二重加算になり、一覧1行目へ覆いかぶさる。
+ *
+ * translucent（agent）や自前ヘッダー（agent-activity 系・archive 等）はシーン原点が
+ * 画面上端のため従来位置が正しい。**新規に不透明バーのスタック画面を足したらここにも加える**
+ * （root `_layout.tsx` の `Stack.Screen` 設定と隣接して管理するのが理想だが、バナー自身が
+ * 判定を持つ方が「位置の正しさ」と同じ場所で完結する）。
+ */
+const OPAQUE_BAR_PATHS = new Set([
+	// タブ4画面（(tabs) 配下。OSバーは wsDrawer が getParent().setOptions で出す）
+	'/', '/index', '/terminal', '/scm', '/files',
+	// ブラウザ
+	'/browser',
+	// 設定モーダル配下（(settings)/_layout.tsx で headerShown: true）
+	'/settings', '/changelog', '/system', '/github-usage', '/ratelimit', '/rtk', '/ccusage',
+	'/pc-detail', '/presets', '/terminal-settings', '/morph-lab', '/morph-native', '/morph-native-detail',
+]);
 
 /**
  * 「結果が分からない操作の記録がある」ことを伝えるバナー。
@@ -21,6 +43,9 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
  */
 export function ConnectionStatusBanner() {
 	const insets = useStableInsets();
+	const pathname = usePathname();
+	// 不透明バーの画面ではシーン原点が既にバー下端なので、バナーはバー直下に置く。
+	const belowOpaqueBar = OPAQUE_BAR_PATHS.has(pathname);
 	// workspace 本体ではなく、表示に使う値だけを購読する（常時マウントされるため、
 	// 本体を購読するとこのバナーが再構築される）。
 	const { issue, unknownCount, discardUnknown } = useAppStore(useShallow(s => ({
@@ -34,7 +59,7 @@ export function ConnectionStatusBanner() {
 	}
 
 	return (
-		<View style={[styles.stack, { top: insets.top + 52 }]} pointerEvents="box-none">
+		<View style={[styles.stack, { top: belowOpaqueBar ? 8 : insets.top + 52 }]} pointerEvents="box-none">
 			<View style={styles.unknown} accessibilityLiveRegion="polite">
 				<Ionicons name="warning-outline" size={15} color={colors.orange} />
 				<Text style={styles.text}>{issue}</Text>

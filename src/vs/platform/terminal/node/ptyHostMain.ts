@@ -27,6 +27,10 @@ import { Server as SocketServer } from '../../../base/parts/ipc/node/ipc.net.js'
 import { paradisPtyDaemonPathsMatch, paradisReadPtyDaemonEnv } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyDaemonEnv.js';
 import { paradisServePtyDaemon } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyDaemonServer.js';
 import { paradisRunPtyDaemonLifecycle } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyDaemonLifecycle.js';
+import { FileAccess } from '../../../base/common/network.js';
+import { paradisBootstrapPtyHost } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyHostBootstrap.js';
+import { paradisAwaitAdoption, paradisAwaitPtyDaemon, paradisPtyDaemonConnection } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { paradisAdoptIntoPtyService } from '../../../paradis/contrib/ptyDaemon/node/paradisAdoptIntoPtyService.js';
 
 startPtyHost();
 
@@ -120,8 +124,22 @@ async function startPtyHost() {
 	const heartbeatService = new HeartbeatService();
 	server.registerChannel(TerminalIpcChannels.Heartbeat, ProxyChannel.fromService(heartbeatService, disposables));
 
+	// PARA-PATCH: terminals may belong to a daemon that outlives this process. Start reaching for it
+	// now but do not wait here: channels are not registered yet, and requests for an unregistered
+	// channel fail after a second, while starting a daemon can take ten. Making a terminal waits for
+	// this instead. See vs/paradis/contrib/ptyDaemon.
+	const paradisJoiningDaemon = paradisBootstrapPtyHost({
+		env: process.env,
+		execPath: process.execPath,
+		bootstrapPath: FileAccess.asFileUri('bootstrap-fork').fsPath,
+		logService,
+	});
+	paradisAwaitPtyDaemon(paradisJoiningDaemon);
+
 	// Init pty service
 	const ptyService = new PtyService(logService, productService, reconnectConstants, simulatedLatency);
+
+
 	const ptyServiceChannel = ProxyChannel.fromService(ptyService, disposables);
 	server.registerChannel(TerminalIpcChannels.PtyHost, ptyServiceChannel);
 
@@ -132,13 +150,26 @@ async function startPtyHost() {
 		server.registerChannel(TerminalIpcChannels.PtyHostWindow, ptyServiceChannel);
 	}
 
+	// PARA-PATCH: take back terminals the daemon kept running while no app was here. This runs after
+	// the channels are registered, so a window that connects meanwhile is answered rather than timed
+	// out; the terminals it does not see yet show up once this finishes.
+	paradisAwaitAdoption(paradisJoiningDaemon.then(async joined => {
+		const paradisConnection = joined ? paradisPtyDaemonConnection() : undefined;
+		if (paradisConnection) {
+			await paradisAdoptIntoPtyService(ptyService, paradisConnection.host, logService);
+		}
+	}, error => logService.error('[ParadisPtyHost] could not join the daemon', error)));
+
 	// PARA-PATCH: nothing outlives the app to clean up after the in-app pty host, but the daemon has
 	// to decide its own end: write itself into the ledger, and step down once no one needs it.
 	if (paradisDaemon && paradisDaemonServer) {
 		disposables.add(paradisRunPtyDaemonLifecycle({
 			env: paradisDaemon,
 			connections: paradisDaemonServer,
-			ptyService,
+			// Count what is attached too; the upstream listing only returns orphans. The lightweight
+			// workspace-name-only query skips the per-terminal getCwd/orphan-barrier work the full
+			// listing does, which these pollers (status display, idle check) don't need.
+			heldTerminals: () => ptyService.paradisListHeldWorkspaceNames(),
 			logService,
 		}));
 	}

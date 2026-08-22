@@ -19,13 +19,15 @@ import type { ISerializeOptions, SerializeAddon as XtermSerializeAddon } from '@
 import type { Unicode11Addon as XtermUnicode11Addon } from '@xterm/addon-unicode11';
 import { IGetTerminalLayoutInfoArgs, IProcessDetails, ISetTerminalLayoutInfoArgs, ITerminalTabLayoutInfoDto } from '../common/terminalProcess.js';
 import { sanitizeEnvForLogging } from './terminalEnvironment.js';
-import { TerminalProcess } from './terminalProcess.js';
 import { localize } from '../../../nls.js';
 import { ignoreProcessNames } from './childProcessMonitor.js';
 import { ErrorNoTelemetry } from '../../../base/common/errors.js';
 import { ShellIntegrationAddon } from '../common/xterm/shellIntegrationAddon.js';
 import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
+import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
+import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -344,19 +346,24 @@ export class PtyService extends Disposable implements IPtyService {
 		workspaceId: string,
 		workspaceName: string,
 		isReviving?: boolean,
-		rawReviveBuffer?: string
+		rawReviveBuffer?: string,
+		// PARA-PATCH: adopt a terminal the daemon is already holding instead of starting one.
+		// See paradisTerminalProcessFactory.ts.
+		paradisAdoptTarget?: IParadisAdoptTarget
 	): Promise<number> {
 		if (shellLaunchConfig.attachPersistentProcess) {
 			throw new Error('Attempt to create a process when attach object was provided');
 		}
 		const id = ++this._lastPtyId;
-		const process = new TerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService);
+		// PARA-PATCH: the pty may belong to a daemon that outlives this process, so the decision of
+		// where it runs is made in one place. See paradisTerminalProcessFactory.ts.
+		const process = await paradisCreateTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService, { id, workspaceId, workspaceName, shouldPersist }, paradisAdoptTarget);
 		const processLaunchOptions: IPersistentTerminalProcessLaunchConfig = {
 			env,
 			executableEnv,
 			options
 		};
-		const persistentProcess = new PersistentTerminalProcess(id, process, workspaceId, workspaceName, shouldPersist, cols, rows, processLaunchOptions, unicodeVersion, this._reconnectConstants, this._logService, isReviving && isString(shellLaunchConfig.initialText) ? shellLaunchConfig.initialText : undefined, rawReviveBuffer, shellLaunchConfig.icon, shellLaunchConfig.color, shellLaunchConfig.name, shellLaunchConfig.fixedDimensions);
+		const persistentProcess = new PersistentTerminalProcess(id, process, workspaceId, workspaceName, shouldPersist, cols, rows, processLaunchOptions, unicodeVersion, this._reconnectConstants, this._logService, isReviving && isString(shellLaunchConfig.initialText) ? shellLaunchConfig.initialText : undefined, rawReviveBuffer, shellLaunchConfig.icon, shellLaunchConfig.color, shellLaunchConfig.name, shellLaunchConfig.fixedDimensions, paradisAdoptTarget !== undefined);
 		process.onProcessExit(event => {
 			this._revivedPtyOldIdByNewId.delete(this._getRevivingProcessId(workspaceId, id));
 			for (const contrib of this._contributions) {
@@ -440,6 +447,25 @@ export class PtyService extends Disposable implements IPtyService {
 	async paradisListHeldTerminals(): Promise<IProcessDetails[]> {
 		const held = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
 		return Promise.all(held.map(([id, data]) => this._buildProcessDetails(id, data)));
+	}
+
+	/**
+	 * PARA-PATCH: lightweight counterpart of {@link paradisListHeldTerminals} for pollers that
+	 * only need how many terminals are held and their workspace names. `_buildProcessDetails`
+	 * shells out per terminal (`getCwd` runs lsof on macOS) and waits on the orphan barrier,
+	 * which is pure waste when nothing but the name is going to be read.
+	 *
+	 * Deliberately not `@traceRpc`: this is an in-process query from the pty daemon's pollers,
+	 * so neither the trace log nor simulated latency injection should apply.
+	 */
+	async paradisListHeldWorkspaceNames(): Promise<{ workspaceName: string }[]> {
+		const names: { workspaceName: string }[] = [];
+		for (const [, data] of this._ptys.entries()) {
+			if (data.shouldPersistTerminal) {
+				names.push({ workspaceName: data.workspaceName });
+			}
+		}
+		return names;
 	}
 
 	async listProcesses(): Promise<IProcessDetails[]> {
@@ -641,11 +667,17 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void> {
 		this._workspaceLayoutInfos.set(args.workspaceId, args);
+		// PARA-PATCH: this only lives as long as the process, so terminals kept by a daemon would
+		// come back with nowhere to appear. See paradisTerminalLayout.ts.
+		paradisRememberLayout(args);
 	}
 
 	@traceRpc
 	async getTerminalLayoutInfo(args: IGetTerminalLayoutInfoArgs): Promise<ITerminalsLayoutInfo | undefined> {
 		performance.mark('code/willGetTerminalLayoutInfo');
+		// PARA-PATCH: a window asked before terminals kept by a daemon were taken back would see
+		// none of them, and nothing tells it later. See paradisTerminalProcessFactory.ts.
+		await paradisAdoptionSettled();
 		const layout = this._workspaceLayoutInfos.get(args.workspaceId);
 		if (layout) {
 			const doneSet: Set<number> = new Set();
@@ -846,7 +878,9 @@ class PersistentTerminalProcess extends Disposable {
 
 	constructor(
 		private _persistentProcessId: number,
-		private readonly _terminalProcess: TerminalProcess,
+		// PARA-PATCH: terminals may live in a daemon that outlives this process, so what is held here
+		// is not always the local one. See paradisTerminalProcessLike.ts.
+		private readonly _terminalProcess: IParadisTerminalProcessLike,
 		readonly workspaceId: string,
 		readonly workspaceName: string,
 		readonly shouldPersistTerminal: boolean,
@@ -861,10 +895,16 @@ class PersistentTerminalProcess extends Disposable {
 		private _icon?: TerminalIcon,
 		private _color?: string,
 		name?: string,
-		fixedDimensions?: IFixedTerminalDimensions
+		fixedDimensions?: IFixedTerminalDimensions,
+		// PARA-PATCH: a terminal taken back from a daemon has not been typed into, and reloading a
+		// window ends terminals nobody has touched. Being handed one counts as having touched it.
+		paradisAdopted?: boolean
 	) {
 		super();
 		this._interactionState = new MutationLogger(`Persistent process "${this._persistentProcessId}" interaction state`, InteractionState.None, this._logService);
+		if (paradisAdopted) {
+			this._interactionState.setValue(InteractionState.ReplayOnly, 'paradisAdopted');
+		}
 		this._wasRevived = reviveBuffer !== undefined;
 		this._serializer = new XtermSerializer(
 			cols,

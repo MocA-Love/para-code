@@ -7,13 +7,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type PcSummary } from '../appState.js';
 import { BatteryGauge } from './batteryGauge.js';
-import { BottomSheet } from './bottomSheet.js';
+import { BottomSheet, useSheetCloseThen } from './bottomSheet.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { colors, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
+import { useNow } from '../time.js';
 
 /**
  * ペアリング済みPCの切り替え。
@@ -75,9 +76,9 @@ export function PcAvatar({ name, hue, size = 40 }: { name: string; hue: number; 
 	);
 }
 
-function PcRow({ pc, active, onPress }: { pc: PcSummary; active: boolean; onPress: () => void }) {
+function PcRow({ pc, active, now, onPress }: { pc: PcSummary; active: boolean; /** 「〇分前まで接続」をシート表示中も経時で進めるための現在時刻。 */ now: number; onPress: () => void }) {
 	const state = pcStateLabel(pc, active);
-	const lastSeen = state.tone === 'dim' && pc.connection !== 'online' ? lastSeenLabel(pc.lastOnlineAt, Date.now()) : undefined;
+	const lastSeen = state.tone === 'dim' && pc.connection !== 'online' ? lastSeenLabel(pc.lastOnlineAt, now) : undefined;
 	return (
 		<Pressable
 			style={[styles.row, active && styles.rowActive]}
@@ -115,11 +116,14 @@ function PcRow({ pc, active, onPress }: { pc: PcSummary; active: boolean; onPres
 	);
 }
 
-function PcList({ onClose }: { onClose: () => void }) {
+function PcList({ onClose, closeThen }: { onClose: () => void; /** 遷移を伴う閉じ方（シート経路は暗幕が残るため遅延する。ポップオーバー経路は即時）。 */ closeThen: (go: () => void) => void }) {
 	const router = useRouter();
 	const { pcs, activePcId, switchPc } = useAppStore(useShallow(s => ({
 		pcs: s.pcs, activePcId: s.activePcId, switchPc: s.switchPc,
 	})));
+	// 「〇分前まで接続」をシート表示中も経時で進める（Date.now() を描画時のみ評価していたため、
+	// 開いたままのシートでは表示が凍結していた）。
+	const now = useNow();
 
 	const select = (id: string) => {
 		if (id === activePcId) {
@@ -134,12 +138,12 @@ function PcList({ onClose }: { onClose: () => void }) {
 	return (
 		<>
 			{pcs.map(pc => (
-				<PcRow key={pc.id} pc={pc} active={pc.id === activePcId} onPress={() => select(pc.id)} />
+				<PcRow key={pc.id} pc={pc} active={pc.id === activePcId} now={now} onPress={() => select(pc.id)} />
 			))}
 			<View style={styles.divider} />
 			<Pressable
 				style={styles.row}
-				onPress={() => { hapticSelection(); onClose(); router.push('/pair'); }}
+				onPress={() => { hapticSelection(); closeThen(() => router.push('/pair')); }}
 				accessibilityLabel="新しいPCとペアリング"
 			>
 				<View style={[styles.avatar, styles.addAvatar]}>
@@ -151,7 +155,7 @@ function PcList({ onClose }: { onClose: () => void }) {
 			</Pressable>
 			<Pressable
 				style={styles.row}
-				onPress={() => { hapticSelection(); onClose(); router.push('/settings'); }}
+				onPress={() => { hapticSelection(); closeThen(() => router.push('/settings')); }}
 				accessibilityLabel="PCの管理"
 			>
 				<View style={[styles.avatar, styles.addAvatar]}>
@@ -176,6 +180,18 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 }) {
 	const regular = useIsRegularWidth();
 	const insets = useStableInsets();
+	const inSheet = !(regular && anchor !== undefined);
+	// シート（iPhone）は暗幕が閉じアニメのあいだ残るため、遷移は閉じ切ってから。
+	// ポップオーバー（iPad）は OverlayPortal の暗幕が即アンマウントされるため遅延しない。
+	const sheetCloseThen = useSheetCloseThen(onClose);
+	const closeThen = (go: () => void) => {
+		if (inSheet) {
+			sheetCloseThen(go);
+		} else {
+			onClose();
+			go();
+		}
+	};
 
 	// Android物理戻るボタンで閉じる
 	useEffect(() => {
@@ -193,11 +209,11 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 	// 狭い幅は共通の {@link BottomSheet} に載せる（器・出方・グラバーのドラッグを1箇所に集約する）。
 	// `visible` はそのまま渡す——ここで早期returnすると閉じるアニメーションが再生されないまま
 	// 木から外れてしまう。
-	if (!(regular && anchor !== undefined)) {
+	if (inSheet) {
 		return (
 			<BottomSheet visible={visible} onClose={onClose} title="ペアリング済みのPC" glass>
 				<ScrollView style={styles.sheetScroll} contentContainerStyle={{ paddingBottom: insets.bottom + 16 }} bounces={false}>
-					<PcList onClose={onClose} />
+					<PcList onClose={onClose} closeThen={closeThen} />
 				</ScrollView>
 			</BottomSheet>
 		);
@@ -218,7 +234,7 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 					<GlassSurface style={styles.popover}>
 						<Text style={styles.head}>ペアリング済みのPC</Text>
 						<ScrollView style={styles.popoverScroll} bounces={false}>
-							<PcList onClose={onClose} />
+							<PcList onClose={onClose} closeThen={closeThen} />
 						</ScrollView>
 					</GlassSurface>
 				</PopIn>
@@ -293,6 +309,7 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 				<Pressable
 					style={styles.settingsBtnHit}
 					onPress={() => { hapticSelection(); onOpenSettings(); }}
+					accessibilityRole="button"
 					accessibilityLabel="設定"
 				>
 					<Ionicons name="settings-outline" size={17} color={colors.textDim} />

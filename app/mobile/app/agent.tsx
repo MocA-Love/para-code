@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -57,8 +57,18 @@ import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
-		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
+	const { terminals, workspaces, activeWs, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
+		// **workspace 本体ではなく部分を購読する。** state 全体の参照は revision が進む限り毎回
+		// 新しくなる（`workspaceIdentity.ts`）ので、本体を選ぶと裏に回った（非フォーカスの）この画面が
+		// PC再送（最大10Hz）のたびに再レンダーし続け、ヘッダー options の再生成＝バーの全項目
+		// 付け替えの発火母数を増やしていた。`terminals` / `workspaces` は構造共有の中身が同じ間は
+		// 同じ参照が据え置かれ、`activeWs` はプリミティブ。useShallow の浅比較が通るのは
+		// 本当に表示に関わる部分が変わったときだけになる（`useRelayHostSelection.ts` と同型）。
+		// `agentChats` はここでは購読しない。理由は下の `chat` 個別購読のコメント参照。
+		terminals: s.workspace?.terminals,
+		workspaces: s.workspace?.workspaces,
+		activeWs: s.workspace?.activeWs,
+		selectedWs: s.selectedWs,
 		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, requestAgentCommandCatalog: s.requestAgentCommandCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
@@ -70,8 +80,12 @@ export default function AgentDetailScreen() {
 	const offline = useOfflineNotice();
 	const gated = useConnectionGateBlocked();
 	const keyboardVisible = useKeyboardVisible();
+	// 入力バー（画面下端に置かれる）の画面座標上端。フローティングキーボードが
+	// 食い込んでいる判定に使う（下端へ接地していなくても覆われたら持ち上げる）。
+	const inputBarRef = useRef<View>(null);
+	const [inputBarTop, setInputBarTop] = useState<number | undefined>(undefined);
 	// 下端がキーボードに食われる高さ。`KeyboardAvoidingView` の代わりに自分で下余白へ入れる。
-	const keyboardCover = useKeyboardCoverage();
+	const keyboardCover = useKeyboardCoverage(inputBarTop);
 	// iPadの広い幅では会話の列幅を制限して中央へ寄せる。1行が長すぎると次の行頭へ
 	// 目線を戻す距離が伸びて読みづらいため（ヘッダーとブラーは全幅のまま）。
 	const regular = useIsRegularWidth();
@@ -84,16 +98,20 @@ export default function AgentDetailScreen() {
 
 	// 表示対象: selectedTerminalKey（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
-	const allTerminals = workspace?.terminals ?? [];
-	const wsList = workspace?.workspaces ?? [];
+	const allTerminals = terminals ?? [];
+	const wsList = workspaces ?? [];
 	const effectiveWsId = (selectedWs !== undefined && wsList.some(w => w.id === selectedWs) ? selectedWs : wsList[0]?.id);
 	const activeTerminal = resolveExplicitTerminalSelection(
 		allTerminals,
 		selectedTerminalKey,
-		terminal => (terminal.ws ?? workspace?.activeWs) === effectiveWsId,
+		terminal => (terminal.ws ?? activeWs) === effectiveWsId,
 	);
 	const activeKey = activeTerminal?.terminalKey;
-	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
+	// agentChats は **Map本体を購読しない**。emit は更新のたびに新しい Map を作るため、
+	// 本体を買うと「他のエージェントが出力している間ずっと（≈8Hzで）」この画面が
+	// 再描画される。必要なのは表示中ターミナル1件だけなので、個別に購読する
+	// （useAgentActions.ts の useAgentChatSubscription と同じ回避パターン）。
+	const chat = useAppStore(s => (activeKey !== undefined ? s.agentChats.get(activeKey) : undefined));
 	const chatReady = chat !== undefined && !chat.none;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
@@ -165,7 +183,7 @@ export default function AgentDetailScreen() {
 
 	// ヘッダー表示用: このターミナルの所属ワークスペース
 	const agentWs = activeTerminal !== undefined
-		? wsList.find(w => w.id === (activeTerminal.ws ?? workspace?.activeWs))
+		? wsList.find(w => w.id === (activeTerminal.ws ?? activeWs))
 		: undefined;
 
 	// コンポーザーのPRピル用。workspace state はpushごとに丸ごと差し替わり pr も毎回新規
@@ -197,10 +215,16 @@ export default function AgentDetailScreen() {
 			.catch(() => undefined);
 		return () => { cancelled = true; };
 	}, [agentToken, connection, pcOnline, sessionProtocolReady, browserTargets]);
-	const openBrowser = () => {
+	// **参照を安定させる。** 素の関数のままだと毎レンダー新しい関数になり、下の headerActions の
+	// useMemo が常に切れて NativeScreenHeader の options 再生成（＝バーの全項目付け替え）が
+	// 遷移のたびに走る。iOS 26 の標準バーは push/pop の開始時点で新旧バー項目の対応付けを
+	// 確定させるため、遷移と同刻の全付け替えはモーフ不発・ボタン消失の原因になる
+	// （経緯は `nativeHeaderItems.tsx` と `screenHeader.tsx` の説明を読むこと）。
+	// deps はプリミティブと安定参照だけ: router は useRouter() の返却値で安定、agentToken は文字列。
+	const openBrowser = useCallback(() => {
 		hapticSelection();
 		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');
-	};
+	}, [router, agentToken]);
 
 	// ヘッダーのタイトルから開く情報シート（名前の変更・スペースのメモ・ピン/アーカイブ/削除）。
 	// それまで名前はホーム長押し、メモはドロワーからしか触れず、会話を読みながらでは手が届かなかった。
@@ -511,7 +535,7 @@ export default function AgentDetailScreen() {
 				{!sticky && chat !== undefined && !chat.none ? (
 					<View style={[styles.jumpWrap, regular && styles.overlayCenter]} pointerEvents="box-none">
 						<View style={regular ? styles.overlayColumnRight : undefined}>
-							<Pressable onPress={jumpToLatest} accessibilityLabel="最新のメッセージへ移動">
+							<Pressable onPress={jumpToLatest} accessibilityRole="button" accessibilityLabel="最新のメッセージへ移動">
 								<GlassSurface style={styles.jumpBtn} interactive>
 									<Ionicons name="chevron-down" size={16} color={colors.text} />
 									{newCount > 0 ? <Text style={styles.jumpText}>{newCount > 99 ? '99+' : String(newCount)}</Text> : null}
@@ -588,7 +612,16 @@ export default function AgentDetailScreen() {
 				/>
 			) : null}
 
-			<View style={[styles.inputBar, regular && styles.readingColumn, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
+			<View
+				ref={inputBarRef}
+				onLayout={() => {
+					// 入力バーの上端はウィンドウ座標で測る（親基準の layout.y では screen 自身の
+					// paddingBottom 分が消えるため）。keyboardCover の変化で動くたびに再計測され、
+					// 値が変わらない間は再レンダーも起きない。
+					inputBarRef.current?.measureInWindow((_x, y) => setInputBarTop(y));
+				}}
+				style={[styles.inputBar, regular && styles.readingColumn, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}
+			>
 				<AgentComposer
 					draftKey={draftKey}
 					activeTerminalKey={activeKey}
@@ -642,7 +675,7 @@ function Favicon({ domain }: { domain: string }) {
 }
 
 /** ChatGPTの検索中表示に近い、クエリ＋発見サイトfaviconの専用アクティビティ。 */
-function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey?: string }) {
+const WebSearchActivity = memo(function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey?: string }) {
 	const [expanded, setExpanded] = useState(false);
 	const query = msgs.find(message => message.kind === 'tool_use' && message.tool === 'web_search')?.text ?? 'Web検索';
 	const sites = webSites(msgs);
@@ -658,9 +691,13 @@ function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; te
 		    numberOfLines で切っていたため、開いても続きが読めなかった */}
 		{expanded ? <View style={styles.activityBody}>{msgs.filter(message => message.kind === 'tool_result').map(message => <IOBlock key={message.rev} label="検索結果" message={message} terminalKey={terminalKey} lines />)}{sites.map(site => <Pressable key={site.domain} style={styles.domainRow} onPress={() => { hapticSelection(); void Linking.openURL(site.url).catch(() => { /* 開けないURLは無視 */ }); }} accessibilityRole="link" accessibilityLabel={`${site.domain} をブラウザで開く`}><Favicon domain={site.domain} /><Text style={styles.domainText}>{site.domain}</Text><Ionicons name="open-outline" size={11} color={colors.textDim} /></Pressable>)}</View> : null}
 	</View>;
-}
+}, (prev, next) =>
+	prev.terminalKey === next.terminalKey
+	// msgs は rows 再計算のたびに作り直される配列なので、要素の同一性で比較する。
+	&& prev.msgs.length === next.msgs.length
+	&& prev.msgs.every((m, i) => m === next.msgs[i]));
 
-function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
+const MessageBubble = memo(function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
 	if (message.kind === 'peer_message') {
 		return (
 			<View style={styles.peerMessageCard}>
@@ -687,7 +724,7 @@ function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; te
 			{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
 		</View>
 	);
-}
+});
 
 /** エージェントがターン実行中に出す「考え中」インジケータ（ドットの脈動アニメーション）。 */
 function WorkingIndicator({ live, pendingCount = 0, onOpenPending }: {

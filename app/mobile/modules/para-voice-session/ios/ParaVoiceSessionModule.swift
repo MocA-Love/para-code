@@ -121,7 +121,7 @@ public class ParaVoiceSessionModule: Module {
 
 	private func refreshNowPlaying() {
 		var info: [String: Any] = [
-			MPMediaItemPropertyTitle: "Paracode",
+			MPMediaItemPropertyTitle: "Para Code",
 			MPNowPlayingInfoPropertyIsLiveStream: true,
 			MPNowPlayingInfoPropertyPlaybackRate: 1.0,
 		]

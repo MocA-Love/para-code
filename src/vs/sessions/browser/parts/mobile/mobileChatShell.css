@@ -640,7 +640,7 @@
 }
 
 /* Also hide the sessions-chat-widget's DnD overlay on phone */
-.agent-sessions-workbench.phone-layout .sessions-chat-dnd-overlay {
+.agent-sessions-workbench.phone-layout .chat-dnd-overlay {
 	display: none;
 }
 
@@ -963,14 +963,14 @@
 	min-height: 36px;
 	border-radius: var(--vscode-cornerRadius-circle);
 	padding: 0 12px;
-	font-size: 14px;
+	font-size: 16px; /* 16px+: iOS Safari auto-zooms inputs under 16px (matches chat input) */
 	width: 100%;
 }
 
 .agent-sessions-workbench.phone-layout
 	.agent-sessions-find-widget-container > .monaco-tree-type-filter
 	.monaco-tree-type-filter-input > .monaco-findInput > .monaco-inputbox input {
-	font-size: 14px;
+	font-size: 16px;
 	line-height: 22px;
 }
 

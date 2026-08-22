@@ -27,15 +27,61 @@ suite('WorkingCopyBackupRestoreRouter', () => {
 		assert.strictEqual(await router.route(identifier), WorkingCopyBackupRestoreDecision.Defer);
 	});
 
-	test('requestRestore is serialized and awaits registered restorers', async () => {
+	test('requestRestore awaits registered restorers and serializes passes that start after a run', async () => {
 		const router = disposables.add(new WorkingCopyBackupRestoreRouter());
 		const calls: number[] = [];
+		let gate = Promise.resolve();
 		disposables.add(router.registerRestorer(async () => {
 			calls.push(1);
-			await Promise.resolve();
+			await gate;
 		}));
 
-		await Promise.all([router.requestRestore(), router.requestRestore()]);
+		// 開始済みのパスの**後**に届いた要求は独立パスとして直列化される
+		const first = router.requestRestore();
+		await Promise.resolve();
+		await Promise.resolve();
+		gate = Promise.resolve();
+		const second = router.requestRestore();
+		assert.notStrictEqual(first, second, 'a request arriving after the pass began gets its own pass');
+		await first;
+		await second;
 		assert.deepStrictEqual(calls, [1, 1]);
+	});
+
+	test('requestRestore coalesces requests that arrive before a pass starts', async () => {
+		const router = disposables.add(new WorkingCopyBackupRestoreRouter());
+		const calls: number[] = [];
+		let release: (() => void) | undefined;
+		let notifyStarted: (() => void) | undefined;
+		let observedFlag = false;
+		let flag = false;
+		disposables.add(router.registerRestorer(async () => {
+			calls.push(1);
+			observedFlag = flag;
+			notifyStarted?.();
+			await new Promise<void>(resolve => { release = resolve; });
+		}));
+
+		// 同tickのバーストは1パスに合流する(ハンドラ登録+スペース切替が同tickに重なるケース)
+		const firstStarted = new Promise<void>(resolve => { notifyStarted = resolve; });
+		const first = router.requestRestore();
+		const joined = router.requestRestore();
+		assert.strictEqual(joined, first, 'same-tick requests share the pending pass');
+		await firstStarted;
+		flag = true;
+
+		release?.();
+		await first;
+		assert.strictEqual(observedFlag, false);
+
+		// パス開始後に状態を変えて要求した場合は、その変更を観測する新しいパスが走る
+		const secondStarted = new Promise<void>(resolve => { notifyStarted = resolve; });
+		const afterFlipPromise = router.requestRestore();
+		await secondStarted;
+		release?.();
+		const afterFlip = await afterFlipPromise;
+		assert.strictEqual(afterFlip, undefined);
+		assert.ok(calls.length >= 2);
+		assert.strictEqual(flag, true);
 	});
 });

@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { pinKeyForTerminal } from '../store.js';
-import { BottomSheet } from './bottomSheet.js';
+import { BottomSheet, useSheetCloseThen } from './bottomSheet.js';
 import { AgentBadge } from './agentRow.js';
 import { appendSpaceNoteEntry, parseSpaceNote, spaceNoteSummary, SPACE_NOTE_MAX_LENGTH, toggleSpaceNoteTask } from '../spaceNote.js';
 import { promptTerminalName } from '../promptTerminalName.js';
@@ -39,9 +39,6 @@ import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 /** メモのプレビューに出す最大行数（超えたぶんは「ほかN行」にまとめる）。 */
 const NOTE_PREVIEW_LINES = 5;
-
-/** シートの閉じアニメーション（bottomSheet.tsx）が終わるまでの待ち時間。 */
-const SHEET_CLOSE_MS = 200;
 
 export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStatus, ws, model, effort, onOpenBrowser, onLeaveScreen }: {
 	visible: boolean;
@@ -234,27 +231,10 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 		commitAdd(true);
 	};
 
-	/**
-	 * シートを閉じ切ってから遷移する。Modalの暗幕は閉じアニメーションのあいだ画面全体を
-	 * 覆ったままなので、同じtickで遷移すると遷移先の最初のタップが暗幕に吸われる。
-	 *
-	 * 使うのは**この画面が残る遷移**（メモ・ターミナル・ブラウザ）だけにすること。削除のように
-	 * このシート自体が消える操作で使うと、待っている間にアンマウントされてタイマーが解放され、
-	 * 遷移が実行されないまま「ターミナルがありません」の画面に取り残される。
-	 */
-	const navigationTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-	useEffect(() => () => {
-		if (navigationTimer.current !== undefined) {
-			clearTimeout(navigationTimer.current);
-		}
-	}, []);
-	const closeThen = (go: () => void) => {
-		onClose();
-		if (navigationTimer.current !== undefined) {
-			clearTimeout(navigationTimer.current);
-		}
-		navigationTimer.current = setTimeout(() => { navigationTimer.current = undefined; go(); }, SHEET_CLOSE_MS);
-	};
+	// シートを閉じ切ってから遷移する（共通ヘルパー。Modalの暗幕が遷移先の最初のタップを
+	// 吸わないため。使えるのはこのシートが残る遷移だけ——削除のようにシート自体が消える
+	// 操作で使うと、待っている間にアンマウントされて遷移が実行されない）。
+	const closeThen = useSheetCloseThen(onClose);
 
 	const summary = spaceNoteSummary(note);
 	const lines = parseSpaceNote(note).filter(line => line.kind !== 'blank');

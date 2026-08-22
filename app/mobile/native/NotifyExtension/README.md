@@ -23,6 +23,13 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
    `Info.plist` に `UIBackgroundModes: [remote-notification]` があることを確認
    （app.json にも設定済みだが、prebuild が反映しない場合は手動で）
 5. NSE ターゲットの iOS Deployment Target をメインアプリと揃える
+6. 復元後、NSE の `Info.plist` を**ファイル自体を直接編集**してバージョンをメインアプリ
+   （app.json の `version`）と揃える。この plist はリテラル値を持つため、Xcode の
+   Target → General → Version を書き換えても反映されない（build setting の
+   `MARKETING_VERSION` 参照に置き換えるならその限りではない）。対象は
+   `CFBundleShortVersionString`（`0.1.0`）と `CFBundleVersion`（`1`）の2つで、
+   **どちらもコンテナアプリと一致させること**（不一致は App Store 提出時に ITMS エラーに
+   なる）。編集後、このコピーへも同じ値を反映すること
 
 ## 鍵の受け渡し（設計）
 
