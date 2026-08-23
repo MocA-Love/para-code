@@ -13,8 +13,9 @@ import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTyp
  * それ以外（about:blank やアンカー等の内部遷移、file:// のPDF内部リンク）はそのまま通す。
  */
 export function guardWebViewNavigation(request: ShouldStartLoadRequest): boolean {
-	// iframe内のナビゲーションには干渉しない（埋め込みコンテンツはそのまま読ませる）。
-	if (!request.isTopFrame) {
+	// Android may omit isTopFrame. Only an explicit false proves this is an iframe;
+	// undefined must retain the top-level external-link and unsafe-scheme rules.
+	if (request.isTopFrame === false) {
 		return true;
 	}
 	if (/^https?:/i.test(request.url)) {
