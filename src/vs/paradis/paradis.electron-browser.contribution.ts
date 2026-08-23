@@ -41,6 +41,8 @@ import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
 import './contrib/browserMirror/electron-browser/paradisBrowserMirrorSpike.contribution.js';
+import './contrib/paradisSettings/electron-browser/paradisSettingsDialog.contribution.js';
+import './contrib/usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';
 import './contrib/rtk/electron-browser/paradisRtk.contribution.js';
 import './contrib/sessionResume/electron-browser/paradisSessionResume.contribution.js';

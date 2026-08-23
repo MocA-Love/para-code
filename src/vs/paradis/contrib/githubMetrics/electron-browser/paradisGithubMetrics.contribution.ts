@@ -30,7 +30,6 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment, StatusbarEntryKind } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import {
 	IParadisGithubMetricsSnapshot,
@@ -41,6 +40,7 @@ import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_E
 import { ParadisGithubMetricsEditor } from './paradisGithubMetricsEditor.js';
 import { paradisGithubRoundedPercent } from './paradisGithubMetricsFormat.js';
 import { ParadisGithubMetricsInput, ParadisGithubMetricsInputSerializer, PARADIS_GITHUB_METRICS_EDITOR_ID, PARADIS_GITHUB_METRICS_INPUT_TYPE_ID } from './paradisGithubMetricsInput.js';
+import { paradisOpenUsageDashboard } from '../../usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 import { ParadisGithubMetricsPopover } from './paradisGithubMetricsPopover.js';
 
 const SHOW_DASHBOARD_COMMAND_ID = 'paradis.githubMetrics.showDashboard';
@@ -90,8 +90,10 @@ registerAction2(class ShowGithubMetricsDashboardAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		await editorService.openEditor(ParadisGithubMetricsInput.instance, { pinned: true });
+		// 3ダッシュボードは統合ダイアログの1タブになったので、こちらの入口からも
+		// 同じダイアログを GitHub タブで開く（ステータスバーのクリックは引き続き軽量な
+		// ポップオーバーで、その「詳細を開く」からここへ来る）
+		paradisOpenUsageDashboard(accessor, 'github');
 	}
 });
 

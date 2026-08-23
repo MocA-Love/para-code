@@ -45,6 +45,10 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	// PARA-PATCH: the fork's session history dialog (paradisSessionResumeDialog.ts). It used to be an
 	// editor pane, which the native view never covered; as a DOM modal it needs the same pause.
 	{ className: 'paradis-session-resume-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's Para Code settings dialog (paradisSettingsDialog.ts).
+	{ className: 'paradis-settings-dialog-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's combined usage dashboard dialog (paradisUsageDashboardDialog.ts).
+	{ className: 'paradis-usage-dashboard-backdrop', type: BrowserOverlayType.Dialog },
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),

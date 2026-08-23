@@ -1,0 +1,352 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* allow-any-unicode-next-line */
+/* 「設定 (Para Code)」ダイアログ。paradisNotificationSettings.css と同じ構造・寸法に揃える */
+/* allow-any-unicode-next-line */
+/* （ヘッダー検索 + 左ナビ + 右コンテンツ）。色は全て --vscode-* テーマトークン。 */
+
+/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
+.paradis-settings-dialog-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.5);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 2700;
+}
+
+.paradis-settings-dialog {
+	width: 940px;
+	max-width: 94vw;
+	height: 700px;
+	max-height: 92vh;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 8px;
+	display: flex;
+	flex-direction: column;
+	box-shadow: var(--vscode-shadow-xl);
+	overflow: hidden;
+	font-size: 13px;
+	outline: none;
+}
+
+/* The modal receives focus (tabindex=-1) for Escape handling; the workbench-wide keyboard-focus rule ([tabindex="-1"]:focus in workbench media/style.css) would otherwise draw a focusBorder frame around the whole dialog. */
+.monaco-workbench .paradis-settings-dialog:focus {
+	outline: none !important;
+}
+
+.paradis-settings-dialog .codicon {
+	font-size: 14px;
+}
+
+/* ---------- header ---------- */
+
+.paradis-settings-dialog .psd-header {
+	padding: 12px 18px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-shrink: 0;
+}
+
+.paradis-settings-dialog .psd-header h2 {
+	margin: 0;
+	font-size: 14.5px;
+	font-weight: 600;
+	flex: none;
+}
+
+.paradis-settings-dialog .psd-search {
+	flex: 1;
+	max-width: 340px;
+	min-width: 140px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	padding: 4px 8px;
+}
+
+.paradis-settings-dialog .psd-search:focus-within {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-settings-dialog .psd-search input {
+	flex: 1;
+	min-width: 0;
+	width: auto;
+	background: transparent;
+	border: none;
+	padding: 0;
+	outline: none;
+	color: var(--vscode-input-foreground);
+	font-size: 12.5px;
+	font-family: inherit;
+}
+
+.paradis-settings-dialog .psd-autosave {
+	margin-left: auto;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-settings-dialog .psd-close {
+	cursor: pointer;
+	color: var(--vscode-icon-foreground);
+	border-radius: 4px;
+	padding: 4px;
+	display: flex;
+}
+
+.paradis-settings-dialog .psd-close:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* ---------- body ---------- */
+
+.paradis-settings-dialog .psd-body {
+	flex: 1;
+	display: flex;
+	min-height: 0;
+}
+
+.paradis-settings-dialog .psd-nav {
+	width: 212px;
+	flex: none;
+	background: var(--vscode-sideBar-background);
+	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	padding: 8px 6px;
+	overflow-y: auto;
+}
+
+.paradis-settings-dialog .psd-nav-caption {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--vscode-descriptionForeground);
+	padding: 9px 10px 3px;
+}
+
+.paradis-settings-dialog .psd-nav-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	font-size: 12.5px;
+}
+
+.paradis-settings-dialog .psd-nav-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-settings-dialog .psd-nav-item.active {
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+.paradis-settings-dialog .psd-nav-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-settings-dialog .psd-nav-chip {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-settings-dialog .psd-nav-chip:empty {
+	display: none;
+}
+
+.paradis-settings-dialog .psd-content {
+	flex: 1;
+	min-width: 0;
+	overflow-y: auto;
+	padding: 16px 24px 32px;
+}
+
+/* ---------- sections / rows ---------- */
+
+.paradis-settings-dialog .psd-section-head {
+	font-size: 15px;
+	font-weight: 700;
+	margin: 2px 0;
+}
+
+.paradis-settings-dialog .psd-section-desc {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 12px;
+	line-height: 1.6;
+}
+
+.paradis-settings-dialog .psd-section {
+	margin-bottom: 18px;
+}
+
+.paradis-settings-dialog .psd-row {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	padding: 11px 4px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-settings-dialog .psd-section.hidden,
+.paradis-settings-dialog .psd-row.hidden,
+.paradis-settings-dialog .psd-nav-item.hidden,
+.paradis-settings-dialog .psd-search-empty.hidden {
+	display: none;
+}
+
+.paradis-settings-dialog .psd-row-main {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-settings-dialog .psd-row-label {
+	font-size: 13px;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	flex-wrap: wrap;
+}
+
+.paradis-settings-dialog .psd-row-label code {
+	font-family: var(--monaco-monospace-font);
+	font-size: 10px;
+	font-weight: 400;
+	background: var(--vscode-textCodeBlock-background, var(--vscode-input-background));
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 4px;
+	padding: 0 5px;
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-settings-dialog .psd-row-desc {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+	line-height: 1.6;
+	max-width: 520px;
+}
+
+/* ---------- controls ---------- */
+
+.paradis-settings-dialog .psd-toggle {
+	appearance: none;
+	width: 38px;
+	height: 20px;
+	border-radius: 11px;
+	position: relative;
+	cursor: pointer;
+	flex: none;
+	margin: 0;
+	background: var(--vscode-checkbox-background, var(--vscode-input-background));
+	border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border, transparent));
+	transition: background 0.15s;
+}
+
+.paradis-settings-dialog .psd-toggle:checked {
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+}
+
+.paradis-settings-dialog .psd-toggle::after {
+	content: '';
+	position: absolute;
+	left: 2px;
+	top: 2px;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--vscode-foreground);
+	transition: left 0.15s;
+}
+
+.paradis-settings-dialog .psd-toggle:checked::after {
+	left: 20px;
+	background: var(--vscode-button-foreground);
+}
+
+.paradis-settings-dialog .psd-toggle:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+.paradis-settings-dialog .psd-input,
+.paradis-settings-dialog .psd-select {
+	flex: none;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 5px;
+	padding: 4px 8px;
+	font-size: 12px;
+	font-family: inherit;
+	outline: none;
+}
+
+.paradis-settings-dialog .psd-input {
+	width: 260px;
+	font-family: var(--monaco-monospace-font);
+	font-size: 11.5px;
+}
+
+.paradis-settings-dialog .psd-input:focus,
+.paradis-settings-dialog .psd-select:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-settings-dialog .psd-btn {
+	flex: none;
+	appearance: none;
+	border: none;
+	border-radius: 5px;
+	padding: 4px 13px;
+	font-size: 12px;
+	font-family: inherit;
+	cursor: pointer;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	white-space: nowrap;
+}
+
+.paradis-settings-dialog .psd-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-settings-dialog .psd-btn-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-settings-dialog .psd-btn-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.paradis-settings-dialog .psd-search-empty {
+	padding: 24px 4px;
+	font-size: 12.5px;
+	color: var(--vscode-descriptionForeground);
+}
