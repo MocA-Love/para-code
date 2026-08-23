@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -19,8 +19,11 @@ const STATUS_LABELS = {
 } as const;
 
 /** モックA: ヘッダーの音声ボタンと、開始・停止を行うボトムシート。 */
-export function VoiceNotificationControl() {
-	const [visible, setVisible] = useState(false);
+export function VoiceNotificationControl({ visible, onClose }: {
+	visible?: boolean;
+	onClose?: () => void;
+} = {}) {
+	const [internalVisible, setInternalVisible] = useState(false);
 	const { voice, pcOnline, start, stop } = useAppStore(useShallow(state => ({
 		voice: state.voiceNotifications,
 		pcOnline: state.pcOnline,
@@ -29,6 +32,14 @@ export function VoiceNotificationControl() {
 	})));
 	const busy = voice.status === 'connecting';
 	const active = voice.desired;
+	const sheetVisible = visible ?? internalVisible;
+	const closeSheet = () => {
+		if (visible === undefined) {
+			setInternalVisible(false);
+		} else {
+			onClose?.();
+		}
+	};
 
 	const toggle = () => {
 		hapticImpact('medium');
@@ -41,20 +52,20 @@ export function VoiceNotificationControl() {
 
 	return (
 		<>
-			{/* ヘッダー右のガラスのピルの中に入るので、ここでガラスを重ねない（Apple HIG）。
-			    受信中はアクセント色の淡い地でそれと分かるようにする。 */}
-			<Pressable
-				style={({ pressed }) => [styles.headerButton, active && styles.headerButtonActive, pressed && styles.headerButtonPressed]}
-				hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
-				onPress={() => { hapticImpact('light'); setVisible(true); }}
-				accessibilityRole="button"
-				accessibilityLabel={active ? '音声通知を受信中' : '音声通知を開始'}
-			>
-				<Ionicons name={active ? 'volume-high' : 'volume-high-outline'} size={17} color={active ? colors.accent : colors.text} />
-				{active ? <View style={styles.liveBadge} /> : null}
-			</Pressable>
+			{visible === undefined ? (
+				<Pressable
+					style={({ pressed }) => [styles.headerButton, active && styles.headerButtonActive, pressed && styles.headerButtonPressed]}
+					hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
+					onPress={() => { hapticImpact('light'); setInternalVisible(true); }}
+					accessibilityRole="button"
+					accessibilityLabel={active ? '音声通知を受信中' : '音声通知を開始'}
+				>
+					<Ionicons name={active ? 'volume-high' : 'volume-high-outline'} size={17} color={active ? colors.accent : colors.text} />
+					{active ? <View style={styles.liveBadge} /> : null}
+				</Pressable>
+			) : null}
 
-			<BottomSheet visible={visible} onClose={() => setVisible(false)} title="音声通知" glass>
+			<BottomSheet visible={sheetVisible} onClose={closeSheet} title="音声通知" glass>
 				<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 					<View style={styles.hero}>
 						<View style={[styles.heroIcon, active && styles.heroIconActive]}>
