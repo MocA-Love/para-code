@@ -133,6 +133,9 @@ import { registerParadisRemoteSearchForServer } from '../../paradis/contrib/mobi
 // PARA-PATCH: the gh calls made while a client is connected happen here, and the sink that records
 // them is per-process, so nothing is counted unless this side owns one too (registered below)
 import { registerParadisGithubMetricsForServer } from '../../paradis/contrib/githubMetrics/node/paradisGithubMetricsChannel.js';
+// PARA-PATCH: while a client is connected, the ports it needs to inspect/kill are listening on
+// this machine, not the one showing the window (registered below)
+import { registerParadisPortListForServer } from '../../paradis/contrib/portList/node/paradisPortListChannelServer.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -465,6 +468,9 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// sink that records them only exists in the process that owns this service. Without one on
 		// this side every call is dropped, so the client's GitHub usage view shows nothing at all.
 		disposables.add(registerParadisGithubMetricsForServer(socketServer, logService));
+		// PARA-PATCH: expose the same port-list channel the shared process has, so a connected
+		// client's title bar widget can search/kill ports that are actually listening on this machine.
+		disposables.add(registerParadisPortListForServer(socketServer, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 
