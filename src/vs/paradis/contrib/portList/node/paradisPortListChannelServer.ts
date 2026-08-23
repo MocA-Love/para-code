@@ -94,7 +94,7 @@ export function loadListeningConnections(...stdouts: string[]): IListeningConnec
 				const address = row.local_address.split(':');
 				return { socket: parseInt(row.inode, 10), ip: parseHexAddress(address[0]), port: parseInt(address[1], 16) };
 			})
-			.map(entry => [`${entry.ip}:${entry.port}`, entry] as const)
+			.map(entry => [entry.socket, entry] as const)
 	).values()];
 }
 
@@ -112,17 +112,28 @@ function execCapture(command: string, logService: ILogService): Promise<string> 
 	});
 }
 
-/** socket inode -> 保有PID。 */
-async function readSocketOwners(logService: ILogService): Promise<Map<number, number>> {
-	const stdout = await execCapture('ls -l /proc/[0-9]*/fd/[0-9]* 2>/dev/null | grep socket:', logService);
-	const owners = new Map<number, number>();
+/** socket inode -> 保有PID群。 */
+export function loadSocketOwners(stdout: string): Map<number, Set<number>> {
+	const owners = new Map<number, Set<number>>();
 	for (const line of stdout.split('\n')) {
 		const match = /\/proc\/(\d+)\/fd\/\d+ -> socket:\[(\d+)\]/.exec(line);
-		if (match) {
-			owners.set(parseInt(match[2], 10), parseInt(match[1], 10));
+		if (!match) {
+			continue;
 		}
+		const pid = parseInt(match[1], 10);
+		const socket = parseInt(match[2], 10);
+		const pids = owners.get(socket) ?? new Set<number>();
+		pids.add(pid);
+		owners.set(socket, pids);
 	}
-	return owners;
+	return new Map([...owners]
+		.sort(([first], [second]) => first - second)
+		.map(([socket, pids]) => [socket, new Set([...pids].sort((a, b) => a - b))]));
+}
+
+async function readSocketOwners(logService: ILogService): Promise<Map<number, Set<number>>> {
+	const stdout = await execCapture('ls -l /proc/[0-9]*/fd/[0-9]* 2>/dev/null | grep socket:', logService);
+	return loadSocketOwners(stdout);
 }
 
 async function readProcessNames(pids: Iterable<number>): Promise<Map<number, string>> {
@@ -139,6 +150,23 @@ async function readProcessNames(pids: Iterable<number>): Promise<Map<number, str
 	return names;
 }
 
+export function resolveRemotePortEntries(listening: readonly IListeningConnection[], owners: ReadonlyMap<number, ReadonlySet<number>>, names: ReadonlyMap<number, string>): IParadisPortEntry[] {
+	const entries: IParadisPortEntry[] = [];
+	for (const connection of listening) {
+		for (const pid of [...(owners.get(connection.socket) ?? [])].sort((a, b) => a - b)) {
+			entries.push({
+				port: connection.port,
+				proto: 'TCP',
+				pid,
+				processName: names.get(pid) ?? String(pid),
+				address: connection.ip,
+				risky: paradisIsRiskyPortAddress(connection.ip)
+			});
+		}
+	}
+	return entries;
+}
+
 async function collectEntries(logService: ILogService): Promise<IParadisPortEntry[]> {
 	const [tcp, tcp6] = await Promise.all([
 		fs.promises.readFile('/proc/net/tcp', 'utf8').catch(() => ''),
@@ -149,24 +177,14 @@ async function collectEntries(logService: ILogService): Promise<IParadisPortEntr
 		return [];
 	}
 	const owners = await readSocketOwners(logService);
-	const resolved: { connection: IListeningConnection; pid: number }[] = [];
 	const pids = new Set<number>();
 	for (const connection of listening) {
-		const pid = owners.get(connection.socket);
-		if (pid !== undefined) {
+		for (const pid of owners.get(connection.socket) ?? []) {
 			pids.add(pid);
-			resolved.push({ connection, pid });
 		}
 	}
 	const names = await readProcessNames(pids);
-	return resolved.map(({ connection, pid }) => ({
-		port: connection.port,
-		proto: 'TCP' as const,
-		pid,
-		processName: names.get(pid) ?? String(pid),
-		address: connection.ip,
-		risky: paradisIsRiskyPortAddress(connection.ip)
-	}));
+	return resolveRemotePortEntries(listening, owners, names);
 }
 
 export class ParadisPortListServerService {
