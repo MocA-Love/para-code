@@ -26,17 +26,24 @@ import { killTree } from '../../base/node/processes.js';
  *
  * @param onError 失敗を記録したい呼び出し元向け(ログサービスは層をまたぐのでここでは持たない)
  */
-export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (error: unknown) => void): void {
+export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (error: unknown) => void, options?: IParadisChildProcessTreeTerminationOptions): void {
+	const reportError = (error: unknown) => {
+		try {
+			onError?.(error);
+		} catch {
+			// Error reporting must not interrupt termination ownership.
+		}
+	};
 	const killDirectly = () => {
 		try {
-			child.kill();
+			(options?.terminator ?? (child => child.kill()))(child);
 		} catch (error) {
-			onError?.(error);
+			reportError(error);
 		}
 	};
 
 	const pid = child.pid;
-	if (process.platform !== 'win32' || typeof pid !== 'number') {
+	if ((options?.platform ?? process.platform) !== 'win32' || typeof pid !== 'number') {
 		killDirectly();
 		return;
 	}
@@ -46,10 +53,21 @@ export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (e
 		return;
 	}
 
-	killTree(pid, true).catch(error => {
-		onError?.(error);
+	try {
+		(options?.treeKill ?? killTree)(pid, true).catch(error => {
+			reportError(error);
+			killDirectly();
+		});
+	} catch (error) {
+		reportError(error);
 		killDirectly();
-	});
+	}
+}
+
+export interface IParadisChildProcessTreeTerminationOptions {
+	readonly platform?: NodeJS.Platform;
+	readonly treeKill?: typeof killTree;
+	readonly terminator?: (child: cp.ChildProcess) => void;
 }
 
 export interface IParadisTrackedChildProcess extends IDisposable {
@@ -61,13 +79,21 @@ export class ParadisChildProcessTreeTracker implements IDisposable {
 	private readonly active = new Set<ParadisTrackedChildProcess>();
 	private disposed = false;
 
-	constructor(private readonly onError?: (error: unknown) => void) { }
+	constructor(
+		private readonly onError?: (error: unknown) => void,
+		private readonly terminationOptions?: IParadisChildProcessTreeTerminationOptions,
+	) { }
+
+	get activeCount(): number {
+		return this.active.size;
+	}
 
 	track(child: cp.ChildProcess, timeoutMs: number): IParadisTrackedChildProcess {
 		const execution = new ParadisTrackedChildProcess(
 			child,
 			timeoutMs,
 			this.onError,
+			this.terminationOptions,
 			() => this.active.delete(execution),
 		);
 		if (this.disposed) {
@@ -105,6 +131,7 @@ class ParadisTrackedChildProcess implements IParadisTrackedChildProcess {
 		private readonly child: cp.ChildProcess,
 		timeoutMs: number,
 		private readonly onError: ((error: unknown) => void) | undefined,
+		private readonly terminationOptions: IParadisChildProcessTreeTerminationOptions | undefined,
 		private readonly onComplete: () => void,
 	) {
 		this.timer = setTimeout(() => {
@@ -132,7 +159,7 @@ class ParadisTrackedChildProcess implements IParadisTrackedChildProcess {
 			return;
 		}
 		this.killStarted = true;
-		paradisKillChildProcessTree(this.child, this.onError);
+		paradisKillChildProcessTree(this.child, this.onError, this.terminationOptions);
 	}
 
 	private complete(): void {
