@@ -59,10 +59,12 @@ native menuを利用できないAndroid／旧iOSでは、既存chipBandをヘッ
 
 ### 2. Web phone changes actions
 
-desktop専用のtitle bar menuをmobileへそのまま載せず、mobile changes用のMenuIdとtoolbar hostを
-設ける。Create Pull Requestを含む既存command/action実装を同じmenu contributionから参照し、
-enablement、visibility、エラー通知の意味をdesktopと共有する。mobile overlayは戻る、タイトル、
-actions、ファイル一覧の順に配置し、狭幅ではactionsをoverflowへ畳む。
+desktop title barのanchorを複製せず、既存の`MenuId.AgentsChangesToolbar`を
+`MenuWorkbenchToolBar`でmobile changes overlayのheaderへ配置する。`vs/sessions/browser`から
+`vs/sessions/contrib`をimportしないレイヤー制約を守りつつ、Create Pull Requestを含む既存
+command/action実装、enablement、visibility、エラー通知をdesktopと共有する。active session
+resourceをmenu argumentに渡し、mobile overlayは戻る、縮小可能なタイトル、actions、ファイル一覧の
+順に配置する。compact幅ではactionsをoverflowにまとめる。
 
 ### 3. 純粋な表示・判定回帰
 
@@ -72,8 +74,8 @@ WebView guardは`request.isTopFrame === false`だけをiframeとして許可す�
 移し、狭幅ruleがcascadeの最終決定になるようにする。
 
 Git parkingでは、現在のworkspace folderの論理pathとreal pathを先に収集する。removed-folder由来
-候補と自動検出由来候補の双方を、既存の双方向包含predicateへ通す。active editorのrepositoryは
-従来どおり除外する。
+候補と全open repositoryを重複のない一つの候補集合へまとめ、既存の双方向包含predicateへ一度だけ
+通してからparkする。active editorのrepositoryは従来どおり除外する。
 
 ### 4. プロセスと所有資源
 
