@@ -300,7 +300,7 @@
 	animation: paradis-port-list-spin 1s linear infinite;
 }
 
-@media (max-width: 455px), (pointer: coarse) {
+@media (max-width: 455px) {
 	.paradis-port-list-panel .ppl-row {
 		gap: 6px;
 		padding-inline: 10px;
@@ -320,6 +320,10 @@
 		text-overflow: ellipsis;
 	}
 
+}
+
+/* Preserve wide row information for touch displays while enlarging their tap target. */
+@media (max-width: 455px), (pointer: coarse) {
 	.paradis-port-list-panel .ppl-kill-btn {
 		width: 44px;
 		height: 44px;
