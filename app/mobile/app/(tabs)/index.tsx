@@ -23,7 +23,7 @@ import { HomeAgentRow, type HomeAgentRowHandlers } from '../../src/components/ho
 import { closeOpenedSwipeRow } from '../../src/components/swipeRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
-import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
+import { useParaHeaderHeight } from '../../src/paraHeader.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
@@ -38,7 +38,7 @@ import {
 	type HomeHeaderMenuAction,
 	type HomePlusMenuAction,
 } from '../../src/components/homeHeaderMenuBehavior.js';
-import { buildHomeHeaderActions } from '../../src/components/homeHeaderActions.js';
+import { useHomeHeaderActions } from '../../src/components/homeHeaderActions.js';
 import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
 import { listColumnsFor, CONTENT_MAX_WIDTH } from '../../src/ipad/ipadLayout.js';
 
@@ -105,7 +105,7 @@ export default function HomeScreen() {
 
 	const tabBarSpacer = useTabBarSpacer();
 	const regular = useIsRegularWidth();
-	const homeHeader = homeHeaderLayout(regular ? 'regular' : 'compact');
+	const homeHeader = useMemo(() => homeHeaderLayout(regular ? 'regular' : 'compact'), [regular]);
 	const voiceActive = useAppStore(state => state.voiceNotifications.desired);
 	const notificationQuestionCount = useMemo(
 		() => notifications.filter(notification => notification.kind === 'agent-question').length,
@@ -371,7 +371,7 @@ export default function HomeScreen() {
 	// 並びは「たまに使う → よく使う」で、＋を右端に置く。メニューはその＋から生えるので、
 	// 右端でないと開く場所と押した場所がずれる。状態を持つボタン（音声・通知・＋）は
 	// データにできないので `node` で差し込む。
-	const actions = useMemo<ParaHeaderIcon[]>(() => buildHomeHeaderActions({
+	const actions = useHomeHeaderActions({
 		header: homeHeader,
 		archivedCount,
 		voiceActive,
@@ -381,7 +381,7 @@ export default function HomeScreen() {
 		notifications,
 		onArchive: openArchive,
 		onSelect: onHeaderMenuSelect,
-	}), [archivedCount, effectiveWs, homeHeader, notificationQuestionCount, notifications, onHeaderMenuSelect, openArchive, reviewable.length, voiceActive]);
+	});
 
 	// 絞り込みチップ。要素も memo で安定させる（同じ理由）。
 	//
