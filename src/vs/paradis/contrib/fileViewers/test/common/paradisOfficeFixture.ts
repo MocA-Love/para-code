@@ -54,7 +54,7 @@ export async function buildOpcFixture(options: IParadisOfficeFixtureOptions): Pr
 
 	const JSZip = await importAMDNodeModule<typeof import('jszip').default>('jszip', 'dist/jszip.min.js');
 	const zip = new JSZip();
-	for (const [name, part] of [...parts.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+	for (const [name, part] of [...parts.entries()].sort(([left], [right]) => compareCodeUnits(left, right))) {
 		zip.file(name.slice(1), part.content, { createFolders: false, date: FIXED_TIMESTAMP });
 	}
 
@@ -85,7 +85,7 @@ function groupRelationships(relationships: readonly IParadisOfficeFixtureRelatio
 		groups.set(relationshipPart, group);
 	}
 	return new Map([...groups.entries()]
-		.sort(([left], [right]) => left.localeCompare(right))
+		.sort(([left], [right]) => compareCodeUnits(left, right))
 		.map(([name, group]) => [name, group.sort(compareRelationships)]));
 }
 
@@ -99,16 +99,27 @@ function relationshipPartName(source: string | undefined): string {
 }
 
 function compareRelationships(left: IParadisOfficeFixtureRelationship, right: IParadisOfficeFixtureRelationship): number {
-	return left.id.localeCompare(right.id)
-		|| left.type.localeCompare(right.type)
-		|| left.target.localeCompare(right.target)
-		|| (left.targetMode ?? '').localeCompare(right.targetMode ?? '');
+	return compareCodeUnits(left.id, right.id)
+		|| compareCodeUnits(left.type, right.type)
+		|| compareCodeUnits(left.target, right.target)
+		|| compareCodeUnits(left.targetMode ?? '', right.targetMode ?? '');
+}
+
+function compareCodeUnits(left: string, right: string): number {
+	const length = Math.min(left.length, right.length);
+	for (let index = 0; index < length; index++) {
+		const difference = left.charCodeAt(index) - right.charCodeAt(index);
+		if (difference !== 0) {
+			return difference;
+		}
+	}
+	return left.length - right.length;
 }
 
 function buildContentTypesXml(parts: ReadonlyMap<string, { readonly contentType: string }>): string {
 	const overrides = [...parts.entries()]
 		.filter(([name]) => name !== '/[Content_Types].xml' && !name.endsWith('.rels'))
-		.sort(([left], [right]) => left.localeCompare(right))
+		.sort(([left], [right]) => compareCodeUnits(left, right))
 		.map(([name, part]) => `<Override PartName="${xmlEscape(name)}" ContentType="${xmlEscape(part.contentType)}"/>`)
 		.join('');
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>${overrides}</Types>`;
