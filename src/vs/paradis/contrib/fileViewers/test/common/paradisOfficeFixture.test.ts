@@ -32,7 +32,7 @@ suite('ParadisOfficeFixture', () => {
 				{ source: '/word/document.xml', id: 'z&<>"', type: 'urn:test?value=&<>"', target: 'https://example.test/a?x=&<>"', targetMode: 'External' },
 			],
 		});
-		const JSZip = await importAMDNodeModule<typeof import('jszip').default>('jszip', 'dist/jszip.min.js');
+		const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
 		const zip = await JSZip.loadAsync(bytes);
 
 		deepStrictEqual(Object.keys(zip.files), [
