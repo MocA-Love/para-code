@@ -15,6 +15,7 @@ import { CancellationTokenSource } from '../../../../base/common/cancellation.js
 import { raceTimeout } from '../../../../base/common/async.js';
 import { localize } from '../../../../nls.js';
 import { asJson, IRequestService } from '../../../../platform/request/common/request.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisServiceStatusEntry,
 	IParadisServiceStatusSnapshot,
@@ -88,6 +89,7 @@ export class ParadisServiceStatusClient {
 				error: undefined,
 			};
 		} catch (error) {
+			reportParadisDiagnosticError('owned', 'service-status', 'fetch-failed', error, { safe_provider: provider }, 'warning');
 			return {
 				provider,
 				severity: 'unknown',

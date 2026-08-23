@@ -22,8 +22,7 @@ import { IProductService } from '../../../../platform/product/common/productServ
 import { IReconnectConstants } from '../../../../platform/terminal/common/terminal.js';
 import { ElectronPtyHostStarter } from '../../../../platform/terminal/electron-main/electronPtyHostStarter.js';
 import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
-import { PARADIS_PTY_HOST_STATE_DIR } from '../node/paradisPtyHostBootstrap.js';
-import { paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
+import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';

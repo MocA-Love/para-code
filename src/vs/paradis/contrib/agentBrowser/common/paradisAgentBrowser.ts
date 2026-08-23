@@ -146,7 +146,7 @@ export function paradisFormatCdpGatewayUrl(port: number): string {
 
 /**
  * PTYの既存環境を保持したまま、内部MCPの動的ポート解決に必要な値だけを追加する。
- * ユーザーが明示した `PARA_CODE_CDP_URL` を含む未知の環境変数は上書きしない。
+ * ユーザーが明示した未知の環境変数（例: 任意ツール向けの独自CDP URL変数）は上書きしない。
  */
 export function paradisCreateTerminalPaneEnvironment(
 	existing: Readonly<Record<string, string | null | undefined>> | undefined,
@@ -897,11 +897,6 @@ export interface IParadisAgentStatusSnapshot {
 	readonly agentHookTokenIssueUrls?: readonly { readonly token: string; readonly issueUrls: readonly string[] }[];
 }
 
-/**
- * 各エージェントCLIのhookイベント名を状態へ正規化する。Superset の
- * main/lib/notifications/map-event-type.ts の正規化テーブル移植 + Claude Code の
- * Notification イベント対応。undefined = 未知イベント (無視)、'idle' = エントリ削除。
- */
 // --- ワンボタンMCPセットアップ（バインディングダイアログの「自動セットアップ」用） -----------------
 
 /** セットアップ対象のエージェントCLI種別。 */
@@ -974,6 +969,11 @@ export interface IParadisMcpFixRequest {
 	readonly cli: ParadisMcpCli;
 }
 
+/**
+ * 各エージェントCLIのhookイベント名を状態へ正規化する。Superset の
+ * main/lib/notifications/map-event-type.ts の正規化テーブル移植 + Claude Code の
+ * Notification イベント対応。undefined = 未知イベント (無視)、'idle' = エントリ削除。
+ */
 export function paradisNormalizeAgentHookEvent(eventType: string, message?: string): ParadisAgentStatus | 'idle' | undefined {
 	switch (eventType) {
 		// 完了系: Claude Code / Codex / OpenCode

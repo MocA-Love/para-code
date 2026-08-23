@@ -14,11 +14,12 @@ import type { WebglAddon } from '@xterm/addon-webgl';
 import { Color, RGBA } from '../../../../base/common/color.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { PARADIS_TRANSPARENT_CLASS } from '../common/paradisTransparency.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
  * ウィンドウ透過が実際に有効か（`.monaco-workbench` に `paradis-transparent` クラスが付与されているか）。
  * このクラスはネイティブウィンドウが `transparent: true` で生成された場合のみ付与されるため（`paradisWindowTransparency.contribution.ts`）、
- * これを唯一の真実として参照する。ターミナルはユーザー操作で生成されるためクラス付与(AfterRestored)より必ず後で、判定は安定する。
+ * これを唯一の真実として参照する。ターミナルはユーザー操作で生成されるためクラス付与(BlockStartup)より必ず後で、判定は安定する。
  */
 export function isParadisTransparentActive(): boolean {
 	// eslint-disable-next-line no-restricted-syntax -- ワークベンチルートに付与された既存クラスの有無を読むだけで、要素構築ではない
@@ -196,7 +197,8 @@ export function installParadisWebglBackgroundAlphaPatch(addon: WebglAddon): void
 		}
 		proto._updateRectangle = paradisUpdateRectangle;
 		proto[PATCHED] = true;
-	} catch {
+	} catch (error) {
 		// private-API surgery のため、addon構造が変わっていたら黙ってスキップ（不透明ターミナルにフォールバック）。
+		reportParadisDiagnosticError('owned', 'window-transparency', 'webgl-patch-skipped', error, undefined, 'warning');
 	}
 }

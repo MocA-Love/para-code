@@ -49,6 +49,7 @@ import {
 	isParadisRemoteFileEntry,
 	isParadisRemoteHost,
 	isParadisRemoteSpace,
+	paradisAllowsHostDrop,
 	paradisParseSpacesByHost,
 	ParadisRemoteFileEntry,
 	ParadisRemoteHost,
@@ -288,12 +289,7 @@ class HostDragAndDrop implements ITreeDragAndDrop<ParadisRemoteHostsElement> {
 	onDragOver(data: IDragAndDropData, targetElement: ParadisRemoteHostsElement | undefined): boolean | ITreeDragOverReaction {
 		const sources = this.draggedSources(data);
 		const target = targetElement ? asDropTarget(targetElement) : undefined;
-		if (!sources.length || !target) {
-			return false;
-		}
-		// 同じマシン内では受けない (誤って移動させて元の場所から消える事故を避けたい。
-		// このビューはあくまで「マシン間のコピー」の入口)
-		if (sources.every(source => source.hostKey === target.hostKey)) {
+		if (!target || !this.canDrop(sources, target)) {
 			return false;
 		}
 		return { accept: true, effect: { type: ListDragOverEffectType.Copy, position: ListDragOverEffectPosition.Over } };
@@ -302,9 +298,17 @@ class HostDragAndDrop implements ITreeDragAndDrop<ParadisRemoteHostsElement> {
 	drop(data: IDragAndDropData, targetElement: ParadisRemoteHostsElement | undefined): void {
 		const sources = this.draggedSources(data);
 		const target = targetElement ? asDropTarget(targetElement) : undefined;
-		if (sources.length && target) {
+		// onDragOver と同じ判定をここでも通す。drop が呼ばれるのは直前の dragover を受理した
+		// ときだけだが、その受理は「最後にホバーした行」に対するもので、実際に落ちた行とは
+		// 限らない (素早く動かすとずれる)。データを動かす手前で必ずもう一度確かめる。
+		if (target && this.canDrop(sources, target)) {
 			this.handleDrop(sources, target);
 		}
+	}
+
+	/** 同じマシン内のドロップは受けない (paradisAllowsHostDrop 参照)。 */
+	private canDrop(sources: readonly TransferableElement[], target: DropTarget): boolean {
+		return paradisAllowsHostDrop(sources.map(source => source.hostKey), target.hostKey);
 	}
 
 	dispose(): void { }
@@ -544,6 +548,8 @@ export class ParadisRemoteHostsView extends ViewPane {
 				return;
 			}
 			await paradisSaveToMachine(this.transferServices, asTransferSource(element), localUserHome);
+			// 転送先 (このマシン) もこのツリーに出ている。D&D・アップロードと同じく反映させる
+			await this.refresh();
 		} catch (error) {
 			this.notificationService.error(error);
 		}
@@ -555,6 +561,8 @@ export class ParadisRemoteHostsView extends ViewPane {
 		}
 		try {
 			await paradisSendToHost(this.transferServices, asTransferSource(element), this.remoteUserHome);
+			// 転送先 (接続先ホスト) もこのツリーに出ている。D&D・アップロードと同じく反映させる
+			await this.refresh();
 		} catch (error) {
 			this.notificationService.error(error);
 		}
@@ -576,7 +584,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 				files.map(uri => ({ uri, name: basename(uri), isDirectory: false })),
 				target.uri,
 			);
-			this.refresh();
+			await this.refresh();
 		} catch (error) {
 			this.notificationService.error(error);
 		}
@@ -588,7 +596,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 		}
 		try {
 			await paradisCopyToDirectory(this.transferServices, sources.map(source => asTransferSource(source)), target.uri);
-			this.refresh();
+			await this.refresh();
 		} catch (error) {
 			this.notificationService.error(error);
 		}

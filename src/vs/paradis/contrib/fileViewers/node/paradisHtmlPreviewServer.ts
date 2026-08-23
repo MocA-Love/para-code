@@ -90,12 +90,12 @@ function isWebviewOrigin(origin: string | undefined): boolean {
 	return origin === undefined || origin.startsWith('vscode-webview://');
 }
 
-/** `Host` として受け付ける相手。ポートは問わない（OS 任せで決まるため）。 */
 /** ヘッダーは配列で来ることがある。先頭だけを見る。 */
 function firstHeader(value: string | string[] | undefined): string | undefined {
 	return Array.isArray(value) ? value[0] : value;
 }
 
+/** `Host` として受け付ける相手。ポートは問わない（OS 任せで決まるため）。 */
 function isLoopbackHost(host: string | undefined): boolean {
 	if (!host) {
 		return false;

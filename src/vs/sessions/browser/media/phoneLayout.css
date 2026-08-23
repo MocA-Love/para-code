@@ -76,6 +76,8 @@
 	width: auto !important;
 }
 
+/* PARA-PATCH: upstream only lifts the toasts clear of the notch, so the notification
+ * center itself still opened underneath it on a phone. */
 .agent-sessions-workbench.phone-layout .notifications-center {
 	/* The inline `top: 40px` set by applySessionsNotificationOffsets sits under the
 	 * notch / Dynamic Island on phones; only toasts had an override so far. */

@@ -12,6 +12,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSpace, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
 
 const MAX_MERGED_SESSIONS = 600;
@@ -113,6 +114,13 @@ export class ParadisSessionResumeClient {
 				sessions.push(...result.value);
 			} else {
 				rejections.push(result.reason);
+				// Warning, not error: when only one machine fails (e.g. an SSH host is down) the list
+				// still renders with the other machine's sessions, so this is a silent partial result
+				// rather than an outright failure — but it was previously invisible either way.
+				reportParadisDiagnosticError('owned', 'session-resume', 'transcript-list-partial-failure', result.reason, {
+					safe_failed_attempts: rejections.length,
+					safe_total_attempts: attempts.length,
+				}, 'warning');
 				this.logService.warn('[ParadisSessionResume] a machine failed to list sessions', result.reason);
 			}
 		});

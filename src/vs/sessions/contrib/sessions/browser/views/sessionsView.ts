@@ -277,6 +277,8 @@ export class SessionsView extends ViewPane {
 		// Mobile filter chips (phone layout only) — created after sessionsControl
 		// so we can wire it as the filter host.
 		if (filterChipsContainer) {
+			// PARA-PATCH: created through the instantiation service now that the chips take a
+			// service dependency (drag-to-scroll needs the viewport class).
 			const chips = this._register(this.instantiationService.createInstance(MobileSessionFilterChips, filterChipsContainer, sessionsControl));
 			this._register(chips.onDidRequestSortGroup(() => {
 				this.openSortGroupSheet();

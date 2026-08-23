@@ -123,3 +123,12 @@ export function paradisWrapWindowsScriptShim(
 	// 引数中の `!` が破損しないようにする(node-pty 経由の claude setup-token 起動と同じ指定)。
 	return { file: comspec, args: ['/d', '/s', '/v:off', '/c', `"${commandLine}"`] };
 }
+
+// 既知の制限（プロセスの後始末）:
+// cmd.exe ラップした場合、`ChildProcess` は cmd.exe であり、`child.kill()` では
+// その先で走っている実体（node / codex 等）が孤児として残る。長く生きるプロセスを
+// 落とす箇所は `vs/base/node/processes.ts` の `killTree(pid, true)` を使うこと
+// （Windows では絶対パスの taskkill.exe を `/T /F` で叩く。common 層のここからは
+// node 層の API を呼べないため、この注意書きだけ置いてある）。
+// `cp.execFile` の `timeout` オプションによる強制終了も内部的には `child.kill()` なので、
+// 短命コマンドはタイムアウト時に孫プロセスが残りうる。そこは現状未対応。

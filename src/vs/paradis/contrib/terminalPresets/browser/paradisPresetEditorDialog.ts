@@ -50,10 +50,12 @@ import {
 	IParadisPresetService,
 	IParadisPresetTask,
 	IParadisResolvedPreset,
+	paradisBuildPresetHosts,
 	paradisDistinctFolderNames,
 	paradisFindPresetNameConflict,
 	paradisGetPresetTasks,
 	paradisGroupPresetsByFolder,
+	paradisIsReservedPresetHost,
 	paradisPresetCommandSignature,
 	paradisPresetFingerprint,
 	paradisPresetHostsLabel,
@@ -186,6 +188,8 @@ const STR_HOST_CHIP_REMOVE = localize('paradis.presetEditor.hostChipRemove', "�
 const STR_HOST_ENV_HINT_ANY = localize('paradis.presetEditor.hostEnvHintAny', "どちらも未チェックの場合は、すべての場所で表示されます（条件なし）。チェックした環境との AND 条件として「対象リポジトリ」が効きます。");
 // allow-any-unicode-next-line
 const STR_HOST_CHIPS_HINT_REMOTE_OFF = localize('paradis.presetEditor.hostChipsHintRemoteOff', "「リモート」にチェックを付けると編集できます。");
+// allow-any-unicode-next-line
+const strHostChipReserved = (value: string) => localize('paradis.presetEditor.hostChipReserved', "「{0}」は実行環境そのものを表す予約語のため、ホスト名には使えません。上のチェックボックスで指定してください。", value);
 // allow-any-unicode-next-line
 const STR_INACTIVE_BADGE = localize('paradis.presetEditor.inactiveBadge', "このウィンドウでは非表示");
 // allow-any-unicode-next-line
@@ -366,11 +370,11 @@ export function openParadisPresetEditorDialog(accessor: ServicesAccessor): void 
 	);
 }
 
+/** 常設シェル（ヘッダー／左ナビ／右コンテンツ）。再描画は右コンテンツの中身だけ行う。 */
 class ParadisPresetEditorDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _dialog: HTMLElement;
-	/** 常設シェル（ヘッダー／左ナビ／右コンテンツ）。再描画は右コンテンツの中身だけ行う。 */
 	private readonly _selectToggleEl: HTMLButtonElement;
 	private readonly _newBtnEl: HTMLButtonElement;
 	private readonly _navEl: HTMLElement;
@@ -407,6 +411,8 @@ class ParadisPresetEditorDialog extends Disposable {
 	private _rowPresets = new Map<string, IParadisResolvedPreset>();
 	/** ドラッグ中のプリセット（dragstart〜drop/dragend の間だけ非 undefined）。 */
 	private _dragging: IParadisResolvedPreset | undefined;
+	/** いま .drop-target / .drop-denied を付けている行。印は同時に1行だけ。 */
+	private _dropMarkedRow: HTMLElement | undefined;
 	/**
 	 * 編集フォームの dirty 判定。「フォームを開いた時点の値」と「現在値」を同じ形で読み取る
 	 * 関数を、編集ビュー（プリセット編集／フォルダ名変更／新規フォルダ）ごとに登録する。
@@ -562,7 +568,8 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 		}));
 		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			if (e.key === 'Escape') {
+			// IME の変換中 Escape は「変換の取り消し」であってダイアログを閉じる操作ではない
+			if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229) {
 				e.preventDefault();
 				if (this._mode === 'edit') {
 					void this._confirmDiscardUnsaved().then(proceed => {
@@ -895,7 +902,9 @@ class ParadisPresetEditorDialog extends Disposable {
 				row.draggable = true;
 				// ドラッグが始まらないまま grip の外で mouseup しても draggable を確実に解除する
 				//（grip 直上の mouseup は dragend / drop 側でも解除されるので二重で問題ない）。
-				this._viewStore.add(dom.addDisposableListener(window, 'mouseup', () => {
+				// 補助ウィンドウでは `window` は本体側を指してしまい mouseup が来ない。grip が載っている
+				// ウィンドウを取る。
+				this._viewStore.add(dom.addDisposableListener(dom.getWindow(grip), 'mouseup', () => {
 					row.draggable = false;
 				}, { once: true, capture: true }));
 			}));
@@ -1042,10 +1051,9 @@ class ParadisPresetEditorDialog extends Disposable {
 	 */
 	private _wireRowDragAndDrop(row: HTMLElement, preset: IParadisResolvedPreset, reorderBlocked?: string): void {
 		const clearDropMarks = (): void => {
-			for (const el of Array.from(this._contentEl.querySelectorAll('.ppe-row.drop-target, .ppe-row.drop-denied'))) {
-				el.classList.remove('drop-target');
-				el.classList.remove('drop-denied');
-			}
+			// 印は同時に1行にしか付かないので、探し直さずに控えた行から外す。
+			this._dropMarkedRow?.classList.remove('drop-target', 'drop-denied');
+			this._dropMarkedRow = undefined;
 		};
 		const finishDrag = (): void => {
 			row.draggable = false;
@@ -1080,6 +1088,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			if (e.dataTransfer) {
 				e.dataTransfer.dropEffect = 'move';
 			}
+			this._dropMarkedRow = row;
 			if (this._reorderRejection(dragging, preset)) {
 				row.classList.add('drop-denied');
 				return;
@@ -1089,6 +1098,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		this._viewStore.add(dom.addDisposableListener(row, 'dragleave', () => {
 			row.classList.remove('drop-target');
 			row.classList.remove('drop-denied');
+			if (this._dropMarkedRow === row) {
+				this._dropMarkedRow = undefined;
+			}
 		}));
 		this._viewStore.add(dom.addDisposableListener(row, 'drop', e => {
 			e.preventDefault();
@@ -1129,10 +1141,14 @@ class ParadisPresetEditorDialog extends Disposable {
 			if (e.dataTransfer) {
 				e.dataTransfer.dropEffect = 'move';
 			}
+			this._dropMarkedRow = row;
 			row.classList.add('drop-denied');
 		}));
 		this._viewStore.add(dom.addDisposableListener(row, 'dragleave', () => {
 			row.classList.remove('drop-denied');
+			if (this._dropMarkedRow === row) {
+				this._dropMarkedRow = undefined;
+			}
 		}));
 		this._viewStore.add(dom.addDisposableListener(row, 'drop', e => {
 			e.preventDefault();
@@ -1755,7 +1771,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		// この UI では表現できない。'remote'（どのホストでも）の方が広い条件なのでそちらを採用し、
 		// チップを捨てる——逆（チップだけ残す）だと、保存時に「gpu01 のみ」へ静かに縮んでしまう。
 		const hasRemoteLiteral = initialHosts.includes(PARADIS_PRESET_HOST_REMOTE);
-		const hostChips = hasRemoteLiteral ? [] : initialHosts.filter(entry => entry !== PARADIS_PRESET_HOST_LOCAL && entry !== PARADIS_PRESET_HOST_REMOTE);
+		const hostChips = hasRemoteLiteral ? [] : initialHosts.filter(entry => !paradisIsReservedPresetHost(entry));
 		const hostEnvField = field(STR_HOST_ENV);
 		const hostLocalInput = checkbox(STR_HOST_LOCAL, initialHosts.includes(PARADIS_PRESET_HOST_LOCAL), hostEnvField);
 		const hostRemoteInput = checkbox(STR_HOST_REMOTE, hasRemoteLiteral || hostChips.length > 0, hostEnvField);
@@ -1774,16 +1790,27 @@ class ParadisPresetEditorDialog extends Disposable {
 		chipInput.spellcheck = false;
 		const addChipFromInput = (): void => {
 			const value = chipInput.value.trim();
+			// 予約語（local / remote）はホスト名として受けない。受けてしまうと条件が
+			// 「SSH 未接続のときだけ」へ裏返る（paradisBuildPresetHosts のコメント参照）。
+			// 打った文字は消さずに残し、直せるようにする。
+			if (paradisIsReservedPresetHost(value)) {
+				chipsHint.textContent = strHostChipReserved(value);
+				return;
+			}
 			chipInput.value = '';
 			if (!value || hostChips.some(existing => existing.toLowerCase() === value.toLowerCase())) {
 				return;
 			}
+			chipsHint.textContent = '';
 			hostChips.push(value);
 			renderChips();
 			chipInput.focus();
 		};
 		this._viewStore.add(dom.addDisposableListener(chipInput, 'keydown', e => {
-			if (e.key === 'Enter') {
+			// IME の変換確定 Enter は「チップの追加」ではないので無視する。確定しただけで
+			// 未確定の文字列がチップになってしまうため。keyCode 229 は isComposing を
+			// 立てない環境向けの保険。
+			if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
 				e.preventDefault();
 				addChipFromInput();
 			}
@@ -1811,6 +1838,9 @@ class ParadisPresetEditorDialog extends Disposable {
 			// 「触っても効かない」状態を見せる。
 			const enabled = hostRemoteInput.checked;
 			hostChipsWrap.classList.toggle('disabled', !enabled);
+			// 見た目 (CSS の pointer-events) だけでなく入力欄自体も止める。キーボードで
+			// タブ移動すると触れてしまい、打ったホスト名が保存時に黙って捨てられるため。
+			chipInput.disabled = !enabled;
 			chipsHint.textContent = enabled ? '' : STR_HOST_CHIPS_HINT_REMOTE_OFF;
 		};
 		renderChips();
@@ -1820,7 +1850,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		// フォルダ欄と同じく、フォームを開いた時点の一覧で一度だけ作る。
 		const knownHosts = [...new Set(this.presetService.presets
 			.flatMap(preset => preset.hosts ?? [])
-			.filter(entry => entry !== PARADIS_PRESET_HOST_LOCAL && entry !== PARADIS_PRESET_HOST_REMOTE))]
+			.filter(entry => !paradisIsReservedPresetHost(entry)))]
 			.sort((a, b) => a.localeCompare(b));
 		if (knownHosts.length > 0) {
 			const datalist = dom.append(hostChipsWrap, $('datalist#ppe-host-datalist'));
@@ -1904,16 +1934,13 @@ class ParadisPresetEditorDialog extends Disposable {
 				return;
 			}
 			const appliesTo = appliesToInput.value.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-			// hosts 条件を UI の状態から組み立てる。ホスト列挙があるときは 'remote' リテラルを
-			// 書かない（列挙が「リモート有効＋絞り込み」を含意するため冗長。読み込み側は
-			// 列挙の存在で remote チェックを復元する）。
-			const hostEntries: string[] = [];
-			if (hostLocalInput.checked) {
-				hostEntries.push(PARADIS_PRESET_HOST_LOCAL);
-			}
-			if (hostRemoteInput.checked) {
-				hostEntries.push(...(hostChips.length > 0 ? hostChips : [PARADIS_PRESET_HOST_REMOTE]));
-			}
+			// hosts 条件は UI の状態から paradisBuildPresetHosts が組み立てる（予約語の除去も含めて
+			// 保存経路をそこ1本に絞ってある）。
+			const hosts = paradisBuildPresetHosts({
+				local: hostLocalInput.checked,
+				remote: hostRemoteInput.checked,
+				hosts: hostChips,
+			});
 			// 保存は常に新形式（tasks + layout）。旧形式の commands / launchMode はここで移行される
 			const definition: IParadisPresetDefinition = {
 				name,
@@ -1927,7 +1954,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				pinnedLabel: pinnedInput.checked && pinnedLabelInput.checked ? true : undefined,
 				autoRun: autoRunInput.checked,
 				appliesTo: userRadio.checked && appliesTo.length > 0 ? appliesTo : undefined,
-				hosts: hostEntries.length > 0 ? hostEntries : undefined,
+				hosts,
 			};
 			const target: ParadisPresetSource = workspaceRadio.checked ? 'workspace' : 'user';
 			const decision = await this._resolveNameConflict(definition, target, editing);

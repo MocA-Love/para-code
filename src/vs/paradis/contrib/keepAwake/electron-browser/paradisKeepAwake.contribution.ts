@@ -20,6 +20,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IPowerService, PowerSaveBlockerType } from '../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeMode, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
 
@@ -99,6 +100,7 @@ class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContr
 				await this.powerService.stopPowerSaveBlocker(oldId);
 			}
 		} catch (error) {
+			reportParadisDiagnosticError('owned', 'keep-awake', 'blocker-start-failed', error, undefined, 'warning');
 			this.logService.error('[paradisKeepAwake] failed to update power save blocker', error);
 		}
 
@@ -197,9 +199,9 @@ class ParadisSelectKeepAwakeModeAction extends Action2 {
 }
 registerAction2(ParadisSelectKeepAwakeModeAction);
 
-// モバイルデバイス接続時などリモート作業の開始点から呼ばれる内部コマンド（コマンドパレット非表示）。
+// モバイルデバイス接続時などリモート作業の開始点から呼ばれることを想定した内部コマンド（コマンドパレット非表示）。
 // 設定が 'off' の場合のみ、スリープ防止を有効にするよう推奨する。「今後表示しない」は
-// アプリケーションスコープで永続化される。
+// アプリケーションスコープで永続化される。現時点ではどこからも呼び出されていない。
 CommandsRegistry.registerCommand(PARADIS_KEEP_AWAKE_PROMPT_COMMAND, (accessor: ServicesAccessor) => {
 	const configurationService = accessor.get(IConfigurationService);
 	const notificationService = accessor.get(INotificationService);

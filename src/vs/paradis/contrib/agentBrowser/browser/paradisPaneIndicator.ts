@@ -141,12 +141,28 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 			cell.style.removeProperty('--paradis-agent-color');
 		}
 	};
+	const clearHoverHighlight = () => {
+		const cell = element.parentElement;
+		cell?.classList.remove('paradis-pvh-target');
+		cell?.style.removeProperty('--paradis-agent-color');
+	};
 	disposables.add(onDidChangeParadisHoveredPane(() => applyHoverHighlight()));
+	// ハイライトは「変化した瞬間」だけでなくマウント時にも反映する必要がある。ダイアログのペイン行を
+	// ホバーしたままグリッドのセルが作り直されると、新しいセルは onDidChangeParadisHoveredPane を
+	// 一度も受け取らないため、ホバー中なのに強調が付かないままになる（呼び出し側は
+	// createParadisPaneIndicator() の直後に appendChild するので、親が付くのを待ってから適用する）。
+	queueMicrotask(() => {
+		if (!disposables.isDisposed) {
+			applyHoverHighlight();
+		}
+	});
 	update();
 
 	return {
 		element,
 		dispose: () => {
+			// セルより先にインジケータだけが破棄される場合に強調が残らないよう、親から外す前に落とす。
+			clearHoverHighlight();
 			element.remove();
 			disposables.dispose();
 		},

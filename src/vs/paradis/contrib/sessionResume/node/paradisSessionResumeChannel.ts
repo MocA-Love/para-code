@@ -21,6 +21,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
 	IParadisResumeLatestMessage,
@@ -848,6 +849,10 @@ export class ParadisSessionResumeService {
 			}
 			return true;
 		} catch (error) {
+			// Not reported when the reporter is unwired (REH has no Sentry SDK), so this is a
+			// no-op there and only reaches Sentry from the shared process. Warning severity because
+			// the caller falls back to the slower per-file rollout scan rather than losing sessions.
+			reportParadisDiagnosticError('owned', 'session-resume', 'codex-index-unavailable', error, undefined, 'warning');
 			this.logService.debug('[ParadisSessionResume] unable to read Codex session index', error);
 			return false;
 		} finally {

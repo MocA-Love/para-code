@@ -63,6 +63,7 @@ suite('Sessions - Workbench', () => {
 	const applyCustomViewGridVisibility = Reflect.get(Workbench.prototype, '_applyCustomViewGridVisibility') as (this: ITestWorkbench, descriptor: object | undefined) => void;
 	const setSessionsHidden = Reflect.get(Workbench.prototype, 'setSessionsHidden') as (this: ITestWorkbench, hidden: boolean) => void;
 	const setPanelHidden = Reflect.get(Workbench.prototype, 'setPanelHidden') as (this: ITestWorkbench, hidden: boolean) => void;
+	// PARA-PATCH: for the mobile nav pop tests at the end of this suite.
 	const handleMobileNavPop = Reflect.get(Workbench.prototype, 'handleMobileNavPop') as (this: ITestWorkbench, layer: MobileNavigationLayer) => void;
 	const updateMobileCustomViewNavigation = Reflect.get(Workbench.prototype, '_updateMobileCustomViewNavigation') as (this: ITestWorkbench) => void;
 	const isVisible = Workbench.prototype.isVisible as (this: ITestWorkbench, part: Parts) => boolean;
@@ -2753,6 +2754,8 @@ suite('Sessions - Workbench', () => {
 		assert.strictEqual(storeCalled, false);
 	});
 
+	// PARA-PATCH: cover the phone-layout gate added to handleMobileNavPop (workbench.ts), so a
+	// nav-stack entry surviving a rotation cannot close the desktop sidebar.
 	// --- Mobile nav stack pop routing ---------------------------------------
 
 	function createMobileNavPopHost(viewportClass: 'phone' | 'tablet' | 'desktop') {

@@ -19,6 +19,7 @@ import { CopilotApiService, ICopilotApiService } from '../../../../platform/agen
 import { ProtectedResourceMetadata } from '../../../../platform/agentHost/common/state/protocol/state.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisCopilotUtilityRequest,
 	IParadisCopilotUtilityResult,
@@ -86,6 +87,8 @@ export class ParadisCopilotUtilityService {
 			return { text };
 		} catch (error) {
 			// 呼び出し側は必ず自前のフォールバックを持つので、ここでは記録して静かに諦める。
+			// (それゆえ全rejectionが呼び出し側からは表面化しない。頻度だけでも把握するため info で送る)
+			reportParadisDiagnosticError('owned', 'copilot-utility', 'completion-failed', error, { safe_aborted: abort.signal.aborted }, 'info');
 			this.logService.info('[ParadisCopilotUtility] utility completion failed', error);
 			return { error: error instanceof Error ? error.message : String(error) };
 		} finally {

@@ -105,7 +105,7 @@ export interface IParadisAgentBrowserBindingModel {
 	unbindPage(model: IBrowserViewModel): Promise<number>;
 
 	/**
-	 * 指定CLI（Claude Code / Codex）にpara-browser・chrome-devtools MCPをユーザーレベルで
+	 * 指定CLI（Claude Code / Codex）にpara-browser MCPをユーザーレベルで
 	 * 自動登録する（shared process経由）。実行結果を返す。
 	 */
 	setupMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult>;
@@ -113,7 +113,7 @@ export interface IParadisAgentBrowserBindingModel {
 	/** 「MCP接続設定」タブ表示用に、Claude Code / Codex のMCP設定ステータスを取得する。 */
 	getMcpConfigStatus(): Promise<IParadisMcpConfigStatus>;
 
-	/** 「ワンクリックで修正」/「自動セットアップ」を実行する（codexの古いポート決め打ちをshim方式へ）。 */
+	/** 「ワンクリックで修正」/「自動セットアップ」を実行する（codexの古いポート決め打ちをHTTP方式へ）。 */
 	fixMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult>;
 
 	/** shared processで起動済みのMCP+CDPゲートウェイ実ポートを取得する。 */
@@ -1023,9 +1023,11 @@ export function detectAgentKind(instance: ITerminalInstance): ParadisPaneAgentKi
 
 /**
  * エージェント種別ごとのブランドアクセント色。背面ターミナルハイライトの
- * パターンB（エージェント色ティント）で使う（MCPカードのロゴ色と同じブランド色）。
- * shell は特定CLIの色を持たないため undefined —— 呼び出し側がテーマのフォーカス色へ
- * フォールバックする。
+ * パターンB（エージェント色ティント）で使う。claude は MCPカードのロゴ背景と同じ色、
+ * codex はセッション再開一覧のバッジ色（paradisSessionResume.css の
+ * `.agent-badge.codex`）に揃えている（MCPカードのロゴはグラデーション地で単色では
+ * 代表できないため）。shell は特定CLIの色を持たないため undefined —— 呼び出し側が
+ * テーマのフォーカス色へフォールバックする。
  */
 export const PARADIS_PANE_AGENT_ACCENT: Readonly<Record<ParadisPaneAgentKind, string | undefined>> = {
 	claude: '#d97757',

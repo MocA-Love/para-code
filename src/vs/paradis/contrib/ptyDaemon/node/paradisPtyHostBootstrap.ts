@@ -15,18 +15,11 @@
 // どちらの場合も設定を知っている**ので、そこで決めて渡すのがいちばん素直で、判断が1箇所に済む。
 
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisPtyHostPaths, ParadisPtyHostPlatform } from '../common/paradisPtyHostPaths.js';
+import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths, ParadisPtyHostPlatform } from '../common/paradisPtyHostPaths.js';
 import { paradisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 import { paradisEnsurePtyHost } from './paradisEnsurePtyHost.js';
 import { paradisUsePtyDaemon } from './paradisTerminalProcessFactory.js';
-
-/**
- * 常駐に置き場所を与える環境変数。**これが無ければ常駐は使わない**（今までどおり）。
- *
- * 値は状態を置くディレクトリ。ここより下に 0700 のディレクトリを作り、ソケットと台帳を置く。
- */
-export const PARADIS_PTY_HOST_STATE_DIR = 'PARADIS_PTY_HOST_STATE_DIR';
 
 function currentPlatform(): ParadisPtyHostPlatform {
 	return process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';

@@ -407,6 +407,40 @@ export function paradisPresetHostsMatch(hosts: readonly string[] | undefined, cu
 }
 
 /**
+ * その語が hosts 条件の特殊値（"local" / "remote"）か。
+ *
+ * {@link paradisPresetHostsMatch} は特殊値を**完全一致**で判定するので、ここも完全一致で見る。
+ * 大文字を含む "Local" は特殊値ではなくホスト名として扱われる（照合時に小文字化されるため、
+ * 実際に `local` という名前の SSH ホストへ繋いでいるときだけ一致する）。
+ */
+export function paradisIsReservedPresetHost(value: string): boolean {
+	return value === PARADIS_PRESET_HOST_LOCAL || value === PARADIS_PRESET_HOST_REMOTE;
+}
+
+/**
+ * 編集 UI の状態（ローカル☑ / リモート☑ / ホスト列挙）から hosts 条件を組み立てる。
+ *
+ * **ホスト列挙から特殊値を落とす**のがこの関数の要。ホスト名の欄に "local" と打ててしまうと、
+ * 「リモートの local という名前のホストだけ」のつもりが `["local"]` として保存され、条件が
+ * 「SSH 未接続のときだけ」へ**裏返る**（読み直すとチップも消えるので、UI 上は何も残らない）。
+ * 保存経路をここ1本に絞って、その化けを起こせなくする。
+ *
+ * ホスト列挙があるときは "remote" を書かない（列挙が「リモート有効＋絞り込み」を含意するため
+ * 冗長。読み込み側は列挙の存在でリモートのチェックを復元する）。
+ */
+export function paradisBuildPresetHosts(selection: { readonly local: boolean; readonly remote: boolean; readonly hosts: readonly string[] }): string[] | undefined {
+	const entries: string[] = [];
+	if (selection.local) {
+		entries.push(PARADIS_PRESET_HOST_LOCAL);
+	}
+	if (selection.remote) {
+		const named = selection.hosts.map(host => host.trim()).filter(host => host.length > 0 && !paradisIsReservedPresetHost(host));
+		entries.push(...(named.length > 0 ? named : [PARADIS_PRESET_HOST_REMOTE]));
+	}
+	return entries.length > 0 ? entries : undefined;
+}
+
+/**
  * 書き戻す直前のリストから、対象プリセットの位置を解決する。見つからなければ -1。
  *
  * 一覧を開いてから保存するまでの間に、設定ファイルを手で編集したり別ウィンドウで並び替えたり

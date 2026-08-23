@@ -51,7 +51,8 @@ const COMMIT_WINDOW_MS = 500;
  *
  * Returns an {@link IDisposable} that detaches all listeners.
  */
-// NOTE: currently unwired — no workbench code imports this helper yet (see MOBILE.md).
+// PARA-PATCH: note only — recording that this helper is still unwired, so a reader does not
+// assume the phone layout already goes through it. No workbench code imports it yet (see MOBILE.md).
 export function installMobileEdgeSwipeToOpenSidebar(
 	mainContainer: HTMLElement,
 	openSidebar: () => void,

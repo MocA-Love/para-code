@@ -8,7 +8,7 @@
 /* Command Presets manager dialog (see paradisPresetEditorDialog.ts). */
 /* Settings Editor 風 2 ペイン構成: ヘッダー / 左ナビ（検索・フォルダツリー・出所）/ 右コンテンツ。 */
 
-/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
+/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, opaque editor-background panel, radius 8px, shadow-xl. */
 .paradis-preset-editor-backdrop {
 	position: absolute;
 	inset: 0;

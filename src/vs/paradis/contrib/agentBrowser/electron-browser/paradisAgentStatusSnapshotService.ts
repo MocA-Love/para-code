@@ -126,6 +126,9 @@ export class ParadisAgentStatusSnapshotService extends Disposable implements IPa
 					snapshot: Object.freeze({
 						paneStatuses: Object.freeze(snapshot.paneStatuses.map(status => Object.freeze({ ...status }))),
 						agentHookTokens: Object.freeze([...snapshot.agentHookTokens]),
+						...(snapshot.agentHookTokenIssueUrls ? {
+							agentHookTokenIssueUrls: Object.freeze(snapshot.agentHookTokenIssueUrls.map(entry => Object.freeze({ token: entry.token, issueUrls: Object.freeze([...entry.issueUrls]) }))),
+						} : {}),
 					}),
 				}));
 			}

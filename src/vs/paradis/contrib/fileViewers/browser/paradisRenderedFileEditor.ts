@@ -549,7 +549,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 				enableFindWidget: true,
 				tryRestoreScrollPosition: true,
 				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
-				// （「Rendered だけ間欠的に白紙になる」フィールド報告の主因、上の onFatalError 参照）。
+				// （「Rendered だけ間欠的に白紙になる」フィールド報告の主因、下の onFatalError 参照）。
 				// 生かしたまま隠すことでその窓を無くす。
 				retainContextWhenHidden: true,
 				disableServiceWorker: this._webviewServiceWorkerDisabled

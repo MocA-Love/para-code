@@ -32,6 +32,7 @@ import { localize } from '../../../../nls.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { browserZoomFactors, browserZoomLabel } from '../../../../platform/browserView/common/browserView.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IBrowserZoomService } from '../../../../workbench/contrib/browserView/common/browserZoomService.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
@@ -40,9 +41,10 @@ import { BrowserEditorZoomSupport } from '../../../../workbench/contrib/browserV
 /**
  * URL ボックス内での並び順。
  *
- * 同じ入れ物には共有トグル (50)・お気に入り (60)・タブ pill (100) が入っていて、狭いときに
- * 刈られるのは右端から。倍率は「見えていると助かる」だけの情報なので、upstream のボタンより
- * 後ろへ置き、詰まったときに先に諦めるのはこちらにする。
+ * 同じ入れ物には共有トグル (50)・ブックマークの星 (60、フォーク独自の bookmark bar 機能。
+ * upstream のお気に入りは無効化済み)・タブ pill (100) が入っていて、狭いときに刈られるのは
+ * 右端から。倍率は「見えていると助かる」だけの情報なので、他のボタンより後ろへ置き、詰まった
+ * ときに先に諦めるのはこちらにする。
  */
 const WIDGET_ORDER = 90;
 
@@ -128,7 +130,10 @@ export class ParadisBrowserZoomIndicator extends BrowserEditorContribution {
 	private run(action: (support: BrowserEditorZoomSupport) => Promise<void>): void {
 		const support = this.editor.getContribution(BrowserEditorZoomSupport);
 		if (support) {
-			action(support).catch(onUnexpectedError);
+			action(support).catch(error => {
+				reportParadisDiagnosticError('owned', 'browser-zoom-indicator', 'action-failed', error);
+				onUnexpectedError(error);
+			});
 		}
 	}
 

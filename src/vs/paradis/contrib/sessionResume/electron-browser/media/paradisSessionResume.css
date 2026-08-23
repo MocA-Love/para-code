@@ -3,8 +3,47 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* allow-any-unicode-next-line */
+/* モーダルダイアログの殻。エディタ(タブ)ではなくダイアログにしているのは、3カラムの最小幅
+ * (216 + 300 + 420 = 936px) をエディタのペイン幅では満たせないことがあるため
+ * (左右分割・サイドバー展開)。ダイアログならウィンドウ幅を基準にできる。 */
+/* 背景・パネルの見た目は他の fork ダイアログ(paradisNotificationSettings.css)と同じ階層に揃える。 */
+.paradis-session-resume-backdrop {
+	position: absolute; inset: 0; z-index: 2700;
+	display: flex; align-items: center; justify-content: center;
+	background: rgba(0, 0, 0, 0.5);
+}
+.paradis-session-resume-modal {
+	display: flex; flex-direction: column; min-width: 0; min-height: 0;
+	/* 3カラムの最小 936px に余白を足した既定寸法。狭い画面では vw/vh で頭打ちにし、
+	 * 下の @container で 2カラム → 1カラムへ段階的に畳む。 */
+	width: 1240px; max-width: 94vw;
+	height: 780px; max-height: 92vh;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border)); border-radius: 8px;
+	overflow: hidden; outline: none;
+	background: var(--vscode-editor-background); color: var(--vscode-foreground);
+	box-shadow: var(--vscode-shadow-xl);
+	font-size: 13px;
+	/* 段階の切り替えはウィンドウ幅ではなくダイアログ自身の幅で見る。上の寸法を変えても連動する。 */
+	container-type: inline-size; container-name: paradis-session-resume;
+}
+/* モーダルは Escape を拾うため tabindex=-1 でフォーカスを受ける。workbench 全体の
+ * [tabindex="-1"]:focus ルールが枠を描いてしまうので打ち消す(通知設定ダイアログと同じ)。 */
+.monaco-workbench .paradis-session-resume-modal:focus { outline: none !important; }
+.paradis-session-resume-modal-header {
+	flex: none; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px 0 16px;
+	border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background);
+}
+.paradis-session-resume-modal-header h2 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.paradis-session-resume-modal-close {
+	flex: none; width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+	border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--vscode-icon-foreground);
+}
+.paradis-session-resume-modal-close:hover { background: var(--vscode-toolbar-hoverBackground); }
+.paradis-session-resume-modal-close:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
 .paradis-session-resume {
-	height: 100%; display: flex; flex-direction: column; overflow: hidden;
+	flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
 	background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);
 }
 /* 左: フィルタナビ(旧 toolbar のフィルタ群をここへ移設) */
@@ -160,7 +199,11 @@
 .paradis-session-resume .paradis-session-resume-state { min-height: 180px; height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
 /* 広い幅では左ナビが常に見えるため、開閉トグルは不要 */
 .paradis-session-resume .paradis-session-resume-rail-toggle { display: none; }
-@media (max-width: 900px) {
+/* allow-any-unicode-next-line */
+/* 閾値 935px は 3カラムの最小合計幅(216 + 300 + 420 = 936px)から 1px 引いた値。
+ウィンドウ幅ではなくダイアログ自身の幅(@container)で測る。ダイアログは 94vw で頭打ちになるので、
+狭い画面では自然にこの段へ落ちる。 */
+@container paradis-session-resume (max-width: 935px) {
 	/* 3カラムが入らない幅では左ナビを折りたたみ、ヘッダーのトグルで出し入れする。
 	開いている間はリスト列に被せるドロワー表示にして 2カラムの幅を維持する。 */
 	.paradis-session-resume .paradis-session-resume-rail-toggle { display: inline-flex; }
@@ -171,3 +214,21 @@
 		box-shadow: 4px 0 12px rgba(0, 0, 0, .35);
 	}
 }
+
+/* allow-any-unicode-next-line */
+/* 2カラム(minmax(280px,43%) + minmax(320px,1fr) = 最小 600px)も入らない幅では1カラムにし、
+ * 一覧 → 詳細のドリルダウンにする。詳細を開いている間だけ .detail-open が付く。 */
+@container paradis-session-resume (max-width: 599px) {
+	.paradis-session-resume .paradis-session-resume-content { grid-template-columns: 1fr; }
+	.paradis-session-resume .paradis-session-resume-detail { display: none; }
+	.paradis-session-resume.detail-open .paradis-session-resume-listcolumn { display: none; }
+	.paradis-session-resume.detail-open .paradis-session-resume-detail { display: flex; }
+	.paradis-session-resume .paradis-session-resume-detail-back { display: inline-flex; }
+}
+/* 広い幅では一覧へ戻るボタンは不要（一覧が常に見えている）。 */
+.paradis-session-resume .paradis-session-resume-detail-back {
+	display: none; align-items: center; gap: 5px; margin-bottom: 10px; height: 24px; padding: 0 9px;
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); border-radius: 5px;
+	background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); font-size: 11px;
+}
+.paradis-session-resume .paradis-session-resume-detail-back:hover { background: var(--vscode-list-hoverBackground); }

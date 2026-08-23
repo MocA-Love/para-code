@@ -103,10 +103,9 @@ suite('ParadisAdoptIntoPtyService', () => {
 					shouldPersist: true,
 					workspaceId: 'ws-1',
 					workspaceName: 'para',
-					// **この2つが要る。** `initialText` は `IProcessDetails` に含まれないので、
-					// これだけではウィンドウへ渡る経路に乗らず、画面は空になる。器の中の
-					// 直列化へ流し込むには upstream の復元と同じ形で渡す必要がある。
-					// 復元ではない。走っているものに繋ぎ直すので、画面は繋いだときに流れてくる。
+					// **復元ではない。** 走っているものに繋ぎ直すだけなので、画面は繋いだときに
+					// 流れてくる。upstream の復元用の材料（`isReviving` / `rawReviveBuffer`）は
+					// 要らず、渡さない。
 					isReviving: undefined,
 					rawReviveBuffer: undefined,
 					// **これが本題。** 引き取り先を名指ししているので、器は起こさずに繋ぐ。
