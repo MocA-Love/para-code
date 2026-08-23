@@ -40,6 +40,11 @@ suite('ParadisPortListClient route identity', () => {
 
 	test('uses null as local and a connection object as remote for every operation', async () => {
 		const request: IParadisPortKillRequest = { port: 3000, pid: 10, processName: 'node' };
+		const expectedCalls: readonly IRecordedCall[] = [
+			{ command: 'getSnapshot', arg: [{ force: false }] },
+			{ command: 'kill', arg: [request] },
+			{ command: 'killAll', arg: [[request]] },
+		];
 		const sharedCalls: IRecordedCall[] = [];
 		const remoteCalls: IRecordedCall[] = [];
 		const sharedChannel = recordingChannel(sharedCalls);
@@ -53,25 +58,28 @@ suite('ParadisPortListClient route identity', () => {
 		await client.getSnapshot();
 		await client.kill(request, false);
 		assert.deepStrictEqual(await client.killAll([request], false), { failed: 0 });
+		assert.deepStrictEqual(sharedCalls, expectedCalls);
 		await assert.rejects(client.kill(request, true), /remote connection state changed/);
 		await assert.rejects(client.killAll([request], true), /remote connection state changed/);
-		assert.deepStrictEqual(sharedCalls.map(call => call.command), ['getSnapshot', 'kill', 'killAll']);
+		assert.deepStrictEqual(sharedCalls, expectedCalls);
 
 		connection = { getChannel: () => remoteChannel } as unknown as IRemoteAgentConnection;
 		assert.strictEqual(client.connectedToRemote, true);
 		await client.getSnapshot();
 		await client.kill(request, true);
 		assert.deepStrictEqual(await client.killAll([request], true), { failed: 0 });
+		assert.deepStrictEqual(remoteCalls, expectedCalls);
 		await assert.rejects(client.kill(request, false), /remote connection state changed/);
 		await assert.rejects(client.killAll([request], false), /remote connection state changed/);
-		assert.deepStrictEqual(remoteCalls.map(call => call.command), ['getSnapshot', 'kill', 'killAll']);
+		assert.deepStrictEqual(remoteCalls, expectedCalls);
 
 		connection = null;
 		assert.strictEqual(client.connectedToRemote, false);
 		await client.getSnapshot();
 		await client.kill(request, false);
 		await client.killAll([request], false);
+		assert.deepStrictEqual(sharedCalls, [...expectedCalls, ...expectedCalls]);
 		await assert.rejects(client.killAll([request], true), /remote connection state changed/);
-		assert.deepStrictEqual(sharedCalls.map(call => call.command), ['getSnapshot', 'kill', 'killAll', 'getSnapshot', 'kill', 'killAll']);
+		assert.deepStrictEqual(sharedCalls, [...expectedCalls, ...expectedCalls]);
 	});
 });
