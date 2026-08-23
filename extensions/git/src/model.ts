@@ -22,7 +22,7 @@ import { IBranchProtectionProviderRegistry } from './branchProtection';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
 import { RepositoryCache } from './repositoryCache';
 import { ParadisRepositoryParkingLot } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
-import { selectRepositoriesForUnifiedParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
+import { coordinateRepositoriesForParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
 
 class RepositoryPick implements QuickPickItem {
 	@memoize get label(): string {
@@ -281,6 +281,9 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	 * Value - canonical path of the workspace folder
 	 */
 	private _workspaceFolders = new Map<string, string>();
+	// PARA-PATCH: an older workspace-folder handler must not park or open repositories after a
+	// newer switch has started while it awaited realpath resolution. See paradisUnaccountedToPark.ts.
+	private _workspaceFolderChangeGeneration = 0;
 
 	private readonly _repositoryCache: RepositoryCache;
 	get repositoryCache(): RepositoryCache {
@@ -480,6 +483,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	}
 
 	private async onDidChangeWorkspaceFolders({ added, removed }: WorkspaceFoldersChangeEvent): Promise<void> {
+		const generation = ++this._workspaceFolderChangeGeneration;
 		try {
 			// PARA-PATCH: bring back repositories parked by an earlier space switch before deciding
 			// what still needs opening, so the expensive path below is skipped entirely on the way
@@ -488,35 +492,45 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 				this._parkingLot.unparkForFolder(folder.uri.fsPath);
 			}
 
-			const possibleRepositoryFolders = added
-				.filter(folder => !this.getOpenRepository(folder.uri));
+			const initialCurrentFolders = (workspace.workspaceFolders || []).filter(folder => folder.uri.scheme === 'file');
+			const initialCurrentFoldersByPath = new Map(initialCurrentFolders.map(folder => [folder.uri.fsPath, folder]));
+			const getParkingSnapshot = () => {
+				const currentFolders = (workspace.workspaceFolders || []).filter(folder => folder.uri.scheme === 'file');
+				const activeRepositories = new Set(window.visibleTextEditors
+					.map(editor => this.getRepository(editor.document.uri))
+					.filter(repository => !!repository) as Repository[]);
+				return {
+					currentFolderPaths: currentFolders.map(folder => folder.uri.fsPath),
+					removedRepositories: removed.map(folder => this.getOpenRepository(folder.uri)),
+					openRepositories: [...this.openRepositories],
+					activeRepositories,
+				};
+			};
 
-			const activeRepositories = new Set(window.visibleTextEditors
-				.map(editor => this.getRepository(editor.document.uri))
-				.filter(repository => !!repository) as Repository[]);
-			const removedRepositories = removed.map(folder => this.getOpenRepository(folder.uri));
+			// PARA-PATCH: gather every removed and open repository before one parking decision. A
+			// newer workspace event invalidates this handler after realpath awaits, and an unresolved
+			// current-folder realpath skips only parking so canonical aliases remain fail-safe.
+			const parkingResult = await coordinateRepositoriesForParking(
+				getParkingSnapshot,
+				() => generation === this._workspaceFolderChangeGeneration,
+				folderPath => {
+					const folder = initialCurrentFoldersByPath.get(folderPath);
+					return folder ? this.getWorkspaceFolderRealPath(folder) : Promise.resolve(undefined);
+				},
+				isDescendant,
+				pathEquals,
+			);
 
-			// PARA-PATCH: gather every removed and open repository before one parking decision. This
-			// preserves warm repository reuse while preventing a first pass from parking an ancestor,
-			// descendant, or symbolic-link alias of a current workspace folder. `park()` still fires
-			// `onDidCloseRepository` and removes the wrapper from `openRepositories`, so it must run
-			// only after all candidates and both logical and real current-folder paths are known.
-			const currentFolders = (workspace.workspaceFolders || []).filter(folder => folder.uri.scheme === 'file');
-			const currentFolderPaths = new Set(currentFolders.map(folder => folder.uri.fsPath));
-			for (const realPath of await Promise.all(currentFolders.map(folder => this.getWorkspaceFolderRealPath(folder)))) {
-				if (realPath) {
-					currentFolderPaths.add(realPath);
-				}
+			if (parkingResult.kind === 'stale') {
+				return;
 			}
 
-			const repositoriesToPark = selectRepositoriesForUnifiedParking(
-				removedRepositories,
-				this.openRepositories,
-				activeRepositories,
-				[...currentFolderPaths],
-				isDescendant,
-			);
-			repositoriesToPark.forEach(repository => repository.park());
+			if (parkingResult.kind === 'ready') {
+				parkingResult.repositoriesToPark.forEach(repository => repository.park());
+			}
+
+			const possibleRepositoryFolders = added
+				.filter(folder => !this.getOpenRepository(folder.uri));
 
 			this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${possibleRepositoryFolders.map(p => p.uri.fsPath).join(', ')}]`);
 			await Promise.all(possibleRepositoryFolders.map(p => this.openRepository(p.uri.fsPath)));

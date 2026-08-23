@@ -7,7 +7,7 @@
 
 import 'mocha';
 import * as assert from 'assert';
-import { IParadisUnaccountedCandidate, selectRepositoriesForUnifiedParking, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
+import { coordinateRepositoriesForParking, IParadisParkingSnapshot, IParadisUnaccountedCandidate, selectRepositoriesForUnifiedParking, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
 
 function candidate(root: string, rootRealPath?: string): IParadisUnaccountedCandidate {
 	return { repository: { root, rootRealPath } };
@@ -24,6 +24,30 @@ function isDescendant(parent: string, descendant: string): boolean {
 		return true;
 	}
 	return descendant.startsWith(parent.endsWith('/') ? parent : `${parent}/`);
+}
+
+function normalizedPathEquals(a: string, b: string): boolean {
+	const normalize = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+	return normalize(a) === normalize(b);
+}
+
+function snapshot(
+	currentFolderPaths: readonly string[],
+	openRepositories: readonly IParadisUnaccountedCandidate[],
+	activeRepositories: ReadonlySet<IParadisUnaccountedCandidate['repository']> = new Set(),
+	removedRepositories: readonly (IParadisUnaccountedCandidate | undefined)[] = [],
+): IParadisParkingSnapshot<IParadisUnaccountedCandidate> {
+	return { currentFolderPaths, openRepositories, activeRepositories, removedRepositories };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: Error): void } {
+	let resolve: (value: T) => void;
+	let reject: (error: Error) => void;
+	const promise = new Promise<T>((complete, fail) => {
+		resolve = complete;
+		reject = fail;
+	});
+	return { promise, resolve: resolve!, reject: reject! };
 }
 
 suite('selectUnaccountedForParking', () => {
@@ -83,6 +107,21 @@ suite('selectUnaccountedForParking', () => {
 		assert.deepStrictEqual(result, []);
 	});
 
+	test('keeps exact aliases that differ only by case, separators, or trailing separators', () => {
+		const repos = [
+			candidate('/Users/Name/Repo'),
+			candidate('C:\\Repo'),
+			candidate('\\\\Server\\Share\\Repo'),
+		];
+		const result = selectUnaccountedForParking(
+			repos,
+			['/users/name/repo/', 'c:/repo/', '//server/share/repo/'],
+			isDescendant,
+			normalizedPathEquals,
+		);
+		assert.deepStrictEqual(result, []);
+	});
+
 	test('selects unified unaccounted repositories once in first-seen order', () => {
 		const ancestor = candidate('/repo');
 		const active = candidate('/active');
@@ -97,5 +136,107 @@ suite('selectUnaccountedForParking', () => {
 			isDescendant,
 		);
 		assert.deepStrictEqual(result, [firstUnrelated, secondUnrelated]);
+	});
+
+	test('returns stale when a newer workspace generation arrives during realpath resolution', async () => {
+		const c = candidate('/spaces/c');
+		let generation = 1;
+		let latestSnapshot = snapshot(['/spaces/b'], [c]);
+		const realpath = deferred<string | undefined>();
+		const resultPromise = coordinateRepositoriesForParking(
+			() => latestSnapshot,
+			() => generation === 1,
+			() => realpath.promise,
+			isDescendant,
+			normalizedPathEquals,
+		);
+
+		generation++;
+		latestSnapshot = snapshot(['/spaces/c'], [c]);
+		realpath.resolve('/spaces/b');
+
+		assert.deepStrictEqual(await resultPromise, { kind: 'stale' });
+	});
+
+	test('returns stale when current folders change while resolving realpaths', async () => {
+		let latestSnapshot = snapshot(['/spaces/b'], []);
+		const realpath = deferred<string | undefined>();
+		const resultPromise = coordinateRepositoriesForParking(
+			() => latestSnapshot,
+			() => true,
+			() => realpath.promise,
+			isDescendant,
+			normalizedPathEquals,
+		);
+
+		latestSnapshot = snapshot(['/spaces/c'], []);
+		realpath.resolve('/spaces/b');
+
+		assert.deepStrictEqual(await resultPromise, { kind: 'stale' });
+	});
+
+	test('uses the latest visible-editor repositories after realpath resolution', async () => {
+		const editorRepository = candidate('/other');
+		let latestSnapshot = snapshot(['/workspace'], [editorRepository]);
+		const realpath = deferred<string | undefined>();
+		const resultPromise = coordinateRepositoriesForParking(
+			() => latestSnapshot,
+			() => true,
+			() => realpath.promise,
+			isDescendant,
+			normalizedPathEquals,
+		);
+
+		latestSnapshot = snapshot(['/workspace'], [editorRepository], new Set([editorRepository.repository]));
+		realpath.resolve('/workspace');
+
+		assert.deepStrictEqual(await resultPromise, { kind: 'ready', repositoriesToPark: [] });
+	});
+
+	test('keeps a logical-root repository when only the current real path matches it', async () => {
+		const logicalRoot = candidate('/canonical/repo');
+		const result = await coordinateRepositoriesForParking(
+			() => snapshot(['/logical/repo'], [logicalRoot]),
+			() => true,
+			() => Promise.resolve('/canonical/repo'),
+			isDescendant,
+			normalizedPathEquals,
+		);
+		assert.deepStrictEqual(result, { kind: 'ready', repositoriesToPark: [] });
+	});
+
+	test('keeps a real-root repository when only the current logical path matches it', async () => {
+		const realRoot = candidate('/other/repo', '/logical/repo');
+		const result = await coordinateRepositoriesForParking(
+			() => snapshot(['/logical/repo'], [realRoot]),
+			() => true,
+			() => Promise.resolve('/canonical/repo'),
+			isDescendant,
+			normalizedPathEquals,
+		);
+		assert.deepStrictEqual(result, { kind: 'ready', repositoriesToPark: [] });
+	});
+
+	test('fails safe without parking when any current folder realpath is unavailable', async () => {
+		const canonicalOnly = candidate('/canonical/repo');
+		const result = await coordinateRepositoriesForParking(
+			() => snapshot(['/logical/repo'], [canonicalOnly]),
+			() => true,
+			() => Promise.resolve(undefined),
+			isDescendant,
+			normalizedPathEquals,
+		);
+		assert.deepStrictEqual(result, { kind: 'skipParking' });
+	});
+
+	test('fails safe without parking when current folder realpath rejects', async () => {
+		const result = await coordinateRepositoriesForParking(
+			() => snapshot(['/logical/repo'], [candidate('/canonical/repo')]),
+			() => true,
+			() => Promise.reject(new Error('realpath failed')),
+			isDescendant,
+			normalizedPathEquals,
+		);
+		assert.deepStrictEqual(result, { kind: 'skipParking' });
 	});
 });
