@@ -23,11 +23,10 @@ export interface IParadisParkingSnapshot<T extends IParadisUnaccountedCandidate>
 	readonly activeRepositories: ReadonlySet<T['repository']>;
 }
 
-/** realpath 待機後の handler が実行してよい操作を表す。 */
-export type ParadisParkingCoordinatorResult<T extends IParadisUnaccountedCandidate> =
+/** realpath 待機後の handler が commit まで完了したかを表す。 */
+export type ParadisParkingCoordinatorResult =
 	| { readonly kind: 'stale' }
-	| { readonly kind: 'skipParking' }
-	| { readonly kind: 'ready'; readonly repositoriesToPark: T[] };
+	| { readonly kind: 'committed'; readonly skippedParking: boolean };
 
 /**
  * 現在のワークスペースフォルダのどれにも属さない（＝自動検出で開かれたまま取り残された）
@@ -102,17 +101,19 @@ function currentFoldersMatch(
 
 /**
  * current folder の logical path から realpath を安全に解決し、その待機中に workspace が
- * 切り替わっていないことを確認してから最新 snapshot で parking 候補を選ぶ。realpath を
- * 一つでも確定できない回は、canonical alias の repository を誤って park しないため mutation
- * だけを見送る。呼び出し側は `skipParking` でも added folder の open を継続できる。
+ * 切り替わっていないことを確認してから最新 snapshot で parking 候補を選ぶ。最終世代確認、
+ * selection、同期 commit は同じ Promise continuation 内で完結させ、stale な候補を caller が
+ * 後から mutate できないようにする。realpath を一つでも確定できない回は parking を見送るが、
+ * commit callback に最新 folder を渡すので added-folder open は継続できる。
  */
-export async function coordinateRepositoriesForParking<T extends IParadisUnaccountedCandidate>(
+export async function commitRepositoriesForParking<T extends IParadisUnaccountedCandidate>(
 	getSnapshot: () => IParadisParkingSnapshot<T>,
 	isCurrent: () => boolean,
 	resolveRealPath: (folderPath: string) => Promise<string | undefined>,
 	isDescendant: (parent: string, descendant: string) => boolean,
 	pathEquals: (a: string, b: string) => boolean,
-): Promise<ParadisParkingCoordinatorResult<T>> {
+	commit: (repositoriesToPark: readonly T[], currentFolderPaths: readonly string[]) => void,
+): Promise<ParadisParkingCoordinatorResult> {
 	const initialSnapshot = getSnapshot();
 	const realPaths = await Promise.all(initialSnapshot.currentFolderPaths.map(async folderPath => {
 		try {
@@ -122,29 +123,22 @@ export async function coordinateRepositoriesForParking<T extends IParadisUnaccou
 		}
 	}));
 
-	if (!isCurrent()) {
-		return { kind: 'stale' };
-	}
-
 	const latestSnapshot = getSnapshot();
-	if (!currentFoldersMatch(initialSnapshot.currentFolderPaths, latestSnapshot.currentFolderPaths, pathEquals)) {
+	if (!isCurrent() || !currentFoldersMatch(initialSnapshot.currentFolderPaths, latestSnapshot.currentFolderPaths, pathEquals)) {
 		return { kind: 'stale' };
 	}
 
-	if (realPaths.some(realPath => realPath === undefined)) {
-		return { kind: 'skipParking' };
-	}
+	const skippedParking = realPaths.some(realPath => realPath === undefined);
 	const resolvedRealPaths = realPaths.filter((realPath): realPath is string => realPath !== undefined);
-
-	return {
-		kind: 'ready',
-		repositoriesToPark: selectRepositoriesForUnifiedParking(
+	const repositoriesToPark = skippedParking ? [] : selectRepositoriesForUnifiedParking(
 			latestSnapshot.removedRepositories,
 			latestSnapshot.openRepositories,
 			latestSnapshot.activeRepositories,
 			[...latestSnapshot.currentFolderPaths, ...resolvedRealPaths],
 			isDescendant,
 			pathEquals,
-		),
-	};
+		);
+
+	commit(repositoriesToPark, latestSnapshot.currentFolderPaths);
+	return { kind: 'committed', skippedParking };
 }

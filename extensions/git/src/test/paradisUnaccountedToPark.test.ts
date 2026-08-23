@@ -7,7 +7,7 @@
 
 import 'mocha';
 import * as assert from 'assert';
-import { coordinateRepositoriesForParking, IParadisParkingSnapshot, IParadisUnaccountedCandidate, selectRepositoriesForUnifiedParking, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
+import { commitRepositoriesForParking, IParadisParkingSnapshot, IParadisUnaccountedCandidate, selectRepositoriesForUnifiedParking, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
 
 function candidate(root: string, rootRealPath?: string): IParadisUnaccountedCandidate {
 	return { repository: { root, rootRealPath } };
@@ -138,105 +138,198 @@ suite('selectUnaccountedForParking', () => {
 		assert.deepStrictEqual(result, [firstUnrelated, secondUnrelated]);
 	});
 
-	test('returns stale when a newer workspace generation arrives during realpath resolution', async () => {
+	test('does not commit when a newer workspace generation arrives during realpath resolution', async () => {
 		const c = candidate('/spaces/c');
 		let generation = 1;
 		let latestSnapshot = snapshot(['/spaces/b'], [c]);
 		const realpath = deferred<string | undefined>();
-		const resultPromise = coordinateRepositoriesForParking(
+		let commits = 0;
+		const resultPromise = commitRepositoriesForParking(
 			() => latestSnapshot,
 			() => generation === 1,
 			() => realpath.promise,
 			isDescendant,
 			normalizedPathEquals,
+			() => commits++,
 		);
 
 		generation++;
 		latestSnapshot = snapshot(['/spaces/c'], [c]);
 		realpath.resolve('/spaces/b');
 
-		assert.deepStrictEqual(await resultPromise, { kind: 'stale' });
+		assert.deepStrictEqual({ result: await resultPromise, commits }, { result: { kind: 'stale' }, commits: 0 });
 	});
 
-	test('returns stale when current folders change while resolving realpaths', async () => {
+	test('does not commit when current folders change while resolving realpaths', async () => {
 		let latestSnapshot = snapshot(['/spaces/b'], []);
 		const realpath = deferred<string | undefined>();
-		const resultPromise = coordinateRepositoriesForParking(
+		let commits = 0;
+		const resultPromise = commitRepositoriesForParking(
 			() => latestSnapshot,
 			() => true,
 			() => realpath.promise,
 			isDescendant,
 			normalizedPathEquals,
+			() => commits++,
 		);
 
 		latestSnapshot = snapshot(['/spaces/c'], []);
 		realpath.resolve('/spaces/b');
 
-		assert.deepStrictEqual(await resultPromise, { kind: 'stale' });
+		assert.deepStrictEqual({ result: await resultPromise, commits }, { result: { kind: 'stale' }, commits: 0 });
 	});
 
-	test('uses the latest visible-editor repositories after realpath resolution', async () => {
+	test('uses the latest visible-editor repositories before committing', async () => {
 		const editorRepository = candidate('/other');
 		let latestSnapshot = snapshot(['/workspace'], [editorRepository]);
 		const realpath = deferred<string | undefined>();
-		const resultPromise = coordinateRepositoriesForParking(
+		const committedRepositories: Array<readonly IParadisUnaccountedCandidate[]> = [];
+		const resultPromise = commitRepositoriesForParking(
 			() => latestSnapshot,
 			() => true,
 			() => realpath.promise,
 			isDescendant,
 			normalizedPathEquals,
+			repositories => committedRepositories.push(repositories),
 		);
 
 		latestSnapshot = snapshot(['/workspace'], [editorRepository], new Set([editorRepository.repository]));
 		realpath.resolve('/workspace');
 
-		assert.deepStrictEqual(await resultPromise, { kind: 'ready', repositoriesToPark: [] });
+		assert.deepStrictEqual(
+			{ result: await resultPromise, committedRepositories },
+			{ result: { kind: 'committed', skippedParking: false }, committedRepositories: [[]] },
+		);
 	});
 
 	test('keeps a logical-root repository when only the current real path matches it', async () => {
 		const logicalRoot = candidate('/canonical/repo');
-		const result = await coordinateRepositoriesForParking(
+		const committedRepositories: Array<readonly IParadisUnaccountedCandidate[]> = [];
+		const result = await commitRepositoriesForParking(
 			() => snapshot(['/logical/repo'], [logicalRoot]),
 			() => true,
 			() => Promise.resolve('/canonical/repo'),
 			isDescendant,
 			normalizedPathEquals,
+			repositories => committedRepositories.push(repositories),
 		);
-		assert.deepStrictEqual(result, { kind: 'ready', repositoriesToPark: [] });
+		assert.deepStrictEqual({ result, committedRepositories }, { result: { kind: 'committed', skippedParking: false }, committedRepositories: [[]] });
 	});
 
 	test('keeps a real-root repository when only the current logical path matches it', async () => {
 		const realRoot = candidate('/other/repo', '/logical/repo');
-		const result = await coordinateRepositoriesForParking(
+		const committedRepositories: Array<readonly IParadisUnaccountedCandidate[]> = [];
+		const result = await commitRepositoriesForParking(
 			() => snapshot(['/logical/repo'], [realRoot]),
 			() => true,
 			() => Promise.resolve('/canonical/repo'),
 			isDescendant,
 			normalizedPathEquals,
+			repositories => committedRepositories.push(repositories),
 		);
-		assert.deepStrictEqual(result, { kind: 'ready', repositoriesToPark: [] });
+		assert.deepStrictEqual({ result, committedRepositories }, { result: { kind: 'committed', skippedParking: false }, committedRepositories: [[]] });
 	});
 
-	test('fails safe without parking when any current folder realpath is unavailable', async () => {
+	test('skips parking but commits latest folders when any current folder realpath is unavailable', async () => {
 		const canonicalOnly = candidate('/canonical/repo');
-		const result = await coordinateRepositoriesForParking(
+		const commits: Array<{ repositories: readonly IParadisUnaccountedCandidate[]; folders: readonly string[] }> = [];
+		const result = await commitRepositoriesForParking(
 			() => snapshot(['/logical/repo'], [canonicalOnly]),
 			() => true,
 			() => Promise.resolve(undefined),
 			isDescendant,
 			normalizedPathEquals,
+			(repositories, folders) => commits.push({ repositories, folders }),
 		);
-		assert.deepStrictEqual(result, { kind: 'skipParking' });
+		assert.deepStrictEqual(result, { kind: 'committed', skippedParking: true });
+		assert.deepStrictEqual(commits, [{ repositories: [], folders: ['/logical/repo'] }]);
 	});
 
-	test('fails safe without parking when current folder realpath rejects', async () => {
-		const result = await coordinateRepositoriesForParking(
+	test('skips parking but commits latest folders when current folder realpath rejects', async () => {
+		const commits: Array<{ repositories: readonly IParadisUnaccountedCandidate[]; folders: readonly string[] }> = [];
+		const result = await commitRepositoriesForParking(
 			() => snapshot(['/logical/repo'], [candidate('/canonical/repo')]),
 			() => true,
 			() => Promise.reject(new Error('realpath failed')),
 			isDescendant,
 			normalizedPathEquals,
+			(repositories, folders) => commits.push({ repositories, folders }),
 		);
-		assert.deepStrictEqual(result, { kind: 'skipParking' });
+		assert.deepStrictEqual(result, { kind: 'committed', skippedParking: true });
+		assert.deepStrictEqual(commits, [{ repositories: [], folders: ['/logical/repo'] }]);
+	});
+
+	test('does not commit when generation changes at the latest-snapshot boundary', async () => {
+		let generation = 1;
+		let snapshots = 0;
+		let parks = 0;
+		const result = await commitRepositoriesForParking(
+			() => {
+				if (snapshots++ === 1) {
+					generation++;
+				}
+				return snapshot(['/workspace'], [candidate('/other')]);
+			},
+			() => generation === 1,
+			() => Promise.resolve('/workspace'),
+			isDescendant,
+			normalizedPathEquals,
+			repositories => parks += repositories.length,
+		);
+		assert.deepStrictEqual({ result, parks }, { result: { kind: 'stale' }, parks: 0 });
+	});
+
+	test('calls the synchronous commit callback exactly once', async () => {
+		let commits = 0;
+		const result = await commitRepositoriesForParking(
+			() => snapshot(['/workspace'], [candidate('/other')]),
+			() => true,
+			() => Promise.resolve('/workspace'),
+			isDescendant,
+			normalizedPathEquals,
+			() => commits++,
+		);
+		assert.deepStrictEqual({ result, commits }, { result: { kind: 'committed', skippedParking: false }, commits: 1 });
+	});
+
+	test('commits latest B and C folders after the stale B handler is discarded', async () => {
+		const opened = new Set(['/a']);
+		const openedByCommit: string[] = [];
+		const commitLatestFolders = (_repositories: readonly IParadisUnaccountedCandidate[], folders: readonly string[]) => {
+			for (const folder of folders) {
+				if (!opened.has(folder)) {
+					opened.add(folder);
+					openedByCommit.push(folder);
+				}
+			}
+		};
+		let generation = 1;
+		let latestSnapshot = snapshot(['/a', '/b'], []);
+		const bRealpath = deferred<string | undefined>();
+		const bResult = commitRepositoriesForParking(
+			() => latestSnapshot,
+			() => generation === 1,
+			() => bRealpath.promise,
+			isDescendant,
+			normalizedPathEquals,
+			commitLatestFolders,
+		);
+
+		generation++;
+		latestSnapshot = snapshot(['/a', '/b', '/c'], []);
+		const cResult = await commitRepositoriesForParking(
+			() => latestSnapshot,
+			() => generation === 2,
+			folder => Promise.resolve(folder),
+			isDescendant,
+			normalizedPathEquals,
+			commitLatestFolders,
+		);
+		bRealpath.resolve('/b');
+
+		assert.deepStrictEqual(
+			{ bResult: await bResult, cResult, openedByCommit },
+			{ bResult: { kind: 'stale' }, cResult: { kind: 'committed', skippedParking: false }, openedByCommit: ['/b', '/c'] },
+		);
 	});
 });
