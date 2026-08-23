@@ -52,7 +52,7 @@ export async function buildOpcFixture(options: IParadisOfficeFixtureOptions): Pr
 		contentType: 'application/xml',
 	});
 
-	const JSZip = await importAMDNodeModule<typeof import('jszip').default>('jszip', 'dist/jszip.min.js');
+	const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
 	const zip = new JSZip();
 	for (const [name, part] of [...parts.entries()].sort(([left], [right]) => compareCodeUnits(left, right))) {
 		zip.file(name.slice(1), part.content, { createFolders: false, date: FIXED_TIMESTAMP });
