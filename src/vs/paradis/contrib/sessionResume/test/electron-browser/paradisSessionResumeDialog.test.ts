@@ -8,30 +8,27 @@
 
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IMarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
-import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
-import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
-import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { TestEditorGroupView } from '../../../../../workbench/test/browser/workbenchTestServices.js';
-import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
-import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { ParadisSessionResumeEditor } from '../../electron-browser/paradisSessionResumeEditor.js';
+import { ParadisSessionResumeDialog, paradisOpenSessionResumeDialog } from '../../electron-browser/paradisSessionResumeDialog.js';
 import { IParadisResumeListRequestWithUri } from '../../electron-browser/paradisSessionResumeClient.js';
 import { IParadisResumePreview, IParadisResumeSession } from '../../common/paradisSessionResume.js';
 import { paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from '../../electron-browser/paradisSessionResumeOrchestration.js';
 
-suite('ParadisSessionResumeEditor', () => {
+/** 自動更新は750ms遅延で走るので、それを跨いで待つ。 */
+const AUTOMATIC_REFRESH_WAIT_MS = 800;
+
+suite('ParadisSessionResumeDialog', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	const target = {
@@ -41,125 +38,88 @@ suite('ParadisSessionResumeEditor', () => {
 		sessionId: 'session-123',
 	};
 
-	test('does not list for each hidden workspace event and refreshes once after becoming visible', async () => {
-		for (const eventName of ['scope', 'repository', 'worktree'] as const) {
-			const scopeEmitter = new Emitter<void>();
-			const repositoryEmitter = new Emitter<void>();
-			const worktreeEmitter = new Emitter<void>();
-			let listCount = 0;
-			const client = {
-				list: async () => {
-					listCount++;
-					return [];
-				},
-				preview: async () => ({ messages: [], truncated: false }),
-				search: async () => [],
-			};
-			const instantiationService = {
-				createInstance: () => client,
-			} as unknown as IInstantiationService;
-			const workspaceSwitchService = {
-				activeStateKey: undefined,
-				repositories: [],
-				onDidSwitchScope: scopeEmitter.event,
-				onDidChangeRepositories: repositoryEmitter.event,
-			} as unknown as IParadisWorkspaceSwitchService;
-			const worktreeService = {
-				initializationBarrier: Promise.resolve(),
-				onDidChangeWorktrees: worktreeEmitter.event,
-				getWorktrees: () => [],
-			} as unknown as IParadisWorktreeService;
-			const storageService = new TestStorageService();
-			const editor = new ParadisSessionResumeEditor(
-				new TestEditorGroupView(1),
-				NullTelemetryService,
-				new TestThemeService(),
-				storageService,
-				instantiationService,
-				workspaceSwitchService,
-				worktreeService,
-				new TestNotificationService(),
-				Object.create(null),
-				Object.create(null),
-			);
-			try {
-				editor.create(document.createElement('div'));
-				editor.setVisible(false);
-				if (eventName === 'scope') {
-					scopeEmitter.fire();
-				} else if (eventName === 'repository') {
-					repositoryEmitter.fire();
-				} else {
-					worktreeEmitter.fire();
-				}
-				await Promise.resolve();
-				assert.strictEqual(listCount, 0, eventName);
+	test('starts the initial load while being constructed', async () => {
+		const list = new DeferredPromise<readonly IParadisResumeSession[]>();
+		const client = new TestResumeClient();
+		client.listResult = () => list.p;
+		const fixture = createRefreshFixture(client);
+		try {
+			await flushMicrotasks();
+			assert.strictEqual(client.listRequests.length, 1);
 
-				editor.setVisible(true);
-				await timeout(1);
-				assert.strictEqual(listCount, 1, eventName);
+			list.complete([testSession('one', 'First session')]);
+			await fixture.load();
+			assert.strictEqual(fixture.root.textContent?.includes('First session'), true);
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	test('refreshes for each workspace event while the dialog is open', async () => {
+		for (const eventName of ['scope', 'repository', 'worktree'] as const) {
+			const client = new TestResumeClient();
+			const fixture = createRefreshFixture(client);
+			try {
+				await fixture.load();
+				assert.strictEqual(client.listRequests.length, 1, eventName);
+
+				fixture.fire(eventName);
+				await timeout(AUTOMATIC_REFRESH_WAIT_MS);
+				assert.strictEqual(client.listRequests.length, 2, eventName);
 			} finally {
-				editor.dispose();
-				storageService.dispose();
+				fixture.dispose();
 			}
 		}
 	});
 
-	test('waits for the initial refresh before setInput resolves', async () => {
-		const list = new DeferredPromise<never[]>();
-		let listCount = 0;
-		const client = {
-			list: async () => {
-				listCount++;
-				return list.p;
-			},
-			preview: async () => ({ messages: [], truncated: false }),
-			search: async () => [],
-		};
-		const scopeEmitter = new Emitter<void>();
-		const repositoryEmitter = new Emitter<void>();
-		const worktreeEmitter = new Emitter<void>();
-		const storageService = new TestStorageService();
-		const editor = new ParadisSessionResumeEditor(
-			new TestEditorGroupView(1),
-			NullTelemetryService,
-			new TestThemeService(),
-			storageService,
-			{ createInstance: () => client } as unknown as IInstantiationService,
-			{
-				activeStateKey: undefined,
-				repositories: [],
-				onDidSwitchScope: scopeEmitter.event,
-				onDidChangeRepositories: repositoryEmitter.event,
-			} as unknown as IParadisWorkspaceSwitchService,
-			{
-				initializationBarrier: Promise.resolve(),
-				onDidChangeWorktrees: worktreeEmitter.event,
-				getWorktrees: () => [],
-			} as unknown as IParadisWorktreeService,
-			new TestNotificationService(),
-			Object.create(null),
-			Object.create(null),
-		);
-		const input = new TestSessionResumeInput();
+	test('stops refreshing and removes the backdrop once closed', async () => {
+		const client = new TestResumeClient();
+		const fixture = createRefreshFixture(client);
 		try {
-			editor.create(document.createElement('div'));
-			editor.setVisible(true);
-			let settled = false;
-			const setInput = editor.setInput(input, undefined, Object.create(null), CancellationToken.None).then(() => { settled = true; });
-			await Promise.resolve();
-			await Promise.resolve();
-			assert.strictEqual(listCount, 1);
-			assert.strictEqual(settled, false);
+			await fixture.load();
+			fixture.dialog.close();
+			assert.strictEqual(fixture.root.querySelector('.paradis-session-resume-backdrop'), null);
 
-			list.complete([]);
-			await setInput;
-			assert.strictEqual(settled, true);
-			assert.strictEqual(listCount, 1);
+			fixture.fire('scope');
+			await timeout(AUTOMATIC_REFRESH_WAIT_MS);
+			assert.strictEqual(client.listRequests.length, 1);
 		} finally {
-			editor.dispose();
-			input.dispose();
-			storageService.dispose();
+			fixture.dispose();
+		}
+	});
+
+	test('opens a single dialog even when requested twice', async () => {
+		const client = new TestResumeClient();
+		const stubs = createDialogStubs(client);
+		try {
+			paradisOpenSessionResumeDialog(stubs.instantiationService);
+			paradisOpenSessionResumeDialog(stubs.instantiationService);
+			await flushMicrotasks();
+
+			assert.strictEqual(stubs.root.querySelectorAll('.paradis-session-resume-backdrop').length, 1);
+			assert.strictEqual(stubs.dialogs.length, 1);
+		} finally {
+			stubs.dispose();
+		}
+	});
+
+	test('clears the search box on Escape before closing the dialog', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session')];
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			const search = fixture.root.querySelector<HTMLInputElement>('input[type="search"]')!;
+			search.value = 'first';
+			search.dispatchEvent(new Event('input'));
+
+			pressEscape(search);
+			assert.deepStrictEqual([search.value, fixture.root.querySelector('.paradis-session-resume-backdrop') !== null], ['', true]);
+
+			pressEscape(search);
+			assert.strictEqual(fixture.root.querySelector('.paradis-session-resume-backdrop'), null);
+		} finally {
+			fixture.dispose();
 		}
 	});
 
@@ -195,7 +155,7 @@ suite('ParadisSessionResumeEditor', () => {
 			client.listResult = () => failedList.p;
 			fixture.root.querySelector<HTMLButtonElement>('.paradis-session-resume-refresh')!.click();
 			await flushMicrotasks();
-			fixture.scopeEmitter.fire();
+			fixture.fire('scope');
 			failedList.error(new Error('list failed'));
 			client.listResult = async () => [session];
 			await timeout(1);
@@ -210,7 +170,7 @@ suite('ParadisSessionResumeEditor', () => {
 		}
 	});
 
-	test('preserves selection, query, and filter while hidden before refreshing', async () => {
+	test('preserves selection, query, and filter across an invalidation refresh', async () => {
 		const client = new TestResumeClient();
 		client.listResult = async () => [testSession('one', 'First session'), testSession('two', 'Second session', 'codex')];
 		const fixture = createRefreshFixture(client);
@@ -223,12 +183,9 @@ suite('ParadisSessionResumeEditor', () => {
 			const codexFilter = fixture.root.querySelector<HTMLButtonElement>('button[data-agent-filter="codex"]')!;
 			codexFilter.click();
 
-			fixture.editor.setVisible(false);
-			fixture.scopeEmitter.fire();
-			await flushMicrotasks();
-			assert.strictEqual(client.listRequests.length, 1);
-			fixture.editor.setVisible(true);
-			await timeout(1);
+			fixture.fire('scope');
+			await timeout(AUTOMATIC_REFRESH_WAIT_MS);
+			assert.strictEqual(client.listRequests.length, 2);
 
 			assert.strictEqual(search.value, 'second');
 			assert.strictEqual(codexFilter.getAttribute('aria-pressed'), 'true');
@@ -238,7 +195,7 @@ suite('ParadisSessionResumeEditor', () => {
 		}
 	});
 
-	test('reloads the selected preview after a hidden invalidation becomes visible', async () => {
+	test('reloads the selected preview after an invalidation', async () => {
 		const client = new TestResumeClient();
 		client.listResult = async () => [testSession('one', 'First session')];
 		let previewCount = 0;
@@ -249,13 +206,10 @@ suite('ParadisSessionResumeEditor', () => {
 		const fixture = createRefreshFixture(client);
 		try {
 			await fixture.load();
-			await flushMicrotasks();
 			assert.strictEqual(fixture.root.textContent?.includes('Initial preview'), true);
 
-			fixture.editor.setVisible(false);
-			fixture.scopeEmitter.fire();
-			fixture.editor.setVisible(true);
-			await timeout(1);
+			fixture.fire('scope');
+			await timeout(AUTOMATIC_REFRESH_WAIT_MS);
 			await flushMicrotasks();
 
 			assert.strictEqual(previewCount, 2);
@@ -284,15 +238,17 @@ suite('ParadisSessionResumeEditor', () => {
 			await timeout(300);
 			fixture.root.querySelector<HTMLButtonElement>('.paradis-session-resume-refresh')!.click();
 			await flushMicrotasks();
-			const beforeDispose = fixture.root.innerHTML;
-			fixture.editor.dispose();
+			// close() で背景ごとDOMから外れるため、比較は外れた後も残るモーダルの中身で行う。
+			const modal = fixture.root.querySelector<HTMLElement>('.paradis-session-resume-modal')!;
+			const beforeDispose = modal.innerHTML;
+			fixture.dialog.close();
 			lateList.complete([session]);
 			latePreview.complete({ messages: [], truncated: false });
 			lateSearch.complete([]);
 			await timeout(1);
 			await flushMicrotasks();
 
-			assert.strictEqual(fixture.root.innerHTML, beforeDispose);
+			assert.strictEqual(modal.innerHTML, beforeDispose);
 			assert.strictEqual(fixture.notifications.errors, 0);
 			assert.strictEqual(client.listRequests.length, 2);
 		} finally {
@@ -300,7 +256,7 @@ suite('ParadisSessionResumeEditor', () => {
 		}
 	});
 
-	test('maps each editor button to its resume mode and permission behavior', () => {
+	test('maps each dialog button to its resume mode and permission behavior', () => {
 		assert.deepStrictEqual([
 			paradisSessionResumeEditorActionOptions('background'),
 			paradisSessionResumeEditorActionOptions('primary'),
@@ -389,21 +345,27 @@ class TestResumeClient {
 	}
 }
 
-interface IRefreshFixture {
-	readonly editor: ParadisSessionResumeEditor;
+type WorkspaceEvent = 'scope' | 'repository' | 'worktree';
+
+interface IDialogStubs {
+	/** ダイアログの背景を受け取るコンテナ（`ILayoutService.activeContainer` の代わり）。 */
 	readonly root: HTMLElement;
-	readonly scopeEmitter: Emitter<void>;
 	readonly notifications: TestNotifications;
-	load(): Promise<void>;
+	readonly instantiationService: IInstantiationService;
+	/** `paradisOpenSessionResumeDialog` 経由も含め、実際に作られたダイアログ。 */
+	readonly dialogs: ParadisSessionResumeDialog[];
+	createDialog(): ParadisSessionResumeDialog;
+	fire(event: WorkspaceEvent): void;
 	dispose(): void;
 }
 
-function createRefreshFixture(client: TestResumeClient): IRefreshFixture {
+function createDialogStubs(client: TestResumeClient): IDialogStubs {
 	const scopeEmitter = new Emitter<void>();
 	const repositoryEmitter = new Emitter<void>();
 	const worktreeEmitter = new Emitter<void>();
-	const storageService = new TestStorageService();
 	const notifications = new TestNotifications();
+	const root = document.createElement('div');
+	const dialogs: ParadisSessionResumeDialog[] = [];
 	const markdownRendererService: IMarkdownRendererService = {
 		_serviceBrand: undefined,
 		render(markdown) {
@@ -413,43 +375,70 @@ function createRefreshFixture(client: TestResumeClient): IRefreshFixture {
 		},
 		setDefaultCodeBlockRenderer() { },
 	};
-	const editor = new ParadisSessionResumeEditor(
-		new TestEditorGroupView(1),
-		NullTelemetryService,
-		new TestThemeService(),
-		storageService,
-		{ createInstance: () => client } as unknown as IInstantiationService,
-		{
-			activeStateKey: undefined,
-			repositories: [],
-			onDidSwitchScope: scopeEmitter.event,
-			onDidChangeRepositories: repositoryEmitter.event,
-		} as unknown as IParadisWorkspaceSwitchService,
-		{
-			initializationBarrier: Promise.resolve(),
-			onDidChangeWorktrees: worktreeEmitter.event,
-			getWorktrees: () => [],
-		} as unknown as IParadisWorktreeService,
-		notifications as unknown as INotificationService,
-		markdownRendererService,
-		Object.create(null),
-	);
-	const input = new TestSessionResumeInput();
-	const root = document.createElement('div');
+	const instantiationService = {
+		createInstance: (ctor: unknown) => ctor === ParadisSessionResumeDialog ? createDialog() : client,
+	} as unknown as IInstantiationService;
+
+	function createDialog(): ParadisSessionResumeDialog {
+		const dialog = new ParadisSessionResumeDialog(
+			{ activeContainer: root } as unknown as ILayoutService,
+			instantiationService,
+			{
+				activeStateKey: undefined,
+				repositories: [],
+				onDidSwitchScope: scopeEmitter.event,
+				onDidChangeRepositories: repositoryEmitter.event,
+			} as unknown as IParadisWorkspaceSwitchService,
+			{
+				initializationBarrier: Promise.resolve(),
+				onDidChangeWorktrees: worktreeEmitter.event,
+				getWorktrees: () => [],
+			} as unknown as IParadisWorktreeService,
+			notifications as unknown as INotificationService,
+			markdownRendererService,
+			Object.create(null),
+		);
+		dialogs.push(dialog);
+		return dialog;
+	}
+
 	return {
-		editor,
 		root,
-		scopeEmitter,
 		notifications,
-		async load(): Promise<void> {
-			editor.create(root);
-			editor.setVisible(true);
-			await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		instantiationService,
+		dialogs,
+		createDialog,
+		fire(event: WorkspaceEvent): void {
+			if (event === 'scope') {
+				scopeEmitter.fire();
+			} else if (event === 'repository') {
+				repositoryEmitter.fire();
+			} else {
+				worktreeEmitter.fire();
+			}
 		},
 		dispose(): void {
-			editor.dispose();
-			input.dispose();
-			storageService.dispose();
+			for (const dialog of dialogs) {
+				dialog.dispose();
+			}
+		},
+	};
+}
+
+interface IRefreshFixture extends IDialogStubs {
+	readonly dialog: ParadisSessionResumeDialog;
+	/** 構築時に始まる初回取得とプレビュー読み込みが落ち着くまで待つ。 */
+	load(): Promise<void>;
+}
+
+function createRefreshFixture(client: TestResumeClient): IRefreshFixture {
+	const stubs = createDialogStubs(client);
+	return {
+		...stubs,
+		dialog: stubs.createDialog(),
+		async load(): Promise<void> {
+			await timeout(1);
+			await flushMicrotasks();
 		},
 	};
 }
@@ -478,21 +467,13 @@ class TestNotifications {
 	}
 }
 
+function pressEscape(target: HTMLElement): void {
+	target.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 27, bubbles: true }));
+}
+
 async function flushMicrotasks(): Promise<void> {
 	for (let index = 0; index < 4; index++) {
 		await Promise.resolve();
-	}
-}
-
-class TestSessionResumeInput extends EditorInput {
-	readonly resource = undefined;
-
-	override get typeId(): string {
-		return 'test.paradisSessionResume';
-	}
-
-	override async resolve(): Promise<null> {
-		return null;
 	}
 }
 
