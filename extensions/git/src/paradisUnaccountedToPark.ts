@@ -35,3 +35,30 @@ export function selectUnaccountedForParking<T extends IParadisUnaccountedCandida
 		return !currentFolderPaths.some(folder => roots.some(root => isDescendant(folder, root) || isDescendant(root, folder)));
 	});
 }
+
+/**
+ * removed-folder と全 open repository から候補を一度だけ収集し、現在のフォルダに属する
+ * repository と表示中 editor の repository を除外する。repository object の同一性で重複を
+ * 除き、最初に見つかった順序を維持する。
+ */
+export function selectRepositoriesForUnifiedParking<T extends IParadisUnaccountedCandidate>(
+	removed: readonly (T | undefined)[],
+	open: readonly T[],
+	activeRepositories: ReadonlySet<T['repository']>,
+	currentFolderPaths: readonly string[],
+	isDescendant: (parent: string, descendant: string) => boolean,
+): T[] {
+	const seen = new Set<T['repository']>();
+	const candidates: T[] = [];
+
+	for (const candidate of [...removed, ...open]) {
+		if (!candidate || activeRepositories.has(candidate.repository) || seen.has(candidate.repository)) {
+			continue;
+		}
+
+		seen.add(candidate.repository);
+		candidates.push(candidate);
+	}
+
+	return selectUnaccountedForParking(candidates, currentFolderPaths, isDescendant);
+}
