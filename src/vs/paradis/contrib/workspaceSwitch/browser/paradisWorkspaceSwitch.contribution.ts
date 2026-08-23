@@ -43,6 +43,7 @@ import { paradisLocalRepositoryPickContext, paradisPickAndAddLocalRepositories }
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { IParadisSpaceNotesService } from '../common/paradisSpaceNotes.js';
 import { PARADIS_SCM_SCOPE_SETTING_ID } from '../common/paradisScmScope.js';
+import { PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_WORKTREE_META_IDS, PARADIS_WORKTREE_ROW_META_SETTING_ID, paradisWorktreeMetaLabel } from '../common/paradisWorktreeRowMeta.js';
 import { PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID } from '../common/paradisRepositoryClone.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { IParadisWorktreeCreateProgressStore } from '../common/paradisWorktreeCreate.js';
@@ -175,6 +176,40 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.WINDOW,
 			description: localize('paradis.workspaceSwitch.scopeScmRepositories', "ソース管理ビューの表示を、現在開いているスペース（ワークスペースフォルダ）に関係するリポジトリだけに自動的に絞ります。git 拡張が裏で開いたままの他スペースや worktree の親リポジトリは非表示になります（リポジトリ自体は閉じられないため、ガター差分などの機能はそのまま使えます）。")
+		},
+		[PARADIS_WORKTREE_ROW_META_SETTING_ID]: {
+			type: 'array',
+			scope: ConfigurationScope.WINDOW,
+			// allow-any-unicode-next-line
+			description: localize('paradis.workspaceSwitch.rowMeta', "Workspaces ビューのスペース行に出す情報（プルリクエスト・Issue 件数・未コミットの差分・メモの未完了件数）と、その並び順・左右の寄せ方を指定します。ここで表示にした情報を1つでも持つ行だけが3段になり、すべて非表示にすると従来どおりの2段表示に戻ります。行を右クリックした「表示する情報」からも変更できます。\n\n書かなかった情報は既定のまま末尾に足されます（空の配列にしても全部消えるのではなく、既定に戻ります）。隠したい情報は `visible` に false を指定してください。"),
+			default: PARADIS_DEFAULT_WORKTREE_ROW_META,
+			items: {
+				type: 'object',
+				required: ['id'],
+				additionalProperties: false,
+				properties: {
+					id: {
+						type: 'string',
+						enum: [...PARADIS_WORKTREE_META_IDS],
+						enumDescriptions: PARADIS_WORKTREE_META_IDS.map(id => paradisWorktreeMetaLabel(id)),
+						// allow-any-unicode-next-line
+						description: localize('paradis.workspaceSwitch.rowMeta.id', "出す情報の種類。")
+					},
+					visible: {
+						type: 'boolean',
+						default: true,
+						// allow-any-unicode-next-line
+						description: localize('paradis.workspaceSwitch.rowMeta.visible', "この情報を出すかどうか。")
+					},
+					align: {
+						type: 'string',
+						enum: ['left', 'right'],
+						default: 'left',
+						// allow-any-unicode-next-line
+						description: localize('paradis.workspaceSwitch.rowMeta.align', "メタ段の左右どちらへ寄せるか。")
+					}
+				}
+			}
 		},
 		'paradis.editor.openTerminalOnSplit': {
 			type: 'boolean',
