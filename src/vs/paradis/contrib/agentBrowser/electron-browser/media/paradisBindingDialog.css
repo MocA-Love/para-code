@@ -7,9 +7,14 @@
 
 /*
  * Agent Browser Binding dialog (see paradisBindingDialog.ts) and the per-pane terminal grid
- * indicator (see paradisPaneIndicator.ts). The layout/structure mirrors the approved UI mock
- * (aaaa.html: single page bar + in-row share/unshare buttons + an "MCP接続設定" tab); all colors
+ * indicator (see paradisPaneIndicator.ts). The layout follows a Settings-Editor-style structure
+ * (880px dialog: status header pills + page bar / left nav (~190px) + view content); all colors
  * come from --vscode-* theme tokens (alpha variants via color-mix) so the dialog adapts to any theme.
+ *
+ * The dialog also drives the "background terminal highlight": while a pane row is hovered/focused,
+ * the dialog puts `paradis-pvh-<style>` on <body> and the pane indicator marks the matching grid
+ * cell with `.paradis-pvh-target` (+ `--paradis-agent-color` for pattern B) — see the
+ * "terminal grid cell highlight" section at the bottom.
  */
 
 /* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css). */
@@ -24,7 +29,7 @@
 }
 
 .paradis-binding-dialog {
-	width: 600px;
+	width: 880px;
 	max-width: 94vw;
 	max-height: 92vh;
 	background: var(--vscode-editor-background);
@@ -129,6 +134,14 @@
 	color: var(--vscode-foreground);
 }
 
+/* Status header: summary pills (shared pane count / MCP state). */
+.paradis-binding-dialog .pbd-header-pills {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
 .paradis-binding-dialog .pbd-close {
 	width: 26px;
 	height: 26px;
@@ -146,17 +159,26 @@
 	color: var(--vscode-foreground);
 }
 
-/* ---------- page bar ---------- */
+/* ---------- toolbar (page bar + highlight seg) ---------- */
+
+.paradis-binding-dialog .pbd-toolbar {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 8px 16px 12px;
+	flex-shrink: 0;
+}
 
 .paradis-binding-dialog .pbd-pagebar {
+	flex: 1;
+	min-width: 0;
 	display: flex;
 	align-items: center;
 	gap: 9px;
-	padding: 10px 16px;
+	padding: 8px 12px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 9px;
 	background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-focusBorder) 7%, transparent), transparent);
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	min-width: 0;
-	flex-shrink: 0;
 }
 
 .paradis-binding-dialog .pbd-favicon {
@@ -210,44 +232,149 @@
 	white-space: nowrap;
 }
 
-/* ---------- tabs ---------- */
+/* ---------- 背面ハイライト切替（seg） ---------- */
 
-.paradis-binding-dialog .pbd-tabs {
+.paradis-binding-dialog .pbd-hlseg {
+	flex: none;
 	display: flex;
-	gap: 2px;
-	padding: 8px 12px 0;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+}
+
+.paradis-binding-dialog .pbd-hl-label {
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-binding-dialog .pbd-seg {
+	display: inline-flex;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 7px;
+	overflow: hidden;
+}
+
+.paradis-binding-dialog .pbd-seg-btn {
+	appearance: none;
+	border: none;
+	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	padding: 4px 10px;
+	font-size: 11px;
+	cursor: pointer;
+	font-family: inherit;
+}
+
+.paradis-binding-dialog .pbd-seg-btn:last-child {
+	border-right: none;
+}
+
+.paradis-binding-dialog .pbd-seg-btn:hover {
+	color: var(--vscode-foreground);
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-binding-dialog .pbd-seg-btn.active {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 24%, transparent);
+	color: var(--vscode-foreground);
+	font-weight: 600;
+}
+
+.paradis-binding-dialog .pbd-seg-btn:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -2px;
+}
+
+/* ---------- 左ナビ (Settings Editor 型) ---------- */
+
+.paradis-binding-dialog .pbd-navwrap {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-binding-dialog .pbd-nav {
+	width: 190px;
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 8px 8px 12px;
+	overflow-y: auto;
+	background: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) 55%, transparent);
+	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-binding-dialog .pbd-nav-cap {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--vscode-descriptionForeground);
+	padding: 9px 9px 3px;
 	flex-shrink: 0;
 }
 
-.paradis-binding-dialog .pbd-tab {
+.paradis-binding-dialog .pbd-nav-item {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	padding: 7px 13px;
+	gap: 7px;
+	padding: 5px 9px;
+	border-radius: 6px;
 	font-size: 12px;
-	color: var(--vscode-descriptionForeground);
-	border-bottom: 2px solid transparent;
+	color: var(--vscode-foreground);
 	cursor: pointer;
+	flex-shrink: 0;
+	min-width: 0;
 }
 
-.paradis-binding-dialog .pbd-tab:hover {
-	color: var(--vscode-foreground);
+.paradis-binding-dialog .pbd-nav-item:hover:not(.static) {
+	background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
 }
 
-.paradis-binding-dialog .pbd-tab.active {
-	color: var(--vscode-foreground);
-	border-bottom-color: var(--vscode-focusBorder);
+.paradis-binding-dialog .pbd-nav-item.static {
+	cursor: default;
 }
 
-.paradis-binding-dialog .pbd-tab-badge {
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
+.paradis-binding-dialog .pbd-nav-item.active {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 22%, transparent);
 }
 
-.paradis-binding-dialog .pbd-tab-badge.warn {
-	background: var(--vscode-charts-yellow);
+.paradis-binding-dialog .pbd-nav-item:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-binding-dialog .pbd-nav-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-binding-dialog .pbd-nav-count {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	flex: none;
+}
+
+.paradis-binding-dialog .pbd-nav-count.green {
+	background: color-mix(in srgb, var(--vscode-charts-green) 16%, transparent);
+	color: var(--vscode-charts-green);
+}
+
+.paradis-binding-dialog .pbd-nav-count.amber {
+	background: color-mix(in srgb, var(--vscode-charts-yellow) 18%, transparent);
+	color: var(--vscode-charts-yellow);
+}
+
+.paradis-binding-dialog .pbd-nav-count.gray {
+	background: color-mix(in srgb, var(--vscode-descriptionForeground) 13%, transparent);
+	color: var(--vscode-descriptionForeground);
 }
 
 /* ---------- body ---------- */
@@ -255,7 +382,9 @@
 .paradis-binding-dialog .pbd-body {
 	display: flex;
 	flex-direction: column;
-	min-height: 240px;
+	min-height: 280px;
+	min-width: 0;
+	flex: 1;
 	overflow-y: auto;
 }
 
@@ -316,6 +445,11 @@
 	background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
 }
 
+.paradis-binding-dialog .pbd-pane-row:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
 .paradis-binding-dialog .pbd-row-main {
 	flex: 1;
 	min-width: 0;
@@ -373,6 +507,52 @@
 .paradis-binding-dialog .pbd-row-btn[disabled] {
 	opacity: 0.4;
 	cursor: not-allowed;
+}
+
+/* ---------- share switch (pane rows) ---------- */
+
+.paradis-binding-dialog .pbd-switch {
+	appearance: none;
+	width: 36px;
+	height: 20px;
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--vscode-descriptionForeground) 38%, transparent);
+	position: relative;
+	cursor: pointer;
+	border: none;
+	flex: none;
+	transition: background 0.15s ease;
+}
+
+.paradis-binding-dialog .pbd-switch::after {
+	content: '';
+	position: absolute;
+	left: 2px;
+	top: 2px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: #ffffff;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+	transition: left 0.15s ease;
+}
+
+.paradis-binding-dialog .pbd-switch:checked {
+	background: var(--vscode-charts-green);
+}
+
+.paradis-binding-dialog .pbd-switch:checked::after {
+	left: 18px;
+}
+
+.paradis-binding-dialog .pbd-switch[disabled] {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.paradis-binding-dialog .pbd-switch:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
 }
 
 .paradis-binding-dialog .pbd-scope-note {
@@ -674,4 +854,53 @@
 .monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator.bound::before {
 	background: var(--vscode-charts-green);
 	box-shadow: 0 0 4px var(--vscode-charts-green);
+}
+
+/* ---------- terminal grid cell highlight (dialog pane row hover/focus) ----------
+ *
+ * paradisBindingDialog.ts puts `paradis-pvh-<glow|tint|dim>` on <body> while a pane row is
+ * hovered/focused, and paradisPaneIndicator.ts marks the matching cell with
+ * `.paradis-pvh-target` (plus `--paradis-agent-color` for pattern B). Selectors below are
+ * prefixed with `body.paradis-pvh-*` so they win over sessionTerminalGrid.css's base cell rule.
+ */
+
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell {
+	transition: opacity 0.16s ease, filter 0.16s ease, box-shadow 0.12s ease;
+}
+
+/* Pattern A: focus ring glow. */
+body.paradis-pvh-glow .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+	box-shadow: 0 0 0 1.5px var(--vscode-focusBorder), 0 0 18px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
+	z-index: 2;
+}
+
+/* Pattern B: agent brand color tint. The overlay pseudo-element tints the xterm content too,
+ * which a plain cell background could not reach. */
+body.paradis-pvh-tint .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target {
+	border-color: var(--paradis-agent-color, var(--vscode-focusBorder));
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--paradis-agent-color, var(--vscode-focusBorder)) 45%, transparent);
+	z-index: 2;
+}
+
+body.paradis-pvh-tint .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: color-mix(in srgb, var(--paradis-agent-color, var(--vscode-focusBorder)) 14%, transparent);
+	pointer-events: none;
+	z-index: 33;
+}
+
+/* Pattern C: dim everything except the target cell. */
+body.paradis-pvh-dim .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell:not(.paradis-pvh-target) {
+	opacity: 0.28;
+	filter: grayscale(0.6);
+}
+
+body.paradis-pvh-dim .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target {
+	border-color: color-mix(in srgb, var(--vscode-editor-foreground) 70%, transparent);
+	box-shadow: 0 0 14px color-mix(in srgb, var(--vscode-focusBorder) 40%, transparent);
+	z-index: 2;
 }

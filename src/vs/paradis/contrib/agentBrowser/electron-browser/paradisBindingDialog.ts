@@ -8,8 +8,10 @@
 
 // ブラウザページ⇔ターミナルペイン紐付けのバインディングダイアログ（モーダル）。
 // upstreamの Dialog ウィジェットには依存せず、workbenchコンテナへ自前のbackdrop+モーダルDOMを
-// 重ねる方式。構造は確定デザインモック（aaaa.html: ページバー1本 + ペイン行の行内「共有/解除」+
-// 「MCP接続設定」タブ）に準拠し、色はハードコードせず --vscode-* テーマトークンを使う。
+// 重ねる方式。レイアウトは Settings Editor 型（幅880px・左ナビ + コンテンツ）で、
+// 色はハードコードせず --vscode-* テーマトークンを使う。
+// また、ペイン行の hover/focus を paradisPaneIndicator.ts のレジストリへ通知することで、
+// 背面の対応ターミナルグリッドセルを3パターン（枠グロー/エージェント色/他を暗く）で強調する。
 
 import './media/paradisBindingDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -23,11 +25,13 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
 import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
@@ -67,9 +71,9 @@ const STR_SUB_READY = localize('paradis.bindingDialog.subReady', "接続済み�
 // allow-any-unicode-next-line
 const STR_SUB_NEEDS_MCP = localize('paradis.bindingDialog.subNeedsMcp', "MCP未接続 — 共有は可能。接続はMCP接続設定タブから");
 // allow-any-unicode-next-line
-const STR_BTN_ROW_SHARE = localize('paradis.bindingDialog.btnRowShare', "共有");
+const STR_SWITCH_SHARE_ARIA = localize('paradis.bindingDialog.switchShareAria', "このページを共有する");
 // allow-any-unicode-next-line
-const STR_BTN_ROW_UNSHARE = localize('paradis.bindingDialog.btnRowUnshare', "解除");
+const STR_SWITCH_UNSHARE_ARIA = localize('paradis.bindingDialog.switchUnshareAria', "共有を解除する");
 // allow-any-unicode-next-line
 const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したこのページだけを読み取り・操作できます");
 // allow-any-unicode-next-line
@@ -175,6 +179,50 @@ const STR_DEVICES_FOOTER_HINT = localize('paradis.bindingDialog.devicesFooterHin
 // allow-any-unicode-next-line
 const strAttachFailed = (detail: string) => localize('paradis.bindingDialog.attachFailed', "アタッチに失敗しました: {0}", detail);
 
+// --- 左ナビ / ステータスヘッダー（Settings Editor 型レイアウト） ---
+// allow-any-unicode-next-line
+const STR_NAV_CAP_PAGES = localize('paradis.bindingDialog.navCapPages', "ページ");
+// allow-any-unicode-next-line
+const STR_NAV_CAP_LINKS = localize('paradis.bindingDialog.navCapLinks', "連携設定");
+// allow-any-unicode-next-line
+const strSummaryShared = (n: number) => localize('paradis.bindingDialog.summaryShared', "共有中 {0} ペイン", n);
+// allow-any-unicode-next-line
+const STR_SUMMARY_UNSHARED = localize('paradis.bindingDialog.summaryUnshared', "未共有");
+// allow-any-unicode-next-line
+const strSummaryMcpFix = (n: number) => localize('paradis.bindingDialog.summaryMcpFix', "MCP 要修正 {0} 件", n);
+// allow-any-unicode-next-line
+const STR_SUMMARY_MCP_OK = localize('paradis.bindingDialog.summaryMcpOk', "MCP 設定済み");
+// allow-any-unicode-next-line
+const STR_SUMMARY_MCP_LOADING = localize('paradis.bindingDialog.summaryMcpLoading', "MCP 確認中");
+// allow-any-unicode-next-line
+const strNavBadgeShared = (n: number) => localize('paradis.bindingDialog.navBadgeShared', "共有中 {0}", n);
+// allow-any-unicode-next-line
+const strNavBadgeFix = (n: number) => localize('paradis.bindingDialog.navBadgeFix', "要修正 {0}", n);
+
+// --- 背面ターミナルハイライト ---
+// allow-any-unicode-next-line
+const STR_HL_LABEL = localize('paradis.bindingDialog.highlightLabel', "背面ハイライト");
+// allow-any-unicode-next-line
+const STR_HL_GLOW = localize('paradis.bindingDialog.highlightGlow', "枠グロー");
+// allow-any-unicode-next-line
+const STR_HL_TINT = localize('paradis.bindingDialog.highlightTint', "エージェント色");
+// allow-any-unicode-next-line
+const STR_HL_DIM = localize('paradis.bindingDialog.highlightDim', "他を暗く");
+
+/** 背面ターミナルセルの強調表示パターン。 */
+type ParadisPaneHighlightStyle = 'glow' | 'tint' | 'dim';
+
+const PARADIS_HIGHLIGHT_STYLES: readonly ParadisPaneHighlightStyle[] = ['glow', 'tint', 'dim'];
+
+/** 選択を永続化するキー（StorageScope.PROFILE）。 */
+const PARADIS_HIGHLIGHT_STYLE_STORAGE_KEY = 'paradis.browserShare.highlightStyle';
+
+const HIGHLIGHT_STYLE_LABELS: Readonly<Record<ParadisPaneHighlightStyle, string>> = {
+	glow: STR_HL_GLOW,
+	tint: STR_HL_TINT,
+	dim: STR_HL_DIM,
+};
+
 type DialogTab = 'panes' | 'devices' | 'mcp';
 
 /** CLIごとの「自動セットアップ / 修正」実行状態。 */
@@ -197,10 +245,12 @@ export class ParadisBindingDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _pageBar: HTMLElement;
+	private readonly _nav: HTMLElement;
 	private readonly _body: HTMLElement;
 	private readonly _footer: HTMLElement;
-	private readonly _tabElements = new Map<DialogTab, HTMLElement>();
-	private _mcpTabBadge: HTMLElement | undefined;
+	private readonly _headerPills: HTMLElement;
+	/** 左ナビの強調スタイル切替（seg）ボタン。 */
+	private readonly _hlButtons = new Map<ParadisPaneHighlightStyle, HTMLButtonElement>();
 	private readonly _renderDisposables = this._register(new DisposableStore());
 
 	private _activeTab: DialogTab = 'panes';
@@ -210,6 +260,10 @@ export class ParadisBindingDialog extends Disposable {
 	private readonly _setupStates = new Map<ParadisMcpCli, IParadisSetupState>();
 	/** 「アタッチ」を押して渡し先ペインの一覧を開いている端末（開いていなければ undefined）。 */
 	private _attachTargetDeviceId: string | undefined;
+	/** 背面ハイライトの強調パターン（StorageScope.PROFILE に永続化）。 */
+	private _highlightStyle: ParadisPaneHighlightStyle;
+	/** hover/focus 中のペイン行に対応するターミナルインスタンスID。 */
+	private _hoveredInstanceId: number | undefined;
 
 	constructor(
 		// モバイル端末のアタッチだけを目的に開く場合はページが無い（ブラウザページを1枚も
@@ -223,39 +277,41 @@ export class ParadisBindingDialog extends Disposable {
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@IParadisMobileCanvasModel private readonly mobileCanvasModel: IParadisMobileCanvasModel,
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
+
+		this._highlightStyle = this._loadHighlightStyle();
+		// ページ無しで開いた場合（モバイル端末アタッチ目的）、ページ起点のビューは意味を持たないので
+		// 端末ビューを初期表示にする。
+		if (!this.pageModel) {
+			this._activeTab = 'devices';
+		}
 
 		this._backdrop = $('.paradis-binding-dialog-backdrop');
 		const modal = $('.paradis-binding-dialog');
 		this._backdrop.appendChild(modal);
 
-		// --- header ---
+		// --- header（タイトル + サマリpill + 閉じる） ---
 		const header = dom.append(modal, $('.pbd-header'));
 		const titles = dom.append(header, $('.pbd-titles'));
 		dom.append(titles, $('h2')).textContent = this.pageModel ? STR_DIALOG_TITLE : STR_DIALOG_TITLE_DEVICES;
+		this._headerPills = dom.append(header, $('.pbd-header-pills'));
 		const closeBtn = dom.append(header, $('.pbd-close'));
 		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
 		closeBtn.setAttribute('role', 'button');
 		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
 		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.close()));
 
-		// --- page bar ---
-		this._pageBar = dom.append(modal, $('.pbd-pagebar'));
+		// --- toolbar（ページバー + 背面ハイライト切替） ---
+		const toolbar = dom.append(modal, $('.pbd-toolbar'));
+		this._pageBar = dom.append(toolbar, $('.pbd-pagebar'));
+		this._renderHighlightSeg(toolbar);
 
-		// --- tabs ---
-		const tabsBar = dom.append(modal, $('.pbd-tabs'));
-		// ページ無しで開いた場合、ページ起点の「ターミナルペイン」タブは意味を持たないので出さない。
-		if (this.pageModel) {
-			this._createTab(tabsBar, 'panes', STR_TAB_PANES);
-		} else {
-			this._activeTab = 'devices';
-		}
-		this._createTab(tabsBar, 'devices', STR_TAB_DEVICES);
-		this._createTab(tabsBar, 'mcp', STR_TAB_MCP);
-
-		// --- body ---
-		this._body = dom.append(modal, $('.pbd-body'));
+		// --- nav + body ---
+		const navwrap = dom.append(modal, $('.pbd-navwrap'));
+		this._nav = dom.append(navwrap, $('.pbd-nav'));
+		this._body = dom.append(navwrap, $('.pbd-body'));
 
 		// --- footer ---
 		this._footer = dom.append(modal, $('.pbd-footer'));
@@ -296,25 +352,254 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	override dispose(): void {
+		// 背面ハイライトの後始末。_setHoveredPane は disposed ガードを持つため直接外す。
+		setParadisHoveredPaneInstanceId(undefined);
+		const doc = this._backdrop.ownerDocument;
+		for (const style of PARADIS_HIGHLIGHT_STYLES) {
+			doc.body.classList.remove(`paradis-pvh-${style}`);
+		}
 		this._backdrop.remove();
 		super.dispose();
 	}
 
 	// --- rendering ------------------------------------------------------
 
-	private _createTab(container: HTMLElement, tab: DialogTab, label: string): void {
-		const element = dom.append(container, $('.pbd-tab'));
-		dom.append(element, $('span.pbd-tab-label')).textContent = label;
-		if (tab === 'mcp') {
-			this._mcpTabBadge = dom.append(element, $('.pbd-tab-badge.warn'));
-			this._mcpTabBadge.title = STR_TAB_MCP_WARN_ARIA;
-			this._mcpTabBadge.style.display = 'none';
+	/**
+	 * 背面ハイライトの強調パターンを切り替える seg。ダイアログ上部の toolbar に置く。
+	 * 選択は StorageScope.PROFILE へ保存し、次回以降も引き継ぐ。
+	 */
+	private _renderHighlightSeg(toolbar: HTMLElement): void {
+		const wrap = dom.append(toolbar, $('.pbd-hlseg'));
+		dom.append(wrap, $('span.pbd-hl-label')).textContent = STR_HL_LABEL;
+		const seg = dom.append(wrap, $('.pbd-seg'));
+		for (const style of PARADIS_HIGHLIGHT_STYLES) {
+			const button = dom.append(seg, $('button.pbd-seg-btn')) as HTMLButtonElement;
+			button.type = 'button';
+			button.textContent = HIGHLIGHT_STYLE_LABELS[style];
+			if (style === this._highlightStyle) {
+				button.classList.add('active');
+			}
+			this._register(dom.addDisposableListener(button, 'click', () => this._setHighlightStyle(style)));
+			this._hlButtons.set(style, button);
 		}
-		this._register(dom.addDisposableListener(element, 'click', () => {
+	}
+
+	private _loadHighlightStyle(): ParadisPaneHighlightStyle {
+		const stored = this.storageService.get(PARADIS_HIGHLIGHT_STYLE_STORAGE_KEY, StorageScope.PROFILE);
+		return stored === 'tint' || stored === 'dim' ? stored : 'glow';
+	}
+
+	private _setHighlightStyle(style: ParadisPaneHighlightStyle): void {
+		this._highlightStyle = style;
+		for (const [candidate, button] of this._hlButtons) {
+			button.classList.toggle('active', candidate === style);
+		}
+		this.storageService.store(PARADIS_HIGHLIGHT_STYLE_STORAGE_KEY, style, StorageScope.PROFILE, StorageTarget.USER);
+		// ホバー中に切り替えた場合も即座に効くよう、現在のホバー状態で再適用する。
+		this._setHoveredPane(this._hoveredInstanceId);
+	}
+
+	/**
+	 * 「いま指しているペイン」を背面セル側へ通知する。強調スタイル（body クラス）は
+	 * ホバー中の間だけ載せる —— パターンC「他を暗く」は対象がいる間だけ全セルを暗く
+	 * する必要があるため、スタイル適用とセットで管理する。
+	 */
+	private _setHoveredPane(instanceId: number | undefined): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+		this._hoveredInstanceId = instanceId;
+		setParadisHoveredPaneInstanceId(instanceId);
+		const body = dom.getWindow(this._backdrop).document.body;
+		for (const style of PARADIS_HIGHLIGHT_STYLES) {
+			body.classList.toggle(`paradis-pvh-${style}`, instanceId !== undefined && this._highlightStyle === style);
+		}
+	}
+
+	/** ペイン行に hover/focus での背面ハイライト通知を張る（a11y: キーボードフォーカスでも効く）。 */
+	private _wireRowHighlight(row: HTMLElement, instanceId: number): void {
+		row.tabIndex = 0;
+		row.dataset['instanceId'] = String(instanceId);
+		this._renderDisposables.add(dom.addDisposableListener(row, dom.EventType.MOUSE_ENTER, () => this._setHoveredPane(instanceId)));
+		this._renderDisposables.add(dom.addDisposableListener(row, dom.EventType.MOUSE_LEAVE, () => this._setHoveredPane(undefined)));
+		this._renderDisposables.add(dom.addDisposableListener(row, 'focusin', () => this._setHoveredPane(instanceId)));
+		this._renderDisposables.add(dom.addDisposableListener(row, 'focusout', () => this._setHoveredPane(undefined)));
+	}
+
+	/**
+	 * ペイン一覧の再描画後に、ポインタが乗っている行を検出してホバー状態を復元する。
+	 * 行はポーリング更新などで頻繁に作り直されるため、mouseenter を待たず同期する。
+	 */
+	private _reconcileHoverAfterRender(): void {
+		const hoveredRow = this._body.querySelector<HTMLElement>('.pbd-pane-row[data-instance-id]:hover');
+		const raw = hoveredRow?.dataset['instanceId'];
+		const instanceId = raw !== undefined ? Number(raw) : Number.NaN;
+		this._setHoveredPane(Number.isFinite(instanceId) ? instanceId : undefined);
+	}
+
+	/** 現在ページ（無い場合は全バインディング）の共有ペイン数。 */
+	private _sharedPaneCount(): number {
+		return this.pageModel
+			? this.bindingModel.getBindingsForPage(this.pageModel.id).length
+			: this.bindingModel.bindings.length;
+	}
+
+	/** MCP設定のうち「設定済み」でないCLI数。未取得（確認中）は undefined。 */
+	private _mcpAttentionCount(): number | undefined {
+		const status = this._mcpStatus;
+		if (!status) {
+			return undefined;
+		}
+		let count = 0;
+		for (const cli of ['claude', 'codex'] as const) {
+			if (status[cli].failed || status[cli].state !== 'configured') {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	/**
+	 * 左ナビ「ページ」に出す共有ページの一覧。現在ページが未共有でも先頭に出す（状態: 未共有）。
+	 * ダイアログは1つのページを主語にするため、他ページの項目は状態表示のみ（クリック不可）。
+	 */
+	private _sharedPages(): { readonly pageId: string; readonly title: string; readonly url: string; readonly paneCount: number }[] {
+		const byPage = new Map<string, { title: string; url: string; paneCount: number }>();
+		for (const binding of this.bindingModel.bindings) {
+			const entry = byPage.get(binding.pageId);
+			if (entry) {
+				entry.paneCount++;
+				continue;
+			}
+			byPage.set(binding.pageId, { title: binding.pageInfo.title, url: binding.pageInfo.url, paneCount: 1 });
+		}
+		const result = [...byPage.entries()].map(([pageId, value]) => ({ pageId, ...value }));
+		if (this.pageModel && !byPage.has(this.pageModel.id)) {
+			result.unshift({ pageId: this.pageModel.id, title: this.pageModel.title, url: this.pageModel.url, paneCount: 0 });
+		}
+		return result;
+	}
+
+	private _render(): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+		this._renderDisposables.clear();
+
+		this._renderHeaderPills();
+		this._renderNav();
+		// 共有先のページを表す帯は「ターミナルペイン」ビューの文脈でしか意味を持たない。
+		// モバイル端末/MCPビューは端末や設定が主語なので、出したままだと無関係な情報になる。
+		this._pageBar.style.display = this._activeTab === 'panes' ? '' : 'none';
+		if (this._activeTab === 'panes') {
+			this._renderPageBar();
+		}
+		dom.clearNode(this._body);
+		if (this._activeTab === 'panes') {
+			this._renderPanesTab();
+		} else if (this._activeTab === 'devices') {
+			this._renderDevicesTab();
+		} else {
+			this._renderMcpTab();
+		}
+		this._reconcileHoverAfterRender();
+		this._renderFooter();
+	}
+
+	private _renderHeaderPills(): void {
+		dom.clearNode(this._headerPills);
+		const sharedCount = this._sharedPaneCount();
+		const pagesPill = dom.append(this._headerPills, $(`.pbd-pill.${sharedCount > 0 ? 'green' : 'gray'}`));
+		dom.append(pagesPill, $(`.pbd-dot.${sharedCount > 0 ? 'green' : 'gray'}`));
+		dom.append(pagesPill, $('span')).textContent = sharedCount > 0 ? strSummaryShared(sharedCount) : STR_SUMMARY_UNSHARED;
+
+		const fixCount = this._mcpAttentionCount();
+		const mcpPillClass = fixCount === undefined ? 'gray' : fixCount > 0 ? 'amber' : 'green';
+		const mcpPill = dom.append(this._headerPills, $(`.pbd-pill.${mcpPillClass}`));
+		dom.append(mcpPill, $(`.pbd-dot.${mcpPillClass}`));
+		dom.append(mcpPill, $('span')).textContent =
+			fixCount === undefined ? STR_SUMMARY_MCP_LOADING
+				: fixCount > 0 ? strSummaryMcpFix(fixCount)
+					: STR_SUMMARY_MCP_OK;
+	}
+
+	private _renderNav(): void {
+		dom.clearNode(this._nav);
+
+		// --- ページ ---
+		const pages = this._sharedPages();
+		if (pages.length > 0) {
+			dom.append(this._nav, $('.pbd-nav-cap')).textContent = STR_NAV_CAP_PAGES;
+			for (const page of pages) {
+				const isCurrent = this.pageModel !== undefined && page.pageId === this.pageModel.id;
+				const item = dom.append(this._nav, $('.pbd-nav-item'));
+				if (!isCurrent) {
+					item.classList.add('static');
+				} else if (this._activeTab === 'panes') {
+					item.classList.add('active');
+				}
+				dom.append(item, $(`.pbd-dot.${page.paneCount > 0 ? 'green' : 'gray'}`));
+				const label = dom.append(item, $('span.pbd-nav-label'));
+				label.textContent = page.title || page.url;
+				label.title = page.title ? page.url : '';
+				if (page.paneCount > 0) {
+					const count = dom.append(item, $('span.pbd-nav-count.green'));
+					count.textContent = String(page.paneCount);
+					count.title = strNavBadgeShared(page.paneCount);
+				}
+				if (isCurrent) {
+					this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => {
+						this._activeTab = 'panes';
+						this._render();
+					}));
+				}
+			}
+		}
+
+		// --- 連携設定 ---
+		dom.append(this._nav, $('.pbd-nav-cap')).textContent = STR_NAV_CAP_LINKS;
+		// ページ無しで開いた場合、「ターミナルペイン」ビューは意味を持たないので出さない。
+		if (this.pageModel) {
+			this._createNavItem(STR_TAB_PANES, 'panes', this._sharedPaneCount() > 0
+				? { text: String(this._sharedPaneCount()), className: 'green', title: strNavBadgeShared(this._sharedPaneCount()) }
+				: undefined);
+		}
+		const fixCount = this._mcpAttentionCount();
+		if (fixCount !== undefined && fixCount > 0) {
+			this._createNavItem(STR_TAB_MCP, 'mcp', undefined, { text: strNavBadgeFix(fixCount), className: 'amber', title: STR_TAB_MCP_WARN_ARIA });
+		} else {
+			this._createNavItem(STR_TAB_MCP, 'mcp');
+		}
+		const snapshot = this.mobileCanvasModel.snapshot;
+		const attachedCount = snapshot.attachments.length;
+		this._createNavItem(STR_TAB_DEVICES, 'devices', {
+			text: this.mobileCanvasModel.loading ? '…' : String(attachedCount),
+			className: 'gray',
+			title: undefined,
+		});
+	}
+
+	private _createNavItem(
+		label: string,
+		tab: DialogTab,
+		badge?: { readonly text: string; readonly className: string; readonly title?: string },
+		warnBadge?: { readonly text: string; readonly className: string; readonly title?: string },
+	): void {
+		const item = dom.append(this._nav, $('.pbd-nav-item'));
+		item.classList.toggle('active', tab === this._activeTab);
+		dom.append(item, $('span.pbd-nav-label')).textContent = label;
+		const badgeInfo = warnBadge ?? badge;
+		if (badgeInfo && badgeInfo.text.length > 0) {
+			const element = dom.append(item, $(`span.pbd-nav-count.${badgeInfo.className}`));
+			element.textContent = badgeInfo.text;
+			if (badgeInfo.title) {
+				element.title = badgeInfo.title;
+			}
+		}
+		this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => {
 			this._activeTab = tab;
 			this._render();
 		}));
-		this._tabElements.set(tab, element);
 	}
 
 	/**
@@ -338,42 +623,6 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _paneMcpConnected(pane: IParadisPaneDescriptor): boolean {
 		return !!pane.binding || !!pane.mcpConnected;
-	}
-
-	private _render(): void {
-		if (this._store.isDisposed) {
-			return;
-		}
-		this._renderDisposables.clear();
-
-		for (const [tab, element] of this._tabElements) {
-			element.classList.toggle('active', tab === this._activeTab);
-		}
-		this._renderMcpTabBadge();
-		// 共有先のページを表す帯は「ターミナルペイン」タブの文脈でしか意味を持たない。
-		// モバイル端末タブは端末が主語なので、出したままだと無関係な情報になる。
-		this._pageBar.style.display = this._activeTab === 'panes' ? '' : 'none';
-		if (this._activeTab === 'panes') {
-			this._renderPageBar();
-		}
-		dom.clearNode(this._body);
-		if (this._activeTab === 'panes') {
-			this._renderPanesTab();
-		} else if (this._activeTab === 'devices') {
-			this._renderDevicesTab();
-		} else {
-			this._renderMcpTab();
-		}
-		this._renderFooter();
-	}
-
-	private _renderMcpTabBadge(): void {
-		if (!this._mcpTabBadge) {
-			return;
-		}
-		const needsAttention = this._mcpStatus !== undefined
-			&& (this._mcpStatus.claude.state !== 'configured' || this._mcpStatus.codex.state !== 'configured');
-		this._mcpTabBadge.style.display = needsAttention ? '' : 'none';
 	}
 
 	private _renderPageBar(): void {
@@ -436,11 +685,14 @@ export class ParadisBindingDialog extends Disposable {
 			.sort((a, b) => Number(this._paneMcpConnected(b)) - Number(this._paneMcpConnected(a)));
 		if (visible.length === 0) {
 			dom.append(container, $('.pbd-empty')).textContent = STR_NO_PANES;
+			// 検索で絞り込まれて行が消えた場合、ホバー状態は無効なので背面ハイライトも外す。
+			this._reconcileHoverAfterRender();
 			return;
 		}
 		for (const pane of visible) {
 			container.appendChild(this._renderPaneRow(pane));
 		}
+		this._reconcileHoverAfterRender();
 	}
 
 	private _renderPaneRow(pane: IParadisPaneDescriptor): HTMLElement {
@@ -455,29 +707,43 @@ export class ParadisBindingDialog extends Disposable {
 		dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
 		dom.append(main, $('.pbd-row-sub')).textContent = this._paneSubText(pane, boundHere, boundElse);
 
+		// 行内アクションは共有/解除を表す switch。eligibility 対象外の行は disabled のまま維持する。
+		// 「解除」の動詞になる行（このページに共有中 / 別ページ共有中でスコープ外）は ON 表示にし、
+		// OFF への切替で解除が走る。
 		const action = paradisGetPaneBindingAction(pane.binding?.pageId, this._page.id, pane.bindEligibility);
-		const button = dom.append(row, $('button.pbd-row-btn')) as HTMLButtonElement;
-		if (action === 'unbind') {
-			button.classList.add('unshare');
-			button.textContent = STR_BTN_ROW_UNSHARE;
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
-				if (boundHere) {
-					void this.bindingModel.unbindPane(this._page, pane.token);
-				} else {
-					void this.bindingModel.unbindToken(pane.token);
-				}
-			}));
-		} else {
-			button.classList.add('share');
-			button.textContent = STR_BTN_ROW_SHARE;
-			button.disabled = action === 'disabled';
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
-				if (action === 'bind') {
-					void this._bindPane(pane.token);
-				}
+		const isUnshareVerb = action === 'unbind';
+		const switchEl = dom.append(row, $('input.pbd-switch')) as HTMLInputElement;
+		switchEl.type = 'checkbox';
+		switchEl.setAttribute('role', 'switch');
+		switchEl.checked = isUnshareVerb;
+		switchEl.disabled = action === 'disabled';
+		switchEl.setAttribute('aria-label', isUnshareVerb ? STR_SWITCH_UNSHARE_ARIA : STR_SWITCH_SHARE_ARIA);
+		if (action !== 'disabled') {
+			this._renderDisposables.add(dom.addDisposableListener(switchEl, 'change', () => {
+				void this._runRowToggle(pane, switchEl.checked);
 			}));
 		}
+		this._wireRowHighlight(row, pane.instanceId);
 		return row;
+	}
+
+	/** 行の switch 操作を受ける。成功/失敗どちらでも描画し直して switch の見た目を実状態へ戻す。 */
+	private async _runRowToggle(pane: IParadisPaneDescriptor, wantShared: boolean): Promise<void> {
+		if (wantShared) {
+			await this._bindPane(pane.token);
+			return;
+		}
+		try {
+			if (pane.binding?.pageId === this._page.id) {
+				await this.bindingModel.unbindPane(this._page, pane.token);
+			} else {
+				await this.bindingModel.unbindToken(pane.token);
+			}
+			this._bindError = undefined;
+		} catch (error) {
+			this._bindError = strBindFailed(error instanceof Error ? error.message : String(error));
+		}
+		this._render();
 	}
 
 	private _paneSubText(pane: IParadisPaneDescriptor, boundHere: boolean, boundElse: boolean): string {
@@ -790,6 +1056,8 @@ export class ParadisBindingDialog extends Disposable {
 					void this._runDeviceAction(() => this.mobileCanvasModel.attach(pane.token, deviceId, stateKey));
 				}));
 			}
+			// 渡し先の行でも背面ハイライトを効かせる（ペイン行と同じ経路）。
+			this._wireRowHighlight(row, pane.instanceId);
 		}
 	}
 

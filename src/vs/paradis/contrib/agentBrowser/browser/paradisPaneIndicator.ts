@@ -38,6 +38,11 @@ export interface IParadisPaneIndicatorHost {
 	getBoundPage(instanceId: number): IParadisPaneIndicatorBoundPage | undefined;
 	/** メインウィンドウをそのページのスペースへ切り替え、ブラウザを前面に出す。 */
 	revealBoundPage(instanceId: number): void;
+	/**
+	 * ハイライトパターンB（エージェント色ティント）で使うペインのブランド色。
+	 * 実装しない場合はテーマのフォーカス色へフォールバックする。
+	 */
+	getPaneAccentColor?(instanceId: number): string | undefined;
 }
 
 let currentHost: IParadisPaneIndicatorHost | undefined;
@@ -60,6 +65,29 @@ export function getParadisPaneIndicatorHost(): IParadisPaneIndicatorHost | undef
 
 /** ホストの差し替え（登録・解除）通知。 */
 export const onDidChangeParadisPaneIndicatorHost: Event<void> = onDidChangeHost.event;
+
+// --- 背面ターミナルハイライト（バインディングダイアログ ⇔ グリッドセル） ---
+//
+// ダイアログのペイン行をホバー/フォーカスしている間、そのペインのグリッドセルを強調表示する。
+// dialog（electron-browser）とセル（vs/sessions）は互いを import できない/しないため、
+// indicator と同じくこのモジュールのレジストリを疎結合な通知路として使う:
+//   dialog → setParadisHoveredPaneInstanceId() → event → 各セルの indicator が自分宛てか
+//   判定し、親要素（= グリッドセル）へ .paradis-pvh-target クラスと --paradis-agent-color を設定。
+
+let currentHoveredInstanceId: number | undefined;
+const onDidChangeHoveredPane = new Emitter<number | undefined>();
+
+/** ホバー/フォーカス中のペインが変わったことを通知するイベント（undefined = どこもホバーしていない）。 */
+export const onDidChangeParadisHoveredPane: Event<number | undefined> = onDidChangeHoveredPane.event;
+
+/** バインディングダイアログ側から「いま指し示しているペイン」を設定する。 */
+export function setParadisHoveredPaneInstanceId(instanceId: number | undefined): void {
+	if (currentHoveredInstanceId === instanceId) {
+		return;
+	}
+	currentHoveredInstanceId = instanceId;
+	onDidChangeHoveredPane.fire(instanceId);
+}
 
 /**
  * 指定ターミナルインスタンス用のインジケータDOMを作る。呼び出し側（グリッドセル）は
@@ -97,6 +125,23 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 		e.stopPropagation();
 		currentHost?.openBindingDialog(instanceId);
 	}));
+	// ダイアログのペイン行 hover/focus 中は、親要素（グリッドセル）へハイライトを反映する。
+	// セルはこの indicator をちょうど1つ子に持つため、親経由の直接DOM操作で足りる。
+	const applyHoverHighlight = () => {
+		const cell = element.parentElement;
+		if (!cell) {
+			return;
+		}
+		const active = currentHost !== undefined && currentHoveredInstanceId === instanceId;
+		cell.classList.toggle('paradis-pvh-target', active);
+		const accentColor = active ? currentHost?.getPaneAccentColor?.(instanceId) : undefined;
+		if (accentColor) {
+			cell.style.setProperty('--paradis-agent-color', accentColor);
+		} else {
+			cell.style.removeProperty('--paradis-agent-color');
+		}
+	};
+	disposables.add(onDidChangeParadisHoveredPane(() => applyHoverHighlight()));
 	update();
 
 	return {
