@@ -511,8 +511,9 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			// newer workspace event invalidates this handler after realpath awaits. The pure helper
 			// then re-reads the latest snapshot, verifies generation, selects, and invokes this
 			// synchronous commit callback to park and start all latest workspace folders missing an
-			// open repository.
-			await commitRepositoriesForParking(
+			// open repository. Its returned open promises are awaited after the commit, preserving
+			// initial-scan completion ordering without reopening the stale commit gap.
+			const parkingResult = await commitRepositoriesForParking(
 				getParkingSnapshot,
 				() => generation === this._workspaceFolderChangeGeneration,
 				folderPath => {
@@ -526,9 +527,13 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 					const foldersToOpen = currentFolderPaths
 						.filter(folderPath => !this.getOpenRepository(Uri.file(folderPath)));
 					this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${foldersToOpen.join(', ')}]`);
-					foldersToOpen.forEach(folderPath => this.openRepository(folderPath));
+					return foldersToOpen.map(folderPath => this.openRepository(folderPath));
 				},
 			);
+
+			if (parkingResult.kind === 'committed') {
+				await Promise.all(parkingResult.commitResult);
+			}
 		}
 		catch (err) {
 			this.logger.warn(`[Model][onDidChangeWorkspaceFolders] Error: ${err}`);
