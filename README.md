@@ -10,7 +10,7 @@ Para Code は、AI コーディングエージェント（Claude Code・Codex �
 このリポジトリは `microsoft/vscode` を fork した独自エディタです。エディタ本体の土台は本家 VS Code のままで、今後も定期的に upstream の新しいリリースを取り込み続けます。そのうえに、複数のエージェントを並行して走らせながら開発する働き方に合わせた機能を追加しています。
 
 <p align="center">
-  <!-- ここにスクリーンショットを挿入 -->
+  <img alt="Para Code" src=".github/readme/screenshot.png">
 </p>
 
 ## 主な機能
