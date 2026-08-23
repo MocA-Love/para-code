@@ -23,6 +23,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
+	IParadisResumeLatestMessage,
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
 	IParadisResumePreview,
@@ -31,6 +32,7 @@ import {
 	IParadisResumeSpace,
 	PARADIS_RESUME_SESSION_ID_PATTERN,
 	PARADIS_SESSION_RESUME_CHANNEL,
+	ParadisResumeAgent,
 } from '../common/paradisSessionResume.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -39,9 +41,17 @@ const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEW_MESSAGES = 200;
 const MAX_MESSAGE_CHARS = 12_000;
 const MAX_CLAUDE_SESSIONS_PER_SPACE = 200;
+// 一覧行の「最新の会話」プレビュー用に transcript の末尾から読む量。
+// 最後のメッセージ行がこの長さを超えると採取できないが、その場合は preview(最初のプロンプト)へフォールバックする。
+export const LAST_MESSAGE_TAIL_BYTES = 16 * 1024;
+// 一覧のプレビューは1行表示なので十分な長さ。電文を膨らませないため preview と同じ上限に切り詰める。
+export const LAST_MESSAGE_CHARS = 260;
+const MAX_CONCURRENT_LAST_MESSAGE_READS = 8;
 const SUMMARY_HEAD_BYTES = 512 * 1024;
 const MAX_SEARCH_TEXT_CHARS = 64 * 1024;
 const MAX_CATALOG_ENTRIES = 2400;
+// tail 再読を避ける最新メッセージキャッシュの上限。catalog の最大件数に合わせる。
+const MAX_LATEST_MESSAGE_CACHE_ENTRIES = MAX_CATALOG_ENTRIES;
 const DEFAULT_SEARCH_TEXT_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_CONCURRENT_SEARCH_TEXT_READS = 4;
 
@@ -274,6 +284,47 @@ async function readBoundedFile(filePath: string, allowedRoot: string, beforeOpen
 		await handle.close();
 	}
 }
+
+/** transcript の末尾 limit バイトを読む。テストから境界挙動を直接検証できるよう export している。 */
+export async function readFileTail(filePath: string, allowedRoot: string, limit: number, beforeOpen?: (filePath: string) => Promise<void>): Promise<string> {
+	const { handle, stat } = await openVerifiedFile(filePath, allowedRoot, undefined, beforeOpen);
+	try {
+		if (stat.size === 0) {
+			return '';
+		}
+		const length = Math.min(stat.size, limit);
+		const buffer = Buffer.alloc(length);
+		const { bytesRead } = await handle.read(buffer, 0, length, stat.size - length);
+		const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
+		// 先頭は読み飛ばし境界で切れている可能性があるため捨てる。全体を読み切ったときは不要。
+		if (stat.size > limit) {
+			lines.shift();
+		}
+		return lines.join('\n');
+	} finally {
+		await handle.close();
+	}
+}
+
+/**
+ * transcript の末尾から「最新の会話メッセージ」を採取する。末尾から逆順に走査するため、
+ * tail 先頭の不完全行(readFileTail が捨てる)や途中の巨大行があっても、その後ろの完全な行に
+ * 落ち着く。ただし最終行自体が tail サイズ({@link LAST_MESSAGE_TAIL_BYTES})を超える場合は
+ * tail 全体が行境界で切れて採取できず、undefined(preview へのフォールバック)になる。
+ * テストから直接検証できるよう export している。
+ */
+export function extractLatestMessage(tailText: string, agent: ParadisResumeAgent): IParadisResumeLatestMessage | undefined {
+	const lines = tailText.split('\n');
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const message = parseLine(lines[index], agent);
+		if (message) {
+			// 一覧では1行で表示するため改行を潰す。
+			return { role: message.role, text: clipped(message.text.replace(/\s+/g, ' ').trim(), LAST_MESSAGE_CHARS) };
+		}
+	}
+	return undefined;
+}
+
 async function readFileHead(filePath: string, allowedRoot: string, expected: IFileIdentity, limit: number, beforeOpen?: (filePath: string) => Promise<void>): Promise<string> {
 	const { handle, stat } = await openVerifiedFile(filePath, allowedRoot, expected, beforeOpen);
 	try {
@@ -299,6 +350,12 @@ function pathInside(root: string, candidate: string): boolean {
 export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
 	private readonly searchTextCache: ParadisSessionSearchTextCache;
+	/** 一覧行プレビューの tail 再読を避けるキャッシュ。キーは catalogId、不変条件(revision)は updatedAt。 */
+	private readonly latestMessageCache = new Map<string, {
+		readonly revision: number;
+		readonly message: IParadisResumeLatestMessage | null;
+		readonly promise?: Promise<IParadisResumeLatestMessage | null>;
+	}>();
 	private readonly searchTextReadLimiter = new Limiter<string>(MAX_CONCURRENT_SEARCH_TEXT_READS);
 	private readonly activeListRequests = new Map<string, Promise<readonly IParadisResumeSession[]>>();
 	private readonly searchRevisions = new Map<string, number>();
@@ -396,7 +453,78 @@ export class ParadisSessionResumeService {
 		}
 		const visible = sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
 		this.trimCatalog(new Set(visible.map(session => session.catalogId)));
-		return visible;
+		return await this.attachLatestMessages(visible);
+	}
+
+	/**
+	 * 一覧行のプレビューを「最新(最後)の会話」にするため、各 transcript の末尾から
+	 * 最新メッセージを採取して上書きする。読めないセッションは latestMessage なしのまま
+	 * 返り、エディタ側で最初のプロンプトへフォールバックする。
+	 * 結果は catalogId+updatedAt をキーにキャッシュし、不変な refresh では tail を読み直さない。
+	 */
+	private async attachLatestMessages(visible: readonly IParadisResumeSession[]): Promise<readonly IParadisResumeSession[]> {
+		const entries = visible.map(session => [session.catalogId, this.catalog.get(session.catalogId)] as const)
+			.filter((entry): entry is readonly [string, ICatalogEntry] => entry[1] !== undefined);
+		if (entries.length === 0) {
+			return visible;
+		}
+		const latestMessages = new Map<string, IParadisResumeLatestMessage>();
+		let cursor = 0;
+		const worker = async (): Promise<void> => {
+			while (cursor < entries.length) {
+				const [catalogId, entry] = entries[cursor++];
+				try {
+					const message = await this.getLatestMessage(entry);
+					if (message) {
+						latestMessages.set(catalogId, message);
+					}
+				} catch { /* 採取できないセッションは preview へフォールバックさせる */ }
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_LAST_MESSAGE_READS, entries.length) }, () => worker()));
+		if (latestMessages.size === 0) {
+			return visible;
+		}
+		return visible.map(session => {
+			const latestMessage = latestMessages.get(session.catalogId);
+			return latestMessage ? { ...session, latestMessage } : session;
+		});
+	}
+
+	/**
+	 * catalogId+updatedAt が不変なら前回の採取結果を再利用し、refresh のたびに全 visible 分の
+	 * tail を読み直さないようにする。読み取り途中の同時要求は1つの物理 read に合流する。
+	 * 採取できなかったことは負キャッシュとして覚えるが、読み取り例外(一時的な失敗の可能性)
+	 * は覚えず、キャッシュから外して次回再試行する。
+	 */
+	private getLatestMessage(entry: ICatalogEntry): Promise<IParadisResumeLatestMessage | null> {
+		const catalogId = entry.session.catalogId;
+		const revision = entry.session.updatedAt;
+		const cached = this.latestMessageCache.get(catalogId);
+		if (cached?.revision === revision) {
+			return cached.promise ?? Promise.resolve(cached.message);
+		}
+		const promise = readFileTail(entry.transcriptPath, entry.allowedRoot, LAST_MESSAGE_TAIL_BYTES, this.beforeSummaryRead)
+			.then(tail => extractLatestMessage(tail, entry.session.agent) ?? null)
+			.then(message => {
+				this.rememberLatestMessage(catalogId, revision, message);
+				return message;
+			}, error => {
+				const current = this.latestMessageCache.get(catalogId);
+				if (current?.promise === promise) {
+					this.latestMessageCache.delete(catalogId);
+				}
+				throw error;
+			});
+		this.latestMessageCache.set(catalogId, { revision, message: null, promise });
+		return promise;
+	}
+
+	private rememberLatestMessage(catalogId: string, revision: number, message: IParadisResumeLatestMessage | null): void {
+		if (this.latestMessageCache.size >= MAX_LATEST_MESSAGE_CACHE_ENTRIES && !this.latestMessageCache.has(catalogId)) {
+			this.latestMessageCache.clear();
+		}
+		this.latestMessageCache.set(catalogId, { revision, message });
 	}
 
 	async preview(catalogId: string, rawQuery?: string): Promise<IParadisResumePreview> {
@@ -546,6 +674,7 @@ export class ParadisSessionResumeService {
 		const previous = this.catalog.get(catalogId);
 		if (previous?.session.updatedAt !== complete.updatedAt) {
 			this.searchTextCache.delete(catalogId);
+			this.latestMessageCache.delete(catalogId);
 		}
 		const searchTextPromise = previous?.session.updatedAt === complete.updatedAt ? previous.searchTextPromise : undefined;
 		this.catalog.set(catalogId, { session: complete, transcriptPath, allowedRoot, searchTextPromise, touchedAt: Date.now() });
@@ -563,6 +692,7 @@ export class ParadisSessionResumeService {
 		for (const [catalogId] of oldest) {
 			this.catalog.delete(catalogId);
 			this.searchTextCache.delete(catalogId);
+			this.latestMessageCache.delete(catalogId);
 		}
 	}
 

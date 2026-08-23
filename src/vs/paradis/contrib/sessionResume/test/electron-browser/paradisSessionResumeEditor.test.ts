@@ -220,9 +220,8 @@ suite('ParadisSessionResumeEditor', () => {
 			const search = fixture.root.querySelector<HTMLInputElement>('input[type="search"]')!;
 			search.value = 'second';
 			search.dispatchEvent(new Event('input'));
-			const agent = fixture.root.querySelectorAll<HTMLSelectElement>('select')[0];
-			agent.value = 'codex';
-			agent.dispatchEvent(new Event('change'));
+			const codexFilter = fixture.root.querySelector<HTMLButtonElement>('button[data-agent-filter="codex"]')!;
+			codexFilter.click();
 
 			fixture.editor.setVisible(false);
 			fixture.scopeEmitter.fire();
@@ -232,7 +231,7 @@ suite('ParadisSessionResumeEditor', () => {
 			await timeout(1);
 
 			assert.strictEqual(search.value, 'second');
-			assert.strictEqual(agent.value, 'codex');
+			assert.strictEqual(codexFilter.getAttribute('aria-pressed'), 'true');
 			assert.strictEqual(fixture.root.querySelector('.paradis-session-resume-row.selected .row-title')?.textContent, 'Second session');
 		} finally {
 			fixture.dispose();
