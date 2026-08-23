@@ -14,6 +14,7 @@
 // 孤児として残り続ける。長く生きるプロセスほど効いてくるので、ツリーごと落とす。
 
 import * as cp from 'child_process';
+import { IDisposable } from '../../base/common/lifecycle.js';
 import { killTree } from '../../base/node/processes.js';
 
 /**
@@ -49,4 +50,104 @@ export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (e
 		onError?.(error);
 		killDirectly();
 	});
+}
+
+export interface IParadisTrackedChildProcess extends IDisposable {
+	readonly timedOut: boolean;
+}
+
+export class ParadisChildProcessTreeTracker implements IDisposable {
+
+	private readonly active = new Set<ParadisTrackedChildProcess>();
+	private disposed = false;
+
+	constructor(private readonly onError?: (error: unknown) => void) { }
+
+	track(child: cp.ChildProcess, timeoutMs: number): IParadisTrackedChildProcess {
+		const execution = new ParadisTrackedChildProcess(
+			child,
+			timeoutMs,
+			this.onError,
+			() => this.active.delete(execution),
+		);
+		if (this.disposed) {
+			execution.killForOwnerDispose();
+		} else {
+			this.active.add(execution);
+		}
+		return execution;
+	}
+
+	dispose(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.disposed = true;
+		for (const execution of [...this.active]) {
+			execution.killForOwnerDispose();
+		}
+		this.active.clear();
+	}
+}
+
+class ParadisTrackedChildProcess implements IParadisTrackedChildProcess {
+
+	private timer: ReturnType<typeof setTimeout> | undefined;
+	private completed = false;
+	private killStarted = false;
+	private _timedOut = false;
+
+	get timedOut(): boolean {
+		return this._timedOut;
+	}
+
+	constructor(
+		private readonly child: cp.ChildProcess,
+		timeoutMs: number,
+		private readonly onError: ((error: unknown) => void) | undefined,
+		private readonly onComplete: () => void,
+	) {
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			this._timedOut = true;
+			this.startKill();
+		}, timeoutMs);
+	}
+
+	dispose(): void {
+		this.complete();
+	}
+
+	killForOwnerDispose(): void {
+		if (this.completed) {
+			return;
+		}
+		this.clearTimer();
+		this.startKill();
+		this.complete();
+	}
+
+	private startKill(): void {
+		if (this.killStarted) {
+			return;
+		}
+		this.killStarted = true;
+		paradisKillChildProcessTree(this.child, this.onError);
+	}
+
+	private complete(): void {
+		if (this.completed) {
+			return;
+		}
+		this.completed = true;
+		this.clearTimer();
+		this.onComplete();
+	}
+
+	private clearTimer(): void {
+		if (this.timer !== undefined) {
+			clearTimeout(this.timer);
+			this.timer = undefined;
+		}
+	}
 }
