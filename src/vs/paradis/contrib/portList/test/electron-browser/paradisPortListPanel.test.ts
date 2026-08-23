@@ -18,6 +18,7 @@ import { ParadisPortListPanel } from '../../electron-browser/paradisPortListPane
 interface IPanelFixture {
 	readonly root: HTMLElement;
 	readonly killedEntries: readonly IParadisPortEntry[];
+	readonly anchorRectReadCount: number;
 	setViewport(viewportWidth: number, anchorRight: number): void;
 	dispose(): void;
 }
@@ -29,8 +30,12 @@ function createPanelFixture(): IPanelFixture {
 	const anchor = document.createElement('button');
 	root.appendChild(anchor);
 	let anchorRight = 300;
+	let anchorRectReadCount = 0;
 	const killedEntries: IParadisPortEntry[] = [];
-	anchor.getBoundingClientRect = () => new DOMRect(anchorRight - 20, 10, 20, 20);
+	anchor.getBoundingClientRect = () => {
+		anchorRectReadCount++;
+		return new DOMRect(anchorRight - 20, 10, 20, 20);
+	};
 	const panel = new ParadisPortListPanel(
 		anchor,
 		{
@@ -48,6 +53,7 @@ function createPanelFixture(): IPanelFixture {
 	return {
 		root,
 		killedEntries,
+		get anchorRectReadCount(): number { return anchorRectReadCount; },
 		setViewport(viewportWidth: number, nextAnchorRight: number): void {
 			Object.defineProperty(window, 'innerWidth', { configurable: true, value: viewportWidth });
 			anchorRight = nextAnchorRight;
@@ -196,6 +202,36 @@ suite('Paradis port list panel', () => {
 			assert.strictEqual(document.activeElement, killButton);
 			killButton.click();
 			assert.deepStrictEqual(fixture.killedEntries, [longRiskyEntry]);
+		} finally {
+			if (originalInnerWidth) {
+				Object.defineProperty(window, 'innerWidth', originalInnerWidth);
+			} else {
+				delete (window as { innerWidth?: number }).innerWidth;
+			}
+			fixture.dispose();
+			stylesheet.remove();
+		}
+	});
+
+	test('repositions on resize and disposes the resize listener', async () => {
+		const stylesheet = await loadPanelStylesheet();
+		const window = dom.getActiveWindow();
+		const originalInnerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+		Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 });
+		const fixture = createPanelFixture();
+		try {
+			const initialRectReads = fixture.anchorRectReadCount;
+			assert.ok(initialRectReads > 0);
+
+			fixture.setViewport(390, 370);
+			const panelRect = fixture.root.querySelector<HTMLElement>('.paradis-port-list-panel')!.getBoundingClientRect();
+			assert.deepStrictEqual({ left: panelRect.left, width: panelRect.width, right: panelRect.right }, { left: 8, width: 374, right: 382 });
+			assert.strictEqual(fixture.anchorRectReadCount, initialRectReads + 1);
+
+			fixture.dispose();
+			const disposedRectReads = fixture.anchorRectReadCount;
+			fixture.setViewport(320, 300);
+			assert.strictEqual(fixture.anchorRectReadCount, disposedRectReads);
 		} finally {
 			if (originalInnerWidth) {
 				Object.defineProperty(window, 'innerWidth', originalInnerWidth);
