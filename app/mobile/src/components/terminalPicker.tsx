@@ -1,10 +1,18 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import * as React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
 import { colors, mono } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
+import {
+	COMPACT_TERMINAL_MENU_WIDTH,
+	decodeTerminalCompactMenuAction,
+	TERMINAL_CREATE_ACTION_ID,
+	TERMINAL_PICK_PREFIX,
+	TERMINAL_PRESETS_ACTION_ID,
+} from './terminalHeaderBehavior.js';
 
 /**
  * ターミナルタブの「ターミナル名 ▾」。**切り替えのメニューはOSに出させる。**
@@ -37,9 +45,6 @@ export interface TerminalPickerEntry {
 	readonly working: boolean;
 }
 
-/** メニューが返す識別子。ターミナルの選択だけ `pick:` を前置して区別する。 */
-const PICK_PREFIX = 'pick:';
-
 /** ネイティブの標準メニューを使えるか。使えないビルドでは呼び出し側がチップ列に戻す。 */
 export const terminalPickerIsNative = ParaPlusMenuButton !== undefined;
 
@@ -61,13 +66,13 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 
 	const items: ParaPlusMenuItem[] = [
 		...entries.map(entry => ({
-			id: `${PICK_PREFIX}${entry.terminalKey}`,
+			id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
 			title: `${entry.index}: ${entry.title}`,
 			// 色は付けられないので形で示す。何も無い＝手が空いている。
 			systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
 			selected: entry.terminalKey === activeKey,
 		})),
-		{ id: 'new-terminal', title: '新しいターミナル', systemImage: 'plus', startsSection: true },
+		{ id: TERMINAL_CREATE_ACTION_ID, title: '新しいターミナル', systemImage: 'plus', startsSection: true },
 	];
 
 	return (
@@ -80,8 +85,8 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 			onSelect={event => {
 				hapticSelection();
 				const id = event.nativeEvent.id;
-				if (id.startsWith(PICK_PREFIX)) {
-					onSelect(id.slice(PICK_PREFIX.length));
+				if (id.startsWith(TERMINAL_PICK_PREFIX)) {
+					onSelect(id.slice(TERMINAL_PICK_PREFIX.length));
 					return;
 				}
 				onCreate();
@@ -101,7 +106,63 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 	);
 }
 
+export function TerminalCompactMenu({ entries, activeKey, onSelect, onOpenPresets, onCreate }: {
+	entries: readonly TerminalPickerEntry[];
+	activeKey: string | undefined;
+	onSelect: (terminalKey: string) => void;
+	onOpenPresets: () => void;
+	onCreate: () => void;
+}) {
+	if (ParaPlusMenuButton === undefined) {
+		return null;
+	}
+
+	const items: ParaPlusMenuItem[] = [];
+	if (entries.length > 0) {
+		items.push({
+			id: 'terminals',
+			title: 'ターミナルを切り替える',
+			systemImage: 'terminal',
+			children: entries.map(entry => ({
+				id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
+				title: `${entry.index}: ${entry.title}`,
+				systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
+				selected: entry.terminalKey === activeKey,
+			})),
+		});
+	}
+	items.push(
+		{ id: TERMINAL_PRESETS_ACTION_ID, title: 'コマンドプリセット', systemImage: 'bolt', startsSection: true },
+		{ id: TERMINAL_CREATE_ACTION_ID, title: '新しいターミナル', systemImage: 'plus' },
+	);
+
+	return (
+		<ParaPlusMenuButton
+			style={styles.compactMenu}
+			symbol="ellipsis.circle"
+			items={items}
+			accessibilityTitle="ターミナル操作"
+			onSelect={event => {
+				const action = decodeTerminalCompactMenuAction(event.nativeEvent.id);
+				if (action?.kind === 'terminal') {
+					hapticSelection();
+					onSelect(action.terminalKey);
+				} else if (action?.kind === 'presets') {
+					hapticSelection();
+					onOpenPresets();
+				} else if (action?.kind === 'create') {
+					onCreate();
+				}
+			}}
+		/>
+	);
+}
+
 const styles = StyleSheet.create({
+	compactMenu: {
+		width: COMPACT_TERMINAL_MENU_WIDTH,
+		height: COMPACT_TERMINAL_MENU_WIDTH,
+	},
 	// **`flex` に頼らず自分の大きさを持つこと。** 以前はヘッダー層の「左右の間に伸びる島」の
 	// 中に居たので親が幅と高さをくれたが、いまはOS標準のバーの項目として置かれる。
 	// バー項目の親は中身なりの大きさなので、`flex: 1` だと 0×0 に潰れて見えなくなる
