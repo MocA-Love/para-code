@@ -1,0 +1,1554 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>Para Code Office ビューア — 現行 / 全対応後 比較モック</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1a1d21;
+    --muted: #5c6672;
+    --line: #dde3ea;
+    --line-strong: #c7d0db;
+    --bg: #f6f8fa;
+    --card: #ffffff;
+    --accent: #0b62c4;
+    --accent-soft: #e8f0fe;
+    --navy-1: #10243e;
+    --navy-2: #17385f;
+    --navy-3: #1c4a77;
+    --danger: #c62828;
+    --danger-bg: #fdecea;
+    --warn: #a05a00;
+    --warn-bg: #fff4e0;
+    --ok: #137333;
+    --ok-bg: #e6f4ea;
+    --code-bg: #eef2f7;
+    --excel-grid: #d4d4d4;
+    --excel-head: #f3f3f3;
+    --workbench: #1e1e1e;
+    --workbench-2: #252526;
+    --workbench-border: #454545;
+    --workbench-fg: #cccccc;
+    --diff-add: #22c55e;
+    --diff-remove: #ef4444;
+    --diff-change: #3b82f6;
+    --diff-move: #a855f7;
+    --diff-current: #f59e0b;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--bg);
+    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic UI", Meiryo, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  a { color: var(--accent); }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: 3px solid rgba(11, 98, 196, .34);
+    outline-offset: 2px;
+  }
+
+  code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--code-bg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .page-header {
+    padding: 46px 24px 38px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--navy-1) 0%, var(--navy-2) 60%, var(--navy-3) 100%);
+  }
+
+  .page-header-inner,
+  .toc-inner,
+  .wrap {
+    width: min(1280px, calc(100% - 40px));
+    margin: 0 auto;
+  }
+
+  .eyebrow {
+    margin: 0 0 8px;
+    color: #bdd7f4;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .page-header h1 {
+    margin: 0 0 10px;
+    max-width: 960px;
+    font-size: clamp(24px, 3.4vw, 36px);
+    line-height: 1.3;
+    letter-spacing: .01em;
+  }
+
+  .page-header .sub {
+    margin: 4px 0 0;
+    max-width: 980px;
+    color: rgba(255, 255, 255, .84);
+    font-size: 14px;
+  }
+
+  .page-header code {
+    color: #fff;
+    background: rgba(255, 255, 255, .14);
+  }
+
+  .toc {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    border-bottom: 1px solid var(--line);
+    background: rgba(255, 255, 255, .94);
+    backdrop-filter: blur(8px);
+  }
+
+  .toc-inner {
+    display: flex;
+    gap: 4px 12px;
+    align-items: center;
+    overflow-x: auto;
+    padding: 8px 0;
+    scrollbar-width: thin;
+    white-space: nowrap;
+  }
+
+  .toc a {
+    padding: 3px 7px;
+    border-radius: 5px;
+    color: var(--accent);
+    font-size: 12.5px;
+    text-decoration: none;
+  }
+
+  .toc a:hover { background: var(--code-bg); }
+
+  .wrap { padding: 0 0 80px; }
+
+  .section-title {
+    margin: 44px 0 8px;
+    padding-left: 12px;
+    border-left: 5px solid var(--accent);
+    font-size: 21px;
+    line-height: 1.35;
+  }
+
+  .section-title small {
+    margin-left: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .lede {
+    margin: 0 0 16px;
+    max-width: 1020px;
+    color: var(--muted);
+    font-size: 13.5px;
+  }
+
+  .card {
+    margin: 14px 0;
+    padding: 20px 22px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+  }
+
+  .callout {
+    margin: 14px 0;
+    padding: 13px 16px;
+    border: 1px solid #f2dfa4;
+    border-radius: 8px;
+    background: #fffbea;
+    font-size: 13.5px;
+  }
+
+  .callout.info {
+    border-color: #c3d7f7;
+    background: #f3f7fd;
+  }
+
+  .callout.ok {
+    border-color: #c4e3cd;
+    background: #f2f9f4;
+  }
+
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+  }
+
+  .kpi {
+    min-height: 104px;
+    padding: 15px 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+  }
+
+  .kpi .value {
+    color: var(--accent);
+    font-size: 25px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .kpi .label {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 22px;
+    padding: 1px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+
+  .badge-current { color: #394250; background: #eef1f5; }
+  .badge-target { color: var(--accent); background: var(--accent-soft); border: 1px solid #c3d7f7; }
+  .badge-fixed { color: #fff; background: #166534; }
+  .badge-open { color: var(--danger); background: var(--danger-bg); }
+  .badge-partial { color: var(--warn); background: var(--warn-bg); }
+  .badge-new { color: var(--accent); background: var(--accent-soft); }
+  .badge-limit { color: #6941c6; background: #f0ebff; }
+
+  .audit-table-wrap { overflow-x: auto; }
+
+  .audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    font-size: 13px;
+  }
+
+  .audit-table th,
+  .audit-table td {
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    vertical-align: top;
+    text-align: left;
+  }
+
+  .audit-table th {
+    background: #eef1f5;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .audit-table td:first-child { font-weight: 700; white-space: nowrap; }
+
+  .correction-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 14px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .correction-list li {
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fbfcfd;
+    font-size: 13px;
+  }
+
+  .correction-list .badge { margin-right: 6px; vertical-align: middle; }
+
+  .comparison-section { scroll-margin-top: 52px; }
+
+  .scenario-head {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+
+  .scenario-head h3 {
+    margin: 0 0 5px;
+    font-size: 17px;
+  }
+
+  .scenario-head p {
+    margin: 0;
+    max-width: 850px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .scenario-changes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
+  .compare-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .compare-pane {
+    min-width: 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 9px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .compare-pane.target { border-color: #9ebfe9; box-shadow: 0 0 0 2px rgba(11, 98, 196, .06); }
+
+  .pane-caption {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 44px;
+    padding: 8px 11px;
+    border-bottom: 1px solid var(--line);
+    background: #fafbfc;
+  }
+
+  .compare-pane.target .pane-caption { background: #f4f8fd; }
+
+  .pane-caption strong { font-size: 12.5px; }
+
+  .pane-caption .caption-note {
+    color: var(--muted);
+    font-size: 11px;
+    text-align: right;
+  }
+
+  .surface {
+    min-height: 432px;
+    color: var(--workbench-fg);
+    background: var(--workbench);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 12px;
+  }
+
+  .editor-tabs {
+    display: flex;
+    min-height: 34px;
+    border-bottom: 1px solid var(--workbench-border);
+    background: var(--workbench-2);
+  }
+
+  .editor-tab {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    min-width: 170px;
+    padding: 7px 12px;
+    border-right: 1px solid var(--workbench-border);
+    background: var(--workbench);
+    color: #fff;
+  }
+
+  .file-glyph {
+    display: inline-grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 2px;
+    color: #fff;
+    background: #217346;
+    font-size: 9px;
+    font-weight: 800;
+  }
+
+  .file-glyph.word { background: #2b579a; }
+
+  .office-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 36px;
+    padding: 4px 9px;
+    border-bottom: 1px solid var(--workbench-border);
+    color: #d7d7d7;
+    background: var(--workbench-2);
+  }
+
+  .toolbar-left,
+  .toolbar-right,
+  .legend,
+  .legend-item,
+  .zoom,
+  .nav-buttons,
+  .target-filters {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+  }
+
+  .toolbar-left { min-width: 0; }
+  .toolbar-right { flex-wrap: wrap; justify-content: flex-end; }
+
+  .legend { gap: 9px; color: #b8b8b8; font-size: 10px; }
+  .legend-item { gap: 4px; }
+  .swatch { width: 8px; height: 8px; border-radius: 2px; }
+  .swatch.add { background: var(--diff-add); }
+  .swatch.remove { background: var(--diff-remove); }
+  .swatch.change { background: var(--diff-change); }
+  .swatch.move { background: var(--diff-move); }
+
+  .ui-button {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    justify-content: center;
+    min-height: 23px;
+    padding: 2px 7px;
+    border: 1px solid #505050;
+    border-radius: 3px;
+    color: #ddd;
+    background: #343434;
+    font: inherit;
+  }
+
+  button.ui-button:disabled {
+    opacity: 1;
+    cursor: default;
+  }
+
+  .ui-button.icon { min-width: 23px; padding: 2px 5px; }
+  .ui-button.active { border-color: #75aadb; background: #174b78; color: #fff; }
+  .nav-position { min-width: 36px; color: #b8b8b8; text-align: center; }
+
+  .status-ribbon {
+    display: flex;
+    gap: 7px;
+    align-items: flex-start;
+    padding: 7px 10px;
+    border-bottom: 1px solid #314961;
+    color: #d8ebff;
+    background: #18354f;
+    font-size: 10.5px;
+  }
+
+  .status-ribbon.warn {
+    border-color: #6b531d;
+    color: #ffe9b3;
+    background: #463816;
+  }
+
+  .mock-note {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .note-index {
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    color: #fff;
+    background: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  /* Spreadsheet mock */
+  .spreadsheet-workspace {
+    display: flex;
+    flex-direction: column;
+    min-height: 362px;
+    background: #fff;
+  }
+
+  .sheet-scroll {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 320px;
+    overflow: auto;
+    background: #fff;
+  }
+
+  .sheet-table {
+    width: 100%;
+    min-width: 560px;
+    border-collapse: collapse;
+    table-layout: fixed;
+    color: #000;
+    background: #fff;
+    font-family: Calibri, "MS PGothic", Meiryo, sans-serif;
+    font-size: 11px;
+  }
+
+  .sheet-table th,
+  .sheet-table td {
+    position: relative;
+    height: 34px;
+    padding: 3px 6px;
+    border: 1px solid var(--excel-grid);
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+
+  .sheet-table thead th,
+  .sheet-table .row-head {
+    color: #666;
+    background: var(--excel-head);
+    font-size: 9px;
+    font-weight: 400;
+    text-align: center;
+  }
+
+  .sheet-table thead th:first-child,
+  .sheet-table .row-head { width: 30px; padding: 0; }
+  .sheet-table .currency { text-align: right; }
+  .sheet-table .plain-link { color: #000; }
+  .sheet-table .real-link { color: #0563c1; text-decoration: underline; }
+  .sheet-table .header-cell { color: #fff; background: #4472c4; font-weight: 700; text-align: center; }
+  .sheet-table .target-date { text-align: center; }
+  .sheet-table .cf-alert { color: #9c0006; background: #ffc7ce; font-weight: 700; }
+  .sheet-table .cf-good { color: #006100; background: #c6efce; }
+  .sheet-table .data-bar::before {
+    position: absolute;
+    inset: 5px auto 5px 3px;
+    width: var(--bar, 55%);
+    content: "";
+    background: linear-gradient(90deg, rgba(99, 165, 232, .75), rgba(99, 165, 232, .18));
+  }
+  .sheet-table .data-bar span { position: relative; z-index: 1; }
+  .sheet-table .comment-corner::after {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 0;
+    height: 0;
+    border-top: 8px solid #dc2626;
+    border-left: 8px solid transparent;
+    content: "";
+  }
+  .sheet-table .rotated {
+    height: 58px;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    letter-spacing: .08em;
+  }
+  .freeze-line-v {
+    position: absolute;
+    z-index: 4;
+    top: 0;
+    bottom: 0;
+    left: 31%;
+    width: 2px;
+    background: #8aa9c8;
+    box-shadow: 2px 0 3px rgba(0, 0, 0, .15);
+  }
+  .freeze-line-h {
+    position: absolute;
+    z-index: 4;
+    top: 92px;
+    right: 0;
+    left: 0;
+    height: 2px;
+    background: #8aa9c8;
+    box-shadow: 0 2px 3px rgba(0, 0, 0, .15);
+  }
+
+  .chart-placeholder,
+  .mini-chart {
+    position: absolute;
+    z-index: 5;
+    right: 16px;
+    bottom: 18px;
+    width: 210px;
+    height: 116px;
+    border: 1px solid #bfc5cc;
+    background: rgba(255, 255, 255, .96);
+  }
+
+  .chart-placeholder {
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .mini-chart { padding: 8px 10px; }
+  .mini-chart-title { margin-bottom: 5px; color: #222; font-size: 10px; font-weight: 700; text-align: center; }
+  .bars { display: flex; gap: 12px; align-items: flex-end; height: 74px; padding: 0 10px 15px; border-bottom: 1px solid #777; }
+  .bar { flex: 1 1 0; min-width: 16px; height: var(--height); background: #4472c4; }
+  .bar:nth-child(2) { background: #70ad47; }
+  .bar:nth-child(3) { background: #ed7d31; }
+
+  .sheet-tabs {
+    display: flex;
+    min-height: 29px;
+    border-top: 1px solid var(--workbench-border);
+    color: #aaa;
+    background: var(--workbench-2);
+  }
+
+  .sheet-tab {
+    padding: 5px 12px;
+    border: 0;
+    border-right: 1px solid var(--workbench-border);
+    color: inherit;
+    background: transparent;
+    font: inherit;
+  }
+
+  .sheet-tab.active { color: #fff; background: var(--workbench); font-weight: 700; }
+  .sheet-tab.hidden-sheet { color: #f2c46d; border-bottom: 2px dashed #f2c46d; }
+  button.sheet-tab:disabled { opacity: 1; cursor: default; }
+
+  /* Diff mock */
+  .diff-layout { display: flex; min-height: 360px; background: #fff; }
+  .diff-panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1 1 auto; min-width: 0; }
+  .diff-pane { min-width: 0; overflow: auto; color: #000; background: #fff; }
+  .diff-pane + .diff-pane { border-left: 1px solid #777; }
+  .diff-label { padding: 3px 8px; border-bottom: 1px solid var(--excel-grid); color: #666; background: var(--excel-head); font-size: 10px; }
+  .diff-sheet { min-width: 300px; }
+  .diff-sheet th,
+  .diff-sheet td { height: 31px; padding: 2px 5px; }
+  .cell-modified { background: rgba(59, 130, 246, .2) !important; box-shadow: inset 0 0 0 2px var(--diff-change); }
+  .cell-added { background: rgba(34, 197, 94, .25) !important; box-shadow: inset 0 0 0 2px var(--diff-add); }
+  .cell-removed { background: rgba(239, 68, 68, .25) !important; box-shadow: inset 0 0 0 2px var(--diff-remove); }
+  .cell-current { outline: 2px solid var(--diff-current); outline-offset: -2px; }
+  .semantic-dot {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--diff-change);
+  }
+
+  .change-inspector {
+    flex: 0 0 212px;
+    border-left: 1px solid #777;
+    color: #ddd;
+    background: #252526;
+  }
+
+  .inspector-head {
+    padding: 8px 10px;
+    border-bottom: 1px solid #454545;
+    font-weight: 700;
+  }
+
+  .inspector-item {
+    padding: 8px 10px;
+    border-bottom: 1px solid #383838;
+  }
+
+  .inspector-item strong { display: block; color: #fff; font-size: 11px; }
+  .inspector-item span { display: block; margin-top: 2px; color: #aaa; font-size: 10px; }
+  .inspector-item.current { border-left: 3px solid var(--diff-current); background: #313131; }
+
+  .inspector-item.compact { padding-top: 5px; padding-bottom: 5px; }
+
+  /* Word mock */
+  .word-workspace {
+    min-height: 398px;
+    padding: 22px 18px 30px;
+    overflow: hidden;
+    background: #1e1e1e;
+  }
+
+  .word-pages {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    align-items: center;
+  }
+
+  .word-page {
+    position: relative;
+    width: min(92%, 430px);
+    min-height: 330px;
+    padding: 38px 42px 40px;
+    color: #111;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .45);
+    font-family: "Yu Mincho", "Hiragino Mincho ProN", serif;
+    font-size: 10.5px;
+    line-height: 1.75;
+  }
+
+  .word-page h4 { margin: 2px 0 18px; font-size: 15px; text-align: center; letter-spacing: .12em; }
+  .word-page p { margin: 7px 0; }
+  .word-header,
+  .word-footer { position: absolute; right: 42px; left: 42px; color: #555; font-size: 8.5px; }
+  .word-header { top: 16px; border-bottom: 1px solid #bbb; }
+  .word-footer { bottom: 14px; text-align: center; }
+  .missing-object-gap { height: 72px; margin: 9px 0; }
+  .drawing-box {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 8px;
+    align-items: center;
+    min-height: 64px;
+    margin: 9px 0;
+    padding: 8px;
+    border: 1px solid #5b9bd5;
+    border-radius: 4px;
+    color: #17385f;
+    background: #eaf3fb;
+    font-family: "Yu Gothic", sans-serif;
+    font-size: 9px;
+    text-align: center;
+  }
+  .drawing-node { padding: 5px; border: 1px solid #78a9d1; border-radius: 3px; background: #fff; }
+  .drawing-arrow { color: #4472c4; font-size: 18px; }
+  .ruby-word ruby { ruby-position: over; }
+  .comment-anchor { position: relative; background: #fff2a8; }
+  .comment-pin {
+    position: absolute;
+    right: -29px;
+    top: -3px;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    color: #fff;
+    background: #d97706;
+    font-family: sans-serif;
+    font-size: 9px;
+    font-weight: 700;
+  }
+  .footnote {
+    margin-top: 14px;
+    padding-top: 5px;
+    border-top: 1px solid #777;
+    font-size: 8px;
+  }
+  .unsupported-object {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-height: 52px;
+    margin: 9px 0;
+    padding: 7px 9px;
+    border: 1px dashed #7c6ab4;
+    color: #3d3264;
+    background: #f5f2ff;
+    font-family: sans-serif;
+    font-size: 8.5px;
+  }
+  .unsupported-object strong { display: block; }
+
+  .field-status,
+  .section-break {
+    margin: 8px 0;
+    padding: 5px 7px;
+    border: 1px solid #b8c4d2;
+    color: #364657;
+    background: #f4f7fa;
+    font-family: "Yu Gothic", sans-serif;
+    font-size: 8px;
+  }
+
+  .section-break {
+    border-width: 1px 0 0;
+    border-style: dashed;
+    background: transparent;
+    text-align: center;
+  }
+
+  /* Word diff */
+  .word-diff-stage { min-height: 360px; background: #1e1e1e; }
+  .word-diff-layout { display: flex; min-height: 360px; }
+  .word-diff-panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1 1 auto; min-width: 0; }
+  .word-diff-pane { min-width: 0; overflow: hidden; }
+  .word-diff-pane + .word-diff-pane { border-left: 1px solid #454545; }
+  .word-pane-label { padding: 3px 9px; border-bottom: 1px solid #454545; color: #aaa; background: #2b2b2b; font-size: 10px; }
+  .word-diff-page {
+    position: relative;
+    width: calc(100% - 24px);
+    min-height: 290px;
+    margin: 12px;
+    padding: 30px 28px;
+    color: #111;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .45);
+    font-family: "Yu Mincho", serif;
+    font-size: 9px;
+    line-height: 1.7;
+  }
+  .word-diff-page h4 { margin: 0 0 13px; text-align: center; }
+  .word-diff-page .theme-modified { color: #2b579a; font-family: "Yu Gothic", sans-serif; }
+  .inline-media {
+    display: grid;
+    place-items: center;
+    width: 72px;
+    height: 36px;
+    margin: 8px auto;
+    border-radius: 3px;
+    color: #fff;
+    background: #2b579a;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .08em;
+  }
+  .inline-media.modified { color: #143322; background: #70ad47; }
+  .inline-media.media-diff { outline: 2px solid var(--diff-change); outline-offset: 2px; }
+  .diff-block { margin: 7px 0; padding: 2px 4px; border-radius: 3px; }
+  .diff-block.add { background: rgba(34, 197, 94, .14); box-shadow: inset 0 0 0 1.5px var(--diff-add); }
+  .diff-block.remove { background: rgba(239, 68, 68, .14); box-shadow: inset 0 0 0 1.5px var(--diff-remove); }
+  .diff-block.change { background: rgba(59, 130, 246, .12); box-shadow: inset 0 0 0 1.5px var(--diff-change); }
+  .diff-block.move { background: rgba(168, 85, 247, .12); box-shadow: inset 0 0 0 1.5px var(--diff-move); }
+  .diff-block.current { outline: 2px solid var(--diff-current); outline-offset: 1px; }
+  .seg-added { border-radius: 2px; background: rgba(34, 197, 94, .35); }
+  .seg-removed { border-radius: 2px; background: rgba(239, 68, 68, .3); text-decoration: line-through; }
+  .seg-format { text-decoration: underline wavy var(--diff-change); text-underline-offset: 2px; }
+  .ghost {
+    padding: 3px 5px;
+    border: 1.5px dashed rgba(107, 114, 128, .8);
+    border-radius: 3px;
+    color: #777;
+    background: repeating-linear-gradient(-45deg, rgba(107, 114, 128, .06), rgba(107, 114, 128, .06) 5px, transparent 5px, transparent 10px);
+    font-style: italic;
+  }
+  .story-inspector {
+    flex: 0 0 205px;
+    border-left: 1px solid #454545;
+    color: #ddd;
+    background: #252526;
+  }
+  .story-group { padding: 8px 9px; border-bottom: 1px solid #3b3b3b; }
+  .story-group-title { display: flex; justify-content: space-between; color: #fff; font-weight: 700; }
+  .story-count { color: #9cdcfe; }
+  .story-change { margin-top: 5px; padding-left: 7px; border-left: 2px solid var(--diff-change); color: #bbb; font-size: 9.5px; }
+  .story-change.add { border-color: var(--diff-add); }
+  .story-change.warn { border-color: var(--diff-current); }
+
+  /* Coverage and target architecture */
+  .coverage-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .coverage-card { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: #fff; }
+  .coverage-head { display: flex; justify-content: space-between; gap: 10px; padding: 11px 13px; border-bottom: 1px solid var(--line); background: #f7f9fb; }
+  .coverage-head h3 { margin: 0; font-size: 14px; }
+  .coverage-evidence { padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted); background: #fbfcfd; font-size: 10.5px; }
+  .coverage-card.cross-cutting { grid-column: 1 / -1; }
+  .coverage-list { margin: 0; padding: 0; list-style: none; }
+  .coverage-list li { display: grid; grid-template-columns: minmax(130px, .8fr) 1.2fr; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #edf0f3; font-size: 12px; }
+  .coverage-list li:last-child { border-bottom: 0; }
+  .coverage-list strong { font-size: 12px; }
+  .coverage-list span { color: var(--muted); }
+
+  .architecture {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+  }
+  .arch-step { position: relative; padding: 13px 14px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+  .arch-step:not(:last-child)::after {
+    position: absolute;
+    top: 50%;
+    right: -9px;
+    z-index: 2;
+    color: var(--accent);
+    content: "→";
+    font-weight: 700;
+  }
+  .arch-step .num { color: var(--accent); font-size: 11px; font-weight: 700; }
+  .arch-step h3 { margin: 3px 0 5px; font-size: 14px; }
+  .arch-step p { margin: 0; color: var(--muted); font-size: 11.5px; }
+
+  .sources { columns: 2; column-gap: 28px; margin: 8px 0 0; padding-left: 20px; font-size: 12.5px; }
+  .sources li { break-inside: avoid; margin: 0 0 8px; }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  @media (max-width: 1180px) {
+    .compare-grid { grid-template-columns: 1fr; }
+    .surface { min-height: 410px; }
+    .pane-caption .caption-note { max-width: 55%; }
+  }
+
+  @media (max-width: 860px) {
+    .kpis,
+    .architecture { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .correction-list,
+    .coverage-grid { grid-template-columns: 1fr; }
+    .arch-step:nth-child(2)::after { display: none; }
+    .diff-layout,
+    .word-diff-layout { display: block; }
+    .change-inspector,
+    .story-inspector { border-top: 1px solid #454545; border-left: 0; }
+    .sources { columns: 1; }
+  }
+
+  @media (max-width: 620px) {
+    .page-header-inner,
+    .toc-inner,
+    .wrap { width: min(100% - 24px, 1280px); }
+    .page-header { padding: 34px 12px 28px; }
+    .kpis,
+    .architecture { grid-template-columns: 1fr; }
+    .arch-step::after { display: none; }
+    .card { padding: 15px 12px; }
+    .scenario-head { display: block; }
+    .scenario-changes { justify-content: flex-start; margin-top: 10px; }
+    .pane-caption { align-items: flex-start; }
+    .pane-caption .caption-note { max-width: 50%; }
+    .office-toolbar { flex-direction: column; align-items: flex-start; }
+    .toolbar-left,
+    .toolbar-right { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
+    .legend { flex-wrap: wrap; }
+    .toolbar-right { gap: 4px; }
+    .target-filters { display: none; }
+    .diff-panes,
+    .word-diff-panes { grid-template-columns: 1fr; }
+    .diff-pane + .diff-pane,
+    .word-diff-pane + .word-diff-pane { border-top: 1px solid #777; border-left: 0; }
+    .word-page { width: 100%; padding-right: 26px; padding-left: 26px; }
+    .chart-placeholder { display: none; }
+    .mini-chart { position: relative; right: auto; bottom: auto; width: min(210px, calc(100% - 20px)); margin: 10px; }
+    .coverage-list li { grid-template-columns: 1fr; gap: 2px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+
+  @media print {
+    body { background: #fff; }
+    .toc { display: none; }
+    .page-header { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    .wrap { width: 100%; padding: 0; }
+    .card,
+    .comparison-section,
+    .compare-pane,
+    .coverage-card { break-inside: avoid; }
+    .compare-grid { grid-template-columns: 1fr; }
+    .surface { min-height: 390px; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    .sheet-table { min-width: 0; }
+    .sheet-scroll,
+    .diff-pane { overflow: visible; }
+    .architecture { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .arch-step,
+    .section-title { break-inside: avoid; break-after: avoid; }
+    a { color: #174f91; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div class="page-header-inner">
+    <p class="eyebrow">Office viewer audit · faithful comparison mock</p>
+    <h1>Excel / Word ビューア・Diff<br>現行 main と全対応後の比較モック</h1>
+    <p class="sub">既存の徹底調査レポートを現行コードへ再照合し、表示用の文字列・CSSだけでは見えないOOXMLの意味差分まで対象を拡張した到達像を並べる。</p>
+    <p class="sub">再調査日: 2026-08-24 ／ 現行基準: <code>ba8ca41d118</code> ／ 元レポート基準: <code>1c88c85dab6</code> ／ 画面モック: Dark Modern相当</p>
+  </div>
+</header>
+
+<nav class="toc" aria-label="ページ内目次">
+  <div class="toc-inner">
+    <a href="#summary">要約</a>
+    <a href="#corrections">現行訂正</a>
+    <a href="#excel-view">Excel表示</a>
+    <a href="#excel-diff">Excel Diff</a>
+    <a href="#word-view">Word表示</a>
+    <a href="#word-diff">Word Diff</a>
+    <a href="#coverage">網羅表</a>
+    <a href="#architecture">対応後の構造</a>
+    <a href="#sources">根拠</a>
+  </div>
+</nav>
+
+<main class="wrap">
+  <section id="summary">
+    <h2 class="section-title">要約 <small>現状を過小評価も過大評価もしない</small></h2>
+    <p class="lede">このページの「現行」は現在の main の静的コード監査、「全対応後」は設計上の到達像であり、実装済みを意味しない。ブラウザで完全再現できないOffice要素は、無言で消すのではなく検出済みの代替表示にする。</p>
+
+    <div class="kpis">
+      <div class="kpi"><div class="value">4</div><div class="label">Excel表示 / Excel Diff / Word表示 / Word Diff を別々に監査</div></div>
+      <div class="kpi"><div class="value">2層</div><div class="label">対応後は「描画モデル」と「意味・パッケージモデル」を分離</div></div>
+      <div class="kpi"><div class="value">3分類</div><div class="label">描画・代替表示・対応範囲外をUIで明示</div></div>
+      <div class="kpi"><div class="value">0</div><div class="label">見えない要素を無言で「変更なし」と扱う状態を目標上は残さない</div></div>
+    </div>
+
+    <div class="callout info">
+      <strong>最も大きな設計差。</strong> 現行Excel Diffは表示文字列とCSS中心、現行Word Diffは本文段落中心である。全対応後は、同じ見た目でも「式が変わった」「リンク先が変わった」「脚注・ヘッダー・画像実体が変わった」を別カテゴリとして残す。
+    </div>
+
+    <div class="audit-table-wrap">
+      <table class="audit-table">
+        <thead><tr><th scope="col">領域</th><th scope="col">現行の比較・表示単位</th><th scope="col">代表的な未対応</th><th scope="col">全対応後の単位</th></tr></thead>
+        <tbody>
+          <tr><td>Excel表示</td><td>表示文字列、CSS化した一部書式、限定的なdrawing</td><td>数値書式、条件付き書式、コメント、リンク、表/Pivot/グラフ、freeze/RTL</td><td>セルの実効表示＋構造要素＋明示的な代替表示</td></tr>
+          <tr><td>Excel Diff</td><td>セル表示値、一部CSS、入力規則、限定図形・改ページ</td><td>式・型・numFmt、列整列、行列寸法、シート順/状態、名前・表・Pivot</td><td>内容 / 書式 / 構造 / 注釈・保護の4カテゴリ</td></tr>
+          <tr><td>Word表示</td><td>docx-preview 0.3.7のHTML/CSS/SVG/MathML描画</td><td>DrawingML図形、SmartArt、グラフ、コメント、ルビ、禁則、自動組版</td><td>高忠実描画、または種類と理由が分かるplaceholder</td></tr>
+          <tr><td>Word Diff</td><td>本文・表セル内の段落と限定的な直接書式</td><td>Story、画像実体、styles/theme、表構造、リンク、フィールド、履歴、sectPr</td><td>Story別の本文差分＋パッケージ構造差分</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="corrections">
+    <h2 class="section-title">元レポートからの現行訂正 <small>2026-08-24 main で再判定</small></h2>
+    <p class="lede">元レポートは調査時点の発見と後続コミットの「対応済み」バッジが同居する。以下を前提に、比較画面では古い本文を現状として再演しない。</p>
+    <ul class="correction-list">
+      <li><span class="badge badge-fixed">修正済み</span> Excelの絶対行・列見出し、HLS tint、indexed色、主パースエラー通知、2,000行打切り通知、Diffの凡例・入力規則フィルタ/詳細UI。</li>
+      <li><span class="badge badge-partial">部分対応</span> 行LCSは導入済み。ただし2,000×2,000行で計算上限を超え、旧位置比較へ戻る。</li>
+      <li><span class="badge badge-open">未解決</span> Word暗号化文書の通常表示は、現在も「空または破損」と案内する。元レポートの対応済み表記は不正確。</li>
+      <li><span class="badge badge-new">追加確認</span> Wordの画像実体差し替え、styles/theme、header/footer、表構造、リンク先、フィールド命令は元レポート外。</li>
+      <li><span class="badge badge-new">追加確認</span> Excelの条件付き書式、hyperlink/note、hidden/veryHidden、行列寸法、sheet order/stateは元レポート外。</li>
+      <li><span class="badge badge-limit">ライブラリ制約</span> docx-previewはHTML能力に依存し、自動改ページを再計算しない。0.4.0も全面的なWord互換エンジンではない。</li>
+    </ul>
+  </section>
+
+  <section id="excel-view" class="comparison-section">
+    <h2 class="section-title">Excel 表示 <small>見えている値だけでなく、Excelが見せる意味まで</small></h2>
+    <div class="card">
+      <div class="scenario-head">
+        <div>
+          <h3>代表シナリオ: <code>月次売上.xlsx</code></h3>
+          <p>通貨・日付書式、条件付き書式、コメント、ハイパーリンク、回転見出し、グラフ、非表示シートを含むブック。値そのものは現行でも読めるが、Excel上の表示意味と操作手掛かりが欠ける。</p>
+        </div>
+        <div class="scenario-changes" role="group" aria-label="対応対象">
+          <span class="badge badge-open">numFmt</span>
+          <span class="badge badge-open">条件付き書式</span>
+          <span class="badge badge-open">note / link</span>
+          <span class="badge badge-partial">drawing</span>
+        </div>
+      </div>
+
+      <div class="compare-grid">
+        <article class="compare-pane">
+          <div class="pane-caption">
+            <strong><span class="badge badge-current">現行 main</span> 表示用射影</strong>
+            <span class="caption-note">セル値は読めても、保存書式や付帯情報が消える</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph">X</span>月次売上.xlsx</div></div>
+            <div class="office-toolbar">
+              <div class="toolbar-left"></div>
+              <div class="toolbar-right"><div class="zoom"><button type="button" class="ui-button icon" disabled aria-label="Zoom Out">−</button><button type="button" class="ui-button" disabled>100%</button><button type="button" class="ui-button icon" disabled aria-label="Zoom In">＋</button></div><button type="button" class="ui-button icon" disabled aria-label="既定のアプリで開く">↗</button></div>
+            </div>
+            <div class="spreadsheet-workspace">
+              <div class="sheet-scroll">
+                <table class="sheet-table" aria-label="現行Excel表示の例">
+                  <thead><tr><th scope="col"></th><th scope="col">A</th><th scope="col">B</th><th scope="col">C</th><th scope="col">D</th><th scope="col">E</th><th scope="col">F</th></tr></thead>
+                  <tbody>
+                    <tr><th scope="row" class="row-head">1</th><td class="header-cell">担当</td><td class="header-cell">売上</td><td class="header-cell">達成率</td><td class="header-cell">更新日</td><td class="header-cell">資料</td><td class="header-cell">状態</td></tr>
+                    <tr><th scope="row" class="row-head">2</th><td>東京</td><td class="currency">1250000</td><td class="currency">0.98</td><td>2026-08-24</td><td class="plain-link">詳細資料</td><td>要確認</td></tr>
+                    <tr><th scope="row" class="row-head">3</th><td>大阪</td><td class="currency">840000</td><td class="currency">0.71</td><td>2026-08-24</td><td class="plain-link">詳細資料</td><td>遅延</td></tr>
+                    <tr><th scope="row" class="row-head">4</th><td>名古屋</td><td class="currency">1530000</td><td class="currency">1.14</td><td>2026-08-23</td><td class="plain-link">詳細資料</td><td>完了</td></tr>
+                    <tr><th scope="row" class="row-head">5</th><td>福岡</td><td class="currency">660000</td><td class="currency">0.63</td><td>2026-08-22</td><td class="plain-link">詳細資料</td><td>遅延</td></tr>
+                    <tr><th scope="row" class="row-head">6</th><td>合計</td><td class="currency">4280000</td><td></td><td></td><td></td><td></td></tr>
+                  </tbody>
+                </table>
+                <div class="chart-placeholder" role="img" aria-label="現行ではグラフが描画されず、空白になっている領域"></div>
+              </div>
+              <div class="sheet-tabs"><button type="button" class="sheet-tab active" disabled>売上</button><button type="button" class="sheet-tab" disabled>計画</button><button type="button" class="sheet-tab" disabled>内部計算</button></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="compare-pane target">
+          <div class="pane-caption">
+            <strong><span class="badge badge-target">全対応後・設計像</span> 実効表示＋意味保持</strong>
+            <span class="caption-note">描画不能要素も種類と理由を表示</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph">X</span>月次売上.xlsx</div></div>
+            <div class="office-toolbar">
+              <div class="toolbar-left"><button type="button" class="ui-button active" disabled aria-pressed="true">表示の忠実度: 高</button><button type="button" class="ui-button" disabled>未描画 0</button></div>
+              <div class="toolbar-right"><div class="zoom"><button type="button" class="ui-button icon" disabled aria-label="Zoom Out">−</button><button type="button" class="ui-button" disabled>100%</button><button type="button" class="ui-button icon" disabled aria-label="Zoom In">＋</button></div><button type="button" class="ui-button icon" disabled aria-label="既定のアプリで開く">↗</button></div>
+            </div>
+            <div class="spreadsheet-workspace">
+              <div class="sheet-scroll">
+                <table class="sheet-table" aria-label="全対応後のExcel表示の例">
+                  <thead><tr><th scope="col"></th><th scope="col">A</th><th scope="col">B</th><th scope="col">C</th><th scope="col">D</th><th scope="col">E</th><th scope="col">F</th></tr></thead>
+                  <tbody>
+                    <tr><th scope="row" class="row-head">1</th><td class="header-cell">担当</td><td class="header-cell rotated">売上金額</td><td class="header-cell">達成率</td><td class="header-cell">更新日</td><td class="header-cell">資料</td><td class="header-cell">状態</td></tr>
+                    <tr><th scope="row" class="row-head">2</th><td>東京</td><td class="currency comment-corner">¥1,250,000</td><td class="currency data-bar" style="--bar:82%"><span>98%</span></td><td class="target-date">2026年8月24日</td><td class="real-link">詳細資料</td><td class="cf-alert">要確認</td></tr>
+                    <tr><th scope="row" class="row-head">3</th><td>大阪</td><td class="currency">¥840,000</td><td class="currency data-bar" style="--bar:59%"><span>71%</span></td><td class="target-date">2026年8月24日</td><td class="real-link">詳細資料</td><td class="cf-alert">遅延</td></tr>
+                    <tr><th scope="row" class="row-head">4</th><td>名古屋</td><td class="currency">¥1,530,000</td><td class="currency data-bar" style="--bar:96%"><span>114%</span></td><td class="target-date">2026年8月23日</td><td class="real-link">詳細資料</td><td class="cf-good">完了</td></tr>
+                    <tr><th scope="row" class="row-head">5</th><td>福岡</td><td class="currency">¥660,000</td><td class="currency data-bar" style="--bar:52%"><span>63%</span></td><td class="target-date">2026年8月22日</td><td class="real-link">詳細資料</td><td class="cf-alert">遅延</td></tr>
+                    <tr><th scope="row" class="row-head">6</th><td>合計</td><td class="currency">¥4,280,000</td><td></td><td></td><td></td><td></td></tr>
+                  </tbody>
+                </table>
+                <div class="freeze-line-v" aria-hidden="true"></div><div class="freeze-line-h" aria-hidden="true"></div>
+                <div class="mini-chart" role="img" aria-label="地域別売上グラフ。東京125万円、大阪84万円、名古屋153万円"><div class="mini-chart-title">地域別売上</div><div class="bars"><div class="bar" style="--height:58px"></div><div class="bar" style="--height:39px"></div><div class="bar" style="--height:71px"></div></div></div>
+              </div>
+              <div class="sheet-tabs"><button type="button" class="sheet-tab active" disabled>売上</button><button type="button" class="sheet-tab" disabled>計画</button><button type="button" class="sheet-tab hidden-sheet" disabled>内部計算・非表示</button></div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="mock-note"><span class="note-index">1</span><span>現行側の空白は「グラフ未対応」という表示ではなく、実際には対象オブジェクトが無言で現れない状態を再現している。対応後は表示できるものを描画し、できないものはplaceholderと根拠を残す。</span></div>
+    </div>
+  </section>
+
+  <section id="excel-diff" class="comparison-section">
+    <h2 class="section-title">Excel Diff <small>同じ「100」でも、式・型・書式・リンク先は別物</small></h2>
+    <div class="card">
+      <div class="scenario-head">
+        <div>
+          <h3>代表シナリオ: 表示値を変えずに式と書式を更新</h3>
+          <p><code>=SUM(B3:B6)</code>から固定値<code>100</code>へ置換し、セル型、<code>0%</code>から<code>0.00%</code>への表示形式、条件付き書式、リンク先、コメント、列幅、シート順・可視性を変更。現行の表示用モデルでは大半が同一に見える。</p>
+        </div>
+        <div class="scenario-changes" role="group" aria-label="対応対象">
+          <span class="badge badge-open">式 / 型 / cache</span>
+          <span class="badge badge-open">列整列・寸法</span>
+          <span class="badge badge-open">sheet構造</span>
+        </div>
+      </div>
+
+      <div class="compare-grid">
+        <article class="compare-pane">
+          <div class="pane-caption">
+            <strong><span class="badge badge-current">現行 main</span> Visual Diff</strong>
+            <span class="caption-note">両側の表示文字列とCSSが同じなら No changes</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph">X</span>月次売上.xlsx (差分)</div></div>
+            <div class="office-toolbar">
+              <div class="toolbar-left"><strong>No changes</strong><div class="legend"><span class="legend-item"><span class="swatch add"></span>追加</span><span class="legend-item"><span class="swatch remove"></span>削除</span><span class="legend-item"><span class="swatch change"></span>変更</span></div></div>
+              <div class="toolbar-right"><button type="button" class="ui-button" disabled>Input Rules</button><div class="zoom"><button type="button" class="ui-button icon" disabled aria-label="Zoom Out">−</button><button type="button" class="ui-button" disabled>100%</button><button type="button" class="ui-button icon" disabled aria-label="Zoom In">＋</button></div><div class="nav-buttons"><button type="button" class="ui-button" disabled>Prev</button><span class="nav-position" aria-label="変更位置なし"></span><button type="button" class="ui-button" disabled>Next</button></div></div>
+            </div>
+            <div class="diff-layout">
+              <div class="diff-panes">
+                <div class="diff-pane"><div class="diff-label">Original</div><table class="sheet-table diff-sheet"><thead><tr><th scope="col"></th><th scope="col">A</th><th scope="col">B</th><th scope="col">C</th></tr></thead><tbody><tr><th scope="row" class="row-head">1</th><td>項目</td><td>値</td><td>率</td></tr><tr><th scope="row" class="row-head">2</th><td>合計</td><td class="currency">100</td><td class="currency">0.8</td></tr><tr><th scope="row" class="row-head">3</th><td>詳細</td><td>資料</td><td></td></tr><tr><th scope="row" class="row-head">4</th><td>型</td><td>1</td><td></td></tr></tbody></table></div>
+                <div class="diff-pane"><div class="diff-label">Modified (Working Copy)</div><table class="sheet-table diff-sheet"><thead><tr><th scope="col"></th><th scope="col">A</th><th scope="col">B</th><th scope="col">C</th></tr></thead><tbody><tr><th scope="row" class="row-head">1</th><td>項目</td><td>値</td><td>率</td></tr><tr><th scope="row" class="row-head">2</th><td>合計</td><td class="currency">100</td><td class="currency">0.8</td></tr><tr><th scope="row" class="row-head">3</th><td>詳細</td><td>資料</td><td></td></tr><tr><th scope="row" class="row-head">4</th><td>型</td><td>1</td><td></td></tr></tbody></table></div>
+              </div>
+            </div>
+            <div class="sheet-tabs"><button type="button" class="sheet-tab active" disabled>売上</button><button type="button" class="sheet-tab" disabled>内部計算</button></div>
+          </div>
+        </article>
+
+        <article class="compare-pane target">
+          <div class="pane-caption">
+            <strong><span class="badge badge-target">全対応後・設計像</span> Semantic + Visual Diff</strong>
+            <span class="caption-note">見た目が同じ変更もカテゴリ別にナビ可能</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph">X</span>月次売上.xlsx (差分)</div></div>
+            <div class="office-toolbar">
+              <div class="toolbar-left"><strong>8 changes</strong><div class="legend"><span class="legend-item"><span class="swatch add"></span>追加</span><span class="legend-item"><span class="swatch remove"></span>削除</span><span class="legend-item"><span class="swatch change"></span>変更</span></div></div>
+              <div class="toolbar-right"><div class="target-filters"><button type="button" class="ui-button active" disabled aria-pressed="true">内容 2</button><button type="button" class="ui-button" disabled>書式 2</button><button type="button" class="ui-button" disabled>構造 2</button><button type="button" class="ui-button" disabled>注釈 2</button></div><div class="nav-buttons"><button type="button" class="ui-button" disabled>Prev</button><span class="nav-position">1 / 8</span><button type="button" class="ui-button" disabled>Next</button></div></div>
+            </div>
+            <div class="status-ribbon">意味差分を表示中: セルの表示値は同じですが、数式・型・表示形式・リンク先が変更されています。</div>
+            <div class="diff-layout">
+              <div class="diff-panes">
+                <div class="diff-pane"><div class="diff-label">Original · Sheet「売上」</div><table class="sheet-table diff-sheet"><thead><tr><th scope="col"></th><th scope="col">A</th><th scope="col">B</th><th scope="col">C</th></tr></thead><tbody><tr><th scope="row" class="row-head">1</th><td>項目</td><td>値</td><td>率</td></tr><tr><th scope="row" class="row-head">2</th><td>合計</td><td class="currency cell-modified cell-current">100<span class="semantic-dot"></span></td><td class="currency cell-modified">0.8<span class="semantic-dot"></span></td></tr><tr><th scope="row" class="row-head">3</th><td>詳細</td><td class="cell-modified">資料<span class="semantic-dot"></span></td><td></td></tr><tr><th scope="row" class="row-head">4</th><td>型</td><td class="cell-modified">1<span class="semantic-dot"></span></td><td></td></tr></tbody></table></div>
+                <div class="diff-pane"><div class="diff-label">Modified · Sheet「売上」</div><table class="sheet-table diff-sheet"><thead><tr><th scope="col"></th><th scope="col">A</th><th scope="col">B</th><th scope="col">C</th></tr></thead><tbody><tr><th scope="row" class="row-head">1</th><td>項目</td><td>値</td><td>率</td></tr><tr><th scope="row" class="row-head">2</th><td>合計</td><td class="currency cell-modified cell-current">100<span class="semantic-dot"></span></td><td class="currency cell-modified">0.8<span class="semantic-dot"></span></td></tr><tr><th scope="row" class="row-head">3</th><td>詳細</td><td class="cell-modified">資料<span class="semantic-dot"></span></td><td></td></tr><tr><th scope="row" class="row-head">4</th><td>型</td><td class="cell-modified">1<span class="semantic-dot"></span></td><td></td></tr></tbody></table></div>
+              </div>
+              <aside class="change-inspector" aria-label="Excel意味差分の詳細">
+                <div class="inspector-head">変更の詳細</div>
+                <div class="inspector-item compact current"><strong>売上!B2 · 内容 / 数式 → 直値</strong><span>=SUM(B3:B6) → 100（表示は同じ）</span></div>
+                <div class="inspector-item compact"><strong>売上!B4 · 内容 / セル型</strong><span>1 (number) → "1" (string)</span></div>
+                <div class="inspector-item compact"><strong>売上!C2 · 書式 / numFmt</strong><span>0% → 0.00%</span></div>
+                <div class="inspector-item compact"><strong>売上!C3 · 書式 / 条件付き書式</strong><span>rule priority・dxf変更</span></div>
+                <div class="inspector-item compact"><strong>売上!Column B · 構造 / 列幅</strong><span>12 → 18 characters</span></div>
+                <div class="inspector-item compact"><strong>Workbook · 構造 / sheets</strong><span>順序変更・内部計算をveryHidden</span></div>
+                <div class="inspector-item compact"><strong>売上!B3 · 注釈 / リンク先</strong><span>/old → /new</span></div>
+                <div class="inspector-item compact"><strong>売上!B2 · 注釈 / note</strong><span>確認済み → 要再確認</span></div>
+              </aside>
+            </div>
+            <div class="sheet-tabs"><button type="button" class="sheet-tab active" disabled>売上 · 7</button><button type="button" class="sheet-tab hidden-sheet" disabled>内部計算 · 1</button></div>
+          </div>
+        </article>
+      </div>
+
+      <div class="mock-note"><span class="note-index">2</span><span>対応後の「N changes」は行数ではなく意味変更の件数。現行の行LCS・入力規則・図形・改ページDiffは維持し、その前段にOOXML構造の正規化比較を追加する。</span></div>
+    </div>
+  </section>
+
+  <section id="word-view" class="comparison-section">
+    <h2 class="section-title">Word 表示 <small>ブラウザ描画の限界を「空白」にしない</small></h2>
+    <div class="card">
+      <div class="scenario-head">
+        <div>
+          <h3>代表シナリオ: <code>業務委託契約書.docx</code></h3>
+          <p>DrawingMLテキストボックス、SmartArt、コメント、ルビ、脚注、フィールド、複数セクション、埋め込みOLEを含む文書。通常表示は本文・表・画像・VML・数式を広く描画する一方、Word同等の組版エンジンではない。</p>
+        </div>
+        <div class="scenario-changes" role="group" aria-label="対応対象">
+          <span class="badge badge-open">DrawingML</span>
+          <span class="badge badge-open">コメント / ルビ</span>
+          <span class="badge badge-partial">ページ組版</span>
+          <span class="badge badge-limit">代替表示</span>
+        </div>
+      </div>
+
+      <div class="compare-grid">
+        <article class="compare-pane">
+          <div class="pane-caption">
+            <strong><span class="badge badge-current">現行 main</span> docx-preview 0.3.7</strong>
+            <span class="caption-note">非対応オブジェクトは空白または保存済み結果だけ</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph word">W</span>業務委託契約書.docx</div></div>
+            <div class="word-workspace">
+              <div class="word-pages">
+                <article class="word-page">
+                  <div class="word-header">業務委託契約書</div>
+                  <h4>業務委託契約書</h4>
+                  <p>株式会社パラコード（以下「甲」という。）と受託者（以下「乙」という。）は、次のとおり契約を締結する。</p>
+                  <p><strong>第1条（目的）</strong><br>乙は、甲が指定する業務を善良な管理者の注意をもって遂行する。</p>
+                  <div class="missing-object-gap" role="img" aria-label="現行ではDrawingMLオブジェクトと埋め込みOLEが表示されず、空白になっている領域"></div>
+                  <p><strong>第2条（成果物）</strong><br>成果物の確認手順は別紙に定める。<sup>1</sup></p>
+                  <p>本契約の有効日は 2026年8月24日 とする。</p>
+                  <div class="footnote"><sup>1</sup> 検収期間は納品日から5営業日とする。</div>
+                  <div class="word-footer">1</div>
+                </article>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="compare-pane target">
+          <div class="pane-caption">
+            <strong><span class="badge badge-target">全対応後・設計像</span> 高忠実表示＋明示的fallback</strong>
+            <span class="caption-note">再現できない要素も存在と内容を隠さない</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph word">W</span>業務委託契約書.docx</div></div>
+            <div class="status-ribbon">表示診断: 主要要素を描画済み。埋め込みOLE 1件は安全な代替表示です。</div>
+            <div class="word-workspace" style="min-height: 366px; padding-top: 16px">
+              <div class="word-pages">
+                <article class="word-page">
+                  <div class="word-header">業務委託契約書</div>
+                  <h4>業務委託契約書</h4>
+                  <p>株式会社パラコード（以下「甲」という。）と受託者（以下「乙」という。）は、次のとおり契約を締結する。</p>
+                  <p><strong>第1条（目的）</strong><br>乙は、甲が指定する業務を善良な管理者の注意をもって遂行する。</p>
+                  <div class="drawing-box" role="img" aria-label="SmartArtとDrawingMLで表した成果物確認フロー"><span class="drawing-node">成果物提出</span><span class="drawing-arrow">→</span><span class="drawing-node">検収・承認</span></div>
+                  <p><strong>第2条（成果物）</strong><br><span class="comment-anchor">成果物の確認手順は別紙に定める。<span class="comment-pin">1</span></span><sup>1</sup></p>
+                  <p class="ruby-word">本契約の<ruby>有効日<rt>ゆうこうび</rt></ruby>は 2026年8月24日 とする。</p>
+                  <div class="field-status">Field: PAGE = 1 / NUMPAGES = 2（保存済み結果。再計算していない場合はその旨を表示）</div>
+                  <div class="section-break">Section break · A4縦 / 次ページはA4横</div>
+                  <div class="unsupported-object"><span aria-hidden="true">◇</span><span><strong>埋め込みOLEオブジェクト</strong>安全上実行しません。種類: Excel Worksheet / 内容fingerprintを保持</span></div>
+                  <div class="footnote"><sup>1</sup> 検収期間は納品日から5営業日とする。</div>
+                  <div class="word-footer">1 / 2</div>
+                </article>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="mock-note"><span class="note-index">3</span><span>「全対応」はすべてを実行することではない。マクロ、ActiveX、OLE、外部リンク画像などは安全に検出し、種類・関係先・fingerprintを示したうえで既定アプリへの導線を提供する。</span></div>
+    </div>
+  </section>
+
+  <section id="word-diff" class="comparison-section">
+    <h2 class="section-title">Word Diff <small>本文以外のStoryとパッケージ差分も追跡</small></h2>
+    <div class="card">
+      <div class="scenario-head">
+        <div>
+          <h3>代表シナリオ: 本文文字列は同じ、ヘッダー・脚注・数式・画像実体を変更</h3>
+          <p>現行outlineは本文と表セル内段落が中心。画像実体やstyle/themeの差は左右の見た目には出ても無着色のまま、ヘッダー、脚注本文、数式内部と合わせて件数・ナビには現れない。</p>
+        </div>
+        <div class="scenario-changes" role="group" aria-label="対応対象">
+          <span class="badge badge-open">Story</span>
+          <span class="badge badge-open">画像fingerprint</span>
+          <span class="badge badge-open">styles / theme</span>
+          <span class="badge badge-open">表 / sectPr</span>
+        </div>
+      </div>
+
+      <div class="compare-grid">
+        <article class="compare-pane">
+          <div class="pane-caption">
+            <strong><span class="badge badge-current">現行 main</span> 本文段落Diff</strong>
+            <span class="caption-note">目視差があっても件数・着色・ナビは更新されない</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph word">W</span>業務委託契約書.docx (差分)</div></div>
+            <div class="office-toolbar">
+              <div class="toolbar-left"><strong>変更はありません</strong><div class="legend"><span class="legend-item"><span class="swatch add"></span>追加</span><span class="legend-item"><span class="swatch remove"></span>削除</span><span class="legend-item"><span class="swatch change"></span>変更</span><span class="legend-item"><span class="swatch move"></span>移動</span></div></div>
+              <div class="toolbar-right"><button type="button" class="ui-button active" disabled aria-pressed="true">書式の変更</button><div class="zoom"><button type="button" class="ui-button icon" disabled aria-label="Zoom Out">−</button><button type="button" class="ui-button" disabled>100%</button><button type="button" class="ui-button icon" disabled aria-label="Zoom In">＋</button></div><div class="nav-buttons"><button type="button" class="ui-button" disabled>Prev</button><span class="nav-position">-</span><button type="button" class="ui-button" disabled>Next</button></div></div>
+            </div>
+            <div class="word-diff-stage">
+              <div class="word-diff-layout">
+                <div class="word-diff-panes">
+                  <div class="word-diff-pane"><div class="word-pane-label">旧版 — 業務委託契約書.docx</div><article class="word-diff-page"><h4>業務委託契約書</h4><p>甲と乙は、次のとおり業務委託契約を締結する。</p><p><strong>第1条</strong> 乙は指定業務を遂行する。</p><div class="inline-media" aria-label="旧版の埋め込みロゴ画像">PARA</div><p>成果物の確認手順は別紙に定める。<sup>1</sup></p><p style="text-align:center">x² + y² = 1</p><div class="footnote"><sup>1</sup> 検収期間は5営業日。</div></article></div>
+                  <div class="word-diff-pane"><div class="word-pane-label">新版 — 業務委託契約書.docx</div><article class="word-diff-page"><h4 class="theme-modified">業務委託契約書</h4><p>甲と乙は、次のとおり業務委託契約を締結する。</p><p><strong>第1条</strong> 乙は指定業務を遂行する。</p><div class="inline-media modified" aria-label="新版で実体が差し替わった同一パスのロゴ画像">CODE</div><p>成果物の確認手順は別紙に定める。<sup>1</sup></p><p style="text-align:center">x² + y² = 2</p><div class="footnote"><sup>1</sup> 検収期間は10営業日。</div></article></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="compare-pane target">
+          <div class="pane-caption">
+            <strong><span class="badge badge-target">全対応後・設計像</span> Story + Package Diff</strong>
+            <span class="caption-note">表示箇所と変更一覧を相互ナビゲーション</span>
+          </div>
+          <div class="surface">
+            <div class="editor-tabs"><div class="editor-tab"><span class="file-glyph word">W</span>業務委託契約書.docx (差分)</div></div>
+            <div class="office-toolbar">
+              <div class="toolbar-left"><strong>7 changes</strong><div class="legend"><span class="legend-item"><span class="swatch add"></span>追加</span><span class="legend-item"><span class="swatch remove"></span>削除</span><span class="legend-item"><span class="swatch change"></span>変更</span><span class="legend-item"><span class="swatch move"></span>移動</span></div></div>
+              <div class="toolbar-right"><div class="target-filters"><button type="button" class="ui-button active" disabled aria-pressed="true">本文</button><button type="button" class="ui-button active" disabled aria-pressed="true">Story</button><button type="button" class="ui-button active" disabled aria-pressed="true">構造</button><button type="button" class="ui-button" disabled>履歴</button></div><div class="nav-buttons"><button type="button" class="ui-button" disabled>Prev</button><span class="nav-position">1 / 7</span><button type="button" class="ui-button" disabled>Next</button></div></div>
+            </div>
+            <div class="status-ribbon">本文外の変更を含みます: Header 1 / Footnote 1 / Math 1 / Image 1 / Styles 1 / Theme 1 / Section 1</div>
+            <div class="word-diff-stage">
+              <div class="word-diff-layout">
+                <div class="word-diff-panes">
+                  <div class="word-diff-pane"><div class="word-pane-label">Original</div><article class="word-diff-page"><div class="diff-block remove">秘密保持契約 · 2026</div><h4 class="diff-block change">業務委託契約書</h4><p>甲と乙は、次のとおり業務委託契約を締結する。</p><p class="diff-block change"><strong>第1条</strong> 乙は指定業務を遂行する。</p><div class="inline-media media-diff">PARA</div><p>成果物の確認手順は別紙に定める。<sup>1</sup></p><p class="diff-block change current" style="text-align:center">x² + y² = <span class="seg-removed">1</span></p><div class="footnote diff-block change"><sup>1</sup> 検収期間は<span class="seg-removed">5</span>営業日。</div></article></div>
+                  <div class="word-diff-pane"><div class="word-pane-label">Modified</div><article class="word-diff-page"><div class="diff-block add">業務委託契約 · 社外秘</div><h4 class="theme-modified diff-block change">業務委託契約書</h4><p>甲と乙は、次のとおり業務委託契約を締結する。</p><p class="diff-block change"><strong>第1条</strong> 乙は指定業務を遂行する。</p><div class="inline-media modified media-diff">CODE</div><p>成果物の確認手順は別紙に定める。<sup>1</sup></p><p class="diff-block change current" style="text-align:center">x² + y² = <span class="seg-added">2</span></p><div class="footnote diff-block change"><sup>1</sup> 検収期間は<span class="seg-added">10</span>営業日。</div></article></div>
+                </div>
+                <aside class="story-inspector" aria-label="Word Story差分一覧">
+                  <div class="inspector-head">変更一覧</div>
+                  <div class="story-group"><div class="story-group-title"><span>本文</span><span class="story-count">1</span></div><div class="story-change">文字書式: style定義変更</div></div>
+                  <div class="story-group"><div class="story-group-title"><span>Header / Footer</span><span class="story-count">1</span></div><div class="story-change add">Header: 文言変更</div></div>
+                  <div class="story-group"><div class="story-group-title"><span>脚注・数式</span><span class="story-count">2</span></div><div class="story-change warn">Math: 1 → 2</div><div class="story-change">Footnote 1: 5 → 10</div></div>
+                  <div class="story-group"><div class="story-group-title"><span>Objects / 構造</span><span class="story-count">3</span></div><div class="story-change">image1.png: fingerprint変更</div><div class="story-change">Section: A4縦 → 横</div><div class="story-change">Theme: accent1変更</div></div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="mock-note"><span class="note-index">4</span><span>対応後はWordの既存変更履歴と、2文書間で新たに計算した差分を別レイヤーとして表示する。脚注IDやrIdを直接比較せず、Story種別・参照位置・内容fingerprintで正規化する。</span></div>
+    </div>
+  </section>
+
+  <section id="coverage">
+    <h2 class="section-title">未対応・部分対応の網羅表 <small>モックに描き切れない項目も省略しない</small></h2>
+    <p class="lede">判定は現行mainの静的コード監査による。「未対応」はOOXML要素が存在してもモデル・表示・Diffのいずれかへ入らない状態、「部分対応」は表示または差分の一部だけを扱う状態を示す。</p>
+
+    <div class="coverage-grid">
+      <article class="coverage-card">
+        <div class="coverage-head"><h3>Excel表示</h3><span class="badge badge-current">現行</span></div>
+        <div class="coverage-evidence">根拠: <code>paradisSpreadsheet.ts:256-322</code> / <code>paradisSpreadsheetService.ts:621-1204</code> / <code>paradisSpreadsheetDrawings.ts:82-185</code></div>
+        <ul class="coverage-list">
+          <li><strong>数値・日付書式</strong><span><span class="badge badge-open">未対応</span> 通貨、会計、百分率、小数桁、元の日付format codeを保持しない。</span></li>
+          <li><strong>数式</strong><span><span class="badge badge-partial">部分</span> 保存済みresultのみ。式、型、共有/配列式、cache無し状態、再計算は扱わない。</span></li>
+          <li><strong>狭い数値セル</strong><span><span class="badge badge-open">未対応</span> <code>######</code>や科学表記へ切り替えず、数値も隣接空セルへ溢れ得る。</span></li>
+          <li><strong>フォント・文字装飾</strong><span><span class="badge badge-partial">部分</span> 二重/会計下線、scheme、charset、outline/shadow等を失う。</span></li>
+          <li><strong>塗り・罫線</strong><span><span class="badge badge-partial">部分</span> pattern/gradient、dashDot/hairの忠実描画が不足。</span></li>
+          <li><strong>配置・回転</strong><span><span class="badge badge-partial">部分</span> 任意角度、readingOrder、distributed/centerContinuousの厳密再現なし。</span></li>
+          <li><strong>条件付き書式</strong><span><span class="badge badge-open">未対応</span> ルール、優先順位、dxf、data bar、color scale、icon setを未描画。</span></li>
+          <li><strong>行・列</strong><span><span class="badge badge-partial">部分</span> customHeight、bestFit、outline/group/collapsedを保持しない。列幅MDWは近似。</span></li>
+          <li><strong>シート状態・ビュー</strong><span><span class="badge badge-open">未対応</span> hidden/veryHidden、freeze/split、activeCell、rightToLeft。</span></li>
+          <li><strong>入力規則</strong><span><span class="badge badge-partial">部分</span> データは抽出するが通常表示でdropdown・prompt・error UIを提供しない。</span></li>
+          <li><strong>リンク・コメント</strong><span><span class="badge badge-open">未対応</span> hyperlink target/tooltip、legacy note、threaded comment。</span></li>
+          <li><strong>表・Filter・Pivot</strong><span><span class="badge badge-open">未対応</span> table style、AutoFilter条件、sort state、Pivot定義/cache、slicer/timeline。</span></li>
+          <li><strong>drawing</strong><span><span class="badge badge-partial">部分</span> line/rect/imageのみ。chart、SmartArt、group、text、rotation、crop、effect、absoluteAnchorなし。</span></li>
+          <li><strong>印刷</strong><span><span class="badge badge-partial">部分</span> 非連続printArea、repeat columns、header/footer、printOptions等が不足。</span></li>
+          <li><strong>保護・外部・macro</strong><span><span class="badge badge-partial">部分</span> sheet真偽と暗号化エラーのみ。cell/workbook保護、external link、VBA/署名を表示しない。</span></li>
+          <li><strong>大規模ブック</strong><span><span class="badge badge-limit">制約</span> 2,000行打切り、列上限・仮想化なし、ZIP展開後サイズ上限なし。</span></li>
+          <li><strong>縮小・overflow再計測</strong><span><span class="badge badge-partial">部分</span> 初回rAF後にWebフォントで文字幅が変わっても、shrinkToFitと文字overflowを再計測しない。</span></li>
+          <li><strong>ズーム・再読込・theme</strong><span><span class="badge badge-partial">部分</span> watcher再読込でscroll位置を保持せず、ピンチなし。sheet面は白固定でhigh-contrast未調整。</span></li>
+        </ul>
+      </article>
+
+      <article class="coverage-card">
+        <div class="coverage-head"><h3>Excel Diff</h3><span class="badge badge-current">現行</span></div>
+        <div class="coverage-evidence">根拠: <code>paradisSpreadsheetDiff.ts:231-1127</code> / <code>paradisSpreadsheetRowAlign.ts:15-96</code> / <code>paradisSpreadsheetDiffEditor.ts:654-1111</code></div>
+        <ul class="coverage-list">
+          <li><strong>数式・型・cache</strong><span><span class="badge badge-open">未対応</span> 同じ表示結果の式変更、式→直値、number→stringを見逃す。</span></li>
+          <li><strong>numFmt</strong><span><span class="badge badge-open">未対応</span> 通貨↔百分率など書式だけの変更が不可視。</span></li>
+          <li><strong>浮動小数</strong><span><span class="badge badge-open">未対応</span> 生の表示文字列完全一致で再計算誤差を調整しない。</span></li>
+          <li><strong>行整列</strong><span><span class="badge badge-partial">部分</span> LCSあり。ただし2,000×2,000行で位置比較へfallback、移動カテゴリなし、重複行に曖昧性。</span></li>
+          <li><strong>列整列</strong><span><span class="badge badge-open">未対応</span> 中間列の挿入・削除・移動で以降が大量modified。</span></li>
+          <li><strong>比較範囲</strong><span><span class="badge badge-limit">制約</span> 先頭2,000行と最初のprintAreaに依存し、範囲外変更を検出しない。</span></li>
+          <li><strong>行高・列幅・hidden</strong><span><span class="badge badge-open">未対応</span> 行高は件数/着色なし、列幅は新版優先へ統合、hidden行は抽出前に消える。</span></li>
+          <li><strong>シート構造</strong><span><span class="badge badge-partial">部分</span> add/removeのみ。rename、order、visible state、tabColor削除、保護解除を正しく比較しない。</span></li>
+          <li><strong>セルstyle</strong><span><span class="badge badge-partial">部分</span> CSS射影後の比較。Protection、quotePrefix、rotation、pattern/gradient、theme参照を失う。</span></li>
+          <li><strong>条件付き書式</strong><span><span class="badge badge-open">未対応</span> ルール差分と実効表示差分の双方なし。</span></li>
+          <li><strong>結合</strong><span><span class="badge badge-partial">部分</span> 原点spanだけを比較し、従属セルはhiddenのため左右着色が非対称。</span></li>
+          <li><strong>入力規則</strong><span><span class="badge badge-partial">部分</span> 専用UIあり。x14拡張、範囲移動/拡縮、意味的に同じ式の正規化が不足。</span></li>
+          <li><strong>リンク・コメント・名前</strong><span><span class="badge badge-open">未対応</span> target、note/thread、definedNameの内容・scope。</span></li>
+          <li><strong>表・Pivot・Filter</strong><span><span class="badge badge-open">未対応</span> table定義、filter/sort、pivot/cache、slicer、sparkline。</span></li>
+          <li><strong>drawing・chart</strong><span><span class="badge badge-partial">部分</span> 限定図形は比較。chart、図形内text、crop/rotation、group、VML controls等は対象外。重複する図形名はMapで後勝ちとなり変更集計が欠落する。</span></li>
+          <li><strong>印刷・改ページ</strong><span><span class="badge badge-partial">部分</span> 境界副作用中心。設定値、header/footer、auto/manual属性、printArea枠を完全比較しない。</span></li>
+          <li><strong>optional extras失敗</strong><span><span class="badge badge-open">未対応</span> JSZip補助抽出とdrawing XML解析の失敗を無通知で省略し得る。</span></li>
+          <li><strong>metadata / security</strong><span><span class="badge badge-open">未対応</span> properties、calc settings、external、VBA、signature、workbook protection。</span></li>
+          <li><strong>scroll同期</strong><span><span class="badge badge-partial">部分</span> 左右の行高が違ってもpixel単位で<code>scrollTop</code>をコピーし、累積ずれが残る。</span></li>
+          <li><strong>比較コスト</strong><span><span class="badge badge-limit">制約</span> unchangedを含む全セルで詳細構築・深比較・sortを行い、DOM仮想化やearly-outなし。</span></li>
+          <li><strong>IPC / memory</strong><span><span class="badge badge-limit">制約</span> 左右をbase64化して送信し、列上限・chunkingなし。</span></li>
+          <li><strong>watcher / staged</strong><span><span class="badge badge-open">未対応</span> file watcher再読込で全DOMがちらつき、<code>git:index</code>の再stageは開き直すまで追従しない。</span></li>
+        </ul>
+      </article>
+
+      <article class="coverage-card">
+        <div class="coverage-head"><h3>Word表示</h3><span class="badge badge-current">現行</span></div>
+        <div class="coverage-evidence">根拠: <code>paradisDocxFileEditor.ts:337-505</code> / vendored <code>docx-preview.min.js</code> / <code>docxpreview/README.md:35-154</code></div>
+        <ul class="coverage-list">
+          <li><strong>文字・段落</strong><span><span class="badge badge-partial">部分</span> 基本書式は対応。文字幅倍率、圏点、複雑な効果、widow/keep等の反映が不足。</span></li>
+          <li><strong>styles / theme</strong><span><span class="badge badge-partial">部分</span> basedOn等は処理するが、East Asia/CS theme font、themeTint/shade等が不足。</span></li>
+          <li><strong>番号・箇条書き</strong><span><span class="badge badge-partial">部分</span> CSS counterと手動patchあり。override/restartや一部numFmtは近似。</span></li>
+          <li><strong>表</strong><span><span class="badge badge-partial">部分</span> 幅・罫線・結合を広く描画。cantSplit、RTL表、見出し反復、旧hMerge等が不足。</span></li>
+          <li><strong>画像・浮動配置</strong><span><span class="badge badge-partial">部分</span> inline/anchorと一部wrap。behindDoc、square/tight/through、外部画像等が不足。</span></li>
+          <li><strong>DrawingML図形</strong><span><span class="badge badge-open">未対応</span> picture以外のshape/textbox/WordArtを未描画。VMLは一部対応・手動patch済み。</span></li>
+          <li><strong>SmartArt / chart</strong><span><span class="badge badge-open">未対応</span> relationship、データ、fallbackを描画しない。</span></li>
+          <li><strong>Header / Footer</strong><span><span class="badge badge-partial">部分</span> 通常表示は有効。fieldと自動改ページ不足によりページ番号等の忠実度に限界。</span></li>
+          <li><strong>脚注・文末脚注</strong><span><span class="badge badge-partial">部分</span> 本文表示あり。番号形式、開始番号、separator、配置の再現が不足。</span></li>
+          <li><strong>コメント</strong><span><span class="badge badge-open">無効</span> vendored parser/rendererは存在するが、アプリ設定で既定false。</span></li>
+          <li><strong>変更履歴</strong><span><span class="badge badge-partial">部分</span> 最終状態風に挿入を表示・削除を隠す。author/date/format revision等を可視化しない。</span></li>
+          <li><strong>フィールド</strong><span><span class="badge badge-partial">部分</span> 保存済み結果中心。TOC/PAGE/REF等の再計算、simple field、dirty/lockなし。</span></li>
+          <li><strong>OMML数式</strong><span><span class="badge badge-partial">部分</span> 多くをMathML化するが全要素ではなくChromium実装に依存。</span></li>
+          <li><strong>section / columns</strong><span><span class="badge badge-partial">部分</span> 用紙・余白・段組の一部。section type、page border/number、不均等列幅等が不足。</span></li>
+          <li><strong>ページ組版</strong><span><span class="badge badge-limit">制約</span> 明示breakと保存済みlastRenderedPageBreakのみ。本文量からWord同等の改ページを計算しない。</span></li>
+          <li><strong>東アジア組版</strong><span><span class="badge badge-partial">部分</span> 表セル縦書きの一部。通常段落縦書き、ruby、kinsoku、文字grid等は未対応。</span></li>
+          <li><strong>外部・埋込・macro</strong><span><span class="badge badge-open">未対応</span> External画像、OLE/ActiveX、docm/VBA、署名、IRM、編集保護の明示なし。</span></li>
+          <li><strong>サイズ・暗号</strong><span><span class="badge badge-limit">制約</span> 通常file表示に全体上限なし、展開後上限なし。CFB暗号化を破損と誤案内。</span></li>
+          <li><strong>ファイル名埋込</strong><span><span class="badge badge-open">未対応</span> POSIX名に<code>&lt;/script&gt;</code>が含まれると、通常表示のinline scriptを早期終端し画面を崩し得る。</span></li>
+        </ul>
+      </article>
+
+      <article class="coverage-card">
+        <div class="coverage-head"><h3>Word Diff</h3><span class="badge badge-current">現行</span></div>
+        <div class="coverage-evidence">根拠: <code>paradisDocx.ts:209-283</code> / <code>paradisDocxDiff.ts:94-941</code> / <code>paradisDocxDiffWebview.ts:200-458</code></div>
+        <ul class="coverage-list">
+          <li><strong>文字差分</strong><span><span class="badge badge-partial">部分</span> LCSあり。結合文字、variation selector、ZWJ絵文字の書記素clusterを完全保護しない。</span></li>
+          <li><strong>段落整列・移動</strong><span><span class="badge badge-partial">部分</span> 類似度と一意完全一致。移動＋編集、重複段落、長文prefixに弱い。</span></li>
+          <li><strong>書式</strong><span><span class="badge badge-partial">部分</span> 許可リストの直接CSSとstyle ID。実効書式と明示既定値を区別できない。</span></li>
+          <li><strong>styles / theme</strong><span><span class="badge badge-open">未対応</span> 同じstyle IDの定義変更、basedOn、theme、embedded fontを比較しない。</span></li>
+          <li><strong>表構造</strong><span><span class="badge badge-open">未対応</span> 表を段落列へ平坦化。行列/セル位置、結合、幅、高さ、表/セルstyleを失い、同じdepthの別表間で段落をクロスマッチし得る。</span></li>
+          <li><strong>画像実体</strong><span><span class="badge badge-open">未対応</span> targetパス＋寸法のみ。同一パスのbinary差し替え、crop/rotation/effect/alt textを見逃す。</span></li>
+          <li><strong>VML / DrawingML</strong><span><span class="badge badge-open">未対応</span> VML textboxは描画されても内部text・styleを不透明object化。DrawingML shape/SmartArt/chartなし。</span></li>
+          <li><strong>Header / Footer</strong><span><span class="badge badge-open">未対応</span> 差分画面で非表示、outline外、件数・ナビとも0。</span></li>
+          <li><strong>脚注・文末脚注</strong><span><span class="badge badge-partial">部分</span> 参照IDの追加削除だけ。本文変更は画面に見えてもDiff対象外。</span></li>
+          <li><strong>コメント</strong><span><span class="badge badge-open">未対応</span> range、本文、author/date、返信/解決状態を比較しない。</span></li>
+          <li><strong>変更履歴</strong><span><span class="badge badge-partial">部分</span> 承認後表示のみ。author/date/revision種類や同じ最終結果の履歴差を失う。</span></li>
+          <li><strong>フィールド</strong><span><span class="badge badge-open">未対応</span> instruction/fldChar/lock/dirtyを無視し、保存済み結果文字だけが対象。</span></li>
+          <li><strong>OMML</strong><span><span class="badge badge-open">内容未対応</span> 全数式のobject keyが固定<code>math</code>。追加削除以外を見逃す。</span></li>
+          <li><strong>break / section</strong><span><span class="badge badge-open">未対応</span> break種別を改行へ潰し、用紙・余白・向き・段組・section refsを比較しない。</span></li>
+          <li><strong>list</strong><span><span class="badge badge-partial">部分</span> <code>numId:level</code>のみ。definition/restart/start/formatを失い、ID再採番で偽差分。</span></li>
+          <li><strong>hyperlink / bookmark</strong><span><span class="badge badge-open">未対応</span> 表示文字のみ。target、anchor、tooltip、リンク化/解除を見逃す。</span></li>
+          <li><strong>content control / altChunk</strong><span><span class="badge badge-open">未対応</span> 定義、binding、placeholder、lock、part内容・MIMEを比較しない。</span></li>
+          <li><strong>metadata / security</strong><span><span class="badge badge-open">未対応</span> core/custom properties、保護、署名、暗号、埋込、macroを比較しない。</span></li>
+          <li><strong>片側欠落</strong><span><span class="badge badge-open">未対応</span> original/modifiedのどちらかが無いdiffでresolverが失敗し、標準表示へ戻れない場合がある。</span></li>
+          <li><strong>ZIP / memory</strong><span><span class="badge badge-limit">制約</span> 32MB圧縮入力のみ制限し、展開後サイズ・media合計・ZIP bomb上限なし。</span></li>
+          <li><strong>LCS最悪経路</strong><span><span class="badge badge-limit">制約</span> <code>LcsDiff</code>へquit predicateを渡さず、quitEarly分岐が機能しない。</span></li>
+          <li><strong>画像の過剰着色</strong><span><span class="badge badge-partial">部分</span> resizeを差し替え扱いにし、object差があると段落内の全special runを印付けし得る。</span></li>
+          <li><strong>ghost / scroll</strong><span><span class="badge badge-partial">部分</span> ghostは400字・無書式、表内は作らない。比例scrollと組み合わさり左右位置がずれる。</span></li>
+          <li><strong>UI状態</strong><span><span class="badge badge-open">未対応</span> zoom・書式toggleをstorageへ保存せず、入力切替ごとにreset。</span></li>
+          <li><strong>UI同期・一覧</strong><span><span class="badge badge-partial">部分</span> excerpt未使用、通常側のSymbol置換・幅拡張がDiff側にない。完全一致movedは<code>comparePair</code>を通らず書式・object・空白差を隠す。</span></li>
+        </ul>
+      </article>
+
+      <article class="coverage-card cross-cutting">
+        <div class="coverage-head"><h3>共通・環境・運用</h3><span class="badge badge-current">現行</span></div>
+        <div class="coverage-evidence">根拠: <code>paradis.*.contribution.ts</code> / <code>paradisFileViewers.ts:46-53</code> / 各Editorのread/watch lifecycle / <code>docs/report-officee.html:D-01〜D-12</code></div>
+        <ul class="coverage-list">
+          <li><strong>Web workbench</strong><span><span class="badge badge-open">未対応</span> xlsx/xlsm/docx/pdf/htmlのElectron contributionはvscode.dev相当のbrowser層へ登録されない。</span></li>
+          <li><strong>Remote負荷</strong><span><span class="badge badge-limit">制約</span> vscode-remote文書をクライアントへ取得後にExcelはbase64 IPC、Word Diffは左右ArrayBufferをwebviewへ転送。</span></li>
+          <li><strong>対応拡張子</strong><span><span class="badge badge-open">限定</span> <code>.xlsx/.xlsm/.docx</code>のみ。<code>.xls/.xlsb/.ods/.doc/.docm/.dotx/.rtf</code>等は対象外。</span></li>
+          <li><strong>検索</strong><span><span class="badge badge-open">未対応</span> Excel、Word、両Diffに統合Ctrl+Fなし。</span></li>
+          <li><strong>印刷 / export</strong><span><span class="badge badge-open">未対応</span> ページ割りや用紙表示はあっても印刷・PDF出力actionなし。</span></li>
+          <li><strong>キャンセル復帰</strong><span><span class="badge badge-partial">部分</span> Word側のinput epoch復帰はあるが、Spreadsheet通常/Diffは同等の復帰処理が不足。</span></li>
+          <li><strong>サイズ上限</strong><span><span class="badge badge-partial">不統一</span> Excel 20MB、Word Diff 32MB、Word通常file/vscode-remoteは同上限を通らない。展開後上限なし。Spreadsheetの上限超過等では上流英語エラーがペインへ露出する。</span></li>
+          <li><strong>アクセシビリティ</strong><span><span class="badge badge-partial">部分</span> 一部icon buttonがtitleのみでaria-labelなし。差分filter/toggleはaria-pressedあり。</span></li>
+          <li><strong>loopback fallback</strong><span><span class="badge badge-limit">制約</span> local preview mount失敗時はservice worker経路へ戻り、Word/PDF側には白紙検知・recoveryがない。</span></li>
+          <li><strong>untitled</strong><span><span class="badge badge-open">未対応</span> resolverはfile/vscode-remote/gitのみ。未保存バイナリをOffice viewerへ解決しない。</span></li>
+          <li><strong>Git LFS</strong><span><span class="badge badge-partial">部分</span> <code>git show --textconv</code>でLFS pointerが渡る場合があり、現在は誤差分ではなく読込エラーになるが内容比較はできない。</span></li>
+          <li><strong>SCM / watcher</strong><span><span class="badge badge-partial">部分</span> file/vscode-remoteは監視するが、staged/index更新や片側消失の扱いに差がある。</span></li>
+          <li><strong>Mobile parity</strong><span><span class="badge badge-partial">部分</span> Wordは端末内render、Excel表示とExcel DiffはPC生成HTML relay。Word Diffはモバイル未対応。</span></li>
+          <li><strong>依存更新</strong><span><span class="badge badge-limit">制約</span> vendored docx-previewの内部<code>parseAsync/renderDocument</code>と手動patchに依存し、0.4.0はbreaking changeを含む。</span></li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <h2 class="section-title">全対応後の内部構造 <small>表示忠実度とDiff網羅性を同じ土台にする</small></h2>
+    <p class="lede">現在すでにdrawing・page setup・data validationをJSZip直読で補う経路がある。その方針をパッケージ全体へ拡張し、表示用データと意味比較用データを分離する。</p>
+    <div class="architecture" aria-label="対応後のOffice処理フロー">
+      <article class="arch-step"><span class="num">01</span><h3>Package inventory</h3><p>OPC relationshipsを辿り、本文・Story・style・drawing・表・Pivot・コメント・保護・外部要素の存在を列挙。</p></article>
+      <article class="arch-step"><span class="num">02</span><h3>Dual model</h3><p>実効表示を持つrender modelと、raw値・式・参照・構造・metadataを持つsemantic modelを生成。</p></article>
+      <article class="arch-step"><span class="num">03</span><h3>Normalized diff</h3><p>rIdやstyle IDをそのまま比較せず、scope・位置・内容fingerprintで正規化。内容/書式/構造/注釈へ分類。</p></article>
+      <article class="arch-step"><span class="num">04</span><h3>Honest presentation</h3><p>描画、代替表示、対応範囲外を区別。画面上の印と変更一覧を相互ナビゲーションし、打切り・省略理由も表示。</p></article>
+    </div>
+    <div class="callout ok"><strong>継承する現行資産。</strong> Excelの絶対見出し、HLS tint/indexed色、入力規則正規化、行LCS、図形/改ページDiff、エラー通知、Wordの段落・文字LCS、書式ツールチップ、ゴースト、ズーム・ナビ・世代管理は捨てず、新しい意味モデルの表示先として利用する。</div>
+  </section>
+
+  <section id="sources">
+    <h2 class="section-title">調査根拠 <small>コード・公式仕様・採用ライブラリ</small></h2>
+    <div class="card">
+      <h3 style="margin-top:0;font-size:15px">コードベース</h3>
+      <ul class="sources">
+        <li><code>docs/report-officee.html</code> — 元調査、ID、訂正・棄却、ロードマップ</li>
+        <li><code>common/paradisSpreadsheet.ts:256-322</code> — Excel表示/Diffへ渡る現在のデータモデル</li>
+        <li><code>node/paradisSpreadsheetService.ts:621-652</code> — 数式resultと表示文字列への平坦化</li>
+        <li><code>node/paradisSpreadsheetService.ts:863-1007</code> — JSZip補助抽出とsilent catch</li>
+        <li><code>common/paradisSpreadsheetRowAlign.ts:15-96</code> — 行LCSと4,000,000セル上限</li>
+        <li><code>electron-browser/paradisSpreadsheetDiff.ts:479-652</code> — sheet/row/columnの現在の整列</li>
+        <li><code>electron-browser/paradisSpreadsheetDrawings.ts:82-185</code> — 対応drawingとanchorの範囲</li>
+        <li><code>electron-browser/paradisDocxFileEditor.ts:420-501</code> — 通常Word表示オプションと後処理</li>
+        <li><code>electron-browser/paradisDocxDiffWebview.ts:200-220</code> — Diff側のheader/comment/revision設定</li>
+        <li><code>electron-browser/paradisDocxDiffWebview.ts:257-271</code> — Word画像の現在の同一性キー</li>
+        <li><code>electron-browser/paradisDocxDiffWebview.ts:293-458</code> — run atomと本文outline抽出範囲</li>
+        <li><code>common/paradisDocx.ts:209-283</code> — 比較する直接書式とblock key</li>
+      </ul>
+
+      <h3 style="font-size:15px">公式・一次資料</h3>
+      <ul class="sources">
+        <li><a href="https://ecma-international.org/publications-and-standards/standards/ecma-376/">ECMA-376 Office Open XML</a> — WordprocessingML / SpreadsheetML / OPCの正式仕様</li>
+        <li><a href="https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/structure-of-a-spreadsheetml-document">Microsoft Learn: SpreadsheetML document structure</a> — worksheet以外にtable、chart sheet、Pivot、conditional formatting等が存在</li>
+        <li><a href="https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/working-with-formulas">Microsoft Learn: Working with formulas</a> — 式<code>&lt;f&gt;</code>と保存済み結果<code>&lt;v&gt;</code>の分離</li>
+        <li><a href="https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/working-with-tables">Microsoft Learn: SpreadsheetML tables</a> — table定義とworksheet値の役割</li>
+        <li><a href="https://learn.microsoft.com/en-us/office/open-xml/about-the-open-xml-sdk">Microsoft Learn: About Open XML SDK</a> — Wordのmain/header/footer/comments/textbox/footnote Story</li>
+        <li><a href="https://learn.microsoft.com/en-us/office/open-xml/word/structure-of-a-wordprocessingml-document">Microsoft Learn: WordprocessingML document structure</a> — 本文以外の典型的part</li>
+        <li><a href="https://learn.microsoft.com/en-us/office/open-xml/word/how-to-create-and-add-a-paragraph-style-to-a-word-processing-document">Microsoft Learn: Word styles</a> — paragraph/character/table/numbering/default styleとbasedOn</li>
+        <li><a href="https://support.microsoft.com/en-au/office/differences-between-using-a-document-in-the-browser-and-in-word-90fac46c-2b8e-4fa1-b997-4e55ce4ed754">Microsoft Support: Word browser / desktop differences</a> — shape、chart、SmartArt、field、content control、OLE等の独立機能</li>
+        <li><a href="https://github.com/exceljs/exceljs/blob/v4.4.0/README.md">ExcelJS 4.4.0 README</a> — 採用版の対応APIと条件付き書式等の範囲</li>
+        <li><a href="https://github.com/VolodymyrBaydalka/docxjs/blob/master/README.md">docx-preview README</a> — HTML能力への依存、内部API、ページ分割の制約</li>
+        <li><a href="https://github.com/VolodymyrBaydalka/docxjs/releases/tag/0.4.0">docx-preview 0.4.0 release</a> — 現行vendored 0.3.7より新しいが、全面互換ではなくbreaking changeあり</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    Para Code Office Viewer comparison mock — current baseline <code>ba8ca41d118</code> — generated 2026-08-24. このHTMLは調査結果を可視化する設計モックであり、「全対応後」は未実装の到達像を示す。
+  </footer>
+</main>
+</body>
+</html>
