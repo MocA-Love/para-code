@@ -20,6 +20,7 @@ import { ILanguageService } from '../../../../../editor/common/languages/languag
 import { TokenizationRegistry } from '../../../../../editor/common/languages.js';
 import { generateTokensCSSForColorMap } from '../../../../../editor/common/languages/supports/tokenization.js';
 import { IFileDiffViewData } from './mobileDiffView.js';
+import { appendMobileChangesToolbar, IMobileChangesToolbarContext } from './mobileChangesToolbar.js';
 import { computeUnifiedDiff, hasMultipleTokenClasses, type IDiffHunk, type IDiffLine, regexTokenizeLines, resolveMobileDiffLanguageId, tokenizeFileLines } from './mobileDiffHelpers.js';
 import { computeMobileMultiDiffItemHeight, computeMobileMultiDiffVirtualLayout, type IMobileMultiDiffVirtualItem, type IMobileMultiDiffVirtualItemLayout, type IMobileMultiDiffVirtualizerMetrics } from './mobileMultiDiffVirtualizer.js';
 
@@ -134,6 +135,7 @@ export class MobileMultiDiffView extends Disposable {
 		private readonly textFileService: ITextFileService,
 		private readonly fileService: IFileService,
 		private readonly languageService: ILanguageService,
+		private readonly changesToolbarContext?: IMobileChangesToolbarContext,
 	) {
 		super();
 		this.fileStates = data.diffs.map((diff, index) => ({
@@ -189,6 +191,9 @@ export class MobileMultiDiffView extends Disposable {
 			this.data.diffs.length,
 			this.data.diffs.length === 1 ? localize('multiDiffView.file', "file") : localize('multiDiffView.files', "files"),
 		);
+		if (this.changesToolbarContext) {
+			appendMobileChangesToolbar(topBar, this.changesToolbarContext, this.viewStore);
+		}
 
 		// -- Scroll body
 		const body = DOM.append(overlay, $('div.mobile-overlay-body'));

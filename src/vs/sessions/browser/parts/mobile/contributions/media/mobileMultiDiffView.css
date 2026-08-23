@@ -39,6 +39,11 @@
 }
 
 .mobile-multi-diff-file-count {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-size: 13px;
 	color: var(--vscode-descriptionForeground);
 	padding-right: 8px;
