@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { BackHandler, Pressable, StyleSheet, Text, View } from 'react-native';
+import { BackHandler, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
@@ -110,6 +110,9 @@ function FallbackPlusMenu({ items, compact, onSelect }: {
 }) {
 	const [open, setOpen] = useState(false);
 	const insets = useStableInsets();
+	const { height } = useWindowDimensions();
+	const panelTop = insets.top + PARA_HEADER_SLOT_HEIGHT + 10;
+	const panelMaxHeight = Math.max(0, height - panelTop - insets.bottom - PANEL_BOTTOM_GAP);
 
 	// Android物理戻るボタンで閉じる。RNのModalではない自作Portalに載せているので、
 	// ここで拾わないとメニューが開いたままタブ画面から抜ける
@@ -153,12 +156,12 @@ function FallbackPlusMenu({ items, compact, onSelect }: {
 					/>
 					{/* 位置はセーフエリアとお知らせの押し下げから決める（固定値だと
 					    Androidのステータスバーやトースト表示中にヘッダーへ食い込む）。 */}
-					<PopIn style={[styles.fallbackPanelPos, { top: insets.top + PARA_HEADER_SLOT_HEIGHT + 10 }]}>
-						<GlassSurface style={styles.fallbackPanel}>
+					<PopIn style={[styles.fallbackPanelPos, { top: panelTop }]}>
+						<GlassSurface style={[styles.fallbackPanel, { maxHeight: panelMaxHeight }]}>
 							<View style={styles.plate} pointerEvents="none" />
-							<View style={styles.fallbackBody}>
+							<ScrollView style={[styles.fallbackScroll, { maxHeight: panelMaxHeight }]} contentContainerStyle={styles.fallbackBody} keyboardShouldPersistTaps="always">
 								<FallbackMenuRows items={items} pick={pick} />
-							</View>
+							</ScrollView>
 						</GlassSurface>
 					</PopIn>
 				</OverlayPortal>
@@ -204,6 +207,7 @@ function MenuRow({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMa
 
 /** フォールバックのパネル幅。 */
 const PANEL_WIDTH = 262;
+const PANEL_BOTTOM_GAP = 12;
 
 const styles = StyleSheet.create({
 	// ネイティブのボタン。ピルの中の他のボタンと同じ当たり判定にする。
@@ -214,6 +218,7 @@ const styles = StyleSheet.create({
 	scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)' },
 	fallbackPanelPos: { position: 'absolute', right: 12, width: PANEL_WIDTH },
 	fallbackPanel: { borderRadius: 26, ...squircle, overflow: 'hidden' },
+	fallbackScroll: { flexGrow: 0 },
 	// 素のガラスだと後ろの一覧の文字が項目名と重なって読めない。ただし埋めすぎると
 	// ガラスに見えないので、コントラストを一段だけ持ち上げる薄さに抑える。
 	plate: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(16,16,19,0.30)' },
