@@ -157,7 +157,7 @@ function isDataDescriptor(descriptor: PropertyDescriptor | undefined): descripto
 	return descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, 'value');
 }
 
-function getPlainDescriptors(value: unknown): Readonly<Record<string, PropertyDescriptor>> | undefined {
+function getPlainObject(value: unknown): object | undefined {
 	if (typeof value !== 'object' || value === null) {
 		return undefined;
 	}
@@ -166,25 +166,29 @@ function getPlainDescriptors(value: unknown): Readonly<Record<string, PropertyDe
 		if (prototype !== Object.prototype && prototype !== null) {
 			return undefined;
 		}
-		return Object.getOwnPropertyDescriptors(value);
+		return value;
 	} catch {
 		return undefined;
 	}
 }
 
-function getDataValue(descriptors: Readonly<Record<string, PropertyDescriptor>>, name: string): unknown {
-	const descriptor = descriptors[name];
-	return isDataDescriptor(descriptor) ? descriptor.value : undefined;
+function getKnownDataValue(target: object, name: string): unknown {
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(target, name);
+		return descriptor?.enumerable && isDataDescriptor(descriptor) ? descriptor.value : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function projectSafePart(value: unknown): ParadisOfficeErrorPart | undefined {
-	const descriptors = getPlainDescriptors(value);
-	if (!descriptors) {
+	const target = getPlainObject(value);
+	if (!target) {
 		return undefined;
 	}
-	const safeId = getDataValue(descriptors, 'safeId');
-	const contentType = getDataValue(descriptors, 'contentType');
-	const feature = getDataValue(descriptors, 'feature');
+	const safeId = getKnownDataValue(target, 'safeId');
+	const contentType = getKnownDataValue(target, 'contentType');
+	const feature = getKnownDataValue(target, 'feature');
 	if (typeof safeId !== 'string' || !safePartIdentifierPattern.test(safeId)
 		|| (contentType !== undefined && (typeof contentType !== 'string' || !safeContentTypePattern.test(contentType)))
 		|| (feature !== undefined && (typeof feature !== 'string' || !safeIdentifierPattern.test(feature)))) {
@@ -231,15 +235,15 @@ export function createParadisOfficeError<TStage extends ParadisOfficeErrorStage>
 ): ParadisOfficeErrorForStage<TStage>;
 export function createParadisOfficeError(stage: unknown, code: unknown, details: unknown): ParadisOfficeError {
 	const identity = messageFor(stage, code);
-	const descriptors = getPlainDescriptors(details);
-	if (!descriptors) {
+	const target = getPlainObject(details);
+	if (!target) {
 		throw new TypeError('Invalid Office error details');
 	}
-	const severity = getDataValue(descriptors, 'severity');
-	const retryable = getDataValue(descriptors, 'retryable');
-	const recoverable = getDataValue(descriptors, 'recoverable');
-	const userAction = getDataValue(descriptors, 'userAction');
-	const side = getDataValue(descriptors, 'side');
+	const severity = getKnownDataValue(target, 'severity');
+	const retryable = getKnownDataValue(target, 'retryable');
+	const recoverable = getKnownDataValue(target, 'recoverable');
+	const userAction = getKnownDataValue(target, 'userAction');
+	const side = getKnownDataValue(target, 'side');
 	if (typeof severity !== 'string' || !validSeverities.includes(severity as ParadisOfficeErrorDetails['severity'])
 		|| typeof retryable !== 'boolean'
 		|| typeof recoverable !== 'boolean'
@@ -247,8 +251,8 @@ export function createParadisOfficeError(stage: unknown, code: unknown, details:
 		|| (side !== undefined && side !== 'original' && side !== 'modified')) {
 		throw new TypeError('Invalid Office error details');
 	}
-	const part = projectSafePart(getDataValue(descriptors, 'part'));
-	const sanitizedCauseCode = getDataValue(descriptors, 'sanitizedCauseCode');
+	const part = projectSafePart(getKnownDataValue(target, 'part'));
+	const sanitizedCauseCode = getKnownDataValue(target, 'sanitizedCauseCode');
 	const projectedSide: ParadisOfficeErrorDetails['side'] = side === 'original' || side === 'modified' ? side : undefined;
 	const projectedDetails = {
 		severity: severity as ParadisOfficeErrorDetails['severity'],
