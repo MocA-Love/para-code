@@ -13,6 +13,8 @@ import { createParadisResourceMonitorWidget } from '../../../../paradis/contrib/
 import { createParadisLimitsMonitorWidget } from '../../../../paradis/contrib/limitsMonitor/electron-browser/paradisLimitsMonitorWidget.js';
 // PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
 import { createParadisServiceStatusWidget } from '../../../../paradis/contrib/serviceStatus/electron-browser/paradisServiceStatusWidget.js';
+// PARA-PATCH: local/remote listening-port list (title bar right side, ahead of window controls)
+import { createParadisPortListWidget } from '../../../../paradis/contrib/portList/electron-browser/paradisPortListWidget.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -70,6 +72,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 	private readonly paradisLimitsMonitorWidget = this._register(new MutableDisposable<IDisposable>());
 	// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
 	private readonly paradisServiceStatusWidget = this._register(new MutableDisposable<IDisposable>());
+	// PARA-PATCH: local/remote listening-port list (title bar right side)
+	private readonly paradisPortListWidget = this._register(new MutableDisposable<IDisposable>());
 
 	private cachedWindowControlStyles: { bgColor: string; fgColor: string } | undefined;
 	private cachedWindowControlHeight: number | undefined;
@@ -180,6 +184,16 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 		this.paradisLimitsMonitorWidget.value = createParadisLimitsMonitorWidget(this.instantiationService, this.leftContent);
 		// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
 		this.paradisServiceStatusWidget.value = createParadisServiceStatusWidget(this.instantiationService, this.leftContent);
+
+		// PARA-PATCH: local/remote listening-port list (title bar right side, ahead of the
+		// layout/action toolbar so it doesn't end up squeezed against the window controls).
+		// actionToolBarElement is only created when hasCustomTitlebar() is true; otherwise this
+		// just appends to the end of rightContent.
+		const portListWidget = createParadisPortListWidget(this.instantiationService, this.rightContent);
+		if (this.actionToolBarElement && this.actionToolBarElement.parentElement === this.rightContent) {
+			this.rightContent.insertBefore(portListWidget.element, this.actionToolBarElement);
+		}
+		this.paradisPortListWidget.value = portListWidget;
 
 		// Native menu controller
 		if (isMacintosh || hasNativeMenu(this.configurationService)) {

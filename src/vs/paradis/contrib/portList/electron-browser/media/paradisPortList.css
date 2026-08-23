@@ -1,0 +1,305 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Port list widget: title bar trigger (paradisPortListWidget.ts) and the click-to-open
+ * search/kill panel (paradisPortListPanel.ts). Layout mirrors the limits monitor panel
+ * (paradisLimitsMonitor.css); colors come from --vscode-* theme tokens except the fixed
+ * severity accent (red), which matches the rest of Para Code.
+ */
+
+/* ---------- trigger (title bar) ---------- */
+
+.paradis-port-list-trigger {
+	/* Same drag-region caveat as the other title bar widgets: explicit z-index needed. */
+	z-index: 2500;
+	-webkit-app-region: no-drag;
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	height: 22px;
+	padding: 0 7px;
+	margin: 0 2px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-titleBar-inactiveForeground, var(--vscode-foreground));
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.paradis-port-list-trigger:hover,
+.paradis-port-list-trigger.active {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-titleBar-activeForeground, var(--vscode-foreground));
+}
+
+.paradis-port-list-trigger .codicon {
+	font-size: 14px;
+}
+
+/* ---------- panel ---------- */
+
+.paradis-port-list-panel {
+	/* width は paradisPortListPanel.ts の PANEL_WIDTH から element.style.width で設定される(reposition() と値を1箇所で管理するため、ここでは指定しない)。 */
+	position: fixed;
+	z-index: 2500;
+	max-height: 70vh;
+	display: flex;
+	flex-direction: column;
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: 6px;
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	font-size: 12px;
+	outline: none;
+	overflow: hidden;
+}
+
+.paradis-port-list-panel .ppl-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 14px 8px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-port-list-panel .ppl-title {
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+}
+
+.paradis-port-list-panel .ppl-count {
+	font-weight: 400;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-port-list-panel .ppl-search {
+	padding: 8px 14px;
+}
+
+.paradis-port-list-panel .ppl-search-box {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 6px;
+	padding: 5px 9px;
+}
+
+.paradis-port-list-panel .ppl-search-box:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-port-list-panel .ppl-search-box input {
+	background: none;
+	border: none;
+	outline: none;
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	width: 100%;
+	font-family: inherit;
+}
+
+.paradis-port-list-panel .ppl-search-box .codicon {
+	opacity: 0.6;
+	font-size: 13px;
+}
+
+.paradis-port-list-panel .ppl-filters {
+	display: flex;
+	gap: 6px;
+	padding: 0 14px 9px;
+	flex-wrap: wrap;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-port-list-panel .ppl-chip {
+	font-size: 11px;
+	padding: 3px 9px;
+	border-radius: 12px;
+	background: rgba(128, 128, 128, 0.16);
+	border: 1px solid transparent;
+	cursor: pointer;
+	color: inherit;
+}
+
+.paradis-port-list-panel .ppl-chip:hover {
+	background: rgba(128, 128, 128, 0.26);
+}
+
+.paradis-port-list-panel .ppl-chip.on {
+	background: var(--vscode-button-background, #0e639c);
+	border-color: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+}
+
+.paradis-port-list-panel .ppl-list {
+	overflow-y: auto;
+	flex: 1;
+}
+
+.paradis-port-list-panel .ppl-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 14px;
+	border-bottom: 1px solid rgba(128, 128, 128, 0.09);
+}
+
+.paradis-port-list-panel .ppl-row:last-child {
+	border-bottom: none;
+}
+
+.paradis-port-list-panel .ppl-row:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-port-list-panel .ppl-row.risky {
+	background: rgba(239, 68, 68, 0.06);
+}
+
+.paradis-port-list-panel .ppl-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex: none;
+	background: #2ea043;
+}
+
+.paradis-port-list-panel .ppl-dot.risky {
+	background: #ef4444;
+}
+
+.paradis-port-list-panel .ppl-port {
+	font-family: var(--monaco-monospace-font);
+	font-size: 12px;
+	font-weight: 600;
+	width: 52px;
+	flex: none;
+}
+
+.paradis-port-list-panel .ppl-proc {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-port-list-panel .ppl-risk-badge {
+	font-size: 9px;
+	font-weight: 700;
+	color: #ef4444;
+	background: rgba(239, 68, 68, 0.15);
+	border: 1px solid rgba(239, 68, 68, 0.35);
+	border-radius: 4px;
+	padding: 0 4px;
+	line-height: 1.5;
+	flex: none;
+	white-space: nowrap;
+}
+
+.paradis-port-list-panel .ppl-pid {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+	width: 68px;
+	text-align: right;
+	flex: none;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-port-list-panel .ppl-kill-btn {
+	width: 20px;
+	height: 20px;
+	border-radius: 4px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	padding: 0;
+}
+
+.paradis-port-list-panel .ppl-kill-btn .codicon {
+	font-size: 13px;
+}
+
+.paradis-port-list-panel .ppl-kill-btn:hover {
+	background: rgba(239, 68, 68, 0.18);
+	color: #ef4444;
+}
+
+.paradis-port-list-panel .ppl-kill-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.paradis-port-list-panel .ppl-empty {
+	padding: 26px 14px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-port-list-panel .ppl-footer {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 7px 9px;
+	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-port-list-panel .ppl-fbtn {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	background: none;
+	border: none;
+	color: inherit;
+	font-size: 11.5px;
+	cursor: pointer;
+	padding: 5px 8px;
+	border-radius: 5px;
+	font-family: inherit;
+}
+
+.paradis-port-list-panel .ppl-fbtn:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-port-list-panel .ppl-fbtn.danger {
+	color: #ef4444;
+	margin-left: auto;
+}
+
+.paradis-port-list-panel .ppl-fbtn.danger:hover {
+	background: rgba(239, 68, 68, 0.14);
+}
+
+.paradis-port-list-panel .ppl-fbtn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.paradis-port-list-panel .ppl-fbtn.spinning .codicon {
+	animation: paradis-port-list-spin 1s linear infinite;
+}
+
+@keyframes paradis-port-list-spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}

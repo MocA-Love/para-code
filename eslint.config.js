@@ -1811,6 +1811,9 @@ export default defineConfig(
 						// PARA-PATCH: 同titlebarPart.ts が Claude/Codex/GitHubサービスステータスの
 						// タイトルバーウィジェット(createParadisServiceStatusWidget)を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/serviceStatus/~',
+						// PARA-PATCH: 同titlebarPart.ts がポート一覧のタイトルバーウィジェット
+						// (createParadisPortListWidget)を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/portList/~',
 						'assert',
 						{
 							'when': 'test',
@@ -2104,6 +2107,9 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts が接続先で走った gh 呼び出しを数えるチャネル
 						// (registerParadisGithubMetricsForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/githubMetrics/~',
+						// PARA-PATCH: serverServices.ts が接続先でリッスン中のポート一覧を答えるチャネル
+						// (registerParadisPortListForServer) を登録するための逆方向 import
+						'vs/paradis/contrib/portList/~',
 						'vs/server/~'
 					]
 				},

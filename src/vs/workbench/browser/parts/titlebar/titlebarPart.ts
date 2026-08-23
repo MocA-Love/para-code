@@ -265,7 +265,9 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	// the CPU/RAM resource monitor widget to the title bar's left side without duplicating layout logic
 	protected leftContent!: HTMLElement;
 	private centerContent!: HTMLElement;
-	private rightContent!: HTMLElement;
+	// PARA-PATCH: protected instead of private so NativeTitlebarPart (electron-browser) can insert
+	// the port list widget on the title bar's right side, ahead of the layout/action toolbar
+	protected rightContent!: HTMLElement;
 
 	protected readonly customMenubar = this._register(new MutableDisposable<CustomMenubarControl>());
 	private readonly customMenubarDisposables = this._register(new DisposableStore());
@@ -277,7 +279,9 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	private actionToolBar!: WorkbenchToolBar;
 	private readonly actionToolBarDisposable = this._register(new DisposableStore());
 	private readonly editorActionsChangeDisposable = this._register(new DisposableStore());
-	private actionToolBarElement!: HTMLElement;
+	// PARA-PATCH: protected instead of private so NativeTitlebarPart (electron-browser) can insert
+	// the port list widget ahead of the layout/action toolbar (Toggle Panel etc.) on the right side
+	protected actionToolBarElement!: HTMLElement;
 	private readonly centerAdjacentToolBarDisposable = this._register(new DisposableStore());
 	private centerAdjacentToolBarElement: HTMLElement | undefined;
 	private readonly updateToolBarDisposable = this._register(new DisposableStore());
