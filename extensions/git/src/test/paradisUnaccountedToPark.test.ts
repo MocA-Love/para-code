@@ -190,7 +190,7 @@ suite('selectUnaccountedForParking', () => {
 			() => realpath.promise,
 			isDescendant,
 			normalizedPathEquals,
-			repositories => committedRepositories.push(repositories),
+			repositories => { committedRepositories.push(repositories); },
 		);
 
 		latestSnapshot = snapshot(['/workspace'], [editorRepository], new Set([editorRepository.repository]));
@@ -198,7 +198,7 @@ suite('selectUnaccountedForParking', () => {
 
 		assert.deepStrictEqual(
 			{ result: await resultPromise, committedRepositories },
-			{ result: { kind: 'committed', skippedParking: false }, committedRepositories: [[]] },
+			{ result: { kind: 'committed', skippedParking: false, commitResult: undefined }, committedRepositories: [[]] },
 		);
 	});
 
@@ -211,9 +211,9 @@ suite('selectUnaccountedForParking', () => {
 			() => Promise.resolve('/canonical/repo'),
 			isDescendant,
 			normalizedPathEquals,
-			repositories => committedRepositories.push(repositories),
+			repositories => { committedRepositories.push(repositories); },
 		);
-		assert.deepStrictEqual({ result, committedRepositories }, { result: { kind: 'committed', skippedParking: false }, committedRepositories: [[]] });
+		assert.deepStrictEqual({ result, committedRepositories }, { result: { kind: 'committed', skippedParking: false, commitResult: undefined }, committedRepositories: [[]] });
 	});
 
 	test('keeps a real-root repository when only the current logical path matches it', async () => {
@@ -225,9 +225,9 @@ suite('selectUnaccountedForParking', () => {
 			() => Promise.resolve('/canonical/repo'),
 			isDescendant,
 			normalizedPathEquals,
-			repositories => committedRepositories.push(repositories),
+			repositories => { committedRepositories.push(repositories); },
 		);
-		assert.deepStrictEqual({ result, committedRepositories }, { result: { kind: 'committed', skippedParking: false }, committedRepositories: [[]] });
+		assert.deepStrictEqual({ result, committedRepositories }, { result: { kind: 'committed', skippedParking: false, commitResult: undefined }, committedRepositories: [[]] });
 	});
 
 	test('skips parking but commits latest folders when any current folder realpath is unavailable', async () => {
@@ -239,9 +239,9 @@ suite('selectUnaccountedForParking', () => {
 			() => Promise.resolve(undefined),
 			isDescendant,
 			normalizedPathEquals,
-			(repositories, folders) => commits.push({ repositories, folders }),
+			(repositories, folders) => { commits.push({ repositories, folders }); },
 		);
-		assert.deepStrictEqual(result, { kind: 'committed', skippedParking: true });
+		assert.deepStrictEqual(result, { kind: 'committed', skippedParking: true, commitResult: undefined });
 		assert.deepStrictEqual(commits, [{ repositories: [], folders: ['/logical/repo'] }]);
 	});
 
@@ -253,9 +253,9 @@ suite('selectUnaccountedForParking', () => {
 			() => Promise.reject(new Error('realpath failed')),
 			isDescendant,
 			normalizedPathEquals,
-			(repositories, folders) => commits.push({ repositories, folders }),
+			(repositories, folders) => { commits.push({ repositories, folders }); },
 		);
-		assert.deepStrictEqual(result, { kind: 'committed', skippedParking: true });
+		assert.deepStrictEqual(result, { kind: 'committed', skippedParking: true, commitResult: undefined });
 		assert.deepStrictEqual(commits, [{ repositories: [], folders: ['/logical/repo'] }]);
 	});
 
@@ -287,9 +287,9 @@ suite('selectUnaccountedForParking', () => {
 			() => Promise.resolve('/workspace'),
 			isDescendant,
 			normalizedPathEquals,
-			() => commits++,
+			() => { commits++; },
 		);
-		assert.deepStrictEqual({ result, commits }, { result: { kind: 'committed', skippedParking: false }, commits: 1 });
+		assert.deepStrictEqual({ result, commits }, { result: { kind: 'committed', skippedParking: false, commitResult: undefined }, commits: 1 });
 	});
 
 	test('commits latest B and C folders after the stale B handler is discarded', async () => {
@@ -329,7 +329,73 @@ suite('selectUnaccountedForParking', () => {
 
 		assert.deepStrictEqual(
 			{ bResult: await bResult, cResult, openedByCommit },
-			{ bResult: { kind: 'stale' }, cResult: { kind: 'committed', skippedParking: false }, openedByCommit: ['/b', '/c'] },
+			{ bResult: { kind: 'stale' }, cResult: { kind: 'committed', skippedParking: false, commitResult: undefined }, openedByCommit: ['/b', '/c'] },
 		);
+	});
+
+	test('returns synchronously started B and C open promises for the handler to await', async () => {
+		const bOpen = deferred<void>();
+		const cOpen = deferred<void>();
+		const opens = new Map([['/b', bOpen], ['/c', cOpen]]);
+		const started: string[] = [];
+		const result = await commitRepositoriesForParking(
+			() => snapshot(['/a', '/b', '/c'], []),
+			() => true,
+			folder => Promise.resolve(folder),
+			isDescendant,
+			normalizedPathEquals,
+			(_repositories, folders) => folders
+				.filter(folder => folder !== '/a')
+				.map(folder => {
+					started.push(folder);
+					return opens.get(folder)!.promise;
+				}),
+		);
+
+		assert.deepStrictEqual({ started, result }, {
+			started: ['/b', '/c'],
+			result: { kind: 'committed', skippedParking: false, commitResult: [bOpen.promise, cOpen.promise] },
+		});
+		if (result.kind !== 'committed') {
+			assert.fail('expected committed result');
+		}
+
+		let completed = false;
+		const handlerCompletion = Promise.all(result.commitResult).then(() => completed = true);
+		bOpen.resolve();
+		await Promise.resolve();
+		assert.strictEqual(completed, false);
+		cOpen.resolve();
+		await handlerCompletion;
+		assert.strictEqual(completed, true);
+	});
+
+	test('lets the handler catch a rejection from a synchronously started open', async () => {
+		const open = deferred<void>();
+		const expectedError = new Error('open failed');
+		const logged: Error[] = [];
+		const handler = async () => {
+			try {
+				const result = await commitRepositoriesForParking(
+					() => snapshot(['/workspace'], []),
+					() => true,
+					folder => Promise.resolve(folder),
+					isDescendant,
+					normalizedPathEquals,
+					() => [open.promise],
+				);
+				if (result.kind === 'committed') {
+					await Promise.all(result.commitResult);
+				}
+			} catch (error) {
+				logged.push(error as Error);
+			}
+		};
+
+		const handlerCompletion = handler();
+		await Promise.resolve();
+		open.reject(expectedError);
+		await handlerCompletion;
+		assert.deepStrictEqual(logged, [expectedError]);
 	});
 });

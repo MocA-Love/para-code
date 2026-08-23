@@ -24,9 +24,9 @@ export interface IParadisParkingSnapshot<T extends IParadisUnaccountedCandidate>
 }
 
 /** realpath 待機後の handler が commit まで完了したかを表す。 */
-export type ParadisParkingCoordinatorResult =
+export type ParadisParkingCoordinatorResult<T> =
 	| { readonly kind: 'stale' }
-	| { readonly kind: 'committed'; readonly skippedParking: boolean };
+	| { readonly kind: 'committed'; readonly skippedParking: boolean; readonly commitResult: T };
 
 /**
  * 現在のワークスペースフォルダのどれにも属さない（＝自動検出で開かれたまま取り残された）
@@ -104,16 +104,17 @@ function currentFoldersMatch(
  * 切り替わっていないことを確認してから最新 snapshot で parking 候補を選ぶ。最終世代確認、
  * selection、同期 commit は同じ Promise continuation 内で完結させ、stale な候補を caller が
  * 後から mutate できないようにする。realpath を一つでも確定できない回は parking を見送るが、
- * commit callback に最新 folder を渡すので added-folder open は継続できる。
+ * commit callback に最新 folder を渡すので added-folder open は継続できる。callback の戻り値は
+ * commit 後に await できるよう result へそのまま返す。
  */
-export async function commitRepositoriesForParking<T extends IParadisUnaccountedCandidate>(
+export async function commitRepositoriesForParking<T extends IParadisUnaccountedCandidate, R>(
 	getSnapshot: () => IParadisParkingSnapshot<T>,
 	isCurrent: () => boolean,
 	resolveRealPath: (folderPath: string) => Promise<string | undefined>,
 	isDescendant: (parent: string, descendant: string) => boolean,
 	pathEquals: (a: string, b: string) => boolean,
-	commit: (repositoriesToPark: readonly T[], currentFolderPaths: readonly string[]) => void,
-): Promise<ParadisParkingCoordinatorResult> {
+	commit: (repositoriesToPark: readonly T[], currentFolderPaths: readonly string[]) => R,
+): Promise<ParadisParkingCoordinatorResult<R>> {
 	const initialSnapshot = getSnapshot();
 	const realPaths = await Promise.all(initialSnapshot.currentFolderPaths.map(async folderPath => {
 		try {
@@ -139,6 +140,6 @@ export async function commitRepositoriesForParking<T extends IParadisUnaccounted
 			pathEquals,
 		);
 
-	commit(repositoriesToPark, latestSnapshot.currentFolderPaths);
-	return { kind: 'committed', skippedParking };
+	const commitResult = commit(repositoriesToPark, latestSnapshot.currentFolderPaths);
+	return { kind: 'committed', skippedParking, commitResult };
 }
