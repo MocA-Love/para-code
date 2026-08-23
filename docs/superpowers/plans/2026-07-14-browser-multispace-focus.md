@@ -16,7 +16,7 @@
 - 各Task後に自己レビューと独立read-onlyレビューを行い、Critical/Importantを解消してから次へ進む。
 - ユーザーの明示指示があるまでcommit/pushしない。
 - `app/mobile/mock/serve.mts`、`.serena/`、`app/design/mobile-relay-v3-recovery-design.md`、`app/mobile/mock/slash-command-catalog.html`、`docs/superpowers/plans/2026-07-14-mobile-slash-command-catalog-mock.md`へ触れない。
-- Node 24を使用する: `env PATH=/Users/magu/.local/share/mise/installs/node/24.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin ...`
+- Node 24を使用する: `env PATH=~/.local/share/mise/installs/node/24.17.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin ...`
 
 ---
 
