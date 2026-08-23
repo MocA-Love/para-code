@@ -1,10 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
-import { colors, mono } from '../theme.js';
+import { GlassSurface } from './glassSurface.js';
+import { colors, mono, radius, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import {
 	COMPACT_TERMINAL_MENU_WIDTH,
@@ -158,6 +159,36 @@ export function TerminalCompactMenu({ entries, activeKey, onSelect, onOpenPreset
 	);
 }
 
+export function TerminalFallbackBand({ entries, activeKey, onSelect }: {
+	entries: readonly TerminalPickerEntry[];
+	activeKey: string | undefined;
+	onSelect: (terminalKey: string) => void;
+}) {
+	return (
+		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.fallbackTabContent}>
+			{entries.map(entry => {
+				const active = entry.terminalKey === activeKey;
+				const body = (
+					<Pressable
+						style={styles.fallbackTabHit}
+						onPress={() => { hapticSelection(); onSelect(entry.terminalKey); }}
+						accessibilityRole="button"
+						accessibilityState={{ selected: active }}
+					>
+						{entry.waiting
+							? <View style={styles.fallbackDotWaiting} />
+							: entry.working ? <View style={styles.fallbackDotWorking} /> : null}
+						<Text style={[styles.fallbackTabText, active && styles.fallbackTabTextActive]} numberOfLines={1}>{entry.index}: {entry.title}</Text>
+					</Pressable>
+				);
+				return active
+					? <View key={entry.terminalKey} style={[styles.fallbackTabChip, styles.fallbackTabChipActive]}>{body}</View>
+					: <GlassSurface key={entry.terminalKey} style={styles.fallbackTabChip} interactive>{body}</GlassSurface>;
+			})}
+		</ScrollView>
+	);
+}
+
 const styles = StyleSheet.create({
 	compactMenu: {
 		width: COMPACT_TERMINAL_MENU_WIDTH,
@@ -176,4 +207,12 @@ const styles = StyleSheet.create({
 	index: { color: colors.textDim, fontSize: 11, fontFamily: mono.ios },
 	// 上限で止める。長い端末名でバーの右側が押し出されると、左の島が削られる。
 	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
+	fallbackTabContent: { gap: 7, alignItems: 'center' },
+	fallbackTabChip: { height: 32, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
+	fallbackTabChipActive: { backgroundColor: 'rgba(9,175,217,0.30)', borderWidth: 1, borderColor: 'rgba(9,175,217,0.5)' },
+	fallbackTabHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
+	fallbackTabText: { color: colors.text, fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	fallbackTabTextActive: { color: '#bfeeff', fontWeight: '700' },
+	fallbackDotWaiting: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
+	fallbackDotWorking: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
 });
