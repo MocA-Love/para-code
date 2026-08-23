@@ -8,7 +8,49 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { parseLsofOutput, parseNetstatOutput } from '../../node/paradisPortListChannel.js';
+import { IParadisPortEntry } from '../../common/paradisPortList.js';
+import { ParadisPortListService, parseLsofOutput, parseNetstatOutput, registerParadisPortList } from '../../node/paradisPortListChannel.js';
+
+const batchEntries: readonly IParadisPortEntry[] = [
+	{ port: 3000, proto: 'TCP', pid: 10, processName: 'node', address: '127.0.0.1', risky: false },
+	{ port: 3001, proto: 'TCP', pid: process.pid, processName: 'shared-process', address: '127.0.0.1', risky: false },
+];
+
+interface ICapturedChannel {
+	call<T>(context: undefined, command: string, arg?: unknown): Promise<T>;
+}
+
+suite('ParadisPortList - batch kill', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('collects once and protects the shared process when killing all', async () => {
+		let collections = 0;
+		const signalled: number[] = [];
+		const service = new ParadisPortListService(
+			{} as never,
+			async () => { collections++; return batchEntries; },
+			pid => { signalled.push(pid); },
+		);
+
+		const result = await service.killAll([batchEntries[0], batchEntries[1]]);
+		assert.strictEqual(collections, 1);
+		assert.deepStrictEqual(signalled, [10]);
+		assert.deepStrictEqual(result, { failed: 1 });
+	});
+
+	test('forwards a killAll IPC array to the registered channel', async () => {
+		let captured: ICapturedChannel | undefined;
+		const service = new ParadisPortListService({} as never, async () => batchEntries, () => { });
+		const server = {
+			registerChannel: (_name: string, channel: ICapturedChannel) => captured = channel,
+		};
+		registerParadisPortList(server as never, {} as never, service);
+
+		const result = await captured!.call<{ readonly failed: number }>(undefined, 'killAll', [[batchEntries[0]]]);
+		assert.deepStrictEqual(result, { failed: 0 });
+	});
+});
 
 suite('ParadisPortList - parseLsofOutput', () => {
 
