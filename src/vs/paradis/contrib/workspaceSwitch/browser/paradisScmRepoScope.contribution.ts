@@ -56,7 +56,7 @@ import { paradisScopeRootPath } from '../common/paradisWorkspaceSwitch.js';
  * 相手へ close を投げてしまう。renderer からは ext host の実態を確認する術がなく、遅延を伸ばしても
  * 塞ぎきれない。
  *
- * 撤去で失うものが2つあることは承知の上で選んでいる (どちらも「見えないところに残る」だけで、
+ * 撤去で失うものが3つあることは承知の上で選んでいる (いずれも「見えないところに残る」だけで、
  * ユーザー操作を遮るモーダルや無確認の誤 close より軽いと判断した):
  *  - `pickRepository` は git 拡張側の openRepositories を列挙するため、`git.commit` / `git.pull` /
  *    `git.push` / `git.sync` などをコマンドパレットから引数なしで実行すると、一覧では隠れている

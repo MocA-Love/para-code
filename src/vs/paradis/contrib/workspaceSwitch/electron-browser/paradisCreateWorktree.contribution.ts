@@ -166,12 +166,6 @@ class ParadisCreateWorktreeAction extends Action2 {
 registerAction2(ParadisCreateWorktreeAction);
 
 /**
- * ワークツリー（スペース）をディスクごと削除するコマンド。Workspaces ビューの worktree 行の
- * コンテキストメニューから、対象の IParadisWorktree を引数に呼ばれる（browser 層のビューは
- * ID 経由でこのコマンドを実行する。git 実行と shared process チャネル依存があるため
- * electron-browser 層に置く）。
- */
-/**
  * teardown スクリプト起因の失敗を、削除フロー内の他の想定外エラーと区別するためのマーカー。
  * これで包まれていないエラーに「セットアップ解除スクリプトが失敗した」と誤って案内しないために使う。
  */
@@ -243,6 +237,12 @@ export async function paradisRemoveWorktreeSequence(actions: IParadisRemoveWorkt
 	await actions.remove();
 }
 
+/**
+ * ワークツリー（スペース）をディスクごと削除するコマンド。Workspaces ビューの worktree 行の
+ * コンテキストメニューから、対象の IParadisWorktree を引数に呼ばれる（browser 層のビューは
+ * ID 経由でこのコマンドを実行する。git 実行と shared process チャネル依存があるため
+ * electron-browser 層に置く）。
+ */
 class ParadisRemoveWorktreeAction extends Action2 {
 	constructor() {
 		super({

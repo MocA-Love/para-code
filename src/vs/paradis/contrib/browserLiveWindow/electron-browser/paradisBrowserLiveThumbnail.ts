@@ -12,6 +12,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { CodeWindow } from '../../../../base/browser/window.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	ParadisBrowserLiveCadence,
 	paradisBrowserLiveCaptureDelayMs,
@@ -22,7 +23,7 @@ import {
  * スクリーンショットの符号化。
  *
  * 矩形を指定しない撮影は、そのビューの「最後のスクリーンショット」として main 側へ保存され、
- * エディタでタブを切り替えたときに出る静止画にもなる (browserView.ts の _screenshot)。
+ * エディタでタブを切り替えたときに出る静止画にもなる (browserView.ts の _lastScreenshot)。
  * ここで粗い品質を指定すると本体の静止画まで粗くなるので、upstream の既定と同じ値にする。
  */
 const CAPTURE_QUALITY = 80;
@@ -32,6 +33,15 @@ const FIRST_FRAME_RETRY_DELAY = 3000;
 
 /** 生成からこの時間 (ms) を過ぎたら、開いた直後用の待ち (startDelayMs) は使わない。 */
 const STAGGER_WINDOW = 3000;
+
+/**
+ * この回数だけ連続で失敗し、かつ1枚も撮れていない場合に「一時的な競合ではなく永続的に
+ * 撮影できていない」と見なして Sentry へ報告する回数。`paradisBrowserLiveRetryDelayMs` の
+ * バックオフは failures=4 で既に上限(factor=8)へ頭打ちになっており、この閾値はそこから
+ * さらに1回リトライしても直らなかった、単発の失敗とは区別できる状態を表す。`failures` は
+ * 単調増加なので、この値ちょうどで一度だけ発火する。
+ */
+const PERSISTENT_FAILURE_THRESHOLD = 5;
 
 /**
  * タイル1枚分のライブサムネイル。
@@ -236,6 +246,11 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 			// 撮影の失敗は日常的に起きる (ページ破棄との競合、撮影の輻輳)。次の間隔を離して
 			// 静かに続ける —— 通知や画面上の見た目は変えない。
 			this.logService.trace(`[paradisBrowserLive] capture failed (${this.failures}): ${error}`);
+			if (!this.hasFrame && this.failures === PERSISTENT_FAILURE_THRESHOLD) {
+				// 1枚も撮れないまま連続で失敗し続けている。単発の競合ではなく永続的な失敗
+				// なので、無音のまま静止画が出ない状態が続かないよう報告する。
+				reportParadisDiagnosticError('owned', 'browser-live-window', 'capture-persistently-failing', error, undefined, 'warning');
+			}
 		} finally {
 			this.capturing = false;
 			if (!this._store.isDisposed) {

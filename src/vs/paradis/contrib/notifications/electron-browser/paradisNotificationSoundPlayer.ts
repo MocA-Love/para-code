@@ -28,7 +28,8 @@ export function base64ToBlobUrl(base64: string, mimeType: string): string {
 }
 
 /**
- * 着信音の解決 + 再生。設定ダイアログのプレビュー再生と、通知トリガーの実再生の両方から使う。
+ * 着信音の解決 + 再生。通知の実再生は shared process の AudioScheduler へ移設済みのため、
+ * 現在は設定ダイアログのプレビュー再生からのみ使う。
  */
 export class ParadisNotificationSoundPlayer extends Disposable {
 

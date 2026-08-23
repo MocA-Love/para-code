@@ -48,6 +48,7 @@ import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ILocalPtyService } from '../../../../platform/terminal/common/terminal.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
  * `LocalPty` チャネルで先回りバッファを作らせないイベント。
@@ -115,6 +116,9 @@ export function paradisCreateLocalPtyChannel(
 	}
 	if (unexpected.length > 0) {
 		logService.error(`[ParadisLocalPtyChannel] unexpected eagerly buffered pty events: ${unexpected.join(', ')}`);
+		reportParadisDiagnosticError('owned', 'pty-channel', 'unexpected-eager-buffer', new Error('unexpected eagerly buffered pty events'), {
+			safe_unexpected_count: unexpected.length,
+		});
 	}
 
 	return ProxyChannel.fromService<string>(service, disposables, { unbufferedEvents: PARADIS_DIRECT_PTY_EVENTS });

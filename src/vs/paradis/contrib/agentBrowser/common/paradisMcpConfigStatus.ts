@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // バインディングダイアログ「MCP接続設定」タブのステータス判定と、Codex要修正エントリの
-// shim方式への書き換えを行うpureなパーサ群。node層に依存しないので、shared processの
+// HTTP方式への書き換えを行うpureなパーサ群。node層に依存しないので、shared processの
 // ParadisMcpSetupController（node/paradisMcpSetup.ts、node/paradisMcpConfigStatus.js経由の
 // 再exportで引き続き参照できる）だけでなく、SSH接続先向けの electron-browser 側
 // （paradisRemoteMcpSetup.ts）からも layer違反なく直接importできる。

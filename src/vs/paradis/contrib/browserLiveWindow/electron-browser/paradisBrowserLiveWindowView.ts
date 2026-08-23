@@ -631,13 +631,6 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 
 	// ------------------------------------------------------------------ エージェントのカーソル
 
-	/**
-	 * カーソルの写しをタイルへ描く。
-	 *
-	 * 座標は 0..1 の割合で来る (正規化は寸法を知っている electron-main 側で済ませてある)。
-	 * ここでやるのは、サムネイルが `object-fit: cover` で切り取られているぶんの補正だけ。
-	 * まだ1枚も撮れていないタイルでは画像の実寸が分からないので、その回は描かない。
-	 */
 	/** 演出の設定。切っている間は一覧側にもカーソルを出さない。 */
 	private isCursorMirrorEnabled(): boolean {
 		return this.configurationService.getValue<boolean>(PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING) !== false;
@@ -675,7 +668,12 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 	}
 
 	/**
-	 * 覚えている割合座標から、いまの枠に合わせて置き直す。切り取られて見えない位置なら隠す。
+	 * 覚えている割合座標から、いまの枠に合わせて置き直す。
+	 *
+	 * 座標は 0..1 の割合で来る (正規化は寸法を知っている electron-main 側で済ませてある)。
+	 * ここでやるのは、サムネイルが `object-fit: cover` で切り取られているぶんの補正だけ。
+	 * まだ1枚も撮れていないタイルでは画像の実寸が分からないので、その回は描かない。
+	 * 縦横比の違いで切り取られて見えない位置なら隠す。
 	 *
 	 * @returns 置けたか (置けなかったときは呼び出し側でアイドルの延長もしない)
 	 */

@@ -629,16 +629,6 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	/**
-	 * 所属スコープが分かっている pty host の孤児プロセス (どのウィンドウにも接続されていない
-	 * 永続プロセス) を再接続し、park 台帳へ登録する。
-	 *
-	 * 対象は実質「非アクティブスコープの working set に閉じ込められたエディタターミナル」。
-	 * パネルターミナルは park 中グループもレイアウト永続化で復元される (PARA-PATCH) が、
-	 * エディタターミナルの復元は working set の適用 (= そのスコープへの切り替え) まで起きない。
-	 * ここで park 台帳へ戻しておけば、切り替え時は reviveInput の台帳ルックアップがそのまま
-	 * 再利用し、モバイルからもスペースを問わず一覧・操作できる。
-	 */
-	/**
 	 * 中断された孤児復活をやり直す。切り替えの最中に呼ばれても意味が無いので、
 	 * 次の切り替え完了時に改めて試す（多重実行は _orphanRevivalRetrying で防ぐ）。
 	 */
@@ -663,6 +653,15 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	/**
+	 * 所属スコープが分かっている pty host の孤児プロセス (どのウィンドウにも接続されていない
+	 * 永続プロセス) を再接続し、park 台帳へ登録する。
+	 *
+	 * 対象は実質「非アクティブスコープの working set に閉じ込められたエディタターミナル」。
+	 * パネルターミナルは park 中グループもレイアウト永続化で復元される (PARA-PATCH) が、
+	 * エディタターミナルの復元は working set の適用 (= そのスコープへの切り替え) まで起きない。
+	 * ここで park 台帳へ戻しておけば、切り替え時は reviveInput の台帳ルックアップがそのまま
+	 * 再利用し、モバイルからもスペースを問わず一覧・操作できる。
+	 *
 	 * @returns 孤児を一巡し切ったか。中断した場合は台帳が不完全なので、これを
 	 * 「このスコープに端末は無い」の根拠に使ってはいけない。
 	 */

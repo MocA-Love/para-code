@@ -234,7 +234,10 @@ interface IParadisSetupState {
 }
 
 export interface IParadisBindingDialogOptions {
-	/** 開いた時点で選択状態にするペインのターミナルインスタンスID。 */
+	/**
+	 * 呼び出し元ペインの識別に使われていたが、行内アクションUIでは選択の概念がないため
+	 * 現在は未使用。API互換のためフィールドは維持する。
+	 */
 	readonly selectInstanceId?: number;
 }
 
@@ -249,7 +252,7 @@ export class ParadisBindingDialog extends Disposable {
 	private readonly _body: HTMLElement;
 	private readonly _footer: HTMLElement;
 	private readonly _headerPills: HTMLElement;
-	/** 左ナビの強調スタイル切替（seg）ボタン。 */
+	/** ダイアログ上部 toolbar の強調スタイル切替（seg）ボタン。 */
 	private readonly _hlButtons = new Map<ParadisPaneHighlightStyle, HTMLButtonElement>();
 	private readonly _renderDisposables = this._register(new DisposableStore());
 
@@ -431,6 +434,9 @@ export class ParadisBindingDialog extends Disposable {
 	 * 行はポーリング更新などで頻繁に作り直されるため、mouseenter を待たず同期する。
 	 */
 	private _reconcileHoverAfterRender(): void {
+		// querySelector is required here to read live :hover pseudo-state; dom.ts h() only builds
+		// elements, it has no equivalent for querying which one the pointer is currently over.
+		// eslint-disable-next-line no-restricted-syntax
 		const hoveredRow = this._body.querySelector<HTMLElement>('.pbd-pane-row[data-instance-id]:hover');
 		const raw = hoveredRow?.dataset['instanceId'];
 		const instanceId = raw !== undefined ? Number(raw) : Number.NaN;

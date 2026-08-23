@@ -122,13 +122,6 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 	) { }
 
 	/**
-	 * 上流ポートの確定を始める（待たない）。app.ts が起動直後に1度だけ呼ぶ。
-	 *
-	 * `DevToolsActivePort` を2つ目のプロセスが上書きするより先に読むのが唯一の確実な手なので、
-	 * shared process から聞かれるのを待たずに走らせる。コンストラクタでやらないのは、この
-	 * サービスを組み立てるだけで Electron とファイルシステムに触りに行かせないため。
-	 */
-	/**
 	 * カーソル演出を取り下げる。ページ側と一覧側の写しを必ず同時に片付ける。
 	 *
 	 * 別々に呼ぶと、片方だけ残った状態 (もう誰も操作していないページに一覧側のカーソルだけが
@@ -207,6 +200,13 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		}
 	}
 
+	/**
+	 * 上流ポートの確定を始める（待たない）。app.ts が起動直後に1度だけ呼ぶ。
+	 *
+	 * `DevToolsActivePort` を2つ目のプロセスが上書きするより先に読むのが唯一の確実な手なので、
+	 * shared process から聞かれるのを待たずに走らせる。コンストラクタでやらないのは、この
+	 * サービスを組み立てるだけで Electron とファイルシステムに触りに行かせないため。
+	 */
 	pinUpstreamPort(): void {
 		void this.upstreamPortPin.pin().catch(() => undefined);
 	}

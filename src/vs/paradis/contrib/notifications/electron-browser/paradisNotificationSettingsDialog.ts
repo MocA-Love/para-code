@@ -9,7 +9,8 @@
 // 通知設定ダイアログのシェル（自前backdrop+モーダル。paradisBindingDialog.ts と同じ方式）。
 // Settings Editor 風のレイアウト: ヘッダー（検索ボックス + 自動保存フラッシュ）、左ナビ、
 // 右コンテンツ（おやすみモード / デスクトップ通知 / 通知サウンド / Aivis Voice Announcement /
-// ユーザー辞書 / 使用量）。検索は全セクションの setting-row を横断フィルタする。
+// ユーザー辞書 / 使用量）。検索は全セクションの setting-row / 着信音カード / 辞書カード /
+// 使用量カード / プリセットタイルを横断フィルタする（FILTERABLE_SELECTOR）。
 // 「Aivis Voice Announcement / ユーザー辞書 / 使用量」の各セクションは別ファイルのクラスに委譲する。
 
 import './media/paradisNotificationSettings.css';
@@ -844,7 +845,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		}, durationMs);
 	}
 
-	/** 再生中カードの進捗バーを rt.dur 秒いっぱいまで動かす。 */
+	/** 再生中カードの進捗バーを _playingDurationSeconds 秒いっぱいまで動かす。 */
 	private _startProgressBar(): void {
 		this._stopProgressBar();
 		if (!this._playingCard || this._playingStartedAt === undefined) {

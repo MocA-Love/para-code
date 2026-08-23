@@ -26,6 +26,7 @@
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { TerminalSettingId } from '../../../../platform/terminal/common/terminal.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const configurationRegistry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
 
@@ -34,6 +35,12 @@ const configurationRegistry = Registry.as<IConfigurationRegistry>(ConfigurationE
 // allow-any-unicode-next-line
 const paradisUpstreamWordSeparatorsFallback = ' ()[]{}\',"`─‘’“”|';
 const paradisUpstreamWordSeparators = configurationRegistry.getConfigurationProperties()[TerminalSettingId.WordSeparators]?.default;
+if (typeof paradisUpstreamWordSeparators !== 'string') {
+	// Falls back to a hardcoded string silently otherwise — if upstream ever moves this setting's
+	// id or default, the CJK injection below keeps running against a stale base and nobody notices.
+	// This runs once at startup, so no rate limiting concern.
+	reportParadisDiagnosticError('owned', 'terminal-word-separators', 'default-missing', new Error('terminal.integrated.wordSeparators default was not found in the configuration registry'));
+}
 const paradisBaseWordSeparators = typeof paradisUpstreamWordSeparators === 'string' ? paradisUpstreamWordSeparators : paradisUpstreamWordSeparatorsFallback;
 
 // Subset of linkComputer.ts's FORCE_TERMINATION_CHARACTERS not already covered above.

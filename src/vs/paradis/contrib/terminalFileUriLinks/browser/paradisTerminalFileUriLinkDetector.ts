@@ -34,6 +34,7 @@ import { ITerminalConfigurationService } from '../../../../workbench/contrib/ter
 import { ITerminalLinkDetector, ITerminalLinkResolver, ITerminalSimpleLink, TerminalBuiltinLinkType } from '../../../../workbench/contrib/terminalContrib/links/browser/links.js';
 import { convertLinkRangeToBuffer, getXtermLineContent } from '../../../../workbench/contrib/terminalContrib/links/browser/terminalLinkHelpers.js';
 import { ITerminalProcessManager } from '../../../../workbench/contrib/terminal/common/terminal.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IBufferLine, Terminal } from '@xterm/xterm';
 
 const enum Constants {
@@ -41,7 +42,13 @@ const enum Constants {
 	 * Mirrors TerminalUriLinkDetector.MaxResolvedLinksInLine: avoid resolving (and stat-ing) an
 	 * unbounded number of links per line, which could block on unreachable SMB/UNC hosts.
 	 */
-	MaxResolvedLinksInLine = 10
+	MaxResolvedLinksInLine = 10,
+	/**
+	 * `resolveLink` has no timeout of its own, so an unreachable SMB/UNC host stalls until the OS'
+	 * own network timeout gives up. There is no exception to catch in that case — report only when
+	 * a single resolution took long enough to be a symptom, not on every normal stat.
+	 */
+	SlowResolveThresholdMs = 3000
 }
 
 export class ParadisTerminalFileUriLinkDetector implements ITerminalLinkDetector {
@@ -81,7 +88,8 @@ export class ParadisTerminalFileUriLinkDetector implements ITerminalLinkDetector
 			let uri: URI;
 			try {
 				uri = URI.parse(this._excludeLineAndColSuffix(text));
-			} catch {
+			} catch (error) {
+				reportParadisDiagnosticError('owned', 'terminal-file-uri-links', 'resolve-failed', error, undefined, 'info');
 				continue;
 			}
 
@@ -91,7 +99,15 @@ export class ParadisTerminalFileUriLinkDetector implements ITerminalLinkDetector
 
 			// If it resolves locally (e.g. an already-mounted SMB share), leave it to the
 			// built-in Uri detector's LocalFile/LocalFolder handling.
+			const resolveStartedAt = Date.now();
 			const linkStat = await this._linkResolver.resolveLink(this._processManager, text, uri);
+			const resolveDuration = Date.now() - resolveStartedAt;
+			if (resolveDuration >= Constants.SlowResolveThresholdMs) {
+				// No exception is thrown when a stat stalls on an unreachable SMB/UNC host — resolveLink
+				// swallows the underlying error and resolves to null once the OS' own network timeout
+				// gives up. A synthetic error is the only way to surface how often that happens.
+				reportParadisDiagnosticError('owned', 'terminal-file-uri-links', 'resolve-failed', new Error('file:// link resolution was slow'), { duration_ms: resolveDuration }, 'info');
+			}
 			if (linkStat) {
 				continue;
 			}

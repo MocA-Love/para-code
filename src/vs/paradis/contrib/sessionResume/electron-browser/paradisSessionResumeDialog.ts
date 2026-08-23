@@ -28,6 +28,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IChatOutputRendererService } from '../../../../workbench/contrib/chat/browser/chatOutputItemRenderer.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent } from '../common/paradisSessionResume.js';
@@ -64,7 +65,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private list: HTMLElement | undefined;
 	private detail: HTMLElement | undefined;
 	private searchInput: HTMLInputElement | undefined;
-	/** 左フィルタナビの項目(ボタン化した旧 select)。render 毎に aria-pressed と件数を同期する。 */
+	/** 左フィルタナビの項目(ボタン化した旧 select)。render() から updateRailSelection() 経由で aria-pressed と件数を同期する(初回ローディング中のプレースホルダ表示時は未同期)。 */
 	private readonly agentNavButtons = new Map<AgentFilter, { button: HTMLButtonElement; count: HTMLElement }>();
 	private spaceNavCurrent: { button: HTMLButtonElement; count: HTMLElement } | undefined;
 	private railSpaceTree: HTMLElement | undefined;
@@ -344,7 +345,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		}
 	}
 
-	/** 左ナビの選択状態(aria-pressed)・件数・サマリを現在のフィルタ結果へ同期する。render() から毎回呼ぶ。 */
+	/** 左ナビの選択状態(aria-pressed)・件数・サマリを現在のフィルタ結果へ同期する。render() から呼ぶ(初回ローディング中のプレースホルダ表示時は未呼び出し)。 */
 	private updateRailSelection(filteredCount: number): void {
 		const setPressed = (entry: { button: HTMLButtonElement; count: HTMLElement }, pressed: boolean, count: number): void => {
 			entry.button.classList.toggle('on', pressed);
@@ -502,8 +503,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 					this.render();
 				}
 			}
-		} catch {
+		} catch (error) {
 			// 検索失敗時もmetadata検索は利用できる。入力内容を外部へ送ったり記録したりしない。
+			reportParadisDiagnosticError('owned', 'session-resume', 'transcript-search-failed', error, undefined, 'warning');
 		}
 	}
 
@@ -903,6 +905,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 				resumeAgent: request => this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, request),
 			});
 		} catch (error) {
+			reportParadisDiagnosticError('owned', 'session-resume', 'resume-launch-failed', error, {
+				safe_agent: session.agent,
+			});
 			this.notificationService.error(error);
 		} finally {
 			this.resumingCatalogIds.delete(session.catalogId);

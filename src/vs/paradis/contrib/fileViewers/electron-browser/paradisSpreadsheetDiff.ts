@@ -96,7 +96,7 @@ export interface IParadisDiffSheet {
 	readonly modifiedShapes?: readonly IParadisRenderShape[];
 	readonly originalDataValidations?: readonly IParadisDataValidationEntry[];
 	readonly modifiedDataValidations?: readonly IParadisDataValidationEntry[];
-	/** 図形描画時の Excel 行番号→Y座標の基準に使う、各版シートの行メタ(excelRow, height)。 */
+	/** 各版シートの使用範囲の先頭列(1始まり)。列ヘッダ表示や図形アンカーのX座標算出の基準列にする。 */
 	readonly originalMinCol?: number;
 	readonly modifiedMinCol?: number;
 	/** シートタブの色(hex)。新版優先、無ければ旧版。 */

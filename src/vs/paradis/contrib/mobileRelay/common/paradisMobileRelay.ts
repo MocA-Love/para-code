@@ -231,7 +231,7 @@ export interface IParadisMobilePairingSession {
 	readonly deviceId: string;
 	/** QRコードにエンコードする paracode-mobile://pair URI。 */
 	readonly pairingUri: string;
-	/** 手動入力用の6桁ペアリングトークン先頭（表示用ではなくSAS確認を使うため参考値）。 */
+	/** このペアリングセッションの失効時刻（epoch ms）。 */
 	readonly expiresAt: number;
 }
 

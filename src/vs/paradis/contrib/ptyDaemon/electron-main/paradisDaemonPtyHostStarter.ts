@@ -41,6 +41,7 @@ import { IReconnectConstants } from '../../../../platform/terminal/common/termin
 import { IPtyHostConnection, IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { UtilityProcess } from '../../../../platform/utilityProcess/electron-main/utilityProcess.js';
 import { IpcMainEvent } from 'electron';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { paradisPtyDaemonEnv, PARADIS_PTY_DAEMON_LEDGER, PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
 import { PARADIS_DAEMON_TERMINAL_GRACE_TIME } from '../common/paradisPtyDaemonPolicy.js';
@@ -139,6 +140,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		});
 		connecting.catch(error => {
 			this.logService.error('[ParadisPtyDaemon] could not reach the daemon', error);
+			reportParadisDiagnosticError('owned', 'pty-daemon', 'not-ready', error);
 			onDidProcessExit.fire({ code: 1, signal: '' });
 		});
 
@@ -232,12 +234,6 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	}
 
 	/**
-	 * 常駐を起こす。**アプリの寿命から外す**のがここの仕事のすべて。
-	 *
-	 * `unref()` まで済ませて、以後は一切面倒を見ない。起きたかどうかは繋いで確かめる
-	 * (起動の成否をプロセスの側から知ろうとすると、それだけで親子の縁が残る)。
-	 */
-	/**
 	 * 常駐の出力を書き出す先を開く。開けなければ捨てる（起動そのものは止めない）。
 	 *
 	 * ここに出るのは、**ログの仕組みが立ち上がる前に落ちたとき**の理由だけ。常駐が動き出せば
@@ -255,6 +251,12 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		}
 	}
 
+	/**
+	 * 常駐を起こす。**アプリの寿命から外す**のがここの仕事のすべて。
+	 *
+	 * `unref()` まで済ませて、以後は一切面倒を見ない。起きたかどうかは繋いで確かめる
+	 * (起動の成否をプロセスの側から知ろうとすると、それだけで親子の縁が残る)。
+	 */
 	private spawnDaemon(): void {
 		const env: { [key: string]: string | undefined } = {
 			...process.env,
@@ -311,6 +313,10 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 				// 閉じられなくても起動には関わらない。
 			}
 		}
+		child.on('error', error => {
+			this.logService.error('[ParadisPtyDaemon] failed to spawn the daemon process', error);
+			reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error);
+		});
 		child.unref();
 	}
 
@@ -337,6 +343,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			await this.ensureDaemonReady();
 		} catch (error) {
 			this.logService.error('[ParadisPtyDaemon] not handing a port to the window; the daemon never answered', error);
+			reportParadisDiagnosticError('owned', 'pty-daemon', 'not-ready', error);
 			return;
 		}
 		if (this._store.isDisposed || e.sender.isDestroyed()) {

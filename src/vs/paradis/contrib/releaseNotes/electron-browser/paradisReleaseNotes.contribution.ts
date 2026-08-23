@@ -27,6 +27,7 @@ import { IBaseSerializableStorageRequest, ISerializableCompareAndSwapRequest, IS
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { mergeChangelogs, parseParadisChangelog } from '../common/paradisChangelogModel.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisChangelogModal, toViewReleases } from './paradisChangelogModal.js';
 
 /**
@@ -252,7 +253,10 @@ function openParadisChangelogModal(
 }
 
 // 歯車メニューの「更新の確認...」(update.ts の appendUpdateMenuItems が使う group '7_update') の
-// 直下に並べる。update 系の項目は order 未指定 (=0) なので order: 1 で最後に来る
+// 直下に並べる。同グループ内は order → タイトルの順でソートされ(MenuInfo._compareMenuItems)、
+// update.check 等の常時表示項目は order 未指定 (=0) のため order: 1 ならその後ろに来る
+// (update.restart は order: 2 でさらに後ろ、stable限定・条件付き表示の update.showUpdateReleaseNotes も
+// order: 1 のためその場合はタイトルの辞書順で並ぶ)
 MenuRegistry.appendMenuItem(MenuId.GlobalActivity, {
 	group: '7_update',
 	order: 1,
@@ -329,7 +333,10 @@ class ParadisShowChangelogOnUpdate implements IWorkbenchContribution {
 		// 記録はガードの外へ出し、メインプロセス側の compare-and-swap で「記録できた
 		// ウィンドウだけが開く」形にして、どのウィンドウが先に来ても必ず 1 回になるようにする。
 		this.claimAndShow(storageChannel, commit, storageService, configurationService, commandService)
-			.catch(() => { /* storage への問い合わせが失敗したら、更新履歴は出さないだけにする */ });
+			.catch(error => {
+				// storage への問い合わせが失敗したら、更新履歴は出さないだけにする
+				reportParadisDiagnosticError('owned', 'release-notes', 'auto-open-failed', error, undefined, 'info');
+			});
 	}
 
 	private async claimAndShow(
