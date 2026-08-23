@@ -120,4 +120,69 @@ describe('parseUnifiedDiff', () => {
 			{ kind: 'del', oldNo: 1, text: 'old-two' },
 		]);
 	});
+
+	test('extended mode metadataの後でもfile headerを除外してtext hunkを保持する', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/mode.ts b/mode.ts',
+			'old mode 100644',
+			'new mode 100755',
+			'--- a/mode.ts',
+			'+++ b/mode.ts',
+			'@@ -1 +1 @@',
+			'-old',
+			'+new',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -1 +1 @@' },
+			{ kind: 'del', oldNo: 1, text: 'old' },
+			{ kind: 'add', newNo: 1, text: 'new' },
+		]);
+	});
+
+	test('extended mode metadataの後でもbinary noticeを保持する', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/image.bin b/image.bin',
+			'old mode 100644',
+			'new mode 100755',
+			'Binary files a/image.bin and b/image.bin differ',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: 'Binary files a/image.bin and b/image.bin differ' },
+		]);
+	});
+
+	test('対応する+++がないpending headerをEOFで削除内容としてflushする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/dangling.txt b/dangling.txt',
+			'--- dangling-content',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'del', oldNo: 1, text: '-- dangling-content' },
+		]);
+	});
+
+	test('対応する+++がないpending headerを次のdiff境界でflushする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/one.txt b/one.txt',
+			'--- dangling-content',
+			'diff --git a/two.txt b/two.txt',
+			'+new-two',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'del', oldNo: 1, text: '-- dangling-content' },
+			{ kind: 'add', newNo: 1, text: 'new-two' },
+		]);
+	});
+
+	test('対応する+++がないpending headerを非headerの+++内容の前でflushする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/dangling.txt b/dangling.txt',
+			'--- dangling-content',
+			'+++actual-content',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'del', oldNo: 1, text: '-- dangling-content' },
+			{ kind: 'add', newNo: 1, text: '++actual-content' },
+		]);
+	});
 });

@@ -22,8 +22,19 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 	let inHunk = false;
 	let metadataPhase: 'none' | 'headers' | 'awaitingNewHeader' = 'none';
 	let pendingOldFileHeader: string | undefined;
+	const flushPendingOldFileHeader = () => {
+		if (!pendingOldFileHeader) {
+			return;
+		}
+		if (oldNo === 0) {
+			oldNo = 1;
+		}
+		rows.push({ kind: 'del', oldNo: oldNo++, text: pendingOldFileHeader.slice(1) });
+		pendingOldFileHeader = undefined;
+	};
 	for (const line of diff.split('\n')) {
 		if (line.startsWith('diff ')) {
+			flushPendingOldFileHeader();
 			inHunk = false;
 			oldNo = 0;
 			newNo = 0;
@@ -37,11 +48,7 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 				pendingOldFileHeader = undefined;
 				continue;
 			}
-			if (oldNo === 0) {
-				oldNo = 1;
-			}
-			rows.push({ kind: 'del', oldNo: oldNo++, text: pendingOldFileHeader!.slice(1) });
-			pendingOldFileHeader = undefined;
+			flushPendingOldFileHeader();
 			metadataPhase = 'none';
 		}
 		if (line.startsWith('@@')) {
@@ -61,14 +68,15 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 				metadataPhase = 'awaitingNewHeader';
 				continue;
 			}
-			if (line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') || line.startsWith('rename ') || line.startsWith('Binary files') || line.startsWith('\\')) {
-				// ファイルメタ情報はビューアのヘッダで代替する（Binary等は文脈行として出さない）
-				if (line.startsWith('Binary files')) {
-					rows.push({ kind: 'hunk', text: line });
-				}
+			if (line.startsWith('Binary files')) {
+				rows.push({ kind: 'hunk', text: line });
 				continue;
 			}
-			metadataPhase = 'none';
+			if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) {
+				metadataPhase = 'none';
+			} else {
+				continue;
+			}
 		}
 		if (line.startsWith('+')) {
 			// 未追跡ファイルの擬似diff（全行+でハンク見出しなし）は1行目から数える
@@ -90,5 +98,6 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 			}
 		}
 	}
+	flushPendingOldFileHeader();
 	return rows;
 }
