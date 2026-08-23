@@ -464,7 +464,13 @@ class ParadisPresetEditorDialog extends Disposable {
 		closeBtn.textContent = '✕';
 		closeBtn.title = STR_CLOSE;
 		closeBtn.setAttribute('aria-label', STR_CLOSE);
-		this._chromeStore.add(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
+		this._chromeStore.add(dom.addDisposableListener(closeBtn, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this.dispose();
+				}
+			});
+		}));
 
 		// --- ボディ: 左ナビ + 右コンテンツ ---
 		const body = dom.append(this._dialog, $('.ppe-body'));
@@ -548,7 +554,11 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
 			if (e.target === this._backdrop) {
-				this.dispose();
+				void this._confirmDiscardUnsaved().then(proceed => {
+					if (proceed) {
+						this.dispose();
+					}
+				});
 			}
 		}));
 		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
