@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisPortEntry, paradisIsRiskyPortAddress } from '../../common/paradisPortList.js';
-import { ParadisPortListServerService, loadConnectionTable, loadListeningConnections, loadSocketOwners, parseHexAddress, registerParadisPortListForServer, resolveRemotePortEntries } from '../../node/paradisPortListChannelServer.js';
+import { collectRemotePortEntries, ParadisPortListServerService, loadConnectionTable, loadListeningConnections, loadSocketOwners, parseHexAddress, registerParadisPortListForServer, resolveRemotePortEntries } from '../../node/paradisPortListChannelServer.js';
 
 const batchEntries: readonly IParadisPortEntry[] = [
 	{ port: 3000, proto: 'TCP', pid: 10, processName: 'node', address: '127.0.0.1', risky: false },
@@ -144,22 +144,33 @@ suite('ParadisPortList (remote) - socket owners', () => {
 
 	test('retains every PID that owns the same socket inode', () => {
 		const owners = loadSocketOwners([
-			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/444/fd/6 -> socket:[67890]',
-			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/222/fd/4 -> socket:[12345]',
-			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/111/fd/3 -> socket:[12345]',
-			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/111/fd/5 -> socket:[12345]',
+			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/10/fd/6 -> socket:[10]',
+			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/10/fd/7 -> socket:[2]',
+			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/2/fd/3 -> socket:[10]',
+			'lrwx------ 1 user user 64 Aug 24 00:00 /proc/10/fd/5 -> socket:[10]',
 		].join('\n'));
 		assert.deepStrictEqual([...owners].map(([socket, pids]) => [socket, [...pids]]), [
-			[12345, [111, 222]],
-			[67890, [444]],
+			[2, [10]],
+			[10, [2, 10]],
 		]);
 		assert.deepStrictEqual(resolveRemotePortEntries(
-			[{ socket: 12345, ip: '0.0.0.0', port: 8080 }],
+			[{ socket: 10, ip: '0.0.0.0', port: 8080 }],
 			owners,
-			new Map([[111, 'worker-a'], [222, 'worker-b']]),
+			new Map([[2, 'worker-a'], [10, 'worker-b']]),
 		), [
-			{ port: 8080, proto: 'TCP', pid: 111, processName: 'worker-a', address: '0.0.0.0', risky: true },
-			{ port: 8080, proto: 'TCP', pid: 222, processName: 'worker-b', address: '0.0.0.0', risky: true },
+			{ port: 8080, proto: 'TCP', pid: 2, processName: 'worker-a', address: '0.0.0.0', risky: true },
+			{ port: 8080, proto: 'TCP', pid: 10, processName: 'worker-b', address: '0.0.0.0', risky: true },
+		]);
+	});
+
+	test('sorts an unsorted owner PID set before resolving entries', () => {
+		assert.deepStrictEqual(resolveRemotePortEntries(
+			[{ socket: 1, ip: '127.0.0.1', port: 3000 }],
+			new Map([[1, new Set([10, 2])]]),
+			new Map([[2, 'two'], [10, 'ten']]),
+		), [
+			{ port: 3000, proto: 'TCP', pid: 2, processName: 'two', address: '127.0.0.1', risky: false },
+			{ port: 3000, proto: 'TCP', pid: 10, processName: 'ten', address: '127.0.0.1', risky: false },
 		]);
 	});
 
@@ -170,6 +181,50 @@ suite('ParadisPortList (remote) - socket owners', () => {
 			new Map([[333, 'node']]),
 		), [
 			{ port: 3000, proto: 'TCP', pid: 333, processName: 'node', address: '0:0:0:0:0:0:0:1', risky: false },
+		]);
+	});
+});
+
+suite('ParadisPortList (remote) - collection', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const HEADER = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+
+	test('collects every TCP and TCP6 socket owner with names and fallbacks', async () => {
+		const entries = await collectRemotePortEntries({
+			readTcp: async () => [
+				HEADER,
+				'   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 10 1 0000000000000000 100 0 0 10 0',
+				'   1: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 2 1 0000000000000000 100 0 0 10 0',
+				'   2: 00000000:2382 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 3 1 0000000000000000 100 0 0 10 0',
+			].join('\n'),
+			readTcp6: async () => [
+				HEADER,
+				'   0: 00000000000000000000000001000000:0BB8 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4 1 0000000000000000 100 0 0 10 0',
+			].join('\n'),
+			readSocketOwners: async () => loadSocketOwners([
+				'lrwx------ 1 user user 64 Aug 24 00:00 /proc/10/fd/3 -> socket:[10]',
+				'lrwx------ 1 user user 64 Aug 24 00:00 /proc/2/fd/4 -> socket:[10]',
+				'lrwx------ 1 user user 64 Aug 24 00:00 /proc/10/fd/5 -> socket:[10]',
+				'not a socket owner',
+				'lrwx------ 1 user user 64 Aug 24 00:00 /proc/4/fd/6 -> socket:[2]',
+				'lrwx------ 1 user user 64 Aug 24 00:00 /proc/20/fd/7 -> socket:[3]',
+				'lrwx------ 1 user user 64 Aug 24 00:00 /proc/30/fd/8 -> socket:[4]',
+			].join('\n')),
+			readProcessName: async pid => {
+				if (pid === 30) {
+					throw new Error('cmdline unavailable');
+				}
+				return new Map([[2, 'worker-two'], [4, 'worker-four'], [10, 'worker-ten'], [20, 'httpd']]).get(pid)!;
+			},
+		});
+		assert.deepStrictEqual(entries, [
+			{ port: 8080, proto: 'TCP', pid: 2, processName: 'worker-two', address: '127.0.0.1', risky: false },
+			{ port: 8080, proto: 'TCP', pid: 10, processName: 'worker-ten', address: '127.0.0.1', risky: false },
+			{ port: 8080, proto: 'TCP', pid: 4, processName: 'worker-four', address: '127.0.0.1', risky: false },
+			{ port: 9090, proto: 'TCP', pid: 20, processName: 'httpd', address: '0.0.0.0', risky: true },
+			{ port: 3000, proto: 'TCP', pid: 30, processName: '30', address: '0:0:0:0:0:0:0:1', risky: false },
 		]);
 	});
 });
