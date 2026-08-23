@@ -123,6 +123,48 @@ suite('ParadisSessionResumeDialog', () => {
 		}
 	});
 
+	test('shows the detail back button only in the one-column container', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session')];
+		const fixture = createRefreshFixture(client);
+		const stylesheet = document.createElement('link');
+		stylesheet.rel = 'stylesheet';
+		stylesheet.href = new URL('../../electron-browser/media/paradisSessionResume.css', import.meta.url).href;
+		const stylesheetLoaded = new Promise<void>((resolve, reject) => {
+			stylesheet.addEventListener('load', () => resolve(), { once: true });
+			stylesheet.addEventListener('error', () => reject(new Error('Failed to load session resume stylesheet')), { once: true });
+		});
+		document.head.appendChild(stylesheet);
+		document.body.appendChild(fixture.root);
+		try {
+			await stylesheetLoaded;
+			await fixture.load();
+			fixture.root.querySelector<HTMLButtonElement>('.paradis-session-resume-row')!.click();
+			await flushMicrotasks();
+			const modal = fixture.root.querySelector<HTMLElement>('.paradis-session-resume-modal')!;
+			const backButton = fixture.root.querySelector<HTMLElement>('.paradis-session-resume-detail-back')!;
+			const view = fixture.root.ownerDocument.defaultView!;
+			modal.style.maxWidth = 'none';
+
+			modal.style.width = '599px';
+			await new Promise<void>(resolve => view.requestAnimationFrame(() => resolve()));
+			const narrowDisplay = view.getComputedStyle(backButton).display;
+
+			modal.style.width = '600px';
+			await new Promise<void>(resolve => view.requestAnimationFrame(() => resolve()));
+			const wideDisplay = view.getComputedStyle(backButton).display;
+
+			assert.deepStrictEqual({ narrowDisplay, wideDisplay }, {
+				narrowDisplay: 'inline-flex',
+				wideDisplay: 'none',
+			});
+		} finally {
+			fixture.root.remove();
+			stylesheet.remove();
+			fixture.dispose();
+		}
+	});
+
 	test('uses the latest archived state for immediate checkbox and button refreshes', async () => {
 		const client = new TestResumeClient();
 		const fixture = createRefreshFixture(client);
