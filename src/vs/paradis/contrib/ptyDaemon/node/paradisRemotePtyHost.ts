@@ -28,7 +28,7 @@
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
-import { PARADIS_PTY_HOST_STATE_DIR } from './paradisPtyHostBootstrap.js';
+import { PARADIS_PTY_HOST_STATE_DIR } from '../common/paradisPtyHostPaths.js';
 
 /**
  * 有効なら、pty ホストへ置き場所を渡す。

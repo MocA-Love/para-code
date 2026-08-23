@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -123,6 +124,14 @@ function changelogRequestHeaders(productService: IProductService): Record<string
 	};
 }
 
+/**
+ * サーバー問い合わせの打ち切り時間。呼び出し側の token はモーダルを閉じた／開き直したときに
+ * しかキャンセルされないので、キャプティブポータル等でレスポンスが返らないとモーダルが
+ * 「サーバーを確認中…」のまま固まる。更新履歴は同梱 md だけでも成立する情報なので、
+ * 短めに諦めて既存の失敗経路(undefined)へ寄せる。
+ */
+const CHANGELOG_FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchRemoteChangelogMd(
 	requestService: IRequestService,
 	productService: IProductService,
@@ -132,20 +141,33 @@ async function fetchRemoteChangelogMd(
 	if (!url) {
 		return undefined;
 	}
+	// 呼び出し側の token を親にした CTS を挟み、タイムアウト時はこちらから cancel して
+	// 実際の通信も止める(ヘッダー受信後に本文が止まる場合も raceTimeout 側で拾える)。
+	const cts = new CancellationTokenSource(token);
 	try {
-		const context = await requestService.request(
-			{ url, type: 'GET', headers: changelogRequestHeaders(productService), callSite: 'paradisChangelog.fetchRemote' },
-			token
+		return await raceTimeout(
+			(async () => {
+				try {
+					const context = await requestService.request(
+						{ url, type: 'GET', headers: changelogRequestHeaders(productService), callSite: 'paradisChangelog.fetchRemote' },
+						cts.token
+					);
+					// 200 以外(204=サーバー側にまだ無い、401、404 など)は同梱分のみで静かに表示する
+					if (context.res.statusCode !== 200) {
+						return undefined;
+					}
+					const text = await asText(context);
+					// キャプティブポータル等が返した HTML を弾くため、我々の見出し形式を含むかだけ確認する
+					return text && CHANGELOG_SANITY_RE.test(text) ? text : undefined;
+				} catch {
+					return undefined;
+				}
+			})(),
+			CHANGELOG_FETCH_TIMEOUT_MS,
+			() => cts.cancel()
 		);
-		// 200 以外(204=サーバー側にまだ無い、401、404 など)は同梱分のみで静かに表示する
-		if (context.res.statusCode !== 200) {
-			return undefined;
-		}
-		const text = await asText(context);
-		// キャプティブポータル等が返した HTML を弾くため、我々の見出し形式を含むかだけ確認する
-		return text && CHANGELOG_SANITY_RE.test(text) ? text : undefined;
-	} catch {
-		return undefined;
+	} finally {
+		cts.dispose();
 	}
 }
 

@@ -99,4 +99,5 @@ suite('paradisWindowsScriptShim', () => {
 			assert.ok(withEmptyArg?.args[4].includes(' "" '), withEmptyArg?.args[4]);
 		});
 	});
+
 });

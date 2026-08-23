@@ -36,6 +36,7 @@ import * as path from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
@@ -744,11 +745,8 @@ export class ParadisLimitsMonitorService {
 		let cancelled = false;
 		session.dispose = () => {
 			cancelled = true;
-			try {
-				child.kill();
-			} catch {
-				// already dead
-			}
+			// cmd.exe ラップ時は kill() だと実体の codex が孫として残るためツリーごと落とす
+			paradisKillChildProcessTree(child, error => this.logService.trace(`[ParadisLimitsMonitor] failed to stop 'codex login': ${error}`));
 		};
 		this.scheduleSetupTimeout(session);
 
@@ -1031,6 +1029,11 @@ export class ParadisLimitsMonitorService {
 					env: { ...env, NO_COLOR: '1' },
 				}, (err, stdout, stderr) => {
 					if (err) {
+						if (err.killed === true) {
+							// タイムアウトによる強制終了は Node 内部の `child.kill()` なので、cmd.exe ラップ時は
+							// その先の実体が孫として残る。日常的に起きる経路なのでここでも落とす。
+							paradisKillChildProcessTree(child, error => this.logService.trace(`[ParadisLimitsMonitor] failed to stop the timed out child: ${error}`));
+						}
 						reject(new Error(stderr?.trim() || err.message));
 					} else {
 						resolve(stdout);
@@ -1103,6 +1106,7 @@ function stripAnsi(value: string): string {
 class ParadisCodexRpcSession extends Disposable {
 
 	private readonly child: cp.ChildProcess;
+	private readonly logService: ILogService;
 	private buffer = '';
 	private nextId = 1;
 	private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -1113,6 +1117,7 @@ class ParadisCodexRpcSession extends Disposable {
 		// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
 		const args = ['-s', 'read-only', '-a', 'untrusted', 'app-server'];
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
+		this.logService = logService;
 		this.child = cp.spawn(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
 			env,
 			stdio: ['pipe', 'pipe', 'pipe'],
@@ -1189,11 +1194,7 @@ class ParadisCodexRpcSession extends Disposable {
 	}
 
 	private terminate(): void {
-		try {
-			this.child.kill();
-		} catch {
-			// already dead
-		}
+		paradisKillChildProcessTree(this.child, error => this.logService.trace(`[ParadisLimitsMonitor] failed to stop codex app-server: ${error}`));
 	}
 }
 

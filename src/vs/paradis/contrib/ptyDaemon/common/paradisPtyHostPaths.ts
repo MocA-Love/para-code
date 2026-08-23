@@ -28,6 +28,20 @@ import { posix, win32 } from '../../../../base/common/path.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from './paradisPtyProtocol.js';
 
+/**
+ * 常駐に置き場所を与える環境変数。**これが無ければ常駐は使わない**（今までどおり）。
+ *
+ * 値は状態を置くディレクトリ。ここより下に 0700 のディレクトリを作り、ソケットと台帳を置く。
+ *
+ * **この定数を `node/` 層へ戻さないこと。** electron-main（`paradisPtyHostStarterFactory.ts`）が
+ * これを読むため、`node/paradisPtyHostBootstrap.ts` に置くと main プロセスの静的 import が
+ * `node/paradisTerminalProcessFactory.ts` -> `platform/terminal/node/terminalProcess.ts` を辿って
+ * `node-pty` に届く。パッケージ版は ASAR 内の依存を ESM ローダーが解決できないため、main が
+ * ERR_MODULE_NOT_FOUND で起動しなくなる（2026-08-23 に実際に踏んだ）。値を持つだけのこの定数は
+ * common に置き、electron-main からは common だけを見る。
+ */
+export const PARADIS_PTY_HOST_STATE_DIR = 'PARADIS_PTY_HOST_STATE_DIR';
+
 /** ソケット名に混ぜるハッシュの長さ。衝突ではなく取り違えを防ぐのが目的なので8文字で足りる。 */
 const KEY_LENGTH = 8;
 

@@ -613,6 +613,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// resolving it here is what triggers its constructor —
 				// the registry hands ownership/disposal to the
 				// instantiation service so we don't `_register` it.
+				// PARA-PATCH: keep the reference — registerLayoutListeners() below subscribes to it.
 				this.mobileVisualViewport = accessor.get(IMobileVisualViewport);
 
 				// Orientation changes produce a window `resize` event which
@@ -623,6 +624,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// Register Listeners
 				this.registerListeners(lifecycleService, storageService, configurationService, hostService, dialogService);
 
+				// PARA-PATCH: moved here from initLayout(), which runs too early for this.
 				// Register layout listeners. Must run **after** the visual viewport
 				// service is resolved above — the subscription below reads
 				// `this.mobileVisualViewport`, and initLayout (which calls this
@@ -1507,7 +1509,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	//#endregion
 
 	/**
-	 * Visual viewport tracking (iOS URL bar / virtual keyboard). Resolved
+	 * PARA-PATCH: visual viewport tracking (iOS URL bar / virtual keyboard). Resolved
 	 * during `start()` and subscribed to in {@link registerLayoutListeners}.
 	 */
 	private mobileVisualViewport!: IMobileVisualViewport;
@@ -1526,6 +1528,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const onWindowResize = () => this.layout();
 		this._register(addDisposableListener(mainWindow, 'resize', onWindowResize));
 
+		// PARA-PATCH: (uses getWindow/scheduleAtNextAnimationFrame and isMobile/isIOS, added to the
+		// imports at the top of this file for this block.)
 		// Visual viewport changes (iOS Safari URL bar collapse, virtual
 		// keyboard) do not fire a window resize. `getClientArea` already reads
 		// the visual viewport on iOS, so re-running layout() here keeps the
@@ -1653,6 +1657,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this._register(this.mobileNavStack.onDidPop(layer => this.handleMobileNavPop(layer)));
 	}
 
+	// PARA-PATCH: extracted out of the onDidPop listener above so it can be unit tested, and
+	// gated on the phone layout: a nav-stack entry that survived a rotation used to close the
+	// desktop sidebar the user never opened. (`MobileNavigationLayer` added to the
+	// mobileNavigationStack.js import at the top of this file.)
 	private handleMobileNavPop(layer: MobileNavigationLayer): void {
 		// Drawer/back-button pops only make sense while the phone layout is
 		// active; a stale entry surviving a rotation must not close the
@@ -1879,7 +1887,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				// Remove mobile components when leaving phone layout
 				this.mobileTopBarDisposables.clear();
 				this.mobileTopBarElement = undefined;
-				// Drop the drawer's history entry. Leaving it behind made a later
+				// PARA-PATCH: drop the drawer's history entry. Leaving it behind made a later
 				// back gesture close the desktop sidebar that had never been opened.
 				if (this.mobileNavStack.has('sidebar')) {
 					this.mobileNavStack.popSilently('sidebar');

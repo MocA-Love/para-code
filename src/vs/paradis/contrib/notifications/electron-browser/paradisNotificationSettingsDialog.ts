@@ -17,7 +17,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -27,6 +27,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { CUSTOM_RINGTONE_ID, DEFAULT_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, PARADIS_AIVIS_DEFAULT_FORMAT, PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES, getRingtoneById } from '../common/paradisNotifications.js';
+import { IParadisDoNotDisturbRefreshState, paradisCreateDoNotDisturbRefreshController, ParadisDoNotDisturbRefreshController } from '../common/paradisDoNotDisturb.js';
 import { clearAivisApiCaches } from './paradisAivisApiCache.js';
 import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
@@ -124,6 +125,8 @@ const STR_PLAY_PREVIEW_ARIA = localize('paradis.notif.playPreviewAria', "試聴�
 const STR_STOP_PREVIEW_ARIA = localize('paradis.notif.stopPreviewAria', "試聴を停止");
 // allow-any-unicode-next-line
 const STR_CUSTOM_RINGTONE_NAV_NAME = localize('paradis.notif.customRingtoneNavName', "カスタム");
+// allow-any-unicode-next-line
+const STR_SEARCH_NO_RESULTS = localize('paradis.notif.searchNoResults', "一致する設定はありません。");
 
 // おやすみモード中に封印（半透明オーバーレイ）されるセクション。
 const DND_SEAL_SECTION_IDS = ['pns-sec-desktop', 'pns-sec-sound', 'pns-sec-aivis'] as const;
@@ -167,6 +170,15 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	private _desktopSectionEl!: HTMLElement;
 	private _soundSectionEl!: HTMLElement;
 	private _aivisSectionEl!: HTMLElement;
+	private _aivisSection: ParadisAivisVoiceSection | undefined;
+	private _searchEmptyEl!: HTMLElement;
+	/**
+	 * 封印オーバーレイとナビのバッジを、おやすみモードの解除予定時刻に合わせて更新するコントローラ。
+	 * 時限の満了は設定サービスのイベントを伴わない（getter が黙って正規化する）ため、
+	 * ステータスバーやおやすみモードセクションと同じく、この surface も自前の
+	 * deadline-aware refresh で追従する必要がある。
+	 */
+	private _dndRefreshController: ParadisDoNotDisturbRefreshController | undefined;
 
 	private _savedFlashTimer: ReturnType<typeof setTimeout> | undefined;
 	private _filterRenderToken = 0;
@@ -177,10 +189,13 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	private _playingRingtoneId: string | undefined;
 	private _playingButton: HTMLButtonElement | undefined;
 	private _playingCard: HTMLElement | undefined;
+	/** 着信音カード → その進捗バー。試聴中に querySelector で探し直さないための控え。 */
+	private readonly _ringtoneProgressFills = new WeakMap<HTMLElement, HTMLElement>();
 	private _playingDurationSeconds = 5;
 	private _playingStartedAt: number | undefined;
 	private _playingAutoStopTimer: ReturnType<typeof setTimeout> | undefined;
-	private _playingProgressTimer: ReturnType<typeof setInterval> | undefined;
+	/** 進捗バーの更新タイマー。dom.disposableWindowInterval が後始末を持つ。 */
+	private readonly _playingProgressTimer = this._register(new MutableDisposable());
 
 	constructor(
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
@@ -269,19 +284,15 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			if (scope === 'notifications') {
 				this._renderNotificationsSections();
 			}
-			if (scope === 'notifications' || scope === 'dnd') {
-				this._updateNavStatuses();
-			}
 			if (scope === 'dnd') {
-				this._updateDndSeal();
+				this._dndRefreshController?.refresh();
+			} else if (scope === 'notifications') {
+				this._updateNavStatuses();
 			}
 			this._scheduleApplySearchFilter();
 		}));
 		// 別ウィンドウ等からの外部変更（onDidChange が発火しない経路）でも封印・バッジを追従させる。
-		this._register(this.settingsService.onDidChangeDoNotDisturb(() => {
-			this._updateDndSeal();
-			this._updateNavStatuses();
-		}));
+		this._register(this.settingsService.onDidChangeDoNotDisturb(() => this._dndRefreshController?.refresh()));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._render();
@@ -383,7 +394,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			// allow-any-unicode-next-line
 			'aivis 音声 読み上げ voice api key model uuid 辞書 テスト再生 プリセット',
 		);
-		this._register(this.instantiationService.createInstance(ParadisAivisVoiceSection, this._aivisSectionEl));
+		this._aivisSection = this._register(this.instantiationService.createInstance(ParadisAivisVoiceSection, this._aivisSectionEl));
 
 		const dictSection = this._createSection(
 			'pns-sec-dict',
@@ -399,9 +410,15 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		);
 		this._register(this.instantiationService.createInstance(ParadisAivisUsageSection, usageSection));
 
+		// 検索でどのセクションも残らなかったときの受け皿。セクションと違い再描画で作り直されないため
+		// コンテンツ末尾に一度だけ置き、表示切替だけをフィルタから行う。
+		this._searchEmptyEl = dom.append(this._contentEl, $('.pns-empty.pns-search-empty'));
+		this._searchEmptyEl.textContent = STR_SEARCH_NO_RESULTS;
+		this._searchEmptyEl.style.display = 'none';
+
 		this._renderNotificationsSections();
-		this._updateDndSeal();
-		this._updateNavStatuses();
+		this._dndRefreshController = this._register(paradisCreateDoNotDisturbRefreshController(() => this._refreshDndSurfaces()));
+		this._dndRefreshController.refresh();
 		// 初回オープン時は先頭（おやすみモード）を選択状態にしておく
 		this._activateNavItem('pns-sec-dnd');
 	}
@@ -410,11 +427,23 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	// おやすみモード連動の封印・ナビステータス
 	// ==========================================================================================
 
-	private _updateDndSeal(): void {
-		const sealed = this.settingsService.getDoNotDisturb().enabled;
+	/**
+	 * おやすみモードの現在値を読み直し、封印オーバーレイとナビのバッジへ反映する。
+	 * refresh コントローラのコールバックとして、時限の満了時にも呼ばれる。
+	 */
+	private _refreshDndSurfaces(): IParadisDoNotDisturbRefreshState {
+		const state = this.settingsService.getDoNotDisturb();
 		for (const id of DND_SEAL_SECTION_IDS) {
-			this._sectionEls.find(section => section.id === id)?.el.classList.toggle('disabled-veil', sealed);
+			this._sectionEls.find(section => section.id === id)?.el.classList.toggle('disabled-veil', state.enabled);
 		}
+		if (state.enabled) {
+			// 封印中のセクションはオーバーレイに覆われて操作できない。試聴を鳴らしたまま封印すると
+			// 停止ボタンに手が届かなくなるため、封印と同時に再生を止める。
+			this._stopPreview();
+			this._aivisSection?.stopSamplePlayback();
+		}
+		this._updateNavStatuses();
+		return state;
 	}
 
 	private _updateNavStatuses(): void {
@@ -490,9 +519,13 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 	private _applySearchFilter(): void {
 		const query = this._searchInput.value.trim().toLowerCase();
+		let visibleSections = 0;
 		for (const { el, id } of this._sectionEls) {
 			const keywords = (el.getAttribute('data-name') ?? '').toLowerCase();
 			let hits = 0;
+			// 絞り込みの対象は、それぞれ別のセクションクラスが自分の都合で描き直している要素群。
+			// ここは作り手ではなく横断して掃くだけなので、参照を持ち回るのではなくセレクタで拾う。
+			// eslint-disable-next-line no-restricted-syntax
 			for (const unit of el.querySelectorAll(FILTERABLE_SELECTOR)) {
 				const hit = !query || keywords.includes(query) || (unit.textContent ?? '').toLowerCase().includes(query);
 				unit.classList.toggle('row-hidden', !hit);
@@ -500,13 +533,19 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 					hits++;
 				}
 			}
-			el.style.display = !query || hits > 0 || keywords.includes(query) ? '' : 'none';
+			const visible = !query || hits > 0 || keywords.includes(query);
+			el.style.display = visible ? '' : 'none';
+			if (visible) {
+				visibleSections++;
+			}
 			const navEntry = this._navItems.get(id);
 			if (navEntry) {
 				navEntry.chip.textContent = query ? String(hits) : '';
 				navEntry.item.classList.toggle('filtering', !!query);
 			}
 		}
+		// 全セクションが消えると本文が真っ白になり「壊れた」ように見えるので、明示的に空状態を出す。
+		this._searchEmptyEl.style.display = visibleSections === 0 ? '' : 'none';
 	}
 
 	/**
@@ -545,7 +584,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 		this._renderDisposables.clear();
 		this._renderDesktopSectionBody();
-		this._renderSoundSectionBody(onListPopulated);
+		this._renderSoundSectionBody(token, onListPopulated);
 		this._contentEl.scrollTop = scrollTop;
 		this._applySearchFilter();
 	}
@@ -601,7 +640,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		}));
 	}
 
-	private _renderSoundSectionBody(onListPopulated: () => void): void {
+	private _renderSoundSectionBody(token: number, onListPopulated: () => void): void {
 		const container = this._soundSectionEl;
 		dom.clearNode(container);
 
@@ -625,6 +664,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		}));
 
 		if (muted) {
+			// 着信音カードごと消えるため、鳴っている試聴も一緒に止める（停止ボタンが無くなり
+			// 音だけが最後まで鳴り続けるのを避ける）。
+			this._stopPreview();
 			onListPopulated();
 			return;
 		}
@@ -667,7 +709,10 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		const grid = dom.append(container, $('.pns-ringtone-grid'));
 
 		void this._fetchCustomRingtone().then(custom => {
-			if (this._store.isDisposed) {
+			// 後続の再描画に追い抜かれていたら、この結果は既に画面から外れたグリッド宛て。
+			// そのまま流すと _renderRingtoneCard が試聴中の参照（_playingButton/_playingCard）を
+			// 画面に無い要素へ書き換えてしまい、表示中のカードが再生中のまま固まる。
+			if (this._store.isDisposed || token !== this._notifRenderToken) {
 				return;
 			}
 			importBtn.textContent = custom ? STR_REPLACE_CUSTOM : STR_ADD_CUSTOM;
@@ -709,7 +754,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			dom.append(nameRow, $('span.pns-ringtone-duration')).textContent = `${ringtone.duration}s`;
 		}
 		dom.append(info, $('.pns-ringtone-desc')).textContent = ringtone.description;
-		dom.append(info, $('div.pns-rt-progress')).appendChild($('i.pns-rt-progress-fill'));
+		const progressFill = $('i.pns-rt-progress-fill');
+		dom.append(info, $('div.pns-rt-progress')).appendChild(progressFill);
+		this._ringtoneProgressFills.set(card, progressFill);
 
 		const playBtn = dom.append(card, $('button.pns-ringtone-play')) as HTMLButtonElement;
 		const isPlaying = this._playingRingtoneId === ringtone.id;
@@ -760,7 +807,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		}
 		if (this._playingCard) {
 			this._playingCard.classList.remove('playing');
-			const fill = this._playingCard.querySelector<HTMLElement>('.pns-rt-progress-fill');
+			const fill = this._ringtoneProgressFills.get(this._playingCard);
 			if (fill) {
 				fill.style.width = '0%';
 			}
@@ -803,7 +850,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		if (!this._playingCard || this._playingStartedAt === undefined) {
 			return;
 		}
-		const fill = this._playingCard.querySelector<HTMLElement>('.pns-rt-progress-fill');
+		const fill = this._ringtoneProgressFills.get(this._playingCard);
 		if (!fill) {
 			return;
 		}
@@ -817,14 +864,12 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			}
 		};
 		update();
-		this._playingProgressTimer = setInterval(update, 60);
+		// 補助ウィンドウでも動くよう、ダイアログが載っているウィンドウのタイマーを使う。
+		this._playingProgressTimer.value = dom.disposableWindowInterval(dom.getWindow(this._backdrop), update, 60);
 	}
 
 	private _stopProgressBar(): void {
-		if (this._playingProgressTimer !== undefined) {
-			clearInterval(this._playingProgressTimer);
-			this._playingProgressTimer = undefined;
-		}
+		this._playingProgressTimer.clear();
 	}
 
 	private async _importCustomAudio(): Promise<void> {

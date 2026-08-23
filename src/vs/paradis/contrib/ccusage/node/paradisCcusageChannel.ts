@@ -22,6 +22,7 @@ import * as path from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
@@ -417,11 +418,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		this.warmLeaseOwners.clear();
 		this.warmFailures.clear();
 		for (const child of this.activeChildren) {
-			try {
-				child.kill();
-			} catch (error) {
-				this.logService.trace(`[ParadisCcusage] failed to stop child process during dispose: ${error}`);
-			}
+			// Windows で .cmd シムを cmd.exe ラップして起動している場合、kill() では実体が孫として残る
+			paradisKillChildProcessTree(child, error => this.logService.trace(`[ParadisCcusage] failed to stop child process during dispose: ${error}`));
 		}
 		this.activeChildren.clear();
 	}
@@ -529,6 +527,11 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				execution.completed = true;
 				if (execution.child) {
 					this.activeChildren.delete(execution.child);
+					if (err?.killed === true) {
+						// タイムアウトによる強制終了は Node 内部の `child.kill()` なので、cmd.exe ラップ時は
+						// その先の実体が孫として残る。日常的に起きる経路なのでここでも落とす。
+						paradisKillChildProcessTree(execution.child, error => this.logService.trace(`[ParadisCcusage] failed to stop the timed out child: ${error}`));
+					}
 				}
 				if (err) {
 					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${stderr || err.message}`);

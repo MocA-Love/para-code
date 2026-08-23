@@ -462,6 +462,12 @@ export class DeviceDO implements DurableObject {
 				await this.approvePairing(msg.pairId, msg.name);
 			} else if (msg.type === 'pairing-reject') {
 				this.sendToTag(`pair:${msg.pairId}`, { type: 'error', message: 'pairing rejected' });
+				// 拒否したペアリングは即座に無効化する。pending を残したままだと、PCが後から
+				// 同じ pairId を承認できてしまい「拒否した」が守られない。
+				this.sql.exec('DELETE FROM pending WHERE pairId = ?', msg.pairId);
+				for (const ws of this.state.getWebSockets(`pair:${msg.pairId}`)) {
+					try { ws.close(1000, 'rejected'); } catch { /* ignore */ }
+				}
 			} else if (msg.type === 'push-notify') {
 				await this.pushNotify(msg.mobileId, msg.payload);
 			}
@@ -530,6 +536,13 @@ export class DeviceDO implements DurableObject {
 		// この mobileId に紐付けて保存し、以後のデータ接続の相手鍵とする）。mobileTokenは
 		// モバイル専用の秘密なのでPCには送らず空にする。
 		this.sendToPc({ type: 'paired', deviceId, mobileId, mobileToken: '' });
+		// 承認した時点で pending 行は消しているので、この pair ソケットは以後 cleanupPairings の
+		// TTL掃除の対象にならない。モバイル側の PairingClient は 'paired' を受けたら自己closeする
+		// が、強制終了・half-open 等でそれが起きないと hibernated WS として残り続ける。用が済んだ
+		// ソケットはサーバ側からも閉じる（失効ソケットと同じ扱い）。
+		for (const ws of this.state.getWebSockets(`pair:${pairId}`)) {
+			try { ws.close(1000, 'paired'); } catch { /* ignore */ }
+		}
 	}
 
 	// --- helpers ------------------------------------------------------------------

@@ -73,6 +73,19 @@ export function isParadisRemoteFileEntry(element: ParadisRemoteHostsElement): el
 	return element.type === 'file' || element.type === 'dir';
 }
 
+/**
+ * その行の集合を、その転送先へドロップしてよいか。
+ *
+ * このビューは**マシン間のコピー専用**の入口なので、転送先と同じマシンのものが**1件でも**
+ * 混ざっていたら受けない。以前は「全件が転送先と同じホストなら拒否」だったため、両ホストに
+ * またがる複数選択だけが受理をすり抜け、同じマシン内のぶんまで転送経路（上書き確認つきの
+ * コピー）へ流れていた。同じマシン内のファイル操作はエクスプローラーの仕事として、
+ * ここでは一切引き受けない。
+ */
+export function paradisAllowsHostDrop(sourceHostKeys: readonly string[], targetHostKey: string): boolean {
+	return sourceHostKeys.length > 0 && sourceHostKeys.every(hostKey => hostKey !== targetHostKey);
+}
+
 /** その場所が属するホストの鍵。手元は空文字。workspaceSwitchService.belongsToThisHost と同一の約束。 */
 export function paradisHostKeyFor(uri: URI): string {
 	return uri.scheme === Schemas.vscodeRemote ? uri.authority : '';

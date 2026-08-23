@@ -99,6 +99,9 @@ suite('ChangesEditorLabels', () => {
 		});
 	});
 
+	// PARA-PATCH: tests below pin the behaviour the indexed lookup has to keep matching the
+	// upstream linear `find` on (first change wins, all candidate URIs resolve). See
+	// changesEditorLabels.ts.
 	test('file stats resolve the first change when a URI appears in several changes', () => {
 		// 索引化(先勝ちルール)でも旧 find と同じ「最初の要素」を採用する
 		const changes = [

@@ -586,9 +586,31 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 			modRows.push({ cells: modCells, height: modRow?.height ?? origRow?.height ?? 20, excelRow: modRow?.excelRow });
 		};
 
+		/**
+		 * LCS ペア間のギャップ(どちらのフィンガープリントとも一致しなかった区間)を出力する。
+		 * 先頭から min(旧行数, 新行数) 組は位置順にペアリングして「その場で書き換えた行」= modified
+		 * として扱い(文字レベル差分も付く)、余った側だけをゴースト行(added/removed)として出す。
+		 * 全行を独立行として出すと、最も普通の「セルの値を書き換えた」編集が追加行+削除行に分裂する。
+		 */
+		const pushGap = (oStart: number, oEnd: number, mStart: number, mEnd: number): void => {
+			// 0 で下限を切るのは保険。現状の LCS は o/m とも狭義単調増加なので空区間しか来ないが、
+			// 負の区間が来ると以降のループが gap の手前の行を二重に出してしまう。
+			const paired = Math.max(0, Math.min(oEnd - oStart, mEnd - mStart));
+			for (let k = 0; k < paired; k++) {
+				pushAlignedRow(orig.rows[oStart + k], mod.rows[mStart + k]);
+			}
+			for (let mi = mStart + paired; mi < mEnd; mi++) {
+				pushAlignedRow(undefined, mod.rows[mi]);
+			}
+			for (let oi = oStart + paired; oi < oEnd; oi++) {
+				pushAlignedRow(orig.rows[oi], undefined);
+			}
+		};
+
 		// 行アライメント(LCS): 行の表示値フィンガープリントの最長共通部分列で対応行を見つけ、
-		// 挿入/削除行を「相手側がゴーストの独立行」として切り出す。旧来のインデックス対比では
-		// 1行の挿入で以降の全行が偽の modified になっていた。左右の行数はゴースト込みで常に一致するため、
+		// ペア間のギャップは上記 pushGap で位置順に突き合わせる(余りだけがゴースト行になる)。
+		// 旧来のインデックス対比では1行の挿入で以降の全行が偽の modified になっていた。
+		// 左右の行数はゴースト込みで常に一致するため、
 		// 差分エディタのナビ・スクロール同期・ハイライトはこれまでどおり表示インデックス基準で動く。
 		// 行数が多くDPテーブルが上限を超える場合は、従来のインデックス対比へフォールバックする。
 		// この経路では「行挿入/削除以降が偽のmodifiedになる」既知の弱点が残る(巨大シート限定)。
@@ -601,26 +623,12 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 			let oi = 0;
 			let mi = 0;
 			for (const pair of lcsPairs) {
-				while (mi < pair.m) {
-					pushAlignedRow(undefined, mod.rows[mi]);
-					mi++;
-				}
-				while (oi < pair.o) {
-					pushAlignedRow(orig.rows[oi], undefined);
-					oi++;
-				}
+				pushGap(oi, pair.o, mi, pair.m);
 				pushAlignedRow(orig.rows[pair.o], mod.rows[pair.m]);
 				oi = pair.o + 1;
 				mi = pair.m + 1;
 			}
-			while (mi < mod.rows.length) {
-				pushAlignedRow(undefined, mod.rows[mi]);
-				mi++;
-			}
-			while (oi < orig.rows.length) {
-				pushAlignedRow(orig.rows[oi], undefined);
-				oi++;
-			}
+			pushGap(oi, orig.rows.length, mi, mod.rows.length);
 		}
 
 		result.push({

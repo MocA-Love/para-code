@@ -68,6 +68,48 @@ suite('paradisSpreadsheetDiff row alignment', () => {
 		strictEqual(diff.modifiedRows[2].excelRow, 2);
 	});
 
+	test('marks an in-place edit as modified with character level segments', () => {
+		const original = sheet('S', [['a'], ['b'], ['c']]);
+		const modified = sheet('S', [['a'], ['B'], ['c']]);
+
+		const [diff] = buildDiffSheets([original], [modified]);
+
+		// 書き換えは追加行+削除行に分裂させず、同じ表示行のペアとして出す。
+		strictEqual(diff.originalRows.length, 3);
+		strictEqual(diff.modifiedRows.length, 3);
+		strictEqual(diff.originalRows[1].cells[0].diffStatus, 'modified');
+		strictEqual(diff.modifiedRows[1].cells[0].diffStatus, 'modified');
+		ok(diff.modifiedRows[1].cells[0].diffSegments, 'in-place edit carries character level segments');
+		// 前後の行は無印のまま。
+		for (const i of [0, 2]) {
+			ok(diff.originalRows[i].cells.every(c => !c.diffStatus));
+			ok(diff.modifiedRows[i].cells.every(c => !c.diffStatus));
+		}
+	});
+
+	test('pairs an asymmetric replacement and ghosts only the leftover rows', () => {
+		// 2行(b,c)が3行(B,C,D)に置き換わったケース。
+		const original = sheet('S', [['a'], ['b'], ['c'], ['z']]);
+		const modified = sheet('S', [['a'], ['B'], ['C'], ['D'], ['z']]);
+
+		const [diff] = buildDiffSheets([original], [modified]);
+
+		strictEqual(diff.originalRows.length, diff.modifiedRows.length);
+		strictEqual(diff.originalRows.length, 5);
+
+		// 先頭2組はペアとして modified。
+		for (const i of [1, 2]) {
+			strictEqual(diff.originalRows[i].cells[0].diffStatus, 'modified');
+			strictEqual(diff.modifiedRows[i].cells[0].diffStatus, 'modified');
+		}
+		// 余った1行(D)だけがゴースト付きの added。
+		strictEqual(diff.modifiedRows[3].cells[0].diffStatus, 'added');
+		strictEqual(diff.originalRows[3].excelRow, undefined);
+		// 末尾の共通行(z)はペアリングされ無印。
+		ok(diff.originalRows[4].cells.every(c => !c.diffStatus));
+		ok(diff.modifiedRows[4].cells.every(c => !c.diffStatus));
+	});
+
 	test('mirrors the counterpart height on ghost rows so both panes stay aligned', () => {
 		const original = sheet('S', [['a']]);
 		const modified: IParadisSheetData = {

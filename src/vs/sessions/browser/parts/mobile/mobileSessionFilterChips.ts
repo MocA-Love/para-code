@@ -93,7 +93,9 @@ export class MobileSessionFilterChips extends Disposable {
 	constructor(
 		parent: HTMLElement,
 		private readonly host: IMobileSessionFilterChipHost,
-		// The lane drag helper needs the viewport class (phone only).
+		// PARA-PATCH: taking a service here turns this into an instantiation-service
+		// creation at the call site (sessionsView.ts). The lane drag helper below needs
+		// the viewport class (phone only).
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 	) {
 		super();
@@ -106,7 +108,7 @@ export class MobileSessionFilterChips extends Disposable {
 
 		this.renderChips();
 
-		// The monaco Gesture on every chip swallows touchmove, so the
+		// PARA-PATCH: the monaco Gesture on every chip swallows touchmove, so the
 		// native horizontal pan never starts and chips beyond the right
 		// edge are unreachable on narrow phones. Reuse the same drag-to-
 		// scroll helper the chat input chip lane uses.

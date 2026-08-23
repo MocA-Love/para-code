@@ -106,7 +106,8 @@
 .mobile-sort-group-sheet-list {
 	flex: 1 1 auto;
 	overflow-y: auto;
-	/* Keep the page behind from scrolling along when the list hits its edge. */
+	/* PARA-PATCH: without this the sheet handed its overscroll to the page behind it,
+	 * which scrolled away underneath the open sheet on a phone. */
 	overscroll-behavior: contain;
 	-webkit-overflow-scrolling: touch;
 	padding: 4px 0 8px;
