@@ -10,6 +10,7 @@ import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	extractLatestMessage,
 	LAST_MESSAGE_CHARS,
@@ -30,6 +31,8 @@ function codexMessage(role: 'user' | 'assistant', text: string, timestamp = '202
 }
 
 suite('ParadisSessionResume tail read', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
 	let root: string;
 
 	setup(async () => {
