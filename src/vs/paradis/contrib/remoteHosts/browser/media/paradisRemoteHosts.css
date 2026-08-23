@@ -100,3 +100,19 @@
 .para-rh-list .monaco-list-row.focused .para-rh-actions {
 	opacity: 1;
 }
+
+/* 未接続ホスト (~/.ssh/config にあるだけで、このウィンドウが繋がっていないホスト)。
+ * 閲覧しかできないので、繋がっているホストと同じ濃さで並べない。 */
+.para-rh-row.offline .para-rh-name,
+.para-rh-row.offline .para-rh-icon {
+	color: var(--vscode-descriptionForeground);
+}
+
+.para-rh-row.offline .para-rh-meta {
+	font-size: 0.85em;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background);
+	border-radius: 10px;
+	padding: 0 6px;
+	line-height: 15px;
+}
