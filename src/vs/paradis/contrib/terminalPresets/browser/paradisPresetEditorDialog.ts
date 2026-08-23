@@ -6,7 +6,21 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// コマンドプリセットの管理ダイアログ（一覧 ⇄ 編集フォームの2ビュー構成）。
+// コマンドプリセットの管理ダイアログ（Settings Editor 風 2 ペイン構成）。
+//   - 左ナビ: 検索ボックス（名前・説明・コマンドの部分一致）、フォルダツリー（すべて／各フォルダ／
+//     (フォルダなし)＋件数バッジ）、出所フィルタ（ユーザー設定／.paracode.json）。
+//   - 右コンテンツ: プリセット行の一覧 ⇄ 編集フォームを切り替えて表示する。ナビは常設で、
+//     クリックすると一覧へ戻った上でフィルタが適用される。
+//
+// 行の並び替えは従来の ↑↓ 隣接スワップに加え、行左端の grip ハンドル（⋮⋮）からの HTML5
+// ドラッグ＆ドロップと、Alt+↑ / Alt+↓ キーボード操作をサポートする。並び替えの土台は
+// swapPresets（同一スコープ内の2件入れ替え）なので、フォルダ跨ぎ・保存先跨ぎの移動は不可——
+// ドラッグ先が別フォルダ／別保存先（やフォルダヘッダー行）なら .drop-denied 表示＋トーストで
+// 拒否する。検索・フィルタ中は非表示項目を飛び越えるため、手動並び替え自体を無効化する。
+//
+// 編集フォームへの遷移（選択トグル・新規作成・左ナビ・Esc・戻る）は、未保存の入力があるときに
+// 破棄確認（dialogService.confirm）を挟む。dirty 判定はフォームを開いた時点の値との比較。
+//
 // 保存先として「ユーザー設定（settings.json）」と「このリポジトリ（.paracode.json）」を選べる。
 // ダイアログの実装様式は paradisYouTubeImportDialog.ts / paradisCreateWorktreeDialog.ts と同じ
 // 自前 DOM + backdrop 方式。
@@ -74,6 +88,15 @@ type IDeleteFolderDecision = 'keep' | 'deleteAll' | undefined;
 /** {@link IParadisPresetGroup} のうち、folder を持つことが確定しているもの（フォルダ行の描画に使う）。 */
 type IParadisFolderGroup = IParadisPresetGroup & { readonly folder: string };
 
+/**
+ * 左ナビの選択状態。フォルダと出所は排他の単一選択（Settings Editor のセクション選択と同じ
+ * 「今どれを見ているか」のモデル）。folder が undefined のときは「(フォルダなし)」を指す。
+ */
+type ParadisPresetEditorFilter =
+	| { readonly kind: 'all' }
+	| { readonly kind: 'folder'; readonly folder?: string }
+	| { readonly kind: 'source'; readonly source: ParadisPresetSource };
+
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.presetEditor.title', "コマンドプリセット");
 // allow-any-unicode-next-line
@@ -86,6 +109,15 @@ const STR_CLOSE = localize('paradis.presetEditor.close', "閉じる");
 const STR_RUN = localize('paradis.presetEditor.run', "実行");
 // allow-any-unicode-next-line
 const STR_EDIT = localize('paradis.presetEditor.edit', "編集");
+// allow-any-unicode-next-line
+const STR_DUPLICATE = localize('paradis.presetEditor.duplicate', "複製");
+// allow-any-unicode-next-line
+const strDuplicateName = (name: string) => localize('paradis.presetEditor.duplicateName', "{0} のコピー", name);
+// allow-any-unicode-next-line
+const strDuplicatedNotice = (name: string) => localize('paradis.presetEditor.duplicatedNotice', "「{0}」を複製しました", name);
+// 複製の連打で「完全一致の同名ペア」を作らせないための拒否トースト。
+// allow-any-unicode-next-line
+const strDuplicateSkipped = (name: string) => localize('paradis.presetEditor.duplicateSkipped', "同じ内容のプリセット「{0}」が既にあるため、複製していません", name);
 // allow-any-unicode-next-line
 const STR_DELETE = localize('paradis.presetEditor.delete', "削除");
 // allow-any-unicode-next-line
@@ -124,6 +156,8 @@ const STR_LAYOUT_CURRENT = localize('paradis.presetEditor.layout.current', "ア�
 const STR_PINNED = localize('paradis.presetEditor.pinned', "ターミナルタブバー右側にボタンとして表示する");
 // allow-any-unicode-next-line
 const STR_PINNED_LABEL = localize('paradis.presetEditor.pinnedLabel', "ボタンにアイコンに加えて名前も表示する");
+// allow-any-unicode-next-line
+const STR_DISPLAY = localize('paradis.presetEditor.display', "表示");
 // allow-any-unicode-next-line
 const STR_AUTORUN = localize('paradis.presetEditor.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する");
 // allow-any-unicode-next-line
@@ -257,8 +291,53 @@ const STR_BULK_RUN_ALL_INACTIVE = localize('paradis.presetEditor.bulkRunAllInact
 // allow-any-unicode-next-line
 const strBulkRunSkipped = (count: number) => localize('paradis.presetEditor.bulkRunSkipped', "（{0} 件は現在のウィンドウでは実行できないため除きます）", count);
 
+// --- 2 ペイン UI 用の文言 ---------------------------------------------------------------------------------
+
+// allow-any-unicode-next-line
+const STR_SEARCH_PLACEHOLDER = localize('paradis.presetEditor.searchPlaceholder', "プリセットを検索（名前・説明・コマンド）");
+// allow-any-unicode-next-line
+const strSearchHits = (count: number) => localize('paradis.presetEditor.searchHits', "{0}件ヒット", count);
+// allow-any-unicode-next-line
+const STR_NO_MATCH = localize('paradis.presetEditor.noMatch', "該当するプリセットがありません。");
+// allow-any-unicode-next-line
+const STR_NAV_CAPTION_PRESETS = localize('paradis.presetEditor.navCaptionPresets', "プリセット");
+// allow-any-unicode-next-line
+const STR_NAV_ALL = localize('paradis.presetEditor.navAll', "すべて");
+// allow-any-unicode-next-line
+const STR_NAV_UNFILED = localize('paradis.presetEditor.navUnfiled', "(フォルダなし)");
+// allow-any-unicode-next-line
+const STR_NAV_CAPTION_SOURCE = localize('paradis.presetEditor.navCaptionSource', "出所");
+// allow-any-unicode-next-line
+const STR_NAV_SOURCE_USER = localize('paradis.presetEditor.navSourceUser', "ユーザー設定");
+// allow-any-unicode-next-line
+const STR_NAV_SOURCE_WORKSPACE = localize('paradis.presetEditor.navSourceWorkspace', "リポジトリ（.paracode.json）");
+// allow-any-unicode-next-line
+const STR_NAV_CAPTION_HINTS = localize('paradis.presetEditor.navCaptionHints', "操作のヒント");
+// allow-any-unicode-next-line
+const strGripTitle = (name: string) => localize('paradis.presetEditor.gripTitle', "{0}: 左端をつかんでドラッグ、または Alt+↑ / Alt+↓ で並び替え", name);
+// allow-any-unicode-next-line
+const STR_HINT_REORDER = localize('paradis.presetEditor.hintReorder', "行の左端 ⋮⋮ をドラッグ、または Alt+↑ / Alt+↓ でも並び替えられます。");
+// allow-any-unicode-next-line
+const STR_HINT_NO_CROSS = localize('paradis.presetEditor.hintNoCross', "※ フォルダを跨ぐ移動と、保存先（ユーザー設定 / .paracode.json）を跨ぐ移動はできません。");
+// allow-any-unicode-next-line
+const STR_MOVE_REJECTED_FOLDER = localize('paradis.presetEditor.moveRejectedFolder', "フォルダを跨ぐ移動はできません");
+// allow-any-unicode-next-line
+const STR_MOVE_REJECTED_SCOPE = localize('paradis.presetEditor.moveRejectedScope', "保存先が異なるプリセット同士は入れ替えられません");
+// 検索語・ナビフィルタがあるときの手動並び替え（DnD・↑↓・Alt+↑↓）の無効化理由。
+// allow-any-unicode-next-line
+const STR_REORDER_BLOCKED_BY_FILTER = localize('paradis.presetEditor.reorderBlockedByFilter', "フィルタ中は並び替えできません");
+
+// 編集中の未保存入力を捨てる前に出す確認。primary が「破棄」で、キャンセルすると元の画面に留まる。
+// allow-any-unicode-next-line
+const STR_DISCARD_MESSAGE = localize('paradis.presetEditor.discardMessage', "未保存の変更を破棄しますか？");
+// allow-any-unicode-next-line
+const STR_DISCARD = localize('paradis.presetEditor.discard', "破棄");
+
 /** これ未満の件数なら「実行」は確認なしで即実行する（1〜2件は単発実行と同じ感覚で押せてよいため）。 */
 const BULK_RUN_CONFIRM_THRESHOLD = 3;
+
+/** ダイアログ内トーストを自動で消すまでの時間（ms）。 */
+const TOAST_REMOVE_DELAY = 2400;
 
 // アイコンピッカーに出す全codicon（アルファベット順）。モジュールロード時に一度だけ確定する。
 const ALL_CODICONS = getAllCodicons().sort((a, b) => a.id.localeCompare(b.id));
@@ -291,6 +370,16 @@ class ParadisPresetEditorDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _dialog: HTMLElement;
+	/** 常設シェル（ヘッダー／左ナビ／右コンテンツ）。再描画は右コンテンツの中身だけ行う。 */
+	private readonly _selectToggleEl: HTMLButtonElement;
+	private readonly _newBtnEl: HTMLButtonElement;
+	private readonly _navEl: HTMLElement;
+	private readonly _searchInput: HTMLInputElement;
+	private readonly _searchHitsEl: HTMLElement;
+	private readonly _navItemsEl: HTMLElement;
+	private readonly _contentEl: HTMLElement;
+	/** 常設部分のリスナー。render ごとの {@link _viewStore} とは分けて管理する。 */
+	private readonly _chromeStore = this._register(new DisposableStore());
 	private readonly _viewStore = this._register(new DisposableStore());
 	private _mode: 'list' | 'edit' = 'list';
 
@@ -308,6 +397,24 @@ class ParadisPresetEditorDialog extends Disposable {
 	/** 折りたたんだフォルダのキー（scope::folder名）。既定は展開。ダイアログの表示中だけ保持する。 */
 	private readonly _collapsedFolders = new Set<string>();
 
+	/** 左ナビで選択中のフィルタ（フォルダ／出所は排他単一選択）。 */
+	private _filter: ParadisPresetEditorFilter = { kind: 'all' };
+	private _searchQuery = '';
+
+	/** 表示中の各行の並び替え可否（key → 上下の隣接プリセット）。Alt+↑↓ キーボード操作から参照する。 */
+	private _moveTargets = new Map<string, { up?: IParadisResolvedPreset; down?: IParadisResolvedPreset }>();
+	/** 表示中の key → プリセット本体（ドラッグ＆ドロップの drop 先解決にも使う）。 */
+	private _rowPresets = new Map<string, IParadisResolvedPreset>();
+	/** ドラッグ中のプリセット（dragstart〜drop/dragend の間だけ非 undefined）。 */
+	private _dragging: IParadisResolvedPreset | undefined;
+	/**
+	 * 編集フォームの dirty 判定。「フォームを開いた時点の値」と「現在値」を同じ形で読み取る
+	 * 関数を、編集ビュー（プリセット編集／フォルダ名変更／新規フォルダ）ごとに登録する。
+	 * 一覧に戻った時点で解除する。
+	 */
+	private _readEditState: (() => Record<string, unknown>) | undefined;
+	private _initialEditState: Record<string, unknown> | undefined;
+
 	constructor(
 		layoutService: ILayoutService,
 		private readonly presetService: IParadisPresetService,
@@ -321,16 +428,148 @@ class ParadisPresetEditorDialog extends Disposable {
 		this._dialog = $('.paradis-preset-editor-dialog');
 		this._backdrop.appendChild(this._dialog);
 
+		// --- ヘッダー（常設）: タイトル + 選択トグル + 新規作成 + 閉じる ---
+		const header = dom.append(this._dialog, $('.ppe-header'));
+		dom.append(header, $('h3.ppe-title')).textContent = STR_TITLE;
+		const headerActions = dom.append(header, $('.ppe-header-actions'));
+		this._selectToggleEl = dom.append(headerActions, $('button.ppe-btn.ppe-select-toggle')) as HTMLButtonElement;
+		this._selectToggleEl.type = 'button';
+		this._selectToggleEl.textContent = STR_SELECT;
+		this._chromeStore.add(dom.addDisposableListener(this._selectToggleEl, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (!proceed) {
+					return;
+				}
+				this._selecting = !this._selecting;
+				if (!this._selecting) {
+					this._selectedKeys.clear();
+				}
+				// 編集フォーム中表示中に押された場合も、一覧へ戻して選択モードを反映させる
+				this._renderList();
+			});
+		}));
+		this._newBtnEl = dom.append(headerActions, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
+		this._newBtnEl.type = 'button';
+		this._newBtnEl.textContent = STR_NEW;
+		this._chromeStore.add(dom.addDisposableListener(this._newBtnEl, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this._renderEdit(undefined);
+				}
+			});
+		}));
+		const closeBtn = dom.append(headerActions, $('button.ppe-btn.ppe-close-btn')) as HTMLButtonElement;
+		closeBtn.type = 'button';
+		// allow-any-unicode-next-line
+		closeBtn.textContent = '✕';
+		closeBtn.title = STR_CLOSE;
+		closeBtn.setAttribute('aria-label', STR_CLOSE);
+		this._chromeStore.add(dom.addDisposableListener(closeBtn, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this.dispose();
+				}
+			});
+		}));
+
+		// --- ボディ: 左ナビ + 右コンテンツ ---
+		const body = dom.append(this._dialog, $('.ppe-body'));
+		this._navEl = dom.append(body, $('.ppe-nav'));
+		const search = dom.append(this._navEl, $('.ppe-search'));
+		dom.append(search, $(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
+		this._searchInput = dom.append(search, $('input.ppe-search-input')) as HTMLInputElement;
+		this._searchInput.type = 'text';
+		this._searchInput.spellcheck = false;
+		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
+		this._searchInput.setAttribute('aria-label', STR_SEARCH_PLACEHOLDER);
+		this._chromeStore.add(dom.addDisposableListener(this._searchInput, 'input', () => {
+			this._searchQuery = this._searchInput.value;
+			if (this._mode === 'list') {
+				this._renderList();
+			}
+		}));
+		this._searchHitsEl = dom.append(this._navEl, $('.ppe-search-hits'));
+		const navScroll = dom.append(this._navEl, $('.ppe-nav-scroll'));
+		// フィルタ項目（すべて／フォルダ群／出所）は render のたびに作り直す。検索ボックスと
+		// ヒントは常設なので、クリック委譲をナビ全体に張っておけば作り直しに耐える。
+		this._navItemsEl = dom.append(navScroll, $('.ppe-nav-items'));
+		this._chromeStore.add(dom.addDisposableListener(this._navEl, 'click', e => {
+			const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button.ppe-nav-item');
+			if (!btn || !btn.dataset.kind) {
+				return;
+			}
+			const kind = btn.dataset.kind;
+			let filter: ParadisPresetEditorFilter;
+			if (kind === 'all') {
+				filter = { kind: 'all' };
+			} else if (kind === 'folder') {
+				filter = { kind: 'folder', folder: btn.dataset.folder || undefined };
+			} else if (kind === 'source') {
+				filter = { kind: 'source', source: btn.dataset.source === 'workspace' ? 'workspace' : 'user' };
+			} else {
+				return;
+			}
+			// 編集中にナビを触った場合も、まず一覧へ戻す（フィルタは一覧に対する操作のため）
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (!proceed) {
+					return;
+				}
+				this._filter = filter;
+				this._renderList();
+			});
+		}));
+		dom.append(navScroll, $('.ppe-nav-caption')).textContent = STR_NAV_CAPTION_HINTS;
+		const navHint = dom.append(navScroll, $('.ppe-nav-hint'));
+		dom.append(navHint, $('div')).textContent = STR_HINT_REORDER;
+		dom.append(navHint, $('div')).textContent = STR_HINT_NO_CROSS;
+		this._contentEl = dom.append(body, $('.ppe-content'));
+
+		// Alt+↑ / Alt+↓ キーボード並び替え。行内のどの要素（grip 含む）にフォーカスがあっても
+		// 効くように、コンテンツ全体に委譲する。選択モード中（workspace の key 移動で選択が
+		// 全解除される事故源）と、検索・フィルタ中（見えていない行を飛び越えるため）は無効。
+		this._chromeStore.add(dom.addDisposableListener(this._contentEl, 'keydown', e => {
+			if (this._mode !== 'list' || this._selecting || !e.altKey) {
+				return;
+			}
+			if (this._reorderBlockReason()) {
+				return;
+			}
+			if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') {
+				return;
+			}
+			const row = (e.target as HTMLElement).closest<HTMLElement>('.ppe-row[data-preset-key]');
+			const key = row?.dataset.presetKey;
+			const current = key ? this._rowPresets.get(key) : undefined;
+			const targets = key ? this._moveTargets.get(key) : undefined;
+			if (!current || !targets) {
+				return;
+			}
+			e.preventDefault();
+			e.stopPropagation();
+			const target = e.key === 'ArrowUp' ? targets.up : targets.down;
+			if (target) {
+				void this.presetService.swapPresets(current, target);
+			}
+		}));
+
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
 			if (e.target === this._backdrop) {
-				this.dispose();
+				void this._confirmDiscardUnsaved().then(proceed => {
+					if (proceed) {
+						this.dispose();
+					}
+				});
 			}
 		}));
 		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
 			if (e.key === 'Escape') {
 				e.preventDefault();
 				if (this._mode === 'edit') {
-					this._renderList();
+					void this._confirmDiscardUnsaved().then(proceed => {
+						if (proceed) {
+							this._renderList();
+						}
+					});
 				} else {
 					this.dispose();
 				}
@@ -365,14 +604,110 @@ class ParadisPresetEditorDialog extends Disposable {
 		super.dispose();
 	}
 
+	// --- フィルタ・ユーティリティ ------------------------------------------------------------------
+
+	/** プリセットが左ナビの選択（フォルダ／出所）に合致するか。 */
+	private _matchesFilter(preset: IParadisResolvedPreset, filter: ParadisPresetEditorFilter): boolean {
+		switch (filter.kind) {
+			case 'all':
+				return true;
+			case 'folder':
+				// グループ化（paradisGroupPresetsByFolder）と同じく trim 越しに比較する。
+				// filter.folder === undefined は「(フォルダなし)」を意味する。
+				return (preset.folder?.trim() || undefined) === filter.folder;
+			case 'source':
+				return preset.source === filter.source;
+		}
+	}
+
+	/** プリセットが検索語（名前・説明・コマンドの部分一致）に合致するか。空クエリは常に true。 */
+	private _matchesSearch(preset: IParadisResolvedPreset, query: string): boolean {
+		if (!query) {
+			return true;
+		}
+		const haystack = `${preset.name}\n${preset.description ?? ''}\n${paradisPresetCommandSignature(preset, ' ')}`.toLowerCase();
+		return haystack.includes(query);
+	}
+
+	// --- 編集フォームの dirty 判定・破棄確認 ---------------------------------------------------------
+
+	/**
+	 * 現在の編集ビューの入力状態スナップショットを登録する。{@link _renderEdit} などの
+	 * 編集ビューが、全コントロールの初期化後に「現在値を読む関数」を渡して呼ぶ。
+	 * 一覧へ戻る（_renderList）と解除される。
+	 */
+	private _trackEditState(read: () => Record<string, unknown>): void {
+		this._readEditState = read;
+		this._initialEditState = read();
+	}
+
+	private _editIsDirty(): boolean {
+		if (!this._readEditState || !this._initialEditState) {
+			return false;
+		}
+		return JSON.stringify(this._initialEditState) !== JSON.stringify(this._readEditState());
+	}
+
+	/**
+	 * 未保存の編集入力を捨ててよいか確認する。dirty でなければ（＝捨てるものがなければ）
+	 * 確認なしで続行。破棄を選んだときだけ true を返す。
+	 */
+	private async _confirmDiscardUnsaved(): Promise<boolean> {
+		if (!this._editIsDirty()) {
+			return true;
+		}
+		const result = await this.dialogService.confirm({
+			message: STR_DISCARD_MESSAGE,
+			primaryButton: STR_DISCARD,
+		});
+		return result.confirmed;
+	}
+
+	/**
+	 * 手動並び替え（DnD・↑↓・Alt+↑↓）ができないとき、その理由（title 表示共用）。
+	 * 検索語やナビフィルタがあると表示が絞り込まれ、隣接スワップの結果が見た目と
+	 * 一致しなくなるため、丸ごと無効化する。
+	 */
+	private _reorderBlockReason(): string | undefined {
+		if (this._searchQuery.trim().length > 0 || this._filter.kind !== 'all') {
+			return STR_REORDER_BLOCKED_BY_FILTER;
+		}
+		return undefined;
+	}
+
+	/**
+	 * 2つのプリセットを入れ替えてよいか。「だめ」ときの理由も返す（トーストの文言を分けるため）。
+	 * swapPresets の制約（同一スコープ内のみ）に加え、フォルダ跨ぎも UI 側で拒否する。
+	 */
+	private _reorderRejection(a: IParadisResolvedPreset, b: IParadisResolvedPreset): 'scope' | 'folder' | undefined {
+		if (paradisPresetScopeKey(a) !== paradisPresetScopeKey(b)) {
+			return 'scope';
+		}
+		if ((a.folder?.trim() || undefined) !== (b.folder?.trim() || undefined)) {
+			return 'folder';
+		}
+		return undefined;
+	}
+
+	/** ダイアログ内トースト。フォーカスを奪わない軽い通知（並び替え拒否・複製完了など）。 */
+	private _toast(message: string): void {
+		const toast = $('.ppe-toast');
+		toast.setAttribute('role', 'status');
+		toast.textContent = message;
+		this._backdrop.appendChild(toast);
+		setTimeout(() => toast.remove(), TOAST_REMOVE_DELAY);
+	}
+
 	// --- 一覧ビュー -------------------------------------------------------------------------------
 
 	private _renderList(): void {
 		this._mode = 'list';
 		this._viewStore.clear();
-		dom.clearNode(this._dialog);
-
-		dom.append(this._dialog, $('h3.ppe-title')).textContent = STR_TITLE;
+		this._readEditState = undefined;
+		this._initialEditState = undefined;
+		dom.clearNode(this._contentEl);
+		this._moveTargets = new Map();
+		this._rowPresets = new Map();
 
 		const presets = this.presetService.presets;
 		// 選択中のキーぶんだけ、今の中身の指紋を撮り直す（onDidChangePresets が次に来たときの
@@ -381,35 +716,34 @@ class ParadisPresetEditorDialog extends Disposable {
 			presets.filter(preset => this._selectedKeys.has(preset.key)).map(preset => [preset.key, paradisPresetFingerprint(preset)]),
 		);
 
-		const toolbar = dom.append(this._dialog, $('.ppe-list-toolbar'));
-		const selectToggle = dom.append(toolbar, $('button.ppe-btn.ppe-select-toggle')) as HTMLButtonElement;
-		selectToggle.type = 'button';
-		selectToggle.textContent = STR_SELECT;
-		selectToggle.classList.toggle('active', this._selecting);
-		selectToggle.setAttribute('aria-pressed', String(this._selecting));
-		this._viewStore.add(dom.addDisposableListener(selectToggle, 'click', () => {
-			this._selecting = !this._selecting;
-			if (!this._selecting) {
-				this._selectedKeys.clear();
-			}
-			this._renderList();
-		}));
-
-		const list = dom.append(this._dialog, $('.ppe-list'));
-		if (presets.length === 0) {
-			dom.append(list, $('.ppe-empty')).textContent = STR_EMPTY;
-		}
-		// 同じ名前が並んでいるときだけ、それぞれを分けている値（対象リポジトリ・作業ディレクトリ等）を
-		// 名前の右に出す。単独の名前には何も足さない。
+		// 検索＋ナビフィルタを適用した表示対象。qualifier（同名の区別語）はフルセット基準で計算する
+		// ——絞り込みで同名の片方しか見えていないときでも区別語が出ている方が誤認がない。
+		const query = this._searchQuery.trim().toLowerCase();
+		const filtered = presets.filter(preset =>
+			this._matchesFilter(preset, this._filter) && this._matchesSearch(preset, query));
 		const qualifiers = paradisPresetQualifiers(presets);
 
-		const groups = paradisGroupPresetsByFolder(presets);
+		this._syncSelectToggle();
+		this._renderNavItems(presets, filtered.length);
+
+		// 選択モードのバルクバーは一覧より上（sticky）に出す。何も選ばれていなければ出ない。
+		this._renderBulkBar();
+
+		const list = dom.append(this._contentEl, $('.ppe-list'));
+		if (presets.length === 0) {
+			dom.append(list, $('.ppe-empty')).textContent = STR_EMPTY;
+		} else if (filtered.length === 0) {
+			dom.append(list, $('.ppe-empty')).textContent = STR_NO_MATCH;
+		}
+
 		// ↑↓ の移動可否は「見えている並び（グループ化後）」基準で決める。生の配列（presets）の
 		// 隣接で決めると、フォルダに入っていない1件がフォルダを挟んで並んでいるとき、ボタンは
 		// 有効なのに見た目が1ミリも動かない（グループの並び順はフォルダの初出位置で決まり、
 		// 単純な2件のスワップでは変わらないため）。フォルダをまたぐ移動は隣接スワップでは
 		// 正しく表現できないので、単独プリセットの隣（表示上）がフォルダの中身なら押せなくする。
+		const reorderBlocked = this._reorderBlockReason();
 		const displayOrder: { readonly preset: IParadisResolvedPreset; readonly inFolder: boolean }[] = [];
+		const groups = paradisGroupPresetsByFolder(filtered);
 		for (const group of groups) {
 			for (const preset of group.presets) {
 				displayOrder.push({ preset, inFolder: !!group.folder });
@@ -427,18 +761,94 @@ class ParadisPresetEditorDialog extends Disposable {
 			const nextEntry = displayIndex < displayOrder.length - 1 ? displayOrder[displayIndex + 1] : undefined;
 			const up = prevEntry && !prevEntry.inFolder && paradisPresetScopeKey(prevEntry.preset) === paradisPresetScopeKey(preset) ? prevEntry.preset : undefined;
 			const down = nextEntry && !nextEntry.inFolder && paradisPresetScopeKey(nextEntry.preset) === paradisPresetScopeKey(preset) ? nextEntry.preset : undefined;
-			this._renderPresetRow(list, preset, { qualifiers, moveUp: up, moveDown: down });
+			this._renderPresetRow(list, preset, { qualifiers, moveUp: up, moveDown: down, reorderBlocked });
+		}
+	}
+
+	/** ヘッダーの「選択」トグルの見た目を現在の _selecting に合わせる。 */
+	private _syncSelectToggle(): void {
+		this._selectToggleEl.classList.toggle('active', this._selecting);
+		this._selectToggleEl.setAttribute('aria-pressed', String(this._selecting));
+	}
+
+	/** 左ナビのフィルタ項目（すべて／フォルダ群／(フォルダなし)／出所）を作り直す。 */
+	private _renderNavItems(presets: readonly IParadisResolvedPreset[], hitCount: number): void {
+		dom.clearNode(this._navItemsEl);
+		const hasQuery = this._searchQuery.trim().length > 0;
+		this._searchHitsEl.textContent = hasQuery ? strSearchHits(hitCount) : '';
+
+		// 件数バッジは「検索に引っかかる前の総数」基準。検索中にバッジが揺れるとフォルダ間の
+		// 比較ができないため（ヒット件数は検索ボックス下に専用表示する）。
+		const folderCounts = new Map<string, number>();
+		let unfiledCount = 0;
+		for (const preset of presets) {
+			const folder = preset.folder?.trim();
+			if (folder) {
+				folderCounts.set(folder, (folderCounts.get(folder) ?? 0) + 1);
+			} else {
+				unfiledCount++;
+			}
 		}
 
-		this._renderBulkBar();
+		const mkItem = (parent: HTMLElement, label: string, options: {
+			readonly icon?: ThemeIcon;
+			readonly count?: number;
+			readonly active: boolean;
+			readonly dataset: Record<string, string>;
+		}): HTMLButtonElement => {
+			const btn = dom.append(parent, $('button.ppe-nav-item')) as HTMLButtonElement;
+			btn.type = 'button';
+			btn.classList.toggle('on', options.active);
+			btn.setAttribute('aria-pressed', String(options.active));
+			btn.title = label;
+			for (const [key, value] of Object.entries(options.dataset)) {
+				btn.dataset[key] = value;
+			}
+			if (options.icon) {
+				dom.append(btn, $('span.ppe-nav-icon')).classList.add(...ThemeIcon.asClassNameArray(options.icon));
+			}
+			dom.append(btn, $('span.ppe-nav-label')).textContent = label;
+			if (options.count !== undefined) {
+				dom.append(btn, $('span.ppe-nav-count')).textContent = String(options.count);
+			}
+			return btn;
+		};
 
-		const footer = dom.append(this._dialog, $('.ppe-footer'));
-		const closeBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
-		closeBtn.textContent = STR_CLOSE;
-		this._viewStore.add(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
-		const newBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
-		newBtn.textContent = STR_NEW;
-		this._viewStore.add(dom.addDisposableListener(newBtn, 'click', () => this._renderEdit(undefined)));
+		dom.append(this._navItemsEl, $('.ppe-nav-caption')).textContent = STR_NAV_CAPTION_PRESETS;
+		mkItem(this._navItemsEl, STR_NAV_ALL, {
+			count: presets.length,
+			active: this._filter.kind === 'all',
+			dataset: { kind: 'all' },
+		});
+
+		// フォルダはツリー状に字下げして表示する（paradisDistinctFolderNames の出現順）。
+		const folderNames = paradisDistinctFolderNames(presets);
+		if (folderNames.length > 0) {
+			const tree = dom.append(this._navItemsEl, $('.ppe-nav-tree'));
+			for (const name of folderNames) {
+				mkItem(tree, name, {
+					icon: Codicon.folder,
+					count: folderCounts.get(name) ?? 0,
+					active: this._filter.kind === 'folder' && this._filter.folder === name,
+					dataset: { kind: 'folder', folder: name },
+				});
+			}
+		}
+		mkItem(this._navItemsEl, STR_NAV_UNFILED, {
+			count: unfiledCount,
+			active: this._filter.kind === 'folder' && this._filter.folder === undefined,
+			dataset: { kind: 'folder', folder: '' },
+		});
+
+		dom.append(this._navItemsEl, $('.ppe-nav-caption')).textContent = STR_NAV_CAPTION_SOURCE;
+		mkItem(this._navItemsEl, STR_NAV_SOURCE_USER, {
+			active: this._filter.kind === 'source' && this._filter.source === 'user',
+			dataset: { kind: 'source', source: 'user' },
+		});
+		mkItem(this._navItemsEl, STR_NAV_SOURCE_WORKSPACE, {
+			active: this._filter.kind === 'source' && this._filter.source === 'workspace',
+			dataset: { kind: 'source', source: 'workspace' },
+		});
 	}
 
 	/** 1件のプリセット行（一覧の直下、またはフォルダの中）。 */
@@ -449,12 +859,17 @@ class ParadisPresetEditorDialog extends Disposable {
 			readonly qualifiers: Map<string, string>;
 			readonly moveUp?: IParadisResolvedPreset;
 			readonly moveDown?: IParadisResolvedPreset;
+			readonly reorderBlocked?: string;
 		},
 	): void {
 		const row = dom.append(container, $('.ppe-row'));
 		// hosts 条件が現在の接続先と一致しない行は薄く表示する。消さないのは「SSH 先でしか出ない
 		// プリセット」を手元から編集する手段を残すため（envInactive のコメント参照）。
 		row.classList.toggle('dim', !!preset.envInactive);
+		row.dataset.presetKey = preset.key;
+		this._rowPresets.set(preset.key, preset);
+		this._moveTargets.set(preset.key, { up: options.moveUp, down: options.moveDown });
+
 		if (this._selecting) {
 			this._appendCheckbox(row, strSelectPreset(preset.name), this._selectedKeys.has(preset.key), checked => {
 				if (checked) {
@@ -465,6 +880,28 @@ class ParadisPresetEditorDialog extends Disposable {
 				this._renderList();
 			});
 		}
+
+		// grip ハンドル（⋮⋮）。ここから mousedown したときだけ row を draggable にすることで、
+		// 「行本文のテキスト選択やボタン押下」と DnD を共存させる。検索・フィルタ中は並び替えを
+		// 無効化し、title で理由を見せる。
+		const grip = dom.append(row, $('span.ppe-grip'));
+		grip.tabIndex = 0;
+		// allow-any-unicode-next-line
+		grip.textContent = '⋮⋮';
+		grip.title = options.reorderBlocked ?? strGripTitle(preset.name);
+		grip.setAttribute('aria-label', grip.title);
+		if (!this._selecting && !options.reorderBlocked) {
+			this._viewStore.add(dom.addDisposableListener(grip, 'mousedown', () => {
+				row.draggable = true;
+				// ドラッグが始まらないまま grip の外で mouseup しても draggable を確実に解除する
+				//（grip 直上の mouseup は dragend / drop 側でも解除されるので二重で問題ない）。
+				this._viewStore.add(dom.addDisposableListener(window, 'mouseup', () => {
+					row.draggable = false;
+				}, { once: true, capture: true }));
+			}));
+		}
+		this._wireRowDragAndDrop(row, preset, options.reorderBlocked);
+
 		const iconEl = dom.append(row, $('span.ppe-row-icon'));
 		iconEl.classList.add(...ThemeIcon.asClassNameArray(preset.icon ? ThemeIcon.fromId(preset.icon) : ThemeIcon.fromId('play')));
 		const main = dom.append(row, $('.ppe-row-main'));
@@ -490,7 +927,10 @@ class ParadisPresetEditorDialog extends Disposable {
 			const btn = dom.append(actions, $('button.ppe-btn.ppe-task-btn')) as HTMLButtonElement;
 			btn.type = 'button';
 			btn.textContent = label;
-			btn.disabled = !target;
+			btn.disabled = !target || !!options.reorderBlocked;
+			if (options.reorderBlocked) {
+				btn.title = options.reorderBlocked;
+			}
 			this._viewStore.add(dom.addDisposableListener(btn, 'click', () => {
 				if (target) {
 					void this.presetService.swapPresets(preset, target);
@@ -525,6 +965,44 @@ class ParadisPresetEditorDialog extends Disposable {
 		const editBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
 		editBtn.textContent = STR_EDIT;
 		this._viewStore.add(dom.addDisposableListener(editBtn, 'click', () => this._renderEdit(preset)));
+		const duplicateBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
+		duplicateBtn.textContent = STR_DUPLICATE;
+		duplicateBtn.title = strDuplicateName(preset.name);
+		this._viewStore.add(dom.addDisposableListener(duplicateBtn, 'click', async () => {
+			// 解決済みフィールド（source/sourceUri/sourceIndex/key/locallyHidden/envInactive）は
+			// 定義ではないので写さない。id も新しく採番させたいので写さない。
+			const tasks = paradisGetPresetTasks(preset);
+			const definition: IParadisPresetDefinition = {
+				name: strDuplicateName(preset.name),
+				description: preset.description,
+				folder: preset.folder,
+				tasks: tasks.tasks.map(task => ({ name: task.name, cwd: task.cwd, commands: [...task.commands] })),
+				layout: tasks.layout,
+				icon: preset.icon,
+				cwd: preset.cwd,
+				pinned: preset.pinned,
+				pinnedLabel: preset.pinnedLabel,
+				autoRun: preset.autoRun,
+				appliesTo: preset.appliesTo ? [...preset.appliesTo] : undefined,
+				hosts: preset.hosts ? [...preset.hosts] : undefined,
+			};
+			try {
+				// 連打で「完全一致の同名ペア」を作らせない。同じ保存先に指紋まで一致する
+				// プリセットがあるときは保存せず、理由をトーストで出す。
+				const fingerprintOptions = { ignoreAppliesTo: preset.source === 'workspace' };
+				const fingerprint = paradisPresetFingerprint(definition, fingerprintOptions);
+				const twin = this._presetsInSaveTarget(preset.source, preset)
+					.find(candidate => candidate.key !== preset.key && paradisPresetFingerprint(candidate, fingerprintOptions) === fingerprint);
+				if (twin) {
+					this._toast(strDuplicateSkipped(twin.name));
+					return;
+				}
+				await this.presetService.savePreset(definition, preset.source);
+				this._toast(strDuplicatedNotice(definition.name));
+			} catch (error) {
+				await this.dialogService.error(STR_OPERATION_FAILED, error instanceof Error ? error.message : String(error));
+			}
+		}));
 		const deleteBtn = dom.append(actions, $('button.ppe-btn.ppe-btn-danger')) as HTMLButtonElement;
 		deleteBtn.textContent = STR_DELETE;
 		this._viewStore.add(dom.addDisposableListener(deleteBtn, 'click', async () => {
@@ -552,12 +1030,125 @@ class ParadisPresetEditorDialog extends Disposable {
 		}));
 	}
 
+	/**
+	 * 行のドラッグ＆ドロップ並び替え。grip の mousedown で draggable を立てているので、dragstart は
+	 * grip 発のドラッグでしか来ない。drop 先が別フォルダ／別保存先なら swapPresets を呼ばずに
+	 * トーストで拒否する（swapPresets 自体もスコープ跨ぎを no-op にしているが、黙って何も起きない
+	 * のではなく理由を見せる）。
+	 *
+	 * 拒否のときも dragover を preventDefault する。キャンセルしないと drop イベント自体が来ず、
+	 * 理由のトーストを出せないため（dataTransfer.dropEffect='none' でも同様に drop が抑制される）。
+	 * 拒否中は .drop-denied の枠で「ここには置けない」ことを見せる。
+	 */
+	private _wireRowDragAndDrop(row: HTMLElement, preset: IParadisResolvedPreset, reorderBlocked?: string): void {
+		const clearDropMarks = (): void => {
+			for (const el of Array.from(this._contentEl.querySelectorAll('.ppe-row.drop-target, .ppe-row.drop-denied'))) {
+				el.classList.remove('drop-target');
+				el.classList.remove('drop-denied');
+			}
+		};
+		const finishDrag = (): void => {
+			row.draggable = false;
+			row.classList.remove('dragging');
+			clearDropMarks();
+			this._dragging = undefined;
+		};
+		this._viewStore.add(dom.addDisposableListener(row, 'dragstart', e => {
+			if (this._selecting || !row.draggable) {
+				e.preventDefault();
+				return;
+			}
+			this._dragging = preset;
+			row.classList.add('dragging');
+			const transfer = e.dataTransfer;
+			if (transfer) {
+				transfer.effectAllowed = 'move';
+				try {
+					transfer.setData('text/plain', preset.name);
+				} catch {
+					// 一部の環境では setData が例外を投げる。並び替えには使わないデータなので無視。
+				}
+			}
+		}));
+		this._viewStore.add(dom.addDisposableListener(row, 'dragend', finishDrag));
+		this._viewStore.add(dom.addDisposableListener(row, 'dragover', e => {
+			const dragging = this._dragging;
+			if (!dragging || dragging.key === preset.key || reorderBlocked) {
+				return;
+			}
+			e.preventDefault();
+			if (e.dataTransfer) {
+				e.dataTransfer.dropEffect = 'move';
+			}
+			if (this._reorderRejection(dragging, preset)) {
+				row.classList.add('drop-denied');
+				return;
+			}
+			row.classList.add('drop-target');
+		}));
+		this._viewStore.add(dom.addDisposableListener(row, 'dragleave', () => {
+			row.classList.remove('drop-target');
+			row.classList.remove('drop-denied');
+		}));
+		this._viewStore.add(dom.addDisposableListener(row, 'drop', e => {
+			e.preventDefault();
+			row.classList.remove('drop-target');
+			row.classList.remove('drop-denied');
+			const dragging = this._dragging;
+			if (!dragging || dragging.key === preset.key || reorderBlocked) {
+				finishDrag();
+				return;
+			}
+			finishDrag();
+			const rejection = this._reorderRejection(dragging, preset);
+			if (rejection === 'folder') {
+				this._toast(STR_MOVE_REJECTED_FOLDER);
+				return;
+			}
+			if (rejection === 'scope') {
+				this._toast(STR_MOVE_REJECTED_SCOPE);
+				return;
+			}
+			void this.presetService.swapPresets(dragging, preset);
+		}));
+	}
+
 	/** フォルダ1件（ヘッダー行＋展開時は中身の行）。 */
 	private _renderFolderGroup(container: HTMLElement, group: IParadisFolderGroup, qualifiers: Map<string, string>): void {
 		const folderKey = `${paradisPresetScopeKey(group.presets[0])}::${group.folder}`;
 		const collapsed = this._collapsedFolders.has(folderKey);
 
 		const row = dom.append(container, $('.ppe-row.ppe-folder-row'));
+		// フォルダ行はドロップ先として意味を持たない（swap の相手になれない）。それでも
+		// dragover を preventDefault して drop を受けるのは、拒否の理由をトーストで出すため。
+		this._viewStore.add(dom.addDisposableListener(row, 'dragover', e => {
+			if (!this._dragging) {
+				return;
+			}
+			e.preventDefault();
+			if (e.dataTransfer) {
+				e.dataTransfer.dropEffect = 'move';
+			}
+			row.classList.add('drop-denied');
+		}));
+		this._viewStore.add(dom.addDisposableListener(row, 'dragleave', () => {
+			row.classList.remove('drop-denied');
+		}));
+		this._viewStore.add(dom.addDisposableListener(row, 'drop', e => {
+			e.preventDefault();
+			row.classList.remove('drop-denied');
+			const dragging = this._dragging;
+			if (!dragging || dragging.key === group.presets[0].key) {
+				return;
+			}
+			const rejection = this._reorderRejection(dragging, group.presets[0]);
+			if (rejection === 'scope') {
+				this._toast(STR_MOVE_REJECTED_SCOPE);
+			} else if (rejection === 'folder') {
+				this._toast(STR_MOVE_REJECTED_FOLDER);
+			}
+			// 自フォルダのメンバーをヘッダーへ落とした場合（rejection なし）は位置として無意味なので黙って無視する。
+		}));
 		if (this._selecting) {
 			const memberKeys = group.presets.map(preset => preset.key);
 			const selectedCount = memberKeys.filter(key => this._selectedKeys.has(key)).length;
@@ -640,7 +1231,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			return;
 		}
 
-		const bar = dom.append(this._dialog, $('.ppe-bulk-bar'));
+		const bar = dom.append(this._contentEl, $('.ppe-bulk-bar'));
 		dom.append(bar, $('span.ppe-bulk-count')).textContent = strBulkCount(selected.length);
 		const actions = dom.append(bar, $('.ppe-bulk-actions'));
 
@@ -774,25 +1365,48 @@ class ParadisPresetEditorDialog extends Disposable {
 		});
 	}
 
+	/** 右コンテンツ共通の見出し＋ form-grid の組み立て。フォルダ名変更・新規フォルダでも使う。 */
+	private _openEditPane(title: string): { readonly grid: HTMLElement } {
+		dom.clearNode(this._contentEl);
+		dom.append(this._contentEl, $('h3.ppe-edit-heading')).textContent = title;
+		const grid = dom.append(this._contentEl, $('.ppe-form-grid'));
+		return { grid };
+	}
+
+	/** Settings 行スタイル（左ラベル列＝右寄せ／右コントロール列）の1行を足す。 */
+	private _formRow(grid: HTMLElement, label: string | undefined): HTMLElement {
+		if (label !== undefined) {
+			dom.append(grid, $('div.ppe-flabel')).textContent = label;
+		} else {
+			// ラベルなし行（「＋ ターミナルを追加」など）。グリッドの段組みを保つために空セルを置く。
+			dom.append(grid, $('div.ppe-flabel'));
+		}
+		return dom.append(grid, $('div.ppe-fcontrol'));
+	}
+
 	/** フォルダ名の変更ビュー。既存メンバー全員の folder を書き換える。 */
 	private _renderFolderRename(group: IParadisFolderGroup): void {
 		this._mode = 'edit';
 		this._viewStore.clear();
-		dom.clearNode(this._dialog);
+		const { grid } = this._openEditPane(strFolderRenameTitle(group.folder));
 
-		dom.append(this._dialog, $('h3.ppe-title')).textContent = strFolderRenameTitle(group.folder);
-		const form = dom.append(this._dialog, $('.ppe-form'));
-		const field = dom.append(form, $('.ppe-field'));
-		dom.append(field, $('label.ppe-label')).textContent = STR_FOLDER_NAME;
-		const nameInput = dom.append(field, $('input.ppe-input')) as HTMLInputElement;
+		const control = this._formRow(grid, STR_FOLDER_NAME);
+		const nameInput = dom.append(control, $('input.ppe-input')) as HTMLInputElement;
 		nameInput.type = 'text';
 		nameInput.value = group.folder;
+		this._trackEditState(() => ({ name: nameInput.value }));
 
-		const errorEl = dom.append(this._dialog, $('.ppe-error'));
-		const footer = dom.append(this._dialog, $('.ppe-footer'));
+		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
+		const footer = dom.append(this._contentEl, $('.ppe-footer'));
 		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
-		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => this._renderList()));
+		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this._renderList();
+				}
+			});
+		}));
 		const saveBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
 		saveBtn.textContent = STR_SAVE;
 		this._viewStore.add(dom.addDisposableListener(saveBtn, 'click', async () => {
@@ -814,22 +1428,26 @@ class ParadisPresetEditorDialog extends Disposable {
 	private _renderFolderCreate(members: readonly IParadisResolvedPreset[]): void {
 		this._mode = 'edit';
 		this._viewStore.clear();
-		dom.clearNode(this._dialog);
+		const { grid } = this._openEditPane(strFolderCreateTitle());
 
-		dom.append(this._dialog, $('h3.ppe-title')).textContent = strFolderCreateTitle();
-		const form = dom.append(this._dialog, $('.ppe-form'));
-		const field = dom.append(form, $('.ppe-field'));
-		dom.append(field, $('label.ppe-label')).textContent = STR_FOLDER_NAME;
-		const nameInput = dom.append(field, $('input.ppe-input')) as HTMLInputElement;
+		const control = this._formRow(grid, STR_FOLDER_NAME);
+		const nameInput = dom.append(control, $('input.ppe-input')) as HTMLInputElement;
 		nameInput.type = 'text';
 		nameInput.placeholder = STR_FOLDER_PLACEHOLDER;
-		dom.append(form, $('.ppe-hint')).textContent = strFolderCreateHint(members.length);
+		dom.append(control, $('.ppe-hint')).textContent = strFolderCreateHint(members.length);
+		this._trackEditState(() => ({ name: nameInput.value }));
 
-		const errorEl = dom.append(this._dialog, $('.ppe-error'));
-		const footer = dom.append(this._dialog, $('.ppe-footer'));
+		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
+		const footer = dom.append(this._contentEl, $('.ppe-footer'));
 		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
-		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => this._renderList()));
+		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this._renderList();
+				}
+			});
+		}));
 		const createBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
 		createBtn.textContent = STR_FOLDER_CREATE;
 		this._viewStore.add(dom.addDisposableListener(createBtn, 'click', async () => {
@@ -885,17 +1503,12 @@ class ParadisPresetEditorDialog extends Disposable {
 	private _renderEdit(editing: IParadisResolvedPreset | undefined): void {
 		this._mode = 'edit';
 		this._viewStore.clear();
-		dom.clearNode(this._dialog);
+		this._syncSelectToggle();
+		const { grid } = this._openEditPane(editing ? `${STR_TITLE} — ${editing.name}` : `${STR_TITLE} — ${STR_NEW}`);
 
-		dom.append(this._dialog, $('h3.ppe-title')).textContent = editing ? `${STR_TITLE} — ${editing.name}` : `${STR_TITLE} — ${STR_NEW}`;
-
-		const form = dom.append(this._dialog, $('.ppe-form'));
-
-		const field = (label: string): HTMLElement => {
-			const wrap = dom.append(form, $('.ppe-field'));
-			dom.append(wrap, $('label.ppe-label')).textContent = label;
-			return wrap;
-		};
+		// Settings 行スタイル: field() が「右寄せラベル列＋コントロール列」の1行を生む。
+		// label 省略時は空のラベルセルを置く（「＋ ターミナルを追加」などラベルを持たない行用）。
+		const field = (label?: string): HTMLElement => this._formRow(grid, label);
 
 		const nameField = field(STR_NAME);
 		const nameInput = dom.append(nameField, $('input.ppe-input')) as HTMLInputElement;
@@ -905,7 +1518,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		// ここで分かれば「名前を変える」「そのまま2件にする」をその場で決められる。
 		const nameHint = dom.append(nameField, $('.ppe-hint.ppe-hint-warn'));
 		// 数える相手は「これから書き込む先」に居るものだけ。ユーザー設定とリポジトリで
-		// 同じ名前を使うのは衝突ではないので、そこまで数えると出さなくてよい注意が出る。
+		// 同じ名前を使うのは衝突ではないので、そこまで数えると出なくてよい注意が出る。
 		let hintTarget: ParadisPresetSource = editing?.source ?? 'user';
 		const updateNameHint = () => {
 			const name = nameInput.value.trim();
@@ -944,7 +1557,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			: [{ name: '', cwd: '', commands: '' }];
 		const tasksField = field(STR_TASKS);
 		const tasksContainer = dom.append(tasksField, $('.ppe-tasks'));
-		const addTaskBtn = dom.append(tasksField, $('button.ppe-btn.ppe-add-task')) as HTMLButtonElement;
+		const addTaskBtn = dom.append(field(), $('button.ppe-btn.ppe-add-task')) as HTMLButtonElement;
 		addTaskBtn.type = 'button';
 		addTaskBtn.textContent = STR_ADD_TASK;
 		// 再描画のたびにカード内リスナーを作り直すため、カード群専用の store を分ける
@@ -1072,7 +1685,8 @@ class ParadisPresetEditorDialog extends Disposable {
 		cwdInput.spellcheck = false;
 		cwdInput.value = editing?.cwd ?? '';
 
-		const checkbox = (label: string, checked: boolean, parent: HTMLElement = form): HTMLInputElement => {
+		// 「表示」グループ（ピン留めまわり＋ autoRun）。Settings 行としては1つの行にまとめる。
+		const checkbox = (label: string, checked: boolean, parent: HTMLElement): HTMLInputElement => {
 			const wrap = dom.append(parent, $('.ppe-check-row'));
 			const input = dom.append(wrap, $('input.ppe-checkbox')) as HTMLInputElement;
 			input.type = 'checkbox';
@@ -1087,8 +1701,9 @@ class ParadisPresetEditorDialog extends Disposable {
 			}));
 			return input;
 		};
-		const pinnedInput = checkbox(STR_PINNED, editing?.pinned !== false);
-		const pinnedLabelInput = checkbox(STR_PINNED_LABEL, editing?.pinnedLabel === true);
+		const displayControl = field(STR_DISPLAY);
+		const pinnedInput = checkbox(STR_PINNED, editing?.pinned !== false, displayControl);
+		const pinnedLabelInput = checkbox(STR_PINNED_LABEL, editing?.pinnedLabel === true, displayControl);
 		const pinnedLabelRow = pinnedLabelInput.parentElement as HTMLElement;
 		pinnedLabelRow.classList.add('ppe-check-row-sub');
 		const updatePinnedLabelVisibility = () => {
@@ -1096,8 +1711,8 @@ class ParadisPresetEditorDialog extends Disposable {
 		};
 		updatePinnedLabelVisibility();
 		this._viewStore.add(dom.addDisposableListener(pinnedInput, 'change', updatePinnedLabelVisibility));
-		const autoRunInput = checkbox(STR_AUTORUN, editing?.autoRun === true);
-		dom.append(form, $('.ppe-check-hint')).textContent = STR_AUTORUN_HINT;
+		const autoRunInput = checkbox(STR_AUTORUN, editing?.autoRun === true, displayControl);
+		dom.append(displayControl, $('.ppe-check-hint')).textContent = STR_AUTORUN_HINT;
 
 		// 保存先（既存編集時は変更不可）
 		const folder = this.contextService.getWorkspace().folders[0];
@@ -1215,14 +1830,19 @@ class ParadisPresetEditorDialog extends Disposable {
 			chipInput.setAttribute('list', 'ppe-host-datalist');
 		}
 
-		// appliesTo（保存先がユーザー設定のときのみ表示）
-		const appliesToField = field(STR_APPLIES_TO);
+		// appliesTo（保存先がユーザー設定のときのみ表示）。グリッドの段組みごと消すため、
+		// ラベル列とコントロール列の両方を握っておく。
+		const appliesToLabel = dom.append(grid, $('div.ppe-flabel'));
+		appliesToLabel.textContent = STR_APPLIES_TO;
+		const appliesToField = dom.append(grid, $('div.ppe-fcontrol'));
 		const appliesToInput = dom.append(appliesToField, $('textarea.ppe-input')) as HTMLTextAreaElement;
 		appliesToInput.rows = 2;
 		appliesToInput.spellcheck = false;
 		appliesToInput.value = editing?.appliesTo?.join('\n') ?? '';
 		const updateAppliesToVisibility = () => {
-			appliesToField.style.display = userRadio.checked ? '' : 'none';
+			for (const cell of [appliesToLabel, appliesToField]) {
+				cell.style.display = userRadio.checked ? '' : 'none';
+			}
 			// 保存先が変われば「同じ名前が何件あるか」も変わる
 			hintTarget = workspaceRadio.checked ? 'workspace' : 'user';
 			updateNameHint();
@@ -1232,12 +1852,38 @@ class ParadisPresetEditorDialog extends Disposable {
 			this._viewStore.add(dom.addDisposableListener(radio, 'change', updateAppliesToVisibility));
 		}
 
-		const errorEl = dom.append(this._dialog, $('.ppe-error'));
+		// 全コントロールが出揃った時点で初期値を撮る。「開いた直後にいきなり確認が出る」ことを
+		// 避けるため、dirty はここでの値との比較で判定する。
+		this._trackEditState(() => ({
+			name: nameInput.value,
+			description: descriptionInput.value,
+			folder: folderInput.value,
+			tasks: taskDrafts.map(draft => ({ name: draft.name, cwd: draft.cwd, commands: draft.commands })),
+			layout: layoutSelect.value,
+			icon: iconInput.value,
+			cwd: cwdInput.value,
+			pinned: pinnedInput.checked,
+			pinnedLabel: pinnedLabelInput.checked,
+			autoRun: autoRunInput.checked,
+			target: workspaceRadio.checked ? 'workspace' : 'user',
+			hostLocal: hostLocalInput.checked,
+			hostRemote: hostRemoteInput.checked,
+			hostChips: [...hostChips],
+			appliesTo: appliesToInput.value,
+		}));
 
-		const footer = dom.append(this._dialog, $('.ppe-footer'));
+		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
+
+		const footer = dom.append(this._contentEl, $('.ppe-footer'));
 		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
-		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => this._renderList()));
+		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this._renderList();
+				}
+			});
+		}));
 		const saveBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
 		saveBtn.textContent = STR_SAVE;
 		this._viewStore.add(dom.addDisposableListener(saveBtn, 'click', async () => {
