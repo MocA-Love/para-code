@@ -15,6 +15,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisPortKillRequest,
+	IParadisPortKillBatchResult,
 	IParadisPortListSnapshot,
 	PARADIS_PORT_LIST_CHANNEL
 } from '../common/paradisPortList.js';
@@ -56,5 +57,16 @@ export class ParadisPortListClient {
 			? remoteConnection.getChannel(PARADIS_PORT_LIST_CHANNEL)
 			: this.sharedProcessService.getChannel(PARADIS_PORT_LIST_CHANNEL);
 		await channel.call<void>('kill', [request]);
+	}
+
+	async killAll(requests: readonly IParadisPortKillRequest[], expectedViaRemote: boolean): Promise<IParadisPortKillBatchResult> {
+		const remoteConnection = this.remoteAgentService.getConnection();
+		if ((remoteConnection !== undefined) !== expectedViaRemote) {
+			throw new Error('Port kill aborted: the remote connection state changed');
+		}
+		const channel = remoteConnection
+			? remoteConnection.getChannel(PARADIS_PORT_LIST_CHANNEL)
+			: this.sharedProcessService.getChannel(PARADIS_PORT_LIST_CHANNEL);
+		return channel.call<IParadisPortKillBatchResult>('killAll', [requests]);
 	}
 }

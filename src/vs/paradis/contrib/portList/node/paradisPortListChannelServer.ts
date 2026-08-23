@@ -28,12 +28,14 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisPortEntry,
+	IParadisPortKillBatchResult,
 	IParadisPortKillRequest,
 	IParadisPortListRequest,
 	IParadisPortListSnapshot,
 	PARADIS_PORT_LIST_CHANNEL,
 	paradisIsRiskyPortAddress
 } from '../common/paradisPortList.js';
+import { executeParadisPortKillBatch } from '../common/paradisPortKillBatch.js';
 
 const SNAPSHOT_MAX_AGE_MS = 2000;
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -172,7 +174,11 @@ export class ParadisPortListServerService {
 	private cached: IParadisPortListSnapshot | undefined;
 	private inflight: Promise<IParadisPortListSnapshot> | undefined;
 
-	constructor(private readonly logService: ILogService) { }
+	constructor(
+		private readonly logService: ILogService,
+		private readonly collect: () => Promise<readonly IParadisPortEntry[]> = () => collectEntries(logService),
+		private readonly signal: (pid: number) => void = pid => process.kill(pid, 'SIGTERM'),
+	) { }
 
 	async getSnapshot(request: IParadisPortListRequest): Promise<IParadisPortListSnapshot> {
 		if (request.force !== true && this.cached !== undefined && Date.now() - this.cached.collectedAt <= SNAPSHOT_MAX_AGE_MS) {
@@ -181,7 +187,7 @@ export class ParadisPortListServerService {
 		if (this.inflight !== undefined && request.force !== true) {
 			return this.inflight;
 		}
-		const collection = collectEntries(this.logService)
+		const collection = this.collect()
 			.then(entries => {
 				const snapshot: IParadisPortListSnapshot = { entries, collectedAt: Date.now() };
 				this.cached = snapshot;
@@ -214,13 +220,21 @@ export class ParadisPortListServerService {
 		if (request.pid === process.pid || request.pid === process.ppid) {
 			throw new Error('Refusing to kill the remote server process itself');
 		}
-		const entries = await collectEntries(this.logService);
+		const entries = await this.collect();
 		const stillListening = entries.some(entry => entry.pid === request.pid && entry.port === request.port && entry.processName === request.processName);
 		if (!stillListening) {
 			throw new Error(`Port :${request.port} is no longer held by PID ${request.pid} on the remote host (it may have already exited)`);
 		}
-		process.kill(request.pid, 'SIGTERM');
+		this.signal(request.pid);
 		this.cached = undefined;
+	}
+
+	async killAll(requests: readonly unknown[]): Promise<IParadisPortKillBatchResult> {
+		try {
+			return await executeParadisPortKillBatch(requests, this.collect, new Set([process.pid, process.ppid]), this.signal);
+		} finally {
+			this.cached = undefined;
+		}
 	}
 }
 
@@ -239,6 +253,8 @@ class ParadisPortListServerChannel<TContext> implements IServerChannel<TContext>
 				return this.service.getSnapshot((args[0] ?? {}) as IParadisPortListRequest) as Promise<T>;
 			case 'kill':
 				return this.service.kill(args[0] as IParadisPortKillRequest) as Promise<T>;
+			case 'killAll':
+				return this.service.killAll(Array.isArray(args[0]) ? args[0] : []) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -246,7 +262,7 @@ class ParadisPortListServerChannel<TContext> implements IServerChannel<TContext>
 }
 
 /** serverServices.ts の PARA-PATCH 点から1行で呼べるファクトリ。 */
-export function registerParadisPortListForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
-	server.registerChannel(PARADIS_PORT_LIST_CHANNEL, new ParadisPortListServerChannel<TContext>(new ParadisPortListServerService(logService)));
+export function registerParadisPortListForServer<TContext>(server: IPCServer<TContext>, logService: ILogService, service = new ParadisPortListServerService(logService)): IDisposable {
+	server.registerChannel(PARADIS_PORT_LIST_CHANNEL, new ParadisPortListServerChannel<TContext>(service));
 	return { dispose: () => { } };
 }

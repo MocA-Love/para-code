@@ -8,8 +8,50 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisIsRiskyPortAddress } from '../../common/paradisPortList.js';
-import { loadConnectionTable, loadListeningConnections, parseHexAddress } from '../../node/paradisPortListChannelServer.js';
+import { IParadisPortEntry, paradisIsRiskyPortAddress } from '../../common/paradisPortList.js';
+import { ParadisPortListServerService, loadConnectionTable, loadListeningConnections, parseHexAddress, registerParadisPortListForServer } from '../../node/paradisPortListChannelServer.js';
+
+const batchEntries: readonly IParadisPortEntry[] = [
+	{ port: 3000, proto: 'TCP', pid: 10, processName: 'node', address: '127.0.0.1', risky: false },
+	{ port: 3001, proto: 'TCP', pid: process.pid, processName: 'remote-server', address: '127.0.0.1', risky: false },
+	{ port: 3002, proto: 'TCP', pid: process.ppid, processName: 'remote-parent', address: '127.0.0.1', risky: false },
+];
+
+interface ICapturedChannel {
+	call<T>(context: undefined, command: string, arg?: unknown): Promise<T>;
+}
+
+suite('ParadisPortList (remote) - batch kill', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('collects once and protects the remote server and parent when killing all', async () => {
+		let collections = 0;
+		const signalled: number[] = [];
+		const service = new ParadisPortListServerService(
+			{} as never,
+			async () => { collections++; return batchEntries; },
+			pid => { signalled.push(pid); },
+		);
+
+		const result = await service.killAll(batchEntries);
+		assert.strictEqual(collections, 1);
+		assert.deepStrictEqual(signalled, [10]);
+		assert.deepStrictEqual(result, { failed: 2 });
+	});
+
+	test('forwards a killAll IPC array to the registered remote channel', async () => {
+		let captured: ICapturedChannel | undefined;
+		const service = new ParadisPortListServerService({} as never, async () => batchEntries, () => { });
+		const server = {
+			registerChannel: (_name: string, channel: ICapturedChannel) => captured = channel,
+		};
+		registerParadisPortListForServer(server as never, {} as never, service);
+
+		const result = await captured!.call<{ readonly failed: number }>(undefined, 'killAll', [[batchEntries[0]]]);
+		assert.deepStrictEqual(result, { failed: 0 });
+	});
+});
 
 suite('ParadisPortList (remote) - parseHexAddress', () => {
 

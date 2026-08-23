@@ -171,14 +171,13 @@ export class ParadisPortListWidget extends Disposable implements IParadisPortLis
 		if (!confirmed) {
 			return;
 		}
-		let failures = 0;
-		for (const entry of entries) {
-			try {
-				await this.client.kill({ port: entry.port, pid: entry.pid, processName: entry.processName }, viaRemote);
-			} catch (error) {
-				failures++;
-				this.logService.error('[ParadisPortList] Failed to kill port during Kill All', entry.port, error);
-			}
+		let failures: number;
+		try {
+			const result = await this.client.killAll(entries.map(entry => ({ port: entry.port, pid: entry.pid, processName: entry.processName })), viaRemote);
+			failures = result.failed;
+		} catch (error) {
+			failures = entries.length;
+			this.logService.error('[ParadisPortList] Failed to kill ports during Kill All', error);
 		}
 		await this.poll(true);
 		if (failures > 0) {
