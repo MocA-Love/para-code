@@ -24,10 +24,9 @@ import { localize } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IParadisPortEntry, IParadisPortListSnapshot } from '../common/paradisPortList.js';
+import { paradisPortListPanelGeometry } from '../common/paradisPortListLayout.js';
 
 const $ = dom.$;
-
-const PANEL_WIDTH = 440;
 
 type ParadisPortListFilter = 'all' | 'risky';
 
@@ -68,7 +67,6 @@ export class ParadisPortListPanel extends Disposable {
 
 		this.element = $('.paradis-port-list-panel');
 		this.element.tabIndex = -1;
-		this.element.style.width = `${PANEL_WIDTH}px`;
 
 		const head = dom.append(this.element, $('.ppl-head'));
 		const title = dom.append(head, $('.ppl-title'));
@@ -182,10 +180,11 @@ export class ParadisPortListPanel extends Disposable {
 	private reposition(): void {
 		const rect = this.anchor.getBoundingClientRect();
 		const win = dom.getActiveWindow();
-		const left = Math.max(8, Math.min(rect.right - PANEL_WIDTH, win.innerWidth - PANEL_WIDTH - 8));
+		const geometry = paradisPortListPanelGeometry(win.innerWidth, rect.right);
 		const maxTop = win.innerHeight - 40;
+		this.element.style.width = `${geometry.width}px`;
 		this.element.style.top = `${Math.min(rect.bottom + 6, maxTop)}px`;
-		this.element.style.left = `${left}px`;
+		this.element.style.left = `${geometry.left}px`;
 	}
 
 	private visibleEntries(): IParadisPortEntry[] {
