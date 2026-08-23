@@ -10,7 +10,6 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
-import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { VoiceNotificationControl } from '../../src/components/voiceNotificationControl.js';
 import { useWsHeader, useEffectiveWs, useOpenDrawerPan, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionStack, type AttentionStackItem } from '../../src/components/attentionStack.js';
@@ -33,13 +32,13 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 import { arrangeHomeRows } from '../../src/homeSort.js';
 import { HomeFilterChips, HomeSortSheet } from '../../src/components/homeListControls.js';
-import { HomePlusMenuButton } from '../../src/components/homePlusMenu.js';
 import {
 	dispatchHomeHeaderMenuAction,
 	homeHeaderLayout,
 	type HomeHeaderMenuAction,
 	type HomePlusMenuAction,
 } from '../../src/components/homeHeaderMenuBehavior.js';
+import { buildHomeHeaderActions } from '../../src/components/homeHeaderActions.js';
 import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
 import { listColumnsFor, CONTENT_MAX_WIDTH } from '../../src/ipad/ipadLayout.js';
 
@@ -372,31 +371,17 @@ export default function HomeScreen() {
 	// 並びは「たまに使う → よく使う」で、＋を右端に置く。メニューはその＋から生えるので、
 	// 右端でないと開く場所と押した場所がずれる。状態を持つボタン（音声・通知・＋）は
 	// データにできないので `node` で差し込む。
-	const actions = useMemo<ParaHeaderIcon[]>(() => {
-		if (homeHeader.kind === 'compact-menu') {
-			return [{
-				key: 'home-overflow',
-				label: 'ホーム操作',
-				node: (
-					<HomePlusMenuButton
-						compact
-						archivedCount={archivedCount}
-						voiceActive={voiceActive}
-						notificationQuestionCount={notificationQuestionCount}
-						ackCount={reviewable.length}
-						hasSpace={effectiveWs !== undefined}
-						onSelect={onHeaderMenuSelect}
-					/>
-				),
-			}];
-		}
-		return [
-			...(archivedCount > 0 ? [{ key: 'archive', icon: 'file-tray-full-outline' as const, label: `アーカイブ ${archivedCount}件を見る`, onPress: openArchive }] : []),
-			{ key: 'voice', label: '音声通知', node: <VoiceNotificationControl /> },
-			{ key: 'notifications', label: '通知', node: <NotificationsButton notifications={notifications} /> },
-			{ key: 'plus', label: '作成と表示のメニュー', node: <HomePlusMenuButton ackCount={reviewable.length} hasSpace={effectiveWs !== undefined} onSelect={onHeaderMenuSelect} /> },
-		];
-	}, [archivedCount, effectiveWs, homeHeader.kind, notificationQuestionCount, notifications, onHeaderMenuSelect, openArchive, reviewable.length, voiceActive]);
+	const actions = useMemo<ParaHeaderIcon[]>(() => buildHomeHeaderActions({
+		header: homeHeader,
+		archivedCount,
+		voiceActive,
+		notificationQuestionCount,
+		ackCount: reviewable.length,
+		hasSpace: effectiveWs !== undefined,
+		notifications,
+		onArchive: openArchive,
+		onSelect: onHeaderMenuSelect,
+	}), [archivedCount, effectiveWs, homeHeader, notificationQuestionCount, notifications, onHeaderMenuSelect, openArchive, reviewable.length, voiceActive]);
 
 	// 絞り込みチップ。要素も memo で安定させる（同じ理由）。
 	//
