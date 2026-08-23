@@ -68,6 +68,13 @@ describe('parseUnifiedDiff', () => {
 		]);
 	});
 
+	test('境界なしのhunkless擬似diffでは+++始まりも追加内容として保持する', () => {
+		const rows = parseUnifiedDiff('+++counter;');
+		expect(rows).toEqual([
+			{ kind: 'add', newNo: 1, text: '++counter;' },
+		]);
+	});
+
 	test('次のdiff --git境界でハンク状態と行番号をresetする', () => {
 		const rows = parseUnifiedDiff([
 			'diff --git a/one.txt b/one.txt',
@@ -90,6 +97,27 @@ describe('parseUnifiedDiff', () => {
 			{ kind: 'hunk', text: '@@ -1 +1 @@' },
 			{ kind: 'del', oldNo: 1, text: 'old-two' },
 			{ kind: 'add', newNo: 1, text: 'new-two' },
+		]);
+	});
+
+	test('diff --git境界後のhunkless行は行番号を1から数え直す', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/one.txt b/one.txt',
+			'--- a/one.txt',
+			'+++ b/one.txt',
+			'@@ -8 +8 @@',
+			'-old-one',
+			'+new-one',
+			'diff --git a/two.txt b/two.txt',
+			'+new-two',
+			'-old-two',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -8 +8 @@' },
+			{ kind: 'del', oldNo: 8, text: 'old-one' },
+			{ kind: 'add', newNo: 8, text: 'new-one' },
+			{ kind: 'add', newNo: 1, text: 'new-two' },
+			{ kind: 'del', oldNo: 1, text: 'old-two' },
 		]);
 	});
 });

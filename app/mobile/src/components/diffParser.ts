@@ -20,12 +20,29 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 	let oldNo = 0;
 	let newNo = 0;
 	let inHunk = false;
+	let metadataPhase: 'none' | 'headers' | 'awaitingNewHeader' = 'none';
+	let pendingOldFileHeader: string | undefined;
 	for (const line of diff.split('\n')) {
 		if (line.startsWith('diff ')) {
 			inHunk = false;
 			oldNo = 0;
 			newNo = 0;
+			metadataPhase = 'headers';
+			pendingOldFileHeader = undefined;
 			continue;
+		}
+		if (metadataPhase === 'awaitingNewHeader') {
+			if (line.startsWith('+++ ')) {
+				metadataPhase = 'headers';
+				pendingOldFileHeader = undefined;
+				continue;
+			}
+			if (oldNo === 0) {
+				oldNo = 1;
+			}
+			rows.push({ kind: 'del', oldNo: oldNo++, text: pendingOldFileHeader!.slice(1) });
+			pendingOldFileHeader = undefined;
+			metadataPhase = 'none';
 		}
 		if (line.startsWith('@@')) {
 			const m = line.match(/^@@ -(?<oldStart>\d+)(?:,\d+)? \+(?<newStart>\d+)(?:,\d+)? @@(?<rest>.*)$/);
@@ -33,16 +50,27 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 				oldNo = parseInt(m.groups.oldStart ?? '1', 10);
 				newNo = parseInt(m.groups.newStart ?? '1', 10);
 				inHunk = true;
+				metadataPhase = 'none';
 				rows.push({ kind: 'hunk', text: line });
 			}
 			continue;
 		}
-		if (!inHunk && (line.startsWith('+++') || line.startsWith('---') || line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') || line.startsWith('rename ') || line.startsWith('Binary files') || line.startsWith('\\'))) {
-			// ファイルメタ情報はビューアのヘッダで代替する（Binary等は文脈行として出さない）
-			if (line.startsWith('Binary files')) {
-				rows.push({ kind: 'hunk', text: line });
+		if (!inHunk && metadataPhase === 'headers') {
+			if (line.startsWith('--- ')) {
+				pendingOldFileHeader = line;
+				metadataPhase = 'awaitingNewHeader';
+				continue;
 			}
-		} else if (line.startsWith('+')) {
+			if (line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') || line.startsWith('rename ') || line.startsWith('Binary files') || line.startsWith('\\')) {
+				// ファイルメタ情報はビューアのヘッダで代替する（Binary等は文脈行として出さない）
+				if (line.startsWith('Binary files')) {
+					rows.push({ kind: 'hunk', text: line });
+				}
+				continue;
+			}
+			metadataPhase = 'none';
+		}
+		if (line.startsWith('+')) {
 			// 未追跡ファイルの擬似diff（全行+でハンク見出しなし）は1行目から数える
 			if (newNo === 0) {
 				newNo = 1;
