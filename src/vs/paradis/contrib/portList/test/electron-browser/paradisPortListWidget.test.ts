@@ -12,7 +12,7 @@ import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.j
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
-import { IParadisPortListSnapshot } from '../../common/paradisPortList.js';
+import { IParadisPortEntry, IParadisPortKillBatchResult, IParadisPortKillRequest, IParadisPortListSnapshot } from '../../common/paradisPortList.js';
 import { ParadisPortListClient } from '../../electron-browser/paradisPortListClient.js';
 import { IParadisPortListPanelOptions, ParadisPortListPanel } from '../../electron-browser/paradisPortListPanel.js';
 import { IParadisPortListPollTimer } from '../../electron-browser/paradisPortListPolling.js';
@@ -94,15 +94,27 @@ interface IWidgetHarness {
 	readonly timer: TestPollTimer;
 	readonly requests: boolean[];
 	readonly panels: TestPanel[];
+	readonly batchCalls: { readonly requests: readonly IParadisPortKillRequest[]; readonly expectedViaRemote: boolean }[];
+	readonly singleKillCalls: IParadisPortKillRequest[];
+	readonly notifications: string[];
 	readonly widget: ParadisPortListWidget;
 	deferNextSnapshot(): DeferredSnapshot;
 }
 
-function createWidgetHarness(): IWidgetHarness {
+interface IWidgetHarnessOptions {
+	readonly confirmed?: boolean;
+	readonly batchResult?: IParadisPortKillBatchResult;
+	readonly batchError?: Error;
+}
+
+function createWidgetHarness(options: IWidgetHarnessOptions = {}): IWidgetHarness {
 	const testDocument = new TestDocument();
 	const timer = new TestPollTimer();
 	const requests: boolean[] = [];
 	const panels: TestPanel[] = [];
+	const batchCalls: { requests: readonly IParadisPortKillRequest[]; expectedViaRemote: boolean }[] = [];
+	const singleKillCalls: IParadisPortKillRequest[] = [];
+	const notifications: string[] = [];
 	let deferredSnapshot: DeferredSnapshot | undefined;
 	const client = {
 		connectedToRemote: false,
@@ -111,6 +123,16 @@ function createWidgetHarness(): IWidgetHarness {
 			const snapshot = deferredSnapshot?.promise ?? Promise.resolve(createSnapshot());
 			deferredSnapshot = undefined;
 			return snapshot;
+		},
+		kill: async (request: IParadisPortKillRequest) => {
+			singleKillCalls.push(request);
+		},
+		killAll: async (killRequests: readonly IParadisPortKillRequest[], expectedViaRemote: boolean) => {
+			batchCalls.push({ requests: killRequests, expectedViaRemote });
+			if (options.batchError) {
+				throw options.batchError;
+			}
+			return options.batchResult ?? { failed: 0 };
 		},
 	} as unknown as ParadisPortListClient;
 	const instantiationService = {
@@ -127,15 +149,24 @@ function createWidgetHarness(): IWidgetHarness {
 		},
 	} as unknown as IInstantiationService;
 	const dependencies: IParadisPortListWidgetDependencies = { document: testDocument, pollTimer: timer };
+	const dialogService = {
+		confirm: async () => ({ confirmed: options.confirmed ?? true }),
+	} as unknown as IDialogService;
+	const notificationService = {
+		error: (message: string) => notifications.push(message),
+	} as unknown as INotificationService;
+	const logService = {
+		error() { },
+	} as unknown as ILogService;
 	const container = document.createElement('div');
 	document.body.append(container);
 	const widget = new ParadisPortListWidget(
 		container,
 		dependencies,
 		instantiationService,
-		{} as IDialogService,
-		{} as INotificationService,
-		{} as ILogService,
+		dialogService,
+		notificationService,
+		logService,
 	);
 	return {
 		container,
@@ -143,6 +174,9 @@ function createWidgetHarness(): IWidgetHarness {
 		timer,
 		requests,
 		panels,
+		batchCalls,
+		singleKillCalls,
+		notifications,
 		widget,
 		deferNextSnapshot: () => deferredSnapshot = new DeferredSnapshot(),
 	};
@@ -155,7 +189,14 @@ function createSnapshot(): IParadisPortListSnapshot {
 async function flushMicrotasks(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
 }
+
+const visibleEntries: readonly IParadisPortEntry[] = [
+	{ port: 3000, proto: 'TCP', pid: 10, processName: 'node', address: '127.0.0.1', risky: false },
+	{ port: 4000, proto: 'TCP', pid: 20, processName: 'python', address: '0.0.0.0', risky: true },
+];
 
 suite('ParadisPortListWidget', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -204,6 +245,64 @@ suite('ParadisPortListWidget', () => {
 			harness.widget.dispose();
 			assert.strictEqual(harness.panels[1].disposed, true);
 			assert.strictEqual(harness.timer.hasDeadline, false);
+		} finally {
+			harness.widget.dispose();
+		}
+	});
+
+	test('does not batch kill or refresh when Kill All confirmation is cancelled', async () => {
+		const harness = createWidgetHarness({ confirmed: false });
+		try {
+			harness.container.querySelector<HTMLButtonElement>('button')!.click();
+			await flushMicrotasks();
+			harness.panels[0].options.onKillAll(visibleEntries);
+			await flushMicrotasks();
+
+			assert.deepStrictEqual(harness.batchCalls, []);
+			assert.deepStrictEqual(harness.singleKillCalls, []);
+			assert.deepStrictEqual(harness.requests, [true]);
+			assert.deepStrictEqual(harness.notifications, []);
+		} finally {
+			harness.widget.dispose();
+		}
+	});
+
+	test('sends visible entries once to Kill All, reports partial failures, and refreshes once', async () => {
+		const harness = createWidgetHarness({ batchResult: { failed: 1 } });
+		try {
+			harness.container.querySelector<HTMLButtonElement>('button')!.click();
+			await flushMicrotasks();
+			harness.panels[0].options.onKillAll(visibleEntries);
+			await flushMicrotasks();
+
+			assert.deepStrictEqual(harness.batchCalls, [{
+				requests: [
+					{ port: 3000, pid: 10, processName: 'node' },
+					{ port: 4000, pid: 20, processName: 'python' },
+				],
+				expectedViaRemote: false,
+			}]);
+			assert.deepStrictEqual(harness.singleKillCalls, []);
+			assert.deepStrictEqual(harness.requests, [true, true]);
+			assert.deepStrictEqual(harness.notifications, ['1件のポートを終了できませんでした。']);
+		} finally {
+			harness.widget.dispose();
+		}
+	});
+
+	test('reports every visible entry as failed and refreshes once when Kill All rejects', async () => {
+		const rejectedEntries = [...visibleEntries, { port: 5000, proto: 'TCP' as const, pid: 30, processName: 'go', address: '127.0.0.1', risky: false }];
+		const harness = createWidgetHarness({ batchError: new Error('IPC disconnected') });
+		try {
+			harness.container.querySelector<HTMLButtonElement>('button')!.click();
+			await flushMicrotasks();
+			harness.panels[0].options.onKillAll(rejectedEntries);
+			await flushMicrotasks();
+
+			assert.strictEqual(harness.batchCalls.length, 1);
+			assert.deepStrictEqual(harness.singleKillCalls, []);
+			assert.deepStrictEqual(harness.requests, [true, true]);
+			assert.deepStrictEqual(harness.notifications, ['3件のポートを終了できませんでした。']);
 		} finally {
 			harness.widget.dispose();
 		}
