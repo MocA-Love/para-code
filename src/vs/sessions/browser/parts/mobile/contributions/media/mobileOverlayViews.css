@@ -74,6 +74,20 @@
 	gap: 8px;
 }
 
+.mobile-changes-toolbar {
+	flex: 0 0 auto;
+	min-width: 44px;
+}
+
+.mobile-changes-toolbar.has-no-actions {
+	display: none;
+}
+
+.mobile-changes-toolbar .monaco-toolbar .action-label {
+	min-width: 44px;
+	min-height: 44px;
+}
+
 .mobile-overlay-header-title {
 	font-size: 14px;
 	font-weight: 500;
