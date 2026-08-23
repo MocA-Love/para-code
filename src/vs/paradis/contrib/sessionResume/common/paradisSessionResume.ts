@@ -31,6 +31,15 @@ export interface IParadisResumeListRequest<TPath extends string = ParadisHostPat
 	readonly includeArchived?: boolean;
 }
 
+/**
+ * 一覧行のプレビュー用に、transcript の末尾から採取した最新の会話メッセージ。
+ * 読み取りに失敗した場合などは付かないため、受ける側は {@link IParadisResumeSession.preview} へフォールバックする。
+ */
+export interface IParadisResumeLatestMessage {
+	readonly role: 'user' | 'assistant';
+	readonly text: string;
+}
+
 export interface IParadisResumeSession {
 	/** shared process 内の検証済み transcript を指す、不透明な一時キー。 */
 	readonly catalogId: string;
@@ -38,6 +47,7 @@ export interface IParadisResumeSession {
 	readonly agent: ParadisResumeAgent;
 	readonly title: string;
 	readonly preview: string;
+	readonly latestMessage?: IParadisResumeLatestMessage;
 	readonly cwd: string;
 	readonly spaceStateKey: string;
 	readonly spaceName: string;

@@ -53,11 +53,18 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	private list: HTMLElement | undefined;
 	private detail: HTMLElement | undefined;
 	private searchInput: HTMLInputElement | undefined;
-	private agentSelect: HTMLSelectElement | undefined;
-	private spaceSelect: HTMLSelectElement | undefined;
-	private periodSelect: HTMLSelectElement | undefined;
+	/** 左フィルタナビの項目(ボタン化した旧 select)。render 毎に aria-pressed と件数を同期する。 */
+	private readonly agentNavButtons = new Map<AgentFilter, { button: HTMLButtonElement; count: HTMLElement }>();
+	private spaceNavCurrent: { button: HTMLButtonElement; count: HTMLElement } | undefined;
+	private railSpaceTree: HTMLElement | undefined;
+	private readonly spaceNavButtons = new Map<string, { button: HTMLButtonElement; count: HTMLElement }>();
+	private readonly periodNavButtons = new Map<PeriodFilter, { button: HTMLButtonElement; count: HTMLElement }>();
+	private railSummary: HTMLElement | undefined;
 	private archivedInput: HTMLInputElement | undefined;
-	private refreshButton: HTMLButtonElement | undefined;
+	/** 更新ボタン(左ナビのフッターとリスト列ヘッダーの2箇所)。loading 状態は両方へ同期する。 */
+	private readonly refreshButtons: HTMLButtonElement[] = [];
+	/** 狭い幅で折りたたんだ左ナビを出し入れするトグル。広い幅では CSS で隠れる。 */
+	private railToggleButton: HTMLButtonElement | undefined;
 	private readonly renderDisposables = this._register(new DisposableStore());
 	private readonly searchScheduler = this._register(new RunOnceScheduler(() => this.searchTranscripts(), 250));
 	private readonly client: ParadisSessionResumeClient;
@@ -106,8 +113,87 @@ export class ParadisSessionResumeEditor extends EditorPane {
 
 	protected override createEditor(parent: HTMLElement): void {
 		this.root = dom.append(parent, $('.paradis-session-resume'));
-		const toolbar = dom.append(this.root, $('.paradis-session-resume-toolbar'));
-		const searchWrap = dom.append(toolbar, $('.paradis-session-resume-search'));
+		const content = dom.append(this.root, $('.paradis-session-resume-content'));
+
+		// 左カラム: フィルタナビ(旧 toolbar の select ×3・checkbox・refresh をここへ移設)
+		const rail = dom.append(content, $('nav.paradis-session-resume-nav'));
+		rail.setAttribute('aria-label', localize('paradis.sessionResume.filterRail', "セッション履歴のフィルター"));
+
+		dom.append(rail, $('.nav-cap')).textContent = localize('paradis.sessionResume.agentLabel', "エージェント");
+		const agentGroup = dom.append(rail, $('.nav-group'));
+		for (const [value, label] of [
+			['all', localize('paradis.sessionResume.allAgents', "すべてのエージェント")],
+			['claude', 'Claude Code'],
+			['codex', 'Codex'],
+		] as const) {
+			const entry = this.createNavItem(agentGroup, label, button => {
+				if (value !== 'all') {
+					this.renderAgentIcon(button, value);
+				}
+			});
+			entry.button.dataset.agentFilter = value;
+			this._register(dom.addDisposableListener(entry.button, dom.EventType.CLICK, () => {
+				this.agentFilter = value;
+				this.ensureSelectedSessionIsVisible();
+				this.render();
+			}));
+			this.agentNavButtons.set(value, entry);
+		}
+
+		dom.append(rail, $('.nav-cap')).textContent = localize('paradis.sessionResume.spaceLabel', "スペース");
+		const currentSpaceEntry = this.createNavItem(rail, localize('paradis.sessionResume.currentSpaceFilter', "現在のスペース"),
+			button => dom.append(button, $(`span${ThemeIcon.asCSSSelector(Codicon.home)}`)));
+		currentSpaceEntry.button.dataset.spaceFilter = 'current';
+		this._register(dom.addDisposableListener(currentSpaceEntry.button, dom.EventType.CLICK, () => {
+			this.spaceFilter = 'current';
+			this.currentSearchMatchIndex = 0;
+			this.ensureSelectedSessionIsVisible();
+			this.render();
+		}));
+		this.spaceNavCurrent = currentSpaceEntry;
+		// スペース一覧は refresh のたびに差し替わるため、クリックはツリー側で委譲して受ける。
+		this.railSpaceTree = dom.append(rail, $('.nav-tree'));
+		this._register(dom.addDisposableListener(this.railSpaceTree, dom.EventType.CLICK, event => {
+			const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('button[data-space-filter]');
+			if (!button) { return; }
+			this.spaceFilter = button.dataset.spaceFilter ?? 'all';
+			this.currentSearchMatchIndex = 0;
+			this.ensureSelectedSessionIsVisible();
+			this.render();
+		}));
+
+		dom.append(rail, $('.nav-cap')).textContent = localize('paradis.sessionResume.periodLabel', "期間");
+		const chipRow = dom.append(rail, $('.chip-row'));
+		for (const [value, label] of [
+			['all', localize('paradis.sessionResume.periodAll', "すべて")],
+			['day', localize('paradis.sessionResume.periodDay', "過去24時間")],
+			['week', localize('paradis.sessionResume.periodWeek', "過去7日")],
+			['month', localize('paradis.sessionResume.periodMonth', "過去30日")],
+		] as const) {
+			const entry = this.createNavItem(chipRow, label);
+			entry.button.classList.add('fchip');
+			entry.button.dataset.periodFilter = value;
+			this._register(dom.addDisposableListener(entry.button, dom.EventType.CLICK, () => {
+				this.periodFilter = value;
+				this.ensureSelectedSessionIsVisible();
+				this.render();
+			}));
+			this.periodNavButtons.set(value, entry);
+		}
+
+		const archivedLabel = dom.append(rail, $('label.paradis-session-resume-check'));
+		this.archivedInput = dom.append(archivedLabel, $('input')) as HTMLInputElement;
+		this.archivedInput.type = 'checkbox';
+		dom.append(archivedLabel, $('span')).textContent = localize('paradis.sessionResume.archived', "アーカイブ済みを含む");
+		this._register(dom.addDisposableListener(this.archivedInput, dom.EventType.CHANGE, () => this.refreshController.requestImmediate()));
+
+		const footer = dom.append(rail, $('.rail-footer'));
+		this.createRefreshButton(footer, localize('paradis.sessionResume.refreshShort', "履歴を更新"));
+		this.railSummary = dom.append(footer, $('span.rail-summary'));
+
+		// 中央カラム: 検索ヘッダー + リスト
+		const listColumn = dom.append(content, $('.paradis-session-resume-listcolumn'));
+		const searchWrap = dom.append(listColumn, $('.paradis-session-resume-search'));
 		dom.append(searchWrap, $(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		this.searchInput = dom.append(searchWrap, $('input')) as HTMLInputElement;
 		this.searchInput.type = 'search';
@@ -121,92 +207,93 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			this.searchScheduler.schedule();
 			this.render();
 		}));
-
-		this.agentSelect = this.createSelect(toolbar, localize('paradis.sessionResume.agentLabel', "エージェント"), [
-			['all', localize('paradis.sessionResume.allAgents', "すべてのエージェント")],
-			['claude', 'Claude Code'],
-			['codex', 'Codex'],
-		]);
-		this._register(dom.addDisposableListener(this.agentSelect, dom.EventType.CHANGE, () => {
-			this.agentFilter = this.agentSelect?.value as AgentFilter;
-			this.ensureSelectedSessionIsVisible();
-			this.render();
+		// 狭い幅では左ナビ(rail)が折りたたまれるため、検索バー右端にも開閉トグルと更新を置く。
+		const headActions = dom.append(searchWrap, $('.search-head-actions'));
+		this.railToggleButton = dom.append(headActions, $('button.paradis-session-resume-rail-toggle')) as HTMLButtonElement;
+		this.railToggleButton.type = 'button';
+		this.railToggleButton.title = localize('paradis.sessionResume.toggleFilterRail', "フィルターレールの表示を切り替え");
+		this.railToggleButton.setAttribute('aria-label', this.railToggleButton.title);
+		this.railToggleButton.setAttribute('aria-expanded', 'false');
+		dom.append(this.railToggleButton, $(`span${ThemeIcon.asCSSSelector(Codicon.layoutSidebarLeft)}`));
+		this._register(dom.addDisposableListener(this.railToggleButton, dom.EventType.CLICK, () => {
+			const open = this.root?.classList.toggle('rail-open') === true;
+			this.railToggleButton?.setAttribute('aria-expanded', String(open));
 		}));
+		this.createRefreshButton(headActions);
+		this.list = dom.append(listColumn, $('.paradis-session-resume-list'));
 
-		this.spaceSelect = this.createSelect(toolbar, localize('paradis.sessionResume.spaceLabel', "スペース"), [
-			['all', localize('paradis.sessionResume.allSpaces', "すべてのスペース")],
-			['current', localize('paradis.sessionResume.currentSpaceFilter', "現在のスペース")],
-		]);
-		this._register(dom.addDisposableListener(this.spaceSelect, dom.EventType.CHANGE, () => {
-			this.spaceFilter = this.spaceSelect?.value ?? 'all';
-			this.currentSearchMatchIndex = 0;
-			this.ensureSelectedSessionIsVisible();
-			this.render();
-		}));
-
-		this.periodSelect = this.createSelect(toolbar, localize('paradis.sessionResume.periodLabel', "期間"), [
-			['all', localize('paradis.sessionResume.periodAll', "すべての期間")],
-			['day', localize('paradis.sessionResume.periodDay', "過去24時間")],
-			['week', localize('paradis.sessionResume.periodWeek', "過去7日")],
-			['month', localize('paradis.sessionResume.periodMonth', "過去30日")],
-		]);
-		this._register(dom.addDisposableListener(this.periodSelect, dom.EventType.CHANGE, () => {
-			this.periodFilter = this.periodSelect?.value as PeriodFilter;
-			this.ensureSelectedSessionIsVisible();
-			this.render();
-		}));
-
-		const archivedLabel = dom.append(toolbar, $('label.paradis-session-resume-check'));
-		this.archivedInput = dom.append(archivedLabel, $('input')) as HTMLInputElement;
-		this.archivedInput.type = 'checkbox';
-		dom.append(archivedLabel, $('span')).textContent = localize('paradis.sessionResume.archived', "アーカイブ済み");
-		this._register(dom.addDisposableListener(this.archivedInput, dom.EventType.CHANGE, () => this.refreshController.requestImmediate()));
-
-		this.refreshButton = dom.append(toolbar, $('button.paradis-session-resume-refresh')) as HTMLButtonElement;
-		this.refreshButton.title = localize('paradis.sessionResume.refresh', "セッション履歴を更新");
-		this.refreshButton.setAttribute('aria-label', this.refreshButton.title);
-		dom.append(this.refreshButton, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
-		this._register(dom.addDisposableListener(this.refreshButton, dom.EventType.CLICK, () => this.refreshController.requestImmediate()));
-
-		const content = dom.append(this.root, $('.paradis-session-resume-content'));
-		this.list = dom.append(content, $('.paradis-session-resume-list'));
+		// 右カラム: 詳細
 		this.detail = dom.append(content, $('.paradis-session-resume-detail'));
 		this.render();
 	}
 
-	private createSelect(parent: HTMLElement, ariaLabel: string, options: readonly (readonly [string, string])[]): HTMLSelectElement {
-		const select = dom.append(parent, $('select')) as HTMLSelectElement;
-		select.setAttribute('aria-label', ariaLabel);
-		for (const [value, label] of options) {
-			const option = dom.append(select, $('option')) as HTMLOptionElement;
-			option.value = value;
-			option.textContent = label;
-		}
-		return select;
+	private createNavItem(parent: HTMLElement, label: string, decorate?: (button: HTMLButtonElement) => void): { button: HTMLButtonElement; count: HTMLElement } {
+		const button = dom.append(parent, $('button.nav-item')) as HTMLButtonElement;
+		button.type = 'button';
+		decorate?.(button);
+		dom.append(button, $('span.nav-label')).textContent = label;
+		return { button, count: dom.append(button, $('span.nav-count')) };
 	}
 
-	private updateSpaceSelectOptions(): void {
-		if (!this.spaceSelect) {
+	/** 更新ボタンを作る。ラベル省略時はアイコンのみのコンパクト表示(リスト列ヘッダー用)。 */
+	private createRefreshButton(parent: HTMLElement, label?: string): HTMLButtonElement {
+		const button = dom.append(parent, $('button.paradis-session-resume-refresh')) as HTMLButtonElement;
+		button.type = 'button';
+		button.title = localize('paradis.sessionResume.refresh', "セッション履歴を更新");
+		button.setAttribute('aria-label', button.title);
+		dom.append(button, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
+		if (label) {
+			dom.append(button, $('span')).textContent = label;
+		}
+		this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.refreshController.requestImmediate()));
+		this.refreshButtons.push(button);
+		return button;
+	}
+
+	private updateSpaceNavOptions(): void {
+		if (!this.railSpaceTree) {
 			return;
 		}
-		const previous = this.spaceFilter;
-		dom.clearNode(this.spaceSelect);
-		for (const [value, label] of [
-			['all', localize('paradis.sessionResume.allSpaces', "すべてのスペース")],
-			['current', localize('paradis.sessionResume.currentSpaceFilter', "現在のスペース")],
-		] as const) {
-			const option = dom.append(this.spaceSelect, $('option')) as HTMLOptionElement;
-			option.value = value;
-			option.textContent = label;
-		}
+		dom.clearNode(this.railSpaceTree);
+		this.spaceNavButtons.clear();
 		for (const space of this.spaces) {
-			const option = dom.append(this.spaceSelect, $('option')) as HTMLOptionElement;
-			option.value = `${SPACE_FILTER_PREFIX}${space.stateKey}`;
-			option.textContent = space.name;
+			const value = `${SPACE_FILTER_PREFIX}${space.stateKey}`;
+			const entry = this.createNavItem(this.railSpaceTree, space.name);
+			entry.button.title = space.name;
+			entry.button.dataset.spaceFilter = value;
+			this.spaceNavButtons.set(value, entry);
 		}
-		const available = [...this.spaceSelect.options].some(option => option.value === previous);
-		this.spaceFilter = available ? previous : 'all';
-		this.spaceSelect.value = this.spaceFilter;
+		const available = this.spaces.some(space => `${SPACE_FILTER_PREFIX}${space.stateKey}` === this.spaceFilter);
+		if (!available && this.spaceFilter !== 'all' && this.spaceFilter !== 'current') {
+			this.spaceFilter = 'all';
+		}
+	}
+
+	/** 左ナビの選択状態(aria-pressed)・件数・サマリを現在のフィルタ結果へ同期する。render() から毎回呼ぶ。 */
+	private updateRailSelection(filteredCount: number): void {
+		const setPressed = (entry: { button: HTMLButtonElement; count: HTMLElement }, pressed: boolean, count: number): void => {
+			entry.button.classList.toggle('on', pressed);
+			entry.button.setAttribute('aria-pressed', String(pressed));
+			entry.count.textContent = String(count);
+		};
+		const sessions = this.sessions;
+		for (const [value, entry] of this.agentNavButtons) {
+			setPressed(entry, this.agentFilter === value, value === 'all' ? sessions.length : sessions.filter(session => session.agent === value).length);
+		}
+		if (this.spaceNavCurrent) {
+			setPressed(this.spaceNavCurrent, this.spaceFilter === 'current', sessions.filter(session => session.currentSpace).length);
+		}
+		for (const [value, entry] of this.spaceNavButtons) {
+			setPressed(entry, this.spaceFilter === value, sessions.filter(session => session.spaceStateKey === value.slice(SPACE_FILTER_PREFIX.length)).length);
+		}
+		for (const [value, entry] of this.periodNavButtons) {
+			const periodMs = value === 'day' ? 86_400_000 : value === 'week' ? 7 * 86_400_000 : value === 'month' ? 30 * 86_400_000 : undefined;
+			const threshold = periodMs ? Date.now() - periodMs : undefined;
+			setPressed(entry, this.periodFilter === value, threshold === undefined ? sessions.length : sessions.filter(session => session.updatedAt >= threshold).length);
+		}
+		if (this.railSummary) {
+			this.railSummary.textContent = localize('paradis.sessionResume.filterSummary', "{0} / {1} 件表示", filteredCount, sessions.length);
+		}
 	}
 
 	private ensureSelectedSessionIsVisible(): boolean {
@@ -270,7 +357,9 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		this.searchSequence++;
 		this.searchMatches = undefined;
 		this.loading = true;
-		this.refreshButton?.classList.add('loading');
+		for (const button of this.refreshButtons) {
+			button.classList.add('loading');
+		}
 		this.render();
 		try {
 			await this.worktreeService.initializationBarrier;
@@ -278,7 +367,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 				return;
 			}
 			this.spaces = this.collectSpaces();
-			this.updateSpaceSelectOptions();
+			this.updateSpaceNavOptions();
 			this.sessions = await this.client.list({
 				spaces: this.spaces,
 				includeArchived: this.archivedInput?.checked === true,
@@ -299,7 +388,9 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		} finally {
 			if (!this._store.isDisposed) {
 				this.loading = false;
-				this.refreshButton?.classList.remove('loading');
+				for (const button of this.refreshButtons) {
+					button.classList.remove('loading');
+				}
 				this.render();
 				if (this.query) {
 					this.searchScheduler.schedule();
@@ -369,6 +460,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			return;
 		}
 		const filtered = this.filteredSessions();
+		this.updateRailSelection(filtered.length);
 		if (filtered.length === 0) {
 			this.renderState(this.list, Codicon.search, this.sessions.length === 0
 				? localize('paradis.sessionResume.noSessions', "登録されたスペースにClaude CodeまたはCodexのセッションが見つかりません。")
@@ -411,6 +503,11 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		badge.setAttribute('role', 'img');
 		badge.setAttribute('aria-label', label);
 		return badge;
+	}
+
+	/** transcript 中の発話者の表示名。一覧プレビューと詳細の両方で使う。 */
+	private speakerName(session: IParadisResumeSession, role: 'user' | 'assistant'): string {
+		return role === 'user' ? localize('paradis.sessionResume.you', "あなた") : (session.agent === 'claude' ? 'Claude' : 'Codex');
 	}
 
 	private searchTerms(): readonly string[] {
@@ -477,7 +574,17 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			this.appendHighlightedText(dom.append(top, $('span.row-title')), session.title);
 			dom.append(top, $('span.row-time')).textContent = fromNow(session.updatedAt, true);
 			const searchMatch = this.searchMatches?.get(session.catalogId);
-			this.appendHighlightedText(dom.append(row, $('.row-preview')), searchMatch?.snippet || session.preview);
+			// プレビューの優先規則: 検索ヒット時は一致スニペット、なければ「最新(最後)の会話メッセージ」、
+			// それも採取できていない場合は最初のプロンプト(preview)へフォールバックする。
+			const rowPreview = dom.append(row, $('.row-preview'));
+			if (searchMatch?.snippet) {
+				this.appendHighlightedText(rowPreview, searchMatch.snippet);
+			} else if (session.latestMessage) {
+				dom.append(rowPreview, $('span.row-speaker')).textContent = `${this.speakerName(session, session.latestMessage.role)}:`;
+				this.appendHighlightedText(dom.append(rowPreview, $('span.row-text')), session.latestMessage.text);
+			} else {
+				this.appendHighlightedText(rowPreview, session.preview);
+			}
 			if (this.query && searchMatch) {
 				const matchInfo = dom.append(row, $('.row-match-info'));
 				dom.append(matchInfo, $('span.match-source')).textContent = searchMatch.source === 'conversation'
@@ -550,7 +657,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			for (const message of this.previewMessages) {
 				const article = dom.append(transcript, $(`article.message.${message.role}`));
 				const label = dom.append(article, $('.message-role'));
-				label.textContent = message.role === 'user' ? localize('paradis.sessionResume.you', "あなた") : (session.agent === 'claude' ? 'Claude' : 'Codex');
+				label.textContent = this.speakerName(session, message.role);
 				const messageText = dom.append(article, $('.message-text'));
 				const sourceMatch = message.rawSearchMatch ? dom.append(article, $('.message-source-match')) : undefined;
 				if (sourceMatch) {

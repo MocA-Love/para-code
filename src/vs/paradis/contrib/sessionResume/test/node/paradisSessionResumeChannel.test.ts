@@ -147,6 +147,90 @@ suite('ParadisSessionResume', () => {
 		}
 	});
 
+	test('attaches the newest conversation message to listed sessions', async () => {
+		const transcriptPath = join(claudeProject, 'latest-message.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'First prompt', '2026-08-13T01:00:00.000Z'),
+			claudeMessage('assistant', 'Newest reply\ntext', '2026-08-13T02:00:00.000Z'),
+		]);
+
+		const [session] = await listSessions(createService());
+
+		assert.deepStrictEqual(session.latestMessage, { role: 'assistant', text: 'Newest reply text' });
+	});
+
+	test('falls back to the first prompt without latestMessage when the tail read fails', async () => {
+		const transcriptPath = join(claudeProject, 'failing-tail.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Fallback prompt'),
+			claudeMessage('assistant', 'Unreachable reply'),
+		]);
+		let summaryReads = 0;
+		const service = createService(undefined, async filePath => {
+			if (filePath === transcriptPath && ++summaryReads === 2) {
+				throw new Error('tail read failed');
+			}
+		});
+
+		const [session] = await listSessions(service);
+
+		assert.strictEqual(session.latestMessage, undefined);
+		assert.strictEqual(session.preview, 'Fallback prompt');
+	});
+
+	test('retries a failed tail read on the next refresh instead of caching the failure', async () => {
+		const transcriptPath = join(claudeProject, 'recovered-tail.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Recovered prompt'),
+			claudeMessage('assistant', 'Recovered reply'),
+		]);
+		let transcriptReads = 0;
+		let failedTailReads = 0;
+		const service = createService(undefined, async filePath => {
+			if (filePath !== transcriptPath) {
+				return;
+			}
+			transcriptReads++;
+			if (transcriptReads === 2) {
+				failedTailReads++;
+				throw new Error('temporary tail failure');
+			}
+		});
+
+		const [first] = await listSessions(service);
+		assert.strictEqual(first.latestMessage, undefined);
+		const [second] = await listSessions(service);
+
+		assert.strictEqual(failedTailReads, 1);
+		assert.deepStrictEqual(second.latestMessage, { role: 'assistant', text: 'Recovered reply' });
+	});
+
+	test('skips tail rereads while catalogId and updatedAt stay unchanged and rereads after an update', async () => {
+		const transcriptPath = join(claudeProject, 'cached-latest.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Cached prompt')]);
+		let transcriptReads = 0;
+		const service = createService(undefined, async () => {
+			transcriptReads++;
+		});
+
+		const [first] = await listSessions(service);
+		assert.strictEqual(transcriptReads, 2); // 概要(head)と最新メッセージ(tail)
+		const unchanged = await listSessions(service);
+		assert.strictEqual(transcriptReads, 3); // head だけ再読し、tail はキャッシュで再読しない
+
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Cached prompt'),
+			claudeMessage('assistant', 'Refreshed reply'),
+		]);
+		const updatedTime = new Date(first.updatedAt + 5_000);
+		await fs.utimes(transcriptPath, updatedTime, updatedTime);
+		const refreshed = await listSessions(service);
+
+		assert.strictEqual(transcriptReads, 5); // updatedAt が変わったため head と tail を再読する
+		assert.deepStrictEqual(unchanged.map(session => session.latestMessage), [{ role: 'user', text: 'Cached prompt' }]);
+		assert.deepStrictEqual(refreshed.map(session => session.latestMessage), [{ role: 'assistant', text: 'Refreshed reply' }]);
+	});
+
 	test('uses the Codex SQLite index and excludes archived threads unless requested', async () => {
 		const visiblePath = join(codexSessions, 'rollout-visible-db-session.jsonl');
 		const archivedPath = join(codexSessions, 'rollout-archived-db-session.jsonl');
@@ -273,7 +357,8 @@ suite('ParadisSessionResume', () => {
 		summaryGate.complete();
 		const [firstResult, secondResult] = await Promise.all([first, second]);
 
-		assert.strictEqual(summaryReadCount, 1);
+		// 共有された1スキャンの概要(head)と最新メッセージ(tail)で計2読。
+		assert.strictEqual(summaryReadCount, 2);
 		assert.strictEqual(firstResult, secondResult);
 	});
 
@@ -297,7 +382,9 @@ suite('ParadisSessionResume', () => {
 			summaryGate.complete();
 			const [[firstSession], [secondSession]] = await Promise.all([first, second]);
 
-			assert.strictEqual(summaryReadCount, 2);
+			// 両スキャンが同一ファイルを指すため、先に走った側の tail だけ読まれ(3読目)、
+			// もう片方は catalogId+updatedAt キャッシュで再読を skip する。
+			assert.strictEqual(summaryReadCount, 3);
 			assert.strictEqual(firstSession?.cwd, firstCwd);
 			assert.strictEqual(secondSession?.cwd, secondCwd);
 		}
@@ -352,13 +439,16 @@ suite('ParadisSessionResume', () => {
 
 		const primarySpace: IParadisResumeSpace<string> = { stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true };
 		const secondarySpace: IParadisResumeSpace<string> = { stateKey: 'secondary-state', name: 'Secondary Workspace', cwd: secondaryWorkspace, current: false };
+		// 各スキャンは概要(head)と最新メッセージ(tail)を読む。同一 transcript への2回目の
+		// tail は catalogId+updatedAt キャッシュで skip されるため、同一ファイルの組は +1、
+		// 異なるファイルの組は +2、両ファイルを跨ぐ space order は (head×4 + tail×2) = 6。
 		const cases: readonly { readonly name: string; readonly first: IParadisResumeListRequest<string>; readonly second: IParadisResumeListRequest<string>; readonly expectedSummaryReads: number }[] = [
-			{ name: 'state key', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, stateKey: 'other-state' }], includeArchived: false }, expectedSummaryReads: 2 },
-			{ name: 'name', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, name: 'Other Workspace' }], includeArchived: false }, expectedSummaryReads: 2 },
-			{ name: 'cwd', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [secondarySpace], includeArchived: false }, expectedSummaryReads: 2 },
-			{ name: 'current', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, current: false }], includeArchived: false }, expectedSummaryReads: 2 },
-			{ name: 'includeArchived', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [primarySpace], includeArchived: true }, expectedSummaryReads: 2 },
-			{ name: 'space order', first: { spaces: [primarySpace, secondarySpace], includeArchived: false }, second: { spaces: [secondarySpace, primarySpace], includeArchived: false }, expectedSummaryReads: 4 },
+			{ name: 'state key', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, stateKey: 'other-state' }], includeArchived: false }, expectedSummaryReads: 3 },
+			{ name: 'name', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, name: 'Other Workspace' }], includeArchived: false }, expectedSummaryReads: 3 },
+			{ name: 'cwd', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [secondarySpace], includeArchived: false }, expectedSummaryReads: 4 },
+			{ name: 'current', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, current: false }], includeArchived: false }, expectedSummaryReads: 3 },
+			{ name: 'includeArchived', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [primarySpace], includeArchived: true }, expectedSummaryReads: 3 },
+			{ name: 'space order', first: { spaces: [primarySpace, secondarySpace], includeArchived: false }, second: { spaces: [secondarySpace, primarySpace], includeArchived: false }, expectedSummaryReads: 6 },
 		];
 
 		for (const testCase of cases) {
@@ -392,7 +482,8 @@ suite('ParadisSessionResume', () => {
 		await service.list(createListRequest());
 		await service.list(createListRequest());
 
-		assert.strictEqual(summaryReadCount, 2);
+		// 1回目: head + tail。2回目: head のみ(tail は updatedAt 不変のためキャッシュ再利用)。
+		assert.strictEqual(summaryReadCount, 3);
 	});
 
 	test('cleans a rejected active list request so a later request retries', async () => {
@@ -418,7 +509,8 @@ suite('ParadisSessionResume', () => {
 
 		assert.strictEqual(first.status, 'rejected');
 		assert.strictEqual(second.status, 'rejected');
-		assert.strictEqual(summaryReadCount, 1);
+		// 再試行した1スキャンの head + tail。
+		assert.strictEqual(summaryReadCount, 2);
 		assert.deepStrictEqual(retried.map(session => session.id), ['retry-after-rejection']);
 	});
 
