@@ -37,6 +37,7 @@ import { ITerminalCompletion, TerminalCompletionItemKind } from '../../../../wor
 import { ITerminalCompletionProvider, ITerminalCompletionService } from '../../../../workbench/contrib/terminalContrib/suggest/browser/terminalCompletionService.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ParadisTerminalHistoryCache, paradisTerminalHistoryCacheKey, paradisDecodeZshHistory, paradisParseBashHistory, paradisParseZshHistory, ParadisTerminalHistorySharedValue, ParadisTerminalHistoryWaitResult } from '../common/paradisTerminalHistoryCache.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const MAX_RESULTS = 20;
 
@@ -201,6 +202,10 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		}
 		const home = remoteEnvironment?.userHome?.fsPath ?? env['HOME'];
 		if (!home) {
+			// zsh/bash 向けのファイル履歴マージが以後ずっと無効化される(undefinedが
+			// ParadisTerminalHistorySharedValue にキャッシュされ、再解決されない)。頻度不明な
+			// 環境要因の切り分け用に、情報レベルで計測だけしておく。
+			reportParadisDiagnosticError('owned', 'terminal-history-suggest', 'resolve-location-no-home', new Error('No HOME resolved for terminal history location'), undefined, 'info');
 			return undefined;
 		}
 		const remoteAuthority = this._remoteAgentService.getConnection()?.remoteAuthority;
@@ -233,6 +238,12 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 			if (e instanceof FileOperationError && e.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
 				return undefined;
 			}
+			// このrejectionは呼び出し元(ParadisTerminalHistoryCache)で「履歴なし」の負キャッシュへ
+			// 丸められ、権限/IOエラーがログにしか残らなくなる。負キャッシュ化の条件は変えず、
+			// ここで実際の原因を計測だけしておく。
+			reportParadisDiagnosticError('owned', 'terminal-history-suggest', 'history-read-failed', e, {
+				shell_kind: request.shellType,
+			});
 			throw e;
 		}
 		if (this._isDisposed) {

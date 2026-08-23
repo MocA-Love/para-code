@@ -137,7 +137,7 @@ export interface IParadisLimitsSetupState {
 	readonly email?: string;
 	/** Codex: 追加先ホームの表示ラベル(~/.codex-3 等)。 */
 	readonly homeLabel?: string;
-	/** Codex: 重複確認時にゴミ箱へ移動する新規ホームの絶対パス。 */
+	/** Codex: 重複確認時に破棄する新規ホームの絶対パス(ローカルはゴミ箱へ移動、リモートは完全削除)。 */
 	readonly homePath?: string;
 	/** Codex: 同じaccount_idが見つかった既存ホームの表示用ラベル。 */
 	readonly duplicateHomeLabels?: readonly string[];

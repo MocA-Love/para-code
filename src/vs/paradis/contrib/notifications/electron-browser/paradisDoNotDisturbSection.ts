@@ -106,8 +106,9 @@ export class ParadisDoNotDisturbSection extends Disposable {
 			option.value = duration.id;
 			option.textContent = duration.label;
 		}
-		// 「自分でオフにするまで」だけは保存された状態（until 未設定）から現在の選択と判別できる。
-		// 時限の3つは選択した時点から残り時間が減っていくため、選択中の強調ではなく左の残り時間 hint で示す。
+		// select の選択状態は _matchDurationId で「自分でオフにするまで」を含む全ての選択肢に一律反映する
+		// （until 未設定なら manual、時限3つは許容差内の一致で判定）。時限の残り時間は選択のたびに
+		// 減っていくため、select 自体ではなく左の残り時間 hint で別途示す。
 		select.value = this._matchDurationId(state.until, renderNow);
 		this._renderDisposables.add(dom.addDisposableListener(select, 'change', () => {
 			const duration = PARADIS_DO_NOT_DISTURB_DURATIONS.find(d => d.id === select.value);

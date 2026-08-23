@@ -11,11 +11,20 @@
 // ブロックする（「このブラウザまたはアプリは安全でない可能性があります」）ため。
 // 呼び出し元は browserSession.ts の configure()（PARA-PATCH 1行）。
 
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+
 /**
  * 内蔵ブラウザ用のElectronセッションのUser-AgentをChrome風に書き換える。
  * セッション単位で設定するため、そのセッション上の全ビュー・全ナビゲーションに効く。
  */
 export function paradisApplyChromeLikeUserAgent(session: Electron.Session): void {
-	const chromeLikeUA = session.getUserAgent().replace(/\sElectron\/\S+/g, '').trim();
+	const originalUA = session.getUserAgent();
+	const chromeLikeUA = originalUA.replace(/\sElectron\/\S+/g, '').trim();
+	if (chromeLikeUA === originalUA) {
+		// Electron側のUA形式が変わり `Electron/x.y.z` トークンが消えている等で、この置換が
+		// no-opになっている。setUserAgentは呼ばれ続けるので気付く手段がなく、UAに
+		// Electronシグネチャが残ったままログインブロックが再発する。
+		reportParadisDiagnosticError('owned', 'browser-user-agent', 'ua-still-electron', new Error('chrome-like User-Agent rewrite did not change the User-Agent string'), { safe_ua_length: originalUA.length }, 'warning');
+	}
 	session.setUserAgent(chromeLikeUA);
 }

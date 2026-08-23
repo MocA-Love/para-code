@@ -450,7 +450,6 @@ function normalizeDevice(raw: unknown): IParadisMobileDevice | undefined {
 	};
 }
 
-/** 端末の画面寸法。入力はポイント、スクリーンショットはピクセルなので両方を保持する。 */
 /** MCPの引数から、ホストの UiQuery へそのまま渡せる形を作る。 */
 function buildUiQuery(args: Record<string, unknown>): { text?: string; identifier?: string; role?: string; exact: boolean; interactableOnly: boolean; limit: number } {
 	return {
@@ -484,6 +483,7 @@ function findFocusedElement(node: unknown): Record<string, unknown> | undefined 
 	return undefined;
 }
 
+/** 端末の画面寸法。入力はポイント、スクリーンショットはピクセルなので両方を保持する。 */
 function normalizeDisplay(raw: unknown): IParadisMobileDisplay | undefined {
 	if (!raw || typeof raw !== 'object') {
 		return undefined;

@@ -190,6 +190,31 @@ suite('ParadisAgentStatusSnapshotService', () => {
 		assert.strictEqual(outcomes[1].snapshot?.agentHookTokens[0], 'recovered');
 	});
 
+	test('carries agentHookTokenIssueUrls through to the published snapshot, frozen', async () => {
+		const scheduler = new TestScheduler();
+		const service = store.add(createService(scheduler, async () => snapshot('token-a', ['https://example.com/issues/1'])));
+		const outcomes: IParadisAgentStatusSnapshotOutcome[] = [];
+		store.add(service.subscribe(outcome => outcomes.push(outcome)));
+
+		await scheduler.advanceBy(0);
+
+		assert.deepStrictEqual(outcomes[0].snapshot?.agentHookTokenIssueUrls, [{ token: 'token-a', issueUrls: ['https://example.com/issues/1'] }]);
+		assert.strictEqual(Object.isFrozen(outcomes[0].snapshot?.agentHookTokenIssueUrls), true);
+		assert.strictEqual(Object.isFrozen(outcomes[0].snapshot?.agentHookTokenIssueUrls?.[0]), true);
+		assert.strictEqual(Object.isFrozen(outcomes[0].snapshot?.agentHookTokenIssueUrls?.[0].issueUrls), true);
+	});
+
+	test('omits agentHookTokenIssueUrls from the published snapshot when the transport reports none', async () => {
+		const scheduler = new TestScheduler();
+		const service = store.add(createService(scheduler, async () => snapshot('token-a')));
+		const outcomes: IParadisAgentStatusSnapshotOutcome[] = [];
+		store.add(service.subscribe(outcome => outcomes.push(outcome)));
+
+		await scheduler.advanceBy(0);
+
+		assert.strictEqual(outcomes[0].snapshot?.agentHookTokenIssueUrls, undefined);
+	});
+
 	test('uses the renderer-owned shared channel command with no argument payload', async () => {
 		const scheduler = new TestScheduler();
 		const channelCalls: Array<{ command: string; argumentCount: number }> = [];
@@ -248,10 +273,11 @@ function createService(
 	);
 }
 
-function snapshot(token: string): IParadisAgentStatusSnapshot {
+function snapshot(token: string, issueUrls?: readonly string[]): IParadisAgentStatusSnapshot {
 	return {
 		paneStatuses: [{ token, status: 'working', changedAt: 1 }],
 		agentHookTokens: [token],
+		...(issueUrls ? { agentHookTokenIssueUrls: [{ token, issueUrls }] } : {}),
 	};
 }
 

@@ -12,6 +12,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
  * 貼り付けた画像を置くディレクトリ名。cwd 配下に作る（TUI が確認なしに読める範囲を保つため）。
@@ -97,7 +98,8 @@ async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalIma
 	await ensurePastedImagesIgnored(directory, target.fileService);
 	try {
 		await target.fileService.writeFile(file, VSBuffer.wrap(image));
-	} catch {
+	} catch (error) {
+		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'remote-write-failed', error);
 		return undefined;
 	}
 	// 過去に置いたものの掃除はユーザーから見える効果が無いので、待たずに投げっぱなしにする。
@@ -137,8 +139,9 @@ async function cleanupOldImages(directory: URI, fileService: IFileService, keep:
 				await fileService.del(child.resource);
 			}
 		}
-	} catch {
+	} catch (error) {
 		// 掃除できなくても実害はない
+		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'cleanup-failed', error, undefined, 'warning');
 	}
 }
 
@@ -158,7 +161,8 @@ async function ensurePastedImagesIgnored(directory: URI, fileService: IFileServi
 			return;
 		}
 		await fileService.writeFile(gitignore, VSBuffer.fromString('*\n'));
-	} catch {
+	} catch (error) {
 		// .gitignore を用意できなくても貼り付け自体は成立しているので無視してよい
+		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'gitignore-write-failed', error, undefined, 'warning');
 	}
 }

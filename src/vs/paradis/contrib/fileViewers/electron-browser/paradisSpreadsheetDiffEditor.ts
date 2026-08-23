@@ -77,7 +77,7 @@ interface IValidationChange {
 	readonly modified?: IParadisDataValidation;
 }
 
-/** ペインの自然座標(zoom 適用前)での行位置測定結果。図形/ハイライトの配置に使う。 */
+/** ペインの自然座標(拡縮(transform:scale)適用前)での行位置測定結果。図形/ハイライトの配置に使う。 */
 interface IPaneMetrics {
 	/** Excel 行番号(1始まり)→ 行上端Y(自然px)。図形の位置合わせ用。 */
 	readonly rowY: Map<number, number>;
@@ -126,8 +126,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _rightMetrics: IPaneMetrics = emptyMetrics();
 	// フォント反映等の再フローで行高が変わると図形の固定Y座標が古くなるため、再測定・再配置のトリガを張る。
 	private _replaceToken: object = {};
-	// 通常ビューアと同じく自然幅で表・図形を描画し、ペインごとに CSS zoom で一括拡縮する
-	// (列幅を事前縮小すると図形の EMU オフセットとズレるため。zoom はレイアウトごと拡縮しスクロールも整合)。
+	// 通常ビューアと同じく自然幅で表・図形を描画し、ペインごとに transform:scale で一括拡縮する
+	// (列幅を事前縮小すると図形の EMU オフセットとズレるため。transform はレイアウトごと拡縮しスクロールも整合)。
 	private _columnWidths: readonly number[] = [];
 	private _naturalTableWidth = 0;
 	private _scale = 1;
@@ -360,7 +360,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 	}
 
-	/** excelRow → アライメント後の行インデックス。行插入/削除で片側だけがゴーストになりうるため、
+	/** excelRow → アライメント後の行インデックス。行挿入/削除で片側だけがゴーストになりうるため、
 	 * 呼び出し側は変更が属する側(original/modified)のマップを選んで引く。 */
 	private _buildRowIndexByExcel(rows: IParadisDiffSheet['originalRows']): Map<number, number> {
 		const map = new Map<number, number>();
@@ -655,7 +655,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 
-		// 自然幅で描画し、フィット/ズームは CSS zoom で一括拡縮する。
+		// 自然幅で描画し、フィット/ズームは transform:scale で一括拡縮する。
 		this._columnWidths = sheet.columnWidths;
 		this._naturalTableWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((s, w) => s + w, 0);
 		this._bodyEl.classList.toggle('validation-filter', this._validationFilter);
@@ -709,7 +709,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._wireSyncScroll(this._leftScroll, this._rightScroll);
 		this._wireSyncScroll(this._rightScroll, this._leftScroll);
 
-		// レイアウト確定後に、はみ出し反映 → 測定 → 図形/ハイライト配置 → zoom を行う。
+		// レイアウト確定後に、はみ出し反映 → 測定 → 図形/ハイライト配置 → 拡縮(transform:scale)を行う。
 		// さらにフォント反映等の再フローで行高が変わっても位置が古くならないよう再配置トリガも張る。
 		this._renderDisposables.add(dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl), () => {
 			applyOverflow(left.overflowCells);
@@ -720,8 +720,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	}
 
 	/**
-	 * 行位置を自然座標(zoom 適用前)で測り直し、図形オーバーレイとアクティブなハイライトを配置し直す。
-	 * zoom を一時的に外して測定するため、同一 JS ターン内で復帰させ画面のちらつきを避ける。
+	 * 行位置を自然座標で測り直し、図形オーバーレイとアクティブなハイライトを配置し直す。
+	 * transform:scale は offsetTop/offsetHeight に影響しないため、測定は拡縮を外さず自然座標のまま行える。
 	 * フォント反映等の再フロー後にも呼ばれる(idempotent)。
 	 */
 	private _placeOverlays(): void {
@@ -853,7 +853,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		return { pane, sizer, content: contentEl, table, rows: rowEls, highlight, rowMeta, overflowCells };
 	}
 
-	/** zoom 適用前の自然座標で行位置を測定する。 */
+	/** 拡縮(transform:scale)適用前の自然座標で行位置を測定する。 */
 	private _measurePane(rowEls: readonly HTMLElement[], rowMeta: readonly { excelRow: number; tr: HTMLElement }[]): IPaneMetrics {
 		const rowY = new Map<number, number>();
 		for (const { excelRow, tr } of rowMeta) {
@@ -866,7 +866,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		return { rowY, rowTops: rowEls.map(tr => tr.offsetTop), rowHeights: rowEls.map(tr => tr.offsetHeight) };
 	}
 
-	/** 図形を差分ステータス色で描画して content に重ねる(自然座標。zoom で一緒に拡縮される)。既存のオーバーレイは貼り替える。 */
+	/** 図形を差分ステータス色で描画して content に重ねる(自然座標。transform:scale で一緒に拡縮される)。既存のオーバーレイは貼り替える。 */
 	private _appendShapeOverlay(side: 'original' | 'modified', renders: readonly IParadisShapeRender[] | undefined, minCol: number | undefined, rowY: Map<number, number>): void {
 		const content = side === 'original' ? this._leftContent : this._rightContent;
 		const prev = side === 'original' ? this._leftShapeOverlay : this._rightShapeOverlay;
@@ -1173,7 +1173,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			return;
 		}
-		// セル: 両ペインの該当行を帯で強調(自然座標。zoom 適用前に測定した値を使う)。
+		// セル: 両ペインの該当行を帯で強調(自然座標。拡縮(transform:scale)適用前に測定した値を使う)。
 		this._highlightRow(this._leftHighlight, this._leftMetrics, location.rowIndex, pulse);
 		this._highlightRow(this._rightHighlight, this._rightMetrics, location.rowIndex, pulse);
 	}

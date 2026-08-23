@@ -36,12 +36,6 @@ import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
 import { dirname } from '../../../../base/common/path.js';
 
 /**
- * ポート1本と、それに対応するソケット1本を繋ぐ。
- *
- * 片側が閉じたらもう片側も閉じる。片方だけ残すと、ウィンドウが閉じたあとも常駐から見ると
- * クライアントが繋がったままになり、**何も抱えていないのに終われない常駐**ができる。
- */
-/**
  * 繋ぎ先が本物かを、流し始める前に確かめる。
  *
  * 確認は使い捨ての接続で行う。この橋が流すのは中身を解釈しないバイト列なので、同じ接続の上で
@@ -72,6 +66,12 @@ async function paradisDaemonIsGenuine(socketPath: string, ledgerFile: string): P
 	}
 }
 
+/**
+ * ポート1本と、それに対応するソケット1本を繋ぐ。
+ *
+ * 片側が閉じたらもう片側も閉じる。片方だけ残すと、ウィンドウが閉じたあとも常駐から見ると
+ * クライアントが繋がったままになり、**何も抱えていないのに終われない常駐**ができる。
+ */
 function paradisPipePortToDaemon(port: MessagePortMain, socketPath: string): void {
 	const socket = createConnection({ path: socketPath });
 	const protocol = new SocketProtocol(new NodeSocket(socket, 'paradis-pty-daemon-bridge'));

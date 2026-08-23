@@ -23,6 +23,7 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import * as path from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisWarmLeaseScheduler,
 	ParadisWarmLeaseTracker,
@@ -355,12 +356,18 @@ export class ParadisSpaceDiskService implements IDisposable {
 				if (measuredWhileWaiting) {
 					return measuredWhileWaiting;
 				}
-				const result = await this.doMeasure(targets);
-				if (!this.disposed) {
-					this.storeResult(signature, result);
-					this.failuresBySignature.delete(signature);
+				try {
+					const result = await this.doMeasure(targets);
+					if (!this.disposed) {
+						this.storeResult(signature, result);
+						this.failuresBySignature.delete(signature);
+					}
+					return result;
+				} catch (error) {
+					// shared process 側でのみ意味を持つ(REH には reporter が未接続なので無音の no-op)。
+					reportParadisDiagnosticError('owned', 'space-disk', 'measure-failed', error, { safe_target_count: targets.length });
+					throw error;
 				}
-				return result;
 			})
 			.finally(() => {
 				if (this.inflight === promise) {
@@ -481,6 +488,12 @@ export class ParadisSpaceDiskService implements IDisposable {
 			// owner generation が完了直前に切り替わっても、同じ署名の失敗履歴は失わない。
 			if (!this.disposed) {
 				this.recordWarmFailure(signature);
+				// 諦めて恒久停止するまさにその瞬間だけ報告する(以後は runWarmPass 自体が
+				// 早期returnするのでここへ再入しない = 1停止につき1回で済む)。従来は
+				// trace ログのみで、「開いても数十秒待たされる」退行が観測不能だった。
+				if ((this.failuresBySignature.get(signature) ?? 0) >= MAX_CONSECUTIVE_FAILURES) {
+					reportParadisDiagnosticError('owned', 'space-disk', 'warm-loop-stopped', error, undefined, 'warning');
+				}
 			}
 			this.logService.trace(`[ParadisSpaceDisk] background measure failed: ${error}`);
 		}

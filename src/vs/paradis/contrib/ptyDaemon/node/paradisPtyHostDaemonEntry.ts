@@ -18,8 +18,7 @@
 import { ConsoleLogger, LogLevel } from '../../../../platform/log/common/log.js';
 import { LogService } from '../../../../platform/log/common/logService.js';
 import { paradisReadPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
-import { paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
-import { PARADIS_PTY_HOST_STATE_DIR } from './paradisPtyHostBootstrap.js';
+import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisRunPtyHostDaemon } from './paradisPtyHostDaemonMain.js';
 
 const env = paradisReadPtyDaemonEnv(process.env);

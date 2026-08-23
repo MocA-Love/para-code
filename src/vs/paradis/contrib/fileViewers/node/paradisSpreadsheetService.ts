@@ -8,7 +8,8 @@
 
 // shared process 内で動く Excel パーサ本体（Superset apps/desktop の SpreadsheetViewer/parseWorkbook.ts の移植）。
 // exceljs で xlsx を読み、セル値・スタイル・結合・列幅/行高を「プレーンにシリアライズ可能な」構造化データ
-// (IParadisWorkbookData)へ変換する。図形(drawing)・対角罫線は今回はスコープ外。
+// (IParadisWorkbookData)へ変換する。対角罫線(getCellDiagonal)は exceljs の Cell.border から直接読む。
+// 図形(drawing)・改ページ・データ検証・ページ設定・テーマ色は extractXlsxExtras() で xlsx(ZIP)を直読みして抽出する。
 // exceljs は Buffer/stream 依存のため workbench(renderer, sandbox)では動かず、node層で実行する必要がある。
 
 import { localize } from '../../../../nls.js';

@@ -20,13 +20,20 @@ export interface IChangesEditorFileStats {
 }
 
 /**
- * 変更配列から「候補URIの比較キー → 行数stats」の索引を1回だけ作る。
+ * PARA-PATCH: upstream resolves the stats of every file label with a linear `find` over the
+ * whole change array, which is O(N^2) per refresh and showed up on large agent changesets.
+ * The index below (plus {@link lookupChangesEditorFileStats}) replaces that; the original
+ * `getChangesEditorFileStats` is kept as a wrapper so upstream callers are untouched.
  *
- * 各ファイルラベルの autorun が線形 find（両辺で比較キーを構築する isEqual）を回す O(N²) を、
- * 索引構築 O(N) + ラベル側 O(1) 参照に変える。変更配列はエージェント実行中に高頻度で更新される
- * ため、数百ファイル規模のdiffでは無視できないCPUコストになっていた。
+ * Builds a "comparison key of a candidate URI -> line stats" index once per change array.
  *
- * 先勝ちルール: 同じURIに複数のchangeが紐づく場合は最初の要素を採用する（旧 find と同一）。
+ * Every file label used to autorun a linear find (an isEqual that builds a comparison key on both
+ * sides), which is O(N^2). This turns it into O(N) to build plus an O(1) lookup per label. The
+ * change array is updated at a high rate while an agent runs, so a few hundred files were enough
+ * for that to cost real CPU.
+ *
+ * First one wins: when several changes point at the same URI the first is kept (same as the
+ * find it replaces).
  */
 export function buildChangesEditorFileStatsIndex(changes: readonly ISessionFileChange[]): Map<string, IChangesEditorFileStats> {
 	const index = new Map<string, IChangesEditorFileStats>();
@@ -48,7 +55,7 @@ export function buildChangesEditorFileStatsIndex(changes: readonly ISessionFileC
 	return index;
 }
 
-/** 索引からリソースの行数statsを取り出す（索引に無いURIは undefined）。 */
+/** Reads a resource's line stats out of the index (undefined when the URI is not in it). */
 export function lookupChangesEditorFileStats(index: ReadonlyMap<string, IChangesEditorFileStats>, resource: URI): IChangesEditorFileStats | undefined {
 	return index.get(getComparisonKey(resource));
 }

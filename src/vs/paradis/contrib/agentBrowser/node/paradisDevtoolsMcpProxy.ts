@@ -13,7 +13,7 @@
 //   - vendored chrome-devtools-mcp をペイントークン毎に1子プロセスとして遅延spawnする
 //     （ELECTRON_RUN_AS_NODE=1 + process.execPath。Electron同梱NodeはESM/Node20+要件を満たす）
 //   - CDPゲートウェイへの接続は `--wsEndpoint=ws://127.0.0.1:<port>/cdp/devtools/browser/<id>?pane=<token>`
-//     で行う。`?pane=` クエリは _resolveToken の最優先経路なので、lsof/psによるピアPID推定に
+//     で行う。`?pane=` クエリは _resolveIngress の最優先経路なので、lsof/psによるピアPID推定に
 //     一切依存せず全OSで決定的にペインへ紐付く（puppeteerがwsEndpointのクエリを保持することは実測確認済み。
 //     --browserUrl だと puppeteer がパス・クエリを落とすため使わない）。保険として env にもトークンを注入する
 //   - chrome-devtools-mcp はブラウザ接続を初回 tools/call まで遅延するため、子プロセス自体の

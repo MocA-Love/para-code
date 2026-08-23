@@ -16,6 +16,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisApplyAuxiliaryWindowTransparency, paradisIsAuxiliaryWindowTransparencyActive } from '../../windowTransparency/browser/paradisAuxiliaryWindowTransparency.js';
 import { IParadisAuxiliaryWindowScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -147,6 +148,7 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 			this.windowDisposables = disposables;
 			this.model.setOutputTracking(true);
 		} catch (error) {
+			reportParadisDiagnosticError('owned', 'agent-live-window', 'open-failed', error);
 			this._store.deleteAndLeak(disposables);
 			disposables.dispose();
 			throw error;

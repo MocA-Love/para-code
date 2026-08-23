@@ -483,7 +483,7 @@ export class ParadisMcpSetupController {
 
 	/**
 	 * 「ワンクリックで修正」/「自動セットアップ」。claude は setup と等価。codex は要修正エントリを
-	 * shim方式へ書き換え、未設定なら para-browser テーブルを追記する。
+	 * HTTP方式の節へ書き換え、未設定なら para-browser テーブルを追記する。
 	 */
 	fix(cli: ParadisMcpCli, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
 		if (cli === 'claude') {

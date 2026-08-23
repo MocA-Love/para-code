@@ -70,6 +70,9 @@ class SessionChangesUIElementFactory implements IWorkbenchUIElementFactory {
 	readonly headerClickToCollapse = true;
 
 	constructor(
+		// PARA-PATCH: takes the prebuilt stats index instead of the raw change array, so a file
+		// label looks its stats up in O(1) (see changesEditorLabels.ts). Threaded through to
+		// SessionChangesResourceLabel below.
 		private readonly statsIndexObs: IObservable<ReadonlyMap<string, IChangesEditorFileStats>>,
 		@ICommandService private readonly commandService: ICommandService,
 		@IChangesViewService private readonly changesViewService: IChangesViewService,
@@ -186,8 +189,12 @@ export class SessionChangesEditor extends AbstractEditorWithViewState<IMultiDiff
 	});
 
 	/**
-	 * 変更配列の「比較キー → 行数stats」索引。各ファイルラベルの autorun がここへ O(1) 参照する。
-	 * ラベルごとに線形 find を回す O(N²) を、変更配列更新ごとの1回の索引構築に集約する。
+	 * PARA-PATCH: see changesEditorLabels.ts — built once per change-array update and handed to
+	 * the label factory below in place of the raw array.
+	 *
+	 * The "comparison key -> line stats" index for the change array; every file label's autorun
+	 * reads from it in O(1). Collapses the per-label linear find (O(N^2)) into a single index
+	 * build per change-array update.
 	 */
 	private readonly _scopedChangesStatsIndex = derived(this, reader => buildChangesEditorFileStatsIndex(this._scopedChangesObs.read(reader)));
 

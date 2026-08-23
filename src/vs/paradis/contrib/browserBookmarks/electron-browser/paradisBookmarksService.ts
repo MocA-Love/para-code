@@ -18,6 +18,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { BrowserFaviconsStore, ISerializedBrowserFaviconsSnapshot } from '../../../../platform/browserView/common/browserHistory.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	collectParadisFaviconHashes,
 	findParadisBookmarkByUrl,
@@ -425,11 +426,12 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 		let nodes: ParadisBookmarkNode[];
 		try {
 			nodes = raw ? recoverParadisBookmarkNodes(JSON.parse(raw)) : [];
-		} catch {
+		} catch (error) {
 			nodes = [];
 			if (raw) {
 				this._storageService.store(BOOKMARKS_STORAGE_RECOVERY_BACKUP_KEY, raw, StorageScope.APPLICATION, StorageTarget.USER);
 			}
+			reportParadisDiagnosticError('owned', 'browser-bookmarks', 'storage-corrupt', error, undefined, 'warning');
 		}
 		this._nodes = nodes;
 		const recovered = JSON.stringify(nodes);

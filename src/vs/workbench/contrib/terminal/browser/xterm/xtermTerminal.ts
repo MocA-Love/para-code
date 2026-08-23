@@ -52,6 +52,8 @@ import { clamp } from '../../../../../base/common/numbers.js';
 import { installParadisWebglBackgroundAlphaPatch, isParadisTransparentActive, paradisXtermBackground } from '../../../../../paradis/contrib/windowTransparency/browser/paradisTerminalTransparency.js';
 // PARA-PATCH: tell a terminal that lost its GPU context apart from a machine that cannot render at all (fork-owned, see vs/paradis)
 import { ParadisWebglRecovery, paradisWebglSupport } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisWebglRecovery.js';
+// PARA-PATCH: report webgl fallback / global-disable diagnostics to Sentry (see vs/paradis)
+import { reportParadisDiagnosticError } from '../../../../../paradis/contrib/sentry/common/paradisSentryDiagnostics.js';
 import { LayoutSettings } from '../../../../services/layout/browser/layoutService.js';
 
 const enum RenderConstants {
@@ -1007,9 +1009,16 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			// Para Code keeps many terminals on screen at once (2D grid, agent tiles), where failing
 			// to get a context is normally the contest for a limited number of them — only treat it
 			// as "this machine cannot render" while webgl has never once worked here.
-			if (paradisWebglSupport.shouldDisableGlobally()) {
+			const disabledGlobally = paradisWebglSupport.shouldDisableGlobally();
+			if (disabledGlobally) {
 				XtermTerminal._suggestedRendererType = 'dom';
 			}
+			// PARA-PATCH: report to Sentry, keeping the disabledGlobally verdict in safeExtra so a
+			// false "this machine cannot render" reading (mistaking contention for lack of support)
+			// can be told apart from a real global failure
+			reportParadisDiagnosticError('patched', 'terminal-webgl', 'loadAddon-fallback', e, {
+				safe_disabledGlobally: disabledGlobally,
+			}, 'warning');
 			this._paradisWebglRecovery.noteLost();
 			this._disposeOfWebglRenderer();
 		}

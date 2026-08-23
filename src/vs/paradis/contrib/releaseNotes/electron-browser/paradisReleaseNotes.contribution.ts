@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -26,6 +27,7 @@ import { IBaseSerializableStorageRequest, ISerializableCompareAndSwapRequest, IS
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { mergeChangelogs, parseParadisChangelog } from '../common/paradisChangelogModel.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisChangelogModal, toViewReleases } from './paradisChangelogModal.js';
 
 /**
@@ -123,6 +125,14 @@ function changelogRequestHeaders(productService: IProductService): Record<string
 	};
 }
 
+/**
+ * サーバー問い合わせの打ち切り時間。呼び出し側の token はモーダルを閉じた／開き直したときに
+ * しかキャンセルされないので、キャプティブポータル等でレスポンスが返らないとモーダルが
+ * 「サーバーを確認中…」のまま固まる。更新履歴は同梱 md だけでも成立する情報なので、
+ * 短めに諦めて既存の失敗経路(undefined)へ寄せる。
+ */
+const CHANGELOG_FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchRemoteChangelogMd(
 	requestService: IRequestService,
 	productService: IProductService,
@@ -132,20 +142,33 @@ async function fetchRemoteChangelogMd(
 	if (!url) {
 		return undefined;
 	}
+	// 呼び出し側の token を親にした CTS を挟み、タイムアウト時はこちらから cancel して
+	// 実際の通信も止める(ヘッダー受信後に本文が止まる場合も raceTimeout 側で拾える)。
+	const cts = new CancellationTokenSource(token);
 	try {
-		const context = await requestService.request(
-			{ url, type: 'GET', headers: changelogRequestHeaders(productService), callSite: 'paradisChangelog.fetchRemote' },
-			token
+		return await raceTimeout(
+			(async () => {
+				try {
+					const context = await requestService.request(
+						{ url, type: 'GET', headers: changelogRequestHeaders(productService), callSite: 'paradisChangelog.fetchRemote' },
+						cts.token
+					);
+					// 200 以外(204=サーバー側にまだ無い、401、404 など)は同梱分のみで静かに表示する
+					if (context.res.statusCode !== 200) {
+						return undefined;
+					}
+					const text = await asText(context);
+					// キャプティブポータル等が返した HTML を弾くため、我々の見出し形式を含むかだけ確認する
+					return text && CHANGELOG_SANITY_RE.test(text) ? text : undefined;
+				} catch {
+					return undefined;
+				}
+			})(),
+			CHANGELOG_FETCH_TIMEOUT_MS,
+			() => cts.cancel()
 		);
-		// 200 以外(204=サーバー側にまだ無い、401、404 など)は同梱分のみで静かに表示する
-		if (context.res.statusCode !== 200) {
-			return undefined;
-		}
-		const text = await asText(context);
-		// キャプティブポータル等が返した HTML を弾くため、我々の見出し形式を含むかだけ確認する
-		return text && CHANGELOG_SANITY_RE.test(text) ? text : undefined;
-	} catch {
-		return undefined;
+	} finally {
+		cts.dispose();
 	}
 }
 
@@ -230,7 +253,10 @@ function openParadisChangelogModal(
 }
 
 // 歯車メニューの「更新の確認...」(update.ts の appendUpdateMenuItems が使う group '7_update') の
-// 直下に並べる。update 系の項目は order 未指定 (=0) なので order: 1 で最後に来る
+// 直下に並べる。同グループ内は order → タイトルの順でソートされ(MenuInfo._compareMenuItems)、
+// update.check 等の常時表示項目は order 未指定 (=0) のため order: 1 ならその後ろに来る
+// (update.restart は order: 2 でさらに後ろ、stable限定・条件付き表示の update.showUpdateReleaseNotes も
+// order: 1 のためその場合はタイトルの辞書順で並ぶ)
 MenuRegistry.appendMenuItem(MenuId.GlobalActivity, {
 	group: '7_update',
 	order: 1,
@@ -307,7 +333,10 @@ class ParadisShowChangelogOnUpdate implements IWorkbenchContribution {
 		// 記録はガードの外へ出し、メインプロセス側の compare-and-swap で「記録できた
 		// ウィンドウだけが開く」形にして、どのウィンドウが先に来ても必ず 1 回になるようにする。
 		this.claimAndShow(storageChannel, commit, storageService, configurationService, commandService)
-			.catch(() => { /* storage への問い合わせが失敗したら、更新履歴は出さないだけにする */ });
+			.catch(error => {
+				// storage への問い合わせが失敗したら、更新履歴は出さないだけにする
+				reportParadisDiagnosticError('owned', 'release-notes', 'auto-open-failed', error, undefined, 'info');
+			});
 	}
 
 	private async claimAndShow(

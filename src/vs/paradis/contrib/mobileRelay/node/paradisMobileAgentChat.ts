@@ -3066,7 +3066,6 @@ interface IAgentSubscriber {
 	readonly liveEncoding: string | undefined;
 }
 
-/** セッション確定済みかつ現在rendererから生存同期されているペインだけを公開する。 */
 /**
  * 「そのターミナルでエージェントが動いている」として外へ出すペインを決める。
  *

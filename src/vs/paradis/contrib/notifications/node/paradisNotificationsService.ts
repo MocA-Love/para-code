@@ -168,7 +168,7 @@ export class ParadisNotificationsService extends Disposable {
 	private static readonly TEMP_WORK_DIR_PREFIXES = ['paradis-ytfull-', 'paradis-ytclip-'];
 
 	/**
-	 * この年齢より新しい作業ディレクトリは sweep しない。フルダウンロードの上限(10分)より
+	 * この年齢より新しい作業ディレクトリは sweep しない。フルダウンロードのタイムアウト(5分)より
 	 * 十分長い時間を置くことで、同一マシンの別アプリインスタンスが実行中の取得と衝突しない
 	 * ようにする(孤立した直後のものは次回起動以降で回収される)。
 	 */
@@ -229,8 +229,8 @@ export class ParadisNotificationsService extends Disposable {
 	}
 
 	/**
-	 * 前回までのプロセスが残した YouTube 取込の一時ディレクトリ ($TMPDIR/paradis-ytfull-*) を
-	 * 起動時に掃除する。
+	 * 前回までのプロセスが残した YouTube 取込の一時ディレクトリ ($TMPDIR/paradis-ytfull-*,
+	 * $TMPDIR/paradis-ytclip-*) を起動時に掃除する。
 	 *
 	 * ダウンロード完了前にダイアログが閉じられる（backdrop クリックやウィンドウリロード）と
 	 * renderer 側の参照は消えるため、正常終了なら quit 時の dispose() で回収されるものの、
@@ -272,7 +272,9 @@ export class ParadisNotificationsService extends Disposable {
 
 	/**
 	 * 通知1回分の音声（通知音 + Aivis 読み上げ）をスケジューラへ渡す。トリガー(renderer)から
-	 * 通知ごとに1回呼ばれる。通知音はビジー時に捨てられ、Aivis は FIFO キューで失われない。
+	 * 通知ごとに1回呼ばれる。通知音はビジー時に捨てられる。Aivis はFIFOキューで処理するが
+	 * 待機キューには上限があり、超過した normal は捨てられる（high を受け入れるために
+	 * 最古の normal が追い出されることもある）。
 	 */
 	notifyAudio(request: IParadisNotifyAudioRequest): void {
 		if (request.ringtone) {
@@ -615,8 +617,9 @@ export class ParadisNotificationsService extends Disposable {
 
 	async installYtDlp(installId: string): Promise<void> {
 		// 通常は同時1件だが、ダイアログを閉じるとポーリングが止まり done 済みエントリが
-		// 残り続ける（ログ最大1000行分）。少数上限で最も古いものから破棄する。done が無ければ
-		// アクティブなものも破棄し得る（その installId のポーリングは unknown-id 契約に乗る）。
+		// 残り続ける（ログ最大1000行分）。少数上限に達したら done 済みのうち最も古いものを
+		// 優先して破棄し、done が一つも無ければ最も古いもの（アクティブなものも含む）を
+		// 破棄する（その installId のポーリングは unknown-id 契約に乗る）。
 		while (this._installStates.size >= PARADIS_MAX_INSTALL_STATES) {
 			let victim: string | undefined;
 			for (const [key, value] of this._installStates) {

@@ -1267,6 +1267,8 @@ suite('LocalAgentHostSessionsProvider', () => {
 		});
 	}));
 
+	// PARA-PATCH: tests below cover the refresh coalescing added to _refreshSessions
+	// (baseAgentHostSessionsProvider.ts), including the announce flag surviving a failed pass.
 	test('coalesces a same-tick ChatTurnComplete burst into a single trailing rerun', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
 		// K sessions completing turns at nearly the same time used to fire K
 		// concurrent listSessions() passes; they must now share one pass plus

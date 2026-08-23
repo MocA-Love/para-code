@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import type { Session } from 'electron';
 import { basename, extname, isAbsolute, join } from '../../../../base/common/path.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER, PARADIS_BROWSER_DOWNLOADS_ENABLED_KEY, PARADIS_BROWSER_DOWNLOADS_PATH_KEY } from '../common/paradisBrowserDownloads.js';
 
 /**
@@ -46,6 +47,7 @@ export function paradisConfigureBrowserDownloadsWithPath(
 			fs.mkdirSync(targetDirectory, { recursive: true });
 		} catch (error) {
 			console.error('[paradis] Failed to create the browser downloads directory, falling back to the save dialog:', error);
+			reportParadisDiagnosticError('owned', 'browser-downloads', 'dir-create-failed', error);
 			return;
 		}
 

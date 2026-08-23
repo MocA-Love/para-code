@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize } from '../../../../nls.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 // Claude Code / Codex のハーネスは、スラッシュコマンド実行やバックグラウンドタスク完了通知等を
 // 「ユーザーロールの合成メッセージ」として transcript / state DB に書き込む。エージェントセッション
@@ -23,6 +24,30 @@ const COMMAND_NAME_PATTERN = /<command-name>([^<\n]*)<\/command-name>/;
 const COMMAND_ARGS_PATTERN = /<command-args>([^<\n]*)<\/command-args>/;
 const SYSTEM_REMINDER_PATTERN = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 const SIMPLE_TAG_PATTERN = /<\/?[a-zA-Z][\w-]*>/g;
+
+/**
+ * How often to send a `title-discarded` diagnostic event at most. This function runs on every
+ * agent-session title/activity update (including live activity streaming), so an unconditional
+ * report per occurrence would flood Sentry; a cooldown keeps this to an occasional sample.
+ */
+const DISCARD_REPORT_COOLDOWN_MS = 10 * 60 * 1000;
+let lastDiscardReportedAt = 0;
+
+/**
+ * Samples the case where a raw title/activity string survives the early discard checks (so it
+ * was not recognized as harness-injected boilerplate) but becomes empty once tags are stripped.
+ * This is the "rate unknown" case called out during the Sentry coverage audit: it does not carry
+ * any user content, only a low-frequency signal that the stripping is too aggressive.
+ */
+function reportTitleDiscarded(): void {
+	const now = Date.now();
+	if (now - lastDiscardReportedAt < DISCARD_REPORT_COOLDOWN_MS) {
+		return;
+	}
+	lastDiscardReportedAt = now;
+	reportParadisDiagnosticError('owned', 'agent-session-title', 'title-discarded',
+		new Error('Agent session title/activity became empty after tag stripping'), undefined, 'info');
+}
 
 /**
  * Turns a raw agent-session summary (Claude Code / Codex CLI's own "title" for a
@@ -60,5 +85,9 @@ export function paradisHumanizeAgentSessionTitle(raw: string | undefined): strin
 
 	const withoutReminders = trimmed.replace(SYSTEM_REMINDER_PATTERN, '').trim();
 	const withoutTags = withoutReminders.replace(SIMPLE_TAG_PATTERN, ' ').replace(/\s+/g, ' ').trim();
-	return withoutTags.length > 0 ? withoutTags : undefined;
+	if (withoutTags.length === 0) {
+		reportTitleDiscarded();
+		return undefined;
+	}
+	return withoutTags;
 }

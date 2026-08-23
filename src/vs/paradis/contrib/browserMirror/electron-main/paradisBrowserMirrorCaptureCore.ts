@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { WebFrameMain } from 'electron';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 export const PARADIS_MIRROR_CAPTURE_ENV = 'PARADIS_MIRROR_CAPTURE_VIEW';
 
@@ -40,12 +41,16 @@ export class ParadisBrowserMirrorCapture {
 			const expired = Date.now() > this.armedExpiresAt;
 			this.armedTargetId = undefined;
 			if (expired) {
+				// getDisplayMedia がフェイルクローズしても呼び出し側は無音で画面全体キャプチャの
+				// フォールバックを打ち切るだけなので、ここで報告しないと再現しない不具合になる。
+				reportParadisDiagnosticError('owned', 'browser-mirror', 'resolve-denied', new Error('mirror capture arm expired before getDisplayMedia'), { safe_reason: 'expired' }, 'info');
 				return 'deny';
 			}
 			const webContents = this.host.fromDevToolsTargetId(targetId);
 			if (webContents && !webContents.isDestroyed() && webContents.mainFrame) {
 				return webContents.mainFrame;
 			}
+			reportParadisDiagnosticError('owned', 'browser-mirror', 'resolve-denied', new Error('mirror capture target not found or destroyed'), { safe_reason: 'target-unavailable' }, 'info');
 			return 'deny';
 		}
 

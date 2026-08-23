@@ -22,8 +22,11 @@ import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
 	IParadisRunPresetOptions,
+	paradisBuildPresetHosts,
 	paradisFindPresetNameConflict,
+	paradisIsReservedPresetHost,
 	paradisJoinPresetCommands,
+	paradisPresetHostsMatch,
 	paradisPresetKey,
 	paradisPresetQualifiers,
 	paradisResolvePresetIndex,
@@ -270,5 +273,55 @@ suite('paradisJoinPresetCommands', () => {
 			paradisJoinPresetCommands(['first', 'second', 'third'], GeneralShellType.PowerShell),
 			'first; if ($?) { second; if ($?) { third } }',
 		);
+	});
+});
+
+// allow-any-unicode-next-line
+suite('hosts 条件（実行環境）', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('matches the special values against whether the window is connected, and named hosts against the ssh host', () => {
+		assert.deepStrictEqual([
+			// 条件なしはどこでも有効
+			paradisPresetHostsMatch(undefined, undefined),
+			paradisPresetHostsMatch([], 'ssh-remote+gpu01'),
+			// local / remote
+			paradisPresetHostsMatch(['local'], undefined),
+			paradisPresetHostsMatch(['local'], 'ssh-remote+gpu01'),
+			paradisPresetHostsMatch(['remote'], 'ssh-remote+gpu01'),
+			paradisPresetHostsMatch(['remote'], undefined),
+			// ホスト名は大小文字を無視して比較する
+			paradisPresetHostsMatch(['GPU01'], 'ssh-remote+gpu01'),
+			paradisPresetHostsMatch(['gpu01'], 'ssh-remote+other'),
+			// ssh-remote 以外の接続先にはホスト名が無いので、名指しには一致しない
+			paradisPresetHostsMatch(['gpu01'], 'wsl+ubuntu'),
+			paradisPresetHostsMatch(['remote'], 'wsl+ubuntu'),
+		], [true, true, true, false, true, false, true, false, false, true]);
+	});
+
+	test('never lets a host name become the reserved local/remote condition, which would invert what the preset asked for', () => {
+		assert.deepStrictEqual([
+			// 予約語そのもの（判定側と同じく完全一致で見る）
+			paradisIsReservedPresetHost('local'),
+			paradisIsReservedPresetHost('remote'),
+			paradisIsReservedPresetHost('Local'),
+			paradisIsReservedPresetHost('gpu01'),
+			// リモート☑ + ホスト欄に予約語 → 予約語は落ちる。残りが無ければ「どのホストでも」
+			paradisBuildPresetHosts({ local: false, remote: true, hosts: ['local'] }),
+			paradisBuildPresetHosts({ local: false, remote: true, hosts: ['local', 'gpu01'] }),
+			// 通常の組み立て
+			paradisBuildPresetHosts({ local: false, remote: false, hosts: ['gpu01'] }),
+			paradisBuildPresetHosts({ local: true, remote: false, hosts: ['gpu01'] }),
+			paradisBuildPresetHosts({ local: true, remote: true, hosts: [] }),
+			paradisBuildPresetHosts({ local: true, remote: true, hosts: ['  gpu01  ', ''] }),
+		], [
+			true, true, false, false,
+			['remote'],
+			['gpu01'],
+			undefined,
+			['local'],
+			['local', 'remote'],
+			['local', 'gpu01'],
+		]);
 	});
 });

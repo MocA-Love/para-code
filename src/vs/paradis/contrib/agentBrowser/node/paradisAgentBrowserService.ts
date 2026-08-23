@@ -1563,7 +1563,6 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	// --- MCP HTTPサーバー ---
 
-	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
 	/**
 	 * PARA-PATCH: このMCPサーバーへツールを足す（モバイル端末操作など、別contribの機能）。
 	 * shared processの起動時に一度だけ呼ばれる想定。
@@ -1572,6 +1571,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._toolProviders.push(provider);
 	}
 
+	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
 	async getGatewayEndpoint(): Promise<IParadisGatewayEndpoint> {
 		await this._serverStartPromise;
 		const port = this._port;
@@ -2429,7 +2429,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		return this._mcpSetupController.status(await this._currentGatewayPort());
 	}
 
-	/** 「ワンクリックで修正」/「自動セットアップ」。codexの古いポート決め打ちをshim方式へ書き換える。 */
+	/** 「ワンクリックで修正」/「自動セットアップ」。codexの古いポート決め打ちをHTTP方式の節へ書き換える。 */
 	async fixMcp(request: IParadisMcpFixRequest): Promise<IParadisMcpSetupResult> {
 		if (this._serverDisposed) {
 			throw new Error('Para Browser protocol rejected');

@@ -8,7 +8,7 @@
  */
 
 import { SELF, env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
-import { generateIdentity, toBase64Url } from '@para/protocol';
+import { encodeRelayControl, generateIdentity, toBase64Url } from '@para/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const openSockets: WebSocket[] = [];
@@ -129,6 +129,51 @@ describe('DeviceDO pairing socket sweep', () => {
 		// re-armed itself instead of leaving future expiries unswept
 		const nextAlarm = await runInDurableObject(deviceStub(deviceId), (_instance, state) => state.storage.getAlarm());
 		expect(nextAlarm).not.toBeNull();
+	});
+
+	it('closes the approved pair: socket after handing the credentials over', async () => {
+		// 承認時に pending 行は消えるので、以後この pair ソケットは TTL 掃除の対象にならない。
+		// 資格情報を渡したあとサーバ側から閉じないと、自己closeしないクライアントの分だけ
+		// hibernated WS が DO に残り続ける。
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await beginPairing(deviceId, pcToken);
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+
+		const pairMessages: string[] = [];
+		pairWs.addEventListener('message', event => pairMessages.push(String(event.data)));
+		const closePromise = waitForClose(pairWs);
+
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
+
+		const closeEvent = await closePromise;
+		expect(closeEvent.code).toBe(1000);
+		expect(closeEvent.reason).toBe('paired');
+		// close が先行して資格情報が届かない、という取り違えが起きていないこと
+		expect(pairMessages.map(text => JSON.parse(text).type)).toContain('paired');
+	});
+
+	it('invalidates a rejected pairing so it can no longer be approved', async () => {
+		// 拒否だけして pending を残すと、PCが後から同じ pairId を承認できてしまう。
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await beginPairing(deviceId, pcToken);
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		const closePromise = waitForClose(pairWs);
+
+		pcWs.send(encodeRelayControl({ type: 'pairing-reject', pairId: pair.pairId }));
+		const closeEvent = await closePromise;
+		expect(closeEvent.reason).toBe('rejected');
+
+		const pcMessages: string[] = [];
+		pcWs.addEventListener('message', event => pcMessages.push(String(event.data)));
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
+		await new Promise(resolve => setTimeout(resolve, 100));
+
+		// 承認は通らず、エラーが返る（paired が返ってはいけない）
+		const types = pcMessages.map(text => JSON.parse(text).type);
+		expect(types).toContain('error');
+		expect(types).not.toContain('paired');
 	});
 
 	it('does not send a false offline notification for a server-closed pairing socket', async () => {

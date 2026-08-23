@@ -63,6 +63,10 @@ export interface IMobileVisualViewport {
 	readonly isKeyboardVisible: IObservable<boolean>;
 
 	/**
+	 * PARA-PATCH: the observables above only tell a consumer about the keyboard, but the
+	 * workbench also has to re-lay-out when the iOS URL bar collapses. Expose the raw
+	 * update pass so `workbench.ts` can relayout on it (see registerLayoutListeners).
+	 *
 	 * Fired whenever the visual viewport reports a change (resize/scroll).
 	 *
 	 * Note this fires on **every** update pass, not only when
@@ -132,6 +136,7 @@ export class MobileVisualViewport extends Disposable implements IMobileVisualVie
 	private readonly _keyboardVisibleCtx: IContextKey<boolean>;
 	private readonly mainContainer: HTMLElement;
 
+	// PARA-PATCH: backing emitter for onDidChangeVisualViewport (see the interface).
 	private readonly _onDidChangeVisualViewport = new Emitter<void>();
 	readonly onDidChangeVisualViewport = this._onDidChangeVisualViewport.event;
 
@@ -160,7 +165,7 @@ export class MobileVisualViewport extends Disposable implements IMobileVisualVie
 			}
 			this.mainContainer.style.setProperty(KEYBOARD_HEIGHT_CSS_VAR, `${height}px`);
 			this._keyboardVisibleCtx.set(height > KEYBOARD_VISIBLE_THRESHOLD_PX);
-			// Fire even when the height did not change (see interface note about
+			// PARA-PATCH: fire even when the height did not change (see interface note about
 			// URL-bar collapse keeping the keyboard height at zero).
 			this._onDidChangeVisualViewport.fire();
 		};
