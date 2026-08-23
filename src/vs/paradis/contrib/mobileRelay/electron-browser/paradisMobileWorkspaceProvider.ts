@@ -539,7 +539,7 @@ export function paradisScreenShowsMarker(screen: string, marker: string): boolea
  * xterm.js が今まさにSGR拡張座標（DECSET 1006）でマウスイベントを符号化しているか。
  *
  * 公開APIには無いが、`_core` 経由で内部サービスを覗くのは upstream 自身が既に使っている
- * パターン（`workbench/contrib/terminal/browser/xterm/xtermTerminal.ts:285-288` の
+ * パターン（`workbench/contrib/terminal/browser/xterm/xtermTerminal.ts:299-302` の
  * `ITerminalWithCore`/`IXtermCore`）。ここで覗く `_inputHandler._mouseStateService` は
  * `IXtermCore` にまだ無いフィールドなので、このファイル内だけの狭い構造型で受ける
  * （`IXtermCore` 自体は書き換えない＝差し替え点を1つに保つ）。
@@ -578,7 +578,8 @@ const TERM_RESIZE_SNAPSHOT_SCROLLBACK_ROWS = 200;
 const TERM_COALESCE_MS = 16; // onData のまとめ送り間隔（1フレーム=1暗号化+relay往復のため細切れ送信を避ける）
 // フロー制御: 未ACK文字数が HIGH を超えたら生ストリーム転送を止め（ptyは止めない）、
 // ACK が LOW まで追いついたらスナップショット1発で最新画面へ追いつく（mosh の
-// 「中間状態スキップ」方式）。値は本家 FlowControlConstants（renderer↔ptyHost間）に合わせる。
+// 「中間状態スキップ」方式）。renderer↔ptyHost間の FlowControlConstants はその後
+// 100K/5K → 1M/50K に引き上げられており（14bdbc18461）、こちらは追随せず維持している。
 const TERM_HIGH_WATERMARK_CHARS = 100_000;
 const TERM_LOW_WATERMARK_CHARS = 5_000;
 const TERM_RESIZE_SNAPSHOT_DELAY_MS = 200; // リサイズ確定からスナップショット再同期までのデバウンス
@@ -629,7 +630,9 @@ interface TermSyncState {
  * - state: ワークスペース・ターミナル・エージェント状態のスナップショットを push
  * - term: モバイルからの attach/input を処理し、ターミナル出力を stream 送信
  *
- * SCM / fs / browser チャネルは本スライスでは未実装（設計書 M2/M3。ここに追加していく）。
+ * scm / fs チャネルは本クラスが処理する（handleScmInbound / handleFsInbound）。browser
+ * チャネルは shared process 側（paradisMobileBrowserMirror.ts）と renderer 側の
+ * contribution（paradisMobileRelay.contribution.ts）で実装している。
  */
 export class ParadisMobileWorkspaceProvider extends Disposable {
 	readonly initialAgentPanesReady: Promise<void>;
@@ -1130,12 +1133,6 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	/**
-	 * エージェント状態の遷移を検知して notify フレームを送る。
-	 * - permission（質問/許可要求）への遷移 → agent-question
-	 * - review（作業完了）への遷移 → agent-done
-	 * これがモバイルの「エージェントの質問通知」の供給源。全オンラインモバイルへ届ける。
-	 */
-	/**
 	 * park 中（他ワークスペースへ退避中）のグループも含めた全ターミナルインスタンス。
 	 * terminalService.instances はアクティブワークスペースの表示中グループしか含まないため、
 	 * これを使わないとモバイル側は「PCで選択中のワークスペースのターミナル」しか見えない。
@@ -1167,6 +1164,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			&& this.paneTokenService.getTokenForInstance(instanceId) === token);
 	}
 
+	/**
+	 * エージェント状態の遷移を検知して notify フレームを送る。
+	 * - permission（質問/許可要求）への遷移 → agent-question
+	 * - review（作業完了）への遷移 → agent-done
+	 * これがモバイルの「エージェントの質問通知」の供給源。全オンラインモバイルへ届ける。
+	 */
 	private detectAndNotify(): void {
 		for (const inst of this.allInstances()) {
 			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId);
@@ -2417,11 +2420,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// あわせて createTerminal は openEditor の完了を待たないため、先に開き切ってから
 					// park させる（detachInstance が先行すると、進行中の openEditor が
 					// 実体のない入力を開いてしまう）。
-					// PTY 起動が失敗すると processReady は解決しないため、待ち切らない場合でも操作は
-					// 成功として返す（未完了のままだとモバイルが再試行して二重作成になる）。
-					// 待ち切れなくても操作は成功として返す（未完了だとモバイルが再試行して
-					// 二重作成になる）。ただし黙って進むと、PTY が遅い環境で park 台帳に
-					// 載らず端末が見えなくなる過去の症状が再発しても記録が残らない。
+					// PTY 起動が失敗すると processReady は解決しないため、待ち切れなくても操作は
+					// 成功として返す（未完了だとモバイルが再試行して二重作成になる）。ただし
+					// 黙って進むと、PTY が遅い環境で park 台帳に載らず端末が見えなくなる過去の
+					// 症状が再発しても記録が残らない。
 					if (await raceTimeout(instance.processReady, TERMINAL_CREATE_READY_TIMEOUT_MS) === undefined) {
 						reportParadisDiagnosticError('owned', 'mobile-terminal', 'create-not-ready', new Error('PTY was not ready before parking the terminal'), {
 							phase: 'create',
@@ -2797,7 +2799,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * そこで xterm.js 内部（`_core._inputHandler._mouseStateService.activeEncoding`）を覗いて
 	 * 実際に 'SGR' が有効なときだけホイールを送る。公開APIではないが、upstream 自身が同じ
 	 * `_core` 経由のアクセスを既存パターンとして持っている
-	 * （`browser/xterm/xtermTerminal.ts:285-288` の `ITerminalWithCore`/`IXtermCore`）。
+	 * （`browser/xterm/xtermTerminal.ts:299-302` の `ITerminalWithCore`/`IXtermCore`）。
 	 * `@xterm/headless` で実測して到達可能なことを確認済み（1000/1002/1003/1006を流すと
 	 * `activeEncoding` は `'SGR'`、1006無しの `mouse=a` 相当だと `'DEFAULT'` のまま）。
 	 * 読めない・想定と違う値のときは安全側（矢印キー）へ倒す。

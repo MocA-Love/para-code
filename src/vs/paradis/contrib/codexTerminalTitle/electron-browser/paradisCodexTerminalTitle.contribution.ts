@@ -21,6 +21,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ICommandDetectionCapability, ITerminalCommand, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ITerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
@@ -447,6 +448,10 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 			} catch (error) {
 				this.logService.debug('[ParadisCodexTerminalTitle] prompt lookup failed', error);
 				if (++consecutiveErrors >= PROMPT_LOOKUP_MAX_CONSECUTIVE_ERRORS) {
+					// Only reported once the lookup gives up outright, not on every transient retry.
+					reportParadisDiagnosticError('owned', 'codex-terminal-title', 'db-read-failed', error, {
+						safe_consecutive_errors: consecutiveErrors,
+					}, 'warning');
 					return;
 				}
 			}
@@ -573,6 +578,9 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 					await this.writeCodexConfig();
 				}
 			}).catch(error => {
+				// This is the main way the feature dies silently: a failed config.toml write leaves
+				// `[tui].terminal_title` unset forever, since nothing else retries it.
+				reportParadisDiagnosticError('owned', 'codex-terminal-title', 'config-write-failed', error);
 				this.logService.warn('[ParadisCodexTerminalTitle] failed to update Codex terminal title', error);
 			});
 		}

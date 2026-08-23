@@ -10,6 +10,7 @@ import { join } from '../../../../base/common/path.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IParadisHeapSnapshotMainService, IParadisHeapSnapshotResult, PARADIS_HEAP_SNAPSHOT_CHANNEL } from '../common/paradisHeapSnapshot.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** {@link paradisRegisterHeapSnapshot} が要求する最小の口。app.ts の実体を丸ごと受け取らないため。 */
 export interface IParadisHeapSnapshotChannelHost {
@@ -61,6 +62,7 @@ export class ParadisHeapSnapshotMainService implements IParadisHeapSnapshotMainS
 				} catch {
 					// 消せなくても元の書き出し失敗を伝える。
 				}
+				reportParadisDiagnosticError('owned', 'heap-snapshot', 'write-failed', error);
 				throw error;
 			}
 			const durationMs = Date.now() - writeStartedAt;

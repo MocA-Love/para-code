@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+
 // ターミナルのGPUレンダラ(WebGL)が外れたあとの扱いを決める。
 //
 // upstream は「1つの端末がWebGLを取れなかった」ときに、そのウィンドウのGPUレンダラを
@@ -97,6 +99,8 @@ export class ParadisWebglRecovery {
 	private lost = false;
 	private attempts = 0;
 	private lastAttemptAt = 0;
+	/** 上限到達を計測済みか。1回のロスト区間につき1回だけ報告するためのガード。 */
+	private reportedRetriesExhausted = false;
 
 	constructor(private readonly now: () => number = Date.now) { }
 
@@ -105,6 +109,7 @@ export class ParadisWebglRecovery {
 		this.lost = false;
 		this.attempts = 0;
 		this.lastAttemptAt = 0;
+		this.reportedRetriesExhausted = false;
 	}
 
 	/** コンテキストを取り上げられた、または取得に失敗した。 */
@@ -119,6 +124,14 @@ export class ParadisWebglRecovery {
 	shouldRetryNow(): boolean {
 		const now = this.now();
 		if (!paradisShouldRetryWebgl({ lost: this.lost, attempts: this.attempts, lastAttemptAt: this.lastAttemptAt }, now)) {
+			// この端末はDOMレンダラのまま取り直されなくなる。ユーザーからは何も起きないので、
+			// 上限到達を1回だけ計測しておく(挙動は変えない、報告のみ)。
+			if (this.lost && this.attempts >= PARADIS_WEBGL_MAX_RETRIES && !this.reportedRetriesExhausted) {
+				this.reportedRetriesExhausted = true;
+				reportParadisDiagnosticError('owned', 'terminal-renderer', 'webgl-retry-exhausted', new Error('Terminal exhausted WebGL recovery retries'), {
+					attempt: this.attempts,
+				}, 'info');
+			}
 			return false;
 		}
 		this.attempts++;

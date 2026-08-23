@@ -13,6 +13,7 @@ import { IViewDescriptorService, IViewsRegistry, ViewContainer, ViewContainerLoc
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** 配置の指定方法。'left' = 左サイドバー / 'right' = 右セカンダリサイドバー / 'hidden' = 指定ビューを非表示。 */
 type ParadisViewPlacement = 'left' | 'right' | 'hidden';
@@ -172,7 +173,15 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 			}
 		}));
 
-		const timer = setTimeout(() => watchStore.dispose(), WATCH_DURATION_MS);
+		const timer = setTimeout(() => {
+			if (this.pendingMoves.size > 0 || this.pendingHides.size > 0) {
+				reportParadisDiagnosticError('owned', 'view-layout', 'placement-incomplete', new Error('view layout watch expired with pending placements'), {
+					safe_pending_moves: this.pendingMoves.size,
+					safe_pending_hides: this.pendingHides.size,
+				}, 'warning');
+			}
+			watchStore.dispose();
+		}, WATCH_DURATION_MS);
 		this._register({ dispose: () => clearTimeout(timer) });
 	}
 

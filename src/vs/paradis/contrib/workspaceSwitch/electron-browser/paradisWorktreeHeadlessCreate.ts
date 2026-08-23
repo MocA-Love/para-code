@@ -370,8 +370,9 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 	});
 	if (request.stateKey !== switchService.activeStateKey) {
 		// PC側で非表示のワークスペース向け: スコープを付け替えて即parkさせる（表示を乱さない）。
-		// エディタターミナルの park は persistentProcessId を鍵にするため PTY 起動を待ってから
-		// assign する。あわせて createTerminal は openEditor の完了を待たないため先に開き切らせる。
+		// エディタターミナルの park は persistentProcessId が確定していないと失敗するため
+		// PTY 起動を待ってから assign する。あわせて createTerminal は openEditor の完了を
+		// 待たないため先に開き切らせる。
 		await instance.processReady;
 		await terminalEditorService.openEditor(instance);
 		terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
@@ -589,7 +590,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 					cwd: worktreeUri,
 					location: TerminalLocation.Editor,
 				});
-				// park は persistentProcessId を鍵にするため PTY 起動と openEditor の完了を待ってから assign する
+				// park は persistentProcessId が確定していないと失敗するため PTY 起動と openEditor の完了を待ってから assign する
 				await instance.processReady;
 				await terminalEditorService.openEditor(instance);
 				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
@@ -604,7 +605,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				// unparkEditorTerminals がエディタとして開き直すため現在のスペースの表示は乱れない。
 				// paneトークンは同様に自動注入されるため、稼働状態表示（Workspaces ビュー/
 				// モバイルのホーム一覧）はそのまま効く。
-				// park は persistentProcessId を鍵にするため PTY 起動と openEditor の完了を待ってから assign する。
+				// park は persistentProcessId が確定していないと失敗するため PTY 起動と openEditor の完了を待ってから assign する。
 				const instance = await terminalService.createTerminal({
 					cwd: worktreeUri,
 					location: TerminalLocation.Editor,

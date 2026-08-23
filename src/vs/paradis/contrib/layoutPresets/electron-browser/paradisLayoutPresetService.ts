@@ -34,6 +34,7 @@ import { ITerminalService } from '../../../../workbench/contrib/terminal/browser
 import { GroupOrientation, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisPresetTitleConfig } from '../../terminalPresets/browser/paradisPresetService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -230,6 +231,10 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 			} catch (error) {
 				// 1つの枠の失敗で残りを開かないのは損なので、続行して最後にまとめて知らせる。
 				this.logService.warn(`[ParadisLayoutPresets] failed to fill slot ${index} (${slot.kind})`, error);
+				reportParadisDiagnosticError('owned', 'layout-presets', 'slot-fill-failed', error, {
+					safe_slot_kind: slot.kind,
+					safe_slot_index: index,
+				});
 				this.notificationService.warn(localize(
 					'paradis.layoutPresets.slotFailed',
 					// allow-any-unicode-next-line

@@ -7,9 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ターミナルのプロンプト入力が非空のとき、↓キーで補完候補リスト(既存のterminal suggestウィジェット)を
-// 開けるようにする(Superset同等UX)。実装は3点のみで、upstreamファイルへのPARA-PATCHはゼロ:
+// 開けるようにする(Superset同等UX)。実装は5点のみで、upstreamファイルへのPARA-PATCHはゼロ:
 //  1. fork独自context key `para.terminalPromptNotEmpty` を per-instance の terminal contribution で
-//     promptInputModel から追従させる(ghost text は除外して判定)
+//     promptInputModel から追従させる(ghost text は除外し、入力中(state===Input)かつフォアグラウンド
+//     コマンド実行中でない(executingCommand===undefined)ときのみ非空判定、詳細は
+//     paradisIsTerminalPromptSuggestEligible を参照)
 //  2. 既存コマンドID TriggerSuggest へ DownArrow の追加キーバインドルールを登録する。
 //     既存IDを再利用するのは、TriggerSuggest が DEFAULT_COMMANDS_TO_SKIP_SHELL に登録済みで、
 //     この↓キーが xterm/シェルに流れず workbench 側でディスパッチされるため

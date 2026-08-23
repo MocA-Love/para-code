@@ -18,6 +18,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { IWorkbenchExtensionManagementService } from '../../../../workbench/services/extensionManagement/common/extensionManagement.js';
@@ -249,6 +250,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		const results = await this.extensionManagementService.installGalleryExtensions(toInstall);
 		for (const result of results) {
 			if (result.error) {
+				reportParadisDiagnosticError('owned', 'default-extensions', 'gallery-install-failed', result.error);
 				this.logService.warn(`[ParadisDefaultExtensions] failed to install ${result.identifier.id}`, result.error);
 			} else {
 				doneIds.add(result.identifier.id.toLowerCase());

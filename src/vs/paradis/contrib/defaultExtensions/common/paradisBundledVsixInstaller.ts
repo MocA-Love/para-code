@@ -8,6 +8,7 @@
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
  * Open VSX 未公開のためリポジトリに .vsix を同梱してインストールする拡張のファイル名一覧。
@@ -75,6 +76,9 @@ export class ParadisBundledVsixInstaller {
 			const location = joinPath(URI.file(this.options.appRoot), ...BUNDLED_VSIX_DIR.split('/'), file);
 			try {
 				if (!(await this.options.exists(location))) {
+					// 台帳に記録しないので起動毎に再試行し続ける。同梱漏れ(パッケージング不具合)を
+					// 検知するにはここで報告するしかない。
+					reportParadisDiagnosticError('owned', 'default-extensions', 'bundled-vsix-missing', new Error(`bundled vsix not found: ${file}`));
 					this.options.warn(`[ParadisDefaultExtensions] bundled vsix not found: ${file}`);
 					continue;
 				}
@@ -82,6 +86,9 @@ export class ParadisBundledVsixInstaller {
 				done.add(file);
 				this.options.info(`[ParadisDefaultExtensions] installed bundled vsix: ${file}`);
 			} catch (error) {
+				// インストール失敗も台帳に記録されないため、同じく起動毎に無限リトライする(上とは
+				// 別原因なので operation を分けて区別できるようにする)。
+				reportParadisDiagnosticError('owned', 'default-extensions', 'bundled-vsix-install-failed', error);
 				this.options.warn(`[ParadisDefaultExtensions] failed to install bundled vsix ${file}`, error);
 			}
 		}

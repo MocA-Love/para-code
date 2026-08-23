@@ -313,7 +313,8 @@ const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
 
 /**
  * 指定フォルダで有効な autoRun プリセットを実行する。
- * paradisCreateWorktreeDialog（新しいスペースの作成）から、切り替え完了後に呼ばれる。
+ * paradisRunWorktreeCreateFlow（ダイアログ発のバックグラウンド作成とモバイル発のヘッドレス作成の
+ * 共通本体）から、worktree 作成完了後に呼ばれる。
  * リポジトリレベル（.paracode.json 由来）のプリセットは、リポジトリを開いただけで任意コマンドが
  * 走る攻撃面になるため、内容（コマンド一覧）ごとの初回承認を挟む。承認は APPLICATION スコープに永続。
  *
@@ -324,8 +325,8 @@ const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
  *   （`uri.fsPath` を直に渡すと、Windows から Linux の接続先で `/home/u/repo` が `\home\u\repo`
  *   に化ける。型がそれを弾く）。
  * @param stateKey 実行対象の状態キー（worktree 作成直後など、現在PC側でアクティブなスコープとは
- *   限らない）。指定すると生成されたターミナルをこのスコープへ明示的に紐付ける（呼び出し元が
- *   `paradisCreateWorktreeDialog` の場合、setup スクリプト実行中にユーザーが別スコープへ
+ *   限らない）。指定すると生成されたターミナルをこのスコープへ明示的に紐付ける（ダイアログ発の
+ *   バックグラウンド作成の場合、setup スクリプト実行中にユーザーが別スコープへ
  *   切り替えても、完成したターミナルが誤って「今アクティブな」スコープに表示されるのを防ぐ）。
  * @returns 実際に1つ以上のプリセットを実行したか（呼び出し側がデフォルト端末の要否を判断するために使う）。
  */

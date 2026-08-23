@@ -132,7 +132,7 @@ export interface IParadisDaemonIdleState {
  * {@link PARADIS_DAEMON_TERMINAL_GRACE_TIME}。
  *
  * **抱えている間は終わらない、にしてはいけない。** 猶予タイマー
- * (`PersistentTerminalProcess._disconnectRunner`) を動かすのは、クライアントが `detachFromProcess`
+ * (`PersistentTerminalProcess._disconnectRunner1`) を動かすのは、クライアントが `detachFromProcess`
  * を呼んだときだけで、アプリが正常に終わらなかった場合 (クラッシュ・強制終了・電源断) には
  * 届かない。そのとき「抱えているから終わらない」と読むと、猶予タイマーも回らず自分も終われず、
  * **誰も繋いでいないのに永久に居座る常駐**ができる。常駐にした以上、上限はこちら側にも要る。

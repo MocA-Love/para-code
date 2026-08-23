@@ -16,6 +16,7 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -187,6 +188,10 @@ export class ParadisCodexTerminalTitleService {
 			const rolloutPath = request.skipRolloutScan ? undefined : nonEmptyString(row.rollout_path);
 			return rolloutPath ? await readFirstUserPrompt(this.codexHome, rolloutPath, this.rolloutScanLimits) : {};
 		} catch (error) {
+			// Not reported when the reporter is unwired (REH has no Sentry SDK), so this is a
+			// no-op there and only reaches Sentry from the shared process. Warning severity because
+			// the caller falls back to no transient title rather than failing outright.
+			reportParadisDiagnosticError('owned', 'codex-terminal-title', 'db-read-failed', error, undefined, 'warning');
 			this.logService.debug('[ParadisCodexTerminalTitle] unable to read Codex thread metadata', error);
 			return {};
 		} finally {

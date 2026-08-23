@@ -22,6 +22,7 @@ import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
 import { IParadisMobileInboundFrame } from '../common/paradisMobileRelay.js';
 
@@ -163,6 +164,9 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 			stream = await mediaDevices.getDisplayMedia({ video: true, audio: false });
 		} catch (err) {
 			this.logService.warn('[paradisWebrtc] getDisplayMedia failed', err);
+			// モバイル側はこれを既存の JPEG ミラーへの無音フォールバック起点にするだけなので、
+			// ここで報告しないと WebRTC 経路が静かに機能しなくなっても気付けない。
+			reportParadisDiagnosticError('owned', 'browser-mirror', 'resolve-denied', err, undefined, 'info');
 			this.send(mobileId, { t: 'webrtc-error', id, error: String(err instanceof Error ? err.message : err) });
 			return;
 		}

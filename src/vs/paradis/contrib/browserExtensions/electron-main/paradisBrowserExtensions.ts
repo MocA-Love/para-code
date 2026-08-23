@@ -16,6 +16,7 @@
 // 同梱物の出所・更新手順は ../README.md を参照。
 
 import { FileAccess } from '../../../../base/common/network.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
  * ロード試行済みのセッション。`loadExtension` は同一セッションへ同じ拡張を二重ロードすると
@@ -41,5 +42,6 @@ export function paradisInstallBrowserExtensions(session: Electron.Session): void
 	session.extensions.loadExtension(reactDevtoolsPath, { allowFileAccess: true }).catch(error => {
 		// mainプロセスにはこの経路で使えるログサービスが無いため console に残す（メインプロセスログに出る）
 		console.error('[paradis] Failed to load the bundled React DevTools extension:', error);
+		reportParadisDiagnosticError('owned', 'browser-extensions', 'react-devtools-load-failed', error, undefined, 'warning');
 	});
 }

@@ -27,9 +27,9 @@ export function toParadisKeepAwakeMode(value: unknown): ParadisKeepAwakeMode {
 export const PARADIS_KEEP_AWAKE_SELECT_COMMAND = 'paradis.power.selectKeepAwakeMode';
 
 /**
- * モバイルデバイス接続時などリモート作業の開始点から呼ぶ内部コマンド。
+ * モバイルデバイス接続時などリモート作業の開始点から呼ぶことを想定した内部コマンド。
  * 設定が 'off' の場合のみ、スリープ防止を有効にするよう推奨する通知を出す
- * （「今後表示しない」選択可）。将来の mobileRelay contribution はこのコマンドIDを
- * executeCommand するだけでよく、import依存は発生しない。
+ * （「今後表示しない」選択可）。コマンドとしては登録済みだが、現時点では
+ * どこからも executeCommand されていない（mobileRelay contribution からの呼び出しは未実装）。
  */
 export const PARADIS_KEEP_AWAKE_PROMPT_COMMAND = 'paradis.power.promptKeepAwakeForRemote';

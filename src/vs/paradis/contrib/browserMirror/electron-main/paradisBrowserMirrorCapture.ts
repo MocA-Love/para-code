@@ -18,10 +18,14 @@
 // ではなく、埋め込まれた WebContentsView の中身だけ）。対象は
 // `browserView.webContents.mainFrame`。
 //
-// 本番実装では arm 対象を viewId で明示（IBrowserViewMainService.tryGetBrowserView(id)）し、
-// レンダラ→main の IPC チャネルで arm する。スパイクではその配線を省き、環境変数
-// `PARADIS_MIRROR_CAPTURE_VIEW` が立っているときのみ「最初に見つかった内蔵ブラウザビュー」の
-// フレームを返す（既存の画面録画/スクショ機能に影響を与えないための env ゲート）。
+// 本番実装では arm 対象を Chromium DevTools targetId で明示する。shared process 側の
+// paradisMobileRelayService が `PARADIS_CDP_TARGET_CHANNEL` 経由で呼ぶ
+// ParadisCdpTargetService.armMirrorCapture（electron-main）から paradisArmMirrorCapture が
+// 呼ばれ、次の1回の getDisplayMedia に対して1回限り・TTL 15秒で arm する（期限切れ/対象
+// 消失時は 'deny' を返しフェイルクローズ）。環境変数 `PARADIS_MIRROR_CAPTURE_VIEW` は上記の
+// arm が無い場合のローカル検証用フォールバックで、立っている間は「最初に見つかった内蔵
+// ブラウザビュー」のフレームを返す（既存の画面録画/スクショ機能に影響を与えないための env
+// ゲート）。
 
 import { webContents as electronWebContents, WebFrameMain } from 'electron';
 import { BrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
@@ -37,7 +41,9 @@ const capture = new ParadisBrowserMirrorCapture({
 
 /**
  * 指定 DevTools targetId の WebContentsView 単体キャプチャを次の1回の getDisplayMedia
- * に対して arm する。shared process の ParadisCdpTargetService.armMirrorCapture から呼ばれる。
+ * に対して arm する（TTL 15秒、ワンショット）。shared process の paradisMobileRelayService
+ * が `PARADIS_CDP_TARGET_CHANNEL` 経由で呼ぶ ParadisCdpTargetService.armMirrorCapture
+ * （electron-main）から呼ばれる。
  */
 export function paradisArmMirrorCapture(targetId: string): void {
 	capture.arm(targetId);
@@ -46,11 +52,13 @@ export function paradisArmMirrorCapture(targetId: string): void {
 /**
  * `setDisplayMediaRequestHandler` から呼ばれ、キャプチャ対象の WebFrameMain を返す。
  *
- * arm されていない（env 未設定）場合や対象ビューが無い場合は undefined を返し、
+ * targetId で arm 済みの場合は DevTools targetId から解決し、期限切れや対象消失なら
+ * 'deny' を返す（フェイルクローズ。画面全体キャプチャへのフォールバックを防ぐ）。
+ * arm されておらず env `PARADIS_MIRROR_CAPTURE_VIEW` も未設定の場合は undefined を返し、
  * 呼び出し側（app.ts のハンドラ）は従来どおり画面全体キャプチャにフォールバックする。
  *
- * スパイクでは「最初に見つかった内蔵ブラウザビュー」を対象にする。本番では viewId で
- * 明示解決する（下記コメント参照）。
+ * env のみが設定されている場合（ローカル検証用フォールバック）は「最初に見つかった
+ * 内蔵ブラウザビュー」を対象にする。
  */
 export function paradisResolveMirrorCaptureFrame(): WebFrameMain | 'deny' | undefined {
 	return capture.resolve();

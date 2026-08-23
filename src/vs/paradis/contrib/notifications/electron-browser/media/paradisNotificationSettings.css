@@ -181,7 +181,7 @@
 .paradis-notif-settings .pns-nav-item.active {
 	background: var(--vscode-list-activeSelectionBackground);
 	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
-	outline: 1px solid var(--vscode-list-activeSelectionBorder, transparent);
+	outline: 1px solid var(--vscode-list-focusAndSelectionOutline, transparent);
 	outline-offset: -1px;
 }
 
@@ -455,7 +455,7 @@
 }
 
 /* 検索欄の input は枠側の :focus-within 輪郭に任せるため、上の汎用 input:focus（同特異度で
-   後から定義されており outline: none に勝てなかった）より特異度を上げて打ち消す。 */
+ * 後から定義されており outline: none に勝てなかった）より特異度を上げて打ち消す。 */
 .paradis-notif-settings .pns-search input:focus {
 	outline: none;
 }
@@ -608,7 +608,7 @@
 	white-space: nowrap;
 }
 
-/* 試聴中の進捗バー（rt.dur 秒いっぱいまで伸びる） */
+/* 試聴中の進捗バー（着信音の長さいっぱいまで伸びる） */
 .paradis-notif-settings .pns-rt-progress {
 	height: 3px;
 	border-radius: 2px;

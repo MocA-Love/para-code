@@ -370,11 +370,11 @@ export function openParadisPresetEditorDialog(accessor: ServicesAccessor): void 
 	);
 }
 
+/** 常設シェル（ヘッダー／左ナビ／右コンテンツ）。再描画は右コンテンツの中身だけ行う。 */
 class ParadisPresetEditorDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _dialog: HTMLElement;
-	/** 常設シェル（ヘッダー／左ナビ／右コンテンツ）。再描画は右コンテンツの中身だけ行う。 */
 	private readonly _selectToggleEl: HTMLButtonElement;
 	private readonly _newBtnEl: HTMLButtonElement;
 	private readonly _navEl: HTMLElement;

@@ -70,6 +70,8 @@ export class BrowserSession {
 	 * they point to is garbage-collected.
 	 */
 	private static readonly _finalizer = new FinalizationRegistry<string>((id) => {
+		// PARA-PATCH: reference the static map via `this` instead of the hardcoded
+		// class name, so this keeps working if the class is ever renamed
 		this._byId.delete(id);
 	});
 

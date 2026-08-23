@@ -192,7 +192,6 @@ export interface IParadisAgentPaneActivity {
 	readonly pendingApproval: boolean;
 }
 
-/** 完了通知が来ないまま残ったバックグラウンドタスクを無視するまでの時間。 */
 const activities = new Map<string, IParadisAgentPaneActivity>();
 const activityEmitter = new Emitter<{ readonly token: string; readonly activity: IParadisAgentPaneActivity }>();
 let activityGuard: ((token: string) => boolean) | undefined;
