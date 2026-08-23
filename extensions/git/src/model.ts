@@ -22,7 +22,7 @@ import { IBranchProtectionProviderRegistry } from './branchProtection';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
 import { RepositoryCache } from './repositoryCache';
 import { ParadisRepositoryParkingLot } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
-import { coordinateRepositoriesForParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
+import { commitRepositoriesForParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
 
 class RepositoryPick implements QuickPickItem {
 	@memoize get label(): string {
@@ -508,9 +508,11 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			};
 
 			// PARA-PATCH: gather every removed and open repository before one parking decision. A
-			// newer workspace event invalidates this handler after realpath awaits, and an unresolved
-			// current-folder realpath skips only parking so canonical aliases remain fail-safe.
-			const parkingResult = await coordinateRepositoriesForParking(
+			// newer workspace event invalidates this handler after realpath awaits. The pure helper
+			// then re-reads the latest snapshot, verifies generation, selects, and invokes this
+			// synchronous commit callback to park and start all latest workspace folders missing an
+			// open repository.
+			await commitRepositoriesForParking(
 				getParkingSnapshot,
 				() => generation === this._workspaceFolderChangeGeneration,
 				folderPath => {
@@ -519,21 +521,14 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 				},
 				isDescendant,
 				pathEquals,
+				(repositoriesToPark, currentFolderPaths) => {
+					repositoriesToPark.forEach(repository => repository.park());
+					const foldersToOpen = currentFolderPaths
+						.filter(folderPath => !this.getOpenRepository(Uri.file(folderPath)));
+					this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${foldersToOpen.join(', ')}]`);
+					foldersToOpen.forEach(folderPath => this.openRepository(folderPath));
+				},
 			);
-
-			if (parkingResult.kind === 'stale') {
-				return;
-			}
-
-			if (parkingResult.kind === 'ready') {
-				parkingResult.repositoriesToPark.forEach(repository => repository.park());
-			}
-
-			const possibleRepositoryFolders = added
-				.filter(folder => !this.getOpenRepository(folder.uri));
-
-			this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${possibleRepositoryFolders.map(p => p.uri.fsPath).join(', ')}]`);
-			await Promise.all(possibleRepositoryFolders.map(p => this.openRepository(p.uri.fsPath)));
 		}
 		catch (err) {
 			this.logger.warn(`[Model][onDidChangeWorkspaceFolders] Error: ${err}`);
