@@ -7,7 +7,7 @@
 
 import 'mocha';
 import * as assert from 'assert';
-import { IParadisUnaccountedCandidate, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
+import { IParadisUnaccountedCandidate, selectRepositoriesForUnifiedParking, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
 
 function candidate(root: string, rootRealPath?: string): IParadisUnaccountedCandidate {
 	return { repository: { root, rootRealPath } };
@@ -71,5 +71,31 @@ suite('selectUnaccountedForParking', () => {
 		const repo = candidate('/w/repo');
 		const result = selectUnaccountedForParking([repo], [], isDescendant);
 		assert.deepStrictEqual(result, [repo]);
+	});
+
+	test('keeps logical and real-path aliases of a current folder', () => {
+		const aliased = candidate('/tmp/repo', '/private/repo');
+		const result = selectUnaccountedForParking(
+			[aliased, aliased],
+			['/tmp/repo/app', '/private/repo/app'],
+			isDescendant,
+		);
+		assert.deepStrictEqual(result, []);
+	});
+
+	test('selects unified unaccounted repositories once in first-seen order', () => {
+		const ancestor = candidate('/repo');
+		const active = candidate('/active');
+		const nested = candidate('/repo/packages/app/nested');
+		const firstUnrelated = candidate('/other');
+		const secondUnrelated = candidate('/another');
+		const result = selectRepositoriesForUnifiedParking(
+			[ancestor, active, firstUnrelated],
+			[ancestor, active, nested, firstUnrelated, secondUnrelated],
+			new Set([active.repository]),
+			['/repo/packages/app'],
+			isDescendant,
+		);
+		assert.deepStrictEqual(result, [firstUnrelated, secondUnrelated]);
 	});
 });
