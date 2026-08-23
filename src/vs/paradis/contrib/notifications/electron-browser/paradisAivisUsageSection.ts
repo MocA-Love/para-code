@@ -129,14 +129,15 @@ export class ParadisAivisUsageSection extends Disposable {
 		dom.clearNode(this.container);
 		this._renderDisposables.clear();
 
-		const header = dom.append(this.container, $('.pns-row'));
-		const titles = dom.append(header, $('div'));
+		const header = dom.append(this.container, $('.setting-row'));
+		const titles = dom.append(header, $('.sr-main'));
 		dom.append(titles, $('.pns-section-title')).textContent = STR_TITLE;
 		dom.append(titles, $('.pns-section-desc')).textContent = STR_DESC;
 
 		const periodGroup = dom.append(header, $('div'));
 		periodGroup.style.display = 'flex';
 		periodGroup.style.gap = '4px';
+		periodGroup.style.flexShrink = '0';
 		const btn7 = dom.append(periodGroup, $('button.pns-btn')) as HTMLButtonElement;
 		btn7.textContent = STR_7DAYS;
 		const btn30 = dom.append(periodGroup, $('button.pns-btn')) as HTMLButtonElement;
