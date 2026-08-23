@@ -22,7 +22,7 @@
 }
 
 .paradis-settings-dialog {
-	width: 940px;
+	width: 980px;
 	max-width: 94vw;
 	height: 700px;
 	max-height: 92vh;
@@ -277,15 +277,15 @@
 	position: absolute;
 	left: 2px;
 	top: 2px;
-	width: 14px;
-	height: 14px;
+	width: 16px;
+	height: 16px;
 	border-radius: 50%;
 	background: var(--vscode-foreground);
 	transition: left 0.15s;
 }
 
 .paradis-settings-dialog .psd-toggle:checked::after {
-	left: 20px;
+	left: 19px;
 	background: var(--vscode-button-foreground);
 }
 

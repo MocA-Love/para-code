@@ -88,6 +88,8 @@ interface IParadisUsageSettingSpec {
 	readonly label: string;
 	readonly description?: string;
 	readonly placeholder?: string;
+	/** 数値 select の選択肢。指定するとテキスト欄ではなくプルダウンになる。 */
+	readonly choices?: readonly { readonly value: number; readonly label: string }[];
 }
 
 const SETTINGS: readonly IParadisUsageSettingSpec[] = [
@@ -121,6 +123,23 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 		key: 'paradis.rtk.statusBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.usage.rtkStatusBar', "今日の rtk 削減トークン数を表示"),
+	},
+	{
+		key: 'paradis.githubMetrics.refreshIntervalSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.usage.refreshInterval', "自動更新の間隔"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.usage.refreshIntervalDesc', "GitHub API のタブを開いている間、自分で取り直す間隔です。ccusage と rtk は開いたときとこのダイアログの更新ボタンでのみ取り直します。"),
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 0, label: localize('paradis.usage.refreshManual', "手動のみ") },
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.usage.refresh60', "1 分ごと") },
+			// allow-any-unicode-next-line
+			{ value: 300, label: localize('paradis.usage.refresh300', "5 分ごと") },
+			// allow-any-unicode-next-line
+			{ value: 900, label: localize('paradis.usage.refresh900', "15 分ごと") },
+		],
 	},
 ];
 
@@ -276,7 +295,33 @@ export class ParadisUsageDashboardDialog extends Disposable {
 				dom.append(main, $('.pud-setting-desc')).textContent = spec.description;
 			}
 
-			if (typeof this.configurationService.getValue(spec.key) === 'boolean') {
+			if (spec.choices) {
+				const select = dom.append(row, $('select.pud-select')) as HTMLSelectElement;
+				for (const choice of spec.choices) {
+					const option = dom.append(select, $('option')) as HTMLOptionElement;
+					option.value = String(choice.value);
+					option.textContent = choice.label;
+				}
+				// 用意した刻みに載らない値が既に入っていることがあるので、そのときは
+				// 実際の値を選択肢へ足して選んでおく（開いただけで設定が変わったように見せない）
+				let extraOption: HTMLOptionElement | undefined;
+				const sync = () => {
+					const current = String(this.configurationService.getValue(spec.key) ?? '');
+					extraOption?.remove();
+					extraOption = undefined;
+					if (!spec.choices?.some(choice => String(choice.value) === current)) {
+						extraOption = dom.append(select, $('option')) as HTMLOptionElement;
+						extraOption.value = current;
+						extraOption.textContent = current;
+					}
+					select.value = current;
+				};
+				sync();
+				this._settingRefreshers.push(sync);
+				store.add(dom.addDisposableListener(select, 'change', () => {
+					void this.configurationService.updateValue(spec.key, Number(select.value), ConfigurationTarget.USER);
+				}));
+			} else if (typeof this.configurationService.getValue(spec.key) === 'boolean') {
 				const toggle = dom.append(row, $('input.pud-toggle')) as HTMLInputElement;
 				toggle.type = 'checkbox';
 				const sync = () => { toggle.checked = this.configurationService.getValue<boolean>(spec.key) === true; };

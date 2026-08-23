@@ -176,9 +176,13 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		}
 	}
 
-	setVisible(_visible: boolean): void {
-		// rtk はポーリングも warm lease も持たない(表示のたびに取り直すだけ)ので、
-		// 可視状態で止めるものが無い。ホストの経路を揃えるためにメソッドだけ用意しておく。
+	setVisible(visible: boolean): void {
+		// rtk はポーリングも warm lease も持たないので、隠れたときに止めるものは無い。
+		// 見えたときの初回読み込みだけは要る: タブ(EditorPane)は setInput で ensureLoaded を
+		// 呼ぶが、ダイアログにはその経路が無く、ここで呼ばないと開いた直後が空のままになる。
+		if (visible) {
+			this.ensureLoaded();
+		}
 	}
 
 	focus(): void {

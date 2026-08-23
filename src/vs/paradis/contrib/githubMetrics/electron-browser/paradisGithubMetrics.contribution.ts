@@ -36,7 +36,7 @@ import {
 	paradisGithubSeverity,
 	paradisGithubWorstRemainingRatio,
 } from '../common/paradisGithubMetrics.js';
-import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_ENABLED } from './paradisGithubMetricsClient.js';
+import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL, PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_ENABLED } from './paradisGithubMetricsClient.js';
 import { ParadisGithubMetricsEditor } from './paradisGithubMetricsEditor.js';
 import { paradisGithubRoundedPercent } from './paradisGithubMetricsFormat.js';
 import { ParadisGithubMetricsInput, ParadisGithubMetricsInputSerializer, PARADIS_GITHUB_METRICS_EDITOR_ID, PARADIS_GITHUB_METRICS_INPUT_TYPE_ID } from './paradisGithubMetricsInput.js';
@@ -109,6 +109,19 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			description: localize('paradis.githubMetrics.statusBarEnabled', "Show the remaining GitHub API rate limit in the status bar."),
+		},
+		[PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL]: {
+			type: 'number',
+			enum: [0, 60, 300, 900],
+			default: 60,
+			scope: ConfigurationScope.APPLICATION,
+			enumDescriptions: [
+				localize('paradis.githubMetrics.refreshInterval.manual', "Only refresh when asked."),
+				localize('paradis.githubMetrics.refreshInterval.60', "Every minute."),
+				localize('paradis.githubMetrics.refreshInterval.300', "Every 5 minutes."),
+				localize('paradis.githubMetrics.refreshInterval.900', "Every 15 minutes."),
+			],
+			description: localize('paradis.githubMetrics.refreshInterval', "How often the open GitHub API dashboard refreshes itself, in seconds. Zero refreshes only on demand."),
 		},
 	},
 });

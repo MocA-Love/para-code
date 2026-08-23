@@ -346,9 +346,13 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._agentSeg = dom.append(agentBlock, $('.pcw-d-agent-seg'));
 		this._agentSeg.setAttribute('role', 'radiogroup');
 		this._agentSeg.setAttribute('aria-label', STR_AGENT_LABEL);
-		// 前回選択したエージェントを復元する。保存値が現在の選択肢に無い場合
-		// （設定から削除された等）は既定の「実行しない」にする
-		const lastAgentId = prefill?.agentId ?? this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
+		// 開いたときの選択は、再表示(prefill) > 設定で固定した既定 > 前回選んだもの、の順で決める。
+		// 設定が空なら従来どおり前回選択を覚えて使う。いずれも現在の選択肢に無い場合
+		// （設定から削除された等）は「実行しない」にする
+		const configuredDefault = (this.configurationService.getValue<string>('paradis.workspaceSwitch.defaultAgent') ?? '').trim();
+		const lastAgentId = prefill?.agentId
+			?? (configuredDefault.length > 0 ? configuredDefault : undefined)
+			?? this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
 		this._selectedAgentId = lastAgentId && (lastAgentId === 'none' || this._agents.some(agent => agent.id === lastAgentId))
 			? lastAgentId
 			: 'none';

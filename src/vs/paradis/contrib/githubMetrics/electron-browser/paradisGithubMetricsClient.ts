@@ -15,6 +15,8 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IParadisGithubMetricsSnapshot, PARADIS_GITHUB_METRICS_CHANNEL } from '../common/paradisGithubMetrics.js';
 
 export const PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_ENABLED = 'paradis.githubMetrics.statusBar.enabled';
+/** 開いているダッシュボードが自分で取り直す間隔（秒、0 = 手動のみ）。 */
+export const PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL = 'paradis.githubMetrics.refreshIntervalSeconds';
 
 export class ParadisGithubMetricsClient {
 
