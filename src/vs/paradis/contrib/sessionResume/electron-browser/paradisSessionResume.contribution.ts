@@ -7,35 +7,18 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Codicon } from '../../../../base/common/codicons.js';
-import { localize, localize2 } from '../../../../nls.js';
+import { localize2 } from '../../../../nls.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { Registry } from '../../../../platform/registry/common/platform.js';
-import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
-import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
-import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../../workspaceSwitch/browser/paradisWorkspacesView.js';
-import { ParadisSessionResumeEditor } from './paradisSessionResumeEditor.js';
-import { ParadisSessionResumeInput, ParadisSessionResumeInputSerializer, PARADIS_SESSION_RESUME_EDITOR_ID, PARADIS_SESSION_RESUME_INPUT_TYPE_ID } from './paradisSessionResumeInput.js';
+import { paradisOpenSessionResumeDialog } from './paradisSessionResumeDialog.js';
 
 export const PARADIS_SHOW_SESSION_RESUME_COMMAND_ID = 'paradis.sessionResume.show';
 
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		ParadisSessionResumeEditor,
-		PARADIS_SESSION_RESUME_EDITOR_ID,
-		localize('paradis.sessionResume.editorName', "セッション履歴"),
-	),
-	[new SyncDescriptor(ParadisSessionResumeInput)],
-);
-
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
-	PARADIS_SESSION_RESUME_INPUT_TYPE_ID,
-	ParadisSessionResumeInputSerializer,
-);
+// エディタ(タブ)ではなくモーダルダイアログで開く。3カラムの最小幅(936px)はエディタのペイン幅では
+// 満たせないことがあり(分割・サイドバー展開)、ウィンドウ幅を基準にできるダイアログの方が破綻しない。
 
 registerAction2(class ShowParadisSessionResumeAction extends Action2 {
 	constructor() {
@@ -48,7 +31,7 @@ registerAction2(class ShowParadisSessionResumeAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		await accessor.get(IEditorService).openEditor(ParadisSessionResumeInput.instance, { pinned: true });
+		paradisOpenSessionResumeDialog(accessor.get(IInstantiationService));
 	}
 });
 

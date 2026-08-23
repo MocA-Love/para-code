@@ -9,11 +9,13 @@
 import './media/paradisSessionResume.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { KeyCode } from '../../../../base/common/keyCodes.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { basename } from '../../../../base/common/resources.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
@@ -21,34 +23,43 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { EditorMarkdownCodeBlockRenderer } from '../../../../editor/browser/widget/markdownRenderer/browser/editorMarkdownCodeBlockRenderer.js';
 import { localize } from '../../../../nls.js';
-import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
-import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
-import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
-import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IChatOutputRendererService } from '../../../../workbench/contrib/chat/browser/chatOutputItemRenderer.js';
-import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent } from '../common/paradisSessionResume.js';
 import { IParadisResumeSpaceWithUri, ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
-import { PARADIS_SESSION_RESUME_EDITOR_ID } from './paradisSessionResumeInput.js';
 import { IParadisSessionResumeEditorOptions, paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from './paradisSessionResumeOrchestration.js';
 import { ParadisSessionResumeRefreshController } from './paradisSessionResumeRefreshController.js';
 
 const $ = dom.$;
+// allow-any-unicode-next-line
+const STR_DIALOG_TITLE = localize('paradis.sessionResume.dialogTitle', "セッション履歴");
+// allow-any-unicode-next-line
+const STR_DIALOG_CLOSE = localize('paradis.sessionResume.dialogClose', "閉じる");
 type AgentFilter = 'all' | ParadisResumeAgent;
 type PeriodFilter = 'all' | 'day' | 'week' | 'month';
 const SPACE_FILTER_PREFIX = 'space:';
 
-export class ParadisSessionResumeEditor extends EditorPane {
-	static readonly ID = PARADIS_SESSION_RESUME_EDITOR_ID;
+/** 同時に2枚出さないための、いま開いているダイアログ。 */
+let activeDialog: ParadisSessionResumeDialog | undefined;
 
+/** セッション履歴を開く。既に開いていればそれを前面に出すだけ。 */
+export function paradisOpenSessionResumeDialog(instantiationService: IInstantiationService): void {
+	if (activeDialog) {
+		activeDialog.focus();
+		return;
+	}
+	activeDialog = instantiationService.createInstance(ParadisSessionResumeDialog);
+}
+
+export class ParadisSessionResumeDialog extends Disposable {
+
+	private readonly backdrop: HTMLElement;
+	private readonly modal: HTMLElement;
 	private root: HTMLElement | undefined;
 	private list: HTMLElement | undefined;
 	private detail: HTMLElement | undefined;
@@ -90,10 +101,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	private readonly refreshController: ParadisSessionResumeRefreshController;
 
 	constructor(
-		group: IEditorGroup,
-		@ITelemetryService telemetryService: ITelemetryService,
-		@IThemeService themeService: IThemeService,
-		@IStorageService storageService: IStorageService,
+		@ILayoutService layoutService: ILayoutService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
@@ -101,7 +109,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
 		@IChatOutputRendererService private readonly chatOutputRendererService: IChatOutputRendererService,
 	) {
-		super(PARADIS_SESSION_RESUME_EDITOR_ID, group, telemetryService, themeService, storageService);
+		super();
 		this.client = instantiationService.createInstance(ParadisSessionResumeClient);
 		this.markdownCodeBlockRenderer = instantiationService.createInstance(EditorMarkdownCodeBlockRenderer);
 		this.refreshController = this._register(new ParadisSessionResumeRefreshController(() => this.refresh()));
@@ -109,9 +117,82 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.refreshController.invalidate()));
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.refreshController.invalidate()));
 		this._register(this.worktreeService.onDidChangeWorktrees(() => this.refreshController.invalidate()));
+
+		// ダイアログの殻。寸法は media/paradisSessionResume.css 側で指定する（3カラムの最小 936px を
+		// 満たす幅を既定にし、狭い画面では 94vw/92vh で頭打ちにして段階的に畳む）。
+		this.backdrop = $('.paradis-session-resume-backdrop');
+		this.modal = dom.append(this.backdrop, $('.paradis-session-resume-modal'));
+		this.modal.tabIndex = -1;
+		this.modal.setAttribute('role', 'dialog');
+		this.modal.setAttribute('aria-modal', 'true');
+		this.modal.setAttribute('aria-label', STR_DIALOG_TITLE);
+
+		const header = dom.append(this.modal, $('.paradis-session-resume-modal-header'));
+		dom.append(header, $('h2')).textContent = STR_DIALOG_TITLE;
+		const closeBtn = dom.append(header, $('button.paradis-session-resume-modal-close')) as HTMLButtonElement;
+		closeBtn.type = 'button';
+		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
+		closeBtn.setAttribute('aria-label', STR_DIALOG_CLOSE);
+		this._register(dom.addDisposableListener(closeBtn, dom.EventType.CLICK, () => this.close()));
+
+		this.buildContent(this.modal);
+
+		// 背景クリックと Escape で閉じる。検索欄に入力があるときの Escape は
+		// 「検索語を消す」を優先する（通知設定ダイアログと同じ約束）。
+		this._register(dom.addDisposableListener(this.backdrop, dom.EventType.MOUSE_DOWN, e => {
+			if (e.target === this.backdrop) {
+				this.close();
+			}
+		}));
+		this._register(dom.addDisposableListener(this.backdrop, dom.EventType.KEY_DOWN, e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.keyCode !== KeyCode.Escape) {
+				return;
+			}
+			event.preventDefault();
+			if (this.searchInput && this.searchInput.value.length > 0) {
+				this.searchInput.value = '';
+				this.onSearchInput();
+				return;
+			}
+			this.close();
+		}));
+
+		layoutService.activeContainer.appendChild(this.backdrop);
+		this.refreshController.setVisible(true);
+		if (!this.loading && this.sessions.length === 0) {
+			void this.refreshController.requestImmediate();
+		}
+		this.focus();
 	}
 
-	protected override createEditor(parent: HTMLElement): void {
+	/** 検索欄の内容を取り込んで再描画する。Escape による消去からも同じ経路を通す。 */
+	private onSearchInput(): void {
+		this.query = this.searchInput?.value.trim().toLocaleLowerCase() ?? '';
+		this.searchMatches = undefined;
+		this.currentSearchMatchIndex = 0;
+		this.searchScheduler.schedule();
+		this.render();
+	}
+
+	/** 既に開いているダイアログを前面へ。入力位置も戻す。 */
+	focus(): void {
+		this.searchInput?.focus();
+	}
+
+	close(): void {
+		this.dispose();
+	}
+
+	override dispose(): void {
+		if (activeDialog === this) {
+			activeDialog = undefined;
+		}
+		this.backdrop.remove();
+		super.dispose();
+	}
+
+	private buildContent(parent: HTMLElement): void {
 		this.root = dom.append(parent, $('.paradis-session-resume'));
 		const content = dom.append(this.root, $('.paradis-session-resume-content'));
 
@@ -200,13 +281,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		this.searchInput.maxLength = 200;
 		this.searchInput.placeholder = localize('paradis.sessionResume.searchPlaceholder', "タイトル、会話、パス、セッションIDを検索");
 		this.searchInput.setAttribute('aria-label', this.searchInput.placeholder);
-		this._register(dom.addDisposableListener(this.searchInput, dom.EventType.INPUT, () => {
-			this.query = this.searchInput?.value.trim().toLocaleLowerCase() ?? '';
-			this.searchMatches = undefined;
-			this.currentSearchMatchIndex = 0;
-			this.searchScheduler.schedule();
-			this.render();
-		}));
+		this._register(dom.addDisposableListener(this.searchInput, dom.EventType.INPUT, () => this.onSearchInput()));
 		// 狭い幅では左ナビ(rail)が折りたたまれるため、検索バー右端にも開閉トグルと更新を置く。
 		const headActions = dom.append(searchWrap, $('.search-head-actions'));
 		this.railToggleButton = dom.append(headActions, $('button.paradis-session-resume-rail-toggle')) as HTMLButtonElement;
@@ -308,21 +383,6 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			void this.loadPreview(this.selected);
 		}
 		return true;
-	}
-
-	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
-		await super.setInput(input, options, context, token);
-		if (!this.loading && this.sessions.length === 0) {
-			await this.refreshController.requestImmediate();
-		}
-	}
-
-	override layout(_dimension: dom.Dimension): void { }
-	override focus(): void { this.searchInput?.focus(); }
-
-	protected override setEditorVisible(visible: boolean): void {
-		super.setEditorVisible(visible);
-		this.refreshController.setVisible(visible);
 	}
 
 	private collectSpaces(): readonly IParadisResumeSpaceWithUri[] {
@@ -602,6 +662,9 @@ export class ParadisSessionResumeEditor extends EditorPane {
 				this.selected = session;
 				this.previewMessages = undefined;
 				this.currentSearchMatchIndex = 0;
+				// 1カラムまで狭いときは一覧を隠して詳細を出す(CSS 側の @container で効く)。
+				// 広い幅では一覧と詳細が並ぶのでこのクラスは何もしない。
+				this.root?.classList.add('detail-open');
 				this.render();
 				void this.loadPreview(session);
 			}));
@@ -618,6 +681,14 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		const renderSequence = this.renderSequence;
 		const renderCancellation = this.renderDisposables.add(new CancellationTokenSource());
 		const header = dom.append(this.detail, $('.paradis-session-resume-detail-header'));
+		// 1カラムまで狭いときだけ CSS で出る戻るボタン。広い幅では一覧が常に見えているので隠れる。
+		const backButton = dom.append(header, $('button.paradis-session-resume-detail-back')) as HTMLButtonElement;
+		backButton.type = 'button';
+		backButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.arrowLeft)}`));
+		dom.append(backButton, $('span')).textContent = localize('paradis.sessionResume.backToList', "一覧へ");
+		this.renderDisposables.add(dom.addDisposableListener(backButton, dom.EventType.CLICK, () => {
+			this.root?.classList.remove('detail-open');
+		}));
 		const heading = dom.append(header, $('.detail-heading'));
 		this.renderAgentIcon(heading, session.agent);
 		dom.append(heading, $('h2')).textContent = session.title;

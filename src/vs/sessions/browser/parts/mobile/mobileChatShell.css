@@ -963,13 +963,16 @@
 	min-height: 36px;
 	border-radius: var(--vscode-cornerRadius-circle);
 	padding: 0 12px;
-	font-size: 16px; /* 16px+: iOS Safari auto-zooms inputs under 16px (matches chat input) */
+	/* PARA-PATCH: focusing the filter box zoomed the whole workbench in on iOS Safari,
+	 * which auto-zooms any input rendered below 16px. Matches the chat input. */
+	font-size: 16px;
 	width: 100%;
 }
 
 .agent-sessions-workbench.phone-layout
 	.agent-sessions-find-widget-container > .monaco-tree-type-filter
 	.monaco-tree-type-filter-input > .monaco-findInput > .monaco-inputbox input {
+	/* PARA-PATCH: same iOS auto-zoom fix as the box above, for the inner input. */
 	font-size: 16px;
 	line-height: 22px;
 }

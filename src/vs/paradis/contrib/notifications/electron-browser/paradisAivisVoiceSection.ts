@@ -180,6 +180,11 @@ export class ParadisAivisVoiceSection extends Disposable {
 		// --- フィールド群（無効のときは非表示ではなく opacity+pointer-events で無効化） ---
 		const fields = dom.append(this.container, $('.pns-fields'));
 		fields.classList.toggle('disabled', !settings.enabled);
+		if (!settings.enabled) {
+			// 無効化したフィールド群は pointer-events: none で操作できなくなる。サンプル再生中に
+			// オフにすると停止ボタンを押せないまま音だけが鳴り続けるため、ここで止める。
+			this.stopSamplePlayback();
+		}
 
 		this._renderSlider(fields, STR_VOLUME_LABEL, settings.volume, 0, 100, 1, v => `${v}%`, v => this.settingsService.setAivisSettings({ volume: v }));
 		this._renderSlider(fields, STR_RATE_LABEL, settings.speakingRate, 0.5, 2.0, 0.1, v => `${v.toFixed(1)}x`, v => this.settingsService.setAivisSettings({ speakingRate: v }));
@@ -416,14 +421,14 @@ export class ParadisAivisVoiceSection extends Disposable {
 
 	private _toggleSamplePlayback(uuid: string, btn: HTMLButtonElement): void {
 		if (this._playingSampleUuid === uuid) {
-			this._stopSamplePlayback();
+			this.stopSamplePlayback();
 			return;
 		}
 		const sampleUrl = presetModelInfoCache.get(uuid)?.sampleUrl;
 		if (!sampleUrl) {
 			return;
 		}
-		this._stopSamplePlayback();
+		this.stopSamplePlayback();
 		// フェッチ中の二重クリック・他タイル選択との競合防止のため先に確保しておく。
 		this._playingSampleUuid = uuid;
 		void this._playSampleFromUrl(uuid, sampleUrl, btn);
@@ -456,20 +461,24 @@ export class ParadisAivisVoiceSection extends Disposable {
 		this._sampleBlobUrl = blobUrl;
 		this._playingSampleButton = btn;
 		this._setSampleButtonPlaying(btn, true);
-		audio.addEventListener('ended', () => this._stopSamplePlayback());
+		audio.addEventListener('ended', () => this.stopSamplePlayback());
 		audio.addEventListener('error', () => {
 			this.logService.warn('[ParadisNotifications] Aivis sample playback error', audio.error);
-			this._stopSamplePlayback();
+			this.stopSamplePlayback();
 		});
 		try {
 			await audio.play();
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] failed to play Aivis sample', error);
-			this._stopSamplePlayback();
+			this.stopSamplePlayback();
 		}
 	}
 
-	private _stopSamplePlayback(): void {
+	/**
+	 * サンプル音声の再生を止める。セクションが操作できない状態（おやすみモードの封印など）に
+	 * なったとき、ダイアログ側から止めさせるため公開している。
+	 */
+	stopSamplePlayback(): void {
 		if (this._sampleAudio) {
 			this._sampleAudio.pause();
 			this._sampleAudio.src = '';

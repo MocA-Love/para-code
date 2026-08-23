@@ -98,7 +98,8 @@ export interface IInstallLongPressOptions {
  * @returns Disposable that removes all listeners and clears any
  *          pending timer.
  */
-// NOTE: currently unwired — no workbench code imports this helper yet (see MOBILE.md).
+// PARA-PATCH: note only — recording that this helper is still unwired, so a reader does not
+// assume the phone layout already goes through it. No workbench code imports it yet (see MOBILE.md).
 export function installLongPress(
 	element: HTMLElement,
 	handler: (e: PointerEvent) => void,
