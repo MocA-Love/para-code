@@ -24,6 +24,7 @@ import { Disposable, DisposableStore, MutableDisposable } from '../../../../base
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import {
 	IParadisGithubCallCounts,
@@ -37,15 +38,16 @@ import {
 	PARADIS_GITHUB_UNSCOPED_SPACE,
 } from '../common/paradisGithubMetrics.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
-import { ParadisGithubMetricsClient } from './paradisGithubMetricsClient.js';
+import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL } from './paradisGithubMetricsClient.js';
 import { paradisGithubFormatDuration, paradisGithubResourceLabel, paradisGithubRoundedPercent } from './paradisGithubMetricsFormat.js';
 
 const $ = dom.$;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /**
- * 表示中の自動更新間隔。1回ごとに gh のプロセスが起動しうるので、
+ * 表示中の自動更新間隔の既定値。1回ごとに gh のプロセスが起動しうるので、
  * shared process 側の最短取得間隔(45秒)より長くして無駄打ちを避ける。
+ * 設定 {@link PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL} で変えられる(0 = 手動のみ)。
  */
 const VISIBLE_REFRESH_INTERVAL_MS = 60_000;
 /** コピーボタンのフィードバック表示時間。 */
@@ -89,6 +91,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -136,9 +139,21 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 	setVisible(visible: boolean): void {
 		if (visible) {
 			void this.refresh(false);
-			this.autoRefreshTimer.cancelAndSet(() => void this.refresh(false), VISIBLE_REFRESH_INTERVAL_MS);
+			this.scheduleAutoRefresh();
 		} else {
 			this.autoRefreshTimer.cancel();
+		}
+	}
+
+	/** 設定された間隔で自分を取り直す。0（手動のみ）ならタイマーを張らない。 */
+	private scheduleAutoRefresh(): void {
+		const configured = this.configurationService.getValue<number>(PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL);
+		const intervalMs = typeof configured === 'number' && Number.isFinite(configured)
+			? Math.max(0, Math.round(configured)) * 1000
+			: VISIBLE_REFRESH_INTERVAL_MS;
+		this.autoRefreshTimer.cancel();
+		if (intervalMs > 0) {
+			this.autoRefreshTimer.cancelAndSet(() => void this.refresh(false), intervalMs);
 		}
 	}
 

@@ -24,7 +24,9 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 
 const $ = dom.$;
 
@@ -169,6 +171,17 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.scopeScm', "ソース管理ビューを現在のスペースに絞る"),
 		keywords: 'scm git scope repository filter',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.defaultAgent',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.defaultAgent', "既定のエージェント"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.defaultAgentDesc', "「新しいスペース」を開いたときに選んでおくエージェント。空欄なら前回選んだものを覚えて使います。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.defaultAgentPlaceholder', "(前回選択を記憶)"),
+		keywords: 'default agent last selected claude codex',
 	},
 	{
 		sectionId: 'psd-sec-space',
@@ -395,7 +408,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.transparency', "ウィンドウを透過させる"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.transparencyDesc', "タイトルバー・ターミナル背景を透過させます。"),
+		description: localize('paradis.settings.transparencyDesc', "タイトルバー・ターミナル背景を透過させます。切り替えたあとはウィンドウの再読み込みが要ります。"),
 		keywords: 'window transparency transparent',
 	},
 	{
@@ -584,9 +597,34 @@ export class ParadisSettingsDialog extends Disposable {
 		});
 	}
 
-	/** 設定値の型 (と choices 指定) を見てコントロールを選ぶ。 */
+	/**
+	 * 設定スキーマに enum が宣言されていれば、その選択肢を拾う。
+	 * ここを見ずに型だけで判断すると、enum の文字列設定 (スリープ防止のモード等) が
+	 * 自由入力のテキスト欄になり、綴りを間違えた値をそのまま書けてしまう。
+	 */
+	private _enumChoices(key: string): readonly { value: string; label: string }[] | undefined {
+		const schema = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).getConfigurationProperties()[key];
+		const values = schema?.enum;
+		if (!Array.isArray(values) || values.length === 0) {
+			return undefined;
+		}
+		const descriptions = schema?.enumDescriptions;
+		return values.map((value, index) => {
+			const raw = String(value);
+			const description = descriptions?.[index];
+			// 説明があれば短く添える (設定エディタと違い1行なので、先頭の一文だけ)
+			const summary = description?.split(/[。\n]/)[0]?.trim();
+			return { value: raw, label: summary ? `${raw} — ${summary}` : raw };
+		});
+	}
+
+	/** 設定値の型 (と choices 指定・スキーマの enum) を見てコントロールを選ぶ。 */
 	private _buildControl(row: HTMLElement, key: string, spec: IParadisSettingRowSpec): void {
 		const value = this.configurationService.getValue(key);
+		const enumChoices = spec.choices ? undefined : this._enumChoices(key);
+		if (enumChoices) {
+			spec = { ...spec, choices: enumChoices };
+		}
 
 		if (spec.choices) {
 			const select = dom.append(row, $('select.psd-select')) as HTMLSelectElement;
@@ -595,11 +633,21 @@ export class ParadisSettingsDialog extends Disposable {
 				option.value = String(choice.value);
 				option.textContent = choice.label;
 			}
+			// 用意した刻み (不透明度の 96% など) に載らない値が既に入っていることがある。
+			// そのまま黙って別の値を選んだ状態にすると、開いただけで設定が変わったように
+			// 見えるので、実際の値を選択肢へ足して選んでおく。差し替え式にして増殖させない。
+			let extraOption: HTMLOptionElement | undefined;
 			const sync = () => {
 				const current = String(this.configurationService.getValue(key) ?? '');
-				if (spec.choices?.some(choice => String(choice.value) === current)) {
-					select.value = current;
+				const known = spec.choices?.some(choice => String(choice.value) === current) ?? false;
+				extraOption?.remove();
+				extraOption = undefined;
+				if (!known) {
+					extraOption = dom.append(select, $('option')) as HTMLOptionElement;
+					extraOption.value = current;
+					extraOption.textContent = current;
 				}
+				select.value = current;
 			};
 			sync();
 			this._refreshers.push(sync);

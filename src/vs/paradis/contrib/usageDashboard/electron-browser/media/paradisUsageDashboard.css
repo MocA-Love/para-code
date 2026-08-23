@@ -335,3 +335,19 @@
 .paradis-usage-dashboard .pud-btn:hover {
 	background: var(--vscode-button-secondaryHoverBackground);
 }
+
+.paradis-usage-dashboard .pud-select {
+	flex: none;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 5px;
+	padding: 4px 8px;
+	font-size: 12px;
+	font-family: inherit;
+	outline: none;
+}
+
+.paradis-usage-dashboard .pud-select:focus {
+	border-color: var(--vscode-focusBorder);
+}
