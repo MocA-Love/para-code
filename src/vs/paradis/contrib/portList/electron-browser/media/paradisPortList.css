@@ -45,6 +45,7 @@
 
 .paradis-port-list-panel {
 	/* width は paradisPortListPanel.ts の reposition() から element.style.width で設定される。 */
+	box-sizing: border-box;
 	position: fixed;
 	z-index: 2500;
 	max-height: 70vh;
@@ -299,7 +300,7 @@
 	animation: paradis-port-list-spin 1s linear infinite;
 }
 
-@media (max-width: 455px) {
+@media (max-width: 455px), (pointer: coarse) {
 	.paradis-port-list-panel .ppl-row {
 		gap: 6px;
 		padding-inline: 10px;
@@ -317,6 +318,11 @@
 		max-width: 64px;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	.paradis-port-list-panel .ppl-kill-btn {
+		width: 44px;
+		height: 44px;
 	}
 }
 

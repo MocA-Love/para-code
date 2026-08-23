@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 const PARADIS_PORT_LIST_PANEL_MAX_WIDTH = 440;
 const PARADIS_PORT_LIST_PANEL_MARGIN = 8;
 
