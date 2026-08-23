@@ -16,10 +16,16 @@ export type TerminalCompactMenuAction =
 	| { readonly kind: 'presets' }
 	| { readonly kind: 'create' };
 
+export type TerminalFallbackPlacement = 'body' | 'none';
+
 export function terminalNativeHeaderLayout(sizeClass: SizeClass): TerminalNativeHeaderLayout {
 	return sizeClass === 'compact'
 		? { kind: 'compact-menu', headerItemCount: 1, itemWidth: COMPACT_TERMINAL_MENU_WIDTH }
 		: { kind: 'regular-actions', headerItemCount: 3 };
+}
+
+export function terminalFallbackPlacement(nativeMenuAvailable: boolean, terminalCount: number): TerminalFallbackPlacement {
+	return !nativeMenuAvailable && terminalCount > 0 ? 'body' : 'none';
 }
 
 export function decodeTerminalCompactMenuAction(id: string): TerminalCompactMenuAction | undefined {

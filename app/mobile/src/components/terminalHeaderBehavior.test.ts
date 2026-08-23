@@ -7,9 +7,10 @@ import { sizeClassFor } from '../sizeClass.js';
 import {
 	COMPACT_TERMINAL_MENU_WIDTH,
 	decodeTerminalCompactMenuAction,
+	terminalFallbackPlacement,
 	terminalNativeHeaderLayout,
 } from './terminalHeaderBehavior.js';
-import { TerminalCompactMenu } from './terminalPicker.js';
+import { TerminalCompactMenu, TerminalFallbackBand } from './terminalPicker.js';
 
 vi.mock('react-native', () => ({
 	Platform: { OS: 'ios' },
@@ -97,6 +98,34 @@ describe('terminal header behavior', () => {
 			button.props.onSelect({ nativeEvent: { id: 'new-terminal' } });
 		});
 		expect(events).toEqual(['terminal:terminal-2', 'presets', 'create']);
+		act(() => renderer!.unmount());
+	});
+
+	test('renders non-native terminal switching in the body only when terminals exist', () => {
+		expect([
+			terminalFallbackPlacement(false, 2),
+			terminalFallbackPlacement(false, 0),
+			terminalFallbackPlacement(true, 2),
+		]).toEqual(['body', 'none', 'none']);
+	});
+
+	test('fallback band renders every terminal and forwards the tapped terminal key', () => {
+		const selected: string[] = [];
+		let renderer: ReactTestRenderer | undefined;
+		act(() => {
+			renderer = create(createElement(TerminalFallbackBand, {
+				entries: [
+					{ terminalKey: 'terminal-1', title: 'First', index: 1, waiting: false, working: true },
+					{ terminalKey: 'terminal-2', title: 'Second', index: 2, waiting: true, working: false },
+				],
+				activeKey: 'terminal-1',
+				onSelect: terminalKey => selected.push(terminalKey),
+			}));
+		});
+		const chips = renderer!.root.findAllByType('Pressable' as unknown as ElementType);
+		expect(chips).toHaveLength(2);
+		act(() => chips[1]!.props.onPress());
+		expect(selected).toEqual(['terminal-2']);
 		act(() => renderer!.unmount());
 	});
 });
