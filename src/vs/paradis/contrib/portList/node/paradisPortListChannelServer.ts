@@ -46,6 +46,13 @@ export interface IListeningConnection {
 	readonly port: number;
 }
 
+export interface IParadisRemotePortCollectionReaders {
+	readTcp(): Promise<string>;
+	readTcp6(): Promise<string>;
+	readSocketOwners(): Promise<Map<number, Set<number>>>;
+	readProcessName(pid: number): Promise<string>;
+}
+
 /** '0100007F' -> '127.0.0.1'、32桁hexのIPv6も展開する(extHostTunnelServiceのparseIpAddressと同じ規則)。 */
 export function parseHexAddress(hex: string): string {
 	if (hex.length === 8) {
@@ -136,13 +143,17 @@ async function readSocketOwners(logService: ILogService): Promise<Map<number, Se
 	return loadSocketOwners(stdout);
 }
 
-async function readProcessNames(pids: Iterable<number>): Promise<Map<number, string>> {
+async function readProcessNameFromProc(pid: number): Promise<string> {
+	const cmdline = await fs.promises.readFile(`/proc/${pid}/cmdline`, 'utf8');
+	const first = cmdline.split('\0').find(part => part.length > 0);
+	return first ? first.split('/').pop()! : String(pid);
+}
+
+async function readProcessNames(pids: Iterable<number>, readProcessName: (pid: number) => Promise<string>): Promise<Map<number, string>> {
 	const names = new Map<number, string>();
 	await Promise.all([...pids].map(async pid => {
 		try {
-			const cmdline = await fs.promises.readFile(`/proc/${pid}/cmdline`, 'utf8');
-			const first = cmdline.split('\0').find(part => part.length > 0);
-			names.set(pid, first ? first.split('/').pop()! : String(pid));
+			names.set(pid, await readProcessName(pid));
 		} catch {
 			names.set(pid, String(pid));
 		}
@@ -167,24 +178,33 @@ export function resolveRemotePortEntries(listening: readonly IListeningConnectio
 	return entries;
 }
 
-async function collectEntries(logService: ILogService): Promise<IParadisPortEntry[]> {
+export async function collectRemotePortEntries(readers: IParadisRemotePortCollectionReaders): Promise<IParadisPortEntry[]> {
 	const [tcp, tcp6] = await Promise.all([
-		fs.promises.readFile('/proc/net/tcp', 'utf8').catch(() => ''),
-		fs.promises.readFile('/proc/net/tcp6', 'utf8').catch(() => '')
+		readers.readTcp(),
+		readers.readTcp6()
 	]);
 	const listening = loadListeningConnections(tcp, tcp6);
 	if (listening.length === 0) {
 		return [];
 	}
-	const owners = await readSocketOwners(logService);
+	const owners = await readers.readSocketOwners();
 	const pids = new Set<number>();
 	for (const connection of listening) {
 		for (const pid of owners.get(connection.socket) ?? []) {
 			pids.add(pid);
 		}
 	}
-	const names = await readProcessNames(pids);
+	const names = await readProcessNames(pids, readers.readProcessName);
 	return resolveRemotePortEntries(listening, owners, names);
+}
+
+async function collectEntries(logService: ILogService): Promise<IParadisPortEntry[]> {
+	return collectRemotePortEntries({
+		readTcp: () => fs.promises.readFile('/proc/net/tcp', 'utf8').catch(() => ''),
+		readTcp6: () => fs.promises.readFile('/proc/net/tcp6', 'utf8').catch(() => ''),
+		readSocketOwners: () => readSocketOwners(logService),
+		readProcessName: readProcessNameFromProc,
+	});
 }
 
 export class ParadisPortListServerService {
