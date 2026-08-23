@@ -366,7 +366,7 @@ export type ParadisOfficeRenderableAsset = ParadisOfficeRenderableAssetBase & (
 /** Runtime guard for safe asset shape, hash, size, and kind/MIME correlation. */
 export function isOfficeRenderableAsset(value: unknown): value is ParadisOfficeRenderableAsset {
 	const descriptors = getRecordDescriptors(value, new Set(['id', 'kind', 'mime', 'byteLength', 'fingerprint', 'altText']));
-	if (!descriptors || (Object.keys(descriptors).length !== 5 && Object.keys(descriptors).length !== 6)) {
+	if (!descriptors || (descriptors.keys.length !== 5 && descriptors.keys.length !== 6)) {
 		return false;
 	}
 	const id = getDataValue(descriptors, 'id');
@@ -511,6 +511,11 @@ interface ParadisOfficeSerializableInspection {
 	readonly violation?: 'serializedBytes' | 'nonSerializable';
 }
 
+interface ParadisOfficeDataRecord {
+	readonly target: object;
+	readonly keys: readonly string[];
+}
+
 function isDataDescriptor(descriptor: PropertyDescriptor | undefined): descriptor is PropertyDescriptor & { readonly value: unknown } {
 	return descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, 'value');
 }
@@ -519,7 +524,7 @@ function validationFailure(serializedBytes: number, violation: ParadisOfficeVali
 	return { valid: false, serializedBytes, violation, path };
 }
 
-function getRecordDescriptors(value: unknown, allowedKeys?: ReadonlySet<string>): Readonly<Record<string, PropertyDescriptor>> | undefined {
+function getRecordDescriptors(value: unknown, allowedKeys?: ReadonlySet<string>): ParadisOfficeDataRecord | undefined {
 	if (typeof value !== 'object' || value === null || Array.isArray(value) || value instanceof VSBuffer) {
 		return undefined;
 	}
@@ -529,25 +534,29 @@ function getRecordDescriptors(value: unknown, allowedKeys?: ReadonlySet<string>)
 			return undefined;
 		}
 		const keys = Reflect.ownKeys(value);
-		if (keys.some(key => typeof key !== 'string' || (allowedKeys !== undefined && !allowedKeys.has(key)))) {
+		if (!Number.isSafeInteger(keys.length) || keys.length > PARADIS_OFFICE_LIMITS.maxSerializableNodes
+			|| keys.some(key => typeof key !== 'string' || (allowedKeys !== undefined && !allowedKeys.has(key)))) {
 			return undefined;
 		}
-		const descriptors = Object.getOwnPropertyDescriptors(value);
 		for (const key of keys) {
-			const descriptor = descriptors[key as string];
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
 			if (!descriptor?.enumerable || !isDataDescriptor(descriptor)) {
 				return undefined;
 			}
 		}
-		return descriptors;
+		return { target: value, keys: keys as string[] };
 	} catch {
 		return undefined;
 	}
 }
 
-function getDataValue(descriptors: Readonly<Record<string, PropertyDescriptor>>, name: string): unknown {
-	const descriptor = descriptors[name];
-	return isDataDescriptor(descriptor) ? descriptor.value : undefined;
+function getDataValue(record: ParadisOfficeDataRecord, name: string): unknown {
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(record.target, name);
+		return descriptor?.enumerable && isDataDescriptor(descriptor) ? descriptor.value : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function getArrayLength(value: unknown): number | undefined {
@@ -579,10 +588,9 @@ function getDenseArrayValues(value: unknown, maximumLength: number): readonly un
 		if (keys.length !== length + 1 || keys.some(key => typeof key !== 'string' || (key !== 'length' && !/^\d+$/.test(key)))) {
 			return undefined;
 		}
-		const descriptors = Object.getOwnPropertyDescriptors(value);
 		const values: unknown[] = [];
 		for (let index = 0; index < length; index++) {
-			const descriptor = descriptors[String(index)];
+			const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
 			if (!descriptor?.enumerable || !isDataDescriptor(descriptor)) {
 				return undefined;
 			}
@@ -629,6 +637,23 @@ function jsonStringByteLength(value: string, maximumBytes: number): number {
 		}
 	}
 	return bytes;
+}
+
+function canEnqueueSerializableChildren(processedNodes: number, pendingNodes: number, childCount: number, childDepth: number): boolean {
+	if (!Number.isSafeInteger(processedNodes) || !Number.isSafeInteger(pendingNodes) || !Number.isSafeInteger(childCount)
+		|| processedNodes < 0 || pendingNodes < 0 || childCount < 0) {
+		return false;
+	}
+	if (childCount === 0) {
+		return true;
+	}
+	if (childDepth > PARADIS_OFFICE_LIMITS.maxSerializableDepth) {
+		return false;
+	}
+	const occupied = processedNodes + pendingNodes;
+	return Number.isSafeInteger(occupied)
+		&& occupied <= PARADIS_OFFICE_LIMITS.maxSerializableNodes
+		&& childCount <= PARADIS_OFFICE_LIMITS.maxSerializableNodes - occupied;
 }
 
 function inspectSerializableData(value: unknown, maximumBytes: number): ParadisOfficeSerializableInspection {
@@ -684,20 +709,30 @@ function inspectSerializableData(value: unknown, maximumBytes: number): ParadisO
 		seen.add(candidate);
 		try {
 			if (Array.isArray(candidate)) {
+				const childCount = getArrayLength(candidate);
+				const childDepth = item.depth + 1;
+				if (childCount === undefined || !canEnqueueSerializableChildren(nodeCount, work.length, childCount, childDepth)) {
+					return { valid: false, serializedBytes, violation: 'nonSerializable' };
+				}
 				const values = getDenseArrayValues(candidate, PARADIS_OFFICE_LIMITS.maxSerializableNodes);
 				if (!values || !addBytes(2 + Math.max(0, values.length - 1))) {
 					return { valid: false, serializedBytes, violation: values ? 'serializedBytes' : 'nonSerializable' };
 				}
 				for (let index = values.length - 1; index >= 0; index--) {
-					work.push({ value: values[index], depth: item.depth + 1 });
+					work.push({ value: values[index], depth: childDepth });
 				}
+				// Invariant: processed nodes plus pending WorkItems never exceeds maxSerializableNodes.
 				continue;
 			}
 			const descriptors = getRecordDescriptors(candidate);
 			if (!descriptors) {
 				return { valid: false, serializedBytes, violation: 'nonSerializable' };
 			}
-			const keys = Object.keys(descriptors);
+			const keys = descriptors.keys;
+			const childDepth = item.depth + 1;
+			if (!canEnqueueSerializableChildren(nodeCount, work.length, keys.length, childDepth)) {
+				return { valid: false, serializedBytes, violation: 'nonSerializable' };
+			}
 			if (!addBytes(2 + Math.max(0, keys.length - 1))) {
 				return { valid: false, serializedBytes, violation: 'serializedBytes' };
 			}
@@ -707,8 +742,9 @@ function inspectSerializableData(value: unknown, maximumBytes: number): ParadisO
 				if (!addBytes(jsonStringByteLength(key, remaining)) || !addBytes(1)) {
 					return { valid: false, serializedBytes, violation: 'serializedBytes' };
 				}
-				work.push({ value: descriptors[key].value, depth: item.depth + 1 });
+				work.push({ value: getDataValue(descriptors, key), depth: childDepth });
 			}
+			// Invariant: processed nodes plus pending WorkItems never exceeds maxSerializableNodes.
 		} catch {
 			return { valid: false, serializedBytes, violation: 'nonSerializable' };
 		}
@@ -718,7 +754,7 @@ function inspectSerializableData(value: unknown, maximumBytes: number): ParadisO
 
 function getValidFingerprintByteLength(value: unknown): number | undefined {
 	const descriptors = getRecordDescriptors(value, new Set(['kind', 'algorithm', 'value', 'byteLength']));
-	if (!descriptors || (Object.keys(descriptors).length !== 3 && Object.keys(descriptors).length !== 4)) {
+	if (!descriptors || (descriptors.keys.length !== 3 && descriptors.keys.length !== 4)) {
 		return undefined;
 	}
 	const kind = getDataValue(descriptors, 'kind');
@@ -813,13 +849,13 @@ function validateChangeValueStructure(value: unknown, serializedBytes: number): 
 		}
 		const kind = getDataValue(descriptors, 'kind');
 		if (kind === 'none') {
-			if (Object.keys(descriptors).length !== 1) {
+			if (descriptors.keys.length !== 1) {
 				return validationFailure(serializedBytes, 'nonSerializable', item.path);
 			}
 			continue;
 		}
 		if (kind === 'scalar') {
-			if (Object.keys(descriptors).length !== 3) {
+			if (descriptors.keys.length !== 3) {
 				return validationFailure(serializedBytes, 'nonSerializable', item.path);
 			}
 			const valueType = getDataValue(descriptors, 'valueType');
@@ -835,7 +871,7 @@ function validateChangeValueStructure(value: unknown, serializedBytes: number): 
 			continue;
 		}
 		if (kind === 'list') {
-			if (Object.keys(descriptors).length !== 2) {
+			if (descriptors.keys.length !== 2) {
 				return validationFailure(serializedBytes, 'nonSerializable', item.path);
 			}
 			const items = getDenseArrayValues(getDataValue(descriptors, 'items'), PARADIS_OFFICE_LIMITS.maxChangeValueListItems);
@@ -849,7 +885,7 @@ function validateChangeValueStructure(value: unknown, serializedBytes: number): 
 			continue;
 		}
 		if (kind === 'record') {
-			if (Object.keys(descriptors).length !== 2) {
+			if (descriptors.keys.length !== 2) {
 				return validationFailure(serializedBytes, 'nonSerializable', item.path);
 			}
 			const fields = getDenseArrayValues(getDataValue(descriptors, 'fields'), PARADIS_OFFICE_LIMITS.maxChangeValueRecordFields);
@@ -860,7 +896,7 @@ function validateChangeValueStructure(value: unknown, serializedBytes: number): 
 			for (let index = fields.length - 1; index >= 0; index--) {
 				const fieldDescriptors = getRecordDescriptors(fields[index], new Set(['name', 'value']));
 				const name = fieldDescriptors && getDataValue(fieldDescriptors, 'name');
-				if (!fieldDescriptors || Object.keys(fieldDescriptors).length !== 2 || typeof name !== 'string') {
+				if (!fieldDescriptors || fieldDescriptors.keys.length !== 2 || typeof name !== 'string') {
 					return validationFailure(serializedBytes, 'nonSerializable', [...item.path, index]);
 				}
 				if (!hasAtMostCodePoints(name, PARADIS_OFFICE_LIMITS.maxChangeValueStringLength)) {
@@ -871,7 +907,7 @@ function validateChangeValueStructure(value: unknown, serializedBytes: number): 
 			continue;
 		}
 		if (kind === 'fingerprint') {
-			if (!isValidFingerprint(item.value) || Object.keys(descriptors).length !== 4) {
+			if (!isValidFingerprint(item.value) || descriptors.keys.length !== 4) {
 				return validationFailure(serializedBytes, 'fingerprint', item.path);
 			}
 			continue;
@@ -909,7 +945,7 @@ export function validateOfficeChange(change: unknown): ParadisOfficeValidationRe
 	const validCategories: readonly ParadisOfficeChangeCategory[] = ['content', 'formatting', 'structure', 'annotation', 'revision', 'object', 'security'];
 	const validCertainties: readonly ParadisOfficeChange['certainty'][] = ['exact', 'normalized', 'heuristic', 'ambiguous', 'opaque', 'degraded'];
 	if (typeof id !== 'string' || typeof category !== 'string' || !validCategories.includes(category as ParadisOfficeChangeCategory)
-		|| !subject || Object.keys(subject).length !== 2 || typeof getDataValue(subject, 'kind') !== 'string' || typeof getDataValue(subject, 'locator') !== 'string'
+		|| !subject || subject.keys.length !== 2 || typeof getDataValue(subject, 'kind') !== 'string' || typeof getDataValue(subject, 'locator') !== 'string'
 		|| typeof certainty !== 'string' || !validCertainties.includes(certainty as ParadisOfficeChange['certainty'])
 		|| !sourceParts || sourceParts.some(part => typeof part !== 'string')
 		|| (navigableAnchor !== undefined && typeof navigableAnchor !== 'string')) {

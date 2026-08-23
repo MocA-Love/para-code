@@ -75,9 +75,13 @@ function change(before: ParadisOfficeChangeValue, after: ParadisOfficeChangeValu
 	};
 }
 
+function jsonByteLength(value: unknown): number {
+	return VSBuffer.fromString(JSON.stringify(value)).byteLength;
+}
+
 function changeWithSerializedBytes(targetBytes: number): ParadisOfficeChange {
 	const base = { ...change({ kind: 'none' }), navigableAnchor: '' };
-	const baseBytes = validateOfficeChange(base).serializedBytes;
+	const baseBytes = jsonByteLength(base);
 	ok(targetBytes >= baseBytes);
 	return { ...base, navigableAnchor: 'x'.repeat(targetBytes - baseBytes) };
 }
@@ -261,6 +265,8 @@ suite('ParadisOfficeProtocol', () => {
 	test('enforces the whole serialized change byte limit at exactly 64 KiB', () => {
 		const exact = changeWithSerializedBytes(PARADIS_OFFICE_LIMITS.maxChangeSerializedBytes);
 		const over = changeWithSerializedBytes(PARADIS_OFFICE_LIMITS.maxChangeSerializedBytes + 1);
+		strictEqual(jsonByteLength(exact), PARADIS_OFFICE_LIMITS.maxChangeSerializedBytes);
+		strictEqual(jsonByteLength(over), PARADIS_OFFICE_LIMITS.maxChangeSerializedBytes + 1);
 
 		deepStrictEqual(validateOfficeChange(exact), {
 			valid: true,
@@ -268,6 +274,21 @@ suite('ParadisOfficeProtocol', () => {
 		});
 		strictEqual(validateOfficeChange(over).serializedBytes, PARADIS_OFFICE_LIMITS.maxChangeSerializedBytes + 1);
 		strictEqual(validateOfficeChange(over).violation, 'serializedBytes');
+	});
+
+	test('matches an independent JSON UTF-8 byte oracle for escaped and Unicode strings and keys', () => {
+		const corpus: readonly unknown[] = [
+			{ kind: 'scalar', valueType: 'text', value: 'quote"backslash\\control\u0000\b\t\n\f\r' },
+			{ kind: 'scalar', valueType: 'text', value: 'BMP-漢字' },
+			{ kind: 'scalar', valueType: 'text', value: 'astral-\u{1F600}' },
+			{ kind: 'scalar', valueType: 'text', value: 'lone-high-\ud800' },
+			{ kind: 'scalar', valueType: 'text', value: 'lone-low-\udc00' },
+			{ kind: 'none', '鍵': '値' },
+		];
+
+		for (const value of corpus) {
+			strictEqual(validateRuntimeValue(value).serializedBytes, jsonByteLength(value));
+		}
 	});
 
 	test('binds document and comparison cursors to their exact revisions', () => {
@@ -365,6 +386,33 @@ suite('ParadisOfficeProtocol', () => {
 
 		strictEqual(isOfficeSerializableData(deep), false);
 		strictEqual(isOfficeSerializableData('x'.repeat(PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes + 1)), false);
+	});
+
+	test('rejects a wide pending queue before visiting its next-level sentinel', () => {
+		let sentinelVisits = 0;
+		let getterCalls = 0;
+		const sentinelTarget: object = {};
+		Object.defineProperty(sentinelTarget, 'secret', {
+			enumerable: true,
+			get: () => {
+				getterCalls++;
+				return 'must not execute';
+			},
+		});
+		const sentinel = new Proxy(sentinelTarget, {
+			getPrototypeOf: target => {
+				sentinelVisits++;
+				return Object.getPrototypeOf(target);
+			},
+		});
+		const nextLevel = new Array(PARADIS_OFFICE_LIMITS.maxSerializableNodes).fill(null);
+		nextLevel[0] = sentinel;
+		const root = new Array(PARADIS_OFFICE_LIMITS.maxSerializableNodes).fill(null);
+		root[0] = nextLevel;
+
+		strictEqual(isOfficeSerializableData(root), false);
+		strictEqual(sentinelVisits, 0);
+		strictEqual(getterCalls, 0);
 	});
 
 	test('enforces response and renderable asset chunks at two MiB', () => {
