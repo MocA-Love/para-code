@@ -127,15 +127,22 @@ suite('ParadisChildProcessTreeTracker', () => {
 		assert.strictEqual(fixture.kill.callCount, 1);
 	});
 
-	test('does not terminate an exited Windows child with a reusable PID', () => {
-		const fixture = child({ pid: 123, exitCode: 0 });
-		const treeKill = sinon.stub().resolves();
+	for (const { name, exitCode, signalCode, treeKillCalls } of [
+		{ name: 'exit code', exitCode: 0, signalCode: null, treeKillCalls: 0 },
+		{ name: 'signal code', exitCode: null, signalCode: 'SIGTERM' as NodeJS.Signals, treeKillCalls: 0 },
+		{ name: 'live child', exitCode: null, signalCode: null, treeKillCalls: 1 },
+	]) {
+		test(`guards Windows PID reuse for a ${name}`, () => {
+			const fixture = child({ pid: 123, exitCode, signalCode });
+			const treeKill = sinon.stub().resolves();
+			const terminator = sinon.spy();
 
-		paradisKillChildProcessTree(fixture.process, undefined, terminationOptions('win32', treeKill));
+			paradisKillChildProcessTree(fixture.process, undefined, terminationOptions('win32', treeKill, terminator));
 
-		assert.strictEqual(treeKill.callCount, 0);
-		assert.strictEqual(fixture.kill.callCount, 0);
-	});
+			assert.strictEqual(treeKill.callCount, treeKillCalls);
+			assert.strictEqual(terminator.callCount, 0);
+		});
+	}
 
 	test('uses the injected direct terminator outside Windows', () => {
 		const fixture = child({ pid: 123 });
