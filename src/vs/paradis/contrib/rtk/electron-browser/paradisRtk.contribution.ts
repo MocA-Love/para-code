@@ -26,12 +26,12 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { isParadisRtkNotFoundError, paradisRtkFormatTokens } from '../common/paradisRtk.js';
 import { ParadisRtkClient, PARADIS_RTK_SETTING_EXECUTABLE_PATH } from './paradisRtkClient.js';
 import { ParadisRtkEditor } from './paradisRtkEditor.js';
 import { ParadisRtkInput, ParadisRtkInputSerializer, PARADIS_RTK_EDITOR_ID, PARADIS_RTK_INPUT_TYPE_ID } from './paradisRtkInput.js';
+import { paradisOpenUsageDashboard } from '../../usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 
 const SETTING_STATUS_BAR_ENABLED = 'paradis.rtk.statusBar.enabled';
 const SHOW_DASHBOARD_COMMAND_ID = 'paradis.rtk.showDashboard';
@@ -72,8 +72,10 @@ registerAction2(class ShowRtkDashboardAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		await editorService.openEditor(ParadisRtkInput.instance, { pinned: true });
+		// 3ダッシュボードは統合ダイアログの1タブになったので、こちらの入口からも
+		// 同じダイアログを rtk タブで開く（エディタタブとしての実装も残っているが、
+		// 既定の導線はダイアログ側に一本化する）
+		paradisOpenUsageDashboard(accessor, 'rtk');
 	}
 });
 

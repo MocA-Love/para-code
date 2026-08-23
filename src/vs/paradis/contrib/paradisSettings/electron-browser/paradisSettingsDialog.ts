@@ -1,0 +1,694 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// 「設定 (Para Code)」ダイアログ。fork が足した設定 (paradis.*) だけを、機能ごとの
+// セクションへまとめて出す。標準の設定エディタで `@id:paradis.*` を検索しても同じ項目には
+// 辿り着けるが、そちらは「どの機能の設定か」「どのダイアログから細かく設定するのか」が
+// 並び順からは読み取れない。ここでは機能単位のセクション + 専用ダイアログへの導線を持たせる。
+//
+// 値の読み書きは IConfigurationService へ直接行い、変更は即保存する (フッターの保存ボタンなし)。
+// 通知設定ダイアログ (paradisNotificationSettingsDialog.ts) と同じシェル構造・CSS 命名に揃えてある。
+
+import './media/paradisSettingsDialog.css';
+import * as dom from '../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode } from '../../../../base/common/keyCodes.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
+import { localize } from '../../../../nls.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+
+const $ = dom.$;
+
+// allow-any-unicode-next-line
+const STR_TITLE = localize('paradis.settings.title', "設定 (Para Code)");
+// allow-any-unicode-next-line
+const STR_SEARCH_PLACEHOLDER = localize('paradis.settings.searchPlaceholder', "Para Code 設定を検索 (worktree, ccusage, rtk…)");
+// allow-any-unicode-next-line
+const STR_AUTOSAVE = localize('paradis.settings.autosave', "変更は即保存されます");
+// allow-any-unicode-next-line
+const STR_CLOSE_ARIA = localize('paradis.settings.closeAria', "閉じる");
+// allow-any-unicode-next-line
+const STR_SEARCH_EMPTY = localize('paradis.settings.searchEmpty', "一致する設定はありません");
+// allow-any-unicode-next-line
+const STR_NAV_CAPTION_FEATURES = localize('paradis.settings.navCaptionFeatures', "機能");
+// allow-any-unicode-next-line
+const STR_NAV_CAPTION_WINDOW = localize('paradis.settings.navCaptionWindow', "ウィンドウ");
+// allow-any-unicode-next-line
+const STR_OPEN_SETTINGS_EDITOR = localize('paradis.settings.openSettingsEditor', "設定エディタで開く");
+
+/** セクション見出しと、ナビ項目のラベル。 */
+interface IParadisSettingsSectionSpec {
+	readonly id: string;
+	readonly navLabel: string;
+	readonly heading: string;
+	readonly description?: string;
+	readonly caption?: string;
+}
+
+const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
+	{
+		id: 'psd-sec-space',
+		caption: STR_NAV_CAPTION_FEATURES,
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navSpace', "スペース切替"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headSpace', "スペース切替 (worktree)"),
+	},
+	{
+		id: 'psd-sec-preset',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navPreset', "コマンドプリセット"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headPreset', "コマンドプリセット"),
+	},
+	{
+		id: 'psd-sec-usage',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navUsage', "使用量ダッシュボード"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headUsage', "使用量ダッシュボード (ccusage · GitHub API · rtk)"),
+	},
+	{
+		id: 'psd-sec-notif',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navNotif', "通知"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headNotif', "通知"),
+	},
+	{
+		id: 'psd-sec-browser',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navBrowser', "ブラウザ共有"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headBrowser', "ブラウザ共有 (agentBrowser)"),
+	},
+	{
+		id: 'psd-sec-terminal',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navTerminal', "ターミナル"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headTerminal', "ターミナル"),
+	},
+	{
+		id: 'psd-sec-mobile',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navMobile', "モバイル連携"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headMobile', "モバイル連携"),
+	},
+	{
+		id: 'psd-sec-window',
+		caption: STR_NAV_CAPTION_WINDOW,
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navWindow', "透明化・その他"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headWindow', "ウィンドウ"),
+	},
+];
+
+/**
+ * Para Code 独自設定の一覧。ここに並べたキーだけがダイアログに出る
+ * (paradis.* すべてを機械的に出すと、内部向けの細かい調整値まで並んでしまうため、
+ * 「ユーザーが触って意味がある」ものを明示的に選んでいる)。
+ */
+interface IParadisSettingRowSpec {
+	readonly sectionId: string;
+	/** 設定キー。専用ダイアログを開くだけの行では undefined。 */
+	readonly key?: string;
+	readonly label: string;
+	readonly description?: string;
+	/** 検索用の追加キーワード (キー・ラベル・説明は自動で対象になる)。 */
+	readonly keywords?: string;
+	/** 文字列設定の入力欄プレースホルダ。 */
+	readonly placeholder?: string;
+	/** 数値 select の選択肢 (値 → 表示ラベル)。 */
+	readonly choices?: readonly { readonly value: string | number; readonly label: string }[];
+	/** 行の右端に置くボタン。押すとコマンドを実行してこのダイアログは閉じる。 */
+	readonly action?: { readonly label: string; readonly commandId: string; readonly primary?: boolean };
+}
+
+const ROWS: readonly IParadisSettingRowSpec[] = [
+	// --- スペース切替 ---
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.worktreeRoot',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.worktreeRoot', "worktree 作成先ルート"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.worktreeRootDesc', "空欄の場合、リポジトリ隣の「{リポジトリ名}-worktrees/」に作成します。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.unset', "(未設定)"),
+		keywords: 'worktree root space path',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.autoImportWorktrees',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.autoImport', "既存の worktree を自動で取り込む"),
+		keywords: 'auto import worktree detect',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.autoRemoveMissingWorktrees',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.autoRemove', "消えた worktree を一覧から自動で外す"),
+		keywords: 'auto remove missing worktree prune',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.scopeScmRepositories',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.scopeScm', "ソース管理ビューを現在のスペースに絞る"),
+		keywords: 'scm git scope repository filter',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.agents',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agents', "エージェント定義"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentsDesc', "新規スペースで選べるエージェントと、モデル/エフォート/権限の選択肢。設定エディタで JSON を編集します。"),
+		keywords: 'agents claude codex gemini model effort permission',
+	},
+
+	// --- コマンドプリセット ---
+	{
+		sectionId: 'psd-sec-preset',
+		key: 'paradis.terminal.presets',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.presets', "ユーザー プリセット"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.presetsDesc', "リポジトリ共有分は {リポジトリ}/.paracode.json に保存されます。"),
+		keywords: 'terminal presets command manage',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.presetsAction', "コマンドプリセットを管理…"),
+			commandId: 'paradis.terminal.configurePresets',
+			primary: true,
+		},
+	},
+
+	// --- 使用量ダッシュボード ---
+	{
+		sectionId: 'psd-sec-usage',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.usageDashboard', "統合ダッシュボード"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.usageDashboardDesc', "ccusage / GitHub API / rtk を 1 つのダイアログでまとめて確認します。"),
+		keywords: 'usage dashboard ccusage github rtk unified',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.usageDashboardAction', "開く…"),
+			commandId: 'paradis.usage.showDashboard',
+			primary: true,
+		},
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.ccusage.executablePath',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.ccusagePath', "ccusage 実行ファイルの絶対パス"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.ccusagePathDesc', "空欄時は PATH 探索 → 固定バージョンの npx フォールバック。"),
+		placeholder: '/usr/local/bin/ccusage',
+		keywords: 'ccusage executable path cost',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.ccusage.statusBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.ccusageStatusBar', "今日の AI コストをステータスバーに表示"),
+		keywords: 'ccusage status bar today cost',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.githubMetrics.statusBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.ghStatusBar', "GitHub API 残量をステータスバーに表示"),
+		keywords: 'github metrics rate limit status bar remaining',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.rtk.executablePath',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.rtkPath', "rtk 実行ファイルの絶対パス"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.rtkPathDesc', "SSH 中は接続先の rtk を実行するため、リモート側設定で指定してください。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.rtkPathPlaceholder', "(PATH 上の rtk)"),
+		keywords: 'rtk executable path token killer',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.rtk.statusBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.rtkStatusBar', "今日の rtk 削減トークン数を表示"),
+		keywords: 'rtk status bar saved tokens today',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.limitsMonitor.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.limitsMonitor', "AI 利用量リミットをタイトルバーに表示"),
+		keywords: 'limits monitor claude codex usage titlebar',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.resourceMonitor.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.resourceMonitor', "CPU / メモリをタイトルバーに表示"),
+		keywords: 'resource monitor cpu memory titlebar',
+	},
+
+	// --- 通知 ---
+	{
+		sectionId: 'psd-sec-notif',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.notifications', "通知・音声報告の詳細設定"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.notificationsDesc', "着信音・デスクトップ通知イベント・おやすみモード・Aivis 音声報告。専用ダイアログで設定します。"),
+		keywords: 'notification sound desktop aivis voice do not disturb',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.notificationsAction', "通知設定を開く…"),
+			commandId: 'paradis.notifications.openSettings',
+			primary: true,
+		},
+	},
+
+	// --- ブラウザ共有 ---
+	{
+		sectionId: 'psd-sec-browser',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.binding', "MCP サーバー (para-browser) の接続状態"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.bindingDesc', "内蔵ブラウザのページをターミナルのエージェント CLI へ渡すための MCP 登録を確認・修正します。"),
+		keywords: 'browser share mcp para-browser binding',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.bindingAction', "接続状態を確認…"),
+			commandId: 'paradis.agentBrowser.openBindingDialog',
+			primary: true,
+		},
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.showCursorOverlay',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.cursorOverlay', "エージェント操作時にカーソルを表示"),
+		keywords: 'agent browser cursor overlay',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.bookmarkBar.visible',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.bookmarkBar', "ブックマークバーを表示"),
+		keywords: 'browser bookmark bar visible',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.downloads.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.downloads', "ダウンロードを保存ダイアログなしで受け取る"),
+		keywords: 'browser downloads auto save',
+	},
+
+	// --- ターミナル ---
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.daemon.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.daemon', "ターミナルをアプリ終了後も生かす (常駐 pty)"),
+		keywords: 'terminal daemon pty keep alive persistent',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.daemon.keepAliveOnClose',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.daemonKeepAlive', "ウィンドウを閉じてもターミナルを残す"),
+		keywords: 'terminal daemon keep alive close',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.shiftEnterNewline',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.shiftEnter', "Shift+Enter で改行を入力する"),
+		keywords: 'terminal shift enter newline',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.editor.openTerminalOnSplit',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.openTerminalOnSplit', "エディタ分割時にターミナルを開く"),
+		keywords: 'editor split terminal',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.power.keepAwake',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.keepAwake', "エージェント実行中はスリープさせない"),
+		keywords: 'power keep awake sleep prevent',
+	},
+
+	// --- モバイル連携 ---
+	{
+		sectionId: 'psd-sec-mobile',
+		key: 'paradis.mobile.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.mobileEnabled', "モバイルアプリからの接続を有効にする"),
+		keywords: 'mobile relay iphone ipad remote',
+	},
+	{
+		sectionId: 'psd-sec-mobile',
+		key: 'paradis.mobile.pcName',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.mobilePcName', "モバイルに表示する PC 名"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.mobilePcNamePlaceholder', "(ホスト名)"),
+		keywords: 'mobile pc name display',
+	},
+	{
+		sectionId: 'psd-sec-mobile',
+		key: 'paradis.mobile.relayUrl',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.mobileRelayUrl', "リレーサーバー URL"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.mobileRelayUrlDesc', "空欄なら既定のリレーを使います。自前で運用する場合のみ指定します。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.mobileRelayUrlPlaceholder', "(既定のリレー)"),
+		keywords: 'mobile relay url server',
+	},
+
+	// --- ウィンドウ ---
+	{
+		sectionId: 'psd-sec-window',
+		key: 'paradis.window.transparency.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.transparency', "ウィンドウを透過させる"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.transparencyDesc', "タイトルバー・ターミナル背景を透過させます。"),
+		keywords: 'window transparency transparent',
+	},
+	{
+		sectionId: 'psd-sec-window',
+		key: 'paradis.window.transparency.opacity',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.opacity', "不透明度"),
+		keywords: 'window opacity level transparency',
+		choices: [
+			{ value: 1, label: '100%' },
+			{ value: 0.96, label: '96%' },
+			{ value: 0.9, label: '90%' },
+			{ value: 0.85, label: '85%' },
+			{ value: 0.8, label: '80%' },
+			{ value: 0.7, label: '70%' },
+		],
+	},
+	{
+		sectionId: 'psd-sec-window',
+		key: 'paradis.releaseNotes.showOnUpdate',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.releaseNotes', "更新後に変更履歴を表示する"),
+		keywords: 'release notes changelog update',
+	},
+	{
+		sectionId: 'psd-sec-window',
+		key: 'paradis.serviceStatus.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.serviceStatus', "各サービスの稼働状況を表示する"),
+		keywords: 'service status incident chip',
+	},
+];
+
+export class ParadisSettingsDialog extends Disposable {
+
+	private readonly _backdrop: HTMLElement;
+	private readonly _searchInput: HTMLInputElement;
+	private readonly _contentEl: HTMLElement;
+	private readonly _navItems = new Map<string, { item: HTMLElement; chip: HTMLElement }>();
+	private readonly _sections = new Map<string, HTMLElement>();
+	private readonly _rows: { spec: IParadisSettingRowSpec; el: HTMLElement; searchText: string }[] = [];
+	private readonly _searchEmptyEl: HTMLElement;
+	/** 設定キーごとのコントロール更新関数 (外部変更を画面へ反映するため)。 */
+	private readonly _refreshers: (() => void)[] = [];
+
+	constructor(
+		@ILayoutService layoutService: ILayoutService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@ICommandService private readonly commandService: ICommandService,
+	) {
+		super();
+
+		this._backdrop = $('.paradis-settings-dialog-backdrop');
+		const modal = $('.paradis-settings-dialog');
+		this._backdrop.appendChild(modal);
+
+		// ---------- header ----------
+		const header = dom.append(modal, $('.psd-header'));
+		dom.append(header, $('h2')).textContent = STR_TITLE;
+
+		const searchBox = dom.append(header, $('.psd-search'));
+		searchBox.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
+		this._searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
+		this._searchInput.type = 'text';
+		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
+		this._register(dom.addDisposableListener(this._searchInput, 'input', () => this._applySearchFilter()));
+		// 検索欄内の Escape は「検索語クリア」として扱い、ダイアログは閉じない
+		// (空のときはそのまま背景側の Escape ハンドラへ渡して閉じる)。
+		this._register(dom.addDisposableListener(this._searchInput, 'keydown', e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.keyCode === KeyCode.Escape && this._searchInput.value.length > 0) {
+				event.preventDefault();
+				event.stopPropagation();
+				this._searchInput.value = '';
+				this._applySearchFilter();
+			}
+		}));
+
+		dom.append(header, $('.psd-autosave')).textContent = STR_AUTOSAVE;
+
+		const closeBtn = dom.append(header, $('.psd-close'));
+		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
+		closeBtn.setAttribute('role', 'button');
+		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
+		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
+
+		// ---------- body（左ナビ + 右コンテンツ） ----------
+		const body = dom.append(modal, $('.psd-body'));
+		const nav = dom.append(body, $('nav.psd-nav'));
+		this._contentEl = dom.append(body, $('.psd-content'));
+		this._buildSections(nav);
+		this._searchEmptyEl = dom.append(this._contentEl, $('.psd-search-empty'));
+		this._searchEmptyEl.textContent = STR_SEARCH_EMPTY;
+		this._searchEmptyEl.classList.add('hidden');
+
+		modal.tabIndex = -1;
+		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
+			if (e.target === this._backdrop) {
+				this.dispose();
+			}
+		}));
+		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.keyCode === KeyCode.Escape) {
+				event.preventDefault();
+				this.dispose();
+			}
+		}));
+
+		// 別ウィンドウ・設定エディタ側からの変更にも追従させる
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('paradis')) {
+				for (const refresh of this._refreshers) {
+					refresh();
+				}
+			}
+		}));
+
+		layoutService.activeContainer.appendChild(this._backdrop);
+		this._activateNavItem(SECTIONS[0].id);
+		modal.focus();
+	}
+
+	override dispose(): void {
+		this._backdrop.remove();
+		super.dispose();
+	}
+
+	// ==========================================================================================
+
+	private _buildSections(nav: HTMLElement): void {
+		for (const spec of SECTIONS) {
+			if (spec.caption) {
+				dom.append(nav, $('.psd-nav-caption')).textContent = spec.caption;
+			}
+			const item = dom.append(nav, $('.psd-nav-item'));
+			item.setAttribute('role', 'button');
+			dom.append(item, $('span.psd-nav-label')).textContent = spec.navLabel;
+			const chip = dom.append(item, $('span.psd-nav-chip'));
+			this._navItems.set(spec.id, { item, chip });
+			this._register(dom.addDisposableListener(item, 'click', () => this._navigateTo(spec.id)));
+
+			const section = dom.append(this._contentEl, $('section.psd-section'));
+			section.id = spec.id;
+			dom.append(section, $('.psd-section-head')).textContent = spec.heading;
+			if (spec.description) {
+				dom.append(section, $('.psd-section-desc')).textContent = spec.description;
+			}
+			this._sections.set(spec.id, section);
+
+			for (const row of ROWS.filter(candidate => candidate.sectionId === spec.id)) {
+				this._buildRow(section, row);
+			}
+		}
+	}
+
+	private _buildRow(section: HTMLElement, spec: IParadisSettingRowSpec): void {
+		const row = dom.append(section, $('.psd-row'));
+		const main = dom.append(row, $('.psd-row-main'));
+		const label = dom.append(main, $('.psd-row-label'));
+		dom.append(label, $('span')).textContent = spec.label;
+		if (spec.key) {
+			dom.append(label, $('code')).textContent = spec.key;
+		}
+		if (spec.description) {
+			dom.append(main, $('.psd-row-desc')).textContent = spec.description;
+		}
+
+		if (spec.action) {
+			const button = dom.append(row, $(`button.psd-btn${spec.action.primary ? '.psd-btn-primary' : ''}`)) as HTMLButtonElement;
+			button.textContent = spec.action.label;
+			const commandId = spec.action.commandId;
+			this._register(dom.addDisposableListener(button, 'click', () => {
+				// 遷移先も同じ層のダイアログなので、重ならないようこちらを閉じてから開く
+				this.dispose();
+				void this.commandService.executeCommand(commandId);
+			}));
+		} else if (spec.key) {
+			this._buildControl(row, spec.key, spec);
+		}
+
+		this._rows.push({
+			spec,
+			el: row,
+			searchText: [spec.label, spec.description ?? '', spec.key ?? '', spec.keywords ?? ''].join(' ').toLowerCase(),
+		});
+	}
+
+	/** 設定値の型 (と choices 指定) を見てコントロールを選ぶ。 */
+	private _buildControl(row: HTMLElement, key: string, spec: IParadisSettingRowSpec): void {
+		const value = this.configurationService.getValue(key);
+
+		if (spec.choices) {
+			const select = dom.append(row, $('select.psd-select')) as HTMLSelectElement;
+			for (const choice of spec.choices) {
+				const option = dom.append(select, $('option')) as HTMLOptionElement;
+				option.value = String(choice.value);
+				option.textContent = choice.label;
+			}
+			const sync = () => {
+				const current = String(this.configurationService.getValue(key) ?? '');
+				if (spec.choices?.some(choice => String(choice.value) === current)) {
+					select.value = current;
+				}
+			};
+			sync();
+			this._refreshers.push(sync);
+			this._register(dom.addDisposableListener(select, 'change', () => {
+				const raw = select.value;
+				const numeric = Number(raw);
+				void this._write(key, Number.isFinite(numeric) && raw.trim() !== '' ? numeric : raw);
+			}));
+			return;
+		}
+
+		if (typeof value === 'boolean') {
+			const toggle = dom.append(row, $('input.psd-toggle')) as HTMLInputElement;
+			toggle.type = 'checkbox';
+			const sync = () => { toggle.checked = this.configurationService.getValue<boolean>(key) === true; };
+			sync();
+			this._refreshers.push(sync);
+			this._register(dom.addDisposableListener(toggle, 'change', () => void this._write(key, toggle.checked)));
+			return;
+		}
+
+		if (typeof value === 'string' || value === undefined) {
+			const input = dom.append(row, $('input.psd-input')) as HTMLInputElement;
+			input.type = 'text';
+			input.spellcheck = false;
+			if (spec.placeholder) {
+				input.placeholder = spec.placeholder;
+			}
+			const sync = () => { input.value = this.configurationService.getValue<string>(key) ?? ''; };
+			sync();
+			this._refreshers.push(sync);
+			// 入力途中で毎回書かない (設定ファイルが1文字ごとに書き変わるのを避ける)
+			this._register(dom.addDisposableListener(input, 'change', () => void this._write(key, input.value)));
+			return;
+		}
+
+		// 配列・オブジェクト設定 (エージェント定義・プリセット等) はここでは編集させず、
+		// 標準の設定エディタへ送る
+		const button = dom.append(row, $('button.psd-btn')) as HTMLButtonElement;
+		button.textContent = STR_OPEN_SETTINGS_EDITOR;
+		this._register(dom.addDisposableListener(button, 'click', () => {
+			this.dispose();
+			void this.commandService.executeCommand('workbench.action.openSettings', `@id:${key}`);
+		}));
+	}
+
+	private async _write(key: string, value: unknown): Promise<void> {
+		// スコープは設定スキーマ側の宣言 (APPLICATION/MACHINE/WINDOW) に任せる。
+		// USER を明示すると WINDOW スコープの設定が意図しない側へ書かれる
+		await this.configurationService.updateValue(key, value, ConfigurationTarget.USER);
+	}
+
+	private _navigateTo(sectionId: string): void {
+		this._activateNavItem(sectionId);
+		this._sections.get(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+
+	private _activateNavItem(sectionId: string): void {
+		for (const entry of this._navItems.values()) {
+			entry.item.classList.remove('active');
+		}
+		this._navItems.get(sectionId)?.item.classList.add('active');
+	}
+
+	/** 検索語で行を絞り、ヒットが 0 のセクションは丸ごと隠す。 */
+	private _applySearchFilter(): void {
+		const query = this._searchInput.value.trim().toLowerCase();
+		const hitsPerSection = new Map<string, number>();
+
+		for (const row of this._rows) {
+			const hit = query.length === 0 || row.searchText.includes(query);
+			row.el.classList.toggle('hidden', !hit);
+			if (hit) {
+				hitsPerSection.set(row.spec.sectionId, (hitsPerSection.get(row.spec.sectionId) ?? 0) + 1);
+			}
+		}
+
+		let totalHits = 0;
+		for (const spec of SECTIONS) {
+			const hits = hitsPerSection.get(spec.id) ?? 0;
+			totalHits += hits;
+			this._sections.get(spec.id)?.classList.toggle('hidden', hits === 0);
+			const nav = this._navItems.get(spec.id);
+			if (nav) {
+				nav.item.classList.toggle('hidden', query.length > 0 && hits === 0);
+				nav.chip.textContent = query.length > 0 && hits > 0 ? String(hits) : '';
+			}
+		}
+
+		this._searchEmptyEl.classList.toggle('hidden', totalHits > 0);
+	}
+}

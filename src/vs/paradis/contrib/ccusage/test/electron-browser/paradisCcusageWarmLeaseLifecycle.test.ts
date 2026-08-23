@@ -15,6 +15,7 @@ import { IConfigurationChangeEvent, IConfigurationService } from '../../../../..
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
+import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
@@ -172,6 +173,8 @@ function createHarness(values: Readonly<Record<string, unknown>> = {}): ITestCcu
 	instantiationService.set(ISharedProcessService, { getChannel: () => channel } as unknown as ISharedProcessService);
 	instantiationService.set(IConfigurationService, configuration as unknown as IConfigurationService);
 	instantiationService.set(IRemoteAgentService, { getConnection: () => null } as unknown as IRemoteAgentService);
+	// 描画本体は ParadisCcusageSection へ移り、テーマ購読も含めて createInstance で組み立てられる
+	instantiationService.set(IThemeService, new TestThemeService());
 	return {
 		channel,
 		configuration,

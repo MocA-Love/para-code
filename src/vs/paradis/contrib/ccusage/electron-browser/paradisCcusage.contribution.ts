@@ -26,11 +26,11 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { ParadisCcusageClient, PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH } from './paradisCcusageClient.js';
 import { ParadisCcusageEditor } from './paradisCcusageEditor.js';
 import { ParadisCcusageInput, ParadisCcusageInputSerializer, PARADIS_CCUSAGE_EDITOR_ID, PARADIS_CCUSAGE_INPUT_TYPE_ID } from './paradisCcusageInput.js';
+import { paradisOpenUsageDashboard } from '../../usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 
 const SETTING_STATUS_BAR_ENABLED = 'paradis.ccusage.statusBar.enabled';
 const SHOW_DASHBOARD_COMMAND_ID = 'paradis.ccusage.showDashboard';
@@ -71,8 +71,10 @@ registerAction2(class ShowCcusageDashboardAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		await editorService.openEditor(ParadisCcusageInput.instance, { pinned: true });
+		// 3ダッシュボードは統合ダイアログの1タブになったので、こちらの入口からも
+		// 同じダイアログを ccusage タブで開く（エディタタブとしての実装も残っているが、
+		// 既定の導線はダイアログ側に一本化する）
+		paradisOpenUsageDashboard(accessor, 'ccusage');
 	}
 });
 

@@ -36,6 +36,7 @@ import {
 	paradisDeduplicateWorktreeDirName,
 	paradisSanitizeBranchName,
 } from '../common/paradisWorktreeCreate.js';
+import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
@@ -82,7 +83,13 @@ export async function paradisCompleteCreatedWorktree(actions: IParadisCreatedWor
 }
 
 // allow-any-unicode-next-line
-const STR_TITLE = localize('paradis.createWorktree.title', "新しいスペース（worktree）を作成");
+const STR_TITLE = localize('paradis.createWorktree.title', "新しいスペース");
+/** タイトル右に添える小さな補足（何を作るのかの技術名）。 */
+const STR_TITLE_SUB = 'worktree';
+// allow-any-unicode-next-line
+const STR_CLOSE = localize('paradis.createWorktree.close', "閉じる");
+// allow-any-unicode-next-line
+const STR_ADVANCED = localize('paradis.createWorktree.advanced', "詳細オプション");
 // allow-any-unicode-next-line
 const STR_NAME_PLACEHOLDER = localize('paradis.createWorktree.namePlaceholder', "スペース名（表示名・任意）");
 // allow-any-unicode-next-line
@@ -98,7 +105,7 @@ const STR_MODEL_LABEL = localize('paradis.createWorktree.modelLabel', "モデル
 // allow-any-unicode-next-line
 const STR_EFFORT_LABEL = localize('paradis.createWorktree.effortLabel', "エフォート");
 // allow-any-unicode-next-line
-const STR_PERMISSION_LABEL = localize('paradis.createWorktree.permissionLabel', "権限");
+const STR_PERMISSION_ARIA = localize('paradis.createWorktree.permissionAria', "権限モード");
 // allow-any-unicode-next-line
 const STR_OPTION_DEFAULT = localize('paradis.createWorktree.optionDefault', "既定");
 // allow-any-unicode-next-line
@@ -114,7 +121,11 @@ const STR_BRANCHES_LOADING = localize('paradis.createWorktree.branchesLoading', 
 // allow-any-unicode-next-line
 const STR_CANCEL = localize('paradis.createWorktree.cancel', "キャンセル");
 // allow-any-unicode-next-line
-const STR_CREATE = localize('paradis.createWorktree.create', "作成 (⌘⏎)");
+const STR_CREATE = localize('paradis.createWorktree.create', "作成");
+/** 作成ボタンに添えるキーボードショートカット表記。 */
+const STR_CREATE_KBD = '⌘⏎';
+// allow-any-unicode-next-line
+const STR_SETUP_LABEL = localize('paradis.createWorktree.setupLabel', "setup スクリプト");
 // allow-any-unicode-next-line
 const STR_NO_BRANCHES = localize('paradis.createWorktree.noBranches', "ブランチを取得できませんでした");
 // allow-any-unicode-next-line
@@ -156,7 +167,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private _nameInput!: HTMLInputElement;
 	private _branchInput!: HTMLInputElement;
 	private _promptInput!: HTMLTextAreaElement;
-	private _agentSelect!: HTMLSelectElement;
+	private _agentSeg!: HTMLElement;
 	private _agentOptionsEl!: HTMLElement;
 	private _modelGroup!: HTMLElement;
 	private _modelSelect!: HTMLSelectElement;
@@ -177,6 +188,12 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private _cancelBtn!: HTMLButtonElement;
 
 	private _branches: IParadisGitBranches | undefined;
+	/** エージェントセグメントのリスナー（フォーム再構築のたびに作り直すため個別管理）。 */
+	private readonly _agentListeners = this._register(new DisposableStore());
+	/** 選択中のエージェント id（'none' = 実行しない）。 */
+	private _selectedAgentId: string = 'none';
+	/** エージェントセグメントのボタン（描画順は _agents + 'none'）。 */
+	private _agentButtons: { id: string; button: HTMLButtonElement }[] = [];
 	/** 権限セグメントボタンのリスナー（エージェント切り替えのたびに作り直すため個別管理）。 */
 	private readonly _permissionListeners = this._register(new DisposableStore());
 	private _permissionButtons: HTMLButtonElement[] = [];
@@ -202,7 +219,9 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		super();
 
 		this._backdrop = $('.paradis-create-worktree-backdrop');
-		this._dialog = $('.paradis-create-worktree-dialog');
+		// 案D レイアウトは修飾子クラスで囲う。同じ CSS ファイルを共有する
+		// paradisWorkspaceLifecycleDialog は修飾子を付けないので従来の見た目のまま残る
+		this._dialog = $('.paradis-create-worktree-dialog.pcw-d');
 		this._backdrop.appendChild(this._dialog);
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
@@ -232,7 +251,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private get _agents(): readonly IParadisAgentCommandTemplate[] {
 		const configured = this.configurationService.getValue<IParadisAgentCommandTemplate[]>('paradis.workspaceSwitch.agents');
 		if (Array.isArray(configured) && configured.length > 0) {
-			// 'none' は「実行しない」を表す予約識別子（_agentSelect の固定オプション）のため、
+			// 'none' は「実行しない」を表す予約識別子（セグメントの固定項目）のため、
 			// 設定で誤って同じ id が指定されても既定端末とエージェント端末の二重起動を避けるため除外する
 			return configured.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string');
 		}
@@ -244,77 +263,123 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	}
 
 	private get _selectedAgent(): IParadisAgentCommandTemplate | undefined {
-		return this._agents.find(agent => agent.id === this._agentSelect.value);
+		return this._agents.find(agent => agent.id === this._selectedAgentId);
+	}
+
+	/**
+	 * エージェント選択セグメントを組み立てる。「実行しない」を末尾に置き、Claude/Codex は
+	 * 実際のブランドロゴ（limitsMonitor と共通のヘルパ）、それ以外は汎用アイコンを添える。
+	 */
+	private _renderAgentSegment(): void {
+		dom.clearNode(this._agentSeg);
+		this._agentListeners.clear();
+		this._agentButtons = [];
+		const entries: { id: string; label: string }[] = [
+			...this._agents.map(agent => ({ id: agent.id, label: agent.label ?? agent.id })),
+			{ id: 'none', label: STR_AGENT_NONE },
+		];
+		for (const entry of entries) {
+			const button = dom.append(this._agentSeg, $('button.pcw-d-agent-btn')) as HTMLButtonElement;
+			button.type = 'button';
+			button.setAttribute('role', 'radio');
+			const icon = dom.append(button, $('span.pcw-d-agent-icon'));
+			if (entry.id === 'claude' || entry.id === 'codex') {
+				icon.classList.add(entry.id);
+				appendParadisAgentLogoSvg(icon, entry.id);
+			} else {
+				dom.append(icon, $(entry.id === 'none' ? 'span.codicon.codicon-circle-slash' : 'span.codicon.codicon-robot'));
+			}
+			dom.append(button, $('span')).textContent = entry.label;
+			this._agentButtons.push({ id: entry.id, button });
+			this._agentListeners.add(dom.addDisposableListener(button, 'click', () => this._selectAgent(entry.id)));
+		}
+		this._updateAgentSegmentState();
+	}
+
+	private _updateAgentSegmentState(): void {
+		for (const entry of this._agentButtons) {
+			const active = entry.id === this._selectedAgentId;
+			entry.button.classList.toggle('active', active);
+			entry.button.setAttribute('aria-checked', String(active));
+		}
+	}
+
+	private _selectAgent(agentId: string): void {
+		if (this._selectedAgentId === agentId) {
+			return;
+		}
+		this._selectedAgentId = agentId;
+		this._updateAgentSegmentState();
+		this._onAgentChanged(undefined);
 	}
 
 	private _renderForm(preselectedRepositoryId: string | undefined, prefill: IParadisHeadlessWorktreeRequest | undefined): void {
 		dom.clearNode(this._dialog);
 
-		dom.append(this._dialog, $('h3.pcw-title')).textContent = STR_TITLE;
+		const title = dom.append(this._dialog, $('h3.pcw-title'));
+		title.textContent = STR_TITLE;
+		dom.append(title, $('span.pcw-d-sub')).textContent = STR_TITLE_SUB;
+		const closeBtn = dom.append(this._dialog, $('button.pcw-d-close')) as HTMLButtonElement;
+		closeBtn.type = 'button';
+		closeBtn.title = STR_CLOSE;
+		closeBtn.setAttribute('aria-label', STR_CLOSE);
+		dom.append(closeBtn, $('span.codicon.codicon-close'));
+		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
+
+		// 自然言語プロンプト。ここが一番よく書かれる欄なので最上段に置く
+		this._promptInput = dom.append(this._dialog, $('textarea.pcw-prompt.pcw-d-area')) as HTMLTextAreaElement;
+		this._promptInput.rows = 3;
+		this._promptInput.placeholder = STR_PROMPT_PLACEHOLDER;
 
 		// スペース名 + ブランチ名
-		const nameRow = dom.append(this._dialog, $('.pcw-row'));
-		this._nameInput = dom.append(nameRow, $('input.pcw-input.pcw-name')) as HTMLInputElement;
+		const nameRow = dom.append(this._dialog, $('.pcw-d-two'));
+		this._nameInput = dom.append(nameRow, $('input.pcw-d-input.pcw-name')) as HTMLInputElement;
 		this._nameInput.type = 'text';
 		this._nameInput.placeholder = STR_NAME_PLACEHOLDER;
-		this._branchInput = dom.append(nameRow, $('input.pcw-input.pcw-branch')) as HTMLInputElement;
+		this._branchInput = dom.append(nameRow, $('input.pcw-d-input.pcw-branch')) as HTMLInputElement;
 		this._branchInput.type = 'text';
 		this._branchInput.placeholder = STR_BRANCH_PLACEHOLDER;
 		this._branchInput.spellcheck = false;
 
-		// 自然言語プロンプト
-		this._promptInput = dom.append(this._dialog, $('textarea.pcw-prompt')) as HTMLTextAreaElement;
-		this._promptInput.rows = 3;
-		this._promptInput.placeholder = STR_PROMPT_PLACEHOLDER;
-
-		// エージェント選択
-		const agentRow = dom.append(this._dialog, $('.pcw-row.pcw-field-row'));
-		dom.append(agentRow, $('label.pcw-label')).textContent = STR_AGENT_LABEL;
-		this._agentSelect = dom.append(agentRow, $('select.pcw-select')) as HTMLSelectElement;
-		const noneOption = dom.append(this._agentSelect, $('option')) as HTMLOptionElement;
-		noneOption.value = 'none';
-		noneOption.textContent = STR_AGENT_NONE;
-		for (const agent of this._agents) {
-			const option = dom.append(this._agentSelect, $('option')) as HTMLOptionElement;
-			option.value = agent.id;
-			option.textContent = agent.label ?? agent.id;
-		}
+		// エージェント選択（セグメント）＋その詳細オプション
+		const agentBlock = dom.append(this._dialog, $('.pcw-d-agent-block'));
+		this._agentSeg = dom.append(agentBlock, $('.pcw-d-agent-seg'));
+		this._agentSeg.setAttribute('role', 'radiogroup');
+		this._agentSeg.setAttribute('aria-label', STR_AGENT_LABEL);
 		// 前回選択したエージェントを復元する。保存値が現在の選択肢に無い場合
-		// （設定から削除された等）は既定の「実行しない」のままにする
+		// （設定から削除された等）は既定の「実行しない」にする
 		const lastAgentId = prefill?.agentId ?? this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
-		if (lastAgentId && (lastAgentId === 'none' || this._agents.some(agent => agent.id === lastAgentId))) {
-			this._agentSelect.value = lastAgentId;
-		}
+		this._selectedAgentId = lastAgentId && (lastAgentId === 'none' || this._agents.some(agent => agent.id === lastAgentId))
+			? lastAgentId
+			: 'none';
+		this._renderAgentSegment();
 
 		// エージェント詳細オプション（モデル/エフォート/権限＋コマンドプレビュー）。
 		// 「実行しない」選択時は囲みごと非表示にする
-		this._agentOptionsEl = dom.append(this._dialog, $('.pcw-agent-options'));
-		const optionRow = dom.append(this._agentOptionsEl, $('.pcw-row'));
-		this._modelGroup = dom.append(optionRow, $('.pcw-opt-group'));
-		dom.append(this._modelGroup, $('label.pcw-label')).textContent = STR_MODEL_LABEL;
-		this._modelSelect = dom.append(this._modelGroup, $('select.pcw-select')) as HTMLSelectElement;
-		this._effortGroup = dom.append(optionRow, $('.pcw-opt-group'));
-		dom.append(this._effortGroup, $('label.pcw-label')).textContent = STR_EFFORT_LABEL;
-		this._effortSelect = dom.append(this._effortGroup, $('select.pcw-select')) as HTMLSelectElement;
-		this._permissionRow = dom.append(this._agentOptionsEl, $('.pcw-row'));
-		dom.append(this._permissionRow, $('label.pcw-label')).textContent = STR_PERMISSION_LABEL;
+		this._agentOptionsEl = dom.append(agentBlock, $('.pcw-agent-options'));
+		const optionRow = dom.append(this._agentOptionsEl, $('.pcw-d-agent-sub'));
+		this._modelGroup = dom.append(optionRow, $('label.pcw-d-sub-field'));
+		dom.append(this._modelGroup, $('span.pcw-d-sub-label')).textContent = STR_MODEL_LABEL;
+		this._modelSelect = dom.append(this._modelGroup, $('select.pcw-d-sub-select')) as HTMLSelectElement;
+		this._effortGroup = dom.append(optionRow, $('label.pcw-d-sub-field'));
+		dom.append(this._effortGroup, $('span.pcw-d-sub-label')).textContent = STR_EFFORT_LABEL;
+		this._effortSelect = dom.append(this._effortGroup, $('select.pcw-d-sub-select')) as HTMLSelectElement;
+		this._permissionRow = dom.append(this._agentOptionsEl, $('.pcw-d-perm-line'));
 		this._permissionSeg = dom.append(this._permissionRow, $('.pcw-seg'));
+		this._permissionSeg.setAttribute('role', 'radiogroup');
+		this._permissionSeg.setAttribute('aria-label', STR_PERMISSION_ARIA);
 		this._permissionHint = dom.append(this._permissionRow, $('span.pcw-perm-hint'));
 		this._cmdPreview = dom.append(this._agentOptionsEl, $('.pcw-cmd-preview'));
 
-		// setup スクリプトの実行トグル（リポジトリに setupScript がある場合のみ表示）
-		this._setupRow = dom.append(this._dialog, $('.pcw-setup-row'));
-		this._setupRow.classList.add('hidden');
-		const setupLabel = dom.append(this._setupRow, $('label.pcw-setup-label'));
-		this._setupCheckbox = dom.append(setupLabel, $('input.pcw-setup-checkbox')) as HTMLInputElement;
-		this._setupCheckbox.type = 'checkbox';
-		dom.append(setupLabel, $('span')).textContent = STR_RUN_SETUP;
-		this._setupScriptEl = dom.append(this._setupRow, $('span.pcw-setup-script'));
+		// 詳細オプション（リポジトリ / ベースブランチ / setup）は折りたたみに入れる。
+		// 既定のリポジトリと HEAD で作ることがほとんどなので、開くのは変えたいときだけでよい
+		const advanced = dom.append(this._dialog, $('details.pcw-d-adv')) as HTMLDetailsElement;
+		dom.append(advanced, $('summary')).textContent = STR_ADVANCED;
+		const advGrid = dom.append(advanced, $('.pcw-d-adv-grid'));
 
-		// ベースリポジトリ + ベースブランチ
-		const baseRow = dom.append(this._dialog, $('.pcw-row.pcw-field-row'));
-		dom.append(baseRow, $('label.pcw-label')).textContent = STR_BASE_REPO_LABEL;
-		this._repoSelect = dom.append(baseRow, $('select.pcw-select')) as HTMLSelectElement;
+		const repoRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
+		dom.append(repoRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_REPO_LABEL;
+		this._repoSelect = dom.append(repoRow, $('select.pcw-d-adv-select')) as HTMLSelectElement;
 		for (const repository of this.switchService.repositories) {
 			const option = dom.append(this._repoSelect, $('option')) as HTMLOptionElement;
 			option.value = repository.id;
@@ -324,25 +389,37 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		if (initialRepoId && this.switchService.repositories.some(repository => repository.id === initialRepoId)) {
 			this._repoSelect.value = initialRepoId;
 		}
-		dom.append(baseRow, $('label.pcw-label')).textContent = STR_BASE_BRANCH_LABEL;
-		this._branchSelect = dom.append(baseRow, $('select.pcw-select.pcw-branch-select')) as HTMLSelectElement;
 
-		// 作成先パスのプレビュー
-		this._pathPreview = dom.append(this._dialog, $('.pcw-path-preview'));
+		const branchRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
+		dom.append(branchRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_BRANCH_LABEL;
+		this._branchSelect = dom.append(branchRow, $('select.pcw-d-adv-select.pcw-branch-select')) as HTMLSelectElement;
+
+		// setup スクリプトの実行トグル（リポジトリに setupScript がある場合のみ表示）
+		this._setupRow = dom.append(advGrid, $('.pcw-d-adv-row.pcw-setup-row'));
+		this._setupRow.classList.add('hidden');
+		dom.append(this._setupRow, $('span.pcw-d-adv-label')).textContent = STR_SETUP_LABEL;
+		const setupLabel = dom.append(this._setupRow, $('label.pcw-setup-label'));
+		this._setupCheckbox = dom.append(setupLabel, $('input.pcw-setup-checkbox')) as HTMLInputElement;
+		this._setupCheckbox.type = 'checkbox';
+		dom.append(setupLabel, $('span')).textContent = STR_RUN_SETUP;
+		this._setupScriptEl = dom.append(this._setupRow, $('span.pcw-setup-script'));
 
 		this._errorEl = dom.append(this._dialog, $('.pcw-error'));
 
-		const footer = dom.append(this._dialog, $('.pcw-footer'));
-		this._cancelBtn = dom.append(footer, $('button.pcw-btn')) as HTMLButtonElement;
+		const footer = dom.append(this._dialog, $('.pcw-footer.pcw-d-foot'));
+		// 作成先パスのプレビューはフッター左端に置く（案D: 決め手にはならないが常に見えていてほしい情報）
+		this._pathPreview = dom.append(footer, $('.pcw-path-preview'));
+		const buttons = dom.append(footer, $('.pcw-d-btnrow'));
+		this._cancelBtn = dom.append(buttons, $('button.pcw-btn')) as HTMLButtonElement;
 		this._cancelBtn.textContent = STR_CANCEL;
 		this._register(dom.addDisposableListener(this._cancelBtn, 'click', () => this.dispose()));
-		this._createBtn = dom.append(footer, $('button.pcw-btn.pcw-btn-primary')) as HTMLButtonElement;
+		this._createBtn = dom.append(buttons, $('button.pcw-btn.pcw-btn-primary')) as HTMLButtonElement;
 		this._createBtn.textContent = STR_CREATE;
+		dom.append(this._createBtn, $('span.pcw-d-kbd')).textContent = STR_CREATE_KBD;
 		this._register(dom.addDisposableListener(this._createBtn, 'click', () => this._doCreate()));
 
 		this._register(dom.addDisposableListener(this._repoSelect, 'change', () => this._onRepositoryChanged()));
 		this._register(dom.addDisposableListener(this._branchInput, 'input', () => this._updatePathPreview()));
-		this._register(dom.addDisposableListener(this._agentSelect, 'change', () => this._onAgentChanged(undefined)));
 		this._register(dom.addDisposableListener(this._modelSelect, 'change', () => this._onModelChanged()));
 		this._register(dom.addDisposableListener(this._effortSelect, 'change', () => this._updateCommandPreview()));
 		this._register(dom.addDisposableListener(this._promptInput, 'input', () => this._updateCommandPreview()));
@@ -415,6 +492,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		for (const permission of permissions) {
 			const button = dom.append(this._permissionSeg, $('button.pcw-seg-btn')) as HTMLButtonElement;
 			button.type = 'button';
+			button.setAttribute('role', 'radio');
 			button.textContent = permission.label;
 			button.classList.toggle('pcw-seg-danger', !!permission.danger);
 			this._permissionButtons.push(button);
@@ -482,7 +560,9 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		const selected = permissions.find(permission => permission.id === permissionId) ?? permissions[0];
 		this._selectedPermissionId = selected?.id;
 		permissions.forEach((permission, index) => {
-			this._permissionButtons[index]?.classList.toggle('active', permission.id === this._selectedPermissionId);
+			const active = permission.id === this._selectedPermissionId;
+			this._permissionButtons[index]?.classList.toggle('active', active);
+			this._permissionButtons[index]?.setAttribute('aria-checked', String(active));
 		});
 		this._permissionHint.textContent = selected?.hint ?? '';
 		this._permissionHint.classList.toggle('pcw-perm-hint-danger', !!selected?.danger);
@@ -650,7 +730,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			return;
 		}
 
-		const agentId = this._agentSelect.value;
+		const agentId = this._selectedAgentId;
 		const launchOptions = this._currentLaunchOptions();
 
 		// 次回ダイアログを開いたときに同じ選択を既定にするため記憶する
