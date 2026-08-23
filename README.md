@@ -1,77 +1,90 @@
-# Visual Studio Code - Open Source ("Code - OSS")
-[![Feature Requests](https://img.shields.io/github/issues/microsoft/vscode/feature-request.svg)](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
-[![Bugs](https://img.shields.io/github/issues/microsoft/vscode/bug.svg)](https://github.com/microsoft/vscode/issues?utf8=✓&q=is%3Aissue+is%3Aopen+label%3Abug)
-[![Gitter](https://img.shields.io/badge/chat-on%20gitter-yellow.svg)](https://gitter.im/Microsoft/vscode)
+# Para Code
 
-## The Repository
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.txt)
+[![Issues](https://img.shields.io/github/issues/MocA-Love/para-code.svg)](https://github.com/MocA-Love/para-code/issues)
 
-This repository ("`Code - OSS`") is where we (Microsoft) develop the [Visual Studio Code](https://code.visualstudio.com) product together with the community. Not only do we work on code and issues here, but we also publish our [roadmap](https://github.com/microsoft/vscode/wiki/Roadmap), [monthly iteration plans](https://github.com/microsoft/vscode/wiki/Iteration-Plans), and our [endgame plans](https://github.com/microsoft/vscode/wiki/Running-the-Endgame). This source code is available to everyone under the standard [MIT license](https://github.com/microsoft/vscode/blob/main/LICENSE.txt).
+Para Code は、AI コーディングエージェント（Claude Code・Codex など）と一緒に開発することを前提に作られたエディタです。[Visual Studio Code](https://github.com/microsoft/vscode) を fork し、複数リポジトリの並行作業・常駐ターミナル・エージェントセッション管理・内蔵ブラウザ連携・SSH リモート開発・モバイルからの遠隔操作といった機能を継ぎ足してあります。
 
-## Visual Studio Code
+## Para Code とは
+
+このリポジトリは `microsoft/vscode` を fork した独自エディタです。エディタ本体の土台は本家 VS Code のままで、今後も定期的に upstream の新しいリリースを取り込み続けます。そのうえに、複数のエージェントを並行して走らせながら開発する働き方に合わせた機能を追加しています。
 
 <p align="center">
-  <img alt="VS Code in action" src="https://github.com/user-attachments/assets/56af271c-949d-454c-a3ea-16188c063414">
+  <!-- ここにスクリーンショットを挿入 -->
 </p>
 
-[Visual Studio Code](https://code.visualstudio.com) is a distribution of the `Code - OSS` repository with Microsoft-specific customizations released under a traditional [Microsoft product license](https://code.visualstudio.com/License/).
+## 主な機能
 
-[Visual Studio Code](https://code.visualstudio.com) combines the simplicity of a code editor with what developers need for their core edit-build-debug cycle. It provides comprehensive code editing, navigation, and understanding support along with lightweight debugging, a rich extensibility model, and lightweight integration with existing tools.
+### スペース（ワークスペース）管理
 
-Visual Studio Code is updated monthly with new features and bug fixes. You can download it for Windows, macOS, and Linux on the [Visual Studio Code website](https://code.visualstudio.com/Download). To get the latest releases every day, install the [Insiders build](https://code.visualstudio.com/insiders).
+- 複数のリポジトリ・ワークツリーを常駐させたまま、Extension Host を再起動せずに瞬時に切り替え
+- リモートエクスプローラーの「Para ホスト」ビューで、手元と SSH 先を同じツリーに並べて操作
+- SSH 先とのファイル送受信・ドラッグ&ドロップ・複数ファイルのアップロードにも対応
 
-## Contributing
+### ターミナル
 
-There are many ways in which you can participate in this project, for example:
+- 縦横自由な田の字型（2D グリッド）分割
+- 「常駐ターミナル」でウィンドウや Para Code 自体を閉じても実行中のプロセスが動き続け、次回起動時にそのまま繋ぎ直せる（macOS / Linux）
+- Superset 相当のターミナル履歴サジェストなど、日々のシェル操作を補う拡張
 
-* [Submit bugs and feature requests](https://github.com/microsoft/vscode/issues), and help us verify them as they are checked in
-* Review [source code changes](https://github.com/microsoft/vscode/pulls)
-* Review the [documentation](https://github.com/microsoft/vscode-docs) and make pull requests for anything from typos to new content.
+### AI エージェント連携
 
-If you are interested in fixing issues and contributing directly to the codebase, please see the document [How to Contribute](https://github.com/microsoft/vscode/wiki/How-to-Contribute), which covers the following:
+- Claude Code・Codex など複数のエージェントセッションを一覧・絞り込み・履歴検索
+- 通知（音声報告・サウンド・おやすみモード）とユーザー辞書
+- 使用量ダッシュボード（コスト/トークン切り替え）や RTK のトークン節約ダッシュボード
+- 実行環境（手元／特定の SSH 接続先など）に応じて出し分けられるコマンドプリセット
 
-* [How to build and run from source](https://github.com/microsoft/vscode/wiki/How-to-Contribute)
-* [The development workflow, including debugging and running tests](https://github.com/microsoft/vscode/wiki/How-to-Contribute#debugging)
-* [Coding guidelines](https://github.com/microsoft/vscode/wiki/Coding-Guidelines)
-* [Submitting pull requests](https://github.com/microsoft/vscode/wiki/How-to-Contribute#pull-requests)
-* [Finding an issue to work on](https://github.com/microsoft/vscode/wiki/How-to-Contribute#where-to-contribute)
-* [Contributing to translations](https://aka.ms/vscodeloc)
+### 内蔵ブラウザ
 
-## Feedback
+- CDP で繋いだブラウザタブとエージェントセッションを紐づけ、エージェントが見ている画面を可視化・共有
+- 複数ペインの一覧化・絞り込み・ズーム操作
 
-* Ask a question on [Stack Overflow](https://stackoverflow.com/questions/tagged/vscode)
-* [Request a new feature](CONTRIBUTING.md)
-* Upvote [popular feature requests](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
-* [File an issue](https://github.com/microsoft/vscode/issues)
-* Connect with the extension author community on [GitHub Discussions](https://github.com/microsoft/vscode-discussions/discussions) or [Slack](https://aka.ms/vscode-dev-community)
-* Follow [@code](https://x.com/code) and let us know what you think!
+### ファイルビューア / Git
 
-See our [wiki](https://github.com/microsoft/vscode/wiki/Feedback-Channels) for a description of each of these channels and information on some other available community-driven channels.
+- Markdown・HTML・PDF・Excel・Word の独自プレビュー（相対パスの画像・実行中の読み込みにも対応）
+- Excel・Word の変更点を左右に並べて見られる差分ビュー
+- ソース管理に分岐元ブランチからの差分を独立して表示する「ブランチの変更点」ビュー、GitHub Issue 連携
 
-## Related Projects
+### モバイル（Para Code Mobile）
 
-Many of the core components and extensions to VS Code live in their own repositories on GitHub. For example, the [node debug adapter](https://github.com/microsoft/vscode-node-debug) and the [mono debug adapter](https://github.com/microsoft/vscode-mono-debug) repositories are separate from each other. For a complete list, please visit the [Related Projects](https://github.com/microsoft/vscode/wiki/Related-Projects) page on our [wiki](https://github.com/microsoft/vscode/wiki).
+- iPhone / iPad から、PC 上で動いているエージェントセッションを遠隔で確認・操作
 
-## Bundled Extensions
+各バージョンで実際に何が変わったかは、アプリ内の歯車メニュー →「更新履歴」から確認できます。
 
-VS Code includes a set of built-in extensions located in the [extensions](extensions) folder, including grammars and snippets for many languages. Extensions that provide rich language support (inline suggestions, Go to Definition) for a language have the suffix `language-features`. For example, the `json` extension provides coloring for `JSON` and the `json-language-features` extension provides rich language support for `JSON`.
+## 開発に参加する
 
-## Development Container
+Para Code は本家 VS Code のソースをベースにしているため、ビルド・デバッグの基本的な流れは [How to Contribute](https://github.com/microsoft/vscode/wiki/How-to-Contribute) や [Coding Guidelines](https://github.com/microsoft/vscode/wiki/Coding-Guidelines) がそのまま参考になります。そのうえで、この fork 特有の実装ルール（新機能の置き場所・既存ファイルへのパッチ方針・upstream 取り込み手順など）は [`CLAUDE.md`](CLAUDE.md) と [`NOTES.md`](NOTES.md) にまとめてあるので、変更を加える前に一読してください。
 
-This repository includes a Visual Studio Code Dev Containers / GitHub Codespaces development container.
+* [問題や要望を報告する](https://github.com/MocA-Love/para-code/issues)
+* [変更を提案する](https://github.com/MocA-Love/para-code/pulls)
 
-* For [Dev Containers](https://aka.ms/vscode-remote/download/containers), use the **Dev Containers: Clone Repository in Container Volume...** command, which creates a Docker volume for better disk I/O on macOS and Windows.
-  * If you already have VS Code and Docker installed, you can also click [here](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/microsoft/vscode) to get started. This will cause VS Code to automatically install the Dev Containers extension if needed, clone the source code into a container volume, and spin up a dev container for use.
+## フィードバック
 
-* For Codespaces, install the [GitHub Codespaces](https://marketplace.visualstudio.com/items?itemName=GitHub.codespaces) extension in VS Code, and use the **Codespaces: Create New Codespace** command.
+* [Issue を立てる](https://github.com/MocA-Love/para-code/issues)
+* 本家 VS Code 自体の不具合・要望は [microsoft/vscode](https://github.com/microsoft/vscode/issues) 側へ
 
-Docker / the Codespace should have at least **4 cores and 6 GB of RAM (8 GB recommended)** to run a full build. See the [development container README](.devcontainer/README.md) for more information.
+## 本家 VS Code との関係
 
-## Code of Conduct
+Para Code は `microsoft/vscode` を upstream として fetch し続けている fork です。エディタのコア機能（言語サポート、デバッグ、拡張機能 API など）は本家の開発にそのまま追従し、Para Code 独自の機能はなるべく新規ファイル・薄いフックポイントだけで完結させる方針で実装しています。本家の関連プロジェクト一覧は [Related Projects](https://github.com/microsoft/vscode/wiki/Related-Projects) を参照してください。
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information, see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+## 同梱拡張機能
 
-## License
+[extensions](extensions) フォルダには、多言語対応の文法・スニペットなどを提供する組み込み拡張機能が含まれます（本家由来）。加えて Para Code では、Open VSX に未公開のいくつかのサードパーティ拡張機能を VSIX として同梱し、起動時に自動インストールする仕組みを備えています。拡張機能の取得元は Open VSX Registry です。
 
-Copyright (c) Microsoft Corporation. All rights reserved.
+## 開発コンテナ
 
-Licensed under the [MIT](LICENSE.txt) license.
+このリポジトリには Visual Studio Code Dev Containers / GitHub Codespaces 用の開発コンテナ設定が含まれています。
+
+* Dev Containers を使う場合は、Docker と VS Code（または Para Code）をインストールしたうえで **Dev Containers: Clone Repository in Container Volume...** コマンドを実行してください。
+* Codespaces を使う場合は、GitHub Codespaces 拡張機能をインストールし、**Codespaces: Create New Codespace** コマンドを実行してください。
+
+フルビルドには最低でも **4 コア・6 GB の RAM（推奨 8 GB）** が必要です。詳細は [development container README](.devcontainer/README.md) を参照してください。
+
+## 行動規範
+
+このプロジェクトに参加するすべての人は、互いに敬意を持って接してください。攻撃的な言動やハラスメントは認められません。問題があれば Issue で報告してください。
+
+## ライセンス
+
+Copyright (c) 2015 - present Microsoft Corporation.
+Para Code による追加・変更部分も含め、[MIT](LICENSE.txt) ライセンスの下で公開されています。
