@@ -12,11 +12,12 @@ import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
-import { IParadisPortListSnapshot } from '../../common/paradisPortList.js';
+import { IParadisPortEntry, IParadisPortListSnapshot } from '../../common/paradisPortList.js';
 import { ParadisPortListPanel } from '../../electron-browser/paradisPortListPanel.js';
 
 interface IPanelFixture {
 	readonly root: HTMLElement;
+	readonly killedEntries: readonly IParadisPortEntry[];
 	setViewport(viewportWidth: number, anchorRight: number): void;
 	dispose(): void;
 }
@@ -28,6 +29,7 @@ function createPanelFixture(): IPanelFixture {
 	const anchor = document.createElement('button');
 	root.appendChild(anchor);
 	let anchorRight = 300;
+	const killedEntries: IParadisPortEntry[] = [];
 	anchor.getBoundingClientRect = () => new DOMRect(anchorRight - 20, 10, 20, 20);
 	const panel = new ParadisPortListPanel(
 		anchor,
@@ -36,7 +38,7 @@ function createPanelFixture(): IPanelFixture {
 			viaRemote: false,
 			onManualRefresh() { },
 			onClose() { },
-			onKill() { },
+			onKill(entry) { killedEntries.push(entry); },
 			onKillAll() { },
 		},
 		upcastPartial<ILayoutService>({ activeContainer: root }),
@@ -45,6 +47,7 @@ function createPanelFixture(): IPanelFixture {
 
 	return {
 		root,
+		killedEntries,
 		setViewport(viewportWidth: number, nextAnchorRight: number): void {
 			Object.defineProperty(window, 'innerWidth', { configurable: true, value: viewportWidth });
 			anchorRight = nextAnchorRight;
@@ -57,15 +60,17 @@ function createPanelFixture(): IPanelFixture {
 	};
 }
 
+const longRiskyEntry: IParadisPortEntry = {
+	port: 65535,
+	proto: 'TCP',
+	pid: 4321,
+	processName: 'a-very-long-process-name-that-must-not-push-the-kill-button-outside-the-panel',
+	address: '0.0.0.0:65535',
+	risky: true,
+};
+
 const longRiskySnapshot: IParadisPortListSnapshot = {
-	entries: [{
-		port: 65535,
-		proto: 'TCP',
-		pid: 4321,
-		processName: 'a-very-long-process-name-that-must-not-push-the-kill-button-outside-the-panel',
-		address: '0.0.0.0:65535',
-		risky: true,
-	}],
+	entries: [longRiskyEntry],
 	collectedAt: 0,
 };
 
@@ -81,52 +86,116 @@ function loadPanelStylesheet(): Promise<HTMLLinkElement> {
 	return loaded.then(() => stylesheet);
 }
 
-function compactMediaRule(stylesheet: HTMLLinkElement): CSSMediaRule | undefined {
+function mediaRule(stylesheet: HTMLLinkElement, predicate: (rule: CSSMediaRule) => boolean): CSSMediaRule | undefined {
 	for (const rule of Array.from(stylesheet.sheet?.cssRules ?? [])) {
-		if (rule instanceof CSSMediaRule && rule.conditionText.includes('max-width: 455px') && rule.conditionText.includes('pointer: coarse')) {
+		if (rule instanceof CSSMediaRule && predicate(rule)) {
 			return rule;
 		}
 	}
 	return undefined;
 }
 
+function nestedStyleRule(mediaRule: CSSMediaRule, selector: string): CSSStyleRule | undefined {
+	return Array.from(mediaRule.cssRules).find(rule => rule instanceof CSSStyleRule && rule.selectorText === selector) as CSSStyleRule | undefined;
+}
+
+function compactRowMediaRule(stylesheet: HTMLLinkElement): CSSMediaRule | undefined {
+	return mediaRule(stylesheet, rule => rule.conditionText === '(max-width: 455px)' && nestedStyleRule(rule, '.paradis-port-list-panel .ppl-row') !== undefined);
+}
+
+function killTargetMediaRule(stylesheet: HTMLLinkElement): CSSMediaRule | undefined {
+	return mediaRule(stylesheet, rule => rule.conditionText.includes('pointer: coarse') && nestedStyleRule(rule, '.paradis-port-list-panel .ppl-kill-btn') !== undefined);
+}
+
+function rowStructure(window: Window, root: HTMLElement): { readonly gap: string; readonly paddingLeft: string; readonly paddingRight: string; readonly portWidth: string; readonly pidWidth: string; readonly badgeMaxWidth: string; readonly badgeOverflow: string; readonly badgeTextOverflow: string } {
+	const row = root.querySelector<HTMLElement>('.ppl-row')!;
+	const port = root.querySelector<HTMLElement>('.ppl-port')!;
+	const pid = root.querySelector<HTMLElement>('.ppl-pid')!;
+	const badge = root.querySelector<HTMLElement>('.ppl-risk-badge')!;
+	const rowStyle = window.getComputedStyle(row);
+	const portStyle = window.getComputedStyle(port);
+	const pidStyle = window.getComputedStyle(pid);
+	const badgeStyle = window.getComputedStyle(badge);
+	return {
+		gap: rowStyle.gap,
+		paddingLeft: rowStyle.paddingLeft,
+		paddingRight: rowStyle.paddingRight,
+		portWidth: portStyle.width,
+		pidWidth: pidStyle.width,
+		badgeMaxWidth: badgeStyle.maxWidth,
+		badgeOverflow: badgeStyle.overflow,
+		badgeTextOverflow: badgeStyle.textOverflow,
+	};
+}
+
 suite('Paradis port list panel', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('keeps its border box and compact row controls inside the viewport after resize', async () => {
+	test('keeps wide coarse-pointer rows at the wide layout dimensions', async () => {
+		const stylesheet = await loadPanelStylesheet();
+		const window = dom.getActiveWindow();
+		const originalInnerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+		Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 });
+		const fixture = createPanelFixture();
+		try {
+			const wideFineStructure = rowStructure(window, fixture.root);
+			const compactRule = compactRowMediaRule(stylesheet);
+			const targetRule = killTargetMediaRule(stylesheet);
+			assert.ok(compactRule);
+			assert.ok(targetRule);
+			targetRule.media.mediaText = 'all';
+			assert.deepStrictEqual(rowStructure(window, fixture.root), wideFineStructure);
+		} finally {
+			if (originalInnerWidth) {
+				Object.defineProperty(window, 'innerWidth', originalInnerWidth);
+			} else {
+				delete (window as { innerWidth?: number }).innerWidth;
+			}
+			fixture.dispose();
+			stylesheet.remove();
+		}
+	});
+
+	test('keeps compact risky rows interactive and fully contained', async () => {
 		const stylesheet = await loadPanelStylesheet();
 		const window = dom.getActiveWindow();
 		const originalInnerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
 		Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 });
 		const fixture = createPanelFixture();
 		try {
-			let panelElement = fixture.root.querySelector<HTMLElement>('.paradis-port-list-panel')!;
-			let panelRect = panelElement.getBoundingClientRect();
-			assert.deepStrictEqual({ left: panelRect.left, width: panelRect.width, right: panelRect.right }, { left: 8, width: 304, right: 312 });
+			const compactRule = compactRowMediaRule(stylesheet);
+			const targetRule = killTargetMediaRule(stylesheet);
+			assert.ok(compactRule);
+			assert.ok(targetRule);
+			compactRule.media.mediaText = 'all';
+			targetRule.media.mediaText = 'all';
 
-			fixture.setViewport(390, 370);
-			panelElement = fixture.root.querySelector<HTMLElement>('.paradis-port-list-panel')!;
-			panelRect = panelElement.getBoundingClientRect();
-			assert.deepStrictEqual({ left: panelRect.left, width: panelRect.width, right: panelRect.right }, { left: 8, width: 374, right: 382 });
-
+			const panel = fixture.root.querySelector<HTMLElement>('.paradis-port-list-panel')!;
 			const processElement = fixture.root.querySelector<HTMLElement>('.ppl-proc')!;
 			const killButton = fixture.root.querySelector<HTMLButtonElement>('.ppl-kill-btn')!;
+			const panelRect = panel.getBoundingClientRect();
 			const killRect = killButton.getBoundingClientRect();
+			assert.deepStrictEqual({ left: panelRect.left, width: panelRect.width, right: panelRect.right }, { left: 8, width: 304, right: 312 });
+			assert.ok(killRect.width >= 44 && killRect.height >= 44);
 			assert.ok(killRect.left >= panelRect.left && killRect.right <= panelRect.right);
-			assert.deepStrictEqual({ minWidth: window.getComputedStyle(processElement).minWidth, flexShrink: window.getComputedStyle(killButton).flexShrink }, { minWidth: '0px', flexShrink: '0' });
+			assert.ok(processElement.scrollWidth > processElement.clientWidth);
+			assert.deepStrictEqual({ textOverflow: window.getComputedStyle(processElement).textOverflow, minWidth: window.getComputedStyle(processElement).minWidth, flexShrink: window.getComputedStyle(killButton).flexShrink }, { textOverflow: 'ellipsis', minWidth: '0px', flexShrink: '0' });
+			assert.deepStrictEqual(rowStructure(window, fixture.root), {
+				gap: '6px',
+				paddingLeft: '10px',
+				paddingRight: '10px',
+				portWidth: '46px',
+				pidWidth: '48px',
+				badgeMaxWidth: '64px',
+				badgeOverflow: 'hidden',
+				badgeTextOverflow: 'ellipsis',
+			});
 			assert.strictEqual(killButton.getAttribute('aria-label'), 'PID 4321 を終了');
 			assert.strictEqual(killButton.tabIndex, 0);
 			killButton.focus();
 			assert.strictEqual(document.activeElement, killButton);
-
-			const compactRule = compactMediaRule(stylesheet);
-			assert.ok(compactRule);
-			const compactKillRule = Array.from(compactRule.cssRules).find(rule => rule instanceof CSSStyleRule && rule.selectorText === '.paradis-port-list-panel .ppl-kill-btn') as CSSStyleRule | undefined;
-			assert.deepStrictEqual({ width: compactKillRule?.style.width, height: compactKillRule?.style.height }, { width: '44px', height: '44px' });
-			compactRule.media.mediaText = 'all';
-			const compactKillRect = killButton.getBoundingClientRect();
-			assert.ok(compactKillRect.width >= 44 && compactKillRect.height >= 44);
-			assert.ok(compactKillRect.left >= panelRect.left && compactKillRect.right <= panelRect.right);
+			killButton.click();
+			assert.deepStrictEqual(fixture.killedEntries, [longRiskyEntry]);
 		} finally {
 			if (originalInnerWidth) {
 				Object.defineProperty(window, 'innerWidth', originalInnerWidth);
