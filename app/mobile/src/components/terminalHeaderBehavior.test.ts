@@ -11,6 +11,7 @@ import {
 	terminalNativeHeaderLayout,
 } from './terminalHeaderBehavior.js';
 import { TerminalCompactMenu, TerminalFallbackBand } from './terminalPicker.js';
+import { TerminalBodyLayout } from './terminalBodyLayout.js';
 
 vi.mock('react-native', () => ({
 	Platform: { OS: 'ios' },
@@ -126,6 +127,80 @@ describe('terminal header behavior', () => {
 		expect(chips).toHaveLength(2);
 		act(() => chips[1]!.props.onPress());
 		expect(selected).toEqual(['terminal-2']);
+		act(() => renderer!.unmount());
+	});
+
+	test('keeps fallback taps active with the keyboard while exposing stateful 44pt terminal controls', () => {
+		let renderer: ReactTestRenderer | undefined;
+		act(() => {
+			renderer = create(createElement(TerminalFallbackBand, {
+				entries: [
+					{ terminalKey: 'terminal-1', title: 'First', index: 1, waiting: false, working: true },
+					{ terminalKey: 'terminal-2', title: 'Second', index: 2, waiting: true, working: false },
+				],
+				activeKey: 'terminal-1',
+				onSelect: () => {},
+			}));
+		});
+		const scrollView = renderer!.root.findByType('ScrollView' as unknown as ElementType);
+		const chips = renderer!.root.findAllByType('Pressable' as unknown as ElementType);
+		expect({
+			keyboardShouldPersistTaps: scrollView.props.keyboardShouldPersistTaps,
+			chips: chips.map(chip => ({
+				accessibilityLabel: chip.props.accessibilityLabel,
+				minHeight: chip.props.style.minHeight,
+				minWidth: chip.props.style.minWidth,
+			})),
+		}).toEqual({
+			keyboardShouldPersistTaps: 'always',
+			chips: [
+				{ accessibilityLabel: 'ターミナル 1: First、実行中', minHeight: 44, minWidth: 44 },
+				{ accessibilityLabel: 'ターミナル 2: Second、応答待ち', minHeight: 44, minWidth: 44 },
+			],
+		});
+		act(() => renderer!.unmount());
+	});
+
+	test('keeps fallback before output and input beside the terminal body for a non-native menu', () => {
+		let renderer: ReactTestRenderer | undefined;
+		act(() => {
+			renderer = create(createElement(TerminalBodyLayout, {
+				headerHeight: 52,
+				nativeMenuAvailable: false,
+				terminalCount: 2,
+				fallback: createElement('FallbackContent'),
+				onOutputLayout: () => {},
+				output: createElement('OutputContent'),
+				input: createElement('InputContent'),
+			}));
+		});
+		const layout = renderer!.root.findByProps({ testID: 'terminal-layout' });
+		const body = renderer!.root.findByProps({ testID: 'terminal-body' });
+		expect({
+			layoutChildren: layout.children.map(child => typeof child === 'string' ? child : child.props.testID),
+			bodyChildren: body.children.map(child => typeof child === 'string' ? child : child.props.testID),
+		}).toEqual({
+			layoutChildren: ['terminal-body', 'terminal-input-bar'],
+			bodyChildren: ['terminal-fallback-band', 'terminal-output-slot'],
+		});
+		act(() => renderer!.unmount());
+	});
+
+	test('omits the fallback from the terminal body when a native menu is available', () => {
+		let renderer: ReactTestRenderer | undefined;
+		act(() => {
+			renderer = create(createElement(TerminalBodyLayout, {
+				headerHeight: 52,
+				nativeMenuAvailable: true,
+				terminalCount: 2,
+				fallback: createElement('FallbackContent'),
+				onOutputLayout: () => {},
+				output: createElement('OutputContent'),
+				input: createElement('InputContent'),
+			}));
+		});
+		const body = renderer!.root.findByProps({ testID: 'terminal-body' });
+		expect(body.children.map(child => typeof child === 'string' ? child : child.props.testID)).toEqual(['terminal-output-slot']);
 		act(() => renderer!.unmount());
 	});
 });

@@ -165,14 +165,16 @@ export function TerminalFallbackBand({ entries, activeKey, onSelect }: {
 	onSelect: (terminalKey: string) => void;
 }) {
 	return (
-		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.fallbackTabContent}>
+		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.fallbackTabContent} keyboardShouldPersistTaps="always">
 			{entries.map(entry => {
 				const active = entry.terminalKey === activeKey;
+				const state = entry.waiting ? '応答待ち' : entry.working ? '実行中' : '待機中';
 				const body = (
 					<Pressable
 						style={styles.fallbackTabHit}
 						onPress={() => { hapticSelection(); onSelect(entry.terminalKey); }}
 						accessibilityRole="button"
+						accessibilityLabel={`ターミナル ${entry.index}: ${entry.title}、${state}`}
 						accessibilityState={{ selected: active }}
 					>
 						{entry.waiting
@@ -208,9 +210,9 @@ const styles = StyleSheet.create({
 	// 上限で止める。長い端末名でバーの右側が押し出されると、左の島が削られる。
 	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
 	fallbackTabContent: { gap: 7, alignItems: 'center' },
-	fallbackTabChip: { height: 32, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
+	fallbackTabChip: { height: 44, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
 	fallbackTabChipActive: { backgroundColor: 'rgba(9,175,217,0.30)', borderWidth: 1, borderColor: 'rgba(9,175,217,0.5)' },
-	fallbackTabHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
+	fallbackTabHit: { flex: 1, minWidth: 44, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
 	fallbackTabText: { color: colors.text, fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	fallbackTabTextActive: { color: '#bfeeff', fontWeight: '700' },
 	fallbackDotWaiting: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },

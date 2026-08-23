@@ -7,11 +7,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { TerminalBodyLayout } from '../../src/components/terminalBodyLayout.js';
 import { TermView } from '../../src/components/termView.js';
 import { useWsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
 import { TerminalCompactMenu, TerminalFallbackBand, TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
-import { terminalFallbackPlacement, terminalNativeHeaderLayout } from '../../src/components/terminalHeaderBehavior.js';
+import { terminalNativeHeaderLayout } from '../../src/components/terminalHeaderBehavior.js';
 import { PresetSheet } from '../../src/components/presetSheet.js';
 import { useKeyboardCoverage, useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useSizeClass } from '../../src/hooks/useSizeClass.js';
@@ -185,10 +186,9 @@ export default function TerminalScreen() {
 		}, ...operationalActions];
 	}, [activeKey, createHere, nativeHeaderLayout.kind, otherWaiting, pickerEntries, setSelectedTerminalKey]);
 
-	const fallbackPlacement = terminalFallbackPlacement(terminalPickerIsNative, terminals.length);
-	const chipBand = useMemo(() => (fallbackPlacement === 'body' ? (
+	const chipBand = useMemo(() => (
 		<TerminalFallbackBand entries={pickerEntries} activeKey={activeKey} onSelect={setSelectedTerminalKey} />
-	) : undefined), [activeKey, fallbackPlacement, pickerEntries, setSelectedTerminalKey]);
+	), [activeKey, pickerEntries, setSelectedTerminalKey]);
 
 	const send = (data: string) => {
 		if (activeKey !== undefined) {
@@ -261,34 +261,12 @@ export default function TerminalScreen() {
 		    非フォーカス中に0へ倒す面倒（NativeTabsの画面凍結中に keyboardWillHide を取り逃すと
 			下パディングが張り付く）は、あのフック自身が `useIsFocused` で見ている。 */}
 		<View style={[styles.screen, { paddingBottom: keyboardCover }]}>
-			<View style={[styles.terminalBody, { paddingTop: headerHeight }]}>
-				{chipBand === undefined ? null : (
-					<View style={styles.fallbackBand}>{chipBand}</View>
-				)}
-			{/* ヘッダーは浮かぶ島。タブチップ列がその下に潜らないよう、実測した高さぶん上を空ける。
-			    この画面だけドロワーの全域スワイプを巻かないのは、チップ列が横スクロールで
-			    指の動きの向きが同じになり、どちらが取るか状況で変わるため（左端24ptのエッジ
-			    スワイプは WsDrawerLayout 側で従来どおり効く）。 */}
-			{/* キーボードを開いても**ターミナルの高さは変えない**。縮めると行数が変わり、
-			    PTYのリサイズ → SIGWINCH → TUIの全画面再描画が開閉のたびに2往復する。
-			    枠だけを縮めて中身を下端で揃え、はみ出した上側を切って「上へずれた」ように
-			    見せる（下端のプロンプトは常に見えるので実用上これで足りる）。
-
- 			    高さは「キーボードが閉じているとき」の枠の高さを採る。広がる向きの変化は
- 			    常に採るのは、初回マウント時に既にキーボードが出ていた場合（他画面から戻る等）に
- 			    0 のまま固定されるのを避けるため。回転や Split View の幅変更でも測り直される。
- 			    キーボードを出したまま回すと、旧い実装では閉じるまで旧い高さのまま上へはみ出した
- 			    ——**幅の変化は回転・Split View 変更の確実な合図**なので（キーボード出し入れでは
- 			    幅は変わらない）、幅が動いたときだけは表示中でも採り直して即座に追従させる。 */}
-			<View
-				style={styles.outputSlot}
-				onLayout={event => {
-					// **このタブを見ている間だけ採る。** 高さの基準（ヘッダー）はアプリ全体で
-					// 共有しているので、裏に回っている間に別画面のヘッダー高さでこの箱が動く。
-					// 裏の値を拾うと、戻ったときに上端がはみ出したまま固まる。
-					// ただし**一度も測れていないときは採る**——タブは非フォーカスで先に
-					// マウントされることがあり、遷移元とヘッダー高さが同じだと再レイアウトが
-					// 起きないので、0 のまま固まって初回のキーボードで縮んだ高さを拾ってしまう。
+			<TerminalBodyLayout
+				headerHeight={headerHeight}
+				nativeMenuAvailable={terminalPickerIsNative}
+				terminalCount={terminals.length}
+				fallback={chipBand}
+				onOutputLayout={event => {
 					if (!isFocused && outputHeight > 0) {
 						return;
 					}
@@ -300,7 +278,18 @@ export default function TerminalScreen() {
 						setOutputHeight(next);
 					}
 				}}
-			>
+				output={(
+					/* キーボードを開いても**ターミナルの高さは変えない**。縮めると行数が変わり、
+			    PTYのリサイズ → SIGWINCH → TUIの全画面再描画が開閉のたびに2往復する。
+			    枠だけを縮めて中身を下端で揃え、はみ出した上側を切って「上へずれた」ように
+			    見せる（下端のプロンプトは常に見えるので実用上これで足りる）。
+
+ 			    高さは「キーボードが閉じているとき」の枠の高さを採る。広がる向きの変化は
+ 			    常に採るのは、初回マウント時に既にキーボードが出ていた場合（他画面から戻る等）に
+ 			    0 のまま固定されるのを避けるため。回転や Split View の幅変更でも測り直される。
+ 			    キーボードを出したまま回すと、旧い実装では閉じるまで旧い高さのまま上へはみ出した
+			    ——**幅の変化は回転・Split View 変更の確実な合図**なので（キーボード出し入れでは
+			    幅は変わらない）、幅が動いたときだけは表示中でも採り直して即座に追従させる。 */
 				<View style={[styles.output, outputHeight > 0 ? { height: outputHeight } : { flex: 1 }]}>
 					{activeKey !== undefined ? (
 						// fontSize は「このタブを見ている間だけ」渡す。渡さない間 TermView は実測を
@@ -322,9 +311,9 @@ export default function TerminalScreen() {
 						<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
 					)}
 				</View>
-			</View>
-			</View>
-			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : tabBarSpacer }]}>
+				)}
+				input={(
+					<View style={{ paddingBottom: keyboardVisible ? 8 : tabBarSpacer }}>
 				<GlassComposer
 					value={input}
 					onChangeText={setInput}
@@ -334,7 +323,9 @@ export default function TerminalScreen() {
 					monospace
 					tools={terminalKeyTools}
 				/>
-			</View>
+					</View>
+				)}
+			/>
 			<PresetSheet visible={presetsOpen} ws={ws?.id} wsLabel={ws?.name ?? 'このスペース'} onClose={() => setPresetsOpen(false)} />
 		</View>
 		</ConnectionGate>
@@ -343,15 +334,12 @@ export default function TerminalScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	terminalBody: { flex: 1, minHeight: 0 },
-	fallbackBand: { flexShrink: 0, paddingHorizontal: 12, paddingVertical: 6 },
 	operationWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(245,158,11,.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,.35)' },
 	operationWarningText: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 16 },
 	// キーボードで縮む「枠」。中の箱は高さを保ったまま下端で揃え、はみ出す上側をここで切る。
 	// **左右の余白と枠は持たない。** エージェント詳細の会話が地色に直接流れているのと同じ
 	// 言語に揃える（枠があると同じアプリの同じ役割の画面に見えない）。
 	// 注意: この余白を変えると箱の高さが変わり、PCへ申告するPTYの行数まで変わる。
-	outputSlot: { flex: 1, minHeight: 0, overflow: 'hidden', justifyContent: 'flex-end' },
 	output: { backgroundColor: '#1e1e1e', overflow: 'hidden' },
 	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
 	keyRowScroll: { flex: 1, minWidth: 0 },
@@ -360,5 +348,4 @@ const styles = StyleSheet.create({
 	keyPressed: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	keyText: { color: colors.text, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	keyDanger: { color: colors.red },
-	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
 });
