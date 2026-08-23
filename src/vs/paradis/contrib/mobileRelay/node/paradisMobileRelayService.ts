@@ -1844,7 +1844,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.finishTerminalOperation(mobileId, operationId, 'stale-epoch');
 			return;
 		}
-		if (typeof message.t !== 'string' || !['attach', 'detach', 'ack', 'input', 'create', 'rename', 'close', 'ackStatus'].includes(message.t)) {
+		if (typeof message.t !== 'string' || !['attach', 'detach', 'ack', 'input', 'viewport', 'scroll', 'create', 'rename', 'close', 'ackStatus'].includes(message.t)) {
 			this.finishTerminalOperation(mobileId, operationId, 'terminal-not-found');
 			return;
 		}
