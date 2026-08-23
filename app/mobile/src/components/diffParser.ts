@@ -19,15 +19,25 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 	const rows: DiffRow[] = [];
 	let oldNo = 0;
 	let newNo = 0;
+	let inHunk = false;
 	for (const line of diff.split('\n')) {
+		if (line.startsWith('diff ')) {
+			inHunk = false;
+			oldNo = 0;
+			newNo = 0;
+			continue;
+		}
 		if (line.startsWith('@@')) {
 			const m = line.match(/^@@ -(?<oldStart>\d+)(?:,\d+)? \+(?<newStart>\d+)(?:,\d+)? @@(?<rest>.*)$/);
 			if (m?.groups) {
 				oldNo = parseInt(m.groups.oldStart ?? '1', 10);
 				newNo = parseInt(m.groups.newStart ?? '1', 10);
+				inHunk = true;
 				rows.push({ kind: 'hunk', text: line });
 			}
-		} else if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') || line.startsWith('rename ') || line.startsWith('Binary files') || line.startsWith('\\')) {
+			continue;
+		}
+		if (!inHunk && (line.startsWith('+++') || line.startsWith('---') || line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') || line.startsWith('rename ') || line.startsWith('Binary files') || line.startsWith('\\'))) {
 			// ファイルメタ情報はビューアのヘッダで代替する（Binary等は文脈行として出さない）
 			if (line.startsWith('Binary files')) {
 				rows.push({ kind: 'hunk', text: line });

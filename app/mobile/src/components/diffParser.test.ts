@@ -49,4 +49,47 @@ describe('parseUnifiedDiff', () => {
 		expect(rows.filter(row => row.kind === 'hunk').length).toBe(1);
 		expect(rows.every(row => row.kind !== 'ctx')).toBe(true);
 	});
+
+	test('ハンク内の+++／---始まりをファイルヘッダーではなく内容行として保持する', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/markers.txt b/markers.txt',
+			'--- a/markers.txt',
+			'+++ b/markers.txt',
+			'@@ -4,2 +4,2 @@',
+			'---old-marker',
+			'+++new-marker',
+			' context',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -4,2 +4,2 @@' },
+			{ kind: 'del', oldNo: 4, text: '--old-marker' },
+			{ kind: 'add', newNo: 4, text: '++new-marker' },
+			{ kind: 'ctx', oldNo: 5, newNo: 5, text: 'context' },
+		]);
+	});
+
+	test('次のdiff --git境界でハンク状態と行番号をresetする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/one.txt b/one.txt',
+			'--- a/one.txt',
+			'+++ b/one.txt',
+			'@@ -8 +8 @@',
+			'-old-one',
+			'+new-one',
+			'diff --git a/two.txt b/two.txt',
+			'--- a/two.txt',
+			'+++ b/two.txt',
+			'@@ -1 +1 @@',
+			'-old-two',
+			'+new-two',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -8 +8 @@' },
+			{ kind: 'del', oldNo: 8, text: 'old-one' },
+			{ kind: 'add', newNo: 8, text: 'new-one' },
+			{ kind: 'hunk', text: '@@ -1 +1 @@' },
+			{ kind: 'del', oldNo: 1, text: 'old-two' },
+			{ kind: 'add', newNo: 1, text: 'new-two' },
+		]);
+	});
 });
