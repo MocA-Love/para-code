@@ -10,9 +10,11 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TermView } from '../../src/components/termView.js';
 import { useWsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
-import { TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
+import { TerminalCompactMenu, TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
+import { terminalNativeHeaderLayout } from '../../src/components/terminalHeaderBehavior.js';
 import { PresetSheet } from '../../src/components/presetSheet.js';
 import { useKeyboardCoverage, useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
+import { useSizeClass } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
@@ -54,6 +56,8 @@ export default function TerminalScreen() {
 	// index/files/scm と同じ規範値を使う（regular=12 はタブバーがサイドバー側にあるため）。
 	const tabBarSpacer = useTabBarSpacer();
 	const isFocused = useIsFocused();
+	const sizeClass = useSizeClass();
+	const nativeHeaderLayout = terminalNativeHeaderLayout(sizeClass);
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
 	// （全ワークスペースに重複表示しない）。
@@ -125,17 +129,52 @@ export default function TerminalScreen() {
 	// 他のターミナルに応答待ちがあることの合図。畳んだぶん、ここで気づけるようにする
 	// （チップ列は各行の赤ドットを常に見せていた）。
 	const otherWaiting = pickerEntries.some(entry => entry.waiting && entry.terminalKey !== activeKey);
-	// 右のボタン群。**ターミナルの切り替えもここに並べる。**
+	// 右のボタン群。regularではターミナルの切り替えもここに並べる。
 	//
 	// 以前はバーの中央に置いていたが、中央（`titleView`）に使える幅は
 	// `画面幅 − 2 × max(左, 右)` しかない——左の島が172ptあると中央は26ptしか残らず、
 	// 端末名が1文字まで削られた（実機で確認済み）。右のバー項目なら幅の制限が無く、
 	// OSがガラスの器を付けて左の島と揃うし、メニューも右下から自然に開く。
-	const actions = useMemo<ParaHeaderIcon[]>(() => [
-		...(terminalPickerIsNative ? [{
+	const actions = useMemo<ParaHeaderIcon[]>(() => {
+		const operationalActions: ParaHeaderIcon[] = [
+			{
+				key: 'presets',
+				icon: 'flash-outline',
+				label: 'コマンドプリセット',
+				size: 19,
+				onPress: () => { hapticSelection(); setPresetsOpen(true); },
+			},
+			{
+				key: 'new-terminal',
+				icon: 'add',
+				label: '新しいターミナル',
+				size: 21,
+				onPress: createHere,
+			},
+		];
+		if (!terminalPickerIsNative) {
+			return operationalActions;
+		}
+		if (nativeHeaderLayout.kind === 'compact-menu') {
+			return [{
+				key: 'terminal-menu',
+				label: 'ターミナル操作',
+				badge: otherWaiting ? 'red' : undefined,
+				node: (
+					<TerminalCompactMenu
+						entries={pickerEntries}
+						activeKey={activeKey}
+						onSelect={setSelectedTerminalKey}
+						onOpenPresets={() => setPresetsOpen(true)}
+						onCreate={createHere}
+					/>
+				),
+			}];
+		}
+		return [{
 			key: 'picker',
 			label: 'ターミナルを切り替える',
-			badge: otherWaiting ? ('red' as const) : undefined,
+			badge: otherWaiting ? 'red' : undefined,
 			node: (
 				<TerminalPicker
 					entries={pickerEntries}
@@ -144,22 +183,8 @@ export default function TerminalScreen() {
 					onCreate={createHere}
 				/>
 			),
-		}] : []),
-		{
-			key: 'presets',
-			icon: 'flash-outline',
-			label: 'コマンドプリセット',
-			size: 19,
-			onPress: () => { hapticSelection(); setPresetsOpen(true); },
-		},
-		{
-			key: 'new-terminal',
-			icon: 'add',
-			label: '新しいターミナル',
-			size: 21,
-			onPress: createHere,
-		},
-	], [createHere, pickerEntries, activeKey, setSelectedTerminalKey, otherWaiting]);
+		}, ...operationalActions];
+	}, [activeKey, createHere, nativeHeaderLayout.kind, otherWaiting, pickerEntries, setSelectedTerminalKey]);
 
 	// フォールバックのタブ列。ネイティブの標準メニューが無いビルド（Android・このモジュールを
 	// 含まない旧バイナリ）でだけ帯に出す。
