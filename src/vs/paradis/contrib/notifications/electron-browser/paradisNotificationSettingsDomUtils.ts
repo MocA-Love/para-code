@@ -9,12 +9,12 @@
 // 通知設定ダイアログの各セクションは `settingsService.onDidChange` を購読して自身のコンテナを
 // dom.clearNode() で丸ごと再構築する。この再構築中に直前までフォーカスされていた要素
 // （チェックボックス・セレクト等）がDOMから外れると、ブラウザがフォーカスを document.body へ
-// 戻す副作用で祖先のスクロール可能要素（.pns-body）が先頭までスクロールされてしまう。
+// 戻す副作用で祖先のスクロール可能要素（.pns-content）が先頭までスクロールされてしまう。
 // 再描画の前後で該当スクロール位置を保存・復元することで、この意図しないジャンプを防ぐ。
 
-/** `container` の祖先から最初に見つかったスクロール可能要素（.pns-bodyを想定）を返す。 */
+/** `container` の祖先から最初に見つかったスクロール可能要素（.pns-contentを想定）を返す。 */
 function findScrollHost(container: HTMLElement): HTMLElement | null {
-	return container.closest<HTMLElement>('.pns-body');
+	return container.closest<HTMLElement>('.pns-content');
 }
 
 /**
