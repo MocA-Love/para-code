@@ -20,6 +20,7 @@ import { ILanguageService } from '../../../../../editor/common/languages/languag
 import { tokenizeToString } from '../../../../../editor/common/languages/textToHtmlTokenizer.js';
 import { TokenizationRegistry } from '../../../../../editor/common/languages.js';
 import { generateTokensCSSForColorMap } from '../../../../../editor/common/languages/supports/tokenization.js';
+import { appendMobileChangesToolbar, IMobileChangesToolbarContext } from './mobileChangesToolbar.js';
 
 const $ = DOM.$;
 
@@ -101,6 +102,8 @@ export interface IFileDiffViewData {
  */
 export interface IMobileDiffViewData {
 	readonly diff: IFileDiffViewData;
+	/** Active session resource when opened from the phone Changes command. */
+	readonly sessionResource?: URI;
 	readonly siblings?: readonly IFileDiffViewData[];
 	readonly index?: number;
 }
@@ -151,6 +154,7 @@ export class MobileDiffView extends Disposable {
 		data: IMobileDiffViewData,
 		private readonly textFileService: ITextFileService,
 		private readonly languageService: ILanguageService,
+		private readonly changesToolbarContext?: IMobileChangesToolbarContext,
 	) {
 		super();
 
@@ -207,6 +211,9 @@ export class MobileDiffView extends Disposable {
 		this.viewStore.add(DOM.addDisposableListener(this.nextBtn, TouchEventType.Tap, onNext));
 
 		nav.style.display = this.siblings.length > 1 ? '' : 'none';
+		if (this.changesToolbarContext) {
+			appendMobileChangesToolbar(header, this.changesToolbarContext, this.viewStore);
+		}
 
 		// -- Body -------------------------------------------------
 		const body = DOM.append(overlay, $('div.mobile-overlay-body'));
@@ -834,6 +841,7 @@ export function openMobileDiffView(
 	data: IMobileDiffViewData,
 	textFileService: ITextFileService,
 	languageService: ILanguageService,
+	changesToolbarContext?: IMobileChangesToolbarContext,
 ): MobileDiffView {
-	return new MobileDiffView(workbenchContainer, data, textFileService, languageService);
+	return new MobileDiffView(workbenchContainer, data, textFileService, languageService, changesToolbarContext);
 }

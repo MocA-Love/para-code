@@ -16,8 +16,6 @@ import { localize } from '../../../../../nls.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { comparePaths } from '../../../../../base/common/comparers.js';
 import { basename, dirname } from '../../../../../base/common/resources.js';
-import { MenuWorkbenchToolBar } from '../../../../../platform/actions/browser/toolbar.js';
-import { MenuId } from '../../../../../platform/actions/common/actions.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ISessionsService } from '../../../../services/sessions/browser/sessionsService.js';
 import { ISessionFileChange } from '../../../../services/sessions/common/session.js';
@@ -142,7 +140,7 @@ export class MobileChangesView extends Disposable {
 	constructor(
 		workbenchContainer: HTMLElement,
 		private readonly onOpen: MobileChangesOpenHandler,
-		@IInstantiationService instantiationService: IInstantiationService,
+		@IInstantiationService _instantiationService: IInstantiationService,
 		@ISessionsService private readonly sessionsService: ISessionsService,
 	) {
 		super();
@@ -166,20 +164,6 @@ export class MobileChangesView extends Disposable {
 		const info = DOM.append(header, $('div.mobile-overlay-header-info'));
 		DOM.append(info, $('div.mobile-overlay-header-title')).textContent = localize('changesView.title', "Session Changes");
 		this.subtitleEl = DOM.append(info, $('div.mobile-overlay-header-subtitle'));
-		const toolbarContainer = DOM.append(header, $('div.mobile-changes-toolbar'));
-		const sessionResource = this.sessionsService.activeSession.get()?.resource;
-		this.viewStore.add(instantiationService.createInstance(
-			MenuWorkbenchToolBar,
-			toolbarContainer,
-			MenuId.AgentsChangesToolbar,
-			{
-				telemetrySource: 'mobileChanges',
-				menuOptions: sessionResource === undefined
-					? { shouldForwardArgs: true }
-					: { arg: sessionResource },
-				toolbarOptions: { primaryGroup: () => false },
-			},
-		));
 
 		// -- Body -------------------------------------------------
 		const body = DOM.append(overlay, $('div.mobile-overlay-body'));
