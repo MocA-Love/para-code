@@ -983,6 +983,11 @@ const PARADIS_SESSION_SCAN_STUCK_MS = 5 * 60_000;
 const PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS = 5 * 60_000;
 const PARADIS_CODEX_DIRECTORY_WALK_LIMIT = 128;
 
+interface IParadisDirectoryWalkBudget {
+	mayRun(key: string): boolean;
+	mark(key: string): void;
+}
+
 /**
  * 常駐スキャンが「そのターミナルで今動いている」とみなす transcript の更新の新しさ。
  *
@@ -3222,8 +3227,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		private readonly sessionStore?: ParadisAgentSessionStore,
 		/** SSH 接続先の transcript を手元へ写す台帳。無ければ接続先の会話は読まないだけ。 */
 		private readonly remoteTranscriptMirror?: ParadisRemoteTranscriptMirrorStore,
+		codexDirectoryWalkBudget?: IParadisDirectoryWalkBudget,
 	) {
 		super();
+		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		void this.loadPersistedSessions();
@@ -5395,7 +5402,7 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private sessionScanStartedAt: number | undefined;
 	/** 作業ディレクトリごとの、Codex の sessions/ を最後に総なめした時刻と走査予算。 */
-	private readonly codexDirectoryWalkLedger = new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
+	private readonly codexDirectoryWalkLedger: IParadisDirectoryWalkBudget;
 
 	/**
 	 * コマンド検知に頼らず、作業ディレクトリだけを頼りにセッションを見つける。
