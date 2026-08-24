@@ -309,9 +309,9 @@ export class OfficeWorkerHost {
 
 	private workerStopped(job: PendingJob<object>): void {
 		if (job.state === 'finished') { return; }
+		if (job.pendingOutcome) { this.finish(job, job.pendingOutcome); return; }
 		if (job.token.isCancellationRequested) { this.reap(job, { outcome: 'cancelled' }); return; }
 		if (this.expired(job.operationDeadline)) { this.reap(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
-		if (job.pendingOutcome) { this.finish(job, job.pendingOutcome); return; }
 		if (job.terminal === 'cancelled' || job.state === 'cancelling') { this.finish(job, { outcome: 'cancelled' }); }
 		else if (job.terminal === 'blocked') { this.finish(job, { outcome: 'blocked', error: 'limitExceeded' }); }
 		else {
@@ -329,7 +329,10 @@ export class OfficeWorkerHost {
 		try {
 			job.reapTimer = this.setTimer(() => this.finish(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
 			const termination = job.worker.terminate();
-			void termination.catch(() => this.finish(job, outcome));
+			void Promise.resolve(termination).then(
+				() => this.finish(job, outcome),
+				() => this.finish(job, outcome),
+			);
 		} catch {
 			this.finish(job, outcome);
 		}
