@@ -6,7 +6,7 @@
 
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeRenderableAsset } from './paradisOfficeProtocol.js';
-import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
+import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlAttribute, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml } from './office/paradisOfficeCanonicalXml.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
@@ -293,7 +293,6 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 		}
 		const policy = analyzeOpcPackage(values, input.nodeId, input.token, input.checkpoint);
 		for (const placeholderValue of policy.placeholders) { placeholders.push(placeholderValue); }
-		const initiallyAnchored = placeholders.length;
 		for (const [name, replacement] of policy.rewrittenXml) { values.set(name, replacement); }
 		for (const name of policy.removedParts) { values.delete(name); }
 		for (const name of policy.svgParts) {
@@ -306,10 +305,6 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 			const raw = values.get(name); if (!raw) { continue; }
 			const processed = placeholderMedia(input.nodeId, name, fingerprint(raw, input.token, input.checkpoint));
 			values.set(name, processed.bytes); assets.push(processed.asset); placeholders.push(processed.placeholder);
-		}
-		if (placeholders.length > initiallyAnchored) {
-			const mainName = [...values.keys()].find(name => /^word\/document\.xml$/i.test(name));
-			if (mainName) { const main = parsePackageXml(values.get(mainName)!); appendVisibleWordPlaceholders(main.root, placeholders.slice(initiallyAnchored)); values.set(mainName, new TextEncoder().encode(serializeOfficeXml(main.root))); }
 		}
 		if (assets.length + placeholders.length > 256) { throw new ParadisOfficePackageError('limitExceeded'); }
 		const entries = metadata.filter(entry => values.has(entry.name)).map(entry => ({ name: entry.name, bytes: values.get(entry.name)!, directory: entry.directory }));
@@ -353,72 +348,95 @@ function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, nodeId: stri
 	const contentType = (name: string): string => overrides.get(name) ?? defaults.get(name.slice(name.lastIndexOf('.') + 1).toLowerCase()) ?? '';
 	const removedParts = new Set<string>(); const svgParts = new Set<string>(); const imageParts = new Set<string>();
 	const rewrittenXml = new Map<string, Uint8Array>(); const placeholders: ParadisOfficePlaceholder[] = [];
-	const storyDocuments = new Map<string, { readonly root: OfficeXmlElement }>();
+	const storyDocuments = new Map<string, OfficeStoryDocument>();
 	const storyReplacements = new Map<string, { readonly id: string; readonly placeholder: ParadisOfficePlaceholder }[]>();
-	const safeTargetReferences = new Map<string, number>();
+	const safeTargetReferences = new Map<string, Set<string | undefined>>();
 	for (const [name, bytes] of values) {
 		checkpoint?.(); throwIfParadisOfficeCancelled(token);
 		if (!name.endsWith('.rels')) { continue; }
-		const document = parsePackageXml(bytes);
-		if (document.root.uri !== RELATIONSHIPS_NAMESPACE || document.root.local !== 'Relationships') { throw new ParadisOfficePackageError('malformed'); }
+		const relationshipDocument = parsePackageXml(bytes);
+		if (relationshipDocument.root.uri !== RELATIONSHIPS_NAMESPACE || relationshipDocument.root.local !== 'Relationships') { throw new ParadisOfficePackageError('malformed'); }
+		const sourcePart = relationshipSourcePart(name);
+		const sourceStory = sourcePart ? loadOfficeStory(values, storyDocuments, sourcePart, contentType(sourcePart)) : undefined;
 		const kept: ParadisOfficeXmlNode[] = [];
 		const relationshipIds = new Set<string>();
-		const sourcePart = relationshipSourcePart(name);
-		for (const child of document.root.children) {
+		for (const child of relationshipDocument.root.children) {
 			if (child.kind !== 'element' || child.uri !== RELATIONSHIPS_NAMESPACE || child.local !== 'Relationship') { kept.push(child); continue; }
 			const id = xmlAttribute(child, 'Id') ?? ''; const type = xmlAttribute(child, 'Type') ?? ''; const target = xmlAttribute(child, 'Target') ?? '';
-			if (!id || relationshipIds.has(id) || !isKnownRelationshipType(type)) { throw new ParadisOfficePackageError('malformed'); }
+			if (!id || relationshipIds.has(id)) { throw new ParadisOfficePackageError('malformed'); }
 			relationshipIds.add(id);
-			const external = (xmlAttribute(child, 'TargetMode') ?? '').toLowerCase() === 'external';
+			const relationshipKind = OFFICE_RELATIONSHIP_KINDS.get(type);
+			if (!relationshipKind && !isOfficeRelationshipFamily(type)) { throw new ParadisOfficePackageError('malformed'); }
+			const targetMode = xmlAttribute(child, 'TargetMode');
+			if (targetMode !== undefined && targetMode !== 'Internal' && targetMode !== 'External') { throw new ParadisOfficePackageError('malformed'); }
+			const external = targetMode === 'External';
 			const resolved = external ? undefined : resolveRelationshipTarget(name, target);
 			if (!external && (!resolved || !values.has(resolved))) { throw new ParadisOfficePackageError('malformed'); }
-			const unsafe = external || isUnsafeRelationshipType(type);
+			const consumers = sourceStory?.consumers.filter(consumer => consumer.id === id) ?? [];
+			const targetType = resolved ? contentType(resolved) : '';
+			const compatible = relationshipKind !== undefined
+				&& relationshipSourceIsCompatible(relationshipKind, sourceStory?.kind, sourcePart)
+				&& relationshipTargetIsCompatible(relationshipKind, targetType, external)
+				&& relationshipConsumersAreCompatible(relationshipKind, consumers, sourceStory !== undefined);
+			const unsafe = external || relationshipKind === undefined || UNSAFE_RELATIONSHIP_KINDS.has(relationshipKind) || !compatible;
 			if (unsafe) {
-				const placeholderValue = packagePlaceholder(nodeId, `${name}:${id}`, external ? 'externalRelationship' : relationshipFeature(type), fingerprint(new TextEncoder().encode(`${type}|${target}`), token, checkpoint).value);
-				if (resolved && values.has(resolved)) { removedParts.add(resolved); }
+				const feature = external ? 'externalRelationship' : relationshipKind === undefined ? 'unknownRelationship' : !compatible ? 'mismatchedRelationship' : relationshipFeatureKind(relationshipKind);
+				const placeholderValue = packagePlaceholder(nodeId, `${name}:${id}`, feature, fingerprint(new TextEncoder().encode(`${type}|${target}`), token, checkpoint).value);
+				if (resolved) { removedParts.add(resolved); }
 				placeholders.push(placeholderValue);
-				if (sourcePart) { const list = storyReplacements.get(sourcePart) ?? []; list.push({ id, placeholder: placeholderValue }); storyReplacements.set(sourcePart, list); }
+				if (sourceStory) { const list = storyReplacements.get(sourcePart!) ?? []; list.push({ id, placeholder: placeholderValue }); storyReplacements.set(sourcePart!, list); }
 				continue;
 			}
 			const internalTarget = resolved!;
-			const targetType = contentType(internalTarget);
-			if (!isKnownContentType(targetType)) {
-				const placeholderValue = packagePlaceholder(nodeId, internalTarget, 'unknownContent', fingerprint(values.get(internalTarget)!, token, checkpoint).value);
-				removedParts.add(internalTarget); placeholders.push(placeholderValue);
-				if (sourcePart) { const list = storyReplacements.get(sourcePart) ?? []; list.push({ id, placeholder: placeholderValue }); storyReplacements.set(sourcePart, list); }
-				continue;
+			if (relationshipKind === 'image') {
+				imageParts.add(internalTarget);
+				if (isSvgContentType(targetType)) { svgParts.add(internalTarget); }
 			}
-			if (isImageRelationshipType(type)) {
-				if (!sourcePart || !storyHasRelationship(values, storyDocuments, sourcePart, id)) { throw new ParadisOfficePackageError('malformed'); }
-				if (isSvgContentType(targetType)) { svgParts.add(internalTarget); } imageParts.add(internalTarget);
-			}
-			else if (isUnsafeContentType(targetType)) { removedParts.add(internalTarget); placeholders.push(packagePlaceholder(nodeId, internalTarget, contentFeature(targetType), fingerprint(values.get(internalTarget) ?? new Uint8Array(), token, checkpoint).value)); continue; }
-			safeTargetReferences.set(internalTarget, (safeTargetReferences.get(internalTarget) ?? 0) + 1);
+			const references = safeTargetReferences.get(internalTarget) ?? new Set<string | undefined>(); references.add(sourcePart); safeTargetReferences.set(internalTarget, references);
 			kept.push(child);
 		}
-		(document.root.children as ParadisOfficeXmlNode[]).splice(0, document.root.children.length, ...kept);
-		rewrittenXml.set(name, new TextEncoder().encode(serializeOfficeXml(document.root)));
+		if (sourceStory) {
+			for (const consumer of sourceStory.consumers) {
+				if (relationshipIds.has(consumer.id)) { continue; }
+				const placeholderValue = packagePlaceholder(nodeId, `${sourcePart}:${consumer.id}`, 'missingRelationship', fingerprint(new TextEncoder().encode(consumer.id), token, checkpoint).value);
+				placeholders.push(placeholderValue);
+				const list = storyReplacements.get(sourcePart!) ?? []; list.push({ id: consumer.id, placeholder: placeholderValue }); storyReplacements.set(sourcePart!, list);
+			}
+		}
+		(relationshipDocument.root.children as ParadisOfficeXmlNode[]).splice(0, relationshipDocument.root.children.length, ...kept);
+		rewrittenXml.set(name, new TextEncoder().encode(serializeOfficeXml(relationshipDocument.root)));
 	}
 	for (const [name, bytes] of values) {
+		if (name === '[Content_Types].xml' || name.endsWith('.rels')) { continue; }
 		const type = contentType(name);
-		if (isSvgContentType(type)) { svgParts.add(name); imageParts.add(name); }
-		else if (type && !isKnownContentType(type) && !removedParts.has(name)) { removedParts.add(name); placeholders.push(packagePlaceholder(nodeId, name, 'unknownContent', fingerprint(bytes, token, checkpoint).value)); }
-		else if (isUnsafeContentType(type) && !removedParts.has(name)) { removedParts.add(name); placeholders.push(packagePlaceholder(nodeId, name, contentFeature(type), fingerprint(bytes, token, checkpoint).value)); }
+		const referenced = safeTargetReferences.has(name);
+		if (isUnsafeContentType(type) && !removedParts.has(name)) {
+			removedParts.add(name); placeholders.push(packagePlaceholder(nodeId, name, contentFeature(type), fingerprint(bytes, token, checkpoint).value));
+		} else if (isBinaryPackagePart(name, type) && !referenced && !removedParts.has(name)) {
+			removedParts.add(name);
+			if (type && !KNOWN_IMAGE_CONTENT_TYPES.has(type)) { placeholders.push(packagePlaceholder(nodeId, name, 'unknownContent', fingerprint(bytes, token, checkpoint).value)); }
+		}
 	}
-	for (const [target, count] of safeTargetReferences) { if (count > 0) { removedParts.delete(target); } }
+	let graphChanged = true;
+	while (graphChanged) {
+		graphChanged = false;
+		for (const [target, sources] of safeTargetReferences) {
+			const live = [...sources].some(source => source === undefined || !removedParts.has(source));
+			if (live && removedParts.has(target) && !isUnsafeContentType(contentType(target))) { removedParts.delete(target); graphChanged = true; }
+			else if (!live && !removedParts.has(target)) { removedParts.add(target); graphChanged = true; }
+		}
+	}
+	for (const part of [...removedParts]) {
+		const relationshipPart = relationshipPartForSource(part);
+		if (values.has(relationshipPart)) { removedParts.add(relationshipPart); }
+	}
 	for (const part of removedParts) { svgParts.delete(part); imageParts.delete(part); }
 	rewriteContentTypes(contentDocument.root, removedParts, new Set([...imageParts].filter(name => !svgParts.has(name))));
 	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
-	if (placeholders.length > 0) {
-		const mainName = [...values.keys()].find(name => /^(?:word\/document|word\/header\d*|word\/footer\d*)\.xml$/i.test(name));
-		if (mainName) {
-			const main = parsePackageXml(values.get(mainName)!); appendVisibleWordPlaceholders(main.root, placeholders);
-			rewrittenXml.set(mainName, new TextEncoder().encode(serializeOfficeXml(main.root)));
-		}
-	}
 	for (const [storyName, replacements] of storyReplacements) {
-		const story = storyDocuments.get(storyName) ?? parsePackageXml(values.get(storyName)!);
-		replaceStoryRelationshipConsumers(story.root, replacements);
+		const story = storyDocuments.get(storyName) ?? loadOfficeStory(values, storyDocuments, storyName, contentType(storyName));
+		if (!story) { continue; }
+		replaceStoryRelationshipConsumers(story, replacements);
 		rewrittenXml.set(storyName, new TextEncoder().encode(serializeOfficeXml(story.root)));
 	}
 	if (placeholders.length > 256) { throw new ParadisOfficePackageError('limitExceeded'); }
@@ -455,59 +473,278 @@ function relationshipSourcePart(relsName: string): string | undefined {
 	const match = /^(.*\/)?_rels\/([^/]+)\.rels$/.exec(relsName); return match ? `${match[1] ?? ''}${match[2]}` : undefined;
 }
 
-const KNOWN_RELATIONSHIP_SUFFIXES = new Set(['officeDocument', 'image', 'styles', 'stylesWithEffects', 'theme', 'settings', 'webSettings', 'numbering', 'fontTable', 'header', 'footer', 'footnotes', 'endnotes', 'comments', 'commentsExtended', 'core-properties', 'extended-properties', 'custom-properties', 'hyperlink', 'aFChunk', 'font', 'oleObject', 'package', 'control', 'activeX', 'vbaProject', 'attachedTemplate']);
-function isKnownRelationshipType(type: string): boolean { const suffix = type.slice(type.lastIndexOf('/') + 1); return /^https?:\/\/(?:schemas\.openxmlformats\.org|purl\.oclc\.org|schemas\.microsoft\.com)\//.test(type) && KNOWN_RELATIONSHIP_SUFFIXES.has(suffix); }
-function isKnownContentType(type: string): boolean { return !!type && (type === 'application/xml' || /\+xml$/i.test(type) || /^image\/(?:png|jpeg|gif|webp|svg\+xml)$/i.test(type) || isUnsafeContentType(type)); }
+type OfficeRelationshipKind = 'officeDocument' | 'image' | 'styles' | 'stylesWithEffects' | 'theme' | 'settings' | 'webSettings' | 'numbering' | 'fontTable' | 'header' | 'footer' | 'footnotes' | 'endnotes' | 'comments' | 'commentsExtended' | 'coreProperties' | 'extendedProperties' | 'customProperties' | 'hyperlink' | 'altChunk' | 'font' | 'oleObject' | 'package' | 'control' | 'activeX' | 'vbaProject' | 'attachedTemplate';
+type OfficeStoryKind = 'document' | 'header' | 'footer' | 'footnotes' | 'endnotes' | 'comments';
+type OfficeConsumerKind = 'image' | 'headerReference' | 'footerReference' | 'hyperlink' | 'altChunk' | 'font' | 'oleObject' | 'control' | 'attachedTemplate' | 'unknown';
+type OfficeAnchorKind = 'run' | 'preservedRun' | 'block' | 'fallback';
 
-function storyHasRelationship(values: ReadonlyMap<string, Uint8Array>, cache: Map<string, { readonly root: OfficeXmlElement }>, sourcePart: string, id: string): boolean {
-	const bytes = values.get(sourcePart); if (!bytes) { return false; }
-	const document = cache.get(sourcePart) ?? parsePackageXml(bytes); cache.set(sourcePart, document);
-	return hasRelationshipAttribute(document.root, id);
+interface OfficeStoryConsumer {
+	readonly id: string;
+	readonly kind: OfficeConsumerKind;
+	readonly element: OfficeXmlElement;
+	readonly elementParent?: OfficeXmlElement;
+	readonly anchor: OfficeXmlElement;
+	readonly anchorParent?: OfficeXmlElement;
+	readonly anchorKind: OfficeAnchorKind;
 }
 
-function hasRelationshipAttribute(node: OfficeXmlElement, id: string): boolean {
-	if (node.attributes.some(attribute => RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) && (attribute.local === 'id' || attribute.local === 'embed' || attribute.local === 'link') && attribute.value === id)) { return true; }
-	return node.children.some(child => child.kind === 'element' && hasRelationshipAttribute(child, id));
+interface OfficeStoryDocument {
+	readonly root: OfficeXmlElement;
+	readonly kind: OfficeStoryKind;
+	readonly consumers: readonly OfficeStoryConsumer[];
 }
 
-const RELATIONSHIP_ATTRIBUTE_NAMESPACES = new Set(['http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'http://purl.oclc.org/ooxml/officeDocument/relationships']);
+const TRANSITIONAL_RELATIONSHIP_BASE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
+const STRICT_RELATIONSHIP_BASE = 'http://purl.oclc.org/ooxml/officeDocument/relationships/';
+const WORD_NAMESPACES = new Set([WORD_NAMESPACE, 'http://purl.oclc.org/ooxml/wordprocessingml/main']);
+const DRAWING_NAMESPACES = new Set(['http://schemas.openxmlformats.org/drawingml/2006/main', 'http://purl.oclc.org/ooxml/drawingml/main']);
+const VML_NAMESPACE = 'urn:schemas-microsoft-com:vml';
+const OFFICE_VML_NAMESPACE = 'urn:schemas-microsoft-com:office:office';
+const RELATIONSHIP_ATTRIBUTE_NAMESPACES = new Set([TRANSITIONAL_RELATIONSHIP_BASE.slice(0, -1), STRICT_RELATIONSHIP_BASE.slice(0, -1)]);
 
-function replaceStoryRelationshipConsumers(root: OfficeXmlElement, replacements: readonly { readonly id: string; readonly placeholder: ParadisOfficePlaceholder }[]): void {
-	const byId = new Map(replacements.map(value => [value.id, value.placeholder]));
-	const visit = (element: OfficeXmlElement): void => {
-		const children = element.children as ParadisOfficeXmlNode[];
-		for (let index = 0; index < children.length; index++) {
-			const child = children[index]; if (child.kind !== 'element') { continue; }
-			const relationship = child.attributes.find(attribute => RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) && (attribute.local === 'id' || attribute.local === 'embed' || attribute.local === 'link'));
-			const placeholderValue = relationship ? byId.get(relationship.value) : undefined;
-			if (placeholderValue) {
-				children[index] = wordPlaceholderRun(placeholderValue); byId.delete(relationship!.value);
-			} else { visit(child); }
+const OFFICE_RELATIONSHIP_KINDS = new Map<string, OfficeRelationshipKind>();
+for (const [local, kind] of [
+	['officeDocument', 'officeDocument'], ['image', 'image'], ['styles', 'styles'], ['stylesWithEffects', 'stylesWithEffects'], ['theme', 'theme'],
+	['settings', 'settings'], ['webSettings', 'webSettings'], ['numbering', 'numbering'], ['fontTable', 'fontTable'], ['header', 'header'],
+	['footer', 'footer'], ['footnotes', 'footnotes'], ['endnotes', 'endnotes'], ['comments', 'comments'], ['commentsExtended', 'commentsExtended'],
+	['extended-properties', 'extendedProperties'], ['custom-properties', 'customProperties'], ['hyperlink', 'hyperlink'], ['aFChunk', 'altChunk'],
+	['font', 'font'], ['oleObject', 'oleObject'], ['package', 'package'], ['control', 'control'], ['activeX', 'activeX'],
+	['vbaProject', 'vbaProject'], ['attachedTemplate', 'attachedTemplate'],
+] as const) {
+	OFFICE_RELATIONSHIP_KINDS.set(`${TRANSITIONAL_RELATIONSHIP_BASE}${local}`, kind);
+	OFFICE_RELATIONSHIP_KINDS.set(`${STRICT_RELATIONSHIP_BASE}${local}`, kind);
+}
+OFFICE_RELATIONSHIP_KINDS.set('http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties', 'coreProperties');
+OFFICE_RELATIONSHIP_KINDS.set('http://purl.oclc.org/ooxml/package/relationships/metadata/core-properties', 'coreProperties');
+OFFICE_RELATIONSHIP_KINDS.set('http://schemas.microsoft.com/office/2011/relationships/commentsExtended', 'commentsExtended');
+OFFICE_RELATIONSHIP_KINDS.set('http://schemas.microsoft.com/office/2006/relationships/vbaProject', 'vbaProject');
+OFFICE_RELATIONSHIP_KINDS.set('http://schemas.microsoft.com/office/2006/relationships/activeXControl', 'activeX');
+OFFICE_RELATIONSHIP_KINDS.set('http://schemas.microsoft.com/office/2006/relationships/activeXControlBinary', 'activeX');
+
+const UNSAFE_RELATIONSHIP_KINDS = new Set<OfficeRelationshipKind>(['hyperlink', 'altChunk', 'font', 'oleObject', 'package', 'control', 'activeX', 'vbaProject', 'attachedTemplate']);
+const KNOWN_IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/tiff', 'image/x-emf', 'image/x-wmf', 'image/emf', 'image/wmf']);
+const RELATIONSHIP_TARGET_CONTENT_TYPES: Readonly<Partial<Record<OfficeRelationshipKind, ReadonlySet<string>>>> = {
+	officeDocument: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml', 'application/vnd.ms-word.document.macroEnabled.main+xml', 'application/vnd.ms-word.template.macroEnabledTemplate.main+xml']),
+	image: KNOWN_IMAGE_CONTENT_TYPES,
+	styles: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml']),
+	stylesWithEffects: new Set(['application/vnd.ms-word.stylesWithEffects+xml']),
+	theme: new Set(['application/vnd.openxmlformats-officedocument.theme+xml']),
+	settings: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml']),
+	webSettings: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.webSettings+xml']),
+	numbering: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml']),
+	fontTable: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml']),
+	header: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml']),
+	footer: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml']),
+	footnotes: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml']),
+	endnotes: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml']),
+	comments: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml']),
+	commentsExtended: new Set(['application/vnd.ms-word.commentsExtended+xml']),
+	coreProperties: new Set(['application/vnd.openxmlformats-package.core-properties+xml']),
+	extendedProperties: new Set(['application/vnd.openxmlformats-officedocument.extended-properties+xml']),
+	customProperties: new Set(['application/vnd.openxmlformats-officedocument.custom-properties+xml']),
+	altChunk: new Set(['text/html', 'application/xhtml+xml', 'message/rfc822']),
+	font: new Set(['application/x-font-ttf', 'application/vnd.openxmlformats-officedocument.obfuscatedFont', 'font/ttf', 'font/otf']),
+	oleObject: new Set(['application/vnd.openxmlformats-officedocument.oleObject']),
+	package: new Set(['application/vnd.openxmlformats-officedocument.oleObject', 'application/octet-stream']),
+	control: new Set(['application/vnd.ms-office.activeX+xml']),
+	activeX: new Set(['application/vnd.ms-office.activeX', 'application/vnd.ms-office.activeX+xml']),
+	vbaProject: new Set(['application/vnd.ms-office.vbaProject']),
+};
+
+const RELATIONSHIP_CONSUMER_KINDS: Readonly<Partial<Record<OfficeRelationshipKind, OfficeConsumerKind>>> = {
+	image: 'image', header: 'headerReference', footer: 'footerReference', hyperlink: 'hyperlink', altChunk: 'altChunk', font: 'font',
+	oleObject: 'oleObject', package: 'oleObject', control: 'control', activeX: 'control', attachedTemplate: 'attachedTemplate',
+};
+
+function isOfficeRelationshipFamily(type: string): boolean {
+	return type.startsWith(TRANSITIONAL_RELATIONSHIP_BASE) || type.startsWith(STRICT_RELATIONSHIP_BASE) || type.startsWith('http://schemas.microsoft.com/office/');
+}
+
+function relationshipSourceIsCompatible(kind: OfficeRelationshipKind, storyKind: OfficeStoryKind | undefined, sourcePart: string | undefined): boolean {
+	if (kind === 'officeDocument' || kind === 'coreProperties' || kind === 'extendedProperties' || kind === 'customProperties') { return sourcePart === undefined; }
+	if (kind === 'header' || kind === 'footer' || kind === 'footnotes' || kind === 'endnotes' || kind === 'comments' || kind === 'commentsExtended'
+		|| kind === 'styles' || kind === 'stylesWithEffects' || kind === 'settings' || kind === 'webSettings' || kind === 'numbering' || kind === 'fontTable' || kind === 'theme' || kind === 'vbaProject' || kind === 'attachedTemplate') {
+		return storyKind === 'document';
+	}
+	return storyKind !== undefined;
+}
+
+function relationshipTargetIsCompatible(kind: OfficeRelationshipKind, targetType: string, external: boolean): boolean {
+	if (kind === 'hyperlink' || kind === 'attachedTemplate') { return external; }
+	if (external) { return false; }
+	return RELATIONSHIP_TARGET_CONTENT_TYPES[kind]?.has(targetType) ?? false;
+}
+
+function relationshipConsumersAreCompatible(kind: OfficeRelationshipKind, consumers: readonly OfficeStoryConsumer[], hasStory: boolean): boolean {
+	const expected = RELATIONSHIP_CONSUMER_KINDS[kind];
+	if (!expected) { return consumers.length === 0; }
+	if (!hasStory || consumers.length === 0) { return UNSAFE_RELATIONSHIP_KINDS.has(kind); }
+	return consumers.every(consumer => consumer.kind === expected);
+}
+
+function relationshipFeatureKind(kind: OfficeRelationshipKind): string {
+	return kind === 'altChunk' ? 'altChunk' : kind === 'font' ? 'embeddedFont' : kind === 'vbaProject' ? 'macro'
+		: kind === 'oleObject' || kind === 'package' || kind === 'control' || kind === 'activeX' ? 'embeddedObject' : 'unsafeRelationship';
+}
+
+function loadOfficeStory(values: ReadonlyMap<string, Uint8Array>, cache: Map<string, OfficeStoryDocument>, sourcePart: string, type: string): OfficeStoryDocument | undefined {
+	const cached = cache.get(sourcePart); if (cached) { return cached; }
+	const kind = officeStoryKind(type); if (!kind) { return undefined; }
+	const bytes = values.get(sourcePart); if (!bytes) { return undefined; }
+	const document = parsePackageXml(bytes);
+	const expectedRoot = kind === 'document' ? 'document' : kind === 'header' ? 'hdr' : kind === 'footer' ? 'ftr' : kind;
+	if (!WORD_NAMESPACES.has(document.root.uri) || document.root.local !== expectedRoot) { throw new ParadisOfficePackageError('malformed'); }
+	const story = { root: document.root, kind, consumers: collectOfficeStoryConsumers(document.root) };
+	cache.set(sourcePart, story);
+	return story;
+}
+
+function officeStoryKind(type: string): OfficeStoryKind | undefined {
+	if (/wordprocessingml\.(?:document|template)\.main\+xml$|word\.document\.macroEnabled\.main\+xml$|word\.template\.macroEnabledTemplate\.main\+xml$/.test(type)) { return 'document'; }
+	for (const kind of ['header', 'footer', 'footnotes', 'endnotes', 'comments'] as const) {
+		if (type === `application/vnd.openxmlformats-officedocument.wordprocessingml.${kind}+xml`) { return kind; }
+	}
+	return undefined;
+}
+
+function collectOfficeStoryConsumers(root: OfficeXmlElement): readonly OfficeStoryConsumer[] {
+	const consumers: OfficeStoryConsumer[] = [];
+	const visit = (element: OfficeXmlElement, parent: OfficeXmlElement | undefined, ancestors: readonly { readonly element: OfficeXmlElement; readonly parent?: OfficeXmlElement }[]): void => {
+		const attributes = element.attributes.filter(attribute => RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) && (attribute.local === 'id' || attribute.local === 'embed' || attribute.local === 'link'));
+		for (const attribute of attributes) {
+			const kind = officeConsumerKind(element, attribute.local, parent, ancestors);
+			const anchor = officeConsumerAnchor(element, parent, ancestors, kind);
+			consumers.push({ id: attribute.value, kind, element, ...(parent ? { elementParent: parent } : {}), ...anchor });
 		}
+		const nextAncestors = [...ancestors, { element, ...(parent ? { parent } : {}) }];
+		for (const child of element.children) { if (child.kind === 'element') { visit(child, element, nextAncestors); } }
 	};
-	visit(root);
-	for (const placeholderValue of byId.values()) { appendStoryPlaceholder(root, placeholderValue); }
+	visit(root, undefined, []);
+	return consumers;
 }
 
-function wordPlaceholderRun(value: ParadisOfficePlaceholder): OfficeXmlElement {
-	return { kind: 'element', uri: WORD_NAMESPACE, local: 'r', attributes: [], children: [{ kind: 'element', uri: WORD_NAMESPACE, local: 't', attributes: [], children: [{ kind: 'text', value: `Office asset unavailable: ${value.feature} ${value.fingerprint?.slice(0, 12) ?? ''}` }] }] };
+function officeConsumerKind(element: OfficeXmlElement, attributeLocal: string, parent: OfficeXmlElement | undefined, ancestors: readonly { readonly element: OfficeXmlElement }[]): OfficeConsumerKind {
+	if (DRAWING_NAMESPACES.has(element.uri) && element.local === 'blip' && (attributeLocal === 'embed' || attributeLocal === 'link') && hasWordAncestor(ancestors, 'drawing')) { return 'image'; }
+	if (element.uri === VML_NAMESPACE && element.local === 'imagedata' && attributeLocal === 'id' && (hasWordAncestor(ancestors, 'pict') || hasWordAncestor(ancestors, 'object'))) { return 'image'; }
+	if (WORD_NAMESPACES.has(element.uri)) {
+		if (element.local === 'headerReference' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'sectPr') { return 'headerReference'; }
+		if (element.local === 'footerReference' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'sectPr') { return 'footerReference'; }
+		if (element.local === 'hyperlink' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'p') { return 'hyperlink'; }
+		if (element.local === 'altChunk' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'body') { return 'altChunk'; }
+		if (/^embed(?:Regular|Bold|Italic|BoldItalic)$/.test(element.local)) { return 'font'; }
+		if (element.local === 'control') { return 'control'; }
+		if (element.local === 'attachedTemplate') { return 'attachedTemplate'; }
+	}
+	if (element.uri === OFFICE_VML_NAMESPACE && element.local === 'OLEObject' && hasWordAncestor(ancestors, 'object')) { return 'oleObject'; }
+	return 'unknown';
 }
 
-function appendStoryPlaceholder(root: OfficeXmlElement, value: ParadisOfficePlaceholder): void {
-	const container = findOfficeElement(root, WORD_NAMESPACE, 'body') ?? root;
-	const paragraph: OfficeXmlElement = { kind: 'element', uri: WORD_NAMESPACE, local: 'p', attributes: [], children: [wordPlaceholderRun(value)] };
-	const children = container.children as ParadisOfficeXmlNode[]; const section = children.findIndex(child => child.kind === 'element' && child.uri === WORD_NAMESPACE && child.local === 'sectPr');
-	children.splice(section < 0 ? children.length : section, 0, paragraph);
+function hasWordAncestor(ancestors: readonly { readonly element: OfficeXmlElement }[], local: string): boolean {
+	return ancestors.some(ancestor => WORD_NAMESPACES.has(ancestor.element.uri) && ancestor.element.local === local);
 }
 
-function isImageRelationshipType(type: string): boolean { return /\/image$/i.test(type); }
-function isUnsafeRelationshipType(type: string): boolean { return /\/(?:aFChunk|font|oleObject|package|control|activeX|vbaProject|hyperlink|attachedTemplate)$/i.test(type); }
-function relationshipFeature(type: string): string {
-	const value = type.slice(type.lastIndexOf('/') + 1);
-	return /afchunk/i.test(value) ? 'altChunk' : /font/i.test(value) ? 'embeddedFont' : /ole|activex|control|package/i.test(value) ? 'embeddedObject' : /vba/i.test(value) ? 'macro' : 'unsafeRelationship';
+function officeConsumerAnchor(element: OfficeXmlElement, parent: OfficeXmlElement | undefined, ancestors: readonly { readonly element: OfficeXmlElement; readonly parent?: OfficeXmlElement }[], consumerKind: OfficeConsumerKind): Pick<OfficeStoryConsumer, 'anchor' | 'anchorParent' | 'anchorKind'> {
+	if (WORD_NAMESPACES.has(element.uri) && element.local === 'altChunk' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'body') { return { anchor: element, anchorParent: parent, anchorKind: 'block' }; }
+	if (WORD_NAMESPACES.has(element.uri) && (element.local === 'headerReference' || element.local === 'footerReference')) { return { anchor: element, ...(parent ? { anchorParent: parent } : {}), anchorKind: 'fallback' }; }
+	if (WORD_NAMESPACES.has(element.uri) && element.local === 'hyperlink' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'p') { return { anchor: element, anchorParent: parent, anchorKind: 'run' }; }
+	for (let index = ancestors.length - 1; index >= 0; index--) {
+		const candidate = ancestors[index];
+		if (WORD_NAMESPACES.has(candidate.element.uri) && candidate.element.local === 'r') {
+			const preserveDrawing = consumerKind === 'image' && DRAWING_NAMESPACES.has(element.uri) && element.local === 'blip' && hasWordAncestor(ancestors, 'drawing');
+			return { anchor: candidate.element, ...(candidate.parent ? { anchorParent: candidate.parent } : {}), anchorKind: preserveDrawing ? 'preservedRun' : 'run' };
+		}
+	}
+	for (let index = ancestors.length - 1; index >= 0; index--) {
+		const candidate = ancestors[index];
+		if (WORD_NAMESPACES.has(candidate.element.uri) && candidate.element.local === 'p') { return { anchor: candidate.element, ...(candidate.parent ? { anchorParent: candidate.parent } : {}), anchorKind: 'block' }; }
+	}
+	return { anchor: element, ...(parent ? { anchorParent: parent } : {}), anchorKind: 'fallback' };
 }
+
+function replaceStoryRelationshipConsumers(story: OfficeStoryDocument, replacements: readonly { readonly id: string; readonly placeholder: ParadisOfficePlaceholder }[]): void {
+	const byId = new Map(replacements.map(value => [value.id, value.placeholder]));
+	const applied = new Set<string>();
+	const anchors = new Map<OfficeXmlElement, { readonly parent?: OfficeXmlElement; readonly kind: OfficeAnchorKind; readonly placeholders: ParadisOfficePlaceholder[] }>();
+	for (const consumer of story.consumers) {
+		const placeholderValue = byId.get(consumer.id); if (!placeholderValue) { continue; }
+		applied.add(consumer.id);
+		if (consumer.anchorKind === 'preservedRun' && consumer.elementParent) {
+			const attributes = consumer.element.attributes as ParadisOfficeXmlAttribute[];
+			for (let index = attributes.length - 1; index >= 0; index--) {
+				if (RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attributes[index].uri) && attributes[index].value === consumer.id) { attributes.splice(index, 1); }
+			}
+		}
+		const entry = anchors.get(consumer.anchor) ?? { ...(consumer.anchorParent ? { parent: consumer.anchorParent } : {}), kind: consumer.anchorKind, placeholders: [] };
+		if (!entry.placeholders.includes(placeholderValue)) { entry.placeholders.push(placeholderValue); }
+		anchors.set(consumer.anchor, entry);
+	}
+	const byParent = new Map<OfficeXmlElement, Map<OfficeXmlElement, readonly ParadisOfficeXmlNode[]>>();
+	const fallback: ParadisOfficePlaceholder[] = [];
+	for (const [anchor, entry] of anchors) {
+		if (!entry.parent) { fallback.push(...entry.placeholders); continue; }
+		const replacementsForAnchor = entry.kind === 'run' ? entry.placeholders.map(value => wordPlaceholderRun(value, story.root.uri))
+			: entry.kind === 'preservedRun' ? [anchor, ...entry.placeholders.map(value => wordPlaceholderRun(value, story.root.uri))]
+				: entry.kind === 'block' ? entry.placeholders.map(value => wordPlaceholderParagraph(value, story.root.uri)) : [];
+		if (entry.kind === 'fallback') { fallback.push(...entry.placeholders); }
+		const siblings = byParent.get(entry.parent) ?? new Map(); siblings.set(anchor, replacementsForAnchor); byParent.set(entry.parent, siblings);
+	}
+	for (const [parent, childReplacements] of byParent) {
+		const next: ParadisOfficeXmlNode[] = [];
+		for (const child of parent.children) { const replacement = child.kind === 'element' ? childReplacements.get(child) : undefined; replacement ? next.push(...replacement) : next.push(child); }
+		(parent.children as ParadisOfficeXmlNode[]).splice(0, parent.children.length, ...next);
+	}
+	for (const [id, placeholderValue] of byId) { if (!applied.has(id)) { fallback.push(placeholderValue); } }
+	for (const placeholderValue of fallback) { appendStoryPlaceholder(story, placeholderValue); }
+}
+
+function wordPlaceholderRun(value: ParadisOfficePlaceholder, wordNamespace = WORD_NAMESPACE): OfficeXmlElement {
+	return { kind: 'element', uri: wordNamespace, local: 'r', attributes: [], children: [{ kind: 'element', uri: wordNamespace, local: 't', attributes: [], children: [{ kind: 'text', value: `Office asset unavailable: ${value.feature} ${value.fingerprint?.slice(0, 12) ?? ''}` }] }] };
+}
+
+function wordPlaceholderParagraph(value: ParadisOfficePlaceholder, wordNamespace = WORD_NAMESPACE): OfficeXmlElement {
+	return { kind: 'element', uri: wordNamespace, local: 'p', attributes: [], children: [wordPlaceholderRun(value, wordNamespace)] };
+}
+
+function appendStoryPlaceholder(story: OfficeStoryDocument, value: ParadisOfficePlaceholder): void {
+	let container: OfficeXmlElement | undefined;
+	if (story.kind === 'document') { container = findOfficeElement(story.root, WORD_NAMESPACES, 'body'); }
+	else if (story.kind === 'header' || story.kind === 'footer') { container = story.root; }
+	else if (story.kind === 'footnotes') { container = findStoryItem(story.root, 'footnote'); }
+	else if (story.kind === 'endnotes') { container = findStoryItem(story.root, 'endnote'); }
+	else { container = findStoryItem(story.root, 'comment'); }
+	if (!container) { throw new ParadisOfficePackageError('malformed'); }
+	const children = container.children as ParadisOfficeXmlNode[];
+	const section = story.kind === 'document' ? children.findIndex(child => child.kind === 'element' && WORD_NAMESPACES.has(child.uri) && child.local === 'sectPr') : -1;
+	children.splice(section < 0 ? children.length : section, 0, wordPlaceholderParagraph(value, story.root.uri));
+}
+
+function findStoryItem(root: OfficeXmlElement, local: string): OfficeXmlElement | undefined {
+	for (const child of root.children) {
+		if (child.kind !== 'element' || !WORD_NAMESPACES.has(child.uri) || child.local !== local) { continue; }
+		const id = child.attributes.find(attribute => WORD_NAMESPACES.has(attribute.uri) && attribute.local === 'id')?.value;
+		if (id !== '-1' && id !== '0') { return child; }
+	}
+	return undefined;
+}
+
+function relationshipPartForSource(sourcePart: string): string {
+	const slash = sourcePart.lastIndexOf('/');
+	return `${slash < 0 ? '' : `${sourcePart.slice(0, slash + 1)}`}_rels/${sourcePart.slice(slash + 1)}.rels`;
+}
+
+function isBinaryPackagePart(name: string, type: string): boolean {
+	return KNOWN_IMAGE_CONTENT_TYPES.has(type) || isUnsafeContentType(type) || !(/\+xml$/i.test(type) || type === 'application/xml' || name.endsWith('.xml'));
+}
+
 function isSvgContentType(type: string): boolean { return type.toLowerCase() === 'image/svg+xml'; }
-function isUnsafeContentType(type: string): boolean { return /(?:vbaProject|oleObject|activeX|font|msdownload|executable|javascript|text\/html|message\/rfc822)/i.test(type); }
+function isUnsafeContentType(type: string): boolean {
+	const normalized = type.toLowerCase();
+	return normalized === 'text/html' || normalized === 'application/xhtml+xml' || normalized === 'message/rfc822'
+		|| normalized === 'application/x-font-ttf' || normalized === 'font/ttf' || normalized === 'font/otf'
+		|| normalized === 'application/vnd.openxmlformats-officedocument.obfuscatedfont'
+		|| normalized.includes('vbaproject') || normalized.includes('oleobject') || normalized.includes('activex')
+		|| normalized.includes('msdownload') || normalized.includes('executable') || normalized.includes('javascript');
+}
 function contentFeature(type: string): string { return /font/i.test(type) ? 'embeddedFont' : /vba/i.test(type) ? 'macro' : /ole|activeX/i.test(type) ? 'embeddedObject' : /html|rfc822/i.test(type) ? 'altChunk' : 'unsafeContent'; }
 
 function rewriteContentTypes(root: OfficeXmlElement, removed: ReadonlySet<string>, replacements: ReadonlySet<string>): void {
@@ -520,14 +757,9 @@ function rewriteContentTypes(root: OfficeXmlElement, removed: ReadonlySet<string
 	(root.children as ParadisOfficeXmlNode[]).splice(0, root.children.length, ...children);
 }
 
-function appendVisibleWordPlaceholders(root: OfficeXmlElement, placeholders: readonly ParadisOfficePlaceholder[]): void {
-	if (!findOfficeElement(root, WORD_NAMESPACE, 'body')) { throw new ParadisOfficePackageError('malformed'); }
-	for (const value of placeholders.slice(0, 256)) { appendStoryPlaceholder(root, value); }
-}
-
-function findOfficeElement(root: OfficeXmlElement, uri: string, local: string): OfficeXmlElement | undefined {
-	if (root.uri === uri && root.local === local) { return root; }
-	for (const child of root.children) { if (child.kind === 'element') { const found = findOfficeElement(child, uri, local); if (found) { return found; } } }
+function findOfficeElement(root: OfficeXmlElement, uris: ReadonlySet<string>, local: string): OfficeXmlElement | undefined {
+	if (uris.has(root.uri) && root.local === local) { return root; }
+	for (const child of root.children) { if (child.kind === 'element') { const found = findOfficeElement(child, uris, local); if (found) { return found; } } }
 	return undefined;
 }
 

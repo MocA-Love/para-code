@@ -5,6 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import { deepStrictEqual, ok, strictEqual } from 'assert';
+import { importAMDNodeModule } from '../../../../../amdX.js';
 import { Dimension } from '../../../../../base/browser/dom.js';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
@@ -91,7 +92,7 @@ suite('ParadisDocxFileEditor', () => {
 		const input = storeZip({
 			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/media/unsafe.svg" ContentType="image/svg+xml"/><Override PartName="/word/fonts/font.odttf" ContentType="application/x-font-ttf"/><Override PartName="/word/afchunk/chunk.html" ContentType="text/html"/></Types>',
 			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing r:embed="svg"/></w:r></w:p></w:body></w:document>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing><a:blip r:embed="svg"/></w:drawing></w:r></w:p></w:body></w:document>',
 			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="svg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/unsafe.svg"/><Relationship Id="font" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font.odttf"/><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk/chunk.html"/></Relationships>',
 			'word/media/unsafe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>danger</script></svg>',
 			'word/fonts/font.odttf': 'RAW-FONT',
@@ -108,6 +109,33 @@ suite('ParadisDocxFileEditor', () => {
 		ok(serialized.includes('Office asset unavailable'));
 		strictEqual(result.placeholders.length, 3);
 		ok(reopened.bytes.byteLength > 0);
+	});
+
+	test('renders one visible body altChunk anchor through the actual docx-preview parser and renderer', async () => {
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/afchunk/chunk.html" ContentType="text/html"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p><w:altChunk r:id="chunk"/><w:sectPr/></w:body></w:document>',
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk/chunk.html"/></Relationships>',
+			'word/afchunk/chunk.html': '<p>UNSAFE-HTML</p>',
+		});
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-docx-preview');
+		const docx = await loadActualDocxPreview();
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = sanitized.bytes.buffer.slice(sanitized.bytes.byteOffset, sanitized.bytes.byteOffset + sanitized.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, {
+			ignoreFonts: true,
+			renderAltChunks: false,
+			renderHeaders: true,
+			renderFooters: true,
+			renderFootnotes: true,
+			renderEndnotes: true,
+		});
+
+		strictEqual((body.textContent?.match(/Office asset unavailable:/g) ?? []).length, 1);
+		strictEqual(body.textContent?.includes('UNSAFE-HTML'), false);
 	});
 
 	function createDocxEditorFixture() {
@@ -1164,6 +1192,22 @@ suite('ParadisDocxFileEditor', () => {
 		});
 	});
 });
+
+async function loadActualDocxPreview(): Promise<{ renderAsync(data: ArrayBuffer, body: HTMLElement, styles: HTMLElement, options: Readonly<Record<string, unknown>>): Promise<void> }> {
+	const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
+	const response = await fetch(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/docx-preview.min.js').toString(true));
+	if (!response.ok) { throw new Error(`Unable to load docx-preview: ${response.status}`); }
+	const source = await response.text();
+	const module = { exports: {} as Record<string, unknown> };
+	const evaluate = new Function('exports', 'module', 'require', source) as (exports: Record<string, unknown>, module: { exports: Record<string, unknown> }, require: (id: string) => unknown) => void;
+	evaluate(module.exports, module, id => {
+		if (id !== 'jszip') {
+			throw new Error(`Unexpected docx-preview dependency: ${id}`);
+		}
+		return JSZip;
+	});
+	return module.exports as unknown as { renderAsync(data: ArrayBuffer, body: HTMLElement, styles: HTMLElement, options: Readonly<Record<string, unknown>>): Promise<void> };
+}
 
 function storeZip(files: Readonly<Record<string, string>>): Uint8Array {
 	const encoder = new TextEncoder();
