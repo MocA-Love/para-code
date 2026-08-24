@@ -21,11 +21,14 @@ export const PARADIS_OFFICE_CHANNEL = 'officeDocument/v1';
 export const PARADIS_OFFICE_PROTOCOL_VERSION = 1 as const;
 export const PARADIS_OFFICE_LEGACY_PROTOCOL_VERSION = 0 as const;
 export const PARADIS_OFFICE_OPERATIONS = ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] as const;
+export const PARADIS_OFFICE_WIRE_ENVELOPE = 'paradis-office-wire/v1' as const;
 
 export interface ParadisOfficeV1Negotiation {
 	readonly version: 1;
 	readonly channel: typeof PARADIS_OFFICE_CHANNEL;
 	readonly capabilities: typeof PARADIS_OFFICE_OPERATIONS;
+	readonly ownerCapability?: string;
+	readonly connectionEpoch?: number;
 }
 
 export interface ParadisOfficeV0Negotiation {
@@ -69,6 +72,9 @@ export class ParadisOfficeWireError extends Error {
 
 interface WireSnapshot { readonly value: unknown; readonly bytes: number }
 interface SnapshotState { readonly seen: Set<object>; nodes: number }
+export type ParadisOfficeWireEnvelope = readonly [typeof PARADIS_OFFICE_WIRE_ENVELOPE, header: string, ...buffers: VSBuffer[]];
+export interface ParadisOfficeWireAuthority { readonly ownerCapability: string; readonly connectionEpoch: number }
+export interface ParadisOfficeDecodedWireValue { readonly value: unknown; readonly authority?: ParadisOfficeWireAuthority }
 
 function wireError(code: 'invalid' | 'payloadTooLarge' = 'invalid'): never { throw new ParadisOfficeWireError(code); }
 
@@ -160,6 +166,98 @@ function snapshotWire(value: unknown, maximumBytes: number): WireSnapshot {
 	return second;
 }
 
+interface EncodedBufferReference { readonly $paradisOfficeBuffer: number }
+
+function encodeWireBuffers(value: unknown, buffers: VSBuffer[]): unknown {
+	if (value instanceof VSBuffer) {
+		const index = buffers.length;
+		buffers.push(VSBuffer.wrap(value.buffer.slice()));
+		return { $paradisOfficeBuffer: index } satisfies EncodedBufferReference;
+	}
+	if (Array.isArray(value)) { return value.map(item => encodeWireBuffers(item, buffers)); }
+	if (value && typeof value === 'object') {
+		const result: Record<string, unknown> = {};
+		for (const [key, child] of Object.entries(value)) { Object.defineProperty(result, key, { configurable: true, enumerable: true, writable: true, value: encodeWireBuffers(child, buffers) }); }
+		return result;
+	}
+	return value;
+}
+
+function decodeWireBuffers(value: unknown, buffers: readonly VSBuffer[]): unknown {
+	const used = new Set<number>();
+	let nodes = 0;
+	const decode = (candidate: unknown, depth: number): unknown => {
+		if (++nodes > PARADIS_OFFICE_LIMITS.maxSerializableNodes || depth > PARADIS_OFFICE_LIMITS.maxSerializableDepth) { return wireError(); }
+		if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean' || (typeof candidate === 'number' && Number.isFinite(candidate))) { return candidate; }
+		if (Array.isArray(candidate)) { return candidate.map(child => decode(child, depth + 1)); }
+		if (!candidate || typeof candidate !== 'object' || Object.getPrototypeOf(candidate) !== Object.prototype) { return wireError(); }
+		const entries = Object.entries(candidate);
+		if (entries.length === 1 && entries[0][0] === '$paradisOfficeBuffer') {
+			const index = entries[0][1];
+			if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index >= buffers.length || used.has(index)) { return wireError(); }
+			used.add(index);
+			return VSBuffer.wrap(buffers[index].buffer.slice());
+		}
+		const result: Record<string, unknown> = {};
+		for (const [key, child] of entries) { Object.defineProperty(result, key, { configurable: true, enumerable: true, writable: true, value: decode(child, depth + 1) }); }
+		return result;
+	};
+	const decoded = decode(value, 1);
+	if (used.size !== buffers.length) { return wireError(); }
+	return decoded;
+}
+
+export function isParadisOfficeWireEnvelope(value: unknown): value is ParadisOfficeWireEnvelope {
+	return Array.isArray(value) && value.length >= 2 && value[0] === PARADIS_OFFICE_WIRE_ENVELOPE;
+}
+
+/** Flattens nested VSBuffer values so the generic IPC serializer never JSON-stringifies them. */
+function validateWireAuthority(value: unknown): ParadisOfficeWireAuthority {
+	const authority = record(value, ['ownerCapability', 'connectionEpoch']);
+	if (!/^[a-f\d]{64}$/.test(string(authority.ownerCapability, 64))) { return wireError(); }
+	const connectionEpoch = nonNegativeInteger(authority.connectionEpoch);
+	if (connectionEpoch < 1) { return wireError(); }
+	return { ownerCapability: authority.ownerCapability as string, connectionEpoch };
+}
+
+export function marshalParadisOfficeWireValue(value: unknown, authority?: ParadisOfficeWireAuthority): ParadisOfficeWireEnvelope {
+	const snapshot = snapshotWire(value, PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes);
+	const buffers: VSBuffer[] = [];
+	const payload = encodeWireBuffers(snapshot.value, buffers);
+	const projectedAuthority = authority ? validateWireAuthority(authority) : undefined;
+	const header = JSON.stringify({ version: 1, bufferLengths: buffers.map(buffer => buffer.byteLength), payload, ...(projectedAuthority ? { authority: projectedAuthority } : {}) });
+	return [PARADIS_OFFICE_WIRE_ENVELOPE, header, ...buffers];
+}
+
+/** Restores a flattened IPC value into fresh data. Public unions must be validated after this step. */
+export function decodeParadisOfficeWireValue(value: unknown): ParadisOfficeDecodedWireValue {
+	if (!isParadisOfficeWireEnvelope(value) || Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) { return wireError(); }
+	const headerText = value[1];
+	if (typeof headerText !== 'string' || VSBuffer.fromString(headerText).byteLength > PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes) { return wireError('payloadTooLarge'); }
+	const buffers: VSBuffer[] = [];
+	for (const buffer of value.slice(2)) { if (!(buffer instanceof VSBuffer)) { return wireError(); } buffers.push(buffer); }
+	let header: unknown;
+	try { header = JSON.parse(headerText); } catch { return wireError(); }
+	const record = openRecord(header, ['version', 'bufferLengths', 'payload']);
+	exactKeys(record, ['version', 'bufferLengths', 'payload'], ['authority']);
+	if (record.version !== 1 || !Array.isArray(record.bufferLengths) || record.bufferLengths.length !== buffers.length) { return wireError(); }
+	let totalBytes = VSBuffer.fromString(headerText).byteLength;
+	for (let index = 0; index < buffers.length; index++) {
+		const length = record.bufferLengths[index];
+		if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0 || buffers[index].byteLength !== length) { return wireError(); }
+		totalBytes += length;
+		if (!Number.isSafeInteger(totalBytes) || totalBytes > PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes + PARADIS_OFFICE_LIMITS.maxSerializableNodes * 48) { return wireError('payloadTooLarge'); }
+	}
+	const decoded = decodeWireBuffers(record.payload, buffers);
+	return { value: decoded, ...(record.authority !== undefined ? { authority: validateWireAuthority(record.authority) } : {}) };
+}
+
+export function unmarshalParadisOfficeWireValue(value: unknown): unknown { return decodeParadisOfficeWireValue(value).value; }
+export function marshalParadisOfficeRequest(value: unknown, authority?: ParadisOfficeWireAuthority): ParadisOfficeWireEnvelope { return marshalParadisOfficeWireValue(snapshotParadisOfficeRequest(value), authority); }
+export function unmarshalParadisOfficeRequest(value: unknown): ParadisOfficeRequest { return snapshotParadisOfficeRequest(unmarshalParadisOfficeWireValue(value)); }
+export function marshalParadisOfficeResponse(value: unknown): ParadisOfficeWireEnvelope { return marshalParadisOfficeWireValue(snapshotParadisOfficeResponse(value)); }
+export function unmarshalParadisOfficeResponse(value: unknown): ParadisOfficeResponse { return snapshotParadisOfficeResponse(unmarshalParadisOfficeWireValue(value)); }
+
 function record(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
 	if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof VSBuffer) { return wireError(); }
 	const candidate = value as Record<string, unknown>;
@@ -216,6 +314,10 @@ function optionalString(value: unknown, maximum = 16 * 1024): void {
 	if (value !== undefined) { string(value, maximum); }
 }
 
+function optionalNonEmptyString(value: unknown, maximum: number): void {
+	if (value !== undefined && string(value, maximum).length < 1) { wireError(); }
+}
+
 function validateSource(value: unknown): void {
 	const source = record(value, ['kind', 'displayName'], ['uri', 'revisionHint', 'side']);
 	const kind = oneOf(source.kind, ['file', 'remote', 'gitCommit', 'gitIndex', 'workingTree', 'untitled', 'sideMissing'] as const);
@@ -226,16 +328,25 @@ function validateSource(value: unknown): void {
 	if (kind === 'sideMissing' && source.uri !== undefined) { wireError(); }
 }
 
-function validateHandle(value: unknown): void {
+function validateHandle(value: unknown): 'document' | 'comparison' {
 	const handle = record(value, ['kind', 'id']);
-	oneOf(handle.kind, ['document', 'comparison'] as const);
+	const kind = oneOf(handle.kind, ['document', 'comparison'] as const);
 	if (!/^[a-f\d]{48}$/.test(string(handle.id, 48))) { wireError(); }
+	return kind;
 }
 
 function validateAssetId(value: unknown): string {
 	const assetId = string(value, 256);
 	if (!/^[A-Za-z\d][A-Za-z\d:_-]{0,255}$/.test(assetId) || /(?:^|[:_-])\.\.(?:$|[:_-])|%2f|%5c|file:/i.test(assetId)) { wireError(); }
 	return assetId;
+}
+
+export function validateParadisOfficeAssetRange(offsetValue: unknown, lengthValue: unknown): { readonly offset: number; readonly length: number; readonly end: number } {
+	const offset = nonNegativeInteger(offsetValue);
+	const length = nonNegativeInteger(lengthValue);
+	const end = offset + length;
+	if (length < 1 || length > PARADIS_OFFICE_LIMITS.maxAssetRequestBytes || !Number.isSafeInteger(end)) { return wireError(); }
+	return { offset, length, end };
 }
 
 function validateRange(value: unknown): void {
@@ -261,18 +372,16 @@ function validateRequest(value: unknown): asserts value is ParadisOfficeRequest 
 		case 'compare':
 			exactKeys(base, ['version', 'requestId', 'operation', 'original', 'modified'], ['categories', 'cursor']); validateSource(base.original); validateSource(base.modified);
 			if (base.categories !== undefined) { for (const category of array(base.categories, 7)) { oneOf(category, ['content', 'formatting', 'structure', 'annotation', 'revision', 'object', 'security'] satisfies readonly ParadisOfficeChangeCategory[]); } }
-			optionalString(base.cursor, PARADIS_OFFICE_LIMITS.maxCursorLength); break;
+			optionalNonEmptyString(base.cursor, PARADIS_OFFICE_LIMITS.maxCursorLength); break;
 		case 'search': {
 			exactKeys(base, ['version', 'requestId', 'operation', 'handle', 'query'], ['options', 'cursor']); validateHandle(base.handle); string(base.query);
 			if (base.options !== undefined) { const options = record(base.options, [], ['matchCase']); if (options.matchCase !== undefined) { boolean(options.matchCase); } }
-			optionalString(base.cursor, PARADIS_OFFICE_LIMITS.maxCursorLength); break;
+			optionalNonEmptyString(base.cursor, PARADIS_OFFICE_LIMITS.maxCursorLength); break;
 		}
 		case 'getRenderableAsset': {
 			exactKeys(base, ['version', 'requestId', 'operation', 'handle', 'assetId', 'offset', 'length']); validateHandle(base.handle);
 			validateAssetId(base.assetId);
-			const offset = nonNegativeInteger(base.offset);
-			const length = nonNegativeInteger(base.length);
-			if (length > PARADIS_OFFICE_LIMITS.maxAssetRequestBytes || !Number.isSafeInteger(offset + length)) { wireError(); }
+			validateParadisOfficeAssetRange(base.offset, base.length);
 			break;
 		}
 		case 'getPrintModel': {
@@ -282,7 +391,7 @@ function validateRequest(value: unknown): asserts value is ParadisOfficeRequest 
 		case 'exportPrint':
 			exactKeys(base, ['version', 'requestId', 'operation', 'handle', 'format'], ['pageRange']); validateHandle(base.handle); if (base.format !== 'pdf') { wireError(); } if (base.pageRange !== undefined) { validatePageRange(base.pageRange); } break;
 		case 'close': case 'cancel':
-			exactKeys(base, ['version', 'requestId', 'operation'], ['handle', 'targetRequestId']); if (base.handle !== undefined) { validateHandle(base.handle); } optionalString(base.targetRequestId, 128);
+			exactKeys(base, ['version', 'requestId', 'operation'], ['handle', 'targetRequestId']); if (base.handle !== undefined) { validateHandle(base.handle); } optionalNonEmptyString(base.targetRequestId, 128);
 			if (operation === 'close' ? base.handle === undefined || base.targetRequestId !== undefined : base.handle === undefined && base.targetRequestId === undefined) { wireError(); }
 			break;
 	}
@@ -402,7 +511,7 @@ function validateTextRuns(value: unknown): void {
 }
 
 function validateRenderObject(value: unknown): void {
-	const object = record(value, ['nodeId', 'coverage', 'kind'], ['assetId', 'altText', 'bounds', 'anchor']); string(object.nodeId); oneOf(object.coverage, ['rendered', 'approximated', 'placeholder', 'blockedByPolicy', 'noAnchor'] as const); oneOf(object.kind, ['rasterImage', 'sanitizedSvg', 'chart', 'shape', 'math', 'objectPreview'] as const); optionalString(object.assetId, 256); optionalString(object.altText); if (object.anchor !== undefined) { validateAnchor(object.anchor); }
+	const object = record(value, ['nodeId', 'coverage', 'kind'], ['assetId', 'altText', 'bounds', 'anchor']); string(object.nodeId); oneOf(object.coverage, ['rendered', 'approximated', 'placeholder', 'blockedByPolicy', 'noAnchor'] as const); oneOf(object.kind, ['rasterImage', 'sanitizedSvg', 'chart', 'shape', 'math', 'objectPreview'] as const); if (object.assetId !== undefined) { validateAssetId(object.assetId); } optionalString(object.altText); if (object.anchor !== undefined) { validateAnchor(object.anchor); }
 	if (object.bounds !== undefined) { const bounds = record(object.bounds, ['x', 'y', 'width', 'height']); for (const value of Object.values(bounds)) { finiteNumber(value); } }
 }
 
@@ -481,10 +590,10 @@ function validateResponse(value: unknown): asserts value is ParadisOfficeRespons
 	const revisionKind = validateRevision(response.revision); validateCompleteness(response.completeness);
 	switch (operation) {
 		case 'inspect': if (revisionKind !== 'document') { wireError(); } validateInventory(response.inventory); break;
-		case 'open': if (revisionKind !== 'document') { wireError(); } validateHandle(response.handle); for (const capability of array(response.capabilities, 256)) { string(capability, 128); } break;
+		case 'open': if (revisionKind !== 'document' || validateHandle(response.handle) !== 'document') { wireError(); } for (const capability of array(response.capabilities, 256)) { string(capability, 128); } break;
 		case 'getViewport': validateTile(response.tile); break;
-		case 'compare': if (revisionKind !== 'comparison') { wireError(); } validateHandle(response.handle); for (const change of array(response.changes)) { if (!validateOfficeChange(change).valid) { wireError(); } } optionalString(response.nextCursor, PARADIS_OFFICE_LIMITS.maxCursorLength); boolean(response.terminal); break;
-		case 'search': validateSearchResults(response.results); optionalString(response.nextCursor, PARADIS_OFFICE_LIMITS.maxCursorLength); break;
+		case 'compare': if (revisionKind !== 'comparison' || validateHandle(response.handle) !== 'comparison') { wireError(); } for (const change of array(response.changes)) { if (!validateOfficeChange(change).valid) { wireError(); } } optionalNonEmptyString(response.nextCursor, PARADIS_OFFICE_LIMITS.maxCursorLength); boolean(response.terminal); break;
+		case 'search': validateSearchResults(response.results); optionalNonEmptyString(response.nextCursor, PARADIS_OFFICE_LIMITS.maxCursorLength); break;
 		case 'getRenderableAsset': { validateAssetId(response.assetId); const offset = nonNegativeInteger(response.offset); const totalLength = nonNegativeInteger(response.totalLength); if (!(response.bytes instanceof VSBuffer)) { wireError(); } const end = offset + response.bytes.byteLength; if (!Number.isSafeInteger(end) || end > totalLength) { wireError(); } break; }
 		case 'getPrintModel': validatePrintModel(response.printModel); break;
 		case 'exportPrint': validateAssetId(response.assetId); if (response.mime !== 'application/pdf') { wireError(); } nonNegativeInteger(response.byteLength); break;
