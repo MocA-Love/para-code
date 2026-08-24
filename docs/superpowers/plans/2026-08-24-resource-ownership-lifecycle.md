@@ -1798,6 +1798,7 @@ rtk git commit -m "fix: release PTY host IPC listeners on dispose"
 - Contract: start が resolve した ID だけを Map<number, system|display> に加える。stop が resolve した ID だけを Map から消す。
 - Contract: actualMode は owned Map の最大強度 display > system > off。statusbar は actualMode だけを描画する。
 - Contract: setMode calls are serialized。pending start 中に requested mode が off へ変わっても、resolve した ID を ledger に入れてから stop する。
+- Contract: dispose 中は1件の stop failure で打ち切らず、その時点で所有する他の blocker ID も各1回 stop する。失敗した ID は ledger に残し、成功した ID だけを削除する。
 - Adapter contract: IPowerService.stopPowerSaveBlocker が false を返した場合も stop failure として throw し、controller が旧 ID を保持して blocker-stop-failed を報告する。
 
 - [ ] **Step 1: start failure、stop retry、mode downgrade、pending start race、operation 分類を表す failing test を作る。**
@@ -1956,6 +1957,28 @@ suite('ParadisKeepAwakeController', () => {
 		assert.deepStrictEqual(stopped, [91]);
 		assert.strictEqual(fixture.controller.actualMode, 'off');
 	});
+
+	test('dispose attempts every owned blocker even when one stop keeps failing', async () => {
+		let nextId = 1;
+		const stopped: number[] = [];
+		const fixture = createController({
+			start: async () => nextId++,
+			stop: async id => {
+				stopped.push(id);
+				if (id === 1) {
+					throw new Error('display stop failed');
+				}
+			},
+		});
+
+		await fixture.controller.setMode('display');
+		await fixture.controller.setMode('system');
+		fixture.controller.dispose();
+		await fixture.controller.whenSettled();
+
+		assert.deepStrictEqual(stopped, [1, 1, 2]);
+		assert.strictEqual(fixture.controller.actualMode, 'display');
+	});
 });
 ~~~
 
@@ -2049,19 +2072,28 @@ export class ParadisKeepAwakeController extends Disposable {
 				continue;
 			}
 
-			const stale = [...this.blockers].find(([, mode]) => requested === 'off' || mode !== requested);
-			if (!stale) {
+			const stale = [...this.blockers].filter(([, mode]) => requested === 'off' || mode !== requested);
+			if (stale.length === 0) {
 				this.publishActualMode();
 				return;
 			}
 
-			try {
-				await this.options.stop(stale[0]);
-				this.blockers.delete(stale[0]);
-				this.publishActualMode();
-			} catch (error) {
-				this.options.report('blocker-stop-failed', error);
-				this.publishActualMode();
+			let stopFailed = false;
+			for (const [id] of stale) {
+				try {
+					await this.options.stop(id);
+					this.blockers.delete(id);
+					this.publishActualMode();
+				} catch (error) {
+					this.options.report('blocker-stop-failed', error);
+					this.publishActualMode();
+					stopFailed = true;
+					if (!this.disposing) {
+						return;
+					}
+				}
+			}
+			if (stopFailed) {
 				return;
 			}
 		}
