@@ -57,11 +57,17 @@ class FakeWorker implements IOfficeWorker {
 }
 
 function source() {
-	return { kind: 'file' as const, displayName: 'safe.xlsx' };
+	return { kind: 'bytes' as const, bytes: new Uint8Array([80, 75, 3, 4]), revision: 'safe-revision' };
 }
 
 suite('ParadisOfficeWorkerHost', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('rejects descriptors at the worker bytes boundary', async () => {
+		const host = new OfficeWorkerHost({ createWorker: () => new FakeWorker() });
+		const result = host.run('inspect', 'client-a', { kind: 'file', displayName: 'must-not-cross.xlsx' } as never, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
+		assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
+	});
 
 	test('cancels cooperatively without publishing a later worker result', async () => {
 		const worker = new FakeWorker();
@@ -78,7 +84,7 @@ suite('ParadisOfficeWorkerHost', () => {
 		worker.emit({ kind: 'cancelled', requestId: '1' });
 		worker.emit({ kind: 'result', requestId: '1', value: { inventory: 'late' } });
 		assert.deepStrictEqual(await result, { outcome: 'cancelled' });
-		assert.strictEqual(worker.terminated, false);
+		assert.strictEqual(worker.terminated, true);
 	});
 
 	test('terminates an unresponsive cancelled worker after 250ms', async () => {
@@ -101,7 +107,7 @@ suite('ParadisOfficeWorkerHost', () => {
 		if (process.type === 'renderer') { return; }
 		const host = new OfficeWorkerHost();
 		const cancellation = new CancellationTokenSource();
-		const result = host.run('inspect', 'node-worker', { kind: 'bytes', bytes: new ArrayBuffer(0) }, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, cancellation.token);
+		const result = host.run('inspect', 'node-worker', { kind: 'bytes', bytes: new Uint8Array(), revision: 'node-cancel' }, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, cancellation.token);
 		cancellation.cancel();
 		assert.deepStrictEqual(await result, { outcome: 'cancelled' });
 		host.dispose();
@@ -143,6 +149,14 @@ suite('ParadisOfficeWorkerHost', () => {
 		const result = host.run('parse', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
 		worker.emit({ kind: 'limitExceeded', requestId: '1', path: '/secret/document.xlsx', stack: 'private' });
 		assert.deepStrictEqual(await result, { outcome: 'blocked', error: 'limitExceeded' });
+	});
+
+	test('rejects an invalid inspect result instead of publishing partial worker data', async () => {
+		const worker = new FakeWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker });
+		const result = host.run('inspect', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
+		worker.emit({ kind: 'result', requestId: '1', value: { inventory: { format: 'xlsx', container: 'opc', parts: [], relationships: [], features: [] }, stack: '/private' } });
+		assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
 	});
 
 	test('maps an abnormal worker exit to engineCrashed', async () => {

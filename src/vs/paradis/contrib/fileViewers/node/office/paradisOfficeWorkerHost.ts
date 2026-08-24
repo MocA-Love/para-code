@@ -10,9 +10,8 @@ import type { IDisposable } from '../../../../../base/common/lifecycle.js';
 import {
 	PARADIS_OFFICE_BUDGET_PROFILES,
 	type ParadisOfficeBudgetProfile,
-	type ParadisOfficeSourceDescriptor,
+	isOfficeSerializableData,
 } from '../../common/paradisOfficeProtocol.js';
-import { validateParadisOfficeSourceDescriptor } from '../../common/paradisOfficeSourceBroker.js';
 
 export const PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS = 250;
 export const PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS = 30_000;
@@ -29,11 +28,16 @@ export interface IOfficeWorker {
 
 export type ParadisOfficeWorkerOperation = 'inspect' | 'parse' | 'diff';
 /** Transferred bytes are accepted only as plain data; the host still never parses them. */
+/**
+ * Worker-ready bounded bytes. SourceBroker/SpoolStore resolution belongs to Task 6; descriptors,
+ * spool capabilities, filesystem paths, and streams must never reach this host or worker.
+ */
 export interface OfficeWorkerBytesSource {
 	readonly kind: 'bytes';
-	readonly bytes: ArrayBuffer;
+	readonly bytes: Uint8Array;
+	readonly revision: string;
 }
-export type OfficeWorkerSource = ParadisOfficeSourceDescriptor | OfficeWorkerBytesSource;
+export type OfficeWorkerSource = OfficeWorkerBytesSource;
 export type OfficeWorkerOutcome<T> =
 	| { readonly outcome: 'complete'; readonly value: T }
 	| { readonly outcome: 'cancelled' }
@@ -83,6 +87,8 @@ interface PendingJob<T> {
 	queueTimer?: unknown;
 	deadlineTimer?: unknown;
 	cancelTimer?: unknown;
+	reapTimer?: unknown;
+	pendingOutcome?: OfficeWorkerOutcome<T>;
 	worker?: IOfficeWorker;
 	workerListeners?: readonly IDisposable[];
 	state: 'queued' | 'running' | 'cancelling' | 'finished';
@@ -176,7 +182,7 @@ export class OfficeWorkerHost {
 		if (this.disposed || !operations.includes(operation) || !ownerPattern.test(ownerId) || !token || typeof token.isCancellationRequested !== 'boolean' || typeof token.onCancellationRequested !== 'function' || !safeBudget) {
 			return Promise.resolve({ outcome: 'failed', error: 'engineCrashed' });
 		}
-		try { safeSource = this.validateSource(source); } catch { return Promise.resolve({ outcome: 'failed', error: 'engineCrashed' }); }
+		try { safeSource = this.validateSource(source, safeBudget); } catch { return Promise.resolve({ outcome: 'failed', error: 'engineCrashed' }); }
 		const reservationBytes = options.reservationBytes ?? this.memory.workerReservationBytes ?? 384 * 1024 * 1024;
 		if (!safeInteger(reservationBytes) || (options.workerId !== undefined && !ownerPattern.test(options.workerId))) { return Promise.resolve({ outcome: 'blocked', error: 'limitExceeded' }); }
 		if (token.isCancellationRequested) { return Promise.resolve({ outcome: 'cancelled' }); }
@@ -233,12 +239,11 @@ export class OfficeWorkerHost {
 		];
 		job.deadlineTimer = this.setTimer(() => {
 			job.terminal = 'blocked';
-			void worker.terminate();
-			this.finish(job, { outcome: 'blocked', error: 'limitExceeded' });
+			this.reap(job, { outcome: 'blocked', error: 'limitExceeded' });
 		}, operationDeadline(job.operation, job.budget));
 		try {
 			const message: OfficeWorkerMessageRun = { kind: 'run', requestId: job.requestId, operation: job.operation, source: job.source, budget: job.budget };
-			worker.postMessage(message, job.source.kind === 'bytes' ? [job.source.bytes] : undefined);
+			worker.postMessage(message, [job.source.bytes.buffer]);
 		} catch {
 			this.workerStopped(job);
 		}
@@ -253,8 +258,7 @@ export class OfficeWorkerHost {
 		try { job.worker?.postMessage({ kind: 'cancel', requestId: job.requestId }); } catch { }
 		job.cancelTimer = this.setTimer(() => {
 			if (job.state !== 'finished') {
-				void job.worker?.terminate();
-				this.finish(job, { outcome: 'cancelled' });
+				this.reap(job, { outcome: 'cancelled' });
 			}
 		}, PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
 	}
@@ -262,27 +266,43 @@ export class OfficeWorkerHost {
 	private onWorkerMessage(job: PendingJob<object>, message: unknown): void {
 		if (job.state === 'finished' || dataField(message, 'requestId') !== job.requestId) { return; }
 		const kind = dataField(message, 'kind');
-		if (kind === 'cancelled') { this.finish(job, { outcome: 'cancelled' }); return; }
-		if (kind === 'limitExceeded') { this.finish(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
+		if (kind === 'cancelled') { this.reap(job, { outcome: 'cancelled' }); return; }
+		if (kind === 'limitExceeded') { this.reap(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
 		if (kind === 'result' && job.state === 'running') {
 			const value = dataField(message, 'value');
-			if (value && typeof value === 'object' && !Array.isArray(value)) {
-				this.finish(job, { outcome: 'complete', value: value as object });
+			if (this.validWorkerResult(job.operation, value)) {
+				this.reap(job, { outcome: 'complete', value: value as object });
 			} else {
-				this.finish(job, { outcome: 'failed', error: 'engineCrashed' });
+				this.reap(job, { outcome: 'failed', error: 'engineCrashed' });
 			}
 			return;
 		}
-		if (kind === 'failure') { this.finish(job, { outcome: 'failed', error: 'engineCrashed' }); }
+		if (kind === 'failure') { this.reap(job, { outcome: 'failed', error: 'engineCrashed' }); }
 	}
 
 	private workerStopped(job: PendingJob<object>): void {
 		if (job.state === 'finished') { return; }
+		if (job.pendingOutcome) { this.finish(job, job.pendingOutcome); return; }
 		if (job.terminal === 'cancelled' || job.state === 'cancelling') { this.finish(job, { outcome: 'cancelled' }); }
 		else if (job.terminal === 'blocked') { this.finish(job, { outcome: 'blocked', error: 'limitExceeded' }); }
 		else {
 			try { this.onWorkerCrashed(job.workerId ?? job.requestId); } catch { }
 			this.finish(job, { outcome: 'failed', error: 'engineCrashed' });
+		}
+	}
+
+	private reap(job: PendingJob<object>, outcome: OfficeWorkerOutcome<object>): void {
+		if (job.state === 'finished' || job.pendingOutcome) { return; }
+		job.pendingOutcome = outcome;
+		if (job.deadlineTimer !== undefined) { this.clearTimer(job.deadlineTimer); job.deadlineTimer = undefined; }
+		if (job.cancelTimer !== undefined) { this.clearTimer(job.cancelTimer); job.cancelTimer = undefined; }
+		if (!job.worker) { this.finish(job, outcome); return; }
+		try {
+			job.reapTimer = this.setTimer(() => this.finish(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
+			const termination = job.worker.terminate();
+			void termination.catch(() => this.finish(job, outcome));
+		} catch {
+			this.finish(job, outcome);
 		}
 	}
 
@@ -296,6 +316,7 @@ export class OfficeWorkerHost {
 		if (job.queueTimer !== undefined) { this.clearTimer(job.queueTimer); }
 		if (job.deadlineTimer !== undefined) { this.clearTimer(job.deadlineTimer); }
 		if (job.cancelTimer !== undefined) { this.clearTimer(job.cancelTimer); }
+		if (job.reapTimer !== undefined) { this.clearTimer(job.reapTimer); }
 		job.cancellationListener.dispose();
 		for (const listener of job.workerListeners ?? []) { listener.dispose(); }
 		job.resolve(outcome);
@@ -337,15 +358,24 @@ export class OfficeWorkerHost {
 		return kind === 'desktopLocal' || kind === 'remoteMobile' || kind === 'browser' ? PARADIS_OFFICE_BUDGET_PROFILES[kind] : undefined;
 	}
 
-	private validateSource(value: OfficeWorkerSource): OfficeWorkerSource {
-		if (dataField(value, 'kind') === 'bytes') {
-			const bytes = dataField(value, 'bytes');
-			if (!(bytes instanceof ArrayBuffer) || bytes.byteLength > 32 * 1024 * 1024) {
-				throw new TypeError('Invalid Office worker bytes');
-			}
-			return { kind: 'bytes', bytes };
+	private validateSource(value: OfficeWorkerSource, budget: ParadisOfficeBudgetProfile): OfficeWorkerSource {
+		if (dataField(value, 'kind') !== 'bytes') { throw new TypeError('Invalid Office worker source'); }
+		const bytes = dataField(value, 'bytes');
+		const revision = dataField(value, 'revision');
+		if (!(bytes instanceof Uint8Array) || !Number.isSafeInteger(bytes.byteLength) || bytes.byteLength > budget.compressedInputBytes || typeof revision !== 'string' || revision.length === 0 || revision.length > 4096) {
+			throw new TypeError('Invalid Office worker bytes');
 		}
-		return validateParadisOfficeSourceDescriptor(value);
+		return { kind: 'bytes', bytes: bytes.slice(), revision };
+	}
+
+	private validWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown): value is object {
+		if (!isOfficeSerializableData(value)) { return false; }
+		if (operation !== 'inspect') { return true; }
+		const inventory = dataField(value, 'inventory');
+		if (!inventory || typeof inventory !== 'object' || !Array.isArray(dataField(inventory, 'parts')) || !Array.isArray(dataField(inventory, 'relationships')) || !Array.isArray(dataField(inventory, 'features'))
+			|| typeof dataField(inventory, 'format') !== 'string' || typeof dataField(inventory, 'container') !== 'string'
+			|| typeof dataField(inventory, 'outcome') !== 'string' || !dataField(inventory, 'completeness')) { return false; }
+		return true;
 	}
 
 	private safeNow(): number {
