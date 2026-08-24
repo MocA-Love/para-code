@@ -9,6 +9,7 @@ import type { CancellationToken } from '../../../../base/common/cancellation.js'
 import { CancellationError, isCancellationError } from '../../../../base/common/errors.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import type { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import {
 	buildParadisOfficeSourceRevision,
 	IOfficeSourceBroker,
@@ -26,6 +27,7 @@ import {
 	validateParadisOfficeSourceDescriptor,
 	validateParadisOfficeWritableSpoolReference,
 } from '../common/paradisOfficeSourceBroker.js';
+import { marshalParadisOfficeSpoolAppend, marshalParadisOfficeWireValue, type ParadisOfficeWireAuthority } from '../common/paradisOfficeChannel.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeBudgetProfile } from '../common/paradisOfficeProtocol.js';
 
 export type ParadisOfficeSourceBrokerErrorCode =
@@ -58,6 +60,35 @@ export interface ParadisOfficeSourceBrokerOptions {
 	readonly spoolClient: IOfficeSpoolClient;
 	readonly createHash: () => IOfficeSourceHash;
 	readonly isRemoteProtocolV1: (descriptor: ParadisOfficeSourceDescriptor) => boolean;
+}
+
+/** Task 3 spool transport adapter. Raw chunks remain VSBuffer values and are never base64 encoded. */
+export class ParadisOfficeChannelSpoolClient implements IOfficeSpoolClient {
+	constructor(private readonly channel: IChannel, private readonly authority?: ParadisOfficeWireAuthority) { }
+
+	begin(_ownerId: string, attemptId: string): Promise<ReturnType<typeof validateParadisOfficeWritableSpoolReference>> {
+		return this.channel.call('spool/begin', marshalParadisOfficeWireValue({ attemptId }, this.authority));
+	}
+
+	claim(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, attemptId: string): Promise<void> {
+		return this.channel.call('spool/claim', marshalParadisOfficeWireValue({ reference, attemptId }, this.authority));
+	}
+
+	append(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, bytes: VSBuffer): Promise<void> {
+		return this.channel.call('spool/append', marshalParadisOfficeSpoolAppend({ reference, bytes }, this.authority));
+	}
+
+	seal(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, request: Parameters<IOfficeSpoolClient['seal']>[1]): Promise<ReturnType<typeof validateParadisOfficeSealedSpoolReference>> {
+		return this.channel.call('spool/seal', marshalParadisOfficeWireValue({ reference, request }, this.authority));
+	}
+
+	dispose(reference: Parameters<IOfficeSpoolClient['dispose']>[0]): Promise<void> {
+		return this.channel.call('spool/dispose', marshalParadisOfficeWireValue({ reference }, this.authority));
+	}
+
+	disposeAttempt(_ownerId: string, attemptId: string): Promise<void> {
+		return this.channel.call('spool/disposeAttempt', marshalParadisOfficeWireValue({ attemptId }, this.authority));
+	}
 }
 
 /** Test-only runtime seam; it deliberately does not extend the broker's public options contract. */
@@ -284,6 +315,9 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		token: CancellationToken,
 	): Promise<ParadisOfficeBackendSource> {
 		const before = await this.providerSnapshot(descriptor, token);
+		if (descriptor.revisionHint?.startsWith('office-git-v1|') && descriptor.revisionHint !== before.revision) {
+			throw new ParadisOfficeSourceBrokerError('stale');
+		}
 		throwIfCancelled(token);
 		const attemptId = generateUuid();
 		let attemptCleanupPromise: Promise<void> | undefined;
