@@ -56,6 +56,7 @@ interface StoredHandle extends Omit<OfficeHandleRecord, 'active'> {
 	readonly nonce: string;
 	readonly timer: IOfficeHandleTimer;
 	lastUsed: number;
+	idleDeadline: number;
 	active: boolean;
 }
 
@@ -176,7 +177,8 @@ export class OfficeHandleStore {
 		} catch {
 			throw new OfficeHandleStoreError('invalidInput');
 		}
-		const entry: StoredHandle = { id, ownerId, nonce, kind, sourceRevision, memoryBytes, workerId, active: false, lastUsed: this.safeNow(), timer };
+		const createdAt = this.safeNow();
+		const entry: StoredHandle = { id, ownerId, nonce, kind, sourceRevision, memoryBytes, workerId, active: false, lastUsed: createdAt, idleDeadline: createdAt + PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS, timer };
 		holder.entry = entry;
 		this.handles.set(id, entry);
 		try {
@@ -193,6 +195,7 @@ export class OfficeHandleStore {
 		if (!entry) {
 			return undefined;
 		}
+		if (this.expired(entry)) { this.remove(entry); return undefined; }
 		this.touch(entry);
 		return { kind: entry.kind, sourceRevision: entry.sourceRevision, memoryBytes: entry.memoryBytes, ...(entry.workerId ? { workerId: entry.workerId } : {}), active: entry.active };
 	}
@@ -202,6 +205,7 @@ export class OfficeHandleStore {
 		if (!entry || typeof active !== 'boolean') {
 			return false;
 		}
+		if (this.expired(entry)) { this.remove(entry); return false; }
 		entry.active = active;
 		this.touch(entry);
 		return true;
@@ -320,6 +324,7 @@ export class OfficeHandleStore {
 
 	private touch(entry: StoredHandle): void {
 		entry.lastUsed = this.safeNow();
+		entry.idleDeadline = entry.lastUsed + PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS;
 		entry.timer.schedule(PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS);
 	}
 
@@ -337,4 +342,5 @@ export class OfficeHandleStore {
 			return 0;
 		}
 	}
+	private expired(entry: StoredHandle): boolean { return !Number.isSafeInteger(entry.idleDeadline) || this.safeNow() >= entry.idleDeadline; }
 }

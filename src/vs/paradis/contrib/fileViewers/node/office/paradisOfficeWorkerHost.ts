@@ -62,6 +62,25 @@ export interface OfficeWorkerHostOptions {
 	readonly memory?: OfficeWorkerHostMemory;
 	/** Invalidates only handles owned by a worker that failed unexpectedly. */
 	readonly onWorkerCrashed?: (workerId: string) => void;
+	readonly accountant?: OfficeMemoryAccountant;
+}
+
+export interface OfficeMemorySnapshot { readonly limitBytes: number; readonly workerBytes: number; readonly cacheBytes: number; readonly spoolBytes: number; readonly derivedAssetBytes: number; readonly totalBytes: number }
+/** Shared safe-integer memory ledger. Task 3/6 own spool and asset updates; workers own reservations. */
+export class OfficeMemoryAccountant {
+	private workerBytes = 0;
+	private cacheBytes = 0;
+	private spoolBytes = 0;
+	private derivedAssetBytes = 0;
+	constructor(readonly limitBytes: number) { if (!safeInteger(limitBytes)) { throw new TypeError('Invalid Office memory limit'); } }
+	setCache(bytes: number): void { this.cacheBytes = this.valid(bytes); }
+	setSpool(bytes: number): void { this.spoolBytes = this.valid(bytes); }
+	setDerivedAssets(bytes: number): void { this.derivedAssetBytes = this.valid(bytes); }
+	reserveWorker(bytes: number): boolean { const total = this.total() + this.valid(bytes); if (!safeInteger(total) || total > this.limitBytes) { return false; } this.workerBytes += bytes; return true; }
+	releaseWorker(bytes: number): void { bytes = this.valid(bytes); this.workerBytes = Math.max(0, this.workerBytes - bytes); }
+	snapshot(): OfficeMemorySnapshot { return { limitBytes: this.limitBytes, workerBytes: this.workerBytes, cacheBytes: this.cacheBytes, spoolBytes: this.spoolBytes, derivedAssetBytes: this.derivedAssetBytes, totalBytes: this.total() }; }
+	private total(): number { const total = this.workerBytes + this.cacheBytes + this.spoolBytes + this.derivedAssetBytes; return safeInteger(total) ? total : Number.MAX_SAFE_INTEGER; }
+	private valid(bytes: number): number { if (!safeInteger(bytes)) { throw new TypeError('Invalid Office memory bytes'); } return bytes; }
 }
 
 interface OfficeWorkerMessageRun {
@@ -80,6 +99,8 @@ interface PendingJob<T> {
 	readonly budget: ParadisOfficeBudgetProfile;
 	readonly token: CancellationToken;
 	readonly reservationBytes: number;
+	readonly queueDeadline: number;
+	readonly operationDeadline: number;
 	readonly workerId?: string;
 	readonly queuedAt: number;
 	readonly resolve: (outcome: OfficeWorkerOutcome<T>) => void;
@@ -159,6 +180,7 @@ export class OfficeWorkerHost {
 	private readonly clearTimer: (handle: unknown) => void;
 	private readonly memory: OfficeWorkerHostMemory;
 	private readonly onWorkerCrashed: (workerId: string) => void;
+	private readonly accountant: OfficeMemoryAccountant | undefined;
 	private readonly pending: PendingJob<object>[] = [];
 	private readonly active = new Set<PendingJob<object>>();
 	private requestSequence = 0;
@@ -171,6 +193,7 @@ export class OfficeWorkerHost {
 		this.clearTimer = options.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
 		this.memory = options.memory ?? {};
 		this.onWorkerCrashed = options.onWorkerCrashed ?? (() => { });
+		this.accountant = options.accountant;
 	}
 
 	get activeWorkerCount(): number { return this.active.size; }
@@ -189,11 +212,11 @@ export class OfficeWorkerHost {
 		return new Promise<OfficeWorkerOutcome<T>>(resolve => {
 			const requestId = String(++this.requestSequence);
 			const job: PendingJob<T> = {
-				requestId, operation, ownerId, source: safeSource, budget: safeBudget, token, reservationBytes, ...(options.workerId ? { workerId: options.workerId } : {}), queuedAt: this.safeNow(), resolve,
-				cancellationListener: token.onCancellationRequested(() => this.cancel(job as PendingJob<object>)), state: 'queued', released: false, terminal: undefined,
+				requestId, operation, ownerId, source: safeSource, budget: safeBudget, token, reservationBytes, queueDeadline: this.deadline(PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS), operationDeadline: this.deadline(operationDeadline(operation, safeBudget)), ...(options.workerId ? { workerId: options.workerId } : {}), queuedAt: this.safeNow(), resolve,
+				cancellationListener: token.onCancellationRequested(() => this.cancel(job as unknown as PendingJob<object>)), state: 'queued', released: false, terminal: undefined,
 			};
-			job.queueTimer = this.setTimer(() => this.finish(job as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS);
-			this.pending.push(job as PendingJob<object>);
+			job.queueTimer = this.setTimer(() => this.finish(job as unknown as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS);
+			this.pending.push(job as unknown as PendingJob<object>);
 			this.pump();
 		});
 	}
@@ -213,6 +236,7 @@ export class OfficeWorkerHost {
 		for (let index = 0; index < this.pending.length && this.active.size < PARADIS_OFFICE_WORKER_GLOBAL_LIMIT;) {
 			const job = this.pending[index];
 			if (job.state !== 'queued') { this.pending.splice(index, 1); continue; }
+			if (this.expired(job.queueDeadline)) { this.finish(job, { outcome: 'blocked', error: 'limitExceeded' }); continue; }
 			if (job.token.isCancellationRequested) { this.finish(job, { outcome: 'cancelled' }); continue; }
 			if (this.activeForOwner(job.ownerId) >= PARADIS_OFFICE_WORKER_PER_CLIENT_LIMIT) { index++; continue; }
 			if (!this.reserve(job)) {
@@ -226,6 +250,7 @@ export class OfficeWorkerHost {
 	}
 
 	private start(job: PendingJob<object>): void {
+		if (this.expired(job.queueDeadline)) { this.finish(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
 		job.state = 'running';
 		this.active.add(job);
 		if (job.queueTimer !== undefined) { this.clearTimer(job.queueTimer); job.queueTimer = undefined; }
@@ -243,7 +268,7 @@ export class OfficeWorkerHost {
 		}, operationDeadline(job.operation, job.budget));
 		try {
 			const message: OfficeWorkerMessageRun = { kind: 'run', requestId: job.requestId, operation: job.operation, source: job.source, budget: job.budget };
-			worker.postMessage(message, [job.source.bytes.buffer]);
+			worker.postMessage(message);
 		} catch {
 			this.workerStopped(job);
 		}
@@ -265,6 +290,8 @@ export class OfficeWorkerHost {
 
 	private onWorkerMessage(job: PendingJob<object>, message: unknown): void {
 		if (job.state === 'finished' || dataField(message, 'requestId') !== job.requestId) { return; }
+		if (job.token.isCancellationRequested) { this.cancel(job); return; }
+		if (this.expired(job.operationDeadline)) { this.reap(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
 		const kind = dataField(message, 'kind');
 		if (kind === 'cancelled') { this.reap(job, { outcome: 'cancelled' }); return; }
 		if (kind === 'limitExceeded') { this.reap(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
@@ -282,6 +309,8 @@ export class OfficeWorkerHost {
 
 	private workerStopped(job: PendingJob<object>): void {
 		if (job.state === 'finished') { return; }
+		if (job.token.isCancellationRequested) { this.reap(job, { outcome: 'cancelled' }); return; }
+		if (this.expired(job.operationDeadline)) { this.reap(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
 		if (job.pendingOutcome) { this.finish(job, job.pendingOutcome); return; }
 		if (job.terminal === 'cancelled' || job.state === 'cancelling') { this.finish(job, { outcome: 'cancelled' }); }
 		else if (job.terminal === 'blocked') { this.finish(job, { outcome: 'blocked', error: 'limitExceeded' }); }
@@ -312,7 +341,7 @@ export class OfficeWorkerHost {
 		const queuedIndex = this.pending.indexOf(job);
 		if (queuedIndex >= 0) { this.pending.splice(queuedIndex, 1); }
 		this.active.delete(job);
-		if (!job.released) { job.released = true; }
+		if (!job.released) { job.released = true; this.accountant?.releaseWorker(job.reservationBytes); }
 		if (job.queueTimer !== undefined) { this.clearTimer(job.queueTimer); }
 		if (job.deadlineTimer !== undefined) { this.clearTimer(job.deadlineTimer); }
 		if (job.cancelTimer !== undefined) { this.clearTimer(job.cancelTimer); }
@@ -324,14 +353,17 @@ export class OfficeWorkerHost {
 	}
 
 	private reserve(job: PendingJob<object>): boolean {
+		if (this.accountant && !this.accountant.reserveWorker(job.reservationBytes)) { return false; }
 		const current = this.memoryUsage();
 		const limit = this.memory.limitBytes ?? memoryLimit(job.budget);
 		const requested = current + job.reservationBytes;
-		if (!safeInteger(requested)) { return false; }
+		if (!safeInteger(requested)) { this.accountant?.releaseWorker(job.reservationBytes); return false; }
 		if (requested <= limit) { return true; }
 		const required = requested - limit;
 		try { this.memory.evictInactiveCache?.(required); } catch { return false; }
-		return this.memoryUsage() + job.reservationBytes <= limit;
+		const admitted = this.memoryUsage() + job.reservationBytes <= limit;
+		if (!admitted) { this.accountant?.releaseWorker(job.reservationBytes); }
+		return admitted;
 	}
 
 	private canEverReserve(job: PendingJob<object>): boolean {
@@ -381,4 +413,6 @@ export class OfficeWorkerHost {
 	private safeNow(): number {
 		try { const value = this.now(); return safeInteger(value) ? value : 0; } catch { return 0; }
 	}
+	private deadline(delay: number): number { const now = this.safeNow(); const result = now + delay; return safeInteger(result) ? result : 0; }
+	private expired(deadline: number): boolean { const now = this.safeNow(); return deadline === 0 || now >= deadline; }
 }
