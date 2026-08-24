@@ -127,6 +127,27 @@ suite('ParadisLimitsMonitor process lifecycle', () => {
 		service.dispose();
 	});
 
+	test('releases the executable probe deadline after a successful callback', async () => {
+		const clock = sinon.useFakeTimers();
+		const kill = sinon.spy(() => true);
+		let callback: ((error: NodeJS.ErrnoException | null) => void) | undefined;
+		const execFile = ((_file: string, _args: readonly string[], _options: cp.ExecFileOptionsWithStringEncoding, cb: typeof callback) => {
+			callback = cb;
+			return { pid: undefined, exitCode: null, signalCode: null, kill } as unknown as cp.ChildProcess;
+		}) as unknown as typeof cp.execFile;
+		const service = new ParadisLimitsMonitorService(new NullLogService(), undefined, undefined, () => '/test/home', execFile);
+		const probe = (service as unknown as { canExecute(command: string): Promise<boolean> }).canExecute('cswap');
+
+		while (!callback) {
+			await Promise.resolve();
+		}
+		callback(null);
+		assert.strictEqual(await probe, true);
+		await clock.tickAsync(10_001);
+		service.dispose();
+		assert.deepStrictEqual({ kills: kill.callCount, timers: clock.countTimers() }, { kills: 0, timers: 0 });
+	});
+
 	test('surfaces a synchronous execFile throw as a source error, releases the inflight key, and leaves no unhandled rejection', async () => {
 		let invocations = 0;
 		const execFile = ((_file: string, _args: readonly string[], _options: cp.ExecFileOptionsWithStringEncoding, callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) => {
