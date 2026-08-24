@@ -16,7 +16,7 @@ interface WorkerRunMessage {
 	readonly kind: 'run';
 	readonly requestId: string;
 	readonly operation: WorkerOperation;
-	readonly source: { readonly kind: 'bytes'; readonly bytes: ArrayBuffer };
+	readonly source: { readonly kind: 'bytes'; readonly bytes: Uint8Array; readonly revision: string };
 	readonly budget: ParadisOfficeBudgetProfile;
 }
 
@@ -52,7 +52,7 @@ function validRun(value: unknown): value is WorkerRunMessage {
 	const budget = dataField(value, 'budget');
 	return kind === 'run' && typeof requestId === 'string' && /^[1-9]\d{0,15}$/.test(requestId)
 		&& (operation === 'inspect' || operation === 'parse' || operation === 'diff')
-		&& !!source && typeof source === 'object' && dataField(source, 'kind') === 'bytes' && dataField(source, 'bytes') instanceof ArrayBuffer
+		&& !!source && typeof source === 'object' && dataField(source, 'kind') === 'bytes' && dataField(source, 'bytes') instanceof Uint8Array && typeof dataField(source, 'revision') === 'string'
 		&& !!budget && typeof budget === 'object';
 }
 
@@ -70,7 +70,7 @@ async function run(message: WorkerRunMessage): Promise<void> {
 	try {
 		// Parsing is deliberately available only for transferred bytes. This worker never opens paths,
 		// follows external relationships, executes macros, or invokes document-provided code.
-		const archive = await createParadisOfficeNodeArchive(new Uint8Array(message.source.bytes));
+		const archive = await createParadisOfficeNodeArchive(message.source.bytes);
 		const inventory = await inspectOfficePackage(archive, message.budget, cancellation.token);
 		if (cancellation.token.isCancellationRequested) {
 			parentPort?.postMessage({ kind: 'cancelled', requestId: message.requestId });
@@ -93,7 +93,6 @@ if (port) {
 	port.on('message', message => {
 		if (validCancel(message) && active?.requestId === message.requestId) {
 			active.cancellation.cancel();
-			port.postMessage({ kind: 'cancelled', requestId: message.requestId });
 			return;
 		}
 		if (validRun(message)) {
