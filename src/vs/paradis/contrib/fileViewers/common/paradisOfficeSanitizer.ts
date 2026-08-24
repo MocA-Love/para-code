@@ -107,6 +107,7 @@ export interface ParadisOfficePackageSanitizerInput {
 	readonly token?: CancellationToken;
 	readonly checkpoint?: () => void;
 	readonly deadline?: number;
+	readonly scheduler?: () => Promise<void>;
 }
 
 /** Builds the isolated Word webview policy from already-resolved, exact origins only. */
@@ -228,15 +229,6 @@ function snapshotFontInput(input: ParadisOfficeFontInput): ParadisOfficeFontInpu
 	}, values.altText as string | undefined);
 }
 
-function snapshotTrustedSubset(value: ParadisOfficeTrustedFontSubset): ParadisOfficeTrustedFontSubset | undefined {
-	const values = dataProperties(value, ['bytes'], []);
-	const bytes = copyPlainBytes(values?.bytes);
-	if (!values || !bytes) {
-		return undefined;
-	}
-	return { bytes };
-}
-
 function dataProperties(value: object, required: readonly string[], optional: readonly string[]): Record<string, unknown> | undefined {
 	let descriptors: PropertyDescriptorMap;
 	try {
@@ -273,7 +265,7 @@ function isSharedBytes(value: Uint8Array): boolean {
 /** Rebuilds an owned STORE-only package whose renderer-facing assets are allowlisted. */
 export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficePackageSanitizerInput): Promise<ParadisOfficeRenderablePackage> {
 	const source = copyPlainBytes(input.source);
-	if (!source || source.byteLength > 32 * 1024 * 1024 || !isAssetId(input.nodeId)) { throw new ParadisOfficePackageError('unsafe'); }
+	if (!source || source.byteLength > 16 * 1024 * 1024 || !isAssetId(input.nodeId)) { throw new ParadisOfficePackageError('unsafe'); }
 	const metadata: ParadisOfficeArchiveEntry[] = [];
 	const names = new Set<string>();
 	const assets: ParadisOfficeRenderableAsset[] = [];
@@ -283,21 +275,21 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 		for await (const entry of input.archive.entries(input.token)) {
 			checkPackageWork(input);
 			const canonical = canonicalizeParadisOfficeArchiveName(entry.name).slice(1);
-			if (metadata.length >= 4_096 || entry.name.length > 4_096 || canonical !== entry.name || names.has(canonical) || entry.encrypted || entry.symlink) { throw new ParadisOfficePackageError('unsafe'); }
+			if (metadata.length >= 4_096 || entry.name.length > 2_048 || canonical !== entry.name || names.has(canonical) || entry.encrypted || entry.symlink) { throw new ParadisOfficePackageError('unsafe'); }
 			names.add(canonical); metadata.push(entry);
 			compressedTotal += entry.compressedBytes; expandedTotal += entry.declaredExpandedBytes;
-			if (entry.compressedBytes < 0 || entry.declaredExpandedBytes < 0 || entry.declaredExpandedBytes > 16 * 1024 * 1024
-				|| entry.declaredExpandedBytes > Math.max(1, entry.compressedBytes) * 100 || compressedTotal > 32 * 1024 * 1024
-				|| expandedTotal > 64 * 1024 * 1024 || expandedTotal > Math.max(1, compressedTotal) * 100) { throw new ParadisOfficePackageError('zipBomb'); }
-			await Promise.resolve();
+			if (entry.compressedBytes < 0 || entry.declaredExpandedBytes < 0 || entry.declaredExpandedBytes > 8 * 1024 * 1024
+				|| entry.declaredExpandedBytes > Math.max(1, entry.compressedBytes) * 100 || compressedTotal > 16 * 1024 * 1024
+				|| expandedTotal > 32 * 1024 * 1024 || expandedTotal > Math.max(1, compressedTotal) * 100) { throw new ParadisOfficePackageError('zipBomb'); }
+			await yieldPackageWork(input);
 		}
 		const values = new Map<string, Uint8Array>();
 		for (const entry of metadata) {
 			checkPackageWork(input);
 			if (entry.directory) { values.set(entry.name, new Uint8Array()); continue; }
-			const raw = await readPackageEntry(input.archive, entry, input.token, input.checkpoint);
+			const raw = await readPackageEntry(input.archive, entry, input);
 			if (entry.crc32 === undefined || crc32(raw, input.token, input.checkpoint) !== entry.crc32) { throw new ParadisOfficePackageError('malformed'); }
-			values.set(entry.name, raw); await Promise.resolve();
+			values.set(entry.name, raw); await yieldPackageWork(input);
 		}
 		const policy = analyzeOpcPackage(values, input.nodeId, input.token, input.checkpoint);
 		for (const placeholderValue of policy.placeholders) { placeholders.push(placeholderValue); }
@@ -319,10 +311,10 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 			const mainName = [...values.keys()].find(name => /^word\/document\.xml$/i.test(name));
 			if (mainName) { const main = parsePackageXml(values.get(mainName)!); appendVisibleWordPlaceholders(main.root, placeholders.slice(initiallyAnchored)); values.set(mainName, new TextEncoder().encode(serializeOfficeXml(main.root))); }
 		}
-		if (assets.length + placeholders.length > 4_096) { throw new ParadisOfficePackageError('limitExceeded'); }
+		if (assets.length + placeholders.length > 256) { throw new ParadisOfficePackageError('limitExceeded'); }
 		const entries = metadata.filter(entry => values.has(entry.name)).map(entry => ({ name: entry.name, bytes: values.get(entry.name)!, directory: entry.directory }));
 		const bytes = await writeStoreZip(entries, input);
-		if (bytes.byteLength > 64 * 1024 * 1024) { throw new ParadisOfficePackageError('limitExceeded'); }
+		if (bytes.byteLength > 32 * 1024 * 1024) { throw new ParadisOfficePackageError('limitExceeded'); }
 		return { bytes, assets, placeholders };
 	} finally {
 		input.archive.dispose();
@@ -332,6 +324,10 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 function checkPackageWork(input: ParadisOfficePackageSanitizerInput): void {
 	input.checkpoint?.(); throwIfParadisOfficeCancelled(input.token);
 	if (input.deadline !== undefined && Date.now() > input.deadline) { throw new ParadisOfficePackageError('limitExceeded'); }
+}
+
+async function yieldPackageWork(input: ParadisOfficePackageSanitizerInput): Promise<void> {
+	checkPackageWork(input); await (input.scheduler?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); checkPackageWork(input);
 }
 
 type OfficeXmlElement = Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
@@ -351,33 +347,53 @@ function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, nodeId: stri
 	const defaults = new Map<string, string>(); const overrides = new Map<string, string>();
 	for (const child of contentDocument.root.children) {
 		if (child.kind !== 'element' || child.uri !== CONTENT_TYPES_NAMESPACE) { continue; }
-		if (child.local === 'Default') { const extension = xmlAttribute(child, 'Extension'); const type = xmlAttribute(child, 'ContentType'); if (extension && type) { defaults.set(extension.toLowerCase(), type); } }
-		if (child.local === 'Override') { const part = xmlAttribute(child, 'PartName'); const type = xmlAttribute(child, 'ContentType'); if (part && type) { overrides.set(canonicalPartName(part), type); } }
+		if (child.local === 'Default') { const extension = xmlAttribute(child, 'Extension')?.toLowerCase(); const type = xmlAttribute(child, 'ContentType'); if (!extension || !type || defaults.has(extension)) { throw new ParadisOfficePackageError('malformed'); } defaults.set(extension, type); }
+		if (child.local === 'Override') { const part = xmlAttribute(child, 'PartName'); const type = xmlAttribute(child, 'ContentType'); if (!part || !type) { throw new ParadisOfficePackageError('malformed'); } const canonical = canonicalPartName(part); if ([...overrides.keys()].some(value => value.toLowerCase() === canonical.toLowerCase())) { throw new ParadisOfficePackageError('malformed'); } overrides.set(canonical, type); }
 	}
 	const contentType = (name: string): string => overrides.get(name) ?? defaults.get(name.slice(name.lastIndexOf('.') + 1).toLowerCase()) ?? '';
 	const removedParts = new Set<string>(); const svgParts = new Set<string>(); const imageParts = new Set<string>();
 	const rewrittenXml = new Map<string, Uint8Array>(); const placeholders: ParadisOfficePlaceholder[] = [];
+	const storyDocuments = new Map<string, { readonly root: OfficeXmlElement }>();
+	const storyReplacements = new Map<string, { readonly id: string; readonly placeholder: ParadisOfficePlaceholder }[]>();
+	const safeTargetReferences = new Map<string, number>();
 	for (const [name, bytes] of values) {
 		checkpoint?.(); throwIfParadisOfficeCancelled(token);
 		if (!name.endsWith('.rels')) { continue; }
 		const document = parsePackageXml(bytes);
 		if (document.root.uri !== RELATIONSHIPS_NAMESPACE || document.root.local !== 'Relationships') { throw new ParadisOfficePackageError('malformed'); }
 		const kept: ParadisOfficeXmlNode[] = [];
+		const relationshipIds = new Set<string>();
+		const sourcePart = relationshipSourcePart(name);
 		for (const child of document.root.children) {
 			if (child.kind !== 'element' || child.uri !== RELATIONSHIPS_NAMESPACE || child.local !== 'Relationship') { kept.push(child); continue; }
 			const id = xmlAttribute(child, 'Id') ?? ''; const type = xmlAttribute(child, 'Type') ?? ''; const target = xmlAttribute(child, 'Target') ?? '';
+			if (!id || relationshipIds.has(id) || !isKnownRelationshipType(type)) { throw new ParadisOfficePackageError('malformed'); }
+			relationshipIds.add(id);
 			const external = (xmlAttribute(child, 'TargetMode') ?? '').toLowerCase() === 'external';
 			const resolved = external ? undefined : resolveRelationshipTarget(name, target);
-			const unsafe = external || isUnsafeRelationshipType(type) || !resolved;
+			if (!external && (!resolved || !values.has(resolved))) { throw new ParadisOfficePackageError('malformed'); }
+			const unsafe = external || isUnsafeRelationshipType(type);
 			if (unsafe) {
+				const placeholderValue = packagePlaceholder(nodeId, `${name}:${id}`, external ? 'externalRelationship' : relationshipFeature(type), fingerprint(new TextEncoder().encode(`${type}|${target}`), token, checkpoint).value);
 				if (resolved && values.has(resolved)) { removedParts.add(resolved); }
-				placeholders.push(packagePlaceholder(nodeId, `${name}:${id}`, external ? 'externalRelationship' : relationshipFeature(type), fingerprint(new TextEncoder().encode(`${type}|${target}`), token, checkpoint).value));
+				placeholders.push(placeholderValue);
+				if (sourcePart) { const list = storyReplacements.get(sourcePart) ?? []; list.push({ id, placeholder: placeholderValue }); storyReplacements.set(sourcePart, list); }
 				continue;
 			}
-			const targetType = contentType(resolved);
-			if (isSvgContentType(targetType)) { svgParts.add(resolved); imageParts.add(resolved); }
-			else if (isImageRelationshipType(type) || targetType.startsWith('image/')) { imageParts.add(resolved); }
-			else if (isUnsafeContentType(targetType)) { removedParts.add(resolved); placeholders.push(packagePlaceholder(nodeId, resolved, contentFeature(targetType), fingerprint(values.get(resolved) ?? new Uint8Array(), token, checkpoint).value)); continue; }
+			const internalTarget = resolved!;
+			const targetType = contentType(internalTarget);
+			if (!isKnownContentType(targetType)) {
+				const placeholderValue = packagePlaceholder(nodeId, internalTarget, 'unknownContent', fingerprint(values.get(internalTarget)!, token, checkpoint).value);
+				removedParts.add(internalTarget); placeholders.push(placeholderValue);
+				if (sourcePart) { const list = storyReplacements.get(sourcePart) ?? []; list.push({ id, placeholder: placeholderValue }); storyReplacements.set(sourcePart, list); }
+				continue;
+			}
+			if (isImageRelationshipType(type)) {
+				if (!sourcePart || !storyHasRelationship(values, storyDocuments, sourcePart, id)) { throw new ParadisOfficePackageError('malformed'); }
+				if (isSvgContentType(targetType)) { svgParts.add(internalTarget); } imageParts.add(internalTarget);
+			}
+			else if (isUnsafeContentType(targetType)) { removedParts.add(internalTarget); placeholders.push(packagePlaceholder(nodeId, internalTarget, contentFeature(targetType), fingerprint(values.get(internalTarget) ?? new Uint8Array(), token, checkpoint).value)); continue; }
+			safeTargetReferences.set(internalTarget, (safeTargetReferences.get(internalTarget) ?? 0) + 1);
 			kept.push(child);
 		}
 		(document.root.children as ParadisOfficeXmlNode[]).splice(0, document.root.children.length, ...kept);
@@ -386,8 +402,10 @@ function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, nodeId: stri
 	for (const [name, bytes] of values) {
 		const type = contentType(name);
 		if (isSvgContentType(type)) { svgParts.add(name); imageParts.add(name); }
+		else if (type && !isKnownContentType(type) && !removedParts.has(name)) { removedParts.add(name); placeholders.push(packagePlaceholder(nodeId, name, 'unknownContent', fingerprint(bytes, token, checkpoint).value)); }
 		else if (isUnsafeContentType(type) && !removedParts.has(name)) { removedParts.add(name); placeholders.push(packagePlaceholder(nodeId, name, contentFeature(type), fingerprint(bytes, token, checkpoint).value)); }
 	}
+	for (const [target, count] of safeTargetReferences) { if (count > 0) { removedParts.delete(target); } }
 	for (const part of removedParts) { svgParts.delete(part); imageParts.delete(part); }
 	rewriteContentTypes(contentDocument.root, removedParts, new Set([...imageParts].filter(name => !svgParts.has(name))));
 	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
@@ -398,6 +416,12 @@ function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, nodeId: stri
 			rewrittenXml.set(mainName, new TextEncoder().encode(serializeOfficeXml(main.root)));
 		}
 	}
+	for (const [storyName, replacements] of storyReplacements) {
+		const story = storyDocuments.get(storyName) ?? parsePackageXml(values.get(storyName)!);
+		replaceStoryRelationshipConsumers(story.root, replacements);
+		rewrittenXml.set(storyName, new TextEncoder().encode(serializeOfficeXml(story.root)));
+	}
+	if (placeholders.length > 256) { throw new ParadisOfficePackageError('limitExceeded'); }
 	return { removedParts, svgParts, imageParts, rewrittenXml, placeholders };
 }
 
@@ -426,6 +450,56 @@ function resolveRelationshipTarget(relsName: string, target: string): string | u
 	try { return canonicalizeParadisOfficeArchiveName(resolved.join('/')).slice(1); } catch { return undefined; }
 }
 
+function relationshipSourcePart(relsName: string): string | undefined {
+	if (relsName === '_rels/.rels') { return undefined; }
+	const match = /^(.*\/)?_rels\/([^/]+)\.rels$/.exec(relsName); return match ? `${match[1] ?? ''}${match[2]}` : undefined;
+}
+
+const KNOWN_RELATIONSHIP_SUFFIXES = new Set(['officeDocument', 'image', 'styles', 'stylesWithEffects', 'theme', 'settings', 'webSettings', 'numbering', 'fontTable', 'header', 'footer', 'footnotes', 'endnotes', 'comments', 'commentsExtended', 'core-properties', 'extended-properties', 'custom-properties', 'hyperlink', 'aFChunk', 'font', 'oleObject', 'package', 'control', 'activeX', 'vbaProject', 'attachedTemplate']);
+function isKnownRelationshipType(type: string): boolean { const suffix = type.slice(type.lastIndexOf('/') + 1); return /^https?:\/\/(?:schemas\.openxmlformats\.org|purl\.oclc\.org|schemas\.microsoft\.com)\//.test(type) && KNOWN_RELATIONSHIP_SUFFIXES.has(suffix); }
+function isKnownContentType(type: string): boolean { return !!type && (type === 'application/xml' || /\+xml$/i.test(type) || /^image\/(?:png|jpeg|gif|webp|svg\+xml)$/i.test(type) || isUnsafeContentType(type)); }
+
+function storyHasRelationship(values: ReadonlyMap<string, Uint8Array>, cache: Map<string, { readonly root: OfficeXmlElement }>, sourcePart: string, id: string): boolean {
+	const bytes = values.get(sourcePart); if (!bytes) { return false; }
+	const document = cache.get(sourcePart) ?? parsePackageXml(bytes); cache.set(sourcePart, document);
+	return hasRelationshipAttribute(document.root, id);
+}
+
+function hasRelationshipAttribute(node: OfficeXmlElement, id: string): boolean {
+	if (node.attributes.some(attribute => RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) && (attribute.local === 'id' || attribute.local === 'embed' || attribute.local === 'link') && attribute.value === id)) { return true; }
+	return node.children.some(child => child.kind === 'element' && hasRelationshipAttribute(child, id));
+}
+
+const RELATIONSHIP_ATTRIBUTE_NAMESPACES = new Set(['http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'http://purl.oclc.org/ooxml/officeDocument/relationships']);
+
+function replaceStoryRelationshipConsumers(root: OfficeXmlElement, replacements: readonly { readonly id: string; readonly placeholder: ParadisOfficePlaceholder }[]): void {
+	const byId = new Map(replacements.map(value => [value.id, value.placeholder]));
+	const visit = (element: OfficeXmlElement): void => {
+		const children = element.children as ParadisOfficeXmlNode[];
+		for (let index = 0; index < children.length; index++) {
+			const child = children[index]; if (child.kind !== 'element') { continue; }
+			const relationship = child.attributes.find(attribute => RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) && (attribute.local === 'id' || attribute.local === 'embed' || attribute.local === 'link'));
+			const placeholderValue = relationship ? byId.get(relationship.value) : undefined;
+			if (placeholderValue) {
+				children[index] = wordPlaceholderRun(placeholderValue); byId.delete(relationship!.value);
+			} else { visit(child); }
+		}
+	};
+	visit(root);
+	for (const placeholderValue of byId.values()) { appendStoryPlaceholder(root, placeholderValue); }
+}
+
+function wordPlaceholderRun(value: ParadisOfficePlaceholder): OfficeXmlElement {
+	return { kind: 'element', uri: WORD_NAMESPACE, local: 'r', attributes: [], children: [{ kind: 'element', uri: WORD_NAMESPACE, local: 't', attributes: [], children: [{ kind: 'text', value: `Office asset unavailable: ${value.feature} ${value.fingerprint?.slice(0, 12) ?? ''}` }] }] };
+}
+
+function appendStoryPlaceholder(root: OfficeXmlElement, value: ParadisOfficePlaceholder): void {
+	const container = findOfficeElement(root, WORD_NAMESPACE, 'body') ?? root;
+	const paragraph: OfficeXmlElement = { kind: 'element', uri: WORD_NAMESPACE, local: 'p', attributes: [], children: [wordPlaceholderRun(value)] };
+	const children = container.children as ParadisOfficeXmlNode[]; const section = children.findIndex(child => child.kind === 'element' && child.uri === WORD_NAMESPACE && child.local === 'sectPr');
+	children.splice(section < 0 ? children.length : section, 0, paragraph);
+}
+
 function isImageRelationshipType(type: string): boolean { return /\/image$/i.test(type); }
 function isUnsafeRelationshipType(type: string): boolean { return /\/(?:aFChunk|font|oleObject|package|control|activeX|vbaProject|hyperlink|attachedTemplate)$/i.test(type); }
 function relationshipFeature(type: string): string {
@@ -447,10 +521,8 @@ function rewriteContentTypes(root: OfficeXmlElement, removed: ReadonlySet<string
 }
 
 function appendVisibleWordPlaceholders(root: OfficeXmlElement, placeholders: readonly ParadisOfficePlaceholder[]): void {
-	const body = findOfficeElement(root, WORD_NAMESPACE, 'body'); if (!body) { throw new ParadisOfficePackageError('malformed'); }
-	for (const value of placeholders.slice(0, 256)) {
-		(body.children as ParadisOfficeXmlNode[]).push({ kind: 'element', uri: WORD_NAMESPACE, local: 'p', attributes: [], children: [{ kind: 'element', uri: WORD_NAMESPACE, local: 'r', attributes: [], children: [{ kind: 'element', uri: WORD_NAMESPACE, local: 't', attributes: [], children: [{ kind: 'text', value: `Office asset unavailable: ${value.feature} ${value.fingerprint?.slice(0, 12) ?? ''}` }] }] }] });
-	}
+	if (!findOfficeElement(root, WORD_NAMESPACE, 'body')) { throw new ParadisOfficePackageError('malformed'); }
+	for (const value of placeholders.slice(0, 256)) { appendStoryPlaceholder(root, value); }
 }
 
 function findOfficeElement(root: OfficeXmlElement, uri: string, local: string): OfficeXmlElement | undefined {
@@ -474,16 +546,17 @@ function serializeOfficeXml(root: OfficeXmlElement): string {
 	return `<?xml version="1.0" encoding="UTF-8"?>${render(root, true)}`;
 }
 
-async function readPackageEntry(archive: ParadisOfficePackageArchive, entry: ParadisOfficeArchiveEntry, token?: CancellationToken, checkpoint?: () => void): Promise<Uint8Array> {
+async function readPackageEntry(archive: ParadisOfficePackageArchive, entry: ParadisOfficeArchiveEntry, input: ParadisOfficePackageSanitizerInput): Promise<Uint8Array> {
 	const chunks: Uint8Array[] = [];
 	let length = 0;
-	for await (const chunk of archive.read(entry, token)) {
-		checkpoint?.(); throwIfParadisOfficeCancelled(token);
+	for await (const chunk of archive.read(entry, input.token)) {
+		input.checkpoint?.(); throwIfParadisOfficeCancelled(input.token);
 		const owned = copyPlainBytes(chunk);
 		if (!owned) { throw new ParadisOfficePackageError('unsafe'); }
 		length += owned.byteLength;
-		if (length > entry.declaredExpandedBytes || length > 32 * 1024 * 1024) { throw new ParadisOfficePackageError('limitExceeded'); }
+		if (length > entry.declaredExpandedBytes || length > 8 * 1024 * 1024) { throw new ParadisOfficePackageError('limitExceeded'); }
 		chunks.push(owned);
+		await yieldPackageWork(input);
 	}
 	if (length !== entry.declaredExpandedBytes) { throw new ParadisOfficePackageError('malformed'); }
 	const result = new Uint8Array(length);
@@ -543,14 +616,14 @@ async function writeStoreZip(entries: readonly { readonly name: string; readonly
 		checkPackageWork(input); offsets.push(offset); writeLe32(view, offset, 0x04034b50); writeLe16(view, offset + 4, 20); writeLe16(view, offset + 6, 0x0800); writeLe16(view, offset + 8, 0);
 		writeLe32(view, offset + 14, record.crc); writeLe32(view, offset + 18, record.bytes.byteLength); writeLe32(view, offset + 22, record.bytes.byteLength); writeLe16(view, offset + 26, record.nameBytes.byteLength);
 		output.set(record.nameBytes, offset + 30); output.set(record.bytes, offset + 30 + record.nameBytes.byteLength); offset += 30 + record.nameBytes.byteLength + record.bytes.byteLength;
-		await Promise.resolve();
+		await yieldPackageWork(input);
 	}
 	const centralOffset = offset;
 	for (let index = 0; index < records.length; index++) {
 		checkPackageWork(input); const record = records[index]; writeLe32(view, offset, 0x02014b50); writeLe16(view, offset + 4, 20); writeLe16(view, offset + 6, 20); writeLe16(view, offset + 8, 0x0800); writeLe32(view, offset + 16, record.crc);
 		writeLe32(view, offset + 20, record.bytes.byteLength); writeLe32(view, offset + 24, record.bytes.byteLength); writeLe16(view, offset + 28, record.nameBytes.byteLength); writeLe32(view, offset + 38, record.directory ? 0x10 : 0); writeLe32(view, offset + 42, offsets[index]);
 		output.set(record.nameBytes, offset + 46); offset += 46 + record.nameBytes.byteLength;
-		await Promise.resolve();
+		await yieldPackageWork(input);
 	}
 	writeLe32(view, offset, 0x06054b50); writeLe16(view, offset + 8, records.length); writeLe16(view, offset + 10, records.length); writeLe32(view, offset + 12, centralLength); writeLe32(view, offset + 16, centralOffset);
 	return output;
@@ -612,55 +685,9 @@ export function validateAndSubsetOfficeFont(input: ParadisOfficeFontInput): Para
 	} catch (error) {
 		return placeholder(snapshot.nodeId, 'embeddedFont', error instanceof AssetBudgetError ? 'budget' : 'unsafe', rawFingerprint.value);
 	}
-	if (!snapshot.subsetter || !snapshot.decoder) {
-		return placeholder(snapshot.nodeId, 'embeddedFont', 'unsupported', rawFingerprint.value);
-	}
-	try {
-		const trusted = snapshotTrustedSubset(snapshot.subsetter(source.slice(), [...snapshot.glyphIds]));
-		if (!trusted) { throw new UnsafeAssetError(); }
-		const subsetBytes = copyPlainBytes(trusted.bytes);
-		if (!subsetBytes) { throw new UnsafeAssetError(); }
-		if (subsetBytes.byteLength > MAX_FONT_OUTPUT_BYTES) {
-			throw new AssetBudgetError();
-		}
-		const output = inspectWoff2(subsetBytes);
-		const decoded = snapshotDecodedFont(snapshot.decoder(subsetBytes.slice()));
-		if (!decoded) { throw new UnsafeAssetError(); }
-		const decodedInspection = inspectSfnt(decoded.sfnt);
-		validateDecodedFont(output, decodedInspection, decoded, snapshot.glyphIds, inspected.glyphCount, fingerprint(subsetBytes, snapshot.token, snapshot.checkpoint));
-		if (output.tables.has('SVG ') || !output.tables.has('maxp')) {
-			throw new UnsafeAssetError();
-		}
-		throwIfParadisOfficeCancelled(snapshot.token); snapshot.checkpoint?.();
-		const published = subsetBytes.slice();
-		return withOptionalAltText({
-			id: snapshot.assetId,
-			kind: 'fontSubset' as const,
-			mime: 'font/woff2' as const,
-			bytes: published,
-			byteLength: published.byteLength,
-			fingerprint: fingerprint(published, snapshot.token, snapshot.checkpoint),
-		}, snapshot.altText);
-	} catch (error) {
-		return placeholder(snapshot.nodeId, 'embeddedFont', error instanceof AssetBudgetError ? 'budget' : 'unsafe', rawFingerprint.value);
-	}
-}
-
-function snapshotDecodedFont(value: ParadisOfficeDecodedFont): ParadisOfficeDecodedFont | undefined {
-	const values = dataProperties(value, ['sfnt', 'woff2Fingerprint', 'includedGlyphIds', 'compositeDependencies'], []);
-	const sfnt = copyPlainBytes(values?.sfnt);
-	const included = copyPlainNumberArray(values?.includedGlyphIds);
-	if (!values || !sfnt || !included || !isFingerprint(values.woff2Fingerprint) || !Array.isArray(values.compositeDependencies) || Object.getPrototypeOf(values.compositeDependencies) !== Array.prototype) { return undefined; }
-	const dependencies: { readonly glyphId: number; readonly components: readonly number[] }[] = [];
-	try {
-		for (const raw of Array.prototype.slice.call(values.compositeDependencies) as unknown[]) {
-			const record = dataProperties(raw as object, ['glyphId', 'components'], []);
-			const components = copyPlainNumberArray(record?.components);
-			if (!record || typeof record.glyphId !== 'number' || !components) { return undefined; }
-			dependencies.push({ glyphId: record.glyphId, components });
-		}
-	} catch { return undefined; }
-	return { sfnt, woff2Fingerprint: values.woff2Fingerprint, includedGlyphIds: included, compositeDependencies: dependencies };
+	// A production WOFF2 decoder/subsetter service is not wired until the Task 3 worker integration.
+	// Caller-supplied callbacks cannot establish an independent trust boundary, so publishing is forbidden.
+	return placeholder(snapshot.nodeId, 'embeddedFont', 'unsupported', rawFingerprint.value);
 }
 
 function copyPlainNumberArray(value: unknown): readonly number[] | undefined {
@@ -669,91 +696,6 @@ function copyPlainNumberArray(value: unknown): readonly number[] | undefined {
 		const copy = Array.prototype.slice.call(value) as unknown[];
 		return copy.every(item => typeof item === 'number' && Number.isSafeInteger(item) && item >= 0 && item <= MAX_FONT_GLYPHS) ? copy as number[] : undefined;
 	} catch { return undefined; }
-}
-
-function validateDecodedFont(woff2: InspectedFont, sfnt: InspectedFont, decoded: ParadisOfficeDecodedFont, requested: readonly number[], sourceGlyphCount: number | undefined, expectedFingerprint: ParadisOfficeFingerprint): void {
-	if (decoded.woff2Fingerprint.byteLength !== expectedFingerprint.byteLength || decoded.woff2Fingerprint.value !== expectedFingerprint.value) { throw new UnsafeAssetError(); }
-	if (sfnt.expandedByteLength !== woff2.expandedByteLength || sfnt.expandedByteLength > expectedFingerprint.byteLength * 100) { throw new AssetBudgetError(); }
-	for (const tag of ['maxp', 'cmap', 'name', 'OS/2']) { if (!sfnt.tables.has(tag) || !woff2.tables.has(tag)) { throw new UnsafeAssetError(); } }
-	const outline = sfnt.tables.has('glyf') && sfnt.tables.has('loca') || sfnt.tables.has('CFF ') || sfnt.tables.has('CFF2');
-	if (!outline || sfnt.tables.has('SVG ') || sfnt.tables.has('COLR') || !sameSet(sfnt.tables, woff2.tables)) { throw new UnsafeAssetError(); }
-	const glyphCount = sfnt.glyphCount;
-	if (!glyphCount) { throw new UnsafeAssetError(); }
-	const actualDependencies = validateSfntSemanticTables(decoded.sfnt, sfnt.records ?? [], glyphCount);
-	const included = new Set(decoded.includedGlyphIds);
-	if (included.size !== decoded.includedGlyphIds.length || included.size !== glyphCount || !included.has(0) || [...included].some(id => id >= glyphCount || sourceGlyphCount !== undefined && id >= sourceGlyphCount)) { throw new UnsafeAssetError(); }
-	for (let id = 0; id < glyphCount; id++) { if (!included.has(id)) { throw new UnsafeAssetError(); } }
-	for (const glyph of requested) { if (!included.has(glyph)) { throw new UnsafeAssetError(); } }
-	for (const dependency of decoded.compositeDependencies) {
-		if (!included.has(dependency.glyphId) || dependency.components.some(component => !included.has(component))) { throw new UnsafeAssetError(); }
-	}
-	const declaredDependencies = new Map(decoded.compositeDependencies.map(value => [value.glyphId, [...value.components].sort((a, b) => a - b).join(',')]));
-	if (declaredDependencies.size !== decoded.compositeDependencies.length || declaredDependencies.size !== actualDependencies.size) { throw new UnsafeAssetError(); }
-	for (const [glyph, components] of actualDependencies) { if (declaredDependencies.get(glyph) !== components.join(',')) { throw new UnsafeAssetError(); } }
-}
-
-function validateSfntSemanticTables(bytes: Uint8Array, records: readonly FontTableRecord[], glyphCount: number): ReadonlyMap<number, readonly number[]> {
-	const byTag = new Map(records.map(record => [record.tag, record]));
-	const cmap = byTag.get('cmap'); const name = byTag.get('name'); const os2 = byTag.get('OS/2');
-	if (!cmap || !name || !os2) { throw new UnsafeAssetError(); }
-	if (cmap.length < 4 || readU16(bytes, cmap.offset) !== 0) { throw new UnsafeAssetError(); }
-	const cmapCount = readU16(bytes, cmap.offset + 2);
-	if (cmapCount < 1 || cmapCount > 64 || 4 + cmapCount * 8 > cmap.length) { throw new UnsafeAssetError(); }
-	for (let index = 0; index < cmapCount; index++) {
-		const subtable = readU32(bytes, cmap.offset + 4 + index * 8 + 4);
-		if (subtable >= cmap.length) { throw new UnsafeAssetError(); }
-	}
-	if (name.length < 6) { throw new UnsafeAssetError(); }
-	const nameFormat = readU16(bytes, name.offset); const nameCount = readU16(bytes, name.offset + 2); const strings = readU16(bytes, name.offset + 4);
-	if (nameFormat > 1 || nameCount > 4_096 || 6 + nameCount * 12 > name.length || strings > name.length) { throw new UnsafeAssetError(); }
-	for (let index = 0; index < nameCount; index++) {
-		const recordOffset = name.offset + 6 + index * 12;
-		const length = readU16(bytes, recordOffset + 8); const offset = readU16(bytes, recordOffset + 10);
-		if (strings + offset + length > name.length) { throw new UnsafeAssetError(); }
-	}
-	if (os2.length < 2) { throw new UnsafeAssetError(); }
-	const os2Version = readU16(bytes, os2.offset); const os2Minimum = [78, 86, 96, 96, 96, 100][os2Version];
-	if (os2Minimum === undefined || os2.length < os2Minimum) { throw new UnsafeAssetError(); }
-	if (byTag.has('glyf')) {
-		const head = byTag.get('head'); const loca = byTag.get('loca'); const glyf = byTag.get('glyf');
-		if (!head || !loca || !glyf || head.length < 54) { throw new UnsafeAssetError(); }
-		const longLoca = readU16(bytes, head.offset + 50) === 1; const entrySize = longLoca ? 4 : 2;
-		if (loca.length < (glyphCount + 1) * entrySize) { throw new UnsafeAssetError(); }
-		let previous = 0; const offsets: number[] = [];
-		for (let index = 0; index <= glyphCount; index++) {
-			const raw = longLoca ? readU32(bytes, loca.offset + index * 4) : readU16(bytes, loca.offset + index * 2) * 2;
-			if (raw < previous || raw > glyf.length) { throw new UnsafeAssetError(); }
-			previous = raw; offsets.push(raw);
-		}
-		return parseGlyfDependencies(bytes, glyf.offset, offsets);
-	} else {
-		const cff = byTag.get('CFF ') ?? byTag.get('CFF2');
-		if (!cff || cff.length < 4) { throw new UnsafeAssetError(); }
-		return new Map();
-	}
-}
-
-function parseGlyfDependencies(bytes: Uint8Array, glyfOffset: number, offsets: readonly number[]): ReadonlyMap<number, readonly number[]> {
-	const result = new Map<number, readonly number[]>();
-	for (let glyph = 0; glyph + 1 < offsets.length; glyph++) {
-		const start = glyfOffset + offsets[glyph]; const end = glyfOffset + offsets[glyph + 1]; if (start === end) { continue; }
-		if (end - start < 10) { throw new UnsafeAssetError(); }
-		const contours = (readU16(bytes, start) << 16) >> 16; if (contours >= 0) { continue; }
-		let offset = start + 10; const components: number[] = []; let more = true;
-		while (more) {
-			if (offset + 4 > end) { throw new UnsafeAssetError(); }
-			const flags = readU16(bytes, offset); const component = readU16(bytes, offset + 2); components.push(component); offset += 4;
-			offset += flags & 1 ? 4 : 2; if (flags & 8) { offset += 2; } else if (flags & 0x40) { offset += 4; } else if (flags & 0x80) { offset += 8; }
-			if (offset > end || components.length > 1_024) { throw new UnsafeAssetError(); }
-			more = (flags & 0x20) !== 0;
-		}
-		result.set(glyph, [...new Set(components)].sort((a, b) => a - b));
-	}
-	return result;
-}
-
-function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
-	return left.size === right.size && [...left].every(value => right.has(value));
 }
 
 function validateCspOrigin(value: string, kind: ParadisOfficeWordCspSource['kind']): string {

@@ -64,10 +64,11 @@ const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/d
 
 /** Owns and sanitizes every package asset before docx-preview can observe the package. */
 export async function sanitizeParadisDocxBytesForRenderer(bytes: Uint8Array, nodeId: string, token?: CancellationToken): Promise<ParadisOfficeRenderablePackage> {
+	if (!(bytes instanceof Uint8Array) || bytes.byteLength > 16 * 1024 * 1024) { throw new Error('Office package exceeds renderer preprocessing limits'); }
 	const owned = new Uint8Array(bytes.byteLength);
 	owned.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
 	const archive = await createParadisOfficeWebArchive(owned);
-	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive, token, deadline: Date.now() + 10_000 });
+	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive, token, deadline: Date.now() + 10_000, scheduler: () => new Promise<void>(resolve => setTimeout(resolve, 0)) });
 }
 
 // ── docx-preview の AST（使う部分だけを緩く型付けする） ────────────────────
@@ -144,6 +145,7 @@ export interface IParadisDocxDiffWebviewHost {
 	setStatus(text: string | undefined): void;
 	/** 書式変更の表示を切り替える。 */
 	setShowFormatChanges(enabled: boolean): void;
+	setAssetPlaceholders(placeholders: readonly { readonly title: string; readonly feature: string; readonly fingerprint?: string }[]): void;
 	setTimeout(handler: () => void, delay: number): number;
 	clearTimeout(handle: number): void;
 }
@@ -905,6 +907,7 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		}
 		switch (message.type) {
 			case 'load':
+				host.setAssetPlaceholders(message.assetPlaceholders);
 				void handleLoad(message.generation, message.original, message.modified);
 				break;
 			case 'annotate':
@@ -998,6 +1001,11 @@ export function paradisDocxDiffWebviewBoot(ctx: IParadisDocxDiffWebviewContext, 
 			}
 		},
 		setShowFormatChanges: (enabled: boolean) => window.document.body.classList.toggle('paradis-hide-format', !enabled),
+		setAssetPlaceholders: placeholders => {
+			const container = byId('asset-placeholders');
+			container.textContent = placeholders.length ? `Office assets unavailable: ${placeholders.length}` : '';
+			container.style.display = placeholders.length ? '' : 'none';
+		},
 		setTimeout: (handler: () => void, delay: number) => window.setTimeout(handler, delay),
 		clearTimeout: (handle: number) => window.clearTimeout(handle),
 	};
@@ -1135,6 +1143,7 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 	</style>
 </head>
 <body>
+	<div id="asset-placeholders" role="status" style="display:none"></div>
 	<div id="panes">
 		<div class="pane-wrap">
 			<div class="pane-label">${escapeHtml(labels.original)}</div>

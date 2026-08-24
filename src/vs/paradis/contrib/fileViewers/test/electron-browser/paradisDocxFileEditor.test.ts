@@ -91,7 +91,7 @@ suite('ParadisDocxFileEditor', () => {
 		const input = storeZip({
 			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/media/unsafe.svg" ContentType="image/svg+xml"/><Override PartName="/word/fonts/font.odttf" ContentType="application/x-font-ttf"/><Override PartName="/word/afchunk/chunk.html" ContentType="text/html"/></Types>',
 			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing r:embed="svg"/></w:r></w:p></w:body></w:document>',
 			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="svg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/unsafe.svg"/><Relationship Id="font" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font.odttf"/><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk/chunk.html"/></Relationships>',
 			'word/media/unsafe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>danger</script></svg>',
 			'word/fonts/font.odttf': 'RAW-FONT',
@@ -275,7 +275,8 @@ suite('ParadisDocxFileEditor', () => {
 				return disposables.add(new CancellationTokenSource());
 			},
 			async settleCurrentRender(): Promise<void> {
-				for (let index = 0; index < 64; index++) { await Promise.resolve(); }
+				await timeout(200);
+				for (let index = 0; index < 16; index++) { await Promise.resolve(); }
 			},
 			resetObservations(): void {
 				readResources.length = 0;
