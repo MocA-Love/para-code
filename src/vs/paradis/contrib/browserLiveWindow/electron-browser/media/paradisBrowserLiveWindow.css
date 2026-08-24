@@ -838,3 +838,12 @@
 .paradis-browser-live-window.paradis-browser-live-transparent .paradis-browser-live-tile {
 	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
 }
+
+/* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
+	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
+	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
+	同等以上の詳細度で打ち消す必要がある（クラス単独の `outline: none` では負ける）。 */
+.monaco-workbench .paradis-browser-live-pop:focus,
+.monaco-workbench .paradis-browser-live-pop:focus-visible {
+	outline: none;
+}
