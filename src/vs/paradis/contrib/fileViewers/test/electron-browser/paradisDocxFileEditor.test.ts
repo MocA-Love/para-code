@@ -25,7 +25,7 @@ import { IWorkingCopyService } from '../../../../../workbench/services/workingCo
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
-import { buildParadisDocxDiffHtml } from '../../electron-browser/paradisDocxDiffWebview.js';
+import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
 
 interface IDocxEditorSnapshot {
@@ -68,6 +68,7 @@ type HeaderResult = VSBuffer | DeferredPromise<VSBuffer> | Error;
 
 suite('ParadisDocxFileEditor', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+	const defaultDocxPackage = storeZip({ '[Content_Types].xml': '<Types/>', 'word/document.xml': '<document/>' });
 
 	test('integrates exact mounted and fallback CSP sources into the Word diff webview', () => {
 		const labels = { original: 'Before', modified: 'After', loading: 'Loading' };
@@ -84,6 +85,25 @@ suite('ParadisDocxFileEditor', () => {
 			ok(csp.includes('object-src \'none\'; frame-src \'none\'; worker-src \'none\';'));
 			ok(csp.includes('navigate-to \'none\';'));
 		}
+	});
+
+	test('preprocesses unsafe package assets before the real browser archive result reaches either renderer', async () => {
+		const input = storeZip({
+			'[Content_Types].xml': '<Types/>',
+			'word/document.xml': '<document/>',
+			'word/media/unsafe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>danger</script></svg>',
+			'word/fonts/font.odttf': 'RAW-FONT',
+			'word/afchunk/chunk.html': '<script>ALTCHUNK</script>',
+		});
+
+		const result = await sanitizeParadisDocxBytesForRenderer(input, 'integration_package');
+		const serialized = new TextDecoder().decode(result.bytes);
+
+		strictEqual(serialized.includes('<script>'), false);
+		strictEqual(serialized.includes('RAW-FONT'), false);
+		strictEqual(serialized.includes('ALTCHUNK'), false);
+		ok(serialized.includes('Office asset unavailable'));
+		strictEqual(result.placeholders.length, 3);
 	});
 
 	function createDocxEditorFixture() {
@@ -118,6 +138,7 @@ suite('ParadisDocxFileEditor', () => {
 				return { classification };
 			}
 			const docxUrlMatch = /const DOCX_URL = ("(?:[^"\\]|\\.)*");/.exec(html);
+			const parsedDocxUrl = docxUrlMatch ? JSON.parse(docxUrlMatch[1]) as string : undefined;
 			const cspMatch = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(html);
 			const styleNonce = /<style nonce="([^"]+)">/.exec(html)?.[1];
 			const cspNonce = /script-src 'nonce-([^']+)'/.exec(cspMatch?.[1] ?? '')?.[1];
@@ -130,7 +151,7 @@ suite('ParadisDocxFileEditor', () => {
 			};
 			return {
 				classification,
-				docxUrl: docxUrlMatch ? JSON.parse(docxUrlMatch[1]) : undefined,
+				docxUrl: parsedDocxUrl?.startsWith('data:') ? '<sanitized-docx-data>' : parsedDocxUrl,
 				csp: styleNonce ? cspMatch?.[1].replace(`nonce-${styleNonce}`, 'nonce-<nonce>') : cspMatch?.[1],
 				scriptUrls: externalScripts.map(match => match[2]),
 				nonceConsistency: {
@@ -197,7 +218,10 @@ suite('ParadisDocxFileEditor', () => {
 					dispose: () => onDidChange.dispose(),
 				};
 			},
-			readFile: async (resource: URI, options: { length: number }) => {
+			readFile: async (resource: URI, options: { length?: number; limits?: { readonly size: number } }) => {
+				if (options.length !== 4) {
+					return { value: VSBuffer.wrap(defaultDocxPackage.slice()) };
+				}
 				readResources.push(resource.toString());
 				readOptions.push({ length: options.length });
 				const queue = queuedHeaders.get(resource.toString());
@@ -247,10 +271,7 @@ suite('ParadisDocxFileEditor', () => {
 				return disposables.add(new CancellationTokenSource());
 			},
 			async settleCurrentRender(): Promise<void> {
-				await Promise.resolve();
-				await Promise.resolve();
-				await Promise.resolve();
-				await Promise.resolve();
+				for (let index = 0; index < 64; index++) { await Promise.resolve(); }
 			},
 			resetObservations(): void {
 				readResources.length = 0;
@@ -459,12 +480,12 @@ suite('ParadisDocxFileEditor', () => {
 		});
 	});
 
-	function expectedViewerSnapshot(docxUrl: string): IDocxHtmlSnapshot {
+	function expectedViewerSnapshot(_docxUrl: string): IDocxHtmlSnapshot {
 		const libraryBase = asWebviewUri(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview')).toString(true);
-		const exactOrigins = [...new Set([new URL(libraryBase).origin, new URL(docxUrl).origin])].join(' ');
+		const exactOrigins = new URL(libraryBase).origin;
 		return {
 			classification: 'viewer',
-			docxUrl,
+			docxUrl: '<sanitized-docx-data>',
 			csp: `default-src 'none'; script-src 'nonce-<nonce>' ${exactOrigins}; style-src 'unsafe-inline'; img-src data: blob: ${exactOrigins}; font-src data: blob: ${exactOrigins}; connect-src ${exactOrigins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none';`,
 			scriptUrls: [`${libraryBase}/jszip.min.js`, `${libraryBase}/docx-preview.min.js`],
 			nonceConsistency: {
@@ -1138,3 +1159,31 @@ suite('ParadisDocxFileEditor', () => {
 		});
 	});
 });
+
+function storeZip(files: Readonly<Record<string, string>>): Uint8Array {
+	const encoder = new TextEncoder();
+	const records = Object.entries(files).map(([name, value]) => ({ name: encoder.encode(name), bytes: encoder.encode(value), crc: testCrc32(encoder.encode(value)) }));
+	const localLength = records.reduce((sum, record) => sum + 30 + record.name.byteLength + record.bytes.byteLength, 0);
+	const centralLength = records.reduce((sum, record) => sum + 46 + record.name.byteLength, 0);
+	const output = new Uint8Array(localLength + centralLength + 22);
+	const view = new DataView(output.buffer);
+	const offsets: number[] = [];
+	let offset = 0;
+	for (const record of records) {
+		offsets.push(offset); view.setUint32(offset, 0x04034b50, true); view.setUint16(offset + 4, 20, true); view.setUint32(offset + 14, record.crc, true); view.setUint32(offset + 18, record.bytes.byteLength, true); view.setUint32(offset + 22, record.bytes.byteLength, true); view.setUint16(offset + 26, record.name.byteLength, true);
+		output.set(record.name, offset + 30); output.set(record.bytes, offset + 30 + record.name.byteLength); offset += 30 + record.name.byteLength + record.bytes.byteLength;
+	}
+	const centralOffset = offset;
+	for (let index = 0; index < records.length; index++) {
+		const record = records[index]; view.setUint32(offset, 0x02014b50, true); view.setUint16(offset + 4, 20, true); view.setUint16(offset + 6, 20, true); view.setUint32(offset + 16, record.crc, true); view.setUint32(offset + 20, record.bytes.byteLength, true); view.setUint32(offset + 24, record.bytes.byteLength, true); view.setUint16(offset + 28, record.name.byteLength, true); view.setUint32(offset + 42, offsets[index], true);
+		output.set(record.name, offset + 46); offset += 46 + record.name.byteLength;
+	}
+	view.setUint32(offset, 0x06054b50, true); view.setUint16(offset + 8, records.length, true); view.setUint16(offset + 10, records.length, true); view.setUint32(offset + 12, centralLength, true); view.setUint32(offset + 16, centralOffset, true);
+	return output;
+}
+
+function testCrc32(bytes: Uint8Array): number {
+	let crc = 0xffffffff;
+	for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit++) { crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); } }
+	return (crc ^ 0xffffffff) >>> 0;
+}

@@ -59,7 +59,7 @@ import {
 import { buildDocxDiff } from '../common/paradisDocxDiff.js';
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
-import { buildParadisDocxDiffHtml } from './paradisDocxDiffWebview.js';
+import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import './media/paradisDocxDiff.css';
 
 const $ = dom.$;
@@ -373,8 +373,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private async _readDocument(resource: URI): Promise<ArrayBuffer> {
 		// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリに載せてしまう。
 		const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
-		const bytes = content.value.buffer;
-		// VSBuffer は共有バッファへのビューのことがあるので、自前の ArrayBuffer に写してから渡す。
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`);
+		const bytes = sanitized.bytes;
 		return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 	}
 

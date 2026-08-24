@@ -7,14 +7,18 @@
 
 import { deepStrictEqual, notStrictEqual, ok, strictEqual, throws } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import {
 	buildParadisOfficeWordCsp,
+	sanitizeOfficeDocxPackageForRenderer,
 	sanitizeOfficeSvg,
 	validateAndSubsetOfficeFont,
+	type ParadisOfficeDecodedFont,
 	type ParadisRenderableFont,
 	type ParadisSanitizedSvg,
 	type ParadisOfficeTrustedFontSubset,
 } from '../../common/paradisOfficeSanitizer.js';
+import type { ParadisOfficeArchiveEntry } from '../../common/office/paradisOfficeArchive.js';
 
 suite('ParadisOfficeSanitizer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -132,6 +136,79 @@ suite('ParadisOfficeSanitizer', () => {
 		strictEqual(result.reason, 'unsafe');
 	});
 
+	test('does not invent a fingerprint for oversized SVG and accepts only a precomputed all-byte identity', () => {
+		const source = `<svg xmlns="http://www.w3.org/2000/svg"><text>${'x'.repeat(1_048_577)}</text></svg>`;
+		const withoutIdentity = sanitizeOfficeSvg({ nodeId: 'large-svg', assetId: 'large-svg', source });
+		const rawFingerprint = { algorithm: 'sha256', value: 'a'.repeat(64), byteLength: 1_048_636 } as const;
+		const withIdentity = sanitizeOfficeSvg({ nodeId: 'large-svg', assetId: 'large-svg', source, rawFingerprint });
+
+		ok(!hasBytes(withoutIdentity) && !hasBytes(withIdentity));
+		strictEqual(withoutIdentity.fingerprint, undefined);
+		strictEqual(withIdentity.fingerprint, rawFingerprint.value);
+	});
+
+	test('checks cancellation and caller checkpoints while hashing bounded assets', () => {
+		let checkpoints = 0;
+		const safe = sanitizeOfficeSvg({ nodeId: 'checked-svg', assetId: 'checked-svg', source: '<svg xmlns="http://www.w3.org/2000/svg"/>', checkpoint: () => checkpoints++ });
+		ok(hasBytes(safe));
+		ok(checkpoints >= 2);
+		const cancelled = new CancellationTokenSource();
+		cancelled.cancel();
+		try {
+			throws(() => sanitizeOfficeSvg({ nodeId: 'cancelled-svg', assetId: 'cancelled-svg', source: '<svg xmlns="http://www.w3.org/2000/svg"/>', token: cancelled.token }));
+		} finally {
+			cancelled.dispose();
+		}
+	});
+
+	test('rejects malformed SVG path, point, and transform grammars instead of character-whitelisting them', () => {
+		const invalidAttributes = [
+			'd="M 0"',
+			'd="M0 0 A1 1 0 2 0 2 2"',
+			'd="M0 0,,L1 1"',
+			`d="M0 0 ${'L1 1 '.repeat(8_193)}"`,
+			'points="0,0,1"',
+			'transform="matrix(1 0 0)"',
+			'transform="translate(1,,2)"',
+		];
+		for (const [index, attribute] of invalidAttributes.entries()) {
+			const element = attribute.startsWith('points') ? 'polygon' : 'path';
+			const result = sanitizeOfficeSvg({
+				nodeId: `svg-grammar-${index}`,
+				assetId: `svg-grammar-${index}`,
+				source: `<svg xmlns="http://www.w3.org/2000/svg"><${element} ${attribute}/></svg>`,
+			});
+			ok(!hasBytes(result), attribute);
+		}
+	});
+
+	test('preprocesses package media before renderer publication and emits a typed safe asset manifest', async () => {
+		const archive = new MemoryOfficeArchive({
+			'[Content_Types].xml': '<Types/>',
+			'word/document.xml': '<document/>',
+			'word/media/safe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L1 1"/></svg>',
+			'word/media/unsafe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+			'word/media/unknown.bin': 'UNSAFE-MEDIA-BYTES',
+			'word/fonts/font1.odttf': 'RAW-FONT-BYTES',
+			'word/afchunk/chunk1.html': '<script>RAW-ALTCHUNK</script>',
+		});
+
+		const result = await sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'package-1', source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04), archive,
+		});
+		const serialized = new TextDecoder().decode(result.bytes);
+
+		strictEqual(serialized.includes('<script>'), false);
+		strictEqual(serialized.includes('UNSAFE-MEDIA-BYTES'), false);
+		strictEqual(serialized.includes('RAW-FONT-BYTES'), false);
+		strictEqual(serialized.includes('RAW-ALTCHUNK'), false);
+		ok(serialized.includes('<path d="M 0 0 L 1 1"/>'));
+		ok(serialized.includes('Office asset unavailable'));
+		strictEqual(result.assets.some(asset => asset.kind === 'sanitizedSvg'), true);
+		strictEqual(result.assets.some(asset => asset.kind === 'placeholderPreview'), true);
+		strictEqual(result.placeholders.length, 4);
+	});
+
 	test('enforces SVG byte, depth, node, and attribute budgets before publishing bytes', () => {
 		const deep = `<svg xmlns="http://www.w3.org/2000/svg">${'<g>'.repeat(65)}${'</g>'.repeat(65)}</svg>`;
 		const many = `<svg xmlns="http://www.w3.org/2000/svg">${'<g/>'.repeat(16_385)}</svg>`;
@@ -147,25 +224,26 @@ suite('ParadisOfficeSanitizer', () => {
 
 	test('validates a raw SFNT and publishes only a trusted bounded WOFF2 subset', () => {
 		const source = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 3]) }]);
-		const subsetBytes = minimalWoff2([{ tag: 'maxp', originalLength: 6 }]);
-		const trustedSubset: ParadisOfficeTrustedFontSubset = {
-			bytes: subsetBytes,
-			glyphCount: 2,
-			expandedByteLength: 36,
-			hasExternalReferences: false,
-		};
+		const decodedSfnt = renderableSfnt(3);
+		const subsetBytes = decoderBackedWoff2(decodedSfnt);
+		const trustedSubset: ParadisOfficeTrustedFontSubset = { bytes: subsetBytes };
 		let sourceSeenBySubsetter: Uint8Array | undefined;
+		let subsetSeenByDecoder: Uint8Array | undefined;
 
 		const result = validateAndSubsetOfficeFont({
 			nodeId: 'font-1',
 			assetId: 'asset-font-1',
 			source,
-			glyphIds: [0, 2],
+			glyphIds: [1, 2],
 			altText: 'Embedded font',
 			subsetter: (sourceSnapshot, glyphIds) => {
 				sourceSeenBySubsetter = sourceSnapshot;
-				deepStrictEqual(glyphIds, [0, 2]);
+				deepStrictEqual(glyphIds, [1, 2]);
 				return trustedSubset;
+			},
+			decoder: subsetSnapshot => {
+				subsetSeenByDecoder = subsetSnapshot;
+				return decodedFont(decodedSfnt, [0, 1, 2], [{ glyphId: 2, components: [1] }]);
 			},
 		});
 
@@ -178,6 +256,7 @@ suite('ParadisOfficeSanitizer', () => {
 		deepStrictEqual(result.bytes, subsetBytes);
 		notStrictEqual(result.bytes, subsetBytes);
 		notStrictEqual(sourceSeenBySubsetter, source);
+		notStrictEqual(subsetSeenByDecoder, subsetBytes);
 	});
 
 	test('rejects unsafe raw font tables and invalid, oversized, or externally referencing subset output', () => {
@@ -222,6 +301,7 @@ suite('ParadisOfficeSanitizer', () => {
 				source: entry.source,
 				glyphIds: [0],
 				subsetter: () => entry.subset,
+				decoder: () => decodedFont(renderableSfnt(1), [0], []),
 			});
 			ok(!hasBytes(result));
 			strictEqual(result.reason, 'unsafe');
@@ -242,15 +322,62 @@ suite('ParadisOfficeSanitizer', () => {
 	test('rejects stateful trusted subset output instead of publishing a later byte snapshot', () => {
 		const source = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 1]) }]);
 		const subsetBytes = minimalWoff2([{ tag: 'maxp', originalLength: 6 }]);
-		const statefulSubset = { glyphCount: 1, expandedByteLength: 36, hasExternalReferences: false } as ParadisOfficeTrustedFontSubset;
+		const statefulSubset = {} as ParadisOfficeTrustedFontSubset;
 		Object.defineProperty(statefulSubset, 'bytes', { enumerable: true, get: () => subsetBytes });
 
 		const result = validateAndSubsetOfficeFont({
 			nodeId: 'font-stateful-subset', assetId: 'font-stateful-subset', source, glyphIds: [0], subsetter: () => statefulSubset,
+			decoder: () => decodedFont(renderableSfnt(1), [0], []),
 		});
 
 		ok(!hasBytes(result));
 		strictEqual(result.reason, 'unsafe');
+	});
+
+	test('requires independent decoded SFNT and complete requested/composite glyph proof', () => {
+		const source = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 3]) }]);
+		const decodedSfnt = renderableSfnt(3);
+		const subset = { bytes: decoderBackedWoff2(decodedSfnt) };
+		const decodedCases: readonly ParadisOfficeDecodedFont[] = [
+			decodedFont(decodedSfnt, [1, 2], []),
+			decodedFont(decodedSfnt, [0, 1], []),
+			decodedFont(decodedSfnt, [0, 1, 2], [{ glyphId: 2, components: [1, 3] }]),
+		];
+
+		for (const [index, decoded] of decodedCases.entries()) {
+			const result = validateAndSubsetOfficeFont({
+				nodeId: `font-proof-${index}`, assetId: `font-proof-${index}`, source, glyphIds: [1, 2],
+				subsetter: () => subset, decoder: () => decoded,
+			});
+			ok(!hasBytes(result));
+			strictEqual(result.reason, 'unsafe');
+		}
+	});
+
+	test('rejects exotic byte views and isolates every font processing boundary with fresh copies', () => {
+		class DerivedBytes extends Uint8Array { }
+		const validSource = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 3]) }]);
+		const invalidSources: Uint8Array[] = [new DerivedBytes(validSource), new Proxy(validSource, {})];
+		const resizable = Reflect.construct(ArrayBuffer, [validSource.byteLength, { maxByteLength: validSource.byteLength * 2 }]) as ArrayBuffer & { readonly resizable?: boolean };
+		if (resizable.resizable) { const view = new Uint8Array(resizable); view.set(validSource); invalidSources.push(view); }
+		for (const [index, source] of invalidSources.entries()) {
+			const result = validateAndSubsetOfficeFont({ nodeId: `font-view-${index}`, assetId: `font-view-${index}`, source, glyphIds: [0] });
+			ok(!hasBytes(result));
+			strictEqual(result.reason, 'unsafe');
+		}
+
+		const decodedSfnt = renderableSfnt(3);
+		const subsetBytes = decoderBackedWoff2(decodedSfnt);
+		let retainedSource: Uint8Array | undefined;
+		let retainedSubset: Uint8Array | undefined;
+		const result = validateAndSubsetOfficeFont({
+			nodeId: 'font-owned', assetId: 'font-owned', source: validSource, glyphIds: [1, 2],
+			subsetter: source => { retainedSource = source; return { bytes: subsetBytes }; },
+			decoder: subset => { retainedSubset = subset; return decodedFont(decodedSfnt, [0, 1, 2], []); },
+		});
+		if (!hasBytes(result)) { throw new Error('Expected isolated font result'); }
+		retainedSource?.fill(0); retainedSubset?.fill(0); subsetBytes.fill(0);
+		strictEqual(result.bytes.some(byte => byte !== 0), true);
 	});
 });
 
@@ -292,26 +419,67 @@ function tableChecksum(bytes: Uint8Array): number {
 	return sum;
 }
 
-function minimalWoff2(tables: readonly { readonly tag: string; readonly originalLength: number }[]): Uint8Array {
-	const knownTags = ['cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name'];
+function minimalWoff2(tables: readonly { readonly tag: string; readonly originalLength: number }[], expandedByteLength?: number): Uint8Array {
+	const knownTags = ['cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post', 'cvt ', 'fpgm', 'glyf', 'loca'];
 	const directory: number[] = [];
 	for (const table of tables) {
 		const tagIndex = knownTags.indexOf(table.tag);
 		if (tagIndex < 0) {
 			throw new Error(`Unsupported test tag ${table.tag}`);
 		}
-		directory.push(tagIndex, table.originalLength);
+		directory.push((table.tag === 'glyf' || table.tag === 'loca' ? 0xc0 : 0) | tagIndex, table.originalLength);
 	}
-	const result = new Uint8Array(48 + directory.length + 1);
+	const payloadLength = 32;
+	const result = new Uint8Array(48 + directory.length + payloadLength);
 	writeTag(result, 0, 'wOF2');
 	writeU32(result, 4, 0x00010000);
 	writeU32(result, 8, result.byteLength);
 	writeU16(result, 12, tables.length);
-	writeU32(result, 16, 36);
-	writeU32(result, 20, 1);
+	const calculatedExpanded = 12 + tables.length * 16 + tables.reduce((sum, table) => sum + ((table.originalLength + 3) & ~3), 0);
+	writeU32(result, 16, expandedByteLength ?? calculatedExpanded);
+	writeU32(result, 20, payloadLength);
 	result.set(directory, 48);
-	result[result.byteLength - 1] = 0;
+	for (let index = result.byteLength - payloadLength; index < result.byteLength; index++) { result[index] = index & 0xff; }
 	return result;
+}
+
+function renderableSfnt(glyphCount: number): Uint8Array {
+	const cmap = new Uint8Array(16); writeU16(cmap, 2, 1); writeU32(cmap, 8, 12);
+	const name = new Uint8Array(6); writeU16(name, 4, 6);
+	return minimalSfnt([
+		{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, glyphCount >>> 8, glyphCount]) },
+		{ tag: 'cmap', bytes: cmap },
+		{ tag: 'name', bytes: name },
+		{ tag: 'OS/2', bytes: new Uint8Array(78) },
+		{ tag: 'head', bytes: new Uint8Array(54) },
+		{ tag: 'glyf', bytes: new Uint8Array() },
+		{ tag: 'loca', bytes: new Uint8Array((glyphCount + 1) * 2) },
+	]);
+}
+
+function decoderBackedWoff2(sfnt: Uint8Array): Uint8Array {
+	return minimalWoff2([
+		{ tag: 'maxp', originalLength: 6 },
+		{ tag: 'cmap', originalLength: 16 },
+		{ tag: 'name', originalLength: 6 },
+		{ tag: 'OS/2', originalLength: 78 },
+		{ tag: 'head', originalLength: 54 },
+		{ tag: 'glyf', originalLength: 0 },
+		{ tag: 'loca', originalLength: ((readU16ForTest(sfnt, sfntMaxpOffset(sfnt) + 4) + 1) * 2) },
+	], sfnt.byteLength);
+}
+
+function sfntMaxpOffset(sfnt: Uint8Array): number {
+	const tableCount = sfnt[4] * 256 + sfnt[5];
+	for (let index = 0; index < tableCount; index++) { const offset = 12 + index * 16; if (new TextDecoder().decode(sfnt.subarray(offset, offset + 4)) === 'maxp') { return readU32ForTest(sfnt, offset + 8); } }
+	throw new Error('missing maxp');
+}
+
+function readU16ForTest(bytes: Uint8Array, offset: number): number { return bytes[offset] * 256 + bytes[offset + 1]; }
+function readU32ForTest(bytes: Uint8Array, offset: number): number { return (bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]) >>> 0; }
+
+function decodedFont(sfnt: Uint8Array, includedGlyphIds: readonly number[], compositeDependencies: readonly { readonly glyphId: number; readonly components: readonly number[] }[]): ParadisOfficeDecodedFont {
+	return { sfnt, includedGlyphIds, compositeDependencies };
 }
 
 function writeTag(target: Uint8Array, offset: number, value: string): void {
@@ -330,4 +498,28 @@ function writeU32(target: Uint8Array, offset: number, value: number): void {
 	target[offset + 1] = value >>> 16;
 	target[offset + 2] = value >>> 8;
 	target[offset + 3] = value;
+}
+
+class MemoryOfficeArchive {
+	readonly containerByteLength = 4;
+	private readonly values = new Map<string, Uint8Array>();
+
+	constructor(values: Readonly<Record<string, string>>) {
+		for (const [name, value] of Object.entries(values)) {
+			this.values.set(name, new TextEncoder().encode(value));
+		}
+	}
+
+	async *entries(): AsyncIterable<ParadisOfficeArchiveEntry> {
+		for (const [name, value] of this.values) {
+			yield { name, compressedBytes: value.byteLength, declaredExpandedBytes: value.byteLength, encrypted: false, directory: false, symlink: false };
+		}
+	}
+
+	async *read(entry: ParadisOfficeArchiveEntry): AsyncIterable<Uint8Array> {
+		const value = this.values.get(entry.name);
+		if (value) { yield value.slice(); }
+	}
+
+	dispose(): void { }
 }
