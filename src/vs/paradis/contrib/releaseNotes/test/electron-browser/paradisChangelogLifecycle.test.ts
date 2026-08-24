@@ -65,6 +65,19 @@ suite('ParadisChangelogLifecycle', () => {
 		assert.strictEqual(modal.disposeCount, 1);
 	});
 
+	test('closing the modal cancels its current token after its fetch finishes', () => {
+		const lifecycle = new ParadisChangelogLifecycle<TestModal>();
+		const modal = new TestModal();
+		const generation = lifecycle.open(() => modal);
+
+		generation.finishFetch();
+		modal.dispose();
+
+		assert.strictEqual(generation.token.isCancellationRequested, true);
+		assert.strictEqual(generation.isCurrent(), false);
+		lifecycle.dispose();
+	});
+
 	test('a late result from the replaced generation cannot publish', async () => {
 		const lifecycle = new ParadisChangelogLifecycle<TestModal>();
 		let resolveFirst!: (value: string) => void;
