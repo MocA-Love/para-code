@@ -198,12 +198,13 @@ const workerProjectionBytes = 2 * 1024 * 1024;
 class WorkerResultProjector {
 	private readonly seen = new Set<object>();
 	private nodes = 0;
+	constructor(private readonly permitSharedInput = false) { }
 
 	project(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
 		const result = this.projectOnce(operation, value);
 		// A descriptor trap can mutate after an apparently valid pass. Repeat the bounded read
 		// before publishing; no value from either confirmation is retained.
-		const confirmation = new WorkerResultProjector().projectOnce(operation, value);
+		const confirmation = new WorkerResultProjector(this.permitSharedInput).projectOnce(operation, value);
 		if (!result || !confirmation || !this.equal(result, confirmation)) { return undefined; }
 		return result;
 	}
@@ -260,7 +261,7 @@ class WorkerResultProjector {
 
 	private record(value: unknown, required: readonly string[], optional: readonly string[], depth: number): ReadonlyMap<string, unknown> {
 		this.consume(depth);
-		if (!value || typeof value !== 'object' || Array.isArray(value) || this.seen.has(value)) { throw new TypeError('Office worker record'); }
+		if (!value || typeof value !== 'object' || Array.isArray(value) || (!this.permitSharedInput && this.seen.has(value))) { throw new TypeError('Office worker record'); }
 		this.seen.add(value);
 		const prototype = Object.getPrototypeOf(value);
 		if (prototype !== Object.prototype && prototype !== null) { throw new TypeError('Office worker record prototype'); }
@@ -281,7 +282,7 @@ class WorkerResultProjector {
 
 	private array(value: unknown, depth: number): readonly unknown[] {
 		this.consume(depth);
-		if (!Array.isArray(value) || this.seen.has(value)) { throw new TypeError('Office worker array'); }
+		if (!Array.isArray(value) || (!this.permitSharedInput && this.seen.has(value))) { throw new TypeError('Office worker array'); }
 		this.seen.add(value);
 		const length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
 		if (!safeInteger(length) || length > workerProjectionNodes - this.nodes || Reflect.ownKeys(value).length !== length + 1) { throw new TypeError('Office worker array length'); }
@@ -423,8 +424,8 @@ class WorkerResultProjector {
 	}
 }
 
-export function projectOfficeWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
-	return new WorkerResultProjector().project(operation, value);
+export function projectOfficeWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown, permitSharedInput = false): object | undefined {
+	return new WorkerResultProjector(permitSharedInput).project(operation, value);
 }
 
 /** Bounded Node worker orchestrator. The shared process never parses untrusted Office bytes. */
@@ -537,6 +538,7 @@ export class OfficeWorkerHost {
 			listeners.push(worker.onError(() => this.workerStopped(job)));
 			if (this.cannotStart(job)) { for (const listener of listeners) { try { listener.dispose(); } catch { } } return; }
 			listeners.push(worker.onExit(() => this.workerStopped(job)));
+			if (this.cannotStart(job)) { for (const listener of listeners) { try { listener.dispose(); } catch { } } return; }
 			job.workerListeners = listeners;
 		} catch {
 			job.workerListeners = listeners;
@@ -622,8 +624,7 @@ export class OfficeWorkerHost {
 		let reapTimer: unknown;
 		try {
 			reapTimer = this.setTimer(() => this.orphan(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
-			if (job.state === 'finished' || job.orphaned) { try { this.clearTimer(reapTimer); } catch { } return; }
-			job.reapTimer = reapTimer;
+			if (job.state === 'finished' || job.orphaned) { try { this.clearTimer(reapTimer); } catch { } } else { job.reapTimer = reapTimer; }
 			const termination = job.worker.terminate();
 			void Promise.resolve(termination).then(
 				() => this.finish(job, outcome),
