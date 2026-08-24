@@ -7,9 +7,13 @@
 import { createHash } from 'crypto';
 import { deepStrictEqual, doesNotThrow, ok, rejects, strictEqual } from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+// eslint-disable-next-line local/code-layering, local/code-import-patterns -- This Node integration test intentionally exercises the browser broker's IPC client contract against the backend store.
+import { ParadisOfficeSourceBroker } from '../../browser/paradisOfficeSourceBroker.js';
 import {
 	buildParadisOfficeSourceRevision,
+	IOfficeSourceProvider,
 	IOfficeSpoolExpiryScheduler,
 	PARADIS_OFFICE_SPOOL_CHUNK_BYTES,
 	PARADIS_OFFICE_SPOOL_LIMITS,
@@ -263,6 +267,170 @@ suite('OfficeSpoolStore', () => {
 		strictEqual(Object.prototype.hasOwnProperty.call(sealed, 'path'), false);
 		strictEqual(Object.prototype.hasOwnProperty.call(sealed, 'bytes'), false);
 		strictEqual(Object.prototype.hasOwnProperty.call(sealed, 'stream'), false);
+		store.disposeAll();
+	});
+
+	test('cleans sealed bytes and quota after every authenticated open-attempt failure', async () => {
+		for (const failure of ['mismatch', 'extraField', 'nonFunction'] as const) {
+			const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+			const sealed = await appendAndSeal(store, ownerA, failure);
+			const candidate = failure === 'mismatch'
+				? { ...sealed, size: sealed.size + 1 }
+				: failure === 'extraField'
+					? { ...sealed, path: '/raw/private/spool' }
+					: sealed;
+			await rejects(() => store.open(candidate as typeof sealed, (failure === 'nonFunction' ? undefined : async () => undefined) as never));
+			strictEqual(store.activeSpoolCount, 0);
+			strictEqual(store.byteLength, 0);
+			await store.begin(ownerA);
+			await store.begin(ownerA);
+			store.disposeAll();
+		}
+
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const sealed = await appendAndSeal(store, ownerA, 'victim');
+		await rejects(() => store.open({ ...sealed, nonce: 'f'.repeat(64) }, async () => undefined));
+		strictEqual(store.activeSpoolCount, 1);
+		await store.open(sealed, async source => strictEqual((await source.read(0, 6)).toString(), 'victim'));
+	});
+
+	test('enforces the unsealed hard deadline synchronously even when the scheduler has not fired', async () => {
+		let now = 10_000;
+		const store = new OfficeSpoolStore({
+			platform: 'desktopLocal',
+			now: () => now,
+			createExpiryScheduler: runner => new ManualExpiryScheduler(runner),
+		});
+		const reference = await store.begin(ownerA);
+		now += 119_999;
+		await store.append(reference, VSBuffer.fromString('a'));
+		now += 1;
+		await rejects(() => store.seal(reference, sealRequest('a')), (error: unknown) => {
+			return error instanceof Error && (error as Error & { code?: string }).code === 'invalidReference';
+		});
+		strictEqual(store.activeSpoolCount, 0);
+		strictEqual(store.byteLength, 0);
+	});
+
+	test('snapshots reentrant reference, buffer, seal, and open inputs before entry lookup', async () => {
+		for (const operation of ['reference', 'buffer', 'seal', 'open'] as const) {
+			const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+			const reference = await store.begin(ownerA);
+			if (operation === 'reference') {
+				const candidate = new Proxy(reference, {
+					getOwnPropertyDescriptor(target, property) {
+						if (property === 'nonce') { void store.dispose(reference); }
+						return Reflect.getOwnPropertyDescriptor(target, property);
+					},
+				});
+				await rejects(() => store.append(candidate, VSBuffer.fromString('x')));
+			} else if (operation === 'buffer') {
+				const bytes = new Proxy(VSBuffer.fromString('x'), {
+					getOwnPropertyDescriptor(target, property) {
+						if (property === 'buffer') { void store.dispose(reference); }
+						return Reflect.getOwnPropertyDescriptor(target, property);
+					},
+				});
+				await rejects(() => store.append(reference, bytes));
+			} else if (operation === 'seal') {
+				await store.append(reference, VSBuffer.fromString('x'));
+				const request = sealRequest('x');
+				const candidate = new Proxy(request, {
+					getOwnPropertyDescriptor(target, property) {
+						if (property === 'sourceKind') { void store.dispose(reference); }
+						return Reflect.getOwnPropertyDescriptor(target, property);
+					},
+				});
+				await rejects(() => store.seal(reference, candidate));
+			} else {
+				await store.append(reference, VSBuffer.fromString('x'));
+				const sealed = await store.seal(reference, sealRequest('x'));
+				const candidate = new Proxy(sealed, {
+					getOwnPropertyDescriptor(target, property) {
+						if (property === 'providerIdentity') { void store.dispose(sealed); }
+						return Reflect.getOwnPropertyDescriptor(target, property);
+					},
+				});
+				await rejects(() => store.open(candidate, async () => undefined));
+			}
+			strictEqual(store.activeSpoolCount, 0);
+			strictEqual(store.byteLength, 0);
+		}
+	});
+
+	test('rejects concurrent open, append, and seal transitions without retaining a second consumer', async () => {
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const sealed = await appendAndSeal(store, ownerA, 'concurrent');
+		let release!: () => void;
+		const blocked = new Promise<void>(resolve => release = resolve);
+		const opening = store.open(sealed, async source => {
+			strictEqual((await source.read(0, 10)).toString(), 'concurrent');
+			await blocked;
+		});
+		await rejects(() => store.open(sealed, async () => undefined));
+		await rejects(() => store.append(sealed, VSBuffer.fromString('x')));
+		await rejects(() => store.seal(sealed, sealRequest('concurrent')));
+		release();
+		await opening;
+		strictEqual(store.activeSpoolCount, 0);
+	});
+
+	test('rolls back begin when scheduling fails and bounds random collision attempts', async () => {
+		const schedulerFailure = new OfficeSpoolStore({
+			platform: 'desktopLocal',
+			createExpiryScheduler: () => ({ schedule() { throw new Error('/raw/private'); }, dispose() { } }),
+		});
+		await rejects(() => schedulerFailure.begin(ownerA));
+		strictEqual(schedulerFailure.activeSpoolCount, 0);
+
+		let randomCalls = 0;
+		const collisionStore = new OfficeSpoolStore({
+			platform: 'desktopLocal',
+			randomBytes: length => {
+				randomCalls++;
+				if (randomCalls > 66) { throw new Error('collision sentinel'); }
+				return new Uint8Array(length).fill(1);
+			},
+		});
+		await collisionStore.begin(ownerA);
+		await rejects(() => collisionStore.begin(ownerB), (error: unknown) => {
+			return error instanceof Error && error.name === 'OfficeSpoolStoreError';
+		});
+		ok(randomCalls <= 66);
+		collisionStore.disposeAll();
+	});
+
+	test('rejects non-finite clock values without creating an entry', async () => {
+		for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+			const store = new OfficeSpoolStore({ platform: 'desktopLocal', now: () => value });
+			await rejects(() => store.begin(ownerA), TypeError);
+			strictEqual(store.activeSpoolCount, 0);
+		}
+	});
+
+	test('runs the real broker and real spool store end to end and reuses quota after open', async () => {
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const provider: IOfficeSourceProvider = {
+			async snapshot() { return { identity: 'provider:real', revision: 'etag:real' }; },
+			async *read() { yield VSBuffer.fromString('real-bytes'); },
+		};
+		const broker = new ParadisOfficeSourceBroker({
+			ownerId: ownerA,
+			platform: 'desktopLocal',
+			provider,
+			spoolClient: store,
+			createHash: () => {
+				const hash = createHash('sha256');
+				return { update: bytes => { hash.update(bytes.buffer); }, digest: () => hash.digest('hex') };
+			},
+			isRemoteProtocolV1: () => false,
+		});
+		const source = await broker.open({ kind: 'gitCommit', uri: 'git:/doc', displayName: 'doc.docx' }, CancellationToken.None);
+		ok(source.kind === 'spool');
+		await store.open(source.spool, async opened => strictEqual((await opened.read(0, 10)).toString(), 'real-bytes'));
+		strictEqual(store.activeSpoolCount, 0);
+		await store.begin(ownerA);
+		await store.begin(ownerA);
 		store.disposeAll();
 	});
 });

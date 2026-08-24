@@ -21,7 +21,8 @@ import {
 	ParadisOfficeSpoolLimits,
 	ParadisOfficeSpoolReference,
 	ParadisOfficeWritableSpoolReference,
-	validateParadisOfficeSealedSpoolReference,
+	snapshotParadisOfficeBuffer,
+	snapshotParadisOfficeSealedSpoolAttempt,
 	validateParadisOfficeSealRequest,
 	validateParadisOfficeSpoolOwner,
 	validateParadisOfficeWritableSpoolReference,
@@ -38,7 +39,9 @@ export type OfficeSpoolStoreErrorCode =
 	| 'notWritable'
 	| 'notSealed'
 	| 'integrityMismatch'
-	| 'invalidRange';
+	| 'invalidRange'
+	| 'initializationFailed'
+	| 'randomnessUnavailable';
 
 export class OfficeSpoolStoreError extends Error {
 	override readonly name = 'OfficeSpoolStoreError';
@@ -92,6 +95,8 @@ function validLimit(value: number): boolean {
 	return Number.isSafeInteger(value) && value >= 0;
 }
 
+const MAX_RANDOM_ID_ATTEMPTS = 64;
+
 /** Backend-local one-shot sealed spool store. It never exposes a filesystem path. */
 export class OfficeSpoolStore implements IOfficeSpoolClient {
 	private readonly entries = new Map<string, SpoolEntry>();
@@ -129,18 +134,41 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			throw new OfficeSpoolStoreError('globalQuota');
 		}
 
-		let id: string;
-		do {
-			id = hex(this.random(24));
-			if (!/^[a-f\d]{48}$/.test(id)) {
-				throw new TypeError('Invalid Office spool randomness');
+		let id: string | undefined;
+		try {
+			for (let attempt = 0; attempt < MAX_RANDOM_ID_ATTEMPTS; attempt++) {
+				const candidate = hex(this.random(24));
+				if (!/^[a-f\d]{48}$/.test(candidate)) {
+					throw new OfficeSpoolStoreError('randomnessUnavailable');
+				}
+				if (!this.entries.has(candidate)) {
+					id = candidate;
+					break;
+				}
 			}
-		} while (this.entries.has(id));
-		const nonce = hex(this.random(32));
-		if (!/^[a-f\d]{64}$/.test(nonce)) {
-			throw new TypeError('Invalid Office spool randomness');
+		} catch (error) {
+			if (error instanceof OfficeSpoolStoreError) {
+				throw error;
+			}
+			throw new OfficeSpoolStoreError('randomnessUnavailable');
 		}
-		const expiresAt = this.now() + PARADIS_OFFICE_UNSEALED_SPOOL_EXPIRY_MILLISECONDS;
+		if (!id) {
+			throw new OfficeSpoolStoreError('randomnessUnavailable');
+		}
+		let nonce: string;
+		try {
+			nonce = hex(this.random(32));
+		} catch {
+			throw new OfficeSpoolStoreError('randomnessUnavailable');
+		}
+		if (!/^[a-f\d]{64}$/.test(nonce)) {
+			throw new OfficeSpoolStoreError('randomnessUnavailable');
+		}
+		const currentTime = this.readCurrentTime();
+		const expiresAt = currentTime + PARADIS_OFFICE_UNSEALED_SPOOL_EXPIRY_MILLISECONDS;
+		if (!Number.isSafeInteger(expiresAt)) {
+			throw new TypeError('Invalid Office spool clock');
+		}
 		const entryHolder: { entry?: SpoolEntry } = {};
 		const expiryScheduler = this.createExpiryScheduler(() => {
 			if (entryHolder.entry) {
@@ -160,29 +188,36 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		};
 		entryHolder.entry = entry;
 		this.entries.set(id, entry);
-		expiryScheduler.schedule(PARADIS_OFFICE_UNSEALED_SPOOL_EXPIRY_MILLISECONDS);
+		try {
+			expiryScheduler.schedule(PARADIS_OFFICE_UNSEALED_SPOOL_EXPIRY_MILLISECONDS);
+		} catch {
+			this.removeEntry(entry);
+			throw new OfficeSpoolStoreError('initializationFailed');
+		}
 		return { id, ownerId, nonce };
 	}
 
 	async append(untrustedReference: ParadisOfficeWritableSpoolReference, untrustedBytes: VSBuffer): Promise<void> {
 		const reference = validateParadisOfficeWritableSpoolReference(untrustedReference);
-		const entry = this.requireEntry(reference);
+		let owned: VSBuffer;
+		try {
+			owned = snapshotParadisOfficeBuffer(untrustedBytes, PARADIS_OFFICE_SPOOL_CHUNK_BYTES);
+		} catch (error) {
+			if (error instanceof RangeError) {
+				throw new OfficeSpoolStoreError('chunkTooLarge');
+			}
+			throw error;
+		}
+		const entry = this.requireEntry(reference, true);
 		if (entry.state !== 'writable') {
 			throw new OfficeSpoolStoreError('notWritable');
 		}
-		if (!(untrustedBytes instanceof VSBuffer)) {
-			throw new TypeError('Invalid Office spool chunk');
-		}
-		if (untrustedBytes.byteLength > PARADIS_OFFICE_SPOOL_CHUNK_BYTES) {
-			throw new OfficeSpoolStoreError('chunkTooLarge');
-		}
-		if (entry.byteLength + untrustedBytes.byteLength > this.limits.compressedInputBytes) {
+		if (entry.byteLength + owned.byteLength > this.limits.compressedInputBytes) {
 			throw new OfficeSpoolStoreError('sourceByteQuota');
 		}
-		if (this.totalBytes + untrustedBytes.byteLength > this.limits.totalBytes) {
+		if (this.totalBytes + owned.byteLength > this.limits.totalBytes) {
 			throw new OfficeSpoolStoreError('globalByteQuota');
 		}
-		const owned = untrustedBytes.clone();
 		entry.hash.update(owned.buffer);
 		entry.chunks.push(owned);
 		entry.byteLength += owned.byteLength;
@@ -194,11 +229,11 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		untrustedRequest: ParadisOfficeSealRequest,
 	): Promise<ParadisOfficeSealedSpoolReference> {
 		const reference = validateParadisOfficeWritableSpoolReference(untrustedReference);
-		const entry = this.requireEntry(reference);
+		const request = validateParadisOfficeSealRequest(untrustedRequest);
+		const entry = this.requireEntry(reference, true);
 		if (entry.state !== 'writable') {
 			throw new OfficeSpoolStoreError('notWritable');
 		}
-		const request = validateParadisOfficeSealRequest(untrustedRequest);
 		const actualHash = entry.hash.digest('hex');
 		const actualRevision = buildParadisOfficeSourceRevision(
 			request.sourceKind,
@@ -218,18 +253,23 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 	}
 
 	async open<T>(untrustedReference: ParadisOfficeSealedSpoolReference, consume: (source: OfficeSpoolOpenedSource) => Promise<T>): Promise<T> {
-		const identity = this.readIdentityForOpen(untrustedReference);
-		const entry = this.requireEntry(identity);
+		const attempt = snapshotParadisOfficeSealedSpoolAttempt(untrustedReference);
+		const consumeIsFunction = typeof consume === 'function';
+		if (!attempt.identity) {
+			throw new TypeError('Invalid sealed Office spool reference');
+		}
+		const entry = this.requireEntry(attempt.identity);
 		if (entry.state === 'writable') {
 			throw new OfficeSpoolStoreError('notSealed');
 		}
 		if (entry.state !== 'sealed' || !entry.sealed) {
 			throw new OfficeSpoolStoreError('invalidReference');
 		}
-		const sealed = validateParadisOfficeSealedSpoolReference(untrustedReference);
-		if (!this.sameSealedReference(entry.sealed, sealed) || typeof consume !== 'function') {
+		if (!attempt.sealed || !this.sameSealedReference(entry.sealed, attempt.sealed) || !consumeIsFunction) {
+			this.removeEntry(entry);
 			throw new OfficeSpoolStoreError('invalidReference');
 		}
+		const sealed = attempt.sealed;
 		entry.state = 'opening';
 		const source: OfficeSpoolOpenedSource = Object.freeze({
 			size: sealed.size,
@@ -245,7 +285,10 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 	}
 
 	async dispose(untrustedReference: ParadisOfficeSpoolReference): Promise<void> {
-		const reference = this.readIdentityForDispose(untrustedReference);
+		const reference = snapshotParadisOfficeSealedSpoolAttempt(untrustedReference).identity;
+		if (!reference) {
+			throw new TypeError('Invalid Office spool reference');
+		}
 		const entry = this.entries.get(reference.id);
 		if (!entry) {
 			return;
@@ -286,7 +329,13 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		if (entry.state !== 'writable' || this.entries.get(entry.id) !== entry) {
 			return;
 		}
-		const remaining = entry.expiresAt - this.now();
+		let remaining: number;
+		try {
+			remaining = entry.expiresAt - this.readCurrentTime();
+		} catch {
+			this.removeEntry(entry);
+			return;
+		}
 		if (remaining > 0) {
 			entry.expiryScheduler.schedule(remaining);
 			return;
@@ -294,42 +343,24 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		this.removeEntry(entry);
 	}
 
-	private requireEntry(reference: ParadisOfficeWritableSpoolReference): SpoolEntry {
+	private requireEntry(reference: ParadisOfficeWritableSpoolReference, enforceWritableDeadline = false): SpoolEntry {
 		const entry = this.entries.get(reference.id);
 		if (!entry || entry.ownerId !== reference.ownerId || entry.nonce !== reference.nonce) {
+			throw new OfficeSpoolStoreError('invalidReference');
+		}
+		if (enforceWritableDeadline && entry.state === 'writable' && this.readCurrentTime() >= entry.expiresAt) {
+			this.removeEntry(entry);
 			throw new OfficeSpoolStoreError('invalidReference');
 		}
 		return entry;
 	}
 
-	private readIdentityForOpen(value: unknown): ParadisOfficeWritableSpoolReference {
-		if (typeof value !== 'object' || value === null) {
-			throw new TypeError('Invalid sealed Office spool reference');
+	private readCurrentTime(): number {
+		const value = this.now();
+		if (!Number.isSafeInteger(value)) {
+			throw new TypeError('Invalid Office spool clock');
 		}
-		try {
-			const id = Object.getOwnPropertyDescriptor(value, 'id');
-			const ownerId = Object.getOwnPropertyDescriptor(value, 'ownerId');
-			const nonce = Object.getOwnPropertyDescriptor(value, 'nonce');
-			if (!id?.enumerable || !Object.prototype.hasOwnProperty.call(id, 'value')
-				|| !ownerId?.enumerable || !Object.prototype.hasOwnProperty.call(ownerId, 'value')
-				|| !nonce?.enumerable || !Object.prototype.hasOwnProperty.call(nonce, 'value')) {
-				throw new TypeError('Invalid sealed Office spool reference');
-			}
-			return validateParadisOfficeWritableSpoolReference({ id: id.value, ownerId: ownerId.value, nonce: nonce.value });
-		} catch (error) {
-			if (error instanceof TypeError) {
-				throw error;
-			}
-			throw new TypeError('Invalid sealed Office spool reference');
-		}
-	}
-
-	private readIdentityForDispose(value: unknown): ParadisOfficeWritableSpoolReference {
-		try {
-			return validateParadisOfficeWritableSpoolReference(value);
-		} catch {
-			return this.readIdentityForOpen(value);
-		}
+		return value;
 	}
 
 	private sameSealedReference(expected: ParadisOfficeSealedSpoolReference, actual: ParadisOfficeSealedSpoolReference): boolean {
@@ -375,9 +406,13 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			return;
 		}
 		this.entries.delete(entry.id);
-		entry.expiryScheduler.dispose();
 		this.totalBytes -= entry.byteLength;
 		entry.chunks.length = 0;
 		entry.byteLength = 0;
+		try {
+			entry.expiryScheduler.dispose();
+		} catch {
+			// Entry ownership and counters are already released.
+		}
 	}
 }
