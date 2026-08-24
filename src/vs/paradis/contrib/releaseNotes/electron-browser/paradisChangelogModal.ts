@@ -15,6 +15,7 @@
 
 import './media/changelogModal.css';
 import * as dom from '../../../../base/browser/dom.js';
+import * as domSanitize from '../../../../base/browser/domSanitize.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -351,7 +352,7 @@ export class ParadisChangelogModal extends Disposable {
 			const list = dom.append(this.contentElement, $('ul.para-cl-items'));
 			for (const entry of section.items) {
 				const li = dom.append(list, $('li'));
-				li.innerHTML = formatInlineMarkdown(entry);
+				domSanitize.safeSetInnerHtml(li, formatInlineMarkdown(entry));
 			}
 		}
 	}
