@@ -807,6 +807,11 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		if (hasDiff && diffStat) {
 			templateData.diffAdded.textContent = diffStat.insertions > 0 ? `+${diffStat.insertions}` : '';
 			templateData.diffRemoved.textContent = diffStat.deletions > 0 ? `-${diffStat.deletions}` : '';
+		} else {
+			// テンプレートは使い回されるので、消さないと前にこの枠を使っていた行の増減が残る
+			// (メモ・PR と同じ後始末)。
+			templateData.diffAdded.textContent = '';
+			templateData.diffRemoved.textContent = '';
 		}
 
 		const noteSummary = worktree.missing ? undefined : this.getNoteSummary(worktree);
@@ -1477,9 +1482,12 @@ export class ParadisWorkspacesView extends ViewPane {
 				}
 			}
 		}
-		// 高さ (delegate) と中身 (renderer) が同じ判定を読むよう、setChildren の前に作り直す
+		// 高さ (delegate) と中身 (renderer) が同じ判定を読むよう、setChildren の前に作り直す。
+		// **ルート要素だけを見てはいけない**: worktree 行はリポジトリ行の children にいるため、
+		// ルートだけを拾うと折りたたみ中のピン留め控え行しか presence に載らず、他の全行が
+		// 「メタ無し」= メタ段ごと非表示・行の高さも2段のまま、という状態で固定される。
 		this.rebuildMetaPresence(elements
-			.map(entry => entry.element)
+			.flatMap(entry => [entry.element, ...[...entry.children ?? []].map(child => child.element)])
 			.filter((element): element is IParadisWorktree => isWorktree(element)));
 		this.tree.setChildren(null, elements);
 		this._onDidChangeViewWelcomeState.fire();
