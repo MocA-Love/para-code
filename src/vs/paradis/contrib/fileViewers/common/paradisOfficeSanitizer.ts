@@ -108,7 +108,7 @@ export interface ParadisOfficePackageSanitizerInput {
 	readonly checkpoint?: () => void;
 	readonly deadline?: number;
 	readonly scheduler?: () => Promise<void>;
-	readonly allocationObserver?: (kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin', characters: number) => void;
+	readonly allocationObserver?: (kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin' | 'textEncoder', characters: number, bytes?: number) => void;
 }
 
 /** Builds the isolated Word webview policy from already-resolved, exact origins only. */
@@ -487,6 +487,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		const story = storyDocuments.get(storyName) ?? await loadOfficeStory(values, storyDocuments, storyName, contentType(storyName), input, state);
 		if (!story) { continue; }
 		const rewritten = await patchStoryRelationshipConsumers(story, replacements, input, state);
+		input.allocationObserver?.('textEncoder', rewritten.length);
 		const bytes = new TextEncoder().encode(rewritten);
 		if (bytes.byteLength > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
 		rewrittenXml.set(storyName, bytes);
@@ -575,6 +576,7 @@ const TRANSITIONAL_RELATIONSHIP_BASE = 'http://schemas.openxmlformats.org/office
 const STRICT_RELATIONSHIP_BASE = 'http://purl.oclc.org/ooxml/officeDocument/relationships/';
 const WORD_NAMESPACES = new Set([WORD_NAMESPACE, 'http://purl.oclc.org/ooxml/wordprocessingml/main']);
 const DRAWING_NAMESPACES = new Set(['http://schemas.openxmlformats.org/drawingml/2006/main', 'http://purl.oclc.org/ooxml/drawingml/main']);
+const MARKUP_COMPATIBILITY_NAMESPACE = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 const VML_NAMESPACE = 'urn:schemas-microsoft-com:vml';
 const OFFICE_VML_NAMESPACE = 'urn:schemas-microsoft-com:office:office';
 const RELATIONSHIP_ATTRIBUTE_NAMESPACES = new Set([TRANSITIONAL_RELATIONSHIP_BASE.slice(0, -1), STRICT_RELATIONSHIP_BASE.slice(0, -1)]);
@@ -845,14 +847,22 @@ function mapOfficeLexicalElements(source: string, root: OfficeXmlElement): Reado
 function isOfficeXmlWhitespace(value: string | undefined): boolean { return value === ' ' || value === '\t' || value === '\r' || value === '\n'; }
 
 type OfficePatchAffinity = 'before' | 'replace' | 'after';
-interface OfficeLexicalPatch { readonly start: number; readonly end: number; readonly text: string; readonly affinity: OfficePatchAffinity }
+interface OfficeTextMetrics { readonly characters: number; readonly bytes: number }
+interface OfficeSourceFragment extends OfficeTextMetrics { readonly kind: 'source'; readonly start: number; readonly end: number }
+interface OfficePlaceholderFragment extends OfficeTextMetrics { readonly kind: 'placeholder'; readonly value: ParadisOfficePlaceholder; readonly namespace: WordLexicalNamespace; readonly paragraph: boolean }
+interface OfficeNamespaceFragment extends OfficeTextMetrics { readonly kind: 'namespace'; readonly prefix: string; readonly uri: string }
+type OfficeOutputFragment = OfficeSourceFragment | OfficePlaceholderFragment | OfficeNamespaceFragment;
+interface OfficeLexicalPatch { readonly start: number; readonly end: number; readonly fragments: OfficeOutputFragment[]; readonly affinity: OfficePatchAffinity }
+interface OfficeLexicalRange { readonly start: number; readonly end: number }
 
 interface OfficeAnchorPatchPlan {
 	readonly anchor: OfficeXmlElement;
 	readonly parent?: OfficeXmlElement;
 	kind: OfficeAnchorKind;
 	readonly placeholders: ParadisOfficePlaceholder[];
-	readonly attributes: OfficeLexicalPatch[];
+	readonly attributes: OfficeLexicalRange[];
+	readonly children: OfficeAnchorPatchPlan[];
+	lexical?: OfficeLexicalElement;
 }
 
 const MAX_OFFICE_PATCH_ANCHORS = 65_536;
@@ -860,13 +870,28 @@ const MAX_OFFICE_LEXICAL_PATCHES = 131_072;
 const MAX_OFFICE_PLACEHOLDER_OCCURRENCES = 65_536;
 const MAX_OFFICE_PATCH_OUTPUT_BYTES = 8 * 1024 * 1024;
 const OFFICE_PATCH_RADIX = 4_096;
+const OFFICE_WORD_RUN_CONTAINERS = new Set(['p', 'hyperlink', 'smartTag', 'sdtContent', 'customXml', 'ins', 'del', 'moveFrom', 'moveTo', 'fldSimple']);
+const OFFICE_WORD_BLOCK_CONTAINERS = new Set(['body', 'hdr', 'ftr', 'footnote', 'endnote', 'comment', 'tc']);
 
-interface OfficePlaceholderBudget {
+interface OfficeOutputBudget {
 	remainingCharacters: number;
+	remainingBytes: number;
 	remainingOccurrences: number;
 }
 
+interface OfficeFragmentPlanningContext {
+	readonly story: OfficeStoryDocument;
+	readonly input: ParadisOfficePackageSanitizerInput;
+	readonly state: OpcAnalysisState;
+	readonly budget: OfficeOutputBudget;
+	readonly rawStringMetrics: Map<string, OfficeTextMetrics>;
+	readonly textStringMetrics: Map<string, OfficeTextMetrics>;
+	readonly attributeStringMetrics: Map<string, OfficeTextMetrics>;
+}
+
 async function patchStoryRelationshipConsumers(story: OfficeStoryDocument, replacements: readonly { readonly id: string; readonly placeholder: ParadisOfficePlaceholder }[], input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<string> {
+	const sourceMetrics = await measureOfficeUtf8Range(story.source, 0, story.source.length, input, state);
+	if (sourceMetrics.characters > MAX_OFFICE_PATCH_OUTPUT_BYTES || sourceMetrics.bytes > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
 	const byId = new Map<string, ParadisOfficePlaceholder>();
 	for (const replacement of replacements) {
 		await advanceOpcAnalysis(input, state);
@@ -874,6 +899,7 @@ async function patchStoryRelationshipConsumers(story: OfficeStoryDocument, repla
 	}
 	const applied = new Set<string>();
 	const anchors = new Map<OfficeXmlElement, OfficeAnchorPatchPlan>();
+	let lexicalPatchCount = 0;
 	for (const consumer of story.consumers) {
 		await advanceOpcAnalysis(input, state);
 		const placeholderValue = byId.get(consumer.id); if (!placeholderValue) { continue; }
@@ -887,10 +913,12 @@ async function patchStoryRelationshipConsumers(story: OfficeStoryDocument, repla
 			kind: consumer.anchorKind,
 			placeholders: [],
 			attributes: [],
+			children: [],
 		};
 		if (existing) { entry.kind = mergeOfficeAnchorKind(existing.kind, consumer.anchorKind); }
 		entry.placeholders.push(placeholderValue);
-		entry.attributes.push({ start: attribute.start, end: attribute.end, text: '', affinity: 'replace' });
+		if (++lexicalPatchCount > MAX_OFFICE_LEXICAL_PATCHES) { throw new ParadisOfficePackageError('limitExceeded'); }
+		entry.attributes.push({ start: attribute.start, end: attribute.end });
 		if (!existing) {
 			if (anchors.size >= MAX_OFFICE_PATCH_ANCHORS) { throw new ParadisOfficePackageError('limitExceeded'); }
 			anchors.set(consumer.anchor, entry);
@@ -898,36 +926,27 @@ async function patchStoryRelationshipConsumers(story: OfficeStoryDocument, repla
 	}
 	const fallback: ParadisOfficePlaceholder[] = [];
 	const patches: OfficeLexicalPatch[] = [];
-	const placeholderBudget: OfficePlaceholderBudget = {
-		remainingCharacters: Math.max(0, MAX_OFFICE_PATCH_OUTPUT_BYTES - story.source.length),
-		remainingOccurrences: MAX_OFFICE_PLACEHOLDER_OCCURRENCES,
+	const planning: OfficeFragmentPlanningContext = {
+		story,
+		input,
+		state,
+		rawStringMetrics: new Map(),
+		textStringMetrics: new Map(),
+		attributeStringMetrics: new Map(),
+		budget: {
+			remainingCharacters: MAX_OFFICE_PATCH_OUTPUT_BYTES,
+			remainingBytes: MAX_OFFICE_PATCH_OUTPUT_BYTES,
+			remainingOccurrences: MAX_OFFICE_PLACEHOLDER_OCCURRENCES,
+		},
 	};
 	const addPatch = (patch: OfficeLexicalPatch): void => {
-		if (patches.length >= MAX_OFFICE_LEXICAL_PATCHES || patch.text.length > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
+		if (++lexicalPatchCount > MAX_OFFICE_LEXICAL_PATCHES) { throw new ParadisOfficePackageError('limitExceeded'); }
 		patches.push(patch);
 	};
-	for (const entry of anchors.values()) {
-		await advanceOpcAnalysis(input, state);
-		const lexicalAnchor = story.lexicalElements.get(entry.anchor); if (!lexicalAnchor) { throw new ParadisOfficePackageError('malformed'); }
-		const insertionParent = entry.parent ?? story.root;
-		if (entry.kind === 'preservedRun' || entry.kind === 'preservedElement') {
-			const placeholderText = entry.kind === 'preservedRun' ? await wordPlaceholderXml(entry.placeholders, story, insertionParent, false, placeholderBudget, input, state) : '';
-			addPatch({
-				start: lexicalAnchor.start,
-				end: lexicalAnchor.end,
-				text: await preservedOfficeAnchorXml(story.source, lexicalAnchor, entry.attributes, input, state),
-				affinity: 'replace',
-			});
-			if (placeholderText) { addPatch({ start: lexicalAnchor.end, end: lexicalAnchor.end, text: placeholderText, affinity: 'before' }); }
-		} else if (entry.kind === 'run') {
-			addPatch({ start: lexicalAnchor.start, end: lexicalAnchor.end, text: await wordPlaceholderXml(entry.placeholders, story, insertionParent, false, placeholderBudget, input, state), affinity: 'replace' });
-		} else if (entry.kind === 'block') {
-			addPatch({ start: lexicalAnchor.start, end: lexicalAnchor.end, text: await wordPlaceholderXml(entry.placeholders, story, insertionParent, true, placeholderBudget, input, state), affinity: 'replace' });
-		} else if (entry.kind === 'removedElement') {
-			addPatch({ start: lexicalAnchor.start, end: lexicalAnchor.end, text: '', affinity: 'replace' });
-		} else {
-			addPatch({ start: lexicalAnchor.start, end: lexicalAnchor.end, text: '', affinity: 'replace' }); fallback.push(...entry.placeholders);
-		}
+	const roots = await buildOfficeAnchorTree(anchors.values(), story, input, state);
+	for (const entry of roots) {
+		const lexicalAnchor = entry.lexical!;
+		addPatch({ start: lexicalAnchor.start, end: lexicalAnchor.end, fragments: await planOfficeAnchorFragments(entry, entry.parent ?? story.root, fallback, planning), affinity: 'replace' });
 	}
 	for (const [id, placeholderValue] of byId) {
 		await advanceOpcAnalysis(input, state);
@@ -935,9 +954,9 @@ async function patchStoryRelationshipConsumers(story: OfficeStoryDocument, repla
 	}
 	if (fallback.length > 0) {
 		const insertion = storyPlaceholderInsertion(story);
-		addPatch({ start: insertion.offset, end: insertion.offset, text: await wordPlaceholderXml(fallback, story, insertion.context, true, placeholderBudget, input, state), affinity: 'before' });
+		addPatch({ start: insertion.offset, end: insertion.offset, fragments: await planWordPlaceholderFragments(fallback, insertion.context, true, planning), affinity: 'before' });
 	}
-	return applyOfficeLexicalPatches(story.source, patches, input, state);
+	return applyOfficeLexicalPatches(story.source, patches, sourceMetrics, input, state);
 }
 
 function mergeOfficeAnchorKind(left: OfficeAnchorKind, right: OfficeAnchorKind): OfficeAnchorKind {
@@ -947,67 +966,231 @@ function mergeOfficeAnchorKind(left: OfficeAnchorKind, right: OfficeAnchorKind):
 	throw new ParadisOfficePackageError('malformed');
 }
 
-async function wordPlaceholderXml(values: readonly ParadisOfficePlaceholder[], story: OfficeStoryDocument, context: OfficeXmlElement, paragraph: boolean, budget: OfficePlaceholderBudget, input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<string> {
-	const chunks: string[] = [];
-	let characters = 0;
-	for (const value of values) {
+async function buildOfficeAnchorTree(entries: Iterable<OfficeAnchorPatchPlan>, story: OfficeStoryDocument, input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<OfficeAnchorPatchPlan[]> {
+	const roots: OfficeAnchorPatchPlan[] = [];
+	const stack: OfficeAnchorPatchPlan[] = [];
+	let previousStart = -1;
+	for (const entry of entries) {
 		await advanceOpcAnalysis(input, state);
-		if (budget.remainingOccurrences <= 0) { throw new ParadisOfficePackageError('limitExceeded'); }
-		const fragment = wordPlaceholderFragment(value, story, context, paragraph, budget.remainingCharacters);
-		budget.remainingOccurrences--;
-		budget.remainingCharacters -= fragment.length;
-		characters += fragment.length;
-		input.allocationObserver?.('placeholderFragment', fragment.length);
-		chunks.push(fragment);
+		const lexical = story.lexicalElements.get(entry.anchor); if (!lexical) { throw new ParadisOfficePackageError('malformed'); }
+		entry.lexical = lexical;
+		if (lexical.start < previousStart) { throw new ParadisOfficePackageError('malformed'); }
+		previousStart = lexical.start;
+		while (stack.length > 0 && lexical.start >= stack[stack.length - 1].lexical!.end) { stack.pop(); }
+		const parent = stack[stack.length - 1];
+		if (parent) {
+			if (lexical.end > parent.lexical!.end) { throw new ParadisOfficePackageError('malformed'); }
+			parent.children.push(entry);
+		} else {
+			roots.push(entry);
+		}
+		stack.push(entry);
 	}
-	input.allocationObserver?.('placeholderJoin', characters);
-	return chunks.join('');
+	return roots;
 }
 
-interface WordLexicalNamespace { readonly prefix: string; readonly declaration: string }
+async function planOfficeAnchorFragments(entry: OfficeAnchorPatchPlan, insertionParent: OfficeXmlElement, fallback: ParadisOfficePlaceholder[], planning: OfficeFragmentPlanningContext): Promise<OfficeOutputFragment[]> {
+	await advanceOpcAnalysis(planning.input, planning.state);
+	if (entry.kind === 'run') {
+		validateOfficeRunInsertion(insertionParent);
+		const fragments = await planWordPlaceholderFragments(entry.placeholders, insertionParent, false, planning);
+		for (const child of entry.children) {
+			for (const fragment of await planOfficeAnchorFragments(child, insertionParent, fallback, planning)) { fragments.push(fragment); }
+		}
+		return fragments;
+	}
+	if (entry.kind === 'block') {
+		validateOfficeBlockInsertion(insertionParent);
+		if (entry.children.length > 0) { throw new ParadisOfficePackageError('malformed'); }
+		return planWordPlaceholderFragments(entry.placeholders, insertionParent, true, planning);
+	}
+	if (entry.kind === 'fallback') {
+		if (entry.children.length > 0) { throw new ParadisOfficePackageError('malformed'); }
+		for (const placeholder of entry.placeholders) { fallback.push(placeholder); }
+		return [];
+	}
+	if (entry.kind === 'removedElement') {
+		if (entry.children.length > 0) { throw new ParadisOfficePackageError('malformed'); }
+		return [];
+	}
+	if (entry.kind === 'preservedRun') { validateOfficeRunInsertion(insertionParent); }
+	else if (insertionParent !== (entry.parent ?? planning.story.root)) { throw new ParadisOfficePackageError('malformed'); }
+	const fragments = await planPreservedOfficeAnchorFragments(entry, insertionParent, fallback, planning);
+	if (entry.kind === 'preservedRun') {
+		for (const fragment of await planWordPlaceholderFragments(entry.placeholders, insertionParent, false, planning)) { fragments.push(fragment); }
+	}
+	return fragments;
+}
 
-function wordPlaceholderFragment(value: ParadisOfficePlaceholder, story: OfficeStoryDocument, context: OfficeXmlElement, paragraph: boolean, remainingCharacters: number): string {
-	const namespace = wordLexicalNamespace(story, context);
+async function planPreservedOfficeAnchorFragments(entry: OfficeAnchorPatchPlan, insertionParent: OfficeXmlElement, fallback: ParadisOfficePlaceholder[], planning: OfficeFragmentPlanningContext): Promise<OfficeOutputFragment[]> {
+	const lexical = entry.lexical!;
+	const fragments: OfficeOutputFragment[] = [];
+	const namespaceOffset = lexical.start + 1 + lexical.name.length;
+	await appendOfficeSourceFragment(fragments, lexical.start, namespaceOffset, planning);
+	for (const [prefix, uri] of promotedOfficeNamespaceBindings(entry, insertionParent)) {
+		fragments.push(await planOfficeNamespaceFragment(prefix, uri, planning));
+	}
+	let cursor = namespaceOffset;
+	let attributeIndex = 0;
+	let childIndex = 0;
+	while (attributeIndex < entry.attributes.length || childIndex < entry.children.length) {
+		await advanceOpcAnalysis(planning.input, planning.state);
+		const attribute = entry.attributes[attributeIndex];
+		const child = entry.children[childIndex];
+		const childLexical = child?.lexical;
+		const useAttribute = attribute && (!childLexical || attribute.start < childLexical.start);
+		const start = useAttribute ? attribute.start : childLexical!.start;
+		const end = useAttribute ? attribute.end : childLexical!.end;
+		if (start < cursor || end < start || end > lexical.end) { throw new ParadisOfficePackageError('malformed'); }
+		await appendOfficeSourceFragment(fragments, cursor, start, planning);
+		if (useAttribute) {
+			attributeIndex++;
+		} else {
+			for (const fragment of await planOfficeAnchorFragments(child, entry.anchor, fallback, planning)) { fragments.push(fragment); }
+			childIndex++;
+		}
+		cursor = end;
+	}
+	await appendOfficeSourceFragment(fragments, cursor, lexical.end, planning);
+	return fragments;
+}
+
+function promotedOfficeNamespaceBindings(entry: OfficeAnchorPatchPlan, insertionParent: OfficeXmlElement): readonly (readonly [string, string])[] {
+	if (insertionParent === (entry.parent ?? insertionParent)) { return []; }
+	const original = entry.anchor.namespaceBindings ?? {};
+	const originalParent = entry.parent?.namespaceBindings ?? {};
+	const target = insertionParent.namespaceBindings ?? {};
+	const declarations: (readonly [string, string])[] = [];
+	for (const [prefix, uri] of Object.entries(original)) {
+		if (prefix === 'xml' || target[prefix] === uri || originalParent[prefix] !== uri) { continue; }
+		declarations.push([prefix, uri]);
+	}
+	return declarations;
+}
+
+function validateOfficeRunInsertion(parent: OfficeXmlElement): void {
+	if (parent.uri === MARKUP_COMPATIBILITY_NAMESPACE && (parent.local === 'Choice' || parent.local === 'Fallback')) { return; }
+	if (!WORD_NAMESPACES.has(parent.uri) || !OFFICE_WORD_RUN_CONTAINERS.has(parent.local)) { throw new ParadisOfficePackageError('malformed'); }
+}
+
+function validateOfficeBlockInsertion(parent: OfficeXmlElement): void {
+	if (!WORD_NAMESPACES.has(parent.uri) || !OFFICE_WORD_BLOCK_CONTAINERS.has(parent.local)) { throw new ParadisOfficePackageError('malformed'); }
+}
+
+async function appendOfficeSourceFragment(fragments: OfficeOutputFragment[], start: number, end: number, planning: OfficeFragmentPlanningContext): Promise<void> {
+	if (start === end) { return; }
+	const metrics = await measureOfficeUtf8Range(planning.story.source, start, end, planning.input, planning.state);
+	fragments.push({ kind: 'source', start, end, ...metrics });
+}
+
+async function planWordPlaceholderFragments(values: readonly ParadisOfficePlaceholder[], context: OfficeXmlElement, paragraph: boolean, planning: OfficeFragmentPlanningContext): Promise<OfficeOutputFragment[]> {
+	const fragments: OfficeOutputFragment[] = [];
+	const namespace = wordLexicalNamespace(planning.story, context);
+	for (const value of values) {
+		await advanceOpcAnalysis(planning.input, planning.state);
+		const metrics = await measureWordPlaceholderFragment(value, namespace, paragraph, planning);
+		commitOfficeGeneratedFragment(metrics, planning.budget, true);
+		fragments.push({ kind: 'placeholder', value, namespace, paragraph, ...metrics });
+	}
+	return fragments;
+}
+
+interface WordLexicalNamespace { readonly prefix: string; readonly declare: boolean; readonly uri: string }
+
+async function measureWordPlaceholderFragment(value: ParadisOfficePlaceholder, namespace: WordLexicalNamespace, paragraph: boolean, planning: OfficeFragmentPlanningContext): Promise<OfficeTextMetrics> {
+	const prefix = await measureOfficeString(namespace.prefix, planning);
+	const uri = namespace.declare ? await measureEscapedOfficeString(namespace.uri, true, planning) : { characters: 0, bytes: 0 };
+	const feature = await measureEscapedOfficeString(value.feature, false, planning);
+	const fingerprint = await measureEscapedOfficeString(value.fingerprint?.slice(0, 12) ?? '', false, planning);
+	const qname = (local: string): OfficeTextMetrics => ({ characters: (namespace.prefix ? prefix.characters + 1 : 0) + local.length, bytes: (namespace.prefix ? prefix.bytes + 1 : 0) + local.length });
+	const declaration: OfficeTextMetrics = namespace.declare ? { characters: 10 + prefix.characters + uri.characters, bytes: 10 + prefix.bytes + uri.bytes } : { characters: 0, bytes: 0 };
+	const run = qname('r'); const text = qname('t'); const paragraphName = qname('p');
+	const content = { characters: 27 + feature.characters + fingerprint.characters, bytes: 27 + feature.bytes + fingerprint.bytes };
+	const runDeclaration = paragraph ? { characters: 0, bytes: 0 } : declaration;
+	const runMetrics = { characters: 10 + run.characters * 2 + text.characters * 2 + runDeclaration.characters + content.characters, bytes: 10 + run.bytes * 2 + text.bytes * 2 + runDeclaration.bytes + content.bytes };
+	return paragraph ? { characters: runMetrics.characters + 5 + paragraphName.characters * 2 + declaration.characters, bytes: runMetrics.bytes + 5 + paragraphName.bytes * 2 + declaration.bytes } : runMetrics;
+}
+
+async function planOfficeNamespaceFragment(prefix: string, uri: string, planning: OfficeFragmentPlanningContext): Promise<OfficeNamespaceFragment> {
+	const prefixMetrics = await measureOfficeString(prefix, planning);
+	const uriMetrics = await measureEscapedOfficeString(uri, true, planning);
+	const fixed = prefix ? 10 : 9;
+	const metrics = { characters: fixed + prefixMetrics.characters + uriMetrics.characters, bytes: fixed + prefixMetrics.bytes + uriMetrics.bytes };
+	commitOfficeGeneratedFragment(metrics, planning.budget, false);
+	return { kind: 'namespace', prefix, uri, ...metrics };
+}
+
+function commitOfficeGeneratedFragment(metrics: OfficeTextMetrics, budget: OfficeOutputBudget, occurrence: boolean): void {
+	if (occurrence && budget.remainingOccurrences <= 0 || metrics.characters > budget.remainingCharacters || metrics.bytes > budget.remainingBytes) { throw new ParadisOfficePackageError('limitExceeded'); }
+	if (occurrence) { budget.remainingOccurrences--; }
+	budget.remainingCharacters -= metrics.characters;
+	budget.remainingBytes -= metrics.bytes;
+}
+
+async function measureEscapedOfficeString(value: string, attribute: boolean, planning: OfficeFragmentPlanningContext): Promise<OfficeTextMetrics> {
+	const cache = attribute ? planning.attributeStringMetrics : planning.textStringMetrics;
+	const cached = cache.get(value); if (cached) { return cached; }
+	let characters = 0; let bytes = 0;
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		const escaped = code === 38 ? 5 : code === 60 || code === 62 ? 4 : attribute && code === 34 ? 6 : 0;
+		if (escaped) { characters += escaped; bytes += escaped; }
+		else {
+			const width = officeUtf8Width(value, index, value.length);
+			characters += width.codeUnits; bytes += width.bytes; index += width.codeUnits - 1;
+		}
+		if ((index & 4095) === 4095) { await advanceOpcAnalysis(planning.input, planning.state); }
+	}
+	const metrics = { characters, bytes }; cache.set(value, metrics); return metrics;
+}
+
+async function measureOfficeString(value: string, planning: OfficeFragmentPlanningContext): Promise<OfficeTextMetrics> {
+	const cached = planning.rawStringMetrics.get(value); if (cached) { return cached; }
+	const metrics = await measureOfficeUtf8Range(value, 0, value.length, planning.input, planning.state);
+	planning.rawStringMetrics.set(value, metrics); return metrics;
+}
+
+async function measureOfficeUtf8Range(value: string, start: number, end: number, input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<OfficeTextMetrics> {
+	if (start < 0 || end < start || end > value.length) { throw new ParadisOfficePackageError('malformed'); }
+	let bytes = 0;
+	for (let index = start; index < end; index++) {
+		const width = officeUtf8Width(value, index, end); bytes += width.bytes; index += width.codeUnits - 1;
+		if (((index - start) & 4095) === 4095) { await advanceOpcAnalysis(input, state); }
+	}
+	return { characters: end - start, bytes };
+}
+
+function officeUtf8Width(value: string, index: number, end: number): { readonly codeUnits: number; readonly bytes: number } {
+	const code = value.charCodeAt(index);
+	if (code <= 0x7f) { return { codeUnits: 1, bytes: 1 }; }
+	if (code <= 0x7ff) { return { codeUnits: 1, bytes: 2 }; }
+	if (code >= 0xd800 && code <= 0xdbff && index + 1 < end) {
+		const low = value.charCodeAt(index + 1);
+		if (low >= 0xdc00 && low <= 0xdfff) { return { codeUnits: 2, bytes: 4 }; }
+	}
+	return { codeUnits: 1, bytes: 3 };
+}
+
+function wordPlaceholderFragment(value: ParadisOfficePlaceholder, namespace: WordLexicalNamespace, paragraph: boolean): string {
 	const run = wordQName(namespace.prefix, 'r'); const text = wordQName(namespace.prefix, 't');
 	const content = escapeXmlText(`Office asset unavailable: ${value.feature} ${value.fingerprint?.slice(0, 12) ?? ''}`);
 	const paragraphName = wordQName(namespace.prefix, 'p');
-	const runDeclaration = paragraph ? '' : namespace.declaration;
-	const runLength = 1 + run.length + runDeclaration.length + 1 + 1 + text.length + 1 + content.length + 2 + text.length + 1 + 2 + run.length + 1;
-	const fragmentLength = paragraph ? 1 + paragraphName.length + namespace.declaration.length + 1 + runLength + 2 + paragraphName.length + 1 : runLength;
-	if (fragmentLength > remainingCharacters) { throw new ParadisOfficePackageError('limitExceeded'); }
-	const runXml = `<${run}${runDeclaration}><${text}>${content}</${text}></${run}>`;
-	return paragraph ? `<${paragraphName}${namespace.declaration}>${runXml}</${paragraphName}>` : runXml;
+	const declaration = wordNamespaceDeclaration(namespace);
+	const runXml = `<${run}${paragraph ? '' : declaration}><${text}>${content}</${text}></${run}>`;
+	return paragraph ? `<${paragraphName}${declaration}>${runXml}</${paragraphName}>` : runXml;
 }
 
-async function preservedOfficeAnchorXml(source: string, anchor: OfficeLexicalElement, attributes: readonly OfficeLexicalPatch[], input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<string> {
-	const ordered = [...attributes].sort((left, right) => left.start - right.start || left.end - right.end);
-	let outputLength = anchor.end - anchor.start;
-	let cursor = anchor.start;
-	for (const attribute of ordered) {
-		await advanceOpcAnalysis(input, state);
-		if (attribute.start < cursor || attribute.end > anchor.end) { throw new ParadisOfficePackageError('malformed'); }
-		outputLength -= attribute.end - attribute.start;
-		cursor = attribute.end;
-	}
-	if (outputLength > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
-	const chunks: string[] = [];
-	cursor = anchor.start;
-	for (const attribute of ordered) {
-		chunks.push(source.slice(cursor, attribute.start));
-		cursor = attribute.end;
-	}
-	chunks.push(source.slice(cursor, anchor.end));
-	input.allocationObserver?.('outputJoin', outputLength);
-	return chunks.join('');
+function wordNamespaceDeclaration(namespace: WordLexicalNamespace): string {
+	return namespace.declare ? ` xmlns${namespace.prefix ? `:${namespace.prefix}` : ''}="${escapeXmlAttribute(namespace.uri)}"` : '';
 }
 
 function wordLexicalNamespace(story: OfficeStoryDocument, context: OfficeXmlElement): WordLexicalNamespace {
 	const bindings = context.namespaceBindings ?? {};
 	const existing = Object.entries(bindings).find(([, uri]) => uri === story.root.uri)?.[0];
-	if (existing !== undefined) { return { prefix: existing, declaration: '' }; }
+	if (existing !== undefined) { return { prefix: existing, declare: false, uri: story.root.uri }; }
 	let prefix = 'pcw';
 	for (let suffix = 1; Object.prototype.hasOwnProperty.call(bindings, prefix); suffix++) { prefix = `pcw${suffix}`; }
-	return { prefix, declaration: ` xmlns:${prefix}="${escapeXmlAttribute(story.root.uri)}"` };
+	return { prefix, declare: true, uri: story.root.uri };
 }
 
 function wordQName(prefix: string, local: string): string {
@@ -1031,7 +1214,7 @@ function storyPlaceholderInsertion(story: OfficeStoryDocument): { readonly offse
 	return { offset: lexicalContainer.endStart, context: container };
 }
 
-async function applyOfficeLexicalPatches(source: string, patches: readonly OfficeLexicalPatch[], input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<string> {
+async function applyOfficeLexicalPatches(source: string, patches: readonly OfficeLexicalPatch[], sourceMetrics: OfficeTextMetrics, input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<string> {
 	const ordered = await radixSortOfficeLexicalPatches(source.length, patches, input, state);
 	const normalized: OfficeLexicalPatch[] = [];
 	for (const patch of ordered) {
@@ -1039,40 +1222,49 @@ async function applyOfficeLexicalPatches(source: string, patches: readonly Offic
 		if (patch.start < 0 || patch.end < patch.start || patch.end > source.length) { throw new ParadisOfficePackageError('malformed'); }
 		const previous = normalized[normalized.length - 1];
 		if (previous && patch.start === previous.start && patch.end === previous.end && patch.start === patch.end) {
-			normalized[normalized.length - 1] = mergeOfficePatchText(previous, patch.text, input); continue;
+			for (const fragment of patch.fragments) { previous.fragments.push(fragment); }
+			continue;
 		}
 		if (previous && patch.start < previous.end) {
-			if (patch.end <= previous.end) {
-				normalized[normalized.length - 1] = mergeOfficePatchText(previous, patch.text, input); continue;
-			}
 			throw new ParadisOfficePackageError('malformed');
 		}
 		normalized.push(patch);
 	}
-	const chunks: string[] = [];
+	const outputFragments: OfficeOutputFragment[] = [];
 	let cursor = 0;
-	let outputCharacters = 0;
 	for (const patch of normalized) {
 		await advanceOpcAnalysis(input, state);
-		const sourceChunk = source.slice(cursor, patch.start);
-		outputCharacters += sourceChunk.length + patch.text.length;
-		if (outputCharacters > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
-		chunks.push(sourceChunk, patch.text);
+		await appendOfficeMeasuredSourceFragment(outputFragments, source, cursor, patch.start, input, state);
+		for (const fragment of patch.fragments) { outputFragments.push(fragment); }
 		cursor = patch.end;
 	}
-	const tail = source.slice(cursor);
-	if (outputCharacters + tail.length > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
-	chunks.push(tail);
+	await appendOfficeMeasuredSourceFragment(outputFragments, source, cursor, source.length, input, state);
+	let outputCharacters = 0; let outputBytes = 0;
+	for (const fragment of outputFragments) {
+		await advanceOpcAnalysis(input, state);
+		outputCharacters += fragment.characters; outputBytes += fragment.bytes;
+		if (outputCharacters > MAX_OFFICE_PATCH_OUTPUT_BYTES || outputBytes > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
+	}
+	if (patches.length === 0 && (outputCharacters !== sourceMetrics.characters || outputBytes !== sourceMetrics.bytes)) { throw new ParadisOfficePackageError('malformed'); }
+	const chunks: string[] = [];
+	for (const fragment of outputFragments) {
+		await advanceOpcAnalysis(input, state);
+		if (fragment.kind === 'source') { chunks.push(source.slice(fragment.start, fragment.end)); }
+		else if (fragment.kind === 'placeholder') {
+			input.allocationObserver?.('placeholderFragment', fragment.characters, fragment.bytes);
+			chunks.push(wordPlaceholderFragment(fragment.value, fragment.namespace, fragment.paragraph));
+		} else {
+			chunks.push(` xmlns${fragment.prefix ? `:${fragment.prefix}` : ''}="${escapeXmlAttribute(fragment.uri)}"`);
+		}
+	}
 	await advanceOpcAnalysis(input, state, true);
-	input.allocationObserver?.('outputJoin', outputCharacters + tail.length);
+	input.allocationObserver?.('outputJoin', outputCharacters, outputBytes);
 	return chunks.join('');
 }
 
-function mergeOfficePatchText(patch: OfficeLexicalPatch, text: string, input: ParadisOfficePackageSanitizerInput): OfficeLexicalPatch {
-	const characters = patch.text.length + text.length;
-	if (characters > MAX_OFFICE_PATCH_OUTPUT_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
-	input.allocationObserver?.('outputJoin', characters);
-	return { ...patch, text: patch.text + text };
+async function appendOfficeMeasuredSourceFragment(fragments: OfficeOutputFragment[], source: string, start: number, end: number, input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<void> {
+	if (start === end) { return; }
+	fragments.push({ kind: 'source', start, end, ...await measureOfficeUtf8Range(source, start, end, input, state) });
 }
 
 async function radixSortOfficeLexicalPatches(sourceLength: number, patches: readonly OfficeLexicalPatch[], input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState): Promise<OfficeLexicalPatch[]> {

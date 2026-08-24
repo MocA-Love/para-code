@@ -193,6 +193,31 @@ suite('ParadisDocxFileEditor', () => {
 		strictEqual(body.textContent?.includes('RAW-OLE'), false);
 	});
 
+	test('renders promoted local-prefix Drawing runs from a removed outer hyperlink through actual docx-preview', async () => {
+		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+		const geometry = '<wp:anchor><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:link="shared"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000" flipH="1"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"><a:prstDash val="dash"/><a:tailEnd type="triangle"/></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': `<q:document xmlns:q="${word}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><q:body><q:p><w:hyperlink xmlns:w="${word}" r:id="shared"><w:r data-preserved="yes"><w:drawing>${geometry}</w:drawing></w:r><w:r data-unsafe="yes"><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink></q:p></q:body></q:document>`,
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/></Relationships>',
+		});
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-promoted-anchor');
+		const serialized = new TextDecoder().decode(sanitized.bytes);
+		ok(serialized.includes(`<w:r xmlns:w="${word}" data-preserved="yes">`));
+		strictEqual(serialized.includes('r:id="shared"'), false);
+		strictEqual(serialized.includes('r:link="shared"'), false);
+		ok(serialized.includes(geometry.replace(' r:link="shared"', '')));
+		const docx = await loadActualDocxPreview();
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = sanitized.bytes.buffer.slice(sanitized.bytes.byteOffset, sanitized.bytes.byteOffset + sanitized.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+
+		strictEqual((body.textContent?.match(/Office asset unavailable:/g) ?? []).length, 3);
+	});
+
 	function createDocxEditorFixture() {
 		const watcherResources: string[] = [];
 		const readResources: string[] = [];

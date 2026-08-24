@@ -774,7 +774,7 @@ suite('ParadisOfficeSanitizer', () => {
 		this.timeout(30_000);
 		const count = 65_000;
 		const consumers = '<x:c r:id="shared" r:embed="shared" r:link="shared" s:id="shared" s:embed="shared" s:link="shared"/>'.repeat(count);
-		const allocations: { readonly kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin'; readonly characters: number }[] = [];
+		const allocations: { readonly kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin' | 'textEncoder'; readonly characters: number }[] = [];
 		const input = {
 			nodeId: 'bounded-fallback-expansion',
 			source: Uint8Array.of(1),
@@ -784,7 +784,7 @@ suite('ParadisOfficeSanitizer', () => {
 				'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:x="urn:fallback" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:s="http://purl.oclc.org/ooxml/officeDocument/relationships"><w:body>${consumers}</w:body></w:document>`,
 				'word/_rels/document.xml.rels': relationships('<Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/>'),
 			}),
-			allocationObserver: (kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin', characters: number) => allocations.push({ kind, characters }),
+			allocationObserver: (kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin' | 'textEncoder', characters: number) => allocations.push({ kind, characters }),
 			scheduler: () => Promise.resolve(),
 		};
 
@@ -794,10 +794,48 @@ suite('ParadisOfficeSanitizer', () => {
 		ok(allocations.every(allocation => allocation.characters <= 8 * 1024 * 1024));
 	});
 
+	test('accounts for exact UTF-8 source bytes before placeholder materialization at the output boundary', async function () {
+		this.timeout(30_000);
+		const limit = 8 * 1024 * 1024;
+		const wordPrefix = 'p'.repeat(4_096);
+		const prefix = `<${wordPrefix}:document xmlns:${wordPrefix}="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><${wordPrefix}:body><${wordPrefix}:p><${wordPrefix}:r><${wordPrefix}:t>日本😀\uD800`;
+		const suffix = `</${wordPrefix}:t></${wordPrefix}:r><${wordPrefix}:hyperlink r:id="blocked"></${wordPrefix}:hyperlink></${wordPrefix}:p></${wordPrefix}:body></${wordPrefix}:document>`;
+		const encoder = new TextEncoder();
+		const fixedBytes = encoder.encode(prefix + suffix).byteLength;
+		const sourceAt = (bytes: number) => prefix + 'x'.repeat(bytes - fixedBytes) + suffix;
+		const allocations: string[] = [];
+		const run = (bytes: number) => sanitizeOfficeDocxPackageForRenderer({
+			nodeId: `utf8-boundary-${bytes}`,
+			source: Uint8Array.of(1),
+			archive: new MemoryOfficeArchive({
+				'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
+				'_rels/.rels': packageRootRelationships(),
+				'word/document.xml': sourceAt(bytes),
+				'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/blocked" TargetMode="External"/>'),
+			}),
+			allocationObserver: kind => allocations.push(kind),
+			scheduler: () => Promise.resolve(),
+		});
+
+		const baseline = await run(fixedBytes);
+		const baselineDocument = textOf(readStoreZipEntries(baseline.bytes), 'word/document.xml');
+		const replacementGrowth = encoder.encode(baselineDocument).byteLength - fixedBytes;
+		allocations.length = 0;
+		await run(limit - replacementGrowth - 1);
+		await run(limit - replacementGrowth);
+		ok(allocations.includes('textEncoder'));
+		allocations.length = 0;
+		await rejects(run(limit - replacementGrowth + 1), (error: unknown) => error instanceof Error && error.message === 'limitExceeded');
+		strictEqual(allocations.includes('placeholderFragment'), false);
+		strictEqual(allocations.includes('outputJoin'), false);
+		strictEqual(allocations.includes('textEncoder'), false);
+	});
+
 	test('retains nested and adjacent placeholder anchors when a shared rId creates overlapping patches', async () => {
+		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 		const geometry = '<wp:anchor data-geometry="overlap"><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:link="shared"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000" flipH="1"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"><a:prstDash val="dash"/><a:headEnd type="none"/><a:tailEnd type="triangle"/></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
-		const diagonal = '<w:tcBorders><w:tl2br w:val="single" w:sz="8" w:color="112233"/><w:tr2bl w:val="dashed" w:sz="6" w:color="445566"/></w:tcBorders>';
-		const documentXml = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:hyperlink r:id="shared"><w:r data-preserved-drawing="yes"><w:drawing>${geometry}</w:drawing></w:r><w:r data-unsafe-adjacent="yes"><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink></w:p><w:tbl><w:tr><w:tc><w:tcPr>${diagonal}</w:tcPr><w:p/></w:tc></w:tr></w:tbl></w:body></w:document>`;
+		const diagonal = '<q:tcBorders><q:tl2br q:val="single" q:sz="8" q:color="112233"/><q:tr2bl q:val="dashed" q:sz="6" q:color="445566"/></q:tcBorders>';
+		const documentXml = `<q:document xmlns:q="${word}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><q:body><q:p><w:hyperlink xmlns:w="${word}" r:id="shared"><w:r data-preserved-drawing="yes"><w:drawing>${geometry}</w:drawing></w:r><w:r data-unsafe-adjacent="yes"><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink></q:p><q:tbl><q:tr><q:tc><q:tcPr>${diagonal}</q:tcPr><q:p/></q:tc></q:tr></q:tbl></q:body></q:document>`;
 		const result = await sanitizeMemoryPackage('overlapping-shared-rid', {
 			'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
 			'word/document.xml': documentXml,
@@ -810,9 +848,75 @@ suite('ParadisOfficeSanitizer', () => {
 		strictEqual(sanitized.includes('r:id="shared"'), false);
 		strictEqual(sanitized.includes('r:link="shared"'), false);
 		strictEqual(sanitized.includes('data-unsafe-adjacent="yes"'), false);
-		ok(sanitized.includes('<w:r data-preserved-drawing="yes"><w:drawing>'));
+		ok(sanitized.includes(`<w:r xmlns:w="${word}" data-preserved-drawing="yes"><w:drawing>`));
 		ok(sanitized.includes(geometry.replace(' r:link="shared"', '')));
 		deepStrictEqual(drawingGeometrySignature(sanitized), drawingGeometrySignature(documentXml));
+	});
+
+	test('composes 10,000 contained Drawing anchors with one final join and interruptible linear work', async function () {
+		this.timeout(15_000);
+		const count = 10_000;
+		const runs = Array.from({ length: count }, (_, index) => `<w:r data-geometry="g${index}" data-diagonal="d${index}"><w:drawing><a:blip r:link="shared"/></w:drawing></w:r>`).join('');
+		const allocations: { readonly kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin' | 'textEncoder'; readonly characters: number }[] = [];
+		let checkpoints = 0;
+		let schedulerYields = 0;
+		const files = {
+			'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:hyperlink r:id="shared">${runs}</w:hyperlink></w:p></w:body></w:document>`,
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/>'),
+		};
+		const result = await sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'contained-linear-tree',
+			source: Uint8Array.of(1),
+			archive: new MemoryOfficeArchive(files),
+			allocationObserver: (kind, characters) => allocations.push({ kind, characters }),
+			checkpoint: () => { checkpoints++; },
+			scheduler: () => { schedulerYields++; return Promise.resolve(); },
+		});
+		const documentXml = textOf(readStoreZipEntries(result.bytes), 'word/document.xml');
+
+		strictEqual(countOccurrences(documentXml, 'Office asset unavailable:'), count + 1);
+		strictEqual(countOccurrences(documentXml, 'data-geometry='), count);
+		strictEqual(countOccurrences(documentXml, 'data-diagonal='), count);
+		strictEqual(allocations.filter(allocation => allocation.kind === 'outputJoin').length, 1);
+		ok(checkpoints < count * 80, `bounded checkpoints: ${checkpoints}`);
+		ok(schedulerYields < count / 4, `bounded yields: ${schedulerYields}`);
+
+		const cancellation = new CancellationTokenSource();
+		const interruptionYield = Math.max(1, Math.floor(schedulerYields / 2));
+		let cancellationYields = 0;
+		try {
+			await rejects(sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'contained-linear-tree-cancel',
+				source: Uint8Array.of(1),
+				archive: new MemoryOfficeArchive(files),
+				token: cancellation.token,
+				scheduler: () => {
+					if (++cancellationYields === interruptionYield) { cancellation.cancel(); }
+					return Promise.resolve();
+				},
+			}), (error: unknown) => error instanceof Error && error.message === 'cancelled');
+		} finally {
+			cancellation.dispose();
+		}
+		const originalNow = Date.now;
+		let now = 10_000;
+		let deadlineYields = 0;
+		try {
+			Date.now = () => now;
+			await rejects(sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'contained-linear-tree-deadline',
+				source: Uint8Array.of(1),
+				archive: new MemoryOfficeArchive(files),
+				deadline: now + interruptionYield,
+				scheduler: () => { deadlineYields++; now++; return Promise.resolve(); },
+			}), (error: unknown) => error instanceof Error && error.message === 'limitExceeded');
+		} finally {
+			Date.now = originalNow;
+		}
+		ok(cancellationYields < schedulerYields);
+		ok(deadlineYields < schedulerYields);
 	});
 
 	test('rejects the 257th placeholder during relationship analysis instead of scanning the tail', async () => {
