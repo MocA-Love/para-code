@@ -3,7 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { BrowserWindow, Details, MessageChannelMain, app, utilityProcess, UtilityProcess as ElectronUtilityProcess } from 'electron';
+// PARA-PATCH: defer resolving main-process-only Electron APIs while renderer unit tests import PTY starter modules; main-process methods still dereference the same APIs when used.
+import electron, { type BrowserWindow, type Details, type UtilityProcess as ElectronUtilityProcess } from 'electron';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { ILogService } from '../../log/common/log.js';
@@ -247,7 +248,7 @@ export class UtilityProcess extends Disposable {
 		const args = this.configuration.args ?? [];
 		const execArgv = [...(this.configuration.execArgv ?? [])];
 		const allowLoadingUnsignedLibraries = this.configuration.allowLoadingUnsignedLibraries;
-		const jsFlags = app.commandLine.getSwitchValue('js-flags');
+		const jsFlags = electron.app.commandLine.getSwitchValue('js-flags');
 		if (jsFlags) {
 			execArgv.push(`--js-flags=${jsFlags}`);
 		}
@@ -258,7 +259,7 @@ export class UtilityProcess extends Disposable {
 		this.log('creating new...', Severity.Info);
 
 		// Fork utility process
-		this.process = utilityProcess.fork(modulePath, args, {
+		this.process = electron.utilityProcess.fork(modulePath, args, {
 			serviceName,
 			env,
 			execArgv, // !!! Add `--trace-warnings` for node.js tracing !!!
@@ -342,7 +343,7 @@ export class UtilityProcess extends Disposable {
 		}));
 
 		// Child process gone
-		this._register(Event.fromNodeEventEmitter<{ details: Details }>(app, 'child-process-gone', (event, details) => ({ event, details }))(({ details }) => {
+		this._register(Event.fromNodeEventEmitter<{ details: Details }>(electron.app, 'child-process-gone', (event, details) => ({ event, details }))(({ details }) => {
 			if (details.type === 'Utility' && details.name === serviceName) {
 				this.log(`crashed with code ${details.exitCode} and reason '${details.reason}'`, Severity.Error);
 
@@ -395,7 +396,7 @@ export class UtilityProcess extends Disposable {
 	}
 
 	connect(payload?: unknown): Electron.MessagePortMain {
-		const { port1: outPort, port2: utilityProcessPort } = new MessageChannelMain();
+		const { port1: outPort, port2: utilityProcessPort } = new electron.MessageChannelMain();
 		this.postMessage(payload, [utilityProcessPort]);
 
 		return outPort;

@@ -49,6 +49,7 @@ import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirro
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
+import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
@@ -980,6 +981,12 @@ const PARADIS_SESSION_SCAN_STUCK_MS = 5 * 60_000;
 
 /** Codex の sessions/ 総なめを、同じホームに対して再び許すまでの間隔。 */
 const PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS = 5 * 60_000;
+const PARADIS_CODEX_DIRECTORY_WALK_LIMIT = 128;
+
+interface IParadisDirectoryWalkBudget {
+	mayRun(key: string): boolean;
+	mark(key: string): void;
+}
 
 /**
  * 常駐スキャンが「そのターミナルで今動いている」とみなす transcript の更新の新しさ。
@@ -3220,8 +3227,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		private readonly sessionStore?: ParadisAgentSessionStore,
 		/** SSH 接続先の transcript を手元へ写す台帳。無ければ接続先の会話は読まないだけ。 */
 		private readonly remoteTranscriptMirror?: ParadisRemoteTranscriptMirrorStore,
+		codexDirectoryWalkBudget?: IParadisDirectoryWalkBudget,
 	) {
 		super();
+		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		void this.loadPersistedSessions();
@@ -5392,8 +5401,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private sessionScanStartedAt: number | undefined;
-	/** 作業ディレクトリごとの、Codex の sessions/ を最後に総なめした時刻。 */
-	private readonly lastCodexDirectoryWalkAt = new Map<string, number>();
+	/** 作業ディレクトリごとの、Codex の sessions/ を最後に総なめした時刻と走査予算。 */
+	private readonly codexDirectoryWalkLedger: IParadisDirectoryWalkBudget;
 
 	/**
 	 * コマンド検知に頼らず、作業ディレクトリだけを頼りにセッションを見つける。
@@ -5462,7 +5471,11 @@ export class ParadisMobileAgentChat extends Disposable {
 					const retained = new Set([...this.retiredSessions.values()].map(entry => entry.session.transcriptPath));
 					// mode は 'resume' 固定。'new' / 'fork' は生成時刻での相関を要求するので、
 					// Para Code を起動する前から動いているセッションが必ず落ちる。
-					await this.discoverAndNotify(token, agent, 'resume', cwd, minMtime, generation, undefined, retained, agent === 'codex' && this.mayWalkCodexSessions(cwd), () => this.lastCodexDirectoryWalkAt.set(paradisCwdGroupKey(cwd), Date.now()))
+					const cwdGroupKey = paradisCwdGroupKey(cwd);
+					const allowCodexDirectoryWalk = agent === 'codex' && this.codexDirectoryWalkLedger.mayRun(cwdGroupKey);
+					// state DB が使えず、実際に Codex の sessions/ 走査へ入ったcallbackでだけ予算を消費する。
+					const onCodexDirectoryWalk = agent === 'codex' ? () => this.codexDirectoryWalkLedger.mark(cwdGroupKey) : undefined;
+					await this.discoverAndNotify(token, agent, 'resume', cwd, minMtime, generation, undefined, retained, allowCodexDirectoryWalk, onCodexDirectoryWalk)
 						.catch(err => this.logService.trace(`[paradisAgentChat] standing session scan failed: ${err instanceof Error ? err.message : String(err)}`));
 				}
 			}
@@ -5472,20 +5485,6 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.sessionScanStartedAt = undefined;
 			}
 		}
-	}
-
-	/**
-	 * Codex の `sessions/` 総なめを許すか。state DB が読めない環境（WSL のホームを 9p 越しに
-	 * 開くと SQLite が開けないことがある）では、これが唯一の発見手段になる。ただし数百ファイルの
-	 * stat になるので間隔を空ける。
-	 *
-	 * 予算は作業ディレクトリごとに持つ。ホームごとにすると、同じディストロの2枚目以降が
-	 * 先頭のペインに予算を食われ続け、永久に総なめされない（走査順は毎回同じなので偶然に
-	 * 救われることもない）。消費は**実際に総なめしたとき**だけ記録する。
-	 */
-	private mayWalkCodexSessions(cwd: string): boolean {
-		const last = this.lastCodexDirectoryWalkAt.get(paradisCwdGroupKey(cwd));
-		return last === undefined || Date.now() - last >= PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS;
 	}
 
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */

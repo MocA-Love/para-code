@@ -16,6 +16,7 @@
 import './media/changelogModal.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -58,6 +59,9 @@ const CHIP_COLOR_VARS: Record<string, string> = {
 };
 
 export class ParadisChangelogModal extends Disposable {
+
+	private readonly _onDidDispose = this._register(new Emitter<void>());
+	readonly onDidDispose = this._onDidDispose.event;
 
 	private readonly overlay: HTMLElement;
 	private readonly dialog: HTMLElement;
@@ -200,6 +204,7 @@ export class ParadisChangelogModal extends Disposable {
 		}
 		this.closed = true;
 		this.overlay.remove();
+		this._onDidDispose.fire();
 		super.dispose();
 	}
 

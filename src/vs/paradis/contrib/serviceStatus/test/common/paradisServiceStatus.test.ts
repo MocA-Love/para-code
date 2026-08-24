@@ -6,6 +6,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	ParadisServiceStatusFailureEpisodeTracker,
 	paradisParseServiceStatusIndicator,
 	paradisServiceStatusSeverity,
 } from '../../common/paradisServiceStatus.js';
@@ -57,5 +58,22 @@ suite('ParadisServiceStatus', () => {
 			paradisParseServiceStatusIndicator({ status: {} }),
 			paradisParseServiceStatusIndicator({ status: { indicator: 123 } }),
 		], [undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+	});
+
+	test('tracks one report per provider failure episode and rearms after success', () => {
+		const tracker = new ParadisServiceStatusFailureEpisodeTracker();
+
+		assert.deepStrictEqual([
+			tracker.recordFailure('claude'),
+			tracker.recordFailure('claude'),
+			tracker.recordFailure('codex'),
+		], [true, false, true]);
+
+		tracker.recordSuccess('claude');
+
+		assert.deepStrictEqual([
+			tracker.recordFailure('claude'),
+			tracker.recordFailure('codex'),
+		], [true, false]);
 	});
 });

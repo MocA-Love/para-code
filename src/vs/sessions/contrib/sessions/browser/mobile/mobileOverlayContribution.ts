@@ -8,7 +8,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { registerAction2, Action2 } from '../../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ILanguageService } from '../../../../../editor/common/languages/language.js';
-import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
@@ -50,8 +50,14 @@ class MobileOpenDiffViewAction extends Action2 {
 		const data: IMobileDiffViewData = isMobileDiffViewData(arg)
 			? arg
 			: { diff: arg };
+		const changesToolbarContext = data.sessionResource === undefined
+			? undefined
+			: {
+				instantiationService: accessor.get(IInstantiationService),
+				sessionResource: data.sessionResource,
+			};
 
-		activeDiffView.value = openMobileDiffView(layoutService.mainContainer, data, textFileService, languageService);
+		activeDiffView.value = openMobileDiffView(layoutService.mainContainer, data, textFileService, languageService, changesToolbarContext);
 		// Clear the slot when the view tears itself down (back-button)
 		// so the slot value tracks "no overlay open" correctly. The
 		// equality guard ensures a newer view that has already replaced
@@ -83,6 +89,7 @@ class MobileOpenChangesViewAction extends Action2 {
 		const languageService = accessor.get(ILanguageService);
 		const notificationService = accessor.get(INotificationService);
 		const sessionsService = accessor.get(ISessionsService);
+		const instantiationService = accessor.get(IInstantiationService);
 
 		const session = sessionsService.activeSession.get();
 		const changes = session?.changes.get() ?? [];
@@ -103,7 +110,7 @@ class MobileOpenChangesViewAction extends Action2 {
 		// exists — jump straight to the single-file diff view.
 		if (diffs.length === 1) {
 			const commandService = accessor.get(ICommandService);
-			commandService.executeCommand(MOBILE_OPEN_DIFF_VIEW_COMMAND_ID, { diff: diffs[0] });
+			commandService.executeCommand(MOBILE_OPEN_DIFF_VIEW_COMMAND_ID, { diff: diffs[0], sessionResource: session?.resource });
 			return;
 		}
 
@@ -114,6 +121,7 @@ class MobileOpenChangesViewAction extends Action2 {
 			textFileService,
 			fileService,
 			languageService,
+			{ instantiationService, sessionResource: session!.resource },
 		);
 		const view = activeMultiDiffView.value;
 		Event.once(view.onDidDispose)(() => {

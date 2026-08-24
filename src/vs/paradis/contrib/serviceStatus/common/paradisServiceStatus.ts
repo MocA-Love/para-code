@@ -19,6 +19,22 @@ export type ParadisServiceStatusProvider = 'claude' | 'codex' | 'github';
 
 export const PARADIS_SERVICE_STATUS_PROVIDERS: readonly ParadisServiceStatusProvider[] = ['claude', 'codex', 'github'];
 
+export class ParadisServiceStatusFailureEpisodeTracker {
+	private readonly failingProviders = new Set<ParadisServiceStatusProvider>();
+
+	recordFailure(provider: ParadisServiceStatusProvider): boolean {
+		if (this.failingProviders.has(provider)) {
+			return false;
+		}
+		this.failingProviders.add(provider);
+		return true;
+	}
+
+	recordSuccess(provider: ParadisServiceStatusProvider): void {
+		this.failingProviders.delete(provider);
+	}
+}
+
 /** 表示用に丸めた重大度。`unknown` は取得失敗・未取得、`maintenance` は計画メンテナンス中を表す。 */
 export type ParadisServiceStatusSeverity = 'ok' | 'minor' | 'major' | 'maintenance' | 'unknown';
 
