@@ -185,15 +185,10 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 		// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
 		this.paradisServiceStatusWidget.value = createParadisServiceStatusWidget(this.instantiationService, this.leftContent);
 
-		// PARA-PATCH: local/remote listening-port list (title bar right side, ahead of the
-		// layout/action toolbar so it doesn't end up squeezed against the window controls).
-		// actionToolBarElement is only created when hasCustomTitlebar() is true; otherwise this
-		// just appends to the end of rightContent.
-		const portListWidget = createParadisPortListWidget(this.instantiationService, this.rightContent);
-		if (this.actionToolBarElement && this.actionToolBarElement.parentElement === this.rightContent) {
-			this.rightContent.insertBefore(portListWidget.element, this.actionToolBarElement);
-		}
-		this.paradisPortListWidget.value = portListWidget;
+		// PARA-PATCH: local/remote listening-port list, grouped with the other left-side
+		// status widgets instead of the right side (right side ended up isolated next to
+		// the window controls depending on whether actionToolBarElement existed yet).
+		this.paradisPortListWidget.value = createParadisPortListWidget(this.instantiationService, this.leftContent);
 
 		// Native menu controller
 		if (isMacintosh || hasNativeMenu(this.configurationService)) {
