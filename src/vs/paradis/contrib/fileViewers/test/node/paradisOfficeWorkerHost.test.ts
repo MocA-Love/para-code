@@ -10,8 +10,9 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { toDisposable, type IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
+import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 import { OfficeHandleStore } from '../../node/office/paradisOfficeHandleStore.js';
-import { OfficeWorkerHost, type IOfficeWorker } from '../../node/office/paradisOfficeWorkerHost.js';
+import { OfficeMemoryAccountant, OfficeWorkerHost, type IOfficeWorker } from '../../node/office/paradisOfficeWorkerHost.js';
 
 class FakeClock {
 	private now = 0;
@@ -37,17 +38,21 @@ class FakeClock {
 			}
 		}
 	}
+
+	jump(milliseconds: number): void { this.now += milliseconds; }
 }
 
 class FakeWorker implements IOfficeWorker {
 	readonly messages: unknown[] = [];
 	terminated = false;
+	emitExitOnTerminate = true;
+	terminateResult: Promise<number> = Promise.resolve(1);
 	private readonly messageEmitter = new Emitter<unknown>();
 	private readonly errorEmitter = new Emitter<unknown>();
 	private readonly exitEmitter = new Emitter<number>();
 
 	postMessage(message: unknown): void { this.messages.push(message); }
-	terminate(): Promise<number> { this.terminated = true; this.exitEmitter.fire(1); return Promise.resolve(1); }
+	terminate(): Promise<number> { this.terminated = true; if (this.emitExitOnTerminate) { this.exitEmitter.fire(1); } return this.terminateResult; }
 	onMessage(listener: (message: unknown) => void): IDisposable { return this.messageEmitter.event(listener); }
 	onError(listener: (error: unknown) => void): IDisposable { return this.errorEmitter.event(listener); }
 	onExit(listener: (code: number) => void): IDisposable { return this.exitEmitter.event(listener); }
@@ -58,6 +63,10 @@ class FakeWorker implements IOfficeWorker {
 
 function source() {
 	return { kind: 'bytes' as const, bytes: new Uint8Array([80, 75, 3, 4]), revision: 'safe-revision' };
+}
+
+function parseSummary() {
+	return { operation: 'parse', handle: { kind: 'document', id: 'handle-1' }, outcome: 'complete', completeness: {} };
 }
 
 suite('ParadisOfficeWorkerHost', () => {
@@ -101,6 +110,21 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.strictEqual(worker.terminated, true);
 	});
 
+	test('retains an orphaned worker slot until a late exit after termination rejection', async () => {
+		const worker = new FakeWorker();
+		worker.emitExitOnTerminate = false;
+		worker.terminateResult = Promise.reject(new Error('terminate rejected'));
+		const host = new OfficeWorkerHost({ createWorker: () => worker, memory: { limitBytes: 1, workerReservationBytes: 1 } });
+		const cancellation = new CancellationTokenSource();
+		const result = host.run('parse', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, cancellation.token);
+		cancellation.cancel();
+		worker.emit({ kind: 'cancelled', requestId: '1' });
+		assert.deepStrictEqual(await result, { outcome: 'cancelled' });
+		assert.strictEqual(host.activeWorkerCount, 1);
+		worker.exit(1);
+		assert.strictEqual(host.activeWorkerCount, 0);
+	});
+
 	test('starts the Node worker and receives its cooperative cancellation acknowledgement', async () => {
 		// The Electron renderer test host cannot launch worker_threads. The node unit runner is the
 		// production execution boundary and runs this smoke test below.
@@ -111,6 +135,20 @@ suite('ParadisOfficeWorkerHost', () => {
 		cancellation.cancel();
 		assert.deepStrictEqual(await result, { outcome: 'cancelled' });
 		host.dispose();
+	});
+
+	test('inspects a real minimal OPC package and reaps the worker', async () => {
+		if (process.type === 'renderer') { return; }
+		const bytes = await buildOpcFixture({
+			parts: [['/word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>']],
+			relationships: [{ id: 'rId1', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', target: 'word/document.xml' }],
+		});
+		const accountant = new OfficeMemoryAccountant(1024 * 1024 * 1024);
+		const host = new OfficeWorkerHost({ accountant, memory: { workerReservationBytes: 1 } });
+		const result = await host.run('inspect', 'node-inspect', { kind: 'bytes', bytes, revision: 'fixture-1' }, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
+		assert.strictEqual(result.outcome, 'complete');
+		assert.strictEqual(host.activeWorkerCount, 0);
+		assert.strictEqual(accountant.snapshot().workerBytes, 0);
 	});
 
 	test('maps an inspect deadline and worker crash to safe outcomes', async () => {
@@ -159,6 +197,22 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
 	});
 
+	test('rejects extra, path-bearing, and Proxy worker summaries', async () => {
+		for (const value of [{ ...parseSummary(), path: '/private/document.xlsx', stack: 'secret' }]) {
+			const worker = new FakeWorker();
+			const host = new OfficeWorkerHost({ createWorker: () => worker });
+			const result = host.run('parse', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
+			worker.emit({ kind: 'result', requestId: '1', value });
+			assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
+		}
+		const worker = new FakeWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker });
+		const result = host.run('parse', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
+		const proxy = new Proxy(parseSummary(), { getOwnPropertyDescriptor: () => { throw new Error('getter'); } });
+		worker.emit({ kind: 'result', requestId: '1', value: proxy });
+		assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
+	});
+
 	test('maps an abnormal worker exit to engineCrashed', async () => {
 		const worker = new FakeWorker();
 		const host = new OfficeWorkerHost({ createWorker: () => worker });
@@ -194,11 +248,11 @@ suite('ParadisOfficeWorkerHost', () => {
 		const b = host.run('parse', 'a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
 		const c = host.run('parse', 'b', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
 		assert.strictEqual(workers.length, 2);
-		workers[0].emit({ kind: 'result', requestId: '1', value: {} });
+		workers[0].emit({ kind: 'result', requestId: '1', value: parseSummary() });
 		assert.strictEqual(workers.length, 3);
-		workers[1].emit({ kind: 'result', requestId: '2', value: {} });
-		workers[2].emit({ kind: 'result', requestId: '3', value: {} });
-		assert.deepStrictEqual(await Promise.all([a, b, c]), [{ outcome: 'complete', value: {} }, { outcome: 'complete', value: {} }, { outcome: 'complete', value: {} }]);
+		workers[1].emit({ kind: 'result', requestId: '2', value: parseSummary() });
+		workers[2].emit({ kind: 'result', requestId: '3', value: parseSummary() });
+		assert.deepStrictEqual(await Promise.all([a, b, c]), [{ outcome: 'complete', value: parseSummary() }, { outcome: 'complete', value: parseSummary() }, { outcome: 'complete', value: parseSummary() }]);
 		const blocked = await host.run('parse', 'c', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token, { reservationBytes: 385 });
 		assert.deepStrictEqual(blocked, { outcome: 'blocked', error: 'limitExceeded' });
 	});
@@ -247,6 +301,36 @@ suite('ParadisOfficeWorkerHost', () => {
 		host.dispose();
 	});
 
+	test('starts an operation deadline only after a 29-second queue wait', async () => {
+		const clock = new FakeClock();
+		const workers: FakeWorker[] = [];
+		const host = new OfficeWorkerHost({ createWorker: () => { const worker = new FakeWorker(); workers.push(worker); return worker; }, now: clock.read, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, memory: { limitBytes: 1, workerReservationBytes: 1 } });
+		const token = { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) };
+		const first = host.run('parse', 'a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
+		const queued = host.run('parse', 'b', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
+		clock.advance(29_000);
+		workers[0].emit({ kind: 'result', requestId: '1', value: parseSummary() });
+		clock.advance(59_999);
+		workers[1].emit({ kind: 'result', requestId: '2', value: parseSummary() });
+		assert.strictEqual((await queued).outcome, 'complete');
+		await first;
+	});
+
+	test('blocks a result at its exact operation deadline and idle get cannot revive after a delayed timer', async () => {
+		const clock = new FakeClock();
+		const worker = new FakeWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker, now: clock.read, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+		const result = host.run('parse', 'a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
+		clock.advance(60_000);
+		worker.emit({ kind: 'result', requestId: '1', value: parseSummary() });
+		assert.deepStrictEqual(await result, { outcome: 'blocked', error: 'limitExceeded' });
+		let randomSeed = 90;
+		const store = new OfficeHandleStore({ now: clock.read, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, randomBytes: length => new Uint8Array(length).fill(++randomSeed) });
+		const handle = store.create('owner', 'document', 'revision', 1);
+		clock.jump(10 * 60 * 1000);
+		assert.strictEqual(store.get(handle), undefined);
+	});
+
 	test('evicts inactive cache before a reservation and releases it once after completion', async () => {
 		const workers: FakeWorker[] = [];
 		let cache = 128;
@@ -257,8 +341,8 @@ suite('ParadisOfficeWorkerHost', () => {
 		const token = { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) };
 		const first = host.run('parse', 'a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
 		assert.strictEqual(cache, 96);
-		workers[0].emit({ kind: 'result', requestId: '1', value: {} });
-		assert.deepStrictEqual(await first, { outcome: 'complete', value: {} });
+		workers[0].emit({ kind: 'result', requestId: '1', value: parseSummary() });
+		assert.deepStrictEqual(await first, { outcome: 'complete', value: parseSummary() });
 		assert.strictEqual(host.activeWorkerCount, 0);
 		assert.deepStrictEqual(await host.run('parse', 'b', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token, { reservationBytes: Number.MAX_SAFE_INTEGER + 1 }), { outcome: 'blocked', error: 'limitExceeded' });
 	});
@@ -284,6 +368,18 @@ suite('ParadisOfficeWorkerHost', () => {
 		const store = new OfficeHandleStore({ randomBytes: length => new Uint8Array(length).fill(++randomSeed) });
 		for (let index = 0; index < 4; index++) { store.create('client-a', index % 2 === 0 ? 'document' : 'comparison', `revision-${index}`, 1); }
 		assert.throws(() => store.create('client-a', 'document', 'revision-5', 1), error => error instanceof Error && error.name === 'OfficeHandleStoreError');
+	});
+
+	test('shares cache and handle accounting across the host and handle store', () => {
+		const accountant = new OfficeMemoryAccountant(100);
+		let randomSeed = 60;
+		const store = new OfficeHandleStore({ accountant, semanticCacheLimitBytes: 100, randomBytes: length => new Uint8Array(length).fill(++randomSeed) });
+		assert.strictEqual(store.putSemanticCache('cache', 20), true);
+		const handle = store.create('client-a', 'document', 'revision', 30);
+		assert.deepStrictEqual(accountant.snapshot(), { limitBytes: 100, workerBytes: 0, cacheBytes: 20, handleBytes: 30, spoolBytes: 0, derivedAssetBytes: 0, totalBytes: 50 });
+		assert.strictEqual(store.close(handle), true);
+		assert.strictEqual(accountant.snapshot().handleBytes, 0);
+		assert.throws(() => accountant.setSpool(-1));
 	});
 
 	test('preserves active cache and handle entries while evicting inactive LRU entries', () => {

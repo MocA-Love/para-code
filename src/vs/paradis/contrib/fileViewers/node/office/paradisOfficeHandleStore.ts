@@ -185,6 +185,7 @@ export class OfficeHandleStore {
 		const entry: StoredHandle = { id, ownerId, nonce, kind, sourceRevision, memoryBytes, workerId, active: false, lastUsed: createdAt, idleDeadline: createdAt + PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS, timer };
 		holder.entry = entry;
 		this.handles.set(id, entry);
+		this.syncAccountant();
 		try {
 			timer.schedule(PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS);
 		} catch {
@@ -339,6 +340,7 @@ export class OfficeHandleStore {
 		if (this.handles.get(entry.id) !== entry) { return; }
 		this.handles.delete(entry.id);
 		entry.timer.dispose();
+		this.syncAccountant();
 	}
 
 	private safeNow(): number {
@@ -350,5 +352,8 @@ export class OfficeHandleStore {
 		}
 	}
 	private expired(entry: StoredHandle): boolean { return !Number.isSafeInteger(entry.idleDeadline) || this.safeNow() >= entry.idleDeadline; }
-	private syncAccountant(): void { this.accountant?.setCache(this.cacheBytes); }
+	private syncAccountant(): void {
+		this.accountant?.setCache(this.cacheBytes);
+		this.accountant?.setHandles([...this.handles.values()].reduce((total, entry) => total + entry.memoryBytes, 0));
+	}
 }
