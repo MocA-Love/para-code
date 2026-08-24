@@ -30,6 +30,7 @@
 // ゴーストの差し込み）が一切検証できなくなる。テストは test/electron-browser/paradisDocxDiffWebview.test.ts。
 
 import { FileAccess } from '../../../../base/common/network.js';
+import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { paradisPreviewOrigins } from './paradisViewerAssets.js';
@@ -62,11 +63,11 @@ import {
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
 
 /** Owns and sanitizes every package asset before docx-preview can observe the package. */
-export async function sanitizeParadisDocxBytesForRenderer(bytes: Uint8Array, nodeId: string): Promise<ParadisOfficeRenderablePackage> {
+export async function sanitizeParadisDocxBytesForRenderer(bytes: Uint8Array, nodeId: string, token?: CancellationToken): Promise<ParadisOfficeRenderablePackage> {
 	const owned = new Uint8Array(bytes.byteLength);
 	owned.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
 	const archive = await createParadisOfficeWebArchive(owned);
-	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive });
+	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive, token, deadline: Date.now() + 10_000 });
 }
 
 // ── docx-preview の AST（使う部分だけを緩く型付けする） ────────────────────
