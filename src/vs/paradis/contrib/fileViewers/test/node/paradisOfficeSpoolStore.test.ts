@@ -15,6 +15,7 @@ import { ParadisOfficeSourceBroker } from '../../browser/paradisOfficeSourceBrok
 import {
 	buildParadisOfficeSourceRevision,
 	IOfficeSourceProvider,
+	IOfficeSpoolClient,
 	IOfficeSpoolExpiryScheduler,
 	PARADIS_OFFICE_SPOOL_CHUNK_BYTES,
 	PARADIS_OFFICE_SPOOL_LIMITS,
@@ -22,7 +23,7 @@ import {
 	ParadisOfficeSpoolReference,
 	ParadisOfficeWritableSpoolReference,
 } from '../../common/paradisOfficeSourceBroker.js';
-import { OfficeSpoolStore, OfficeSpoolStoreError } from '../../node/paradisOfficeSpoolStore.js';
+import { OfficeSpoolStore, OfficeSpoolStoreError, type OfficeSpoolOpenedSource } from '../../node/paradisOfficeSpoolStore.js';
 
 const ownerA = 'window-a';
 const ownerB = 'window-b';
@@ -586,5 +587,43 @@ suite('OfficeSpoolStore', () => {
 		strictEqual(store.byteLength, 0);
 		lateReject(new Error('/raw/private late close rejection'));
 		await Promise.resolve();
+	});
+
+	test('normalizes throwing and rejecting spool consumers while releasing the sealed entry', async () => {
+		for (const consume of [
+			new Proxy(async (_source: OfficeSpoolOpenedSource) => undefined, { apply() { throw new Error('/raw/private secret-token'); } }),
+			async () => { throw new Error('/raw/private secret-token'); },
+		]) {
+			const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+			const sealed = await appendAndSeal(store, ownerA, 'consumer');
+			await rejects(() => store.open(sealed, consume), (error: unknown) => {
+				return error instanceof Error && error.name === 'OfficeSpoolStoreError' && (error as OfficeSpoolStoreError).code === 'consumerFailure' && error.message === 'The Office spool operation was rejected.' && (error.stack === '' || error.stack === undefined);
+			});
+			strictEqual(store.activeSpoolCount, 0);
+			strictEqual(store.byteLength, 0);
+		}
+	});
+
+	test('releases real store quota before a never-settling broker cleanup', async () => {
+		let requestedDelay = 0;
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const client: IOfficeSpoolClient = {
+			begin: (ownerId, attemptId) => store.begin(ownerId, attemptId),
+			append: async () => { throw new Error('/raw/private primary'); },
+			seal: (reference, request) => store.seal(reference, request),
+			dispose: async reference => { await store.dispose(reference); return new Promise<void>(() => undefined); },
+			disposeAttempt: (ownerId, attemptId) => store.disposeAttempt(ownerId, attemptId),
+		};
+		const broker = new ParadisOfficeSourceBroker({
+			ownerId: ownerA, platform: 'desktopLocal', spoolClient: client,
+			provider: { async snapshot() { return { identity: 'provider:real', revision: 'etag:real' }; }, async *read() { yield VSBuffer.fromString('x'); } },
+			createHash: () => { const hash = createHash('sha256'); return { update: bytes => hash.update(bytes.buffer), digest: () => hash.digest('hex') }; },
+			isRemoteProtocolV1: () => false,
+			closeTimeout: { setTimeout: (runner: () => void, delay: number) => { requestedDelay = delay; Promise.resolve().then(runner); return {}; }, clearTimeout() { } },
+		});
+		await rejects(() => broker.open({ kind: 'gitCommit', uri: 'git:/doc', displayName: 'doc.docx' }, CancellationToken.None));
+		strictEqual(store.activeSpoolCount, 0);
+		strictEqual(store.byteLength, 0);
+		strictEqual(requestedDelay, 250);
 	});
 });

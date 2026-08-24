@@ -40,6 +40,12 @@ export interface ParadisOfficeWritableSpoolReference {
 	readonly nonce: string;
 }
 
+/** Owner-bound lease known before a begin response is observed. */
+export interface ParadisOfficeSpoolAttempt {
+	readonly ownerId: string;
+	readonly attemptId: string;
+}
+
 export type ParadisOfficeSpoolReference = ParadisOfficeWritableSpoolReference;
 
 export type ParadisOfficeSpoolSourceKind = Extract<ParadisOfficeSourceDescriptor['kind'], 'remote' | 'gitCommit' | 'gitIndex' | 'workingTree' | 'untitled'>;
@@ -82,10 +88,11 @@ export interface IOfficeSourceBroker {
 
 /** IPC-capable spool client used by the workbench broker. `open` remains backend-local. */
 export interface IOfficeSpoolClient {
-	begin(ownerId: string): Promise<ParadisOfficeWritableSpoolReference>;
+	begin(ownerId: string, attemptId?: string): Promise<ParadisOfficeWritableSpoolReference>;
 	append(reference: ParadisOfficeWritableSpoolReference, bytes: VSBuffer): Promise<void>;
 	seal(reference: ParadisOfficeWritableSpoolReference, request: ParadisOfficeSealRequest): Promise<ParadisOfficeSealedSpoolReference>;
 	dispose(reference: ParadisOfficeSpoolReference): Promise<void>;
+	disposeAttempt(ownerId: string, attemptId: string): Promise<void>;
 }
 
 /** Workbench-owned provider adapter. This interface is local and is never serialized. Adapters should yield bounded buffers; the broker independently snapshots and chunks every yield. */
@@ -225,6 +232,15 @@ export function validateParadisOfficeSpoolOwner(value: unknown): string {
 		throw new TypeError('Invalid Office spool owner');
 	}
 	return value;
+}
+
+/** Validates a pre-response owner-bound begin lease. */
+export function validateParadisOfficeSpoolAttempt(ownerId: unknown, attemptId: unknown): ParadisOfficeSpoolAttempt {
+	const safeOwnerId = validateParadisOfficeSpoolOwner(ownerId);
+	if (typeof attemptId !== 'string' || !identifierPattern.test(attemptId)) {
+		throw new TypeError('Invalid Office spool attempt');
+	}
+	return { ownerId: safeOwnerId, attemptId };
 }
 
 /** Reads only the three base capability fields and rejects accessors and unrelated fields. */

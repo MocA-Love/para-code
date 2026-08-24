@@ -43,6 +43,7 @@ class TestHash implements IOfficeSourceHash {
 class TestSpoolClient implements IOfficeSpoolClient {
 	readonly appended: VSBuffer[] = [];
 	readonly disposed: ParadisOfficeSpoolReference[] = [];
+	readonly disposedAttempts: readonly { ownerId: string; attemptId: string }[] = [];
 	readonly sealed: ParadisOfficeSealRequest[] = [];
 	beginCalls = 0;
 	failAppend = false;
@@ -50,7 +51,7 @@ class TestSpoolClient implements IOfficeSpoolClient {
 	sealResultOverride: unknown;
 	private readonly writable: ParadisOfficeWritableSpoolReference = { id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64) };
 
-	async begin(requestOwnerId: string): Promise<ParadisOfficeWritableSpoolReference> {
+	async begin(requestOwnerId: string, _attemptId?: string): Promise<ParadisOfficeWritableSpoolReference> {
 		strictEqual(requestOwnerId, ownerId);
 		this.beginCalls++;
 		return { ...this.writable };
@@ -78,6 +79,10 @@ class TestSpoolClient implements IOfficeSpoolClient {
 
 	async dispose(reference: ParadisOfficeSpoolReference): Promise<void> {
 		this.disposed.push({ ...reference });
+	}
+
+	async disposeAttempt(requestOwnerId: string, attemptId: string): Promise<void> {
+		(this.disposedAttempts as { ownerId: string; attemptId: string }[]).push({ ownerId: requestOwnerId, attemptId });
 	}
 }
 
@@ -515,14 +520,15 @@ suite('ParadisOfficeSourceBroker', () => {
 		);
 	});
 
-	test('disposes an identifiable but non-exact begin capability before returning a safe broker error', async () => {
+	test('disposes an identifiable but non-exact begin attempt before returning a safe broker error', async () => {
 		const spoolClient = new TestSpoolClient();
 		spoolClient.begin = async () => ({ id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64), path: '/raw/private/spool' });
 		await rejectsSafeBrokerError(
 			() => createBroker(sourceProvider([VSBuffer.fromString('abcdef')]), spoolClient).broker.open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None),
 			'spoolFailure',
 		);
-		strictEqual(spoolClient.disposed.length, 1);
+		strictEqual(spoolClient.disposed.length, 0);
+		strictEqual(spoolClient.disposedAttempts.length, 1);
 	});
 
 	test('normalizes proxy dependency rejections and error stacks without leaking trap data', async () => {
@@ -701,12 +707,95 @@ suite('ParadisOfficeSourceBroker', () => {
 	test('clears the iterator close timeout after an immediate iterator close settlement', async () => {
 		let scheduled = 0;
 		let cleared = 0;
+		const delays: number[] = [];
 		const iterator: AsyncIterator<VSBuffer> = { async next() { throw new Error('/raw/private primary'); }, async return() { return { done: true, value: undefined }; } };
-		const options = { ownerId, platform: 'desktopLocal', provider: { async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; }, read() { return { [Symbol.asyncIterator]: () => iterator }; } }, spoolClient: new TestSpoolClient(), createHash: () => new TestHash(), isRemoteProtocolV1: () => false, closeTimeout: { setTimeout: (_runner: () => void) => { scheduled++; return {}; }, clearTimeout: () => { cleared++; } } } as unknown as ParadisOfficeSourceBrokerOptions;
+		const options = { ownerId, platform: 'desktopLocal', provider: { async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; }, read() { return { [Symbol.asyncIterator]: () => iterator }; } }, spoolClient: new TestSpoolClient(), createHash: () => new TestHash(), isRemoteProtocolV1: () => false, closeTimeout: { setTimeout: (_runner: () => void, delay: number) => { scheduled++; delays.push(delay); return {}; }, clearTimeout: () => { cleared++; } } } as unknown as ParadisOfficeSourceBrokerOptions;
 		await rejects(() => new ParadisOfficeSourceBroker(options).open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None));
-		strictEqual(scheduled, 1);
-		strictEqual(cleared, 1);
+		strictEqual(scheduled, 2);
+		strictEqual(cleared, 2);
+		deepStrictEqual(delays, [250, 250]);
 	});
+
+	test('clears the iterator close timeout after an immediate close rejection', async () => {
+		let scheduled = 0;
+		let cleared = 0;
+		const iterator: AsyncIterator<VSBuffer> = { async next() { throw new Error('/raw/private primary'); }, async return() { throw new Error('/raw/private close'); } };
+		const options = { ownerId, platform: 'desktopLocal', provider: { async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; }, read() { return { [Symbol.asyncIterator]: () => iterator }; } }, spoolClient: new TestSpoolClient(), createHash: () => new TestHash(), isRemoteProtocolV1: () => false, closeTimeout: { setTimeout: (_runner: () => void, delay: number) => { strictEqual(delay, 250); scheduled++; return {}; }, clearTimeout: () => { cleared++; } } } as unknown as ParadisOfficeSourceBrokerOptions;
+		await rejects(() => new ParadisOfficeSourceBroker(options).open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None));
+		strictEqual(scheduled, 2);
+		strictEqual(cleared, 2);
+	});
+
+	test('fences successful callback results before the next untrusted boundary', async () => {
+		const cancellation = new CancellationTokenSource();
+		let iterableReads = 0;
+		const readBroker = createBroker({
+			async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; },
+			read() {
+				cancellation.cancel();
+				return { get [Symbol.asyncIterator]() { iterableReads++; throw new Error('/raw/private iterator trap'); } } as unknown as AsyncIterable<VSBuffer>;
+			},
+		}).broker;
+		await rejects(() => readBroker.open(descriptor('gitCommit', 'git:/doc'), cancellation.token), error => error instanceof CancellationError);
+		strictEqual(iterableReads, 0);
+		cancellation.dispose();
+
+		const snapshotCancellation = new CancellationTokenSource();
+		let snapshotReads = 0;
+		const snapshotBroker = createBroker({
+			async snapshot() {
+				snapshotCancellation.cancel();
+				return new Proxy({}, { ownKeys() { snapshotReads++; throw new Error('/raw/private snapshot trap'); } }) as ParadisOfficeProviderSnapshot;
+			},
+			async *read() { },
+		}).broker;
+		await rejects(() => snapshotBroker.open(descriptor('gitCommit', 'git:/doc'), snapshotCancellation.token), error => error instanceof CancellationError);
+		strictEqual(snapshotReads, 0);
+		snapshotCancellation.dispose();
+
+		const sealCancellation = new CancellationTokenSource();
+		let sealedReads = 0;
+		const client = new TestSpoolClient();
+		client.seal = async () => {
+			sealCancellation.cancel();
+			return new Proxy({}, { ownKeys() { sealedReads++; throw new Error('/raw/private sealed trap'); } }) as never;
+		};
+		await rejects(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker.open(descriptor('gitCommit', 'git:/doc'), sealCancellation.token), error => error instanceof CancellationError);
+		strictEqual(sealedReads, 0);
+		sealCancellation.dispose();
+	});
+
+	test('uses an owner-bound attempt lease to cancel a successful begin without inspecting or operating a foreign capability', async () => {
+		const cancellation = new CancellationTokenSource();
+		let capabilityReads = 0;
+		const client = new TestSpoolClient();
+		client.begin = async () => {
+			cancellation.cancel();
+			return new Proxy({ id: 'c'.repeat(48), ownerId: 'victim-window', nonce: 'd'.repeat(64) }, { ownKeys() { capabilityReads++; throw new Error('/raw/private capability trap'); } });
+		};
+		await rejects(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker.open(descriptor('gitCommit', 'git:/doc'), cancellation.token), error => error instanceof CancellationError);
+		strictEqual(capabilityReads, 0);
+		strictEqual(client.disposed.length, 0);
+		strictEqual(client.disposedAttempts.length, 1);
+		strictEqual(client.disposedAttempts[0].ownerId, ownerId);
+		cancellation.dispose();
+	});
+
+	test('bounds never-settling begin-cancellation cleanup while preserving cancellation', async () => {
+		const cancellation = new CancellationTokenSource();
+		let requestedDelay = 0;
+		const client = new TestSpoolClient();
+		client.begin = async () => { cancellation.cancel(); return { id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64) }; };
+		client.disposeAttempt = () => new Promise<void>(() => undefined);
+		const broker = new ParadisOfficeSourceBroker({
+			ownerId, platform: 'desktopLocal', provider: sourceProvider([VSBuffer.fromString('x')]), spoolClient: client, createHash: () => new TestHash(), isRemoteProtocolV1: () => false,
+			closeTimeout: { setTimeout: (runner: () => void, delay: number) => { requestedDelay = delay; Promise.resolve().then(runner); return {}; }, clearTimeout() { } },
+		});
+		await rejects(() => broker.open(descriptor('gitCommit', 'git:/doc'), cancellation.token), error => error instanceof CancellationError);
+		strictEqual(requestedDelay, 250);
+		cancellation.dispose();
+	});
+
 
 	test('enforces the Task 2 platform compressed-input budget before append', async () => {
 		const chunks = new Array(8).fill(undefined).map(() => VSBuffer.alloc(PARADIS_OFFICE_SPOOL_CHUNK_BYTES));
