@@ -22,7 +22,7 @@ import * as path from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
+import { IParadisTrackedChildProcess, ParadisChildProcessTreeTracker } from '../../../node/paradisKillChildProcess.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
@@ -137,8 +137,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private readonly cache = new Map<string, { at: number; ttl: number; value: unknown }>();
 	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
 	private readonly inflight = new Map<string, IInflightReport>();
-	/** dispose 時に停止する実行中の子プロセス。 */
-	private readonly activeChildren = new Set<cp.ChildProcess>();
+	/** 実行のdeadlineと子プロセスツリーの停止を所有する。 */
+	private readonly childProcesses: ParadisChildProcessTreeTracker;
 	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<ParadisCcusageWarmTarget>;
 	private readonly warmLeaseOwners = new Map<string, IWarmLeaseOwner>();
 	private readonly warmFailures = new Map<string, IWarmFailure>();
@@ -165,6 +165,9 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		private readonly now: () => number = Date.now,
 		warmLeaseSchedulerFactory: WarmLeaseSchedulerFactory = runner => new RunOnceScheduler(runner, 0),
 	) {
+		this.childProcesses = new ParadisChildProcessTreeTracker(
+			error => this.logService.trace('[ParadisCcusage] failed to stop child process: ' + error),
+		);
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
 			'ParadisCcusage',
@@ -417,11 +420,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		this.warmLeaseTracker.dispose();
 		this.warmLeaseOwners.clear();
 		this.warmFailures.clear();
-		for (const child of this.activeChildren) {
-			// Windows で .cmd シムを cmd.exe ラップして起動している場合、kill() では実体が孫として残る
-			paradisKillChildProcessTree(child, error => this.logService.trace(`[ParadisCcusage] failed to stop child process during dispose: ${error}`));
-		}
-		this.activeChildren.clear();
+		this.childProcesses.dispose();
 	}
 
 	private async execJsonInternal<T>(
@@ -515,38 +514,31 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		// 自動委譲は CVE-2024-27980 対策で撤去済みで、ラップしないと EINVAL になる。
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(executable.command, fullArgs) : undefined;
 		return new Promise<string>((resolve, reject) => {
-			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
+			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
 			execution.child = this.execFile(shimInvocation?.file ?? executable.command, shimInvocation?.args ?? fullArgs, {
 				encoding: 'utf8',
-				timeout: EXEC_TIMEOUT_MS,
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
 				windowsVerbatimArguments: shimInvocation !== undefined,
 				env: { ...env, NO_COLOR: '1', LOG_LEVEL: '0' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;
-				if (execution.child) {
-					this.activeChildren.delete(execution.child);
-					if (err?.killed === true) {
-						// タイムアウトによる強制終了は Node 内部の `child.kill()` なので、cmd.exe ラップ時は
-						// その先の実体が孫として残る。日常的に起きる経路なのでここでも落とす。
-						paradisKillChildProcessTree(execution.child, error => this.logService.trace(`[ParadisCcusage] failed to stop the timed out child: ${error}`));
-					}
-				}
+				const timedOut = execution.tracked?.timedOut === true;
+				execution.tracked?.dispose();
 				if (err) {
 					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${stderr || err.message}`);
 					// 実行自体に失敗した場合は次回に別の候補を試せるようキャッシュを破棄する
 					this.resolved = undefined;
 					const execError: IParadisExecError = new Error(stderr?.trim() || err.message);
 					execError.spawnFailed = (err as NodeJS.ErrnoException).code === 'ENOENT';
-					execError.timedOut = err.killed === true;
+					execError.timedOut = timedOut;
 					reject(execError);
 				} else {
 					resolve(stdout);
 				}
 			});
 			if (!execution.completed && execution.child) {
-				this.activeChildren.add(execution.child);
+				execution.tracked = this.childProcesses.track(execution.child, EXEC_TIMEOUT_MS);
 			}
 		});
 	}
@@ -624,16 +616,15 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		const env = await this.getExecEnv();
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['--version']) : undefined;
 		return new Promise<boolean>(resolve => {
-			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
-			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { timeout: 10_000, windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, err => {
+			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
+			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, err => {
 				execution.completed = true;
-				if (execution.child) {
-					this.activeChildren.delete(execution.child);
-				}
-				resolve(!err);
+				const timedOut = execution.tracked?.timedOut === true;
+				execution.tracked?.dispose();
+				resolve(!err && !timedOut);
 			});
 			if (!execution.completed && execution.child) {
-				this.activeChildren.add(execution.child);
+				execution.tracked = this.childProcesses.track(execution.child, 10_000);
 			}
 		});
 	}

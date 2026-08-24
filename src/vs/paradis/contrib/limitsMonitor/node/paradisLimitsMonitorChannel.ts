@@ -36,7 +36,7 @@ import * as path from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
+import { IParadisTrackedChildProcess, ParadisChildProcessTreeTracker, paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
@@ -195,6 +195,8 @@ export class ParadisLimitsMonitorService {
 	/** RPCフォールバックまで失敗したCodexホーム → 失敗時刻(クールダウン用)。 */
 	private readonly rpcFailureAt = new Map<string, number>();
 	private readonly setupSessions = new Map<string, ISetupSession>();
+	private readonly childProcesses: ParadisChildProcessTreeTracker;
+	private disposed = false;
 	/** 同時ログイン完了時の重複判定・確定を直列化する。 */
 	private codexFinalizationQueue = Promise.resolve();
 	private readonly cachedShellEnv: ParadisCachedShellEnv;
@@ -208,7 +210,11 @@ export class ParadisLimitsMonitorService {
 		// Codex ホーム探索・削除のテストで実ホームディレクトリに触れずに済むようにするための注入点。
 		// 本番は既定の os.homedir のまま。
 		private readonly _homedir: () => string = os.homedir,
+		private readonly _execFile: typeof cp.execFile = cp.execFile,
 	) {
+		this.childProcesses = new ParadisChildProcessTreeTracker(
+			error => this.logService.trace('[ParadisLimitsMonitor] failed to stop child process: ' + error),
+		);
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
 			'ParadisLimitsMonitor',
@@ -219,6 +225,8 @@ export class ParadisLimitsMonitorService {
 	}
 
 	dispose(): void {
+		this.disposed = true;
+		this.childProcesses.dispose();
 		for (const session of this.setupSessions.values()) {
 			session.dispose();
 		}
@@ -1017,28 +1025,34 @@ export class ParadisLimitsMonitorService {
 	private execFile(command: string, args: string[], options: { timeoutMs: number; stdin?: string }): Promise<string> {
 		return new Promise<string>((resolve, reject) => {
 			this.getExecEnv().then(env => {
+				if (this.disposed) {
+					reject(new Error('ParadisLimitsMonitorService is disposed'));
+					return;
+				}
 				// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
 				// (shell 指定なしの execFile は CVE-2024-27980 対策後の Node では EINVAL になる)。
 				const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
-				const child = cp.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
+				const execution: { tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
+				const child = this._execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
 					encoding: 'utf8',
-					timeout: options.timeoutMs,
 					maxBuffer: 16 * 1024 * 1024,
 					windowsHide: true,
 					windowsVerbatimArguments: shimInvocation !== undefined,
 					env: { ...env, NO_COLOR: '1' },
 				}, (err, stdout, stderr) => {
-					if (err) {
-						if (err.killed === true) {
-							// タイムアウトによる強制終了は Node 内部の `child.kill()` なので、cmd.exe ラップ時は
-							// その先の実体が孫として残る。日常的に起きる経路なのでここでも落とす。
-							paradisKillChildProcessTree(child, error => this.logService.trace(`[ParadisLimitsMonitor] failed to stop the timed out child: ${error}`));
-						}
-						reject(new Error(stderr?.trim() || err.message));
+					execution.completed = true;
+					const timedOut = execution.tracked?.timedOut === true;
+					execution.tracked?.dispose();
+					if (err || timedOut) {
+						const message = stderr?.trim() || (timedOut ? 'command timed out after ' + options.timeoutMs + 'ms' : err!.message);
+						reject(new Error(message));
 					} else {
 						resolve(stdout);
 					}
 				});
+				if (!execution.completed) {
+					execution.tracked = this.childProcesses.track(child, options.timeoutMs);
+				}
 				if (options.stdin !== undefined) {
 					child.stdin?.write(options.stdin);
 					child.stdin?.end();
@@ -1082,11 +1096,23 @@ export class ParadisLimitsMonitorService {
 
 	private async canExecute(command: string): Promise<boolean> {
 		const env = await this.getExecEnv();
+		if (this.disposed) {
+			return false;
+		}
 		// .cmd シム候補も EINVAL ではなく実際の終了コードで判定できるよう、
 		// 実行時と同じ cmd.exe ラップを通す。
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['--version']) : undefined;
 		return new Promise<boolean>(resolve => {
-			cp.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { timeout: 10_000, windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, err => resolve(!err));
+			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
+			execution.child = this._execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, err => {
+				execution.completed = true;
+				const timedOut = execution.tracked?.timedOut === true;
+				execution.tracked?.dispose();
+				resolve(!err && !timedOut);
+			});
+			if (!execution.completed && execution.child) {
+				execution.tracked = this.childProcesses.track(execution.child, 10_000);
+			}
 		});
 	}
 

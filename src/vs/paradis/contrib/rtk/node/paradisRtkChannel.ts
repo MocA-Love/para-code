@@ -23,7 +23,7 @@ import * as path from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
+import { IParadisTrackedChildProcess, ParadisChildProcessTreeTracker } from '../../../node/paradisKillChildProcess.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
@@ -87,8 +87,8 @@ export class ParadisRtkService implements IParadisRtkService {
 	private readonly cache = new Map<string, { at: number; value: unknown }>();
 	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
 	private readonly inflight = new Map<string, Promise<unknown>>();
-	/** dispose 時に停止する実行中の子プロセス。 */
-	private readonly activeChildren = new Set<cp.ChildProcess>();
+	/** 実行のdeadlineと子プロセスツリーの停止を所有する。 */
+	private readonly childProcesses: ParadisChildProcessTreeTracker;
 	/** バックグラウンドで温め続ける対象(キーは cache と同じ)。 */
 	private readonly warmTargets = new Map<string, IWarmTarget>();
 	/** 温め直しのタイマー。最初の要求が来て初めて回り始める。 */
@@ -115,6 +115,9 @@ export class ParadisRtkService implements IParadisRtkService {
 		 */
 		private readonly backgroundWarm: boolean = true,
 	) {
+		this.childProcesses = new ParadisChildProcessTreeTracker(
+			error => this.logService.trace('[ParadisRtk] failed to stop child process: ' + error),
+		);
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
 			'ParadisRtk',
@@ -299,24 +302,16 @@ export class ParadisRtkService implements IParadisRtkService {
 		// execFile('rtk') の解決対象にならない=従来どおり未インストール扱い)。
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
 		return new Promise<string>((resolve, reject) => {
-			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
+			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
 			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
 				encoding: 'utf8',
-				timeout: EXEC_TIMEOUT_MS,
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
 				windowsVerbatimArguments: shimInvocation !== undefined,
 				env: { ...env, NO_COLOR: '1' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;
-				if (execution.child) {
-					this.activeChildren.delete(execution.child);
-					if (err?.killed === true) {
-						// タイムアウトによる強制終了は Node 内部の `child.kill()` なので、cmd.exe ラップ時は
-						// その先の実体が孫として残る。日常的に起きる経路なのでここでも落とす。
-						paradisKillChildProcessTree(execution.child, error => this.logService.trace(`[ParadisRtk] failed to stop the timed out child: ${error}`));
-					}
-				}
+				execution.tracked?.dispose();
 				if (err) {
 					if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
 						// renderer 側はこの目印で「未インストール」の案内へ切り替える。
@@ -331,7 +326,7 @@ export class ParadisRtkService implements IParadisRtkService {
 				}
 			});
 			if (!execution.completed && execution.child) {
-				this.activeChildren.add(execution.child);
+				execution.tracked = this.childProcesses.track(execution.child, EXEC_TIMEOUT_MS);
 			}
 		});
 	}
@@ -343,11 +338,7 @@ export class ParadisRtkService implements IParadisRtkService {
 			this.warmTimer = undefined;
 		}
 		this.warmTargets.clear();
-		for (const child of this.activeChildren) {
-			// Windows で .cmd シムを cmd.exe ラップして起動している場合、kill() では実体が孫として残る
-			paradisKillChildProcessTree(child, error => this.logService.trace(`[ParadisRtk] failed to stop child process during dispose: ${error}`));
-		}
-		this.activeChildren.clear();
+		this.childProcesses.dispose();
 	}
 }
 
