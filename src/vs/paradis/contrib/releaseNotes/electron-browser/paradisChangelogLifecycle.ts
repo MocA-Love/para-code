@@ -71,11 +71,9 @@ export class ParadisChangelogLifecycle<TModal extends IParadisChangelogLifecycle
 		if (this.active === entry) {
 			this.active = undefined;
 		}
-		if (!entry.fetchFinished) {
-			entry.cts.cancel();
-			entry.cts.dispose();
-			entry.fetchFinished = true;
-		}
+		entry.cts.cancel();
+		entry.cts.dispose();
+		entry.fetchFinished = true;
 		entry.closeListener.dispose();
 		if (disposeModal) {
 			entry.modal.dispose();
