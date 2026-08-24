@@ -23,10 +23,24 @@ import {
 	ParadisOfficeSpoolReference,
 	ParadisOfficeWritableSpoolReference,
 } from '../../common/paradisOfficeSourceBroker.js';
-import { OfficeSpoolStore, OfficeSpoolStoreError, type OfficeSpoolOpenedSource } from '../../node/paradisOfficeSpoolStore.js';
+import { OfficeSpoolStore as BaseOfficeSpoolStore, OfficeSpoolStoreError, type OfficeSpoolOpenedSource } from '../../node/paradisOfficeSpoolStore.js';
 
 const ownerA = 'window-a';
 const ownerB = 'window-b';
+let testAttemptSequence = 0;
+
+function nextTestAttemptId(): string {
+	testAttemptSequence++;
+	return `00000000-0000-4000-8000-${testAttemptSequence.toString(16).padStart(12, '0')}`;
+}
+
+class OfficeSpoolStore extends BaseOfficeSpoolStore {
+	override async begin(ownerId: string, attemptId = nextTestAttemptId()) {
+		const reference = await super.begin(ownerId, attemptId);
+		await super.claim(reference, attemptId);
+		return reference;
+	}
+}
 
 class ManualExpiryScheduler implements IOfficeSpoolExpiryScheduler {
 	disposed = false;
@@ -268,7 +282,7 @@ suite('OfficeSpoolStore', () => {
 		strictEqual(getterCalls, 0);
 
 		const sealed = await appendAndSeal(store, ownerA, 'safe');
-		deepStrictEqual(Object.keys(sealed).sort(), ['id', 'nonce', 'ownerId', 'providerIdentity', 'providerRevision', 'revision', 'sha256', 'size', 'sourceKind']);
+		deepStrictEqual(Object.keys(sealed).sort(), ['attemptId', 'id', 'nonce', 'ownerId', 'providerIdentity', 'providerRevision', 'revision', 'sha256', 'size', 'sourceKind']);
 		strictEqual(Object.prototype.hasOwnProperty.call(sealed, 'path'), false);
 		strictEqual(Object.prototype.hasOwnProperty.call(sealed, 'bytes'), false);
 		strictEqual(Object.prototype.hasOwnProperty.call(sealed, 'stream'), false);
@@ -496,7 +510,7 @@ suite('OfficeSpoolStore', () => {
 	});
 
 	test('runs the real broker and real spool store end to end and reuses quota after open', async () => {
-		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const store = new BaseOfficeSpoolStore({ platform: 'desktopLocal' });
 		const provider: IOfficeSourceProvider = {
 			async snapshot() { return { identity: 'provider:real', revision: 'etag:real' }; },
 			async *read() { yield VSBuffer.fromString('real-bytes'); },
@@ -516,8 +530,8 @@ suite('OfficeSpoolStore', () => {
 		ok(source.kind === 'spool');
 		await store.open(source.spool, async opened => strictEqual((await opened.read(0, 10)).toString(), 'real-bytes'));
 		strictEqual(store.activeSpoolCount, 0);
-		await store.begin(ownerA);
-		await store.begin(ownerA);
+		await store.begin(ownerA, nextTestAttemptId());
+		await store.begin(ownerA, nextTestAttemptId());
 		store.disposeAll();
 	});
 
@@ -537,7 +551,7 @@ suite('OfficeSpoolStore', () => {
 				return { done: true, value: undefined };
 			},
 		};
-		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const store = new BaseOfficeSpoolStore({ platform: 'desktopLocal' });
 		const broker = new ParadisOfficeSourceBroker({
 			ownerId: ownerA,
 			platform: 'desktopLocal',
@@ -570,7 +584,7 @@ suite('OfficeSpoolStore', () => {
 		let returnCalls = 0;
 		let lateReject!: (reason?: unknown) => void;
 		const lateClose = new Promise<IteratorResult<VSBuffer>>((_resolve, reject) => lateReject = reject);
-		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const store = new BaseOfficeSpoolStore({ platform: 'desktopLocal' });
 		const broker = new ParadisOfficeSourceBroker({
 			ownerId: ownerA, platform: 'desktopLocal', spoolClient: store,
 			provider: {
@@ -606,9 +620,10 @@ suite('OfficeSpoolStore', () => {
 
 	test('releases real store quota before a never-settling broker cleanup', async () => {
 		let requestedDelay = 0;
-		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const store = new BaseOfficeSpoolStore({ platform: 'desktopLocal' });
 		const client: IOfficeSpoolClient = {
 			begin: (ownerId, attemptId) => store.begin(ownerId, attemptId),
+			claim: (reference, attemptId) => store.claim(reference, attemptId),
 			append: async () => { throw new Error('/raw/private primary'); },
 			seal: (reference, request) => store.seal(reference, request),
 			dispose: async reference => { await store.dispose(reference); return new Promise<void>(() => undefined); },
@@ -625,5 +640,30 @@ suite('OfficeSpoolStore', () => {
 		strictEqual(store.activeSpoolCount, 0);
 		strictEqual(store.byteLength, 0);
 		strictEqual(requestedDelay, 250);
+	});
+
+	test('requires lowercase UUID attempts and permits attempt cleanup only before a one-shot claim', async () => {
+		const store = new BaseOfficeSpoolStore({ platform: 'desktopLocal' });
+		const attempt = '00000000-0000-4000-8000-0000000000aa';
+		await rejects(() => store.begin(ownerA, 'not-a-uuid'), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
+		await rejects(() => store.begin(ownerA, attempt.toUpperCase()), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
+		const reference = await store.begin(ownerA, attempt);
+		await rejects(() => store.begin(ownerA, attempt), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
+		const otherOwner = await store.begin(ownerB, attempt);
+		await store.disposeAttempt(ownerA, attempt);
+		strictEqual(store.activeSpoolCount, 1);
+		await store.dispose(otherOwner);
+
+		const claimed = await store.begin(ownerA, attempt);
+		await store.claim(claimed, attempt);
+		await rejects(() => store.claim(claimed, attempt), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
+		await store.disposeAttempt(ownerA, attempt);
+		await store.append(claimed, VSBuffer.fromString('claimed'));
+		const sealed = await store.seal(claimed, sealRequest('claimed'));
+		await store.disposeAttempt(ownerA, attempt);
+		strictEqual(store.activeSpoolCount, 1);
+		await store.open(sealed, async () => undefined);
+		await store.disposeAttempt(ownerA, attempt);
+		strictEqual(store.activeSpoolCount, 0);
 	});
 });

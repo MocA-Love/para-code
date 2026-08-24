@@ -304,12 +304,21 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				throw newSafeCancellationError();
 			}
 			beginAttempt = snapshotParadisOfficeSealedSpoolAttempt(beginResult);
-			if (!beginAttempt.writable || beginAttempt.writable.ownerId !== this.options.ownerId) {
+			if (token.isCancellationRequested) {
+				await cancellationCleanup();
+				throw newSafeCancellationError();
+			}
+			if (!beginAttempt.writable || beginAttempt.writable.ownerId !== this.options.ownerId || beginAttempt.writable.attemptId !== attemptId) {
 				await cancellationCleanup();
 				throw new ParadisOfficeSourceBrokerError('spoolFailure');
 			}
 			writable = beginAttempt.writable;
+			cancellationCleanup = () => this.disposeReferenceBounded(writable);
+			await awaitDependency(token, 'spoolFailure', () => this.options.spoolClient.claim(writable, attemptId));
 		} catch (error) {
+			if (cancellationCleanup) {
+				await cancellationCleanup();
+			}
 			cancellationListener.dispose();
 			throwDependencyError(error, token, 'spoolFailure');
 		}
@@ -452,6 +461,14 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			await this.awaitBounded(this.options.spoolClient.disposeAttempt(this.options.ownerId, attemptId));
 		} catch {
 			// A pre-response lease is owner-bound and cleanup must not replace cancellation.
+		}
+	}
+
+	private async disposeReferenceBounded(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>): Promise<void> {
+		try {
+			await this.awaitBounded(this.options.spoolClient.dispose(reference));
+		} catch {
+			// The reference was locally owner/attempt verified before this cleanup path.
 		}
 	}
 

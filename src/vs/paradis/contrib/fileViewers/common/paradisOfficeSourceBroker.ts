@@ -38,6 +38,7 @@ export interface ParadisOfficeWritableSpoolReference {
 	readonly id: string;
 	readonly ownerId: string;
 	readonly nonce: string;
+	readonly attemptId: string;
 }
 
 /** Owner-bound lease known before a begin response is observed. */
@@ -88,7 +89,8 @@ export interface IOfficeSourceBroker {
 
 /** IPC-capable spool client used by the workbench broker. `open` remains backend-local. */
 export interface IOfficeSpoolClient {
-	begin(ownerId: string, attemptId?: string): Promise<ParadisOfficeWritableSpoolReference>;
+	begin(ownerId: string, attemptId: string): Promise<ParadisOfficeWritableSpoolReference>;
+	claim(reference: ParadisOfficeWritableSpoolReference, attemptId: string): Promise<void>;
 	append(reference: ParadisOfficeWritableSpoolReference, bytes: VSBuffer): Promise<void>;
 	seal(reference: ParadisOfficeWritableSpoolReference, request: ParadisOfficeSealRequest): Promise<ParadisOfficeSealedSpoolReference>;
 	dispose(reference: ParadisOfficeSpoolReference): Promise<void>;
@@ -119,6 +121,7 @@ const identifierPattern = /^[A-Za-z\d][A-Za-z\d._:-]{0,255}$/;
 const spoolIdPattern = /^[a-f\d]{48}$/;
 const spoolNoncePattern = /^[a-f\d]{64}$/;
 const sha256Pattern = /^[a-f\d]{64}$/;
+const attemptIdPattern = /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/;
 
 interface DataRecord {
 	readonly keys: readonly string[];
@@ -237,27 +240,29 @@ export function validateParadisOfficeSpoolOwner(value: unknown): string {
 /** Validates a pre-response owner-bound begin lease. */
 export function validateParadisOfficeSpoolAttempt(ownerId: unknown, attemptId: unknown): ParadisOfficeSpoolAttempt {
 	const safeOwnerId = validateParadisOfficeSpoolOwner(ownerId);
-	if (typeof attemptId !== 'string' || !identifierPattern.test(attemptId)) {
+	if (typeof attemptId !== 'string' || !attemptIdPattern.test(attemptId)) {
 		throw new TypeError('Invalid Office spool attempt');
 	}
 	return { ownerId: safeOwnerId, attemptId };
 }
 
-/** Reads only the three base capability fields and rejects accessors and unrelated fields. */
+/** Reads only the owner-bound begin capability fields and rejects accessors and unrelated fields. */
 export function validateParadisOfficeWritableSpoolReference(value: unknown): ParadisOfficeWritableSpoolReference {
-	const record = dataRecord(value, new Set(['id', 'ownerId', 'nonce']));
-	if (!record || record.keys.length !== 3) {
+	const record = dataRecord(value, new Set(['id', 'ownerId', 'nonce', 'attemptId']));
+	if (!record || record.keys.length !== 4) {
 		throw new TypeError('Invalid Office spool reference');
 	}
 	const id = dataValue(record, 'id');
 	const ownerId = dataValue(record, 'ownerId');
 	const nonce = dataValue(record, 'nonce');
+	const attemptId = dataValue(record, 'attemptId');
 	if (typeof id !== 'string' || !spoolIdPattern.test(id)
 		|| typeof ownerId !== 'string' || !identifierPattern.test(ownerId)
-		|| typeof nonce !== 'string' || !spoolNoncePattern.test(nonce)) {
+		|| typeof nonce !== 'string' || !spoolNoncePattern.test(nonce)
+		|| typeof attemptId !== 'string' || !attemptIdPattern.test(attemptId)) {
 		throw new TypeError('Invalid Office spool reference');
 	}
-	return { id, ownerId, nonce };
+	return { id, ownerId, nonce, attemptId };
 }
 
 /** Validates the complete sealed capability shape and returns a fresh copy. */
@@ -287,10 +292,10 @@ export function snapshotParadisOfficeSealedSpoolAttempt(value: unknown): Paradis
 	} catch {
 		return {};
 	}
-	if (record.keys.length === 3 && record.keys.every(key => key === 'id' || key === 'ownerId' || key === 'nonce')) {
+	if (record.keys.length === 4 && record.keys.every(key => key === 'id' || key === 'ownerId' || key === 'nonce' || key === 'attemptId')) {
 		return { identity, writable: identity };
 	}
-	const sealedKeys = new Set(['id', 'ownerId', 'nonce', 'sourceKind', 'providerIdentity', 'providerRevision', 'size', 'sha256', 'revision']);
+	const sealedKeys = new Set(['id', 'ownerId', 'nonce', 'attemptId', 'sourceKind', 'providerIdentity', 'providerRevision', 'size', 'sha256', 'revision']);
 	if (record.keys.length !== sealedKeys.size || !record.keys.every(key => sealedKeys.has(key))) {
 		return { identity };
 	}
@@ -357,12 +362,14 @@ function validateSpoolIdentityRecord(record: DataRecord): ParadisOfficeWritableS
 	const id = dataValue(record, 'id');
 	const ownerId = dataValue(record, 'ownerId');
 	const nonce = dataValue(record, 'nonce');
+	const attemptId = dataValue(record, 'attemptId');
 	if (typeof id !== 'string' || !spoolIdPattern.test(id)
 		|| typeof ownerId !== 'string' || !identifierPattern.test(ownerId)
-		|| typeof nonce !== 'string' || !spoolNoncePattern.test(nonce)) {
+		|| typeof nonce !== 'string' || !spoolNoncePattern.test(nonce)
+		|| typeof attemptId !== 'string' || !attemptIdPattern.test(attemptId)) {
 		throw new TypeError('Invalid Office spool reference');
 	}
-	return { id, ownerId, nonce };
+	return { id, ownerId, nonce, attemptId };
 }
 
 function validateSealRecord(record: DataRecord): ParadisOfficeSealRequest {
