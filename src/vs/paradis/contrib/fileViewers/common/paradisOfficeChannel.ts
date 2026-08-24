@@ -6,6 +6,7 @@
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
+import { BufferWriter, serialize } from '../../../../base/parts/ipc/common/ipc.js';
 import { PARADIS_SPREADSHEET_CHANNEL } from './paradisSpreadsheet.js';
 import { createParadisOfficeError, type ParadisOfficeError, type ParadisOfficeErrorDetails } from './paradisOfficeErrors.js';
 import {
@@ -22,6 +23,8 @@ export const PARADIS_OFFICE_PROTOCOL_VERSION = 1 as const;
 export const PARADIS_OFFICE_LEGACY_PROTOCOL_VERSION = 0 as const;
 export const PARADIS_OFFICE_OPERATIONS = ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] as const;
 export const PARADIS_OFFICE_WIRE_ENVELOPE = 'paradis-office-wire/v1' as const;
+/** Public semantic payload and flattened IPC body are independently capped at 2 MiB. */
+export const PARADIS_OFFICE_MAX_IPC_BYTES = 2 * 1024 * 1024;
 
 export interface ParadisOfficeV1Negotiation {
 	readonly version: 1;
@@ -78,6 +81,8 @@ export interface ParadisOfficeDecodedWireValue { readonly value: unknown; readon
 
 function wireError(code: 'invalid' | 'payloadTooLarge' = 'invalid'): never { throw new ParadisOfficeWireError(code); }
 
+function copyWireBuffer(value: VSBuffer): VSBuffer { const copy = VSBuffer.alloc(value.byteLength); copy.buffer.set(value.buffer); return copy; }
+
 function stringWireBytes(value: string): number {
 	return VSBuffer.fromString(JSON.stringify(value)).byteLength;
 }
@@ -104,7 +109,7 @@ function snapshotWireValue(value: unknown, maximumBytes: number, state: Snapshot
 		return { value, bytes: VSBuffer.fromString(JSON.stringify(value)).byteLength };
 	}
 	if (value instanceof VSBuffer) {
-		return { value: VSBuffer.wrap(value.buffer.slice()), bytes: value.byteLength };
+		return { value: copyWireBuffer(value), bytes: value.byteLength };
 	}
 	if (!value || typeof value !== 'object' || state.seen.has(value)) { return wireError(); }
 	state.seen.add(value);
@@ -171,7 +176,7 @@ interface EncodedBufferReference { readonly $paradisOfficeBuffer: number }
 function encodeWireBuffers(value: unknown, buffers: VSBuffer[]): unknown {
 	if (value instanceof VSBuffer) {
 		const index = buffers.length;
-		buffers.push(VSBuffer.wrap(value.buffer.slice()));
+		buffers.push(copyWireBuffer(value));
 		return { $paradisOfficeBuffer: index } satisfies EncodedBufferReference;
 	}
 	if (Array.isArray(value)) { return value.map(item => encodeWireBuffers(item, buffers)); }
@@ -196,7 +201,7 @@ function decodeWireBuffers(value: unknown, buffers: readonly VSBuffer[]): unknow
 			const index = entries[0][1];
 			if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index >= buffers.length || used.has(index)) { return wireError(); }
 			used.add(index);
-			return VSBuffer.wrap(buffers[index].buffer.slice());
+			return copyWireBuffer(buffers[index]);
 		}
 		const result: Record<string, unknown> = {};
 		for (const [key, child] of entries) { Object.defineProperty(result, key, { configurable: true, enumerable: true, writable: true, value: decode(child, depth + 1) }); }
@@ -209,6 +214,14 @@ function decodeWireBuffers(value: unknown, buffers: readonly VSBuffer[]): unknow
 
 export function isParadisOfficeWireEnvelope(value: unknown): value is ParadisOfficeWireEnvelope {
 	return Array.isArray(value) && value.length >= 2 && value[0] === PARADIS_OFFICE_WIRE_ENVELOPE;
+}
+
+/** Measures the actual generic IPC serializer output, including tags and VQL length framing. */
+export function measureParadisOfficeIpcWireBytes(value: ParadisOfficeWireEnvelope): number {
+	const writer = new BufferWriter();
+	try { serialize(writer, value); return writer.buffer.byteLength; }
+	catch { return wireError(); }
+	finally { writer.dispose(); }
 }
 
 /** Flattens nested VSBuffer values so the generic IPC serializer never JSON-stringifies them. */
@@ -226,12 +239,15 @@ export function marshalParadisOfficeWireValue(value: unknown, authority?: Paradi
 	const payload = encodeWireBuffers(snapshot.value, buffers);
 	const projectedAuthority = authority ? validateWireAuthority(authority) : undefined;
 	const header = JSON.stringify({ version: 1, bufferLengths: buffers.map(buffer => buffer.byteLength), payload, ...(projectedAuthority ? { authority: projectedAuthority } : {}) });
-	return [PARADIS_OFFICE_WIRE_ENVELOPE, header, ...buffers];
+	const envelope: ParadisOfficeWireEnvelope = [PARADIS_OFFICE_WIRE_ENVELOPE, header, ...buffers];
+	if (measureParadisOfficeIpcWireBytes(envelope) > PARADIS_OFFICE_MAX_IPC_BYTES) { return wireError('payloadTooLarge'); }
+	return envelope;
 }
 
 /** Restores a flattened IPC value into fresh data. Public unions must be validated after this step. */
 export function decodeParadisOfficeWireValue(value: unknown): ParadisOfficeDecodedWireValue {
 	if (!isParadisOfficeWireEnvelope(value) || Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) { return wireError(); }
+	if (measureParadisOfficeIpcWireBytes(value) > PARADIS_OFFICE_MAX_IPC_BYTES) { return wireError('payloadTooLarge'); }
 	const headerText = value[1];
 	if (typeof headerText !== 'string' || VSBuffer.fromString(headerText).byteLength > PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes) { return wireError('payloadTooLarge'); }
 	const buffers: VSBuffer[] = [];

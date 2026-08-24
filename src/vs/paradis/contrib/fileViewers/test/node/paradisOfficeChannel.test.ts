@@ -13,29 +13,32 @@ import { CancellationToken, CancellationTokenSource } from '../../../../../base/
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { join } from '../../../../../base/common/path.js';
-import { ChannelClient, ChannelServer, type IMessagePassingProtocol } from '../../../../../base/parts/ipc/common/ipc.js';
+import { BufferWriter, ChannelClient, ChannelServer, IPCClient, IPCServer, serialize, type IMessagePassingProtocol } from '../../../../../base/parts/ipc/common/ipc.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createParadisOfficeError } from '../../common/paradisOfficeErrors.js';
 import { buildParadisOfficeSourceRevision } from '../../common/paradisOfficeSourceBroker.js';
 import {
 	PARADIS_OFFICE_CHANNEL,
+	PARADIS_OFFICE_MAX_IPC_BYTES,
 	ParadisOfficeWireError,
 	measureParadisOfficeWireBytes,
 	marshalParadisOfficeRequest,
 	marshalParadisOfficeWireValue,
+	measureParadisOfficeIpcWireBytes,
 	snapshotParadisOfficeRequest,
 	snapshotParadisOfficeResponse,
 	snapshotParadisOfficeRestoreState,
 	validateParadisOfficeAssetRange,
 	unmarshalParadisOfficeResponse,
+	unmarshalParadisOfficeWireValue,
 	type IParadisOfficeDocumentBackend,
 	type ParadisOfficeCancelRequest,
 	type ParadisOfficeCloseRequest,
 	type ParadisOfficeWireAuthority,
 } from '../../common/paradisOfficeChannel.js';
 import { PARADIS_OFFICE_LIMITS, type ParadisOfficeChangeCategory, type ParadisOfficeRequest, type ParadisOfficeResponse } from '../../common/paradisOfficeProtocol.js';
-import { LocalParadisOfficeDocumentBackend, LocalParadisOfficeSourceResolver, PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT, PARADIS_OFFICE_FILE_GLOBAL_LIMIT, PARADIS_OFFICE_FILE_PER_OWNER_LIMIT, PARADIS_OFFICE_FILE_READ_CHUNK_BYTES, ParadisOfficeChannel, ParadisOfficeChannelError, ParadisOfficeSourceResolutionError, ParadisOfficeSpoolTransport, SpoolAwareParadisOfficeSourceResolver, buildParadisOfficeFileRevision, type IParadisOfficeFileHandle } from '../../node/paradisOfficeChannel.js';
+import { LocalParadisOfficeDocumentBackend, LocalParadisOfficeSourceResolver, PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT, PARADIS_OFFICE_CONTROL_REQUEST_LIMIT, PARADIS_OFFICE_FILE_GLOBAL_LIMIT, PARADIS_OFFICE_FILE_PER_OWNER_LIMIT, PARADIS_OFFICE_FILE_READ_CHUNK_BYTES, ParadisOfficeChannel, ParadisOfficeChannelError, ParadisOfficeSourceResolutionError, ParadisOfficeSpoolTransport, SpoolAwareParadisOfficeSourceResolver, buildParadisOfficeFileRevision, registerParadisOffice, type IParadisOfficeFileHandle } from '../../node/paradisOfficeChannel.js';
 import { OfficeSpoolStore } from '../../node/paradisOfficeSpoolStore.js';
 import { OfficeMemoryAccountant } from '../../node/office/paradisOfficeWorkerHost.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
@@ -46,10 +49,12 @@ const source = { kind: 'file' as const, uri: 'file:///safe/document.docx', displ
 const completeness = { expectedParts: 1, visitedParts: 1, parsedParts: 1, opaqueParts: 0, failedParts: 0, omittedParts: 0, expectedSemanticUnits: 1, visitedSemanticUnits: 1, terminal: true };
 
 class QueueProtocol implements IMessagePassingProtocol {
-	private readonly emitter = new Emitter<VSBuffer>();
+	private buffering = true;
+	private readonly buffered: VSBuffer[] = [];
+	private readonly emitter = new Emitter<VSBuffer>({ onDidAddFirstListener: () => { this.buffering = false; for (const buffer of this.buffered.splice(0)) { this.emitter.fire(buffer); } }, onDidRemoveLastListener: () => this.buffering = true });
 	readonly onMessage = this.emitter.event;
 	other!: QueueProtocol;
-	send(buffer: VSBuffer): void { this.other.emitter.fire(buffer); }
+	send(buffer: VSBuffer): void { if (this.other.buffering) { this.other.buffered.push(buffer); } else { this.other.emitter.fire(buffer); } }
 	dispose(): void { this.emitter.dispose(); }
 }
 
@@ -59,6 +64,11 @@ function createProtocolPair(): readonly [QueueProtocol, QueueProtocol] {
 	client.other = server;
 	server.other = client;
 	return [client, server];
+}
+
+function independentlySerializedIpcBytes(value: unknown): number {
+	const writer = new BufferWriter();
+	try { serialize(writer, value); return writer.buffer.byteLength; } finally { writer.dispose(); }
 }
 
 class FakeOfficeFileHandle implements IParadisOfficeFileHandle {
@@ -225,7 +235,11 @@ suite('ParadisOfficeChannel', () => {
 		backend.responses.set('getRenderableAsset', request => assetResponse(request.requestId, 'asset_safe-1', 1));
 		assert.strictEqual((await channel.call<ParadisOfficeResponse>('window:asset-bind', 'request', { ...assetRequest, requestId: 'asset-bind-2' })).ok, false);
 		backend.responses.set('getRenderableAsset', request => assetResponse(request.requestId, 'asset_safe-1', 0, 3));
-		assert.strictEqual((await channel.call<ParadisOfficeResponse>('window:asset-bind', 'request', { ...assetRequest, requestId: 'asset-bind-3' })).ok, false);
+		assert.strictEqual((await channel.call<ParadisOfficeResponse>('window:asset-bind', 'request', { ...assetRequest, requestId: 'asset-bind-3' })).ok, true);
+		backend.responses.set('getRenderableAsset', request => assetResponse(request.requestId, 'asset_safe-1', 0, 0));
+		assert.strictEqual((await channel.call<ParadisOfficeResponse>('window:asset-bind', 'request', { ...assetRequest, requestId: 'asset-bind-4' })).ok, false);
+		backend.responses.set('getRenderableAsset', request => assetResponse(request.requestId, 'asset_safe-1', 10, 0));
+		assert.strictEqual((await channel.call<ParadisOfficeResponse>('window:asset-bind', 'request', { ...assetRequest, requestId: 'asset-bind-5', offset: 10 })).ok, true);
 		channel.dispose();
 	});
 
@@ -285,18 +299,45 @@ suite('ParadisOfficeChannel', () => {
 		if (!asset.ok || asset.operation !== 'getRenderableAsset') { throw new Error('Expected an asset response'); }
 		assert.deepStrictEqual([...asset.bytes.buffer], [9, 8, 7, 6]);
 
-		const exactOverhead = measureParadisOfficeWireBytes({ ...responseBase, bytes: VSBuffer.alloc(0), totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes });
-		backend.responses.set('getRenderableAsset', request => ({ ...responseBase, requestId: request.requestId, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes, bytes: VSBuffer.alloc(PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes - exactOverhead) }));
-		const exactLength = PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes - exactOverhead;
-		const exact = await unmarshalParadisOfficeResponse(await wire.call('request', marshalParadisOfficeRequest({ ...request('getRenderableAsset', 'ipc-exact-1'), length: exactLength })));
+		const semanticOverhead = measureParadisOfficeWireBytes({ ...responseBase, bytes: VSBuffer.alloc(0), totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes });
+		const semanticExact = { ...responseBase, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes, bytes: VSBuffer.alloc(PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes - semanticOverhead) };
+		assert.strictEqual(measureParadisOfficeWireBytes(semanticExact), PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes);
+		assert.throws(() => marshalParadisOfficeWireValue(semanticExact), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
+		let low = 0;
+		let high = PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes - semanticOverhead;
+		while (low < high) {
+			const candidate = Math.ceil((low + high) / 2);
+			try {
+				const envelope = marshalParadisOfficeWireValue({ ...responseBase, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes, bytes: VSBuffer.alloc(candidate) });
+				if (independentlySerializedIpcBytes(envelope) <= PARADIS_OFFICE_MAX_IPC_BYTES) { low = candidate; } else { high = candidate - 1; }
+			} catch { high = candidate - 1; }
+		}
+		const exactEnvelope = marshalParadisOfficeWireValue({ ...responseBase, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes, bytes: VSBuffer.alloc(low) });
+		assert.strictEqual(independentlySerializedIpcBytes(exactEnvelope), PARADIS_OFFICE_MAX_IPC_BYTES);
+		assert.strictEqual(measureParadisOfficeIpcWireBytes(exactEnvelope), PARADIS_OFFICE_MAX_IPC_BYTES);
+		assert.throws(() => marshalParadisOfficeWireValue({ ...responseBase, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes, bytes: VSBuffer.alloc(low + 1) }), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
+		backend.responses.set('getRenderableAsset', request => ({ ...responseBase, requestId: request.requestId, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes, bytes: VSBuffer.alloc(low) }));
+		const exact = await unmarshalParadisOfficeResponse(await wire.call('request', marshalParadisOfficeRequest({ ...request('getRenderableAsset', 'ipc-exact-1'), length: PARADIS_OFFICE_LIMITS.maxAssetRequestBytes })));
 		assert.strictEqual(exact.ok, true);
-		backend.responses.set('getRenderableAsset', request => ({ ...responseBase, requestId: request.requestId, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes + 1, bytes: VSBuffer.alloc(PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes - exactOverhead + 1) }));
-		const plusOne = await unmarshalParadisOfficeResponse(await wire.call('request', marshalParadisOfficeRequest({ ...request('getRenderableAsset', 'ipc-plus-one-1'), length: exactLength + 1 })));
+		backend.responses.set('getRenderableAsset', request => ({ ...responseBase, requestId: request.requestId, totalLength: PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes, bytes: VSBuffer.alloc(low + 1) }));
+		const plusOne = await unmarshalParadisOfficeResponse(await wire.call('request', marshalParadisOfficeRequest({ ...request('getRenderableAsset', 'ipc-plus-one-1'), length: PARADIS_OFFICE_LIMITS.maxAssetRequestBytes })));
 		assert.strictEqual(plusOne.ok, false);
 		if (plusOne.ok) { throw new Error('Expected payloadTooLarge'); }
 		assert.strictEqual(plusOne.error.code, 'payloadTooLarge');
 		disposables.dispose();
 		store.disposeAll();
+	});
+
+	test('owns binary bytes across marshal source and received-envelope mutations', () => {
+		const sourceBytes = VSBuffer.wrap(Buffer.from([1, 2, 3]));
+		const envelope = marshalParadisOfficeWireValue({ bytes: sourceBytes });
+		sourceBytes.buffer[0] = 9;
+		const received = unmarshalParadisOfficeWireValue(envelope) as { readonly bytes: VSBuffer };
+		assert.deepStrictEqual([...received.bytes.buffer], [1, 2, 3]);
+		const envelopeBuffer = envelope.find(value => value instanceof VSBuffer);
+		if (!(envelopeBuffer instanceof VSBuffer)) { throw new Error('Expected envelope buffer'); }
+		envelopeBuffer.buffer[1] = 8;
+		assert.deepStrictEqual([...received.bytes.buffer], [1, 2, 3]);
 	});
 
 	test('fences connection epochs, owner capabilities, and active-entry identity across reconnect ABA', async () => {
@@ -333,6 +374,59 @@ suite('ParadisOfficeChannel', () => {
 		const fresh = await unmarshalParadisOfficeResponse(await newRequest);
 		assert.strictEqual(fresh.ok, true);
 		assert.strictEqual(backend.calls.filter(call => call.operation === 'close').length, 1);
+		channel.dispose();
+		disconnects.dispose();
+	});
+
+	test('binds shared-process channels to concrete connections when the same ctx overlaps', async () => {
+		const disposables = new DisposableStore();
+		const connections = disposables.add(new Emitter<{ readonly protocol: IMessagePassingProtocol; readonly onDidClientDisconnect: Event<void> }>());
+		const server = disposables.add(new IPCServer<string>(connections.event));
+		const backend = new RecordingBackend();
+		disposables.add(registerParadisOffice(server, backend));
+		const createConnection = () => {
+			const [clientProtocol, serverProtocol] = createProtocolPair();
+			disposables.add(clientProtocol); disposables.add(serverProtocol);
+			const disconnect = disposables.add(new Emitter<void>());
+			connections.fire({ protocol: serverProtocol, onDidClientDisconnect: disconnect.event });
+			const client = disposables.add(new IPCClient(clientProtocol, 'window:overlap'));
+			return { client, disconnect };
+		};
+		const oldConnection = createConnection();
+		const oldWire = oldConnection.client.getChannel(PARADIS_OFFICE_CHANNEL);
+		const oldNegotiation = await oldWire.call<{ readonly ownerCapability: string; readonly connectionEpoch: number }>('negotiate', { versions: [1] });
+		const newConnection = createConnection();
+		const newWire = newConnection.client.getChannel(PARADIS_OFFICE_CHANNEL);
+		const newNegotiation = await newWire.call<{ readonly ownerCapability: string; readonly connectionEpoch: number }>('negotiate', { versions: [1] });
+		assert.notStrictEqual(oldNegotiation.ownerCapability, newNegotiation.ownerCapability);
+		const newAuthority = { ownerCapability: newNegotiation.ownerCapability, connectionEpoch: newNegotiation.connectionEpoch };
+		await assert.rejects(oldWire.call('request', marshalParadisOfficeRequest(request('open', 'overlap-forged-1'), newAuthority)));
+		oldConnection.disconnect.fire();
+		const opened = await unmarshalParadisOfficeResponse(await newWire.call('request', marshalParadisOfficeRequest(request('open', 'overlap-open-1'), newAuthority)));
+		assert.strictEqual(opened.ok, true);
+		disposables.dispose();
+	});
+
+	test('disconnects the old resource owner when late handle validation or close cleanup fails', async () => {
+		const disconnects = new Emitter<{ readonly ownerId: string; readonly epoch: number }>();
+		let epoch = 1;
+		const authority = { currentEpoch: (_ownerId: string) => epoch, onDidDisconnect: disconnects.event, createCapability: () => 'd'.repeat(64) };
+		const backend = new RecordingBackend();
+		const releases: ((response: ParadisOfficeResponse) => void)[] = [];
+		backend.responses.set('open', () => new Promise<ParadisOfficeResponse>(resolve => releases.push(resolve)));
+		backend.responses.set('close', () => Promise.reject(new Error('/private/close failure')));
+		const channel = new ParadisOfficeChannel(backend, Event.None, undefined, authority);
+		const negotiation = await channel.call<{ readonly ownerCapability: string; readonly connectionEpoch: number }>('window:late-cleanup', 'negotiate', { versions: [1] });
+		const wireAuthority = { ownerCapability: negotiation.ownerCapability, connectionEpoch: negotiation.connectionEpoch };
+		const invalidPending = channel.call('window:late-cleanup', 'request', marshalParadisOfficeRequest(request('open', 'late-invalid-1'), wireAuthority));
+		const closePending = channel.call('window:late-cleanup', 'request', marshalParadisOfficeRequest(request('open', 'late-close-1'), wireAuthority));
+		epoch = 2;
+		disconnects.fire({ ownerId: 'window:late-cleanup', epoch: 1 });
+		releases[0]({ ...openResponse('late-invalid-1'), privatePath: '/private/late.docx' } as ParadisOfficeResponse);
+		releases[1](openResponse('late-close-1'));
+		await unmarshalParadisOfficeResponse(await invalidPending);
+		await unmarshalParadisOfficeResponse(await closePending);
+		assert.strictEqual(backend.disconnected.filter(ownerId => ownerId === 'd'.repeat(64)).length, 3);
 		channel.dispose();
 		disconnects.dispose();
 	});
@@ -505,6 +599,25 @@ suite('ParadisOfficeChannel', () => {
 		for (let index = 0; index < releases.length; index++) { releases[index](failure(request('inspect', `active-${index}`))); }
 		await Promise.all(pending);
 		assert.deepStrictEqual(backend.calls.slice(-2).map(call => call.operation), ['cancel', 'close']);
+		channel.dispose();
+	});
+
+	test('bounds delayed close and cancel control entries at an exact per-owner limit', async () => {
+		const backend = new RecordingBackend();
+		let releaseTarget!: (response: ParadisOfficeResponse) => void;
+		backend.responses.set('inspect', request => new Promise<ParadisOfficeResponse>(resolve => releaseTarget = resolve));
+		const controlReleases: { readonly requestId: string; readonly resolve: (response: ParadisOfficeResponse) => void }[] = [];
+		backend.responses.set('cancel', request => new Promise<ParadisOfficeResponse>(resolve => controlReleases.push({ requestId: request.requestId, resolve })));
+		const channel = new ParadisOfficeChannel(backend);
+		const target = channel.call('window:control-bounded', 'request', request('inspect', 'control-target-1'));
+		const controls = Array.from({ length: PARADIS_OFFICE_CONTROL_REQUEST_LIMIT }, (_, index) => channel.call('window:control-bounded', 'request', { version: 1, requestId: `bounded-cancel-${index}`, operation: 'cancel', targetRequestId: 'control-target-1' }));
+		const overflow = channel.call('window:control-bounded', 'request', { version: 1, requestId: 'bounded-cancel-overflow', operation: 'cancel', targetRequestId: 'control-target-1' });
+		for (const pending of controlReleases) { pending.resolve({ version: 1, requestId: pending.requestId, operation: 'cancel', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true }); }
+		releaseTarget(failure(request('inspect', 'control-target-1')));
+		const results = await Promise.allSettled([...controls, overflow]);
+		assert.strictEqual(controlReleases.length, PARADIS_OFFICE_CONTROL_REQUEST_LIMIT);
+		assert.strictEqual(results.at(-1)?.status, 'rejected');
+		await target;
 		channel.dispose();
 	});
 
