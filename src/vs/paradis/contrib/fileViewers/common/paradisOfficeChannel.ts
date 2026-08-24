@@ -230,6 +230,21 @@ export function measureParadisOfficeIpcWireBytes(value: ParadisOfficeWireEnvelop
 
 function vqlBytes(value: number): number { if (!Number.isSafeInteger(value) || value < 0) { return wireError(); } if (value === 0) { return 1; } let bytes = 0; for (let remaining = value; remaining > 0; remaining = Math.floor(remaining / 128)) { bytes++; } return bytes; }
 function safeWireAdd(total: number, value: number): number { const next = total + value; return Number.isSafeInteger(next) ? next : wireError('payloadTooLarge'); }
+function boundedUtf8Bytes(value: string, maximumBytes: number): number {
+	// Every UTF-16 code unit needs at least one UTF-8 byte. This rejects obvious
+	// excess without allocating a temporary byte buffer.
+	if (value.length > maximumBytes) { return wireError('payloadTooLarge'); }
+	let bytes = 0;
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code <= 0x7F) { bytes++; }
+		else if (code <= 0x7FF) { bytes += 2; }
+		else if (code >= 0xD800 && code <= 0xDBFF && index + 1 < value.length && value.charCodeAt(index + 1) >= 0xDC00 && value.charCodeAt(index + 1) <= 0xDFFF) { bytes += 4; index++; }
+		else { bytes += 3; }
+		if (bytes > maximumBytes) { return wireError('payloadTooLarge'); }
+	}
+	return bytes;
+}
 function preflightEnvelopeBytes(headerBytes: number, buffers: readonly VSBuffer[]): number {
 	const magicBytes = VSBuffer.fromString(PARADIS_OFFICE_WIRE_ENVELOPE).byteLength;
 	let total = 1 + vqlBytes(buffers.length + 2);
@@ -285,8 +300,8 @@ export function marshalParadisOfficeSpoolAppend(value: unknown, authority?: Para
 export function decodeParadisOfficeWireValue(value: unknown, observer?: ParadisOfficeWireDecodeObserver): ParadisOfficeDecodedWireValue {
 	if (!isParadisOfficeWireEnvelope(value) || value.length > PARADIS_OFFICE_LIMITS.maxSerializableNodes + 2 || Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) { return wireError(); }
 	const headerText = value[1];
-	const headerBytes = typeof headerText === 'string' ? VSBuffer.fromString(headerText).byteLength : -1;
-	if (typeof headerText !== 'string' || headerBytes > PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes) { return wireError('payloadTooLarge'); }
+	if (typeof headerText !== 'string') { return wireError(); }
+	const headerBytes = boundedUtf8Bytes(headerText, PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes);
 	const buffers: VSBuffer[] = [];
 	for (const buffer of value.slice(2)) { if (!(buffer instanceof VSBuffer)) { return wireError(); } buffers.push(buffer); }
 	let header: unknown;
