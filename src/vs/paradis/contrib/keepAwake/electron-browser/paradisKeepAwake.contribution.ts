@@ -38,7 +38,7 @@ const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
  * 有効中はステータスバーにインジケーターを表示し、クリックでモード選択の Quick Pick を開く
  * （「なぜ PC が眠らないのか」をユーザーが見失わないための安全装置）。
  */
-class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContribution {
+export class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisKeepAwake';
 
@@ -83,6 +83,10 @@ class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContr
 	}
 
 	private updateStatusbar(mode: ParadisKeepAwakeMode): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+
 		if (mode === 'off') {
 			this.statusbarEntry.clear();
 			return;
