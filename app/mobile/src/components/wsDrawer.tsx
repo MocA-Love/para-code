@@ -689,25 +689,13 @@ export function useOpenDrawerPan(): PanGesture {
  * **本文の `paddingTop` は `useParaHeaderHeight()` から取ること**。高さは subtitle の有無・
  * 帯の有無・Dynamic Type で変わるため定数では足りない。
  */
-export function useWsHeader({ subtitle, actions, mid, below, allWorkspaces, wide = false }: {
+export function useWsHeader({ subtitle, actions, mid, allWorkspaces, wide = false }: {
 	/** 島のサブ行を差し替える（既定はブランチ名。切断中は自動でその状態に差し替わる）。 */
 	subtitle?: string;
 	/** 右のピルに並べるボタン（1〜4個）。器（ガラスのピル）は層が持つ。 */
 	actions?: readonly ParaHeaderIcon[];
 	/** スペースの島と右のピルの間に伸びる島（ターミナルタブの「ターミナル名 ▾」）。 */
 	mid?: ParaHeaderSpec['mid'];
-	/**
-	 * **もう描かれない。** ヘッダーをOS標準のナビゲーションバーへ移したので、帯（絞り込み
-	 * チップ・検索欄・タブチップ）を載せる場所が無くなった——ネイティブのバーに入るのは
-	 * バー項目だけで、その下に続く帯は置けない。
-	 *
-	 * 帯が要る画面は、**本文の上に絶対配置で張り付ける**こと（`app/(tabs)/index.tsx` の
-	 * 絞り込みチップ、`app/(tabs)/files.tsx` の検索欄が実例。高さを `onLayout` で測って
-	 * 一覧の頭を空ける）。ここへ渡しても黙って消えるので、新しい帯をここへ足さない。
-	 * 残してあるのはAndroid・旧バイナリ用のフォールバック（ターミナルのタブチップ）が
-	 * まだこの引数を通しているためで、その経路もいまは何も描かない。
-	 */
-	below?: ReactNode;
 	allWorkspaces?: boolean;
 	/**
 	 * 本文が読み幅の列に収まらず画面いっぱいを使う画面（ホームの2列など）で true。
@@ -778,9 +766,8 @@ export function useWsHeader({ subtitle, actions, mid, below, allWorkspaces, wide
 		},
 		mid,
 		...(actions !== undefined && actions.length > 0 ? { rightA: { kind: 'icons' as const, items: actions } } : {}),
-		band: below,
 		wide,
-	}), [regular, drawerOpen, sub, name, offline, otherWaiting, allWorkspaces, current, chipColor, actions, mid, below, wide]);
+	}), [regular, drawerOpen, sub, name, offline, otherWaiting, allWorkspaces, current, chipColor, actions, mid, wide]);
 
 	// **自前のヘッダー層は伏せる。** 下でOS標準のバーへ登録するので、両方描くと二重になる。
 	// フックは無条件に呼ぶ（分岐で本数が変わると React が落ちる）。

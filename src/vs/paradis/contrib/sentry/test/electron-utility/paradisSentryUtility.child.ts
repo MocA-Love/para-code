@@ -102,14 +102,14 @@ async function main(): Promise<void> {
 		'patched',
 		'mobile-relay',
 		'reconnect',
-		new Error('relay failed'),
+		new Error('relay failed for file:///Users/alice/private.ts'),
 		{ attempt: 2 },
 	);
 	reportParadisDiagnosticError(
 		'owned',
 		'terminal-environment',
 		'resolve',
-		new Error('diagnostic failed'),
+		new Error('diagnostic failed with private response body'),
 		{ duration_ms: 321, phase: 'resolve' },
 	);
 	setParadisDiagnosticCorrelationTag('para.pairing', 'pairing-hash-fragment');

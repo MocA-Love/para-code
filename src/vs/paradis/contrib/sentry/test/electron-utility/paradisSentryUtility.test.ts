@@ -56,7 +56,7 @@ suite('ParadisSentryUtility', () => {
 
 	test('connects the diagnostic reporter and correlation tag APIs to the utility SDK', () => {
 		assert.deepStrictEqual(result.captures, [{
-			errorMessage: 'relay failed',
+			errorMessage: 'Para Code diagnostic: mobile-relay.reconnect',
 			scope: {
 				tags: {
 					'para.scope': 'patched',
@@ -66,7 +66,7 @@ suite('ParadisSentryUtility', () => {
 				extras: { attempt: 2 },
 			},
 		}, {
-			errorMessage: 'diagnostic failed',
+			errorMessage: 'Para Code diagnostic: terminal-environment.resolve',
 			scope: {
 				tags: {
 					'para.scope': 'owned',

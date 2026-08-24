@@ -27,6 +27,26 @@ export interface RemoteTunnel {
 	dispose(silent?: boolean): Promise<void>;
 }
 
+// PARA-PATCH: A delayed close event for an old tunnel must not clear a newer
+// Para preview lease that reused the same remote port.
+const remoteTunnelGenerations = new WeakMap<RemoteTunnel, object>();
+
+export function getRemoteTunnelGeneration(tunnel: RemoteTunnel): object {
+	return remoteTunnelGenerations.get(tunnel) ?? tunnel;
+}
+
+export interface TunnelCloseEvent {
+	readonly host: string;
+	readonly port: number;
+	readonly generation?: object;
+}
+
+interface TunnelEntry {
+	refcount: number;
+	readonly value: Promise<RemoteTunnel | string | undefined>;
+	readonly generation: object;
+}
+
 export function isRemoteTunnel(something: unknown): something is RemoteTunnel {
 	const asTunnel: Partial<RemoteTunnel> = something as Partial<RemoteTunnel>;
 	return !!(asTunnel.tunnelRemotePort && asTunnel.tunnelRemoteHost && asTunnel.localAddress && asTunnel.privacy && asTunnel.dispose);
@@ -130,7 +150,9 @@ export interface ITunnelService {
 	readonly canChangePrivacy: boolean;
 	readonly privacyOptions: TunnelPrivacy[];
 	readonly onTunnelOpened: Event<RemoteTunnel>;
-	readonly onTunnelClosed: Event<{ host: string; port: number }>;
+	// PARA-PATCH: Preserve legacy host/port events while allowing consumers to
+	// distinguish a delayed close from a newly-created ledger entry.
+	readonly onTunnelClosed: Event<TunnelCloseEvent>;
 	readonly canElevate: boolean;
 	readonly canChangeProtocol: boolean;
 	readonly hasTunnelProvider: boolean;
@@ -226,11 +248,13 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 
 	private _onTunnelOpened = this._register(new Emitter<RemoteTunnel>());
 	public onTunnelOpened: Event<RemoteTunnel> = this._onTunnelOpened.event;
-	private _onTunnelClosed = this._register(new Emitter<{ host: string; port: number }>());
-	public onTunnelClosed: Event<{ host: string; port: number }> = this._onTunnelClosed.event;
+	// PARA-PATCH: Carry the optional entry generation through the close event.
+	private _onTunnelClosed = this._register(new Emitter<TunnelCloseEvent>());
+	public onTunnelClosed: Event<TunnelCloseEvent> = this._onTunnelClosed.event;
 	private _onAddedTunnelProvider = this._register(new Emitter<void>());
 	public onAddedTunnelProvider: Event<void> = this._onAddedTunnelProvider.event;
-	protected readonly _tunnels = new Map</*host*/ string, Map</* port */ number, { refcount: number; readonly value: Promise<RemoteTunnel | string | undefined> }>>();
+	// PARA-PATCH: One generation belongs to each service ledger entry.
+	protected readonly _tunnels = new Map</*host*/ string, Map</* port */ number, TunnelEntry>>();
 	protected _tunnelProvider: ITunnelProvider | undefined;
 	protected _canElevate: boolean = false;
 	private _canChangeProtocol: boolean = true;
@@ -375,6 +399,9 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 			return resolvedTunnel;
 		}
 
+		// PARA-PATCH: Capture the entry generation before an older close can remove
+		// or replace the service ledger entry.
+		const generation = this.getTunnelFromMap(remoteHost, remotePort)?.generation ?? {};
 		return resolvedTunnel.then(tunnel => {
 			if (!tunnel) {
 				this.logService.trace('ForwardedPorts: (TunnelService) New tunnel is undefined.');
@@ -386,7 +413,7 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 				return tunnel;
 			}
 			this.logService.trace('ForwardedPorts: (TunnelService) New tunnel established.');
-			const newTunnel = this.makeTunnel(tunnel);
+			const newTunnel = this.makeTunnel(tunnel, generation);
 			if (tunnel.tunnelRemoteHost !== remoteHost || tunnel.tunnelRemotePort !== remotePort) {
 				this.logService.warn('ForwardedPorts: (TunnelService) Created tunnel does not match requirements of requested tunnel. Host or port mismatch.');
 			}
@@ -398,8 +425,8 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		});
 	}
 
-	private makeTunnel(tunnel: RemoteTunnel): RemoteTunnel {
-		return {
+	private makeTunnel(tunnel: RemoteTunnel, generation: object): RemoteTunnel {
+		const lease: RemoteTunnel = {
 			tunnelRemotePort: tunnel.tunnelRemotePort,
 			tunnelRemoteHost: tunnel.tunnelRemoteHost,
 			tunnelLocalPort: tunnel.tunnelLocalPort,
@@ -418,15 +445,21 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 				}
 			}
 		};
+		// PARA-PATCH: Returned leases must retain their entry generation even if a
+		// provider later reuses the same RemoteTunnel object for a new entry.
+		remoteTunnelGenerations.set(lease, generation);
+		return lease;
 	}
 
-	private async tryDisposeTunnel(remoteHost: string, remotePort: number, tunnel: { refcount: number; readonly value: Promise<RemoteTunnel | string | undefined> }): Promise<void> {
-		if (tunnel.refcount <= 0) {
+	private async tryDisposeTunnel(remoteHost: string, remotePort: number, entry: TunnelEntry): Promise<void> {
+		if (entry.refcount <= 0) {
 			this.logService.trace(`ForwardedPorts: (TunnelService) Tunnel is being disposed ${remoteHost}:${remotePort}.`);
-			const disposePromise: Promise<void> = tunnel.value.then(async (tunnel) => {
+			const disposePromise: Promise<void> = entry.value.then(async (tunnel) => {
 				if (tunnel && (typeof tunnel !== 'string')) {
 					await tunnel.dispose(true);
-					this._onTunnelClosed.fire({ host: tunnel.tunnelRemoteHost, port: tunnel.tunnelRemotePort });
+					// PARA-PATCH: The delayed close must identify the disposed entry, not a
+					// replacement that may already use the same remote port.
+					this._onTunnelClosed.fire({ host: tunnel.tunnelRemoteHost, port: tunnel.tunnelRemotePort, generation: entry.generation });
 				}
 			});
 			if (this._tunnels.has(remoteHost)) {
@@ -450,7 +483,16 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		if (!this._tunnels.has(remoteHost)) {
 			this._tunnels.set(remoteHost, new Map());
 		}
-		this._tunnels.get(remoteHost)!.set(remotePort, { refcount: 1, value: tunnel });
+		// PARA-PATCH: Provider tunnels and every lease from this entry share one
+		// opaque generation; a reused provider object is overwritten only for its
+		// new entry while old leases and close events keep the old generation.
+		const generation = {};
+		void tunnel.then(value => {
+			if (value && typeof value !== 'string') {
+				remoteTunnelGenerations.set(value, generation);
+			}
+		}, () => { });
+		this._tunnels.get(remoteHost)!.set(remotePort, { refcount: 1, value: tunnel, generation });
 	}
 
 	private async removeEmptyOrErrorTunnelFromMap(remoteHost: string, remotePort: number) {
@@ -467,7 +509,7 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		}
 	}
 
-	protected getTunnelFromMap(remoteHost: string, remotePort: number): { refcount: number; readonly value: Promise<RemoteTunnel | string | undefined> } | undefined {
+	protected getTunnelFromMap(remoteHost: string, remotePort: number): TunnelEntry | undefined {
 		const hosts = [remoteHost];
 		// Order matters. We want the original host to be first.
 		if (isLocalhost(remoteHost)) {
