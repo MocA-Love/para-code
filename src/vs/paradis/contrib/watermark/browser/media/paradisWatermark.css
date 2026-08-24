@@ -35,3 +35,23 @@
 .monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-watermark-wrapper > .editor-group-watermark {
 	max-width: 272px;
 }
+
+/* allow-any-unicode-next-line */
+/* 高さの低いグループ (upstream が .max-height-478px を付ける) では、ロゴと */
+/* allow-any-unicode-next-line */
+/* ショートカット一覧が縦に入りきらない。飾りであるロゴを隠し、情報である */
+/* allow-any-unicode-next-line */
+/* 一覧のほうを残す (upstream は逆に一覧を隠す)。 */
+.monaco-workbench .part.editor > .content .editor-group-container.empty.max-height-478px > .editor-group-watermark-wrapper .editor-group-watermark .letterpress {
+	display: none;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container.empty.max-height-478px > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts {
+	display: block;
+}
+
+/* allow-any-unicode-next-line */
+/* 一覧だけでも入らないほど低い場合に、グループの外へはみ出させない。 */
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper > .editor-group-watermark {
+	overflow: hidden;
+}
