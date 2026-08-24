@@ -46,19 +46,26 @@ class TestSpoolClient implements IOfficeSpoolClient {
 	readonly disposedAttempts: readonly { ownerId: string; attemptId: string }[] = [];
 	readonly sealed: ParadisOfficeSealRequest[] = [];
 	beginCalls = 0;
+	claimCalls = 0;
 	failAppend = false;
 	failSeal = false;
 	sealResultOverride: unknown;
-	private readonly writable: ParadisOfficeWritableSpoolReference = { id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64) };
+	private readonly writable: ParadisOfficeWritableSpoolReference = { id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64), attemptId: '00000000-0000-4000-8000-000000000001' };
 
-	async begin(requestOwnerId: string, _attemptId?: string): Promise<ParadisOfficeWritableSpoolReference> {
+	async begin(requestOwnerId: string, attemptId: string): Promise<ParadisOfficeWritableSpoolReference> {
 		strictEqual(requestOwnerId, ownerId);
 		this.beginCalls++;
-		return { ...this.writable };
+		return { ...this.writable, attemptId };
+	}
+
+	async claim(reference: ParadisOfficeWritableSpoolReference, attemptId: string): Promise<void> {
+		deepStrictEqual(reference.attemptId, attemptId);
+		this.claimCalls++;
 	}
 
 	async append(reference: ParadisOfficeWritableSpoolReference, bytes: VSBuffer): Promise<void> {
-		deepStrictEqual(reference, this.writable);
+		strictEqual(reference.id, this.writable.id);
+		strictEqual(reference.ownerId, this.writable.ownerId);
 		if (this.failAppend) {
 			throw new Error('append failed');
 		}
@@ -66,7 +73,8 @@ class TestSpoolClient implements IOfficeSpoolClient {
 	}
 
 	async seal(reference: ParadisOfficeWritableSpoolReference, request: ParadisOfficeSealRequest) {
-		deepStrictEqual(reference, this.writable);
+		strictEqual(reference.id, this.writable.id);
+		strictEqual(reference.ownerId, this.writable.ownerId);
 		if (this.failSeal) {
 			throw new Error('seal failed');
 		}
@@ -779,6 +787,32 @@ suite('ParadisOfficeSourceBroker', () => {
 		strictEqual(client.disposedAttempts.length, 1);
 		strictEqual(client.disposedAttempts[0].ownerId, ownerId);
 		cancellation.dispose();
+	});
+
+	test('does not claim or consume a begin snapshot that cancels during its own trap', async () => {
+		const cancellation = new CancellationTokenSource();
+		const client = new TestSpoolClient();
+		client.begin = async (_ownerId, attemptId) => new Proxy({ id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64), attemptId }, {
+			ownKeys(target) { cancellation.cancel(); return Reflect.ownKeys(target); },
+		});
+		await rejects(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker.open(descriptor('gitCommit', 'git:/doc'), cancellation.token), error => error instanceof CancellationError);
+		strictEqual(client.claimCalls, 0);
+		strictEqual(client.appended.length, 0);
+		strictEqual(client.sealed.length, 0);
+		strictEqual(client.disposed.length, 0);
+		strictEqual(client.disposedAttempts.length, 1);
+		cancellation.dispose();
+	});
+
+	test('rejects owner or attempt replayed begin capabilities before claim or capability disposal', async () => {
+		for (const kind of ['owner', 'attempt'] as const) {
+			const client = new TestSpoolClient();
+			client.begin = async (_ownerId, attemptId) => ({ id: 'a'.repeat(48), ownerId: kind === 'owner' ? 'victim-window' : ownerId, nonce: 'b'.repeat(64), attemptId: kind === 'attempt' ? '00000000-0000-4000-8000-000000000099' : attemptId });
+			await rejectsSafeBrokerError(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker.open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None), 'spoolFailure');
+			strictEqual(client.claimCalls, 0);
+			strictEqual(client.disposed.length, 0);
+			strictEqual(client.disposedAttempts.length, 1);
+		}
 	});
 
 	test('bounds never-settling begin-cancellation cleanup while preserving cancellation', async () => {

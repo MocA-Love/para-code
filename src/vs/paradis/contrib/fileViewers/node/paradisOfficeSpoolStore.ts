@@ -81,7 +81,8 @@ interface SpoolEntry {
 	readonly id: string;
 	readonly ownerId: string;
 	readonly nonce: string;
-	readonly attemptId?: string;
+	readonly attemptId: string;
+	claimed: boolean;
 	state: 'writable' | 'sealed' | 'opening';
 	readonly chunks: VSBuffer[];
 	readonly hash: ReturnType<typeof createHash>;
@@ -138,20 +139,21 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		return this.totalBytes;
 	}
 
-	async begin(untrustedOwnerId: string, untrustedAttemptId?: string): Promise<ParadisOfficeWritableSpoolReference> {
+	async begin(untrustedOwnerId: string, untrustedAttemptId: string): Promise<ParadisOfficeWritableSpoolReference> {
 		let ownerId: string;
 		try {
 			ownerId = validateParadisOfficeSpoolOwner(untrustedOwnerId);
 		} catch (error) {
 			throwStoreError(error, 'invalidReference');
 		}
-		let attemptId: string | undefined;
-		if (untrustedAttemptId !== undefined) {
-			try {
-				attemptId = validateParadisOfficeSpoolAttempt(ownerId, untrustedAttemptId).attemptId;
-			} catch (error) {
-				throwStoreError(error, 'invalidReference');
-			}
+		let attemptId: string;
+		try {
+			attemptId = validateParadisOfficeSpoolAttempt(ownerId, untrustedAttemptId).attemptId;
+		} catch (error) {
+			throwStoreError(error, 'invalidReference');
+		}
+		if ([...this.entries.values()].some(entry => entry.ownerId === ownerId && entry.attemptId === attemptId)) {
+			throw new OfficeSpoolStoreError('invalidReference');
 		}
 		if (this.ownerEntryCount(ownerId) >= PARADIS_OFFICE_SPOOL_PER_CLIENT_LIMIT) {
 			throw new OfficeSpoolStoreError('clientQuota');
@@ -217,6 +219,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			ownerId,
 			nonce,
 			attemptId,
+			claimed: false,
 			state: 'writable',
 			chunks: [],
 			hash: createHash('sha256'),
@@ -232,7 +235,23 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			this.removeEntry(entry);
 			throw new OfficeSpoolStoreError('initializationFailed');
 		}
-		return { id, ownerId, nonce };
+		return { id, ownerId, nonce, attemptId };
+	}
+
+	async claim(untrustedReference: ParadisOfficeWritableSpoolReference, untrustedAttemptId: string): Promise<void> {
+		let reference: ParadisOfficeWritableSpoolReference;
+		let attemptId: string;
+		try {
+			reference = validateParadisOfficeWritableSpoolReference(untrustedReference);
+			attemptId = validateParadisOfficeSpoolAttempt(reference.ownerId, untrustedAttemptId).attemptId;
+		} catch (error) {
+			throwStoreError(error, 'invalidReference');
+		}
+		const entry = this.requireEntry(reference, true);
+		if (entry.state !== 'writable' || entry.claimed || entry.attemptId !== attemptId || reference.attemptId !== attemptId) {
+			throw new OfficeSpoolStoreError('invalidReference');
+		}
+		entry.claimed = true;
 	}
 
 	async append(untrustedReference: ParadisOfficeWritableSpoolReference, untrustedBytes: VSBuffer): Promise<void> {
@@ -252,7 +271,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			throw new OfficeSpoolStoreError('invalidChunk');
 		}
 		const entry = this.requireEntry(reference, true);
-		if (entry.state !== 'writable') {
+		if (entry.state !== 'writable' || !entry.claimed) {
 			throw new OfficeSpoolStoreError('notWritable');
 		}
 		if (entry.byteLength + owned.byteLength > this.limits.compressedInputBytes) {
@@ -280,7 +299,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			throwStoreError(error, 'invalidReference');
 		}
 		const entry = this.requireEntry(reference, true);
-		if (entry.state !== 'writable') {
+		if (entry.state !== 'writable' || !entry.claimed) {
 			throw new OfficeSpoolStoreError('notWritable');
 		}
 		const actualHash = entry.hash.digest('hex');
@@ -363,7 +382,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			throwStoreError(error, 'invalidReference');
 		}
 		for (const entry of [...this.entries.values()]) {
-			if (entry.ownerId === attempt.ownerId && entry.attemptId === attempt.attemptId) {
+			if (entry.ownerId === attempt.ownerId && entry.attemptId === attempt.attemptId && !entry.claimed) {
 				this.removeEntry(entry);
 			}
 		}
@@ -450,6 +469,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		return expected.id === actual.id
 			&& expected.ownerId === actual.ownerId
 			&& expected.nonce === actual.nonce
+			&& expected.attemptId === actual.attemptId
 			&& expected.sourceKind === actual.sourceKind
 			&& expected.providerIdentity === actual.providerIdentity
 			&& expected.providerRevision === actual.providerRevision
