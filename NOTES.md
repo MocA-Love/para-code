@@ -557,6 +557,14 @@ node_modules を解決できない**ため、main のトップレベル import �
 - 依存関係: `mise exec -- npm install`（約7分、1559パッケージ、致命的エラーなし）
 - 開発起動: `mise exec -- bash scripts/code.sh`（初回はElectronダウンロード+コンパイルで時間がかかる。起動確認済み: 2026-07-01）
 
+## GitHub Actions CIの整理（2026-08-25）
+
+upstream由来の`pr.yml`/`pr-node-modules.yml`/`copilot-setup-steps.yml`（と、それらから`workflow_call`される`pr-darwin-test.yml`/`pr-linux-cli-test.yml`/`pr-win32-test.yml`）はMicrosoft社内の自前ランナー（`1ES.Pool=...`、`vscode-large-runners`、`macos-26-xlarge`）を要求するジョブが大半を占める。このforkにはそのランナーが存在しないため、PR・push毎に自動発火してもジョブが永久に`queued`のまま残り続けていた（`pr.yml`内の`para-fork-tests`と`pr-linux-test.yml`経由のLinuxテストだけはGitHub標準ランナーで動く設計だったが、同じファイル内の他ジョブに引きずられる形になっていた）。
+
+- 上記6ファイルと、Microsoft社員個人サービス（`hediet-screenshots.azurewebsites.net`）に依存する`component-fixtures.yml`/`css-order-scan.yml`、fork運用に無関係な`monaco-editor.yml`（npm配布しない）・`require-commit-trailer.yml`（`release/msrc/*`ブランチ運用なし）・`chat-perf.yml`（手動性能比較）・`sessions-e2e.yml`（元々手動発火のみ）は、**ファイルは変更せず`gh workflow disable`でリポジトリ設定側から無効化**した
+- 代わりに`.github/workflows/para-ci.yml`を新規追加。GitHub標準の`ubuntu-latest`のみで完結する軽量CI（typecheck/hygiene/eslint、node.jsユニットテスト、fork独自ワークスペース（`cloudflare/update-server`・`app/mobile`）のtypecheck/test、`extensions/copilot`のtypecheck/lint/unit test）
+- `chat-lib-package.yml`・`telemetry.yml`（元からGitHub標準ランナーで完結）と`para-release.yml`・`para-reh.yml`（fork独自のリリースビルド）はそのまま維持
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）
