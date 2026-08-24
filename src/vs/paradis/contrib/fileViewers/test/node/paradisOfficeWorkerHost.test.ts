@@ -5,6 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { toDisposable, type IDisposable } from '../../../../../base/common/lifecycle.js';
@@ -61,12 +62,46 @@ class FakeWorker implements IOfficeWorker {
 	exit(code: number): void { this.exitEmitter.fire(code); }
 }
 
+class ObservedWorker implements IOfficeWorker {
+	readonly messages: unknown[] = [];
+	readonly listenerDisposals = { message: 0, error: 0, exit: 0 };
+	terminateCalls = 0;
+	emitExitOnTerminate = true;
+	terminateResult: Promise<number> = Promise.resolve(1);
+	private messageListener: ((message: unknown) => void) | undefined;
+	private exitListener: ((code: number) => void) | undefined;
+
+	postMessage(message: unknown): void { this.messages.push(message); }
+	terminate(): Promise<number> { this.terminateCalls++; if (this.emitExitOnTerminate) { this.exitListener?.(1); } return this.terminateResult; }
+	onMessage(listener: (message: unknown) => void): IDisposable { this.messageListener = listener; return toDisposable(() => { this.listenerDisposals.message++; }); }
+	onError(_listener: (error: unknown) => void): IDisposable { return toDisposable(() => { this.listenerDisposals.error++; }); }
+	onExit(listener: (code: number) => void): IDisposable { this.exitListener = listener; return toDisposable(() => { this.listenerDisposals.exit++; }); }
+	emit(message: unknown): void { this.messageListener?.(message); }
+	exit(code: number): void { this.exitListener?.(code); }
+}
+
+class CountingMemoryAccountant extends OfficeMemoryAccountant {
+	releaseWorkerCalls = 0;
+	override releaseWorker(bytes: number): void { this.releaseWorkerCalls++; super.releaseWorker(bytes); }
+}
+
 function source() {
 	return { kind: 'bytes' as const, bytes: new Uint8Array([80, 75, 3, 4]), revision: 'safe-revision' };
 }
 
 function parseSummary() {
 	return { operation: 'parse', handle: { kind: 'document', id: 'handle-1' }, outcome: 'complete', completeness: completeness(), capabilities: [], changes: [] };
+}
+
+function diffSummary() {
+	return {
+		operation: 'diff', handle: { kind: 'comparison', id: 'comparison-1' }, outcome: 'complete', completeness: completeness(), capabilities: ['changeNavigation'],
+		changes: [{
+			id: 'change-1', category: 'content', subject: { kind: 'paragraph', locator: 'word:p:1' },
+			before: { kind: 'none' }, after: { kind: 'scalar', valueType: 'text', value: 'after' },
+			certainty: 'exact', sourceParts: ['/word/document.xml'], navigableAnchor: 'paragraph-1',
+		}],
+	};
 }
 
 function completeness() {
@@ -82,6 +117,43 @@ function inspectInventory() {
 		outcome: 'complete', completeness: completeness(),
 		warnings: [],
 	};
+}
+
+const workerProjectionBytes = 2 * 1024 * 1024;
+
+function jsonByteLength(value: unknown): number {
+	return VSBuffer.fromString(JSON.stringify(value)).byteLength;
+}
+
+function exactSizeInspectResult(targetBytes: number) {
+	const specialCharacters = 'quote:" backslash:\\ controls:\b\t\n\f\r\u0000 BMP:é中 astral:😀 lone:\ud800x\udc00';
+	const warnings = Array.from({ length: 512 }, (_, index) => ({ code: `code-${index}`, message: index === 0 ? specialCharacters : '' }));
+	const value = { inventory: { ...inspectInventory(), warnings } };
+	let remaining = targetBytes - jsonByteLength(value);
+	for (const warning of warnings) {
+		const addedCharacters = Math.min(4096 - warning.message.length, remaining);
+		warning.message += 'x'.repeat(addedCharacters);
+		remaining -= addedCharacters;
+	}
+	assert.strictEqual(remaining, 0, 'fixture must have enough bounded warning capacity');
+	assert.strictEqual(jsonByteLength(value), targetBytes, 'independent JSON/UTF-8 oracle must hit the requested boundary');
+	return value;
+}
+
+function wrapChangeValue(value: object, listCount: number, recordCount: number): object {
+	let result = value;
+	for (let index = 0; index < listCount; index++) { result = { kind: 'list', items: [result] }; }
+	for (let index = 0; index < recordCount; index++) { result = { kind: 'record', fields: [{ name: `field-${index}`, value: result }] }; }
+	return result;
+}
+
+function assertFreshData(input: unknown, output: unknown): void {
+	if (!input || typeof input !== 'object') { assert.strictEqual(output, input); return; }
+	assert.notStrictEqual(output, input);
+	assert.strictEqual(Array.isArray(output), Array.isArray(input));
+	for (const key of Object.keys(input)) {
+		assertFreshData((input as Record<string, unknown>)[key], (output as Record<string, unknown>)[key]);
+	}
 }
 
 const uncancelledToken = { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) };
@@ -265,12 +337,11 @@ suite('ParadisOfficeWorkerHost', () => {
 		}
 	});
 
-	test('projects exact depth and JSON-byte boundaries through the worker projector seam', () => {
-
-		const warnings = Array.from({ length: 508 }, () => ({ code: 'a', message: 'x'.repeat(4096) }));
-		assert.notStrictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...inspectInventory(), warnings } }), undefined);
-		warnings.push({ code: 'a', message: 'x'.repeat(4096) });
-		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...inspectInventory(), warnings } }), undefined);
+	test('enforces the exact JSON UTF-8 worker projection byte boundary', () => {
+		const exact = exactSizeInspectResult(workerProjectionBytes);
+		const over = exactSizeInspectResult(workerProjectionBytes + 1);
+		assert.notStrictEqual(projectOfficeWorkerResult('inspect', exact), undefined);
+		assert.strictEqual(projectOfficeWorkerResult('inspect', over), undefined);
 	});
 
 	test('rejects hash coverage and operation-handle inversions at the projector seam', () => {
@@ -278,16 +349,87 @@ suite('ParadisOfficeWorkerHost', () => {
 		const base = { id: '/a', canonicalUri: '/a', contentType: 'x', compressedBytes: 1, expandedBytes: 1, required: false };
 		const opaque = { ...inspectInventory(), parts: [{ ...base, coverage: 'completeOpaque', hashCompleteness: 'allBytes', fingerprint }] };
 		opaque.completeness = { ...completeness(), expectedParts: 1, visitedParts: 1, opaqueParts: 1, expectedSemanticUnits: 1, visitedSemanticUnits: 1 };
-		assert.notStrictEqual(projectOfficeWorkerResult('inspect', { inventory: opaque }), undefined);
-		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...opaque, parts: [{ ...base, coverage: 'completeOpaque', hashCompleteness: 'allBytes', rawHash: fingerprint }] } }), undefined);
+		const projectedOpaque = projectOfficeWorkerResult('inspect', { inventory: opaque }) as { inventory: { parts: readonly { fingerprint: object }[] } };
+		assert.deepStrictEqual(projectedOpaque.inventory.parts[0].fingerprint, fingerprint);
+		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...opaque, parts: [{ ...opaque.parts[0], rawHash: { ...fingerprint } }] } }), undefined);
 		const parsed = { ...inspectInventory(), parts: [{ ...base, coverage: 'parsed', hashCompleteness: 'allBytes', rawHash: fingerprint }] };
 		parsed.completeness = { ...completeness(), expectedParts: 1, visitedParts: 1, parsedParts: 1, expectedSemanticUnits: 1, visitedSemanticUnits: 1 };
-		assert.notStrictEqual(projectOfficeWorkerResult('inspect', { inventory: parsed }), undefined);
-		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...parsed, parts: [{ ...base, coverage: 'parsed', hashCompleteness: 'allBytes', fingerprint }] } }), undefined);
+		const projectedParsed = projectOfficeWorkerResult('inspect', { inventory: parsed }) as { inventory: { parts: readonly { rawHash: object }[] } };
+		assert.deepStrictEqual(projectedParsed.inventory.parts[0].rawHash, fingerprint);
+		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...parsed, parts: [{ ...parsed.parts[0], fingerprint: { ...fingerprint } }] } }), undefined);
 		const parse = parseSummary();
-		assert.notStrictEqual(projectOfficeWorkerResult('parse', parse), undefined);
+		assert.deepStrictEqual(projectOfficeWorkerResult('parse', parse), parse);
 		assert.strictEqual(projectOfficeWorkerResult('parse', { ...parse, handle: { kind: 'comparison', id: 'x' } }), undefined);
-		assert.strictEqual(projectOfficeWorkerResult('diff', { ...parse, operation: 'diff', handle: { kind: 'document', id: 'x' } }), undefined);
+		const diff = diffSummary();
+		assert.deepStrictEqual(projectOfficeWorkerResult('diff', diff), diff);
+		assert.strictEqual(projectOfficeWorkerResult('diff', { ...diff, handle: { kind: 'document', id: 'x' } }), undefined);
+	});
+
+	test('enforces projector depth 32 before touching depth 33', () => {
+		let atLimitReads = 0;
+		const atLimitLeaf = new Proxy({ kind: 'none' }, {
+			getPrototypeOf: target => { atLimitReads++; return Reflect.getPrototypeOf(target); },
+		});
+		const atLimit = diffSummary();
+		atLimit.changes[0].before = wrapChangeValue(atLimitLeaf, 14, 0) as typeof atLimit.changes[0]['before'];
+		assert.strictEqual(projectOfficeWorkerResult('diff', atLimit), undefined);
+		assert.ok(atLimitReads > 0, 'a node at projector depth 32 must be inspected');
+
+		let overLimitReads = 0;
+		const overLimitLeaf = new Proxy({ kind: 'none' }, {
+			getPrototypeOf: target => { overLimitReads++; return Reflect.getPrototypeOf(target); },
+		});
+		const overLimit = diffSummary();
+		overLimit.changes[0].before = wrapChangeValue(overLimitLeaf, 13, 1) as typeof overLimit.changes[0]['before'];
+		assert.strictEqual(projectOfficeWorkerResult('diff', overLimit), undefined);
+		assert.strictEqual(overLimitReads, 0, 'a node at projector depth 33 must remain untouched');
+	});
+
+	test('enforces projector node 65,536 before touching node 65,537', () => {
+		const exact = { ...parseSummary(), capabilities: Array.from({ length: 65_518 }, () => '') };
+		assert.notStrictEqual(projectOfficeWorkerResult('parse', exact), undefined);
+
+		let sentinelTouched = false;
+		const overCapabilities = new Proxy(Array.from({ length: 65_519 }, () => ''), {
+			getOwnPropertyDescriptor(target, key) {
+				if (key === '65518') { sentinelTouched = true; }
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+		});
+		assert.strictEqual(projectOfficeWorkerResult('parse', { ...parseSummary(), capabilities: overCapabilities }), undefined);
+		assert.strictEqual(sentinelTouched, false);
+	});
+
+	test('stops projecting a shared DAG before reading later pending work', () => {
+		const shared = diffSummary().changes[0];
+		let sentinelTouched = false;
+		const changes = new Proxy([shared, shared, diffSummary().changes[0]], {
+			getOwnPropertyDescriptor(target, key) {
+				if (key === '2') { sentinelTouched = true; }
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+		});
+		const value = { ...diffSummary(), changes };
+		assert.strictEqual(projectOfficeWorkerResult('diff', value), undefined);
+		assert.strictEqual(sentinelTouched, false);
+	});
+
+	test('rejects nested path and stack fields and returns a fully fresh valid diff tree', () => {
+		const pathBearing = diffSummary();
+		pathBearing.changes[0].subject = { ...pathBearing.changes[0].subject, path: '/private/document.docx' } as typeof pathBearing.changes[0]['subject'];
+		assert.strictEqual(projectOfficeWorkerResult('diff', pathBearing), undefined);
+		const stackBearing = diffSummary();
+		stackBearing.changes[0].after = { ...stackBearing.changes[0].after, stack: 'private stack' } as typeof stackBearing.changes[0]['after'];
+		assert.strictEqual(projectOfficeWorkerResult('diff', stackBearing), undefined);
+
+		const input = diffSummary();
+		input.changes[0].before = {
+			kind: 'record',
+			fields: [{ name: 'nested', value: { kind: 'list', items: [{ kind: 'scalar', valueType: 'text', value: 'before' }] } }],
+		} as typeof input.changes[0]['before'];
+		const output = projectOfficeWorkerResult('diff', input);
+		assert.notStrictEqual(output, undefined);
+		assertFreshData(input, output);
 	});
 
 	test('rejects extra, path-bearing, and Proxy worker summaries', async () => {
@@ -566,6 +708,25 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.deepStrictEqual(accountant.snapshot(), { limitBytes: 10, workerBytes: 0, cacheBytes: 0, handleBytes: 0, spoolBytes: 6, derivedAssetBytes: 0, totalBytes: 6 });
 	});
 
+	test('keeps spool, derived assets, and retained handles atomic on global over-limit updates', () => {
+		const accountant = new OfficeMemoryAccountant(15);
+		accountant.setSpool(4);
+		accountant.setDerivedAssets(4);
+		const store = new OfficeHandleStore({ accountant, randomBytes: length => new Uint8Array(length).fill(7) });
+		const retained = store.create('owner-a', 'document', 'revision-a', 4);
+		const before = accountant.snapshot();
+
+		assert.throws(() => accountant.setSpool(8), RangeError);
+		assert.strictEqual(accountant.trySetDerivedAssets(8), false);
+		assert.throws(() => store.create('owner-b', 'comparison', 'revision-b', 4));
+
+		assert.deepStrictEqual(accountant.snapshot(), before);
+		assert.deepStrictEqual({ size: store.size, record: store.get(retained) }, {
+			size: 1,
+			record: { kind: 'document', sourceRevision: 'revision-a', memoryBytes: 4, active: false },
+		});
+	});
+
 	test('does not post or schedule after a synchronous listener terminal transition', async () => {
 		class SynchronousResultWorker extends FakeWorker {
 			override onMessage(listener: (message: unknown) => void): IDisposable {
@@ -580,6 +741,100 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.deepStrictEqual(result, { outcome: 'complete', value: parseSummary() });
 		assert.deepStrictEqual(worker.messages, []);
 		assert.strictEqual(host.activeWorkerCount, 0);
+	});
+
+	test('disposes cancellation exactly once when registration fires synchronously', async () => {
+		let listenerDisposals = 0;
+		let workerCreations = 0;
+		const host = new OfficeWorkerHost({ createWorker: () => { workerCreations++; return new FakeWorker(); } });
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: (listener: () => void) => {
+				listener();
+				return toDisposable(() => { listenerDisposals++; });
+			},
+		};
+		assert.deepStrictEqual(await host.run('parse', 'owner', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token), { outcome: 'cancelled' });
+		assert.deepStrictEqual({ listenerDisposals, workerCreations }, { listenerDisposals: 1, workerCreations: 0 });
+	});
+
+	test('cleans up when the queue timer fires synchronously', async () => {
+		let listenerDisposals = 0;
+		let workerCreations = 0;
+		const cleared: unknown[] = [];
+		const host = new OfficeWorkerHost({
+			createWorker: () => { workerCreations++; return new FakeWorker(); },
+			setTimeout: runner => { runner(); return 'queue-timer'; },
+			clearTimeout: handle => { cleared.push(handle); },
+		});
+		const token = { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { listenerDisposals++; }) };
+		assert.deepStrictEqual(await host.run('parse', 'owner', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token), { outcome: 'blocked', error: 'limitExceeded' });
+		assert.deepStrictEqual({ listenerDisposals, workerCreations, cleared }, { listenerDisposals: 1, workerCreations: 0, cleared: ['queue-timer'] });
+	});
+
+	test('terminates and disposes listeners when the deadline timer fires synchronously', async () => {
+		const worker = new ObservedWorker();
+		let timerSequence = 0;
+		let cancellationDisposals = 0;
+		const host = new OfficeWorkerHost({
+			createWorker: () => worker,
+			setTimeout: (runner, delay) => {
+				const handle = `timer-${++timerSequence}`;
+				if (delay === PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.semanticParseMilliseconds) { runner(); }
+				return handle;
+			},
+			clearTimeout: () => { },
+		});
+		const token = { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { cancellationDisposals++; }) };
+		assert.deepStrictEqual(await host.run('parse', 'owner', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token), { outcome: 'blocked', error: 'limitExceeded' });
+		assert.deepStrictEqual({ terminateCalls: worker.terminateCalls, listenerDisposals: worker.listenerDisposals, cancellationDisposals, messages: worker.messages }, {
+			terminateCalls: 1, listenerDisposals: { message: 1, error: 1, exit: 1 }, cancellationDisposals: 1, messages: [],
+		});
+	});
+
+	test('terminates and disposes listeners when cancel and reap timers fire synchronously', async () => {
+		for (const trigger of ['cancel', 'result'] as const) {
+			const worker = new ObservedWorker();
+			let cancellationListener: (() => void) | undefined;
+			let cancellationDisposals = 0;
+			const host = new OfficeWorkerHost({
+				createWorker: () => worker,
+				setTimeout: (runner, delay) => {
+					const handle = Symbol(`timer-${delay}`);
+					if (delay === 250) { runner(); }
+					return handle;
+				},
+				clearTimeout: () => { },
+			});
+			const token = {
+				isCancellationRequested: false,
+				onCancellationRequested: (listener: () => void) => { cancellationListener = listener; return toDisposable(() => { cancellationDisposals++; }); },
+			};
+			const result = host.run('parse', `owner-${trigger}`, source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
+			if (trigger === 'cancel') { cancellationListener?.(); } else { worker.emit({ kind: 'result', requestId: '1', value: parseSummary() }); }
+			assert.strictEqual((await result).outcome, trigger === 'cancel' ? 'cancelled' : 'complete');
+			assert.deepStrictEqual({ terminateCalls: worker.terminateCalls, listenerDisposals: worker.listenerDisposals, cancellationDisposals }, {
+				terminateCalls: 1, listenerDisposals: { message: 1, error: 1, exit: 1 }, cancellationDisposals: 1,
+			});
+		}
+	});
+
+	test('retains and releases a reaped worker reservation exactly once on late exit', async () => {
+		const accountant = new CountingMemoryAccountant(100);
+		const worker = new ObservedWorker();
+		worker.emitExitOnTerminate = false;
+		worker.terminateResult = Promise.reject(new Error('termination rejected'));
+		const host = new OfficeWorkerHost({ createWorker: () => worker, accountant, memory: { workerReservationBytes: 100 } });
+		const result = host.run('parse', 'owner', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken);
+		worker.emit({ kind: 'result', requestId: '1', value: parseSummary() });
+		assert.deepStrictEqual(await result, { outcome: 'complete', value: parseSummary() });
+		assert.deepStrictEqual(accountant.snapshot(), { limitBytes: 100, workerBytes: 100, cacheBytes: 0, handleBytes: 0, spoolBytes: 0, derivedAssetBytes: 0, totalBytes: 100 });
+		worker.exit(1);
+		worker.exit(1);
+		assert.deepStrictEqual({ releaseWorkerCalls: accountant.releaseWorkerCalls, snapshot: accountant.snapshot() }, {
+			releaseWorkerCalls: 1,
+			snapshot: { limitBytes: 100, workerBytes: 0, cacheBytes: 0, handleBytes: 0, spoolBytes: 0, derivedAssetBytes: 0, totalBytes: 0 },
+		});
 	});
 
 	test('disposes listeners and does not post after a synchronous exit registration', async () => {
