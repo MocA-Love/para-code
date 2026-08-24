@@ -7,7 +7,7 @@
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Emitter, type Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import type { IOfficeSourceProvider, ParadisOfficeProviderSnapshot } from '../common/paradisOfficeSourceBroker.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeOutcome, type ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
@@ -32,7 +32,7 @@ export interface ParadisOfficeGitRepositorySnapshot {
 }
 
 /** Minimal Git repository surface. `onDidChange` is the repository status/index event. */
-export interface IParadisOfficeGitRepository {
+export interface IParadisOfficeGitRepository extends IDisposable {
 	readonly snapshot: ParadisOfficeGitRepositorySnapshot;
 	readonly onDidChange: Event<void>;
 }
@@ -73,6 +73,46 @@ const gitCommitPattern = /^[a-f\d]{40,64}$/i;
 const indexChecksumPattern = /^[a-f\d]{64}$/i;
 const lfsPointerPattern = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\r?\noid sha256:([a-f\d]{64})\r?\nsize (0|[1-9]\d*)\r?\n?$/i;
 const emptySha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+const maximumChanges = 10_000;
+const uriPrototype = Object.getPrototypeOf(URI.file('/'));
+
+function dataUri(value: unknown): URI {
+	if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== uriPrototype) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+	const fields = new Map<string, unknown>();
+	for (const key of ['scheme', 'authority', 'path', 'query', 'fragment']) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value') || typeof descriptor.value !== 'string') { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+		fields.set(key, descriptor.value);
+	}
+	return URI.from({ scheme: fields.get('scheme') as string, authority: fields.get('authority') as string, path: fields.get('path') as string, query: fields.get('query') as string, fragment: fields.get('fragment') as string });
+}
+
+function dataRecord(value: unknown, required: readonly string[], optional: readonly string[] = []): ReadonlyMap<string, unknown> {
+	if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+	const keys = Reflect.ownKeys(value);
+	if (keys.some(key => typeof key !== 'string' || !required.includes(key) && !optional.includes(key)) || required.some(key => !keys.includes(key))) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+	const result = new Map<string, unknown>();
+	for (const key of keys as string[]) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+		result.set(key, descriptor.value);
+	}
+	return result;
+}
+
+function dataArray(value: unknown): readonly unknown[] {
+	if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+	const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+	const length = lengthDescriptor?.value;
+	if (!Number.isSafeInteger(length) || length < 0 || length > maximumChanges || Reflect.ownKeys(value).length !== length + 1) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+	const result: unknown[] = [];
+	for (let index = 0; index < length; index++) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+		if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+		result.push(descriptor.value);
+	}
+	return result;
+}
 
 function throwIfCancelled(token: CancellationToken): void {
 	if (token.isCancellationRequested) {
@@ -92,39 +132,38 @@ function normalizeRelativePath(value: string): string {
 }
 
 function snapshotRepository(repository: IParadisOfficeGitRepository): ParadisOfficeGitRepositorySnapshot {
-	let snapshot: ParadisOfficeGitRepositorySnapshot;
 	try {
-		snapshot = repository.snapshot;
-	} catch {
-		throw new ParadisOfficeGitSourceError('invalidRepository');
-	}
-	if (!(snapshot.repositoryRoot instanceof URI)
-		|| !gitCommitPattern.test(snapshot.headCommit)
-		|| !indexChecksumPattern.test(snapshot.indexChecksum)
-		|| typeof snapshot.workingTreeRevision !== 'string' || snapshot.workingTreeRevision.length < 1 || snapshot.workingTreeRevision.length > 4096
-		|| !Array.isArray(snapshot.indexChanges) || !Array.isArray(snapshot.workingTreeChanges)) {
-		throw new ParadisOfficeGitSourceError('invalidRepository');
-	}
-	return {
-		repositoryRoot: snapshot.repositoryRoot,
-		headCommit: snapshot.headCommit.toLowerCase(),
-		indexChecksum: snapshot.indexChecksum.toLowerCase(),
-		workingTreeRevision: snapshot.workingTreeRevision,
-		indexChanges: snapshot.indexChanges.map(snapshotChange),
-		workingTreeChanges: snapshot.workingTreeChanges.map(snapshotChange),
-	};
+		const repositoryDescriptor = Object.getOwnPropertyDescriptor(repository, 'snapshot');
+		if (!repositoryDescriptor || !Object.prototype.hasOwnProperty.call(repositoryDescriptor, 'value')) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+		const fields = dataRecord(repositoryDescriptor.value, ['repositoryRoot', 'headCommit', 'indexChecksum', 'workingTreeRevision', 'indexChanges', 'workingTreeChanges']);
+		const repositoryRoot = fields.get('repositoryRoot');
+		const headCommit = fields.get('headCommit');
+		const indexChecksum = fields.get('indexChecksum');
+		const workingTreeRevision = fields.get('workingTreeRevision');
+		if (typeof headCommit !== 'string' || !gitCommitPattern.test(headCommit)
+			|| typeof indexChecksum !== 'string' || !indexChecksumPattern.test(indexChecksum)
+			|| typeof workingTreeRevision !== 'string' || workingTreeRevision.length < 1 || workingTreeRevision.length > 4096) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+		return {
+			repositoryRoot: dataUri(repositoryRoot), headCommit: headCommit.toLowerCase(), indexChecksum: indexChecksum.toLowerCase(), workingTreeRevision,
+			indexChanges: dataArray(fields.get('indexChanges')).map(snapshotChange),
+			workingTreeChanges: dataArray(fields.get('workingTreeChanges')).map(snapshotChange),
+		};
+	} catch { throw new ParadisOfficeGitSourceError('invalidRepository'); }
 }
 
-function snapshotChange(change: ParadisOfficeGitChange): ParadisOfficeGitChange {
-	if (!change || typeof change !== 'object' || !['added', 'modified', 'deleted', 'renamed'].includes(change.status)) {
+function snapshotChange(change: unknown): ParadisOfficeGitChange {
+	const fields = dataRecord(change, ['status', 'path'], ['originalPath']);
+	const status = fields.get('status');
+	if (typeof status !== 'string' || !['added', 'modified', 'deleted', 'renamed'].includes(status)) { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+	const pathValue = fields.get('path');
+	const originalPathValue = fields.get('originalPath');
+	if (typeof pathValue !== 'string' || originalPathValue !== undefined && typeof originalPathValue !== 'string') { throw new ParadisOfficeGitSourceError('invalidRepository'); }
+	const path = normalizeRelativePath(pathValue);
+	const originalPath = originalPathValue === undefined ? undefined : normalizeRelativePath(originalPathValue);
+	if (status === 'renamed' ? !originalPath || originalPath === path : originalPath !== undefined) {
 		throw new ParadisOfficeGitSourceError('invalidRepository');
 	}
-	const path = normalizeRelativePath(change.path);
-	const originalPath = change.originalPath === undefined ? undefined : normalizeRelativePath(change.originalPath);
-	if (change.status === 'renamed' ? !originalPath || originalPath === path : originalPath !== undefined) {
-		throw new ParadisOfficeGitSourceError('invalidRepository');
-	}
-	return { status: change.status, path, ...(originalPath ? { originalPath } : {}) };
+	return { status: status as ParadisOfficeGitChangeStatus, path, ...(originalPath ? { originalPath } : {}) };
 }
 
 function findChange(changes: readonly ParadisOfficeGitChange[], path: string): ParadisOfficeGitChange | undefined {
@@ -150,9 +189,11 @@ function sourceRevision(kind: Exclude<ParadisOfficeSourceDescriptor['kind'], 'fi
 }
 
 async function sha256(bytes: VSBuffer): Promise<string> {
-	const owned = bytes.buffer.slice();
-	const digest = await globalThis.crypto.subtle.digest('SHA-256', owned as Uint8Array<ArrayBuffer>);
-	return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+	try {
+		const owned = bytes.buffer.slice();
+		const digest = await globalThis.crypto.subtle.digest('SHA-256', owned as Uint8Array<ArrayBuffer>);
+		return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+	} catch { throw new ParadisOfficeGitSourceError('changed'); }
 }
 
 function lfsPointer(bytes: VSBuffer): ParadisOfficeLfsPointer | undefined {
@@ -181,6 +222,7 @@ export class ParadisOfficeGitSource extends Disposable implements IOfficeSourceP
 
 	constructor(private readonly repository: IParadisOfficeGitRepository, private readonly byteProvider: IParadisOfficeGitByteProvider) {
 		super();
+		this._register(repository);
 		this._register(repository.onDidChange(() => this.changeEmitter.fire()));
 	}
 
@@ -289,12 +331,18 @@ export class ParadisOfficeGitSource extends Disposable implements IOfficeSourceP
 			throw new ParadisOfficeGitSourceError('notFound');
 		}
 		throwIfCancelled(token);
-		if (!(bytes instanceof VSBuffer)) {
+		try {
+			if (!bytes || Object.getPrototypeOf(bytes) !== VSBuffer.prototype || Reflect.ownKeys(bytes).some(key => typeof key !== 'string' || key !== 'buffer' && key !== 'byteLength')) { throw new ParadisOfficeGitSourceError('notFound'); }
+			const bufferDescriptor = Object.getOwnPropertyDescriptor(bytes, 'buffer');
+			const lengthDescriptor = Object.getOwnPropertyDescriptor(bytes, 'byteLength');
+			const buffer = bufferDescriptor?.value;
+			const byteLength = lengthDescriptor?.value;
+			if (!bufferDescriptor?.enumerable || !lengthDescriptor?.enumerable || !(buffer instanceof Uint8Array) || !Number.isSafeInteger(byteLength) || byteLength !== buffer.byteLength) { throw new ParadisOfficeGitSourceError('notFound'); }
+			if (byteLength > PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.compressedInputBytes) { throw new ParadisOfficeGitSourceError('limitExceeded'); }
+			return VSBuffer.wrap(buffer.slice());
+		} catch (error) {
+			if (error instanceof ParadisOfficeGitSourceError) { throw error; }
 			throw new ParadisOfficeGitSourceError('notFound');
 		}
-		if (bytes.byteLength > PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.compressedInputBytes) {
-			throw new ParadisOfficeGitSourceError('limitExceeded');
-		}
-		return VSBuffer.wrap(bytes.buffer.slice());
 	}
 }
