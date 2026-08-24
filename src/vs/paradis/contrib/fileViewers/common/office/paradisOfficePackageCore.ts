@@ -17,8 +17,8 @@ import {
 	type ParadisOfficePartStatus,
 	type ParadisOfficeRelationship,
 } from '../paradisOfficeProtocol.js';
-import { ParadisOfficeBudget } from './paradisOfficeBudget.js';
-import { canonicalizeOfficeXmlTree } from './paradisOfficeCanonicalXml.js';
+import { isParadisOfficePartBudgetError, ParadisOfficeBudget } from './paradisOfficeBudget.js';
+import { canonicalizeOfficeXml } from './paradisOfficeCanonicalXml.js';
 import {
 	canonicalizeParadisOfficeArchiveName,
 	type IParadisOfficeArchive,
@@ -63,6 +63,7 @@ export async function inspectOfficePackage(
 ): Promise<ParadisOfficePackageInventory> {
 	const now = options.now ?? Date.now;
 	const budget = new ParadisOfficeBudget(profile, now());
+	const checkpoint = () => { throwIfParadisOfficeCancelled(token); budget.checkDeadline(now()); };
 	const parts: ReadPart[] = [];
 	const seen = new Set<string>();
 	try {
@@ -90,6 +91,7 @@ export async function inspectOfficePackage(
 			}
 			const chunks: Uint8Array[] = [];
 			let entryBytes = 0;
+			let crc = 0xffffffff;
 			const media = isMediaPart(name);
 			const binary = !name.endsWith('.xml') && !name.endsWith('.rels');
 			let complete = true;
@@ -102,15 +104,19 @@ export async function inspectOfficePackage(
 					}
 					budget.consumeEntry(chunk.byteLength, entry.compressedBytes, binary, media, entryBytes);
 					entryBytes += chunk.byteLength;
+					crc = updateCrc32(crc, chunk);
 					chunks.push(chunk.slice());
 				}
 			} catch (error) {
-				if (!(error instanceof ParadisOfficePackageError) || error.code !== 'limitExceeded') {
+				if (!isParadisOfficePartBudgetError(error)) {
 					throw error;
 				}
 				complete = false;
 			}
 			const bytes = joinChunks(chunks, entryBytes);
+			if (complete && (entryBytes !== entry.declaredExpandedBytes || (entry.crc32 !== undefined && ((crc ^ 0xffffffff) >>> 0) !== entry.crc32))) {
+				throw new ParadisOfficePackageError('invalid');
+			}
 			parts.push({
 				name,
 				compressedBytes: entry.compressedBytes,
@@ -121,7 +127,7 @@ export async function inspectOfficePackage(
 		}
 		throwIfParadisOfficeCancelled(token);
 		budget.checkDeadline(now());
-		return await buildInventory(parts, profile, budget, archive, token);
+		return await buildInventory(parts, profile, budget, archive, token, checkpoint);
 	} finally {
 		archive.dispose();
 	}
@@ -133,6 +139,7 @@ async function buildInventory(
 	budget: ParadisOfficeBudget,
 	archive: IParadisOfficeArchive,
 	token: CancellationToken,
+	checkpoint: () => void,
 ): Promise<ParadisOfficePackageInventory> {
 	const byName = new Map(readParts.map(part => [part.name, part]));
 	const contentTypes = byName.get(contentTypesName);
@@ -149,10 +156,11 @@ async function buildInventory(
 		attributeLength: profile.attributeLength,
 		characters: profile.xmlPartBytes,
 	};
-	const types = parseContentTypes(await archive.parseXml(asText(contentTypes.bytes), limits, token));
+	checkpoint();
+	const types = parseContentTypes(await archive.parseXml(asText(contentTypes.bytes), limits, token, checkpoint), checkpoint);
 	const relationshipRecords = (
 		await Promise.all(
-			readParts.filter(part => part.complete && part.name.endsWith('.rels')).map(async part => parseRelationships(part.name, await archive.parseXml(asText(part.bytes), limits, token))),
+			readParts.filter(part => part.complete && part.name.endsWith('.rels')).map(async part => parseRelationships(part.name, await archive.parseXml(asText(part.bytes), limits, token, checkpoint), checkpoint)),
 		)
 	).flat();
 	const rootOfficeDocument = relationshipRecords.find(relationship => relationship.source === '/' && relationship.type === officeDocumentRelationship && relationship.targetMode === 'internal');
@@ -187,8 +195,8 @@ async function buildInventory(
 		const xml = isXmlPart(part.name, contentType);
 		if (xml) {
 			try {
-				const tree = await archive.parseXml(asText(part.bytes), limits, token);
-				const canonical = canonicalizeOfficeXmlTree(tree, id => relationshipRecords.find(relationship => relationship.source === part.name && relationship.id === id)?.target);
+				const tree = await archive.parseXml(asText(part.bytes), limits, token, checkpoint);
+				const canonical = canonicalizeOfficeXml(tree, id => relationshipRecords.find(relationship => relationship.source === part.name && relationship.id === id)?.target, checkpoint);
 				inventoryParts.push({
 					id: part.name,
 					canonicalUri: part.name,
@@ -240,7 +248,7 @@ async function buildInventory(
 		missing: record.targetMode === 'internal' && !byName.get(record.target)?.complete,
 		cyclic: record.targetMode === 'internal' && isRelationshipCycle(record.source, record.target, relationshipRecords),
 	}));
-	const features = buildFeatures(readParts, relationships);
+	const features = buildFeatures(readParts, relationships, checkpoint);
 	const security = {
 		encrypted: false,
 		hasMacros: readParts.some(part => /vbaProject\.bin$/i.test(part.name)),
@@ -309,12 +317,13 @@ function isRequiredRelationship(relationship: ParsedRelationship, mainPart: stri
 	return /\/(?:styles|settings|numbering|theme|sharedStrings|workbook)$/i.test(relationship.type);
 }
 
-function parseContentTypes(document: ParadisOfficeXmlDocument): ReadonlyMap<string, string> {
-	if (document.root.local !== 'Types') {
+function parseContentTypes(document: ParadisOfficeXmlDocument, checkpoint?: () => void): ReadonlyMap<string, string> {
+	if (document.root.local !== 'Types' || document.root.uri !== 'http://schemas.openxmlformats.org/package/2006/content-types') {
 		throw new ParadisOfficePackageError('malformed');
 	}
 	const result = new Map<string, string>();
 	for (const node of document.root.children) {
+		checkpoint?.();
 		if (node.kind !== 'element' || node.local !== 'Override') {
 			continue;
 		}
@@ -336,13 +345,14 @@ interface ParsedRelationship {
 	readonly targetMode: 'internal' | 'external';
 }
 
-function parseRelationships(name: string, document: ParadisOfficeXmlDocument): readonly ParsedRelationship[] {
-	if (document.root.local !== 'Relationships') {
+function parseRelationships(name: string, document: ParadisOfficeXmlDocument, checkpoint?: () => void): readonly ParsedRelationship[] {
+	if (document.root.local !== 'Relationships' || document.root.uri !== 'http://schemas.openxmlformats.org/package/2006/relationships') {
 		throw new ParadisOfficePackageError('malformed');
 	}
 	const source = relationshipSource(name);
 	const records: ParsedRelationship[] = [];
 	for (const node of document.root.children) {
+		checkpoint?.();
 		if (node.kind !== 'element' || node.local !== 'Relationship') {
 			continue;
 		}
@@ -418,7 +428,7 @@ function isRelationshipCycle(source: string, target: string, relationships: read
 	return visit(target);
 }
 
-function buildFeatures(parts: readonly ReadPart[], relationships: readonly ParadisOfficeRelationship[]): readonly ParadisOfficeInventoryFeature[] {
+function buildFeatures(parts: readonly ReadPart[], relationships: readonly ParadisOfficeRelationship[], checkpoint?: () => void): readonly ParadisOfficeInventoryFeature[] {
 	const feature = (kind: string, predicate: (part: ReadPart) => boolean, safety: ParadisOfficeInventoryFeature['safety']): ParadisOfficeInventoryFeature | undefined => {
 		const matching = parts.filter(predicate);
 		return matching.length
@@ -431,12 +441,19 @@ function buildFeatures(parts: readonly ReadPart[], relationships: readonly Parad
 			: undefined;
 	};
 	const reachable = new Set<string>([contentTypesName, rootRelationshipsName]);
-	for (const relationship of relationships) {
-		if (relationship.sourcePartId) {
-			reachable.add(relationship.sourcePartId);
-		}
-		if (relationship.targetMode === 'internal' && !relationship.missing) {
-			reachable.add(relationship.target);
+	const pending = ['/'];
+	while (pending.length) {
+		checkpoint?.();
+		const source = pending.shift()!;
+		for (const relationship of relationships) {
+			if ((relationship.sourcePartId ?? '/') !== source || relationship.targetMode !== 'internal' || relationship.missing) {
+				continue;
+			}
+			if (!reachable.has(relationship.target)) {
+				reachable.add(relationship.target);
+				pending.push(relationship.target);
+			}
+			reachable.add(relationshipPartName(source));
 		}
 	}
 	return [
@@ -452,6 +469,14 @@ function buildFeatures(parts: readonly ReadPart[], relationships: readonly Parad
 			: undefined,
 		feature('orphanPart', part => !reachable.has(part.name), 'metadataOnly'),
 	].filter((value): value is ParadisOfficeInventoryFeature => value !== undefined);
+}
+
+function relationshipPartName(source: string): string {
+	if (source === '/') {
+		return rootRelationshipsName;
+	}
+	const slash = source.lastIndexOf('/');
+	return `${source.slice(0, slash)}/_rels/${source.slice(slash + 1)}.rels`;
 }
 
 function detectFormat(mainPart: string, hasMacros: boolean): ParadisOfficeFormat {
@@ -489,4 +514,16 @@ function joinChunks(chunks: readonly Uint8Array[], length: number): Uint8Array {
 		offset += chunk.byteLength;
 	}
 	return result;
+}
+
+function updateCrc32(value: number, bytes: Uint8Array): number {
+
+	let crc = value;
+	for (const byte of bytes) {
+		crc ^= byte;
+		for (let bit = 0; bit < 8; bit++) {
+			crc = (crc >>> 1) ^ ((crc & 1) === 1 ? 0xedb88320 : 0);
+		}
+	}
+	return crc;
 }

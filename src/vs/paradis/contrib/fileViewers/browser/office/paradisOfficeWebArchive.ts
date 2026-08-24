@@ -6,8 +6,8 @@
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import type { ParadisOfficeFingerprint } from '../../common/paradisOfficeProtocol.js';
-import { type IParadisOfficeArchive, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlDocument, type ParadisOfficeXmlNode, ParadisOfficePackageError, throwIfParadisOfficeCancelled } from '../../common/office/paradisOfficeArchive.js';
-import type { ParadisOfficeXmlLimits } from '../../common/office/paradisOfficeCanonicalXml.js';
+import { type IParadisOfficeArchive, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlDocument, ParadisOfficePackageError, throwIfParadisOfficeCancelled } from '../../common/office/paradisOfficeArchive.js';
+import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../../common/office/paradisOfficeCanonicalXml.js';
 
 /** Browser/Worker ZIP primitive. Its stream is decompressed lazily and supports iterator return. */
 export interface IParadisOfficeWebZipPrimitive {
@@ -67,47 +67,13 @@ export class ParadisOfficeWebArchive implements IParadisOfficeArchive {
 		return { algorithm: 'sha256', value: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join(''), byteLength: bytes.byteLength };
 	}
 
-	async parseXml(xml: string, limits: ParadisOfficeXmlLimits, token?: CancellationToken): Promise<ParadisOfficeXmlDocument> {
-		throwIfParadisOfficeCancelled(token);
-		if (/<!DOCTYPE|<!ENTITY/i.test(xml) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(xml)) { throw new ParadisOfficePackageError('malformed'); }
-		const document = new DOMParser().parseFromString(xml, 'application/xml');
-		const documentRoot = document.firstElementChild;
-		if (!documentRoot || documentRoot.localName === 'parsererror') { throw new ParadisOfficePackageError('malformed'); }
-		let nodes = 0;
-		let characters = 0;
-		const convert = (node: Node, depth: number): ParadisOfficeXmlNode | undefined => {
-			throwIfParadisOfficeCancelled(token);
-			if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
-				characters += node.textContent?.length ?? 0;
-				if (characters > limits.characters) { throw new ParadisOfficePackageError('limitExceeded'); }
-				return { kind: 'text', value: node.textContent ?? '' };
-			}
-			if (node.nodeType !== Node.ELEMENT_NODE) { return undefined; }
-			if (++nodes > limits.nodes || depth > limits.depth) { throw new ParadisOfficePackageError('limitExceeded'); }
-			const element = node as Element;
-			const attributes = [...element.attributes].filter(attribute => !attribute.name.startsWith('xmlns')).map(attribute => ({ uri: attribute.namespaceURI ?? '', local: attribute.localName ?? attribute.name, value: attribute.value }));
-			if (attributes.some(attribute => attribute.value.length > limits.attributeLength)) { throw new ParadisOfficePackageError('limitExceeded'); }
-			const children = [...element.childNodes].map(child => convert(child, depth + 1)).filter((child): child is ParadisOfficeXmlNode => child !== undefined);
-			return { kind: 'element', uri: element.namespaceURI ?? '', local: element.localName ?? element.nodeName, attributes, children, namespaceBindings: elementNamespaces(element) };
-		};
-		const root = convert(documentRoot, 1);
-		if (!root || root.kind !== 'element') { throw new ParadisOfficePackageError('malformed'); }
-		return { root };
+	async parseXml(xml: string, limits: ParadisOfficeXmlLimits, token?: CancellationToken, checkpoint?: () => void): Promise<ParadisOfficeXmlDocument> {
+		return parseParadisOfficeXml(xml, limits, token, checkpoint);
 	}
 
 	dispose(): void {
 		if (!this.closed) { this.closed = true; this.primitive.close(); }
 	}
-}
-
-function elementNamespaces(element: Element): Readonly<Record<string, string>> {
-
-	const result: Record<string, string> = {};
-	for (const attribute of element.attributes) {
-		if (attribute.name === 'xmlns') { result[''] = attribute.value; }
-		else if (attribute.name.startsWith('xmlns:')) { result[attribute.name.slice(6)] = attribute.value; }
-	}
-	return result;
 }
 
 class NativeZipPrimitive implements IParadisOfficeWebZipPrimitive {
@@ -123,7 +89,7 @@ class NativeZipPrimitive implements IParadisOfficeWebZipPrimitive {
 		for (const object of this.records) {
 			if (this.closed) { return; }
 			const entry: ParadisOfficeArchiveEntry = {
-				name: object.name, compressedBytes: object.compressedBytes, declaredExpandedBytes: object.expandedBytes,
+				name: object.name, compressedBytes: object.compressedBytes, declaredExpandedBytes: object.expandedBytes, crc32: object.crc32,
 				encrypted: (object.flags & 1) !== 0, directory: object.name.endsWith('/'),
 				symlink: (object.unixMode & 0xf000) === 0xa000, unixMode: object.unixMode,
 			};
@@ -144,7 +110,8 @@ class NativeZipPrimitive implements IParadisOfficeWebZipPrimitive {
 			return;
 		}
 		if (object.method !== 8 || typeof DecompressionStream === 'undefined') { throw new ParadisOfficePackageError('invalid'); }
-		const reader = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+		const ownedCompressed = new Uint8Array(compressed);
+		const reader = new Blob([ownedCompressed.buffer]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
 		try {
 			while (true) {
 				if (signal.aborted) { throw new ParadisOfficePackageError('cancelled'); }
@@ -165,6 +132,7 @@ interface NativeZipEntry {
 	readonly method: number;
 	readonly compressedBytes: number;
 	readonly expandedBytes: number;
+	readonly crc32: number;
 	readonly unixMode: number;
 	readonly localOffset: number;
 }
@@ -174,22 +142,36 @@ function parseNativeZipCentralDirectory(bytes: Uint8Array): readonly NativeZipEn
 	let eocd = -1;
 	for (let offset = Math.max(0, bytes.byteLength - 65_557); offset <= bytes.byteLength - 22; offset++) { if (view.getUint32(offset, true) === 0x06054b50) { eocd = offset; } }
 	if (eocd < 0 || view.getUint16(eocd + 4, true) !== 0 || view.getUint16(eocd + 6, true) !== 0) { throw new ParadisOfficePackageError('invalid'); }
-	const count = view.getUint16(eocd + 10, true); let offset = view.getUint32(eocd + 16, true);
-	if (count === 0xffff || offset === 0xffffffff) { throw new ParadisOfficePackageError('invalid'); }
+	if (eocd + 22 + view.getUint16(eocd + 20, true) !== bytes.byteLength || view.getUint16(eocd + 8, true) !== view.getUint16(eocd + 10, true)) { throw new ParadisOfficePackageError('invalid'); }
+	const count = view.getUint16(eocd + 10, true); const centralSize = view.getUint32(eocd + 12, true); const centralOffset = view.getUint32(eocd + 16, true); let offset = centralOffset;
+	if (count === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff || centralOffset + centralSize > eocd) { throw new ParadisOfficePackageError('invalid'); }
 	const decoder = new TextDecoder('utf-8', { fatal: true }); const entries: NativeZipEntry[] = [];
 	for (let index = 0; index < count; index++) {
 		if (offset + 46 > bytes.byteLength || view.getUint32(offset, true) !== 0x02014b50) { throw new ParadisOfficePackageError('invalid'); }
+		if (view.getUint16(offset + 34, true) === 0xffff || view.getUint32(offset + 20, true) === 0xffffffff || view.getUint32(offset + 24, true) === 0xffffffff || view.getUint32(offset + 42, true) === 0xffffffff) { throw new ParadisOfficePackageError('invalid'); }
 		const nameLength = view.getUint16(offset + 28, true); const extraLength = view.getUint16(offset + 30, true); const commentLength = view.getUint16(offset + 32, true);
 		const end = offset + 46 + nameLength + extraLength + commentLength; if (end > bytes.byteLength) { throw new ParadisOfficePackageError('invalid'); }
-		entries.push({ name: decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)), flags: view.getUint16(offset + 8, true), method: view.getUint16(offset + 10, true), compressedBytes: view.getUint32(offset + 20, true), expandedBytes: view.getUint32(offset + 24, true), unixMode: view.getUint32(offset + 38, true) >>> 16, localOffset: view.getUint32(offset + 42, true) }); offset = end;
+		entries.push({ name: decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)), flags: view.getUint16(offset + 8, true), method: view.getUint16(offset + 10, true), crc32: view.getUint32(offset + 16, true), compressedBytes: view.getUint32(offset + 20, true), expandedBytes: view.getUint32(offset + 24, true), unixMode: view.getUint32(offset + 38, true) >>> 16, localOffset: view.getUint32(offset + 42, true) }); offset = end;
 	}
+	if (offset !== centralOffset + centralSize) { throw new ParadisOfficePackageError('invalid'); }
 	return entries;
 }
 
 function localZipData(bytes: Uint8Array, entry: NativeZipEntry): Uint8Array {
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const offset = entry.localOffset;
 	if (offset + 30 > bytes.byteLength || view.getUint32(offset, true) !== 0x04034b50) { throw new ParadisOfficePackageError('invalid'); }
-	const start = offset + 30 + view.getUint16(offset + 26, true) + view.getUint16(offset + 28, true); const end = start + entry.compressedBytes;
+	const flags = view.getUint16(offset + 6, true); const method = view.getUint16(offset + 8, true); const nameLength = view.getUint16(offset + 26, true); const extraLength = view.getUint16(offset + 28, true);
+	if (flags !== entry.flags || method !== entry.method || new TextDecoder('utf-8', { fatal: true }).decode(bytes.slice(offset + 30, offset + 30 + nameLength)) !== entry.name) { throw new ParadisOfficePackageError('invalid'); }
+	const localCrc = view.getUint32(offset + 14, true); const localCompressed = view.getUint32(offset + 18, true); const localExpanded = view.getUint32(offset + 22, true);
+	if ((flags & 8) === 0 && (localCrc !== entry.crc32 || localCompressed !== entry.compressedBytes || localExpanded !== entry.expandedBytes)) { throw new ParadisOfficePackageError('invalid'); }
+	if ((flags & 8) !== 0 && !((localCrc === 0 || localCrc === 0xffffffff) && (localCompressed === 0 || localCompressed === 0xffffffff) && (localExpanded === 0 || localExpanded === 0xffffffff))) { throw new ParadisOfficePackageError('invalid'); }
+	const start = offset + 30 + nameLength + extraLength; const end = start + entry.compressedBytes;
 	if (!Number.isSafeInteger(end) || end > bytes.byteLength) { throw new ParadisOfficePackageError('invalid'); }
+	if ((flags & 8) !== 0) { validateDataDescriptor(view, end, entry); }
 	return bytes.slice(start, end);
+}
+
+function validateDataDescriptor(view: DataView, offset: number, entry: NativeZipEntry): void {
+	const signature = view.getUint32(offset, true); const start = signature === 0x08074b50 ? offset + 4 : offset;
+	if (start + 12 > view.byteLength || view.getUint32(start, true) !== entry.crc32 || view.getUint32(start + 4, true) !== entry.compressedBytes || view.getUint32(start + 8, true) !== entry.expandedBytes) { throw new ParadisOfficePackageError('invalid'); }
 }
