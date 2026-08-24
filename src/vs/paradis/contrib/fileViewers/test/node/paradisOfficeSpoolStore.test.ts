@@ -21,7 +21,7 @@ import {
 	ParadisOfficeSealRequest,
 	ParadisOfficeSpoolReference,
 } from '../../common/paradisOfficeSourceBroker.js';
-import { OfficeSpoolStore } from '../../node/paradisOfficeSpoolStore.js';
+import { OfficeSpoolStore, OfficeSpoolStoreError } from '../../node/paradisOfficeSpoolStore.js';
 
 const ownerA = 'window-a';
 const ownerB = 'window-b';
@@ -455,6 +455,13 @@ suite('OfficeSpoolStore', () => {
 			await rejects(() => store.begin(ownerA), TypeError);
 			strictEqual(store.activeSpoolCount, 0);
 		}
+	});
+
+	test('normalizes arbitrary runtime store error codes without exposing a stack', () => {
+		const error = new (OfficeSpoolStoreError as unknown as new (code: string) => Error & { code: string })('/raw/private secret-token');
+		strictEqual(error.code, 'invalidReference');
+		strictEqual(error.message, 'The Office spool operation was rejected.');
+		strictEqual(error.stack, '');
 	});
 
 	test('runs the real broker and real spool store end to end and reuses quota after open', async () => {

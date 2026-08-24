@@ -609,6 +609,26 @@ suite('ParadisOfficeSourceBroker', () => {
 		cancellation.dispose();
 	});
 
+	test('gives cancellation precedence to synchronous iterator-result traps without consuming bytes', async () => {
+		const cancellation = new CancellationTokenSource();
+		const result = new Proxy({ done: false, value: VSBuffer.fromString('late') }, {
+			getOwnPropertyDescriptor(target, property) {
+				if (property === 'done') { cancellation.cancel(); }
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		const spoolClient = new TestSpoolClient();
+		const provider: IOfficeSourceProvider = {
+			async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; },
+			read() { return { [Symbol.asyncIterator]: () => ({ next: async () => result, return: async () => ({ done: true, value: undefined }) }) }; },
+		};
+		await rejects(createBroker(provider, spoolClient).broker.open(descriptor('gitCommit', 'git:/doc'), cancellation.token), (error: unknown) => {
+			return error instanceof CancellationError && (error.stack === '' || error.stack === undefined);
+		});
+		strictEqual(spoolClient.appended.length, 0);
+		cancellation.dispose();
+	});
+
 	test('enforces the Task 2 platform compressed-input budget before append', async () => {
 		const chunks = new Array(8).fill(undefined).map(() => VSBuffer.alloc(PARADIS_OFFICE_SPOOL_CHUNK_BYTES));
 		chunks.push(VSBuffer.alloc(1));
