@@ -157,11 +157,11 @@ function normalizeSnapshot(snapshot: IParadisMobileCanvasSnapshot | undefined): 
 	if (!snapshot) {
 		return EMPTY_SNAPSHOT;
 	}
-	return {
-		devices: Array.isArray(snapshot.devices) ? snapshot.devices as IParadisMobileDevice[] : [],
-		attachments: Array.isArray(snapshot.attachments) ? snapshot.attachments as IParadisMobileAttachment[] : [],
-		unavailableReason: snapshot.unavailableReason,
-	};
+	const devices = Array.isArray(snapshot.devices) ? snapshot.devices as IParadisMobileDevice[] : [];
+	const attachments = Array.isArray(snapshot.attachments) ? snapshot.attachments as IParadisMobileAttachment[] : [];
+	return snapshot.unavailableReason === undefined
+		? { devices, attachments }
+		: { devices, attachments, unavailableReason: snapshot.unavailableReason };
 }
 
 function toMessage(error: unknown): string {
