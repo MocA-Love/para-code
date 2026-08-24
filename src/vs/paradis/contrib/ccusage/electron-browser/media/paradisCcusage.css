@@ -7,6 +7,11 @@
 .paradis-ccusage {
 	position: relative;
 	height: 100%;
+	/* allow-any-unicode-next-line */
+	/* 段組みの畳み込みを、ウィンドウ幅ではなくこのパネル自身の幅で測るための基準。
+	ダイアログに入れると左ナビ 212px の分だけウィンドウ幅とずれるため。 */
+	container-type: inline-size;
+	container-name: paradis-ccusage-panel;
 	/* ダイアログのタブ(flex の子)に入れても、本文のスクロールが親を押し広げないようにする。 */
 	min-height: 0;
 	display: flex;
@@ -190,6 +195,10 @@
 	grid-template-columns: 1.5fr 1fr 1fr 1fr;
 	gap: 12px;
 	margin-bottom: 12px;
+	/* allow-any-unicode-next-line */
+	/* KPI は常に 4 枚なので、広い画面では 1 枚が 500px 超まで膨らんで数字が間延びする。
+	グラフや表は本文幅いっぱいを使ってよいが、ここだけ上限を置く。 */
+	max-width: 1400px;
 }
 
 .paradis-ccusage-grid2 {
@@ -200,7 +209,7 @@
 	align-items: start;
 }
 
-@media (max-width: 900px) {
+@container paradis-ccusage-panel (max-width: 900px) {
 	.paradis-ccusage-kpis { grid-template-columns: 1fr 1fr; }
 	.paradis-ccusage-grid2 { grid-template-columns: 1fr; }
 }
@@ -245,7 +254,7 @@
 	margin-bottom: 12px;
 }
 
-@media (max-width: 900px) {
+@container paradis-ccusage-panel (max-width: 900px) {
 	.paradis-ccusage-block { grid-template-columns: 1fr; gap: 10px; }
 }
 

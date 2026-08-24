@@ -66,7 +66,7 @@ const STR_SETTINGS_DESC = localize('paradis.usage.settingsDesc', "このダイ�
 // allow-any-unicode-next-line
 const STR_UNSET = localize('paradis.usage.unset', "(未設定)");
 // allow-any-unicode-next-line
-const STR_RTK_PATH_PLACEHOLDER = localize('paradis.usage.rtkPathPlaceholder', "(PATH 上の rtk)");
+const STR_RTK_PATH_PLACEHOLDER = localize('paradis.usage.rtkPathPlaceholder', "(自動で探す)");
 
 interface IParadisUsageTabSpec {
 	readonly id: ParadisUsageDashboardTab;
@@ -96,9 +96,9 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 	{
 		key: 'paradis.ccusage.executablePath',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.ccusagePath', "ccusage 実行ファイルの絶対パス"),
+		label: localize('paradis.usage.ccusagePath', "ccusage のパス"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.usage.ccusagePathDesc', "空欄時は PATH 探索 → 固定バージョンの npx フォールバック。"),
+		description: localize('paradis.usage.ccusagePathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
 		placeholder: '/usr/local/bin/ccusage',
 	},
 	{
@@ -109,27 +109,27 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 	{
 		key: 'paradis.githubMetrics.statusBar.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.ghStatusBar', "GitHub API 残量をステータスバーに表示"),
+		label: localize('paradis.usage.ghStatusBar', "GitHub API の残量をステータスバーに表示"),
 	},
 	{
 		key: 'paradis.rtk.executablePath',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.rtkPath', "rtk 実行ファイルの絶対パス"),
+		label: localize('paradis.usage.rtkPath', "rtk のパス"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.usage.rtkPathDesc', "SSH 中は接続先の rtk を実行するため、リモート側設定で指定してください。"),
+		description: localize('paradis.usage.rtkPathDesc', "空欄なら自動で探します。SSH 中は接続先の rtk を使うので、リモート側の設定に書いてください。"),
 		placeholder: STR_RTK_PATH_PLACEHOLDER,
 	},
 	{
 		key: 'paradis.rtk.statusBar.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.rtkStatusBar', "今日の rtk 削減トークン数を表示"),
+		label: localize('paradis.usage.rtkStatusBar', "今日 rtk が減らしたトークン数をステータスバーに表示"),
 	},
 	{
 		key: 'paradis.githubMetrics.refreshIntervalSeconds',
 		// allow-any-unicode-next-line
 		label: localize('paradis.usage.refreshInterval', "自動更新の間隔"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.usage.refreshIntervalDesc', "GitHub API のタブを開いている間、自分で取り直す間隔です。ccusage と rtk は開いたときとこのダイアログの更新ボタンでのみ取り直します。"),
+		description: localize('paradis.usage.refreshIntervalDesc', "GitHub API のタブを開いている間に取り直す間隔です。AI コストと rtk は、開いたときと更新ボタンでのみ取り直します。"),
 		choices: [
 			// allow-any-unicode-next-line
 			{ value: 0, label: localize('paradis.usage.refreshManual', "手動のみ") },
@@ -290,7 +290,8 @@ export class ParadisUsageDashboardDialog extends Disposable {
 			const main = dom.append(row, $('.pud-setting-main'));
 			const label = dom.append(main, $('.pud-setting-label'));
 			dom.append(label, $('span')).textContent = spec.label;
-			dom.append(label, $('code')).textContent = spec.key;
+			// allow-any-unicode-next-line
+			// 設定キー (paradis.*) は画面に出さない (paradisSettingsDialog.ts と同じ方針)。
 			if (spec.description) {
 				dom.append(main, $('.pud-setting-desc')).textContent = spec.description;
 			}

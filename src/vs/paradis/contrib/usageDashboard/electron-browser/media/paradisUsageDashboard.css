@@ -22,9 +22,12 @@
 }
 
 .paradis-usage-dashboard {
-	width: 1040px;
+	/* allow-any-unicode-next-line */
+	/* ここはタイル・グラフ・表なので、広げた幅がそのまま日数・列数・行数になる。
+	幅も高さも伸ばす（設定系ダイアログと違って幅を足す先がある）。 */
+	width: clamp(1040px, 78vw, 2000px);
 	max-width: 95vw;
-	height: 726px;
+	height: clamp(726px, 88vh, 1400px);
 	max-height: 92vh;
 	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
@@ -239,16 +242,6 @@
 	flex-wrap: wrap;
 }
 
-.paradis-usage-dashboard .pud-setting-label code {
-	font-family: var(--monaco-monospace-font);
-	font-size: 10px;
-	font-weight: 400;
-	background: var(--vscode-textCodeBlock-background, var(--vscode-input-background));
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 4px;
-	padding: 0 5px;
-	color: var(--vscode-textLink-foreground);
-}
 
 .paradis-usage-dashboard .pud-setting-desc {
 	font-size: 11.5px;

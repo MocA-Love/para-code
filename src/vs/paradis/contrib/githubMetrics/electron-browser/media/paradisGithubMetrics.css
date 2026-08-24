@@ -319,6 +319,10 @@
 
 .paradis-ghm-grid.cols4 {
 	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	/* allow-any-unicode-next-line */
+	/* 概況カードは 4 枚固定。auto-fit は空トラックを畳むので枚数は割れないが、
+	広い画面では 1 枚が膨らんで数字が間延びするため上限を置く。 */
+	max-width: 1400px;
 }
 
 .paradis-ghm-grid.cols3 {
