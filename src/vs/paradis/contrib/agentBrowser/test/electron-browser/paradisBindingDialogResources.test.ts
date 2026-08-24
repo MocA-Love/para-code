@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisBindingDialogDevicePollLease } from '../../electron-browser/paradisBindingDialogResources.js';
+import { ParadisBindingDialogDevicePollLease, ParadisBindingDialogTabController } from '../../electron-browser/paradisBindingDialogResources.js';
 
 suite('ParadisBindingDialogDevicePollLease', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -50,5 +50,51 @@ suite('ParadisBindingDialogDevicePollLease', () => {
 
 		owner.dispose();
 		assert.deepStrictEqual({ starts, stops }, { starts: 1, stops: 1 });
+	});
+});
+
+suite('ParadisBindingDialogTabController', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	function createController(events: string[]): ParadisBindingDialogTabController {
+		const controller = store.add(new ParadisBindingDialogTabController(
+			() => {
+				events.push('poll:start');
+				return toDisposable(() => events.push('poll:stop'));
+			},
+			() => events.push(`render:${controller.activeTab}`),
+		));
+		return controller;
+	}
+
+	test('starts a normal dialog on panes and delegates every transition before rendering', () => {
+		const events: string[] = [];
+		const controller = createController(events);
+
+		controller.initialize(true);
+		controller.setActiveTab('devices');
+		controller.setActiveTab('devices');
+		controller.setActiveTab('mcp');
+		controller.setActiveTab('devices');
+		controller.dispose();
+
+		assert.deepStrictEqual(events, [
+			'render:panes',
+			'poll:start', 'render:devices',
+			'render:devices',
+			'poll:stop', 'render:mcp',
+			'poll:start', 'render:devices',
+			'poll:stop',
+		]);
+	});
+
+	test('starts a page-less dialog on devices and releases its lease on owner disposal', () => {
+		const events: string[] = [];
+		const controller = createController(events);
+
+		controller.initialize(false);
+		controller.dispose();
+
+		assert.deepStrictEqual(events, ['poll:start', 'render:devices', 'poll:stop']);
 	});
 });
