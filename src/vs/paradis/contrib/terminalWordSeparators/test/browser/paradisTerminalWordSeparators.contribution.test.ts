@@ -49,6 +49,33 @@ suite('Paradis terminal word separator diagnostics', () => {
 		assert.strictEqual(reports.length, 1);
 	});
 
+	test('self-registers the diagnostic contribution exactly once during module initialization', () => {
+		const registrations: Array<{
+			readonly id: string;
+			readonly ctor: typeof contributionModule.ParadisTerminalWordSeparatorsDiagnosticsContribution;
+			readonly phase: WorkbenchPhase;
+		}> = [];
+		let initializationError: Error | undefined;
+
+		try {
+			contributionModule.initializeParadisTerminalWordSeparatorsDiagnosticsContribution(
+				(id, ctor, phase) => registrations.push({ id, ctor, phase }),
+			);
+		} catch (error) {
+			if (error instanceof Error) {
+				initializationError = error;
+			}
+		}
+
+		assert.deepStrictEqual({
+			registrations,
+			initializationErrorName: initializationError?.name,
+		}, {
+			registrations: [],
+			initializationErrorName: 'Error',
+		});
+	});
+
 	test('registers the diagnostic contribution after the workbench is restored', () => {
 		const registrations: Array<{
 			readonly id: string;

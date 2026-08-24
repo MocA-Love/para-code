@@ -87,4 +87,16 @@ export function registerParadisTerminalWordSeparatorsDiagnosticsContribution(
 	);
 }
 
-registerParadisTerminalWordSeparatorsDiagnosticsContribution();
+let paradisTerminalWordSeparatorsDiagnosticsContributionInitialized = false;
+
+export function initializeParadisTerminalWordSeparatorsDiagnosticsContribution(
+	register: ParadisTerminalWordSeparatorsDiagnosticsRegistrar = registerWorkbenchContribution2,
+): void {
+	if (paradisTerminalWordSeparatorsDiagnosticsContributionInitialized) {
+		throw new Error('Paradis terminal word separators diagnostics contribution is already initialized');
+	}
+	registerParadisTerminalWordSeparatorsDiagnosticsContribution(register);
+	paradisTerminalWordSeparatorsDiagnosticsContributionInitialized = true;
+}
+
+initializeParadisTerminalWordSeparatorsDiagnosticsContribution();
