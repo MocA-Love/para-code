@@ -130,6 +130,7 @@ interface PendingJob<T> {
 	workerListeners?: readonly IDisposable[];
 	state: 'queued' | 'running' | 'cancelling' | 'finished';
 	released: boolean;
+	reservationHeld: boolean;
 	terminal: 'cancelled' | 'blocked' | 'failed' | undefined;
 }
 
@@ -202,14 +203,25 @@ class WorkerResultProjector {
 		const result = this.projectOnce(operation, value);
 		// A descriptor trap can mutate after an apparently valid pass. Repeat the bounded read
 		// before publishing; no value from either confirmation is retained.
-		if (!result || !new WorkerResultProjector().projectOnce(operation, value)) { return undefined; }
+		const confirmation = new WorkerResultProjector().projectOnce(operation, value);
+		if (!result || !confirmation || !this.equal(result, confirmation)) { return undefined; }
 		return result;
+	}
+
+	private equal(left: unknown, right: unknown): boolean {
+		if (left === right || (typeof left === 'number' && typeof right === 'number' && Number.isNaN(left) && Number.isNaN(right))) { return true; }
+		if (!left || !right || typeof left !== 'object' || typeof right !== 'object' || Array.isArray(left) !== Array.isArray(right)) { return false; }
+		if (Array.isArray(left) && Array.isArray(right)) { return left.length === right.length && left.every((value, index) => this.equal(value, right[index])); }
+		const leftRecord = left as Record<string, unknown>;
+		const rightRecord = right as Record<string, unknown>;
+		const keys = Object.keys(leftRecord);
+		return keys.length === Object.keys(rightRecord).length && keys.every(key => Object.prototype.hasOwnProperty.call(rightRecord, key) && this.equal(leftRecord[key], rightRecord[key]));
 	}
 
 	private projectOnce(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
 		try {
 			const result = operation === 'inspect' ? this.inspectResult(value, 1) : this.summary(operation, value, 1);
-			if (Buffer.byteLength(JSON.stringify(result), 'utf8') > workerProjectionBytes) { return undefined; }
+			if (this.jsonBytes(result) > workerProjectionBytes) { return undefined; }
 			return result;
 		} catch {
 			return undefined;
@@ -218,6 +230,32 @@ class WorkerResultProjector {
 
 	private consume(depth: number): void {
 		if (depth > workerProjectionDepth || ++this.nodes > workerProjectionNodes) { throw new TypeError('Office worker projection limit'); }
+	}
+
+	private jsonBytes(value: unknown): number {
+		const addString = (text: string, current: number): number => {
+			let bytes = current + 2;
+			for (let index = 0; index < text.length; index++) {
+				const code = text.charCodeAt(index);
+				if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) { bytes += 2; }
+				else if (code <= 0x1f || (code >= 0xdc00 && code <= 0xdfff)) { bytes += 6; }
+				else if (code >= 0xd800 && code <= 0xdbff) { const low = text.charCodeAt(index + 1); if (low >= 0xdc00 && low <= 0xdfff) { bytes += 4; index++; } else { bytes += 6; } }
+				else if (code <= 0x7f) { bytes++; } else if (code <= 0x7ff) { bytes += 2; } else { bytes += 3; }
+				if (bytes > workerProjectionBytes) { return bytes; }
+			}
+			return bytes;
+		};
+		const work: unknown[] = [value];
+		let bytes = 0;
+		while (work.length) {
+			const item = work.pop();
+			if (item === null) { bytes += 4; } else if (typeof item === 'string') { bytes = addString(item, bytes); } else if (typeof item === 'boolean') { bytes += item ? 4 : 5; } else if (typeof item === 'number') { bytes += String(item).length; }
+			else if (Array.isArray(item)) { bytes += 2 + Math.max(0, item.length - 1); for (let index = item.length - 1; index >= 0; index--) { work.push(item[index]); } }
+			else if (item && typeof item === 'object') { const entries = Object.entries(item); bytes += 2 + Math.max(0, entries.length - 1); for (let index = entries.length - 1; index >= 0; index--) { const [key, child] = entries[index]; bytes = addString(key, bytes) + 1; work.push(child); } }
+			else { return workerProjectionBytes + 1; }
+			if (bytes > workerProjectionBytes) { return bytes; }
+		}
+		return bytes;
 	}
 
 	private record(value: unknown, required: readonly string[], optional: readonly string[], depth: number): ReadonlyMap<string, unknown> {
@@ -287,6 +325,7 @@ class WorkerResultProjector {
 	private part(value: unknown, depth: number): object {
 		const fields = this.record(value, ['id', 'canonicalUri', 'contentType', 'compressedBytes', 'expandedBytes', 'required', 'coverage'], ['rawHash', 'hashCompleteness', 'canonicalHash', 'fingerprint'], depth);
 		const coverage = this.oneOf(fields.get('coverage'), ['parsed', 'partial', 'opaque', 'completeOpaque', 'unsafe', 'failed', 'omittedByBudget'], depth + 1);
+		if ((coverage === 'completeOpaque' && fields.has('rawHash')) || (coverage !== 'completeOpaque' && fields.has('fingerprint'))) { throw new TypeError('Office worker part hash shape'); }
 		const result: Record<string, unknown> = {
 			id: this.string(fields.get('id'), depth + 1), canonicalUri: this.string(fields.get('canonicalUri'), depth + 1), contentType: this.string(fields.get('contentType'), depth + 1),
 			compressedBytes: this.integer(fields.get('compressedBytes'), depth + 1), expandedBytes: this.integer(fields.get('expandedBytes'), depth + 1), required: this.bool(fields.get('required'), depth + 1), coverage,
@@ -359,7 +398,8 @@ class WorkerResultProjector {
 		const fields = this.record(value, ['operation', 'handle', 'outcome', 'completeness', 'capabilities', 'changes'], [], depth);
 		const handle = this.record(fields.get('handle'), ['kind', 'id'], [], depth + 1);
 		const changes = this.array(fields.get('changes'), depth + 1).map(change => this.change(change, depth + 2));
-		return { operation: this.oneOf(fields.get('operation'), [operation], depth + 1), handle: { kind: this.oneOf(handle.get('kind'), ['document', 'comparison'], depth + 2), id: this.string(handle.get('id'), depth + 2) }, outcome: this.oneOf(fields.get('outcome'), ['complete', 'degraded'], depth + 1), completeness: this.completeness(fields.get('completeness'), depth + 1), capabilities: this.array(fields.get('capabilities'), depth + 1).map(capability => this.string(capability, depth + 2)), changes };
+		const handleKind = this.oneOf(handle.get('kind'), [operation === 'parse' ? 'document' : 'comparison'], depth + 2);
+		return { operation: this.oneOf(fields.get('operation'), [operation], depth + 1), handle: { kind: handleKind, id: this.string(handle.get('id'), depth + 2) }, outcome: this.oneOf(fields.get('outcome'), ['complete', 'degraded'], depth + 1), completeness: this.completeness(fields.get('completeness'), depth + 1), capabilities: this.array(fields.get('capabilities'), depth + 1).map(capability => this.string(capability, depth + 2)), changes };
 	}
 
 	private change(value: unknown, depth: number): object {
@@ -381,6 +421,10 @@ class WorkerResultProjector {
 		if (fields.size !== 4) { throw new TypeError('Office worker change fingerprint'); }
 		return { kind, ...this.fingerprint({ algorithm: fields.get('algorithm'), value: fields.get('value'), byteLength: fields.get('byteLength') }, depth + 1) };
 	}
+}
+
+export function projectOfficeWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
+	return new WorkerResultProjector().project(operation, value);
 }
 
 /** Bounded Node worker orchestrator. The shared process never parses untrusted Office bytes. */
@@ -423,12 +467,28 @@ export class OfficeWorkerHost {
 		if (token.isCancellationRequested) { return Promise.resolve({ outcome: 'cancelled' }); }
 		return new Promise<OfficeWorkerOutcome<T>>(resolve => {
 			const requestId = String(++this.requestSequence);
+			const holder: { job?: PendingJob<T> } = {};
+			let cancelledBeforeJob = false;
+			let cancellationListener: IDisposable;
+			try {
+				cancellationListener = token.onCancellationRequested(() => {
+					if (holder.job) { this.cancel(holder.job as unknown as PendingJob<object>); } else { cancelledBeforeJob = true; }
+				});
+			} catch {
+				resolve({ outcome: 'failed', error: 'engineCrashed' });
+				return;
+			}
 			const job: PendingJob<T> = {
 				requestId, operation, ownerId, source: safeSource, budget: safeBudget, token, reservationBytes, queueDeadline: this.deadline(PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS), operationDeadline: 0, ...(options.workerId ? { workerId: options.workerId } : {}), queuedAt: this.safeNow(), resolve,
-				cancellationListener: token.onCancellationRequested(() => this.cancel(job as unknown as PendingJob<object>)), state: 'queued', released: false, terminal: undefined, settled: false, orphaned: false,
+				cancellationListener, state: 'queued', released: false, reservationHeld: false, terminal: undefined, settled: false, orphaned: false,
 			};
-			try { job.queueTimer = this.setTimer(() => this.finish(job as unknown as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS); } catch { this.finish(job as unknown as PendingJob<object>, { outcome: 'failed', error: 'engineCrashed' }); return; }
-			this.pending.push(job as unknown as PendingJob<object>);
+			holder.job = job;
+			if (cancelledBeforeJob || token.isCancellationRequested) { this.finish(job as unknown as PendingJob<object>, { outcome: 'cancelled' }); return; }
+			let timer: unknown;
+			try { timer = this.setTimer(() => this.finish(job as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS); } catch { this.finish(job as PendingJob<object>, { outcome: 'failed', error: 'engineCrashed' }); return; }
+			if (job.state === 'finished') { try { this.clearTimer(timer); } catch { } return; }
+			job.queueTimer = timer;
+			this.pending.push(job as PendingJob<object>);
 			this.pump();
 		});
 	}
@@ -484,12 +544,15 @@ export class OfficeWorkerHost {
 			return;
 		}
 		if (this.cannotStart(job)) { return; }
+		let deadlineTimer: unknown;
 		try {
-			job.deadlineTimer = this.setTimer(() => {
+			deadlineTimer = this.setTimer(() => {
 				job.terminal = 'blocked';
 				this.reap(job, { outcome: 'blocked', error: 'limitExceeded' });
 			}, operationDeadline(job.operation, job.budget));
 		} catch { this.reap(job, { outcome: 'failed', error: 'engineCrashed' }); return; }
+		if (this.cannotStart(job)) { try { this.clearTimer(deadlineTimer); } catch { } return; }
+		job.deadlineTimer = deadlineTimer;
 		try {
 			const message: OfficeWorkerMessageRun = { kind: 'run', requestId: job.requestId, operation: job.operation, source: job.source, budget: job.budget };
 			worker.postMessage(message);
@@ -505,13 +568,16 @@ export class OfficeWorkerHost {
 		job.state = 'cancelling';
 		job.terminal = 'cancelled';
 		try { job.worker?.postMessage({ kind: 'cancel', requestId: job.requestId }); } catch { }
+		let cancelTimer: unknown;
 		try {
-			job.cancelTimer = this.setTimer(() => {
+			cancelTimer = this.setTimer(() => {
 				if (job.state !== 'finished') {
 					this.reap(job, { outcome: 'cancelled' });
 				}
 			}, PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
 		} catch { this.reap(job, { outcome: 'cancelled' }); }
+		if (job.state === 'finished' || job.pendingOutcome) { try { this.clearTimer(cancelTimer); } catch { } return; }
+		job.cancelTimer = cancelTimer;
 	}
 
 	private onWorkerMessage(job: PendingJob<object>, message: unknown): void {
@@ -553,8 +619,11 @@ export class OfficeWorkerHost {
 		if (job.deadlineTimer !== undefined) { try { this.clearTimer(job.deadlineTimer); } catch { } job.deadlineTimer = undefined; }
 		if (job.cancelTimer !== undefined) { try { this.clearTimer(job.cancelTimer); } catch { } job.cancelTimer = undefined; }
 		if (!job.worker) { this.finish(job, outcome); return; }
+		let reapTimer: unknown;
 		try {
-			job.reapTimer = this.setTimer(() => this.orphan(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
+			reapTimer = this.setTimer(() => this.orphan(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
+			if (job.state === 'finished' || job.orphaned) { try { this.clearTimer(reapTimer); } catch { } return; }
+			job.reapTimer = reapTimer;
 			const termination = job.worker.terminate();
 			void Promise.resolve(termination).then(
 				() => this.finish(job, outcome),
@@ -579,7 +648,7 @@ export class OfficeWorkerHost {
 		const queuedIndex = this.pending.indexOf(job);
 		if (queuedIndex >= 0) { this.pending.splice(queuedIndex, 1); }
 		this.active.delete(job);
-		if (!job.released) { job.released = true; this.accountant?.releaseWorker(job.reservationBytes); }
+		if (job.reservationHeld && !job.released) { job.released = true; job.reservationHeld = false; this.accountant?.releaseWorker(job.reservationBytes); }
 		for (const timer of [job.queueTimer, job.deadlineTimer, job.cancelTimer, job.reapTimer]) { try { if (timer !== undefined) { this.clearTimer(timer); } } catch { } }
 		try { job.cancellationListener.dispose(); } catch { }
 		for (const listener of job.workerListeners ?? []) { try { listener.dispose(); } catch { } }
@@ -599,6 +668,7 @@ export class OfficeWorkerHost {
 				if (deficit > 0) { this.memory.evictInactiveCache?.(deficit); }
 				if (!this.accountant.reserveWorker(job.reservationBytes)) { return false; }
 				reserved = true;
+				job.reservationHeld = true;
 			}
 			const current = this.memoryUsage();
 			const limit = this.memory.limitBytes ?? memoryLimit(job.budget);
@@ -614,7 +684,7 @@ export class OfficeWorkerHost {
 		} catch {
 			return false;
 		} finally {
-			if (reserved && !admitted) { this.accountant?.releaseWorker(job.reservationBytes); }
+			if (reserved && !admitted) { job.reservationHeld = false; this.accountant?.releaseWorker(job.reservationBytes); }
 		}
 	}
 
