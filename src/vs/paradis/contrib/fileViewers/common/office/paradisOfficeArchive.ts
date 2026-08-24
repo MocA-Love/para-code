@@ -25,6 +25,7 @@ export interface ParadisOfficeArchiveEntry {
 	readonly name: string;
 	readonly compressedBytes: number;
 	readonly declaredExpandedBytes: number;
+	readonly crc32?: number;
 	readonly encrypted: boolean;
 	readonly directory: boolean;
 	readonly symlink: boolean;
@@ -45,7 +46,7 @@ export interface IParadisOfficeArchive extends IParadisOfficeHash {
 	readonly containerByteLength: number;
 	entries(token?: CancellationToken): AsyncIterable<ParadisOfficeArchiveEntry>;
 	read(entry: ParadisOfficeArchiveEntry, token?: CancellationToken): AsyncIterable<Uint8Array>;
-	parseXml(xml: string, limits: ParadisOfficeXmlLimits, token?: CancellationToken): Promise<ParadisOfficeXmlDocument>;
+	parseXml(xml: string, limits: ParadisOfficeXmlLimits, token?: CancellationToken, checkpoint?: () => void): Promise<ParadisOfficeXmlDocument>;
 	dispose(): void;
 }
 

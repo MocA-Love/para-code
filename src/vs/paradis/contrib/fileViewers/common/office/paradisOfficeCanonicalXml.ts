@@ -5,13 +5,529 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { ParadisOfficeFingerprint } from '../paradisOfficeProtocol.js';
-import { type ParadisOfficeXmlDocument, type ParadisOfficeXmlNode, ParadisOfficePackageError } from './paradisOfficeArchive.js';
+import type { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { type ParadisOfficeXmlDocument, type ParadisOfficeXmlNode, ParadisOfficePackageError, throwIfParadisOfficeCancelled } from './paradisOfficeArchive.js';
 
 export interface ParadisOfficeXmlLimits {
 	readonly depth: number;
 	readonly nodes: number;
 	readonly attributeLength: number;
 	readonly characters: number;
+}
+
+const xmlNamespace = 'http://www.w3.org/XML/1998/namespace';
+const xmlnsNamespace = 'http://www.w3.org/2000/xmlns/';
+
+type XmlElement = Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
+
+interface XmlFrame {
+	readonly name: XmlQName;
+	readonly node: XmlElement;
+	readonly namespaces: Readonly<Record<string, string>>;
+}
+
+interface XmlQName {
+	readonly prefix: string;
+	readonly local: string;
+}
+
+interface RawXmlAttribute {
+	readonly name: XmlQName;
+	readonly value: string;
+}
+
+/**
+ * Parses the deliberately small XML subset accepted from an untrusted Office package.
+ * It does not depend on DOM, Node, or a streaming parser so adapters have identical output.
+ */
+export function parseParadisOfficeXml(xml: string, limits: ParadisOfficeXmlLimits, token?: CancellationToken, checkpoint?: () => void): ParadisOfficeXmlDocument {
+
+	try {
+		if (typeof xml !== 'string') {
+			throw new ParadisOfficePackageError('malformed');
+		}
+		validateLimits(limits);
+		const parser = new ParadisOfficeXmlParser(xml, limits, token, checkpoint);
+		return parser.parse();
+	} catch (error) {
+		if (error instanceof ParadisOfficePackageError) {
+			throw error;
+		}
+		throw new ParadisOfficePackageError('malformed');
+	}
+}
+
+class ParadisOfficeXmlParser {
+	private readonly stack: XmlFrame[] = [];
+	private root: XmlElement | undefined;
+	private index = 0;
+	private nodes = 0;
+	private characters = 0;
+	private events = 0;
+	private lastCheckpoint = 0;
+
+	constructor(
+		private readonly xml: string,
+		private readonly limits: ParadisOfficeXmlLimits,
+		private readonly token: CancellationToken | undefined,
+		private readonly checkpoint: (() => void) | undefined,
+	) { }
+
+	parse(): ParadisOfficeXmlDocument {
+		this.checkpointNow();
+		let seenDeclaration = false;
+		while (this.index < this.xml.length) {
+			if (this.peek() === '<') {
+				if (this.startsWith('<!--')) {
+					this.parseComment();
+				} else if (this.startsWith('<![CDATA[')) {
+					this.parseCdata();
+				} else if (this.startsWith('<?')) {
+					seenDeclaration = this.parseProcessingInstruction(seenDeclaration);
+				} else if (this.startsWith('</')) {
+					this.parseEndTag();
+				} else if (this.startsWith('<!')) {
+					this.malformed();
+				} else {
+					this.parseStartTag();
+				}
+			} else {
+				this.parseText();
+			}
+		}
+		if (!this.root || this.stack.length !== 0) {
+			this.malformed();
+		}
+		return { root: this.root };
+	}
+
+	private parseStartTag(): void {
+		this.consume('<');
+		const name = this.parseQName();
+		const attributes: RawXmlAttribute[] = [];
+		const rawNames = new Set<string>();
+		let selfClosing = false;
+		while (true) {
+			const whitespace = this.skipWhitespace();
+			if (this.startsWith('/>')) {
+				this.consume('/');
+				this.consume('>');
+				selfClosing = true;
+				break;
+			}
+			if (this.peek() === '>') {
+				this.consume('>');
+				break;
+			}
+			if (!whitespace) {
+				this.malformed();
+			}
+			const attributeName = this.parseQName();
+			const rawName = attributeName.prefix ? `${attributeName.prefix}:${attributeName.local}` : attributeName.local;
+			if (rawNames.has(rawName)) {
+				this.malformed();
+			}
+			rawNames.add(rawName);
+			this.skipWhitespace();
+			this.consume('=');
+			this.skipWhitespace();
+			attributes.push({ name: attributeName, value: this.parseAttributeValue() });
+		}
+
+		const namespaces: Record<string, string> = { ...(this.stack[this.stack.length - 1]?.namespaces ?? { xml: xmlNamespace }) };
+		for (const attribute of attributes) {
+			if (attribute.name.prefix === '' && attribute.name.local === 'xmlns') {
+				if (attribute.value === xmlNamespace || attribute.value === xmlnsNamespace) {
+					this.malformed();
+				}
+				namespaces[''] = attribute.value;
+			} else if (attribute.name.prefix === 'xmlns') {
+				this.validateNamespaceBinding(attribute.name.local, attribute.value);
+				namespaces[attribute.name.local] = attribute.value;
+			}
+		}
+		const element = this.createElement(name, attributes, namespaces);
+		if (++this.nodes > this.limits.nodes || this.stack.length + 1 > this.limits.depth) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		if (this.stack.length > 0) {
+			(this.stack[this.stack.length - 1].node.children as ParadisOfficeXmlNode[]).push(element);
+		} else if (this.root) {
+			this.malformed();
+		} else {
+			this.root = element;
+		}
+		this.recordEvent();
+		if (!selfClosing) {
+			this.stack.push({ name, node: element, namespaces });
+		}
+	}
+
+	private createElement(name: XmlQName, attributes: readonly RawXmlAttribute[], namespaces: Readonly<Record<string, string>>): XmlElement {
+		const uri = this.resolveElementUri(name, namespaces);
+		const expandedAttributes: { uri: string; local: string; value: string }[] = [];
+		const expandedNames = new Set<string>();
+		for (const attribute of attributes) {
+			if (attribute.name.prefix === '' && attribute.name.local === 'xmlns' || attribute.name.prefix === 'xmlns') {
+				continue;
+			}
+			// XML Namespaces deliberately never apply the default namespace to attributes.
+			const attributeUri = attribute.name.prefix === '' ? '' : this.resolveAttributeUri(attribute.name, namespaces);
+			const expandedName = `{${attributeUri}}${attribute.name.local}`;
+			if (expandedNames.has(expandedName)) {
+				this.malformed();
+			}
+			expandedNames.add(expandedName);
+			expandedAttributes.push({ uri: attributeUri, local: attribute.name.local, value: attribute.value });
+		}
+		const namespaceBindings: Record<string, string> = {};
+		for (const [prefix, value] of Object.entries(namespaces)) {
+			if (prefix !== 'xml') {
+				namespaceBindings[prefix] = value;
+			}
+		}
+		return { kind: 'element', uri, local: name.local, attributes: expandedAttributes, children: [], namespaceBindings };
+	}
+
+	private parseEndTag(): void {
+		this.consume('<');
+		this.consume('/');
+		const name = this.parseQName();
+		this.skipWhitespace();
+		this.consume('>');
+		const frame = this.stack.pop();
+		if (!frame || frame.name.prefix !== name.prefix || frame.name.local !== name.local) {
+			this.malformed();
+		}
+		this.recordEvent();
+	}
+
+	private parseText(): void {
+		const value = this.parseCharacterData(false);
+		if (this.stack.length === 0) {
+			if (!isXmlWhitespace(value)) {
+				this.malformed();
+			}
+			return;
+		}
+		this.appendText(value);
+	}
+
+	private parseCdata(): void {
+		if (this.stack.length === 0) {
+			this.malformed();
+		}
+		for (const character of '<![CDATA[') {
+			this.consume(character);
+		}
+		let value = '';
+		while (!this.startsWith(']]>')) {
+			if (this.index >= this.xml.length) {
+				this.malformed();
+			}
+			value += this.consumeCodePoint();
+		}
+		this.consume(']');
+		this.consume(']');
+		this.consume('>');
+		this.appendText(value);
+	}
+
+	private parseComment(): void {
+		for (const character of '<!--') {
+			this.consume(character);
+		}
+		while (!this.startsWith('-->')) {
+			if (this.index >= this.xml.length || this.startsWith('--')) {
+				this.malformed();
+			}
+			this.consumeCodePoint();
+		}
+		this.consume('-');
+		this.consume('-');
+		this.consume('>');
+		this.recordEvent();
+	}
+
+	private parseProcessingInstruction(seenDeclaration: boolean): boolean {
+		const atStart = this.index === 0;
+		this.consume('<');
+		this.consume('?');
+		const target = this.parseName();
+		const isDeclaration = target === 'xml';
+		if (target.toLowerCase() === 'xml' && !isDeclaration || isDeclaration && (!atStart || seenDeclaration)) {
+			this.malformed();
+		}
+		if (isDeclaration && !isXmlWhitespaceCharacter(this.peek())) {
+			this.malformed();
+		}
+		while (!this.startsWith('?>')) {
+			if (this.index >= this.xml.length) {
+				this.malformed();
+			}
+			this.consumeCodePoint();
+		}
+		this.consume('?');
+		this.consume('>');
+		this.recordEvent();
+		return seenDeclaration || isDeclaration;
+	}
+
+	private parseAttributeValue(): string {
+		const quote = this.peek();
+		if (quote !== '"' && quote !== '\'') {
+			this.malformed();
+		}
+		this.consume(quote);
+		let value = '';
+		while (this.peek() !== quote) {
+			if (this.index >= this.xml.length || this.peek() === '<') {
+				this.malformed();
+			}
+			value += this.peek() === '&' ? this.parseEntity() : this.consumeCodePoint();
+		}
+		this.consume(quote);
+		if (value.length > this.limits.attributeLength) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		return value;
+	}
+
+	private parseCharacterData(cdata: boolean): string {
+		let value = '';
+		while (this.index < this.xml.length && this.peek() !== '<') {
+			if (!cdata && this.startsWith(']]>')) {
+				this.malformed();
+			}
+			value += this.peek() === '&' ? this.parseEntity() : this.consumeCodePoint();
+		}
+		return value;
+	}
+
+	private parseEntity(): string {
+		this.consume('&');
+		let encoded = '';
+		while (this.peek() !== ';') {
+			if (this.index >= this.xml.length || this.peek() === '<' || this.peek() === '&') {
+				this.malformed();
+			}
+			encoded += this.consumeCodePoint();
+		}
+		this.consume(';');
+		if (encoded === 'amp') { return '&'; }
+		if (encoded === 'lt') { return '<'; }
+		if (encoded === 'gt') { return '>'; }
+		if (encoded === 'quot') { return '"'; }
+		if (encoded === 'apos') { return '\''; }
+		if (encoded.startsWith('#x') || encoded.startsWith('#')) {
+			const digits = encoded.startsWith('#x') ? encoded.slice(2) : encoded.slice(1);
+			const radix = encoded[1] === 'x' ? 16 : 10;
+			if (!digits || !isNumber(digits, radix)) {
+				this.malformed();
+			}
+			const codePoint = Number.parseInt(digits, radix);
+			if (!Number.isSafeInteger(codePoint) || !isValidXmlCodePoint(codePoint)) {
+				this.malformed();
+			}
+			return String.fromCodePoint(codePoint);
+		}
+		this.malformed();
+	}
+
+	private parseQName(): XmlQName {
+		const name = this.parseName();
+		const firstColon = name.indexOf(':');
+		if (firstColon !== name.lastIndexOf(':')) {
+			this.malformed();
+		}
+		if (firstColon < 0) {
+			return { prefix: '', local: name };
+		}
+		const prefix = name.slice(0, firstColon);
+		const local = name.slice(firstColon + 1);
+		if (!prefix || !local) {
+			this.malformed();
+		}
+		return { prefix, local };
+	}
+
+	private parseName(): string {
+		const first = this.peekCodePoint();
+		if (first === undefined || !isXmlNameStart(first)) {
+			this.malformed();
+		}
+		let name = this.consumeCodePoint();
+		while (true) {
+			const codePoint = this.peekCodePoint();
+			if (codePoint === undefined || !isXmlNameCharacter(codePoint)) {
+				return name;
+			}
+			name += this.consumeCodePoint();
+		}
+	}
+
+	private resolveElementUri(name: XmlQName, namespaces: Readonly<Record<string, string>>): string {
+		if (name.prefix === 'xmlns') {
+			this.malformed();
+		}
+		if (name.prefix === 'xml') {
+			return xmlNamespace;
+		}
+		if (!name.prefix) {
+			return namespaces[''] ?? '';
+		}
+		const uri = namespaces[name.prefix];
+		if (!uri) {
+			this.malformed();
+		}
+		return uri;
+	}
+
+	private resolveAttributeUri(name: XmlQName, namespaces: Readonly<Record<string, string>>): string {
+		if (!name.prefix) {
+			return '';
+		}
+		if (name.prefix === 'xml') {
+			return xmlNamespace;
+		}
+		const uri = namespaces[name.prefix];
+		if (!uri) {
+			this.malformed();
+		}
+		return uri;
+	}
+
+	private validateNamespaceBinding(prefix: string, uri: string): void {
+		if (!prefix || prefix === 'xmlns' || uri === xmlnsNamespace || prefix === 'xml' && uri !== xmlNamespace || prefix !== 'xml' && uri === xmlNamespace || !uri) {
+			this.malformed();
+		}
+	}
+
+	private appendText(value: string): void {
+		this.characters += value.length;
+		if (this.characters > this.limits.characters) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		(this.stack[this.stack.length - 1].node.children as ParadisOfficeXmlNode[]).push({ kind: 'text', value });
+		this.recordEvent();
+	}
+
+	private skipWhitespace(): boolean {
+		let found = false;
+		while (isXmlWhitespaceCharacter(this.peek())) {
+			this.consumeCodePoint();
+			found = true;
+		}
+		return found;
+	}
+
+	private consume(expected: string): void {
+		if (this.peek() !== expected) {
+			this.malformed();
+		}
+		this.consumeCodePoint();
+	}
+
+	private consumeCodePoint(): string {
+		const codePoint = this.peekCodePoint();
+		if (codePoint === undefined || !isValidXmlCodePoint(codePoint)) {
+			this.malformed();
+		}
+		const character = String.fromCodePoint(codePoint);
+		this.index += character.length;
+		this.checkpointIfNeeded();
+		return character;
+	}
+
+	private peek(): string {
+		return this.xml[this.index] ?? '';
+	}
+
+	private peekCodePoint(): number | undefined {
+		if (this.index >= this.xml.length) {
+			return undefined;
+		}
+		const first = this.xml.charCodeAt(this.index);
+		if (first >= 0xd800 && first <= 0xdbff) {
+			const second = this.xml.charCodeAt(this.index + 1);
+			if (second < 0xdc00 || second > 0xdfff) {
+				this.malformed();
+			}
+			return (first - 0xd800) * 0x400 + second - 0xdc00 + 0x10000;
+		}
+		if (first >= 0xdc00 && first <= 0xdfff) {
+			this.malformed();
+		}
+		return first;
+	}
+
+	private startsWith(value: string): boolean {
+		return this.xml.startsWith(value, this.index);
+	}
+
+	private recordEvent(): void {
+		this.events++;
+		this.checkpointIfNeeded();
+	}
+
+	private checkpointIfNeeded(): void {
+		if (this.index - this.lastCheckpoint >= 4096 || this.events >= 4096) {
+			this.checkpointNow();
+		}
+	}
+
+	private checkpointNow(): void {
+		this.checkpoint?.();
+		throwIfParadisOfficeCancelled(this.token);
+		this.lastCheckpoint = this.index;
+		this.events = 0;
+	}
+
+	private malformed(): never {
+		throw new ParadisOfficePackageError('malformed');
+	}
+}
+
+function isXmlWhitespace(value: string): boolean {
+
+	for (let index = 0; index < value.length; index++) {
+		if (!isXmlWhitespaceCharacter(value[index] ?? '')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isXmlWhitespaceCharacter(value: string): boolean {
+
+	return value === ' ' || value === '\t' || value === '\r' || value === '\n';
+}
+
+function isNumber(value: string, radix: number): boolean {
+
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		const digit = code >= 0x30 && code <= 0x39 ? code - 0x30 : code >= 0x41 && code <= 0x46 ? code - 0x41 + 10 : code >= 0x61 && code <= 0x66 ? code - 0x61 + 10 : radix;
+		if (digit >= radix) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isValidXmlCodePoint(codePoint: number): boolean {
+
+	return codePoint === 0x9 || codePoint === 0xa || codePoint === 0xd || codePoint >= 0x20 && codePoint <= 0xd7ff || codePoint >= 0xe000 && codePoint <= 0xfffd || codePoint >= 0x10000 && codePoint <= 0x10ffff;
+}
+
+function isXmlNameStart(codePoint: number): boolean {
+
+	return codePoint === 0x3a || codePoint === 0x5f || codePoint >= 0x41 && codePoint <= 0x5a || codePoint >= 0x61 && codePoint <= 0x7a || codePoint >= 0xc0 && codePoint <= 0xd6 || codePoint >= 0xd8 && codePoint <= 0xf6 || codePoint >= 0xf8 && codePoint <= 0x2ff || codePoint >= 0x370 && codePoint <= 0x37d || codePoint >= 0x37f && codePoint <= 0x1fff || codePoint >= 0x200c && codePoint <= 0x200d || codePoint >= 0x2070 && codePoint <= 0x218f || codePoint >= 0x2c00 && codePoint <= 0x2fef || codePoint >= 0x3001 && codePoint <= 0xd7ff || codePoint >= 0xf900 && codePoint <= 0xfdcf || codePoint >= 0xfdf0 && codePoint <= 0xfffd || codePoint >= 0x10000 && codePoint <= 0xeffff;
+}
+
+function isXmlNameCharacter(codePoint: number): boolean {
+
+	return isXmlNameStart(codePoint) || codePoint === 0x2d || codePoint === 0x2e || codePoint >= 0x30 && codePoint <= 0x39 || codePoint === 0xb7 || codePoint >= 0x300 && codePoint <= 0x36f || codePoint >= 0x203f && codePoint <= 0x2040;
 }
 
 export interface CanonicalXmlSourceRef {
@@ -26,143 +542,32 @@ export interface CanonicalXmlResult {
 	readonly markupCompatibility: readonly { readonly branch: 'choice' | 'fallback'; readonly selected: boolean; readonly hash: ParadisOfficeFingerprint; readonly sourceRef: CanonicalXmlSourceRef }[];
 }
 
-const defaultLimits: ParadisOfficeXmlLimits = { depth: 128, nodes: 2_000_000, attributeLength: 1024 * 1024, characters: 64 * 1024 * 1024 };
-const namePattern = /^[A-Za-z_][A-Za-z0-9._:-]*$/;
-
-interface ElementFrame {
-	readonly name: string;
-	readonly namespace: ReadonlyMap<string, string>;
-	readonly preserve: boolean;
-	readonly path: readonly number[];
-	children: number;
-}
-
-/**
- * Namespace-aware, non-DOM canonicalization for untrusted OOXML. DTDs and every
- * non-predefined entity are rejected before tokenization. The result is stable across
- * prefix, attribute-order, and indentation-only changes.
- */
-export function canonicalizeOfficeXml(xml: string, relationshipResolver: (relationshipId: string) => string | undefined, limits: ParadisOfficeXmlLimits = defaultLimits, collectMarkupBranches = true): CanonicalXmlResult {
-
-	if (typeof xml !== 'string' || /<!DOCTYPE|<!ENTITY/i.test(xml) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(xml) || hasLoneSurrogate(xml)) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	validateLimits(limits);
-	const tokenPattern = /<!--[\s\S]*?-->|<\?[^?]*\?>|<!\[CDATA\[[\s\S]*?\]\]>|<[^>]*>|[^<]+/g;
-	const output: string[] = [];
-	const stack: ElementFrame[] = [];
-	const sourceRefs: CanonicalXmlSourceRef[] = [];
-	let nodes = 0;
-	let characters = 0;
-	let cursor = 0;
-	let match: RegExpExecArray | null;
-	while ((match = tokenPattern.exec(xml))) {
-		if (match.index !== cursor) {
-			throw new ParadisOfficePackageError('malformed');
-		}
-		cursor = tokenPattern.lastIndex;
-		const token = match[0];
-		if (token.startsWith('<!--') || token.startsWith('<?')) {
-			continue;
-		}
-		if (token.startsWith('<![CDATA[')) {
-			appendText(token.slice(9, -3), stack, output, limits, value => {
-				characters += value;
-				if (characters > limits.characters) { throw new ParadisOfficePackageError('limitExceeded'); }
-			});
-			continue;
-		}
-		if (!token.startsWith('<')) {
-			appendText(decodeXml(token), stack, output, limits, value => {
-				characters += value;
-				if (characters > limits.characters) { throw new ParadisOfficePackageError('limitExceeded'); }
-			});
-			continue;
-		}
-		if (token.startsWith('</')) {
-			const name = token.slice(2, -1).trim();
-			if (!namePattern.test(name) || stack.length === 0 || stack[stack.length - 1].name !== name) {
-				throw new ParadisOfficePackageError('malformed');
-			}
-			output.push(')');
-			stack.pop();
-			continue;
-		}
-		if (token.startsWith('<!')) {
-			throw new ParadisOfficePackageError('malformed');
-		}
-		const selfClosing = /\/\s*>$/.test(token);
-		const inner = token.slice(1, selfClosing ? -2 : -1).trim();
-		const space = inner.search(/\s/);
-		const name = space === -1 ? inner : inner.slice(0, space);
-		if (!namePattern.test(name)) {
-			throw new ParadisOfficePackageError('malformed');
-		}
-		const rawAttributes = space === -1 ? '' : inner.slice(space).trim();
-		const parent = stack[stack.length - 1];
-		const namespace = new Map(parent?.namespace ?? []);
-		const attributes = parseAttributes(rawAttributes, limits);
-		for (const attribute of attributes) {
-			if (attribute.name === 'xmlns') {
-				namespace.set('', attribute.value);
-			} else if (attribute.name.startsWith('xmlns:')) {
-				namespace.set(attribute.name.slice(6), attribute.value);
-			}
-		}
-		nodes++;
-		if (nodes > limits.nodes || stack.length + 1 > limits.depth) {
-			throw new ParadisOfficePackageError('limitExceeded');
-		}
-		const path = parent ? [...parent.path, parent.children++] : [0];
-		const preserve = parent?.preserve === true || attributes.some(attribute => attribute.name === 'xml:space' && attribute.value === 'preserve');
-		const qname = canonicalQName(name, namespace);
-		const canonicalAttributes = attributes
-			.filter(attribute => !attribute.name.startsWith('xmlns'))
-			.map(attribute => ({ name: canonicalQName(attribute.name, namespace), value: relationshipValue(attribute.name, attribute.value, relationshipResolver) }))
-			.sort((left, right) => left.name.localeCompare(right.name) || left.value.localeCompare(right.value));
-		output.push(`(${qname}${canonicalAttributes.map(attribute => `[${attribute.name}=${JSON.stringify(attribute.value)}]`).join('')}`);
-		const frame: ElementFrame = { name, namespace, preserve, path, children: 0 };
-		if (selfClosing) {
-			output.push(')');
-			if (!isKnownOfficeQName(qname)) {
-				const canonical = output[output.length - 2] + ')';
-				sourceRefs.push({ path, hash: sha256Fingerprint(canonical) });
-			}
-		} else {
-			stack.push(frame);
-		}
-	}
-	if (cursor !== xml.length || stack.length !== 0) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	const canonical = output.join('');
-	return { canonical, hash: sha256Fingerprint(canonical), sourceRefs, markupCompatibility: collectMarkupBranches ? markupCompatibilityBranches(xml, relationshipResolver, limits) : [] };
-}
-
-/** Canonicalizes only namespace-aware adapter output; package inspection uses this entrypoint. */
-export function canonicalizeOfficeXmlTree(document: ParadisOfficeXmlDocument, relationshipResolver: (relationshipId: string) => string | undefined): CanonicalXmlResult {
+/** Canonicalizes namespace-aware adapter output only. */
+export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relationshipResolver: (relationshipId: string) => string | undefined, checkpoint?: () => void): CanonicalXmlResult {
 
 	const sourceRefs: CanonicalXmlSourceRef[] = [];
 	const markupCompatibility: CanonicalXmlResult['markupCompatibility'][number][] = [];
-	const render = (node: ParadisOfficeXmlNode, path: readonly number[], preserve: boolean): string => {
+	const render = (node: ParadisOfficeXmlNode, path: readonly number[], preserve: boolean, inheritedBindings: Readonly<Record<string, string>> = {}): string => {
+		checkpoint?.();
 		if (node.kind === 'text') { return !preserve && !node.value.trim() ? '' : `{${JSON.stringify(node.value)}}`; }
 		const nextPreserve = preserve || node.attributes.some(attribute => attribute.uri === 'http://www.w3.org/XML/1998/namespace' && attribute.local === 'space' && attribute.value === 'preserve');
 		const attributes = node.attributes.map(attribute => ({ name: `{${attribute.uri}}${attribute.local}`, value: attribute.local === 'id' ? relationshipResolver(attribute.value) ?? `unresolved:${attribute.value}` : attribute.value })).sort((left, right) => left.name.localeCompare(right.name) || left.value.localeCompare(right.value));
+		const bindings = { ...inheritedBindings, ...(node.namespaceBindings ?? {}) };
 		const mcBranches = node.children.filter((child): child is Extract<ParadisOfficeXmlNode, { kind: 'element' }> => child.kind === 'element' && child.uri === markupCompatibilityNamespace && (child.local === 'Choice' || child.local === 'Fallback'));
 		let children: string;
 		if (mcBranches.length > 0) {
-			const selected = selectMarkupCompatibilityBranch(mcBranches);
+			const selected = selectMarkupCompatibilityBranch(mcBranches, bindings);
 			const hashes = mcBranches.map((branch, index) => {
 				const branchPath = [...path, node.children.indexOf(branch)];
-				const canonical = render(branch, branchPath, nextPreserve);
+				const canonical = render(branch, branchPath, nextPreserve, bindings);
 				const sourceRef = { path: branchPath, hash: sha256Fingerprint(canonical) };
 				sourceRefs.push(sourceRef);
 				markupCompatibility.push({ branch: branch.local === 'Choice' ? 'choice' : 'fallback', selected: branch === selected, hash: sourceRef.hash, sourceRef });
 				return `${branch === selected ? 'selected' : 'opaque'}:${sourceRef.hash.value}:${index}`;
 			});
-			children = `${node.children.filter(child => !mcBranches.includes(child as Extract<ParadisOfficeXmlNode, { kind: 'element' }>)).map((child, index) => render(child, [...path, index], nextPreserve)).join('')}[MC:${hashes.join(',')}]`;
+			children = `${node.children.filter(child => !mcBranches.includes(child as Extract<ParadisOfficeXmlNode, { kind: 'element' }>)).map((child, index) => render(child, [...path, index], nextPreserve, bindings)).join('')}[MC:${hashes.join(',')}]`;
 		} else {
-			children = node.children.map((child, index) => render(child, [...path, index], nextPreserve)).join('');
+			children = node.children.map((child, index) => render(child, [...path, index], nextPreserve, bindings)).join('');
 		}
 		const value = `({${node.uri}}${node.local}${attributes.map(attribute => `[${attribute.name}=${JSON.stringify(attribute.value)}]`).join('')}${children})`;
 		if (!isKnownOfficeQName(`{${node.uri}}${node.local}`)) { sourceRefs.push({ path, hash: sha256Fingerprint(value) }); }
@@ -179,125 +584,18 @@ const supportedMarkupCompatibilityNamespaces = new Set([
 	'http://schemas.openxmlformats.org/drawingml/2006/main',
 ]);
 
-function selectMarkupCompatibilityBranch(branches: readonly Extract<ParadisOfficeXmlNode, { kind: 'element' }>[]): Extract<ParadisOfficeXmlNode, { kind: 'element' }> {
+function selectMarkupCompatibilityBranch(branches: readonly Extract<ParadisOfficeXmlNode, { kind: 'element' }>[], inheritedBindings: Readonly<Record<string, string>>): Extract<ParadisOfficeXmlNode, { kind: 'element' }> {
 
 	for (const branch of branches) {
 		if (branch.local !== 'Choice') { continue; }
 		const requires = branch.attributes.find(attribute => attribute.local === 'Requires' && attribute.uri === '')?.value;
 		if (!requires) { continue; }
-		const bindings = branch.namespaceBindings ?? {};
+		const bindings = { ...inheritedBindings, ...(branch.namespaceBindings ?? {}) };
 		if (requires.split(/\s+/).every(prefix => supportedMarkupCompatibilityNamespaces.has(bindings[prefix] ?? ''))) {
 			return branch;
 		}
 	}
 	return branches.find(branch => branch.local === 'Fallback') ?? branches[0];
-}
-
-function markupCompatibilityBranches(xml: string, resolver: (relationshipId: string) => string | undefined, limits: ParadisOfficeXmlLimits): CanonicalXmlResult['markupCompatibility'] {
-
-	const declaration = /xmlns:([A-Za-z_][A-Za-z\d._-]*)\s*=\s*["']http:\/\/schemas\.openxmlformats\.org\/markup-compatibility\/2006["']/.exec(xml);
-	if (!declaration) {
-		return [];
-	}
-	const prefix = declaration[1];
-	const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-	const pattern = new RegExp(`<${escapedPrefix}:(Choice|Fallback)\\b[^>]*>[\\s\\S]*?<\\/${escapedPrefix}:\\1\\s*>`, 'g');
-	const branches: CanonicalXmlResult['markupCompatibility'][number][] = [];
-	for (const match of xml.matchAll(pattern)) {
-		const wrapper = `<root xmlns:${prefix}="http://schemas.openxmlformats.org/markup-compatibility/2006">${match[0]}</root>`;
-		const hash = canonicalizeOfficeXml(wrapper, resolver, limits, false).hash;
-		branches.push({ branch: match[1] === 'Choice' ? 'choice' : 'fallback', selected: false, hash, sourceRef: { path: [0], hash } });
-	}
-	return branches;
-}
-
-function appendText(value: string, stack: readonly ElementFrame[], output: string[], limits: ParadisOfficeXmlLimits, account: (count: number) => void): void {
-
-	if (stack.length === 0) {
-		if (value.trim()) {
-			throw new ParadisOfficePackageError('malformed');
-		}
-		return;
-	}
-	account(value.length);
-	if (value.length > limits.characters) {
-		throw new ParadisOfficePackageError('limitExceeded');
-	}
-	if (!stack[stack.length - 1].preserve && !value.trim()) {
-		return;
-	}
-	output.push(`{${JSON.stringify(value)}}`);
-}
-
-function parseAttributes(source: string, limits: ParadisOfficeXmlLimits): readonly { readonly name: string; readonly value: string }[] {
-
-	const result: { name: string; value: string }[] = [];
-	let offset = 0;
-	const pattern = /\s*([^\s=]+)\s*=\s*(["'])([\s\S]*?)\2/g;
-	let match: RegExpExecArray | null;
-	while ((match = pattern.exec(source))) {
-		if (match.index !== offset || !namePattern.test(match[1])) {
-			throw new ParadisOfficePackageError('malformed');
-		}
-		offset = pattern.lastIndex;
-		const value = decodeXml(match[3]);
-		if (value.length > limits.attributeLength) {
-			throw new ParadisOfficePackageError('limitExceeded');
-		}
-		result.push({ name: match[1], value });
-	}
-	if (source && offset !== source.length) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	return result;
-}
-
-function decodeXml(value: string): string {
-
-	return value.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (entity, encoded: string) => {
-		if (encoded === 'amp') { return '&'; }
-		if (encoded === 'lt') { return '<'; }
-		if (encoded === 'gt') { return '>'; }
-		if (encoded === 'quot') { return '"'; }
-		if (encoded === 'apos') { return '\''; }
-		const codePoint = encoded.startsWith('#x') ? Number.parseInt(encoded.slice(2), 16) : Number.parseInt(encoded.slice(1), 10);
-		if (!Number.isSafeInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
-			throw new ParadisOfficePackageError('malformed');
-		}
-		return String.fromCodePoint(codePoint);
-	}).replace(/&[^;]+;/, () => { throw new ParadisOfficePackageError('malformed'); });
-}
-
-function canonicalQName(name: string, namespace: ReadonlyMap<string, string>): string {
-
-	const colon = name.indexOf(':');
-	if (colon !== name.lastIndexOf(':')) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	const prefix = colon === -1 ? '' : name.slice(0, colon);
-	const local = colon === -1 ? name : name.slice(colon + 1);
-	const uri = prefix === 'xml' ? 'http://www.w3.org/XML/1998/namespace' : namespace.get(prefix);
-	if (prefix && !uri) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	return `{${uri ?? ''}}${local}`;
-}
-
-function hasLoneSurrogate(value: string): boolean {
-
-	for (let index = 0; index < value.length; index++) {
-		const code = value.charCodeAt(index);
-		if (code >= 0xd800 && code <= 0xdbff) {
-			if (index + 1 >= value.length || value.charCodeAt(index + 1) < 0xdc00 || value.charCodeAt(index + 1) > 0xdfff) { return true; }
-			index++;
-		} else if (code >= 0xdc00 && code <= 0xdfff) { return true; }
-	}
-	return false;
-}
-
-function relationshipValue(name: string, value: string, resolver: (relationshipId: string) => string | undefined): string {
-
-	return name === 'r:id' || name.endsWith(':id') ? resolver(value) ?? `unresolved:${value}` : value;
 }
 
 function isKnownOfficeQName(qname: string): boolean {
