@@ -4,24 +4,30 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { createHash } from 'crypto';
-import { open, type FileHandle } from 'fs/promises';
+import { createHash, randomBytes } from 'crypto';
+import { open } from 'fs/promises';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { Event } from '../../../../base/common/event.js';
-import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import {
 	PARADIS_OFFICE_CHANNEL,
 	ParadisOfficeWireError,
+	decodeParadisOfficeWireValue,
+	isParadisOfficeWireEnvelope,
+	marshalParadisOfficeResponse,
 	negotiateParadisOffice,
 	snapshotParadisOfficeRequest,
 	snapshotParadisOfficeResponse,
+	validateParadisOfficeAssetRange,
 	type IParadisOfficeDocumentBackend,
 	type ParadisOfficeCancelRequest,
 	type ParadisOfficeCloseRequest,
 	type ParadisOfficeControlRequest,
+	type ParadisOfficeV1Negotiation,
+	type ParadisOfficeWireAuthority,
 } from '../common/paradisOfficeChannel.js';
 import { createParadisOfficeError } from '../common/paradisOfficeErrors.js';
 import {
@@ -48,7 +54,10 @@ import { OfficeMemoryAccountant, OfficeWorkerHost, type OfficeWorkerBytesSource,
 import { OfficeSpoolStore } from './paradisOfficeSpoolStore.js';
 
 const ownerPattern = /^[A-Za-z\d][A-Za-z\d._:-]{0,255}$/;
-const maxActiveRequestsPerOwner = 128;
+export const PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT = 128;
+export const PARADIS_OFFICE_FILE_READ_CHUNK_BYTES = 2 * 1024 * 1024;
+export const PARADIS_OFFICE_FILE_PER_OWNER_LIMIT = 2;
+export const PARADIS_OFFICE_FILE_GLOBAL_LIMIT = 8;
 
 export class ParadisOfficeChannelError extends Error {
 	override readonly name = 'ParadisOfficeChannelError';
@@ -58,13 +67,32 @@ export class ParadisOfficeChannelError extends Error {
 	}
 }
 
-class ParadisOfficeSourceResolutionError extends Error {
+export class ParadisOfficeSourceResolutionError extends Error {
 	override readonly name = 'ParadisOfficeSourceResolutionError';
 	constructor(readonly code: 'notFound' | 'permission' | 'changed' | 'limitExceeded' | 'unsupportedScheme') { super('The Office source could not be resolved.'); Object.defineProperty(this, 'stack', { configurable: true, value: '' }); }
 }
 
 export interface IParadisOfficeChannelSourceResolver {
 	resolve(ownerId: string, descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<OfficeWorkerBytesSource>;
+}
+
+export interface IParadisOfficeFileStat {
+	readonly dev: number;
+	readonly ino: number;
+	readonly ctimeMs: number;
+	readonly mtimeMs: number;
+	readonly size: number;
+	isFile(): boolean;
+}
+
+export interface IParadisOfficeFileHandle {
+	stat(): Promise<IParadisOfficeFileStat>;
+	read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ readonly bytesRead: number }>;
+	close(): Promise<void>;
+}
+
+export interface LocalParadisOfficeSourceResolverOptions {
+	readonly openFile?: (path: string) => Promise<IParadisOfficeFileHandle>;
 }
 
 interface StoredHandleBinding {
@@ -77,11 +105,25 @@ interface StoredCursorBinding {
 	readonly operation: 'compare' | 'search';
 	readonly subject: string;
 	readonly revision: ParadisOfficeRevision;
+	readonly handle: ParadisOfficeHandleRef;
 }
 
 interface ActiveChannelRequest {
 	readonly cancellation: CancellationTokenSource;
 	readonly handle?: ParadisOfficeHandleRef;
+	readonly epoch: number;
+	readonly ownerCapability: string;
+	readonly resourceOwnerId: string;
+	readonly control: boolean;
+	handleReservation: boolean;
+}
+
+interface OwnerSession extends ParadisOfficeWireAuthority { }
+
+export interface IParadisOfficeConnectionAuthority {
+	currentEpoch(ownerId: string): number | undefined;
+	readonly onDidDisconnect: Event<{ readonly ownerId: string; readonly epoch: number }>;
+	createCapability?(): string;
 }
 
 function channelError(): never { throw new ParadisOfficeChannelError(); }
@@ -116,44 +158,81 @@ function sourceFailure(request: ParadisOfficeRequest, stage: 'source' | 'contain
 		case 'format': error = createParadisOfficeError(stage, code as 'featureUnsupported', details); break;
 		case 'transport': error = createParadisOfficeError(stage, code as 'cancelled' | 'payloadTooLarge', details); break;
 	}
-	return { version: 1, requestId: request.requestId, operation: request.operation, ok: false, outcome: code === 'cancelled' ? 'cancelled' : code === 'changed' ? 'stale' : code === 'limitExceeded' || code === 'payloadTooLarge' ? 'blocked' : 'failed', error };
+	return { version: 1, requestId: request.requestId, operation: request.operation, ok: false, outcome: code === 'cancelled' ? 'cancelled' : code === 'changed' ? 'stale' : code === 'sideMissing' ? 'sideMissing' : code === 'limitExceeded' || code === 'payloadTooLarge' ? 'blocked' : 'failed', error };
 }
 
 function acknowledged(request: ParadisOfficeControlRequest): ParadisOfficeResponse {
 	return { version: 1, requestId: request.requestId, operation: request.operation, ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true };
 }
 
-function snapshotFileRevision(size: number, modified: number, sha256: string): string {
-	return `file:${sha256}:${size}:${Math.trunc(modified)}`;
+export function buildParadisOfficeFileRevision(kind: 'file' | 'workingTree', resource: URI, stat: IParadisOfficeFileStat, sha256: string): string {
+	const canonicalIdentity = resource.with({ query: null, fragment: null }).toString(true);
+	const identityHash = createHash('sha256').update(kind).update('\0').update(canonicalIdentity).digest('hex');
+	return `office-file-v1:${kind}:${identityHash}:${stat.dev}:${stat.ino}:${stat.ctimeMs}:${stat.mtimeMs}:${stat.size}:${sha256}`;
 }
 
 /** Local resolver. It reads bounded bytes asynchronously and never sends a URI/path into a worker. */
 export class LocalParadisOfficeSourceResolver implements IParadisOfficeChannelSourceResolver {
+	private readonly openFile: (path: string) => Promise<IParadisOfficeFileHandle>;
+	private readonly ownerOpenFiles = new Map<string, number>();
+	private openFiles = 0;
+
+	constructor(options: LocalParadisOfficeSourceResolverOptions = {}) { this.openFile = options.openFile ?? (path => open(path, 'r')); }
+
 	async resolve(_ownerId: string, descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<OfficeWorkerBytesSource> {
 		if ((descriptor.kind !== 'file' && descriptor.kind !== 'workingTree') || !descriptor.uri) { throw new ParadisOfficeSourceResolutionError('unsupportedScheme'); }
 		let resource: URI;
 		try { resource = URI.parse(descriptor.uri, true); } catch { throw new ParadisOfficeSourceResolutionError('unsupportedScheme'); }
 		if (resource.scheme !== 'file' || token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('unsupportedScheme'); }
-		let handle: FileHandle | undefined;
+		this.acquireFile(_ownerId);
+		let handle: IParadisOfficeFileHandle | undefined;
+		let resolved: OfficeWorkerBytesSource | undefined;
 		try {
-			handle = await open(resource.fsPath, 'r');
+			handle = await this.openFile(resource.fsPath);
+			if (token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('changed'); }
 			const before = await handle.stat();
+			if (token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('changed'); }
 			if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size < 0) { throw new ParadisOfficeSourceResolutionError('unsupportedScheme'); }
+			if (![before.dev, before.ino, before.ctimeMs, before.mtimeMs].every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0)) { throw new ParadisOfficeSourceResolutionError('changed'); }
 			if (before.size > PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.compressedInputBytes) { throw new ParadisOfficeSourceResolutionError('limitExceeded'); }
 			if (token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('changed'); }
-			const content = await handle.readFile();
-			if (content.byteLength !== before.size || token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('changed'); }
+			const content = new Uint8Array(before.size);
+			const hash = createHash('sha256');
+			for (let position = 0; position < before.size;) {
+				const length = Math.min(PARADIS_OFFICE_FILE_READ_CHUNK_BYTES, before.size - position);
+				const result = await handle.read(content, position, length, position);
+				if (token.isCancellationRequested || !Number.isSafeInteger(result.bytesRead) || result.bytesRead < 1 || result.bytesRead > length) { throw new ParadisOfficeSourceResolutionError('changed'); }
+				hash.update(content.subarray(position, position + result.bytesRead));
+				position += result.bytesRead;
+			}
+			const growthProbe = new Uint8Array(1);
+			const growth = await handle.read(growthProbe, 0, 1, before.size);
+			if (token.isCancellationRequested || growth.bytesRead !== 0) { throw new ParadisOfficeSourceResolutionError('changed'); }
 			const after = await handle.stat();
+			if (token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('changed'); }
 			if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('changed'); }
-			const sha256 = createHash('sha256').update(content).digest('hex');
-			return { kind: 'bytes', bytes: new Uint8Array(content), revision: snapshotFileRevision(content.byteLength, after.mtimeMs, sha256) };
+			resolved = { kind: 'bytes', bytes: content, revision: buildParadisOfficeFileRevision(descriptor.kind, resource, after, hash.digest('hex')) };
 		} catch (error) {
 			if (error instanceof ParadisOfficeSourceResolutionError) { throw error; }
 			const code = dataField(error, 'code');
 			if (code === 'ENOENT') { throw new ParadisOfficeSourceResolutionError('notFound'); }
 			if (code === 'EACCES' || code === 'EPERM') { throw new ParadisOfficeSourceResolutionError('permission'); }
 			throw new ParadisOfficeSourceResolutionError('unsupportedScheme');
-		} finally { try { await handle?.close(); } catch { } }
+		} finally { try { await handle?.close(); } catch { } this.releaseFile(_ownerId); }
+		if (!resolved || token.isCancellationRequested) { throw new ParadisOfficeSourceResolutionError('changed'); }
+		return resolved;
+	}
+
+	private acquireFile(ownerId: string): void {
+		if (!ownerPattern.test(ownerId) || this.openFiles >= PARADIS_OFFICE_FILE_GLOBAL_LIMIT || (this.ownerOpenFiles.get(ownerId) ?? 0) >= PARADIS_OFFICE_FILE_PER_OWNER_LIMIT) { throw new ParadisOfficeSourceResolutionError('limitExceeded'); }
+		this.openFiles++;
+		this.ownerOpenFiles.set(ownerId, (this.ownerOpenFiles.get(ownerId) ?? 0) + 1);
+	}
+
+	private releaseFile(ownerId: string): void {
+		this.openFiles = Math.max(0, this.openFiles - 1);
+		const next = Math.max(0, (this.ownerOpenFiles.get(ownerId) ?? 0) - 1);
+		if (next === 0) { this.ownerOpenFiles.delete(ownerId); } else { this.ownerOpenFiles.set(ownerId, next); }
 	}
 }
 
@@ -223,17 +302,20 @@ export class ParadisOfficeSpoolTransport {
 
 	async call(ownerId: string, command: string, value: unknown): Promise<unknown> {
 		switch (command) {
-			case 'spool/begin': { const fields = exactTransportRecord(value, ['attemptId']); const attempt = validateParadisOfficeSpoolAttempt(ownerId, fields.get('attemptId')); return this.store.begin(ownerId, attempt.attemptId); }
-			case 'spool/claim': { const fields = exactTransportRecord(value, ['reference', 'attemptId']); const reference = validateParadisOfficeWritableSpoolReference(fields.get('reference')); if (reference.ownerId !== ownerId) { channelError(); } const attempt = validateParadisOfficeSpoolAttempt(ownerId, fields.get('attemptId')); await this.store.claim(reference, attempt.attemptId); return undefined; }
-			case 'spool/append': { const fields = exactTransportRecord(value, ['reference', 'bytes']); const reference = validateParadisOfficeWritableSpoolReference(fields.get('reference')); const bytes = fields.get('bytes'); if (reference.ownerId !== ownerId || !(bytes instanceof VSBuffer)) { channelError(); } await this.store.append(reference, bytes); if (!this.syncSpool()) { await this.store.dispose(reference); this.syncSpool(); channelError(); } return undefined; }
-			case 'spool/seal': { const fields = exactTransportRecord(value, ['reference', 'request']); const reference = validateParadisOfficeWritableSpoolReference(fields.get('reference')); if (reference.ownerId !== ownerId) { channelError(); } const request = validateParadisOfficeSealRequest(fields.get('request')); const sealed = await this.store.seal(reference, request); if (!this.syncSpool()) { await this.store.dispose(sealed); this.syncSpool(); channelError(); } return sealed; }
-			case 'spool/dispose': { const fields = exactTransportRecord(value, ['reference']); const reference = snapshotParadisOfficeSealedSpoolAttempt(fields.get('reference')).identity; if (!reference || reference.ownerId !== ownerId) { channelError(); } await this.store.dispose(reference); this.syncSpool(); return undefined; }
+			case 'spool/begin': { const fields = exactTransportRecord(value, ['attemptId']); const attempt = validateParadisOfficeSpoolAttempt(ownerId, fields.get('attemptId')); try { return await this.store.begin(ownerId, attempt.attemptId); } finally { this.syncSpool(); } }
+			case 'spool/claim': { const fields = exactTransportRecord(value, ['reference', 'attemptId']); const reference = validateParadisOfficeWritableSpoolReference(fields.get('reference')); if (reference.ownerId !== ownerId) { channelError(); } const attempt = validateParadisOfficeSpoolAttempt(ownerId, fields.get('attemptId')); try { await this.store.claim(reference, attempt.attemptId); return undefined; } finally { this.syncSpool(); } }
+			case 'spool/append': { const fields = exactTransportRecord(value, ['reference', 'bytes']); const reference = validateParadisOfficeWritableSpoolReference(fields.get('reference')); const bytes = fields.get('bytes'); if (reference.ownerId !== ownerId || !(bytes instanceof VSBuffer) || !this.reserveSpool(bytes.byteLength)) { channelError(); } try { await this.store.append(reference, bytes); return undefined; } finally { this.syncSpool(); } }
+			case 'spool/seal': { const fields = exactTransportRecord(value, ['reference', 'request']); const reference = validateParadisOfficeWritableSpoolReference(fields.get('reference')); if (reference.ownerId !== ownerId) { channelError(); } const request = validateParadisOfficeSealRequest(fields.get('request')); try { return await this.store.seal(reference, request); } finally { this.syncSpool(); } }
+			case 'spool/dispose': { const fields = exactTransportRecord(value, ['reference']); const reference = snapshotParadisOfficeSealedSpoolAttempt(fields.get('reference')).identity; if (!reference || reference.ownerId !== ownerId) { channelError(); } try { await this.store.dispose(reference); return undefined; } finally { this.syncSpool(); } }
+			case 'spool/disposeAttempt': { const fields = exactTransportRecord(value, ['attemptId']); const attempt = validateParadisOfficeSpoolAttempt(ownerId, fields.get('attemptId')); try { await this.store.disposeAttempt(ownerId, attempt.attemptId); return undefined; } finally { this.syncSpool(); } }
 			case 'source/bind': { const fields = exactTransportRecord(value, ['descriptor', 'spool']); this.resolver.bind(ownerId, fields.get('descriptor'), fields.get('spool')); return undefined; }
 			default: channelError();
 		}
 	}
 
 	disconnect(ownerId: string): void { this.resolver.disconnect(ownerId); try { this.store.disconnect(ownerId); } catch { } this.syncSpool(); }
+	async cleanupLate(ownerId: string, value: unknown): Promise<void> { const reference = snapshotParadisOfficeSealedSpoolAttempt(value).identity; if (!reference || reference.ownerId !== ownerId) { return; } try { await this.store.dispose(reference); } catch { } finally { this.syncSpool(); } }
+	private reserveSpool(bytes: number): boolean { const projected = this.store.byteLength + bytes; if (!Number.isSafeInteger(projected)) { return false; } try { return this.accountant?.trySetSpool(projected) ?? true; } catch { return false; } }
 	private syncSpool(): boolean { try { return this.accountant?.trySetSpool(this.store.byteLength) ?? true; } catch { return false; } }
 }
 
@@ -354,10 +436,13 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 	private readonly handles = new Map<string, StoredHandleBinding>();
 	private readonly cursors = new Map<string, StoredCursorBinding>();
 	private readonly knownOwners = new Set<string>();
+	private readonly sessions = new Map<string, OwnerSession>();
+	private readonly pendingHandleReservations = new Map<string, number>();
 
-	constructor(private readonly backend: IParadisOfficeDocumentBackend = new LocalParadisOfficeDocumentBackend(), onDidDisconnect: Event<string> = Event.None, private readonly spoolTransport?: ParadisOfficeSpoolTransport) {
+	constructor(private readonly backend: IParadisOfficeDocumentBackend = new LocalParadisOfficeDocumentBackend(), onDidDisconnect: Event<string> = Event.None, private readonly spoolTransport?: ParadisOfficeSpoolTransport, private readonly connectionAuthority?: IParadisOfficeConnectionAuthority) {
 		super();
 		this._register(onDidDisconnect(ownerId => this.disconnect(ownerId)));
+		if (connectionAuthority) { this._register(connectionAuthority.onDidDisconnect(event => this.disconnect(event.ownerId, event.epoch))); }
 	}
 
 	listen<T>(_ctx: string, event: string): Event<T> { throw new ParadisOfficeChannelError(); }
@@ -365,41 +450,69 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 	async call<T>(ctx: string, command: string, arg?: unknown, cancellationToken: CancellationToken = CancellationToken.None): Promise<T> {
 		if (!ownerPattern.test(ctx)) { return channelError(); }
 		this.knownOwners.add(ctx);
+		const encoded = isParadisOfficeWireEnvelope(arg);
+		let decodedArg = arg;
+		let wireAuthority: ParadisOfficeWireAuthority | undefined;
+		if (encoded) { try { const decoded = decodeParadisOfficeWireValue(arg); decodedArg = decoded.value; wireAuthority = decoded.authority; } catch { return channelError(); } }
+		const currentEpoch = this.connectionAuthority?.currentEpoch(ctx) ?? 0;
+		if (this.connectionAuthority && (!Number.isSafeInteger(currentEpoch) || currentEpoch < 1)) { return channelError(); }
 		if (command === 'negotiate') {
-			try { return negotiateParadisOffice(arg) as T; } catch { return channelError(); }
+			try {
+				const negotiation = negotiateParadisOffice(decodedArg);
+				if (!this.connectionAuthority || negotiation.version === 0) { return negotiation as T; }
+				const existing = this.sessions.get(ctx);
+				if (existing && existing.connectionEpoch !== currentEpoch) { this.disconnect(ctx, existing.connectionEpoch); }
+				let session = this.sessions.get(ctx);
+				if (!session) { session = { connectionEpoch: currentEpoch, ownerCapability: this.createOwnerCapability() }; this.sessions.set(ctx, session); }
+				const result: ParadisOfficeV1Negotiation = { ...negotiation, ...session };
+				return result as T;
+			} catch { return channelError(); }
 		}
+		const session = this.sessions.get(ctx) ?? { connectionEpoch: 0, ownerCapability: '' };
+		if (this.connectionAuthority && (!wireAuthority || wireAuthority.connectionEpoch !== currentEpoch || wireAuthority.connectionEpoch !== session.connectionEpoch || wireAuthority.ownerCapability !== session.ownerCapability)) { return channelError(); }
+		const resourceOwnerId = this.connectionAuthority ? session.ownerCapability : ctx;
 		if (command.startsWith('spool/') || command === 'source/bind') {
 			if (!this.spoolTransport) { return channelError(); }
-			try { return await this.spoolTransport.call(ctx, command, arg) as T; } catch { return channelError(); }
+			try {
+				const result = await this.spoolTransport.call(resourceOwnerId, command, decodedArg);
+				if (cancellationToken.isCancellationRequested || !this.isCurrentSession(ctx, session)) { await this.spoolTransport.cleanupLate(resourceOwnerId, result); return channelError(); }
+				return result as T;
+			} catch { return channelError(); }
 		}
 		if (command !== 'request') { return channelError(); }
 		let request: ParadisOfficeRequest;
-		try { request = snapshotParadisOfficeRequest(arg); } catch { return channelError(); }
+		try { request = snapshotParadisOfficeRequest(decodedArg); } catch { return channelError(); }
 		this.validateRequestBinding(ctx, request);
+		const handleReservation = request.operation === 'open' || request.operation === 'compare' && request.cursor === undefined;
+		if (handleReservation && !this.reserveHandle(ctx)) { return channelError(); }
 		const activeKey = this.requestKey(ctx, request.requestId);
-		if (this.active.has(activeKey) || this.activeForOwner(ctx) >= maxActiveRequestsPerOwner) { return channelError(); }
-		if (request.operation === 'cancel' && request.targetRequestId) {
+		const control = request.operation === 'close' || request.operation === 'cancel';
+		if (this.active.has(activeKey) || (!control && this.activeForOwner(ctx) >= PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT)) { if (handleReservation) { this.releaseHandleReservation(ctx); } return channelError(); }
+		if (request.operation === 'cancel' && request.targetRequestId !== undefined) {
 			const target = this.active.get(this.requestKey(ctx, request.targetRequestId));
 			if (!target) { return channelError(); }
 			try { target.cancellation.cancel(); } catch { return channelError(); }
 		}
 		if ((request.operation === 'close' || request.operation === 'cancel') && request.handle) { this.cancelHandleRequests(ctx, request.handle); }
 		let source: CancellationTokenSource;
-		try { source = new CancellationTokenSource(cancellationToken); } catch { return channelError(); }
+		try { source = new CancellationTokenSource(cancellationToken); } catch { if (handleReservation) { this.releaseHandleReservation(ctx); } return channelError(); }
 		const requestHandle = this.requestHandle(request);
-		this.active.set(activeKey, { cancellation: source, ...(requestHandle ? { handle: requestHandle } : {}) });
+		const entry: ActiveChannelRequest = { cancellation: source, ...(requestHandle ? { handle: requestHandle } : {}), epoch: session.connectionEpoch, ownerCapability: session.ownerCapability, resourceOwnerId, control, handleReservation };
+		this.active.set(activeKey, entry);
 		try {
 			let raw: unknown;
-			try { raw = await this.dispatch(ctx, request, source.token); }
-			catch { return sourceFailure(request, source.token.isCancellationRequested ? 'transport' : 'engine', source.token.isCancellationRequested ? 'cancelled' : 'engineCrashed') as T; }
+			try { raw = await this.dispatch(resourceOwnerId, request, source.token); }
+			catch { return this.publishResponse(!this.isCurrentEntry(ctx, activeKey, entry) ? sourceFailure(request, 'transport', 'cancelled') : sourceFailure(request, source.token.isCancellationRequested ? 'transport' : 'engine', source.token.isCancellationRequested ? 'cancelled' : 'engineCrashed'), encoded) as T; }
+			if (!this.isCurrentEntry(ctx, activeKey, entry)) { await this.closeLateHandle(entry.resourceOwnerId, request, raw); return this.publishResponse(sourceFailure(request, 'transport', 'cancelled'), encoded) as T; }
 			let response: ParadisOfficeResponse;
 			try { response = snapshotParadisOfficeResponse(raw); }
-			catch (error) { this.disconnect(ctx); return (error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge' ? sourceFailure(request, 'transport', 'payloadTooLarge') : sourceFailure(request, 'engine', 'engineCrashed')) as T; }
+			catch (error) { this.disconnect(ctx); return this.publishResponse(error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge' ? sourceFailure(request, 'transport', 'payloadTooLarge') : sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
 			try { this.validateResponseBinding(ctx, request, response); }
-			catch { this.disconnect(ctx); return sourceFailure(request, 'engine', 'engineCrashed') as T; }
-			return response as T;
+			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
+			return this.publishResponse(response, encoded) as T;
 		} finally {
-			this.active.delete(activeKey);
+			if (this.active.get(activeKey) === entry) { this.active.delete(activeKey); }
+			if (entry.handleReservation) { entry.handleReservation = false; this.releaseHandleReservation(ctx); }
 			try { source.dispose(); } catch { }
 		}
 	}
@@ -409,6 +522,8 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		this.active.clear();
 		for (const owner of [...this.knownOwners]) { this.disconnect(owner); }
 		this.handles.clear(); this.cursors.clear();
+		this.sessions.clear();
+		this.pendingHandleReservations.clear();
 		super.dispose();
 	}
 
@@ -427,15 +542,25 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		}
 	}
 
+	private publishResponse(response: ParadisOfficeResponse, encoded: boolean): ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse> { return encoded ? marshalParadisOfficeResponse(response) : response; }
+	private createOwnerCapability(): string { const value = this.connectionAuthority?.createCapability?.() ?? randomBytes(32).toString('hex'); return /^[a-f\d]{64}$/.test(value) ? value : channelError(); }
+	private isCurrentSession(ownerId: string, session: OwnerSession): boolean { const current = this.sessions.get(ownerId); return !this.connectionAuthority || current === session && this.connectionAuthority.currentEpoch(ownerId) === session.connectionEpoch; }
+	private isCurrentEntry(ownerId: string, key: string, entry: ActiveChannelRequest): boolean { const session = this.sessions.get(ownerId); return this.active.get(key) === entry && !entry.cancellation.token.isCancellationRequested && (!this.connectionAuthority || !!session && session.connectionEpoch === entry.epoch && session.ownerCapability === entry.ownerCapability && this.connectionAuthority.currentEpoch(ownerId) === entry.epoch); }
+	private async closeLateHandle(ownerId: string, request: ParadisOfficeRequest, raw: unknown): Promise<void> {
+		let response: ParadisOfficeResponse;
+		try { response = snapshotParadisOfficeResponse(raw); } catch { return; }
+		if (!response.ok || (response.operation !== 'open' && response.operation !== 'compare')) { return; }
+		try { await this.backend.close(ownerId, { version: 1, requestId: request.requestId, operation: 'close', handle: response.handle }, CancellationToken.None); } catch { }
+	}
+
 	private validateRequestBinding(ownerId: string, request: ParadisOfficeRequest): void {
-		if ((request.operation === 'open' || (request.operation === 'compare' && request.cursor === undefined)) && this.handleCount(ownerId) >= PARADIS_OFFICE_HANDLE_PER_CLIENT_LIMIT) { channelError(); }
 		const handle = this.requestHandle(request);
 		if (handle) {
 			const binding = this.handles.get(this.handleKey(handle));
 			if (!binding || binding.ownerId !== ownerId) { channelError(); }
 		}
-		if ((request.operation === 'compare' || request.operation === 'search') && request.cursor) {
-			const binding = this.cursors.get(request.cursor);
+		if ((request.operation === 'compare' || request.operation === 'search') && request.cursor !== undefined) {
+			const binding = this.cursors.get(this.cursorKey(ownerId, request.cursor));
 			const subject = request.operation === 'search' ? this.handleKey(request.handle) : this.compareSubject(request);
 			if (!binding || binding.ownerId !== ownerId || binding.operation !== request.operation || binding.subject !== subject) { channelError(); }
 		}
@@ -445,13 +570,19 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		if (response.requestId !== request.requestId || response.operation !== request.operation || response.version !== 1) { channelError(); }
 		const requestHandle = this.requestHandle(request);
 		const revision = responseRevision(response);
-		if ((request.operation === 'compare' || request.operation === 'search') && request.cursor) {
-			const cursor = this.cursors.get(request.cursor);
+		if ((request.operation === 'compare' || request.operation === 'search') && request.cursor !== undefined) {
+			const cursor = this.cursors.get(this.cursorKey(ownerId, request.cursor));
 			if (!cursor || !revision || !this.sameRevision(cursor.revision, revision)) { channelError(); }
+			if (request.operation === 'compare' && response.ok && response.operation === 'compare' && this.handleKey(response.handle) !== this.handleKey(cursor.handle)) { channelError(); }
 		}
 		if (requestHandle && revision) {
 			const binding = this.handles.get(this.handleKey(requestHandle));
 			if (!binding || !this.sameRevision(binding.revision, revision)) { channelError(); }
+		}
+		if (request.operation === 'getRenderableAsset' && response.ok && response.operation === 'getRenderableAsset') {
+			const range = validateParadisOfficeAssetRange(request.offset, request.length);
+			const available = Math.max(0, response.totalLength - range.offset);
+			if (response.assetId !== request.assetId || response.offset !== range.offset || response.bytes.byteLength !== Math.min(range.length, available)) { channelError(); }
 		}
 		if (response.ok && (response.operation === 'open' || response.operation === 'compare')) {
 			const key = this.handleKey(response.handle);
@@ -462,33 +593,40 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		if (response.ok && response.operation === 'close' && requestHandle) {
 			const subject = this.handleKey(requestHandle);
 			this.handles.delete(subject);
-			for (const [key, binding] of [...this.cursors]) { if (binding.ownerId === ownerId && binding.subject === subject) { this.cursors.delete(key); } }
+			for (const [key, binding] of [...this.cursors]) { if (binding.ownerId === ownerId && this.handleKey(binding.handle) === subject) { this.cursors.delete(key); } }
 		}
-		if (response.ok && (response.operation === 'compare' || response.operation === 'search') && response.nextCursor) {
+		if (response.ok && (response.operation === 'compare' || response.operation === 'search') && response.nextCursor !== undefined) {
 			let subject: string;
 			if (response.operation === 'search' && request.operation === 'search') { subject = this.handleKey(request.handle); }
 			else if (response.operation === 'compare' && request.operation === 'compare') { subject = this.compareSubject(request); }
 			else { channelError(); }
 			this.evictOwnerCursorIfNeeded(ownerId);
-			this.cursors.set(response.nextCursor, { ownerId, operation: response.operation, subject, revision: response.revision });
+			const handle = response.operation === 'compare' ? response.handle : request.operation === 'search' ? request.handle : channelError();
+			this.cursors.set(this.cursorKey(ownerId, response.nextCursor), { ownerId, operation: response.operation, subject, revision: response.revision, handle });
 		}
 	}
 
-	private disconnect(ownerId: string): void {
+	private disconnect(ownerId: string, expectedEpoch?: number): void {
 		if (!ownerPattern.test(ownerId)) { return; }
-		for (const [key, active] of [...this.active]) { if (key.startsWith(`${ownerId}\0`)) { try { active.cancellation.cancel(); } catch { } try { active.cancellation.dispose(); } catch { } this.active.delete(key); } }
+		const session = this.sessions.get(ownerId);
+		if (expectedEpoch !== undefined && session?.connectionEpoch !== expectedEpoch) { return; }
+		for (const [key, active] of [...this.active]) { if (key.startsWith(`${ownerId}\0`) && (expectedEpoch === undefined || active.epoch === expectedEpoch)) { try { active.cancellation.cancel(); } catch { } try { active.cancellation.dispose(); } catch { } if (active.handleReservation) { active.handleReservation = false; this.releaseHandleReservation(ownerId); } this.active.delete(key); } }
 		for (const [key, binding] of [...this.handles]) { if (binding.ownerId === ownerId) { this.handles.delete(key); } }
 		for (const [key, binding] of [...this.cursors]) { if (binding.ownerId === ownerId) { this.cursors.delete(key); } }
 		this.knownOwners.delete(ownerId);
-		try { this.spoolTransport?.disconnect(ownerId); } catch { }
-		try { this.backend.disconnect(ownerId); } catch { }
+		if (session && (expectedEpoch === undefined || session.connectionEpoch === expectedEpoch)) { this.sessions.delete(ownerId); }
+		const resourceOwnerId = this.connectionAuthority ? session?.ownerCapability : ownerId;
+		if (resourceOwnerId) { try { this.spoolTransport?.disconnect(resourceOwnerId); } catch { } try { this.backend.disconnect(resourceOwnerId); } catch { } }
 	}
 
-	private activeForOwner(ownerId: string): number { let count = 0; for (const key of this.active.keys()) { if (key.startsWith(`${ownerId}\0`)) { count++; } } return count; }
+	private activeForOwner(ownerId: string): number { let count = 0; for (const [key, active] of this.active) { if (!active.control && key.startsWith(`${ownerId}\0`)) { count++; } } return count; }
 	private cancelHandleRequests(ownerId: string, handle: ParadisOfficeHandleRef): void { const handleKey = this.handleKey(handle); for (const [key, active] of this.active) { if (key.startsWith(`${ownerId}\0`) && active.handle && this.handleKey(active.handle) === handleKey) { try { active.cancellation.cancel(); } catch { } } } }
 	private handleCount(ownerId: string): number { let count = 0; for (const binding of this.handles.values()) { if (binding.ownerId === ownerId) { count++; } } return count; }
+	private reserveHandle(ownerId: string): boolean { const pending = this.pendingHandleReservations.get(ownerId) ?? 0; if (this.handleCount(ownerId) + pending >= PARADIS_OFFICE_HANDLE_PER_CLIENT_LIMIT) { return false; } this.pendingHandleReservations.set(ownerId, pending + 1); return true; }
+	private releaseHandleReservation(ownerId: string): void { const next = Math.max(0, (this.pendingHandleReservations.get(ownerId) ?? 0) - 1); if (next === 0) { this.pendingHandleReservations.delete(ownerId); } else { this.pendingHandleReservations.set(ownerId, next); } }
 	private evictOwnerCursorIfNeeded(ownerId: string): void { let count = 0; let oldest: string | undefined; for (const [key, binding] of this.cursors) { if (binding.ownerId !== ownerId) { continue; } count++; oldest ??= key; } if (count >= 256 && oldest) { this.cursors.delete(oldest); } }
 	private requestKey(ownerId: string, requestId: string): string { return `${ownerId}\0${requestId}`; }
+	private cursorKey(ownerId: string, cursor: string): string { return `${ownerId}\0${cursor}`; }
 	private handleKey(handle: ParadisOfficeHandleRef): string { return `${handle.kind}:${handle.id}`; }
 	private requestHandle(request: ParadisOfficeRequest): ParadisOfficeHandleRef | undefined {
 		switch (request.operation) {
@@ -503,6 +641,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 }
 
 export function registerParadisOffice(server: IPCServer<string>, backend?: IParadisOfficeDocumentBackend): IDisposable {
+	const lifecycle = new DisposableStore();
 	let channelBackend: IParadisOfficeDocumentBackend;
 	let transport: ParadisOfficeSpoolTransport | undefined;
 	if (backend) { channelBackend = backend; }
@@ -515,7 +654,25 @@ export function registerParadisOffice(server: IPCServer<string>, backend?: IPara
 		channelBackend = new LocalParadisOfficeDocumentBackend(resolver, workers, handles);
 		transport = new ParadisOfficeSpoolTransport(store, resolver, accountant);
 	}
-	const channel = new ParadisOfficeChannel(channelBackend, Event.map(server.onDidRemoveConnection, connection => connection.ctx), transport);
+	const disconnects = lifecycle.add(new Emitter<{ readonly ownerId: string; readonly epoch: number }>());
+	const epochs = new WeakMap<object, number>();
+	const currentEpochs = new Map<string, number>();
+	let epochSequence = 0;
+	const addConnection = (connection: { readonly ctx: string }): void => {
+		const epoch = ++epochSequence;
+		epochs.set(connection, epoch);
+		currentEpochs.set(connection.ctx, epoch);
+	};
+	for (const connection of server.connections) { addConnection(connection); }
+	lifecycle.add(server.onDidAddConnection(connection => addConnection(connection)));
+	lifecycle.add(server.onDidRemoveConnection(connection => {
+		const epoch = epochs.get(connection);
+		if (epoch === undefined) { return; }
+		disconnects.fire({ ownerId: connection.ctx, epoch });
+		if (currentEpochs.get(connection.ctx) === epoch) { currentEpochs.delete(connection.ctx); }
+	}));
+	const authority: IParadisOfficeConnectionAuthority = { currentEpoch: ownerId => currentEpochs.get(ownerId), onDidDisconnect: disconnects.event };
+	const channel = lifecycle.add(new ParadisOfficeChannel(channelBackend, Event.None, transport, authority));
 	server.registerChannel(PARADIS_OFFICE_CHANNEL, channel);
-	return channel;
+	return lifecycle;
 }
