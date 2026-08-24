@@ -44,7 +44,7 @@
 	`--vscode-foreground` because it assumes the bar's background was neutralized to match the
 	window. Para Code keeps a colored (muted) status bar background above, so restore the theme's
 	own statusBar foreground for legibility; the module's hover rule uses `inherit` and follows. */
-.monaco-workbench.paradis-transparent.style-override .part.statusbar {
+.monaco-workbench.paradis-transparent.modern-ui .part.statusbar {
 	color: var(--vscode-statusBar-foreground, var(--vscode-foreground)) !important;
 }
 
@@ -221,7 +221,7 @@
 	translucent layers into near-opacity. The extra classes outrank the module's selectors at equal
 	!important. Hover is excluded on the header so the module's hover tint keeps working; the card
 	look is preserved by the module's rounded corners, gaps and shadows, which paint no background. */
-.monaco-workbench.paradis-transparent.style-override .monaco-pane-view .pane,
-.monaco-workbench.paradis-transparent.style-override .monaco-pane-view .pane > .pane-header:not(:hover) {
+.monaco-workbench.paradis-transparent.modern-ui .monaco-pane-view .pane,
+.monaco-workbench.paradis-transparent.modern-ui .monaco-pane-view .pane > .pane-header:not(:hover) {
 	background-color: transparent !important;
 }
