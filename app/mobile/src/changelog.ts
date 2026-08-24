@@ -92,6 +92,30 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '内容を隠す設定にしているときは、質問文やPC名、エージェント名がぼかされます。ロック画面の表示を押すとそのエージェントの画面が開くようになりました。',
 				tone: 'green',
 			},
+			{
+				icon: 'menu-outline',
+				title: '横幅の狭い画面でターミナル名とヘッダーのボタンが重ならなくなりました',
+				body: 'ターミナル名が長いときにボタンと衝突していたのを、ひとつのメニューにまとめて解消しました。ホーム画面のヘッダーも同じ扱いにしています。',
+				tone: 'green',
+			},
+			{
+				icon: 'swap-horizontal-outline',
+				title: 'Android・古いiOSでターミナルの切り替えが出てこなかったのを直しました',
+				body: '本文の中にスクロールで届く形で切り替えを置くようにしました。',
+				tone: 'green',
+			},
+			{
+				icon: 'git-pull-request-outline',
+				title: '変更点の一覧からプルリクエストの操作を呼び出せるようになりました',
+				body: '差分を開いたまま、プルリクエストの作成などをそこから呼び出せます。',
+				tone: 'accent',
+			},
+			{
+				icon: 'git-compare-outline',
+				title: '差分表示とセッション履歴の細かい表示崩れを直しました',
+				body: '一部の差分で先頭や区切りの行が正しく出ないことがあったのと、狭い画面のセッション履歴で戻るボタンが出ないことがあったのを直しました。',
+				tone: 'green',
+			},
 		],
 	},
 	{
