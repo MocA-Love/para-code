@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 
 export type ParadisBindingDialogTab = 'panes' | 'devices' | 'mcp';
 
@@ -22,6 +22,19 @@ export class ParadisBindingDialogDevicePollLease extends Disposable {
 			return;
 		}
 		this.pollLease.value = visible ? this.beginPolling() : undefined;
+	}
+}
+
+/** Owns only the listeners attached to pane rows created by the current partial list render. */
+export class ParadisBindingDialogPaneListResources extends Disposable {
+	private readonly listeners = this._register(new DisposableStore());
+
+	beginRender(): void {
+		this.listeners.clear();
+	}
+
+	add<T extends IDisposable>(value: T): T {
+		return this.listeners.add(value);
 	}
 }
 
