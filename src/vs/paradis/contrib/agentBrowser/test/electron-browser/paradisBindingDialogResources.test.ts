@@ -13,7 +13,6 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IBrowserViewModel } from '../../../../../workbench/contrib/browserView/common/browserView.js';
-import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { IParadisMobileCanvasModel } from '../../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { onDidChangeParadisHoveredPane, setParadisHoveredPaneInstanceId } from '../../browser/paradisPaneIndicator.js';
@@ -97,7 +96,6 @@ suite('ParadisBindingDialogPaneListResources', () => {
 		const root = document.createElement('div');
 		document.body.appendChild(root);
 		const bindingChanges = new Emitter<void>();
-		const storageService = new TestStorageService();
 		let bindCalls = 0;
 		const pane: IParadisPaneDescriptor = {
 			instanceId: 17,
@@ -141,7 +139,6 @@ suite('ParadisBindingDialogPaneListResources', () => {
 				beginPolling: () => toDisposable(() => { }),
 			}),
 			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
-			storageService,
 		);
 		const hoverEvents: (number | undefined)[] = [];
 		const hoverListener = onDidChangeParadisHoveredPane(instanceId => hoverEvents.push(instanceId));
@@ -192,7 +189,6 @@ suite('ParadisBindingDialogPaneListResources', () => {
 			hoverListener.dispose();
 			dialog.dispose();
 			bindingChanges.dispose();
-			storageService.dispose();
 			root.remove();
 			setParadisHoveredPaneInstanceId(undefined);
 		}
