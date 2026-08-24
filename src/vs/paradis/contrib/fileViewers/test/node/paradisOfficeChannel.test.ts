@@ -21,9 +21,13 @@ import { buildParadisOfficeSourceRevision } from '../../common/paradisOfficeSour
 import {
 	PARADIS_OFFICE_CHANNEL,
 	PARADIS_OFFICE_MAX_IPC_BYTES,
+	PARADIS_OFFICE_MAX_SPOOL_APPEND_METADATA_BYTES,
+	PARADIS_OFFICE_WIRE_ENVELOPE,
 	ParadisOfficeWireError,
+	decodeParadisOfficeWireValue,
 	measureParadisOfficeWireBytes,
 	marshalParadisOfficeRequest,
+	marshalParadisOfficeSpoolAppend,
 	marshalParadisOfficeWireValue,
 	measureParadisOfficeIpcWireBytes,
 	snapshotParadisOfficeRequest,
@@ -36,6 +40,7 @@ import {
 	type ParadisOfficeCancelRequest,
 	type ParadisOfficeCloseRequest,
 	type ParadisOfficeWireAuthority,
+	type ParadisOfficeWireDecodeObserver,
 } from '../../common/paradisOfficeChannel.js';
 import { PARADIS_OFFICE_LIMITS, type ParadisOfficeChangeCategory, type ParadisOfficeRequest, type ParadisOfficeResponse } from '../../common/paradisOfficeProtocol.js';
 import { LocalParadisOfficeDocumentBackend, LocalParadisOfficeSourceResolver, PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT, PARADIS_OFFICE_CONTROL_REQUEST_LIMIT, PARADIS_OFFICE_FILE_GLOBAL_LIMIT, PARADIS_OFFICE_FILE_PER_OWNER_LIMIT, PARADIS_OFFICE_FILE_READ_CHUNK_BYTES, ParadisOfficeChannel, ParadisOfficeChannelError, ParadisOfficeSourceResolutionError, ParadisOfficeSpoolTransport, SpoolAwareParadisOfficeSourceResolver, buildParadisOfficeFileRevision, registerParadisOffice, type IParadisOfficeFileHandle } from '../../node/paradisOfficeChannel.js';
@@ -112,6 +117,16 @@ function compareResponse(requestId: string): Extract<ParadisOfficeResponse, { re
 		revision: { kind: 'comparison', originalRevision: 'original-1', modifiedRevision: 'modified-1', comparisonRevision: 'comparison-1' }, completeness,
 		handle: comparisonHandle, changes: [], terminal: true,
 	};
+}
+
+function fillResponseToSemanticLimit<T extends ParadisOfficeResponse>(response: T): T {
+	const warnings = Array.from({ length: 132 }, (_, index) => ({ code: `wire${index}`, message: '' }));
+	const result = { ...response, warnings };
+	let remaining = PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes - measureParadisOfficeWireBytes(result);
+	for (const warning of warnings) { const count = Math.min(16 * 1024, remaining); warning.message = 'x'.repeat(count); remaining -= count; }
+	assert.strictEqual(remaining, 0);
+	assert.strictEqual(measureParadisOfficeWireBytes(result), PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes);
+	return result as T;
 }
 
 class RecordingBackend implements IParadisOfficeDocumentBackend {
@@ -284,8 +299,14 @@ suite('ParadisOfficeChannel', () => {
 		const reference = await wire.call<{ readonly id: string; readonly ownerId: string; readonly nonce: string; readonly attemptId: string }>('spool/begin', { attemptId });
 		await wire.call('spool/claim', { reference, attemptId });
 		const spoolBytes = VSBuffer.fromByteArray([0, 1, 2, 255]);
-		await wire.call('spool/append', marshalParadisOfficeWireValue({ reference, bytes: spoolBytes }));
+		await wire.call('spool/append', marshalParadisOfficeSpoolAppend({ reference, bytes: spoolBytes }));
 		assert.strictEqual(store.byteLength, 4);
+		const exactRawChunk = VSBuffer.alloc(PARADIS_OFFICE_LIMITS.maxAssetRequestBytes);
+		await wire.call('spool/append', marshalParadisOfficeSpoolAppend({ reference, bytes: exactRawChunk }));
+		assert.strictEqual(store.byteLength, PARADIS_OFFICE_LIMITS.maxAssetRequestBytes + 4);
+		assert.throws(() => marshalParadisOfficeSpoolAppend({ reference, bytes: VSBuffer.alloc(PARADIS_OFFICE_LIMITS.maxAssetRequestBytes + 1) }), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
+		const exactAppendEnvelope = marshalParadisOfficeSpoolAppend({ reference, bytes: exactRawChunk });
+		assert.ok(independentlySerializedIpcBytes(exactAppendEnvelope) - exactRawChunk.byteLength <= PARADIS_OFFICE_MAX_SPOOL_APPEND_METADATA_BYTES);
 
 		await unmarshalParadisOfficeResponse(await wire.call('request', marshalParadisOfficeRequest(request('open', 'ipc-open-1'))));
 		const responseBase: ParadisOfficeResponse = {
@@ -338,6 +359,23 @@ suite('ParadisOfficeChannel', () => {
 		if (!(envelopeBuffer instanceof VSBuffer)) { throw new Error('Expected envelope buffer'); }
 		envelopeBuffer.buffer[1] = 8;
 		assert.deepStrictEqual([...received.bytes.buffer], [1, 2, 3]);
+	});
+
+	test('rejects obvious wire excess before BufferWriter measurement or binary copying', () => {
+		let exactMeasurements = 0;
+		let bufferCopies = 0;
+		const observer: ParadisOfficeWireDecodeObserver = { onBeforeExactMeasure: () => exactMeasurements++, onBeforeBufferCopy: () => bufferCopies++ };
+		const oversizedHeader = [PARADIS_OFFICE_WIRE_ENVELOPE, 'x'.repeat(PARADIS_OFFICE_MAX_IPC_BYTES + 1)] as const;
+		assert.throws(() => decodeParadisOfficeWireValue(oversizedHeader, observer), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
+		const rawLength = PARADIS_OFFICE_LIMITS.maxAssetRequestBytes + 1;
+		const header = JSON.stringify({ version: 1, transfer: 'spoolAppend', bufferLengths: [rawLength], payload: { reference: { id: 'a'.repeat(48), ownerId: 'owner', nonce: 'b'.repeat(64), attemptId: '123e4567-e89b-42d3-a456-426614174000' }, bytes: { $paradisOfficeBuffer: 0 } } });
+		assert.throws(() => decodeParadisOfficeWireValue([PARADIS_OFFICE_WIRE_ENVELOPE, header, VSBuffer.alloc(rawLength)], observer), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
+		assert.strictEqual(exactMeasurements, 0);
+		assert.strictEqual(bufferCopies, 0);
+		const valid = marshalParadisOfficeWireValue({ bytes: VSBuffer.fromByteArray([1]) });
+		decodeParadisOfficeWireValue(valid, observer);
+		assert.strictEqual(exactMeasurements, 1);
+		assert.strictEqual(bufferCopies, 1);
 	});
 
 	test('fences connection epochs, owner capabilities, and active-entry identity across reconnect ABA', async () => {
@@ -431,6 +469,26 @@ suite('ParadisOfficeChannel', () => {
 		disconnects.dispose();
 	});
 
+	test('requires late close acknowledgements to match the original request ID', async () => {
+		const disconnects = new Emitter<{ readonly ownerId: string; readonly epoch: number }>();
+		let epoch = 1;
+		const authority = { currentEpoch: (_ownerId: string) => epoch, onDidDisconnect: disconnects.event, createCapability: () => 'e'.repeat(64) };
+		const backend = new RecordingBackend();
+		let release!: (response: ParadisOfficeResponse) => void;
+		backend.responses.set('open', () => new Promise<ParadisOfficeResponse>(resolve => release = resolve));
+		backend.responses.set('close', () => Promise.resolve({ version: 1, requestId: 'wrong-close-id', operation: 'close', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true }));
+		const channel = new ParadisOfficeChannel(backend, Event.None, undefined, authority);
+		const negotiation = await channel.call<{ readonly ownerCapability: string; readonly connectionEpoch: number }>('window:late-wrong-id', 'negotiate', { versions: [1] });
+		const pending = channel.call('window:late-wrong-id', 'request', marshalParadisOfficeRequest(request('open', 'late-wrong-id-1'), { ownerCapability: negotiation.ownerCapability, connectionEpoch: negotiation.connectionEpoch }));
+		epoch = 2;
+		disconnects.fire({ ownerId: 'window:late-wrong-id', epoch: 1 });
+		release(openResponse('late-wrong-id-1'));
+		await unmarshalParadisOfficeResponse(await pending);
+		assert.strictEqual(backend.disconnected.filter(ownerId => ownerId === 'e'.repeat(64)).length, 2);
+		channel.dispose();
+		disconnects.dispose();
+	});
+
 	test('accepts every exact success variant and rejects missing or nested extra fields', () => {
 		const meta = { version: 1 as const, requestId: 'variant-1', ok: true as const, outcome: 'complete' as const, warnings: [], budgetUsage: {}, timings: {}, revision: { kind: 'document' as const, sourceRevision: 'document-revision-1' }, completeness };
 		const inventory = { format: 'docx' as const, container: 'opc' as const, parts: [], relationships: [], features: [], security: { encrypted: false, hasMacros: false, hasExternalRelationships: false, hasEmbeddedObjects: false, hasProtection: false, hasSignatures: false }, budgetProfile: 'desktopLocal' as const, budgetUsage: { compressedInputBytes: 0, expandedBytes: 0, entryCount: 0, largestPartBytes: 0, totalMediaBytes: 0, elapsedMilliseconds: 0 } };
@@ -451,6 +509,28 @@ suite('ParadisOfficeChannel', () => {
 		const missingWarnings = { ...openResponse('missing-warnings') } as Record<string, unknown>;
 		delete missingWarnings.warnings;
 		assert.throws(() => snapshotParadisOfficeResponse(missingWarnings), ParadisOfficeWireError);
+	});
+
+	test('commits handles and cursors only after response marshal succeeds', async () => {
+		const backend = new RecordingBackend();
+		backend.responses.set('close', request => Promise.resolve({ version: 1, requestId: request.requestId, operation: 'close', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true }));
+		const channel = new ParadisOfficeChannel(backend);
+		const compareRequest = request('compare', 'wire-compare-1');
+		for (let index = 0; index < 4; index++) {
+			if (index < 2) { backend.responses.set('open', request => fillResponseToSemanticLimit({ ...openResponse(request.requestId), handle: { kind: 'document', id: (index + 1).toString(16).repeat(48) } })); }
+			else { backend.responses.set('compare', request => fillResponseToSemanticLimit({ ...compareResponse(request.requestId), handle: { kind: 'comparison', id: (index + 1).toString(16).repeat(48) }, nextCursor: `overflow-cursor-${index}` })); }
+			const operationRequest = index < 2 ? request('open', `wire-open-${index}`) : { ...compareRequest, requestId: `wire-compare-${index}` };
+			const result = await unmarshalParadisOfficeResponse(await channel.call('window:wire-commit', 'request', marshalParadisOfficeRequest(operationRequest)));
+			assert.strictEqual(result.ok, false);
+			if (result.ok) { throw new Error('Expected wire overflow'); }
+			assert.strictEqual(result.error.code, 'payloadTooLarge');
+		}
+		assert.strictEqual(backend.calls.filter(call => call.operation === 'close').length, 4);
+		await assert.rejects(channel.call('window:wire-commit', 'request', marshalParadisOfficeRequest({ ...compareRequest, requestId: 'wire-cursor-replay', cursor: 'overflow-cursor-3' })), ParadisOfficeChannelError);
+		backend.responses.set('open', request => ({ ...openResponse(request.requestId), handle: { kind: 'document', id: 'f'.repeat(48) } }));
+		const valid = await unmarshalParadisOfficeResponse(await channel.call('window:wire-commit', 'request', marshalParadisOfficeRequest(request('open', 'wire-valid-open'))));
+		assert.strictEqual(valid.ok, true);
+		channel.dispose();
 	});
 
 	test('rejects oversized, sparse, shared, symbol, accessor, and unstable request data before dispatch', async () => {
@@ -757,12 +837,12 @@ suite('ParadisOfficeChannel', () => {
 		const channel = new ParadisOfficeChannel(new RecordingBackend(), Event.None, new ParadisOfficeSpoolTransport(store, resolver, accountant));
 		const reference = await channel.call<{ readonly id: string; readonly ownerId: string; readonly nonce: string; readonly attemptId: string }>(ownerId, 'spool/begin', { attemptId });
 		await channel.call(ownerId, 'spool/claim', { reference, attemptId });
-		await assert.rejects(channel.call(ownerId, 'spool/append', marshalParadisOfficeWireValue({ reference, bytes: VSBuffer.fromByteArray([1]) })), ParadisOfficeChannelError);
+		await assert.rejects(channel.call(ownerId, 'spool/append', marshalParadisOfficeSpoolAppend({ reference, bytes: VSBuffer.fromByteArray([1]) })), ParadisOfficeChannelError);
 		assert.strictEqual(store.activeSpoolCount, 1);
 		assert.strictEqual(store.byteLength, 0);
 		assert.strictEqual(accountant.snapshot().spoolBytes, 0);
 		accountant.setHandles(0);
-		await channel.call(ownerId, 'spool/append', marshalParadisOfficeWireValue({ reference, bytes: VSBuffer.fromByteArray([1]) }));
+		await channel.call(ownerId, 'spool/append', marshalParadisOfficeSpoolAppend({ reference, bytes: VSBuffer.fromByteArray([1]) }));
 		assert.strictEqual(accountant.snapshot().spoolBytes, 1);
 		const invalidSeal = { sourceKind: 'untitled' as const, providerIdentity: 'working-copy:accounting', providerRevision: 'version:1', size: 1, sha256: '0'.repeat(64), revision: '0'.repeat(64) };
 		await assert.rejects(channel.call(ownerId, 'spool/seal', { reference, request: invalidSeal }), ParadisOfficeChannelError);
