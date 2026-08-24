@@ -6,6 +6,7 @@
 
 import { PolicyCategory } from '../../../../base/common/policy.js';
 import { localize } from '../../../../nls.js';
+import type { IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, type IConfigurationPropertySchema } from '../../../../platform/configuration/common/configurationRegistry.js';
 
 export const PARADIS_OFFICE_FEATURE_EXCEL_VIEW = 1 << 0;
@@ -61,27 +62,20 @@ export interface ParadisOfficeCapabilitySet {
 
 interface DataRecord {
 	readonly values: Readonly<Record<string, unknown>>;
+	readonly keys: ReadonlySet<string>;
 }
 
-function descriptorsMatch(first: PropertyDescriptorMap, second: PropertyDescriptorMap): boolean {
-	const firstKeys = Reflect.ownKeys(first);
-	const secondKeys = Reflect.ownKeys(second);
-	if (firstKeys.length !== secondKeys.length || firstKeys.some((key, index) => key !== secondKeys[index])) {
-		return false;
-	}
-	for (const key of firstKeys) {
-		if (typeof key !== 'string') {
-			return false;
-		}
-		const left = first[key];
-		const right = second[key];
-		if (!left || !right || left.enumerable !== right.enumerable || left.configurable !== right.configurable
-			|| left.writable !== right.writable || !Object.is(left.value, right.value)
-			|| Object.prototype.hasOwnProperty.call(left, 'get') || Object.prototype.hasOwnProperty.call(right, 'get')) {
-			return false;
-		}
-	}
-	return true;
+function sameKeys(first: readonly string[], second: readonly PropertyKey[]): boolean {
+	return first.length === second.length && second.every((key, index) => key === first[index]);
+}
+
+function sameDataDescriptor(first: PropertyDescriptor | undefined, second: PropertyDescriptor | undefined): first is PropertyDescriptor & { readonly value: unknown } {
+	return !!first && !!second && first.enumerable === true && second.enumerable === true
+		&& Object.prototype.hasOwnProperty.call(first, 'value')
+		&& Object.prototype.hasOwnProperty.call(second, 'value')
+		&& first.configurable === second.configurable
+		&& first.writable === second.writable
+		&& Object.is(first.value, second.value);
 }
 
 function dataRecord(value: unknown, required: readonly string[], optional: readonly string[] = []): DataRecord | undefined {
@@ -93,28 +87,28 @@ function dataRecord(value: unknown, required: readonly string[], optional: reado
 		if (prototype !== Object.prototype && prototype !== null) {
 			return undefined;
 		}
-		const first = Object.getOwnPropertyDescriptors(value);
-		const second = Object.getOwnPropertyDescriptors(value);
-		if (!descriptorsMatch(first, second)) {
+		const allowed = new Set([...required, ...optional]);
+		const ownKeys = Reflect.ownKeys(value);
+		if (ownKeys.length > allowed.size || ownKeys.some(key => typeof key !== 'string' || !allowed.has(key))) {
 			return undefined;
 		}
-		const keys = Reflect.ownKeys(first);
-		const allowed = new Set([...required, ...optional]);
-		if (keys.length > allowed.size || keys.some(key => typeof key !== 'string' || !allowed.has(key)) || required.some(key => !keys.includes(key))) {
+		const keys = ownKeys as string[];
+		if (required.some(key => !keys.includes(key))) {
 			return undefined;
 		}
 		const result: Record<string, unknown> = Object.create(null);
 		for (const key of keys) {
-			if (typeof key !== 'string') {
+			const firstDescriptor = Object.getOwnPropertyDescriptor(value, key);
+			const secondDescriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!sameDataDescriptor(firstDescriptor, secondDescriptor)) {
 				return undefined;
 			}
-			const descriptor = first[key];
-			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-				return undefined;
-			}
-			result[key] = descriptor.value;
+			result[key] = firstDescriptor.value;
 		}
-		return { values: result };
+		if (!sameKeys(keys, Reflect.ownKeys(value))) {
+			return undefined;
+		}
+		return { values: result, keys: new Set(keys) };
 	} catch {
 		return undefined;
 	}
@@ -200,13 +194,15 @@ function snapshotHandshake(value: unknown): ParadisOfficeCapabilityHandshake | u
 	const available = backend.values.available;
 	const featureBits = backend.values.featureBits;
 	const localSpoolAvailable = root.values.localSpoolAvailable;
+	const clientHasFeatureBits = client.keys.has('featureBits');
+	const backendHasFeatureBits = backend.keys.has('featureBits');
 	if ((clientVersion !== 0 && clientVersion !== 1)
 		|| (platform !== 'desktop' && platform !== 'mobile' && platform !== 'web')
-		|| (clientVersion === 0 ? clientFeatureBits !== undefined : typeof clientFeatureBits !== 'number' || !Number.isSafeInteger(clientFeatureBits) || clientFeatureBits < 0 || (clientFeatureBits & ~PARADIS_OFFICE_ALL_FEATURES) !== 0)
+		|| (clientVersion === 0 ? clientHasFeatureBits : !clientHasFeatureBits || typeof clientFeatureBits !== 'number' || !Number.isSafeInteger(clientFeatureBits) || clientFeatureBits < 0 || (clientFeatureBits & ~PARADIS_OFFICE_ALL_FEATURES) !== 0)
 		|| (backendVersion !== 0 && backendVersion !== 1)
 		|| (kind !== 'local' && kind !== 'remote' && kind !== 'mobileHost' && kind !== 'webWorker')
 		|| typeof available !== 'boolean'
-		|| (backendVersion === 0 ? featureBits !== undefined : typeof featureBits !== 'number' || !Number.isSafeInteger(featureBits) || featureBits < 0 || (featureBits & ~PARADIS_OFFICE_ALL_FEATURES) !== 0)
+		|| (backendVersion === 0 ? backendHasFeatureBits : !backendHasFeatureBits || typeof featureBits !== 'number' || !Number.isSafeInteger(featureBits) || featureBits < 0 || (featureBits & ~PARADIS_OFFICE_ALL_FEATURES) !== 0)
 		|| (localSpoolAvailable !== undefined && typeof localSpoolAvailable !== 'boolean')
 		|| (platform === 'desktop' ? kind !== 'local' && kind !== 'remote' : platform === 'mobile' ? kind !== 'mobileHost' : kind !== 'webWorker')
 		|| (clientVersion === 0 && platform === 'web')
@@ -302,7 +298,7 @@ type ParadisOfficeRuntimeConfigurationLayer = Partial<ParadisOfficeRuntimeConfig
 
 export interface ParadisOfficeConfigurationReader {
 	getValue<T>(key: string): T | undefined;
-	inspect<T>(key: string): { readonly policyValue?: T } | undefined;
+	inspect<T>(key: string): IConfigurationValue<T> | undefined;
 }
 
 export interface ParadisOfficeRuntimeOverrides {
@@ -344,38 +340,19 @@ function snapshotConfigurationLayer(value: unknown): ParadisOfficeRuntimeConfigu
 	if (value === undefined) {
 		return {};
 	}
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+	const record = dataRecord(value, [], runtimeKeys);
+	if (!record) {
 		return undefined;
 	}
 	try {
-		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) {
-			return undefined;
-		}
-		const first = Object.getOwnPropertyDescriptors(value);
-		const second = Object.getOwnPropertyDescriptors(value);
-		const firstKeys = Reflect.ownKeys(first);
-		const secondKeys = Reflect.ownKeys(second);
-		if (firstKeys.length > runtimeKeys.length || firstKeys.length !== secondKeys.length
-			|| firstKeys.some((key, index) => key !== secondKeys[index] || typeof key !== 'string' || !runtimeKeys.includes(key as ParadisOfficeRuntimeConfigurationKey))) {
-			return undefined;
-		}
 		const result: ParadisOfficeRuntimeConfigurationLayer = {};
-		for (const propertyKey of firstKeys) {
-			if (typeof propertyKey !== 'string') {
-				return undefined;
-			}
-			const firstDescriptor = first[propertyKey];
-			const secondDescriptor = second[propertyKey];
+		for (const propertyKey of record.keys) {
 			const key = propertyKey as ParadisOfficeRuntimeConfigurationKey;
-			if (!firstDescriptor?.enumerable || !secondDescriptor?.enumerable
-				|| !Object.prototype.hasOwnProperty.call(firstDescriptor, 'value')
-				|| !Object.prototype.hasOwnProperty.call(secondDescriptor, 'value')
-				|| !Object.is(firstDescriptor.value, secondDescriptor.value)
-				|| !isRuntimeValue(key, firstDescriptor.value)) {
+			const field = record.values[key];
+			if (!isRuntimeValue(key, field)) {
 				return undefined;
 			}
-			(result as Record<ParadisOfficeRuntimeConfigurationKey, unknown>)[key] = firstDescriptor.value;
+			(result as Record<ParadisOfficeRuntimeConfigurationKey, unknown>)[key] = field;
 		}
 		return result;
 	} catch {
@@ -384,39 +361,11 @@ function snapshotConfigurationLayer(value: unknown): ParadisOfficeRuntimeConfigu
 }
 
 function snapshotRuntimeOverrides(value: ParadisOfficeRuntimeOverrides): { readonly profile: unknown; readonly cli: unknown } | undefined {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+	const record = dataRecord(value, [], ['profile', 'cli']);
+	if (!record) {
 		return undefined;
 	}
-	try {
-		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) {
-			return undefined;
-		}
-		const first = Object.getOwnPropertyDescriptors(value);
-		const second = Object.getOwnPropertyDescriptors(value);
-		const firstKeys = Reflect.ownKeys(first);
-		const secondKeys = Reflect.ownKeys(second);
-		if (firstKeys.length > 2 || firstKeys.length !== secondKeys.length
-			|| firstKeys.some((key, index) => key !== secondKeys[index] || key !== 'profile' && key !== 'cli')) {
-			return undefined;
-		}
-		for (const key of firstKeys) {
-			if (typeof key !== 'string') {
-				return undefined;
-			}
-			const left = first[key];
-			const right = second[key];
-			if (!left?.enumerable || !right?.enumerable
-				|| !Object.prototype.hasOwnProperty.call(left, 'value')
-				|| !Object.prototype.hasOwnProperty.call(right, 'value')
-				|| !Object.is(left.value, right.value)) {
-				return undefined;
-			}
-		}
-		return { profile: first.profile?.value, cli: first.cli?.value };
-	} catch {
-		return undefined;
-	}
+	return { profile: record.values.profile, cli: record.values.cli };
 }
 
 function configurationLayer(reader: ParadisOfficeConfigurationReader): ParadisOfficeRuntimeConfigurationLayer | undefined {
@@ -448,14 +397,14 @@ function policyLayer(reader: ParadisOfficeConfigurationReader): ParadisOfficeRun
 			if (!inspected || typeof inspected !== 'object' || Array.isArray(inspected)) {
 				return undefined;
 			}
-			const descriptor = Object.getOwnPropertyDescriptor(inspected, 'policyValue');
-			if (!descriptor) {
+			const policyValue = inspected.policyValue;
+			if (policyValue === undefined) {
 				continue;
 			}
-			if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value') || !isRuntimeValue(key, descriptor.value)) {
+			if (!isRuntimeValue(key, policyValue)) {
 				return undefined;
 			}
-			(result as Record<ParadisOfficeRuntimeConfigurationKey, unknown>)[key] = descriptor.value;
+			(result as Record<ParadisOfficeRuntimeConfigurationKey, unknown>)[key] = policyValue;
 		}
 		return result;
 	} catch {
