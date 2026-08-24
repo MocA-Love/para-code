@@ -75,6 +75,8 @@ export class OfficeMemoryAccountant {
 	constructor(readonly limitBytes: number) { if (!safeInteger(limitBytes)) { throw new TypeError('Invalid Office memory limit'); } }
 	setCache(bytes: number): void { this.cacheBytes = this.valid(bytes); }
 	setHandles(bytes: number): void { this.handleBytes = this.valid(bytes); }
+	reserveHandles(bytes: number): boolean { bytes = this.valid(bytes); const total = this.total() + bytes; if (!safeInteger(total) || total > this.limitBytes) { return false; } this.handleBytes += bytes; return true; }
+	releaseHandles(bytes: number): void { bytes = this.valid(bytes); this.handleBytes = Math.max(0, this.handleBytes - bytes); }
 	setSpool(bytes: number): void { this.spoolBytes = this.valid(bytes); }
 	setDerivedAssets(bytes: number): void { this.derivedAssetBytes = this.valid(bytes); }
 	reserveWorker(bytes: number): boolean { const total = this.total() + this.valid(bytes); if (!safeInteger(total) || total > this.limitBytes) { return false; } this.workerBytes += bytes; return true; }
@@ -219,7 +221,7 @@ export class OfficeWorkerHost {
 				requestId, operation, ownerId, source: safeSource, budget: safeBudget, token, reservationBytes, queueDeadline: this.deadline(PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS), operationDeadline: 0, ...(options.workerId ? { workerId: options.workerId } : {}), queuedAt: this.safeNow(), resolve,
 				cancellationListener: token.onCancellationRequested(() => this.cancel(job as unknown as PendingJob<object>)), state: 'queued', released: false, terminal: undefined, settled: false, orphaned: false,
 			};
-			job.queueTimer = this.setTimer(() => this.finish(job as unknown as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS);
+			try { job.queueTimer = this.setTimer(() => this.finish(job as unknown as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS); } catch { this.finish(job as unknown as PendingJob<object>, { outcome: 'failed', error: 'engineCrashed' }); return; }
 			this.pending.push(job as unknown as PendingJob<object>);
 			this.pump();
 		});
@@ -231,7 +233,7 @@ export class OfficeWorkerHost {
 		for (const job of [...this.pending, ...this.active]) {
 			job.terminal = 'cancelled';
 			this.finish(job, { outcome: 'cancelled' });
-			void job.worker?.terminate();
+			try { void job.worker?.terminate().catch(() => { }); } catch { }
 		}
 	}
 
@@ -262,16 +264,22 @@ export class OfficeWorkerHost {
 		let worker: IOfficeWorker;
 		try { worker = this.createWorker(); } catch { this.finish(job, { outcome: 'failed', error: 'engineCrashed' }); return; }
 		job.worker = worker;
-		job.workerListeners = [
-			worker.onMessage(message => this.onWorkerMessage(job, message)),
-			worker.onError(() => this.workerStopped(job)),
-			worker.onExit(() => this.workerStopped(job)),
-		];
+		const listeners: IDisposable[] = [];
+		try {
+			listeners.push(worker.onMessage(message => this.onWorkerMessage(job, message)));
+			if (job.state !== 'finished') { listeners.push(worker.onError(() => this.workerStopped(job))); }
+			if (job.state !== 'finished') { listeners.push(worker.onExit(() => this.workerStopped(job))); }
+			job.workerListeners = listeners;
+		} catch {
+			job.workerListeners = listeners;
+			this.reap(job, { outcome: 'failed', error: 'engineCrashed' });
+			return;
+		}
 		if (job.state === 'finished') { return; }
-		job.deadlineTimer = this.setTimer(() => {
+		try { job.deadlineTimer = this.setTimer(() => {
 			job.terminal = 'blocked';
 			this.reap(job, { outcome: 'blocked', error: 'limitExceeded' });
-		}, operationDeadline(job.operation, job.budget));
+		}, operationDeadline(job.operation, job.budget)); } catch { this.reap(job, { outcome: 'failed', error: 'engineCrashed' }); return; }
 		try {
 			const message: OfficeWorkerMessageRun = { kind: 'run', requestId: job.requestId, operation: job.operation, source: job.source, budget: job.budget };
 			worker.postMessage(message);
@@ -287,11 +295,11 @@ export class OfficeWorkerHost {
 		job.state = 'cancelling';
 		job.terminal = 'cancelled';
 		try { job.worker?.postMessage({ kind: 'cancel', requestId: job.requestId }); } catch { }
-		job.cancelTimer = this.setTimer(() => {
+		try { job.cancelTimer = this.setTimer(() => {
 			if (job.state !== 'finished') {
 				this.reap(job, { outcome: 'cancelled' });
 			}
-		}, PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
+		}, PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS); } catch { this.reap(job, { outcome: 'cancelled' }); }
 	}
 
 	private onWorkerMessage(job: PendingJob<object>, message: unknown): void {
@@ -303,8 +311,9 @@ export class OfficeWorkerHost {
 		if (kind === 'limitExceeded') { this.reap(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
 		if (kind === 'result' && job.state === 'running') {
 			const value = dataField(message, 'value');
-			if (this.validWorkerResult(job.operation, value)) {
-				this.reap(job, { outcome: 'complete', value: value as object });
+			const snapshot = this.snapshotWorkerResult(job.operation, value);
+			if (snapshot) {
+				this.reap(job, { outcome: 'complete', value: snapshot });
 			} else {
 				this.reap(job, { outcome: 'failed', error: 'engineCrashed' });
 			}
@@ -367,7 +376,15 @@ export class OfficeWorkerHost {
 	}
 
 	private reserve(job: PendingJob<object>): boolean {
-		if (this.accountant && !this.accountant.reserveWorker(job.reservationBytes)) { return false; }
+		if (this.accountant) {
+			const before = this.accountant.snapshot();
+			const deficit = before.totalBytes + job.reservationBytes - before.limitBytes;
+			if (!safeInteger(before.totalBytes + job.reservationBytes)) { return false; }
+			if (deficit > 0) {
+				try { this.memory.evictInactiveCache?.(deficit); } catch { return false; }
+			}
+			if (!this.accountant.reserveWorker(job.reservationBytes)) { return false; }
+		}
 		const current = this.memoryUsage();
 		const limit = this.memory.limitBytes ?? memoryLimit(job.budget);
 		const requested = current + job.reservationBytes;
@@ -427,6 +444,45 @@ export class OfficeWorkerHost {
 		return this.validInventory(inventory);
 	}
 
+	/** Returns a fresh plain-data boundary object; no worker-owned object crosses into host state. */
+	private snapshotWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
+		if (!this.validWorkerResult(operation, value)) { return undefined; }
+		try {
+			const snapshot = this.copyWorkerData(value, 0);
+			return this.validWorkerResult(operation, snapshot) ? snapshot as object : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private copyWorkerData(value: unknown, depth: number): unknown {
+		if (depth > 32 || value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') { return value; }
+		if (Array.isArray(value)) {
+			const length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
+			if (!safeInteger(length)) { throw new TypeError('Invalid worker array'); }
+			const result: unknown[] = [];
+			for (let index = 0; index < length; index++) {
+				const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+				if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) { throw new TypeError('Invalid worker array'); }
+				result.push(this.copyWorkerData(descriptor.value, depth + 1));
+			}
+			return result;
+		}
+		if (!value || typeof value !== 'object') { throw new TypeError('Invalid worker data'); }
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) { throw new TypeError('Invalid worker data'); }
+		const result: Record<string, unknown> = {};
+		for (const key of Reflect.ownKeys(value)) {
+			if (typeof key !== 'string') { throw new TypeError('Invalid worker key'); }
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) { throw new TypeError('Invalid worker descriptor'); }
+			// Structured worker data may carry an optional field as enumerable undefined.
+			// Omit it from the fresh record; the operation validator then rejects any required absence.
+			if (descriptor.value !== undefined) { result[key] = this.copyWorkerData(descriptor.value, depth + 1); }
+		}
+		return result;
+	}
+
 	private validInventory(value: unknown): boolean {
 		const allowed = new Set(['format', 'container', 'parts', 'relationships', 'features', 'security', 'budgetProfile', 'budgetUsage', 'outcome', 'completeness', 'warnings']);
 		if (!this.exactRecord(value, allowed)) { return false; }
@@ -436,15 +492,18 @@ export class OfficeWorkerHost {
 		const parts = dataField(value, 'parts');
 		const relationships = dataField(value, 'relationships');
 		const features = dataField(value, 'features');
-		if (!['xlsx', 'xlsm', 'docx', 'docm', 'pptx', 'pptm', 'zip', 'unknown'].includes(format as string) || container !== 'opc' || !['complete', 'degraded', 'blocked'].includes(outcome as string) || !Array.isArray(parts) || !Array.isArray(relationships) || !Array.isArray(features)) { return false; }
+		if (!['xlsx', 'xlsm', 'xltx', 'xltm', 'docx', 'docm', 'dotx', 'dotm', 'zip', 'cfbEncrypted', 'unknown'].includes(format as string) || !['opc', 'zip', 'cfb', 'unknown'].includes(container as string) || !['complete', 'degraded', 'blocked'].includes(outcome as string) || !Array.isArray(parts) || !Array.isArray(relationships) || !Array.isArray(features)) { return false; }
 		const completeness = dataField(value, 'completeness');
 		if (!this.exactRecord(completeness, new Set(['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits', 'terminal']))) { return false; }
 		const counters = ['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits'].map(name => dataField(completeness, name));
 		if (counters.some(counter => !safeInteger(counter)) || dataField(completeness, 'terminal') !== true) { return false; }
 		const [expected, visited, parsed, opaque, failed, omitted] = counters as number[];
 		if (expected !== visited || visited !== parsed + opaque + failed + omitted) { return false; }
+		const security = dataField(value, 'security');
+		const usage = dataField(value, 'budgetUsage');
+		if (!this.exactRecord(security, new Set(['encrypted', 'hasMacros', 'hasExternalRelationships', 'hasEmbeddedObjects', 'hasProtection', 'hasSignatures'])) || !this.exactRecord(usage, new Set(['compressedInputBytes', 'expandedBytes', 'entryCount', 'largestPartBytes', 'totalMediaBytes', 'elapsedMilliseconds'])) || ['encrypted', 'hasMacros', 'hasExternalRelationships', 'hasEmbeddedObjects', 'hasProtection', 'hasSignatures'].some(name => typeof dataField(security, name) !== 'boolean') || ['compressedInputBytes', 'expandedBytes', 'entryCount', 'largestPartBytes', 'totalMediaBytes', 'elapsedMilliseconds'].some(name => !safeInteger(dataField(usage, name)))) { return false; }
 		return parts.every(part => this.validPart(part)) && relationships.every(relationship => this.exactRecord(relationship, new Set(['id', 'sourcePartId', 'type', 'target', 'targetMode', 'missing', 'cyclic'])))
-			&& features.every(feature => this.exactRecord(feature, new Set(['kind', 'partIds', 'supported', 'safe'])));
+			&& features.every(feature => this.exactRecord(feature, new Set(['kind', 'count', 'partIds', 'safety'])) && typeof dataField(feature, 'kind') === 'string' && safeInteger(dataField(feature, 'count')) && Array.isArray(dataField(feature, 'partIds')) && ['safe', 'sanitized', 'metadataOnly', 'blocked'].includes(dataField(feature, 'safety') as string));
 	}
 
 	private validPart(value: unknown): boolean {
@@ -461,7 +520,25 @@ export class OfficeWorkerHost {
 	private validHandleSummary(operation: 'parse' | 'diff', value: unknown): boolean {
 		if (!this.exactRecord(value, new Set(['operation', 'handle', 'outcome', 'completeness', 'capabilities', 'changes']))) { return false; }
 		const handle = dataField(value, 'handle');
-		return dataField(value, 'operation') === operation && this.exactRecord(handle, new Set(['kind', 'id'])) && (dataField(handle, 'kind') === 'document' || dataField(handle, 'kind') === 'comparison') && typeof dataField(handle, 'id') === 'string' && ['complete', 'degraded'].includes(dataField(value, 'outcome') as string) && !!dataField(value, 'completeness');
+		const completeness = dataField(value, 'completeness');
+		if (dataField(value, 'operation') !== operation || !this.exactRecord(handle, new Set(['kind', 'id'])) || (dataField(handle, 'kind') !== 'document' && dataField(handle, 'kind') !== 'comparison') || typeof dataField(handle, 'id') !== 'string' || !['complete', 'degraded'].includes(dataField(value, 'outcome') as string) || !this.validCompleteness(completeness)) { return false; }
+		const capabilities = dataField(value, 'capabilities');
+		if (capabilities !== undefined && (!Array.isArray(capabilities) || !capabilities.every(capability => typeof capability === 'string'))) { return false; }
+		const changes = dataField(value, 'changes');
+		return changes === undefined || (Array.isArray(changes) && changes.every(change => this.safeChange(change)));
+	}
+
+	private validCompleteness(value: unknown): boolean {
+		if (!this.exactRecord(value, new Set(['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits', 'terminal']))) { return false; }
+		const counters = ['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits'].map(name => dataField(value, name));
+		if (counters.some(counter => !safeInteger(counter)) || dataField(value, 'terminal') !== true) { return false; }
+		const [expected, visited, parsed, opaque, failed, omitted] = counters as number[];
+		return expected === visited && visited === parsed + opaque + failed + omitted;
+	}
+
+	private safeChange(value: unknown): boolean {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) { return false; }
+		try { return !Reflect.ownKeys(value).some(key => key === 'path' || key === 'stack'); } catch { return false; }
 	}
 
 	private exactRecord(value: unknown, allowed: ReadonlySet<string>): boolean {

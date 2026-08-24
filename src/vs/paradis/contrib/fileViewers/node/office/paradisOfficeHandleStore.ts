@@ -12,6 +12,7 @@ import type { OfficeMemoryAccountant } from './paradisOfficeWorkerHost.js';
 export const PARADIS_OFFICE_HANDLE_PER_CLIENT_LIMIT = 4;
 export const PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS = 10 * 60 * 1000;
 export const PARADIS_OFFICE_SEMANTIC_CACHE_LIMIT_BYTES = 512 * 1024 * 1024;
+export const PARADIS_OFFICE_HANDLE_MAX_BYTES = 512 * 1024 * 1024;
 
 export interface IOfficeHandleTimer {
 	schedule(delay: number): void;
@@ -41,7 +42,7 @@ export interface OfficeHandleRecord {
 	readonly active: boolean;
 }
 
-export type OfficeHandleStoreErrorCode = 'invalidInput' | 'quotaExceeded' | 'randomnessUnavailable';
+export type OfficeHandleStoreErrorCode = 'invalidInput' | 'quotaExceeded' | 'memoryExceeded' | 'randomnessUnavailable';
 
 export class OfficeHandleStoreError extends Error {
 	override readonly name = 'OfficeHandleStoreError';
@@ -60,6 +61,7 @@ interface StoredHandle extends Omit<OfficeHandleRecord, 'active'> {
 	lastUsed: number;
 	idleDeadline: number;
 	active: boolean;
+	accountantReserved: boolean;
 }
 
 interface StoredCache {
@@ -117,6 +119,7 @@ export class OfficeHandleStore {
 	private readonly semanticCacheLimitBytes: number;
 	private readonly accountant: OfficeMemoryAccountant | undefined;
 	private cacheBytes = 0;
+	private lastNow = 0;
 
 	constructor(options: OfficeHandleStoreOptions = {}) {
 		this.now = options.now ?? Date.now;
@@ -141,6 +144,15 @@ export class OfficeHandleStore {
 		if (this.ownerCount(ownerId) >= PARADIS_OFFICE_HANDLE_PER_CLIENT_LIMIT) {
 			throw new OfficeHandleStoreError('quotaExceeded');
 		}
+		const retainedBytes = [...this.handles.values()].reduce((total, entry) => total + entry.memoryBytes, 0);
+		if (memoryBytes > PARADIS_OFFICE_HANDLE_MAX_BYTES || !isSafeInteger(retainedBytes + memoryBytes)
+			|| (this.accountant !== undefined && this.accountant.snapshot().totalBytes + memoryBytes > this.accountant.snapshot().limitBytes)) {
+			throw new OfficeHandleStoreError('memoryExceeded');
+		}
+		if (this.accountant && !this.accountant.reserveHandles(memoryBytes)) {
+			throw new OfficeHandleStoreError('memoryExceeded');
+		}
+		let reserved = this.accountant !== undefined;
 		let id: string | undefined;
 		try {
 			for (let attempt = 0; attempt < maxRandomAttempts; attempt++) {
@@ -154,9 +166,11 @@ export class OfficeHandleStore {
 				}
 			}
 		} catch (error) {
+			if (reserved) { this.accountant?.releaseHandles(memoryBytes); reserved = false; }
 			throw error instanceof OfficeHandleStoreError ? error : new OfficeHandleStoreError('randomnessUnavailable');
 		}
 		if (!id) {
+			if (reserved) { this.accountant?.releaseHandles(memoryBytes); }
 			throw new OfficeHandleStoreError('randomnessUnavailable');
 		}
 		let nonce: string | undefined;
@@ -169,9 +183,11 @@ export class OfficeHandleStore {
 				}
 			}
 		} catch {
+			if (reserved) { this.accountant?.releaseHandles(memoryBytes); }
 			throw new OfficeHandleStoreError('randomnessUnavailable');
 		}
 		if (!nonce) {
+			if (reserved) { this.accountant?.releaseHandles(memoryBytes); }
 			throw new OfficeHandleStoreError('randomnessUnavailable');
 		}
 		const holder: { entry?: StoredHandle } = {};
@@ -179,10 +195,11 @@ export class OfficeHandleStore {
 		try {
 			timer = this.createIdleTimer(() => holder.entry && this.remove(holder.entry));
 		} catch {
+			if (reserved) { this.accountant?.releaseHandles(memoryBytes); reserved = false; }
 			throw new OfficeHandleStoreError('invalidInput');
 		}
 		const createdAt = this.safeNow();
-		const entry: StoredHandle = { id, ownerId, nonce, kind, sourceRevision, memoryBytes, workerId, active: false, lastUsed: createdAt, idleDeadline: createdAt + PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS, timer };
+		const entry: StoredHandle = { id, ownerId, nonce, kind, sourceRevision, memoryBytes, workerId, active: false, lastUsed: createdAt, idleDeadline: createdAt + PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS, timer, accountantReserved: reserved };
 		holder.entry = entry;
 		this.handles.set(id, entry);
 		this.syncAccountant();
@@ -339,21 +356,22 @@ export class OfficeHandleStore {
 	private remove(entry: StoredHandle): void {
 		if (this.handles.get(entry.id) !== entry) { return; }
 		this.handles.delete(entry.id);
-		entry.timer.dispose();
+		try { entry.timer.dispose(); } catch { }
+		if (entry.accountantReserved) { entry.accountantReserved = false; this.accountant?.releaseHandles(entry.memoryBytes); }
 		this.syncAccountant();
 	}
 
 	private safeNow(): number {
 		try {
 			const value = this.now();
-			return isSafeInteger(value) ? value : 0;
+			if (isSafeInteger(value)) { this.lastNow = Math.max(this.lastNow, value); }
+			return this.lastNow;
 		} catch {
-			return 0;
+			return this.lastNow;
 		}
 	}
 	private expired(entry: StoredHandle): boolean { return !Number.isSafeInteger(entry.idleDeadline) || this.safeNow() >= entry.idleDeadline; }
 	private syncAccountant(): void {
 		this.accountant?.setCache(this.cacheBytes);
-		this.accountant?.setHandles([...this.handles.values()].reduce((total, entry) => total + entry.memoryBytes, 0));
 	}
 }
