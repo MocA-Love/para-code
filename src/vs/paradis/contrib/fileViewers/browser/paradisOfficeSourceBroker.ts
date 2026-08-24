@@ -313,8 +313,21 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				throw new ParadisOfficeSourceBrokerError('spoolFailure');
 			}
 			writable = beginAttempt.writable;
+			let claimSucceeded = false;
+			try {
+				throwIfCancelled(token);
+				await this.options.spoolClient.claim(writable, attemptId);
+				claimSucceeded = true;
+			} catch (error) {
+				if (claimSucceeded) {
+					await this.disposeReferenceBounded(writable);
+				} else {
+					await cancellationCleanup();
+				}
+				throwDependencyError(error, token, 'spoolFailure');
+			}
 			cancellationCleanup = () => this.disposeReferenceBounded(writable);
-			await awaitDependency(token, 'spoolFailure', () => this.options.spoolClient.claim(writable, attemptId));
+			throwIfCancelled(token);
 		} catch (error) {
 			if (cancellationCleanup) {
 				await cancellationCleanup();
@@ -411,7 +424,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				throwDependencyError(error, token, 'spoolFailure');
 			}
 			throwIfCancelled(token);
-			if (sealed.id !== writable.id || sealed.ownerId !== writable.ownerId || sealed.nonce !== writable.nonce
+			if (sealed.id !== writable.id || sealed.ownerId !== writable.ownerId || sealed.nonce !== writable.nonce || sealed.attemptId !== writable.attemptId
 				|| sealed.sourceKind !== sealRequest.sourceKind || sealed.providerIdentity !== sealRequest.providerIdentity
 				|| sealed.providerRevision !== sealRequest.providerRevision || sealed.size !== sealRequest.size
 				|| sealed.sha256 !== sealRequest.sha256 || sealed.revision !== sealRequest.revision) {

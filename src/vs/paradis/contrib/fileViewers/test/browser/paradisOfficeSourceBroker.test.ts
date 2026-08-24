@@ -82,7 +82,7 @@ class TestSpoolClient implements IOfficeSpoolClient {
 		if (this.sealResultOverride !== undefined) {
 			return this.sealResultOverride as ReturnType<IOfficeSpoolClient['seal']> extends Promise<infer T> ? T : never;
 		}
-		return { ...this.writable, ...request };
+		return { ...reference, ...request };
 	}
 
 	async dispose(reference: ParadisOfficeSpoolReference): Promise<void> {
@@ -813,6 +813,31 @@ suite('ParadisOfficeSourceBroker', () => {
 			strictEqual(client.disposed.length, 0);
 			strictEqual(client.disposedAttempts.length, 1);
 		}
+	});
+
+	test('keeps attempt cleanup through a rejected claim and switches to capability cleanup only after claim success', async () => {
+		const rejectedSource = new CancellationTokenSource();
+		const rejectedClient = new TestSpoolClient();
+		rejectedClient.claim = async () => { rejectedSource.cancel(); throw new Error('/raw/private claim'); };
+		await rejects(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), rejectedClient).broker.open(descriptor('gitCommit', 'git:/doc'), rejectedSource.token), error => error instanceof CancellationError);
+		strictEqual(rejectedClient.disposed.length, 0);
+		strictEqual(rejectedClient.disposedAttempts.length, 1);
+		rejectedSource.dispose();
+
+		const claimedSource = new CancellationTokenSource();
+		const claimedClient = new TestSpoolClient();
+		claimedClient.claim = async () => { queueMicrotask(() => claimedSource.cancel()); };
+		await rejects(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), claimedClient).broker.open(descriptor('gitCommit', 'git:/doc'), claimedSource.token), error => error instanceof CancellationError);
+		strictEqual(claimedClient.disposed.length, 1);
+		claimedSource.dispose();
+	});
+
+	test('rejects a sealed response whose attempt does not match the claimed capability', async () => {
+		const client = new TestSpoolClient();
+		client.seal = async (reference, request) => ({ ...reference, ...request, attemptId: '00000000-0000-4000-8000-000000000099' });
+		await rejectsSafeBrokerError(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker.open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None), 'spoolFailure');
+		strictEqual(client.disposed.length, 1);
+		strictEqual(client.sealed.length, 0);
 	});
 
 	test('bounds never-settling begin-cancellation cleanup while preserving cancellation', async () => {
