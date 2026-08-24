@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisBrowserLiveEntry,
 	IParadisBrowserLiveViewState,
+	ParadisBrowserLivePersistentFailureGate,
 	PARADIS_BROWSER_LIVE_MAX_COLUMNS,
 	paradisBrowserLiveCaptureDelayMs,
 	paradisBrowserLiveCoverPoint,
@@ -286,5 +287,35 @@ suite('Paradis Browser Live Window', () => {
 			],
 			[0, 0, 1000, 2500, 350, 1000, 1000, 4000, 8000, 1000],
 		);
+	});
+
+	test('counts only real capture failures and rearms after a successful capture', () => {
+		const gate = new ParadisBrowserLivePersistentFailureGate();
+
+		const unresolvedModelDecisions = Array.from(
+			{ length: 4 },
+			() => gate.record('model-unavailable', false),
+		);
+		const firstEpisode = Array.from(
+			{ length: 6 },
+			() => gate.record('capture-failed', false),
+		);
+
+		gate.record('capture-succeeded', false);
+		const secondEpisode = Array.from(
+			{ length: 5 },
+			() => gate.record('capture-failed', false),
+		);
+
+		gate.record('capture-succeeded', false);
+		const failuresAfterAFrame = Array.from(
+			{ length: 5 },
+			() => gate.record('capture-failed', true),
+		);
+
+		assert.deepStrictEqual(unresolvedModelDecisions, [false, false, false, false]);
+		assert.deepStrictEqual(firstEpisode, [false, false, false, false, true, false]);
+		assert.deepStrictEqual(secondEpisode, [false, false, false, false, true]);
+		assert.deepStrictEqual(failuresAfterAFrame, [false, false, false, false, false]);
 	});
 });
