@@ -33,7 +33,8 @@ import { FileAccess } from '../../../../base/common/network.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { paradisPreviewOrigins } from './paradisViewerAssets.js';
-import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
+import { createParadisOfficeWebArchive } from '../browser/office/paradisOfficeWebArchive.js';
+import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin, sanitizeOfficeDocxPackageForRenderer, type ParadisOfficeRenderablePackage } from '../common/paradisOfficeSanitizer.js';
 import {
 	IParadisDocxAnnotation,
 	IParadisDocxBlock,
@@ -59,6 +60,14 @@ import {
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
+
+/** Owns and sanitizes every package asset before docx-preview can observe the package. */
+export async function sanitizeParadisDocxBytesForRenderer(bytes: Uint8Array, nodeId: string): Promise<ParadisOfficeRenderablePackage> {
+	const owned = new Uint8Array(bytes.byteLength);
+	owned.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+	const archive = await createParadisOfficeWebArchive(owned);
+	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive });
+}
 
 // ── docx-preview の AST（使う部分だけを緩く型付けする） ────────────────────
 //

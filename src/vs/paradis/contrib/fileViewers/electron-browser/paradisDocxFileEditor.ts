@@ -16,7 +16,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { encodeBase64 } from '../../../../base/common/buffer.js';
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
@@ -42,6 +42,7 @@ import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { PARADIS_DOCX_MAX_BYTES } from '../common/paradisDocx.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
+import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
@@ -300,16 +301,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
 			return;
 		}
-		// SCM の旧版など、webview のリソース URL では取れないスキーム(git: 等)は中身を読んで直接埋め込む。
-		// asWebviewUri は scheme を authority に押し込む形で URL 化するが、その解決は service worker と
-		// localResourceRoots の判定に依存し、query に JSON を持つ git: では通る保証が無い。
 		let inlineData: string | undefined;
-		if (decision === 'viewer' && !this._canFetchViaWebviewUri(resource)) {
+		if (decision === 'viewer') {
 			try {
-				// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリへ
-				// 載せた上に base64 で 4/3 に膨らませた文字列まで作ってしまう。
 				const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
-				inlineData = encodeBase64(content.value);
+				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`);
+				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
 			} catch {
 				decision = 'rejected';
 			}
@@ -325,10 +322,6 @@ export class ParadisDocxFileEditor extends EditorPane {
 				webview.setHtml(this._buildHtml(resource, inlineData));
 				return;
 		}
-	}
-
-	private _canFetchViaWebviewUri(resource: URI): boolean {
-		return resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote;
 	}
 
 	private _buildRejectedFileHtml(): string {
