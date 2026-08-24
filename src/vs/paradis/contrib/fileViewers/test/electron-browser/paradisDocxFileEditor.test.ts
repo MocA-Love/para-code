@@ -165,10 +165,12 @@ suite('ParadisDocxFileEditor', () => {
 
 	test('reopens an MC QName document and renders its locally patched DrawingML anchor', async () => {
 		const geometry = '<wp:anchor><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="blocked"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const diagonal = '<q:tcBorders><q:tl2br q:val="single" q:sz="8" q:color="112233"/><q:tr2bl q:val="dashed" q:sz="6" q:color="445566"/></q:tcBorders>';
+		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 		const input = storeZip({
 			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/custom/ole.bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/></Types>',
 			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-			'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="wps"><w:body><mc:AlternateContent><mc:Choice Requires="wps"><w:p><w:r><w:t>MC choice</w:t></w:r></w:p></mc:Choice><mc:Fallback><w:p><w:r><w:t>MC fallback</w:t></w:r></w:p></mc:Fallback></mc:AlternateContent><w:p><w:r><w:t>MC anchor</w:t></w:r><w:r><w:drawing>${geometry}</w:drawing></w:r></w:p></w:body></w:document>`,
+			'word/document.xml': `<q:document xmlns:q="${word}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="wps"><q:body><mc:AlternateContent><mc:Choice Requires="wps"><q:p><q:r><q:t>MC choice</q:t></q:r></q:p></mc:Choice><mc:Fallback><q:p><q:r><q:t>MC fallback</q:t></q:r></q:p></mc:Fallback></mc:AlternateContent><q:p><q:r><q:t>MC anchor</q:t></q:r><w:r xmlns:w="${word}" xmlns:q="urn:shadow"><w:drawing>${geometry}</w:drawing></w:r></q:p><q:tbl><q:tr><q:tc><q:tcPr>${diagonal}</q:tcPr><q:p/></q:tc></q:tr></q:tbl></q:body></q:document>`,
 			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/></Relationships>',
 			'custom/ole.bin': 'RAW-OLE',
 		});
@@ -176,7 +178,9 @@ suite('ParadisDocxFileEditor', () => {
 		const serialized = new TextDecoder().decode(sanitized.bytes);
 		ok(serialized.includes('mc:Ignorable="wps"'));
 		ok(serialized.includes('<mc:Choice Requires="wps">'));
+		ok(serialized.includes('</w:r><q:r><q:t>Office asset unavailable:'));
 		ok(serialized.includes(geometry.replace(' r:embed="blocked"', '')));
+		ok(serialized.includes(diagonal));
 		const reopened = await sanitizeParadisDocxBytesForRenderer(sanitized.bytes, 'actual-mc-anchor-reopen');
 		const docx = await loadActualDocxPreview();
 		const body = document.createElement('div');

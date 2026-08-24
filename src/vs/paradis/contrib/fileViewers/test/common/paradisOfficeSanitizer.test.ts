@@ -696,6 +696,80 @@ suite('ParadisOfficeSanitizer', () => {
 		ok(checkpoints < 1_000_000, `bounded checkpoints: ${checkpoints}`);
 	});
 
+	test('patches 20,000 Drawing consumers sharing one blocked rId with bounded interruptible work', async function () {
+		this.timeout(15_000);
+		const packageFiles = (count: number, blocked: boolean): Readonly<Record<string, string>> => {
+			const consumers = Array.from({ length: count }, (_, index) => `<w:r data-diagonal="d${index}"><w:drawing data-geometry="g${index}"><a:blip r:${blocked ? 'link' : 'embed'}="shared"/></w:drawing></w:r>`).join('');
+			return {
+				'[Content_Types].xml': contentTypes([
+					['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+					...(blocked ? [] : [['/word/media/shared.svg', 'image/svg+xml']] as const),
+				]),
+				'_rels/.rels': packageRootRelationships(),
+				'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p>${consumers}</w:p></w:body></w:document>`,
+				'word/_rels/document.xml.rels': relationships(blocked
+					? '<Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.invalid/shared.svg" TargetMode="External"/>'
+					: '<Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/shared.svg"/>'),
+				...(blocked ? {} : { 'word/media/shared.svg': '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L1 1"/></svg>' }),
+			};
+		};
+		const run = async (nodeId: string, count: number, blocked: boolean, cancelAt?: number, macrotask = true) => {
+			const cancellation = new CancellationTokenSource();
+			let checkpoints = 0;
+			let schedulerYields = 0;
+			try {
+				const promise = sanitizeOfficeDocxPackageForRenderer({
+					nodeId,
+					source: Uint8Array.of(1),
+					archive: new MemoryOfficeArchive(packageFiles(count, blocked)),
+					token: cancellation.token,
+					checkpoint: () => { checkpoints++; },
+					scheduler: () => {
+						if (++schedulerYields === cancelAt) { cancellation.cancel(); }
+						return macrotask ? new Promise<void>(resolve => setTimeout(resolve, 0)) : Promise.resolve();
+					},
+				});
+				return { result: await promise, checkpoints, schedulerYields };
+			} finally {
+				cancellation.dispose();
+			}
+		};
+
+		const smallSafe = await run('shared-safe-small', 1_000, false);
+		await rejects(run('shared-blocked-cancel', 1_000, true, smallSafe.schedulerYields + 4), (error: unknown) => error instanceof Error && error.message === 'cancelled');
+		const originalNow = Date.now;
+		let now = 1_000;
+		let deadlineYields = 0;
+		try {
+			Date.now = () => now;
+			await rejects(sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'shared-blocked-deadline',
+				source: Uint8Array.of(1),
+				archive: new MemoryOfficeArchive(packageFiles(1_000, true)),
+				deadline: now + smallSafe.schedulerYields + 3,
+				scheduler: () => new Promise<void>(resolve => setTimeout(() => { deadlineYields++; now++; resolve(); }, 0)),
+			}), (error: unknown) => error instanceof Error && error.message === 'limitExceeded');
+		} finally {
+			Date.now = originalNow;
+		}
+		strictEqual(deadlineYields, smallSafe.schedulerYields + 4);
+
+		const count = 20_000;
+		const safe = await run('shared-safe-large', count, false, undefined, false);
+		const blocked = await run('shared-blocked-large', count, true, undefined, false);
+		const documentXml = textOf(readStoreZipEntries(blocked.result.bytes), 'word/document.xml');
+
+		strictEqual(blocked.result.placeholders.length, 1);
+		strictEqual(documentXml.includes('r:link="shared"'), false);
+		strictEqual(documentXml.split('Office asset unavailable:').length - 1, count);
+		strictEqual(documentXml.split('data-geometry=').length - 1, count);
+		strictEqual(documentXml.split('data-diagonal=').length - 1, count);
+		ok(documentXml.includes('<w:r data-diagonal="d0"><w:drawing data-geometry="g0"><a:blip/></w:drawing></w:r>'));
+		ok(documentXml.includes(`<w:r data-diagonal="d${count - 1}"><w:drawing data-geometry="g${count - 1}"><a:blip/></w:drawing></w:r>`));
+		ok(blocked.schedulerYields < safe.schedulerYields + count / 8, `bounded shared-rId yields: safe=${safe.schedulerYields} blocked=${blocked.schedulerYields}`);
+		ok(blocked.checkpoints < safe.checkpoints + count * 40, `bounded shared-rId checkpoints: safe=${safe.checkpoints} blocked=${blocked.checkpoints}`);
+	});
+
 	test('rejects the 257th placeholder during relationship analysis instead of scanning the tail', async () => {
 		const externalRelationships = Array.from({ length: 1_000 }, (_, index) => `<Relationship Id="external${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/${index}" TargetMode="External"/>`).join('');
 		let schedulerYields = 0;
@@ -809,6 +883,32 @@ suite('ParadisOfficeSanitizer', () => {
 		strictEqual(types.includes('/orphan/payload.bin'), false);
 	});
 
+	test('rebuilds reachability only from retained relationship parts and removes ghost overrides', async () => {
+		const result = await sanitizeMemoryPackage('retained-relationship-graph', {
+			'[Content_Types].xml': contentTypes([
+				['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+				['/word/theme/theme1.xml', 'application/vnd.openxmlformats-officedocument.theme+xml'],
+				['/word/hidden.xml', 'application/xml'],
+				['/ghost/payload.xml', 'application/xml'],
+			]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="theme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>'),
+			'word/theme/theme1.xml': '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Retained"><a:themeElements/></a:theme>',
+			'word/document.xml.rels': relationships('<Relationship Id="fakeRoot" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="hidden.xml"/>'),
+			'word/hidden.xml': '<hidden xmlns="urn:hidden">HIDDEN-GRAPH</hidden>',
+		});
+		const entries = readStoreZipEntries(result.bytes);
+
+		ok(entries.has('word/theme/theme1.xml'));
+		ok(entries.has('word/_rels/document.xml.rels'));
+		strictEqual(entries.has('word/document.xml.rels'), false);
+		strictEqual(entries.has('word/hidden.xml'), false);
+		const types = textOf(entries, '[Content_Types].xml');
+		strictEqual(types.includes('/word/hidden.xml'), false);
+		strictEqual(types.includes('/ghost/payload.xml'), false);
+	});
+
 	test('scans a Word story without a relationships part and replaces every dangling consumer in place', async () => {
 		const result = await sanitizeMemoryPackage('story-without-rels', {
 			'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
@@ -843,6 +943,51 @@ suite('ParadisOfficeSanitizer', () => {
 		ok(sanitized.includes(diagonal));
 		strictEqual(sanitized.includes('blocked'), false);
 		ok(sanitized.includes('Office asset unavailable:'));
+	});
+
+	test('binds placeholder QNames at their insertion parent while retaining shadowed MC and DrawingML bytes', async () => {
+		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+		const geometry = '<wp:anchor data-geometry="shadowed"><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="blocked"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const diagonal = '<q:tcBorders><q:tl2br q:val="single" q:sz="8" q:color="112233"/><q:tr2bl q:val="dashed" q:sz="6" q:color="445566"/></q:tcBorders>';
+		const documentXml = `<q:document xmlns:q="${word}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="wps"><q:body><mc:AlternateContent><mc:Choice Requires="wps"><q:p><w:r xmlns:w="${word}" xmlns:q="urn:shadow"><w:drawing>${geometry}</w:drawing></w:r></q:p></mc:Choice><mc:Fallback><q:p/></mc:Fallback></mc:AlternateContent><q:tbl><q:tr><q:tc><q:tcPr>${diagonal}</q:tcPr><q:p/></q:tc></q:tr></q:tbl></q:body></q:document>`;
+		const result = await sanitizeMemoryPackage('parent-scope-qname', {
+			'[Content_Types].xml': contentTypes([
+				['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+				['/custom/ole.bin', 'application/vnd.openxmlformats-officedocument.oleObject'],
+			]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': documentXml,
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/>'),
+			'custom/ole.bin': 'RAW-OLE',
+		});
+		const sanitized = textOf(readStoreZipEntries(result.bytes), 'word/document.xml');
+
+		parseParadisOfficeXml(sanitized, { depth: 64, nodes: 65_536, attributeLength: 4_096, characters: 8 * 1024 * 1024 });
+		ok(sanitized.includes('</w:r><q:r><q:t>Office asset unavailable:'));
+		ok(sanitized.includes('mc:Ignorable="wps"'));
+		ok(sanitized.includes('<mc:Choice Requires="wps">'));
+		ok(sanitized.includes(geometry.replace(' r:embed="blocked"', '')));
+		ok(sanitized.includes(diagonal));
+	});
+
+	test('declares a fresh nonconflicting Word prefix when an insertion parent has no Word binding', async () => {
+		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+		const documentXml = `<w:document xmlns:w="${word}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><w:body><mc:AlternateContent><mc:Choice xmlns:w="urn:shadow" xmlns:pcw="urn:occupied" Requires="pcw"><q:r xmlns:q="${word}"><q:drawing xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:blip r:embed="blocked"/></q:drawing></q:r></mc:Choice><mc:Fallback><w:p/></mc:Fallback></mc:AlternateContent></w:body></w:document>`;
+		const result = await sanitizeMemoryPackage('fresh-parent-qname', {
+			'[Content_Types].xml': contentTypes([
+				['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+				['/custom/ole.bin', 'application/vnd.openxmlformats-officedocument.oleObject'],
+			]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': documentXml,
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/>'),
+			'custom/ole.bin': 'RAW-OLE',
+		});
+		const sanitized = textOf(readStoreZipEntries(result.bytes), 'word/document.xml');
+
+		parseParadisOfficeXml(sanitized, { depth: 64, nodes: 65_536, attributeLength: 4_096, characters: 8 * 1024 * 1024 });
+		ok(sanitized.includes(`<pcw1:r xmlns:pcw1="${word}"><pcw1:t>Office asset unavailable:`));
+		ok(sanitized.includes('xmlns:pcw="urn:occupied" Requires="pcw"'));
 	});
 
 	test('supports an exact numbering picture-bullet image and strips unsupported non-story consumers', async () => {
