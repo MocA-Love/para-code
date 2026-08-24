@@ -34,7 +34,7 @@ import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/parad
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
-import { ParadisBindingDialogTab, ParadisBindingDialogTabController } from './paradisBindingDialogResources.js';
+import { ParadisBindingDialogPaneListResources, ParadisBindingDialogTab, ParadisBindingDialogTabController } from './paradisBindingDialogResources.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 
@@ -254,6 +254,7 @@ export class ParadisBindingDialog extends Disposable {
 	/** ダイアログ上部 toolbar の強調スタイル切替（seg）ボタン。 */
 	private readonly _hlButtons = new Map<ParadisPaneHighlightStyle, HTMLButtonElement>();
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	private readonly _paneListResources = this._register(new ParadisBindingDialogPaneListResources());
 	private readonly _tabController: ParadisBindingDialogTabController;
 
 	private _filterText = '';
@@ -423,10 +424,10 @@ export class ParadisBindingDialog extends Disposable {
 	private _wireRowHighlight(row: HTMLElement, instanceId: number): void {
 		row.tabIndex = 0;
 		row.dataset['instanceId'] = String(instanceId);
-		this._renderDisposables.add(dom.addDisposableListener(row, dom.EventType.MOUSE_ENTER, () => this._setHoveredPane(instanceId)));
-		this._renderDisposables.add(dom.addDisposableListener(row, dom.EventType.MOUSE_LEAVE, () => this._setHoveredPane(undefined)));
-		this._renderDisposables.add(dom.addDisposableListener(row, 'focusin', () => this._setHoveredPane(instanceId)));
-		this._renderDisposables.add(dom.addDisposableListener(row, 'focusout', () => this._setHoveredPane(undefined)));
+		this._paneListResources.add(dom.addDisposableListener(row, dom.EventType.MOUSE_ENTER, () => this._setHoveredPane(instanceId)));
+		this._paneListResources.add(dom.addDisposableListener(row, dom.EventType.MOUSE_LEAVE, () => this._setHoveredPane(undefined)));
+		this._paneListResources.add(dom.addDisposableListener(row, 'focusin', () => this._setHoveredPane(instanceId)));
+		this._paneListResources.add(dom.addDisposableListener(row, 'focusout', () => this._setHoveredPane(undefined)));
 	}
 
 	/**
@@ -490,6 +491,7 @@ export class ParadisBindingDialog extends Disposable {
 		if (this._store.isDisposed) {
 			return;
 		}
+		this._paneListResources.beginRender();
 		this._renderDisposables.clear();
 
 		this._renderHeaderPills();
@@ -682,6 +684,7 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _renderPaneList(container: HTMLElement): void {
+		this._paneListResources.beginRender();
 		dom.clearNode(container);
 		const filter = this._filterText.trim().toLowerCase();
 		const visible = this._visiblePanes()
@@ -723,7 +726,7 @@ export class ParadisBindingDialog extends Disposable {
 		switchEl.disabled = action === 'disabled';
 		switchEl.setAttribute('aria-label', isUnshareVerb ? STR_SWITCH_UNSHARE_ARIA : STR_SWITCH_SHARE_ARIA);
 		if (action !== 'disabled') {
-			this._renderDisposables.add(dom.addDisposableListener(switchEl, 'change', () => {
+			this._paneListResources.add(dom.addDisposableListener(switchEl, 'change', () => {
 				void this._runRowToggle(pane, switchEl.checked);
 			}));
 		}
