@@ -65,9 +65,10 @@
 	background-color: var(--para-rh-color, transparent);
 }
 
-/* Modern UI (.style-override) は行に角丸を強制するため、色バーが上下端でクリップされて分断される。
- * このビューだけ左2隅の角丸をフラットに戻す (paradisWorkspaceSwitch.css と同じ対策)。 */
-.style-override .para-rh-list .monaco-list .monaco-list-row:not(.separator) {
+/* Modern UI (.modern-ui) は行に角丸を強制するため、色バーが上下端でクリップされて分断される。
+ * このビューだけ左2隅の角丸をフラットに戻す (paradisWorkspaceSwitch.css と同じ対策)。
+ * PARA-PATCH: upstream 1.130 でこのフラグクラスが style-override → modern-ui にリネームされたため追従 */
+.modern-ui .para-rh-list .monaco-list .monaco-list-row:not(.separator) {
 	border-top-left-radius: 0 !important;
 	border-bottom-left-radius: 0 !important;
 }
