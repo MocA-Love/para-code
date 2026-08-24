@@ -344,7 +344,7 @@ export class ParadisChangelogModal extends Disposable {
 			const chip = dom.append(secHead, $('span.para-cl-chip')) as HTMLElement;
 			chip.textContent = section.category;
 			if (chipColor) {
-				chip.style.setProperty('--chip-color', chipColor);
+				chip.style.setProperty('--paradis-chip-color', chipColor);
 			}
 			dom.append(secHead, $('span.para-cl-count')).textContent =
 				localize('paradis.changelog.itemCount', "{0}件", section.items.length);

@@ -22,7 +22,10 @@
 .paradis-preset-editor-dialog {
 	width: 900px;
 	max-width: 94vw;
-	height: min(700px, 88vh);
+	/* allow-any-unicode-next-line */
+	/* 大きなモニタでは高さだけ伸ばす。一覧は1行1プリセット、編集フォームは
+	minmax(150px,190px) 1fr なので、幅を足す先がない。 */
+	height: clamp(min(700px, 88vh), 88vh, 1200px);
 	min-height: 420px;
 	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);

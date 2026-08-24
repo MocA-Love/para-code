@@ -1213,6 +1213,7 @@
 		"--para-rh-color",
 		"--paradis-agent-color",
 		"--paradis-agent-live-row-height",
+		"--paradis-chip-color",
 		"--paradis-cursor-duration",
 		"--paradis-pr-color",
 		"--paradis-preset-cluster-flyout-max-width",
