@@ -521,7 +521,7 @@ suite('ParadisOfficeSourceBroker', () => {
 
 	test('rejects malformed writable capabilities returned by begin without leaking dependency data', async () => {
 		const spoolClient = new TestSpoolClient();
-		spoolClient.begin = async () => ({ id: '/raw/private', ownerId: 'secret-token', nonce: 'bad' });
+		spoolClient.begin = async () => ({ id: '/raw/private', ownerId: 'secret-token', nonce: 'bad', attemptId: '00000000-0000-4000-8000-000000000001' });
 		await rejectsSafeBrokerError(
 			() => createBroker(sourceProvider([VSBuffer.fromString('abcdef')]), spoolClient).broker.open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None),
 			'spoolFailure',
@@ -530,7 +530,7 @@ suite('ParadisOfficeSourceBroker', () => {
 
 	test('disposes an identifiable but non-exact begin attempt before returning a safe broker error', async () => {
 		const spoolClient = new TestSpoolClient();
-		spoolClient.begin = async () => ({ id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64), path: '/raw/private/spool' });
+		spoolClient.begin = async () => ({ id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64), attemptId: '00000000-0000-4000-8000-000000000001', path: '/raw/private/spool' });
 		await rejectsSafeBrokerError(
 			() => createBroker(sourceProvider([VSBuffer.fromString('abcdef')]), spoolClient).broker.open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None),
 			'spoolFailure',
@@ -679,7 +679,7 @@ suite('ParadisOfficeSourceBroker', () => {
 			},
 			{
 				name: 'sealed snapshot mismatch', descriptor: descriptor('gitCommit', 'git:/doc'),
-				create: source => { const client = new TestSpoolClient(); client.seal = async (_reference, request) => new Proxy({ id: 'c'.repeat(48), ownerId, nonce: 'b'.repeat(64), ...request }, { getOwnPropertyDescriptor(target, property) { if (property === 'id') { source.cancel(); } return Reflect.getOwnPropertyDescriptor(target, property); } }); return createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker; },
+				create: source => { const client = new TestSpoolClient(); client.seal = async (reference, request) => new Proxy({ id: 'c'.repeat(48), ownerId, nonce: 'b'.repeat(64), attemptId: reference.attemptId, ...request }, { getOwnPropertyDescriptor(target, property) { if (property === 'id') { source.cancel(); } return Reflect.getOwnPropertyDescriptor(target, property); } }); return createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker; },
 			},
 		];
 		for (const testCase of cases) {
@@ -777,9 +777,9 @@ suite('ParadisOfficeSourceBroker', () => {
 		const cancellation = new CancellationTokenSource();
 		let capabilityReads = 0;
 		const client = new TestSpoolClient();
-		client.begin = async () => {
+		client.begin = async (_ownerId, attemptId) => {
 			cancellation.cancel();
-			return new Proxy({ id: 'c'.repeat(48), ownerId: 'victim-window', nonce: 'd'.repeat(64) }, { ownKeys() { capabilityReads++; throw new Error('/raw/private capability trap'); } });
+			return new Proxy({ id: 'c'.repeat(48), ownerId: 'victim-window', nonce: 'd'.repeat(64), attemptId }, { ownKeys() { capabilityReads++; throw new Error('/raw/private capability trap'); } });
 		};
 		await rejects(() => createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker.open(descriptor('gitCommit', 'git:/doc'), cancellation.token), error => error instanceof CancellationError);
 		strictEqual(capabilityReads, 0);
@@ -844,7 +844,7 @@ suite('ParadisOfficeSourceBroker', () => {
 		const cancellation = new CancellationTokenSource();
 		let requestedDelay = 0;
 		const client = new TestSpoolClient();
-		client.begin = async () => { cancellation.cancel(); return { id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64) }; };
+		client.begin = async (_ownerId, attemptId) => { cancellation.cancel(); return { id: 'a'.repeat(48), ownerId, nonce: 'b'.repeat(64), attemptId }; };
 		client.disposeAttempt = () => new Promise<void>(() => undefined);
 		const broker = new ParadisOfficeSourceBroker({
 			ownerId, platform: 'desktopLocal', provider: sourceProvider([VSBuffer.fromString('x')]), spoolClient: client, createHash: () => new TestHash(), isRemoteProtocolV1: () => false,

@@ -647,7 +647,7 @@ suite('OfficeSpoolStore', () => {
 		const attempt = '00000000-0000-4000-8000-0000000000aa';
 		await rejects(() => store.begin(ownerA, 'not-a-uuid'), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
 		await rejects(() => store.begin(ownerA, attempt.toUpperCase()), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
-		const reference = await store.begin(ownerA, attempt);
+		await store.begin(ownerA, attempt);
 		await rejects(() => store.begin(ownerA, attempt), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
 		const otherOwner = await store.begin(ownerB, attempt);
 		await store.disposeAttempt(ownerA, attempt);
