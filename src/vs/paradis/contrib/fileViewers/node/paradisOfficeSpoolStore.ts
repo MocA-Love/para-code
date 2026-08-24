@@ -46,9 +46,11 @@ export type OfficeSpoolStoreErrorCode =
 
 export class OfficeSpoolStoreError extends Error {
 	override readonly name = 'OfficeSpoolStoreError';
+	readonly code: OfficeSpoolStoreErrorCode;
 
-	constructor(readonly code: OfficeSpoolStoreErrorCode) {
+	constructor(code: OfficeSpoolStoreErrorCode) {
 		super('The Office spool operation was rejected.');
+		this.code = officeSpoolStoreErrorCodes.includes(code) ? code : 'invalidReference';
 		Object.defineProperty(this, 'stack', { configurable: true, value: '' });
 	}
 }
@@ -98,6 +100,7 @@ function validLimit(value: number): boolean {
 }
 
 const MAX_RANDOM_ID_ATTEMPTS = 64;
+const officeSpoolStoreErrorCodes: readonly OfficeSpoolStoreErrorCode[] = ['invalidReference', 'clientQuota', 'globalQuota', 'chunkTooLarge', 'sourceByteQuota', 'globalByteQuota', 'notWritable', 'notSealed', 'integrityMismatch', 'invalidRange', 'invalidChunk', 'initializationFailed', 'randomnessUnavailable'];
 
 /** Backend-local one-shot sealed spool store. It never exposes a filesystem path. */
 export class OfficeSpoolStore implements IOfficeSpoolClient {
@@ -442,7 +445,7 @@ function safeStoreErrorCode(value: unknown): OfficeSpoolStoreErrorCode | undefin
 		if (!(value instanceof OfficeSpoolStoreError)) {
 			return undefined;
 		}
-		return value.code;
+		return officeSpoolStoreErrorCodes.includes(value.code) ? value.code : undefined;
 	} catch {
 		return undefined;
 	}
