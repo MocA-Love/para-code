@@ -10,7 +10,6 @@ import type { IDisposable } from '../../../../../base/common/lifecycle.js';
 import {
 	PARADIS_OFFICE_BUDGET_PROFILES,
 	type ParadisOfficeBudgetProfile,
-	isOfficeSerializableData,
 } from '../../common/paradisOfficeProtocol.js';
 
 export const PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS = 250;
@@ -65,21 +64,23 @@ export interface OfficeWorkerHostOptions {
 	readonly accountant?: OfficeMemoryAccountant;
 }
 
-export interface OfficeMemorySnapshot { readonly limitBytes: number; readonly workerBytes: number; readonly cacheBytes: number; readonly spoolBytes: number; readonly derivedAssetBytes: number; readonly totalBytes: number }
+export interface OfficeMemorySnapshot { readonly limitBytes: number; readonly workerBytes: number; readonly cacheBytes: number; readonly handleBytes: number; readonly spoolBytes: number; readonly derivedAssetBytes: number; readonly totalBytes: number }
 /** Shared safe-integer memory ledger. Task 3/6 own spool and asset updates; workers own reservations. */
 export class OfficeMemoryAccountant {
 	private workerBytes = 0;
 	private cacheBytes = 0;
+	private handleBytes = 0;
 	private spoolBytes = 0;
 	private derivedAssetBytes = 0;
 	constructor(readonly limitBytes: number) { if (!safeInteger(limitBytes)) { throw new TypeError('Invalid Office memory limit'); } }
 	setCache(bytes: number): void { this.cacheBytes = this.valid(bytes); }
+	setHandles(bytes: number): void { this.handleBytes = this.valid(bytes); }
 	setSpool(bytes: number): void { this.spoolBytes = this.valid(bytes); }
 	setDerivedAssets(bytes: number): void { this.derivedAssetBytes = this.valid(bytes); }
 	reserveWorker(bytes: number): boolean { const total = this.total() + this.valid(bytes); if (!safeInteger(total) || total > this.limitBytes) { return false; } this.workerBytes += bytes; return true; }
 	releaseWorker(bytes: number): void { bytes = this.valid(bytes); this.workerBytes = Math.max(0, this.workerBytes - bytes); }
-	snapshot(): OfficeMemorySnapshot { return { limitBytes: this.limitBytes, workerBytes: this.workerBytes, cacheBytes: this.cacheBytes, spoolBytes: this.spoolBytes, derivedAssetBytes: this.derivedAssetBytes, totalBytes: this.total() }; }
-	private total(): number { const total = this.workerBytes + this.cacheBytes + this.spoolBytes + this.derivedAssetBytes; return safeInteger(total) ? total : Number.MAX_SAFE_INTEGER; }
+	snapshot(): OfficeMemorySnapshot { return { limitBytes: this.limitBytes, workerBytes: this.workerBytes, cacheBytes: this.cacheBytes, handleBytes: this.handleBytes, spoolBytes: this.spoolBytes, derivedAssetBytes: this.derivedAssetBytes, totalBytes: this.total() }; }
+	private total(): number { const total = this.workerBytes + this.cacheBytes + this.handleBytes + this.spoolBytes + this.derivedAssetBytes; return safeInteger(total) ? total : Number.MAX_SAFE_INTEGER; }
 	private valid(bytes: number): number { if (!safeInteger(bytes)) { throw new TypeError('Invalid Office memory bytes'); } return bytes; }
 }
 
@@ -100,7 +101,7 @@ interface PendingJob<T> {
 	readonly token: CancellationToken;
 	readonly reservationBytes: number;
 	readonly queueDeadline: number;
-	readonly operationDeadline: number;
+	operationDeadline: number;
 	readonly workerId?: string;
 	readonly queuedAt: number;
 	readonly resolve: (outcome: OfficeWorkerOutcome<T>) => void;
@@ -110,6 +111,8 @@ interface PendingJob<T> {
 	cancelTimer?: unknown;
 	reapTimer?: unknown;
 	pendingOutcome?: OfficeWorkerOutcome<T>;
+	settled: boolean;
+	orphaned: boolean;
 	worker?: IOfficeWorker;
 	workerListeners?: readonly IDisposable[];
 	state: 'queued' | 'running' | 'cancelling' | 'finished';
@@ -184,6 +187,7 @@ export class OfficeWorkerHost {
 	private readonly pending: PendingJob<object>[] = [];
 	private readonly active = new Set<PendingJob<object>>();
 	private requestSequence = 0;
+	private lastNow = 0;
 	private disposed = false;
 
 	constructor(options: OfficeWorkerHostOptions = {}) {
@@ -212,8 +216,8 @@ export class OfficeWorkerHost {
 		return new Promise<OfficeWorkerOutcome<T>>(resolve => {
 			const requestId = String(++this.requestSequence);
 			const job: PendingJob<T> = {
-				requestId, operation, ownerId, source: safeSource, budget: safeBudget, token, reservationBytes, queueDeadline: this.deadline(PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS), operationDeadline: this.deadline(operationDeadline(operation, safeBudget)), ...(options.workerId ? { workerId: options.workerId } : {}), queuedAt: this.safeNow(), resolve,
-				cancellationListener: token.onCancellationRequested(() => this.cancel(job as unknown as PendingJob<object>)), state: 'queued', released: false, terminal: undefined,
+				requestId, operation, ownerId, source: safeSource, budget: safeBudget, token, reservationBytes, queueDeadline: this.deadline(PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS), operationDeadline: 0, ...(options.workerId ? { workerId: options.workerId } : {}), queuedAt: this.safeNow(), resolve,
+				cancellationListener: token.onCancellationRequested(() => this.cancel(job as unknown as PendingJob<object>)), state: 'queued', released: false, terminal: undefined, settled: false, orphaned: false,
 			};
 			job.queueTimer = this.setTimer(() => this.finish(job as unknown as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS);
 			this.pending.push(job as unknown as PendingJob<object>);
@@ -251,6 +255,7 @@ export class OfficeWorkerHost {
 
 	private start(job: PendingJob<object>): void {
 		if (this.expired(job.queueDeadline)) { this.finish(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
+		job.operationDeadline = this.deadline(operationDeadline(job.operation, job.budget));
 		job.state = 'running';
 		this.active.add(job);
 		if (job.queueTimer !== undefined) { this.clearTimer(job.queueTimer); job.queueTimer = undefined; }
@@ -262,6 +267,7 @@ export class OfficeWorkerHost {
 			worker.onError(() => this.workerStopped(job)),
 			worker.onExit(() => this.workerStopped(job)),
 		];
+		if (job.state === 'finished') { return; }
 		job.deadlineTimer = this.setTimer(() => {
 			job.terminal = 'blocked';
 			this.reap(job, { outcome: 'blocked', error: 'limitExceeded' });
@@ -327,15 +333,23 @@ export class OfficeWorkerHost {
 		if (job.cancelTimer !== undefined) { this.clearTimer(job.cancelTimer); job.cancelTimer = undefined; }
 		if (!job.worker) { this.finish(job, outcome); return; }
 		try {
-			job.reapTimer = this.setTimer(() => this.finish(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
+			job.reapTimer = this.setTimer(() => this.orphan(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
 			const termination = job.worker.terminate();
 			void Promise.resolve(termination).then(
 				() => this.finish(job, outcome),
-				() => this.finish(job, outcome),
+				() => this.orphan(job, outcome),
 			);
 		} catch {
-			this.finish(job, outcome);
+			this.orphan(job, outcome);
 		}
+	}
+
+	private orphan(job: PendingJob<object>, outcome: OfficeWorkerOutcome<object>): void {
+		if (job.state === 'finished' || job.settled) { return; }
+		job.orphaned = true;
+		job.settled = true;
+		try { job.cancellationListener.dispose(); } catch { }
+		job.resolve(outcome);
 	}
 
 	private finish(job: PendingJob<object>, outcome: OfficeWorkerOutcome<object>): void {
@@ -345,13 +359,10 @@ export class OfficeWorkerHost {
 		if (queuedIndex >= 0) { this.pending.splice(queuedIndex, 1); }
 		this.active.delete(job);
 		if (!job.released) { job.released = true; this.accountant?.releaseWorker(job.reservationBytes); }
-		if (job.queueTimer !== undefined) { this.clearTimer(job.queueTimer); }
-		if (job.deadlineTimer !== undefined) { this.clearTimer(job.deadlineTimer); }
-		if (job.cancelTimer !== undefined) { this.clearTimer(job.cancelTimer); }
-		if (job.reapTimer !== undefined) { this.clearTimer(job.reapTimer); }
-		job.cancellationListener.dispose();
-		for (const listener of job.workerListeners ?? []) { listener.dispose(); }
-		job.resolve(outcome);
+		for (const timer of [job.queueTimer, job.deadlineTimer, job.cancelTimer, job.reapTimer]) { try { if (timer !== undefined) { this.clearTimer(timer); } } catch { } }
+		try { job.cancellationListener.dispose(); } catch { }
+		for (const listener of job.workerListeners ?? []) { try { listener.dispose(); } catch { } }
+		if (!job.settled) { job.settled = true; job.resolve(outcome); }
 		this.pump();
 	}
 
@@ -404,17 +415,62 @@ export class OfficeWorkerHost {
 	}
 
 	private validWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown): value is object {
-		if (!isOfficeSerializableData(value)) { return false; }
-		if (operation !== 'inspect') { return true; }
+		// The operation-specific snapshots below use descriptor-only reads and reject all unknown
+		// fields. They are the boundary validation for Task 4 inventory objects.
+		if (operation === 'parse' || operation === 'diff') { return this.validHandleSummary(operation, value); }
+		try {
+			if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).length !== 1 || !Object.prototype.hasOwnProperty.call(value, 'inventory')) { return false; }
+			const inventoryDescriptor = Object.getOwnPropertyDescriptor(value, 'inventory');
+			if (!inventoryDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(inventoryDescriptor, 'value')) { return false; }
+		} catch { return false; }
 		const inventory = dataField(value, 'inventory');
-		if (!inventory || typeof inventory !== 'object' || !Array.isArray(dataField(inventory, 'parts')) || !Array.isArray(dataField(inventory, 'relationships')) || !Array.isArray(dataField(inventory, 'features'))
-			|| typeof dataField(inventory, 'format') !== 'string' || typeof dataField(inventory, 'container') !== 'string'
-			|| typeof dataField(inventory, 'outcome') !== 'string' || !dataField(inventory, 'completeness')) { return false; }
+		return this.validInventory(inventory);
+	}
+
+	private validInventory(value: unknown): boolean {
+		const allowed = new Set(['format', 'container', 'parts', 'relationships', 'features', 'security', 'budgetProfile', 'budgetUsage', 'outcome', 'completeness', 'warnings']);
+		if (!this.exactRecord(value, allowed)) { return false; }
+		const format = dataField(value, 'format');
+		const container = dataField(value, 'container');
+		const outcome = dataField(value, 'outcome');
+		const parts = dataField(value, 'parts');
+		const relationships = dataField(value, 'relationships');
+		const features = dataField(value, 'features');
+		if (!['xlsx', 'xlsm', 'docx', 'docm', 'pptx', 'pptm', 'zip', 'unknown'].includes(format as string) || container !== 'opc' || !['complete', 'degraded', 'blocked'].includes(outcome as string) || !Array.isArray(parts) || !Array.isArray(relationships) || !Array.isArray(features)) { return false; }
+		const completeness = dataField(value, 'completeness');
+		if (!this.exactRecord(completeness, new Set(['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits', 'terminal']))) { return false; }
+		const counters = ['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits'].map(name => dataField(completeness, name));
+		if (counters.some(counter => !safeInteger(counter)) || dataField(completeness, 'terminal') !== true) { return false; }
+		const [expected, visited, parsed, opaque, failed, omitted] = counters as number[];
+		if (expected !== visited || visited !== parsed + opaque + failed + omitted) { return false; }
+		return parts.every(part => this.validPart(part)) && relationships.every(relationship => this.exactRecord(relationship, new Set(['id', 'sourcePartId', 'type', 'target', 'targetMode', 'missing', 'cyclic'])))
+			&& features.every(feature => this.exactRecord(feature, new Set(['kind', 'partIds', 'supported', 'safe'])));
+	}
+
+	private validPart(value: unknown): boolean {
+		if (!this.exactRecord(value, new Set(['id', 'canonicalUri', 'contentType', 'compressedBytes', 'expandedBytes', 'required', 'coverage', 'rawHash', 'hashCompleteness', 'canonicalHash', 'fingerprint']))) { return false; }
+		const coverage = dataField(value, 'coverage');
+		if (!['parsed', 'partial', 'opaque', 'completeOpaque', 'unsafe', 'failed', 'omittedByBudget'].includes(coverage as string) || typeof dataField(value, 'id') !== 'string' || typeof dataField(value, 'canonicalUri') !== 'string' || typeof dataField(value, 'contentType') !== 'string' || !safeInteger(dataField(value, 'compressedBytes')) || !safeInteger(dataField(value, 'expandedBytes')) || typeof dataField(value, 'required') !== 'boolean') { return false; }
+		if (coverage === 'parsed' || coverage === 'completeOpaque') {
+			const hash = dataField(value, coverage === 'parsed' ? 'rawHash' : 'fingerprint');
+			return this.exactRecord(hash, new Set(['algorithm', 'value', 'byteLength'])) && dataField(hash, 'algorithm') === 'sha256' && typeof dataField(hash, 'value') === 'string' && /^[a-f\d]{64}$/i.test(dataField(hash, 'value') as string) && safeInteger(dataField(hash, 'byteLength')) && dataField(value, 'hashCompleteness') === 'allBytes';
+		}
 		return true;
 	}
 
+	private validHandleSummary(operation: 'parse' | 'diff', value: unknown): boolean {
+		if (!this.exactRecord(value, new Set(['operation', 'handle', 'outcome', 'completeness', 'capabilities', 'changes']))) { return false; }
+		const handle = dataField(value, 'handle');
+		return dataField(value, 'operation') === operation && this.exactRecord(handle, new Set(['kind', 'id'])) && (dataField(handle, 'kind') === 'document' || dataField(handle, 'kind') === 'comparison') && typeof dataField(handle, 'id') === 'string' && ['complete', 'degraded'].includes(dataField(value, 'outcome') as string) && !!dataField(value, 'completeness');
+	}
+
+	private exactRecord(value: unknown, allowed: ReadonlySet<string>): boolean {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) { return false; }
+		try { const prototype = Object.getPrototypeOf(value); const keys = Reflect.ownKeys(value); return (prototype === Object.prototype || prototype === null) && keys.length > 0 && keys.every(key => typeof key === 'string' && allowed.has(key) && !!Object.getOwnPropertyDescriptor(value, key)?.enumerable && Object.prototype.hasOwnProperty.call(Object.getOwnPropertyDescriptor(value, key), 'value')); } catch { return false; }
+	}
+
 	private safeNow(): number {
-		try { const value = this.now(); return safeInteger(value) ? value : 0; } catch { return 0; }
+		try { const value = this.now(); if (!safeInteger(value)) { return this.lastNow; } this.lastNow = Math.max(this.lastNow, value); return this.lastNow; } catch { return this.lastNow; }
 	}
 	private deadline(delay: number): number { const now = this.safeNow(); const result = now + delay; return safeInteger(result) ? result : 0; }
 	private expired(deadline: number): boolean { const now = this.safeNow(); return deadline === 0 || now >= deadline; }
