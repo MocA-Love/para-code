@@ -12,7 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 import { OfficeHandleStore } from '../../node/office/paradisOfficeHandleStore.js';
-import { OfficeMemoryAccountant, OfficeWorkerHost, type IOfficeWorker } from '../../node/office/paradisOfficeWorkerHost.js';
+import { OfficeMemoryAccountant, OfficeWorkerHost, projectOfficeWorkerResult, type IOfficeWorker } from '../../node/office/paradisOfficeWorkerHost.js';
 
 class FakeClock {
 	private now = 0;
@@ -263,6 +263,31 @@ suite('ParadisOfficeWorkerHost', () => {
 			worker.emit({ kind: 'result', requestId: '1', value: { inventory } });
 			assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
 		}
+	});
+
+	test('projects exact depth and JSON-byte boundaries through the worker projector seam', () => {
+
+		const warnings = Array.from({ length: 508 }, () => ({ code: 'a', message: 'x'.repeat(4096) }));
+		assert.notStrictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...inspectInventory(), warnings } }), undefined);
+		warnings.push({ code: 'a', message: 'x'.repeat(4096) });
+		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...inspectInventory(), warnings } }), undefined);
+	});
+
+	test('rejects hash coverage and operation-handle inversions at the projector seam', () => {
+		const fingerprint = { algorithm: 'sha256', value: 'a'.repeat(64), byteLength: 1 };
+		const base = { id: '/a', canonicalUri: '/a', contentType: 'x', compressedBytes: 1, expandedBytes: 1, required: false };
+		const opaque = { ...inspectInventory(), parts: [{ ...base, coverage: 'completeOpaque', hashCompleteness: 'allBytes', fingerprint }] };
+		opaque.completeness = { ...completeness(), expectedParts: 1, visitedParts: 1, opaqueParts: 1, expectedSemanticUnits: 1, visitedSemanticUnits: 1 };
+		assert.notStrictEqual(projectOfficeWorkerResult('inspect', { inventory: opaque }), undefined);
+		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...opaque, parts: [{ ...base, coverage: 'completeOpaque', hashCompleteness: 'allBytes', rawHash: fingerprint }] } }), undefined);
+		const parsed = { ...inspectInventory(), parts: [{ ...base, coverage: 'parsed', hashCompleteness: 'allBytes', rawHash: fingerprint }] };
+		parsed.completeness = { ...completeness(), expectedParts: 1, visitedParts: 1, parsedParts: 1, expectedSemanticUnits: 1, visitedSemanticUnits: 1 };
+		assert.notStrictEqual(projectOfficeWorkerResult('inspect', { inventory: parsed }), undefined);
+		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...parsed, parts: [{ ...base, coverage: 'parsed', hashCompleteness: 'allBytes', fingerprint }] } }), undefined);
+		const parse = parseSummary();
+		assert.notStrictEqual(projectOfficeWorkerResult('parse', parse), undefined);
+		assert.strictEqual(projectOfficeWorkerResult('parse', { ...parse, handle: { kind: 'comparison', id: 'x' } }), undefined);
+		assert.strictEqual(projectOfficeWorkerResult('diff', { ...parse, operation: 'diff', handle: { kind: 'document', id: 'x' } }), undefined);
 	});
 
 	test('rejects extra, path-bearing, and Proxy worker summaries', async () => {
