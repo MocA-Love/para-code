@@ -36,6 +36,23 @@ interface RawXmlAttribute {
 	readonly value: string;
 }
 
+class XmlValueBuilder {
+	private readonly chunks: string[] = [];
+	private pending = '';
+
+	append(character: string): void {
+		this.pending += character;
+		if (this.pending.length >= 4096) {
+			this.chunks.push(this.pending);
+			this.pending = '';
+		}
+	}
+
+	build(): string {
+		return this.chunks.length === 0 ? this.pending : [...this.chunks, this.pending].join('');
+	}
+}
+
 /**
  * Parses the deliberately small XML subset accepted from an untrusted Office package.
  * It does not depend on DOM, Node, or a streaming parser so adapters have identical output.
@@ -203,7 +220,7 @@ class ParadisOfficeXmlParser {
 	}
 
 	private parseText(): void {
-		const value = this.parseCharacterData(false);
+		const value = this.parseCharacterData(false, this.stack.length > 0);
 		if (this.stack.length === 0) {
 			if (!isXmlWhitespace(value)) {
 				this.malformed();
@@ -220,17 +237,17 @@ class ParadisOfficeXmlParser {
 		for (const character of '<![CDATA[') {
 			this.consume(character);
 		}
-		let value = '';
+		const value = new XmlValueBuilder();
 		while (!this.startsWith(']]>')) {
 			if (this.index >= this.xml.length) {
 				this.malformed();
 			}
-			value += this.consumeCodePoint();
+			this.appendCharacter(value, this.consumeCodePoint());
 		}
 		this.consume(']');
 		this.consume(']');
 		this.consume('>');
-		this.appendText(value);
+		this.appendText(value.build());
 	}
 
 	private parseComment(): void {
@@ -254,12 +271,13 @@ class ParadisOfficeXmlParser {
 		this.consume('<');
 		this.consume('?');
 		const target = this.parseName();
-		const isDeclaration = target === 'xml';
-		if (target.toLowerCase() === 'xml' && !isDeclaration || isDeclaration && (!atStart || seenDeclaration)) {
-			this.malformed();
-		}
-		if (isDeclaration && !isXmlWhitespaceCharacter(this.peek())) {
-			this.malformed();
+		if (target.toLowerCase() === 'xml') {
+			if (target !== 'xml' || !atStart || seenDeclaration) {
+				this.malformed();
+			}
+			this.parseXmlDeclaration();
+			this.recordEvent();
+			return true;
 		}
 		while (!this.startsWith('?>')) {
 			if (this.index >= this.xml.length) {
@@ -270,7 +288,84 @@ class ParadisOfficeXmlParser {
 		this.consume('?');
 		this.consume('>');
 		this.recordEvent();
-		return seenDeclaration || isDeclaration;
+		return seenDeclaration;
+	}
+
+	private parseXmlDeclaration(): void {
+		if (!this.skipWhitespace()) {
+			this.malformed();
+		}
+		this.parseXmlDeclarationField('version', '1.0');
+		if (this.startsWith('?>')) {
+			this.consume('?');
+			this.consume('>');
+			return;
+		}
+		if (!this.skipWhitespace()) {
+			this.malformed();
+		}
+		if (this.startsWith('?>')) {
+			this.consume('?');
+			this.consume('>');
+			return;
+		}
+		const second = this.parseName();
+		if (second === 'encoding') {
+			const encoding = this.parseXmlDeclarationValue();
+			if (encoding !== 'UTF-8' && encoding !== 'utf8') {
+				this.malformed();
+			}
+			if (this.startsWith('?>')) {
+				this.consume('?');
+				this.consume('>');
+				return;
+			}
+			if (!this.skipWhitespace()) {
+				this.malformed();
+			}
+			if (this.startsWith('?>')) {
+				this.consume('?');
+				this.consume('>');
+				return;
+			}
+		}
+		const third = second === 'standalone' ? second : this.parseName();
+		if (third !== 'standalone') {
+			this.malformed();
+		}
+		const standalone = this.parseXmlDeclarationValue();
+		if (standalone !== 'yes' && standalone !== 'no') {
+			this.malformed();
+		}
+		this.skipWhitespace();
+		this.consume('?');
+		this.consume('>');
+	}
+
+	private parseXmlDeclarationField(name: string, expected: string): void {
+		if (this.parseName() !== name || this.parseXmlDeclarationValue() !== expected) {
+			this.malformed();
+		}
+	}
+
+	private parseXmlDeclarationValue(): string {
+		this.skipWhitespace();
+		this.consume('=');
+		this.skipWhitespace();
+		const quote = this.peek();
+		if (quote !== '"' && quote !== '\'') {
+			this.malformed();
+		}
+		this.consume(quote);
+		const value = new XmlValueBuilder();
+		while (this.peek() !== quote) {
+			if (this.index >= this.xml.length || this.peek() === '<') {
+				this.malformed();
+			}
+			value.append(this.consumeCodePoint());
+		}
+		this.consume(quote);
+		return value.build();
 	}
 
 	private parseAttributeValue(): string {
@@ -279,49 +374,59 @@ class ParadisOfficeXmlParser {
 			this.malformed();
 		}
 		this.consume(quote);
-		let value = '';
+		const value = new XmlValueBuilder();
+		let attributeCharacters = 0;
 		while (this.peek() !== quote) {
 			if (this.index >= this.xml.length || this.peek() === '<') {
 				this.malformed();
 			}
-			value += this.peek() === '&' ? this.parseEntity() : this.consumeCodePoint();
+			const character = this.peek() === '&' ? this.parseEntity() : this.normalizeAttributeLiteral(this.consumeCodePoint());
+			attributeCharacters += character.length;
+			if (attributeCharacters > this.limits.attributeLength) {
+				throw new ParadisOfficePackageError('limitExceeded');
+			}
+			this.recordCharacters(character.length);
+			value.append(character);
 		}
 		this.consume(quote);
-		if (value.length > this.limits.attributeLength) {
-			throw new ParadisOfficePackageError('limitExceeded');
-		}
-		return value;
+		return value.build();
 	}
 
-	private parseCharacterData(cdata: boolean): string {
-		let value = '';
+	private parseCharacterData(cdata: boolean, countCharacters: boolean): string {
+		const value = new XmlValueBuilder();
 		while (this.index < this.xml.length && this.peek() !== '<') {
 			if (!cdata && this.startsWith(']]>')) {
 				this.malformed();
 			}
-			value += this.peek() === '&' ? this.parseEntity() : this.consumeCodePoint();
+			const character = this.peek() === '&' ? this.parseEntity() : this.consumeCodePoint();
+			if (countCharacters) {
+				this.appendCharacter(value, character);
+			} else {
+				value.append(character);
+			}
 		}
-		return value;
+		return value.build();
 	}
 
 	private parseEntity(): string {
 		this.consume('&');
-		let encoded = '';
+		const encoded = new XmlValueBuilder();
 		while (this.peek() !== ';') {
 			if (this.index >= this.xml.length || this.peek() === '<' || this.peek() === '&') {
 				this.malformed();
 			}
-			encoded += this.consumeCodePoint();
+			encoded.append(this.consumeCodePoint());
 		}
 		this.consume(';');
-		if (encoded === 'amp') { return '&'; }
-		if (encoded === 'lt') { return '<'; }
-		if (encoded === 'gt') { return '>'; }
-		if (encoded === 'quot') { return '"'; }
-		if (encoded === 'apos') { return '\''; }
-		if (encoded.startsWith('#x') || encoded.startsWith('#')) {
-			const digits = encoded.startsWith('#x') ? encoded.slice(2) : encoded.slice(1);
-			const radix = encoded[1] === 'x' ? 16 : 10;
+		const value = encoded.build();
+		if (value === 'amp') { return '&'; }
+		if (value === 'lt') { return '<'; }
+		if (value === 'gt') { return '>'; }
+		if (value === 'quot') { return '"'; }
+		if (value === 'apos') { return '\''; }
+		if (value.startsWith('#x') || value.startsWith('#')) {
+			const digits = value.startsWith('#x') ? value.slice(2) : value.slice(1);
+			const radix = value[1] === 'x' ? 16 : 10;
 			if (!digits || !isNumber(digits, radix)) {
 				this.malformed();
 			}
@@ -404,12 +509,25 @@ class ParadisOfficeXmlParser {
 	}
 
 	private appendText(value: string): void {
-		this.characters += value.length;
+		(this.stack[this.stack.length - 1].node.children as ParadisOfficeXmlNode[]).push({ kind: 'text', value });
+		this.recordEvent();
+	}
+
+	private appendCharacter(value: XmlValueBuilder, character: string): void {
+		this.recordCharacters(character.length);
+		value.append(character);
+	}
+
+	private recordCharacters(length: number): void {
+		// The document character budget covers decoded text and attribute values, not XML markup or names.
+		this.characters += length;
 		if (this.characters > this.limits.characters) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
-		(this.stack[this.stack.length - 1].node.children as ParadisOfficeXmlNode[]).push({ kind: 'text', value });
-		this.recordEvent();
+	}
+
+	private normalizeAttributeLiteral(character: string): string {
+		return character === '\t' || character === '\n' ? ' ' : character;
 	}
 
 	private skipWhitespace(): boolean {
@@ -435,6 +553,13 @@ class ParadisOfficeXmlParser {
 		}
 		const character = String.fromCodePoint(codePoint);
 		this.index += character.length;
+		if (codePoint === 0xd) {
+			if (this.peek() === '\n') {
+				this.index++;
+			}
+			this.checkpointIfNeeded();
+			return '\n';
+		}
 		this.checkpointIfNeeded();
 		return character;
 	}
@@ -551,7 +676,7 @@ export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relati
 		checkpoint?.();
 		if (node.kind === 'text') { return !preserve && !node.value.trim() ? '' : `{${JSON.stringify(node.value)}}`; }
 		const nextPreserve = preserve || node.attributes.some(attribute => attribute.uri === 'http://www.w3.org/XML/1998/namespace' && attribute.local === 'space' && attribute.value === 'preserve');
-		const attributes = node.attributes.map(attribute => ({ name: `{${attribute.uri}}${attribute.local}`, value: attribute.local === 'id' ? relationshipResolver(attribute.value) ?? `unresolved:${attribute.value}` : attribute.value })).sort((left, right) => left.name.localeCompare(right.name) || left.value.localeCompare(right.value));
+		const attributes = node.attributes.map(attribute => ({ name: `{${attribute.uri}}${attribute.local}`, value: isOfficeRelationshipAttribute(attribute) ? relationshipResolver(attribute.value) ?? `unresolved:${attribute.value}` : attribute.value })).sort((left, right) => left.name.localeCompare(right.name) || left.value.localeCompare(right.value));
 		const bindings = { ...inheritedBindings, ...(node.namespaceBindings ?? {}) };
 		const mcBranches = node.children.filter((child): child is Extract<ParadisOfficeXmlNode, { kind: 'element' }> => child.kind === 'element' && child.uri === markupCompatibilityNamespace && (child.local === 'Choice' || child.local === 'Fallback'));
 		let children: string;
@@ -578,11 +703,20 @@ export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relati
 }
 
 const markupCompatibilityNamespace = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+const officeRelationshipNamespaces = new Set([
+	'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+	'http://purl.oclc.org/ooxml/officeDocument/relationships',
+]);
 const supportedMarkupCompatibilityNamespaces = new Set([
 	'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
 	'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
 	'http://schemas.openxmlformats.org/drawingml/2006/main',
 ]);
+
+function isOfficeRelationshipAttribute(attribute: { readonly uri: string; readonly local: string }): boolean {
+
+	return attribute.local === 'id' && officeRelationshipNamespaces.has(attribute.uri);
+}
 
 function selectMarkupCompatibilityBranch(branches: readonly Extract<ParadisOfficeXmlNode, { kind: 'element' }>[], inheritedBindings: Readonly<Record<string, string>>): Extract<ParadisOfficeXmlNode, { kind: 'element' }> {
 
@@ -615,6 +749,7 @@ function validateLimits(limits: ParadisOfficeXmlLimits): void {
 function sha256Fingerprint(value: string): ParadisOfficeFingerprint {
 
 	const bytes = new TextEncoder().encode(value);
+	// The parser's byte and character budgets keep canonical strings far below SHA-256's 2^32-bit length-field boundary.
 	const words: number[] = [];
 	for (let index = 0; index < bytes.length; index++) {
 		words[index >> 2] = (words[index >> 2] ?? 0) | (bytes[index] << (24 - (index % 4) * 8));

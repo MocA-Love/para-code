@@ -8,7 +8,7 @@ import { deepStrictEqual, rejects, strictEqual } from 'assert';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { importAMDNodeModule } from '../../../../../amdX.js';
-import { createParadisOfficeWebArchive, ParadisOfficeWebArchive } from '../../browser/office/paradisOfficeWebArchive.js';
+import { createParadisOfficeWebArchive, getParadisOfficeWebArchiveEntryDecodeCountForTest, ParadisOfficeWebArchive } from '../../browser/office/paradisOfficeWebArchive.js';
 import type { ParadisOfficeArchiveEntry } from '../../common/office/paradisOfficeArchive.js';
 import { canonicalizeOfficeXml, parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
@@ -103,6 +103,44 @@ suite('ParadisOfficeWebArchive', () => {
 		await rejects(inspectOfficePackage(await createParadisOfficeWebArchive(localNameCorrupt), PARADIS_OFFICE_BUDGET_PROFILES.browser, CancellationToken.None), /invalid/);
 	});
 
+	test('selects the real EOCD when a coherent fake EOCD is embedded in its comment', async () => {
+		const fixture = await packageFixture();
+		const withFakeEocd = withCoherentFakeEocdInComment(fixture);
+
+		const inventory = await inspectOfficePackage(await createParadisOfficeWebArchive(withFakeEocd), PARADIS_OFFICE_BUDGET_PROFILES.browser, CancellationToken.None);
+
+		strictEqual(inventory.outcome, 'complete');
+	});
+
+	test('accepts ordinary EOCD signature bytes in a ZIP comment', async () => {
+		const fixture = await packageFixture();
+		const comment = new Uint8Array([0x61, 0x50, 0x4b, 0x05, 0x06, 0x62]);
+
+		const inventory = await inspectOfficePackage(await createParadisOfficeWebArchive(withComment(fixture, comment)), PARADIS_OFFICE_BUDGET_PROFILES.browser, CancellationToken.None);
+
+		strictEqual(inventory.outcome, 'complete');
+	});
+
+	test('stops before decoding a malformed central-directory name beyond the browser entry budget', async () => {
+		const entryLimit = PARADIS_OFFICE_BUDGET_PROFILES.browser.entryCount;
+		const fixture = centralDirectoryOnlyZip([
+			...Array.from({ length: entryLimit + 1 }, (_, index) => new TextEncoder().encode(`dir-${index}/`)),
+			new Uint8Array([0xff]),
+		]);
+
+		const archive = await createParadisOfficeWebArchive(fixture);
+		await rejects(inspectOfficePackage(archive, PARADIS_OFFICE_BUDGET_PROFILES.browser, CancellationToken.None), /limitExceeded/);
+		strictEqual(getParadisOfficeWebArchiveEntryDecodeCountForTest(archive), entryLimit + 1);
+	});
+
+	test('reports the owned ZIP byte length as compressed input usage including central-directory and comment overhead', async () => {
+		const fixture = withComment(await packageFixture(), new Uint8Array([0x50, 0x4b, 0x05, 0x06, 0x63]));
+
+		const inventory = await inspectOfficePackage(await createParadisOfficeWebArchive(fixture), PARADIS_OFFICE_BUDGET_PROFILES.browser, CancellationToken.None);
+
+		strictEqual(inventory.budgetUsage.compressedInputBytes, fixture.byteLength);
+	});
+
 	test('rejects every supported ZIP64 sentinel and corrupt STORE CRC before complete inventory', async () => {
 		const fixture = await packageFixture();
 		const eocd = findEocd(fixture);
@@ -146,4 +184,43 @@ function findEocd(bytes: Uint8Array): number {
 
 function withComment(bytes: Uint8Array, comment: Uint8Array): Uint8Array {
 	const eocd = findEocd(bytes); const result = new Uint8Array(bytes.byteLength + comment.byteLength); result.set(bytes); result.set(comment, bytes.byteLength); new DataView(result.buffer).setUint16(eocd + 20, comment.byteLength, true); return result;
+}
+
+function withCoherentFakeEocdInComment(bytes: Uint8Array): Uint8Array {
+	const fakeName = new TextEncoder().encode('evil/');
+	const fakeCentral = new Uint8Array(46 + fakeName.byteLength);
+	const fakeCentralView = new DataView(fakeCentral.buffer);
+	fakeCentralView.setUint32(0, 0x02014b50, true);
+	fakeCentralView.setUint16(28, fakeName.byteLength, true);
+	fakeCentral.set(fakeName, 46);
+	const fakeEocd = new Uint8Array(22);
+	const fakeEocdView = new DataView(fakeEocd.buffer);
+	fakeEocdView.setUint32(0, 0x06054b50, true);
+	fakeEocdView.setUint16(8, 1, true);
+	fakeEocdView.setUint16(10, 1, true);
+	fakeEocdView.setUint32(12, fakeCentral.byteLength, true);
+	fakeEocdView.setUint32(16, bytes.byteLength, true);
+	const comment = new Uint8Array(fakeCentral.byteLength + fakeEocd.byteLength);
+	comment.set(fakeCentral);
+	comment.set(fakeEocd, fakeCentral.byteLength);
+	return withComment(bytes, comment);
+}
+
+function centralDirectoryOnlyZip(names: readonly Uint8Array[]): Uint8Array {
+	const centralSize = names.reduce((total, name) => total + 46 + name.byteLength, 0);
+	const bytes = new Uint8Array(centralSize + 22);
+	const view = new DataView(bytes.buffer);
+	let offset = 0;
+	for (const name of names) {
+		view.setUint32(offset, 0x02014b50, true);
+		view.setUint16(offset + 28, name.byteLength, true);
+		bytes.set(name, offset + 46);
+		offset += 46 + name.byteLength;
+	}
+	view.setUint32(offset, 0x06054b50, true);
+	view.setUint16(offset + 8, names.length, true);
+	view.setUint16(offset + 10, names.length, true);
+	view.setUint32(offset + 12, centralSize, true);
+	view.setUint32(offset + 16, 0, true);
+	return bytes;
 }

@@ -239,15 +239,28 @@ async function buildInventory(
 			canonicalHash: part.rawHash!,
 		});
 	}
-	const relationships: ParadisOfficeRelationship[] = relationshipRecords.map(record => ({
-		id: record.id,
-		sourcePartId: record.source === '/' ? undefined : record.source,
-		type: record.type,
-		target: record.target,
-		targetMode: record.targetMode,
-		missing: record.targetMode === 'internal' && !byName.get(record.target)?.complete,
-		cyclic: record.targetMode === 'internal' && isRelationshipCycle(record.source, record.target, relationshipRecords),
-	}));
+	const completePartNames = new Set<string>();
+	for (const part of readParts) {
+		checkpoint();
+		if (part.complete) {
+			completePartNames.add(part.name);
+		}
+	}
+	const cyclicRelationships = findCyclicRelationships(relationshipRecords, completePartNames, checkpoint);
+	const relationships: ParadisOfficeRelationship[] = [];
+	for (let index = 0; index < relationshipRecords.length; index++) {
+		checkpoint();
+		const record = relationshipRecords[index];
+		relationships.push({
+			id: record.id,
+			sourcePartId: record.source === '/' ? undefined : record.source,
+			type: record.type,
+			target: record.target,
+			targetMode: record.targetMode,
+			missing: record.targetMode === 'internal' && !byName.get(record.target)?.complete,
+			cyclic: cyclicRelationships[index],
+		});
+	}
 	const features = buildFeatures(readParts, relationships, checkpoint);
 	const security = {
 		encrypted: false,
@@ -345,6 +358,12 @@ interface ParsedRelationship {
 	readonly targetMode: 'internal' | 'external';
 }
 
+interface RelationshipCycleEdge {
+	readonly source: string;
+	readonly target: string;
+	readonly targetMode: 'internal' | 'external';
+}
+
 function parseRelationships(name: string, document: ParadisOfficeXmlDocument, checkpoint?: () => void): readonly ParsedRelationship[] {
 	if (document.root.local !== 'Relationships' || document.root.uri !== 'http://schemas.openxmlformats.org/package/2006/relationships') {
 		throw new ParadisOfficePackageError('malformed');
@@ -410,22 +429,99 @@ function resolveTarget(source: string, target: string): string {
 	return `/${base.join('/')}`;
 }
 
-function isRelationshipCycle(source: string, target: string, relationships: readonly ParsedRelationship[]): boolean {
-	if (source === '/') {
-		return false;
+function findCyclicRelationships(relationships: readonly RelationshipCycleEdge[], completePartNames: ReadonlySet<string>, checkpoint: () => void): readonly boolean[] {
+	const adjacency = new Map<string, string[]>();
+	const reverseAdjacency = new Map<string, string[]>();
+	for (const partName of completePartNames) {
+		checkpoint();
+		adjacency.set(partName, []);
+		reverseAdjacency.set(partName, []);
 	}
+	for (const relationship of relationships) {
+		checkpoint();
+		if (relationship.targetMode !== 'internal' || relationship.source === '/' || !adjacency.has(relationship.source) || !adjacency.has(relationship.target)) {
+			continue;
+		}
+		adjacency.get(relationship.source)!.push(relationship.target);
+		reverseAdjacency.get(relationship.target)!.push(relationship.source);
+	}
+
 	const visited = new Set<string>();
-	const visit = (part: string): boolean => {
-		if (part === source) {
-			return true;
+	const completed = [] as string[];
+	for (const partName of adjacency.keys()) {
+		checkpoint();
+		if (visited.has(partName)) {
+			continue;
 		}
-		if (visited.has(part)) {
-			return false;
+		const stack: { readonly partName: string; nextEdge: number }[] = [{ partName, nextEdge: 0 }];
+		visited.add(partName);
+		while (stack.length) {
+			checkpoint();
+			const current = stack[stack.length - 1];
+			const targets = adjacency.get(current.partName)!;
+			if (current.nextEdge === targets.length) {
+				completed.push(current.partName);
+				stack.pop();
+				continue;
+			}
+			const target = targets[current.nextEdge++];
+			if (visited.has(target)) {
+				continue;
+			}
+			visited.add(target);
+			stack.push({ partName: target, nextEdge: 0 });
 		}
-		visited.add(part);
-		return relationships.some(relationship => relationship.source === part && relationship.targetMode === 'internal' && visit(relationship.target));
-	};
-	return visit(target);
+	}
+
+	const componentByPartName = new Map<string, number>();
+	const componentSizes = [] as number[];
+	for (let index = completed.length - 1; index >= 0; index--) {
+		checkpoint();
+		const partName = completed[index];
+		if (componentByPartName.has(partName)) {
+			continue;
+		}
+		const component = componentSizes.length;
+		let componentSize = 0;
+		const stack = [partName];
+		componentByPartName.set(partName, component);
+		while (stack.length) {
+			checkpoint();
+			const current = stack.pop()!;
+			componentSize++;
+			for (const source of reverseAdjacency.get(current)!) {
+				checkpoint();
+				if (!componentByPartName.has(source)) {
+					componentByPartName.set(source, component);
+					stack.push(source);
+				}
+			}
+		}
+		componentSizes.push(componentSize);
+	}
+
+	const cyclic = new Array<boolean>(relationships.length).fill(false);
+	for (let index = 0; index < relationships.length; index++) {
+		checkpoint();
+		const relationship = relationships[index];
+		if (relationship.targetMode !== 'internal' || relationship.source === '/' || !adjacency.has(relationship.source) || !adjacency.has(relationship.target)) {
+			continue;
+		}
+		const sourceComponent = componentByPartName.get(relationship.source)!;
+		const targetComponent = componentByPartName.get(relationship.target)!;
+		cyclic[index] = relationship.source === relationship.target || (sourceComponent === targetComponent && componentSizes[sourceComponent] > 1);
+	}
+	return cyclic;
+}
+
+/** @internal Test seam for graph-depth and checkpoint coverage without expanding the Office protocol. */
+export function findParadisOfficeRelationshipCyclesForTest(partNames: readonly string[], relationships: readonly RelationshipCycleEdge[], checkpoint: () => void = () => { }): readonly boolean[] {
+	const completePartNames = new Set<string>();
+	for (const partName of partNames) {
+		checkpoint();
+		completePartNames.add(partName);
+	}
+	return findCyclicRelationships(relationships, completePartNames, checkpoint);
 }
 
 function buildFeatures(parts: readonly ReadPart[], relationships: readonly ParadisOfficeRelationship[], checkpoint?: () => void): readonly ParadisOfficeInventoryFeature[] {
