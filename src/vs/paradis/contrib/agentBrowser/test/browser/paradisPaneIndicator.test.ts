@@ -10,6 +10,7 @@ import assert from 'assert';
 import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	createParadisEditorTerminalIndicator,
 	createParadisPaneIndicator,
 	IParadisPaneIndicatorBoundPage,
 	IParadisPaneIndicatorHost,
@@ -25,7 +26,6 @@ class TestHost implements IParadisPaneIndicatorHost {
 	openBindingDialog(): void { }
 	getBoundPage(): IParadisPaneIndicatorBoundPage | undefined { return undefined; }
 	revealBoundPage(): void { }
-	getPaneAccentColor(): string | undefined { return '#abcdef'; }
 }
 
 /** グリッドセルと同じ手順（生成 → appendChild）でインジケータを取り付ける。 */
@@ -53,10 +53,7 @@ suite('ParadisPaneIndicator hover highlight', () => {
 		// マウント直後は親がまだ付いていないため、適用は次のマイクロタスクで行われる。
 		await Promise.resolve();
 
-		assert.deepStrictEqual(
-			{ target: cell.classList.contains('paradis-pvh-target'), accent: cell.style.getPropertyValue('--paradis-agent-color') },
-			{ target: true, accent: '#abcdef' },
-		);
+		assert.strictEqual(cell.classList.contains('paradis-pvh-target'), true);
 		indicator.dispose();
 	});
 
@@ -67,10 +64,7 @@ suite('ParadisPaneIndicator hover highlight', () => {
 		const { cell, indicator } = mountIndicator(8);
 		await Promise.resolve();
 
-		assert.deepStrictEqual(
-			{ target: cell.classList.contains('paradis-pvh-target'), accent: cell.style.getPropertyValue('--paradis-agent-color') },
-			{ target: false, accent: '' },
-		);
+		assert.strictEqual(cell.classList.contains('paradis-pvh-target'), false);
 		indicator.dispose();
 	});
 
@@ -82,9 +76,44 @@ suite('ParadisPaneIndicator hover highlight', () => {
 		await Promise.resolve();
 		indicator.dispose();
 
-		assert.deepStrictEqual(
-			{ target: cell.classList.contains('paradis-pvh-target'), accent: cell.style.getPropertyValue('--paradis-agent-color') },
-			{ target: false, accent: '' },
-		);
+		assert.strictEqual(cell.classList.contains('paradis-pvh-target'), false);
+	});
+});
+
+suite('ParadisEditorTerminalIndicator', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	teardown(() => {
+		setParadisPaneIndicatorHost(undefined);
+	});
+
+	test('setInstance mounts/unmounts a single indicator into the shared container', () => {
+		setParadisPaneIndicatorHost(new TestHost());
+		const container = document.createElement('div');
+		const controller = createParadisEditorTerminalIndicator(container);
+
+		controller.setInstance(7);
+		assert.strictEqual(container.querySelectorAll('.paradis-pane-indicator').length, 1);
+
+		// タブ切り替え（別インスタンスへの retarget）で古いインジケータが残らないこと。
+		controller.setInstance(8);
+		assert.strictEqual(container.querySelectorAll('.paradis-pane-indicator').length, 1);
+
+		controller.setInstance(undefined);
+		assert.strictEqual(container.querySelectorAll('.paradis-pane-indicator').length, 0);
+
+		controller.dispose();
+	});
+
+	test('dispose clears the mounted indicator', () => {
+		setParadisPaneIndicatorHost(new TestHost());
+		const container = document.createElement('div');
+		const controller = createParadisEditorTerminalIndicator(container);
+
+		controller.setInstance(7);
+		controller.dispose();
+
+		assert.strictEqual(container.querySelectorAll('.paradis-pane-indicator').length, 0);
 	});
 });
