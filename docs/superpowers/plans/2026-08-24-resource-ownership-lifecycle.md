@@ -20,7 +20,8 @@
 - VS Code unit test は transpile 済みの out を実行するため、各 RED/GREEN で rtk npm run transpile-client を先に実行する。TypeScript import 自体が RED の Task では transpile failure を最初の失敗証拠とする。
 - callback、timer、Promise、dispose の競合では identity 比較を残し、古い世代が新しい世代の参照を clear しない。
 - #9 は ccusage、rtk、limitsMonitor の timeout と service dispose を対象とし、ccusage の timeout 時 offline retry 抑制を維持する。
-- #10 は取得済み RemoteTunnel の非 loopback 拒否を対象とし、成功時は mounter へ所有権を一度だけ移譲する。
+- #10 は取得済み RemoteTunnel の非 loopback 拒否と同一portの遅延close通知を対象とする。成功時はmounterへ所有権を一度だけ移譲し、generation付きclose通知は通知元generationと現行lease generationが一致する場合だけ現行entryを削除する。
+- #10 の `onTunnelClosed` generationは後方互換のoptional fieldとし、generationを提供しないcustom実装は従来のport単位削除へフォールバックする。upstream所有のtunnel common差分には理由付き`PARA-PATCH`を付ける。
 - #13 は modal 再オープン、ユーザーによる modal close、fetch の遅延完了を対象とする。
 - #16 は daemon starter と fallback starter の両方を修正する。upstream 所有ファイル src/vs/platform/terminal/electron-main/electronPtyHostStarter.ts の差分には、理由を記した PARA-PATCH コメントを必ず付ける。
 - #18 は requested mode と actual mode を分離する。start 成功済み ID だけを所有し、stop 失敗 ID は保持して次の reconcile で同じ ID を再試行する。
@@ -770,14 +771,19 @@ rtk git commit -m "fix: terminate timed out CLI process trees before wrapper exi
 
 **Files:**
 
+- Modify: src/vs/platform/tunnel/common/tunnel.ts
+- Modify: src/vs/platform/tunnel/test/common/tunnel.test.ts
 - Modify: src/vs/paradis/contrib/fileViewers/electron-browser/paradisHtmlPreviewClient.ts
 - Create: src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlPreviewClient.test.ts
 
 **Interfaces:**
 
 - Exercise: ParadisRemotePreviewMounter.mount(directory)
+- Add: getRemoteTunnelGeneration(tunnel): object
+- Extend compatibly: ITunnelService.onTunnelClosed payload with readonly generation?: object
 - Preserve: IParadisPreviewLocation and the existing service-worker fallback by rejection
 - Contract: openTunnel が RemoteTunnel を返した時点から loopback 検証成功までは _openTunnel が所有する。検証失敗は一度だけ dispose し、検証成功は _tunnels ledger へ所有権を移す。
+- Contract: AbstractTunnelServiceの一つのledger entryから返すleaseと、そのentryのclose eventは同じopaque generationを共有する。別generationの遅延closeは現行mounter entryを削除しない。
 
 - [ ] **Step 1: 非 loopback 拒否時の一回 dispose と成功時の ownership transfer を表す failing test を追加する。**
 
@@ -806,10 +812,13 @@ suite('ParadisRemotePreviewMounter', () => {
 	function createMounter(localAddress: string): {
 		readonly mounter: ParadisRemotePreviewMounter;
 		readonly disposeCount: () => number;
+		readonly openCount: () => number;
+		readonly closeCurrent: () => void;
 	} {
 		const store = disposables.add(new DisposableStore());
-		const tunnelClosed = store.add(new Emitter<{ port: number }>());
+		const tunnelClosed = store.add(new Emitter<{ host: string; port: number; generation?: object }>());
 		let disposed = 0;
+		let opened = 0;
 		const tunnel = {
 			tunnelRemotePort: 56789,
 			tunnelRemoteHost: '127.0.0.1',
@@ -838,11 +847,17 @@ suite('ParadisRemotePreviewMounter', () => {
 		} as unknown as IRemoteAuthorityResolverService;
 		const tunnelService = {
 			onTunnelClosed: tunnelClosed.event,
-			openTunnel: async () => tunnel,
+			openTunnel: async () => { opened++; return tunnel; },
 		} as unknown as ITunnelService;
 		return {
 			mounter: store.add(new ParadisRemotePreviewMounter(agent, resolver, tunnelService)),
 			disposeCount: () => disposed,
+			openCount: () => opened,
+			closeCurrent: () => tunnelClosed.fire({
+				host: '127.0.0.1',
+				port: 56789,
+				generation: getRemoteTunnelGeneration(tunnel),
+			}),
 		};
 	}
 
@@ -927,6 +942,309 @@ rtk git add \
   src/vs/paradis/contrib/fileViewers/electron-browser/paradisHtmlPreviewClient.ts \
   src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlPreviewClient.test.ts
 rtk git commit -m "fix: dispose rejected HTML preview tunnels"
+~~~
+
+- [ ] **Step 6: 同一portの旧closeが新mounter generationを削除する failing test を追加する。**
+
+  `paradisHtmlPreviewClient.test.ts` のtunnel importへ `getRemoteTunnelGeneration` を加え、二つのmounterが同じserviceを共有する次のtestを追加する。旧tunnelと新tunnelはport、local port、local addressを意図的に同じにし、公開field比較では区別できないfixtureにする。
+
+~~~ts
+test('keeps a new mounter tunnel when an older generation closes on the same port', async () => {
+	const store = disposables.add(new DisposableStore());
+	const tunnelClosed = store.add(new Emitter<{ host: string; port: number; generation?: object }>());
+	let opened = 0;
+	let oldDisposeStarted!: () => void;
+	const oldDisposeStarting = new Promise<void>(resolve => oldDisposeStarted = resolve);
+	let releaseOldDispose!: () => void;
+	const oldDisposeFinished = new Promise<void>(resolve => releaseOldDispose = resolve);
+	let newDisposed = 0;
+	let duplicateDisposed = 0;
+	const oldTunnel = {
+		tunnelRemotePort: 56789,
+		tunnelRemoteHost: '127.0.0.1',
+		tunnelLocalPort: 45678,
+		localAddress: '127.0.0.1:45678',
+		privacy: 'private',
+		dispose: async () => {
+			oldDisposeStarted();
+			await oldDisposeFinished;
+			tunnelClosed.fire({ host: '127.0.0.1', port: 56789, generation: getRemoteTunnelGeneration(oldTunnel) });
+		},
+	} as RemoteTunnel;
+	const newTunnel = {
+		tunnelRemotePort: 56789,
+		tunnelRemoteHost: '127.0.0.1',
+		tunnelLocalPort: 45678,
+		localAddress: '127.0.0.1:45678',
+		privacy: 'private',
+		dispose: async () => { newDisposed++; },
+	} as RemoteTunnel;
+	const duplicateTunnel = {
+		...newTunnel,
+		dispose: async () => { duplicateDisposed++; },
+	} as RemoteTunnel;
+	const agent = {
+		getConnection: () => ({
+			remoteAuthority: 'ssh-remote+box',
+			getChannel: () => ({
+				call: async () => ({ port: 56789, token: '0123456789abcdef0123456789abcdef' }),
+				listen: () => { throw new Error('not used'); },
+			}),
+		}),
+	} as unknown as IRemoteAgentService;
+	const resolver = {
+		resolveAuthority: async () => ({ authority: { authority: 'ssh-remote+box', connectTo: {}, connectionToken: undefined } }),
+	} as unknown as IRemoteAuthorityResolverService;
+	const tunnelService = {
+		onTunnelClosed: tunnelClosed.event,
+		openTunnel: async () => [oldTunnel, newTunnel, duplicateTunnel][opened++],
+	} as unknown as ITunnelService;
+	const oldMounter = store.add(new ParadisRemotePreviewMounter(agent, resolver, tunnelService));
+	const newMounter = store.add(new ParadisRemotePreviewMounter(agent, resolver, tunnelService));
+
+	await oldMounter.mount(resource);
+	oldMounter.dispose();
+	await oldDisposeStarting;
+	await newMounter.mount(resource);
+	releaseOldDispose();
+	await Promise.resolve();
+	await Promise.resolve();
+
+	await newMounter.mount(resource);
+	assert.strictEqual(opened, 2);
+	newMounter.dispose();
+	await Promise.resolve();
+	assert.strictEqual(newDisposed, 1);
+	assert.strictEqual(duplicateDisposed, 0);
+});
+
+test('drops the current generation so the next mount reopens it', async () => {
+	const fixture = createMounter('127.0.0.1:45678');
+	await fixture.mounter.mount(resource);
+	fixture.closeCurrent();
+	await Promise.resolve();
+	await Promise.resolve();
+	await fixture.mounter.mount(resource);
+	assert.strictEqual(fixture.openCount(), 2);
+});
+~~~
+
+  `tunnel.test.ts` へ `IAddressProvider`、`NullLogService`、`TestConfigurationService`、`AbstractTunnelService`、`getRemoteTunnelGeneration`、`ITunnelProvider`、`RemoteTunnel`、`TunnelCloseEvent`をimportし、次のtest subclassとtestを追加する。provider fixtureは一回目と二回目で別の`RemoteTunnel`を返す。
+
+~~~ts
+class TestTunnelService extends AbstractTunnelService {
+	override isPortPrivileged(): boolean { return false; }
+
+	protected override retainOrCreateTunnel(
+		addressProvider: IAddressProvider | ITunnelProvider,
+		remoteHost: string,
+		remotePort: number,
+		_localHost: string,
+		localPort: number | undefined,
+		elevateIfNeeded: boolean,
+		privacy?: string,
+		protocol?: string,
+	): Promise<RemoteTunnel | string | undefined> | undefined {
+		const existing = this.getTunnelFromMap(remoteHost, remotePort);
+		if (existing) {
+			existing.refcount++;
+			return existing.value;
+		}
+		return this.createWithProvider(addressProvider as ITunnelProvider, remoteHost, remotePort, localPort, elevateIfNeeded, privacy, protocol);
+	}
+}
+
+test('keeps the disposed ledger generation on a delayed close event', async () => {
+	let oldDisposeStarted!: () => void;
+	const oldDisposeStarting = new Promise<void>(resolve => oldDisposeStarted = resolve);
+	let releaseOldDispose!: () => void;
+	const oldDisposeFinished = new Promise<void>(resolve => releaseOldDispose = resolve);
+	const firstTunnel: RemoteTunnel = {
+		tunnelRemoteHost: '127.0.0.1', tunnelRemotePort: 56789,
+		localAddress: '127.0.0.1:45678', privacy: 'private',
+		dispose: async () => { oldDisposeStarted(); await oldDisposeFinished; },
+	};
+	const secondTunnel: RemoteTunnel = {
+		tunnelRemoteHost: '127.0.0.1', tunnelRemotePort: 56789,
+		localAddress: '127.0.0.1:45678', privacy: 'private',
+		dispose: async () => { },
+	};
+	let opened = 0;
+	const service = new TestTunnelService(new NullLogService(), new TestConfigurationService());
+	const provider = service.setTunnelProvider({
+		forwardPort: () => Promise.resolve([firstTunnel, secondTunnel][opened++]),
+	});
+	const closedEvents: TunnelCloseEvent[] = [];
+	const closeListener = service.onTunnelClosed(event => closedEvents.push(event));
+	try {
+		const firstLease = await service.openTunnel(undefined, '127.0.0.1', 56789);
+		assert.ok(firstLease && typeof firstLease !== 'string');
+		const closing = firstLease.dispose();
+		await oldDisposeStarting;
+		const secondLease = await service.openTunnel(undefined, '127.0.0.1', 56789);
+		assert.ok(secondLease && typeof secondLease !== 'string');
+		releaseOldDispose();
+		await closing;
+
+		assert.notStrictEqual(getRemoteTunnelGeneration(firstLease), getRemoteTunnelGeneration(secondLease));
+		assert.strictEqual(closedEvents[0].generation, getRemoteTunnelGeneration(firstLease));
+		assert.notStrictEqual(closedEvents[0].generation, getRemoteTunnelGeneration(secondLease));
+		await secondLease.dispose();
+	} finally {
+		closeListener.dispose();
+		provider.dispose();
+		await service.dispose();
+	}
+});
+~~~
+
+- [ ] **Step 7: generation未実装のREDを確認する。**
+
+~~~sh
+rtk npm run transpile-client
+rtk xvfb-run -a ./scripts/test.sh --no-sandbox \
+  --run src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlPreviewClient.test.ts \
+  --run src/vs/platform/tunnel/test/common/tunnel.test.ts
+~~~
+
+  期待: mounter競合testは `opened` がactual 3 / expected 2で失敗する。基盤testはgeneration APIが未定義のため、最初はtranspile failureをREDとしてよい。
+
+- [ ] **Step 8: shared tunnel ledgerとmounterへopaque generationを実装する。**
+
+  `tunnel.ts` に後方互換のoptional payloadとlease accessorを追加する。追加blockには理由を記した`PARA-PATCH`を付ける。
+
+~~~ts
+// PARA-PATCH: A delayed close event for an old tunnel must not clear a newer
+// Para preview lease that reused the same remote port.
+const remoteTunnelGenerations = new WeakMap<RemoteTunnel, object>();
+
+export function getRemoteTunnelGeneration(tunnel: RemoteTunnel): object {
+	return remoteTunnelGenerations.get(tunnel) ?? tunnel;
+}
+
+export interface TunnelCloseEvent {
+	readonly host: string;
+	readonly port: number;
+	readonly generation?: object;
+}
+
+interface TunnelEntry {
+	refcount: number;
+	readonly value: Promise<RemoteTunnel | string | undefined>;
+	readonly generation: object;
+}
+~~~
+
+  `ITunnelService.onTunnelClosed`、`AbstractTunnelService._onTunnelClosed`を`Event<TunnelCloseEvent>`へ変更する。`_tunnels`は`TunnelEntry`を保持する。`addTunnelToMap`はentryごとに一つgenerationを作り、provider tunnelにも同じgenerationを関連付ける。
+
+~~~ts
+const generation = {};
+void tunnel.then(value => {
+	if (value && typeof value !== 'string') {
+		remoteTunnelGenerations.set(value, generation);
+	}
+}, () => { });
+this._tunnels.get(remoteHost)!.set(remotePort, { refcount: 1, value: tunnel, generation });
+~~~
+
+  `openTunnel`は`retainOrCreateTunnel`直後のentry generationを取得して`makeTunnel`へ渡す。`makeTunnel`は返却leaseをWeakMapへ関連付け、`tryDisposeTunnel`はdispose開始時に受け取ったentryのgenerationをclose eventへ載せる。
+
+~~~ts
+const generation = this.getTunnelFromMap(remoteHost, remotePort)?.generation ?? {};
+// resolvedTunnel.then内
+const newTunnel = this.makeTunnel(tunnel, generation);
+
+private makeTunnel(tunnel: RemoteTunnel, generation: object): RemoteTunnel {
+	const lease: RemoteTunnel = {
+		tunnelRemotePort: tunnel.tunnelRemotePort,
+		tunnelRemoteHost: tunnel.tunnelRemoteHost,
+		tunnelLocalPort: tunnel.tunnelLocalPort,
+		localAddress: tunnel.localAddress,
+		privacy: tunnel.privacy,
+		protocol: tunnel.protocol,
+		dispose: async () => {
+			const existing = this._tunnels.get(tunnel.tunnelRemoteHost)?.get(tunnel.tunnelRemotePort);
+			if (existing) {
+				existing.refcount--;
+				await this.tryDisposeTunnel(tunnel.tunnelRemoteHost, tunnel.tunnelRemotePort, existing);
+			}
+		}
+	};
+	remoteTunnelGenerations.set(lease, generation);
+	return lease;
+}
+
+private async tryDisposeTunnel(remoteHost: string, remotePort: number, entry: TunnelEntry): Promise<void> {
+	if (entry.refcount <= 0) {
+		const disposePromise = entry.value.then(async tunnel => {
+			if (tunnel && typeof tunnel !== 'string') {
+				await tunnel.dispose(true);
+				this._onTunnelClosed.fire({
+					host: tunnel.tunnelRemoteHost,
+					port: tunnel.tunnelRemotePort,
+					generation: entry.generation,
+				});
+			}
+		});
+		this._tunnels.get(remoteHost)?.delete(remotePort);
+		return disposePromise;
+	}
+}
+~~~
+
+  `paradisHtmlPreviewClient.ts`はevent受信時のcurrent Promiseを捕捉する。generation付き通知はPromiseとgenerationの両方が現行の場合だけ削除し、generationなし通知は従来どおりportで削除する。
+
+~~~ts
+this._register(this._tunnelService.onTunnelClosed(({ port, generation }) => {
+	const current = this._tunnels.get(port);
+	if (!current) {
+		return;
+	}
+	if (generation === undefined) {
+		this._tunnels.delete(port);
+		return;
+	}
+	current.then(tunnel => {
+		if (this._tunnels.get(port) === current && getRemoteTunnelGeneration(tunnel) === generation) {
+			this._tunnels.delete(port);
+		}
+	}, () => { });
+}));
+~~~
+
+- [ ] **Step 9: shared generation、stale close、通常closeをGREENにする。**
+
+~~~sh
+rtk npm run transpile-client
+rtk xvfb-run -a ./scripts/test.sh --no-sandbox \
+  --run src/vs/platform/tunnel/test/common/tunnel.test.ts \
+  --run src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlPreviewClient.test.ts \
+  --run src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlFileEditor.test.ts
+~~~
+
+  期待: 同じledger entryのleaseは同じgeneration、再作成entryは別generation、旧close eventは旧generationを保持する。mounterは旧close後も新entryを再利用し、現行generationのcloseではentryを除去して次のmountで再openする。
+
+- [ ] **Step 10: upstream markerと拡張Filesを検証してcommitする。**
+
+~~~sh
+rtk npm run typecheck-client
+rtk npm run eslint -- \
+  src/vs/platform/tunnel/common/tunnel.ts \
+  src/vs/platform/tunnel/test/common/tunnel.test.ts \
+  src/vs/paradis/contrib/fileViewers/electron-browser/paradisHtmlPreviewClient.ts \
+  src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlPreviewClient.test.ts
+rtk npm run valid-layers-check
+rtk git diff --check -- \
+  src/vs/platform/tunnel/common/tunnel.ts \
+  src/vs/platform/tunnel/test/common/tunnel.test.ts \
+  src/vs/paradis/contrib/fileViewers/electron-browser/paradisHtmlPreviewClient.ts \
+  src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlPreviewClient.test.ts
+rtk git add \
+  src/vs/platform/tunnel/common/tunnel.ts \
+  src/vs/platform/tunnel/test/common/tunnel.test.ts \
+  src/vs/paradis/contrib/fileViewers/electron-browser/paradisHtmlPreviewClient.ts \
+  src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisHtmlPreviewClient.test.ts
+rtk git commit -m "fix: preserve current preview tunnel generation"
 ~~~
 
 ---
