@@ -6,6 +6,19 @@
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import type { ParadisOfficeFingerprint } from '../paradisOfficeProtocol.js';
+import type { ParadisOfficeXmlLimits } from './paradisOfficeCanonicalXml.js';
+
+export interface ParadisOfficeXmlAttribute {
+	readonly uri: string;
+	readonly local: string;
+	readonly value: string;
+}
+export type ParadisOfficeXmlNode =
+	| { readonly kind: 'text'; readonly value: string }
+	| { readonly kind: 'element'; readonly uri: string; readonly local: string; readonly attributes: readonly ParadisOfficeXmlAttribute[]; readonly children: readonly ParadisOfficeXmlNode[]; readonly namespaceBindings?: Readonly<Record<string, string>> };
+export interface ParadisOfficeXmlDocument {
+	readonly root: Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
+}
 
 /** Immutable central-directory metadata. Declared output bytes are never authoritative. */
 export interface ParadisOfficeArchiveEntry {
@@ -14,6 +27,8 @@ export interface ParadisOfficeArchiveEntry {
 	readonly declaredExpandedBytes: number;
 	readonly encrypted: boolean;
 	readonly directory: boolean;
+	readonly symlink: boolean;
+	readonly unixMode?: number;
 }
 
 /** Environment-provided SHA-256 boundary; common package code never imports a crypto runtime. */
@@ -26,15 +41,18 @@ export interface IParadisOfficeHash {
  * the consumer returns from the iterator. Adapters must not expose ZIP internals to callers.
  */
 export interface IParadisOfficeArchive extends IParadisOfficeHash {
+	/** Immutable copied input length. This is the authoritative compressed-input budget value. */
+	readonly containerByteLength: number;
 	entries(token?: CancellationToken): AsyncIterable<ParadisOfficeArchiveEntry>;
 	read(entry: ParadisOfficeArchiveEntry, token?: CancellationToken): AsyncIterable<Uint8Array>;
+	parseXml(xml: string, limits: ParadisOfficeXmlLimits, token?: CancellationToken): Promise<ParadisOfficeXmlDocument>;
 	dispose(): void;
 }
 
 /** Sanitized package failure. It intentionally carries neither raw archive errors nor paths. */
 export class ParadisOfficePackageError extends Error {
 
-	constructor(readonly code: 'invalid' | 'encrypted' | 'zipBomb' | 'limitExceeded' | 'malformed' | 'cancelled') {
+	constructor(readonly code: 'invalid' | 'encrypted' | 'zipBomb' | 'limitExceeded' | 'malformed' | 'cancelled' | 'unsafe') {
 		super(code);
 	}
 }

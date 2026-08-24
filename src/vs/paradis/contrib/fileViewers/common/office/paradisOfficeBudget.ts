@@ -20,12 +20,16 @@ export class ParadisOfficeBudget {
 
 	constructor(readonly profile: ParadisOfficeBudgetProfile, private readonly startedAt = Date.now()) { }
 
+	validateContainerInput(bytes: number): void {
+		this.requireSafe(bytes);
+		this.limit('containerRatio', bytes, this.profile.compressedInputBytes, 'limitExceeded');
+	}
+
 	beginEntry(compressedBytes: number): void {
 		this.requireSafe(compressedBytes);
 		this.entryCount++;
 		this.limit('entryCount', this.entryCount, this.profile.entryCount, 'limitExceeded');
 		this.totalCompressedBytes = this.add(this.totalCompressedBytes, compressedBytes);
-		this.limit('containerRatio', this.totalCompressedBytes, this.profile.compressedInputBytes, 'limitExceeded');
 	}
 
 	consumeEntry(bytes: number, entryCompressedBytes: number, isBinary: boolean, isMedia: boolean, entryBytes: number): void {
@@ -60,6 +64,16 @@ export class ParadisOfficeBudget {
 
 	warningKinds(): readonly ParadisOfficeBudgetKind[] {
 		return [...this.warnings];
+	}
+
+	checkDeadline(now: number): void {
+		this.requireSafe(now);
+		if (now - this.startedAt > this.profile.inspectMilliseconds) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		if (now - this.startedAt >= Math.floor(this.profile.inspectMilliseconds * 0.8)) {
+			this.warnings.add('expandedBytes');
+		}
 	}
 
 	private limit(kind: ParadisOfficeBudgetKind, value: number, maximum: number, error: 'limitExceeded' | 'zipBomb'): void {

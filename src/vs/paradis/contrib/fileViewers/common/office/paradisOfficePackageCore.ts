@@ -5,10 +5,28 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
-import type { ParadisOfficeBudgetProfile, ParadisOfficeFormat, ParadisOfficeInventory, ParadisOfficeInventoryFeature, ParadisOfficeInventoryPart, ParadisOfficeRelationship } from '../paradisOfficeProtocol.js';
+import {
+	aggregateOfficeOutcome,
+	type ParadisOfficeBudgetProfile,
+	type ParadisOfficeCompletenessManifest,
+	type ParadisOfficeFormat,
+	type ParadisOfficeInventory,
+	type ParadisOfficeInventoryFeature,
+	type ParadisOfficeInventoryPart,
+	type ParadisOfficeOutcome,
+	type ParadisOfficePartStatus,
+	type ParadisOfficeRelationship,
+} from '../paradisOfficeProtocol.js';
 import { ParadisOfficeBudget } from './paradisOfficeBudget.js';
-import { canonicalizeOfficeXml } from './paradisOfficeCanonicalXml.js';
-import { canonicalizeParadisOfficeArchiveName, type IParadisOfficeArchive, ParadisOfficePackageError, throwIfParadisOfficeCancelled } from './paradisOfficeArchive.js';
+import { canonicalizeOfficeXmlTree } from './paradisOfficeCanonicalXml.js';
+import {
+	canonicalizeParadisOfficeArchiveName,
+	type IParadisOfficeArchive,
+	type ParadisOfficeXmlDocument,
+	type ParadisOfficeXmlNode,
+	ParadisOfficePackageError,
+	throwIfParadisOfficeCancelled,
+} from './paradisOfficeArchive.js';
 
 interface ReadPart {
 	readonly name: string;
@@ -22,27 +40,54 @@ const contentTypesName = '/[Content_Types].xml';
 const rootRelationshipsName = '/_rels/.rels';
 const officeDocumentRelationship = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
 
-/** Builds the security-first, whole-package OPC inventory without exposing raw Part access. */
-export async function inspectOfficePackage(archive: IParadisOfficeArchive, profile: ParadisOfficeBudgetProfile, token: CancellationToken): Promise<ParadisOfficeInventory> {
+/** Terminal inventory detail retained in common code without changing the v1 protocol base type. */
+export interface ParadisOfficePackageInventory extends ParadisOfficeInventory {
+	readonly outcome: ParadisOfficeOutcome;
+	readonly completeness: ParadisOfficeCompletenessManifest;
+	readonly warnings: readonly {
+		readonly code: string;
+		readonly message: string;
+	}[];
+}
 
-	const budget = new ParadisOfficeBudget(profile);
+export interface ParadisOfficeInspectOptions {
+	readonly now?: () => number;
+}
+
+/** Builds the security-first, whole-package OPC inventory without exposing raw Part access. */
+export async function inspectOfficePackage(
+	archive: IParadisOfficeArchive,
+	profile: ParadisOfficeBudgetProfile,
+	token: CancellationToken,
+	options: ParadisOfficeInspectOptions = {},
+): Promise<ParadisOfficePackageInventory> {
+	const now = options.now ?? Date.now;
+	const budget = new ParadisOfficeBudget(profile, now());
 	const parts: ReadPart[] = [];
 	const seen = new Set<string>();
 	try {
+		budget.validateContainerInput(archive.containerByteLength);
 		for await (const entry of archive.entries(token)) {
+			budget.checkDeadline(now());
 			throwIfParadisOfficeCancelled(token);
-			if (entry.directory) {
-				continue;
+			const name = canonicalizeParadisOfficeArchiveName(entry.name.endsWith('/') ? entry.name.slice(0, -1) : entry.name);
+			if (!Number.isSafeInteger(entry.compressedBytes) || entry.compressedBytes < 0 || !Number.isSafeInteger(entry.declaredExpandedBytes) || entry.declaredExpandedBytes < 0) {
+				throw new ParadisOfficePackageError('invalid');
 			}
 			if (entry.encrypted) {
 				throw new ParadisOfficePackageError('encrypted');
 			}
-			const name = canonicalizeParadisOfficeArchiveName(entry.name);
+			if (entry.symlink) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
 			if (seen.has(name)) {
 				throw new ParadisOfficePackageError('invalid');
 			}
 			seen.add(name);
 			budget.beginEntry(entry.compressedBytes);
+			if (entry.directory) {
+				continue;
+			}
 			const chunks: Uint8Array[] = [];
 			let entryBytes = 0;
 			const media = isMediaPart(name);
@@ -50,6 +95,7 @@ export async function inspectOfficePackage(archive: IParadisOfficeArchive, profi
 			let complete = true;
 			try {
 				for await (const chunk of archive.read(entry, token)) {
+					budget.checkDeadline(now());
 					throwIfParadisOfficeCancelled(token);
 					if (!(chunk instanceof Uint8Array)) {
 						throw new ParadisOfficePackageError('invalid');
@@ -59,31 +105,56 @@ export async function inspectOfficePackage(archive: IParadisOfficeArchive, profi
 					chunks.push(chunk.slice());
 				}
 			} catch (error) {
-				if (!(error instanceof ParadisOfficePackageError) || error.code !== 'limitExceeded' || !media) {
+				if (!(error instanceof ParadisOfficePackageError) || error.code !== 'limitExceeded') {
 					throw error;
 				}
 				complete = false;
 			}
 			const bytes = joinChunks(chunks, entryBytes);
-			parts.push({ name, compressedBytes: entry.compressedBytes, bytes, rawHash: complete ? await archive.hash(bytes) : undefined, complete });
+			parts.push({
+				name,
+				compressedBytes: entry.compressedBytes,
+				bytes,
+				rawHash: complete ? await archive.hash(bytes) : undefined,
+				complete,
+			});
 		}
 		throwIfParadisOfficeCancelled(token);
-		return buildInventory(parts, profile, budget);
+		budget.checkDeadline(now());
+		return await buildInventory(parts, profile, budget, archive, token);
 	} finally {
 		archive.dispose();
 	}
 }
 
-function buildInventory(readParts: readonly ReadPart[], profile: ParadisOfficeBudgetProfile, budget: ParadisOfficeBudget): ParadisOfficeInventory {
-
+async function buildInventory(
+	readParts: readonly ReadPart[],
+	profile: ParadisOfficeBudgetProfile,
+	budget: ParadisOfficeBudget,
+	archive: IParadisOfficeArchive,
+	token: CancellationToken,
+): Promise<ParadisOfficePackageInventory> {
 	const byName = new Map(readParts.map(part => [part.name, part]));
 	const contentTypes = byName.get(contentTypesName);
 	const rootRelationships = byName.get(rootRelationshipsName);
+	if ((contentTypes && !contentTypes.complete) || (rootRelationships && !rootRelationships.complete)) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
 	if (!contentTypes || !rootRelationships) {
 		throw new ParadisOfficePackageError('malformed');
 	}
-	const types = parseContentTypes(asText(contentTypes.bytes));
-	const relationshipRecords = readParts.filter(part => part.name.endsWith('.rels')).flatMap(part => parseRelationships(part.name, asText(part.bytes)));
+	const limits = {
+		depth: profile.xmlDepth,
+		nodes: profile.xmlNodesPerPart,
+		attributeLength: profile.attributeLength,
+		characters: profile.xmlPartBytes,
+	};
+	const types = parseContentTypes(await archive.parseXml(asText(contentTypes.bytes), limits, token));
+	const relationshipRecords = (
+		await Promise.all(
+			readParts.filter(part => part.complete && part.name.endsWith('.rels')).map(async part => parseRelationships(part.name, await archive.parseXml(asText(part.bytes), limits, token))),
+		)
+	).flat();
 	const rootOfficeDocument = relationshipRecords.find(relationship => relationship.source === '/' && relationship.type === officeDocumentRelationship && relationship.targetMode === 'internal');
 	if (!rootOfficeDocument || !byName.has(rootOfficeDocument.target)) {
 		throw new ParadisOfficePackageError('malformed');
@@ -91,53 +162,82 @@ function buildInventory(readParts: readonly ReadPart[], profile: ParadisOfficeBu
 	if (!byName.get(rootOfficeDocument.target)!.complete) {
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
-	for (const relationship of relationshipRecords) {
-		if (relationship.targetMode === 'internal') {
-			const target = byName.get(relationship.target);
-			if (!target) {
-				throw new ParadisOfficePackageError('malformed');
-			}
-			if (!target.complete) {
-				throw new ParadisOfficePackageError('limitExceeded');
-			}
-		}
-	}
 	const required = new Set([contentTypesName, rootRelationshipsName, rootOfficeDocument.target]);
 	for (const relationship of relationshipRecords) {
-		if (relationship.targetMode === 'internal') {
+		if (isRequiredRelationship(relationship, rootOfficeDocument.target)) {
 			required.add(relationship.target);
 		}
 	}
-	const canonicalHashes = new Map<string, Awaited<ReturnType<IParadisOfficeArchive['hash']>>>();
-	const inventoryParts: ParadisOfficeInventoryPart[] = readParts.map(part => {
+	const inventoryParts: ParadisOfficeInventoryPart[] = [];
+	for (const part of readParts) {
 		const contentType = types.get(part.name) ?? (part.name.endsWith('.rels') ? 'application/vnd.openxmlformats-package.relationships+xml' : 'application/octet-stream');
 		if (!part.complete) {
-			return {
-				id: part.name, canonicalUri: part.name, contentType, compressedBytes: part.compressedBytes, expandedBytes: part.bytes.byteLength,
-				required: required.has(part.name), coverage: 'omittedByBudget', hashCompleteness: 'incomplete',
-			};
+			inventoryParts.push({
+				id: part.name,
+				canonicalUri: part.name,
+				contentType,
+				compressedBytes: part.compressedBytes,
+				expandedBytes: part.bytes.byteLength,
+				required: required.has(part.name),
+				coverage: 'omittedByBudget',
+				hashCompleteness: 'incomplete',
+			});
+			continue;
 		}
 		const xml = isXmlPart(part.name, contentType);
 		if (xml) {
-			const canonical = canonicalizeOfficeXml(asText(part.bytes), id => relationshipRecords.find(relationship => relationship.source === part.name && relationship.id === id)?.target);
-			canonicalHashes.set(part.name, canonical.hash);
-			return {
-				id: part.name, canonicalUri: part.name, contentType, compressedBytes: part.compressedBytes, expandedBytes: part.bytes.byteLength,
-				required: required.has(part.name), coverage: 'parsed', rawHash: part.rawHash!, hashCompleteness: 'allBytes', canonicalHash: canonical.hash,
-			};
+			try {
+				const tree = await archive.parseXml(asText(part.bytes), limits, token);
+				const canonical = canonicalizeOfficeXmlTree(tree, id => relationshipRecords.find(relationship => relationship.source === part.name && relationship.id === id)?.target);
+				inventoryParts.push({
+					id: part.name,
+					canonicalUri: part.name,
+					contentType,
+					compressedBytes: part.compressedBytes,
+					expandedBytes: part.bytes.byteLength,
+					required: required.has(part.name),
+					coverage: 'parsed',
+					rawHash: part.rawHash!,
+					hashCompleteness: 'allBytes',
+					canonicalHash: canonical.hash,
+				});
+			} catch (error) {
+				if (!(error instanceof ParadisOfficePackageError)) {
+					throw error;
+				}
+				inventoryParts.push({
+					id: part.name,
+					canonicalUri: part.name,
+					contentType,
+					compressedBytes: part.compressedBytes,
+					expandedBytes: part.bytes.byteLength,
+					required: required.has(part.name),
+					coverage: 'failed',
+					hashCompleteness: 'incomplete',
+				});
+			}
+			continue;
 		}
-		return {
-			id: part.name, canonicalUri: part.name, contentType, compressedBytes: part.compressedBytes, expandedBytes: part.bytes.byteLength,
-			required: required.has(part.name), coverage: 'completeOpaque', hashCompleteness: 'allBytes', fingerprint: part.rawHash!, rawHash: part.rawHash!, canonicalHash: part.rawHash!,
-		};
-	});
+		inventoryParts.push({
+			id: part.name,
+			canonicalUri: part.name,
+			contentType,
+			compressedBytes: part.compressedBytes,
+			expandedBytes: part.bytes.byteLength,
+			required: required.has(part.name),
+			coverage: 'completeOpaque',
+			hashCompleteness: 'allBytes',
+			fingerprint: part.rawHash!,
+			canonicalHash: part.rawHash!,
+		});
+	}
 	const relationships: ParadisOfficeRelationship[] = relationshipRecords.map(record => ({
 		id: record.id,
 		sourcePartId: record.source === '/' ? undefined : record.source,
 		type: record.type,
 		target: record.target,
 		targetMode: record.targetMode,
-		missing: record.targetMode === 'internal' && !byName.has(record.target),
+		missing: record.targetMode === 'internal' && !byName.get(record.target)?.complete,
 		cyclic: record.targetMode === 'internal' && isRelationshipCycle(record.source, record.target, relationshipRecords),
 	}));
 	const features = buildFeatures(readParts, relationships);
@@ -149,18 +249,77 @@ function buildInventory(readParts: readonly ReadPart[], profile: ParadisOfficeBu
 		hasProtection: readParts.some(part => /protection/i.test(asTextIfXml(part))),
 		hasSignatures: readParts.some(part => /_xmlsignatures\//i.test(part.name)),
 	};
-	return { format: detectFormat(rootOfficeDocument.target, security.hasMacros), container: 'opc', parts: inventoryParts, relationships, features, security, budgetProfile: profile.kind, budgetUsage: budget.usage() };
+	const statuses: ParadisOfficePartStatus[] = inventoryParts.map(part =>
+		part.coverage === 'completeOpaque'
+			? {
+				coverage: 'completeOpaque',
+				required: part.required,
+				hashCompleteness: 'allBytes',
+				fingerprint: part.fingerprint,
+			}
+			: { coverage: part.coverage, required: part.required },
+	);
+	const missingRequired = relationships.some(relationship => relationship.missing && (relationship.sourcePartId === undefined || relationship.sourcePartId === rootOfficeDocument.target));
+	const baseOutcome = aggregateOfficeOutcome(statuses);
+	const outcome = missingRequired ? 'blocked' : relationships.some(relationship => relationship.missing) && baseOutcome === 'complete' ? 'degraded' : baseOutcome;
+	const parsedParts = inventoryParts.filter(part => part.coverage === 'parsed').length;
+	const opaqueParts = inventoryParts.filter(part => part.coverage === 'completeOpaque').length;
+	const failedParts = inventoryParts.filter(part => part.coverage === 'failed').length;
+	const omittedParts = inventoryParts.filter(part => part.coverage === 'omittedByBudget').length;
+	const completeness: ParadisOfficeCompletenessManifest = {
+		expectedParts: inventoryParts.length,
+		visitedParts: inventoryParts.length,
+		parsedParts,
+		opaqueParts,
+		failedParts,
+		omittedParts,
+		expectedSemanticUnits: inventoryParts.length,
+		visitedSemanticUnits: inventoryParts.length,
+		terminal: true,
+	};
+	const warnings = budget.warningKinds().map(kind => ({
+		code: `budget.${kind}`,
+		message: `Office package budget is at least 80% consumed: ${kind}`,
+	}));
+	return {
+		format: detectFormat(rootOfficeDocument.target, security.hasMacros),
+		container: 'opc',
+		parts: inventoryParts,
+		relationships,
+		features,
+		security,
+		budgetProfile: profile.kind,
+		budgetUsage: budget.usage(),
+		outcome,
+		completeness,
+		warnings,
+	};
 }
 
-function parseContentTypes(xml: string): ReadonlyMap<string, string> {
+function isRequiredRelationship(relationship: ParsedRelationship, mainPart: string): boolean {
+	if (relationship.targetMode !== 'internal') {
+		return false;
+	}
+	if (relationship.source === '/') {
+		return relationship.type === officeDocumentRelationship;
+	}
+	if (relationship.source !== mainPart) {
+		return false;
+	}
+	return /\/(?:styles|settings|numbering|theme|sharedStrings|workbook)$/i.test(relationship.type);
+}
 
-	if (!/<(?:\w+:)?Types\b/.test(xml)) {
+function parseContentTypes(document: ParadisOfficeXmlDocument): ReadonlyMap<string, string> {
+	if (document.root.local !== 'Types') {
 		throw new ParadisOfficePackageError('malformed');
 	}
 	const result = new Map<string, string>();
-	for (const match of xml.matchAll(/<(?:\w+:)?Override\b([^>]*)\/?\s*>/g)) {
-		const name = attribute(match[1], 'PartName');
-		const type = attribute(match[1], 'ContentType');
+	for (const node of document.root.children) {
+		if (node.kind !== 'element' || node.local !== 'Override') {
+			continue;
+		}
+		const name = attribute(node, 'PartName');
+		const type = attribute(node, 'ContentType');
 		if (!name || !type || !name.startsWith('/')) {
 			throw new ParadisOfficePackageError('malformed');
 		}
@@ -177,63 +336,82 @@ interface ParsedRelationship {
 	readonly targetMode: 'internal' | 'external';
 }
 
-function parseRelationships(name: string, xml: string): readonly ParsedRelationship[] {
-
-	if (!/<(?:\w+:)?Relationships\b/.test(xml)) {
+function parseRelationships(name: string, document: ParadisOfficeXmlDocument): readonly ParsedRelationship[] {
+	if (document.root.local !== 'Relationships') {
 		throw new ParadisOfficePackageError('malformed');
 	}
 	const source = relationshipSource(name);
 	const records: ParsedRelationship[] = [];
-	for (const match of xml.matchAll(/<(?:\w+:)?Relationship\b([^>]*)\/?\s*>/g)) {
-		const id = attribute(match[1], 'Id');
-		const type = attribute(match[1], 'Type');
-		const targetValue = attribute(match[1], 'Target');
-		const mode = attribute(match[1], 'TargetMode') === 'External' ? 'external' : 'internal';
+	for (const node of document.root.children) {
+		if (node.kind !== 'element' || node.local !== 'Relationship') {
+			continue;
+		}
+		const id = attribute(node, 'Id');
+		const type = attribute(node, 'Type');
+		const targetValue = attribute(node, 'Target');
+		const mode = attribute(node, 'TargetMode') === 'External' ? 'external' : 'internal';
 		if (!id || !type || !targetValue) {
 			throw new ParadisOfficePackageError('malformed');
 		}
-		records.push({ source, id, type, target: mode === 'external' ? targetValue : resolveTarget(source, targetValue), targetMode: mode });
+		records.push({
+			source,
+			id,
+			type,
+			target: mode === 'external' ? targetValue : resolveTarget(source, targetValue),
+			targetMode: mode,
+		});
 	}
 	return records;
 }
 
-function attribute(source: string, name: string): string | undefined {
-
-	const match = new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`).exec(source);
-	return match?.[2];
+function attribute(node: Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>, name: string): string | undefined {
+	return node.attributes.find(attribute => attribute.local === name && attribute.uri === '')?.value;
 }
 
 function relationshipSource(name: string): string {
-
-	if (name === rootRelationshipsName) { return '/'; }
+	if (name === rootRelationshipsName) {
+		return '/';
+	}
 	const match = /^(.*)\/_rels\/([^/]+)\.rels$/.exec(name);
-	if (!match) { throw new ParadisOfficePackageError('malformed'); }
+	if (!match) {
+		throw new ParadisOfficePackageError('malformed');
+	}
 	return `${match[1]}/${match[2]}`;
 }
 
 function resolveTarget(source: string, target: string): string {
-
 	if (!target || target.startsWith('/') || target.includes('\\') || target.includes('%')) {
 		throw new ParadisOfficePackageError('malformed');
 	}
 	const base = source === '/' ? [] : source.slice(1).split('/').slice(0, -1);
 	for (const segment of target.split('/')) {
-		if (!segment || segment === '.') { continue; }
+		if (!segment || segment === '.') {
+			continue;
+		}
 		if (segment === '..') {
-			if (base.length === 0) { throw new ParadisOfficePackageError('malformed'); }
+			if (base.length === 0) {
+				throw new ParadisOfficePackageError('malformed');
+			}
 			base.pop();
-		} else { base.push(segment); }
+		} else {
+			base.push(segment);
+		}
 	}
 	return `/${base.join('/')}`;
 }
 
 function isRelationshipCycle(source: string, target: string, relationships: readonly ParsedRelationship[]): boolean {
-
-	if (source === '/') { return false; }
+	if (source === '/') {
+		return false;
+	}
 	const visited = new Set<string>();
 	const visit = (part: string): boolean => {
-		if (part === source) { return true; }
-		if (visited.has(part)) { return false; }
+		if (part === source) {
+			return true;
+		}
+		if (visited.has(part)) {
+			return false;
+		}
 		visited.add(part);
 		return relationships.some(relationship => relationship.source === part && relationship.targetMode === 'internal' && visit(relationship.target));
 	};
@@ -241,41 +419,74 @@ function isRelationshipCycle(source: string, target: string, relationships: read
 }
 
 function buildFeatures(parts: readonly ReadPart[], relationships: readonly ParadisOfficeRelationship[]): readonly ParadisOfficeInventoryFeature[] {
-
 	const feature = (kind: string, predicate: (part: ReadPart) => boolean, safety: ParadisOfficeInventoryFeature['safety']): ParadisOfficeInventoryFeature | undefined => {
 		const matching = parts.filter(predicate);
-		return matching.length ? { kind, count: matching.length, partIds: matching.map(part => part.name), safety } : undefined;
+		return matching.length
+			? {
+				kind,
+				count: matching.length,
+				partIds: matching.map(part => part.name),
+				safety,
+			}
+			: undefined;
 	};
+	const reachable = new Set<string>([contentTypesName, rootRelationshipsName]);
+	for (const relationship of relationships) {
+		if (relationship.sourcePartId) {
+			reachable.add(relationship.sourcePartId);
+		}
+		if (relationship.targetMode === 'internal' && !relationship.missing) {
+			reachable.add(relationship.target);
+		}
+	}
 	return [
 		feature('macro', part => /vbaProject\.bin$/i.test(part.name), 'metadataOnly'),
 		feature('embeddedObject', part => /(?:oleObject|embeddings|activeX)/i.test(part.name), 'metadataOnly'),
-		relationships.some(relationship => relationship.targetMode === 'external') ? { kind: 'externalRelationship', count: relationships.filter(relationship => relationship.targetMode === 'external').length, partIds: [], safety: 'blocked' } : undefined,
+		relationships.some(relationship => relationship.targetMode === 'external')
+			? {
+				kind: 'externalRelationship',
+				count: relationships.filter(relationship => relationship.targetMode === 'external').length,
+				partIds: [],
+				safety: 'blocked',
+			}
+			: undefined,
+		feature('orphanPart', part => !reachable.has(part.name), 'metadataOnly'),
 	].filter((value): value is ParadisOfficeInventoryFeature => value !== undefined);
 }
 
 function detectFormat(mainPart: string, hasMacros: boolean): ParadisOfficeFormat {
-
-	if (mainPart === '/word/document.xml') { return hasMacros ? 'docm' : 'docx'; }
-	if (mainPart === '/xl/workbook.xml') { return hasMacros ? 'xlsm' : 'xlsx'; }
+	if (mainPart === '/word/document.xml') {
+		return hasMacros ? 'docm' : 'docx';
+	}
+	if (mainPart === '/xl/workbook.xml') {
+		return hasMacros ? 'xlsm' : 'xlsx';
+	}
 	return 'zip';
 }
 
-function isXmlPart(name: string, contentType: string): boolean { return name.endsWith('.xml') || name.endsWith('.rels') || /(?:xml|\+xml)/i.test(contentType); }
-function isMediaPart(name: string): boolean { return /\/(?:media|embeddings)\//i.test(name) || /\.(?:png|jpe?g|gif|bmp|tiff?|wmf|emf)$/i.test(name); }
+function isXmlPart(name: string, contentType: string): boolean {
+	return name.endsWith('.xml') || name.endsWith('.rels') || /(?:xml|\+xml)/i.test(contentType);
+}
+function isMediaPart(name: string): boolean {
+	return /\/(?:media|embeddings)\//i.test(name) || /\.(?:png|jpe?g|gif|bmp|tiff?|wmf|emf)$/i.test(name);
+}
 function asText(bytes: Uint8Array): string {
-
 	try {
 		return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 	} catch {
 		throw new ParadisOfficePackageError('malformed');
 	}
 }
-function asTextIfXml(part: ReadPart): string { return part.name.endsWith('.xml') || part.name.endsWith('.rels') ? asText(part.bytes) : ''; }
+function asTextIfXml(part: ReadPart): string {
+	return part.name.endsWith('.xml') || part.name.endsWith('.rels') ? asText(part.bytes) : '';
+}
 
 function joinChunks(chunks: readonly Uint8Array[], length: number): Uint8Array {
-
 	const result = new Uint8Array(length);
 	let offset = 0;
-	for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+	for (const chunk of chunks) {
+		result.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
 	return result;
 }
