@@ -557,6 +557,20 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.strictEqual(host.activeWorkerCount, 0);
 	});
 
+	test('disposes listeners and does not post after a synchronous exit registration', async () => {
+		class SynchronousExitWorker extends FakeWorker {
+			override onExit(listener: (code: number) => void): IDisposable {
+				const disposable = super.onExit(listener);
+				listener(1);
+				return disposable;
+			}
+		}
+		const worker = new SynchronousExitWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker });
+		assert.deepStrictEqual(await host.run('parse', 'owner', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken), { outcome: 'failed', error: 'engineCrashed' });
+		assert.deepStrictEqual(worker.messages, []);
+	});
+
 	test('rejects oversized or overflowing handles before retaining an owner entry and rolls back failed creation', () => {
 		const accountant = new OfficeMemoryAccountant(1024 * 1024 * 1024);
 		let randomCalls = 0;

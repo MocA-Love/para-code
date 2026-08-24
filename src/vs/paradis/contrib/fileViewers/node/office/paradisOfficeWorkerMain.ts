@@ -77,10 +77,9 @@ async function run(message: WorkerRunMessage): Promise<void> {
 			parentPort?.postMessage({ kind: 'cancelled', requestId: message.requestId });
 			return;
 		}
-		// The core may intentionally reuse immutable hash objects. Normalize the worker wire value
-		// to a tree so the host can reject every shared/cyclic untrusted graph without rejecting
-		// a genuine inventory produced by this worker.
-		const value = projectOfficeWorkerResult('inspect', JSON.parse(JSON.stringify({ inventory })));
+		// The core may intentionally reuse immutable hash objects. The bounded descriptor
+		// projector clones that trusted graph directly; do not allocate a JSON wire copy first.
+		const value = projectOfficeWorkerResult('inspect', { inventory }, true);
 		if (!value) {
 			parentPort?.postMessage({ kind: 'failure', requestId: message.requestId });
 			return;
