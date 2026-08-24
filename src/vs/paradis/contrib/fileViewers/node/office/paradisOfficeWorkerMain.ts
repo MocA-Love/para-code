@@ -76,7 +76,11 @@ async function run(message: WorkerRunMessage): Promise<void> {
 			parentPort?.postMessage({ kind: 'cancelled', requestId: message.requestId });
 			return;
 		}
-		parentPort?.postMessage({ kind: 'result', requestId: message.requestId, value: { inventory } });
+		// The core may intentionally reuse immutable hash objects. Normalize the worker wire value
+		// to a tree so the host can reject every shared/cyclic untrusted graph without rejecting
+		// a genuine inventory produced by this worker.
+		const value = JSON.parse(JSON.stringify({ inventory }));
+		parentPort?.postMessage({ kind: 'result', requestId: message.requestId, value });
 	} catch {
 		parentPort?.postMessage(cancellation.token.isCancellationRequested
 			? { kind: 'cancelled', requestId: message.requestId }

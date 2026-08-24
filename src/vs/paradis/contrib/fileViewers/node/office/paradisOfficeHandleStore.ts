@@ -272,12 +272,21 @@ export class OfficeHandleStore {
 	putSemanticCache(id: string, bytes: number, active = false): boolean {
 		if (!ownerPattern.test(id) || !isSafeInteger(bytes) || typeof active !== 'boolean') { return false; }
 		const previous = this.cache.get(id);
-		if (previous) { this.cacheBytes -= previous.bytes; this.cache.delete(id); }
-		this.evictInactiveCache(Math.max(0, bytes - (this.semanticCacheLimitBytes - this.cacheBytes)));
-		if (bytes > this.semanticCacheLimitBytes - this.cacheBytes) { this.syncAccountant(); return false; }
+		const evicted: StoredCache[] = [];
+		let retained = this.cacheBytes - (previous?.bytes ?? 0);
+		const requiredFor = (limit: number) => Math.max(0, retained + bytes - limit);
+		for (const candidate of [...this.cache.values()].filter(entry => entry !== previous && !entry.active).sort((a, b) => a.lastUsed - b.lastUsed)) {
+			const accountantLimit = this.accountant ? this.accountant.snapshot().limitBytes - (this.accountant.snapshot().totalBytes - this.accountant.snapshot().cacheBytes) : Number.MAX_SAFE_INTEGER;
+			if (requiredFor(this.semanticCacheLimitBytes) === 0 && requiredFor(accountantLimit) === 0) { break; }
+			evicted.push(candidate);
+			retained -= candidate.bytes;
+		}
+		const accountantLimit = this.accountant ? this.accountant.snapshot().limitBytes - (this.accountant.snapshot().totalBytes - this.accountant.snapshot().cacheBytes) : Number.MAX_SAFE_INTEGER;
+		if (requiredFor(this.semanticCacheLimitBytes) > 0 || requiredFor(accountantLimit) > 0 || (this.accountant && !this.accountant.trySetCache(retained + bytes))) { return false; }
+		if (previous) { this.cache.delete(id); }
+		for (const entry of evicted) { this.cache.delete(entry.id); }
+		this.cacheBytes = retained + bytes;
 		this.cache.set(id, { id, bytes, active, lastUsed: this.safeNow() });
-		this.cacheBytes += bytes;
-		this.syncAccountant();
 		return true;
 	}
 
@@ -372,6 +381,6 @@ export class OfficeHandleStore {
 	}
 	private expired(entry: StoredHandle): boolean { return !Number.isSafeInteger(entry.idleDeadline) || this.safeNow() >= entry.idleDeadline; }
 	private syncAccountant(): void {
-		this.accountant?.setCache(this.cacheBytes);
+		if (this.accountant && !this.accountant.trySetCache(this.cacheBytes)) { throw new OfficeHandleStoreError('memoryExceeded'); }
 	}
 }
