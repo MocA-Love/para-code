@@ -10,6 +10,7 @@ import type { IDisposable } from '../../../../../base/common/lifecycle.js';
 import {
 	PARADIS_OFFICE_BUDGET_PROFILES,
 	type ParadisOfficeBudgetProfile,
+	validateOfficeChange,
 } from '../../common/paradisOfficeProtocol.js';
 
 export const PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS = 250;
@@ -73,17 +74,27 @@ export class OfficeMemoryAccountant {
 	private spoolBytes = 0;
 	private derivedAssetBytes = 0;
 	constructor(readonly limitBytes: number) { if (!safeInteger(limitBytes)) { throw new TypeError('Invalid Office memory limit'); } }
-	setCache(bytes: number): void { this.cacheBytes = this.valid(bytes); }
-	setHandles(bytes: number): void { this.handleBytes = this.valid(bytes); }
+	trySetCache(bytes: number): boolean { return this.trySet('cacheBytes', bytes); }
+	trySetSpool(bytes: number): boolean { return this.trySet('spoolBytes', bytes); }
+	trySetDerivedAssets(bytes: number): boolean { return this.trySet('derivedAssetBytes', bytes); }
+	setCache(bytes: number): void { if (!this.trySetCache(bytes)) { throw new RangeError('Office memory limit exceeded'); } }
+	setHandles(bytes: number): void { if (!this.trySet('handleBytes', bytes)) { throw new RangeError('Office memory limit exceeded'); } }
 	reserveHandles(bytes: number): boolean { bytes = this.valid(bytes); const total = this.total() + bytes; if (!safeInteger(total) || total > this.limitBytes) { return false; } this.handleBytes += bytes; return true; }
 	releaseHandles(bytes: number): void { bytes = this.valid(bytes); this.handleBytes = Math.max(0, this.handleBytes - bytes); }
-	setSpool(bytes: number): void { this.spoolBytes = this.valid(bytes); }
-	setDerivedAssets(bytes: number): void { this.derivedAssetBytes = this.valid(bytes); }
+	setSpool(bytes: number): void { if (!this.trySetSpool(bytes)) { throw new RangeError('Office memory limit exceeded'); } }
+	setDerivedAssets(bytes: number): void { if (!this.trySetDerivedAssets(bytes)) { throw new RangeError('Office memory limit exceeded'); } }
 	reserveWorker(bytes: number): boolean { const total = this.total() + this.valid(bytes); if (!safeInteger(total) || total > this.limitBytes) { return false; } this.workerBytes += bytes; return true; }
 	releaseWorker(bytes: number): void { bytes = this.valid(bytes); this.workerBytes = Math.max(0, this.workerBytes - bytes); }
 	snapshot(): OfficeMemorySnapshot { return { limitBytes: this.limitBytes, workerBytes: this.workerBytes, cacheBytes: this.cacheBytes, handleBytes: this.handleBytes, spoolBytes: this.spoolBytes, derivedAssetBytes: this.derivedAssetBytes, totalBytes: this.total() }; }
 	private total(): number { const total = this.workerBytes + this.cacheBytes + this.handleBytes + this.spoolBytes + this.derivedAssetBytes; return safeInteger(total) ? total : Number.MAX_SAFE_INTEGER; }
 	private valid(bytes: number): number { if (!safeInteger(bytes)) { throw new TypeError('Invalid Office memory bytes'); } return bytes; }
+	private trySet(category: 'cacheBytes' | 'handleBytes' | 'spoolBytes' | 'derivedAssetBytes', bytes: number): boolean {
+		bytes = this.valid(bytes);
+		const total = this.total() - this[category] + bytes;
+		if (!safeInteger(total) || total > this.limitBytes) { return false; }
+		this[category] = bytes;
+		return true;
+	}
 }
 
 interface OfficeWorkerMessageRun {
@@ -177,6 +188,201 @@ function dataField(value: unknown, name: string): unknown {
 	}
 }
 
+const workerProjectionDepth = 32;
+const workerProjectionNodes = 65_536;
+const workerProjectionBytes = 2 * 1024 * 1024;
+
+/** Descriptor-only projector for the untrusted worker boundary. It deliberately creates every
+ * returned value so validation cannot retain a worker object, a getter, a Proxy, or a shared DAG. */
+class WorkerResultProjector {
+	private readonly seen = new Set<object>();
+	private nodes = 0;
+
+	project(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
+		const result = this.projectOnce(operation, value);
+		// A descriptor trap can mutate after an apparently valid pass. Repeat the bounded read
+		// before publishing; no value from either confirmation is retained.
+		if (!result || !new WorkerResultProjector().projectOnce(operation, value)) { return undefined; }
+		return result;
+	}
+
+	private projectOnce(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
+		try {
+			const result = operation === 'inspect' ? this.inspectResult(value, 1) : this.summary(operation, value, 1);
+			if (Buffer.byteLength(JSON.stringify(result), 'utf8') > workerProjectionBytes) { return undefined; }
+			return result;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private consume(depth: number): void {
+		if (depth > workerProjectionDepth || ++this.nodes > workerProjectionNodes) { throw new TypeError('Office worker projection limit'); }
+	}
+
+	private record(value: unknown, required: readonly string[], optional: readonly string[], depth: number): ReadonlyMap<string, unknown> {
+		this.consume(depth);
+		if (!value || typeof value !== 'object' || Array.isArray(value) || this.seen.has(value)) { throw new TypeError('Office worker record'); }
+		this.seen.add(value);
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) { throw new TypeError('Office worker record prototype'); }
+		const allowed = new Set([...required, ...optional]);
+		const keys = Reflect.ownKeys(value);
+		if (keys.length !== required.length + [...optional].filter(key => Object.prototype.hasOwnProperty.call(value, key)).length) { throw new TypeError('Office worker record keys'); }
+		const result = new Map<string, unknown>();
+		for (const key of keys) {
+			if (typeof key !== 'string' || !allowed.has(key)) { throw new TypeError('Office worker record key'); }
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) { throw new TypeError('Office worker accessor'); }
+			if (descriptor.value === undefined && !optional.includes(key)) { throw new TypeError('Office worker undefined'); }
+			if (descriptor.value !== undefined) { result.set(key, descriptor.value); }
+		}
+		if (required.some(key => !result.has(key))) { throw new TypeError('Office worker required key'); }
+		return result;
+	}
+
+	private array(value: unknown, depth: number): readonly unknown[] {
+		this.consume(depth);
+		if (!Array.isArray(value) || this.seen.has(value)) { throw new TypeError('Office worker array'); }
+		this.seen.add(value);
+		const length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
+		if (!safeInteger(length) || length > workerProjectionNodes - this.nodes || Reflect.ownKeys(value).length !== length + 1) { throw new TypeError('Office worker array length'); }
+		const result: unknown[] = [];
+		for (let index = 0; index < length; index++) {
+			const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value') || descriptor.value === undefined) { throw new TypeError('Office worker array item'); }
+			result.push(descriptor.value);
+		}
+		return result;
+	}
+
+	private string(value: unknown, depth: number): string { this.consume(depth); if (typeof value !== 'string') { throw new TypeError('Office worker string'); } return value; }
+	private bool(value: unknown, depth: number): boolean { this.consume(depth); if (typeof value !== 'boolean') { throw new TypeError('Office worker boolean'); } return value; }
+	private integer(value: unknown, depth: number): number { this.consume(depth); if (!safeInteger(value)) { throw new TypeError('Office worker integer'); } return value; }
+	private oneOf<T extends string>(value: unknown, values: readonly T[], depth: number): T { const string = this.string(value, depth); if (!values.includes(string as T)) { throw new TypeError('Office worker enum'); } return string as T; }
+
+	private inspectResult(value: unknown, depth: number): object {
+		const fields = this.record(value, ['inventory'], [], depth);
+		return { inventory: this.inventory(fields.get('inventory'), depth + 1) };
+	}
+
+	private inventory(value: unknown, depth: number): object {
+		const fields = this.record(value, ['format', 'container', 'parts', 'relationships', 'features', 'security', 'budgetProfile', 'budgetUsage', 'outcome', 'completeness', 'warnings'], [], depth);
+		const parts = this.array(fields.get('parts'), depth + 1).map(part => this.part(part, depth + 2));
+		const relationships = this.array(fields.get('relationships'), depth + 1).map(relationship => this.relationship(relationship, depth + 2));
+		const features = this.array(fields.get('features'), depth + 1).map(feature => this.feature(feature, depth + 2));
+		const security = this.security(fields.get('security'), depth + 1);
+		const completeness = this.completeness(fields.get('completeness'), depth + 1, parts);
+		const outcome = this.oneOf(fields.get('outcome'), ['complete', 'degraded', 'blocked'], depth + 1);
+		if (!this.coherentOutcome(outcome, parts, relationships)) { throw new TypeError('Office worker outcome'); }
+		return {
+			format: this.oneOf(fields.get('format'), ['xlsx', 'xlsm', 'xltx', 'xltm', 'docx', 'docm', 'dotx', 'dotm', 'zip', 'cfbEncrypted', 'unknown'], depth + 1),
+			container: this.oneOf(fields.get('container'), ['opc', 'zip', 'cfb', 'unknown'], depth + 1), parts, relationships, features, security,
+			budgetProfile: this.oneOf(fields.get('budgetProfile'), ['desktopLocal', 'remoteMobile', 'browser'], depth + 1),
+			budgetUsage: this.budgetUsage(fields.get('budgetUsage'), depth + 1), outcome, completeness,
+			warnings: this.array(fields.get('warnings'), depth + 1).map(warning => this.warning(warning, depth + 2)),
+		};
+	}
+
+	private part(value: unknown, depth: number): object {
+		const fields = this.record(value, ['id', 'canonicalUri', 'contentType', 'compressedBytes', 'expandedBytes', 'required', 'coverage'], ['rawHash', 'hashCompleteness', 'canonicalHash', 'fingerprint'], depth);
+		const coverage = this.oneOf(fields.get('coverage'), ['parsed', 'partial', 'opaque', 'completeOpaque', 'unsafe', 'failed', 'omittedByBudget'], depth + 1);
+		const result: Record<string, unknown> = {
+			id: this.string(fields.get('id'), depth + 1), canonicalUri: this.string(fields.get('canonicalUri'), depth + 1), contentType: this.string(fields.get('contentType'), depth + 1),
+			compressedBytes: this.integer(fields.get('compressedBytes'), depth + 1), expandedBytes: this.integer(fields.get('expandedBytes'), depth + 1), required: this.bool(fields.get('required'), depth + 1), coverage,
+		};
+		if (fields.has('rawHash')) { result.rawHash = this.fingerprint(fields.get('rawHash'), depth + 1); }
+		if (fields.has('hashCompleteness')) { result.hashCompleteness = this.oneOf(fields.get('hashCompleteness'), ['allBytes', 'incomplete'], depth + 1); }
+		if (fields.has('canonicalHash')) { result.canonicalHash = this.fingerprint(fields.get('canonicalHash'), depth + 1); }
+		if (fields.has('fingerprint')) { result.fingerprint = this.fingerprint(fields.get('fingerprint'), depth + 1); }
+		if ((coverage === 'parsed' && (!result.rawHash || result.hashCompleteness !== 'allBytes')) || (coverage === 'completeOpaque' && (!result.fingerprint || result.hashCompleteness !== 'allBytes'))) { throw new TypeError('Office worker part proof'); }
+		return result;
+	}
+
+	private fingerprint(value: unknown, depth: number): object {
+		const fields = this.record(value, ['algorithm', 'value', 'byteLength'], [], depth);
+		const fingerprint = this.string(fields.get('value'), depth + 1);
+		if (!/^[a-f\d]{64}$/i.test(fingerprint)) { throw new TypeError('Office worker fingerprint'); }
+		return { algorithm: this.oneOf(fields.get('algorithm'), ['sha256'], depth + 1), value: fingerprint, byteLength: this.integer(fields.get('byteLength'), depth + 1) };
+	}
+
+	private relationship(value: unknown, depth: number): object {
+		const fields = this.record(value, ['id', 'type', 'target', 'targetMode', 'missing', 'cyclic'], ['sourcePartId'], depth);
+		const result: Record<string, unknown> = { id: this.string(fields.get('id'), depth + 1), type: this.string(fields.get('type'), depth + 1), target: this.string(fields.get('target'), depth + 1), targetMode: this.oneOf(fields.get('targetMode'), ['internal', 'external'], depth + 1), missing: this.bool(fields.get('missing'), depth + 1), cyclic: this.bool(fields.get('cyclic'), depth + 1) };
+		if (fields.has('sourcePartId')) { result.sourcePartId = this.string(fields.get('sourcePartId'), depth + 1); }
+		return result;
+	}
+
+	private feature(value: unknown, depth: number): object {
+		const fields = this.record(value, ['kind', 'count', 'partIds', 'safety'], [], depth);
+		return { kind: this.string(fields.get('kind'), depth + 1), count: this.integer(fields.get('count'), depth + 1), partIds: this.array(fields.get('partIds'), depth + 1).map(partId => this.string(partId, depth + 2)), safety: this.oneOf(fields.get('safety'), ['safe', 'sanitized', 'metadataOnly', 'blocked'], depth + 1) };
+	}
+
+	private security(value: unknown, depth: number): object {
+		const fields = this.record(value, ['encrypted', 'hasMacros', 'hasExternalRelationships', 'hasEmbeddedObjects', 'hasProtection', 'hasSignatures'], [], depth);
+		return { encrypted: this.bool(fields.get('encrypted'), depth + 1), hasMacros: this.bool(fields.get('hasMacros'), depth + 1), hasExternalRelationships: this.bool(fields.get('hasExternalRelationships'), depth + 1), hasEmbeddedObjects: this.bool(fields.get('hasEmbeddedObjects'), depth + 1), hasProtection: this.bool(fields.get('hasProtection'), depth + 1), hasSignatures: this.bool(fields.get('hasSignatures'), depth + 1) };
+	}
+
+	private budgetUsage(value: unknown, depth: number): object {
+		const fields = this.record(value, ['compressedInputBytes', 'expandedBytes', 'entryCount', 'largestPartBytes', 'totalMediaBytes', 'elapsedMilliseconds'], [], depth);
+		return { compressedInputBytes: this.integer(fields.get('compressedInputBytes'), depth + 1), expandedBytes: this.integer(fields.get('expandedBytes'), depth + 1), entryCount: this.integer(fields.get('entryCount'), depth + 1), largestPartBytes: this.integer(fields.get('largestPartBytes'), depth + 1), totalMediaBytes: this.integer(fields.get('totalMediaBytes'), depth + 1), elapsedMilliseconds: this.integer(fields.get('elapsedMilliseconds'), depth + 1) };
+	}
+
+	private completeness(value: unknown, depth: number, parts?: readonly object[]): object {
+		const names = ['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits', 'terminal'] as const;
+		const fields = this.record(value, names, [], depth);
+		const result = { expectedParts: this.integer(fields.get('expectedParts'), depth + 1), visitedParts: this.integer(fields.get('visitedParts'), depth + 1), parsedParts: this.integer(fields.get('parsedParts'), depth + 1), opaqueParts: this.integer(fields.get('opaqueParts'), depth + 1), failedParts: this.integer(fields.get('failedParts'), depth + 1), omittedParts: this.integer(fields.get('omittedParts'), depth + 1), expectedSemanticUnits: this.integer(fields.get('expectedSemanticUnits'), depth + 1), visitedSemanticUnits: this.integer(fields.get('visitedSemanticUnits'), depth + 1), terminal: this.bool(fields.get('terminal'), depth + 1) };
+		if (!result.terminal || result.expectedParts !== result.visitedParts || result.visitedParts !== result.parsedParts + result.opaqueParts + result.failedParts + result.omittedParts || result.expectedSemanticUnits !== result.visitedSemanticUnits) { throw new TypeError('Office worker completeness'); }
+		if (parts && result.expectedParts !== parts.length) { throw new TypeError('Office worker parts completeness'); }
+		return result;
+	}
+
+	private warning(value: unknown, depth: number): object {
+		const fields = this.record(value, ['code', 'message'], [], depth);
+		const code = this.string(fields.get('code'), depth + 1);
+		const message = this.string(fields.get('message'), depth + 1);
+		if (code.length > 256 || message.length > 4096) { throw new TypeError('Office worker warning'); }
+		return { code, message };
+	}
+
+	private coherentOutcome(outcome: string, parts: readonly object[], relationships: readonly object[]): boolean {
+		const partStatus = parts.map(part => part as { coverage: string; required: boolean });
+		const blocked = partStatus.some(part => part.required && (part.coverage === 'failed' || part.coverage === 'omittedByBudget')) || relationships.some(relationship => {
+			const value = relationship as { missing: boolean; sourcePartId?: string };
+			return value.missing && value.sourcePartId === undefined;
+		});
+		const degraded = partStatus.some(part => part.coverage !== 'parsed' && part.coverage !== 'completeOpaque') || relationships.some(relationship => (relationship as { missing: boolean }).missing);
+		return outcome === 'blocked' ? blocked : outcome === 'degraded' ? !blocked && degraded : !blocked && !degraded;
+	}
+
+	private summary(operation: 'parse' | 'diff', value: unknown, depth: number): object {
+		const fields = this.record(value, ['operation', 'handle', 'outcome', 'completeness', 'capabilities', 'changes'], [], depth);
+		const handle = this.record(fields.get('handle'), ['kind', 'id'], [], depth + 1);
+		const changes = this.array(fields.get('changes'), depth + 1).map(change => this.change(change, depth + 2));
+		return { operation: this.oneOf(fields.get('operation'), [operation], depth + 1), handle: { kind: this.oneOf(handle.get('kind'), ['document', 'comparison'], depth + 2), id: this.string(handle.get('id'), depth + 2) }, outcome: this.oneOf(fields.get('outcome'), ['complete', 'degraded'], depth + 1), completeness: this.completeness(fields.get('completeness'), depth + 1), capabilities: this.array(fields.get('capabilities'), depth + 1).map(capability => this.string(capability, depth + 2)), changes };
+	}
+
+	private change(value: unknown, depth: number): object {
+		const fields = this.record(value, ['id', 'category', 'subject', 'before', 'after', 'certainty', 'sourceParts'], ['navigableAnchor'], depth);
+		const subject = this.record(fields.get('subject'), ['kind', 'locator'], [], depth + 1);
+		const result: Record<string, unknown> = { id: this.string(fields.get('id'), depth + 1), category: this.oneOf(fields.get('category'), ['content', 'formatting', 'structure', 'annotation', 'revision', 'object', 'security'], depth + 1), subject: { kind: this.string(subject.get('kind'), depth + 2), locator: this.string(subject.get('locator'), depth + 2) }, before: this.changeValue(fields.get('before'), depth + 1), after: this.changeValue(fields.get('after'), depth + 1), certainty: this.oneOf(fields.get('certainty'), ['exact', 'normalized', 'heuristic', 'ambiguous', 'opaque', 'degraded'], depth + 1), sourceParts: this.array(fields.get('sourceParts'), depth + 1).map(part => this.string(part, depth + 2)) };
+		if (fields.has('navigableAnchor')) { result.navigableAnchor = this.string(fields.get('navigableAnchor'), depth + 1); }
+		if (!validateOfficeChange(result).valid) { throw new TypeError('Office worker change'); }
+		return result;
+	}
+
+	private changeValue(value: unknown, depth: number): object {
+		const fields = this.record(value, ['kind'], ['valueType', 'value', 'items', 'fields', 'algorithm', 'byteLength'], depth);
+		const kind = this.oneOf(fields.get('kind'), ['none', 'scalar', 'list', 'record', 'fingerprint'], depth + 1);
+		if (kind === 'none') { if (fields.size !== 1) { throw new TypeError('Office worker change none'); } return { kind }; }
+		if (kind === 'scalar') { if (fields.size !== 3) { throw new TypeError('Office worker change scalar'); } const valueType = this.oneOf(fields.get('valueType'), ['text', 'number', 'boolean', 'null'], depth + 1); const scalar = fields.get('value'); if ((valueType === 'text' || valueType === 'number') ? typeof scalar !== 'string' : valueType === 'boolean' ? typeof scalar !== 'boolean' : scalar !== null) { throw new TypeError('Office worker scalar'); } this.consume(depth + 1); return { kind, valueType, value: scalar }; }
+		if (kind === 'list') { if (fields.size !== 2) { throw new TypeError('Office worker change list'); } return { kind, items: this.array(fields.get('items'), depth + 1).map(item => this.changeValue(item, depth + 2)) }; }
+		if (kind === 'record') { if (fields.size !== 2) { throw new TypeError('Office worker change record'); } return { kind, fields: this.array(fields.get('fields'), depth + 1).map(field => { const item = this.record(field, ['name', 'value'], [], depth + 2); return { name: this.string(item.get('name'), depth + 3), value: this.changeValue(item.get('value'), depth + 3) }; }) }; }
+		if (fields.size !== 4) { throw new TypeError('Office worker change fingerprint'); }
+		return { kind, ...this.fingerprint({ algorithm: fields.get('algorithm'), value: fields.get('value'), byteLength: fields.get('byteLength') }, depth + 1) };
+	}
+}
+
 /** Bounded Node worker orchestrator. The shared process never parses untrusted Office bytes. */
 export class OfficeWorkerHost {
 	private readonly createWorker: () => IOfficeWorker;
@@ -260,26 +466,30 @@ export class OfficeWorkerHost {
 		job.operationDeadline = this.deadline(operationDeadline(job.operation, job.budget));
 		job.state = 'running';
 		this.active.add(job);
-		if (job.queueTimer !== undefined) { this.clearTimer(job.queueTimer); job.queueTimer = undefined; }
+		if (job.queueTimer !== undefined) { try { this.clearTimer(job.queueTimer); } catch { } job.queueTimer = undefined; }
 		let worker: IOfficeWorker;
 		try { worker = this.createWorker(); } catch { this.finish(job, { outcome: 'failed', error: 'engineCrashed' }); return; }
 		job.worker = worker;
 		const listeners: IDisposable[] = [];
 		try {
 			listeners.push(worker.onMessage(message => this.onWorkerMessage(job, message)));
-			if (job.state !== 'finished') { listeners.push(worker.onError(() => this.workerStopped(job))); }
-			if (job.state !== 'finished') { listeners.push(worker.onExit(() => this.workerStopped(job))); }
+			if (this.cannotStart(job)) { for (const listener of listeners) { try { listener.dispose(); } catch { } } return; }
+			listeners.push(worker.onError(() => this.workerStopped(job)));
+			if (this.cannotStart(job)) { for (const listener of listeners) { try { listener.dispose(); } catch { } } return; }
+			listeners.push(worker.onExit(() => this.workerStopped(job)));
 			job.workerListeners = listeners;
 		} catch {
 			job.workerListeners = listeners;
 			this.reap(job, { outcome: 'failed', error: 'engineCrashed' });
 			return;
 		}
-		if (job.state === 'finished') { return; }
-		try { job.deadlineTimer = this.setTimer(() => {
-			job.terminal = 'blocked';
-			this.reap(job, { outcome: 'blocked', error: 'limitExceeded' });
-		}, operationDeadline(job.operation, job.budget)); } catch { this.reap(job, { outcome: 'failed', error: 'engineCrashed' }); return; }
+		if (this.cannotStart(job)) { return; }
+		try {
+			job.deadlineTimer = this.setTimer(() => {
+				job.terminal = 'blocked';
+				this.reap(job, { outcome: 'blocked', error: 'limitExceeded' });
+			}, operationDeadline(job.operation, job.budget));
+		} catch { this.reap(job, { outcome: 'failed', error: 'engineCrashed' }); return; }
 		try {
 			const message: OfficeWorkerMessageRun = { kind: 'run', requestId: job.requestId, operation: job.operation, source: job.source, budget: job.budget };
 			worker.postMessage(message);
@@ -295,11 +505,13 @@ export class OfficeWorkerHost {
 		job.state = 'cancelling';
 		job.terminal = 'cancelled';
 		try { job.worker?.postMessage({ kind: 'cancel', requestId: job.requestId }); } catch { }
-		try { job.cancelTimer = this.setTimer(() => {
-			if (job.state !== 'finished') {
-				this.reap(job, { outcome: 'cancelled' });
-			}
-		}, PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS); } catch { this.reap(job, { outcome: 'cancelled' }); }
+		try {
+			job.cancelTimer = this.setTimer(() => {
+				if (job.state !== 'finished') {
+					this.reap(job, { outcome: 'cancelled' });
+				}
+			}, PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
+		} catch { this.reap(job, { outcome: 'cancelled' }); }
 	}
 
 	private onWorkerMessage(job: PendingJob<object>, message: unknown): void {
@@ -338,8 +550,8 @@ export class OfficeWorkerHost {
 	private reap(job: PendingJob<object>, outcome: OfficeWorkerOutcome<object>): void {
 		if (job.state === 'finished' || job.pendingOutcome) { return; }
 		job.pendingOutcome = outcome;
-		if (job.deadlineTimer !== undefined) { this.clearTimer(job.deadlineTimer); job.deadlineTimer = undefined; }
-		if (job.cancelTimer !== undefined) { this.clearTimer(job.cancelTimer); job.cancelTimer = undefined; }
+		if (job.deadlineTimer !== undefined) { try { this.clearTimer(job.deadlineTimer); } catch { } job.deadlineTimer = undefined; }
+		if (job.cancelTimer !== undefined) { try { this.clearTimer(job.cancelTimer); } catch { } job.cancelTimer = undefined; }
 		if (!job.worker) { this.finish(job, outcome); return; }
 		try {
 			job.reapTimer = this.setTimer(() => this.orphan(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
@@ -376,26 +588,37 @@ export class OfficeWorkerHost {
 	}
 
 	private reserve(job: PendingJob<object>): boolean {
-		if (this.accountant) {
-			const before = this.accountant.snapshot();
-			const deficit = before.totalBytes + job.reservationBytes - before.limitBytes;
-			if (!safeInteger(before.totalBytes + job.reservationBytes)) { return false; }
-			if (deficit > 0) {
-				try { this.memory.evictInactiveCache?.(deficit); } catch { return false; }
+		let reserved = false;
+		let admitted = false;
+		try {
+			if (this.accountant) {
+				const before = this.accountant.snapshot();
+				const requested = before.totalBytes + job.reservationBytes;
+				if (!safeInteger(requested)) { return false; }
+				const deficit = Math.max(0, requested - before.limitBytes);
+				if (deficit > 0) { this.memory.evictInactiveCache?.(deficit); }
+				if (!this.accountant.reserveWorker(job.reservationBytes)) { return false; }
+				reserved = true;
 			}
-			if (!this.accountant.reserveWorker(job.reservationBytes)) { return false; }
+			const current = this.memoryUsage();
+			const limit = this.memory.limitBytes ?? memoryLimit(job.budget);
+			const requested = current + job.reservationBytes;
+			if (!safeInteger(requested)) { return false; }
+			if (requested > limit) {
+				this.memory.evictInactiveCache?.(requested - limit);
+				const afterEviction = this.memoryUsage() + job.reservationBytes;
+				if (!safeInteger(afterEviction) || afterEviction > limit) { return false; }
+			}
+			admitted = true;
+			return true;
+		} catch {
+			return false;
+		} finally {
+			if (reserved && !admitted) { this.accountant?.releaseWorker(job.reservationBytes); }
 		}
-		const current = this.memoryUsage();
-		const limit = this.memory.limitBytes ?? memoryLimit(job.budget);
-		const requested = current + job.reservationBytes;
-		if (!safeInteger(requested)) { this.accountant?.releaseWorker(job.reservationBytes); return false; }
-		if (requested <= limit) { return true; }
-		const required = requested - limit;
-		try { this.memory.evictInactiveCache?.(required); } catch { return false; }
-		const admitted = this.memoryUsage() + job.reservationBytes <= limit;
-		if (!admitted) { this.accountant?.releaseWorker(job.reservationBytes); }
-		return admitted;
 	}
+
+	private cannotStart(job: PendingJob<object>): boolean { return job.state === 'finished' || !!job.pendingOutcome || job.state === 'cancelling' || job.orphaned; }
 
 	private canEverReserve(job: PendingJob<object>): boolean {
 		const limit = this.memory.limitBytes ?? memoryLimit(job.budget);
@@ -431,119 +654,9 @@ export class OfficeWorkerHost {
 		return { kind: 'bytes', bytes: bytes.slice(), revision };
 	}
 
-	private validWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown): value is object {
-		// The operation-specific snapshots below use descriptor-only reads and reject all unknown
-		// fields. They are the boundary validation for Task 4 inventory objects.
-		if (operation === 'parse' || operation === 'diff') { return this.validHandleSummary(operation, value); }
-		try {
-			if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).length !== 1 || !Object.prototype.hasOwnProperty.call(value, 'inventory')) { return false; }
-			const inventoryDescriptor = Object.getOwnPropertyDescriptor(value, 'inventory');
-			if (!inventoryDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(inventoryDescriptor, 'value')) { return false; }
-		} catch { return false; }
-		const inventory = dataField(value, 'inventory');
-		return this.validInventory(inventory);
-	}
-
 	/** Returns a fresh plain-data boundary object; no worker-owned object crosses into host state. */
 	private snapshotWorkerResult(operation: ParadisOfficeWorkerOperation, value: unknown): object | undefined {
-		if (!this.validWorkerResult(operation, value)) { return undefined; }
-		try {
-			const snapshot = this.copyWorkerData(value, 0);
-			return this.validWorkerResult(operation, snapshot) ? snapshot as object : undefined;
-		} catch {
-			return undefined;
-		}
-	}
-
-	private copyWorkerData(value: unknown, depth: number): unknown {
-		if (depth > 32 || value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') { return value; }
-		if (Array.isArray(value)) {
-			const length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
-			if (!safeInteger(length)) { throw new TypeError('Invalid worker array'); }
-			const result: unknown[] = [];
-			for (let index = 0; index < length; index++) {
-				const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-				if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) { throw new TypeError('Invalid worker array'); }
-				result.push(this.copyWorkerData(descriptor.value, depth + 1));
-			}
-			return result;
-		}
-		if (!value || typeof value !== 'object') { throw new TypeError('Invalid worker data'); }
-		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) { throw new TypeError('Invalid worker data'); }
-		const result: Record<string, unknown> = {};
-		for (const key of Reflect.ownKeys(value)) {
-			if (typeof key !== 'string') { throw new TypeError('Invalid worker key'); }
-			const descriptor = Object.getOwnPropertyDescriptor(value, key);
-			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) { throw new TypeError('Invalid worker descriptor'); }
-			// Structured worker data may carry an optional field as enumerable undefined.
-			// Omit it from the fresh record; the operation validator then rejects any required absence.
-			if (descriptor.value !== undefined) { result[key] = this.copyWorkerData(descriptor.value, depth + 1); }
-		}
-		return result;
-	}
-
-	private validInventory(value: unknown): boolean {
-		const allowed = new Set(['format', 'container', 'parts', 'relationships', 'features', 'security', 'budgetProfile', 'budgetUsage', 'outcome', 'completeness', 'warnings']);
-		if (!this.exactRecord(value, allowed)) { return false; }
-		const format = dataField(value, 'format');
-		const container = dataField(value, 'container');
-		const outcome = dataField(value, 'outcome');
-		const parts = dataField(value, 'parts');
-		const relationships = dataField(value, 'relationships');
-		const features = dataField(value, 'features');
-		if (!['xlsx', 'xlsm', 'xltx', 'xltm', 'docx', 'docm', 'dotx', 'dotm', 'zip', 'cfbEncrypted', 'unknown'].includes(format as string) || !['opc', 'zip', 'cfb', 'unknown'].includes(container as string) || !['complete', 'degraded', 'blocked'].includes(outcome as string) || !Array.isArray(parts) || !Array.isArray(relationships) || !Array.isArray(features)) { return false; }
-		const completeness = dataField(value, 'completeness');
-		if (!this.exactRecord(completeness, new Set(['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits', 'terminal']))) { return false; }
-		const counters = ['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits'].map(name => dataField(completeness, name));
-		if (counters.some(counter => !safeInteger(counter)) || dataField(completeness, 'terminal') !== true) { return false; }
-		const [expected, visited, parsed, opaque, failed, omitted] = counters as number[];
-		if (expected !== visited || visited !== parsed + opaque + failed + omitted) { return false; }
-		const security = dataField(value, 'security');
-		const usage = dataField(value, 'budgetUsage');
-		if (!this.exactRecord(security, new Set(['encrypted', 'hasMacros', 'hasExternalRelationships', 'hasEmbeddedObjects', 'hasProtection', 'hasSignatures'])) || !this.exactRecord(usage, new Set(['compressedInputBytes', 'expandedBytes', 'entryCount', 'largestPartBytes', 'totalMediaBytes', 'elapsedMilliseconds'])) || ['encrypted', 'hasMacros', 'hasExternalRelationships', 'hasEmbeddedObjects', 'hasProtection', 'hasSignatures'].some(name => typeof dataField(security, name) !== 'boolean') || ['compressedInputBytes', 'expandedBytes', 'entryCount', 'largestPartBytes', 'totalMediaBytes', 'elapsedMilliseconds'].some(name => !safeInteger(dataField(usage, name)))) { return false; }
-		return parts.every(part => this.validPart(part)) && relationships.every(relationship => this.exactRecord(relationship, new Set(['id', 'sourcePartId', 'type', 'target', 'targetMode', 'missing', 'cyclic'])))
-			&& features.every(feature => this.exactRecord(feature, new Set(['kind', 'count', 'partIds', 'safety'])) && typeof dataField(feature, 'kind') === 'string' && safeInteger(dataField(feature, 'count')) && Array.isArray(dataField(feature, 'partIds')) && ['safe', 'sanitized', 'metadataOnly', 'blocked'].includes(dataField(feature, 'safety') as string));
-	}
-
-	private validPart(value: unknown): boolean {
-		if (!this.exactRecord(value, new Set(['id', 'canonicalUri', 'contentType', 'compressedBytes', 'expandedBytes', 'required', 'coverage', 'rawHash', 'hashCompleteness', 'canonicalHash', 'fingerprint']))) { return false; }
-		const coverage = dataField(value, 'coverage');
-		if (!['parsed', 'partial', 'opaque', 'completeOpaque', 'unsafe', 'failed', 'omittedByBudget'].includes(coverage as string) || typeof dataField(value, 'id') !== 'string' || typeof dataField(value, 'canonicalUri') !== 'string' || typeof dataField(value, 'contentType') !== 'string' || !safeInteger(dataField(value, 'compressedBytes')) || !safeInteger(dataField(value, 'expandedBytes')) || typeof dataField(value, 'required') !== 'boolean') { return false; }
-		if (coverage === 'parsed' || coverage === 'completeOpaque') {
-			const hash = dataField(value, coverage === 'parsed' ? 'rawHash' : 'fingerprint');
-			return this.exactRecord(hash, new Set(['algorithm', 'value', 'byteLength'])) && dataField(hash, 'algorithm') === 'sha256' && typeof dataField(hash, 'value') === 'string' && /^[a-f\d]{64}$/i.test(dataField(hash, 'value') as string) && safeInteger(dataField(hash, 'byteLength')) && dataField(value, 'hashCompleteness') === 'allBytes';
-		}
-		return true;
-	}
-
-	private validHandleSummary(operation: 'parse' | 'diff', value: unknown): boolean {
-		if (!this.exactRecord(value, new Set(['operation', 'handle', 'outcome', 'completeness', 'capabilities', 'changes']))) { return false; }
-		const handle = dataField(value, 'handle');
-		const completeness = dataField(value, 'completeness');
-		if (dataField(value, 'operation') !== operation || !this.exactRecord(handle, new Set(['kind', 'id'])) || (dataField(handle, 'kind') !== 'document' && dataField(handle, 'kind') !== 'comparison') || typeof dataField(handle, 'id') !== 'string' || !['complete', 'degraded'].includes(dataField(value, 'outcome') as string) || !this.validCompleteness(completeness)) { return false; }
-		const capabilities = dataField(value, 'capabilities');
-		if (capabilities !== undefined && (!Array.isArray(capabilities) || !capabilities.every(capability => typeof capability === 'string'))) { return false; }
-		const changes = dataField(value, 'changes');
-		return changes === undefined || (Array.isArray(changes) && changes.every(change => this.safeChange(change)));
-	}
-
-	private validCompleteness(value: unknown): boolean {
-		if (!this.exactRecord(value, new Set(['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits', 'terminal']))) { return false; }
-		const counters = ['expectedParts', 'visitedParts', 'parsedParts', 'opaqueParts', 'failedParts', 'omittedParts', 'expectedSemanticUnits', 'visitedSemanticUnits'].map(name => dataField(value, name));
-		if (counters.some(counter => !safeInteger(counter)) || dataField(value, 'terminal') !== true) { return false; }
-		const [expected, visited, parsed, opaque, failed, omitted] = counters as number[];
-		return expected === visited && visited === parsed + opaque + failed + omitted;
-	}
-
-	private safeChange(value: unknown): boolean {
-		if (!value || typeof value !== 'object' || Array.isArray(value)) { return false; }
-		try { return !Reflect.ownKeys(value).some(key => key === 'path' || key === 'stack'); } catch { return false; }
-	}
-
-	private exactRecord(value: unknown, allowed: ReadonlySet<string>): boolean {
-		if (!value || typeof value !== 'object' || Array.isArray(value)) { return false; }
-		try { const prototype = Object.getPrototypeOf(value); const keys = Reflect.ownKeys(value); return (prototype === Object.prototype || prototype === null) && keys.length > 0 && keys.every(key => typeof key === 'string' && allowed.has(key) && !!Object.getOwnPropertyDescriptor(value, key)?.enumerable && Object.prototype.hasOwnProperty.call(Object.getOwnPropertyDescriptor(value, key), 'value')); } catch { return false; }
+		return new WorkerResultProjector().project(operation, value);
 	}
 
 	private safeNow(): number {

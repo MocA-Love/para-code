@@ -66,7 +66,7 @@ function source() {
 }
 
 function parseSummary() {
-	return { operation: 'parse', handle: { kind: 'document', id: 'handle-1' }, outcome: 'complete', completeness: completeness() };
+	return { operation: 'parse', handle: { kind: 'document', id: 'handle-1' }, outcome: 'complete', completeness: completeness(), capabilities: [], changes: [] };
 }
 
 function completeness() {
@@ -77,8 +77,10 @@ function inspectInventory() {
 	return {
 		format: 'docx', container: 'opc', parts: [], relationships: [], features: [],
 		security: { encrypted: false, hasMacros: false, hasExternalRelationships: false, hasEmbeddedObjects: false, hasProtection: false, hasSignatures: false },
+		budgetProfile: 'desktopLocal',
 		budgetUsage: { compressedInputBytes: 0, expandedBytes: 0, entryCount: 0, largestPartBytes: 0, totalMediaBytes: 0, elapsedMilliseconds: 0 },
 		outcome: 'complete', completeness: completeness(),
+		warnings: [],
 	};
 }
 
@@ -168,7 +170,7 @@ suite('ParadisOfficeWorkerHost', () => {
 		const accountant = new OfficeMemoryAccountant(1024 * 1024 * 1024);
 		const host = new OfficeWorkerHost({ accountant, memory: { workerReservationBytes: 1 } });
 		const result = await host.run('inspect', 'node-inspect', { kind: 'bytes', bytes, revision: 'fixture-1' }, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) });
-		assert.strictEqual(result.outcome, 'complete');
+		assert.strictEqual(result.outcome, 'complete', JSON.stringify(result));
 		if (result.outcome === 'complete') {
 			const inventory = (result.value as { inventory: { readonly features: readonly { readonly kind: string }[]; readonly security: { readonly hasMacros: boolean; readonly hasExternalRelationships: boolean } } }).inventory;
 			assert.deepStrictEqual(inventory.features.map(feature => feature.kind).sort(), ['externalRelationship', 'macro', 'orphanPart']);
@@ -225,6 +227,44 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
 	});
 
+	test('requires every inspect descriptor field and never returns a nested worker identity', async () => {
+		for (const inventory of [
+			(() => { const value = inspectInventory(); delete (value as Partial<typeof value>).budgetProfile; return value; })(),
+			(() => { const value = inspectInventory(); delete (value as Partial<typeof value>).warnings; return value; })(),
+		]) {
+			const worker = new FakeWorker();
+			const host = new OfficeWorkerHost({ createWorker: () => worker });
+			const result = host.run('inspect', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken);
+			worker.emit({ kind: 'result', requestId: '1', value: { inventory } });
+			assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
+		}
+
+		const worker = new FakeWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker });
+		const original = { inventory: inspectInventory() };
+		const result = host.run('inspect', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken);
+		worker.emit({ kind: 'result', requestId: '1', value: original });
+		const outcome = await result;
+		assert.strictEqual(outcome.outcome, 'complete');
+		if (outcome.outcome === 'complete') {
+			assert.notStrictEqual(outcome.value, original);
+			assert.notStrictEqual((outcome.value as { inventory: object }).inventory, original.inventory);
+		}
+	});
+
+	test('bounds projected worker output before publishing a deep or oversized payload', async () => {
+		for (const inventory of [
+			(() => { let value: unknown = inspectInventory(); for (let index = 0; index < 33; index++) { value = { inventory: value }; } return value; })(),
+			{ ...inspectInventory(), warnings: [{ code: 'x', message: '😀'.repeat(524_289) }] },
+		]) {
+			const worker = new FakeWorker();
+			const host = new OfficeWorkerHost({ createWorker: () => worker });
+			const result = host.run('inspect', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken);
+			worker.emit({ kind: 'result', requestId: '1', value: { inventory } });
+			assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
+		}
+	});
+
 	test('rejects extra, path-bearing, and Proxy worker summaries', async () => {
 		for (const value of [{ ...parseSummary(), path: '/private/document.xlsx', stack: 'secret' }]) {
 			const worker = new FakeWorker();
@@ -267,7 +307,7 @@ suite('ParadisOfficeWorkerHost', () => {
 		let inventoryDescriptorReads = 0;
 		const mutating = new Proxy({ inventory: changingInventory }, {
 			getOwnPropertyDescriptor(target, key) {
-				if (key === 'inventory' && ++inventoryDescriptorReads === 3) { changingInventory.security.hasMacros = 'not-a-boolean' as never; }
+				if (key === 'inventory' && ++inventoryDescriptorReads === 2) { changingInventory.security.hasMacros = 'not-a-boolean' as never; }
 				return Reflect.getOwnPropertyDescriptor(target, key);
 			},
 		});
@@ -456,14 +496,45 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.strictEqual(rejectedAccountant.snapshot().workerBytes, 0);
 	});
 
+	test('keeps every accountant category and cache map unchanged when a global admission is denied', () => {
+		const accountant = new OfficeMemoryAccountant(10);
+		assert.strictEqual(accountant.trySetCache(6), true);
+		assert.strictEqual(accountant.trySetSpool(5), false);
+		assert.deepStrictEqual(accountant.snapshot(), { limitBytes: 10, workerBytes: 0, cacheBytes: 6, handleBytes: 0, spoolBytes: 0, derivedAssetBytes: 0, totalBytes: 6 });
+		assert.strictEqual(accountant.trySetCache(0), true);
+		assert.strictEqual(accountant.trySetSpool(6), true);
+		const store = new OfficeHandleStore({ accountant, semanticCacheLimitBytes: 10, randomBytes: length => new Uint8Array(length).fill(1) });
+		assert.strictEqual(store.putSemanticCache('active', 6, true), false);
+		assert.strictEqual(store.semanticCacheBytes, 0);
+		assert.deepStrictEqual(accountant.snapshot(), { limitBytes: 10, workerBytes: 0, cacheBytes: 0, handleBytes: 0, spoolBytes: 6, derivedAssetBytes: 0, totalBytes: 6 });
+	});
+
+	test('does not post or schedule after a synchronous listener terminal transition', async () => {
+		class SynchronousResultWorker extends FakeWorker {
+			override onMessage(listener: (message: unknown) => void): IDisposable {
+				const disposable = super.onMessage(listener);
+				listener({ kind: 'result', requestId: '1', value: parseSummary() });
+				return disposable;
+			}
+		}
+		const worker = new SynchronousResultWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker });
+		const result = await host.run('parse', 'owner', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken);
+		assert.deepStrictEqual(result, { outcome: 'complete', value: parseSummary() });
+		assert.deepStrictEqual(worker.messages, []);
+		assert.strictEqual(host.activeWorkerCount, 0);
+	});
+
 	test('rejects oversized or overflowing handles before retaining an owner entry and rolls back failed creation', () => {
 		const accountant = new OfficeMemoryAccountant(1024 * 1024 * 1024);
 		let randomCalls = 0;
-		const store = new OfficeHandleStore({ accountant, randomBytes: length => {
-			randomCalls++;
-			if (randomCalls === 2) { throw new Error('randomness failure'); }
-			return new Uint8Array(length).fill(randomCalls);
-		} });
+		const store = new OfficeHandleStore({
+			accountant, randomBytes: length => {
+				randomCalls++;
+				if (randomCalls === 2) { throw new Error('randomness failure'); }
+				return new Uint8Array(length).fill(randomCalls);
+			}
+		});
 		assert.throws(() => store.create('owner-a', 'document', 'large', 512 * 1024 * 1024 + 1));
 		assert.throws(() => store.create('owner-b', 'document', 'overflow', Number.MAX_SAFE_INTEGER));
 		assert.strictEqual(store.size, 0);
