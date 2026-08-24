@@ -368,7 +368,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		if (!entry) {
 			return;
 		}
-		if (entry.ownerId !== reference.ownerId || entry.nonce !== reference.nonce) {
+		if (entry.ownerId !== reference.ownerId || entry.nonce !== reference.nonce || entry.attemptId !== reference.attemptId) {
 			throw new OfficeSpoolStoreError('invalidReference');
 		}
 		this.removeEntry(entry);
@@ -443,7 +443,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 
 	private requireEntry(reference: ParadisOfficeWritableSpoolReference, enforceWritableDeadline = false): SpoolEntry {
 		const entry = this.entries.get(reference.id);
-		if (!entry || entry.ownerId !== reference.ownerId || entry.nonce !== reference.nonce) {
+		if (!entry || entry.ownerId !== reference.ownerId || entry.nonce !== reference.nonce || entry.attemptId !== reference.attemptId) {
 			throw new OfficeSpoolStoreError('invalidReference');
 		}
 		if (enforceWritableDeadline && entry.state === 'writable' && this.readCurrentTime() >= entry.expiresAt) {

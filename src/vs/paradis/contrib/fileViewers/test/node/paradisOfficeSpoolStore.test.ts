@@ -666,4 +666,26 @@ suite('OfficeSpoolStore', () => {
 		await store.disposeAttempt(ownerA, attempt);
 		strictEqual(store.activeSpoolCount, 0);
 	});
+
+	test('rejects forged attempt IDs at every capability entrypoint without changing the victim', async () => {
+		const store = new BaseOfficeSpoolStore({ platform: 'desktopLocal' });
+		const attempt = '00000000-0000-4000-8000-0000000000bb';
+		const reference = await store.begin(ownerA, attempt);
+		await store.claim(reference, attempt);
+		await store.append(reference, VSBuffer.fromString('victim'));
+		const forged = { ...reference, attemptId: '00000000-0000-4000-8000-0000000000cc' };
+		for (const operation of [
+			() => store.claim(forged, forged.attemptId),
+			() => store.append(forged, VSBuffer.fromString('x')),
+			() => store.seal(forged, sealRequest('victim')),
+			() => store.dispose(forged),
+		]) {
+			await rejects(operation, (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
+		}
+		const sealed = await store.seal(reference, sealRequest('victim'));
+		await rejects(() => store.open({ ...sealed, attemptId: forged.attemptId }, async () => undefined), (error: unknown) => error instanceof OfficeSpoolStoreError && error.code === 'invalidReference');
+		strictEqual(store.activeSpoolCount, 1);
+		strictEqual(store.byteLength, 6);
+		await store.open(sealed, async source => strictEqual((await source.read(0, 6)).toString(), 'victim'));
+	});
 });
