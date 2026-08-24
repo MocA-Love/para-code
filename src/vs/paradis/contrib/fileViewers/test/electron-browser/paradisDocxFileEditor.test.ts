@@ -138,6 +138,57 @@ suite('ParadisDocxFileEditor', () => {
 		strictEqual(body.textContent?.includes('UNSAFE-HTML'), false);
 	});
 
+	test('reopens and renders an exact numbering picture bullet through the actual docx-preview parser', async () => {
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/media/bullet.svg" ContentType="image/svg+xml"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Picture bullet visible</w:t></w:r></w:p></w:body></w:document>',
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="numbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>',
+			'word/numbering.xml': '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:numPicBullet w:numPicBulletId="1"><w:pict><v:shape style="width:8pt;height:8pt"><v:imagedata r:id="bullet"/></v:shape></w:pict></w:numPicBullet><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val=""/><w:lvlPicBulletId w:val="1"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>',
+			'word/_rels/numbering.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="bullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bullet.svg"/></Relationships>',
+			'word/media/bullet.svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>',
+		});
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-picture-bullet');
+		const reopened = await sanitizeParadisDocxBytesForRenderer(sanitized.bytes, 'actual-picture-bullet-reopen');
+		const docx = await loadActualDocxPreview();
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = reopened.bytes.buffer.slice(reopened.bytes.byteOffset, reopened.bytes.byteOffset + reopened.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+
+		ok(body.textContent?.includes('Picture bullet visible'));
+		ok([...body.querySelectorAll('p')].some(paragraph => paragraph.className.includes('-num-1-0')));
+		ok(styles.textContent?.includes(':before'));
+		ok(styles.textContent?.includes('background: var('));
+	});
+
+	test('reopens an MC QName document and renders its locally patched DrawingML anchor', async () => {
+		const geometry = '<wp:anchor><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="blocked"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/custom/ole.bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="wps"><w:body><mc:AlternateContent><mc:Choice Requires="wps"><w:p><w:r><w:t>MC choice</w:t></w:r></w:p></mc:Choice><mc:Fallback><w:p><w:r><w:t>MC fallback</w:t></w:r></w:p></mc:Fallback></mc:AlternateContent><w:p><w:r><w:t>MC anchor</w:t></w:r><w:r><w:drawing>${geometry}</w:drawing></w:r></w:p></w:body></w:document>`,
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/></Relationships>',
+			'custom/ole.bin': 'RAW-OLE',
+		});
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-mc-anchor');
+		const serialized = new TextDecoder().decode(sanitized.bytes);
+		ok(serialized.includes('mc:Ignorable="wps"'));
+		ok(serialized.includes('<mc:Choice Requires="wps">'));
+		ok(serialized.includes(geometry.replace(' r:embed="blocked"', '')));
+		const reopened = await sanitizeParadisDocxBytesForRenderer(sanitized.bytes, 'actual-mc-anchor-reopen');
+		const docx = await loadActualDocxPreview();
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = reopened.bytes.buffer.slice(reopened.bytes.byteOffset, reopened.bytes.byteOffset + reopened.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+
+		ok(body.textContent?.includes('Office asset unavailable:'));
+		strictEqual(body.textContent?.includes('RAW-OLE'), false);
+	});
+
 	function createDocxEditorFixture() {
 		const watcherResources: string[] = [];
 		const readResources: string[] = [];
