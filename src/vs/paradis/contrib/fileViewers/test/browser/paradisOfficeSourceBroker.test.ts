@@ -9,7 +9,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../../base/common/errors.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisOfficeSourceBroker } from '../../browser/paradisOfficeSourceBroker.js';
+import { ParadisOfficeSourceBroker, ParadisOfficeSourceBrokerError, type ParadisOfficeSourceBrokerOptions } from '../../browser/paradisOfficeSourceBroker.js';
 import {
 	buildParadisOfficeSourceRevision,
 	IOfficeSourceHash,
@@ -290,7 +290,7 @@ suite('ParadisOfficeSourceBroker', () => {
 		const unsafe = Object.create(null);
 		Object.defineProperty(unsafe, 'kind', { enumerable: true, get: () => { getterCalls++; throw new Error('secret'); } });
 		const { broker } = createBroker(sourceProvider([]));
-		await rejects(() => broker.open(unsafe as ParadisOfficeSourceDescriptor, CancellationToken.None), TypeError);
+		await rejectsSafeBrokerError(() => broker.open(unsafe as ParadisOfficeSourceDescriptor, CancellationToken.None), 'unsupportedSource');
 		strictEqual(getterCalls, 0);
 
 		const input = descriptor('file', 'file:///tmp/document.docx') as { displayName: string } & ParadisOfficeSourceDescriptor;
@@ -627,6 +627,85 @@ suite('ParadisOfficeSourceBroker', () => {
 		});
 		strictEqual(spoolClient.appended.length, 0);
 		cancellation.dispose();
+	});
+
+	test('gives a scrubbed cancellation error precedence at every reported callback race', async () => {
+		const cases: readonly { readonly name: string; readonly descriptor: ParadisOfficeSourceDescriptor; readonly create: (source: CancellationTokenSource) => ParadisOfficeSourceBroker }[] = [
+			{
+				name: 'remote capability success', descriptor: descriptor('remote', 'vscode-remote://ssh/doc'),
+				create: source => new ParadisOfficeSourceBroker({ ownerId, platform: 'desktopLocal', provider: sourceProvider([]), spoolClient: new TestSpoolClient(), createHash: () => new TestHash(), isRemoteProtocolV1: () => { source.cancel(); return true; } }),
+			},
+			{
+				name: 'remote capability throw', descriptor: descriptor('remote', 'vscode-remote://ssh/doc'),
+				create: source => new ParadisOfficeSourceBroker({ ownerId, platform: 'desktopLocal', provider: sourceProvider([]), spoolClient: new TestSpoolClient(), createHash: () => new TestHash(), isRemoteProtocolV1: () => { source.cancel(); throw new Error('/raw/private secret-token'); } }),
+			},
+			{
+				name: 'begin rejection', descriptor: descriptor('gitCommit', 'git:/doc'),
+				create: source => { const client = new TestSpoolClient(); client.begin = async () => { source.cancel(); throw new Error('/raw/private secret-token'); }; return createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker; },
+			},
+			{
+				name: 'read creation throw', descriptor: descriptor('gitCommit', 'git:/doc'),
+				create: source => createBroker({ async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; }, read() { source.cancel(); throw new Error('/raw/private secret-token'); } }).broker,
+			},
+			{
+				name: 'iterator result trap', descriptor: descriptor('gitCommit', 'git:/doc'),
+				create: source => createBroker({ async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; }, read() { return { [Symbol.asyncIterator]: () => ({ next: async () => new Proxy({}, { ownKeys() { source.cancel(); throw new Error('/raw/private secret-token'); } }) as IteratorResult<VSBuffer> }) }; } }).broker,
+			},
+			{
+				name: 'append rejection', descriptor: descriptor('gitCommit', 'git:/doc'),
+				create: source => { const client = new TestSpoolClient(); client.append = async () => { source.cancel(); throw new Error('/raw/private secret-token'); }; return createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker; },
+			},
+			{
+				name: 'digest rejection', descriptor: descriptor('gitCommit', 'git:/doc'),
+				create: source => new ParadisOfficeSourceBroker({ ownerId, platform: 'desktopLocal', provider: sourceProvider([VSBuffer.fromString('x')]), spoolClient: new TestSpoolClient(), createHash: () => ({ update() { }, digest: async () => { source.cancel(); throw new Error('/raw/private secret-token'); } }), isRemoteProtocolV1: () => false }),
+			},
+			{
+				name: 'seal rejection', descriptor: descriptor('gitCommit', 'git:/doc'),
+				create: source => { const client = new TestSpoolClient(); client.seal = async () => { source.cancel(); throw new Error('/raw/private secret-token'); }; return createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker; },
+			},
+			{
+				name: 'sealed snapshot mismatch', descriptor: descriptor('gitCommit', 'git:/doc'),
+				create: source => { const client = new TestSpoolClient(); client.seal = async (_reference, request) => new Proxy({ id: 'c'.repeat(48), ownerId, nonce: 'b'.repeat(64), ...request }, { getOwnPropertyDescriptor(target, property) { if (property === 'id') { source.cancel(); } return Reflect.getOwnPropertyDescriptor(target, property); } }); return createBroker(sourceProvider([VSBuffer.fromString('x')]), client).broker; },
+			},
+		];
+		for (const testCase of cases) {
+			const source = new CancellationTokenSource();
+			await rejects(() => testCase.create(source).open(testCase.descriptor, source.token), (error: unknown) => error instanceof CancellationError && (error.stack === '' || error.stack === undefined), testCase.name);
+			source.dispose();
+		}
+	});
+
+	test('normalizes malformed broker input and runtime codes without a raw stack', async () => {
+		const unsafe = new Proxy({}, { ownKeys() { throw new Error('/raw/private secret-token'); } });
+		await rejects(() => createBroker(sourceProvider([])).broker.open(unsafe as ParadisOfficeSourceDescriptor, CancellationToken.None), (error: unknown) => {
+			return error instanceof Error && error.name === 'ParadisOfficeSourceBrokerError' && (error as ParadisOfficeSourceBrokerError).code === 'unsupportedSource' && error.message === 'The Office source could not be brokered.' && (error.stack === '' || error.stack === undefined);
+		});
+		const forged = new (ParadisOfficeSourceBrokerError as unknown as new (code: string) => ParadisOfficeSourceBrokerError)('/raw/private secret-token');
+		strictEqual(forged.code, 'spoolFailure');
+		strictEqual(forged.stack, '');
+	});
+
+	test('allows an empty yield at the exact compressed budget and rejects the next byte', async () => {
+		for (const overflow of [false, true]) {
+			const chunks = new Array(8).fill(undefined).map(() => VSBuffer.alloc(PARADIS_OFFICE_SPOOL_CHUNK_BYTES));
+			chunks.push(VSBuffer.alloc(overflow ? 1 : 0));
+			const broker = new ParadisOfficeSourceBroker({ ownerId, platform: 'browser', provider: sourceProvider(chunks), spoolClient: new TestSpoolClient(), createHash: () => new TestHash(), isRemoteProtocolV1: () => false });
+			if (overflow) {
+				await rejectsSafeBrokerError(() => broker.open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None), 'sourceTooLarge');
+			} else {
+				strictEqual((await broker.open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None)).kind, 'spool');
+			}
+		}
+	});
+
+	test('clears the iterator close timeout after an immediate iterator close settlement', async () => {
+		let scheduled = 0;
+		let cleared = 0;
+		const iterator: AsyncIterator<VSBuffer> = { async next() { throw new Error('/raw/private primary'); }, async return() { return { done: true, value: undefined }; } };
+		const options = { ownerId, platform: 'desktopLocal', provider: { async snapshot() { return { identity: 'provider:git', revision: 'etag:1' }; }, read() { return { [Symbol.asyncIterator]: () => iterator }; } }, spoolClient: new TestSpoolClient(), createHash: () => new TestHash(), isRemoteProtocolV1: () => false, closeTimeout: { setTimeout: (_runner: () => void) => { scheduled++; return {}; }, clearTimeout: () => { cleared++; } } } as unknown as ParadisOfficeSourceBrokerOptions;
+		await rejects(() => new ParadisOfficeSourceBroker(options).open(descriptor('gitCommit', 'git:/doc'), CancellationToken.None));
+		strictEqual(scheduled, 1);
+		strictEqual(cleared, 1);
 	});
 
 	test('enforces the Task 2 platform compressed-input budget before append', async () => {

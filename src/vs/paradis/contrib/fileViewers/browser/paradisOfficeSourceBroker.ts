@@ -59,6 +59,11 @@ export interface ParadisOfficeSourceBrokerOptions {
 	readonly isRemoteProtocolV1: (descriptor: ParadisOfficeSourceDescriptor) => boolean;
 }
 
+/** Test-only runtime seam; it deliberately does not extend the broker's public options contract. */
+interface ParadisOfficeSourceBrokerRuntimeOptions {
+	readonly closeTimeout?: Readonly<{ setTimeout(runner: () => void, delay: number): unknown; clearTimeout(handle: unknown): void }>;
+}
+
 function throwIfCancelled(token: CancellationToken): void {
 	if (token.isCancellationRequested) {
 		throw newSafeCancellationError();
@@ -87,6 +92,28 @@ function throwDependencyError(error: unknown, token: CancellationToken, code: Pa
 		throw newSafeCancellationError();
 	}
 	throwBrokerError(error, code);
+}
+
+function runDependency<T>(token: CancellationToken, code: ParadisOfficeSourceBrokerErrorCode, dependency: () => T): T {
+	throwIfCancelled(token);
+	try {
+		const result = dependency();
+		throwIfCancelled(token);
+		return result;
+	} catch (error) {
+		throwDependencyError(error, token, code);
+	}
+}
+
+async function awaitDependency<T>(token: CancellationToken, code: ParadisOfficeSourceBrokerErrorCode, dependency: () => Promise<T> | T): Promise<T> {
+	throwIfCancelled(token);
+	try {
+		const result = await dependency();
+		throwIfCancelled(token);
+		return result;
+	} catch (error) {
+		throwDependencyError(error, token, code);
+	}
 }
 
 const brokerErrorCodes: readonly ParadisOfficeSourceBrokerErrorCode[] = ['stale', 'unsupportedSource', 'invalidProviderSnapshot', 'sourceTooLarge', 'providerFailure', 'hashFailure', 'spoolFailure', 'cleanupFailure', 'invalidChunk'];
@@ -219,10 +246,10 @@ function spoolSourceKind(descriptor: ParadisOfficeSourceDescriptor): ParadisOffi
 
 /** Routes provider-specific workbench sources without exposing provider capabilities to the backend. */
 export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
-	constructor(private readonly options: ParadisOfficeSourceBrokerOptions) { }
+	constructor(private readonly options: ParadisOfficeSourceBrokerOptions & ParadisOfficeSourceBrokerRuntimeOptions) { }
 
 	async open(untrustedDescriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<ParadisOfficeBackendSource> {
-		const descriptor = validateParadisOfficeSourceDescriptor(untrustedDescriptor);
+		const descriptor = runDependency(token, 'unsupportedSource', () => validateParadisOfficeSourceDescriptor(untrustedDescriptor));
 		throwIfCancelled(token);
 		const scheme = sourceScheme(descriptor);
 		if (descriptor.kind === 'sideMissing') {
@@ -231,12 +258,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 
 		let remoteV1 = false;
 		if ((descriptor.kind === 'remote' || descriptor.kind === 'workingTree') && scheme === 'vscode-remote') {
-			let capability: unknown;
-			try {
-				capability = this.options.isRemoteProtocolV1({ ...descriptor });
-			} catch (error) {
-				throwBrokerError(error, 'providerFailure');
-			}
+			const capability = runDependency(token, 'providerFailure', () => this.options.isRemoteProtocolV1({ ...descriptor }));
 			if (typeof capability !== 'boolean') {
 				throw new ParadisOfficeSourceBrokerError('providerFailure');
 			}
@@ -262,8 +284,17 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		const before = await this.providerSnapshot(descriptor, token);
 		throwIfCancelled(token);
 		let writable: ReturnType<typeof validateParadisOfficeWritableSpoolReference>;
+		let beginAttempt: ReturnType<typeof snapshotParadisOfficeSealedSpoolAttempt>;
 		try {
-			const beginAttempt = snapshotParadisOfficeSealedSpoolAttempt(await this.options.spoolClient.begin(this.options.ownerId));
+			throwIfCancelled(token);
+			const beginResult = await this.options.spoolClient.begin(this.options.ownerId);
+			beginAttempt = snapshotParadisOfficeSealedSpoolAttempt(beginResult);
+			if (token.isCancellationRequested) {
+				if (beginAttempt.identity) {
+					await this.disposeIgnoredSpool(beginAttempt.identity);
+				}
+				throw newSafeCancellationError();
+			}
 			if (!beginAttempt.writable) {
 				if (beginAttempt.identity) {
 					await this.disposeIgnoredSpool(beginAttempt.identity);
@@ -272,7 +303,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			}
 			writable = beginAttempt.writable;
 		} catch (error) {
-			throwBrokerError(error, 'spoolFailure');
+			throwDependencyError(error, token, 'spoolFailure');
 		}
 		let keepSpool = false;
 		let cleanupPromise: Promise<void> | undefined;
@@ -295,19 +326,15 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		let iteratorDone = false;
 		try {
 			throwIfCancelled(token);
-			let hash: IOfficeSourceHash;
-			try {
-				hash = this.options.createHash();
-			} catch (error) {
-				throwDependencyError(error, token, 'hashFailure');
-			}
-			throwIfCancelled(token);
+			const hash = runDependency(token, 'hashFailure', () => this.options.createHash());
 			let size = 0;
 			try {
+				throwIfCancelled(token);
 				iterator = this.options.provider.read(descriptor, token)[Symbol.asyncIterator]();
 			} catch (error) {
-				throwBrokerError(error, 'providerFailure');
+				throwDependencyError(error, token, 'providerFailure');
 			}
+			throwIfCancelled(token);
 			while (true) {
 				throwIfCancelled(token);
 				let iteration: IteratorResult<VSBuffer>;
@@ -317,7 +344,12 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 					throwDependencyError(error, token, 'providerFailure');
 				}
 				throwIfCancelled(token);
-				const iterationSnapshot = snapshotIteratorResult(iteration);
+				let iterationSnapshot: ReturnType<typeof snapshotIteratorResult>;
+				try {
+					iterationSnapshot = snapshotIteratorResult(iteration);
+				} catch (error) {
+					throwDependencyError(error, token, 'providerFailure');
+				}
 				throwIfCancelled(token);
 				if (iterationSnapshot.done) {
 					iteratorDone = true;
@@ -340,40 +372,19 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				}
 				for (let offset = 0; offset < providerBytes.byteLength; offset += PARADIS_OFFICE_SPOOL_CHUNK_BYTES) {
 					const chunk = providerBytes.slice(offset, Math.min(offset + PARADIS_OFFICE_SPOOL_CHUNK_BYTES, providerBytes.byteLength));
-					try {
-						hash.update(chunk);
-					} catch (error) {
-						throwDependencyError(error, token, 'hashFailure');
-					}
-					throwIfCancelled(token);
-					try {
-						await this.options.spoolClient.append(writable, chunk);
-					} catch (error) {
-						throwDependencyError(error, token, 'spoolFailure');
-					}
-					throwIfCancelled(token);
+					runDependency(token, 'hashFailure', () => hash.update(chunk));
+					await awaitDependency(token, 'spoolFailure', () => this.options.spoolClient.append(writable, chunk));
 				}
 				size = nextSize;
 			}
 			throwIfCancelled(token);
-			let sha256: string;
-			try {
-				sha256 = await hash.digest();
-			} catch (error) {
-				throwDependencyError(error, token, 'hashFailure');
-			}
-			throwIfCancelled(token);
+			const sha256 = await awaitDependency(token, 'hashFailure', () => hash.digest());
 			const beforeSeal = await this.providerSnapshot(descriptor, token);
 			throwIfCancelled(token);
 			if (before.identity !== beforeSeal.identity || before.revision !== beforeSeal.revision) {
 				throw new ParadisOfficeSourceBrokerError('stale');
 			}
-			let revision: string;
-			try {
-				revision = buildParadisOfficeSourceRevision(sourceKind, before.identity, before.revision, size, sha256);
-			} catch (error) {
-				throwDependencyError(error, token, 'hashFailure');
-			}
+			const revision = runDependency(token, 'hashFailure', () => buildParadisOfficeSourceRevision(sourceKind, before.identity, before.revision, size, sha256));
 			const sealRequest = {
 				sourceKind,
 				providerIdentity: before.identity,
@@ -382,12 +393,20 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				sha256,
 				revision,
 			} as const;
-			let sealed: ReturnType<typeof validateParadisOfficeSealedSpoolReference>;
+			let sealedResult: unknown;
 			try {
-				sealed = validateParadisOfficeSealedSpoolReference(await this.options.spoolClient.seal(writable, sealRequest));
+				throwIfCancelled(token);
+				sealedResult = await this.options.spoolClient.seal(writable, sealRequest);
 			} catch (error) {
 				throwDependencyError(error, token, 'spoolFailure');
 			}
+			let sealed: ReturnType<typeof validateParadisOfficeSealedSpoolReference>;
+			try {
+				sealed = validateParadisOfficeSealedSpoolReference(sealedResult);
+			} catch (error) {
+				throwDependencyError(error, token, 'spoolFailure');
+			}
+			throwIfCancelled(token);
 			if (sealed.id !== writable.id || sealed.ownerId !== writable.ownerId || sealed.nonce !== writable.nonce
 				|| sealed.sourceKind !== sealRequest.sourceKind || sealed.providerIdentity !== sealRequest.providerIdentity
 				|| sealed.providerRevision !== sealRequest.providerRevision || sealed.size !== sealRequest.size
@@ -421,20 +440,15 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		}
 		await this.closeIterator(iterator, iteratorDone);
 		if (failure) {
+			throwIfCancelled(token);
 			throwBrokerError(failure, 'spoolFailure');
 		}
+		throwIfCancelled(token);
 		return result!;
 	}
 
 	private async providerSnapshot(descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<ParadisOfficeProviderSnapshot> {
-		throwIfCancelled(token);
-		try {
-			const snapshot = validateProviderSnapshot(await this.options.provider.snapshot({ ...descriptor }));
-			throwIfCancelled(token);
-			return snapshot;
-		} catch (error) {
-			throwDependencyError(error, token, 'providerFailure');
-		}
+		return awaitDependency(token, 'providerFailure', async () => validateProviderSnapshot(await this.options.provider.snapshot({ ...descriptor })));
 	}
 
 	private async disposeIgnoredSpool(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>): Promise<void> {
@@ -452,9 +466,16 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		try {
 			const close = iterator.return;
 			if (typeof close === 'function') {
-				const closing = Promise.resolve(close.call(iterator));
+				const closing = Promise.resolve(close.call(iterator)).then(() => undefined);
 				void closing.catch(() => undefined);
-				await Promise.race([closing, new Promise<void>(resolve => setTimeout(resolve, 250))]);
+				const timeout = this.options.closeTimeout ?? { setTimeout, clearTimeout };
+				let handle: unknown;
+				const timedOut = new Promise<void>(resolve => handle = timeout.setTimeout(resolve, 250));
+				try {
+					await Promise.race([closing, timedOut]);
+				} finally {
+					timeout.clearTimeout(handle);
+				}
 			}
 		} catch {
 			// The primary broker outcome and cleanup ownership take precedence over provider close errors.

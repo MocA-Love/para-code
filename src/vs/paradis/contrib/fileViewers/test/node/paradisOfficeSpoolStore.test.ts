@@ -20,6 +20,7 @@ import {
 	PARADIS_OFFICE_SPOOL_LIMITS,
 	ParadisOfficeSealRequest,
 	ParadisOfficeSpoolReference,
+	ParadisOfficeWritableSpoolReference,
 } from '../../common/paradisOfficeSourceBroker.js';
 import { OfficeSpoolStore, OfficeSpoolStoreError } from '../../node/paradisOfficeSpoolStore.js';
 
@@ -260,7 +261,9 @@ suite('OfficeSpoolStore', () => {
 		const unsafe = Object.create(null);
 		Object.defineProperty(unsafe, 'id', { enumerable: true, get: () => { getterCalls++; throw new Error('/raw/path secret=token'); } });
 		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
-		await rejects(() => store.append(unsafe, VSBuffer.fromString('x')), TypeError);
+		await rejects(() => store.append(unsafe, VSBuffer.fromString('x')), (error: unknown) => {
+			return error instanceof Error && error.name === 'OfficeSpoolStoreError' && (error as OfficeSpoolStoreError).code === 'invalidReference' && (error.stack === '' || error.stack === undefined);
+		});
 		strictEqual(getterCalls, 0);
 
 		const sealed = await appendAndSeal(store, ownerA, 'safe');
@@ -452,7 +455,9 @@ suite('OfficeSpoolStore', () => {
 	test('rejects non-finite clock values without creating an entry', async () => {
 		for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
 			const store = new OfficeSpoolStore({ platform: 'desktopLocal', now: () => value });
-			await rejects(() => store.begin(ownerA), TypeError);
+			await rejects(() => store.begin(ownerA), (error: unknown) => {
+				return error instanceof Error && error.name === 'OfficeSpoolStoreError' && (error as OfficeSpoolStoreError).code === 'initializationFailed' && (error.stack === '' || error.stack === undefined);
+			});
 			strictEqual(store.activeSpoolCount, 0);
 		}
 	});
@@ -462,6 +467,31 @@ suite('OfficeSpoolStore', () => {
 		strictEqual(error.code, 'invalidReference');
 		strictEqual(error.message, 'The Office spool operation was rejected.');
 		strictEqual(error.stack, '');
+	});
+
+	test('normalizes every malformed public store input to a fixed domain error without a stack', async () => {
+		const malformed = new Proxy({}, { ownKeys() { throw new Error('/raw/private secret-token'); } });
+		const assertStoreError = (code: string) => (error: unknown) => error instanceof Error
+			&& error.name === 'OfficeSpoolStoreError'
+			&& (error as OfficeSpoolStoreError).code === code
+			&& error.message === 'The Office spool operation was rejected.'
+			&& (error.stack === '' || error.stack === undefined);
+
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		await rejects(() => store.begin(malformed as string), assertStoreError('invalidReference'));
+		const reference = await store.begin(ownerA);
+		await rejects(() => store.append(malformed as ParadisOfficeWritableSpoolReference, VSBuffer.fromString('x')), assertStoreError('invalidReference'));
+		await rejects(() => store.append(reference, malformed as VSBuffer), assertStoreError('invalidChunk'));
+		await rejects(() => store.seal(malformed as ParadisOfficeWritableSpoolReference, malformed as ParadisOfficeSealRequest), assertStoreError('invalidReference'));
+		await rejects(() => store.dispose(malformed as ParadisOfficeSpoolReference), assertStoreError('invalidReference'));
+		await store.append(reference, VSBuffer.fromString('x'));
+		const sealed = await store.seal(reference, sealRequest('x'));
+		await rejects(() => store.open(malformed as typeof sealed, async () => undefined), assertStoreError('invalidReference'));
+		store.disposeAll();
+
+		const clockStore = new OfficeSpoolStore({ platform: 'desktopLocal', now: () => Number.NaN });
+		await rejects(() => clockStore.begin(ownerA), assertStoreError('initializationFailed'));
+		strictEqual(clockStore.activeSpoolCount, 0);
 	});
 
 	test('runs the real broker and real spool store end to end and reuses quota after open', async () => {
@@ -533,5 +563,28 @@ suite('OfficeSpoolStore', () => {
 		strictEqual(store.activeSpoolCount, 0);
 		strictEqual(store.byteLength, 0);
 		cancellation.dispose();
+	});
+
+	test('releases real spool quota before a bounded never-resolving iterator close and handles its late rejection', async () => {
+		let returnCalls = 0;
+		let lateReject!: (reason?: unknown) => void;
+		const lateClose = new Promise<IteratorResult<VSBuffer>>((_resolve, reject) => lateReject = reject);
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const broker = new ParadisOfficeSourceBroker({
+			ownerId: ownerA, platform: 'desktopLocal', spoolClient: store,
+			provider: {
+				async snapshot() { return { identity: 'provider:real', revision: 'etag:real' }; },
+				read() { return { [Symbol.asyncIterator]: () => ({ next: async () => { throw new Error('/raw/private primary'); }, return: () => { returnCalls++; return lateClose; } }) }; },
+			},
+			createHash: () => { const hash = createHash('sha256'); return { update: bytes => hash.update(bytes.buffer), digest: () => hash.digest('hex') }; },
+			isRemoteProtocolV1: () => false,
+			closeTimeout: { setTimeout: runner => { Promise.resolve().then(runner); return {}; }, clearTimeout() { } },
+		});
+		await rejects(() => broker.open({ kind: 'gitCommit', uri: 'git:/doc', displayName: 'doc.docx' }, CancellationToken.None));
+		strictEqual(returnCalls, 1);
+		strictEqual(store.activeSpoolCount, 0);
+		strictEqual(store.byteLength, 0);
+		lateReject(new Error('/raw/private late close rejection'));
+		await Promise.resolve();
 	});
 });
