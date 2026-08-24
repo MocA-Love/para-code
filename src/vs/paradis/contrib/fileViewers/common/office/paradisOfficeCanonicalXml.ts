@@ -5,7 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { ParadisOfficeFingerprint } from '../paradisOfficeProtocol.js';
-import { ParadisOfficePackageError } from './paradisOfficeArchive.js';
+import { type ParadisOfficeXmlDocument, type ParadisOfficeXmlNode, ParadisOfficePackageError } from './paradisOfficeArchive.js';
 
 export interface ParadisOfficeXmlLimits {
 	readonly depth: number;
@@ -23,11 +23,10 @@ export interface CanonicalXmlResult {
 	readonly canonical: string;
 	readonly hash: ParadisOfficeFingerprint;
 	readonly sourceRefs: readonly CanonicalXmlSourceRef[];
-	readonly markupCompatibility: readonly { readonly branch: 'choice' | 'fallback'; readonly hash: ParadisOfficeFingerprint }[];
+	readonly markupCompatibility: readonly { readonly branch: 'choice' | 'fallback'; readonly selected: boolean; readonly hash: ParadisOfficeFingerprint; readonly sourceRef: CanonicalXmlSourceRef }[];
 }
 
 const defaultLimits: ParadisOfficeXmlLimits = { depth: 128, nodes: 2_000_000, attributeLength: 1024 * 1024, characters: 64 * 1024 * 1024 };
-const tokenPattern = /<!--[\s\S]*?-->|<\?[^?]*\?>|<!\[CDATA\[[\s\S]*?\]\]>|<[^>]*>|[^<]+/g;
 const namePattern = /^[A-Za-z_][A-Za-z0-9._:-]*$/;
 
 interface ElementFrame {
@@ -45,10 +44,11 @@ interface ElementFrame {
  */
 export function canonicalizeOfficeXml(xml: string, relationshipResolver: (relationshipId: string) => string | undefined, limits: ParadisOfficeXmlLimits = defaultLimits, collectMarkupBranches = true): CanonicalXmlResult {
 
-	if (typeof xml !== 'string' || /<!DOCTYPE|<!ENTITY/i.test(xml)) {
+	if (typeof xml !== 'string' || /<!DOCTYPE|<!ENTITY/i.test(xml) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(xml) || hasLoneSurrogate(xml)) {
 		throw new ParadisOfficePackageError('malformed');
 	}
 	validateLimits(limits);
+	const tokenPattern = /<!--[\s\S]*?-->|<\?[^?]*\?>|<!\[CDATA\[[\s\S]*?\]\]>|<[^>]*>|[^<]+/g;
 	const output: string[] = [];
 	const stack: ElementFrame[] = [];
 	const sourceRefs: CanonicalXmlSourceRef[] = [];
@@ -139,7 +139,61 @@ export function canonicalizeOfficeXml(xml: string, relationshipResolver: (relati
 	return { canonical, hash: sha256Fingerprint(canonical), sourceRefs, markupCompatibility: collectMarkupBranches ? markupCompatibilityBranches(xml, relationshipResolver, limits) : [] };
 }
 
-function markupCompatibilityBranches(xml: string, resolver: (relationshipId: string) => string | undefined, limits: ParadisOfficeXmlLimits): readonly { readonly branch: 'choice' | 'fallback'; readonly hash: ParadisOfficeFingerprint }[] {
+/** Canonicalizes only namespace-aware adapter output; package inspection uses this entrypoint. */
+export function canonicalizeOfficeXmlTree(document: ParadisOfficeXmlDocument, relationshipResolver: (relationshipId: string) => string | undefined): CanonicalXmlResult {
+
+	const sourceRefs: CanonicalXmlSourceRef[] = [];
+	const markupCompatibility: CanonicalXmlResult['markupCompatibility'][number][] = [];
+	const render = (node: ParadisOfficeXmlNode, path: readonly number[], preserve: boolean): string => {
+		if (node.kind === 'text') { return !preserve && !node.value.trim() ? '' : `{${JSON.stringify(node.value)}}`; }
+		const nextPreserve = preserve || node.attributes.some(attribute => attribute.uri === 'http://www.w3.org/XML/1998/namespace' && attribute.local === 'space' && attribute.value === 'preserve');
+		const attributes = node.attributes.map(attribute => ({ name: `{${attribute.uri}}${attribute.local}`, value: attribute.local === 'id' ? relationshipResolver(attribute.value) ?? `unresolved:${attribute.value}` : attribute.value })).sort((left, right) => left.name.localeCompare(right.name) || left.value.localeCompare(right.value));
+		const mcBranches = node.children.filter((child): child is Extract<ParadisOfficeXmlNode, { kind: 'element' }> => child.kind === 'element' && child.uri === markupCompatibilityNamespace && (child.local === 'Choice' || child.local === 'Fallback'));
+		let children: string;
+		if (mcBranches.length > 0) {
+			const selected = selectMarkupCompatibilityBranch(mcBranches);
+			const hashes = mcBranches.map((branch, index) => {
+				const branchPath = [...path, node.children.indexOf(branch)];
+				const canonical = render(branch, branchPath, nextPreserve);
+				const sourceRef = { path: branchPath, hash: sha256Fingerprint(canonical) };
+				sourceRefs.push(sourceRef);
+				markupCompatibility.push({ branch: branch.local === 'Choice' ? 'choice' : 'fallback', selected: branch === selected, hash: sourceRef.hash, sourceRef });
+				return `${branch === selected ? 'selected' : 'opaque'}:${sourceRef.hash.value}:${index}`;
+			});
+			children = `${node.children.filter(child => !mcBranches.includes(child as Extract<ParadisOfficeXmlNode, { kind: 'element' }>)).map((child, index) => render(child, [...path, index], nextPreserve)).join('')}[MC:${hashes.join(',')}]`;
+		} else {
+			children = node.children.map((child, index) => render(child, [...path, index], nextPreserve)).join('');
+		}
+		const value = `({${node.uri}}${node.local}${attributes.map(attribute => `[${attribute.name}=${JSON.stringify(attribute.value)}]`).join('')}${children})`;
+		if (!isKnownOfficeQName(`{${node.uri}}${node.local}`)) { sourceRefs.push({ path, hash: sha256Fingerprint(value) }); }
+		return value;
+	};
+	const canonical = render(document.root, [0], false);
+	return { canonical, hash: sha256Fingerprint(canonical), sourceRefs, markupCompatibility };
+}
+
+const markupCompatibilityNamespace = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+const supportedMarkupCompatibilityNamespaces = new Set([
+	'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+	'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
+	'http://schemas.openxmlformats.org/drawingml/2006/main',
+]);
+
+function selectMarkupCompatibilityBranch(branches: readonly Extract<ParadisOfficeXmlNode, { kind: 'element' }>[]): Extract<ParadisOfficeXmlNode, { kind: 'element' }> {
+
+	for (const branch of branches) {
+		if (branch.local !== 'Choice') { continue; }
+		const requires = branch.attributes.find(attribute => attribute.local === 'Requires' && attribute.uri === '')?.value;
+		if (!requires) { continue; }
+		const bindings = branch.namespaceBindings ?? {};
+		if (requires.split(/\s+/).every(prefix => supportedMarkupCompatibilityNamespaces.has(bindings[prefix] ?? ''))) {
+			return branch;
+		}
+	}
+	return branches.find(branch => branch.local === 'Fallback') ?? branches[0];
+}
+
+function markupCompatibilityBranches(xml: string, resolver: (relationshipId: string) => string | undefined, limits: ParadisOfficeXmlLimits): CanonicalXmlResult['markupCompatibility'] {
 
 	const declaration = /xmlns:([A-Za-z_][A-Za-z\d._-]*)\s*=\s*["']http:\/\/schemas\.openxmlformats\.org\/markup-compatibility\/2006["']/.exec(xml);
 	if (!declaration) {
@@ -148,10 +202,11 @@ function markupCompatibilityBranches(xml: string, resolver: (relationshipId: str
 	const prefix = declaration[1];
 	const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	const pattern = new RegExp(`<${escapedPrefix}:(Choice|Fallback)\\b[^>]*>[\\s\\S]*?<\\/${escapedPrefix}:\\1\\s*>`, 'g');
-	const branches: { branch: 'choice' | 'fallback'; hash: ParadisOfficeFingerprint }[] = [];
+	const branches: CanonicalXmlResult['markupCompatibility'][number][] = [];
 	for (const match of xml.matchAll(pattern)) {
 		const wrapper = `<root xmlns:${prefix}="http://schemas.openxmlformats.org/markup-compatibility/2006">${match[0]}</root>`;
-		branches.push({ branch: match[1] === 'Choice' ? 'choice' : 'fallback', hash: canonicalizeOfficeXml(wrapper, resolver, limits, false).hash });
+		const hash = canonicalizeOfficeXml(wrapper, resolver, limits, false).hash;
+		branches.push({ branch: match[1] === 'Choice' ? 'choice' : 'fallback', selected: false, hash, sourceRef: { path: [0], hash } });
 	}
 	return branches;
 }
@@ -216,6 +271,9 @@ function decodeXml(value: string): string {
 function canonicalQName(name: string, namespace: ReadonlyMap<string, string>): string {
 
 	const colon = name.indexOf(':');
+	if (colon !== name.lastIndexOf(':')) {
+		throw new ParadisOfficePackageError('malformed');
+	}
 	const prefix = colon === -1 ? '' : name.slice(0, colon);
 	const local = colon === -1 ? name : name.slice(colon + 1);
 	const uri = prefix === 'xml' ? 'http://www.w3.org/XML/1998/namespace' : namespace.get(prefix);
@@ -223,6 +281,18 @@ function canonicalQName(name: string, namespace: ReadonlyMap<string, string>): s
 		throw new ParadisOfficePackageError('malformed');
 	}
 	return `{${uri ?? ''}}${local}`;
+}
+
+function hasLoneSurrogate(value: string): boolean {
+
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			if (index + 1 >= value.length || value.charCodeAt(index + 1) < 0xdc00 || value.charCodeAt(index + 1) > 0xdfff) { return true; }
+			index++;
+		} else if (code >= 0xdc00 && code <= 0xdfff) { return true; }
+	}
+	return false;
 }
 
 function relationshipValue(name: string, value: string, resolver: (relationshipId: string) => string | undefined): string {
