@@ -8,6 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisBookmarksService } from '../../electron-browser/paradisBookmarksService.js';
 
 const BOOKMARKS_STORAGE_KEY = 'paradis.browser.bookmarks';
@@ -36,6 +37,59 @@ suite('Paradis bookmarks service storage recovery', () => {
 		const inserted = service.addBookmark({ url: 'https://inserted.example/', title: 'Inserted' });
 
 		assert.deepStrictEqual(JSON.parse(storage.get(BOOKMARKS_STORAGE_KEY, StorageScope.APPLICATION)!), JSON.parse(JSON.stringify([inserted])));
+	});
+
+	test('reports corrupt storage with a fixed error without exposing bookmark content', () => {
+		const storedBookmarks = '{"title":"private-title","url":"file:///Users/alice/secret.ts",}';
+		const reports: Array<{
+			readonly scope: string;
+			readonly feature: string;
+			readonly operation: string;
+			readonly error: unknown;
+			readonly safeExtra: Record<string, unknown> | undefined;
+			readonly severity: string | undefined;
+		}> = [];
+		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
+			reports.push({ scope, feature, operation, error, safeExtra, severity });
+		});
+
+		try {
+			const { service, storage } = createService(storedBookmarks);
+
+			assert.deepStrictEqual(service.nodes, []);
+			assert.strictEqual(
+				storage.get(BOOKMARKS_STORAGE_RECOVERY_BACKUP_KEY, StorageScope.APPLICATION),
+				storedBookmarks,
+			);
+			assert.deepStrictEqual(reports.map(report => ({
+				scope: report.scope,
+				feature: report.feature,
+				operation: report.operation,
+				name: report.error instanceof Error ? report.error.name : undefined,
+				message: report.error instanceof Error ? report.error.message : undefined,
+				safeExtra: report.safeExtra,
+				severity: report.severity,
+			})), [{
+				scope: 'owned',
+				feature: 'browser-bookmarks',
+				operation: 'storage-corrupt',
+				name: 'Error',
+				message: 'Browser bookmark storage could not be parsed',
+				safeExtra: undefined,
+				severity: 'warning',
+			}]);
+			const reportedError = reports[0].error as Error & { readonly cause?: unknown };
+			assert.strictEqual(reportedError.cause, undefined);
+			assert.deepStrictEqual(Object.keys(reportedError), []);
+			for (const rawNeedle of ['private-title', 'file:///Users/alice/secret.ts', '/Users/alice']) {
+				assert.ok(!reportedError.name.includes(rawNeedle));
+				assert.ok(!reportedError.message.includes(rawNeedle));
+				assert.ok(!String(reportedError.cause).includes(rawNeedle));
+				assert.ok(!String(reportedError.stack).includes(rawNeedle));
+			}
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
 	});
 
 	test('migrates legacy roots, reassigns duplicate ids, and persists later mutations', () => {
