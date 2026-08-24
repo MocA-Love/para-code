@@ -318,6 +318,22 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.deepStrictEqual(await invalid, { outcome: 'failed', error: 'engineCrashed' });
 	});
 
+	test('rejects a valid-to-valid descriptor mutation between fresh projection passes', async () => {
+		const inventory = inspectInventory();
+		let reads = 0;
+		const value = new Proxy({ inventory }, {
+			getOwnPropertyDescriptor(target, key) {
+				if (key === 'inventory' && ++reads === 2) { inventory.budgetProfile = 'browser'; }
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+		});
+		const worker = new FakeWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker });
+		const result = host.run('inspect', 'client-a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken);
+		worker.emit({ kind: 'result', requestId: '1', value });
+		assert.deepStrictEqual(await result, { outcome: 'failed', error: 'engineCrashed' });
+	});
+
 	test('rejects parse and diff summaries with incomplete nested payloads', async () => {
 		for (const value of [
 			{ ...parseSummary(), completeness: {} },
@@ -407,6 +423,22 @@ suite('ParadisOfficeWorkerHost', () => {
 		assert.strictEqual(created, 1);
 		first.emit({ kind: 'result', requestId: '1', value: {} });
 		await running;
+	});
+
+	test('does not release another active worker reservation when a queued job is cancelled', async () => {
+		const accountant = new OfficeMemoryAccountant(100);
+		const worker = new FakeWorker();
+		const host = new OfficeWorkerHost({ createWorker: () => worker, accountant, memory: { limitBytes: 100, workerReservationBytes: 100 } });
+		const running = host.run('parse', 'a', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, uncancelledToken);
+		const cancellation = new CancellationTokenSource();
+		const queued = host.run('parse', 'b', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, cancellation.token);
+		assert.strictEqual(accountant.snapshot().workerBytes, 100);
+		cancellation.cancel();
+		assert.deepStrictEqual(await queued, { outcome: 'cancelled' });
+		assert.strictEqual(accountant.snapshot().workerBytes, 100);
+		worker.emit({ kind: 'result', requestId: '1', value: parseSummary() });
+		await running;
+		assert.strictEqual(accountant.snapshot().workerBytes, 0);
 	});
 
 	test('times out a queued admission at 30 seconds', async () => {

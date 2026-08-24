@@ -9,6 +9,7 @@ import { CancellationTokenSource } from '../../../../../base/common/cancellation
 import type { ParadisOfficeBudgetProfile } from '../../common/paradisOfficeProtocol.js';
 import { createParadisOfficeNodeArchive } from './paradisOfficeNodeArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
+import { projectOfficeWorkerResult } from './paradisOfficeWorkerHost.js';
 
 type WorkerOperation = 'inspect' | 'parse' | 'diff';
 
@@ -79,7 +80,11 @@ async function run(message: WorkerRunMessage): Promise<void> {
 		// The core may intentionally reuse immutable hash objects. Normalize the worker wire value
 		// to a tree so the host can reject every shared/cyclic untrusted graph without rejecting
 		// a genuine inventory produced by this worker.
-		const value = JSON.parse(JSON.stringify({ inventory }));
+		const value = projectOfficeWorkerResult('inspect', JSON.parse(JSON.stringify({ inventory })));
+		if (!value) {
+			parentPort?.postMessage({ kind: 'failure', requestId: message.requestId });
+			return;
+		}
 		parentPort?.postMessage({ kind: 'result', requestId: message.requestId, value });
 	} catch {
 		parentPort?.postMessage(cancellation.token.isCancellationRequested
