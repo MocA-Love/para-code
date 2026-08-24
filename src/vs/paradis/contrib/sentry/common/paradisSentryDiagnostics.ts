@@ -130,6 +130,16 @@ export function reportParadisDiagnosticError(
 	reporter?.(scope, feature, operation, error, safeExtra, severity);
 }
 
+export function toParadisSentrySafeError(
+	feature: string,
+	operation: string,
+	_error: unknown,
+): Error {
+	const safeError = new Error('Para Code diagnostic: ' + feature + '.' + operation);
+	safeError.stack = safeError.name + ': ' + safeError.message;
+	return safeError;
+}
+
 /**
  * Reports webview infrastructure failures (e.g. the "Could not register service
  * worker" fatal error) surfaced by the upstream webview element. Field reports
