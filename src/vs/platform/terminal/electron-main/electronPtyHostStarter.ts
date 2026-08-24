@@ -29,21 +29,28 @@ export class ElectronPtyHostStarter extends Disposable implements IPtyHostStarte
 	readonly onRequestConnection = this._onRequestConnection.event;
 	private readonly _onWillShutdown = this._register(new Emitter<void>());
 	readonly onWillShutdown = this._onWillShutdown.event;
+	// PARA-PATCH: retain the listener identity so disposing the PTY starter removes the Electron IPC subscription.
+	private readonly _onCreatePtyHostMessageChannel = (event: IpcMainEvent, nonce: string): void => {
+		this._onWindowConnection(event, nonce);
+	};
 
 	constructor(
 		private readonly _reconnectConstants: IReconnectConstants,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IEnvironmentMainService private readonly _environmentMainService: IEnvironmentMainService,
 		@ILifecycleMainService private readonly _lifecycleMainService: ILifecycleMainService,
-		@ILogService private readonly _logService: ILogService
+		@ILogService private readonly _logService: ILogService,
+		// PARA-PATCH: inject the validated IPC source only so listener ownership can be tested without a main-process global.
+		private readonly _ipcMain: Pick<typeof validatedIpcMain, 'on' | 'removeListener'> = validatedIpcMain,
 	) {
 		super();
 
 		this._register(this._lifecycleMainService.onWillShutdown(() => this._onWillShutdown.fire()));
 		// Listen for new windows to establish connection directly to pty host
-		validatedIpcMain.on('vscode:createPtyHostMessageChannel', (e, nonce) => this._onWindowConnection(e, nonce));
+		// PARA-PATCH: unregister the exact EventEmitter listener instead of removing an unrelated invoke handler.
+		this._ipcMain.on('vscode:createPtyHostMessageChannel', this._onCreatePtyHostMessageChannel);
 		this._register(toDisposable(() => {
-			validatedIpcMain.removeHandler('vscode:createPtyHostMessageChannel');
+			this._ipcMain.removeListener('vscode:createPtyHostMessageChannel', this._onCreatePtyHostMessageChannel);
 		}));
 	}
 

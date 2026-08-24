@@ -91,6 +91,9 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	readonly onRequestConnection = this._onRequestConnection.event;
 	private readonly _onWillShutdown = this._register(new Emitter<void>());
 	readonly onWillShutdown = this._onWillShutdown.event;
+	private readonly onCreatePtyHostMessageChannel = (event: IpcMainEvent, nonce: string): void => {
+		this.onWindowConnection(event, nonce);
+	};
 
 	/** ウィンドウ用の橋渡し。状態を持たないので、アプリと一緒に死んでよい。 */
 	private bridge: UtilityProcess | undefined;
@@ -115,12 +118,15 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService,
 		@ILifecycleMainService private readonly lifecycleMainService: ILifecycleMainService,
 		@ILogService private readonly logService: ILogService,
+		private readonly _ipcMain: Pick<typeof validatedIpcMain, 'on' | 'removeListener'> = validatedIpcMain,
 	) {
 		super();
 
 		this._register(this.lifecycleMainService.onWillShutdown(() => this._onWillShutdown.fire()));
-		validatedIpcMain.on('vscode:createPtyHostMessageChannel', (e, nonce) => this.onWindowConnection(e, nonce));
-		this._register(toDisposable(() => validatedIpcMain.removeHandler('vscode:createPtyHostMessageChannel')));
+		this._ipcMain.on('vscode:createPtyHostMessageChannel', this.onCreatePtyHostMessageChannel);
+		this._register(toDisposable(() => {
+			this._ipcMain.removeListener('vscode:createPtyHostMessageChannel', this.onCreatePtyHostMessageChannel);
+		}));
 	}
 
 	start(): IPtyHostConnection {
