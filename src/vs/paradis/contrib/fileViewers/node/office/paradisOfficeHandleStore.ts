@@ -7,6 +7,7 @@
 import { randomBytes } from 'crypto';
 import { RunOnceScheduler } from '../../../../../base/common/async.js';
 import type { ParadisOfficeHandleRef } from '../../common/paradisOfficeProtocol.js';
+import type { OfficeMemoryAccountant } from './paradisOfficeWorkerHost.js';
 
 export const PARADIS_OFFICE_HANDLE_PER_CLIENT_LIMIT = 4;
 export const PARADIS_OFFICE_HANDLE_IDLE_MILLISECONDS = 10 * 60 * 1000;
@@ -24,6 +25,7 @@ export interface OfficeHandleStoreOptions {
 	readonly clearTimeout?: (handle: unknown) => void;
 	readonly createIdleTimer?: (runner: () => void) => IOfficeHandleTimer;
 	readonly semanticCacheLimitBytes?: number;
+	readonly accountant?: OfficeMemoryAccountant;
 }
 
 export type OfficeHandleCapability = ParadisOfficeHandleRef & {
@@ -113,6 +115,7 @@ export class OfficeHandleStore {
 	private readonly random: (length: number) => Uint8Array;
 	private readonly createIdleTimer: (runner: () => void) => IOfficeHandleTimer;
 	private readonly semanticCacheLimitBytes: number;
+	private readonly accountant: OfficeMemoryAccountant | undefined;
 	private cacheBytes = 0;
 
 	constructor(options: OfficeHandleStoreOptions = {}) {
@@ -121,6 +124,7 @@ export class OfficeHandleStore {
 		this.createIdleTimer = options.createIdleTimer
 			?? (options.setTimeout && options.clearTimeout ? runner => callbackIdleTimer(runner, options.setTimeout!, options.clearTimeout!) : defaultIdleTimer);
 		this.semanticCacheLimitBytes = options.semanticCacheLimitBytes ?? PARADIS_OFFICE_SEMANTIC_CACHE_LIMIT_BYTES;
+		this.accountant = options.accountant;
 		if (!isSafeInteger(this.semanticCacheLimitBytes)) {
 			throw new OfficeHandleStoreError('invalidInput');
 		}
@@ -252,9 +256,10 @@ export class OfficeHandleStore {
 		const previous = this.cache.get(id);
 		if (previous) { this.cacheBytes -= previous.bytes; this.cache.delete(id); }
 		this.evictInactiveCache(Math.max(0, bytes - (this.semanticCacheLimitBytes - this.cacheBytes)));
-		if (bytes > this.semanticCacheLimitBytes - this.cacheBytes) { return false; }
+		if (bytes > this.semanticCacheLimitBytes - this.cacheBytes) { this.syncAccountant(); return false; }
 		this.cache.set(id, { id, bytes, active, lastUsed: this.safeNow() });
 		this.cacheBytes += bytes;
+		this.syncAccountant();
 		return true;
 	}
 
@@ -275,6 +280,7 @@ export class OfficeHandleStore {
 			this.cacheBytes -= entry.bytes;
 			released += entry.bytes;
 		}
+		this.syncAccountant();
 		return released;
 	}
 
@@ -294,6 +300,7 @@ export class OfficeHandleStore {
 		for (const entry of [...this.handles.values()]) { this.remove(entry); }
 		this.cache.clear();
 		this.cacheBytes = 0;
+		this.syncAccountant();
 	}
 
 	private ownerCount(ownerId: string): number {
@@ -343,4 +350,5 @@ export class OfficeHandleStore {
 		}
 	}
 	private expired(entry: StoredHandle): boolean { return !Number.isSafeInteger(entry.idleDeadline) || this.safeNow() >= entry.idleDeadline; }
+	private syncAccountant(): void { this.accountant?.setCache(this.cacheBytes); }
 }
