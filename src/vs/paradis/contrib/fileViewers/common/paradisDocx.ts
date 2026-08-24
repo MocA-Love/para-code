@@ -17,6 +17,8 @@
 // AST そのものを renderer へ送らないのは、docx-preview が描画時に `parent` を張って循環参照にするため
 // （postMessage の構造化クローンで落ちる）。送るのは常にこのファイルの型だけに限る。
 
+import type { ParadisOfficePlaceholder } from './paradisOfficeProtocol.js';
+
 /** ブロックの種別。いまは段落のみ（表のセル内段落も同じ paragraph として平坦に並べる）。 */
 export type ParadisDocxBlockKind = 'paragraph';
 
@@ -290,7 +292,7 @@ export const PARADIS_DOCX_ERROR_LIBRARY_MISSING = 'paradis.docx.libraryMissing';
 /** renderer → webview。 */
 export type ParadisDocxHostMessage =
 	// generation は読み直しの世代。webview は概要を返すときにそのまま反射して返す。
-	| { readonly type: 'load'; readonly generation: number; readonly original: ArrayBuffer; readonly modified: ArrayBuffer }
+	| { readonly type: 'load'; readonly generation: number; readonly original: ArrayBuffer; readonly modified: ArrayBuffer; readonly assetPlaceholders: readonly ParadisOfficePlaceholder[] }
 	| {
 		readonly type: 'annotate';
 		readonly annotations: readonly IParadisDocxAnnotation[];

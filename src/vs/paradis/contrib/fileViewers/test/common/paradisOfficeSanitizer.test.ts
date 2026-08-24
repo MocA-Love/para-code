@@ -9,17 +9,7 @@ import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } fro
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { decodeBase64 } from '../../../../../base/common/buffer.js';
-import {
-	buildParadisOfficeWordCsp,
-	fingerprintOfficeAssetForDecoder,
-	sanitizeOfficeDocxPackageForRenderer,
-	sanitizeOfficeSvg,
-	validateAndSubsetOfficeFont,
-	type ParadisOfficeDecodedFont,
-	type ParadisRenderableFont,
-	type ParadisSanitizedSvg,
-	type ParadisOfficeTrustedFontSubset,
-} from '../../common/paradisOfficeSanitizer.js';
+import { buildParadisOfficeWordCsp, fingerprintOfficeAssetForDecoder, sanitizeOfficeDocxPackageForRenderer, sanitizeOfficeSvg, validateAndSubsetOfficeFont, type ParadisOfficeDecodedFont, type ParadisRenderableFont, type ParadisSanitizedSvg, type ParadisOfficeTrustedFontSubset } from '../../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeArchiveEntry } from '../../common/office/paradisOfficeArchive.js';
 
 suite('ParadisOfficeSanitizer', () => {
@@ -49,25 +39,28 @@ suite('ParadisOfficeSanitizer', () => {
 	});
 
 	test('rejects CSP source injection, wildcard, broad schemes, and non-loopback mount origins', () => {
-		for (const origins of [
-			['http://localhost:43123'],
-			['http://127.0.0.1'],
-			['https://127.0.0.1:43123'],
-			['http://127.0.0.1:43123/path'],
-			['http://127.0.0.1:43123; img-src *'],
-		] as const) {
-			throws(() => buildParadisOfficeWordCsp('nonce', { kind: 'mountedLoopback', origins }));
+		for (const origins of [['http://localhost:43123'], ['http://127.0.0.1'], ['https://127.0.0.1:43123'], ['http://127.0.0.1:43123/path'], ['http://127.0.0.1:43123; img-src *']] as const) {
+			throws(() =>
+				buildParadisOfficeWordCsp('nonce', {
+					kind: 'mountedLoopback',
+					origins,
+				}),
+			);
 		}
-		for (const cspSources of [
-			['https:'],
-			['https://*.vscode-resource.vscode-cdn.net'],
-			['https://trusted.example/path'],
-			['\'self\' https://trusted.example'],
-			['http://trusted.example'],
-		] as const) {
-			throws(() => buildParadisOfficeWordCsp('nonce', { kind: 'webviewResource', cspSources }));
+		for (const cspSources of [['https:'], ['https://*.vscode-resource.vscode-cdn.net'], ['https://trusted.example/path'], ['\'self\' https://trusted.example'], ['http://trusted.example']] as const) {
+			throws(() =>
+				buildParadisOfficeWordCsp('nonce', {
+					kind: 'webviewResource',
+					cspSources,
+				}),
+			);
 		}
-		throws(() => buildParadisOfficeWordCsp('bad\' nonce', { kind: 'webviewResource', cspSources: ['https://trusted.example'] }));
+		throws(() =>
+			buildParadisOfficeWordCsp('bad\' nonce', {
+				kind: 'webviewResource',
+				cspSources: ['https://trusted.example'],
+			}),
+		);
 	});
 
 	test('canonicalizes only the typed SVG allowlist and returns fresh sanitized bytes', () => {
@@ -85,9 +78,22 @@ suite('ParadisOfficeSanitizer', () => {
 		}
 
 		strictEqual(new TextDecoder().decode(first.bytes), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><g opacity="1"><path d="M 0 0 L 20 10" fill="none" stroke="#000000"/><text x="2" y="8">Safe</text></g></svg>');
-		deepStrictEqual({ id: first.id, kind: first.kind, mime: first.mime, byteLength: first.byteLength, altText: first.altText }, {
-			id: 'asset-shape-1', kind: 'sanitizedSvg', mime: 'image/svg+xml', byteLength: first.bytes.byteLength, altText: 'Safe shape'
-		});
+		deepStrictEqual(
+			{
+				id: first.id,
+				kind: first.kind,
+				mime: first.mime,
+				byteLength: first.byteLength,
+				altText: first.altText,
+			},
+			{
+				id: 'asset-shape-1',
+				kind: 'sanitizedSvg',
+				mime: 'image/svg+xml',
+				byteLength: first.bytes.byteLength,
+				altText: 'Safe shape',
+			},
+		);
 		strictEqual(first.fingerprint.algorithm, 'sha256');
 		strictEqual(first.fingerprint.byteLength, first.bytes.byteLength);
 		strictEqual(first.fingerprint.value, second.fingerprint.value);
@@ -96,31 +102,14 @@ suite('ParadisOfficeSanitizer', () => {
 	});
 
 	test('turns active, externally referencing, and namespace-confused SVG into fingerprinted placeholders', () => {
-		const unsafeSources = [
-			'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><style/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><animate/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><filter/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><image/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><use href="#safe"/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><path href="https://attacker.example/x" d="M0 0"/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><path fill="url(#paint)" d="M0 0"/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><path fill="data:image/svg+xml,x" d="M0 0"/></svg>',
-			'<!DOCTYPE svg [<!ENTITY x "boom">]><svg xmlns="http://www.w3.org/2000/svg"><text>&x;</text></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><text>&#65;</text></svg>',
-			'<svg xmlns="urn:not-svg"><path d="M0 0"/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg" xmlns:x="urn:evil"><x:path d="M0 0"/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg" fill="red" fill="blue"/>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><path fill="#12345" d="M0 0"/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg"><path fill="rgb(999,0,0)" d="M0 0"/></svg>',
-			'<svg xmlns="http://www.w3.org/2000/svg" opacity="2"/>',
-			'<svg xmlns="http://www.w3.org/2000/svg" width="-1"/>',
-		];
+		const unsafeSources = ['<svg xmlns="http://www.w3.org/2000/svg"><foreignObject/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><style/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><animate/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><filter/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><image/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><use href="#safe"/></svg>', '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>', '<svg xmlns="http://www.w3.org/2000/svg"><path href="https://attacker.example/x" d="M0 0"/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><path fill="url(#paint)" d="M0 0"/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><path fill="data:image/svg+xml,x" d="M0 0"/></svg>', '<!DOCTYPE svg [<!ENTITY x "boom">]><svg xmlns="http://www.w3.org/2000/svg"><text>&x;</text></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><text>&#65;</text></svg>', '<svg xmlns="urn:not-svg"><path d="M0 0"/></svg>', '<svg xmlns="http://www.w3.org/2000/svg" xmlns:x="urn:evil"><x:path d="M0 0"/></svg>', '<svg xmlns="http://www.w3.org/2000/svg" fill="red" fill="blue"/>', '<svg xmlns="http://www.w3.org/2000/svg"><path fill="#12345" d="M0 0"/></svg>', '<svg xmlns="http://www.w3.org/2000/svg"><path fill="rgb(999,0,0)" d="M0 0"/></svg>', '<svg xmlns="http://www.w3.org/2000/svg" opacity="2"/>', '<svg xmlns="http://www.w3.org/2000/svg" width="-1"/>'];
 
 		for (const [index, source] of unsafeSources.entries()) {
-			const result = sanitizeOfficeSvg({ nodeId: `unsafe-${index}`, assetId: `unsafe-${index}`, source });
+			const result = sanitizeOfficeSvg({
+				nodeId: `unsafe-${index}`,
+				assetId: `unsafe-${index}`,
+				source,
+			});
 			ok(!hasBytes(result), source);
 			strictEqual(result.reason, 'unsafe');
 			strictEqual(result.feature, 'svg');
@@ -129,8 +118,15 @@ suite('ParadisOfficeSanitizer', () => {
 	});
 
 	test('rejects stateful SVG input instead of validating and publishing different snapshots', () => {
-		const input = { nodeId: 'stateful-svg', assetId: 'stateful-svg' } as { nodeId: string; assetId: string; source: string };
-		Object.defineProperty(input, 'source', { enumerable: true, get: () => '<svg xmlns="http://www.w3.org/2000/svg"/>' });
+		const input = { nodeId: 'stateful-svg', assetId: 'stateful-svg' } as {
+			nodeId: string;
+			assetId: string;
+			source: string;
+		};
+		Object.defineProperty(input, 'source', {
+			enumerable: true,
+			get: () => '<svg xmlns="http://www.w3.org/2000/svg"/>',
+		});
 
 		const result = sanitizeOfficeSvg(input);
 
@@ -140,9 +136,22 @@ suite('ParadisOfficeSanitizer', () => {
 
 	test('does not invent a fingerprint for oversized SVG and accepts only a precomputed all-byte identity', () => {
 		const source = `<svg xmlns="http://www.w3.org/2000/svg"><text>${'x'.repeat(1_048_577)}</text></svg>`;
-		const withoutIdentity = sanitizeOfficeSvg({ nodeId: 'large-svg', assetId: 'large-svg', source });
-		const rawFingerprint = { algorithm: 'sha256', value: 'a'.repeat(64), byteLength: 1_048_636 } as const;
-		const withIdentity = sanitizeOfficeSvg({ nodeId: 'large-svg', assetId: 'large-svg', source, rawFingerprint });
+		const withoutIdentity = sanitizeOfficeSvg({
+			nodeId: 'large-svg',
+			assetId: 'large-svg',
+			source,
+		});
+		const rawFingerprint = {
+			algorithm: 'sha256',
+			value: 'a'.repeat(64),
+			byteLength: 1_048_636,
+		} as const;
+		const withIdentity = sanitizeOfficeSvg({
+			nodeId: 'large-svg',
+			assetId: 'large-svg',
+			source,
+			rawFingerprint,
+		});
 
 		ok(!hasBytes(withoutIdentity) && !hasBytes(withIdentity));
 		strictEqual(withoutIdentity.fingerprint, undefined);
@@ -151,28 +160,32 @@ suite('ParadisOfficeSanitizer', () => {
 
 	test('checks cancellation and caller checkpoints while hashing bounded assets', () => {
 		let checkpoints = 0;
-		const safe = sanitizeOfficeSvg({ nodeId: 'checked-svg', assetId: 'checked-svg', source: '<svg xmlns="http://www.w3.org/2000/svg"/>', checkpoint: () => checkpoints++ });
+		const safe = sanitizeOfficeSvg({
+			nodeId: 'checked-svg',
+			assetId: 'checked-svg',
+			source: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+			checkpoint: () => checkpoints++,
+		});
 		ok(hasBytes(safe));
 		ok(checkpoints >= 2);
 		const cancelled = new CancellationTokenSource();
 		cancelled.cancel();
 		try {
-			throws(() => sanitizeOfficeSvg({ nodeId: 'cancelled-svg', assetId: 'cancelled-svg', source: '<svg xmlns="http://www.w3.org/2000/svg"/>', token: cancelled.token }));
+			throws(() =>
+				sanitizeOfficeSvg({
+					nodeId: 'cancelled-svg',
+					assetId: 'cancelled-svg',
+					source: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+					token: cancelled.token,
+				}),
+			);
 		} finally {
 			cancelled.dispose();
 		}
 	});
 
 	test('rejects malformed SVG path, point, and transform grammars instead of character-whitelisting them', () => {
-		const invalidAttributes = [
-			'd="M 0"',
-			'd="M0 0 A1 1 0 2 0 2 2"',
-			'd="M0 0,,L1 1"',
-			`d="M0 0 ${'L1 1 '.repeat(8_193)}"`,
-			'points="0,0,1"',
-			'transform="matrix(1 0 0)"',
-			'transform="translate(1,,2)"',
-		];
+		const invalidAttributes = ['d="M 0"', 'd="M0 0 A1 1 0 2 0 2 2"', 'd="M0 0,,L1 1"', `d="M0 0 ${'L1 1 '.repeat(8_193)}"`, 'points="0,0,1"', 'transform="matrix(1 0 0)"', 'transform="translate(1,,2)"'];
 		for (const [index, attribute] of invalidAttributes.entries()) {
 			const element = attribute.startsWith('points') ? 'polygon' : 'path';
 			const result = sanitizeOfficeSvg({
@@ -188,7 +201,7 @@ suite('ParadisOfficeSanitizer', () => {
 		const archive = new MemoryOfficeArchive({
 			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/media/safe.svg" ContentType="image/svg+xml"/><Override PartName="/word/media/unsafe.svg" ContentType="image/svg+xml"/><Override PartName="/word/media/unknown.bin" ContentType="application/octet-stream"/><Override PartName="/word/fonts/font1.odttf" ContentType="application/x-font-ttf"/><Override PartName="/word/afchunk/chunk1.html" ContentType="text/html"/></Types>',
 			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing r:embed="safe"/><w:drawing r:embed="unsafe"/><w:drawing r:embed="unknown"/></w:r></w:p></w:body></w:document>',
 			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="safe" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/safe.svg"/><Relationship Id="unsafe" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/unsafe.svg"/><Relationship Id="unknown" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/unknown.bin"/><Relationship Id="font" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.odttf"/><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk/chunk1.html"/></Relationships>',
 			'word/media/safe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L1 1"/></svg>',
 			'word/media/unsafe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
@@ -198,7 +211,9 @@ suite('ParadisOfficeSanitizer', () => {
 		});
 
 		const result = await sanitizeOfficeDocxPackageForRenderer({
-			nodeId: 'package-1', source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04), archive,
+			nodeId: 'package-1',
+			source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04),
+			archive,
 		});
 		const serialized = new TextDecoder().decode(result.bytes);
 
@@ -208,8 +223,14 @@ suite('ParadisOfficeSanitizer', () => {
 		strictEqual(serialized.includes('RAW-ALTCHUNK'), false);
 		ok(serialized.includes('<path d="M 0 0 L 1 1"/>'));
 		ok(serialized.includes('Office asset unavailable'));
-		strictEqual(result.assets.some(asset => asset.kind === 'sanitizedSvg'), true);
-		strictEqual(result.assets.some(asset => asset.kind === 'placeholderPreview'), true);
+		strictEqual(
+			result.assets.some((asset) => asset.kind === 'sanitizedSvg'),
+			true,
+		);
+		strictEqual(
+			result.assets.some((asset) => asset.kind === 'placeholderPreview'),
+			true,
+		);
 		strictEqual(result.placeholders.length, 4);
 	});
 
@@ -217,7 +238,7 @@ suite('ParadisOfficeSanitizer', () => {
 		const archive = new MemoryOfficeArchive({
 			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/custom/payload.bin" ContentType="image/svg+xml"/><Override PartName="/custom/chunk.bin" ContentType="text/html"/><Override PartName="/custom/font.bin" ContentType="application/x-font-ttf"/><Override PartName="/custom/ole.bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/><Override PartName="/word/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/></Types>',
 			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rRoot" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:body></w:document>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>Body</w:t><w:drawing r:embed="rSvg"/></w:r></w:p></w:body></w:document>',
 			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rSvg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/><Relationship Id="rChunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="../custom/chunk.bin"/><Relationship Id="rFont" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="../custom/font.bin"/><Relationship Id="rOle" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/><Relationship Id="rExternal" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://attacker.example" TargetMode="External"/></Relationships>',
 			'custom/payload.bin': '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L1 1"/></svg>',
 			'custom/chunk.bin': '<script>ALT-CHUNK</script>',
@@ -226,36 +247,153 @@ suite('ParadisOfficeSanitizer', () => {
 			'word/vbaProject.bin': 'RAW-MACRO',
 		});
 
-		const result = await sanitizeOfficeDocxPackageForRenderer({ nodeId: 'semantic-package', source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04), archive });
+		const result = await sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'semantic-package',
+			source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04),
+			archive,
+		});
 		const serialized = new TextDecoder().decode(result.bytes);
 
 		ok(serialized.includes('<path d="M 0 0 L 1 1"/>'));
 		ok(serialized.includes('Office asset unavailable'));
-		for (const forbidden of ['ALT-CHUNK', 'RAW-CUSTOM-FONT', 'RAW-OLE', 'RAW-MACRO', 'attacker.example', 'oleObject', 'aFChunk']) { strictEqual(serialized.includes(forbidden), false, forbidden); }
+		for (const forbidden of ['ALT-CHUNK', 'RAW-CUSTOM-FONT', 'RAW-OLE', 'RAW-MACRO', 'attacker.example', 'oleObject', 'aFChunk']) {
+			strictEqual(serialized.includes(forbidden), false, forbidden);
+		}
 		ok(result.placeholders.length >= 5);
-		strictEqual(result.assets.some(asset => asset.kind === 'sanitizedSvg'), true);
-		strictEqual((result.bytes[6] | result.bytes[7] << 8) & 0x0800, 0x0800);
+		strictEqual(
+			result.assets.some((asset) => asset.kind === 'sanitizedSvg'),
+			true,
+		);
+		strictEqual((result.bytes[6] | (result.bytes[7] << 8)) & 0x0800, 0x0800);
 	});
 
 	test('rejects ZIP bombs, CRC mismatch, duplicate canonical names, and late cancellation before publication', async () => {
-		const bomb = new MemoryOfficeArchive({ 'word/document.xml': 'tiny' }, { 'word/document.xml': { compressedBytes: 1, declaredExpandedBytes: 1_000 } });
-		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'bomb', source: Uint8Array.of(1), archive: bomb }));
+		const bomb = new MemoryOfficeArchive(
+			{ 'word/document.xml': 'tiny' },
+			{
+				'word/document.xml': {
+					compressedBytes: 1,
+					declaredExpandedBytes: 1_000,
+				},
+			},
+		);
+		await rejects(
+			sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'bomb',
+				source: Uint8Array.of(1),
+				archive: bomb,
+			}),
+		);
 		strictEqual(bomb.readCount, 0);
 
 		const crcMismatch = new MemoryOfficeArchive({ 'word/document.xml': '<document/>' }, { 'word/document.xml': { crc32: 1 } });
-		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'crc', source: Uint8Array.of(1), archive: crcMismatch }));
+		await rejects(
+			sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'crc',
+				source: Uint8Array.of(1),
+				archive: crcMismatch,
+			}),
+		);
 
 		const duplicate = new MemoryOfficeArchive({ 'word/document.xml': '<document/>' }, {}, ['word/document.xml']);
-		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'duplicate', source: Uint8Array.of(1), archive: duplicate }));
+		await rejects(
+			sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'duplicate',
+				source: Uint8Array.of(1),
+				archive: duplicate,
+			}),
+		);
 
 		const cancellation = new CancellationTokenSource();
-		let checkpoints = 0;
+		let schedulerYields = 0;
 		try {
-			await rejects(sanitizeOfficeDocxPackageForRenderer({
-				nodeId: 'cancel', source: Uint8Array.of(1), archive: new MemoryOfficeArchive({ 'word/document.xml': '<document/>' }), token: cancellation.token,
-				checkpoint: () => { if (++checkpoints === 2) { cancellation.cancel(); } },
-			}));
-		} finally { cancellation.dispose(); }
+			await rejects(
+				sanitizeOfficeDocxPackageForRenderer({
+					nodeId: 'cancel',
+					source: Uint8Array.of(1),
+					archive: new MemoryOfficeArchive({
+						'word/document.xml': '<document/>',
+					}),
+					token: cancellation.token,
+					scheduler: () =>
+						new Promise<void>((resolve) =>
+							setTimeout(() => {
+								if (++schedulerYields === 2) {
+									cancellation.cancel();
+								}
+								resolve();
+							}, 0),
+						),
+				}),
+			);
+		} finally {
+			cancellation.dispose();
+		}
+		ok(schedulerYields >= 2);
+	});
+
+	test('fails closed on unknown relationships and duplicate or dangling OPC declarations', async () => {
+		const base = {
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/custom/payload.bin" ContentType="image/svg+xml"/></Types>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
+			'custom/payload.bin': '<svg xmlns="http://www.w3.org/2000/svg"/>',
+		};
+		const invalidRels = ['<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="urn:custom:drawing" Target="../custom/payload.bin"/></Relationships>', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/></Relationships>', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../missing.bin"/></Relationships>'];
+		for (const [index, rels] of invalidRels.entries()) {
+			await rejects(
+				sanitizeOfficeDocxPackageForRenderer({
+					nodeId: `invalid-opc-${index}`,
+					source: Uint8Array.of(1),
+					archive: new MemoryOfficeArchive({
+						...base,
+						'word/_rels/document.xml.rels': rels,
+					}),
+				}),
+			);
+		}
+		const duplicateTypes = new MemoryOfficeArchive({
+			...base,
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/custom/payload.bin" ContentType="image/svg+xml"/><Override PartName="/CUSTOM/PAYLOAD.BIN" ContentType="image/svg+xml"/></Types>',
+		});
+		await rejects(
+			sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'duplicate-types',
+				source: Uint8Array.of(1),
+				archive: duplicateTypes,
+			}),
+		);
+	});
+
+	test('replaces each relationship consumer in Word stories and rejects a 257th placeholder', async () => {
+		const types = '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/custom/ole.bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/></Types>';
+		const rels = '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="ole" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/></Relationships>';
+		const result = await sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'story',
+			source: Uint8Array.of(1),
+			archive: new MemoryOfficeArchive({
+				'[Content_Types].xml': types,
+				'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+				'word/header1.xml': '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:p><w:r><w:drawing r:id="ole"/></w:r></w:p></w:hdr>',
+				'word/_rels/header1.xml.rels': rels,
+				'custom/ole.bin': 'OLE',
+			}),
+		});
+		const serialized = new TextDecoder().decode(result.bytes);
+		strictEqual(serialized.includes('r:id="ole"'), false);
+		ok(serialized.includes('Office asset unavailable'));
+
+		const externalRelationships = Array.from({ length: 257 }, (_, index) => `<Relationship Id="e${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/${index}" TargetMode="External"/>`).join('');
+		await rejects(
+			sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'too-many-placeholders',
+				source: Uint8Array.of(1),
+				archive: new MemoryOfficeArchive({
+					'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+					'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+					'word/_rels/document.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${externalRelationships}</Relationships>`,
+				}),
+			}),
+		);
 	});
 
 	test('enforces SVG byte, depth, node, and attribute budgets before publishing bytes', () => {
@@ -265,17 +403,23 @@ suite('ParadisOfficeSanitizer', () => {
 		const oversized = `<svg xmlns="http://www.w3.org/2000/svg"><text>${'a'.repeat(1_048_577)}</text></svg>`;
 
 		for (const [index, source] of [deep, many, longAttribute, oversized].entries()) {
-			const result = sanitizeOfficeSvg({ nodeId: `bounded-${index}`, assetId: `bounded-${index}`, source });
+			const result = sanitizeOfficeSvg({
+				nodeId: `bounded-${index}`,
+				assetId: `bounded-${index}`,
+				source,
+			});
 			ok(!hasBytes(result));
 			strictEqual(result.reason, 'budget');
 		}
 	});
 
-	test('validates a raw SFNT and publishes only a trusted bounded WOFF2 subset', () => {
+	test('refuses font publication until a production decoder trust boundary is available', () => {
 		const source = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 3]) }]);
 		const decodedSfnt = renderableSfnt(3);
 		const subsetBytes = decoderBackedWoff2(decodedSfnt);
-		const trustedSubset: ParadisOfficeTrustedFontSubset = { bytes: subsetBytes };
+		const trustedSubset: ParadisOfficeTrustedFontSubset = {
+			bytes: subsetBytes,
+		};
 		let sourceSeenBySubsetter: Uint8Array | undefined;
 		let subsetSeenByDecoder: Uint8Array | undefined;
 
@@ -290,33 +434,37 @@ suite('ParadisOfficeSanitizer', () => {
 				deepStrictEqual(glyphIds, [1, 2]);
 				return trustedSubset;
 			},
-			decoder: subsetSnapshot => {
+			decoder: (subsetSnapshot) => {
 				subsetSeenByDecoder = subsetSnapshot;
 				return decodedFont(decodedSfnt, [0, 1, 2], [], subsetSnapshot);
 			},
 		});
 
-		if (!hasBytes(result)) {
-			throw new Error('Expected a trusted font subset');
-		}
-		strictEqual(result.kind, 'fontSubset');
-		strictEqual(result.mime, 'font/woff2');
-		strictEqual(result.fingerprint.byteLength, subsetBytes.byteLength);
-		deepStrictEqual(result.bytes, subsetBytes);
-		notStrictEqual(result.bytes, subsetBytes);
-		notStrictEqual(sourceSeenBySubsetter, source);
-		notStrictEqual(subsetSeenByDecoder, subsetBytes);
+		ok(!hasBytes(result));
+		strictEqual(result.reason, 'unsupported');
+		strictEqual(sourceSeenBySubsetter, undefined);
+		strictEqual(subsetSeenByDecoder, undefined);
 	});
 
-	test('binds an actual Brotli WOFF2 fixture to its independently decoded SFNT bytes', () => {
+	test('keeps an actual Brotli WOFF2 fixture blocked without a production decoder integration', () => {
 		const woff2 = plainBase64('d09GMgABAAAAAAEwAAoAAAAAAqgAAADoAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAANAocNgE2AiQDCAsGAAQgBYEWByYbBwIoLgrsBvmOsXBOxBC8oQ9ULET893vdnndfaH18NZ75wmUQrjXVLAqP8hgVpZgoVFdJEB7IxvlC5JUpu9n5D6xgy+P+Eo8Cjj3sLuxmNPC5jKc7D3SAA90Yawc52ESeLdUXVfvMRjpJQEdtMBjKDGrXBACwCxoKO0qwo9tF1wXDjG9ZADTQERTmAB2QWr67OX+rzoEg/F/Y9b4XUlP4eC/vnVOvbZQGwgk7xaQIq3wl/YKmBDQAACx5ERBBQDMvAkoQ0AfAnDP1RdEsoM2apVHWVQdzOX6e+oGxYxeuPLt34kHTHsUhAA==');
 		const sfnt = plainBase64('AAEAAAAKAIAAAwAgT1MvMkUhRMsAAAEoAAAAYGNtYXAADACUAAABkAAAADRnbHlmAvU7NwAAAcwAAAAaaGVhZDBgWKwAAACsAAAANmhoZWEGQgPrAAAA5AAAACRobXR4BdwAAAAAAYgAAAAIbG9jYQANAAAAAAHEAAAABm1heHAABAAFAAABCAAAACBuYW1lyT7btQAAAegAAACWcG9zdAAoAAAAAAKAAAAAJgABAAAAAQAACWcqm18PPPUAAQPoAAAAAOayCogAAAAA5rIKiABkAAADhAK8AAAAAwACAAAAAAAAAAEAAAMg/zgAAAPoAAAAyAMgAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAMAAQAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwLuAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAPz8/PwAAAEEAQQMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAA+gAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAAAQf//AAAAQf///8AAAQAAAAAAAAAAAA0AAAABAGQAAAOEArwAAgAAMwEBZAGQAZACvP1EAAAAAAAKAH4AAQAAAAAAAQABAAAAAQAAAAAAAgAHAAEAAQAAAAAAAwABAAAAAQAAAAAABAABAAAAAQAAAAAABgABAAAAAwABBAkAAQACAAgAAwABBAkAAgAOAAoAAwABBAkAAwACAAgAAwABBAkABAACAAgAAwABBAkABgACAAhQUmVndWxhcgBQAFIAZQBnAHUAbABhAHIAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAkAAA=');
 		let decoderReached = false;
 		const result = validateAndSubsetOfficeFont({
-			nodeId: 'real-woff2', assetId: 'real-woff2', source: sfnt, glyphIds: [1], subsetter: () => ({ bytes: woff2 }),
-			decoder: input => { decoderReached = true; deepStrictEqual(input, woff2); return decodedFont(sfnt, [0, 1], [], input); },
+			nodeId: 'real-woff2',
+			assetId: 'real-woff2',
+			source: sfnt,
+			glyphIds: [1],
+			subsetter: () => ({ bytes: woff2 }),
+			decoder: (input) => {
+				decoderReached = true;
+				deepStrictEqual(input, woff2);
+				return decodedFont(sfnt, [0, 1], [], input);
+			},
 		});
-		ok(hasBytes(result)); strictEqual(decoderReached, true); deepStrictEqual(result.bytes, woff2);
+		ok(!hasBytes(result));
+		strictEqual(result.reason, 'unsupported');
+		strictEqual(decoderReached, false);
 	});
 
 	test('rejects unsafe raw font tables and invalid, oversized, or externally referencing subset output', () => {
@@ -331,34 +479,30 @@ suite('ParadisOfficeSanitizer', () => {
 		]);
 		writeU32(overlap, 28 + 8, 44);
 		const missingMaxp = minimalSfnt([{ tag: 'name', bytes: new Uint8Array([0, 0, 0, 0]) }]);
-		const invalidWoff2Metadata = safeSubset.slice();
-		writeU32(invalidWoff2Metadata, 28, invalidWoff2Metadata.byteLength);
-		writeU32(invalidWoff2Metadata, 36, 0xffffffff);
-		const emptyWoff2Payload = safeSubset.slice();
-		writeU32(emptyWoff2Payload, 20, 0);
-		const undersizedExpandedWoff2 = safeSubset.slice();
-		writeU32(undersizedExpandedWoff2, 16, 1);
 
 		const cases = [
 			{ source: svgFont, bytes: safeSubset, subsetter: false },
 			{ source: invalidOffset, bytes: safeSubset, subsetter: false },
 			{ source: overlap, bytes: safeSubset, subsetter: false },
 			{ source: missingMaxp, bytes: safeSubset, subsetter: false },
-			{ source: validSource, bytes: validSource, subsetter: true },
-			{ source: validSource, bytes: invalidWoff2Metadata, subsetter: true },
-			{ source: validSource, bytes: emptyWoff2Payload, subsetter: true },
-			{ source: validSource, bytes: undersizedExpandedWoff2, subsetter: true },
 		];
 
 		for (const [index, entry] of cases.entries()) {
-			let subsetterCalls = 0; let decoderCalls = 0;
+			let subsetterCalls = 0;
+			let decoderCalls = 0;
 			const result = validateAndSubsetOfficeFont({
 				nodeId: `font-unsafe-${index}`,
 				assetId: `font-unsafe-${index}`,
 				source: entry.source,
 				glyphIds: [0],
-				subsetter: () => { subsetterCalls++; return { bytes: entry.bytes }; },
-				decoder: subset => { decoderCalls++; return decodedFont(renderableSfnt(1), [0], [], subset); },
+				subsetter: () => {
+					subsetterCalls++;
+					return { bytes: entry.bytes };
+				},
+				decoder: (subset) => {
+					decoderCalls++;
+					return decodedFont(renderableSfnt(1), [0], [], subset);
+				},
 			});
 			ok(!hasBytes(result));
 			strictEqual(result.reason, 'unsafe');
@@ -370,30 +514,47 @@ suite('ParadisOfficeSanitizer', () => {
 
 	test('uses a deterministic placeholder when a trusted font subsetter is unavailable', () => {
 		const source = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 1]) }]);
-		const first = validateAndSubsetOfficeFont({ nodeId: 'font-no-subsetter', assetId: 'font-no-subsetter', source, glyphIds: [0] });
-		const second = validateAndSubsetOfficeFont({ nodeId: 'font-no-subsetter', assetId: 'font-no-subsetter', source, glyphIds: [0] });
+		const first = validateAndSubsetOfficeFont({
+			nodeId: 'font-no-subsetter',
+			assetId: 'font-no-subsetter',
+			source,
+			glyphIds: [0],
+		});
+		const second = validateAndSubsetOfficeFont({
+			nodeId: 'font-no-subsetter',
+			assetId: 'font-no-subsetter',
+			source,
+			glyphIds: [0],
+		});
 
 		ok(!hasBytes(first) && !hasBytes(second));
 		strictEqual(first.reason, 'unsupported');
 		strictEqual(first.fingerprint, second.fingerprint);
 	});
 
-	test('rejects stateful trusted subset output instead of publishing a later byte snapshot', () => {
+	test('does not invoke a stateful caller subsetter without a production decoder boundary', () => {
 		const source = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 1]) }]);
 		const subsetBytes = minimalWoff2([{ tag: 'maxp', originalLength: 6 }]);
 		const statefulSubset = {} as ParadisOfficeTrustedFontSubset;
-		Object.defineProperty(statefulSubset, 'bytes', { enumerable: true, get: () => subsetBytes });
+		Object.defineProperty(statefulSubset, 'bytes', {
+			enumerable: true,
+			get: () => subsetBytes,
+		});
 
 		const result = validateAndSubsetOfficeFont({
-			nodeId: 'font-stateful-subset', assetId: 'font-stateful-subset', source, glyphIds: [0], subsetter: () => statefulSubset,
-			decoder: subset => decodedFont(renderableSfnt(1), [0], [], subset),
+			nodeId: 'font-stateful-subset',
+			assetId: 'font-stateful-subset',
+			source,
+			glyphIds: [0],
+			subsetter: () => statefulSubset,
+			decoder: (subset) => decodedFont(renderableSfnt(1), [0], [], subset),
 		});
 
 		ok(!hasBytes(result));
-		strictEqual(result.reason, 'unsafe');
+		strictEqual(result.reason, 'unsupported');
 	});
 
-	test('requires independent decoded SFNT and complete requested/composite glyph proof', () => {
+	test('does not trust caller-supplied decoded SFNT or glyph proof', () => {
 		const source = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 3]) }]);
 		const decodedSfnt = renderableSfnt(3);
 		const subset = { bytes: decoderBackedWoff2(decodedSfnt) };
@@ -401,16 +562,27 @@ suite('ParadisOfficeSanitizer', () => {
 			decodedFont(decodedSfnt, [1, 2], [], subset.bytes),
 			decodedFont(decodedSfnt, [0, 1], [], subset.bytes),
 			decodedFont(decodedSfnt, [0, 1, 2], [{ glyphId: 2, components: [1, 3] }], subset.bytes),
-			{ ...decodedFont(decodedSfnt, [0, 1, 2], [], subset.bytes), woff2Fingerprint: { algorithm: 'sha256', value: 'f'.repeat(64), byteLength: subset.bytes.byteLength } },
+			{
+				...decodedFont(decodedSfnt, [0, 1, 2], [], subset.bytes),
+				woff2Fingerprint: {
+					algorithm: 'sha256',
+					value: 'f'.repeat(64),
+					byteLength: subset.bytes.byteLength,
+				},
+			},
 		];
 
 		for (const [index, decoded] of decodedCases.entries()) {
 			const result = validateAndSubsetOfficeFont({
-				nodeId: `font-proof-${index}`, assetId: `font-proof-${index}`, source, glyphIds: [1, 2],
-				subsetter: () => subset, decoder: () => decoded,
+				nodeId: `font-proof-${index}`,
+				assetId: `font-proof-${index}`,
+				source,
+				glyphIds: [1, 2],
+				subsetter: () => subset,
+				decoder: () => decoded,
 			});
 			ok(!hasBytes(result));
-			strictEqual(result.reason, 'unsafe');
+			strictEqual(result.reason, 'unsupported');
 		}
 	});
 
@@ -419,9 +591,18 @@ suite('ParadisOfficeSanitizer', () => {
 		const validSource = minimalSfnt([{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, 0, 3]) }]);
 		const invalidSources: Uint8Array[] = [new DerivedBytes(validSource), new Proxy(validSource, {})];
 		const resizable = Reflect.construct(ArrayBuffer, [validSource.byteLength, { maxByteLength: validSource.byteLength * 2 }]) as ArrayBuffer & { readonly resizable?: boolean };
-		if (resizable.resizable) { const view = new Uint8Array(resizable); view.set(validSource); invalidSources.push(view); }
+		if (resizable.resizable) {
+			const view = new Uint8Array(resizable);
+			view.set(validSource);
+			invalidSources.push(view);
+		}
 		for (const [index, source] of invalidSources.entries()) {
-			const result = validateAndSubsetOfficeFont({ nodeId: `font-view-${index}`, assetId: `font-view-${index}`, source, glyphIds: [0] });
+			const result = validateAndSubsetOfficeFont({
+				nodeId: `font-view-${index}`,
+				assetId: `font-view-${index}`,
+				source,
+				glyphIds: [0],
+			});
 			ok(!hasBytes(result));
 			strictEqual(result.reason, 'unsafe');
 		}
@@ -431,13 +612,23 @@ suite('ParadisOfficeSanitizer', () => {
 		let retainedSource: Uint8Array | undefined;
 		let retainedSubset: Uint8Array | undefined;
 		const result = validateAndSubsetOfficeFont({
-			nodeId: 'font-owned', assetId: 'font-owned', source: validSource, glyphIds: [1, 2],
-			subsetter: source => { retainedSource = source; return { bytes: subsetBytes }; },
-			decoder: subset => { retainedSubset = subset; return decodedFont(decodedSfnt, [0, 1, 2], [], subset); },
+			nodeId: 'font-owned',
+			assetId: 'font-owned',
+			source: validSource,
+			glyphIds: [1, 2],
+			subsetter: (source) => {
+				retainedSource = source;
+				return { bytes: subsetBytes };
+			},
+			decoder: (subset) => {
+				retainedSubset = subset;
+				return decodedFont(decodedSfnt, [0, 1, 2], [], subset);
+			},
 		});
-		if (!hasBytes(result)) { throw new Error('Expected isolated font result'); }
-		retainedSource?.fill(0); retainedSubset?.fill(0); subsetBytes.fill(0);
-		strictEqual(result.bytes.some(byte => byte !== 0), true);
+		ok(!hasBytes(result));
+		strictEqual(result.reason, 'unsupported');
+		strictEqual(retainedSource, undefined);
+		strictEqual(retainedSubset, undefined);
 	});
 });
 
@@ -448,7 +639,7 @@ function hasBytes(value: object): value is ParadisSanitizedSvg | ParadisRenderab
 function minimalSfnt(tables: readonly { readonly tag: string; readonly bytes: Uint8Array }[]): Uint8Array {
 	const directoryEnd = 12 + tables.length * 16;
 	let offset = directoryEnd;
-	const records = tables.map(table => {
+	const records = tables.map((table) => {
 		const record = { ...table, offset };
 		offset += (table.bytes.byteLength + 3) & ~3;
 		return record;
@@ -470,10 +661,7 @@ function minimalSfnt(tables: readonly { readonly tag: string; readonly bytes: Ui
 function tableChecksum(bytes: Uint8Array): number {
 	let sum = 0;
 	for (let offset = 0; offset < bytes.byteLength; offset += 4) {
-		const word = (bytes[offset] ?? 0) * 0x1000000
-			+ (bytes[offset + 1] ?? 0) * 0x10000
-			+ (bytes[offset + 2] ?? 0) * 0x100
-			+ (bytes[offset + 3] ?? 0);
+		const word = (bytes[offset] ?? 0) * 0x1000000 + (bytes[offset + 1] ?? 0) * 0x10000 + (bytes[offset + 2] ?? 0) * 0x100 + (bytes[offset + 3] ?? 0);
 		sum = (sum + word) >>> 0;
 	}
 	return sum;
@@ -499,15 +687,23 @@ function minimalWoff2(tables: readonly { readonly tag: string; readonly original
 	writeU32(result, 16, expandedByteLength ?? calculatedExpanded);
 	writeU32(result, 20, payloadLength);
 	result.set(directory, 48);
-	for (let index = result.byteLength - payloadLength; index < result.byteLength; index++) { result[index] = index & 0xff; }
+	for (let index = result.byteLength - payloadLength; index < result.byteLength; index++) {
+		result[index] = index & 0xff;
+	}
 	return result;
 }
 
 function renderableSfnt(glyphCount: number): Uint8Array {
-	const cmap = new Uint8Array(16); writeU16(cmap, 2, 1); writeU32(cmap, 8, 12);
-	const name = new Uint8Array(6); writeU16(name, 4, 6);
+	const cmap = new Uint8Array(16);
+	writeU16(cmap, 2, 1);
+	writeU32(cmap, 8, 12);
+	const name = new Uint8Array(6);
+	writeU16(name, 4, 6);
 	return minimalSfnt([
-		{ tag: 'maxp', bytes: new Uint8Array([0, 1, 0, 0, glyphCount >>> 8, glyphCount]) },
+		{
+			tag: 'maxp',
+			bytes: new Uint8Array([0, 1, 0, 0, glyphCount >>> 8, glyphCount]),
+		},
 		{ tag: 'cmap', bytes: cmap },
 		{ tag: 'name', bytes: name },
 		{ tag: 'OS/2', bytes: new Uint8Array(78) },
@@ -518,28 +714,56 @@ function renderableSfnt(glyphCount: number): Uint8Array {
 }
 
 function decoderBackedWoff2(sfnt: Uint8Array): Uint8Array {
-	return minimalWoff2([
-		{ tag: 'maxp', originalLength: 6 },
-		{ tag: 'cmap', originalLength: 16 },
-		{ tag: 'name', originalLength: 6 },
-		{ tag: 'OS/2', originalLength: 78 },
-		{ tag: 'head', originalLength: 54 },
-		{ tag: 'glyf', originalLength: 0 },
-		{ tag: 'loca', originalLength: ((readU16ForTest(sfnt, sfntMaxpOffset(sfnt) + 4) + 1) * 2) },
-	], sfnt.byteLength);
+	return minimalWoff2(
+		[
+			{ tag: 'maxp', originalLength: 6 },
+			{ tag: 'cmap', originalLength: 16 },
+			{ tag: 'name', originalLength: 6 },
+			{ tag: 'OS/2', originalLength: 78 },
+			{ tag: 'head', originalLength: 54 },
+			{ tag: 'glyf', originalLength: 0 },
+			{
+				tag: 'loca',
+				originalLength: (readU16ForTest(sfnt, sfntMaxpOffset(sfnt) + 4) + 1) * 2,
+			},
+		],
+		sfnt.byteLength,
+	);
 }
 
 function sfntMaxpOffset(sfnt: Uint8Array): number {
 	const tableCount = sfnt[4] * 256 + sfnt[5];
-	for (let index = 0; index < tableCount; index++) { const offset = 12 + index * 16; if (new TextDecoder().decode(sfnt.subarray(offset, offset + 4)) === 'maxp') { return readU32ForTest(sfnt, offset + 8); } }
+	for (let index = 0; index < tableCount; index++) {
+		const offset = 12 + index * 16;
+		if (new TextDecoder().decode(sfnt.subarray(offset, offset + 4)) === 'maxp') {
+			return readU32ForTest(sfnt, offset + 8);
+		}
+	}
 	throw new Error('missing maxp');
 }
 
-function readU16ForTest(bytes: Uint8Array, offset: number): number { return bytes[offset] * 256 + bytes[offset + 1]; }
-function readU32ForTest(bytes: Uint8Array, offset: number): number { return (bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]) >>> 0; }
+function readU16ForTest(bytes: Uint8Array, offset: number): number {
+	return bytes[offset] * 256 + bytes[offset + 1];
+}
+function readU32ForTest(bytes: Uint8Array, offset: number): number {
+	return (bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]) >>> 0;
+}
 
-function decodedFont(sfnt: Uint8Array, includedGlyphIds: readonly number[], compositeDependencies: readonly { readonly glyphId: number; readonly components: readonly number[] }[], woff2: Uint8Array): ParadisOfficeDecodedFont {
-	return { sfnt, woff2Fingerprint: fingerprintOfficeAssetForDecoder(woff2), includedGlyphIds, compositeDependencies };
+function decodedFont(
+	sfnt: Uint8Array,
+	includedGlyphIds: readonly number[],
+	compositeDependencies: readonly {
+		readonly glyphId: number;
+		readonly components: readonly number[];
+	}[],
+	woff2: Uint8Array,
+): ParadisOfficeDecodedFont {
+	return {
+		sfnt,
+		woff2Fingerprint: fingerprintOfficeAssetForDecoder(woff2),
+		includedGlyphIds,
+		compositeDependencies,
+	};
 }
 
 function writeTag(target: Uint8Array, offset: number, value: string): void {
@@ -560,14 +784,20 @@ function writeU32(target: Uint8Array, offset: number, value: number): void {
 	target[offset + 3] = value;
 }
 
-function plainBase64(value: string): Uint8Array { return Uint8Array.from(decodeBase64(value).buffer); }
+function plainBase64(value: string): Uint8Array {
+	return Uint8Array.from(decodeBase64(value).buffer);
+}
 
 class MemoryOfficeArchive {
 	readonly containerByteLength = 4;
 	private readonly values = new Map<string, Uint8Array>();
 	readCount = 0;
 
-	constructor(values: Readonly<Record<string, string>>, private readonly metadata: Readonly<Record<string, Partial<ParadisOfficeArchiveEntry>>> = {}, private readonly duplicates: readonly string[] = []) {
+	constructor(
+		values: Readonly<Record<string, string>>,
+		private readonly metadata: Readonly<Record<string, Partial<ParadisOfficeArchiveEntry>>> = {},
+		private readonly duplicates: readonly string[] = [],
+	) {
 		for (const [name, value] of Object.entries(values)) {
 			this.values.set(name, new TextEncoder().encode(value));
 		}
@@ -575,15 +805,37 @@ class MemoryOfficeArchive {
 
 	async *entries(): AsyncIterable<ParadisOfficeArchiveEntry> {
 		for (const [name, value] of this.values) {
-			yield { name, compressedBytes: value.byteLength, declaredExpandedBytes: value.byteLength, crc32: memoryCrc32(value), encrypted: false, directory: false, symlink: false, ...this.metadata[name] };
+			yield {
+				name,
+				compressedBytes: value.byteLength,
+				declaredExpandedBytes: value.byteLength,
+				crc32: memoryCrc32(value),
+				encrypted: false,
+				directory: false,
+				symlink: false,
+				...this.metadata[name],
+			};
 		}
-		for (const name of this.duplicates) { const value = this.values.get(name)!; yield { name, compressedBytes: value.byteLength, declaredExpandedBytes: value.byteLength, crc32: memoryCrc32(value), encrypted: false, directory: false, symlink: false }; }
+		for (const name of this.duplicates) {
+			const value = this.values.get(name)!;
+			yield {
+				name,
+				compressedBytes: value.byteLength,
+				declaredExpandedBytes: value.byteLength,
+				crc32: memoryCrc32(value),
+				encrypted: false,
+				directory: false,
+				symlink: false,
+			};
+		}
 	}
 
 	async *read(entry: ParadisOfficeArchiveEntry): AsyncIterable<Uint8Array> {
 		this.readCount++;
 		const value = this.values.get(entry.name);
-		if (value) { yield value.slice(); }
+		if (value) {
+			yield value.slice();
+		}
 	}
 
 	dispose(): void { }
@@ -591,6 +843,11 @@ class MemoryOfficeArchive {
 
 function memoryCrc32(bytes: Uint8Array): number {
 	let crc = 0xffffffff;
-	for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit++) { crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); } }
+	for (const byte of bytes) {
+		crc ^= byte;
+		for (let bit = 0; bit < 8; bit++) {
+			crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+		}
+	}
 	return (crc ^ 0xffffffff) >>> 0;
 }
