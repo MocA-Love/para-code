@@ -311,16 +311,18 @@ export class ParadisRtkService implements IParadisRtkService {
 				env: { ...env, NO_COLOR: '1' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;
+				const timedOut = execution.tracked?.timedOut === true;
 				execution.tracked?.dispose();
-				if (err) {
-					if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+				if (err || timedOut) {
+					if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
 						// renderer 側はこの目印で「未インストール」の案内へ切り替える。
 						this.logService.trace(`[ParadisRtk] rtk executable not found (${command})`);
 						reject(new Error(`${PARADIS_RTK_NOT_FOUND_MARKER}: ${command} was not found on PATH`));
 						return;
 					}
-					this.logService.warn(`[ParadisRtk] ${command} ${args.join(' ')} failed: ${stderr || err.message}`);
-					reject(new Error(stderr?.trim() || err.message));
+					const message = stderr?.trim() || (timedOut ? `command timed out after ${EXEC_TIMEOUT_MS}ms` : err!.message);
+					this.logService.warn(`[ParadisRtk] ${command} ${args.join(' ')} failed: ${message}`);
+					reject(new Error(message));
 				} else {
 					resolve(stdout);
 				}

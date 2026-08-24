@@ -1022,42 +1022,40 @@ export class ParadisLimitsMonitorService {
 
 	// ---------- 実行ヘルパー ----------
 
-	private execFile(command: string, args: string[], options: { timeoutMs: number; stdin?: string }): Promise<string> {
+	private async execFile(command: string, args: string[], options: { timeoutMs: number; stdin?: string }): Promise<string> {
+		const env = await this.getExecEnv();
+		if (this.disposed) {
+			throw new Error('ParadisLimitsMonitorService is disposed');
+		}
 		return new Promise<string>((resolve, reject) => {
-			this.getExecEnv().then(env => {
-				if (this.disposed) {
-					reject(new Error('ParadisLimitsMonitorService is disposed'));
-					return;
+			// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
+			// (shell 指定なしの execFile は CVE-2024-27980 対策後の Node では EINVAL になる)。
+			const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
+			const execution: { tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
+			const child = this._execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
+				encoding: 'utf8',
+				maxBuffer: 16 * 1024 * 1024,
+				windowsHide: true,
+				windowsVerbatimArguments: shimInvocation !== undefined,
+				env: { ...env, NO_COLOR: '1' },
+			}, (err, stdout, stderr) => {
+				execution.completed = true;
+				const timedOut = execution.tracked?.timedOut === true;
+				execution.tracked?.dispose();
+				if (err || timedOut) {
+					const message = stderr?.trim() || (timedOut ? 'command timed out after ' + options.timeoutMs + 'ms' : err!.message);
+					reject(new Error(message));
+				} else {
+					resolve(stdout);
 				}
-				// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
-				// (shell 指定なしの execFile は CVE-2024-27980 対策後の Node では EINVAL になる)。
-				const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
-				const execution: { tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
-				const child = this._execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
-					encoding: 'utf8',
-					maxBuffer: 16 * 1024 * 1024,
-					windowsHide: true,
-					windowsVerbatimArguments: shimInvocation !== undefined,
-					env: { ...env, NO_COLOR: '1' },
-				}, (err, stdout, stderr) => {
-					execution.completed = true;
-					const timedOut = execution.tracked?.timedOut === true;
-					execution.tracked?.dispose();
-					if (err || timedOut) {
-						const message = stderr?.trim() || (timedOut ? 'command timed out after ' + options.timeoutMs + 'ms' : err!.message);
-						reject(new Error(message));
-					} else {
-						resolve(stdout);
-					}
-				});
-				if (!execution.completed) {
-					execution.tracked = this.childProcesses.track(child, options.timeoutMs);
-				}
-				if (options.stdin !== undefined) {
-					child.stdin?.write(options.stdin);
-					child.stdin?.end();
-				}
-			}, reject);
+			});
+			if (!execution.completed) {
+				execution.tracked = this.childProcesses.track(child, options.timeoutMs);
+			}
+			if (options.stdin !== undefined) {
+				child.stdin?.write(options.stdin);
+				child.stdin?.end();
+			}
 		});
 	}
 

@@ -525,12 +525,15 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				execution.completed = true;
 				const timedOut = execution.tracked?.timedOut === true;
 				execution.tracked?.dispose();
-				if (err) {
-					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${stderr || err.message}`);
+				if (err || timedOut) {
+					const message = stderr?.trim() || (timedOut ? `command timed out after ${EXEC_TIMEOUT_MS}ms` : err!.message);
+					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${message}`);
 					// 実行自体に失敗した場合は次回に別の候補を試せるようキャッシュを破棄する
 					this.resolved = undefined;
-					const execError: IParadisExecError = new Error(stderr?.trim() || err.message);
-					execError.spawnFailed = (err as NodeJS.ErrnoException).code === 'ENOENT';
+					const execError: IParadisExecError = new Error(message);
+					if (err) {
+						execError.spawnFailed = (err as NodeJS.ErrnoException).code === 'ENOENT';
+					}
 					execError.timedOut = timedOut;
 					reject(execError);
 				} else {
