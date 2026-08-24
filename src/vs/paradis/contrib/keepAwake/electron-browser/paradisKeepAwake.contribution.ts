@@ -17,9 +17,10 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, NeverShowAgainScope } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IPowerService, PowerSaveBlockerType } from '../../../../workbench/services/power/common/powerService.js';
+import { IPowerService } from '../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeMode, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
+import { ParadisKeepAwakeController } from '../common/paradisKeepAwakeController.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
@@ -29,9 +30,9 @@ const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
  * PC のスリープを防止する contribution。
  *
  * powerSaveBlocker はアプリ全体にスタックする方式（発行された全 id が stop されるまで有効）のため、
- * 各ウィンドウのこの contribution が自分の blocker id を1つずつ持てば、「Para Code のウィンドウが
- * どれか1枚でも開いていれば有効・全部閉じたら解除」という意味論になる。ウィンドウが正常に閉じずに
- * stop が飛ばなかった場合でも、blocker はプロセス（electron-main）終了と共に消えるためリークは
+ * 各ウィンドウの controller が成功済み blocker id を所有し、「Para Code のウィンドウがどれか1枚でも
+ * 開いていれば有効・全部閉じたら解除」という意味論になる。ウィンドウが正常に閉じずに stop が
+ * 飛ばなかった場合でも、blocker はプロセス（electron-main）終了と共に消えるためリークは
  * アプリ生存中に限られる。
  *
  * 有効中はステータスバーにインジケーターを表示し、クリックでモード選択の Quick Pick を開く
@@ -41,13 +42,8 @@ class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContr
 
 	static readonly ID = 'workbench.contrib.paradisKeepAwake';
 
-	/** 現在この ウィンドウが保持している blocker id（未保持は undefined）。 */
-	private blockerId: number | undefined;
-
-	/** 非同期の start/stop が交錯したとき、最後の update だけを勝たせるための世代カウンタ。 */
-	private generation = 0;
-
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	private readonly controller: ParadisKeepAwakeController;
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -57,56 +53,33 @@ class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContr
 	) {
 		super();
 
-		this.update();
+		this.controller = this._register(new ParadisKeepAwakeController({
+			start: mode => this.powerService.startPowerSaveBlocker(
+				mode === 'display' ? 'prevent-display-sleep' : 'prevent-app-suspension'
+			),
+			stop: async id => {
+				const stopped = await this.powerService.stopPowerSaveBlocker(id);
+				if (!stopped) {
+					throw new Error('Power save blocker could not be stopped');
+				}
+			},
+			onDidChangeMode: mode => this.updateStatusbar(mode),
+			report: (operation, error) => {
+				reportParadisDiagnosticError('owned', 'keep-awake', operation, error, undefined, 'warning');
+				this.logService.error('[paradisKeepAwake] ' + operation, error);
+			},
+		}));
+		void this.controller.setMode(this.getMode());
 
-		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(PARADIS_KEEP_AWAKE_SETTING)) {
-				this.update();
+		this._register(this.configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_KEEP_AWAKE_SETTING)) {
+				void this.controller.setMode(this.getMode());
 			}
 		}));
 	}
 
 	private getMode(): ParadisKeepAwakeMode {
 		return toParadisKeepAwakeMode(this.configurationService.getValue(PARADIS_KEEP_AWAKE_SETTING));
-	}
-
-	private async update(): Promise<void> {
-		const generation = ++this.generation;
-		const mode = this.getMode();
-		const type: PowerSaveBlockerType | undefined =
-			mode === 'system' ? 'prevent-app-suspension' :
-				mode === 'display' ? 'prevent-display-sleep' :
-					undefined;
-
-		try {
-			// 先に新しい blocker を張ってから古いものを外す（モード切替時に一瞬もスリープ可能に
-			// ならないようにする。blocker はスタックするので二重期間があっても問題ない）。
-			let newId: number | undefined;
-			if (type !== undefined) {
-				newId = await this.powerService.startPowerSaveBlocker(type);
-			}
-
-			if (generation !== this.generation || this._store.isDisposed) {
-				// この update 中に設定が再変更された/ウィンドウが閉じた。今張った blocker は即座に返上する。
-				if (newId !== undefined) {
-					this.powerService.stopPowerSaveBlocker(newId).catch(error => this.logService.error('[paradisKeepAwake] failed to stop superseded power save blocker', error));
-				}
-				return;
-			}
-
-			const oldId = this.blockerId;
-			this.blockerId = newId;
-			if (oldId !== undefined) {
-				await this.powerService.stopPowerSaveBlocker(oldId);
-			}
-		} catch (error) {
-			reportParadisDiagnosticError('owned', 'keep-awake', 'blocker-start-failed', error, undefined, 'warning');
-			this.logService.error('[paradisKeepAwake] failed to update power save blocker', error);
-		}
-
-		if (generation === this.generation && !this._store.isDisposed) {
-			this.updateStatusbar(mode);
-		}
 	}
 
 	private updateStatusbar(mode: ParadisKeepAwakeMode): void {
@@ -133,17 +106,6 @@ class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContr
 		} else {
 			this.statusbarEntry.value = this.statusbarService.addEntry(entry, STATUSBAR_ENTRY_ID, StatusbarAlignment.RIGHT, 48);
 		}
-	}
-
-	override dispose(): void {
-		// dispose は同期なので await できない。stop の完了は待たず投げっぱなしにする
-		// （届かなかった場合も electron-main プロセス終了時に blocker は消える）。
-		this.generation++;
-		if (this.blockerId !== undefined) {
-			this.powerService.stopPowerSaveBlocker(this.blockerId).catch(error => this.logService.error('[paradisKeepAwake] failed to stop power save blocker on dispose', error));
-			this.blockerId = undefined;
-		}
-		super.dispose();
 	}
 }
 
