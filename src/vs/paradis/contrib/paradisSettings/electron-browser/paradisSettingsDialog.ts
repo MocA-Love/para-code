@@ -73,6 +73,13 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		heading: localize('paradis.settings.headPreset', "コマンドプリセット"),
 	},
 	{
+		id: 'psd-sec-layout',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navLayout', "レイアウトプリセット"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headLayout', "レイアウトプリセット"),
+	},
+	{
 		id: 'psd-sec-usage',
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navUsage', "使用量ダッシュボード"),
@@ -106,6 +113,13 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		navLabel: localize('paradis.settings.navMobile', "モバイル連携"),
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headMobile', "モバイル連携"),
+	},
+	{
+		id: 'psd-sec-remote',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navRemote', "リモート (SSH)"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headRemote', "リモート (SSH 接続)"),
 	},
 	{
 		id: 'psd-sec-window',
@@ -192,6 +206,49 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.agentsDesc', "新規スペースで選べるエージェントと、モデル/エフォート/権限の選択肢。設定エディタで JSON を編集します。"),
 		keywords: 'agents claude codex gemini model effort permission',
 	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.cloneParentDirectory',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.cloneParentDir', "リポジトリのクローン先"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.cloneParentDirDesc', "URL からリポジトリを追加するときのクローン先の親フォルダ。空欄にすると、クローンのたびにフォルダ選択ダイアログで確認します。"),
+		placeholder: '~/github',
+		keywords: 'clone parent directory repository add url',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.rowMeta',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.rowMeta', "スペース一覧に表示する情報"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.rowMetaDesc', "Workspaces ビューの各行に出す情報（PR・Issue 件数・差分・メモ）と並び順です。行を右クリックした「表示する情報」からも変更できます。詳細な指定は設定エディタで JSON を編集します。"),
+		keywords: 'workspaces view row meta pull request issue diff notes order',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.agentLiveWindow.titleBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentLiveTitleBar', "タイトルバーに「エージェント一覧」ボタンを表示"),
+		keywords: 'agent live window titlebar list',
+	},
+
+	// --- レイアウトプリセット ---
+	{
+		sectionId: 'psd-sec-layout',
+		key: 'paradis.editor.layoutPresets',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.layoutPresets', "レイアウトプリセット"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.layoutPresetsDesc', "エディタエリアの枠の組み方（ターミナル・内蔵ブラウザ・ファイルの配置）をプリセットとして保存・適用します。"),
+		keywords: 'layout presets editor area terminal browser file split',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.layoutPresetsAction', "レイアウトプリセットを管理…"),
+			commandId: 'paradis.editor.showLayoutPresets',
+			primary: true,
+		},
+	},
 
 	// --- コマンドプリセット ---
 	{
@@ -251,6 +308,13 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-usage',
+		key: 'paradis.githubMetrics.refreshIntervalSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.ghRefreshInterval', "GitHub API ダッシュボードの自動更新間隔"),
+		keywords: 'github metrics refresh interval dashboard',
+	},
+	{
+		sectionId: 'psd-sec-usage',
 		key: 'paradis.rtk.executablePath',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.rtkPath', "rtk 実行ファイルの絶対パス"),
@@ -273,6 +337,26 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.limitsMonitor', "AI 利用量リミットをタイトルバーに表示"),
 		keywords: 'limits monitor claude codex usage titlebar',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.limitsMonitor.cswapPath',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.cswapPath', "claude-swap (cswap) 実行ファイルの絶対パス"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.cswapPathDesc', "空欄時は PATH とよくあるインストール先から自動解決します。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.unset', "(未設定)"),
+		keywords: 'cswap claude-swap executable path limits monitor',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.limitsMonitor.codexHomes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexHomes', "追加で監視する Codex ホームディレクトリ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexHomesDesc', "自動走査 (~/.codex, ~/.codex-*) に加えて監視するパスの一覧。設定エディタで JSON を編集します。"),
+		keywords: 'codex home directory limits monitor scan',
 	},
 	{
 		sectionId: 'psd-sec-usage',
@@ -329,10 +413,28 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.browserLiveWindow.titleBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserLiveTitleBar', "タイトルバーに「ブラウザ一覧」ボタンを表示"),
+		keywords: 'browser live window titlebar list',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.downloads.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.downloads', "ダウンロードを保存ダイアログなしで受け取る"),
 		keywords: 'browser downloads auto save',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.downloads.path',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.downloadsPath', "ダウンロードの自動保存先フォルダ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.downloadsPathDesc', "絶対パスのみ有効。空欄の場合は OS 標準のダウンロードフォルダ配下の Paracode サブフォルダに保存します。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.unset', "(未設定)"),
+		keywords: 'browser downloads path folder save',
 	},
 
 	// --- ターミナル ---
@@ -349,6 +451,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.daemonKeepAlive', "ウィンドウを閉じてもターミナルを残す"),
 		keywords: 'terminal daemon keep alive close',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.daemon.reattachAcrossUpdates',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.daemonReattach', "Para Code を更新してもターミナルを繋ぎ直す (実験的)"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.daemonReattachDesc', "常駐ターミナルを、Para Code のバージョンが変わっても引き継げるようにします。SSH 接続先でも同様に動きます。"),
+		keywords: 'terminal daemon reattach update experimental pty host',
 	},
 	{
 		sectionId: 'psd-sec-terminal',
@@ -370,6 +481,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.keepAwake', "エージェント実行中はスリープさせない"),
 		keywords: 'power keep awake sleep prevent',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.codex.terminalTitle.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexTerminalTitle', "Codex の会話内容からターミナルのタブ名を自動設定"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexTerminalTitleDesc', "手動で変更したタブ名や Codex の /rename は常に優先されます。"),
+		keywords: 'codex terminal title tab name rename',
 	},
 
 	// --- モバイル連携 ---
@@ -399,6 +519,44 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		placeholder: localize('paradis.settings.mobileRelayUrlPlaceholder', "(既定のリレー)"),
 		keywords: 'mobile relay url server',
+	},
+	{
+		sectionId: 'psd-sec-mobile',
+		key: 'paradis.mobile.agent.codexDaemonStreaming',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexDaemonStreaming', "Codex のライブ連携をモバイルへ送る"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexDaemonStreamingDesc', "生成中の文字・子エージェント・ツール出力をその場でモバイルへ送ります。有効にすると Codex を開いたターミナルごとに裏方のプロセスが増え、メモリと起動時間が増加します。"),
+		keywords: 'codex daemon streaming mobile live',
+	},
+
+	// --- リモート (SSH) ---
+	{
+		sectionId: 'psd-sec-remote',
+		key: 'paradis.remote.openDefaultWorkspace',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteOpenDefaultWorkspace', "接続先のマルチリポワークスペースを自動で開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteOpenDefaultWorkspaceDesc', "SSH で接続したウィンドウで、接続先のリポジトリ一覧を自動的に開きます。接続先ごとに一覧は独立します。"),
+		keywords: 'remote ssh default workspace open multi repo',
+	},
+	{
+		sectionId: 'psd-sec-remote',
+		key: 'paradis.remote.agentReturnTunnel',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteAgentReturnTunnel', "SSH 接続先からの通知経路を開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteAgentReturnTunnelDesc', "接続先で動くエージェントが手元へ通知を返せるようにします。オフにすると、実行状態のドットやモバイルのチャットミラーが接続先からは届きません。"),
+		keywords: 'remote ssh agent return tunnel notification mobile mirror hook mcp',
+	},
+	{
+		sectionId: 'psd-sec-remote',
+		key: 'paradis.remote.keepTerminalsAliveOnClose',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteKeepTerminals', "ウィンドウを閉じたとき接続先のターミナルを残すか"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteKeepTerminalsDesc', "残したターミナルは、次に同じ接続先へつなぎ直したときにタブと分割レイアウトごと復元されます。"),
+		keywords: 'remote ssh terminal keep alive close ask always never',
 	},
 
 	// --- ウィンドウ ---
