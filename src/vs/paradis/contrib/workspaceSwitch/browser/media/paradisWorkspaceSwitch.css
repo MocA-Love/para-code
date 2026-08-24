@@ -31,11 +31,12 @@
 }
 
 /* allow-any-unicode-next-line */
-/* Modern UI (.style-override) は各リスト行に角丸を !important で強制し (roundedCorners.css)、
+/* Modern UI (.modern-ui) は各リスト行に角丸を !important で強制し (roundedCorners.css)、
  * 行の overflow:hidden と相まって上記の色バー (::before) が行ごとの上下端で角丸クリップされ、
  * 連続した1本の縦線に見えず分断される。このビューの行だけ左2隅の角丸をフラットに戻す
- * (右側の角丸は Modern UI のまま維持)。 */
-.style-override .paradis-workspaces-list .monaco-list .monaco-list-row:not(.separator) {
+ * (右側の角丸は Modern UI のまま維持)。
+ * PARA-PATCH: upstream 1.130 でこのフラグクラスが style-override → modern-ui にリネームされたため追従 */
+.modern-ui .paradis-workspaces-list .monaco-list .monaco-list-row:not(.separator) {
 	border-top-left-radius: 0 !important;
 	border-bottom-left-radius: 0 !important;
 }

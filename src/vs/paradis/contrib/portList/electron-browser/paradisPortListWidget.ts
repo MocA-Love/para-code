@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ポート一覧ウィジェットのタイトルバートリガー(アイコンのみ)。
-// titlebarPart.ts の PARA-PATCH 点(レイアウト/アクションツールバーの手前)から
+// titlebarPart.ts の PARA-PATCH 点(左側の他ステータスウィジェット群)から
 // createParadisPortListWidget(instantiationService, container) として1回だけ生成される。
 //
 // ポーリングの唯一の主体はこのウィジェット(パネルは表示のみ、limitsMonitorWidget.tsと同じ構造)。
