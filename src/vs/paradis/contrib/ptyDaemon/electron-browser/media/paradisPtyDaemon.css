@@ -69,7 +69,12 @@
 	background-color: var(--vscode-errorForeground);
 }
 
-/* 並べるものが無いときの本体。脚注ではなく本文なので、色を落とさない。 */
+/* 見出しに1行添えるときは、見出しの下余白を詰める。あの10pxは「次の塊との間」で、
+	見出しの続きとして読ませたい1行との間ではない。 */
+.paradis-pty-daemon-popover .ppd-head:has(+ .ppd-scope) {
+	padding-bottom: 2px;
+}
+
 /* どの機械の常駐かを、見出しのすぐ下に。数字より前に出ないよう補足の色にするが、
 	操作の前に必ず目に入る位置に置く（下の「停止」が別の機械のターミナルを終わらせ得る）。 */
 .paradis-pty-daemon-popover .ppd-scope {
@@ -79,6 +84,7 @@
 	color: var(--vscode-descriptionForeground);
 }
 
+/* 並べるものが無いときの本体。脚注ではなく本文なので、色を落とさない。 */
 .paradis-pty-daemon-popover .ppd-empty {
 	padding: 12px 14px;
 	line-height: 1.65;

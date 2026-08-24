@@ -108,6 +108,13 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		//
 		// だから端末が作られたときにも読み直す。常駐が起きるのはまさにその瞬間なので、
 		// 「本当に常駐が居るウィンドウ」では必ず true が焼ける。
+		//
+		// 接続先を開いているウィンドウでは読みに行かない。ここが聞くのは**この PC の main**で、
+		// そちらの答えは接続先の端末について何も言っていない。`prepare` が先に降りるので焼いた
+		// 値が使われることはないが、要らない往復を接続先のウィンドウから出し続ける理由も無い。
+		if (this.environmentService.remoteAuthority !== undefined) {
+			return;
+		}
 		void this.isDaemonRunning();
 		this._register(this.terminalService.onDidCreateInstance(() => void this.isDaemonRunning()));
 	}

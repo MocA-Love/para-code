@@ -55,6 +55,17 @@ export interface IParadisPtyDaemonStatus {
 	readonly foreign: readonly IParadisForeignDaemonInfo[];
 }
 
+/**
+ * 設定で無効なときの姿。
+ *
+ * 出す側が複数（この PC の main と接続先のサーバー）あるので、形をここに1つだけ置く。
+ * それぞれで書くと、片方だけ `terminalCount: 0` のような**分からないことを 0 と書く**姿に
+ * なりかねない。
+ */
+export function paradisDisabledDaemonStatus(): IParadisPtyDaemonStatus {
+	return { enabled: false, running: false, pid: undefined, buildId: undefined, startedAt: undefined, terminalCount: undefined, spaces: [], foreign: [] };
+}
+
 export interface IParadisPtyDaemonStatusService {
 	getStatus(): Promise<IParadisPtyDaemonStatus>;
 	/** 止めて立て直す。抱えているターミナルは全部失われる。 */

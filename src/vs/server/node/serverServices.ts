@@ -110,6 +110,7 @@ import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.
 // for as long as they do (see those files for why)
 import { paradisTerminalReconnectionGraceTime } from '../../paradis/contrib/remoteTerminals/common/paradisTerminalGraceTime.js';
 import { paradisEnableRemotePtyHostDaemon } from '../../paradis/contrib/ptyDaemon/node/paradisRemotePtyHost.js';
+import { registerParadisPtyDaemonStatusForServer } from '../../paradis/contrib/ptyDaemon/node/paradisPtyDaemonStatusServer.js';
 import { registerParadisServerTerminalLifetime } from '../../paradis/contrib/remoteTerminals/node/paradisServerTerminalLifetime.js';
 // PARA-PATCH: channel that runs git on this machine for a connected client (registered below)
 import { registerParadisWorktreeGitForServer } from '../../paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.js';
@@ -471,6 +472,11 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// PARA-PATCH: expose the same port-list channel the shared process has, so a connected
 		// client's title bar widget can search/kill ports that are actually listening on this machine.
 		disposables.add(registerParadisPortListForServer(socketServer, logService));
+
+		// PARA-PATCH: the daemon that outlives this server lives on this machine, so a connected
+		// client's status bar has to ask this side. Asking its own main process instead showed the
+		// client PC's daemon in a window whose terminals all run here — and offered to stop it.
+		disposables.add(registerParadisPtyDaemonStatusForServer(socketServer, ptyHostService, configurationService, environmentService.userDataPath, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 

@@ -30,7 +30,18 @@ import {
 	paradisFormatUptime,
 	paradisShortBuildId,
 } from '../common/paradisPtyDaemonStatus.js';
-import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import {
+	IParadisDaemonScope,
+	paradisDaemonForeignStopTitle,
+	paradisDaemonLeadText,
+	paradisDaemonNotRunningSub,
+	paradisDaemonRestartTitle,
+	paradisDaemonScopeLine,
+	paradisDaemonSharedHostWarning,
+	paradisDaemonStopTitle,
+} from '../common/paradisPtyDaemonScope.js';
+import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 
 const $ = dom.$;
 
@@ -39,6 +50,8 @@ const POPOVER_MARGIN = 8;
 
 export interface IParadisPtyDaemonPopoverOptions {
 	readonly status: IParadisPtyDaemonStatus;
+	/** どの機械の常駐を出しているか。文言と確認ダイアログの両方がこれに従う。 */
+	readonly scope: IParadisDaemonScope;
 	readonly service: IParadisPtyDaemonStatusService;
 	readonly onClose: () => void;
 	readonly onDidAct: () => void;
@@ -164,6 +177,13 @@ export class ParadisPtyDaemonPopover extends Disposable {
 			? '—'
 			: localize('paradis.ptyDaemon.popover.count', "{0}本", this.status.terminalCount);
 
+		// **どの機械の話かは、操作より上に置く。** 下の「停止」は接続先の常駐なら接続先の
+		// ターミナルを終わらせるので、押す前に読める場所でなければ意味がない。
+		const scopeLine = paradisDaemonScopeLine(this.options.scope);
+		if (scopeLine !== undefined) {
+			dom.append(this.element, $('.ppd-scope')).textContent = scopeLine;
+		}
+
 		if (this.status.spaces.length > 0) {
 			dom.append(this.element, $('.ppd-sep'));
 			const rows = dom.append(this.element, $('.ppd-rows'));
@@ -185,7 +205,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 			this.appendAlert(
 				true,
 				localize('paradis.ptyDaemon.popover.notRunningTitle', "常駐していません"),
-				localize('paradis.ptyDaemon.popover.notRunningSub', "いまのターミナルは Para Code の中で動いているので、閉じると終了します。次にターミナルを開くと常駐を立て直します。"),
+				paradisDaemonNotRunningSub(this.options.scope),
 				[],
 			);
 		}
@@ -223,7 +243,12 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		dom.append(actions, $('.ppd-spacer'));
 		this.appendButton(actions, localize('paradis.ptyDaemon.popover.settings', "設定"), true, () => {
 			this.options.onClose();
-			return this.preferencesService.openSettings({ query: PARADIS_PTY_DAEMON_ENABLED });
+			// 接続先の常駐を有効にするのは**接続先のマシン設定**で、こちらのユーザー設定では
+			// ない。同じ画面を開くと、押した人はここで切ったつもりのまま接続先が変わらない。
+			// 接続先に読み手が居る鍵は薄い常駐のものだけなので、開く先もそれに合わせる。
+			return this.options.scope.isRemote
+				? this.preferencesService.openSettings({ query: PARADIS_PTY_HOST_DAEMON_ENABLED, target: ConfigurationTarget.USER_REMOTE })
+				: this.preferencesService.openSettings({ query: PARADIS_PTY_DAEMON_ENABLED });
 		});
 	}
 
@@ -258,20 +283,9 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		return localize('paradis.ptyDaemon.popover.meta', "稼働 {0} · pid {1} · {2}", uptime, pid, paradisShortBuildId(this.status.buildId));
 	}
 
+	/** 本体の1行。機械ごとに言うことが変わるので、文言は `paradisPtyDaemonScope.ts` に置いてある。 */
 	private leadText(): string {
-		if (!this.status.running) {
-			return localize('paradis.ptyDaemon.popover.leadStopped', "常駐が動いていません。設定は有効ですが、いまはターミナルを Para Code の中で動かしています。");
-		}
-		if (this.status.terminalCount === undefined) {
-			// **「ありません」と言わない。** 聞けなかっただけで、抱えていないとは限らない。
-			return localize('paradis.ptyDaemon.popover.leadUnknown', "常駐は動いていますが、いま何を抱えているかを聞き出せていません。しばらくすると取り直します。");
-		}
-		if (this.status.terminalCount === 0) {
-			return localize('paradis.ptyDaemon.popover.leadIdle', "常駐は動いていますが、抱えているターミナルはありません。このまま誰も使わなければ、しばらくして自分から終了します。");
-		}
-		// 「残ります」と言い切らず「残せます」にしてある。閉じるときに残すかどうかは設定
-		// (`keepAliveOnClose`) と、尋ねたときの答え次第で、`never` にしている人には嘘になる。
-		return localize('paradis.ptyDaemon.popover.leadRunning', "{0}本のターミナルを、Para Code の外の常駐が抱えています。ウィンドウを閉じても Para Code を終了しても、実行したまま残せます。", this.status.terminalCount);
+		return paradisDaemonLeadText(this.options.scope, this.status);
 	}
 
 	private appendAlert(isError: boolean, title: string, sub: string, buttons: readonly { label: string; run: () => unknown }[]): void {
@@ -311,13 +325,21 @@ export class ParadisPtyDaemonPopover extends Disposable {
 			: count === 0
 				? localize('paradis.ptyDaemon.confirm.detailEmpty', "いま抱えているターミナルはありません。")
 				: localize('paradis.ptyDaemon.confirm.detail', "動いている{0}本のターミナルが終了します。実行中のコマンドやエージェントも一緒に終わり、元には戻せません。", count);
-		const { confirmed } = await this.dialogService.confirm({ type: Severity.Warning, message, detail, primaryButton });
+		// 接続先では、失うのが自分の作業だけとは限らない。同じサーバーに繋いでいる他の
+		// ウィンドウのターミナルも同じ常駐が抱えている。
+		const shared = paradisDaemonSharedHostWarning(this.options.scope);
+		const { confirmed } = await this.dialogService.confirm({
+			type: Severity.Warning,
+			message,
+			detail: shared === undefined ? detail : `${detail}\n${shared}`,
+			primaryButton,
+		});
 		return confirmed;
 	}
 
 	private async confirmAndRestart(): Promise<void> {
 		if (!await this.confirm(
-			localize('paradis.ptyDaemon.confirm.restart', "常駐ターミナルを再起動しますか?"),
+			paradisDaemonRestartTitle(this.options.scope),
 			localize('paradis.ptyDaemon.confirm.restartButton', "再起動"),
 		)) {
 			return;
@@ -328,7 +350,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 
 	private async confirmAndStop(): Promise<void> {
 		if (!await this.confirm(
-			localize('paradis.ptyDaemon.confirm.stop', "常駐ターミナルを停止しますか?"),
+			paradisDaemonStopTitle(this.options.scope),
 			localize('paradis.ptyDaemon.confirm.stopButton', "停止"),
 		)) {
 			return;
@@ -342,10 +364,12 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	 * 分からないことを 0 と書くのが一番危ない。
 	 */
 	private async confirmAndStopForeign(pid: number, buildId: string): Promise<void> {
+		const shared = paradisDaemonSharedHostWarning(this.options.scope);
+		const detail = localize('paradis.ptyDaemon.confirm.foreignDetail', "{0} が抱えているターミナルはすべて終了します。何本残っているかは、こちらからは分かりません。", paradisShortBuildId(buildId));
 		const { confirmed } = await this.dialogService.confirm({
 			type: Severity.Warning,
-			message: localize('paradis.ptyDaemon.confirm.foreign', "古いバージョンの常駐を停止しますか?"),
-			detail: localize('paradis.ptyDaemon.confirm.foreignDetail', "{0} が抱えているターミナルはすべて終了します。何本残っているかは、こちらからは分かりません。", paradisShortBuildId(buildId)),
+			message: paradisDaemonForeignStopTitle(this.options.scope),
+			detail: shared === undefined ? detail : `${detail}\n${shared}`,
 			primaryButton: localize('paradis.ptyDaemon.confirm.foreignButton', "停止"),
 		});
 		if (!confirmed) {

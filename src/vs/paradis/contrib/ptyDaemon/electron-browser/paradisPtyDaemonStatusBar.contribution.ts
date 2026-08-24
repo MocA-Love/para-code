@@ -17,6 +17,15 @@
 //  - 設定は有効なのに常駐へ繋がっていない (次に閉じたらターミナルが消える)
 //
 // 設定が無効なら**何も出さない**。使っていない機能の痕跡をステータスバーに残さない。
+//
+// **どの機械の常駐を出すかは `remoteAuthority` で決める。** 接続先を開いているウィンドウの
+// ターミナルは接続先の常駐が抱えているので、聞く先も接続先(REH)にする。ここを常に自分の main に
+// していたために、接続先のウィンドウへこの PC の本数が出て、同じパネルの「停止」が目の前の
+// ターミナルではなく別の機械のものを終わらせる状態だった。
+//
+// 接続先のウィンドウで、この PC の常駐は**出さない**。そのウィンドウにもローカルの端末は作れる
+// が、常駐へ残す経路が無い (`paradisPtyDaemonShutdown.contribution.ts` を参照) ので、並べても
+// そのウィンドウの誰の話でもない数字になる。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { raceTimeout } from '../../../../base/common/async.js';
@@ -27,8 +36,12 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { ILabelService } from '../../../../platform/label/common/label.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import {
 	IParadisPtyDaemonStatus,
@@ -36,7 +49,8 @@ import {
 	PARADIS_PTY_DAEMON_CHANNEL,
 	paradisDaemonSeverity,
 } from '../common/paradisPtyDaemonStatus.js';
-import { PARADIS_PTY_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { IParadisDaemonScope, paradisDaemonScopeFor, paradisDaemonStatusAria, paradisDaemonStatusTooltip } from '../common/paradisPtyDaemonScope.js';
+import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 import { ParadisPtyDaemonPopover } from './paradisPtyDaemonPopover.js';
 
 const ENTRY_ID = 'paradis.ptyDaemon';
@@ -64,7 +78,8 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 
 	private readonly entry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly popover = this._register(new MutableDisposable<ParadisPtyDaemonPopover>());
-	private readonly service: IParadisPtyDaemonStatusService;
+	/** 聞く先。接続先のウィンドウで接続が無いときだけ持たない（そのときは何も出さない）。 */
+	private readonly service: IParadisPtyDaemonStatusService | undefined;
 	private status: IParadisPtyDaemonStatus | undefined;
 	private timer: Timeout | undefined;
 
@@ -74,14 +89,29 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ILayoutService private readonly layoutService: ILayoutService,
+		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@ILabelService private readonly labelService: ILabelService,
 	) {
 		super();
 
-		this.service = ProxyChannel.toService<IParadisPtyDaemonStatusService>(mainProcessService.getChannel(PARADIS_PTY_DAEMON_CHANNEL));
+		// 接続先を開いているウィンドウでは、接続先の常駐に聞く。`remoteAuthority` があれば接続は
+		// 必ずあるが、無かったときに自分の main へ落ちると**別の機械の数字を出す**ことになるので、
+		// そのときは口を持たない (状態が取れず、項目も出ない)。
+		const connection = remoteAgentService.getConnection();
+		const channel = this.environmentService.remoteAuthority === undefined
+			? mainProcessService.getChannel(PARADIS_PTY_DAEMON_CHANNEL)
+			: connection?.getChannel(PARADIS_PTY_DAEMON_CHANNEL);
+		this.service = channel === undefined
+			? undefined
+			: ProxyChannel.toService<IParadisPtyDaemonStatusService>(channel);
 
 		this._register(CommandsRegistry.registerCommand(TOGGLE_COMMAND, () => this.togglePopover()));
+		// **常駐が2種類あるので、鍵も2つ見る。** 出すかどうかはどちらかが有効なら真なので
+		// (`paradisAnyDaemonEnabled`)、片方しか見ていないと、薄い常駐だけを有効にした人には
+		// 次の定期更新まで項目が出ない（切ったときは、無いものが最大30秒出たままになる）。
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(PARADIS_PTY_DAEMON_ENABLED)) {
+			if (e.affectsConfiguration(PARADIS_PTY_DAEMON_ENABLED) || e.affectsConfiguration(PARADIS_PTY_HOST_DAEMON_ENABLED)) {
 				void this.refresh();
 			}
 		}));
@@ -102,7 +132,21 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 		}
 	}
 
+	/**
+	 * どの機械の常駐を見ているか。
+	 *
+	 * 毎回組み立てるのは、**接続先の呼び名が後から決まる**から。接続直後は空で、解決してから
+	 * 名前が入る。起動時に1回だけ焼くと、その後ずっと「接続先」としか言えないままになる。
+	 */
+	private scope(): IParadisDaemonScope {
+		const authority = this.environmentService.remoteAuthority;
+		return paradisDaemonScopeFor(authority, authority === undefined ? undefined : this.labelService.getHostLabel(Schemas.vscodeRemote, authority));
+	}
+
 	private async refresh(): Promise<void> {
+		if (!this.service) {
+			return;
+		}
 		let status: IParadisPtyDaemonStatus | undefined;
 		try {
 			status = await raceTimeout(this.service.getStatus(), STATUS_TIMEOUT);
@@ -153,19 +197,14 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 			? `$(server-process) ${count}`
 			: `$(debug-disconnect) !`;
 
+		// 文言は接続先を見ているかで変わる。組み立てをここに書かないのは、同じ判断が確認
+		// ダイアログにも要るため（片方だけ機械を言い忘れると、押す前に取り違えられる）。
+		const scope = this.scope();
 		const properties: IStatusbarEntry = {
 			name: localize('paradis.ptyDaemon.status.name', "常駐ターミナル"),
 			text: severity === 'warn' ? `${text} $(warning)` : text,
-			ariaLabel: !status.running
-				? localize('paradis.ptyDaemon.status.ariaStopped', "常駐ターミナルは停止しています")
-				: status.terminalCount === undefined
-					? localize('paradis.ptyDaemon.status.ariaUnknown', "常駐ターミナルの本数を取得できていません")
-					: localize('paradis.ptyDaemon.status.aria', "常駐ターミナル {0}本", status.terminalCount),
-			tooltip: !status.running
-				? localize('paradis.ptyDaemon.status.tooltipStopped', "常駐が動いていません。いまのターミナルは Para Code の中で動いています。クリックで詳細。")
-				: status.terminalCount === undefined
-					? localize('paradis.ptyDaemon.status.tooltipUnknown', "常駐は動いていますが、いま何を抱えているかを聞き出せていません。クリックで詳細。")
-					: localize('paradis.ptyDaemon.status.tooltip', "{0}本のターミナルを、Para Code の外の常駐が抱えています。クリックで詳細。", status.terminalCount),
+			ariaLabel: paradisDaemonStatusAria(scope, status),
+			tooltip: paradisDaemonStatusTooltip(scope, status),
 			command: TOGGLE_COMMAND,
 			kind: severity === 'error' ? 'error' : undefined,
 		};
@@ -201,11 +240,12 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 			return;
 		}
 		const anchor = this.findAnchor();
-		if (!anchor || !this.status) {
+		if (!anchor || !this.status || !this.service) {
 			return;
 		}
 		this.popover.value = this.instantiationService.createInstance(ParadisPtyDaemonPopover, anchor, {
 			status: this.status,
+			scope: this.scope(),
 			service: this.service,
 			onClose: () => this.closePopover(),
 			onDidAct: () => void this.refresh(),
