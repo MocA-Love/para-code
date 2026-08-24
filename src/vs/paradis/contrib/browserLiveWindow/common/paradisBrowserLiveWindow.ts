@@ -388,6 +388,30 @@ export function paradisBrowserLiveCaptureDelayMs(cadence: ParadisBrowserLiveCade
 	return cadence === 'smooth' ? 1000 : 2500;
 }
 
+/** サムネイル取得の診断用結果。retry/backoff の失敗回数とは分離して扱う。 */
+export type ParadisBrowserLiveCaptureOutcome =
+	| 'model-unavailable'
+	| 'capture-succeeded'
+	| 'capture-failed';
+
+/** 最初のフレームを撮れない実 capture failure を episode ごとに一度だけ報告する gate。 */
+export class ParadisBrowserLivePersistentFailureGate {
+	private static readonly threshold = 5;
+	private consecutiveFirstFrameCaptureFailures = 0;
+
+	record(outcome: ParadisBrowserLiveCaptureOutcome, hasFrame: boolean): boolean {
+		if (outcome === 'capture-succeeded') {
+			this.consecutiveFirstFrameCaptureFailures = 0;
+			return false;
+		}
+		if (outcome === 'model-unavailable' || hasFrame) {
+			return false;
+		}
+		this.consecutiveFirstFrameCaptureFailures++;
+		return this.consecutiveFirstFrameCaptureFailures === ParadisBrowserLivePersistentFailureGate.threshold;
+	}
+}
+
 /**
  * 取得に失敗し続けたときの待ち時間 (ms)。
  *
