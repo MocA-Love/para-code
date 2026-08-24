@@ -22,6 +22,7 @@ import {
 	paradisParseServiceStatusIndicator,
 	paradisServiceStatusSeverity,
 	PARADIS_SERVICE_STATUS_SOURCES,
+	ParadisServiceStatusFailureEpisodeTracker,
 	ParadisServiceStatusProvider,
 } from '../common/paradisServiceStatus.js';
 
@@ -49,6 +50,7 @@ function truncateErrorMessage(message: string): string {
 }
 
 export class ParadisServiceStatusClient {
+	private readonly failureEpisodes = new ParadisServiceStatusFailureEpisodeTracker();
 
 	constructor(
 		@IRequestService private readonly requestService: IRequestService,
@@ -81,6 +83,7 @@ export class ParadisServiceStatusClient {
 			if (!parsed) {
 				throw new Error(localize('paradis.serviceStatus.unexpectedResponse', "予期しない応答形式です"));
 			}
+			this.failureEpisodes.recordSuccess(provider);
 			return {
 				provider,
 				severity: paradisServiceStatusSeverity(parsed.indicator),
@@ -89,7 +92,16 @@ export class ParadisServiceStatusClient {
 				error: undefined,
 			};
 		} catch (error) {
-			reportParadisDiagnosticError('owned', 'service-status', 'fetch-failed', error, { safe_provider: provider }, 'warning');
+			if (this.failureEpisodes.recordFailure(provider)) {
+				reportParadisDiagnosticError(
+					'owned',
+					'service-status',
+					'fetch-failed',
+					new Error('Service status provider request failed'),
+					{ safe_provider: provider },
+					'warning',
+				);
+			}
 			return {
 				provider,
 				severity: 'unknown',
