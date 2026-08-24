@@ -36,14 +36,12 @@ export class ParadisOfficeBudget {
 	private totalMediaBytes = 0;
 	private totalCompressedBytes = 0;
 	private containerInputBytes = 0;
-	private containerInputBytes: number | undefined;
 	private readonly warnings = new Set<ParadisOfficeBudgetKind>();
 
 	constructor(readonly profile: ParadisOfficeBudgetProfile, private readonly startedAt = Date.now()) { }
 
 	validateContainerInput(bytes: number): void {
 		this.requireSafe(bytes);
-		this.containerInputBytes = bytes;
 		this.containerInputBytes = bytes;
 		this.limit('container', 'inputBytes', bytes, this.profile.compressedInputBytes);
 	}
@@ -69,7 +67,7 @@ export class ParadisOfficeBudget {
 		if (entryCompressedBytes <= 0 ? nextPart > 0 : nextPart > entryCompressedBytes * this.profile.compressionRatio) {
 			throw new ParadisOfficeBudgetError('container', 'entryRatio');
 		}
-		const containerCompressedBytes = this.containerInputBytes ?? this.totalCompressedBytes;
+		const containerCompressedBytes = this.containerInputBytes;
 		if (containerCompressedBytes <= 0 ? this.expandedBytes > 0 : this.expandedBytes > containerCompressedBytes * this.profile.compressionRatio) {
 			throw new ParadisOfficeBudgetError('container', 'containerRatio');
 		}
