@@ -280,17 +280,17 @@ class WorkerResultProjector {
 		return result;
 	}
 
-	private array(value: unknown, depth: number): readonly unknown[] {
+	private array<T>(value: unknown, depth: number, project: (item: unknown) => T): readonly T[] {
 		this.consume(depth);
 		if (!Array.isArray(value) || (!this.permitSharedInput && this.seen.has(value))) { throw new TypeError('Office worker array'); }
 		this.seen.add(value);
 		const length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
 		if (!safeInteger(length) || length > workerProjectionNodes - this.nodes || Reflect.ownKeys(value).length !== length + 1) { throw new TypeError('Office worker array length'); }
-		const result: unknown[] = [];
+		const result: T[] = [];
 		for (let index = 0; index < length; index++) {
 			const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
 			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value') || descriptor.value === undefined) { throw new TypeError('Office worker array item'); }
-			result.push(descriptor.value);
+			result.push(project(descriptor.value));
 		}
 		return result;
 	}
@@ -307,9 +307,9 @@ class WorkerResultProjector {
 
 	private inventory(value: unknown, depth: number): object {
 		const fields = this.record(value, ['format', 'container', 'parts', 'relationships', 'features', 'security', 'budgetProfile', 'budgetUsage', 'outcome', 'completeness', 'warnings'], [], depth);
-		const parts = this.array(fields.get('parts'), depth + 1).map(part => this.part(part, depth + 2));
-		const relationships = this.array(fields.get('relationships'), depth + 1).map(relationship => this.relationship(relationship, depth + 2));
-		const features = this.array(fields.get('features'), depth + 1).map(feature => this.feature(feature, depth + 2));
+		const parts = this.array(fields.get('parts'), depth + 1, part => this.part(part, depth + 2));
+		const relationships = this.array(fields.get('relationships'), depth + 1, relationship => this.relationship(relationship, depth + 2));
+		const features = this.array(fields.get('features'), depth + 1, feature => this.feature(feature, depth + 2));
 		const security = this.security(fields.get('security'), depth + 1);
 		const completeness = this.completeness(fields.get('completeness'), depth + 1, parts);
 		const outcome = this.oneOf(fields.get('outcome'), ['complete', 'degraded', 'blocked'], depth + 1);
@@ -319,7 +319,7 @@ class WorkerResultProjector {
 			container: this.oneOf(fields.get('container'), ['opc', 'zip', 'cfb', 'unknown'], depth + 1), parts, relationships, features, security,
 			budgetProfile: this.oneOf(fields.get('budgetProfile'), ['desktopLocal', 'remoteMobile', 'browser'], depth + 1),
 			budgetUsage: this.budgetUsage(fields.get('budgetUsage'), depth + 1), outcome, completeness,
-			warnings: this.array(fields.get('warnings'), depth + 1).map(warning => this.warning(warning, depth + 2)),
+			warnings: this.array(fields.get('warnings'), depth + 1, warning => this.warning(warning, depth + 2)),
 		};
 	}
 
@@ -355,7 +355,7 @@ class WorkerResultProjector {
 
 	private feature(value: unknown, depth: number): object {
 		const fields = this.record(value, ['kind', 'count', 'partIds', 'safety'], [], depth);
-		return { kind: this.string(fields.get('kind'), depth + 1), count: this.integer(fields.get('count'), depth + 1), partIds: this.array(fields.get('partIds'), depth + 1).map(partId => this.string(partId, depth + 2)), safety: this.oneOf(fields.get('safety'), ['safe', 'sanitized', 'metadataOnly', 'blocked'], depth + 1) };
+		return { kind: this.string(fields.get('kind'), depth + 1), count: this.integer(fields.get('count'), depth + 1), partIds: this.array(fields.get('partIds'), depth + 1, partId => this.string(partId, depth + 2)), safety: this.oneOf(fields.get('safety'), ['safe', 'sanitized', 'metadataOnly', 'blocked'], depth + 1) };
 	}
 
 	private security(value: unknown, depth: number): object {
@@ -398,15 +398,15 @@ class WorkerResultProjector {
 	private summary(operation: 'parse' | 'diff', value: unknown, depth: number): object {
 		const fields = this.record(value, ['operation', 'handle', 'outcome', 'completeness', 'capabilities', 'changes'], [], depth);
 		const handle = this.record(fields.get('handle'), ['kind', 'id'], [], depth + 1);
-		const changes = this.array(fields.get('changes'), depth + 1).map(change => this.change(change, depth + 2));
+		const changes = this.array(fields.get('changes'), depth + 1, change => this.change(change, depth + 2));
 		const handleKind = this.oneOf(handle.get('kind'), [operation === 'parse' ? 'document' : 'comparison'], depth + 2);
-		return { operation: this.oneOf(fields.get('operation'), [operation], depth + 1), handle: { kind: handleKind, id: this.string(handle.get('id'), depth + 2) }, outcome: this.oneOf(fields.get('outcome'), ['complete', 'degraded'], depth + 1), completeness: this.completeness(fields.get('completeness'), depth + 1), capabilities: this.array(fields.get('capabilities'), depth + 1).map(capability => this.string(capability, depth + 2)), changes };
+		return { operation: this.oneOf(fields.get('operation'), [operation], depth + 1), handle: { kind: handleKind, id: this.string(handle.get('id'), depth + 2) }, outcome: this.oneOf(fields.get('outcome'), ['complete', 'degraded'], depth + 1), completeness: this.completeness(fields.get('completeness'), depth + 1), capabilities: this.array(fields.get('capabilities'), depth + 1, capability => this.string(capability, depth + 2)), changes };
 	}
 
 	private change(value: unknown, depth: number): object {
 		const fields = this.record(value, ['id', 'category', 'subject', 'before', 'after', 'certainty', 'sourceParts'], ['navigableAnchor'], depth);
 		const subject = this.record(fields.get('subject'), ['kind', 'locator'], [], depth + 1);
-		const result: Record<string, unknown> = { id: this.string(fields.get('id'), depth + 1), category: this.oneOf(fields.get('category'), ['content', 'formatting', 'structure', 'annotation', 'revision', 'object', 'security'], depth + 1), subject: { kind: this.string(subject.get('kind'), depth + 2), locator: this.string(subject.get('locator'), depth + 2) }, before: this.changeValue(fields.get('before'), depth + 1), after: this.changeValue(fields.get('after'), depth + 1), certainty: this.oneOf(fields.get('certainty'), ['exact', 'normalized', 'heuristic', 'ambiguous', 'opaque', 'degraded'], depth + 1), sourceParts: this.array(fields.get('sourceParts'), depth + 1).map(part => this.string(part, depth + 2)) };
+		const result: Record<string, unknown> = { id: this.string(fields.get('id'), depth + 1), category: this.oneOf(fields.get('category'), ['content', 'formatting', 'structure', 'annotation', 'revision', 'object', 'security'], depth + 1), subject: { kind: this.string(subject.get('kind'), depth + 2), locator: this.string(subject.get('locator'), depth + 2) }, before: this.changeValue(fields.get('before'), depth + 1), after: this.changeValue(fields.get('after'), depth + 1), certainty: this.oneOf(fields.get('certainty'), ['exact', 'normalized', 'heuristic', 'ambiguous', 'opaque', 'degraded'], depth + 1), sourceParts: this.array(fields.get('sourceParts'), depth + 1, part => this.string(part, depth + 2)) };
 		if (fields.has('navigableAnchor')) { result.navigableAnchor = this.string(fields.get('navigableAnchor'), depth + 1); }
 		if (!validateOfficeChange(result).valid) { throw new TypeError('Office worker change'); }
 		return result;
@@ -417,8 +417,8 @@ class WorkerResultProjector {
 		const kind = this.oneOf(fields.get('kind'), ['none', 'scalar', 'list', 'record', 'fingerprint'], depth + 1);
 		if (kind === 'none') { if (fields.size !== 1) { throw new TypeError('Office worker change none'); } return { kind }; }
 		if (kind === 'scalar') { if (fields.size !== 3) { throw new TypeError('Office worker change scalar'); } const valueType = this.oneOf(fields.get('valueType'), ['text', 'number', 'boolean', 'null'], depth + 1); const scalar = fields.get('value'); if ((valueType === 'text' || valueType === 'number') ? typeof scalar !== 'string' : valueType === 'boolean' ? typeof scalar !== 'boolean' : scalar !== null) { throw new TypeError('Office worker scalar'); } this.consume(depth + 1); return { kind, valueType, value: scalar }; }
-		if (kind === 'list') { if (fields.size !== 2) { throw new TypeError('Office worker change list'); } return { kind, items: this.array(fields.get('items'), depth + 1).map(item => this.changeValue(item, depth + 2)) }; }
-		if (kind === 'record') { if (fields.size !== 2) { throw new TypeError('Office worker change record'); } return { kind, fields: this.array(fields.get('fields'), depth + 1).map(field => { const item = this.record(field, ['name', 'value'], [], depth + 2); return { name: this.string(item.get('name'), depth + 3), value: this.changeValue(item.get('value'), depth + 3) }; }) }; }
+		if (kind === 'list') { if (fields.size !== 2) { throw new TypeError('Office worker change list'); } return { kind, items: this.array(fields.get('items'), depth + 1, item => this.changeValue(item, depth + 2)) }; }
+		if (kind === 'record') { if (fields.size !== 2) { throw new TypeError('Office worker change record'); } return { kind, fields: this.array(fields.get('fields'), depth + 1, field => { const item = this.record(field, ['name', 'value'], [], depth + 2); return { name: this.string(item.get('name'), depth + 3), value: this.changeValue(item.get('value'), depth + 3) }; }) }; }
 		if (fields.size !== 4) { throw new TypeError('Office worker change fingerprint'); }
 		return { kind, ...this.fingerprint({ algorithm: fields.get('algorithm'), value: fields.get('value'), byteLength: fields.get('byteLength') }, depth + 1) };
 	}
@@ -486,10 +486,10 @@ export class OfficeWorkerHost {
 			holder.job = job;
 			if (cancelledBeforeJob || token.isCancellationRequested) { this.finish(job as unknown as PendingJob<object>, { outcome: 'cancelled' }); return; }
 			let timer: unknown;
-			try { timer = this.setTimer(() => this.finish(job as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS); } catch { this.finish(job as PendingJob<object>, { outcome: 'failed', error: 'engineCrashed' }); return; }
+			try { timer = this.setTimer(() => this.finish(job as unknown as PendingJob<object>, { outcome: 'blocked', error: 'limitExceeded' }), PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS); } catch { this.finish(job as unknown as PendingJob<object>, { outcome: 'failed', error: 'engineCrashed' }); return; }
 			if (job.state === 'finished') { try { this.clearTimer(timer); } catch { } return; }
 			job.queueTimer = timer;
-			this.pending.push(job as PendingJob<object>);
+			this.pending.push(job as unknown as PendingJob<object>);
 			this.pump();
 		});
 	}
@@ -578,7 +578,7 @@ export class OfficeWorkerHost {
 				}
 			}, PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
 		} catch { this.reap(job, { outcome: 'cancelled' }); }
-		if (job.state === 'finished' || job.pendingOutcome) { try { this.clearTimer(cancelTimer); } catch { } return; }
+		if (this.isFinished(job) || job.pendingOutcome) { try { this.clearTimer(cancelTimer); } catch { } return; }
 		job.cancelTimer = cancelTimer;
 	}
 
@@ -624,7 +624,7 @@ export class OfficeWorkerHost {
 		let reapTimer: unknown;
 		try {
 			reapTimer = this.setTimer(() => this.orphan(job, outcome), PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS);
-			if (job.state === 'finished' || job.orphaned) { try { this.clearTimer(reapTimer); } catch { } } else { job.reapTimer = reapTimer; }
+			if (this.isFinished(job) || job.orphaned) { try { this.clearTimer(reapTimer); } catch { } } else { job.reapTimer = reapTimer; }
 			const termination = job.worker.terminate();
 			void Promise.resolve(termination).then(
 				() => this.finish(job, outcome),
@@ -690,6 +690,7 @@ export class OfficeWorkerHost {
 	}
 
 	private cannotStart(job: PendingJob<object>): boolean { return job.state === 'finished' || !!job.pendingOutcome || job.state === 'cancelling' || job.orphaned; }
+	private isFinished(job: PendingJob<object>): boolean { return job.state === 'finished'; }
 
 	private canEverReserve(job: PendingJob<object>): boolean {
 		const limit = this.memory.limitBytes ?? memoryLimit(job.budget);
