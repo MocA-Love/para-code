@@ -12,7 +12,7 @@ import { aggregateOfficeOutcome, canReportNoChanges, PARADIS_OFFICE_BUDGET_PROFI
 import { canonicalizeOfficeXml, parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { type IParadisOfficeArchive, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlDocument, ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
 import { ParadisOfficeBudget, ParadisOfficeBudgetError } from '../../common/office/paradisOfficeBudget.js';
-import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
+import { findParadisOfficeRelationshipCyclesForTest, inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
 import { createParadisOfficeNodeArchive } from '../../node/office/paradisOfficeNodeArchive.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
@@ -405,6 +405,57 @@ suite('ParadisOfficePackageReader', () => {
 		);
 	});
 
+	test('finds cycles in a 20,000-node graph without recursion', () => {
+		const nodes = Array.from({ length: 20_000 }, (_, index) => `/word/part-${index}.xml`);
+		const acyclic = nodes.slice(0, -1).map((source, index) => ({ source, target: nodes[index + 1], targetMode: 'internal' as const }));
+		const cyclic = [...acyclic, { source: nodes[nodes.length - 1], target: nodes[0], targetMode: 'internal' as const }];
+
+		strictEqual(findParadisOfficeRelationshipCyclesForTest(nodes, acyclic).every(value => !value), true);
+		strictEqual(findParadisOfficeRelationshipCyclesForTest(nodes, cyclic).every(value => value), true);
+	});
+
+	test('marks only complete internal SCC edges as cyclic', () => {
+		const cycles = findParadisOfficeRelationshipCyclesForTest(
+			['/word/a.xml', '/word/b.xml', '/word/c.xml', '/word/d.xml', '/word/e.xml'],
+			[
+				{ source: '/word/a.xml', target: '/word/b.xml', targetMode: 'internal' },
+				{ source: '/word/b.xml', target: '/word/a.xml', targetMode: 'internal' },
+				{ source: '/word/c.xml', target: '/word/c.xml', targetMode: 'internal' },
+				{ source: '/word/d.xml', target: '/word/e.xml', targetMode: 'internal' },
+				{ source: '/word/e.xml', target: '/word/missing.xml', targetMode: 'internal' },
+				{ source: '/word/a.xml', target: 'https://example.invalid/a', targetMode: 'external' },
+				{ source: '/', target: '/word/a.xml', targetMode: 'internal' },
+				{ source: '/word/a.xml', target: '/word/b.xml', targetMode: 'internal' },
+			],
+		);
+
+		deepStrictEqual(cycles, [true, true, true, false, false, false, false, true]);
+	});
+
+	test('propagates cancellation and deadline checkpoints while finding deep SCCs', () => {
+		const nodes = Array.from({ length: 20_000 }, (_, index) => `/word/part-${index}.xml`);
+		const relationships = nodes.map((source, index) => ({ source, target: nodes[(index + 1) % nodes.length], targetMode: 'internal' as const }));
+		let cancellationChecks = 0;
+		let deadlineChecks = 0;
+
+		throws(
+			() => findParadisOfficeRelationshipCyclesForTest(nodes, relationships, () => {
+				if (++cancellationChecks === 80_000) {
+					throw new ParadisOfficePackageError('cancelled');
+				}
+			}),
+			error => error instanceof ParadisOfficePackageError && error.code === 'cancelled',
+		);
+		throws(
+			() => findParadisOfficeRelationshipCyclesForTest(nodes, relationships, () => {
+				if (++deadlineChecks === 80_000) {
+					throw new ParadisOfficePackageError('limitExceeded');
+				}
+			}),
+			error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded',
+		);
+	});
+
 	test('reports unreferenced parts as metadata-only orphan inventory instead of silently dropping them', async () => {
 		const inventory = await inspectFixture([
 			['/word/document.xml', '<document/>'],
@@ -493,11 +544,11 @@ suite('ParadisOfficePackageReader', () => {
 
 	test('canonicalizes relationship IDs, xml:space, and unknown subtrees without silently dropping either MC branch', async () => {
 		const withFirstId = await canonicalizeXmlStringForTest(
-			'<p:a xmlns:p="urn:p" xmlns:r="urn:r" r:id="rId1"><x:unknown xmlns:x="urn:x"/><p:b xml:space="preserve">\n  keep indent\n</p:b><mc:Choice xmlns:mc="urn:mc">one</mc:Choice><mc:Fallback xmlns:mc="urn:mc">two</mc:Fallback></p:a>',
+			'<p:a xmlns:p="urn:p" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"><x:unknown xmlns:x="urn:x"/><p:b xml:space="preserve">\n  keep indent\n</p:b><mc:Choice xmlns:mc="urn:mc">one</mc:Choice><mc:Fallback xmlns:mc="urn:mc">two</mc:Fallback></p:a>',
 			id => (id === 'rId1' ? '/word/media/a.bin' : undefined),
 		);
 		const withSecondId = await canonicalizeXmlStringForTest(
-			'<q:a xmlns:q="urn:p" xmlns:s="urn:r" s:id="rId9"><x:unknown xmlns:x="urn:x"/><q:b xml:space="preserve">\n  keep indent\n</q:b><mc:Choice xmlns:mc="urn:mc">one</mc:Choice><mc:Fallback xmlns:mc="urn:mc">two</mc:Fallback></q:a>',
+			'<q:a xmlns:q="urn:p" xmlns:s="http://schemas.openxmlformats.org/officeDocument/2006/relationships" s:id="rId9"><x:unknown xmlns:x="urn:x"/><q:b xml:space="preserve">\n  keep indent\n</q:b><mc:Choice xmlns:mc="urn:mc">one</mc:Choice><mc:Fallback xmlns:mc="urn:mc">two</mc:Fallback></q:a>',
 			id => (id === 'rId9' ? '/word/media/a.bin' : undefined),
 		);
 
@@ -786,7 +837,7 @@ suite('ParadisOfficePackageReader', () => {
 	});
 
 	test('parses XML declarations, comments, CDATA, entities, namespaces, and Unicode names deterministically', () => {
-		const document = parseParadisOfficeXml('<?xml version="1.0"?><!-- ignored --><α:root xmlns:α="urn:root" xmlns:p="urn:attribute" plain="a &gt; b" p:名=\'&#x41;&#65;\'><child><![CDATA[x<y]]>&amp;&quot;&apos;</child></α:root>', { depth: 4, nodes: 2, attributeLength: 16, characters: 16 });
+		const document = parseParadisOfficeXml('<?xml version="1.0"?><!-- ignored --><α:root xmlns:α="urn:root" xmlns:p="urn:attribute" plain="a &gt; b" p:名=\'&#x41;&#65;\'><child><![CDATA[x<y]]>&amp;&quot;&apos;</child></α:root>', { depth: 4, nodes: 2, attributeLength: 16, characters: 64 });
 		deepStrictEqual(document, {
 			root: {
 				kind: 'element', uri: 'urn:root', local: 'root', namespaceBindings: { α: 'urn:root', p: 'urn:attribute' },
@@ -825,6 +876,93 @@ suite('ParadisOfficePackageReader', () => {
 		let checkpoints = 0;
 		parseParadisOfficeXml(`<a>${'x'.repeat(4096)}</a>`, { depth: 1, nodes: 1, attributeLength: 16, characters: 4096 }, undefined, () => { checkpoints++; });
 		strictEqual(checkpoints >= 2, true);
+	});
+
+	test('counts decoded attribute values toward the document limit before parsing the remaining attribute data', () => {
+		let checkpoints = 0;
+		throws(
+			() => parseParadisOfficeXml('<a first="abc" second="sentinel"/>', { depth: 1, nodes: 1, attributeLength: 8, characters: 3 }, undefined, () => { checkpoints++; }),
+			/limitExceeded/,
+		);
+		strictEqual(checkpoints, 1);
+		throws(() => parseParadisOfficeXml('<a value="&amp;&amp;&amp;&amp;"/>', { depth: 1, nodes: 1, attributeLength: 3, characters: 8 }), /limitExceeded/);
+		throws(() => parseParadisOfficeXml('<a first="ab" second="cd"/>', { depth: 1, nodes: 1, attributeLength: 2, characters: 3 }), /limitExceeded/);
+	});
+
+	test('rejects a one MiB attribute at limit plus one before processing its following sentinel', () => {
+		const attribute = 'x'.repeat(1024 * 1024);
+		let checkpoints = 0;
+		throws(
+			() => parseParadisOfficeXml(`<a value="${attribute}x" after="sentinel"/>`, { depth: 1, nodes: 1, attributeLength: attribute.length, characters: attribute.length }, undefined, () => { checkpoints++; }),
+			/limitExceeded/,
+		);
+		strictEqual(checkpoints < 260, true);
+	});
+
+	test('normalizes XML line endings and literal attribute whitespace without normalizing character references', () => {
+		const crlf = parseParadisOfficeXml('<a value="x\r\ny\rz\tq">one\r\ntwo\rthree</a>', { depth: 1, nodes: 1, attributeLength: 16, characters: 32 });
+		const lf = parseParadisOfficeXml('<a value="x y z q">one\ntwo\nthree</a>', { depth: 1, nodes: 1, attributeLength: 16, characters: 32 });
+		deepStrictEqual(crlf, lf);
+		deepStrictEqual(
+			parseParadisOfficeXml('<a value="&#9;&#10;&#13;&amp;"/>', { depth: 1, nodes: 1, attributeLength: 8, characters: 8 }).root.attributes,
+			[{ uri: '', local: 'value', value: '\t\n\r&' }],
+		);
+	});
+
+	test('accepts only a strict XML 1.0 declaration at the document start and rejects reserved PI targets', () => {
+		parseParadisOfficeXml('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a/>', { depth: 1, nodes: 1, attributeLength: 1, characters: 1 });
+		parseParadisOfficeXml('<?xml version=\'1.0\' encoding=\'utf8\' standalone=\'no\' ?><a/>', { depth: 1, nodes: 1, attributeLength: 1, characters: 1 });
+		for (const xml of [
+			'<a/><?xml version="1.0"?>',
+			' <?xml version="1.0"?><a/>',
+			'<?xml encoding="UTF-8" version="1.0"?><a/>',
+			'<?xml version="1.1"?><a/>',
+			'<?xml version="1.0" encoding="UTF-16"?><a/>',
+			'<?xml version="1.0" standalone="maybe"?><a/>',
+			'<?xml version="1.0" extra="no"?><a/>',
+			'<a><?XML ok?></a>',
+		]) {
+			throws(() => parseParadisOfficeXml(xml, { depth: 1, nodes: 1, attributeLength: 32, characters: 32 }), /malformed/);
+		}
+	});
+
+	test('rejects malformed comment, CDATA, and processing-instruction terminators', () => {
+		for (const xml of ['<a><!-- invalid -- comment --></a>', '<a><![CDATA[unterminated</a>', '<a><?test unterminated</a>']) {
+			throws(() => parseParadisOfficeXml(xml, { depth: 1, nodes: 1, attributeLength: 1, characters: 32 }), /malformed/);
+		}
+	});
+
+	test('normalizes only Office relationship namespace id attributes', () => {
+		const transitional = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+		const strict = 'http://purl.oclc.org/ooxml/officeDocument/relationships';
+		const resolve = (id: string) => id === 'rId1' || id === 'rId2' ? '/word/media/a.bin' : undefined;
+		const first = canonicalizeOfficeXml(parseParadisOfficeXml(`<a xmlns:r="${transitional}" r:id="rId1"/>`, { depth: 1, nodes: 1, attributeLength: 128, characters: 128 }), resolve);
+		const second = canonicalizeOfficeXml(parseParadisOfficeXml(`<a xmlns:r="${transitional}" r:id="rId2"/>`, { depth: 1, nodes: 1, attributeLength: 128, characters: 128 }), resolve);
+		const strictResult = canonicalizeOfficeXml(parseParadisOfficeXml(`<a xmlns:r="${strict}" r:id="rId2"/>`, { depth: 1, nodes: 1, attributeLength: 128, characters: 128 }), resolve);
+		const plainFirst = canonicalizeOfficeXml(parseParadisOfficeXml('<a id="rId1" xmlns:plain="urn:plain" plain:id="rId1"/>', { depth: 1, nodes: 1, attributeLength: 128, characters: 128 }), resolve);
+		const plainSecond = canonicalizeOfficeXml(parseParadisOfficeXml('<a id="rId2" xmlns:plain="urn:plain" plain:id="rId2"/>', { depth: 1, nodes: 1, attributeLength: 128, characters: 128 }), resolve);
+
+		strictEqual(first.hash.value, second.hash.value);
+		strictEqual(strictResult.canonical.includes('/word/media/a.bin'), true);
+		strictEqual(plainFirst.hash.value === plainSecond.hash.value, false);
+	});
+
+	test('matches Node SHA-256 for canonical XML boundary lengths and Unicode', () => {
+		for (const xml of ['<a/>', '<a>abc</a>', `<a>${'x'.repeat(55)}</a>`, `<a>${'x'.repeat(56)}</a>`, `<a>${'x'.repeat(64)}</a>`, '<a>東京😀</a>']) {
+			const result = canonicalizeOfficeXml(parseParadisOfficeXml(xml, { depth: 1, nodes: 1, attributeLength: 1, characters: 128 }), () => undefined);
+			strictEqual(result.hash.value, createHash('sha256').update(result.canonical).digest('hex'));
+		}
+		strictEqual(canonicalizeOfficeXml(parseParadisOfficeXml('<a>abc</a>', { depth: 1, nodes: 1, attributeLength: 1, characters: 3 }), () => undefined).hash.value, '839597b446fd7d49db02157688112c9c4594162f607f3984d2497b8a0bf427f7');
+	});
+
+	test('canonicalizes one MiB XML text with parser checkpoints and cancellation', () => {
+		const text = 'x'.repeat(1024 * 1024);
+		let checkpoints = 0;
+		const document = parseParadisOfficeXml(`<a>${text}</a>`, { depth: 1, nodes: 1, attributeLength: 1, characters: text.length }, undefined, () => { checkpoints++; });
+		const result = canonicalizeOfficeXml(document, () => undefined, () => { checkpoints++; });
+		strictEqual(result.hash.value, createHash('sha256').update(result.canonical).digest('hex'));
+		strictEqual(checkpoints > 2, true);
+		throws(() => canonicalizeOfficeXml(document, () => undefined, () => { throw new ParadisOfficePackageError('cancelled'); }), /cancelled/);
 	});
 
 	test('keeps canonicalization reentrant after a malformed call', async () => {

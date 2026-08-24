@@ -35,6 +35,7 @@ export class ParadisOfficeBudget {
 	private largestPartBytes = 0;
 	private totalMediaBytes = 0;
 	private totalCompressedBytes = 0;
+	private containerInputBytes = 0;
 	private containerInputBytes: number | undefined;
 	private readonly warnings = new Set<ParadisOfficeBudgetKind>();
 
@@ -42,6 +43,7 @@ export class ParadisOfficeBudget {
 
 	validateContainerInput(bytes: number): void {
 		this.requireSafe(bytes);
+		this.containerInputBytes = bytes;
 		this.containerInputBytes = bytes;
 		this.limit('container', 'inputBytes', bytes, this.profile.compressedInputBytes);
 	}
@@ -75,7 +77,7 @@ export class ParadisOfficeBudget {
 
 	usage(): ParadisOfficeBudgetUsage {
 		return {
-			compressedInputBytes: this.totalCompressedBytes,
+			compressedInputBytes: this.containerInputBytes,
 			expandedBytes: this.expandedBytes,
 			entryCount: this.entryCount,
 			largestPartBytes: this.largestPartBytes,

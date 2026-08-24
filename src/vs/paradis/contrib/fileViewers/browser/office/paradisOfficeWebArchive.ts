@@ -23,8 +23,20 @@ export async function createParadisOfficeWebArchive(bytes: Uint8Array): Promise<
 		throw new ParadisOfficePackageError('invalid');
 	}
 	const owned = bytes.slice();
-	return new ParadisOfficeWebArchive(new NativeZipPrimitive(owned), owned.byteLength);
+	const primitive = new NativeZipPrimitive(owned);
+	const archive = new ParadisOfficeWebArchive(primitive, owned.byteLength);
+	nativeZipPrimitivesForTest.set(archive, primitive);
+	return archive;
 }
+
+/** Test-only visibility for verifying that package budgets stop lazy central-directory decoding. */
+export function getParadisOfficeWebArchiveEntryDecodeCountForTest(archive: ParadisOfficeWebArchive): number {
+	const primitive = nativeZipPrimitivesForTest.get(archive);
+	if (!primitive) { throw new Error('not a native web archive'); }
+	return primitive.entryDecodeCount;
+}
+
+const nativeZipPrimitivesForTest = new WeakMap<ParadisOfficeWebArchive, NativeZipPrimitive>();
 
 /** Browser-safe adapter: no Node modules, DOM parsing, or raw ZIP implementation leaks. */
 export class ParadisOfficeWebArchive implements IParadisOfficeArchive {
@@ -78,16 +90,31 @@ export class ParadisOfficeWebArchive implements IParadisOfficeArchive {
 
 class NativeZipPrimitive implements IParadisOfficeWebZipPrimitive {
 	private closed = false;
+	private decodedEntryCount = 0;
 	private readonly entriesByIdentity = new WeakMap<ParadisOfficeArchiveEntry, NativeZipEntry>();
-	private readonly records: readonly NativeZipEntry[];
+	private readonly centralOffset: number;
+	private readonly centralSize: number;
+	private readonly entryCount: number;
 
 	constructor(private readonly bytes: Uint8Array) {
-		this.records = parseNativeZipCentralDirectory(bytes);
+		const central = parseNativeZipCentralDirectory(bytes);
+		this.centralOffset = central.offset;
+		this.centralSize = central.size;
+		this.entryCount = central.count;
 	}
 
+	get entryDecodeCount(): number { return this.decodedEntryCount; }
+
 	async *entries(): AsyncIterable<ParadisOfficeArchiveEntry> {
-		for (const object of this.records) {
+		const view = new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength);
+		const decoder = new TextDecoder('utf-8', { fatal: true });
+		const centralEnd = this.centralOffset + this.centralSize;
+		let offset = this.centralOffset;
+		for (let index = 0; index < this.entryCount; index++) {
 			if (this.closed) { return; }
+			const record = parseNativeZipCentralRecord(this.bytes, view, offset, centralEnd, decoder);
+			this.decodedEntryCount++;
+			const object = record.entry;
 			const entry: ParadisOfficeArchiveEntry = {
 				name: object.name, compressedBytes: object.compressedBytes, declaredExpandedBytes: object.expandedBytes, crc32: object.crc32,
 				encrypted: (object.flags & 1) !== 0, directory: object.name.endsWith('/'),
@@ -95,7 +122,9 @@ class NativeZipPrimitive implements IParadisOfficeWebZipPrimitive {
 			};
 			this.entriesByIdentity.set(entry, object);
 			yield entry;
+			offset = record.end;
 		}
+		if (offset !== centralEnd) { throw new ParadisOfficePackageError('invalid'); }
 	}
 
 	async *read(entry: ParadisOfficeArchiveEntry, signal: AbortSignal): AsyncIterable<Uint8Array> {
@@ -137,24 +166,56 @@ interface NativeZipEntry {
 	readonly localOffset: number;
 }
 
-function parseNativeZipCentralDirectory(bytes: Uint8Array): readonly NativeZipEntry[] {
+interface NativeZipCentralDirectory {
+	readonly offset: number;
+	readonly size: number;
+	readonly count: number;
+}
+
+function parseNativeZipCentralDirectory(bytes: Uint8Array): NativeZipCentralDirectory {
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-	let eocd = -1;
-	for (let offset = Math.max(0, bytes.byteLength - 65_557); offset <= bytes.byteLength - 22; offset++) { if (view.getUint32(offset, true) === 0x06054b50) { eocd = offset; } }
-	if (eocd < 0 || view.getUint16(eocd + 4, true) !== 0 || view.getUint16(eocd + 6, true) !== 0) { throw new ParadisOfficePackageError('invalid'); }
-	if (eocd + 22 + view.getUint16(eocd + 20, true) !== bytes.byteLength || view.getUint16(eocd + 8, true) !== view.getUint16(eocd + 10, true)) { throw new ParadisOfficePackageError('invalid'); }
-	const count = view.getUint16(eocd + 10, true); const centralSize = view.getUint32(eocd + 12, true); const centralOffset = view.getUint32(eocd + 16, true); let offset = centralOffset;
-	if (count === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff || centralOffset + centralSize > eocd) { throw new ParadisOfficePackageError('invalid'); }
-	const decoder = new TextDecoder('utf-8', { fatal: true }); const entries: NativeZipEntry[] = [];
-	for (let index = 0; index < count; index++) {
-		if (offset + 46 > bytes.byteLength || view.getUint32(offset, true) !== 0x02014b50) { throw new ParadisOfficePackageError('invalid'); }
-		if (view.getUint16(offset + 34, true) === 0xffff || view.getUint32(offset + 20, true) === 0xffffffff || view.getUint32(offset + 24, true) === 0xffffffff || view.getUint32(offset + 42, true) === 0xffffffff) { throw new ParadisOfficePackageError('invalid'); }
-		const nameLength = view.getUint16(offset + 28, true); const extraLength = view.getUint16(offset + 30, true); const commentLength = view.getUint16(offset + 32, true);
-		const end = offset + 46 + nameLength + extraLength + commentLength; if (end > bytes.byteLength) { throw new ParadisOfficePackageError('invalid'); }
-		entries.push({ name: decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)), flags: view.getUint16(offset + 8, true), method: view.getUint16(offset + 10, true), crc32: view.getUint32(offset + 16, true), compressedBytes: view.getUint32(offset + 20, true), expandedBytes: view.getUint32(offset + 24, true), unixMode: view.getUint32(offset + 38, true) >>> 16, localOffset: view.getUint32(offset + 42, true) }); offset = end;
+	for (let offset = Math.max(0, bytes.byteLength - 65_557); offset <= bytes.byteLength - 22; offset++) {
+		if (view.getUint32(offset, true) !== 0x06054b50) { continue; }
+		const candidate = parseNativeZipEocdCandidate(bytes, view, offset);
+		if (candidate) { return candidate; }
 	}
-	if (offset !== centralOffset + centralSize) { throw new ParadisOfficePackageError('invalid'); }
-	return entries;
+	throw new ParadisOfficePackageError('invalid');
+}
+
+function parseNativeZipEocdCandidate(bytes: Uint8Array, view: DataView, offset: number): NativeZipCentralDirectory | undefined {
+	if (view.getUint16(offset + 4, true) !== 0 || view.getUint16(offset + 6, true) !== 0 || view.getUint16(offset + 8, true) !== view.getUint16(offset + 10, true)) { return undefined; }
+	if (offset + 22 + view.getUint16(offset + 20, true) !== bytes.byteLength) { return undefined; }
+	const count = view.getUint16(offset + 10, true);
+	const size = view.getUint32(offset + 12, true);
+	const centralOffset = view.getUint32(offset + 16, true);
+	if (count === 0xffff || size === 0xffffffff || centralOffset === 0xffffffff || centralOffset + size !== offset) { return undefined; }
+	if (!hasConsistentNativeZipCentralRecords(view, centralOffset, size, count)) { return undefined; }
+	return { offset: centralOffset, size, count };
+}
+
+function hasConsistentNativeZipCentralRecords(view: DataView, offset: number, size: number, count: number): boolean {
+	const centralEnd = offset + size;
+	let cursor = offset;
+	for (let index = 0; index < count; index++) {
+		if (cursor + 46 > centralEnd || view.getUint32(cursor, true) !== 0x02014b50) { return false; }
+		if (view.getUint16(cursor + 34, true) === 0xffff || view.getUint32(cursor + 20, true) === 0xffffffff || view.getUint32(cursor + 24, true) === 0xffffffff || view.getUint32(cursor + 42, true) === 0xffffffff) { return false; }
+		const end = cursor + 46 + view.getUint16(cursor + 28, true) + view.getUint16(cursor + 30, true) + view.getUint16(cursor + 32, true);
+		if (end > centralEnd) { return false; }
+		cursor = end;
+	}
+	return cursor === centralEnd;
+}
+
+function parseNativeZipCentralRecord(bytes: Uint8Array, view: DataView, offset: number, centralEnd: number, decoder: TextDecoder): { readonly entry: NativeZipEntry; readonly end: number } {
+	if (offset + 46 > centralEnd || view.getUint32(offset, true) !== 0x02014b50) { throw new ParadisOfficePackageError('invalid'); }
+	if (view.getUint16(offset + 34, true) === 0xffff || view.getUint32(offset + 20, true) === 0xffffffff || view.getUint32(offset + 24, true) === 0xffffffff || view.getUint32(offset + 42, true) === 0xffffffff) { throw new ParadisOfficePackageError('invalid'); }
+	const nameLength = view.getUint16(offset + 28, true); const extraLength = view.getUint16(offset + 30, true); const commentLength = view.getUint16(offset + 32, true);
+	const end = offset + 46 + nameLength + extraLength + commentLength;
+	if (end > centralEnd) { throw new ParadisOfficePackageError('invalid'); }
+	return {
+		entry: { name: decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)), flags: view.getUint16(offset + 8, true), method: view.getUint16(offset + 10, true), crc32: view.getUint32(offset + 16, true), compressedBytes: view.getUint32(offset + 20, true), expandedBytes: view.getUint32(offset + 24, true), unixMode: view.getUint32(offset + 38, true) >>> 16, localOffset: view.getUint32(offset + 42, true) },
+		end,
+	};
 }
 
 function localZipData(bytes: Uint8Array, entry: NativeZipEntry): Uint8Array {
