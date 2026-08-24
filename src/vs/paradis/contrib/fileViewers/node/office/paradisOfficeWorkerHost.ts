@@ -290,7 +290,7 @@ export class OfficeWorkerHost {
 
 	private onWorkerMessage(job: PendingJob<object>, message: unknown): void {
 		if (job.state === 'finished' || dataField(message, 'requestId') !== job.requestId) { return; }
-		if (job.token.isCancellationRequested) { this.cancel(job); return; }
+		if (job.token.isCancellationRequested) { this.reap(job, { outcome: 'cancelled' }); return; }
 		if (this.expired(job.operationDeadline)) { this.reap(job, { outcome: 'blocked', error: 'limitExceeded' }); return; }
 		const kind = dataField(message, 'kind');
 		if (kind === 'cancelled') { this.reap(job, { outcome: 'cancelled' }); return; }
