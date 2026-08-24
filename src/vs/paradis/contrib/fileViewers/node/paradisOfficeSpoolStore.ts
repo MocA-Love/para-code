@@ -40,6 +40,7 @@ export type OfficeSpoolStoreErrorCode =
 	| 'notSealed'
 	| 'integrityMismatch'
 	| 'invalidRange'
+	| 'invalidChunk'
 	| 'initializationFailed'
 	| 'randomnessUnavailable';
 
@@ -48,6 +49,7 @@ export class OfficeSpoolStoreError extends Error {
 
 	constructor(readonly code: OfficeSpoolStoreErrorCode) {
 		super('The Office spool operation was rejected.');
+		Object.defineProperty(this, 'stack', { configurable: true, value: '' });
 	}
 }
 
@@ -147,8 +149,9 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 				}
 			}
 		} catch (error) {
-			if (error instanceof OfficeSpoolStoreError) {
-				throw error;
+			const code = safeStoreErrorCode(error);
+			if (code) {
+				throw new OfficeSpoolStoreError(code);
 			}
 			throw new OfficeSpoolStoreError('randomnessUnavailable');
 		}
@@ -203,10 +206,10 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		try {
 			owned = snapshotParadisOfficeBuffer(untrustedBytes, PARADIS_OFFICE_SPOOL_CHUNK_BYTES);
 		} catch (error) {
-			if (error instanceof RangeError) {
+			if (isSafeRangeError(error)) {
 				throw new OfficeSpoolStoreError('chunkTooLarge');
 			}
-			throw error;
+			throw new OfficeSpoolStoreError('invalidChunk');
 		}
 		const entry = this.requireEntry(reference, true);
 		if (entry.state !== 'writable') {
@@ -246,9 +249,14 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			this.removeEntry(entry);
 			throw new OfficeSpoolStoreError('integrityMismatch');
 		}
-		entry.state = 'sealed';
-		entry.expiryScheduler.dispose();
+		try {
+			entry.expiryScheduler.dispose();
+		} catch {
+			this.removeEntry(entry);
+			throw new OfficeSpoolStoreError('initializationFailed');
+		}
 		entry.sealed = { ...reference, ...request };
+		entry.state = 'sealed';
 		return { ...entry.sealed };
 	}
 
@@ -337,7 +345,11 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			return;
 		}
 		if (remaining > 0) {
-			entry.expiryScheduler.schedule(remaining);
+			try {
+				entry.expiryScheduler.schedule(remaining);
+			} catch {
+				this.removeEntry(entry);
+			}
 			return;
 		}
 		this.removeEntry(entry);
@@ -414,5 +426,24 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		} catch {
 			// Entry ownership and counters are already released.
 		}
+	}
+}
+
+function isSafeRangeError(value: unknown): boolean {
+	try {
+		return value instanceof RangeError;
+	} catch {
+		return false;
+	}
+}
+
+function safeStoreErrorCode(value: unknown): OfficeSpoolStoreErrorCode | undefined {
+	try {
+		if (!(value instanceof OfficeSpoolStoreError)) {
+			return undefined;
+		}
+		return value.code;
+	} catch {
+		return undefined;
 	}
 }
