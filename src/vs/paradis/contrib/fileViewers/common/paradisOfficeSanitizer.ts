@@ -570,6 +570,8 @@ interface OfficeLexicalElement {
 	readonly name: string;
 	readonly selfClosing: boolean;
 	readonly attributes: readonly OfficeLexicalAttribute[];
+	readonly localNamespacePrefixes: readonly string[];
+	localNamespaceBindings: Readonly<Record<string, string>>;
 }
 
 const TRANSITIONAL_RELATIONSHIP_BASE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
@@ -801,6 +803,7 @@ function mapOfficeLexicalElements(source: string, root: OfficeXmlElement): Reado
 		while (cursor < source.length && !isOfficeXmlWhitespace(source[cursor]) && source[cursor] !== '/' && source[cursor] !== '>') { cursor++; }
 		const name = source.slice(nameStart, cursor); if (!name) { throw new ParadisOfficePackageError('malformed'); }
 		const attributes: OfficeLexicalAttribute[] = [];
+		const localNamespacePrefixes: string[] = [];
 		let selfClosing = false;
 		while (cursor < source.length) {
 			const attributeStart = cursor;
@@ -816,10 +819,12 @@ function mapOfficeLexicalElements(source: string, root: OfficeXmlElement): Reado
 			const quote = source[cursor++]; if (quote?.charCodeAt(0) !== 34 && quote?.charCodeAt(0) !== 39) { throw new ParadisOfficePackageError('malformed'); }
 			const valueEnd = source.indexOf(quote, cursor); if (valueEnd < 0) { throw new ParadisOfficePackageError('malformed'); }
 			cursor = valueEnd + 1;
-			if (attributeName !== 'xmlns' && !attributeName.startsWith('xmlns:')) { attributes.push({ start: attributeStart, end: cursor }); }
+			if (attributeName === 'xmlns') { localNamespacePrefixes.push(''); }
+			else if (attributeName.startsWith('xmlns:')) { localNamespacePrefixes.push(attributeName.slice(6)); }
+			else { attributes.push({ start: attributeStart, end: cursor }); }
 		}
 		if (cursor > source.length) { throw new ParadisOfficePackageError('malformed'); }
-		const element: OfficeLexicalElement = { start, startTagEnd: cursor, endStart: selfClosing ? cursor - 2 : -1, end: selfClosing ? cursor : -1, name, selfClosing, attributes };
+		const element: OfficeLexicalElement = { start, startTagEnd: cursor, endStart: selfClosing ? cursor - 2 : -1, end: selfClosing ? cursor : -1, name, selfClosing, attributes, localNamespacePrefixes, localNamespaceBindings: {} };
 		elements.push(element); if (!selfClosing) { stack.push(element); }
 		index = cursor;
 	}
@@ -839,6 +844,12 @@ function mapOfficeLexicalElements(source: string, root: OfficeXmlElement): Reado
 		const parsedElement = parsed[elementIndex]; const lexicalElement = elements[elementIndex];
 		const lexicalLocal = lexicalElement.name.slice(lexicalElement.name.indexOf(':') + 1);
 		if (parsedElement.local !== lexicalLocal || parsedElement.attributes.length !== lexicalElement.attributes.length) { throw new ParadisOfficePackageError('malformed'); }
+		const localNamespaceBindings: Record<string, string> = {};
+		for (const prefix of lexicalElement.localNamespacePrefixes) {
+			const uri = parsedElement.namespaceBindings?.[prefix]; if (uri === undefined) { throw new ParadisOfficePackageError('malformed'); }
+			localNamespaceBindings[prefix] = uri;
+		}
+		lexicalElement.localNamespaceBindings = localNamespaceBindings;
 		result.set(parsedElement, lexicalElement);
 	}
 	return result;
@@ -1058,11 +1069,11 @@ async function planPreservedOfficeAnchorFragments(entry: OfficeAnchorPatchPlan, 
 function promotedOfficeNamespaceBindings(entry: OfficeAnchorPatchPlan, insertionParent: OfficeXmlElement): readonly (readonly [string, string])[] {
 	if (insertionParent === (entry.parent ?? insertionParent)) { return []; }
 	const original = entry.anchor.namespaceBindings ?? {};
-	const originalParent = entry.parent?.namespaceBindings ?? {};
 	const target = insertionParent.namespaceBindings ?? {};
+	const local = entry.lexical?.localNamespaceBindings; if (!local) { throw new ParadisOfficePackageError('malformed'); }
 	const declarations: (readonly [string, string])[] = [];
 	for (const [prefix, uri] of Object.entries(original)) {
-		if (prefix === 'xml' || target[prefix] === uri || originalParent[prefix] !== uri) { continue; }
+		if (prefix === 'xml' || target[prefix] === uri || local[prefix] === uri) { continue; }
 		declarations.push([prefix, uri]);
 	}
 	return declarations;

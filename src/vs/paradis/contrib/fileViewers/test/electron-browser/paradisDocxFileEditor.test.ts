@@ -28,6 +28,7 @@ import { TestStorageService } from '../../../../../workbench/test/common/workben
 import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
+import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 
 interface IDocxEditorSnapshot {
 	readonly watcherResources: readonly string[];
@@ -193,29 +194,65 @@ suite('ParadisDocxFileEditor', () => {
 		strictEqual(body.textContent?.includes('RAW-OLE'), false);
 	});
 
-	test('renders promoted local-prefix Drawing runs from a removed outer hyperlink through actual docx-preview', async () => {
+	test('renders promoted Drawing runs with inherited, redundant, shadowed, and default local namespaces', async () => {
 		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 		const geometry = '<wp:anchor><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:link="shared"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000" flipH="1"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"><a:prstDash val="dash"/><a:tailEnd type="triangle"/></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
-		const input = storeZip({
-			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
-			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-			'word/document.xml': `<q:document xmlns:q="${word}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><q:body><q:p><w:hyperlink xmlns:w="${word}" r:id="shared"><w:r data-preserved="yes"><w:drawing>${geometry}</w:drawing></w:r><w:r data-unsafe="yes"><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink></q:p></q:body></q:document>`,
-			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/></Relationships>',
-		});
-		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-promoted-anchor');
-		const serialized = new TextDecoder().decode(sanitized.bytes);
-		ok(serialized.includes(`<w:r xmlns:w="${word}" data-preserved="yes">`));
-		strictEqual(serialized.includes('r:id="shared"'), false);
-		strictEqual(serialized.includes('r:link="shared"'), false);
-		ok(serialized.includes(geometry.replace(' r:link="shared"', '')));
+		const diagonal = '<q:tcBorders><q:tl2br q:val="single" q:sz="8" q:color="112233"/><q:tr2bl q:val="dashed" q:sz="6" q:color="445566"/></q:tcBorders>';
+		const cases = [
+			{
+				id: 'outer-local',
+				rootBindings: '',
+				anchor: `<w:hyperlink xmlns:w="${word}" r:id="shared"><w:r data-preserved="outer-local"><w:drawing>${geometry}</w:drawing></w:r><w:r><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink>`,
+				expectedRun: `<w:r xmlns:w="${word}" data-preserved="outer-local">`,
+			},
+			{
+				id: 'redundant-local',
+				rootBindings: '',
+				anchor: `<w:hyperlink xmlns:w="${word}" r:id="shared"><w:r xmlns:w="${word}" data-preserved="redundant-local"><w:drawing>${geometry}</w:drawing></w:r><w:r><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink>`,
+				expectedRun: `<w:r xmlns:w="${word}" data-preserved="redundant-local">`,
+			},
+			{
+				id: 'local-shadow',
+				rootBindings: ` xmlns:w="${word}"`,
+				anchor: `<q:hyperlink r:id="shared"><q:r xmlns:w="urn:shadow" data-preserved="local-shadow"><q:drawing>${geometry}</q:drawing></q:r><q:r><q:object><o:OLEObject r:id="shared"/></q:object></q:r></q:hyperlink>`,
+				expectedRun: '<q:r xmlns:w="urn:shadow" data-preserved="local-shadow">',
+			},
+			{
+				id: 'default-local',
+				rootBindings: '',
+				anchor: `<hyperlink xmlns="${word}" r:id="shared"><r xmlns="${word}" data-preserved="default-local"><drawing>${geometry}</drawing></r><r><object><o:OLEObject r:id="shared"/></object></r></hyperlink>`,
+				expectedRun: `<r xmlns="${word}" data-preserved="default-local">`,
+			},
+		] as const;
 		const docx = await loadActualDocxPreview();
-		const body = document.createElement('div');
-		const styles = document.createElement('div');
-		const arrayBuffer = sanitized.bytes.buffer.slice(sanitized.bytes.byteOffset, sanitized.bytes.byteOffset + sanitized.bytes.byteLength) as ArrayBuffer;
+		const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
+		for (const testCase of cases) {
+			const input = storeZip({
+				'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+				'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+				'word/document.xml': `<q:document xmlns:q="${word}"${testCase.rootBindings} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="wps"><q:body><mc:AlternateContent><mc:Choice Requires="wps"><q:p><q:r><q:t>MC choice</q:t></q:r></q:p></mc:Choice><mc:Fallback><q:p/></mc:Fallback></mc:AlternateContent><q:p>${testCase.anchor}</q:p><q:tbl><q:tr><q:tc><q:tcPr>${diagonal}</q:tcPr><q:p/></q:tc></q:tr></q:tbl></q:body></q:document>`,
+				'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/></Relationships>',
+			});
+			const sanitized = await sanitizeParadisDocxBytesForRenderer(input, `actual-promoted-${testCase.id}`);
+			const archive = await JSZip.loadAsync(sanitized.bytes);
+			const documentXml = await archive.file('word/document.xml')?.async('string');
+			ok(documentXml);
+			parseParadisOfficeXml(documentXml, { depth: 64, nodes: 65_536, attributeLength: 4_096, characters: 8 * 1024 * 1024 });
+			ok(documentXml.includes(testCase.expectedRun));
+			strictEqual(documentXml.includes('r:id="shared"'), false);
+			strictEqual(documentXml.includes('r:link="shared"'), false);
+			ok(documentXml.includes('mc:Ignorable="wps"'));
+			ok(documentXml.includes('<mc:Choice Requires="wps">'));
+			ok(documentXml.includes(geometry.replace(' r:link="shared"', '')));
+			ok(documentXml.includes(diagonal));
+			const body = document.createElement('div');
+			const styles = document.createElement('div');
+			const arrayBuffer = sanitized.bytes.buffer.slice(sanitized.bytes.byteOffset, sanitized.bytes.byteOffset + sanitized.bytes.byteLength) as ArrayBuffer;
 
-		await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+			await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
 
-		strictEqual((body.textContent?.match(/Office asset unavailable:/g) ?? []).length, 3);
+			strictEqual((body.textContent?.match(/Office asset unavailable:/g) ?? []).length, 3);
+		}
 	});
 
 	function createDocxEditorFixture() {
