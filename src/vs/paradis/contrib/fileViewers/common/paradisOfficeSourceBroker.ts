@@ -6,7 +6,7 @@
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
-import type { ParadisOfficeBudgetProfile, ParadisOfficeSourceDescriptor } from './paradisOfficeProtocol.js';
+import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeBudgetProfile, type ParadisOfficeSourceDescriptor } from './paradisOfficeProtocol.js';
 
 export type { ParadisOfficeSourceDescriptor } from './paradisOfficeProtocol.js';
 
@@ -22,9 +22,9 @@ export interface ParadisOfficeSpoolLimits {
 
 /** Source and aggregate byte admission limits. The aggregate limits bound retained spool bytes. */
 export const PARADIS_OFFICE_SPOOL_LIMITS: Readonly<Record<ParadisOfficeBudgetProfile['kind'], ParadisOfficeSpoolLimits>> = {
-	desktopLocal: { compressedInputBytes: 32 * 1024 * 1024, totalBytes: 256 * 1024 * 1024 },
-	remoteMobile: { compressedInputBytes: 20 * 1024 * 1024, totalBytes: 128 * 1024 * 1024 },
-	browser: { compressedInputBytes: 16 * 1024 * 1024, totalBytes: 96 * 1024 * 1024 },
+	desktopLocal: { compressedInputBytes: PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.compressedInputBytes, totalBytes: 256 * 1024 * 1024 },
+	remoteMobile: { compressedInputBytes: PARADIS_OFFICE_BUDGET_PROFILES.remoteMobile.compressedInputBytes, totalBytes: 128 * 1024 * 1024 },
+	browser: { compressedInputBytes: PARADIS_OFFICE_BUDGET_PROFILES.browser.compressedInputBytes, totalBytes: 96 * 1024 * 1024 },
 };
 
 /** Provider identity fence captured immediately before and after a brokered read. */
@@ -42,7 +42,7 @@ export interface ParadisOfficeWritableSpoolReference {
 
 export type ParadisOfficeSpoolReference = ParadisOfficeWritableSpoolReference;
 
-export type ParadisOfficeSpoolSourceKind = Extract<ParadisOfficeSourceDescriptor['kind'], 'remote' | 'gitCommit' | 'gitIndex' | 'untitled'>;
+export type ParadisOfficeSpoolSourceKind = Extract<ParadisOfficeSourceDescriptor['kind'], 'remote' | 'gitCommit' | 'gitIndex' | 'workingTree' | 'untitled'>;
 
 /** Integrity and provider fence submitted when a writable spool is sealed. */
 export interface ParadisOfficeSealRequest {
@@ -107,7 +107,7 @@ export interface IOfficeSpoolExpiryScheduler {
 }
 
 const sourceKinds: readonly ParadisOfficeSourceDescriptor['kind'][] = ['file', 'remote', 'gitCommit', 'gitIndex', 'workingTree', 'untitled', 'sideMissing'];
-const spoolSourceKinds: readonly ParadisOfficeSpoolSourceKind[] = ['remote', 'gitCommit', 'gitIndex', 'untitled'];
+const spoolSourceKinds: readonly ParadisOfficeSpoolSourceKind[] = ['remote', 'gitCommit', 'gitIndex', 'workingTree', 'untitled'];
 const identifierPattern = /^[A-Za-z\d][A-Za-z\d._:-]{0,255}$/;
 const spoolIdPattern = /^[a-f\d]{48}$/;
 const spoolNoncePattern = /^[a-f\d]{64}$/;
@@ -118,7 +118,7 @@ interface DataRecord {
 	readonly values: ReadonlyMap<string, unknown>;
 }
 
-function dataRecord(value: unknown, allowedKeys: ReadonlySet<string>): DataRecord | undefined {
+function snapshotDataRecord(value: unknown, maximumKeys: number): DataRecord | undefined {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return undefined;
 	}
@@ -132,7 +132,7 @@ function dataRecord(value: unknown, allowedKeys: ReadonlySet<string>): DataRecor
 			return undefined;
 		}
 		const keys = ownKeys as string[];
-		if (keys.some(key => !allowedKeys.has(key))) {
+		if (keys.length > maximumKeys) {
 			return undefined;
 		}
 		const values = new Map<string, unknown>();
@@ -147,6 +147,11 @@ function dataRecord(value: unknown, allowedKeys: ReadonlySet<string>): DataRecor
 	} catch {
 		return undefined;
 	}
+}
+
+function dataRecord(value: unknown, allowedKeys: ReadonlySet<string>): DataRecord | undefined {
+	const record = snapshotDataRecord(value, allowedKeys.size);
+	return record && record.keys.every(key => allowedKeys.has(key)) ? record : undefined;
 }
 
 function dataValue(record: DataRecord, key: string): unknown {
@@ -241,15 +246,85 @@ export function validateParadisOfficeWritableSpoolReference(value: unknown): Par
 
 /** Validates the complete sealed capability shape and returns a fresh copy. */
 export function validateParadisOfficeSealedSpoolReference(value: unknown): ParadisOfficeSealedSpoolReference {
-	const record = dataRecord(value, new Set([
-		'id', 'ownerId', 'nonce', 'sourceKind', 'providerIdentity', 'providerRevision', 'size', 'sha256', 'revision',
-	]));
-	if (!record || record.keys.length !== 9) {
+	const snapshot = snapshotParadisOfficeSealedSpoolAttempt(value);
+	if (!snapshot.sealed) {
 		throw new TypeError('Invalid sealed Office spool reference');
 	}
-	const base = validateSpoolIdentityRecord(record);
-	const request = validateSealRecord(record);
-	return { ...base, ...request };
+	return snapshot.sealed;
+}
+
+export interface ParadisOfficeSealedSpoolAttemptSnapshot {
+	readonly identity?: ParadisOfficeWritableSpoolReference;
+	readonly sealed?: ParadisOfficeSealedSpoolReference;
+}
+
+/** Snapshots a full untrusted open capability once, retaining only validated fields. */
+export function snapshotParadisOfficeSealedSpoolAttempt(value: unknown): ParadisOfficeSealedSpoolAttemptSnapshot {
+	const record = snapshotDataRecord(value, 16);
+	if (!record) {
+		return {};
+	}
+	let identity: ParadisOfficeWritableSpoolReference | undefined;
+	try {
+		identity = validateSpoolIdentityRecord(record);
+	} catch {
+		return {};
+	}
+	const sealedKeys = new Set(['id', 'ownerId', 'nonce', 'sourceKind', 'providerIdentity', 'providerRevision', 'size', 'sha256', 'revision']);
+	if (record.keys.length !== sealedKeys.size || !record.keys.every(key => sealedKeys.has(key))) {
+		return { identity };
+	}
+	try {
+		return { identity, sealed: { ...identity, ...validateSealRecord(record) } };
+	} catch {
+		return { identity };
+	}
+}
+
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength')?.get;
+
+/** Copies an untrusted VSBuffer without invoking its methods or property getters. */
+export function snapshotParadisOfficeBuffer(value: unknown, maximumBytes: number): VSBuffer {
+	if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || !(value instanceof VSBuffer)) {
+		throw new TypeError('Invalid Office buffer');
+	}
+	let keys: readonly PropertyKey[];
+	let bufferDescriptor: PropertyDescriptor | undefined;
+	let byteLengthDescriptor: PropertyDescriptor | undefined;
+	try {
+		keys = Reflect.ownKeys(value);
+		bufferDescriptor = Object.getOwnPropertyDescriptor(value, 'buffer');
+		byteLengthDescriptor = Object.getOwnPropertyDescriptor(value, 'byteLength');
+	} catch {
+		throw new TypeError('Invalid Office buffer');
+	}
+	if (keys.length !== 2 || !keys.includes('buffer') || !keys.includes('byteLength')
+		|| !bufferDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(bufferDescriptor, 'value')
+		|| !byteLengthDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(byteLengthDescriptor, 'value')
+		|| !(bufferDescriptor.value instanceof Uint8Array) || !ArrayBuffer.isView(bufferDescriptor.value)
+		|| typeof byteLengthDescriptor.value !== 'number' || !Number.isSafeInteger(byteLengthDescriptor.value) || byteLengthDescriptor.value < 0
+		|| !typedArrayByteLengthGetter) {
+		throw new TypeError('Invalid Office buffer');
+	}
+	let actualLength: number;
+	try {
+		actualLength = typedArrayByteLengthGetter.call(bufferDescriptor.value) as number;
+	} catch {
+		throw new TypeError('Invalid Office buffer');
+	}
+	if (byteLengthDescriptor.value !== actualLength) {
+		throw new TypeError('Invalid Office buffer');
+	}
+	if (actualLength > maximumBytes) {
+		throw new RangeError('Office buffer exceeds limit');
+	}
+	const result = VSBuffer.alloc(actualLength);
+	Uint8Array.prototype.set.call(result.buffer, bufferDescriptor.value);
+	if (result.byteLength !== actualLength) {
+		throw new TypeError('Invalid Office buffer');
+	}
+	return result;
 }
 
 /** Validates seal metadata independently from a capability. */
