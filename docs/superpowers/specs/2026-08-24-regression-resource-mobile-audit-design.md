@@ -36,7 +36,7 @@ PR baseに存在した正規化済み `PARA-PATCH` マーカーの消失はな�
 | 7 | Session history | 599px以下の戻るボタン表示が後続の同一詳細度ルールで上書きされる | 1カラム詳細画面で戻るボタンが表示される |
 | 8 | Git repository parking | removed-folderの一次parkingが祖先repositoryとreal pathを考慮しない | 現workspaceを包含する、または包含されるrepositoryを一次・二次判定ともparkしない |
 | 9 | Windows process | Node timeout callback後ではwrapperがexit済みで、孫process treeを安全にkillできない | timeout期限にwrapperが生存中の段階でtree killを開始し、完了・dispose時にtimerを解除する |
-| 10 | HTML preview | 非loopback tunnelを拒否する例外経路で取得済み参照をdisposeしない | 拒否経路でtunnelを正確に一度disposeする |
+| 10 | HTML preview | 非loopback tunnelを拒否する例外経路で取得済み参照をdisposeしない。また、portだけの遅延close通知が同一portの新しいtunnel世代をmounter台帳から削除し得る | 拒否経路でtunnelを正確に一度disposeし、close通知は通知元generationと現在のlease generationが一致する場合だけ台帳を削除する |
 | 11 | Binding dialog polling | devices以外のタブでも4秒周期の列挙と全面renderを続ける | devices表示中だけpollし、退出・disposeで停止する |
 | 12 | Binding dialog listeners | 検索ごとの行再描画で旧行listenerを保持する | 一覧専用DisposableStoreを再描画前にclearする |
 | 13 | Release notes | CTSの`dispose()`が通信をcancelせず、閉じたmodalも保持する | 再オープン・閉鎖で旧通信をcancelし、現行インスタンスだけをcleanupする |
@@ -100,6 +100,11 @@ callback、正常完了、channel disposeではtimerを必ず解除する。time
 
 HTML preview tunnelは、取得成功からmounterへ所有権を移すまでを一つの局所的な所有区間とする。
 loopback検証等が失敗した場合はその場でdisposeし、成功時だけ通常のmounter disposeへ移譲する。
+TunnelServiceの基盤台帳にはentryごとのopaque generationを持たせ、同じentryから返すすべての
+`RemoteTunnel` leaseと`onTunnelClosed`通知へ同じgenerationを関連付ける。close payloadのgenerationは
+後方互換のoptional fieldとし、generationを提供する実装ではmounterが現在のPromise identityと
+lease generationの両方を照合してから削除する。generationを提供しない既存・custom実装では従来の
+port単位削除へフォールバックする。upstream所有のtunnel common差分には理由付き`PARA-PATCH`を付ける。
 
 PTY host starterはdaemon経路とupstream fallback経路の双方で、message-channel listenerをnamed fieldとして
 保持する。登録に使った同一関数参照を`removeListener`へ渡し、starterのdispose後にIPC EventEmitter上へ
