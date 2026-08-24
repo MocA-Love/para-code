@@ -12,7 +12,7 @@ import { toDisposable, type IDisposable } from '../../../../../base/common/lifec
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
-import { OfficeHandleStore } from '../../node/office/paradisOfficeHandleStore.js';
+import { OfficeHandleStore, OfficeHandleStoreError } from '../../node/office/paradisOfficeHandleStore.js';
 import { OfficeMemoryAccountant, OfficeWorkerHost, projectOfficeWorkerResult, type IOfficeWorker } from '../../node/office/paradisOfficeWorkerHost.js';
 
 class FakeClock {
@@ -154,6 +154,12 @@ function assertFreshData(input: unknown, output: unknown): void {
 	for (const key of Object.keys(input)) {
 		assertFreshData((input as Record<string, unknown>)[key], (output as Record<string, unknown>)[key]);
 	}
+}
+
+function withoutField(value: Record<string, unknown>, field: string): Record<string, unknown> {
+	const result = { ...value };
+	delete result[field];
+	return result;
 }
 
 const uncancelledToken = { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { }) };
@@ -351,11 +357,29 @@ suite('ParadisOfficeWorkerHost', () => {
 		opaque.completeness = { ...completeness(), expectedParts: 1, visitedParts: 1, opaqueParts: 1, expectedSemanticUnits: 1, visitedSemanticUnits: 1 };
 		const projectedOpaque = projectOfficeWorkerResult('inspect', { inventory: opaque }) as { inventory: { parts: readonly { fingerprint: object }[] } };
 		assert.deepStrictEqual(projectedOpaque.inventory.parts[0].fingerprint, fingerprint);
+		assert.notStrictEqual(projectedOpaque.inventory.parts[0], opaque.parts[0]);
+		assert.notStrictEqual(projectedOpaque.inventory.parts[0].fingerprint, opaque.parts[0].fingerprint);
+		for (const invalidPart of [
+			withoutField(opaque.parts[0], 'fingerprint'),
+			withoutField(opaque.parts[0], 'hashCompleteness'),
+			{ ...opaque.parts[0], hashCompleteness: 'incomplete' },
+		]) {
+			assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...opaque, parts: [invalidPart] } }), undefined);
+		}
 		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...opaque, parts: [{ ...opaque.parts[0], rawHash: { ...fingerprint } }] } }), undefined);
 		const parsed = { ...inspectInventory(), parts: [{ ...base, coverage: 'parsed', hashCompleteness: 'allBytes', rawHash: fingerprint }] };
 		parsed.completeness = { ...completeness(), expectedParts: 1, visitedParts: 1, parsedParts: 1, expectedSemanticUnits: 1, visitedSemanticUnits: 1 };
 		const projectedParsed = projectOfficeWorkerResult('inspect', { inventory: parsed }) as { inventory: { parts: readonly { rawHash: object }[] } };
 		assert.deepStrictEqual(projectedParsed.inventory.parts[0].rawHash, fingerprint);
+		assert.notStrictEqual(projectedParsed.inventory.parts[0], parsed.parts[0]);
+		assert.notStrictEqual(projectedParsed.inventory.parts[0].rawHash, parsed.parts[0].rawHash);
+		for (const invalidPart of [
+			withoutField(parsed.parts[0], 'rawHash'),
+			withoutField(parsed.parts[0], 'hashCompleteness'),
+			{ ...parsed.parts[0], hashCompleteness: 'incomplete' },
+		]) {
+			assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...parsed, parts: [invalidPart] } }), undefined);
+		}
 		assert.strictEqual(projectOfficeWorkerResult('inspect', { inventory: { ...parsed, parts: [{ ...parsed.parts[0], fingerprint: { ...fingerprint } }] } }), undefined);
 		const parse = parseSummary();
 		assert.deepStrictEqual(projectOfficeWorkerResult('parse', parse), parse);
@@ -712,19 +736,19 @@ suite('ParadisOfficeWorkerHost', () => {
 		const accountant = new OfficeMemoryAccountant(15);
 		accountant.setSpool(4);
 		accountant.setDerivedAssets(4);
-		const store = new OfficeHandleStore({ accountant, randomBytes: length => new Uint8Array(length).fill(7) });
+		let randomSequence = 0;
+		const store = new OfficeHandleStore({ accountant, randomBytes: length => new Uint8Array(length).fill(++randomSequence) });
 		const retained = store.create('owner-a', 'document', 'revision-a', 4);
-		const before = accountant.snapshot();
+		const before = { accountant: accountant.snapshot(), size: store.size, semanticCacheBytes: store.semanticCacheBytes, record: store.get(retained), randomSequence };
 
 		assert.throws(() => accountant.setSpool(8), RangeError);
 		assert.strictEqual(accountant.trySetDerivedAssets(8), false);
-		assert.throws(() => store.create('owner-b', 'comparison', 'revision-b', 4));
+		assert.throws(
+			() => store.create('owner-b', 'comparison', 'revision-b', 4),
+			error => error instanceof OfficeHandleStoreError && error.code === 'memoryExceeded',
+		);
 
-		assert.deepStrictEqual(accountant.snapshot(), before);
-		assert.deepStrictEqual({ size: store.size, record: store.get(retained) }, {
-			size: 1,
-			record: { kind: 'document', sourceRevision: 'revision-a', memoryBytes: 4, active: false },
-		});
+		assert.deepStrictEqual({ accountant: accountant.snapshot(), size: store.size, semanticCacheBytes: store.semanticCacheBytes, record: store.get(retained), randomSequence }, before);
 	});
 
 	test('does not post or schedule after a synchronous listener terminal transition', async () => {
@@ -792,31 +816,79 @@ suite('ParadisOfficeWorkerHost', () => {
 		});
 	});
 
-	test('terminates and disposes listeners when cancel and reap timers fire synchronously', async () => {
-		for (const trigger of ['cancel', 'result'] as const) {
-			const worker = new ObservedWorker();
-			let cancellationListener: (() => void) | undefined;
-			let cancellationDisposals = 0;
-			const host = new OfficeWorkerHost({
-				createWorker: () => worker,
-				setTimeout: (runner, delay) => {
-					const handle = Symbol(`timer-${delay}`);
-					if (delay === 250) { runner(); }
-					return handle;
-				},
-				clearTimeout: () => { },
-			});
-			const token = {
-				isCancellationRequested: false,
-				onCancellationRequested: (listener: () => void) => { cancellationListener = listener; return toDisposable(() => { cancellationDisposals++; }); },
-			};
-			const result = host.run('parse', `owner-${trigger}`, source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
-			if (trigger === 'cancel') { cancellationListener?.(); } else { worker.emit({ kind: 'result', requestId: '1', value: parseSummary() }); }
-			assert.strictEqual((await result).outcome, trigger === 'cancel' ? 'cancelled' : 'complete');
-			assert.deepStrictEqual({ terminateCalls: worker.terminateCalls, listenerDisposals: worker.listenerDisposals, cancellationDisposals }, {
-				terminateCalls: 1, listenerDisposals: { message: 1, error: 1, exit: 1 }, cancellationDisposals: 1,
-			});
+	test('terminates and disposes listeners when the cancel timer fires synchronously', async () => {
+		const worker = new ObservedWorker();
+		let cancellationListener: (() => void) | undefined;
+		let cancellationDisposals = 0;
+		const host = new OfficeWorkerHost({
+			createWorker: () => worker,
+			setTimeout: (runner, delay) => {
+				const handle = Symbol(`timer-${delay}`);
+				if (delay === 250) { runner(); }
+				return handle;
+			},
+			clearTimeout: () => { },
+		});
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: (listener: () => void) => { cancellationListener = listener; return toDisposable(() => { cancellationDisposals++; }); },
+		};
+		const result = host.run('parse', 'owner-cancel', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
+		cancellationListener?.();
+		assert.strictEqual((await result).outcome, 'cancelled');
+		assert.deepStrictEqual({ terminateCalls: worker.terminateCalls, listenerDisposals: worker.listenerDisposals, cancellationDisposals }, {
+			terminateCalls: 1, listenerDisposals: { message: 1, error: 1, exit: 1 }, cancellationDisposals: 1,
+		});
+	});
+
+	test('settles only through a synchronously fired reap timer and releases on late exit', async () => {
+		const events: string[] = [];
+		class PendingTerminationWorker extends ObservedWorker {
+			override terminate(): Promise<number> {
+				this.terminateCalls++;
+				events.push('terminate');
+				return new Promise(() => { });
+			}
 		}
+		const accountant = new CountingMemoryAccountant(100);
+		const worker = new PendingTerminationWorker();
+		let timerSequence = 0;
+		let cancellationDisposals = 0;
+		const timerKinds = new Map<object, string>();
+		const host = new OfficeWorkerHost({
+			createWorker: () => worker,
+			accountant,
+			memory: { workerReservationBytes: 100 },
+			setTimeout: (runner, delay) => {
+				const kind = delay === 30_000 ? 'queue' : delay === 60_000 ? 'deadline' : 'reap';
+				const handle = { id: ++timerSequence, kind };
+				timerKinds.set(handle, kind);
+				events.push(`register:${kind}:${handle.id}`);
+				if (kind === 'reap') { events.push(`fire:${kind}:${handle.id}`); runner(); }
+				return handle;
+			},
+			clearTimeout: handle => {
+				const timer = handle as { readonly id: number };
+				events.push(`clear:${timerKinds.get(handle as object)}:${timer.id}`);
+			},
+		});
+		const token = { isCancellationRequested: false, onCancellationRequested: () => toDisposable(() => { cancellationDisposals++; }) };
+		const result = host.run('parse', 'owner-reap', source(), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, token);
+		worker.emit({ kind: 'result', requestId: '1', value: parseSummary() });
+		assert.deepStrictEqual(await result, { outcome: 'complete', value: parseSummary() });
+		assert.deepStrictEqual(events, [
+			'register:queue:1', 'clear:queue:1', 'register:deadline:2', 'clear:deadline:2',
+			'register:reap:3', 'fire:reap:3', 'clear:reap:3', 'terminate',
+		]);
+		assert.deepStrictEqual({ active: host.activeWorkerCount, workerBytes: accountant.snapshot().workerBytes, listenerDisposals: worker.listenerDisposals, cancellationDisposals }, {
+			active: 1, workerBytes: 100, listenerDisposals: { message: 0, error: 0, exit: 0 }, cancellationDisposals: 1,
+		});
+
+		worker.exit(1);
+		worker.exit(1);
+		assert.deepStrictEqual({ active: host.activeWorkerCount, releaseWorkerCalls: accountant.releaseWorkerCalls, workerBytes: accountant.snapshot().workerBytes, listenerDisposals: worker.listenerDisposals }, {
+			active: 0, releaseWorkerCalls: 1, workerBytes: 0, listenerDisposals: { message: 1, error: 1, exit: 1 },
+		});
 	});
 
 	test('retains and releases a reaped worker reservation exactly once on late exit', async () => {
