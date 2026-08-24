@@ -138,6 +138,17 @@ class MutableConfigurationReader implements ParadisOfficeConfigurationReader {
 	}
 }
 
+function invalidCapabilitySet() {
+	return {
+		version: 0,
+		route: 'diagnostic',
+		quality: 'blocked',
+		semanticCompleteness: false,
+		features: { excelView: 'diagnostic', excelDiff: 'explicitFallback', wordView: 'diagnostic', wordDiff: 'explicitFallback' },
+		warnings: ['office.capability.invalidHandshake'],
+	} as const;
+}
+
 suite('ParadisOfficeCapabilities', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -190,6 +201,74 @@ suite('ParadisOfficeCapabilities', () => {
 		});
 	});
 
+	for (const backendKind of ['local', 'remote'] as const) {
+		test(`intersects a ${backendKind} v1 backend subset below an all-feature client`, () => {
+			deepStrictEqual(negotiateParadisOfficeCapabilities({
+				client: { version: 1, platform: 'desktop', featureBits: PARADIS_OFFICE_ALL_FEATURES },
+				backend: { version: 1, kind: backendKind, available: true, featureBits: PARADIS_OFFICE_FEATURE_EXCEL_VIEW | PARADIS_OFFICE_FEATURE_WORD_VIEW },
+			}), {
+				version: 1,
+				route: backendKind === 'local' ? 'localV1' : 'remoteV1',
+				quality: 'degraded',
+				semanticCompleteness: false,
+				features: { excelView: 'semantic', excelDiff: 'explicitFallback', wordView: 'semantic', wordDiff: 'explicitFallback' },
+				warnings: ['office.capability.featureUnavailable'],
+			});
+		});
+	}
+
+	test('enforces version-specific featureBits presence and rejects a sole extra field', () => {
+		const invalidInputs = [
+			{ client: { version: 0, platform: 'desktop', featureBits: undefined }, backend: { version: 0, kind: 'local', available: true } },
+			{ client: { version: 0, platform: 'desktop' }, backend: { version: 0, kind: 'local', available: true, featureBits: undefined } },
+			{ client: { version: 1, platform: 'desktop' }, backend: { version: 1, kind: 'local', available: true, featureBits: PARADIS_OFFICE_ALL_FEATURES } },
+			{ client: { version: 1, platform: 'desktop', featureBits: PARADIS_OFFICE_ALL_FEATURES }, backend: { version: 1, kind: 'local', available: true } },
+			{ client: { version: 0, platform: 'desktop' }, backend: { version: 0, kind: 'local', available: true }, extra: true },
+		];
+
+		for (const input of invalidInputs) {
+			deepStrictEqual(negotiateParadisOfficeCapabilities(input), invalidCapabilitySet());
+		}
+	});
+
+	test('rejects large unknown-key records before requesting any property descriptor', () => {
+		const largeClient: Record<string, unknown> = { version: 1, platform: 'desktop', featureBits: PARADIS_OFFICE_ALL_FEATURES };
+		for (let index = 0; index < 10_000; index++) {
+			largeClient[`extra${index}`] = index;
+		}
+		let descriptorReads = 0;
+		const sentinelClient = new Proxy({ version: 1, platform: 'desktop', featureBits: PARADIS_OFFICE_ALL_FEATURES }, {
+			ownKeys: target => [...Reflect.ownKeys(target), 'extra'],
+			getOwnPropertyDescriptor: () => {
+				descriptorReads++;
+				throw new Error('descriptor sentinel');
+			},
+		});
+		const backend = { version: 1, kind: 'local', available: true, featureBits: PARADIS_OFFICE_ALL_FEATURES };
+
+		deepStrictEqual(negotiateParadisOfficeCapabilities({ client: largeClient, backend }), invalidCapabilitySet());
+		deepStrictEqual(negotiateParadisOfficeCapabilities({ client: sentinelClient, backend }), invalidCapabilitySet());
+		strictEqual(descriptorReads, 0);
+	});
+
+	test('copies handshake inputs and does not share nested results across calls', () => {
+		const client = { version: 1, platform: 'desktop', featureBits: PARADIS_OFFICE_ALL_FEATURES };
+		const backend = { version: 1, kind: 'local', available: true, featureBits: PARADIS_OFFICE_ALL_FEATURES };
+		const first = negotiateParadisOfficeCapabilities({ client, backend });
+		client.featureBits = 0;
+		backend.featureBits = 0;
+		const second = negotiateParadisOfficeCapabilities({
+			client: { version: 1, platform: 'desktop', featureBits: PARADIS_OFFICE_ALL_FEATURES },
+			backend: { version: 1, kind: 'local', available: true, featureBits: PARADIS_OFFICE_ALL_FEATURES },
+		});
+
+		strictEqual(first.quality, 'complete');
+		strictEqual(second.quality, 'complete');
+		notStrictEqual(first, second);
+		notStrictEqual(first.features, second.features);
+		notStrictEqual(first.warnings, second.warnings);
+	});
+
 	test('rejects extra, invalid, accessor, and stateful proxy handshake inputs without retaining identity', () => {
 		const accessed: string[] = [];
 		const accessor = Object.create(null, {
@@ -212,14 +291,7 @@ suite('ParadisOfficeCapabilities', () => {
 			accessor,
 			proxy,
 		];
-		const expected = {
-			version: 0,
-			route: 'diagnostic',
-			quality: 'blocked',
-			semanticCompleteness: false,
-			features: { excelView: 'diagnostic', excelDiff: 'explicitFallback', wordView: 'diagnostic', wordDiff: 'explicitFallback' },
-			warnings: ['office.capability.invalidHandshake'],
-		} as const;
+		const expected = invalidCapabilitySet();
 		const results = malformed.map(value => negotiateParadisOfficeCapabilities(value));
 
 		for (const result of results) {
@@ -278,6 +350,49 @@ suite('ParadisOfficeConfiguration', () => {
 			platformBackend: true,
 			searchPrint: false,
 		});
+	});
+
+	test('reads a prototype policy getter once and lets managed legacy override CLI v1', () => {
+		let policyReads = 0;
+		const inspection = Object.create(Object.create(null, {
+			policyValue: {
+				get: () => {
+					policyReads++;
+					return policyReads === 1 ? 'legacy' : 'v1';
+				},
+			},
+		}));
+		const configuration: ParadisOfficeConfigurationReader = {
+			getValue: <T>(key: string) => key === 'paradis.officeViewer.engine' ? 'v1' as T : undefined,
+			inspect: <T>(key: string) => key === 'paradis.officeViewer.engine' ? inspection as { readonly policyValue?: T } : undefined,
+		};
+
+		const snapshot = snapshotParadisOfficeRuntimeConfiguration(configuration, { cli: { engine: 'v1' } });
+
+		strictEqual(snapshot.engine, 'legacy');
+		strictEqual(policyReads, 1);
+		strictEqual(snapshot.semanticSpreadsheet, false);
+	});
+
+	test('fails closed when a policy getter throws or returns a non-primitive without leaking raw data', () => {
+		const secret = 'do-not-leak-policy-value';
+		const throwingInspection = Object.create(Object.create(null, {
+			policyValue: { get: () => { throw new Error(secret); } },
+		}));
+		const rawInspection = Object.create(Object.create(null, {
+			policyValue: { get: () => ({ secret }) },
+		}));
+		const reader = (inspection: object): ParadisOfficeConfigurationReader => ({
+			getValue: <T>(key: string) => key === 'paradis.officeViewer.engine' ? 'v1' as T : undefined,
+			inspect: <T>(key: string) => key === 'paradis.officeViewer.engine' ? inspection as { readonly policyValue?: T } : undefined,
+		});
+
+		const throwingResult = snapshotParadisOfficeRuntimeConfiguration(reader(throwingInspection), { cli: { engine: 'v1' } });
+		const rawResult = snapshotParadisOfficeRuntimeConfiguration(reader(rawInspection), { cli: { engine: 'v1' } });
+
+		strictEqual(throwingResult.engine, 'legacy');
+		strictEqual(rawResult.engine, 'legacy');
+		strictEqual(JSON.stringify([throwingResult, rawResult]).includes(secret), false);
 	});
 
 	test('legacy forces every open/render/diff/search/print subfeature off but preserves kernel shadow', () => {
