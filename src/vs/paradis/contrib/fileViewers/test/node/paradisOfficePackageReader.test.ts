@@ -216,6 +216,13 @@ suite('ParadisOfficePackageReader', () => {
 		await rejects(inspectOfficePackage(containerBomb, profile({ compressionRatio: 1 }), CancellationToken.None), /zipBomb/);
 	});
 
+	test('reports zero input usage before validation and the owned actual input afterward', () => {
+		const budget = new ParadisOfficeBudget(profile({}), 0);
+		strictEqual(budget.usage().compressedInputBytes, 0);
+		budget.validateContainerInput(123);
+		strictEqual(budget.usage().compressedInputBytes, 123);
+	});
+
 	test('does not omit an archive-supplied error that impersonates a part budget breach', async () => {
 		const forged = Object.assign(new ParadisOfficePackageError('limitExceeded'), { scope: 'part', metric: 'partBytes' });
 		const entry = testEntry('[Content_Types].xml', 1, 0);
