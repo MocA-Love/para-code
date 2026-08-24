@@ -7,13 +7,13 @@
 import { createHash, randomBytes } from 'crypto';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, type IDisposable } from '../../../../base/common/lifecycle.js';
-import type { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import type { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import type { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import type { RemoteAgentConnectionContext } from '../../../../platform/remote/common/remoteAgentEnvironment.js';
-import { PARADIS_OFFICE_CHANNEL, type IParadisOfficeDocumentBackend } from '../common/paradisOfficeChannel.js';
-import { ParadisOfficeChannel, type IParadisOfficeConnectionAuthority } from './paradisOfficeChannel.js';
-import { ParadisOfficeRemoteBackend } from './paradisOfficeRemoteBackend.js';
+import { PARADIS_OFFICE_CHANNEL, decodeParadisOfficeWireValue, snapshotParadisOfficeRequest, type IParadisOfficeDocumentBackend } from '../common/paradisOfficeChannel.js';
+import { ParadisOfficeChannel, ParadisOfficeChannelError, type IParadisOfficeConnectionAuthority } from './paradisOfficeChannel.js';
+import { ParadisOfficeRemoteBackend, ParadisOfficeRemoteRuntime } from './paradisOfficeRemoteBackend.js';
 import { ParadisSpreadsheetChannel } from './paradisSpreadsheetChannel.js';
 import { PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
 
@@ -27,7 +27,7 @@ export interface ParadisOfficeServerChannelOptions<TContext> {
 class ParadisOfficeLegacyServerChannel<TContext> implements IServerChannel<TContext> {
 	constructor(private readonly channel = new ParadisSpreadsheetChannel()) { }
 	listen<T>(_ctx: TContext, event: string): Event<T> { return this.channel.listen(this.owner(_ctx), event); }
-	call<T>(_ctx: TContext, command: string, arg?: unknown, _token?: CancellationToken): Promise<T> { return this.channel.call(this.owner(_ctx), command, arg); }
+	call<T>(_ctx: TContext, command: string, arg?: unknown, _token: CancellationToken = CancellationToken.None): Promise<T> { return this.channel.call(this.owner(_ctx), command, arg); }
 	private owner(_ctx: TContext): string { return 'remote-office-legacy'; }
 }
 
@@ -64,14 +64,23 @@ export class ParadisOfficeServerChannel<TContext extends RemoteAgentConnectionCo
 		throw new Error('The remote Office channel has no events.');
 	}
 
-	call<T>(ctx: TContext, command: string, arg?: unknown): Promise<T> {
+	call<T>(ctx: TContext, command: string, arg?: unknown, token: CancellationToken = CancellationToken.None): Promise<T> {
 		if (!this.connected || !sameContext(ctx, this.context)) {
 			return Promise.reject(new Error('The remote Office channel is disconnected.'));
 		}
 		if (command === 'negotiate' && this.options.isPlatformBackendEnabled?.() === false) {
-			return this.inner.call<T>(this.owner, command, { versions: [0] });
+			return this.inner.call<T>(this.owner, command, { versions: [0] }, token);
 		}
-		return this.inner.call<T>(this.owner, command, arg);
+		if (command === 'request' && this.options.isPlatformBackendEnabled?.() === false) {
+			try {
+				const decoded = decodeParadisOfficeWireValue(arg);
+				const request = snapshotParadisOfficeRequest(decoded.value);
+				if (request.operation === 'inspect' || request.operation === 'open' || request.operation === 'compare') {
+					return Promise.reject(new ParadisOfficeChannelError());
+				}
+			} catch { return Promise.reject(new ParadisOfficeChannelError()); }
+		}
+		return this.inner.call<T>(this.owner, command, arg, token);
 	}
 
 	override dispose(): void {
@@ -91,6 +100,7 @@ export class ParadisOfficeServerChannel<TContext extends RemoteAgentConnectionCo
 /** Registers isolated v1 and retained v0 channels for every remote-agent connection. */
 export function registerParadisOfficeForServer(server: IPCServer<RemoteAgentConnectionContext>, configurationService?: IConfigurationService): IDisposable {
 	const lifecycle = new DisposableStore();
+	const runtime = lifecycle.add(new ParadisOfficeRemoteRuntime());
 	const channels = lifecycle.add(new DisposableMap<object, DisposableStore>());
 	let epoch = 0;
 	const addConnection = (connection: (typeof server.connections)[number]): void => {
@@ -100,6 +110,7 @@ export function registerParadisOfficeForServer(server: IPCServer<RemoteAgentConn
 			connectionEpoch: ++epoch,
 			isPlatformBackendEnabled: () => configurationService?.getValue<string>('paradis.officeViewer.engine') !== 'legacy'
 				&& configurationService?.getValue<boolean>('paradis.officeViewer.platformBackend') !== false,
+			createBackend: authority => runtime.createBackend(authority),
 		}));
 		connection.channelServer.registerChannel(PARADIS_OFFICE_CHANNEL, channel);
 		connection.channelServer.registerChannel(PARADIS_SPREADSHEET_CHANNEL, new ParadisOfficeLegacyServerChannel());

@@ -7,10 +7,11 @@
 import { createHash } from 'crypto';
 import { open } from 'fs/promises';
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
+import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
-import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
+import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeBudgetProfile, type ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { OfficeHandleStore } from './office/paradisOfficeHandleStore.js';
-import { OfficeMemoryAccountant, OfficeWorkerHost, type OfficeWorkerBytesSource } from './office/paradisOfficeWorkerHost.js';
+import { OfficeMemoryAccountant, OfficeWorkerHost, type OfficeWorkerBytesSource, type OfficeWorkerHostOptions, type OfficeWorkerOutcome, type OfficeWorkerSource, type ParadisOfficeWorkerOperation } from './office/paradisOfficeWorkerHost.js';
 import {
 	LocalParadisOfficeDocumentBackend,
 	ParadisOfficeSourceResolutionError,
@@ -21,6 +22,7 @@ import {
 
 export interface ParadisOfficeRemoteSourceResolverOptions {
 	readonly openFile?: (path: string) => Promise<IParadisOfficeFileHandle>;
+	readonly fileCoordinator?: ParadisOfficeRemoteFileCoordinator;
 }
 
 const authorityPattern = /^[A-Za-z\d][A-Za-z\d._+:-]{0,511}$/;
@@ -43,14 +45,14 @@ function revisionField(value: string): string {
 /** Opens vscode-remote descriptors on the server and gives workers only owned raw bytes. */
 export class ParadisOfficeRemoteSourceResolver implements IParadisOfficeChannelSourceResolver {
 	private readonly openFile: (path: string) => Promise<IParadisOfficeFileHandle>;
-	private openFiles = 0;
-	private readonly ownerOpenFiles = new Map<string, number>();
+	private readonly fileCoordinator: ParadisOfficeRemoteFileCoordinator;
 
 	constructor(private readonly remoteAuthority: string, options: ParadisOfficeRemoteSourceResolverOptions = {}) {
 		if (!authorityPattern.test(remoteAuthority)) {
 			throw new ParadisOfficeSourceResolutionError('unsupportedScheme');
 		}
 		this.openFile = options.openFile ?? (path => open(path, 'r'));
+		this.fileCoordinator = options.fileCoordinator ?? new ParadisOfficeRemoteFileCoordinator();
 	}
 
 	async resolve(ownerId: string, descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<OfficeWorkerBytesSource> {
@@ -64,13 +66,16 @@ export class ParadisOfficeRemoteSourceResolver implements IParadisOfficeChannelS
 		} catch {
 			throw new ParadisOfficeSourceResolutionError('unsupportedScheme');
 		}
-		if (resource.scheme !== 'vscode-remote' || resource.authority !== this.remoteAuthority || !resource.path.startsWith('/') || resource.path.includes('\0') || token.isCancellationRequested) {
+		const segments = resource.path.split('/');
+		if (resource.scheme !== 'vscode-remote' || resource.authority !== this.remoteAuthority || !resource.path.startsWith('/')
+			|| resource.query !== '' || resource.fragment !== '' || resource.path.includes('\0') || resource.path.includes('\\')
+			|| segments.some((segment, index) => index > 0 && (segment === '' || segment === '.' || segment === '..')) || token.isCancellationRequested) {
 			throw new ParadisOfficeSourceResolutionError('unsupportedScheme');
 		}
-		this.acquire(ownerId);
+		this.fileCoordinator.acquire(ownerId);
 		let handle: IParadisOfficeFileHandle | undefined;
 		try {
-			handle = await this.openFile(resource.path);
+			handle = await this.openFile(resource.fsPath);
 			if (token.isCancellationRequested) {
 				throw new ParadisOfficeSourceResolutionError('changed');
 			}
@@ -126,27 +131,37 @@ export class ParadisOfficeRemoteSourceResolver implements IParadisOfficeChannelS
 			} catch {
 				// Resolution outcome takes precedence over close failures.
 			}
-			this.release(ownerId);
+			this.fileCoordinator.release(ownerId);
 		}
 	}
+}
 
-	private acquire(ownerId: string): void {
+/** One registration-wide descriptor/file admission ledger shared by every connection. */
+export class ParadisOfficeRemoteFileCoordinator {
+	private openFiles = 0;
+	private readonly ownerOpenFiles = new Map<string, number>();
+
+	acquire(ownerId: string): void {
 		const ownerCount = this.ownerOpenFiles.get(ownerId) ?? 0;
-		if (this.openFiles >= 8 || ownerCount >= 2) {
-			throw new ParadisOfficeSourceResolutionError('limitExceeded');
-		}
+		if (this.openFiles >= 8 || ownerCount >= 2) { throw new ParadisOfficeSourceResolutionError('limitExceeded'); }
 		this.openFiles++;
 		this.ownerOpenFiles.set(ownerId, ownerCount + 1);
 	}
 
-	private release(ownerId: string): void {
+	release(ownerId: string): void {
+		const ownerCount = this.ownerOpenFiles.get(ownerId) ?? 0;
+		if (ownerCount < 1) { return; }
 		this.openFiles = Math.max(0, this.openFiles - 1);
-		const next = Math.max(0, (this.ownerOpenFiles.get(ownerId) ?? 0) - 1);
-		if (next === 0) {
-			this.ownerOpenFiles.delete(ownerId);
-		} else {
-			this.ownerOpenFiles.set(ownerId, next);
-		}
+		const next = ownerCount - 1;
+		if (next === 0) { this.ownerOpenFiles.delete(ownerId); } else { this.ownerOpenFiles.set(ownerId, next); }
+	}
+}
+
+/** Forces Task 6 calls through the normative remote/mobile budget, regardless of facade defaults. */
+export class ParadisOfficeRemoteWorkerHost extends OfficeWorkerHost {
+	constructor(options: OfficeWorkerHostOptions = {}) { super(options); }
+	override run<T extends object>(operation: ParadisOfficeWorkerOperation, ownerId: string, source: OfficeWorkerSource, _budget: ParadisOfficeBudgetProfile, token: CancellationToken, options: { readonly reservationBytes?: number; readonly workerId?: string } = {}): Promise<OfficeWorkerOutcome<T>> {
+		return super.run<T>(operation, ownerId, source, PARADIS_OFFICE_BUDGET_PROFILES.remoteMobile, token, options);
 	}
 }
 
@@ -157,6 +172,21 @@ export class ParadisOfficeRemoteBackend extends LocalParadisOfficeDocumentBacken
 	}
 }
 
+/** Registration-owned remote resources; connections contribute only owner/epoch state. */
+export class ParadisOfficeRemoteRuntime implements IDisposable {
+	readonly accountant = new OfficeMemoryAccountant(768 * 1024 * 1024);
+	readonly handles = new OfficeHandleStore({ accountant: this.accountant });
+	readonly workers = new ParadisOfficeRemoteWorkerHost({ accountant: this.accountant, onWorkerCrashed: workerId => this.handles.invalidateWorker(workerId) });
+	readonly files = new ParadisOfficeRemoteFileCoordinator();
+
+	createBackend(remoteAuthority: string, options: ParadisOfficeRemoteSourceResolverOptions = {}): ParadisOfficeRemoteBackend {
+		const resolver = new ParadisOfficeRemoteSourceResolver(remoteAuthority, { ...options, fileCoordinator: this.files });
+		return new ParadisOfficeRemoteBackend(remoteAuthority, options, { resolver, workers: this.workers, handles: this.handles });
+	}
+
+	dispose(): void { this.workers.dispose(); }
+}
+
 function createRemoteDependencies(remoteAuthority: string, options: ParadisOfficeRemoteSourceResolverOptions): {
 	readonly resolver: ParadisOfficeRemoteSourceResolver;
 	readonly workers: OfficeWorkerHost;
@@ -164,6 +194,6 @@ function createRemoteDependencies(remoteAuthority: string, options: ParadisOffic
 } {
 	const accountant = new OfficeMemoryAccountant(768 * 1024 * 1024);
 	const handles = new OfficeHandleStore({ accountant });
-	const workers = new OfficeWorkerHost({ accountant, onWorkerCrashed: workerId => handles.invalidateWorker(workerId) });
+	const workers = new ParadisOfficeRemoteWorkerHost({ accountant, onWorkerCrashed: workerId => handles.invalidateWorker(workerId) });
 	return { resolver: new ParadisOfficeRemoteSourceResolver(remoteAuthority, options), workers, handles };
 }

@@ -255,6 +255,18 @@ export class SpoolAwareParadisOfficeSourceResolver extends LocalParadisOfficeSou
 		this.bound.set(key, spool);
 	}
 
+	async unbind(ownerId: string, descriptorValue: unknown, spoolValue?: unknown): Promise<void> {
+		const descriptor = validateParadisOfficeSourceDescriptor(descriptorValue);
+		const requestedSpool = spoolValue === undefined ? undefined : validateParadisOfficeSealedSpoolReference(spoolValue);
+		if (requestedSpool && (requestedSpool.ownerId !== ownerId || requestedSpool.sourceKind !== descriptor.kind)) { channelError(); }
+		const key = descriptorKey(ownerId, descriptor);
+		const bound = this.bound.get(key);
+		if (!bound) { return; }
+		if (requestedSpool && JSON.stringify(bound) !== JSON.stringify(requestedSpool)) { channelError(); }
+		this.bound.delete(key);
+		try { await this.store.dispose(bound); } finally { this.onStoreChange(); }
+	}
+
 	override async resolve(ownerId: string, descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<OfficeWorkerBytesSource> {
 		const key = descriptorKey(ownerId, descriptor);
 		const spool = this.bound.get(key);
@@ -310,6 +322,12 @@ export class ParadisOfficeSpoolTransport {
 			case 'spool/dispose': { const fields = exactTransportRecord(value, ['reference']); const reference = snapshotParadisOfficeSealedSpoolAttempt(fields.get('reference')).identity; if (!reference || reference.ownerId !== ownerId) { channelError(); } try { await this.store.dispose(reference); return undefined; } finally { this.syncSpool(); } }
 			case 'spool/disposeAttempt': { const fields = exactTransportRecord(value, ['attemptId']); const attempt = validateParadisOfficeSpoolAttempt(ownerId, fields.get('attemptId')); try { await this.store.disposeAttempt(ownerId, attempt.attemptId); return undefined; } finally { this.syncSpool(); } }
 			case 'source/bind': { const fields = exactTransportRecord(value, ['descriptor', 'spool']); this.resolver.bind(ownerId, fields.get('descriptor'), fields.get('spool')); return undefined; }
+			case 'source/unbind': {
+				const keys = value && typeof value === 'object' && !Array.isArray(value) && Reflect.ownKeys(value).includes('spool') ? ['descriptor', 'spool'] : ['descriptor'];
+				const fields = exactTransportRecord(value, keys);
+				await this.resolver.unbind(ownerId, fields.get('descriptor'), fields.get('spool'));
+				return undefined;
+			}
 			default: channelError();
 		}
 	}
@@ -473,7 +491,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		const session = this.sessions.get(ctx) ?? { connectionEpoch: 0, ownerCapability: '' };
 		if (this.connectionAuthority && (!wireAuthority || wireAuthority.connectionEpoch !== currentEpoch || wireAuthority.connectionEpoch !== session.connectionEpoch || wireAuthority.ownerCapability !== session.ownerCapability)) { return channelError(); }
 		const resourceOwnerId = this.connectionAuthority ? session.ownerCapability : ctx;
-		if (command.startsWith('spool/') || command === 'source/bind') {
+		if (command.startsWith('spool/') || command === 'source/bind' || command === 'source/unbind') {
 			if (!this.spoolTransport) { return channelError(); }
 			if (command === 'spool/append' && encoded && wireTransfer !== 'spoolAppend') { return channelError(); }
 			try {

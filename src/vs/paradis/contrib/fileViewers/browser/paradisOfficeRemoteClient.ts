@@ -35,6 +35,7 @@ export interface ParadisOfficeRemoteClientOptions {
 	readonly sourceBroker: IOfficeSourceBroker;
 	readonly spoolClient: IOfficeSpoolClient;
 	readonly onWarning: (warning: string) => void;
+	readonly isPlatformBackendEnabled?: () => boolean;
 }
 
 export interface ParadisOfficeRemoteRequestResult {
@@ -129,8 +130,10 @@ function safeDispose(disposable: IDisposable): void {
 /** Selects the remote Task 6 channel or a local Task 3 bounded-spool fallback. */
 export class ParadisOfficeRemoteClient extends Disposable {
 	private route: RemoteRoute | undefined;
+	private readonly handleRoutes = new Map<string, RemoteRoute>();
 	private disposed = false;
 	private readonly pendingSpools = new Set<ParadisOfficeSealedSpoolReference>();
+	private readonly spoolDescriptors = new Map<ParadisOfficeSealedSpoolReference, ParadisOfficeSourceDescriptor>();
 
 	constructor(private readonly options: ParadisOfficeRemoteClientOptions) {
 		super();
@@ -142,7 +145,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		}
 		let route: RemoteRoute;
 		try {
-			route = await this.resolveRoute(token);
+			route = await this.resolveRoute(token, requestSources(request).length > 0, request);
 		} catch (error) {
 			if (error instanceof ParadisOfficeRemoteClientError) {
 				throw error;
@@ -153,17 +156,17 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		try {
 			const routedRequest = route.kind === 'remoteV1' ? this.validateDirectRemoteRequest(request, route.connection) : await this.prepareLocalFallback(request, spools, token);
 			const response = await this.callCancellable(route.channel, 'request', marshalParadisOfficeRequest(routedRequest, route.authority), token);
-			for (const spool of spools) {
-				this.pendingSpools.delete(spool);
-			}
+			const parsed = unmarshalParadisOfficeResponse(response);
+			this.rememberHandleRoute(parsed, route, request);
 			const warnings = route.kind === 'remoteV1' ? [] : ['office.capability.remoteBackendV0'];
-			return { route: route.kind, quality: route.kind === 'remoteV1' ? 'complete' : 'degraded', warnings, response: unmarshalParadisOfficeResponse(response) };
+			return { route: route.kind, quality: route.kind === 'remoteV1' ? 'complete' : 'degraded', warnings, response: parsed };
 		} catch (error) {
-			await this.cleanupSpools(spools);
 			if (error instanceof ParadisOfficeRemoteClientError) {
 				throw error;
 			}
 			throw new ParadisOfficeRemoteClientError(token.isCancellationRequested ? 'cancelled' : 'transportFailed');
+		} finally {
+			await this.cleanupSpools(spools);
 		}
 	}
 
@@ -177,7 +180,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		super.dispose();
 	}
 
-	private async resolveRoute(token: CancellationToken): Promise<RemoteRoute> {
+	private async resolveRoute(token: CancellationToken, sourceCreating: boolean, request: ParadisOfficeRequest): Promise<RemoteRoute> {
 		let connection: IParadisOfficeRemoteConnection | null;
 		try {
 			connection = this.options.remoteAgentService.getConnection();
@@ -187,7 +190,11 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		if (!connection) {
 			throw new ParadisOfficeRemoteClientError('noConnection');
 		}
-		if (this.route?.connection === connection) {
+		const handleRoute = this.routeForHandle(request);
+		if (!sourceCreating && handleRoute?.connection === connection) {
+			return handleRoute;
+		}
+		if (!sourceCreating && this.route?.connection === connection) {
 			return this.route;
 		}
 		if (token.isCancellationRequested) {
@@ -195,6 +202,9 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		}
 		let remoteChannel: IChannel | undefined;
 		try {
+			if (sourceCreating && this.options.isPlatformBackendEnabled?.() === false) {
+				throw new Error('platform backend disabled');
+			}
 			remoteChannel = connection.getChannel(PARADIS_OFFICE_CHANNEL);
 			const negotiation = await this.callCancellable(remoteChannel, 'negotiate', { versions: [1, 0] }, token);
 			if (isV1Negotiation(negotiation) && negotiation.ownerCapability && negotiation.connectionEpoch) {
@@ -265,6 +275,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 			}
 			spools.push(backendSource.spool);
 			this.pendingSpools.add(backendSource.spool);
+			this.spoolDescriptors.set(backendSource.spool, backendSource.descriptor);
 			await this.callCancellable(this.options.localChannel, 'source/bind', marshalParadisOfficeWireValue({ descriptor: backendSource.descriptor, spool: backendSource.spool }), token);
 			sources.push(backendSource.descriptor);
 		}
@@ -290,12 +301,40 @@ export class ParadisOfficeRemoteClient extends Disposable {
 
 	private async cleanupSpools(spools: readonly ParadisOfficeSealedSpoolReference[]): Promise<void> {
 		for (const spool of spools) {
+			const descriptor = this.spoolDescriptors.get(spool);
 			this.pendingSpools.delete(spool);
+			this.spoolDescriptors.delete(spool);
+			if (descriptor) {
+				try {
+					await this.options.localChannel.call('source/unbind', marshalParadisOfficeWireValue({ descriptor, spool }));
+				} catch {
+					// A consumed binding is already absent; cleanup is deliberately idempotent.
+				}
+			}
 			try {
 				await this.options.spoolClient.dispose(spool);
 			} catch {
 				// Owner-bound cleanup is best effort; raw errors are never surfaced.
 			}
+		}
+	}
+
+	private routeForHandle(request: ParadisOfficeRequest): RemoteRoute | undefined {
+		switch (request.operation) {
+			case 'getViewport': case 'search': case 'getRenderableAsset': case 'getPrintModel': case 'exportPrint':
+				return this.handleRoutes.get(`${request.handle.kind}:${request.handle.id}`);
+			case 'close': case 'cancel':
+				return request.handle ? this.handleRoutes.get(`${request.handle.kind}:${request.handle.id}`) : undefined;
+			default: return undefined;
+		}
+	}
+
+	private rememberHandleRoute(response: ParadisOfficeResponse, route: RemoteRoute, request: ParadisOfficeRequest): void {
+		if (response.ok && (response.operation === 'open' || response.operation === 'compare')) {
+			this.handleRoutes.set(`${response.handle.kind}:${response.handle.id}`, route);
+		}
+		if (response.ok && request.operation === 'close' && request.handle) {
+			this.handleRoutes.delete(`${request.handle.kind}:${request.handle.id}`);
 		}
 	}
 }
