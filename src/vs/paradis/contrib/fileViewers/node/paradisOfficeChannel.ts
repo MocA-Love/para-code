@@ -9,7 +9,7 @@ import { open } from 'fs/promises';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import {
@@ -55,6 +55,7 @@ import { OfficeSpoolStore } from './paradisOfficeSpoolStore.js';
 
 const ownerPattern = /^[A-Za-z\d][A-Za-z\d._:-]{0,255}$/;
 export const PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT = 128;
+export const PARADIS_OFFICE_CONTROL_REQUEST_LIMIT = 8;
 export const PARADIS_OFFICE_FILE_READ_CHUNK_BYTES = 2 * 1024 * 1024;
 export const PARADIS_OFFICE_FILE_PER_OWNER_LIMIT = 2;
 export const PARADIS_OFFICE_FILE_GLOBAL_LIMIT = 8;
@@ -487,7 +488,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		if (handleReservation && !this.reserveHandle(ctx)) { return channelError(); }
 		const activeKey = this.requestKey(ctx, request.requestId);
 		const control = request.operation === 'close' || request.operation === 'cancel';
-		if (this.active.has(activeKey) || (!control && this.activeForOwner(ctx) >= PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT)) { if (handleReservation) { this.releaseHandleReservation(ctx); } return channelError(); }
+		if (this.active.has(activeKey) || !control && this.activeForOwner(ctx) >= PARADIS_OFFICE_ACTIVE_REQUEST_LIMIT || control && this.activeControlsForOwner(ctx) >= PARADIS_OFFICE_CONTROL_REQUEST_LIMIT) { if (handleReservation) { this.releaseHandleReservation(ctx); } return channelError(); }
 		if (request.operation === 'cancel' && request.targetRequestId !== undefined) {
 			const target = this.active.get(this.requestKey(ctx, request.targetRequestId));
 			if (!target) { return channelError(); }
@@ -542,15 +543,25 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		}
 	}
 
-	private publishResponse(response: ParadisOfficeResponse, encoded: boolean): ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse> { return encoded ? marshalParadisOfficeResponse(response) : response; }
+	private publishResponse(response: ParadisOfficeResponse, encoded: boolean): ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse> {
+		if (!encoded) { return response; }
+		try { return marshalParadisOfficeResponse(response); }
+		catch (error) {
+			if (!(error instanceof ParadisOfficeWireError) || error.code !== 'payloadTooLarge') { throw error; }
+			return marshalParadisOfficeResponse({ version: 1, requestId: response.requestId, operation: response.operation, ok: false, outcome: 'blocked', error: createParadisOfficeError('transport', 'payloadTooLarge', { severity: 'error', retryable: false, recoverable: true, userAction: 'reduceDocumentSize' }) });
+		}
+	}
 	private createOwnerCapability(): string { const value = this.connectionAuthority?.createCapability?.() ?? randomBytes(32).toString('hex'); return /^[a-f\d]{64}$/.test(value) ? value : channelError(); }
 	private isCurrentSession(ownerId: string, session: OwnerSession): boolean { const current = this.sessions.get(ownerId); return !this.connectionAuthority || current === session && this.connectionAuthority.currentEpoch(ownerId) === session.connectionEpoch; }
 	private isCurrentEntry(ownerId: string, key: string, entry: ActiveChannelRequest): boolean { const session = this.sessions.get(ownerId); return this.active.get(key) === entry && !entry.cancellation.token.isCancellationRequested && (!this.connectionAuthority || !!session && session.connectionEpoch === entry.epoch && session.ownerCapability === entry.ownerCapability && this.connectionAuthority.currentEpoch(ownerId) === entry.epoch); }
 	private async closeLateHandle(ownerId: string, request: ParadisOfficeRequest, raw: unknown): Promise<void> {
 		let response: ParadisOfficeResponse;
-		try { response = snapshotParadisOfficeResponse(raw); } catch { return; }
+		try { response = snapshotParadisOfficeResponse(raw); } catch { try { this.backend.disconnect(ownerId); } catch { } return; }
 		if (!response.ok || (response.operation !== 'open' && response.operation !== 'compare')) { return; }
-		try { await this.backend.close(ownerId, { version: 1, requestId: request.requestId, operation: 'close', handle: response.handle }, CancellationToken.None); } catch { }
+		try {
+			const closed = snapshotParadisOfficeResponse(await this.backend.close(ownerId, { version: 1, requestId: request.requestId, operation: 'close', handle: response.handle }, CancellationToken.None));
+			if (!closed.ok || closed.operation !== 'close' || closed.acknowledged !== true) { throw new ParadisOfficeChannelError(); }
+		} catch { try { this.backend.disconnect(ownerId); } catch { } }
 	}
 
 	private validateRequestBinding(ownerId: string, request: ParadisOfficeRequest): void {
@@ -582,7 +593,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		if (request.operation === 'getRenderableAsset' && response.ok && response.operation === 'getRenderableAsset') {
 			const range = validateParadisOfficeAssetRange(request.offset, request.length);
 			const available = Math.max(0, response.totalLength - range.offset);
-			if (response.assetId !== request.assetId || response.offset !== range.offset || response.bytes.byteLength !== Math.min(range.length, available)) { channelError(); }
+			if (response.assetId !== request.assetId || response.offset !== range.offset || response.bytes.byteLength > range.length || response.bytes.byteLength > available || response.bytes.byteLength === 0 && available !== 0) { channelError(); }
 		}
 		if (response.ok && (response.operation === 'open' || response.operation === 'compare')) {
 			const key = this.handleKey(response.handle);
@@ -620,6 +631,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 	}
 
 	private activeForOwner(ownerId: string): number { let count = 0; for (const [key, active] of this.active) { if (!active.control && key.startsWith(`${ownerId}\0`)) { count++; } } return count; }
+	private activeControlsForOwner(ownerId: string): number { let count = 0; for (const [key, active] of this.active) { if (active.control && key.startsWith(`${ownerId}\0`)) { count++; } } return count; }
 	private cancelHandleRequests(ownerId: string, handle: ParadisOfficeHandleRef): void { const handleKey = this.handleKey(handle); for (const [key, active] of this.active) { if (key.startsWith(`${ownerId}\0`) && active.handle && this.handleKey(active.handle) === handleKey) { try { active.cancellation.cancel(); } catch { } } } }
 	private handleCount(ownerId: string): number { let count = 0; for (const binding of this.handles.values()) { if (binding.ownerId === ownerId) { count++; } } return count; }
 	private reserveHandle(ownerId: string): boolean { const pending = this.pendingHandleReservations.get(ownerId) ?? 0; if (this.handleCount(ownerId) + pending >= PARADIS_OFFICE_HANDLE_PER_CLIENT_LIMIT) { return false; } this.pendingHandleReservations.set(ownerId, pending + 1); return true; }
@@ -654,25 +666,27 @@ export function registerParadisOffice(server: IPCServer<string>, backend?: IPara
 		channelBackend = new LocalParadisOfficeDocumentBackend(resolver, workers, handles);
 		transport = new ParadisOfficeSpoolTransport(store, resolver, accountant);
 	}
-	const disconnects = lifecycle.add(new Emitter<{ readonly ownerId: string; readonly epoch: number }>());
-	const epochs = new WeakMap<object, number>();
-	const currentEpochs = new Map<string, number>();
+	const connectionChannels = lifecycle.add(new DisposableMap<object, DisposableStore>());
 	let epochSequence = 0;
-	const addConnection = (connection: { readonly ctx: string }): void => {
+	const addConnection = (connection: (typeof server.connections)[number]): void => {
+		connectionChannels.deleteAndDispose(connection);
+		const connectionStore = new DisposableStore();
 		const epoch = ++epochSequence;
-		epochs.set(connection, epoch);
-		currentEpochs.set(connection.ctx, epoch);
+		let connected = true;
+		const disconnect = new Emitter<{ readonly ownerId: string; readonly epoch: number }>();
+		connectionStore.add({ dispose: () => { if (!connected) { return; } connected = false; disconnect.fire({ ownerId: connection.ctx, epoch }); disconnect.dispose(); } });
+		const authority: IParadisOfficeConnectionAuthority = {
+			currentEpoch: ownerId => connected && ownerId === connection.ctx ? epoch : undefined,
+			onDidDisconnect: disconnect.event,
+		};
+		const channel = connectionStore.add(new ParadisOfficeChannel(channelBackend, Event.None, transport, authority));
+		connection.channelServer.registerChannel(PARADIS_OFFICE_CHANNEL, channel);
+		connectionChannels.set(connection, connectionStore);
 	};
 	for (const connection of server.connections) { addConnection(connection); }
 	lifecycle.add(server.onDidAddConnection(connection => addConnection(connection)));
 	lifecycle.add(server.onDidRemoveConnection(connection => {
-		const epoch = epochs.get(connection);
-		if (epoch === undefined) { return; }
-		disconnects.fire({ ownerId: connection.ctx, epoch });
-		if (currentEpochs.get(connection.ctx) === epoch) { currentEpochs.delete(connection.ctx); }
+		connectionChannels.deleteAndDispose(connection);
 	}));
-	const authority: IParadisOfficeConnectionAuthority = { currentEpoch: ownerId => currentEpochs.get(ownerId), onDidDisconnect: disconnects.event };
-	const channel = lifecycle.add(new ParadisOfficeChannel(channelBackend, Event.None, transport, authority));
-	server.registerChannel(PARADIS_OFFICE_CHANNEL, channel);
 	return lifecycle;
 }
