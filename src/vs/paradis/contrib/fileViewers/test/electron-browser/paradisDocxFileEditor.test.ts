@@ -68,7 +68,7 @@ type HeaderResult = VSBuffer | DeferredPromise<VSBuffer> | Error;
 
 suite('ParadisDocxFileEditor', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
-	const defaultDocxPackage = storeZip({ '[Content_Types].xml': '<Types/>', 'word/document.xml': '<document/>' });
+	const defaultDocxPackage = storeZip({ '[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>', '_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>', 'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>' });
 
 	test('integrates exact mounted and fallback CSP sources into the Word diff webview', () => {
 		const labels = { original: 'Before', modified: 'After', loading: 'Loading' };
@@ -89,8 +89,10 @@ suite('ParadisDocxFileEditor', () => {
 
 	test('preprocesses unsafe package assets before the real browser archive result reaches either renderer', async () => {
 		const input = storeZip({
-			'[Content_Types].xml': '<Types/>',
-			'word/document.xml': '<document/>',
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/media/unsafe.svg" ContentType="image/svg+xml"/><Override PartName="/word/fonts/font.odttf" ContentType="application/x-font-ttf"/><Override PartName="/word/afchunk/chunk.html" ContentType="text/html"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="svg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/unsafe.svg"/><Relationship Id="font" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font.odttf"/><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk/chunk.html"/></Relationships>',
 			'word/media/unsafe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>danger</script></svg>',
 			'word/fonts/font.odttf': 'RAW-FONT',
 			'word/afchunk/chunk.html': '<script>ALTCHUNK</script>',
@@ -98,12 +100,14 @@ suite('ParadisDocxFileEditor', () => {
 
 		const result = await sanitizeParadisDocxBytesForRenderer(input, 'integration_package');
 		const serialized = new TextDecoder().decode(result.bytes);
+		const reopened = await sanitizeParadisDocxBytesForRenderer(result.bytes, 'integration_reopen');
 
 		strictEqual(serialized.includes('<script>'), false);
 		strictEqual(serialized.includes('RAW-FONT'), false);
 		strictEqual(serialized.includes('ALTCHUNK'), false);
 		ok(serialized.includes('Office asset unavailable'));
 		strictEqual(result.placeholders.length, 3);
+		ok(reopened.bytes.byteLength > 0);
 	});
 
 	function createDocxEditorFixture() {

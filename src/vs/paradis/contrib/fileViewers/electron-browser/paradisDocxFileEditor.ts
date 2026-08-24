@@ -17,7 +17,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
@@ -42,6 +42,7 @@ import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { PARADIS_DOCX_MAX_BYTES } from '../common/paradisDocx.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
+import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
@@ -87,6 +88,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _inputEpoch = 0;
 	private _disposed = false;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
+	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 
 	constructor(
 		group: IEditorGroup,
@@ -282,12 +285,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	protected _renderResource(resource: URI): void {
+		this._assetPlaceholders = [];
 		const generation = ++this._renderGeneration;
 		const inputEpoch = this._inputEpoch;
-		void this._renderResourceAfterPreflight(resource, generation, inputEpoch);
+		this._assetSanitization.value?.cancel();
+		const source = new CancellationTokenSource(); this._assetSanitization.value = source;
+		void this._renderResourceAfterPreflight(resource, generation, inputEpoch, source.token);
 	}
 
-	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number): Promise<void> {
+	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number, token: CancellationToken): Promise<void> {
 		const webview = this._ensureWebview(resource);
 		// `_ensureWebview` は要否が変わると webview を捨てるので、claim を取り戻しておく
 		// （PDF と同じ。setInput の呼び出し順に頼らない）。
@@ -298,15 +304,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 		};
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
 		let decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
-		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
+		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed || token.isCancellationRequested) {
 			return;
 		}
 		let inlineData: string | undefined;
 		if (decision === 'viewer') {
 			try {
 				const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
-				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`);
+				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`, token);
 				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
+				this._assetPlaceholders = sanitized.placeholders;
 			} catch {
 				decision = 'rejected';
 			}
@@ -319,7 +326,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				webview.setHtml(this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
-				webview.setHtml(this._buildHtml(resource, inlineData));
+				webview.setHtml(this._buildHtml(resource, inlineData, this._assetPlaceholders.length));
 				return;
 		}
 	}
@@ -328,7 +335,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		return '<!DOCTYPE html><html><body>Word 文書を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
-	private _buildHtml(resource: URI, inlineData?: string): string {
+	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0): string {
 		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
 		// service worker を切った webview に解決できない URL を渡すことになる。
 		const served = this._webviewServiceWorkerDisabled && this._documentUrl !== undefined;
@@ -404,6 +411,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	</style>
 </head>
 <body>
+	${assetPlaceholderCount > 0 ? `<div role="status" id="asset-placeholders">Office assets unavailable: ${assetPlaceholderCount}</div>` : ''}
 	<div id="scroller"><div id="content"></div></div>
 	<div id="status">読み込み中…</div>
 	<script nonce="${nonce}" src="${libBase}/jszip.min.js"></script>
@@ -545,6 +553,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._assetSanitization.value?.cancel();
 		this._inputEpoch++;
 		this._inputDisposables.clear();
 		this._currentResource = undefined;
@@ -556,6 +565,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._assetSanitization.value?.cancel();
 		this._disposed = true;
 		this._inputEpoch++;
 		this._currentResource = undefined;

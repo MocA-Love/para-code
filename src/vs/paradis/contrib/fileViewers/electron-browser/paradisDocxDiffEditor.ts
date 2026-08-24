@@ -22,7 +22,7 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisDocxFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
@@ -57,6 +57,7 @@ import {
 	ParadisDocxWebviewMessage,
 } from '../common/paradisDocx.js';
 import { buildDocxDiff } from '../common/paradisDocxDiff.js';
+import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
@@ -113,6 +114,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
+	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 
 	constructor(
 		group: IEditorGroup,
@@ -343,24 +346,28 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			return;
 		}
 		const generation = this._loadGeneration;
+		this._assetSanitization.value?.cancel();
+		const sanitization = new CancellationTokenSource(); this._assetSanitization.value = sanitization;
 		// 読み直しの前にツールバーの状態を送り直す。webview は作り直されるたびに
 		// 倍率 1・書式表示 ON に戻るので、送らないとツールバーの表示と本文が食い違う。
 		void webview.postMessage({ type: 'zoom', scale: this._scale });
 		void webview.postMessage({ type: 'showFormatChanges', enabled: this._showFormatChanges });
 		try {
-			const [originalBuffer, modifiedBuffer] = await Promise.all([
-				this._readDocument(original),
-				this._readDocument(modified),
+			const [originalPackage, modifiedPackage] = await Promise.all([
+				this._readDocument(original, sanitization.token),
+				this._readDocument(modified, sanitization.token),
 			]);
-			if (generation !== this._loadGeneration || this._disposed) {
+			if (generation !== this._loadGeneration || this._disposed || sanitization.token.isCancellationRequested) {
 				return;
 			}
+			this._assetPlaceholders = [...originalPackage.placeholders, ...modifiedPackage.placeholders];
+			const originalBuffer = originalPackage.buffer; const modifiedBuffer = modifiedPackage.buffer;
 			// transfer リストを渡しても renderer → webview の最初のホップは構造化クローン
 			// （webviewElement.postMessage は transfer をメッセージ本体に詰めるだけ）。
 			// 実際に所有権が移るのは webview 内部から iframe へ渡す最後のホップだけで、
 			// ここでのコピーは避けられない。
 			void webview.postMessage(
-				{ type: 'load', generation, original: originalBuffer, modified: modifiedBuffer },
+				{ type: 'load', generation, original: originalBuffer, modified: modifiedBuffer, assetPlaceholders: this._assetPlaceholders },
 				[originalBuffer, modifiedBuffer]
 			);
 		} catch (error) {
@@ -370,12 +377,12 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 	}
 
-	private async _readDocument(resource: URI): Promise<ArrayBuffer> {
+	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[] }> {
 		// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリに載せてしまう。
 		const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
-		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`);
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`, token);
 		const bytes = sanitized.bytes;
-		return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders };
 	}
 
 	/** 例外を利用者に見せる文言にする。ファイルが大きすぎる場合だけ専用の案内を出す。 */
@@ -583,6 +590,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._assetSanitization.value?.cancel();
 		this._inputEpoch++;
 		this._loadGeneration++;
 		this._inputDisposables.clear();
@@ -601,6 +609,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._assetSanitization.value?.cancel();
 		this._disposed = true;
 		this._loadGeneration++;
 		super.dispose();
