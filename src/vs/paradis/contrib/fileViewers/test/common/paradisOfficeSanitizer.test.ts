@@ -336,11 +336,18 @@ suite('ParadisOfficeSanitizer', () => {
 	test('fails closed on unknown relationships and duplicate or dangling OPC declarations', async () => {
 		const base = {
 			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/custom/payload.bin" ContentType="image/svg+xml"/></Types>',
+			'_rels/.rels': packageRootRelationships(),
 			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
 			'custom/payload.bin': '<svg xmlns="http://www.w3.org/2000/svg"/>',
 		};
 		const invalidRels = ['<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="urn:custom:drawing" Target="../custom/payload.bin"/></Relationships>', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/></Relationships>', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../missing.bin"/></Relationships>'];
-		for (const [index, rels] of invalidRels.entries()) {
+		const unknown = await sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'unknown-opc', source: Uint8Array.of(1), archive: new MemoryOfficeArchive({ ...base, 'word/_rels/document.xml.rels': invalidRels[0] }),
+		});
+		const unknownEntries = readStoreZipEntries(unknown.bytes);
+		strictEqual(unknownEntries.has('custom/payload.bin'), false);
+		strictEqual(textOf(unknownEntries, 'word/_rels/document.xml.rels').includes('urn:custom:drawing'), false);
+		for (const [index, rels] of invalidRels.slice(1).entries()) {
 			await rejects(
 				sanitizeOfficeDocxPackageForRenderer({
 					nodeId: `invalid-opc-${index}`,
@@ -373,7 +380,9 @@ suite('ParadisOfficeSanitizer', () => {
 			source: Uint8Array.of(1),
 			archive: new MemoryOfficeArchive({
 				'[Content_Types].xml': types,
-				'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+				'_rels/.rels': packageRootRelationships(),
+				'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:sectPr><w:headerReference w:type="default" r:id="header"/></w:sectPr></w:body></w:document>',
+				'word/_rels/document.xml.rels': relationships('<Relationship Id="header" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>'),
 				'word/header1.xml': '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:p><w:r><w:drawing r:id="ole"/></w:r></w:p></w:hdr>',
 				'word/_rels/header1.xml.rels': rels,
 				'custom/ole.bin': 'OLE',
@@ -390,6 +399,7 @@ suite('ParadisOfficeSanitizer', () => {
 				source: Uint8Array.of(1),
 				archive: new MemoryOfficeArchive({
 					'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+					'_rels/.rels': packageRootRelationships(),
 					'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
 					'word/_rels/document.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${externalRelationships}</Relationships>`,
 				}),
@@ -522,23 +532,24 @@ suite('ParadisOfficeSanitizer', () => {
 
 	test('preserves line, shape, anchor, transform, and diagonal-border geometry while blocking a DrawingML asset', async () => {
 		const nonAssetDrawing = '<a:sp xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:spPr><a:xfrm rot="2700000"><a:off x="91" y="92"/><a:ext cx="93" cy="94"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="12700"/></a:spPr></a:sp>';
+		const themeXml = `<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Geometry"><a:themeElements/>${nonAssetDrawing}</a:theme>`;
 		const documentXml = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing><wp:anchor distT="11" distB="12" distL="13" distR="14" simplePos="0" relativeHeight="15" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:positionH relativeFrom="column"><wp:posOffset>160020</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>320040</wp:posOffset></wp:positionV><wp:extent cx="480060" cy="640080"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="blocked"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000" flipH="1"><a:off x="101" y="202"/><a:ext cx="303" cy="404"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"><a:prstDash val="dash"/><a:headEnd type="none"/><a:tailEnd type="triangle"/></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p><w:tbl><w:tr><w:tc><w:tcPr><w:tcBorders><w:tl2br w:val="single" w:sz="8" w:space="0" w:color="112233"/><w:tr2bl w:val="dashed" w:sz="6" w:space="1" w:color="445566"/></w:tcBorders></w:tcPr><w:p/></w:tc></w:tr></w:tbl></w:body></w:document>';
 		const result = await sanitizeMemoryPackage('preserved-drawing-geometry', {
 			'[Content_Types].xml': contentTypes([
 				['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
-				['/word/drawings/nonAsset.xml', 'application/xml'],
+				['/word/theme/theme1.xml', 'application/vnd.openxmlformats-officedocument.theme+xml'],
 				['/custom/ole.bin', 'application/vnd.openxmlformats-officedocument.oleObject'],
 			]),
 			'word/document.xml': documentXml,
-			'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/>'),
-			'word/drawings/nonAsset.xml': nonAssetDrawing,
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/><Relationship Id="theme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>'),
+			'word/theme/theme1.xml': themeXml,
 			'custom/ole.bin': 'BLOCKED-OLE',
 		});
 		const entries = readStoreZipEntries(result.bytes);
 		const sanitizedDocument = textOf(entries, 'word/document.xml');
 
 		deepStrictEqual(drawingGeometrySignature(sanitizedDocument), drawingGeometrySignature(documentXml));
-		strictEqual(textOf(entries, 'word/drawings/nonAsset.xml'), nonAssetDrawing);
+		strictEqual(textOf(entries, 'word/theme/theme1.xml'), themeXml);
 		strictEqual(sanitizedDocument.includes('blocked'), false);
 		ok(sanitizedDocument.includes('Office asset unavailable:'));
 	});
@@ -578,6 +589,8 @@ suite('ParadisOfficeSanitizer', () => {
 			const slash = story.name.lastIndexOf('/');
 			files[`${story.name.slice(0, slash)}/_rels/${story.name.slice(slash + 1)}.rels`] = relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid" TargetMode="External"/>');
 		}
+		files['word/document.xml'] = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:hyperlink r:id="blocked"><w:r><w:t>Main</w:t></w:r></w:hyperlink></w:p><w:sectPr><w:headerReference w:type="default" r:id="header"/><w:footerReference w:type="default" r:id="footer"/></w:sectPr></w:body></w:document>';
+		files['word/_rels/document.xml.rels'] = relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid" TargetMode="External"/><Relationship Id="header" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="footer" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/><Relationship Id="footnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/><Relationship Id="endnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/><Relationship Id="comments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>');
 
 		const entries = readStoreZipEntries((await sanitizeMemoryPackage('story-anchors', files)).bytes);
 		for (const story of stories) {
@@ -652,6 +665,228 @@ suite('ParadisOfficeSanitizer', () => {
 			'word/_rels/document.xml.rels': relationships('<Relationship Id="image" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image.svg" TargetMode="Attacker"/>'),
 			'word/media/image.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
 		}));
+	});
+
+	test('indexes 25,000 unique relationship consumers with bounded linear checkpoints and macrotask yields', async function () {
+		this.timeout(4_000);
+		const count = 25_000;
+		const consumers = Array.from({ length: count }, (_, index) => `<a:blip r:embed="r${index}"/>`).join('');
+		const imageRelationships = Array.from({ length: count }, (_, index) => `<Relationship Id="r${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/shared.svg"/>`).join('');
+		let checkpoints = 0;
+		let schedulerYields = 0;
+		const result = await sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'linear-consumer-index',
+			source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04),
+			archive: new MemoryOfficeArchive({
+				'[Content_Types].xml': contentTypes([
+					['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+					['/word/media/shared.svg', 'image/svg+xml'],
+				]),
+				'_rels/.rels': packageRootRelationships(),
+				'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing>${consumers}</w:drawing></w:r></w:p></w:body></w:document>`,
+				'word/_rels/document.xml.rels': relationships(imageRelationships),
+				'word/media/shared.svg': '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L1 1"/></svg>',
+			}),
+			checkpoint: () => { checkpoints++; },
+			scheduler: () => new Promise<void>(resolve => setTimeout(() => { schedulerYields++; resolve(); }, 0)),
+		});
+
+		strictEqual(result.placeholders.length, 0);
+		ok(schedulerYields > 100, 'analysis yielded independently of archive read/write');
+		ok(checkpoints < 1_000_000, `bounded checkpoints: ${checkpoints}`);
+	});
+
+	test('rejects the 257th placeholder during relationship analysis instead of scanning the tail', async () => {
+		const externalRelationships = Array.from({ length: 1_000 }, (_, index) => `<Relationship Id="external${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/${index}" TargetMode="External"/>`).join('');
+		let schedulerYields = 0;
+		await rejects(sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'immediate-placeholder-cap',
+			source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04),
+			archive: new MemoryOfficeArchive({
+				'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
+				'_rels/.rels': packageRootRelationships(),
+				'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+				'word/_rels/document.xml.rels': relationships(externalRelationships),
+			}),
+			scheduler: () => new Promise<void>(resolve => setTimeout(() => { schedulerYields++; resolve(); }, 0)),
+		}), (error: unknown) => error instanceof Error && error.message === 'limitExceeded');
+
+		ok(schedulerYields > 12, 'relationship analysis yielded before rejecting');
+		ok(schedulerYields < 20, `stopped at the cap instead of scanning 1,000 relationships: ${schedulerYields}`);
+	});
+
+	test('observes cancellation and an absolute deadline during chunked OPC analysis', async () => {
+		const relationshipsXml = Array.from({ length: 2_000 }, (_, index) => `<Relationship Id="r${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/shared.svg"/>`).join('');
+		const consumers = Array.from({ length: 2_000 }, (_, index) => `<a:blip r:embed="r${index}"/>`).join('');
+		const files = {
+			'[Content_Types].xml': contentTypes([
+				['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+				['/word/media/shared.svg', 'image/svg+xml'],
+			]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing>${consumers}</w:drawing></w:r></w:p></w:body></w:document>`,
+			'word/_rels/document.xml.rels': relationships(relationshipsXml),
+			'word/media/shared.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
+		};
+		const cancellation = new CancellationTokenSource();
+		let cancellationYields = 0;
+		try {
+			await rejects(sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'analysis-cancel',
+				source: Uint8Array.of(1),
+				archive: new MemoryOfficeArchive(files),
+				token: cancellation.token,
+				scheduler: () => new Promise<void>(resolve => setTimeout(() => {
+					if (++cancellationYields === 30) { cancellation.cancel(); }
+					resolve();
+				}, 0)),
+			}), (error: unknown) => error instanceof Error && error.message === 'cancelled');
+		} finally {
+			cancellation.dispose();
+		}
+		strictEqual(cancellationYields, 30);
+
+		const originalNow = Date.now;
+		let now = 1_000;
+		let deadlineYields = 0;
+		try {
+			Date.now = () => now;
+			await rejects(sanitizeOfficeDocxPackageForRenderer({
+				nodeId: 'analysis-deadline',
+				source: Uint8Array.of(1),
+				archive: new MemoryOfficeArchive(files),
+				deadline: 1_029,
+				scheduler: () => new Promise<void>(resolve => setTimeout(() => { deadlineYields++; now++; resolve(); }, 0)),
+			}), (error: unknown) => error instanceof Error && error.message === 'limitExceeded');
+		} finally {
+			Date.now = originalNow;
+		}
+		strictEqual(deadlineYields, 30);
+	});
+
+	test('requires one reachable root officeDocument and removes every unreachable OPC part and override', async () => {
+		const documentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml';
+		await rejects(sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'missing-root',
+			source: Uint8Array.of(1),
+			archive: new MemoryOfficeArchive({
+				'[Content_Types].xml': contentTypes([['/word/document.xml', documentType]]),
+				'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+			}),
+		}));
+		await rejects(sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'duplicate-root-main',
+			source: Uint8Array.of(1),
+			archive: new MemoryOfficeArchive({
+				'[Content_Types].xml': contentTypes([
+					['/word/document.xml', documentType],
+					['/word/document2.xml', documentType],
+				]),
+				'_rels/.rels': relationships('<Relationship Id="root1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="root2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document2.xml"/>'),
+				'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+				'word/document2.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+			}),
+		}));
+
+		const result = await sanitizeMemoryPackage('orphan-graph', {
+			'[Content_Types].xml': contentTypes([
+				['/word/document.xml', documentType],
+				['/orphan/payload.xml', 'application/xml'],
+				['/orphan/payload.bin', 'application/octet-stream'],
+			]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+			'orphan/payload.xml': '<orphan xmlns="urn:orphan">RAW-ORPHAN-XML</orphan>',
+			'orphan/_rels/payload.xml.rels': relationships('<Relationship Id="nested" Type="urn:unknown" Target="payload.bin"/>'),
+			'orphan/payload.bin': 'RAW-ORPHAN-BINARY',
+		});
+		const entries = readStoreZipEntries(result.bytes);
+		strictEqual(entries.has('orphan/payload.xml'), false);
+		strictEqual(entries.has('orphan/_rels/payload.xml.rels'), false);
+		strictEqual(entries.has('orphan/payload.bin'), false);
+		const types = textOf(entries, '[Content_Types].xml');
+		strictEqual(types.includes('/orphan/payload.xml'), false);
+		strictEqual(types.includes('/orphan/payload.bin'), false);
+	});
+
+	test('scans a Word story without a relationships part and replaces every dangling consumer in place', async () => {
+		const result = await sanitizeMemoryPackage('story-without-rels', {
+			'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:hyperlink r:id="missing"><w:r><w:t>Dangling</w:t></w:r></w:hyperlink></w:p></w:body></w:document>',
+		});
+		const documentXml = textOf(readStoreZipEntries(result.bytes), 'word/document.xml');
+		strictEqual(documentXml.includes('r:id="missing"'), false);
+		strictEqual(documentXml.includes('Dangling'), false);
+		ok(documentXml.includes('Office asset unavailable:'));
+	});
+
+	test('patches only unsafe consumer bytes while preserving MC QName bindings and diagonal DrawingML bytes', async () => {
+		const geometry = '<wp:anchor distT="11" distB="12" distL="13" distR="14"><wp:positionH relativeFrom="column"><wp:posOffset>160020</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>320040</wp:posOffset></wp:positionV><wp:extent cx="480060" cy="640080"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="blocked"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000"><a:off x="101" y="202"/><a:ext cx="303" cy="404"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const diagonal = '<w:tcBorders><w:tl2br w:val="single" w:sz="8" w:color="112233"/><w:tr2bl w:val="dashed" w:sz="6" w:color="445566"/></w:tcBorders>';
+		const documentXml = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="w14 wps"><w:body><mc:AlternateContent><mc:Choice Requires="wps"><w:p><w:r><w:drawing>${geometry}</w:drawing></w:r></w:p></mc:Choice><mc:Fallback><w:p/></mc:Fallback></mc:AlternateContent><w:tbl><w:tr><w:tc><w:tcPr>${diagonal}</w:tcPr><w:p/></w:tc></w:tr></w:tbl></w:body></w:document>`;
+		const result = await sanitizeMemoryPackage('lexical-mc-patch', {
+			'[Content_Types].xml': contentTypes([
+				['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+				['/custom/ole.bin', 'application/vnd.openxmlformats-officedocument.oleObject'],
+			]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': documentXml,
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/>'),
+			'custom/ole.bin': 'RAW-OLE',
+		});
+		const sanitized = textOf(readStoreZipEntries(result.bytes), 'word/document.xml');
+
+		ok(sanitized.includes('mc:Ignorable="w14 wps"'));
+		ok(sanitized.includes('<mc:Choice Requires="wps">'));
+		ok(sanitized.includes(geometry.replace(' r:embed="blocked"', '')));
+		ok(sanitized.includes(diagonal));
+		strictEqual(sanitized.includes('blocked'), false);
+		ok(sanitized.includes('Office asset unavailable:'));
+	});
+
+	test('supports an exact numbering picture-bullet image and strips unsupported non-story consumers', async () => {
+		const result = await sanitizeMemoryPackage('numbering-picture-bullet', {
+			'[Content_Types].xml': contentTypes([
+				['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'],
+				['/word/numbering.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml'],
+				['/word/fontTable.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml'],
+				['/word/settings.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml'],
+				['/word/styles.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml'],
+				['/word/theme/theme1.xml', 'application/vnd.openxmlformats-officedocument.theme+xml'],
+				['/word/media/bullet.svg', 'image/svg+xml'],
+				['/word/media/theme.svg', 'image/svg+xml'],
+				['/word/media/style.svg', 'image/svg+xml'],
+				['/word/fonts/font.odttf', 'application/x-font-ttf'],
+			]),
+			'_rels/.rels': packageRootRelationships(),
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Picture bullet</w:t></w:r></w:p></w:body></w:document>',
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="numbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="fonts" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/><Relationship Id="settings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/><Relationship Id="styles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="theme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>'),
+			'word/numbering.xml': '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:numPicBullet w:numPicBulletId="1"><w:pict><v:shape><v:imagedata r:id="bullet"/></v:shape></w:pict></w:numPicBullet></w:numbering>',
+			'word/_rels/numbering.xml.rels': relationships('<Relationship Id="bullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bullet.svg"/>'),
+			'word/media/bullet.svg': '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="4" cy="4" r="3"/></svg>',
+			'word/fontTable.xml': '<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:font w:name="Unsafe"><w:embedRegular r:id="font"/></w:font></w:fonts>',
+			'word/_rels/fontTable.xml.rels': relationships('<Relationship Id="font" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font.odttf"/>'),
+			'word/fonts/font.odttf': 'RAW-FONT',
+			'word/settings.xml': '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:attachedTemplate r:id="template"/></w:settings>',
+			'word/_rels/settings.xml.rels': relationships('<Relationship Id="template" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="https://example.invalid/template" TargetMode="External"/>'),
+			'word/styles.xml': '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:style w:type="paragraph" w:styleId="Unsafe"><a:blip r:embed="styleImage"/></w:style></w:styles>',
+			'word/_rels/styles.xml.rels': relationships('<Relationship Id="styleImage" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/style.svg"/>'),
+			'word/media/style.svg': '<svg xmlns="http://www.w3.org/2000/svg"><text>UNSUPPORTED-STYLE</text></svg>',
+			'word/theme/theme1.xml': '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="Theme"><a:themeElements/><a:blip r:embed="themeImage"/></a:theme>',
+			'word/theme/_rels/theme1.xml.rels': relationships('<Relationship Id="themeImage" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attacker/image" Target="../media/theme.svg"/>'),
+			'word/media/theme.svg': '<svg xmlns="http://www.w3.org/2000/svg"><text>UNSAFE-THEME</text></svg>',
+		});
+		const entries = readStoreZipEntries(result.bytes);
+		ok(textOf(entries, 'word/numbering.xml').includes('r:id="bullet"'));
+		ok(textOf(entries, 'word/_rels/numbering.xml.rels').includes('Id="bullet"'));
+		strictEqual(entries.has('word/media/bullet.svg'), true);
+		strictEqual(entries.has('word/fonts/font.odttf'), false);
+		strictEqual(textOf(entries, 'word/fontTable.xml').includes('r:id="font"'), false);
+		strictEqual(textOf(entries, 'word/settings.xml').includes('r:id="template"'), false);
+		strictEqual(textOf(entries, 'word/styles.xml').includes('r:embed="styleImage"'), false);
+		strictEqual(entries.has('word/media/style.svg'), false);
+		strictEqual(textOf(entries, 'word/theme/theme1.xml').includes('r:embed="themeImage"'), false);
 	});
 
 	test('enforces SVG byte, depth, node, and attribute budgets before publishing bytes', () => {
@@ -898,6 +1133,10 @@ function relationships(children: string): string {
 	return `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${children}</Relationships>`;
 }
 
+function packageRootRelationships(target = 'word/document.xml'): string {
+	return relationships(`<Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="${target}"/>`);
+}
+
 function contentTypes(overrides: readonly (readonly [string, string])[]): string {
 	return `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${overrides.map(([name, type]) => `<Override PartName="${name}" ContentType="${type}"/>`).join('')}</Types>`;
 }
@@ -906,7 +1145,7 @@ function sanitizeMemoryPackage(nodeId: string, files: Readonly<Record<string, st
 	return sanitizeOfficeDocxPackageForRenderer({
 		nodeId,
 		source: Uint8Array.of(0x50, 0x4b, 0x03, 0x04),
-		archive: new MemoryOfficeArchive(files),
+		archive: new MemoryOfficeArchive({ '_rels/.rels': packageRootRelationships(), ...files }),
 	});
 }
 
