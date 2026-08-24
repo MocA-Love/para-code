@@ -516,7 +516,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 			let prepared: ReturnType<ParadisOfficeChannel['prepareResponse']>;
 			try { prepared = this.prepareResponse(response, encoded); }
 			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
-			if (prepared.original) { commit(); }
+			if (prepared.shouldCommit) { commit(); }
 			else { await this.closeLateHandle(entry.resourceOwnerId, request, response); }
 			return prepared.value as T;
 		} finally {
@@ -554,12 +554,25 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 	private publishResponse(response: ParadisOfficeResponse, encoded: boolean): ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse> {
 		return this.prepareResponse(response, encoded).value;
 	}
-	private prepareResponse(response: ParadisOfficeResponse, encoded: boolean): { readonly value: ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse>; readonly original: boolean } {
-		if (!encoded) { return { value: response, original: true }; }
-		try { return { value: marshalParadisOfficeResponse(response), original: true }; }
+	private prepareResponse(response: ParadisOfficeResponse, encoded: boolean): { readonly value: ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse>; readonly shouldCommit: boolean } {
+		if (!encoded) { return { value: response, shouldCommit: true }; }
+		try { return { value: marshalParadisOfficeResponse(response), shouldCommit: true }; }
 		catch (error) {
 			if (!(error instanceof ParadisOfficeWireError) || error.code !== 'payloadTooLarge') { throw error; }
-			return { value: marshalParadisOfficeResponse({ version: 1, requestId: response.requestId, operation: response.operation, ok: false, outcome: 'blocked', error: createParadisOfficeError('transport', 'payloadTooLarge', { severity: 'error', retryable: false, recoverable: true, userAction: 'reduceDocumentSize' }) }), original: false };
+			const canonical = this.canonicalSideEffectResponse(response);
+			if (canonical) { return { value: marshalParadisOfficeResponse(canonical), shouldCommit: true }; }
+			return { value: marshalParadisOfficeResponse({ version: 1, requestId: response.requestId, operation: response.operation, ok: false, outcome: 'blocked', error: createParadisOfficeError('transport', 'payloadTooLarge', { severity: 'error', retryable: false, recoverable: true, userAction: 'reduceDocumentSize' }) }), shouldCommit: false };
+		}
+	}
+	private canonicalSideEffectResponse(response: ParadisOfficeResponse): ParadisOfficeResponse | undefined {
+		if (!response.ok) { return undefined; }
+		switch (response.operation) {
+			case 'close': case 'cancel':
+				return { version: 1, requestId: response.requestId, operation: response.operation, ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true };
+			case 'exportPrint':
+				return { ...response, warnings: [], budgetUsage: {}, timings: {} };
+			default:
+				return undefined;
 		}
 	}
 	private createOwnerCapability(): string { const value = this.connectionAuthority?.createCapability?.() ?? randomBytes(32).toString('hex'); return /^[a-f\d]{64}$/.test(value) ? value : channelError(); }

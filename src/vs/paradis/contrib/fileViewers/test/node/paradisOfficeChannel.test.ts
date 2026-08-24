@@ -365,13 +365,28 @@ suite('ParadisOfficeChannel', () => {
 		let exactMeasurements = 0;
 		let bufferCopies = 0;
 		const observer: ParadisOfficeWireDecodeObserver = { onBeforeExactMeasure: () => exactMeasurements++, onBeforeBufferCopy: () => bufferCopies++ };
-		const oversizedHeader = [PARADIS_OFFICE_WIRE_ENVELOPE, 'x'.repeat(PARADIS_OFFICE_MAX_IPC_BYTES + 1)] as const;
-		assert.throws(() => decodeParadisOfficeWireValue(oversizedHeader, observer), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
+		let headerCopies = 0;
+		const originalFromString = VSBuffer.fromString;
+		VSBuffer.fromString = ((...args: Parameters<typeof VSBuffer.fromString>) => { headerCopies++; return originalFromString(...args); }) as typeof VSBuffer.fromString;
+		try {
+			const oversizedHeaders = [
+				'x'.repeat(PARADIS_OFFICE_MAX_IPC_BYTES + 1),
+				'\u0800'.repeat(Math.floor(PARADIS_OFFICE_MAX_IPC_BYTES / 3) + 1),
+				'\u{1F600}'.repeat(Math.floor(PARADIS_OFFICE_MAX_IPC_BYTES / 4) + 1),
+				'\uD800'.repeat(Math.floor(PARADIS_OFFICE_MAX_IPC_BYTES / 3) + 1),
+			];
+			for (const oversizedHeader of oversizedHeaders) {
+				assert.throws(() => decodeParadisOfficeWireValue([PARADIS_OFFICE_WIRE_ENVELOPE, oversizedHeader], observer), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
+			}
+		} finally {
+			VSBuffer.fromString = originalFromString;
+		}
 		const rawLength = PARADIS_OFFICE_LIMITS.maxAssetRequestBytes + 1;
 		const header = JSON.stringify({ version: 1, transfer: 'spoolAppend', bufferLengths: [rawLength], payload: { reference: { id: 'a'.repeat(48), ownerId: 'owner', nonce: 'b'.repeat(64), attemptId: '123e4567-e89b-42d3-a456-426614174000' }, bytes: { $paradisOfficeBuffer: 0 } } });
 		assert.throws(() => decodeParadisOfficeWireValue([PARADIS_OFFICE_WIRE_ENVELOPE, header, VSBuffer.alloc(rawLength)], observer), (error: unknown) => error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge');
 		assert.strictEqual(exactMeasurements, 0);
 		assert.strictEqual(bufferCopies, 0);
+		assert.strictEqual(headerCopies, 0);
 		const valid = marshalParadisOfficeWireValue({ bytes: VSBuffer.fromByteArray([1]) });
 		decodeParadisOfficeWireValue(valid, observer);
 		assert.strictEqual(exactMeasurements, 1);
@@ -530,6 +545,66 @@ suite('ParadisOfficeChannel', () => {
 		backend.responses.set('open', request => ({ ...openResponse(request.requestId), handle: { kind: 'document', id: 'f'.repeat(48) } }));
 		const valid = await unmarshalParadisOfficeResponse(await channel.call('window:wire-commit', 'request', marshalParadisOfficeRequest(request('open', 'wire-valid-open'))));
 		assert.strictEqual(valid.ok, true);
+		channel.dispose();
+	});
+
+	test('publishes a canonical close acknowledgement and commits handle, cursor, and quota cleanup after wire overflow', async () => {
+		const backend = new RecordingBackend();
+		let nextHandle = 1;
+		const backendHandles = new Set<string>();
+		backend.responses.set('open', operationRequest => {
+			const id = (nextHandle++).toString(16).repeat(48);
+			backendHandles.add(`document:${id}`);
+			return { ...openResponse(operationRequest.requestId), handle: { kind: 'document', id } };
+		});
+		backend.responses.set('compare', operationRequest => {
+			backendHandles.add(`comparison:${comparisonHandle.id}`);
+			return { ...compareResponse(operationRequest.requestId), nextCursor: 'close-overflow-cursor' };
+		});
+		backend.responses.set('close', operationRequest => {
+			if (operationRequest.operation !== 'close' || !operationRequest.handle) { throw new Error('Expected close handle'); }
+			backendHandles.delete(`${operationRequest.handle.kind}:${operationRequest.handle.id}`);
+			return fillResponseToSemanticLimit({ version: 1, requestId: operationRequest.requestId, operation: 'close', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true });
+		});
+		const channel = new ParadisOfficeChannel(backend);
+		await unmarshalParadisOfficeResponse(await channel.call('window:close-overflow', 'request', marshalParadisOfficeRequest(request('compare', 'close-overflow-compare'))));
+		const closed = await unmarshalParadisOfficeResponse(await channel.call('window:close-overflow', 'request', marshalParadisOfficeRequest({ version: 1, requestId: 'close-overflow-close', operation: 'close', handle: comparisonHandle })));
+		assert.deepStrictEqual(closed, { version: 1, requestId: 'close-overflow-close', operation: 'close', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true });
+		assert.strictEqual(backendHandles.has(`comparison:${comparisonHandle.id}`), false);
+		await assert.rejects(channel.call('window:close-overflow', 'request', marshalParadisOfficeRequest({ ...request('compare', 'close-overflow-replay'), cursor: 'close-overflow-cursor' })), ParadisOfficeChannelError);
+		const admitted = await Promise.all(Array.from({ length: 4 }, (_, index) => channel.call('window:close-overflow', 'request', marshalParadisOfficeRequest(request('open', `close-overflow-open-${index}`))).then(unmarshalParadisOfficeResponse)));
+		assert.ok(admitted.every(response => response.ok));
+		channel.dispose();
+	});
+
+	test('publishes canonical acknowledgements for successful cancel side effects after wire overflow', async () => {
+		const backend = new RecordingBackend();
+		let targetCancelled = false;
+		backend.responses.set('inspect', (operationRequest, token) => new Promise<ParadisOfficeResponse>(resolve => {
+			const listener = token.onCancellationRequested(() => { targetCancelled = true; listener.dispose(); resolve(failure(operationRequest)); });
+		}));
+		backend.responses.set('cancel', operationRequest => fillResponseToSemanticLimit({ version: 1, requestId: operationRequest.requestId, operation: 'cancel', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true }));
+		const channel = new ParadisOfficeChannel(backend);
+		const target = channel.call('window:cancel-overflow', 'request', marshalParadisOfficeRequest(request('inspect', 'cancel-overflow-target')));
+		const cancelled = await unmarshalParadisOfficeResponse(await channel.call('window:cancel-overflow', 'request', marshalParadisOfficeRequest({ version: 1, requestId: 'cancel-overflow-control', operation: 'cancel', targetRequestId: 'cancel-overflow-target' })));
+		await target;
+		assert.strictEqual(targetCancelled, true);
+		assert.deepStrictEqual(cancelled, { version: 1, requestId: 'cancel-overflow-control', operation: 'cancel', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true });
+		channel.dispose();
+	});
+
+	test('publishes a bounded canonical export result after its backend side effect succeeds', async () => {
+		const backend = new RecordingBackend();
+		let exported = false;
+		backend.responses.set('exportPrint', operationRequest => {
+			exported = true;
+			return fillResponseToSemanticLimit({ version: 1, requestId: operationRequest.requestId, operation: 'exportPrint', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, revision: { kind: 'document', sourceRevision: 'document-revision-1' }, completeness, assetId: 'print_pdf', mime: 'application/pdf', byteLength: 17 });
+		});
+		const channel = new ParadisOfficeChannel(backend);
+		await unmarshalParadisOfficeResponse(await channel.call('window:export-overflow', 'request', marshalParadisOfficeRequest(request('open', 'export-overflow-open'))));
+		const response = await unmarshalParadisOfficeResponse(await channel.call('window:export-overflow', 'request', marshalParadisOfficeRequest(request('exportPrint', 'export-overflow-export'))));
+		assert.strictEqual(exported, true);
+		assert.deepStrictEqual(response, { version: 1, requestId: 'export-overflow-export', operation: 'exportPrint', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, revision: { kind: 'document', sourceRevision: 'document-revision-1' }, completeness, assetId: 'print_pdf', mime: 'application/pdf', byteLength: 17 });
 		channel.dispose();
 	});
 
