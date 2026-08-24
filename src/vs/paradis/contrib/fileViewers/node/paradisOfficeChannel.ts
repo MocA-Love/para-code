@@ -454,7 +454,8 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		const encoded = isParadisOfficeWireEnvelope(arg);
 		let decodedArg = arg;
 		let wireAuthority: ParadisOfficeWireAuthority | undefined;
-		if (encoded) { try { const decoded = decodeParadisOfficeWireValue(arg); decodedArg = decoded.value; wireAuthority = decoded.authority; } catch { return channelError(); } }
+		let wireTransfer: 'semantic' | 'spoolAppend' | undefined;
+		if (encoded) { try { const decoded = decodeParadisOfficeWireValue(arg); decodedArg = decoded.value; wireAuthority = decoded.authority; wireTransfer = decoded.transfer; } catch { return channelError(); } }
 		const currentEpoch = this.connectionAuthority?.currentEpoch(ctx) ?? 0;
 		if (this.connectionAuthority && (!Number.isSafeInteger(currentEpoch) || currentEpoch < 1)) { return channelError(); }
 		if (command === 'negotiate') {
@@ -474,6 +475,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		const resourceOwnerId = this.connectionAuthority ? session.ownerCapability : ctx;
 		if (command.startsWith('spool/') || command === 'source/bind') {
 			if (!this.spoolTransport) { return channelError(); }
+			if (command === 'spool/append' && encoded && wireTransfer !== 'spoolAppend') { return channelError(); }
 			try {
 				const result = await this.spoolTransport.call(resourceOwnerId, command, decodedArg);
 				if (cancellationToken.isCancellationRequested || !this.isCurrentSession(ctx, session)) { await this.spoolTransport.cleanupLate(resourceOwnerId, result); return channelError(); }
@@ -508,9 +510,15 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 			let response: ParadisOfficeResponse;
 			try { response = snapshotParadisOfficeResponse(raw); }
 			catch (error) { this.disconnect(ctx); return this.publishResponse(error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge' ? sourceFailure(request, 'transport', 'payloadTooLarge') : sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
-			try { this.validateResponseBinding(ctx, request, response); }
+			let commit: () => void;
+			try { commit = this.validateResponseBinding(ctx, request, response); }
 			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
-			return this.publishResponse(response, encoded) as T;
+			let prepared: ReturnType<ParadisOfficeChannel['prepareResponse']>;
+			try { prepared = this.prepareResponse(response, encoded); }
+			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
+			if (prepared.original) { commit(); }
+			else { await this.closeLateHandle(entry.resourceOwnerId, request, response); }
+			return prepared.value as T;
 		} finally {
 			if (this.active.get(activeKey) === entry) { this.active.delete(activeKey); }
 			if (entry.handleReservation) { entry.handleReservation = false; this.releaseHandleReservation(ctx); }
@@ -544,11 +552,14 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 	}
 
 	private publishResponse(response: ParadisOfficeResponse, encoded: boolean): ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse> {
-		if (!encoded) { return response; }
-		try { return marshalParadisOfficeResponse(response); }
+		return this.prepareResponse(response, encoded).value;
+	}
+	private prepareResponse(response: ParadisOfficeResponse, encoded: boolean): { readonly value: ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse>; readonly original: boolean } {
+		if (!encoded) { return { value: response, original: true }; }
+		try { return { value: marshalParadisOfficeResponse(response), original: true }; }
 		catch (error) {
 			if (!(error instanceof ParadisOfficeWireError) || error.code !== 'payloadTooLarge') { throw error; }
-			return marshalParadisOfficeResponse({ version: 1, requestId: response.requestId, operation: response.operation, ok: false, outcome: 'blocked', error: createParadisOfficeError('transport', 'payloadTooLarge', { severity: 'error', retryable: false, recoverable: true, userAction: 'reduceDocumentSize' }) });
+			return { value: marshalParadisOfficeResponse({ version: 1, requestId: response.requestId, operation: response.operation, ok: false, outcome: 'blocked', error: createParadisOfficeError('transport', 'payloadTooLarge', { severity: 'error', retryable: false, recoverable: true, userAction: 'reduceDocumentSize' }) }), original: false };
 		}
 	}
 	private createOwnerCapability(): string { const value = this.connectionAuthority?.createCapability?.() ?? randomBytes(32).toString('hex'); return /^[a-f\d]{64}$/.test(value) ? value : channelError(); }
@@ -560,7 +571,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		if (!response.ok || (response.operation !== 'open' && response.operation !== 'compare')) { return; }
 		try {
 			const closed = snapshotParadisOfficeResponse(await this.backend.close(ownerId, { version: 1, requestId: request.requestId, operation: 'close', handle: response.handle }, CancellationToken.None));
-			if (!closed.ok || closed.operation !== 'close' || closed.acknowledged !== true) { throw new ParadisOfficeChannelError(); }
+			if (!closed.ok || closed.operation !== 'close' || closed.requestId !== request.requestId || closed.acknowledged !== true) { throw new ParadisOfficeChannelError(); }
 		} catch { try { this.backend.disconnect(ownerId); } catch { } }
 	}
 
@@ -577,8 +588,11 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		}
 	}
 
-	private validateResponseBinding(ownerId: string, request: ParadisOfficeRequest, response: ParadisOfficeResponse): void {
+	private validateResponseBinding(ownerId: string, request: ParadisOfficeRequest, response: ParadisOfficeResponse): () => void {
 		if (response.requestId !== request.requestId || response.operation !== request.operation || response.version !== 1) { channelError(); }
+		let newHandle: { readonly key: string; readonly binding: StoredHandleBinding } | undefined;
+		let closedHandleKey: string | undefined;
+		let newCursor: { readonly cursor: string; readonly binding: StoredCursorBinding } | undefined;
 		const requestHandle = this.requestHandle(request);
 		const revision = responseRevision(response);
 		if ((request.operation === 'compare' || request.operation === 'search') && request.cursor !== undefined) {
@@ -599,22 +613,24 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 			const key = this.handleKey(response.handle);
 			const existing = this.handles.get(key);
 			if (existing && (request.operation !== 'compare' || request.cursor === undefined || existing.ownerId !== ownerId || !this.sameRevision(existing.revision, response.revision))) { channelError(); }
-			this.handles.set(key, { ownerId, revision: response.revision });
+			newHandle = { key, binding: { ownerId, revision: response.revision } };
 		}
 		if (response.ok && response.operation === 'close' && requestHandle) {
-			const subject = this.handleKey(requestHandle);
-			this.handles.delete(subject);
-			for (const [key, binding] of [...this.cursors]) { if (binding.ownerId === ownerId && this.handleKey(binding.handle) === subject) { this.cursors.delete(key); } }
+			closedHandleKey = this.handleKey(requestHandle);
 		}
 		if (response.ok && (response.operation === 'compare' || response.operation === 'search') && response.nextCursor !== undefined) {
 			let subject: string;
 			if (response.operation === 'search' && request.operation === 'search') { subject = this.handleKey(request.handle); }
 			else if (response.operation === 'compare' && request.operation === 'compare') { subject = this.compareSubject(request); }
 			else { channelError(); }
-			this.evictOwnerCursorIfNeeded(ownerId);
 			const handle = response.operation === 'compare' ? response.handle : request.operation === 'search' ? request.handle : channelError();
-			this.cursors.set(this.cursorKey(ownerId, response.nextCursor), { ownerId, operation: response.operation, subject, revision: response.revision, handle });
+			newCursor = { cursor: response.nextCursor, binding: { ownerId, operation: response.operation, subject, revision: response.revision, handle } };
 		}
+		return () => {
+			if (newHandle) { this.handles.set(newHandle.key, newHandle.binding); }
+			if (closedHandleKey) { this.handles.delete(closedHandleKey); for (const [key, binding] of [...this.cursors]) { if (binding.ownerId === ownerId && this.handleKey(binding.handle) === closedHandleKey) { this.cursors.delete(key); } } }
+			if (newCursor) { this.evictOwnerCursorIfNeeded(ownerId); this.cursors.set(this.cursorKey(ownerId, newCursor.cursor), newCursor.binding); }
+		};
 	}
 
 	private disconnect(ownerId: string, expectedEpoch?: number): void {
