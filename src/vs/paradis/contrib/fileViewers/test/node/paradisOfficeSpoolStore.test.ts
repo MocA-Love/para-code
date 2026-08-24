@@ -7,7 +7,8 @@
 import { createHash } from 'crypto';
 import { deepStrictEqual, doesNotThrow, ok, rejects, strictEqual } from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { CancellationError } from '../../../../../base/common/errors.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 // eslint-disable-next-line local/code-layering, local/code-import-patterns -- This Node integration test intentionally exercises the browser broker's IPC client contract against the backend store.
 import { ParadisOfficeSourceBroker } from '../../browser/paradisOfficeSourceBroker.js';
@@ -400,6 +401,54 @@ suite('OfficeSpoolStore', () => {
 		collisionStore.disposeAll();
 	});
 
+	test('normalizes proxy buffer traps and reschedule/dispose failures while releasing quota', async () => {
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const reference = await store.begin(ownerA);
+		const trapped = new Proxy(VSBuffer.fromString('x'), {
+			getPrototypeOf() { throw new Error('/raw/private secret-token'); },
+		});
+		await rejects(() => store.append(reference, trapped), (error: unknown) => {
+			return error instanceof Error
+				&& error.name === 'OfficeSpoolStoreError'
+				&& !(error.stack ?? '').includes('/Users/magu/')
+				&& !(error.stack ?? '').includes('/raw/private')
+				&& !(error.stack ?? '').includes('secret-token');
+		});
+		await store.dispose(reference);
+
+		let now = 1_000;
+		const scheduler = new ManualExpiryScheduler(() => undefined);
+		let scheduleCalls = 0;
+		scheduler.schedule = () => {
+			scheduleCalls++;
+			if (scheduleCalls > 1) { throw new Error('/raw/private secret-token'); }
+		};
+		const rescheduleStore = new OfficeSpoolStore({
+			platform: 'desktopLocal', now: () => now, createExpiryScheduler: runner => {
+				(scheduler as unknown as { runner: () => void }).runner = runner;
+				return scheduler;
+			},
+		});
+		const expiring = await rescheduleStore.begin(ownerA);
+		now += 1;
+		scheduler.run();
+		strictEqual(rescheduleStore.activeSpoolCount, 0);
+		strictEqual(rescheduleStore.byteLength, 0);
+		await rejects(() => rescheduleStore.append(expiring, VSBuffer.fromString('x')));
+
+		const disposeFailureStore = new OfficeSpoolStore({
+			platform: 'desktopLocal', createExpiryScheduler: runner => ({ schedule() { }, dispose() { throw new Error('/raw/private secret-token'); } }),
+		});
+		const sealing = await disposeFailureStore.begin(ownerA);
+		await disposeFailureStore.append(sealing, VSBuffer.fromString('x'));
+		await rejects(() => disposeFailureStore.seal(sealing, sealRequest('x')), (error: unknown) => {
+			return error instanceof Error && error.name === 'OfficeSpoolStoreError' && !(error.stack ?? '').includes('/raw/private');
+		});
+		strictEqual(disposeFailureStore.activeSpoolCount, 0);
+		await disposeFailureStore.begin(ownerA);
+		disposeFailureStore.disposeAll();
+	});
+
 	test('rejects non-finite clock values without creating an entry', async () => {
 		for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
 			const store = new OfficeSpoolStore({ platform: 'desktopLocal', now: () => value });
@@ -432,5 +481,50 @@ suite('OfficeSpoolStore', () => {
 		await store.begin(ownerA);
 		await store.begin(ownerA);
 		store.disposeAll();
+	});
+
+	test('releases a real spool and closes a late iterator without consuming its cancelled result', async () => {
+		let release!: () => void;
+		const blocked = new Promise<void>(resolve => release = resolve);
+		let nextCalls = 0;
+		let returnCalls = 0;
+		const iterator: AsyncIterator<VSBuffer> = {
+			async next() {
+				nextCalls++;
+				await blocked;
+				return { done: false, value: VSBuffer.fromString('late') };
+			},
+			async return() {
+				returnCalls++;
+				return { done: true, value: undefined };
+			},
+		};
+		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
+		const broker = new ParadisOfficeSourceBroker({
+			ownerId: ownerA,
+			platform: 'desktopLocal',
+			provider: {
+				async snapshot() { return { identity: 'provider:real', revision: 'etag:real' }; },
+				read() { return { [Symbol.asyncIterator]: () => iterator }; },
+			},
+			spoolClient: store,
+			createHash: () => {
+				const hash = createHash('sha256');
+				return { update: bytes => { hash.update(bytes.buffer); }, digest: () => hash.digest('hex') };
+			},
+			isRemoteProtocolV1: () => false,
+		});
+		const cancellation = new CancellationTokenSource();
+		const pending = broker.open({ kind: 'gitCommit', uri: 'git:/doc', displayName: 'doc.docx' }, cancellation.token);
+		while (nextCalls === 0) {
+			await Promise.resolve();
+		}
+		cancellation.cancel();
+		release();
+		await rejects(pending, error => error instanceof CancellationError);
+		strictEqual(returnCalls, 1);
+		strictEqual(store.activeSpoolCount, 0);
+		strictEqual(store.byteLength, 0);
+		cancellation.dispose();
 	});
 });

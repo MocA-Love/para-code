@@ -20,6 +20,7 @@ import {
 	ParadisOfficeSourceDescriptor,
 	ParadisOfficeSpoolSourceKind,
 	snapshotParadisOfficeBuffer,
+	snapshotParadisOfficeSealedSpoolAttempt,
 	validateParadisOfficeSealedSpoolReference,
 	validateParadisOfficeSourceDescriptor,
 	validateParadisOfficeWritableSpoolReference,
@@ -42,6 +43,7 @@ export class ParadisOfficeSourceBrokerError extends Error {
 
 	constructor(readonly code: ParadisOfficeSourceBrokerErrorCode) {
 		super(code === 'stale' ? 'The Office source changed while it was being read.' : 'The Office source could not be brokered.');
+		Object.defineProperty(this, 'stack', { configurable: true, value: '' });
 	}
 }
 
@@ -61,10 +63,64 @@ function throwIfCancelled(token: CancellationToken): void {
 }
 
 function throwBrokerError(error: unknown, code: ParadisOfficeSourceBrokerErrorCode): never {
-	if (isCancellationError(error) || error instanceof ParadisOfficeSourceBrokerError) {
-		throw error;
+	if (isSafeCancellationError(error)) {
+		throw new CancellationError();
+	}
+	const brokerCode = safeBrokerErrorCode(error);
+	if (brokerCode) {
+		throw new ParadisOfficeSourceBrokerError(brokerCode);
 	}
 	throw new ParadisOfficeSourceBrokerError(code);
+}
+
+const brokerErrorCodes: readonly ParadisOfficeSourceBrokerErrorCode[] = ['stale', 'unsupportedSource', 'invalidProviderSnapshot', 'sourceTooLarge', 'providerFailure', 'hashFailure', 'spoolFailure', 'cleanupFailure', 'invalidChunk'];
+
+function safeBrokerErrorCode(value: unknown): ParadisOfficeSourceBrokerErrorCode | undefined {
+	try {
+		if (!(value instanceof ParadisOfficeSourceBrokerError)) {
+			return undefined;
+		}
+		return brokerErrorCodes.includes(value.code) ? value.code : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function isSafeCancellationError(value: unknown): boolean {
+	try {
+		return isCancellationError(value);
+	} catch {
+		return false;
+	}
+}
+
+function isSafeRangeError(value: unknown): boolean {
+	try {
+		return value instanceof RangeError;
+	} catch {
+		return false;
+	}
+}
+
+function snapshotIteratorResult(value: unknown): { readonly done: boolean; readonly value?: unknown } {
+	try {
+		if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+			throw new TypeError();
+		}
+		const keys = Reflect.ownKeys(value);
+		if (keys.length !== 2 || !keys.includes('done') || !keys.includes('value')) {
+			throw new TypeError();
+		}
+		const done = Object.getOwnPropertyDescriptor(value, 'done');
+		const item = Object.getOwnPropertyDescriptor(value, 'value');
+		if (!done?.enumerable || !Object.prototype.hasOwnProperty.call(done, 'value') || typeof done.value !== 'boolean'
+			|| !item?.enumerable || !Object.prototype.hasOwnProperty.call(item, 'value')) {
+			throw new TypeError();
+		}
+		return done.value ? { done: true } : { done: false, value: item.value };
+	} catch {
+		throw new ParadisOfficeSourceBrokerError('providerFailure');
+	}
 }
 
 function validateProviderSnapshot(value: unknown): ParadisOfficeProviderSnapshot {
@@ -86,8 +142,9 @@ function validateProviderSnapshot(value: unknown): ParadisOfficeProviderSnapshot
 		}
 		return { identity: identityDescriptor.value, revision: revisionDescriptor.value };
 	} catch (error) {
-		if (error instanceof ParadisOfficeSourceBrokerError) {
-			throw error;
+		const code = safeBrokerErrorCode(error);
+		if (code) {
+			throw new ParadisOfficeSourceBrokerError(code);
 		}
 		throw new ParadisOfficeSourceBrokerError('invalidProviderSnapshot');
 	}
@@ -190,7 +247,14 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		throwIfCancelled(token);
 		let writable: ReturnType<typeof validateParadisOfficeWritableSpoolReference>;
 		try {
-			writable = validateParadisOfficeWritableSpoolReference(await this.options.spoolClient.begin(this.options.ownerId));
+			const beginAttempt = snapshotParadisOfficeSealedSpoolAttempt(await this.options.spoolClient.begin(this.options.ownerId));
+			if (!beginAttempt.writable) {
+				if (beginAttempt.identity) {
+					await this.disposeIgnoredSpool(beginAttempt.identity);
+				}
+				throw new ParadisOfficeSourceBrokerError('spoolFailure');
+			}
+			writable = beginAttempt.writable;
 		} catch (error) {
 			throwBrokerError(error, 'spoolFailure');
 		}
@@ -202,6 +266,8 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		});
 		let result: ParadisOfficeBackendSource | undefined;
 		let failure: unknown;
+		let iterator: AsyncIterator<VSBuffer> | undefined;
+		let iteratorDone = false;
 		try {
 			throwIfCancelled(token);
 			let hash: IOfficeSourceHash;
@@ -211,7 +277,6 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				throwBrokerError(error, 'hashFailure');
 			}
 			let size = 0;
-			let iterator: AsyncIterator<VSBuffer>;
 			try {
 				iterator = this.options.provider.read(descriptor, token)[Symbol.asyncIterator]();
 			} catch (error) {
@@ -225,28 +290,39 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				} catch (error) {
 					throwBrokerError(error, 'providerFailure');
 				}
-				if (iteration.done) {
+				throwIfCancelled(token);
+				const iterationSnapshot = snapshotIteratorResult(iteration);
+				if (iterationSnapshot.done) {
+					iteratorDone = true;
 					break;
 				}
-				let chunk: VSBuffer;
-				try {
-					chunk = snapshotParadisOfficeBuffer(iteration.value, PARADIS_OFFICE_SPOOL_CHUNK_BYTES);
-				} catch (error) {
-					throw new ParadisOfficeSourceBrokerError(error instanceof RangeError ? 'sourceTooLarge' : 'invalidChunk');
-				}
-				const nextSize = size + chunk.byteLength;
-				if (!Number.isSafeInteger(nextSize) || nextSize > PARADIS_OFFICE_BUDGET_PROFILES[this.options.platform].compressedInputBytes) {
+				const remainingBytes = PARADIS_OFFICE_BUDGET_PROFILES[this.options.platform].compressedInputBytes - size;
+				if (remainingBytes <= 0) {
 					throw new ParadisOfficeSourceBrokerError('sourceTooLarge');
 				}
+				let providerBytes: VSBuffer;
 				try {
-					hash.update(chunk);
+					providerBytes = snapshotParadisOfficeBuffer(iterationSnapshot.value, remainingBytes);
 				} catch (error) {
-					throwBrokerError(error, 'hashFailure');
+					throw new ParadisOfficeSourceBrokerError(isSafeRangeError(error) ? 'sourceTooLarge' : 'invalidChunk');
 				}
-				try {
-					await this.options.spoolClient.append(writable, chunk);
-				} catch (error) {
-					throwBrokerError(error, 'spoolFailure');
+				const nextSize = size + providerBytes.byteLength;
+				if (!Number.isSafeInteger(nextSize)) {
+					throw new ParadisOfficeSourceBrokerError('sourceTooLarge');
+				}
+				for (let offset = 0; offset < providerBytes.byteLength; offset += PARADIS_OFFICE_SPOOL_CHUNK_BYTES) {
+					const chunk = providerBytes.slice(offset, Math.min(offset + PARADIS_OFFICE_SPOOL_CHUNK_BYTES, providerBytes.byteLength));
+					try {
+						hash.update(chunk);
+					} catch (error) {
+						throwBrokerError(error, 'hashFailure');
+					}
+					try {
+						await this.options.spoolClient.append(writable, chunk);
+					} catch (error) {
+						throwBrokerError(error, 'spoolFailure');
+					}
+					throwIfCancelled(token);
 				}
 				size = nextSize;
 			}
@@ -257,6 +333,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			} catch (error) {
 				throwBrokerError(error, 'hashFailure');
 			}
+			throwIfCancelled(token);
 			const beforeSeal = await this.providerSnapshot(descriptor);
 			throwIfCancelled(token);
 			if (before.identity !== beforeSeal.identity || before.revision !== beforeSeal.revision) {
@@ -299,6 +376,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		} catch (error) {
 			failure = error;
 		}
+		await this.closeIterator(iterator, iteratorDone);
 		cancellationListener.dispose();
 		if (!keepSpool) {
 			try {
@@ -314,10 +392,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			}
 		}
 		if (failure) {
-			if (isCancellationError(failure) || failure instanceof ParadisOfficeSourceBrokerError) {
-				throw failure;
-			}
-			throw new ParadisOfficeSourceBrokerError('spoolFailure');
+			throwBrokerError(failure, 'spoolFailure');
 		}
 		return result!;
 	}
@@ -326,7 +401,29 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		try {
 			return validateProviderSnapshot(await this.options.provider.snapshot({ ...descriptor }));
 		} catch (error) {
-			throwBrokerError(error, error instanceof ParadisOfficeSourceBrokerError ? error.code : 'providerFailure');
+			throwBrokerError(error, 'providerFailure');
+		}
+	}
+
+	private async disposeIgnoredSpool(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>): Promise<void> {
+		try {
+			await this.options.spoolClient.dispose(reference);
+		} catch {
+			// An invalid begin response must not retain a capability even if its peer is already gone.
+		}
+	}
+
+	private async closeIterator(iterator: AsyncIterator<VSBuffer> | undefined, completed: boolean): Promise<void> {
+		if (!iterator || completed) {
+			return;
+		}
+		try {
+			const close = iterator.return;
+			if (typeof close === 'function') {
+				await close.call(iterator);
+			}
+		} catch {
+			// The primary broker outcome and cleanup ownership take precedence over provider close errors.
 		}
 	}
 }

@@ -88,7 +88,7 @@ export interface IOfficeSpoolClient {
 	dispose(reference: ParadisOfficeSpoolReference): Promise<void>;
 }
 
-/** Workbench-owned provider adapter. This interface is local and is never serialized. */
+/** Workbench-owned provider adapter. This interface is local and is never serialized. Adapters should yield bounded buffers; the broker independently snapshots and chunks every yield. */
 export interface IOfficeSourceProvider {
 	snapshot(descriptor: ParadisOfficeSourceDescriptor): Promise<ParadisOfficeProviderSnapshot>;
 	read(descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): AsyncIterable<VSBuffer>;
@@ -255,6 +255,7 @@ export function validateParadisOfficeSealedSpoolReference(value: unknown): Parad
 
 export interface ParadisOfficeSealedSpoolAttemptSnapshot {
 	readonly identity?: ParadisOfficeWritableSpoolReference;
+	readonly writable?: ParadisOfficeWritableSpoolReference;
 	readonly sealed?: ParadisOfficeSealedSpoolReference;
 }
 
@@ -269,6 +270,9 @@ export function snapshotParadisOfficeSealedSpoolAttempt(value: unknown): Paradis
 		identity = validateSpoolIdentityRecord(record);
 	} catch {
 		return {};
+	}
+	if (record.keys.length === 3 && record.keys.every(key => key === 'id' || key === 'ownerId' || key === 'nonce')) {
+		return { identity, writable: identity };
 	}
 	const sealedKeys = new Set(['id', 'ownerId', 'nonce', 'sourceKind', 'providerIdentity', 'providerRevision', 'size', 'sha256', 'revision']);
 	if (record.keys.length !== sealedKeys.size || !record.keys.every(key => sealedKeys.has(key))) {
@@ -286,45 +290,42 @@ const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPro
 
 /** Copies an untrusted VSBuffer without invoking its methods or property getters. */
 export function snapshotParadisOfficeBuffer(value: unknown, maximumBytes: number): VSBuffer {
-	if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || !(value instanceof VSBuffer)) {
-		throw new TypeError('Invalid Office buffer');
-	}
-	let keys: readonly PropertyKey[];
-	let bufferDescriptor: PropertyDescriptor | undefined;
-	let byteLengthDescriptor: PropertyDescriptor | undefined;
+	let exceedsMaximum = false;
 	try {
-		keys = Reflect.ownKeys(value);
-		bufferDescriptor = Object.getOwnPropertyDescriptor(value, 'buffer');
-		byteLengthDescriptor = Object.getOwnPropertyDescriptor(value, 'byteLength');
+		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || !(value instanceof VSBuffer)) {
+			throw new TypeError('Invalid Office buffer');
+		}
+		const keys = Reflect.ownKeys(value);
+		const bufferDescriptor = Object.getOwnPropertyDescriptor(value, 'buffer');
+		const byteLengthDescriptor = Object.getOwnPropertyDescriptor(value, 'byteLength');
+		if (keys.length !== 2 || !keys.includes('buffer') || !keys.includes('byteLength')
+			|| !bufferDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(bufferDescriptor, 'value')
+			|| !byteLengthDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(byteLengthDescriptor, 'value')
+			|| !(bufferDescriptor.value instanceof Uint8Array) || !ArrayBuffer.isView(bufferDescriptor.value)
+			|| typeof byteLengthDescriptor.value !== 'number' || !Number.isSafeInteger(byteLengthDescriptor.value) || byteLengthDescriptor.value < 0
+			|| !typedArrayByteLengthGetter) {
+			throw new TypeError('Invalid Office buffer');
+		}
+		const actualLength = typedArrayByteLengthGetter.call(bufferDescriptor.value) as number;
+		if (byteLengthDescriptor.value !== actualLength) {
+			throw new TypeError('Invalid Office buffer');
+		}
+		if (actualLength > maximumBytes) {
+			exceedsMaximum = true;
+			throw new RangeError('Office buffer exceeds limit');
+		}
+		const result = VSBuffer.alloc(actualLength);
+		Uint8Array.prototype.set.call(result.buffer, bufferDescriptor.value);
+		if (result.byteLength !== actualLength || typedArrayByteLengthGetter.call(bufferDescriptor.value) !== actualLength) {
+			throw new TypeError('Invalid Office buffer');
+		}
+		return result;
 	} catch {
+		if (exceedsMaximum) {
+			throw new RangeError('Office buffer exceeds limit');
+		}
 		throw new TypeError('Invalid Office buffer');
 	}
-	if (keys.length !== 2 || !keys.includes('buffer') || !keys.includes('byteLength')
-		|| !bufferDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(bufferDescriptor, 'value')
-		|| !byteLengthDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(byteLengthDescriptor, 'value')
-		|| !(bufferDescriptor.value instanceof Uint8Array) || !ArrayBuffer.isView(bufferDescriptor.value)
-		|| typeof byteLengthDescriptor.value !== 'number' || !Number.isSafeInteger(byteLengthDescriptor.value) || byteLengthDescriptor.value < 0
-		|| !typedArrayByteLengthGetter) {
-		throw new TypeError('Invalid Office buffer');
-	}
-	let actualLength: number;
-	try {
-		actualLength = typedArrayByteLengthGetter.call(bufferDescriptor.value) as number;
-	} catch {
-		throw new TypeError('Invalid Office buffer');
-	}
-	if (byteLengthDescriptor.value !== actualLength) {
-		throw new TypeError('Invalid Office buffer');
-	}
-	if (actualLength > maximumBytes) {
-		throw new RangeError('Office buffer exceeds limit');
-	}
-	const result = VSBuffer.alloc(actualLength);
-	Uint8Array.prototype.set.call(result.buffer, bufferDescriptor.value);
-	if (result.byteLength !== actualLength) {
-		throw new TypeError('Invalid Office buffer');
-	}
-	return result;
 }
 
 /** Validates seal metadata independently from a capability. */
