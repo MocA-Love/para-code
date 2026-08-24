@@ -770,6 +770,51 @@ suite('ParadisOfficeSanitizer', () => {
 		ok(blocked.checkpoints < safe.checkpoints + count * 40, `bounded shared-rId checkpoints: safe=${safe.checkpoints} blocked=${blocked.checkpoints}`);
 	});
 
+	test('rejects fallback placeholder expansion before an over-budget fragment or final join is allocated', async function () {
+		this.timeout(30_000);
+		const count = 65_000;
+		const consumers = '<x:c r:id="shared" r:embed="shared" r:link="shared" s:id="shared" s:embed="shared" s:link="shared"/>'.repeat(count);
+		const allocations: { readonly kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin'; readonly characters: number }[] = [];
+		const input = {
+			nodeId: 'bounded-fallback-expansion',
+			source: Uint8Array.of(1),
+			archive: new MemoryOfficeArchive({
+				'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
+				'_rels/.rels': packageRootRelationships(),
+				'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:x="urn:fallback" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:s="http://purl.oclc.org/ooxml/officeDocument/relationships"><w:body>${consumers}</w:body></w:document>`,
+				'word/_rels/document.xml.rels': relationships('<Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/>'),
+			}),
+			allocationObserver: (kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin', characters: number) => allocations.push({ kind, characters }),
+			scheduler: () => Promise.resolve(),
+		};
+
+		await rejects(sanitizeOfficeDocxPackageForRenderer(input), (error: unknown) => error instanceof Error && error.message === 'limitExceeded');
+		strictEqual(allocations.some(allocation => allocation.kind === 'placeholderJoin'), false);
+		strictEqual(allocations.some(allocation => allocation.kind === 'outputJoin'), false);
+		ok(allocations.every(allocation => allocation.characters <= 8 * 1024 * 1024));
+	});
+
+	test('retains nested and adjacent placeholder anchors when a shared rId creates overlapping patches', async () => {
+		const geometry = '<wp:anchor data-geometry="overlap"><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:link="shared"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000" flipH="1"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"><a:prstDash val="dash"/><a:headEnd type="none"/><a:tailEnd type="triangle"/></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const diagonal = '<w:tcBorders><w:tl2br w:val="single" w:sz="8" w:color="112233"/><w:tr2bl w:val="dashed" w:sz="6" w:color="445566"/></w:tcBorders>';
+		const documentXml = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:hyperlink r:id="shared"><w:r data-preserved-drawing="yes"><w:drawing>${geometry}</w:drawing></w:r><w:r data-unsafe-adjacent="yes"><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink></w:p><w:tbl><w:tr><w:tc><w:tcPr>${diagonal}</w:tcPr><w:p/></w:tc></w:tr></w:tbl></w:body></w:document>`;
+		const result = await sanitizeMemoryPackage('overlapping-shared-rid', {
+			'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
+			'word/document.xml': documentXml,
+			'word/_rels/document.xml.rels': relationships('<Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/>'),
+		});
+		const sanitized = textOf(readStoreZipEntries(result.bytes), 'word/document.xml');
+
+		parseParadisOfficeXml(sanitized, { depth: 64, nodes: 65_536, attributeLength: 4_096, characters: 8 * 1024 * 1024 });
+		strictEqual(countOccurrences(sanitized, 'Office asset unavailable:'), 3);
+		strictEqual(sanitized.includes('r:id="shared"'), false);
+		strictEqual(sanitized.includes('r:link="shared"'), false);
+		strictEqual(sanitized.includes('data-unsafe-adjacent="yes"'), false);
+		ok(sanitized.includes('<w:r data-preserved-drawing="yes"><w:drawing>'));
+		ok(sanitized.includes(geometry.replace(' r:link="shared"', '')));
+		deepStrictEqual(drawingGeometrySignature(sanitized), drawingGeometrySignature(documentXml));
+	});
+
 	test('rejects the 257th placeholder during relationship analysis instead of scanning the tail', async () => {
 		const externalRelationships = Array.from({ length: 1_000 }, (_, index) => `<Relationship Id="external${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/${index}" TargetMode="External"/>`).join('');
 		let schedulerYields = 0;
