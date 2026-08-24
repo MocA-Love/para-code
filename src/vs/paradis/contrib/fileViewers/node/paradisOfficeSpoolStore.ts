@@ -24,6 +24,7 @@ import {
 	snapshotParadisOfficeBuffer,
 	snapshotParadisOfficeSealedSpoolAttempt,
 	validateParadisOfficeSealRequest,
+	validateParadisOfficeSpoolAttempt,
 	validateParadisOfficeSpoolOwner,
 	validateParadisOfficeWritableSpoolReference,
 } from '../common/paradisOfficeSourceBroker.js';
@@ -42,7 +43,8 @@ export type OfficeSpoolStoreErrorCode =
 	| 'invalidRange'
 	| 'invalidChunk'
 	| 'initializationFailed'
-	| 'randomnessUnavailable';
+	| 'randomnessUnavailable'
+	| 'consumerFailure';
 
 export class OfficeSpoolStoreError extends Error {
 	override readonly name = 'OfficeSpoolStoreError';
@@ -79,6 +81,7 @@ interface SpoolEntry {
 	readonly id: string;
 	readonly ownerId: string;
 	readonly nonce: string;
+	readonly attemptId?: string;
 	state: 'writable' | 'sealed' | 'opening';
 	readonly chunks: VSBuffer[];
 	readonly hash: ReturnType<typeof createHash>;
@@ -105,7 +108,7 @@ function validLimit(value: number): boolean {
 }
 
 const MAX_RANDOM_ID_ATTEMPTS = 64;
-const officeSpoolStoreErrorCodes: readonly OfficeSpoolStoreErrorCode[] = ['invalidReference', 'clientQuota', 'globalQuota', 'chunkTooLarge', 'sourceByteQuota', 'globalByteQuota', 'notWritable', 'notSealed', 'integrityMismatch', 'invalidRange', 'invalidChunk', 'initializationFailed', 'randomnessUnavailable'];
+const officeSpoolStoreErrorCodes: readonly OfficeSpoolStoreErrorCode[] = ['invalidReference', 'clientQuota', 'globalQuota', 'chunkTooLarge', 'sourceByteQuota', 'globalByteQuota', 'notWritable', 'notSealed', 'integrityMismatch', 'invalidRange', 'invalidChunk', 'initializationFailed', 'randomnessUnavailable', 'consumerFailure'];
 
 /** Backend-local one-shot sealed spool store. It never exposes a filesystem path. */
 export class OfficeSpoolStore implements IOfficeSpoolClient {
@@ -135,12 +138,20 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		return this.totalBytes;
 	}
 
-	async begin(untrustedOwnerId: string): Promise<ParadisOfficeWritableSpoolReference> {
+	async begin(untrustedOwnerId: string, untrustedAttemptId?: string): Promise<ParadisOfficeWritableSpoolReference> {
 		let ownerId: string;
 		try {
 			ownerId = validateParadisOfficeSpoolOwner(untrustedOwnerId);
 		} catch (error) {
 			throwStoreError(error, 'invalidReference');
+		}
+		let attemptId: string | undefined;
+		if (untrustedAttemptId !== undefined) {
+			try {
+				attemptId = validateParadisOfficeSpoolAttempt(ownerId, untrustedAttemptId).attemptId;
+			} catch (error) {
+				throwStoreError(error, 'invalidReference');
+			}
 		}
 		if (this.ownerEntryCount(ownerId) >= PARADIS_OFFICE_SPOOL_PER_CLIENT_LIMIT) {
 			throw new OfficeSpoolStoreError('clientQuota');
@@ -205,6 +216,7 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			id,
 			ownerId,
 			nonce,
+			attemptId,
 			state: 'writable',
 			chunks: [],
 			hash: createHash('sha256'),
@@ -321,6 +333,8 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 		});
 		try {
 			return await consume(source);
+		} catch (error) {
+			throwStoreError(error, 'consumerFailure');
 		} finally {
 			this.removeEntry(entry);
 		}
@@ -339,6 +353,20 @@ export class OfficeSpoolStore implements IOfficeSpoolClient {
 			throw new OfficeSpoolStoreError('invalidReference');
 		}
 		this.removeEntry(entry);
+	}
+
+	async disposeAttempt(untrustedOwnerId: string, untrustedAttemptId: string): Promise<void> {
+		let attempt: ReturnType<typeof validateParadisOfficeSpoolAttempt>;
+		try {
+			attempt = validateParadisOfficeSpoolAttempt(untrustedOwnerId, untrustedAttemptId);
+		} catch (error) {
+			throwStoreError(error, 'invalidReference');
+		}
+		for (const entry of [...this.entries.values()]) {
+			if (entry.ownerId === attempt.ownerId && entry.attemptId === attempt.attemptId) {
+				this.removeEntry(entry);
+			}
+		}
 	}
 
 	disconnect(untrustedOwnerId: string): void {

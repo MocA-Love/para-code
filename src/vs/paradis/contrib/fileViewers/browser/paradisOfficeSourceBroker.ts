@@ -8,6 +8,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import { CancellationError, isCancellationError } from '../../../../base/common/errors.js';
 import { URI } from '../../../../base/common/uri.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import {
 	buildParadisOfficeSourceRevision,
 	IOfficeSourceBroker,
@@ -117,6 +118,7 @@ async function awaitDependency<T>(token: CancellationToken, code: ParadisOfficeS
 }
 
 const brokerErrorCodes: readonly ParadisOfficeSourceBrokerErrorCode[] = ['stale', 'unsupportedSource', 'invalidProviderSnapshot', 'sourceTooLarge', 'providerFailure', 'hashFailure', 'spoolFailure', 'cleanupFailure', 'invalidChunk'];
+const BOUNDED_OPERATION_MILLISECONDS = 250;
 
 function safeBrokerErrorCode(value: unknown): ParadisOfficeSourceBrokerErrorCode | undefined {
 	try {
@@ -283,26 +285,32 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 	): Promise<ParadisOfficeBackendSource> {
 		const before = await this.providerSnapshot(descriptor, token);
 		throwIfCancelled(token);
+		const attemptId = generateUuid();
+		let attemptCleanupPromise: Promise<void> | undefined;
+		let cancellationCleanup: (() => Promise<void>) | undefined;
+		const cancellationListener = token.onCancellationRequested(() => {
+			if (cancellationCleanup) {
+				void cancellationCleanup().catch(() => undefined);
+			}
+		});
 		let writable: ReturnType<typeof validateParadisOfficeWritableSpoolReference>;
 		let beginAttempt: ReturnType<typeof snapshotParadisOfficeSealedSpoolAttempt>;
 		try {
 			throwIfCancelled(token);
-			const beginResult = await this.options.spoolClient.begin(this.options.ownerId);
-			beginAttempt = snapshotParadisOfficeSealedSpoolAttempt(beginResult);
+			cancellationCleanup = () => attemptCleanupPromise ??= this.disposeAttemptBounded(attemptId);
+			const beginResult = await this.options.spoolClient.begin(this.options.ownerId, attemptId);
 			if (token.isCancellationRequested) {
-				if (beginAttempt.identity) {
-					await this.disposeIgnoredSpool(beginAttempt.identity);
-				}
+				await cancellationCleanup();
 				throw newSafeCancellationError();
 			}
-			if (!beginAttempt.writable) {
-				if (beginAttempt.identity) {
-					await this.disposeIgnoredSpool(beginAttempt.identity);
-				}
+			beginAttempt = snapshotParadisOfficeSealedSpoolAttempt(beginResult);
+			if (!beginAttempt.writable || beginAttempt.writable.ownerId !== this.options.ownerId) {
+				await cancellationCleanup();
 				throw new ParadisOfficeSourceBrokerError('spoolFailure');
 			}
 			writable = beginAttempt.writable;
 		} catch (error) {
+			cancellationListener.dispose();
 			throwDependencyError(error, token, 'spoolFailure');
 		}
 		let keepSpool = false;
@@ -317,9 +325,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			}
 			return cleanupPromise;
 		};
-		const cancellationListener = token.onCancellationRequested(() => {
-			cleanup().catch(() => undefined);
-		});
+		cancellationCleanup = () => this.awaitBounded(cleanup());
 		let result: ParadisOfficeBackendSource | undefined;
 		let failure: unknown;
 		let iterator: AsyncIterator<VSBuffer> | undefined;
@@ -328,13 +334,8 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			throwIfCancelled(token);
 			const hash = runDependency(token, 'hashFailure', () => this.options.createHash());
 			let size = 0;
-			try {
-				throwIfCancelled(token);
-				iterator = this.options.provider.read(descriptor, token)[Symbol.asyncIterator]();
-			} catch (error) {
-				throwDependencyError(error, token, 'providerFailure');
-			}
-			throwIfCancelled(token);
+			const iterable = runDependency(token, 'providerFailure', () => this.options.provider.read(descriptor, token));
+			iterator = runDependency(token, 'providerFailure', () => iterable[Symbol.asyncIterator]());
 			while (true) {
 				throwIfCancelled(token);
 				let iteration: IteratorResult<VSBuffer>;
@@ -393,13 +394,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				sha256,
 				revision,
 			} as const;
-			let sealedResult: unknown;
-			try {
-				throwIfCancelled(token);
-				sealedResult = await this.options.spoolClient.seal(writable, sealRequest);
-			} catch (error) {
-				throwDependencyError(error, token, 'spoolFailure');
-			}
+			const sealedResult = await awaitDependency(token, 'spoolFailure', () => this.options.spoolClient.seal(writable, sealRequest));
 			let sealed: ReturnType<typeof validateParadisOfficeSealedSpoolReference>;
 			try {
 				sealed = validateParadisOfficeSealedSpoolReference(sealedResult);
@@ -427,13 +422,13 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		cancellationListener.dispose();
 		if (!keepSpool) {
 			try {
-				await cleanup();
+				await this.awaitBounded(cleanup());
 			} catch {
 				failure ??= new ParadisOfficeSourceBrokerError('cleanupFailure');
 			}
 		} else if (cleanupPromise) {
 			try {
-				await cleanupPromise;
+				await this.awaitBounded(cleanupPromise);
 			} catch {
 				failure ??= new ParadisOfficeSourceBrokerError('cleanupFailure');
 			}
@@ -448,14 +443,15 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 	}
 
 	private async providerSnapshot(descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<ParadisOfficeProviderSnapshot> {
-		return awaitDependency(token, 'providerFailure', async () => validateProviderSnapshot(await this.options.provider.snapshot({ ...descriptor })));
+		const snapshot = await awaitDependency(token, 'providerFailure', () => this.options.provider.snapshot({ ...descriptor }));
+		return runDependency(token, 'providerFailure', () => validateProviderSnapshot(snapshot));
 	}
 
-	private async disposeIgnoredSpool(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>): Promise<void> {
+	private async disposeAttemptBounded(attemptId: string): Promise<void> {
 		try {
-			await this.options.spoolClient.dispose(reference);
+			await this.awaitBounded(this.options.spoolClient.disposeAttempt(this.options.ownerId, attemptId));
 		} catch {
-			// An invalid begin response must not retain a capability even if its peer is already gone.
+			// A pre-response lease is owner-bound and cleanup must not replace cancellation.
 		}
 	}
 
@@ -468,17 +464,23 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			if (typeof close === 'function') {
 				const closing = Promise.resolve(close.call(iterator)).then(() => undefined);
 				void closing.catch(() => undefined);
-				const timeout = this.options.closeTimeout ?? { setTimeout, clearTimeout };
-				let handle: unknown;
-				const timedOut = new Promise<void>(resolve => handle = timeout.setTimeout(resolve, 250));
-				try {
-					await Promise.race([closing, timedOut]);
-				} finally {
-					timeout.clearTimeout(handle);
-				}
+				await this.awaitBounded(closing);
 			}
 		} catch {
 			// The primary broker outcome and cleanup ownership take precedence over provider close errors.
+		}
+	}
+
+	private async awaitBounded(operation: Promise<unknown>): Promise<void> {
+		const timeout = this.options.closeTimeout ?? { setTimeout, clearTimeout };
+		const settling = Promise.resolve(operation).then(() => undefined);
+		void settling.catch(() => undefined);
+		let handle: unknown;
+		const timedOut = new Promise<void>(resolve => handle = timeout.setTimeout(resolve, BOUNDED_OPERATION_MILLISECONDS));
+		try {
+			await Promise.race([settling, timedOut]);
+		} finally {
+			timeout.clearTimeout(handle);
 		}
 	}
 }
