@@ -426,12 +426,19 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 		let nodes: ParadisBookmarkNode[];
 		try {
 			nodes = raw ? recoverParadisBookmarkNodes(JSON.parse(raw)) : [];
-		} catch (error) {
+		} catch {
 			nodes = [];
 			if (raw) {
 				this._storageService.store(BOOKMARKS_STORAGE_RECOVERY_BACKUP_KEY, raw, StorageScope.APPLICATION, StorageTarget.USER);
 			}
-			reportParadisDiagnosticError('owned', 'browser-bookmarks', 'storage-corrupt', error, undefined, 'warning');
+			reportParadisDiagnosticError(
+				'owned',
+				'browser-bookmarks',
+				'storage-corrupt',
+				new Error('Browser bookmark storage could not be parsed'),
+				undefined,
+				'warning',
+			);
 		}
 		this._nodes = nodes;
 		const recovered = JSON.stringify(nodes);
