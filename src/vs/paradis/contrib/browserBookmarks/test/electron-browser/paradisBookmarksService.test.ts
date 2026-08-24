@@ -18,9 +18,13 @@ suite('Paradis bookmarks service storage recovery', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createService(storedBookmarks: string): { readonly service: ParadisBookmarksService; readonly storage: InMemoryStorageService } {
+	function createService(
+		storedBookmarks: string,
+		captureStorage?: (storage: InMemoryStorageService) => void,
+	): { readonly service: ParadisBookmarksService; readonly storage: InMemoryStorageService } {
 		const storage = store.add(new InMemoryStorageService());
 		storage.store(BOOKMARKS_STORAGE_KEY, storedBookmarks, StorageScope.APPLICATION, StorageTarget.USER);
+		captureStorage?.(storage);
 		return {
 			service: store.add(new ParadisBookmarksService(storage)),
 			storage,
@@ -49,12 +53,24 @@ suite('Paradis bookmarks service storage recovery', () => {
 			readonly safeExtra: Record<string, unknown> | undefined;
 			readonly severity: string | undefined;
 		}> = [];
+		let storageAtReport: InMemoryStorageService | undefined;
 		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
+			assert.ok(storageAtReport);
+			assert.strictEqual(
+				storageAtReport.get(BOOKMARKS_STORAGE_RECOVERY_BACKUP_KEY, StorageScope.APPLICATION),
+				storedBookmarks,
+			);
+			assert.strictEqual(
+				storageAtReport.get(BOOKMARKS_STORAGE_KEY, StorageScope.APPLICATION),
+				storedBookmarks,
+			);
 			reports.push({ scope, feature, operation, error, safeExtra, severity });
 		});
 
 		try {
-			const { service, storage } = createService(storedBookmarks);
+			const { service, storage } = createService(storedBookmarks, value => {
+				storageAtReport = value;
+			});
 
 			assert.deepStrictEqual(service.nodes, []);
 			assert.strictEqual(
