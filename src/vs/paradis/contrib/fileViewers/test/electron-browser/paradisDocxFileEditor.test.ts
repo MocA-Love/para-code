@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
-import { deepStrictEqual, strictEqual } from 'assert';
+import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { Dimension } from '../../../../../base/browser/dom.js';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
@@ -25,6 +25,7 @@ import { IWorkingCopyService } from '../../../../../workbench/services/workingCo
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
+import { buildParadisDocxDiffHtml } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
 
 interface IDocxEditorSnapshot {
@@ -58,6 +59,8 @@ interface IDocxHtmlSnapshot {
 		readonly renderFootnotes: boolean | undefined;
 		readonly renderEndnotes: boolean | undefined;
 		readonly useBase64URL: boolean | undefined;
+		readonly ignoreFonts: boolean | undefined;
+		readonly renderAltChunks: boolean | undefined;
 	};
 }
 
@@ -65,6 +68,23 @@ type HeaderResult = VSBuffer | DeferredPromise<VSBuffer> | Error;
 
 suite('ParadisDocxFileEditor', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('integrates exact mounted and fallback CSP sources into the Word diff webview', () => {
+		const labels = { original: 'Before', modified: 'After', loading: 'Loading' };
+		const cspOf = (html: string): string => /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(html)?.[1] ?? '';
+		const mounted = cspOf(buildParadisDocxDiffHtml(labels, 'http://127.0.0.1:43123/docx-preview'));
+		const fallback = cspOf(buildParadisDocxDiffHtml(labels, 'https://file+.vscode-resource.vscode-cdn.net/docx-preview'));
+
+		ok(mounted.includes('script-src \'nonce-'));
+		ok(mounted.includes(' http://127.0.0.1:43123;'));
+		ok(!mounted.includes('https:'));
+		ok(fallback.includes(' https://file+.vscode-resource.vscode-cdn.net;'));
+		ok(!/(?:^|\s)https:(?:\s|;|$)/.test(fallback));
+		for (const csp of [mounted, fallback]) {
+			ok(csp.includes('object-src \'none\'; frame-src \'none\'; worker-src \'none\';'));
+			ok(csp.includes('navigate-to \'none\';'));
+		}
+	});
 
 	function createDocxEditorFixture() {
 		const watcherResources: string[] = [];
@@ -129,6 +149,8 @@ suite('ParadisDocxFileEditor', () => {
 					renderFootnotes: readBooleanOption('renderFootnotes'),
 					renderEndnotes: readBooleanOption('renderEndnotes'),
 					useBase64URL: readBooleanOption('useBase64URL'),
+					ignoreFonts: readBooleanOption('ignoreFonts'),
+					renderAltChunks: readBooleanOption('renderAltChunks'),
 				},
 			};
 		};
@@ -439,10 +461,11 @@ suite('ParadisDocxFileEditor', () => {
 
 	function expectedViewerSnapshot(docxUrl: string): IDocxHtmlSnapshot {
 		const libraryBase = asWebviewUri(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview')).toString(true);
+		const exactOrigins = [...new Set([new URL(libraryBase).origin, new URL(docxUrl).origin])].join(' ');
 		return {
 			classification: 'viewer',
 			docxUrl,
-			csp: 'default-src \'none\'; script-src \'nonce-<nonce>\' https:; style-src \'unsafe-inline\'; img-src blob: data: https:; font-src https: data: blob:; connect-src https: blob: data:;',
+			csp: `default-src 'none'; script-src 'nonce-<nonce>' ${exactOrigins}; style-src 'unsafe-inline'; img-src data: blob: ${exactOrigins}; font-src data: blob: ${exactOrigins}; connect-src ${exactOrigins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none';`,
 			scriptUrls: [`${libraryBase}/jszip.min.js`, `${libraryBase}/docx-preview.min.js`],
 			nonceConsistency: {
 				csp: true,
@@ -460,6 +483,8 @@ suite('ParadisDocxFileEditor', () => {
 				renderFootnotes: true,
 				renderEndnotes: true,
 				useBase64URL: true,
+				ignoreFonts: true,
+				renderAltChunks: false,
 			},
 		};
 	}

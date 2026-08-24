@@ -33,6 +33,7 @@ import { FileAccess } from '../../../../base/common/network.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { paradisPreviewOrigins } from './paradisViewerAssets.js';
+import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import {
 	IParadisDocxAnnotation,
 	IParadisDocxBlock,
@@ -218,6 +219,11 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 			renderChanges: false,
 			renderComments: false,
 			useBase64URL: true,
+			// Raw embedded fonts are never handed to the renderer. The Office asset pipeline publishes
+			// only separately validated WOFF2 subsets; the legacy docx-preview path uses fallback fonts.
+			ignoreFonts: true,
+			// altChunk can contain arbitrary HTML and must be represented by the semantic placeholder path.
+			renderAltChunks: false,
 		};
 	}
 
@@ -1021,8 +1027,9 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 	const libBase = libBaseOverride ?? asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
 	// CSP は実際に使うポートまで絞る（`http://127.0.0.1:*` だと他プロセスのサーバまで許してしまう）。
 	const serverOrigin = paradisPreviewOrigins(libBase);
-	// 空のときは CSP に余分な空白を残さない。
-	const serverSrc = serverOrigin ? ` ${serverOrigin}` : '';
+	const csp = serverOrigin
+		? buildParadisOfficeWordCsp(nonce, { kind: 'mountedLoopback', origins: serverOrigin.split(' ') })
+		: buildParadisOfficeWordCsp(nonce, { kind: 'webviewResource', cspSources: [paradisOfficeWebviewResourceOrigin(libBase)] });
 	const context = JSON.stringify(buildParadisDocxDiffContext(labels.loading));
 
 	// CSP の style-src について: docx-preview は文書ごとの CSS を nonce 無しの動的 <style> として
@@ -1033,7 +1040,7 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 <html>
 <head>
 	<meta charset="utf-8">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:${serverSrc}; style-src 'unsafe-inline'; img-src blob: data: https:; font-src https:${serverSrc} data: blob:;">
+	<meta http-equiv="Content-Security-Policy" content="${csp}">
 	<style>
 		*, *::before, *::after { box-sizing: border-box; }
 		html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }

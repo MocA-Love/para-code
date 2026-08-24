@@ -41,6 +41,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { PARADIS_DOCX_MAX_BYTES } from '../common/paradisDocx.js';
+import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
@@ -346,8 +347,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
 		// CSP は実際に使うポートまで絞る（`http://127.0.0.1:*` だと他プロセスのサーバまで許してしまう）。
 		const serverOrigin = served ? paradisPreviewOrigins(libBase, docxUrl) : '';
-		// 空のときは CSP に余分な空白を残さない。
-		const serverSrc = serverOrigin ? ` ${serverOrigin}` : '';
+		const csp = serverOrigin
+			? buildParadisOfficeWordCsp(nonce, { kind: 'mountedLoopback', origins: serverOrigin.split(' ') })
+			: buildParadisOfficeWordCsp(nonce, {
+				kind: 'webviewResource',
+				cspSources: [
+					paradisOfficeWebviewResourceOrigin(libBase),
+					...(docxUrl.startsWith('data:') ? [] : [paradisOfficeWebviewResourceOrigin(docxUrl)]),
+				],
+			});
 
 		// CSP: スクリプトは nonce 付き inline と webview リソース(https:)のみ。docx-preview が本文中に
 		// 埋め込む style は要素インライン + 動的 <style> なので style-src に 'unsafe-inline' を許可する
@@ -363,7 +371,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	後方互換ルールがあるため、nonce と unsafe-inline を併記しても nonce の無い動的 style は
 	ブロックされる(sheet=null になり書式が丸ごと無効化される)。ここでは nonce を使わず
 	'unsafe-inline' のみを指定し、docx-preview 由来のスタイルも含めて確実に適用させる。 -->
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:${serverSrc}; style-src 'unsafe-inline'; img-src blob: data: https:; font-src https:${serverSrc} data: blob:; connect-src https:${serverSrc} blob: data:;">
+	<meta http-equiv="Content-Security-Policy" content="${csp}">
 	<style nonce="${nonce}">
 		/* docx-preview はページ要素(section.docx)に「width(=ページ幅) + padding(=左右余白)」を設定する
 		("createPageElement": ignoreWidth未指定時に r.style.width = pageSize.width、余白は paddingLeft/Right)。
@@ -442,7 +450,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 					renderFooters: true,
 					renderFootnotes: true,
 					renderEndnotes: true,
-					useBase64URL: true
+					useBase64URL: true,
+					// Raw embedded fonts stay outside the legacy renderer. Safe WOFF2 subsets are supplied
+					// only by the typed Office asset path, so this view deliberately uses fallback fonts.
+					ignoreFonts: true,
+					// Arbitrary altChunk HTML is represented by a semantic placeholder, never an iframe.
+					renderAltChunks: false
 				});
 				// docx-preview はページ幅を固定値(width、grow不可)で設定する一方、高さは
 				// min-height(可変)にしている。本文（表など）がページの本文幅より広い場合、
