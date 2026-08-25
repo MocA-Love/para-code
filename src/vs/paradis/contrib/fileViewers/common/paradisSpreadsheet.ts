@@ -12,6 +12,7 @@
 // Object.assign(element.style, style) によりそのまま適用できる。
 
 import type { IParadisPageLayout } from './paradisSpreadsheetPageLayout.js';
+import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetProjectionDiagnostic, ParadisSpreadsheetSnapshot } from './spreadsheet/paradisSpreadsheetSemantic.js';
 
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
 export const PARADIS_SPREADSHEET_CHANNEL = 'paradisSpreadsheet';
@@ -319,6 +320,145 @@ export interface IParadisWorkbookData {
 	readonly drawingsBySheet?: { readonly [sheetIndex: number]: readonly IParadisDrawingData[] };
 	/** theme1.xml の clrScheme 色(scheme名 lt1/dk1/accent1... → hex)。図形の schemeClr 解決に renderer 側で使う。 */
 	readonly themeColors?: { readonly [schemeName: string]: string };
+}
+
+const MAX_SEMANTIC_PROJECTION_DIAGNOSTICS = 10_000;
+const SEMANTIC_BORDER_STYLES: Readonly<Record<string, string>> = {
+	thin: '1px solid', medium: '2px solid', thick: '3px solid', dotted: '1px dotted',
+	dashed: '1px dashed', double: '3px double', mediumDashed: '2px dashed', dashDot: '1px dashed',
+	dashDotDot: '1px dashed', mediumDashDot: '2px dashed', mediumDashDotDot: '2px dashed',
+	slantDashDot: '1px dashed', hair: '1px solid',
+};
+
+interface IParadisSpreadsheetProjectionDiagnosticOptions {
+	readonly checkpoint?: () => void;
+	readonly consumeProjectionSheet?: () => void;
+	readonly consumeProjectionRow?: () => void;
+	readonly consumeProjectionCell?: () => void;
+}
+
+interface IIndexedParadisProjectionSheet {
+	readonly sheet: IParadisSheetData;
+	readonly rows: ReadonlyMap<number, IParadisRowData>;
+}
+
+/**
+ * Compares the legacy ExcelJS render projection with the raw OOXML semantic model.
+ * Diagnostics are intentionally one-way: no projected value or normalized border mutates the snapshot.
+ */
+export function diagnoseSpreadsheetProjection(
+	snapshot: ParadisSpreadsheetSnapshot,
+	projection: IParadisWorkbookData,
+	options: IParadisSpreadsheetProjectionDiagnosticOptions = {},
+): readonly ParadisSpreadsheetProjectionDiagnostic[] {
+	const diagnostics: ParadisSpreadsheetProjectionDiagnostic[] = [];
+	const indexedSheets: IIndexedParadisProjectionSheet[] = [];
+	const indexedSheetsByName = new Map<string, IIndexedParadisProjectionSheet>();
+	for (const sheet of projection.sheets) {
+		options.consumeProjectionSheet?.();
+		options.checkpoint?.();
+		const rows = new Map<number, IParadisRowData>();
+		for (const row of sheet.rows) {
+			options.consumeProjectionRow?.();
+			options.checkpoint?.();
+			for (let index = 0; index < row.cells.length; index++) {
+				options.consumeProjectionCell?.();
+				options.checkpoint?.();
+			}
+			rows.set(row.excelRow, row);
+		}
+		const indexed = { sheet, rows };
+		indexedSheets.push(indexed);
+		if (!indexedSheetsByName.has(sheet.name)) {
+			indexedSheetsByName.set(sheet.name, indexed);
+		}
+	}
+	for (const semanticSheet of snapshot.sheets) {
+		options.checkpoint?.();
+		const orderedSheet = indexedSheets[semanticSheet.order];
+		const projected = orderedSheet?.sheet.name === semanticSheet.name ? orderedSheet : indexedSheetsByName.get(semanticSheet.name);
+		if (!projected) {
+			diagnostics.push({ kind: 'sheetMissing', sheetName: semanticSheet.name });
+			if (diagnostics.length >= MAX_SEMANTIC_PROJECTION_DIAGNOSTICS) {
+				break;
+			}
+			continue;
+		}
+		for (const [cellAddress, semanticCell] of semanticSheet.cells) {
+			options.checkpoint?.();
+			const coordinate = parseSemanticCellAddress(cellAddress);
+			if (!coordinate) {
+				continue;
+			}
+			const projectedCell = projected.rows.get(coordinate.row)?.cells[coordinate.column - projected.sheet.minCol];
+			if (!projectedCell) {
+				diagnostics.push({ kind: 'cellMissing', sheetName: semanticSheet.name, cellAddress });
+			} else {
+				const semanticValue = semanticProjectionValue(semanticCell);
+				if (semanticValue !== projectedCell.value) {
+					diagnostics.push({
+						kind: 'valueMismatch',
+						sheetName: semanticSheet.name,
+						cellAddress,
+						semanticValue,
+						projectionValue: projectedCell.value,
+					});
+				}
+				const semanticFormat = semanticCell.styleRef === undefined ? undefined : snapshot.styles.cellFormats[semanticCell.styleRef];
+				const semanticBorder = semanticFormat?.borderRef === undefined ? undefined : snapshot.styles.borders[semanticFormat.borderRef];
+				if ((semanticBorder?.diagonalUp || semanticBorder?.diagonalDown)
+					&& !projectionDiagonalMatches(semanticBorder, projectedCell.diagonal)) {
+					diagnostics.push({ kind: 'diagonalStyleMismatch', sheetName: semanticSheet.name, cellAddress });
+				}
+			}
+			if (diagnostics.length >= MAX_SEMANTIC_PROJECTION_DIAGNOSTICS) {
+				break;
+			}
+		}
+		if (diagnostics.length >= MAX_SEMANTIC_PROJECTION_DIAGNOSTICS) {
+			break;
+		}
+	}
+	return diagnostics.slice(0, MAX_SEMANTIC_PROJECTION_DIAGNOSTICS);
+}
+
+function projectionDiagonalMatches(semanticBorder: ParadisSemanticBorder, projected: IParadisDiagonalBorder | undefined): boolean {
+	if (!projected
+		|| projected.up !== (semanticBorder.diagonalUp ?? false)
+		|| projected.down !== (semanticBorder.diagonalDown ?? false)) {
+		return false;
+	}
+	const semanticStyle = semanticBorder.diagonal?.style ? SEMANTIC_BORDER_STYLES[semanticBorder.diagonal.style] : undefined;
+	if (semanticStyle && semanticStyle !== projected.style) {
+		return false;
+	}
+	const rawRgb = semanticBorder.diagonal?.color?.rgb;
+	if (rawRgb) {
+		const semanticColor = `#${rawRgb.slice(-6)}`.toUpperCase();
+		if (semanticColor !== projected.color.toUpperCase()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function semanticProjectionValue(cell: ParadisSemanticCell): string {
+	if (cell.storedType === 'formula') {
+		return cell.cachedResult?.present ? cell.cachedResult.rawValue : '';
+	}
+	return cell.text ?? cell.rawValue ?? '';
+}
+
+function parseSemanticCellAddress(address: string): { readonly row: number; readonly column: number } | undefined {
+	const match = /^([A-Z]+)([1-9][0-9]*)$/.exec(address);
+	if (!match) {
+		return undefined;
+	}
+	let column = 0;
+	for (const character of match[1]) {
+		column = column * 26 + character.charCodeAt(0) - 64;
+	}
+	return { row: Number.parseInt(match[2], 10), column };
 }
 
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */
