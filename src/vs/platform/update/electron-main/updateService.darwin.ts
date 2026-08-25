@@ -21,7 +21,7 @@ import { getParadisDesktopUpdatePlatform } from '../common/paradisUpdatePlatform
 // PARA-PATCH: end
 import { AvailableForDownload, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { IMeteredConnectionService } from '../../meteredConnection/common/meteredConnection.js';
-import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders (Cloudflare Access service token headers, see CLAUDE.md)
+import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, redactUpdateHeadersForLog, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders/redactUpdateHeadersForLog (Cloudflare Access service token headers, see CLAUDE.md)
 
 export class DarwinUpdateService extends AbstractUpdateService implements IRelaunchHandler {
 
@@ -104,7 +104,7 @@ export class DarwinUpdateService extends AbstractUpdateService implements IRelau
 		// PARA-PATCH: merge Cloudflare Access service token headers (see CLAUDE.md).
 		const headers = { ...getUpdateRequestHeaders(this.productService.version), ...getUpdateAccessHeaders(this.productService) };
 		try {
-			this.logService.trace('update#buildUpdateFeedUrl - setting feed URL for Electron autoUpdater', { url, assetID, quality, commit, headers });
+			this.logService.trace('update#buildUpdateFeedUrl - setting feed URL for Electron autoUpdater', { url, assetID, quality, commit, headers: redactUpdateHeadersForLog(headers) });
 			electron.autoUpdater.setFeedURL({ url, headers });
 		} catch (e) {
 			// application is very likely not signed
@@ -149,7 +149,7 @@ export class DarwinUpdateService extends AbstractUpdateService implements IRelau
 	private async checkForUpdateNoDownload(url: string, canInstall?: boolean): Promise<void> {
 		// PARA-PATCH: merge Cloudflare Access service token headers (see CLAUDE.md).
 		const headers = { ...getUpdateRequestHeaders(this.productService.version), ...getUpdateAccessHeaders(this.productService) };
-		this.logService.trace('update#checkForUpdateNoDownload - checking update server', { url, headers });
+		this.logService.trace('update#checkForUpdateNoDownload - checking update server', { url, headers: redactUpdateHeadersForLog(headers) });
 
 		try {
 			const context = await this.requestService.request({ url, headers, callSite: 'updateService.darwin.checkForUpdates' }, CancellationToken.None);
