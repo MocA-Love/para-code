@@ -119,24 +119,24 @@ function creatingElementLabel(element: ICreatingSpaceElement): string {
 /** パレットIDの表示名 (Superset の12色) */
 function colorLabel(colorId: string): string {
 	switch (colorId) {
-		case 'red': return localize('paradis.color.red', "赤");
-		case 'orange': return localize('paradis.color.orange', "オレンジ");
-		case 'yellow': return localize('paradis.color.yellow', "黄");
-		case 'lime': return localize('paradis.color.lime', "ライム");
-		case 'green': return localize('paradis.color.green', "緑");
-		case 'teal': return localize('paradis.color.teal', "ティール");
-		case 'cyan': return localize('paradis.color.cyan', "シアン");
-		case 'blue': return localize('paradis.color.blue', "青");
-		case 'indigo': return localize('paradis.color.indigo', "インディゴ");
-		case 'purple': return localize('paradis.color.purple', "紫");
-		case 'pink': return localize('paradis.color.pink', "ピンク");
-		case 'slate': return localize('paradis.color.slate', "スレート");
+		case 'red': return localize('paradis.color.red', "Red");
+		case 'orange': return localize('paradis.color.orange', "Orange");
+		case 'yellow': return localize('paradis.color.yellow', "Yellow");
+		case 'lime': return localize('paradis.color.lime', "Lime");
+		case 'green': return localize('paradis.color.green', "Green");
+		case 'teal': return localize('paradis.color.teal', "Teal");
+		case 'cyan': return localize('paradis.color.cyan', "Cyan");
+		case 'blue': return localize('paradis.color.blue', "Blue");
+		case 'indigo': return localize('paradis.color.indigo', "Indigo");
+		case 'purple': return localize('paradis.color.purple', "Purple");
+		case 'pink': return localize('paradis.color.pink', "Pink");
+		case 'slate': return localize('paradis.color.slate', "Slate");
 		default: return colorId;
 	}
 }
 
 /** リポジトリ本体 (main checkout) を表す合成 worktree 行の表示名。 */
-const STR_MAIN_CHECKOUT_NAME = localize('paradis.workspaceSwitch.mainCheckoutName', "本体");
+const STR_MAIN_CHECKOUT_NAME = localize('paradis.workspaceSwitch.mainCheckoutName', "local");
 
 /** worktree の状態キー。main checkout の合成行は repositoryId をそのまま状態キーとして使う。 */
 function worktreeStateKeyFor(worktree: IParadisWorktree): string {
@@ -394,8 +394,8 @@ function prStateIcon(state: ParadisPrState): ThemeIcon {
 
 function issueStateLabel(state: ParadisIssueState): string {
 	switch (state) {
-		case 'closed': return localize('paradis.issue.closed', "クローズ済み");
-		default: return localize('paradis.issue.open', "オープン");
+		case 'closed': return localize('paradis.issue.closed', "Closed");
+		default: return localize('paradis.issue.open', "Open");
 	}
 }
 
@@ -442,10 +442,10 @@ function issueHoverContent(issueUrls: readonly string[], getIssueStatus: (url: s
 
 function prStateLabel(state: ParadisPrState): string {
 	switch (state) {
-		case 'merged': return localize('paradis.pr.merged', "マージ済み");
-		case 'closed': return localize('paradis.pr.closed', "クローズ済み");
-		case 'draft': return localize('paradis.pr.draft', "下書き");
-		default: return localize('paradis.pr.open', "オープン");
+		case 'merged': return localize('paradis.pr.merged', "Merged");
+		case 'closed': return localize('paradis.pr.closed', "Closed");
+		case 'draft': return localize('paradis.pr.draft', "Draft");
+		default: return localize('paradis.pr.open', "Open");
 	}
 }
 
@@ -775,7 +775,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			? localize('paradis.workspaceSwitch.switchingStage', "切り替えています…")
 			: pendingStage;
 		templateData.branch.textContent = worktree.missing
-			? localize('paradis.workspaceSwitch.worktreeMissing', "見つかりません")
+			? localize('paradis.workspaceSwitch.worktreeMissing', "missing")
 			: rowStage ?? worktree.branch ?? '';
 		templateData.branch.classList.toggle('paradis-creating-stage', rowStage !== undefined);
 		templateData.row.classList.toggle('active', active);
