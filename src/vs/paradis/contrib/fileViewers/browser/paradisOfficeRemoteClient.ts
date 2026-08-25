@@ -52,6 +52,14 @@ interface RemoteRoute {
 	readonly authority?: ParadisOfficeWireAuthority;
 }
 
+type AuthorityAwareSourceBroker = IOfficeSourceBroker & {
+	open(descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken, authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSourceBroker['open']>;
+};
+
+type AuthorityAwareSpoolClient = IOfficeSpoolClient & {
+	dispose(reference: Parameters<IOfficeSpoolClient['dispose']>[0], authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSpoolClient['dispose']>;
+};
+
 export class ParadisOfficeRemoteClientError extends Error {
 	override readonly name = 'ParadisOfficeRemoteClientError';
 
@@ -133,7 +141,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 	private readonly handleRoutes = new Map<string, RemoteRoute>();
 	private disposed = false;
 	private readonly pendingSpools = new Set<ParadisOfficeSealedSpoolReference>();
-	private readonly spoolDescriptors = new Map<ParadisOfficeSealedSpoolReference, ParadisOfficeSourceDescriptor>();
+	private readonly spoolBindings = new Map<ParadisOfficeSealedSpoolReference, { readonly descriptor: ParadisOfficeSourceDescriptor; readonly authority: ParadisOfficeWireAuthority }>();
 
 	constructor(private readonly options: ParadisOfficeRemoteClientOptions) {
 		super();
@@ -154,7 +162,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		}
 		const spools: ParadisOfficeSealedSpoolReference[] = [];
 		try {
-			const routedRequest = route.kind === 'remoteV1' ? this.validateDirectRemoteRequest(request, route.connection) : await this.prepareLocalFallback(request, spools, token);
+			const routedRequest = route.kind === 'remoteV1' ? this.validateDirectRemoteRequest(request, route.connection) : await this.prepareLocalFallback(request, route, spools, token);
 			const response = await this.callCancellable(route.channel, 'request', marshalParadisOfficeRequest(routedRequest, route.authority), token);
 			const parsed = unmarshalParadisOfficeResponse(response);
 			this.rememberHandleRoute(parsed, route, request);
@@ -222,15 +230,16 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		} catch {
 			throw new ParadisOfficeRemoteClientError(token.isCancellationRequested ? 'cancelled' : 'negotiationFailed');
 		}
-		if (!isV1Negotiation(localNegotiation)) {
+		if (!isV1Negotiation(localNegotiation) || !localNegotiation.ownerCapability || !localNegotiation.connectionEpoch) {
 			throw new ParadisOfficeRemoteClientError('negotiationFailed');
 		}
+		const authority = { ownerCapability: localNegotiation.ownerCapability, connectionEpoch: localNegotiation.connectionEpoch };
 		try {
 			this.options.onWarning('office.capability.remoteBackendV0');
 		} catch {
 			// Warning delivery cannot expose UI extension failures or prevent the safe fallback.
 		}
-		return this.route = { connection, channel: this.options.localChannel, kind: 'boundedLocalSpool' };
+		return this.route = { connection, channel: this.options.localChannel, kind: 'boundedLocalSpool', authority };
 	}
 
 	private validateDirectRemoteRequest(request: ParadisOfficeRequest, connection: IParadisOfficeRemoteConnection): ParadisOfficeRequest {
@@ -254,7 +263,8 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		return request;
 	}
 
-	private async prepareLocalFallback(request: ParadisOfficeRequest, spools: ParadisOfficeSealedSpoolReference[], token: CancellationToken): Promise<ParadisOfficeRequest> {
+	private async prepareLocalFallback(request: ParadisOfficeRequest, route: RemoteRoute, spools: ParadisOfficeSealedSpoolReference[], token: CancellationToken): Promise<ParadisOfficeRequest> {
+		if (!route.authority) { throw new ParadisOfficeRemoteClientError('negotiationFailed'); }
 		const sources: ParadisOfficeSourceDescriptor[] = [];
 		for (const source of requestSources(request)) {
 			if (token.isCancellationRequested) {
@@ -262,7 +272,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 			}
 			let backendSource: ParadisOfficeBackendSource;
 			try {
-				backendSource = await this.options.sourceBroker.open(source, token);
+				backendSource = await (this.options.sourceBroker as AuthorityAwareSourceBroker).open(source, token, route.authority);
 			} catch {
 				throw new ParadisOfficeRemoteClientError(token.isCancellationRequested ? 'cancelled' : 'sourceFailed');
 			}
@@ -275,8 +285,17 @@ export class ParadisOfficeRemoteClient extends Disposable {
 			}
 			spools.push(backendSource.spool);
 			this.pendingSpools.add(backendSource.spool);
-			this.spoolDescriptors.set(backendSource.spool, backendSource.descriptor);
-			await this.callCancellable(this.options.localChannel, 'source/bind', marshalParadisOfficeWireValue({ descriptor: backendSource.descriptor, spool: backendSource.spool }), token);
+			this.spoolBindings.set(backendSource.spool, { descriptor: backendSource.descriptor, authority: route.authority });
+			if (token.isCancellationRequested) { throw new ParadisOfficeRemoteClientError('cancelled'); }
+			const binding = this.options.localChannel.call('source/bind', marshalParadisOfficeWireValue({ descriptor: backendSource.descriptor, spool: backendSource.spool }, route.authority), token);
+			try {
+				await this.raceCancellation(binding, token);
+			} catch (error) {
+				const lateBinding = { descriptor: backendSource.descriptor, authority: route.authority };
+				void binding.then(() => this.unbindExact(backendSource.spool, lateBinding)).catch(() => undefined);
+				throw error;
+			}
+			if (token.isCancellationRequested) { throw new ParadisOfficeRemoteClientError('cancelled'); }
 			sources.push(backendSource.descriptor);
 		}
 		return withSources(request, sources);
@@ -286,12 +305,16 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		if (token.isCancellationRequested) {
 			throw new ParadisOfficeRemoteClientError('cancelled');
 		}
+		return this.raceCancellation(channel.call(command, arg, token), token);
+	}
+
+	private async raceCancellation(pending: Promise<unknown>, token: CancellationToken): Promise<unknown> {
 		let listener: IDisposable | undefined;
 		const cancelled = new Promise<never>((_resolve, reject) => {
 			listener = token.onCancellationRequested(() => reject(new ParadisOfficeRemoteClientError('cancelled')));
 		});
 		try {
-			return await Promise.race([channel.call(command, arg, token), cancelled]);
+			return await Promise.race([pending, cancelled]);
 		} finally {
 			if (listener) {
 				safeDispose(listener);
@@ -301,21 +324,29 @@ export class ParadisOfficeRemoteClient extends Disposable {
 
 	private async cleanupSpools(spools: readonly ParadisOfficeSealedSpoolReference[]): Promise<void> {
 		for (const spool of spools) {
-			const descriptor = this.spoolDescriptors.get(spool);
 			this.pendingSpools.delete(spool);
-			this.spoolDescriptors.delete(spool);
-			if (descriptor) {
-				try {
-					await this.options.localChannel.call('source/unbind', marshalParadisOfficeWireValue({ descriptor, spool }));
-				} catch {
-					// A consumed binding is already absent; cleanup is deliberately idempotent.
-				}
-			}
+			const binding = this.spoolBindings.get(spool);
+			await this.unbind(spool);
 			try {
-				await this.options.spoolClient.dispose(spool);
+				await (this.options.spoolClient as AuthorityAwareSpoolClient).dispose(spool, binding?.authority);
 			} catch {
 				// Owner-bound cleanup is best effort; raw errors are never surfaced.
 			}
+		}
+	}
+
+	private async unbind(spool: ParadisOfficeSealedSpoolReference): Promise<void> {
+		const binding = this.spoolBindings.get(spool);
+		if (!binding) { return; }
+		this.spoolBindings.delete(spool);
+		await this.unbindExact(spool, binding);
+	}
+
+	private async unbindExact(spool: ParadisOfficeSealedSpoolReference, binding: { readonly descriptor: ParadisOfficeSourceDescriptor; readonly authority: ParadisOfficeWireAuthority }): Promise<void> {
+		try {
+			await this.options.localChannel.call('source/unbind', marshalParadisOfficeWireValue({ descriptor: binding.descriptor, spool }, binding.authority));
+		} catch {
+			// A consumed binding is already absent; cleanup is deliberately idempotent.
 		}
 	}
 

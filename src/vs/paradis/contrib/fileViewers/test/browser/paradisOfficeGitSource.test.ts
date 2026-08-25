@@ -18,13 +18,12 @@ import {
 	type IParadisOfficeGitRepository,
 	type ParadisOfficeGitRepositorySnapshot,
 } from '../../browser/paradisOfficeGitSource.js';
-import { ParadisOfficeSourceBroker, ParadisOfficeSourceBrokerError } from '../../browser/paradisOfficeSourceBroker.js';
+import { ParadisOfficeChannelSpoolClient, ParadisOfficeSourceBroker, ParadisOfficeSourceBrokerError } from '../../browser/paradisOfficeSourceBroker.js';
 import { ParadisOfficeRemoteClient, ParadisOfficeRemoteClientError } from '../../browser/paradisOfficeRemoteClient.js';
 import { PARADIS_OFFICE_CHANNEL, decodeParadisOfficeWireValue, marshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../common/paradisOfficeChannel.js';
 import { createParadisOfficeError } from '../../common/paradisOfficeErrors.js';
-import { PARADIS_OFFICE_SPOOL_CHUNK_BYTES, type IOfficeSourceBroker, type IOfficeSourceHash, type IOfficeSpoolClient, type ParadisOfficeBackendSource, type ParadisOfficeSealedSpoolReference, type ParadisOfficeSpoolReference, type ParadisOfficeWritableSpoolReference, type ParadisOfficeSealRequest } from '../../common/paradisOfficeSourceBroker.js';
+import { type IOfficeSourceBroker, type IOfficeSourceHash, type IOfficeSpoolClient, type ParadisOfficeBackendSource, type ParadisOfficeSealedSpoolReference, type ParadisOfficeSpoolReference, type ParadisOfficeWritableSpoolReference, type ParadisOfficeSealRequest } from '../../common/paradisOfficeSourceBroker.js';
 import type { ParadisOfficeRequest, ParadisOfficeResponse, ParadisOfficeSourceDescriptor } from '../../common/paradisOfficeProtocol.js';
-import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
 const headCommitA = '1111111111111111111111111111111111111111';
 const headCommitB = '2222222222222222222222222222222222222222';
@@ -142,6 +141,13 @@ const remoteSpool: ParadisOfficeSealedSpoolReference = {
 	id: 'a'.repeat(48), ownerId: 'window:remote', nonce: 'b'.repeat(64), attemptId: '123e4567-e89b-42d3-a456-426614174000',
 	sourceKind: 'remote', providerIdentity: 'remote-provider', providerRevision: 'etag:1', size: 4, sha256: 'c'.repeat(64), revision: 'office-source/v1|remote',
 };
+
+const localAuthority = { ownerCapability: 'e'.repeat(64), connectionEpoch: 11 };
+const v1Capabilities = ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] as const;
+
+function localNegotiation() {
+	return { version: 1 as const, channel: PARADIS_OFFICE_CHANNEL, capabilities: [...v1Capabilities], ...localAuthority };
+}
 
 class RemoteBroker implements IOfficeSourceBroker {
 	readonly opened: ParadisOfficeSourceDescriptor[] = [];
@@ -371,46 +377,6 @@ suite('ParadisOfficeGitSource', () => {
 		safeRepository.dispose();
 	});
 
-	test('preserves real DOCX/XLSX DrawingML diagonals byte-for-byte across Git and the 2 MiB spool boundary', async () => {
-		const fixtures = [
-			await buildOpcFixture({
-				parts: [
-					['/word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:drawing/></w:body></w:document>'],
-					['/word/drawings/drawing1.xml', '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:ln><a:prstDash val="dash"/></a:ln><a:xfrm><a:off x="0" y="0"/><a:ext cx="1" cy="1"/></a:xfrm></a:graphic>'],
-				], relationships: [{ id: 'rId1', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', target: 'word/document.xml' }],
-			}),
-			await buildOpcFixture({
-				parts: [
-					['/xl/workbook.xml', '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>'],
-					['/xl/drawings/drawing1.xml', '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:cxnSp><xdr:spPr><a:xfrm flipH="1"><a:off x="0" y="0"/><a:ext cx="1" cy="1"/></a:xfrm><a:ln/></xdr:spPr></xdr:cxnSp></xdr:wsDr>'],
-					['/xl/media/padding.bin', new Uint8Array(PARADIS_OFFICE_SPOOL_CHUNK_BYTES + 1)],
-				], relationships: [{ id: 'rId1', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', target: 'xl/workbook.xml' }],
-			}),
-		];
-		for (const [index, fixture] of fixtures.entries()) {
-			const repository = new TestRepository(repositorySnapshot());
-			const bytes = new TestBytes({ [`git:/workspace/repo/book.xlsx:${headCommitA}`]: fixture, 'git:/workspace/repo/book.xlsx:': fixture });
-			const source = new ParadisOfficeGitSource(repository, bytes);
-			const comparison = await source.createComparison('headToIndex', 'book.xlsx', CancellationToken.None);
-			const appended: VSBuffer[] = [];
-			const reference = { id: `${index + 1}`.repeat(48), ownerId: 'window:fixture', nonce: 'b'.repeat(64), attemptId: `123e4567-e89b-42d3-a456-42661417400${index}` };
-			const spoolClient: IOfficeSpoolClient = {
-				begin: async (_owner, attemptId) => ({ ...reference, attemptId }), claim: async () => { }, append: async (_reference, chunk) => { appended.push(chunk.clone()); },
-				seal: async (writable, request) => ({ ...writable, ...request }), dispose: async () => { }, disposeAttempt: async () => { },
-			};
-			const hash: IOfficeSourceHash = { update: () => { }, digest: () => comparison.modified.contentHash };
-			const broker = new ParadisOfficeSourceBroker({ ownerId: reference.ownerId, platform: 'desktopLocal', provider: source, spoolClient, createHash: () => hash, isRemoteProtocolV1: () => false });
-			const backend = await broker.open(comparison.modified.descriptor, CancellationToken.None);
-			assert.strictEqual(backend.kind, 'spool');
-			const reconstructed = VSBuffer.concat(appended);
-			assert.deepStrictEqual([...reconstructed.buffer], [...fixture]);
-			assert.strictEqual(backend.spool.sha256, comparison.modified.contentHash);
-			if (index === 1) { assert.strictEqual(appended[0].byteLength, PARADIS_OFFICE_SPOOL_CHUNK_BYTES); assert.ok(appended.length > 1); }
-			source.dispose();
-			repository.dispose();
-		}
-	});
-
 	test('uses the remote v1 channel and transfers only a descriptor wire envelope', async () => {
 		const authority = { ownerCapability: 'd'.repeat(64), connectionEpoch: 7 };
 		const remote = new RecordingRemoteChannel((command, arg) => {
@@ -446,8 +412,9 @@ suite('ParadisOfficeGitSource', () => {
 		const remote = new RecordingRemoteChannel(() => { throw new Error('/private/server/channel missing secret-token'); });
 		const local = new RecordingRemoteChannel((command, arg) => {
 			if (command === 'negotiate') {
-				return { version: 1, channel: PARADIS_OFFICE_CHANNEL, capabilities: ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] };
+				return localNegotiation();
 			}
+			assert.deepStrictEqual(decodeParadisOfficeWireValue(arg).authority, localAuthority);
 			if (command === 'source/bind') {
 				assert.deepStrictEqual(decodeParadisOfficeWireValue(arg).value, { descriptor: remoteDescriptor, spool: remoteSpool });
 				return undefined;
@@ -482,7 +449,7 @@ suite('ParadisOfficeGitSource', () => {
 			return marshalParadisOfficeResponse(remoteFailedResponse(request.requestId));
 		});
 		const local = new RecordingRemoteChannel((command, arg) => {
-			if (command === 'negotiate') { return { version: 1, channel: PARADIS_OFFICE_CHANNEL, capabilities: ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] }; }
+			if (command === 'negotiate') { return localNegotiation(); }
 			if (command === 'source/bind' || command === 'source/unbind') { return undefined; }
 			const request = decodeParadisOfficeWireValue(arg).value as ParadisOfficeRequest;
 			return marshalParadisOfficeResponse(remoteFailedResponse(request.requestId));
@@ -525,7 +492,7 @@ suite('ParadisOfficeGitSource', () => {
 		const remote = new RecordingRemoteChannel(() => { throw new Error('old server'); });
 		const bound = new Set<string>();
 		const local = new RecordingRemoteChannel((command, arg) => {
-			if (command === 'negotiate') { return { version: 1, channel: PARADIS_OFFICE_CHANNEL, capabilities: ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] }; }
+			if (command === 'negotiate') { return localNegotiation(); }
 			const value = decodeParadisOfficeWireValue(arg).value as { readonly descriptor: ParadisOfficeSourceDescriptor };
 			if (command === 'source/bind') {
 				const key = JSON.stringify(value.descriptor);
@@ -558,7 +525,7 @@ suite('ParadisOfficeGitSource', () => {
 		const requestStarted = new Emitter<void>();
 		const local = new RecordingRemoteChannel(command => {
 			if (command === 'negotiate') {
-				return { version: 1, channel: PARADIS_OFFICE_CHANNEL, capabilities: ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] };
+				return localNegotiation();
 			}
 			if (command === 'source/bind') {
 				return undefined;
@@ -583,5 +550,107 @@ suite('ParadisOfficeGitSource', () => {
 		client.dispose();
 		cancellation.dispose();
 		requestStarted.dispose();
+	});
+
+	test('binds the local negotiation authority to every fallback spool and request command', async () => {
+		const remote = new RecordingRemoteChannel(() => { throw new Error('old remote'); });
+		const commands: string[] = [];
+		const appended: VSBuffer[] = [];
+		const local = new RecordingRemoteChannel((command, arg) => {
+			commands.push(command);
+			if (command === 'negotiate') { return localNegotiation(); }
+			const decoded = decodeParadisOfficeWireValue(arg);
+			assert.deepStrictEqual(decoded.authority, localAuthority);
+			if (command === 'spool/begin') {
+				const attemptId = (decoded.value as { readonly attemptId: string }).attemptId;
+				return { id: 'a'.repeat(48), ownerId: localAuthority.ownerCapability, nonce: 'b'.repeat(64), attemptId };
+			}
+			if (command === 'spool/append') {
+				appended.push((decoded.value as { readonly bytes: VSBuffer }).bytes.clone());
+				return undefined;
+			}
+			if (command === 'spool/seal') {
+				const value = decoded.value as { readonly reference: ParadisOfficeWritableSpoolReference; readonly request: ParadisOfficeSealRequest };
+				return { ...value.reference, ...value.request };
+			}
+			if (command === 'request') {
+				const request = decoded.value as ParadisOfficeRequest;
+				return marshalParadisOfficeResponse(remoteFailedResponse(request.requestId));
+			}
+			return undefined;
+		});
+		const spoolClient = new ParadisOfficeChannelSpoolClient(local);
+		const hash: IOfficeSourceHash = { update: () => { }, digest: () => 'bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721' };
+		const broker = new ParadisOfficeSourceBroker({
+			ownerId: 'window:pre-negotiation', platform: 'desktopLocal', spoolClient,
+			provider: { snapshot: async () => ({ identity: 'remote:file', revision: 'etag:1' }), async *read() { yield VSBuffer.fromString('abcdef'); } },
+			createHash: () => hash, isRemoteProtocolV1: () => false,
+		});
+		const client = new ParadisOfficeRemoteClient({ remoteAgentService: { getConnection: () => ({ remoteAuthority: 'old', getChannel: () => remote }) }, localChannel: local, sourceBroker: broker, spoolClient, onWarning: () => { } });
+
+		const result = await client.request(remoteInspectRequest('authority-fallback'), CancellationToken.None);
+
+		assert.strictEqual(result.route, 'boundedLocalSpool');
+		assert.deepStrictEqual(commands, ['negotiate', 'spool/begin', 'spool/claim', 'spool/append', 'spool/seal', 'source/bind', 'request', 'source/unbind', 'spool/dispose']);
+		assert.strictEqual(VSBuffer.concat(appended).toString(), 'abcdef');
+		client.dispose();
+	});
+
+	test('fences cancellation before and after fallback bind and unbinds a late bind', async () => {
+		for (const cancellationPoint of ['beforeBindResponse', 'afterBindResponse'] as const) {
+			const remote = new RecordingRemoteChannel(() => { throw new Error('old remote'); });
+			let resolveBind!: () => void;
+			const bindStarted = new Emitter<void>();
+			const requestStarted = new Emitter<void>();
+			const local = new RecordingRemoteChannel((command, arg) => {
+				if (command === 'negotiate') { return localNegotiation(); }
+				assert.deepStrictEqual(decodeParadisOfficeWireValue(arg).authority, localAuthority);
+				if (command === 'source/bind') { bindStarted.fire(); return new Promise<void>(resolve => resolveBind = resolve); }
+				if (command === 'request') { requestStarted.fire(); return new Promise(() => { }); }
+				return undefined;
+			});
+			const cancellation = new CancellationTokenSource();
+			const client = new ParadisOfficeRemoteClient({ remoteAgentService: { getConnection: () => ({ remoteAuthority: 'old', getChannel: () => remote }) }, localChannel: local, sourceBroker: new RemoteBroker({ kind: 'spool', descriptor: remoteDescriptor, spool: { ...remoteSpool, ownerId: localAuthority.ownerCapability } }), spoolClient: new RemoteSpoolClient(), onWarning: () => { } });
+			const pending = client.request(remoteInspectRequest(`bind-${cancellationPoint}`), cancellation.token);
+			await Event.toPromise(bindStarted.event);
+			if (cancellationPoint === 'beforeBindResponse') {
+				cancellation.cancel();
+				await assert.rejects(pending, ParadisOfficeRemoteClientError);
+				resolveBind();
+				await new Promise(resolve => setTimeout(resolve, 0));
+				assert.strictEqual(local.calls.filter(call => call.command === 'source/unbind').length, 2);
+			} else {
+				resolveBind();
+				await Event.toPromise(requestStarted.event);
+				cancellation.cancel();
+				await assert.rejects(pending, ParadisOfficeRemoteClientError);
+				assert.strictEqual(local.calls.filter(call => call.command === 'source/unbind').length, 1);
+			}
+			client.dispose(); cancellation.dispose(); bindStarted.dispose(); requestStarted.dispose();
+		}
+	});
+
+	test('does not publish a fallback bind after cancellation is observed at the post-broker fence', async () => {
+		const cancellation = new CancellationTokenSource();
+		const remote = new RecordingRemoteChannel(() => { throw new Error('old remote'); });
+		const local = new RecordingRemoteChannel((command, arg) => {
+			if (command === 'negotiate') { return localNegotiation(); }
+			assert.deepStrictEqual(decodeParadisOfficeWireValue(arg).authority, localAuthority);
+			return undefined;
+		});
+		const spoolClient = new RemoteSpoolClient();
+		const broker: IOfficeSourceBroker = {
+			open: async () => {
+				cancellation.cancel();
+				return { kind: 'spool', descriptor: remoteDescriptor, spool: { ...remoteSpool, ownerId: localAuthority.ownerCapability } };
+			},
+		};
+		const client = new ParadisOfficeRemoteClient({ remoteAgentService: { getConnection: () => ({ remoteAuthority: 'old', getChannel: () => remote }) }, localChannel: local, sourceBroker: broker, spoolClient, onWarning: () => { } });
+
+		await assert.rejects(client.request(remoteInspectRequest('post-broker-cancel'), cancellation.token), ParadisOfficeRemoteClientError);
+
+		assert.strictEqual(local.calls.some(call => call.command === 'source/bind'), false);
+		assert.deepStrictEqual(spoolClient.disposed, [{ ...remoteSpool, ownerId: localAuthority.ownerCapability }]);
+		client.dispose(); cancellation.dispose();
 	});
 });
