@@ -39,9 +39,7 @@ export interface IParadisSessionResumeEditorDependencies {
 
 /**
  * Session Resume editor のアクションを、スペース切り替えとCLI起動の順に実行する。
- * 別スペースのバックグラウンド再開はワークスペース(ウィンドウ)を切り替えず、foregroundだけ先に切り替える。
- * これはワークスペースの切り替えに関する挙動であり、呼び出し元のセッション履歴ダイアログ自体は
- * mode に関わらず（background でも）成功後に閉じる（paradisSessionResumeDialog.ts の resume() 参照）。
+ * 別スペースのバックグラウンド再開は現在のUIを保ち、foregroundだけ先に切り替える。
  */
 export async function paradisResumeSessionFromEditor(
 	target: IParadisSessionResumeEditorTarget,
