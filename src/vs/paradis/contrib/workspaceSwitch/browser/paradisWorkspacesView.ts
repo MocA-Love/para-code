@@ -119,24 +119,24 @@ function creatingElementLabel(element: ICreatingSpaceElement): string {
 /** パレットIDの表示名 (Superset の12色) */
 function colorLabel(colorId: string): string {
 	switch (colorId) {
-		case 'red': return localize('paradis.color.red', "Red");
-		case 'orange': return localize('paradis.color.orange', "Orange");
-		case 'yellow': return localize('paradis.color.yellow', "Yellow");
-		case 'lime': return localize('paradis.color.lime', "Lime");
-		case 'green': return localize('paradis.color.green', "Green");
-		case 'teal': return localize('paradis.color.teal', "Teal");
-		case 'cyan': return localize('paradis.color.cyan', "Cyan");
-		case 'blue': return localize('paradis.color.blue', "Blue");
-		case 'indigo': return localize('paradis.color.indigo', "Indigo");
-		case 'purple': return localize('paradis.color.purple', "Purple");
-		case 'pink': return localize('paradis.color.pink', "Pink");
-		case 'slate': return localize('paradis.color.slate', "Slate");
+		case 'red': return localize('paradis.color.red', "赤");
+		case 'orange': return localize('paradis.color.orange', "オレンジ");
+		case 'yellow': return localize('paradis.color.yellow', "黄");
+		case 'lime': return localize('paradis.color.lime', "ライム");
+		case 'green': return localize('paradis.color.green', "緑");
+		case 'teal': return localize('paradis.color.teal', "ティール");
+		case 'cyan': return localize('paradis.color.cyan', "シアン");
+		case 'blue': return localize('paradis.color.blue', "青");
+		case 'indigo': return localize('paradis.color.indigo', "インディゴ");
+		case 'purple': return localize('paradis.color.purple', "紫");
+		case 'pink': return localize('paradis.color.pink', "ピンク");
+		case 'slate': return localize('paradis.color.slate', "スレート");
 		default: return colorId;
 	}
 }
 
 /** リポジトリ本体 (main checkout) を表す合成 worktree 行の表示名。 */
-const STR_MAIN_CHECKOUT_NAME = localize('paradis.workspaceSwitch.mainCheckoutName', "local");
+const STR_MAIN_CHECKOUT_NAME = localize('paradis.workspaceSwitch.mainCheckoutName', "本体");
 
 /** worktree の状態キー。main checkout の合成行は repositoryId をそのまま状態キーとして使う。 */
 function worktreeStateKeyFor(worktree: IParadisWorktree): string {
@@ -394,8 +394,8 @@ function prStateIcon(state: ParadisPrState): ThemeIcon {
 
 function issueStateLabel(state: ParadisIssueState): string {
 	switch (state) {
-		case 'closed': return localize('paradis.issue.closed', "Closed");
-		default: return localize('paradis.issue.open', "Open");
+		case 'closed': return localize('paradis.issue.closed', "クローズ済み");
+		default: return localize('paradis.issue.open', "オープン");
 	}
 }
 
@@ -442,10 +442,10 @@ function issueHoverContent(issueUrls: readonly string[], getIssueStatus: (url: s
 
 function prStateLabel(state: ParadisPrState): string {
 	switch (state) {
-		case 'merged': return localize('paradis.pr.merged', "Merged");
-		case 'closed': return localize('paradis.pr.closed', "Closed");
-		case 'draft': return localize('paradis.pr.draft', "Draft");
-		default: return localize('paradis.pr.open', "Open");
+		case 'merged': return localize('paradis.pr.merged', "マージ済み");
+		case 'closed': return localize('paradis.pr.closed', "クローズ済み");
+		case 'draft': return localize('paradis.pr.draft', "下書き");
+		default: return localize('paradis.pr.open', "オープン");
 	}
 }
 
@@ -585,7 +585,7 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		templateData.actionBar.clear();
 		templateData.actionBar.push(new Action(
 			'paradis.workspaceSwitch.createWorktreeInline',
-			localize('paradis.workspaceSwitch.createWorktreeContext', "New Worktree Space..."),
+			localize('paradis.workspaceSwitch.createWorktreeContext', "新しいワークツリースペース..."),
 			ThemeIcon.asClassName(Codicon.add),
 			true,
 			() => this.onCreateWorktree(repository)
@@ -775,7 +775,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			? localize('paradis.workspaceSwitch.switchingStage', "切り替えています…")
 			: pendingStage;
 		templateData.branch.textContent = worktree.missing
-			? localize('paradis.workspaceSwitch.worktreeMissing', "missing")
+			? localize('paradis.workspaceSwitch.worktreeMissing', "見つかりません")
 			: rowStage ?? worktree.branch ?? '';
 		templateData.branch.classList.toggle('paradis-creating-stage', rowStage !== undefined);
 		templateData.row.classList.toggle('active', active);
@@ -1167,7 +1167,7 @@ export class ParadisWorkspacesView extends ViewPane {
 				expandOnlyOnTwistieClick: true,
 				accessibilityProvider: {
 					getAriaLabel: (element: WorkspaceTreeElement) => isCreating(element) ? creatingElementLabel(element) : element.name,
-					getWidgetAriaLabel: () => localize('paradisWorkspaces', "Workspaces")
+					getWidgetAriaLabel: () => localize('paradisWorkspaces', "スペース")
 				}
 			}
 		));
@@ -1629,7 +1629,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		});
 		const defaultAction = new Action(
 			'paradis.workspaceSwitch.color.default',
-			localize('paradis.workspaceSwitch.colorDefault', "Default"),
+			localize('paradis.workspaceSwitch.colorDefault', "既定"),
 			'paradis-menu-icon paradis-menu-color paradis-color-default',
 			true,
 			() => this.workspaceSwitchService.setRepositoryColor(repository.id, undefined)
@@ -1645,7 +1645,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		return [
 			new Action(
 				'paradis.workspaceSwitch.createWorktreeContext',
-				localize('paradis.workspaceSwitch.createWorktreeContext', "New Worktree Space..."),
+				localize('paradis.workspaceSwitch.createWorktreeContext', "新しいワークツリースペース..."),
 				'paradis-menu-icon codicon codicon-add',
 				true,
 				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
@@ -1706,7 +1706,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.configureLifecycleScripts',
-				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup/Teardown Scripts..."),
+				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup / Teardown スクリプト..."),
 				'paradis-menu-icon codicon codicon-tools',
 				true,
 				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
@@ -1959,10 +1959,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		const name = await this.quickInputService.input({
 			value: repository.name,
 			valueSelection: [0, repository.name.length],
-			prompt: localize('paradis.workspaceSwitch.renamePrompt', "Enter a new name for this repository"),
+			prompt: localize('paradis.workspaceSwitch.renamePrompt', "このリポジトリの新しい名前を入力してください"),
 			validateInput: async value => value.trim()
 				? undefined
-				: localize('paradis.workspaceSwitch.renameEmpty', "Name cannot be empty")
+				: localize('paradis.workspaceSwitch.renameEmpty', "名前を空にすることはできません")
 		});
 		if (name !== undefined && name.trim()) {
 			await this.workspaceSwitchService.renameRepository(repository.id, name.trim());
@@ -1979,10 +1979,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		const name = await this.quickInputService.input({
 			value: worktree.name,
 			valueSelection: [0, worktree.name.length],
-			prompt: localize('paradis.workspaceSwitch.worktreeRenamePrompt', "Enter a new name for this worktree"),
+			prompt: localize('paradis.workspaceSwitch.worktreeRenamePrompt', "このワークツリーの新しい名前を入力してください"),
 			validateInput: async value => value.trim()
 				? undefined
-				: localize('paradis.workspaceSwitch.renameEmpty', "Name cannot be empty")
+				: localize('paradis.workspaceSwitch.renameEmpty', "名前を空にすることはできません")
 		});
 		if (name !== undefined && name.trim()) {
 			this.worktreeService.addKnownWorktree({ ...worktree, name: name.trim() });

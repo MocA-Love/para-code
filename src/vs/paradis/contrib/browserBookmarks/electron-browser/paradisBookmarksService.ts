@@ -234,7 +234,7 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 		const duplicated: IParadisBookmark = {
 			...target,
 			id: generateUuid(),
-			title: localize('paradis.bookmarks.duplicateTitle', "{0} (Copy)", target.title.trim() || target.url),
+			title: localize('paradis.bookmarks.duplicateTitle', "{0}のコピー", target.title.trim() || target.url),
 			createdAt: Date.now(),
 		};
 		const folderId = findParadisParentFolderId(this._nodes, bookmarkId);

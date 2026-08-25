@@ -70,7 +70,7 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		const header = dom.append(this.element, $('.paradis-ghm-popover-header'));
 		const title = dom.append(header, $('.paradis-ghm-popover-title'));
 		dom.append(title, $(ThemeIcon.asCSSSelector(Codicon.github)));
-		dom.append(title, $('span')).textContent = localize('paradis.githubMetrics.popover.title', "GitHub API Usage");
+		dom.append(title, $('span')).textContent = localize('paradis.githubMetrics.popover.title', "GitHub API 利用状況");
 		this.updatedElement = dom.append(header, $('.paradis-ghm-popover-updated'));
 
 		this.bodyElement = dom.append(this.element, $('.paradis-ghm-popover-body'));
@@ -78,11 +78,11 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		const footer = dom.append(this.element, $('.paradis-ghm-popover-footer'));
 		const refreshButton = dom.append(footer, $('button.paradis-ghm-button')) as HTMLButtonElement;
 		this.refreshIcon = dom.append(refreshButton, $(ThemeIcon.asCSSSelector(Codicon.refresh)));
-		dom.append(refreshButton, $('span')).textContent = localize('paradis.githubMetrics.popover.refresh', "Refresh");
+		dom.append(refreshButton, $('span')).textContent = localize('paradis.githubMetrics.popover.refresh', "更新");
 		this._register(dom.addDisposableListener(refreshButton, dom.EventType.CLICK, () => void this.load(true)));
 
 		const detailsButton = dom.append(footer, $('button.paradis-ghm-button.primary')) as HTMLButtonElement;
-		detailsButton.textContent = localize('paradis.githubMetrics.popover.details', "Open Details");
+		detailsButton.textContent = localize('paradis.githubMetrics.popover.details', "詳細を開く");
 		this._register(dom.addDisposableListener(detailsButton, dom.EventType.CLICK, () => this.options.openDashboard()));
 
 		this.render();
@@ -116,7 +116,7 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		const snapshot = this.snapshot;
 		// レート枠は shared process 側で短時間キャッシュされるので、取得時刻はその実測値を出す
 		this.updatedElement.textContent = snapshot
-			? localize('paradis.githubMetrics.popover.updated', "Updated {0}", fromNow(snapshot.rateLimitFetchedAt ?? snapshot.generatedAt, true))
+			? localize('paradis.githubMetrics.popover.updated', "更新: {0}", fromNow(snapshot.rateLimitFetchedAt ?? snapshot.generatedAt, true))
 			: '';
 
 		dom.clearNode(this.bodyElement);
@@ -125,13 +125,13 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		if (!snapshot) {
 			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
 			message.textContent = this.error
-				?? localize('paradis.githubMetrics.popover.loading', "Loading…");
+				?? localize('paradis.githubMetrics.popover.loading', "読み込み中…");
 			return;
 		}
 
 		if (!snapshot.ghAvailable) {
 			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
-			message.textContent = localize('paradis.githubMetrics.popover.noGh', "The GitHub CLI (gh) was not found, so rate limits cannot be read.");
+			message.textContent = localize('paradis.githubMetrics.popover.noGh', "GitHub CLI（gh）が見つからないため、レート制限を取得できません。");
 			return;
 		}
 
@@ -142,7 +142,7 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		if (primary.length === 0) {
 			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
 			message.textContent = snapshot.rateLimitError
-				?? localize('paradis.githubMetrics.popover.noData', "No rate limit data yet.");
+				?? localize('paradis.githubMetrics.popover.noData', "まだレート制限のデータがありません。");
 		}
 
 		for (const entry of primary) {
@@ -153,30 +153,30 @@ export class ParadisGithubMetricsPopover extends Disposable {
 
 		const coreConsumption = snapshot.consumption.find(item => item.resource === 'core');
 		this.renderKeyValue(
-			localize('paradis.githubMetrics.popover.consumed5m', "Consumed in the last 5 min"),
+			localize('paradis.githubMetrics.popover.consumed5m', "直近5分の消費量"),
 			coreConsumption?.rolling5m !== undefined
-				? localize('paradis.githubMetrics.popover.requests', "{0} requests", Math.round(coreConsumption.rolling5m))
-				: localize('paradis.githubMetrics.popover.notEnoughSamples', "Measuring…")
+				? localize('paradis.githubMetrics.popover.requests', "{0} 件のリクエスト", Math.round(coreConsumption.rolling5m))
+				: localize('paradis.githubMetrics.popover.notEnoughSamples', "計測中…")
 		);
 		this.renderKeyValue(
-			localize('paradis.githubMetrics.popover.paraCalls', "Sent via the GitHub CLI (5 min)"),
+			localize('paradis.githubMetrics.popover.paraCalls', "GitHub CLI経由の送信数（5分）"),
 			snapshot.totals.rolling5mFailures > 0
-				? localize('paradis.githubMetrics.popover.callsWithFailures', "{0} ({1} failed)", snapshot.totals.rolling5mCalls, snapshot.totals.rolling5mFailures)
+				? localize('paradis.githubMetrics.popover.callsWithFailures', "{0}件（うち失敗{1}件）", snapshot.totals.rolling5mCalls, snapshot.totals.rolling5mFailures)
 				: `${snapshot.totals.rolling5mCalls}`
 		);
 		if (coreConsumption?.perMinute !== undefined) {
 			this.renderKeyValue(
-				localize('paradis.githubMetrics.popover.pace', "Pace"),
-				localize('paradis.githubMetrics.popover.perMinute', "{0} req/min", coreConsumption.perMinute.toFixed(1))
+				localize('paradis.githubMetrics.popover.pace', "ペース"),
+				localize('paradis.githubMetrics.popover.perMinute', "{0} req/分", coreConsumption.perMinute.toFixed(1))
 			);
 		}
 		if (coreConsumption?.exhaustionEtaMs !== undefined) {
-			const valueElement = this.renderKeyValue(localize('paradis.githubMetrics.popover.eta', "Budget runs out in"), '', 'warning');
+			const valueElement = this.renderKeyValue(localize('paradis.githubMetrics.popover.eta', "枯渇までの時間"), '', 'warning');
 			this.addCountdown(
 				valueElement,
 				snapshot.generatedAt + coreConsumption.exhaustionEtaMs,
 				remainingMs => paradisGithubFormatCountdown(remainingMs),
-				localize('paradis.githubMetrics.popover.etaNow', "now")
+				localize('paradis.githubMetrics.popover.etaNow', "枯渇")
 			);
 		}
 
@@ -184,7 +184,7 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		if (lastError) {
 			const box = dom.append(this.bodyElement, $('.paradis-ghm-popover-error'));
 			dom.append(box, $('.paradis-ghm-popover-error-title')).textContent =
-				localize('paradis.githubMetrics.popover.lastError', "Last error · {0}", fromNow(lastError.at, true));
+				localize('paradis.githubMetrics.popover.lastError', "直近のエラー・{0}", fromNow(lastError.at, true));
 			dom.append(box, $('.paradis-ghm-popover-error-body')).textContent = `${lastError.callSite} — ${lastError.message}`;
 		}
 	}
@@ -199,7 +199,7 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		const badge = dom.append(name, $('.paradis-ghm-badge'));
 		badge.classList.add(entry.resource);
 		badge.textContent = paradisGithubResourceLabel(entry.resource);
-		dom.append(name, $('span')).textContent = localize('paradis.githubMetrics.popover.remaining', "remaining");
+		dom.append(name, $('span')).textContent = localize('paradis.githubMetrics.popover.remaining', "残り");
 		dom.append(top, $('.paradis-ghm-limit-value')).textContent = `${entry.remaining.toLocaleString()} / ${entry.limit.toLocaleString()}`;
 
 		const gauge = dom.append(row, $('.paradis-ghm-gauge'));
@@ -207,12 +207,12 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		fill.style.width = `${ratio * 100}%`;
 
 		const sub = dom.append(row, $('.paradis-ghm-limit-sub'));
-		dom.append(sub, $('span')).textContent = localize('paradis.githubMetrics.popover.percentLeft', "{0}% left", paradisGithubRoundedPercent(ratio));
+		dom.append(sub, $('span')).textContent = localize('paradis.githubMetrics.popover.percentLeft', "残り{0}%", paradisGithubRoundedPercent(ratio));
 		this.addCountdown(
 			dom.append(sub, $('span')),
 			entry.resetAt,
-			remainingMs => localize('paradis.githubMetrics.popover.resetsIn', "resets in {0}", paradisGithubFormatCountdown(remainingMs)),
-			localize('paradis.githubMetrics.popover.resetSoon', "resetting")
+			remainingMs => localize('paradis.githubMetrics.popover.resetsIn', "{0}後にリセット", paradisGithubFormatCountdown(remainingMs)),
+			localize('paradis.githubMetrics.popover.resetSoon', "リセット中")
 		);
 	}
 

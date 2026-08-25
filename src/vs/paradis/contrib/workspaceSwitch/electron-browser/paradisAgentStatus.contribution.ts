@@ -131,7 +131,7 @@ class ParadisCopyAgentHooksSetupAction extends Action2 {
 	constructor() {
 		super({
 			id: 'paradis.workspaceSwitch.copyAgentHooksSetup',
-			title: localize2('paradis.workspaceSwitch.copyAgentHooksSetup', "Copy Agent Hooks Setup (Claude Code)"),
+			title: localize2('paradis.workspaceSwitch.copyAgentHooksSetup', "エージェントフックのセットアップをコピー (Claude Code)"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: true
 		});
@@ -158,7 +158,7 @@ class ParadisCopyAgentHooksSetupAction extends Action2 {
 		}
 
 		await clipboardService.writeText(JSON.stringify({ hooks }, undefined, 2));
-		notificationService.info(localize('paradis.workspaceSwitch.hooksCopied', "Copied. Merge the snippet into ~/.claude/settings.json (\"hooks\" section) to enable agent status indicators in the Workspaces view."));
+		notificationService.info(localize('paradis.workspaceSwitch.hooksCopied', "コピーしました。スニペットを ~/.claude/settings.json の「hooks」セクションにマージすると、スペースビューでエージェント状態インジケーターが有効になります。"));
 	}
 }
 

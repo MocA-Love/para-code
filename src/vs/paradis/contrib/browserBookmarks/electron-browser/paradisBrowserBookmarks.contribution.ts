@@ -76,7 +76,7 @@ class ParadisToggleBookmarkAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_TOGGLE_BOOKMARK_COMMAND_ID,
-			title: localize2('paradis.bookmarks.toggleAction', 'Bookmark This Page'),
+			title: localize2('paradis.bookmarks.toggleAction', 'このページをブックマーク'),
 			category: BrowserActionCategory,
 			icon: Codicon.star,
 			f1: true,
@@ -84,7 +84,7 @@ class ParadisToggleBookmarkAction extends Action2 {
 			toggled: {
 				condition: CONTEXT_PARADIS_URL_IS_BOOKMARKED,
 				icon: Codicon.starFull,
-				title: localize('paradis.bookmarks.toggleAction.toggled', "Remove Bookmark"),
+				title: localize('paradis.bookmarks.toggleAction.toggled', "ブックマークを解除"),
 			},
 			menu: {
 				id: MenuId.BrowserActionsToolbar,
@@ -112,7 +112,7 @@ class ParadisToggleBookmarkBarAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_TOGGLE_BOOKMARK_BAR_COMMAND_ID,
-			title: localize2('paradis.bookmarks.toggleBarAction', 'Toggle Bookmarks Bar'),
+			title: localize2('paradis.bookmarks.toggleBarAction', 'ブックマークバーの表示切替'),
 			category: BrowserActionCategory,
 			f1: true,
 		});
@@ -129,7 +129,7 @@ class ParadisImportBookmarksAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_IMPORT_BOOKMARKS_COMMAND_ID,
-			title: localize2('paradis.bookmarks.importAction', 'Import Bookmarks...'),
+			title: localize2('paradis.bookmarks.importAction', 'ブックマークをインポート...'),
 			category: BrowserActionCategory,
 			f1: true,
 		});
@@ -142,7 +142,7 @@ class ParadisImportBookmarksAction extends Action2 {
 		const notificationService = accessor.get(INotificationService);
 
 		const uris = await fileDialogService.showOpenDialog({
-			title: localize('paradis.bookmarks.importDialogTitle', "Import Bookmarks"),
+			title: localize('paradis.bookmarks.importDialogTitle', "ブックマークのインポート"),
 			canSelectFiles: true,
 			canSelectFolders: false,
 			canSelectMany: false,
@@ -156,7 +156,7 @@ class ParadisImportBookmarksAction extends Action2 {
 		const stats = bookmarksService.importNodes(nodes);
 		notificationService.info(localize(
 			'paradis.bookmarks.importResult',
-			"Imported {0} bookmarks and {1} folders ({2} skipped).",
+			"ブックマーク{0}件、フォルダ{1}件をインポートしました（{2}件スキップ）。",
 			stats.bookmarksAdded, stats.foldersAdded, stats.skipped
 		));
 	}
@@ -166,7 +166,7 @@ class ParadisExportBookmarksAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_EXPORT_BOOKMARKS_COMMAND_ID,
-			title: localize2('paradis.bookmarks.exportAction', 'Export Bookmarks...'),
+			title: localize2('paradis.bookmarks.exportAction', 'ブックマークをエクスポート...'),
 			category: BrowserActionCategory,
 			f1: true,
 		});
@@ -178,7 +178,7 @@ class ParadisExportBookmarksAction extends Action2 {
 		const fileService = accessor.get(IFileService);
 
 		const uri = await fileDialogService.showSaveDialog({
-			title: localize('paradis.bookmarks.exportDialogTitle', "Export Bookmarks"),
+			title: localize('paradis.bookmarks.exportDialogTitle', "ブックマークのエクスポート"),
 			defaultUri: joinPath(await fileDialogService.defaultFilePath(), 'bookmarks.html'),
 			filters: [{ name: localize('paradis.bookmarks.htmlFilter', "Bookmark HTML"), extensions: ['html'] }],
 		});

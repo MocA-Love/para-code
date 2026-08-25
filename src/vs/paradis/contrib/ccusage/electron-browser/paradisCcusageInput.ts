@@ -46,7 +46,7 @@ export class ParadisCcusageInput extends EditorInput {
 	}
 
 	override getName(): string {
-		return localize('paradis.ccusage.inputName', "ccusage Dashboard");
+		return localize('paradis.ccusage.inputName', "ccusage ダッシュボード");
 	}
 
 	override getIcon(): ThemeIcon {

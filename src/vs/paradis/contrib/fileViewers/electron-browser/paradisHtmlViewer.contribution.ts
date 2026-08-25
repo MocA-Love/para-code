@@ -24,7 +24,7 @@ import { ParadisHtmlFileInput, ParadisHtmlFileInputSerializer } from './paradisH
 import { ParadisFileDiffInput } from '../browser/paradisFileDiffInput.js';
 import { PARADIS_HTML_EDITOR_ID, PARADIS_HTML_EXTENSIONS, PARADIS_HTML_INPUT_TYPE_ID, isParadisHtmlResource, paradisGlobForExtension } from '../browser/paradisFileViewers.js';
 
-const HTML_PREVIEW_LABEL = localize('paradis.htmlPreview', "HTML Preview");
+const HTML_PREVIEW_LABEL = localize('paradis.htmlPreview', "HTMLプレビュー");
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(

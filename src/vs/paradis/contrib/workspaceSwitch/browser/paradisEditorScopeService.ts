@@ -504,9 +504,9 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			if (unrestoredBackups.length > 0) {
 				const { confirmed } = await this.dialogService.confirm({
 					type: 'warning',
-					message: localize('paradis.editorScope.backupRetirementMessage', "This space contains unsaved backup data."),
-					detail: localize('paradis.editorScope.backupRetirementDetail', "Removing the space will permanently discard its unrestored editor backups."),
-					primaryButton: localize('paradis.editorScope.backupRetirementConfirm', "Discard Backups and Remove")
+					message: localize('paradis.editorScope.backupRetirementMessage', "このスペースには未保存のバックアップデータがあります。"),
+					detail: localize('paradis.editorScope.backupRetirementDetail', "このスペースを削除すると、復元されていないエディタのバックアップは完全に失われます。"),
+					primaryButton: localize('paradis.editorScope.backupRetirementConfirm', "バックアップを破棄して削除")
 				});
 				if (!confirmed) {
 					await this.restoreFrozenRetirement(stateKey, frozenPlacements, workingCopiesByEditor, frozenRetentions);

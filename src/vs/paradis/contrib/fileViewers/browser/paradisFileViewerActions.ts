@@ -40,7 +40,7 @@ class ParadisShowSourceAction extends Action2 {
 	constructor() {
 		super({
 			id: ParadisShowSourceAction.ID,
-			title: localize2('paradis.fileViewer.showSource', "Show Source"),
+			title: localize2('paradis.fileViewer.showSource', "ソースを表示"),
 			icon: Codicon.code,
 			menu: [{ id: MenuId.EditorTitle, group: 'navigation', order: 1, when: viewerEditorActiveContext }]
 		});
@@ -57,7 +57,7 @@ class ParadisShowPreviewAction extends Action2 {
 	constructor() {
 		super({
 			id: ParadisShowPreviewAction.ID,
-			title: localize2('paradis.fileViewer.showPreview', "Show Preview"),
+			title: localize2('paradis.fileViewer.showPreview', "プレビューを表示"),
 			icon: Codicon.openPreview,
 			menu: [{ id: MenuId.EditorTitle, group: 'navigation', order: 1, when: viewerEditorActiveContext }]
 		});
