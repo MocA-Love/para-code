@@ -28,7 +28,49 @@ export interface IParadisLimitsWindow {
 	readonly label?: string;
 }
 
-export type ParadisLimitsAccountStatus = 'ok' | 'token_expired' | 'no_credentials' | 'error';
+/**
+ * アカウントの取得状態。
+ *
+ * cswap の usageStatus（json_output.py のセンチネル）と1:1で対応させる。特に以下の2つは
+ * 「壊れている」ように見えて壊れていないので、'error' と同列にしてはいけない:
+ *  - 'refreshing'   : cswap の 'token_expired'。使用中アカウントのトークンが切れているが、
+ *                     所有者である Claude Code 自身が更新する。ユーザーの操作は要らない
+ *  - 'unavailable'  : 使用状況を読めていないだけ。cswap は制限に達したアカウントの再取得を
+ *                     枠のリセットまで止めるため（レート予算の節約）、日常的にこの状態になる
+ *
+ * 再ログインが要るのは 'relogin_required'（リフレッシュトークンが失効）・'no_credentials'・
+ * 'error' のみ。
+ */
+export type ParadisLimitsAccountStatus = 'ok' | 'refreshing' | 'relogin_required' | 'no_credentials' | 'unavailable' | 'error';
+
+/** 'unavailable' の内訳。表示の分岐キーにする（statusDetail は自由文字列なので分岐に使わない）。 */
+export type ParadisLimitsUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable';
+
+/** 再ログインで解消し得る状態か（'refreshing'・'unavailable' は再ログインしても直らない）。 */
+export function paradisLimitsNeedsRelogin(status: ParadisLimitsAccountStatus): boolean {
+	return status === 'relogin_required' || status === 'no_credentials' || status === 'error';
+}
+
+/**
+ * cswap の usageStatus をこちらの状態へ写す。
+ *
+ * cswap 側の契約が変わったときに真っ先に壊れる箇所なので、純関数にしてテストできるようにする。
+ * 未知の値は 'error'（＝人の対処が要る）に倒す: 黙って「取得できず」に混ぜると、本当に壊れた
+ * アカウントが放置される。
+ */
+export function paradisLimitsStatusFromCswap(usageStatus: string | undefined): { readonly status: ParadisLimitsAccountStatus; readonly unavailableReason?: ParadisLimitsUnavailableReason } {
+	switch (usageStatus) {
+		case 'ok': return { status: 'ok' };
+		case 'token_expired': return { status: 'refreshing' };
+		case 'relogin_required': return { status: 'relogin_required' };
+		case 'no_credentials': return { status: 'no_credentials' };
+		case 'api_key': return { status: 'unavailable', unavailableReason: 'api_key' };
+		case 'keychain_unavailable': return { status: 'unavailable', unavailableReason: 'keychain_unavailable' };
+		case 'unavailable':
+		case undefined: return { status: 'unavailable', unavailableReason: 'not_fetched' };
+		default: return { status: 'error' };
+	}
+}
 
 export interface IParadisLimitsAccount {
 	readonly provider: ParadisLimitsProvider;
@@ -46,7 +88,9 @@ export interface IParadisLimitsAccount {
 	/** Codex: 同じaccount_idを持つ、自分以外のホームの表示用ラベル。 */
 	readonly duplicateHomeLabels?: readonly string[];
 	readonly status: ParadisLimitsAccountStatus;
-	/** status が ok 以外のときの補足(cswapのusageStatus生値やHTTPエラー等)。 */
+	/** status が 'unavailable' のときの内訳(表示の分岐に使う)。 */
+	readonly unavailableReason?: ParadisLimitsUnavailableReason;
+	/** 診断用の補足(HTTPエラーや未知のusageStatus生値等)。表示の分岐キーには使わない。 */
 	readonly statusDetail?: string;
 	readonly planType?: string;
 	readonly fiveHour?: IParadisLimitsWindow;
