@@ -169,6 +169,28 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(accounting.unsupportedTokens, ['* ']);
 	});
 
+	test('hides optional zero fixed-denominator fractions without leaking spacing or denominator literals', () => {
+		deepStrictEqual([
+			format(0, '?/10'),
+			format(2, '?/10'),
+			format(0, '# ?/10'),
+			format(2, '# ?/10'),
+			format(0, '?/100'),
+			format(2, '?/100'),
+			format(0, '0/10'),
+			format(2, '0/10'),
+		], [
+			exact(''),
+			exact('20/10'),
+			exact('0'),
+			exact('2'),
+			exact(''),
+			exact('200/100'),
+			exact('0/10'),
+			exact('20/10'),
+		]);
+	});
+
 	test('implements optional and spacing placeholders for zero, large finite numbers, and percent rounding', () => {
 		deepStrictEqual(format(0, '#'), exact(''));
 		deepStrictEqual(format(0, '?'), exact(' '));
