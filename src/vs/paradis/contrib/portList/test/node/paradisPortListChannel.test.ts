@@ -59,7 +59,7 @@ suite('ParadisPortList - parseLsofOutput', () => {
 	test('parses a plain LISTEN line', () => {
 		const stdout = [
 			'COMMAND     PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME',
-			'node      82913 magu   20u  IPv4 0x1234567890abcdef      0t0  TCP 127.0.0.1:5173 (LISTEN)',
+			'node      82913 user   20u  IPv4 0x1234567890abcdef      0t0  TCP 127.0.0.1:5173 (LISTEN)',
 		].join('\n');
 		assert.deepStrictEqual(parseLsofOutput(stdout), [
 			{ port: 5173, proto: 'TCP', pid: 82913, processName: 'node', address: '127.0.0.1', risky: false },
@@ -67,7 +67,7 @@ suite('ParadisPortList - parseLsofOutput', () => {
 	});
 
 	test('strips brackets from an IPv6 address and does not misparse the embedded colons as the port separator', () => {
-		const stdout = 'node      82913 magu   20u  IPv6 0x1234567890abcdef      0t0  TCP [::1]:8080 (LISTEN)';
+		const stdout = 'node      82913 user   20u  IPv6 0x1234567890abcdef      0t0  TCP [::1]:8080 (LISTEN)';
 		assert.deepStrictEqual(parseLsofOutput(stdout), [
 			{ port: 8080, proto: 'TCP', pid: 82913, processName: 'node', address: '::1', risky: false },
 		]);
@@ -75,8 +75,8 @@ suite('ParadisPortList - parseLsofOutput', () => {
 
 	test('marks a wildcard/0.0.0.0 bind as risky', () => {
 		const stdout = [
-			'node      1 magu   1u  IPv4 0x1 0t0 TCP *:3000 (LISTEN)',
-			'node      2 magu   1u  IPv4 0x2 0t0 TCP 0.0.0.0:3001 (LISTEN)',
+			'node      1 user   1u  IPv4 0x1 0t0 TCP *:3000 (LISTEN)',
+			'node      2 user   1u  IPv4 0x2 0t0 TCP 0.0.0.0:3001 (LISTEN)',
 		].join('\n');
 		const entries = parseLsofOutput(stdout);
 		assert.strictEqual(entries.length, 2);
@@ -106,8 +106,8 @@ suite('ParadisPortList - parseLsofOutput', () => {
 
 	test('deduplicates identical proto/port/pid rows (e.g. IPv4 and IPv6 dual-stack entries reported twice)', () => {
 		const stdout = [
-			'node      1 magu   1u  IPv4 0x1 0t0 TCP 127.0.0.1:3000 (LISTEN)',
-			'node      1 magu   2u  IPv4 0x2 0t0 TCP 127.0.0.1:3000 (LISTEN)',
+			'node      1 user   1u  IPv4 0x1 0t0 TCP 127.0.0.1:3000 (LISTEN)',
+			'node      1 user   2u  IPv4 0x2 0t0 TCP 127.0.0.1:3000 (LISTEN)',
 		].join('\n');
 		assert.strictEqual(parseLsofOutput(stdout).length, 1);
 	});

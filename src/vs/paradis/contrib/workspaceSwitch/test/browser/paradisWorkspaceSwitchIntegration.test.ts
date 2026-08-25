@@ -864,7 +864,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			// 1ウィンドウは1つの接続先しか見られない。開けないスペースを並べると、開き直すたびに
 			// 見え方が変わって混乱するだけなので、繋がっている先のものだけを出す
 			const harness = await createHarness(['space-a'], testDisposables, undefined, [
-				{ id: 'space-x', name: 'x', uri: 'vscode-remote://ssh-remote%2Bparadis-pc/home/user/develop/x' }
+				{ id: 'space-x', name: 'x', uri: 'vscode-remote://ssh-remote%2Bdev-pc/home/user/develop/x' }
 			]);
 
 			assert.deepStrictEqual(

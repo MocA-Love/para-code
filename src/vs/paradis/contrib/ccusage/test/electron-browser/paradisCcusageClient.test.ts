@@ -46,17 +46,17 @@ suite('ParadisCcusageClient', () => {
 
 	test('reduces encoded home and repository prefixes without damaging plain project names', () => {
 		assert.deepStrictEqual([
-			paradisCcusageProjectDisplayName('-Users-magu-github-para-code'),
+			paradisCcusageProjectDisplayName('-Users-user-github-para-code'),
 			paradisCcusageProjectDisplayName('-home-magu-projects-client-portal'),
-			paradisCcusageProjectDisplayName('-Users-magu-work-api'),
+			paradisCcusageProjectDisplayName('-Users-user-work-api'),
 			paradisCcusageProjectDisplayName('plain-project'),
-			paradisCcusageProjectDisplayName('-Users-magu-github-'),
+			paradisCcusageProjectDisplayName('-Users-user-github-'),
 		], [
 			'para-code',
 			'client-portal',
 			'api',
 			'plain-project',
-			'-Users-magu-github-',
+			'-Users-user-github-',
 		]);
 	});
 
@@ -365,7 +365,7 @@ suite('ParadisCcusageClient', () => {
 		const sessionsFixture = [
 			{
 				sessionId: 'session-older',
-				projectPath: '-Users-magu-github-older',
+				projectPath: '-Users-user-github-older',
 				firstActivity: 'invalid',
 				lastActivity: 'invalid',
 				inputTokens: 5,
@@ -378,7 +378,7 @@ suite('ParadisCcusageClient', () => {
 			},
 			{
 				sessionId: 'session-newer',
-				projectPath: '-Users-magu-github-newer',
+				projectPath: '-Users-user-github-newer',
 				firstActivity: '2026-07-29T00:00:00.000Z',
 				lastActivity: '2026-07-29T02:00:00.000Z',
 				inputTokens: 10,
@@ -392,7 +392,7 @@ suite('ParadisCcusageClient', () => {
 			},
 		] satisfies IParadisCcusageSessionRow[];
 		const projectsFixture = {
-			'-Users-magu-github-para-code': [
+			'-Users-user-github-para-code': [
 				{ date: '2026-07-28', totalCost: 0.5, totalTokens: 10, inputTokens: 6, outputTokens: 4 },
 				{ date: '2026-07-29', totalTokens: 20, inputTokens: 12, outputTokens: 8 },
 			],
@@ -467,7 +467,7 @@ suite('ParadisCcusageClient', () => {
 		assert.deepStrictEqual(dashboard.sessions, [
 			{
 				project: 'newer',
-				rawProject: '-Users-magu-github-newer',
+				rawProject: '-Users-user-github-newer',
 				lastActivity: 1_785_290_400_000,
 				models: ['gpt-5'],
 				totalTokens: 28,
@@ -475,7 +475,7 @@ suite('ParadisCcusageClient', () => {
 			},
 			{
 				project: 'older',
-				rawProject: '-Users-magu-github-older',
+				rawProject: '-Users-user-github-older',
 				lastActivity: undefined,
 				models: ['claude-sonnet-4'],
 				totalTokens: 14,
@@ -484,7 +484,7 @@ suite('ParadisCcusageClient', () => {
 		]);
 		assert.deepStrictEqual(dashboard.projects, [{
 			name: 'para-code',
-			rawName: '-Users-magu-github-para-code',
+			rawName: '-Users-user-github-para-code',
 			dailyCosts: [
 				{ date: '2026-07-28', cost: 0.5 },
 				{ date: '2026-07-29', cost: 0 },

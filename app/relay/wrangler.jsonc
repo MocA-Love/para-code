@@ -1,8 +1,9 @@
 {
 	// PARA-CODE: fork-owned file (Para Code) — Para Code Mobile relay worker
 	"name": "para-mobile-relay",
-	// PARA-CODE: Pin the production Cloudflare account selected for Para Code deployment.
-	"account_id": "979dbe0328e903a34bb6291b06cca0da",
+	// PARA-PATCH: account_id intentionally omitted; resolved from the
+	// CLOUDFLARE_ACCOUNT_ID environment variable (or a single-account token via
+	// `wrangler login`) before running `wrangler deploy`.
 	"main": "src/worker.ts",
 	"compatibility_date": "2024-11-01",
 	"compatibility_flags": ["nodejs_compat"],
