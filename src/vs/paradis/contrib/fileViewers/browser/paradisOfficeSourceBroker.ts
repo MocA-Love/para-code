@@ -66,30 +66,39 @@ export interface ParadisOfficeSourceBrokerOptions {
 export class ParadisOfficeChannelSpoolClient implements IOfficeSpoolClient {
 	constructor(private readonly channel: IChannel, private readonly authority?: ParadisOfficeWireAuthority) { }
 
-	begin(_ownerId: string, attemptId: string): Promise<ReturnType<typeof validateParadisOfficeWritableSpoolReference>> {
-		return this.channel.call('spool/begin', marshalParadisOfficeWireValue({ attemptId }, this.authority));
+	begin(_ownerId: string, attemptId: string, authority?: ParadisOfficeWireAuthority): Promise<ReturnType<typeof validateParadisOfficeWritableSpoolReference>> {
+		return this.channel.call('spool/begin', marshalParadisOfficeWireValue({ attemptId }, authority ?? this.authority));
 	}
 
-	claim(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, attemptId: string): Promise<void> {
-		return this.channel.call('spool/claim', marshalParadisOfficeWireValue({ reference, attemptId }, this.authority));
+	claim(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, attemptId: string, authority?: ParadisOfficeWireAuthority): Promise<void> {
+		return this.channel.call('spool/claim', marshalParadisOfficeWireValue({ reference, attemptId }, authority ?? this.authority));
 	}
 
-	append(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, bytes: VSBuffer): Promise<void> {
-		return this.channel.call('spool/append', marshalParadisOfficeSpoolAppend({ reference, bytes }, this.authority));
+	append(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, bytes: VSBuffer, authority?: ParadisOfficeWireAuthority): Promise<void> {
+		return this.channel.call('spool/append', marshalParadisOfficeSpoolAppend({ reference, bytes }, authority ?? this.authority));
 	}
 
-	seal(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, request: Parameters<IOfficeSpoolClient['seal']>[1]): Promise<ReturnType<typeof validateParadisOfficeSealedSpoolReference>> {
-		return this.channel.call('spool/seal', marshalParadisOfficeWireValue({ reference, request }, this.authority));
+	seal(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, request: Parameters<IOfficeSpoolClient['seal']>[1], authority?: ParadisOfficeWireAuthority): Promise<ReturnType<typeof validateParadisOfficeSealedSpoolReference>> {
+		return this.channel.call('spool/seal', marshalParadisOfficeWireValue({ reference, request }, authority ?? this.authority));
 	}
 
-	dispose(reference: Parameters<IOfficeSpoolClient['dispose']>[0]): Promise<void> {
-		return this.channel.call('spool/dispose', marshalParadisOfficeWireValue({ reference }, this.authority));
+	dispose(reference: Parameters<IOfficeSpoolClient['dispose']>[0], authority?: ParadisOfficeWireAuthority): Promise<void> {
+		return this.channel.call('spool/dispose', marshalParadisOfficeWireValue({ reference }, authority ?? this.authority));
 	}
 
-	disposeAttempt(_ownerId: string, attemptId: string): Promise<void> {
-		return this.channel.call('spool/disposeAttempt', marshalParadisOfficeWireValue({ attemptId }, this.authority));
+	disposeAttempt(_ownerId: string, attemptId: string, authority?: ParadisOfficeWireAuthority): Promise<void> {
+		return this.channel.call('spool/disposeAttempt', marshalParadisOfficeWireValue({ attemptId }, authority ?? this.authority));
 	}
 }
+
+type AuthorityAwareSpoolClient = IOfficeSpoolClient & {
+	begin(ownerId: string, attemptId: string, authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSpoolClient['begin']>;
+	claim(reference: Parameters<IOfficeSpoolClient['claim']>[0], attemptId: string, authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSpoolClient['claim']>;
+	append(reference: Parameters<IOfficeSpoolClient['append']>[0], bytes: VSBuffer, authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSpoolClient['append']>;
+	seal(reference: Parameters<IOfficeSpoolClient['seal']>[0], request: Parameters<IOfficeSpoolClient['seal']>[1], authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSpoolClient['seal']>;
+	dispose(reference: Parameters<IOfficeSpoolClient['dispose']>[0], authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSpoolClient['dispose']>;
+	disposeAttempt(ownerId: string, attemptId: string, authority?: ParadisOfficeWireAuthority): ReturnType<IOfficeSpoolClient['disposeAttempt']>;
+};
 
 /** Test-only runtime seam; it deliberately does not extend the broker's public options contract. */
 interface ParadisOfficeSourceBrokerRuntimeOptions {
@@ -281,7 +290,7 @@ function spoolSourceKind(descriptor: ParadisOfficeSourceDescriptor): ParadisOffi
 export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 	constructor(private readonly options: ParadisOfficeSourceBrokerOptions & ParadisOfficeSourceBrokerRuntimeOptions) { }
 
-	async open(untrustedDescriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<ParadisOfficeBackendSource> {
+	async open(untrustedDescriptor: ParadisOfficeSourceDescriptor, token: CancellationToken, authority?: ParadisOfficeWireAuthority): Promise<ParadisOfficeBackendSource> {
 		const descriptor = runDependency(token, 'unsupportedSource', () => validateParadisOfficeSourceDescriptor(untrustedDescriptor));
 		throwIfCancelled(token);
 		const scheme = sourceScheme(descriptor);
@@ -306,14 +315,17 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		if (!sourceKind) {
 			throw new ParadisOfficeSourceBrokerError('unsupportedSource');
 		}
-		return this.spool(descriptor, sourceKind, token);
+		return this.spool(descriptor, sourceKind, token, authority);
 	}
 
 	private async spool(
 		descriptor: ParadisOfficeSourceDescriptor,
 		sourceKind: ParadisOfficeSpoolSourceKind,
 		token: CancellationToken,
+		authority?: ParadisOfficeWireAuthority,
 	): Promise<ParadisOfficeBackendSource> {
+		const ownerId = authority?.ownerCapability ?? this.options.ownerId;
+		const spoolClient = this.options.spoolClient as AuthorityAwareSpoolClient;
 		const before = await this.providerSnapshot(descriptor, token);
 		if (descriptor.revisionHint?.startsWith('office-git-v1|') && descriptor.revisionHint !== before.revision) {
 			throw new ParadisOfficeSourceBrokerError('stale');
@@ -331,8 +343,8 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		let beginAttempt: ReturnType<typeof snapshotParadisOfficeSealedSpoolAttempt>;
 		try {
 			throwIfCancelled(token);
-			cancellationCleanup = () => attemptCleanupPromise ??= this.disposeAttemptBounded(attemptId);
-			const beginResult = await this.options.spoolClient.begin(this.options.ownerId, attemptId);
+			cancellationCleanup = () => attemptCleanupPromise ??= this.disposeAttemptBounded(ownerId, attemptId, authority);
+			const beginResult = await spoolClient.begin(ownerId, attemptId, authority);
 			if (token.isCancellationRequested) {
 				await cancellationCleanup();
 				throw newSafeCancellationError();
@@ -342,7 +354,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				await cancellationCleanup();
 				throw newSafeCancellationError();
 			}
-			if (!beginAttempt.writable || beginAttempt.writable.ownerId !== this.options.ownerId || beginAttempt.writable.attemptId !== attemptId) {
+			if (!beginAttempt.writable || beginAttempt.writable.ownerId !== ownerId || beginAttempt.writable.attemptId !== attemptId) {
 				await cancellationCleanup();
 				throw new ParadisOfficeSourceBrokerError('spoolFailure');
 			}
@@ -350,17 +362,17 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 			let claimSucceeded = false;
 			try {
 				throwIfCancelled(token);
-				await this.options.spoolClient.claim(writable, attemptId);
+				await spoolClient.claim(writable, attemptId, authority);
 				claimSucceeded = true;
 			} catch (error) {
 				if (claimSucceeded) {
-					await this.disposeReferenceBounded(writable);
+					await this.disposeReferenceBounded(writable, authority);
 				} else {
 					await cancellationCleanup();
 				}
 				throwDependencyError(error, token, 'spoolFailure');
 			}
-			cancellationCleanup = () => this.disposeReferenceBounded(writable);
+			cancellationCleanup = () => this.disposeReferenceBounded(writable, authority);
 			throwIfCancelled(token);
 		} catch (error) {
 			if (cancellationCleanup) {
@@ -374,7 +386,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		const cleanup = (): Promise<void> => {
 			if (!cleanupPromise) {
 				try {
-					cleanupPromise = Promise.resolve(this.options.spoolClient.dispose(writable));
+					cleanupPromise = Promise.resolve(spoolClient.dispose(writable, authority));
 				} catch {
 					cleanupPromise = Promise.reject(new ParadisOfficeSourceBrokerError('cleanupFailure'));
 				}
@@ -430,7 +442,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				for (let offset = 0; offset < providerBytes.byteLength; offset += PARADIS_OFFICE_SPOOL_CHUNK_BYTES) {
 					const chunk = providerBytes.slice(offset, Math.min(offset + PARADIS_OFFICE_SPOOL_CHUNK_BYTES, providerBytes.byteLength));
 					runDependency(token, 'hashFailure', () => hash.update(chunk));
-					await awaitDependency(token, 'spoolFailure', () => this.options.spoolClient.append(writable, chunk));
+					await awaitDependency(token, 'spoolFailure', () => spoolClient.append(writable, chunk, authority));
 				}
 				size = nextSize;
 			}
@@ -450,7 +462,7 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 				sha256,
 				revision,
 			} as const;
-			const sealedResult = await awaitDependency(token, 'spoolFailure', () => this.options.spoolClient.seal(writable, sealRequest));
+			const sealedResult = await awaitDependency(token, 'spoolFailure', () => spoolClient.seal(writable, sealRequest, authority));
 			let sealed: ReturnType<typeof validateParadisOfficeSealedSpoolReference>;
 			try {
 				sealed = validateParadisOfficeSealedSpoolReference(sealedResult);
@@ -503,17 +515,17 @@ export class ParadisOfficeSourceBroker implements IOfficeSourceBroker {
 		return runDependency(token, 'providerFailure', () => validateProviderSnapshot(snapshot));
 	}
 
-	private async disposeAttemptBounded(attemptId: string): Promise<void> {
+	private async disposeAttemptBounded(ownerId: string, attemptId: string, authority?: ParadisOfficeWireAuthority): Promise<void> {
 		try {
-			await this.awaitBounded(this.options.spoolClient.disposeAttempt(this.options.ownerId, attemptId));
+			await this.awaitBounded((this.options.spoolClient as AuthorityAwareSpoolClient).disposeAttempt(ownerId, attemptId, authority));
 		} catch {
 			// A pre-response lease is owner-bound and cleanup must not replace cancellation.
 		}
 	}
 
-	private async disposeReferenceBounded(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>): Promise<void> {
+	private async disposeReferenceBounded(reference: ReturnType<typeof validateParadisOfficeWritableSpoolReference>, authority?: ParadisOfficeWireAuthority): Promise<void> {
 		try {
-			await this.awaitBounded(this.options.spoolClient.dispose(reference));
+			await this.awaitBounded((this.options.spoolClient as AuthorityAwareSpoolClient).dispose(reference, authority));
 		} catch {
 			// The reference was locally owner/attempt verified before this cleanup path.
 		}
