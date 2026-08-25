@@ -4,16 +4,17 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { deepStrictEqual, rejects, strictEqual } from 'assert';
+import { deepStrictEqual, rejects, strictEqual, throws } from 'assert';
 import { createHash } from 'crypto';
 import JSZip from 'jszip';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeInventory } from '../../common/paradisOfficeProtocol.js';
-import type { IParadisOfficeArchive } from '../../common/office/paradisOfficeArchive.js';
+import { type IParadisOfficeArchive, ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
 import { diagnoseSpreadsheetProjection, type IParadisDiagonalBorder, type IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
-import { ownSpreadsheetSemanticInput, parseSpreadsheetSemantic, resolveSpreadsheetSemanticLimits } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
+import { ownSpreadsheetSemanticInput, parseSpreadsheetSemantic, resolveSpreadsheetSemanticLimits, sanitizeSpreadsheetPackageError } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseSpreadsheetSemanticNode } from '../../node/spreadsheet/paradisSpreadsheetNodeAdapter.js';
 import { createParadisOfficeNodeArchive } from '../../node/office/paradisOfficeNodeArchive.js';
 import { buildOpcFixture, type IParadisOfficeFixtureRelationship, type ParadisOfficeFixturePart } from '../common/paradisOfficeFixture.js';
@@ -125,6 +126,7 @@ interface SemanticFixture {
 }
 
 interface SemanticFixtureOverrides {
+	readonly workbook?: string;
 	readonly worksheet?: string;
 	readonly extraParts?: readonly ParadisOfficeFixturePart[];
 	readonly firstSheetRelationshipTarget?: string;
@@ -137,7 +139,7 @@ interface SemanticFixtureOverrides {
 async function buildSemanticBytes(overrides: SemanticFixtureOverrides = {}): Promise<Uint8Array> {
 	return buildOpcFixture({
 		parts: [
-			['/xl/workbook.xml', workbookXml, overrides.workbookContentType ?? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'],
+			['/xl/workbook.xml', overrides.workbook ?? workbookXml, overrides.workbookContentType ?? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'],
 			['/xl/worksheets/sheet1.xml', overrides.worksheet ?? worksheetXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'],
 			['/xl/worksheets/sheet2.xml', archiveSheetXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'],
 			['/xl/styles.xml', overrides.styles ?? stylesXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
@@ -263,6 +265,18 @@ async function reorderWorkbookRelationshipAttributes(bytes: Uint8Array): Promise
 	);
 	strictEqual(changed.length, original.length);
 	zip.file(path, changed, { createFolders: false, date: entry.date });
+	return zip.generateAsync({ comment: '', compression: 'STORE', platform: 'DOS', type: 'uint8array' });
+}
+
+async function overrideRelationshipContentType(bytes: Uint8Array, partName: string): Promise<Uint8Array> {
+	const zip = await JSZip.loadAsync(bytes);
+	const entry = zip.file('[Content_Types].xml');
+	if (!entry) {
+		throw new Error('missing Content Types');
+	}
+	const original = await entry.async('text');
+	const changed = original.replace('</Types>', `<Override PartName="${partName}" ContentType="application/octet-stream"/></Types>`);
+	zip.file('[Content_Types].xml', changed, { createFolders: false, date: entry.date });
 	return zip.generateAsync({ comment: '', compression: 'STORE', platform: 'DOS', type: 'uint8array' });
 }
 
@@ -511,6 +525,116 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		strictEqual(snapshot.projectionDiagnostics.some(diagnostic => diagnostic.kind === 'valueMismatch' && diagnostic.cellAddress === 'A1'), false);
 	});
 
+	test('Node adapter sanitizes ownership errors before raw Proxy details escape', async () => {
+		const fixture = await createSemanticFixture();
+		const inventory = new Proxy(fixture.inventory, {
+			ownKeys: () => { throw new Error('/private/node/ownership-secret'); },
+		});
+
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, inventory, CancellationToken.None),
+			error => error instanceof ParadisOfficePackageError
+				&& error.message === 'invalid'
+				&& !error.stack?.includes('ownership-secret'),
+		);
+
+		const poisoned = new ParadisOfficePackageError('zipBomb');
+		poisoned.stack = '/private/node/poisoned-package-error';
+		Object.defineProperty(poisoned, 'secret', { value: '/private/node/custom-field' });
+		const poisonedInventory = new Proxy(fixture.inventory, { ownKeys: () => { throw poisoned; } });
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, poisonedInventory, CancellationToken.None),
+			error => error instanceof ParadisOfficePackageError
+				&& error !== poisoned
+				&& error.code === 'zipBomb'
+				&& !error.stack?.includes('poisoned-package-error')
+				&& !Object.hasOwn(error, 'secret'),
+		);
+	});
+
+	test('sanitizer contains poisoned Proxy introspection traps', () => {
+		const poisoned = new ParadisOfficePackageError('zipBomb');
+		for (const proxy of [
+			new Proxy(poisoned, { getPrototypeOf: () => { throw new Error('/private/get-prototype-secret'); } }),
+			new Proxy(poisoned, { getOwnPropertyDescriptor: () => { throw new Error('/private/get-descriptor-secret'); } }),
+		]) {
+			const sanitized = sanitizeSpreadsheetPackageError(proxy);
+			strictEqual(sanitized instanceof ParadisOfficePackageError, true);
+			strictEqual(sanitized.code, 'invalid');
+			strictEqual(sanitized.stack?.includes('/private/'), false);
+		}
+	});
+
+	test('Node adapter binds parsing to its actual desktop execution profile', async () => {
+		const fixture = await createSemanticFixture();
+		const forgedInventory: ParadisOfficeInventory = { ...fixture.inventory, budgetProfile: 'browser' };
+
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, forgedInventory, CancellationToken.None),
+			/unsafe/,
+		);
+	});
+
+	test('Node adapter accepts an explicitly bound remote execution profile', async () => {
+		const fixture = await createSemanticFixture();
+		const remoteInventory: ParadisOfficeInventory = { ...fixture.inventory, budgetProfile: 'remoteMobile' };
+
+		const snapshot = await parseSpreadsheetSemanticNode(
+			fixture.bytes,
+			remoteInventory,
+			CancellationToken.None,
+			{},
+			'remoteMobile',
+		);
+		deepStrictEqual(snapshot.sheets.map(sheet => sheet.name), ['Matrix', 'Archive']);
+
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, {}, 'remoteMobile'),
+			/unsafe/,
+		);
+		const oversizedRemoteInventory: ParadisOfficeInventory = {
+			...remoteInventory,
+			parts: Array.from({ length: PARADIS_OFFICE_BUDGET_PROFILES.remoteMobile.entryCount + 1 }, (_, index) => ({
+				...remoteInventory.parts[0], id: `/remote-part-${index}.xml`, canonicalUri: `/remote-part-${index}.xml`,
+			})),
+		};
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, oversizedRemoteInventory, CancellationToken.None, {}, 'remoteMobile'),
+			/limitExceeded/,
+		);
+	});
+
+	test('Node adapter uses intrinsic byte identity and rejects its compressed byte limit plus one', async () => {
+		const fixture = await createSemanticFixture();
+		let byteLengthReads = 0;
+		let sliceCalls = 0;
+		class PoisonedBytes extends Uint8Array {
+			override get byteLength(): number { byteLengthReads++; return 1; }
+			override slice(_start?: number, _end?: number): Uint8Array<ArrayBuffer> { sliceCalls++; return this; }
+		}
+		await rejects(parseSpreadsheetSemanticNode(new PoisonedBytes(fixture.bytes), fixture.inventory), /invalid/);
+		strictEqual(byteLengthReads, 0);
+		strictEqual(sliceCalls, 0);
+
+		const oversized = new Uint8Array(PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.compressedInputBytes + 1);
+		await rejects(
+			parseSpreadsheetSemanticNode(oversized, fixture.inventory),
+			error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded',
+		);
+	});
+
+	test('rejects prototype-key and unknown runtime budget profiles', async () => {
+		const fixture = await createSemanticFixture();
+		for (const value of ['__proto__', 'constructor', 'unknown']) {
+			const inventory = { ...fixture.inventory };
+			Object.defineProperty(inventory, 'budgetProfile', { enumerable: true, value });
+			await rejects(
+				parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), inventory, CancellationToken.None, { deadlineMilliseconds: 1 }),
+				/unsafe/,
+			);
+		}
+	});
+
 	test('rejects inventory and option accessors without invoking them', async () => {
 		const fixture = await createSemanticFixture();
 		let inventoryGetterReads = 0;
@@ -558,6 +682,66 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 
 		const snapshot = await parsing;
 		strictEqual(snapshot.projectionDiagnostics.some(diagnostic => diagnostic.kind === 'valueMismatch' && diagnostic.cellAddress === 'A1'), false);
+	});
+
+	test('freezes the publicly returned owned input before registering its no-copy marker', async () => {
+		const fixture = await createSemanticFixture();
+		const projection = singleCellProjection(1, 1);
+		const owned = ownSpreadsheetSemanticInput(fixture.inventory, { projection }, CancellationToken.None);
+
+		strictEqual(Object.isFrozen(owned.inventory), true);
+		strictEqual(Object.isFrozen(owned.inventory.parts), true);
+		strictEqual(Object.isFrozen(owned.options), true);
+		strictEqual(Object.isFrozen(owned.options.projection?.sheets[0].rows[0].cells[0]), true);
+		throws(() => Object.defineProperty(owned.inventory, 'relationships', { value: [] }), TypeError);
+		const snapshot = await parseSpreadsheetSemantic(
+			await createParadisOfficeNodeArchive(fixture.bytes), owned.inventory, CancellationToken.None, owned.options,
+		);
+		deepStrictEqual(snapshot.sheets.map(sheet => sheet.name), ['Matrix', 'Archive']);
+	});
+
+	test('consumes the owned marker without taking a second ownership snapshot', async () => {
+		const fixture = await createSemanticFixture();
+		const owned = ownSpreadsheetSemanticInput(fixture.inventory, {}, CancellationToken.None);
+		let cancellationChecks = 0;
+		const token: CancellationToken = {
+			get isCancellationRequested() { cancellationChecks++; return false; },
+			onCancellationRequested: Event.None,
+		};
+		const archive = withArchiveContainerLength(await createParadisOfficeNodeArchive(fixture.bytes), fixture.bytes.byteLength + 1);
+
+		await rejects(parseSpreadsheetSemantic(archive, owned.inventory, token, owned.options), /unsafe/);
+		strictEqual(cancellationChecks, 1);
+	});
+
+	test('checks cancellation during the owned graph freeze pass', async () => {
+		const fixture = await createSemanticFixture();
+		let snapshotFinished = false;
+		const cell = new Proxy({ value: '1', style: {} }, {
+			getOwnPropertyDescriptor: (target, property) => {
+				const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+				if (property === 'style') {
+					snapshotFinished = true;
+				}
+				return descriptor;
+			},
+		});
+		const token: CancellationToken = {
+			get isCancellationRequested() { return snapshotFinished; },
+			onCancellationRequested: Event.None,
+		};
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: [], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: [cell] }],
+			}],
+		};
+
+		await rejects(
+			Promise.resolve().then(() => ownSpreadsheetSemanticInput(fixture.inventory, { projection }, token)),
+			/cancelled/,
+		);
+		strictEqual(snapshotFinished, true);
 	});
 
 	test('does not traverse unused inventory features or projection style and width graphs', async () => {
@@ -636,6 +820,21 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 
 		deepStrictEqual([cells.get('A1')?.effectiveStyleRef, cells.get('A1')?.effectiveStyleOrigin], [0, 'default']);
 		deepStrictEqual([cells.get('B1')?.effectiveStyleRef, cells.get('B1')?.effectiveStyleOrigin], [1, 'column']);
+	});
+
+	test('uses row cellXf zero when customFormat is true and row s is absent', async () => {
+		const worksheet = `<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:B1"/><cols><col min="2" max="2" style="1"/></cols><sheetData><row r="1" customFormat="1" hidden="1"><c r="A1"/><c r="B1"/></row></sheetData></worksheet>`;
+		const fixture = await createSemanticFixture({ worksheet, styles: effectiveStylesXml });
+		const snapshot = await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None);
+		const cell = snapshot.sheets[0].cells.get('B1');
+
+		deepStrictEqual([snapshot.sheets[0].rows.get(1)?.hidden, cell?.storedType, cell?.styleRef, cell?.effectiveStyleRef, cell?.effectiveStyleOrigin], [true, 'blank', undefined, 0, 'row']);
+		const diagnostics = diagnoseSpreadsheetProjection(snapshot, singleCellProjection(1, 2, {
+			up: false, down: true, style: '2px solid', color: '#000000', rawStyle: 'medium', rawColor: { kind: 'theme', theme: 4, tint: '0.2' },
+		}));
+		deepStrictEqual(diagnostics.filter(diagnostic => diagnostic.cellAddress === 'B1').map(diagnostic => diagnostic.kind), [
+			'diagonalDirectionMismatch', 'diagonalStyleMismatch', 'diagonalColorMismatch',
+		]);
 	});
 
 	test('inherits column style when cell and row styles are absent', async () => {
@@ -773,6 +972,28 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		strictEqual(reads.includes('xl/worksheets/unreferenced.xml'), false);
 	});
 
+	test('checkpoints the bounded workbook relationship fanout', async () => {
+		const countCancellationChecks = async (fixture: SemanticFixture): Promise<number> => {
+			const owned = ownSpreadsheetSemanticInput(fixture.inventory, {}, CancellationToken.None);
+			let checks = 0;
+			const token: CancellationToken = {
+				get isCancellationRequested() { checks++; return false; },
+				onCancellationRequested: Event.None,
+			};
+			await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), owned.inventory, token, owned.options);
+			return checks;
+		};
+		const baselineChecks = await countCancellationChecks(await createSemanticFixture());
+		const noisyFixture = await createSemanticFixture({
+			extraRelationships: Array.from({ length: 512 }, (_, index) => ({
+				source: '/xl/workbook.xml', id: `rIdNoise${index}`, type: 'urn:para-code:test/noise',
+				target: `https://invalid.example/${index}`, targetMode: 'External' as const,
+			})),
+		});
+		const noisyChecks = await countCancellationChecks(noisyFixture);
+		strictEqual(noisyChecks - baselineChecks >= 55, true);
+	});
+
 	test('rejects oversized inventory shapes before cloning attacker-controlled entries', async () => {
 		const fixture = await createSemanticFixture();
 		let partReads = 0;
@@ -899,6 +1120,58 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		);
 	});
 
+	test('rejects a dense ownership array before enumerating its keys', async () => {
+		const fixture = await createSemanticFixture();
+		let ownKeysCalls = 0;
+		const denseCells = new Proxy(Array.from({ length: 1_000_001 }, () => ({ value: '1', style: {} })), {
+			ownKeys: target => {
+				ownKeysCalls++;
+				return Reflect.ownKeys(target);
+			},
+		});
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: denseCells.length, columnWidths: [], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: denseCells }],
+			}],
+		};
+
+		await rejects(
+			Promise.resolve().then(() => ownSpreadsheetSemanticInput(fixture.inventory, { projection }, CancellationToken.None)),
+			/limitExceeded/,
+		);
+		strictEqual(ownKeysCalls, 0);
+	});
+
+	test('checks cancellation while copying individual ownership descriptors', async () => {
+		const fixture = await createSemanticFixture();
+		let descriptorReads = 0;
+		const cells = new Proxy(Array.from({ length: 100 }, () => ({ value: '1', style: {} })), {
+			getOwnPropertyDescriptor: (target, property) => {
+				if (property !== 'length') {
+					descriptorReads++;
+				}
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		const token: CancellationToken = {
+			get isCancellationRequested() { return descriptorReads >= 10; },
+			onCancellationRequested: Event.None,
+		};
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: cells.length, columnWidths: [], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells }],
+			}],
+		};
+
+		await rejects(
+			Promise.resolve().then(() => ownSpreadsheetSemanticInput(fixture.inventory, { projection }, token)),
+			/cancelled/,
+		);
+		strictEqual(descriptorReads > 0 && descriptorReads < cells.length, true);
+	});
+
 	test('checks cancellation incrementally while taking the inventory snapshot', async () => {
 		const fixture = await createSemanticFixture();
 		let reads = 0;
@@ -985,6 +1258,19 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			}),
 			/limitExceeded/,
 		);
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None, {
+				now: () => 0,
+				deadlineMilliseconds: 1,
+				projection: {
+					sheets: [{
+						name: 'Matrix', minCol: 1, columnCount: 0, columnWidths: [], truncated: false,
+						rows: Array.from({ length: 10_000 }, (_, index) => ({ excelRow: index + 1, height: 20, cells: [] })),
+					}],
+				},
+			}),
+			/limitExceeded/,
+		);
 	});
 
 	test('rejects an all-byte relationship Part change even when its ZIP metadata and byte length are unchanged', async () => {
@@ -1031,6 +1317,40 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(changed.bytes), forgedInventory, CancellationToken.None),
 			/unsafe/,
 		);
+	});
+
+	test('rejects non-relationship Content Types before parsing root or workbook relationships', async () => {
+		const base = await buildSemanticBytes();
+		for (const [partName, sentinel] of [
+			['/_rels/.rels', 'rIdRoot'],
+			['/xl/_rels/workbook.xml.rels', 'rIdStyles'],
+		] as const) {
+			const bytes = await overrideRelationshipContentType(base, partName);
+			const inventory = await inspectOfficePackage(
+				await createParadisOfficeNodeArchive(bytes),
+				PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal,
+				CancellationToken.None,
+			);
+			strictEqual(inventory.parts.find(part => part.canonicalUri === partName)?.contentType, 'application/octet-stream');
+			let sentinelParses = 0;
+			const inner = await createParadisOfficeNodeArchive(bytes);
+			const archive: IParadisOfficeArchive = {
+				containerByteLength: inner.containerByteLength,
+				entries: token => inner.entries(token),
+				read: (entry, token) => inner.read(entry, token),
+				hash: value => inner.hash(value),
+				parseXml: (xml, limits, token, checkpoint) => {
+					if (xml.includes(sentinel)) {
+						sentinelParses++;
+					}
+					return inner.parseXml(xml, limits, token, checkpoint);
+				},
+				dispose: () => inner.dispose(),
+			};
+
+			await rejects(parseSpreadsheetSemantic(archive, inventory, CancellationToken.None), /unsafe/);
+			strictEqual(sentinelParses, 0, partName);
+		}
 	});
 
 	test('detects relevant part TOCTOU and enforces semantic cell, deadline, and cancellation limits', async () => {
@@ -1099,6 +1419,63 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		]) {
 			const invalidWorksheet = worksheetXml.replace('<c r="A1" s="1"><v>1</v></c>', invalidCell);
 			const fixture = await createSemanticFixture({ worksheet: invalidWorksheet });
+			await rejects(
+				parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None),
+				/malformed/,
+			);
+		}
+	});
+
+	test('rejects duplicate singleton workbook and worksheet schema elements', async () => {
+		const duplicateWorkbookProperties = workbookXml.replace('<workbookPr date1904="1"/>', '<workbookPr date1904="1"/><workbookPr date1904="0"/>');
+		const duplicateCalculationProperties = workbookXml.replace('<calcPr ', '<calcPr calcId="1"/><calcPr ');
+		const duplicateFileVersion = workbookXml.replace('<workbookPr ', '<fileVersion appName="xl"/><fileVersion appName="xl"/><workbookPr ');
+		const duplicateWorkbookProtection = workbookXml.replace('<bookViews>', '<workbookProtection/><workbookProtection/><bookViews>');
+		const duplicateDimension = worksheetXml.replace('<dimension ref="A1:E12"/>', '<dimension ref="A1:E12"/><dimension ref="A1:A1"/>');
+		const duplicateSheetProperties = worksheetXml.replace('<dimension ', '<sheetPr/><sheetPr/><dimension ');
+		const duplicateSheetFormat = worksheetXml.replace('<sheetViews>', '<sheetFormatPr defaultRowHeight="15"/><sheetFormatPr defaultRowHeight="20"/><sheetViews>');
+		const duplicatePageMargins = worksheetXml.replace('</worksheet>', '<pageMargins left="1" right="1" top="1" bottom="1" header="1" footer="1"/><pageMargins left="2" right="2" top="2" bottom="2" header="2" footer="2"/></worksheet>');
+		const duplicatePane = worksheetXml.replace(
+			'<pane xSplit="2" ySplit="3" topLeftCell="C4" activePane="bottomRight" state="frozenSplit"/>',
+			'<pane xSplit="2"/><pane ySplit="3"/>',
+		);
+		for (const overrides of [
+			{ workbook: duplicateWorkbookProperties },
+			{ workbook: duplicateCalculationProperties },
+			{ workbook: duplicateFileVersion },
+			{ workbook: duplicateWorkbookProtection },
+			{ worksheet: duplicateDimension },
+			{ worksheet: duplicateSheetProperties },
+			{ worksheet: duplicateSheetFormat },
+			{ worksheet: duplicatePageMargins },
+			{ worksheet: duplicatePane },
+		]) {
+			const fixture = await createSemanticFixture(overrides);
+			await rejects(
+				parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None),
+				/malformed/,
+			);
+		}
+	});
+
+	test('accepts repeated cols containers but rejects duplicate style singleton containers', async () => {
+		const repeatedColumns = worksheetXml.replace(
+			'<cols>',
+			'<cols><col min="5" max="5" width="8"/></cols><cols>',
+		);
+		const repeatedColumnsFixture = await createSemanticFixture({ worksheet: repeatedColumns });
+		const snapshot = await parseSpreadsheetSemantic(
+			await createParadisOfficeNodeArchive(repeatedColumnsFixture.bytes), repeatedColumnsFixture.inventory, CancellationToken.None,
+		);
+		strictEqual(snapshot.sheets[0].columns.length, 3);
+
+		for (const singleton of ['numFmts', 'borders', 'cellXfs']) {
+			const styles = singleton === 'numFmts'
+				? stylesXml.replace('</numFmts>', '</numFmts><numFmts count="0"/>')
+				: singleton === 'borders'
+					? stylesXml.replace('</borders>', '</borders><borders count="0"/>')
+					: stylesXml.replace('</cellXfs>', '</cellXfs><cellXfs count="0"/>');
+			const fixture = await createSemanticFixture({ styles });
 			await rejects(
 				parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None),
 				/malformed/,
