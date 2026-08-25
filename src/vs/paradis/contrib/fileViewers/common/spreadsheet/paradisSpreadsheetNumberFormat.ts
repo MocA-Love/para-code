@@ -1216,7 +1216,10 @@ function renderFraction(value: number, tokens: readonly FormatToken[], profile: 
 			numerator === 0 ? '' : denominator.toString(),
 		)
 		: denominatorPattern;
-	const showZeroFraction = numerator === 0 && (numeratorPattern.includes('0') || denominatorPattern.includes('0'));
+	const showZeroFraction = numerator === 0 && (
+		numeratorPattern.includes('0')
+		|| fixedDenominator === undefined && denominatorPattern.includes('0')
+	);
 	let result = numerator === 0 && !showZeroFraction
 		? (wholePattern ? wholeAndMiddle.trimEnd() : '')
 		: `${wholeAndMiddle}${numeratorText}/${slashGap}${denominatorText}`;
