@@ -87,8 +87,8 @@ const englishProfile: LocaleProfile = {
 
 const localeProfiles: Readonly<Record<string, LocaleProfile>> = {
 	'en-us': englishProfile,
-	'de-de': { ...englishProfile, locale: 'de-DE', decimal: ',', group: '.', currency: '€', monthsShort: ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'], monthsLong: ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'] },
-	'fr-fr': { ...englishProfile, locale: 'fr-FR', decimal: ',', group: '\u202f', currency: '€', monthsShort: ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'], monthsLong: ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] },
+	'de-de': { ...englishProfile, locale: 'de-DE', decimal: ',', group: '.', currency: '€', monthsShort: ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'], monthsLong: ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'], weekdaysShort: ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'], weekdaysLong: ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'] },
+	'fr-fr': { ...englishProfile, locale: 'fr-FR', decimal: ',', group: '\u202f', currency: '€', monthsShort: ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'], monthsLong: ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'], weekdaysShort: ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'], weekdaysLong: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'] },
 	'ja-jp': { ...englishProfile, locale: 'ja-JP', currency: '¥', monthsShort: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'], monthsLong: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'], weekdaysShort: ['日', '月', '火', '水', '木', '金', '土'], weekdaysLong: ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'], am: '午前', pm: '午後' },
 	'ko-kr': { ...englishProfile, locale: 'ko-KR', currency: '₩', monthsShort: ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'], monthsLong: ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'], weekdaysShort: ['일', '월', '화', '수', '목', '금', '토'], weekdaysLong: ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'], am: '오전', pm: '오후' },
 	'zh-cn': { ...englishProfile, locale: 'zh-CN', currency: '¥', monthsShort: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'], monthsLong: ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'], weekdaysShort: ['日', '一', '二', '三', '四', '五', '六'], weekdaysLong: ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'], am: '上午', pm: '下午' },
@@ -102,7 +102,7 @@ type FormatToken =
 	| { readonly kind: 'elapsed'; readonly text: 'h' | 'm' | 's' }
 	| { readonly kind: 'condition'; readonly operator: '<' | '<=' | '=' | '<>' | '>=' | '>'; readonly value: number }
 	| { readonly kind: 'locale'; readonly locale?: string; readonly currency?: string }
-	| { readonly kind: 'metadata' };
+	| { readonly kind: 'metadata'; readonly metadata: 'color' };
 
 interface ParsedSection {
 	readonly raw: string;
@@ -118,36 +118,96 @@ interface ResolvedFormat {
 	readonly unsupported: readonly string[];
 }
 
+export interface ParadisSpreadsheetPreparedNumberFormat {
+	readonly formatCode: string;
+}
+
+interface InternalPreparedNumberFormat extends ParadisSpreadsheetPreparedNumberFormat {
+	readonly runtime: FormatRuntime;
+	readonly locale: { readonly profile: LocaleProfile; readonly unsupported: readonly string[] };
+	readonly resolved: ResolvedFormat;
+	readonly sections: readonly ParsedSection[];
+}
+
+const preparedNumberFormats = new WeakSet<object>();
+
 /** Deterministically formats an Excel stored/cached value without constructing a host Date. */
 export function formatSpreadsheetValue(
 	value: unknown,
 	format: number | string,
 	context: ParadisSpreadsheetNumberFormatContext = {},
 ): ParadisFormattedCellValue {
+	return formatPreparedSpreadsheetValue(prepareSpreadsheetNumberFormat(format, context), value);
+}
+
+/** Parses and owns one bounded format for reuse across cells in a render operation. */
+export function prepareSpreadsheetNumberFormat(
+	format: number | string,
+	context: ParadisSpreadsheetNumberFormatContext = {},
+): ParadisSpreadsheetPreparedNumberFormat {
 	try {
 		const owned = ownFormatContext(context);
 		const started = readClock(owned.now);
 		const runtime: FormatRuntime = { context: owned, hardDeadline: StopWatch.create(true), started, lastClock: started, checks: 0 };
 		checkpoint(runtime, true);
-		const ownedValue = ownFormatValue(value, owned.limits.inputCharacters, runtime);
-		const locale = resolveLocaleProfile(owned.workbookLocale ?? owned.applicationLocale);
-		const localeIssue = locale.unsupported;
+		const locale = resolveLocaleProfile(owned.workbookLocale || owned.applicationLocale);
 		const resolved = resolveFormat(format, locale.profile, owned.limits, runtime);
+		const sections = resolved.unsupported.length > 0
+			? []
+			: splitSections(resolved.code, owned.limits, runtime).map((section, index) => tokenizeSection(section, index, locale.profile, owned.limits, runtime));
+		const prepared: InternalPreparedNumberFormat = Object.freeze({ formatCode: resolved.code, runtime, locale, resolved, sections });
+		preparedNumberFormats.add(prepared);
+		return prepared;
+	} catch (error) {
+		throw sanitizeNumberFormatError(error);
+	}
+}
+
+/** Applies a previously parsed format while retaining its cancellation/deadline lifetime. */
+export function formatPreparedSpreadsheetValue(prepared: ParadisSpreadsheetPreparedNumberFormat, value: unknown): ParadisFormattedCellValue {
+	try {
+		if (!prepared || typeof prepared !== 'object' || !preparedNumberFormats.has(prepared)) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		const internal = prepared as InternalPreparedNumberFormat;
+		const { runtime, locale, resolved, sections } = internal;
+		checkpoint(runtime, true);
+		const ownedValue = ownFormatValue(value, runtime.context.limits.inputCharacters, runtime);
+		if (ownedValue.value === null) {
+			return boundedResult('', ownedValue.unsupported, false, runtime);
+		}
+		if (typeof ownedValue.value === 'boolean') {
+			return boundedResult(generalText(ownedValue.value), ownedValue.unsupported, false, runtime);
+		}
+		const localeIssue = locale.unsupported;
 		if (resolved.unsupported.length > 0) {
 			const general = generalText(ownedValue.value);
 			return boundedResult(`${general} ⟦${resolved.label}⟧`, [...ownedValue.unsupported, ...localeIssue, ...resolved.unsupported], true, runtime);
 		}
-		const rawSections = splitSections(resolved.code, owned.limits, runtime);
-		const sections = rawSections.map(section => tokenizeSection(section, locale.profile, owned.limits, runtime));
 		const selected = selectSection(sections, ownedValue.value);
 		if (!selected) {
-			return boundedResult('', [...ownedValue.unsupported, ...localeIssue], false, runtime);
+			return boundedResult(
+				`${generalText(ownedValue.value)} ⟦${resolved.code}⟧`,
+				[...ownedValue.unsupported, ...localeIssue, 'condition:no-match'],
+				true,
+				runtime,
+			);
 		}
 		const effectiveProfile = selected.profile ?? locale.profile;
+		if (typeof ownedValue.value === 'number' && numericSectionOverflows(ownedValue.value, selected.tokens)) {
+			return boundedResult(
+				`${generalText(ownedValue.value)} ⟦${selected.raw}⟧`,
+				uniqueStrings([...ownedValue.unsupported, ...localeIssue, 'numeric-overflow']),
+				true,
+				runtime,
+			);
+		}
 		const automaticNegative = typeof ownedValue.value === 'number' && ownedValue.value < 0
 			&& (sections.some(section => section.condition !== undefined) || sections.length < 2);
 		const applyTextSection = typeof ownedValue.value !== 'number' && sections.length >= 4 && selected === sections[3];
-		let rendered = renderSection(ownedValue.value, selected, effectiveProfile, owned.date1904, automaticNegative, applyTextSection, runtime);
+		let rendered = selected.unsupported.some(token => token.startsWith('fraction:'))
+			? generalText(ownedValue.value)
+			: renderSection(ownedValue.value, selected, effectiveProfile, runtime.context.date1904, automaticNegative, applyTextSection, runtime);
 		const unsupported = uniqueStrings([...ownedValue.unsupported, ...localeIssue, ...selected.unsupported]);
 		// Fill alignment is a recognized token, but exact repetition depends on the eventual cell width.
 		// Keep it approximated without treating it as an unknown-code fallback.
@@ -157,11 +217,34 @@ export function formatSpreadsheetValue(
 		}
 		return boundedResult(appendRaw ? `${rendered} ⟦${selected.raw}⟧` : rendered, unsupported, appendRaw, runtime);
 	} catch (error) {
-		if (error instanceof ParadisOfficePackageError) {
-			throw new ParadisOfficePackageError(error.code);
-		}
-		throw new ParadisOfficePackageError('unsafe');
+		throw sanitizeNumberFormatError(error);
 	}
+}
+
+function numericSectionOverflows(value: number, tokens: readonly FormatToken[]): boolean {
+	let scaled = Math.abs(value);
+	for (const token of tokens) {
+		if (token.kind === 'character' && token.text === '%') {
+			scaled *= 100;
+			if (!Number.isFinite(scaled)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+function sanitizeNumberFormatError(error: unknown): ParadisOfficePackageError {
+	try {
+		if (error instanceof ParadisOfficePackageError) {
+			const code = Object.getOwnPropertyDescriptor(error, 'code')?.value;
+			if (code === 'invalid' || code === 'encrypted' || code === 'zipBomb' || code === 'limitExceeded'
+				|| code === 'malformed' || code === 'cancelled' || code === 'unsafe') {
+				return new ParadisOfficePackageError(code);
+			}
+		}
+	} catch { /* Poisoned thrown values are reduced to a local safe error. */ }
+	return new ParadisOfficePackageError('unsafe');
 }
 
 function ownFormatContext(value: unknown): OwnedFormatContext {
@@ -345,7 +428,9 @@ function resolveLocaleProfile(locale: string | undefined): { readonly profile: L
 	}
 	const language = lower.split('-')[0];
 	const fallbackKey = language === 'de' ? 'de-de' : language === 'fr' ? 'fr-fr' : language === 'ja' ? 'ja-jp' : language === 'ko' ? 'ko-kr' : language === 'zh' ? 'zh-cn' : language === 'en' ? 'en-us' : undefined;
-	return fallbackKey ? { profile: localeProfiles[fallbackKey], unsupported: [] } : { profile: englishProfile, unsupported: [`locale:${locale}`] };
+	return fallbackKey
+		? { profile: localeProfiles[fallbackKey], unsupported: [`locale:${locale}`] }
+		: { profile: englishProfile, unsupported: [`locale:${locale}`] };
 }
 
 function isSafeLocale(value: string): boolean {
@@ -471,10 +556,14 @@ function splitSections(code: string, limits: ParadisSpreadsheetNumberFormatLimit
 	return result;
 }
 
-function tokenizeSection(raw: string, defaultProfile: LocaleProfile, limits: ParadisSpreadsheetNumberFormatLimits, runtime: FormatRuntime): ParsedSection {
+function tokenizeSection(raw: string, sectionIndex: number, defaultProfile: LocaleProfile, limits: ParadisSpreadsheetNumberFormatLimits, runtime: FormatRuntime): ParsedSection {
 	const tokens: FormatToken[] = [];
 	const unsupported: string[] = [];
 	let profile: LocaleProfile | undefined;
+	let displayStarted = false;
+	let colorCount = 0;
+	let conditionCount = 0;
+	let localeCount = 0;
 	const push = (token: FormatToken): void => {
 		if (tokens.length >= limits.tokens) {
 			throw new ParadisOfficePackageError('limitExceeded');
@@ -503,6 +592,7 @@ function tokenizeSection(raw: string, defaultProfile: LocaleProfile, limits: Par
 				literal += raw[index++];
 			}
 			push({ kind: 'literal', text: literal });
+			displayStarted = true;
 			if (!closed) {
 				unsupported.push('"');
 			}
@@ -514,6 +604,7 @@ function tokenizeSection(raw: string, defaultProfile: LocaleProfile, limits: Par
 				index++;
 			} else {
 				push({ kind: 'literal', text: character === '_' ? ' ' : raw[index + 1] });
+				displayStarted = true;
 				index += 2;
 			}
 			continue;
@@ -522,6 +613,7 @@ function tokenizeSection(raw: string, defaultProfile: LocaleProfile, limits: Par
 			const rawToken = raw.slice(index, Math.min(index + 2, raw.length));
 			unsupported.push(rawToken);
 			push({ kind: 'literal', text: raw[index + 1] ?? '' });
+			displayStarted = true;
 			index += rawToken.length;
 			continue;
 		}
@@ -536,7 +628,21 @@ function tokenizeSection(raw: string, defaultProfile: LocaleProfile, limits: Par
 			const body = raw.slice(index + 1, end);
 			const directive = bracketDirective(body, defaultProfile);
 			if (directive.token) {
-				push(directive.token);
+				const invalidPosition = (directive.token.kind === 'condition' || directive.token.kind === 'metadata') && displayStarted;
+				if (directive.token.kind === 'condition') {
+					conditionCount++;
+				}
+				if (directive.token.kind === 'metadata') {
+					colorCount++;
+				}
+				if (directive.token.kind === 'locale') {
+					localeCount++;
+				}
+				if (invalidPosition || conditionCount > 1 || colorCount > 1 || localeCount > 1 || directive.token.kind === 'condition' && sectionIndex > 1) {
+					unsupported.push(bracket);
+				} else {
+					push(directive.token);
+				}
 				if (directive.profile) {
 					profile = directive.profile;
 				}
@@ -549,11 +655,13 @@ function tokenizeSection(raw: string, defaultProfile: LocaleProfile, limits: Par
 		const upperRest = asciiUpper(raw.slice(index));
 		if (upperRest.startsWith('AM/PM')) {
 			push({ kind: 'date', text: raw.slice(index, index + 5) });
+			displayStarted = true;
 			index += 5;
 			continue;
 		}
 		if (upperRest.startsWith('A/P')) {
 			push({ kind: 'date', text: raw.slice(index, index + 3) });
+			displayStarted = true;
 			index += 3;
 			continue;
 		}
@@ -564,11 +672,25 @@ function tokenizeSection(raw: string, defaultProfile: LocaleProfile, limits: Par
 				end++;
 			}
 			push({ kind: 'date', text: raw.slice(index, end) });
+			displayStarted = true;
 			index = end;
 			continue;
 		}
+		if (character === ']') {
+			unsupported.push(character);
+		}
 		push({ kind: 'character', text: character });
+		displayStarted = true;
 		index++;
+	}
+	const fractionPattern = tokens.filter(token => token.kind === 'character' || token.kind === 'literal').map(token => token.text).join('');
+	const firstSlash = fractionPattern.indexOf('/');
+	const dateSection = tokens.some(token => token.kind === 'date' || token.kind === 'elapsed');
+	if (firstSlash >= 0 && !dateSection) {
+		const denominator = fractionPattern.slice(firstSlash + 1).match(/^(?:[0#?]+|[1-9][0-9]*)/)?.[0];
+		if (fractionPattern.indexOf('/', firstSlash + 1) >= 0 || denominator && /^[1-9][0-9]*$/.test(denominator) && denominator.length > 6) {
+			unsupported.push(`fraction:${raw}`);
+		}
 	}
 	const condition = tokens.find((token): token is Extract<FormatToken, { readonly kind: 'condition' }> => token.kind === 'condition');
 	return { raw, tokens, ...(condition ? { condition } : {}), unsupported: uniqueStrings(unsupported), ...(profile ? { profile } : {}) };
@@ -580,7 +702,7 @@ function bracketDirective(body: string, defaultProfile: LocaleProfile): { readon
 		return { token: { kind: 'elapsed', text: lower } };
 	}
 	if (isColorDirective(lower)) {
-		return { token: { kind: 'metadata' } };
+		return { token: { kind: 'metadata', metadata: 'color' } };
 	}
 	const condition = parseCondition(body);
 	if (condition) {
@@ -681,13 +803,19 @@ function renderSection(value: number | string | boolean | null, section: ParsedS
 	if (section.tokens.some(token => token.kind === 'date' || token.kind === 'elapsed')) {
 		return renderDate(value, section.tokens, profile, date1904, runtime);
 	}
+	let scaledValue = value;
+	for (const token of section.tokens) {
+		if (token.kind === 'character' && token.text === '%') {
+			scaledValue *= 100;
+		}
+	}
 	if (significant.includes('E') || significant.includes('e')) {
-		return renderScientific(value, section.tokens, profile, automaticNegative);
+		return renderScientific(scaledValue, section.tokens, profile, automaticNegative);
 	}
 	if (significant.includes('/')) {
-		return renderFraction(value, section.tokens, profile, automaticNegative);
+		return renderFraction(scaledValue, section.tokens, profile, automaticNegative);
 	}
-	return renderNumber(value, section.tokens, profile, automaticNegative);
+	return renderNumber(scaledValue, section.tokens, profile, automaticNegative);
 }
 
 function renderText(value: string | boolean | null, tokens: readonly FormatToken[], profile: LocaleProfile): string {
@@ -703,7 +831,7 @@ function renderText(value: string | boolean | null, tokens: readonly FormatToken
 			case 'condition': case 'metadata': break;
 		}
 	}
-	return result || text;
+	return result;
 }
 
 function renderNumber(value: number, tokens: readonly FormatToken[], profile: LocaleProfile, automaticNegative: boolean): string {
@@ -714,12 +842,11 @@ function renderNumber(value: number, tokens: readonly FormatToken[], profile: Lo
 	}
 	const first = placeholderIndexes[0];
 	const last = placeholderIndexes[placeholderIndexes.length - 1];
-	const core = displayTokens.slice(first, last + 1);
-	const pattern = core.map(token => token.kind === 'character' ? token.text : '').join('');
-	const decimalIndex = pattern.indexOf('.');
-	const integerPattern = decimalIndex < 0 ? pattern : pattern.slice(0, decimalIndex);
-	const fractionPattern = decimalIndex < 0 ? '' : pattern.slice(decimalIndex + 1);
-	const percentCount = displayTokens.filter(token => token.kind === 'character' && token.text === '%').length;
+	const decimalTokenIndex = displayTokens.findIndex((token, index) => index >= first && index <= last && token.kind === 'character' && token.text === '.');
+	const integerTokens = displayTokens.slice(first, decimalTokenIndex < 0 ? last + 1 : decimalTokenIndex);
+	const fractionTokens = decimalTokenIndex < 0 ? [] : displayTokens.slice(decimalTokenIndex + 1, last + 1);
+	const integerPattern = integerTokens.filter(token => token.kind === 'character').map(token => token.text).join('');
+	const fractionPattern = fractionTokens.filter(token => token.kind === 'character').map(token => token.text).join('');
 	let scaleCommas = 0;
 	for (let index = last + 1; index < displayTokens.length; index++) {
 		const token = displayTokens[index];
@@ -730,9 +857,6 @@ function renderNumber(value: number, tokens: readonly FormatToken[], profile: Lo
 		}
 	}
 	let scaled = Math.abs(value);
-	for (let index = 0; index < percentCount; index++) {
-		scaled *= 100;
-	}
 	for (let index = 0; index < scaleCommas; index++) {
 		scaled /= 1000;
 	}
@@ -741,20 +865,24 @@ function renderNumber(value: number, tokens: readonly FormatToken[], profile: Lo
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
 	const minimumDecimals = countCharacter(fractionPattern, '0');
-	const questionDecimals = countCharacter(fractionPattern, '?');
-	let [integer, fraction = ''] = scaled.toFixed(maximumDecimals).split('.');
-	while (fraction.length > minimumDecimals && fractionPattern[fraction.length - 1] === '#' && fraction.endsWith('0')) {
-		fraction = fraction.slice(0, -1);
+	let { integer, fraction } = decimalParts(scaled, maximumDecimals);
+	const integerPlaceholders = integerTokens.filter((token): token is Extract<FormatToken, { readonly kind: 'character' }> => token.kind === 'character' && ['0', '#', '?'].includes(token.text));
+	const hasRequiredInteger = integerPlaceholders.some(token => token.text === '0');
+	if (integer === '0' && !hasRequiredInteger) {
+		integer = '';
 	}
-	if (questionDecimals > 0 && fraction.length < maximumDecimals) {
-		fraction += ' '.repeat(maximumDecimals - fraction.length);
+	let renderedInteger: string;
+	const hasMiddleLiteral = integerTokens.some(token => token.kind === 'literal' || token.kind === 'locale' || token.kind === 'character' && !['0', '#', '?', ','].includes(token.text));
+	if (integerPattern.includes(',') && !hasMiddleLiteral) {
+		const minimumInteger = countCharacter(integerPattern, '0');
+		const padded = integer.padStart(minimumInteger, '0');
+		renderedInteger = padded ? groupDigits(padded, profile.group) : '';
+	} else {
+		renderedInteger = renderIntegerTokens(integerTokens, integer, profile);
 	}
-	const minimumInteger = countCharacter(integerPattern, '0');
-	integer = integer.padStart(minimumInteger, '0');
-	if (integerPattern.includes(',')) {
-		integer = groupDigits(integer, profile.group);
-	}
-	let numeric = integer + (maximumDecimals > 0 && (fraction.length > 0 || minimumDecimals > 0) ? profile.decimal + fraction : '');
+	const renderedFraction = renderFractionalTokens(fractionTokens, fraction, profile);
+	const showDecimal = maximumDecimals > 0 && (minimumDecimals > 0 || renderedFraction.length > 0);
+	let numeric = renderedInteger + (showDecimal ? profile.decimal + renderedFraction : '');
 	const prefix = literalTokens(displayTokens.slice(0, first), profile);
 	const suffix = literalTokens(displayTokens.slice(last + 1), profile);
 	const selectedNegativeSection = value < 0 && (prefix.includes('(') || suffix.includes(')') || prefix.includes('-'));
@@ -762,6 +890,111 @@ function renderNumber(value: number, tokens: readonly FormatToken[], profile: Lo
 		numeric = `-${numeric}`;
 	}
 	return prefix + numeric + suffix;
+}
+
+function renderIntegerTokens(tokens: readonly FormatToken[], digits: string, profile: LocaleProfile): string {
+	const rendered = new Array<string>(tokens.length).fill('');
+	let digitIndex = digits.length - 1;
+	let firstPlaceholder = -1;
+	for (let index = tokens.length - 1; index >= 0; index--) {
+		const token = tokens[index];
+		if (token.kind === 'character' && ['0', '#', '?'].includes(token.text)) {
+			firstPlaceholder = index;
+			if (digitIndex >= 0) {
+				rendered[index] = digits[digitIndex--];
+			} else if (token.text === '0') {
+				rendered[index] = '0';
+			} else if (token.text === '?') {
+				rendered[index] = ' ';
+			}
+		} else if (token.kind === 'literal') {
+			rendered[index] = token.text;
+		} else if (token.kind === 'locale') {
+			rendered[index] = token.currency ?? '';
+		} else if (token.kind === 'character' && token.text !== ',') {
+			rendered[index] = token.text;
+		}
+	}
+	if (digitIndex >= 0 && firstPlaceholder >= 0) {
+		rendered[firstPlaceholder] = digits.slice(0, digitIndex + 1) + rendered[firstPlaceholder];
+	}
+	return rendered.join('').replace(/\$/g, '$');
+}
+
+function renderFractionalTokens(tokens: readonly FormatToken[], digits: string, profile: LocaleProfile): string {
+	const placeholders = tokens.filter((token): token is Extract<FormatToken, { readonly kind: 'character' }> => token.kind === 'character' && ['0', '#', '?'].includes(token.text));
+	let lastVisible = -1;
+	for (let index = 0; index < placeholders.length; index++) {
+		if (placeholders[index].text === '0' || digits[index] !== '0') {
+			lastVisible = index;
+		}
+	}
+	let placeholderIndex = 0;
+	let result = '';
+	for (const token of tokens) {
+		if (token.kind === 'character' && ['0', '#', '?'].includes(token.text)) {
+			const digit = digits[placeholderIndex] ?? '0';
+			if (placeholderIndex <= lastVisible) {
+				result += digit;
+			} else if (token.text === '?') {
+				result += ' ';
+			}
+			placeholderIndex++;
+		} else if (token.kind === 'literal') {
+			result += token.text;
+		} else if (token.kind === 'locale') {
+			result += token.currency ?? '';
+		} else if (token.kind === 'character') {
+			result += token.text;
+		}
+	}
+	return result.replace(/\$/g, '$').replace('.', profile.decimal);
+}
+
+function decimalParts(value: number, decimals: number): { readonly integer: string; readonly fraction: string } {
+	const expanded = expandFiniteNumber(value);
+	const point = expanded.indexOf('.');
+	let integer = point < 0 ? expanded : expanded.slice(0, point);
+	const sourceFraction = point < 0 ? '' : expanded.slice(point + 1);
+	let fraction = sourceFraction.slice(0, decimals).padEnd(decimals, '0');
+	if ((sourceFraction[decimals] ?? '0') >= '5') {
+		let combined = integer + fraction;
+		let carry = 1;
+		const characters = combined.split('');
+		for (let index = characters.length - 1; index >= 0 && carry; index--) {
+			const digit = Number(characters[index]) + carry;
+			characters[index] = String(digit % 10);
+			carry = digit >= 10 ? 1 : 0;
+		}
+		if (carry) {
+			characters.unshift('1');
+		}
+		combined = characters.join('');
+		const integerLength = combined.length - decimals;
+		integer = integerLength > 0 ? combined.slice(0, integerLength) : '0';
+		fraction = decimals > 0 ? combined.slice(integerLength).padStart(decimals, '0') : '';
+	}
+	return { integer: integer.replace(/^0+(?=\d)/, '') || '0', fraction };
+}
+
+function expandFiniteNumber(value: number): string {
+	const source = String(value);
+	const exponentIndex = Math.max(source.indexOf('e'), source.indexOf('E'));
+	if (exponentIndex < 0) {
+		return source;
+	}
+	const coefficient = source.slice(0, exponentIndex);
+	const exponent = Number(source.slice(exponentIndex + 1));
+	const point = coefficient.indexOf('.');
+	const digits = coefficient.replace('.', '');
+	const decimalPosition = (point < 0 ? coefficient.length : point) + exponent;
+	if (decimalPosition <= 0) {
+		return `0.${'0'.repeat(-decimalPosition)}${digits}`;
+	}
+	if (decimalPosition >= digits.length) {
+		return digits + '0'.repeat(decimalPosition - digits.length);
+	}
+	return `${digits.slice(0, decimalPosition)}.${digits.slice(decimalPosition)}`;
 }
 
 function renderScientific(value: number, tokens: readonly FormatToken[], profile: LocaleProfile, automaticNegative: boolean): string {
@@ -777,15 +1010,23 @@ function renderScientific(value: number, tokens: readonly FormatToken[], profile
 	const mantissa = pattern.slice(0, exponentIndex);
 	const exponentPattern = pattern.slice(exponentIndex + 1);
 	const decimals = mantissa.includes('.') ? countPlaceholders(mantissa.slice(mantissa.indexOf('.') + 1)) : 0;
+	const integerSlots = Math.max(1, countPlaceholders(mantissa.includes('.') ? mantissa.slice(0, mantissa.indexOf('.')) : mantissa));
 	if (decimals > 30) {
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
-	const raw = Math.abs(value).toExponential(decimals);
-	const [rawMantissa, rawExponent] = raw.split('e');
-	const exponent = Number(rawExponent);
+	const absolute = Math.abs(value);
+	let exponent = absolute === 0 ? 0 : Math.floor(Math.log10(absolute) / integerSlots) * integerSlots;
+	let mantissaValue = absolute === 0 ? 0 : absolute / 10 ** exponent;
+	let parts = decimalParts(mantissaValue, decimals);
+	if (parts.integer.length > integerSlots) {
+		exponent += integerSlots;
+		mantissaValue = absolute / 10 ** exponent;
+		parts = decimalParts(mantissaValue, decimals);
+	}
 	const exponentDigits = Math.max(1, countPlaceholders(exponentPattern));
 	const sign = exponent < 0 ? '-' : exponentPattern.includes('+') ? '+' : '';
-	let formatted = `${rawMantissa.replace('.', profile.decimal)}E${sign}${Math.abs(exponent).toString().padStart(exponentDigits, '0')}`;
+	const exponentMarker = pattern[exponentIndex] === 'e' ? 'e' : 'E';
+	let formatted = `${parts.integer}${decimals > 0 ? profile.decimal + parts.fraction : ''}${exponentMarker}${sign}${Math.abs(exponent).toString().padStart(exponentDigits, '0')}`;
 	const prefix = literalTokens(displayTokens.slice(0, first), profile);
 	const suffix = literalTokens(displayTokens.slice(last + 1), profile);
 	if (value < 0 && automaticNegative && !prefix.includes('-') && !prefix.includes('(') && !suffix.includes(')')) {
@@ -815,13 +1056,20 @@ function renderFraction(value: number, tokens: readonly FormatToken[], profile: 
 	}
 	const pattern = displayTokens.slice(first, last + 1).filter(token => token.kind === 'character' || token.kind === 'literal').map(token => token.text).join('');
 	const slash = pattern.indexOf('/');
+	if (slash < 0 || pattern.indexOf('/', slash + 1) >= 0) {
+		return generalText(value);
+	}
 	const numeratorPattern = pattern.slice(0, slash).match(/[0#?]+$/)?.[0] ?? '?';
 	const denominatorPattern = pattern.slice(slash + 1).match(/^(?:[0#?]+|[1-9][0-9]*)/)?.[0] ?? '?';
-	const fixedDenominator = /^\d+$/.test(denominatorPattern) ? Number(denominatorPattern) : undefined;
+	const fixedDenominator = /^[1-9][0-9]*$/.test(denominatorPattern) && denominatorPattern.length <= 6 ? Number(denominatorPattern) : undefined;
+	if (/^[1-9][0-9]*$/.test(denominatorPattern) && fixedDenominator === undefined) {
+		return generalText(value);
+	}
 	const maximumDenominator = fixedDenominator ?? Math.min(999, 10 ** denominatorPattern.length - 1);
 	const absolute = Math.abs(value);
-	let whole = Math.floor(absolute);
-	const fraction = absolute - whole;
+	const wholePattern = pattern.slice(0, Math.max(0, slash - numeratorPattern.length)).match(/[0#?]+/)?.[0];
+	let whole = wholePattern ? Math.floor(absolute) : 0;
+	const fraction = wholePattern ? absolute - whole : absolute;
 	let denominator = fixedDenominator ?? 1;
 	let numerator = fixedDenominator ? Math.round(fraction * fixedDenominator) : 0;
 	if (!fixedDenominator) {
@@ -836,14 +1084,13 @@ function renderFraction(value: number, tokens: readonly FormatToken[], profile: 
 			}
 		}
 	}
-	if (numerator >= denominator) {
+	if (wholePattern && numerator >= denominator) {
 		whole += Math.floor(numerator / denominator);
 		numerator %= denominator;
 	}
 	const numeratorText = numerator.toString().padStart(numeratorPattern.length, numeratorPattern.includes('?') ? ' ' : '0');
 	const denominatorText = denominator.toString().padStart(denominatorPattern.length, denominatorPattern.includes('?') ? ' ' : '0');
-	const wholePattern = pattern.slice(0, Math.max(0, slash - numeratorPattern.length)).match(/[0#?]+/)?.[0];
-	let result = numerator === 0 ? whole.toString() : `${wholePattern ? whole.toString() + ' ' : ''}${numeratorText}/${denominatorText}`;
+	let result = numerator === 0 ? (wholePattern ? whole.toString() : '') : `${wholePattern ? whole.toString() + ' ' : ''}${numeratorText}/${denominatorText}`;
 	const prefix = literalTokens(displayTokens.slice(0, first), profile);
 	const suffix = literalTokens(displayTokens.slice(last + 1), profile);
 	if (value < 0 && automaticNegative && !prefix.includes('-') && !prefix.includes('(') && !suffix.includes(')')) {
@@ -1021,7 +1268,7 @@ function literalTokens(tokens: readonly FormatToken[], profile: LocaleProfile): 
 			case 'condition': case 'metadata': break;
 		}
 	}
-	return result.replace(/\$/g, profile.currency);
+	return result;
 }
 
 function isNumericSyntax(value: string): boolean {

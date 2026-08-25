@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { deepStrictEqual, ok, strictEqual, throws } from 'assert';
+import { deepStrictEqual, notStrictEqual, ok, strictEqual, throws } from 'assert';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
@@ -90,6 +90,16 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(format('hello', 'yyyy-mm-dd'), exact('hello'));
 		deepStrictEqual(format('hello', '"USD "0.00'), exact('hello'));
 		deepStrictEqual(format(true, '0.00'), exact('TRUE'));
+		deepStrictEqual(format(null, '0.00;[Red](0.00);"zero";"text:"@'), exact(''));
+		deepStrictEqual(format('hidden', '0;0;0;'), exact(''));
+		deepStrictEqual(format(false, '0;0;0;"bool:"@'), exact('FALSE'));
+	});
+
+	test('preserves literal token positions and localizes only semantic currency directives', () => {
+		deepStrictEqual(format(1234, '00"-"00'), exact('12-34'));
+		deepStrictEqual(format(123, '0\\$00', { workbookLocale: 'de-DE' }), exact('1$23'));
+		deepStrictEqual(format(12, '0"$"0', { workbookLocale: 'ja-JP' }), exact('1$2'));
+		deepStrictEqual(format(1234.5, '[$€-407]#,##0.00', { applicationLocale: 'en-US' }), exact('€1.234,50'));
 	});
 
 	test('evaluates ordered conditions and accepts color directives as non-display metadata', () => {
@@ -110,12 +120,40 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(format(-1234, '0.00E+00;[Red](0.00E+00)'), exact('(1.23E+03)'));
 		deepStrictEqual(format(2.125, '"qty "# ?/?" kg"'), exact('qty 2 1/8 kg'));
 		deepStrictEqual(format(-2.125, '# ?/?;[Red](# ?/?)'), exact('(2 1/8)'));
+		deepStrictEqual(format(2.125, '?/??'), exact('17/ 8'));
+		deepStrictEqual(format(0.2, '?/8'), exact('2/8'));
+		const invalidFraction = format(0.2, '?/999999999999999999');
+		strictEqual(invalidFraction.status, 'approximated');
+		ok(invalidFraction.text.startsWith('0.2'));
+		ok(invalidFraction.text.includes('?/999999999999999999'));
+		const duplicateSlash = format(0.2, '?/??/??');
+		strictEqual(duplicateSlash.status, 'approximated');
+		ok(duplicateSlash.text.startsWith('0.2'));
+		deepStrictEqual(format(12_345, '##0.0E+0'), exact('12.3E+3'));
+		deepStrictEqual(format(0.1234, '0.00E+00%'), exact('1.23E+01%'));
+		deepStrictEqual(format(0.1234, '##0.0E+0%'), exact('12.3E+0%'));
+		deepStrictEqual(format(0.125, '# ?/?%'), exact('12 1/2%'));
 		deepStrictEqual(format(1.5, '0.0\\ kg "net"'), exact('1.5 kg net'));
 
 		const accounting = format(1234.5, '_($* #,##0.00_);[Red]_($* (#,##0.00);_($* "-"??_);_(@_)');
 		strictEqual(accounting.text.trim(), '$ 1,234.50');
 		strictEqual(accounting.status, 'approximated');
 		deepStrictEqual(accounting.unsupportedTokens, ['* ']);
+	});
+
+	test('implements optional and spacing placeholders for zero, large finite numbers, and percent rounding', () => {
+		deepStrictEqual(format(0, '#'), exact(''));
+		deepStrictEqual(format(0, '?'), exact(' '));
+		deepStrictEqual(format(12, '????'), exact('  12'));
+		deepStrictEqual(format(1e21, '0'), exact('1000000000000000000000'));
+		deepStrictEqual(format(1.2, '#.##'), exact('1.2'));
+		deepStrictEqual(format(0.126, '0.0%'), exact('12.6%'));
+		const overflow = format(Number.MAX_VALUE, '0%');
+		strictEqual(overflow.status, 'approximated');
+		deepStrictEqual(overflow.unsupportedTokens, ['numeric-overflow']);
+		ok(!overflow.text.includes('Infinity'));
+		ok(overflow.text.includes('0%'));
+		deepStrictEqual(format(1234, '0.0e+0'), exact('1.2e+3'));
 	});
 
 	test('computes 1900 and 1904 dates without a host timezone and preserves serial 60', () => {
@@ -145,6 +183,26 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(format(2, 31, { workbookLocale: 'ja-JP', applicationLocale: 'ko-KR' }), exact('1900年1月2日'));
 		deepStrictEqual(format(2, 31, { applicationLocale: 'ko-KR' }), exact('1900년 1월 2일'));
 		deepStrictEqual(format(1234.5, '#,##0.00', { workbookLocale: 'de-DE', applicationLocale: 'en-US' }), exact('1.234,50'));
+		deepStrictEqual(format(1234.5, '#,##0.00', { workbookLocale: '', applicationLocale: 'de-DE' }), exact('1.234,50'));
+		deepStrictEqual(format(1, 'dddd', { workbookLocale: 'de-DE' }), exact('Montag'));
+		deepStrictEqual(format(1, 'dddd', { workbookLocale: 'fr-FR' }), exact('lundi'));
+		const regionalFallback = format(1234.5, '#,##0.00', { workbookLocale: 'en-GB' });
+		deepStrictEqual(regionalFallback, { text: '1,234.50', status: 'approximated', unsupportedTokens: ['locale:en-GB'] });
+		const unknownLocale = format(1234.5, '#,##0.00', { workbookLocale: 'pt-BR' });
+		deepStrictEqual(unknownLocale, { text: '1,234.50', status: 'approximated', unsupportedTokens: ['locale:pt-BR'] });
+	});
+
+	test('rejects invalid condition and color grammar without a silent blank fallback', () => {
+		for (const code of ['[Red][Blue]0', '[>0][<2]0', '0[Red]', '[oops]0', '[Red0', '"unterminated']) {
+			const result = format(1, code);
+			strictEqual(result.status, 'approximated', code);
+			ok(result.text.includes(code), code);
+			ok(result.text.length > code.length, code);
+		}
+		const noMatch = format(5, '[>10]0;[<0]0');
+		strictEqual(noMatch.status, 'approximated');
+		strictEqual(noMatch.text, '5 ⟦[>10]0;[<0]0⟧');
+		deepStrictEqual(noMatch.unsupportedTokens, ['condition:no-match']);
 	});
 
 	test('marks unknown tokens as approximated and retains the raw code instead of silently using General', () => {
@@ -241,15 +299,17 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		const result = formatSpreadsheetRenderProjection(snapshot, projection, { applicationLocale: 'en-US' });
 
 		strictEqual(result.projection.sheets[0].rows[0].cells[0].value, '1,234.50');
-		strictEqual(result.projection.sheets[0].rows[0].cells[0].style, style);
-		strictEqual(result.projection.sheets[0].rows[0].cells[0].diagonal, diagonal);
+		deepStrictEqual(result.projection.sheets[0].rows[0].cells[0].style, style);
+		notStrictEqual(result.projection.sheets[0].rows[0].cells[0].style, style);
+		deepStrictEqual(result.projection.sheets[0].rows[0].cells[0].diagonal, diagonal);
+		notStrictEqual(result.projection.sheets[0].rows[0].cells[0].diagonal, diagonal);
 		strictEqual(projection.sheets[0].rows[0].cells[0], projectedCell);
 		strictEqual(projection.sheets[0].rows[0].cells[0].value, '1234.5');
 		strictEqual(snapshot.sheets[0].cells.get('A1'), semanticCell);
 		strictEqual(snapshot.sheets[0].cells.get('A1')?.styleRef, 1);
 		strictEqual(snapshot.styles.borders[1], semanticDiagonal);
 		strictEqual(snapshot.styles.borders[1].diagonal?.color, rawColor);
-		strictEqual(result.diagnostics, snapshot.projectionDiagnostics);
+		notStrictEqual(result.diagnostics, snapshot.projectionDiagnostics);
 		deepStrictEqual(result.diagnostics, diagnostics);
 		deepStrictEqual(result.diagnostics, []);
 		strictEqual(result.formatDiagnosticsTruncated, false);
@@ -289,11 +349,146 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		const capped = formatSpreadsheetRenderProjection(snapshot, projection, {}, { formatDiagnostics: 0 });
 		deepStrictEqual(capped.formatDiagnostics, []);
 		strictEqual(capped.formatDiagnosticsTruncated, true);
+
+		const twoCells = twoCellProjection();
+		const twoCellSnapshot = twoCellProjectionSnapshot();
+		throws(() => formatSpreadsheetRenderProjection(twoCellSnapshot, twoCells, {}, { inputCharacters: 1 }), /limitExceeded/);
+		throws(() => formatSpreadsheetRenderProjection(twoCellSnapshot, twoCells, {}, { inputUtf8Bytes: 1 }), /limitExceeded/);
+		throws(() => formatSpreadsheetRenderProjection(
+			projectionSnapshot({ storedType: 'string', rawValue: { present: true, text: '😀' }, text: '😀', effectiveStyleRef: 0 }, 0),
+			oneCellProjection('😀'),
+			{},
+			{ inputCharacters: 2, inputUtf8Bytes: 3 },
+		), /limitExceeded/);
+		const longSheetName = '😀'.repeat(1000);
+		const namedSnapshot = projectionSnapshot({ storedType: 'blank', rawValue: { present: false } });
+		throws(() => formatSpreadsheetRenderProjection(
+			{ ...namedSnapshot, sheets: [{ ...namedSnapshot.sheets[0], name: longSheetName }] },
+			{ sheets: [{ ...oneCellProjection('').sheets[0], name: longSheetName }] },
+			{},
+			{ inputCharacters: 512, outputCharacters: 512, inputUtf8Bytes: 1024, outputUtf8Bytes: 1024 },
+		), /limitExceeded/);
+		const diagnosedSnapshot = projectionSnapshot({ storedType: 'blank', rawValue: { present: false } });
+		throws(() => formatSpreadsheetRenderProjection(
+			{ ...diagnosedSnapshot, projectionDiagnostics: [{ kind: 'cellMissing', sheetName: 'Sheet1', cellAddress: 'A1' }] },
+			oneCellProjection(''),
+			{},
+			{ diagnosticCharacters: 0, diagnosticUtf8Bytes: 0 },
+		), /limitExceeded/);
+		throws(() => formatSpreadsheetRenderProjection(
+			{ ...projectionSnapshot({ storedType: 'blank', rawValue: { present: false } }), sheets: [{ ...projectionSnapshot({ storedType: 'blank', rawValue: { present: false } }).sheets[0], cells: new Map() }] },
+			oneCellProjection('unmatched'),
+			{},
+			{ inputCharacters: 1, inputUtf8Bytes: 1, outputCharacters: 1, outputUtf8Bytes: 1 },
+		), /limitExceeded/);
+		throws(() => formatSpreadsheetRenderProjection(twoCellSnapshot, twoCells, {}, { outputCharacters: 2 }), /limitExceeded/);
+		throws(() => formatSpreadsheetRenderProjection(twoCellSnapshot, twoCells, {}, { outputUtf8Bytes: 2 }), /limitExceeded/);
+		throws(() => formatSpreadsheetRenderProjection(twoCellSnapshot, twoCells, {}, { parsedFormats: 1 }), /limitExceeded/);
+		throws(() => formatSpreadsheetRenderProjection(
+			projectionSnapshot({ storedType: 'number', rawValue: { present: true, text: '2.5' }, effectiveStyleRef: 0 }, 41),
+			oneCellProjection('2.5'),
+			{},
+			{ diagnosticCharacters: 1, diagnosticUtf8Bytes: 1 },
+		), /limitExceeded/);
+	});
+
+	test('sanitizes poisoned render input and snapshots accessors without invoking them', () => {
+		let getterReads = 0;
+		const accessorProjection = {};
+		Object.defineProperty(accessorProjection, 'sheets', { get: () => { getterReads++; return []; } });
+		throws(() => formatSpreadsheetRenderProjection(projectionSnapshot({ storedType: 'number', rawValue: { present: true, text: '1' } }), accessorProjection as IParadisWorkbookData), /unsafe/);
+		strictEqual(getterReads, 0);
+
+		const poisoned = new Proxy({}, { getPrototypeOf: () => { throw new Error('private attacker detail'); } });
+		let message = '';
+		try {
+			formatSpreadsheetRenderProjection(poisoned as ParadisSpreadsheetSnapshot, oneCellProjection('1'));
+		} catch (error) {
+			message = String(error);
+		}
+		strictEqual(message, 'Error: unsafe');
+
+		const mutableLimits = { cells: 0 };
+		const limitMutatingProjection = new Proxy(oneCellProjection('1'), {
+			getOwnPropertyDescriptor: (target, property) => {
+				if (property === 'sheets') {
+					mutableLimits.cells = 1;
+				}
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		throws(() => formatSpreadsheetRenderProjection(
+			projectionSnapshot({ storedType: 'number', rawValue: { present: true, text: '1' }, effectiveStyleRef: 0 }, 1),
+			limitMutatingProjection,
+			{},
+			mutableLimits,
+		), /limitExceeded/);
+
+		const mutableContext = { workbookLocale: 'de-DE' };
+		const contextMutatingProjection = new Proxy(oneCellProjection('1234.5'), {
+			getOwnPropertyDescriptor: (target, property) => {
+				if (property === 'sheets') {
+					mutableContext.workbookLocale = 'en-US';
+				}
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		const ownedContext = formatSpreadsheetRenderProjection(
+			projectionSnapshot({ storedType: 'number', rawValue: { present: true, text: '1234.5' }, effectiveStyleRef: 0 }, 4),
+			contextMutatingProjection,
+			mutableContext,
+		);
+		strictEqual(ownedContext.projection.sheets[0].rows[0].cells[0].value, '1.234,50');
+
+		let styleDescriptorReads = 0;
+		const largeStyle = new Proxy(Object.fromEntries(Array.from({ length: 200 }, (_, index) => [`p${index}`, 'x'])), {
+			getOwnPropertyDescriptor: (target, property) => {
+				styleDescriptorReads++;
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		const cloneCancellation: CancellationToken = {
+			get isCancellationRequested() { return styleDescriptorReads >= 2; },
+			onCancellationRequested: () => ({ dispose() { } }),
+		};
+		throws(() => formatSpreadsheetRenderProjection(
+			projectionSnapshot({ storedType: 'number', rawValue: { present: true, text: '1' }, effectiveStyleRef: 0 }, 1),
+			{ sheets: [{ ...oneCellProjection('1').sheets[0], rows: [{ excelRow: 1, height: 20, cells: [{ value: '1', style: largeStyle }] }] }] },
+			{ cancellationToken: cloneCancellation },
+		), /cancelled/);
+		ok(styleDescriptorReads < 200);
 	});
 });
 
 function oneCellProjection(value: string): IParadisWorkbookData {
 	return { sheets: [{ name: 'Sheet1', rows: [{ excelRow: 1, height: 20, cells: [{ value, style: {} }] }], columnCount: 1, columnWidths: [100], truncated: false, minCol: 1 }] };
+}
+
+function twoCellProjection(): IParadisWorkbookData {
+	return {
+		sheets: [{
+			name: 'Sheet1', minCol: 1, columnCount: 2, columnWidths: [80, 90], truncated: false,
+			rows: [{ excelRow: 1, height: 20, cells: [{ value: '1', style: {} }, { value: '2', style: {} }] }],
+		}],
+	};
+}
+
+function twoCellProjectionSnapshot(): ParadisSpreadsheetSnapshot {
+	const snapshot = projectionSnapshot({ storedType: 'number', rawValue: { present: true, text: '1' }, effectiveStyleRef: 0 }, 1);
+	return {
+		...snapshot,
+		sheets: [{
+			...snapshot.sheets[0], cells: new Map([
+				['A1', { storedType: 'number', rawValue: { present: true, text: '1' }, effectiveStyleRef: 0 }],
+				['B1', { storedType: 'number', rawValue: { present: true, text: '2' }, effectiveStyleRef: 1 }],
+			])
+		}],
+		styles: {
+			...snapshot.styles,
+			cellFormats: [{ index: 0, numberFormatId: 1 }, { index: 1, numberFormatId: 2 }],
+			completeness: { ...snapshot.styles.completeness, parsedCellFormats: 2 },
+		},
+	};
 }
 
 function projectionSnapshot(cell: ParadisSemanticCell, numberFormatId = 2): ParadisSpreadsheetSnapshot {

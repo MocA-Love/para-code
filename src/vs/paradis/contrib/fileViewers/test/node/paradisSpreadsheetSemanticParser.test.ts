@@ -754,18 +754,49 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 
 	test('common parser owns projection before its first archive await', async () => {
 		const fixture = await createSemanticFixture();
-		const projectedCell = { value: '1', style: {} };
+		const projectedStyle = { color: '#123456', fontWeight: '700' };
+		const projectedDiagonal: IParadisDiagonalBorder = {
+			up: true, down: true, style: '1px solid', color: '#ff0000', rawStyle: 'dashDot', rawColor: { kind: 'rgb', rgb: 'FFFF0000' },
+		};
+		const projectedCell = {
+			value: '1', style: projectedStyle, colSpan: 2, rowSpan: 3, hidden: true, wrapText: true, verticalText: true, shrinkToFit: true,
+			richText: [{ text: 'rich', style: { color: '#abcdef', fontStyle: 'italic' } }],
+			diagonal: projectedDiagonal,
+			dataValidation: { type: 'list' as const, formulae: ['"A,B"'], allowBlank: true },
+		};
 		const projection: IParadisWorkbookData = {
 			sheets: [{
 				name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: [64], truncated: false,
-				rows: [{ excelRow: 1, height: 20, cells: [projectedCell] }],
+				rows: [{ excelRow: 1, height: 20, cells: [projectedCell] }], showGridLines: false, zoomScale: 125, tabColor: '#ff00ff', protectedSheet: true,
+				rowBreaks: [4], colBreaks: [2], printArea: { minR: 1, maxR: 10, minC: 1, maxC: 4 },
+				dataValidations: [{ range: { minR: 1, maxR: 1, minC: 1, maxC: 1 }, validation: { type: 'list', formulae: ['"A,B"'], allowBlank: true } }],
+				shapes: [{ type: 'line', flipV: false, flipH: false, from: { c: 0, co: 1, r: 0, ro: 2 }, to: { c: 1, co: 3, r: 1, ro: 4 }, outlineWidth: 1, outlineColor: '#000000', dash: 'solid', name: 'line' }],
 			}],
+			drawingsBySheet: { 1: [{ xml: '<drawing/>', media: { rId1: 'data:image/png;base64,AA==' } }] },
+			themeColors: { accent1: '#112233' },
 		};
 		const parsing = parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None, { projection });
 		Object.defineProperty(projectedCell, 'value', { configurable: true, value: 'mutated-after-call' });
+		projectedStyle.color = '#000000';
+		(projection.sheets[0].columnWidths as number[])[0] = 999;
 
 		const snapshot = await parsing;
 		strictEqual(snapshot.projectionDiagnostics.some(diagnostic => diagnostic.kind === 'valueMismatch' && diagnostic.cellAddress === 'A1'), false);
+		const rendered = snapshot.renderProjection!;
+		strictEqual(rendered.sheets[0].rows[0].cells[0].value, '1.000');
+		deepStrictEqual(rendered.sheets[0].rows[0].cells[0].style, { color: '#123456', fontWeight: '700' });
+		strictEqual(rendered.sheets[0].rows[0].cells[0].colSpan, 2);
+		strictEqual(rendered.sheets[0].rows[0].cells[0].rowSpan, 3);
+		strictEqual(rendered.sheets[0].rows[0].cells[0].hidden, true);
+		strictEqual(rendered.sheets[0].rows[0].cells[0].wrapText, true);
+		deepStrictEqual(rendered.sheets[0].rows[0].cells[0].richText, projectedCell.richText);
+		deepStrictEqual(rendered.sheets[0].rows[0].cells[0].dataValidation, projectedCell.dataValidation);
+		deepStrictEqual(rendered.sheets[0].rows[0].cells[0].diagonal, projectedDiagonal);
+		deepStrictEqual(rendered.sheets[0].columnWidths, [64]);
+		deepStrictEqual(rendered.sheets[0].shapes, projection.sheets[0].shapes);
+		deepStrictEqual(rendered.sheets[0].dataValidations, projection.sheets[0].dataValidations);
+		deepStrictEqual(rendered.drawingsBySheet, projection.drawingsBySheet);
+		deepStrictEqual(rendered.themeColors, projection.themeColors);
 	});
 
 	test('freezes the publicly returned owned input before registering its no-copy marker', async () => {
@@ -828,10 +859,15 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		strictEqual(snapshotFinished, true);
 	});
 
-	test('does not traverse unused inventory features or projection style and width graphs', async () => {
+	test('owns render style and width graphs without invoking caller getters', async () => {
 		const fixture = await createSemanticFixture();
 		let unusedReads = 0;
-		const unusedStyle = recordWithExtraKeys({}, () => unusedReads++);
+		const unusedStyle = new Proxy({ color: '#123456' }, {
+			get: (target, property, receiver) => {
+				unusedReads++;
+				return Reflect.get(target, property, receiver);
+			},
+		});
 		const widths = new Proxy([64], {
 			get: (target, property, receiver) => {
 				if (property !== 'length') {
@@ -854,8 +890,12 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			}],
 		};
 
-		await parseSpreadsheetSemanticNode(fixture.bytes, inventory, CancellationToken.None, { projection });
+		const snapshot = await parseSpreadsheetSemantic(
+			await createParadisOfficeNodeArchive(fixture.bytes), inventory, CancellationToken.None, { projection },
+		);
 		strictEqual(unusedReads, 0);
+		deepStrictEqual(snapshot.renderProjection?.sheets[0].rows[0].cells[0].style, { color: '#123456' });
+		deepStrictEqual(snapshot.renderProjection?.sheets[0].columnWidths, [64]);
 	});
 
 	test('keeps raw value container absence separate from present empty content and blank cells', async () => {
@@ -1147,6 +1187,18 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, { projection }),
 			/unsafe/,
 		);
+	});
+
+	test('rejects shared nested render projection objects', async () => {
+		const fixture = await createSemanticFixture();
+		const sharedStyle = { color: '#123456' };
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: 2, columnWidths: [64, 64], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: [{ value: '1', style: sharedStyle }, { value: '2', style: sharedStyle }] }],
+			}],
+		};
+		throws(() => ownSpreadsheetSemanticInput(fixture.inventory, { projection }, CancellationToken.None), /unsafe/);
 	});
 
 	test('rejects sparse and accessor-backed projection arrays', async () => {
