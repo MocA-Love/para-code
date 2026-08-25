@@ -27,6 +27,7 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
+import { PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS } from '../common/paradisCcusage.js';
 import { ParadisCcusageClient, PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH } from './paradisCcusageClient.js';
 import { ParadisCcusageEditor } from './paradisCcusageEditor.js';
 import { ParadisCcusageInput, ParadisCcusageInputSerializer, PARADIS_CCUSAGE_EDITOR_ID, PARADIS_CCUSAGE_INPUT_TYPE_ID } from './paradisCcusageInput.js';
@@ -103,6 +104,31 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			description: localize('paradis.ccusage.statusBarEnabled', "Show today's coding agent cost (via ccusage) in the status bar."),
+		},
+		[PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS]: {
+			type: 'number',
+			// 自由入力の数値ではなく候補からの選択にしてあるのは、Para Code 設定ダイアログの
+			// _buildControl (paradisSettingsDialog.ts) が enum の無い number 型には専用の入力欄を
+			// 持たず、標準の設定エディタへのリンクにフォールバックするため
+			// (paradis.githubMetrics.refreshIntervalSeconds と同じ理由・同じ形)。
+			// 上限を 10 分までにしてあるのは、warm(定期先取り更新)がこの4種のレポートを直列に
+			// 実行するため(runWarmPass)。1本ごとの上限を長くすると「対象数 × タイムアウト」で
+			// 1周が伸び、CACHE_TTL_MS を前提にした温め直しの不変条件が崩れてしまう。
+			enum: [60, 120, 180, 300, 600],
+			default: 180,
+			// SSH 接続中は接続先で実行されるため、接続先ごとにログ量が違いうる executablePath と
+			// 同じ理由でマシンスコープにする。既定プロファイル以外でも shared process から読める
+			// よう APPLICATION_MACHINE にしてある(素の MACHINE だと既定プロファイル以外の
+			// settings.json に書かれた値を shared process 側の ConfigurationService が見に行けない)。
+			scope: ConfigurationScope.APPLICATION_MACHINE,
+			enumDescriptions: [
+				localize('paradis.ccusage.execTimeoutSeconds.60', "60 seconds."),
+				localize('paradis.ccusage.execTimeoutSeconds.120', "2 minutes."),
+				localize('paradis.ccusage.execTimeoutSeconds.180', "3 minutes (default)."),
+				localize('paradis.ccusage.execTimeoutSeconds.300', "5 minutes."),
+				localize('paradis.ccusage.execTimeoutSeconds.600', "10 minutes."),
+			],
+			markdownDescription: localize('paradis.ccusage.execTimeoutSeconds', "Timeout for a single `ccusage` invocation. `ccusage` scans the full session log history on every run, so this may need to be increased if you have a large amount of history (Claude Code / Codex / etc. logs)."),
 		},
 	},
 });

@@ -105,6 +105,25 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 		label: localize('paradis.usage.ccusageStatusBar', "今日の AI コストをステータスバーに表示"),
 	},
 	{
+		key: 'paradis.ccusage.execTimeoutSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.usage.ccusageExecTimeout', "ccusage の実行タイムアウト"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.usage.ccusageExecTimeoutDesc', "ログの量が多いと集計に時間がかかります。取得できない場合は延ばしてください。"),
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.usage.ccusageExecTimeout60', "60秒") },
+			// allow-any-unicode-next-line
+			{ value: 120, label: localize('paradis.usage.ccusageExecTimeout120', "2分") },
+			// allow-any-unicode-next-line
+			{ value: 180, label: localize('paradis.usage.ccusageExecTimeout180', "3分（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 300, label: localize('paradis.usage.ccusageExecTimeout300', "5分") },
+			// allow-any-unicode-next-line
+			{ value: 600, label: localize('paradis.usage.ccusageExecTimeout600', "10分") },
+		],
+	},
+	{
 		key: 'paradis.githubMetrics.statusBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.usage.ghStatusBar', "GitHub API の残量をステータスバーに表示"),

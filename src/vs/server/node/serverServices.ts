@@ -441,7 +441,7 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 
 		// PARA-PATCH: the agents run here while a client is connected, so what they used is
 		// recorded in this machine's home. Counting it on the client side misses all of it.
-		disposables.add(registerParadisCcusageForServer(socketServer, logService));
+		disposables.add(registerParadisCcusageForServer(socketServer, logService, configurationService));
 		disposables.add(registerParadisLimitsMonitorForServer(socketServer, logService));
 		// PARA-PATCH: rtk records what it saved on the machine that ran the command, so while a
 		// client is connected those savings pile up here, not on the machine showing the window.

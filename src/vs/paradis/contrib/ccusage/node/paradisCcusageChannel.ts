@@ -36,14 +36,26 @@ import {
 	IParadisCcusageService,
 	IParadisCcusageSessionRow,
 	PARADIS_CCUSAGE_CHANNEL,
+	PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS,
 	ParadisCcusageProjects,
 	ParadisCcusageWarmLeasePayload,
 	ParadisCcusageWarmTarget,
 	ParadisCcusageWarmTargetKind,
 } from '../common/paradisCcusage.js';
 
-/** ccusage 実行のタイムアウト。JSONL 全走査+価格取得があるため長め。 */
-const EXEC_TIMEOUT_MS = 60_000;
+/**
+ * ccusage 実行のタイムアウトの既定値。JSONL 全走査+価格取得があるため長め。
+ * 設定 `paradis.ccusage.execTimeoutSeconds` が明示されていればそちらを優先する
+ * (実測でセッションログが数十GBある環境では既定値でも足りないことがあるため)。
+ */
+const DEFAULT_EXEC_TIMEOUT_MS = 180_000;
+const MIN_EXEC_TIMEOUT_MS = 10_000;
+/**
+ * 上限を10分にしてあるのは、warm(定期先取り更新)が daily/blocks/session/projects の4種を
+ * 直列に実行するため(runWarmPass)。1本ごとの上限を長くすると「対象数 × タイムアウト」で
+ * 1周の所要が伸び、CACHE_TTL_MS を前提にした「周期内に必ず温め直す」不変条件が崩れる。
+ */
+const MAX_EXEC_TIMEOUT_MS = 10 * 60_000;
 /**
  * npx フォールバック時に使うバージョン。サプライチェーン対策として @latest ではなく
  * 実機検証済みのバージョンへ固定する(更新したい場合はローカルインストールか
@@ -159,7 +171,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 	constructor(
 		private readonly logService: ILogService,
-		configurationService?: IConfigurationService,
+		private readonly configurationService?: IConfigurationService,
 		args?: NativeParsedArgs,
 		private readonly execFile: typeof cp.execFile = cp.execFile,
 		private readonly now: () => number = Date.now,
@@ -190,6 +202,15 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			},
 		);
 		this.warmLeaseListener = this.warmLeaseTracker.onDidChange(() => this.syncWarmTimer());
+	}
+
+	/** 設定 paradis.ccusage.execTimeoutSeconds(未設定なら既定値)から実行タイムアウトを求める。 */
+	private getExecTimeoutMs(): number {
+		const seconds = this.configurationService?.getValue<number>(PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS);
+		if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+			return DEFAULT_EXEC_TIMEOUT_MS;
+		}
+		return Math.min(Math.max(seconds * 1000, MIN_EXEC_TIMEOUT_MS), MAX_EXEC_TIMEOUT_MS);
 	}
 
 	/** exec に渡す環境変数(process.env にログインシェル解決分をマージしたもの)。 */
@@ -256,7 +277,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private async runWarmPass(): Promise<void> {
 		const snapshots = this.warmLeaseTracker.activeTargets();
 		for (const snapshot of snapshots) {
-			// dispose 後は残りを回さない(1本60秒待つので、畳んだ後も子プロセスが続きうる)。
+			// dispose 後は残りを回さない(1本あたり既定180秒・設定次第で最大30分待つので、
+			// 畳んだ後も子プロセスが続きうる)。
 			if (this.disposed) {
 				return;
 			}
@@ -513,6 +535,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする。旧 Node の
 		// 自動委譲は CVE-2024-27980 対策で撤去済みで、ラップしないと EINVAL になる。
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(executable.command, fullArgs) : undefined;
+		const timeoutMs = this.getExecTimeoutMs();
 		return new Promise<string>((resolve, reject) => {
 			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
 			execution.child = this.execFile(shimInvocation?.file ?? executable.command, shimInvocation?.args ?? fullArgs, {
@@ -526,7 +549,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				const timedOut = execution.tracked?.timedOut === true;
 				execution.tracked?.dispose();
 				if (err || timedOut) {
-					const message = stderr?.trim() || (timedOut ? `command timed out after ${EXEC_TIMEOUT_MS}ms` : err!.message);
+					const message = stderr?.trim() || (timedOut ? `command timed out after ${timeoutMs}ms` : err!.message);
 					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${message}`);
 					// 実行自体に失敗した場合は次回に別の候補を試せるようキャッシュを破棄する
 					this.resolved = undefined;
@@ -541,7 +564,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				}
 			});
 			if (!execution.completed && execution.child) {
-				execution.tracked = this.childProcesses.track(execution.child, EXEC_TIMEOUT_MS);
+				execution.tracked = this.childProcesses.track(execution.child, timeoutMs);
 			}
 		});
 	}
@@ -776,11 +799,13 @@ function isExactPlainRecord(value: unknown, expectedKeys: readonly string[]): va
  * 手元で数えるとその分がまるごと抜ける。同じチャネルを接続先にも生やし、繋いでいるウィンドウは
  * そちらへ聞く。
  *
- * 設定と起動引数は渡さない（どちらも省略可で、シェル環境の解決だけに使う）。接続先には
- * このアプリの設定も引数も無いため、既定の解決に任せる。
+ * 設定は接続先のマシン設定（REH の machineSettingsResource）を渡す。実行タイムアウトは
+ * マシンスコープの設定で、接続先のログ量に応じて延ばせる必要があるため（渡さないと接続先だけ
+ * 既定値に固定され、設定画面から書いた値が誰にも読まれない）。起動引数は渡さない: シェル環境の
+ * 解決は設定と引数の両方が揃ったときだけ行うので、接続先では既定の解決のままになる。
  */
-export function registerParadisCcusageForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
-	const service = new ParadisCcusageService(logService);
+export function registerParadisCcusageForServer<TContext>(server: IPCServer<TContext>, logService: ILogService, configurationService?: IConfigurationService): IDisposable {
+	const service = new ParadisCcusageService(logService, configurationService);
 	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel<TContext>(service));
 	return { dispose: () => service.dispose() };
 }

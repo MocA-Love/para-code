@@ -7,7 +7,9 @@ import assert from 'assert';
 import * as cp from 'child_process';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS } from '../../common/paradisCcusage.js';
 import { ParadisCcusageService } from '../../node/paradisCcusageChannel.js';
 
 suite('ParadisCcusage process lifecycle', () => {
@@ -15,7 +17,51 @@ suite('ParadisCcusage process lifecycle', () => {
 
 	teardown(() => sinon.restore());
 
-	test('tree-kills at 60 seconds and classifies the explicit deadline without an offline retry', async () => {
+	/** 設定値ごとに、実際に子プロセスが tree-kill されるまでの経過時間(ms)を測る。 */
+	async function measureDeadline(configuredValue: unknown): Promise<number | undefined> {
+		const clock = sinon.useFakeTimers();
+		const kill = sinon.spy(() => true);
+		const execFile = ((_file: string, _args: readonly string[], _options: cp.ExecFileOptionsWithStringEncoding, _cb: unknown) => {
+			return { pid: undefined, exitCode: null, signalCode: null, kill } as unknown as cp.ChildProcess;
+		}) as unknown as typeof cp.execFile;
+		const configurationService = new TestConfigurationService({ [PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS]: configuredValue });
+		const service = new ParadisCcusageService(new NullLogService(), configurationService, undefined, execFile, () => clock.now);
+
+		const pending = service.fetchDaily({ executablePath: '/test/ccusage' });
+		pending.catch(() => undefined);
+		let killedAt: number | undefined;
+		// 上限(10分)を超えて回し、どこで打ち切られたかを見る。
+		while (clock.now <= 11 * 60_000) {
+			if (kill.callCount > 0) {
+				killedAt = clock.now;
+				break;
+			}
+			await clock.tickAsync(1_000);
+		}
+		service.dispose();
+		clock.restore();
+		return killedAt;
+	}
+
+	test('derives the execution deadline from the setting, clamped to 10 seconds and 10 minutes', async () => {
+		assert.deepStrictEqual({
+			configured: await measureDeadline(300),
+			belowMinimum: await measureDeadline(3),
+			aboveMaximum: await measureDeadline(9_999),
+			negative: await measureDeadline(-5),
+			notANumber: await measureDeadline('600'),
+			unset: await measureDeadline(undefined),
+		}, {
+			configured: 300_000,
+			belowMinimum: 10_000,
+			aboveMaximum: 10 * 60_000,
+			negative: 180_000,
+			notANumber: 180_000,
+			unset: 180_000,
+		});
+	});
+
+	test('tree-kills at the default 180 second timeout and classifies the explicit deadline without an offline retry', async () => {
 		const clock = sinon.useFakeTimers();
 		const kill = sinon.spy(() => true);
 		let callback: ((error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) | undefined;
@@ -38,7 +84,9 @@ suite('ParadisCcusage process lifecycle', () => {
 		while (!callback) {
 			await Promise.resolve();
 		}
-		await clock.tickAsync(60_000);
+		await clock.tickAsync(179_999);
+		assert.strictEqual(kill.callCount, 0, 'the deadline must not fire before the configured default');
+		await clock.tickAsync(1);
 		assert.strictEqual(kill.callCount, 1);
 		assert.strictEqual(timeoutOption, undefined);
 
@@ -63,7 +111,7 @@ suite('ParadisCcusage process lifecycle', () => {
 		while (callbacks.length === 0) {
 			await Promise.resolve();
 		}
-		await clock.tickAsync(60_000);
+		await clock.tickAsync(180_000);
 		callbacks[0](null, JSON.stringify({ daily: [{ period: 'late' }] }), '');
 		await assert.rejects(expired, /timed out/);
 
@@ -87,7 +135,7 @@ suite('ParadisCcusage process lifecycle', () => {
 		const service = new ParadisCcusageService(new NullLogService(), undefined, undefined, execFile, () => clock.now);
 
 		await service.fetchDaily({ executablePath: '/test/ccusage' });
-		await clock.tickAsync(60_000);
+		await clock.tickAsync(180_000);
 		assert.deepStrictEqual({ kills: kill.callCount, timers: clock.countTimers() }, { kills: 0, timers: 0 });
 		service.dispose();
 	});
@@ -116,7 +164,7 @@ suite('ParadisCcusage process lifecycle', () => {
 			await Promise.resolve();
 		}
 		service.dispose();
-		await clock.tickAsync(60_000);
+		await clock.tickAsync(180_000);
 		assert.deepStrictEqual({ kills: kills.map(kill => kill.callCount), timers: clock.countTimers() }, { kills: [0, 1, 1], timers: 0 });
 		void active;
 		void anotherActive;

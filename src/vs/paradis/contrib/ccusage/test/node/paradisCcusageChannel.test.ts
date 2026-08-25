@@ -449,7 +449,7 @@ suite('ParadisCcusageService', () => {
 
 	test('does not reset three-failure suppression when the same target renews', async () => {
 		const timeout = Object.assign(new Error('timed out'), { killed: false });
-		const { clock, invocations, service } = createService(() => ({ error: timeout, stderr: 'timed out', delayMs: 60_000 }));
+		const { clock, invocations, service } = createService(() => ({ error: timeout, stderr: 'timed out', delayMs: 180_000 }));
 		const channel = new ParadisCcusageChannel(service);
 		const payload = { ownerId: 'status-owner', active: true, targets: [dailyWarmTarget] };
 
