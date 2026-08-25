@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- 作業場所は /home/yuasa/github/para-code-audit-fixes-20260824 とし、main 側の既存未追跡ファイルや他担当の変更へ触れない。
+- 作業場所は /home/user/github/para-code-audit-fixes-20260824 とし、main 側の既存未追跡ファイルや他担当の変更へ触れない。
 - 実装 baseline は監査済み origin/main 8c5bd783f57008a6347eaa18ca8d3730983ba6b8 とし、実装開始時に origin/main がさらに更新されていればその最新 commit まで取り込んだうえで、branch が監査基準を含むことを確認する。
 - 各 Task は記載順に test-first で進める。RED を観測する前に、その Task の production code を変更しない。
 - 各 Task の最小実装後に対象テストを GREEN にし、その Task の列挙ファイルだけを原因単位で commit する。push と PR 作成はこの計画の実装範囲外とする。
