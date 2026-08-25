@@ -1375,6 +1375,7 @@ function snapshotProjection(
 		maximumCharacters: Math.min(renderLimits.inputCharacters, renderLimits.outputCharacters),
 		maximumUtf8Bytes: Math.min(renderLimits.inputUtf8Bytes, renderLimits.outputUtf8Bytes),
 	};
+	const diagonalCache = new WeakMap<object, IParadisDiagonalBorder>();
 	let rowCount = 0;
 	let cellCount = 0;
 	const diagnosticSheets: IParadisWorkbookData['sheets'][number][] = [];
@@ -1401,9 +1402,10 @@ function snapshotProjection(
 				const cell = projectDataRecord(cellValue, [
 					'value', 'style', 'colSpan', 'rowSpan', 'hidden', 'wrapText', 'verticalText', 'shrinkToFit', 'richText', 'diagonal', 'dataValidation',
 				], 11, budget);
-				const diagonal = cell.diagonal === undefined ? undefined : snapshotProjectionDiagonal(cell.diagonal, budget);
-				if (diagonal) {
-					chargeOwnedRenderDiagonal(diagonal, cloneBudget, checkpoint);
+				const diagonalSnapshot = cell.diagonal === undefined ? undefined : snapshotProjectionDiagonal(cell.diagonal, budget, diagonalCache);
+				const diagonal = diagonalSnapshot?.value;
+				if (diagonalSnapshot?.owned) {
+					chargeOwnedRenderDiagonal(diagonalSnapshot.value, cloneBudget, checkpoint);
 				}
 				const value = ownedString(cell.value, budget);
 				cloneBudget.characters = addRenderCloneBudget(cloneBudget.characters, value.length, cloneBudget.maximumCharacters);
@@ -1659,9 +1661,20 @@ function boundedUtf8Length(value: string, checkpoint: () => void): number {
 	return bytes;
 }
 
-function snapshotProjectionDiagonal(value: unknown, budget: OwnershipBudget): IParadisDiagonalBorder {
+function snapshotProjectionDiagonal(
+	value: unknown,
+	budget: OwnershipBudget,
+	cache: WeakMap<object, IParadisDiagonalBorder>,
+): { readonly value: IParadisDiagonalBorder; readonly owned: boolean } {
+	if (!value || typeof value !== 'object') {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	const cached = cache.get(value);
+	if (cached) {
+		return { value: cached, owned: false };
+	}
 	const record = projectDataRecord(value, ['up', 'down', 'style', 'color', 'rawStyle', 'rawColor'], 6, budget);
-	return {
+	const result: IParadisDiagonalBorder = {
 		up: ownedBoolean(record.up),
 		down: ownedBoolean(record.down),
 		style: ownedString(record.style, budget),
@@ -1669,6 +1682,8 @@ function snapshotProjectionDiagonal(value: unknown, budget: OwnershipBudget): IP
 		...(record.rawStyle !== undefined ? { rawStyle: ownedString(record.rawStyle, budget) } : {}),
 		...(record.rawColor !== undefined ? { rawColor: snapshotSpreadsheetColor(record.rawColor, budget) } : {}),
 	};
+	cache.set(value, result);
+	return { value: result, owned: true };
 }
 
 function readMonotonicClock(now: () => number): number {
