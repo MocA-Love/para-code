@@ -64,14 +64,6 @@
 	flex: none;
 }
 
-.paradis-usage-dashboard .pud-subtitle {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
 .paradis-usage-dashboard .pud-refresh {
 	margin-left: auto;
 	flex: none;

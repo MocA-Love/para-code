@@ -428,7 +428,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			const message = dom.append(this.body, $('.paradis-ccusage-message'));
 			dom.append(message, $(`span${ThemeIcon.asCSSSelector(Codicon.loading)}.codicon-modifier-spin`));
 			message.appendChild(this.body.ownerDocument.createTextNode(
-				localize('paradis.ccusage.loading', "Collecting usage data via ccusage… The first run may take a while.")));
+				localize('paradis.ccusage.loading', "ccusage でデータを集計しています… 初回は少し時間がかかることがあります")));
 		}
 		try {
 			this.data = await this.client.fetchDashboard(bypassCache);
