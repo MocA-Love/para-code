@@ -525,10 +525,51 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		strictEqual(snapshot.projectionDiagnostics.some(diagnostic => diagnostic.kind === 'valueMismatch' && diagnostic.cellAddress === 'A1'), false);
 	});
 
+	test('Node adapter owns stable bytes before any inventory reflection', async () => {
+		const fixture = await createSemanticFixture();
+		const callerBytes = fixture.bytes.slice();
+		const originalHash = rawSha256(callerBytes);
+		let mutated = false;
+		const inventory = new Proxy(fixture.inventory, {
+			getOwnPropertyDescriptor: (target, property) => {
+				if (!mutated) {
+					mutated = true;
+					callerBytes[0] ^= 0xff;
+				}
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+
+		const snapshot = await parseSpreadsheetSemanticNode(callerBytes, inventory, CancellationToken.None);
+		strictEqual(mutated, true);
+		strictEqual(rawSha256(callerBytes) === originalHash, false);
+		deepStrictEqual(snapshot.sheets[0].cells.get('A1')?.rawValue, { present: true, text: '1' });
+		strictEqual(snapshot.styles.borders[1].diagonal?.style, 'dashDot');
+		deepStrictEqual(snapshot.styles.borders[1].diagonal?.color, { kind: 'rgb', rgb: 'FFFF0000' });
+	});
+
+	test('Node adapter does not enumerate caller records with ownKeys', async () => {
+		const fixture = await createSemanticFixture();
+		let ownKeysCalls = 0;
+		const inventory = new Proxy(fixture.inventory, {
+			ownKeys: () => { ownKeysCalls++; throw new Error('/private/unbounded-own-keys'); },
+		});
+		const options = new Proxy({}, {
+			ownKeys: () => { ownKeysCalls++; throw new Error('/private/unbounded-option-keys'); },
+		});
+
+		const snapshot = await parseSpreadsheetSemanticNode(fixture.bytes, inventory, CancellationToken.None, options);
+		deepStrictEqual(snapshot.sheets.map(sheet => sheet.name), ['Matrix', 'Archive']);
+		strictEqual(ownKeysCalls, 0);
+	});
+
 	test('Node adapter sanitizes ownership errors before raw Proxy details escape', async () => {
 		const fixture = await createSemanticFixture();
 		const inventory = new Proxy(fixture.inventory, {
-			ownKeys: () => { throw new Error('/private/node/ownership-secret'); },
+			getOwnPropertyDescriptor: (target, property) => {
+				if (property === 'format') { throw new Error('/private/node/ownership-secret'); }
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
 		});
 
 		await rejects(
@@ -541,7 +582,12 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		const poisoned = new ParadisOfficePackageError('zipBomb');
 		poisoned.stack = '/private/node/poisoned-package-error';
 		Object.defineProperty(poisoned, 'secret', { value: '/private/node/custom-field' });
-		const poisonedInventory = new Proxy(fixture.inventory, { ownKeys: () => { throw poisoned; } });
+		const poisonedInventory = new Proxy(fixture.inventory, {
+			getOwnPropertyDescriptor: (target, property) => {
+				if (property === 'format') { throw poisoned; }
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
 		await rejects(
 			parseSpreadsheetSemanticNode(fixture.bytes, poisonedInventory, CancellationToken.None),
 			error => error instanceof ParadisOfficePackageError
@@ -621,6 +667,44 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			parseSpreadsheetSemanticNode(oversized, fixture.inventory),
 			error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded',
 		);
+	});
+
+	test('Node adapter rejects unstable or caller-programmable byte stores before reflection', async () => {
+		const fixture = await createSemanticFixture();
+		let inventoryReads = 0;
+		const inventory = new Proxy(fixture.inventory, {
+			getOwnPropertyDescriptor: (target, property) => {
+				inventoryReads++;
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		const invalidBytes: Uint8Array[] = [];
+		if (typeof SharedArrayBuffer !== 'undefined') {
+			const shared = new Uint8Array(new SharedArrayBuffer(fixture.bytes.byteLength));
+			shared.set(fixture.bytes);
+			invalidBytes.push(shared);
+		}
+		const resizableBuffer = new ArrayBuffer(fixture.bytes.byteLength, { maxByteLength: fixture.bytes.byteLength + 1024 });
+		const resizable = new Uint8Array(resizableBuffer);
+		resizable.set(fixture.bytes);
+		invalidBytes.push(resizable);
+		const detachedBuffer = fixture.bytes.slice().buffer;
+		const detached = new Uint8Array(detachedBuffer);
+		structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+		invalidBytes.push(detached);
+		for (const ownKey of ['constructor', 'byteLength', 'slice'] as const) {
+			const bytes = fixture.bytes.slice();
+			Object.defineProperty(bytes, ownKey, { value: ownKey === 'constructor' ? { [Symbol.species]: () => bytes } : undefined });
+			invalidBytes.push(bytes);
+		}
+		const ownSpecies = fixture.bytes.slice();
+		Object.defineProperty(ownSpecies, Symbol.species, { value: () => ownSpecies });
+		invalidBytes.push(ownSpecies);
+
+		for (const bytes of invalidBytes) {
+			await rejects(parseSpreadsheetSemanticNode(bytes, inventory), /invalid/);
+		}
+		strictEqual(inventoryReads, 0);
 	});
 
 	test('rejects prototype-key and unknown runtime budget profiles', async () => {
@@ -994,7 +1078,7 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		strictEqual(noisyChecks - baselineChecks >= 55, true);
 	});
 
-	test('rejects oversized inventory shapes before cloning attacker-controlled entries', async () => {
+	test('rejects oversized inventory arrays before cloning and ignores unprojected keys', async () => {
 		const fixture = await createSemanticFixture();
 		let partReads = 0;
 		const observedPart = new Proxy(fixture.inventory.parts[0], {
@@ -1028,17 +1112,16 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			/limitExceeded/,
 		);
 
+		let unknownReads = 0;
 		const oversizedKeys = { ...fixture.inventory };
 		for (let index = 0; index < 64; index++) {
-			Object.defineProperty(oversizedKeys, `attackerKey${index}`, { enumerable: true, value: index });
+			Object.defineProperty(oversizedKeys, `attackerKey${index}`, { enumerable: true, get: () => { unknownReads++; throw new Error('must not read'); } });
 		}
-		await rejects(
-			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), oversizedKeys, CancellationToken.None),
-			/limitExceeded/,
-		);
+		await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), oversizedKeys, CancellationToken.None);
+		strictEqual(unknownReads, 0);
 	});
 
-	test('rejects oversized nested inventory records without invoking their value getters', async () => {
+	test('does not enumerate oversized unprojected nested record keys', async () => {
 		const fixture = await createSemanticFixture();
 		let reads = 0;
 		const inventory: ParadisOfficeInventory = {
@@ -1046,10 +1129,7 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			security: recordWithExtraKeys(fixture.inventory.security, () => reads++),
 		};
 
-		await rejects(
-			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), inventory, CancellationToken.None),
-			/limitExceeded/,
-		);
+		await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), inventory, CancellationToken.None);
 		strictEqual(reads, 0);
 	});
 
@@ -1091,9 +1171,11 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		}
 	});
 
-	test('rejects a single unknown projection key inside the per-record cap', async () => {
+	test('does not enumerate or read an unknown projection key', async () => {
 		const fixture = await createSemanticFixture();
-		const cell = { value: '1', style: {}, attackerKey: true };
+		let unknownReads = 0;
+		const cell = { value: '1', style: {} };
+		Object.defineProperty(cell, 'attackerKey', { enumerable: true, get: () => { unknownReads++; throw new Error('must not read'); } });
 		const projection: IParadisWorkbookData = {
 			sheets: [{
 				name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: [], truncated: false,
@@ -1101,10 +1183,8 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			}],
 		};
 
-		await rejects(
-			parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, { projection }),
-			/unsafe/,
-		);
+		await parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, { projection });
+		strictEqual(unknownReads, 0);
 	});
 
 	test('enforces the aggregate ownership node budget across an otherwise bounded graph', async () => {
@@ -1481,6 +1561,33 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 				/malformed/,
 			);
 		}
+	});
+
+	test('requires exactly one non-empty workbook sheets container', async () => {
+		const missing = workbookXml.replace(/\s*<sheets>[\s\S]*?<\/sheets>/, '');
+		const empty = workbookXml.replace(/<sheets>[\s\S]*?<\/sheets>/, '<sheets/>');
+		for (const workbook of [missing, empty]) {
+			const fixture = await createSemanticFixture({ workbook });
+			await rejects(
+				parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory),
+				/malformed/,
+			);
+		}
+	});
+
+	test('requires exactly one worksheet sheetData while allowing it to be empty', async () => {
+		const missingSheetData = worksheetXml.replace(/\s*<sheetData>[\s\S]*?<\/sheetData>/, '');
+		const missingFixture = await createSemanticFixture({ worksheet: missingSheetData });
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(missingFixture.bytes), missingFixture.inventory),
+			/malformed/,
+		);
+
+		const emptySheetData = worksheetXml.replace(/<sheetData>[\s\S]*?<\/sheetData>/, '<sheetData/>');
+		const emptyFixture = await createSemanticFixture({ worksheet: emptySheetData });
+		const snapshot = await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(emptyFixture.bytes), emptyFixture.inventory);
+		strictEqual(snapshot.sheets[0].cells.size, 0);
+		strictEqual(snapshot.sheets[0].rows.size, 0);
 	});
 
 	test('counts unknown attributes on semantic root and leaf elements', async () => {

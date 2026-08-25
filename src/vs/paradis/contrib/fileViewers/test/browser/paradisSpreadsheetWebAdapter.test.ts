@@ -54,6 +54,31 @@ suite('ParadisSpreadsheetWebAdapter', () => {
 		strictEqual(snapshot.projectionDiagnostics.some(diagnostic => diagnostic.kind === 'valueMismatch' && diagnostic.cellAddress === 'A1'), false);
 	});
 
+	test('owns stable bytes before any inventory reflection and never calls ownKeys', async () => {
+		const bytes = await spreadsheetFixture();
+		const inventory = await inspectOfficePackage(
+			await createParadisOfficeWebArchive(bytes), PARADIS_OFFICE_BUDGET_PROFILES.browser, CancellationToken.None,
+		);
+		const callerBytes = bytes.slice();
+		let mutated = false;
+		let ownKeysCalls = 0;
+		const observedInventory = new Proxy(inventory, {
+			ownKeys: () => { ownKeysCalls++; throw new Error('/private/unbounded-web-own-keys'); },
+			getOwnPropertyDescriptor: (target, property) => {
+				if (!mutated) {
+					mutated = true;
+					callerBytes[0] ^= 0xff;
+				}
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+
+		const snapshot = await parseSpreadsheetSemanticWeb(callerBytes, observedInventory, CancellationToken.None);
+		deepStrictEqual(snapshot.sheets[0].cells.get('A1')?.rawValue, { present: true, text: '1' });
+		strictEqual(mutated, true);
+		strictEqual(ownKeysCalls, 0);
+	});
+
 	test('sanitizes ownership errors before raw Proxy details escape', async () => {
 		const bytes = await spreadsheetFixture();
 		const inventory = await inspectOfficePackage(
@@ -62,7 +87,10 @@ suite('ParadisSpreadsheetWebAdapter', () => {
 			CancellationToken.None,
 		);
 		const unsafeInventory = new Proxy(inventory, {
-			ownKeys: () => { throw new Error('/private/web/ownership-secret'); },
+			getOwnPropertyDescriptor: (target, property) => {
+				if (property === 'format') { throw new Error('/private/web/ownership-secret'); }
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
 		});
 
 		await rejects(
@@ -75,7 +103,12 @@ suite('ParadisSpreadsheetWebAdapter', () => {
 		const poisoned = new ParadisOfficePackageError('zipBomb');
 		poisoned.stack = '/private/web/poisoned-package-error';
 		Object.defineProperty(poisoned, 'secret', { value: '/private/web/custom-field' });
-		const poisonedInventory = new Proxy(inventory, { ownKeys: () => { throw poisoned; } });
+		const poisonedInventory = new Proxy(inventory, {
+			getOwnPropertyDescriptor: (target, property) => {
+				if (property === 'format') { throw poisoned; }
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
 		await rejects(
 			parseSpreadsheetSemanticWeb(bytes, poisonedInventory, CancellationToken.None),
 			error => error instanceof ParadisOfficePackageError
@@ -133,6 +166,45 @@ suite('ParadisSpreadsheetWebAdapter', () => {
 			parseSpreadsheetSemanticWeb(oversized, inventory, CancellationToken.None),
 			error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded',
 		);
+	});
+
+	test('rejects shared, resizable, detached, and species-programmable bytes before reflection', async () => {
+		const bytes = await spreadsheetFixture();
+		const rawInventory = await inspectOfficePackage(
+			await createParadisOfficeWebArchive(bytes), PARADIS_OFFICE_BUDGET_PROFILES.browser, CancellationToken.None,
+		);
+		let inventoryReads = 0;
+		const inventory = new Proxy(rawInventory, {
+			getOwnPropertyDescriptor: (target, property) => {
+				inventoryReads++;
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		const invalidBytes: Uint8Array[] = [];
+		if (typeof SharedArrayBuffer !== 'undefined') {
+			const shared = new Uint8Array(new SharedArrayBuffer(bytes.byteLength));
+			shared.set(bytes);
+			invalidBytes.push(shared);
+		}
+		const resizableBuffer = new ArrayBuffer(bytes.byteLength, { maxByteLength: bytes.byteLength + 1024 });
+		const resizable = new Uint8Array(resizableBuffer);
+		resizable.set(bytes);
+		invalidBytes.push(resizable);
+		const detachedBuffer = bytes.slice().buffer;
+		const detached = new Uint8Array(detachedBuffer);
+		structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+		invalidBytes.push(detached);
+		const speciesBytes = bytes.slice();
+		Object.defineProperty(speciesBytes, 'constructor', { value: { [Symbol.species]: () => speciesBytes } });
+		invalidBytes.push(speciesBytes);
+		const ownSpecies = bytes.slice();
+		Object.defineProperty(ownSpecies, Symbol.species, { value: () => ownSpecies });
+		invalidBytes.push(ownSpecies);
+
+		for (const candidate of invalidBytes) {
+			await rejects(parseSpreadsheetSemanticWeb(candidate, inventory), /invalid/);
+		}
+		strictEqual(inventoryReads, 0);
 	});
 });
 
