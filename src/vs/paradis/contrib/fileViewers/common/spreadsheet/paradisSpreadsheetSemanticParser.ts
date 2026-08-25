@@ -22,7 +22,8 @@ import {
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
 } from '../office/paradisOfficeArchive.js';
-import { diagnoseSpreadsheetProjection, type IParadisDiagonalBorder, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
+import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisDiagonalBorder, type IParadisRowData, type IParadisSheetData, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
+import { formatSpreadsheetValue, type ParadisFormattedCellValue, type ParadisSpreadsheetNumberFormatContext } from './paradisSpreadsheetNumberFormat.js';
 import type {
 	ParadisSemanticBorder,
 	ParadisSemanticBorderEdge,
@@ -132,11 +133,287 @@ export interface ParadisSpreadsheetSemanticParseOptions {
 	readonly limits?: Partial<ParadisSpreadsheetSemanticLimits>;
 	readonly now?: () => number;
 	readonly deadlineMilliseconds?: number;
+	readonly workbookLocale?: string;
+	readonly applicationLocale?: string;
 }
 
 export interface ParadisSpreadsheetOwnedSemanticInput {
 	readonly inventory: ParadisOfficeInventory;
 	readonly options: ParadisSpreadsheetSemanticParseOptions;
+}
+
+export interface ParadisSpreadsheetRenderFormatDiagnostic extends ParadisFormattedCellValue {
+	readonly sheetName: string;
+	readonly cellAddress: string;
+}
+
+export interface ParadisSpreadsheetFormattedRenderProjection {
+	readonly projection: IParadisWorkbookData;
+	/** Projection diagnostics are captured against the raw projection before display formatting. */
+	readonly diagnostics: ParadisSpreadsheetSnapshot['projectionDiagnostics'];
+	readonly formatDiagnostics: readonly ParadisSpreadsheetRenderFormatDiagnostic[];
+	readonly formatDiagnosticsTruncated: boolean;
+}
+
+export interface ParadisSpreadsheetRenderProjectionLimits {
+	readonly sheets: number;
+	readonly rows: number;
+	readonly cells: number;
+	readonly formatDiagnostics: number;
+}
+
+export interface ParadisSpreadsheetSemanticResult extends ParadisSpreadsheetSnapshot {
+	readonly renderProjection?: IParadisWorkbookData;
+	readonly renderFormatDiagnostics?: readonly ParadisSpreadsheetRenderFormatDiagnostic[];
+	readonly renderFormatDiagnosticsTruncated?: boolean;
+}
+
+const defaultRenderProjectionLimits: ParadisSpreadsheetRenderProjectionLimits = {
+	sheets: 65_535,
+	rows: 5_000_000,
+	cells: 5_000_000,
+	formatDiagnostics: 10_000,
+};
+
+/**
+ * Builds a display-only projection. Raw cell identity, formula/cache fields, style refs, borders,
+ * diagonal provenance, and the diagnostics established against the raw projection are untouched.
+ */
+export function formatSpreadsheetRenderProjection(
+	snapshot: ParadisSpreadsheetSnapshot,
+	projection: IParadisWorkbookData,
+	context: ParadisSpreadsheetNumberFormatContext = {},
+	limitOverrides: Partial<ParadisSpreadsheetRenderProjectionLimits> = {},
+): ParadisSpreadsheetFormattedRenderProjection {
+	const diagnostics = snapshot.projectionDiagnostics;
+	const formatContext = ownRenderFormatContext(context, snapshot.date1904);
+	// Validate/copy the formatter boundary, and observe cancellation before any projection traversal.
+	formatSpreadsheetValue(null, 0, formatContext);
+	const limits = resolveRenderProjectionLimits(limitOverrides);
+	const now = formatContext.now ?? Date.now;
+	const deadlineMilliseconds = formatContext.deadlineMilliseconds ?? 60_000;
+	const hardDeadline = StopWatch.create(true);
+	const started = readMonotonicClock(now);
+	let lastClock = started;
+	let checkpointCount = 0;
+	const checkpoint = (force = false): void => {
+		checkpointCount++;
+		if (!force && checkpointCount % 128 !== 0) {
+			return;
+		}
+		try {
+			throwIfParadisOfficeCancelled(formatContext.cancellationToken);
+		} catch (error) {
+			throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+		}
+		if (hardDeadline.elapsed() > deadlineMilliseconds) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		const currentClock = readMonotonicClock(now);
+		if (currentClock < lastClock) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		lastClock = currentClock;
+		if (currentClock - started > deadlineMilliseconds) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+	};
+	checkpoint(true);
+	const formatDiagnostics: ParadisSpreadsheetRenderFormatDiagnostic[] = [];
+	let formatDiagnosticsTruncated = false;
+	let sheetCount = 0;
+	let rowCount = 0;
+	let cellCount = 0;
+	const semanticSheetsByName = new Map(snapshot.sheets.map(sheet => [sheet.name, sheet]));
+	const sheets = projection.sheets.map((sheet, sheetIndex): IParadisSheetData => {
+		checkpoint();
+		if (++sheetCount > limits.sheets) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		const semanticSheet = snapshot.sheets[sheetIndex]?.name === sheet.name ? snapshot.sheets[sheetIndex] : semanticSheetsByName.get(sheet.name);
+		if (!semanticSheet) {
+			return sheet;
+		}
+		let sheetChanged = false;
+		const rows = sheet.rows.map((row): IParadisRowData => {
+			checkpoint();
+			if (++rowCount > limits.rows) {
+				throw new ParadisOfficePackageError('limitExceeded');
+			}
+			let rowChanged = false;
+			const cells = row.cells.map((cell, cellIndex): IParadisCellData => {
+				checkpoint();
+				if (++cellCount > limits.cells) {
+					throw new ParadisOfficePackageError('limitExceeded');
+				}
+				const column = sheet.minCol + cellIndex;
+				const cellAddress = formatCellAddress(row.excelRow, column);
+				const semanticCell = semanticSheet.cells.get(cellAddress);
+				if (!semanticCell) {
+					return cell;
+				}
+				const value = semanticDisplayValue(semanticCell);
+				if (value === undefined) {
+					return cell;
+				}
+				const numberFormat = semanticNumberFormat(snapshot, semanticCell);
+				const formatted = formatSpreadsheetValue(value, numberFormat, formatContext);
+				if (formatted.status === 'approximated') {
+					if (formatDiagnostics.length < limits.formatDiagnostics) {
+						formatDiagnostics.push({ sheetName: semanticSheet.name, cellAddress, ...formatted });
+					} else {
+						formatDiagnosticsTruncated = true;
+					}
+				}
+				if (formatted.text === cell.value) {
+					return cell;
+				}
+				rowChanged = true;
+				return { ...cell, value: formatted.text };
+			});
+			if (!rowChanged) {
+				return row;
+			}
+			sheetChanged = true;
+			return { ...row, cells };
+		});
+		return sheetChanged ? { ...sheet, rows } : sheet;
+	});
+	checkpoint(true);
+	return {
+		projection: sheets.some((sheet, index) => sheet !== projection.sheets[index]) ? { ...projection, sheets } : projection,
+		diagnostics,
+		formatDiagnostics,
+		formatDiagnosticsTruncated,
+	};
+}
+
+function resolveRenderProjectionLimits(overrides: Partial<ParadisSpreadsheetRenderProjectionLimits>): ParadisSpreadsheetRenderProjectionLimits {
+	const allowed = new Set(['sheets', 'rows', 'cells', 'formatDiagnostics']);
+	const record: Record<string, unknown> = Object.create(null);
+	try {
+		for (const key of Reflect.ownKeys(overrides)) {
+			if (typeof key !== 'string' || !allowed.has(key)) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			const descriptor = Object.getOwnPropertyDescriptor(overrides, key);
+			if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			record[key] = descriptor.value;
+		}
+	} catch (error) {
+		throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+	}
+	const result = { ...defaultRenderProjectionLimits };
+	for (const key of allowed as ReadonlySet<keyof ParadisSpreadsheetRenderProjectionLimits>) {
+		const value = record[key];
+		if (value === undefined) {
+			continue;
+		}
+		if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > defaultRenderProjectionLimits[key]) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		result[key] = value as number;
+	}
+	return result;
+}
+
+function ownRenderFormatContext(context: ParadisSpreadsheetNumberFormatContext, date1904: boolean): ParadisSpreadsheetNumberFormatContext {
+	try {
+		const allowed = new Set(['date1904', 'workbookLocale', 'applicationLocale', 'cancellationToken', 'now', 'deadlineMilliseconds', 'limits']);
+		const result: Record<string, unknown> = Object.create(null);
+		for (const key of Reflect.ownKeys(context)) {
+			if (typeof key !== 'string' || !allowed.has(key)) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			const descriptor = Object.getOwnPropertyDescriptor(context, key);
+			if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			result[key] = descriptor.value;
+		}
+		if (result.limits !== undefined) {
+			const limits = result.limits;
+			if (!limits || typeof limits !== 'object' || Array.isArray(limits)) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			const ownedLimits: Record<string, unknown> = Object.create(null);
+			for (const key of Reflect.ownKeys(limits)) {
+				if (typeof key !== 'string' || !['formatCharacters', 'sections', 'tokens', 'inputCharacters', 'outputCharacters'].includes(key)) {
+					throw new ParadisOfficePackageError('unsafe');
+				}
+				const descriptor = Object.getOwnPropertyDescriptor(limits, key);
+				if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+					throw new ParadisOfficePackageError('unsafe');
+				}
+				ownedLimits[key] = descriptor.value;
+			}
+			result.limits = ownedLimits;
+		}
+		result.date1904 = date1904;
+		return result as ParadisSpreadsheetNumberFormatContext;
+	} catch (error) {
+		if (error instanceof ParadisOfficePackageError) {
+			throw error;
+		}
+		throw new ParadisOfficePackageError('unsafe');
+	}
+}
+
+function semanticDisplayValue(cell: ParadisSemanticCell): number | string | boolean | null | undefined {
+	if (cell.storedType === 'formula') {
+		if (!cell.cachedResult?.present) {
+			return undefined;
+		}
+		return typedDisplayValue(cell, cell.cachedResult.type, cell.cachedResult.rawValue);
+	}
+	if (cell.storedType === 'blank') {
+		return null;
+	}
+	if (cell.storedType === 'string') {
+		return cell.text ?? (cell.rawValue?.present ? cell.rawValue.text : '');
+	}
+	if (cell.storedType === 'boolean') {
+		return cell.rawValue?.present ? cell.rawValue.text === '1' || cell.rawValue.text === 'true' : false;
+	}
+	if (cell.storedType === 'error' || cell.storedType === 'date') {
+		return undefined;
+	}
+	if (!cell.rawValue?.present) {
+		return undefined;
+	}
+	return cell.storedType === 'number' ? finiteSpreadsheetNumber(cell.rawValue.text) : cell.rawValue.text;
+}
+
+function typedDisplayValue(cell: ParadisSemanticCell, type: ParadisSemanticCachedResultType, rawValue: string): number | string | boolean | undefined {
+	switch (type) {
+		case 'number': return finiteSpreadsheetNumber(rawValue);
+		case 'boolean': return rawValue === '1' || rawValue === 'true';
+		case 'string': return cell.rawType === 's' ? undefined : rawValue;
+		case 'error': case 'date': return undefined;
+	}
+}
+
+function finiteSpreadsheetNumber(value: string): number {
+	if (value.length > 256 || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?$/.test(value)) {
+		throw new ParadisOfficePackageError('malformed');
+	}
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) {
+		throw new ParadisOfficePackageError('malformed');
+	}
+	return parsed;
+}
+
+function semanticNumberFormat(snapshot: ParadisSpreadsheetSnapshot, cell: ParadisSemanticCell): number | string {
+	const format = cell.effectiveStyleRef === undefined ? undefined : snapshot.styles.cellFormats[cell.effectiveStyleRef];
+	const id = format?.numberFormatId ?? 0;
+	const custom = snapshot.styles.numberFormats.find(candidate => candidate.id === id);
+	if (custom) {
+		return custom.code;
+	}
+	return id >= 0 && id <= 49 ? id : `[numFmtId:${id}]`;
 }
 
 interface OwnedSemanticContext extends ParadisSpreadsheetOwnedSemanticInput {
@@ -288,7 +565,7 @@ export async function parseSpreadsheetSemantic(
 	inventory: ParadisOfficeInventory,
 	token?: CancellationToken,
 	options: ParadisSpreadsheetSemanticParseOptions = {},
-): Promise<ParadisSpreadsheetSnapshot> {
+): Promise<ParadisSpreadsheetSemanticResult> {
 	let archiveDisposeAttempted = false;
 	try {
 		const markedContext = ownedSemanticContexts.get(inventory);
@@ -459,7 +736,7 @@ export async function parseSpreadsheetSemantic(
 		let projectionCells = 0;
 		let projectionSheets = 0;
 		let projectionRows = 0;
-		const result = ownedProjection
+		const result: ParadisSpreadsheetSemanticResult = ownedProjection
 			? {
 				...baseSnapshot,
 				projectionDiagnostics: diagnoseSpreadsheetProjection(baseSnapshot, ownedProjection, {
@@ -483,13 +760,41 @@ export async function parseSpreadsheetSemantic(
 			}
 			: baseSnapshot;
 		checkpoint(true);
+		const formattedProjection = ownedProjection ? formatSpreadsheetRenderProjection(
+			result,
+			ownedProjection,
+			{
+				date1904: result.date1904,
+				...(ownedOptions.workbookLocale ? { workbookLocale: ownedOptions.workbookLocale } : {}),
+				...(ownedOptions.applicationLocale ? { applicationLocale: ownedOptions.applicationLocale } : {}),
+				...(token ? { cancellationToken: token } : {}),
+				now,
+				deadlineMilliseconds: Math.max(0, Math.min(
+					deadlineMilliseconds - Math.ceil(context.hardDeadline.elapsed()),
+					deadlineMilliseconds - Math.ceil(lastClock - started),
+				)),
+			},
+			{
+				sheets: limits.projectionSheets,
+				rows: limits.projectionRows,
+				cells: limits.projectionCells,
+				formatDiagnostics: 10_000,
+			},
+		) : undefined;
+		const finalResult: ParadisSpreadsheetSemanticResult = formattedProjection ? {
+			...result,
+			renderProjection: formattedProjection.projection,
+			renderFormatDiagnostics: formattedProjection.formatDiagnostics,
+			renderFormatDiagnosticsTruncated: formattedProjection.formatDiagnosticsTruncated,
+		} : result;
+		checkpoint(true);
 		try {
 			archiveDisposeAttempted = true;
 			archive.dispose();
 		} catch {
 			throw new ParadisOfficePackageError('invalid');
 		}
-		return result;
+		return finalResult;
 	} catch (error) {
 		throw sanitizeSpreadsheetPackageError(error, 'malformed');
 	} finally {
@@ -687,7 +992,7 @@ function createOwnedSemanticContext(
 	};
 	const budget = new OwnershipBudget(checkpoint);
 	const inventoryRecord = projectInventoryEnvelope(inventory, budget);
-	const optionsRecord = projectDataRecord(options, ['projection', 'limits', 'now', 'deadlineMilliseconds'], 4, budget);
+	const optionsRecord = projectDataRecord(options, ['projection', 'limits', 'now', 'deadlineMilliseconds', 'workbookLocale', 'applicationLocale'], 6, budget);
 	const declaredProfile = ownedString(inventoryRecord.budgetProfile, budget);
 	if (executionProfile !== undefined && declaredProfile !== executionProfile) {
 		throw new ParadisOfficePackageError('unsafe');
@@ -706,10 +1011,17 @@ function createOwnedSemanticContext(
 	if (now !== undefined && typeof now !== 'function') {
 		throw new ParadisOfficePackageError('unsafe');
 	}
+	const workbookLocale = optionsRecord.workbookLocale === undefined ? undefined : ownedString(optionsRecord.workbookLocale, budget);
+	const applicationLocale = optionsRecord.applicationLocale === undefined ? undefined : ownedString(optionsRecord.applicationLocale, budget);
+	if ((workbookLocale?.length ?? 0) > 128 || (applicationLocale?.length ?? 0) > 128) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
 	const ownedOptions: ParadisSpreadsheetSemanticParseOptions = {
 		limits,
 		...(projection ? { projection } : {}),
 		...(now ? { now: now as () => number } : {}),
+		...(workbookLocale !== undefined ? { workbookLocale } : {}),
+		...(applicationLocale !== undefined ? { applicationLocale } : {}),
 		deadlineMilliseconds,
 	};
 	return {
