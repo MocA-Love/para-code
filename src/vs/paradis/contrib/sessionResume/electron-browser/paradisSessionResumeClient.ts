@@ -23,8 +23,6 @@ export interface IParadisResumeSpaceWithUri {
 	readonly name: string;
 	readonly uri: URI;
 	readonly current: boolean;
-	/** ワークツリーの場合、その親リポジトリの stateKey。リポジトリ自体は undefined（左ナビのツリー折りたたみに使う）。 */
-	readonly repositoryStateKey?: string;
 }
 
 export interface IParadisResumeListRequestWithUri {
