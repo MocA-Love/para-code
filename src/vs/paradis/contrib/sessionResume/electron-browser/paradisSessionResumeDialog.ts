@@ -70,6 +70,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private spaceNavCurrent: { button: HTMLButtonElement; count: HTMLElement } | undefined;
 	private railSpaceTree: HTMLElement | undefined;
 	private readonly spaceNavButtons = new Map<string, { button: HTMLButtonElement; count: HTMLElement }>();
+	/** ワークツリーを展開しているリポジトリの stateKey。updateSpaceNavOptions() は refresh() のたびに
+	 * ツリーを作り直す(DOMのクラスだけでは状態が消える)ため、開閉状態はここに持って復元する。 */
+	private readonly expandedRepositories = new Set<string>();
 	private readonly periodNavButtons = new Map<PeriodFilter, { button: HTMLButtonElement; count: HTMLElement }>();
 	private railSummary: HTMLElement | undefined;
 	private archivedInput: HTMLInputElement | undefined;
@@ -236,7 +239,22 @@ export class ParadisSessionResumeDialog extends Disposable {
 		// スペース一覧は refresh のたびに差し替わるため、クリックはツリー側で委譲して受ける。
 		this.railSpaceTree = dom.append(rail, $('.nav-tree'));
 		this._register(dom.addDisposableListener(this.railSpaceTree, dom.EventType.CLICK, event => {
-			const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('button[data-space-filter]');
+			const target = event.target as HTMLElement | null;
+			// ワークツリーの開閉トグルはフィルタ選択とは独立に扱う（updateSpaceNavOptions() が
+			// refresh() のたびにツリーを作り直すため、専用リスナーではなくここで委譲して受ける）。
+			const twistie = target?.closest<HTMLButtonElement>('button.nav-twistie[data-space-toggle]');
+			if (twistie) {
+				const stateKey = twistie.dataset.spaceToggle!;
+				const expanded = twistie.closest('.nav-tree-repo')?.classList.toggle('expanded') === true;
+				twistie.setAttribute('aria-expanded', String(expanded));
+				if (expanded) {
+					this.expandedRepositories.add(stateKey);
+				} else {
+					this.expandedRepositories.delete(stateKey);
+				}
+				return;
+			}
+			const button = target?.closest<HTMLButtonElement>('button[data-space-filter]');
 			if (!button) { return; }
 			this.spaceFilter = button.dataset.spaceFilter ?? 'all';
 			this.currentSearchMatchIndex = 0;
@@ -326,18 +344,72 @@ export class ParadisSessionResumeDialog extends Disposable {
 		return button;
 	}
 
+	/** ワークツリーをその親リポジトリへぶら下げる。repositoryStateKey で紐付けるため、collectSpaces() の並び順には依存しない
+	 * （将来 this.spaces がソートされても、親が見つからない孤児ワークツリーとして単独表示されるだけで消えない）。 */
+	private groupSpacesByRepository(): { repo: IParadisResumeSpaceWithUri; children: IParadisResumeSpaceWithUri[] }[] {
+		const groups = new Map<string, { repo: IParadisResumeSpaceWithUri; children: IParadisResumeSpaceWithUri[] }>();
+		for (const space of this.spaces) {
+			if (space.repositoryStateKey === undefined) {
+				groups.set(space.stateKey, { repo: space, children: [] });
+			}
+		}
+		for (const space of this.spaces) {
+			if (space.repositoryStateKey === undefined) {
+				continue;
+			}
+			const group = groups.get(space.repositoryStateKey);
+			if (group) {
+				group.children.push(space);
+			} else {
+				groups.set(space.stateKey, { repo: space, children: [] });
+			}
+		}
+		return [...groups.values()];
+	}
+
+	/** ワークツリーが多いリポジトリで一覧が埋まらないよう、既定で折りたたんだツリーとして描画する。開閉は railSpaceTree のクリック委譲で受ける。 */
 	private updateSpaceNavOptions(): void {
 		if (!this.railSpaceTree) {
 			return;
 		}
 		dom.clearNode(this.railSpaceTree);
 		this.spaceNavButtons.clear();
-		for (const space of this.spaces) {
-			const value = `${SPACE_FILTER_PREFIX}${space.stateKey}`;
-			const entry = this.createNavItem(this.railSpaceTree, space.name);
-			entry.button.title = space.name;
+		for (const group of this.groupSpacesByRepository()) {
+			const hasChildren = group.children.length > 0;
+			// 現在選択中のワークツリーが畳まれた中に隠れて「何で絞り込まれているか見えない」ことがないよう、
+			// そのグループだけは開閉状態(expandedRepositories)によらず強制的に展開する。
+			const selectedInGroup = group.children.some(child => `${SPACE_FILTER_PREFIX}${child.stateKey}` === this.spaceFilter);
+			const expanded = hasChildren && (this.expandedRepositories.has(group.repo.stateKey) || selectedInGroup);
+			const wrapper = dom.append(this.railSpaceTree, $('.nav-tree-repo'));
+			wrapper.classList.toggle('expanded', expanded);
+			const row = dom.append(wrapper, $('.nav-repo-row'));
+			const twistie = dom.append(row, $(`button.nav-twistie${hasChildren ? '' : '.spacer'}`)) as HTMLButtonElement;
+			twistie.type = 'button';
+			twistie.tabIndex = hasChildren ? 0 : -1;
+			twistie.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.chevronRight)}`));
+			if (hasChildren) {
+				twistie.dataset.spaceToggle = group.repo.stateKey;
+				twistie.title = localize('paradis.sessionResume.toggleSpaceChildren', "ワークツリーの表示を切り替え");
+				twistie.setAttribute('aria-label', twistie.title);
+				twistie.setAttribute('aria-expanded', String(expanded));
+			}
+			const value = `${SPACE_FILTER_PREFIX}${group.repo.stateKey}`;
+			const entry = this.createNavItem(row, group.repo.name);
+			entry.button.title = group.repo.name;
 			entry.button.dataset.spaceFilter = value;
 			this.spaceNavButtons.set(value, entry);
+			if (hasChildren) {
+				const children = dom.append(wrapper, $('.nav-tree-children'));
+				children.id = `paradis-session-resume-space-children-${group.repo.stateKey}`;
+				twistie.setAttribute('aria-controls', children.id);
+				for (const child of group.children) {
+					const childValue = `${SPACE_FILTER_PREFIX}${child.stateKey}`;
+					const childEntry = this.createNavItem(children, child.name);
+					childEntry.button.title = child.name;
+					childEntry.button.dataset.spaceFilter = childValue;
+					this.spaceNavButtons.set(childValue, childEntry);
+				}
+			}
 		}
 		const available = this.spaces.some(space => `${SPACE_FILTER_PREFIX}${space.stateKey}` === this.spaceFilter);
 		if (!available && this.spaceFilter !== 'all' && this.spaceFilter !== 'current') {
@@ -403,7 +475,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				const stateKey = paradisWorktreeStateKey(worktree.uri);
 				spaces.push({
 					stateKey, name: `${repository.name} ✦ ${worktree.name}`, uri: worktree.uri,
-					current: stateKey === current,
+					current: stateKey === current, repositoryStateKey: repository.id,
 				});
 			}
 		}
@@ -904,6 +976,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 				switchToStateKey: stateKey => this.workspaceSwitchService.switchToStateKey(stateKey),
 				resumeAgent: request => this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, request),
 			});
+			// 再開できたらこのダイアログの役目は終わり。開いたままだと再開先の作業を隠してしまう。
+			this.close();
+			return;
 		} catch (error) {
 			reportParadisDiagnosticError('owned', 'session-resume', 'resume-launch-failed', error, {
 				safe_agent: session.agent,
@@ -911,7 +986,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 			this.notificationService.error(error);
 		} finally {
 			this.resumingCatalogIds.delete(session.catalogId);
-			this.render();
+			if (!this._store.isDisposed) {
+				this.render();
+			}
 		}
 	}
 }
