@@ -7,7 +7,7 @@
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import type { ParadisOfficeInventory } from '../../common/paradisOfficeProtocol.js';
 import { ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
-import { parseSpreadsheetSemantic, type ParadisSpreadsheetSemanticParseOptions } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
+import { ownSpreadsheetSemanticInput, parseSpreadsheetSemantic, type ParadisSpreadsheetSemanticParseOptions } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import type { ParadisSpreadsheetSnapshot } from '../../common/spreadsheet/paradisSpreadsheetSemantic.js';
 import { createParadisOfficeNodeArchive } from '../office/paradisOfficeNodeArchive.js';
 
@@ -22,5 +22,6 @@ export async function parseSpreadsheetSemanticNode(
 		throw new ParadisOfficePackageError('invalid');
 	}
 	const owned = bytes.slice();
-	return parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(owned), inventory, token, options);
+	const input = ownSpreadsheetSemanticInput(inventory, options, token);
+	return parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(owned), input.inventory, token, input.options);
 }

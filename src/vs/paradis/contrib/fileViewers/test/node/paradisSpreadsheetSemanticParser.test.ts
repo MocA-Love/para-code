@@ -10,12 +10,13 @@ import JSZip from 'jszip';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeInventory } from '../../common/paradisOfficeProtocol.js';
+import type { IParadisOfficeArchive } from '../../common/office/paradisOfficeArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
-import type { IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
-import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
+import { diagnoseSpreadsheetProjection, type IParadisDiagonalBorder, type IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
+import { ownSpreadsheetSemanticInput, parseSpreadsheetSemantic, resolveSpreadsheetSemanticLimits } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseSpreadsheetSemanticNode } from '../../node/spreadsheet/paradisSpreadsheetNodeAdapter.js';
 import { createParadisOfficeNodeArchive } from '../../node/office/paradisOfficeNodeArchive.js';
-import { buildOpcFixture, type ParadisOfficeFixturePart } from '../common/paradisOfficeFixture.js';
+import { buildOpcFixture, type IParadisOfficeFixtureRelationship, type ParadisOfficeFixturePart } from '../common/paradisOfficeFixture.js';
 
 const spreadsheetNamespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const relationshipNamespace = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -94,6 +95,27 @@ const sharedStringsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 	<si><r><rPr><i/><color theme="4" tint="0.4"/></rPr><t>shared</t></r><r><t xml:space="preserve"> rich</t></r></si>
 </sst>`;
 
+const effectiveStylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="${spreadsheetNamespace}">
+	<borders count="5">
+		<border diagonalUp="1"><diagonal style="thin"><color rgb="FF112233"/></diagonal></border>
+		<border diagonalDown="1"><diagonal style="medium"><color theme="4" tint="0.2"/></diagonal></border>
+		<border diagonalUp="1" diagonalDown="1"><diagonal style="dashDot"><color indexed="7"/></diagonal></border>
+		<border diagonalUp="1"><diagonal style="double"><color auto="1"/></diagonal></border>
+		<border><diagonal/></border>
+	</borders>
+	<cellXfs count="5">
+		<xf borderId="0" applyBorder="1"/><xf borderId="1" applyBorder="1"/><xf borderId="2" applyBorder="1"/>
+		<xf borderId="3" applyBorder="1"/><xf borderId="4" applyBorder="1"/>
+	</cellXfs>
+</styleSheet>`;
+
+const effectiveStyleWorksheetXml = `<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:E2"/>
+	<cols><col min="2" max="3" style="1"/></cols><sheetData>
+		<row r="1" s="2" customFormat="1"><c r="A1"/><c r="B1"/><c r="C1" s="3"/><c r="D1"/><c r="E1" s="4"/></row>
+		<row r="2"><c r="A2"/><c r="B2"/><c r="C2" s="3"/></row>
+	</sheetData></worksheet>`;
+
 const archiveSheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:A1"/><sheetData><row r="1"><c r="A1" t="str"><v>archived</v></c></row></sheetData></worksheet>`;
 
@@ -108,6 +130,8 @@ interface SemanticFixtureOverrides {
 	readonly firstSheetRelationshipTarget?: string;
 	readonly rootRelationshipTarget?: string;
 	readonly workbookContentType?: string;
+	readonly styles?: string;
+	readonly extraRelationships?: readonly IParadisOfficeFixtureRelationship[];
 }
 
 async function buildSemanticBytes(overrides: SemanticFixtureOverrides = {}): Promise<Uint8Array> {
@@ -116,7 +140,7 @@ async function buildSemanticBytes(overrides: SemanticFixtureOverrides = {}): Pro
 			['/xl/workbook.xml', workbookXml, overrides.workbookContentType ?? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'],
 			['/xl/worksheets/sheet1.xml', overrides.worksheet ?? worksheetXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'],
 			['/xl/worksheets/sheet2.xml', archiveSheetXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'],
-			['/xl/styles.xml', stylesXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
+			['/xl/styles.xml', overrides.styles ?? stylesXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
 			['/xl/sharedStrings.xml', sharedStringsXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'],
 			...(overrides.extraParts ?? []),
 		],
@@ -126,6 +150,7 @@ async function buildSemanticBytes(overrides: SemanticFixtureOverrides = {}): Pro
 			{ source: '/xl/workbook.xml', id: 'rIdSheet2', type: worksheetRelationship, target: 'worksheets/sheet2.xml' },
 			{ source: '/xl/workbook.xml', id: 'rIdStyles', type: stylesRelationship, target: 'styles.xml' },
 			{ source: '/xl/workbook.xml', id: 'rIdStrings', type: sharedStringsRelationship, target: 'sharedStrings.xml' },
+			...(overrides.extraRelationships ?? []),
 		],
 	});
 }
@@ -140,8 +165,88 @@ async function createSemanticFixture(overrides: SemanticFixtureOverrides = {}): 
 	return { bytes, inventory };
 }
 
+async function createEffectiveStyleSnapshot() {
+	const fixture = await createSemanticFixture({ worksheet: effectiveStyleWorksheetXml, styles: effectiveStylesXml });
+	return parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None);
+}
+
 function rawSha256(bytes: Uint8Array): string {
 	return createHash('sha256').update(bytes).digest('hex');
+}
+
+function recordWithExtraKeys<T extends object>(record: T, onRead: () => void): T {
+	const expanded = { ...record };
+	for (let index = 0; index < 128; index++) {
+		Object.defineProperty(expanded, `attackerKey${index}`, { enumerable: true, value: index });
+	}
+	return new Proxy(expanded, {
+		get: (target, property, receiver) => {
+			onRead();
+			return Reflect.get(target, property, receiver);
+		},
+	});
+}
+
+function trackArchiveReads(archive: IParadisOfficeArchive, reads: string[]): IParadisOfficeArchive {
+	return {
+		containerByteLength: archive.containerByteLength,
+		entries: token => archive.entries(token),
+		read: (entry, token) => {
+			reads.push(entry.name);
+			return archive.read(entry, token);
+		},
+		hash: bytes => archive.hash(bytes),
+		parseXml: (xml, limits, token, checkpoint) => archive.parseXml(xml, limits, token, checkpoint),
+		dispose: () => archive.dispose(),
+	};
+}
+
+function withArchiveContainerLength(archive: IParadisOfficeArchive, containerByteLength: number): IParadisOfficeArchive {
+	return {
+		containerByteLength,
+		entries: token => archive.entries(token),
+		read: (entry, token) => archive.read(entry, token),
+		hash: bytes => archive.hash(bytes),
+		parseXml: (xml, limits, token, checkpoint) => archive.parseXml(xml, limits, token, checkpoint),
+		dispose: () => archive.dispose(),
+	};
+}
+
+function withEntryCompressedSize(
+	archive: IParadisOfficeArchive,
+	entryName: string,
+	compressedBytes: number,
+	onReadBytes: (bytes: number) => void,
+): IParadisOfficeArchive {
+	const originals = new WeakMap<object, Parameters<IParadisOfficeArchive['read']>[0]>();
+	return {
+		containerByteLength: archive.containerByteLength,
+		async *entries(token) {
+			for await (const original of archive.entries(token)) {
+				const projected = original.name === entryName ? { ...original, compressedBytes } : original;
+				originals.set(projected, original);
+				yield projected;
+			}
+		},
+		async *read(entry, token) {
+			const original = originals.get(entry);
+			if (!original) {
+				throw new Error('unknown projected entry');
+			}
+			for await (const chunk of archive.read(original, token)) {
+				for (let offset = 0; offset < chunk.byteLength; offset += 32) {
+					const projected = chunk.slice(offset, Math.min(chunk.byteLength, offset + 32));
+					if (entry.name === entryName) {
+						onReadBytes(projected.byteLength);
+					}
+					yield projected;
+				}
+			}
+		},
+		hash: bytes => archive.hash(bytes),
+		parseXml: (xml, limits, token, checkpoint) => archive.parseXml(xml, limits, token, checkpoint),
+		dispose: () => archive.dispose(),
+	};
 }
 
 async function reorderWorkbookRelationshipAttributes(bytes: Uint8Array): Promise<Uint8Array> {
@@ -182,6 +287,15 @@ function differingLegacyProjection(): IParadisWorkbookData {
 	};
 }
 
+function singleCellProjection(row: number, column: number, diagonal?: IParadisDiagonalBorder): IParadisWorkbookData {
+	return {
+		sheets: [{
+			name: 'Matrix', minCol: column, columnCount: 1, columnWidths: [64], truncated: false,
+			rows: [{ excelRow: row, height: 20, cells: [{ value: '', style: {}, ...(diagonal ? { diagonal } : {}) }] }],
+		}],
+	};
+}
+
 suite('ParadisSpreadsheetSemanticParser', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -197,20 +311,24 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 
 		deepStrictEqual(cells.get('A1'), {
 			storedType: 'number',
-			rawValue: '1',
+			rawValue: { present: true, text: '1' },
 			styleRef: 1,
+			effectiveStyleRef: 1,
+			effectiveStyleOrigin: 'cell',
 			styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint },
 		});
-		deepStrictEqual(cells.get('A2'), { storedType: 'string', rawType: 's', rawValue: '0', text: '1', sharedStringIndex: 0 });
-		deepStrictEqual(cells.get('A3'), { storedType: 'string', rawType: 'inlineStr', rawValue: '', text: '' });
-		deepStrictEqual(cells.get('A4'), { storedType: 'blank' });
-		deepStrictEqual(cells.get('A5'), { storedType: 'boolean', rawType: 'b', rawValue: '1' });
+		deepStrictEqual(cells.get('A2'), { storedType: 'string', rawType: 's', rawValue: { present: true, text: '0' }, text: '1', sharedStringIndex: 0, effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
+		deepStrictEqual(cells.get('A3'), { storedType: 'string', rawType: 'inlineStr', rawValue: { present: true, text: '' }, text: '', effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
+		deepStrictEqual(cells.get('A4'), { storedType: 'blank', rawValue: { present: false }, effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
+		deepStrictEqual(cells.get('A5'), { storedType: 'boolean', rawType: 'b', rawValue: { present: true, text: '1' }, effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
 		deepStrictEqual(cells.get('B2'), {
 			storedType: 'formula',
 			rawValue: undefined,
 			formula: { text: 'SUM(B3:B6)', kind: 'normal' },
 			cachedResult: { present: true, type: 'number', rawValue: '1' },
 			styleRef: 1,
+			effectiveStyleRef: 1,
+			effectiveStyleOrigin: 'cell',
 			styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint },
 		});
 		deepStrictEqual(cells.get('B3'), {
@@ -218,18 +336,22 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			rawValue: undefined,
 			formula: { text: 'NOW()', kind: 'normal' },
 			cachedResult: { present: false },
+			effectiveStyleRef: 0,
+			effectiveStyleOrigin: 'default',
+			styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint },
 		});
 		deepStrictEqual(cells.get('B4')?.formula, { text: 'A1*2', kind: 'shared', ref: 'B4:B5', sharedIndex: 4 });
 		deepStrictEqual(cells.get('B5')?.formula, { text: '', kind: 'shared', sharedIndex: 4 });
 		deepStrictEqual(cells.get('B6')?.formula, { text: 'TRANSPOSE(A1:A2)', kind: 'array', ref: 'B6:B7' });
-		deepStrictEqual(cells.get('B7'), { storedType: 'error', rawType: 'e', rawValue: '#DIV/0!' });
-		deepStrictEqual(cells.get('B8'), { storedType: 'date', rawType: 'd', rawValue: '2026-08-26T00:00:00Z' });
+		deepStrictEqual(cells.get('B7'), { storedType: 'error', rawType: 'e', rawValue: { present: true, text: '#DIV/0!' }, effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
+		deepStrictEqual(cells.get('B8'), { storedType: 'date', rawType: 'd', rawValue: { present: true, text: '2026-08-26T00:00:00Z' }, effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
 		strictEqual(snapshot.date1904, true);
 	});
 
 	test('retains workbook, sheet, sparse string, view, row, column, merge, style, and completeness semantics', async () => {
 		const fixture = await createSemanticFixture();
 		const snapshot = await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None);
+		const styleFingerprint = { algorithm: 'sha256' as const, value: rawSha256(new TextEncoder().encode(stylesXml)), byteLength: new TextEncoder().encode(stylesXml).byteLength };
 
 		deepStrictEqual(snapshot.sheets.map(sheet => [sheet.name, sheet.sheetId, sheet.order, sheet.state, sheet.partId]), [
 			['Matrix', '7', 0, 'visible', '/xl/worksheets/sheet1.xml'],
@@ -256,17 +378,19 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			selections: [{ pane: 'bottomRight', activeCell: 'D5', sqref: 'D5:E6' }],
 		});
 		deepStrictEqual(sheet.cells.get('C1'), {
-			storedType: 'string', rawType: 'inlineStr', rawValue: 'rich text', text: 'rich text',
-			richText: [{ text: 'rich', properties: { bold: true, color: { rgb: 'FFFF0000' } } }, { text: ' text' }],
+			storedType: 'string', rawType: 'inlineStr', rawValue: { present: true, text: 'rich text' }, text: 'rich text',
+			richText: [{ text: 'rich', properties: { bold: true, color: { kind: 'rgb', rgb: 'FFFF0000' } } }, { text: ' text' }],
+			effectiveStyleRef: 1, effectiveStyleOrigin: 'row', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint },
 		});
 		deepStrictEqual(sheet.cells.get('D1'), {
-			storedType: 'string', rawType: 's', rawValue: '1', text: 'shared rich', sharedStringIndex: 1,
-			richText: [{ text: 'shared', properties: { italic: true, color: { theme: 4, tint: '0.4' } } }, { text: ' rich' }],
+			storedType: 'string', rawType: 's', rawValue: { present: true, text: '1' }, text: 'shared rich', sharedStringIndex: 1,
+			richText: [{ text: 'shared', properties: { italic: true, color: { kind: 'theme', theme: 4, tint: '0.4' } } }, { text: ' rich' }],
+			effectiveStyleRef: 1, effectiveStyleOrigin: 'row', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint },
 		});
 		strictEqual(sheet.cells.has('E1'), false);
 		deepStrictEqual(snapshot.styles.completeness, {
 			declaredCellFormats: 2, parsedCellFormats: 2, declaredBorders: 2, parsedBorders: 2,
-			cellsWithStyleRefs: 4, unresolvedStyleRefs: 0, cellsWithDiagonalStyleRefs: 4,
+			cellsWithStyleRefs: 4, unresolvedStyleRefs: 0, cellsWithDiagonalStyleRefs: 6,
 		});
 		deepStrictEqual(snapshot.completeness, {
 			expectedParts: 8, visitedParts: 8, parsedParts: 8, expectedSheets: 2, parsedSheets: 2,
@@ -292,7 +416,7 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			strictEqual(snapshot.styles.cellFormats[cell!.styleRef!].borderRef, 1);
 			strictEqual(snapshot.styles.borders[1].diagonalUp, true);
 			strictEqual(snapshot.styles.borders[1].diagonalDown, true);
-			deepStrictEqual(snapshot.styles.borders[1].diagonal, { style: 'dashDot', color: { rgb: 'FFFF0000' } });
+			deepStrictEqual(snapshot.styles.borders[1].diagonal, { style: 'dashDot', color: { kind: 'rgb', rgb: 'FFFF0000' } });
 		}
 		strictEqual(snapshot.sheets[0].rows.get(12)?.hidden, true);
 		strictEqual(snapshot.sheets[0].columns.some(column => column.min <= 3 && column.max >= 3 && column.hidden), true);
@@ -356,7 +480,511 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		const snapshot = await parsing;
 
 		strictEqual(snapshot.sheets[0].cells.get('A1')?.storedType, 'number');
-		strictEqual(snapshot.sheets[0].cells.get('A1')?.rawValue, '1');
+		deepStrictEqual(snapshot.sheets[0].cells.get('A1')?.rawValue, { present: true, text: '1' });
+	});
+
+	test('Node adapter owns inventory and projection deeply before opening its archive', async () => {
+		const fixture = await createSemanticFixture();
+		const mutableInventory: ParadisOfficeInventory = {
+			...fixture.inventory,
+			relationships: fixture.inventory.relationships.map(relationship => ({ ...relationship })),
+		};
+		const projectedCell = { value: '1', style: {} };
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: [64], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: [projectedCell] }],
+			}],
+		};
+
+		const parsing = parseSpreadsheetSemanticNode(fixture.bytes, mutableInventory, CancellationToken.None, { projection });
+		Object.defineProperty(mutableInventory, 'relationships', {
+			configurable: true,
+			value: mutableInventory.relationships.map(relationship => relationship.id === 'rIdSheet1'
+				? { ...relationship, target: '/xl/worksheets/sheet2.xml' }
+				: relationship),
+		});
+		Object.defineProperty(projectedCell, 'value', { configurable: true, value: 'mutated-after-call' });
+
+		const snapshot = await parsing;
+		deepStrictEqual(snapshot.sheets[0].cells.get('A1')?.rawValue, { present: true, text: '1' });
+		strictEqual(snapshot.projectionDiagnostics.some(diagnostic => diagnostic.kind === 'valueMismatch' && diagnostic.cellAddress === 'A1'), false);
+	});
+
+	test('rejects inventory and option accessors without invoking them', async () => {
+		const fixture = await createSemanticFixture();
+		let inventoryGetterReads = 0;
+		const accessorInventory = { ...fixture.inventory };
+		Object.defineProperty(accessorInventory, 'budgetProfile', {
+			enumerable: true,
+			get: () => {
+				inventoryGetterReads++;
+				return 'desktopLocal';
+			},
+		});
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), accessorInventory, CancellationToken.None),
+			/unsafe/,
+		);
+		strictEqual(inventoryGetterReads, 0);
+
+		let optionGetterReads = 0;
+		const accessorOptions = {};
+		Object.defineProperty(accessorOptions, 'projection', {
+			enumerable: true,
+			get: () => {
+				optionGetterReads++;
+				return undefined;
+			},
+		});
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, accessorOptions),
+			/unsafe/,
+		);
+		strictEqual(optionGetterReads, 0);
+	});
+
+	test('common parser owns projection before its first archive await', async () => {
+		const fixture = await createSemanticFixture();
+		const projectedCell = { value: '1', style: {} };
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: [64], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: [projectedCell] }],
+			}],
+		};
+		const parsing = parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None, { projection });
+		Object.defineProperty(projectedCell, 'value', { configurable: true, value: 'mutated-after-call' });
+
+		const snapshot = await parsing;
+		strictEqual(snapshot.projectionDiagnostics.some(diagnostic => diagnostic.kind === 'valueMismatch' && diagnostic.cellAddress === 'A1'), false);
+	});
+
+	test('does not traverse unused inventory features or projection style and width graphs', async () => {
+		const fixture = await createSemanticFixture();
+		let unusedReads = 0;
+		const unusedStyle = recordWithExtraKeys({}, () => unusedReads++);
+		const widths = new Proxy([64], {
+			get: (target, property, receiver) => {
+				if (property !== 'length') {
+					unusedReads++;
+				}
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		const feature = new Proxy(fixture.inventory.features[0] ?? { kind: 'unused', count: 0, partIds: [], safety: 'safe' as const }, {
+			get: (target, property, receiver) => {
+				unusedReads++;
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		const inventory: ParadisOfficeInventory = { ...fixture.inventory, features: [feature] };
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: widths, truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: [{ value: '1', style: unusedStyle }] }],
+			}],
+		};
+
+		await parseSpreadsheetSemanticNode(fixture.bytes, inventory, CancellationToken.None, { projection });
+		strictEqual(unusedReads, 0);
+	});
+
+	test('keeps raw value container absence separate from present empty content and blank cells', async () => {
+		const worksheet = `<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:F1"/><sheetData><row r="1">
+			<c r="A1" t="n"/><c r="B1" t="str"/><c r="C1" t="str"><v/></c>
+			<c r="D1" t="inlineStr"/><c r="E1" t="inlineStr"><is/></c><c r="F1"/>
+		</row></sheetData></worksheet>`;
+		const fixture = await createSemanticFixture({ worksheet });
+		const snapshot = await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None);
+		const cells = snapshot.sheets[0].cells;
+
+		deepStrictEqual([cells.get('A1')?.storedType, cells.get('A1')?.rawType, cells.get('A1')?.rawValue, cells.get('A1')?.text], ['number', 'n', { present: false }, undefined]);
+		deepStrictEqual([cells.get('B1')?.storedType, cells.get('B1')?.rawType, cells.get('B1')?.rawValue, cells.get('B1')?.text], ['string', 'str', { present: false }, undefined]);
+		deepStrictEqual([cells.get('C1')?.storedType, cells.get('C1')?.rawType, cells.get('C1')?.rawValue, cells.get('C1')?.text], ['string', 'str', { present: true, text: '' }, '']);
+		deepStrictEqual([cells.get('D1')?.storedType, cells.get('D1')?.rawType, cells.get('D1')?.rawValue, cells.get('D1')?.text], ['string', 'inlineStr', { present: false }, undefined]);
+		deepStrictEqual([cells.get('E1')?.storedType, cells.get('E1')?.rawType, cells.get('E1')?.rawValue, cells.get('E1')?.text], ['string', 'inlineStr', { present: true, text: '' }, '']);
+		deepStrictEqual([cells.get('F1')?.storedType, cells.get('F1')?.rawType, cells.get('F1')?.rawValue, cells.get('F1')?.text], ['blank', undefined, { present: false }, undefined]);
+	});
+
+	test('derives an omitted cell reference from the previous cell column', async () => {
+		const worksheet = `<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="B1:D1"/><sheetData><row r="1">
+			<c r="B1"><v>1</v></c><c><v>2</v></c><c t="str"><v>three</v></c>
+		</row></sheetData></worksheet>`;
+		const fixture = await createSemanticFixture({ worksheet });
+		const snapshot = await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None);
+
+		deepStrictEqual([...snapshot.sheets[0].cells.keys()], ['B1', 'C1', 'D1']);
+		deepStrictEqual(snapshot.sheets[0].cells.get('C1')?.rawValue, { present: true, text: '2' });
+		deepStrictEqual(snapshot.sheets[0].cells.get('D1')?.rawValue, { present: true, text: 'three' });
+	});
+
+	test('uses explicit cell style ahead of row and column styles', async () => {
+		const cells = (await createEffectiveStyleSnapshot()).sheets[0].cells;
+		deepStrictEqual([cells.get('C1')?.styleRef, cells.get('C1')?.effectiveStyleRef, cells.get('C1')?.effectiveStyleOrigin], [3, 3, 'cell']);
+	});
+
+	test('uses row style ahead of an intersecting column style', async () => {
+		const cells = (await createEffectiveStyleSnapshot()).sheets[0].cells;
+		deepStrictEqual([cells.get('B1')?.styleRef, cells.get('B1')?.effectiveStyleRef, cells.get('B1')?.effectiveStyleOrigin], [undefined, 2, 'row']);
+	});
+
+	test('ignores row style when customFormat is false or absent', async () => {
+		const worksheet = `<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:B1"/><cols><col min="2" max="2" style="1"/></cols><sheetData><row r="1" s="2"><c r="A1"/><c r="B1"/></row></sheetData></worksheet>`;
+		const fixture = await createSemanticFixture({ worksheet, styles: effectiveStylesXml });
+		const cells = (await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None)).sheets[0].cells;
+
+		deepStrictEqual([cells.get('A1')?.effectiveStyleRef, cells.get('A1')?.effectiveStyleOrigin], [0, 'default']);
+		deepStrictEqual([cells.get('B1')?.effectiveStyleRef, cells.get('B1')?.effectiveStyleOrigin], [1, 'column']);
+	});
+
+	test('inherits column style when cell and row styles are absent', async () => {
+		const cells = (await createEffectiveStyleSnapshot()).sheets[0].cells;
+		deepStrictEqual([cells.get('B2')?.styleRef, cells.get('B2')?.effectiveStyleRef, cells.get('B2')?.effectiveStyleOrigin], [undefined, 1, 'column']);
+	});
+
+	test('inherits default cellXf zero when cell, row, and column styles are absent', async () => {
+		const cells = (await createEffectiveStyleSnapshot()).sheets[0].cells;
+		deepStrictEqual([cells.get('A2')?.styleRef, cells.get('A2')?.effectiveStyleRef, cells.get('A2')?.effectiveStyleOrigin], [undefined, 0, 'default']);
+	});
+
+	test('retains rgb, theme, indexed, and auto diagonal color provenance', async () => {
+		const snapshot = await createEffectiveStyleSnapshot();
+		deepStrictEqual(snapshot.styles.borders.map(border => border.diagonal?.color), [
+			{ kind: 'rgb', rgb: 'FF112233' },
+			{ kind: 'theme', theme: 4, tint: '0.2' },
+			{ kind: 'indexed', indexed: 7 },
+			{ kind: 'auto', auto: true },
+			undefined,
+		]);
+	});
+
+	test('reports a raw diagonal style-only mismatch without CSS token collapse', async () => {
+		const snapshot = await createEffectiveStyleSnapshot();
+		const styleOnly = diagnoseSpreadsheetProjection(snapshot, singleCellProjection(2, 1, {
+			up: true, down: false, style: '1px solid', color: '#112233',
+			rawStyle: 'medium', rawColor: { kind: 'rgb', rgb: 'FF112233' },
+		}));
+		deepStrictEqual(styleOnly.filter(diagnostic => diagnostic.cellAddress === 'A2').map(diagnostic => diagnostic.kind), ['diagonalStyleMismatch']);
+		deepStrictEqual(styleOnly.find(diagnostic => diagnostic.cellAddress === 'A2')?.semanticDiagonal, {
+			up: true, down: false, style: 'thin', color: { kind: 'rgb', rgb: 'FF112233' },
+		});
+	});
+
+	test('reports a full ARGB-only diagonal color mismatch', async () => {
+		const snapshot = await createEffectiveStyleSnapshot();
+		const colorOnly = diagnoseSpreadsheetProjection(snapshot, singleCellProjection(2, 1, {
+			up: true, down: false, style: '1px solid', color: '#112233',
+			rawStyle: 'thin', rawColor: { kind: 'rgb', rgb: '00112233' },
+		}));
+		deepStrictEqual(colorOnly.filter(diagnostic => diagnostic.cellAddress === 'A2').map(diagnostic => diagnostic.kind), ['diagonalColorMismatch']);
+	});
+
+	test('retains tint provenance for rgb, indexed, and auto diagonal colors', async () => {
+		const styles = `<styleSheet xmlns="${spreadsheetNamespace}"><borders count="3">
+			<border diagonalUp="1"><diagonal style="thin"><color rgb="FF112233" tint="0.1"/></diagonal></border>
+			<border diagonalUp="1"><diagonal style="thin"><color indexed="7" tint="0.2"/></diagonal></border>
+			<border diagonalUp="1"><diagonal style="thin"><color auto="1" tint="0.3"/></diagonal></border>
+		</borders><cellXfs count="3"><xf borderId="0"/><xf borderId="1"/><xf borderId="2"/></cellXfs></styleSheet>`;
+		const fixture = await createSemanticFixture({ styles });
+		const snapshot = await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None);
+
+		deepStrictEqual(snapshot.styles.borders.map(border => border.diagonal?.color), [
+			{ kind: 'rgb', rgb: 'FF112233', tint: '0.1' },
+			{ kind: 'indexed', indexed: 7, tint: '0.2' },
+			{ kind: 'auto', auto: true, tint: '0.3' },
+		]);
+	});
+
+	test('reports direction, raw style, and raw color mismatches without returning early', async () => {
+		const snapshot = await createEffectiveStyleSnapshot();
+		const allDifferent = diagnoseSpreadsheetProjection(snapshot, singleCellProjection(1, 1, {
+			up: true, down: false, style: '1px dashed', color: '#FFFFFF',
+			rawStyle: 'dashed', rawColor: { kind: 'rgb', rgb: 'FFFFFFFF' },
+		}));
+		deepStrictEqual(allDifferent.filter(diagnostic => diagnostic.cellAddress === 'A1').map(diagnostic => diagnostic.kind), [
+			'diagonalDirectionMismatch', 'diagonalStyleMismatch', 'diagonalColorMismatch',
+		]);
+	});
+
+	test('reports semantic-only diagonal presence', async () => {
+		const snapshot = await createEffectiveStyleSnapshot();
+		const semanticOnly = diagnoseSpreadsheetProjection(snapshot, singleCellProjection(2, 1));
+		deepStrictEqual(semanticOnly.filter(diagnostic => diagnostic.cellAddress === 'A2').map(diagnostic => diagnostic.kind), ['diagonalPresenceMismatch']);
+	});
+
+	test('reports projection-only diagonal presence', async () => {
+		const snapshot = await createEffectiveStyleSnapshot();
+		const projectionOnly = diagnoseSpreadsheetProjection(snapshot, singleCellProjection(1, 5, {
+			up: true, down: false, style: '1px solid', color: '#112233',
+			rawStyle: 'thin', rawColor: { kind: 'rgb', rgb: 'FF112233' },
+		}));
+		deepStrictEqual(projectionOnly.filter(diagnostic => diagnostic.cellAddress === 'E1').map(diagnostic => diagnostic.kind), ['diagonalPresenceMismatch']);
+	});
+
+	test('accepts exact inherited theme diagonal provenance', async () => {
+		const snapshot = await createEffectiveStyleSnapshot();
+		const exactTheme = diagnoseSpreadsheetProjection(snapshot, singleCellProjection(2, 2, {
+			up: false, down: true, style: '2px solid', color: '#000000',
+			rawStyle: 'medium', rawColor: { kind: 'theme', theme: 4, tint: '0.2' },
+		}));
+		strictEqual(exactTheme.some(diagnostic => diagnostic.cellAddress === 'B2'), false);
+	});
+
+	test('rejects duplicate border edges including diagonal', async () => {
+		for (const edge of ['start', 'end', 'left', 'right', 'top', 'bottom', 'diagonal', 'vertical', 'horizontal']) {
+			const styles = `<styleSheet xmlns="${spreadsheetNamespace}"><borders count="1"><border><${edge}/><${edge}/></border></borders><cellXfs count="1"><xf borderId="0"/></cellXfs></styleSheet>`;
+			const fixture = await createSemanticFixture({ styles });
+			await rejects(
+				parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None),
+				/malformed/,
+			);
+		}
+	});
+
+	test('validates raw relationship authority before reading a forged inventory target', async () => {
+		const sentinelXml = `<worksheet xmlns="${spreadsheetNamespace}"><sheetData>${'x'.repeat(256 * 1024)}</sheetData></worksheet>`;
+		const fixture = await createSemanticFixture({
+			extraParts: [['/xl/worksheets/sentinel.xml', sentinelXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml']],
+		});
+		const forgedInventory: ParadisOfficeInventory = {
+			...fixture.inventory,
+			relationships: fixture.inventory.relationships.map(relationship => relationship.id === 'rIdSheet1'
+				? { ...relationship, target: '/xl/worksheets/sentinel.xml' }
+				: relationship),
+		};
+		const reads: string[] = [];
+		const archive = trackArchiveReads(await createParadisOfficeNodeArchive(fixture.bytes), reads);
+
+		await rejects(parseSpreadsheetSemantic(archive, forgedInventory, CancellationToken.None), /unsafe/);
+		strictEqual(reads.includes('xl/worksheets/sentinel.xml'), false);
+	});
+
+	test('does not read worksheet relationships absent from the raw workbook sheet list', async () => {
+		const sentinelXml = `<worksheet xmlns="${spreadsheetNamespace}"><sheetData>${'x'.repeat(256 * 1024)}</sheetData></worksheet>`;
+		const fixture = await createSemanticFixture({
+			extraParts: [['/xl/worksheets/unreferenced.xml', sentinelXml, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml']],
+			extraRelationships: [{ source: '/xl/workbook.xml', id: 'rIdUnreferenced', type: worksheetRelationship, target: 'worksheets/unreferenced.xml' }],
+		});
+		const reads: string[] = [];
+		const archive = trackArchiveReads(await createParadisOfficeNodeArchive(fixture.bytes), reads);
+
+		await parseSpreadsheetSemantic(archive, fixture.inventory, CancellationToken.None);
+		strictEqual(reads.includes('xl/worksheets/unreferenced.xml'), false);
+	});
+
+	test('rejects oversized inventory shapes before cloning attacker-controlled entries', async () => {
+		const fixture = await createSemanticFixture();
+		let partReads = 0;
+		const observedPart = new Proxy(fixture.inventory.parts[0], {
+			get: (target, property, receiver) => {
+				partReads++;
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		const oversizedParts: ParadisOfficeInventory = {
+			...fixture.inventory,
+			parts: new Proxy(Array.from({ length: PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.entryCount + 1 }, () => observedPart), {
+				ownKeys: target => {
+					partReads++;
+					return Reflect.ownKeys(target);
+				},
+			}),
+		};
+
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), oversizedParts, CancellationToken.None),
+			/limitExceeded/,
+		);
+		strictEqual(partReads, 0);
+
+		const oversizedRelationships: ParadisOfficeInventory = {
+			...fixture.inventory,
+			relationships: Array.from({ length: 100_001 }, () => fixture.inventory.relationships[0]),
+		};
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), oversizedRelationships, CancellationToken.None),
+			/limitExceeded/,
+		);
+
+		const oversizedKeys = { ...fixture.inventory };
+		for (let index = 0; index < 64; index++) {
+			Object.defineProperty(oversizedKeys, `attackerKey${index}`, { enumerable: true, value: index });
+		}
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), oversizedKeys, CancellationToken.None),
+			/limitExceeded/,
+		);
+	});
+
+	test('rejects oversized nested inventory records without invoking their value getters', async () => {
+		const fixture = await createSemanticFixture();
+		let reads = 0;
+		const inventory: ParadisOfficeInventory = {
+			...fixture.inventory,
+			security: recordWithExtraKeys(fixture.inventory.security, () => reads++),
+		};
+
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), inventory, CancellationToken.None),
+			/limitExceeded/,
+		);
+		strictEqual(reads, 0);
+	});
+
+	test('rejects shared projection object references', async () => {
+		const fixture = await createSemanticFixture();
+		const sharedCell = { value: '1', style: {} };
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: 2, columnWidths: [], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: [sharedCell, sharedCell] }],
+			}],
+		};
+
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, { projection }),
+			/unsafe/,
+		);
+	});
+
+	test('rejects sparse and accessor-backed projection arrays', async () => {
+		const fixture = await createSemanticFixture();
+		const sparseRows: IParadisWorkbookData['sheets'][number]['rows'][number][] = [];
+		sparseRows.length = 2;
+		sparseRows[1] = { excelRow: 2, height: 20, cells: [] };
+		const accessorCells: IParadisWorkbookData['sheets'][number]['rows'][number]['cells'][number][] = [];
+		Object.defineProperty(accessorCells, '0', { enumerable: true, get: () => ({ value: '1', style: {} }) });
+		accessorCells.length = 1;
+		for (const rows of [
+			sparseRows,
+			[{ excelRow: 1, height: 20, cells: accessorCells }],
+		]) {
+			const projection: IParadisWorkbookData = {
+				sheets: [{ name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: [], truncated: false, rows }],
+			};
+			await rejects(
+				parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, { projection }),
+				/unsafe/,
+			);
+		}
+	});
+
+	test('rejects a single unknown projection key inside the per-record cap', async () => {
+		const fixture = await createSemanticFixture();
+		const cell = { value: '1', style: {}, attackerKey: true };
+		const projection: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Matrix', minCol: 1, columnCount: 1, columnWidths: [], truncated: false,
+				rows: [{ excelRow: 1, height: 20, cells: [cell] }],
+			}],
+		};
+
+		await rejects(
+			parseSpreadsheetSemanticNode(fixture.bytes, fixture.inventory, CancellationToken.None, { projection }),
+			/unsafe/,
+		);
+	});
+
+	test('enforces the aggregate ownership node budget across an otherwise bounded graph', async () => {
+		const fixture = await createSemanticFixture();
+		const rows = Array.from({ length: 250_001 }, (_, index) => ({ excelRow: index + 1, height: 20, cells: [] }));
+		const projection: IParadisWorkbookData = {
+			sheets: [{ name: 'Matrix', minCol: 1, columnCount: 0, columnWidths: [], truncated: false, rows }],
+		};
+
+		await rejects(
+			Promise.resolve().then(() => ownSpreadsheetSemanticInput(fixture.inventory, { projection }, CancellationToken.None)),
+			/limitExceeded/,
+		);
+	});
+
+	test('checks cancellation incrementally while taking the inventory snapshot', async () => {
+		const fixture = await createSemanticFixture();
+		let reads = 0;
+		const observedPart = new Proxy(fixture.inventory.parts[0], {
+			get: (target, property, receiver) => {
+				reads++;
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		const inventory: ParadisOfficeInventory = {
+			...fixture.inventory,
+			parts: Array.from({ length: 5_000 }, () => observedPart),
+		};
+		const cancellation = new CancellationTokenSource();
+		cancellation.cancel();
+
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), inventory, cancellation.token),
+			/cancelled/,
+		);
+		strictEqual(reads < 100, true);
+		cancellation.dispose();
+	});
+
+	test('enforces aggregate reread compression ratio from actual archive metadata', async () => {
+		const fixture = await createSemanticFixture();
+		const forgedInventory: ParadisOfficeInventory = {
+			...fixture.inventory,
+			budgetUsage: { ...fixture.inventory.budgetUsage, compressedInputBytes: 1 },
+		};
+		const archive = withArchiveContainerLength(await createParadisOfficeNodeArchive(fixture.bytes), 1);
+
+		await rejects(parseSpreadsheetSemantic(archive, forgedInventory, CancellationToken.None), /zipBomb/);
+	});
+
+	test('aborts a reread stream at the entry ratio instead of after the whole Part', async () => {
+		const fixture = await createSemanticFixture();
+		const workbookPart = fixture.inventory.parts.find(part => part.canonicalUri === '/xl/workbook.xml');
+		if (!workbookPart) {
+			throw new Error('missing workbook inventory');
+		}
+		const inventory: ParadisOfficeInventory = {
+			...fixture.inventory,
+			parts: fixture.inventory.parts.map(part => part === workbookPart ? { ...part, compressedBytes: 1 } : part),
+		};
+		let workbookReadBytes = 0;
+		const archive = withEntryCompressedSize(
+			await createParadisOfficeNodeArchive(fixture.bytes),
+			'xl/workbook.xml',
+			1,
+			bytes => workbookReadBytes += bytes,
+		);
+
+		await rejects(parseSpreadsheetSemantic(archive, inventory, CancellationToken.None), /zipBomb/);
+		strictEqual(workbookReadBytes < workbookPart.expandedBytes, true);
+	});
+
+	test('clamps caller semantic limits to static hard caps while allowing exact narrowing', () => {
+		strictEqual(resolveSpreadsheetSemanticLimits({ cells: 5_000_001 }).cells, 5_000_000);
+		strictEqual(resolveSpreadsheetSemanticLimits({ cells: 7 }).cells, 7);
+		strictEqual(resolveSpreadsheetSemanticLimits({ projectionCells: Number.MAX_SAFE_INTEGER }).projectionCells, 5_000_000);
+	});
+
+	test('rejects non-finite or backward clocks and never extends the profile deadline', async () => {
+		const fixture = await createSemanticFixture();
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None, { now: () => Number.NaN }),
+			/invalid/,
+		);
+
+		const backwardTimes = [100, 101, 99];
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None, {
+				now: () => backwardTimes.shift() ?? 99,
+			}),
+			/invalid/,
+		);
+
+		let clockReads = 0;
+		await rejects(
+			parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None, {
+				now: () => clockReads++ === 0 ? 0 : PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.semanticParseMilliseconds + 1,
+				deadlineMilliseconds: PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.semanticParseMilliseconds * 2,
+			}),
+			/limitExceeded/,
+		);
 	});
 
 	test('rejects an all-byte relationship Part change even when its ZIP metadata and byte length are unchanged', async () => {

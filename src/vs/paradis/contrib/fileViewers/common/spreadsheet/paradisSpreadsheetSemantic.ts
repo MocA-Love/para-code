@@ -27,7 +27,12 @@ export type ParadisSemanticCachedResult =
 	| { readonly present: false }
 	| { readonly present: true; readonly type: ParadisSemanticCachedResultType; readonly rawValue: string };
 
+export type ParadisSemanticRawValue =
+	| { readonly present: false }
+	| { readonly present: true; readonly text: string };
+
 export interface ParadisSpreadsheetColor {
+	readonly kind: 'rgb' | 'indexed' | 'theme' | 'auto';
 	readonly rgb?: string;
 	readonly indexed?: number;
 	readonly theme?: number;
@@ -55,13 +60,15 @@ export interface ParadisSemanticRichTextRun {
 export interface ParadisSemanticCell {
 	readonly storedType: ParadisSemanticCellStoredType;
 	readonly rawType?: string;
-	readonly rawValue?: string;
+	readonly rawValue?: ParadisSemanticRawValue;
 	readonly text?: string;
 	readonly sharedStringIndex?: number;
 	readonly richText?: readonly ParadisSemanticRichTextRun[];
 	readonly formula?: ParadisSemanticFormula;
 	readonly cachedResult?: ParadisSemanticCachedResult;
 	readonly styleRef?: number;
+	readonly effectiveStyleRef?: number;
+	readonly effectiveStyleOrigin?: 'cell' | 'row' | 'column' | 'default';
 	readonly styleSource?: ParadisSpreadsheetPartSource;
 }
 
@@ -270,11 +277,20 @@ export interface ParadisSpreadsheetSemanticCompleteness {
 }
 
 export interface ParadisSpreadsheetProjectionDiagnostic {
-	readonly kind: 'sheetMissing' | 'cellMissing' | 'valueMismatch' | 'diagonalStyleMismatch';
+	readonly kind: 'sheetMissing' | 'cellMissing' | 'valueMismatch' | 'diagonalPresenceMismatch' | 'diagonalDirectionMismatch' | 'diagonalStyleMismatch' | 'diagonalColorMismatch';
 	readonly sheetName: string;
 	readonly cellAddress?: string;
 	readonly semanticValue?: string;
 	readonly projectionValue?: string;
+	readonly semanticDiagonal?: ParadisSpreadsheetDiagonalIdentity;
+	readonly projectionDiagonal?: ParadisSpreadsheetDiagonalIdentity;
+}
+
+export interface ParadisSpreadsheetDiagonalIdentity {
+	readonly up: boolean;
+	readonly down: boolean;
+	readonly style?: string;
+	readonly color?: ParadisSpreadsheetColor;
 }
 
 /** Raw-OOXML-authoritative workbook state used by semantic diff and later render stages. */
