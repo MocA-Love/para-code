@@ -42,8 +42,6 @@ export type ParadisUsageDashboardTab = 'ccusage' | 'github' | 'rtk' | 'settings'
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.usage.title', "使用量・コスト");
 // allow-any-unicode-next-line
-const STR_SUBTITLE = localize('paradis.usage.subtitle', "ccusage · GitHub API · rtk の集計を1か所で");
-// allow-any-unicode-next-line
 const STR_CLOSE_ARIA = localize('paradis.usage.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_REFRESH = localize('paradis.usage.refresh', "更新");
@@ -169,7 +167,6 @@ export class ParadisUsageDashboardDialog extends Disposable {
 		// ---------- header ----------
 		const header = dom.append(modal, $('.pud-header'));
 		dom.append(header, $('h2')).textContent = STR_TITLE;
-		dom.append(header, $('.pud-subtitle')).textContent = STR_SUBTITLE;
 
 		const refreshBtn = dom.append(header, $('button.pud-refresh')) as HTMLButtonElement;
 		refreshBtn.type = 'button';

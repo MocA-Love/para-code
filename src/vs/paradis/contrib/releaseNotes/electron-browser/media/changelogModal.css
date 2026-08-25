@@ -7,7 +7,8 @@
 /*
  * アプリ内更新履歴モーダル (paradisChangelogModal.ts)。左にバージョン一覧、右に本文の
  * ナビゲーター型ダイアログ。色は --vscode-* テーマトークンで統一し、固定の色は
- * カテゴリチップ(charts.*)とオーバーレイ背景のみ。
+ * カテゴリドット(charts.*)とオーバーレイ背景のみ。強調は枠線やアウトラインではなく
+ * 背景の塗り分けとカード区切りだけで表現する。
  */
 
 /* ---------- オーバーレイ ---------- */
@@ -48,6 +49,13 @@
 	animation: para-cl-dialog-in 120ms ease;
 }
 
+/* tabIndex=-1 は Esc/Tab トラップ用。workbench 全体の [tabindex="-1"]:focus ルール
+	(media/style.css)が focusBorder 枠を描いてしまうため、.monaco-workbench 前置で
+	specificity を上げて打ち消す */
+.monaco-workbench .para-cl-dialog:focus {
+	outline: none !important;
+}
+
 /* ---------- ヘッダー ---------- */
 
 .para-cl-header {
@@ -56,18 +64,6 @@
 	gap: 10px;
 	padding: 12px 14px;
 	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
-	flex-shrink: 0;
-}
-
-.para-cl-title-icon {
-	width: 32px;
-	height: 32px;
-	border-radius: 6px;
-	background: color-mix(in srgb, var(--vscode-focusBorder, var(--vscode-button-background)) 16%, transparent);
-	color: var(--vscode-focusBorder, var(--vscode-button-background));
-	display: flex;
-	align-items: center;
-	justify-content: center;
 	flex-shrink: 0;
 }
 
@@ -152,7 +148,13 @@
 .para-cl-item.active {
 	background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
 	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
-	outline: 1px solid var(--vscode-focusBorder, transparent);
+}
+
+/* list.activeSelectionBackground は hc-black/hc-light では未定義で、hoverBackground と
+	区別が付かなくなる(選択中バージョンが判別不能になる)ため、HC だけ枠で補う */
+.hc-black .para-cl-item.active,
+.hc-light .para-cl-item.active {
+	outline: 1px solid var(--vscode-contrastBorder);
 	outline-offset: -1px;
 }
 
@@ -260,27 +262,36 @@
 	color: var(--vscode-descriptionForeground);
 }
 
-.para-cl-section-head {
-	display: flex;
-	align-items: baseline;
-	gap: 8px;
-	margin: 22px 0 10px;
+.para-cl-card {
+	margin-top: 14px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: 8px;
+	padding: 14px 16px 16px;
+	background: color-mix(in srgb, var(--vscode-foreground) 2%, transparent);
 }
 
-.para-cl-chip {
-	display: inline-block;
-	font-size: 10.5px;
-	line-height: 1;
-	font-weight: 600;
-	letter-spacing: 0.02em;
-	padding: 4px 8px;
-	border-radius: 3px;
-	color: var(--paradis-chip-color, var(--vscode-descriptionForeground));
-	background: color-mix(in srgb, var(--paradis-chip-color, var(--vscode-descriptionForeground)) 13%, transparent);
+.para-cl-card-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 10px;
+	font-size: 12.5px;
+	font-weight: 700;
+	color: var(--vscode-foreground);
+}
+
+.para-cl-card-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	background: var(--paradis-chip-color, var(--vscode-descriptionForeground));
 }
 
 .para-cl-count {
+	margin-left: auto;
 	font-size: 11px;
+	font-weight: 400;
 	color: var(--vscode-descriptionForeground);
 }
 
