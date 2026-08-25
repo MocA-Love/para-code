@@ -158,6 +158,9 @@ const defaultSemanticLimits: ParadisSpreadsheetSemanticLimits = {
 	definedNames: 65_535,
 	sharedStrings: 5_000_000,
 };
+const semanticLimitKeys: readonly (keyof ParadisSpreadsheetSemanticLimits)[] = [
+	'sheets', 'cells', 'projectionSheets', 'projectionRows', 'projectionCells', 'rows', 'columns', 'merges', 'definedNames', 'sharedStrings',
+];
 const maximumInventoryKeys = 16;
 const maximumInventoryParts = PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.entryCount;
 const maximumInventoryRelationships = 100_000;
@@ -168,6 +171,14 @@ const maximumOwnershipNodes = 250_000;
 const maximumOwnershipProperties = 1_000_000;
 const maximumOwnershipArrayElements = 1_000_000;
 const maximumOwnershipStringCharacters = 64 * 1024 * 1024;
+const maximumSemanticDeadlineMilliseconds = Math.max(...Object.values(PARADIS_OFFICE_BUDGET_PROFILES).map(profile => profile.semanticParseMilliseconds));
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength')!.get!;
+const typedArrayBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer')!.get!;
+const typedArraySet = Uint8Array.prototype.set;
+const arrayBufferByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')!.get!;
+const arrayBufferResizable = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'resizable')?.get;
+const arrayBufferDetached = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detached')?.get;
 
 class OwnershipBudget {
 	private readonly seenObjects = new WeakSet<object>();
@@ -519,12 +530,13 @@ function budgetProfile(kind: ParadisOfficeInventory['budgetProfile']): ParadisOf
 }
 
 export function resolveSpreadsheetSemanticLimits(overrides: Partial<ParadisSpreadsheetSemanticLimits> | undefined): ParadisSpreadsheetSemanticLimits {
-	if (overrides && Object.keys(overrides).some(key => !Object.hasOwn(defaultSemanticLimits, key))) {
-		throw new ParadisOfficePackageError('limitExceeded');
-	}
 	const limits = { ...defaultSemanticLimits };
-	for (const key of Object.keys(defaultSemanticLimits) as (keyof ParadisSpreadsheetSemanticLimits)[]) {
-		const override = overrides?.[key];
+	for (const key of semanticLimitKeys) {
+		const descriptor = overrides === undefined ? undefined : Object.getOwnPropertyDescriptor(overrides, key);
+		if (descriptor && !Object.hasOwn(descriptor, 'value')) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		const override = descriptor?.value;
 		if (override === undefined) {
 			continue;
 		}
@@ -543,19 +555,19 @@ function projectDataRecord(value: unknown, allowedKeys: readonly string[], maxim
 		throw new ParadisOfficePackageError('unsafe');
 	}
 	budget.consumeObject(value);
-	const keys = Reflect.ownKeys(value);
-	if (keys.length > maximumKeys) {
+	if (allowedKeys.length > maximumKeys) {
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
-	if (keys.some(key => typeof key !== 'string' || !allowedKeys.includes(key))) {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	budget.consumeRecord(keys.length);
+	budget.consumeRecord(allowedKeys.length);
+	rejectDangerousOwnDescriptors(value, budget);
 	const result: Record<string, unknown> = {};
-	for (const key of keys as string[]) {
+	for (const key of allowedKeys) {
 		budget.checkpoint();
 		const descriptor = Object.getOwnPropertyDescriptor(value, key);
-		if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+		if (!descriptor) {
+			continue;
+		}
+		if (!Object.hasOwn(descriptor, 'value')) {
 			throw new ParadisOfficePackageError('unsafe');
 		}
 		result[key] = descriptor.value;
@@ -576,20 +588,26 @@ function projectDataArray(value: unknown, maximumElements: number, budget: Owner
 	}
 	const length = rawLength;
 	budget.consumeArray(length);
-	const keys = Reflect.ownKeys(value);
-	if (keys.some(key => typeof key !== 'string' || (key !== 'length' && !/^(?:0|[1-9][0-9]*)$/.test(key))) || keys.length !== length + 1) {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	const result: unknown[] = [];
+	rejectDangerousOwnDescriptors(value, budget);
+	const result = new Array<unknown>(length);
 	for (let index = 0; index < length; index++) {
 		budget.checkpoint();
 		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
 		if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
 			throw new ParadisOfficePackageError('unsafe');
 		}
-		result.push(descriptor.value);
+		result[index] = descriptor.value;
 	}
 	return result;
+}
+
+function rejectDangerousOwnDescriptors(value: object, budget: OwnershipBudget): void {
+	for (const key of ['__proto__', 'prototype', 'constructor', Symbol.iterator, Symbol.species]) {
+		budget.checkpoint();
+		if (Object.getOwnPropertyDescriptor(value, key)) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+	}
 }
 
 function ownedString(value: unknown, budget: OwnershipBudget): string {
@@ -625,14 +643,42 @@ export function ownSpreadsheetSemanticInput(
 	return { inventory: context.inventory, options: context.options };
 }
 
+export interface ParadisSpreadsheetOwnedAdapterInput extends ParadisSpreadsheetOwnedSemanticInput {
+	readonly bytes: Uint8Array;
+}
+
+/** Owns stable package bytes before reflecting over caller-owned inventory/options. */
+export function ownSpreadsheetSemanticAdapterInput(
+	bytes: Uint8Array,
+	inventory: ParadisOfficeInventory,
+	options: ParadisSpreadsheetSemanticParseOptions,
+	token: CancellationToken | undefined,
+	executionProfile: ParadisOfficeInventory['budgetProfile'],
+): ParadisSpreadsheetOwnedAdapterInput {
+	const profile = budgetProfile(executionProfile);
+	const hardDeadline = StopWatch.create(true);
+	const checkpoint = (): void => {
+		throwIfParadisOfficeCancelled(token);
+		if (hardDeadline.elapsed() > profile.semanticParseMilliseconds) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+	};
+	const ownedBytes = ownStableSpreadsheetBytes(bytes, profile.compressedInputBytes, checkpoint);
+	const context = createOwnedSemanticContext(inventory, options, token, executionProfile, hardDeadline);
+	ownedSemanticContexts.set(context.inventory, { options: context.options, context });
+	return { bytes: ownedBytes, inventory: context.inventory, options: context.options };
+}
+
 function createOwnedSemanticContext(
 	inventory: ParadisOfficeInventory,
 	options: ParadisSpreadsheetSemanticParseOptions,
 	token?: CancellationToken,
 	executionProfile?: ParadisOfficeInventory['budgetProfile'],
+	hardDeadline = StopWatch.create(true),
 ): OwnedSemanticContext {
-	const hardDeadline = StopWatch.create(true);
-	let deadlineMilliseconds = Number.POSITIVE_INFINITY;
+	let deadlineMilliseconds = executionProfile === undefined
+		? maximumSemanticDeadlineMilliseconds
+		: budgetProfile(executionProfile).semanticParseMilliseconds;
 	const checkpoint = (): void => {
 		throwIfParadisOfficeCancelled(token);
 		if (hardDeadline.elapsed() > deadlineMilliseconds) {
@@ -674,6 +720,58 @@ function createOwnedSemanticContext(
 	};
 }
 
+function ownStableSpreadsheetBytes(value: unknown, maximumBytes: number, checkpoint: () => void): Uint8Array {
+	checkpoint();
+	if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Uint8Array.prototype) {
+		throw new ParadisOfficePackageError('invalid');
+	}
+	for (const key of ['constructor', 'byteLength', 'slice', Symbol.species]) {
+		checkpoint();
+		if (Object.getOwnPropertyDescriptor(value, key)) {
+			throw new ParadisOfficePackageError('invalid');
+		}
+	}
+	const source = value as Uint8Array;
+	const sourceBuffer = typedArrayBuffer.call(source) as ArrayBuffer;
+	if (Object.getPrototypeOf(sourceBuffer) !== ArrayBuffer.prototype) {
+		throw new ParadisOfficePackageError('invalid');
+	}
+	for (const key of ['constructor', 'byteLength', 'slice', Symbol.species]) {
+		checkpoint();
+		if (Object.getOwnPropertyDescriptor(sourceBuffer, key)) {
+			throw new ParadisOfficePackageError('invalid');
+		}
+	}
+	if (arrayBufferResizable?.call(sourceBuffer) === true || arrayBufferDetached?.call(sourceBuffer) === true) {
+		throw new ParadisOfficePackageError('invalid');
+	}
+	const length = typedArrayByteLength.call(source) as number;
+	const bufferLength = arrayBufferByteLength.call(sourceBuffer) as number;
+	if (!Number.isSafeInteger(length) || length < 0 || length > maximumBytes || !Number.isSafeInteger(bufferLength) || bufferLength < length) {
+		throw new ParadisOfficePackageError(length > maximumBytes ? 'limitExceeded' : 'invalid');
+	}
+	const owned = new Uint8Array(new ArrayBuffer(length));
+	typedArraySet.call(owned, source);
+	checkpoint();
+	if (typedArrayBuffer.call(source) !== sourceBuffer
+		|| typedArrayByteLength.call(source) !== length
+		|| arrayBufferByteLength.call(sourceBuffer) !== bufferLength
+		|| arrayBufferResizable?.call(sourceBuffer) === true
+		|| arrayBufferDetached?.call(sourceBuffer) === true) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	for (let index = 0; index < length; index++) {
+		if ((index & 0xfff) === 0) {
+			checkpoint();
+		}
+		if (owned[index] !== source[index]) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+	}
+	checkpoint();
+	return owned;
+}
+
 function deepFreezeOwned<T extends object>(value: T, checkpoint: () => void): T {
 	const seen = new WeakSet<object>();
 	const stack: object[] = [value];
@@ -684,11 +782,24 @@ function deepFreezeOwned<T extends object>(value: T, checkpoint: () => void): T 
 			continue;
 		}
 		seen.add(current);
-		for (const key of Reflect.ownKeys(current)) {
-			checkpoint();
-			const child = Object.getOwnPropertyDescriptor(current, key)?.value;
-			if (child && typeof child === 'object') {
-				stack.push(child);
+		if (Array.isArray(current)) {
+			for (let index = 0; index < current.length; index++) {
+				checkpoint();
+				const child = current[index];
+				if (child && typeof child === 'object') {
+					stack.push(child);
+				}
+			}
+		} else {
+			for (const key in current) {
+				checkpoint();
+				if (!Object.hasOwn(current, key)) {
+					continue;
+				}
+				const child = Object.getOwnPropertyDescriptor(current, key)?.value;
+				if (child && typeof child === 'object') {
+					stack.push(child);
+				}
 			}
 		}
 		Object.freeze(current);
@@ -701,10 +812,9 @@ function resolveOwnedLimits(value: unknown, budget: OwnershipBudget): ParadisSpr
 	if (value === undefined) {
 		return resolveSpreadsheetSemanticLimits(undefined);
 	}
-	const keys = Object.keys(defaultSemanticLimits) as (keyof ParadisSpreadsheetSemanticLimits)[];
-	const record = projectDataRecord(value, keys, keys.length, budget);
+	const record = projectDataRecord(value, semanticLimitKeys, semanticLimitKeys.length, budget);
 	const overrides: Record<keyof ParadisSpreadsheetSemanticLimits, number> = { ...defaultSemanticLimits };
-	for (const key of keys) {
+	for (const key of semanticLimitKeys) {
 		if (record[key] !== undefined) {
 			overrides[key] = ownedNumber(record[key]);
 		}
@@ -1375,6 +1485,9 @@ function parseWorkbook(
 	if (sheets.length > limits.sheets || definedNames.length > limits.definedNames) {
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
+	if (!seenSingletons.has('sheets') || sheets.length === 0) {
+		throw new ParadisOfficePackageError('malformed');
+	}
 	return { date1904, sheets, ...(calcProperties ? { calcProperties } : {}), definedNames, workbookViews };
 }
 
@@ -1712,9 +1825,10 @@ function parseWorksheet(
 				counters.unknownElements++;
 		}
 	}
-	if (sheetData) {
-		parseSheetData(sheetData, rows, cells, columns, sharedStrings, styles, limits, counters, checkpoint);
+	if (!sheetData) {
+		throw new ParadisOfficePackageError('malformed');
 	}
+	parseSheetData(sheetData, rows, cells, columns, sharedStrings, styles, limits, counters, checkpoint);
 	return {
 		name: record.name,
 		sheetId: record.sheetId,
