@@ -21,7 +21,7 @@ import {
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
 } from '../office/paradisOfficeArchive.js';
-import { diagnoseSpreadsheetProjection, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
+import { diagnoseSpreadsheetProjection, type IParadisDiagonalBorder, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
 import type {
 	ParadisSemanticBorder,
 	ParadisSemanticBorderEdge,
@@ -132,6 +132,11 @@ export interface ParadisSpreadsheetSemanticParseOptions {
 	readonly deadlineMilliseconds?: number;
 }
 
+export interface ParadisSpreadsheetOwnedSemanticInput {
+	readonly inventory: ParadisOfficeInventory;
+	readonly options: ParadisSpreadsheetSemanticParseOptions;
+}
+
 const defaultSemanticLimits: ParadisSpreadsheetSemanticLimits = {
 	sheets: 65_535,
 	cells: 5_000_000,
@@ -144,6 +149,54 @@ const defaultSemanticLimits: ParadisSpreadsheetSemanticLimits = {
 	definedNames: 65_535,
 	sharedStrings: 5_000_000,
 };
+const maximumInventoryKeys = 16;
+const maximumInventoryParts = PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.entryCount;
+const maximumInventoryRelationships = 100_000;
+const maximumInventoryFeatures = maximumInventoryParts;
+const maximumInventoryPartKeys = 24;
+const maximumInventoryRelationshipKeys = 12;
+const maximumOwnershipNodes = 250_000;
+const maximumOwnershipProperties = 1_000_000;
+const maximumOwnershipArrayElements = 1_000_000;
+const maximumOwnershipStringCharacters = 64 * 1024 * 1024;
+
+class OwnershipBudget {
+	private readonly seenObjects = new WeakSet<object>();
+	private nodes = 0;
+	private properties = 0;
+	private arrayElements = 0;
+	private stringCharacters = 0;
+
+	consumeObject(value: object): void {
+		if (this.seenObjects.has(value)) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		this.seenObjects.add(value);
+	}
+
+	consumeRecord(properties: number): void {
+		this.nodes = addOwnershipValue(this.nodes, 1, maximumOwnershipNodes);
+		this.properties = addOwnershipValue(this.properties, properties, maximumOwnershipProperties);
+	}
+
+	consumeArray(elements: number): void {
+		this.nodes = addOwnershipValue(this.nodes, 1, maximumOwnershipNodes);
+		this.arrayElements = addOwnershipValue(this.arrayElements, elements, maximumOwnershipArrayElements);
+	}
+
+	consumeString(value: string): string {
+		this.stringCharacters = addOwnershipValue(this.stringCharacters, value.length, maximumOwnershipStringCharacters);
+		return value;
+	}
+}
+
+function addOwnershipValue(current: number, value: number, maximum: number): number {
+	const next = current + value;
+	if (!Number.isSafeInteger(next) || next > maximum) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	return next;
+}
 
 interface ParsedPart {
 	readonly document: ParadisOfficeXmlDocument;
@@ -181,6 +234,25 @@ interface SemanticCounters {
 	cellsWithDiagonalStyleRefs: number;
 }
 
+interface RawRelationship {
+	readonly id: string;
+	readonly type: string;
+	readonly target: string;
+	readonly targetMode: 'internal' | 'external';
+}
+
+interface IndexedArchivePart {
+	readonly entry: ParadisOfficeArchiveEntry;
+	readonly inventoryPart: ParadisOfficeInventoryPart;
+}
+
+interface SemanticArchiveReader {
+	readonly parts: ReadonlyMap<string, IndexedArchivePart>;
+	readonly parsed: Map<string, ParsedPart>;
+	rereadCompressedBytes: number;
+	rereadExpandedBytes: number;
+}
+
 /**
  * Consumes and disposes an archive after parsing namespace-validated, all-byte-verified OOXML Parts.
  * The parser owns the archive for success, cancellation, rejection, and malformed-input paths.
@@ -193,15 +265,22 @@ export async function parseSpreadsheetSemantic(
 ): Promise<ParadisSpreadsheetSnapshot> {
 	let archiveDisposeAttempted = false;
 	try {
-		const ownedInventory = snapshotInventory(inventory);
-		const profile = budgetProfile(ownedInventory.budgetProfile);
-		const limits = semanticLimits(options.limits);
-		const now = options.now ?? Date.now;
-		const deadlineMilliseconds = options.deadlineMilliseconds ?? profile.semanticParseMilliseconds;
-		if (!Number.isFinite(deadlineMilliseconds) || deadlineMilliseconds < 0) {
+		const ownershipBudget = new OwnershipBudget();
+		const inventoryEnvelope = projectInventoryEnvelope(inventory, ownershipBudget);
+		const optionsEnvelope = projectDataRecord(options, ['projection', 'limits', 'now', 'deadlineMilliseconds'], 4, ownershipBudget);
+		const profileBeforeSnapshot = budgetProfile(ownedString(inventoryEnvelope.budgetProfile, ownershipBudget) as ParadisOfficeInventory['budgetProfile']);
+		const nowValue = optionsEnvelope.now;
+		if (nowValue !== undefined && typeof nowValue !== 'function') {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		const now = (nowValue as (() => number) | undefined) ?? Date.now;
+		const requestedDeadlineMilliseconds = optionsEnvelope.deadlineMilliseconds ?? profileBeforeSnapshot.semanticParseMilliseconds;
+		if (typeof requestedDeadlineMilliseconds !== 'number' || !Number.isSafeInteger(requestedDeadlineMilliseconds) || requestedDeadlineMilliseconds < 0) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
-		const started = now();
+		const deadlineMilliseconds = Math.min(profileBeforeSnapshot.semanticParseMilliseconds, requestedDeadlineMilliseconds as number);
+		const started = readMonotonicClock(now);
+		let lastClock = started;
 		let checkpointCount = 0;
 		const checkpoint = (force = false): void => {
 			checkpointCount++;
@@ -209,44 +288,38 @@ export async function parseSpreadsheetSemantic(
 				return;
 			}
 			throwIfParadisOfficeCancelled(token);
-			if (now() - started > deadlineMilliseconds) {
+			const currentClock = readMonotonicClock(now);
+			if (currentClock < lastClock) {
+				throw new ParadisOfficePackageError('invalid');
+			}
+			lastClock = currentClock;
+			if (currentClock - started > deadlineMilliseconds) {
 				throw new ParadisOfficePackageError('limitExceeded');
 			}
 		};
 		checkpoint(true);
+		const ownedInventory = snapshotInventory(inventoryEnvelope, checkpoint, ownershipBudget);
+		const profile = budgetProfile(ownedInventory.budgetProfile);
+		const limits = resolveOwnedLimits(optionsEnvelope.limits, ownershipBudget);
+		const ownedProjection = optionsEnvelope.projection === undefined
+			? undefined
+			: snapshotProjection(optionsEnvelope.projection, limits, () => checkpoint(), ownershipBudget);
 		validateInventory(ownedInventory, archive, profile);
-		const workbookRelationship = uniqueRelationship(ownedInventory, undefined, officeDocumentRelationships);
-		const workbookPartId = safeInternalTarget(workbookRelationship);
-		const workbookRelationships = ownedInventory.relationships.filter(relationship => relationship.sourcePartId === workbookPartId);
-		const requestedPartIds = new Set<string>([
-			contentTypesPartId,
-			workbookPartId,
-			relationshipPartId(undefined),
-			relationshipPartId(workbookPartId),
-		]);
-		for (const relationship of workbookRelationships) {
-			const acceptedContentTypes = worksheetRelationships.has(relationship.type)
-				? worksheetContentTypes
-				: stylesRelationships.has(relationship.type)
-					? stylesContentTypes
-					: sharedStringsRelationships.has(relationship.type)
-						? sharedStringsContentTypes
-						: undefined;
-			if (acceptedContentTypes) {
-				const target = safeInternalTarget(relationship);
-				validatePartContentType(ownedInventory, target, acceptedContentTypes);
-				requestedPartIds.add(target);
-			}
-		}
-		if (requestedPartIds.size > profile.entryCount) {
-			throw new ParadisOfficePackageError('limitExceeded');
-		}
-		const parsedParts = await readAndParseParts(archive, ownedInventory, requestedPartIds, profile, token, checkpoint);
-		const workbookPart = requiredParsedPart(parsedParts, workbookPartId);
-		validateContentTypesPart(requiredParsedPart(parsedParts, contentTypesPartId).document, ownedInventory, requestedPartIds, checkpoint);
+		const reader = await indexSemanticArchive(archive, ownedInventory, profile, token, checkpoint);
+		const contentTypesPart = await readSemanticPart(archive, reader, contentTypesPartId, profile, token, checkpoint);
+		const rootRelationshipsPartId = relationshipPartId(undefined);
+		const rootRelationshipsPart = await readSemanticPart(archive, reader, rootRelationshipsPartId, profile, token, checkpoint);
+		const rootRelationships = parseRelationshipPart(rootRelationshipsPart.document, undefined, checkpoint);
+		validateRelationshipAuthority(rootRelationships, undefined, ownedInventory, reader.parts);
+		const workbookRelationship = uniqueRawRelationship(rootRelationships, officeDocumentRelationships);
+		const workbookPartId = safeRawInternalTarget(workbookRelationship);
+		validateContentTypesPart(contentTypesPart.document, ownedInventory, new Set([contentTypesPartId, rootRelationshipsPartId, workbookPartId]), checkpoint);
 		validatePartContentType(ownedInventory, workbookPartId, workbookContentTypesForFormat(ownedInventory.format));
-		validateRelationshipPart(requiredParsedPart(parsedParts, relationshipPartId(undefined)).document, undefined, ownedInventory, checkpoint);
-		validateRelationshipPart(requiredParsedPart(parsedParts, relationshipPartId(workbookPartId)).document, workbookPartId, ownedInventory, checkpoint);
+		const workbookPart = await readSemanticPart(archive, reader, workbookPartId, profile, token, checkpoint);
+		const workbookRelationshipsPartId = relationshipPartId(workbookPartId);
+		const workbookRelationshipsPart = await readSemanticPart(archive, reader, workbookRelationshipsPartId, profile, token, checkpoint);
+		const workbookRelationships = parseRelationshipPart(workbookRelationshipsPart.document, workbookPartId, checkpoint);
+		validateRelationshipAuthority(workbookRelationships, workbookPartId, ownedInventory, reader.parts);
 		const counters: SemanticCounters = {
 			unknownElements: 0,
 			unknownAttributes: 0,
@@ -258,13 +331,39 @@ export async function parseSpreadsheetSemantic(
 			cellsWithDiagonalStyleRefs: 0,
 		};
 		const workbook = parseWorkbook(workbookPart.document, limits, counters, checkpoint);
-		if (workbook.sheets.length > limits.sheets) {
+		const referencedWorksheetRelationships = new Set(workbook.sheets.map(sheet => sheet.relationshipId));
+		const requestedPartIds = new Set<string>([
+			contentTypesPartId,
+			workbookPartId,
+			rootRelationshipsPartId,
+			workbookRelationshipsPartId,
+		]);
+		for (const relationship of workbookRelationships) {
+			const acceptedContentTypes = worksheetRelationships.has(relationship.type) && referencedWorksheetRelationships.has(relationship.id)
+				? worksheetContentTypes
+				: stylesRelationships.has(relationship.type)
+					? stylesContentTypes
+					: sharedStringsRelationships.has(relationship.type)
+						? sharedStringsContentTypes
+						: undefined;
+			if (acceptedContentTypes) {
+				const target = safeRawInternalTarget(relationship);
+				validatePartContentType(ownedInventory, target, acceptedContentTypes);
+				requestedPartIds.add(target);
+			}
+		}
+		if (requestedPartIds.size > profile.entryCount) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
-		const stylesRelationship = optionalUniqueRelationship(ownedInventory, workbookPartId, stylesRelationships);
-		const sharedStringsRelationship = optionalUniqueRelationship(ownedInventory, workbookPartId, sharedStringsRelationships);
-		const stylesPart = stylesRelationship ? requiredParsedPart(parsedParts, safeInternalTarget(stylesRelationship)) : undefined;
-		const sharedStringsPart = sharedStringsRelationship ? requiredParsedPart(parsedParts, safeInternalTarget(sharedStringsRelationship)) : undefined;
+		validateContentTypesPart(contentTypesPart.document, ownedInventory, requestedPartIds, checkpoint);
+		validatePartContentType(ownedInventory, workbookPartId, workbookContentTypesForFormat(ownedInventory.format));
+		for (const partId of requestedPartIds) {
+			await readSemanticPart(archive, reader, partId, profile, token, checkpoint);
+		}
+		const stylesRelationship = optionalUniqueRawRelationship(workbookRelationships, stylesRelationships);
+		const sharedStringsRelationship = optionalUniqueRawRelationship(workbookRelationships, sharedStringsRelationships);
+		const stylesPart = stylesRelationship ? requiredParsedPart(reader.parsed, safeRawInternalTarget(stylesRelationship)) : undefined;
+		const sharedStringsPart = sharedStringsRelationship ? requiredParsedPart(reader.parsed, safeRawInternalTarget(sharedStringsRelationship)) : undefined;
 		const styles = parseStyles(stylesPart, counters, checkpoint);
 		const sharedStrings = parseSharedStrings(sharedStringsPart, limits, counters, checkpoint);
 		const sheets: ParadisSemanticSheet[] = [];
@@ -277,16 +376,16 @@ export async function parseSpreadsheetSemantic(
 				throw new ParadisOfficePackageError('unsafe');
 			}
 			seenRelationshipIds.add(sheetRecord.relationshipId);
-			const relationship = ownedInventory.relationships.find(candidate => candidate.sourcePartId === workbookPartId && candidate.id === sheetRecord.relationshipId);
+			const relationship = workbookRelationships.find(candidate => candidate.id === sheetRecord.relationshipId);
 			if (!relationship || !worksheetRelationships.has(relationship.type)) {
 				throw new ParadisOfficePackageError('unsafe');
 			}
-			const partId = safeInternalTarget(relationship);
+			const partId = safeRawInternalTarget(relationship);
 			if (seenSheetPartIds.has(partId)) {
 				throw new ParadisOfficePackageError('unsafe');
 			}
 			seenSheetPartIds.add(partId);
-			const part = requiredParsedPart(parsedParts, partId);
+			const part = requiredParsedPart(reader.parsed, partId);
 			sheets.push(parseWorksheet(part, partId, order, sheetRecord, sharedStrings, styles, limits, counters, checkpoint));
 		}
 		const resolvedStyles: ParadisSpreadsheetStyles = {
@@ -308,8 +407,8 @@ export async function parseSpreadsheetSemantic(
 			styles: resolvedStyles,
 			completeness: {
 				expectedParts: requestedPartIds.size,
-				visitedParts: parsedParts.size,
-				parsedParts: parsedParts.size,
+				visitedParts: reader.parsed.size,
+				parsedParts: reader.parsed.size,
 				expectedSheets: workbook.sheets.length,
 				parsedSheets: sheets.length,
 				expectedCells: counters.expectedCells,
@@ -324,10 +423,10 @@ export async function parseSpreadsheetSemantic(
 		let projectionCells = 0;
 		let projectionSheets = 0;
 		let projectionRows = 0;
-		const result = options.projection
+		const result = ownedProjection
 			? {
 				...baseSnapshot,
-				projectionDiagnostics: diagnoseSpreadsheetProjection(baseSnapshot, options.projection, {
+				projectionDiagnostics: diagnoseSpreadsheetProjection(baseSnapshot, ownedProjection, {
 					checkpoint: () => checkpoint(),
 					consumeProjectionSheet: () => {
 						if (++projectionSheets > limits.projectionSheets) {
@@ -376,39 +475,346 @@ function budgetProfile(kind: ParadisOfficeInventory['budgetProfile']): ParadisOf
 	return PARADIS_OFFICE_BUDGET_PROFILES[kind];
 }
 
-function semanticLimits(overrides: Partial<ParadisSpreadsheetSemanticLimits> | undefined): ParadisSpreadsheetSemanticLimits {
-	const limits = { ...defaultSemanticLimits, ...overrides };
-	for (const value of Object.values(limits)) {
-		if (!Number.isSafeInteger(value) || value < 0) {
+export function resolveSpreadsheetSemanticLimits(overrides: Partial<ParadisSpreadsheetSemanticLimits> | undefined): ParadisSpreadsheetSemanticLimits {
+	if (overrides && Object.keys(overrides).some(key => !Object.hasOwn(defaultSemanticLimits, key))) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	const limits = { ...defaultSemanticLimits };
+	for (const key of Object.keys(defaultSemanticLimits) as (keyof ParadisSpreadsheetSemanticLimits)[]) {
+		const override = overrides?.[key];
+		if (override === undefined) {
+			continue;
+		}
+		if (!Number.isSafeInteger(override) || override < 0) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
+		limits[key] = Math.min(defaultSemanticLimits[key], override);
 	}
 	return limits;
 }
 
-function snapshotInventory(inventory: ParadisOfficeInventory): ParadisOfficeInventory {
+type OwnedRecord = Readonly<Record<string, unknown>>;
+
+function projectDataRecord(value: unknown, allowedKeys: readonly string[], maximumKeys: number, budget: OwnershipBudget): OwnedRecord {
+	if (!value || typeof value !== 'object') {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	budget.consumeObject(value);
+	const keys = Reflect.ownKeys(value);
+	if (keys.length > maximumKeys) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	if (keys.some(key => typeof key !== 'string' || !allowedKeys.includes(key))) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	budget.consumeRecord(keys.length);
+	const result: Record<string, unknown> = {};
+	for (const key of keys as string[]) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		result[key] = descriptor.value;
+	}
+	return result;
+}
+
+function projectDataArray(value: unknown, maximumElements: number, budget: OwnershipBudget): readonly unknown[] {
+	if (!Array.isArray(value)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	budget.consumeObject(value);
+	const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+	const rawLength = lengthDescriptor?.value;
+	if (typeof rawLength !== 'number' || !Number.isSafeInteger(rawLength)
+		|| rawLength < 0 || rawLength > maximumElements) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	const length = rawLength;
+	const keys = Reflect.ownKeys(value);
+	if (keys.some(key => typeof key !== 'string' || (key !== 'length' && !/^(?:0|[1-9][0-9]*)$/.test(key))) || keys.length !== length + 1) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	budget.consumeArray(length);
+	const result: unknown[] = [];
+	for (let index = 0; index < length; index++) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+		if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		result.push(descriptor.value);
+	}
+	return result;
+}
+
+function ownedString(value: unknown, budget: OwnershipBudget): string {
+	if (typeof value !== 'string') {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	return budget.consumeString(value);
+}
+
+function ownedNumber(value: unknown): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 0) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	return value as number;
+}
+
+function ownedBoolean(value: unknown): boolean {
+	if (typeof value !== 'boolean') {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	return value;
+}
+
+/** Takes a bounded deep ownership snapshot synchronously, before an adapter crosses an async runtime boundary. */
+export function ownSpreadsheetSemanticInput(
+	inventory: ParadisOfficeInventory,
+	options: ParadisSpreadsheetSemanticParseOptions,
+	token?: CancellationToken,
+): ParadisSpreadsheetOwnedSemanticInput {
+	const budget = new OwnershipBudget();
+	const inventoryRecord = projectInventoryEnvelope(inventory, budget);
+	const optionsRecord = projectDataRecord(options, ['projection', 'limits', 'now', 'deadlineMilliseconds'], 4, budget);
+	const checkpoint = (): void => throwIfParadisOfficeCancelled(token);
+	checkpoint();
+	const ownedInventory = snapshotInventory(inventoryRecord, checkpoint, budget);
+	const limits = resolveOwnedLimits(optionsRecord.limits, budget);
+	const projection = optionsRecord.projection === undefined ? undefined : snapshotProjection(optionsRecord.projection, limits, checkpoint, budget);
+	const now = optionsRecord.now;
+	if (now !== undefined && typeof now !== 'function') {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	const deadlineMilliseconds = optionsRecord.deadlineMilliseconds;
+	if (deadlineMilliseconds !== undefined && !Number.isSafeInteger(deadlineMilliseconds)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
 	return {
-		...inventory,
-		parts: inventory.parts.map(copyInventoryPart),
-		relationships: inventory.relationships.map(relationship => ({ ...relationship })),
-		features: inventory.features.map(feature => ({ ...feature, partIds: [...feature.partIds] })),
-		security: { ...inventory.security },
-		budgetUsage: { ...inventory.budgetUsage },
+		inventory: ownedInventory,
+		options: {
+			limits,
+			...(projection ? { projection } : {}),
+			...(now ? { now: now as () => number } : {}),
+			...(deadlineMilliseconds !== undefined ? { deadlineMilliseconds: deadlineMilliseconds as number } : {}),
+		},
 	};
 }
 
-function copyInventoryPart(part: ParadisOfficeInventoryPart): ParadisOfficeInventoryPart {
-	const canonicalHash = part.canonicalHash ? { ...part.canonicalHash } : undefined;
-	if (part.coverage === 'completeOpaque') {
-		return { ...part, fingerprint: { ...part.fingerprint }, ...(canonicalHash ? { canonicalHash } : {}) };
+function resolveOwnedLimits(value: unknown, budget: OwnershipBudget): ParadisSpreadsheetSemanticLimits {
+	if (value === undefined) {
+		return resolveSpreadsheetSemanticLimits(undefined);
 	}
-	if (part.coverage === 'parsed') {
-		return { ...part, rawHash: { ...part.rawHash }, ...(canonicalHash ? { canonicalHash } : {}) };
+	const keys = Object.keys(defaultSemanticLimits) as (keyof ParadisSpreadsheetSemanticLimits)[];
+	const record = projectDataRecord(value, keys, keys.length, budget);
+	const overrides: Record<keyof ParadisSpreadsheetSemanticLimits, number> = { ...defaultSemanticLimits };
+	for (const key of keys) {
+		if (record[key] !== undefined) {
+			overrides[key] = ownedNumber(record[key]);
+		}
+	}
+	return resolveSpreadsheetSemanticLimits(overrides);
+}
+
+function snapshotProjection(
+	projection: unknown,
+	limits: ParadisSpreadsheetSemanticLimits,
+	checkpoint: () => void,
+	budget: OwnershipBudget,
+): IParadisWorkbookData {
+	const projectionRecord = projectDataRecord(projection, ['sheets', 'drawingsBySheet', 'themeColors'], 3, budget);
+	const sourceSheets = projectDataArray(projectionRecord.sheets, limits.projectionSheets, budget);
+	let rowCount = 0;
+	let cellCount = 0;
+	const sheets: IParadisWorkbookData['sheets'][number][] = [];
+	for (const sheetValue of sourceSheets) {
+		checkpoint();
+		const sheet = projectDataRecord(sheetValue, [
+			'name', 'rows', 'columnCount', 'columnWidths', 'truncated', 'minCol', 'dataValidations', 'shapes', 'showGridLines', 'zoomScale',
+			'tabColor', 'protectedSheet', 'rowBreaks', 'colBreaks', 'printArea', 'pageLayout',
+		], 18, budget);
+		const sourceRows = projectDataArray(sheet.rows, limits.projectionRows - rowCount, budget);
+		const rows: IParadisWorkbookData['sheets'][number]['rows'][number][] = [];
+		for (const rowValue of sourceRows) {
+			checkpoint();
+			rowCount++;
+			const row = projectDataRecord(rowValue, ['excelRow', 'height', 'cells'], 3, budget);
+			const sourceCells = projectDataArray(row.cells, limits.projectionCells - cellCount, budget);
+			const cells: IParadisWorkbookData['sheets'][number]['rows'][number]['cells'][number][] = [];
+			for (const cellValue of sourceCells) {
+				checkpoint();
+				cellCount++;
+				const cell = projectDataRecord(cellValue, [
+					'value', 'style', 'colSpan', 'rowSpan', 'hidden', 'wrapText', 'verticalText', 'shrinkToFit', 'richText', 'diagonal', 'dataValidation',
+				], 11, budget);
+				const diagonal = cell.diagonal === undefined ? undefined : snapshotProjectionDiagonal(cell.diagonal, budget);
+				cells.push({
+					value: ownedString(cell.value, budget),
+					style: {},
+					...(diagonal ? { diagonal } : {}),
+				});
+			}
+			rows.push({ excelRow: ownedNumber(row.excelRow), height: ownedNumber(row.height), cells });
+		}
+		sheets.push({
+			name: ownedString(sheet.name, budget),
+			rows,
+			columnCount: ownedNumber(sheet.columnCount),
+			columnWidths: [],
+			truncated: ownedBoolean(sheet.truncated),
+			minCol: ownedNumber(sheet.minCol),
+		});
+	}
+	return { sheets };
+}
+
+function snapshotProjectionDiagonal(value: unknown, budget: OwnershipBudget): IParadisDiagonalBorder {
+	const record = projectDataRecord(value, ['up', 'down', 'style', 'color', 'rawStyle', 'rawColor'], 6, budget);
+	return {
+		up: ownedBoolean(record.up),
+		down: ownedBoolean(record.down),
+		style: ownedString(record.style, budget),
+		color: ownedString(record.color, budget),
+		...(record.rawStyle !== undefined ? { rawStyle: ownedString(record.rawStyle, budget) } : {}),
+		...(record.rawColor !== undefined ? { rawColor: snapshotSpreadsheetColor(record.rawColor, budget) } : {}),
+	};
+}
+
+function readMonotonicClock(now: () => number): number {
+	const value = now();
+	if (!Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) {
+		throw new ParadisOfficePackageError('invalid');
+	}
+	return value;
+}
+
+function projectInventoryEnvelope(inventory: ParadisOfficeInventory, budget: OwnershipBudget): OwnedRecord {
+	return projectDataRecord(inventory, [
+		'format', 'container', 'parts', 'relationships', 'features', 'security', 'budgetProfile', 'budgetUsage',
+		'outcome', 'completeness', 'warnings',
+	], maximumInventoryKeys, budget);
+}
+
+function snapshotInventory(inventory: OwnedRecord, checkpoint: (force?: boolean) => void, budget: OwnershipBudget): ParadisOfficeInventory {
+	const sourceParts = projectDataArray(inventory.parts, maximumInventoryParts, budget);
+	const parts: ParadisOfficeInventoryPart[] = [];
+	for (const part of sourceParts) {
+		checkpoint();
+		parts.push(copyInventoryPart(part, budget));
+	}
+	const sourceRelationships = projectDataArray(inventory.relationships, maximumInventoryRelationships, budget);
+	const relationships: ParadisOfficeInventory['relationships'][number][] = [];
+	for (const relationshipValue of sourceRelationships) {
+		checkpoint();
+		const relationship = projectDataRecord(relationshipValue, ['id', 'sourcePartId', 'type', 'target', 'targetMode', 'missing', 'cyclic'], maximumInventoryRelationshipKeys, budget);
+		const targetMode = ownedString(relationship.targetMode, budget);
+		if (targetMode !== 'internal' && targetMode !== 'external') {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		relationships.push({
+			id: ownedString(relationship.id, budget),
+			...(relationship.sourcePartId !== undefined ? { sourcePartId: ownedString(relationship.sourcePartId, budget) } : {}),
+			type: ownedString(relationship.type, budget),
+			target: ownedString(relationship.target, budget),
+			targetMode,
+			missing: ownedBoolean(relationship.missing),
+			cyclic: ownedBoolean(relationship.cyclic),
+		});
+	}
+	projectDataArray(inventory.features, maximumInventoryFeatures, budget);
+	const security = projectDataRecord(inventory.security, [
+		'encrypted', 'hasMacros', 'hasExternalRelationships', 'hasEmbeddedObjects', 'hasProtection', 'hasSignatures',
+	], 6, budget);
+	const budgetUsage = projectDataRecord(inventory.budgetUsage, [
+		'compressedInputBytes', 'expandedBytes', 'entryCount', 'largestPartBytes', 'totalMediaBytes', 'elapsedMilliseconds',
+	], 6, budget);
+	return {
+		format: ownedString(inventory.format, budget) as ParadisOfficeInventory['format'],
+		container: ownedString(inventory.container, budget) as ParadisOfficeInventory['container'],
+		parts,
+		relationships,
+		features: [],
+		security: {
+			encrypted: ownedBoolean(security.encrypted),
+			hasMacros: ownedBoolean(security.hasMacros),
+			hasExternalRelationships: ownedBoolean(security.hasExternalRelationships),
+			hasEmbeddedObjects: ownedBoolean(security.hasEmbeddedObjects),
+			hasProtection: ownedBoolean(security.hasProtection),
+			hasSignatures: ownedBoolean(security.hasSignatures),
+		},
+		budgetProfile: ownedString(inventory.budgetProfile, budget) as ParadisOfficeInventory['budgetProfile'],
+		budgetUsage: {
+			compressedInputBytes: ownedNumber(budgetUsage.compressedInputBytes),
+			expandedBytes: ownedNumber(budgetUsage.expandedBytes),
+			entryCount: ownedNumber(budgetUsage.entryCount),
+			largestPartBytes: ownedNumber(budgetUsage.largestPartBytes),
+			totalMediaBytes: ownedNumber(budgetUsage.totalMediaBytes),
+			elapsedMilliseconds: ownedNumber(budgetUsage.elapsedMilliseconds),
+		},
+	};
+}
+
+function copyInventoryPart(value: unknown, budget: OwnershipBudget): ParadisOfficeInventoryPart {
+	const part = projectDataRecord(value, [
+		'id', 'canonicalUri', 'contentType', 'compressedBytes', 'expandedBytes', 'required', 'canonicalHash',
+		'coverage', 'rawHash', 'hashCompleteness', 'fingerprint',
+	], maximumInventoryPartKeys, budget);
+	const base = {
+		id: ownedString(part.id, budget),
+		canonicalUri: ownedString(part.canonicalUri, budget),
+		contentType: ownedString(part.contentType, budget),
+		compressedBytes: ownedNumber(part.compressedBytes),
+		expandedBytes: ownedNumber(part.expandedBytes),
+		required: ownedBoolean(part.required),
+		...(part.canonicalHash !== undefined ? { canonicalHash: snapshotFingerprint(part.canonicalHash, budget) } : {}),
+	};
+	const coverage = ownedString(part.coverage, budget);
+	if (coverage === 'completeOpaque') {
+		return { ...base, coverage, hashCompleteness: 'allBytes', fingerprint: snapshotFingerprint(part.fingerprint, budget) };
+	}
+	if (coverage === 'parsed') {
+		return { ...base, coverage, rawHash: snapshotFingerprint(part.rawHash, budget), hashCompleteness: 'allBytes' };
+	}
+	if (!isIncompletePartCoverage(coverage)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	const hashCompleteness = part.hashCompleteness === undefined ? undefined : ownedString(part.hashCompleteness, budget);
+	if (hashCompleteness !== undefined && hashCompleteness !== 'allBytes' && hashCompleteness !== 'incomplete') {
+		throw new ParadisOfficePackageError('unsafe');
 	}
 	return {
-		...part,
-		...(part.rawHash ? { rawHash: { ...part.rawHash } } : {}),
-		...(canonicalHash ? { canonicalHash } : {}),
+		...base,
+		coverage,
+		...(part.rawHash !== undefined ? { rawHash: snapshotFingerprint(part.rawHash, budget) } : {}),
+		...(hashCompleteness !== undefined ? { hashCompleteness } : {}),
+	};
+}
+
+function isIncompletePartCoverage(value: string): value is 'partial' | 'opaque' | 'unsafe' | 'failed' | 'omittedByBudget' {
+	return value === 'partial' || value === 'opaque' || value === 'unsafe' || value === 'failed' || value === 'omittedByBudget';
+}
+
+function snapshotFingerprint(value: unknown, budget: OwnershipBudget): ParadisOfficeFingerprint {
+	const record = projectDataRecord(value, ['algorithm', 'value', 'byteLength'], 3, budget);
+	if (ownedString(record.algorithm, budget) !== 'sha256') {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	return { algorithm: 'sha256', value: ownedString(record.value, budget), byteLength: ownedNumber(record.byteLength) };
+}
+
+function snapshotSpreadsheetColor(value: unknown, budget: OwnershipBudget): ParadisSpreadsheetColor {
+	const record = projectDataRecord(value, ['kind', 'rgb', 'indexed', 'theme', 'tint', 'auto'], 6, budget);
+	const kind = ownedString(record.kind, budget);
+	if (!['rgb', 'indexed', 'theme', 'auto'].includes(kind)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	return {
+		kind: kind as ParadisSpreadsheetColor['kind'],
+		...(record.rgb !== undefined ? { rgb: ownedString(record.rgb, budget) } : {}),
+		...(record.indexed !== undefined ? { indexed: ownedNumber(record.indexed) } : {}),
+		...(record.theme !== undefined ? { theme: ownedNumber(record.theme) } : {}),
+		...(record.tint !== undefined ? { tint: ownedString(record.tint, budget) } : {}),
+		...(record.auto !== undefined ? { auto: ownedBoolean(record.auto) } : {}),
 	};
 }
 
@@ -504,24 +910,24 @@ function validateContentTypesPart(
 	}
 }
 
-function uniqueRelationship(inventory: ParadisOfficeInventory, sourcePartId: string | undefined, types: ReadonlySet<string>) {
-	const relationships = inventory.relationships.filter(relationship => relationship.sourcePartId === sourcePartId && types.has(relationship.type));
-	if (relationships.length !== 1) {
+function uniqueRawRelationship(relationships: readonly RawRelationship[], types: ReadonlySet<string>): RawRelationship {
+	const matches = relationships.filter(relationship => types.has(relationship.type));
+	if (matches.length !== 1) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
-	return relationships[0];
+	return matches[0];
 }
 
-function optionalUniqueRelationship(inventory: ParadisOfficeInventory, sourcePartId: string, types: ReadonlySet<string>) {
-	const relationships = inventory.relationships.filter(relationship => relationship.sourcePartId === sourcePartId && types.has(relationship.type));
-	if (relationships.length > 1) {
+function optionalUniqueRawRelationship(relationships: readonly RawRelationship[], types: ReadonlySet<string>): RawRelationship | undefined {
+	const matches = relationships.filter(relationship => types.has(relationship.type));
+	if (matches.length > 1) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
-	return relationships[0];
+	return matches[0];
 }
 
-function safeInternalTarget(relationship: ParadisOfficeInventory['relationships'][number]): string {
-	if (relationship.targetMode !== 'internal' || relationship.missing || relationship.cyclic || !relationship.target.startsWith('/')) {
+function safeRawInternalTarget(relationship: RawRelationship): string {
+	if (relationship.targetMode !== 'internal' || !relationship.target.startsWith('/')) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
 	return relationship.target;
@@ -538,17 +944,17 @@ function relationshipPartId(sourcePartId: string | undefined): string {
 	return `${sourcePartId.slice(0, separator)}/_rels/${sourcePartId.slice(separator + 1)}.rels`;
 }
 
-function validateRelationshipPart(
+function parseRelationshipPart(
 	document: ParadisOfficeXmlDocument,
 	sourcePartId: string | undefined,
-	inventory: ParadisOfficeInventory,
 	checkpoint: (force?: boolean) => void,
-): void {
+): readonly RawRelationship[] {
 	const root = document.root;
 	if (root.local !== 'Relationships' || !packageRelationshipNamespaces.has(root.uri)) {
 		throw new ParadisOfficePackageError('malformed');
 	}
-	const actual = new Map<string, { readonly type: string; readonly target: string; readonly targetMode: 'internal' | 'external' }>();
+	const result: RawRelationship[] = [];
+	const ids = new Set<string>();
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (node.local !== 'Relationship' || node.uri !== root.uri) {
@@ -568,27 +974,39 @@ function validateRelationshipPart(
 		}
 		const targetMode = rawMode === 'External' ? 'external' : 'internal';
 		const target = targetMode === 'external' ? rawTarget : resolveRelationshipTarget(sourcePartId, rawTarget);
-		if (actual.has(id)) {
+		if (ids.has(id)) {
 			throw new ParadisOfficePackageError('unsafe');
 		}
-		actual.set(id, { type, target, targetMode });
+		ids.add(id);
+		result.push({ id, type, target, targetMode });
 	}
+	return result;
+}
+
+function validateRelationshipAuthority(
+	actual: readonly RawRelationship[],
+	sourcePartId: string | undefined,
+	inventory: ParadisOfficeInventory,
+	indexedParts: ReadonlyMap<string, IndexedArchivePart>,
+): void {
 	const expected = inventory.relationships.filter(relationship => relationship.sourcePartId === sourcePartId);
-	if (actual.size !== expected.length) {
+	if (actual.length !== expected.length) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
+	const actualById = new Map(actual.map(relationship => [relationship.id, relationship]));
 	const expectedIds = new Set<string>();
 	for (const relationship of expected) {
-		checkpoint();
 		if (expectedIds.has(relationship.id)) {
 			throw new ParadisOfficePackageError('unsafe');
 		}
 		expectedIds.add(relationship.id);
-		const authority = actual.get(relationship.id);
+		const authority = actualById.get(relationship.id);
 		if (!authority
 			|| authority.type !== relationship.type
 			|| authority.target !== relationship.target
-			|| authority.targetMode !== relationship.targetMode) {
+			|| authority.targetMode !== relationship.targetMode
+			|| relationship.cyclic
+			|| relationship.missing !== (authority.targetMode === 'internal' && !indexedParts.has(authority.target))) {
 			throw new ParadisOfficePackageError('unsafe');
 		}
 	}
@@ -615,25 +1033,29 @@ function resolveRelationshipTarget(sourcePartId: string | undefined, target: str
 	return `/${base.join('/')}`;
 }
 
-async function readAndParseParts(
+async function indexSemanticArchive(
 	archive: IParadisOfficeArchive,
 	inventory: ParadisOfficeInventory,
-	requestedPartIds: ReadonlySet<string>,
 	profile: ParadisOfficeBudgetProfile,
 	token: CancellationToken | undefined,
 	checkpoint: (force?: boolean) => void,
-): Promise<ReadonlyMap<string, ParsedPart>> {
+): Promise<SemanticArchiveReader> {
 	const inventoryParts = new Map(inventory.parts.map(part => [part.canonicalUri, part]));
-	const parsed = new Map<string, ParsedPart>();
+	const parts = new Map<string, IndexedArchivePart>();
 	const seen = new Set<string>();
 	const seenInventoryParts = new Set<string>();
 	let entries = 0;
+	let aggregateCompressedBytes = 0;
 	for await (const entry of archive.entries(token)) {
 		checkpoint();
 		if (++entries > profile.entryCount) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
 		validateEntryMetadata(entry);
+		aggregateCompressedBytes = addSafeBudget(aggregateCompressedBytes, entry.compressedBytes);
+		if (aggregateCompressedBytes > archive.containerByteLength) {
+			throw new ParadisOfficePackageError('zipBomb');
+		}
 		const canonicalName = canonicalizeParadisOfficeArchiveName(entry.directory && entry.name.endsWith('/') ? entry.name.slice(0, -1) : entry.name);
 		if (seen.has(canonicalName)) {
 			throw new ParadisOfficePackageError('unsafe');
@@ -650,34 +1072,55 @@ async function readAndParseParts(
 			throw new ParadisOfficePackageError('unsafe');
 		}
 		seenInventoryParts.add(canonicalName);
-		if (!requestedPartIds.has(canonicalName)) {
-			continue;
-		}
-		const expectedFingerprint = allByteFingerprint(inventoryPart);
-		const bytes = await readPartBytes(archive, entry, profile.xmlPartBytes, token, checkpoint);
-		const fingerprint = await archive.hash(bytes.slice());
-		if (!sameFingerprint(fingerprint, expectedFingerprint) || fingerprint.byteLength !== bytes.byteLength) {
-			throw new ParadisOfficePackageError('unsafe');
-		}
-		const xml = decodeXml(bytes);
-		const document = await archive.parseXml(xml, {
-			depth: profile.xmlDepth,
-			nodes: profile.xmlNodesPerPart,
-			attributeLength: profile.attributeLength,
-			characters: profile.xmlPartBytes,
-		}, token, () => checkpoint());
-		parsed.set(canonicalName, { document, source: { partId: canonicalName, fingerprint } });
-		checkpoint(true);
+		parts.set(canonicalName, { entry, inventoryPart });
 	}
 	if (seenInventoryParts.size !== inventoryParts.size) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
-	for (const partId of requestedPartIds) {
-		if (!parsed.has(partId)) {
-			throw new ParadisOfficePackageError('unsafe');
-		}
+	return { parts, parsed: new Map(), rereadCompressedBytes: 0, rereadExpandedBytes: 0 };
+}
+
+async function readSemanticPart(
+	archive: IParadisOfficeArchive,
+	reader: SemanticArchiveReader,
+	partId: string,
+	profile: ParadisOfficeBudgetProfile,
+	token: CancellationToken | undefined,
+	checkpoint: (force?: boolean) => void,
+): Promise<ParsedPart> {
+	const existing = reader.parsed.get(partId);
+	if (existing) {
+		return existing;
 	}
+	const indexed = reader.parts.get(partId);
+	if (!indexed) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	const expectedFingerprint = allByteFingerprint(indexed.inventoryPart);
+	reader.rereadCompressedBytes = addSafeBudget(reader.rereadCompressedBytes, indexed.entry.compressedBytes);
+	const bytes = await readPartBytes(archive, reader, indexed.entry, profile, token, checkpoint);
+	const fingerprint = await archive.hash(bytes.slice());
+	if (!sameFingerprint(fingerprint, expectedFingerprint) || fingerprint.byteLength !== bytes.byteLength) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	const document = await archive.parseXml(decodeXml(bytes), {
+		depth: profile.xmlDepth,
+		nodes: profile.xmlNodesPerPart,
+		attributeLength: profile.attributeLength,
+		characters: profile.xmlPartBytes,
+	}, token, () => checkpoint());
+	const parsed = { document, source: { partId, fingerprint } };
+	reader.parsed.set(partId, parsed);
+	checkpoint(true);
 	return parsed;
+}
+
+function addSafeBudget(left: number, right: number): number {
+	const value = left + right;
+	if (!Number.isSafeInteger(value) || value < 0) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	return value;
 }
 
 function validateEntryMetadata(entry: ParadisOfficeArchiveEntry): void {
@@ -696,8 +1139,9 @@ function allByteFingerprint(part: ParadisOfficeInventoryPart): ParadisOfficeFing
 
 async function readPartBytes(
 	archive: IParadisOfficeArchive,
+	reader: SemanticArchiveReader,
 	entry: ParadisOfficeArchiveEntry,
-	maximumBytes: number,
+	profile: ParadisOfficeBudgetProfile,
 	token: CancellationToken | undefined,
 	checkpoint: (force?: boolean) => void,
 ): Promise<Uint8Array> {
@@ -705,10 +1149,21 @@ async function readPartBytes(
 	let length = 0;
 	for await (const chunk of archive.read(entry, token)) {
 		checkpoint();
-		if (!(chunk instanceof Uint8Array) || !Number.isSafeInteger(length + chunk.byteLength) || length + chunk.byteLength > maximumBytes) {
+		if (!(chunk instanceof Uint8Array) || !Number.isSafeInteger(length + chunk.byteLength)) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
-		length += chunk.byteLength;
+		const nextLength = length + chunk.byteLength;
+		const nextExpandedBytes = addSafeBudget(reader.rereadExpandedBytes, chunk.byteLength);
+		if (nextLength > profile.xmlPartBytes || nextExpandedBytes > profile.expandedBytes) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		if ((entry.compressedBytes <= 0 ? nextLength > 0 : nextLength > entry.compressedBytes * profile.compressionRatio)
+			|| (archive.containerByteLength <= 0 ? nextExpandedBytes > 0 : nextExpandedBytes > archive.containerByteLength * profile.compressionRatio)
+			|| (reader.rereadCompressedBytes <= 0 ? nextExpandedBytes > 0 : nextExpandedBytes > reader.rereadCompressedBytes * profile.compressionRatio)) {
+			throw new ParadisOfficePackageError('zipBomb');
+		}
+		length = nextLength;
+		reader.rereadExpandedBytes = nextExpandedBytes;
 		chunks.push(chunk.slice());
 	}
 	if (length !== entry.declaredExpandedBytes) {
@@ -970,11 +1425,16 @@ function parseBorder(node: XmlElement, index: number, counters: SemanticCounters
 		outline: booleanAttribute(node, 'outline'),
 	});
 	const validEdges = new Set(['start', 'end', 'left', 'right', 'top', 'bottom', 'diagonal', 'vertical', 'horizontal']);
+	const seenEdges = new Set<string>();
 	for (const child of elementChildren(node, checkpoint)) {
 		if (!isSpreadsheetElement(child) || !validEdges.has(child.local)) {
 			counters.unknownElements++;
 			continue;
 		}
+		if (seenEdges.has(child.local)) {
+			throw new ParadisOfficePackageError('malformed');
+		}
+		seenEdges.add(child.local);
 		result[child.local] = parseBorderEdge(child, counters, checkpoint);
 	}
 	return result as unknown as ParadisSemanticBorder;
@@ -1063,6 +1523,7 @@ function parseWorksheet(
 	const merges: ParadisSemanticRange[] = [];
 	const views: ParadisSemanticSheetView[] = [];
 	let dimension: ParadisSemanticRange | undefined;
+	let sheetData: XmlElement | undefined;
 	for (const child of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(child)) {
@@ -1081,7 +1542,10 @@ function parseWorksheet(
 				parseColumns(child, columns, limits, counters, checkpoint);
 				break;
 			case 'sheetData':
-				parseSheetData(child, rows, cells, sharedStrings, styles, limits, counters, checkpoint);
+				if (sheetData) {
+					throw new ParadisOfficePackageError('malformed');
+				}
+				sheetData = child;
 				break;
 			case 'mergeCells':
 				parseMerges(child, merges, limits, counters, checkpoint);
@@ -1091,6 +1555,9 @@ function parseWorksheet(
 			default:
 				counters.unknownElements++;
 		}
+	}
+	if (sheetData) {
+		parseSheetData(sheetData, rows, cells, columns, sharedStrings, styles, limits, counters, checkpoint);
 	}
 	return {
 		name: record.name,
@@ -1200,6 +1667,7 @@ function parseSheetData(
 	root: XmlElement,
 	rows: Map<number, ParadisSemanticRow>,
 	cells: Map<string, ParadisSemanticCell>,
+	columns: readonly ParadisSemanticColumn[],
 	sharedStrings: readonly SharedStringRecord[],
 	styles: ParadisSpreadsheetStyles,
 	limits: ParadisSpreadsheetSemanticLimits,
@@ -1221,6 +1689,8 @@ function parseSheetData(
 		}
 		const allowed = ['r', 'spans', 's', 'customFormat', 'ht', 'hidden', 'customHeight', 'outlineLevel', 'collapsed', 'thickTop', 'thickBot', 'ph', 'dyDescent'];
 		countUnknownAttributes(node, allowed, counters, [{ namespaces: new Set(['http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac']), local: 'dyDescent' }]);
+		const rowStyleRef = integerAttribute(node, 's');
+		const effectiveRowStyleRef = booleanAttribute(node, 'customFormat') === true ? rowStyleRef : undefined;
 		rows.set(rowIndex, compact({
 			index: rowIndex,
 			height: attribute(node, 'ht'),
@@ -1231,8 +1701,9 @@ function parseSheetData(
 			collapsed: booleanAttribute(node, 'collapsed'),
 			thickTop: booleanAttribute(node, 'thickTop'),
 			thickBottom: booleanAttribute(node, 'thickBot'),
-			styleRef: integerAttribute(node, 's'),
+			styleRef: rowStyleRef,
 		}));
+		let previousColumn = 0;
 		for (const cellNode of elementChildren(node, checkpoint)) {
 			checkpoint();
 			if (!isSpreadsheetElement(cellNode, 'c')) {
@@ -1243,12 +1714,16 @@ function parseSheetData(
 			if (counters.expectedCells > limits.cells) {
 				throw new ParadisOfficePackageError('limitExceeded');
 			}
-			const addressValue = requiredAttribute(cellNode, 'r').toUpperCase();
+			const rawAddress = attribute(cellNode, 'r');
+			const addressValue = rawAddress?.toUpperCase() ?? formatCellAddress(rowIndex, previousColumn + 1);
 			const coordinate = parseCellAddress(addressValue);
 			if (!coordinate || coordinate.row !== rowIndex || cells.has(addressValue)) {
 				throw new ParadisOfficePackageError('malformed');
 			}
-			cells.set(addressValue, parseCell(cellNode, sharedStrings, styles, counters, checkpoint));
+			previousColumn = coordinate.column;
+			const explicitStyleRef = integerAttribute(cellNode, 's');
+			const effectiveStyle = resolveEffectiveCellStyle(explicitStyleRef, effectiveRowStyleRef, coordinate.column, columns, styles);
+			cells.set(addressValue, parseCell(cellNode, sharedStrings, styles, effectiveStyle, counters, checkpoint));
 			counters.parsedCells++;
 		}
 	}
@@ -1258,6 +1733,7 @@ function parseCell(
 	node: XmlElement,
 	sharedStrings: readonly SharedStringRecord[],
 	styles: ParadisSpreadsheetStyles,
+	effectiveStyle: { readonly ref?: number; readonly origin?: ParadisSemanticCell['effectiveStyleOrigin'] },
 	counters: SemanticCounters,
 	checkpoint: (force?: boolean) => void,
 ): ParadisSemanticCell {
@@ -1278,7 +1754,7 @@ function parseCell(
 			counters.unknownElements++;
 		}
 	}
-	const styleFields = cellStyleFields(styleRef, styles, counters);
+	const styleFields = cellStyleFields(styleRef, effectiveStyle, styles, counters);
 	if (formulaNode) {
 		if (inlineNode) {
 			throw new ParadisOfficePackageError('malformed');
@@ -1300,12 +1776,15 @@ function parseCell(
 		if (valueNode) {
 			throw new ParadisOfficePackageError('malformed');
 		}
-		const inline = inlineNode ? parseStringContainer(inlineNode, counters, checkpoint) : { text: '' };
-		return { storedType: 'string', rawType, rawValue: inline.text, text: inline.text, ...(inline.richText ? { richText: inline.richText } : {}), ...styleFields };
+		if (!inlineNode) {
+			return { storedType: 'string', rawType, rawValue: { present: false }, ...styleFields };
+		}
+		const inline = parseStringContainer(inlineNode, counters, checkpoint);
+		return { storedType: 'string', rawType, rawValue: { present: true, text: inline.text }, text: inline.text, ...(inline.richText ? { richText: inline.richText } : {}), ...styleFields };
 	}
 	if (rawType === 's') {
-		const rawValue = valueNode ? directTextContent(valueNode, checkpoint) : '';
-		const sharedStringIndex = parseUnsignedInteger(rawValue);
+		const rawValue = semanticRawValue(valueNode, checkpoint);
+		const sharedStringIndex = rawValue.present ? parseUnsignedInteger(rawValue.text) : undefined;
 		const sharedString = sharedStringIndex === undefined ? undefined : sharedStrings[sharedStringIndex];
 		if (!sharedString) {
 			counters.unresolvedReferences++;
@@ -1317,38 +1796,76 @@ function parseCell(
 		};
 	}
 	if (rawType === 'str') {
-		const rawValue = valueNode ? directTextContent(valueNode, checkpoint) : '';
-		return { storedType: 'string', rawType, rawValue, text: rawValue, ...styleFields };
+		const rawValue = semanticRawValue(valueNode, checkpoint);
+		return { storedType: 'string', rawType, rawValue, ...(rawValue.present ? { text: rawValue.text } : {}), ...styleFields };
 	}
 	if (rawType === 'b') {
-		return { storedType: 'boolean', rawType, rawValue: valueNode ? directTextContent(valueNode, checkpoint) : '', ...styleFields };
+		return { storedType: 'boolean', rawType, rawValue: semanticRawValue(valueNode, checkpoint), ...styleFields };
 	}
 	if (rawType === 'e') {
-		return { storedType: 'error', rawType, rawValue: valueNode ? directTextContent(valueNode, checkpoint) : '', ...styleFields };
+		return { storedType: 'error', rawType, rawValue: semanticRawValue(valueNode, checkpoint), ...styleFields };
 	}
 	if (rawType === 'd') {
-		return { storedType: 'date', rawType, rawValue: valueNode ? directTextContent(valueNode, checkpoint) : '', ...styleFields };
+		return { storedType: 'date', rawType, rawValue: semanticRawValue(valueNode, checkpoint), ...styleFields };
 	}
 	if (rawType !== undefined && rawType !== 'n') {
 		counters.unresolvedReferences++;
-		const rawValue = valueNode ? directTextContent(valueNode, checkpoint) : '';
-		return { storedType: 'string', rawType, rawValue, text: rawValue, ...styleFields };
+		const rawValue = semanticRawValue(valueNode, checkpoint);
+		return { storedType: 'string', rawType, rawValue, ...(rawValue.present ? { text: rawValue.text } : {}), ...styleFields };
 	}
 	if (!valueNode) {
-		return { storedType: 'blank', ...styleFields };
+		return rawType === 'n'
+			? { storedType: 'number', rawType, rawValue: { present: false }, ...styleFields }
+			: { storedType: 'blank', rawValue: { present: false }, ...styleFields };
 	}
-	return { storedType: 'number', ...(rawType ? { rawType } : {}), rawValue: directTextContent(valueNode, checkpoint), ...styleFields };
+	return { storedType: 'number', ...(rawType ? { rawType } : {}), rawValue: { present: true, text: directTextContent(valueNode, checkpoint) }, ...styleFields };
 }
 
-function cellStyleFields(styleRef: number | undefined, styles: ParadisSpreadsheetStyles, counters: SemanticCounters): Pick<ParadisSemanticCell, 'styleRef' | 'styleSource'> {
-	if (styleRef === undefined) {
-		return {};
+function semanticRawValue(node: XmlElement | undefined, checkpoint: (force?: boolean) => void) {
+	return node ? { present: true as const, text: directTextContent(node, checkpoint) } : { present: false as const };
+}
+
+function resolveEffectiveCellStyle(
+	cellStyleRef: number | undefined,
+	rowStyleRef: number | undefined,
+	column: number,
+	columns: readonly ParadisSemanticColumn[],
+	styles: ParadisSpreadsheetStyles,
+): { readonly ref?: number; readonly origin?: ParadisSemanticCell['effectiveStyleOrigin'] } {
+	if (cellStyleRef !== undefined) {
+		return { ref: cellStyleRef, origin: 'cell' };
 	}
-	counters.cellsWithStyleRefs++;
-	const format = styles.cellFormats[styleRef];
+	if (rowStyleRef !== undefined) {
+		return { ref: rowStyleRef, origin: 'row' };
+	}
+	const columnStyle = columns.find(candidate => candidate.min <= column && column <= candidate.max && candidate.styleRef !== undefined)?.styleRef;
+	if (columnStyle !== undefined) {
+		return { ref: columnStyle, origin: 'column' };
+	}
+	return styles.cellFormats.length > 0 ? { ref: 0, origin: 'default' } : {};
+}
+
+function cellStyleFields(
+	styleRef: number | undefined,
+	effectiveStyle: { readonly ref?: number; readonly origin?: ParadisSemanticCell['effectiveStyleOrigin'] },
+	styles: ParadisSpreadsheetStyles,
+	counters: SemanticCounters,
+): Pick<ParadisSemanticCell, 'styleRef' | 'effectiveStyleRef' | 'effectiveStyleOrigin' | 'styleSource'> {
+	if (styleRef !== undefined) {
+		counters.cellsWithStyleRefs++;
+	}
+	if (effectiveStyle.ref === undefined) {
+		return { ...(styleRef !== undefined ? { styleRef } : {}) };
+	}
+	const format = styles.cellFormats[effectiveStyle.ref];
 	if (!format) {
 		counters.unresolvedStyleRefs++;
-		return { styleRef, ...(styles.source ? { styleSource: styles.source } : {}) };
+		return {
+			...(styleRef !== undefined ? { styleRef } : {}),
+			effectiveStyleRef: effectiveStyle.ref,
+			...(effectiveStyle.origin ? { effectiveStyleOrigin: effectiveStyle.origin } : {}),
+			...(styles.source ? { styleSource: styles.source } : {}),
+		};
 	}
 	const border = format.borderRef === undefined ? undefined : styles.borders[format.borderRef];
 	if (format.borderRef !== undefined && !border) {
@@ -1357,7 +1874,12 @@ function cellStyleFields(styleRef: number | undefined, styles: ParadisSpreadshee
 	if (border?.diagonalUp || border?.diagonalDown || border?.diagonal?.style || border?.diagonal?.color) {
 		counters.cellsWithDiagonalStyleRefs++;
 	}
-	return { styleRef, ...(styles.source ? { styleSource: styles.source } : {}) };
+	return {
+		...(styleRef !== undefined ? { styleRef } : {}),
+		effectiveStyleRef: effectiveStyle.ref,
+		...(effectiveStyle.origin ? { effectiveStyleOrigin: effectiveStyle.origin } : {}),
+		...(styles.source ? { styleSource: styles.source } : {}),
+	};
 }
 
 function parseFormula(node: XmlElement, counters: SemanticCounters, checkpoint: (force?: boolean) => void): ParadisSemanticFormula {
@@ -1457,10 +1979,25 @@ function parseRichTextProperties(node: XmlElement, counters: SemanticCounters, c
 
 function parseColor(node: XmlElement, counters: SemanticCounters): ParadisSpreadsheetColor {
 	countUnknownAttributes(node, ['rgb', 'indexed', 'theme', 'tint', 'auto'], counters);
-	return compact({
-		rgb: attribute(node, 'rgb'), indexed: integerAttribute(node, 'indexed'), theme: integerAttribute(node, 'theme'),
-		tint: attribute(node, 'tint'), auto: booleanAttribute(node, 'auto'),
-	});
+	const rgb = attribute(node, 'rgb');
+	const indexed = integerAttribute(node, 'indexed');
+	const theme = integerAttribute(node, 'theme');
+	const auto = booleanAttribute(node, 'auto');
+	const tint = attribute(node, 'tint');
+	const sourceCount = Number(rgb !== undefined) + Number(indexed !== undefined) + Number(theme !== undefined) + Number(auto !== undefined);
+	if (sourceCount !== 1) {
+		throw new ParadisOfficePackageError('malformed');
+	}
+	if (rgb !== undefined) {
+		return { kind: 'rgb', rgb, ...(tint !== undefined ? { tint } : {}) };
+	}
+	if (indexed !== undefined) {
+		return { kind: 'indexed', indexed, ...(tint !== undefined ? { tint } : {}) };
+	}
+	if (theme !== undefined) {
+		return { kind: 'theme', theme, ...(tint !== undefined ? { tint } : {}) };
+	}
+	return { kind: 'auto', auto: auto!, ...(tint !== undefined ? { tint } : {}) };
 }
 
 function parseMerges(root: XmlElement, result: ParadisSemanticRange[], limits: ParadisSpreadsheetSemanticLimits, counters: SemanticCounters, checkpoint: (force?: boolean) => void): void {
@@ -1503,6 +2040,20 @@ function parseCellAddress(value: string): { readonly row: number; readonly colum
 	}
 	const row = Number.parseInt(match[2], 10);
 	return column <= maximumExcelColumns && row <= maximumExcelRows ? { row, column } : undefined;
+}
+
+function formatCellAddress(row: number, column: number): string {
+	if (row < 1 || row > maximumExcelRows || column < 1 || column > maximumExcelColumns) {
+		throw new ParadisOfficePackageError('malformed');
+	}
+	let value = column;
+	let name = '';
+	while (value > 0) {
+		value--;
+		name = String.fromCharCode(65 + value % 26) + name;
+		value = Math.floor(value / 26);
+	}
+	return `${name}${row}`;
 }
 
 function spreadsheetRoot(document: ParadisOfficeXmlDocument, local: string): XmlElement {

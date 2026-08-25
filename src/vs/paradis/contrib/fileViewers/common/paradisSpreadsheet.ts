@@ -12,7 +12,7 @@
 // Object.assign(element.style, style) によりそのまま適用できる。
 
 import type { IParadisPageLayout } from './paradisSpreadsheetPageLayout.js';
-import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetProjectionDiagnostic, ParadisSpreadsheetSnapshot } from './spreadsheet/paradisSpreadsheetSemantic.js';
+import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetColor, ParadisSpreadsheetDiagonalIdentity, ParadisSpreadsheetProjectionDiagnostic, ParadisSpreadsheetSnapshot } from './spreadsheet/paradisSpreadsheetSemantic.js';
 
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
 export const PARADIS_SPREADSHEET_CHANNEL = 'paradisSpreadsheet';
@@ -37,6 +37,10 @@ export interface IParadisDiagonalBorder {
 	/** CSS 罫線の太さ・種別(例 "1px solid")。 */
 	readonly style: string;
 	readonly color: string;
+	/** Raw OOXML/ExcelJS border token retained for semantic diagnostics; CSS style is not authoritative. */
+	readonly rawStyle?: string;
+	/** Raw color source retained without resolving theme/indexed/auto provenance. */
+	readonly rawColor?: ParadisSpreadsheetColor;
 }
 
 /** 図形のアンカー位置(セル基準 + EMU オフセット。col/row は0始まり)。 */
@@ -323,12 +327,6 @@ export interface IParadisWorkbookData {
 }
 
 const MAX_SEMANTIC_PROJECTION_DIAGNOSTICS = 10_000;
-const SEMANTIC_BORDER_STYLES: Readonly<Record<string, string>> = {
-	thin: '1px solid', medium: '2px solid', thick: '3px solid', dotted: '1px dotted',
-	dashed: '1px dashed', double: '3px double', mediumDashed: '2px dashed', dashDot: '1px dashed',
-	dashDotDot: '1px dashed', mediumDashDot: '2px dashed', mediumDashDotDot: '2px dashed',
-	slantDashDot: '1px dashed', hair: '1px solid',
-};
 
 interface IParadisSpreadsheetProjectionDiagnosticOptions {
 	readonly checkpoint?: () => void;
@@ -404,11 +402,12 @@ export function diagnoseSpreadsheetProjection(
 						projectionValue: projectedCell.value,
 					});
 				}
-				const semanticFormat = semanticCell.styleRef === undefined ? undefined : snapshot.styles.cellFormats[semanticCell.styleRef];
+				const semanticFormat = semanticCell.effectiveStyleRef === undefined ? undefined : snapshot.styles.cellFormats[semanticCell.effectiveStyleRef];
 				const semanticBorder = semanticFormat?.borderRef === undefined ? undefined : snapshot.styles.borders[semanticFormat.borderRef];
-				if ((semanticBorder?.diagonalUp || semanticBorder?.diagonalDown)
-					&& !projectionDiagonalMatches(semanticBorder, projectedCell.diagonal)) {
-					diagnostics.push({ kind: 'diagonalStyleMismatch', sheetName: semanticSheet.name, cellAddress });
+				const semanticDiagonal = semanticDiagonalIdentity(semanticBorder);
+				const projectionDiagonal = projectionDiagonalIdentity(projectedCell.diagonal);
+				for (const kind of diagonalMismatchKinds(semanticDiagonal, projectionDiagonal)) {
+					diagnostics.push({ kind, sheetName: semanticSheet.name, cellAddress, ...(semanticDiagonal ? { semanticDiagonal } : {}), ...(projectionDiagonal ? { projectionDiagonal } : {}) });
 				}
 			}
 			if (diagnostics.length >= MAX_SEMANTIC_PROJECTION_DIAGNOSTICS) {
@@ -422,31 +421,61 @@ export function diagnoseSpreadsheetProjection(
 	return diagnostics.slice(0, MAX_SEMANTIC_PROJECTION_DIAGNOSTICS);
 }
 
-function projectionDiagonalMatches(semanticBorder: ParadisSemanticBorder, projected: IParadisDiagonalBorder | undefined): boolean {
-	if (!projected
-		|| projected.up !== (semanticBorder.diagonalUp ?? false)
-		|| projected.down !== (semanticBorder.diagonalDown ?? false)) {
-		return false;
+function semanticDiagonalIdentity(border: ParadisSemanticBorder | undefined): ParadisSpreadsheetDiagonalIdentity | undefined {
+	if (!border || (!border.diagonalUp && !border.diagonalDown && !border.diagonal?.style && !border.diagonal?.color)) {
+		return undefined;
 	}
-	const semanticStyle = semanticBorder.diagonal?.style ? SEMANTIC_BORDER_STYLES[semanticBorder.diagonal.style] : undefined;
-	if (semanticStyle && semanticStyle !== projected.style) {
-		return false;
+	return {
+		up: border.diagonalUp ?? false,
+		down: border.diagonalDown ?? false,
+		...(border.diagonal?.style ? { style: border.diagonal.style } : {}),
+		...(border.diagonal?.color ? { color: border.diagonal.color } : {}),
+	};
+}
+
+function projectionDiagonalIdentity(diagonal: IParadisDiagonalBorder | undefined): ParadisSpreadsheetDiagonalIdentity | undefined {
+	return diagonal ? {
+		up: diagonal.up,
+		down: diagonal.down,
+		...(diagonal.rawStyle ? { style: diagonal.rawStyle } : {}),
+		...(diagonal.rawColor ? { color: diagonal.rawColor } : {}),
+	} : undefined;
+}
+
+function diagonalMismatchKinds(
+	semantic: ParadisSpreadsheetDiagonalIdentity | undefined,
+	projection: ParadisSpreadsheetDiagonalIdentity | undefined,
+): readonly ParadisSpreadsheetProjectionDiagnostic['kind'][] {
+	if (!semantic || !projection) {
+		return semantic === projection ? [] : ['diagonalPresenceMismatch'];
 	}
-	const rawRgb = semanticBorder.diagonal?.color?.rgb;
-	if (rawRgb) {
-		const semanticColor = `#${rawRgb.slice(-6)}`.toUpperCase();
-		if (semanticColor !== projected.color.toUpperCase()) {
-			return false;
-		}
+	const result: ParadisSpreadsheetProjectionDiagnostic['kind'][] = [];
+	if (semantic.up !== projection.up || semantic.down !== projection.down) {
+		result.push('diagonalDirectionMismatch');
 	}
-	return true;
+	if (semantic.style !== projection.style) {
+		result.push('diagonalStyleMismatch');
+	}
+	if (!sameRawColor(semantic.color, projection.color)) {
+		result.push('diagonalColorMismatch');
+	}
+	return result;
+}
+
+function sameRawColor(left: ParadisSpreadsheetColor | undefined, right: ParadisSpreadsheetColor | undefined): boolean {
+	return left?.kind === right?.kind
+		&& left?.rgb === right?.rgb
+		&& left?.indexed === right?.indexed
+		&& left?.theme === right?.theme
+		&& left?.tint === right?.tint
+		&& left?.auto === right?.auto;
 }
 
 function semanticProjectionValue(cell: ParadisSemanticCell): string {
 	if (cell.storedType === 'formula') {
 		return cell.cachedResult?.present ? cell.cachedResult.rawValue : '';
 	}
-	return cell.text ?? cell.rawValue ?? '';
+	return cell.text ?? (cell.rawValue?.present ? cell.rawValue.text : '');
 }
 
 function parseSemanticCellAddress(address: string): { readonly row: number; readonly column: number } | undefined {
