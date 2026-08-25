@@ -9,7 +9,9 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
 import {
+	formatPreparedSpreadsheetValue,
 	formatSpreadsheetValue,
+	prepareSpreadsheetNumberFormat,
 	type ParadisFormattedCellValue,
 } from '../../common/spreadsheet/paradisSpreadsheetNumberFormat.js';
 import type { ParadisSemanticCell, ParadisSpreadsheetSnapshot } from '../../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -80,6 +82,18 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(format(0.5, 47), exact('0000.0'));
 	});
 
+	test('seals reusable prepared format state behind a frozen opaque handle', () => {
+		const mutableContext = { workbookLocale: 'de-DE', limits: { outputCharacters: 64 } };
+		const prepared = prepareSpreadsheetNumberFormat('#,##0.00', mutableContext);
+		deepStrictEqual(Reflect.ownKeys(prepared), []);
+		strictEqual(Object.isFrozen(prepared), true);
+		throws(() => Object.defineProperty(prepared, 'runtime', { value: { deadlineMilliseconds: Number.MAX_SAFE_INTEGER } }), TypeError);
+		mutableContext.workbookLocale = 'en-US';
+		mutableContext.limits.outputCharacters = 1;
+		deepStrictEqual(formatPreparedSpreadsheetValue(prepared, 1234.5), exact('1.234,50'));
+		throws(() => formatPreparedSpreadsheetValue(Object.freeze({}) as typeof prepared, 1), /unsafe/);
+	});
+
 	test('selects positive, negative, zero, and text sections without changing the source value', () => {
 		const code = '0.0;[Red](0.0);"-";"text:"@';
 		deepStrictEqual(format(1.25, code), exact('1.3'));
@@ -100,6 +114,15 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(format(123, '0\\$00', { workbookLocale: 'de-DE' }), exact('1$23'));
 		deepStrictEqual(format(12, '0"$"0', { workbookLocale: 'ja-JP' }), exact('1$2'));
 		deepStrictEqual(format(1234.5, '[$€-407]#,##0.00', { applicationLocale: 'en-US' }), exact('€1.234,50'));
+		deepStrictEqual(format(12, 'General" kg"'), exact('12 kg'));
+		deepStrictEqual(format(0.125, 'General%'), exact('12.5%'));
+		deepStrictEqual(format(12, '"USD "General"."'), exact('USD 12.'));
+		deepStrictEqual(format(1234, '0.00" $ "E+00'), exact('1.23 $ E+03'));
+		deepStrictEqual(format(2.125, '#" kg "?/??'), exact('2 kg 1/ 8'));
+		deepStrictEqual(format(1.5, '0.00" $."', { workbookLocale: 'de-DE' }), exact('1,50 $.'));
+		deepStrictEqual(format(1.23, '0.0"."0', { workbookLocale: 'de-DE' }), exact('1,2.3'));
+		deepStrictEqual(format(1.23, '0.0\\.0', { workbookLocale: 'de-DE' }), exact('1,2.3'));
+		deepStrictEqual(format(1234, '0.0"."0E+00', { workbookLocale: 'de-DE' }), exact('1,2.3E+03'));
 	});
 
 	test('evaluates ordered conditions and accepts color directives as non-display metadata', () => {
@@ -154,6 +177,12 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		ok(!overflow.text.includes('Infinity'));
 		ok(overflow.text.includes('0%'));
 		deepStrictEqual(format(1234, '0.0e+0'), exact('1.2e+3'));
+		const minimum = format(Number.MIN_VALUE, '0.0E+00');
+		strictEqual(minimum.status === 'exact' || minimum.status === 'approximated', true);
+		ok(!minimum.text.includes('Infinity'));
+		ok(!minimum.text.includes('NaN'));
+		deepStrictEqual(format(12, '000.0E+00'), exact('012.0E+00'));
+		deepStrictEqual(format(12, '???.?E+??'), exact(' 12. E+  '));
 	});
 
 	test('computes 1900 and 1904 dates without a host timezone and preserves serial 60', () => {
@@ -257,6 +286,11 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		throws(() => format(1, 0, { workbookLocale: 'x'.repeat(129) }), /limitExceeded/);
 		const locale = format(1234.5, '#,##0.00', { workbookLocale: '__proto__' });
 		deepStrictEqual(locale, { text: '1,234.50', status: 'approximated', unsupportedTokens: ['locale:__proto__'] });
+		const malformedLocale = format(1, '0', { workbookLocale: 'de-\uD800' });
+		strictEqual(malformedLocale.status, 'approximated');
+		for (const token of malformedLocale.unsupportedTokens) {
+			strictEqual(hasUnpairedSurrogate(token), false);
+		}
 	});
 
 	test('formats only the render projection while retaining raw semantic and diagonal provenance', () => {
@@ -291,7 +325,14 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		};
 		const style = { color: '#000000' };
 		const diagonal = { up: true, down: false, style: '1px solid', color: '#ff0000', rawStyle: 'thin', rawColor };
-		const projectedCell: IParadisCellData = { value: '1234.5', style, diagonal };
+		const diagonalDescriptorReads = new Map<PropertyKey, number>();
+		const diagonalProxy = new Proxy(diagonal, {
+			getOwnPropertyDescriptor: (target, property) => {
+				diagonalDescriptorReads.set(property, (diagonalDescriptorReads.get(property) ?? 0) + 1);
+				return Reflect.getOwnPropertyDescriptor(target, property);
+			},
+		});
+		const projectedCell: IParadisCellData = { value: '1234.5', style, diagonal: diagonalProxy };
 		const projection: IParadisWorkbookData = {
 			sheets: [{ name: 'Sheet1', rows: [{ excelRow: 1, height: 20, cells: [projectedCell] }], columnCount: 1, columnWidths: [100], truncated: false, minCol: 1 }],
 		};
@@ -303,6 +344,9 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		notStrictEqual(result.projection.sheets[0].rows[0].cells[0].style, style);
 		deepStrictEqual(result.projection.sheets[0].rows[0].cells[0].diagonal, diagonal);
 		notStrictEqual(result.projection.sheets[0].rows[0].cells[0].diagonal, diagonal);
+		for (const property of ['up', 'down', 'style', 'color', 'rawStyle', 'rawColor']) {
+			strictEqual(diagonalDescriptorReads.get(property), 1, property);
+		}
 		strictEqual(projection.sheets[0].rows[0].cells[0], projectedCell);
 		strictEqual(projection.sheets[0].rows[0].cells[0].value, '1234.5');
 		strictEqual(snapshot.sheets[0].cells.get('A1'), semanticCell);
@@ -313,6 +357,17 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(result.diagnostics, diagnostics);
 		deepStrictEqual(result.diagnostics, []);
 		strictEqual(result.formatDiagnosticsTruncated, false);
+
+		const sharedDiagonal = { up: true, down: false, style: 'thin' };
+		const aliasedDiagnosticsSnapshot = {
+			...snapshot,
+			projectionDiagnostics: [
+				{ kind: 'diagonalStyleMismatch' as const, sheetName: 'Sheet1', cellAddress: 'A1', semanticDiagonal: sharedDiagonal },
+				{ kind: 'diagonalDirectionMismatch' as const, sheetName: 'Sheet1', cellAddress: 'A2', semanticDiagonal: sharedDiagonal },
+			],
+		};
+		const aliased = formatSpreadsheetRenderProjection(aliasedDiagnosticsSnapshot, projection);
+		strictEqual(aliased.diagnostics[0].semanticDiagonal, aliased.diagnostics[1].semanticDiagonal);
 	});
 
 	test('uses a present formula cache for display and never recalculates or invents a missing cache', () => {
@@ -374,6 +429,16 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 			oneCellProjection(''),
 			{},
 			{ diagnosticCharacters: 0, diagnosticUtf8Bytes: 0 },
+		), /limitExceeded/);
+		const diagonalBudgetProjection = oneCellProjection('');
+		(diagonalBudgetProjection.sheets[0].rows[0].cells[0] as { diagonal?: unknown }).diagonal = {
+			up: true, down: false, style: '1px solid', color: '😀'.repeat(1000), rawStyle: 'thin', rawColor: { kind: 'rgb', rgb: 'FFFF0000' },
+		};
+		throws(() => formatSpreadsheetRenderProjection(
+			projectionSnapshot({ storedType: 'blank', rawValue: { present: false } }),
+			diagonalBudgetProjection,
+			{},
+			{ inputCharacters: 512, outputCharacters: 512, inputUtf8Bytes: 1024, outputUtf8Bytes: 1024 },
 		), /limitExceeded/);
 		throws(() => formatSpreadsheetRenderProjection(
 			{ ...projectionSnapshot({ storedType: 'blank', rawValue: { present: false } }), sheets: [{ ...projectionSnapshot({ storedType: 'blank', rawValue: { present: false } }).sheets[0], cells: new Map() }] },
@@ -462,6 +527,21 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 
 function oneCellProjection(value: string): IParadisWorkbookData {
 	return { sheets: [{ name: 'Sheet1', rows: [{ excelRow: 1, height: 20, cells: [{ value, style: {} }] }], columnCount: 1, columnWidths: [100], truncated: false, minCol: 1 }] };
+}
+
+function hasUnpairedSurrogate(value: string): boolean {
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = value.charCodeAt(++index);
+			if (!(next >= 0xdc00 && next <= 0xdfff)) {
+				return true;
+			}
+		} else if (code >= 0xdc00 && code <= 0xdfff) {
+			return true;
+		}
+	}
+	return false;
 }
 
 function twoCellProjection(): IParadisWorkbookData {
