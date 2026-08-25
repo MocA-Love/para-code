@@ -145,6 +145,11 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		deepStrictEqual(format(-2.125, '# ?/?;[Red](# ?/?)'), exact('(2 1/8)'));
 		deepStrictEqual(format(2.125, '?/??'), exact('17/ 8'));
 		deepStrictEqual(format(0.2, '?/8'), exact('2/8'));
+		deepStrictEqual(format(0.5, '0?/??'), exact('01/ 2'));
+		deepStrictEqual(format(0.5, '?0/??'), exact(' 1/ 2'));
+		deepStrictEqual(format(0.5, '##/??'), exact('1/ 2'));
+		deepStrictEqual(format(0.5, '?/0?'), exact('1/02'));
+		deepStrictEqual(format(0, '0/0'), exact('0/0'));
 		const invalidFraction = format(0.2, '?/999999999999999999');
 		strictEqual(invalidFraction.status, 'approximated');
 		ok(invalidFraction.text.startsWith('0.2'));
@@ -368,6 +373,38 @@ suite('ParadisSpreadsheetNumberFormat', () => {
 		};
 		const aliased = formatSpreadsheetRenderProjection(aliasedDiagnosticsSnapshot, projection);
 		strictEqual(aliased.diagnostics[0].semanticDiagonal, aliased.diagnostics[1].semanticDiagonal);
+	});
+
+	test('owns a shared diagonal once and preserves its alias across projected cells', () => {
+		const rawColor = { kind: 'rgb' as const, rgb: 'FFFF0000' };
+		const target = { up: true, down: false, style: '1px solid', color: 'x'.repeat(400), rawStyle: 'thin', rawColor };
+		const descriptorReads = new Map<PropertyKey, number>();
+		const sharedDiagonal = new Proxy(target, {
+			getOwnPropertyDescriptor: (source, property) => {
+				descriptorReads.set(property, (descriptorReads.get(property) ?? 0) + 1);
+				const descriptor = Reflect.getOwnPropertyDescriptor(source, property);
+				if (property === 'rawStyle' && (descriptorReads.get(property) ?? 0) > 1) {
+					return { configurable: true, enumerable: true, writable: true, value: 'mutated' };
+				}
+				return descriptor;
+			},
+		});
+		const projection = twoCellProjection();
+		(projection.sheets[0].rows[0].cells[0] as { diagonal?: unknown }).diagonal = sharedDiagonal;
+		(projection.sheets[0].rows[0].cells[1] as { diagonal?: unknown }).diagonal = sharedDiagonal;
+		const result = formatSpreadsheetRenderProjection(
+			twoCellProjectionSnapshot(),
+			projection,
+			{},
+			{ inputCharacters: 700, outputCharacters: 700, inputUtf8Bytes: 700, outputUtf8Bytes: 700 },
+		);
+		const first = result.projection.sheets[0].rows[0].cells[0].diagonal;
+		const second = result.projection.sheets[0].rows[0].cells[1].diagonal;
+		strictEqual(first, second);
+		strictEqual(first?.rawStyle, 'thin');
+		for (const property of ['up', 'down', 'style', 'color', 'rawStyle', 'rawColor']) {
+			strictEqual(descriptorReads.get(property), 1, property);
+		}
 	});
 
 	test('uses a present formula cache for display and never recalculates or invents a missing cache', () => {

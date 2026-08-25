@@ -1176,8 +1176,6 @@ function renderFraction(value: number, tokens: readonly FormatToken[], profile: 
 		whole += Math.floor(numerator / denominator);
 		numerator %= denominator;
 	}
-	const numeratorText = numerator.toString().padStart(numeratorPattern.length, numeratorPattern.includes('?') ? ' ' : '0');
-	const denominatorText = denominator.toString().padStart(denominatorPattern.length, denominatorPattern.includes('?') ? ' ' : '0');
 	let numeratorTokenStart = slashTokenIndex;
 	while (numeratorTokenStart > first) {
 		const token = displayTokens[numeratorTokenStart - 1];
@@ -1208,7 +1206,18 @@ function renderFraction(value: number, tokens: readonly FormatToken[], profile: 
 		: literalTokens(displayTokens.slice(first, numeratorTokenStart), profile);
 	const slashGap = literalTokens(displayTokens.slice(slashTokenIndex + 1, denominatorTokenStart), profile);
 	const suffix = literalTokens(displayTokens.slice(denominatorTokenEnd), profile);
-	let result = numerator === 0
+	const numeratorText = renderIntegerTokens(
+		displayTokens.slice(numeratorTokenStart, slashTokenIndex),
+		numerator === 0 ? '' : numerator.toString(),
+	);
+	const denominatorText = fixedDenominator === undefined
+		? renderIntegerTokens(
+			displayTokens.slice(denominatorTokenStart, denominatorTokenEnd),
+			numerator === 0 ? '' : denominator.toString(),
+		)
+		: denominatorPattern;
+	const showZeroFraction = numerator === 0 && (numeratorPattern.includes('0') || denominatorPattern.includes('0'));
+	let result = numerator === 0 && !showZeroFraction
 		? (wholePattern ? wholeAndMiddle.trimEnd() : '')
 		: `${wholeAndMiddle}${numeratorText}/${slashGap}${denominatorText}`;
 	if (value < 0 && automaticNegative && !prefix.includes('-') && !prefix.includes('(') && !suffix.includes(')')) {
