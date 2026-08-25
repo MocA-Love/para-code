@@ -345,6 +345,7 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 			effectiveStyleOrigin: 'cell',
 			styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint },
 		});
+		strictEqual(cells.get('A1')?.styleSource, cells.get('B2')?.styleSource);
 		deepStrictEqual(cells.get('B3'), {
 			storedType: 'formula',
 			rawValue: undefined,
@@ -1189,7 +1190,7 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		);
 	});
 
-	test('rejects shared nested render projection objects', async () => {
+	test('preserves non-cyclic shared nested render projection aliases', async () => {
 		const fixture = await createSemanticFixture();
 		const sharedStyle = { color: '#123456' };
 		const projection: IParadisWorkbookData = {
@@ -1198,6 +1199,22 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 				rows: [{ excelRow: 1, height: 20, cells: [{ value: '1', style: sharedStyle }, { value: '2', style: sharedStyle }] }],
 			}],
 		};
+		const owned = ownSpreadsheetSemanticInput(fixture.inventory, { projection }, CancellationToken.None);
+		const snapshot = await parseSpreadsheetSemantic(
+			await createParadisOfficeNodeArchive(fixture.bytes), owned.inventory, CancellationToken.None, owned.options,
+		);
+		const firstStyle = snapshot.renderProjection!.sheets[0].rows[0].cells[0].style;
+		const secondStyle = snapshot.renderProjection!.sheets[0].rows[0].cells[1].style;
+		strictEqual(firstStyle, secondStyle);
+		strictEqual(firstStyle === sharedStyle, false);
+	});
+
+	test('rejects cyclic nested render projection objects', async () => {
+		const fixture = await createSemanticFixture();
+		const cyclicStyle: Record<string, unknown> = { color: '#123456' };
+		cyclicStyle.self = cyclicStyle;
+		const projection = singleCellProjection(1, 1);
+		(projection.sheets[0].rows[0].cells[0] as { style: unknown }).style = cyclicStyle;
 		throws(() => ownSpreadsheetSemanticInput(fixture.inventory, { projection }, CancellationToken.None), /unsafe/);
 	});
 

@@ -1402,6 +1402,9 @@ function snapshotProjection(
 					'value', 'style', 'colSpan', 'rowSpan', 'hidden', 'wrapText', 'verticalText', 'shrinkToFit', 'richText', 'diagonal', 'dataValidation',
 				], 11, budget);
 				const diagonal = cell.diagonal === undefined ? undefined : snapshotProjectionDiagonal(cell.diagonal, budget);
+				if (diagonal) {
+					chargeOwnedRenderDiagonal(diagonal, cloneBudget, checkpoint);
+				}
 				const value = ownedString(cell.value, budget);
 				cloneBudget.characters = addRenderCloneBudget(cloneBudget.characters, value.length, cloneBudget.maximumCharacters);
 				cloneBudget.utf8Bytes = addRenderCloneBudget(cloneBudget.utf8Bytes, boundedUtf8Length(value, checkpoint), cloneBudget.maximumUtf8Bytes);
@@ -1410,8 +1413,12 @@ function snapshotProjection(
 					style: {},
 					...(diagonal ? { diagonal } : {}),
 				});
-				const renderCell: Record<string, unknown> = { value, style: cloneRenderCellStyle(cell.style, cloneBudget, checkpoint) };
-				for (const key of ['colSpan', 'rowSpan', 'hidden', 'wrapText', 'verticalText', 'shrinkToFit', 'richText', 'diagonal', 'dataValidation']) {
+				const renderCell: Record<string, unknown> = {
+					value,
+					style: cloneRenderCellStyle(cell.style, cloneBudget, checkpoint),
+					...(diagonal ? { diagonal } : {}),
+				};
+				for (const key of ['colSpan', 'rowSpan', 'hidden', 'wrapText', 'verticalText', 'shrinkToFit', 'richText', 'dataValidation']) {
 					if (cell[key] !== undefined) {
 						renderCell[key] = cloneRenderProjectionValue(cell[key], cloneBudget, checkpoint);
 					}
@@ -1455,13 +1462,59 @@ function snapshotProjection(
 	};
 }
 
+function chargeOwnedRenderDiagonal(diagonal: IParadisDiagonalBorder, budget: RenderCloneBudget, checkpoint: () => void): void {
+	budget.nodes = addRenderCloneBudget(budget.nodes, 1, 10_000_000);
+	const strings: [string, string][] = [
+		['style', diagonal.style],
+		['color', diagonal.color],
+	];
+	let properties = 4; // up, down, style, color
+	if (diagonal.rawStyle !== undefined) {
+		strings.push(['rawStyle', diagonal.rawStyle]);
+		properties++;
+	}
+	if (diagonal.rawColor !== undefined) {
+		properties++;
+		chargeOwnedRenderString('rawColor', budget, checkpoint);
+		budget.nodes = addRenderCloneBudget(budget.nodes, 1, 10_000_000);
+		let rawColorProperties = 0;
+		for (const key of ['kind', 'rgb', 'indexed', 'theme', 'tint', 'auto'] as const) {
+			const value = diagonal.rawColor[key];
+			if (value === undefined) {
+				continue;
+			}
+			rawColorProperties++;
+			chargeOwnedRenderString(key, budget, checkpoint);
+			if (typeof value === 'string') {
+				chargeOwnedRenderString(value, budget, checkpoint);
+			}
+		}
+		budget.properties = addRenderCloneBudget(budget.properties, rawColorProperties, 50_000_000);
+	}
+	budget.properties = addRenderCloneBudget(budget.properties, properties, 50_000_000);
+	for (const key of ['up', 'down']) {
+		chargeOwnedRenderString(key, budget, checkpoint);
+	}
+	for (const [key, value] of strings) {
+		chargeOwnedRenderString(key, budget, checkpoint);
+		chargeOwnedRenderString(value, budget, checkpoint);
+	}
+}
+
+function chargeOwnedRenderString(value: string, budget: RenderCloneBudget, checkpoint: () => void): void {
+	checkpoint();
+	budget.characters = addRenderCloneBudget(budget.characters, value.length, budget.maximumCharacters);
+	budget.utf8Bytes = addRenderCloneBudget(budget.utf8Bytes, boundedUtf8Length(value, checkpoint), budget.maximumUtf8Bytes);
+}
+
 function cloneRenderCellStyle(value: unknown, budget: RenderCloneBudget, checkpoint: () => void): IParadisCellStyle {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
 	try {
-		if (budget.clones.has(value)) {
-			throw new ParadisOfficePackageError('unsafe');
+		const cached = budget.clones.get(value);
+		if (cached !== undefined) {
+			return cached as IParadisCellStyle;
 		}
 		budget.nodes = addRenderCloneBudget(budget.nodes, 1, 10_000_000);
 		const prototype = Object.getPrototypeOf(value);
@@ -1519,8 +1572,9 @@ function cloneRenderProjectionValue(value: unknown, budget: RenderCloneBudget, c
 		if (budget.active.has(value)) {
 			throw new ParadisOfficePackageError('unsafe');
 		}
-		if (budget.clones.has(value)) {
-			throw new ParadisOfficePackageError('unsafe');
+		const cached = budget.clones.get(value);
+		if (cached !== undefined) {
+			return cached;
 		}
 		budget.nodes = addRenderCloneBudget(budget.nodes, 1, 10_000_000);
 		budget.active.add(value);

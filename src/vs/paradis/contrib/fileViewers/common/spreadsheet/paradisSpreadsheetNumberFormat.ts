@@ -94,6 +94,7 @@ const localeProfiles: Readonly<Record<string, LocaleProfile>> = {
 	'zh-cn': { ...englishProfile, locale: 'zh-CN', currency: '¥', monthsShort: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'], monthsLong: ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'], weekdaysShort: ['日', '一', '二', '三', '四', '五', '六'], weekdaysLong: ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'], am: '上午', pm: '下午' },
 	'zh-tw': { ...englishProfile, locale: 'zh-TW', currency: 'NT$', monthsShort: ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'], monthsLong: ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'], weekdaysShort: ['日', '一', '二', '三', '四', '五', '六'], weekdaysLong: ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'], am: '上午', pm: '下午' },
 };
+freezePreparedValue(localeProfiles);
 
 type FormatToken =
 	| { readonly kind: 'literal'; readonly text: string }
@@ -119,17 +120,17 @@ interface ResolvedFormat {
 }
 
 export interface ParadisSpreadsheetPreparedNumberFormat {
-	readonly formatCode: string;
+	readonly _opaquePreparedNumberFormat?: never;
 }
 
-interface InternalPreparedNumberFormat extends ParadisSpreadsheetPreparedNumberFormat {
+interface InternalPreparedNumberFormat {
 	readonly runtime: FormatRuntime;
 	readonly locale: { readonly profile: LocaleProfile; readonly unsupported: readonly string[] };
 	readonly resolved: ResolvedFormat;
 	readonly sections: readonly ParsedSection[];
 }
 
-const preparedNumberFormats = new WeakSet<object>();
+const preparedNumberFormats = new WeakMap<object, InternalPreparedNumberFormat>();
 
 /** Deterministically formats an Excel stored/cached value without constructing a host Date. */
 export function formatSpreadsheetValue(
@@ -150,14 +151,26 @@ export function prepareSpreadsheetNumberFormat(
 		const started = readClock(owned.now);
 		const runtime: FormatRuntime = { context: owned, hardDeadline: StopWatch.create(true), started, lastClock: started, checks: 0 };
 		checkpoint(runtime, true);
-		const locale = resolveLocaleProfile(owned.workbookLocale || owned.applicationLocale);
+		const rawLocale = owned.workbookLocale || owned.applicationLocale;
+		const sanitizedLocale = rawLocale === undefined ? undefined : sanitizeUnicode(rawLocale, runtime);
+		const resolvedLocale = resolveLocaleProfile(sanitizedLocale?.text);
+		const locale = {
+			profile: resolvedLocale.profile,
+			unsupported: uniqueStrings([...(sanitizedLocale?.changed ? ['unicode'] : []), ...resolvedLocale.unsupported]),
+		};
 		const resolved = resolveFormat(format, locale.profile, owned.limits, runtime);
 		const sections = resolved.unsupported.length > 0
 			? []
 			: splitSections(resolved.code, owned.limits, runtime).map((section, index) => tokenizeSection(section, index, locale.profile, owned.limits, runtime));
-		const prepared: InternalPreparedNumberFormat = Object.freeze({ formatCode: resolved.code, runtime, locale, resolved, sections });
-		preparedNumberFormats.add(prepared);
-		return prepared;
+		const state: InternalPreparedNumberFormat = Object.freeze({
+			runtime,
+			locale: freezePreparedValue(locale),
+			resolved: freezePreparedValue(resolved),
+			sections: freezePreparedValue(sections),
+		});
+		const handle: ParadisSpreadsheetPreparedNumberFormat = Object.freeze({});
+		preparedNumberFormats.set(handle, state);
+		return handle;
 	} catch (error) {
 		throw sanitizeNumberFormatError(error);
 	}
@@ -166,10 +179,13 @@ export function prepareSpreadsheetNumberFormat(
 /** Applies a previously parsed format while retaining its cancellation/deadline lifetime. */
 export function formatPreparedSpreadsheetValue(prepared: ParadisSpreadsheetPreparedNumberFormat, value: unknown): ParadisFormattedCellValue {
 	try {
-		if (!prepared || typeof prepared !== 'object' || !preparedNumberFormats.has(prepared)) {
+		if (!prepared || typeof prepared !== 'object') {
 			throw new ParadisOfficePackageError('unsafe');
 		}
-		const internal = prepared as InternalPreparedNumberFormat;
+		const internal = preparedNumberFormats.get(prepared);
+		if (!internal) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
 		const { runtime, locale, resolved, sections } = internal;
 		checkpoint(runtime, true);
 		const ownedValue = ownFormatValue(value, runtime.context.limits.inputCharacters, runtime);
@@ -219,6 +235,29 @@ export function formatPreparedSpreadsheetValue(prepared: ParadisSpreadsheetPrepa
 	} catch (error) {
 		throw sanitizeNumberFormatError(error);
 	}
+}
+
+function freezePreparedValue<T>(value: T): T {
+	const seen = new WeakSet<object>();
+	const stack: object[] = [];
+	if (value && typeof value === 'object') {
+		stack.push(value);
+	}
+	while (stack.length > 0) {
+		const current = stack.pop()!;
+		if (seen.has(current)) {
+			continue;
+		}
+		seen.add(current);
+		for (const key of Reflect.ownKeys(current)) {
+			const child = Object.getOwnPropertyDescriptor(current, key)?.value;
+			if (child && typeof child === 'object') {
+				stack.push(child);
+			}
+		}
+		Object.freeze(current);
+	}
+	return value;
 }
 
 function numericSectionOverflows(value: number, tokens: readonly FormatToken[]): boolean {
@@ -285,15 +324,15 @@ function ownFormatContext(value: unknown): OwnedFormatContext {
 	if (cancellationToken !== undefined && (!cancellationToken || typeof cancellationToken !== 'object')) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
-	return {
+	return Object.freeze({
 		date1904,
 		...(record.workbookLocale !== undefined ? { workbookLocale: record.workbookLocale as string } : {}),
 		...(record.applicationLocale !== undefined ? { applicationLocale: record.applicationLocale as string } : {}),
 		...(cancellationToken !== undefined ? { cancellationToken: cancellationToken as CancellationToken } : {}),
 		now: now as () => number,
 		deadlineMilliseconds: deadlineMilliseconds as number,
-		limits,
-	};
+		limits: Object.freeze(limits),
+	});
 }
 
 function ownRecord(value: unknown, allowedKeys: ReadonlySet<string>): Record<string, unknown> {
@@ -794,8 +833,8 @@ function evaluateCondition(value: number, condition: Extract<FormatToken, { read
 
 function renderSection(value: number | string | boolean | null, section: ParsedSection, profile: LocaleProfile, date1904: boolean, automaticNegative: boolean, applyTextSection: boolean, runtime: FormatRuntime): string {
 	const significant = section.tokens.filter(token => token.kind === 'character').map(token => token.text).join('');
-	if (asciiLower(significant) === 'general') {
-		return generalText(value);
+	if (hasGeneralToken(section.tokens)) {
+		return renderGeneral(value, section.tokens);
 	}
 	if (typeof value !== 'number') {
 		return applyTextSection ? renderText(value, section.tokens, profile) : generalText(value);
@@ -816,6 +855,41 @@ function renderSection(value: number | string | boolean | null, section: ParsedS
 		return renderFraction(scaledValue, section.tokens, profile, automaticNegative);
 	}
 	return renderNumber(scaledValue, section.tokens, profile, automaticNegative);
+}
+
+function hasGeneralToken(tokens: readonly FormatToken[]): boolean {
+	return asciiLower(tokens.filter(token => token.kind === 'character').map(token => token.text).join('')).includes('general');
+}
+
+function renderGeneral(value: number | string | boolean | null, tokens: readonly FormatToken[]): string {
+	let scaledValue = value;
+	if (typeof scaledValue === 'number') {
+		for (const token of tokens) {
+			if (token.kind === 'character' && token.text === '%') {
+				scaledValue *= 100;
+			}
+		}
+	}
+	let result = '';
+	for (let index = 0; index < tokens.length;) {
+		const sequence = tokens.slice(index, index + 7);
+		if (sequence.length === 7 && sequence.every(token => token.kind === 'character')
+			&& asciiLower(sequence.map(token => token.kind === 'character' ? token.text : '').join('')) === 'general') {
+			result += generalText(scaledValue);
+			index += 7;
+			continue;
+		}
+		const token = tokens[index++];
+		switch (token.kind) {
+			case 'literal': result += token.text; break;
+			case 'character': result += token.text; break;
+			case 'locale': result += token.currency ?? ''; break;
+			case 'date': result += token.text; break;
+			case 'elapsed': result += `[${token.text}]`; break;
+			case 'condition': case 'metadata': break;
+		}
+	}
+	return result;
 }
 
 function renderText(value: string | boolean | null, tokens: readonly FormatToken[], profile: LocaleProfile): string {
@@ -878,9 +952,9 @@ function renderNumber(value: number, tokens: readonly FormatToken[], profile: Lo
 		const padded = integer.padStart(minimumInteger, '0');
 		renderedInteger = padded ? groupDigits(padded, profile.group) : '';
 	} else {
-		renderedInteger = renderIntegerTokens(integerTokens, integer, profile);
+		renderedInteger = renderIntegerTokens(integerTokens, integer);
 	}
-	const renderedFraction = renderFractionalTokens(fractionTokens, fraction, profile);
+	const renderedFraction = renderFractionalTokens(fractionTokens, fraction);
 	const showDecimal = maximumDecimals > 0 && (minimumDecimals > 0 || renderedFraction.length > 0);
 	let numeric = renderedInteger + (showDecimal ? profile.decimal + renderedFraction : '');
 	const prefix = literalTokens(displayTokens.slice(0, first), profile);
@@ -892,7 +966,7 @@ function renderNumber(value: number, tokens: readonly FormatToken[], profile: Lo
 	return prefix + numeric + suffix;
 }
 
-function renderIntegerTokens(tokens: readonly FormatToken[], digits: string, profile: LocaleProfile): string {
+function renderIntegerTokens(tokens: readonly FormatToken[], digits: string): string {
 	const rendered = new Array<string>(tokens.length).fill('');
 	let digitIndex = digits.length - 1;
 	let firstPlaceholder = -1;
@@ -918,10 +992,10 @@ function renderIntegerTokens(tokens: readonly FormatToken[], digits: string, pro
 	if (digitIndex >= 0 && firstPlaceholder >= 0) {
 		rendered[firstPlaceholder] = digits.slice(0, digitIndex + 1) + rendered[firstPlaceholder];
 	}
-	return rendered.join('').replace(/\$/g, '$');
+	return rendered.join('');
 }
 
-function renderFractionalTokens(tokens: readonly FormatToken[], digits: string, profile: LocaleProfile): string {
+function renderFractionalTokens(tokens: readonly FormatToken[], digits: string): string {
 	const placeholders = tokens.filter((token): token is Extract<FormatToken, { readonly kind: 'character' }> => token.kind === 'character' && ['0', '#', '?'].includes(token.text));
 	let lastVisible = -1;
 	for (let index = 0; index < placeholders.length; index++) {
@@ -948,7 +1022,7 @@ function renderFractionalTokens(tokens: readonly FormatToken[], digits: string, 
 			result += token.text;
 		}
 	}
-	return result.replace(/\$/g, '$').replace('.', profile.decimal);
+	return result;
 }
 
 function decimalParts(value: number, decimals: number): { readonly integer: string; readonly fraction: string } {
@@ -999,34 +1073,48 @@ function expandFiniteNumber(value: number): string {
 
 function renderScientific(value: number, tokens: readonly FormatToken[], profile: LocaleProfile, automaticNegative: boolean): string {
 	const displayTokens = tokens.filter(token => token.kind !== 'condition' && token.kind !== 'metadata');
-	const placeholderIndexes = displayTokens.flatMap((token, index) => token.kind === 'character' && (token.text === '0' || token.text === '#' || token.text === '?') ? [index] : []);
-	if (placeholderIndexes.length === 0) {
+	const exponentTokenIndex = displayTokens.findIndex(token => token.kind === 'character' && (token.text === 'E' || token.text === 'e'));
+	if (exponentTokenIndex < 0) {
 		return literalTokens(displayTokens, profile);
 	}
-	const first = placeholderIndexes[0];
-	const last = placeholderIndexes[placeholderIndexes.length - 1];
-	const pattern = displayTokens.slice(first, last + 1).filter(token => token.kind === 'character').map(token => token.text).join('');
-	const exponentIndex = Math.max(pattern.indexOf('E'), pattern.indexOf('e'));
-	const mantissa = pattern.slice(0, exponentIndex);
-	const exponentPattern = pattern.slice(exponentIndex + 1);
+	const mantissaPlaceholderIndexes = displayTokens.flatMap((token, index) => index < exponentTokenIndex && token.kind === 'character' && ['0', '#', '?'].includes(token.text) ? [index] : []);
+	const exponentPlaceholderIndexes = displayTokens.flatMap((token, index) => index > exponentTokenIndex && token.kind === 'character' && ['0', '#', '?'].includes(token.text) ? [index] : []);
+	if (mantissaPlaceholderIndexes.length === 0 || exponentPlaceholderIndexes.length === 0) {
+		return generalText(value);
+	}
+	const first = mantissaPlaceholderIndexes[0];
+	const last = exponentPlaceholderIndexes[exponentPlaceholderIndexes.length - 1];
+	const mantissaTokens = displayTokens.slice(first, exponentTokenIndex);
+	const exponentTokens = displayTokens.slice(exponentTokenIndex + 1, last + 1);
+	const mantissa = mantissaTokens.filter(token => token.kind === 'character').map(token => token.text).join('');
 	const decimals = mantissa.includes('.') ? countPlaceholders(mantissa.slice(mantissa.indexOf('.') + 1)) : 0;
 	const integerSlots = Math.max(1, countPlaceholders(mantissa.includes('.') ? mantissa.slice(0, mantissa.indexOf('.')) : mantissa));
 	if (decimals > 30) {
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
 	const absolute = Math.abs(value);
-	let exponent = absolute === 0 ? 0 : Math.floor(Math.log10(absolute) / integerSlots) * integerSlots;
-	let mantissaValue = absolute === 0 ? 0 : absolute / 10 ** exponent;
+	const scientific = absolute === 0 ? '0e+0' : absolute.toExponential(17);
+	const scientificMarker = scientific.indexOf('e');
+	const coefficient = Number(scientific.slice(0, scientificMarker));
+	const rawExponent = Number(scientific.slice(scientificMarker + 1));
+	let exponent = absolute === 0 ? 0 : Math.floor(rawExponent / integerSlots) * integerSlots;
+	let mantissaValue = absolute === 0 ? 0 : coefficient * 10 ** (rawExponent - exponent);
 	let parts = decimalParts(mantissaValue, decimals);
 	if (parts.integer.length > integerSlots) {
 		exponent += integerSlots;
 		mantissaValue = absolute / 10 ** exponent;
 		parts = decimalParts(mantissaValue, decimals);
 	}
-	const exponentDigits = Math.max(1, countPlaceholders(exponentPattern));
-	const sign = exponent < 0 ? '-' : exponentPattern.includes('+') ? '+' : '';
-	const exponentMarker = pattern[exponentIndex] === 'e' ? 'e' : 'E';
-	let formatted = `${parts.integer}${decimals > 0 ? profile.decimal + parts.fraction : ''}${exponentMarker}${sign}${Math.abs(exponent).toString().padStart(exponentDigits, '0')}`;
+	const renderedMantissa = renderNumber(mantissaValue, mantissaTokens, profile, false);
+	const exponentHasRequired = exponentTokens.some(token => token.kind === 'character' && token.text === '0');
+	const exponentDigits = exponent === 0 && !exponentHasRequired ? '' : Math.abs(exponent).toString();
+	const renderedExponent = renderIntegerTokens(
+		exponentTokens.filter(token => token.kind !== 'character' || token.text !== '+' && token.text !== '-'),
+		exponentDigits,
+	);
+	const sign = exponent < 0 ? '-' : exponentTokens.some(token => token.kind === 'character' && token.text === '+') ? '+' : '';
+	const exponentMarker = displayTokens[exponentTokenIndex].kind === 'character' && displayTokens[exponentTokenIndex].text === 'e' ? 'e' : 'E';
+	let formatted = `${renderedMantissa}${exponentMarker}${sign}${renderedExponent}`;
 	const prefix = literalTokens(displayTokens.slice(0, first), profile);
 	const suffix = literalTokens(displayTokens.slice(last + 1), profile);
 	if (value < 0 && automaticNegative && !prefix.includes('-') && !prefix.includes('(') && !suffix.includes(')')) {
@@ -1090,9 +1178,39 @@ function renderFraction(value: number, tokens: readonly FormatToken[], profile: 
 	}
 	const numeratorText = numerator.toString().padStart(numeratorPattern.length, numeratorPattern.includes('?') ? ' ' : '0');
 	const denominatorText = denominator.toString().padStart(denominatorPattern.length, denominatorPattern.includes('?') ? ' ' : '0');
-	let result = numerator === 0 ? (wholePattern ? whole.toString() : '') : `${wholePattern ? whole.toString() + ' ' : ''}${numeratorText}/${denominatorText}`;
+	let numeratorTokenStart = slashTokenIndex;
+	while (numeratorTokenStart > first) {
+		const token = displayTokens[numeratorTokenStart - 1];
+		if (token.kind !== 'character' || !['0', '#', '?'].includes(token.text)) {
+			break;
+		}
+		numeratorTokenStart--;
+	}
+	let denominatorTokenStart = slashTokenIndex + 1;
+	while (denominatorTokenStart <= last) {
+		const token = displayTokens[denominatorTokenStart];
+		if (token.kind === 'character' && /^[0-9#?]$/.test(token.text)) {
+			break;
+		}
+		denominatorTokenStart++;
+	}
+	let denominatorTokenEnd = denominatorTokenStart;
+	while (denominatorTokenEnd <= last) {
+		const token = displayTokens[denominatorTokenEnd];
+		if (token.kind !== 'character' || !/^[0-9#?]$/.test(token.text)) {
+			break;
+		}
+		denominatorTokenEnd++;
+	}
 	const prefix = literalTokens(displayTokens.slice(0, first), profile);
-	const suffix = literalTokens(displayTokens.slice(last + 1), profile);
+	const wholeAndMiddle = wholePattern
+		? renderIntegerTokens(displayTokens.slice(first, numeratorTokenStart), whole.toString())
+		: literalTokens(displayTokens.slice(first, numeratorTokenStart), profile);
+	const slashGap = literalTokens(displayTokens.slice(slashTokenIndex + 1, denominatorTokenStart), profile);
+	const suffix = literalTokens(displayTokens.slice(denominatorTokenEnd), profile);
+	let result = numerator === 0
+		? (wholePattern ? wholeAndMiddle.trimEnd() : '')
+		: `${wholeAndMiddle}${numeratorText}/${slashGap}${denominatorText}`;
 	if (value < 0 && automaticNegative && !prefix.includes('-') && !prefix.includes('(') && !suffix.includes(')')) {
 		result = `-${result}`;
 	}
