@@ -157,18 +157,18 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._headerDisposables.add(dom.addDisposableListener(this._formatToggle, dom.EventType.CLICK, () => this._setShowFormatChanges(!this._showFormatChanges)));
 
 		const zoom = dom.append(right, $('.paradis-docx-diff-zoom'));
-		this._appendIconButton(zoom, Codicon.zoomOut, localize('paradis.docxDiff.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / ZOOM_STEP));
+		this._appendIconButton(zoom, Codicon.zoomOut, localize('paradis.docxDiff.zoomOut', "ズームアウト"), this._headerDisposables, () => this._zoom(1 / ZOOM_STEP));
 		this._percentEl = dom.append(zoom, $('button.paradis-docx-diff-percent')) as HTMLButtonElement;
-		this._percentEl.title = localize('paradis.docxDiff.resetZoom', "Reset Zoom");
+		this._percentEl.title = localize('paradis.docxDiff.resetZoom', "ズームをリセット");
 		this._headerDisposables.add(dom.addDisposableListener(this._percentEl, dom.EventType.CLICK, () => this._setScale(1)));
-		this._appendIconButton(zoom, Codicon.zoomIn, localize('paradis.docxDiff.zoomIn', "Zoom In"), this._headerDisposables, () => this._zoom(ZOOM_STEP));
+		this._appendIconButton(zoom, Codicon.zoomIn, localize('paradis.docxDiff.zoomIn', "ズームイン"), this._headerDisposables, () => this._zoom(ZOOM_STEP));
 
 		const nav = dom.append(right, $('.paradis-docx-diff-nav'));
 		const previous = dom.append(nav, $('button.paradis-docx-diff-navbtn')) as HTMLButtonElement;
-		previous.textContent = localize('paradis.docxDiff.previous', "Prev");
+		previous.textContent = localize('paradis.docxDiff.previous', "前へ");
 		this._navPositionEl = dom.append(nav, $('span.paradis-docx-diff-navpos'));
 		const next = dom.append(nav, $('button.paradis-docx-diff-navbtn')) as HTMLButtonElement;
-		next.textContent = localize('paradis.docxDiff.next', "Next");
+		next.textContent = localize('paradis.docxDiff.next', "次へ");
 		this._headerDisposables.add(dom.addDisposableListener(previous, dom.EventType.CLICK, () => this._navigate(-1)));
 		this._headerDisposables.add(dom.addDisposableListener(next, dom.EventType.CLICK, () => this._navigate(1)));
 		this._openAppEl = dom.append(nav, $('.paradis-docx-diff-openapp'));

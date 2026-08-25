@@ -46,7 +46,7 @@ export class ParadisGithubMetricsInput extends EditorInput {
 	}
 
 	override getName(): string {
-		return localize('paradis.githubMetrics.inputName', "GitHub API Usage");
+		return localize('paradis.githubMetrics.inputName', "GitHub API 利用状況");
 	}
 
 	override getIcon(): ThemeIcon {

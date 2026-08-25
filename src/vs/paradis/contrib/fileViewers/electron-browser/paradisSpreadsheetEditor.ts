@@ -163,11 +163,11 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const right = dom.append(header, $('.paradis-spreadsheet-header-right'));
 
 		// ズーム −/%/＋（HTMLビューアと同じUI）。
-		appendIconButton(right, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / 1.2));
+		appendIconButton(right, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "ズームアウト"), this._headerDisposables, () => this._zoom(1 / 1.2));
 		this._percentBtn = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
-		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "Reset Zoom");
+		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "ズームをリセット");
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
-		appendIconButton(right, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "Zoom In"), this._headerDisposables, () => this._zoom(1.2));
+		appendIconButton(right, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "ズームイン"), this._headerDisposables, () => this._zoom(1.2));
 
 		// 「既定のアプリで開く」ボタンは resource 依存なので入力ごとに作り直す。
 		this._openAppEl = dom.append(right, $('.paradis-spreadsheet-openapp'));
@@ -219,13 +219,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	private async _load(resource: URI, token: CancellationToken): Promise<void> {
 		const generation = ++this._loadGeneration;
-		this._renderMessage(localize('paradis.spreadsheet.loading', "Loading spreadsheet..."));
+		this._renderMessage(localize('paradis.spreadsheet.loading', "スプレッドシートを読み込み中..."));
 		let workbook: IParadisWorkbookData;
 		try {
 			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource);
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
-				this._renderMessage(localize('paradis.spreadsheet.error', "Failed to open spreadsheet: {0}", err instanceof Error ? err.message : String(err)));
+				this._renderMessage(localize('paradis.spreadsheet.error', "スプレッドシートを開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
 			}
 			return;
 		}
@@ -264,7 +264,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		const sheet = this._sheets[this._activeSheetIndex];
 		if (!sheet) {
-			this._renderMessage(localize('paradis.spreadsheet.noSheets', "No sheets found"));
+			this._renderMessage(localize('paradis.spreadsheet.noSheets', "シートが見つかりません"));
 			return;
 		}
 
@@ -289,7 +289,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		if (sheet.truncated) {
 			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
-			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
+			notice.textContent = localize('paradis.spreadsheet.truncated', "先頭2,000行のみ表示しています。ファイル全体にはさらに行があります。");
 		}
 
 		this._renderOverlays(sheet, inner);
@@ -476,7 +476,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			}
 			if (sheet.protectedSheet) {
 				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
-				lock.title = localize('paradis.spreadsheet.protected', "This sheet is protected");
+				lock.title = localize('paradis.spreadsheet.protected', "このシートは保護されています");
 			}
 			const label = dom.append(tab, $('span'));
 			label.textContent = sheet.name;

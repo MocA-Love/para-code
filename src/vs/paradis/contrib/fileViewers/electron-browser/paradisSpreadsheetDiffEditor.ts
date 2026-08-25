@@ -200,27 +200,27 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		// 入力規則だけに絞り込み、セルマーカーと詳細ペインを表示する。
 		this._validationFilterBtn = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
-		this._validationFilterBtn.title = localize('paradis.spreadsheet.validationFilter', "Show Data Validation Changes");
+		this._validationFilterBtn.title = localize('paradis.spreadsheet.validationFilter', "データの入力規則の変更を表示");
 		this._validationFilterBtn.setAttribute('aria-pressed', 'false');
 		dom.append(this._validationFilterBtn, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
 		const validationFilterLabel = dom.append(this._validationFilterBtn, $('span'));
-		validationFilterLabel.textContent = localize('paradis.spreadsheet.validation', "Input Rules");
+		validationFilterLabel.textContent = localize('paradis.spreadsheet.validation', "入力規則");
 		this._headerDisposables.add(dom.addDisposableListener(this._validationFilterBtn, dom.EventType.CLICK, () => this._setValidationFilter(!this._validationFilter)));
 
 		// ズーム −/%/＋（通常ビューアと同じ。左右ペインに同倍率を適用する）。
 		const zoom = dom.append(right, $('.paradis-spreadsheet-diff-zoom'));
-		appendIconButton(zoom, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / 1.2));
+		appendIconButton(zoom, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "ズームアウト"), this._headerDisposables, () => this._zoom(1 / 1.2));
 		this._percentBtn = dom.append(zoom, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
-		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "Reset Zoom");
+		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "ズームをリセット");
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
-		appendIconButton(zoom, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "Zoom In"), this._headerDisposables, () => this._zoom(1.2));
+		appendIconButton(zoom, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "ズームイン"), this._headerDisposables, () => this._zoom(1.2));
 
 		const nav = dom.append(right, $('.paradis-spreadsheet-diff-nav'));
 		const prevBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
-		prevBtn.textContent = localize('paradis.spreadsheet.prev', "Prev");
+		prevBtn.textContent = localize('paradis.spreadsheet.prev', "前へ");
 		this._navPositionEl = dom.append(nav, $('span.paradis-spreadsheet-diff-navpos'));
 		const nextBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
-		nextBtn.textContent = localize('paradis.spreadsheet.next', "Next");
+		nextBtn.textContent = localize('paradis.spreadsheet.next', "次へ");
 		this._register(dom.addDisposableListener(prevBtn, dom.EventType.CLICK, () => this._navigate(-1)));
 		this._register(dom.addDisposableListener(nextBtn, dom.EventType.CLICK, () => this._navigate(1)));
 		this._openAppEl = dom.append(nav, $('.paradis-spreadsheet-openapp'));
@@ -280,7 +280,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		const generation = ++this._loadGeneration;
 		const previousValidation = this._selectedValidation;
-		this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "Loading diff..."));
+		this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "差分を読み込み中..."));
 		try {
 			// パース失敗(暗号化・破損・サイズ超過・git参照消失)を空ブックとして握りつぶすと、
 			// 「全行追加/削除/変更なし」という静かな誤差分になってしまう。失敗した側と理由を
@@ -355,7 +355,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 		} catch (err) {
 			if (!token.isCancellationRequested) {
-				this._renderMessage(localize('paradis.spreadsheet.errorDiff', "Failed to open spreadsheet diff: {0}", err instanceof Error ? err.message : String(err)));
+				this._renderMessage(localize('paradis.spreadsheet.errorDiff', "スプレッドシートの差分を開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
 			}
 		}
 	}
@@ -513,46 +513,46 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	private _validationTypeLabel(type: IParadisDataValidation['type'] | undefined): string {
 		switch (type) {
-			case 'any': return localize('paradis.spreadsheet.validation.any', "Any Value");
-			case 'list': return localize('paradis.spreadsheet.validation.list', "List");
-			case 'whole': return localize('paradis.spreadsheet.validation.whole', "Whole Number");
-			case 'decimal': return localize('paradis.spreadsheet.validation.decimal', "Decimal");
-			case 'date': return localize('paradis.spreadsheet.validation.date', "Date");
-			case 'time': return localize('paradis.spreadsheet.validation.time', "Time");
-			case 'textLength': return localize('paradis.spreadsheet.validation.textLength', "Text Length");
-			case 'custom': return localize('paradis.spreadsheet.validation.custom', "Custom Formula");
-			case undefined: return localize('paradis.spreadsheet.validation.unset', "Not Set");
+			case 'any': return localize('paradis.spreadsheet.validation.any', "すべての値");
+			case 'list': return localize('paradis.spreadsheet.validation.list', "リスト");
+			case 'whole': return localize('paradis.spreadsheet.validation.whole', "整数");
+			case 'decimal': return localize('paradis.spreadsheet.validation.decimal', "小数点数");
+			case 'date': return localize('paradis.spreadsheet.validation.date', "日付");
+			case 'time': return localize('paradis.spreadsheet.validation.time', "時刻");
+			case 'textLength': return localize('paradis.spreadsheet.validation.textLength', "文字列（長さ）");
+			case 'custom': return localize('paradis.spreadsheet.validation.custom', "ユーザー設定の数式");
+			case undefined: return localize('paradis.spreadsheet.validation.unset', "未設定");
 		}
 	}
 
 	private _validationOperatorLabel(operator: IParadisDataValidation['operator'] | undefined): string {
 		switch (operator) {
-			case 'between': return localize('paradis.spreadsheet.validation.between', "Between");
-			case 'notBetween': return localize('paradis.spreadsheet.validation.notBetween', "Not Between");
-			case 'equal': return localize('paradis.spreadsheet.validation.equal', "Equal To");
-			case 'notEqual': return localize('paradis.spreadsheet.validation.notEqual', "Not Equal To");
-			case 'greaterThan': return localize('paradis.spreadsheet.validation.greaterThan', "Greater Than");
-			case 'lessThan': return localize('paradis.spreadsheet.validation.lessThan', "Less Than");
-			case 'greaterThanOrEqual': return localize('paradis.spreadsheet.validation.greaterThanOrEqual', "Greater Than or Equal To");
-			case 'lessThanOrEqual': return localize('paradis.spreadsheet.validation.lessThanOrEqual', "Less Than or Equal To");
-			case undefined: return localize('paradis.spreadsheet.validation.unset', "Not Set");
+			case 'between': return localize('paradis.spreadsheet.validation.between', "次の値の間");
+			case 'notBetween': return localize('paradis.spreadsheet.validation.notBetween', "次の値の間以外");
+			case 'equal': return localize('paradis.spreadsheet.validation.equal', "次の値に等しい");
+			case 'notEqual': return localize('paradis.spreadsheet.validation.notEqual', "次の値に等しくない");
+			case 'greaterThan': return localize('paradis.spreadsheet.validation.greaterThan', "次の値より大きい");
+			case 'lessThan': return localize('paradis.spreadsheet.validation.lessThan', "次の値より小さい");
+			case 'greaterThanOrEqual': return localize('paradis.spreadsheet.validation.greaterThanOrEqual', "次の値以上");
+			case 'lessThanOrEqual': return localize('paradis.spreadsheet.validation.lessThanOrEqual', "次の値以下");
+			case undefined: return localize('paradis.spreadsheet.validation.unset', "未設定");
 		}
 	}
 
 	private _validationBooleanLabel(value: boolean | undefined): string {
 		return value === undefined
-			? localize('paradis.spreadsheet.validation.unset', "Not Set")
+			? localize('paradis.spreadsheet.validation.unset', "未設定")
 			: value
-				? localize('paradis.spreadsheet.validation.yes', "Yes")
-				: localize('paradis.spreadsheet.validation.no', "No");
+				? localize('paradis.spreadsheet.validation.yes', "はい")
+				: localize('paradis.spreadsheet.validation.no', "いいえ");
 	}
 
 	private _validationStatusLabel(status: IValidationChange['status']): string {
 		return status === 'added'
-			? localize('paradis.spreadsheet.validationAdded', "Added")
+			? localize('paradis.spreadsheet.validationAdded', "追加")
 			: status === 'removed'
-				? localize('paradis.spreadsheet.validationRemoved', "Removed")
-				: localize('paradis.spreadsheet.validationModified', "Modified");
+				? localize('paradis.spreadsheet.validationRemoved', "削除")
+				: localize('paradis.spreadsheet.validationModified', "変更");
 	}
 
 	private _renderValidationInspector(change: IValidationChange | undefined): void {
@@ -564,10 +564,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const header = dom.append(inspector, $('.paradis-spreadsheet-validation-inspector-header'));
 		dom.append(header, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
 		const headerLabel = dom.append(header, $('span'));
-		headerLabel.textContent = localize('paradis.spreadsheet.validationChanges', "Input Rule Changes");
+		headerLabel.textContent = localize('paradis.spreadsheet.validationChanges', "入力規則の変更");
 		if (!change) {
 			const empty = dom.append(inspector, $('.paradis-spreadsheet-validation-empty'));
-			empty.textContent = localize('paradis.spreadsheet.validationSelect', "Select a cell to inspect its input rule change.");
+			empty.textContent = localize('paradis.spreadsheet.validationSelect', "セルを選択すると入力規則の変更内容を確認できます。");
 			return;
 		}
 
@@ -597,18 +597,18 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			const afterEl = dom.append(field, $('.paradis-spreadsheet-validation-value.after'));
 			afterEl.textContent = after;
 		};
-		const unset = localize('paradis.spreadsheet.validation.unset', "Not Set");
-		appendField(localize('paradis.spreadsheet.validation.type', "Rule Type"), this._validationTypeLabel(original?.type), this._validationTypeLabel(modified?.type));
-		appendField(localize('paradis.spreadsheet.validation.operator', "Condition"), this._validationOperatorLabel(original?.operator), this._validationOperatorLabel(modified?.operator));
-		appendField(localize('paradis.spreadsheet.validation.formulae', "Values or Formula"), original ? original.formulae.join(', ') : unset, modified ? modified.formulae.join(', ') : unset);
-		appendField(localize('paradis.spreadsheet.validation.allowBlank', "Allow Blank"), this._validationBooleanLabel(original?.allowBlank), this._validationBooleanLabel(modified?.allowBlank));
-		appendField(localize('paradis.spreadsheet.validation.showInputMessage', "Show Input Message"), this._validationBooleanLabel(original?.showInputMessage), this._validationBooleanLabel(modified?.showInputMessage));
-		appendField(localize('paradis.spreadsheet.validation.inputTitle', "Input Message Title"), original?.promptTitle ?? unset, modified?.promptTitle ?? unset);
-		appendField(localize('paradis.spreadsheet.validation.inputMessage', "Input Message"), original?.prompt ?? unset, modified?.prompt ?? unset);
-		appendField(localize('paradis.spreadsheet.validation.showErrorMessage', "Show Error Alert"), this._validationBooleanLabel(original?.showErrorMessage), this._validationBooleanLabel(modified?.showErrorMessage));
-		appendField(localize('paradis.spreadsheet.validation.errorStyle', "Error Style"), original?.errorStyle ?? unset, modified?.errorStyle ?? unset);
-		appendField(localize('paradis.spreadsheet.validation.errorTitle', "Error Title"), original?.errorTitle ?? unset, modified?.errorTitle ?? unset);
-		appendField(localize('paradis.spreadsheet.validation.errorMessage', "Error Message"), original?.error ?? unset, modified?.error ?? unset);
+		const unset = localize('paradis.spreadsheet.validation.unset', "未設定");
+		appendField(localize('paradis.spreadsheet.validation.type', "規則の種類"), this._validationTypeLabel(original?.type), this._validationTypeLabel(modified?.type));
+		appendField(localize('paradis.spreadsheet.validation.operator', "条件"), this._validationOperatorLabel(original?.operator), this._validationOperatorLabel(modified?.operator));
+		appendField(localize('paradis.spreadsheet.validation.formulae', "値または数式"), original ? original.formulae.join(', ') : unset, modified ? modified.formulae.join(', ') : unset);
+		appendField(localize('paradis.spreadsheet.validation.allowBlank', "空白を許可"), this._validationBooleanLabel(original?.allowBlank), this._validationBooleanLabel(modified?.allowBlank));
+		appendField(localize('paradis.spreadsheet.validation.showInputMessage', "入力時メッセージを表示"), this._validationBooleanLabel(original?.showInputMessage), this._validationBooleanLabel(modified?.showInputMessage));
+		appendField(localize('paradis.spreadsheet.validation.inputTitle', "入力時メッセージのタイトル"), original?.promptTitle ?? unset, modified?.promptTitle ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.inputMessage', "入力時メッセージ"), original?.prompt ?? unset, modified?.prompt ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.showErrorMessage', "エラーメッセージを表示"), this._validationBooleanLabel(original?.showErrorMessage), this._validationBooleanLabel(modified?.showErrorMessage));
+		appendField(localize('paradis.spreadsheet.validation.errorStyle', "エラーの種類"), original?.errorStyle ?? unset, modified?.errorStyle ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.errorTitle', "エラーメッセージのタイトル"), original?.errorTitle ?? unset, modified?.errorTitle ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.errorMessage', "エラーメッセージ"), original?.error ?? unset, modified?.error ?? unset);
 	}
 
 	private _renderMessage(message: string): void {
@@ -651,7 +651,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		const sheet = this._diffSheets[this._activeSheetIndex];
 		if (!sheet) {
-			this._renderMessage(localize('paradis.spreadsheet.noChanges', "No changes found"));
+			this._renderMessage(localize('paradis.spreadsheet.noChanges', "変更はありません"));
 			return;
 		}
 
@@ -671,7 +671,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		// 左右ペインとも diff シート側で minCol 揃え済み(originalMinCol === modifiedMinCol)。
 		const paneMinCol = sheet.originalMinCol ?? sheet.modifiedMinCol ?? 1;
-		const left = this._buildDiffPane(sheet.originalRows, localize('paradis.spreadsheet.original', "Original"), 'original', validationByCell, paneMinCol);
+		const left = this._buildDiffPane(sheet.originalRows, localize('paradis.spreadsheet.original', "旧版"), 'original', validationByCell, paneMinCol);
 		this._leftScroll = left.pane;
 		this._leftContent = left.content;
 		this._leftSizer = left.sizer;
@@ -681,7 +681,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._leftHighlight = left.highlight;
 		dom.append(this._panesEl, left.pane);
 		dom.append(this._panesEl, $('.paradis-spreadsheet-diff-separator'));
-		const right = this._buildDiffPane(sheet.modifiedRows, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), 'modified', validationByCell, paneMinCol);
+		const right = this._buildDiffPane(sheet.modifiedRows, localize('paradis.spreadsheet.modified', "新版（作業コピー）"), 'modified', validationByCell, paneMinCol);
 		this._rightScroll = right.pane;
 		this._rightContent = right.content;
 		this._rightSizer = right.sizer;
@@ -694,7 +694,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			this._validationInspector = dom.append(main, $('.paradis-spreadsheet-validation-inspector'));
 			this._validationInspector.tabIndex = -1;
 			this._validationInspector.setAttribute('role', 'region');
-			this._validationInspector.setAttribute('aria-label', localize('paradis.spreadsheet.validationChanges', "Input Rule Changes"));
+			this._validationInspector.setAttribute('aria-label', localize('paradis.spreadsheet.validationChanges', "入力規則の変更"));
 			this._validationInspector.setAttribute('aria-live', 'polite');
 			this._renderValidationInspector(this._selectedValidation);
 		} else {
@@ -703,7 +703,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		// どちらかの版が MAX_ROWS で打ち切られている場合は通知する。通常ビューアと同じ帯。
 		if (sheet.truncated) {
 			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
-			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
+			notice.textContent = localize('paradis.spreadsheet.truncated', "先頭2,000行のみ表示しています。ファイル全体にはさらに行があります。");
 		}
 
 		this._wireSyncScroll(this._leftScroll, this._rightScroll);
@@ -963,8 +963,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (validationChange) {
 			const badge = dom.append(td, $(`button.paradis-spreadsheet-validation-badge${ThemeIcon.asCSSSelector(Codicon.checklist)}`)) as HTMLButtonElement;
 			badge.type = 'button';
-			badge.title = localize('paradis.spreadsheet.validationChanged', "Data Validation Changed");
-			badge.setAttribute('aria-label', localize('paradis.spreadsheet.validationCellLabel', "Input rule {0} at {1}", this._validationStatusLabel(validationChange.status), validationChange.address));
+			badge.title = localize('paradis.spreadsheet.validationChanged', "入力規則が変更されました");
+			badge.setAttribute('aria-label', localize('paradis.spreadsheet.validationCellLabel', "{1}の入力規則が{0}", this._validationStatusLabel(validationChange.status), validationChange.address));
 			badge.setAttribute('aria-pressed', String(this._selectedValidation === validationChange));
 			this._renderedValidationCells.push({ cell: td, button: badge, address: validationChange.address });
 			this._renderDisposables.add(dom.addDisposableListener(badge, dom.EventType.CLICK, event => {
@@ -1064,7 +1064,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			if (sheet.protectedSheet) {
 				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
-				lock.title = localize('paradis.spreadsheet.protected', "This sheet is protected");
+				lock.title = localize('paradis.spreadsheet.protected', "このシートは保護されています");
 			}
 			let label = sheet.name;
 			if (sheet.sheetStatus === 'added') {
@@ -1100,9 +1100,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (this._countEl) {
 			this._countEl.textContent = this._diffLocations.length > 0
 				? this._validationFilter
-					? localize('paradis.spreadsheet.nValidationChanges', "{0} input rule changes", this._diffLocations.length)
-					: localize('paradis.spreadsheet.nChanges', "{0} changes", this._diffLocations.length)
-				: localize('paradis.spreadsheet.noChangesShort', "No changes");
+					? localize('paradis.spreadsheet.nValidationChanges', "入力規則の変更{0}件", this._diffLocations.length)
+					: localize('paradis.spreadsheet.nChanges', "変更{0}件", this._diffLocations.length)
+				: localize('paradis.spreadsheet.noChangesShort', "変更なし");
 		}
 		if (this._navPositionEl) {
 			// まだどの変更にも移動していない間は位置を伏せる(「1 / N」と出しつつ 1 番目を映していない状態を作らない)。

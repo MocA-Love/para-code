@@ -48,7 +48,7 @@ import {
 	PARADIS_TOGGLE_BOOKMARK_COMMAND_ID,
 } from './paradisBookmarksService.js';
 
-export const CONTEXT_PARADIS_URL_IS_BOOKMARKED = new RawContextKey<boolean>('paradisBrowserUrlIsBookmarked', false, localize('paradis.bookmarks.urlIsBookmarked', "Whether the current browser URL is bookmarked"));
+export const CONTEXT_PARADIS_URL_IS_BOOKMARKED = new RawContextKey<boolean>('paradisBrowserUrlIsBookmarked', false, localize('paradis.bookmarks.urlIsBookmarked', "現在のブラウザURLがブックマークされているかどうか"));
 
 /**
  * Clickable star indicator shown in the URL bar's PostUrl slot when the
@@ -83,7 +83,7 @@ class BookmarkIndicator extends Disposable {
 		}));
 		this._button.element.classList.add('paradis-bookmark-indicator');
 		this._button.label = `$(${Codicon.starFull.id})`;
-		this._button.element.setAttribute('aria-label', localize('paradis.bookmarks.remove', "Remove Bookmark"));
+		this._button.element.setAttribute('aria-label', localize('paradis.bookmarks.remove', "ブックマークを解除"));
 		this._register(this._button.onDidClick(() => this._onDidClick.fire()));
 		this._register(this._keybindingService.onDidUpdateKeybindings(() => {
 			this._button.setTitle(this._tooltip());
@@ -93,8 +93,8 @@ class BookmarkIndicator extends Disposable {
 	private _tooltip(): string {
 		const kb = this._keybindingService.lookupKeybinding(PARADIS_TOGGLE_BOOKMARK_COMMAND_ID)?.getLabel();
 		return kb
-			? localize('paradis.bookmarks.removeWithKb', "Remove Bookmark ({0})", kb)
-			: localize('paradis.bookmarks.remove', "Remove Bookmark");
+			? localize('paradis.bookmarks.removeWithKb', "ブックマークを解除（{0}）", kb)
+			: localize('paradis.bookmarks.remove', "ブックマークを解除");
 	}
 
 	setVisible(visible: boolean): void {
@@ -153,7 +153,7 @@ export class ParadisBookmarkBarFeature extends BrowserEditorContribution {
 		}));
 
 		this._suggestionProvider = {
-			label: localize('paradis.bookmarks.suggestGroup', "Bookmarks"),
+			label: localize('paradis.bookmarks.suggestGroup', "ブックマーク"),
 			order: 55,
 			onDidChange: this._onDidChangeState.event,
 			getSuggestions: async ({ text, input }) => {
@@ -193,8 +193,8 @@ export class ParadisBookmarkBarFeature extends BrowserEditorContribution {
 					id: PARADIS_TOGGLE_BOOKMARK_COMMAND_ID,
 					iconClass: ThemeIcon.asClassName(bookmarked ? Codicon.starFull : Codicon.star),
 					tooltip: bookmarked
-						? localize('paradis.bookmarks.remove', "Remove Bookmark")
-						: localize('paradis.bookmarks.add', "Bookmark This Page"),
+						? localize('paradis.bookmarks.remove', "ブックマークを解除")
+						: localize('paradis.bookmarks.add', "このページをブックマーク"),
 					alwaysVisible: true,
 					toggle: { checked: bookmarked },
 					location: QuickInputButtonLocation.Input,

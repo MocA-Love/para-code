@@ -60,7 +60,7 @@ export class ParadisFileDiffEditor extends EditorPane {
 		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
 		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
 		const rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item.active')) as HTMLButtonElement;
-		rawBtn.textContent = localize('paradis.fileViewer.rawDiff', "Raw Diff");
+		rawBtn.textContent = localize('paradis.fileViewer.rawDiff', "生の差分表示");
 		rawBtn.disabled = true;
 		dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
 

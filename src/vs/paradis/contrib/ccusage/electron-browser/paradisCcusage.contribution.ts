@@ -47,7 +47,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	EditorPaneDescriptor.create(
 		ParadisCcusageEditor,
 		PARADIS_CCUSAGE_EDITOR_ID,
-		localize('paradis.ccusage.editorName', "ccusage Dashboard")
+		localize('paradis.ccusage.editorName', "ccusage ダッシュボード")
 	),
 	[
 		new SyncDescriptor(ParadisCcusageInput)
@@ -65,7 +65,7 @@ registerAction2(class ShowCcusageDashboardAction extends Action2 {
 	constructor() {
 		super({
 			id: SHOW_DASHBOARD_COMMAND_ID,
-			title: localize2('paradis.ccusage.showDashboard', "Show ccusage Dashboard"),
+			title: localize2('paradis.ccusage.showDashboard', "ccusage ダッシュボードを表示"),
 			category: Categories.View,
 			f1: true,
 		});
@@ -97,13 +97,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// rtk 側と同じ扱いに揃えてある。逆に、既定プロファイル以外を使っていて以前この設定を
 			// 入れていた場合は、そのプロファイルの設定へ入れ直しになる(値そのものは消えない)。
 			scope: ConfigurationScope.MACHINE,
-			markdownDescription: localize('paradis.ccusage.executablePath', "Absolute path to the `ccusage` executable. When empty, Para Code looks for `ccusage` on PATH and common install locations, and falls back to `npx` with a pinned `ccusage` version for supply-chain safety. Set this path explicitly if you want to use a different (e.g. newer) version. While you are connected over SSH, the `ccusage` on the machine you are connected to is used, so set this in the remote settings if its path differs there."),
+			markdownDescription: localize('paradis.ccusage.executablePath', "`ccusage` 実行ファイルの絶対パス。空の場合、Para Code は PATH や一般的なインストール先から `ccusage` を探し、見つからなければサプライチェーン安全性のためバージョン固定した `npx` にフォールバックします。別バージョン（例: より新しいもの）を使いたい場合は明示的にこのパスを設定してください。SSH接続中は接続先マシン上の `ccusage` が使われるため、パスが異なる場合はリモート側の設定でこの項目を指定してください。"),
 		},
 		[SETTING_STATUS_BAR_ENABLED]: {
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.ccusage.statusBarEnabled', "Show today's coding agent cost (via ccusage) in the status bar."),
+			description: localize('paradis.ccusage.statusBarEnabled', "本日のコーディングエージェント利用コスト（ccusage経由）をステータスバーに表示します。"),
 		},
 		[PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS]: {
 			type: 'number',
@@ -122,13 +122,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// settings.json に書かれた値を shared process 側の ConfigurationService が見に行けない)。
 			scope: ConfigurationScope.APPLICATION_MACHINE,
 			enumDescriptions: [
-				localize('paradis.ccusage.execTimeoutSeconds.60', "60 seconds."),
-				localize('paradis.ccusage.execTimeoutSeconds.120', "2 minutes."),
-				localize('paradis.ccusage.execTimeoutSeconds.180', "3 minutes (default)."),
-				localize('paradis.ccusage.execTimeoutSeconds.300', "5 minutes."),
-				localize('paradis.ccusage.execTimeoutSeconds.600', "10 minutes."),
+				localize('paradis.ccusage.execTimeoutSeconds.60', "60秒。"),
+				localize('paradis.ccusage.execTimeoutSeconds.120', "2分。"),
+				localize('paradis.ccusage.execTimeoutSeconds.180', "3分（既定）。"),
+				localize('paradis.ccusage.execTimeoutSeconds.300', "5分。"),
+				localize('paradis.ccusage.execTimeoutSeconds.600', "10分。"),
 			],
-			markdownDescription: localize('paradis.ccusage.execTimeoutSeconds', "Timeout for a single `ccusage` invocation. `ccusage` scans the full session log history on every run, so this may need to be increased if you have a large amount of history (Claude Code / Codex / etc. logs)."),
+			markdownDescription: localize('paradis.ccusage.execTimeoutSeconds', "`ccusage` を1回実行する際のタイムアウトです。`ccusage` は実行のたびにセッションログの全履歴を走査するため、履歴（Claude Code / Codex 等のログ）が大量にある場合は値を増やす必要があるかもしれません。"),
 		},
 	},
 });
@@ -186,10 +186,10 @@ export class ParadisCcusageStatusBarContribution extends Disposable implements I
 		const properties: IStatusbarEntry = {
 			name: localize('paradis.ccusage.statusName', "ccusage"),
 			text,
-			ariaLabel: localize('paradis.ccusage.statusAria', "Coding agent usage (ccusage)"),
+			ariaLabel: localize('paradis.ccusage.statusAria', "コーディングエージェントの利用状況（ccusage）"),
 			tooltip: todayCost !== undefined
-				? localize('paradis.ccusage.statusTooltip', "Today's coding agent cost: ${0} — click to open the ccusage dashboard", todayCost.toFixed(2))
-				: localize('paradis.ccusage.statusTooltipNoData', "Open the ccusage usage dashboard"),
+				? localize('paradis.ccusage.statusTooltip', "本日のコーディングエージェント利用コスト: ${0} — クリックで ccusage ダッシュボードを開く", todayCost.toFixed(2))
+				: localize('paradis.ccusage.statusTooltipNoData', "ccusage 利用状況ダッシュボードを開く"),
 			command: SHOW_DASHBOARD_COMMAND_ID,
 		};
 		if (this.entry.value) {
