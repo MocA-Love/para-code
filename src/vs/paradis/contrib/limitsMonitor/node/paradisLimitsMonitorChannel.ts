@@ -52,8 +52,8 @@ import {
 	IParadisLimitsSnapshot,
 	IParadisLimitsWindow,
 	PARADIS_LIMITS_MONITOR_CHANNEL,
-	ParadisLimitsAccountStatus,
 	ParadisLimitsDuplicateDecision,
+	paradisLimitsStatusFromCswap,
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
 
@@ -307,14 +307,8 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private mapCswapAccount(raw: ICswapAccount): IParadisLimitsAccount {
-		const usageStatus = raw.usageStatus ?? 'unavailable';
-		let status: ParadisLimitsAccountStatus;
-		switch (usageStatus) {
-			case 'ok': status = 'ok'; break;
-			case 'token_expired': status = 'token_expired'; break;
-			case 'no_credentials': status = 'no_credentials'; break;
-			default: status = 'error'; break;
-		}
+		// cswap の usageStatus の意味づけは common 側の純関数に集約する（テスト可能にするため）。
+		const { status, unavailableReason } = paradisLimitsStatusFromCswap(raw.usageStatus);
 		const mapWindow = (window: ICswapWindow | undefined, label?: string): IParadisLimitsWindow | undefined => {
 			if (typeof window?.pct !== 'number') {
 				return undefined;
@@ -340,7 +334,9 @@ export class ParadisLimitsMonitorService {
 			email: raw.email,
 			active: raw.active === true,
 			status,
-			statusDetail: status === 'ok' ? undefined : usageStatus,
+			unavailableReason,
+			// 既知の状態は表示側が文言を持つので、生値は未知の値の診断用にだけ残す。
+			statusDetail: status === 'error' ? raw.usageStatus : undefined,
 			fiveHour: mapWindow(raw.usage?.fiveHour),
 			sevenDay: mapWindow(raw.usage?.sevenDay),
 			scoped: scoped.length > 0 ? scoped : undefined,
@@ -545,7 +541,7 @@ export class ParadisLimitsMonitorService {
 		// access token失効 → codex app-server RPCへフォールバック(codex CLI自身にリフレッシュさせる)
 		const lastFailure = this.rpcFailureAt.get(homePath);
 		if (lastFailure !== undefined && Date.now() - lastFailure < RPC_FAILURE_COOLDOWN_MS) {
-			return { account: { ...base, email, status: 'token_expired', statusDetail: 'access token expired (re-login required)' }, accountId };
+			return { account: { ...base, email, status: 'relogin_required', statusDetail: 'access token expired (re-login required)' }, accountId };
 		}
 		try {
 			const viaRpc = await this.fetchCodexAccountViaRpc(homePath);
@@ -554,7 +550,7 @@ export class ParadisLimitsMonitorService {
 		} catch (error) {
 			this.rpcFailureAt.set(homePath, Date.now());
 			// 認証切れはユーザーが再ログインするまで続くので、報告すると同じ内容が積み上がる。
-			// パネル側は status='token_expired' を受けて「トークン失効」バッジと「再ログイン…」
+			// パネル側は status='relogin_required' を受けて「要再ログイン」バッジと「再ログイン…」
 			// ボタンを出す（paradisLimitsMonitorPanel.ts）ため、ユーザーはそこから復帰できる。
 			if (!isCodexAuthFailure(error)) {
 				reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
@@ -563,7 +559,7 @@ export class ParadisLimitsMonitorService {
 				});
 			}
 			this.logService.warn(`[ParadisLimitsMonitor] codex app-server fallback failed for ${base.homeLabel}: ${(error as Error).message}`);
-			return { account: { ...base, email, status: 'token_expired', statusDetail: (error as Error).message }, accountId };
+			return { account: { ...base, email, status: 'relogin_required', statusDetail: (error as Error).message }, accountId };
 		}
 	}
 
