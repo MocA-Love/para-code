@@ -22,8 +22,8 @@ import {
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
 } from '../office/paradisOfficeArchive.js';
-import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisDiagonalBorder, type IParadisRowData, type IParadisSheetData, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
-import { formatSpreadsheetValue, type ParadisFormattedCellValue, type ParadisSpreadsheetNumberFormatContext } from './paradisSpreadsheetNumberFormat.js';
+import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisCellStyle, type IParadisDiagonalBorder, type IParadisRowData, type IParadisSheetData, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
+import { formatPreparedSpreadsheetValue, formatSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisFormattedCellValue, type ParadisSpreadsheetNumberFormatContext, type ParadisSpreadsheetPreparedNumberFormat } from './paradisSpreadsheetNumberFormat.js';
 import type {
 	ParadisSemanticBorder,
 	ParadisSemanticBorderEdge,
@@ -160,6 +160,14 @@ export interface ParadisSpreadsheetRenderProjectionLimits {
 	readonly rows: number;
 	readonly cells: number;
 	readonly formatDiagnostics: number;
+	readonly inputCharacters: number;
+	readonly inputUtf8Bytes: number;
+	readonly outputCharacters: number;
+	readonly outputUtf8Bytes: number;
+	readonly diagnosticCharacters: number;
+	readonly diagnosticUtf8Bytes: number;
+	readonly parsedFormats: number;
+	readonly parsedFormatCharacters: number;
 }
 
 export interface ParadisSpreadsheetSemanticResult extends ParadisSpreadsheetSnapshot {
@@ -168,11 +176,30 @@ export interface ParadisSpreadsheetSemanticResult extends ParadisSpreadsheetSnap
 	readonly renderFormatDiagnosticsTruncated?: boolean;
 }
 
+interface ParadisSpreadsheetRenderSemanticInput {
+	readonly date1904: boolean;
+	readonly projectionDiagnostics: ParadisSpreadsheetSnapshot['projectionDiagnostics'];
+	readonly sheets: readonly {
+		readonly name: string;
+		readonly order: number;
+		readonly cells: ReadonlyMap<string, ParadisSemanticCell>;
+	}[];
+	readonly styles: Pick<ParadisSpreadsheetStyles, 'numberFormats' | 'cellFormats'>;
+}
+
 const defaultRenderProjectionLimits: ParadisSpreadsheetRenderProjectionLimits = {
 	sheets: 65_535,
 	rows: 5_000_000,
 	cells: 5_000_000,
 	formatDiagnostics: 10_000,
+	inputCharacters: 64 * 1024 * 1024,
+	inputUtf8Bytes: 128 * 1024 * 1024,
+	outputCharacters: 64 * 1024 * 1024,
+	outputUtf8Bytes: 128 * 1024 * 1024,
+	diagnosticCharacters: 4 * 1024 * 1024,
+	diagnosticUtf8Bytes: 8 * 1024 * 1024,
+	parsedFormats: 4096,
+	parsedFormatCharacters: 4 * 1024 * 1024,
 };
 
 /**
@@ -185,45 +212,105 @@ export function formatSpreadsheetRenderProjection(
 	context: ParadisSpreadsheetNumberFormatContext = {},
 	limitOverrides: Partial<ParadisSpreadsheetRenderProjectionLimits> = {},
 ): ParadisSpreadsheetFormattedRenderProjection {
-	const diagnostics = snapshot.projectionDiagnostics;
-	const formatContext = ownRenderFormatContext(context, snapshot.date1904);
-	// Validate/copy the formatter boundary, and observe cancellation before any projection traversal.
-	formatSpreadsheetValue(null, 0, formatContext);
-	const limits = resolveRenderProjectionLimits(limitOverrides);
-	const now = formatContext.now ?? Date.now;
-	const deadlineMilliseconds = formatContext.deadlineMilliseconds ?? 60_000;
+	try {
+		const ownedContext = ownRenderFormatContext(context, false);
+		const limits = resolveRenderProjectionLimits(limitOverrides);
+		const operation = createRenderProjectionOperation(ownedContext, limits);
+		operation.checkpoint(true);
+		const ownershipBudget = new OwnershipBudget(() => operation.checkpoint());
+		const semanticLimits = resolveSpreadsheetSemanticLimits({
+			projectionSheets: limits.sheets,
+			projectionRows: limits.rows,
+			projectionCells: limits.cells,
+		});
+		const projections = snapshotProjection(projection, semanticLimits, () => operation.checkpoint(), ownershipBudget, limits);
+		const ownedSnapshot = snapshotStandaloneRenderSemanticSnapshot(snapshot, ownershipBudget, limits);
+		return formatOwnedSpreadsheetRenderProjection(
+			ownedSnapshot,
+			projections.render,
+			ownedContext,
+			limits,
+			operation,
+			{ characters: projections.renderCharacters, utf8Bytes: projections.renderUtf8Bytes },
+		);
+	} catch (error) {
+		throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+	}
+}
+
+interface RenderProjectionOperation {
+	readonly context: ParadisSpreadsheetNumberFormatContext;
+	readonly limits: ParadisSpreadsheetRenderProjectionLimits;
+	readonly checkpoint: (force?: boolean) => void;
+}
+
+function createRenderProjectionOperation(
+	context: ParadisSpreadsheetNumberFormatContext,
+	limits: ParadisSpreadsheetRenderProjectionLimits,
+): RenderProjectionOperation {
+	const now = context.now ?? Date.now;
+	const deadlineMilliseconds = context.deadlineMilliseconds ?? 60_000;
 	const hardDeadline = StopWatch.create(true);
 	const started = readMonotonicClock(now);
 	let lastClock = started;
 	let checkpointCount = 0;
-	const checkpoint = (force = false): void => {
-		checkpointCount++;
-		if (!force && checkpointCount % 128 !== 0) {
-			return;
-		}
-		try {
-			throwIfParadisOfficeCancelled(formatContext.cancellationToken);
-		} catch (error) {
-			throw sanitizeSpreadsheetPackageError(error, 'unsafe');
-		}
-		if (hardDeadline.elapsed() > deadlineMilliseconds) {
-			throw new ParadisOfficePackageError('limitExceeded');
-		}
-		const currentClock = readMonotonicClock(now);
-		if (currentClock < lastClock) {
-			throw new ParadisOfficePackageError('unsafe');
-		}
-		lastClock = currentClock;
-		if (currentClock - started > deadlineMilliseconds) {
-			throw new ParadisOfficePackageError('limitExceeded');
-		}
+	return {
+		context,
+		limits,
+		checkpoint: (force = false): void => {
+			checkpointCount++;
+			if (!force && checkpointCount % 128 !== 0) {
+				return;
+			}
+			try {
+				throwIfParadisOfficeCancelled(context.cancellationToken);
+			} catch (error) {
+				throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+			}
+			if (hardDeadline.elapsed() > deadlineMilliseconds) {
+				throw new ParadisOfficePackageError('limitExceeded');
+			}
+			const currentClock = readMonotonicClock(now);
+			if (currentClock < lastClock) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			lastClock = currentClock;
+			if (currentClock - started > deadlineMilliseconds) {
+				throw new ParadisOfficePackageError('limitExceeded');
+			}
+		},
 	};
+}
+
+function formatOwnedSpreadsheetRenderProjection(
+	snapshot: ParadisSpreadsheetRenderSemanticInput,
+	projection: IParadisWorkbookData,
+	context: ParadisSpreadsheetNumberFormatContext = {},
+	limitOverrides: Partial<ParadisSpreadsheetRenderProjectionLimits> = {},
+	ownedOperation?: RenderProjectionOperation,
+	initialProjectionBudget: { readonly characters: number; readonly utf8Bytes: number } = { characters: 0, utf8Bytes: 0 },
+): ParadisSpreadsheetFormattedRenderProjection {
+	const diagnostics = snapshot.projectionDiagnostics;
+	const formatContext = ownRenderFormatContext(ownedOperation?.context ?? context, snapshot.date1904);
+	// Validate/copy the formatter boundary, and observe cancellation before any projection traversal.
+	formatSpreadsheetValue(null, 0, formatContext);
+	const limits = ownedOperation?.limits ?? resolveRenderProjectionLimits(limitOverrides);
+	const operation = ownedOperation ?? createRenderProjectionOperation(formatContext, limits);
+	const checkpoint = operation.checkpoint;
 	checkpoint(true);
 	const formatDiagnostics: ParadisSpreadsheetRenderFormatDiagnostic[] = [];
+	const preparedFormats = new Map<number | string, ParadisSpreadsheetPreparedNumberFormat>();
 	let formatDiagnosticsTruncated = false;
 	let sheetCount = 0;
 	let rowCount = 0;
 	let cellCount = 0;
+	let inputCharacters = initialProjectionBudget.characters;
+	let inputUtf8Bytes = initialProjectionBudget.utf8Bytes;
+	let outputCharacters = initialProjectionBudget.characters;
+	let outputUtf8Bytes = initialProjectionBudget.utf8Bytes;
+	let diagnosticCharacters = 0;
+	let diagnosticUtf8Bytes = 0;
+	let parsedFormatCharacters = 0;
 	const semanticSheetsByName = new Map(snapshot.sheets.map(sheet => [sheet.name, sheet]));
 	const sheets = projection.sheets.map((sheet, sheetIndex): IParadisSheetData => {
 		checkpoint();
@@ -257,9 +344,35 @@ export function formatSpreadsheetRenderProjection(
 					return cell;
 				}
 				const numberFormat = semanticNumberFormat(snapshot, semanticCell);
-				const formatted = formatSpreadsheetValue(value, numberFormat, formatContext);
+				const sourceText = generalRenderBudgetText(value);
+				inputCharacters = addProjectionStringBudget(inputCharacters, sourceText.length, limits.inputCharacters);
+				inputUtf8Bytes = addProjectionStringBudget(inputUtf8Bytes, boundedUtf8Length(sourceText, () => checkpoint()), limits.inputUtf8Bytes);
+				let prepared = preparedFormats.get(numberFormat);
+				if (!prepared) {
+					if (preparedFormats.size >= limits.parsedFormats) {
+						throw new ParadisOfficePackageError('limitExceeded');
+					}
+					const formatCharacters = typeof numberFormat === 'string' ? numberFormat.length : String(numberFormat).length;
+					parsedFormatCharacters = addProjectionStringBudget(parsedFormatCharacters, formatCharacters, limits.parsedFormatCharacters);
+					prepared = prepareSpreadsheetNumberFormat(numberFormat, formatContext);
+					preparedFormats.set(numberFormat, prepared);
+				}
+				const formatted = formatPreparedSpreadsheetValue(prepared, value);
+				const previousValueBytes = boundedUtf8Length(cell.value, () => checkpoint());
+				outputCharacters -= cell.value.length;
+				outputUtf8Bytes -= previousValueBytes;
+				if (outputCharacters < 0 || outputUtf8Bytes < 0) {
+					throw new ParadisOfficePackageError('unsafe');
+				}
+				outputCharacters = addProjectionStringBudget(outputCharacters, formatted.text.length, limits.outputCharacters);
+				outputUtf8Bytes = addProjectionStringBudget(outputUtf8Bytes, boundedUtf8Length(formatted.text, () => checkpoint()), limits.outputUtf8Bytes);
 				if (formatted.status === 'approximated') {
 					if (formatDiagnostics.length < limits.formatDiagnostics) {
+						const diagnosticStrings = [semanticSheet.name, cellAddress, formatted.text, ...formatted.unsupportedTokens];
+						for (const diagnosticString of diagnosticStrings) {
+							diagnosticCharacters = addProjectionStringBudget(diagnosticCharacters, diagnosticString.length, limits.diagnosticCharacters);
+							diagnosticUtf8Bytes = addProjectionStringBudget(diagnosticUtf8Bytes, boundedUtf8Length(diagnosticString, () => checkpoint()), limits.diagnosticUtf8Bytes);
+						}
 						formatDiagnostics.push({ sheetName: semanticSheet.name, cellAddress, ...formatted });
 					} else {
 						formatDiagnosticsTruncated = true;
@@ -288,8 +401,91 @@ export function formatSpreadsheetRenderProjection(
 	};
 }
 
+function generalRenderBudgetText(value: number | string | boolean | null): string {
+	return value === null ? '' : typeof value === 'boolean' ? value ? 'TRUE' : 'FALSE' : String(value);
+}
+
+function addProjectionStringBudget(current: number, increment: number, maximum: number): number {
+	const next = current + increment;
+	if (!Number.isSafeInteger(next) || next > maximum) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	return next;
+}
+
+function snapshotStandaloneRenderSemanticSnapshot(value: unknown, budget: OwnershipBudget, limits = defaultRenderProjectionLimits): ParadisSpreadsheetRenderSemanticInput {
+	const root = projectDataRecord(value, ['date1904', 'projectionDiagnostics', 'styles', 'sheets'], 4, budget);
+	const cloneBudget: RenderCloneBudget = {
+		clones: new WeakMap(), active: new WeakSet(), nodes: 0, properties: 0, arrayElements: 0, characters: 0, utf8Bytes: 0,
+		maximumCharacters: Math.min(limits.inputCharacters, limits.outputCharacters),
+		maximumUtf8Bytes: Math.min(limits.inputUtf8Bytes, limits.outputUtf8Bytes),
+	};
+	const diagnosticCloneBudget: RenderCloneBudget = {
+		clones: new WeakMap(), active: new WeakSet(), nodes: 0, properties: 0, arrayElements: 0, characters: 0, utf8Bytes: 0,
+		maximumCharacters: limits.diagnosticCharacters,
+		maximumUtf8Bytes: limits.diagnosticUtf8Bytes,
+	};
+	const checkpoint = () => budget.checkpoint();
+	const stylesRecord = projectDataRecord(root.styles, ['numberFormats', 'cellFormats'], 2, budget);
+	const numberFormats = projectDataArray(stylesRecord.numberFormats, 65_535, budget).map(entry => {
+		const record = projectDataRecord(entry, ['id', 'code'], 2, budget);
+		return { id: ownedNumber(record.id), code: ownedString(record.code, budget) };
+	});
+	const cellFormats = projectDataArray(stylesRecord.cellFormats, 65_535, budget).map((entry, index) => {
+		const record = projectDataRecord(entry, ['index', 'numberFormatId'], 2, budget);
+		return { index: record.index === undefined ? index : ownedNumber(record.index), ...(record.numberFormatId !== undefined ? { numberFormatId: ownedNumber(record.numberFormatId) } : {}) };
+	});
+	const sheets = projectDataArray(root.sheets, defaultSemanticLimits.projectionSheets, budget).map(sheetValue => {
+		const record = projectDataRecord(sheetValue, ['name', 'order', 'cells'], 3, budget);
+		const cellsValue = record.cells;
+		try {
+			if (!cellsValue || typeof cellsValue !== 'object' || Object.getPrototypeOf(cellsValue) !== Map.prototype) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+		} catch (error) {
+			throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+		}
+		budget.consumeObject(cellsValue);
+		const cells = new Map<string, ParadisSemanticCell>();
+		let count = 0;
+		try {
+			for (const [addressValue, cellValue] of Map.prototype.entries.call(cellsValue) as IterableIterator<[unknown, unknown]>) {
+				if (++count > defaultSemanticLimits.projectionCells) {
+					throw new ParadisOfficePackageError('limitExceeded');
+				}
+				const address = ownedString(addressValue, budget);
+				const cellRecord = projectDataRecord(cellValue, [
+					'storedType', 'rawType', 'rawValue', 'text', 'formula', 'cachedResult', 'styleRef', 'effectiveStyleRef', 'effectiveStyleOrigin', 'styleSource', 'sharedStringIndex', 'richText',
+				], 12, budget);
+				const clonedCell: Record<string, unknown> = {};
+				for (const key of Object.keys(cellRecord)) {
+					clonedCell[key] = cloneRenderProjectionValue(cellRecord[key], cloneBudget, checkpoint);
+				}
+				cells.set(address, clonedCell as unknown as ParadisSemanticCell);
+			}
+		} catch (error) {
+			throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+		}
+		return {
+			name: ownedString(record.name, budget),
+			order: ownedNumber(record.order),
+			cells,
+		};
+	});
+	const projectionDiagnostics = cloneRenderProjectionValue(root.projectionDiagnostics, diagnosticCloneBudget, checkpoint) as ParadisSpreadsheetSnapshot['projectionDiagnostics'];
+	return {
+		date1904: ownedBoolean(root.date1904),
+		projectionDiagnostics,
+		sheets,
+		styles: { numberFormats, cellFormats },
+	};
+}
+
 function resolveRenderProjectionLimits(overrides: Partial<ParadisSpreadsheetRenderProjectionLimits>): ParadisSpreadsheetRenderProjectionLimits {
-	const allowed = new Set(['sheets', 'rows', 'cells', 'formatDiagnostics']);
+	const allowed = new Set([
+		'sheets', 'rows', 'cells', 'formatDiagnostics', 'inputCharacters', 'inputUtf8Bytes', 'outputCharacters', 'outputUtf8Bytes',
+		'diagnosticCharacters', 'diagnosticUtf8Bytes', 'parsedFormats', 'parsedFormatCharacters',
+	]);
 	const record: Record<string, unknown> = Object.create(null);
 	try {
 		for (const key of Reflect.ownKeys(overrides)) {
@@ -406,7 +602,7 @@ function finiteSpreadsheetNumber(value: string): number {
 	return parsed;
 }
 
-function semanticNumberFormat(snapshot: ParadisSpreadsheetSnapshot, cell: ParadisSemanticCell): number | string {
+function semanticNumberFormat(snapshot: ParadisSpreadsheetRenderSemanticInput, cell: ParadisSemanticCell): number | string {
 	const format = cell.effectiveStyleRef === undefined ? undefined : snapshot.styles.cellFormats[cell.effectiveStyleRef];
 	const id = format?.numberFormatId ?? 0;
 	const custom = snapshot.styles.numberFormats.find(candidate => candidate.id === id);
@@ -417,6 +613,9 @@ function semanticNumberFormat(snapshot: ParadisSpreadsheetSnapshot, cell: Paradi
 }
 
 interface OwnedSemanticContext extends ParadisSpreadsheetOwnedSemanticInput {
+	readonly renderProjection?: IParadisWorkbookData;
+	readonly renderProjectionCharacters?: number;
+	readonly renderProjectionUtf8Bytes?: number;
 	readonly hardDeadline: StopWatch;
 	readonly deadlineMilliseconds: number;
 }
@@ -578,6 +777,7 @@ export async function parseSpreadsheetSemantic(
 		const profile = budgetProfile(ownedInventory.budgetProfile);
 		const limits = resolveSpreadsheetSemanticLimits(ownedOptions.limits);
 		const ownedProjection = ownedOptions.projection;
+		const ownedRenderProjection = context.renderProjection;
 		const now = ownedOptions.now ?? Date.now;
 		const deadlineMilliseconds = context.deadlineMilliseconds;
 		const started = readMonotonicClock(now);
@@ -760,9 +960,9 @@ export async function parseSpreadsheetSemantic(
 			}
 			: baseSnapshot;
 		checkpoint(true);
-		const formattedProjection = ownedProjection ? formatSpreadsheetRenderProjection(
+		const formattedProjection = ownedRenderProjection ? formatOwnedSpreadsheetRenderProjection(
 			result,
-			ownedProjection,
+			ownedRenderProjection,
 			{
 				date1904: result.date1904,
 				...(ownedOptions.workbookLocale ? { workbookLocale: ownedOptions.workbookLocale } : {}),
@@ -779,6 +979,11 @@ export async function parseSpreadsheetSemantic(
 				rows: limits.projectionRows,
 				cells: limits.projectionCells,
 				formatDiagnostics: 10_000,
+			},
+			undefined,
+			{
+				characters: context.renderProjectionCharacters ?? 0,
+				utf8Bytes: context.renderProjectionUtf8Bytes ?? 0,
 			},
 		) : undefined;
 		const finalResult: ParadisSpreadsheetSemanticResult = formattedProjection ? {
@@ -1006,7 +1211,8 @@ function createOwnedSemanticContext(
 	checkpoint();
 	const ownedInventory = snapshotInventory(inventoryRecord, checkpoint, budget, effectiveProfile.entryCount);
 	const limits = resolveOwnedLimits(optionsRecord.limits, budget);
-	const projection = optionsRecord.projection === undefined ? undefined : snapshotProjection(optionsRecord.projection, limits, checkpoint, budget);
+	const projections = optionsRecord.projection === undefined ? undefined : snapshotProjection(optionsRecord.projection, limits, checkpoint, budget);
+	const projection = projections?.diagnostic;
 	const now = optionsRecord.now;
 	if (now !== undefined && typeof now !== 'function') {
 		throw new ParadisOfficePackageError('unsafe');
@@ -1027,6 +1233,8 @@ function createOwnedSemanticContext(
 	return {
 		inventory: deepFreezeOwned(ownedInventory, checkpoint),
 		options: deepFreezeOwned(ownedOptions, checkpoint),
+		...(projections ? { renderProjection: deepFreezeOwned(projections.render, checkpoint) } : {}),
+		...(projections ? { renderProjectionCharacters: projections.renderCharacters, renderProjectionUtf8Bytes: projections.renderUtf8Bytes } : {}),
 		hardDeadline,
 		deadlineMilliseconds,
 	};
@@ -1134,17 +1342,43 @@ function resolveOwnedLimits(value: unknown, budget: OwnershipBudget): ParadisSpr
 	return resolveSpreadsheetSemanticLimits(overrides);
 }
 
+interface OwnedProjectionSnapshots {
+	readonly diagnostic: IParadisWorkbookData;
+	readonly render: IParadisWorkbookData;
+	readonly renderCharacters: number;
+	readonly renderUtf8Bytes: number;
+}
+
+interface RenderCloneBudget {
+	readonly clones: WeakMap<object, unknown>;
+	readonly active: WeakSet<object>;
+	nodes: number;
+	properties: number;
+	arrayElements: number;
+	characters: number;
+	utf8Bytes: number;
+	readonly maximumCharacters: number;
+	readonly maximumUtf8Bytes: number;
+}
+
 function snapshotProjection(
 	projection: unknown,
 	limits: ParadisSpreadsheetSemanticLimits,
 	checkpoint: () => void,
 	budget: OwnershipBudget,
-): IParadisWorkbookData {
+	renderLimits: ParadisSpreadsheetRenderProjectionLimits = defaultRenderProjectionLimits,
+): OwnedProjectionSnapshots {
 	const projectionRecord = projectDataRecord(projection, ['sheets', 'drawingsBySheet', 'themeColors'], 3, budget);
 	const sourceSheets = projectDataArray(projectionRecord.sheets, limits.projectionSheets, budget);
+	const cloneBudget: RenderCloneBudget = {
+		clones: new WeakMap(), active: new WeakSet(), nodes: 0, properties: 0, arrayElements: 0, characters: 0, utf8Bytes: 0,
+		maximumCharacters: Math.min(renderLimits.inputCharacters, renderLimits.outputCharacters),
+		maximumUtf8Bytes: Math.min(renderLimits.inputUtf8Bytes, renderLimits.outputUtf8Bytes),
+	};
 	let rowCount = 0;
 	let cellCount = 0;
-	const sheets: IParadisWorkbookData['sheets'][number][] = [];
+	const diagnosticSheets: IParadisWorkbookData['sheets'][number][] = [];
+	const renderSheets: IParadisWorkbookData['sheets'][number][] = [];
 	for (const sheetValue of sourceSheets) {
 		checkpoint();
 		const sheet = projectDataRecord(sheetValue, [
@@ -1152,13 +1386,15 @@ function snapshotProjection(
 			'tabColor', 'protectedSheet', 'rowBreaks', 'colBreaks', 'printArea', 'pageLayout',
 		], 18, budget);
 		const sourceRows = projectDataArray(sheet.rows, limits.projectionRows - rowCount, budget);
-		const rows: IParadisWorkbookData['sheets'][number]['rows'][number][] = [];
+		const diagnosticRows: IParadisWorkbookData['sheets'][number]['rows'][number][] = [];
+		const renderRows: IParadisWorkbookData['sheets'][number]['rows'][number][] = [];
 		for (const rowValue of sourceRows) {
 			checkpoint();
 			rowCount++;
 			const row = projectDataRecord(rowValue, ['excelRow', 'height', 'cells'], 3, budget);
 			const sourceCells = projectDataArray(row.cells, limits.projectionCells - cellCount, budget);
-			const cells: IParadisWorkbookData['sheets'][number]['rows'][number]['cells'][number][] = [];
+			const diagnosticCells: IParadisWorkbookData['sheets'][number]['rows'][number]['cells'][number][] = [];
+			const renderCells: IParadisWorkbookData['sheets'][number]['rows'][number]['cells'][number][] = [];
 			for (const cellValue of sourceCells) {
 				checkpoint();
 				cellCount++;
@@ -1166,24 +1402,207 @@ function snapshotProjection(
 					'value', 'style', 'colSpan', 'rowSpan', 'hidden', 'wrapText', 'verticalText', 'shrinkToFit', 'richText', 'diagonal', 'dataValidation',
 				], 11, budget);
 				const diagonal = cell.diagonal === undefined ? undefined : snapshotProjectionDiagonal(cell.diagonal, budget);
-				cells.push({
-					value: ownedString(cell.value, budget),
+				const value = ownedString(cell.value, budget);
+				cloneBudget.characters = addRenderCloneBudget(cloneBudget.characters, value.length, cloneBudget.maximumCharacters);
+				cloneBudget.utf8Bytes = addRenderCloneBudget(cloneBudget.utf8Bytes, boundedUtf8Length(value, checkpoint), cloneBudget.maximumUtf8Bytes);
+				diagnosticCells.push({
+					value,
 					style: {},
 					...(diagonal ? { diagonal } : {}),
 				});
+				const renderCell: Record<string, unknown> = { value, style: cloneRenderCellStyle(cell.style, cloneBudget, checkpoint) };
+				for (const key of ['colSpan', 'rowSpan', 'hidden', 'wrapText', 'verticalText', 'shrinkToFit', 'richText', 'diagonal', 'dataValidation']) {
+					if (cell[key] !== undefined) {
+						renderCell[key] = cloneRenderProjectionValue(cell[key], cloneBudget, checkpoint);
+					}
+				}
+				renderCells.push(renderCell as unknown as IParadisCellData);
 			}
-			rows.push({ excelRow: ownedNumber(row.excelRow), height: ownedNumber(row.height), cells });
+			const excelRow = ownedNumber(row.excelRow);
+			const height = ownedNumber(row.height);
+			diagnosticRows.push({ excelRow, height, cells: diagnosticCells });
+			renderRows.push({ excelRow, height, cells: renderCells });
 		}
-		sheets.push({
-			name: ownedString(sheet.name, budget),
-			rows,
-			columnCount: ownedNumber(sheet.columnCount),
-			columnWidths: [],
-			truncated: ownedBoolean(sheet.truncated),
-			minCol: ownedNumber(sheet.minCol),
-		});
+		const name = ownedString(sheet.name, budget);
+		cloneBudget.characters = addRenderCloneBudget(cloneBudget.characters, name.length, cloneBudget.maximumCharacters);
+		cloneBudget.utf8Bytes = addRenderCloneBudget(cloneBudget.utf8Bytes, boundedUtf8Length(name, checkpoint), cloneBudget.maximumUtf8Bytes);
+		const columnCount = ownedNumber(sheet.columnCount);
+		const truncated = ownedBoolean(sheet.truncated);
+		const minCol = ownedNumber(sheet.minCol);
+		diagnosticSheets.push({ name, rows: diagnosticRows, columnCount, columnWidths: [], truncated, minCol });
+		const renderSheet: Record<string, unknown> = {
+			name, rows: renderRows, columnCount, truncated, minCol,
+			columnWidths: cloneRenderProjectionValue(sheet.columnWidths, cloneBudget, checkpoint),
+		};
+		for (const key of ['dataValidations', 'shapes', 'showGridLines', 'zoomScale', 'tabColor', 'protectedSheet', 'rowBreaks', 'colBreaks', 'printArea', 'pageLayout']) {
+			if (sheet[key] !== undefined) {
+				renderSheet[key] = cloneRenderProjectionValue(sheet[key], cloneBudget, checkpoint);
+			}
+		}
+		renderSheets.push(renderSheet as unknown as IParadisSheetData);
 	}
-	return { sheets };
+	const render: Record<string, unknown> = { sheets: renderSheets };
+	for (const key of ['drawingsBySheet', 'themeColors']) {
+		if (projectionRecord[key] !== undefined) {
+			render[key] = cloneRenderProjectionValue(projectionRecord[key], cloneBudget, checkpoint);
+		}
+	}
+	return {
+		diagnostic: { sheets: diagnosticSheets },
+		render: render as unknown as IParadisWorkbookData,
+		renderCharacters: cloneBudget.characters,
+		renderUtf8Bytes: cloneBudget.utf8Bytes,
+	};
+}
+
+function cloneRenderCellStyle(value: unknown, budget: RenderCloneBudget, checkpoint: () => void): IParadisCellStyle {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	try {
+		if (budget.clones.has(value)) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		budget.nodes = addRenderCloneBudget(budget.nodes, 1, 10_000_000);
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		const keys = Reflect.ownKeys(value);
+		if (keys.length > 256) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		budget.properties = addRenderCloneBudget(budget.properties, keys.length, 50_000_000);
+		const result: Record<string, string> = {};
+		budget.clones.set(value, result);
+		for (const key of keys) {
+			checkpoint();
+			if (typeof key !== 'string' || key === '__proto__' || key === 'prototype' || key === 'constructor') {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor || !Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'string') {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			budget.characters = addRenderCloneBudget(budget.characters, key.length, budget.maximumCharacters);
+			budget.utf8Bytes = addRenderCloneBudget(budget.utf8Bytes, boundedUtf8Length(key, checkpoint), budget.maximumUtf8Bytes);
+			budget.characters = addRenderCloneBudget(budget.characters, descriptor.value.length, budget.maximumCharacters);
+			budget.utf8Bytes = addRenderCloneBudget(budget.utf8Bytes, boundedUtf8Length(descriptor.value, checkpoint), budget.maximumUtf8Bytes);
+			result[key] = descriptor.value;
+		}
+		return result;
+	} catch (error) {
+		throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+	}
+}
+
+function cloneRenderProjectionValue(value: unknown, budget: RenderCloneBudget, checkpoint: () => void, depth = 0): unknown {
+	checkpoint();
+	if (value === null || typeof value === 'boolean') {
+		return value;
+	}
+	if (typeof value === 'number') {
+		if (!Number.isFinite(value)) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		return value;
+	}
+	if (typeof value === 'string') {
+		budget.characters = addRenderCloneBudget(budget.characters, value.length, budget.maximumCharacters);
+		budget.utf8Bytes = addRenderCloneBudget(budget.utf8Bytes, boundedUtf8Length(value, checkpoint), budget.maximumUtf8Bytes);
+		return value;
+	}
+	if (!value || typeof value !== 'object' || depth >= 32) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	try {
+		if (budget.active.has(value)) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		if (budget.clones.has(value)) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		budget.nodes = addRenderCloneBudget(budget.nodes, 1, 10_000_000);
+		budget.active.add(value);
+		if (Array.isArray(value)) {
+			const length = Object.getOwnPropertyDescriptor(value, 'length')?.value;
+			if (!Number.isSafeInteger(length) || length < 0 || length > 5_000_000) {
+				throw new ParadisOfficePackageError('limitExceeded');
+			}
+			budget.arrayElements = addRenderCloneBudget(budget.arrayElements, length, 10_000_000);
+			const result = new Array<unknown>(length);
+			budget.clones.set(value, result);
+			for (let index = 0; index < length; index++) {
+				const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+				if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+					throw new ParadisOfficePackageError('unsafe');
+				}
+				result[index] = cloneRenderProjectionValue(descriptor.value, budget, checkpoint, depth + 1);
+			}
+			budget.active.delete(value);
+			return result;
+		}
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		const keys = Reflect.ownKeys(value);
+		if (keys.length > 256) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		budget.properties = addRenderCloneBudget(budget.properties, keys.length, 50_000_000);
+		const result: Record<string, unknown> = {};
+		budget.clones.set(value, result);
+		for (const key of keys) {
+			if (typeof key !== 'string' || key === '__proto__' || key === 'prototype' || key === 'constructor') {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+				throw new ParadisOfficePackageError('unsafe');
+			}
+			budget.characters = addRenderCloneBudget(budget.characters, key.length, budget.maximumCharacters);
+			budget.utf8Bytes = addRenderCloneBudget(budget.utf8Bytes, boundedUtf8Length(key, checkpoint), budget.maximumUtf8Bytes);
+			result[key] = cloneRenderProjectionValue(descriptor.value, budget, checkpoint, depth + 1);
+		}
+		budget.active.delete(value);
+		return result;
+	} catch (error) {
+		budget.active.delete(value);
+		throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+	}
+}
+
+function addRenderCloneBudget(current: number, increment: number, maximum: number): number {
+	const next = current + increment;
+	if (!Number.isSafeInteger(next) || next > maximum) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	return next;
+}
+
+function boundedUtf8Length(value: string, checkpoint: () => void): number {
+	let bytes = 0;
+	for (let index = 0; index < value.length; index++) {
+		if ((index & 0xff) === 0) {
+			checkpoint();
+		}
+		const code = value.charCodeAt(index);
+		if (code < 0x80) {
+			bytes++;
+		} else if (code < 0x800) {
+			bytes += 2;
+		} else if (code >= 0xd800 && code <= 0xdbff && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+			bytes += 4;
+			index++;
+		} else {
+			bytes += 3;
+		}
+		if (!Number.isSafeInteger(bytes)) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+	}
+	return bytes;
 }
 
 function snapshotProjectionDiagonal(value: unknown, budget: OwnershipBudget): IParadisDiagonalBorder {
