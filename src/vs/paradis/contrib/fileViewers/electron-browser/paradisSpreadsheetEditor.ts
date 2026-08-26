@@ -15,10 +15,11 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { isEqual } from '../../../../base/common/resources.js';
+import { basename, isEqual } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -31,6 +32,8 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintBlock, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
@@ -38,6 +41,8 @@ import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from './spreadsheet/paradisSpreadsheetGridRenderer.js';
 import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from './spreadsheet/paradisSpreadsheetViewport.js';
+import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
+import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
 
 import './media/paradisSpreadsheet.css';
 
@@ -45,6 +50,163 @@ const $ = dom.$;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 4;
 const VIRTUAL_GRID_CELL_THRESHOLD = 10_000;
+const LEGACY_SEARCH_RESULT_LIMIT = 200;
+const LEGACY_PRINT_CELL_LIMIT = 10_000;
+const INCOMPLETE_SPREADSHEET_MANIFEST: ParadisOfficeCompletenessManifest = Object.freeze({
+	expectedParts: 1, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
+	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
+});
+
+interface IParadisSpreadsheetCommittedInput {
+	readonly input: EditorInput;
+	readonly options: IEditorOptions | undefined;
+	readonly resource: URI;
+	readonly workbook: IParadisWorkbookData | undefined;
+	readonly sheets: readonly IParadisSheetData[];
+	readonly activeSheetIndex: number;
+	readonly scale: number;
+	readonly userAdjusted: boolean;
+	readonly runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
+	readonly viewState: ParadisSpreadsheetViewState;
+}
+
+export function isParadisSpreadsheetV1Enabled(configuration: ParadisOfficeRuntimeConfiguration): boolean {
+	return configuration.engine !== 'legacy' && configuration.semanticSpreadsheet;
+}
+
+export function createParadisSpreadsheetSourceDescriptor(resource: URI, side?: 'original' | 'modified'): ParadisOfficeSourceDescriptor {
+	const kind: ParadisOfficeSourceDescriptor['kind'] = resource.scheme === 'vscode-remote'
+		? 'remote'
+		: resource.scheme === 'git'
+			? 'gitCommit'
+			: resource.scheme === 'untitled'
+				? 'untitled'
+				: side === 'modified'
+					? 'workingTree'
+					: 'file';
+	return { kind, uri: resource.toString(true), displayName: basename(resource), ...(side ? { side } : {}) };
+}
+
+function spreadsheetViewStateFromOptions(value: object | undefined, fallback: ParadisSpreadsheetViewState): ParadisSpreadsheetViewState {
+	const nested = value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'viewState')
+		? (value as { readonly viewState?: unknown }).viewState
+		: value;
+	return restoreParadisSpreadsheetViewState(nested, fallback);
+}
+
+export function snapshotSpreadsheetRuntimeConfiguration(configurationService: IConfigurationService): ParadisOfficeRuntimeConfiguration {
+	const reader: ParadisOfficeConfigurationReader = {
+		getValue: <T>(key: string) => configurationService.getValue<T>(key),
+		inspect: <T>(key: string) => configurationService.inspect<T>(key) as IConfigurationValue<T> | undefined,
+	};
+	return snapshotParadisOfficeRuntimeConfiguration(reader);
+}
+
+function spreadsheetColumnLabel(column: number): string {
+	let value = column;
+	let label = '';
+	while (value > 0) {
+		value--;
+		label = String.fromCharCode(65 + value % 26) + label;
+		value = Math.floor(value / 26);
+	}
+	return label;
+}
+
+/** Compatibility search adapter. The callback shape matches v1 search results and includes non-active sheets. */
+export function searchLegacySpreadsheetWorkbook(workbook: IParadisWorkbookData, query: string): readonly ParadisOfficeSearchResult[] {
+	const normalizedQuery = query.normalize('NFC').trim();
+	if (normalizedQuery.length === 0 || normalizedQuery.length > 4096) {
+		return [];
+	}
+	const needle = normalizedQuery.toLocaleLowerCase();
+	const results: ParadisOfficeSearchResult[] = [];
+	for (let sheetIndex = 0; sheetIndex < workbook.sheets.length && results.length < LEGACY_SEARCH_RESULT_LIMIT; sheetIndex++) {
+		const sheet = workbook.sheets[sheetIndex];
+		for (let rowIndex = 0; rowIndex < sheet.rows.length && results.length < LEGACY_SEARCH_RESULT_LIMIT; rowIndex++) {
+			const row = sheet.rows[rowIndex];
+			for (let columnIndex = 0; columnIndex < row.cells.length && results.length < LEGACY_SEARCH_RESULT_LIMIT; columnIndex++) {
+				const text = row.cells[columnIndex].value.normalize('NFC');
+				const matchIndex = text.toLocaleLowerCase().indexOf(needle);
+				if (matchIndex < 0) {
+					continue;
+				}
+				const address = `${spreadsheetColumnLabel(sheet.minCol + columnIndex)}${row.excelRow}`;
+				const previewStart = Math.max(0, matchIndex - 40);
+				const previewEnd = Math.min(text.length, matchIndex + normalizedQuery.length + 40);
+				results.push({
+					id: `legacy-search:${sheetIndex}:${rowIndex}:${columnIndex}`,
+					locator: `${sheet.name}!${address}`,
+					preview: {
+						before: text.slice(previewStart, matchIndex),
+						match: text.slice(matchIndex, matchIndex + normalizedQuery.length),
+						after: text.slice(matchIndex + normalizedQuery.length, previewEnd),
+					},
+					locationBadge: { kind: 'sheet', label: sheet.name },
+					navigableAnchor: `cell:${sheet.name}:${address}`,
+				});
+			}
+		}
+	}
+	return results;
+}
+
+function legacyPrintCellBlock(sheetIndex: number, rowIndex: number, columnIndex: number, text: string): ParadisOfficePrintBlock {
+	return { kind: 'text', nodeId: `legacy:${sheetIndex}:cell:${rowIndex}:${columnIndex}`, runs: [{ text }] };
+}
+
+/** Script-free, bounded fallback model used until a platform print callback is available for this source. */
+export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData, title: string): ParadisOfficePrintModel {
+	let remainingCells = LEGACY_PRINT_CELL_LIMIT;
+	let truncated = false;
+	const pages = workbook.sheets.map((sheet, sheetIndex) => {
+		const rows: ParadisOfficePrintBlock[] = [];
+		for (let rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
+			if (remainingCells <= 0) {
+				truncated = true;
+				break;
+			}
+			const cells: ParadisOfficePrintBlock[] = [];
+			for (let columnIndex = 0; columnIndex < sheet.rows[rowIndex].cells.length; columnIndex++) {
+				if (remainingCells-- <= 0) {
+					truncated = true;
+					break;
+				}
+				cells.push(legacyPrintCellBlock(sheetIndex, rowIndex, columnIndex, sheet.rows[rowIndex].cells[columnIndex].value));
+			}
+			rows.push({ kind: 'container', nodeId: `legacy:${sheetIndex}:row:${rowIndex}`, role: 'row', children: cells.map(cell => ({ kind: 'container', nodeId: `${cell.nodeId}:container`, role: 'cell', children: [cell] })) });
+		}
+		const placeholders: ParadisOfficePlaceholder[] = (sheet.shapes ?? []).map((shape, shapeIndex) => ({
+			nodeId: `legacy:${sheetIndex}:drawing:${shapeIndex}`,
+			feature: `drawing.${shape.type}`,
+			reason: 'unsupported',
+			title: shape.name ?? localize('paradis.spreadsheet.printDrawing', "Drawing Object"),
+			detail: localize('paradis.spreadsheet.printDrawingFallback', "Printed as alternative content from the legacy projection."),
+		}));
+		const blocks: ParadisOfficePrintBlock[] = [
+			{ kind: 'container', nodeId: `legacy:${sheetIndex}:table`, role: 'table', children: rows },
+			...placeholders.map(placeholder => ({ kind: 'placeholder' as const, nodeId: placeholder.nodeId, placeholder })),
+		];
+		return {
+			pageNumber: sheetIndex + 1,
+			widthPoints: 612,
+			heightPoints: 792,
+			blocks,
+			placeholders,
+		};
+	});
+	const approximationWarnings = [{
+		code: 'spreadsheet.legacyPrintProjection',
+		message: localize('paradis.spreadsheet.legacyPrintProjection', "Pagination is approximate while the legacy spreadsheet renderer is active."),
+	}];
+	if (truncated) {
+		approximationWarnings.push({
+			code: 'spreadsheet.legacyPrintLimit',
+			message: localize('paradis.spreadsheet.legacyPrintLimit', "The compatibility print preview is limited to 10,000 cells."),
+		});
+	}
+	return { title, pages, approximationWarnings };
+}
 
 /** Keeps legacy-only visual features on the existing renderer until their bounded tile adapters exist. */
 export function shouldVirtualizeSpreadsheetSheet(sheet: IParadisSheetData): boolean {
@@ -152,9 +314,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	static readonly ID = PARADIS_SPREADSHEET_EDITOR_ID;
 
 	private _root: HTMLElement | undefined;
+	private _diagnosticsEl: HTMLElement | undefined;
+	private _inspectorPanel: HTMLElement | undefined;
+	private _inspectorToggle: HTMLButtonElement | undefined;
 	private _openAppEl: HTMLElement | undefined;
 	private _percentBtn: HTMLButtonElement | undefined;
 	private _bodyEl: HTMLElement | undefined;
+	private _virtualHostEl: HTMLElement | undefined;
 	private _tabsEl: HTMLElement | undefined;
 	private _outerEl: HTMLElement | undefined;
 	private _innerEl: HTMLElement | undefined;
@@ -192,9 +358,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private readonly _overlayRaf = this._register(new MutableDisposable());
 	private readonly _overlayTriggers = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _virtualRenderer = this._register(new MutableDisposable<ParadisSpreadsheetGridRenderer>());
+	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
 	private _currentResource: URI | undefined;
+	private _workbook: IParadisWorkbookData | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
 	private _activeSheetIndex = 0;
+	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
+	private readonly _inputGeneration = new ParadisSpreadsheetOpenGeneration();
+	private _committedInput: IParadisSpreadsheetCommittedInput | undefined;
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
 
@@ -206,16 +377,43 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super(PARADIS_SPREADSHEET_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-spreadsheet'));
+		this._root.style.position = 'relative';
 
 		const header = dom.append(this._root, $('.paradis-spreadsheet-header'));
-		dom.append(header, $('.paradis-spreadsheet-header-left'));
+		const left = dom.append(header, $('.paradis-spreadsheet-header-left'));
+		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
 		const right = dom.append(header, $('.paradis-spreadsheet-header-right'));
+		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
+		this._inspectorToggle.type = 'button';
+		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "Inspector");
+		this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		this._inspectorToggle.style.display = 'none';
+		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
+			if (!this._inspectorPanel || !this._inspectorToggle) {
+				return;
+			}
+			const visible = this._inspectorPanel.style.display === 'none';
+			this._inspectorPanel.style.display = visible ? 'block' : 'none';
+			this._inspectorToggle.setAttribute('aria-expanded', String(visible));
+		}));
+
+		this._inspectorPanel = dom.append(this._root, $('.paradis-spreadsheet-inspector-panel'));
+		this._inspectorPanel.style.position = 'absolute';
+		this._inspectorPanel.style.top = '34px';
+		this._inspectorPanel.style.right = '8px';
+		this._inspectorPanel.style.zIndex = '20';
+		this._inspectorPanel.style.width = '360px';
+		this._inspectorPanel.style.maxHeight = '70%';
+		this._inspectorPanel.style.overflow = 'auto';
+		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
+		this._inspectorPanel.style.display = 'none';
 
 		// ズーム −/%/＋（HTMLビューアと同じUI）。
 		appendIconButton(right, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / 1.2));
@@ -242,21 +440,80 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		const inputGeneration = this._inputGeneration.begin();
+		if (this._committedInput && this.input === this._committedInput.input && isEqual(this._currentResource, this._committedInput.resource)) {
+			this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
+		}
+		const previous = this._committedInput;
 		await super.setInput(input, options, context, token);
+		if (!this._inputGeneration.isCurrent(inputGeneration)) {
+			return;
+		}
 
 		const resource = (input as ParadisSpreadsheetInput).resource;
+		this._runtimeConfiguration = snapshotSpreadsheetRuntimeConfiguration(this._configurationService);
+		const fallbackViewState = this._currentSpreadsheetViewState();
+		const requestedViewState = spreadsheetViewStateFromOptions(options?.viewState, fallbackViewState);
 		this._currentResource = resource;
 		this._activeSheetIndex = 0;
-		this._userAdjusted = false;
+		this._scale = requestedViewState.zoom;
+		this._userAdjusted = options?.viewState !== undefined;
+		this._clearSemanticUi();
+		this._configureInputResource(resource);
 
+		const loaded = await this._load(resource, token, requestedViewState);
+		if (!this._inputGeneration.isCurrent(inputGeneration)) {
+			return;
+		}
+		if (!loaded && token.isCancellationRequested && previous) {
+			this._currentResource = previous.resource;
+			this._workbook = previous.workbook;
+			this._sheets = previous.sheets;
+			this._activeSheetIndex = previous.activeSheetIndex;
+			this._scale = previous.scale;
+			this._userAdjusted = previous.userAdjusted;
+			this._runtimeConfiguration = previous.runtimeConfiguration;
+			this._configureInputResource(previous.resource);
+			await super.setInput(previous.input, previous.options, context, CancellationToken.None);
+			if (!this._inputGeneration.isCurrent(inputGeneration)) {
+				return;
+			}
+			this._renderSheet();
+			this._renderTabs();
+			if (previous.workbook) {
+				this._renderSemanticUi(previous.workbook, previous.viewState);
+			}
+			return;
+		}
+		if (!loaded && token.isCancellationRequested) {
+			this.clearInput();
+		} else if (loaded) {
+			this._committedInput = this._captureCommittedInput(input, options);
+		}
+	}
+
+	private _captureCommittedInput(input: EditorInput, options: IEditorOptions | undefined): IParadisSpreadsheetCommittedInput {
+		return {
+			input,
+			options,
+			resource: this._currentResource!,
+			workbook: this._workbook,
+			sheets: this._sheets,
+			activeSheetIndex: this._activeSheetIndex,
+			scale: this._scale,
+			userAdjusted: this._userAdjusted,
+			runtimeConfiguration: this._runtimeConfiguration,
+			viewState: this._currentSpreadsheetViewState(),
+		};
+	}
+
+	private _configureInputResource(resource: URI): void {
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
-
 		if (this._openAppEl) {
 			dom.clearNode(this._openAppEl);
 			appendOpenInAppButton(this._openAppEl, resource, this._nativeHostService, store);
 		}
-
 		try {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
 			store.add(watcher);
@@ -268,12 +525,11 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		} catch {
 			// watcher 生成失敗は致命的ではない。
 		}
-
-		await this._load(resource, token);
 	}
 
-	private async _load(resource: URI, token: CancellationToken): Promise<void> {
+	private async _load(resource: URI, token: CancellationToken, viewState = this._currentSpreadsheetViewState()): Promise<boolean> {
 		const generation = ++this._loadGeneration;
+		this._clearSemanticUi();
 		this._renderMessage(localize('paradis.spreadsheet.loading', "Loading spreadsheet..."));
 		let workbook: IParadisWorkbookData;
 		try {
@@ -282,18 +538,143 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				this._renderMessage(localize('paradis.spreadsheet.error', "Failed to open spreadsheet: {0}", err instanceof Error ? err.message : String(err)));
 			}
-			return;
+			return false;
 		}
 		// 応答の逆順到着で古い結果が新しい結果を上書きしないよう、最新ロードでなければ破棄する。
 		if (generation !== this._loadGeneration || token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
-			return;
+			return false;
 		}
+		this._workbook = workbook;
 		this._sheets = workbook.sheets;
+		const restoredSheet = this._sheets.findIndex(sheet => sheet.name === viewState.activeSheet);
+		if (restoredSheet >= 0) {
+			this._activeSheetIndex = restoredSheet;
+		}
 		if (this._activeSheetIndex >= this._sheets.length) {
 			this._activeSheetIndex = 0;
 		}
 		this._renderSheet();
 		this._renderTabs();
+		this._renderSemanticUi(workbook, viewState);
+		if (this._committedInput && isEqual(this._committedInput.resource, resource) && this.input === this._committedInput.input) {
+			this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
+		}
+		return true;
+	}
+
+	private _currentSpreadsheetViewState(): ParadisSpreadsheetViewState {
+		const inspectorState = this._changeInspector.value?.getViewState();
+		return {
+			zoom: this._scale,
+			activeSheet: this._sheets[this._activeSheetIndex]?.name ?? inspectorState?.activeSheet ?? 'Sheet1',
+			categories: inspectorState?.categories ?? PARADIS_SPREADSHEET_CHANGE_CATEGORIES,
+			...(inspectorState?.selectedChangeId ? { selectedChangeId: inspectorState.selectedChangeId } : {}),
+		};
+	}
+
+	private _clearSemanticUi(): void {
+		this._changeInspector.clear();
+		if (this._diagnosticsEl) {
+			dom.clearNode(this._diagnosticsEl);
+		}
+		if (this._inspectorPanel) {
+			dom.clearNode(this._inspectorPanel);
+			this._inspectorPanel.style.display = 'none';
+		}
+		if (this._inspectorToggle) {
+			this._inspectorToggle.style.display = 'none';
+			this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		}
+	}
+
+	private _renderSemanticUi(workbook: IParadisWorkbookData, restoredViewState?: ParadisSpreadsheetViewState): void {
+		const configuration = this._runtimeConfiguration;
+		if (!configuration || !isParadisSpreadsheetV1Enabled(configuration)) {
+			this._clearSemanticUi();
+			return;
+		}
+		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
+		const placeholders: ParadisOfficePlaceholder[] = [];
+		for (let sheetIndex = 0; sheetIndex < workbook.sheets.length; sheetIndex++) {
+			const sheet = workbook.sheets[sheetIndex];
+			for (let shapeIndex = 0; shapeIndex < (sheet.shapes?.length ?? 0); shapeIndex++) {
+				const shape = sheet.shapes![shapeIndex];
+				const name = shape.name ?? shape.shapeId ?? `${shape.type}-${shapeIndex + 1}`;
+				placeholders.push({
+					nodeId: `${sheet.name}!object:${name}`,
+					feature: `drawing.${shape.type}`,
+					reason: 'unsupported',
+					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "Drawing Object"),
+					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "Rendered through the compatible legacy projection."),
+				});
+			}
+		}
+		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...placeholders.map(() => 'placeholder' as const)];
+		if (workbook.sheets.some(sheet => sheet.truncated)) {
+			coverages.push('noAnchor');
+		}
+		if (this._diagnosticsEl) {
+			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, {
+				outcome: 'degraded',
+				coverages,
+				warnings: [{
+					code: 'spreadsheet.legacyProjection',
+					message: localize('paradis.spreadsheet.legacyProjection', "Semantic diagnostics are not available for this source adapter; the compatible spreadsheet renderer remains active."),
+				}],
+			});
+		}
+		if (!this._inspectorPanel || !this._inspectorToggle) {
+			return;
+		}
+		this._inspectorToggle.style.display = '';
+		dom.clearNode(this._inspectorPanel);
+		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
+			...(configuration.searchPrint ? {
+				search: async (query: string) => searchLegacySpreadsheetWorkbook(workbook, query),
+				getPrintModel: async () => createLegacySpreadsheetPrintModel(workbook, basename(this._currentResource ?? URI.file('spreadsheet.xlsx'))),
+			} : {}),
+			onNavigate: target => this._navigateToLogicalLocator(target.locator, target.anchor),
+		});
+		this._changeInspector.value = inspector;
+		inspector.setViewState(viewState);
+		inspector.setComparison([], INCOMPLETE_SPREADSHEET_MANIFEST, 'degraded');
+		inspector.setPlaceholders(placeholders);
+	}
+
+	private _navigateToLogicalLocator(locator: string, anchor?: string): void {
+		const navigation = resolveParadisSpreadsheetNavigation(locator, anchor);
+		if (!navigation) {
+			return;
+		}
+		const sheetIndex = this._sheets.findIndex(sheet => sheet.name === navigation.sheetName);
+		if (sheetIndex < 0) {
+			return;
+		}
+		this._activeSheetIndex = sheetIndex;
+		this._renderSheet();
+		this._renderTabs();
+		this._changeInspector.value?.setActiveSheet(navigation.sheetName);
+		if (!navigation.cell || !this._bodyEl) {
+			return;
+		}
+		const sheet = this._sheets[sheetIndex];
+		const rowIndex = sheet.rows.findIndex(row => row.excelRow === navigation.cell!.row);
+		const columnIndex = navigation.cell.column - sheet.minCol;
+		if (rowIndex < 0 || columnIndex < 0 || columnIndex >= sheet.columnCount) {
+			return;
+		}
+		const body = this._bodyEl;
+		const scheduledNavigation = dom.scheduleAtNextAnimationFrame(dom.getWindow(body), () => {
+			const virtualHost = this._virtualHostEl;
+			if (virtualHost && this._virtualRenderer.value) {
+				void this._virtualRenderer.value.revealCell(rowIndex, columnIndex);
+				return;
+			}
+			const rowElement = this._dataRowEls.find(item => item.excelRow === navigation.cell!.row)?.tr as HTMLTableRowElement | undefined;
+			const cell = rowElement?.cells[columnIndex + 1];
+			cell?.scrollIntoView({ block: 'center', inline: 'center' });
+		});
+		this._inputDisposables.value?.add(scheduledNavigation);
 	}
 
 	private _renderMessage(message: string): void {
@@ -330,6 +711,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._pageLabelOverlay = undefined;
 		dom.clearNode(this._bodyEl);
 		this._bodyEl.classList.remove('virtualized');
+		this._virtualHostEl = undefined;
 		// 前のシートのヘッダー帯が残らないよう一旦隠す(行位置の実測後 _rebuildStickyStrips が再表示する)。
 		this._setStickyStripsVisible(false);
 
@@ -346,7 +728,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		this._activeSheet = sheet;
 		this._naturalTableWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((sum, width) => sum + width, 0);
-		if (shouldVirtualizeSpreadsheetSheet(sheet)) {
+		if (this._runtimeConfiguration?.virtualizedSpreadsheet !== false && shouldVirtualizeSpreadsheetSheet(sheet)) {
 			this._renderVirtualGrid(sheet);
 			return;
 		}
@@ -379,6 +761,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._setStickyStripsVisible(false);
 		this._bodyEl.classList.add('virtualized');
 		const host = dom.append(this._bodyEl, $('.paradis-spreadsheet-virtual-host'));
+		this._virtualHostEl = host;
 		const target = this._userAdjusted ? this._scale : this._computeFitScale();
 		if (!this._userAdjusted) {
 			this._scale = target;
@@ -604,6 +987,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._activeSheetIndex = idx;
 				this._renderSheet();
 				this._renderTabs();
+				this._changeInspector.value?.setActiveSheet(sheet.name);
 			}));
 		});
 	}
@@ -616,6 +1000,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		} else {
 			this._applyScale();
 		}
+		this._changeInspector.value?.setZoom(this._scale);
 	}
 
 	private _resetZoom(): void {
@@ -625,6 +1010,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		} else {
 			this._applyScale();
 		}
+		this._changeInspector.value?.setZoom(this._scale);
 	}
 
 	private _computeFitScale(): number {
@@ -675,11 +1061,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._inputGeneration.invalidate();
+		this._loadGeneration++;
 		this._inputDisposables.clear();
 		this._tabsDisposables.clear();
 		this._overlayRaf.clear();
 		this._overlayTriggers.clear();
 		this._virtualRenderer.clear();
+		this._clearSemanticUi();
 		this._dataRowEls = [];
 		this._shrinkCells = [];
 		this._overflowCells = [];
@@ -688,6 +1077,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._theadEl = undefined;
 		this._headCellEls = [];
 		this._outerEl = undefined;
+		this._virtualHostEl = undefined;
 		this._setStickyStripsVisible(false);
 		this._headHeight = 0;
 		this._naturalTableHeight = 0;
@@ -696,7 +1086,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._pageLabelOverlay = undefined;
 		this._replaceToken = {};
 		this._currentResource = undefined;
+		this._workbook = undefined;
 		this._sheets = [];
+		this._runtimeConfiguration = undefined;
+		this._committedInput = undefined;
 		if (this._bodyEl) {
 			dom.clearNode(this._bodyEl);
 		}
@@ -704,6 +1097,16 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			dom.clearNode(this._tabsEl);
 		}
 		super.clearInput();
+	}
+
+	override getViewState(): object | undefined {
+		if (!this._currentResource) {
+			return undefined;
+		}
+		return {
+			source: createParadisSpreadsheetSourceDescriptor(this._currentResource),
+			viewState: this._currentSpreadsheetViewState(),
+		};
 	}
 
 	override layout(dimension: dom.Dimension): void {
