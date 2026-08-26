@@ -36,12 +36,66 @@ import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applySh
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
+import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from './spreadsheet/paradisSpreadsheetGridRenderer.js';
+import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from './spreadsheet/paradisSpreadsheetViewport.js';
 
 import './media/paradisSpreadsheet.css';
 
 const $ = dom.$;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 4;
+const VIRTUAL_GRID_CELL_THRESHOLD = 10_000;
+
+/** Keeps legacy-only visual features on the existing renderer until their bounded tile adapters exist. */
+export function shouldVirtualizeSpreadsheetSheet(sheet: IParadisSheetData): boolean {
+	if (sheet.rows.length * sheet.columnCount <= VIRTUAL_GRID_CELL_THRESHOLD
+		|| sheet.showGridLines === false
+		|| (sheet.shapes?.length ?? 0) > 0
+		|| (sheet.rowBreaks?.length ?? 0) > 0
+		|| (sheet.colBreaks?.length ?? 0) > 0
+		|| sheet.printArea !== undefined
+		|| sheet.pageLayout !== undefined) {
+		return false;
+	}
+	for (const row of sheet.rows) {
+		for (const cell of row.cells) {
+			if (cell.shrinkToFit || (cell.richText?.length ?? 0) > 0) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+function legacyGridTile(sheet: IParadisSheetData, request: ParadisSpreadsheetTileRequest): ParadisSpreadsheetGridTile {
+	const cells: ParadisSpreadsheetGridTile['cells'][number][] = [];
+	for (let rowIndex = request.range[0]; rowIndex < request.range[2]; rowIndex++) {
+		const row = sheet.rows[rowIndex];
+		if (!row) {
+			continue;
+		}
+		for (let columnIndex = request.range[1]; columnIndex < request.range[3]; columnIndex++) {
+			const cell = row.cells[columnIndex];
+			if (!cell || cell.hidden) {
+				continue;
+			}
+			cells.push({
+				row: rowIndex,
+				column: columnIndex,
+				text: cell.value,
+				style: cell.style,
+				classNames: [
+					...(cell.wrapText ? ['paradis-spreadsheet-virtual-cell-wrap'] : []),
+					...(cell.verticalText ? ['paradis-spreadsheet-virtual-cell-vertical'] : []),
+				],
+				...(cell.rowSpan ? { rowSpan: cell.rowSpan } : {}),
+				...(cell.colSpan ? { columnSpan: cell.colSpan } : {}),
+				...(cell.diagonal ? { baseDiagonal: cell.diagonal } : {}),
+			});
+		}
+	}
+	return { revision: request.revision, range: request.range, cells };
+}
 
 /** 固定ヘッダー帯の計測と DOM 更新を 1 回ずつのフラグメント追加で行う。 */
 export function rebuildSpreadsheetStickyStrips(
@@ -137,6 +191,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private readonly _tabsDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _overlayRaf = this._register(new MutableDisposable());
 	private readonly _overlayTriggers = this._register(new MutableDisposable<DisposableStore>());
+	private readonly _virtualRenderer = this._register(new MutableDisposable<ParadisSpreadsheetGridRenderer>());
 	private _currentResource: URI | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
 	private _activeSheetIndex = 0;
@@ -258,7 +313,23 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (!this._bodyEl) {
 			return;
 		}
+		this._virtualRenderer.clear();
+		this._overlayRaf.clear();
+		this._overlayTriggers.clear();
+		this._replaceToken = {};
+		this._tableEl = undefined;
+		this._theadEl = undefined;
+		this._headCellEls = [];
+		this._dataRowEls = [];
+		this._shrinkCells = [];
+		this._overflowCells = [];
+		this._innerEl = undefined;
+		this._outerEl = undefined;
+		this._shapeOverlay = undefined;
+		this._pageBreakOverlay = undefined;
+		this._pageLabelOverlay = undefined;
 		dom.clearNode(this._bodyEl);
+		this._bodyEl.classList.remove('virtualized');
 		// 前のシートのヘッダー帯が残らないよう一旦隠す(行位置の実測後 _rebuildStickyStrips が再表示する)。
 		this._setStickyStripsVisible(false);
 
@@ -273,13 +344,17 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, sheet.zoomScale / 100));
 			this._userAdjusted = true;
 		}
+		this._activeSheet = sheet;
+		this._naturalTableWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((sum, width) => sum + width, 0);
+		if (shouldVirtualizeSpreadsheetSheet(sheet)) {
+			this._renderVirtualGrid(sheet);
+			return;
+		}
 
 		const outer = dom.append(this._bodyEl, $('.paradis-spreadsheet-outer'));
 		this._outerEl = outer;
 		const inner = dom.append(outer, $('.paradis-spreadsheet-inner'));
 		this._innerEl = inner;
-		this._activeSheet = sheet;
-
 		const { table, naturalWidth } = this._buildSheetTable(sheet);
 		this._tableEl = table;
 		this._naturalTableWidth = naturalWidth;
@@ -294,6 +369,48 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		this._renderOverlays(sheet, inner);
 		this._applyScale();
+	}
+
+	/** Large legacy projections use the same bounded tile callback shape as getViewport(handle, sheet, range). */
+	private _renderVirtualGrid(sheet: IParadisSheetData): void {
+		if (!this._bodyEl) {
+			return;
+		}
+		this._setStickyStripsVisible(false);
+		this._bodyEl.classList.add('virtualized');
+		const host = dom.append(this._bodyEl, $('.paradis-spreadsheet-virtual-host'));
+		const target = this._userAdjusted ? this._scale : this._computeFitScale();
+		if (!this._userAdjusted) {
+			this._scale = target;
+		}
+		const viewport = new ParadisSpreadsheetViewport({
+			rowCount: Math.max(1, sheet.rows.length),
+			columnCount: Math.max(1, sheet.columnCount),
+			defaultRowHeight: 20 * target,
+			defaultColumnWidth: 80 * target,
+			rowMetrics: sheet.rows.map((row, index) => ({ index, size: row.height * target })),
+			columnMetrics: sheet.columnWidths.map((width, index) => ({ index, size: width * target, hidden: width <= 0 })),
+			maxLiveCells: VIRTUAL_GRID_CELL_THRESHOLD,
+			revision: `${this._loadGeneration}:${this._activeSheetIndex}:${sheet.name}`,
+		});
+		const renderer = new ParadisSpreadsheetGridRenderer(host, viewport, {
+			getViewport: async request => legacyGridTile(sheet, request),
+			fontsReady: dom.getWindow(host).document.fonts.ready,
+		});
+		this._virtualRenderer.value = renderer;
+		void renderer.render({
+			scrollTop: 0,
+			scrollLeft: 0,
+			width: Math.max(1, this._bodyEl.clientWidth),
+			height: Math.max(1, this._bodyEl.clientHeight),
+		});
+		if (sheet.truncated) {
+			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
+			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
+		}
+		if (this._percentBtn) {
+			this._percentBtn.textContent = `${Math.round(target * 100)}%`;
+		}
 	}
 
 	// 図形/改ページ/shrinkToFit は行の実描画位置が要るため、レイアウト確定後(rAF)にまとめて処理する。
@@ -494,12 +611,20 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _zoom(factor: number): void {
 		this._userAdjusted = true;
 		this._scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this._scale * factor));
-		this._applyScale();
+		if (this._virtualRenderer.value) {
+			this._renderSheet();
+		} else {
+			this._applyScale();
+		}
 	}
 
 	private _resetZoom(): void {
 		this._userAdjusted = false;
-		this._applyScale();
+		if (this._virtualRenderer.value) {
+			this._renderSheet();
+		} else {
+			this._applyScale();
+		}
 	}
 
 	private _computeFitScale(): number {
@@ -554,6 +679,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._tabsDisposables.clear();
 		this._overlayRaf.clear();
 		this._overlayTriggers.clear();
+		this._virtualRenderer.clear();
 		this._dataRowEls = [];
 		this._shrinkCells = [];
 		this._overflowCells = [];
@@ -585,6 +711,15 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._root.style.width = `${dimension.width}px`;
 			this._root.style.height = `${dimension.height}px`;
 		}
-		this._applyScale();
+		const virtualRenderer = this._virtualRenderer.value;
+		if (virtualRenderer) {
+			void virtualRenderer.render({
+				...virtualRenderer.frame,
+				width: Math.max(1, this._bodyEl?.clientWidth ?? dimension.width),
+				height: Math.max(1, this._bodyEl?.clientHeight ?? dimension.height),
+			});
+		} else {
+			this._applyScale();
+		}
 	}
 }
