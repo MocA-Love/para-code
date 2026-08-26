@@ -24,6 +24,11 @@ import {
 } from '../office/paradisOfficeArchive.js';
 import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisCellStyle, type IParadisDiagonalBorder, type IParadisRowData, type IParadisSheetData, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
 import { formatPreparedSpreadsheetValue, formatSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisFormattedCellValue, type ParadisSpreadsheetNumberFormatContext, type ParadisSpreadsheetPreparedNumberFormat } from './paradisSpreadsheetNumberFormat.js';
+import {
+	evaluateSpreadsheetConditionalFormattingOwned,
+	parseSpreadsheetConditionalFormattingVerifiedDocuments,
+	type ParadisSpreadsheetConditionalFormatEvaluationRequest,
+} from './paradisSpreadsheetConditionalFormatting.js';
 import type {
 	ParadisSemanticBorder,
 	ParadisSemanticBorderEdge,
@@ -49,9 +54,40 @@ import type {
 	ParadisSpreadsheetSnapshot,
 	ParadisSpreadsheetStyles,
 	ParadisSpreadsheetWorkbookView,
+	ParadisSpreadsheetConditionalFormatEvaluation,
 } from './paradisSpreadsheetSemantic.js';
 
 type XmlElement = Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
+interface ConditionalFormattingSnapshotAuthority {
+	readonly sheetNames: ReadonlySet<string>;
+	readonly snapshot?: ParadisSpreadsheetSnapshot;
+}
+const authoritativeSpreadsheetSnapshots = new WeakMap<object, ConditionalFormattingSnapshotAuthority>();
+
+/** Evaluates only operation-local snapshots issued by the verified Task 1 parser. */
+export function evaluateSpreadsheetConditionalFormatting(
+	snapshot: ParadisSpreadsheetSnapshot,
+	request: ParadisSpreadsheetConditionalFormatEvaluationRequest,
+): readonly ParadisSpreadsheetConditionalFormatEvaluation[] {
+	try {
+		if (!snapshot || typeof snapshot !== 'object') {
+			throw new ParadisOfficePackageError('unsafe');
+		}
+		const authority = authoritativeSpreadsheetSnapshots.get(snapshot);
+		if (!authority) { throw new ParadisOfficePackageError('unsafe'); }
+		const sheetName = Object.getOwnPropertyDescriptor(request, 'sheetName')?.value;
+		if (typeof sheetName !== 'string') { throw new ParadisOfficePackageError('unsafe'); }
+		const normalizedSheetName = sheetName.toLocaleLowerCase('en-US');
+		if (!authority.sheetNames.has(normalizedSheetName)) { throw new ParadisOfficePackageError('malformed'); }
+		if (!authority.snapshot) { return Object.freeze([]); }
+		const sheet = authority.snapshot.sheets.find(candidate => candidate.name.toLocaleLowerCase('en-US') === normalizedSheetName);
+		if (!sheet) { throw new ParadisOfficePackageError('malformed'); }
+		if (!sheet.conditionalFormatting) { return Object.freeze([]); }
+		return evaluateSpreadsheetConditionalFormattingOwned(sheet.conditionalFormatting, authority.snapshot, request);
+	} catch (error) {
+		throw sanitizeSpreadsheetPackageError(error, 'unsafe');
+	}
+}
 
 const spreadsheetNamespaces = new Set([
 	'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
@@ -899,7 +935,7 @@ export async function parseSpreadsheetSemantic(
 			}
 			seenSheetPartIds.add(partId);
 			const part = requiredParsedPart(reader.parsed, partId);
-			sheets.push(parseWorksheet(part, partId, order, sheetRecord, sharedStrings, styles, limits, counters, checkpoint));
+			sheets.push(parseWorksheet(part, partId, order, sheetRecord, sharedStrings, stylesPart, styles, limits, counters, checkpoint));
 		}
 		const resolvedStyles: ParadisSpreadsheetStyles = {
 			...styles,
@@ -999,6 +1035,11 @@ export async function parseSpreadsheetSemantic(
 		} catch {
 			throw new ParadisOfficePackageError('invalid');
 		}
+		const hasConditionalFormatting = finalResult.sheets.some(sheet => sheet.conditionalFormatting !== undefined);
+		authoritativeSpreadsheetSnapshots.set(finalResult, {
+			sheetNames: new Set(finalResult.sheets.map(sheet => sheet.name.toLocaleLowerCase('en-US'))),
+			...(hasConditionalFormatting ? { snapshot: cloneConditionalFormattingAuthoritySnapshot(finalResult, checkpoint) } : {}),
+		});
 		return finalResult;
 	} catch (error) {
 		throw sanitizeSpreadsheetPackageError(error, 'malformed');
@@ -1012,6 +1053,35 @@ export async function parseSpreadsheetSemantic(
 			}
 		}
 	}
+}
+
+function cloneConditionalFormattingAuthoritySnapshot(snapshot: ParadisSpreadsheetSnapshot, checkpoint: (force?: boolean) => void): ParadisSpreadsheetSnapshot {
+	const sheets: ParadisSemanticSheet[] = [];
+	for (const sheet of snapshot.sheets) {
+		checkpoint();
+		const cells = new Map<string, ParadisSemanticCell>();
+		for (const [address, cell] of sheet.cells) {
+			checkpoint();
+			cells.set(address, {
+				...cell,
+				...(cell.rawValue ? { rawValue: { ...cell.rawValue } } : {}),
+				...(cell.formula ? { formula: { ...cell.formula } } : {}),
+				...(cell.cachedResult ? { cachedResult: { ...cell.cachedResult } } : {}),
+				...(cell.styleSource ? { styleSource: clonePartSource(cell.styleSource) } : {}),
+			});
+		}
+		sheets.push({ ...sheet, source: clonePartSource(sheet.source), cells });
+	}
+	return {
+		...snapshot,
+		workbookSource: clonePartSource(snapshot.workbookSource),
+		sheets,
+		styles: { ...snapshot.styles, ...(snapshot.styles.source ? { source: clonePartSource(snapshot.styles.source) } : {}) },
+	};
+}
+
+function clonePartSource(source: ParadisSpreadsheetPartSource): ParadisSpreadsheetPartSource {
+	return { partId: source.partId, fingerprint: { ...source.fingerprint } };
 }
 
 export function sanitizeSpreadsheetPackageError(
@@ -2565,6 +2635,7 @@ function parseWorksheet(
 	order: number,
 	record: WorkbookSheetRecord,
 	sharedStrings: readonly SharedStringRecord[],
+	stylesPart: ParsedPart | undefined,
 	styles: ParadisSpreadsheetStyles,
 	limits: ParadisSpreadsheetSemanticLimits,
 	counters: SemanticCounters,
@@ -2629,6 +2700,11 @@ function parseWorksheet(
 		throw new ParadisOfficePackageError('malformed');
 	}
 	parseSheetData(sheetData, rows, cells, columns, sharedStrings, styles, limits, counters, checkpoint);
+	const conditionalFormatting = parseSpreadsheetConditionalFormattingVerifiedDocuments({
+		worksheetDocument: part.document,
+		worksheetSource: part.source,
+		...(stylesPart ? { stylesDocument: stylesPart.document, stylesSource: stylesPart.source } : {}),
+	}, () => checkpoint());
 	return {
 		name: record.name,
 		sheetId: record.sheetId,
@@ -2643,6 +2719,7 @@ function parseWorksheet(
 		columns,
 		merges,
 		cells,
+		...(conditionalFormatting.rules.length > 0 ? { conditionalFormatting } : {}),
 	};
 }
 
