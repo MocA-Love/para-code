@@ -56,6 +56,160 @@ export interface ParadisSemanticRichTextRun {
 	readonly properties?: ParadisSemanticRichTextProperties;
 }
 
+/** Safe UI text paired with the exact pre-sanitization UTF-8 identity used by semantic Diff. */
+export interface ParadisSpreadsheetTextIdentity {
+	readonly text: string;
+	readonly fingerprint: ParadisOfficeFingerprint;
+}
+
+export type ParadisSpreadsheetValidationKind = 'standard' | 'x14';
+export type ParadisSpreadsheetValidationType = 'none' | 'whole' | 'decimal' | 'list' | 'date' | 'time' | 'textLength' | 'custom';
+export type ParadisSpreadsheetValidationOperator = 'between' | 'notBetween' | 'equal' | 'notEqual' | 'lessThan' | 'lessThanOrEqual' | 'greaterThan' | 'greaterThanOrEqual';
+export type ParadisSpreadsheetValidationErrorStyle = 'stop' | 'warning' | 'information';
+
+export interface ParadisSpreadsheetValidation {
+	readonly id: string;
+	readonly order: number;
+	readonly kind: ParadisSpreadsheetValidationKind;
+	readonly type: ParadisSpreadsheetValidationType;
+	readonly ranges: readonly ParadisSemanticRange[];
+	readonly source: ParadisSpreadsheetPartSource;
+	readonly formula1?: string;
+	readonly formula2?: string;
+	readonly operator?: ParadisSpreadsheetValidationOperator;
+	readonly errorStyle?: ParadisSpreadsheetValidationErrorStyle;
+	readonly allowBlank?: boolean;
+	readonly showDropDown?: boolean;
+	readonly showInputMessage?: boolean;
+	readonly showErrorMessage?: boolean;
+	readonly imeMode?: string;
+	readonly promptTitle?: ParadisSpreadsheetTextIdentity;
+	readonly prompt?: ParadisSpreadsheetTextIdentity;
+	readonly errorTitle?: ParadisSpreadsheetTextIdentity;
+	readonly error?: ParadisSpreadsheetTextIdentity;
+}
+
+export interface ParadisSpreadsheetCommentContent {
+	readonly text: string;
+	readonly runs: readonly ParadisSemanticRichTextRun[];
+	/** Exact ordered text/run identity, independent of the sanitized UI projection. */
+	readonly fingerprint: ParadisOfficeFingerprint;
+}
+
+export interface ParadisSpreadsheetLegacyNoteAnchor {
+	readonly shapeId: string;
+	readonly shapeNumericId?: number;
+	readonly row: number;
+	readonly column: number;
+	readonly leftColumn: number;
+	readonly leftOffset: number;
+	readonly topRow: number;
+	readonly topOffset: number;
+	readonly rightColumn: number;
+	readonly rightOffset: number;
+	readonly bottomRow: number;
+	readonly bottomOffset: number;
+	readonly moveWithCells: boolean;
+	readonly sizeWithCells: boolean;
+	readonly source: ParadisSpreadsheetPartSource;
+}
+
+export interface ParadisSpreadsheetLegacyNote {
+	readonly id: string;
+	readonly ref: string;
+	readonly authorId: number;
+	readonly author: ParadisSpreadsheetTextIdentity;
+	readonly content: ParadisSpreadsheetCommentContent;
+	readonly source: ParadisSpreadsheetPartSource;
+	readonly anchor?: ParadisSpreadsheetLegacyNoteAnchor;
+}
+
+export interface ParadisSpreadsheetPerson {
+	readonly id: string;
+	readonly displayName: ParadisSpreadsheetTextIdentity;
+	readonly userId?: ParadisSpreadsheetTextIdentity;
+	readonly providerId?: ParadisSpreadsheetTextIdentity;
+	readonly source: ParadisSpreadsheetPartSource;
+}
+
+export interface ParadisSpreadsheetThreadedComment {
+	readonly id: string;
+	readonly ref: string;
+	readonly personId: string;
+	readonly parentId?: string;
+	readonly depth: number;
+	readonly resolved: boolean;
+	readonly dateTime?: string;
+	readonly content: ParadisSpreadsheetCommentContent;
+	readonly source: ParadisSpreadsheetPartSource;
+}
+
+export type ParadisSpreadsheetHyperlinkTargetClassification = 'safeExternal' | 'unsafeExternal' | 'internalPart';
+
+/** The target itself is deliberately absent; callers receive only a redacted label and hash. */
+export interface ParadisSpreadsheetHyperlinkTarget {
+	readonly classification: ParadisSpreadsheetHyperlinkTargetClassification;
+	readonly scheme?: string;
+	readonly display: string;
+	readonly normalizedTargetHash: ParadisOfficeFingerprint;
+	readonly relationshipSource: ParadisSpreadsheetPartSource;
+}
+
+export interface ParadisSpreadsheetHyperlink {
+	readonly id: string;
+	readonly ref: string;
+	readonly source: ParadisSpreadsheetPartSource;
+	readonly target?: ParadisSpreadsheetHyperlinkTarget;
+	readonly location?: ParadisSpreadsheetTextIdentity;
+	readonly tooltip?: ParadisSpreadsheetTextIdentity;
+	readonly display?: ParadisSpreadsheetTextIdentity;
+}
+
+export interface ParadisSpreadsheetOpaqueAnnotationFragment {
+	readonly name: { readonly namespace: string; readonly local: string };
+	readonly path: string;
+	readonly ordinal: number;
+	readonly fingerprint: ParadisOfficeFingerprint;
+	readonly source: ParadisSpreadsheetPartSource;
+}
+
+/** Per-cell annotation IDs form a render overlay and contain no style or border fields. */
+export interface ParadisSpreadsheetCellAnnotationOverlay {
+	readonly ref: string;
+	readonly legacyNoteIds?: readonly string[];
+	readonly threadedCommentIds?: readonly string[];
+	readonly hyperlinkIds?: readonly string[];
+}
+
+/** Bounded range index; ranges are never expanded into attacker-controlled cell counts. */
+export interface ParadisSpreadsheetRangeAnnotationOverlay {
+	readonly ranges: readonly ParadisSemanticRange[];
+	readonly validationIds?: readonly string[];
+	readonly hyperlinkIds?: readonly string[];
+}
+
+export interface ParadisSpreadsheetAnnotations {
+	readonly worksheetSource: ParadisSpreadsheetPartSource;
+	readonly contentTypesSource: ParadisSpreadsheetPartSource;
+	readonly rootRelationshipsSource: ParadisSpreadsheetPartSource;
+	readonly workbookSource: ParadisSpreadsheetPartSource;
+	readonly worksheetRelationshipsSource: ParadisSpreadsheetPartSource;
+	readonly workbookRelationshipsSource: ParadisSpreadsheetPartSource;
+	readonly commentsSource?: ParadisSpreadsheetPartSource;
+	readonly vmlDrawingSource?: ParadisSpreadsheetPartSource;
+	readonly vmlDrawingRelationshipsSource?: ParadisSpreadsheetPartSource;
+	readonly threadedCommentsSource?: ParadisSpreadsheetPartSource;
+	readonly personsSource?: ParadisSpreadsheetPartSource;
+	readonly validations: readonly ParadisSpreadsheetValidation[];
+	readonly legacyNotes: readonly ParadisSpreadsheetLegacyNote[];
+	readonly threadedComments: readonly ParadisSpreadsheetThreadedComment[];
+	readonly persons: readonly ParadisSpreadsheetPerson[];
+	readonly hyperlinks: readonly ParadisSpreadsheetHyperlink[];
+	readonly opaqueFragments: readonly ParadisSpreadsheetOpaqueAnnotationFragment[];
+	readonly cellOverlays: readonly ParadisSpreadsheetCellAnnotationOverlay[];
+	readonly rangeOverlays: readonly ParadisSpreadsheetRangeAnnotationOverlay[];
+}
+
 /** Sparse OOXML cell identity. Display formatting and formula recalculation are deliberately absent. */
 export interface ParadisSemanticCell {
 	readonly storedType: ParadisSemanticCellStoredType;
@@ -159,6 +313,8 @@ export interface ParadisSemanticSheet {
 	readonly cells: ReadonlyMap<string, ParadisSemanticCell>;
 	/** Raw-OOXML conditional-format rules. Evaluated render overlays remain separate. */
 	readonly conditionalFormatting?: ParadisSpreadsheetConditionalFormatting;
+	/** Validation, comment and hyperlink overlays never replace base cell/style identity. */
+	readonly annotations?: ParadisSpreadsheetAnnotations;
 }
 
 export interface ParadisSpreadsheetCalcProperties {
