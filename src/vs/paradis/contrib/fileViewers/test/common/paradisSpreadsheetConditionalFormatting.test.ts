@@ -5,13 +5,15 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { deepStrictEqual, notStrictEqual, ok, strictEqual, throws } from 'assert';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
+import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import {
 	evaluateSpreadsheetConditionalFormattingOwned,
 	fingerprintSpreadsheetConditionalFormattingXml,
 	parseSpreadsheetConditionalFormatting,
+	parseSpreadsheetConditionalFormattingVerifiedDocuments,
 	type ParadisSpreadsheetConditionalFormatEvaluation,
 } from '../../common/spreadsheet/paradisSpreadsheetConditionalFormatting.js';
 import type {
@@ -666,6 +668,15 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 		const conflicting = parseRawWorksheet(xml.replace('<xm:sqref>A1</xm:sqref>', '<xm:sqref>B1</xm:sqref>'));
 		strictEqual(conflicting.rules[0].x14DataBar, undefined);
 		strictEqual(conflicting.rules.some(rule => rule.type === 'unsupported' && rule.x14OpaqueRule?.type === 'dataBar'), true);
+		const formulaOverflowXml = xml
+			.replace('<dataBar>', '<formula>1</formula><formula>2</formula><formula>3</formula><dataBar>')
+			.replace('<x14:dataBar direction=', '<xm:f>1</xm:f><xm:f>2</xm:f><xm:f>3</xm:f><x14:dataBar direction=');
+		const formulaOverflow = parseRawWorksheet(formulaOverflowXml);
+		strictEqual(formulaOverflow.rules.length, 2);
+		strictEqual(formulaOverflow.rules[0].formulas.length, 3);
+		strictEqual(formulaOverflow.rules[0].x14DataBar, undefined);
+		strictEqual(formulaOverflow.rules[1].type, 'unsupported');
+		strictEqual(formulaOverflow.rules[1].formulas.length, 3);
 	});
 
 	test('preserves opaque x14 text and element event order without topology collisions', () => {
@@ -675,6 +686,40 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 		const interleaved = parseRawWorksheet(wrap('a<x14:cfIcon iconId="0"/>b')).rules[0].x14OpaqueRule?.events;
 		const grouped = parseRawWorksheet(wrap('ab<x14:cfIcon iconId="0"/>')).rules[0].x14OpaqueRule?.events;
 		notStrictEqual(JSON.stringify(interleaved), JSON.stringify(grouped));
+		const flatBody = Array.from({ length: 5000 }, (_, index) => `<x14:cfIcon iconId="${index}"/>`).join('');
+		const flat = parseRawWorksheet(wrap(flatBody)).rules[0].x14OpaqueRule!;
+		strictEqual(flat.elements.length, 5002);
+		strictEqual(flat.events.length, 10_004);
+		throws(() => parseRawWorksheet(wrap(flatBody), { limits: { opaqueEvents: 100 } }), error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded');
+		const cancellation = new CancellationTokenSource();
+		let checks = 0;
+		try {
+			throws(() => parseRawWorksheet(wrap(flatBody), {
+				cancellationToken: cancellation.token,
+				now: () => {
+					checks++;
+					if (checks === 20) { cancellation.cancel(); }
+					return checks;
+				},
+			}), error => error instanceof ParadisOfficePackageError && error.code === 'cancelled');
+			strictEqual(checks >= 20, true);
+		} finally {
+			cancellation.dispose();
+		}
+		const flatXml = wrap(flatBody);
+		const verifiedDocument = parseParadisOfficeXml(flatXml, { depth: 96, nodes: 20_000, attributeLength: 1024, characters: 2 * 1024 * 1024 });
+		const verifiedInput = {
+			worksheetDocument: verifiedDocument,
+			worksheetSource: sourceFor(worksheetSource.partId, flatXml),
+		};
+		for (const [code, stopAt] of [['cancelled', 200], ['limitExceeded', 300]] as const) {
+			let traversalChecks = 0;
+			throws(() => parseSpreadsheetConditionalFormattingVerifiedDocuments(verifiedInput, () => {
+				traversalChecks++;
+				if (traversalChecks === stopAt) { throw new ParadisOfficePackageError(code); }
+			}), error => error instanceof ParadisOfficePackageError && error.code === code);
+			strictEqual(traversalChecks, stopAt);
+		}
 	});
 
 	test('binds worksheet and styles all-byte sources to the evaluated semantic snapshot', () => {

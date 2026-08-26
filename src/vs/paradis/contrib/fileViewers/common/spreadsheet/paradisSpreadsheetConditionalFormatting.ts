@@ -489,13 +489,22 @@ function pushEvaluation(
 	results.push(result);
 }
 
-function consumeOpaqueEvent(runtime: Runtime, path: string, text = ''): void {
+function consumeOpaqueEvent(runtime: Runtime, text = ''): void {
 	runtime.opaqueEvents = safeAdd(runtime.opaqueEvents, 1);
-	runtime.opaqueCharacters = safeAdd(runtime.opaqueCharacters, safeAdd(path.length, text.length));
+	runtime.opaqueCharacters = safeAdd(runtime.opaqueCharacters, text.length);
 	if (runtime.opaqueEvents > runtime.context.limits.opaqueEvents || runtime.opaqueCharacters > runtime.context.limits.opaqueCharacters) {
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
 	checkpoint(runtime);
+}
+
+function createOpaquePath(runtime: Runtime, parent: string | undefined, ordinal: number): string {
+	consumeEvaluationOperations(runtime);
+	const suffix = String(ordinal);
+	const length = parent === undefined ? suffix.length : safeAdd(safeAdd(parent.length, 1), suffix.length);
+	runtime.opaqueCharacters = safeAdd(runtime.opaqueCharacters, length);
+	if (runtime.opaqueCharacters > runtime.context.limits.opaqueCharacters) { throw new ParadisOfficePackageError('limitExceeded'); }
+	return parent === undefined ? suffix : `${parent}/${suffix}`;
 }
 
 function readClock(now: () => number): number {
@@ -719,7 +728,9 @@ function parseWorksheetX14Rules(
 				if (!ranges || pending.length === 0) { throw new ParadisOfficePackageError('malformed'); }
 				for (const entry of pending) {
 					const linkedIndex = entry.id === undefined ? -1 : findLinkedRuleIndex(existingRules, entry.id, runtime);
+					const combinedFormulaCount = linkedIndex >= 0 ? safeAdd(existingRules[linkedIndex].formulas.length, entry.formulas.length) : 0;
 					if (linkedIndex >= 0 && entry.priority === undefined
+						&& combinedFormulaCount <= runtime.context.limits.formulasPerRule
 						&& !existingRules[linkedIndex].x14DataBar && !existingRules[linkedIndex].x14OpaqueRule
 						&& sameRanges(existingRules[linkedIndex].ranges, ranges)) {
 						const linked = existingRules[linkedIndex];
@@ -818,47 +829,52 @@ function parseX14DataBar(node: XmlElement, id: string | undefined, runtime: Runt
 function parseX14OpaqueRule(node: XmlElement, type: string, id: string | undefined, runtime: Runtime): ParadisSpreadsheetX14OpaqueRule {
 	const elements: ParadisSpreadsheetX14OpaqueRule['elements'][number][] = [];
 	const events: ParadisSpreadsheetX14OpaqueRule['events'][number][] = [];
-	type Work =
-		| { readonly kind: 'element'; readonly node: XmlElement; readonly parentIndex?: number; readonly depth: number; readonly ordinal: number; readonly path: string }
-		| { readonly kind: 'text'; readonly value: string; readonly parentIndex: number; readonly depth: number; readonly ordinal: number; readonly path: string }
-		| { readonly kind: 'end'; readonly elementIndex: number; readonly parentIndex?: number; readonly depth: number; readonly ordinal: number; readonly path: string };
-	const stack: Work[] = [{ kind: 'element', node, depth: 0, ordinal: 0, path: '0' }];
+	interface Frame {
+		readonly node: XmlElement;
+		readonly parentIndex?: number;
+		readonly depth: number;
+		readonly ordinal: number;
+		readonly path: string;
+		entered: boolean;
+		elementIndex: number;
+		nextChildIndex: number;
+	}
+	const stack: Frame[] = [{ node, depth: 0, ordinal: 0, path: createOpaquePath(runtime, undefined, 0), entered: false, elementIndex: -1, nextChildIndex: 0 }];
 	while (stack.length > 0) {
 		checkpoint(runtime);
-		const entry = stack.pop()!;
-		if (entry.kind === 'text') {
-			consumeOpaqueEvent(runtime, entry.path, entry.value);
-			events.push({ kind: 'text', parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path, text: entry.value });
+		const frame = stack[stack.length - 1];
+		if (!frame.entered) {
+			const attributes: Record<string, string> = {};
+			const rawAttributeEntries: { key: string; value: string }[] = [];
+			for (const attribute of frame.node.attributes) {
+				checkpoint(runtime);
+				rawAttributeEntries.push({ key: attribute.uri ? `{${attribute.uri}}${attribute.local}` : attribute.local, value: attribute.value });
+			}
+			const attributeEntries = boundedSort(rawAttributeEntries, (left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0, runtime);
+			for (const attribute of attributeEntries) { attributes[attribute.key] = attribute.value; }
+			frame.elementIndex = elements.length;
+			frame.entered = true;
+			elements.push(compact({ parentIndex: frame.parentIndex, depth: frame.depth, ordinal: frame.ordinal, path: frame.path, namespace: frame.node.uri, local: frame.node.local, attributes }));
+			consumeOpaqueEvent(runtime);
+			events.push(compact({ kind: 'start' as const, elementIndex: frame.elementIndex, parentIndex: frame.parentIndex, depth: frame.depth, ordinal: frame.ordinal, path: frame.path }));
 			continue;
 		}
-		if (entry.kind === 'end') {
-			consumeOpaqueEvent(runtime, entry.path);
-			events.push(compact({ kind: 'end' as const, elementIndex: entry.elementIndex, parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path }));
+		if (frame.nextChildIndex < frame.node.children.length) {
+			consumeEvaluationOperations(runtime);
+			const ordinal = frame.nextChildIndex++;
+			const child = frame.node.children[ordinal];
+			const path = createOpaquePath(runtime, frame.path, ordinal);
+			if (child.kind === 'text') {
+				consumeOpaqueEvent(runtime, child.value);
+				events.push({ kind: 'text', parentIndex: frame.elementIndex, depth: frame.depth + 1, ordinal, path, text: child.value });
+			} else {
+				stack.push({ node: child, parentIndex: frame.elementIndex, depth: frame.depth + 1, ordinal, path, entered: false, elementIndex: -1, nextChildIndex: 0 });
+			}
 			continue;
 		}
-		const current = entry.node;
-		const attributes: Record<string, string> = {};
-		const rawAttributeEntries: { key: string; value: string }[] = [];
-		for (const attribute of current.attributes) {
-			checkpoint(runtime);
-			rawAttributeEntries.push({ key: attribute.uri ? `{${attribute.uri}}${attribute.local}` : attribute.local, value: attribute.value });
-		}
-		const attributeEntries = boundedSort(rawAttributeEntries, (left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0, runtime);
-		for (const attribute of attributeEntries) {
-			attributes[attribute.key] = attribute.value;
-		}
-		const currentIndex = elements.length;
-		elements.push(compact({ parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path, namespace: current.uri, local: current.local, attributes }));
-		consumeOpaqueEvent(runtime, entry.path);
-		events.push(compact({ kind: 'start' as const, elementIndex: currentIndex, parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path }));
-		stack.push({ kind: 'end', elementIndex: currentIndex, parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path });
-		for (let index = current.children.length - 1; index >= 0; index--) {
-			const child = current.children[index];
-			const path = `${entry.path}/${index}`;
-			stack.push(child.kind === 'text'
-				? { kind: 'text', value: child.value, parentIndex: currentIndex, depth: entry.depth + 1, ordinal: index, path }
-				: { kind: 'element', node: child, parentIndex: currentIndex, depth: entry.depth + 1, ordinal: index, path });
-		}
+		consumeOpaqueEvent(runtime);
+		events.push(compact({ kind: 'end' as const, elementIndex: frame.elementIndex, parentIndex: frame.parentIndex, depth: frame.depth, ordinal: frame.ordinal, path: frame.path }));
+		stack.pop();
 	}
 	return { type, ...(id ? { id } : {}), childType: node.local, attributes: elements[0].attributes, elements, events };
 }
