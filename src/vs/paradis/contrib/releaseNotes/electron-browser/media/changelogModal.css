@@ -187,6 +187,14 @@
 	padding: 3px 7px;
 }
 
+/* codicon.css の `.codicon[class*='codicon-']` は属性セレクタ込みで詳細度が高く、
+このタグの display/font-size を無言で上書きする(利用可能な更新タグが横幅いっぱいの
+ブロックへ崩れる形で発覚した)。同じ強さのセレクタで打ち返す。 */
+.para-cl-tag.codicon[class*='codicon-'] {
+	display: inline-flex;
+	font-size: 10px;
+}
+
 .para-cl-tag.codicon::before {
 	font-size: 11px;
 }
