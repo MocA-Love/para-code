@@ -77,6 +77,8 @@ export interface ParadisSpreadsheetConditionalFormattingLimits {
 	readonly snapshotCells: number;
 	readonly outputNodes: number;
 	readonly outputProperties: number;
+	readonly opaqueEvents: number;
+	readonly opaqueCharacters: number;
 }
 
 const defaultLimits: ParadisSpreadsheetConditionalFormattingLimits = {
@@ -98,6 +100,8 @@ const defaultLimits: ParadisSpreadsheetConditionalFormattingLimits = {
 	snapshotCells: 1_000_000,
 	outputNodes: 1_000_000,
 	outputProperties: 2_000_000,
+	opaqueEvents: 1_000_000,
+	opaqueCharacters: 24 * 1024 * 1024,
 };
 const limitKeys = Object.freeze(Object.keys(defaultLimits) as (keyof ParadisSpreadsheetConditionalFormattingLimits)[]);
 
@@ -168,7 +172,11 @@ interface Runtime {
 	outputProperties: number;
 	parsedRanges: number;
 	parsedRules: number;
+	opaqueEvents: number;
+	opaqueCharacters: number;
 	readonly upstreamCheckpoint?: () => void;
+	workbook?: OwnedWorkbook;
+	readonly formulaDependencyReasons: Map<string, ParadisSpreadsheetConditionalNotEvaluatedReason>;
 }
 
 interface CellCoordinate {
@@ -197,7 +205,7 @@ interface OwnedWorkbook {
 
 interface EvaluationCache {
 	readonly numericValues: Map<string, readonly number[]>;
-	readonly averageStatistics: Map<string, { readonly average: number; readonly standardDeviation: number }>;
+	readonly averageStatistics: Map<string, { readonly scale: number; readonly mean: number; readonly standardDeviation: number }>;
 	readonly topThresholds: Map<string, number>;
 	readonly visualThresholds: Map<string, readonly number[]>;
 	readonly duplicateCounts: Map<string, ReadonlyMap<string, number>>;
@@ -296,6 +304,7 @@ export function evaluateSpreadsheetConditionalFormattingOwned(
 		const runtime = ownedRequest.runtime;
 		const ownedModel = ownModel(model, runtime);
 		const workbook = ownWorkbook(snapshot, runtime);
+		runtime.workbook = workbook;
 		const currentSheet = workbook.sheets.get(normalizeSheetName(ownedRequest.sheetName));
 		if (!currentSheet) {
 			throw new ParadisOfficePackageError('malformed');
@@ -436,6 +445,8 @@ function createRuntime(context: OwnedContext, hardDeadline: StopWatch, upstreamC
 		formulaBytes: 0, formulaTokens: 0, evaluationOperations: 0, evaluationResults: 0, ownedRanges: 0,
 		outputNodes: 0, outputProperties: 0,
 		parsedRanges: 0, parsedRules: 0,
+		opaqueEvents: 0, opaqueCharacters: 0,
+		formulaDependencyReasons: new Map(),
 		...(upstreamCheckpoint ? { upstreamCheckpoint } : {}),
 	};
 	checkpoint(runtime, true);
@@ -476,6 +487,15 @@ function pushEvaluation(
 		throw new ParadisOfficePackageError('limitExceeded');
 	}
 	results.push(result);
+}
+
+function consumeOpaqueEvent(runtime: Runtime, path: string, text = ''): void {
+	runtime.opaqueEvents = safeAdd(runtime.opaqueEvents, 1);
+	runtime.opaqueCharacters = safeAdd(runtime.opaqueCharacters, safeAdd(path.length, text.length));
+	if (runtime.opaqueEvents > runtime.context.limits.opaqueEvents || runtime.opaqueCharacters > runtime.context.limits.opaqueCharacters) {
+		throw new ParadisOfficePackageError('limitExceeded');
+	}
+	checkpoint(runtime);
 }
 
 function readClock(now: () => number): number {
@@ -644,30 +664,56 @@ function parseWorksheetX14Rules(
 					if (child.uri !== spreadsheetX14Namespace || child.local !== 'cfRule') { throw new ParadisOfficePackageError('malformed'); }
 					runtime.parsedRules = safeAdd(runtime.parsedRules, 1);
 					if (runtime.parsedRules > runtime.context.limits.rules) { throw new ParadisOfficePackageError('limitExceeded'); }
-					exactAttributes(child, ['type', 'priority', 'id', 'stopIfTrue', 'aboveAverage', 'percent', 'bottom', 'operator', 'text', 'timePeriod', 'rank', 'stdDev', 'equalAverage', 'activePresent']);
-					const type = requiredAttribute(child, 'type');
-					const children = elementChildren(child, runtime);
+					const allowedRuleAttributes = new Set(['type', 'priority', 'id', 'stopIfTrue', 'aboveAverage', 'percent', 'bottom', 'operator', 'text', 'timePeriod', 'rank', 'stdDev', 'equalAverage', 'activePresent']);
+					let typedCandidate = child.attributes.every(candidate => candidate.uri === '' && allowedRuleAttributes.has(candidate.local));
+					const type = attribute(child, 'type') ?? 'unknown';
+					for (const node of child.children) {
+						checkpoint(runtime);
+						if (node.kind === 'text' && node.value.trim().length > 0) { typedCandidate = false; }
+					}
+					const children = elementChildrenBestEffort(child, runtime);
 					const id = attribute(child, 'id');
 					const formulas: string[] = [];
 					let dataBarNode: XmlElement | undefined;
 					for (const ruleChild of children) {
 						if (ruleChild.uri === spreadsheetXmNamespace && ruleChild.local === 'f') {
 							if (formulas.length >= runtime.context.limits.formulasPerRule) { throw new ParadisOfficePackageError('limitExceeded'); }
-							const formula = directText(ruleChild, runtime);
-							chargeFormula(formula, runtime);
-							formulas.push(formula);
+							try {
+								const formula = directText(ruleChild, runtime);
+								chargeFormula(formula, runtime);
+								formulas.push(formula);
+							} catch (error) {
+								if (!(error instanceof ParadisOfficePackageError) || error.code !== 'malformed') { throw error; }
+								typedCandidate = false;
+							}
 						} else if (ruleChild.uri === spreadsheetX14Namespace && ruleChild.local === 'dataBar' && !dataBarNode) {
 							dataBarNode = ruleChild;
+						} else {
+							typedCandidate = false;
 						}
 					}
-					const rawPriority = integerAttribute(child, 'priority');
-					if (rawPriority !== undefined && rawPriority < 1) { throw new ParadisOfficePackageError('malformed'); }
+					let rawPriority: number | undefined;
+					let stopIfTrue = false;
+					try {
+						rawPriority = integerAttribute(child, 'priority');
+						if (rawPriority !== undefined && rawPriority < 1) { typedCandidate = false; rawPriority = undefined; }
+						stopIfTrue = booleanAttribute(child, 'stopIfTrue') ?? false;
+					} catch (error) {
+						if (!(error instanceof ParadisOfficePackageError) || error.code !== 'malformed') { throw error; }
+						typedCandidate = false;
+					}
+					let dataBar: ParadisSpreadsheetX14DataBar | undefined;
+					if (typedCandidate && type === 'dataBar' && dataBarNode) {
+						try {
+							dataBar = parseX14DataBar(dataBarNode, id, runtime);
+						} catch (error) {
+							if (!(error instanceof ParadisOfficePackageError) || error.code !== 'malformed') { throw error; }
+						}
+					}
 					pending.push({
-						priority: rawPriority, id, type, stopIfTrue: booleanAttribute(child, 'stopIfTrue') ?? false, formulas,
+						priority: rawPriority, id, type, stopIfTrue, formulas,
 						opaque: parseX14OpaqueRule(child, type, id, runtime),
-						...(type === 'dataBar' && dataBarNode
-							? { dataBar: parseX14DataBar(dataBarNode, id, runtime) }
-							: {}),
+						...(dataBar ? { dataBar } : {}),
 					});
 				}
 				if (!ranges || pending.length === 0) { throw new ParadisOfficePackageError('malformed'); }
@@ -771,10 +817,25 @@ function parseX14DataBar(node: XmlElement, id: string | undefined, runtime: Runt
 
 function parseX14OpaqueRule(node: XmlElement, type: string, id: string | undefined, runtime: Runtime): ParadisSpreadsheetX14OpaqueRule {
 	const elements: ParadisSpreadsheetX14OpaqueRule['elements'][number][] = [];
-	const stack: { node: XmlElement; parentIndex?: number; depth: number }[] = [{ node, depth: 0 }];
+	const events: ParadisSpreadsheetX14OpaqueRule['events'][number][] = [];
+	type Work =
+		| { readonly kind: 'element'; readonly node: XmlElement; readonly parentIndex?: number; readonly depth: number; readonly ordinal: number; readonly path: string }
+		| { readonly kind: 'text'; readonly value: string; readonly parentIndex: number; readonly depth: number; readonly ordinal: number; readonly path: string }
+		| { readonly kind: 'end'; readonly elementIndex: number; readonly parentIndex?: number; readonly depth: number; readonly ordinal: number; readonly path: string };
+	const stack: Work[] = [{ kind: 'element', node, depth: 0, ordinal: 0, path: '0' }];
 	while (stack.length > 0) {
 		checkpoint(runtime);
 		const entry = stack.pop()!;
+		if (entry.kind === 'text') {
+			consumeOpaqueEvent(runtime, entry.path, entry.value);
+			events.push({ kind: 'text', parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path, text: entry.value });
+			continue;
+		}
+		if (entry.kind === 'end') {
+			consumeOpaqueEvent(runtime, entry.path);
+			events.push(compact({ kind: 'end' as const, elementIndex: entry.elementIndex, parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path }));
+			continue;
+		}
 		const current = entry.node;
 		const attributes: Record<string, string> = {};
 		const rawAttributeEntries: { key: string; value: string }[] = [];
@@ -786,18 +847,20 @@ function parseX14OpaqueRule(node: XmlElement, type: string, id: string | undefin
 		for (const attribute of attributeEntries) {
 			attributes[attribute.key] = attribute.value;
 		}
-		let text = '';
-		const children: XmlElement[] = [];
-		for (const child of current.children) {
-			checkpoint(runtime);
-			if (child.kind === 'text') { text += child.value; }
-			else { children.push(child); }
-		}
 		const currentIndex = elements.length;
-		elements.push(compact({ parentIndex: entry.parentIndex, depth: entry.depth, namespace: current.uri, local: current.local, attributes, ...(text.trim().length > 0 ? { text } : {}) }));
-		for (let index = children.length - 1; index >= 0; index--) { stack.push({ node: children[index], parentIndex: currentIndex, depth: entry.depth + 1 }); }
+		elements.push(compact({ parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path, namespace: current.uri, local: current.local, attributes }));
+		consumeOpaqueEvent(runtime, entry.path);
+		events.push(compact({ kind: 'start' as const, elementIndex: currentIndex, parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path }));
+		stack.push({ kind: 'end', elementIndex: currentIndex, parentIndex: entry.parentIndex, depth: entry.depth, ordinal: entry.ordinal, path: entry.path });
+		for (let index = current.children.length - 1; index >= 0; index--) {
+			const child = current.children[index];
+			const path = `${entry.path}/${index}`;
+			stack.push(child.kind === 'text'
+				? { kind: 'text', value: child.value, parentIndex: currentIndex, depth: entry.depth + 1, ordinal: index, path }
+				: { kind: 'element', node: child, parentIndex: currentIndex, depth: entry.depth + 1, ordinal: index, path });
+		}
 	}
-	return { type, ...(id ? { id } : {}), childType: node.local, attributes: elements[0].attributes, elements };
+	return { type, ...(id ? { id } : {}), childType: node.local, attributes: elements[0].attributes, elements, events };
 }
 
 function parseRule(
@@ -1341,7 +1404,7 @@ function ownX14DataBar(value: unknown, runtime: Runtime): ParadisSpreadsheetX14D
 }
 
 function ownX14OpaqueRule(value: unknown, runtime: Runtime): ParadisSpreadsheetX14OpaqueRule {
-	const record = ownRecord(value, new Set(['type', 'id', 'childType', 'attributes', 'elements']));
+	const record = ownRecord(value, new Set(['type', 'id', 'childType', 'attributes', 'elements', 'events']));
 	if (typeof record.type !== 'string' || record.id !== undefined && typeof record.id !== 'string' || record.childType !== undefined && typeof record.childType !== 'string') { throw new ParadisOfficePackageError('unsafe'); }
 	const attributesRecord = ownRecord(record.attributes, new Set(Object.keys(record.attributes as object)));
 	const attributes: Record<string, string> = {};
@@ -1349,17 +1412,29 @@ function ownX14OpaqueRule(value: unknown, runtime: Runtime): ParadisSpreadsheetX
 		if (typeof entry !== 'string') { throw new ParadisOfficePackageError('unsafe'); }
 		attributes[key] = entry;
 	}
-	const elements = ownArrayValues(record.elements, runtime.context.limits.xmlNodes, runtime).map(value => {
-		const element = ownRecord(value, new Set(['parentIndex', 'depth', 'namespace', 'local', 'attributes', 'text']));
+	const elements = ownArrayValues(record.elements, runtime.context.limits.xmlNodes, runtime).map((value, index) => {
+		const element = ownRecord(value, new Set(['parentIndex', 'depth', 'ordinal', 'path', 'namespace', 'local', 'attributes', 'text']));
 		if (typeof element.namespace !== 'string' || typeof element.local !== 'string' || element.text !== undefined && typeof element.text !== 'string'
 			|| !Number.isSafeInteger(element.depth) || (element.depth as number) < 0
-			|| element.parentIndex !== undefined && (!Number.isSafeInteger(element.parentIndex) || (element.parentIndex as number) < 0)) { throw new ParadisOfficePackageError('unsafe'); }
+			|| !Number.isSafeInteger(element.ordinal) || (element.ordinal as number) < 0 || typeof element.path !== 'string'
+			|| element.parentIndex !== undefined && (!Number.isSafeInteger(element.parentIndex) || (element.parentIndex as number) < 0 || (element.parentIndex as number) >= index)) { throw new ParadisOfficePackageError('unsafe'); }
 		const rawAttributes = element.attributes as Record<string, unknown>;
 		const ownedAttributes = ownRecord(rawAttributes, new Set(Object.keys(rawAttributes)));
 		for (const entry of Object.values(ownedAttributes)) { if (typeof entry !== 'string') { throw new ParadisOfficePackageError('unsafe'); } }
-		return { parentIndex: element.parentIndex as number | undefined, depth: element.depth as number, namespace: element.namespace, local: element.local, attributes: ownedAttributes as Readonly<Record<string, string>>, ...(element.text === undefined ? {} : { text: element.text }) };
+		return compact({ parentIndex: element.parentIndex as number | undefined, depth: element.depth as number, ordinal: element.ordinal as number, path: element.path, namespace: element.namespace, local: element.local, attributes: ownedAttributes as Readonly<Record<string, string>>, ...(element.text === undefined ? {} : { text: element.text }) });
 	});
-	return { type: record.type, ...(record.id ? { id: record.id } : {}), ...(record.childType ? { childType: record.childType } : {}), attributes, elements };
+	const events = ownArrayValues(record.events, runtime.context.limits.opaqueEvents, runtime).map(value => {
+		const event = ownRecord(value, new Set(['kind', 'elementIndex', 'parentIndex', 'depth', 'ordinal', 'path', 'text']));
+		if (event.kind !== 'start' && event.kind !== 'end' && event.kind !== 'text' || !Number.isSafeInteger(event.depth) || (event.depth as number) < 0
+			|| !Number.isSafeInteger(event.ordinal) || (event.ordinal as number) < 0 || typeof event.path !== 'string') { throw new ParadisOfficePackageError('unsafe'); }
+		if (event.kind === 'text') {
+			if (!Number.isSafeInteger(event.parentIndex) || (event.parentIndex as number) < 0 || typeof event.text !== 'string') { throw new ParadisOfficePackageError('unsafe'); }
+			return { kind: 'text' as const, parentIndex: event.parentIndex as number, depth: event.depth as number, ordinal: event.ordinal as number, path: event.path, text: event.text };
+		}
+		if (!Number.isSafeInteger(event.elementIndex) || (event.elementIndex as number) < 0 || event.parentIndex !== undefined && (!Number.isSafeInteger(event.parentIndex) || (event.parentIndex as number) < 0)) { throw new ParadisOfficePackageError('unsafe'); }
+		return compact({ kind: event.kind as 'start' | 'end', elementIndex: event.elementIndex as number, parentIndex: event.parentIndex as number | undefined, depth: event.depth as number, ordinal: event.ordinal as number, path: event.path });
+	});
+	return { type: record.type, ...(record.id ? { id: record.id } : {}), ...(record.childType ? { childType: record.childType } : {}), attributes, elements, events };
 }
 
 function ownRanges(value: unknown, runtime: Runtime, cache: WeakMap<object, readonly ParadisSemanticRange[]>): readonly ParadisSemanticRange[] {
@@ -1601,7 +1676,7 @@ function ownWorkbook(snapshot: unknown, runtime: Runtime): OwnedWorkbook {
 			if (address !== entry[0].replace(/\$/g, '').toUpperCase() || cells.has(address)) {
 				throw new ParadisOfficePackageError('unsafe');
 			}
-			cells.set(address, ownCell(entry[1]));
+			cells.set(address, ownCell(entry[1], runtime));
 		}
 		if (intrinsicMapSize(sheetRecord.cells) !== initialSize || cells.size !== initialSize) {
 			throw new ParadisOfficePackageError('unsafe');
@@ -1624,14 +1699,14 @@ function intrinsicMapEntries(value: Map<unknown, unknown>): IterableIterator<[un
 	return Map.prototype.entries.call(value);
 }
 
-function ownCell(value: unknown): ParadisSemanticCell {
+function ownCell(value: unknown, runtime: Runtime): ParadisSemanticCell {
 	const record = ownRecord(value, new Set(['storedType', 'rawType', 'rawValue', 'text', 'formula', 'cachedResult']));
 	if (typeof record.storedType !== 'string' || !['blank', 'number', 'string', 'boolean', 'error', 'date', 'formula'].includes(record.storedType)
 		|| record.rawType !== undefined && typeof record.rawType !== 'string' || record.text !== undefined && typeof record.text !== 'string') {
 		throw new ParadisOfficePackageError('unsafe');
 	}
 	const rawValue = record.rawValue === undefined ? undefined : ownRawValue(record.rawValue);
-	const formula = record.formula === undefined ? undefined : ownFormula(record.formula);
+	const formula = record.formula === undefined ? undefined : ownFormula(record.formula, runtime);
 	const cachedResult = record.cachedResult === undefined ? undefined : ownCachedResult(record.cachedResult);
 	return compact({ storedType: record.storedType, rawType: record.rawType as string | undefined, rawValue, text: record.text as string | undefined, formula, cachedResult }) as ParadisSemanticCell;
 }
@@ -1644,12 +1719,13 @@ function ownRawValue(value: unknown): ParadisSemanticCell['rawValue'] {
 	return record.present ? { present: true, text: record.text as string } : { present: false };
 }
 
-function ownFormula(value: unknown): NonNullable<ParadisSemanticCell['formula']> {
+function ownFormula(value: unknown, runtime: Runtime): NonNullable<ParadisSemanticCell['formula']> {
 	const record = ownRecord(value, new Set(['text', 'kind', 'ref', 'sharedIndex']));
 	if (typeof record.text !== 'string' || typeof record.kind !== 'string' || !['normal', 'shared', 'array'].includes(record.kind)
 		|| record.ref !== undefined && typeof record.ref !== 'string' || record.sharedIndex !== undefined && !Number.isSafeInteger(record.sharedIndex)) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
+	chargeFormula(record.text, runtime);
 	return compact({ text: record.text, kind: record.kind, ref: record.ref as string | undefined, sharedIndex: record.sharedIndex as number | undefined }) as NonNullable<ParadisSemanticCell['formula']>;
 }
 
@@ -1701,7 +1777,7 @@ function evaluateRule(
 		const supplementalFormulaApplies = evaluateSupplementalRuleFormulas(rule, target, anchor, currentSheet, workbook, cache, runtime);
 		switch (rule.type) {
 			case 'cellIs': {
-				const targetValue = scalarCellValue(target.cell, target.address, workbook.date1904);
+				const targetValue = scalarCellValue(target.cell, target.address, workbook.date1904, currentSheet, runtime);
 				const operands = rule.formulas.map(formula => scalarFormulaValue(evaluateFormula(formula, target.coordinate, anchor, currentSheet, workbook, runtime)));
 				applies = evaluateCellOperator(rule.operator!, targetValue, operands);
 				break;
@@ -1723,16 +1799,16 @@ function evaluateRule(
 			case 'notContainsText':
 			case 'beginsWith':
 			case 'endsWith':
-				applies = evaluateTextRule(rule, target);
+				applies = evaluateTextRule(rule, target, currentSheet, runtime);
 				break;
 			case 'containsBlanks':
 			case 'notContainsBlanks':
 			case 'containsErrors':
 			case 'notContainsErrors':
-				applies = evaluateBlankOrErrorRule(rule, target);
+				applies = evaluateBlankOrErrorRule(rule, target, currentSheet, runtime);
 				break;
 			case 'timePeriod':
-				applies = evaluateTimePeriod(rule, target, todaySerial, workbook.date1904);
+				applies = evaluateTimePeriod(rule, target, todaySerial, workbook.date1904, currentSheet, runtime);
 				break;
 			case 'colorScale':
 			case 'dataBar':
@@ -1894,7 +1970,7 @@ function validateFormulaDependencies(
 			for (let column = minColumn; column <= maxColumn; column++) {
 				consumeEvaluationOperations(runtime);
 				const address = formatCellAddress(row, column);
-				scalarCellValue(sheet.cells.get(address), address, workbook.date1904);
+				scalarCellValue(sheet.cells.get(address), address, workbook.date1904, sheet, runtime);
 			}
 		}
 	}
@@ -1920,7 +1996,7 @@ function evaluateCellOperator(operator: ParadisSpreadsheetConditionalOperator, t
 }
 
 function evaluateTop10(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell, sheet: OwnedSheet, date1904: boolean, cache: EvaluationCache, runtime: Runtime): boolean {
-	const targetValue = optionalNumericScalar(scalarCellValue(target.cell, target.address, date1904));
+	const targetValue = optionalNumericScalar(scalarCellValue(target.cell, target.address, date1904, sheet, runtime));
 	if (targetValue === undefined) { return false; }
 	const values = aggregateNumericValues(rule, sheet, date1904, cache, runtime);
 	if (values.length === 0) {
@@ -1978,7 +2054,7 @@ function rankThreshold(values: readonly number[], count: number, bottom: boolean
 }
 
 function evaluateAboveAverage(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell, sheet: OwnedSheet, date1904: boolean, cache: EvaluationCache, runtime: Runtime): boolean {
-	const targetValue = optionalNumericScalar(scalarCellValue(target.cell, target.address, date1904));
+	const targetValue = optionalNumericScalar(scalarCellValue(target.cell, target.address, date1904, sheet, runtime));
 	if (targetValue === undefined) { return false; }
 	const values = aggregateNumericValues(rule, sheet, date1904, cache, runtime);
 	if (values.length === 0) {
@@ -1986,31 +2062,36 @@ function evaluateAboveAverage(rule: ParadisSpreadsheetConditionalFormatRule, tar
 	}
 	let statistics = cache.averageStatistics.get(rule.id);
 	if (!statistics) {
-		let sum = 0;
+		let scale = 0;
 		for (const value of values) {
 			consumeEvaluationOperations(runtime);
-			sum = finiteNumber(sum + value);
+			scale = Math.max(scale, Math.abs(value));
 		}
-		const average = finiteNumber(sum / values.length);
+		let mean = 0;
 		let squaredDifferenceSum = 0;
+		let count = 0;
 		for (const value of values) {
 			consumeEvaluationOperations(runtime);
-			squaredDifferenceSum = finiteNumber(squaredDifferenceSum + finiteNumber((value - average) ** 2));
+			const normalized = scale === 0 ? 0 : value / scale;
+			count++;
+			const delta = normalized - mean;
+			mean += delta / count;
+			squaredDifferenceSum += delta * (normalized - mean);
 		}
-		statistics = { average, standardDeviation: Math.sqrt(finiteNumber(squaredDifferenceSum / values.length)) };
+		statistics = { scale, mean, standardDeviation: Math.sqrt(Math.max(0, squaredDifferenceSum / values.length)) };
 		cache.averageStatistics.set(rule.id, statistics);
 	}
-	const average = statistics.average;
+	const targetNormalized = statistics.scale === 0 ? 0 : targetValue / statistics.scale;
 	const standardDeviation = statistics.standardDeviation * (rule.standardDeviation ?? 0);
 	const above = rule.aboveAverage ?? true;
-	const threshold = average + (above ? standardDeviation : -standardDeviation);
+	const threshold = statistics.mean + (above ? standardDeviation : -standardDeviation);
 	return above
-		? rule.equalAverage ? targetValue >= threshold : targetValue > threshold
-		: rule.equalAverage ? targetValue <= threshold : targetValue < threshold;
+		? rule.equalAverage ? targetNormalized >= threshold : targetNormalized > threshold
+		: rule.equalAverage ? targetNormalized <= threshold : targetNormalized < threshold;
 }
 
 function evaluateDuplicate(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell, sheet: OwnedSheet, date1904: boolean, cache: EvaluationCache, runtime: Runtime): boolean {
-	const targetValue = scalarCellValue(target.cell, target.address, date1904);
+	const targetValue = scalarCellValue(target.cell, target.address, date1904, sheet, runtime);
 	const targetKey = scalarKey(targetValue);
 	const cached = cache.duplicateCounts.get(rule.id);
 	if (cached) {
@@ -2027,7 +2108,7 @@ function evaluateDuplicate(rule: ParadisSpreadsheetConditionalFormatRule, target
 			continue;
 		}
 		materialized++;
-		const key = scalarKey(scalarCellValue(cell, address, date1904));
+		const key = scalarKey(scalarCellValue(cell, address, date1904, sheet, runtime));
 		counts.set(key, safeAdd(counts.get(key) ?? 0, 1));
 	}
 	if (rangeArea > materialized) {
@@ -2083,8 +2164,8 @@ function rangeUnionArea(ranges: readonly ParadisSemanticRange[], runtime: Runtim
 	return area;
 }
 
-function evaluateTextRule(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell): boolean {
-	const value = scalarCellValue(target.cell, target.address);
+function evaluateTextRule(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell, sheet: OwnedSheet, runtime: Runtime): boolean {
+	const value = scalarCellValue(target.cell, target.address, runtime.workbook?.date1904 ?? false, sheet, runtime);
 	if (typeof value !== 'string') {
 		return false;
 	}
@@ -2099,10 +2180,12 @@ function evaluateTextRule(rule: ParadisSpreadsheetConditionalFormatRule, target:
 	}
 }
 
-function evaluateBlankOrErrorRule(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell): boolean {
+function evaluateBlankOrErrorRule(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell, sheet: OwnedSheet, runtime: Runtime): boolean {
 	const cell = target.cell;
 	if (cell?.storedType === 'formula' && !cell.cachedResult?.present) {
-		throw new EvaluationIssue(classifyMissingFormulaCache(cell.formula?.text ?? '', target.address));
+		throw new EvaluationIssue(runtime.workbook
+			? classifyMissingFormulaCacheDependencies(sheet, target.address, runtime.workbook, runtime)
+			: classifyMissingFormulaCache(cell.formula?.text ?? '', target.address));
 	}
 	const blank = isConditionalBlankCell(cell);
 	const error = cell?.storedType === 'error' || Boolean(cell?.storedType === 'formula' && cell.cachedResult?.present && cell.cachedResult.type === 'error');
@@ -2126,11 +2209,11 @@ function isConditionalBlankCell(cell: ParadisSemanticCell | undefined): boolean 
 	return value !== undefined && value.replace(/ /g, '').length === 0;
 }
 
-function evaluateTimePeriod(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell, todaySerial: number | undefined, date1904: boolean): boolean {
+function evaluateTimePeriod(rule: ParadisSpreadsheetConditionalFormatRule, target: OwnedCell, todaySerial: number | undefined, date1904: boolean, sheet: OwnedSheet, runtime: Runtime): boolean {
 	if (todaySerial === undefined) {
 		throw new EvaluationIssue('todayMissing');
 	}
-	const numeric = optionalNumericScalar(scalarCellValue(target.cell, target.address, date1904));
+	const numeric = optionalNumericScalar(scalarCellValue(target.cell, target.address, date1904, sheet, runtime));
 	if (numeric === undefined) { return false; }
 	const maximumSerial = date1904 ? 2_957_003 : 2_958_465;
 	if (numeric < 0 || numeric > maximumSerial || todaySerial < 0 || todaySerial > maximumSerial) {
@@ -2220,7 +2303,7 @@ function evaluateVisualRule(
 	cache: EvaluationCache,
 	runtime: Runtime,
 ): ParadisSpreadsheetConditionalRenderOverlay | undefined {
-	const targetValue = optionalNumericScalar(scalarCellValue(target.cell, target.address, workbook.date1904));
+	const targetValue = optionalNumericScalar(scalarCellValue(target.cell, target.address, workbook.date1904, currentSheet, runtime));
 	if (targetValue === undefined) { return undefined; }
 	const values = aggregateNumericValues(rule, currentSheet, workbook.date1904, cache, runtime);
 	if (values.length === 0) {
@@ -2239,14 +2322,14 @@ function evaluateVisualRule(
 		}
 		const lower = thresholds[segment];
 		const upper = thresholds[segment + 1];
-		const mix = upper === lower ? targetValue >= upper ? 1 : 0 : clamp((targetValue - lower) / (upper - lower));
+		const mix = stableRatio(targetValue, lower, upper);
 		const position = thresholds[thresholds.length - 1] === thresholds[0]
 			? 0
-			: clamp((targetValue - thresholds[0]) / (thresholds[thresholds.length - 1] - thresholds[0]));
+			: stableRatio(targetValue, thresholds[0], thresholds[thresholds.length - 1]);
 		return { kind: 'colorScale', position, lowerColor: ownColor(visual.colors[segment]), upperColor: ownColor(visual.colors[segment + 1]), mix };
 	}
 	if (visual.kind === 'dataBar') {
-		const ratio = thresholds[1] === thresholds[0] ? targetValue >= thresholds[1] ? 1 : 0 : clamp((targetValue - thresholds[0]) / (thresholds[1] - thresholds[0]));
+		const ratio = stableRatio(targetValue, thresholds[0], thresholds[1]);
 		const minLength = visual.minLength ?? 10;
 		const maxLength = visual.maxLength ?? 90;
 		const renderedRatio = (minLength + ratio * (maxLength - minLength)) / 100;
@@ -2287,17 +2370,35 @@ function resolveThreshold(
 		case 'max': return max;
 		case 'autoMax': return Math.max(0, max);
 		case 'num': return parseFiniteNumber(value.value!);
-		case 'percent': return finiteNumber(min + finiteNumber(max - min) * parseBoundedPercent(value.value!) / 100);
+		case 'percent': return stableInterpolate(min, max, parseBoundedPercent(value.value!) / 100);
 		case 'percentile': {
 			const index = (values.length - 1) * parseBoundedPercent(value.value!) / 100;
 			const lower = Math.floor(index);
 			const upper = Math.ceil(index);
 			const lowerValue = selectNumericValue(values, lower, runtime);
 			const upperValue = upper === lower ? lowerValue : selectNumericValue(values, upper, runtime);
-			return finiteNumber(lowerValue + finiteNumber(upperValue - lowerValue) * (index - lower));
+			return stableInterpolate(lowerValue, upperValue, index - lower);
 		}
 		case 'formula': return numericScalar(scalarFormulaValue(evaluateFormula(value.value!, target, anchor, currentSheet, workbook, runtime)));
 	}
+}
+
+function stableRatio(value: number, lower: number, upper: number): number {
+	if (upper === lower) { return value >= upper ? 1 : 0; }
+	const scale = Math.max(Math.abs(value), Math.abs(lower), Math.abs(upper));
+	if (scale === 0) { return 0; }
+	const denominator = upper / scale - lower / scale;
+	if (denominator === 0) { return value >= upper ? 1 : 0; }
+	return clamp((value / scale - lower / scale) / denominator);
+}
+
+function stableInterpolate(lower: number, upper: number, ratio: number): number {
+	if (ratio <= 0 || lower === upper) { return lower; }
+	if (ratio >= 1) { return upper; }
+	const scale = Math.max(Math.abs(lower), Math.abs(upper));
+	if (scale === 0) { return 0; }
+	const normalized = (lower / scale) * (1 - ratio) + (upper / scale) * ratio;
+	return finiteNumber(Math.max(-1, Math.min(1, normalized)) * scale);
 }
 
 function aggregateNumericValues(rule: ParadisSpreadsheetConditionalFormatRule, sheet: OwnedSheet, date1904: boolean, cache: EvaluationCache, runtime: Runtime): readonly number[] {
@@ -2310,7 +2411,7 @@ function aggregateNumericValues(rule: ParadisSpreadsheetConditionalFormatRule, s
 		if (!matchingRangeAnchor(rule.ranges, coordinate, runtime)) {
 			continue;
 		}
-		const scalar = scalarCellValue(cell, address, date1904);
+		const scalar = scalarCellValue(cell, address, date1904, sheet, runtime);
 		if (typeof scalar === 'number') {
 			result.push(scalar);
 		}
@@ -2384,7 +2485,7 @@ function boundedSort<T>(values: readonly T[], compare: (left: T, right: T) => nu
 	return source;
 }
 
-function scalarCellValue(cell: ParadisSemanticCell | undefined, address: string, date1904 = false): Scalar {
+function scalarCellValue(cell: ParadisSemanticCell | undefined, address: string, date1904 = false, sheet?: OwnedSheet, runtime?: Runtime): Scalar {
 	if (!cell || cell.storedType === 'blank') {
 		return { kind: 'blank' };
 	}
@@ -2393,7 +2494,9 @@ function scalarCellValue(cell: ParadisSemanticCell | undefined, address: string,
 	}
 	if (cell.storedType === 'formula') {
 		if (!cell.cachedResult?.present) {
-			throw new EvaluationIssue(classifyMissingFormulaCache(cell.formula?.text ?? '', address));
+			throw new EvaluationIssue(sheet && runtime?.workbook
+				? classifyMissingFormulaCacheDependencies(sheet, address, runtime.workbook, runtime)
+				: classifyMissingFormulaCache(cell.formula?.text ?? '', address));
 		}
 		if (cell.cachedResult.type === 'error') {
 			throw new EvaluationIssue('errorValue');
@@ -2452,6 +2555,135 @@ function classifyMissingFormulaCache(formula: string, address: string): ParadisS
 		return 'cycle';
 	}
 	return 'cacheMissing';
+}
+
+function classifyMissingFormulaCacheDependencies(
+	startSheet: OwnedSheet,
+	startAddress: string,
+	workbook: OwnedWorkbook,
+	runtime: Runtime,
+): ParadisSpreadsheetConditionalNotEvaluatedReason {
+	const startKey = dependencyKey(startSheet, startAddress);
+	const cached = runtime.formulaDependencyReasons.get(startKey);
+	if (cached) { return cached; }
+	const nodes = new Map<string, { readonly sheet: OwnedSheet; readonly address: string; readonly edges: string[] }>();
+	const queue: { readonly sheet: OwnedSheet; readonly address: string }[] = [{ sheet: startSheet, address: startAddress }];
+	const queued = new Set<string>([startKey]);
+	let external = false;
+	let volatile = false;
+	for (let cursor = 0; cursor < queue.length; cursor++) {
+		consumeEvaluationOperations(runtime);
+		if (nodes.size >= runtime.context.limits.snapshotCells) { throw new ParadisOfficePackageError('limitExceeded'); }
+		const current = queue[cursor];
+		const key = dependencyKey(current.sheet, current.address);
+		const cell = current.sheet.cells.get(current.address);
+		const formula = cell?.storedType === 'formula' && !cell.cachedResult?.present ? cell.formula?.text ?? '' : '';
+		const edges: string[] = [];
+		nodes.set(key, { sheet: current.sheet, address: current.address, edges });
+		if (!formula) { continue; }
+		if (containsExternalReference(formula)) {
+			external = true;
+			continue;
+		}
+		if (containsVolatileFunction(formula, runtime)) { volatile = true; }
+		try {
+			const tokenizer = new FormulaTokenizer(formula.startsWith('=') ? formula.slice(1) : formula, runtime);
+			while (true) {
+				const token = tokenizer.next();
+				if (token.kind === 'end') { break; }
+				if (token.kind === 'identifier' && ['RAND', 'RANDBETWEEN', 'NOW', 'TODAY', 'OFFSET', 'INDIRECT'].includes(token.value)) {
+					volatile = true;
+				}
+				if (token.kind !== 'reference') { continue; }
+				const referencedSheet = token.sheet === undefined ? current.sheet : workbook.sheets.get(normalizeSheetName(token.sheet));
+				if (!referencedSheet) { continue; }
+				const origin = parseCellReference(current.address);
+				const start = resolveFormulaReference(token.start, origin, origin);
+				const end = token.end ? resolveFormulaReference(token.end, origin, origin) : start;
+				const minRow = Math.min(start.row, end.row);
+				const maxRow = Math.max(start.row, end.row);
+				const minColumn = Math.min(start.column, end.column);
+				const maxColumn = Math.max(start.column, end.column);
+				const area = safeMultiply(maxRow - minRow + 1, maxColumn - minColumn + 1);
+				if (area > runtime.context.limits.snapshotCells) { throw new ParadisOfficePackageError('limitExceeded'); }
+				for (let row = minRow; row <= maxRow; row++) {
+					for (let column = minColumn; column <= maxColumn; column++) {
+						consumeEvaluationOperations(runtime);
+						const address = formatCellAddress(row, column);
+						const dependency = referencedSheet.cells.get(address);
+						if (dependency?.storedType !== 'formula' || dependency.cachedResult?.present) { continue; }
+						const dependencyKeyValue = dependencyKey(referencedSheet, address);
+						edges.push(dependencyKeyValue);
+						if (!queued.has(dependencyKeyValue)) {
+							queued.add(dependencyKeyValue);
+							queue.push({ sheet: referencedSheet, address });
+						}
+					}
+				}
+			}
+		} catch (error) {
+			if (error instanceof ParadisOfficePackageError) { throw error; }
+			if (!(error instanceof EvaluationIssue)) { throw error; }
+		}
+	}
+	let cycle = false;
+	const colors = new Map<string, 1 | 2>();
+	for (const key of nodes.keys()) {
+		if (colors.has(key)) { continue; }
+		const stack: { readonly key: string; index: number }[] = [{ key, index: 0 }];
+		colors.set(key, 1);
+		while (stack.length > 0) {
+			consumeEvaluationOperations(runtime);
+			const frame = stack[stack.length - 1];
+			const edges = nodes.get(frame.key)?.edges ?? [];
+			if (frame.index >= edges.length) {
+				colors.set(frame.key, 2);
+				stack.pop();
+				continue;
+			}
+			const edge = edges[frame.index++];
+			const color = colors.get(edge);
+			if (color === 1) { cycle = true; continue; }
+			if (color === 2 || !nodes.has(edge)) { continue; }
+			colors.set(edge, 1);
+			stack.push({ key: edge, index: 0 });
+		}
+	}
+	const reason: ParadisSpreadsheetConditionalNotEvaluatedReason = external ? 'externalReference' : volatile ? 'volatileFunction' : cycle ? 'cycle' : 'cacheMissing';
+	runtime.formulaDependencyReasons.set(startKey, reason);
+	return reason;
+}
+
+function dependencyKey(sheet: OwnedSheet, address: string): string {
+	return `${normalizeSheetName(sheet.name)}\0${address}`;
+}
+
+function containsVolatileFunction(formula: string, runtime: Runtime): boolean {
+	const volatileFunctions = new Set(['RAND', 'RANDBETWEEN', 'NOW', 'TODAY', 'OFFSET', 'INDIRECT']);
+	let quoted = false;
+	let quotedSheet = false;
+	for (let index = 0; index < formula.length; index++) {
+		consumeEvaluationOperations(runtime);
+		const character = formula[index];
+		if (!quoted && character.charCodeAt(0) === 39) {
+			if (quotedSheet && formula.charCodeAt(index + 1) === 39) { index++; }
+			else { quotedSheet = !quotedSheet; }
+			continue;
+		}
+		if (!quotedSheet && character === '"') {
+			if (quoted && formula[index + 1] === '"') { index++; }
+			else { quoted = !quoted; }
+			continue;
+		}
+		if (quoted || quotedSheet || !/[A-Za-z_]/.test(character)) { continue; }
+		const start = index;
+		while (index + 1 < formula.length && /[A-Za-z0-9_.]/.test(formula[index + 1])) { consumeEvaluationOperations(runtime); index++; }
+		const identifier = formula.slice(start, index + 1).toUpperCase().split('.').pop()!;
+		let cursor = index + 1;
+		while (cursor < formula.length && /\s/.test(formula[cursor])) { consumeEvaluationOperations(runtime); cursor++; }
+		if (formula[cursor] === '(' && volatileFunctions.has(identifier)) { return true; }
+	}
+	return false;
 }
 
 function parseFiniteNumber(value: string): number {
@@ -2961,7 +3193,7 @@ class FormulaParser {
 			for (let column = minColumn; column <= maxColumn; column++) {
 				consumeEvaluationOperations(this.runtime);
 				const address = formatCellAddress(row, column);
-				result.push(scalarCellValue(sheet.cells.get(address), address, this.workbook.date1904));
+				result.push(scalarCellValue(sheet.cells.get(address), address, this.workbook.date1904, sheet, this.runtime));
 			}
 		}
 		return result.length === 1 ? result[0] : result;
@@ -3066,6 +3298,15 @@ function elementChildren(node: XmlElement, runtime: Runtime): readonly XmlElemen
 		} else if (child.value.trim().length > 0) {
 			throw new ParadisOfficePackageError('malformed');
 		}
+	}
+	return result;
+}
+
+function elementChildrenBestEffort(node: XmlElement, runtime: Runtime): readonly XmlElement[] {
+	const result: XmlElement[] = [];
+	for (const child of node.children) {
+		checkpoint(runtime);
+		if (child.kind === 'element') { result.push(child); }
 	}
 	return result;
 }
