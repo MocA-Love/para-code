@@ -19,6 +19,13 @@
 
 import type { ParadisOfficePlaceholder } from './paradisOfficeProtocol.js';
 
+export type {
+	ParadisWordDocument,
+	ParadisWordNode,
+	ParadisWordSourceRef,
+	ParadisWordStory,
+} from './word/paradisWordSemantic.js';
+
 /** ブロックの種別。いまは段落のみ（表のセル内段落も同じ paragraph として平坦に並べる）。 */
 export type ParadisDocxBlockKind = 'paragraph';
 
