@@ -402,16 +402,23 @@ export interface ParadisSpreadsheetX14OpaqueRule {
 	readonly childType?: string;
 	readonly attributes: Readonly<Record<string, string>>;
 	readonly elements: readonly ParadisSpreadsheetX14OpaqueElement[];
+	readonly events: readonly ParadisSpreadsheetX14OpaqueEvent[];
 }
 
 export interface ParadisSpreadsheetX14OpaqueElement {
 	readonly parentIndex?: number;
 	readonly depth: number;
+	readonly ordinal: number;
+	readonly path: string;
 	readonly namespace: string;
 	readonly local: string;
 	readonly attributes: Readonly<Record<string, string>>;
 	readonly text?: string;
 }
+
+export type ParadisSpreadsheetX14OpaqueEvent =
+	| { readonly kind: 'start' | 'end'; readonly elementIndex: number; readonly parentIndex?: number; readonly depth: number; readonly ordinal: number; readonly path: string }
+	| { readonly kind: 'text'; readonly parentIndex: number; readonly depth: number; readonly ordinal: number; readonly path: string; readonly text: string };
 
 export type ParadisSpreadsheetConditionalVisualRule =
 	| ParadisSpreadsheetConditionalColorScale

@@ -287,6 +287,25 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 		strictEqual(model.rules.length, 10, 'notEvaluated rules remain semantic records');
 	});
 
+	test('classifies indirect formula cycles with bounded dependency traversal and reason precedence', () => {
+		const cells = new Map<string, ParadisSemanticCell>([
+			['A1', formula('B1+1', { present: false })], ['B1', formula('C1+1', { present: false })], ['C1', formula('A1+1', { present: false })],
+			['A2', formula('B2+[Book.xlsx]Sheet1!A1', { present: false })], ['B2', formula('A2+1', { present: false })],
+			['A3', formula('B3&RAND()', { present: false })], ['B3', formula('A3+1', { present: false })],
+			['A4', formula('B4+1', { present: false })], ['B4', number(1)],
+		]);
+		const model = parse(`
+			<conditionalFormatting sqref="D1">
+				<cfRule type="expression" priority="1"><formula>A1&gt;0</formula></cfRule>
+				<cfRule type="expression" priority="2"><formula>A2&gt;0</formula></cfRule>
+				<cfRule type="expression" priority="3"><formula>A3&gt;0</formula></cfRule>
+				<cfRule type="expression" priority="4"><formula>A4&gt;0</formula></cfRule>
+			</conditionalFormatting>`);
+		deepStrictEqual(resultsFor(model, snapshot(cells), ['D1']).map(result => result.status === 'notEvaluated' ? result.reason : undefined), [
+			'cycle', 'externalReference', 'volatileFunction', 'cacheMissing',
+		]);
+	});
+
 	test('keeps number, text, boolean, and blank comparison identities distinct', () => {
 		const cells = new Map<string, ParadisSemanticCell>([
 			['A1', number(1)], ['A2', text('1')], ['A3', { storedType: 'boolean', rawType: 'b', rawValue: { present: true, text: '1' } }],
@@ -485,6 +504,30 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 		}
 	});
 
+	test('evaluates finite extreme aggregates and visual ratios without intermediate overflow', () => {
+		const maximum = Number.MAX_VALUE;
+		const cells = new Map<string, ParadisSemanticCell>([
+			['A1', number(maximum)], ['A2', number(maximum)], ['A3', number(-maximum)], ['A4', number(-maximum)],
+			['B1', number(-maximum)], ['B2', number(0)], ['B3', number(maximum)],
+		]);
+		const model = parse(`
+			<conditionalFormatting sqref="A1:A4"><cfRule type="aboveAverage" priority="1"/></conditionalFormatting>
+			<conditionalFormatting sqref="B1:B3">
+				<cfRule type="colorScale" priority="2"><colorScale><cfvo type="min"/><cfvo type="max"/><color rgb="FFFF0000"/><color rgb="FF00FF00"/></colorScale></cfRule>
+				<cfRule type="dataBar" priority="3"><dataBar minLength="0" maxLength="100"><cfvo type="min"/><cfvo type="max"/><color rgb="FF0000FF"/></dataBar></cfRule>
+			</conditionalFormatting>`);
+		const results = resultsFor(model, snapshot(cells), ['A1', 'B2']);
+		strictEqual(exactResult(results, 'A1', 1).applies, true);
+		deepStrictEqual(exactResult(results, 'B2', 2).renderOverlay, {
+			kind: 'colorScale', position: 0.5,
+			lowerColor: { kind: 'rgb', rgb: 'FFFF0000' }, upperColor: { kind: 'rgb', rgb: 'FF00FF00' }, mix: 0.5,
+		});
+		deepStrictEqual(exactResult(results, 'B2', 3).renderOverlay, {
+			kind: 'dataBar', ratio: 0.5, color: { kind: 'rgb', rgb: 'FF0000FF' }, showValue: true,
+			gradient: true, minLength: 0, maxLength: 100,
+		});
+	});
+
 	test('keeps conditional diagonal dxf provenance separate from raw base diagonal style and evaluation state', () => {
 		const baseCell = number(10, 1);
 		const workbook = snapshot(new Map([['A1', baseCell]]));
@@ -573,13 +616,14 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 			negativeFillColor: { kind: 'rgb', rgb: 'FFFF0000' }, negativeBorderColor: { kind: 'rgb', rgb: 'FF880000' },
 			axisColor: { kind: 'rgb', rgb: 'FF000000' },
 		});
-		deepStrictEqual(model.rules[1].x14OpaqueRule, {
-			type: 'iconSet', id: '{ICON}', childType: 'cfRule', attributes: { type: 'iconSet', priority: '2', id: '{ICON}', stopIfTrue: '1', activePresent: '0' },
-			elements: [
-				{ depth: 0, namespace: x14, local: 'cfRule', attributes: { type: 'iconSet', priority: '2', id: '{ICON}', stopIfTrue: '1', activePresent: '0' } },
-				{ parentIndex: 0, depth: 1, namespace: x14, local: 'iconSet', attributes: { iconSet: '3Stars', custom: '1' } },
-			],
+		const opaqueIcon = model.rules[1].x14OpaqueRule!;
+		deepStrictEqual({ type: opaqueIcon.type, id: opaqueIcon.id, childType: opaqueIcon.childType, attributes: opaqueIcon.attributes }, {
+			type: 'iconSet', id: '{ICON}', childType: 'cfRule', attributes: { activePresent: '0', id: '{ICON}', priority: '2', stopIfTrue: '1', type: 'iconSet' },
 		});
+		deepStrictEqual(opaqueIcon.elements.map(element => [element.parentIndex, element.depth, element.ordinal, element.path, element.local]), [
+			[undefined, 0, 0, '0', 'cfRule'], [0, 1, 0, '0/0', 'iconSet'],
+		]);
+		deepStrictEqual(opaqueIcon.events.map(event => [event.kind, event.path]), [['start', '0'], ['start', '0/0'], ['end', '0/0'], ['end', '0']]);
 		strictEqual(model.rules[1].stopIfTrue, true);
 		const flatXml = xml.replace('<x14:iconSet iconSet="3Stars" custom="1"/>', '<x14:iconSet iconSet="3Stars" custom="1"><x14:cfIcon iconSet="3Stars" iconId="0"/><x14:cfIcon iconSet="3Stars" iconId="1"/></x14:iconSet>');
 		const nestedXml = xml.replace('<x14:iconSet iconSet="3Stars" custom="1"/>', '<x14:iconSet iconSet="3Stars" custom="1"><x14:cfIcon iconSet="3Stars" iconId="0"><x14:cfIcon iconSet="3Stars" iconId="1"/></x14:cfIcon></x14:iconSet>');
@@ -590,9 +634,23 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 		throws(() => parseRawWorksheet(amplified, { limits: { ranges: 1 } }), error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded');
 		throws(() => parseRawWorksheet(xml, { limits: { rules: 1 } }), error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded');
 		const tooManyValues = xml.replace('<x14:fillColor', '<x14:cfvo type="num"><xm:f>0</xm:f></x14:cfvo><x14:fillColor');
-		throws(() => parseRawWorksheet(tooManyValues), error => error instanceof ParadisOfficePackageError && error.code === 'malformed');
+		const tooManyValuesModel = parseRawWorksheet(tooManyValues);
+		strictEqual(tooManyValuesModel.rules[0].x14DataBar, undefined);
+		strictEqual(tooManyValuesModel.rules[0].type, 'unsupported');
 		const tooManyFormulas = xml.replace('<x14:dataBar', '<xm:f>1</xm:f><xm:f>2</xm:f><xm:f>3</xm:f><xm:f>4</xm:f><x14:dataBar');
 		throws(() => parseRawWorksheet(tooManyFormulas), error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded');
+		const futureDataBar = xml
+			.replace('axisPosition="middle"', 'axisPosition="middle" futureFlag="1"')
+			.replace('</x14:dataBar>', '<x14:futureChild val="1"/></x14:dataBar>');
+		const futureModel = parseRawWorksheet(futureDataBar);
+		strictEqual(futureModel.rules[0].x14DataBar, undefined);
+		strictEqual(futureModel.rules[0].type, 'unsupported');
+		strictEqual(futureModel.rules[0].x14OpaqueRule?.elements.some(element => element.local === 'futureChild'), true);
+		const futureResult = resultsFor(futureModel, snapshot(new Map([['A1', number(1)]])), ['A1'])[0];
+		deepStrictEqual(futureResult.status === 'notEvaluated' ? futureResult.reason : undefined, 'unsupportedExtension');
+		const futureTextModel = parseRawWorksheet(xml.replace('<x14:dataBar', 'future<x14:dataBar'));
+		strictEqual(futureTextModel.rules[0].x14DataBar, undefined);
+		strictEqual(futureTextModel.rules[0].x14OpaqueRule?.events.some(event => event.kind === 'text' && event.text === 'future'), true);
 	});
 
 	test('joins an optional-priority x14 data bar to its base rule extension id', () => {
@@ -608,6 +666,15 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 		const conflicting = parseRawWorksheet(xml.replace('<xm:sqref>A1</xm:sqref>', '<xm:sqref>B1</xm:sqref>'));
 		strictEqual(conflicting.rules[0].x14DataBar, undefined);
 		strictEqual(conflicting.rules.some(rule => rule.type === 'unsupported' && rule.x14OpaqueRule?.type === 'dataBar'), true);
+	});
+
+	test('preserves opaque x14 text and element event order without topology collisions', () => {
+		const x14 = 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main';
+		const xm = 'http://schemas.microsoft.com/office/excel/2006/main';
+		const wrap = (body: string) => `<worksheet xmlns="${namespace}" xmlns:x14="${x14}" xmlns:xm="${xm}"><sheetData/><extLst><ext uri="urn:test"><x14:conditionalFormattings><x14:conditionalFormatting><x14:cfRule type="iconSet" priority="1"><x14:iconSet>${body}</x14:iconSet></x14:cfRule><xm:sqref>A1</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings></ext></extLst></worksheet>`;
+		const interleaved = parseRawWorksheet(wrap('a<x14:cfIcon iconId="0"/>b')).rules[0].x14OpaqueRule?.events;
+		const grouped = parseRawWorksheet(wrap('ab<x14:cfIcon iconId="0"/>')).rules[0].x14OpaqueRule?.events;
+		notStrictEqual(JSON.stringify(interleaved), JSON.stringify(grouped));
 	});
 
 	test('binds worksheet and styles all-byte sources to the evaluated semantic snapshot', () => {
@@ -711,6 +778,11 @@ suite('ParadisSpreadsheetConditionalFormatting', () => {
 		const unaryWorkbook = bindSnapshot(unaryModel, snapshot(new Map([['A1', number(1)]])));
 		throws(() => evaluateSpreadsheetConditionalFormattingOwned(unaryModel, unaryWorkbook, {
 			sheetName: 'Sheet1', addresses: ['A1'], limits: { formulaDepth: 8 },
+		}), error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded');
+		const formulaBudgetModel = parse('<conditionalFormatting sqref="A1"><cfRule type="expression" priority="1"><formula>1=1</formula></cfRule></conditionalFormatting>');
+		const formulaBudgetWorkbook = bindSnapshot(formulaBudgetModel, snapshot(new Map([['A1', formula('B1+1', { present: false })]])));
+		throws(() => evaluateSpreadsheetConditionalFormattingOwned(formulaBudgetModel, formulaBudgetWorkbook, {
+			sheetName: 'Sheet1', addresses: ['A1'], limits: { formulaBytes: 4 },
 		}), error => error instanceof ParadisOfficePackageError && error.code === 'limitExceeded');
 
 		const aggregateModel = parse('<conditionalFormatting sqref="A1:A3"><cfRule type="top10" priority="1" rank="1"/></conditionalFormatting>');
