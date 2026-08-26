@@ -163,6 +163,15 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 	}
 
+	async revealCell(row: number, column: number): Promise<void> {
+		if (this.disposed) {
+			return;
+		}
+		const reveal = this.viewport.revealCell(this._frame, row, column);
+		this.focused = { row: reveal.row, column: reveal.column };
+		await this.render({ ...this._frame, scrollTop: reveal.scrollTop, scrollLeft: reveal.scrollLeft });
+	}
+
 	whenIdle(): Promise<void> {
 		return this.idle;
 	}

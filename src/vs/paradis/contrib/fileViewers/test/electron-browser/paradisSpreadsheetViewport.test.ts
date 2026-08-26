@@ -184,6 +184,30 @@ suite('paradisSpreadsheetViewport', () => {
 suite('paradisSpreadsheetGridRenderer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('reveals a logical cell through measured viewport geometry', async () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet logical reveal');
+		const container = document.createElement('div');
+		const viewport = new ParadisSpreadsheetViewport({
+			rowCount: 100,
+			columnCount: 50,
+			defaultRowHeight: 20,
+			defaultColumnWidth: 80,
+			rowMetrics: [{ index: 30, size: 47 }],
+			columnMetrics: [{ index: 20, size: 131 }],
+			revision: 'revision-1',
+		});
+		const renderer = new ParadisSpreadsheetGridRenderer(container, viewport, { getViewport: async request => tileForRequest(request) });
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 300, height: 200 });
+
+		await (renderer as unknown as { revealCell(row: number, column: number): Promise<void> }).revealCell(30, 20);
+
+		const bounds = viewport.cellBounds(30, 20);
+		strictEqual(renderer.frame.scrollTop, bounds.top + bounds.height - 200);
+		strictEqual(renderer.frame.scrollLeft, bounds.left + bounds.width - 300);
+		strictEqual(container.getAttribute('aria-activedescendant')?.includes('-30-20'), true);
+		renderer.dispose();
+	});
+
 	test('renders reusable four-pane gridcells with bounded live DOM', async () => {
 		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet virtual grid');
 		const container = document.createElement('div');

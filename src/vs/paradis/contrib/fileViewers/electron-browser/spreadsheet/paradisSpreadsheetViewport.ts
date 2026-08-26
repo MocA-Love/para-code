@@ -54,6 +54,13 @@ export interface ParadisSpreadsheetLogicalAnchor {
 	readonly columnOffset: number;
 }
 
+export interface ParadisSpreadsheetCellReveal {
+	readonly row: number;
+	readonly column: number;
+	readonly scrollTop: number;
+	readonly scrollLeft: number;
+}
+
 export interface ParadisSpreadsheetVirtualTile {
 	readonly pane: ParadisSpreadsheetPaneKind;
 	readonly range: ParadisSpreadsheetVirtualRange;
@@ -336,6 +343,35 @@ export class ParadisSpreadsheetViewport {
 			top: this.rows.offset(row),
 			width: this.columns.offset(columnEnd) - this.columns.offset(column),
 			height: this.rows.offset(rowEnd) - this.rows.offset(row),
+		};
+	}
+
+	revealCell(frame: ParadisSpreadsheetViewportFrame, row: number, column: number): ParadisSpreadsheetCellReveal {
+		const normalized = normalizeFrame(frame, this.totalWidth, this.totalHeight);
+		const resolvedRow = this.rows.visibleAtOrAfter(clampInteger(row, 0, Math.max(0, this.rowCount - 1)));
+		const resolvedColumn = this.columns.visibleAtOrAfter(clampInteger(column, 0, Math.max(0, this.columnCount - 1)));
+		const bounds = this.cellBounds(resolvedRow, resolvedColumn);
+		let scrollTop = normalized.scrollTop;
+		let scrollLeft = normalized.scrollLeft;
+		if (resolvedRow >= this.frozenRows) {
+			if (bounds.top < scrollTop) {
+				scrollTop = bounds.top;
+			} else if (bounds.top + bounds.height > scrollTop + normalized.height) {
+				scrollTop = bounds.top + bounds.height - normalized.height;
+			}
+		}
+		if (resolvedColumn >= this.frozenColumns) {
+			if (bounds.left < scrollLeft) {
+				scrollLeft = bounds.left;
+			} else if (bounds.left + bounds.width > scrollLeft + normalized.width) {
+				scrollLeft = bounds.left + bounds.width - normalized.width;
+			}
+		}
+		return {
+			row: resolvedRow,
+			column: resolvedColumn,
+			scrollTop: clampFinite(scrollTop, 0, Math.max(0, this.totalHeight - normalized.height)),
+			scrollLeft: clampFinite(scrollLeft, 0, Math.max(0, this.totalWidth - normalized.width)),
 		};
 	}
 
