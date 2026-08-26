@@ -20,6 +20,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { PARADIS_HTML_EDITOR_ID, PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
+import { registerParadisFileViewerFindActions } from './paradisFileViewerFindActions.js';
 
 /** いずれかのビューアペインがアクティブなときにマッチする when 式。 */
 const viewerEditorActiveContext = ContextKeyExpr.or(
@@ -72,4 +73,5 @@ class ParadisShowPreviewAction extends Action2 {
 export function registerParadisFileViewerActions(): void {
 	registerAction2(ParadisShowSourceAction);
 	registerAction2(ParadisShowPreviewAction);
+	registerParadisFileViewerFindActions();
 }
