@@ -14,7 +14,7 @@ import { PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeInventory } from '../
 import { type IParadisOfficeArchive, ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
 import { diagnoseSpreadsheetProjection, type IParadisDiagonalBorder, type IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
-import { ownSpreadsheetSemanticInput, parseSpreadsheetSemantic, resolveSpreadsheetSemanticLimits, sanitizeSpreadsheetPackageError } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
+import { evaluateSpreadsheetConditionalFormatting, ownSpreadsheetSemanticInput, parseSpreadsheetSemantic, resolveSpreadsheetSemanticLimits, sanitizeSpreadsheetPackageError } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseSpreadsheetSemanticNode } from '../../node/spreadsheet/paradisSpreadsheetNodeAdapter.js';
 import { createParadisOfficeNodeArchive } from '../../node/office/paradisOfficeNodeArchive.js';
 import { buildOpcFixture, type IParadisOfficeFixtureRelationship, type ParadisOfficeFixturePart } from '../common/paradisOfficeFixture.js';
@@ -72,6 +72,7 @@ const worksheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 		<row r="12" hidden="1" outlineLevel="2" collapsed="1"><c r="C12" s="1"/></row>
 	</sheetData>
 	<mergeCells count="1"><mergeCell ref="D1:E2"/></mergeCells>
+	<conditionalFormatting sqref="A1"><cfRule type="cellIs" dxfId="0" priority="1" operator="greaterThan"><formula>0</formula></cfRule></conditionalFormatting>
 </worksheet>`;
 
 const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -88,6 +89,7 @@ const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 		<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 		<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyNumberFormat="1"/>
 	</cellXfs>
+	<dxfs count="1"><dxf><border diagonalUp="0" diagonalDown="1"><diagonal style="double"><color theme="4" tint="-0.25"/></diagonal></border></dxf></dxfs>
 </styleSheet>`;
 
 const sharedStringsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -118,7 +120,7 @@ const effectiveStyleWorksheetXml = `<worksheet xmlns="${spreadsheetNamespace}"><
 	</sheetData></worksheet>`;
 
 const archiveSheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:A1"/><sheetData><row r="1"><c r="A1" t="str"><v>archived</v></c></row></sheetData></worksheet>`;
+<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:A1"/><sheetData><row r="1"><c r="A1" t="str"><v>archived</v></c></row></sheetData><conditionalFormatting sqref="A1"><cfRule type="expression" dxfId="0" priority="2"><formula>1=1</formula></cfRule></conditionalFormatting></worksheet>`;
 
 interface SemanticFixture {
 	readonly bytes: Uint8Array;
@@ -361,6 +363,28 @@ suite('ParadisSpreadsheetSemanticParser', () => {
 		deepStrictEqual(cells.get('B7'), { storedType: 'error', rawType: 'e', rawValue: { present: true, text: '#DIV/0!' }, effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
 		deepStrictEqual(cells.get('B8'), { storedType: 'date', rawType: 'd', rawValue: { present: true, text: '2026-08-26T00:00:00Z' }, effectiveStyleRef: 0, effectiveStyleOrigin: 'default', styleSource: { partId: '/xl/styles.xml', fingerprint: styleFingerprint } });
 		strictEqual(snapshot.date1904, true);
+		deepStrictEqual(snapshot.sheets[0].conditionalFormatting?.rules.map(rule => [rule.type, rule.priority, rule.differentialStyleRef]), [['cellIs', 1, 0]]);
+		deepStrictEqual(snapshot.sheets[0].conditionalFormatting?.differentialStyles[0].border, {
+			diagonalUp: false, diagonalDown: true,
+			diagonal: { style: 'double', color: { kind: 'theme', theme: 4, tint: '-0.25' } },
+		});
+		strictEqual(snapshot.sheets[0].conditionalFormatting?.differentialStyles, snapshot.sheets[1].conditionalFormatting?.differentialStyles);
+		const cfResult = evaluateSpreadsheetConditionalFormatting(snapshot, { sheetName: 'Matrix', addresses: ['A1'] });
+		strictEqual(cfResult[0].status, 'exact');
+		throws(() => evaluateSpreadsheetConditionalFormatting({ ...snapshot }, { sheetName: 'Matrix', addresses: ['A1'] }), error => error instanceof ParadisOfficePackageError && error.code === 'unsafe');
+		(snapshot.sheets[0].cells as Map<string, unknown>).set('A1', { storedType: 'number', rawValue: { present: true, text: '0' } });
+		const afterMutation = evaluateSpreadsheetConditionalFormatting(snapshot, { sheetName: 'Matrix', addresses: ['A1'] })[0];
+		strictEqual(afterMutation.status === 'exact' && afterMutation.applies, true);
+	});
+
+	test('binds conditional formatting to the verified all-byte worksheet source including a UTF-8 BOM', async () => {
+		const bomWorksheet = `\uFEFF${worksheetXml}`;
+		const fixture = await createSemanticFixture({ worksheet: bomWorksheet });
+		const snapshot = await parseSpreadsheetSemantic(await createParadisOfficeNodeArchive(fixture.bytes), fixture.inventory, CancellationToken.None);
+		const source = snapshot.sheets[0].conditionalFormatting?.worksheetSource;
+		strictEqual(source?.fingerprint.value, rawSha256(new TextEncoder().encode(bomWorksheet)));
+		strictEqual(source?.fingerprint.byteLength, new TextEncoder().encode(bomWorksheet).byteLength);
+		strictEqual(evaluateSpreadsheetConditionalFormatting(snapshot, { sheetName: 'Matrix', addresses: ['A1'] })[0].status, 'exact');
 	});
 
 	test('retains workbook, sheet, sparse string, view, row, column, merge, style, and completeness semantics', async () => {
