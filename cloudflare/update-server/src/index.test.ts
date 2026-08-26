@@ -203,3 +203,59 @@ describe('changelog feed', () => {
 		expect(get).toHaveBeenCalledWith('changelog:insider');
 	});
 });
+
+describe('CORS', () => {
+	// The changelog modal fetches this feed from the renderer with a real
+	// fetch(), which sends a preflight OPTIONS request. Without an
+	// Access-Control-Allow-Origin on both the preflight and the actual
+	// response, Chromium fails the request client-side and the modal never
+	// sees the 200 the worker sent — this is what silently broke it.
+	it('answers a changelog preflight with the headers the browser checks', async () => {
+		const { env } = createEnv(null, null);
+
+		const response = await worker.fetch(
+			new Request('https://updates.para-code.dev/api/changelog/stable', { method: 'OPTIONS' }),
+			env as Env
+		);
+
+		expect(response.status).toBe(204);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		expect(response.headers.get('Access-Control-Allow-Headers')).toContain('Cf-Access-Client-Id');
+	});
+
+	it('answers an update-feed preflight the same way', async () => {
+		const { env } = createEnv(null);
+
+		const response = await worker.fetch(
+			new Request('https://updates.para-code.dev/api/update/darwin-arm64/stable/old-commit', { method: 'OPTIONS' }),
+			env as Env
+		);
+
+		expect(response.status).toBe(204);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+
+	it('stamps the actual changelog response with Access-Control-Allow-Origin too', async () => {
+		const { env } = createEnv(publishedRelease, '# changelog\n');
+
+		const response = await worker.fetch(
+			new Request('https://updates.para-code.dev/api/changelog/stable'),
+			env as Env
+		);
+
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+
+	it('stamps error responses (404/401) as well, since those are still read by the browser', async () => {
+		const { env } = createEnv(publishedRelease, '# changelog\n', 'para-code-update-feed');
+
+		const notFound = await worker.fetch(new Request('https://updates.para-code.dev/health'), env as Env);
+		expect(notFound.headers.get('Access-Control-Allow-Origin')).toBe('*');
+
+		const unauthorized = await worker.fetch(
+			new Request('https://updates.para-code.dev/api/changelog/stable'),
+			env as Env
+		);
+		expect(unauthorized.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+});

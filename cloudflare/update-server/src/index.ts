@@ -41,25 +41,52 @@ import type { Env, IReleaseRecord } from './types';
 const UPDATE_FEED_RE = /^\/api\/update\/([^/]+)\/([^/]+)\/([^/]+)$/;
 const CHANGELOG_RE = /^\/api\/changelog\/([^/]+)$/;
 
+// The update feed is fetched from the main process (Squirrel.Mac / the native
+// updaters), which never applies CORS. The changelog feed is fetched from the
+// renderer's IRequestService instead (see paradisReleaseNotes.contribution.ts),
+// which is a real fetch() and so is subject to it. Without these headers the
+// preflight OPTIONS request has no Access-Control-Allow-Origin to read, and
+// Chromium fails the whole request client-side before this worker's 200 ever
+// reaches the caller — the changelog modal then silently falls back to the
+// bundled markdown forever. `*` is fine here: the CF Access service-token
+// headers are the actual gate, and this feed is read-only, low-sensitivity data.
+const CORS_HEADERS: Record<string, string> = {
+	'Access-Control-Allow-Origin': '*',
+	'Access-Control-Allow-Methods': 'GET, OPTIONS',
+	'Access-Control-Allow-Headers': 'Cf-Access-Client-Id, Cf-Access-Client-Secret'
+};
+
+function withCors(response: Response): Response {
+	const headers = new Headers(response.headers);
+	for (const [key, value] of Object.entries(CORS_HEADERS)) {
+		headers.set(key, value);
+	}
+	return new Response(response.body, { status: response.status, headers });
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
+		if (request.method === 'OPTIONS') {
+			return new Response(null, { status: 204, headers: CORS_HEADERS });
+		}
+
 		const url = new URL(request.url);
 		const updateMatch = url.pathname.match(UPDATE_FEED_RE);
 		const changelogMatch = url.pathname.match(CHANGELOG_RE);
 
 		if (!updateMatch && !changelogMatch) {
-			return new Response('Not found', { status: 404 });
+			return withCors(new Response('Not found', { status: 404 }));
 		}
 
 		if (env.CF_ACCESS_AUD && !request.headers.get('Cf-Access-Jwt-Assertion')) {
-			return new Response('Unauthorized', { status: 401 });
+			return withCors(new Response('Unauthorized', { status: 401 }));
 		}
 
 		if (changelogMatch) {
-			return serveChangelog(env, changelogMatch[1]);
+			return withCors(await serveChangelog(env, changelogMatch[1]));
 		}
 
-		return serveUpdateFeed(env, updateMatch!);
+		return withCors(await serveUpdateFeed(env, updateMatch!));
 	}
 } satisfies ExportedHandler<Env>;
 
