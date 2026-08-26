@@ -239,6 +239,33 @@ suite('ParadisSpreadsheetAnnotations', () => {
 		}
 	});
 
+	test('validates verified Relationships MIME before reading any relationship bytes or graph', () => {
+		const relationshipParts = [
+			['rootRelationshipsDocument', 'rootRelationshipsBytes', 'rootRelationshipsSource', partIds.rootRelationships],
+			['workbookRelationshipsDocument', 'workbookRelationshipsBytes', 'workbookRelationshipsSource', partIds.workbookRelationships],
+			['worksheetRelationshipsDocument', 'worksheetRelationshipsBytes', 'worksheetRelationshipsSource', partIds.worksheetRelationships],
+			['vmlDrawingRelationshipsDocument', 'vmlDrawingRelationshipsBytes', 'vmlDrawingRelationshipsSource', partIds.vmlRelationships],
+		] as const;
+		for (const [documentName, bytesName, sourceName, partId] of relationshipParts) {
+			const badOverride = `<Override PartName="${partId}" ContentType="application/octet-stream"/>`;
+			const contentTypesXml = contentTypes().replace('</Types>', `${badOverride}</Types>`);
+			const verified = verifiedInputFor(xmlSet({ contentTypesXml }));
+			const invalidBytes = new TextEncoder().encode('not relationships xml');
+			let graphReads = 0;
+			const sentinelDocument = new Proxy(verified[documentName]!, {
+				getPrototypeOf(target) { graphReads++; return Reflect.getPrototypeOf(target); },
+			});
+			const candidate = {
+				...verified,
+				[documentName]: sentinelDocument,
+				[bytesName]: invalidBytes,
+				[sourceName]: sourceForBytes(partId, invalidBytes),
+			} as ParadisSpreadsheetVerifiedAnnotationsInput;
+			invalid(() => parseSpreadsheetAnnotationsVerifiedDocuments(candidate, () => undefined), 'unsafe');
+			strictEqual(graphReads, 0, partId);
+		}
+	});
+
 	test('parses standard and x14 validation as bounded source-owned semantic records', () => {
 		const xml = xmlSet();
 		const model = parseSpreadsheetAnnotations(inputFor(xml));

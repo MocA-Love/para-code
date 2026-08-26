@@ -551,8 +551,7 @@ function ownVerifiedInput(input: unknown, runtime: Runtime): OwnedDocuments {
 	] as const;
 	const record = ownRecord(input, new Set(parts.flat()));
 	const result: Record<string, unknown> = {};
-	for (let index = 0; index < parts.length; index++) {
-		checkpoint(runtime);
+	const partPresent = (index: number): boolean => {
 		const [documentName, bytesName, sourceName] = parts[index];
 		const required = index < 6;
 		const document = record[documentName];
@@ -561,8 +560,16 @@ function ownVerifiedInput(input: unknown, runtime: Runtime): OwnedDocuments {
 		if ((document === undefined) !== (source === undefined) || (document === undefined) !== (bytes === undefined) || required && document === undefined) {
 			throw new ParadisOfficePackageError('unsafe');
 		}
+		return document !== undefined;
+	};
+	const ownPart = (index: number, preparsedSource?: ParadisSpreadsheetPartSource): void => {
+		checkpoint(runtime);
+		const [documentName, bytesName, sourceName] = parts[index];
+		const document = record[documentName];
+		const bytes = record[bytesName];
+		const source = record[sourceName];
 		if (document !== undefined) {
-			const ownedSource = ownPartSource(source);
+			const ownedSource = preparsedSource ?? ownPartSource(source);
 			const ownedBytes = ownBytes(bytes, runtime.context.limits.xmlCharacters, runtime);
 			verifyByteSource(ownedBytes, ownedSource, runtime);
 			const ownedDocument = ownXmlDocument(document, runtime);
@@ -573,6 +580,31 @@ function ownVerifiedInput(input: unknown, runtime: Runtime): OwnedDocuments {
 			result[documentName] = authoritativeDocument;
 			result[sourceName] = ownedSource;
 		}
+	};
+
+	// Establish Content Types authority first, before any relationship byte or graph is read.
+	if (!partPresent(0)) { throw new ParadisOfficePackageError('unsafe'); }
+	ownPart(0);
+	const relationshipIndexes = [1, 4, 5, 8] as const;
+	const relationshipSources = new Map<string, ParadisSpreadsheetPartSource>();
+	for (const index of relationshipIndexes) {
+		if (!partPresent(index)) { continue; }
+		const sourceName = parts[index][2];
+		relationshipSources.set(sourceName, ownPartSource(record[sourceName]));
+	}
+	validateRelationshipPartContentTypes({
+		rootRelationshipsSource: relationshipSources.get('rootRelationshipsSource')!,
+		workbookRelationshipsSource: relationshipSources.get('workbookRelationshipsSource')!,
+		worksheetRelationshipsSource: relationshipSources.get('worksheetRelationshipsSource')!,
+		...(relationshipSources.has('vmlDrawingRelationshipsSource')
+			? { vmlDrawingRelationshipsSource: relationshipSources.get('vmlDrawingRelationshipsSource')! }
+			: {}),
+	}, parseContentTypes(result.contentTypesDocument as ParadisOfficeXmlDocument, runtime));
+
+	for (let index = 1; index < parts.length; index++) {
+		if (!partPresent(index)) { continue; }
+		const sourceName = parts[index][2];
+		ownPart(index, relationshipSources.get(sourceName));
 	}
 	return result as unknown as OwnedDocuments;
 }
