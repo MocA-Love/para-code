@@ -16,6 +16,7 @@ import {
 	parseSpreadsheetAnnotations,
 	parseSpreadsheetAnnotationsVerifiedDocuments,
 	type ParadisSpreadsheetAnnotationsInput,
+	type ParadisSpreadsheetVerifiedAnnotationsInput,
 } from '../../common/spreadsheet/paradisSpreadsheetAnnotations.js';
 import type { ParadisSemanticCell, ParadisSpreadsheetPartSource } from '../../common/spreadsheet/paradisSpreadsheetSemantic.js';
 
@@ -27,6 +28,7 @@ const xmNamespace = 'http://schemas.microsoft.com/office/excel/2006/main';
 const threadedNamespace = 'http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments';
 const vmlNamespace = 'urn:schemas-microsoft-com:vml';
 const excelNamespace = 'urn:schemas-microsoft-com:office:excel';
+const relationshipsContentType = 'application/vnd.openxmlformats-package.relationships+xml';
 
 const relationshipTypes = {
 	worksheet: `${officeRelationshipNamespace}/worksheet`,
@@ -66,6 +68,7 @@ function sourceForBytes(partId: string, bytes: Uint8Array): ParadisSpreadsheetPa
 function contentTypes(): string {
 	return `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 		<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>
+		<Default Extension="rels" ContentType="${relationshipsContentType}"/>
 		<Override PartName="${partIds.workbook}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 		<Override PartName="${partIds.worksheet}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 		<Override PartName="${partIds.comments}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>
@@ -175,12 +178,66 @@ function inputFor(xml: XmlSet): ParadisSpreadsheetAnnotationsInput {
 	};
 }
 
+function verifiedInputFor(xml: XmlSet): ParadisSpreadsheetVerifiedAnnotationsInput {
+	const raw = inputFor(xml);
+	const bytes = (value: string) => new TextEncoder().encode(value);
+	const parse = (value: string) => parseParadisOfficeXml(value.startsWith('\uFEFF') ? value.slice(1) : value, {
+		depth: 96, nodes: 10_000, attributeLength: 64 * 1024, characters: 1024 * 1024,
+	});
+	return {
+		contentTypesDocument: parse(xml.contentTypesXml), contentTypesBytes: bytes(xml.contentTypesXml), contentTypesSource: raw.contentTypesSource,
+		rootRelationshipsDocument: parse(xml.rootRelationshipsXml), rootRelationshipsBytes: bytes(xml.rootRelationshipsXml), rootRelationshipsSource: raw.rootRelationshipsSource,
+		workbookDocument: parse(xml.workbookXml), workbookBytes: bytes(xml.workbookXml), workbookSource: raw.workbookSource,
+		worksheetDocument: parse(xml.worksheetXml), worksheetBytes: bytes(xml.worksheetXml), worksheetSource: raw.worksheetSource,
+		worksheetRelationshipsDocument: parse(xml.worksheetRelationshipsXml), worksheetRelationshipsBytes: bytes(xml.worksheetRelationshipsXml), worksheetRelationshipsSource: raw.worksheetRelationshipsSource,
+		workbookRelationshipsDocument: parse(xml.workbookRelationshipsXml), workbookRelationshipsBytes: bytes(xml.workbookRelationshipsXml), workbookRelationshipsSource: raw.workbookRelationshipsSource,
+		commentsDocument: parse(xml.commentsXml), commentsBytes: bytes(xml.commentsXml), commentsSource: raw.commentsSource,
+		vmlDrawingDocument: parse(xml.vmlDrawingXml), vmlDrawingBytes: bytes(xml.vmlDrawingXml), vmlDrawingSource: raw.vmlDrawingSource,
+		vmlDrawingRelationshipsDocument: parse(xml.vmlDrawingRelationshipsXml), vmlDrawingRelationshipsBytes: bytes(xml.vmlDrawingRelationshipsXml), vmlDrawingRelationshipsSource: raw.vmlDrawingRelationshipsSource,
+		threadedCommentsDocument: parse(xml.threadedCommentsXml), threadedCommentsBytes: bytes(xml.threadedCommentsXml), threadedCommentsSource: raw.threadedCommentsSource,
+		personsDocument: parse(xml.personsXml), personsBytes: bytes(xml.personsXml), personsSource: raw.personsSource,
+	};
+}
+
 function invalid(run: () => unknown, code: ParadisOfficePackageError['code']): void {
 	throws(run, error => error instanceof ParadisOfficePackageError && error.code === code);
 }
 
 suite('ParadisSpreadsheetAnnotations', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('parses every supplied optional XML Part even when its string is empty', () => {
+		for (const name of ['commentsXml', 'vmlDrawingXml', 'vmlDrawingRelationshipsXml', 'threadedCommentsXml', 'personsXml'] as const) {
+			const xml = { ...xmlSet(), [name]: '' };
+			invalid(() => parseSpreadsheetAnnotations(inputFor(xml)), 'malformed');
+		}
+	});
+
+	test('requires the exact Relationships MIME before parsing every relationships Part', () => {
+		const defaultEntry = `<Default Extension="rels" ContentType="${relationshipsContentType}"/>`;
+		const missing = contentTypes().replace(defaultEntry, '');
+		invalid(() => parseSpreadsheetAnnotations(inputFor(xmlSet({ contentTypesXml: missing }))), 'unsafe');
+
+		const wrong = contentTypes().replace(relationshipsContentType, 'application/octet-stream');
+		invalid(() => parseSpreadsheetAnnotations(inputFor(xmlSet({ contentTypesXml: wrong }))), 'unsafe');
+
+		const relationshipParts = [
+			['rootRelationshipsXml', partIds.rootRelationships],
+			['workbookRelationshipsXml', partIds.workbookRelationships],
+			['worksheetRelationshipsXml', partIds.worksheetRelationships],
+			['vmlDrawingRelationshipsXml', partIds.vmlRelationships],
+		] as const;
+		const exactOverrides = relationshipParts.map(([, partId]) => `<Override PartName="${partId}" ContentType="${relationshipsContentType}"/>`).join('');
+		const overrideOnly = contentTypes().replace(defaultEntry, '').replace('</Types>', `${exactOverrides}</Types>`);
+		strictEqual(parseSpreadsheetAnnotations(inputFor(xmlSet({ contentTypesXml: overrideOnly }))).validations.length, 2);
+
+		for (const [xmlName, partId] of relationshipParts) {
+			const badOverride = `<Override PartName="${partId}" ContentType="application/octet-stream"/>`;
+			const contentTypesXml = contentTypes().replace('</Types>', `${badOverride}</Types>`);
+			const xml = { ...xmlSet(), contentTypesXml, [xmlName]: '' };
+			invalid(() => parseSpreadsheetAnnotations(inputFor(xml)), 'unsafe');
+		}
+	});
 
 	test('parses standard and x14 validation as bounded source-owned semantic records', () => {
 		const xml = xmlSet();
@@ -369,6 +426,57 @@ suite('ParadisSpreadsheetAnnotations', () => {
 		});
 		invalid(() => parseSpreadsheetAnnotations({ ...input, worksheetBytes: bytes }), 'unsafe');
 		strictEqual(reads, 0);
+	});
+
+	test('uses the stable fixed-byte contract for fingerprint, raw, and verified ownership', () => {
+		const xml = xmlSet();
+		const raw = inputFor(xml);
+		const verified = verifiedInputFor(xml);
+		const worksheetBytes = new TextEncoder().encode(xml.worksheetXml);
+		const candidates: Uint8Array[] = [];
+
+		if (typeof SharedArrayBuffer !== 'undefined') {
+			const shared = new Uint8Array(new SharedArrayBuffer(worksheetBytes.byteLength));
+			shared.set(worksheetBytes); candidates.push(shared);
+		}
+		if (typeof ArrayBuffer.prototype.resize === 'function') {
+			const buffer = new ArrayBuffer(worksheetBytes.byteLength, { maxByteLength: worksheetBytes.byteLength + 1024 });
+			const resizable = new Uint8Array(buffer); resizable.set(worksheetBytes); candidates.push(resizable);
+		}
+		const detachedBuffer = worksheetBytes.slice().buffer;
+		const detached = new Uint8Array(detachedBuffer);
+		structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+		candidates.push(detached);
+		class SubclassedBytes extends Uint8Array { }
+		candidates.push(new SubclassedBytes(worksheetBytes));
+
+		let programmableReads = 0;
+		const programmable = worksheetBytes.slice();
+		Object.defineProperty(programmable, 'byteLength', { get: () => { programmableReads++; return worksheetBytes.byteLength; } });
+		candidates.push(programmable);
+		const programmableBuffer = worksheetBytes.slice();
+		Object.defineProperty(programmableBuffer.buffer, 'constructor', { get: () => { programmableReads++; return ArrayBuffer; } });
+		candidates.push(programmableBuffer);
+		let proxyReads = 0;
+		candidates.push(new Proxy(worksheetBytes.slice(), {
+			get(target, property) { proxyReads++; return Reflect.get(target, property, target); },
+		}));
+
+		for (const bytes of candidates) {
+			invalid(() => fingerprintSpreadsheetAnnotationsBytes(bytes), 'unsafe');
+			invalid(() => parseSpreadsheetAnnotations({ ...raw, worksheetBytes: bytes }), 'unsafe');
+			invalid(() => parseSpreadsheetAnnotationsVerifiedDocuments({ ...verified, worksheetBytes: bytes }, () => undefined), 'unsafe');
+		}
+		strictEqual(programmableReads, 0);
+		strictEqual(proxyReads, 0);
+
+		const fixed = worksheetBytes.slice();
+		const expected = fingerprintSpreadsheetAnnotationsBytes(fixed);
+		strictEqual(parseSpreadsheetAnnotations({ ...raw, worksheetBytes: fixed }).worksheetSource.fingerprint.value, expected.value);
+		strictEqual(parseSpreadsheetAnnotationsVerifiedDocuments({ ...verified, worksheetBytes: fixed }, () => undefined).worksheetSource.fingerprint.value, expected.value);
+
+		let clock = 0;
+		invalid(() => parseSpreadsheetAnnotations({ ...raw, worksheetBytes: fixed }, { now: () => clock++, deadlineMilliseconds: 1 }), 'limitExceeded');
 	});
 
 	test('rejects invalid refs, Unicode controls, reply cycles, hostile input accessors, cancellation, and deadlines', () => {

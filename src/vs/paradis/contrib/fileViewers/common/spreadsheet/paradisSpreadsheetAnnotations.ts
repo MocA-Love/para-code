@@ -67,6 +67,17 @@ const maximumExcelRows = 1_048_576;
 const maximumExcelColumns = 16_384;
 const maximumDeadlineMilliseconds = 60_000;
 const parsedAnnotationModels = new WeakSet<object>();
+const arrayBufferIsView = ArrayBuffer.isView;
+const arrayBufferPrototype = ArrayBuffer.prototype;
+const arrayBufferByteLength = Object.getOwnPropertyDescriptor(arrayBufferPrototype, 'byteLength')!.get!;
+const arrayBufferResizable = Object.getOwnPropertyDescriptor(arrayBufferPrototype, 'resizable')?.get;
+const arrayBufferDetached = Object.getOwnPropertyDescriptor(arrayBufferPrototype, 'detached')?.get;
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength')!.get!;
+const typedArrayBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer')!.get!;
+const typedArraySet = Uint8Array.prototype.set;
+const fixedArrayBufferConstructor = ArrayBuffer;
+const fixedUint8ArrayConstructor = Uint8Array;
 
 const relationshipTypes = Object.freeze({
 	officeDocument: 'officeDocument',
@@ -79,6 +90,7 @@ const relationshipTypes = Object.freeze({
 });
 
 const contentTypes = Object.freeze({
+	relationships: new Set(['application/vnd.openxmlformats-package.relationships+xml']),
 	workbook: new Set([
 		'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
 		'application/vnd.ms-excel.sheet.main+xml',
@@ -482,7 +494,7 @@ function ownRawInput(input: unknown, runtime: Runtime): ParadisSpreadsheetAnnota
 			throw new ParadisOfficePackageError(typeof xml === 'string' ? 'limitExceeded' : 'unsafe');
 		}
 		const source = ownPartSource(sourceValue);
-		const bytes = byteValue === undefined ? undefined : ownBytes(byteValue, runtime.context.limits.xmlCharacters);
+		const bytes = byteValue === undefined ? undefined : ownBytes(byteValue, runtime.context.limits.xmlCharacters, runtime);
 		if (bytes) { verifyByteSource(bytes, source, runtime); } else { verifyXmlSource(xml, source, runtime); }
 		result[xmlName] = xml;
 		if (bytes) { result[bytesName] = bytes; }
@@ -506,18 +518,20 @@ function parseRawDocuments(input: ParadisSpreadsheetAnnotationsInput, runtime: R
 		}
 		return authoritativeDocument;
 	};
+	const contentTypesDocument = parse(input.contentTypesXml, input.contentTypesBytes);
+	validateRelationshipPartContentTypes(input, parseContentTypes(contentTypesDocument, runtime));
 	return {
-		contentTypesDocument: parse(input.contentTypesXml, input.contentTypesBytes), contentTypesSource: input.contentTypesSource,
+		contentTypesDocument, contentTypesSource: input.contentTypesSource,
 		rootRelationshipsDocument: parse(input.rootRelationshipsXml, input.rootRelationshipsBytes), rootRelationshipsSource: input.rootRelationshipsSource,
 		workbookDocument: parse(input.workbookXml, input.workbookBytes), workbookSource: input.workbookSource,
 		worksheetDocument: parse(input.worksheetXml, input.worksheetBytes), worksheetSource: input.worksheetSource,
 		worksheetRelationshipsDocument: parse(input.worksheetRelationshipsXml, input.worksheetRelationshipsBytes), worksheetRelationshipsSource: input.worksheetRelationshipsSource,
 		workbookRelationshipsDocument: parse(input.workbookRelationshipsXml, input.workbookRelationshipsBytes), workbookRelationshipsSource: input.workbookRelationshipsSource,
-		...(input.commentsXml ? { commentsDocument: parse(input.commentsXml, input.commentsBytes), commentsSource: input.commentsSource! } : {}),
-		...(input.vmlDrawingXml ? { vmlDrawingDocument: parse(input.vmlDrawingXml, input.vmlDrawingBytes), vmlDrawingSource: input.vmlDrawingSource! } : {}),
-		...(input.vmlDrawingRelationshipsXml ? { vmlDrawingRelationshipsDocument: parse(input.vmlDrawingRelationshipsXml, input.vmlDrawingRelationshipsBytes), vmlDrawingRelationshipsSource: input.vmlDrawingRelationshipsSource! } : {}),
-		...(input.threadedCommentsXml ? { threadedCommentsDocument: parse(input.threadedCommentsXml, input.threadedCommentsBytes), threadedCommentsSource: input.threadedCommentsSource! } : {}),
-		...(input.personsXml ? { personsDocument: parse(input.personsXml, input.personsBytes), personsSource: input.personsSource! } : {}),
+		...(input.commentsXml !== undefined ? { commentsDocument: parse(input.commentsXml, input.commentsBytes), commentsSource: input.commentsSource! } : {}),
+		...(input.vmlDrawingXml !== undefined ? { vmlDrawingDocument: parse(input.vmlDrawingXml, input.vmlDrawingBytes), vmlDrawingSource: input.vmlDrawingSource! } : {}),
+		...(input.vmlDrawingRelationshipsXml !== undefined ? { vmlDrawingRelationshipsDocument: parse(input.vmlDrawingRelationshipsXml, input.vmlDrawingRelationshipsBytes), vmlDrawingRelationshipsSource: input.vmlDrawingRelationshipsSource! } : {}),
+		...(input.threadedCommentsXml !== undefined ? { threadedCommentsDocument: parse(input.threadedCommentsXml, input.threadedCommentsBytes), threadedCommentsSource: input.threadedCommentsSource! } : {}),
+		...(input.personsXml !== undefined ? { personsDocument: parse(input.personsXml, input.personsBytes), personsSource: input.personsSource! } : {}),
 	};
 }
 
@@ -690,6 +704,7 @@ function compareXmlAttributes(
 function buildAnnotations(input: OwnedDocuments, runtime: Runtime): ParadisSpreadsheetAnnotations {
 	validateSourceLocations(input);
 	const typeMap = parseContentTypes(input.contentTypesDocument, runtime);
+	validateRelationshipPartContentTypes(input, typeMap);
 	validateContentType(input.workbookSource.partId, contentTypes.workbook, typeMap);
 	validateContentType(input.worksheetSource.partId, contentTypes.worksheet, typeMap);
 	spreadsheetRoot(input.workbookDocument, 'workbook');
@@ -765,6 +780,23 @@ function buildAnnotations(input: OwnedDocuments, runtime: Runtime): ParadisSprea
 	const frozen = deepFreeze(result, runtime);
 	parsedAnnotationModels.add(frozen);
 	return frozen;
+}
+
+function validateRelationshipPartContentTypes(
+	input: {
+		readonly rootRelationshipsSource: ParadisSpreadsheetPartSource;
+		readonly workbookRelationshipsSource: ParadisSpreadsheetPartSource;
+		readonly worksheetRelationshipsSource: ParadisSpreadsheetPartSource;
+		readonly vmlDrawingRelationshipsSource?: ParadisSpreadsheetPartSource;
+	},
+	typeMap: ContentTypeMap,
+): void {
+	validateContentType(input.rootRelationshipsSource.partId, contentTypes.relationships, typeMap);
+	validateContentType(input.workbookRelationshipsSource.partId, contentTypes.relationships, typeMap);
+	validateContentType(input.worksheetRelationshipsSource.partId, contentTypes.relationships, typeMap);
+	if (input.vmlDrawingRelationshipsSource) {
+		validateContentType(input.vmlDrawingRelationshipsSource.partId, contentTypes.relationships, typeMap);
+	}
 }
 
 function validateSourceLocations(input: OwnedDocuments): void {
@@ -2422,18 +2454,46 @@ function ownArray(value: unknown, limit: number, runtime: Runtime): readonly unk
 }
 
 function ownBytes(value: unknown, limit: number, runtime?: Runtime): Uint8Array {
-	if (!ArrayBuffer.isView(value) || !(value instanceof Uint8Array) || Object.getPrototypeOf(value) !== Uint8Array.prototype) {
+	const observe = (): void => { if (runtime) { checkpoint(runtime, true); } };
+	observe();
+	if (!value || typeof value !== 'object' || !arrayBufferIsView(value) || Object.getPrototypeOf(value) !== Uint8Array.prototype) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
-	const length = value.byteLength;
-	if (!Number.isSafeInteger(length) || length < 0 || length > limit) {
+	for (const key of ['constructor', 'byteLength', 'slice', Symbol.species]) {
+		observe();
+		if (Object.getOwnPropertyDescriptor(value, key)) { throw new ParadisOfficePackageError('unsafe'); }
+	}
+	const source = value as Uint8Array;
+	const sourceBuffer = typedArrayBuffer.call(source) as ArrayBuffer;
+	if (Object.getPrototypeOf(sourceBuffer) !== arrayBufferPrototype) { throw new ParadisOfficePackageError('unsafe'); }
+	for (const key of ['constructor', 'byteLength', 'slice', Symbol.species]) {
+		observe();
+		if (Object.getOwnPropertyDescriptor(sourceBuffer, key)) { throw new ParadisOfficePackageError('unsafe'); }
+	}
+	if (arrayBufferResizable?.call(sourceBuffer) === true || arrayBufferDetached?.call(sourceBuffer) === true) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	const length = typedArrayByteLength.call(source) as number;
+	const bufferLength = arrayBufferByteLength.call(sourceBuffer) as number;
+	if (!Number.isSafeInteger(length) || length < 0 || length > limit || !Number.isSafeInteger(bufferLength) || bufferLength < length) {
 		throw new ParadisOfficePackageError(length > limit ? 'limitExceeded' : 'unsafe');
 	}
-	if (runtime) { checkpoint(runtime, true); }
-	const result = new Uint8Array(length);
-	Uint8Array.prototype.set.call(result, value);
-	if (runtime) { checkpoint(runtime, true); }
-	return result;
+	const owned = new fixedUint8ArrayConstructor(new fixedArrayBufferConstructor(length));
+	typedArraySet.call(owned, source);
+	observe();
+	if (typedArrayBuffer.call(source) !== sourceBuffer
+		|| typedArrayByteLength.call(source) !== length
+		|| arrayBufferByteLength.call(sourceBuffer) !== bufferLength
+		|| arrayBufferResizable?.call(sourceBuffer) === true
+		|| arrayBufferDetached?.call(sourceBuffer) === true) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	for (let index = 0; index < length; index++) {
+		if ((index & 0xfff) === 0) { observe(); }
+		if (owned[index] !== source[index]) { throw new ParadisOfficePackageError('unsafe'); }
+	}
+	observe();
+	return owned;
 }
 
 function ownPartSource(value: unknown): ParadisSpreadsheetPartSource {
