@@ -41,6 +41,7 @@ import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
+import { mapSpreadsheetLogicalAnchor } from './spreadsheet/paradisSpreadsheetViewport.js';
 
 import './media/paradisSpreadsheet.css';
 
@@ -91,6 +92,76 @@ function emptyMetrics(): IPaneMetrics {
 	return { rowY: new Map(), rowTops: [], rowHeights: [] };
 }
 
+/** Preserves the within-row logical position when aligned rows have different measured heights. */
+export function scaleSpreadsheetLogicalOffset(offset: number, sourceSize: number, targetSize: number): number {
+	if (!Number.isFinite(offset) || !Number.isFinite(sourceSize) || !Number.isFinite(targetSize) || sourceSize <= 0 || targetSize <= 0) {
+		return 0;
+	}
+	return Math.min(Math.max(0, offset), sourceSize) / sourceSize * targetSize;
+}
+
+function axisIndexAt(tops: readonly number[], heights: readonly number[], offset: number): number {
+	if (tops.length === 0) {
+		return 0;
+	}
+	let low = 0;
+	let high = tops.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if (tops[middle] + (heights[middle] ?? 0) <= offset) {
+			low = middle + 1;
+		} else {
+			high = middle;
+		}
+	}
+	return Math.min(low, tops.length - 1);
+}
+
+function nearestLogicalRow(rows: readonly IParadisDiffRow[], start: number): number {
+	for (let distance = 0; distance < rows.length; distance++) {
+		const after = rows[start + distance]?.excelRow;
+		if (after !== undefined) {
+			return after;
+		}
+		const before = rows[start - distance]?.excelRow;
+		if (before !== undefined) {
+			return before;
+		}
+	}
+	return 0;
+}
+
+function nearestRowIndex(rows: readonly IParadisDiffRow[], logicalRow: number): number {
+	let nearest = 0;
+	let distance = Number.POSITIVE_INFINITY;
+	for (let index = 0; index < rows.length; index++) {
+		const row = rows[index].excelRow;
+		if (row === undefined) {
+			continue;
+		}
+		const candidateDistance = Math.abs(row - logicalRow);
+		if (candidateDistance < distance) {
+			nearest = index;
+			distance = candidateDistance;
+		}
+	}
+	return nearest;
+}
+
+function widthIndexAt(offsets: readonly number[], offset: number): number {
+	let low = 0;
+	let high = Math.max(0, offsets.length - 1);
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if (offsets[middle + 1] <= offset) {
+			low = middle + 1;
+		} else {
+			high = middle;
+		}
+	}
+	return low;
+}
+
 export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	static readonly ID = PARADIS_SPREADSHEET_DIFF_EDITOR_ID;
@@ -129,6 +200,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	// 通常ビューアと同じく自然幅で表・図形を描画し、ペインごとに transform:scale で一括拡縮する
 	// (列幅を事前縮小すると図形の EMU オフセットとズレるため。transform はレイアウトごと拡縮しスクロールも整合)。
 	private _columnWidths: readonly number[] = [];
+	private _columnOffsets: readonly number[] = [0];
 	private _naturalTableWidth = 0;
 	private _scale = 1;
 	private _userAdjusted = false;
@@ -657,6 +729,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		// 自然幅で描画し、フィット/ズームは transform:scale で一括拡縮する。
 		this._columnWidths = sheet.columnWidths;
+		this._columnOffsets = sheet.columnWidths.reduce<number[]>((offsets, width) => {
+			offsets.push(offsets[offsets.length - 1] + width);
+			return offsets;
+		}, [0]);
 		this._naturalTableWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((s, w) => s + w, 0);
 		this._bodyEl.classList.toggle('validation-filter', this._validationFilter);
 		// main(横並び: ペイン+入力規則インスペクタ)の下に打ち切り通知帯を置くための縦積みラッパ。
@@ -706,8 +782,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
 		}
 
-		this._wireSyncScroll(this._leftScroll, this._rightScroll);
-		this._wireSyncScroll(this._rightScroll, this._leftScroll);
+		this._wireSyncScroll(this._leftScroll, this._rightScroll, 'original');
+		this._wireSyncScroll(this._rightScroll, this._leftScroll, 'modified');
 
 		// レイアウト確定後に、はみ出し反映 → 測定 → 図形/ハイライト配置 → 拡縮(transform:scale)を行う。
 		// さらにフォント反映等の再フローで行高が変わっても位置が古くならないよう再配置トリガも張る。
@@ -1017,24 +1093,75 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 	}
 
-	private _wireSyncScroll(from: HTMLElement, to: HTMLElement): void {
+	private _wireSyncScroll(from: HTMLElement, to: HTMLElement, fromSide: 'original' | 'modified'): void {
 		this._renderDisposables.add(dom.addDisposableListener(from, dom.EventType.SCROLL, () => {
 			if (this._syncing) {
 				return;
 			}
 			this._syncing = true;
-			// 代入が実値を変えない(既に同値/クランプ済み)場合は echo イベントが発火しないため、
-			// フラグ解除を echo に頼らず次フレームで必ず行う(片側 truncated 等で同期が外れないように)。
-			if (to.scrollTop !== from.scrollTop) {
-				to.scrollTop = from.scrollTop;
+			const target = this._logicalScrollTarget(from, fromSide);
+			if (to.scrollTop !== target.top) {
+				to.scrollTop = target.top;
 			}
-			if (to.scrollLeft !== from.scrollLeft) {
-				to.scrollLeft = from.scrollLeft;
+			if (to.scrollLeft !== target.left) {
+				to.scrollLeft = target.left;
 			}
 			this._syncScrollReset.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(from), () => {
 				this._syncing = false;
 			});
 		}));
+	}
+
+	/** Converts source pixels to a logical row/column anchor, maps it, then resolves target geometry. */
+	private _logicalScrollTarget(from: HTMLElement, fromSide: 'original' | 'modified'): { readonly top: number; readonly left: number } {
+		const sheet = this._diffSheets[this._activeSheetIndex];
+		if (!sheet) {
+			return { top: 0, left: 0 };
+		}
+		const targetSide = fromSide === 'original' ? 'modified' : 'original';
+		const sourceRows = fromSide === 'original' ? sheet.originalRows : sheet.modifiedRows;
+		const targetRows = targetSide === 'original' ? sheet.originalRows : sheet.modifiedRows;
+		const sourceMetrics = fromSide === 'original' ? this._leftMetrics : this._rightMetrics;
+		const targetMetrics = targetSide === 'original' ? this._leftMetrics : this._rightMetrics;
+		const naturalTop = from.scrollTop / this._scale;
+		const sourceFirstRowTop = sourceMetrics.rowTops[0] ?? 0;
+		const targetFirstRowTop = targetMetrics.rowTops[0] ?? 0;
+		const sourceRowIndex = axisIndexAt(sourceMetrics.rowTops, sourceMetrics.rowHeights, naturalTop);
+		const sourceRow = nearestLogicalRow(sourceRows, sourceRowIndex);
+		const sourceRowTop = sourceMetrics.rowTops[sourceRowIndex] ?? 0;
+		const sourceMinColumn = (fromSide === 'original' ? sheet.originalMinCol : sheet.modifiedMinCol) ?? 1;
+		const targetMinColumn = (targetSide === 'original' ? sheet.originalMinCol : sheet.modifiedMinCol) ?? 1;
+		const naturalScrollLeft = from.scrollLeft / this._scale;
+		const leadingColumnOffset = Math.min(naturalScrollLeft, PARADIS_ROW_NUM_COL_WIDTH);
+		const naturalLeft = Math.max(0, naturalScrollLeft - PARADIS_ROW_NUM_COL_WIDTH);
+		const sourceColumnIndex = widthIndexAt(this._columnOffsets, naturalLeft);
+		const sourceColumnLeft = this._columnOffsets[sourceColumnIndex] ?? 0;
+		const mapped = mapSpreadsheetLogicalAnchor({
+			row: sourceRow,
+			column: sourceMinColumn + sourceColumnIndex,
+			rowOffset: Math.max(0, naturalTop - sourceRowTop),
+			columnOffset: Math.max(0, naturalLeft - sourceColumnLeft),
+		}, sheet.logicalAlignment, fromSide);
+		const hasSemanticAlignment = !!sheet.logicalAlignment?.grid;
+		const targetRowIndex = hasSemanticAlignment
+			? nearestRowIndex(targetRows, mapped.row)
+			: Math.min(sourceRowIndex, Math.max(0, targetRows.length - 1));
+		const targetColumnIndex = hasSemanticAlignment
+			? Math.max(0, Math.min(this._columnWidths.length - 1, mapped.column - targetMinColumn))
+			: sourceColumnIndex;
+		const targetRowOffset = scaleSpreadsheetLogicalOffset(
+			mapped.rowOffset,
+			sourceMetrics.rowHeights[sourceRowIndex] ?? 0,
+			targetMetrics.rowHeights[targetRowIndex] ?? 0,
+		);
+		return {
+			top: (naturalTop < sourceFirstRowTop && sourceFirstRowTop > 0
+				? naturalTop / sourceFirstRowTop * targetFirstRowTop
+				: (targetMetrics.rowTops[targetRowIndex] ?? 0) + targetRowOffset) * this._scale,
+			left: (naturalScrollLeft <= PARADIS_ROW_NUM_COL_WIDTH
+				? leadingColumnOffset
+				: PARADIS_ROW_NUM_COL_WIDTH + (this._columnOffsets[targetColumnIndex] ?? 0) + mapped.columnOffset) * this._scale,
+		};
 	}
 
 	private _renderTabs(): void {
@@ -1260,6 +1387,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._leftMetrics = emptyMetrics();
 		this._rightMetrics = emptyMetrics();
 		this._columnWidths = [];
+		this._columnOffsets = [0];
 		this._naturalTableWidth = 0;
 		if (this._bodyEl) {
 			dom.clearNode(this._bodyEl);
