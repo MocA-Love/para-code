@@ -14,9 +14,11 @@
 import { stringHash } from '../../../../base/common/hash.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { localize } from '../../../../nls.js';
+import type { ParadisOfficeChange } from '../common/paradisOfficeProtocol.js';
 import { IParadisCellData, IParadisDataValidationEntry, IParadisRenderShape, IParadisSheetData, canonicalizeDataValidationEntries, dataValidationEntriesCoverSame } from '../common/paradisSpreadsheet.js';
 import { computeLcsRowPairs, rowFingerprint } from '../common/paradisSpreadsheetRowAlign.js';
 import { IParadisPageBreakLine, IParadisPageLabelBox, IParadisPageLayout, IParadisPageRectangle, ParadisPageBreakStatus, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
+import { selectSpreadsheetSheetAlignment, type ParadisSpreadsheetSemanticDiffPage, type ParadisSpreadsheetSheetAlignment } from '../common/spreadsheet/paradisSpreadsheetSemanticDiff.js';
 
 export type ParadisDiffStatus = 'added' | 'removed' | 'modified';
 
@@ -105,6 +107,38 @@ export interface IParadisDiffSheet {
 	readonly protectedSheet?: boolean;
 	/** どちらかの版で MAX_ROWS を超えて打ち切られているか。差分UIに通知を出すために使う。 */
 	readonly truncated?: boolean;
+	/** Raw-OOXML semantic diff page supplied by the typed comparison path. */
+	readonly semanticChanges?: readonly ParadisOfficeChange[];
+	/** Logical row/column correspondence; consumers synchronize by these anchors, not pixels. */
+	readonly logicalAlignment?: ParadisSpreadsheetSheetAlignment;
+}
+
+/**
+ * Adds typed semantic records to the legacy projection diff without recomputing or flattening them.
+ * The existing renderer remains projection-only; later viewport work consumes the logical map directly.
+ */
+export function adaptSemanticSpreadsheetDiff(
+	sheets: readonly IParadisDiffSheet[],
+	semantic: ParadisSpreadsheetSemanticDiffPage,
+): IParadisDiffSheet[] {
+	return sheets.map(sheet => {
+		const alignment = selectSpreadsheetSheetAlignment(semantic.alignments, sheet.name, sheet.sheetStatus === 'removed' ? 'originalOnly' : 'modified');
+		if (!alignment) {
+			return { ...sheet };
+		}
+		const semanticName = alignment.modifiedName ?? alignment.originalName;
+		const changes = semanticName ? semantic.changes.filter(change => semanticChangeBelongsToSheet(change, semanticName)) : [];
+		return {
+			...sheet,
+			logicalAlignment: alignment,
+			...(changes.length > 0 ? { semanticChanges: changes } : {}),
+		};
+	});
+}
+
+function semanticChangeBelongsToSheet(change: ParadisOfficeChange, name: string): boolean {
+	const locator = change.subject.locator;
+	return locator === name || locator.startsWith(`${name}!`);
 }
 
 export interface IParadisDataValidationDiff {
