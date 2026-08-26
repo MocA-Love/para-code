@@ -737,6 +737,27 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		return this._mode === 'raw' ? this._codeEditor : undefined;
 	}
 
+	/** Rendered 表示中のみ有効。webview 標準の find widget（トグル/件数表示なし）を出す。 */
+	showFind(): void {
+		if (this._mode === 'rendered') {
+			this._webview?.showFind();
+		}
+	}
+
+	/** Rendered 表示中のみ有効。表示中の find widget を閉じる。 */
+	hideFind(): void {
+		if (this._mode === 'rendered') {
+			this._webview?.hideFind();
+		}
+	}
+
+	/** Rendered 表示中のみ有効。次/前のマッチへ移動する。 */
+	runFindAction(previous: boolean): void {
+		if (this._mode === 'rendered') {
+			this._webview?.runFindAction(previous);
+		}
+	}
+
 	override focus(): void {
 		super.focus();
 		if (this._mode === 'raw') {
