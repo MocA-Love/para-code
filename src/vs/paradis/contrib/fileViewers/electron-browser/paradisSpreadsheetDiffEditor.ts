@@ -35,6 +35,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { ParadisOfficeChange, ParadisOfficeChangeCategory, ParadisOfficeChangeValue, ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
@@ -45,7 +46,7 @@ import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffShee
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { mapSpreadsheetLogicalAnchor } from './spreadsheet/paradisSpreadsheetViewport.js';
-import { createLegacySpreadsheetPrintModel, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
+import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
 
@@ -392,6 +393,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	// スクロール同期の抑止フラグは echo イベントに頼らず次フレームで解除する(代入が no-op でも立ちっぱなしにしない)。
 	private readonly _syncScrollReset = this._register(new MutableDisposable());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
+	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _originalResource: URI | undefined;
 	private _modifiedResource: URI | undefined;
 	private _originalWorkbook: IParadisWorkbookData | undefined;
@@ -433,6 +435,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-spreadsheet-diff'));
 		this._root.style.position = 'relative';
+		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
+			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
+		});
 
 		const toolbar = dom.append(this._root, $('.paradis-spreadsheet-diff-toolbar'));
 		const left = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-left'));
@@ -620,6 +625,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.spreadsheet.diffSearchDisabledOrUnavailable', "Search is disabled or unavailable for this comparison."));
 		if (this._diagnosticsEl) {
 			dom.clearNode(this._diagnosticsEl);
 		}
@@ -640,6 +646,14 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
+		this._findWidget.value?.setSearchProvider(configuration.searchPrint ? async (query, cursor, token) => {
+			if (cursor || token.isCancellationRequested) {
+				return Object.freeze({ results: Object.freeze([]), total: 0, capped: false });
+			}
+			return createLegacySpreadsheetSearchPage(modifiedWorkbook, query.text, query.matchCase);
+		} : undefined, configuration.searchPrint
+			? localize('paradis.spreadsheet.diffSearchUnavailableAdapter', "Search is unavailable for this compatible comparison adapter.")
+			: localize('paradis.spreadsheet.diffSearchDisabled', "Search is disabled by configuration."));
 		const legacyChangeSet = adaptLegacySpreadsheetInspectorChangeSet(this._diffSheets);
 		const changes = legacyChangeSet.changes;
 		const placeholders: ParadisOfficePlaceholder[] = [];

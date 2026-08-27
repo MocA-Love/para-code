@@ -16,6 +16,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, isEqual } from '../../../../base/common/resources.js';
+import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -35,6 +36,8 @@ import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpread
 import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintBlock, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
+import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
@@ -114,12 +117,12 @@ function spreadsheetColumnLabel(column: number): string {
 }
 
 /** Compatibility search adapter. The callback shape matches v1 search results and includes non-active sheets. */
-export function searchLegacySpreadsheetWorkbook(workbook: IParadisWorkbookData, query: string): readonly ParadisOfficeSearchResult[] {
+export function searchLegacySpreadsheetWorkbook(workbook: IParadisWorkbookData, query: string, matchCase = false): readonly ParadisOfficeSearchResult[] {
 	const normalizedQuery = query.normalize('NFC').trim();
 	if (normalizedQuery.length === 0 || normalizedQuery.length > 4096) {
 		return [];
 	}
-	const needle = normalizedQuery.toLocaleLowerCase();
+	const matcher = new RegExp(escapeRegExpCharacters(normalizedQuery), matchCase ? 'u' : 'iu');
 	const results: ParadisOfficeSearchResult[] = [];
 	for (let sheetIndex = 0; sheetIndex < workbook.sheets.length && results.length < LEGACY_SEARCH_RESULT_LIMIT; sheetIndex++) {
 		const sheet = workbook.sheets[sheetIndex];
@@ -127,20 +130,22 @@ export function searchLegacySpreadsheetWorkbook(workbook: IParadisWorkbookData, 
 			const row = sheet.rows[rowIndex];
 			for (let columnIndex = 0; columnIndex < row.cells.length && results.length < LEGACY_SEARCH_RESULT_LIMIT; columnIndex++) {
 				const text = row.cells[columnIndex].value.normalize('NFC');
-				const matchIndex = text.toLocaleLowerCase().indexOf(needle);
-				if (matchIndex < 0) {
+				const match = matcher.exec(text);
+				if (!match) {
 					continue;
 				}
+				const matchIndex = match.index;
+				const matchLength = match[0].length;
 				const address = `${spreadsheetColumnLabel(sheet.minCol + columnIndex)}${row.excelRow}`;
 				const previewStart = Math.max(0, matchIndex - 40);
-				const previewEnd = Math.min(text.length, matchIndex + normalizedQuery.length + 40);
+				const previewEnd = Math.min(text.length, matchIndex + matchLength + 40);
 				results.push({
 					id: `legacy-search:${sheetIndex}:${rowIndex}:${columnIndex}`,
 					locator: `${sheet.name}!${address}`,
 					preview: {
 						before: text.slice(previewStart, matchIndex),
-						match: text.slice(matchIndex, matchIndex + normalizedQuery.length),
-						after: text.slice(matchIndex + normalizedQuery.length, previewEnd),
+						match: text.slice(matchIndex, matchIndex + matchLength),
+						after: text.slice(matchIndex + matchLength, previewEnd),
 					},
 					locationBadge: { kind: 'sheet', label: sheet.name },
 					navigableAnchor: `cell:${sheet.name}:${address}`,
@@ -149,6 +154,12 @@ export function searchLegacySpreadsheetWorkbook(workbook: IParadisWorkbookData, 
 		}
 	}
 	return results;
+}
+
+/** Explicit bounded compatibility page used by the shared find widget until a semantic callback is present. */
+export function createLegacySpreadsheetSearchPage(workbook: IParadisWorkbookData, query: string, matchCase = false): ParadisOfficeSearchPage {
+	const results = searchLegacySpreadsheetWorkbook(workbook, query, matchCase);
+	return Object.freeze({ results: Object.freeze([...results]), total: results.length, capped: results.length === LEGACY_SEARCH_RESULT_LIMIT });
 }
 
 function legacyPrintCellBlock(sheetIndex: number, rowIndex: number, columnIndex: number, text: string): ParadisOfficePrintBlock {
@@ -359,6 +370,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private readonly _overlayTriggers = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _virtualRenderer = this._register(new MutableDisposable<ParadisSpreadsheetGridRenderer>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
+	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _currentResource: URI | undefined;
 	private _workbook: IParadisWorkbookData | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
@@ -385,6 +397,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-spreadsheet'));
 		this._root.style.position = 'relative';
+		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
+			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
+		});
 
 		const header = dom.append(this._root, $('.paradis-spreadsheet-header'));
 		const left = dom.append(header, $('.paradis-spreadsheet-header-left'));
@@ -574,6 +589,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.spreadsheet.searchDisabledOrUnavailable', "Search is disabled or unavailable for this source."));
 		if (this._diagnosticsEl) {
 			dom.clearNode(this._diagnosticsEl);
 		}
@@ -594,6 +610,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
+		this._findWidget.value?.setSearchProvider(configuration.searchPrint ? async (query, cursor, token) => {
+			if (cursor || token.isCancellationRequested) {
+				return Object.freeze({ results: Object.freeze([]), total: 0, capped: false });
+			}
+			return createLegacySpreadsheetSearchPage(workbook, query.text, query.matchCase);
+		} : undefined, configuration.searchPrint
+			? localize('paradis.spreadsheet.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
+			: localize('paradis.spreadsheet.searchDisabled', "Search is disabled by configuration."));
 		const placeholders: ParadisOfficePlaceholder[] = [];
 		for (let sheetIndex = 0; sheetIndex < workbook.sheets.length; sheetIndex++) {
 			const sheet = workbook.sheets[sheetIndex];
