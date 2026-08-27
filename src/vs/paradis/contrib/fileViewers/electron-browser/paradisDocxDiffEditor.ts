@@ -47,6 +47,7 @@ import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js
 import { resolveParadisViewerLibBase } from './paradisViewerAssets.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { PARADIS_DOCX_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import {
 	IParadisDocxChange,
 	IParadisDocxDiffResult,
@@ -173,6 +174,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
+	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 
 	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService);
@@ -199,6 +201,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-docx-diff'));
 		this._root.style.position = 'relative';
+		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
+			unavailableMessage: localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter."),
+			isActive: () => !!this._webview?.isFocused,
+		});
 
 		const toolbar = dom.append(this._root, $('.paradis-docx-diff-toolbar'));
 		const left = dom.append(toolbar, $('.paradis-docx-diff-toolbar-left'));
@@ -575,6 +581,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.word.diffSearchDisabled', "Search is disabled or unavailable for this comparison."));
 		if (this._diagnosticsEl) {
 			dom.clearNode(this._diagnosticsEl);
 		}
@@ -594,6 +601,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			this._clearSemanticUi();
 			return;
 		}
+		this._findWidget.value?.setSearchProvider(undefined, configuration.searchPrint
+			? localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter.")
+			: localize('paradis.word.searchDisabled', "Search is disabled by configuration."));
 		const adapted = adaptLegacyWordInspectorChangeSet(result);
 		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...this._assetPlaceholders.map(() => 'placeholder' as const)];
 		if (adapted.truncated || result.degraded?.length) {

@@ -41,6 +41,7 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { PARADIS_DOCX_MAX_BYTES } from '../common/paradisDocx.js';
 import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
@@ -136,6 +137,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
+	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
@@ -164,6 +166,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._rootElement = dom.append(parent, dom.$('.paradis-docx-viewer'));
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
+		this._findWidget.value = new ParadisOfficeFindWidget(this._rootElement, {
+			unavailableMessage: localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter."),
+			isActive: () => !!this._webview?.isFocused,
+		});
 		this._semanticToolbar = dom.append(this._rootElement, dom.$('.paradis-word-semantic-toolbar'));
 		this._semanticToolbar.style.position = 'absolute';
 		this._semanticToolbar.style.inset = '0 0 auto 0';
@@ -426,6 +432,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.word.searchDisabledOrUnavailable', "Search is disabled or unavailable for this source."));
 		if (this._diagnosticsElement) {
 			dom.clearNode(this._diagnosticsElement);
 		}
@@ -450,6 +457,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._clearSemanticUi();
 			return;
 		}
+		this._findWidget.value?.setSearchProvider(undefined, configuration.searchPrint
+			? localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
+			: localize('paradis.word.searchDisabled', "Search is disabled by configuration."));
 		if (this._semanticToolbar) {
 			this._semanticToolbar.style.display = 'flex';
 		}
