@@ -31,6 +31,11 @@ import {
 } from '../common/paradisOfficeChannel.js';
 import { createParadisOfficeError } from '../common/paradisOfficeErrors.js';
 import {
+	emitParadisOfficeTelemetry,
+	type ParadisOfficeTelemetryOptions,
+	type ParadisOfficeTelemetryScheme,
+} from '../common/paradisOfficeTelemetry.js';
+import {
 	type ParadisOfficeSealedSpoolReference,
 	snapshotParadisOfficeSealedSpoolAttempt,
 	validateParadisOfficeSealRequest,
@@ -47,6 +52,7 @@ import {
 	type ParadisOfficeResponse,
 	type ParadisOfficeRevision,
 	type ParadisOfficeSourceDescriptor,
+	type ParadisOfficeFormat,
 } from '../common/paradisOfficeProtocol.js';
 import type { ParadisOfficePackageInventory } from '../common/office/paradisOfficePackageCore.js';
 import { OfficeHandleStore, PARADIS_OFFICE_HANDLE_PER_CLIENT_LIMIT, type OfficeHandleCapability } from './office/paradisOfficeHandleStore.js';
@@ -164,6 +170,48 @@ function sourceFailure(request: ParadisOfficeRequest, stage: 'source' | 'contain
 
 function acknowledged(request: ParadisOfficeControlRequest): ParadisOfficeResponse {
 	return { version: 1, requestId: request.requestId, operation: request.operation, ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true };
+}
+
+const telemetryFormats: readonly ParadisOfficeFormat[] = ['xlsx', 'xlsm', 'xltx', 'xltm', 'docx', 'docm', 'dotx', 'dotm', 'zip'];
+
+function telemetrySources(request: ParadisOfficeRequest): readonly ParadisOfficeSourceDescriptor[] {
+	switch (request.operation) {
+		case 'inspect': case 'open': return [request.source];
+		case 'compare': return [request.original, request.modified];
+		default: return [];
+	}
+}
+
+function telemetryFormat(source: ParadisOfficeSourceDescriptor): ParadisOfficeFormat {
+	if (source.kind === 'sideMissing') { return 'unknown'; }
+	const match = /\.([^.]+)$/.exec(source.displayName.toLowerCase());
+	return match && telemetryFormats.includes(match[1] as ParadisOfficeFormat) ? match[1] as ParadisOfficeFormat : 'unknown';
+}
+
+function telemetryScheme(source: ParadisOfficeSourceDescriptor): Exclude<ParadisOfficeTelemetryScheme, 'mixed'> {
+	switch (source.kind) {
+		case 'file': return 'file';
+		case 'remote': return 'vscode-remote';
+		case 'gitCommit': case 'gitIndex': return 'git';
+		case 'untitled': return 'untitled';
+		case 'sideMissing': return 'none';
+		case 'workingTree': {
+			try {
+				const scheme = source.uri ? URI.parse(source.uri, true).scheme : '';
+				return scheme === 'file' || scheme === 'vscode-remote' ? scheme : 'unknown';
+			} catch { return 'unknown'; }
+		}
+	}
+}
+
+function requestTelemetryFormat(request: ParadisOfficeRequest): ParadisOfficeFormat {
+	const formats = telemetrySources(request).map(telemetryFormat);
+	return formats.length > 0 && formats.every(format => format === formats[0]) ? formats[0] : 'unknown';
+}
+
+function requestTelemetryScheme(request: ParadisOfficeRequest): ParadisOfficeTelemetryScheme {
+	const schemes = telemetrySources(request).map(telemetryScheme);
+	return schemes.length === 0 ? 'unknown' : schemes.every(scheme => scheme === schemes[0]) ? schemes[0] : 'mixed';
 }
 
 export function buildParadisOfficeFileRevision(kind: 'file' | 'workingTree', resource: URI, stat: IParadisOfficeFileStat, sha256: string): string {
@@ -458,7 +506,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 	private readonly sessions = new Map<string, OwnerSession>();
 	private readonly pendingHandleReservations = new Map<string, number>();
 
-	constructor(private readonly backend: IParadisOfficeDocumentBackend = new LocalParadisOfficeDocumentBackend(), onDidDisconnect: Event<string> = Event.None, private readonly spoolTransport?: ParadisOfficeSpoolTransport, private readonly connectionAuthority?: IParadisOfficeConnectionAuthority) {
+	constructor(private readonly backend: IParadisOfficeDocumentBackend = new LocalParadisOfficeDocumentBackend(), onDidDisconnect: Event<string> = Event.None, private readonly spoolTransport?: ParadisOfficeSpoolTransport, private readonly connectionAuthority?: IParadisOfficeConnectionAuthority, private readonly telemetry?: ParadisOfficeTelemetryOptions) {
 		super();
 		this._register(onDidDisconnect(ownerId => this.disconnect(ownerId)));
 		if (connectionAuthority) { this._register(connectionAuthority.onDidDisconnect(event => this.disconnect(event.ownerId, event.epoch))); }
@@ -523,19 +571,20 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		try {
 			let raw: unknown;
 			try { raw = await this.dispatch(resourceOwnerId, request, source.token); }
-			catch { return this.publishResponse(!this.isCurrentEntry(ctx, activeKey, entry) ? sourceFailure(request, 'transport', 'cancelled') : sourceFailure(request, source.token.isCancellationRequested ? 'transport' : 'engine', source.token.isCancellationRequested ? 'cancelled' : 'engineCrashed'), encoded) as T; }
-			if (!this.isCurrentEntry(ctx, activeKey, entry)) { await this.closeLateHandle(entry.resourceOwnerId, request, raw); return this.publishResponse(sourceFailure(request, 'transport', 'cancelled'), encoded) as T; }
+			catch { return this.publishResponse(request, !this.isCurrentEntry(ctx, activeKey, entry) ? sourceFailure(request, 'transport', 'cancelled') : sourceFailure(request, source.token.isCancellationRequested ? 'transport' : 'engine', source.token.isCancellationRequested ? 'cancelled' : 'engineCrashed'), encoded) as T; }
+			if (!this.isCurrentEntry(ctx, activeKey, entry)) { await this.closeLateHandle(entry.resourceOwnerId, request, raw); return this.publishResponse(request, sourceFailure(request, 'transport', 'cancelled'), encoded) as T; }
 			let response: ParadisOfficeResponse;
 			try { response = snapshotParadisOfficeResponse(raw); }
-			catch (error) { this.disconnect(ctx); return this.publishResponse(error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge' ? sourceFailure(request, 'transport', 'payloadTooLarge') : sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
+			catch (error) { this.disconnect(ctx); return this.publishResponse(request, error instanceof ParadisOfficeWireError && error.code === 'payloadTooLarge' ? sourceFailure(request, 'transport', 'payloadTooLarge') : sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
 			let commit: () => void;
 			try { commit = this.validateResponseBinding(ctx, request, response); }
-			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
+			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(request, sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
 			let prepared: ReturnType<ParadisOfficeChannel['prepareResponse']>;
 			try { prepared = this.prepareResponse(response, encoded); }
-			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
+			catch { await this.closeLateHandle(entry.resourceOwnerId, request, response); return this.publishResponse(request, sourceFailure(request, 'engine', 'engineCrashed'), encoded) as T; }
 			if (prepared.shouldCommit) { commit(); }
 			else { await this.closeLateHandle(entry.resourceOwnerId, request, response); }
+			this.emitTelemetry(request, prepared.response);
 			return prepared.value as T;
 		} finally {
 			if (this.active.get(activeKey) === entry) { this.active.delete(activeKey); }
@@ -569,18 +618,47 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		}
 	}
 
-	private publishResponse(response: ParadisOfficeResponse, encoded: boolean): ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse> {
-		return this.prepareResponse(response, encoded).value;
+	private publishResponse(request: ParadisOfficeRequest, response: ParadisOfficeResponse, encoded: boolean): ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse> {
+		const prepared = this.prepareResponse(response, encoded);
+		this.emitTelemetry(request, prepared.response);
+		return prepared.value;
 	}
-	private prepareResponse(response: ParadisOfficeResponse, encoded: boolean): { readonly value: ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse>; readonly shouldCommit: boolean } {
-		if (!encoded) { return { value: response, shouldCommit: true }; }
-		try { return { value: marshalParadisOfficeResponse(response), shouldCommit: true }; }
+	private prepareResponse(response: ParadisOfficeResponse, encoded: boolean): { readonly value: ParadisOfficeResponse | ReturnType<typeof marshalParadisOfficeResponse>; readonly shouldCommit: boolean; readonly response: ParadisOfficeResponse } {
+		if (!encoded) { return { value: response, shouldCommit: true, response }; }
+		try { return { value: marshalParadisOfficeResponse(response), shouldCommit: true, response }; }
 		catch (error) {
 			if (!(error instanceof ParadisOfficeWireError) || error.code !== 'payloadTooLarge') { throw error; }
 			const canonical = this.canonicalSideEffectResponse(response);
-			if (canonical) { return { value: marshalParadisOfficeResponse(canonical), shouldCommit: true }; }
-			return { value: marshalParadisOfficeResponse({ version: 1, requestId: response.requestId, operation: response.operation, ok: false, outcome: 'blocked', error: createParadisOfficeError('transport', 'payloadTooLarge', { severity: 'error', retryable: false, recoverable: true, userAction: 'reduceDocumentSize' }) }), shouldCommit: false };
+			if (canonical) { return { value: marshalParadisOfficeResponse(canonical), shouldCommit: true, response: canonical }; }
+			const blocked = { version: 1 as const, requestId: response.requestId, operation: response.operation, ok: false as const, outcome: 'blocked' as const, error: createParadisOfficeError('transport', 'payloadTooLarge', { severity: 'error' as const, retryable: false, recoverable: true, userAction: 'reduceDocumentSize' as const }) };
+			return { value: marshalParadisOfficeResponse(blocked), shouldCommit: false, response: blocked };
 		}
+	}
+	private emitTelemetry(request: ParadisOfficeRequest, response: ParadisOfficeResponse): void {
+		if (!this.telemetry) { return; }
+		try {
+			let completeness: ParadisOfficeCompletenessManifest | undefined;
+			if (!response.ok) { completeness = response.completeness; }
+			else {
+				switch (response.operation) {
+					case 'close': case 'cancel': break;
+					default: completeness = response.completeness;
+				}
+			}
+			emitParadisOfficeTelemetry(this.telemetry, {
+				format: response.ok && response.operation === 'inspect' ? response.inventory.format : requestTelemetryFormat(request),
+				scheme: requestTelemetryScheme(request),
+				backend: this.telemetry.backend,
+				version: request.version,
+				counts: {
+					parts: completeness?.expectedParts ?? 0,
+					semanticUnits: completeness?.expectedSemanticUnits ?? 0,
+					warnings: response.ok ? response.warnings.length : 0,
+				},
+				timings: { totalMilliseconds: response.ok ? response.timings.total ?? response.budgetUsage.elapsedMilliseconds ?? 0 : 0 },
+				outcome: response.outcome,
+			});
+		} catch { }
 	}
 	private canonicalSideEffectResponse(response: ParadisOfficeResponse): ParadisOfficeResponse | undefined {
 		if (!response.ok) { return undefined; }
