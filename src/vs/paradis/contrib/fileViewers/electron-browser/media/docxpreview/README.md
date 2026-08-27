@@ -16,12 +16,25 @@ PARA-CODE: fork-owned directory (Para Code) — not present in upstream microsof
 
 ## 更新手順
 
-```sh
-npm pack docx-preview@<version>
-tar -xzf docx-preview-<version>.tgz
-cp package/dist/docx-preview.min.js .
-cp package/LICENSE LICENSE-docx-preview
+`docx-preview@0.3.7` は公開 tarball の SHA-256 を固定し、
+`build/next/index.ts` の順序付きパッチキューを1回ずつ適用して再生成する。
+同じコマンドが PC 用成果物とモバイル用 JSON を生成するため、個別にコピー・編集しない。
 
+```sh
+npm run gulp -- docx-preview-037
+npm run gulp -- docx-preview-037-check
+```
+
+クリーンな任意ディレクトリへの再現確認には次を使う。
+
+```sh
+node build/next/index.ts docx-preview-037 --out <dir>
+```
+
+JSZip を更新する場合だけ、ライセンスを含めて取得し、スクリプト内の固定 SHA-256 と
+バージョン表記を同時に更新する。
+
+```sh
 npm pack jszip@<version>
 tar -xzf jszip-<version>.tgz
 cp package/dist/jszip.min.js .
@@ -32,7 +45,7 @@ cp package/LICENSE.markdown LICENSE-jszip
 ビルド同梱は `build/next/index.ts` の `desktopResourcePatterns`（実リリース経路）と
 `build/gulpfile.vscode.ts` の `vscodeResourceIncludes` の両方に glob 登録済み。
 
-## 既知のバグへの手動パッチ（`docx-preview.min.js`、2026-07-06）
+## 再現ビルドで適用するパッチ（`docx-preview.min.js`、2026-07-06）
 
 `docx-preview@0.3.7`（GitHub `master` の現行実装でも同様、未修正）の
 `HtmlRenderer.levelTextToContent()` は、番号付き/箇条書きリストの CSS `content` 値を
@@ -43,15 +56,14 @@ cp package/LICENSE.markdown LICENSE-jszip
 **番号・箇条書きの記号が一切表示されない**。
 
 この関数の実装を、正しい CSS（`counter(...)` はクォート無し、リテラル文字列部分だけ
-`JSON.stringify` でクォートし、スペース区切りで連結する）に**直接パッチ**してある
-（`levelTextToContent(e,t,r,a){...}` 関数本体を丸ごと置換）。
+`JSON.stringify` でクォートし、スペース区切りで連結する）に置換する。
 
 再更新時（`npm pack` で新バージョンを取得し直す際）は、新しい `docx-preview.min.js` に
 このパッチが必要かどうか確認し、必要ならこの内容で再適用すること。壊れた実装かどうかは、
 実際に番号付きリストを含む .docx をレンダリングし、DevTools で `::before` の
 計算済み `content` が `none` になっていないかで確認できる。
 
-## 既知のバグへの手動パッチ2件目（VML図形の `strokecolor`/`strokeweight` 未対応、2026-07-06）
+## 再現ビルドのパッチ2件目（VML図形の `strokecolor`/`strokeweight` 未対応、2026-07-06）
 
 VML 図形（`<v:line>`/`<v:rect>`/`<v:oval>` 等。斜線コネクタ・罫線装飾など実務文書で
 多用される）は、線の色・太さを (a) `<v:stroke color="..." weight="...">` という子要素、
@@ -71,7 +83,7 @@ v.attrs(e)) switch(t.localName)`）は (a) の子要素形式にしか対応す�
 Elements パネルから該当 `<line>`/`<rect>` の computed `stroke` が `none` に
 なっていないかで壊れているか確認できる。
 
-## 既知のバグへの手動パッチ3件目（ページ幅の不整合、2026-07-07）
+## 再現ビルドのパッチ3件目（ページ幅の不整合、2026-07-07）
 
 複数ページの実務文書（契約書・重要事項説明書等）で、ページごとに白紙の幅が大きく
 異なって見える（あるページだけ極端に広い/狭い）不具合。根本原因は3つ重なっていた。
@@ -110,7 +122,7 @@ Elements パネルから該当 `<line>`/`<rect>` の computed `stroke` が `none
 DevTools から `.docx-wrapper > section.docx` 各要素の `getBoundingClientRect().width`
 を比較し、ページごとに値が食い違っていないかで確認できる。
 
-## 既知のバグへの手動パッチ4件目（図形の位置とタブストップ、2026-07-07）
+## 再現ビルドのパッチ4件目（図形の位置とタブストップ、2026-07-07）
 
 1. **ページ基準のVML図形の位置ズレ**: `mso-position-{horizontal,vertical}-relative:page`
    （ページ左上原点で配置する指定）を持つVML図形（「線で抹消」の斜線コネクタ等）について、
@@ -141,8 +153,8 @@ Para Code Mobile の Word ビューア（`app/mobile/src/components/fileViewer.t
 `buildDocxHtml`）は、このディレクトリの **パッチ済み** `jszip.min.js` /
 `docx-preview.min.js` を `app/mobile/assets/docxpreview/docxPreviewBundle.json`
 （`{ version, jszip, docxPreview }`、xtermBundle.json と同方式）として同梱し、
-WebView 内で実行する。**このディレクトリの min.js を更新・再パッチしたら、以下で
-バンドルを再生成すること**（忘れるとPC版とモバイル版のレンダリング結果が食い違う）:
+WebView 内で実行する。`docx-preview-037` コマンドはこの JSON も同じ入力 bytes から
+同時生成し、`docx-preview-037-check` は両成果物の固定ハッシュを検証する。
 
 なお、モバイル側の `buildDocxHtml` には WKWebView(WebKit) 専用のレンダリング回避策が
 2つ入っている（PC版のChromiumでは不要なため、vendored ライブラリ側ではなく
@@ -152,18 +164,3 @@ WebView 内で実行する。**このディレクトリの min.js を更新・�
    文字が1文字ずつ横に積まれてセル幅が暴走する → writing-mode をセル内のラッパー div へ移す
 2. WebKit は `border-collapse` の表で 1px 未満の罫線を描画しない（Word 標準罫線は
    0.5pt ≒ 0.67px なので細罫線がほぼ全滅する）→ 1px 未満の罫線幅を 1px へ底上げする
-
-```bash
-cd <repo root>
-python3 - <<'EOF'
-import json
-base = 'src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/'
-bundle = {
-    'version': 1,  # 更新時はインクリメント
-    'jszip': open(base + 'jszip.min.js', encoding='utf-8').read(),
-    'docxPreview': open(base + 'docx-preview.min.js', encoding='utf-8').read(),
-}
-with open('app/mobile/assets/docxpreview/docxPreviewBundle.json', 'w', encoding='utf-8') as f:
-    json.dump(bundle, f, ensure_ascii=False)
-EOF
-```
