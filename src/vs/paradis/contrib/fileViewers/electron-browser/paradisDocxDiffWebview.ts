@@ -145,6 +145,10 @@ export interface IParadisDocxDiffWebviewHost {
 	setStatus(text: string | undefined): void;
 	/** 書式変更の表示を切り替える。 */
 	setShowFormatChanges(enabled: boolean): void;
+	/** Revision display is internal viewer state, not an Office backend transport. */
+	setRevisionMode?(mode: 'final' | 'original' | 'markup'): void;
+	clearPane?(side: ParadisDocxSide): void;
+	isPaneBlank?(side: ParadisDocxSide): boolean;
 	setAssetPlaceholders(placeholders: readonly { readonly title: string; readonly feature: string; readonly fingerprint?: string }[]): void;
 	setTimeout(handler: () => void, delay: number): number;
 	clearTimeout(handle: number): void;
@@ -206,7 +210,9 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		loadGeneration: number;
 		/** 注入済みか。AST を書き換えるので二度通してはいけない。 */
 		annotated: boolean;
-	} = { documents: {}, scale: 1, syncing: false, activeChangeId: -1, activeReportHandle: 0, loadGeneration: -1, annotated: false };
+		revisionMode: 'final' | 'original' | 'markup';
+		blankRetryUsed: boolean;
+	} = { documents: {}, scale: 1, syncing: false, activeChangeId: -1, activeReportHandle: 0, loadGeneration: -1, annotated: false, revisionMode: 'final', blankRetryUsed: false };
 
 	const PARSE_OPTIONS: Record<string, unknown> = { trimXmlDeclaration: true };
 
@@ -227,8 +233,8 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 			renderFooters: false,
 			renderFootnotes: true,
 			renderEndnotes: true,
-			// 変更履歴入りの文書は「承認後の見た目」で比べる。概要の抽出側も w:del を読み飛ばして揃える。
-			renderChanges: false,
+			// Final omits tracked deletions; Original/Markup retain revision nodes and differ only in presentation.
+			renderChanges: state.revisionMode !== 'final',
 			renderComments: false,
 			useBase64URL: true,
 			// Raw embedded fonts are never handed to the renderer. The Office asset pipeline publishes
@@ -835,6 +841,8 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		}
 		// 同じ webview に load が二重に届いても、後から来た方だけを通す。
 		state.loadGeneration = generation;
+		state.annotated = false;
+		state.blankRetryUsed = false;
 		host.setStatus(ctx.labelLoading);
 		state.documents = {};
 		const inputs: { side: Side; data: ArrayBuffer }[] = [
@@ -866,6 +874,34 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		});
 	}
 
+	async function renderDocuments(): Promise<void> {
+		for (const side of SIDES) {
+			const loaded = state.documents[side];
+			if (!loaded || !host.docx) {
+				continue;
+			}
+			host.clearPane?.(side);
+			const pane = host.panes[side];
+			await host.docx.renderDocument(loaded.wordDocument, pane.content, pane.styles, renderOptions(side));
+		}
+		if (!state.blankRetryUsed && SIDES.some(side => host.isPaneBlank?.(side) === true)) {
+			state.blankRetryUsed = true;
+			for (const side of SIDES) {
+				const loaded = state.documents[side];
+				if (!loaded || !host.docx) {
+					continue;
+				}
+				host.clearPane?.(side);
+				const pane = host.panes[side];
+				await host.docx.renderDocument(loaded.wordDocument, pane.content, pane.styles, renderOptions(side));
+			}
+		}
+		applyZoom();
+		if (state.activeChangeId >= 0) {
+			reveal(state.activeChangeId);
+		}
+	}
+
 	async function handleAnnotate(annotations: readonly IParadisDocxAnnotation[], fillers: readonly IParadisDocxFiller[]): Promise<void> {
 		if (state.annotated) {
 			// 注入は AST を書き換えるので冪等ではない（ゴーストが二重に入る）。1回だけ通す。
@@ -883,21 +919,13 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		// 注入は必ず描画より前に済ませること。docx-preview は render の先頭で processElement を
 		// 1回だけ走らせて parent を張るので、描画後に木を触っても反映されない。
 		try {
-			for (const side of SIDES) {
-				const loaded = state.documents[side];
-				if (!loaded || !host.docx) {
-					continue;
-				}
-				const pane = host.panes[side];
-				await host.docx.renderDocument(loaded.wordDocument, pane.content, pane.styles, renderOptions(side));
-			}
+			await renderDocuments();
 		} catch (error) {
 			host.setStatus(undefined);
 			host.post({ type: 'error', message: messageOf(error) });
 			return;
 		}
 		host.setStatus(undefined);
-		applyZoom();
 		host.post({ type: 'rendered' });
 	}
 
@@ -905,23 +933,32 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		if (!message || typeof message.type !== 'string') {
 			return;
 		}
-		switch (message.type) {
+		const wordMessage = message as ParadisDocxHostMessage | { readonly type: 'revisionMode'; readonly mode: 'final' | 'original' | 'markup' };
+		switch (wordMessage.type) {
 			case 'load':
-				host.setAssetPlaceholders(message.assetPlaceholders);
-				void handleLoad(message.generation, message.original, message.modified);
+				host.setAssetPlaceholders(wordMessage.assetPlaceholders);
+				void handleLoad(wordMessage.generation, wordMessage.original, wordMessage.modified);
 				break;
 			case 'annotate':
-				void handleAnnotate(message.annotations ?? [], message.fillers ?? []);
+				void handleAnnotate(wordMessage.annotations ?? [], wordMessage.fillers ?? []);
 				break;
 			case 'reveal':
-				reveal(message.changeId);
+				reveal(wordMessage.changeId);
 				break;
 			case 'zoom':
-				state.scale = message.scale;
+				state.scale = wordMessage.scale;
 				applyZoom();
 				break;
 			case 'showFormatChanges':
-				host.setShowFormatChanges(message.enabled);
+				host.setShowFormatChanges(wordMessage.enabled);
+				break;
+			case 'revisionMode':
+				state.revisionMode = wordMessage.mode;
+				state.blankRetryUsed = false;
+				host.setRevisionMode?.(wordMessage.mode);
+				if (state.annotated) {
+					void renderDocuments().then(() => host.post({ type: 'rendered' }), error => host.post({ type: 'error', message: messageOf(error) }));
+				}
 				break;
 			default:
 				break;
@@ -1001,6 +1038,16 @@ export function paradisDocxDiffWebviewBoot(ctx: IParadisDocxDiffWebviewContext, 
 			}
 		},
 		setShowFormatChanges: (enabled: boolean) => window.document.body.classList.toggle('paradis-hide-format', !enabled),
+		setRevisionMode: mode => {
+			window.document.body.classList.toggle('paradis-word-final', mode === 'final');
+			window.document.body.classList.toggle('paradis-word-original', mode === 'original');
+			window.document.body.classList.toggle('paradis-word-markup', mode === 'markup');
+		},
+		clearPane: side => {
+			byId('doc-' + side).textContent = '';
+			byId('style-' + side).textContent = '';
+		},
+		isPaneBlank: side => !byId('doc-' + side).querySelector('.docx-l-wrapper > section, .docx-r-wrapper > section'),
 		setAssetPlaceholders: placeholders => {
 			const container = byId('asset-placeholders');
 			container.textContent = placeholders.length ? `Office assets unavailable: ${placeholders.length}` : '';
@@ -1097,6 +1144,9 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 			position: relative;
 		}
 		.pane table td, .pane table th { overflow-wrap: break-word; }
+		body.paradis-word-original ins { display: none; }
+		body.paradis-word-original del { text-decoration: none; }
+		body.paradis-word-final del { display: none; }
 
 		/*
 		 * 差分の印。Word 由来のインライン style（背景色など）に負けないよう !important を使う。

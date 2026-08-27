@@ -20,9 +20,10 @@ import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
-import { dirname, isEqual } from '../../../../base/common/resources.js';
+import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
@@ -41,14 +42,55 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { PARADIS_DOCX_MAX_BYTES } from '../common/paradisDocx.js';
+import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
-import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
+import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
+import { localize } from '../../../../nls.js';
+import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
+import { renderWordDiagnosticsRibbon } from './word/paradisWordDiagnostics.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
 const DOCX_HEADER_BYTES = 4;
 const DOCX_WATCH_RERENDER_DELAY_MS = 50;
+
+const INCOMPLETE_WORD_MANIFEST: ParadisOfficeCompletenessManifest = Object.freeze({
+	expectedParts: 1, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
+	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
+});
+
+export function isParadisWordV1Enabled(configuration: ParadisOfficeRuntimeConfiguration): boolean {
+	return configuration.engine !== 'legacy' && configuration.semanticWord;
+}
+
+export function createParadisWordSourceDescriptor(resource: URI, side?: 'original' | 'modified'): ParadisOfficeSourceDescriptor {
+	const kind: ParadisOfficeSourceDescriptor['kind'] = resource.scheme === Schemas.vscodeRemote
+		? 'remote'
+		: resource.scheme === 'git'
+			? 'gitCommit'
+			: resource.scheme === Schemas.untitled
+				? 'untitled'
+				: side === 'modified'
+					? 'workingTree'
+					: 'file';
+	return { kind, uri: resource.toString(true), displayName: basename(resource), ...(side ? { side } : {}) };
+}
+
+function snapshotWordRuntimeConfiguration(configurationService: IConfigurationService): ParadisOfficeRuntimeConfiguration {
+	const reader: ParadisOfficeConfigurationReader = {
+		getValue: <T>(key: string) => configurationService.getValue<T>(key),
+		inspect: <T>(key: string) => configurationService.inspect<T>(key) as IConfigurationValue<T> | undefined,
+	};
+	return snapshotParadisOfficeRuntimeConfiguration(reader);
+}
+
+function wordViewStateFromOptions(value: object | undefined, fallback: ParadisWordViewState): ParadisWordViewState {
+	const nested = value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'viewState')
+		? (value as { readonly viewState?: unknown }).viewState
+		: value;
+	return restoreParadisWordViewState(nested, fallback);
+}
 
 /** DOCX(Zip)の先頭ローカルファイルヘッダを検証する。 */
 export function isParadisDocxHeader(bytes: Uint8Array): boolean {
@@ -77,6 +119,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 	static readonly ID = PARADIS_DOCX_EDITOR_ID;
 
 	private _rootElement: HTMLElement | undefined;
+	private _semanticToolbar: HTMLElement | undefined;
+	private _diagnosticsElement: HTMLElement | undefined;
+	private _inspectorToggle: HTMLButtonElement | undefined;
+	private _inspectorPanel: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
 	private _webview: IOverlayWebview | undefined;
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
@@ -89,8 +135,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _disposed = false;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
+	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
+	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
+	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
 
+	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, layoutService: IWorkbenchLayoutService);
+	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, layoutService: IWorkbenchLayoutService, configurationService: IConfigurationService);
 	constructor(
 		group: IEditorGroup,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
@@ -100,6 +151,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService = undefined!,
 	) {
 		super(PARADIS_DOCX_EDITOR_ID, group, telemetryService, themeService, storageService);
 		// ライブラリの置き場は入力に依らないので、ここで先に決めておく。開く操作が
@@ -112,6 +164,39 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._rootElement = dom.append(parent, dom.$('.paradis-docx-viewer'));
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
+		this._semanticToolbar = dom.append(this._rootElement, dom.$('.paradis-word-semantic-toolbar'));
+		this._semanticToolbar.style.position = 'absolute';
+		this._semanticToolbar.style.inset = '0 0 auto 0';
+		this._semanticToolbar.style.minHeight = '32px';
+		this._semanticToolbar.style.zIndex = '10';
+		this._semanticToolbar.style.display = 'none';
+		this._semanticToolbar.style.alignItems = 'center';
+		this._semanticToolbar.style.gap = '8px';
+		this._semanticToolbar.style.padding = '2px 8px';
+		this._semanticToolbar.style.background = 'var(--vscode-editor-background)';
+		this._diagnosticsElement = dom.append(this._semanticToolbar, dom.$('.paradis-word-diagnostics-host'));
+		this._inspectorToggle = dom.append(this._semanticToolbar, dom.$('button.paradis-word-inspector-toggle')) as HTMLButtonElement;
+		this._inspectorToggle.type = 'button';
+		this._inspectorToggle.textContent = localize('paradis.word.inspector', "Inspector");
+		this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		this._register(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
+			if (!this._inspectorPanel || !this._inspectorToggle) {
+				return;
+			}
+			const visible = this._inspectorPanel.style.display === 'none';
+			this._inspectorPanel.style.display = visible ? 'block' : 'none';
+			this._inspectorToggle.setAttribute('aria-expanded', String(visible));
+		}));
+		this._inspectorPanel = dom.append(this._rootElement, dom.$('.paradis-word-inspector-panel'));
+		this._inspectorPanel.style.position = 'absolute';
+		this._inspectorPanel.style.top = '36px';
+		this._inspectorPanel.style.right = '8px';
+		this._inspectorPanel.style.zIndex = '20';
+		this._inspectorPanel.style.width = '360px';
+		this._inspectorPanel.style.maxHeight = '70%';
+		this._inspectorPanel.style.overflow = 'auto';
+		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
+		this._inspectorPanel.style.display = 'none';
 		// overlay webview を重ねる位置合わせ用アンカー（paradisPdfFileEditor と同方式）。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-docx-viewer-webview'));
 		this._webviewContainer.style.position = 'absolute';
@@ -150,6 +235,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 
 		const resource = (input as ParadisDocxInput).resource;
+		this._runtimeConfiguration = this._configurationService ? snapshotWordRuntimeConfiguration(this._configurationService) : undefined;
+		this._wordViewState = wordViewStateFromOptions(options?.viewState, this._currentWordViewState());
+		this._clearSemanticUi();
 		this._currentResource = resource;
 
 		const store = new DisposableStore();
@@ -326,16 +414,90 @@ export class ParadisDocxFileEditor extends EditorPane {
 				webview.setHtml(this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
-				webview.setHtml(this._buildHtml(resource, inlineData, this._assetPlaceholders.length));
+				webview.setHtml(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._wordViewState));
+				this._renderSemanticUi();
 				return;
 		}
+	}
+
+	private _currentWordViewState(): ParadisWordViewState {
+		return this._changeInspector.value?.getViewState() ?? this._wordViewState;
+	}
+
+	private _clearSemanticUi(): void {
+		this._changeInspector.clear();
+		if (this._diagnosticsElement) {
+			dom.clearNode(this._diagnosticsElement);
+		}
+		if (this._semanticToolbar) {
+			this._semanticToolbar.style.display = 'none';
+		}
+		if (this._inspectorPanel) {
+			dom.clearNode(this._inspectorPanel);
+			this._inspectorPanel.style.display = 'none';
+		}
+		if (this._inspectorToggle) {
+			this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		}
+		if (this._webviewContainer) {
+			this._webviewContainer.style.top = '0';
+		}
+	}
+
+	private _renderSemanticUi(): void {
+		const configuration = this._runtimeConfiguration;
+		if (!configuration || !isParadisWordV1Enabled(configuration)) {
+			this._clearSemanticUi();
+			return;
+		}
+		if (this._semanticToolbar) {
+			this._semanticToolbar.style.display = 'flex';
+		}
+		if (this._webviewContainer) {
+			this._webviewContainer.style.top = '36px';
+		}
+		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...this._assetPlaceholders.map(() => 'placeholder' as const)];
+		if (this._diagnosticsElement) {
+			renderWordDiagnosticsRibbon(this._diagnosticsElement, {
+				outcome: 'degraded',
+				coverages,
+				warnings: [{
+					code: 'word.legacyProjection',
+					message: localize('paradis.word.legacyProjection', "Semantic diagnostics are not available for this source adapter; the compatible Word renderer remains active."),
+				}],
+			});
+		}
+		if (!this._inspectorPanel || !this._inspectorToggle) {
+			return;
+		}
+		this._inspectorToggle.style.display = '';
+		dom.clearNode(this._inspectorPanel);
+		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
+			searchUnavailable: configuration.searchPrint
+				? localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
+				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
+			printUnavailable: configuration.searchPrint
+				? localize('paradis.word.printUnavailableAdapter', "Print preview is unavailable for this compatible source adapter.")
+				: localize('paradis.word.printDisabled', "Print preview is disabled by configuration."),
+			onDidChangeViewState: state => {
+				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;
+				this._wordViewState = state;
+				if (changed && this._currentResource && this._webviewClaimed) {
+					this._renderResource(this._currentResource);
+				}
+			},
+		});
+		this._changeInspector.value = inspector;
+		inspector.setViewState(this._wordViewState);
+		inspector.setComparison([], INCOMPLETE_WORD_MANIFEST, 'degraded');
+		inspector.setPlaceholders(this._assetPlaceholders);
 	}
 
 	private _buildRejectedFileHtml(): string {
 		return '<!DOCTYPE html><html><body>Word 文書を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
-	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0): string {
+	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0, viewState: ParadisWordViewState = this._wordViewState): string {
 		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
 		// service worker を切った webview に解決できない URL を渡すことになる。
 		const served = this._webviewServiceWorkerDisabled && this._documentUrl !== undefined;
@@ -356,6 +518,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 					...(docxUrl.startsWith('data:') ? [] : [paradisOfficeWebviewResourceOrigin(docxUrl)]),
 				],
 			});
+		const zoom = Math.min(4, Math.max(0.25, viewState.zoom));
+		const displayMode = viewState.displayMode;
 
 		// CSP: スクリプトは nonce 付き inline と webview リソース(https:)のみ。docx-preview が本文中に
 		// 埋め込む style は要素インライン + 動的 <style> なので style-src に 'unsafe-inline' を許可する
@@ -387,7 +551,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 			font-size: 13px;
 		}
 		#scroller { position: absolute; inset: 0; overflow: auto; }
-		#content { padding: 32px 16px 48px; display: flex; flex-direction: column; align-items: center; }
+		#content { padding: 32px 16px 48px; display: flex; flex-direction: column; align-items: center; zoom: ${zoom}; }
+		body.paradis-word-original ins { display: none; }
+		body.paradis-word-original del { text-decoration: none; }
+		body.paradis-word-final del { display: none; }
 		/* docx-preview のページ要素（.docx-wrapper > section.docx）に PDF ビューア風の白紙＋影を付ける。 */
 		#content .docx-wrapper { background: transparent; padding: 0; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 		#content .docx-wrapper > section.docx {
@@ -410,7 +577,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
 	</style>
 </head>
-<body>
+<body class="paradis-word-${displayMode}">
 	${assetPlaceholderCount > 0 ? `<div role="status" id="asset-placeholders">Office assets unavailable: ${assetPlaceholderCount}</div>` : ''}
 	<div id="scroller"><div id="content"></div></div>
 	<div id="status">読み込み中…</div>
@@ -426,7 +593,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 					throw new Error('レンダリングライブラリの読み込みに失敗しました');
 				}
 				const buf = await (await fetch(DOCX_URL)).arrayBuffer();
-				await window.docx.renderAsync(buf, contentEl, undefined, {
+				const renderDocument = () => window.docx.renderAsync(buf.slice(0), contentEl, undefined, {
 					className: 'docx',
 					inWrapper: true,
 					ignoreWidth: false,
@@ -456,8 +623,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 					// only by the typed Office asset path, so this view deliberately uses fallback fonts.
 					ignoreFonts: true,
 					// Arbitrary altChunk HTML is represented by a semantic placeholder, never an iframe.
-					renderAltChunks: false
+					renderAltChunks: false,
+					renderChanges: ${displayMode !== 'final'}
 				});
+				await renderDocument();
+				// One bounded retry covers the renderer's occasional completed-but-blank result.
+				if (!contentEl.querySelector('.docx-wrapper > section.docx')) {
+					contentEl.textContent = '';
+					await renderDocument();
+				}
 				// docx-preview はページ幅を固定値(width、grow不可)で設定する一方、高さは
 				// min-height(可変)にしている。本文（表など）がページの本文幅より広い場合、
 				// 高さと違って幅は伸びず、白紙の外へそのままはみ出して背後の(暗い)背景が
@@ -556,12 +730,24 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._assetSanitization.value?.cancel();
 		this._inputEpoch++;
 		this._inputDisposables.clear();
+		this._clearSemanticUi();
 		this._currentResource = undefined;
+		this._runtimeConfiguration = undefined;
 		if (this._webview && this._webviewClaimed) {
 			this._webview.release(this);
 			this._webviewClaimed = false;
 		}
 		super.clearInput();
+	}
+
+	override getViewState(): object | undefined {
+		if (!this._currentResource) {
+			return undefined;
+		}
+		return {
+			source: createParadisWordSourceDescriptor(this._currentResource),
+			viewState: this._currentWordViewState(),
+		};
 	}
 
 	override dispose(): void {
