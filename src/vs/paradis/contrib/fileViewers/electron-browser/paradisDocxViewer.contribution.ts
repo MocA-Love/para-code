@@ -6,8 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Word(.docx)ビューア/差分(vendored docx-preview 依存)の登録入り口。paradis.electron-browser.contribution.ts から import。
-// exclusive 登録により、標準のバイナリ警告(BinaryFileEditor)より優先して .docx をレンダリング表示する。
+// Word OOXMLビューア/差分(vendored docx-preview 依存)の登録入り口。macro/template variantsもread-onlyで扱う。
+// paradis.electron-browser.contribution.ts から import。exclusive 登録により標準のバイナリ警告より優先する。
 // 通常オープン(createEditorInput)と SCM の差分オープン(createDiffEditorInput)の両方を横取りする。
 
 import { localize } from '../../../../nls.js';
@@ -79,7 +79,7 @@ class ParadisDocxViewerResolverContribution implements IWorkbenchContribution {
 				{
 					id: PARADIS_DOCX_EDITOR_ID,
 					label: DOCX_LABEL,
-					// exclusive: バイナリ(.docx)を常にビューアで開く(PDF ビューアと同じ扱い)。
+					// exclusive: Word OOXML packagesを常にビューアで開く(PDF ビューアと同じ扱い)。
 					priority: RegisteredEditorPriority.exclusive
 				},
 				{

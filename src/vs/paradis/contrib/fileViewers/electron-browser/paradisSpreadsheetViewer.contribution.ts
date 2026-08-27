@@ -6,7 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Excelビューア/差分(Electron/shared process 依存)の登録入り口。paradis.electron-browser.contribution.ts から import。
+// Excel OOXMLビューア/差分(Electron/shared process 依存)の登録入り口。macro/template variantsもread-onlyで扱う。
+// paradis.electron-browser.contribution.ts から import。
 // 通常オープン(createEditorInput)と SCM の差分オープン(createDiffEditorInput)の両方を横取りする。
 // 差分は VS Code 標準の DiffEditor(テキスト前提)では扱えないため、独自の差分 EditorPane に載せ替える。
 
@@ -74,7 +75,7 @@ class ParadisSpreadsheetViewerResolverContribution implements IWorkbenchContribu
 				{
 					id: PARADIS_SPREADSHEET_EDITOR_ID,
 					label: SPREADSHEET_LABEL,
-					// exclusive: バイナリ(.xlsx)を常にビューアで開く。差分解決では両サイド(file:/git:)が同一 editor に解決される必要があるため優先度も統一。
+					// exclusive: OOXML spreadsheet packagesを常にビューアで開く。差分解決では両サイド(file:/git:)が同一 editor に解決される必要があるため優先度も統一。
 					priority: RegisteredEditorPriority.exclusive
 				},
 				{
