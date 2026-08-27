@@ -67,7 +67,7 @@ import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/par
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { createLegacyWordPrintModel, createParadisWordSourceDescriptor, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
-import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { renderWordDiagnosticsRibbon } from './word/paradisWordDiagnostics.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
@@ -758,11 +758,24 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private _renderSemanticUi(result: IParadisDocxDiffResult): void {
 		const configuration = this._runtimeConfiguration;
-		if (!configuration || !isParadisWordV1Enabled(configuration)) {
+		if (!configuration) {
 			this._clearSemanticUi();
 			return;
 		}
-		this._findWidget.value?.setSearchProvider(undefined, configuration.searchPrint
+		const v1Enabled = isParadisWordV1Enabled(configuration);
+		const callbacks = createParadisOfficeSearchPrintCallbacks(configuration, v1Enabled, {
+			search: () => undefined,
+			print: () => async () => {
+				const model = createLegacyWordPrintModel(basename(this._modifiedResource ?? URI.file('document.docx')), this._assetPlaceholders, this._modifiedOutline);
+				const result = await printParadisOfficeModelInBrowser(model, this.window);
+				return withParadisOfficePrintResult(model, result);
+			},
+		});
+		if (!v1Enabled) {
+			this._clearSemanticUi();
+			return;
+		}
+		this._findWidget.value?.setSearchProvider(callbacks.search, callbacks.print
 			? localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter.")
 			: localize('paradis.word.searchDisabled', "Search is disabled by configuration."));
 		const adapted = adaptLegacyWordInspectorChangeSet(result);
@@ -786,15 +799,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._inspectorToggle.style.display = '';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
-			searchUnavailable: configuration.searchPrint
+			searchUnavailable: callbacks.print
 				? localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter.")
 				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
-			...(configuration.searchPrint ? {
-				getPrintModel: async () => {
-					const model = createLegacyWordPrintModel(basename(this._modifiedResource ?? URI.file('document.docx')), this._assetPlaceholders, this._modifiedOutline);
-					const result = await printParadisOfficeModelInBrowser(model, this.window);
-					return withParadisOfficePrintResult(model, result);
-				},
+			...(callbacks.print ? {
+				getPrintModel: callbacks.print,
 			} : { printUnavailable: localize('paradis.word.printDisabled', "Print preview is disabled by configuration.") }),
 			onNavigate: target => {
 				const match = /^legacy-change:(\d+)$/.exec(target.anchor ?? '');

@@ -41,7 +41,7 @@ import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WID
 import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { ParadisOfficeChange, ParadisOfficeChangeCategory, ParadisOfficeChangeValue, ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
-import type { ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
@@ -677,17 +677,33 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	private _renderSemanticUi(modifiedWorkbook: IParadisWorkbookData, restoredViewState?: ParadisSpreadsheetViewState): void {
 		const configuration = this._runtimeConfiguration;
-		if (!configuration || !isParadisSpreadsheetV1Enabled(configuration)) {
+		if (!configuration) {
+			this._clearSemanticUi();
+			return;
+		}
+		const v1Enabled = isParadisSpreadsheetV1Enabled(configuration);
+		const callbacks = createParadisOfficeSearchPrintCallbacks(configuration, v1Enabled, {
+			search: () => ({
+				find: async (query: { readonly text: string; readonly matchCase: boolean }, cursor: string | undefined, token: CancellationToken) => {
+					if (cursor || token.isCancellationRequested) {
+						return Object.freeze({ results: Object.freeze([]), total: 0, capped: false });
+					}
+					return createLegacySpreadsheetSearchPage(modifiedWorkbook, query.text, query.matchCase);
+				},
+				inspect: async (query: string) => searchLegacySpreadsheetWorkbook(modifiedWorkbook, query),
+			}),
+			print: () => async () => {
+				const model = createLegacySpreadsheetPrintModel(modifiedWorkbook, basename(this._modifiedResource ?? URI.file('spreadsheet.xlsx')));
+				const result = await printParadisOfficeModelInBrowser(model, this.window);
+				return withParadisOfficePrintResult(model, result);
+			},
+		});
+		if (!v1Enabled) {
 			this._clearSemanticUi();
 			return;
 		}
 		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
-		this._findWidget.value?.setSearchProvider(configuration.searchPrint ? async (query, cursor, token) => {
-			if (cursor || token.isCancellationRequested) {
-				return Object.freeze({ results: Object.freeze([]), total: 0, capped: false });
-			}
-			return createLegacySpreadsheetSearchPage(modifiedWorkbook, query.text, query.matchCase);
-		} : undefined, configuration.searchPrint
+		this._findWidget.value?.setSearchProvider(callbacks.search?.find, callbacks.search
 			? localize('paradis.spreadsheet.diffSearchUnavailableAdapter', "Search is unavailable for this compatible comparison adapter.")
 			: localize('paradis.spreadsheet.diffSearchDisabled', "Search is disabled by configuration."));
 		const legacyChangeSet = adaptLegacySpreadsheetInspectorChangeSet(this._diffSheets);
@@ -732,14 +748,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._inspectorToggle.style.display = '';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
-			...(configuration.searchPrint ? {
-				search: async (query: string) => searchLegacySpreadsheetWorkbook(modifiedWorkbook, query),
-				getPrintModel: async () => {
-					const model = createLegacySpreadsheetPrintModel(modifiedWorkbook, basename(this._modifiedResource ?? URI.file('spreadsheet.xlsx')));
-					const result = await printParadisOfficeModelInBrowser(model, this.window);
-					return withParadisOfficePrintResult(model, result);
-				},
-			} : {}),
+			...(callbacks.search ? { search: callbacks.search.inspect } : {}),
+			...(callbacks.print ? { getPrintModel: callbacks.print } : {}),
 			onNavigate: target => {
 				if (target.kind === 'change') {
 					const candidates = changes.filter(change => change.subject.locator === target.locator);

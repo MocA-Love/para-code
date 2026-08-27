@@ -35,7 +35,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
-import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell } from '../common/paradisOfficePrint.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
@@ -712,17 +712,33 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	private _renderSemanticUi(workbook: IParadisWorkbookData, restoredViewState?: ParadisSpreadsheetViewState): void {
 		const configuration = this._runtimeConfiguration;
-		if (!configuration || !isParadisSpreadsheetV1Enabled(configuration)) {
+		if (!configuration) {
+			this._clearSemanticUi();
+			return;
+		}
+		const v1Enabled = isParadisSpreadsheetV1Enabled(configuration);
+		const callbacks = createParadisOfficeSearchPrintCallbacks(configuration, v1Enabled, {
+			search: () => ({
+				find: async (query: { readonly text: string; readonly matchCase: boolean }, cursor: string | undefined, token: CancellationToken) => {
+					if (cursor || token.isCancellationRequested) {
+						return Object.freeze({ results: Object.freeze([]), total: 0, capped: false });
+					}
+					return createLegacySpreadsheetSearchPage(workbook, query.text, query.matchCase);
+				},
+				inspect: async (query: string) => searchLegacySpreadsheetWorkbook(workbook, query),
+			}),
+			print: () => async () => {
+				const model = createLegacySpreadsheetPrintModel(workbook, basename(this._currentResource ?? URI.file('spreadsheet.xlsx')));
+				const result = await printParadisOfficeModelInBrowser(model, this.window);
+				return withParadisOfficePrintResult(model, result);
+			},
+		});
+		if (!v1Enabled) {
 			this._clearSemanticUi();
 			return;
 		}
 		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
-		this._findWidget.value?.setSearchProvider(configuration.searchPrint ? async (query, cursor, token) => {
-			if (cursor || token.isCancellationRequested) {
-				return Object.freeze({ results: Object.freeze([]), total: 0, capped: false });
-			}
-			return createLegacySpreadsheetSearchPage(workbook, query.text, query.matchCase);
-		} : undefined, configuration.searchPrint
+		this._findWidget.value?.setSearchProvider(callbacks.search?.find, callbacks.search
 			? localize('paradis.spreadsheet.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
 			: localize('paradis.spreadsheet.searchDisabled', "Search is disabled by configuration."));
 		const placeholders: ParadisOfficePlaceholder[] = [];
@@ -760,14 +776,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._inspectorToggle.style.display = '';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
-			...(configuration.searchPrint ? {
-				search: async (query: string) => searchLegacySpreadsheetWorkbook(workbook, query),
-				getPrintModel: async () => {
-					const model = createLegacySpreadsheetPrintModel(workbook, basename(this._currentResource ?? URI.file('spreadsheet.xlsx')));
-					const result = await printParadisOfficeModelInBrowser(model, this.window);
-					return withParadisOfficePrintResult(model, result);
-				},
-			} : {}),
+			...(callbacks.search ? { search: callbacks.search.inspect } : {}),
+			...(callbacks.print ? { getPrintModel: callbacks.print } : {}),
 			onNavigate: target => this._navigateToLogicalLocator(target.locator, target.anchor),
 		});
 		this._changeInspector.value = inspector;
