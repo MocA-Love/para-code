@@ -11,6 +11,7 @@ import { ParadisOfficePackageError } from '../../common/office/paradisOfficeArch
 import { fingerprintParadisWordObjectBytes } from '../../common/word/paradisWordObjects.js';
 import {
 	parseParadisWordSecurity,
+	type ParadisWordExternalUnsafeNode,
 	type ParadisWordSecurityPartInput,
 } from '../../common/word/paradisWordSecurity.js';
 
@@ -116,7 +117,7 @@ suite('ParadisWordSecurity', () => {
 	test('redacts DDE instructions and external targets while preserving their hashes and zero-action disposition', () => {
 		const model = parseParadisWordSecurity({ parts: fixtureParts() });
 		const dde = model.unsafeNodes.filter(node => node.kind === 'dde');
-		const external = model.unsafeNodes.filter(node => node.kind === 'externalImage' || node.kind === 'externalRelationship');
+		const external = model.unsafeNodes.filter((node): node is ParadisWordExternalUnsafeNode => node.kind === 'externalImage' || node.kind === 'externalRelationship');
 
 		strictEqual(dde.length, 2);
 		ok(dde.every(node => node.behavior === 'notExecuted' && node.instructionFingerprint.algorithm === 'sha256'));
