@@ -43,14 +43,23 @@ export const PARADIS_SPREADSHEET_INPUT_TYPE_ID = 'paradis.input.spreadsheet';
 export const PARADIS_SPREADSHEET_DIFF_EDITOR_ID = 'paradis.editor.spreadsheetDiff';
 export const PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID = 'paradis.input.spreadsheetDiff';
 
+/** Browser semantic Office viewer and explicit unsupported diagnostic identifiers. */
+export const PARADIS_OFFICE_BROWSER_EDITOR_ID = 'paradis.editor.officeBrowser';
+export const PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID = 'paradis.input.officeBrowser';
+
 /** レンダリング表示の対象となる拡張子（すべて小文字・ドット付き）。 */
 export const PARADIS_MARKDOWN_EXTENSIONS: readonly string[] = ['.md', '.markdown'];
 export const PARADIS_HTML_EXTENSIONS: readonly string[] = ['.html', '.htm'];
-// Excelビューア対象。exceljs は OOXML(.xlsx/.xlsm)のみ対応で、旧BIFF形式(.xls)は非対応のため含めない。
-export const PARADIS_SPREADSHEET_EXTENSIONS: readonly string[] = ['.xlsx', '.xlsm'];
+// Semantic OOXML only. Macro/template packages remain read-only and document code is never executed.
+export const PARADIS_SPREADSHEET_EXTENSIONS: readonly string[] = ['.xlsx', '.xlsm', '.xltx', '.xltm'];
 export const PARADIS_PDF_EXTENSIONS: readonly string[] = ['.pdf'];
-// Word ビューア対象。docx-preview は OOXML(.docx)のみ対応で、旧バイナリ形式(.doc)は非対応のため含めない。
-export const PARADIS_DOCX_EXTENSIONS: readonly string[] = ['.docx'];
+export const PARADIS_DOCX_EXTENSIONS: readonly string[] = ['.docx', '.docm', '.dotx', '.dotm'];
+export const PARADIS_OFFICE_SEMANTIC_EXTENSIONS: readonly string[] = [...PARADIS_SPREADSHEET_EXTENSIONS, ...PARADIS_DOCX_EXTENSIONS];
+export const PARADIS_OFFICE_DIAGNOSTIC_EXTENSIONS: readonly string[] = ['.xlsb', '.ods', '.xls', '.doc', '.rtf'];
+
+export type ParadisOfficeSemanticFormat = 'xlsx' | 'xlsm' | 'xltx' | 'xltm' | 'docx' | 'docm' | 'dotx' | 'dotm';
+export type ParadisOfficeDiagnosticFormat = 'xlsb' | 'ods' | 'xls' | 'doc' | 'rtf';
+export type ParadisOfficeFileFormat = ParadisOfficeSemanticFormat | ParadisOfficeDiagnosticFormat;
 
 // EditorResolver には拡張子ごとに `*<ext>` 形式で個別登録する（ビルトインの Search Editor が
 // `'*' + SEARCH_EDITOR_EXT` で登録しているのと同じ実績のある形。brace glob は使わない）。
@@ -82,4 +91,15 @@ export function isParadisPdfResource(resource: URI): boolean {
 /** 与えられたリソースの拡張子が Word(.docx)ビューア対象か。 */
 export function isParadisDocxResource(resource: URI): boolean {
 	return PARADIS_DOCX_EXTENSIONS.includes(extname(resource).toLowerCase());
+}
+
+export function getParadisOfficeFormat(resource: URI): ParadisOfficeFileFormat | undefined {
+	const extension = extname(resource).toLowerCase();
+	return [...PARADIS_OFFICE_SEMANTIC_EXTENSIONS, ...PARADIS_OFFICE_DIAGNOSTIC_EXTENSIONS].includes(extension)
+		? extension.slice(1) as ParadisOfficeFileFormat
+		: undefined;
+}
+
+export function isParadisOfficeDiagnosticResource(resource: URI): boolean {
+	return PARADIS_OFFICE_DIAGNOSTIC_EXTENSIONS.includes(extname(resource).toLowerCase());
 }
