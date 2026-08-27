@@ -67,6 +67,9 @@ interface StoredHandle extends Omit<OfficeHandleRecord, 'active'> {
 interface StoredCache {
 	readonly id: string;
 	readonly bytes: number;
+	readonly ownerHandleId?: string;
+	readonly snapshot?: object;
+	readonly onRelease?: () => void;
 	lastUsed: number;
 	active: boolean;
 }
@@ -135,6 +138,7 @@ export class OfficeHandleStore {
 
 	get size(): number { return this.handles.size; }
 	get semanticCacheBytes(): number { return this.cacheBytes; }
+	get semanticSnapshotCount(): number { return [...this.cache.values()].filter(entry => entry.snapshot !== undefined).length; }
 
 	create(ownerId: string, kind: ParadisOfficeHandleRef['kind'], sourceRevision: string, memoryBytes: number, workerId?: string): OfficeHandleCapability {
 		if (!ownerPattern.test(ownerId) || (kind !== 'document' && kind !== 'comparison') || !revisionPattern.test(sourceRevision) || !isSafeInteger(memoryBytes)
@@ -270,7 +274,35 @@ export class OfficeHandleStore {
 
 	/** Adds or updates cache accounting and evicts inactive LRU entries before exceeding the fixed cache budget. */
 	putSemanticCache(id: string, bytes: number, active = false): boolean {
-		if (!ownerPattern.test(id) || !isSafeInteger(bytes) || typeof active !== 'boolean') { return false; }
+		return this.putCache(id, bytes, active);
+	}
+
+	/** Transfers ownership of a semantic snapshot to the cache for the lifetime of its handle. */
+	putSemanticSnapshot(capability: OfficeHandleCapability, id: string, snapshot: object, bytes: number, onRelease: () => void, active = false): boolean {
+		const handle = this.entryFor(capability);
+		if (!handle || this.expired(handle)) {
+			if (handle) { this.remove(handle); }
+			return false;
+		}
+		if (!ownerPattern.test(id) || !snapshot || typeof snapshot !== 'object' || typeof onRelease !== 'function' || !isSafeInteger(bytes) || typeof active !== 'boolean') { return false; }
+		return this.putCache(this.snapshotCacheKey(handle.id, id), bytes, active, handle.id, snapshot, onRelease);
+	}
+
+	getSemanticSnapshot(capability: OfficeHandleCapability, id: string): object | undefined {
+		const handle = this.entryFor(capability);
+		if (!handle || this.expired(handle) || !ownerPattern.test(id)) {
+			if (handle) { this.remove(handle); }
+			return undefined;
+		}
+		const entry = this.cache.get(this.snapshotCacheKey(handle.id, id));
+		if (!entry || entry.ownerHandleId !== handle.id || !entry.snapshot) { return undefined; }
+		entry.lastUsed = this.safeNow();
+		this.touch(handle);
+		return entry.snapshot;
+	}
+
+	private putCache(id: string, bytes: number, active: boolean, ownerHandleId?: string, snapshot?: object, onRelease?: () => void): boolean {
+		if ((ownerHandleId === undefined && !ownerPattern.test(id)) || !isSafeInteger(bytes) || typeof active !== 'boolean') { return false; }
 		const previous = this.cache.get(id);
 		const evicted: StoredCache[] = [];
 		let retained = this.cacheBytes - (previous?.bytes ?? 0);
@@ -283,10 +315,10 @@ export class OfficeHandleStore {
 		}
 		const accountantLimit = this.accountant ? this.accountant.snapshot().limitBytes - (this.accountant.snapshot().totalBytes - this.accountant.snapshot().cacheBytes) : Number.MAX_SAFE_INTEGER;
 		if (requiredFor(this.semanticCacheLimitBytes) > 0 || requiredFor(accountantLimit) > 0 || (this.accountant && !this.accountant.trySetCache(retained + bytes))) { return false; }
-		if (previous) { this.cache.delete(id); }
-		for (const entry of evicted) { this.cache.delete(entry.id); }
+		if (previous) { this.releaseCache(previous); }
+		for (const entry of evicted) { this.releaseCache(entry); }
 		this.cacheBytes = retained + bytes;
-		this.cache.set(id, { id, bytes, active, lastUsed: this.safeNow() });
+		this.cache.set(id, { id, bytes, active, lastUsed: this.safeNow(), ...(ownerHandleId ? { ownerHandleId } : {}), ...(snapshot ? { snapshot } : {}), ...(onRelease ? { onRelease } : {}) });
 		return true;
 	}
 
@@ -303,7 +335,7 @@ export class OfficeHandleStore {
 		let released = 0;
 		for (const entry of [...this.cache.values()].filter(value => !value.active).sort((a, b) => a.lastUsed - b.lastUsed)) {
 			if (released >= requiredBytes && this.cacheBytes <= this.semanticCacheLimitBytes) { break; }
-			this.cache.delete(entry.id);
+			this.releaseCache(entry);
 			this.cacheBytes -= entry.bytes;
 			released += entry.bytes;
 		}
@@ -325,7 +357,7 @@ export class OfficeHandleStore {
 
 	dispose(): void {
 		for (const entry of [...this.handles.values()]) { this.remove(entry); }
-		this.cache.clear();
+		for (const entry of [...this.cache.values()]) { this.releaseCache(entry); }
 		this.cacheBytes = 0;
 		this.syncAccountant();
 	}
@@ -365,6 +397,12 @@ export class OfficeHandleStore {
 	private remove(entry: StoredHandle): void {
 		if (this.handles.get(entry.id) !== entry) { return; }
 		this.handles.delete(entry.id);
+		for (const cache of [...this.cache.values()]) {
+			if (cache.ownerHandleId === entry.id) {
+				this.releaseCache(cache);
+				this.cacheBytes -= cache.bytes;
+			}
+		}
 		try { entry.timer.dispose(); } catch { }
 		if (entry.accountantReserved) { entry.accountantReserved = false; this.accountant?.releaseHandles(entry.memoryBytes); }
 		this.syncAccountant();
@@ -380,6 +418,12 @@ export class OfficeHandleStore {
 		}
 	}
 	private expired(entry: StoredHandle): boolean { return !Number.isSafeInteger(entry.idleDeadline) || this.safeNow() >= entry.idleDeadline; }
+	private snapshotCacheKey(handleId: string, id: string): string { return `${handleId}\0${id}`; }
+	private releaseCache(entry: StoredCache): void {
+		if (this.cache.get(entry.id) !== entry) { return; }
+		this.cache.delete(entry.id);
+		try { entry.onRelease?.(); } catch { }
+	}
 	private syncAccountant(): void {
 		if (this.accountant && !this.accountant.trySetCache(this.cacheBytes)) { throw new OfficeHandleStoreError('memoryExceeded'); }
 	}
