@@ -103,6 +103,7 @@
     <h1>Para Code 独自機能「Office ビューア」徹底調査レポート</h1>
     <p class="sub">Excel (.xlsx/.xlsm) 表示・DIFF / Word (.docx) 表示・DIFF の未対応パターン・描画ミスの網羅監査</p>
     <p class="sub">調査日: 2026-08-22 ／ 対象コミット: <code style="background:rgba(255,255,255,.15);color:#fff">1c88c85dab6</code> (HEAD) ／ リサーチ専用(コード変更なし)</p>
+    <p class="sub">完了台帳: <code style="background:rgba(255,255,255,.15);color:#fff">0e123d9598d</code> 時点のTask 2では実機未確認のため、対応状況は <code style="background:rgba(255,255,255,.15);color:#fff">docs/office-viewer-acceptance-matrix.md</code> のsafe-fallback分類を正本とする。</p>
   </div>
 </header>
 
@@ -121,6 +122,10 @@
 </nav>
 
 <div class="wrap">
+
+<div class="callout">
+  このページは2026-08-22時点の歴史的調査であり、ここにある「対応済み」表示は現在のruntime検証結果ではない。現在の分類、commit祖先性、fixture/unit/runtimeの実行有無は<a href="office-viewer-acceptance-matrix.md">監査matrix</a>と<a href="office-viewer-verification.md">検証台帳</a>を参照する。
+</div>
 
 <!-- ================= 要約 ================= -->
 <h2 class="sec" id="summary">要約 <small>Executive Summary</small></h2>

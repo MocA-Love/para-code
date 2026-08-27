@@ -989,6 +989,7 @@
     <h1>Excel / Word ビューア・Diff<br>現行 main と全対応後の比較モック</h1>
     <p class="sub">既存の徹底調査レポートを現行コードへ再照合し、表示用の文字列・CSSだけでは見えないOOXMLの意味差分まで対象を拡張した到達像を並べる。</p>
     <p class="sub">再調査日: 2026-08-24 ／ 現行基準: <code>ba8ca41d118</code> ／ 元レポート基準: <code>1c88c85dab6</code> ／ 画面モック: Dark Modern相当</p>
+    <p class="sub">監査更新: <code>0e123d9598d</code>。Task 2は実機runtime未確認のため、現在の正本はsafe-fallback分類の<a href="office-viewer-acceptance-matrix.md">監査matrix</a>である。</p>
   </div>
 </header>
 
@@ -1491,7 +1492,7 @@
           <li><strong>untitled</strong><span><span class="badge badge-open">未対応</span> resolverはfile/vscode-remote/gitのみ。未保存バイナリをOffice viewerへ解決しない。</span></li>
           <li><strong>Git LFS</strong><span><span class="badge badge-partial">部分</span> <code>git show --textconv</code>でLFS pointerが渡る場合があり、現在は誤差分ではなく読込エラーになるが内容比較はできない。</span></li>
           <li><strong>SCM / watcher</strong><span><span class="badge badge-partial">部分</span> file/vscode-remoteは監視するが、staged/index更新や片側消失の扱いに差がある。</span></li>
-          <li><strong>Mobile parity</strong><span><span class="badge badge-partial">部分</span> Wordは端末内render、Excel表示とExcel DiffはPC生成HTML relay。Word Diffはモバイル未対応。</span></li>
+          <li><strong>Mobile parity（歴史的所見）</strong><span><span class="badge badge-partial">要runtime確認</span> 当時はWordが端末内render、Excel表示とExcel DiffがPC生成HTML relay、Word Diffがモバイル未対応だった。現行実装にはcapability relayがあるが、Task 2では端末実機を接続していないため、未確認cellはsafe-fallbackとして扱う。</span></li>
           <li><strong>依存更新</strong><span><span class="badge badge-limit">制約</span> vendored docx-previewの内部<code>parseAsync/renderDocument</code>と手動patchに依存し、0.4.0はbreaking changeを含む。</span></li>
         </ul>
       </article>
