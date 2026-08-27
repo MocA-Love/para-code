@@ -14,7 +14,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, MutableDisposable, toDisposable, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, isEqual } from '../../../../base/common/resources.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -38,6 +38,7 @@ import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurat
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell } from '../common/paradisOfficePrint.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
@@ -398,8 +399,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private readonly _overlayRaf = this._register(new MutableDisposable());
 	private readonly _overlayTriggers = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _virtualRenderer = this._register(new MutableDisposable<ParadisSpreadsheetGridRenderer>());
+	private readonly _gridAccessibility = this._register(new MutableDisposable<IDisposable>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
+	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _currentResource: URI | undefined;
 	private _workbook: IParadisWorkbookData | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
@@ -426,17 +429,23 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-spreadsheet'));
 		this._root.style.position = 'relative';
+		this._accessibility = this._register(new ParadisOfficeAccessibility(this._root, {
+			label: localize('paradis.spreadsheet.viewer', "Spreadsheet Viewer"),
+		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
 			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
 		});
 
 		const header = dom.append(this._root, $('.paradis-spreadsheet-header'));
+		header.setAttribute('role', 'toolbar');
+		header.setAttribute('aria-label', localize('paradis.spreadsheet.toolbar', "Spreadsheet Toolbar"));
 		const left = dom.append(header, $('.paradis-spreadsheet-header-left'));
 		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
 		const right = dom.append(header, $('.paradis-spreadsheet-header-right'));
 		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
 		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "Inspector");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "Inspector"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._inspectorToggle.style.display = 'none';
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -460,11 +469,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._inspectorPanel.style.display = 'none';
 
 		// ズーム −/%/＋（HTMLビューアと同じUI）。
-		appendIconButton(right, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / 1.2));
+		const zoomOutLabel = localize('paradis.spreadsheet.zoomOut', "Zoom Out");
+		this._accessibility.labelButton(appendIconButton(right, Codicon.zoomOut, zoomOutLabel, this._headerDisposables, () => this._zoom(1 / 1.2)), zoomOutLabel);
 		this._percentBtn = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
 		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "Reset Zoom");
+		this._accessibility.labelButton(this._percentBtn, localize('paradis.spreadsheet.resetZoom', "Reset Zoom"));
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
-		appendIconButton(right, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "Zoom In"), this._headerDisposables, () => this._zoom(1.2));
+		const zoomInLabel = localize('paradis.spreadsheet.zoomIn', "Zoom In");
+		this._accessibility.labelButton(appendIconButton(right, Codicon.zoomIn, zoomInLabel, this._headerDisposables, () => this._zoom(1.2)), zoomInLabel);
 
 		// 「既定のアプリで開く」ボタンは resource 依存なので入力ごとに作り直す。
 		this._openAppEl = dom.append(right, $('.paradis-spreadsheet-openapp'));
@@ -557,6 +569,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (this._openAppEl) {
 			dom.clearNode(this._openAppEl);
 			appendOpenInAppButton(this._openAppEl, resource, this._nativeHostService, store);
+			const button = this._openAppEl.firstElementChild as HTMLButtonElement | null;
+			if (button) {
+				this._accessibility?.labelButton(button, button.title);
+			}
 		}
 		try {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
@@ -738,6 +754,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (!this._bodyEl) {
 			return;
 		}
+		this._gridAccessibility.clear();
 		dom.clearNode(this._bodyEl);
 		this._setStickyStripsVisible(false);
 		if (this._tabsEl) {
@@ -752,6 +769,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		this._virtualRenderer.clear();
+		this._gridAccessibility.clear();
 		this._overlayRaf.clear();
 		this._overlayTriggers.clear();
 		this._replaceToken = {};
@@ -800,6 +818,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._naturalTableHeight = 0; // レイアウト確定後(_placeGeometryOverlays)に実測する
 		inner.style.width = `${naturalWidth}px`;
 		dom.append(inner, table);
+		this._gridAccessibility.value = wireParadisOfficeTableGrid(table, {
+			label: localize('paradis.spreadsheet.sheetGrid', "Sheet {0}", sheet.name),
+			rowCount: Math.max(1, sheet.rows.length),
+			columnCount: Math.max(1, sheet.columnCount),
+			logicalCellColumns: sheet.rows.map(row => row.cells.flatMap((cell, column) => cell.hidden ? [] : [column])),
+		});
 
 		if (sheet.truncated) {
 			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
@@ -837,6 +861,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			getViewport: async request => legacyGridTile(sheet, request),
 			fontsReady: dom.getWindow(host).document.fonts.ready,
 		});
+		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "Sheet {0}", sheet.name), Math.max(1, sheet.rows.length), Math.max(1, sheet.columnCount));
 		this._virtualRenderer.value = renderer;
 		void renderer.render({
 			scrollTop: 0,
@@ -1020,6 +1045,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		this._tabsEl.style.display = '';
+		const accessibleTabs: ParadisOfficeTabEntry[] = [];
 		this._sheets.forEach((sheet, idx) => {
 			const tab = dom.append(this._tabsEl!, $('button.paradis-spreadsheet-tab')) as HTMLButtonElement;
 			tab.classList.toggle('active', idx === this._activeSheetIndex);
@@ -1034,9 +1060,17 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			if (sheet.protectedSheet) {
 				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
 				lock.title = localize('paradis.spreadsheet.protected', "This sheet is protected");
+				lock.setAttribute('aria-hidden', 'true');
 			}
 			const label = dom.append(tab, $('span'));
 			label.textContent = sheet.name;
+			accessibleTabs.push({
+				element: tab,
+				label: sheet.protectedSheet
+					? localize('paradis.spreadsheet.protectedSheetTab', "{0}, protected sheet", sheet.name)
+					: localize('paradis.spreadsheet.sheetTab', "{0} sheet", sheet.name),
+				selected: idx === this._activeSheetIndex,
+			});
 			tabsStore.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
 				if (this._activeSheetIndex === idx) {
 					return;
@@ -1047,6 +1081,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._changeInspector.value?.setActiveSheet(sheet.name);
 			}));
 		});
+		tabsStore.add(wireParadisOfficeTabList(this._tabsEl, {
+			label: localize('paradis.spreadsheet.sheetTabs', "Workbook Sheets"),
+			tabs: accessibleTabs,
+		}));
 	}
 
 	private _zoom(factor: number): void {

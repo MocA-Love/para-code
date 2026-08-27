@@ -35,6 +35,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeAccessibility, applyParadisOfficeChangeLegendSemantics, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
@@ -56,6 +57,7 @@ import './media/paradisSpreadsheet.css';
 const $ = dom.$;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 4;
+const DISTINCT_ACCESSIBLE_CHANGE_KINDS = new Set(['cell.diagonalBorder', 'conditionalFormatting.diagonalBorder', 'table.diagonalBorder', 'object.lineGeometry']);
 const INCOMPLETE_SPREADSHEET_DIFF_MANIFEST: ParadisOfficeCompletenessManifest = Object.freeze({
 	expectedParts: 2, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
 	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
@@ -77,6 +79,8 @@ interface IDiffLocation {
 	readonly shape?: { readonly render: IParadisRenderShape; readonly side: 'original' | 'modified' };
 	/** 入力規則の変更なら、セル位置と変更前後の規則。 */
 	readonly validation?: IValidationChange;
+	/** Safe semantic category used only to derive the live-region label. */
+	readonly semanticChange?: ParadisOfficeChange;
 }
 
 interface IParadisSpreadsheetDiffCommittedInput {
@@ -395,6 +399,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private readonly _syncScrollReset = this._register(new MutableDisposable());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
+	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _originalResource: URI | undefined;
 	private _modifiedResource: URI | undefined;
 	private _originalWorkbook: IParadisWorkbookData | undefined;
@@ -436,31 +441,38 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-spreadsheet-diff'));
 		this._root.style.position = 'relative';
+		this._accessibility = this._register(new ParadisOfficeAccessibility(this._root, {
+			label: localize('paradis.spreadsheet.diffViewer', "Spreadsheet Comparison"),
+		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
 			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
 		});
 
 		const toolbar = dom.append(this._root, $('.paradis-spreadsheet-diff-toolbar'));
+		toolbar.setAttribute('role', 'toolbar');
+		toolbar.setAttribute('aria-label', localize('paradis.spreadsheet.diffToolbar', "Spreadsheet Comparison Toolbar"));
 		const left = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-left'));
 		this._countEl = dom.append(left, $('span.paradis-spreadsheet-diff-count'));
 		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
 		// 色の意味(緑=追加/赤=削除/青=変更)をツールバーに常時表示する。Word 差分と同じ語彙・配色。
 		const legend = dom.append(left, $('.paradis-spreadsheet-diff-legend'));
 		const legendEntries = [
-			{ color: '#22c55e', label: localize('paradis.spreadsheet.legendAdded', "追加") },
-			{ color: '#ef4444', label: localize('paradis.spreadsheet.legendRemoved', "削除") },
-			{ color: '#3b82f6', label: localize('paradis.spreadsheet.legendModified', "変更") },
+			{ category: 'added', marker: '+', color: '#22c55e', label: localize('paradis.spreadsheet.legendAdded', "追加") },
+			{ category: 'removed', marker: '−', color: '#ef4444', label: localize('paradis.spreadsheet.legendRemoved', "削除") },
+			{ category: 'modified', marker: '~', color: '#3b82f6', label: localize('paradis.spreadsheet.legendModified', "変更") },
 		];
 		for (const entry of legendEntries) {
 			const item = dom.append(legend, $('span.paradis-spreadsheet-diff-legend-item'));
 			const swatch = dom.append(item, $('span.paradis-spreadsheet-diff-legend-swatch'));
 			swatch.style.backgroundColor = entry.color;
 			dom.append(item, $('span')).textContent = entry.label;
+			applyParadisOfficeChangeLegendSemantics(item, swatch, entry);
 		}
 		const right = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-right'));
 		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
 		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "Inspector");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "Inspector"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._inspectorToggle.style.display = 'none';
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -475,6 +487,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		// 入力規則だけに絞り込み、セルマーカーと詳細ペインを表示する。
 		this._validationFilterBtn = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
 		this._validationFilterBtn.title = localize('paradis.spreadsheet.validationFilter', "Show Data Validation Changes");
+		this._accessibility.labelButton(this._validationFilterBtn, localize('paradis.spreadsheet.validationFilter', "Show Data Validation Changes"));
 		this._validationFilterBtn.setAttribute('aria-pressed', 'false');
 		dom.append(this._validationFilterBtn, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
 		const validationFilterLabel = dom.append(this._validationFilterBtn, $('span'));
@@ -483,18 +496,23 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		// ズーム −/%/＋（通常ビューアと同じ。左右ペインに同倍率を適用する）。
 		const zoom = dom.append(right, $('.paradis-spreadsheet-diff-zoom'));
-		appendIconButton(zoom, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / 1.2));
+		const zoomOutLabel = localize('paradis.spreadsheet.zoomOut', "Zoom Out");
+		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomOut, zoomOutLabel, this._headerDisposables, () => this._zoom(1 / 1.2)), zoomOutLabel);
 		this._percentBtn = dom.append(zoom, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
 		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "Reset Zoom");
+		this._accessibility.labelButton(this._percentBtn, localize('paradis.spreadsheet.resetZoom', "Reset Zoom"));
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
-		appendIconButton(zoom, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "Zoom In"), this._headerDisposables, () => this._zoom(1.2));
+		const zoomInLabel = localize('paradis.spreadsheet.zoomIn', "Zoom In");
+		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomIn, zoomInLabel, this._headerDisposables, () => this._zoom(1.2)), zoomInLabel);
 
 		const nav = dom.append(right, $('.paradis-spreadsheet-diff-nav'));
 		const prevBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
 		prevBtn.textContent = localize('paradis.spreadsheet.prev', "Prev");
+		this._accessibility.labelButton(prevBtn, localize('paradis.spreadsheet.previousChange', "Previous Change"));
 		this._navPositionEl = dom.append(nav, $('span.paradis-spreadsheet-diff-navpos'));
 		const nextBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
 		nextBtn.textContent = localize('paradis.spreadsheet.next', "Next");
+		this._accessibility.labelButton(nextBtn, localize('paradis.spreadsheet.nextChange', "Next Change"));
 		this._register(dom.addDisposableListener(prevBtn, dom.EventType.CLICK, () => this._navigate(-1)));
 		this._register(dom.addDisposableListener(nextBtn, dom.EventType.CLICK, () => this._navigate(1)));
 		this._openAppEl = dom.append(nav, $('.paradis-spreadsheet-openapp'));
@@ -705,7 +723,16 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 					return withParadisOfficePrintResult(model, result);
 				},
 			} : {}),
-			onNavigate: target => this._navigateToLogicalLocator(target.locator, target.anchor),
+			onNavigate: target => {
+				if (target.kind === 'change') {
+					const candidates = changes.filter(change => change.subject.locator === target.locator);
+					const change = candidates.find(candidate => DISTINCT_ACCESSIBLE_CHANGE_KINDS.has(candidate.subject.kind)) ?? candidates[0];
+					if (change) {
+						this._accessibility?.announceChange(change, Math.max(0, changes.indexOf(change)), changes.length);
+					}
+				}
+				this._navigateToLogicalLocator(target.locator, target.anchor);
+			},
 		});
 		this._changeInspector.value = inspector;
 		inspector.setViewState(viewState);
@@ -753,6 +780,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (this._openAppEl) {
 			dom.clearNode(this._openAppEl);
 			appendOpenInAppButton(this._openAppEl, modified, this._nativeHostService, store);
+			const button = this._openAppEl.firstElementChild as HTMLButtonElement | null;
+			if (button) {
+				this._accessibility?.labelButton(button, button.title);
+			}
 		}
 		if (modified.scheme === Schemas.file || modified.scheme === Schemas.vscodeRemote) {
 			try {
@@ -852,6 +883,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			this._renderSheet();
 			this._renderTabs();
 			this._updateNav();
+			this._accessibility?.announceChangeCount(this._diffLocations.length);
 			if (restoredLocation) {
 				this._scrollToRow(restoredLocation.rowIndex);
 				this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(restoredLocation!));
@@ -885,15 +917,42 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	/** 1シート分の変更位置(セル行 + 図形)を行位置順にまとめて返す。 */
 	private _buildSheetLocations(sheet: IParadisDiffSheet, sheetIndex: number): IDiffLocation[] {
 		const locs: IDiffLocation[] = [];
-		for (const rowIndex of getDiffRowIndices(sheet)) {
-			locs.push({ sheetIndex, rowIndex });
-		}
 		const maxRows = Math.max(sheet.originalRows.length, sheet.modifiedRows.length);
 		// anchorRow は change.side 側の Excel 行番号。行アライメントで挿入/削除があると
 		// original/modified で同じアライメント位置が別の Excel 行を指すため、他方優先のマップ
 		// 1つに寄せるとナビ先が本来の行からズレる。side ごとに別マップを引く。
 		const rowIndexByExcelOriginal = this._buildRowIndexByExcel(sheet.originalRows);
 		const rowIndexByExcelModified = this._buildRowIndexByExcel(sheet.modifiedRows);
+		const semanticChangeByRow = new Map<number, ParadisOfficeChange>();
+		for (const change of sheet.semanticChanges ?? []) {
+			const navigation = resolveParadisSpreadsheetNavigation(change.subject.locator);
+			const excelRow = navigation?.sheetName === sheet.name ? navigation.cell?.row : undefined;
+			const rowIndex = excelRow === undefined ? undefined : rowIndexByExcelModified.get(excelRow) ?? rowIndexByExcelOriginal.get(excelRow);
+			if (rowIndex !== undefined) {
+				const existing = semanticChangeByRow.get(rowIndex);
+				if (!existing || DISTINCT_ACCESSIBLE_CHANGE_KINDS.has(change.subject.kind) && !DISTINCT_ACCESSIBLE_CHANGE_KINDS.has(existing.subject.kind)) {
+					semanticChangeByRow.set(rowIndex, change);
+				}
+			}
+		}
+		for (const rowIndex of getDiffRowIndices(sheet)) {
+			let semanticChange = semanticChangeByRow.get(rowIndex);
+			if (!semanticChange) {
+				const hasLegacyDiagonal = [sheet.originalRows[rowIndex], sheet.modifiedRows[rowIndex]].some(row => row?.cells.some(cell => cell.diffDetails?.some(detail => detail.kind === 'diagonalBorder')));
+				if (hasLegacyDiagonal) {
+					semanticChange = {
+						id: `accessibility-diagonal:${sheetIndex}:${rowIndex}`,
+						category: 'formatting',
+						subject: { kind: 'cell.diagonalBorder', locator: `${sheet.name}!row:${rowIndex + 1}` },
+						before: { kind: 'none' },
+						after: { kind: 'none' },
+						certainty: 'degraded',
+						sourceParts: [],
+					};
+				}
+			}
+			locs.push({ sheetIndex, rowIndex, ...(semanticChange ? { semanticChange } : {}) });
+		}
 		const resolveRowIndex = (change: { readonly anchorRow: number; readonly side: 'original' | 'modified' }): number => {
 			const byExcel = change.side === 'original' ? rowIndexByExcelOriginal : rowIndexByExcelModified;
 			return byExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
@@ -1341,6 +1400,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._buildDiffCell(tr, cell, row.cells, ci, columnWidths, overflowCells, visibleValidation);
 			}
 		});
+		this._renderDisposables.add(wireParadisOfficeTableGrid(table, {
+			label: localize('paradis.spreadsheet.diffGrid', "{0} Spreadsheet Grid", label),
+			rowCount: Math.max(1, rows.length),
+			columnCount: Math.max(1, columnWidths.length),
+			logicalCellColumns: rows.map(row => row.cells.flatMap((cell, column) => cell.hidden ? [] : [column])),
+		}));
 		this._renderDisposables.add(dom.addDisposableListener(table, dom.EventType.MOUSE_OVER, event => {
 			if (!dom.isHTMLElement(event.target)) {
 				return;
@@ -1617,6 +1682,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 		this._tabsEl.style.display = '';
+		const accessibleTabs: ParadisOfficeTabEntry[] = [];
 		this._diffSheets.forEach((sheet, idx) => {
 			const tab = dom.append(this._tabsEl!, $('button.paradis-spreadsheet-tab')) as HTMLButtonElement;
 			tab.classList.toggle('active', idx === this._activeSheetIndex);
@@ -1632,6 +1698,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			if (sheet.protectedSheet) {
 				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
 				lock.title = localize('paradis.spreadsheet.protected', "This sheet is protected");
+				lock.setAttribute('aria-hidden', 'true');
 			}
 			let label = sheet.name;
 			if (sheet.sheetStatus === 'added') {
@@ -1641,6 +1708,18 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			const labelEl = dom.append(tab, $('span'));
 			labelEl.textContent = label;
+			const statusLabel = sheet.sheetStatus === 'added'
+				? localize('paradis.spreadsheet.addedSheet', "added")
+				: sheet.sheetStatus === 'removed'
+					? localize('paradis.spreadsheet.removedSheet', "removed")
+					: localize('paradis.spreadsheet.existingSheet', "existing");
+			accessibleTabs.push({
+				element: tab,
+				label: sheet.protectedSheet
+					? localize('paradis.spreadsheet.diffProtectedSheetTab', "{0} sheet, {1}, protected", sheet.name, statusLabel)
+					: localize('paradis.spreadsheet.diffSheetTab', "{0} sheet, {1}", sheet.name, statusLabel),
+				selected: idx === this._activeSheetIndex,
+			});
 			tabsStore.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
 				if (this._activeSheetIndex === idx) {
 					return;
@@ -1662,6 +1741,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				}
 			}));
 		});
+		tabsStore.add(wireParadisOfficeTabList(this._tabsEl, {
+			label: localize('paradis.spreadsheet.sheetTabs', "Workbook Sheets"),
+			tabs: accessibleTabs,
+		}));
 	}
 
 	private _updateNav(): void {
@@ -1695,6 +1778,21 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		this._currentDiffIdx = idx;
 		const location = this._diffLocations[idx];
+		if (location.semanticChange) {
+			this._accessibility?.announceChange(location.semanticChange, idx, this._diffLocations.length);
+		} else {
+			this._accessibility?.announceChangeLabel(
+				location.validation
+					? localize('paradis.spreadsheet.inputRuleChange', "Input Rule Change")
+					: location.shape?.render.type === 'line'
+						? localize('paradis.spreadsheet.drawingLineChange', "Drawing Line")
+						: location.shape
+							? localize('paradis.spreadsheet.drawingChange', "Drawing Change")
+							: localize('paradis.spreadsheet.cellChange', "Cell Change"),
+				idx,
+				this._diffLocations.length,
+			);
+		}
 		this._selectedValidation = location.validation;
 		if (location.sheetIndex !== this._activeSheetIndex) {
 			this._activeSheetIndex = location.sheetIndex;

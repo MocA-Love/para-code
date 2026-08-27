@@ -41,6 +41,7 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeAccessibility, applyParadisOfficeWebviewAccessibility } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { PARADIS_DOCX_MAX_BYTES, type IParadisDocxOutline } from '../common/paradisDocx.js';
 import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
@@ -177,6 +178,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
+	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
@@ -205,11 +207,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._rootElement = dom.append(parent, dom.$('.paradis-docx-viewer'));
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
+		this._accessibility = this._register(new ParadisOfficeAccessibility(this._rootElement, {
+			label: localize('paradis.word.viewer', "Word Document Viewer"),
+		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._rootElement, {
 			unavailableMessage: localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter."),
 			isActive: () => !!this._webview?.isFocused,
 		});
 		this._semanticToolbar = dom.append(this._rootElement, dom.$('.paradis-word-semantic-toolbar'));
+		this._semanticToolbar.setAttribute('role', 'toolbar');
+		this._semanticToolbar.setAttribute('aria-label', localize('paradis.word.toolbar', "Word Document Toolbar"));
 		this._semanticToolbar.style.position = 'absolute';
 		this._semanticToolbar.style.inset = '0 0 auto 0';
 		this._semanticToolbar.style.minHeight = '32px';
@@ -223,6 +230,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._inspectorToggle = dom.append(this._semanticToolbar, dom.$('button.paradis-word-inspector-toggle')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
 		this._inspectorToggle.textContent = localize('paradis.word.inspector', "Inspector");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.inspector', "Inspector"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._register(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
 			if (!this._inspectorPanel || !this._inspectorToggle) {
@@ -244,6 +252,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._inspectorPanel.style.display = 'none';
 		// overlay webview を重ねる位置合わせ用アンカー（paradisPdfFileEditor と同方式）。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-docx-viewer-webview'));
+		this._webviewContainer.setAttribute('role', 'region');
+		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.documentContent', "Word Document Content"));
 		this._webviewContainer.style.position = 'absolute';
 		this._webviewContainer.style.inset = '0';
 	}
@@ -456,10 +466,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		switch (decision) {
 			case 'rejected':
-				webview.setHtml(this._buildRejectedFileHtml());
+				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildRejectedFileHtml()));
 				return;
 			case 'viewer':
-				webview.setHtml(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._wordViewState));
+				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._wordViewState)));
 				this._renderSemanticUi();
 				return;
 		}

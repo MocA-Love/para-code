@@ -47,6 +47,7 @@ import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js
 import { resolveParadisViewerLibBase } from './paradisViewerAssets.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { PARADIS_DOCX_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeAccessibility, applyParadisOfficeChangeLegendSemantics, applyParadisOfficeWebviewAccessibility } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import {
 	IParadisDocxChange,
@@ -129,11 +130,11 @@ function snapshotWordDiffRuntimeConfiguration(configurationService: IConfigurati
  * 凡例に出す色。値は webview 側の CSS（paradisDocxDiffWebview.ts）と揃えること。
  * 文言は presentation 層と共有し、同じ意味を2か所で訳さないようにする。
  */
-const LEGEND: readonly { readonly color: string; readonly status: ParadisDocxChangeStatus }[] = [
-	{ color: '#22c55e', status: 'added' },
-	{ color: '#ef4444', status: 'removed' },
-	{ color: '#3b82f6', status: 'modified' },
-	{ color: '#a855f7', status: 'moved' },
+const LEGEND: readonly { readonly color: string; readonly status: ParadisDocxChangeStatus; readonly marker: string }[] = [
+	{ color: '#22c55e', status: 'added', marker: '+' },
+	{ color: '#ef4444', status: 'removed', marker: '−' },
+	{ color: '#3b82f6', status: 'modified', marker: '~' },
+	{ color: '#a855f7', status: 'moved', marker: '↔' },
 ];
 
 export class ParadisDocxDiffEditor extends EditorPane {
@@ -177,6 +178,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
+	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 
 	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService);
@@ -203,12 +205,17 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-docx-diff'));
 		this._root.style.position = 'relative';
+		this._accessibility = this._register(new ParadisOfficeAccessibility(this._root, {
+			label: localize('paradis.word.diffViewer', "Word Document Comparison"),
+		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
 			unavailableMessage: localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter."),
 			isActive: () => !!this._webview?.isFocused,
 		});
 
 		const toolbar = dom.append(this._root, $('.paradis-docx-diff-toolbar'));
+		toolbar.setAttribute('role', 'toolbar');
+		toolbar.setAttribute('aria-label', localize('paradis.word.diffToolbar', "Word Comparison Toolbar"));
 		const left = dom.append(toolbar, $('.paradis-docx-diff-toolbar-left'));
 		this._countEl = dom.append(left, $('span.paradis-docx-diff-count'));
 		this._noticeEl = dom.append(left, $('span.paradis-docx-diff-notice'));
@@ -219,13 +226,16 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			const item = dom.append(legend, $('span.paradis-docx-diff-legend-item'));
 			const swatch = dom.append(item, $('span.paradis-docx-diff-legend-swatch'));
 			swatch.style.backgroundColor = entry.color;
-			dom.append(item, $('span')).textContent = describeDocxChangeStatus(entry.status);
+			const label = describeDocxChangeStatus(entry.status);
+			dom.append(item, $('span')).textContent = label;
+			applyParadisOfficeChangeLegendSemantics(item, swatch, { category: entry.status, label, marker: entry.marker });
 		}
 
 		const right = dom.append(toolbar, $('.paradis-docx-diff-toolbar-right'));
 		this._inspectorToggle = dom.append(right, $('button.paradis-docx-diff-toggle')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
 		this._inspectorToggle.textContent = localize('paradis.word.diffInspector', "Inspector");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.diffInspector', "Inspector"));
 		this._inspectorToggle.style.display = 'none';
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -238,6 +248,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}));
 
 		this._formatToggle = dom.append(right, $('button.paradis-docx-diff-toggle')) as HTMLButtonElement;
+		this._accessibility.labelButton(this._formatToggle, localize('paradis.docxDiff.formatToggle', "書式の変更"));
 		dom.append(this._formatToggle, $(`span${ThemeIcon.asCSSSelector(Codicon.symbolText)}`));
 		// allow-any-unicode-next-line
 		dom.append(this._formatToggle, $('span')).textContent = localize('paradis.docxDiff.formatToggle', "書式の変更");
@@ -247,20 +258,25 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._appendIconButton(zoom, Codicon.zoomOut, localize('paradis.docxDiff.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / ZOOM_STEP));
 		this._percentEl = dom.append(zoom, $('button.paradis-docx-diff-percent')) as HTMLButtonElement;
 		this._percentEl.title = localize('paradis.docxDiff.resetZoom', "Reset Zoom");
+		this._accessibility.labelButton(this._percentEl, localize('paradis.docxDiff.resetZoom', "Reset Zoom"));
 		this._headerDisposables.add(dom.addDisposableListener(this._percentEl, dom.EventType.CLICK, () => this._setScale(1)));
 		this._appendIconButton(zoom, Codicon.zoomIn, localize('paradis.docxDiff.zoomIn', "Zoom In"), this._headerDisposables, () => this._zoom(ZOOM_STEP));
 
 		const nav = dom.append(right, $('.paradis-docx-diff-nav'));
 		const previous = dom.append(nav, $('button.paradis-docx-diff-navbtn')) as HTMLButtonElement;
 		previous.textContent = localize('paradis.docxDiff.previous', "Prev");
+		this._accessibility.labelButton(previous, localize('paradis.word.previousChange', "Previous Change"));
 		this._navPositionEl = dom.append(nav, $('span.paradis-docx-diff-navpos'));
 		const next = dom.append(nav, $('button.paradis-docx-diff-navbtn')) as HTMLButtonElement;
 		next.textContent = localize('paradis.docxDiff.next', "Next");
+		this._accessibility.labelButton(next, localize('paradis.word.nextChange', "Next Change"));
 		this._headerDisposables.add(dom.addDisposableListener(previous, dom.EventType.CLICK, () => this._navigate(-1)));
 		this._headerDisposables.add(dom.addDisposableListener(next, dom.EventType.CLICK, () => this._navigate(1)));
 		this._openAppEl = dom.append(nav, $('.paradis-docx-diff-openapp'));
 
 		this._webviewContainer = dom.append(this._root, $('.paradis-docx-diff-body'));
+		this._webviewContainer.setAttribute('role', 'region');
+		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.comparisonContent', "Word Comparison Content"));
 		this._inspectorPanel = dom.append(this._root, $('.paradis-word-diff-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
 		this._inspectorPanel.style.top = '42px';
@@ -284,6 +300,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _appendIconButton(parent: HTMLElement, icon: ThemeIcon, title: string, disposables: DisposableStore, onClick: () => void): HTMLButtonElement {
 		const button = dom.append(parent, $('button.paradis-docx-diff-iconbtn')) as HTMLButtonElement;
 		button.title = title;
+		this._accessibility?.labelButton(button, title);
 		dom.append(button, $(`span${ThemeIcon.asCSSSelector(icon)}`));
 		disposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, onClick));
 		return button;
@@ -429,14 +446,14 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 		this._loadGeneration++;
 		const webview = this._ensureWebview();
-		webview.setHtml(buildParadisDocxDiffHtml({
+		webview.setHtml(applyParadisOfficeWebviewAccessibility(buildParadisDocxDiffHtml({
 			// allow-any-unicode-next-line
 			original: localize('paradis.docxDiff.paneOriginal', "旧版 — {0}", basename(original)),
 			// allow-any-unicode-next-line
 			modified: localize('paradis.docxDiff.paneModified', "新版 — {0}", basename(modified)),
 			// allow-any-unicode-next-line
 			loading: localize('paradis.docxDiff.loading', "読み込み中…"),
-		}, libBase));
+		}, libBase)));
 	}
 
 	/** webview の受信準備ができてから .docx の中身を送る（先に送ると取りこぼす）。 */
@@ -691,6 +708,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			// allow-any-unicode-next-line
 			this._countEl.textContent = localize('paradis.docxDiff.changeCount', "{0} 件の変更", count);
 		}
+		if (count !== undefined) {
+			this._accessibility?.announceChangeCount(count);
+		}
 	}
 
 	private _setNotice(text: string | undefined): void {
@@ -720,6 +740,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			: (this._currentIndex + delta + this._changes.length) % this._changes.length;
 		this._currentIndex = next;
 		this._updateNav();
+		this._accessibility?.announceChangeLabel(describeDocxChangeStatus(this._changes[next].status), next, this._changes.length);
 		void this._webview?.postMessage({ type: 'reveal', changeId: this._changes[next].id });
 	}
 
