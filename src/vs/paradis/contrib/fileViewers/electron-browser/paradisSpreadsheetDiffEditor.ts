@@ -49,6 +49,7 @@ import { mapSpreadsheetLogicalAnchor } from './spreadsheet/paradisSpreadsheetVie
 import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
+import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 
 import './media/paradisSpreadsheet.css';
 
@@ -698,7 +699,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
 			...(configuration.searchPrint ? {
 				search: async (query: string) => searchLegacySpreadsheetWorkbook(modifiedWorkbook, query),
-				getPrintModel: async () => createLegacySpreadsheetPrintModel(modifiedWorkbook, basename(this._modifiedResource ?? URI.file('spreadsheet.xlsx'))),
+				getPrintModel: async () => {
+					const model = createLegacySpreadsheetPrintModel(modifiedWorkbook, basename(this._modifiedResource ?? URI.file('spreadsheet.xlsx')));
+					const result = await printParadisOfficeModelInBrowser(model, this.window);
+					return withParadisOfficePrintResult(model, result);
+				},
 			} : {}),
 			onNavigate: target => this._navigateToLogicalLocator(target.locator, target.anchor),
 		});
