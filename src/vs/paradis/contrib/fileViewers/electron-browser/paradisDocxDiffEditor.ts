@@ -22,6 +22,7 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisDocxFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -61,6 +62,7 @@ import {
 } from '../common/paradisDocx.js';
 import { buildDocxDiff } from '../common/paradisDocxDiff.js';
 import type { ParadisOfficeChange, ParadisOfficeCompletenessManifest, ParadisOfficeOutcome, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
+import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
@@ -175,11 +177,18 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
+	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
+	private _recoveryGeneration = 0;
+	private _webviewRecoveryGeneration = 0;
+	private _sentRecoveryGeneration = 0;
+	private _documentSnapshot: { readonly original: Uint8Array; readonly modified: Uint8Array; readonly placeholders: readonly ParadisOfficePlaceholder[] } | undefined;
+	private _recreatingForRecovery = false;
 
 	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService);
 	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService, configurationService: IConfigurationService);
@@ -341,6 +350,21 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._updateNav();
 		this._setNotice(undefined);
 		this._setCount(undefined);
+		this._recoveryState = beginParadisOfficeRecovery(this._recoveryState, {
+			source: {
+				mode: 'comparison',
+				original: createParadisWordSourceDescriptor(this._originalResource, 'original'),
+				modified: createParadisWordSourceDescriptor(this._modifiedResource, 'modified'),
+			},
+			viewState: {
+				zoom: this._wordViewState.zoom,
+				displayMode: this._wordViewState.displayMode,
+				activeStory: this._wordViewState.activeStory,
+				categories: [...this._wordViewState.categories],
+				...(this._wordViewState.selectedChangeId ? { selectedChangeId: this._wordViewState.selectedChangeId } : {}),
+			},
+		}).state;
+		this._recoveryGeneration = this._recoveryState.generation;
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
@@ -363,9 +387,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				const watched = this._modifiedResource;
 				const watcher = this._fileService.createWatcher(watched, { recursive: false, excludes: [] });
 				store.add(watcher);
+				const scheduler = store.add(new RunOnceScheduler(() => this._onWatchedResourceChanged(watched), 50));
 				store.add(watcher.onDidChange(event => {
 					if (event.contains(watched) && isEqual(this._modifiedResource, watched)) {
-						this._reload();
+						scheduler.schedule();
 					}
 				}));
 			} catch {
@@ -406,7 +431,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			return this._webview;
 		}
 		// origin を渡さないと webview ごとに service worker 登録が増え、二度と消えない。
-		const lease = this._register(this._originPool.acquire(PARADIS_DOCX_DIFF_EDITOR_ID));
+		const store = new DisposableStore();
+		this._webviewStore.value = store;
+		const lease = store.add(this._originPool.acquire(PARADIS_DOCX_DIFF_EDITOR_ID));
 		const webview = this._webviewService.createWebviewOverlay({
 			origin: lease.origin,
 			title: undefined,
@@ -427,25 +454,112 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			extension: undefined
 		});
 		this._webview = webview;
-		this._register(webview);
-		this._register(webview.onMessage(event => this._onWebviewMessage(event.message as ParadisDocxWebviewMessage)));
+		store.add(webview);
+		store.add(webview.onMessage(event => this._onWebviewMessage(event.message as ParadisDocxWebviewMessage)));
 		return webview;
 	}
 
-	/** webview を作り直して読み込みからやり直す。 */
-	private _reload(): void {
-		void this._reloadAfterAssets();
+	private _disposeWebview(): void {
+		if (this._webview && this._webviewClaimed) {
+			this._webview.release(this);
+		}
+		this._webviewClaimed = false;
+		this._webview = undefined;
+		this._webviewStore.clear();
 	}
 
-	private async _reloadAfterAssets(): Promise<void> {
+	/** webview を作り直して読み込みからやり直す。 */
+	private _reload(recoveryGeneration = this._recoveryGeneration): void {
+		void this._reloadAfterAssets(recoveryGeneration);
+	}
+
+	private _onWatchedResourceChanged(resource: URI): void {
+		if (!isEqual(this._modifiedResource, resource)) {
+			return;
+		}
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects);
+	}
+
+	private _applyRecoveryEffects(effects: readonly ParadisOfficeRecoveryEffect[]): void {
+		for (const effect of effects) {
+			switch (effect.type) {
+				case 'load':
+					this._reload(effect.generation);
+					break;
+				case 'remount':
+					this._remountDocumentSnapshot(effect.generation);
+					break;
+				case 'recreate':
+					this._disposeWebview();
+					this._recreatingForRecovery = true;
+					this._updateWebviewPlacement();
+					this._recreatingForRecovery = false;
+					this._remountDocumentSnapshot(effect.generation);
+					break;
+				case 'restore':
+					// A failed watcher preflight never replaces the committed webview DOM.
+					break;
+				case 'showError':
+					this._renderRecoveryError();
+					break;
+			}
+		}
+	}
+
+	private _remountDocumentSnapshot(recoveryGeneration: number): void {
+		if (!this._documentSnapshot || !this._webviewClaimed) {
+			return;
+		}
+		this._recoveryGeneration = recoveryGeneration;
+		this._loadGeneration++;
+		this._webviewRecoveryGeneration = recoveryGeneration;
+		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(buildParadisDocxDiffHtml({
+			original: localize('paradis.docxDiff.paneOriginal', "旧版 — {0}", basename(this._originalResource!)),
+			modified: localize('paradis.docxDiff.paneModified', "新版 — {0}", basename(this._modifiedResource!)),
+			loading: localize('paradis.docxDiff.loading', "読み込み中…"),
+		}, this._resolvedLibBase)));
+	}
+
+	private async _reloadAfterAssets(recoveryGeneration: number): Promise<void> {
 		const libBase = await this._resolveLibBase();
 		const original = this._originalResource;
 		const modified = this._modifiedResource;
 		if (!original || !modified || !this._webviewClaimed) {
 			return;
 		}
-		this._loadGeneration++;
+		const loadGeneration = ++this._loadGeneration;
+		this._assetSanitization.value?.cancel();
+		const sanitization = new CancellationTokenSource(); this._assetSanitization.value = sanitization;
+		try {
+			const [originalPackage, modifiedPackage] = await Promise.all([
+				this._readDocument(original, sanitization.token),
+				this._readDocument(modified, sanitization.token),
+			]);
+			if (loadGeneration !== this._loadGeneration || this._disposed || sanitization.token.isCancellationRequested
+				|| !isEqual(this._originalResource, original) || !isEqual(this._modifiedResource, modified)) {
+				return;
+			}
+			this._documentSnapshot = {
+				original: new Uint8Array(originalPackage.buffer),
+				modified: new Uint8Array(modifiedPackage.buffer),
+				placeholders: [...originalPackage.placeholders, ...modifiedPackage.placeholders],
+			};
+			this._assetPlaceholders = this._documentSnapshot.placeholders;
+		} catch (error) {
+			if (loadGeneration === this._loadGeneration && !sanitization.token.isCancellationRequested) {
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
+				this._recoveryState = transition.state;
+				if (!transition.state.committed) {
+					this._setNotice(this._describeError(error));
+				}
+			}
+			return;
+		}
+		this._recoveryGeneration = recoveryGeneration;
 		const webview = this._ensureWebview();
+		this._webviewRecoveryGeneration = recoveryGeneration;
 		webview.setHtml(applyParadisOfficeWebviewAccessibility(buildParadisDocxDiffHtml({
 			// allow-any-unicode-next-line
 			original: localize('paradis.docxDiff.paneOriginal', "旧版 — {0}", basename(original)),
@@ -458,43 +572,28 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	/** webview の受信準備ができてから .docx の中身を送る（先に送ると取りこぼす）。 */
 	private async _sendDocuments(): Promise<void> {
-		const original = this._originalResource;
-		const modified = this._modifiedResource;
 		const webview = this._webview;
-		if (!original || !modified || !webview) {
+		const snapshot = this._documentSnapshot;
+		if (!webview || !snapshot) {
 			return;
 		}
+		if (this._webviewRecoveryGeneration !== this._recoveryState.generation) {
+			return;
+		}
+		this._sentRecoveryGeneration = this._webviewRecoveryGeneration;
 		const generation = this._loadGeneration;
-		this._assetSanitization.value?.cancel();
-		const sanitization = new CancellationTokenSource(); this._assetSanitization.value = sanitization;
 		// 読み直しの前にツールバーの状態を送り直す。webview は作り直されるたびに
 		// 倍率 1・書式表示 ON に戻るので、送らないとツールバーの表示と本文が食い違う。
 		void webview.postMessage({ type: 'zoom', scale: this._scale });
 		void webview.postMessage({ type: 'showFormatChanges', enabled: this._showFormatChanges });
 		void webview.postMessage({ type: 'revisionMode', mode: this._displayMode });
-		try {
-			const [originalPackage, modifiedPackage] = await Promise.all([
-				this._readDocument(original, sanitization.token),
-				this._readDocument(modified, sanitization.token),
-			]);
-			if (generation !== this._loadGeneration || this._disposed || sanitization.token.isCancellationRequested) {
-				return;
-			}
-			this._assetPlaceholders = [...originalPackage.placeholders, ...modifiedPackage.placeholders];
-			const originalBuffer = originalPackage.buffer; const modifiedBuffer = modifiedPackage.buffer;
-			// transfer リストを渡しても renderer → webview の最初のホップは構造化クローン
-			// （webviewElement.postMessage は transfer をメッセージ本体に詰めるだけ）。
-			// 実際に所有権が移るのは webview 内部から iframe へ渡す最後のホップだけで、
-			// ここでのコピーは避けられない。
-			void webview.postMessage(
-				{ type: 'load', generation, original: originalBuffer, modified: modifiedBuffer, assetPlaceholders: this._assetPlaceholders },
-				[originalBuffer, modifiedBuffer]
-			);
-		} catch (error) {
-			if (generation === this._loadGeneration) {
-				this._setNotice(this._describeError(error));
-			}
-		}
+		const originalBuffer = snapshot.original.buffer.slice(snapshot.original.byteOffset, snapshot.original.byteOffset + snapshot.original.byteLength) as ArrayBuffer;
+		const modifiedBuffer = snapshot.modified.buffer.slice(snapshot.modified.byteOffset, snapshot.modified.byteOffset + snapshot.modified.byteLength) as ArrayBuffer;
+		// Retry copies only the already-sanitized bytes; semantic trees and geometry are not reparsed on the host.
+		void webview.postMessage(
+			{ type: 'load', generation, original: originalBuffer, modified: modifiedBuffer, assetPlaceholders: snapshot.placeholders },
+			[originalBuffer, modifiedBuffer]
+		);
 	}
 
 	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[] }> {
@@ -530,6 +629,16 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				this._onOutline(message.original, message.modified);
 				return;
 			case 'rendered':
+				{
+					if (this._sentRecoveryGeneration !== this._recoveryState.generation) {
+						return;
+					}
+					const transition = reduceParadisOfficeRecovery(this._recoveryState, {
+						type: 'rendered', generation: this._recoveryGeneration, hasExpectedRoot: true,
+					});
+					this._recoveryState = transition.state;
+					this._applyRecoveryEffects(transition.effects);
+				}
 				this._updateNav();
 				return;
 			case 'activeChange': {
@@ -542,9 +651,40 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			}
 			case 'error':
 				this._setNotice(this._describeWebviewError(message));
+				{
+					const transition = reduceParadisOfficeRecovery(this._recoveryState, {
+						type: 'sourceUnavailable', generation: this._recoveryState.generation,
+					});
+					this._recoveryState = transition.state;
+					this._applyRecoveryEffects(transition.effects);
+				}
 				return;
 			default:
 				return;
+		}
+	}
+
+	private _renderRecoveryError(): void {
+		this._setNotice(localize('paradis.docxDiff.blank', "Word comparison produced no visible content."));
+		const resource = this._modifiedResource;
+		if (!this._noticeEl || !resource) {
+			return;
+		}
+		const retry = dom.append(this._noticeEl, $('button')) as HTMLButtonElement;
+		retry.type = 'button';
+		retry.textContent = localize('paradis.docxDiff.retry', "Retry");
+		this._inputDisposables.value?.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
+			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
+			this._recoveryState = transition.state;
+			this._applyRecoveryEffects(transition.effects);
+		}));
+		if (resource.scheme === Schemas.file) {
+			const open = dom.append(this._noticeEl, $('button')) as HTMLButtonElement;
+			open.type = 'button';
+			open.textContent = localize('paradis.docxDiff.openAfterBlank', "Open in Default Application");
+			this._inputDisposables.value?.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
+				void this._nativeHostService.openExternal(resource.toString(true));
+			}));
 		}
 	}
 
@@ -807,7 +947,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 		dom.setParentFlowTo(webview.container, this._webviewContainer!);
 		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
-		if (justClaimed) {
+		if (justClaimed && !this._recreatingForRecovery) {
 			this._reload();
 		}
 	}
@@ -824,6 +964,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._changes = [];
 		this._modifiedOutline = undefined;
 		this._currentIndex = -1;
+		this._documentSnapshot = undefined;
+		this._recoveryState = createParadisOfficeRecoveryState();
+		this._recoveryGeneration = 0;
+		this._webviewRecoveryGeneration = 0;
+		this._sentRecoveryGeneration = 0;
 		if (this._webview && this._webviewClaimed) {
 			this._webview.release(this);
 			this._webviewClaimed = false;

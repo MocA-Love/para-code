@@ -25,6 +25,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
 import { paradisPreviewOrigins, resolveParadisViewerDocumentUrl, resolveParadisViewerLibBase } from './paradisViewerAssets.js';
@@ -48,6 +49,7 @@ import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurat
 import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } from '../common/paradisOfficePrint.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
+import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
@@ -166,6 +168,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _inspectorPanel: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
 	private _webview: IOverlayWebview | undefined;
+	private _webviewSupportsRecoveryMessages = false;
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
 	private readonly _originPool: ParadisWebviewOriginPool;
 	private _webviewClaimed = false;
@@ -182,6 +185,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
+	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
+	private _renderSnapshot: { readonly resource: URI; readonly inlineData: string | undefined; readonly assetPlaceholderCount: number; readonly viewState: ParadisWordViewState } | undefined;
+	private _recreatingForRecovery = false;
 
 	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, layoutService: IWorkbenchLayoutService);
 	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, layoutService: IWorkbenchLayoutService, configurationService: IConfigurationService);
@@ -195,6 +201,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService = undefined!,
+		@INativeHostService private readonly _nativeHostService: INativeHostService = undefined!,
 	) {
 		super(PARADIS_DOCX_EDITOR_ID, group, telemetryService, themeService, storageService);
 		// ライブラリの置き場は入力に依らないので、ここで先に決めておく。開く操作が
@@ -262,6 +269,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const invocationEpoch = ++this._inputEpoch;
 		const previousInput = this._input;
 		const previousOptions = this._options;
+		const previousDocumentUrl = this._documentUrl;
 		// 配信先はここで決めておく（描画経路で待つと追い越し制御の順序が変わる）。失敗しても
 		// 従来の webview リソース経路に倒れるだけなので、結果は見ずに済ませる。
 		if (input instanceof ParadisDocxInput && input.resource) {
@@ -286,6 +294,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (token.isCancellationRequested) {
 			this._input = previousInput;
 			this._options = previousOptions;
+			this._documentUrl = previousDocumentUrl;
 			return;
 		}
 
@@ -294,6 +303,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._wordViewState = wordViewStateFromOptions(options?.viewState, this._currentWordViewState());
 		this._clearSemanticUi();
 		this._currentResource = resource;
+		this._recoveryState = beginParadisOfficeRecovery(this._recoveryState, {
+			source: { mode: 'document', source: createParadisWordSourceDescriptor(resource) },
+			viewState: {
+				zoom: this._wordViewState.zoom,
+				displayMode: this._wordViewState.displayMode,
+				activeStory: this._wordViewState.activeStory,
+				categories: [...this._wordViewState.categories],
+				...(this._wordViewState.selectedChangeId ? { selectedChangeId: this._wordViewState.selectedChangeId } : {}),
+			},
+		}).state;
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
@@ -302,7 +321,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 			const expectedGeneration = watchInvalidationGeneration;
 			watchInvalidationGeneration = undefined;
 			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && this._webviewClaimed) {
-				this._renderResource(resource);
+				if (this._webview && !this._webviewSupportsRecoveryMessages) {
+					// Legacy overlays cannot acknowledge a renderer probe. Keep their existing
+					// preflight concurrency and let _renderGeneration fence stale completions.
+					this._renderResource(resource);
+					return;
+				}
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
+				this._recoveryState = transition.state;
+				this._applyRecoveryEffects(transition.effects, resource);
 			}
 		}, DOCX_WATCH_RERENDER_DELAY_MS));
 		const scheduleWatchRerender = () => {
@@ -381,7 +408,85 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		this._webviewClaimed = false;
 		this._webview = undefined;
+		this._webviewSupportsRecoveryMessages = false;
 		this._webviewStore.clear();
+	}
+
+	private _finishRecoveryWithoutProbe(recoveryGeneration: number): void {
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, {
+			type: 'rendered', generation: recoveryGeneration, hasExpectedRoot: true,
+		});
+		this._recoveryState = transition.state;
+		if (this._currentResource) {
+			this._applyRecoveryEffects(transition.effects, this._currentResource);
+		}
+	}
+
+	private _onRecoveryMessage(message: unknown): void {
+		if (!message || typeof message !== 'object') {
+			return;
+		}
+		const candidate = message as { readonly type?: unknown; readonly generation?: unknown; readonly hasExpectedRoot?: unknown; readonly action?: unknown };
+		if (candidate.type === 'paradisOfficeRecovery' && typeof candidate.generation === 'number' && typeof candidate.hasExpectedRoot === 'boolean') {
+			const transition = reduceParadisOfficeRecovery(this._recoveryState, {
+				type: 'rendered', generation: candidate.generation, hasExpectedRoot: candidate.hasExpectedRoot,
+			});
+			this._recoveryState = transition.state;
+			if (this._currentResource) {
+				this._applyRecoveryEffects(transition.effects, this._currentResource);
+			}
+			return;
+		}
+		if (candidate.type !== 'paradisOfficeRecoveryAction' || typeof candidate.action !== 'string' || !this._currentResource) {
+			return;
+		}
+		if (candidate.action === 'retry') {
+			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
+			this._recoveryState = transition.state;
+			this._applyRecoveryEffects(transition.effects, this._currentResource);
+		} else if (candidate.action === 'openExternally') {
+			void this._nativeHostService?.openExternal(this._currentResource.toString(true));
+		}
+	}
+
+	private _applyRecoveryEffects(effects: readonly ParadisOfficeRecoveryEffect[], resource: URI): void {
+		for (const effect of effects) {
+			switch (effect.type) {
+				case 'load':
+					this._renderResource(resource, effect.generation);
+					break;
+				case 'remount':
+					this._mountRenderSnapshot(effect.generation);
+					break;
+				case 'recreate':
+					this._disposeWebview();
+					this._recreatingForRecovery = true;
+					this._updateWebviewPlacement();
+					this._recreatingForRecovery = false;
+					this._mountRenderSnapshot(effect.generation);
+					break;
+				case 'restore':
+					this._mountRenderSnapshot(effect.generation);
+					break;
+				case 'showError':
+					this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
+					break;
+			}
+		}
+	}
+
+	private _mountRenderSnapshot(recoveryGeneration: number): void {
+		const snapshot = this._renderSnapshot;
+		if (!snapshot || !isEqual(snapshot.resource, this._currentResource) || !this._webviewClaimed) {
+			return;
+		}
+		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(
+			snapshot.resource,
+			snapshot.inlineData,
+			snapshot.assetPlaceholderCount,
+			snapshot.viewState,
+			recoveryGeneration,
+		)));
 	}
 
 	private _ensureWebview(resource: URI): IOverlayWebview {
@@ -420,6 +525,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		});
 		this._webview = webview;
 		store.add(webview);
+		this._webviewSupportsRecoveryMessages = typeof webview.onMessage === 'function';
+		if (this._webviewSupportsRecoveryMessages) {
+			store.add(webview.onMessage(event => this._onRecoveryMessage(event.message)));
+		}
 		return webview;
 	}
 
@@ -427,16 +536,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 		return [dirname(resource), FileAccess.asFileUri(DOCX_MEDIA_ROOT)];
 	}
 
-	protected _renderResource(resource: URI): void {
+	protected _renderResource(resource: URI, recoveryGeneration = this._recoveryState.generation): void {
 		this._assetPlaceholders = [];
 		const generation = ++this._renderGeneration;
 		const inputEpoch = this._inputEpoch;
 		this._assetSanitization.value?.cancel();
 		const source = new CancellationTokenSource(); this._assetSanitization.value = source;
-		void this._renderResourceAfterPreflight(resource, generation, inputEpoch, source.token);
+		void this._renderResourceAfterPreflight(resource, generation, inputEpoch, recoveryGeneration, source.token);
 	}
 
-	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number, token: CancellationToken): Promise<void> {
+	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number, recoveryGeneration: number, token: CancellationToken): Promise<void> {
 		const webview = this._ensureWebview(resource);
 		// `_ensureWebview` は要否が変わると webview を捨てるので、claim を取り戻しておく
 		// （PDF と同じ。setInput の呼び出し順に頼らない）。
@@ -458,6 +567,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
 				this._assetPlaceholders = sanitized.placeholders;
 			} catch {
+				if (isValid === undefined && this._recoveryState.committed) {
+					const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
+					this._recoveryState = transition.state;
+					// Keep the previously committed webview DOM mounted until the correlated watcher sees the file again.
+					return;
+				}
 				decision = 'rejected';
 			}
 			if (generation !== this._renderGeneration || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
@@ -467,10 +582,21 @@ export class ParadisDocxFileEditor extends EditorPane {
 		switch (decision) {
 			case 'rejected':
 				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildRejectedFileHtml()));
+				// A rejected-file page has no renderer root probe, but it is still a completed load.
+				this._finishRecoveryWithoutProbe(recoveryGeneration);
 				return;
 			case 'viewer':
-				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._wordViewState)));
+				this._renderSnapshot = {
+					resource, inlineData, assetPlaceholderCount: this._assetPlaceholders.length,
+					viewState: this._currentWordViewState(),
+				};
+				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._renderSnapshot.viewState, recoveryGeneration)));
 				this._renderSemanticUi();
+				// Older/fake overlay implementations do not expose messages. Preserve their
+				// established watcher lifecycle while modern overlays report the real probe.
+				if (!this._webviewSupportsRecoveryMessages) {
+					this._finishRecoveryWithoutProbe(recoveryGeneration);
+				}
 				return;
 		}
 	}
@@ -546,7 +672,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;
 				this._wordViewState = state;
 				if (changed && this._currentResource && this._webviewClaimed) {
-					this._renderResource(this._currentResource);
+					const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
+					this._recoveryState = transition.state;
+					this._applyRecoveryEffects(transition.effects, this._currentResource);
 				}
 			},
 		});
@@ -560,7 +688,21 @@ export class ParadisDocxFileEditor extends EditorPane {
 		return '<!DOCTYPE html><html><body>Word 文書を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
-	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0, viewState: ParadisWordViewState = this._wordViewState): string {
+	private _buildBlankFileHtml(): string {
+		const nonce = generateUuid();
+		return `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}';"></head><body>
+			<p>Word 文書の表示結果が空でした。</p>
+			<button id="retry" type="button">再試行</button>
+			<button id="open" type="button">既定のアプリで開く</button>
+			<script nonce="${nonce}">
+				const vscode = acquireVsCodeApi();
+				document.getElementById('retry').addEventListener('click', () => vscode.postMessage({ type: 'paradisOfficeRecoveryAction', action: 'retry' }));
+				document.getElementById('open').addEventListener('click', () => vscode.postMessage({ type: 'paradisOfficeRecoveryAction', action: 'openExternally' }));
+			</script>
+		</body></html>`;
+	}
+
+	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0, viewState: ParadisWordViewState = this._wordViewState, recoveryGeneration = this._recoveryState.generation): string {
 		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
 		// service worker を切った webview に解決できない URL を渡すことになる。
 		const served = this._webviewServiceWorkerDisabled && this._documentUrl !== undefined;
@@ -648,6 +790,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	<script nonce="${nonce}" src="${libBase}/docx-preview.min.js"></script>
 	<script nonce="${nonce}">
 		(async () => {
+			const vscode = acquireVsCodeApi();
 			const DOCX_URL = ${JSON.stringify(docxUrl)};
 			const statusEl = document.getElementById('status');
 			const contentEl = document.getElementById('content');
@@ -690,11 +833,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 					renderChanges: ${displayMode !== 'final'}
 				});
 				await renderDocument();
-				// One bounded retry covers the renderer's occasional completed-but-blank result.
-				if (!contentEl.querySelector('.docx-wrapper > section.docx')) {
-					contentEl.textContent = '';
-					await renderDocument();
-				}
+				vscode.postMessage({
+					type: 'paradisOfficeRecovery',
+					generation: ${recoveryGeneration},
+					hasExpectedRoot: !!contentEl.querySelector('.docx-wrapper > section.docx')
+				});
 				// docx-preview はページ幅を固定値(width、grow不可)で設定する一方、高さは
 				// min-height(可変)にしている。本文（表など）がページの本文幅より広い場合、
 				// 高さと違って幅は伸びず、白紙の外へそのままはみ出して背後の(暗い)背景が
@@ -784,7 +927,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		dom.setParentFlowTo(webview.container, this._webviewContainer!);
 		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
-		if (justClaimed) {
+		if (justClaimed && !this._recreatingForRecovery) {
 			this._renderResource(resource);
 		}
 	}
@@ -796,6 +939,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._clearSemanticUi();
 		this._currentResource = undefined;
 		this._runtimeConfiguration = undefined;
+		this._renderSnapshot = undefined;
+		this._recoveryState = createParadisOfficeRecoveryState();
 		if (this._webview && this._webviewClaimed) {
 			this._webview.release(this);
 			this._webviewClaimed = false;
