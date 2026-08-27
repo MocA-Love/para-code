@@ -33,8 +33,10 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
-import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintBlock, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
+import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell } from '../common/paradisOfficePrint.js';
+import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
@@ -46,6 +48,7 @@ import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from 
 import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from './spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
+import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 
 import './media/paradisSpreadsheet.css';
 
@@ -162,30 +165,51 @@ export function createLegacySpreadsheetSearchPage(workbook: IParadisWorkbookData
 	return Object.freeze({ results: Object.freeze([...results]), total: results.length, capped: results.length === LEGACY_SEARCH_RESULT_LIMIT });
 }
 
-function legacyPrintCellBlock(sheetIndex: number, rowIndex: number, columnIndex: number, text: string): ParadisOfficePrintBlock {
-	return { kind: 'text', nodeId: `legacy:${sheetIndex}:cell:${rowIndex}:${columnIndex}`, runs: [{ text }] };
-}
-
 /** Script-free, bounded fallback model used until a platform print callback is available for this source. */
 export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData, title: string): ParadisOfficePrintModel {
 	let remainingCells = LEGACY_PRINT_CELL_LIMIT;
 	let truncated = false;
-	const pages = workbook.sheets.map((sheet, sheetIndex) => {
-		const rows: ParadisOfficePrintBlock[] = [];
-		for (let rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
-			if (remainingCells <= 0) {
-				truncated = true;
-				break;
+	const sheets = workbook.sheets.map((sheet, sheetIndex) => {
+		const lineAnchors = new Map<string, ParadisOfficePrintLinePrimitive[]>();
+		for (let shapeIndex = 0; shapeIndex < (sheet.shapes?.length ?? 0); shapeIndex++) {
+			const shape = sheet.shapes![shapeIndex];
+			if (shape.type !== 'line') {
+				continue;
 			}
-			const cells: ParadisOfficePrintBlock[] = [];
+			const key = `${shape.from.r + 1}:${shape.from.c + 1}`;
+			const lines = lineAnchors.get(key) ?? [];
+			lines.push({ kind: 'drawingLine', nodeId: `legacy:${sheetIndex}:drawing:${shapeIndex}`, ...(shape.name ? { label: shape.name } : {}) });
+			lineAnchors.set(key, lines);
+		}
+		const cells: ParadisOfficeSpreadsheetPrintCell[] = [];
+		for (let rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
 			for (let columnIndex = 0; columnIndex < sheet.rows[rowIndex].cells.length; columnIndex++) {
 				if (remainingCells-- <= 0) {
 					truncated = true;
 					break;
 				}
-				cells.push(legacyPrintCellBlock(sheetIndex, rowIndex, columnIndex, sheet.rows[rowIndex].cells[columnIndex].value));
+				const source = sheet.rows[rowIndex].cells[columnIndex];
+				const row = sheet.rows[rowIndex].excelRow;
+				const column = sheet.minCol + columnIndex;
+				const lines: ParadisOfficePrintLinePrimitive[] = [...(lineAnchors.get(`${row}:${column}`) ?? [])];
+				if (source.diagonal) {
+					lines.push({
+						kind: 'cellDiagonal',
+						nodeId: `legacy:${sheetIndex}:cell:${row}:${column}:diagonal`,
+						direction: source.diagonal.up && source.diagonal.down ? 'both' : source.diagonal.up ? 'topRightToBottomLeft' : 'topLeftToBottomRight',
+					});
+				}
+				cells.push({
+					nodeId: `legacy:${sheetIndex}:cell:${row}:${column}`,
+					row,
+					column,
+					runs: [{ text: source.value }],
+					...(lines.length ? { lines } : {}),
+				});
 			}
-			rows.push({ kind: 'container', nodeId: `legacy:${sheetIndex}:row:${rowIndex}`, role: 'row', children: cells.map(cell => ({ kind: 'container', nodeId: `${cell.nodeId}:container`, role: 'cell', children: [cell] })) });
+			if (remainingCells <= 0) {
+				break;
+			}
 		}
 		const placeholders: ParadisOfficePlaceholder[] = (sheet.shapes ?? []).map((shape, shapeIndex) => ({
 			nodeId: `legacy:${sheetIndex}:drawing:${shapeIndex}`,
@@ -194,19 +218,24 @@ export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData
 			title: shape.name ?? localize('paradis.spreadsheet.printDrawing', "Drawing Object"),
 			detail: localize('paradis.spreadsheet.printDrawingFallback', "Printed as alternative content from the legacy projection."),
 		}));
-		const blocks: ParadisOfficePrintBlock[] = [
-			{ kind: 'container', nodeId: `legacy:${sheetIndex}:table`, role: 'table', children: rows },
-			...placeholders.map(placeholder => ({ kind: 'placeholder' as const, nodeId: placeholder.nodeId, placeholder })),
-		];
 		return {
-			pageNumber: sheetIndex + 1,
-			widthPoints: 612,
-			heightPoints: 792,
-			blocks,
+			nodeId: `legacy:${sheetIndex}`,
+			name: sheet.name,
+			cells,
+			...(sheet.printArea ? {
+				printAreas: [{
+					minRow: sheet.printArea.minR,
+					minColumn: sheet.printArea.minC,
+					maxRow: sheet.printArea.maxR,
+					maxColumn: sheet.printArea.maxC,
+				}]
+			} : {}),
+			...(sheet.pageLayout ? { pageRanges: pageRectangles(sheet.pageLayout).sort((first, second) => first.page - second.page).map(page => ({ minRow: page.fromRow, minColumn: page.fromCol, maxRow: page.toRow, maxColumn: page.toCol })) } : {}),
 			placeholders,
 		};
 	});
-	const approximationWarnings = [{
+	const model = createParadisOfficeSpreadsheetPrintModel({ title, sheets });
+	const approximationWarnings = [...model.approximationWarnings, {
 		code: 'spreadsheet.legacyPrintProjection',
 		message: localize('paradis.spreadsheet.legacyPrintProjection', "Pagination is approximate while the legacy spreadsheet renderer is active."),
 	}];
@@ -216,7 +245,7 @@ export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData
 			message: localize('paradis.spreadsheet.legacyPrintLimit', "The compatibility print preview is limited to 10,000 cells."),
 		});
 	}
-	return { title, pages, approximationWarnings };
+	return { ...model, approximationWarnings };
 }
 
 /** Keeps legacy-only visual features on the existing renderer until their bounded tile adapters exist. */
@@ -655,7 +684,11 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
 			...(configuration.searchPrint ? {
 				search: async (query: string) => searchLegacySpreadsheetWorkbook(workbook, query),
-				getPrintModel: async () => createLegacySpreadsheetPrintModel(workbook, basename(this._currentResource ?? URI.file('spreadsheet.xlsx'))),
+				getPrintModel: async () => {
+					const model = createLegacySpreadsheetPrintModel(workbook, basename(this._currentResource ?? URI.file('spreadsheet.xlsx')));
+					const result = await printParadisOfficeModelInBrowser(model, this.window);
+					return withParadisOfficePrintResult(model, result);
+				},
 			} : {}),
 			onNavigate: target => this._navigateToLogicalLocator(target.locator, target.anchor),
 		});

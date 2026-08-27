@@ -63,10 +63,11 @@ import type { ParadisOfficeChange, ParadisOfficeCompletenessManifest, ParadisOff
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
-import { createParadisWordSourceDescriptor, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
+import { createLegacyWordPrintModel, createParadisWordSourceDescriptor, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
 import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { renderWordDiagnosticsRibbon } from './word/paradisWordDiagnostics.js';
+import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import './media/paradisDocxDiff.css';
 
 const $ = dom.$;
@@ -158,6 +159,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _originalResource: URI | undefined;
 	private _modifiedResource: URI | undefined;
 	private _changes: readonly IParadisDocxChange[] = [];
+	private _modifiedOutline: IParadisDocxOutline | undefined;
 	private _currentIndex = -1;
 	private _scale = 1;
 	private _displayMode: ParadisWordDisplayMode = 'final';
@@ -311,6 +313,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._originalResource = diffInput.originalResource;
 		this._modifiedResource = diffInput.modifiedResource;
 		this._changes = [];
+		this._modifiedOutline = undefined;
 		this._currentIndex = -1;
 		this._scale = this._wordViewState.zoom;
 		this._displayMode = this._wordViewState.displayMode;
@@ -555,6 +558,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			return;
 		}
 		this._changes = result.changes;
+		this._modifiedOutline = modified;
 		this._currentIndex = -1;
 		this._setCount(result.changes.length);
 		this._setNotice(this._degradedNotice(result));
@@ -628,9 +632,13 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			searchUnavailable: configuration.searchPrint
 				? localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter.")
 				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
-			printUnavailable: configuration.searchPrint
-				? localize('paradis.word.diffPrintUnavailable', "Print preview is unavailable for this compatible comparison adapter.")
-				: localize('paradis.word.printDisabled', "Print preview is disabled by configuration."),
+			...(configuration.searchPrint ? {
+				getPrintModel: async () => {
+					const model = createLegacyWordPrintModel(basename(this._modifiedResource ?? URI.file('document.docx')), this._assetPlaceholders, this._modifiedOutline);
+					const result = await printParadisOfficeModelInBrowser(model, this.window);
+					return withParadisOfficePrintResult(model, result);
+				},
+			} : { printUnavailable: localize('paradis.word.printDisabled', "Print preview is disabled by configuration.") }),
 			onNavigate: target => {
 				const match = /^legacy-change:(\d+)$/.exec(target.anchor ?? '');
 				if (match) {
@@ -793,6 +801,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._modifiedResource = undefined;
 		this._runtimeConfiguration = undefined;
 		this._changes = [];
+		this._modifiedOutline = undefined;
 		this._currentIndex = -1;
 		if (this._webview && this._webviewClaimed) {
 			this._webview.release(this);

@@ -42,14 +42,16 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
-import { PARADIS_DOCX_MAX_BYTES } from '../common/paradisDocx.js';
+import { PARADIS_DOCX_MAX_BYTES, type IParadisDocxOutline } from '../common/paradisDocx.js';
 import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } from '../common/paradisOfficePrint.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
-import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
+import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { renderWordDiagnosticsRibbon } from './word/paradisWordDiagnostics.js';
+import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
@@ -76,6 +78,43 @@ export function createParadisWordSourceDescriptor(resource: URI, side?: 'origina
 					? 'workingTree'
 					: 'file';
 	return { kind, uri: resource.toString(true), displayName: basename(resource), ...(side ? { side } : {}) };
+}
+
+/** Bounded compatibility projection used only when the semantic print callback is unavailable. */
+export function createLegacyWordPrintModel(title: string, placeholders: readonly ParadisOfficePlaceholder[], outline?: IParadisDocxOutline): ParadisOfficePrintModel {
+	const contentPlaceholder: ParadisOfficePlaceholder | undefined = outline ? undefined : {
+		nodeId: 'legacy-word-content',
+		feature: 'word.legacyProjection',
+		reason: 'notEvaluated',
+		title: localize('paradis.word.printContentPlaceholder', "Word Document Content"),
+		detail: localize('paradis.word.printContentPlaceholderDetail', "The compatible renderer cannot provide a semantic text projection; print content is shown as alternative content."),
+	};
+	const retainedPlaceholders = [...placeholders, ...(contentPlaceholder ? [contentPlaceholder] : [])];
+	const items: ParadisOfficeWordPrintItem[] = outline
+		? outline.blocks.map(block => ({
+			kind: 'block',
+			block: {
+				kind: 'text',
+				nodeId: `legacy-word:block:${block.index}`,
+				runs: block.runs.length ? block.runs.map(run => ({ text: run.text })) : [{ text: block.text }],
+			},
+		}))
+		: [];
+	const model = createParadisOfficeWordPrintModel({
+		title,
+		sections: [{ nodeId: 'legacy-word:section:0', widthPoints: 612, heightPoints: 792, items, placeholders: retainedPlaceholders }],
+	});
+	const approximationWarnings = [...model.approximationWarnings, {
+		code: 'word.legacyPrintProjection',
+		message: localize('paradis.word.legacyPrintProjection', "Print uses the bounded compatible Word projection."),
+	}];
+	if (outline?.truncated) {
+		approximationWarnings.push({
+			code: 'word.legacyPrintLimit',
+			message: localize('paradis.word.legacyPrintLimit', "The compatible Word print projection is truncated."),
+		});
+	}
+	return { ...model, approximationWarnings };
 }
 
 function snapshotWordRuntimeConfiguration(configurationService: IConfigurationService): ParadisOfficeRuntimeConfiguration {
@@ -486,9 +525,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 			searchUnavailable: configuration.searchPrint
 				? localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
 				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
-			printUnavailable: configuration.searchPrint
-				? localize('paradis.word.printUnavailableAdapter', "Print preview is unavailable for this compatible source adapter.")
-				: localize('paradis.word.printDisabled', "Print preview is disabled by configuration."),
+			...(configuration.searchPrint ? {
+				getPrintModel: async () => {
+					const model = createLegacyWordPrintModel(basename(this._currentResource ?? URI.file('document.docx')), this._assetPlaceholders);
+					const result = await printParadisOfficeModelInBrowser(model, this.window);
+					return withParadisOfficePrintResult(model, result);
+				},
+			} : { printUnavailable: localize('paradis.word.printDisabled', "Print preview is disabled by configuration.") }),
 			onDidChangeViewState: state => {
 				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;
 				this._wordViewState = state;
