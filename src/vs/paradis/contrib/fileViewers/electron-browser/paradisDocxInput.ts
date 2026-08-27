@@ -19,6 +19,7 @@ import { EditorInputCapabilities, IEditorSerializer, IUntypedEditorInput } from 
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { ParadisFileViewerInput, ParadisFileViewerInputSerializer } from '../browser/paradisFileViewerInput.js';
 import { PARADIS_DOCX_DIFF_EDITOR_ID, PARADIS_DOCX_DIFF_INPUT_TYPE_ID, PARADIS_DOCX_EDITOR_ID, PARADIS_DOCX_INPUT_TYPE_ID } from '../browser/paradisFileViewers.js';
+import type { ParadisOfficeSerializerRegistration } from '../browser/paradisOfficeConfiguration.js';
 
 /** Word(.docx)ビューアの EditorInput。 */
 export class ParadisDocxInput extends ParadisFileViewerInput {
@@ -123,3 +124,8 @@ export class ParadisDocxDiffInputSerializer implements IEditorSerializer {
 		}
 	}
 }
+
+export const PARADIS_DOCX_SERIALIZER_REGISTRATIONS = Object.freeze([
+	[PARADIS_DOCX_INPUT_TYPE_ID, ParadisDocxInputSerializer],
+	[PARADIS_DOCX_DIFF_INPUT_TYPE_ID, ParadisDocxDiffInputSerializer],
+] satisfies readonly ParadisOfficeSerializerRegistration[]);

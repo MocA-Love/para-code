@@ -30,7 +30,6 @@ import { IEditorResolverService, RegisteredEditorPriority } from '../../../../wo
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import {
 	PARADIS_OFFICE_BROWSER_EDITOR_ID,
-	PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID,
 	PARADIS_OFFICE_DIAGNOSTIC_EXTENSIONS,
 	getParadisOfficeFormat,
 	isParadisOfficeDiagnosticResource,
@@ -38,7 +37,8 @@ import {
 	type ParadisOfficeDiagnosticFormat,
 	type ParadisOfficeSemanticFormat,
 } from './paradisFileViewers.js';
-import { ParadisOfficeDiagnosticInput, ParadisOfficeDiagnosticInputSerializer } from './paradisOfficeDiagnosticInput.js';
+import { PARADIS_OFFICE_BROWSER_SERIALIZER_REGISTRATIONS, ParadisOfficeDiagnosticInput } from './paradisOfficeDiagnosticInput.js';
+import { registerParadisOfficeViewerSerializers } from './paradisOfficeConfiguration.js';
 import {
 	ParadisOfficeWebWorkerClient,
 	createParadisOfficeWebWorkerEndpoint,
@@ -371,10 +371,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	[new SyncDescriptor(ParadisOfficeDiagnosticInput)],
 );
 
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
-	PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID,
-	ParadisOfficeDiagnosticInputSerializer,
-);
+registerParadisOfficeViewerSerializers(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory), PARADIS_OFFICE_BROWSER_SERIALIZER_REGISTRATIONS);
 
 class ParadisOfficeDiagnosticResolverContribution implements IWorkbenchContribution {
 	static readonly ID = 'paradis.contrib.officeDiagnosticResolver';

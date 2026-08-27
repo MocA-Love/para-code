@@ -458,6 +458,18 @@ export function snapshotParadisOfficeRuntimeConfiguration(reader: ParadisOfficeC
 	return Object.freeze({ ...resolved });
 }
 
+/** Constructs search/print callbacks only when the per-open snapshot permits those operations. */
+export function createParadisOfficeSearchPrintCallbacks<TSearch, TPrint>(
+	configuration: ParadisOfficeRuntimeConfiguration,
+	semanticEnabled: boolean,
+	factories: { readonly search: () => TSearch; readonly print: () => TPrint },
+): { readonly search: TSearch | undefined; readonly print: TPrint | undefined } {
+	if (configuration.engine === 'legacy' || !semanticEnabled || !configuration.searchPrint) {
+		return { search: undefined, print: undefined };
+	}
+	return { search: factories.search(), print: factories.print() };
+}
+
 /** Converts one open snapshot into the v1 client advertisement used for safe capability intersection. */
 export function getParadisOfficeRuntimeFeatureBits(configuration: ParadisOfficeRuntimeConfiguration): number {
 	if (configuration.engine === 'legacy' || !configuration.platformBackend) {

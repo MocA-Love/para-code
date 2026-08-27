@@ -45,7 +45,7 @@ import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeAccessibility, applyParadisOfficeWebviewAccessibility } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { PARADIS_DOCX_MAX_BYTES, type IParadisDocxOutline } from '../common/paradisDocx.js';
-import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } from '../common/paradisOfficePrint.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
@@ -628,11 +628,24 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private _renderSemanticUi(): void {
 		const configuration = this._runtimeConfiguration;
-		if (!configuration || !isParadisWordV1Enabled(configuration)) {
+		if (!configuration) {
 			this._clearSemanticUi();
 			return;
 		}
-		this._findWidget.value?.setSearchProvider(undefined, configuration.searchPrint
+		const v1Enabled = isParadisWordV1Enabled(configuration);
+		const callbacks = createParadisOfficeSearchPrintCallbacks(configuration, v1Enabled, {
+			search: () => undefined,
+			print: () => async () => {
+				const model = createLegacyWordPrintModel(basename(this._currentResource ?? URI.file('document.docx')), this._assetPlaceholders);
+				const result = await printParadisOfficeModelInBrowser(model, this.window);
+				return withParadisOfficePrintResult(model, result);
+			},
+		});
+		if (!v1Enabled) {
+			this._clearSemanticUi();
+			return;
+		}
+		this._findWidget.value?.setSearchProvider(callbacks.search, callbacks.print
 			? localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
 			: localize('paradis.word.searchDisabled', "Search is disabled by configuration."));
 		if (this._semanticToolbar) {
@@ -658,15 +671,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._inspectorToggle.style.display = '';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
-			searchUnavailable: configuration.searchPrint
+			searchUnavailable: callbacks.print
 				? localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
 				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
-			...(configuration.searchPrint ? {
-				getPrintModel: async () => {
-					const model = createLegacyWordPrintModel(basename(this._currentResource ?? URI.file('document.docx')), this._assetPlaceholders);
-					const result = await printParadisOfficeModelInBrowser(model, this.window);
-					return withParadisOfficePrintResult(model, result);
-				},
+			...(callbacks.print ? {
+				getPrintModel: callbacks.print,
 			} : { printUnavailable: localize('paradis.word.printDisabled', "Print preview is disabled by configuration.") }),
 			onDidChangeViewState: state => {
 				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;

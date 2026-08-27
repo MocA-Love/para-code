@@ -15,6 +15,7 @@ import {
 	getParadisOfficeFormat,
 	type ParadisOfficeFileFormat,
 } from './paradisFileViewers.js';
+import type { ParadisOfficeSerializerRegistration } from './paradisOfficeConfiguration.js';
 
 export type ParadisOfficeBrowserInputMode = 'semantic' | 'diagnostic';
 
@@ -101,3 +102,7 @@ export class ParadisOfficeDiagnosticInputSerializer implements IEditorSerializer
 		}
 	}
 }
+
+export const PARADIS_OFFICE_BROWSER_SERIALIZER_REGISTRATIONS = Object.freeze([
+	[PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID, ParadisOfficeDiagnosticInputSerializer],
+] satisfies readonly ParadisOfficeSerializerRegistration[]);

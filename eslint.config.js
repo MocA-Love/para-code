@@ -1921,6 +1921,18 @@ export default defineConfig(
 					]
 				},
 				{
+					// PARA-PATCH: fork-owned contribution integration tests exercise browser/electron-browser/node boundaries together.
+					'target': 'src/vs/paradis/contrib/*/test/integration/**',
+					'restrictions': [
+						'vs/base/**',
+						'vs/platform/**',
+						'vs/workbench/**',
+						'vs/paradis/contrib/**',
+						'fs/promises',
+						'*' // node modules
+					]
+				},
+				{
 					// PARA-PATCH: Paradis独自contribution（src/vs/paradis/contrib/<feature>/{browser,electron-browser}/**）のlayer定義
 					'target': 'src/vs/paradis/contrib/*/~',
 					'restrictions': [
