@@ -57,6 +57,23 @@ import {
 	normalizeDocxText,
 } from './paradisDocx.js';
 
+// The semantic Story/package diff is the forward path. Keep this legacy module as the stable
+// import surface while the existing outline renderer continues to consume buildDocxDiff below.
+export {
+	compareWordSemantics,
+	diffParadisWordSemantics,
+	type ParadisWordPackageFact,
+	type ParadisWordSemanticDiffOptions,
+	type ParadisWordSemanticDiffPage,
+	type ParadisWordSemanticSnapshot,
+} from './word/paradisWordSemanticDiff.js';
+export {
+	alignParadisWordDocuments,
+	diffParadisWordGraphemes,
+	type ParadisWordDocumentAlignment,
+	type ParadisWordTreeAlignOptions,
+} from './word/paradisWordTreeAlign.js';
+
 /** 対応付けの結果1件。 */
 interface IAlignOp {
 	/** 'matched' は「同じ段落」とみなしたペア。中身が違えば後段で modified になる。 */
