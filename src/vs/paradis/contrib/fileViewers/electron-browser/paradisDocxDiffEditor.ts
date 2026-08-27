@@ -30,6 +30,7 @@ import { basename, isEqual } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
@@ -57,10 +58,14 @@ import {
 	ParadisDocxWebviewMessage,
 } from '../common/paradisDocx.js';
 import { buildDocxDiff } from '../common/paradisDocxDiff.js';
-import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
+import type { ParadisOfficeChange, ParadisOfficeCompletenessManifest, ParadisOfficeOutcome, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
+import { createParadisWordSourceDescriptor, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
+import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
+import { renderWordDiagnosticsRibbon } from './word/paradisWordDiagnostics.js';
 import './media/paradisDocxDiff.css';
 
 const $ = dom.$;
@@ -71,6 +76,52 @@ const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/d
 const ZOOM_STEP = 1.2;
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 3;
+
+export const PARADIS_WORD_LEGACY_CHANGE_LIMIT = 5_000;
+
+export interface ParadisWordLegacyChangeSet {
+	readonly changes: readonly ParadisOfficeChange[];
+	readonly completeness: ParadisOfficeCompletenessManifest;
+	readonly outcome: ParadisOfficeOutcome;
+	readonly truncated: boolean;
+}
+
+/** A bounded compatibility projection. It intentionally never claims Kernel completeness. */
+export function adaptLegacyWordInspectorChangeSet(result: IParadisDocxDiffResult): ParadisWordLegacyChangeSet {
+	const selected = result.changes.slice(0, PARADIS_WORD_LEGACY_CHANGE_LIMIT);
+	const changes = selected.map((change): ParadisOfficeChange => {
+		const category = change.status === 'formatChanged' ? 'formatting' : change.status === 'moved' ? 'structure' : 'content';
+		const node = change.modifiedIndex ?? change.originalIndex ?? change.id;
+		return {
+			id: `legacy-word:${change.id}`,
+			category,
+			subject: { kind: `legacy.paragraph.${change.status}`, locator: `story:body:/word/document.xml:legacy/node:${node}` },
+			before: { kind: 'none' },
+			after: { kind: 'scalar', valueType: 'text', value: change.excerpt },
+			certainty: 'degraded',
+			sourceParts: ['/word/document.xml'],
+			navigableAnchor: `legacy-change:${change.id}`,
+		};
+	});
+	return {
+		changes,
+		completeness: {
+			expectedParts: 1, visitedParts: 1, parsedParts: 1, opaqueParts: 0, failedParts: 0,
+			omittedParts: result.changes.length - selected.length,
+			expectedSemanticUnits: Math.max(1, result.changes.length), visitedSemanticUnits: selected.length, terminal: false,
+		},
+		outcome: 'degraded',
+		truncated: selected.length !== result.changes.length,
+	};
+}
+
+function snapshotWordDiffRuntimeConfiguration(configurationService: IConfigurationService): ParadisOfficeRuntimeConfiguration {
+	const reader: ParadisOfficeConfigurationReader = {
+		getValue: <T>(key: string) => configurationService.getValue<T>(key),
+		inspect: <T>(key: string) => configurationService.inspect<T>(key) as IConfigurationValue<T> | undefined,
+	};
+	return snapshotParadisOfficeRuntimeConfiguration(reader);
+}
 
 /**
  * 凡例に出す色。値は webview 側の CSS（paradisDocxDiffWebview.ts）と揃えること。
@@ -90,6 +141,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _root: HTMLElement | undefined;
 	private _countEl: HTMLElement | undefined;
 	private _noticeEl: HTMLElement | undefined;
+	private _diagnosticsEl: HTMLElement | undefined;
+	private _inspectorToggle: HTMLButtonElement | undefined;
+	private _inspectorPanel: HTMLElement | undefined;
 	private _navPositionEl: HTMLElement | undefined;
 	private _percentEl: HTMLButtonElement | undefined;
 	private _formatToggle: HTMLButtonElement | undefined;
@@ -105,7 +159,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _changes: readonly IParadisDocxChange[] = [];
 	private _currentIndex = -1;
 	private _scale = 1;
+	private _displayMode: ParadisWordDisplayMode = 'final';
 	private _showFormatChanges = true;
+	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
+	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
 	/** 応答の逆順到着で古い結果が新しい結果を上書きしないようにする世代トークン。 */
 	private _loadGeneration = 0;
 	/** 並行して走る setInput の取り違えを防ぐための世代トークン。 */
@@ -115,8 +172,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
+	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 
+	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService);
+	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService, configurationService: IConfigurationService);
 	constructor(
 		group: IEditorGroup,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
@@ -127,6 +187,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService = undefined!,
 	) {
 		super(PARADIS_DOCX_DIFF_EDITOR_ID, group, telemetryService, themeService, storageService);
 		// ライブラリの置き場は入力に依らないので、ここで先に決めておく。開く操作が
@@ -137,12 +198,14 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-docx-diff'));
+		this._root.style.position = 'relative';
 
 		const toolbar = dom.append(this._root, $('.paradis-docx-diff-toolbar'));
 		const left = dom.append(toolbar, $('.paradis-docx-diff-toolbar-left'));
 		this._countEl = dom.append(left, $('span.paradis-docx-diff-count'));
 		this._noticeEl = dom.append(left, $('span.paradis-docx-diff-notice'));
 		this._noticeEl.style.display = 'none';
+		this._diagnosticsEl = dom.append(left, $('span.paradis-word-diff-diagnostics'));
 		const legend = dom.append(left, $('.paradis-docx-diff-legend'));
 		for (const entry of LEGEND) {
 			const item = dom.append(legend, $('span.paradis-docx-diff-legend-item'));
@@ -152,6 +215,19 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 
 		const right = dom.append(toolbar, $('.paradis-docx-diff-toolbar-right'));
+		this._inspectorToggle = dom.append(right, $('button.paradis-docx-diff-toggle')) as HTMLButtonElement;
+		this._inspectorToggle.type = 'button';
+		this._inspectorToggle.textContent = localize('paradis.word.diffInspector', "Inspector");
+		this._inspectorToggle.style.display = 'none';
+		this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
+			if (!this._inspectorPanel || !this._inspectorToggle) {
+				return;
+			}
+			const visible = this._inspectorPanel.style.display === 'none';
+			this._inspectorPanel.style.display = visible ? 'block' : 'none';
+			this._inspectorToggle.setAttribute('aria-expanded', String(visible));
+		}));
 
 		this._formatToggle = dom.append(right, $('button.paradis-docx-diff-toggle')) as HTMLButtonElement;
 		dom.append(this._formatToggle, $(`span${ThemeIcon.asCSSSelector(Codicon.symbolText)}`));
@@ -177,6 +253,16 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._openAppEl = dom.append(nav, $('.paradis-docx-diff-openapp'));
 
 		this._webviewContainer = dom.append(this._root, $('.paradis-docx-diff-body'));
+		this._inspectorPanel = dom.append(this._root, $('.paradis-word-diff-inspector-panel'));
+		this._inspectorPanel.style.position = 'absolute';
+		this._inspectorPanel.style.top = '42px';
+		this._inspectorPanel.style.right = '8px';
+		this._inspectorPanel.style.zIndex = '20';
+		this._inspectorPanel.style.width = '360px';
+		this._inspectorPanel.style.maxHeight = '70%';
+		this._inspectorPanel.style.overflow = 'auto';
+		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
+		this._inspectorPanel.style.display = 'none';
 		this._updateScaleLabel();
 		this._updateFormatToggle();
 		this._updateNav();
@@ -211,12 +297,19 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 
 		const diffInput = input as ParadisDocxDiffInput;
+		this._runtimeConfiguration = this._configurationService ? snapshotWordDiffRuntimeConfiguration(this._configurationService) : undefined;
+		const nestedState = options?.viewState && Object.prototype.hasOwnProperty.call(options.viewState, 'viewState')
+			? (options.viewState as { readonly viewState?: unknown }).viewState
+			: options?.viewState;
+		this._wordViewState = restoreParadisWordViewState(nestedState, this._currentWordViewState());
 		this._originalResource = diffInput.originalResource;
 		this._modifiedResource = diffInput.modifiedResource;
 		this._changes = [];
 		this._currentIndex = -1;
-		this._scale = 1;
+		this._scale = this._wordViewState.zoom;
+		this._displayMode = this._wordViewState.displayMode;
 		this._showFormatChanges = true;
+		this._clearSemanticUi();
 		this._updateScaleLabel();
 		this._updateFormatToggle();
 		this._updateNav();
@@ -352,6 +445,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		// 倍率 1・書式表示 ON に戻るので、送らないとツールバーの表示と本文が食い違う。
 		void webview.postMessage({ type: 'zoom', scale: this._scale });
 		void webview.postMessage({ type: 'showFormatChanges', enabled: this._showFormatChanges });
+		void webview.postMessage({ type: 'revisionMode', mode: this._displayMode });
 		try {
 			const [originalPackage, modifiedPackage] = await Promise.all([
 				this._readDocument(original, sanitization.token),
@@ -459,12 +553,97 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._setCount(result.changes.length);
 		this._setNotice(this._degradedNotice(result));
 		this._updateNav();
+		this._renderSemanticUi(result);
 		// 文言（書式変更のツールチップ）は webview では作れないので、送る直前にここで埋める。
 		void this._webview?.postMessage({
 			type: 'annotate',
 			annotations: localizeDocxAnnotations(result.annotations),
 			fillers: result.fillers,
 		});
+	}
+
+	private _currentWordViewState(): ParadisWordViewState {
+		const inspector = this._changeInspector.value?.getViewState();
+		return {
+			zoom: this._scale,
+			displayMode: this._displayMode,
+			activeStory: inspector?.activeStory ?? this._wordViewState.activeStory,
+			categories: inspector?.categories ?? this._wordViewState.categories,
+			...(inspector?.selectedChangeId ? { selectedChangeId: inspector.selectedChangeId } : {}),
+		};
+	}
+
+	private _clearSemanticUi(): void {
+		this._changeInspector.clear();
+		if (this._diagnosticsEl) {
+			dom.clearNode(this._diagnosticsEl);
+		}
+		if (this._inspectorPanel) {
+			dom.clearNode(this._inspectorPanel);
+			this._inspectorPanel.style.display = 'none';
+		}
+		if (this._inspectorToggle) {
+			this._inspectorToggle.style.display = 'none';
+			this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		}
+	}
+
+	private _renderSemanticUi(result: IParadisDocxDiffResult): void {
+		const configuration = this._runtimeConfiguration;
+		if (!configuration || !isParadisWordV1Enabled(configuration)) {
+			this._clearSemanticUi();
+			return;
+		}
+		const adapted = adaptLegacyWordInspectorChangeSet(result);
+		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...this._assetPlaceholders.map(() => 'placeholder' as const)];
+		if (adapted.truncated || result.degraded?.length) {
+			coverages.push('noAnchor');
+		}
+		if (this._diagnosticsEl) {
+			renderWordDiagnosticsRibbon(this._diagnosticsEl, {
+				outcome: adapted.outcome,
+				coverages,
+				warnings: [{
+					code: 'word.diff.legacyProjection',
+					message: localize('paradis.word.diffLegacyProjection', "This compatible comparison is visible but does not claim complete semantic analysis."),
+				}],
+			});
+		}
+		if (!this._inspectorPanel || !this._inspectorToggle) {
+			return;
+		}
+		this._inspectorToggle.style.display = '';
+		dom.clearNode(this._inspectorPanel);
+		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
+			searchUnavailable: configuration.searchPrint
+				? localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter.")
+				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
+			printUnavailable: configuration.searchPrint
+				? localize('paradis.word.diffPrintUnavailable', "Print preview is unavailable for this compatible comparison adapter.")
+				: localize('paradis.word.printDisabled', "Print preview is disabled by configuration."),
+			onNavigate: target => {
+				const match = /^legacy-change:(\d+)$/.exec(target.anchor ?? '');
+				if (match) {
+					const changeId = Number(match[1]);
+					const index = this._changes.findIndex(change => change.id === changeId);
+					if (index >= 0) {
+						this._currentIndex = index;
+						this._updateNav();
+					}
+					void this._webview?.postMessage({ type: 'reveal', changeId });
+				}
+			},
+			onDidChangeViewState: state => {
+				this._wordViewState = state;
+				this._displayMode = state.displayMode;
+				this._setScale(state.zoom);
+				void this._webview?.postMessage({ type: 'revisionMode', mode: state.displayMode });
+			},
+		});
+		this._changeInspector.value = inspector;
+		inspector.setViewState(this._wordViewState);
+		inspector.setComparison(adapted.changes, adapted.completeness, adapted.outcome);
+		inspector.setPlaceholders(this._assetPlaceholders);
 	}
 
 	private _degradedNotice(result: IParadisDocxDiffResult): string | undefined {
@@ -487,7 +666,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 		if (count === undefined) {
 			this._countEl.textContent = '';
-		} else if (count === 0) {
+		} else if (count === 0 && !(this._runtimeConfiguration && isParadisWordV1Enabled(this._runtimeConfiguration))) {
 			// allow-any-unicode-next-line
 			this._countEl.textContent = localize('paradis.docxDiff.noChanges', "変更はありません");
 		} else {
@@ -536,6 +715,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			return;
 		}
 		this._scale = clamped;
+		this._wordViewState = { ...this._wordViewState, zoom: clamped };
+		const inspector = this._changeInspector.value;
+		if (inspector && inspector.getViewState().zoom !== clamped) {
+			inspector.setViewState({ ...inspector.getViewState(), zoom: clamped });
+		}
 		this._updateScaleLabel();
 		void this._webview?.postMessage({ type: 'zoom', scale: clamped });
 	}
@@ -594,8 +778,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._inputEpoch++;
 		this._loadGeneration++;
 		this._inputDisposables.clear();
+		this._clearSemanticUi();
 		this._originalResource = undefined;
 		this._modifiedResource = undefined;
+		this._runtimeConfiguration = undefined;
 		this._changes = [];
 		this._currentIndex = -1;
 		if (this._webview && this._webviewClaimed) {
@@ -606,6 +792,17 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		// 左右2文書ぶんのパース済み AST と描画済み DOM を抱えたままになるので、中身を捨てる。
 		this._webview?.setHtml('');
 		super.clearInput();
+	}
+
+	override getViewState(): object | undefined {
+		if (!this._originalResource || !this._modifiedResource) {
+			return undefined;
+		}
+		return {
+			original: createParadisWordSourceDescriptor(this._originalResource, 'original'),
+			modified: createParadisWordSourceDescriptor(this._modifiedResource, 'modified'),
+			viewState: this._currentWordViewState(),
+		};
 	}
 
 	override dispose(): void {
