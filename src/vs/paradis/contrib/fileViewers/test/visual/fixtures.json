@@ -1,0 +1,24 @@
+{
+	"schema": 2,
+	"caseHash": "eab6b45f6516a47ddab4b6dcea2e6486b9d7c0745982a8be6267cdbffcca2b3f",
+	"visualHash": "716472cf8345dccac0dcaf6158f675201c157c8d5a903f8b2951eb04c6613d41",
+	"attachedPaintBaseline": {
+		"environmentIdentity": "platform=darwin|arch=arm64|release=25.5.0|cpu=Apple M4|cores=10|memoryGiB=32|node=24.18.1|electron=42.8.1|chrome=148.0.7778.280",
+		"rendererSourceSha256": "97fd10e1f0946b42c581a6f247cf4d110d6c618acd2b3c1e7f15d283a7c189f7",
+		"rendererCompiledSha256": "7464a7be30ff859df946fee63098a7676cbc195e66979543b87ec4d56c39d4ee",
+		"calibration": { "measuredAt": "2026-08-28T00:11:55Z", "measurementIterations": 41, "samplesMilliseconds": [9.899999976158142, 6.100000023841858, 5.799999982118607, 11.5, 13.300000011920929, 12.599999994039536, 13.300000011920929, 12.099999994039536, 13.5, 13.299999982118607, 12.199999988079071, 13.600000023841858, 13.099999994039536, 13.399999976158142, 11.900000005960464, 12.700000017881393, 13.199999988079071, 12.700000017881393, 14.299999982118607, 13.200000017881393, 13.5, 13.299999982118607, 13.099999994039536, 12.900000005960464, 13.400000005960464, 13.099999994039536, 13.400000005960464, 13, 13.300000011920929, 12.800000011920929, 13.299999982118607, 13, 13.099999994039536, 13.5, 13, 12.400000005960464, 14.099999994039536, 12.800000011920929, 13.400000005960464, 12.799999982118607, 13.099999994039536], "medianMilliseconds": 13.099999994039536, "requestedRegressionPercent": 10, "validation": "identity-and-threshold" }
+	},
+	"cases": [
+		{ "id": "small", "rows": 32, "columns": 32, "pages": 1 },
+		{ "id": "cells-100k", "rows": 100, "columns": 1000, "pages": 1 },
+		{ "id": "cells-5m", "rows": 5000, "columns": 1000, "pages": 1 },
+		{ "id": "columns-16384", "rows": 1, "columns": 16384, "pages": 1 },
+		{ "id": "pages-200", "rows": 500, "columns": 40, "pages": 200 }
+	],
+	"resourcePeak": { "workerBytes": 4194304, "cacheBytes": 3145728, "spoolBytes": 1048576, "totalBytes": 10485760 },
+	"visual": {
+		"regions": [
+			{ "id": "sheet-diagonal-and-drawing", "pixels": 83, "requiredLandmarks": ["diagonal-border", "drawing-line"], "goldenGeometry": "grid|0|0|83|27|#123456|2\ngrid|0|27|83|0|#123456|2\ndrawing|36|0|116|20|#abcdef|1|8,4", "rawGeometryHash": "0b84428e7c6a830a491aaa530f524c89d9951d76d30071bc2dc882aaba5ac27b" }
+		]
+	}
+}
