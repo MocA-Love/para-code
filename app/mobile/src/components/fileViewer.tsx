@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { marked } from 'marked';
@@ -21,6 +21,7 @@ import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
+import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
 
 interface FileViewerProps {
 	path: string;
@@ -387,7 +388,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 		<WebView
 			style={styles.web}
 			source={{ uri }}
-			originWhitelist={['*']}
+			originWhitelist={['file://']}
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
 			onShouldStartLoadWithRequest={guardWebViewNavigation}
@@ -432,13 +433,25 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	};
 	const name = path.split('/').pop() ?? path;
 	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
+	const officeKind = kind === 'spreadsheet' || kind === 'docx';
+	const officeNonce = useMemo(() => officeKind ? createMobileOfficeNonce() : undefined, [officeKind, spreadsheetHtml, docxData]);
+	const guardOfficeNavigation = useMemo(() => (request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {
+		Alert.alert(
+			'外部リンクを開きますか？',
+			url,
+			[
+				{ text: 'キャンセル', style: 'cancel' },
+				{ text: '開く', onPress: () => { void Linking.openURL(url).catch(() => { }); } },
+			],
+		);
+	}), []);
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
 	const [mode, setMode] = useState<ViewMode>(kind === 'other' || focusLine !== undefined ? 'code' : 'render');
 
 	const html = useMemo(() => {
 		if (kind === 'spreadsheet') {
 			if (spreadsheetHtml !== undefined) {
-				return spreadsheetHtml;
+				return secureMobileOfficeHtml(spreadsheetHtml, officeNonce!);
 			}
 			// レンダリング失敗時は result にエラーメッセージが入る。
 			// これを無視すると「読み込み中…」が恒久表示になるため、コード表示で見せる。
@@ -458,7 +471,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 		}
 		if (kind === 'docx') {
 			if (docxData !== undefined) {
-				return buildDocxHtml(docxData);
+				return secureMobileOfficeHtml(buildDocxHtml(docxData), officeNonce!);
 			}
 			// エラー時のみ result のメッセージをコード表示で見せる（成功時は docxData が来る）。
 			return result ? buildCodeHtml(result) : undefined;
@@ -473,7 +486,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			return buildMarkdownHtml(result);
 		}
 		return buildCodeHtml(result, focusLine);
-	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name]);
+	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name, officeNonce]);
 
 	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
 
@@ -546,9 +559,9 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					<WebView
 						style={styles.web}
 						source={{ html }}
-						originWhitelist={['*']}
+						originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
-						onShouldStartLoadWithRequest={guardWebViewNavigation}
+						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}
 					/>
 				) : (
 					<View style={styles.loadingBox}>
