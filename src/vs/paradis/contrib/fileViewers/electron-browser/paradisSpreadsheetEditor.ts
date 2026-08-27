@@ -15,6 +15,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable, toDisposable, type IDisposable } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { basename, isEqual } from '../../../../base/common/resources.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -37,6 +38,7 @@ import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell } from '../common/paradisOfficePrint.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
+import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
@@ -410,6 +412,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 	private readonly _inputGeneration = new ParadisSpreadsheetOpenGeneration();
 	private _committedInput: IParadisSpreadsheetCommittedInput | undefined;
+	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
 
@@ -516,12 +519,22 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._userAdjusted = options?.viewState !== undefined;
 		this._clearSemanticUi();
 		this._configureInputResource(resource);
+		this._recoveryState = beginParadisOfficeRecovery(this._recoveryState, {
+			source: { mode: 'document', source: createParadisSpreadsheetSourceDescriptor(resource) },
+			viewState: {
+				zoom: requestedViewState.zoom,
+				activeSheet: requestedViewState.activeSheet,
+				categories: [...requestedViewState.categories],
+				...(requestedViewState.selectedChangeId ? { selectedChangeId: requestedViewState.selectedChangeId } : {}),
+			},
+		}).state;
 
-		const loaded = await this._load(resource, token, requestedViewState);
+		const loaded = await this._load(resource, token, requestedViewState, this._recoveryState.generation);
 		if (!this._inputGeneration.isCurrent(inputGeneration)) {
 			return;
 		}
 		if (!loaded && token.isCancellationRequested && previous) {
+			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
 			this._currentResource = previous.resource;
 			this._workbook = previous.workbook;
 			this._sheets = previous.sheets;
@@ -542,6 +555,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		if (!loaded && token.isCancellationRequested) {
+			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
 			this.clearInput();
 		} else if (loaded) {
 			this._committedInput = this._captureCommittedInput(input, options);
@@ -577,9 +591,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		try {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
 			store.add(watcher);
+			const scheduler = store.add(new RunOnceScheduler(() => this._onWatchedResourceChanged(resource), 50));
 			store.add(watcher.onDidChange(e => {
 				if (e.contains(resource) && isEqual(this._currentResource, resource)) {
-					void this._load(resource, CancellationToken.None);
+					scheduler.schedule();
 				}
 			}));
 		} catch {
@@ -587,16 +602,62 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 	}
 
-	private async _load(resource: URI, token: CancellationToken, viewState = this._currentSpreadsheetViewState()): Promise<boolean> {
+	private _onWatchedResourceChanged(resource: URI): void {
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, resource, this._currentSpreadsheetViewState());
+	}
+
+	private _applyRecoveryEffects(effects: readonly ParadisOfficeRecoveryEffect[], resource: URI, viewState: ParadisSpreadsheetViewState): void {
+		for (const effect of effects) {
+			switch (effect.type) {
+				case 'load':
+					void this._load(resource, CancellationToken.None, viewState, effect.generation, true);
+					break;
+				case 'remount':
+				case 'recreate':
+					// Spreadsheet geometry, including diagonal borders, is remounted from the exact parsed snapshot.
+					// Recovery never reparses or mutates the workbook merely to make a second rendering attempt.
+					this._renderSheet();
+					this._renderTabs();
+					if (this._workbook) {
+						this._renderSemanticUi(this._workbook, viewState);
+					}
+					this._finishRecoveryRender(effect.generation, resource, viewState);
+					break;
+				case 'showError':
+					this._renderRecoveryError(resource);
+					break;
+				case 'restore':
+					// The committed DOM was deliberately left mounted while the watcher read ran.
+					break;
+			}
+		}
+	}
+
+	private _finishRecoveryRender(recoveryGeneration: number, resource: URI, viewState: ParadisSpreadsheetViewState): void {
+		const hasExpectedRoot = this._sheets.length > 0 && (!!this._tableEl || !!this._virtualHostEl);
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'rendered', generation: recoveryGeneration, hasExpectedRoot });
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, resource, viewState);
+	}
+
+	private async _load(resource: URI, token: CancellationToken, viewState = this._currentSpreadsheetViewState(), recoveryGeneration = this._recoveryState.generation, preserveCommitted = false): Promise<boolean> {
 		const generation = ++this._loadGeneration;
-		this._clearSemanticUi();
-		this._renderMessage(localize('paradis.spreadsheet.loading', "Loading spreadsheet..."));
+		if (!preserveCommitted) {
+			this._clearSemanticUi();
+			this._renderMessage(localize('paradis.spreadsheet.loading', "Loading spreadsheet..."));
+		}
 		let workbook: IParadisWorkbookData;
 		try {
 			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource);
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
-				this._renderMessage(localize('paradis.spreadsheet.error', "Failed to open spreadsheet: {0}", err instanceof Error ? err.message : String(err)));
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
+				this._recoveryState = transition.state;
+				if (!preserveCommitted || transition.effects.length === 0) {
+					this._renderMessage(localize('paradis.spreadsheet.error', "Failed to open spreadsheet: {0}", err instanceof Error ? err.message : String(err)));
+				}
 			}
 			return false;
 		}
@@ -616,6 +677,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._renderSheet();
 		this._renderTabs();
 		this._renderSemanticUi(workbook, viewState);
+		this._finishRecoveryRender(recoveryGeneration, resource, viewState);
 		if (this._committedInput && isEqual(this._committedInput.resource, resource) && this.input === this._committedInput.input) {
 			this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
 		}
@@ -762,6 +824,30 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		const msg = dom.append(this._bodyEl, $('.paradis-spreadsheet-message'));
 		msg.textContent = message;
+	}
+
+	private _renderRecoveryError(resource: URI): void {
+		this._renderMessage(localize('paradis.spreadsheet.blank', "The spreadsheet renderer produced no visible content."));
+		if (!this._bodyEl) {
+			return;
+		}
+		const actions = dom.append(this._bodyEl, $('.paradis-spreadsheet-recovery-actions'));
+		const retry = dom.append(actions, $('button')) as HTMLButtonElement;
+		retry.type = 'button';
+		retry.textContent = localize('paradis.spreadsheet.retry', "Retry");
+		this._inputDisposables.value?.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
+			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
+			this._recoveryState = transition.state;
+			this._applyRecoveryEffects(transition.effects, resource, this._currentSpreadsheetViewState());
+		}));
+		if (resource.scheme === Schemas.file) {
+			const open = dom.append(actions, $('button')) as HTMLButtonElement;
+			open.type = 'button';
+			open.textContent = localize('paradis.spreadsheet.openAfterBlank', "Open in Default Application");
+			this._inputDisposables.value?.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
+				void this._nativeHostService.openExternal(resource.toString(true));
+			}));
+		}
 	}
 
 	private _renderSheet(): void {
@@ -1185,6 +1271,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._sheets = [];
 		this._runtimeConfiguration = undefined;
 		this._committedInput = undefined;
+		this._recoveryState = createParadisOfficeRecoveryState();
 		if (this._bodyEl) {
 			dom.clearNode(this._bodyEl);
 		}

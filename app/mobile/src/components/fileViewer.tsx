@@ -8,7 +8,7 @@
  *   （md は marked でHTML化、html はそのまま表示）
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
@@ -22,6 +22,7 @@ import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
+import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 
 interface FileViewerProps {
 	path: string;
@@ -396,6 +397,143 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 	);
 }
 
+interface MobileOfficeWebViewProps {
+	readonly path: string;
+	readonly kind: 'spreadsheet' | 'docx';
+	readonly html: string;
+	readonly javaScriptEnabled: boolean;
+	readonly viewState: Readonly<Record<string, string | number>>;
+	readonly onShouldStartLoadWithRequest: (request: { readonly url: string; readonly isTopFrame?: boolean }) => boolean;
+}
+
+/** Applies the shared bounded recovery reducer to the isolated mobile Office WebView. */
+function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, onShouldStartLoadWithRequest }: MobileOfficeWebViewProps) {
+	const snapshot = useMemo<IParadisOfficeRecoverySnapshot>(() => ({
+		source: { mode: 'document', source: { kind: 'file', uri: path, displayName: path.split('/').pop() ?? path } },
+		viewState,
+	}), [path, viewState]);
+	const initial = useRef(beginParadisOfficeRecovery(createParadisOfficeRecoveryState(), snapshot));
+	const recoveryState = useRef(initial.current.state);
+	const webviewRef = useRef<WebView>(null);
+	const lastInput = useRef({ html, snapshot });
+	const [generation, setGeneration] = useState(initial.current.state.generation);
+	const [webviewEpoch, setWebviewEpoch] = useState(0);
+	const [reloadEpoch, setReloadEpoch] = useState(0);
+	const [finalError, setFinalError] = useState(false);
+
+	const applyEffects = useCallback((effects: readonly ParadisOfficeRecoveryEffect[]) => {
+		for (const effect of effects) {
+			switch (effect.type) {
+				case 'load':
+					setFinalError(false);
+					setGeneration(effect.generation);
+					break;
+				case 'remount':
+				case 'restore':
+					setFinalError(false);
+					setGeneration(effect.generation);
+					setReloadEpoch(value => value + 1);
+					break;
+				case 'recreate':
+					setFinalError(false);
+					setGeneration(effect.generation);
+					setWebviewEpoch(value => value + 1);
+					break;
+				case 'showError':
+					setFinalError(true);
+					break;
+			}
+		}
+	}, []);
+
+	useEffect(() => {
+		if (lastInput.current.html === html && lastInput.current.snapshot === snapshot) {
+			return;
+		}
+		lastInput.current = { html, snapshot };
+		const transition = beginParadisOfficeRecovery(recoveryState.current, snapshot);
+		recoveryState.current = transition.state;
+		applyEffects(transition.effects);
+	}, [applyEffects, html, snapshot]);
+
+	useEffect(() => {
+		if (reloadEpoch > 0) {
+			webviewRef.current?.reload();
+		}
+	}, [reloadEpoch]);
+
+	const completeRender = (hasExpectedRoot: boolean) => {
+		const transition = reduceParadisOfficeRecovery(recoveryState.current, { type: 'rendered', generation, hasExpectedRoot });
+		recoveryState.current = transition.state;
+		applyEffects(transition.effects);
+	};
+
+	const retry = () => {
+		const transition = reduceParadisOfficeRecovery(recoveryState.current, { type: 'retry' });
+		recoveryState.current = transition.state;
+		applyEffects(transition.effects);
+	};
+
+	const openExternally = () => {
+		const uri = /^[a-z][a-z\d+.-]*:/i.test(path) ? path : `file://${path}`;
+		void Linking.openURL(uri).catch(() => Alert.alert('ファイルを開けませんでした', path));
+	};
+
+	if (finalError) {
+		return (
+			<View style={styles.recoveryBox}>
+				<Text style={styles.dim}>Office ファイルの表示結果が空でした。</Text>
+				<View style={styles.recoveryActions}>
+					<Pressable style={styles.recoveryButton} onPress={retry} accessibilityRole={'button'}><Text style={styles.recoveryButtonText}>再試行</Text></Pressable>
+					<Pressable style={styles.recoveryButton} onPress={openExternally} accessibilityRole={'button'}><Text style={styles.recoveryButtonText}>既定のアプリで開く</Text></Pressable>
+				</View>
+			</View>
+		);
+	}
+
+	const expectedSelector = kind === 'docx'
+		? '.docx-wrapper > section.docx'
+		: 'table, [role="grid"], .paradis-spreadsheet-virtual-host';
+	const probe = `(function () {
+		var sent = false;
+		var finish = function (present) {
+			if (sent) { return; }
+			sent = true;
+			observer.disconnect();
+			window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'paradisOfficeRecovery', generation: ${generation}, hasExpectedRoot: present }));
+		};
+		var check = function () { if (document.querySelector(${JSON.stringify(expectedSelector)})) { finish(true); } };
+		var observer = new MutationObserver(check);
+		observer.observe(document.documentElement, { childList: true, subtree: true });
+		check();
+		setTimeout(function () { finish(!!document.querySelector(${JSON.stringify(expectedSelector)})); }, 2000);
+		true;
+	})();`;
+
+	return (
+		<WebView
+			ref={webviewRef}
+			key={`${kind}:${webviewEpoch}`}
+			style={styles.web}
+			source={{ html }}
+			originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
+			javaScriptEnabled={javaScriptEnabled}
+			onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+			injectedJavaScript={probe}
+			onMessage={event => {
+				try {
+					const message = JSON.parse(event.nativeEvent.data) as { readonly type?: string; readonly generation?: number; readonly hasExpectedRoot?: boolean };
+					if (message.type === 'paradisOfficeRecovery' && message.generation === generation && typeof message.hasExpectedRoot === 'boolean') {
+						completeRender(message.hasExpectedRoot);
+					}
+				} catch {
+					// Ignore messages that are not recovery observations.
+				}
+			}}
+		/>
+	);
+}
+
 export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, onClose }: FileViewerProps) {
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
@@ -489,6 +627,11 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name, officeNonce]);
 
 	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
+	const hasOfficeRenderPayload = (kind === 'spreadsheet' && spreadsheetHtml !== undefined) || (kind === 'docx' && docxData !== undefined);
+	const officeViewState = useMemo(() => ({
+		mode,
+		...(kind === 'spreadsheet' && sheetIndex !== undefined ? { activeSheetIndex: sheetIndex } : {}),
+	}), [kind, mode, sheetIndex]);
 
 	// iPad幅では pageSheet にして、常設サイドバーを覆い隠さないようにする
 	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。ヘッダーの拡大ボタンで
@@ -553,6 +696,15 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					<NativeFileView data={pdfData} ext="pdf" />
 				) : kind === 'av' && mediaData !== undefined ? (
 					<NativeFileView data={mediaData} ext={fileExt(name)} />
+				) : html !== undefined && hasOfficeRenderPayload ? (
+					<MobileOfficeWebView
+						path={path}
+						kind={kind}
+						html={html}
+						javaScriptEnabled={allowJs}
+						viewState={officeViewState}
+						onShouldStartLoadWithRequest={guardOfficeNavigation}
+					/>
 				) : html !== undefined ? (
 					// ペアリング済みワークスペースのHTMLはPC版と同様にスクリプト実行を許可する。
 					// スプレッドシート、Word、検索行ジャンプ付きコードビューも自前スクリプトを実行する。
@@ -591,6 +743,10 @@ const styles = StyleSheet.create({
 	// 背景色を適用するため、初回ペイント前もダーク面が見える（opaque prop には効果が無い）。
 	web: { flex: 1, backgroundColor: colors.bg },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
+	recoveryBox: { alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24, flex: 1 },
+	recoveryActions: { flexDirection: 'row', gap: 12 },
+	recoveryButton: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 9 },
+	recoveryButtonText: { color: colors.text, fontSize: 13, fontWeight: '600' },
 	loadingBox: { alignItems: 'center', gap: 8, marginTop: 24 },
 	sheetBar: { flexGrow: 0, flexShrink: 0, backgroundColor: colors.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	sheetBarContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },

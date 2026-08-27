@@ -40,6 +40,7 @@ import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { ParadisOfficeChange, ParadisOfficeChangeCategory, ParadisOfficeChangeValue, ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
+import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import type { ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
@@ -422,6 +423,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _loadGeneration = 0;
 	private readonly _inputGeneration = new ParadisSpreadsheetOpenGeneration();
 	private _committedInput: IParadisSpreadsheetDiffCommittedInput | undefined;
+	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
 	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 
 	constructor(
@@ -563,12 +565,26 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._scale = requestedViewState.zoom;
 		this._clearSemanticUi();
 		this._configureInputResources(this._originalResource, this._modifiedResource);
+		this._recoveryState = beginParadisOfficeRecovery(this._recoveryState, {
+			source: {
+				mode: 'comparison',
+				original: createParadisSpreadsheetSourceDescriptor(this._originalResource, 'original'),
+				modified: createParadisSpreadsheetSourceDescriptor(this._modifiedResource, 'modified'),
+			},
+			viewState: {
+				zoom: requestedViewState.zoom,
+				activeSheet: requestedViewState.activeSheet,
+				categories: [...requestedViewState.categories],
+				...(requestedViewState.selectedChangeId ? { selectedChangeId: requestedViewState.selectedChangeId } : {}),
+			},
+		}).state;
 
-		const loaded = await this._load(token, requestedViewState);
+		const loaded = await this._load(token, requestedViewState, this._recoveryState.generation);
 		if (!this._inputGeneration.isCurrent(inputGeneration)) {
 			return;
 		}
 		if (!loaded && token.isCancellationRequested && previous) {
+			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
 			this._originalResource = previous.originalResource;
 			this._modifiedResource = previous.modifiedResource;
 			this._originalWorkbook = previous.originalWorkbook;
@@ -601,6 +617,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 		if (!loaded && token.isCancellationRequested) {
+			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
 			this.clearInput();
 		} else if (loaded) {
 			this._committedInput = this._captureCommittedInput(input, options);
@@ -789,9 +806,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			try {
 				const watcher = this._fileService.createWatcher(modified, { recursive: false, excludes: [] });
 				store.add(watcher);
+				const scheduler = store.add(new RunOnceScheduler(() => this._onWatchedResourceChanged(original, modified), 50));
 				store.add(watcher.onDidChange(e => {
 					if (isEqual(this._originalResource, original) && isEqual(this._modifiedResource, modified) && e.contains(modified)) {
-						void this._load(CancellationToken.None);
+						scheduler.schedule();
 					}
 				}));
 			} catch {
@@ -800,7 +818,51 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 	}
 
-	private async _load(token: CancellationToken, viewState = this._currentSpreadsheetViewState()): Promise<boolean> {
+	private _onWatchedResourceChanged(original: URI, modified: URI): void {
+		if (!isEqual(this._originalResource, original) || !isEqual(this._modifiedResource, modified)) {
+			return;
+		}
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, this._currentSpreadsheetViewState());
+	}
+
+	private _applyRecoveryEffects(effects: readonly ParadisOfficeRecoveryEffect[], viewState: ParadisSpreadsheetViewState): void {
+		for (const effect of effects) {
+			switch (effect.type) {
+				case 'load':
+					void this._load(CancellationToken.None, viewState, effect.generation, true);
+					break;
+				case 'remount':
+				case 'recreate':
+					// Reuse the exact aligned rows and drawing geometry. Recovery must not reparse diagonals or shapes.
+					this._renderSheet();
+					this._renderTabs();
+					this._updateNav();
+					if (this._modifiedWorkbook) {
+						this._renderSemanticUi(this._modifiedWorkbook, viewState);
+					}
+					this._finishRecoveryRender(effect.generation, viewState);
+					break;
+				case 'showError':
+					this._renderRecoveryError();
+					break;
+				case 'restore':
+					// The committed comparison DOM remains mounted while a watcher read is pending.
+					break;
+			}
+		}
+	}
+
+	private _finishRecoveryRender(recoveryGeneration: number, viewState: ParadisSpreadsheetViewState): void {
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, {
+			type: 'rendered', generation: recoveryGeneration, hasExpectedRoot: this._diffSheets.length > 0 && !!this._panesEl,
+		});
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, viewState);
+	}
+
+	private async _load(token: CancellationToken, viewState = this._currentSpreadsheetViewState(), recoveryGeneration = this._recoveryState.generation, preserveCommitted = false): Promise<boolean> {
 		const original = this._originalResource;
 		const modified = this._modifiedResource;
 		if (!original || !modified) {
@@ -808,8 +870,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		const generation = ++this._loadGeneration;
 		const previousValidation = this._selectedValidation;
-		this._clearSemanticUi();
-		this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "Loading diff..."));
+		if (!preserveCommitted) {
+			this._clearSemanticUi();
+			this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "Loading diff..."));
+		}
 		try {
 			// パース失敗(暗号化・破損・サイズ超過・git参照消失)を空ブックとして握りつぶすと、
 			// 「全行追加/削除/変更なし」という静かな誤差分になってしまう。失敗した側と理由を
@@ -829,7 +893,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			if (origResult.error || modResult.error) {
 				// 失敗時は入力規則フィルタの見た目も落とす(エラー画面で active+disabled の
 				// 不整合を出さない。次回成功ロード時にユーザーが付け直せる)。
-				this._validationFilter = false;
+				if (!preserveCommitted) {
+					this._validationFilter = false;
+				}
 				const reasons: string[] = [];
 				if (origResult.error) {
 					reasons.push(localize('paradis.spreadsheet.originalSideFailed', "旧版: {0}", describeSpreadsheetParseError(origResult.error)));
@@ -837,7 +903,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				if (modResult.error) {
 					reasons.push(localize('paradis.spreadsheet.modifiedSideFailed', "新版: {0}", describeSpreadsheetParseError(modResult.error)));
 				}
-				this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')));
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
+				this._recoveryState = transition.state;
+				if (!preserveCommitted || transition.effects.length === 0) {
+					this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')));
+				}
 				return false;
 			}
 			const origWb = origResult.wb;
@@ -889,6 +959,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(restoredLocation!));
 			}
 			this._renderSemanticUi(modWb, viewState);
+			this._finishRecoveryRender(recoveryGeneration, viewState);
 			if (this._committedInput && isEqual(this._committedInput.originalResource, original)
 				&& isEqual(this._committedInput.modifiedResource, modified) && this.input === this._committedInput.input) {
 				this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
@@ -896,7 +967,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return true;
 		} catch (err) {
 			if (!token.isCancellationRequested) {
-				this._renderMessage(localize('paradis.spreadsheet.errorDiff', "Failed to open spreadsheet diff: {0}", err instanceof Error ? err.message : String(err)));
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
+				this._recoveryState = transition.state;
+				if (!preserveCommitted || transition.effects.length === 0) {
+					this._renderMessage(localize('paradis.spreadsheet.errorDiff', "Failed to open spreadsheet diff: {0}", err instanceof Error ? err.message : String(err)));
+				}
 			}
 			return false;
 		}
@@ -1208,6 +1283,31 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._validationInspector = undefined;
 		const msg = dom.append(this._bodyEl, $('.paradis-spreadsheet-message'));
 		msg.textContent = message;
+	}
+
+	private _renderRecoveryError(): void {
+		this._renderMessage(localize('paradis.spreadsheet.diffBlank', "The spreadsheet comparison renderer produced no visible content."));
+		const resource = this._modifiedResource;
+		if (!this._bodyEl || !resource) {
+			return;
+		}
+		const actions = dom.append(this._bodyEl, $('.paradis-spreadsheet-recovery-actions'));
+		const retry = dom.append(actions, $('button')) as HTMLButtonElement;
+		retry.type = 'button';
+		retry.textContent = localize('paradis.spreadsheet.diffRetry', "Retry");
+		this._renderDisposables.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
+			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
+			this._recoveryState = transition.state;
+			this._applyRecoveryEffects(transition.effects, this._currentSpreadsheetViewState());
+		}));
+		if (resource.scheme === Schemas.file) {
+			const open = dom.append(actions, $('button')) as HTMLButtonElement;
+			open.type = 'button';
+			open.textContent = localize('paradis.spreadsheet.diffOpenAfterBlank', "Open in Default Application");
+			this._renderDisposables.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
+				void this._nativeHostService.openExternal(resource.toString(true));
+			}));
+		}
 	}
 
 	private _renderSheet(): void {
@@ -1935,6 +2035,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._naturalTableWidth = 0;
 		this._runtimeConfiguration = undefined;
 		this._committedInput = undefined;
+		this._recoveryState = createParadisOfficeRecoveryState();
 		if (this._bodyEl) {
 			dom.clearNode(this._bodyEl);
 		}
