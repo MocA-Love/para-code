@@ -14,6 +14,88 @@ PARA-CODE: fork-owned directory (Para Code) — not present in upstream microsof
 - `LICENSE-docx-preview` — docx-preview の Apache-2.0 ライセンス全文
 - `LICENSE-jszip` — jszip のライセンス全文（MIT / GPL-3.0）
 
+## docx-preview 0.4.0 compatibility candidate
+
+0.4.0 は現行 0.3.7 を直ちに置換せず、versioned adapter と golden 比較用の候補として
+固定する。PC/mobile の現行追跡成果物は、切替タスクまでは下記 0.3.7 のままとする。
+0.4.0 の build metadata は次のとおり。
+
+| 対象 | 固定値 |
+|---|---|
+| npm archive | `https://registry.npmjs.org/docx-preview/-/docx-preview-0.4.0.tgz` |
+| archive SHA-256 | `94c336d6a1ea69d188bc95bfb4c6de55ea6414270477359ddda557d1a5bea447` |
+| upstream source | `package/dist/docx-preview.min.js` |
+| upstream source SHA-256 | `051ef503f2677d53159a388b7384e950eda41ea4e47a103e5e36f124d7faea40` |
+| license | Apache-2.0、`package/LICENSE` |
+| license SHA-256 | `8668bf4417d161e4eb4d47d6044526e4914d9eb3c748573d9bb7e87708c1253f` |
+| patched PC source SHA-256 | `a60958918afcc4579216ea44637736f6ad21ae41c2ae64b6c48bbb62ee89600b` |
+| mobile JSON SHA-256 | `48834320a889913b60431aa369a80f83e1a0036c041511be345ed6dcfbd2aa9c` |
+
+`paradisDocxPreview040Adapter.ts` の patch queue は、0.4.0 でも未修正だった次の7件だけを
+この順序で適用する。各 source matcher は1回だけ一致する必要があり、upstream drift または
+二重適用は失敗にする。
+
+1. `vml-stroke-attributes`
+2. `vertical-writing-variants`
+3. `table-layout-type-attribute`
+4. `hanging-indent-tab-stop`
+5. `fixed-table-width`
+6. `page-relative-vml-origin`
+7. `numbering-css-content`
+
+0.4.0 は `renderDocument(document, options): Promise<Node[]>` と `options.h` を提供する。
+adapter は `h` で logical node ID/anchor だけを付与し、VML の `from`/`to`、画像 transform、
+page style の生値を変更しない。semantic parser、package security、外部 asset policyは既存経路が
+正本であり、この adapter では再実装しない。0.4.0 の `mmlMath` container が AST の
+`cssStyle` を `h` へ渡さない箇所だけ、文書順で MathML root に logical anchor を引き継ぐ。
+
+次のコマンドは2つの独立した clean temp directory へ同じ PC/mobile 候補を生成し、archive、
+source、license、両出力の固定 hash を検証する。最後に2回目の hash 検証済み PC 候補を
+`out/` の test helper へ渡し、実0.4 UMDの最小 golden を実行する。追跡成果物への書込みは行わない。
+
+```sh
+npm run transpile-client
+for BUILD_RUN in 1 2; do
+  TASK_TMP=$(mktemp -d)
+  curl -fsSLo "$TASK_TMP/archive.tgz" \
+    https://registry.npmjs.org/docx-preview/-/docx-preview-0.4.0.tgz
+  printf '%s  %s\n' \
+    94c336d6a1ea69d188bc95bfb4c6de55ea6414270477359ddda557d1a5bea447 \
+    "$TASK_TMP/archive.tgz" | shasum -a 256 -c -
+  tar -xzf "$TASK_TMP/archive.tgz" -C "$TASK_TMP"
+  printf '%s  %s\n' \
+    051ef503f2677d53159a388b7384e950eda41ea4e47a103e5e36f124d7faea40 \
+    "$TASK_TMP/package/dist/docx-preview.min.js" | shasum -a 256 -c -
+  printf '%s  %s\n' \
+    8668bf4417d161e4eb4d47d6044526e4914d9eb3c748573d9bb7e87708c1253f \
+    "$TASK_TMP/package/LICENSE" | shasum -a 256 -c -
+  TASK_TMP="$TASK_TMP" node --input-type=module <<'NODE'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { applyDocxPreview040Patches } from './out/vs/paradis/contrib/fileViewers/electron-browser/word/paradisDocxPreview040Adapter.js';
+
+const root = process.env.TASK_TMP;
+const upstream = readFileSync(`${root}/package/dist/docx-preview.min.js`, 'utf8');
+const patched = applyDocxPreview040Patches(upstream);
+const jszip = readFileSync('src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/jszip.min.js', 'utf8');
+mkdirSync(`${root}/pc`, { recursive: true });
+mkdirSync(`${root}/mobile`, { recursive: true });
+writeFileSync(`${root}/pc/docx-preview.min.js`, patched);
+writeFileSync(`${root}/mobile/docxPreviewBundle.json`,
+  `{"version": 1, "jszip": ${JSON.stringify(jszip)}, "docxPreview": ${JSON.stringify(patched)}}`);
+NODE
+  printf '%s  %s\n' \
+    a60958918afcc4579216ea44637736f6ad21ae41c2ae64b6c48bbb62ee89600b \
+    "$TASK_TMP/pc/docx-preview.min.js" | shasum -a 256 -c -
+  printf '%s  %s\n' \
+    48834320a889913b60431aa369a80f83e1a0036c041511be345ed6dcfbd2aa9c \
+    "$TASK_TMP/mobile/docxPreviewBundle.json" | shasum -a 256 -c -
+done
+cp "$TASK_TMP/pc/docx-preview.min.js" \
+  out/vs/paradis/contrib/fileViewers/test/electron-browser/paradisDocxPreview040Candidate.min.js
+./scripts/test.sh --run \
+  src/vs/paradis/contrib/fileViewers/test/electron-browser/paradisDocxPreview040Adapter.test.ts
+```
+
 ## 更新手順
 
 `docx-preview@0.3.7` は公開 tarball の SHA-256 を固定し、
