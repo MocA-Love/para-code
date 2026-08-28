@@ -90,25 +90,67 @@ export function paradisScreenshotPathsFromToolResult(result: unknown): readonly 
  * ポート番号は手元のぶんしか書かない。接続先で開いている番号は `ssh -R` が空きから選ぶので
  * 手元とは一致せず、書いても必ず古くなる（以前は接続先でも同じ固定番号を開いていたので
  * たまたま一致していた）。接続先には、その場でポートファイルを読ませる。
+ *
+ * `requestedFilePath` が true（呼び出し側が `filePath` を渡した）の間は、保存が成功したか
+ * どうかに関わらずこの案内を必ず付ける。失敗時（`entries` が空）も「この書き込みはどのマシン/
+ * プロセスで試みられたか」を明示する。これが無いと、SSH 越しのエージェントは自分の機械に
+ * 書けなかった理由が分からないまま、存在しないローカルパスを触りにいってしまう。
+ *
+ * `requestedFilePath` が false でも、何かが保存されていれば（`wasSaved`）案内を付ける。vendored
+ * `take_screenshot` は `filePath` 未指定でも画像が2,000,000バイト以上なら自動的に一時ファイルへ
+ * 逃がす（`Saved screenshot to <path>.` を返す）ため、フルページ撮影など2MB超のケースでは
+ * `filePath` を渡していなくても回収案内が必要になる。
+ *
+ * `wasSaved` と `entries` を分けているのはゲートウェイのHTTPサーバーがまだ起動していない
+ * （ポート未確定）場合があるため。この場合 `paradisScreenshotPathsFromToolResult` はパスを
+ * 見つけられても取り出し口を登録できず `entries` は空になるが、それは「パースできなかった」
+ * わけではないので、その旨を混同しないよう別のメッセージにする。
  */
-export function paradisAppendScreenshotFetchHint(result: unknown, entries: readonly IParadisScreenshotFetchTarget[]): unknown {
+export function paradisAppendScreenshotFetchHint(result: unknown, entries: readonly IParadisScreenshotFetchTarget[], requestedFilePath: boolean, wasSaved: boolean): unknown {
 	const content = (result as { content?: unknown })?.content;
-	if (entries.length === 0 || !Array.isArray(content)) {
+	if ((!requestedFilePath && !wasSaved) || !Array.isArray(content)) {
 		return result;
 	}
-	const lines = [
-		'The screenshot was written on the machine running Para Code, which is not necessarily the machine you are on.',
-		'If that path does not exist for you (for example when Para Code is connected to this host over SSH), download it instead.',
-		'',
-		'On the machine running Para Code:',
-		...entries.map(entry => `  curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" http://127.0.0.1:${entry.localPort}${PARADIS_SCREENSHOT_FETCH_PATH}/${entry.id} -o <local-name>`),
-		'',
-		// 接続先で開くポートは ssh に選ばせた番号で、手元の番号とは一致しない。番号を焼き込むと
-		// 必ず古くなるので、その場で読ませる (このファイルの場所は接続先の hooks が持っている)。
-		'Over SSH the port is different — the return tunnel picks a free one. Read it from the port file first:',
-		`  PORT=$(sed -n 's/.*"port":[[:space:]]*\\([0-9]*\\).*/\\1/p' "$PARA_CODE_MCP_PORT_FILE")`,
-		...entries.map(entry => `  curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" "http://127.0.0.1:$PORT${PARADIS_SCREENSHOT_FETCH_PATH}/${entry.id}" -o <local-name>`),
-	];
+	const isError = (result as { isError?: unknown })?.isError === true;
+	const lines: string[] = [];
+	if (entries.length > 0) {
+		lines.push(
+			// filePath指定・2MB超の自動保存のどちらでも起こりうるため、原因を決め打ちしない表現にする。
+			'The screenshot was written to a file on the machine and inside the shared-process (backend) of Para Code — either because `filePath` was given, or automatically because the image was larger than 2MB. This is never the machine or process this MCP client/agent CLI runs in.',
+			'If that path does not exist for you (for example when Para Code is connected to this host over SSH), download it instead.',
+			'',
+			'On the machine running Para Code:',
+			...entries.map(entry => `  curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" http://127.0.0.1:${entry.localPort}${PARADIS_SCREENSHOT_FETCH_PATH}/${entry.id} -o <local-name>`),
+			'',
+			// 接続先で開くポートは ssh に選ばせた番号で、手元の番号とは一致しない。番号を焼き込むと
+			// 必ず古くなるので、その場で読ませる (このファイルの場所は接続先の hooks が持っている)。
+			'Over SSH the port is different — the return tunnel picks a free one. Read it from the port file first:',
+			`  PORT=$(sed -n 's/.*"port":[[:space:]]*\\([0-9]*\\).*/\\1/p' "$PARA_CODE_MCP_PORT_FILE")`,
+			...entries.map(entry => `  curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" "http://127.0.0.1:$PORT${PARADIS_SCREENSHOT_FETCH_PATH}/${entry.id}" -o <local-name>`),
+		);
+	} else if (wasSaved) {
+		// パスは見つかったが、取り出し口を登録できるだけの状態（ポート確定）ではなかった。
+		// 「パースできなかった」と混同させない。
+		lines.push(
+			'The screenshot was written to a file on the machine and inside the shared-process (backend) of Para Code — either because `filePath` was given, or automatically because the image was larger than 2MB. This is never the machine or process this MCP client/agent CLI runs in.',
+			'A download link could not be prepared this time because the local MCP gateway was not ready yet. If you are on a different machine than Para Code (for example connected over SSH) and need this file, retry the tool call once Para Code has finished starting up.',
+		);
+	} else if (isError) {
+		// ここに来るのは requestedFilePath===true のときだけ（そうでなければ上のガードで既に return
+		// している）。`filePath` を渡したのに何も保存されず失敗した経路。
+		lines.push('`filePath` is always resolved on the machine and inside the shared-process (backend) of Para Code — never on the machine or process this MCP client/agent CLI runs in.');
+		lines.push(
+			'The write above failed (see the error), so no file exists to download. Double-check that `filePath` is valid and writable from the machine running Para Code (not from where this agent is running), then retry.',
+		);
+	} else {
+		// ここに来るのも requestedFilePath===true のときだけ。成功したはずなのに
+		// 「Saved screenshot to ...」行が見つからなかった予防線 (chrome-devtools-mcp側の
+		// 出力形式が変わった等)。無言で情報が欠けるより、その旨を明示する方が事故が少ない。
+		lines.push('`filePath` is always resolved on the machine and inside the shared-process (backend) of Para Code — never on the machine or process this MCP client/agent CLI runs in.');
+		lines.push(
+			'No saved file path could be parsed out of the response above, so a download link could not be prepared. If a file was in fact written, look for its path on the machine running Para Code.',
+		);
+	}
 	return { ...(result as object), content: [...content, { type: 'text', text: lines.join('\n') }] };
 }
 

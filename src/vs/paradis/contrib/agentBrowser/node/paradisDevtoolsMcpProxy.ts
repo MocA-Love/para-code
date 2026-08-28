@@ -220,6 +220,15 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 	}
 
+	/**
+	 * 指定tokenの子プロセスが現在生きているか（副作用なし、子プロセスをspawnしない）。
+	 * `get_session_health` の可観測性のためだけの読み取り専用イントロスペクション。
+	 */
+	hasLiveChild(token: string): boolean {
+		const entry = this._children.get(token);
+		return entry !== undefined && !entry.killed;
+	}
+
 	/** 新しいbinding generationを記録し、それより古い子プロセスを退役させる。 */
 	retire(token: string, generation: number): void {
 		if (this._disposed) {
@@ -297,6 +306,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			// テレメトリ送信（Google Clearcut / CrUX APIへのURL送信）は同梱コンポーネントとして無効化する
 			'--usageStatistics=false',
 			'--performanceCrux=false',
+			// 座標クリック等のvisionベースツール（click_at等）を解禁する。既に許可済みの
+			// Input.dispatchMouseEvent（allowlist、dispatchExactViewInput経由）で配信されるため、
+			// 信頼済みイベントとして届く（座標はLLMがスクリーンショットから読み取る前提）。
+			'--experimentalVision=true',
 		], {
 			env: {
 				...process.env,
