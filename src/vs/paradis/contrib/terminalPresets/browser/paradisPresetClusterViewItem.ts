@@ -43,6 +43,11 @@
 // （paradisGroupPresetsByFolder）。中身が複数プリセットでも、名前が1件だけの同名まとめグループ
 // （下記の group.length > 1 の分岐）と同じ描画パターン（アイコン＋件数入りツールチップ、クリックで
 // 内訳メニュー）を流用する——タブバーのボタン数を増やさずに済み、実装も1本化できる。
+//
+// 内訳メニュー（showGroupMenu）は IContextMenuService を使わず自前の HTML/CSS ポップアップにして
+// いる。IContextMenuService はビルド種別・設定（window.menuStyle）次第で Electron のネイティブ
+// メニューへ委譲されることがあり（macOS は既定で native）、その場合 OS ネイティブ風の見た目になって
+// 他のツールバー項目・フライアウトと質感が揃わない。詳細は showGroupMenu / positionPopup 参照。
 
 import './media/paradisPresetCluster.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -52,7 +57,7 @@ import { renderLabelWithIcons } from '../../../../base/browser/ui/iconLabel/icon
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, dirname } from '../../../../base/common/resources.js';
 import Severity from '../../../../base/common/severity.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -129,6 +134,15 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 
 	private readonly contentStore = this._register(new DisposableStore());
 	private readonly observerStore = this._register(new DisposableStore());
+	/**
+	 * フォルダ／同名まとめの内訳メニュー。`IContextMenuService` を経由すると、macOS の既定設定
+	 * （window.menuStyle: native）では Electron のネイティブメニューに委譲されてしまい、他の
+	 * ツールバー項目と見た目が揃わない（OSネイティブ風のポップアップになる）。ここだけは
+	 * `.paradis-preset-cluster-flyout` と同じ自前 HTML/CSS のポップアップにして、テーマ・見た目を
+	 * 統一する。開いている間だけ非 undefined。
+	 */
+	private readonly popupStore = this._register(new MutableDisposable<DisposableStore>());
+	private popupAnchor: HTMLElement | undefined;
 
 	private container: HTMLElement | undefined;
 	private fullEl: HTMLElement | undefined;
@@ -188,6 +202,9 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		if (!container) {
 			return;
 		}
+		// 再構築でボタンが作り直されると、開いていたポップアップの anchor が古い（DOMから外れた）
+		// 要素を指したままになる。位置がズレたまま浮き続けないよう先に閉じる。
+		this.closePopup();
 		this.contentStore.clear();
 		dom.clearNode(container);
 		this.fullEl = undefined;
@@ -262,6 +279,10 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			if (!collapsedWrap.matches(':focus-within')) {
 				flyout.scrollLeft = 0;
 			}
+			// フライアウトが自動で畳まれると、その中のフォルダボタンをアンカーに開いていた内訳
+			// ポップアップだけが宙に浮いて残ってしまう。アンカーが見えなくなるタイミングでは
+			// 必ず一緒に閉じる。
+			this.closePopup();
 		}, HOVER_CLOSE_DELAY_MS));
 		this.closeScheduler = closeScheduler;
 		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'mouseenter', () => {
@@ -273,8 +294,11 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		}));
 		// キーボードでフォーカスが完全に外へ出たときだけスクロール位置を戻す
 		// （フライアウト内をTabで移動しているだけなら relatedTarget も子孫のまま）。
+		// 内訳ポップアップ（showGroupMenu、DOM上は .monaco-workbench 直下）へフォーカスが移った
+		// ときも「外へ出た」ことになってしまうが、これはフライアウト内のボタンを押して開いた
+		// 正常系の遷移なので巻き戻さない。
 		this.contentStore.add(dom.addDisposableListener(collapsedWrap, 'focusout', e => {
-			if (collapsedWrap.contains(e.relatedTarget as Node | null)) {
+			if (collapsedWrap.contains(e.relatedTarget as Node | null) || this.popupAnchor !== undefined) {
 				return;
 			}
 			flyout.scrollLeft = 0;
@@ -330,6 +354,8 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			const groupTitle = strPresetGroupTitle(folderLabel ?? preset.name.trim(), group.length);
 			dom.append(btn, $('span.paradis-preset-cluster-item-icon')).classList.add(...ThemeIcon.asClassNameArray(ThemeIcon.fromId(iconId)));
 			btn.setAttribute('aria-label', groupTitle);
+			btn.setAttribute('aria-haspopup', 'true');
+			btn.setAttribute('aria-expanded', 'false');
 			const hover = this.contentStore.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), btn, ''));
 			hover.update(groupTitle);
 			this.contentStore.add(dom.addDisposableListener(btn, 'click', e => {
@@ -366,17 +392,167 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		}));
 	}
 
+	/**
+	 * フォルダ／同名まとめの内訳を出す。あえて `IContextMenuService` を使わず、ここだけ自前の
+	 * HTML/CSS ポップアップにしている（クラス冒頭コメントと {@link popupStore} 参照）。
+	 * 同じボタンを連打すると開閉をトグルし、別のボタンを押すと張り替える。
+	 *
+	 * DOM 上は `.monaco-workbench` 直下（アンカーからは離れた位置）に置くため、Tab キーでは
+	 * 辿り着けない——`IContextMenuService` が持っていた「矢印キーで操作できる」を失わないよう、
+	 * 開いた瞬間に先頭項目へフォーカスを移し、↑↓/Home/End で項目間を移動できるようにしている。
+	 */
 	private showGroupMenu(anchor: HTMLElement, group: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>): void {
-		const actions: IAction[] = group.map(preset => toAction({
-			id: `paradis.presetCluster.run.${preset.key}`,
-			label: qualifiers.get(preset.key) ? `${preset.name} — ${qualifiers.get(preset.key)}` : preset.name,
-			class: ThemeIcon.asClassName(ThemeIcon.fromId(preset.icon ?? 'play')),
-			run: () => this.presetService.runPreset(preset).catch(error => this.notificationService.error(strRunFailed(preset.name, toErrorMessage(error)))),
+		const reopening = this.popupAnchor === anchor;
+		this.closePopup();
+		if (reopening) {
+			return;
+		}
+
+		// 描画先は必ず .monaco-workbench の内側にする。body 直下に置くと、このポップアップの
+		// CSS（.monaco-workbench を前置したセレクタ）が一切マッチせず、位置決め・見た目が
+		// すべて崩れる（body は .monaco-workbench の祖先ではなく子）。念のため見つからない場合は
+		// document.body へ逃がす（＝機能自体は動くが見た目は保証しない）。
+		const win = dom.getWindow(anchor);
+		const host = anchor.closest<HTMLElement>('.monaco-workbench') ?? win.document.body;
+
+		const store = new DisposableStore();
+		this.popupStore.value = store;
+		this.popupAnchor = anchor;
+
+		// aria-haspopup は renderItem 側で静的に付与済み（初回フォーカス時から「開くボタン」と
+		// 分かるように）。ここでは開閉に応じた aria-expanded の切り替えだけ担当する。
+		anchor.setAttribute('aria-expanded', 'true');
+		store.add(toDisposable(() => anchor.setAttribute('aria-expanded', 'false')));
+
+		const popup = dom.append(host, $('.paradis-preset-cluster-popup'));
+		popup.setAttribute('role', 'menu');
+		const anchorLabel = anchor.getAttribute('aria-label');
+		if (anchorLabel) {
+			popup.setAttribute('aria-label', anchorLabel);
+		}
+		store.add(toDisposable(() => {
+			popup.remove();
+			this.popupAnchor = undefined;
 		}));
-		this.contextMenuService.showContextMenu({
-			getAnchor: () => anchor,
-			getActions: () => actions,
-		});
+
+		const items: HTMLButtonElement[] = [];
+		for (const preset of group) {
+			const item = dom.append(popup, $('button.paradis-preset-cluster-popup-item')) as HTMLButtonElement;
+			item.type = 'button';
+			item.setAttribute('role', 'menuitem');
+			items.push(item);
+			const iconId = preset.icon ?? 'play';
+			dom.append(item, $('span.paradis-preset-cluster-popup-item-icon')).classList.add(...ThemeIcon.asClassNameArray(ThemeIcon.fromId(iconId)));
+			const qualifier = qualifiers.get(preset.key);
+			dom.append(item, $('span.paradis-preset-cluster-popup-item-label')).textContent = qualifier ? `${preset.name} — ${qualifier}` : preset.name;
+			store.add(dom.addDisposableListener(item, 'click', e => {
+				dom.EventHelper.stop(e, true);
+				this.closePopup();
+				this.presetService.runPreset(preset).catch(error => this.notificationService.error(strRunFailed(preset.name, toErrorMessage(error))));
+			}));
+		}
+
+		this.positionPopup(anchor, popup);
+		items[0]?.focus();
+
+		store.add(dom.addDisposableListener(popup, 'keydown', e => {
+			// フォーカスは常にこの popup 内の項目にある（keydown はここに委譲されているため）。
+			// dom.getActiveElement() 経由だと補助ウィンドウでの realm/フォーカス判定に左右されうるが、
+			// e.target なら発火元そのものなので確実。
+			const currentIndex = items.indexOf(e.target as HTMLButtonElement);
+			if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+				dom.EventHelper.stop(e, true);
+				const delta = e.key === 'ArrowDown' ? 1 : -1;
+				const base = currentIndex >= 0 ? currentIndex : 0;
+				items[(base + delta + items.length) % items.length]?.focus();
+			} else if (e.key === 'Home') {
+				dom.EventHelper.stop(e, true);
+				items[0]?.focus();
+			} else if (e.key === 'End') {
+				dom.EventHelper.stop(e, true);
+				items[items.length - 1]?.focus();
+			} else if (e.key === 'Tab') {
+				// roving tabindex は実装していない（項目は既定の tabindex=0 のまま）ので、Tab を
+				// そのまま通すと DOM 順で workbench の末尾へ飛び、ポップアップだけ開いたまま残る。
+				// メニューとしての慣行どおり、Tab はメニューを閉じてアンカーへフォーカスを戻す。
+				dom.EventHelper.stop(e, true);
+				this.closePopup();
+				if (anchor.isConnected) {
+					anchor.focus();
+				}
+			}
+		}));
+		// Escape はキャプチャ段階で拾う。フォーカスがポップアップではなくターミナル本体（xterm）に
+		// 残っている状態で開かれることもあり、バブル段階だと ESC が先にシェル/TUI（Claude Code や
+		// Codex 等）へ渡ってから閉じてしまう——キャプチャなら常にここで先取りできる。
+		store.add(dom.addDisposableListener(win, 'keydown', e => {
+			if (e.key === 'Escape') {
+				dom.EventHelper.stop(e, true);
+				this.closePopup();
+				// rebuildContent や折りたたみでこの anchor 自体が既に取り外されている場合、
+				// focus() は無言で失敗するだけなので isConnected を確認してから戻す。
+				if (anchor.isConnected) {
+					anchor.focus();
+				}
+			}
+		}, true));
+		// click ハンドラ経由で開いているため、開いた瞬間の mousedown は既にバブリングを終えており
+		// 「開いたその場で即座に外側クリック扱いされて閉じる」ことは起きない。それでも1フレーム
+		// 遅らせておくのは、ブラウザ実装差やイベント順の将来変化に対する保険（実害はほぼ無い）。
+		store.add(dom.scheduleAtNextAnimationFrame(win, () => {
+			store.add(dom.addDisposableListener(win.document, 'mousedown', e => {
+				const target = e.target as Node | null;
+				if (target && !popup.contains(target) && !anchor.contains(target)) {
+					this.closePopup();
+				}
+			}, true));
+		}));
+		// フォルダボタンがホバー展開のフライアウト（.paradis-preset-cluster-flyout）内にある場合、
+		// このポップアップはフライアウトの外（下）に出るため、マウスをポップアップへ動かした瞬間に
+		// collapsedWrap の mouseleave が発火し、HOVER_CLOSE_DELAY_MS 後にフライアウトごと閉じてしまう
+		// （closeScheduler のコールバックが this.closePopup() も呼ぶため、カーソルの下でポップアップが
+		// 消える）。ポップアップの上に居る間は、フライアウトの閉じ猶予タイマーを止めておく。
+		if (this.closeScheduler && this.collapsedWrap?.contains(anchor)) {
+			const closeScheduler = this.closeScheduler;
+			closeScheduler.cancel();
+			store.add(dom.addDisposableListener(popup, 'mouseenter', () => closeScheduler.cancel()));
+			store.add(dom.addDisposableListener(popup, 'mouseleave', () => closeScheduler.schedule()));
+		}
+		// ウィンドウのリサイズ・別ウィンドウへのフォーカス移動でも、追従させるより単純に閉じる方が
+		// 破綻しない（.paradis-preset-cluster-flyout もスクロール・リサイズには追従しない設計）。
+		store.add(dom.addDisposableListener(win, 'resize', () => this.closePopup()));
+		store.add(dom.addDisposableListener(win, 'blur', () => this.closePopup()));
+	}
+
+	/** 開いているポップアップを閉じる（無ければ何もしない）。 */
+	private closePopup(): void {
+		this.popupStore.clear();
+		this.popupAnchor = undefined;
+	}
+
+	/**
+	 * ポップアップをアンカー（クリックされたボタン）の直下、右端を揃えて配置する。ツールバーの
+	 * 右寄りのボタンほど右端に近いため、右揃えを既定にしつつ、画面端からはみ出す場合はクランプする。
+	 * ターミナルタブバーは下部パネルに置かれるのが既定で画面下端に近いため、下方向に収まらない
+	 * ときはアンカーの上側へ反転する（CSS 側の max-height/overflow-y と合わせて、項目数が多い
+	 * フォルダでも必ず操作できる範囲に収める）。
+	 */
+	private positionPopup(anchor: HTMLElement, popup: HTMLElement): void {
+		const win = dom.getWindow(anchor);
+		const anchorRect = anchor.getBoundingClientRect();
+		const popupRect = popup.getBoundingClientRect();
+		const margin = 4;
+
+		let left = anchorRect.right - popupRect.width;
+		left = Math.max(margin, Math.min(left, win.innerWidth - popupRect.width - margin));
+
+		let top = anchorRect.bottom + margin;
+		if (top + popupRect.height > win.innerHeight - margin) {
+			top = Math.max(margin, anchorRect.top - margin - popupRect.height);
+		}
+
+		popup.style.top = `${Math.round(top)}px`;
+		popup.style.left = `${Math.round(left)}px`;
 	}
 
 	/**
@@ -387,6 +563,11 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 	 * （個々のプリセット単位の表示/非表示切り替えができなくなる）。同等の操作をアプリ側の
 	 * `pinned` フィールド（user ソース）または、このマシンだけの非表示台帳（workspace ソース）
 	 * 経由で再現する（実際の分岐は {@link hidePreset} 参照）。
+	 *
+	 * `showGroupMenu` と違い、こちらは意図的に `IContextMenuService`（ビルド種別・
+	 * `window.menuStyle` 次第でネイティブメニューになりうる）のまま残している。使用頻度が
+	 * 低い右クリック操作であることに加え、標準メニューが持つキーボード操作・破棄確認的な
+	 * 挙動を自前実装で作り直すコストに見合わないため。直し忘れではなく見送り。
 	 */
 	private showHideMenu(anchor: HTMLElement, presets: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>): void {
 		const actions: IAction[] = presets.map(preset => toAction({
@@ -558,6 +739,10 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			return;
 		}
 		this.collapsed = value;
+		// 折りたたみ状態が切り替わると、展開表示側・折りたたみ側のどちらか一方が display:none に
+		// なりアンカーごと消える。内訳ポップアップを開いたまま切り替わると、宙に浮いたまま
+		// 残ってしまうので閉じておく。
+		this.closePopup();
 		container.classList.toggle('is-collapsed', value);
 		if (!value) {
 			// 折りたたみを解除するときは開いた状態を必ず捨てる。collapsedWrap が display:none へ
