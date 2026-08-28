@@ -37,7 +37,7 @@ export function isValidPresetDef(value: unknown): value is PresetDef {
 		&& typeof candidate.name === 'string'
 		&& typeof candidate.signature === 'string' && candidate.signature.length > 0
 		&& (candidate.source === 'user' || candidate.source === 'workspace')
-		&& (candidate.layout === 'tabs' || candidate.layout === 'split' || candidate.layout === 'current')
+		&& (candidate.layout === 'tabs' || candidate.layout === 'split' || candidate.layout === 'current' || candidate.layout === 'smart')
 		&& Array.isArray(candidate.tasks)
 		&& candidate.tasks.every(task => typeof task === 'object' && task !== null
 			&& Array.isArray(task.commands) && task.commands.every(command => typeof command === 'string'));
@@ -53,9 +53,13 @@ export function presetCommandSummary(preset: PresetDef): string {
 	return preset.tasks.flatMap(task => task.commands).join(' ／ ');
 }
 
-/** そのプリセットがPC側でいくつのターミナルを作るか。current は既存の端末へ送る指定なので1つ。 */
+/**
+ * そのプリセットがPC側でいくつのターミナルを作るか。current は既存の端末へ送る指定なので1つ。
+ * smart もPC側では既存端末が空いていればそこへ送るが、モバイルからの実行は常に
+ * forceNewTerminal: true（新規1本）なので、こちらも1つ扱いでよい。
+ */
 export function presetTerminalCount(preset: PresetDef): number {
-	return preset.layout === 'current' ? 1 : Math.max(preset.tasks.length, 1);
+	return (preset.layout === 'current' || preset.layout === 'smart') ? 1 : Math.max(preset.tasks.length, 1);
 }
 
 /**

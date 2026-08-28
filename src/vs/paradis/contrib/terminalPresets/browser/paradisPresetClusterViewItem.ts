@@ -38,6 +38,11 @@
 // 自分の設定なので pinned フィールドへ直接書き込むが、workspace ソース（.paracode.json 由来）へ
 // 同じことをすると git で共有される定義元ファイルがチーム全員分書き換わってしまうため、
 // このマシンだけの非表示台帳（setWorkspacePresetLocallyHidden）へ記録する。
+//
+// folder を持つピン留めプリセットは、名前が違っても同じフォルダとして1ボタンにまとめる
+// （paradisGroupPresetsByFolder）。中身が複数プリセットでも、名前が1件だけの同名まとめグループ
+// （下記の group.length > 1 の分岐）と同じ描画パターン（アイコン＋件数入りツールチップ、クリックで
+// 内訳メニュー）を流用する——タブバーのボタン数を増やさずに済み、実装も1本化できる。
 
 import './media/paradisPresetCluster.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -48,6 +53,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { basename, dirname } from '../../../../base/common/resources.js';
 import Severity from '../../../../base/common/severity.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -58,6 +64,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
+	paradisGroupPresetsByFolder,
 	paradisPresetQualifiers,
 	paradisPresetTooltip,
 } from '../common/paradisTerminalPresets.js';
@@ -68,6 +75,13 @@ const $ = dom.$;
 const strClusterAriaLabel = (count: number) => localize('paradis.presetCluster.ariaLabel', "コマンドプリセット {0} 件（ホバーで展開）", count);
 // allow-any-unicode-next-line
 const strPresetGroupTitle = (name: string, count: number) => localize('paradis.presetCluster.groupTitle', "{0}（{1}件）", name, count);
+// allow-any-unicode-next-line
+const STR_FOLDER_SCOPE_USER = localize('paradis.presetCluster.folderScopeUser', "ユーザー");
+// allow-any-unicode-next-line
+const STR_FOLDER_SCOPE_WORKSPACE = localize('paradis.presetCluster.folderScopeWorkspace', "リポジトリ");
+/** 同名の folder ボタンが複数あるときだけ、どちらのスコープのフォルダかをラベルへ付記する。 */
+// allow-any-unicode-next-line
+const strFolderLabelWithScope = (name: string, scope: string) => localize('paradis.presetCluster.folderLabelWithScope', "{0}（{1}）", name, scope);
 // allow-any-unicode-next-line
 const strRunFailed = (name: string, message: string) => localize('paradis.presetCluster.runFailed', "プリセット「{0}」を実行できませんでした: {1}", name, message);
 // allow-any-unicode-next-line
@@ -100,6 +114,16 @@ const TABS_REMEASURE_DEBOUNCE_MS = 50;
  * ボタンへ斜めにカーソルを動かす普通の操作でも閉じやすくなる。
  */
 const HOVER_CLOSE_DELAY_MS = 300;
+
+/**
+ * ツールバーに実際に描画する1個のボタン単位。folder が付いているものはフォルダ丸ごと1グループ
+ * （中身が複数プリセットでも1ボタン）、folder が無いものは同名プリセットをまとめたグループ
+ * （従来どおり）。
+ */
+interface IParadisPresetClusterGroup {
+	readonly folderLabel?: string;
+	readonly presets: IParadisResolvedPreset[];
+}
 
 export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 
@@ -180,19 +204,31 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		container.style.display = '';
 
 		const qualifiers = paradisPresetQualifiers(pinned);
-		// 同じ名前のピン留めプリセットは1つのボタンにまとめる。同名のボタンが2つ並ぶと、
-		// 押すまで違いが分からないまま実際にコマンドが走ってしまう。
-		const byName = new Map<string, IParadisResolvedPreset[]>();
-		for (const preset of pinned) {
+		// folder を持つプリセットはフォルダ単位で1グループにまとめる（中身が複数でも1ボタン）。
+		// folder を持たない単独プリセットは、従来どおり同じ名前同士でさらにまとめる——同名のボタンが
+		// 2つ並ぶと、押すまで違いが分からないまま実際にコマンドが走ってしまうため。
+		const folderGroups = paradisGroupPresetsByFolder(pinned);
+		const groups: IParadisPresetClusterGroup[] = [];
+		const nameIndex = new Map<string, number>();
+		for (const folderGroup of folderGroups) {
+			// フォルダボタン化するのは中身が複数あるときだけ。1件しか無いフォルダをボタン化すると、
+			// クリック→内訳メニュー→本体クリックの2手に退化するうえ、そのプリセットが持つ
+			// pinnedLabel/icon の設定も無視されてしまう——同名まとめルート（下記）へ流し、
+			// 単独プリセットとして通常どおり描画する。
+			if (folderGroup.folder !== undefined && folderGroup.presets.length > 1) {
+				groups.push({ folderLabel: folderGroup.folder, presets: [...folderGroup.presets] });
+				continue;
+			}
+			const preset = folderGroup.presets[0];
 			const name = preset.name.trim();
-			const group = byName.get(name);
-			if (group) {
-				group.push(preset);
+			const existingIndex = nameIndex.get(name);
+			if (existingIndex !== undefined) {
+				groups[existingIndex].presets.push(preset);
 			} else {
-				byName.set(name, [preset]);
+				nameIndex.set(name, groups.length);
+				groups.push({ presets: [preset] });
 			}
 		}
-		const groups = [...byName.values()];
 		this.groupCount = groups.length;
 
 		const fullEl = dom.append(container, $('.paradis-preset-cluster-full'));
@@ -210,7 +246,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		// 横断した非表示メニューを出す（展開して個々のボタンを右クリックする手間を省く）。
 		this.contentStore.add(dom.addDisposableListener(clusterBtn, 'contextmenu', e => {
 			dom.EventHelper.stop(e, true);
-			this.showHideMenu(clusterBtn, groups.flat(), qualifiers);
+			this.showHideMenu(clusterBtn, groups.flatMap(group => group.presets), qualifiers);
 		}));
 		const flyout = dom.append(collapsedWrap, $('.paradis-preset-cluster-flyout'));
 		// CSS の :hover はカーソルがこの要素（とその子孫）の描画領域から1pxでも外れた瞬間に外れる。
@@ -244,9 +280,20 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			flyout.scrollLeft = 0;
 		}));
 
+		// 同名フォルダが user/workspace の両方にあると、見た目だけでは別のフォルダだと分からない。
+		// 同じ folder 名を持つグループが2つ以上あるときだけ、スコープの区別語を付ける。
+		const folderLabelCounts = new Map<string, number>();
 		for (const group of groups) {
-			this.renderItem(fullEl, group, qualifiers);
-			this.renderItem(flyout, group, qualifiers);
+			if (group.folderLabel !== undefined) {
+				folderLabelCounts.set(group.folderLabel, (folderLabelCounts.get(group.folderLabel) ?? 0) + 1);
+			}
+		}
+		for (const group of groups) {
+			const folderLabel = group.folderLabel !== undefined && (folderLabelCounts.get(group.folderLabel) ?? 0) > 1
+				? strFolderLabelWithScope(group.folderLabel, this.folderScopeLabel(group.presets[0]))
+				: group.folderLabel;
+			this.renderItem(fullEl, group.presets, qualifiers, { folderLabel });
+			this.renderItem(flyout, group.presets, qualifiers, { folderLabel });
 		}
 
 		container.classList.toggle('is-collapsed', this.collapsed);
@@ -254,14 +301,33 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		this.evaluateCollapse();
 	}
 
-	private renderItem(target: HTMLElement, group: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>): void {
+	/**
+	 * フォルダの区別語（同名フォルダが2つ以上あるときだけ使う）。ユーザー設定由来は「ユーザー」で
+	 * 固定してよいが、workspace 由来は `source` だけでは区別できない——異なる2つのリポジトリに
+	 * 同名フォルダがあると、どちらも「リポジトリ」になってしまう。その場合はリポジトリのフォルダ名
+	 * （sourceUri の basename）を使う。
+	 */
+	private folderScopeLabel(preset: IParadisResolvedPreset): string {
+		if (preset.source !== 'workspace') {
+			return STR_FOLDER_SCOPE_USER;
+		}
+		// preset.sourceUri は .paracode.json 自身の URI なので、そのままの basename は常に
+		// 同じファイル名（.paracode.json）になり、複数リポジトリを区別できない。1段上（親フォルダ、
+		// ＝リポジトリのルート）の basename を使う。
+		return preset.sourceUri ? basename(dirname(preset.sourceUri)) : STR_FOLDER_SCOPE_WORKSPACE;
+	}
+
+	private renderItem(target: HTMLElement, group: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>, options?: { readonly folderLabel?: string }): void {
 		const preset = group[0];
 		const btn = dom.append(target, $('button.paradis-preset-cluster-item')) as HTMLButtonElement;
 		btn.type = 'button';
-		const iconId = preset.icon ?? 'play';
+		const folderLabel = options?.folderLabel;
 
-		if (group.length > 1) {
-			const groupTitle = strPresetGroupTitle(preset.name.trim(), group.length);
+		// フォルダ丸ごと（folderLabel あり）と、同名プリセットが複数（group.length > 1）は
+		// 同じ描画パターン（バッジ相当のツールチップ＋クリックでメニュー）を使う。
+		if (folderLabel !== undefined || group.length > 1) {
+			const iconId = folderLabel !== undefined ? 'folder' : (preset.icon ?? 'play');
+			const groupTitle = strPresetGroupTitle(folderLabel ?? preset.name.trim(), group.length);
 			dom.append(btn, $('span.paradis-preset-cluster-item-icon')).classList.add(...ThemeIcon.asClassNameArray(ThemeIcon.fromId(iconId)));
 			btn.setAttribute('aria-label', groupTitle);
 			const hover = this.contentStore.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), btn, ''));
@@ -276,6 +342,8 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			}));
 			return;
 		}
+
+		const iconId = preset.icon ?? 'play';
 
 		if (preset.pinnedLabel === true) {
 			const label = dom.append(btn, $('span.paradis-preset-cluster-item-label'));
