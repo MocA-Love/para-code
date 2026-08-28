@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 // Kept free of any `vscode` import (unlike paradisRepositoryPark.ts) so selectUnaccountedForParking
 // can be unit tested outside the extension host.
 
@@ -132,13 +133,13 @@ export async function commitRepositoriesForParking<T extends IParadisUnaccounted
 	const skippedParking = realPaths.some(realPath => realPath === undefined);
 	const resolvedRealPaths = realPaths.filter((realPath): realPath is string => realPath !== undefined);
 	const repositoriesToPark = skippedParking ? [] : selectRepositoriesForUnifiedParking(
-			latestSnapshot.removedRepositories,
-			latestSnapshot.openRepositories,
-			latestSnapshot.activeRepositories,
-			[...latestSnapshot.currentFolderPaths, ...resolvedRealPaths],
-			isDescendant,
-			pathEquals,
-		);
+		latestSnapshot.removedRepositories,
+		latestSnapshot.openRepositories,
+		latestSnapshot.activeRepositories,
+		[...latestSnapshot.currentFolderPaths, ...resolvedRealPaths],
+		isDescendant,
+		pathEquals,
+	);
 
 	const commitResult = commit(repositoriesToPark, latestSnapshot.currentFolderPaths);
 	return { kind: 'committed', skippedParking, commitResult };

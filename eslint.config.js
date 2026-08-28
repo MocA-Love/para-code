@@ -1921,6 +1921,37 @@ export default defineConfig(
 					]
 				},
 				{
+					// PARA-PATCH: fork-owned contribution integration tests exercise browser/electron-browser/node boundaries together.
+					'target': 'src/vs/paradis/contrib/*/test/integration/**',
+					'restrictions': [
+						'vs/base/**',
+						'vs/platform/**',
+						'vs/workbench/**',
+						'vs/paradis/contrib/**',
+						'fs/promises',
+						'*' // node modules
+					]
+				},
+				{
+					// PARA-PATCH: Office performance gates run Node-backed fixture accounting from the Electron test host.
+					'target': 'src/vs/paradis/contrib/fileViewers/test/performance/**',
+					'layer': 'node',
+					'restrictions': [
+						'vs/amdX',
+						'vs/base/**',
+						'vs/paradis/contrib/fileViewers/{common,node}/**',
+						'vs/paradis/contrib/fileViewers/electron-browser/**',
+						'vs/paradis/contrib/fileViewers/test/common/**',
+						'vs/paradis/contrib/fileViewers/test/visual/**'
+					]
+				},
+				{
+					// PARA-PATCH: Visual golden contracts are pure test fixtures with no platform imports.
+					'target': 'src/vs/paradis/contrib/fileViewers/test/visual/**',
+					'layer': 'common',
+					'restrictions': []
+				},
+				{
 					// PARA-PATCH: Paradis独自contribution（src/vs/paradis/contrib/<feature>/{browser,electron-browser}/**）のlayer定義
 					'target': 'src/vs/paradis/contrib/*/~',
 					'restrictions': [

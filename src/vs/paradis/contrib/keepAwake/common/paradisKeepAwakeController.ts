@@ -56,7 +56,7 @@ export class ParadisKeepAwakeController extends Disposable {
 	}
 
 	private async reconcileNow(): Promise<void> {
-		for (;;) {
+		for (; ;) {
 			const requested = this.disposing ? 'off' : this.requestedMode;
 			const hasRequested = requested !== 'off' &&
 				[...this.blockers.values()].some(mode => mode === requested);

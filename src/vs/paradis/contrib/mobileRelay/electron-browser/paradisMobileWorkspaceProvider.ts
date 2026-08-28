@@ -9,6 +9,7 @@
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
 import { IntervalTimer, raceTimeout, RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -41,7 +42,9 @@ import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
+import { loadParadisMobileWordDiffBundle, renderParadisMobileWordDiffHtml } from './paradisMobileWordDiffHtml.js';
 import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind, NotifyPayload, ParadisMobileWarmLeaseRequest } from '../common/paradisMobileProtocol.js';
+import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
@@ -68,6 +71,8 @@ import { paradisContentHashResponse } from '../common/paradisMobileContentHash.j
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
+import type { ParadisOfficeSourceDescriptor } from '../../fileViewers/common/paradisOfficeProtocol.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -463,7 +468,8 @@ type FsInbound =
 	| { t: 'spacedisk'; id: string; bypassCache?: boolean }
 	// テキスト断片のシンタックスハイライト（エージェントチャットのコードブロック用）。
 	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
-	| { t: 'hl'; id: string; text: string; lang?: string };
+	| { t: 'hl'; id: string; text: string; lang?: string }
+	| ParadisMobileOfficeRequest;
 
 // ファイル読み取り上限（バイト）。旧上限（1MiB）では単一ページに完結した大きめのHTMLレポート/
 // ダッシュボード出力が先頭で打ち切られ、`.html`のレンダー表示（生HTMLをそのままWebViewへ
@@ -674,6 +680,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// PC本体のバッテリー状態（Battery Status API）。未対応環境ではundefinedのまま＝state未配信。
 	private battery: IParadisMobileDesktopBattery | undefined;
 	private readonly mobileWarmLeases: ParadisMobileWarmLeaseProvider;
+	/** mobileId/requestId → 現在のWord Diff世代。新世代・cancel・disposeで即座に打ち切る。 */
+	private readonly mobileOfficeOperations = new Map<string, { readonly generation: number; readonly cancellation: CancellationTokenSource }>();
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
 		private readonly windowId: number,
@@ -1371,6 +1379,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		this.termSyncStates.clear();
 		this.clearAllTerminalViewports();
+		for (const operation of this.mobileOfficeOperations.values()) {
+			operation.cancellation.cancel();
+			operation.cancellation.dispose();
+		}
+		this.mobileOfficeOperations.clear();
 		super.dispose();
 	}
 
@@ -2061,6 +2074,166 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return { uri, path: uri.fsPath };
 	}
 
+	private mobileOfficeOperationKey(mobileId: string, requestId: string): string {
+		return `${mobileId}\0${requestId}`;
+	}
+
+	private async negotiateMobileOfficeHost(): Promise<ParadisOfficeV1Negotiation | undefined> {
+		try {
+			const value = await this.sharedProcessService.getChannel(PARADIS_OFFICE_CHANNEL).call<unknown>('negotiate', { versions: [1, 0] });
+			if (!value || typeof value !== 'object' || Array.isArray(value)) {
+				return undefined;
+			}
+			const candidate = value as Partial<ParadisOfficeV1Negotiation>;
+			const authorityValid = candidate.ownerCapability === undefined && candidate.connectionEpoch === undefined
+				|| typeof candidate.ownerCapability === 'string' && /^[a-f\d]{64}$/.test(candidate.ownerCapability)
+				&& typeof candidate.connectionEpoch === 'number' && Number.isSafeInteger(candidate.connectionEpoch) && candidate.connectionEpoch > 0;
+			return candidate.version === 1 && candidate.channel === PARADIS_OFFICE_CHANNEL && Array.isArray(candidate.capabilities)
+				&& candidate.capabilities.includes('compare') && candidate.capabilities.includes('getViewport') && candidate.capabilities.includes('getRenderableAsset')
+				&& authorityValid
+				? candidate as ParadisOfficeV1Negotiation
+				: undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * Re-fences an untrusted mobile descriptor to the requested workspace. Handles and spool IDs are
+	 * not part of the public descriptor contract and therefore cannot enter this path.
+	 */
+	private async resolveMobileOfficeSourceDescriptor(ws: string, descriptor: ParadisOfficeSourceDescriptor): Promise<ParadisOfficeSourceDescriptor | undefined> {
+		const root = this.resolveWsRoot(ws);
+		if (!root || !this.isReachableWorkspaceUri(root)) {
+			return undefined;
+		}
+		if (descriptor.kind === 'sideMissing') {
+			return descriptor;
+		}
+		if (!descriptor.uri) {
+			return undefined;
+		}
+		let resource: URI;
+		try {
+			resource = URI.parse(descriptor.uri, true);
+		} catch {
+			return undefined;
+		}
+		if (descriptor.kind === 'file' || descriptor.kind === 'remote' || descriptor.kind === 'workingTree') {
+			if (resource.scheme !== root.scheme || resource.authority.toLowerCase() !== root.authority.toLowerCase()
+				|| !extUriBiasedIgnorePathCase.isEqualOrParent(resource, root)) {
+				return undefined;
+			}
+			const relative = extUriBiasedIgnorePathCase.relativePath(root, resource);
+			if (!relative) {
+				return undefined;
+			}
+			const resolved = await this.resolveWorkspacePathReal(ws, relative);
+			if (!resolved || resolved.scheme !== root.scheme || resolved.authority.toLowerCase() !== root.authority.toLowerCase()) {
+				return undefined;
+			}
+			const kind = root.scheme === Schemas.file
+				? descriptor.kind === 'workingTree' ? 'workingTree' as const : 'file' as const
+				: descriptor.kind === 'workingTree' ? 'workingTree' as const : 'remote' as const;
+			return { ...descriptor, kind, uri: resolved.toString(true) };
+		}
+		if (descriptor.kind !== 'gitCommit' && descriptor.kind !== 'gitIndex') {
+			return undefined;
+		}
+		if (resource.scheme !== 'git' || resource.authority.toLowerCase() !== root.authority.toLowerCase()) {
+			return undefined;
+		}
+		try {
+			const query = JSON.parse(resource.query) as { readonly path?: unknown; readonly ref?: unknown };
+			if (Object.keys(query).length !== 2 || typeof query.path !== 'string' || typeof query.ref !== 'string'
+				|| descriptor.kind === 'gitCommit' && query.ref !== 'HEAD' && !/^[a-f\d]{40,64}$/i.test(query.ref)
+				|| descriptor.kind === 'gitIndex' && query.ref !== '') {
+				return undefined;
+			}
+			const source = paradisResolveExternalPath(root, query.path);
+			if (!source || !extUriBiasedIgnorePathCase.isEqualOrParent(source, root)) {
+				return undefined;
+			}
+			return descriptor;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async handleMobileOfficeInbound(msg: ParadisMobileOfficeRequest, mobileId: string | undefined, reply: (body: object) => void): Promise<void> {
+		if (msg.t === 'office/hello') {
+			const negotiation = await this.negotiateMobileOfficeHost();
+			const body: ParadisMobileOfficeResponse = negotiation
+				? { t: 'office/capabilities', version: PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, featureBits: getParadisMobileOfficeHostFeatureBits(msg.featureBits), warnings: ['office.capability.featureUnavailable'] }
+				: { t: 'office/capabilities', version: 0, featureBits: 0, warnings: ['office.capability.mobileHostV0'] };
+			reply(body);
+			return;
+		}
+		if (mobileId === undefined) {
+			reply({ error: 'mobile Office request has no device owner' });
+			return;
+		}
+		if (msg.t === 'office/cancel') {
+			const key = this.mobileOfficeOperationKey(mobileId, msg.targetId);
+			const operation = this.mobileOfficeOperations.get(key);
+			if (operation?.generation === msg.generation) {
+				operation.cancellation.cancel();
+			}
+			const body: ParadisMobileOfficeResponse = { t: 'office/cancelled', version: PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, targetId: msg.targetId, generation: msg.generation };
+			reply(body);
+			return;
+		}
+		const key = this.mobileOfficeOperationKey(mobileId, msg.id);
+		const previous = this.mobileOfficeOperations.get(key);
+		if (previous && previous.generation >= msg.generation) {
+			reply({ error: 'stale mobile Office generation' });
+			return;
+		}
+		previous?.cancellation.cancel();
+		previous?.cancellation.dispose();
+		const cancellation = new CancellationTokenSource();
+		const operation = { generation: msg.generation, cancellation };
+		this.mobileOfficeOperations.set(key, operation);
+		try {
+			const [negotiation, original, modified] = await Promise.all([
+				this.negotiateMobileOfficeHost(),
+				this.resolveMobileOfficeSourceDescriptor(msg.ws, msg.original),
+				this.resolveMobileOfficeSourceDescriptor(msg.ws, msg.modified),
+			]);
+			if (!negotiation) {
+				reply({ error: 'office.capability.mobileHostV0', action: 'updatePc' });
+				return;
+			}
+			if (!original || !modified) {
+				reply({ error: 'invalid mobile Office source' });
+				return;
+			}
+			const channel = this.sharedProcessService.getChannel(PARADIS_OFFICE_CHANNEL);
+			const authority = negotiation.ownerCapability && negotiation.connectionEpoch
+				? { ownerCapability: negotiation.ownerCapability, connectionEpoch: negotiation.connectionEpoch }
+				: undefined;
+			const bundle = await loadParadisMobileWordDiffBundle({
+				request: async (request, token) => unmarshalParadisOfficeResponse(await channel.call('request', marshalParadisOfficeRequest(request, authority), token)),
+			}, { original, modified, generation: msg.generation, requestIdPrefix: `mobile-word:${generateUuid()}` }, cancellation.token);
+			if (this.mobileOfficeOperations.get(key) !== operation || cancellation.token.isCancellationRequested) {
+				return;
+			}
+			const html = renderParadisMobileWordDiffHtml(bundle, generateUuid());
+			const body: ParadisMobileOfficeResponse = { t: 'office/wordDiff', version: PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, generation: msg.generation, html, outcome: bundle.outcome, warnings: bundle.warnings };
+			reply(body);
+		} catch (error) {
+			if (this.mobileOfficeOperations.get(key) === operation && !cancellation.token.isCancellationRequested) {
+				this.logService.warn('[paradisMobileRelay] Word diff relay failed', error);
+				reply({ error: localize('paradis.mobile.wordDiff.unavailable', "Word Diff relay is unavailable."), action: 'retryOnPc' });
+			}
+		} finally {
+			if (this.mobileOfficeOperations.get(key) === operation) {
+				this.mobileOfficeOperations.delete(key);
+			}
+			cancellation.dispose();
+		}
+	}
+
 	private async handleFsInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
 		let msg: FsInbound;
 		const binaryUpload = paradisDecodeBinaryFsUpload(payload.buffer);
@@ -2068,7 +2241,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			msg = binaryUpload;
 		} else {
 			try {
-				msg = JSON.parse(decoder.decode(payload.buffer)) as FsInbound;
+				const parsed = JSON.parse(decoder.decode(payload.buffer)) as unknown;
+				msg = decodeParadisMobileOfficeRequest(parsed) ?? parsed as FsInbound;
 			} catch {
 				return;
 			}
@@ -2108,6 +2282,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoded), mobileId: mobileId || undefined });
 			return true;
 		};
+		if (msg.t === 'office/hello' || msg.t === 'office/wordDiff' || msg.t === 'office/cancel') {
+			await this.handleMobileOfficeInbound(msg, mobileId, reply);
+			return;
+		}
 		// 画像アップロード（エージェントへの添付用）。ワークスペースを汚さないよう
 		// userData 配下の専用ディレクトリへ保存し、フルパスを返す（モバイル側がPTYへ
 		// パスを貼り付け、エージェントCLIがそのパスの画像を読む）。SSH 接続中のウィンドウでは

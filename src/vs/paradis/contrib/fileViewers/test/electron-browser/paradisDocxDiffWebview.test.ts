@@ -83,6 +83,7 @@ interface IHarness {
 	readonly posted: unknown[];
 	/** renderDocument に渡された描画オプション（左右の順）。 */
 	readonly renderOptions: Record<string, unknown>[];
+	readonly assetPlaceholderCounts: number[];
 	send(message: ParadisDocxHostMessage): void;
 	/** 描画に渡された AST（renderDocument が受け取ったもの）。 */
 	rendered(side: 'original' | 'modified'): IParadisDocxAstDocument | undefined;
@@ -107,6 +108,7 @@ function harness(original: IParadisDocxAstDocument, modified: IParadisDocxAstDoc
 	const renderOptions: Record<string, unknown>[] = [];
 	const rendered = new Map<string, IParadisDocxAstDocument>();
 	const timers: (() => void)[] = [];
+	const assetPlaceholderCounts: number[] = [];
 	let handler: ((message: ParadisDocxHostMessage) => void) | undefined;
 	let parseError: Error | undefined;
 	let hasZip = true;
@@ -145,6 +147,7 @@ function harness(original: IParadisDocxAstDocument, modified: IParadisDocxAstDoc
 		onScroll: () => { },
 		setStatus: () => { },
 		setShowFormatChanges: () => { },
+		setAssetPlaceholders: placeholders => assetPlaceholderCounts.push(placeholders.length),
 		setTimeout: callback => { timers.push(callback); return timers.length; },
 		clearTimeout: () => { },
 	};
@@ -156,6 +159,7 @@ function harness(original: IParadisDocxAstDocument, modified: IParadisDocxAstDoc
 		host,
 		posted,
 		renderOptions,
+		assetPlaceholderCounts,
 		send: message => handler?.(message),
 		rendered: side => rendered.get(side),
 		lines: side => {
@@ -180,7 +184,7 @@ function bytes(marker: number): ArrayBuffer {
 
 /** load を送って outline が返るまで進める。 */
 async function load(test: IHarness): Promise<{ original: IParadisDocxOutline; modified: IParadisDocxOutline }> {
-	test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2) });
+	test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2), assetPlaceholders: [] });
 	await new Promise(resolve => setTimeout(resolve, 0));
 	const message = test.posted.find(entry => (entry as { type: string }).type === 'outline') as {
 		original: IParadisDocxOutline;
@@ -201,6 +205,12 @@ suite('Paradis Word diff webview', () => {
 	test('起動したら ready を送る', () => {
 		const test = harness(document([]), document([]));
 		deepStrictEqual(test.posted, [{ type: 'ready' }]);
+	});
+
+	test('load manifestをvisible asset placeholder consumerへ渡す', () => {
+		const test = harness(document([simple('本文')]), document([simple('本文')]));
+		test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2), assetPlaceholders: [{ nodeId: 'asset-1', feature: 'embeddedObject', reason: 'unsafe', title: 'Office asset unavailable', fingerprint: 'a'.repeat(64) }] });
+		deepStrictEqual(test.assetPlaceholderCounts, [1]);
 	});
 
 	test('本文の段落を順に並べた概要を返す', async () => {
@@ -453,7 +463,7 @@ suite('Paradis Word diff webview', () => {
 	test('ライブラリが読み込めていなければエラーコードを返す', async () => {
 		const test = harness(document([]), document([]));
 		test.dropLibrary();
-		test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2) });
+		test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2), assetPlaceholders: [] });
 		await new Promise(resolve => setTimeout(resolve, 0));
 		const error = test.posted.find(entry => (entry as { type: string }).type === 'error') as { message: string };
 		// 文言は renderer 側で付けるので、ここではコードだけを返す。
@@ -464,7 +474,7 @@ suite('Paradis Word diff webview', () => {
 	test('パースに失敗した側を添えてエラーを返す', async () => {
 		const test = harness(document([]), document([]));
 		test.failParse(new Error('broken zip'));
-		test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2) });
+		test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2), assetPlaceholders: [] });
 		await new Promise(resolve => setTimeout(resolve, 0));
 		const error = test.posted.find(entry => (entry as { type: string }).type === 'error') as { side: string; message: string };
 		deepStrictEqual({ side: error.side, message: error.message }, { side: 'original', message: 'broken zip' });
@@ -496,7 +506,7 @@ suite('Paradis Word diff webview', () => {
 		};
 		revived(buildParadisDocxDiffContext('loading'), host);
 		deepStrictEqual(posted, [{ type: 'ready' }]);
-		handler!({ type: 'load', generation: 9, original: bytes(1), modified: bytes(2) });
+		handler!({ type: 'load', generation: 9, original: bytes(1), modified: bytes(2), assetPlaceholders: [] });
 		await new Promise(resolve => setTimeout(resolve, 0));
 		const outline = posted.find(entry => (entry as { type: string }).type === 'outline') as unknown as { generation: number };
 		strictEqual(outline.generation, 9);

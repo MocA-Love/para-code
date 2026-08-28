@@ -9,7 +9,7 @@ import { deepStrictEqual, rejects, strictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisSpreadsheetService, applyTint, formatDateFallback, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
+import { ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
 
 async function encodeWorkbook(configure: (workbook: ExcelJS.Workbook) => void): Promise<string> {
 	const workbook = new ExcelJS.Workbook();
@@ -219,5 +219,36 @@ suite('ParadisSpreadsheetService', () => {
 		strictEqual(rows[1].cells[0].style.textAlign, 'center');
 		strictEqual(rows[2].cells[0].style.textAlign, undefined);
 		strictEqual(rows[3].cells[0].style.textAlign, 'right');
+	});
+
+	test('retains raw diagonal style and color provenance in the ExcelJS projection', async () => {
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Diagonal');
+			sheet.getCell('A1').value = 'argb';
+			sheet.getCell('A1').border = { diagonal: { up: true, down: false, style: 'dashDot', color: { argb: '80112233' } } } as unknown as ExcelJS.Borders;
+			sheet.getCell('A2').value = 'theme';
+			sheet.getCell('A2').border = { diagonal: { up: false, down: true, style: 'medium', color: { theme: 4, tint: 0.25 } } } as unknown as ExcelJS.Borders;
+			sheet.getCell('A3').value = 'indexed';
+			sheet.getCell('A3').border = { diagonal: { up: true, down: true, style: 'thin', color: { indexed: 7 } } } as unknown as ExcelJS.Borders;
+		});
+
+		const rows = (await service.parseWorkbook(workbook)).sheets[0].rows;
+
+		deepStrictEqual(rows.map(row => row.cells[0].diagonal), [
+			{ up: true, down: false, style: '1px dashed', color: '#112233', rawStyle: 'dashDot', rawColor: { kind: 'rgb', rgb: '80112233' } },
+			{ up: false, down: true, style: '2px solid', color: '#7BA1CD', rawStyle: 'medium', rawColor: { kind: 'theme', theme: 4, tint: '0.25' } },
+			{ up: true, down: true, style: '1px solid', color: '#00FFFF', rawStyle: 'thin', rawColor: { kind: 'indexed', indexed: 7 } },
+		]);
+	});
+
+	test('maps auto diagonal color provenance when ExcelJS exposes it', () => {
+		const cell = {
+			border: { diagonal: { up: true, down: false, style: 'hair', color: { auto: true, tint: 0.3 } } },
+		} as unknown as ExcelJS.Cell;
+
+		deepStrictEqual(getCellDiagonalForTest(cell), {
+			up: true, down: false, style: '1px solid', color: '#000', rawStyle: 'hair', rawColor: { kind: 'auto', auto: true, tint: '0.3' },
+		});
 	});
 });

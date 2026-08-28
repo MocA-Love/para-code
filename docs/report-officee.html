@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Para Code Office ビューア 徹底調査レポート</title>
+<style>
+  :root {
+    --ink: #1a1d21;
+    --muted: #5c6672;
+    --line: #dde3ea;
+    --bg: #f6f8fa;
+    --card: #ffffff;
+    --accent: #0b62c4;
+    --hi: #c62828;
+    --hi-bg: #fdecea;
+    --mid: #b26a00;
+    --mid-bg: #fff4e0;
+    --lo: #4a5568;
+    --lo-bg: #eef1f5;
+    --ok: #137333;
+    --warn: #a05a00;
+    --code-bg: #eef2f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink);
+    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic UI", Meiryo, system-ui, sans-serif;
+    background: var(--bg); line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px 80px; }
+  header.page {
+    background: linear-gradient(135deg, #10243e 0%, #17385f 60%, #1c4a77 100%);
+    color: #fff; padding: 44px 20px 36px;
+  }
+  header.page .inner { max-width: 1080px; margin: 0 auto; }
+  header.page h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: .02em; }
+  header.page p.sub { margin: 0; opacity: .85; font-size: 14px; }
+  nav.toc {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(255,255,255,.94); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line); padding: 8px 20px;
+  }
+  nav.toc .inner { max-width: 1080px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+  nav.toc a { color: var(--accent); text-decoration: none; padding: 3px 6px; border-radius: 5px; }
+  nav.toc a:hover { background: var(--code-bg); }
+  h2.sec {
+    font-size: 20px; margin: 44px 0 6px; padding-left: 12px;
+    border-left: 5px solid var(--accent); line-height: 1.35;
+  }
+  h2.sec small { color: var(--muted); font-weight: normal; font-size: 12.5px; margin-left: 10px; }
+  p.lede { color: var(--muted); margin: 4px 0 14px; font-size: 13.5px; }
+  section.card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 22px; margin: 14px 0;
+  }
+  table { width: 100%; border-collapse: collapse; background: var(--card); font-size: 13.2px; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; vertical-align: top; text-align: left; }
+  th { background: var(--lo-bg); font-weight: 600; white-space: nowrap; font-size: 12.5px; }
+  td.id { white-space: nowrap; font-weight: 600; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg); border-radius: 4px; padding: 1px 5px; font-size: 12px; word-break: break-all;
+  }
+  .badge { display: inline-block; border-radius: 999px; padding: 1px 10px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+  .b-hi { background: var(--hi-bg); color: var(--hi); }
+  .b-mid { background: var(--mid-bg); color: var(--mid); }
+  .b-lo { background: var(--lo-bg); color: var(--lo); }
+  .b-done { background: #166534; color: #fff; }
+  .b-ok { background: #e6f4ea; color: var(--ok); border: 1px solid #b7dfc2; }
+  .b-warn { background: #fef3dd; color: var(--warn); border: 1px solid #ecd39f; }
+  .b-drop { background: #fdecea; color: var(--hi); border: 1px solid #f3c1bd; text-decoration: none; }
+  .b-new { background: #e8f0fe; color: var(--accent); border: 1px solid #c3d7f7; }
+  .cat { display: inline-block; color: var(--muted); font-size: 12px; }
+  ul.tight { margin: 6px 0; padding-left: 20px; }
+  ul.tight li { margin: 3px 0; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0 4px; }
+  .kpi {
+    flex: 1 1 150px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; text-align: center;
+  }
+  .kpi .num { font-size: 26px; font-weight: 700; color: var(--accent); line-height: 1.2; }
+  .kpi .lbl { font-size: 12px; color: var(--muted); }
+  .callout {
+    border-radius: 8px; padding: 12px 16px; margin: 12px 0;
+    background: #fffbea; border: 1px solid #f2dfa4; font-size: 13.5px;
+  }
+  .callout.ok { background: #f2f9f4; border-color: #c4e3cd; }
+  .roadmap h3 { font-size: 15.5px; margin: 18px 0 8px; }
+  ol.ri { margin: 6px 0; padding-left: 22px; }
+  ol.ri li { margin: 4px 0; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 48px; border-top: 1px solid var(--line); padding-top: 14px; }
+  @media print {
+    body { background: #fff; } nav.toc { display: none; }
+    section.card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<header class="page">
+  <div class="inner">
+    <h1>Para Code 独自機能「Office ビューア」徹底調査レポート</h1>
+    <p class="sub">Excel (.xlsx/.xlsm) 表示・DIFF / Word (.docx) 表示・DIFF の未対応パターン・描画ミスの網羅監査</p>
+    <p class="sub">調査日: 2026-08-22 ／ 対象コミット: <code style="background:rgba(255,255,255,.15);color:#fff">1c88c85dab6</code> (HEAD) ／ リサーチ専用(コード変更なし)</p>
+    <p class="sub">完了台帳: <code style="background:rgba(255,255,255,.15);color:#fff">0e123d9598d</code> 時点のTask 2では実機未確認のため、対応状況は <code style="background:rgba(255,255,255,.15);color:#fff">docs/office-viewer-acceptance-matrix.md</code> のsafe-fallback分類を正本とする。</p>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="inner">
+    <a href="#summary">要約</a>
+    <a href="#method">調査方法</a>
+    <a href="#sec-a">A. Excel 描画</a>
+    <a href="#sec-b">B. Excel 差分</a>
+    <a href="#sec-c">C. Word 表示/差分</a>
+    <a href="#sec-d">D. 統合・環境</a>
+    <a href="#sec-e">E. ライブラリ限界</a>
+    <a href="#sec-f">ファクトチェック記録</a>
+    <a href="#sec-g">対応ロードマップ</a>
+  </div>
+</nav>
+
+<div class="wrap">
+
+<div class="callout">
+  このページは2026-08-22時点の歴史的調査であり、ここにある「対応済み」表示は現在のruntime検証結果ではない。現在の分類、commit祖先性、fixture/unit/runtimeの実行有無は<a href="office-viewer-acceptance-matrix.md">監査matrix</a>と<a href="office-viewer-verification.md">検証台帳</a>を参照する。
+</div>
+
+<!-- ================= 要約 ================= -->
+<h2 class="sec" id="summary">要約 <small>Executive Summary</small></h2>
+<div class="kpis">
+  <div class="kpi"><div class="num">79</div><div class="lbl">発見事項(取り下げ2件を除く)</div></div>
+  <div class="kpi"><div class="num">11</div><div class="lbl">最重要(高) — 実用上の信頼性に関わる</div></div>
+  <div class="kpi"><div class="num">112</div><div class="lbl">ファクトチェック検証項目</div></div>
+  <div class="kpi"><div class="num">≈98%</div><div class="lbl">主張の実質裏付け率</div></div>
+  <div class="kpi"><div class="num">2</div><div class="lbl">棄却(誤報告) — 本レポートで除外</div></div>
+</div>
+
+<div class="callout ok">
+<b>総評。</b> 骨格（寸法変換・結合セル・共有辺罫線解決・sticky+transformズームの数学・ページ割り・XSS/CSP対策・ライフサイクル）は堅実で、ファクトチェックでもほぼ裏付けられた。
+一方、<b>①差分の「静かな誤り」（パース失敗の握りつぶし・行アライメント不在）</b>、<b>②Word差分の網羅性ギャップ（脚注本文・数式中の編集・図形内テキストが「変更なし」表示）</b>、<b>③行列ヘッダ番号の絶対番号不一致</b>、<b>④色系（tint/indexed）の仕様乖離</b> の4点が実機との最大の差分要因。これらは共通根が明確で、修正優先度も付けやすい。
+</div>
+
+<h3 style="font-size:15.5px; margin:20px 0 8px;">最重要 11 項目（高重要度）</h3>
+<table>
+<tr><th>ID</th><th>領域</th><th>内容</th></tr>
+<tr><td class="id">B-01</td><td>Excel差分</td><td><span class="badge b-done">✅ 対応済み</span> 行整列が絶対インデックス対比のみ（LCS/移動検知なし）。<b>行を1行挿入するだけで以降全行が偽「modified」</b>になり、変更ナビも水増しされる。コード内に自己言及コメントあり（未対応）</td></tr>
+<tr><td class="id">B-02</td><td>Excel差分</td><td><span class="badge b-done">✅ 対応済み</span> パース失敗（暗号化・破損・20MB超過・git参照消失）を <code>.catch(() =&gt; ({sheets:[]}))</code> で握りつぶし、<b>「全行追加／削除／変更なし」を無言で誤表示</b>。Word差分は同状況で明示エラーを出すのに真逆</td></tr>
+<tr><td class="id">B-03</td><td>Excel差分</td><td><span class="badge b-done">✅ 対応済み</span> 2000行打ち切り（MAX_ROWS）が<b>差分UIでは無通知</b>。通常ビューは通知あり・Word差分も対応済みで、移植漏れ。2001行目以降の差分が黙って消える</td></tr>
+<tr><td class="id">C-01</td><td>Word差分</td><td><b>脚注・文末脚注の本文変更が差分に一切現れない</b>。脚注は画面には描画されるのに差分対象外（outline抽出が本文直下走査限定）＝「見えているのに変更なし」</td></tr>
+<tr><td class="id">C-02</td><td>Word差分</td><td><b>OMML数式の中身を書き換えても不検出</b>。オブジェクト同一性キーが全式共通の <code>'math'</code> 固定値のため（追加/削除のみ検出）</td></tr>
+<tr><td class="id">C-03</td><td>Word差分/表示</td><td>DrawingMLテキストボックス・図形内テキスト・SmartArt・チャートが<b>描画されず差分対象外</b>。アンカー段落が同一だと文書全体が「変更なし」に見える（※VML経由のテキストボックスのみ例外的にパースされる）</td></tr>
+<tr><td class="id">A-01</td><td>Excel表示</td><td><span class="badge b-done">✅ 対応済み</span> 行ヘッダ番号が<b>可視行の通し番号</b>。フィルタで隠れた行があると Excel 表示（1,2,5,6…）と不一致</td></tr>
+<tr><td class="id">A-02</td><td>Excel表示</td><td><span class="badge b-done">✅ 対応済み</span> 列ラベルが<b>常にA始まり</b>。使用範囲がD列始まりのシートで Excel と不一致</td></tr>
+<tr><td class="id">A-03</td><td>Excel表示</td><td>狭い数値セルの <code>######</code> 非実装＋右寄せ数値が隣の空セルへ溢れて描画される。<b>Excelは数値を絶対に溢れさせない</b>仕様</td></tr>
+<tr><td class="id">A-04</td><td>Excel表示</td><td><span class="badge b-done">✅ 対応済み</span> 図形アンカーが隠し行・2000行超を参照すると座標 y=0 で<b>シート最上部に飛ぶ</b>。改ページ線側は最近傍行フォールバックがあるのに図形側だけ欠落</td></tr>
+<tr><td class="id">D-01</td><td>環境</td><td>ブラウザ版ワークベンチ（vscode.dev的接続）で xlsx/docx/pdf/html ビューアが<b>未登録</b>（Markdownのみbrowser層で動作）。バイナリ警告へ黙ってフォールバック</td></tr>
+</table>
+
+<!-- ================= 方法 ================= -->
+<h2 class="sec" id="method">調査方法 <small>Methodology</small></h2>
+<section class="card">
+<ul class="tight">
+<li><b>調査サブエージェント 5 系統</b>: Excel描画層 / Excel差分ロジック / Word表示・差分 / 統合・エッジケース / 外部知識（exceljs・docx-preview・OOXML仕様のWeb調査）</li>
+<li><b>ファクトチェックサブエージェント 4 系統</b>: 各報告のコード引用（file:line）・仕様主張・Web出典を独立検証。合計 <b>112項目</b> を検証し、<b>97項目が完全一致</b>、<b>13項目が部分訂正</b>、<b>2項目を棄却</b>（第F節参照）。</li>
+<li>コード変更は一切行わず、リサーチのみ。推測には出典（file:line または URL）を必須化した。</li>
+</ul>
+</section>
+
+<!-- ================= A ================= -->
+<h2 class="sec" id="sec-a">A. Excel ビューア（描画層） <small>検証 28項目中27項目が完全一致</small></h2>
+<p class="lede">shared process で exceljs + JSZip 直読みしたJSONを HTML テーブルで描画する経路の監査結果。寸法変換・結合・罫線・ページ割りの骨格は妥当。</p>
+<table>
+<tr><th>ID</th><th>重要度</th><th>分類</th><th>内容</th><th>根拠</th></tr>
+<tr><td class="id">A-01</td><td><span class="badge b-hi">高</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">描画ミス</span></td><td>行ヘッダが可視行の通し番号。<code>excelRow</code> 不使用のため、フィルタ非表示行・開始行オフセットで Excel とズレる。sticky帯も同実装</td><td><code>paradisSpreadsheetRender.ts:746-753</code> <code>paradisSpreadsheetEditor.ts:87</code> <code>node/paradisSpreadsheetService.ts:888-890</code></td></tr>
+<tr><td class="id">A-02</td><td><span class="badge b-hi">高</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">描画ミス</span></td><td>列ラベルが常にA始まり。minCol&gt;1 のシート（printArea等で起き得る）で Excel と不一致</td><td><code>Render.ts:736-739</code> <code>Service.ts:869-875</code></td></tr>
+<tr><td class="id">A-03</td><td><span class="badge b-hi">高</span></td><td><span class="cat">描画ミス</span></td><td>狭い数値セルの <code>######</code> 非実装。右寄せ数値が overflowToward により隣空セルへ左溢れ。Excel 仕様では数値・日付は溢れず ###### または科学表記になる（superuser 400498 ほか）</td><td><code>Render.ts:276-292</code> <code>Service.ts:904-906</code></td></tr>
+<tr><td class="id">A-04</td><td><span class="badge b-hi">高</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">描画ミス</span></td><td>図形アンカーが隠し行・MAX_ROWS(2000)超過行を参照すると <code>?? 0</code> で y=0 に飛び、シート最上部に描画。改ページ線側は二分探索の最近傍行フォールバックを持つのに図形側だけ欠落（実装不整合）</td><td><code>Render.ts:148</code> <code>Editor.ts:340-347</code> 対比 <code>Render.ts:479-497</code></td></tr>
+<tr><td class="id">A-05</td><td><span class="badge b-mid">中</span></td><td><span class="cat">描画ミス</span></td><td>shrinkToFit/文字溢れの計測が初回rAFのみ。Webフォント遅延等で文字幅が変わっても再計測されず、切れ・過剰縮小が残る</td><td><code>Editor.ts:299-316, 420-439</code></td></tr>
+<tr><td class="id">A-06</td><td><span class="badge b-mid">中</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">レイアウト崩れ</span></td><td>wrapText が <code>word-break: break-all</code>（Excelは語境界で折返す）。かつ customHeight フラグはパース段階で未読のため、ユーザー固定行でもwrapped内容が tr を押し広げ、以降の行位置・図形・改ページ線が全体ズレ</td><td><code>Render.ts:81-85, 750</code> <code>Service.ts:938</code></td></tr>
+<tr><td class="id">A-07</td><td><span class="badge b-mid">中</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">描画ミス</span></td><td>general 配置の既定寄せ不完全。真偽値・エラー値は Excel では中央寄せだが本実装は左寄せ（isNumericCell が Number 型のみ判定）。日付は右寄せが正</td><td><code>Service.ts:584-597, 904-906</code>（spec: ECMA-376 ST_HorizontalAlignment「Boolean types are centered」）</td></tr>
+<tr><td class="id">A-08</td><td><span class="badge b-mid">中</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">色</span></td><td>テーマ色 tint が RGB 各チャンネルの線形補間。OOXML 公式は HLS 輝度空間での操作（MS Learn 原文一致をFC確認）。中間 tint で Excel より明暗が異なる</td><td><code>Service.ts:212-219</code></td></tr>
+<tr><td class="id">A-09</td><td><span class="badge b-mid">中</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">色</span></td><td>indexed カラーを 64 以外すべて null 破棄。レガシー 0-63 パレットを使うファイルで罫線・フォント・塗りの色だけ消える</td><td><code>Service.ts:232-234</code>（パレット一覧: exceljs#1687）</td></tr>
+<tr><td class="id">A-10</td><td><span class="badge b-mid">中</span></td><td><span class="cat">未対応</span></td><td>文字回転 textRotation 1〜180° 未対応（vertical/255 縦書きのみ）。斜め見出しが水平描画される</td><td><code>Service.ts:939</code></td></tr>
+<tr><td class="id">A-11</td><td><span class="badge b-mid">中</span></td><td><span class="cat">未対応</span></td><td>図形: 回転(rot)・矢印端点(headEnd/tailEnd)・塗りつぶし(常時none)・図形内テキスト・absoluteAnchor・graphicFrame(グラフ) 未対応</td><td><code>Drawings.ts:120-142, 174, 196-209</code></td></tr>
+<tr><td class="id">A-12</td><td><span class="badge b-mid">中</span></td><td><span class="cat">色</span></td><td>図形の schemeClr に対する lumMod/lumOff/tint 変換未対応。Office 既定の派生色（accent+lumMod 等）がベース色のまま描かれる</td><td><code>Drawings.ts:58-72</code></td></tr>
+<tr><td class="id">A-13</td><td><span class="badge b-mid">中</span></td><td><span class="cat">未対応</span></td><td>ウィンドウ枠の固定 (freeze panes) 未対応。コード全体に xSplit/ySplit/topLeftCell の参照なし。sticky帯はヘッダ固定の代用品であり freeze 再現ではない</td><td>grep 全体確認</td></tr>
+<tr><td class="id">A-14</td><td><span class="badge b-mid">中</span></td><td><span class="cat">レイアウト崩れ</span></td><td>列幅 MDW 推定がヒューリスティック（日本語判定で 7/8px 固定 × size/11）。さらに表示経路(round+5px)とページ割り経路(OOXML truncate式)で別式を使用し、どちらかが Excel と系統的にズレる。styles.xml 先頭の既定フォントは MDW 推定にしか使われず、セル描画 CSS は Calibri/MS PGothic 固定</td><td><code>Service.ts:259-282, 706-716</code> <code>media/paradisSpreadsheet.css:98</code>（公式式: ECMA-376 §18.3.1.13、ClosedXML Wiki）</td></tr>
+<tr><td class="id">A-15</td><td><span class="badge b-mid">中</span></td><td><span class="cat">性能</span></td><td>列方向の上限・仮想化なし（全 td 一括構築）。セル毎の getRow/getCell は短絡評価込みで最悪約12回＋結合originの外周スキャンでさらに増加（FC で 8回→約12回に修正）。500列×2000行級で固まり得る</td><td><code>Render.ts:714-784</code> <code>Service.ts:405-425</code></td></tr>
+<tr><td class="id">A-16</td><td><span class="badge b-lo">低</span></td><td><span class="cat">描画ミス</span></td><td>dashDot 系→dashed 潰し、hair→1px solid（thin と同視）</td><td><code>Service.ts:194-199</code></td></tr>
+<tr><td class="id">A-17</td><td><span class="badge b-lo">低</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">描画ミス</span></td><td>下線を boolean 化（double/doubleAccounting 失われる）。vertAlign 処理が style.verticalAlign を上書きしセル縦位置を破壊し得る</td><td><code>Service.ts:318-340</code></td></tr>
+<tr><td class="id">A-18</td><td><span class="badge b-lo">低</span></td><td><span class="cat">未対応</span></td><td>塗りは solid の fgColor のみ。pattern/gradient 塗りが無背景になる</td><td><code>Service.ts:373-378</code></td></tr>
+<tr><td class="id">A-19</td><td><span class="badge b-lo">低</span></td><td><span class="cat">未対応</span></td><td>印刷タイトルの「列の繰り返し」($A:$B) 未対応。横方向ページ割りが Excel より広くなる</td><td><code>PageLayout.ts:256-264</code></td></tr>
+<tr><td class="id">A-20</td><td><span class="badge b-lo">低</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">描画ミス</span></td><td>centerContinuous→center、distributed→center の近似。indent が paddingLeft のみで右寄せ時に右側へ効かない</td><td><code>Service.ts:353-369</code></td></tr>
+<tr><td class="id">A-21</td><td><span class="badge b-lo">低</span></td><td><span class="cat">描画ミス</span></td><td>数式キャッシュ無し（生成ツール由来xlsx）→空欄表示。日付 fallback が toLocaleDateString() でホストロケール依存</td><td><code>Service.ts:491-512</code></td></tr>
+<tr><td class="id">A-22</td><td><span class="badge b-lo">低</span></td><td><span class="cat">UX</span></td><td>ズーム Math.round による ±0.5px 段差。watcher 再読込でスクロール位置リセット。ピンチジェスチャ非対応（ボタンのみ）</td><td><code>Editor.ts:509-549, 205-216, 164-169</code></td></tr>
+<tr><td class="id">A-23</td><td><span class="badge b-lo">低</span></td><td><span class="cat">テーマ</span></td><td>シート部は全テーマで白紙固定（HC/high-contrast 非調整）。タブ/ツールバーは VS Code 変数準拠</td><td><code>css:27, 110-144</code> <code>Render.ts:79</code></td></tr>
+</table>
+<div class="callout ok"><b>検証済みで問題なし:</b> EMU→px(/9525)・線幅変換、結合セル origin/span+hidden 機構、共有辺罫線の合成（グリッドに負けて消えない）、sticky帯の transform 合成数学(k·p−scroll 厳密一致)、_loadGeneration による逆順応答廃棄、改ページの off-by-one 一貫性、fitToPage/pageOrder/用紙コード処理。</div>
+
+<!-- ================= B ================= -->
+<h2 class="sec" id="sec-b">B. Excel セル単位 DIFF <small>検証 24項目すべて完全一致</small></h2>
+<p class="lede">左右並列＋セル色分け＋ナビ＋hover詳細の差分エンジンの監査結果。最重大は「静かな誤り」2件（B-01/B-02）。</p>
+<table>
+<tr><th>ID</th><th>重要度</th><th>分類</th><th>内容</th><th>根拠</th></tr>
+<tr><td class="id">B-01</td><td><span class="badge b-hi">高</span> <span class="badge b-done">✅ 対応済み(<code>aa7a5be4791</code>)</span></td><td><span class="cat">差分誤り</span></td><td>行整列が絶対インデックスペアリングのみ。LCS・ブロック移動検知なし。先頭行挿入1行で以降全行が青(modified)になり、getDiffRowIndices が偽差分を拾って変更件数も水増し。ソース内に「既知の弱点」と自己言及あり</td><td><code>Diff.ts:535-584</code> <code>DiffEditor.ts:607-621</code></td></tr>
+<tr><td class="id">B-02</td><td><span class="badge b-hi">高</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">差分誤り</span></td><td>両側パース失敗を <code>.catch(() =&gt; ({sheets:[]}))</code> で空ブック扱い。旧版失敗→全行「追加」、新版失敗→全行「削除」、両側失敗→「変更なし」を<b>エラー通知なしで表示</b>。暗号化・破損・20MB超過・git参照消失で発生。Word差分は明示エラーを出すのに真逆</td><td><code>DiffEditor.ts:263-266</code> 対比 <code>paradisDocxDiffEditor.ts:366-370</code></td></tr>
+<tr><td class="id">B-03</td><td><span class="badge b-hi">高</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">差分誤り</span></td><td>MAX_ROWS=2000 打ち切りが差分UIで無通知（通常ビューは Editor:289-291 で通知あり、Word差分 DocxDiff.ts:777 も対応済み）。片側だけ境界跨ぎの場合、後半の追加分が一切表示されない</td><td><code>Service.ts:32, 878-879</code></td></tr>
+<tr><td class="id">B-04</td><td><span class="badge b-mid">中</span></td><td><span class="cat">差分誤り</span></td><td>数式セルはキャッシュ値(result)のみ比較。式を書き換えて結果が同じなら偽陰性、式が同じでも再計算でキャッシュが変われば偽陽性。数式自体は hover にも出ない</td><td><code>Service.ts:500-503</code></td></tr>
+<tr><td class="id">B-05</td><td><span class="badge b-mid">中</span></td><td><span class="cat">未対応</span></td><td>numFmt（表示書式）が比較対象にも表示値にも存在しない。通貨⇔パーセント等の「書式のみ変更」が完全に不可視</td><td><code>Service.ts:349-381</code> <code>common/paradisSpreadsheet.ts:20-22</code></td></tr>
+<tr><td class="id">B-06</td><td><span class="badge b-mid">中</span></td><td><span class="cat">差分誤り</span></td><td>中間列挿入で以降全列が modified（絶対列番号ペアリング）。minCol 差のみの整列は対応済み（テスト有り）だが中間挿入は未対応</td><td><code>Diff.ts:521-524, 546-549</code></td></tr>
+<tr><td class="id">B-07</td><td><span class="badge b-mid">中</span></td><td><span class="cat">差分誤り</span></td><td>浮動小数の生値比較で再計算誤差が偽差分になる。Service のコメント「cell.text は numFmt 反映」は誤りで、exceljs 実態は NumberValue.toString()（FC が exceljs 内部実装まで確認）</td><td><code>Service.ts:504-507</code></td></tr>
+<tr><td class="id">B-08</td><td><span class="badge b-mid">中</span></td><td><span class="cat">UI不具合</span></td><td>左右で同一行の行高が違う場合、scrollTop 直接コピー（ピクセル同期）のためホイールスクロールで累積ズレ。Nav 移動時のみ行単位計算で緩和</td><td><code>Diff.ts:582-583</code> <code>DiffEditor.ts:930-934</code></td></tr>
+<tr><td class="id">B-09</td><td><span class="badge b-mid">中</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">UI不具合</span></td><td>差分エディタに列ヘッダ(A,B,C…)がない（colgroupのみ）。行番号は表示連番で Excel 行番号と不一致。excelRow は保持しているが図形配置用のみでUI未使用</td><td><code>DiffEditor.ts:693-728, 718, 109-110</code></td></tr>
+<tr><td class="id">B-10</td><td><span class="badge b-mid">中</span></td><td><span class="cat">差分誤り</span></td><td>結合セル構造変化時に左側の従属セルは hidden 描画スキップで着色不能。mergedColumns/Rows 詳細は原点セルにしか付与されず、左右非対称な見た目になる</td><td><code>Service.ts:896-898</code> <code>Diff.ts:350-351, 548-559</code></td></tr>
+<tr><td class="id">B-11</td><td><span class="badge b-mid">中</span></td><td><span class="cat">性能</span></td><td>buildDiffSheets が unchanged 含む全セルで buildCellDiffDetails＋配列展開ソート＋深比較を実行。early-out 最適化なし</td><td><code>Diff.ts:561, 338-357</code></td></tr>
+<tr><td class="id">B-12</td><td><span class="badge b-mid">中</span></td><td><span class="cat">性能</span></td><td>差分UIも仮想化なし・列上限なし。IPC は base64(+33%) を両版送信（チャンク化なし）。16384列シートでフリーズ級</td><td><code>DiffEditor.ts:710-728</code> <code>Client.ts:32-34</code></td></tr>
+<tr><td class="id">B-13</td><td><span class="badge b-lo">低</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">dead code</span></td><td>validation-only CSS クラスが付与されるが stylesheet 側に定義ゼロ。「入力規則のみ変更」の意図した視覚区別が効いていない</td><td><code>DiffEditor.ts:834-836</code></td></tr>
+<tr><td class="id">B-14</td><td><span class="badge b-lo">低</span></td><td><span class="cat">差分誤り</span></td><td>シート改名＝削除+追加扱い（大文字小文字のみの変更も別）。新規シートタブは末尾固定</td><td><code>Diff.ts:477-481</code></td></tr>
+<tr><td class="id">B-15</td><td><span class="badge b-lo">低</span></td><td><span class="cat">差分誤り</span></td><td>図形安定キー(cNvPr name)重複で Map 後勝ち上書き。描画自体は消えないが対応付けが崩れ、変更集計の1件が消失する（FC で表現を精緻化）</td><td><code>Diff.ts:729-736</code></td></tr>
+<tr><td class="id">B-16</td><td><span class="badge b-lo">低</span></td><td><span class="cat">UI不具合</span></td><td>watcher 自動再読込のたび「Loading diff...」で全DOM再構築されちらつく。パッチ描画・キャッシュなし</td><td><code>DiffEditor.ts:240-261</code></td></tr>
+<tr><td class="id">B-17</td><td><span class="badge b-lo">低</span></td><td><span class="cat">未対応</span></td><td>staged(git:index) 差分が watcher 監視対象外（file:/vscode-remote のみ）。ステージし直しても開き直すまで更新されない</td><td><code>DiffEditor.ts:236</code></td></tr>
+<tr><td class="id">B-18</td><td><span class="badge b-lo">低</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">UX</span></td><td>色凡例UIなし（緑/赤/青の意味説明なし）。コピー操作も専用機能なし</td><td><code>css:343-388</code> <code>DiffEditor.ts:175-207</code></td></tr>
+<tr><td class="id">B-19</td><td><span class="badge b-lo">低</span></td><td><span class="cat">網羅性</span></td><td>テスト盲点: 行アライメント・列挿入・数式/numFmt/日付/浮動小数・シート追加/削除/改名のケースが0件（図形193-266・改ページ267-366は充実）</td><td><code>test/electron-browser/paradisSpreadsheetDiff.test.ts</code> 全文確認</td></tr>
+</table>
+<div class="callout ok"><b>検証済みで問題なし:</b> 文字LCSのメモリガード(400万文字超でフォールバック)、hover詳細のバウンド(512/4096文字+boundedStableStringify)、機密露出なし（画像はMIME+サイズ+fingerprint化、base64非露出をテストで担保）、入力規則の矩形分割不変比較(スイープ線+セグメント木)、EMPTY_CELL統一+verticalAlign既定除去による偽差分回避、ナビ折返し、世代トークン、スクロール同期デッドロック防止。</div>
+
+<!-- ================= C ================= -->
+<h2 class="sec" id="sec-c">C. Word 表示・DIFF <small>検証 26項目中18完全一致／6部分訂正／2棄却</small></h2>
+<p class="lede">vendored docx-preview@0.3.7 ベースのビューアと、独自実装の段落アラインメント＋文内diff。最重要は「差分の網羅性ギャップ」高3件（共通根: outline抽出のbody直下走査＋オブジェクト同一性キーの粗さ）。</p>
+<table>
+<tr><th>ID</th><th>重要度</th><th>分類</th><th>内容</th><th>根拠</th></tr>
+<tr><td class="id">C-01</td><td><span class="badge b-hi">高</span></td><td><span class="cat">差分誤り</span></td><td>脚注・文末脚注の<b>本文変更が差分に一切現れない</b>。renderFootnotes/Endnotes:true で脚注は描画されるのに、outline抽出は documentPart.body 直下走査限定のため「見えているのに変更なし」。参照番号(U+FFFC+footnoteReference:id)の増減のみ検出</td><td><code>DocxDiffWebview.ts:400-458, 215-216, 325-327</code></td></tr>
+<tr><td class="id">C-02</td><td><span class="badge b-hi">高</span></td><td><span class="cat">差分誤り</span></td><td>OMML数式の原地編集が不検出。text は U+FFFC のまま不変、同一性キーが全式共通 <code>'math'</code> 固定値のため NO_CHANGE（追加/削除のみ検出）。MathML 描画はされる（min.js MmlMath→renderContainerNS 確認）</td><td><code>DocxDiffWebview.ts:388-393</code></td></tr>
+<tr><td class="id">C-03</td><td><span class="badge b-hi">高</span></td><td><span class="cat">未対応</span></td><td>DrawingMLテキストボックス・図形内テキスト・SmartArt・チャートが描画されず差分対象外。drawing 配下は image(pic) ノードのみ探索。※VML 経由の txbxContent は parseBodyElements でパースされる（FC で範囲を精緻化）が DrawingML 側(wps/dgm/chart)は未解析</td><td><code>DocxDiffWebview.ts:313-323</code> min.js parseGraphic</td></tr>
+<tr><td class="id">C-04</td><td><span class="badge b-mid">中</span></td><td><span class="cat">描画ミス</span></td><td>差分ビューでのみ Symbol/Wingdings 箇条書き記号(U+F0B7等PUA)が豆腐になる。通常ビューアのグリフ置換パッチが diff 側 HTML ビルドに未移植</td><td><code>FileEditor.ts:464-501</code> vs <code>DocxDiffWebview.ts:1032-1139</code></td></tr>
+<tr><td class="id">C-05</td><td><span class="badge b-mid">中</span></td><td><span class="cat">描画ミス</span></td><td>差分ビューで用紙幅を超えるコンテンツ（広い表等）が白紙からはみ出す。通常ビューアの section 幅拡張ループが handleAnnotate に未移植（box-sizing等のCSSはある）</td><td><code>FileEditor.ts:452-457</code> vs <code>DocxDiffWebview.ts:851-884</code></td></tr>
+<tr><td class="id">C-06</td><td><span class="badge b-mid">中</span></td><td><span class="cat">差分誤り</span></td><td>移動(moved)は正規化テキスト完全一致でのみ結ばれるため、テキスト編集を伴う移動はそもそも moved にならず removed+added または modified になる。一方、<b>moved 判定時は comparePair を通さないため書式・スタイル・オブジェクト・空白の差分が不可視</b>（FC で条件を精緻化）</td><td><code>DocxDiff.ts:742-750, 908-941</code></td></tr>
+<tr><td class="id">C-07</td><td><span class="badge b-mid">中</span></td><td><span class="cat">描画ミス</span></td><td>holdSync が setTimeout(0) で札を下ろすため、reveal 直後の他ペイン位置合わせが比例スクロールで上書きされ得る（イベント順序は仕様上未保証・環境依存）。ゴースト高さ不一致文書ほど顕在化。実機計測推奨</td><td><code>DocxDiffWebview.ts:709-769</code></td></tr>
+<tr><td class="id">C-08</td><td><span class="badge b-mid">中</span> <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></td><td><span class="cat">エラー処理</span></td><td>パスワード保護docx(CFBコンテナ D0 CF 11 E0)を通常ビューアはPK検査rejectで「空または破損」と誤案内、差分はJSZip生エラーをそのまま通知。マジック判定で「パスワード保護」と出せる</td><td><code>FileEditor.ts:51-61, 333-335</code> <code>DocxDiffEditor.ts:366-379, 425-440</code></td></tr>
+<tr><td class="id">C-09</td><td><span class="badge b-mid">中</span></td><td><span class="cat">エラー処理</span></td><td>片側欠落diff(新規/削除ファイル等)で resolver が throw し、標準差分へフォールバックせずオープン自体が失敗し得る（SCM実装依存で頻度は低い）</td><td><code>paradisDocxViewer.contribution.ts:94-99</code></td></tr>
+<tr><td class="id">C-10</td><td><span class="badge b-mid">中</span></td><td><span class="cat">性能</span></td><td>防御が32MB入力上限のみで zip爆弾・展開後サイズに無制限。32MB×2を readFile→postMessage（renderer→webviewElement→iframe の構造化クローン2hop）で数百MB級ピークになり得る</td><td><code>common/paradisDocx.ts:160</code> <code>DocxDiffEditor.ts:351-379, 358-361</code></td></tr>
+<tr><td class="id">C-11</td><td><span class="badge b-mid">中</span></td><td><span class="cat">dead code</span></td><td>LcsDiff へ predicate 未渡しのため quitEarly は常時 false＝デッドコード。バイグラムDiceが高く出る文順入れ替え対が Myers O(N·D) 最悪まで走る逃げ道なし（vscode diff.ts の挙動を FC 確認）</td><td><code>DocxDiff.ts:515-518, 782-788</code></td></tr>
+<tr><td class="id">C-12</td><td><span class="badge b-lo">低</span></td><td><span class="cat">差分誤り</span></td><td>テーブル同一性が depth 一致のみで検証されず、同一depthの別テーブル間でセル段落がクロスマッチし得る</td><td><code>DocxDiff.ts:623-628</code> <code>common/paradisDocx.ts:280-283</code></td></tr>
+<tr><td class="id">C-13</td><td><span class="badge b-lo">低</span></td><td><span class="cat">差分誤り</span></td><td>画像リサイズ(width/height含むimageKey)が「差し替え」扱い。かつ objectsChanged 時に段落内の全画像 run に印が付く</td><td><code>DocxDiffWebview.ts:258-271</code> <code>DocxDiff.ts:545-575</code></td></tr>
+<tr><td class="id">C-14</td><td><span class="badge b-lo">低</span></td><td><span class="cat">差分誤り</span></td><td>番号付きリストの再始動(numId採番替え)で _list 差分ノイズ。ツールチップに内部ID生表示「箇条書き・段落番号: 5:0 → 9:0」</td><td><code>DocxDiffWebview.ts:434</code> <code>Presentation.ts:88, 174</code></td></tr>
+<tr><td class="id">C-15</td><td><span class="badge b-lo">低</span></td><td><span class="cat">描画ミス</span></td><td>削除側ゴーストが400字打ち切り・素の段落のため高さ不一致で以降の行揃えが崩れる。depth≠0（表内）はゴースト作成自体なしで縦ずれが永続</td><td><code>DocxDiff.ts:764-767, 836-841</code> <code>DocxDiffWebview.ts:636-647</code></td></tr>
+<tr><td class="id">C-16</td><td><span class="badge b-lo">低</span></td><td><span class="cat">未対応</span></td><td>差分ペインに改ページ・セクション境界の<b>種別としての可視化なし</b>（連続フロー設計）。※明示改頁自体は '\n' atom 化され modified としては検出される（FC で精緻化）</td><td><code>DocxDiffWebview.ts:206-211, 303-305</code></td></tr>
+<tr><td class="id">C-17</td><td><span class="badge b-lo">低</span></td><td><span class="cat">未対応</span></td><td>ルビ(w:ruby)・RTL表(bidiVisual)・コメントが非対応（min.js 内に解析コードゼロ、renderComments:false）</td><td>min.js grep <code>DocxDiffWebview.ts:219</code></td></tr>
+<tr><td class="id">C-18</td><td><span class="badge b-lo">低</span></td><td><span class="cat">堅牢性</span></td><td><code>&lt;/script&gt;</code> を含むPOSIXファイル名でインラインscript早期終端の余地（JS文字列脱出不可）。data URL/served 経由では発生せず、実害は画面崩れ止まり</td><td><code>FileEditor.ts:412</code></td></tr>
+<tr><td class="id">C-19</td><td><span class="badge b-lo">低</span></td><td><span class="cat">描画ミス</span></td><td>画像のみ段落の変更一覧抜粋が U+FFFC 置換文字のみで情報ゼロ（空欄ではなく置換文字＝FC 修正）</td><td><code>DocxDiff.ts:883, 360</code></td></tr>
+<tr><td class="id">C-20</td><td><span class="badge b-lo">低</span></td><td><span class="cat">UX</span></td><td>ズーム・書式トグルが入力単位でリセット（storageService 未使用・非永続化）</td><td><code>DocxDiffEditor.ts:213-216</code></td></tr>
+<tr><td class="id">C-21</td><td><span class="badge b-new">新発見</span></td><td><span class="cat">未対応</span></td><td><b>TargetMode=External の外部リンク画像は表示されない。</b>vendored lib は rels.target を zip 内パスとして package.load（zip エントリ検索）するだけで URL fetch 経路が存在しない（ファクトチェックが誤主張「外部画像が直接取得される」を検証中に突き止めた正しい挙動）</td><td>min.js getPathById / package.load</td></tr>
+</table>
+<div class="callout"><span class="badge b-drop">棄却</span> 「波線付きでツールチップが出ない」→ describeFormatChange に汎用フォールバック文言があり不成立 (<code>Presentation.ts:166-174</code>)　<span class="badge b-drop">棄却</span> 「外部リンク画像が https 直接取得される」→ fetch 経路不成立。正しくは C-21 の挙動</div>
+<div class="callout ok"><b>検証済みで問題なし:</b> vendored lib 手動パッチ4件（levelTextToContent/VML strokecolor/tblLayout幅補完/VML relative:page）がREADMEとmin.js適用痕で一致、scroll同期の「上端30%」基準線設計（往復バウンド防止）、git:/スキームのbase64救済＋readFile limits 弾き（※vscode-remote は救済対象外で webviewUri 経由＝FC修正）、webviewメッセージ堅牢性、ライフサイクル解放、テスト自己完結性（common側29ケース＋electron-browser側 toString 実行テスト＝FC修正）。</div>
+
+<!-- ================= D ================= -->
+<h2 class="sec" id="sec-d">D. 統合・環境・エッジケース <small>検証 17項目中14完全一致／3部分訂正</small></h2>
+<table>
+<tr><th>ID</th><th>重要度</th><th>分類</th><th>内容</th><th>根拠</th></tr>
+<tr><td class="id">D-01</td><td><span class="badge b-hi">高</span></td><td><span class="cat">クラッシュ・エラー処理</span></td><td>B-02 と同根。Excel差分のパース失敗握りつぶしは「静かな誤差分」として最悪形。Word差分の世代管理付きエラー伝播方式に揃えるのが正道</td><td><code>paradisSpreadsheetDiffEditor.ts:263-266</code></td></tr>
+<tr><td class="id">D-02</td><td><span class="badge b-mid">中</span></td><td><span class="cat">リモート不整合</span></td><td>ブラウザ版ワークベンチで xlsx/docx/pdf/html ビューアが動かない（contribution 登録が desktop.main のみ、web.main.ts に import なし）。※Markdown ビューアは browser 層で web でも動作（FC 修正）。フォールバックは破綻しないが設計記述なし</td><td><code>workbench.desktop.main.ts:216</code> <code>src/vs/workbench/browser/web.main.ts</code></td></tr>
+<tr><td class="id">D-03</td><td><span class="badge b-mid">中</span></td><td><span class="cat">リモート不整合</span></td><td>SSH リモートの xlsx パースがローカル shared process 固定。renderer が vscode-remote FS から全量読み→base64(+33%)→IPC の二重転送。REH サーバー側(serverServices.ts)は未登録（htmlPreview チャネルはサーバ登録あり＝非対称の証拠）。20MBリモートxlsxで約27MB IPC が増発</td><td><code>sharedProcessMain.ts:157, 568</code> <code>Client.ts:32-34</code></td></tr>
+<tr><td class="id">D-04</td><td><span class="badge b-mid">中</span></td><td><span class="cat">未対応</span></td><td>対応拡張子は .xlsx/.xlsm/.docx のみ。.xls(BIFF8)/.ods/.xltx/.xltm/.xlam/.docm/.dotx/.dot/.rtf/.doc は BinaryFileEditor へフォールバック。「Excelビューアがあるのに.xlsが開けない」UX矛盾が起きやすい</td><td><code>paradisFileViewers.ts:50, 53</code></td></tr>
+<tr><td class="id">D-05</td><td><span class="badge b-mid">中</span></td><td><span class="cat">UX欠落</span></td><td>Ctrl+F 検索不可（xlsx/docx/pdf。※MD/HTML は enableFindWidget:true で可＝FC修正）。PDFビューアには検索があるため機能格差が目立つ</td><td><code>FileEditor.ts:258</code> <code>DocxDiffEditor.ts:293</code> <code>PdfFileEditor.ts:203</code></td></tr>
+<tr><td class="id">D-06</td><td><span class="badge b-mid">中</span></td><td><span class="cat">UX欠落</span></td><td>印刷非対応。spreadsheet はページ割り計算まで実装しながら印刷/PDF出力アクションなし</td><td>grep 確認</td></tr>
+<tr><td class="id">D-07</td><td><span class="badge b-lo">低</span></td><td><span class="cat">エラー処理</span></td><td>spreadsheet 系だけキャンセル時の入力復帰がない（commit a6ebe91fb2a は docx のみ修正）</td><td><code>SpreadsheetEditor.ts:188-217</code> <code>SpreadsheetDiffEditor.ts:210-251</code></td></tr>
+<tr><td class="id">D-08</td><td><span class="badge b-lo">低</span></td><td><span class="cat">UX</span></td><td>サイズ上限不統一（spreadsheet 20MB / docx 32MB）。spreadsheet は上流英語メッセージをそのままペイン表示</td><td><code>Client.ts:21</code> <code>common/paradisDocx.ts:161</code> <code>SpreadsheetEditor.ts:227</code></td></tr>
+<tr><td class="id">D-09</td><td><span class="badge b-lo">低</span></td><td><span class="cat">アクセシビリティ</span></td><td>アイコンボタンが title のみで aria-label なし。一方で diff フィルタ・書式トグルは aria-pressed 付きと実装差あり</td><td><code>Toolbar.ts:23-29</code> <code>DocxDiffEditor.ts:187-193</code></td></tr>
+<tr><td class="id">D-10</td><td><span class="badge b-lo">低</span></td><td><span class="cat">堅牢性</span></td><td>loopback mount 失敗時（3秒タイムアウト）のみ service worker 経路に戻り、pdf/docx は白紙検知を持たない（recovery 使用は MD/HTML のみ）。発生条件は狭いがかつての白紙問題の再発余地</td><td><code>paradisViewerAssets.ts:12-17, 40</code></td></tr>
+<tr><td class="id">D-11</td><td><span class="badge b-lo">低</span></td><td><span class="cat">未対応</span></td><td>untitled スキームは resolver 拒否（SUPPORTED_SCHEMES={file, vscodeRemote, git}）。貼り付けたバイナリは文字化け表示</td><td><code>各contribution.ts:62, 67</code></td></tr>
+<tr><td class="id">D-12</td><td><span class="badge b-lo">低</span></td><td><span class="cat">差分誤り</span></td><td>git LFS リポジトリの旧版取得は <code>git show --textconv</code>（smudge不適用）のため LFS ポインタテキストが渡り、B-02 と連鎖して全行「追加」表示になる。※静的コード経路としては実証。ただしリポジトリ側 textconv 設定があれば例外・上流 VS Code 共通の既知挙動（FC で断定を緩和）</td><td><code>extensions/git/src/repository.ts:2500</code> <code>git.ts:1571</code> <code>fileSystemProvider.ts:231</code></td></tr>
+</table>
+<div class="callout ok"><b>検証済みで問題なし:</b> exclusive 登録（BinaryFileEditorより優先）、watcher自動再読込＋世代トークン逆順廃棄が4エディタ全部、Readonly capability で dirty/save 経路不存在、IPC薄チャネル＋遅延import＋ランタイムPromiseリセット、XSS安全性（textContent のみで innerHTML 不使用を grep 担保）、CSP（script-src nonce+loopback origin 限定・style-src unsafe-inline は lib 動的要件をコメント付き）、disableServiceWorker 適用済み(pdf:210/docx:265/diff:298)、モバイル（docx は端末内レンダリング app/mobile/assets/docxpreview、xlsx は PC 側レンダHTML relay 受信、diff 機能なし）。</div>
+
+<!-- ================= E ================= -->
+<h2 class="sec" id="sec-e">E. ライブラリ限界・外部仕様の裏付け <small>出典検証 17項目中14完全一致／3部分訂正</small></h2>
+<p class="lede">ビューアの能力下限は依存ライブラリと OOXML 仕様で決まる。以下は Web 調査＋出典ファクトチェックで確認した「ライブラリを替えない限り解消できない制約」と「監査判定基準」。</p>
+<section class="card">
+<h3 style="margin:0 0 8px; font-size:15px;">exceljs（xlsx パース基盤）の既知制約</h3>
+<ul class="tight">
+<li>テーマ色は <code>{theme, tint}</code> 生値のまま返却、解決APIなし（<a href="https://github.com/exceljs/exceljs/issues/1690">#1690</a>, #1035, #1070 — closedだが解決API追加なし）→ A-08 の自前実装は必然</li>
+<li>indexedColors も生値・カスタムパレット非解決（<a href="https://github.com/exceljs/exceljs/issues/1687">#1687</a>, #1224）→ A-09 の自前実装が必要</li>
+<li>グラフ読取不可（#141, #2607）、ピボットテーブル読取不可（#261）— 保存時に消失すると明記された issue も</li>
+<li>組み込み通貨書式 ID 5–8 が defaultnumformats から欠落（Discussion #3034）、ID 14 が常に mm-dd-yy（#2683）、locale キー構造で undefined 化（#2893）→ cell.text 依存は危険（B-07 と直結）</li>
+<li>スレッドコメント非解釈（#2070 — closed-completed だが利用文書化なし＝FC修正）、旧 note は v3.1.0 から読取可（#941/#944）</li>
+<li>共有数式は master 翻訳式＋キャッシュ値。falsy キャッシュ値欠落バグは PR #3048 で修正</li>
+</ul>
+<h3 style="margin:14px 0 8px; font-size:15px;">docx-preview 0.3.7（Word 描画基盤）の既知制約</h3>
+<ul class="tight">
+<li>フィールド(TOC/PAGE/HYPERLINK)未対応 — README 明記（#4, #29）</li>
+<li>DrawingML 図形非描画（#167）、テキストボックス内容消失（#97）、Equation 3.0/WMF/EMF 不可視（#51）、OMML は部分対応（#77）</li>
+<li>renderChanges/renderComments は実験的・既定 false。動的改ページ計算は未実装（README 明記）</li>
+<li>0.3.6 で RTL/trPr.hidden/gridBefore-gridAfter 対応。0.4.0(2026-07) は h()フックの breaking change — アップグレード時注意</li>
+</ul>
+<h3 style="margin:14px 0 8px; font-size:15px;">OOXML 仕様（監査判定基準として使用・原文照合済み）</h3>
+<ul class="tight">
+<li>tint 公式式: RGB→HLS 後、tint&lt;0: Lum'=Lum×(1+tint)、tint&gt;0: Lum'=Lum×(1−tint)+(HLSMAX−HLSMAX×(1−tint))（MS Learn 原文一字一句一致）→ A-08 の正解仕様</li>
+<li>列幅↔px: px = Truncate(((256×width + Truncate(128/MDW))/256)×MDW)（ECMA-376 §18.3.1.13 原文一致）→ A-14 の正解仕様</li>
+<li>general 配置既定: 文字列=左寄せ、数値・日付・時刻=右寄せ、真偽値=中央（spec 明記）→ A-07 の正解仕様</li>
+<li>textRotation 255=縦積み文字。ただし ECMA-376 に ST_TextRotation 型名は存在せず 255 も規定なし＝<b>事実上の Excel 拡張</b>（FC 修正）</li>
+<li>文字スピル条件: wrap off／隣セルが真の NULL（"" を返す数式でもブロック）／テキスト値のみ。数値・日付は ###### または科学表記 → A-03 の正解仕様</li>
+<li>1900/1904 日付システム差は1462日（KB 214330 確認）。serial 60 の幻の1900-02-29 は別 KB 由来（FC で出典整理）</li>
+<li>w:jc="distribute" は単語間<b>かつ文字間</b>伸張、"both" は単語間のみ（ST_Jc spec 原文一致）→ 日本語均等割りは docx-preview で再現困難</li>
+<li>SpreadsheetML には罫線競合解決の規定なし（デファクト領域）。※WordprocessingML 自体には ECMA-376 本体に normative な解決アルゴリズムあり（FC 修正）</li>
+</ul>
+</section>
+
+<!-- ================= F ================= -->
+<h2 class="sec" id="sec-f">ファクトチェック記録 <small>透明性のため訂正・棄却を明示</small></h2>
+<section class="card">
+<p style="margin-top:0;">調査報告に対し独立のファクトチェックエージェント 4 系統が <b>112項目</b> を検証。<b>97項目が完全一致</b>、<b>13項目を部分訂正</b>、<b>2項目を棄却</b>した。引用 file:line の精度は極めて高く、「検証済みOK」領域の抜き打ち検証でも虚報は皆無だった。</p>
+<table>
+<tr><th>区分</th><th>元の主張</th><th>検証結果</th></tr>
+<tr><td><span class="badge b-drop">棄却</span></td><td>Word差分: 波線は付くのにツールチップが出ない</td><td><b>誤り。</b>describeFormatChange に汎用文言「下線・取り消し線: ○ → ○」のフォールバックがある (<code>Presentation.ts:166-174</code>)</td></tr>
+<tr><td><span class="badge b-drop">棄却</span></td><td>Word: 外部リンク画像が CSP img-src https: で直接取得される</td><td><b>不成立。</b>lib は rels.target を zip 内パス解決するだけで fetch 経路なし。代わりに「External 画像は非表示になる」という新発見 C-21 を採用</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>Web版でビューア群が一切動かない</td><td>Markdown ビューア（browser層）は web でも動作。動かないのは xlsx/docx/pdf/html</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>全ビューアで Ctrl+F 不可</td><td>MD/HTML は find 可。不可は xlsx/docx/pdf</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>LFS リポジトリで必ず全行「追加」になる</td><td>静的コード経路は実証（--textconv で smudge 不適用）。ただし textconv 設定例外あり・上流共通の既知挙動</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>「移動+内容編集」が編集印なしの移動のみ表示</td><td>moved は正規化テキスト完全一致のみで成立。テキスト編集があればそもそも moved にならない。moved で隠れるのは書式・スタイル・objects・空白差分まで</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>差分ペインで改ページが一切現れない</td><td>'\n' atom 化され modified としては検出される。「種別としての可視化なし」が正確</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>テキストボックス内テキスト(txbxContent)は未解析</td><td>VML 経由は parseBodyElements で解析される。DrawingML 側(pic以外)未解析という点は正しい</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>セル毎の getRow/getCell 最大8回</td><td>実際は短絡評価込みで最大約12回＋結合 origin 外周スキャンでさらに増加</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>図形 name 重複で片方が「消失」</td><td>描画は残り、対応付けが崩れて変更集計の1件が欠落する</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>画像のみ段落の抜粋が「空欄」</td><td>空欄ではなく U+FFFC 置換文字が表示される（情報ゼロなのは同じ）</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>textRotation 255 の根拠型名 ST_TextRotation</td><td>ECMA-376 に当該型名は存在しない（255 も規定なし）。挙動自体は正しいが事実上の Excel 拡張</td></tr>
+<tr><td><span class="badge b-warn">訂正</span></td><td>その他細部</td><td>スレッドコメント issue #2070 は closed-completed／vscode-remote は base64 救済対象外（webviewUri 経由）／テスト件数のファイル混同（common 29ケース）／SpreadsheetML 側は規定なしだが WordprocessingML 本体には ECMA-376 に規定あり</td></tr>
+</table>
+</section>
+
+<!-- ================= G ================= -->
+<h2 class="sec" id="sec-g">対応推奨ロードマップ <small>Roadmap</small></h2>
+<section class="card roadmap">
+<h3><span class="badge b-hi">P1</span> 信頼性・データ整合性（まずここ）</h3>
+<ol class="ri">
+<li><b>B-02/D-01</b>: Excel差分の <code>.catch(() =&gt; ({sheets:[]}))</code> を廃止し、Word差分と同じ世代管理付きエラー伝播に揃える。あわせて LFS/暗号化/破損の判別文言を用意（D-12/C-08） <span class="badge b-done">✅ B-02/C-08は対応済み(<code>f516d5d52f5</code>)・D-01/D-12は未対応</span></li>
+<li><b>B-01/B-06</b>: 行・列アライメントに LCS（または類似度DP）を導入。挿入1行で全体が青になる状態を解消する <span class="badge b-done">✅ B-01は対応済み(<code>aa7a5be4791</code>)・B-06は未確認</span></li>
+<li><b>C-01〜C-03</b>: Word差分の outline 抽出を脚注・テキストボックス内まで拡大し、オブジェクト同一性キーの固定値(<code>'math'</code>)を内容ハッシュに置換。3件の「変更なし誤認」の共通根を一括修正</li>
+<li><b>A-01/A-02/B-09</b>: 行ヘッダ・列ラベルを絶対番号化（excelRow/minCol を使用）。差分側にも列ヘッダ追加 <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></li>
+<li><b>B-03</b>: MAX_ROWS 打ち切り通知を差分UIへ移植（通常ビュー・Word差分に既存の実装がある） <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></li>
+<li><b>A-04</b>: 図形アンカーに改ページ線と同じ最近傍行フォールバックを追加（y=0 飛び解消） <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></li>
+</ol>
+<h3><span class="badge b-mid">P2</span> Excel/Word 実機との見た目一致</h3>
+<ol class="ri start">
+<li><b>A-03</b>: 数値は溢れさせず ###### 表示（スピル仕様準拠）</li>
+<li><b>A-08/A-09/A-12</b>: tint を HLS 公式式へ、indexed 64色パレット実装、schemeClr lumMod/lumOff 変換 <span class="badge b-done">✅ A-08/A-09は対応済み(<code>f516d5d52f5</code>)・A-12は未確認</span></li>
+<li><b>A-07</b>: general 配置の既定寄せ（真偽値/エラー=中央、日付=右） <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></li>
+<li><b>A-06</b>: wrapText を語境界折返しに変更＋customHeight 固定行の扱い <span class="badge b-done">✅ 対応済み(<code>f516d5d52f5</code>)</span></li>
+<li><b>C-04/C-05</b>: 通常ビューアの後処理（Symbolグリフ置換・section幅拡張）を差分側へ移植</li>
+<li><b>B-04/B-05/B-07</b>: 数式文字列・numFmt・浮動小数（許容誤差）の比較追加</li>
+<li><b>A-05/A-14</b>: shrinkToFit 再計測、MDW 式の統一（表示/ページ割りで同一式）</li>
+<li><b>B-08</b>: 差分スクロールを行アンカー同期へ</li>
+</ol>
+<h3><span class="badge b-lo">P3</span> 機能拡張・仕上げ</h3>
+<ol class="ri">
+<li>freeze panes 表示 (A-13)、Ctrl+F 検索統合 (D-05)、印刷/PDF出力 (D-06)</li>
+<li>Web 版でのビューア登録方針の明文化 (D-02)、SSH リモートのサーバー側パース検討 (D-03)</li>
+<li>textRotation 回転描画 (A-10)、図形の塗り/回転/矢印 (A-11)、External 画像の代替表示 (C-21)</li>
+<li>対応外拡張子（.xls 等）向けの案内文言改善 (D-04)、上限値・メッセージの統一 (D-08)</li>
+<li>テスト補強: 行/列アライメント・数式・シート系ケース追加 (B-19)</li>
+</ol>
+</section>
+
+<footer>
+Para Code Office Viewer Audit — generated 2026-08-22 · commit 1c88c85dab6 · 調査サブエージェント5系統＋ファクトチェック4系統（検証112項目: 97完全一致/13部分訂正/2棄却）· 本レポートはリサーチ成果物であり、コード変更は含まない。
+</footer>
+
+</div>
+</body>
+</html>

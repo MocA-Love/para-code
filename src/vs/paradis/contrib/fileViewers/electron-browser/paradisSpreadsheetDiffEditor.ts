@@ -15,11 +15,12 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { isEqual } from '../../../../base/common/resources.js';
+import { basename, isEqual } from '../../../../base/common/resources.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -34,19 +35,34 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { ParadisOfficeAccessibility, applyParadisOfficeChangeLegendSemantics, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
+import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import type { ParadisOfficeChange, ParadisOfficeChangeCategory, ParadisOfficeChangeValue, ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
+import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
+import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
+import { mapSpreadsheetLogicalAnchor } from './spreadsheet/paradisSpreadsheetViewport.js';
+import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
+import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
+import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
+import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 
 import './media/paradisSpreadsheet.css';
 
 const $ = dom.$;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 4;
+const DISTINCT_ACCESSIBLE_CHANGE_KINDS = new Set(['cell.diagonalBorder', 'conditionalFormatting.diagonalBorder', 'table.diagonalBorder', 'object.lineGeometry']);
+const INCOMPLETE_SPREADSHEET_DIFF_MANIFEST: ParadisOfficeCompletenessManifest = Object.freeze({
+	expectedParts: 2, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
+	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
+});
 
 /**
  * パース失敗の理由をユーザー向け文言へ整える。暗号化ブックは service 側が判別済みなので、
@@ -64,6 +80,31 @@ interface IDiffLocation {
 	readonly shape?: { readonly render: IParadisRenderShape; readonly side: 'original' | 'modified' };
 	/** 入力規則の変更なら、セル位置と変更前後の規則。 */
 	readonly validation?: IValidationChange;
+	/** Safe semantic category used only to derive the live-region label. */
+	readonly semanticChange?: ParadisOfficeChange;
+}
+
+interface IParadisSpreadsheetDiffCommittedInput {
+	readonly input: EditorInput;
+	readonly options: IEditorOptions | undefined;
+	readonly originalResource: URI;
+	readonly modifiedResource: URI;
+	readonly originalWorkbook: IParadisWorkbookData | undefined;
+	readonly modifiedWorkbook: IParadisWorkbookData | undefined;
+	readonly diffSheets: IParadisDiffSheet[];
+	readonly shapeDiffs: IParadisShapeDiff[];
+	readonly pageBreakDiffs: IParadisPageBreakDiff[];
+	readonly allDiffLocations: IDiffLocation[];
+	readonly validationLocations: IDiffLocation[];
+	readonly diffLocations: IDiffLocation[];
+	readonly validationFilter: boolean;
+	readonly selectedValidation: IValidationChange | undefined;
+	readonly activeSheetIndex: number;
+	readonly currentDiffIndex: number;
+	readonly scale: number;
+	readonly userAdjusted: boolean;
+	readonly runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
+	readonly viewState: ParadisSpreadsheetViewState;
 }
 
 interface IValidationChange {
@@ -91,11 +132,222 @@ function emptyMetrics(): IPaneMetrics {
 	return { rowY: new Map(), rowTops: [], rowHeights: [] };
 }
 
+/** Preserves the within-row logical position when aligned rows have different measured heights. */
+export function scaleSpreadsheetLogicalOffset(offset: number, sourceSize: number, targetSize: number): number {
+	if (!Number.isFinite(offset) || !Number.isFinite(sourceSize) || !Number.isFinite(targetSize) || sourceSize <= 0 || targetSize <= 0) {
+		return 0;
+	}
+	return Math.min(Math.max(0, offset), sourceSize) / sourceSize * targetSize;
+}
+
+function legacyChangeValue(value: string | undefined): ParadisOfficeChangeValue {
+	return value === undefined ? { kind: 'none' } : { kind: 'scalar', valueType: 'text', value };
+}
+
+function legacyDetailCategory(kind: IParadisDiffDetail['kind']): ParadisOfficeChangeCategory {
+	if (kind === 'value' || kind === 'richText') {
+		return 'content';
+	}
+	if (kind === 'dataValidation') {
+		return 'annotation';
+	}
+	if (kind.startsWith('object')) {
+		return 'object';
+	}
+	if (kind === 'mergedColumns' || kind === 'mergedRows') {
+		return 'structure';
+	}
+	return 'formatting';
+}
+
+function legacyDetailSubject(kind: IParadisDiffDetail['kind']): string {
+	if (kind === 'diagonalBorder') {
+		return 'cell.diagonalBorder';
+	}
+	if (kind === 'dataValidation') {
+		return 'cell.dataValidation';
+	}
+	return `cell.${kind}`;
+}
+
+export const PARADIS_SPREADSHEET_LEGACY_CHANGE_LIMIT = 10_000;
+
+export interface IParadisSpreadsheetLegacyChangeSet {
+	readonly changes: readonly ParadisOfficeChange[];
+	readonly truncated: boolean;
+	readonly minimumChangeCount: number;
+}
+
+/** Adapts the existing projection diff to the typed Inspector contract without claiming semantic completeness. */
+export function adaptLegacySpreadsheetInspectorChangeSet(sheets: readonly IParadisDiffSheet[]): IParadisSpreadsheetLegacyChangeSet {
+	const changes: ParadisOfficeChange[] = [];
+	let truncated = false;
+	const append = (change: ParadisOfficeChange): boolean => {
+		if (changes.length >= PARADIS_SPREADSHEET_LEGACY_CHANGE_LIMIT) {
+			truncated = true;
+			return false;
+		}
+		changes.push(change);
+		return true;
+	};
+	for (let sheetIndex = 0; sheetIndex < sheets.length; sheetIndex++) {
+		const sheet = sheets[sheetIndex];
+		if (sheet.semanticChanges && sheet.semanticChanges.length > 0) {
+			for (const change of sheet.semanticChanges) {
+				if (!append(change)) {
+					break;
+				}
+			}
+			if (truncated) {
+				break;
+			}
+			continue;
+		}
+		const seen = new Set<string>();
+		const appendSide = (rows: IParadisDiffSheet['originalRows'], minColumn: number, side: 'original' | 'modified'): void => {
+			for (let rowIndex = 0; rowIndex < rows.length && !truncated; rowIndex++) {
+				const row = rows[rowIndex];
+				const excelRow = row.excelRow ?? rowIndex + 1;
+				for (let columnIndex = 0; columnIndex < row.cells.length && !truncated; columnIndex++) {
+					const cell = row.cells[columnIndex];
+					if (!cell.diffStatus) {
+						continue;
+					}
+					const address = `${getColumnLabel(minColumn - 1 + columnIndex)}${excelRow}`;
+					const locator = `${sheet.name}!${address}`;
+					const details = cell.diffDetails?.length
+						? cell.diffDetails
+						: [{ kind: 'value' as const, original: side === 'original' ? cell.value : undefined, modified: side === 'modified' ? cell.value : undefined }];
+					for (const detail of details) {
+						const key = `${locator}:${detail.kind}:${detail.property ?? ''}`;
+						if (seen.has(key)) {
+							continue;
+						}
+						seen.add(key);
+						append({
+							id: `legacy-cell:${sheetIndex}:${key}`,
+							category: legacyDetailCategory(detail.kind),
+							subject: { kind: legacyDetailSubject(detail.kind), locator },
+							before: legacyChangeValue(detail.original),
+							after: legacyChangeValue(detail.modified),
+							certainty: 'degraded',
+							sourceParts: [],
+							navigableAnchor: `cell:${sheet.name}:${address}`,
+						});
+					}
+				}
+			}
+		};
+		appendSide(sheet.originalRows, sheet.originalMinCol ?? sheet.modifiedMinCol ?? 1, 'original');
+		appendSide(sheet.modifiedRows, sheet.modifiedMinCol ?? sheet.originalMinCol ?? 1, 'modified');
+		if (truncated) {
+			break;
+		}
+		const shapeDiff = buildShapeDiff(sheet.originalShapes, sheet.modifiedShapes);
+		for (let shapeIndex = 0; shapeIndex < shapeDiff.changes.length; shapeIndex++) {
+			const shape = shapeDiff.changes[shapeIndex];
+			const name = shape.shape.name ?? shape.shape.shapeId ?? `${shape.shape.type}-${shapeIndex + 1}`;
+			if (!append({
+				id: `legacy-object:${sheetIndex}:${shapeIndex}:${shape.key}`,
+				category: 'object',
+				subject: { kind: shape.shape.type === 'line' ? 'object.lineGeometry' : 'sheet.objects', locator: `${sheet.name}!object:${name}` },
+				before: shape.status === 'added' ? { kind: 'none' } : { kind: 'scalar', valueType: 'text', value: shape.status },
+				after: shape.status === 'removed' ? { kind: 'none' } : { kind: 'scalar', valueType: 'text', value: shape.status },
+				certainty: 'degraded',
+				sourceParts: [],
+				navigableAnchor: `sheet:${sheet.name}`,
+			})) {
+				break;
+			}
+		}
+		if (truncated) {
+			break;
+		}
+	}
+	return { changes, truncated, minimumChangeCount: changes.length + (truncated ? 1 : 0) };
+}
+
+export function adaptLegacySpreadsheetInspectorChanges(sheets: readonly IParadisDiffSheet[]): readonly ParadisOfficeChange[] {
+	return adaptLegacySpreadsheetInspectorChangeSet(sheets).changes;
+}
+
+function spreadsheetDiffViewStateFromOptions(value: object | undefined, fallback: ParadisSpreadsheetViewState): ParadisSpreadsheetViewState {
+	const nested = value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'viewState')
+		? (value as { readonly viewState?: unknown }).viewState
+		: value;
+	return restoreParadisSpreadsheetViewState(nested, fallback);
+}
+
+function axisIndexAt(tops: readonly number[], heights: readonly number[], offset: number): number {
+	if (tops.length === 0) {
+		return 0;
+	}
+	let low = 0;
+	let high = tops.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if (tops[middle] + (heights[middle] ?? 0) <= offset) {
+			low = middle + 1;
+		} else {
+			high = middle;
+		}
+	}
+	return Math.min(low, tops.length - 1);
+}
+
+function nearestLogicalRow(rows: readonly IParadisDiffRow[], start: number): number {
+	for (let distance = 0; distance < rows.length; distance++) {
+		const after = rows[start + distance]?.excelRow;
+		if (after !== undefined) {
+			return after;
+		}
+		const before = rows[start - distance]?.excelRow;
+		if (before !== undefined) {
+			return before;
+		}
+	}
+	return 0;
+}
+
+function nearestRowIndex(rows: readonly IParadisDiffRow[], logicalRow: number): number {
+	let nearest = 0;
+	let distance = Number.POSITIVE_INFINITY;
+	for (let index = 0; index < rows.length; index++) {
+		const row = rows[index].excelRow;
+		if (row === undefined) {
+			continue;
+		}
+		const candidateDistance = Math.abs(row - logicalRow);
+		if (candidateDistance < distance) {
+			nearest = index;
+			distance = candidateDistance;
+		}
+	}
+	return nearest;
+}
+
+function widthIndexAt(offsets: readonly number[], offset: number): number {
+	let low = 0;
+	let high = Math.max(0, offsets.length - 1);
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if (offsets[middle + 1] <= offset) {
+			low = middle + 1;
+		} else {
+			high = middle;
+		}
+	}
+	return low;
+}
+
 export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	static readonly ID = PARADIS_SPREADSHEET_DIFF_EDITOR_ID;
 
 	private _root: HTMLElement | undefined;
+	private _diagnosticsEl: HTMLElement | undefined;
+	private _inspectorPanel: HTMLElement | undefined;
+	private _inspectorToggle: HTMLButtonElement | undefined;
 	private _countEl: HTMLElement | undefined;
 	private _navPositionEl: HTMLElement | undefined;
 	private _percentBtn: HTMLButtonElement | undefined;
@@ -129,6 +381,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	// 通常ビューアと同じく自然幅で表・図形を描画し、ペインごとに transform:scale で一括拡縮する
 	// (列幅を事前縮小すると図形の EMU オフセットとズレるため。transform はレイアウトごと拡縮しスクロールも整合)。
 	private _columnWidths: readonly number[] = [];
+	private _columnOffsets: readonly number[] = [0];
 	private _naturalTableWidth = 0;
 	private _scale = 1;
 	private _userAdjusted = false;
@@ -145,8 +398,13 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private readonly _navigateRaf = this._register(new MutableDisposable());
 	// スクロール同期の抑止フラグは echo イベントに頼らず次フレームで解除する(代入が no-op でも立ちっぱなしにしない)。
 	private readonly _syncScrollReset = this._register(new MutableDisposable());
+	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
+	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
+	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _originalResource: URI | undefined;
 	private _modifiedResource: URI | undefined;
+	private _originalWorkbook: IParadisWorkbookData | undefined;
+	private _modifiedWorkbook: IParadisWorkbookData | undefined;
 	private _diffSheets: IParadisDiffSheet[] = [];
 	private _shapeDiffs: IParadisShapeDiff[] = [];
 	private _pageBreakDiffs: IParadisPageBreakDiff[] = [];
@@ -163,6 +421,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _currentDiffIdx = -1;
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
+	private readonly _inputGeneration = new ParadisSpreadsheetOpenGeneration();
+	private _committedInput: IParadisSpreadsheetDiffCommittedInput | undefined;
+	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
+	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -173,34 +435,61 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
 		@IHoverService private readonly _hoverService: IHoverService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super(PARADIS_SPREADSHEET_DIFF_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-spreadsheet-diff'));
+		this._root.style.position = 'relative';
+		this._accessibility = this._register(new ParadisOfficeAccessibility(this._root, {
+			label: localize('paradis.spreadsheet.diffViewer', "Spreadsheet Comparison"),
+		}));
+		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
+			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
+		});
 
 		const toolbar = dom.append(this._root, $('.paradis-spreadsheet-diff-toolbar'));
+		toolbar.setAttribute('role', 'toolbar');
+		toolbar.setAttribute('aria-label', localize('paradis.spreadsheet.diffToolbar', "Spreadsheet Comparison Toolbar"));
 		const left = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-left'));
 		this._countEl = dom.append(left, $('span.paradis-spreadsheet-diff-count'));
+		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
 		// 色の意味(緑=追加/赤=削除/青=変更)をツールバーに常時表示する。Word 差分と同じ語彙・配色。
 		const legend = dom.append(left, $('.paradis-spreadsheet-diff-legend'));
 		const legendEntries = [
-			{ color: '#22c55e', label: localize('paradis.spreadsheet.legendAdded', "追加") },
-			{ color: '#ef4444', label: localize('paradis.spreadsheet.legendRemoved', "削除") },
-			{ color: '#3b82f6', label: localize('paradis.spreadsheet.legendModified', "変更") },
+			{ category: 'added', marker: '+', color: '#22c55e', label: localize('paradis.spreadsheet.legendAdded', "追加") },
+			{ category: 'removed', marker: '−', color: '#ef4444', label: localize('paradis.spreadsheet.legendRemoved', "削除") },
+			{ category: 'modified', marker: '~', color: '#3b82f6', label: localize('paradis.spreadsheet.legendModified', "変更") },
 		];
 		for (const entry of legendEntries) {
 			const item = dom.append(legend, $('span.paradis-spreadsheet-diff-legend-item'));
 			const swatch = dom.append(item, $('span.paradis-spreadsheet-diff-legend-swatch'));
 			swatch.style.backgroundColor = entry.color;
 			dom.append(item, $('span')).textContent = entry.label;
+			applyParadisOfficeChangeLegendSemantics(item, swatch, entry);
 		}
 		const right = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-right'));
+		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
+		this._inspectorToggle.type = 'button';
+		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "Inspector");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "Inspector"));
+		this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		this._inspectorToggle.style.display = 'none';
+		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
+			if (!this._inspectorPanel || !this._inspectorToggle) {
+				return;
+			}
+			const visible = this._inspectorPanel.style.display === 'none';
+			this._inspectorPanel.style.display = visible ? 'block' : 'none';
+			this._inspectorToggle.setAttribute('aria-expanded', String(visible));
+		}));
 
 		// 入力規則だけに絞り込み、セルマーカーと詳細ペインを表示する。
 		this._validationFilterBtn = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
 		this._validationFilterBtn.title = localize('paradis.spreadsheet.validationFilter', "データの入力規則の変更を表示");
+		this._accessibility.labelButton(this._validationFilterBtn, localize('paradis.spreadsheet.validationFilter', "データの入力規則の変更を表示"));
 		this._validationFilterBtn.setAttribute('aria-pressed', 'false');
 		dom.append(this._validationFilterBtn, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
 		const validationFilterLabel = dom.append(this._validationFilterBtn, $('span'));
@@ -209,30 +498,59 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		// ズーム −/%/＋（通常ビューアと同じ。左右ペインに同倍率を適用する）。
 		const zoom = dom.append(right, $('.paradis-spreadsheet-diff-zoom'));
-		appendIconButton(zoom, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "ズームアウト"), this._headerDisposables, () => this._zoom(1 / 1.2));
+		const zoomOutLabel = localize('paradis.spreadsheet.zoomOut', "ズームアウト");
+		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomOut, zoomOutLabel, this._headerDisposables, () => this._zoom(1 / 1.2)), zoomOutLabel);
 		this._percentBtn = dom.append(zoom, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
 		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "ズームをリセット");
+		this._accessibility.labelButton(this._percentBtn, localize('paradis.spreadsheet.resetZoom', "ズームをリセット"));
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
-		appendIconButton(zoom, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "ズームイン"), this._headerDisposables, () => this._zoom(1.2));
+		const zoomInLabel = localize('paradis.spreadsheet.zoomIn', "ズームイン");
+		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomIn, zoomInLabel, this._headerDisposables, () => this._zoom(1.2)), zoomInLabel);
 
 		const nav = dom.append(right, $('.paradis-spreadsheet-diff-nav'));
 		const prevBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
 		prevBtn.textContent = localize('paradis.spreadsheet.prev', "前へ");
+		this._accessibility.labelButton(prevBtn, localize('paradis.spreadsheet.previousChange', "前の変更"));
 		this._navPositionEl = dom.append(nav, $('span.paradis-spreadsheet-diff-navpos'));
 		const nextBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
 		nextBtn.textContent = localize('paradis.spreadsheet.next', "次へ");
+		this._accessibility.labelButton(nextBtn, localize('paradis.spreadsheet.nextChange', "次の変更"));
 		this._register(dom.addDisposableListener(prevBtn, dom.EventType.CLICK, () => this._navigate(-1)));
 		this._register(dom.addDisposableListener(nextBtn, dom.EventType.CLICK, () => this._navigate(1)));
 		this._openAppEl = dom.append(nav, $('.paradis-spreadsheet-openapp'));
+
+		this._inspectorPanel = dom.append(this._root, $('.paradis-spreadsheet-inspector-panel'));
+		this._inspectorPanel.style.position = 'absolute';
+		this._inspectorPanel.style.top = '38px';
+		this._inspectorPanel.style.right = '8px';
+		this._inspectorPanel.style.zIndex = '20';
+		this._inspectorPanel.style.width = '380px';
+		this._inspectorPanel.style.maxHeight = '70%';
+		this._inspectorPanel.style.overflow = 'auto';
+		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
+		this._inspectorPanel.style.display = 'none';
 
 		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-diff-body'));
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		const inputGeneration = this._inputGeneration.begin();
+		if (this._committedInput && this.input === this._committedInput.input
+			&& isEqual(this._originalResource, this._committedInput.originalResource)
+			&& isEqual(this._modifiedResource, this._committedInput.modifiedResource)) {
+			this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
+		}
+		const previous = this._committedInput;
 		await super.setInput(input, options, context, token);
+		if (!this._inputGeneration.isCurrent(inputGeneration)) {
+			return;
+		}
 
 		const diffInput = input as ParadisSpreadsheetDiffInput;
+		this._runtimeConfiguration = snapshotSpreadsheetRuntimeConfiguration(this._configurationService);
+		const fallbackViewState = this._currentSpreadsheetViewState();
+		const requestedViewState = spreadsheetDiffViewStateFromOptions(options?.viewState, fallbackViewState);
 		this._originalResource = diffInput.originalResource;
 		this._modifiedResource = diffInput.modifiedResource;
 		this._activeSheetIndex = 0;
@@ -243,44 +561,329 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._validationLocations = [];
 		this._diffLocations = [];
 		this._updateValidationFilterButton();
-		this._userAdjusted = false;
-		this._scale = 1;
+		this._userAdjusted = options?.viewState !== undefined;
+		this._scale = requestedViewState.zoom;
+		this._clearSemanticUi();
+		this._configureInputResources(this._originalResource, this._modifiedResource);
+		this._recoveryState = beginParadisOfficeRecovery(this._recoveryState, {
+			source: {
+				mode: 'comparison',
+				original: createParadisSpreadsheetSourceDescriptor(this._originalResource, 'original'),
+				modified: createParadisSpreadsheetSourceDescriptor(this._modifiedResource, 'modified'),
+			},
+			viewState: {
+				zoom: requestedViewState.zoom,
+				activeSheet: requestedViewState.activeSheet,
+				categories: [...requestedViewState.categories],
+				...(requestedViewState.selectedChangeId ? { selectedChangeId: requestedViewState.selectedChangeId } : {}),
+			},
+		}).state;
 
+		const loaded = await this._load(token, requestedViewState, this._recoveryState.generation);
+		if (!this._inputGeneration.isCurrent(inputGeneration)) {
+			return;
+		}
+		if (!loaded && token.isCancellationRequested && previous) {
+			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
+			this._originalResource = previous.originalResource;
+			this._modifiedResource = previous.modifiedResource;
+			this._originalWorkbook = previous.originalWorkbook;
+			this._modifiedWorkbook = previous.modifiedWorkbook;
+			this._diffSheets = previous.diffSheets;
+			this._shapeDiffs = previous.shapeDiffs;
+			this._pageBreakDiffs = previous.pageBreakDiffs;
+			this._allDiffLocations = previous.allDiffLocations;
+			this._validationLocations = previous.validationLocations;
+			this._diffLocations = previous.diffLocations;
+			this._validationFilter = previous.validationFilter;
+			this._selectedValidation = previous.selectedValidation;
+			this._activeSheetIndex = previous.activeSheetIndex;
+			this._currentDiffIdx = previous.currentDiffIndex;
+			this._scale = previous.scale;
+			this._userAdjusted = previous.userAdjusted;
+			this._runtimeConfiguration = previous.runtimeConfiguration;
+			this._configureInputResources(previous.originalResource, previous.modifiedResource);
+			await super.setInput(previous.input, previous.options, context, CancellationToken.None);
+			if (!this._inputGeneration.isCurrent(inputGeneration)) {
+				return;
+			}
+			this._updateValidationFilterButton();
+			this._renderSheet();
+			this._renderTabs();
+			this._updateNav();
+			if (previous.modifiedWorkbook) {
+				this._renderSemanticUi(previous.modifiedWorkbook, previous.viewState);
+			}
+			return;
+		}
+		if (!loaded && token.isCancellationRequested) {
+			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
+			this.clearInput();
+		} else if (loaded) {
+			this._committedInput = this._captureCommittedInput(input, options);
+		}
+	}
+
+	private _captureCommittedInput(input: EditorInput, options: IEditorOptions | undefined): IParadisSpreadsheetDiffCommittedInput {
+		return {
+			input,
+			options,
+			originalResource: this._originalResource!,
+			modifiedResource: this._modifiedResource!,
+			originalWorkbook: this._originalWorkbook,
+			modifiedWorkbook: this._modifiedWorkbook,
+			diffSheets: this._diffSheets,
+			shapeDiffs: this._shapeDiffs,
+			pageBreakDiffs: this._pageBreakDiffs,
+			allDiffLocations: this._allDiffLocations,
+			validationLocations: this._validationLocations,
+			diffLocations: this._diffLocations,
+			validationFilter: this._validationFilter,
+			selectedValidation: this._selectedValidation,
+			activeSheetIndex: this._activeSheetIndex,
+			currentDiffIndex: this._currentDiffIdx,
+			scale: this._scale,
+			userAdjusted: this._userAdjusted,
+			runtimeConfiguration: this._runtimeConfiguration,
+			viewState: this._currentSpreadsheetViewState(),
+		};
+	}
+
+	private _currentSpreadsheetViewState(): ParadisSpreadsheetViewState {
+		const inspectorState = this._changeInspector.value?.getViewState();
+		return {
+			zoom: this._scale,
+			activeSheet: this._diffSheets[this._activeSheetIndex]?.name ?? inspectorState?.activeSheet ?? 'Sheet1',
+			categories: inspectorState?.categories ?? PARADIS_SPREADSHEET_CHANGE_CATEGORIES,
+			...(inspectorState?.selectedChangeId ? { selectedChangeId: inspectorState.selectedChangeId } : {}),
+		};
+	}
+
+	private _clearSemanticUi(): void {
+		this._changeInspector.clear();
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.spreadsheet.diffSearchDisabledOrUnavailable', "Search is disabled or unavailable for this comparison."));
+		if (this._diagnosticsEl) {
+			dom.clearNode(this._diagnosticsEl);
+		}
+		if (this._inspectorPanel) {
+			dom.clearNode(this._inspectorPanel);
+			this._inspectorPanel.style.display = 'none';
+		}
+		if (this._inspectorToggle) {
+			this._inspectorToggle.style.display = 'none';
+			this._inspectorToggle.setAttribute('aria-expanded', 'false');
+		}
+	}
+
+	private _renderSemanticUi(modifiedWorkbook: IParadisWorkbookData, restoredViewState?: ParadisSpreadsheetViewState): void {
+		const configuration = this._runtimeConfiguration;
+		if (!configuration) {
+			this._clearSemanticUi();
+			return;
+		}
+		const v1Enabled = isParadisSpreadsheetV1Enabled(configuration);
+		const callbacks = createParadisOfficeSearchPrintCallbacks(configuration, v1Enabled, {
+			search: () => ({
+				find: async (query: { readonly text: string; readonly matchCase: boolean }, cursor: string | undefined, token: CancellationToken) => {
+					if (cursor || token.isCancellationRequested) {
+						return Object.freeze({ results: Object.freeze([]), total: 0, capped: false });
+					}
+					return createLegacySpreadsheetSearchPage(modifiedWorkbook, query.text, query.matchCase);
+				},
+				inspect: async (query: string) => searchLegacySpreadsheetWorkbook(modifiedWorkbook, query),
+			}),
+			print: () => async () => {
+				const model = createLegacySpreadsheetPrintModel(modifiedWorkbook, basename(this._modifiedResource ?? URI.file('spreadsheet.xlsx')));
+				const result = await printParadisOfficeModelInBrowser(model, this.window);
+				return withParadisOfficePrintResult(model, result);
+			},
+		});
+		if (!v1Enabled) {
+			this._clearSemanticUi();
+			return;
+		}
+		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
+		this._findWidget.value?.setSearchProvider(callbacks.search?.find, callbacks.search
+			? localize('paradis.spreadsheet.diffSearchUnavailableAdapter', "Search is unavailable for this compatible comparison adapter.")
+			: localize('paradis.spreadsheet.diffSearchDisabled', "Search is disabled by configuration."));
+		const legacyChangeSet = adaptLegacySpreadsheetInspectorChangeSet(this._diffSheets);
+		const changes = legacyChangeSet.changes;
+		const placeholders: ParadisOfficePlaceholder[] = [];
+		for (const sheet of modifiedWorkbook.sheets) {
+			for (let shapeIndex = 0; shapeIndex < (sheet.shapes?.length ?? 0); shapeIndex++) {
+				const shape = sheet.shapes![shapeIndex];
+				const name = shape.name ?? shape.shapeId ?? `${shape.type}-${shapeIndex + 1}`;
+				placeholders.push({
+					nodeId: `${sheet.name}!object:${name}`,
+					feature: `drawing.${shape.type}`,
+					reason: 'unsupported',
+					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "Drawing Object"),
+					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "Rendered through the compatible legacy projection."),
+				});
+			}
+		}
+		const coverages: ParadisOfficeRenderCoverage[] = changes.length > 0
+			? changes.map(change => change.certainty === 'exact' || change.certainty === 'normalized' ? 'rendered' : 'approximated')
+			: ['approximated'];
+		coverages.push(...placeholders.map(() => 'placeholder' as const));
+		if (this._diffSheets.some(sheet => sheet.truncated)) {
+			coverages.push('noAnchor');
+		}
+		if (this._diagnosticsEl) {
+			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, {
+				outcome: 'degraded',
+				coverages,
+				warnings: [{
+					code: 'spreadsheet.legacyDiffProjection',
+					message: localize('paradis.spreadsheet.legacyDiffProjection', "The typed Inspector uses the compatible spreadsheet comparison while semantic backend results are unavailable."),
+				}, ...(legacyChangeSet.truncated ? [{
+					code: 'spreadsheet.legacyDiffInspectorLimit',
+					message: localize('paradis.spreadsheet.legacyDiffInspectorLimit', "Showing the first {0} changes; at least {1} were detected, so analysis remains incomplete.", changes.length, legacyChangeSet.minimumChangeCount),
+				}] : [])],
+			});
+		}
+		if (!this._inspectorPanel || !this._inspectorToggle) {
+			return;
+		}
+		this._inspectorToggle.style.display = '';
+		dom.clearNode(this._inspectorPanel);
+		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
+			...(callbacks.search ? { search: callbacks.search.inspect } : {}),
+			...(callbacks.print ? { getPrintModel: callbacks.print } : {}),
+			onNavigate: target => {
+				if (target.kind === 'change') {
+					const candidates = changes.filter(change => change.subject.locator === target.locator);
+					const change = candidates.find(candidate => DISTINCT_ACCESSIBLE_CHANGE_KINDS.has(candidate.subject.kind)) ?? candidates[0];
+					if (change) {
+						this._accessibility?.announceChange(change, Math.max(0, changes.indexOf(change)), changes.length);
+					}
+				}
+				this._navigateToLogicalLocator(target.locator, target.anchor);
+			},
+		});
+		this._changeInspector.value = inspector;
+		inspector.setViewState(viewState);
+		inspector.setComparison(changes, INCOMPLETE_SPREADSHEET_DIFF_MANIFEST, 'degraded');
+		inspector.setPlaceholders(placeholders);
+	}
+
+	private _navigateToLogicalLocator(locator: string, anchor?: string): void {
+		const navigation = resolveParadisSpreadsheetNavigation(locator, anchor);
+		if (!navigation) {
+			return;
+		}
+		const sheetIndex = this._diffSheets.findIndex(sheet => sheet.name === navigation.sheetName);
+		if (sheetIndex < 0) {
+			return;
+		}
+		if (sheetIndex !== this._activeSheetIndex) {
+			this._activeSheetIndex = sheetIndex;
+			this._renderSheet();
+			this._renderTabs();
+		}
+		this._changeInspector.value?.setActiveSheet(navigation.sheetName);
+
+		let location: IDiffLocation | undefined;
+		if (navigation.cell) {
+			const sheet = this._diffSheets[sheetIndex];
+			const rows = sheet.modifiedRows.some(row => row.excelRow !== undefined) ? sheet.modifiedRows : sheet.originalRows;
+			if (rows.length > 0) {
+				location = { sheetIndex, rowIndex: nearestRowIndex(rows, navigation.cell.row) };
+			}
+		} else if (navigation.objectName) {
+			location = this._allDiffLocations.find(candidate => candidate.sheetIndex === sheetIndex && candidate.shape
+				&& (candidate.shape.render.name === navigation.objectName || candidate.shape.render.shapeId === navigation.objectName));
+		}
+		if (!location) {
+			return;
+		}
+		this._scrollToRow(location.rowIndex);
+		this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(location!));
+	}
+
+	private _configureInputResources(original: URI, modified: URI): void {
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
-
 		if (this._openAppEl) {
 			dom.clearNode(this._openAppEl);
-			appendOpenInAppButton(this._openAppEl, this._modifiedResource, this._nativeHostService, store);
+			appendOpenInAppButton(this._openAppEl, modified, this._nativeHostService, store);
+			const button = this._openAppEl.firstElementChild as HTMLButtonElement | null;
+			if (button) {
+				this._accessibility?.labelButton(button, button.title);
+			}
 		}
-
-		// 新版がワーキングコピー(file:)の場合はディスク更新で自動再描画する。
-		if (this._modifiedResource.scheme === Schemas.file || this._modifiedResource.scheme === Schemas.vscodeRemote) {
+		if (modified.scheme === Schemas.file || modified.scheme === Schemas.vscodeRemote) {
 			try {
-				const watcher = this._fileService.createWatcher(this._modifiedResource, { recursive: false, excludes: [] });
+				const watcher = this._fileService.createWatcher(modified, { recursive: false, excludes: [] });
 				store.add(watcher);
+				const scheduler = store.add(new RunOnceScheduler(() => this._onWatchedResourceChanged(original, modified), 50));
 				store.add(watcher.onDidChange(e => {
-					if (this._modifiedResource && e.contains(this._modifiedResource)) {
-						void this._load(CancellationToken.None);
+					if (isEqual(this._originalResource, original) && isEqual(this._modifiedResource, modified) && e.contains(modified)) {
+						scheduler.schedule();
 					}
 				}));
 			} catch {
 				// watcher 生成失敗は致命的ではない。
 			}
 		}
-
-		await this._load(token);
 	}
 
-	private async _load(token: CancellationToken): Promise<void> {
+	private _onWatchedResourceChanged(original: URI, modified: URI): void {
+		if (!isEqual(this._originalResource, original) || !isEqual(this._modifiedResource, modified)) {
+			return;
+		}
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, this._currentSpreadsheetViewState());
+	}
+
+	private _applyRecoveryEffects(effects: readonly ParadisOfficeRecoveryEffect[], viewState: ParadisSpreadsheetViewState): void {
+		for (const effect of effects) {
+			switch (effect.type) {
+				case 'load':
+					void this._load(CancellationToken.None, viewState, effect.generation, true);
+					break;
+				case 'remount':
+				case 'recreate':
+					// Reuse the exact aligned rows and drawing geometry. Recovery must not reparse diagonals or shapes.
+					this._renderSheet();
+					this._renderTabs();
+					this._updateNav();
+					if (this._modifiedWorkbook) {
+						this._renderSemanticUi(this._modifiedWorkbook, viewState);
+					}
+					this._finishRecoveryRender(effect.generation, viewState);
+					break;
+				case 'showError':
+					this._renderRecoveryError();
+					break;
+				case 'restore':
+					// The committed comparison DOM remains mounted while a watcher read is pending.
+					break;
+			}
+		}
+	}
+
+	private _finishRecoveryRender(recoveryGeneration: number, viewState: ParadisSpreadsheetViewState): void {
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, {
+			type: 'rendered', generation: recoveryGeneration, hasExpectedRoot: this._diffSheets.length > 0 && !!this._panesEl,
+		});
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, viewState);
+	}
+
+	private async _load(token: CancellationToken, viewState = this._currentSpreadsheetViewState(), recoveryGeneration = this._recoveryState.generation, preserveCommitted = false): Promise<boolean> {
 		const original = this._originalResource;
 		const modified = this._modifiedResource;
 		if (!original || !modified) {
-			return;
+			return false;
 		}
 		const generation = ++this._loadGeneration;
 		const previousValidation = this._selectedValidation;
-		this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "差分を読み込み中..."));
+		if (!preserveCommitted) {
+			this._clearSemanticUi();
+			this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "差分を読み込み中..."));
+		}
 		try {
 			// パース失敗(暗号化・破損・サイズ超過・git参照消失)を空ブックとして握りつぶすと、
 			// 「全行追加/削除/変更なし」という静かな誤差分になってしまう。失敗した側と理由を
@@ -295,12 +898,14 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			const [origResult, modResult] = await Promise.all([loadSide(original), loadSide(modified)]);
 			// 応答の逆順到着で古い結果が新しい結果を上書きしないよう、最新ロードでなければ破棄する。
 			if (generation !== this._loadGeneration || token.isCancellationRequested || !isEqual(this._modifiedResource, modified)) {
-				return;
+				return false;
 			}
 			if (origResult.error || modResult.error) {
 				// 失敗時は入力規則フィルタの見た目も落とす(エラー画面で active+disabled の
 				// 不整合を出さない。次回成功ロード時にユーザーが付け直せる)。
-				this._validationFilter = false;
+				if (!preserveCommitted) {
+					this._validationFilter = false;
+				}
 				const reasons: string[] = [];
 				if (origResult.error) {
 					reasons.push(localize('paradis.spreadsheet.originalSideFailed', "旧版: {0}", describeSpreadsheetParseError(origResult.error)));
@@ -308,11 +913,17 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				if (modResult.error) {
 					reasons.push(localize('paradis.spreadsheet.modifiedSideFailed', "新版: {0}", describeSpreadsheetParseError(modResult.error)));
 				}
-				this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')));
-				return;
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
+				this._recoveryState = transition.state;
+				if (!preserveCommitted || transition.effects.length === 0) {
+					this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')));
+				}
+				return false;
 			}
 			const origWb = origResult.wb;
 			const modWb = modResult.wb;
+			this._originalWorkbook = origWb;
+			this._modifiedWorkbook = modWb;
 			this._diffSheets = buildDiffSheets(origWb.sheets, modWb.sheets);
 			this._shapeDiffs = this._diffSheets.map(s => buildShapeDiff(s.originalShapes, s.modifiedShapes));
 			// 改ページは差分シート(行の対応付け済み)ではなく、元のシートの用紙設定から比べる。
@@ -342,21 +953,37 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._diffLocations = this._allDiffLocations;
 				this._currentDiffIdx = -1;
 			}
-			if (this._activeSheetIndex >= this._diffSheets.length) {
+			const restoredSheet = this._diffSheets.findIndex(sheet => sheet.name === viewState.activeSheet);
+			if (restoredSheet >= 0) {
+				this._activeSheetIndex = restoredSheet;
+			} else if (this._activeSheetIndex >= this._diffSheets.length) {
 				this._activeSheetIndex = 0;
 			}
 			this._updateValidationFilterButton();
 			this._renderSheet();
 			this._renderTabs();
 			this._updateNav();
+			this._accessibility?.announceChangeCount(this._diffLocations.length);
 			if (restoredLocation) {
 				this._scrollToRow(restoredLocation.rowIndex);
 				this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(restoredLocation!));
 			}
+			this._renderSemanticUi(modWb, viewState);
+			this._finishRecoveryRender(recoveryGeneration, viewState);
+			if (this._committedInput && isEqual(this._committedInput.originalResource, original)
+				&& isEqual(this._committedInput.modifiedResource, modified) && this.input === this._committedInput.input) {
+				this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
+			}
+			return true;
 		} catch (err) {
 			if (!token.isCancellationRequested) {
-				this._renderMessage(localize('paradis.spreadsheet.errorDiff', "スプレッドシートの差分を開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
+				this._recoveryState = transition.state;
+				if (!preserveCommitted || transition.effects.length === 0) {
+					this._renderMessage(localize('paradis.spreadsheet.errorDiff', "スプレッドシートの差分を開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
+				}
 			}
+			return false;
 		}
 	}
 
@@ -375,15 +1002,42 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	/** 1シート分の変更位置(セル行 + 図形)を行位置順にまとめて返す。 */
 	private _buildSheetLocations(sheet: IParadisDiffSheet, sheetIndex: number): IDiffLocation[] {
 		const locs: IDiffLocation[] = [];
-		for (const rowIndex of getDiffRowIndices(sheet)) {
-			locs.push({ sheetIndex, rowIndex });
-		}
 		const maxRows = Math.max(sheet.originalRows.length, sheet.modifiedRows.length);
 		// anchorRow は change.side 側の Excel 行番号。行アライメントで挿入/削除があると
 		// original/modified で同じアライメント位置が別の Excel 行を指すため、他方優先のマップ
 		// 1つに寄せるとナビ先が本来の行からズレる。side ごとに別マップを引く。
 		const rowIndexByExcelOriginal = this._buildRowIndexByExcel(sheet.originalRows);
 		const rowIndexByExcelModified = this._buildRowIndexByExcel(sheet.modifiedRows);
+		const semanticChangeByRow = new Map<number, ParadisOfficeChange>();
+		for (const change of sheet.semanticChanges ?? []) {
+			const navigation = resolveParadisSpreadsheetNavigation(change.subject.locator);
+			const excelRow = navigation?.sheetName === sheet.name ? navigation.cell?.row : undefined;
+			const rowIndex = excelRow === undefined ? undefined : rowIndexByExcelModified.get(excelRow) ?? rowIndexByExcelOriginal.get(excelRow);
+			if (rowIndex !== undefined) {
+				const existing = semanticChangeByRow.get(rowIndex);
+				if (!existing || DISTINCT_ACCESSIBLE_CHANGE_KINDS.has(change.subject.kind) && !DISTINCT_ACCESSIBLE_CHANGE_KINDS.has(existing.subject.kind)) {
+					semanticChangeByRow.set(rowIndex, change);
+				}
+			}
+		}
+		for (const rowIndex of getDiffRowIndices(sheet)) {
+			let semanticChange = semanticChangeByRow.get(rowIndex);
+			if (!semanticChange) {
+				const hasLegacyDiagonal = [sheet.originalRows[rowIndex], sheet.modifiedRows[rowIndex]].some(row => row?.cells.some(cell => cell.diffDetails?.some(detail => detail.kind === 'diagonalBorder')));
+				if (hasLegacyDiagonal) {
+					semanticChange = {
+						id: `accessibility-diagonal:${sheetIndex}:${rowIndex}`,
+						category: 'formatting',
+						subject: { kind: 'cell.diagonalBorder', locator: `${sheet.name}!row:${rowIndex + 1}` },
+						before: { kind: 'none' },
+						after: { kind: 'none' },
+						certainty: 'degraded',
+						sourceParts: [],
+					};
+				}
+			}
+			locs.push({ sheetIndex, rowIndex, ...(semanticChange ? { semanticChange } : {}) });
+		}
 		const resolveRowIndex = (change: { readonly anchorRow: number; readonly side: 'original' | 'modified' }): number => {
 			const byExcel = change.side === 'original' ? rowIndexByExcelOriginal : rowIndexByExcelModified;
 			return byExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
@@ -641,6 +1295,31 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		msg.textContent = message;
 	}
 
+	private _renderRecoveryError(): void {
+		this._renderMessage(localize('paradis.spreadsheet.diffBlank', "The spreadsheet comparison renderer produced no visible content."));
+		const resource = this._modifiedResource;
+		if (!this._bodyEl || !resource) {
+			return;
+		}
+		const actions = dom.append(this._bodyEl, $('.paradis-spreadsheet-recovery-actions'));
+		const retry = dom.append(actions, $('button')) as HTMLButtonElement;
+		retry.type = 'button';
+		retry.textContent = localize('paradis.spreadsheet.diffRetry', "Retry");
+		this._renderDisposables.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
+			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
+			this._recoveryState = transition.state;
+			this._applyRecoveryEffects(transition.effects, this._currentSpreadsheetViewState());
+		}));
+		if (resource.scheme === Schemas.file) {
+			const open = dom.append(actions, $('button')) as HTMLButtonElement;
+			open.type = 'button';
+			open.textContent = localize('paradis.spreadsheet.diffOpenAfterBlank', "Open in Default Application");
+			this._renderDisposables.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
+				void this._nativeHostService.openExternal(resource.toString(true));
+			}));
+		}
+	}
+
 	private _renderSheet(): void {
 		if (!this._bodyEl) {
 			return;
@@ -657,6 +1336,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		// 自然幅で描画し、フィット/ズームは transform:scale で一括拡縮する。
 		this._columnWidths = sheet.columnWidths;
+		this._columnOffsets = sheet.columnWidths.reduce<number[]>((offsets, width) => {
+			offsets.push(offsets[offsets.length - 1] + width);
+			return offsets;
+		}, [0]);
 		this._naturalTableWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((s, w) => s + w, 0);
 		this._bodyEl.classList.toggle('validation-filter', this._validationFilter);
 		// main(横並び: ペイン+入力規則インスペクタ)の下に打ち切り通知帯を置くための縦積みラッパ。
@@ -706,8 +1389,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			notice.textContent = localize('paradis.spreadsheet.truncated', "先頭2,000行のみ表示しています。ファイル全体にはさらに行があります。");
 		}
 
-		this._wireSyncScroll(this._leftScroll, this._rightScroll);
-		this._wireSyncScroll(this._rightScroll, this._leftScroll);
+		this._wireSyncScroll(this._leftScroll, this._rightScroll, 'original');
+		this._wireSyncScroll(this._rightScroll, this._leftScroll, 'modified');
 
 		// レイアウト確定後に、はみ出し反映 → 測定 → 図形/ハイライト配置 → 拡縮(transform:scale)を行う。
 		// さらにフォント反映等の再フローで行高が変わっても位置が古くならないよう再配置トリガも張る。
@@ -827,6 +1510,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._buildDiffCell(tr, cell, row.cells, ci, columnWidths, overflowCells, visibleValidation);
 			}
 		});
+		this._renderDisposables.add(wireParadisOfficeTableGrid(table, {
+			label: localize('paradis.spreadsheet.diffGrid', "{0} Spreadsheet Grid", label),
+			rowCount: Math.max(1, rows.length),
+			columnCount: Math.max(1, columnWidths.length),
+			logicalCellColumns: rows.map(row => row.cells.flatMap((cell, column) => cell.hidden ? [] : [column])),
+		}));
 		this._renderDisposables.add(dom.addDisposableListener(table, dom.EventType.MOUSE_OVER, event => {
 			if (!dom.isHTMLElement(event.target)) {
 				return;
@@ -978,11 +1667,13 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._userAdjusted = true;
 		this._scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this._scale * factor));
 		this._applyScale();
+		this._changeInspector.value?.setZoom(this._scale);
 	}
 
 	private _resetZoom(): void {
 		this._userAdjusted = false;
 		this._applyScale();
+		this._changeInspector.value?.setZoom(this._scale);
 	}
 
 	/** 各ペインの表がその半幅に収まる倍率(縮小のみ。1 を超えて拡大はしない)。 */
@@ -1017,24 +1708,75 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 	}
 
-	private _wireSyncScroll(from: HTMLElement, to: HTMLElement): void {
+	private _wireSyncScroll(from: HTMLElement, to: HTMLElement, fromSide: 'original' | 'modified'): void {
 		this._renderDisposables.add(dom.addDisposableListener(from, dom.EventType.SCROLL, () => {
 			if (this._syncing) {
 				return;
 			}
 			this._syncing = true;
-			// 代入が実値を変えない(既に同値/クランプ済み)場合は echo イベントが発火しないため、
-			// フラグ解除を echo に頼らず次フレームで必ず行う(片側 truncated 等で同期が外れないように)。
-			if (to.scrollTop !== from.scrollTop) {
-				to.scrollTop = from.scrollTop;
+			const target = this._logicalScrollTarget(from, fromSide);
+			if (to.scrollTop !== target.top) {
+				to.scrollTop = target.top;
 			}
-			if (to.scrollLeft !== from.scrollLeft) {
-				to.scrollLeft = from.scrollLeft;
+			if (to.scrollLeft !== target.left) {
+				to.scrollLeft = target.left;
 			}
 			this._syncScrollReset.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(from), () => {
 				this._syncing = false;
 			});
 		}));
+	}
+
+	/** Converts source pixels to a logical row/column anchor, maps it, then resolves target geometry. */
+	private _logicalScrollTarget(from: HTMLElement, fromSide: 'original' | 'modified'): { readonly top: number; readonly left: number } {
+		const sheet = this._diffSheets[this._activeSheetIndex];
+		if (!sheet) {
+			return { top: 0, left: 0 };
+		}
+		const targetSide = fromSide === 'original' ? 'modified' : 'original';
+		const sourceRows = fromSide === 'original' ? sheet.originalRows : sheet.modifiedRows;
+		const targetRows = targetSide === 'original' ? sheet.originalRows : sheet.modifiedRows;
+		const sourceMetrics = fromSide === 'original' ? this._leftMetrics : this._rightMetrics;
+		const targetMetrics = targetSide === 'original' ? this._leftMetrics : this._rightMetrics;
+		const naturalTop = from.scrollTop / this._scale;
+		const sourceFirstRowTop = sourceMetrics.rowTops[0] ?? 0;
+		const targetFirstRowTop = targetMetrics.rowTops[0] ?? 0;
+		const sourceRowIndex = axisIndexAt(sourceMetrics.rowTops, sourceMetrics.rowHeights, naturalTop);
+		const sourceRow = nearestLogicalRow(sourceRows, sourceRowIndex);
+		const sourceRowTop = sourceMetrics.rowTops[sourceRowIndex] ?? 0;
+		const sourceMinColumn = (fromSide === 'original' ? sheet.originalMinCol : sheet.modifiedMinCol) ?? 1;
+		const targetMinColumn = (targetSide === 'original' ? sheet.originalMinCol : sheet.modifiedMinCol) ?? 1;
+		const naturalScrollLeft = from.scrollLeft / this._scale;
+		const leadingColumnOffset = Math.min(naturalScrollLeft, PARADIS_ROW_NUM_COL_WIDTH);
+		const naturalLeft = Math.max(0, naturalScrollLeft - PARADIS_ROW_NUM_COL_WIDTH);
+		const sourceColumnIndex = widthIndexAt(this._columnOffsets, naturalLeft);
+		const sourceColumnLeft = this._columnOffsets[sourceColumnIndex] ?? 0;
+		const mapped = mapSpreadsheetLogicalAnchor({
+			row: sourceRow,
+			column: sourceMinColumn + sourceColumnIndex,
+			rowOffset: Math.max(0, naturalTop - sourceRowTop),
+			columnOffset: Math.max(0, naturalLeft - sourceColumnLeft),
+		}, sheet.logicalAlignment, fromSide);
+		const hasSemanticAlignment = !!sheet.logicalAlignment?.grid;
+		const targetRowIndex = hasSemanticAlignment
+			? nearestRowIndex(targetRows, mapped.row)
+			: Math.min(sourceRowIndex, Math.max(0, targetRows.length - 1));
+		const targetColumnIndex = hasSemanticAlignment
+			? Math.max(0, Math.min(this._columnWidths.length - 1, mapped.column - targetMinColumn))
+			: sourceColumnIndex;
+		const targetRowOffset = scaleSpreadsheetLogicalOffset(
+			mapped.rowOffset,
+			sourceMetrics.rowHeights[sourceRowIndex] ?? 0,
+			targetMetrics.rowHeights[targetRowIndex] ?? 0,
+		);
+		return {
+			top: (naturalTop < sourceFirstRowTop && sourceFirstRowTop > 0
+				? naturalTop / sourceFirstRowTop * targetFirstRowTop
+				: (targetMetrics.rowTops[targetRowIndex] ?? 0) + targetRowOffset) * this._scale,
+			left: (naturalScrollLeft <= PARADIS_ROW_NUM_COL_WIDTH
+				? leadingColumnOffset
+				: PARADIS_ROW_NUM_COL_WIDTH + (this._columnOffsets[targetColumnIndex] ?? 0) + mapped.columnOffset) * this._scale,
+		};
 	}
 
 	private _renderTabs(): void {
@@ -1050,6 +1792,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 		this._tabsEl.style.display = '';
+		const accessibleTabs: ParadisOfficeTabEntry[] = [];
 		this._diffSheets.forEach((sheet, idx) => {
 			const tab = dom.append(this._tabsEl!, $('button.paradis-spreadsheet-tab')) as HTMLButtonElement;
 			tab.classList.toggle('active', idx === this._activeSheetIndex);
@@ -1065,6 +1808,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			if (sheet.protectedSheet) {
 				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
 				lock.title = localize('paradis.spreadsheet.protected', "このシートは保護されています");
+				lock.setAttribute('aria-hidden', 'true');
 			}
 			let label = sheet.name;
 			if (sheet.sheetStatus === 'added') {
@@ -1074,6 +1818,18 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			const labelEl = dom.append(tab, $('span'));
 			labelEl.textContent = label;
+			const statusLabel = sheet.sheetStatus === 'added'
+				? localize('paradis.spreadsheet.addedSheet', "added")
+				: sheet.sheetStatus === 'removed'
+					? localize('paradis.spreadsheet.removedSheet', "removed")
+					: localize('paradis.spreadsheet.existingSheet', "existing");
+			accessibleTabs.push({
+				element: tab,
+				label: sheet.protectedSheet
+					? localize('paradis.spreadsheet.diffProtectedSheetTab', "{0} sheet, {1}, protected", sheet.name, statusLabel)
+					: localize('paradis.spreadsheet.diffSheetTab', "{0} sheet, {1}", sheet.name, statusLabel),
+				selected: idx === this._activeSheetIndex,
+			});
 			tabsStore.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
 				if (this._activeSheetIndex === idx) {
 					return;
@@ -1087,6 +1843,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._renderSheet();
 				this._renderTabs();
 				this._updateNav();
+				this._changeInspector.value?.setActiveSheet(sheet.name);
 				if (this._selectedValidation) {
 					const selected = this._selectedValidation;
 					this._scrollToRow(selected.rowIndex);
@@ -1094,6 +1851,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				}
 			}));
 		});
+		tabsStore.add(wireParadisOfficeTabList(this._tabsEl, {
+			label: localize('paradis.spreadsheet.sheetTabs', "Workbook Sheets"),
+			tabs: accessibleTabs,
+		}));
 	}
 
 	private _updateNav(): void {
@@ -1127,6 +1888,21 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		this._currentDiffIdx = idx;
 		const location = this._diffLocations[idx];
+		if (location.semanticChange) {
+			this._accessibility?.announceChange(location.semanticChange, idx, this._diffLocations.length);
+		} else {
+			this._accessibility?.announceChangeLabel(
+				location.validation
+					? localize('paradis.spreadsheet.inputRuleChange', "Input Rule Change")
+					: location.shape?.render.type === 'line'
+						? localize('paradis.spreadsheet.drawingLineChange', "Drawing Line")
+						: location.shape
+							? localize('paradis.spreadsheet.drawingChange', "Drawing Change")
+							: localize('paradis.spreadsheet.cellChange', "Cell Change"),
+				idx,
+				this._diffLocations.length,
+			);
+		}
 		this._selectedValidation = location.validation;
 		if (location.sheetIndex !== this._activeSheetIndex) {
 			this._activeSheetIndex = location.sheetIndex;
@@ -1217,13 +1993,18 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._inputGeneration.invalidate();
+		this._loadGeneration++;
 		this._inputDisposables.clear();
 		this._renderDisposables.clear();
 		this._tabsDisposables.clear();
 		this._navigateRaf.clear();
 		this._syncScrollReset.clear();
+		this._clearSemanticUi();
 		this._originalResource = undefined;
 		this._modifiedResource = undefined;
+		this._originalWorkbook = undefined;
+		this._modifiedWorkbook = undefined;
 		this._diffSheets = [];
 		this._shapeDiffs = [];
 		this._pageBreakDiffs = [];
@@ -1260,7 +2041,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._leftMetrics = emptyMetrics();
 		this._rightMetrics = emptyMetrics();
 		this._columnWidths = [];
+		this._columnOffsets = [0];
 		this._naturalTableWidth = 0;
+		this._runtimeConfiguration = undefined;
+		this._committedInput = undefined;
+		this._recoveryState = createParadisOfficeRecoveryState();
 		if (this._bodyEl) {
 			dom.clearNode(this._bodyEl);
 		}
@@ -1268,6 +2053,16 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			dom.clearNode(this._tabsEl);
 		}
 		super.clearInput();
+	}
+
+	override getViewState(): object | undefined {
+		if (!this._modifiedResource) {
+			return undefined;
+		}
+		return {
+			source: createParadisSpreadsheetSourceDescriptor(this._modifiedResource, 'modified'),
+			viewState: this._currentSpreadsheetViewState(),
+		};
 	}
 
 	override layout(dimension: dom.Dimension): void {

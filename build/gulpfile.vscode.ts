@@ -44,6 +44,20 @@ const glob = promisify(globCallback);
 const rcedit = promisify(rceditCallback);
 const root = path.dirname(import.meta.dirname);
 const commit = getVersion(root);
+
+// PARA-PATCH: keep the desktop and mobile docx-preview 0.3.7 artifacts on one guarded build path.
+function runDocxPreview037Build(check: boolean): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const args = [path.join(root, 'build/next/index.ts'), 'docx-preview-037', ...(check ? ['--check'] : [])];
+		const child = cp.spawn(process.execPath, args, { cwd: root, stdio: 'inherit' });
+		child.on('error', reject);
+		child.on('exit', code => code === 0 ? resolve() : reject(new Error(`docx-preview-037 build exited with code ${code}`)));
+	});
+}
+
+task.task(task.define('docx-preview-037', () => runDocxPreview037Build(false)));
+task.task(task.define('docx-preview-037-check', () => runDocxPreview037Build(true)));
+
 const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')) as {
 	readonly packages?: Readonly<Record<string, { readonly version?: string }>>;
 };

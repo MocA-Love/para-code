@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import type { FsReadResult } from '../store.js';
 import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
+import { classifyMobileFileKind } from './officeCapability.js';
 
 interface WorkspaceFileViewerProps {
 	ws: string;
@@ -84,13 +85,13 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 
 		const load = async () => {
 			try {
-				if (/\.(?:xlsx|xlsm)$/i.test(path)) {
+				if (classifyMobileFileKind(path) === 'spreadsheet') {
 					const value = await fsXlsx(ws, path);
 					if (currentRequest()) { setXlsx({ html: value.html, sheets: value.sheets, sheet: value.sheet }); }
 				} else if (/\.pdf$/i.test(path)) {
 					const value = await fsPdf(ws, path);
 					if (currentRequest()) { setPdf(value.data); }
-				} else if (/\.docx$/i.test(path)) {
+				} else if (classifyMobileFileKind(path) === 'docx') {
 					const value = await fsDocx(ws, path);
 					if (currentRequest()) { setDocx(value.data); }
 				} else if (MEDIA_FILE_PATTERN.test(path)) {
