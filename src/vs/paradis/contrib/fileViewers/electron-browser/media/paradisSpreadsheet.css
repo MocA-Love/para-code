@@ -202,6 +202,36 @@
 	padding: 0;
 }
 
+/* allow-any-unicode-next-line */
+/* テーブル(構造化テーブル)の体裁。セル自身の書式が優先されるよう、いずれも控えめに敷く。 */
+.paradis-spreadsheet-table-stripe:not([style*="background"]) {
+	background-color: rgba(0, 0, 0, 0.035);
+}
+
+.paradis-spreadsheet-table-header {
+	font-weight: 600;
+}
+
+.paradis-spreadsheet-table-totals {
+	font-weight: 600;
+	border-top: 2px solid #9a9a9a;
+}
+
+.paradis-spreadsheet-table-emphasis {
+	font-weight: 600;
+}
+
+/* allow-any-unicode-next-line */
+/* 見出し行のフィルタ記号。絞り込み操作は持たず、フィルタの存在だけを示す。 */
+.paradis-spreadsheet-filter-marker {
+	float: right;
+	margin-left: 3px;
+	color: #666666;
+	font-size: 8px;
+	line-height: 1.6;
+	pointer-events: none;
+}
+
 .paradis-spreadsheet-outer {
 	overflow: hidden;
 }

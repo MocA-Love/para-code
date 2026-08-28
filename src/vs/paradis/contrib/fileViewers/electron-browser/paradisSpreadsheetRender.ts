@@ -729,6 +729,44 @@ export interface IParadisSheetTableDom {
  * shrinkToFit / セルまたぎオーバーフローはレイアウト確定後に applyShrinkToFit /
  * applyOverflow を呼ぶ必要があるため、対象セルを戻り値で返す。
  */
+/** 指定セルがどれかの矩形に入るか。 */
+function isInsideAnyRange(ranges: readonly IParadisCellRange[] | undefined, row: number, col: number): boolean {
+	return !!ranges?.some(range => row >= range.minR && row <= range.maxR && col >= range.minC && col <= range.maxC);
+}
+
+/** テーブルの中でそのセルが担う役割。縞模様や集計行の描き分けに使う。 */
+interface IParadisTableCellRole {
+	readonly header: boolean;
+	readonly totals: boolean;
+	readonly stripe: boolean;
+	readonly emphasizedColumn: boolean;
+}
+
+function tableCellRole(sheet: IParadisSheetData, row: number, col: number): IParadisTableCellRole | undefined {
+	for (const table of sheet.tables ?? []) {
+		const { range } = table;
+		if (row < range.minR || row > range.maxR || col < range.minC || col > range.maxC) {
+			continue;
+		}
+		const header = table.headerRow && row === range.minR;
+		const totals = table.totalsRow && row === range.maxR;
+		// 縞は見出し行・集計行を除いたデータ行で数える(Excel も同じ数え方)。
+		const dataIndex = row - range.minR - (table.headerRow ? 1 : 0);
+		const stripe = !header && !totals && table.showRowStripes && dataIndex >= 0 && dataIndex % 2 === 1;
+		const columnStripe = !header && !totals && table.showColumnStripes && (col - range.minC) % 2 === 1;
+		const emphasizedColumn = (table.showFirstColumn && col === range.minC) || (table.showLastColumn && col === range.maxC);
+		return { header, totals, stripe: stripe || columnStripe, emphasizedColumn };
+	}
+	return undefined;
+}
+
+/** 見出しセルへフィルタ記号を添える。実際の絞り込みは行わず、フィルタがあることだけを示す。 */
+function appendFilterMarker(td: HTMLElement): void {
+	const marker = dom.append(td, $('span.paradis-spreadsheet-filter-marker'));
+	marker.textContent = '\u25BC';
+	marker.setAttribute('aria-hidden', 'true');
+}
+
 export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTableDom {
 	const table = $('table.paradis-spreadsheet-table') as HTMLTableElement;
 	if (sheet.showGridLines !== false) {
@@ -795,6 +833,18 @@ export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTable
 				} else {
 					setCellContent(td, cell);
 				}
+			}
+			// テーブル/オートフィルタの体裁。値そのものは変えず、クラスだけを足す。
+			const excelCol = sheet.minCol + ci;
+			const role = tableCellRole(sheet, row.excelRow, excelCol);
+			if (role) {
+				td.classList.toggle('paradis-spreadsheet-table-header', role.header);
+				td.classList.toggle('paradis-spreadsheet-table-totals', role.totals);
+				td.classList.toggle('paradis-spreadsheet-table-stripe', role.stripe);
+				td.classList.toggle('paradis-spreadsheet-table-emphasis', role.emphasizedColumn);
+			}
+			if (isInsideAnyRange(sheet.filterRanges, row.excelRow, excelCol) && sheet.filterRanges?.some(range => range.minR === row.excelRow)) {
+				appendFilterMarker(td);
 			}
 			if (cell.diagonal) {
 				appendDiagonalOverlay(td, cell.diagonal);
