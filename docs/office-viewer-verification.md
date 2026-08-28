@@ -107,3 +107,26 @@ security gate の hard limit は、sanitizer へ渡す source と同じ実 ZIP b
 | Mobile capability / CSP | `npm test -- src/components/officeCapability.test.ts`（`app/mobile`）、exit 0、12 passing | pure helper testは old/new capability matrix、未接続時にhelperが返す standalone `connectToPc` / explicit fallback、CSP `connect-src 'none'`、`about:blank`以外のtop-frame navigation denyと外部URL confirmationを検証した。これはhelper上の期待safe fallbackであり、mobile UI表示の結果ではない。 | `app/mobile/src/components/fileViewer.tsx` は `secureMobileOfficeHtml` と `guardMobileOfficeNavigation` を配線してOffice HTMLをWebViewへ渡す（:575-585、:589-615、:699-716）。従ってCSP/navigation policyはsource上UI配線済みだが、実機WebViewでの実行は未確認である。一方で `resolveMobileOfficeCapabilities` のhelper連携と `office/hello` / `office/wordDiff` のrelay dispatchは未実装であるため、actual mobile UIがhelperのstandalone fallbackを表示すること、およびconnected Excel/Word View/Diffがrelayへ接続済みであることは未確認かつ未実装である。新transport/UIはこのTaskでは実装しない。 |
 
 この表の `passing` は対象 runner 内の source/test simulation の成功だけを意味する。Web page、remote host、Git UI、mobile device のいずれも実 UI/path 未到達であり、Task 5 の launcher checksum mismatch も未解消のため、対応する matrix runtime status を `implemented` へ変更しない。再検証は checksum を満たす launcher artifact と、実ブラウザ・remote server・paired mobile device を用意して別途行う。
+
+## Task 8 最終監査とリリース状態（2026-08-28）
+
+- 最終文書更新前の matrix 対象 SHA: `459628654b5a652389404923644b44e4198b1d42`（`fix(office): keep incomplete semantic paths fail-closed`）。このSHAはこの文書更新 commit の祖先であり、matrix の既存 evidence SHA も同じく祖先性だけを検査対象とする。
+- matrix checker: `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- node scripts/check-office-matrix.ts docs/office-viewer-acceptance-matrix.md` は exit `1`。173行の all-`not-run` `safe-fallback` が実在する `source=path#symbol` を欠くため、checker が意図どおり拒否する。通過扱いにも、証跡を補った扱いにも変更しない。
+- リリース状態: `paradis.officeViewer.engine=legacy` が既定。`v1` は明示的に選ばれる実験的/診断的経路であり、未実装の semantic operation は advertisement せず `featureUnsupported`、`diagnostic`、または `explicit-unavailable` へ fail closed する。これは完全な production semantic viewer の完了を意味しない。
+- 最終再レビュー: architecture / security / regression / quality はすべて Critical `0`・Important `0`。Minor として profile/CLI override の JSDoc が production wiring されていない点は残るが、legacy default の安全性を変更しない。Web response byte limit、remote request/handle ownership、mobile capability advertisement、desktop `platformBackend` 選択は安全 remediation の対象として修正済みである。
+- 検証済みの範囲: Task 3 の client transpile、client typecheck、layer validation、既存 mobile Office capability test、および Task 4 の sanitizer/worker/performance、forced-GC memory、client transpile/typecheck は Node 24 runner で成功している。これらは source/test harness の成功であって、Desktop/Web/Remote/Git/Mobile の実機 UI 成功ではない。
+- 未達・利用不可の gate: Desktop launcher は Open VSX extension checksum mismatch で CDP/window 前に停止し、実 Desktop lifecycle と pixel 比較は未実施・利用不可。Web/Remote/Git/Mobile も simulation/source wiring のみで実 UI runtime は未確認。serialized geometry invariant は pixel gate の代替ではない。完全 Office glob は既知の worker-host runtime fence により非ゼロ、mobile typecheck は既存 `relayClientPresence.test.ts` の13件の `TS2532` により非ゼロであり、いずれも pass と記録しない。
+
+### Task 8 文書更新後の Node 24 再実行
+
+| コマンド | exit | 結果・扱い |
+| --- | ---: | --- |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- npm run transpile-client` | 0 | 9,230 files、2,572 resources。npm unknown project config 6件のwarningあり。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- ./scripts/test.sh --runGlob 'vs/paradis/contrib/fileViewers/test/**/*.test.js'` | 1 | 既知の完全 Office glob 非ゼロ。Electron renderer の `worker_threads` runtime fence を含むため、全体成功や runtime coverage として扱わない。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- npm test -- src/components/fileViewer.test.tsx src/components/officeCapability.test.ts`（`app/mobile`） | 0 | 既存の `officeCapability.test.ts` のみを検出し、20 tests passed。指定 `fileViewer.test.tsx` は存在しないため、2ファイルの成功とは扱わない。Vite CJS API deprecation warningあり。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- npm run typecheck-client` | 0 | diagnostics 0。npm unknown project config 6件のwarningあり。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- npm run valid-layers-check` | 0 | `layersChecker` / `layersTypeCheck` diagnostics 0。npm unknown project config 6件のwarningあり。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- npm run typecheck`（`app/mobile`） | 2 | `src/relayClientPresence.test.ts` の既存 `TS2532` 13件。失敗として維持する。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- ./scripts/test.sh --runGlob 'vs/paradis/contrib/fileViewers/test/{common/paradisOfficeSanitizer,node/paradisOfficeWorkerHost,performance/paradisOfficePerformance}.test.js'` | 0 | Task 4 security/worker/performance の対象 runner は成功。Electron runner warning（`vm`、Sentry native stacktrace、Node deprecation/WASI）あり。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- node --expose-gc test/unit/node/index.js --runGlob 'vs/paradis/contrib/fileViewers/test/performance/paradisOfficeMemory.test.js'` | 0 | 2 passing。 |
+| `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- node scripts/check-office-matrix.ts docs/office-viewer-acceptance-matrix.md` | 1 | 173行の all-`not-run` evidence を拒否する既知の未達 gate。 |
