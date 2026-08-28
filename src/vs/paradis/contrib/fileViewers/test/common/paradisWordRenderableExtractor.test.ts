@@ -204,11 +204,11 @@ suite('paradisWordRenderableExtractor', () => {
 		strictEqual(only(objects, 'shape').geometry.presetGeometry, 'rect');
 	});
 
-	test('extracts a picture as an unfetched image with its alt text', () => {
-		const image = only(extract({
+	test('ignores pictures that docx-preview already draws as an img', () => {
+		// 画像は docx-preview が <img> にするので、こちらで重ねると二重になる。
+		deepStrictEqual(extract({
 			[uris.document]: documentXml(inlineDrawing('7', `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"/>`, 'ロゴ')),
-		}), 'image');
-		deepStrictEqual({ content: image.content, altText: image.altText }, { content: { behavior: 'notFetched' }, altText: 'ロゴ' });
+		}), []);
 	});
 
 	test('extracts an embedded OLE object', () => {

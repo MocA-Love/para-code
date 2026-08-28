@@ -14,6 +14,11 @@ import type { ParadisWordDrawingGeometry } from './paradisWordSemantic.js';
 export interface ParadisWordRenderableObjectBase {
 	readonly id: string;
 	readonly geometry: ParadisWordDrawingGeometry;
+	/**
+	 * `wp:docPr@id`。docx-preview が描いた枠に付く目印と同じ値で、
+	 * 差し込み先をこの値で突き合わせる(出現順に頼らないため)。
+	 */
+	readonly drawingId?: string;
 }
 
 export interface ParadisWordShapeObject extends ParadisWordRenderableObjectBase {

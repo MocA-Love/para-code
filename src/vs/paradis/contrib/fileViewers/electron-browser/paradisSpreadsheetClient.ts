@@ -14,7 +14,7 @@ import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { IParadisParseWorkbookOptions, IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
 import { parseDrawingShapes } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
@@ -28,10 +28,11 @@ export async function parseSpreadsheetResource(
 	fileService: IFileService,
 	sharedProcessService: ISharedProcessService,
 	resource: URI,
+	options?: IParadisParseWorkbookOptions,
 ): Promise<IParadisWorkbookData> {
 	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
 	const base64 = encodeBase64(content.value);
-	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64]);
+	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64, options]);
 
 	const drawings = raw.drawingsBySheet;
 	if (!drawings) {

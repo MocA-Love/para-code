@@ -40,7 +40,7 @@ import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../.
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { extractParadisWordRenderableObjects } from '../common/word/paradisWordRenderableExtractor.js';
 import { readWordRenderablePackageParts } from '../browser/word/paradisWordPackageParts.js';
-import { buildParadisWordOverlayItems, encodeParadisWordOverlayPayload } from './word/paradisWordObjectOverlayHtml.js';
+import { buildParadisWordOverlayItems } from './word/paradisWordObjectOverlayHtml.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
@@ -172,8 +172,6 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _webviewContainer: HTMLElement | undefined;
 	private _webview: IOverlayWebview | undefined;
 	private _webviewSupportsRecoveryMessages = false;
-	/** docx-preview が描かない図形の SVG(webview へ埋め込む JSON)。既定は「対象なし」。 */
-	private _overlayPayload = '[]';
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
 	private readonly _originPool: ParadisWebviewOriginPool;
 	private _webviewClaimed = false;
@@ -565,14 +563,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 			return;
 		}
 		let inlineData: string | undefined;
+		// 図形の取り出しは本文表示より後にやる(表示を待たせない)。
+		let overlaySource: Uint8Array | undefined;
 		if (decision === 'viewer') {
 			try {
 				const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
 				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`, token);
 				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
 				this._assetPlaceholders = sanitized.placeholders;
-				// docx-preview が描かない図形は、同じバイト列から取り出して SVG にしておく。
-				this._overlayPayload = await this._buildOverlayPayload(sanitized.bytes, token);
+				overlaySource = sanitized.bytes;
 			} catch {
 				if (isValid === undefined && this._recoveryState.committed) {
 					const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
@@ -599,6 +598,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 				};
 				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._renderSnapshot.viewState, recoveryGeneration)));
 				this._renderSemanticUi();
+				// 表示を出したあとで図形を作り、出来たものだけ webview へ送る。
+				// 途中で別の文書へ切り替わったら送らない(古い文書の図が残らないようにする)。
+				if (overlaySource) {
+					this._deliverWordObjects(webview, overlaySource, generation, inputEpoch, token);
+				}
 				// Older/fake overlay implementations do not expose messages. Preserve their
 				// established watcher lifecycle while modern overlays report the real probe.
 				if (!this._webviewSupportsRecoveryMessages) {
@@ -719,28 +723,37 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	/**
-	 * docx-preview が描かない図形(グラフ・SmartArt・図形・テキストボックス・OLE)を SVG にする。
-	 * 失敗しても本文表示には影響しないので、そのときは「対象なし」を返して黙って諦める。
+	 * docx-preview が描かない図形(グラフ・SmartArt・図形・テキストボックス)を SVG にして webview へ送る。
+	 *
+	 * 本文の表示より後に走らせる。zip の再展開と XML 走査はレンダラのメインスレッドで動くので、
+	 * 表示の前に待つと、悪意あるファイル1つでウィンドウ全体が固まる。
+	 * 送る直前に世代を確認し、別の文書へ切り替わっていたら捨てる。
 	 */
-	private async _buildOverlayPayload(bytes: Uint8Array, token: CancellationToken): Promise<string> {
+	private async _deliverWordObjects(webview: IOverlayWebview, bytes: Uint8Array, generation: number, inputEpoch: number, token: CancellationToken): Promise<void> {
+		const isCurrent = () => generation === this._renderGeneration && inputEpoch === this._inputEpoch
+			&& this._webviewClaimed && !token.isCancellationRequested;
 		try {
 			const parts = await readWordRenderablePackageParts(bytes, token);
-			if (parts.size === 0 || token.isCancellationRequested) {
-				return '[]';
+			if (parts.size === 0 || !isCurrent()) {
+				return;
 			}
 			const objects = extractParadisWordRenderableObjects({ parts, token });
-			if (objects.length === 0) {
-				return '[]';
+			if (objects.length === 0 || !isCurrent()) {
+				return;
 			}
 			// 表示中の文書とは別の切り離した Document 上で組み立て、本文の DOM に触れないようにする。
 			const scratch = dom.getWindow(this._webviewContainer).document.implementation.createHTMLDocument('');
-			return encodeParadisWordOverlayPayload(buildParadisWordOverlayItems(objects, scratch));
+			const items = buildParadisWordOverlayItems(objects, scratch);
+			if (items.length === 0 || !isCurrent()) {
+				return;
+			}
+			webview.postMessage({ type: 'paradisWordObjects', items });
 		} catch {
-			return '[]';
+			// 図形が出ないだけで本文の表示には影響しないので、黙って諦める。
 		}
 	}
 
-	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0, viewState: ParadisWordViewState = this._wordViewState, recoveryGeneration = this._recoveryState.generation, overlayPayload = this._overlayPayload): string {
+	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0, viewState: ParadisWordViewState = this._wordViewState, recoveryGeneration = this._recoveryState.generation): string {
 		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
 		// service worker を切った webview に解決できない URL を渡すことになる。
 		const served = this._webviewServiceWorkerDisabled && this._documentUrl !== undefined;
@@ -834,8 +847,20 @@ export class ParadisDocxFileEditor extends EditorPane {
 		(async () => {
 			const vscode = acquireVsCodeApi();
 			const DOCX_URL = ${JSON.stringify(docxUrl)};
-			// docx-preview が描かない図形(グラフ・SmartArt 等)を、こちらで SVG にしたもの。
-			const PARADIS_WORD_OBJECTS = ${overlayPayload};
+			// docx-preview が描かない図形(グラフ・SmartArt 等)。本文表示のあとに送られてくる。
+			let PARADIS_WORD_OBJECTS = [];
+			let paradisDocumentRendered = false;
+			// 差し込みの本体は描画完了後に入れ替える。受け取りだけ先に構えておく
+			// (送信は本文表示の直後に来るので、リスナーが後だと取りこぼす)。
+			let placeParadisWordObjects = () => { };
+			window.addEventListener('message', event => {
+				const message = event.data;
+				if (!message || message.type !== 'paradisWordObjects' || !Array.isArray(message.items)) {
+					return;
+				}
+				PARADIS_WORD_OBJECTS = message.items;
+				placeParadisWordObjects();
+			});
 			const statusEl = document.getElementById('status');
 			const contentEl = document.getElementById('content');
 			try {
@@ -893,40 +918,38 @@ export class ParadisDocxFileEditor extends EditorPane {
 						section.style.width = needed + 'px';
 					}
 				}
-				// docx-preview はグラフ・SmartArt・図形を描かないが、extent の大きさを持つ
-				// 空の inline-block div は残す。そこへ、こちらで組み立てた SVG を流し込む。
-				// 取り違えを防ぐため、出現順に加えて枠の大きさが一致することも確かめる。
-				placeParadisWordObjects();
-				function placeParadisWordObjects() {
-					if (!Array.isArray(PARADIS_WORD_OBJECTS) || PARADIS_WORD_OBJECTS.length === 0) {
+				// docx-preview はグラフ・SmartArt・図形を描かないが、その drawing の枠は残す。
+				// 枠には wp:docPr@id を出させてあるので(vendored docx-preview へのパッチ)、
+				// その値だけで対応づけて SVG を流し込む。出現順には頼らない。
+				placeParadisWordObjects = () => {
+					if (!paradisDocumentRendered || !Array.isArray(PARADIS_WORD_OBJECTS) || PARADIS_WORD_OBJECTS.length === 0) {
 						return;
 					}
-					const slots = [];
-					for (const candidate of contentEl.querySelectorAll('div')) {
-						if (candidate.childElementCount > 0 || candidate.textContent.trim() !== '') {
+					// 同じ id の枠が複数あるのは正常(ヘッダーの図はページごとに複製される)。
+					// その全部へ同じ図を描く。
+					const byDrawingId = new Map();
+					for (const item of PARADIS_WORD_OBJECTS) {
+						if (!item.drawingId) {
 							continue;
 						}
-						const width = parseFloat(candidate.style.width);
-						const height = parseFloat(candidate.style.height);
-						if (candidate.style.display === 'inline-block' && width > 0 && height > 0) {
-							slots.push({ element: candidate, width, height });
-						}
+						// 同じ id の図が複数ある文書は曖昧なので、その id はまとめて描かない。
+						byDrawingId.set(item.drawingId, byDrawingId.has(item.drawingId) ? null : item);
 					}
 					let placed = 0;
-					for (let index = 0; index < PARADIS_WORD_OBJECTS.length && index < slots.length; index++) {
-						const item = PARADIS_WORD_OBJECTS[index];
-						const slot = slots[index];
-						// 1px 未満のずれは丸め由来なので許す。大きく違うなら別物とみなして置かない。
-						if (Math.abs(slot.width - item.width) > 1 || Math.abs(slot.height - item.height) > 1) {
+					for (const slot of contentEl.querySelectorAll('[data-paradis-drawing-id]')) {
+						const item = byDrawingId.get(slot.getAttribute('data-paradis-drawing-id'));
+						if (!item || slot.childElementCount > 0) {
 							continue;
 						}
-						slot.element.classList.add('paradis-word-object-slot');
-						slot.element.setAttribute('data-paradis-object-kind', item.kind);
-						slot.element.innerHTML = item.svg;
+						slot.classList.add('paradis-word-object-slot');
+						slot.setAttribute('data-paradis-object-kind', item.kind);
+						slot.innerHTML = item.svg;
 						placed++;
 					}
-					vscode.postMessage({ type: 'paradisWordObjects', expected: PARADIS_WORD_OBJECTS.length, slots: slots.length, placed });
-				}
+					vscode.postMessage({ type: 'paradisWordObjects', expected: PARADIS_WORD_OBJECTS.length, placed });
+				};
+				paradisDocumentRendered = true;
+				placeParadisWordObjects();
 				// Word の「箇条書き」既定スタイルは通常 Symbol/Wingdings フォントの専用コードポイント
 				// (Private Use Area、例: bullet は U+F0B7) で記号を描画する。実機のWordがあるWindows/Mac
 				// にはこれらのフォントが入っているため正しく見えるが、Symbol/Wingdingsを持たない環境

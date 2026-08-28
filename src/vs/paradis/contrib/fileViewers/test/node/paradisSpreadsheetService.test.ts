@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { deepStrictEqual, rejects, strictEqual } from 'assert';
+import { deepStrictEqual, ok, rejects, strictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -183,6 +183,23 @@ suite('ParadisSpreadsheetService', () => {
 		const result = await service.parseWorkbook(workbook);
 
 		deepStrictEqual(result.sheets[0].rows.map(row => row.cells[0].value), cases.map(([, , expected]) => expected));
+	});
+
+	test('keeps accounting formats even though the fill-alignment token is only approximated', async () => {
+		// 会計書式は必ず `*`(残り幅を埋める指定)を含む。数値の整形自体は正しくできているので、
+		// 近似止まりを理由に一律で捨てると会計書式が丸ごと効かなくなる。
+		const accounting = '_("¥"* #,##0.00_);_("¥"* (#,##0.00);_("¥"* "-"??_);_(@_)';
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Sheet1');
+			const cell = sheet.getCell(1, 1);
+			cell.value = 1234.5;
+			cell.numFmt = accounting;
+		});
+
+		const result = await service.parseWorkbook(workbook);
+
+		ok(result.sheets[0].rows[0].cells[0].value.includes('1,234.50'), result.sheets[0].rows[0].cells[0].value);
 	});
 
 	test('renders date and elapsed-time formats without leaking a host date string', async () => {

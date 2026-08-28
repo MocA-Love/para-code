@@ -9,11 +9,10 @@ import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { extractParadisWordRenderableObjects } from '../../common/word/paradisWordRenderableExtractor.js';
-import { buildParadisWordOverlayItems, encodeParadisWordOverlayPayload } from '../../electron-browser/word/paradisWordObjectOverlayHtml.js';
+import { buildParadisWordOverlayItems } from '../../electron-browser/word/paradisWordObjectOverlayHtml.js';
 
 const CHART_EXTENT = { cx: 2857500, cy: 1905000 };
 const TEXTBOX_EXTENT = { cx: 952500, cy: 476250 };
-const EMU_PER_PIXEL = 9525;
 
 function inlineDrawing(uri: string, inner: string, cx: number, cy: number, id: number): string {
 	return `<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">`
@@ -64,10 +63,8 @@ suite('ParadisWordObjectOverlayHtml', () => {
 
 		strictEqual(objects.length, 1);
 		strictEqual(items.length, 1);
-		deepStrictEqual(
-			[items[0].kind, items[0].width, items[0].height],
-			['chart', CHART_EXTENT.cx / EMU_PER_PIXEL, CHART_EXTENT.cy / EMU_PER_PIXEL],
-		);
+		// 差し込み先は wp:docPr@id で決めるので、その値が載っていること。
+		deepStrictEqual([items[0].kind, items[0].drawingId], ['chart', '1']);
 		// 枠いっぱいに収まるよう viewBox と 100% 指定が付く。
 		ok(items[0].svg.includes('viewBox="0 0 300 200"'), items[0].svg.slice(0, 200));
 		ok(items[0].svg.includes('width="100%"'));
@@ -95,18 +92,16 @@ suite('ParadisWordObjectOverlayHtml', () => {
 		const { items } = overlayFor('<w:p><w:r><w:t>本文だけ</w:t></w:r></w:p>');
 
 		strictEqual(items.length, 0);
-		strictEqual(encodeParadisWordOverlayPayload(items), '[]');
 	});
 
-	test('escapes the payload so it cannot break out of the webview script', () => {
-		const payload = encodeParadisWordOverlayPayload([
-			{ id: 'x', kind: 'shape', width: 1, height: 1, svg: '<svg></svg></script><script>alert(1)</script>' },
-		]);
+	test('skips a drawing that carries no marker to match a frame with', () => {
+		// 目印が無いと差し込み先を決められないので、はじめから作らない。
+		const withoutDocPr = `<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">`
+			+ `<wp:extent cx="${CHART_EXTENT.cx}" cy="${CHART_EXTENT.cy}"/>`
+			+ `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">`
+			+ `<c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rC1"/>`
+			+ `</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
 
-		strictEqual(payload.includes('</script>'), false);
-		strictEqual(payload.includes('<'), false);
-		strictEqual(payload.includes('>'), false);
-		// エスケープしても JSON としては元の文字列に戻る。
-		deepStrictEqual(JSON.parse(payload)[0].svg, '<svg></svg></script><script>alert(1)</script>');
+		strictEqual(overlayFor(withoutDocPr).items.length, 0);
 	});
 });
