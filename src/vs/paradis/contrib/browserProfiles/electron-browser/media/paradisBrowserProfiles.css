@@ -1,0 +1,563 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Named browser profiles: navbar pill, switcher dropdown, and the manage/create modals.
+	The approved mock (2-3.html) hardcodes Dark Modern values; everything here is written against
+	--vscode-* tokens instead so light and high-contrast themes hold up. The only literal colors are
+	the per-profile accent dots, which are user data and are set inline from the ledger. */
+
+/* ============================================================
+	1. Navbar pill (BrowserWidgetLocation.PostUrl)
+	============================================================ */
+
+.browser-root .paradis-browser-profile-pill {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+	height: 20px;
+	padding: 0 7px 0 6px;
+	border: 1px solid transparent;
+	border-radius: var(--vscode-cornerRadius-circle, 9999px);
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: 11px;
+	line-height: 1;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.browser-root .paradis-browser-profile-pill:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.browser-root .paradis-browser-profile-pill:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.browser-root .paradis-browser-profile-pill[aria-expanded='true'] {
+	background-color: var(--vscode-list-activeSelectionBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+/* No page yet (startup, error screen): keep the frame so the navbar height does not jump. */
+.browser-root .paradis-browser-profile-pill.is-detached {
+	opacity: 0.6;
+}
+
+.browser-root .paradis-browser-profile-pill .pbp-pill-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	/* The accent is user data, so it can be any color; this keeps it legible on any background. */
+	box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.browser-root .paradis-browser-profile-pill .pbp-pill-icon,
+.browser-root .paradis-browser-profile-pill .pbp-pill-chevron {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.browser-root .paradis-browser-profile-pill .pbp-pill-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.browser-root .paradis-browser-profile-pill.is-named .pbp-pill-name {
+	font-weight: 600;
+}
+
+.browser-root .paradis-browser-profile-pill:not(.is-named) .pbp-pill-name {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Agent is driving this page. */
+.browser-root .paradis-browser-profile-pill.agent-controlled {
+	border-color: var(--vscode-focusBorder);
+}
+
+.browser-root .paradis-browser-profile-pill .pbp-pill-badge {
+	padding-left: 5px;
+	margin-left: 1px;
+	border-left: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	color: var(--vscode-textLink-foreground);
+	font-size: 10px;
+	font-weight: 600;
+}
+
+/* ============================================================
+	2. Switcher dropdown (custom widget; registered in overlayManager
+	as a QuickInput-like overlay so the native view pauses)
+	============================================================ */
+
+.paradis-browser-profile-dropdown {
+	position: absolute;
+	z-index: 2550;
+	display: flex;
+	flex-direction: column;
+	/* The list scrolls, not the whole widget, so the create/manage footer stays reachable. */
+	overflow: hidden;
+	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+	font-size: 13px;
+}
+
+.paradis-browser-profile-dropdown .pbp-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 4px 0;
+}
+
+.paradis-browser-profile-dropdown .pbp-separator {
+	padding: 6px 12px 4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-browser-profile-dropdown .pbp-notice {
+	padding: 6px 12px 10px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11.5px;
+	line-height: 1.5;
+}
+
+.paradis-browser-profile-dropdown .pbp-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 10px;
+	border-left: 2px solid transparent;
+	cursor: pointer;
+	outline: none;
+}
+
+.paradis-browser-profile-dropdown .pbp-row.is-focused {
+	background-color: var(--vscode-quickInputList-focusBackground, var(--vscode-list-activeSelectionBackground));
+	color: var(--vscode-quickInputList-focusForeground, var(--vscode-list-activeSelectionForeground));
+	border-left-color: var(--vscode-focusBorder);
+}
+
+/* High contrast themes draw selection with borders rather than fills. */
+.hc-black .paradis-browser-profile-dropdown .pbp-row.is-focused,
+.hc-light .paradis-browser-profile-dropdown .pbp-row.is-focused {
+	outline: 1px dotted var(--vscode-contrastActiveBorder, var(--vscode-focusBorder));
+	outline-offset: -1px;
+}
+
+.paradis-browser-profile-dropdown .pbp-row.is-stale .pbp-label,
+.paradis-browser-profile-dropdown .pbp-row.is-stale .pbp-detail {
+	color: var(--vscode-disabledForeground);
+}
+
+.paradis-browser-profile-dropdown .pbp-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.paradis-browser-profile-dropdown .pbp-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-browser-profile-dropdown .pbp-main {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-browser-profile-dropdown .pbp-label {
+	font-size: 12.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-profile-dropdown .pbp-detail {
+	margin-top: 1px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-profile-dropdown .pbp-row.is-focused .pbp-detail {
+	color: inherit;
+	opacity: 0.85;
+}
+
+.paradis-browser-profile-dropdown .pbp-check {
+	display: flex;
+	align-items: center;
+	width: 16px;
+	flex-shrink: 0;
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-browser-profile-dropdown .pbp-footer {
+	flex-shrink: 0;
+	padding: 4px 0;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+/* The footer rows are real <button>s (they are actions, not listbox options), so the UA styling
+	has to be reset back to the row look. */
+.paradis-browser-profile-dropdown .pbp-row.pbp-action {
+	width: 100%;
+	border: none;
+	border-left: 2px solid transparent;
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	text-align: left;
+}
+
+.paradis-browser-profile-dropdown .pbp-action .pbp-label {
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-browser-profile-dropdown .pbp-action.is-focused .pbp-label {
+	color: inherit;
+}
+
+/* ============================================================
+	3. Manage / create modals
+	============================================================ */
+
+.paradis-browser-profile-backdrop {
+	position: absolute;
+	inset: 0;
+	z-index: 2600;
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	padding: 60px 24px 24px;
+	background-color: rgba(0, 0, 0, 0.5);
+}
+
+.paradis-browser-profile-modal {
+	display: flex;
+	flex-direction: column;
+	width: 520px;
+	max-width: 100%;
+	max-height: 100%;
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+	font-size: 13px;
+}
+
+.paradis-browser-profile-modal .pbpm-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 14px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.paradis-browser-profile-modal .pbpm-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-browser-profile-modal .pbpm-title h2 {
+	margin: 0;
+	color: var(--vscode-foreground);
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.paradis-browser-profile-modal .pbpm-close {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-browser-profile-modal .pbpm-close:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-browser-profile-modal .pbpm-body {
+	padding: 14px;
+	overflow: auto;
+}
+
+.paradis-browser-profile-modal .pbpm-description {
+	margin: 0 0 14px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	line-height: 1.6;
+}
+
+.paradis-browser-profile-modal .pbpm-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding: 10px 14px;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.paradis-browser-profile-modal .pbpm-btn {
+	padding: 5px 13px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-family: inherit;
+	font-size: 12.5px;
+	cursor: pointer;
+}
+
+.paradis-browser-profile-modal .pbpm-btn.primary {
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-browser-profile-modal .pbpm-btn.danger {
+	background-color: var(--vscode-inputValidation-errorBackground, var(--vscode-button-background));
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-inputValidation-errorBorder, transparent);
+}
+
+.paradis-browser-profile-modal .pbpm-btn:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-browser-profile-modal .pbpm-btn.primary:hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.paradis-browser-profile-modal .pbpm-btn:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+/* --- profile list (manage) --- */
+
+.paradis-browser-profile-modal .pbpm-list {
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	overflow: hidden;
+}
+
+.paradis-browser-profile-modal .pbpm-empty {
+	padding: 14px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-browser-profile-modal .pbpm-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 9px 10px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.paradis-browser-profile-modal .pbpm-row:last-child {
+	border-bottom: none;
+}
+
+.paradis-browser-profile-modal .pbpm-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-browser-profile-modal .pbpm-dot {
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.paradis-browser-profile-modal .pbpm-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-browser-profile-modal .pbpm-name {
+	font-size: 12.5px;
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-profile-modal .pbpm-meta {
+	margin-top: 2px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-browser-profile-modal .pbpm-rename {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-browser-profile-modal .pbpm-row-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+}
+
+.paradis-browser-profile-modal .pbpm-row-action {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-browser-profile-modal .pbpm-row-action:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-browser-profile-modal .pbpm-row-action:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* --- delete confirmation popover --- */
+
+.paradis-browser-profile-modal .pbpm-confirm {
+	margin-top: 10px;
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-inputValidation-errorBackground, var(--vscode-editorWidget-background));
+	color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+}
+
+.paradis-browser-profile-modal .pbpm-confirm-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+	font-size: 12.5px;
+	font-weight: 600;
+}
+
+.paradis-browser-profile-modal .pbpm-confirm p {
+	margin: 0 0 10px;
+	font-size: 11.5px;
+	line-height: 1.6;
+}
+
+.paradis-browser-profile-modal .pbpm-confirm-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+/* --- create form --- */
+
+.paradis-browser-profile-modal .pbpm-label {
+	display: block;
+	margin-bottom: 5px;
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.paradis-browser-profile-modal .pbpm-label-spaced {
+	margin-top: 16px;
+}
+
+.paradis-browser-profile-modal .pbpm-input {
+	width: 100%;
+	padding: 6px 8px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-family: inherit;
+	font-size: 12.5px;
+}
+
+.paradis-browser-profile-modal .pbpm-input:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-browser-profile-modal .pbpm-hint {
+	margin-top: 5px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-browser-profile-modal .pbpm-swatches {
+	display: flex;
+	gap: 8px;
+	margin-top: 8px;
+}
+
+.paradis-browser-profile-modal .pbpm-swatch {
+	position: relative;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+	cursor: pointer;
+}
+
+.paradis-browser-profile-modal .pbpm-swatch.selected::after {
+	content: '';
+	position: absolute;
+	inset: -3px;
+	border: 1.5px solid var(--vscode-focusBorder);
+	border-radius: 50%;
+}
+
+.paradis-browser-profile-modal .pbpm-swatch:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 3px;
+}
+
+.paradis-browser-profile-modal .pbpm-error {
+	margin-top: 8px;
+	color: var(--vscode-errorForeground);
+	font-size: 11.5px;
+}

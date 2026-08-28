@@ -433,12 +433,19 @@ export interface IBrowserViewFindInPageResult {
 export enum BrowserViewStorageScope {
 	Global = 'global',
 	Workspace = 'workspace',
-	Ephemeral = 'ephemeral'
+	Ephemeral = 'ephemeral',
+	// PARA-PATCH: named persistent browser profiles (vs/paradis/contrib/browserProfiles). A fourth
+	// scope rather than a reuse of Global: "Clear Storage (Global)" must not wipe a named profile,
+	// and a named profile must not leak into the real global session.
+	Profile = 'profile'
 }
 
 export interface IBrowserSessionOptions {
 	/** Storage / data-isolation scope for the session. */
 	scope: BrowserViewStorageScope;
+	// PARA-PATCH: opaque id of the named browser profile, only read when `scope` is `Profile`.
+	// Optional, so every existing caller stays unchanged.
+	profileId?: string;
 }
 
 export const ipcBrowserViewChannelName = 'browserView';

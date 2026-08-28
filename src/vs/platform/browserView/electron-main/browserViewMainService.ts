@@ -32,6 +32,12 @@ export interface IBrowserViewMainService extends IBrowserViewService {
 
 	tryGetBrowserView(id: string): BrowserView | undefined;
 
+	// PARA-PATCH: enumerate the views bound to one browser session, across every window. Named
+	// browser profiles (vs/paradis/contrib/browserProfiles) must destroy them before clearing the
+	// profile's storage: a live page keeps writing cookies back into the partition right after
+	// clearData(). The renderer's own map only knows about its window, so this has to live here.
+	paradisGetBrowserViewIdsForSession(sessionId: string): string[];
+
 	/** Create a new target and return it. */
 	createTarget(url: string, owner: IBrowserViewOwner, browserContextId?: string, audience?: IBrowserViewAudience): Promise<BrowserView>;
 }
@@ -112,6 +118,17 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 
 	tryGetBrowserView(id: string): BrowserView | undefined {
 		return this.browserViews.get(id);
+	}
+
+	// PARA-PATCH: see IBrowserViewMainService. `browserViews` is private, so the lookup has to be here.
+	paradisGetBrowserViewIdsForSession(sessionId: string): string[] {
+		const ids: string[] = [];
+		for (const [id, view] of this.browserViews) {
+			if (view.session.id === sessionId) {
+				ids.push(id);
+			}
+		}
+		return ids;
 	}
 
 	async createTarget(url: string, owner: IBrowserViewOwner, browserContextId?: string, audience?: IBrowserViewAudience): Promise<BrowserView> {

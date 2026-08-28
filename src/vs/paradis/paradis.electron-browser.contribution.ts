@@ -38,6 +38,8 @@ import './contrib/fileViewers/electron-browser/paradisPdfViewer.contribution.js'
 import './contrib/fileViewers/electron-browser/paradisDocxViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisOfficeDesktopSourceService.js';
 import './contrib/browserBookmarks/electron-browser/paradisBrowserBookmarks.contribution.js';
+import './contrib/browserProfiles/electron-browser/paradisBrowserProfiles.contribution.js';
+import './contrib/browserProfiles/electron-browser/paradisBrowserProfileMcp.contribution.js';
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';

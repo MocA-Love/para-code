@@ -24,6 +24,8 @@ import { paradisInstallBrowserExtensions } from '../../../paradis/contrib/browse
 import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisBrowserUserAgent.js';
 // PARA-PATCH: auto-save browser downloads to a fixed folder instead of showing a native save dialog
 import { paradisConfigureBrowserDownloads } from '../../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.js';
+// PARA-PATCH: named persistent browser profiles get their own persist: partition
+import { paradisBrowserProfilePartition } from '../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileId.js';
 
 /**
  * Holds an Electron session along with its storage scope and unique browser
@@ -177,6 +179,14 @@ export class BrowserSession {
 		workspaceStorageHome: URI,
 		workspaceId?: string,
 	): BrowserSession {
+		// PARA-PATCH: named persistent browser profiles get their own persist: partition. The id is
+		// opaque and never derived from the display name, so renaming a profile keeps its logins.
+		const profile = paradisBrowserProfilePartition(sessionOptions);
+		if (profile) {
+			const electronSession = session.fromPartition(profile.partition);
+			return BrowserSession._bySession.get(electronSession)
+				?? instantiationService.createInstance(BrowserSession, profile.sessionId, electronSession, BrowserViewStorageScope.Profile);
+		}
 		switch (sessionOptions.scope) {
 			case BrowserViewStorageScope.Global:
 				return BrowserSession.getOrCreateGlobal(instantiationService);

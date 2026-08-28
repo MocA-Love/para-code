@@ -49,6 +49,14 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-settings-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: the fork's combined usage dashboard dialog (paradisUsageDashboardDialog.ts).
 	{ className: 'paradis-usage-dashboard-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's browser profile management / creation dialogs
+	// (vs/paradis/contrib/browserProfiles).
+	{ className: 'paradis-browser-profile-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's browser profile switcher dropdown. It is anchored to the navbar pill
+	// rather than being a modal, so it is tracked as a QuickInput-like overlay (same shape as the
+	// built-in 'quick-input-widget' entry above): a transient, user-invoked list that must paint
+	// above the native WebContentsView.
+	{ className: 'paradis-browser-profile-dropdown', type: BrowserOverlayType.QuickInput },
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),

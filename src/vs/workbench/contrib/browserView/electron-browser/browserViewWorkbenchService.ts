@@ -41,6 +41,8 @@ import { getCopilotRootPaths } from '../../../../platform/agentHost/common/copil
 import { localChatSessionType } from '../../chat/common/chatSessionsService.js';
 import { INativeWorkbenchEnvironmentService } from '../../../services/environment/electron-browser/environmentService.js';
 import { ITunnelProxyInfo } from '../../../../platform/tunnel/common/tunnelProxy.js';
+// PARA-PATCH: per-view named browser profile routing (see the getOrCreateLazy call below)
+import { paradisResolveBrowserSessionOptions } from '../../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileRouting.js';
 
 // PARA-PATCH: introduce paradisCreateBrowserViewInitialization and its options/result types - a non-rejecting barrier that subscribes before snapshotting existing views, with bounded backoff/timeout retries, to close the snapshot/listen gap on recovery (Para Browser MCP recovery hardening)
 export interface IParadisBrowserViewInitialization<T> {
@@ -553,9 +555,11 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 					{
 						owner: this._getDefaultOwner(),
 						associatedResource,
-						sessionOptions: {
-							scope: await this._resolveStorageScope()
-						},
+						// PARA-PATCH: let named browser profiles override the resolved scope per view
+						// (vs/paradis/contrib/browserProfiles). A module-level registry rather than a DI
+						// dependency, so this class's constructor signature stays untouched; with nothing
+						// registered the fallback is returned as-is and behaviour is unchanged.
+						sessionOptions: paradisResolveBrowserSessionOptions(id, { scope: await this._resolveStorageScope() }),
 						initialState: {
 							url: initialState?.url,
 							title: initialState?.title,
