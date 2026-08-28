@@ -729,9 +729,13 @@ export interface IParadisSheetTableDom {
  * shrinkToFit / セルまたぎオーバーフローはレイアウト確定後に applyShrinkToFit /
  * applyOverflow を呼ぶ必要があるため、対象セルを戻り値で返す。
  */
-/** 指定セルがどれかの矩形に入るか。 */
-function isInsideAnyRange(ranges: readonly IParadisCellRange[] | undefined, row: number, col: number): boolean {
-	return !!ranges?.some(range => row >= range.minR && row <= range.maxR && col >= range.minC && col <= range.maxC);
+/**
+ * そのセルが、いずれかのフィルタ範囲の「見出し行」に当たるか。
+ * 別々の範囲をまたいで判定すると、範囲Aの内側の行と範囲Bの開始行が一致しただけで
+ * 記号が出てしまうため、1 つの範囲の中で完結させる。
+ */
+function isFilterHeaderCell(ranges: readonly IParadisCellRange[] | undefined, row: number, col: number): boolean {
+	return !!ranges?.some(range => row === range.minR && col >= range.minC && col <= range.maxC);
 }
 
 /** テーブルの中でそのセルが担う役割。縞模様や集計行の描き分けに使う。 */
@@ -750,10 +754,11 @@ function tableCellRole(sheet: IParadisSheetData, row: number, col: number): IPar
 		}
 		const header = table.headerRow && row === range.minR;
 		const totals = table.totalsRow && row === range.maxR;
-		// 縞は見出し行・集計行を除いたデータ行で数える(Excel も同じ数え方)。
+		// 縞は見出し行・集計行を除いたデータ行で数える。ECMA-376 の firstRowStripe は
+		// データの先頭行から始まるので、先頭行を塗る側にする。
 		const dataIndex = row - range.minR - (table.headerRow ? 1 : 0);
-		const stripe = !header && !totals && table.showRowStripes && dataIndex >= 0 && dataIndex % 2 === 1;
-		const columnStripe = !header && !totals && table.showColumnStripes && (col - range.minC) % 2 === 1;
+		const stripe = !header && !totals && table.showRowStripes && dataIndex >= 0 && dataIndex % 2 === 0;
+		const columnStripe = !header && !totals && table.showColumnStripes && (col - range.minC) % 2 === 0;
 		const emphasizedColumn = (table.showFirstColumn && col === range.minC) || (table.showLastColumn && col === range.maxC);
 		return { header, totals, stripe: stripe || columnStripe, emphasizedColumn };
 	}
@@ -843,7 +848,7 @@ export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTable
 				td.classList.toggle('paradis-spreadsheet-table-stripe', role.stripe);
 				td.classList.toggle('paradis-spreadsheet-table-emphasis', role.emphasizedColumn);
 			}
-			if (isInsideAnyRange(sheet.filterRanges, row.excelRow, excelCol) && sheet.filterRanges?.some(range => range.minR === row.excelRow)) {
+			if (isFilterHeaderCell(sheet.filterRanges, row.excelRow, excelCol)) {
 				appendFilterMarker(td);
 			}
 			if (cell.diagonal) {

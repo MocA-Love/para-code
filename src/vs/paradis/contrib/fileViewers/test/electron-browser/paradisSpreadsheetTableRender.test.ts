@@ -79,11 +79,12 @@ suite('ParadisSpreadsheetTableRender', () => {
 			}],
 		}));
 
-		// 見出し行 → データ2行(2行目だけ縞) → 集計行。
+		// 見出し行 → データ2行 → 集計行。縞は ECMA-376 の firstRowStripe に合わせ
+		// データの先頭行から始まる。
 		deepStrictEqual(tableClasses(table), [
 			['paradis-spreadsheet-table-header', 'paradis-spreadsheet-table-header'],
-			['', ''],
 			['paradis-spreadsheet-table-stripe', 'paradis-spreadsheet-table-stripe'],
+			['', ''],
 			['paradis-spreadsheet-table-totals', 'paradis-spreadsheet-table-totals'],
 		]);
 	});

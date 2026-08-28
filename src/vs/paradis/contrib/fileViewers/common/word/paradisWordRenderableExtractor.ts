@@ -257,7 +257,9 @@ function createDrawingObject(
 
 	try {
 		const docPr = firstDescendant(placement, budget, candidate => wordDrawingNamespaces.has(candidate.uri) && candidate.local === 'docPr');
-		const id = objectId(storyUri, ordinal, attribute(docPr, '', 'id'));
+		const drawingId = attribute(docPr, '', 'id');
+		const id = objectId(storyUri, ordinal, drawingId);
+		const identity = drawingId ? { id, drawingId } : { id };
 		const geometry = parseDrawingGeometry(placement, fingerprint);
 		const graphicData = firstDescendant(placement, budget, candidate => drawingNamespaces.has(candidate.uri) && candidate.local === 'graphicData');
 		if (!graphicData) {
@@ -265,28 +267,22 @@ function createDrawingObject(
 		}
 		const kind = graphicDataKinds.get(lastUriSegment(attribute(graphicData, '', 'uri') ?? ''));
 		if (kind === 'chart') {
-			return createChartObject(id, geometry, graphicData, relationships, readPart, limits, budget);
+			return withIdentity(createChartObject(id, geometry, graphicData, relationships, readPart, limits, budget), identity);
 		}
 		if (kind === 'diagram') {
-			return createSmartArtObject(id, geometry, graphicData, relationships, readPart, limits, budget);
+			return withIdentity(createSmartArtObject(id, geometry, graphicData, relationships, readPart, limits, budget), identity);
 		}
 		if (kind === 'picture') {
-			const altText = attribute(docPr, '', 'descr');
-			return Object.freeze({
-				kind: 'image' as const,
-				id,
-				geometry,
-				content: Object.freeze({ behavior: 'notFetched' as const }),
-				...(altText ? { altText } : {}),
-			});
+			// 画像は docx-preview が <img> として描くので、こちらで重ねない。
+			return undefined;
 		}
 		if (kind === 'shape') {
 			const textbox = firstDescendant(graphicData, budget, candidate => shapeNamespaces.has(candidate.uri) && candidate.local === 'txbx');
 			const content = textbox ? firstDescendant(textbox, budget, candidate => wordNamespaces.has(candidate.uri) && candidate.local === 'txbxContent') : undefined;
 			if (content) {
-				return Object.freeze({ kind: 'textbox' as const, id, geometry, runs: collectTextboxRuns(content, limits, budget) });
+				return Object.freeze({ kind: 'textbox' as const, ...identity, geometry, runs: collectTextboxRuns(content, limits, budget) });
 			}
-			return Object.freeze({ kind: 'shape' as const, id, geometry });
+			return Object.freeze({ kind: 'shape' as const, ...identity, geometry });
 		}
 		return undefined;
 	} catch (error) {
@@ -576,6 +572,14 @@ function fingerprintPart(xml: string): ParadisOfficeFingerprint {
 }
 
 /** 同じ文書を何度処理しても同じになる安定 id。 */
+/** グラフ・SmartArt の生成結果へ、差し込み先の照合に使う目印を足す。 */
+function withIdentity(
+	object: ParadisWordRenderableObject | undefined,
+	identity: { readonly id: string; readonly drawingId?: string },
+): ParadisWordRenderableObject | undefined {
+	return object && identity.drawingId ? Object.freeze({ ...object, drawingId: identity.drawingId }) : object;
+}
+
 function objectId(storyUri: string, ordinal: number, docPrId: string | undefined): string {
 	return `${storyUri}#${ordinal}:${docPrId ?? ''}`;
 }

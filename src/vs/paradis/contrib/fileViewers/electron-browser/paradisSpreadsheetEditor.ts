@@ -477,9 +477,6 @@ export function trimFrozenPaneClone(table: HTMLElement, rowCount: number | undef
 	}
 }
 
-/** 診断リボンへ渡す coverage の上限。数万件の配列を作らずに件数だけを伝える。 */
-const MAX_DIAGNOSTIC_COVERAGE_SAMPLES = 100_000;
-
 export class ParadisSpreadsheetEditor extends EditorPane {
 
 	static readonly ID = PARADIS_SPREADSHEET_EDITOR_ID;
@@ -796,7 +793,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		let workbook: IParadisWorkbookData;
 		try {
-			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource);
+			// 到達度の診断は、診断表示を出す設定のときだけ費用を払う。
+			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, {
+				semanticDiagnostics: !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration),
+			});
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
@@ -902,40 +902,35 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				});
 			}
 		}
-		// 診断は node 側で実際に OOXML を読んだ結果(到達度)に基づく。解析できなかった場合だけ、
-		// 従来の表示方法で開いている旨を出す。
+		// 表示そのものは互換の投影(exceljs)で作っているので、再現度は常に「近似」と申告する。
+		// 意味解析の結果は「ファイルをどこまで読めたか」を伝えるためだけに使い、再現度の主張には
+		// 使わない(読めたことと、同じ見た目に描けたことは別の話)。
 		const semantic = workbook.semanticDiagnostics;
 		const truncated = workbook.sheets.some(sheet => sheet.truncated);
-		const coverages: ParadisOfficeRenderCoverage[] = [
-			...(semantic?.available
-				? Array.from({ length: Math.min(semantic.parsedCells, MAX_DIAGNOSTIC_COVERAGE_SAMPLES) }, () => 'rendered' as const)
-				: ['approximated' as const]),
-			...placeholders.map(() => 'placeholder' as const),
-		];
+		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...placeholders.map(() => 'placeholder' as const)];
 		if (truncated) {
 			coverages.push('noAnchor');
 		}
 		if (this._diagnosticsEl) {
-			const complete = semantic?.available === true && semantic.terminal
-				&& semantic.parsedParts === semantic.expectedParts
-				&& semantic.parsedSheets === semantic.expectedSheets
-				&& semantic.parsedCells === semantic.expectedCells
-				&& !truncated && placeholders.length === 0;
-			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, {
-				outcome: complete ? 'complete' : 'degraded',
-				coverages,
-				warnings: semantic?.available
-					? (truncated
-						? [{
-							code: 'spreadsheet.truncatedRows',
-							message: localize('paradis.spreadsheet.truncatedRows', "行数が多いため、先頭部分だけを表示しています。"),
-						}]
-						: [])
-					: [{
-						code: 'spreadsheet.legacyProjection',
-						message: localize('paradis.spreadsheet.legacyProjection', "この形式では詳細な解析に対応していないため、従来の表示方法で開いています。"),
-					}],
-			});
+			const warnings: { readonly code: string; readonly message: string }[] = [];
+			if (truncated) {
+				warnings.push({
+					code: 'spreadsheet.truncatedRows',
+					message: localize('paradis.spreadsheet.truncatedRows', "行数が多いため、先頭部分だけを表示しています。"),
+				});
+			}
+			if (semantic?.available === false) {
+				warnings.push({
+					code: 'spreadsheet.semanticUnavailable',
+					message: localize('paradis.spreadsheet.semanticUnavailable', "このファイルの詳しい解析はできませんでしたが、表示には影響していません。"),
+				});
+			} else if (semantic && (semantic.unresolvedReferences > 0 || semantic.unknownElements > 0)) {
+				warnings.push({
+					code: 'spreadsheet.semanticGaps',
+					message: localize('paradis.spreadsheet.semanticGaps', "このファイルには、まだ対応していない要素が含まれています。"),
+				});
+			}
+			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, { outcome: 'degraded', coverages, warnings });
 		}
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;

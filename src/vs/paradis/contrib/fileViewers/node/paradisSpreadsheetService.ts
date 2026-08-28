@@ -25,6 +25,7 @@ import {
 	IParadisFreezePane,
 	IParadisSheetTable,
 	IParadisSemanticDiagnosticsSummary,
+	IParadisParseWorkbookOptions,
 	IParadisRichTextPart,
 	IParadisRowData,
 	canonicalizeDataValidationEntries,
@@ -32,7 +33,7 @@ import {
 	IParadisSpreadsheetService,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { inspectOfficePackage } from '../common/office/paradisOfficePackageCore.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../common/paradisOfficeProtocol.js';
 import { createParadisOfficeNodeArchive } from './office/paradisOfficeNodeArchive.js';
@@ -40,7 +41,7 @@ import { parseSpreadsheetSemanticNode } from './spreadsheet/paradisSpreadsheetNo
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
-import { formatPreparedSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisSpreadsheetPreparedNumberFormat } from '../common/spreadsheet/paradisSpreadsheetNumberFormat.js';
+import { formatPreparedSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisFormattedCellValue, type ParadisSpreadsheetPreparedNumberFormat } from '../common/spreadsheet/paradisSpreadsheetNumberFormat.js';
 
 const MAX_ROWS = 2000;
 
@@ -712,6 +713,26 @@ function getCellDisplayValue(cell: ExcelJS.Cell, formatter?: ISheetNumberFormatt
 }
 
 /** Excel のシリアル値の基準日(1900年方式)。Date を書式エンジンへ渡すために逆変換する。 */
+/**
+ * 整形結果を採用してよいか決める。
+ *
+ * 近似止まりの書式は誤った見た目になるので従来表示へ委ねるが、`*`(塗りつぶし揃え)だけは例外。
+ * これは「残り幅を指定文字で埋める」指定で、数値そのものの整形は正しくできている。
+ * 会計書式(組み込み 41-44 や `_("$"* #,##0.00_)` など)は必ずこれを含むため、
+ * 一律に捨てると会計書式が丸ごと効かなくなる。
+ */
+function usableFormattedText(result: ParadisFormattedCellValue): string | undefined {
+	if (result.status === 'exact') {
+		return result.text;
+	}
+	return result.unsupportedTokens.length > 0 && result.unsupportedTokens.every(token => token.startsWith('*'))
+		? result.text
+		: undefined;
+}
+
+/** 解析済み書式の保持上限。書式コードを大量に変えたファイルで溜め込まないための蓋。 */
+const MAX_PREPARED_NUMBER_FORMATS = 512;
+
 const EXCEL_SERIAL_EPOCH_OFFSET_1900 = 25569;
 const EXCEL_SERIAL_EPOCH_OFFSET_1904 = 24107;
 const MILLISECONDS_PER_DAY = 86400000;
@@ -729,6 +750,31 @@ function createSheetNumberFormatter(date1904: boolean): ISheetNumberFormatter {
 	const prepared = new Map<string, ParadisSpreadsheetPreparedNumberFormat | null>();
 	const context = { date1904 };
 	const serialEpoch = date1904 ? EXCEL_SERIAL_EPOCH_OFFSET_1904 : EXCEL_SERIAL_EPOCH_OFFSET_1900;
+
+	// 解析済みの書式は、同じ書式コードを持つセルで使い回す。ただし
+	// (1) 書式コードを大量に変えたファイルで際限なく溜めない
+	// (2) 解析済みハンドルは「用意した時点」からの制限時間を持つので、期限切れになったら
+	//     作り直す(そうしないと途中から全セルの表示形式が黙って外れる)
+	// の2点を守る。
+	const resolve = (code: string): ParadisSpreadsheetPreparedNumberFormat | null => {
+		const cached = prepared.get(code);
+		if (cached !== undefined) {
+			return cached;
+		}
+		if (prepared.size >= MAX_PREPARED_NUMBER_FORMATS) {
+			prepared.clear();
+		}
+		let handle: ParadisSpreadsheetPreparedNumberFormat | null;
+		try {
+			handle = prepareSpreadsheetNumberFormat(code, context);
+		} catch {
+			// 壊れた書式コードは以後もあきらめる(セルごとに例外を出さない)。
+			handle = null;
+		}
+		prepared.set(code, handle);
+		return handle;
+	};
+
 	return {
 		format(cell, value) {
 			const code = (cell as { numFmt?: string }).numFmt;
@@ -745,25 +791,26 @@ function createSheetNumberFormatter(date1904: boolean): ISheetNumberFormatter {
 			if (input === null || input === undefined || (typeof input !== 'number' && typeof input !== 'string' && typeof input !== 'boolean')) {
 				return undefined;
 			}
-			let handle = prepared.get(code);
-			if (handle === undefined) {
-				try {
-					handle = prepareSpreadsheetNumberFormat(code, context);
-				} catch {
-					// 壊れた書式コードは以後もあきらめる(セルごとに例外を出さない)。
-					handle = null;
-				}
-				prepared.set(code, handle);
-			}
+			const handle = resolve(code);
 			if (handle === null) {
 				return undefined;
 			}
 			try {
-				const result = formatPreparedSpreadsheetValue(handle, input);
-				// 近似でしか出せない書式は、従来の表示へ委ねて誤った見た目を出さない。
-				return result.status === 'exact' ? result.text : undefined;
+				return usableFormattedText(formatPreparedSpreadsheetValue(handle, input));
 			} catch {
-				return undefined;
+				// 期限切れのハンドルを掴んでいる可能性があるので、一度だけ作り直して試す。
+				prepared.delete(code);
+				const retry = resolve(code);
+				if (retry === null) {
+					return undefined;
+				}
+				try {
+					return usableFormattedText(formatPreparedSpreadsheetValue(retry, input));
+				} catch {
+					// 2回続けて駄目なら書式コード自体が扱えないものとして以後あきらめる。
+					prepared.set(code, null);
+					return undefined;
+				}
 			}
 		},
 	};
@@ -929,13 +976,17 @@ async function collectSemanticDiagnostics(bytes: Uint8Array): Promise<IParadisSe
 		expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0, expectedCells: 0, parsedCells: 0,
 		unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0, unavailableReason: reason,
 	});
+	// 解析全体に締め切りを掛ける。パッケージ検査は自前の予算(30秒)を持っており、
+	// こちらの締め切りの外側にあるため、トークンで確実に止められるようにする。
+	const source = new CancellationTokenSource();
+	const timer = setTimeout(() => source.cancel(), SEMANTIC_DIAGNOSTICS_DEADLINE_MS);
 	try {
 		const archive = await createParadisOfficeNodeArchive(bytes);
-		const inventory = await inspectOfficePackage(archive, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, CancellationToken.None);
+		const inventory = await inspectOfficePackage(archive, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, source.token);
 		// 投影との全件突き合わせは行わない。表示用データは非表示行・列オフセット・行数上限で
 		// 意図的に間引いてあるため、差分が実質すべて「表示側に無いセル」になり上限で解析ごと落ちる。
 		// ここで欲しいのは「どこまで読めたか」なので到達度だけを取る。
-		const snapshot = await parseSpreadsheetSemanticNode(bytes, inventory, CancellationToken.None, {
+		const snapshot = await parseSpreadsheetSemanticNode(bytes, inventory, source.token, {
 			deadlineMilliseconds: SEMANTIC_DIAGNOSTICS_DEADLINE_MS,
 		});
 		const mismatchesByKind: Record<string, number> = {};
@@ -959,6 +1010,9 @@ async function collectSemanticDiagnostics(bytes: Uint8Array): Promise<IParadisSe
 		};
 	} catch (error) {
 		return unavailable(error instanceof Error ? error.name : 'unknown');
+	} finally {
+		clearTimeout(timer);
+		source.dispose();
 	}
 }
 
@@ -980,7 +1034,9 @@ function getSheetTables(ws: ExcelJS.Worksheet): readonly IParadisSheetTable[] {
 		result.push({
 			name: typeof model?.displayName === 'string' ? model.displayName : (typeof model?.name === 'string' ? model.name : ''),
 			range,
-			headerRow: model?.headerRow !== false,
+			// exceljs は headerRowCount を boolean へ潰すので、属性の有無は区別できない。
+			// そのまま真偽値として読む(`!== false` は何も守らない)。
+			headerRow: model?.headerRow === true,
 			totalsRow: model?.totalsRow === true,
 			showRowStripes: style.showRowStripes === true,
 			showColumnStripes: style.showColumnStripes === true,
@@ -1020,9 +1076,10 @@ function getSheetFilterRanges(ws: ExcelJS.Worksheet): readonly IParadisCellRange
 	}
 	const tables = (ws as unknown as { tables?: Record<string, unknown> }).tables;
 	for (const table of tables ? Object.values(tables) : []) {
-		const ref = (table as { table?: { ref?: string; headerRow?: boolean } })?.table;
-		if (ref?.ref && ref.headerRow !== false) {
-			ranges.push(...parseConditionalFormatRef(ref.ref));
+		// パース後のモデルの範囲は tableRef。`ref` は書き出し側の名前で、読み取り時には存在しない。
+		const model = (table as { table?: { tableRef?: string; headerRow?: boolean } })?.table;
+		if (model?.tableRef && model.headerRow === true) {
+			ranges.push(...parseConditionalFormatRef(model.tableRef));
 		}
 	}
 	return ranges;
@@ -1301,7 +1358,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
 
-	async parseWorkbook(base64Content: string): Promise<IParadisWorkbookData> {
+	async parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
 		const buffer = Buffer.from(base64Content, 'base64');
@@ -1521,7 +1578,11 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			drawingsBySheet: extras.drawingsBySheet,
 			...(extras.themeColorsByName ? { themeColors: extras.themeColorsByName } : {}),
 		};
-		// 表示は投影で確定済み。意味解析は診断のためだけに回すので、失敗しても表示は変わらない。
+		// 表示は投影で確定済み。意味解析は診断表示のためだけに回すので、
+		// 診断を出さない設定のときは費用を払わない。失敗しても表示は変わらない。
+		if (options?.semanticDiagnostics !== true) {
+			return projection;
+		}
 		// 解析側は Uint8Array そのものを要求する(Buffer を渡すと invalid で弾かれる)。
 		const semanticDiagnostics = await collectSemanticDiagnostics(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		return { ...projection, semanticDiagnostics };

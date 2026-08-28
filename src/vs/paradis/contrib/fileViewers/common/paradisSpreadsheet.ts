@@ -346,6 +346,12 @@ export interface IParadisFreezePane {
 	readonly rows: number;
 }
 
+/** パースの任意指定。診断は表示に使うときだけ費用を払う。 */
+export interface IParadisParseWorkbookOptions {
+	/** 真のときだけ OOXML を直接読んで到達度を返す(既定は返さない)。 */
+	readonly semanticDiagnostics?: boolean;
+}
+
 /** パース結果のワークブック全体。 */
 export interface IParadisWorkbookData {
 	readonly sheets: readonly IParadisSheetData[];
@@ -551,5 +557,5 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
-	parseWorkbook(base64Content: string): Promise<IParadisWorkbookData>;
+	parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData>;
 }

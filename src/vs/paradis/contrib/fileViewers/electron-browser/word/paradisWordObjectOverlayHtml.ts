@@ -5,8 +5,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese comments)
 
-// docx-preview が描けない図形(グラフ・SmartArt・図形・テキストボックス・OLE)を SVG にして、
-// webview へ渡せる形にする。
+// docx-preview が描けない図形(グラフ・SmartArt・図形・テキストボックス)を SVG にする。
+// 出来たものは HTML へ埋め込まず、本文表示のあとに postMessage で送る。
 //
 // docx-preview は理解できない <w:drawing> でも「extent の大きさを持つ空の inline-block div」を
 // 出力する(renderDrawing)。そこがそのまま差し込み先になるので、図形ごとに独立した SVG を作り、
@@ -23,9 +23,8 @@ export interface IParadisWordOverlayItem {
 	/** 図形の安定 ID(照合の失敗時に原因を追うため)。 */
 	readonly id: string;
 	readonly kind: string;
-	/** 差し込み先の枠と突き合わせる大きさ(CSS px)。 */
-	readonly width: number;
-	readonly height: number;
+	/** wp:docPr@id。docx-preview が枠へ出す目印と突き合わせる。 */
+	readonly drawingId: string;
 	/** そのまま innerHTML に入れられる SVG。 */
 	readonly svg: string;
 }
@@ -56,6 +55,10 @@ export function buildParadisWordOverlayItems(
 	const items: IParadisWordOverlayItem[] = [];
 	const serializer = new XMLSerializer();
 	for (const object of objects) {
+		// 目印を持たない図形は差し込み先を決められないので、はじめから作らない。
+		if (!object.drawingId) {
+			continue;
+		}
 		const size = containerSize(object);
 		const geometry = resolveWordObjectGeometry(object.geometry);
 		if (!size || !geometry || size.width <= 0 || size.height <= 0) {
@@ -76,22 +79,9 @@ export function buildParadisWordOverlayItems(
 		items.push({
 			id: object.id,
 			kind: object.kind,
-			width: size.width,
-			height: size.height,
+			drawingId: object.drawingId,
 			svg: serializer.serializeToString(element),
 		});
 	}
 	return items;
-}
-
-/**
- * webview の HTML へ安全に埋め込める JSON にする。
- * `</script>` や U+2028/2029 でスクリプトを抜け出せないようにエスケープする。
- */
-export function encodeParadisWordOverlayPayload(items: readonly IParadisWordOverlayItem[]): string {
-	return JSON.stringify(items)
-		.replace(/</g, '\\u003c')
-		.replace(/>/g, '\\u003e')
-		.replace(/\u2028/g, '\\u2028')
-		.replace(/\u2029/g, '\\u2029');
 }
