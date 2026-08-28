@@ -280,7 +280,11 @@ export const PARADIS_OFFICE_CONFIGURATION_KEYS = [
 	'paradis.officeViewer.semanticWord',
 	'paradis.officeViewer.platformBackend',
 	'paradis.officeViewer.searchPrint',
+	'paradis.officeViewer.enabled',
 ] as const;
+
+/** Single user-facing checkbox shown in the Settings UI; the finer-grained keys above stay settings.json-only. */
+export const PARADIS_OFFICE_ENABLED_SETTING = 'paradis.officeViewer.enabled' as const;
 
 export type ParadisOfficeEngine = 'auto' | 'legacy' | 'v1';
 
@@ -380,6 +384,10 @@ function configurationLayer(reader: ParadisOfficeConfigurationReader): ParadisOf
 				}
 				(result as Record<ParadisOfficeRuntimeConfigurationKey, unknown>)[key] = value;
 			}
+		}
+		// Settings UI exposes only this single checkbox; flipping it on promotes the (hidden) engine key to 'v1'.
+		if (reader.getValue<unknown>(PARADIS_OFFICE_ENABLED_SETTING) === true) {
+			result.engine = 'v1';
 		}
 		return result;
 	} catch {
@@ -522,4 +530,18 @@ export const PARADIS_OFFICE_CONFIGURATION_PROPERTIES: Readonly<Record<typeof PAR
 	'paradis.officeViewer.semanticWord': officeBooleanSetting(true, localize('paradis.officeViewer.semanticWord', "Enables semantic Word view and diff for newly opened documents."), 'ParadisOfficeViewerSemanticWord', { key: 'paradis.officeViewer.semanticWord.policy', value: localize('paradis.officeViewer.semanticWord.policy', "Controls semantic Word processing.") }),
 	'paradis.officeViewer.platformBackend': officeBooleanSetting(true, localize('paradis.officeViewer.platformBackend', "Enables platform Office backends for newly opened documents."), 'ParadisOfficeViewerPlatformBackend', { key: 'paradis.officeViewer.platformBackend.policy', value: localize('paradis.officeViewer.platformBackend.policy', "Controls platform Office backends.") }),
 	'paradis.officeViewer.searchPrint': officeBooleanSetting(true, localize('paradis.officeViewer.searchPrint', "Enables semantic Office search and print for newly opened documents."), 'ParadisOfficeViewerSearchPrint', { key: 'paradis.officeViewer.searchPrint.policy', value: localize('paradis.officeViewer.searchPrint.policy', "Controls semantic Office search and print.") }),
+	[PARADIS_OFFICE_ENABLED_SETTING]: {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.WINDOW,
+		restricted: true,
+		included: true,
+		description: localize('paradis.officeViewer.enabled', "Enables Para Code's semantic Office viewer (Word/Excel) for newly opened documents. When off, the classic viewer is used."),
+		policy: {
+			name: 'ParadisOfficeViewerEnabled',
+			category: PolicyCategory.Extensions,
+			minimumVersion: '1.135',
+			localization: { description: { key: 'paradis.officeViewer.enabled.policy', value: localize('paradis.officeViewer.enabled.policy', "Controls whether Para Code's semantic Office viewer is enabled.") } },
+		},
+	},
 };
