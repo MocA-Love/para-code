@@ -1716,6 +1716,9 @@ export default defineConfig(
 						// PARA-PATCH: browserSession.ts が内蔵ブラウザのダウンロード自動保存
 						// (paradisConfigureBrowserDownloads) を呼ぶための逆方向 import
 						'vs/paradis/contrib/browserDownloads/~',
+						// PARA-PATCH: browserSession.ts が名前付きブラウザプロファイルの persist:
+						// パーティション名 (paradisBrowserProfilePartition) を解くための逆方向 import
+						'vs/paradis/contrib/browserProfiles/~',
 						// PARA-PATCH: ptyHostMain.ts が常駐ターミナル(pty デーモン)として起きたときの
 						// ソケット確保と寿命管理を呼ぶための逆方向 import
 						'vs/paradis/contrib/ptyDaemon/~',
@@ -1886,6 +1889,9 @@ export default defineConfig(
 						'vs/paradis/contrib/agentBrowser/~',
 						// PARA-PATCH: terminalInstanceService.ts がモバイル用terminalKey予約ヘルパー(paradisPrepareTerminalIdentity)を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/mobileRelay/~',
+						// PARA-PATCH: browserViewWorkbenchService.ts が名前付きブラウザプロファイルの
+						// ルーティング (paradisResolveBrowserSessionOptions) を通すための逆方向 import
+						'vs/paradis/contrib/browserProfiles/~',
 						// PARA-PATCH: relauncher.contribution.ts がワークスペース切替時の拡張ホスト再起動抑止フラグ
 						// (isParadisManagedWorkspaceWindow) を読むための逆方向 import。
 						// scm.service.contribution.ts のスコープ付き ISCMViewService 差し替えも同じ許可を使う。

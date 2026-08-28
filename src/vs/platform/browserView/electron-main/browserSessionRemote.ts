@@ -97,7 +97,10 @@ export class BrowserSessionRemote implements IBrowserSessionRemote {
 	}
 
 	acquire(viewId: string, proxyInfo: ITunnelProxyInfo | undefined): void {
-		if (!proxyInfo || this._session.storageScope === BrowserViewStorageScope.Global) {
+		// PARA-PATCH: a named browser profile is shared across windows and workspaces just like the
+		// global session, so it must not pick up a per-window remote tunnel proxy either (that would
+		// leak one window's tunnel into every other view using the same profile).
+		if (!proxyInfo || this._session.storageScope === BrowserViewStorageScope.Global || this._session.storageScope === BrowserViewStorageScope.Profile) {
 			this.release(viewId);
 			return;
 		}

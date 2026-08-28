@@ -50,6 +50,8 @@ import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourc
 import { paradisRegisterHealthBeacon } from '../../paradis/contrib/healthBeacon/electron-main/paradisHealthBeaconMain.js';
 // PARA-PATCH: on-demand main process heap snapshot for leak diagnosis
 import { paradisRegisterHeapSnapshot } from '../../paradis/contrib/heapSnapshot/electron-main/paradisHeapSnapshotMain.js';
+// PARA-PATCH: named persistent browser profiles (see paradis/contrib/browserProfiles)
+import { paradisRegisterBrowserProfiles } from '../../paradis/contrib/browserProfiles/electron-main/paradisBrowserProfilesMain.js';
 // PARA-PATCH: pty daemon status channel for the status bar entry (see paradis/contrib/ptyDaemon)
 import { paradisRegisterPtyDaemonStatus } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyDaemonStatusService.js';
 // PARA-PATCH: LocalPty channel that does not eagerly buffer the per-process pty events
@@ -1493,6 +1495,9 @@ export class CodeApplication extends Disposable {
 
 		// PARA-PATCH: on-demand main process heap snapshot (see paradis/contrib/heapSnapshot)
 		disposables.add(paradisRegisterHeapSnapshot(mainProcessElectronServer));
+
+		// PARA-PATCH: named browser profile session maintenance channel (see paradis/contrib/browserProfiles)
+		disposables.add(paradisRegisterBrowserProfiles(mainProcessElectronServer, accessor.get(IInstantiationService)));
 
 		// PARA-PATCH: what the pty daemon is holding, for the status bar entry that makes terminals
 		// running outside the app visible (see paradis/contrib/ptyDaemon)

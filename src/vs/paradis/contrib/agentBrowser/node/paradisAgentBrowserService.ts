@@ -29,6 +29,8 @@ import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../p
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
+// PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
+import { IParadisOpenProfileResult, ParadisOpenProfileFailure, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
@@ -2425,6 +2427,17 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._spaceNote(ingressLease, name, params?.arguments, signal);
 		}
 
+		if (name === 'open_browser_profile') {
+			// バインドを作るツールなので、バインド必須のガードより前で扱う。
+			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : undefined;
+			return this._openBrowserProfile(
+				ingressLease,
+				typeof toolArgs?.profile === 'string' ? toolArgs.profile : undefined,
+				typeof toolArgs?.url === 'string' ? toolArgs.url : undefined,
+				signal,
+			);
+		}
+
 		if (name === 'get_session_health') {
 			// バインド有無・接続の生死そのものを切り分けるためのツールなので、バインド必須の
 			// ガード（この直後の `if (!binding)`）より前で扱う。
@@ -2841,6 +2854,60 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._toolText(`The user is looking at a different space right now, so ${path} was not opened yet: Para Code queued it for ${space ?? 'the space this terminal pane belongs to'} and it opens as soon as the user switches back. Nothing was shown on screen, so do not assume the user has seen the file.`);
 		}
 		return this._toolText(`Opened ${path} in the Para Code space that owns this terminal pane.`);
+	}
+
+	/**
+	 * `open_browser_profile` ツールの実体。`preview_file` と同型で、呼び出し元ペインの
+	 * ウィンドウが登録した {@link PARADIS_BROWSER_PROFILE_MCP_CHANNEL} へ委ねる。
+	 * どのスペースへ開くか・名前からプロファイルを引く判断は renderer 側が持ち、ここでは
+	 * 構造化された結果を定型英文へ翻訳するだけ（renderer は内部情報を含む文字列を返さない）。
+	 */
+	private async _openBrowserProfile(ingressLease: IParadisAgentBrowserIngressLease, profile: string | undefined, url: string | undefined, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		if (!profile || !profile.trim()) {
+			return this._toolError('open_browser_profile requires the name of a browser profile the user created in Para Code (for example "PRD").');
+		}
+		const call = await this._callOwningWindow<IParadisOpenProfileResult>(ingressLease, {
+			channelName: PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
+			method: PARADIS_BROWSER_PROFILE_MCP_METHOD,
+			args: [ingressLease.token, profile, url],
+			failureLabel: 'open_browser_profile',
+			failureMessage: 'Failed to open a browser page in that profile in Para Code.',
+		}, signal);
+		if (!call.ok) {
+			return this._toolError(call.error);
+		}
+		if (!call.value.ok) {
+			return this._toolError(this._openProfileFailureMessage(call.value.reason, profile));
+		}
+		const where = url ? `${url} in` : 'a page in';
+		const login = call.value.restored
+			? 'It reuses the cookies already stored in that profile, so a previous login should still be active.'
+			: 'That profile has no stored cookies yet, so the page opens logged out - ask the user to log in once, and the login will be reused from then on.';
+		const shared = call.value.bound
+			? 'The page is now shared with this terminal pane, so the chrome-devtools tools (take_snapshot, click, navigate_page, ...) act on it.'
+			: 'The page was opened but could NOT be shared with this terminal pane, so the chrome-devtools tools do not target it yet - ask the user to share it from Para Code.';
+		return this._toolText(`Opened ${where} the "${call.value.profileName}" browser profile. ${login} ${shared}`);
+	}
+
+	/** renderer が返した `open_browser_profile` の失敗理由を英語メッセージへ翻訳する。 */
+	private _openProfileFailureMessage(reason: ParadisOpenProfileFailure, requestedProfile: string): string {
+		switch (reason) {
+			case 'switching':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is switching spaces right now, so no page was opened. Retry in a moment.';
+			case 'paneUnresolved':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane, so it cannot tell which space to open the page in. Retry in a few seconds.';
+			case 'unknownProfile':
+				return `There is no browser profile named "${requestedProfile}" in Para Code. Profiles are created by the user - ask them to create it (the profile pill at the right of the browser address bar, "Create Browser Profile"), then call this tool again with the exact name they used.`;
+			case 'untrustedWorkspace':
+				return 'This workspace is not trusted, so Para Code keeps every browser page in a throwaway session and named profiles cannot be used. Ask the user to trust the workspace first.';
+			case 'spaceNotVisible':
+				return 'The space this terminal pane belongs to is not on screen right now, so opening a page there would not be visible or controllable. Ask the user to switch back to that space, then call this tool again.';
+			case 'unreachableSpace':
+				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list), so there is nowhere to open the page.';
+			case 'openFailed':
+				return `PARA_BROWSER_RETRYABLE: Para Code found the "${requestedProfile}" browser profile but could not open a page in it. Retry once; if it keeps failing, ask the user to open the profile from the profile pill next to the browser address bar.`;
+		}
 	}
 
 	/**

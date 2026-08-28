@@ -157,6 +157,19 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			additionalProperties: false,
 		},
 	},
+	{
+		name: 'open_browser_profile',
+		description: 'Open a Para Code browser page using a named, persistent browser profile (its cookies and localStorage survive restarts, so a login done once stays), and share that page with this terminal pane so the chrome-devtools tools can drive it. Profiles are created by the user in Para Code; call this with the profile name shown there. If the profile has never been logged in, the page opens logged out - tell the user to log in once.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				profile: { type: 'string', description: 'Name of the browser profile as shown in Para Code (case- and width-insensitive, e.g. "PRD" or "TEST").' },
+				url: { type: 'string', description: 'Optional URL to open in that profile. Omit to open a blank page in the profile.' },
+			},
+			required: ['profile'],
+			additionalProperties: false,
+		},
+	},
 ] as const;
 
 export interface IParadisMcpPortFileRecord {
