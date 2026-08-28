@@ -61,7 +61,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.element = document.createElement('div');
 		this.element.className = 'paradis-office-find-widget';
 		this.element.setAttribute('role', 'search');
-		this.element.setAttribute('aria-label', localize('paradis.office.findWidget', "Find in Office Document"));
+		this.element.setAttribute('aria-label', localize('paradis.office.findWidget', "Office 文書内を検索"));
 		this.element.setAttribute('aria-hidden', 'true');
 		this.element.style.position = 'absolute';
 		this.element.style.inset = '8px 8px auto auto';
@@ -81,22 +81,22 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.input = document.createElement('input');
 		this.input.type = 'search';
 		this.input.maxLength = MAXIMUM_QUERY_LENGTH;
-		this.input.placeholder = localize('paradis.office.findPlaceholder', "Find");
-		this.input.setAttribute('aria-label', localize('paradis.office.findInput', "Find"));
+		this.input.placeholder = localize('paradis.office.findPlaceholder', "検索");
+		this.input.setAttribute('aria-label', localize('paradis.office.findInput', "検索"));
 		this.input.style.minWidth = '180px';
 		this.input.style.background = 'var(--vscode-input-background)';
 		this.input.style.color = 'var(--vscode-input-foreground)';
 		this.input.style.border = '1px solid var(--vscode-input-border, transparent)';
 		this.element.appendChild(this.input);
 
-		this.matchCaseButton = button(document, 'Aa', localize('paradis.office.findMatchCase', "Match Case"));
+		this.matchCaseButton = button(document, 'Aa', localize('paradis.office.findMatchCase', "大文字と小文字を区別"));
 		this.matchCaseButton.setAttribute('aria-pressed', 'false');
 		this.element.appendChild(this.matchCaseButton);
-		this.previousButton = button(document, '↑', localize('paradis.office.findPrevious', "Previous Match"));
+		this.previousButton = button(document, '↑', localize('paradis.office.findPrevious', "前の一致"));
 		this.element.appendChild(this.previousButton);
-		this.nextButton = button(document, '↓', localize('paradis.office.findNext', "Next Match"));
+		this.nextButton = button(document, '↓', localize('paradis.office.findNext', "次の一致"));
 		this.element.appendChild(this.nextButton);
-		this.closeButton = button(document, '×', localize('paradis.office.findClose', "Close"));
+		this.closeButton = button(document, '×', localize('paradis.office.findClose', "閉じる"));
 		this.element.appendChild(this.closeButton);
 
 		this.statusElement = document.createElement('span');
@@ -145,7 +145,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.resetResults();
 		this.updateAvailability();
 		if (this.visible && !search) {
-			this.statusElement.textContent = unavailableMessage ?? localize('paradis.office.findUnavailable', "Search is unavailable.");
+			this.statusElement.textContent = unavailableMessage ?? localize('paradis.office.findUnavailable', "この文書では検索を利用できません。");
 		}
 	}
 
@@ -162,7 +162,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 			void this.beginSearch();
 		}
 		if (!this.searchProvider) {
-			this.statusElement.textContent = this.unavailableMessage ?? localize('paradis.office.findUnavailable', "Search is unavailable.");
+			this.statusElement.textContent = this.unavailableMessage ?? localize('paradis.office.findUnavailable', "この文書では検索を利用できません。");
 		}
 		if (this.searchProvider) {
 			this.input.focus();
@@ -233,7 +233,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		const provider = this.searchProvider;
 		const query = this.input.value.normalize('NFC').trim();
 		if (!provider) {
-			this.statusElement.textContent = this.unavailableMessage ?? localize('paradis.office.findUnavailable', "Search is unavailable.");
+			this.statusElement.textContent = this.unavailableMessage ?? localize('paradis.office.findUnavailable', "この文書では検索を利用できません。");
 			return;
 		}
 		if (!query) {
@@ -242,7 +242,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		}
 		const request = new CancellationTokenSource();
 		this.request.value = request;
-		this.statusElement.textContent = localize('paradis.office.findSearching', "Searching…");
+		this.statusElement.textContent = localize('paradis.office.findSearching', "検索中…");
 		try {
 			const page = await provider({ text: query, matchCase: this.matchCaseButton.getAttribute('aria-pressed') === 'true' }, undefined, request.token);
 			if (generation !== this.generation || request.token.isCancellationRequested) {
@@ -258,7 +258,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		} catch (error) {
 			if (generation === this.generation && !isCancellationError(error)) {
 				this.resetResults();
-				this.statusElement.textContent = localize('paradis.office.findFailed', "Search is unavailable.");
+				this.statusElement.textContent = localize('paradis.office.findFailed', "検索できませんでした。");
 			}
 		}
 	}
@@ -280,7 +280,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 			return true;
 		} catch (error) {
 			if (generation === this.generation && !isCancellationError(error)) {
-				this.statusElement.textContent = localize('paradis.office.findFailed', "Search is unavailable.");
+				this.statusElement.textContent = localize('paradis.office.findFailed', "検索できませんでした。");
 			}
 			return false;
 		}
@@ -320,14 +320,14 @@ export class ParadisOfficeFindWidget extends Disposable {
 		if (!result) {
 			this.currentElement.textContent = '';
 			if (this.input.value && this.searchProvider) {
-				this.statusElement.textContent = localize('paradis.office.findNoResults', "No Results");
+				this.statusElement.textContent = localize('paradis.office.findNoResults', "見つかりません");
 			}
 			this.previousButton.disabled = true;
 			this.nextButton.disabled = true;
 			return;
 		}
 		const visibleTotal = this.capped ? `${this.total}+` : String(this.total);
-		this.statusElement.textContent = localize('paradis.office.findPosition', "{0} of {1}", this.currentIndex + 1, visibleTotal);
+		this.statusElement.textContent = localize('paradis.office.findPosition', "{1} 件中 {0} 件目", this.currentIndex + 1, visibleTotal);
 		this.currentElement.textContent = `${result.locationBadge.label}: ${result.preview.before}${result.preview.match}${result.preview.after}`;
 		this.previousButton.disabled = false;
 		this.nextButton.disabled = false;

@@ -283,7 +283,7 @@ export const PARADIS_OFFICE_CONFIGURATION_KEYS = [
 	'paradis.officeViewer.enabled',
 ] as const;
 
-/** Single user-facing checkbox shown in the Settings UI; the finer-grained keys above stay settings.json-only. */
+/** Master checkbox for the viewer; the advanced keys (engine/kernelShadow/platformBackend) stay settings.json-only. */
 export const PARADIS_OFFICE_ENABLED_SETTING = 'paradis.officeViewer.enabled' as const;
 
 export type ParadisOfficeEngine = 'auto' | 'legacy' | 'v1';
@@ -385,9 +385,9 @@ function configurationLayer(reader: ParadisOfficeConfigurationReader): ParadisOf
 				(result as Record<ParadisOfficeRuntimeConfigurationKey, unknown>)[key] = value;
 			}
 		}
-		// Settings UI exposes only this single checkbox; flipping it on promotes the (hidden) engine key to 'v1'.
+		// The master checkbox is what users flip; turning it on promotes the (hidden) engine key to 'v1'.
 		if (reader.getValue<unknown>(PARADIS_OFFICE_ENABLED_SETTING) === true) {
-			result.engine = 'v1';
+			(result as Record<ParadisOfficeRuntimeConfigurationKey, unknown>).engine = 'v1';
 		}
 		return result;
 	} catch {
@@ -494,9 +494,9 @@ export function getParadisOfficeRuntimeFeatureBits(configuration: ParadisOfficeR
 	return featureBits;
 }
 
-function officeBooleanSetting(defaultValue: boolean, description: string, policyName: string, policyDescription: { readonly key: string; readonly value: string }): IConfigurationPropertySchema {
+function officeBooleanSetting(defaultValue: boolean, description: string, policyName: string, policyDescription: { readonly key: string; readonly value: string }, included: boolean = false): IConfigurationPropertySchema {
 	return {
-		type: 'boolean', default: defaultValue, scope: ConfigurationScope.WINDOW, restricted: true, included: false,
+		type: 'boolean', default: defaultValue, scope: ConfigurationScope.WINDOW, restricted: true, included,
 		description,
 		policy: {
 			name: policyName,
@@ -516,7 +516,7 @@ export const PARADIS_OFFICE_CONFIGURATION_PROPERTIES: Readonly<Record<typeof PAR
 		scope: ConfigurationScope.WINDOW,
 		restricted: true,
 		included: false,
-		description: localize('paradis.officeViewer.engine', "Controls the Office viewer processing engine for newly opened documents."),
+		description: localize('paradis.officeViewer.engine', "Office ビューアの処理エンジンを選びます（次に開く文書から反映されます）。"),
 		policy: {
 			name: 'ParadisOfficeViewerEngine',
 			category: PolicyCategory.Extensions,
@@ -524,19 +524,19 @@ export const PARADIS_OFFICE_CONFIGURATION_PROPERTIES: Readonly<Record<typeof PAR
 			localization: { description: { key: 'paradis.officeViewer.engine.policy', value: localize('paradis.officeViewer.engine.policy', "Controls the Office viewer processing engine.") } },
 		},
 	},
-	'paradis.officeViewer.kernelShadow': officeBooleanSetting(false, localize('paradis.officeViewer.kernelShadow', "Runs bounded Office inventory diagnostics without changing the active viewer."), 'ParadisOfficeViewerKernelShadow', { key: 'paradis.officeViewer.kernelShadow.policy', value: localize('paradis.officeViewer.kernelShadow.policy', "Controls Office inventory shadow diagnostics.") }),
-	'paradis.officeViewer.semanticSpreadsheet': officeBooleanSetting(true, localize('paradis.officeViewer.semanticSpreadsheet', "Enables semantic spreadsheet view and diff for newly opened documents."), 'ParadisOfficeViewerSemanticSpreadsheet', { key: 'paradis.officeViewer.semanticSpreadsheet.policy', value: localize('paradis.officeViewer.semanticSpreadsheet.policy', "Controls semantic spreadsheet processing.") }),
-	'paradis.officeViewer.virtualizedSpreadsheet': officeBooleanSetting(true, localize('paradis.officeViewer.virtualizedSpreadsheet', "Enables the virtualized spreadsheet renderer for newly opened documents."), 'ParadisOfficeViewerVirtualizedSpreadsheet', { key: 'paradis.officeViewer.virtualizedSpreadsheet.policy', value: localize('paradis.officeViewer.virtualizedSpreadsheet.policy', "Controls virtualized spreadsheet rendering.") }),
-	'paradis.officeViewer.semanticWord': officeBooleanSetting(true, localize('paradis.officeViewer.semanticWord', "Enables semantic Word view and diff for newly opened documents."), 'ParadisOfficeViewerSemanticWord', { key: 'paradis.officeViewer.semanticWord.policy', value: localize('paradis.officeViewer.semanticWord.policy', "Controls semantic Word processing.") }),
-	'paradis.officeViewer.platformBackend': officeBooleanSetting(true, localize('paradis.officeViewer.platformBackend', "Enables platform Office backends for newly opened documents."), 'ParadisOfficeViewerPlatformBackend', { key: 'paradis.officeViewer.platformBackend.policy', value: localize('paradis.officeViewer.platformBackend.policy', "Controls platform Office backends.") }),
-	'paradis.officeViewer.searchPrint': officeBooleanSetting(true, localize('paradis.officeViewer.searchPrint', "Enables semantic Office search and print for newly opened documents."), 'ParadisOfficeViewerSearchPrint', { key: 'paradis.officeViewer.searchPrint.policy', value: localize('paradis.officeViewer.searchPrint.policy', "Controls semantic Office search and print.") }),
+	'paradis.officeViewer.kernelShadow': officeBooleanSetting(false, localize('paradis.officeViewer.kernelShadow', "表示を変えずに、Office ファイルの構成を調べる診断だけを実行します。"), 'ParadisOfficeViewerKernelShadow', { key: 'paradis.officeViewer.kernelShadow.policy', value: localize('paradis.officeViewer.kernelShadow.policy', "Controls Office inventory shadow diagnostics.") }),
+	'paradis.officeViewer.semanticSpreadsheet': officeBooleanSetting(true, localize('paradis.officeViewer.semanticSpreadsheet', "Excel ブックの変更点を一覧するパネルを表示します（次に開く文書から反映されます）。"), 'ParadisOfficeViewerSemanticSpreadsheet', { key: 'paradis.officeViewer.semanticSpreadsheet.policy', value: localize('paradis.officeViewer.semanticSpreadsheet.policy', "Controls semantic spreadsheet processing.") }, true),
+	'paradis.officeViewer.virtualizedSpreadsheet': officeBooleanSetting(true, localize('paradis.officeViewer.virtualizedSpreadsheet', "画面に見えている範囲だけを描画して、行数の多いシートを軽くします（次に開く文書から反映されます）。"), 'ParadisOfficeViewerVirtualizedSpreadsheet', { key: 'paradis.officeViewer.virtualizedSpreadsheet.policy', value: localize('paradis.officeViewer.virtualizedSpreadsheet.policy', "Controls virtualized spreadsheet rendering.") }, true),
+	'paradis.officeViewer.semanticWord': officeBooleanSetting(true, localize('paradis.officeViewer.semanticWord', "Word 文書の変更点を一覧するパネルを表示します（次に開く文書から反映されます）。"), 'ParadisOfficeViewerSemanticWord', { key: 'paradis.officeViewer.semanticWord.policy', value: localize('paradis.officeViewer.semanticWord.policy', "Controls semantic Word processing.") }, true),
+	'paradis.officeViewer.platformBackend': officeBooleanSetting(true, localize('paradis.officeViewer.platformBackend', "Office ファイルの解析をプラットフォーム側のバックエンドで行います（次に開く文書から反映されます）。"), 'ParadisOfficeViewerPlatformBackend', { key: 'paradis.officeViewer.platformBackend.policy', value: localize('paradis.officeViewer.platformBackend.policy', "Controls platform Office backends.") }),
+	'paradis.officeViewer.searchPrint': officeBooleanSetting(true, localize('paradis.officeViewer.searchPrint', "変更点パネルから文書の検索と印刷ができるようにします（次に開く文書から反映されます）。"), 'ParadisOfficeViewerSearchPrint', { key: 'paradis.officeViewer.searchPrint.policy', value: localize('paradis.officeViewer.searchPrint.policy', "Controls semantic Office search and print.") }, true),
 	[PARADIS_OFFICE_ENABLED_SETTING]: {
 		type: 'boolean',
 		default: false,
 		scope: ConfigurationScope.WINDOW,
 		restricted: true,
 		included: true,
-		description: localize('paradis.officeViewer.enabled', "Enables Para Code's semantic Office viewer (Word/Excel) for newly opened documents. When off, the classic viewer is used."),
+		description: localize('paradis.officeViewer.enabled', "Word・Excel の変更点パネル・検索・印刷が使えるようになります。オフのときは従来の表示のみになります。"),
 		policy: {
 			name: 'ParadisOfficeViewerEnabled',
 			category: PolicyCategory.Extensions,

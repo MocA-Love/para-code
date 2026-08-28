@@ -112,8 +112,8 @@ suite('ParadisOfficePrint', () => {
 		ok(pages[1].includes('Even Footer'));
 		ok(pages[0].includes('Title A'));
 		ok(pages[1].includes('Title B'));
-		ok(pages[1].includes('Diagonal border: top-left to bottom-right'));
-		ok(pages[1].includes('Drawing line: Approval Slash'));
+		ok(pages[1].includes('斜線: 左上から右下'));
+		ok(pages[1].includes('図形の線: Approval Slash'));
 		strictEqual(pages.some(page => page.includes('Outside Print Area')), false);
 		strictEqual(model.pages[1].placeholders[0], unsafePlaceholder);
 	});
@@ -164,7 +164,7 @@ suite('ParadisOfficePrint', () => {
 			[2, 612, 792],
 			[3, 595, 842],
 		]);
-		ok(JSON.stringify(model.pages[1]).includes('Table diagonal border: top-right to bottom-left'));
+		ok(JSON.stringify(model.pages[1]).includes('表の斜線: 右上から左下'));
 		strictEqual(model.pages[1].placeholders[0], unsafePlaceholder);
 		ok(model.approximationWarnings.some(warning => warning.code === 'word.pagination.approximate'));
 	});

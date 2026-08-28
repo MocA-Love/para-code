@@ -80,14 +80,14 @@ export function renderSpreadsheetDiagnosticsRibbon(container: HTMLElement, input
 	ribbon.style.alignItems = 'center';
 	ribbon.style.gap = '4px';
 	ribbon.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.foreground;
-	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.faithful', "Faithful {0}", summary.faithful), 'faithful');
-	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.approximate', "Approximate {0}", summary.approximate), 'approximate');
-	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.alternatives', "Alternatives {0}", summary.alternatives), 'alternatives');
+	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.faithful', "完全再現 {0}", summary.faithful), 'faithful');
+	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.approximate', "近似 {0}", summary.approximate), 'approximate');
+	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.alternatives', "代替表示 {0}", summary.alternatives), 'alternatives');
 	if (summary.incomplete) {
 		const incomplete = dom.append(ribbon, dom.$('span.paradis-spreadsheet-diagnostic-incomplete'));
 		incomplete.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.warning;
 		incomplete.style.borderBottom = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
-		incomplete.textContent = localize('paradis.spreadsheet.diagnostics.incomplete', "Analysis Incomplete");
+		incomplete.textContent = localize('paradis.spreadsheet.diagnostics.incomplete', "解析未完了");
 	}
 	for (const warning of input.warnings ?? []) {
 		const warningElement = dom.append(ribbon, dom.$('span.paradis-spreadsheet-diagnostic-warning'));

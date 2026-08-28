@@ -22,6 +22,7 @@ import {
 	IParadisDataValidation,
 	IParadisDiagonalBorder,
 	IParadisDrawingData,
+	IParadisFreezePane,
 	IParadisRichTextPart,
 	IParadisRowData,
 	canonicalizeDataValidationEntries,
@@ -29,6 +30,7 @@ import {
 	IParadisSpreadsheetService,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
+import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
 
@@ -823,6 +825,103 @@ function hasPrintableContent(cell: ExcelJS.Cell, displayValue: string): boolean 
 	return fill?.type === 'pattern' && fill.pattern !== undefined && fill.pattern !== 'none';
 }
 
+/** ウィンドウ枠の固定(sheetView の frozen pane)。分割(split)は固定ではないので対象外。 */
+function getSheetFreezePane(ws: ExcelJS.Worksheet): IParadisFreezePane | undefined {
+	const view = ws.views?.[0] as { state?: string; xSplit?: number; ySplit?: number } | undefined;
+	if (view?.state !== 'frozen') {
+		return undefined;
+	}
+	const cols = Math.max(0, Math.trunc(view.xSplit ?? 0));
+	const rows = Math.max(0, Math.trunc(view.ySplit ?? 0));
+	return cols === 0 && rows === 0 ? undefined : { cols, rows };
+}
+
+/** オートフィルタとテーブルのフィルタ範囲。見出し行にフィルタ記号を出すために使う。 */
+function getSheetFilterRanges(ws: ExcelJS.Worksheet): readonly IParadisCellRange[] {
+	const ranges: IParadisCellRange[] = [];
+	const autoFilter = (ws as { autoFilter?: unknown }).autoFilter;
+	if (typeof autoFilter === 'string') {
+		ranges.push(...parseConditionalFormatRef(autoFilter));
+	} else if (autoFilter && typeof autoFilter === 'object') {
+		// exceljs は {from, to} 形式でも返す。from/to はアドレス文字列または {row, col}。
+		const { from, to } = autoFilter as { from?: unknown; to?: unknown };
+		const toAddress = (value: unknown): string | undefined => {
+			if (typeof value === 'string') {
+				return value;
+			}
+			if (value && typeof value === 'object') {
+				const { row, column } = value as { row?: number; column?: number };
+				if (typeof row === 'number' && typeof column === 'number') {
+					return `${columnIndexToLetters(column)}${row}`;
+				}
+			}
+			return undefined;
+		};
+		const fromAddress = toAddress(from);
+		const toAddressValue = toAddress(to);
+		if (fromAddress && toAddressValue) {
+			ranges.push(...parseConditionalFormatRef(`${fromAddress}:${toAddressValue}`));
+		}
+	}
+	const tables = (ws as unknown as { tables?: Record<string, unknown> }).tables;
+	for (const table of tables ? Object.values(tables) : []) {
+		const ref = (table as { table?: { ref?: string; headerRow?: boolean } })?.table;
+		if (ref?.ref && ref.headerRow !== false) {
+			ranges.push(...parseConditionalFormatRef(ref.ref));
+		}
+	}
+	return ranges;
+}
+
+function columnIndexToLetters(index: number): string {
+	let letters = '';
+	let remaining = index;
+	while (remaining > 0) {
+		const rest = (remaining - 1) % 26;
+		letters = String.fromCharCode(65 + rest) + letters;
+		remaining = Math.floor((remaining - 1) / 26);
+	}
+	return letters || 'A';
+}
+
+/** 条件付き書式の評価結果(CSS)を、既に組み上がった行データへ焼き込む。 */
+function applyConditionalFormattingToRows(
+	rows: readonly IParadisRowData[],
+	styleByCell: ReadonlyMap<string, Record<string, string>>,
+	minCol: number,
+	showGridLines: boolean,
+): IParadisRowData[] {
+	if (styleByCell.size === 0) {
+		return [...rows];
+	}
+	return rows.map(row => {
+		let changed = false;
+		const cells = row.cells.map((cell, index) => {
+			// cells は minCol 起点の連番なので、Excel の実列番号へ戻してから引く。
+			const overrides = styleByCell.get(`${row.excelRow},${minCol + index}`);
+			if (!overrides) {
+				return cell;
+			}
+			changed = true;
+			const style: Record<string, string> = { ...cell.style, ...overrides };
+			// 塗りのあるセルはグリッド線を塗り色の罫線で打ち消してある(getCellStyle の直後を参照)。
+			// 条件付き書式で背景が変わったら、その打ち消し罫線も新しい色へ揃え直さないと
+			// 元の塗り色の枠が 1px 残る。明示的な罫線(元から色が違うもの)は触らない。
+			const nextBackground = overrides.backgroundColor;
+			if (showGridLines && nextBackground) {
+				const previousBackground = cell.style.backgroundColor;
+				for (const side of ['borderTop', 'borderBottom', 'borderLeft', 'borderRight']) {
+					if (!style[side] || (previousBackground && style[side] === `1px solid ${previousBackground}`)) {
+						style[side] = `1px solid ${nextBackground}`;
+					}
+				}
+			}
+			return { ...cell, style };
+		});
+		return changed ? { ...row, cells } : row;
+	});
+}
+
 function getSheetPrintArea(ws: ExcelJS.Worksheet): IParadisCellRange | undefined {
 	const printArea = (ws.pageSetup as { printArea?: string } | undefined)?.printArea;
 	if (!printArea) {
@@ -1097,6 +1196,10 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			const rows: IParadisRowData[] = [];
 			const maxRow = Math.min(dims.maxR, dims.minR + MAX_ROWS - 1);
 			const truncated = dims.maxR > maxRow;
+			// 条件付き書式は範囲全体の最小/最大が要るため、セル実値を集めてから後段で評価する。
+			const conditionalFormattings = (worksheet as unknown as { conditionalFormattings?: readonly IParadisLegacyCfBlock[] }).conditionalFormattings;
+			const hasConditionalFormatting = !!conditionalFormattings?.length;
+			const conditionalValues: IParadisLegacyCfCellValue[] = [];
 
 			// 印刷して何か出る最も右下のセル。使用範囲の末尾は空のことが多く、そこを含めるとページが余分に増える。
 			// resolveEdgeBorders 後のスタイルは隣接セルの罫線を写し取っているので、判定には生のセルを使う。
@@ -1160,7 +1263,11 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 						: undefined;
 
 					const al = cell.alignment;
-					const wrapText = al?.wrapText === true || (typeof val === 'string' && val.includes('\n'));
+					// 折り返しは Excel の設定(alignment.wrapText)だけに従う。セル内に改行文字があっても、
+					// 折り返しが無効なら Excel は改行を表示せず1行で描き、狭い列では隣へはみ出させる。
+					// ここで改行の有無から折り返しを推測すると、幅の狭い列で1文字ずつ折り返されて
+					// 行高が破綻し、はみ出し描画にも入れなくなる。
+					const wrapText = al?.wrapText === true;
 					const verticalText = al?.textRotation === 'vertical' || al?.textRotation === 255;
 					const shrinkToFit = al?.shrinkToFit === true;
 					const diagonal = getCellDiagonal(cell);
@@ -1178,6 +1285,12 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 						...(dataValidation ? { dataValidation } : {}),
 					};
 					cells.push(parsed);
+					if (hasConditionalFormatting) {
+						const numeric = typeof cell.value === 'number'
+							? cell.value
+							: (cell.result !== undefined && typeof cell.result === 'number' ? cell.result : undefined);
+						conditionalValues.push({ row: r, col: c, ...(numeric !== undefined ? { num: numeric } : {}), text: val });
+					}
 				}
 
 				rows.push({ excelRow: r, cells, height: rowHeightToPx(row.height, sheetProps?.defaultRowHeight) });
@@ -1213,13 +1326,24 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 				});
 			}
 
+			// 条件付き書式を評価し、結果の CSS をセルスタイルへ焼き込む(描画側は無改造で反映される)。
+			// ルール由来のスタイルは元のセル書式より優先される(Excel と同じ挙動)。
+			const conditionalRows = hasConditionalFormatting
+				? applyConditionalFormattingToRows(rows, evaluateLegacyConditionalFormatting(conditionalFormattings, conditionalValues, color => resolveColor(color as IExcelColor | undefined)), dims.minC, showGridLines)
+				: rows;
+
+			const freezePane = getSheetFreezePane(worksheet);
+			const filterRanges = getSheetFilterRanges(worksheet);
+
 			sheets.push({
 				name: worksheet.name,
-				rows,
+				rows: conditionalRows,
 				columnCount: colCount,
 				columnWidths,
 				truncated,
 				minCol: dims.minC,
+				...(freezePane ? { freezePane } : {}),
+				...(filterRanges.length > 0 ? { filterRanges } : {}),
 				...(worksheetDataValidations.entries.length > 0 ? { dataValidations: worksheetDataValidations.entries } : {}),
 				showGridLines,
 				...(view?.zoomScale ? { zoomScale: view.zoomScale } : {}),

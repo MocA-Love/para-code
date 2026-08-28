@@ -89,8 +89,8 @@ export function createLegacyWordPrintModel(title: string, placeholders: readonly
 		nodeId: 'legacy-word-content',
 		feature: 'word.legacyProjection',
 		reason: 'notEvaluated',
-		title: localize('paradis.word.printContentPlaceholder', "Word Document Content"),
-		detail: localize('paradis.word.printContentPlaceholderDetail', "The compatible renderer cannot provide a semantic text projection; print content is shown as alternative content."),
+		title: localize('paradis.word.printContentPlaceholder', "Word 文書の内容"),
+		detail: localize('paradis.word.printContentPlaceholderDetail', "従来の表示方法では文字情報を取り出せないため、印刷内容は代替のコンテンツとして表示します。"),
 	};
 	const retainedPlaceholders = [...placeholders, ...(contentPlaceholder ? [contentPlaceholder] : [])];
 	const items: ParadisOfficeWordPrintItem[] = outline
@@ -109,12 +109,12 @@ export function createLegacyWordPrintModel(title: string, placeholders: readonly
 	});
 	const approximationWarnings = [...model.approximationWarnings, {
 		code: 'word.legacyPrintProjection',
-		message: localize('paradis.word.legacyPrintProjection', "Print uses the bounded compatible Word projection."),
+		message: localize('paradis.word.legacyPrintProjection', "印刷には、範囲を限定した従来の表示方法を使用します。"),
 	}];
 	if (outline?.truncated) {
 		approximationWarnings.push({
 			code: 'word.legacyPrintLimit',
-			message: localize('paradis.word.legacyPrintLimit', "The compatible Word print projection is truncated."),
+			message: localize('paradis.word.legacyPrintLimit', "互換表示の印刷内容は途中までしか含まれていません。"),
 		});
 	}
 	return { ...model, approximationWarnings };
@@ -215,15 +215,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
 		this._accessibility = this._register(new ParadisOfficeAccessibility(this._rootElement, {
-			label: localize('paradis.word.viewer', "Word Document Viewer"),
+			label: localize('paradis.word.viewer', "Word 文書ビューアー"),
 		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._rootElement, {
-			unavailableMessage: localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter."),
+			unavailableMessage: localize('paradis.word.searchUnavailableAdapter', "この形式では検索を利用できません。"),
 			isActive: () => !!this._webview?.isFocused,
 		});
 		this._semanticToolbar = dom.append(this._rootElement, dom.$('.paradis-word-semantic-toolbar'));
 		this._semanticToolbar.setAttribute('role', 'toolbar');
-		this._semanticToolbar.setAttribute('aria-label', localize('paradis.word.toolbar', "Word Document Toolbar"));
+		this._semanticToolbar.setAttribute('aria-label', localize('paradis.word.toolbar', "Word 文書のツールバー"));
 		this._semanticToolbar.style.position = 'absolute';
 		this._semanticToolbar.style.inset = '0 0 auto 0';
 		this._semanticToolbar.style.minHeight = '32px';
@@ -236,8 +236,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._diagnosticsElement = dom.append(this._semanticToolbar, dom.$('.paradis-word-diagnostics-host'));
 		this._inspectorToggle = dom.append(this._semanticToolbar, dom.$('button.paradis-word-inspector-toggle')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
-		this._inspectorToggle.textContent = localize('paradis.word.inspector', "Inspector");
-		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.inspector', "Inspector"));
+		this._inspectorToggle.textContent = localize('paradis.word.inspector', "変更点");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.inspector', "変更点"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._register(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
 			if (!this._inspectorPanel || !this._inspectorToggle) {
@@ -260,7 +260,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		// overlay webview を重ねる位置合わせ用アンカー（paradisPdfFileEditor と同方式）。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-docx-viewer-webview'));
 		this._webviewContainer.setAttribute('role', 'region');
-		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.documentContent', "Word Document Content"));
+		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.documentContent', "Word 文書の内容"));
 		this._webviewContainer.style.position = 'absolute';
 		this._webviewContainer.style.inset = '0';
 	}
@@ -607,7 +607,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
-		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.word.searchDisabledOrUnavailable', "Search is disabled or unavailable for this source."));
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.word.searchDisabledOrUnavailable', "この文書では検索を利用できません。"));
 		if (this._diagnosticsElement) {
 			dom.clearNode(this._diagnosticsElement);
 		}
@@ -646,8 +646,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			return;
 		}
 		this._findWidget.value?.setSearchProvider(callbacks.search, callbacks.print
-			? localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
-			: localize('paradis.word.searchDisabled', "Search is disabled by configuration."));
+			? localize('paradis.word.searchUnavailableAdapter', "この形式では検索を利用できません。")
+			: localize('paradis.word.searchDisabled', "検索は設定で無効になっています。"));
 		if (this._semanticToolbar) {
 			this._semanticToolbar.style.display = 'flex';
 		}
@@ -661,7 +661,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				coverages,
 				warnings: [{
 					code: 'word.legacyProjection',
-					message: localize('paradis.word.legacyProjection', "Semantic diagnostics are not available for this source adapter; the compatible Word renderer remains active."),
+					message: localize('paradis.word.legacyProjection', "この形式では詳細な解析に対応していないため、従来の表示方法で開いています。"),
 				}],
 			});
 		}
@@ -672,11 +672,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
 			searchUnavailable: callbacks.print
-				? localize('paradis.word.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
-				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
+				? localize('paradis.word.searchUnavailableAdapter', "この形式では検索を利用できません。")
+				: localize('paradis.word.searchDisabled', "検索は設定で無効になっています。"),
 			...(callbacks.print ? {
 				getPrintModel: callbacks.print,
-			} : { printUnavailable: localize('paradis.word.printDisabled', "Print preview is disabled by configuration.") }),
+			} : { printUnavailable: localize('paradis.word.printDisabled', "印刷プレビューは設定で無効になっています。") }),
 			onDidChangeViewState: state => {
 				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;
 				this._wordViewState = state;
