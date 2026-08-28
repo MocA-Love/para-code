@@ -15,7 +15,9 @@
 
 import './media/changelogModal.css';
 import * as dom from '../../../../base/browser/dom.js';
+import * as domSanitize from '../../../../base/browser/domSanitize.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -54,10 +56,13 @@ interface IParadisChangelogViewData {
 const CHIP_COLOR_VARS: Record<string, string> = {
 	'新機能': 'var(--vscode-charts-blue)',
 	'改善': 'var(--vscode-charts-green)',
-	'修正': 'var(--vscode-charts-orange)',
+	'修正': 'var(--vscode-charts-orange, var(--vscode-editorWarning-foreground))',
 };
 
 export class ParadisChangelogModal extends Disposable {
+
+	private readonly _onDidDispose = this._register(new Emitter<void>());
+	readonly onDidDispose = this._onDidDispose.event;
 
 	private readonly overlay: HTMLElement;
 	private readonly dialog: HTMLElement;
@@ -125,9 +130,6 @@ export class ParadisChangelogModal extends Disposable {
 
 		// ヘッダー
 		const header = dom.append(this.dialog, $('.para-cl-header'));
-		dom.append(header, $('div.para-cl-title-icon')).append(
-			$(ThemeIcon.asClassName(Codicon.cloudDownload))
-		);
 		dom.append(header, $('span.para-cl-title')).textContent =
 			localize('paradis.changelog.title', "更新履歴");
 		this.statusChip = dom.append(header, $('span.para-cl-status'));
@@ -200,6 +202,7 @@ export class ParadisChangelogModal extends Disposable {
 		}
 		this.closed = true;
 		this.overlay.remove();
+		this._onDidDispose.fire();
 		super.dispose();
 	}
 
@@ -333,20 +336,21 @@ export class ParadisChangelogModal extends Disposable {
 		}
 
 		for (const section of release.sections) {
-			const secHead = dom.append(this.contentElement, $('.para-cl-section-head'));
+			const card = dom.append(this.contentElement, $('.para-cl-card'));
+			const cardHead = dom.append(card, $('.para-cl-card-head'));
 			const chipColor = CHIP_COLOR_VARS[section.category];
-			const chip = dom.append(secHead, $('span.para-cl-chip')) as HTMLElement;
-			chip.textContent = section.category;
+			const dot = dom.append(cardHead, $('span.para-cl-card-dot'));
 			if (chipColor) {
-				chip.style.setProperty('--chip-color', chipColor);
+				dot.style.setProperty('--paradis-chip-color', chipColor);
 			}
-			dom.append(secHead, $('span.para-cl-count')).textContent =
+			dom.append(cardHead, $('span.para-cl-card-category')).textContent = section.category;
+			dom.append(cardHead, $('span.para-cl-count')).textContent =
 				localize('paradis.changelog.itemCount', "{0}件", section.items.length);
 
-			const list = dom.append(this.contentElement, $('ul.para-cl-items'));
+			const list = dom.append(card, $('ul.para-cl-items'));
 			for (const entry of section.items) {
 				const li = dom.append(list, $('li'));
-				li.innerHTML = formatInlineMarkdown(entry);
+				domSanitize.safeSetInnerHtml(li, formatInlineMarkdown(entry));
 			}
 		}
 	}

@@ -24,7 +24,9 @@
 .paradis-notif-settings {
 	width: 940px;
 	max-width: 94vw;
-	height: 700px;
+	/* allow-any-unicode-next-line */
+	/* 大きなモニタでは高さだけ伸ばす（paradisSettingsDialog.css と同じ理由）。 */
+	height: clamp(700px, 88vh, 1200px);
 	max-height: 92vh;
 	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);

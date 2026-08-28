@@ -144,10 +144,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		// 視覚的にまとまりを作る(ボタンが増えても1グループの見た目は詰まりすぎない)。
 		const pointPresetSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
 		const pointPresets: { key: ParadisCcusagePresetKey; label: string }[] = [
-			{ key: 'today', label: localize('paradis.ccusage.period.today', "Today") },
-			{ key: 'yesterday', label: localize('paradis.ccusage.period.yesterday', "Yesterday") },
-			{ key: 'thisWeek', label: localize('paradis.ccusage.period.thisWeek', "This Week") },
-			{ key: 'lastWeek', label: localize('paradis.ccusage.period.lastWeek', "Last Week") },
+			{ key: 'today', label: localize('paradis.ccusage.period.today', "今日") },
+			{ key: 'yesterday', label: localize('paradis.ccusage.period.yesterday', "昨日") },
+			{ key: 'thisWeek', label: localize('paradis.ccusage.period.thisWeek', "今週") },
+			{ key: 'lastWeek', label: localize('paradis.ccusage.period.lastWeek', "先週") },
 		];
 		for (const preset of pointPresets) {
 			const button = dom.append(pointPresetSeg, $('button')) as HTMLButtonElement;
@@ -158,10 +158,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		const rangePresetSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
 		const rangePresets: { key: ParadisCcusagePresetKey; label: string }[] = [
-			{ key: '7d', label: localize('paradis.ccusage.period.7d', "7 Days") },
-			{ key: '30d', label: localize('paradis.ccusage.period.30d', "30 Days") },
-			{ key: '90d', label: localize('paradis.ccusage.period.90d', "90 Days") },
-			{ key: 'custom', label: localize('paradis.ccusage.period.custom', "Custom…") },
+			{ key: '7d', label: localize('paradis.ccusage.period.7d', "7日間") },
+			{ key: '30d', label: localize('paradis.ccusage.period.30d', "30日間") },
+			{ key: '90d', label: localize('paradis.ccusage.period.90d', "90日間") },
+			{ key: 'custom', label: localize('paradis.ccusage.period.custom', "カスタム…") },
 		];
 		for (const preset of rangePresets) {
 			const button = dom.append(rangePresetSeg, $('button')) as HTMLButtonElement;
@@ -178,8 +178,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		const granularitySeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
 		const granularities: { granularity: ParadisCcusageGranularity; label: string }[] = [
-			{ granularity: 'daily', label: localize('paradis.ccusage.granularity.daily', "Daily") },
-			{ granularity: 'weekly', label: localize('paradis.ccusage.granularity.weekly', "Weekly") },
+			{ granularity: 'daily', label: localize('paradis.ccusage.granularity.daily', "日別") },
+			{ granularity: 'weekly', label: localize('paradis.ccusage.granularity.weekly', "週別") },
 		];
 		for (const g of granularities) {
 			const button = dom.append(granularitySeg, $('button')) as HTMLButtonElement;
@@ -190,8 +190,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		const metricSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
 		const metrics: { metric: ParadisCcusageMetric; label: string }[] = [
-			{ metric: 'cost', label: localize('paradis.ccusage.metric.cost', "Cost") },
-			{ metric: 'tokens', label: localize('paradis.ccusage.metric.tokens', "Tokens") },
+			{ metric: 'cost', label: localize('paradis.ccusage.metric.cost', "コスト") },
+			{ metric: 'tokens', label: localize('paradis.ccusage.metric.tokens', "トークン") },
 		];
 		for (const m of metrics) {
 			const button = dom.append(metricSeg, $('button')) as HTMLButtonElement;
@@ -202,7 +202,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		const agentSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
 		const agents: { agent: AgentFilter; label: string }[] = [
-			{ agent: 'all', label: localize('paradis.ccusage.agent.all', "All Agents") },
+			{ agent: 'all', label: localize('paradis.ccusage.agent.all', "すべてのエージェント") },
 			{ agent: 'claude', label: 'Claude Code' },
 			{ agent: 'codex', label: 'Codex' },
 			{ agent: 'gemini', label: 'Gemini' },
@@ -219,7 +219,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		const refresh = dom.append(toolbar, $('button.paradis-ccusage-refresh')) as HTMLButtonElement;
 		this.refreshIcon = dom.append(refresh, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
-		dom.append(refresh, $('span')).textContent = localize('paradis.ccusage.refresh', "Refresh");
+		dom.append(refresh, $('span')).textContent = localize('paradis.ccusage.refresh', "更新");
 		this._register(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => this.refresh(true)));
 
 		// 「カスタム…」選択時にツールバー下に開く日付範囲入力(常に取得済みの90日窓の中に制限)
@@ -230,7 +230,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.customToInput = dom.append(this.customRangeRow, $('input')) as HTMLInputElement;
 		this.customToInput.type = 'date';
 		const applyButton = dom.append(this.customRangeRow, $('button')) as HTMLButtonElement;
-		applyButton.textContent = localize('paradis.ccusage.customRange.apply', "Apply");
+		applyButton.textContent = localize('paradis.ccusage.customRange.apply', "適用");
 		this._register(dom.addDisposableListener(applyButton, dom.EventType.CLICK, () => this.applyCustomRange()));
 
 		this.body = dom.append(this.element, $('.paradis-ccusage-body'));
@@ -360,23 +360,23 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	/** 選択中のプリセットに対応する期間の説明(「last 30 days」等)。 */
 	private periodSuffix(): string {
 		if (this.customRange) {
-			return localize('paradis.ccusage.kpi.periodCustom', "custom range");
+			return localize('paradis.ccusage.kpi.periodCustom', "カスタム範囲");
 		}
 		switch (this.presetKey) {
-			case 'today': return localize('paradis.ccusage.kpi.periodToday', "today");
-			case 'yesterday': return localize('paradis.ccusage.kpi.periodYesterday', "yesterday");
-			case 'thisWeek': return localize('paradis.ccusage.kpi.periodThisWeek', "this week");
-			case 'lastWeek': return localize('paradis.ccusage.kpi.periodLastWeek', "last week");
-			case '7d': return localize('paradis.ccusage.kpi.periodDays', "last {0} days", 7);
-			case '30d': return localize('paradis.ccusage.kpi.periodDays', "last {0} days", 30);
-			case '90d': return localize('paradis.ccusage.kpi.periodDays', "last {0} days", 90);
-			case 'custom': return localize('paradis.ccusage.kpi.periodCustom', "custom range");
+			case 'today': return localize('paradis.ccusage.kpi.periodToday', "今日");
+			case 'yesterday': return localize('paradis.ccusage.kpi.periodYesterday', "昨日");
+			case 'thisWeek': return localize('paradis.ccusage.kpi.periodThisWeek', "今週");
+			case 'lastWeek': return localize('paradis.ccusage.kpi.periodLastWeek', "先週");
+			case '7d': return localize('paradis.ccusage.kpi.periodDays', "直近{0}日間", 7);
+			case '30d': return localize('paradis.ccusage.kpi.periodDays', "直近{0}日間", 30);
+			case '90d': return localize('paradis.ccusage.kpi.periodDays', "直近{0}日間", 90);
+			case 'custom': return localize('paradis.ccusage.kpi.periodCustom', "カスタム範囲");
 		}
 	}
 
 	/** KPI カードの「コスト/token」見出しを選択中のプリセットに合わせて出し分ける。 */
 	private periodLabel(noun: string): string {
-		return localize('paradis.ccusage.kpi.labeled', "{0} ({1})", noun, this.periodSuffix());
+		return localize('paradis.ccusage.kpi.labeled', "{0}（{1}）", noun, this.periodSuffix());
 	}
 
 	private setAgentFilter(agent: AgentFilter): void {
@@ -400,7 +400,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			button.classList.toggle('checked', granularity === effective);
 			if (granularity === 'weekly') {
 				button.disabled = rangeDays < 7;
-				button.title = rangeDays < 7 ? localize('paradis.ccusage.granularity.tooShort', "Selected period is too short for a weekly view") : '';
+				button.title = rangeDays < 7 ? localize('paradis.ccusage.granularity.tooShort', "選択した期間が短すぎるため、週別表示はできません") : '';
 			}
 		}
 
@@ -428,7 +428,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			const message = dom.append(this.body, $('.paradis-ccusage-message'));
 			dom.append(message, $(`span${ThemeIcon.asCSSSelector(Codicon.loading)}.codicon-modifier-spin`));
 			message.appendChild(this.body.ownerDocument.createTextNode(
-				localize('paradis.ccusage.loading', "Collecting usage data via ccusage… The first run may take a while.")));
+				localize('paradis.ccusage.loading', "ccusage でデータを集計しています… 初回は少し時間がかかることがあります")));
 		}
 		try {
 			this.data = await this.client.fetchDashboard(bypassCache);
@@ -468,7 +468,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		if (this.updatedLabel) {
 			this.updatedLabel.textContent = this.data
-				? localize('paradis.ccusage.updatedAt', "Updated {0}", new Date(this.data.fetchedAt).toLocaleTimeString())
+				? localize('paradis.ccusage.updatedAt', "更新: {0}", new Date(this.data.fetchedAt).toLocaleTimeString())
 				: '';
 		}
 
@@ -476,7 +476,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			const message = dom.append(this.body, $('.paradis-ccusage-message'));
 			dom.append(message, $(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
 			message.appendChild(this.body.ownerDocument.createTextNode(
-				localize('paradis.ccusage.error', "Failed to run ccusage: {0}\n\nInstall ccusage (e.g. `npm i -g ccusage`) or set \"paradis.ccusage.executablePath\" in Settings.", this.lastError)));
+				localize('paradis.ccusage.error', "ccusage の実行に失敗しました: {0}\n\nccusage をインストールする（例: `npm i -g ccusage`）か、設定で \"paradis.ccusage.executablePath\" を指定してください。", this.lastError)));
 			return;
 		}
 		if (!this.data) {
@@ -489,16 +489,16 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		if (this.data.failedReports.length > 0) {
 			const note = dom.append(this.body, $('.paradis-ccusage-note'));
-			note.textContent = localize('paradis.ccusage.partial', "Some reports could not be loaded: {0}", this.data.failedReports.join(', '));
+			note.textContent = localize('paradis.ccusage.partial', "一部のレポートを読み込めませんでした: {0}", this.data.failedReports.join(', '));
 		}
 		if (this.lastError) {
 			const note = dom.append(this.body, $('.paradis-ccusage-note'));
-			note.textContent = localize('paradis.ccusage.refreshFailed', "Refresh failed (showing previous data): {0}", this.lastError);
+			note.textContent = localize('paradis.ccusage.refreshFailed', "更新に失敗しました（前回のデータを表示中）: {0}", this.lastError);
 		}
 
 		if (totals.length === 0) {
 			const message = dom.append(this.body, $('.paradis-ccusage-message'));
-			message.textContent = localize('paradis.ccusage.noData', "No usage data found for the selected period and agent.");
+			message.textContent = localize('paradis.ccusage.noData', "選択した期間・エージェントの利用データが見つかりません。");
 			return;
 		}
 
@@ -602,8 +602,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			? [...agentCosts.entries()].sort((a, b) => b[1] - a[1]).map(([agent, cost]) => `${agentDisplayName(agent)} ${formatUsd(cost)}`).join(' · ')
 			: undefined;
 
-		const costNoun = localize('paradis.ccusage.kpi.cost', "Cost");
-		const tokensNoun = localize('paradis.ccusage.kpi.tokens', "Total tokens");
+		const costNoun = localize('paradis.ccusage.kpi.cost', "コスト");
+		const tokensNoun = localize('paradis.ccusage.kpi.tokens', "合計トークン数");
 
 		if (this.metric === 'tokens') {
 			// ヒーロー=Total tokens。コストは 2 枚目に回す(free モデルなど cost $0 の消費も見えるようにするため)。
@@ -611,7 +611,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			dom.append(tokensTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(tokensNoun);
 			dom.append(tokensTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatTokens(allTokens);
 			dom.append(tokensTile, $('.paradis-ccusage-stat-sub')).textContent =
-				localize('paradis.ccusage.kpi.tokensSub', "Input {0} · Output {1}", formatTokens(inputTokens), formatTokens(outputTokens));
+				localize('paradis.ccusage.kpi.tokensSub', "入力 {0}・出力 {1}", formatTokens(inputTokens), formatTokens(outputTokens));
 
 			const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
 			dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(costNoun);
@@ -632,18 +632,18 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			dom.append(tokensTile, $('.paradis-ccusage-stat-label')).textContent = tokensNoun;
 			dom.append(tokensTile, $('.paradis-ccusage-stat-value')).textContent = formatTokens(allTokens);
 			dom.append(tokensTile, $('.paradis-ccusage-stat-sub')).textContent =
-				localize('paradis.ccusage.kpi.tokensSub', "Input {0} · Output {1}", formatTokens(inputTokens), formatTokens(outputTokens));
+				localize('paradis.ccusage.kpi.tokensSub', "入力 {0}・出力 {1}", formatTokens(inputTokens), formatTokens(outputTokens));
 		}
 
 		const cacheTile = dom.append(kpis, $('.paradis-ccusage-card'));
-		dom.append(cacheTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.cacheRate', "Cache read rate");
+		dom.append(cacheTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.cacheRate', "キャッシュ読み取り率");
 		dom.append(cacheTile, $('.paradis-ccusage-stat-value')).textContent = `${cacheRate.toFixed(1)}%`;
 		dom.append(cacheTile, $('.paradis-ccusage-stat-sub')).textContent =
-			localize('paradis.ccusage.kpi.cacheSub', "Cache read {0}", formatTokens(cacheRead));
+			localize('paradis.ccusage.kpi.cacheSub', "キャッシュ読み取り {0}", formatTokens(cacheRead));
 
 		// 消費速度(アクティブブロックの burnRate。Claude Code のブロック概念に基づく)
 		const burnTile = dom.append(kpis, $('.paradis-ccusage-card'));
-		dom.append(burnTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.burnRate', "Current burn rate");
+		dom.append(burnTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.burnRate', "現在の消費ペース");
 		const block = this.data?.block;
 		const burnValue = dom.append(burnTile, $('.paradis-ccusage-stat-value'));
 		if (block?.tokensPerMinute !== undefined) {
@@ -654,7 +654,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			}
 		} else {
 			burnValue.textContent = '—';
-			dom.append(burnTile, $('.paradis-ccusage-stat-sub')).textContent = localize('paradis.ccusage.kpi.noActiveBlock', "No active block");
+			dom.append(burnTile, $('.paradis-ccusage-stat-sub')).textContent = localize('paradis.ccusage.kpi.noActiveBlock', "進行中のブロックなし");
 		}
 	}
 
@@ -675,8 +675,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		// そのまま出すと、終わった枠を「進行中・残りN分」として見せてしまう。
 		const ended = now >= block.endTime;
 		dom.append(meterWrap, $('.paradis-ccusage-stat-label')).textContent = ended
-			? localize('paradis.ccusage.block.titleEnded', "Last 5-hour block (Claude Code · {0} – {1})", formatClock(start), formatClock(end))
-			: localize('paradis.ccusage.block.title', "Current 5-hour block (Claude Code · {0} – {1})", formatClock(start), formatClock(end));
+			? localize('paradis.ccusage.block.titleEnded', "直近の5時間ブロック（Claude Code・{0} – {1}）", formatClock(start), formatClock(end))
+			: localize('paradis.ccusage.block.title', "現在の5時間ブロック（Claude Code・{0} – {1}）", formatClock(start), formatClock(end));
 		const track = dom.append(meterWrap, $('.paradis-ccusage-meter-track'));
 		track.style.background = `color-mix(in srgb, ${accent} 22%, transparent)`;
 		const fill = dom.append(track, $('.paradis-ccusage-meter-fill'));
@@ -688,16 +688,16 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		// 残り時間も現在時刻から出し直す（バーの進みとラベルが食い違わないようにする）。
 		const remainingMinutes = Math.max(0, Math.ceil((block.endTime - now) / 60_000));
 		dom.append(scale, $('span')).textContent = ended
-			? localize('paradis.ccusage.block.ended', "ended")
-			: localize('paradis.ccusage.block.remaining', "{0} remaining", formatDuration(remainingMinutes));
+			? localize('paradis.ccusage.block.ended', "終了")
+			: localize('paradis.ccusage.block.remaining', "残り{0}", formatDuration(remainingMinutes));
 		dom.append(scale, $('span')).textContent = formatClock(end);
 
-		appendBlockStat(card, localize('paradis.ccusage.block.cost', "Block cost"), formatUsd(block.costUSD));
+		appendBlockStat(card, localize('paradis.ccusage.block.cost', "ブロックのコスト"), formatUsd(block.costUSD));
 		if (block.projectedCost !== undefined) {
-			appendBlockStat(card, localize('paradis.ccusage.block.projectedCost', "Projected cost"), formatUsd(block.projectedCost));
+			appendBlockStat(card, localize('paradis.ccusage.block.projectedCost', "予測コスト"), formatUsd(block.projectedCost));
 		}
 		if (block.projectedTokens !== undefined) {
-			appendBlockStat(card, localize('paradis.ccusage.block.projectedTokens', "Projected tokens"), formatTokens(block.projectedTokens));
+			appendBlockStat(card, localize('paradis.ccusage.block.projectedTokens', "予測トークン数"), formatTokens(block.projectedTokens));
 		}
 	}
 
@@ -706,16 +706,16 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private renderDailyChart(card: HTMLElement, buckets: IBucket[], totals: IModelTotal[], granularity: ParadisCcusageGranularity): void {
 		if (granularity === 'weekly') {
 			dom.append(card, $('h3')).textContent = this.metric === 'tokens'
-				? localize('paradis.ccusage.weekly.titleTokens', "Weekly Tokens")
-				: localize('paradis.ccusage.weekly.title', "Weekly Cost");
+				? localize('paradis.ccusage.weekly.titleTokens', "週別トークン数")
+				: localize('paradis.ccusage.weekly.title', "週別コスト");
 		} else {
 			dom.append(card, $('h3')).textContent = this.metric === 'tokens'
-				? localize('paradis.ccusage.daily.titleTokens', "Daily Tokens")
-				: localize('paradis.ccusage.daily.title', "Daily Cost");
+				? localize('paradis.ccusage.daily.titleTokens', "日別トークン数")
+				: localize('paradis.ccusage.daily.title', "日別コスト");
 		}
 		dom.append(card, $('.desc')).textContent = this.metric === 'tokens'
-			? localize('paradis.ccusage.daily.descTokens', "Per-model breakdown (tokens). Hover a bar for details.")
-			: localize('paradis.ccusage.daily.desc', "Per-model breakdown (USD). Hover a bar for details.");
+			? localize('paradis.ccusage.daily.descTokens', "モデル別内訳（トークン数）。バーにカーソルを合わせると詳細を表示します。")
+			: localize('paradis.ccusage.daily.desc', "モデル別内訳（USD）。バーにカーソルを合わせると詳細を表示します。");
 
 		// 色と系列の両方を常にコスト降順トップ N で固定する。tokens モードで表示順だけ変える場合、
 		// コスト圏外のモデルが OTHER_COLOR を拾って「その他」系列と同色衝突するため。
@@ -734,7 +734,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		if (hasOther) {
 			const item = dom.append(legend, $('.item'));
 			dom.append(item, $('.swatch')).style.background = OTHER_COLOR;
-			item.appendChild(card.ownerDocument.createTextNode(localize('paradis.ccusage.other', "Other")));
+			item.appendChild(card.ownerDocument.createTextNode(localize('paradis.ccusage.other', "その他")));
 		}
 
 		const doc = card.ownerDocument;
@@ -840,9 +840,9 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 					}
 				}
 				if (bar.other > 0) {
-					rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "Other"), value: this.formatMetricValue(bar.other) });
+					rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "その他"), value: this.formatMetricValue(bar.other) });
 				}
-				rows.push({ name: localize('paradis.ccusage.total', "Total"), value: this.formatMetricValue(bar.total), isTotal: true });
+				rows.push({ name: localize('paradis.ccusage.total', "合計"), value: this.formatMetricValue(bar.total), isTotal: true });
 				this.showTooltip(e, bar.tooltipLabel, rows);
 			}));
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_LEAVE, () => this.hideTooltip()));
@@ -853,10 +853,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	// ---------- token trend line ----------
 
 	private renderTokenTrend(card: HTMLElement, buckets: IBucket[], granularity: ParadisCcusageGranularity): void {
-		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.trend.title', "Token Trend");
+		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.trend.title', "トークン推移");
 		dom.append(card, $('.desc')).textContent = granularity === 'weekly'
-			? localize('paradis.ccusage.trend.descWeekly', "Weekly input + output tokens (cache excluded). Hover for cache reads too.")
-			: localize('paradis.ccusage.trend.desc', "Daily input + output tokens (cache excluded). Hover for cache reads too.");
+			? localize('paradis.ccusage.trend.descWeekly', "週別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるとキャッシュ読み取り数も表示します。")
+			: localize('paradis.ccusage.trend.desc', "日別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるとキャッシュ読み取り数も表示します。");
 
 		const doc = card.ownerDocument;
 		const width = Math.max(320, card.clientWidth > 0 ? card.clientWidth - 34 : this.availableWidth * 0.55);
@@ -936,8 +936,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			crosshair.setAttribute('x2', String(x(index)));
 			crosshair.setAttribute('visibility', 'visible');
 			this.showTooltip(e, points[index].tooltipLabel, [
-				{ color: accent, name: localize('paradis.ccusage.trend.io', "Input + Output"), value: formatTokens(points[index].io) },
-				{ name: localize('paradis.ccusage.trend.cacheRead', "Cache read"), value: formatTokens(points[index].cacheRead) },
+				{ color: accent, name: localize('paradis.ccusage.trend.io', "入力+出力"), value: formatTokens(points[index].io) },
+				{ name: localize('paradis.ccusage.trend.cacheRead', "キャッシュ読み取り"), value: formatTokens(points[index].cacheRead) },
 			]);
 		}));
 		this.bodyDisposables.add(dom.addDisposableListener(hover, dom.EventType.POINTER_LEAVE, () => {
@@ -951,10 +951,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 	private renderModelBreakdown(card: HTMLElement, totals: IModelTotal[]): void {
 		dom.append(card, $('h3')).textContent = this.metric === 'tokens'
-			? localize('paradis.ccusage.models.titleTokens', "Tokens by Model")
-			: localize('paradis.ccusage.models.title', "Cost by Model");
+			? localize('paradis.ccusage.models.titleTokens', "モデル別トークン数")
+			: localize('paradis.ccusage.models.title', "モデル別コスト");
 		const totalValue = totals.reduce((sum, t) => sum + this.sliceValue(t), 0);
-		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.models.desc', "Total {0}", this.formatMetricValue(totalValue));
+		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.models.desc', "合計 {0}", this.formatMetricValue(totalValue));
 
 		// 色はコスト降順の固定割り当て、表示順は選択中メトリックの降順(メトリック切替で色が動かないように)
 		const colorMap = this.buildModelColorMap(totals);
@@ -993,8 +993,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		}
 		const heading = dom.append(card, $('h3'));
 		heading.style.marginTop = '16px';
-		heading.textContent = localize('paradis.ccusage.projects.title', "Cost by Project");
-		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.projects.desc', "Claude Code only · top {0}", Math.min(MAX_PROJECT_ROWS, projects.length));
+		heading.textContent = localize('paradis.ccusage.projects.title', "プロジェクト別コスト");
+		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.projects.desc', "Claude Codeのみ・上位{0}件", Math.min(MAX_PROJECT_ROWS, projects.length));
 
 		const seq = this.seqPalette;
 		const top = projects.slice(0, MAX_PROJECT_ROWS);
@@ -1005,13 +1005,13 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			appendHBarRow(card, project.name, project.rawName, project.cost, maxCost, seq[Math.min(index, seq.length - 1)], formatUsd(project.cost));
 		});
 		if (restCost > 0) {
-			appendHBarRow(card, localize('paradis.ccusage.projects.rest', "Other ({0})", projects.length - MAX_PROJECT_ROWS), '', restCost, maxCost, seq[seq.length - 1], formatUsd(restCost));
+			appendHBarRow(card, localize('paradis.ccusage.projects.rest', "その他（{0}）", projects.length - MAX_PROJECT_ROWS), '', restCost, maxCost, seq[seq.length - 1], formatUsd(restCost));
 		}
 	}
 
 	private renderSessions(card: HTMLElement, range: IDateRange): void {
-		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.sessions.title', "Recent Sessions");
-		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.sessions.desc', "Claude Code only · most recent first");
+		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.sessions.title', "最近のセッション");
+		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.sessions.desc', "Claude Codeのみ・新しい順");
 
 		// filterDaysInRange/renderProjects と同じ「ローカル日付文字列の辞書順比較」で期間判定を揃える。
 		// 活動日時が取れないセッションは判定不能なので表示に残す。
@@ -1025,7 +1025,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			})
 			.slice(0, MAX_SESSION_ROWS);
 		if (sessions.length === 0) {
-			dom.append(card, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.sessions.none', "No sessions in the selected period.");
+			dom.append(card, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.sessions.none', "選択した期間内にセッションがありません。");
 			return;
 		}
 
@@ -1033,11 +1033,11 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const table = dom.append(card, $('table.paradis-ccusage-sessions'));
 		const thead = dom.append(table, $('thead'));
 		const headRow = dom.append(thead, $('tr'));
-		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.project', "Project");
-		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.models', "Models");
-		dom.append(headRow, $('th.num')).textContent = localize('paradis.ccusage.sessions.tokens', "Tokens");
-		dom.append(headRow, $('th.num')).textContent = localize('paradis.ccusage.sessions.cost', "Cost");
-		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.lastActivity', "Last Activity");
+		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.project', "プロジェクト");
+		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.models', "モデル");
+		dom.append(headRow, $('th.num')).textContent = localize('paradis.ccusage.sessions.tokens', "トークン");
+		dom.append(headRow, $('th.num')).textContent = localize('paradis.ccusage.sessions.cost', "コスト");
+		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.lastActivity', "最終アクティビティ");
 		const tbody = dom.append(table, $('tbody'));
 		for (const session of sessions) {
 			const row = dom.append(tbody, $('tr'));
@@ -1143,7 +1143,7 @@ function agentDisplayName(agent: ParadisCcusageAgent): string {
 		case 'claude': return 'Claude Code';
 		case 'codex': return 'Codex';
 		case 'gemini': return 'Gemini';
-		default: return localize('paradis.ccusage.agent.other', "Other");
+		default: return localize('paradis.ccusage.agent.other', "その他");
 	}
 }
 
@@ -1309,7 +1309,7 @@ function computeBuckets(days: IParadisCcusageDayData[], granularity: ParadisCcus
 		.map(([weekStart, models]) => ({
 			key: weekStart,
 			axisLabel: shortDate(weekStart),
-			tooltipLabel: localize('paradis.ccusage.weekOf', "Week of {0}", shortDate(weekStart)),
+			tooltipLabel: localize('paradis.ccusage.weekOf', "{0}の週", shortDate(weekStart)),
 			models: [...models.values()],
 		}));
 }

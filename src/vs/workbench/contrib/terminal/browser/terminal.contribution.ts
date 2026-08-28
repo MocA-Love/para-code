@@ -36,7 +36,9 @@ import { ITerminalConfigurationService, ITerminalEditingService, ITerminalEditor
 import { registerTerminalActions } from './terminalActions.js';
 import { setupTerminalCommands } from './terminalCommands.js';
 import { TerminalConfigurationService } from './terminalConfigurationService.js';
-import { TerminalEditor } from './terminalEditor.js';
+// allow-any-unicode-next-line
+// PARA-PATCH: エディタタブのターミナルへagent-browser-binding indicatorを配線するための差し替え（詳細はsessionTerminalEditor.ts参照）
+import { SessionTerminalEditor } from '../../../../sessions/contrib/terminalGrid/browser/sessionTerminalEditor.js';
 import { TerminalEditorInput } from './terminalEditorInput.js';
 import { TerminalInputSerializer } from './terminalEditorSerializer.js';
 import { TerminalEditorService } from './terminalEditorService.js';
@@ -74,7 +76,9 @@ registerTerminalConfiguration(getFontSnippets);
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(TerminalEditorInput.ID, TerminalInputSerializer);
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(
-		TerminalEditor,
+		// allow-any-unicode-next-line
+		// PARA-PATCH: エディタタブのターミナルへagent-browser-binding indicatorを配線するための差し替え（sessionTerminalEditor.ts参照）
+		SessionTerminalEditor,
 		terminalEditorId,
 		terminalStrings.terminal
 	),

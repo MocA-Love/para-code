@@ -1,0 +1,20 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * エディタタブのフォーカスリングだけを、いま開いているスペースの色に差し替える。
+ * リング自体は upstream の汎用ルール (workbench/browser/media/style.css の
+ * `[tabindex]:focus { outline-color: var(--vscode-focusBorder) }`) が描いているので、
+ * ここでは色だけを上書きする (太さ・位置・角丸は upstream のまま)。
+ *
+ * `--paradis-space-accent` はスペース色が無い / コントラストが取れない場合は設定されないため、
+ * その時は従来どおり `--vscode-focusBorder` にフォールバックする。
+ * リスト・入力欄など他のフォーカス表示には影響しない。
+ */
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab:focus {
+	outline-color: var(--paradis-space-accent, var(--vscode-focusBorder));
+}

@@ -31,11 +31,12 @@
 }
 
 /* allow-any-unicode-next-line */
-/* Modern UI (.style-override) は各リスト行に角丸を !important で強制し (roundedCorners.css)、
+/* Modern UI (.modern-ui) は各リスト行に角丸を !important で強制し (roundedCorners.css)、
  * 行の overflow:hidden と相まって上記の色バー (::before) が行ごとの上下端で角丸クリップされ、
  * 連続した1本の縦線に見えず分断される。このビューの行だけ左2隅の角丸をフラットに戻す
- * (右側の角丸は Modern UI のまま維持)。 */
-.style-override .paradis-workspaces-list .monaco-list .monaco-list-row:not(.separator) {
+ * (右側の角丸は Modern UI のまま維持)。
+ * PARA-PATCH: upstream 1.130 でこのフラグクラスが style-override → modern-ui にリネームされたため追従 */
+.modern-ui .paradis-workspaces-list .monaco-list .monaco-list-row:not(.separator) {
 	border-top-left-radius: 0 !important;
 	border-bottom-left-radius: 0 !important;
 }
@@ -165,28 +166,76 @@
 }
 
 /* allow-any-unicode-next-line */
-/* 行右端の2段組。上段 = エージェントのドット列 + メモ、下段 = PR チップ + 差分。
- * 44px の1段に5要素を横並びにすると名前とブランチの幅が食い潰されるため縦に分ける。
- * 行の自由幅は .paradis-worktree-labels の flex: 1 が吸収するので、この2段組は
- * 常にラベルの右隣 = 行の右端に落ち着く (自前で margin-left: auto は持たない)。 */
-.paradis-workspaces-list .paradis-worktree-stack {
+/* 案E: メタ専用段。行は「名前 + ドット列」「ブランチ名」の2段が基本で、表示対象のメタ情報
+ * (PR / Issue / 差分 / メモ) を持つ行だけ3段目が生えて 60px になる (高さは
+ * paradisWorkspacesView.ts の WorkspaceTreeDelegate.getHeight が決める)。
+ * 行の自由幅は .paradis-worktree-body の flex: 1 が吸収するので、右端のピンは
+ * 常にその右隣に落ち着く (自前で margin-left: auto は持たない)。 */
+.paradis-workspaces-list .paradis-worktree-body {
 	display: flex;
 	flex-direction: column;
-	align-items: flex-end;
-	justify-content: center;
-	gap: 3px;
-	flex-shrink: 0;
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	gap: 2px;
+}
+
+.paradis-workspaces-list .paradis-worktree-line1,
+.paradis-workspaces-list .paradis-worktree-line2 {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	line-height: 1.4;
+}
+
+.paradis-workspaces-list .paradis-worktree-line1 {
+	gap: 6px;
+}
+
+.paradis-workspaces-list .paradis-worktree-line2 {
+	gap: 5px;
+}
+
+/* allow-any-unicode-next-line */
+/* 名前は残り幅を全部取る (ドット列は flex-shrink: 0 で右端に残る) */
+.paradis-workspaces-list .paradis-worktree-line1 > .paradis-worktree-name {
+	flex: 1;
+	min-width: 0;
+}
+
+/* allow-any-unicode-next-line */
+/* ブランチ名は2段目の幅をいっぱいに使える (案E の主目的) */
+.paradis-workspaces-list .paradis-worktree-line2 > .paradis-worktree-branch {
+	flex: 1;
+	min-width: 0;
+}
+
+/* allow-any-unicode-next-line */
+/* メタ段。設定 (paradis.workspaceSwitch.rowMeta) の順に並べ、left 寄せの項目を spacer の前、
+ * right 寄せの項目を spacer の後ろへ置く。表示対象の情報が1つも無い行では段ごと消える。 */
+.paradis-workspaces-list .paradis-worktree-meta {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	/* allow-any-unicode-next-line */
+	/* 中身 (PR チップ等) は em ベースでフォントサイズに追従するため、固定値ではなく min-height */
+	min-height: 14px;
 	line-height: 1;
 }
 
-.paradis-workspaces-list .paradis-worktree-tier {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	/* allow-any-unicode-next-line */
-	/* 片方の段が空でも上下の位置が動かないよう下限を持たせる。中身 (PR チップ等) は
-	 * em ベースでフォントサイズに追従するため、固定値ではなく min-height にする */
-	min-height: 15px;
+.paradis-workspaces-list .paradis-worktree-meta.hidden {
+	display: none;
+}
+
+.paradis-workspaces-list .paradis-worktree-meta-spacer {
+	flex: 1;
+}
+
+/* allow-any-unicode-next-line */
+/* メタ段では1行に4種類まで並ぶため、チップの余白だけ少し詰める */
+.paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-pr,
+.paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-issue {
+	padding: 1px 5px;
 }
 
 /* allow-any-unicode-next-line */
@@ -277,7 +326,7 @@
 
 /* allow-any-unicode-next-line */
 /* 名前の下にブランチ名を重ねる2段表示 (見出し化前のリポジトリ行と同じ従来スタイル)。
- * 差分バッジ (.paradis-worktree-diff) は margin-left: auto で右端に残る */
+ * 案E に切り替えた worktree 行では使わず、「作成中」行 (CreatingSpaceRenderer) だけが使う */
 .paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-labels {
 	display: flex;
 	flex-direction: column;
@@ -287,13 +336,13 @@
 	min-width: 0;
 }
 
-.paradis-workspaces-list .paradis-worktree-labels > .paradis-worktree-name {
+.paradis-workspaces-list .paradis-worktree-name {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
-.paradis-workspaces-list .paradis-worktree-labels > .paradis-worktree-branch {
+.paradis-workspaces-list .paradis-worktree-branch {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -328,7 +377,7 @@
 /* allow-any-unicode-next-line */
 /* ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
  * 状態色は GitHub 本家に合わせた固定値 (open=緑 / draft=灰 / merged=紫 / closed=赤)。
- * 2段組 (.paradis-worktree-stack) の下段に入るため、このチップ自身は margin を持たない。 */
+ * メタ段 (.paradis-worktree-meta) に入るため、このチップ自身は margin を持たない。 */
 /* allow-any-unicode-next-line */
 /* SSH で繋いだ先のスペースに付く印。名前の直後に小さく置くだけで、幅も行の高さも動かさない
  * （PRチップと場所を奪い合わせない）。手元のスペースには何も足さない。 */
@@ -357,7 +406,7 @@
 	border-radius: 4px;
 	font-size: 0.8em;
 	font-variant-numeric: tabular-nums;
-	/* リスト行のインライン line-height (行高と同値の44px) を継承するとチップが行の全高に膨らむ */
+	/* リスト行のインライン line-height (行高と同値の 44px / 60px) を継承するとチップが行の全高に膨らむ */
 	line-height: 1;
 	cursor: pointer;
 	--paradis-pr-color: var(--vscode-foreground);
@@ -392,7 +441,8 @@
 
 /* allow-any-unicode-next-line */
 /* そのスペースのペイン(生存中、一時的なアイドルも含む)でエージェントが対話から検出した
- * GitHub Issue のマーク。PR チップの隣 (同じ下段) に置く。PR と違い個々の番号は持たず、
+ * GitHub Issue のマーク。PR チップと同じメタ段に置く (並び順と左右の寄せは設定で変えられる)。
+ * PR と違い個々の番号は持たず、
  * アイコン＋検出件数のみ（.paradis-worktree-note と同じ語彙）。詳細（番号・タイトル一覧）は
  * ホバーまたはクリックで出す (cursor: pointer でクリックできることを示す)。色は PR チップの
  * 固定パレットと衝突しない青 (textLink.foreground) にして、一目で「PRではなくIssue」と
@@ -431,8 +481,8 @@
 
 /* allow-any-unicode-next-line */
 /* メモ (paradisSpaceNotesPanel) の未完了件数バッジ。未完了が0件の行では非表示にして
- * 行の情報量を増やさない。エージェントのドット列と同じ上段に置く
- * (どちらも「そのスペースで自分が抱えているもの」なので段の意味が揃う)。 */
+ * 行の情報量を増やさない。他のメタ情報 (PR / Issue / 差分) と同じメタ段に置く
+ * (エージェントのドット列だけは、行の主語である名前と同じ1段目に残している)。 */
 .paradis-workspaces-list .paradis-worktree-note {
 	display: flex;
 	align-items: center;
@@ -454,7 +504,7 @@
 }
 
 /* allow-any-unicode-next-line */
-/* 未コミット差分 (+挿入/-削除) バッジ。PR チップと同じ2段組の下段に入る。 */
+/* 未コミット差分 (+挿入/-削除) バッジ。PR チップと同じメタ段に入る。 */
 .paradis-workspaces-list .paradis-worktree-diff {
 	display: flex;
 	align-items: center;
@@ -884,3 +934,20 @@
 .monaco-menu .paradis-color-purple::before { background-color: #a855f7; }
 .monaco-menu .paradis-color-pink::before { background-color: #ec4899; }
 .monaco-menu .paradis-color-slate::before { background-color: #64748b; }
+
+/* 幅が足りないときに、メタ段が黙って右から切り落とされるのを防ぐ。
+ * spacer(flex:1) が先に潰れたあと、チップ側が縮まないと body の overflow:hidden で
+ * 右寄せのぶん (差分・メモ) が省略記号も出ずに消える。行は60pxのままなので、
+ * ユーザーからは「設定したのに出ない」ようにしか見えない。 */
+.paradis-worktree-meta {
+	min-width: 0;
+}
+
+.paradis-worktree-meta > .paradis-worktree-pr,
+.paradis-worktree-meta > .paradis-worktree-issue,
+.paradis-worktree-meta > .paradis-worktree-note,
+.paradis-worktree-meta > .paradis-worktree-diff {
+	min-width: 0;
+	flex-shrink: 1;
+	overflow: hidden;
+}

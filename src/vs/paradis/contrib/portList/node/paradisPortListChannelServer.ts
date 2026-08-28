@@ -28,12 +28,14 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisPortEntry,
+	IParadisPortKillBatchResult,
 	IParadisPortKillRequest,
 	IParadisPortListRequest,
 	IParadisPortListSnapshot,
 	PARADIS_PORT_LIST_CHANNEL,
 	paradisIsRiskyPortAddress
 } from '../common/paradisPortList.js';
+import { executeParadisPortKillBatch } from '../common/paradisPortKillBatch.js';
 
 const SNAPSHOT_MAX_AGE_MS = 2000;
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -42,6 +44,13 @@ export interface IListeningConnection {
 	readonly socket: number;
 	readonly ip: string;
 	readonly port: number;
+}
+
+export interface IParadisRemotePortCollectionReaders {
+	readTcp(): Promise<string>;
+	readTcp6(): Promise<string>;
+	readSocketOwners(): Promise<Map<number, Set<number>>>;
+	readProcessName(pid: number): Promise<string>;
 }
 
 /** '0100007F' -> '127.0.0.1'、32桁hexのIPv6も展開する(extHostTunnelServiceのparseIpAddressと同じ規則)。 */
@@ -92,7 +101,7 @@ export function loadListeningConnections(...stdouts: string[]): IListeningConnec
 				const address = row.local_address.split(':');
 				return { socket: parseInt(row.inode, 10), ip: parseHexAddress(address[0]), port: parseInt(address[1], 16) };
 			})
-			.map(entry => [`${entry.ip}:${entry.port}`, entry] as const)
+			.map(entry => [entry.socket, entry] as const)
 	).values()];
 }
 
@@ -110,26 +119,41 @@ function execCapture(command: string, logService: ILogService): Promise<string> 
 	});
 }
 
-/** socket inode -> 保有PID。 */
-async function readSocketOwners(logService: ILogService): Promise<Map<number, number>> {
-	const stdout = await execCapture('ls -l /proc/[0-9]*/fd/[0-9]* 2>/dev/null | grep socket:', logService);
-	const owners = new Map<number, number>();
+/** socket inode -> 保有PID群。 */
+export function loadSocketOwners(stdout: string): Map<number, Set<number>> {
+	const owners = new Map<number, Set<number>>();
 	for (const line of stdout.split('\n')) {
 		const match = /\/proc\/(\d+)\/fd\/\d+ -> socket:\[(\d+)\]/.exec(line);
-		if (match) {
-			owners.set(parseInt(match[2], 10), parseInt(match[1], 10));
+		if (!match) {
+			continue;
 		}
+		const pid = parseInt(match[1], 10);
+		const socket = parseInt(match[2], 10);
+		const pids = owners.get(socket) ?? new Set<number>();
+		pids.add(pid);
+		owners.set(socket, pids);
 	}
-	return owners;
+	return new Map([...owners]
+		.sort(([first], [second]) => first - second)
+		.map(([socket, pids]) => [socket, new Set([...pids].sort((a, b) => a - b))]));
 }
 
-async function readProcessNames(pids: Iterable<number>): Promise<Map<number, string>> {
+async function readSocketOwners(logService: ILogService): Promise<Map<number, Set<number>>> {
+	const stdout = await execCapture('ls -l /proc/[0-9]*/fd/[0-9]* 2>/dev/null | grep socket:', logService);
+	return loadSocketOwners(stdout);
+}
+
+async function readProcessNameFromProc(pid: number): Promise<string> {
+	const cmdline = await fs.promises.readFile(`/proc/${pid}/cmdline`, 'utf8');
+	const first = cmdline.split('\0').find(part => part.length > 0);
+	return first ? first.split('/').pop()! : String(pid);
+}
+
+async function readProcessNames(pids: Iterable<number>, readProcessName: (pid: number) => Promise<string>): Promise<Map<number, string>> {
 	const names = new Map<number, string>();
 	await Promise.all([...pids].map(async pid => {
 		try {
-			const cmdline = await fs.promises.readFile(`/proc/${pid}/cmdline`, 'utf8');
-			const first = cmdline.split('\0').find(part => part.length > 0);
-			names.set(pid, first ? first.split('/').pop()! : String(pid));
+			names.set(pid, await readProcessName(pid));
 		} catch {
 			names.set(pid, String(pid));
 		}
@@ -137,34 +161,50 @@ async function readProcessNames(pids: Iterable<number>): Promise<Map<number, str
 	return names;
 }
 
-async function collectEntries(logService: ILogService): Promise<IParadisPortEntry[]> {
+export function resolveRemotePortEntries(listening: readonly IListeningConnection[], owners: ReadonlyMap<number, ReadonlySet<number>>, names: ReadonlyMap<number, string>): IParadisPortEntry[] {
+	const entries: IParadisPortEntry[] = [];
+	for (const connection of listening) {
+		for (const pid of [...(owners.get(connection.socket) ?? [])].sort((a, b) => a - b)) {
+			entries.push({
+				port: connection.port,
+				proto: 'TCP',
+				pid,
+				processName: names.get(pid) ?? String(pid),
+				address: connection.ip,
+				risky: paradisIsRiskyPortAddress(connection.ip)
+			});
+		}
+	}
+	return entries;
+}
+
+export async function collectRemotePortEntries(readers: IParadisRemotePortCollectionReaders): Promise<IParadisPortEntry[]> {
 	const [tcp, tcp6] = await Promise.all([
-		fs.promises.readFile('/proc/net/tcp', 'utf8').catch(() => ''),
-		fs.promises.readFile('/proc/net/tcp6', 'utf8').catch(() => '')
+		readers.readTcp(),
+		readers.readTcp6()
 	]);
 	const listening = loadListeningConnections(tcp, tcp6);
 	if (listening.length === 0) {
 		return [];
 	}
-	const owners = await readSocketOwners(logService);
-	const resolved: { connection: IListeningConnection; pid: number }[] = [];
+	const owners = await readers.readSocketOwners();
 	const pids = new Set<number>();
 	for (const connection of listening) {
-		const pid = owners.get(connection.socket);
-		if (pid !== undefined) {
+		for (const pid of owners.get(connection.socket) ?? []) {
 			pids.add(pid);
-			resolved.push({ connection, pid });
 		}
 	}
-	const names = await readProcessNames(pids);
-	return resolved.map(({ connection, pid }) => ({
-		port: connection.port,
-		proto: 'TCP' as const,
-		pid,
-		processName: names.get(pid) ?? String(pid),
-		address: connection.ip,
-		risky: paradisIsRiskyPortAddress(connection.ip)
-	}));
+	const names = await readProcessNames(pids, readers.readProcessName);
+	return resolveRemotePortEntries(listening, owners, names);
+}
+
+async function collectEntries(logService: ILogService): Promise<IParadisPortEntry[]> {
+	return collectRemotePortEntries({
+		readTcp: () => fs.promises.readFile('/proc/net/tcp', 'utf8').catch(() => ''),
+		readTcp6: () => fs.promises.readFile('/proc/net/tcp6', 'utf8').catch(() => ''),
+		readSocketOwners: () => readSocketOwners(logService),
+		readProcessName: readProcessNameFromProc,
+	});
 }
 
 export class ParadisPortListServerService {
@@ -172,7 +212,11 @@ export class ParadisPortListServerService {
 	private cached: IParadisPortListSnapshot | undefined;
 	private inflight: Promise<IParadisPortListSnapshot> | undefined;
 
-	constructor(private readonly logService: ILogService) { }
+	constructor(
+		private readonly logService: ILogService,
+		private readonly collect: () => Promise<readonly IParadisPortEntry[]> = () => collectEntries(logService),
+		private readonly signal: (pid: number) => void = pid => process.kill(pid, 'SIGTERM'),
+	) { }
 
 	async getSnapshot(request: IParadisPortListRequest): Promise<IParadisPortListSnapshot> {
 		if (request.force !== true && this.cached !== undefined && Date.now() - this.cached.collectedAt <= SNAPSHOT_MAX_AGE_MS) {
@@ -181,7 +225,7 @@ export class ParadisPortListServerService {
 		if (this.inflight !== undefined && request.force !== true) {
 			return this.inflight;
 		}
-		const collection = collectEntries(this.logService)
+		const collection = this.collect()
 			.then(entries => {
 				const snapshot: IParadisPortListSnapshot = { entries, collectedAt: Date.now() };
 				this.cached = snapshot;
@@ -214,13 +258,21 @@ export class ParadisPortListServerService {
 		if (request.pid === process.pid || request.pid === process.ppid) {
 			throw new Error('Refusing to kill the remote server process itself');
 		}
-		const entries = await collectEntries(this.logService);
+		const entries = await this.collect();
 		const stillListening = entries.some(entry => entry.pid === request.pid && entry.port === request.port && entry.processName === request.processName);
 		if (!stillListening) {
 			throw new Error(`Port :${request.port} is no longer held by PID ${request.pid} on the remote host (it may have already exited)`);
 		}
-		process.kill(request.pid, 'SIGTERM');
+		this.signal(request.pid);
 		this.cached = undefined;
+	}
+
+	async killAll(requests: readonly unknown[]): Promise<IParadisPortKillBatchResult> {
+		try {
+			return await executeParadisPortKillBatch(requests, this.collect, new Set([process.pid, process.ppid]), this.signal);
+		} finally {
+			this.cached = undefined;
+		}
 	}
 }
 
@@ -239,6 +291,8 @@ class ParadisPortListServerChannel<TContext> implements IServerChannel<TContext>
 				return this.service.getSnapshot((args[0] ?? {}) as IParadisPortListRequest) as Promise<T>;
 			case 'kill':
 				return this.service.kill(args[0] as IParadisPortKillRequest) as Promise<T>;
+			case 'killAll':
+				return this.service.killAll(Array.isArray(args[0]) ? args[0] : []) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -246,7 +300,7 @@ class ParadisPortListServerChannel<TContext> implements IServerChannel<TContext>
 }
 
 /** serverServices.ts の PARA-PATCH 点から1行で呼べるファクトリ。 */
-export function registerParadisPortListForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
-	server.registerChannel(PARADIS_PORT_LIST_CHANNEL, new ParadisPortListServerChannel<TContext>(new ParadisPortListServerService(logService)));
+export function registerParadisPortListForServer<TContext>(server: IPCServer<TContext>, logService: ILogService, service = new ParadisPortListServerService(logService)): IDisposable {
+	server.registerChannel(PARADIS_PORT_LIST_CHANNEL, new ParadisPortListServerChannel<TContext>(service));
 	return { dispose: () => { } };
 }

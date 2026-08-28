@@ -18,7 +18,7 @@ suite('paradisHistoryScope', () => {
 
 	test('derives a per-space key only while a single folder is open', () => {
 		const backend = folder('/develop/paradis/sample-app/backend');
-		const worktree = folder('/develop/paradis/sample-app-worktrees/add-sample-feature/backend');
+		const worktree = folder('/develop/paradis/sample-app-worktrees/feature-branch/backend');
 		const backendKey = paradisHistoryStorageKey(BASE_KEY, [backend]);
 
 		assert.deepStrictEqual({
@@ -26,7 +26,7 @@ suite('paradisHistoryScope', () => {
 			shape: /^history\.entries\.[0-9a-f]{1,8}$/.test(backendKey),
 			stable: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/sample-app/backend')]) === backendKey,
 			// 大文字小文字と末尾スラッシュの違いで別バケットにしない
-			normalized: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/Sample-app/backend/')]) === backendKey,
+			normalized: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/Sample-App/backend/')]) === backendKey,
 			perSpace: paradisHistoryStorageKey(BASE_KEY, [worktree]) !== backendKey,
 			noFolder: paradisHistoryStorageKey(BASE_KEY, []),
 			multiRoot: paradisHistoryStorageKey(BASE_KEY, [backend, worktree]),
@@ -44,12 +44,12 @@ suite('paradisHistoryScope', () => {
 
 	test('drops editors that leaked in from the next space, and keeps everything else', () => {
 		const previous = folder('/develop/paradis/sample-app/backend');
-		const next = folder('/develop/paradis/sample-app-worktrees/add-sample-feature/backend');
+		const next = folder('/develop/paradis/sample-app-worktrees/feature-branch/backend');
 		const plan = paradisHistorySwitchPlan(event([previous], [next]), [next]);
 
 		assert.deepStrictEqual({
 			// 切り替え中に開かれた切り替え先のファイルは、切り替え元の履歴へ書き戻さない
-			leakedFromNextSpace: plan?.isForeign(URI.file('/develop/paradis/sample-app-worktrees/add-sample-feature/backend/.env')),
+			leakedFromNextSpace: plan?.isForeign(URI.file('/develop/paradis/sample-app-worktrees/feature-branch/backend/.env')),
 			// 切り替え元自身のファイルと、どちらにも属さないファイルは残す
 			ownFile: plan?.isForeign(URI.file('/develop/paradis/sample-app/backend/.env')),
 			outsideBothSpaces: plan?.isForeign(URI.file('/Downloads/notes.md')),
@@ -91,7 +91,7 @@ suite('paradisHistoryScope', () => {
 		const backend = folder('/develop/paradis/sample-app/backend');
 		const entries = [
 			{ resource: URI.file('/develop/paradis/sample-app/backend/.env') },
-			{ resource: URI.file('/develop/paradis/sample-app-worktrees/add-sample-feature/backend/.env') },
+			{ resource: URI.file('/develop/paradis/sample-app-worktrees/feature-branch/backend/.env') },
 			{ resource: URI.file('/Downloads/notes.md') },
 		];
 

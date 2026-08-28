@@ -12,9 +12,9 @@
  * come from --vscode-* theme tokens (alpha variants via color-mix) so the dialog adapts to any theme.
  *
  * The dialog also drives the "background terminal highlight": while a pane row is hovered/focused,
- * the dialog puts `paradis-pvh-<style>` on <body> and the pane indicator marks the matching grid
- * cell with `.paradis-pvh-target` (+ `--paradis-agent-color` for pattern B) — see the
- * "terminal grid cell highlight" section at the bottom.
+ * the dialog puts `paradis-pvh-glow` on <body> and the pane indicator marks the matching cell
+ * (grid cell or editor-hosted terminal) with `.paradis-pvh-target` — see the
+ * "terminal cell highlight" section at the bottom.
  */
 
 /* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css). */
@@ -159,7 +159,7 @@
 	color: var(--vscode-foreground);
 }
 
-/* ---------- toolbar (page bar + highlight seg) ---------- */
+/* ---------- toolbar (page bar) ---------- */
 
 .paradis-binding-dialog .pbd-toolbar {
 	display: flex;
@@ -230,61 +230,6 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-
-/* ---------- 背面ハイライト切替（seg） ---------- */
-
-.paradis-binding-dialog .pbd-hlseg {
-	flex: none;
-	display: flex;
-	flex-direction: column;
-	align-items: flex-end;
-	gap: 4px;
-}
-
-.paradis-binding-dialog .pbd-hl-label {
-	font-size: 10px;
-	letter-spacing: 0.04em;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-binding-dialog .pbd-seg {
-	display: inline-flex;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 7px;
-	overflow: hidden;
-}
-
-.paradis-binding-dialog .pbd-seg-btn {
-	appearance: none;
-	border: none;
-	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	background: transparent;
-	color: var(--vscode-descriptionForeground);
-	padding: 4px 10px;
-	font-size: 11px;
-	cursor: pointer;
-	font-family: inherit;
-}
-
-.paradis-binding-dialog .pbd-seg-btn:last-child {
-	border-right: none;
-}
-
-.paradis-binding-dialog .pbd-seg-btn:hover {
-	color: var(--vscode-foreground);
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-binding-dialog .pbd-seg-btn.active {
-	background: color-mix(in srgb, var(--vscode-focusBorder) 24%, transparent);
-	color: var(--vscode-foreground);
-	font-weight: 600;
-}
-
-.paradis-binding-dialog .pbd-seg-btn:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -2px;
 }
 
 /* ---------- 左ナビ (Settings Editor 型) ---------- */
@@ -823,9 +768,16 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-/* ---------- terminal grid cell indicator (paradisPaneIndicator.ts) ---------- */
+/* ---------- terminal cell indicator (paradisPaneIndicator.ts) ----------
+ *
+ * Shared by the panel's grid cell (`.session-terminal-grid-cell`, one per split pane) and the
+ * editor tab's terminal (`.terminal-overflow-guard.terminal-editor`, reused across tab switches
+ * by sessionTerminalEditor.ts). Both are `position: relative` containers with exactly one
+ * indicator child, so the selectors below are identical apart from the container class.
+ */
 
-.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator {
+.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-pane-indicator {
 	position: absolute;
 	top: 4px;
 	right: 6px;
@@ -839,7 +791,8 @@
 	z-index: 35;
 }
 
-.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator::before {
+.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator::before,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-pane-indicator::before {
 	content: '';
 	width: 7px;
 	height: 7px;
@@ -847,60 +800,33 @@
 	background: color-mix(in srgb, var(--vscode-descriptionForeground) 55%, transparent);
 }
 
-.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator:hover {
+.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator:hover,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-pane-indicator:hover {
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator.bound::before {
+.monaco-workbench .session-terminal-grid-cell .paradis-pane-indicator.bound::before,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-pane-indicator.bound::before {
 	background: var(--vscode-charts-green);
 	box-shadow: 0 0 4px var(--vscode-charts-green);
 }
 
-/* ---------- terminal grid cell highlight (dialog pane row hover/focus) ----------
+/* ---------- terminal cell highlight (dialog pane row hover/focus) ----------
  *
- * paradisBindingDialog.ts puts `paradis-pvh-<glow|tint|dim>` on <body> while a pane row is
- * hovered/focused, and paradisPaneIndicator.ts marks the matching cell with
- * `.paradis-pvh-target` (plus `--paradis-agent-color` for pattern B). Selectors below are
- * prefixed with `body.paradis-pvh-*` so they win over sessionTerminalGrid.css's base cell rule.
+ * paradisBindingDialog.ts puts `paradis-pvh-glow` on <body> while a pane row is hovered/focused,
+ * and paradisPaneIndicator.ts marks the matching cell with `.paradis-pvh-target`. Selectors below
+ * are prefixed with `body.paradis-pvh-glow` so they win over sessionTerminalGrid.css's base rule.
  */
 
-.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell {
-	transition: opacity 0.16s ease, filter 0.16s ease, box-shadow 0.12s ease;
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell,
+.monaco-workbench .terminal-overflow-guard.terminal-editor {
+	transition: outline-color 0.16s ease, box-shadow 0.16s ease;
 }
 
-/* Pattern A: focus ring glow. */
-body.paradis-pvh-glow .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target {
+body.paradis-pvh-glow .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target,
+body.paradis-pvh-glow .monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-pvh-target {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 	box-shadow: 0 0 0 1.5px var(--vscode-focusBorder), 0 0 18px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
-	z-index: 2;
-}
-
-/* Pattern B: agent brand color tint. The overlay pseudo-element tints the xterm content too,
- * which a plain cell background could not reach. */
-body.paradis-pvh-tint .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target {
-	border-color: var(--paradis-agent-color, var(--vscode-focusBorder));
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--paradis-agent-color, var(--vscode-focusBorder)) 45%, transparent);
-	z-index: 2;
-}
-
-body.paradis-pvh-tint .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target::after {
-	content: '';
-	position: absolute;
-	inset: 0;
-	background: color-mix(in srgb, var(--paradis-agent-color, var(--vscode-focusBorder)) 14%, transparent);
-	pointer-events: none;
-	z-index: 33;
-}
-
-/* Pattern C: dim everything except the target cell. */
-body.paradis-pvh-dim .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell:not(.paradis-pvh-target) {
-	opacity: 0.28;
-	filter: grayscale(0.6);
-}
-
-body.paradis-pvh-dim .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target {
-	border-color: color-mix(in srgb, var(--vscode-editor-foreground) 70%, transparent);
-	box-shadow: 0 0 14px color-mix(in srgb, var(--vscode-focusBorder) 40%, transparent);
 	z-index: 2;
 }

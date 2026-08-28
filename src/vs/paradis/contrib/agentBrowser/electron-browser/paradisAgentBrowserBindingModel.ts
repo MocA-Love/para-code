@@ -1021,18 +1021,4 @@ export function detectAgentKind(instance: ITerminalInstance): ParadisPaneAgentKi
 	return 'shell';
 }
 
-/**
- * エージェント種別ごとのブランドアクセント色。背面ターミナルハイライトの
- * パターンB（エージェント色ティント）で使う。claude は MCPカードのロゴ背景と同じ色、
- * codex はセッション再開一覧のバッジ色（paradisSessionResume.css の
- * `.agent-badge.codex`）に揃えている（MCPカードのロゴはグラデーション地で単色では
- * 代表できないため）。shell は特定CLIの色を持たないため undefined —— 呼び出し側が
- * テーマのフォーカス色へフォールバックする。
- */
-export const PARADIS_PANE_AGENT_ACCENT: Readonly<Record<ParadisPaneAgentKind, string | undefined>> = {
-	claude: '#d97757',
-	codex: '#3b82f6',
-	shell: undefined,
-};
-
 registerSingleton(IParadisAgentBrowserBindingModel, new SyncDescriptor(ParadisAgentBrowserBindingModel, [undefined], true));

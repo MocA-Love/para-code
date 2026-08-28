@@ -7,6 +7,11 @@
 .paradis-rtk {
 	position: relative;
 	height: 100%;
+	/* allow-any-unicode-next-line */
+	/* 段組みの畳み込みを、ウィンドウ幅ではなくこのパネル自身の幅で測るための基準
+	（paradisCcusage.css と同じ）。 */
+	container-type: inline-size;
+	container-name: paradis-rtk-panel;
 	display: flex;
 	flex-direction: column;
 	color: var(--vscode-foreground);
@@ -146,6 +151,9 @@
 	grid-template-columns: 1.5fr 1fr 1fr 1fr;
 	gap: 12px;
 	margin-bottom: 12px;
+	/* allow-any-unicode-next-line */
+	/* KPI は常に 4 枚（paradisCcusage.css と同じ理由で上限を置く）。 */
+	max-width: 1400px;
 }
 
 .paradis-rtk-grid2 {
@@ -160,7 +168,7 @@
 	margin-bottom: 12px;
 }
 
-@media (max-width: 900px) {
+@container paradis-rtk-panel (max-width: 900px) {
 	.paradis-rtk-kpis { grid-template-columns: 1fr 1fr; }
 	.paradis-rtk-grid2 { grid-template-columns: 1fr; }
 }

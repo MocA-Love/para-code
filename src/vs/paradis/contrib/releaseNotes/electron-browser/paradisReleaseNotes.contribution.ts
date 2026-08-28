@@ -28,6 +28,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { mergeChangelogs, parseParadisChangelog } from '../common/paradisChangelogModel.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { ParadisChangelogLifecycle } from './paradisChangelogLifecycle.js';
 import { ParadisChangelogModal, toViewReleases } from './paradisChangelogModal.js';
 
 /**
@@ -101,10 +102,7 @@ const PARADIS_CHANGELOG_LAST_READ_KEY = 'paradis.changelog.lastReadVersion';
 
 const CHANGELOG_SANITY_RE = /^##\s+paracode-\d+/m;
 
-/** 前回のモーダルの取得が未完了のまま再オープンされた場合に、そちらを打ち切るため。 */
-let activeFetchCts: CancellationTokenSource | undefined;
-/** 現在開いているモーダル。二重オープン時に閉じるために保持する。 */
-let activeModal: ParadisChangelogModal | undefined;
+const changelogLifecycle = new ParadisChangelogLifecycle<ParadisChangelogModal>();
 
 function changelogFeedUrl(productService: IProductService): string | undefined {
 	if (!productService.updateUrl) {
@@ -195,9 +193,7 @@ function openParadisChangelogModal(
 	const initialLastReadVersion = storageService.getNumber(PARADIS_CHANGELOG_LAST_READ_KEY, StorageScope.APPLICATION, 0);
 	const cachedFetchedAt = storageService.getNumber(PARADIS_CHANGELOG_FETCHED_AT_KEY, StorageScope.APPLICATION, 0);
 
-	// 二重オープンでは既存のモーダルを閉じて作り直す(重なって表示されないように)
-	activeModal?.dispose();
-	const modal = new ParadisChangelogModal(
+	const generation = changelogLifecycle.open(() => new ParadisChangelogModal(
 		layoutService.activeContainer,
 		{
 			releases: toViewReleases(mergeChangelogs(cachedRemoteReleases, bundledReleases), installedVersion),
@@ -208,8 +204,9 @@ function openParadisChangelogModal(
 			onSelectRelease: version => storageService.store(PARADIS_CHANGELOG_LAST_READ_KEY, version, StorageScope.APPLICATION, StorageTarget.MACHINE),
 			onCheckForUpdate: () => commandService.executeCommand('update.checkForUpdate')
 		}
-	);
-	activeModal = modal;
+	));
+	const modal = generation.modal;
+	const token = generation.token;
 
 	// 前回取得のキャッシュがある場合は、その時刻を出しておく(直後の再取得で更新される)
 	if (cachedFetchedAt > 0 && cachedRemoteReleases.length > 0) {
@@ -218,15 +215,13 @@ function openParadisChangelogModal(
 
 	// updateUrl 未設定(開発ビルド等)ではサーバー問い合わせをしない
 	if (!changelogFeedUrl(productService)) {
+		generation.finishFetch();
 		return;
 	}
-	activeFetchCts?.dispose();
-	activeFetchCts = new CancellationTokenSource();
-	const token = activeFetchCts.token;
 
 	modal.setRemoteState({ kind: 'fetching' });
 	fetchRemoteChangelogMd(requestService, productService, token).then(remoteMd => {
-		if (token.isCancellationRequested || modal.isDisposed) {
+		if (!generation.isCurrent() || token.isCancellationRequested) {
 			return;
 		}
 		if (!remoteMd) {
@@ -246,10 +241,10 @@ function openParadisChangelogModal(
 			});
 		}
 	}).catch(() => {
-		if (!token.isCancellationRequested && !modal.isDisposed) {
+		if (generation.isCurrent() && !token.isCancellationRequested) {
 			modal.setRemoteState({ kind: 'error' });
 		}
-	});
+	}).finally(() => generation.finishFetch());
 }
 
 // 歯車メニューの「更新の確認...」(update.ts の appendUpdateMenuItems が使う group '7_update') の

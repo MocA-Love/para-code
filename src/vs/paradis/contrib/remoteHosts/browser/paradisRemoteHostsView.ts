@@ -36,13 +36,14 @@ import { WorkbenchAsyncDataTree } from '../../../../platform/list/browser/listSe
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IProgressService } from '../../../../platform/progress/common/progress.js';
-import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisWorkspaceSwitchService, paradisWorkspaceColorHex } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -50,7 +51,13 @@ import {
 	isParadisRemoteHost,
 	isParadisRemoteSpace,
 	paradisAllowsHostDrop,
+	paradisIsOfflineHostKey,
+	paradisIsSafeSshHost,
+	paradisOfflineAliasOf,
 	paradisParseSpacesByHost,
+	paradisRemoteHostBrowser,
+	PARADIS_OFFLINE_HOST_PREFIX,
+	PARADIS_OFFLINE_URI_SCHEME,
 	ParadisRemoteFileEntry,
 	ParadisRemoteHost,
 	ParadisRemoteHostsElement,
@@ -84,6 +91,10 @@ interface DropTarget {
 type TransferableElement = ParadisRemoteSpace | ParadisRemoteFileEntry;
 
 function asDropTarget(element: ParadisRemoteHostsElement): DropTarget | undefined {
+	// 未接続ホストは閲覧専用。ドロップ先にも掴む対象にもしない
+	if (paradisIsOfflineHostKey(element.hostKey)) {
+		return undefined;
+	}
 	if (isParadisRemoteSpace(element)) {
 		return element;
 	}
@@ -106,6 +117,9 @@ function hostLabelFromAuthority(authority: string): string {
 	return authority.replace(/^ssh-remote\+/, '');
 }
 
+/** 「今後確認しない」を選んだホストの保存キー。 */
+const PARADIS_OFFLINE_APPROVED_STORAGE_KEY = 'paradis.remoteHosts.approvedOfflineHosts';
+
 // --- データソース --------------------------------------------------------------------------------
 
 class DataSource implements IAsyncDataSource<ParadisRemoteHostsRoot, ParadisRemoteHostsElement> {
@@ -123,6 +137,11 @@ class DataSource implements IAsyncDataSource<ParadisRemoteHostsRoot, ParadisRemo
 			return this.view.computeHostElements();
 		}
 		const node = element as ParadisRemoteHostsElement;
+		// 未接続ホストの配下は ssh で読む。スペース台帳はそのホストへ繋がって初めて読めるので、
+		// ここではホーム直下をそのまま出す
+		if (paradisIsOfflineHostKey(node.hostKey)) {
+			return this.view.computeOfflineEntries(node as ParadisRemoteHost | ParadisRemoteFileEntry);
+		}
 		if (isParadisRemoteHost(node)) {
 			return this.view.computeSpaceElements(node);
 		}
@@ -224,7 +243,14 @@ class HostRenderer implements ITreeRenderer<ParadisRemoteHost, FuzzyScore, IHost
 		// 緑ドットは「いつもと違う方」= SSH 先が繋がっているときだけ (手元は大半がこちらなので)
 		templateData.connectedDot.classList.toggle('hidden', isLocal || !element.connected);
 		templateData.name.textContent = element.label;
-		templateData.meta.textContent = '';
+		// 未接続ホストは薄字にして、閲覧しかできないことを行だけで分かるようにする
+		templateData.row.classList.toggle('offline', !!element.offline);
+		templateData.meta.textContent = element.offline
+			? localize('paraRemoteHosts.offlineBadge', "未接続")
+			: '';
+		templateData.row.title = element.offline
+			? localize('paraRemoteHosts.offlineHostTooltip', "展開すると ssh でファイル一覧を取得します (閲覧のみ)")
+			: '';
 		// 色帯はスペース行専用。行は使い回されるので、他のテンプレートでは必ず透明へ戻す
 		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--para-rh-color', 'transparent');
 	}
@@ -273,6 +299,11 @@ class HostDragAndDrop implements ITreeDragAndDrop<ParadisRemoteHostsElement> {
 	constructor(private readonly handleDrop: (sources: readonly TransferableElement[], target: DropTarget) => Promise<void>) { }
 
 	getDragURI(element: ParadisRemoteHostsElement): string | null {
+		// 未接続ホスト配下は転送できないので、掴めるようにもしない
+		// (掴めるとコピーカーソルが出て、落とせるように見えてしまう)
+		if (paradisIsOfflineHostKey(element.hostKey)) {
+			return null;
+		}
 		if (isParadisRemoteSpace(element) || isParadisRemoteFileEntry(element)) {
 			return element.uri.toString();
 		}
@@ -329,6 +360,8 @@ export class ParadisRemoteHostsView extends ViewPane {
 	private tree: WorkbenchAsyncDataTree<ParadisRemoteHostsRoot, ParadisRemoteHostsElement, FuzzyScore> | undefined;
 	/** 接続先ホストのユーザーホーム。「送る」ダイアログの初期位置に使う */
 	private remoteUserHome: URI | undefined;
+	/** このウィンドウで一覧取得に同意済みの未接続ホスト (ssh 別名)。 */
+	private readonly approvedOfflineHosts = new Set<string>();
 	private readonly transferServices: IParadisRemoteTransferServices;
 
 	constructor(
@@ -345,12 +378,13 @@ export class ParadisRemoteHostsView extends ViewPane {
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@ILabelService private readonly labelService: ILabelService,
 		@IEditorService private readonly editorService: IEditorService,
-		@IDialogService dialogService: IDialogService,
+		@IDialogService private readonly dialogService: IDialogService,
 		@IFileDialogService fileDialogService: IFileDialogService,
 		@IFileService private readonly fileService: IFileService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IPathService private readonly pathService: IPathService,
 		@IProgressService progressService: IProgressService,
+		@IHostService private readonly hostService: IHostService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IStorageService private readonly storageService: IStorageService,
@@ -412,14 +446,30 @@ export class ParadisRemoteHostsView extends ViewPane {
 		// クリックでファイルを開く。フォルダー・スペース・ホストはツリー標準の開閉に任せる
 		this._register(this.tree.onDidOpen(event => {
 			const element = event.element;
-			if (element && isParadisRemoteFileEntry(element) && element.type === 'file') {
+			// 未接続ホストのファイルは開けない (paradis-offline スキームのプロバイダは無い)。
+			// 押すたびにエラーを出すより、何もしない方がまし
+			if (element && isParadisRemoteFileEntry(element) && element.type === 'file'
+				&& !paradisIsOfflineHostKey(element.hostKey)) {
 				void this.openFile(element);
 			}
 		}));
 
 		this._register(this.tree.onContextMenu(event => {
 			const element = event.element;
-			if (!element || isParadisRemoteHost(element)) {
+			if (!element) {
+				return;
+			}
+			// 未接続ホストの見出し行だけはメニューを出す。展開に失敗するホストほど
+			// 「接続して開く」への導線が要るのに、子要素からしか辿れないと辿り着けない
+			if (isParadisRemoteHost(element)) {
+				const alias = element.offline ? (element.sshAlias ?? element.label) : undefined;
+				if (alias === undefined) {
+					return;
+				}
+				this.contextMenuService.showContextMenu({
+					getAnchor: () => event.anchor,
+					getActions: () => this.buildOfflineHostActions(alias),
+				});
 				return;
 			}
 			this.contextMenuService.showContextMenu({
@@ -466,20 +516,125 @@ export class ParadisRemoteHostsView extends ViewPane {
 			homeUri: this.getLocalUserHome(),
 		});
 		const authority = this.remoteAuthority;
+		let connectedLabel: string | undefined;
 		if (authority) {
 			const environment = await this.remoteAgentService.getEnvironment().catch(() => null);
 			this.remoteUserHome = environment?.userHome;
+			connectedLabel = hostLabelFromAuthority(authority);
 			hosts.push({
 				type: 'host',
 				hostKey: authority,
-				label: hostLabelFromAuthority(authority),
+				label: connectedLabel,
 				connected: true,
 				homeUri: environment?.userHome,
 			});
 		} else {
 			this.remoteUserHome = undefined;
 		}
+
+		// `~/.ssh/config` に書いてあるだけのホストも並べる。中身は展開したときに ssh で読む
+		// (Web には実装が差し込まれないので、その環境では今までどおり接続中のぶんだけ出る)
+		const browser = paradisRemoteHostBrowser();
+		if (browser) {
+			const configured = await browser.listConfiguredHosts().catch(() => []);
+			// 同じ別名が config 本体と Include の両方に書いてあることは珍しくない。
+			// 重ねるとツリーの identity が衝突するので、ここで一意にしておく
+			const seen = new Set<string>(connectedLabel !== undefined ? [connectedLabel] : []);
+			for (const alias of configured) {
+				// 今まさに繋がっているホストは上で接続済みとして出しているので重ねない。
+				// ssh へ渡せない別名は、展開したらエラーになるだけなので最初から出さない
+				if (seen.has(alias) || !paradisIsSafeSshHost(alias)) {
+					continue;
+				}
+				seen.add(alias);
+				hosts.push({
+					type: 'host',
+					hostKey: `${PARADIS_OFFLINE_HOST_PREFIX}${alias}`,
+					label: alias,
+					connected: false,
+					homeUri: undefined,
+					offline: true,
+					sshAlias: alias,
+				});
+			}
+		}
 		return hosts;
+	}
+
+	/**
+	 * 未接続ホストを展開してよいか尋ねる。同意したホストは覚える。
+	 *
+	 * 黙って ssh を起こさないのは、繋がっているホストと違って**新しく認証が走り得る**ため。
+	 * shared process には端末が無いので、鍵のパスフレーズや多要素を聞かれると
+	 * (BatchMode で即失敗はするものの) ユーザーからは「展開しただけで固まった」ように見える。
+	 */
+	private async confirmOfflineBrowse(host: ParadisRemoteHost): Promise<boolean> {
+		const alias = host.sshAlias ?? host.label;
+		if (this.approvedOfflineHosts.has(alias) || this.rememberedOfflineHosts().includes(alias)) {
+			return true;
+		}
+		const result = await this.dialogService.confirm({
+			message: localize('paraRemoteHosts.offlineConfirm', "{0} のファイル一覧を取得しますか?", alias),
+			detail: localize('paraRemoteHosts.offlineConfirmDetail', "未接続のため ssh で直接読み取ります。初めてのホストなら、その鍵を known_hosts へ登録します（鍵が後から変わった場合は拒否されます）。パスフレーズや多要素認証が必要なホストは、ここでは読み取れないため「このホストに接続して開く」から繋いでください。"),
+			primaryButton: localize('paraRemoteHosts.offlineConfirmYes', "取得"),
+			checkbox: { label: localize('paraRemoteHosts.offlineConfirmRemember', "このホストでは今後確認しない") },
+		});
+		if (!result.confirmed) {
+			return false;
+		}
+		this.approvedOfflineHosts.add(alias);
+		if (result.checkboxChecked) {
+			const remembered = new Set(this.rememberedOfflineHosts());
+			remembered.add(alias);
+			this.storageService.store(PARADIS_OFFLINE_APPROVED_STORAGE_KEY, JSON.stringify([...remembered]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		}
+		return true;
+	}
+
+	/** 「今後確認しない」を選んだホスト。壊れた保存値は空扱いにする。 */
+	private rememberedOfflineHosts(): string[] {
+		try {
+			const raw = JSON.parse(this.storageService.get(PARADIS_OFFLINE_APPROVED_STORAGE_KEY, StorageScope.APPLICATION, '[]'));
+			return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === 'string') : [];
+		} catch {
+			return [];
+		}
+	}
+
+	/** 未接続ホストの中身を ssh で読む。閲覧専用なので転送系のアクションは付けない。 */
+	async computeOfflineEntries(element: ParadisRemoteHost | ParadisRemoteFileEntry): Promise<readonly ParadisRemoteFileEntry[]> {
+		const browser = paradisRemoteHostBrowser();
+		if (!browser) {
+			return [];
+		}
+		const alias = paradisOfflineAliasOf(element.hostKey);
+		if (!alias) {
+			return [];
+		}
+		if (isParadisRemoteHost(element) && !await this.confirmOfflineBrowse(element)) {
+			return [];
+		}
+		// ホスト直下はホーム。以降は前の行が持っているパスを継ぐ
+		const path = isParadisRemoteHost(element) ? '' : element.uri.path;
+		try {
+			const listing = await browser.listDirectory(alias, path);
+			const base = path.length > 0 ? path : '~';
+			if (listing.truncated) {
+				// 打ち切ったことを黙っていると「これで全部」と読めてしまう
+				this.notificationService.warn(localize('paraRemoteHosts.offlineTruncated', "{0} のファイルが多いため、一覧の先頭だけを表示しています。", alias));
+			}
+			return listing.entries.map(entry => ({
+				type: entry.isDirectory ? 'dir' as const : 'file' as const,
+				hostKey: element.hostKey,
+				// 未接続ホストの URI は表示とパスの継承にしか使わない (fileService は解決できない)。
+				// 転送に使われないよう、専用スキームを付けて実在の file:// と混ざらないようにする
+				uri: URI.from({ scheme: PARADIS_OFFLINE_URI_SCHEME, authority: alias, path: base === '~' ? `/~/${entry.name}` : `${base}/${entry.name}` }),
+				name: entry.name,
+			}));
+		} catch (error) {
+			this.notificationService.error(localize('paraRemoteHosts.offlineListFailed', "{0} のファイル一覧を取得できませんでした: {1}", alias, error instanceof Error ? error.message : String(error)));
+			return [];
+		}
 	}
 
 	computeSpaceElements(host: ParadisRemoteHost): readonly ParadisRemoteSpace[] {
@@ -525,6 +680,20 @@ export class ParadisRemoteHostsView extends ViewPane {
 	}
 
 	// --- 操作 --------------------------------------------------------------------------------------
+
+	/**
+	 * 未接続ホストへ実際に繋いだウィンドウを開く。
+	 *
+	 * ここから先は upstream の SSH 接続そのものなので、繋がった側のウィンドウでは
+	 * 「Para ホスト」も接続済みホストとして中身を出し、転送も使えるようになる。
+	 */
+	private async connectToOfflineHost(alias: string): Promise<void> {
+		try {
+			await this.hostService.openWindow({ remoteAuthority: `ssh-remote+${alias}` });
+		} catch (error) {
+			this.notificationService.error(error);
+		}
+	}
 
 	private async openFile(element: ParadisRemoteFileEntry): Promise<void> {
 		await this.editorService.openEditor({ resource: element.uri }).catch(error => this.notificationService.error(error));
@@ -611,6 +780,12 @@ export class ParadisRemoteHostsView extends ViewPane {
 		const push = (label: string, icon: ThemeIcon, run: () => Promise<void>) =>
 			actions.push(new Action(`para-rh-inline-${actionIndex++}`, label, ThemeIcon.asClassName(icon), true, run));
 
+		// 未接続ホストは閲覧専用。転送は IFileService.copy に載っていて、この URI は解決できない。
+		// 押してから失敗させるより項目を出さない方がよい (接続への導線は右クリック側に出す)
+		if (paradisIsOfflineHostKey(element.hostKey)) {
+			return actions;
+		}
+
 		if (element.hostKey !== '') {
 			push(localize('paraRemoteHosts.saveToLocal', "このマシンへ保存…"), Codicon.cloudDownload, () => this.saveToMachine(element));
 			const dirTarget = asDropTarget(element);
@@ -620,6 +795,30 @@ export class ParadisRemoteHostsView extends ViewPane {
 		} else if (this.remoteAuthority) {
 			push(localize('paraRemoteHosts.sendToHost', "{0} へ送る…", hostLabelFromAuthority(this.remoteAuthority)), Codicon.cloudUpload, () => this.sendToHost(element));
 		}
+		return actions;
+	}
+
+	/**
+	 * 未接続ホスト (とその配下) のメニュー。転送は出さず、まず接続への導線を出す。
+	 * 「押したら失敗する項目」を並べるより、繋ぐ道を示す方が親切。
+	 */
+	private buildOfflineHostActions(alias: string, uri?: URI): readonly IAction[] {
+		const actions: IAction[] = [];
+		let index = 0;
+		const push = (label: string, icon: ThemeIcon, run: () => Promise<void>) =>
+			actions.push(new Action(`para-rh-offline-${index++}`, label, ThemeIcon.asClassName(icon), true, run));
+
+		push(localize('paraRemoteHosts.connectAndOpen', "このホストに接続して開く"), Codicon.plug, () => this.connectToOfflineHost(alias));
+		actions.push(new Separator());
+		if (uri) {
+			push(localize('paraRemoteHosts.copyPath', "パスをコピー"), Codicon.clippy, async () => {
+				// 未接続ホストのパスは表示用に組み立てた URI なので、ホーム基準の印を人が読める形へ戻す
+				await this.clipboardService.writeText(uri.path.replace(/^\/~\//, '~/'));
+			});
+		}
+		push(localize('paraRemoteHosts.copyHostName', "ホスト名をコピー"), Codicon.clippy, async () => {
+			await this.clipboardService.writeText(alias);
+		});
 		return actions;
 	}
 
@@ -633,6 +832,12 @@ export class ParadisRemoteHostsView extends ViewPane {
 				actions.push(new Separator());
 			}
 		};
+
+		// 未接続ホスト配下は開く/転送ができないので、まず「繋いでから開く」導線を出す
+		const offlineAlias = paradisOfflineAliasOf(element.hostKey);
+		if (offlineAlias !== undefined) {
+			return this.buildOfflineHostActions(offlineAlias, element.uri);
+		}
 
 		if (isParadisRemoteFileEntry(element) && element.type === 'file') {
 			push(localize('paraRemoteHosts.open', "開く"), Codicon.goToFile, () => this.openFile(element));

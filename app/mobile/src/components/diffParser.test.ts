@@ -49,4 +49,140 @@ describe('parseUnifiedDiff', () => {
 		expect(rows.filter(row => row.kind === 'hunk').length).toBe(1);
 		expect(rows.every(row => row.kind !== 'ctx')).toBe(true);
 	});
+
+	test('ハンク内の+++／---始まりをファイルヘッダーではなく内容行として保持する', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/markers.txt b/markers.txt',
+			'--- a/markers.txt',
+			'+++ b/markers.txt',
+			'@@ -4,2 +4,2 @@',
+			'---old-marker',
+			'+++new-marker',
+			' context',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -4,2 +4,2 @@' },
+			{ kind: 'del', oldNo: 4, text: '--old-marker' },
+			{ kind: 'add', newNo: 4, text: '++new-marker' },
+			{ kind: 'ctx', oldNo: 5, newNo: 5, text: 'context' },
+		]);
+	});
+
+	test('境界なしのhunkless擬似diffでは+++始まりも追加内容として保持する', () => {
+		const rows = parseUnifiedDiff('+++counter;');
+		expect(rows).toEqual([
+			{ kind: 'add', newNo: 1, text: '++counter;' },
+		]);
+	});
+
+	test('次のdiff --git境界でハンク状態と行番号をresetする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/one.txt b/one.txt',
+			'--- a/one.txt',
+			'+++ b/one.txt',
+			'@@ -8 +8 @@',
+			'-old-one',
+			'+new-one',
+			'diff --git a/two.txt b/two.txt',
+			'--- a/two.txt',
+			'+++ b/two.txt',
+			'@@ -1 +1 @@',
+			'-old-two',
+			'+new-two',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -8 +8 @@' },
+			{ kind: 'del', oldNo: 8, text: 'old-one' },
+			{ kind: 'add', newNo: 8, text: 'new-one' },
+			{ kind: 'hunk', text: '@@ -1 +1 @@' },
+			{ kind: 'del', oldNo: 1, text: 'old-two' },
+			{ kind: 'add', newNo: 1, text: 'new-two' },
+		]);
+	});
+
+	test('diff --git境界後のhunkless行は行番号を1から数え直す', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/one.txt b/one.txt',
+			'--- a/one.txt',
+			'+++ b/one.txt',
+			'@@ -8 +8 @@',
+			'-old-one',
+			'+new-one',
+			'diff --git a/two.txt b/two.txt',
+			'+new-two',
+			'-old-two',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -8 +8 @@' },
+			{ kind: 'del', oldNo: 8, text: 'old-one' },
+			{ kind: 'add', newNo: 8, text: 'new-one' },
+			{ kind: 'add', newNo: 1, text: 'new-two' },
+			{ kind: 'del', oldNo: 1, text: 'old-two' },
+		]);
+	});
+
+	test('extended mode metadataの後でもfile headerを除外してtext hunkを保持する', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/mode.ts b/mode.ts',
+			'old mode 100644',
+			'new mode 100755',
+			'--- a/mode.ts',
+			'+++ b/mode.ts',
+			'@@ -1 +1 @@',
+			'-old',
+			'+new',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: '@@ -1 +1 @@' },
+			{ kind: 'del', oldNo: 1, text: 'old' },
+			{ kind: 'add', newNo: 1, text: 'new' },
+		]);
+	});
+
+	test('extended mode metadataの後でもbinary noticeを保持する', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/image.bin b/image.bin',
+			'old mode 100644',
+			'new mode 100755',
+			'Binary files a/image.bin and b/image.bin differ',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'hunk', text: 'Binary files a/image.bin and b/image.bin differ' },
+		]);
+	});
+
+	test('対応する+++がないpending headerをEOFで削除内容としてflushする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/dangling.txt b/dangling.txt',
+			'--- dangling-content',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'del', oldNo: 1, text: '-- dangling-content' },
+		]);
+	});
+
+	test('対応する+++がないpending headerを次のdiff境界でflushする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/one.txt b/one.txt',
+			'--- dangling-content',
+			'diff --git a/two.txt b/two.txt',
+			'+new-two',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'del', oldNo: 1, text: '-- dangling-content' },
+			{ kind: 'add', newNo: 1, text: 'new-two' },
+		]);
+	});
+
+	test('対応する+++がないpending headerを非headerの+++内容の前でflushする', () => {
+		const rows = parseUnifiedDiff([
+			'diff --git a/dangling.txt b/dangling.txt',
+			'--- dangling-content',
+			'+++actual-content',
+		].join('\n'));
+		expect(rows).toEqual([
+			{ kind: 'del', oldNo: 1, text: '-- dangling-content' },
+			{ kind: 'add', newNo: 1, text: '++actual-content' },
+		]);
+	});
 });

@@ -57,6 +57,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			description: localize('paradis.workspaceSwitch.worktreeRoot', "「新しいスペース（worktree）を作成」で worktree を作るベースディレクトリ（絶対パス）。配下に <リポジトリ名>/<ブランチ由来ディレクトリ名>/ が作られます。空の場合はリポジトリの隣の <リポジトリ名>-worktrees/ に作成します。")
 		},
+		'paradis.workspaceSwitch.defaultAgent': {
+			type: 'string',
+			default: '',
+			scope: ConfigurationScope.APPLICATION,
+			// allow-any-unicode-next-line
+			description: localize('paradis.workspaceSwitch.defaultAgent', "「新しいスペース」を開いたときに選んでおくエージェントの識別子（'none' は「実行しない」）。空の場合は前回選んだものを覚えて使います。")
+		},
 		'paradis.workspaceSwitch.agents': {
 			type: 'array',
 			scope: ConfigurationScope.APPLICATION,
@@ -121,7 +128,7 @@ class ParadisCreateWorktreeAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_CREATE_WORKTREE_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.createWorktree', "New Worktree Space..."),
+			title: localize2('paradis.workspaceSwitch.createWorktree', "新しいワークツリースペース..."),
 			category: localize2('paradis.category', "Para Code"),
 			f1: true,
 			icon: Codicon.sparkle
@@ -138,9 +145,9 @@ class ParadisCreateWorktreeAction extends Action2 {
 		if (contextService.getWorkbenchState() !== WorkbenchState.WORKSPACE) {
 			notificationService.prompt(
 				Severity.Warning,
-				localize('paradis.createWorktree.requiresWorkspace', "Para Code worktree creation requires a multi-root workspace. Initialize the Para Code workspace first."),
+				localize('paradis.createWorktree.requiresWorkspace', "ワークツリーの作成にはマルチルートワークスペースが必要です。先に Para Code ワークスペースを初期化してください。"),
 				[{
-					label: localize('paradis.createWorktree.initializeAction', "Initialize Workspace"),
+					label: localize('paradis.createWorktree.initializeAction', "ワークスペースを初期化"),
 					run: () => commandService.executeCommand('paradis.workspaceSwitch.initialize')
 				}]
 			);
@@ -149,9 +156,9 @@ class ParadisCreateWorktreeAction extends Action2 {
 		if (switchService.repositories.length === 0) {
 			notificationService.prompt(
 				Severity.Info,
-				localize('paradis.createWorktree.noRepositories', "No repositories are registered yet."),
+				localize('paradis.createWorktree.noRepositories', "まだリポジトリが登録されていません。"),
 				[{
-					label: localize('paradis.createWorktree.addRepositoryAction', "Add Repository"),
+					label: localize('paradis.createWorktree.addRepositoryAction', "リポジトリを追加"),
 					run: () => commandService.executeCommand('paradis.workspaceSwitch.addRepository')
 				}]
 			);
@@ -247,7 +254,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_REMOVE_WORKTREE_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.removeWorktree', "Remove Worktree"),
+			title: localize2('paradis.workspaceSwitch.removeWorktree', "ワークツリーを削除"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: false
 		});
@@ -486,7 +493,7 @@ class ParadisGetDiffStatsAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_GET_DIFF_STATS_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.getDiffStats', "Get Worktree Diff Stats"),
+			title: localize2('paradis.workspaceSwitch.getDiffStats', "ワークツリーの差分統計を取得"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: false
 		});
@@ -511,7 +518,7 @@ class ParadisGetPrStatusesAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_GET_PR_STATUSES_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.getPrStatuses', "Get Worktree Pull Request Statuses"),
+			title: localize2('paradis.workspaceSwitch.getPrStatuses', "ワークツリーのプルリクエスト状態を取得"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: false
 		});
@@ -546,7 +553,7 @@ class ParadisGetIssueStatusesAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_GET_ISSUE_STATUSES_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.getIssueStatuses', "Get Worktree Issue Statuses"),
+			title: localize2('paradis.workspaceSwitch.getIssueStatuses', "ワークツリーのIssue状態を取得"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: false
 		});
@@ -606,7 +613,7 @@ class ParadisConfigureLifecycleScriptsAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.configureLifecycleScripts', "Setup/Teardown Scripts..."),
+			title: localize2('paradis.workspaceSwitch.configureLifecycleScripts', "Setup / Teardown スクリプト..."),
 			category: localize2('paradis.category', "Para Code"),
 			f1: false
 		});
@@ -631,7 +638,7 @@ registerAction2(ParadisConfigureLifecycleScriptsAction);
 MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
 	command: {
 		id: PARADIS_CREATE_WORKTREE_COMMAND_ID,
-		title: localize2('paradis.workspaceSwitch.createWorktreeMenu', "New Worktree Space..."),
+		title: localize2('paradis.workspaceSwitch.createWorktreeMenu', "新しいワークツリースペース..."),
 		icon: Codicon.sparkle
 	},
 	when: ContextKeyExpr.equals('view', PARADIS_WORKSPACES_VIEW_ID),

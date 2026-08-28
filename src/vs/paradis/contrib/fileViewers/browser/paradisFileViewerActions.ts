@@ -20,6 +20,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { PARADIS_HTML_EDITOR_ID, PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
+import { registerParadisFileViewerFindActions } from './paradisFileViewerFindActions.js';
 
 /** いずれかのビューアペインがアクティブなときにマッチする when 式。 */
 const viewerEditorActiveContext = ContextKeyExpr.or(
@@ -40,7 +41,7 @@ class ParadisShowSourceAction extends Action2 {
 	constructor() {
 		super({
 			id: ParadisShowSourceAction.ID,
-			title: localize2('paradis.fileViewer.showSource', "Show Source"),
+			title: localize2('paradis.fileViewer.showSource', "ソースを表示"),
 			icon: Codicon.code,
 			menu: [{ id: MenuId.EditorTitle, group: 'navigation', order: 1, when: viewerEditorActiveContext }]
 		});
@@ -57,7 +58,7 @@ class ParadisShowPreviewAction extends Action2 {
 	constructor() {
 		super({
 			id: ParadisShowPreviewAction.ID,
-			title: localize2('paradis.fileViewer.showPreview', "Show Preview"),
+			title: localize2('paradis.fileViewer.showPreview', "プレビューを表示"),
 			icon: Codicon.openPreview,
 			menu: [{ id: MenuId.EditorTitle, group: 'navigation', order: 1, when: viewerEditorActiveContext }]
 		});
@@ -72,4 +73,5 @@ class ParadisShowPreviewAction extends Action2 {
 export function registerParadisFileViewerActions(): void {
 	registerAction2(ParadisShowSourceAction);
 	registerAction2(ParadisShowPreviewAction);
+	registerParadisFileViewerFindActions();
 }

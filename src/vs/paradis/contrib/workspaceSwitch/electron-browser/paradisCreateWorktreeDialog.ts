@@ -91,11 +91,17 @@ const STR_CLOSE = localize('paradis.createWorktree.close', "閉じる");
 // allow-any-unicode-next-line
 const STR_ADVANCED = localize('paradis.createWorktree.advanced', "詳細オプション");
 // allow-any-unicode-next-line
-const STR_NAME_PLACEHOLDER = localize('paradis.createWorktree.namePlaceholder', "スペース名（表示名・任意）");
+const STR_NAME_PLACEHOLDER = localize('paradis.createWorktree.namePlaceholder', "(省略可)");
 // allow-any-unicode-next-line
-const STR_BRANCH_PLACEHOLDER = localize('paradis.createWorktree.branchPlaceholder', "ブランチ名（任意）");
+const STR_BRANCH_PLACEHOLDER = localize('paradis.createWorktree.branchPlaceholder', "(自動生成)");
 // allow-any-unicode-next-line
-const STR_PROMPT_PLACEHOLDER = localize('paradis.createWorktree.promptPlaceholder', "何をしますか？（任意 — エージェントへの指示。ブランチ名の自動生成にも使われます）");
+const STR_PROMPT_PLACEHOLDER = localize('paradis.createWorktree.promptPlaceholder', "何をしますか？ ブランチ名の自動生成にも使われます");
+// allow-any-unicode-next-line
+const STR_PROMPT_FIELD = localize('paradis.createWorktree.promptField', "指示（任意）");
+// allow-any-unicode-next-line
+const STR_NAME_FIELD = localize('paradis.createWorktree.nameField', "スペース名");
+// allow-any-unicode-next-line
+const STR_BRANCH_FIELD = localize('paradis.createWorktree.branchField', "ブランチ名");
 // allow-any-unicode-next-line
 const STR_AGENT_LABEL = localize('paradis.createWorktree.agentLabel', "エージェント");
 // allow-any-unicode-next-line
@@ -316,39 +322,58 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private _renderForm(preselectedRepositoryId: string | undefined, prefill: IParadisHeadlessWorktreeRequest | undefined): void {
 		dom.clearNode(this._dialog);
 
-		const title = dom.append(this._dialog, $('h3.pcw-title'));
-		title.textContent = STR_TITLE;
-		dom.append(title, $('span.pcw-d-sub')).textContent = STR_TITLE_SUB;
-		const closeBtn = dom.append(this._dialog, $('button.pcw-d-close')) as HTMLButtonElement;
+		// allow-any-unicode-next-line
+		// 設定 / 通知設定 / 使用量ダッシュボードと同じシェル（ヘッダー帯 + 本文 + フッター帯）に揃える。
+		// 以前はタイトルが本文の padding の中に直接あり、閉じるボタンだけが absolute で浮いていた
+		const header = dom.append(this._dialog, $('.pcw-d-header'));
+		dom.append(header, $('h2.pcw-title')).textContent = STR_TITLE;
+		dom.append(header, $('span.pcw-d-sub')).textContent = STR_TITLE_SUB;
+		const closeBtn = dom.append(header, $('button.pcw-d-close')) as HTMLButtonElement;
 		closeBtn.type = 'button';
 		closeBtn.title = STR_CLOSE;
 		closeBtn.setAttribute('aria-label', STR_CLOSE);
 		dom.append(closeBtn, $('span.codicon.codicon-close'));
 		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
 
+		const body = dom.append(this._dialog, $('.pcw-d-body'));
+
 		// 自然言語プロンプト。ここが一番よく書かれる欄なので最上段に置く
-		this._promptInput = dom.append(this._dialog, $('textarea.pcw-prompt.pcw-d-area')) as HTMLTextAreaElement;
+		// allow-any-unicode-next-line
+		// フィールドの箱そのものを label にして、見出しと入力を暗黙に関連付ける
+		// (placeholder を短くしたので、支援技術に読ませる名前はここにしか無い)
+		const promptField = dom.append(body, $('label.pcw-d-field'));
+		dom.append(promptField, $('span')).textContent = STR_PROMPT_FIELD;
+		this._promptInput = dom.append(promptField, $('textarea.pcw-prompt.pcw-d-area')) as HTMLTextAreaElement;
 		this._promptInput.rows = 3;
 		this._promptInput.placeholder = STR_PROMPT_PLACEHOLDER;
 
 		// スペース名 + ブランチ名
-		const nameRow = dom.append(this._dialog, $('.pcw-d-two'));
-		this._nameInput = dom.append(nameRow, $('input.pcw-d-input.pcw-name')) as HTMLInputElement;
+		const nameRow = dom.append(body, $('.pcw-d-two'));
+		const nameField = dom.append(nameRow, $('label.pcw-d-field'));
+		dom.append(nameField, $('span')).textContent = STR_NAME_FIELD;
+		this._nameInput = dom.append(nameField, $('input.pcw-d-input.pcw-name')) as HTMLInputElement;
 		this._nameInput.type = 'text';
 		this._nameInput.placeholder = STR_NAME_PLACEHOLDER;
-		this._branchInput = dom.append(nameRow, $('input.pcw-d-input.pcw-branch')) as HTMLInputElement;
+		const branchField = dom.append(nameRow, $('label.pcw-d-field'));
+		dom.append(branchField, $('span')).textContent = STR_BRANCH_FIELD;
+		this._branchInput = dom.append(branchField, $('input.pcw-d-input.pcw-branch')) as HTMLInputElement;
 		this._branchInput.type = 'text';
 		this._branchInput.placeholder = STR_BRANCH_PLACEHOLDER;
 		this._branchInput.spellcheck = false;
 
 		// エージェント選択（セグメント）＋その詳細オプション
-		const agentBlock = dom.append(this._dialog, $('.pcw-d-agent-block'));
+		const agentBlock = dom.append(body, $('.pcw-d-agent-block'));
+		dom.append(agentBlock, $('span.pcw-d-field-label')).textContent = STR_AGENT_LABEL;
 		this._agentSeg = dom.append(agentBlock, $('.pcw-d-agent-seg'));
 		this._agentSeg.setAttribute('role', 'radiogroup');
 		this._agentSeg.setAttribute('aria-label', STR_AGENT_LABEL);
-		// 前回選択したエージェントを復元する。保存値が現在の選択肢に無い場合
-		// （設定から削除された等）は既定の「実行しない」にする
-		const lastAgentId = prefill?.agentId ?? this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
+		// 開いたときの選択は、再表示(prefill) > 設定で固定した既定 > 前回選んだもの、の順で決める。
+		// 設定が空なら従来どおり前回選択を覚えて使う。いずれも現在の選択肢に無い場合
+		// （設定から削除された等）は「実行しない」にする
+		const configuredDefault = (this.configurationService.getValue<string>('paradis.workspaceSwitch.defaultAgent') ?? '').trim();
+		const lastAgentId = prefill?.agentId
+			?? (configuredDefault.length > 0 ? configuredDefault : undefined)
+			?? this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
 		this._selectedAgentId = lastAgentId && (lastAgentId === 'none' || this._agents.some(agent => agent.id === lastAgentId))
 			? lastAgentId
 			: 'none';
@@ -373,7 +398,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 		// 詳細オプション（リポジトリ / ベースブランチ / setup）は折りたたみに入れる。
 		// 既定のリポジトリと HEAD で作ることがほとんどなので、開くのは変えたいときだけでよい
-		const advanced = dom.append(this._dialog, $('details.pcw-d-adv')) as HTMLDetailsElement;
+		const advanced = dom.append(body, $('details.pcw-d-adv')) as HTMLDetailsElement;
 		dom.append(advanced, $('summary')).textContent = STR_ADVANCED;
 		const advGrid = dom.append(advanced, $('.pcw-d-adv-grid'));
 
@@ -404,7 +429,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		dom.append(setupLabel, $('span')).textContent = STR_RUN_SETUP;
 		this._setupScriptEl = dom.append(this._setupRow, $('span.pcw-setup-script'));
 
-		this._errorEl = dom.append(this._dialog, $('.pcw-error'));
+		this._errorEl = dom.append(body, $('.pcw-error'));
 
 		const footer = dom.append(this._dialog, $('.pcw-footer.pcw-d-foot'));
 		// 作成先パスのプレビューはフッター左端に置く（案D: 決め手にはならないが常に見えていてほしい情報）

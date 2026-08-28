@@ -44,7 +44,7 @@
 	`--vscode-foreground` because it assumes the bar's background was neutralized to match the
 	window. Para Code keeps a colored (muted) status bar background above, so restore the theme's
 	own statusBar foreground for legibility; the module's hover rule uses `inherit` and follows. */
-.monaco-workbench.paradis-transparent.style-override .part.statusbar {
+.monaco-workbench.paradis-transparent.modern-ui .part.statusbar {
 	color: var(--vscode-statusBar-foreground, var(--vscode-foreground)) !important;
 }
 
@@ -166,6 +166,14 @@
 	background-color: transparent !important;
 }
 
+/* PARA-PATCH: Modern UI's tabs.css paints an opaque panel-background (no !important) on the terminal
+	tab bar (shown once a terminal view has more than one tab) via `.tabs-list-container`, which is
+	otherwise untouched by the rules above (it is a sibling of `.terminal-outer-container`, not a
+	descendant). Clear it so the translucent host part shows through here too. */
+.monaco-workbench.paradis-transparent .pane-body.integrated-terminal .tabs-list-container {
+	background-color: transparent !important;
+}
+
 /* Lists and trees hosted in the side bar / auxiliary bar / panel (Explorer files, Source Control */
 /* changes, debug console rows, output/problems lists, ...). The virtualized `.monaco-list-rows` */
 /* container paints an opaque list background (the host part's theme color) over the translucent */
@@ -213,15 +221,21 @@
 	background-color: color-mix(in srgb, var(--vscode-panel-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
 }
 
-/* Modern UI (workbench.experimental.modernUI) pane cards. styleOverrides' paneHeaders.css paints an
+/* Modern UI (workbench.experimental.modernUI) pane cards. modernUI's paneHeaders.css paints an
 	opaque sideBar-background with !important on every pane card (.monaco-pane-view .pane) and on the
-	pane headers at rest, covering the side bars' interior completely. The translucent layer is
-	already carried by the .part.sidebar / .part.auxiliarybar / .part.panel rules above, so the card
+	pane headers at rest, covering the side bars' interior completely (this also covers the panel/
+	terminal pane cards, since the integrated terminal is hosted as a pane too). The translucent layer
+	is already carried by the .part.sidebar / .part.auxiliarybar / .part.panel rules above, so the card
 	fill must be cleared to transparent — re-painting it with the same color-mix would stack two
-	translucent layers into near-opacity. The extra classes outrank the module's selectors at equal
-	!important. Hover is excluded on the header so the module's hover tint keeps working; the card
-	look is preserved by the module's rounded corners, gaps and shadows, which paint no background. */
-.monaco-workbench.paradis-transparent.style-override .monaco-pane-view .pane,
-.monaco-workbench.paradis-transparent.style-override .monaco-pane-view .pane > .pane-header:not(:hover) {
+	translucent layers into near-opacity. Hover is excluded on the header so the module's hover tint
+	keeps working; the card look is preserved by the module's rounded corners, gaps and shadows, which
+	paint no background.
+	PARA-PATCH: upstream 1.134 tightened its selector to `.modern-ui :is(.part.sidebar,
+	.part.auxiliarybar) .monaco-pane-view .pane` (5 classes), which now ties this rule's specificity
+	(also 5 classes) — a tie lets CSS load order flip the winner, and it silently started losing,
+	making the side bar / auxiliary bar / panel (terminal) pane cards opaque again. Route through
+	`.part` to add a class and win outright regardless of load order. */
+.monaco-workbench.paradis-transparent.modern-ui .part .monaco-pane-view .pane,
+.monaco-workbench.paradis-transparent.modern-ui .part .monaco-pane-view .pane > .pane-header:not(:hover) {
 	background-color: transparent !important;
 }

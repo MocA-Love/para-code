@@ -15,6 +15,7 @@ import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/com
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	ParadisBrowserLiveCadence,
+	ParadisBrowserLivePersistentFailureGate,
 	paradisBrowserLiveCaptureDelayMs,
 	paradisBrowserLiveRetryDelayMs,
 } from '../common/paradisBrowserLiveWindow.js';
@@ -33,15 +34,6 @@ const FIRST_FRAME_RETRY_DELAY = 3000;
 
 /** 生成からこの時間 (ms) を過ぎたら、開いた直後用の待ち (startDelayMs) は使わない。 */
 const STAGGER_WINDOW = 3000;
-
-/**
- * この回数だけ連続で失敗し、かつ1枚も撮れていない場合に「一時的な競合ではなく永続的に
- * 撮影できていない」と見なして Sentry へ報告する回数。`paradisBrowserLiveRetryDelayMs` の
- * バックオフは failures=4 で既に上限(factor=8)へ頭打ちになっており、この閾値はそこから
- * さらに1回リトライしても直らなかった、単発の失敗とは区別できる状態を表す。`failures` は
- * 単調増加なので、この値ちょうどで一度だけ発火する。
- */
-const PERSISTENT_FAILURE_THRESHOLD = 5;
 
 /**
  * タイル1枚分のライブサムネイル。
@@ -78,6 +70,7 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 	private timer: number | undefined;
 	private capturing = false;
 	private failures = 0;
+	private readonly persistentFailureGate = new ParadisBrowserLivePersistentFailureGate();
 	/** いま img が指している blob URL。差し替えのたびに前の URL を解放する。 */
 	private currentUrl: string | undefined;
 	/** 読み込みが終わったら解放する1つ前の blob URL。 */
@@ -230,6 +223,7 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 		if (!model) {
 			// まだエディタが解決されていない (背景のタブ)。絵が出せる状態になるまで待つ。
 			this.failures++;
+			this.persistentFailureGate.record('model-unavailable', this.hasFrame);
 			this.scheduleNext();
 			return;
 		}
@@ -240,13 +234,14 @@ export class ParadisBrowserLiveThumbnail extends Disposable {
 				return;
 			}
 			this.failures = 0;
+			this.persistentFailureGate.record('capture-succeeded', this.hasFrame);
 			this.show(buffer);
 		} catch (error) {
 			this.failures++;
 			// 撮影の失敗は日常的に起きる (ページ破棄との競合、撮影の輻輳)。次の間隔を離して
 			// 静かに続ける —— 通知や画面上の見た目は変えない。
 			this.logService.trace(`[paradisBrowserLive] capture failed (${this.failures}): ${error}`);
-			if (!this.hasFrame && this.failures === PERSISTENT_FAILURE_THRESHOLD) {
+			if (this.persistentFailureGate.record('capture-failed', this.hasFrame)) {
 				// 1枚も撮れないまま連続で失敗し続けている。単発の競合ではなく永続的な失敗
 				// なので、無音のまま静止画が出ない状態が続かないよう報告する。
 				reportParadisDiagnosticError('owned', 'browser-live-window', 'capture-persistently-failing', error, undefined, 'warning');

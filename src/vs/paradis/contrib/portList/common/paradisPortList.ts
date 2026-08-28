@@ -48,6 +48,10 @@ export interface IParadisPortKillRequest {
 	readonly processName: string;
 }
 
+export interface IParadisPortKillBatchResult {
+	readonly failed: number;
+}
+
 export function paradisIsRiskyPortAddress(address: string): boolean {
 	// '0:0:0:0:0:0:0:0' は REHサーバー側(node/paradisPortListChannelServer.ts)の
 	// parseHexAddress が全ゼロIPv6を展開形で返すために出てくる表記(圧縮形の '::' にはならない)。

@@ -27,6 +27,7 @@
 import { ChildProcess, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, unlinkSync } from 'fs';
+import { hostname, userInfo } from 'os';
 import { dirname, join } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -93,14 +94,63 @@ const ONE_SHOT_SSH_OPTIONS = [
 const MAX_RETRIES = 3;
 
 /**
- * `Allocated port ...` の通知が来ないまま待たせない上限。接続先の `~/.ssh/config` に
- * `LogLevel ERROR`/`QUIET` があると（`-o LogLevel=INFO` で通常は上書きされるが、念のため）
- * ssh は正常に繋がったまま何も書かないことがある。有限時間で諦めて再試行の輪へ戻す。
+ * 確認（動的なら `Allocated port ...`、固定候補なら `remote forward success for: ...`）が
+ * 来ないまま待たせない上限。TCP 接続や認証に時間がかかる（到達性の悪い回線・鍵の解決待ち）
+ * だけでなく、接続先の `~/.ssh/config` に `LogLevel ERROR`/`QUIET` があると
+ * （`-o LogLevel=...` で通常は上書きされるが、念のため）ssh が正常に繋がったまま何も書かない
+ * こともある。確認が無い間は「まだ張れていない」として扱い、有限時間で諦めて再試行の輪へ戻す
+ * （＝確認が無いことを「張れた」とはみなさない）。
  */
 const ALLOCATION_TIMEOUT_MS = 10_000;
 
 /** 使い切って諦めてから、また試していいと判断するまでの待ち時間。 */
 const EXHAUSTED_RETRY_COOLDOWN_MS = 30_000;
+
+/**
+ * 決定的候補ポートの範囲。Linux の既定の ephemeral 範囲（`net.ipv4.ip_local_port_range`
+ * の既定値 32768-60999）と重ねると、接続先の無関係な outbound 接続に一時的に取られて
+ * bind に失敗する頻度が上がってしまう。well-known（0-1023）でも Linux の既定 ephemeral でも
+ * ない帯を使う（IANA registered の帯なので、開発機で使われがちな個別のサービスのポートと
+ * 当たる余地は残るが、その場合も動的割当てへフォールバックするだけで実害は無い）。
+ */
+const CANDIDATE_PORT_BASE = 20_000;
+const CANDIDATE_PORT_RANGE = 32_768 - CANDIDATE_PORT_BASE;
+
+/**
+ * 接続先で優先的に使う戻りトンネルのリッスンポートを、ローカルのユーザー名・ホスト名と
+ * 接続先のホストから決定的に計算する。
+ *
+ * 毎回 sshd に選ばせる完全動的な番号だと、SSH の張り直しのたびに番号が変わり、接続先の
+ * MCP / hook 設定ファイルの書き換えと、それを読んでいる側（エージェントCLI）の再接続が
+ * そのたびに必要になる。同じユーザーが同じホストへ繋ぐ限り毎回同じ番号になれば、番号が変わるのは
+ * 「他の誰か（別ユーザー・別プロセス）が偶然同じ番号を先に取っていた」ときだけに減らせる。
+ * 衝突したときは start() 側が動的割当てへフォールバックする（下記 useDynamicPort 参照）。
+ *
+ * ローカルのホスト名も混ぜているのは、ユーザー名だけだと `ubuntu` / `dev` のような使われがちな
+ * 名前で別のマシンの利用者同士が毎回確実に衝突してしまうため。ホスト名が加われば、同じユーザー名
+ * でもマシンが違えば別の候補になり、衝突は「本当に同じマシン・同じユーザーが二重に繋いだ」場合に
+ * ほぼ限られる。
+ *
+ * 注意: macOS の `os.hostname()` は DHCP 由来（`Foo.local` 等）でネットワークを移ると変わる
+ * ことがある。変わればこの関数の返り値も変わり、「番号を安定させる」という狙いは部分的に崩れるが、
+ * それでも動的割当てへのフォールバックが必ず効くので、張れなくなることはない。
+ */
+export function computeCandidateRemotePort(host: string): number {
+	// uid に対応する passwd エントリが無い環境（コンテナの --user 指定等）では os.userInfo() が、
+	// まれに uv_os_gethostname が失敗する環境では os.hostname() も例外を投げうる。
+	// この関数は ensure() からの同期呼びだけでなく retryTimer のコールバックからも呼ばれるため
+	// （後者で投げると未捕捉例外として shared process へ上がる）、丸ごと守る。
+	// 「失敗しても投げない」という設計を守るため、代わりの手がかりで我慢する
+	// （決定的でありさえすればよく、一意性は必須ではない）
+	let identity: string;
+	try {
+		identity = `${userInfo().username}@${hostname()}`;
+	} catch {
+		identity = `${process.env['USER'] ?? process.env['LOGNAME'] ?? 'para-code'}@${process.env['HOSTNAME'] ?? 'para-code'}`;
+	}
+	const digest = createHash('sha256').update(`${identity}@${host}`).digest();
+	return CANDIDATE_PORT_BASE + (digest.readUInt16BE(0) % CANDIDATE_PORT_RANGE);
+}
 
 interface ITunnelEntry {
 	readonly remoteAuthority: string;
@@ -137,17 +187,49 @@ interface ITunnelEntry {
 	exhausted: boolean;
 	/** 使い切った時刻。`EXHAUSTED_RETRY_COOLDOWN_MS` 経ったら追い直しを許す。 */
 	exhaustedAt: number | undefined;
+	/**
+	 * 直近の試行で決定的候補が使用中で弾かれ、動的割当てへ切り替えた状態なら true。
+	 * 通常の切断（`retryImmediately` を伴わない close）を1回でも経ると false に戻す
+	 * （一時的な ephemeral ポートの衝突だっただけかもしれないので、次の接続でまた候補から試す）。
+	 */
+	useDynamicPort: boolean;
+	/**
+	 * 決定的候補が使用中で弾かれた直後の close を、通常の切断（再試行の待ち時間を置く）と
+	 * 区別するための目印。立っていれば、待たずに動的割当てで張り直す（リトライ回数も消費しない）。
+	 */
+	retryImmediately: boolean;
+	/**
+	 * 直近の試行で、確認（成功・失敗どちらの信号）も来ないまま `ALLOCATION_TIMEOUT_MS` で
+	 * 諦めたなら true。次の通常リトライで動的割当てへ切り替える判断材料にする
+	 * （OpenSSH 以外の実装・DEBUG1 が抑止される構成など、固定候補の正の確認信号が
+	 * 構造的に得られない相手に対して、確認の出方がより確実な動的割当てへ逃がすための退路）。
+	 */
+	timedOutWaitingForConfirmation: boolean;
 }
 
 /**
- * 接続先ごとに `ssh -N -R 0:127.0.0.1:<port>` を1本維持する。
+ * 接続先ごとに `ssh -N -R <listenPort>:127.0.0.1:<gatewayPort>` を1本維持する。
+ * `listenPort` は接続先で開くポート、`gatewayPort` は手元の MCP / hook ゲートウェイのポート
+ * （呼び出し元が渡す `port`）で、この2つは別の値になる。
  *
- * 接続先で開くポートは固定番号ではなく、その都度 sshd に選ばせる動的な番号にする。
- * 同じ接続先ホストへ複数ユーザーの Para Code が同時に SSH するとき（例: 共有の開発サーバー）、
- * 全員が同じ既定ポートで戻りトンネルを張ろうとすると、先に繋いだ人だけが成功し、
- * 後から繋いだ人は `remote port forwarding failed for listen port <固定番号>` で
- * 恒久的に失敗する（実機で確認済み）。動的ポートなら sshd が空いている番号を選ぶので衝突しない。
- * 割り当てられた番号は ssh の stderr に出る `Allocated port <N> for remote forward to ...` を読んで拾う。
+ * 接続先で開くポートは、まずユーザー名とホストから決めた候補（`computeCandidateRemotePort()`）を
+ * 試す。同じユーザーが同じホストへ繋ぐ限り毎回同じ番号になるので、MCP / hook 設定ファイルの
+ * 書き換えとエージェントCLI側の再接続が、番号が変わるたびに必要になる事態を避けられる。
+ *
+ * 候補が使用中なら、`ssh -N -R <固定番号>:...` は `remote port forwarding failed for listen
+ * port <固定番号>` を出して終了する（実機で確認済み）。同じ接続先ホストへ複数ユーザーの Para Code
+ * が同時に SSH するとき（例: 共有の開発サーバー）、全員が同じ既定ポートで固定して戻りトンネルを
+ * 張ろうとすると、先に繋いだ人だけが成功し後から繋いだ人は恒久的に失敗する事故が起きる。
+ * このため候補が弾かれたら、その接続に限って `ssh -N -R 0:...` に切り替え、sshd に空いている
+ * 番号を選ばせる（衝突しない代わり、毎回番号が変わる）。通常の切断を1回でも経ると、次はまた
+ * 決定的候補から試す（一時的な衝突だっただけかもしれないので、粘着させすぎない）。
+ *
+ * 割り当てられた番号は ssh の stderr から拾う。動的割当てでは `Allocated port <N> for
+ * remote forward to ...` が常に出る。固定候補は既定の LogLevel では成功時に何も出さないため、
+ * 固定候補を試すときだけ `LogLevel=DEBUG1` に上げ、`remote forward success for: listen <N>` を
+ * 正の確認信号として使う（「一定時間エラーが来なければ張れたとみなす」という推定はしない。
+ * 到達不能なホストや認証に時間がかかる構成では、エラーが来る前に時間切れになって「張れた」と
+ * 誤判定し続け、諦めるべきところで諦められなくなるため）。
  */
 export class ParadisRemoteAgentTunnels extends Disposable {
 
@@ -239,6 +321,8 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 				existing.exhausted = false;
 				existing.exhaustedAt = undefined;
 				existing.retries = 0;
+				// 十分に間を置いたので、決定的候補が今度は空いているかもしれない。もう一度試す
+				existing.useDynamicPort = false;
 				const restarted = new Promise<number | undefined>(resolve => existing.pending.push(resolve));
 				this.start(remoteAuthority, existing, port);
 				return restarted;
@@ -250,6 +334,7 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			openedSocketForwards: new Map(), inFlightSocketForwards: new Set(),
 			controlPath: this.controlPathFor(remoteAuthority), child: undefined, retries: 0, retryTimer: undefined,
 			allocationTimer: undefined, disposed: false, remotePort: undefined, pending: [], exhausted: false, exhaustedAt: undefined,
+			useDynamicPort: false, retryImmediately: false, timedOutWaitingForConfirmation: false,
 		};
 		this.tunnels.set(remoteAuthority, entry);
 		// resolver を pending へ積んでから start() を呼ぶこと（理由は上記コメントと同じ）
@@ -321,11 +406,13 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 
 	private start(remoteAuthority: string, entry: ITunnelEntry, port: number): void {
+		// まずユーザー×ホストから決まる候補を試す。一度でも使用中で弾かれたら、この接続に限って
+		// sshd に選ばせる（同じ番号を取り合って弾かれ続けない）。通常の切断を経ると close 側で
+		// false に戻すので、次の接続ではまた候補から試す
+		const listenPort = entry.useDynamicPort ? 0 : computeCandidateRemotePort(entry.host);
 		const args = [
 			'-N',
-			// 固定番号ではなく sshd に選ばせる。同じホストへ複数ユーザーが同時に繋ぐ共有サーバーで、
-			// 全員が同じ番号を取り合って後勝ちの人だけ弾かれ続ける事故を避けるため
-			'-R', `0:127.0.0.1:${port}`,
+			'-R', `${listenPort}:127.0.0.1:${port}`,
 			// Codex ペインのソケットを後から足し引きするための制御口。接続そのものは1本のまま
 			// にしたいので、ペインごとに ssh を起こさずここへ相乗りさせる
 			...(entry.controlPath !== undefined ? ['-M', '-S', entry.controlPath, '-o', 'ControlPersist=no'] : []),
@@ -333,10 +420,15 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			'-o', 'BatchMode=yes',
 			// ポートを取れなかったら黙って繋がったままにせず終了させる
 			'-o', 'ExitOnForwardFailure=yes',
-			// 割り当てられた番号を知らせる `Allocated port ...` 行は INFO レベルで出る。接続先の
-			// `~/.ssh/config` が LogLevel を絞っていても、コマンドライン引数は config より優先されるので
-			// ここで強制する
-			'-o', 'LogLevel=INFO',
+			// 動的割当てでは `Allocated port ...` が INFO レベルで出るのでそれで十分だが、
+			// 固定候補では成功時に既定の LogLevel では何も出ないため DEBUG1 まで上げ、
+			// `remote forward success for: listen <N>` を正の確認信号として拾う。
+			// 接続先の `~/.ssh/config` が LogLevel を絞っていても、コマンドライン引数は
+			// config より優先されるのでここで強制できる。確認のためだけに要る設定だが、
+			// 接続の寿命いっぱい DEBUG1 のまま残る（確認後に INFO へ戻す口は無い）ので、
+			// hook / MCP のやり取りごとに `debug1: channel ...` 系の行が stderr へ流れ続ける。
+			// それらは末尾の `/^debug\d?:/` 判定で trace に落として warn ログを埋めない
+			'-o', listenPort === 0 ? 'LogLevel=INFO' : 'LogLevel=DEBUG1',
 			'-o', 'ServerAliveInterval=30',
 			'-o', 'ServerAliveCountMax=3',
 			entry.host,
@@ -356,12 +448,19 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		}
 		entry.child = child;
 
-		// 割り当て通知が来ないまま（LogLevel が絞られている等）待たせ続けない。番号が分かるか
-		// 接続が終わるかのどちらかが先に起きるので、ここでは「終わらせる」側を受け持つ
+		// 確認（動的なら `Allocated port ...`、固定候補なら `remote forward success for: ...`）が
+		// 来ないまま待たせ続けない。番号が分かるか接続が終わるかのどちらかが先に起きるので、
+		// ここでは「終わらせる」側を受け持つ。到達不能なホストや認証待ちが長引く構成では、
+		// エラーより先にここへ来ることがあるが、それは「まだ張れていない」の判定として正しい
+		// （時間切れを「張れた」とみなす推定はしない）。
+		// 固定候補で確認が一度も取れなかった場合は、次の通常リトライで動的割当てへ切り替える
+		// （OpenSSH 以外の実装や DEBUG1 が抑止される構成など、正の確認信号が構造的に得られない
+		// 相手に固定候補を延々と試し続けて、戻りトンネルが永久に張れなくなるのを避けるため）
 		entry.allocationTimer = setTimeout(() => {
 			entry.allocationTimer = undefined;
 			if (!entry.disposed && entry.remotePort === undefined) {
-				entry.child?.kill();
+				entry.timedOutWaitingForConfirmation = true;
+				child.kill();
 			}
 		}, ALLOCATION_TIMEOUT_MS);
 
@@ -374,9 +473,13 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 
 		// ssh の stderr は失敗理由（鍵無し等）に加え、動的ポートで割り当てられた番号
 		// （`Allocated port <N> for remote forward to 127.0.0.1:<port>`）が出る唯一の場所なので拾っておく。
+		// 決定的候補では、使用中で弾かれると `remote port forwarding failed for listen port <N>` が、
+		// 張れると（DEBUG1 なので）`remote forward success for: listen <N>, ...` が出る。
 		// チャンクは行境界と無関係に届くため、行単位に組み直してから調べる
 		let stderrBuffer = '';
 		const allocatedPortPattern = new RegExp(`^Allocated port (\\d+) for remote forward to 127\\.0\\.0\\.1:${port}$`);
+		const fixedPortTakenPattern = new RegExp(`remote port forwarding failed for listen port ${listenPort}\\b`);
+		const fixedPortSuccessPattern = new RegExp(`remote forward success for: listen [^,]*\\b${listenPort}\\b`);
 		child.stderr?.on('data', (chunk: Buffer) => {
 			stderrBuffer += chunk.toString();
 			let newlineIndex: number;
@@ -386,14 +489,37 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 				if (line.length === 0) {
 					continue;
 				}
-				const allocated = allocatedPortPattern.exec(line);
-				if (allocated !== null) {
-					this.logService.info(`[paradis] return tunnel (${entry.host}): ${line}`);
-					const remotePort = Number(allocated[1]);
-					if (Number.isInteger(remotePort) && remotePort > 0 && remotePort <= 65535) {
-						entry.retries = 0; // 一度でも張れたら、次に切れたときはまた最初から数え直す
-						this.settle(entry, remotePort);
+				if (listenPort === 0) {
+					const allocated = allocatedPortPattern.exec(line);
+					if (allocated !== null) {
+						this.logService.info(`[paradis] return tunnel (${entry.host}): ${line}`);
+						const remotePort = Number(allocated[1]);
+						if (Number.isInteger(remotePort) && remotePort > 0 && remotePort <= 65535) {
+							entry.retries = 0; // 一度でも張れたら、次に切れたときはまた最初から数え直す
+							this.settle(entry, remotePort);
+						}
+						continue;
 					}
+					this.logService.warn(`[paradis] return tunnel (${entry.host}): ${line}`);
+					continue;
+				}
+				// 決定的候補：LogLevel=DEBUG1 の副作用で `debug1: ...` の行が大量に流れる。
+				// 成功／失敗の2パターンだけを個別に見て、それ以外の debug 行は warn で埋めずに
+				// trace へ落とす。ただし `Permission denied` 等の本物のエラーは debug 接頭辞を
+				// 持たないので、そちらは今までどおり warn に残す（診断性を落とさない）
+				if (fixedPortSuccessPattern.test(line)) {
+					this.logService.info(`[paradis] return tunnel (${entry.host}): preferred port ${listenPort} is up`);
+					entry.retries = 0; // 一度でも張れたら、次に切れたときはまた最初から数え直す
+					this.settle(entry, listenPort);
+				} else if (fixedPortTakenPattern.test(line)) {
+					this.logService.info(`[paradis] return tunnel (${entry.host}): preferred port ${listenPort} is taken; falling back to a dynamic one`);
+					// ExitOnForwardFailure=yes によりこのプロセスはまもなく終了する。まだ生きていれば
+					// 確実に close させ、そちらで待たずに動的割当てへ切り替えて張り直す
+					entry.useDynamicPort = true;
+					entry.retryImmediately = true;
+					child.kill();
+				} else if (/^debug\d?:/.test(line)) {
+					this.logService.trace(`[paradis] return tunnel (${entry.host}): ${line}`);
 				} else {
 					this.logService.warn(`[paradis] return tunnel (${entry.host}): ${line}`);
 				}
@@ -415,6 +541,13 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			if (entry.disposed) {
 				return;
 			}
+			if (entry.retryImmediately) {
+				// 決定的候補が使用中で弾かれただけ。待たずに動的割当てで張り直す（リトライ回数は消費しない）
+				entry.retryImmediately = false;
+				entry.timedOutWaitingForConfirmation = false; // このケースでは意味を持たない値なので念のため揃える
+				this.start(remoteAuthority, entry, port);
+				return;
+			}
 			if (entry.retries >= MAX_RETRIES) {
 				this.logService.warn(`[paradis] gave up on the return tunnel to ${entry.host} (last exit code ${code})`);
 				entry.exhausted = true;
@@ -423,6 +556,12 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 				return;
 			}
 			entry.retries++;
+			// 通常の切断のうち、確認が一度でも取れていた（張れていた経路が後から切れた）なら、
+			// それは一時的な衝突だっただけかもしれないので、次はまた決定的候補から試す。
+			// 確認が一度も取れないまま時間切れになったのなら、固定候補の正の確認信号が構造的に
+			// 得られない相手（OpenSSH 以外の実装等）の可能性があるので、次は動的割当てへ逃がす
+			entry.useDynamicPort = entry.timedOutWaitingForConfirmation;
+			entry.timedOutWaitingForConfirmation = false;
 			entry.retryTimer = setTimeout(() => {
 				entry.retryTimer = undefined;
 				if (!entry.disposed) {

@@ -43,6 +43,11 @@ import { hasClientToolNamePrefix, stripClientToolNamePrefix } from './clientTool
  * attribution rule from M7 — `tool_result` legitimately lands in a later
  * `'user'` envelope and must resolve back to the announcing `tool_use`'s
  * turn. This mapper builds an equivalent local map during its single pass.
+ *
+ * PARA-PATCH: if you change this function's output shape, bump the turn-cache
+ * format version string passed to `ParadisTurnCache` at its `claudeAgent.ts`
+ * call site — otherwise a stale disk cache entry keeps rendering the old
+ * shape after an upstream merge. See CLAUDE.md.
  */
 export function mapSessionMessagesToTurns(
 	messages: readonly SessionMessage[],

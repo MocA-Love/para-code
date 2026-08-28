@@ -19,20 +19,66 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 	const rows: DiffRow[] = [];
 	let oldNo = 0;
 	let newNo = 0;
+	let inHunk = false;
+	let metadataPhase: 'none' | 'headers' | 'awaitingNewHeader' = 'none';
+	let pendingOldFileHeader: string | undefined;
+	const flushPendingOldFileHeader = () => {
+		if (!pendingOldFileHeader) {
+			return;
+		}
+		if (oldNo === 0) {
+			oldNo = 1;
+		}
+		rows.push({ kind: 'del', oldNo: oldNo++, text: pendingOldFileHeader.slice(1) });
+		pendingOldFileHeader = undefined;
+	};
 	for (const line of diff.split('\n')) {
+		if (line.startsWith('diff ')) {
+			flushPendingOldFileHeader();
+			inHunk = false;
+			oldNo = 0;
+			newNo = 0;
+			metadataPhase = 'headers';
+			pendingOldFileHeader = undefined;
+			continue;
+		}
+		if (metadataPhase === 'awaitingNewHeader') {
+			if (line.startsWith('+++ ')) {
+				metadataPhase = 'headers';
+				pendingOldFileHeader = undefined;
+				continue;
+			}
+			flushPendingOldFileHeader();
+			metadataPhase = 'none';
+		}
 		if (line.startsWith('@@')) {
 			const m = line.match(/^@@ -(?<oldStart>\d+)(?:,\d+)? \+(?<newStart>\d+)(?:,\d+)? @@(?<rest>.*)$/);
 			if (m?.groups) {
 				oldNo = parseInt(m.groups.oldStart ?? '1', 10);
 				newNo = parseInt(m.groups.newStart ?? '1', 10);
+				inHunk = true;
+				metadataPhase = 'none';
 				rows.push({ kind: 'hunk', text: line });
 			}
-		} else if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') || line.startsWith('rename ') || line.startsWith('Binary files') || line.startsWith('\\')) {
-			// ファイルメタ情報はビューアのヘッダで代替する（Binary等は文脈行として出さない）
+			continue;
+		}
+		if (!inHunk && metadataPhase === 'headers') {
+			if (line.startsWith('--- ')) {
+				pendingOldFileHeader = line;
+				metadataPhase = 'awaitingNewHeader';
+				continue;
+			}
 			if (line.startsWith('Binary files')) {
 				rows.push({ kind: 'hunk', text: line });
+				continue;
 			}
-		} else if (line.startsWith('+')) {
+			if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) {
+				metadataPhase = 'none';
+			} else {
+				continue;
+			}
+		}
+		if (line.startsWith('+')) {
 			// 未追跡ファイルの擬似diff（全行+でハンク見出しなし）は1行目から数える
 			if (newNo === 0) {
 				newNo = 1;
@@ -52,5 +98,6 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 			}
 		}
 	}
+	flushPendingOldFileHeader();
 	return rows;
 }

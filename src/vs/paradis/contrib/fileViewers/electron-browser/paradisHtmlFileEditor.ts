@@ -123,17 +123,17 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
-		this._zoomOutButton = this._createIconButton(toolbar, Codicon.zoomOut, localize('paradis.html.zoomOut', "Zoom Out"));
+		this._zoomOutButton = this._createIconButton(toolbar, Codicon.zoomOut, localize('paradis.html.zoomOut', "ズームアウト"));
 		this._register(dom.addDisposableListener(this._zoomOutButton, dom.EventType.CLICK, () => this._applyZoom(this._zoomLevel - 1)));
 
 		this._percentButton = dom.append(toolbar, dom.$('button.paradis-html-zoom-percent')) as HTMLButtonElement;
-		this._percentButton.title = localize('paradis.html.resetZoom', "Reset Zoom");
+		this._percentButton.title = localize('paradis.html.resetZoom', "ズームをリセット");
 		this._register(dom.addDisposableListener(this._percentButton, dom.EventType.CLICK, () => this._applyZoom(0)));
 
-		this._zoomInButton = this._createIconButton(toolbar, Codicon.zoomIn, localize('paradis.html.zoomIn', "Zoom In"));
+		this._zoomInButton = this._createIconButton(toolbar, Codicon.zoomIn, localize('paradis.html.zoomIn', "ズームイン"));
 		this._register(dom.addDisposableListener(this._zoomInButton, dom.EventType.CLICK, () => this._applyZoom(this._zoomLevel + 1)));
 
-		const refreshButton = this._createIconButton(toolbar, Codicon.refresh, localize('paradis.html.refresh', "Reload"));
+		const refreshButton = this._createIconButton(toolbar, Codicon.refresh, localize('paradis.html.refresh', "再読み込み"));
 		this._register(dom.addDisposableListener(refreshButton, dom.EventType.CLICK, () => this.webview?.reload()));
 
 		this._updateZoomUI();

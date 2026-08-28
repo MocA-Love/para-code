@@ -10,7 +10,6 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
-import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { VoiceNotificationControl } from '../../src/components/voiceNotificationControl.js';
 import { useWsHeader, useEffectiveWs, useOpenDrawerPan, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionStack, type AttentionStackItem } from '../../src/components/attentionStack.js';
@@ -24,7 +23,7 @@ import { HomeAgentRow, type HomeAgentRowHandlers } from '../../src/components/ho
 import { closeOpenedSwipeRow } from '../../src/components/swipeRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
-import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
+import { useParaHeaderHeight } from '../../src/paraHeader.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
@@ -33,7 +32,13 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 import { arrangeHomeRows } from '../../src/homeSort.js';
 import { HomeFilterChips, HomeSortSheet } from '../../src/components/homeListControls.js';
-import { HomePlusMenuButton, type HomePlusMenuAction } from '../../src/components/homePlusMenu.js';
+import {
+	dispatchHomeHeaderMenuAction,
+	homeHeaderLayout,
+	type HomeHeaderMenuAction,
+	type HomePlusMenuAction,
+} from '../../src/components/homeHeaderMenuBehavior.js';
+import { useHomeHeaderActions } from '../../src/components/homeHeaderActions.js';
 import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
 import { listColumnsFor, CONTENT_MAX_WIDTH } from '../../src/ipad/ipadLayout.js';
 
@@ -93,12 +98,19 @@ export default function HomeScreen() {
 	const [sortSheetOpen, setSortSheetOpen] = useState(false);
 	// ヘッダーの＋から生えるメニューと、そこから開くワークツリー作成シート。
 	const [worktreeSheetOpen, setWorktreeSheetOpen] = useState(false);
+	const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 	// ヘッダー＋ボタンで開く「新しいエージェントを起動」シートの表示状態。
 
 	const tabBarSpacer = useTabBarSpacer();
 	const regular = useIsRegularWidth();
+	const homeHeader = useMemo(() => homeHeaderLayout(regular ? 'regular' : 'compact'), [regular]);
+	const voiceActive = useAppStore(state => state.voiceNotifications.desired);
+	const notificationQuestionCount = useMemo(
+		() => notifications.filter(notification => notification.kind === 'agent-question').length,
+		[notifications],
+	);
 	// 一覧を何列で並べるか。ウィンドウ幅ではなく実際の一覧の幅で決める
 	// （左のサイドバーぶん狭いので、ウィンドウ幅で決めると2列に入らない幅でも2列にしてしまう）。
 	const [listWidth, setListWidth] = useState(0);
@@ -338,27 +350,38 @@ export default function HomeScreen() {
 				return;
 		}
 	}, [router, createTerminal, effectiveWs, reviewable, ackAgentStatus]);
+	const openArchive = useCallback(() => {
+		hapticImpact('light');
+		router.push('/archive');
+	}, [router]);
+	const openNotifications = useCallback(() => {
+		hapticImpact('light');
+		router.push('/notifications');
+	}, [router]);
+	const onHeaderMenuSelect = useCallback((action: HomeHeaderMenuAction) => {
+		dispatchHomeHeaderMenuAction(action, {
+			onArchive: openArchive,
+			onVoiceNotifications: () => setVoiceSheetOpen(true),
+			onNotifications: openNotifications,
+			onPlusMenuSelect,
+		});
+	}, [onPlusMenuSelect, openArchive, openNotifications]);
 
 	// 右のピルの中身。**器（1枚のガラスのピル）はヘッダー層が持つ**ので、ここは中身だけを渡す。
 	// 並びは「たまに使う → よく使う」で、＋を右端に置く。メニューはその＋から生えるので、
 	// 右端でないと開く場所と押した場所がずれる。状態を持つボタン（音声・通知・＋）は
 	// データにできないので `node` で差し込む。
-	const actions = useMemo<ParaHeaderIcon[]>(() => [
-		...(archivedCount > 0 ? [{
-			key: 'archive',
-			icon: 'file-tray-full-outline' as const,
-			label: `アーカイブ ${archivedCount}件を見る`,
-			onPress: () => { hapticImpact('light'); router.push('/archive'); },
-		}] : []),
-		{ key: 'voice', label: '音声通知', node: <VoiceNotificationControl /> },
-		{ key: 'notifications', label: '通知', node: <NotificationsButton notifications={notifications} /> },
-		// ＋はネイティブのボタン。メニューの提示ごとOSに任せてあるので、開閉のstateは
-		// こちらで持たない（homePlusMenu.tsx 参照）。
-		{
-			key: 'plus', label: '作成と表示のメニュー',
-			node: <HomePlusMenuButton ackCount={reviewable.length} hasSpace={effectiveWs !== undefined} onSelect={onPlusMenuSelect} />,
-		},
-	], [archivedCount, router, notifications, reviewable.length, effectiveWs, onPlusMenuSelect]);
+	const actions = useHomeHeaderActions({
+		header: homeHeader,
+		archivedCount,
+		voiceActive,
+		notificationQuestionCount,
+		ackCount: reviewable.length,
+		hasSpace: effectiveWs !== undefined,
+		notifications,
+		onArchive: openArchive,
+		onSelect: onHeaderMenuSelect,
+	});
 
 	// 絞り込みチップ。要素も memo で安定させる（同じ理由）。
 	//
@@ -512,6 +535,9 @@ export default function HomeScreen() {
 				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
 			<WorktreeCreateSheet visible={worktreeSheetOpen} onClose={() => setWorktreeSheetOpen(false)} />
+			{homeHeader.kind === 'compact-menu' ? (
+				<VoiceNotificationControl visible={voiceSheetOpen} onClose={() => setVoiceSheetOpen(false)} />
+			) : null}
 			<HomeSortSheet
 				visible={sortSheetOpen}
 				preferences={homePreferences}

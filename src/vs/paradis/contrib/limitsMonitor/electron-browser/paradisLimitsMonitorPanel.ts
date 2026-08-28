@@ -31,7 +31,9 @@ import {
 	IParadisLimitsWindow,
 	paradisLimitsFormatCountdown,
 	paradisLimitsFormatResetClock,
+	paradisLimitsNeedsRelogin,
 	paradisLimitsSeverity,
+	ParadisLimitsAccountStatus,
 	ParadisLimitsProvider
 } from '../common/paradisLimitsMonitor.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
@@ -261,15 +263,18 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 
 		if (account.status !== 'ok') {
-			dom.append(top, $('.plm-badge.err')).textContent = account.status === 'token_expired'
-				? localize('paradis.limitsMonitor.tokenExpired', "トークン失効")
-				: localize('paradis.limitsMonitor.accountError', "エラー");
+			// 'unavailable'（読めていないだけ）と 'refreshing'（Claude Codeが自動で更新する）は
+			// 認証の問題ではないので、赤いエラーバッジも「再ログイン…」も出さない。
+			const badgeClass = paradisLimitsNeedsRelogin(account.status) ? '.plm-badge.err' : '.plm-badge';
+			dom.append(top, $(badgeClass)).textContent = this.statusBadgeLabel(account.status);
 			const errorRow = dom.append(card, $('.plm-error-row'));
-			dom.append(errorRow, $('span')).textContent = account.statusDetail ?? localize('paradis.limitsMonitor.reloginNeeded', "再ログインが必要です");
-			const reloginButton = dom.append(errorRow, $('button.plm-relogin-btn'));
-			reloginButton.setAttribute('type', 'button');
-			reloginButton.textContent = localize('paradis.limitsMonitor.relogin', "再ログイン…");
-			this._bodyListeners.add(dom.addDisposableListener(reloginButton, 'click', () => this.options.onRelogin(account)));
+			dom.append(errorRow, $('span')).textContent = this.statusMessage(account);
+			if (paradisLimitsNeedsRelogin(account.status)) {
+				const reloginButton = dom.append(errorRow, $('button.plm-relogin-btn'));
+				reloginButton.setAttribute('type', 'button');
+				reloginButton.textContent = localize('paradis.limitsMonitor.relogin', "再ログイン…");
+				this._bodyListeners.add(dom.addDisposableListener(reloginButton, 'click', () => this.options.onRelogin(account)));
+			}
 			return;
 		}
 
@@ -284,6 +289,66 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 		if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
 			dom.append(card, $('.plm-error-row')).textContent = localize('paradis.limitsMonitor.noWindows', "使用状況データがありません");
+		}
+	}
+
+	private statusBadgeLabel(status: ParadisLimitsAccountStatus): string {
+		switch (status) {
+			case 'refreshing':
+				return localize('paradis.limitsMonitor.refreshing', "更新待ち");
+			case 'relogin_required':
+				return localize('paradis.limitsMonitor.reloginRequired', "要再ログイン");
+			case 'no_credentials':
+				return localize('paradis.limitsMonitor.noCredentials', "認証情報なし");
+			case 'unavailable':
+				return localize('paradis.limitsMonitor.usageUnavailableBadge', "取得できず");
+			case 'error':
+				return localize('paradis.limitsMonitor.accountError', "エラー");
+			case 'ok':
+				return '';
+			default: {
+				// 状態を増やしたらここがコンパイルエラーになる（無言の誤表示を防ぐ）。
+				const exhaustive: never = status;
+				return exhaustive;
+			}
+		}
+	}
+
+	/**
+	 * 状態の説明文。
+	 *
+	 * 以前は cswap の usageStatus 生値（'unavailable' 等）をそのまま出していたため、
+	 * 制限に到達しただけのアカウントが英語のエラーとして並んでいた。
+	 */
+	private statusMessage(account: IParadisLimitsAccount): string {
+		switch (account.status) {
+			case 'refreshing':
+				return localize('paradis.limitsMonitor.refreshingDetail', "アクセストークンの期限が切れています。Claude Code が自動で更新するので、操作は要りません");
+			case 'unavailable':
+				switch (account.unavailableReason) {
+					case 'api_key':
+						return localize('paradis.limitsMonitor.apiKeyAccount', "APIキーで利用しているアカウントのため、サブスクリプションの使用状況はありません");
+					case 'keychain_unavailable':
+						return localize('paradis.limitsMonitor.keychainUnavailable', "キーチェーンを読み取れないため、使用状況を取得できません。しばらくしてからお試しください");
+					default:
+						// 制限到達で取得が止まっている場合が多いが、通信断や取得失敗でも同じ状態になる。
+						return localize('paradis.limitsMonitor.usageUnavailable', "使用状況を一時的に取得できていません（制限に達したアカウントは、枠がリセットされるまで取得を止めるため、この表示になることがあります）");
+				}
+			case 'no_credentials':
+				return localize('paradis.limitsMonitor.noCredentialsDetail', "認証情報が見つかりません。再ログインしてください");
+			case 'error':
+				// Codex側は原因(HTTPエラー等)を statusDetail に入れるので、あればそれを見せる。
+				return account.statusDetail ?? localize('paradis.limitsMonitor.fetchFailed', "使用状況を取得できませんでした");
+			case 'relogin_required':
+				return localize('paradis.limitsMonitor.reloginNeeded', "再ログインが必要です");
+			case 'ok':
+				return '';
+			default: {
+				// 状態を増やしたらここがコンパイルエラーになる。既定を「再ログインが必要」に
+				// しておくと、操作不要な新状態を足したときに今回直した誤報がそのまま再発する。
+				const exhaustive: never = account.status;
+				return exhaustive;
+			}
 		}
 	}
 
