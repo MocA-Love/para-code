@@ -26,6 +26,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { GeneralShellType, ITerminalEnvironment, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
@@ -40,15 +41,19 @@ import {
 	IParadisPresetDefinition,
 	IParadisPresetService,
 	IParadisResolvedPreset,
+	IParadisResolvedPresetFolder,
 	IParadisRunPresetOptions,
 	IParadisSavePresetOptions,
 	isValidPresetDefinition,
+	paradisAllFolderNames,
+	paradisDistinctFolderNames,
 	paradisGetPresetTasks,
 	paradisPresetFingerprint,
 	paradisPresetHostsMatch,
 	paradisPresetKey,
 	paradisResolvePresetIndex,
 	paradisUsablePresetId,
+	PARADIS_PRESET_FOLDERS_SETTING,
 	PARADIS_PRESETS_SETTING,
 	PARADIS_WORKSPACE_PRESET_FILE,
 	ParadisPresetSource,
@@ -104,6 +109,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	private readonly _folderStores = this._register(new DisposableStore());
 	/** フォルダURI(string) → .paracode.json 由来のプリセット */
 	private readonly _workspacePresets = new Map<string, IParadisResolvedPreset[]>();
+	/**
+	 * フォルダURI(string) → .paracode.json の presetFolders 由来の空フォルダ台帳。
+	 * _watchFolder の update() が presets と同じ1回のファイル読み込み・パースから両方を取り出す
+	 * （同じファイルを2回読まないため）。
+	 */
+	private readonly _workspacePresetFolders = new Map<string, IParadisResolvedPresetFolder[]>();
 	/** `${定義元ファイルのURI}::${指紋}` の集合。LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY 参照。 */
 	private readonly _locallyHiddenWorkspacePresets = new Set<string>();
 
@@ -154,7 +165,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		this._register(this.terminalService.onDidCreateInstance(instance => this._restorePresetTitle(instance)));
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(PARADIS_PRESETS_SETTING)) {
+			if (e.affectsConfiguration(PARADIS_PRESETS_SETTING) || e.affectsConfiguration(PARADIS_PRESET_FOLDERS_SETTING)) {
 				this._onDidChangePresets.fire();
 			}
 		}));
@@ -186,6 +197,29 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return result;
 	}
 
+	get folders(): readonly IParadisResolvedPresetFolder[] {
+		return this._foldersFor(this.presets);
+	}
+
+	/**
+	 * {@link folders} の実体。既に presets を計算済みの呼び出し元（createFolder 等）は、
+	 * `this.folders`（内部で presets を再計算する）ではなくこちらを直接呼ぶことで、同じ内容の
+	 * 二重パースを避けられる。
+	 */
+	private _foldersFor(presets: readonly IParadisResolvedPreset[]): readonly IParadisResolvedPresetFolder[] {
+		const result: IParadisResolvedPresetFolder[] = [];
+		if (this._workspacePresetsAllowed) {
+			for (const folder of this.contextService.getWorkspace().folders) {
+				result.push(...(this._workspacePresetFolders.get(folder.uri.toString()) ?? []));
+			}
+		}
+		result.push(...this._readUserPresetFolders());
+		// 実プリセットが既にその名前の folder を1件以上持っているものは除外する——台帳は
+		// 「まだ中身が無い」フォルダ専用の記録であって、実プリセット側と二重に一覧へ出すものではない。
+		const namesWithPresets = new Set(paradisDistinctFolderNames(presets));
+		return result.filter(folder => !namesWithPresets.has(folder.name));
+	}
+
 	private _readUserPresets(): IParadisResolvedPreset[] {
 		const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
 		if (!Array.isArray(raw)) {
@@ -209,6 +243,32 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 					envInactive: !paradisPresetHostsMatch(entry.hosts, this._currentRemoteAuthority),
 				};
 			});
+	}
+
+	/** ユーザー設定側の空フォルダ台帳（{@link PARADIS_PRESET_FOLDERS_SETTING}）を解決済みの形へ変換する。 */
+	private _readUserPresetFolders(): IParadisResolvedPresetFolder[] {
+		const raw = this.configurationService.getValue<unknown>(PARADIS_PRESET_FOLDERS_SETTING);
+		if (!Array.isArray(raw)) {
+			return [];
+		}
+		return raw
+			.map((name, index) => ({ name, index }))
+			.filter((entry): entry is { name: string; index: number } => typeof entry.name === 'string' && entry.name.trim().length > 0)
+			.map(({ name, index }) => ({ name: name.trim(), source: 'user' as const, sourceIndex: index }));
+	}
+
+	/**
+	 * .paracode.json の presetFolders（空フォルダ台帳）を解決済みの形へ変換する。
+	 * {@link _parseWorkspacePresets} と同じく、位置は「不正エントリを取り除く前」の配列で数える。
+	 */
+	private _parseWorkspacePresetFolders(raw: unknown, presetFile: URI): IParadisResolvedPresetFolder[] {
+		if (!Array.isArray(raw)) {
+			return [];
+		}
+		return raw
+			.map((name, index) => ({ name, index }))
+			.filter((entry): entry is { name: string; index: number } => typeof entry.name === 'string' && entry.name.trim().length > 0)
+			.map(({ name, index }) => ({ name: name.trim(), source: 'workspace' as const, sourceUri: presetFile, sourceIndex: index }));
 	}
 
 	/**
@@ -252,6 +312,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	private _refreshFolders(): void {
 		this._folderStores.clear();
 		this._workspacePresets.clear();
+		this._workspacePresetFolders.clear();
 		for (const folder of this.contextService.getWorkspace().folders) {
 			this._watchFolder(folder);
 		}
@@ -264,11 +325,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		const presetFile = joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE);
 
 		const update = async () => {
-			const presets = await this._loadWorkspacePresetFile(presetFile);
+			const { presets, folders } = await this._loadWorkspacePresetFileFull(presetFile);
 			if (store.isDisposed) {
 				return;
 			}
 			this._workspacePresets.set(folder.uri.toString(), presets);
+			this._workspacePresetFolders.set(folder.uri.toString(), folders);
 			this._onDidChangePresets.fire();
 		};
 
@@ -279,36 +341,55 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	}
 
 	private async _loadWorkspacePresetFile(presetFile: URI): Promise<IParadisResolvedPreset[]> {
+		return (await this._loadWorkspacePresetFileFull(presetFile)).presets;
+	}
+
+	/**
+	 * .paracode.json を1回だけ読み込み・パースして、presets と presetFolders（空フォルダ台帳）の
+	 * 両方を取り出す。{@link _watchFolder} の update() はここを1回呼ぶだけで両方のキャッシュを
+	 * 更新できる——presets 用と presetFolders 用で別々に読むと同じファイルを2回読むことになる。
+	 */
+	private async _loadWorkspacePresetFileFull(presetFile: URI): Promise<{ presets: IParadisResolvedPreset[]; folders: IParadisResolvedPresetFolder[] }> {
 		try {
 			const content = await this.fileService.readFile(presetFile);
-			const parsed = parseJsonc<{ presets?: unknown[] }>(content.value.toString());
-			if (!parsed || !Array.isArray(parsed.presets)) {
-				return [];
+			const parsed = parseJsonc<{ presets?: unknown[]; presetFolders?: unknown[] }>(content.value.toString());
+			if (!parsed) {
+				return { presets: [], folders: [] };
 			}
-			const takenIds = new Set<string>();
-			return parsed.presets
-				.map((definition, index) => ({ definition, index }))
-				.filter((entry): entry is { definition: IParadisPresetDefinition; index: number } => isValidPresetDefinition(entry.definition))
-				.map(({ definition, index }) => {
-					const entry: IParadisPresetDefinition = { ...definition, id: paradisUsablePresetId(definition, takenIds) };
-					return {
-						...entry,
-						appliesTo: undefined,
-						source: 'workspace' as const,
-						sourceUri: presetFile,
-						sourceIndex: index,
-						key: paradisPresetKey('workspace', presetFile, entry, index),
-						locallyHidden: this._locallyHiddenWorkspacePresets.has(this._locallyHiddenKey(presetFile, entry)),
-						envInactive: !paradisPresetHostsMatch(entry.hosts, this._currentRemoteAuthority),
-					};
-				});
+			return {
+				presets: this._parseWorkspacePresets(parsed.presets, presetFile),
+				folders: this._parseWorkspacePresetFolders(parsed.presetFolders, presetFile),
+			};
 		} catch (error) {
 			// ファイルが無いのは正常。壊れた JSON は警告だけ出して無視する
 			if ((error as { fileOperationResult?: unknown })?.fileOperationResult === undefined) {
 				this.logService.warn(`[ParadisPresets] Failed to parse ${presetFile.toString()}`, error);
 			}
+			return { presets: [], folders: [] };
+		}
+	}
+
+	private _parseWorkspacePresets(rawPresets: unknown, presetFile: URI): IParadisResolvedPreset[] {
+		if (!Array.isArray(rawPresets)) {
 			return [];
 		}
+		const takenIds = new Set<string>();
+		return rawPresets
+			.map((definition, index) => ({ definition, index }))
+			.filter((entry): entry is { definition: IParadisPresetDefinition; index: number } => isValidPresetDefinition(entry.definition))
+			.map(({ definition, index }) => {
+				const entry: IParadisPresetDefinition = { ...definition, id: paradisUsablePresetId(definition, takenIds) };
+				return {
+					...entry,
+					appliesTo: undefined,
+					source: 'workspace' as const,
+					sourceUri: presetFile,
+					sourceIndex: index,
+					key: paradisPresetKey('workspace', presetFile, entry, index),
+					locallyHidden: this._locallyHiddenWorkspacePresets.has(this._locallyHiddenKey(presetFile, entry)),
+					envInactive: !paradisPresetHostsMatch(entry.hosts, this._currentRemoteAuthority),
+				};
+			});
 	}
 
 	// --- 保存 ------------------------------------------------------------------------------------
@@ -393,6 +474,16 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			throw new Error('No workspace folder is open.');
 		}
 		return joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE);
+	}
+
+	/**
+	 * .paracode.json のURIから、それを持つワークスペースフォルダを引く。`joinPath(uri, '..')` の
+	 * ような相対 URI 演算はパスの正規化差（末尾スラッシュの有無等）に依存して壊れやすいため、
+	 * 各ワークスペースフォルダの定義元ファイルURIを実際に組み立てて文字列比較する。
+	 */
+	private _workspaceFolderForPresetFile(presetFile: URI): IWorkspaceFolder | undefined {
+		return this.contextService.getWorkspace().folders.find(folder =>
+			joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE).toString() === presetFile.toString());
 	}
 
 	async movePreset(preset: IParadisResolvedPreset, direction: -1 | 1): Promise<void> {
@@ -664,6 +755,16 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			}
 			plan.parsed.presets = plan.list;
 			await this.fileService.writeFile(plan.uri, VSBuffer.fromString(JSON.stringify(plan.parsed, null, '\t') + '\n'));
+			// _watchFolder の RunOnceScheduler（最大300ms）による再読込を待たず、この場でキャッシュを
+			// 書き込んだ内容に更新する——待つと、直後に this.presets / this.folders を読む呼び出し元
+			// （ゴースト空フォルダの掃除など）が古い内容のまま判定してしまう。
+			const workspaceFolder = this._workspaceFolderForPresetFile(plan.uri);
+			if (workspaceFolder) {
+				this._workspacePresets.set(workspaceFolder.uri.toString(), this._parseWorkspacePresets(plan.list, plan.uri));
+			}
+		}
+		if (workspacePlans.length > 0) {
+			this._onDidChangePresets.fire();
 		}
 	}
 
@@ -699,10 +800,136 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			}
 			plan.parsed.presets = plan.list;
 			await this.fileService.writeFile(plan.uri, VSBuffer.fromString(JSON.stringify(plan.parsed, null, '\t') + '\n'));
+			// setPresetsFolder と同じ理由で、watcher の再読込（最大300ms）を待たずキャッシュを
+			// 直接更新する。呼び出し側（フォルダ削除の「中身ごと削除」等）がこの直後に
+			// this.presets / this.folders を読んで判定するため、待つと古い内容のまま見えてしまう。
+			const workspaceFolder = this._workspaceFolderForPresetFile(plan.uri);
+			if (workspaceFolder) {
+				this._workspacePresets.set(workspaceFolder.uri.toString(), this._parseWorkspacePresets(plan.list, plan.uri));
+			}
+		}
+		if (workspacePlans.length > 0) {
+			this._onDidChangePresets.fire();
 		}
 	}
 
+	/**
+	 * 空フォルダを台帳へ追加する。既に同名のフォルダ（台帳・実プリセットのいずれか）があれば
+	 * 何もしない——重複したフォルダ名が一覧に並ぶと、どちらへプリセットを移すべきか分からなくなる。
+	 * 戻り値は実際に作成したかどうか（呼び出し側は false のとき「無言の成功」に見えないよう、
+	 * 名前が重複している旨をユーザーへ伝えること）。
+	 */
+	async createFolder(name: string, target: ParadisPresetSource): Promise<boolean> {
+		const normalized = name.trim();
+		if (!normalized) {
+			return false;
+		}
+		const presets = this.presets;
+		if (paradisAllFolderNames(presets, this._foldersFor(presets)).includes(normalized)) {
+			return false;
+		}
+		if (target === 'user') {
+			const raw = this.configurationService.getValue<unknown>(PARADIS_PRESET_FOLDERS_SETTING);
+			const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
+			list.push(normalized);
+			await this.configurationService.updateValue(PARADIS_PRESET_FOLDERS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
+			// user 側は configurationService.onDidChangeConfiguration 経由で別途 fire() される
+			// （下の明示 fire() と合わせると二重発火になるが、_onDidChangePresets の購読側は
+			// 再描画するだけの冪等な処理なので実害は軽微）。
+		} else {
+			const workspaceFolder = this.contextService.getWorkspace().folders[0];
+			if (!workspaceFolder) {
+				throw new Error('No workspace folder is open.');
+			}
+			const presetFile = joinPath(workspaceFolder.uri, PARADIS_WORKSPACE_PRESET_FILE);
+			let parsed: { presets?: unknown[]; presetFolders?: unknown[];[key: string]: unknown } = {};
+			try {
+				const content = await this.fileService.readFile(presetFile);
+				parsed = parseJsonc<typeof parsed>(content.value.toString()) ?? {};
+			} catch {
+				// ファイルが無ければ新規作成
+			}
+			const list: unknown[] = Array.isArray(parsed.presetFolders) ? [...parsed.presetFolders] : [];
+			list.push(normalized);
+			parsed.presetFolders = list;
+			await this.fileService.writeFile(presetFile, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+			// _watchFolder の RunOnceScheduler（最大300ms）による再読込を待たず、この場でキャッシュを
+			// 書き込んだ内容に更新する——待つと「作ったのに一覧に出ない」ように見える。watcher 側の
+			// 再読込は従来どおり走ってよい（結果的に同じ内容を読み直すだけで無害）。
+			this._workspacePresetFolders.set(workspaceFolder.uri.toString(), this._parseWorkspacePresetFolders(list, presetFile));
+		}
+		// ファイル watcher / 設定変更イベント経由の再読込（最大 300ms）を待たず、ダイアログの
+		// 操作結果をその場で反映する。
+		this._onDidChangePresets.fire();
+		return true;
+	}
+
+	/**
+	 * 台帳から空フォルダを1件削除する。定義元ファイル内の位置を使う点は他の削除操作と同じだが、
+	 * 見失っていても（並び替え・手編集等で位置がずれていても）例外にせず黙って何もしない——
+	 * 空フォルダの削除はやり直しが効く軽い操作で、{@link movePreset} と同様に安全側へ倒す。
+	 */
+	async deleteFolder(folder: IParadisResolvedPresetFolder): Promise<void> {
+		if (folder.source === 'user') {
+			const raw = this.configurationService.getValue<unknown>(PARADIS_PRESET_FOLDERS_SETTING);
+			const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
+			const current = list[folder.sourceIndex];
+			if (typeof current !== 'string' || current.trim() !== folder.name) {
+				return;
+			}
+			list.splice(folder.sourceIndex, 1);
+			await this.configurationService.updateValue(PARADIS_PRESET_FOLDERS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
+			// user 側は configurationService.onDidChangeConfiguration 経由で別途 fire() される
+			// （下の明示 fire() と合わせると二重発火になるが、_onDidChangePresets の購読側は
+			// 再描画するだけの冪等な処理なので実害は軽微）。
+		} else {
+			if (!folder.sourceUri) {
+				return;
+			}
+			let parsed: { presets?: unknown[]; presetFolders?: unknown[];[key: string]: unknown };
+			try {
+				const content = await this.fileService.readFile(folder.sourceUri);
+				parsed = parseJsonc<typeof parsed>(content.value.toString()) ?? {};
+			} catch {
+				return;
+			}
+			const list: unknown[] = Array.isArray(parsed.presetFolders) ? [...parsed.presetFolders] : [];
+			const current = list[folder.sourceIndex];
+			if (typeof current !== 'string' || current.trim() !== folder.name) {
+				return;
+			}
+			list.splice(folder.sourceIndex, 1);
+			parsed.presetFolders = list;
+			await this.fileService.writeFile(folder.sourceUri, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+			// createFolder と同じ理由で、watcher の再読込（最大300ms）を待たずキャッシュを直接更新する。
+			const workspaceFolder = this._workspaceFolderForPresetFile(folder.sourceUri);
+			if (workspaceFolder) {
+				this._workspacePresetFolders.set(workspaceFolder.uri.toString(), this._parseWorkspacePresetFolders(list, folder.sourceUri));
+			}
+		}
+		this._onDidChangePresets.fire();
+	}
+
 	// --- 実行 ------------------------------------------------------------------------------------
+
+	/**
+	 * ターミナルが今コマンドを実行中（busy）か。CommandDetection capability（shell integration）が
+	 * 生えていれば executingCommand を信頼する——OS のプロセスツリーだけを見る hasChildProcesses は、
+	 * powerlevel10k の gitstatusd のような常駐子プロセスを持つだけで true になり、shell integration
+	 * が効いている環境でも常時 busy 判定になってしまう（smart レイアウトが実質「常に新規作成」に
+	 * 堕落する）。capability 自体が存在しない（shell integration 非対応）場合にのみ
+	 * hasChildProcesses へフォールバックする。
+	 *
+	 * 制限: shell integration が部分的にしか効かない環境（capability は生えるが executingCommand が
+	 * 更新されない構成）では busy を見逃す可能性がある。
+	 */
+	private _isTerminalBusy(instance: ITerminalInstance): boolean {
+		const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
+		if (commandDetection) {
+			return commandDetection.executingCommand !== undefined;
+		}
+		return instance.hasChildProcesses;
+	}
 
 	async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
 		const { tasks, layout } = paradisGetPresetTasks(preset);
@@ -710,11 +937,14 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			return;
 		}
 
-		if (layout === 'current') {
+		if (layout === 'current' || layout === 'smart') {
 			// 全タスクのコマンドを連結してアクティブなターミナルへ送る（旧 current-terminal 相当）。
 			const commands = tasks.flatMap(task => task.commands);
 			const cwd = this._resolveCwd(preset, preset.cwd, options?.cwd);
-			let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
+			const active = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
+			// smart はアクティブなターミナルが busy なら新規作成に倒す。current は従来どおり busy でも再利用する。
+			const busy = active !== undefined && layout === 'smart' && this._isTerminalBusy(active);
+			let instance = busy ? undefined : active;
 			if (!instance) {
 				instance = await this._createTerminalInActiveGroup(cwd, preset.name, options?.env);
 				options?.onDidCreateTerminal?.(instance.instanceId);

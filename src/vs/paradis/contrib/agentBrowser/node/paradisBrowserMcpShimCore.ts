@@ -30,6 +30,135 @@ export const PARADIS_MCP_MAX_STDOUT_QUEUE_BYTES = (PARADIS_MCP_MAX_RESPONSE_BYTE
 const PARADIS_MCP_MAX_STDIN_BUFFER_BYTES = PARADIS_MCP_MAX_REQUEST_BYTES * 2;
 const PARADIS_MCP_MAX_RESPONSE_CHUNKS = 4_096;
 
+/** メモ系ツールに共通の `space` 引数（未指定＝呼び出し元ペインが属するスペース）。 */
+const PARADIS_MCP_SPACE_ARGUMENT = {
+	type: 'string',
+	description: 'Space key from list_space_notes (a repository id or "worktree:<uri>"). Omit to use the space this terminal pane belongs to.',
+} as const;
+
+/**
+ * para固有の静的ツール定義（`tools/list` の中身）。shared process側の
+ * `paradisAgentBrowserService.ts` の `TOOLS` と、stdioシム（Para Code未起動時／ペイン外起動時に
+ * オフライン応答する `paradisBrowserMcpShim.ts`）の両方が、この1つの配列を参照する。
+ *
+ * 以前は2ファイルへ手で複製していたが、更新漏れが繰り返し起きたため、このファイル（vs/*
+ * への依存を持たずシムからも安全にimportできる唯一の場所）へ一本化した。`TOOLS` へ足す/消す/
+ * 変えるときはここを直接編集すること（もう複製先を追いかける必要はない）。
+ * 内蔵chrome-devtools-mcp由来の動的ツールはここには載せない（オフラインでは元々使えず、
+ * オンライン時は透過転送されるため）。
+ * `test/node/paradisMcpToolsSync.test.ts` がこの配列とサーバー側 `TOOLS` の名前集合・
+ * inputSchema一致を機械的に検査する。
+ */
+export const PARADIS_MCP_LOCAL_TOOLS = [
+	{
+		name: 'get_shared_page',
+		description: 'Get the URL and title of the browser page currently shared with this terminal pane in Para Code. Returns an error message if no page is shared yet.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'preview_file',
+		description: 'Open a file in the Para Code space that this terminal pane belongs to, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path. If the user is currently looking at a different space, the file is queued and opens when they switch back, so it never interrupts the space on screen.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				path: { type: 'string', description: 'Absolute path of the file to open (relative paths are rejected because this server does not share your working directory).' },
+			},
+			required: ['path'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'get_cdp_endpoint',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'upload_file_to_drop_zone',
+		description: `Upload a file by dispatching a trusted HTML5 drag-and-drop sequence (dragenter, dragover, drop, each with real DataTransfer files) onto a drop-zone element, such as react-dropzone configured with noClick/noKeyboard, or any custom UI that only listens for "drop" and has no <input type=file>. Prefer the built-in upload_file tool first (it is simpler and works for a plain <input type=file> or a click-triggered file chooser); use this tool only when upload_file fails because the target has neither. The drop zone is addressed by its "uid" from a recent take_snapshot.`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				uid: { type: 'string', description: 'The uid of the drop zone element from the page content snapshot (take_snapshot), to dispatch the drag-and-drop sequence onto.' },
+				fileName: { type: 'string', description: 'The file name to give the dropped file (e.g. "photo.png"), including its extension. Determines the File object\'s name and how the page infers its type.' },
+				// 上限値のラベルは paradisFileDropUpload.ts の PARADIS_FILE_DROP_MAX_BYTES_LABEL と
+				// 手動で揃えること（このファイルはNode組み込みのみに限定しており、vs/base配下は
+				// importできない）。
+				contentBase64: { type: 'string', description: `Base64-encoded file content. Decoded size is capped at 2.0 MiB (the MCP transport's request-size limit, not an arbitrary choice) — for larger files, save them to disk yourself and use the built-in upload_file tool instead.` },
+			},
+			required: ['uid', 'fileName', 'contentBase64'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'get_session_health',
+		description: 'Diagnose this MCP session itself (not the shared page). Reports whether this terminal pane is known to Para Code, whether a browser page is currently shared/bound to it, whether the embedded chrome-devtools bridge process for it is alive, and the state of the local CDP gateway and MCP server. Use this when other tools fail or behave unexpectedly, to tell apart "no page shared", "Para Code MCP server unreachable", and "the embedded DevTools bridge crashed". Works even when no page is shared.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'list_space_notes',
+		description: 'List the spaces (registered repositories and their worktrees) of the Para Code window that owns this terminal pane, with the note checklist counts of each. Use the returned "space" key with the other space note tools; the space of this terminal pane is marked with "current": true.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'read_space_note',
+		description: 'Read the note of a Para Code space. The note is a Markdown scratchpad the user keeps per space, where checklist items look like "- [ ] todo" and "- [x] done". Returns the raw text plus every line with its 0-based "line" number, which the check and delete tools take. Defaults to the space this terminal pane belongs to.',
+		inputSchema: { type: 'object', properties: { space: PARADIS_MCP_SPACE_ARGUMENT }, additionalProperties: false },
+	},
+	{
+		name: 'write_space_note',
+		description: 'Replace the entire note text of a Para Code space (Markdown; checklist items look like "- [ ] todo"). This overwrites everything the user wrote, so prefer add_space_note_task / check_space_note_task / delete_space_note_task for single-item edits, and read_space_note first if you must rewrite. Pass an empty string to clear the note.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: PARADIS_MCP_SPACE_ARGUMENT,
+				text: { type: 'string', description: 'The full note text to store (empty string clears the note).' },
+			},
+			required: ['text'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'add_space_note_task',
+		description: 'Append one checklist item ("- [ ] ...") to the note of a Para Code space, leaving everything else untouched.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: PARADIS_MCP_SPACE_ARGUMENT,
+				task: { type: 'string', description: 'The checklist item text (without the "- [ ] " marker). Extra lines are kept as indented notes under the item, so do not start them with "- [ ]" unless you want a separate nested item.' },
+			},
+			required: ['task'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'check_space_note_task',
+		description: 'Check or uncheck one checklist item of a Para Code space note, addressed by the 0-based "line" number returned by read_space_note. Omit "done" to toggle it.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: PARADIS_MCP_SPACE_ARGUMENT,
+				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
+				done: { type: 'boolean', description: 'true to check the item, false to uncheck it. Omit to toggle.' },
+			},
+			required: ['line'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'delete_space_note_task',
+		description: 'Delete one checklist item (together with its indented continuation lines) from a Para Code space note, addressed by the 0-based "line" number returned by read_space_note.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: PARADIS_MCP_SPACE_ARGUMENT,
+				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
+			},
+			required: ['line'],
+			additionalProperties: false,
+		},
+	},
+] as const;
+
 export interface IParadisMcpPortFileRecord {
 	readonly protocolVersion: typeof PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION;
 	readonly port: number;

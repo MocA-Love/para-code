@@ -20,7 +20,7 @@
 // 正常に起動し、initialize / tools/list には応答する（＝CLIのMCP接続自体は成功させる）。
 // 実際のツール呼び出し時のみ、LLMが読んで状況を理解できる明確なエラーメッセージを返す。
 
-import { IParadisMcpPortFileRecord, IParadisMcpStdioWritable, PARADIS_MCP_MAX_INFLIGHT_REQUESTS, ParadisMcpInflightTracker, ParadisMcpStdioLineBuffer, ParadisMcpStdioWriter, paradisMcpShouldPauseStdin, postParadisMcpRequest, resolveLiveParadisMcpPortFile, shouldEmitParadisMcpHttpResponse } from './paradisBrowserMcpShimCore.js';
+import { IParadisMcpPortFileRecord, IParadisMcpStdioWritable, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_MAX_INFLIGHT_REQUESTS, ParadisMcpInflightTracker, ParadisMcpStdioLineBuffer, ParadisMcpStdioWriter, paradisMcpShouldPauseStdin, postParadisMcpRequest, resolveLiveParadisMcpPortFile, shouldEmitParadisMcpHttpResponse } from './paradisBrowserMcpShimCore.js';
 
 const PORT_FILE_ENV = 'PARA_CODE_MCP_PORT_FILE';
 const TOKEN_ENV = 'PARA_CODE_TERMINAL_PANE_ID';
@@ -51,108 +51,50 @@ const NO_SERVER_MESSAGE =
 	`not be read). Start Para Code and re-launch your agent CLI from a terminal pane inside it to use ` +
 	`this tool, or simply continue working without this MCP server.`;
 
-/** メモ系ツールに共通の `space` 引数（未指定＝呼び出し元ペインが属するスペース）。 */
-const SPACE_ARGUMENT = {
-	type: 'string',
-	description: 'Space key from list_space_notes (a repository id or "worktree:<uri>"). Omit to use the space this terminal pane belongs to.',
-} as const;
+// オフライン時の tools/list 応答に使うツール定義。かつてはこのファイルとshared process側の
+// `paradisAgentBrowserService.ts` の `TOOLS` の両方へ手で複製しており、更新漏れが繰り返し
+// 起きたため、vs/* に依存しない `paradisBrowserMcpShimCore.ts` の `PARADIS_MCP_LOCAL_TOOLS`
+// へ一本化した（サーバー側もこの同じ配列を参照する）。内蔵chrome-devtools-mcp由来の動的ツールは
+// ここには載らない（オフラインでは元々使えず、オンライン時は透過転送されるため）。
+const LOCAL_TOOLS = PARADIS_MCP_LOCAL_TOOLS;
 
-// オフライン時の tools/list 応答に使うツール定義（shared process側の TOOLS と同一内容の複製。
-// このシムは vs/* を import できないためインラインで持つ）。オンライン時はサーバーへ透過転送
-// されるため、内蔵chrome-devtools-mcp由来の動的ツールはここには載せない（オフラインでは元々使えない）。
-const LOCAL_TOOLS = [
-	{
-		name: 'get_shared_page',
-		description: 'Get the URL and title of the browser page currently shared with this terminal pane in Para Code. Returns an error message if no page is shared yet.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'preview_file',
-		description: 'Open a file in the Para Code space that this terminal pane belongs to, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path. If the user is currently looking at a different space, the file is queued and opens when they switch back, so it never interrupts the space on screen.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				path: { type: 'string', description: 'Absolute path of the file to open (relative paths are rejected because this server does not share your working directory).' },
-			},
-			required: ['path'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools are built into this MCP server and already target the page shared with this terminal pane.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'list_space_notes',
-		description: 'List the spaces (registered repositories and their worktrees) of the Para Code window that owns this terminal pane, with the note checklist counts of each. Use the returned "space" key with the other space note tools; the space of this terminal pane is marked with "current": true.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'read_space_note',
-		description: 'Read the note of a Para Code space. The note is a Markdown scratchpad the user keeps per space, where checklist items look like "- [ ] todo" and "- [x] done". Returns the raw text plus every line with its 0-based "line" number, which the check and delete tools take. Defaults to the space this terminal pane belongs to.',
-		inputSchema: { type: 'object', properties: { space: SPACE_ARGUMENT }, additionalProperties: false },
-	},
-	{
-		name: 'write_space_note',
-		description: 'Replace the entire note text of a Para Code space (Markdown; checklist items look like "- [ ] todo"). This overwrites everything the user wrote, so prefer add_space_note_task / check_space_note_task / delete_space_note_task for single-item edits, and read_space_note first if you must rewrite. Pass an empty string to clear the note.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				text: { type: 'string', description: 'The full note text to store (empty string clears the note).' },
-			},
-			required: ['text'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'add_space_note_task',
-		description: 'Append one checklist item ("- [ ] ...") to the note of a Para Code space, leaving everything else untouched.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				task: { type: 'string', description: 'The checklist item text (without the "- [ ] " marker). Extra lines are kept as indented notes under the item, so do not start them with "- [ ]" unless you want a separate nested item.' },
-			},
-			required: ['task'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'check_space_note_task',
-		description: 'Check or uncheck one checklist item of a Para Code space note, addressed by the 0-based "line" number returned by read_space_note. Omit "done" to toggle it.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
-				done: { type: 'boolean', description: 'true to check the item, false to uncheck it. Omit to toggle.' },
-			},
-			required: ['line'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'delete_space_note_task',
-		description: 'Delete one checklist item (together with its indented continuation lines) from a Para Code space note, addressed by the 0-based "line" number returned by read_space_note.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
-			},
-			required: ['line'],
-			additionalProperties: false,
-		},
-	},
-] as const;
+const SESSION_HEALTH_TOOL_NAME = 'get_session_health';
 
 interface IJsonRpcMessage {
 	jsonrpc?: string;
 	id?: number | string | null;
 	method?: string;
 	params?: unknown;
+}
+
+/**
+ * このstdioシム自身（Para Codeの shared process へたどり着く前の、trasnport層）の診断情報。
+ * shared process側の `get_session_health` が返すセッション/ブラウザ側の情報を補う、二段構えの片側。
+ * shared processへ到達できないときは、こちらだけでも「どこで詰まっているか」を切り分けられる。
+ */
+function localShimTransportReport(reachable: boolean, record: IParadisMcpPortFileRecord | undefined, unreachableReason?: string): Record<string, unknown> {
+	return {
+		paneTokenEnvPresent: Boolean(paneToken),
+		portFileEnvConfigured: Boolean(portFilePath),
+		portFileReadable: reachable,
+		resolvedServerPort: record?.port,
+		...(unreachableReason !== undefined ? { unreachableReason } : {}),
+	};
+}
+
+/** shared processから返った `get_session_health` の応答へ、シム自身の診断を追記する。 */
+function withLocalShimTransportReport(parsedBody: unknown, record: IParadisMcpPortFileRecord | undefined): unknown {
+	const message = parsedBody as { result?: { content?: unknown } };
+	const content = message.result?.content;
+	if (!Array.isArray(content)) {
+		// エラー応答等、contentを持たない形はそのまま透過する（誤って形を壊さないため）。
+		return parsedBody;
+	}
+	const shimText = `Local stdio shim (this MCP client's transport layer, before reaching Para Code):\n${JSON.stringify(localShimTransportReport(true, record), null, 2)}`;
+	return {
+		...(parsedBody as object),
+		result: { ...(message.result as object), content: [...content, { type: 'text', text: shimText }] },
+	};
 }
 
 /**
@@ -215,6 +157,9 @@ async function forwardLine(line: string): Promise<void> {
 	} catch {
 		// パースできない行はそのままサーバーに送って判断させる（接続可能な場合のみ）
 	}
+	const toolName = method === 'tools/call' && isRequest && params && typeof params === 'object'
+		? (params as { name?: unknown }).name
+		: undefined;
 
 	// Para Code に接続できない場合はローカルで応答して MCP 接続自体は成立させる。
 	// initialize / tools/list は正常応答し、ツール呼び出しだけ guidance を返す。
@@ -244,6 +189,12 @@ async function forwardLine(line: string): Promise<void> {
 				await writeResult(id, { tools: LOCAL_TOOLS });
 				return;
 			case 'tools/call':
+				if (toolName === SESSION_HEALTH_TOOL_NAME) {
+					// get_session_health自体は診断が仕事なので、未接続そのものを isError にはしない
+					// （「接続できていない」というのがこのツールにとっての正常な報告内容のため）。
+					await writeResult(id, { content: [{ type: 'text', text: JSON.stringify({ shimTransport: localShimTransportReport(false, undefined, unavailable) }, null, 2) }] });
+					return;
+				}
 				// ツール実行エラーは JSON-RPC エラーではなく isError 付きの結果で返す（LLMが本文を読める）
 				await writeResult(id, { content: [{ type: 'text', text: unavailable }], isError: true });
 				return;
@@ -259,11 +210,11 @@ async function forwardLine(line: string): Promise<void> {
 		({ status, body } = await postParadisMcpRequest({ record: record!, body: line, token: paneToken! }));
 	} catch (error) {
 		const detail = `Failed to reach Para Code MCP server on 127.0.0.1:${record!.port}: ${error instanceof Error ? error.message : String(error)}`;
-		if (isRequest) {
-			await writeErrorResponse(id, detail);
-		} else {
-			process.stderr.write(`[para-browser-mcp-shim] ${detail}\n`);
+		if (toolName === SESSION_HEALTH_TOOL_NAME) {
+			await writeResult(id, { content: [{ type: 'text', text: JSON.stringify({ shimTransport: localShimTransportReport(false, record, detail) }, null, 2) }] });
+			return;
 		}
+		await respondToUnreachableServer(id, isRequest, method, detail);
 		return;
 	}
 	if (!shouldEmitParadisMcpHttpResponse(status, body, isRequest)) {
@@ -279,14 +230,29 @@ async function forwardLine(line: string): Promise<void> {
 	if (status >= 400 || !parsedBody || typeof parsedBody !== 'object' || (parsedBody as IJsonRpcMessage).jsonrpc !== '2.0') {
 		// 401/405等のJSON-RPC以外の応答はJSON-RPCエラーに変換してクライアントへ返す
 		const detail = `Para Code MCP server returned HTTP ${status} or an invalid JSON-RPC response`;
-		if (isRequest) {
-			await writeErrorResponse(id, detail);
-		} else {
-			process.stderr.write(`[para-browser-mcp-shim] ${detail}\n`);
-		}
+		await respondToUnreachableServer(id, isRequest, method, detail);
 		return;
 	}
-	await writeResponse(parsedBody);
+	await writeResponse(toolName === SESSION_HEALTH_TOOL_NAME ? withLocalShimTransportReport(parsedBody, record) : parsedBody);
+}
+
+/**
+ * サーバーへ到達できなかった／サーバーが不正な応答を返したときの応答。
+ *
+ * `tools/call` はLLMが読める `isError: true` のcontentで返す（他のツール未接続時の案内
+ * (unavailable) と同じ形に揃える）。initialize/tools/list等プロトコル層の失敗は、
+ * これまで通りJSON-RPCエラーのままにする（LLMへ本文として見せるものではないため）。
+ */
+async function respondToUnreachableServer(id: number | string | null, isRequest: boolean, method: string | undefined, detail: string): Promise<void> {
+	if (!isRequest) {
+		process.stderr.write(`[para-browser-mcp-shim] ${detail}\n`);
+		return;
+	}
+	if (method === 'tools/call') {
+		await writeResult(id, { content: [{ type: 'text', text: detail }], isError: true });
+		return;
+	}
+	await writeErrorResponse(id, detail);
 }
 
 const input = new ParadisMcpStdioLineBuffer();

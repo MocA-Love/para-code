@@ -39,11 +39,13 @@ suite('ParadisScreenshotHandoff', () => {
 		assert.deepStrictEqual(paradisScreenshotPathsFromToolResult(undefined), []);
 	});
 
-	test('adds the download line only when something was saved', () => {
+	test('adds the fetch hint whenever filePath was requested, regardless of success', () => {
 		const saved = toolResult('Saved screenshot to /tmp/a.png.');
-		const hinted = paradisAppendScreenshotFetchHint(saved, [{ id: 'abc', localPort: 47286 }]) as { content: { type: string; text: string }[] };
+		const hinted = paradisAppendScreenshotFetchHint(saved, [{ id: 'abc', localPort: 47286 }], true, true) as { content: { type: string; text: string }[] };
 		assert.strictEqual(hinted.content.length, 2);
 		const hint = hinted.content[1].text;
+		// どちらのマシン/プロセスが書いたかを常に明示する
+		assert.ok(hint.includes('shared-process'));
 		// 手元向けには実際の番号を書く
 		assert.ok(hint.includes('http://127.0.0.1:47286/paradis-mcp/screenshot/abc'));
 		// 接続先向けは番号を焼き込まず、ポートファイルから読ませる (ssh が選ぶ番号は手元と違う)
@@ -52,8 +54,39 @@ suite('ParadisScreenshotHandoff', () => {
 		// 元の本文は触らない
 		assert.strictEqual(hinted.content[0].text, 'Saved screenshot to /tmp/a.png.');
 
+		// filePathを渡しておらず、何も保存されなかった場合は何も足さない（インライン応答に
+		// 余計な情報を混ぜない）
 		const inline = toolResult('Took a screenshot.');
-		assert.strictEqual(paradisAppendScreenshotFetchHint(inline, []), inline);
+		assert.strictEqual(paradisAppendScreenshotFetchHint(inline, [], false, false), inline);
+
+		// filePathを渡したのに保存に失敗した場合も、どこへ書こうとしたかは案内する
+		const failed = { content: [{ type: 'text', text: 'Error: ENOENT' }], isError: true };
+		const failedHint = paradisAppendScreenshotFetchHint(failed, [], true, false) as { content: { type: string; text: string }[]; isError: boolean };
+		assert.strictEqual(failedHint.content.length, 2);
+		assert.ok(failedHint.content[1].text.includes('failed'));
+		assert.strictEqual(failedHint.isError, true);
+	});
+
+	// HIGH回帰テスト: vendored take_screenshot は filePath 未指定でも画像が2MB超なら自動的に
+	// 一時ファイルへ逃がす（screenshot.js の `screenshot.length >= 2_000_000` 分岐）。この場合も
+	// wasSaved は true なので、requestedFilePath===false のまま案内を消してはいけない。
+	test('adds the fetch hint for an automatic >2MB save even when filePath was not requested', () => {
+		const autoSaved = toolResult('Took a screenshot of the full current page.', 'Saved screenshot to /tmp/auto-fullpage.png.');
+		const hinted = paradisAppendScreenshotFetchHint(autoSaved, [{ id: 'xyz', localPort: 47286 }], false, true) as { content: { type: string; text: string }[] };
+		assert.strictEqual(hinted.content.length, 2);
+		assert.ok(hinted.content[1].text.includes('http://127.0.0.1:47286/paradis-mcp/screenshot/xyz'));
+		assert.ok(hinted.content[1].text.includes('$PARA_CODE_MCP_PORT_FILE'));
+	});
+
+	// Warning回帰テスト: ゲートウェイのポートがまだ確定していないと、パスが読めても取り出し口
+	// (entries) は作れない。この状態を「パースできなかった」と誤って案内してはいけない
+	// （wasSaved===true・entries===[] のケースを、entries===[]・wasSaved===false と区別する）。
+	test('explains a not-yet-ready gateway distinctly from an unparsable response, when a path was in fact found', () => {
+		const savedButNoPort = toolResult('Saved screenshot to /tmp/early-boot.png.');
+		const hinted = paradisAppendScreenshotFetchHint(savedButNoPort, [], false, true) as { content: { type: string; text: string }[] };
+		assert.strictEqual(hinted.content.length, 2);
+		assert.ok(!hinted.content[1].text.includes('could not be parsed'));
+		assert.ok(hinted.content[1].text.includes('not ready'));
 	});
 
 	test('hands a saved screenshot back only to the pane that took it', () => {

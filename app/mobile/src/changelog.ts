@@ -121,6 +121,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '一部の差分で先頭や区切りの行が正しく出ないことがあったのと、狭い画面のセッション履歴で戻るボタンが出ないことがあったのを直しました。',
 				tone: 'green',
 			},
+			{
+				icon: 'terminal-outline',
+				title: 'PC版で追加した「空いていれば実行・忙しければ新規」のプリセットが一覧から消えないようにしました',
+				body: 'このモードのプリセットも、これまでのプリセットと同じように一覧に表示され、実行できます。',
+				tone: 'green',
+			},
 		],
 	},
 	{
