@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { deepStrictEqual, rejects, strictEqual } from 'assert';
+import { deepStrictEqual, ok, rejects, strictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -71,14 +71,19 @@ suite('ParadisSpreadsheetService', () => {
 
 	test('formats a formula result that evaluates to a date like a direct date cell', async () => {
 		const service = new ParadisSpreadsheetService();
+		// 直値のセルと数式セルを並べ、同じ表示形式なら同じ文字列になることを見る。
+		// 書き込み時に付く既定の表示形式は mm-dd-yy なので、それが適用された結果を期待する。
 		const workbook = await encodeWorkbook(book => {
 			const sheet = book.addWorksheet('Formulas');
-			sheet.getCell('A1').value = { formula: 'TODAY()', result: new Date(2026, 1, 3) } as ExcelJS.CellFormulaValue;
+			sheet.getCell('A1').value = { formula: 'TODAY()', result: new Date(Date.UTC(2026, 1, 3)) } as ExcelJS.CellFormulaValue;
+			sheet.getCell('A2').value = new Date(Date.UTC(2026, 1, 3));
 		});
 
 		const result = await service.parseWorkbook(workbook);
 
-		strictEqual(result.sheets[0].rows[0].cells[0].value, formatDateFallback(new Date(2026, 1, 3)));
+		const [formula, direct] = result.sheets[0].rows.map(row => row.cells[0].value);
+		strictEqual(formula, direct);
+		strictEqual(formula, '02-03-26');
 	});
 
 	test('shows a formula error result as its error code instead of [object Object]', async () => {
@@ -153,6 +158,83 @@ suite('ParadisSpreadsheetService', () => {
 		const encrypted = Buffer.concat([Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]), Buffer.alloc(16)]).toString('base64');
 
 		await rejects(service.parseWorkbook(encrypted), /パスワードで保護/);
+	});
+
+
+	test('applies the stored number format instead of printing the raw value', async () => {
+		const service = new ParadisSpreadsheetService();
+		const cases: readonly (readonly [unknown, string, string])[] = [
+			[0.5, '0%', '50%'],
+			[1234567, '#,##0', '1,234,567'],
+			[-1234.5, '#,##0.00;[Red](#,##0.00)', '(1,234.50)'],
+			[0.000012345, '0.00E+00', '1.23E-05'],
+			[0.75, '# ?/?', '0 3/4'],
+			[1234, '0"円"', '1234円'],
+		];
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Sheet1');
+			cases.forEach(([value, numFmt], index) => {
+				const cell = sheet.getCell(index + 1, 1);
+				cell.value = value as number;
+				cell.numFmt = numFmt;
+			});
+		});
+
+		const result = await service.parseWorkbook(workbook);
+
+		deepStrictEqual(result.sheets[0].rows.map(row => row.cells[0].value), cases.map(([, , expected]) => expected));
+	});
+
+	test('keeps accounting formats even though the fill-alignment token is only approximated', async () => {
+		// 会計書式は必ず `*`(残り幅を埋める指定)を含む。数値の整形自体は正しくできているので、
+		// 近似止まりを理由に一律で捨てると会計書式が丸ごと効かなくなる。
+		const accounting = '_("¥"* #,##0.00_);_("¥"* (#,##0.00);_("¥"* "-"??_);_(@_)';
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Sheet1');
+			const cell = sheet.getCell(1, 1);
+			cell.value = 1234.5;
+			cell.numFmt = accounting;
+		});
+
+		const result = await service.parseWorkbook(workbook);
+
+		ok(result.sheets[0].rows[0].cells[0].value.includes('1,234.50'), result.sheets[0].rows[0].cells[0].value);
+	});
+
+	test('renders date and elapsed-time formats without leaking a host date string', async () => {
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Sheet1');
+			const date = sheet.getCell(1, 1);
+			date.value = new Date(Date.UTC(2023, 2, 15));
+			date.numFmt = 'yyyy/mm/dd';
+			const elapsed = sheet.getCell(2, 1);
+			elapsed.value = 0.5;
+			elapsed.numFmt = '[h]:mm:ss';
+		});
+
+		const result = await service.parseWorkbook(workbook);
+
+		deepStrictEqual(result.sheets[0].rows.map(row => row.cells[0].value), ['2023/03/15', '12:00:00']);
+	});
+
+	test('keeps the previous rendering for General cells and unusable format codes', async () => {
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Sheet1');
+			sheet.getCell(1, 1).value = 1234.5;
+			const general = sheet.getCell(2, 1);
+			general.value = 1234.5;
+			general.numFmt = 'General';
+			const text = sheet.getCell(3, 1);
+			text.value = 'そのまま';
+			text.numFmt = '@';
+		});
+
+		const result = await service.parseWorkbook(workbook);
+
+		deepStrictEqual(result.sheets[0].rows.map(row => row.cells[0].value), ['1234.5', '1234.5', 'そのまま']);
 	});
 
 	suite('applyTint (OOXML HLS formula)', () => {

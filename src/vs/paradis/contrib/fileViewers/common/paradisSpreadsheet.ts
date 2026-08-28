@@ -316,6 +316,26 @@ export interface IParadisSheetData {
 	readonly freezePane?: IParadisFreezePane;
 	/** オートフィルタ/テーブルのフィルタ範囲(見出し行にフィルタ記号を出すため)。 */
 	readonly filterRanges?: readonly IParadisCellRange[];
+	/** このシート上のテーブル(縞模様・見出し・集計行の描き分けに使う)。 */
+	readonly tables?: readonly IParadisSheetTable[];
+}
+
+/** Excel のテーブル(構造化テーブル)。描画に必要な範囲と体裁だけを持つ。 */
+export interface IParadisSheetTable {
+	readonly name: string;
+	readonly range: IParadisCellRange;
+	/** 先頭行が見出し行か。 */
+	readonly headerRow: boolean;
+	/** 末尾行が集計行か。 */
+	readonly totalsRow: boolean;
+	/** 1行おきの網掛け。 */
+	readonly showRowStripes: boolean;
+	/** 1列おきの網掛け。 */
+	readonly showColumnStripes: boolean;
+	/** 先頭列を強調するか。 */
+	readonly showFirstColumn: boolean;
+	/** 末尾列を強調するか。 */
+	readonly showLastColumn: boolean;
 }
 
 /** ウィンドウ枠の固定。Excel の xSplit/ySplit(固定される列数・行数)に対応する。 */
@@ -324,6 +344,12 @@ export interface IParadisFreezePane {
 	readonly cols: number;
 	/** 固定する行数(上から)。 */
 	readonly rows: number;
+}
+
+/** パースの任意指定。診断は表示に使うときだけ費用を払う。 */
+export interface IParadisParseWorkbookOptions {
+	/** 真のときだけ OOXML を直接読んで到達度を返す(既定は返さない)。 */
+	readonly semanticDiagnostics?: boolean;
 }
 
 /** パース結果のワークブック全体。 */
@@ -336,6 +362,32 @@ export interface IParadisWorkbookData {
 	readonly drawingsBySheet?: { readonly [sheetIndex: number]: readonly IParadisDrawingData[] };
 	/** theme1.xml の clrScheme 色(scheme名 lt1/dk1/accent1... → hex)。図形の schemeClr 解決に renderer 側で使う。 */
 	readonly themeColors?: { readonly [schemeName: string]: string };
+	/** 意味解析(OOXML 直読み)と表示用データを突き合わせた結果。診断表示にそのまま使う。 */
+	readonly semanticDiagnostics?: IParadisSemanticDiagnosticsSummary;
+}
+
+/**
+ * 意味解析の到達度と、表示用データとの食い違い。診断リボンが表示する数字の実体。
+ * 解析を回せなかった場合は `available: false` とし、理由だけを持つ。
+ */
+export interface IParadisSemanticDiagnosticsSummary {
+	readonly available: boolean;
+	/** 解析が最後まで到達したか(打ち切られていないか)。 */
+	readonly terminal: boolean;
+	readonly expectedParts: number;
+	readonly parsedParts: number;
+	readonly expectedSheets: number;
+	readonly parsedSheets: number;
+	readonly expectedCells: number;
+	readonly parsedCells: number;
+	readonly unknownElements: number;
+	readonly unresolvedReferences: number;
+	/** 表示用データと意味解析で食い違ったセル・シートの件数。 */
+	readonly mismatchCount: number;
+	/** 食い違いの内訳(種類→件数)。 */
+	readonly mismatchesByKind?: { readonly [kind: string]: number };
+	/** 解析を回せなかった/打ち切った理由。 */
+	readonly unavailableReason?: string;
 }
 
 const MAX_SEMANTIC_PROJECTION_DIAGNOSTICS = 10_000;
@@ -505,5 +557,5 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
-	parseWorkbook(base64Content: string): Promise<IParadisWorkbookData>;
+	parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData>;
 }

@@ -2379,8 +2379,8 @@ function parseWorkbookViews(root: XmlElement, result: ParadisSpreadsheetWorkbook
 			showVerticalScroll: booleanAttribute(node, 'showVerticalScroll'),
 			showSheetTabs: booleanAttribute(node, 'showSheetTabs'),
 			tabRatio: integerAttribute(node, 'tabRatio'),
-			xWindow: integerAttribute(node, 'xWindow'),
-			yWindow: integerAttribute(node, 'yWindow'),
+			xWindow: signedIntegerAttribute(node, 'xWindow'),
+			yWindow: signedIntegerAttribute(node, 'yWindow'),
 			windowWidth: integerAttribute(node, 'windowWidth'),
 			windowHeight: integerAttribute(node, 'windowHeight'),
 		}));
@@ -3302,6 +3302,30 @@ function requiredIntegerAttribute(node: XmlElement, local: string): number {
 
 function optionalCountAttribute(node: XmlElement): number | undefined {
 	return integerAttribute(node, 'count');
+}
+
+/**
+ * ECMA-376 が xsd:int(符号付き)としている属性を読む。ウィンドウ位置は画面外や
+ * 左側のサブディスプレイを指すと負になるため、符号なしで拒むとブック全体が読めなくなる。
+ */
+function signedIntegerAttribute(node: XmlElement, local: string): number | undefined {
+	const value = attribute(node, local);
+	if (value === undefined) {
+		return undefined;
+	}
+	const parsed = parseSignedInteger(value);
+	if (parsed === undefined) {
+		throw new ParadisOfficePackageError('malformed');
+	}
+	return parsed;
+}
+
+function parseSignedInteger(value: string): number | undefined {
+	if (!/^-?(?:0|[1-9][0-9]*)$/.test(value)) {
+		return undefined;
+	}
+	const result = Number.parseInt(value, 10);
+	return Number.isSafeInteger(result) ? result : undefined;
 }
 
 function parseUnsignedInteger(value: string): number | undefined {

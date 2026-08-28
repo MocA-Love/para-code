@@ -1704,7 +1704,11 @@ function parseDrawing(element: XmlElement, path: readonly number[], state: NodeP
 	return Object.freeze({ ...base, kind: 'drawing', geometry, children: Object.freeze(images) });
 }
 
-function parseDrawingGeometry(placement: XmlElement, partFingerprint: ParadisOfficeFingerprint): ParadisWordDrawingGeometry {
+/**
+ * wp:anchor / wp:inline から配置情報を読む。描画対象の抽出側(paradisWordRenderableExtractor)も
+ * 同じ配置解釈を使う必要があるため公開している。
+ */
+export function parseDrawingGeometry(placement: XmlElement, partFingerprint: ParadisOfficeFingerprint): ParadisWordDrawingGeometry {
 	const wp = placement.uri;
 	const simplePosition = directChild(placement, wp, 'simplePos');
 	const horizontal = directChild(placement, wp, 'positionH');
