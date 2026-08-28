@@ -4,8 +4,22 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { isOfficeRenderableAsset, type ParadisOfficeFingerprint, type ParadisOfficeRenderableAsset, type ParadisOfficeRenderCoverage, type ParadisOfficeTextRun } from '../../common/paradisOfficeProtocol.js';
+import { isOfficeRenderableAsset, type ParadisOfficeFingerprint, type ParadisOfficeRenderableAsset, type ParadisOfficeRenderCoverage } from '../../common/paradisOfficeProtocol.js';
 import type { ParadisWordDrawingGeometry } from '../../common/word/paradisWordSemantic.js';
+import type {
+	ParadisWordChartObject,
+	ParadisWordRenderableImageContent,
+	ParadisWordSmartArtNode,
+	ParadisWordImageObject,
+	ParadisWordOleObject,
+	ParadisWordRenderableObject,
+	ParadisWordShapeObject,
+	ParadisWordSmartArtObject,
+	ParadisWordTextboxObject,
+	ParadisWordWordArtObject,
+} from '../../common/word/paradisWordRenderableObjects.js';
+
+export type * from '../../common/word/paradisWordRenderableObjects.js';
 import { appendWordObjectPlaceholder, formatWordSvgNumber, type ParadisWordObjectBounds, type ParadisWordPlaceholderCoverage } from './paradisWordPlaceholder.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
@@ -17,79 +31,6 @@ const RAW_PAYLOAD_PROPERTIES = new Set([
 	'rawHtml', 'rawSvg', 'rawXml', 'svg', 'xml',
 ]);
 const SUPPORTED_PRESET_GEOMETRIES = new Set(['rect', 'roundRect', 'ellipse', 'triangle', 'rtTriangle', 'diamond', 'line', 'straightConnector1']);
-
-interface ParadisWordRenderableObjectBase {
-	readonly id: string;
-	readonly geometry: ParadisWordDrawingGeometry;
-}
-
-export interface ParadisWordShapeObject extends ParadisWordRenderableObjectBase {
-	readonly kind: 'shape';
-}
-
-export interface ParadisWordTextboxObject extends ParadisWordRenderableObjectBase {
-	readonly kind: 'textbox';
-	readonly runs: readonly ParadisOfficeTextRun[];
-}
-
-export interface ParadisWordWordArtObject extends ParadisWordRenderableObjectBase {
-	readonly kind: 'wordArt';
-	readonly text: string;
-}
-
-export interface ParadisWordChartSeries {
-	readonly name?: string;
-	readonly values: readonly { readonly index: number; readonly value: string }[];
-}
-
-export interface ParadisWordChartObject extends ParadisWordRenderableObjectBase {
-	readonly kind: 'chart';
-	readonly chartType: 'bar' | 'column' | string;
-	readonly title?: string;
-	readonly series: readonly ParadisWordChartSeries[];
-}
-
-export interface ParadisWordSmartArtNode {
-	readonly id: string;
-	readonly label: string;
-	readonly parentId?: string;
-}
-
-export interface ParadisWordSmartArtObject extends ParadisWordRenderableObjectBase {
-	readonly kind: 'smartArt';
-	readonly layout: 'flow' | 'hierarchy';
-	readonly nodes: readonly ParadisWordSmartArtNode[];
-}
-
-export type ParadisWordRenderableImageContent =
-	| { readonly assetId: string; readonly contentType: string; readonly fingerprint: ParadisOfficeFingerprint }
-	| { readonly behavior: 'notFetched' };
-
-export interface ParadisWordImageObject extends ParadisWordRenderableObjectBase {
-	readonly kind: 'image';
-	readonly content: ParadisWordRenderableImageContent;
-	readonly altText?: string;
-}
-
-export interface ParadisWordObjectPreviewReference {
-	readonly id: string;
-	readonly contentType: string;
-	readonly fingerprint: ParadisOfficeFingerprint;
-}
-
-export interface ParadisWordOleObject extends ParadisWordRenderableObjectBase {
-	readonly kind: 'ole';
-	readonly preview?: ParadisWordObjectPreviewReference;
-}
-
-export type ParadisWordRenderableObject =
-	| ParadisWordShapeObject
-	| ParadisWordTextboxObject
-	| ParadisWordWordArtObject
-	| ParadisWordChartObject
-	| ParadisWordSmartArtObject
-	| ParadisWordImageObject
-	| ParadisWordOleObject;
 
 export interface ParadisWordObjectRenderAsset {
 	readonly asset: ParadisOfficeRenderableAsset;
@@ -122,7 +63,7 @@ interface TransformMatrix {
 	readonly f: number;
 }
 
-interface ResolvedGeometry {
+export interface ResolvedGeometry {
 	readonly bounds: ParadisWordObjectBounds;
 	readonly matrix?: TransformMatrix;
 }
@@ -211,7 +152,11 @@ function roundedCoordinate(value: number): number {
 	return Object.is(rounded, -0) ? 0 : rounded;
 }
 
-function resolveWordObjectGeometry(geometry: ParadisWordDrawingGeometry): ResolvedGeometry | undefined {
+/**
+ * 図形の描画位置と大きさを求める。差し込み先のコンテナに合わせて viewBox を組むため、
+ * ビューア側からも同じ計算を使えるように公開している。
+ */
+export function resolveWordObjectGeometry(geometry: ParadisWordDrawingGeometry): ResolvedGeometry | undefined {
 	const transformExtent = geometry.transform?.extent;
 	const width = emuExtent(transformExtent ? transformExtent.cx : geometry.extent?.cx);
 	const height = emuExtent(transformExtent ? transformExtent.cy : geometry.extent?.cy);
