@@ -4,7 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
-import { deepStrictEqual, strictEqual } from 'assert';
+import { deepStrictEqual, ok, strictEqual } from 'assert';
+import { importAMDNodeModule } from '../../../../../amdX.js';
 import { Dimension } from '../../../../../base/browser/dom.js';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
@@ -25,7 +26,9 @@ import { IWorkingCopyService } from '../../../../../workbench/services/workingCo
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
+import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
+import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 
 interface IDocxEditorSnapshot {
 	readonly watcherResources: readonly string[];
@@ -58,6 +61,8 @@ interface IDocxHtmlSnapshot {
 		readonly renderFootnotes: boolean | undefined;
 		readonly renderEndnotes: boolean | undefined;
 		readonly useBase64URL: boolean | undefined;
+		readonly ignoreFonts: boolean | undefined;
+		readonly renderAltChunks: boolean | undefined;
 	};
 }
 
@@ -65,6 +70,190 @@ type HeaderResult = VSBuffer | DeferredPromise<VSBuffer> | Error;
 
 suite('ParadisDocxFileEditor', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+	const defaultDocxPackage = storeZip({ '[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>', '_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>', 'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>' });
+
+	test('integrates exact mounted and fallback CSP sources into the Word diff webview', () => {
+		const labels = { original: 'Before', modified: 'After', loading: 'Loading' };
+		const cspOf = (html: string): string => /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(html)?.[1] ?? '';
+		const mounted = cspOf(buildParadisDocxDiffHtml(labels, 'http://127.0.0.1:43123/docx-preview'));
+		const fallback = cspOf(buildParadisDocxDiffHtml(labels, 'https://file+.vscode-resource.vscode-cdn.net/docx-preview'));
+
+		ok(mounted.includes('script-src \'nonce-'));
+		ok(mounted.includes(' http://127.0.0.1:43123;'));
+		ok(!mounted.includes('https:'));
+		ok(fallback.includes(' https://file+.vscode-resource.vscode-cdn.net;'));
+		ok(!/(?:^|\s)https:(?:\s|;|$)/.test(fallback));
+		for (const csp of [mounted, fallback]) {
+			ok(csp.includes('object-src \'none\'; frame-src \'none\'; worker-src \'none\';'));
+			ok(csp.includes('navigate-to \'none\';'));
+		}
+	});
+
+	test('preprocesses unsafe package assets before the real browser archive result reaches either renderer', async () => {
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/media/unsafe.svg" ContentType="image/svg+xml"/><Override PartName="/word/fonts/font.odttf" ContentType="application/x-font-ttf"/><Override PartName="/word/afchunk/chunk.html" ContentType="text/html"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:drawing><a:blip r:embed="svg"/></w:drawing></w:r></w:p></w:body></w:document>',
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="svg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/unsafe.svg"/><Relationship Id="font" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font.odttf"/><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk/chunk.html"/></Relationships>',
+			'word/media/unsafe.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>danger</script></svg>',
+			'word/fonts/font.odttf': 'RAW-FONT',
+			'word/afchunk/chunk.html': '<script>ALTCHUNK</script>',
+		});
+
+		const result = await sanitizeParadisDocxBytesForRenderer(input, 'integration_package');
+		const serialized = new TextDecoder().decode(result.bytes);
+		const reopened = await sanitizeParadisDocxBytesForRenderer(result.bytes, 'integration_reopen');
+
+		strictEqual(serialized.includes('<script>'), false);
+		strictEqual(serialized.includes('RAW-FONT'), false);
+		strictEqual(serialized.includes('ALTCHUNK'), false);
+		ok(serialized.includes('Office asset unavailable'));
+		strictEqual(result.placeholders.length, 3);
+		ok(reopened.bytes.byteLength > 0);
+	});
+
+	test('renders one visible body altChunk anchor through the actual docx-preview parser and renderer', async () => {
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/afchunk/chunk.html" ContentType="text/html"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p><w:altChunk r:id="chunk"/><w:sectPr/></w:body></w:document>',
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk/chunk.html"/></Relationships>',
+			'word/afchunk/chunk.html': '<p>UNSAFE-HTML</p>',
+		});
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-docx-preview');
+		const docx = await loadActualDocxPreview();
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = sanitized.bytes.buffer.slice(sanitized.bytes.byteOffset, sanitized.bytes.byteOffset + sanitized.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, {
+			ignoreFonts: true,
+			renderAltChunks: false,
+			renderHeaders: true,
+			renderFooters: true,
+			renderFootnotes: true,
+			renderEndnotes: true,
+		});
+
+		strictEqual((body.textContent?.match(/Office asset unavailable:/g) ?? []).length, 1);
+		strictEqual(body.textContent?.includes('UNSAFE-HTML'), false);
+	});
+
+	test('reopens and renders an exact numbering picture bullet through the actual docx-preview parser', async () => {
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/media/bullet.svg" ContentType="image/svg+xml"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Picture bullet visible</w:t></w:r></w:p></w:body></w:document>',
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="numbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>',
+			'word/numbering.xml': '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:numPicBullet w:numPicBulletId="1"><w:pict><v:shape style="width:8pt;height:8pt"><v:imagedata r:id="bullet"/></v:shape></w:pict></w:numPicBullet><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val=""/><w:lvlPicBulletId w:val="1"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>',
+			'word/_rels/numbering.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="bullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bullet.svg"/></Relationships>',
+			'word/media/bullet.svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>',
+		});
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-picture-bullet');
+		const reopened = await sanitizeParadisDocxBytesForRenderer(sanitized.bytes, 'actual-picture-bullet-reopen');
+		const docx = await loadActualDocxPreview();
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = reopened.bytes.buffer.slice(reopened.bytes.byteOffset, reopened.bytes.byteOffset + reopened.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+
+		ok(body.textContent?.includes('Picture bullet visible'));
+		ok([...body.querySelectorAll('p')].some(paragraph => paragraph.className.includes('-num-1-0')));
+		ok(styles.textContent?.includes(':before'));
+		ok(styles.textContent?.includes('background: var('));
+	});
+
+	test('reopens an MC QName document and renders its locally patched DrawingML anchor', async () => {
+		const geometry = '<wp:anchor><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="blocked"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const diagonal = '<q:tcBorders><q:tl2br q:val="single" q:sz="8" q:color="112233"/><q:tr2bl q:val="dashed" q:sz="6" q:color="445566"/></q:tcBorders>';
+		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+		const input = storeZip({
+			'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/custom/ole.bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/></Types>',
+			'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+			'word/document.xml': `<q:document xmlns:q="${word}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="wps"><q:body><mc:AlternateContent><mc:Choice Requires="wps"><q:p><q:r><q:t>MC choice</q:t></q:r></q:p></mc:Choice><mc:Fallback><q:p><q:r><q:t>MC fallback</q:t></q:r></q:p></mc:Fallback></mc:AlternateContent><q:p><q:r><q:t>MC anchor</q:t></q:r><w:r xmlns:w="${word}" xmlns:q="urn:shadow"><w:drawing>${geometry}</w:drawing></w:r></q:p><q:tbl><q:tr><q:tc><q:tcPr>${diagonal}</q:tcPr><q:p/></q:tc></q:tr></q:tbl></q:body></q:document>`,
+			'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../custom/ole.bin"/></Relationships>',
+			'custom/ole.bin': 'RAW-OLE',
+		});
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(input, 'actual-mc-anchor');
+		const serialized = new TextDecoder().decode(sanitized.bytes);
+		ok(serialized.includes('mc:Ignorable="wps"'));
+		ok(serialized.includes('<mc:Choice Requires="wps">'));
+		ok(serialized.includes('</w:r><q:r><q:t>Office asset unavailable:'));
+		ok(serialized.includes(geometry.replace(' r:embed="blocked"', '')));
+		ok(serialized.includes(diagonal));
+		const reopened = await sanitizeParadisDocxBytesForRenderer(sanitized.bytes, 'actual-mc-anchor-reopen');
+		const docx = await loadActualDocxPreview();
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = reopened.bytes.buffer.slice(reopened.bytes.byteOffset, reopened.bytes.byteOffset + reopened.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+
+		ok(body.textContent?.includes('Office asset unavailable:'));
+		strictEqual(body.textContent?.includes('RAW-OLE'), false);
+	});
+
+	test('renders promoted Drawing runs with inherited, redundant, shadowed, and default local namespaces', async () => {
+		const word = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+		const geometry = '<wp:anchor><wp:positionH relativeFrom="column"><wp:posOffset>101</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>202</wp:posOffset></wp:positionV><wp:extent cx="303" cy="404"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:link="shared"/></pic:blipFill><pic:spPr><a:xfrm rot="5400000" flipH="1"><a:off x="11" y="22"/><a:ext cx="33" cy="44"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"><a:prstDash val="dash"/><a:tailEnd type="triangle"/></a:ln></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor>';
+		const diagonal = '<q:tcBorders><q:tl2br q:val="single" q:sz="8" q:color="112233"/><q:tr2bl q:val="dashed" q:sz="6" q:color="445566"/></q:tcBorders>';
+		const cases = [
+			{
+				id: 'outer-local',
+				rootBindings: '',
+				anchor: `<w:hyperlink xmlns:w="${word}" r:id="shared"><w:r data-preserved="outer-local"><w:drawing>${geometry}</w:drawing></w:r><w:r><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink>`,
+				expectedRun: `<w:r xmlns:w="${word}" data-preserved="outer-local">`,
+			},
+			{
+				id: 'redundant-local',
+				rootBindings: '',
+				anchor: `<w:hyperlink xmlns:w="${word}" r:id="shared"><w:r xmlns:w="${word}" data-preserved="redundant-local"><w:drawing>${geometry}</w:drawing></w:r><w:r><w:object><o:OLEObject r:id="shared"/></w:object></w:r></w:hyperlink>`,
+				expectedRun: `<w:r xmlns:w="${word}" data-preserved="redundant-local">`,
+			},
+			{
+				id: 'local-shadow',
+				rootBindings: ` xmlns:w="${word}"`,
+				anchor: `<q:hyperlink r:id="shared"><q:r xmlns:w="urn:shadow" data-preserved="local-shadow"><q:drawing>${geometry}</q:drawing></q:r><q:r><q:object><o:OLEObject r:id="shared"/></q:object></q:r></q:hyperlink>`,
+				expectedRun: '<q:r xmlns:w="urn:shadow" data-preserved="local-shadow">',
+			},
+			{
+				id: 'default-local',
+				rootBindings: '',
+				anchor: `<hyperlink xmlns="${word}" r:id="shared"><r xmlns="${word}" data-preserved="default-local"><drawing>${geometry}</drawing></r><r><object><o:OLEObject r:id="shared"/></object></r></hyperlink>`,
+				expectedRun: `<r xmlns="${word}" data-preserved="default-local">`,
+			},
+		] as const;
+		const docx = await loadActualDocxPreview();
+		const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
+		for (const testCase of cases) {
+			const input = storeZip({
+				'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+				'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+				'word/document.xml': `<q:document xmlns:q="${word}"${testCase.rootBindings} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" mc:Ignorable="wps"><q:body><mc:AlternateContent><mc:Choice Requires="wps"><q:p><q:r><q:t>MC choice</q:t></q:r></q:p></mc:Choice><mc:Fallback><q:p/></mc:Fallback></mc:AlternateContent><q:p>${testCase.anchor}</q:p><q:tbl><q:tr><q:tc><q:tcPr>${diagonal}</q:tcPr><q:p/></q:tc></q:tr></q:tbl></q:body></q:document>`,
+				'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="shared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/shared" TargetMode="External"/></Relationships>',
+			});
+			const sanitized = await sanitizeParadisDocxBytesForRenderer(input, `actual-promoted-${testCase.id}`);
+			const archive = await JSZip.loadAsync(sanitized.bytes);
+			const documentXml = await archive.file('word/document.xml')?.async('string');
+			ok(documentXml);
+			parseParadisOfficeXml(documentXml, { depth: 64, nodes: 65_536, attributeLength: 4_096, characters: 8 * 1024 * 1024 });
+			ok(documentXml.includes(testCase.expectedRun));
+			strictEqual(documentXml.includes('r:id="shared"'), false);
+			strictEqual(documentXml.includes('r:link="shared"'), false);
+			ok(documentXml.includes('mc:Ignorable="wps"'));
+			ok(documentXml.includes('<mc:Choice Requires="wps">'));
+			ok(documentXml.includes(geometry.replace(' r:link="shared"', '')));
+			ok(documentXml.includes(diagonal));
+			const body = document.createElement('div');
+			const styles = document.createElement('div');
+			const arrayBuffer = sanitized.bytes.buffer.slice(sanitized.bytes.byteOffset, sanitized.bytes.byteOffset + sanitized.bytes.byteLength) as ArrayBuffer;
+
+			await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+
+			strictEqual((body.textContent?.match(/Office asset unavailable:/g) ?? []).length, 3);
+		}
+	});
 
 	function createDocxEditorFixture() {
 		const watcherResources: string[] = [];
@@ -98,6 +287,7 @@ suite('ParadisDocxFileEditor', () => {
 				return { classification };
 			}
 			const docxUrlMatch = /const DOCX_URL = ("(?:[^"\\]|\\.)*");/.exec(html);
+			const parsedDocxUrl = docxUrlMatch ? JSON.parse(docxUrlMatch[1]) as string : undefined;
 			const cspMatch = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(html);
 			const styleNonce = /<style nonce="([^"]+)">/.exec(html)?.[1];
 			const cspNonce = /script-src 'nonce-([^']+)'/.exec(cspMatch?.[1] ?? '')?.[1];
@@ -110,7 +300,7 @@ suite('ParadisDocxFileEditor', () => {
 			};
 			return {
 				classification,
-				docxUrl: docxUrlMatch ? JSON.parse(docxUrlMatch[1]) : undefined,
+				docxUrl: parsedDocxUrl?.startsWith('data:') ? '<sanitized-docx-data>' : parsedDocxUrl,
 				csp: styleNonce ? cspMatch?.[1].replace(`nonce-${styleNonce}`, 'nonce-<nonce>') : cspMatch?.[1],
 				scriptUrls: externalScripts.map(match => match[2]),
 				nonceConsistency: {
@@ -129,6 +319,8 @@ suite('ParadisDocxFileEditor', () => {
 					renderFootnotes: readBooleanOption('renderFootnotes'),
 					renderEndnotes: readBooleanOption('renderEndnotes'),
 					useBase64URL: readBooleanOption('useBase64URL'),
+					ignoreFonts: readBooleanOption('ignoreFonts'),
+					renderAltChunks: readBooleanOption('renderAltChunks'),
 				},
 			};
 		};
@@ -175,7 +367,10 @@ suite('ParadisDocxFileEditor', () => {
 					dispose: () => onDidChange.dispose(),
 				};
 			},
-			readFile: async (resource: URI, options: { length: number }) => {
+			readFile: async (resource: URI, options: { length?: number; limits?: { readonly size: number } }) => {
+				if (options.length !== 4) {
+					return { value: VSBuffer.wrap(defaultDocxPackage.slice()) };
+				}
 				readResources.push(resource.toString());
 				readOptions.push({ length: options.length });
 				const queue = queuedHeaders.get(resource.toString());
@@ -225,10 +420,8 @@ suite('ParadisDocxFileEditor', () => {
 				return disposables.add(new CancellationTokenSource());
 			},
 			async settleCurrentRender(): Promise<void> {
-				await Promise.resolve();
-				await Promise.resolve();
-				await Promise.resolve();
-				await Promise.resolve();
+				await timeout(200);
+				for (let index = 0; index < 16; index++) { await Promise.resolve(); }
 			},
 			resetObservations(): void {
 				readResources.length = 0;
@@ -437,12 +630,13 @@ suite('ParadisDocxFileEditor', () => {
 		});
 	});
 
-	function expectedViewerSnapshot(docxUrl: string): IDocxHtmlSnapshot {
+	function expectedViewerSnapshot(_docxUrl: string): IDocxHtmlSnapshot {
 		const libraryBase = asWebviewUri(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview')).toString(true);
+		const exactOrigins = new URL(libraryBase).origin;
 		return {
 			classification: 'viewer',
-			docxUrl,
-			csp: 'default-src \'none\'; script-src \'nonce-<nonce>\' https:; style-src \'unsafe-inline\'; img-src blob: data: https:; font-src https: data: blob:; connect-src https: blob: data:;',
+			docxUrl: '<sanitized-docx-data>',
+			csp: `default-src 'none'; script-src 'nonce-<nonce>' ${exactOrigins}; style-src 'unsafe-inline'; img-src data: blob: ${exactOrigins}; font-src data: blob: ${exactOrigins}; connect-src ${exactOrigins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none';`,
 			scriptUrls: [`${libraryBase}/jszip.min.js`, `${libraryBase}/docx-preview.min.js`],
 			nonceConsistency: {
 				csp: true,
@@ -460,6 +654,8 @@ suite('ParadisDocxFileEditor', () => {
 				renderFootnotes: true,
 				renderEndnotes: true,
 				useBase64URL: true,
+				ignoreFonts: true,
+				renderAltChunks: false,
 			},
 		};
 	}
@@ -1113,3 +1309,47 @@ suite('ParadisDocxFileEditor', () => {
 		});
 	});
 });
+
+async function loadActualDocxPreview(): Promise<{ renderAsync(data: ArrayBuffer, body: HTMLElement, styles: HTMLElement, options: Readonly<Record<string, unknown>>): Promise<void> }> {
+	const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
+	const response = await fetch(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/docx-preview.min.js').toString(true));
+	if (!response.ok) { throw new Error(`Unable to load docx-preview: ${response.status}`); }
+	const source = await response.text();
+	const module = { exports: {} as Record<string, unknown> };
+	const evaluate = new Function('exports', 'module', 'require', source) as (exports: Record<string, unknown>, module: { exports: Record<string, unknown> }, require: (id: string) => unknown) => void;
+	evaluate(module.exports, module, id => {
+		if (id !== 'jszip') {
+			throw new Error(`Unexpected docx-preview dependency: ${id}`);
+		}
+		return JSZip;
+	});
+	return module.exports as unknown as { renderAsync(data: ArrayBuffer, body: HTMLElement, styles: HTMLElement, options: Readonly<Record<string, unknown>>): Promise<void> };
+}
+
+function storeZip(files: Readonly<Record<string, string>>): Uint8Array {
+	const encoder = new TextEncoder();
+	const records = Object.entries(files).map(([name, value]) => ({ name: encoder.encode(name), bytes: encoder.encode(value), crc: testCrc32(encoder.encode(value)) }));
+	const localLength = records.reduce((sum, record) => sum + 30 + record.name.byteLength + record.bytes.byteLength, 0);
+	const centralLength = records.reduce((sum, record) => sum + 46 + record.name.byteLength, 0);
+	const output = new Uint8Array(localLength + centralLength + 22);
+	const view = new DataView(output.buffer);
+	const offsets: number[] = [];
+	let offset = 0;
+	for (const record of records) {
+		offsets.push(offset); view.setUint32(offset, 0x04034b50, true); view.setUint16(offset + 4, 20, true); view.setUint32(offset + 14, record.crc, true); view.setUint32(offset + 18, record.bytes.byteLength, true); view.setUint32(offset + 22, record.bytes.byteLength, true); view.setUint16(offset + 26, record.name.byteLength, true);
+		output.set(record.name, offset + 30); output.set(record.bytes, offset + 30 + record.name.byteLength); offset += 30 + record.name.byteLength + record.bytes.byteLength;
+	}
+	const centralOffset = offset;
+	for (let index = 0; index < records.length; index++) {
+		const record = records[index]; view.setUint32(offset, 0x02014b50, true); view.setUint16(offset + 4, 20, true); view.setUint16(offset + 6, 20, true); view.setUint32(offset + 16, record.crc, true); view.setUint32(offset + 20, record.bytes.byteLength, true); view.setUint32(offset + 24, record.bytes.byteLength, true); view.setUint16(offset + 28, record.name.byteLength, true); view.setUint32(offset + 42, offsets[index], true);
+		output.set(record.name, offset + 46); offset += 46 + record.name.byteLength;
+	}
+	view.setUint32(offset, 0x06054b50, true); view.setUint16(offset + 8, records.length, true); view.setUint16(offset + 10, records.length, true); view.setUint32(offset + 12, centralLength, true); view.setUint32(offset + 16, centralOffset, true);
+	return output;
+}
+
+function testCrc32(bytes: Uint8Array): number {
+	let crc = 0xffffffff;
+	for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit++) { crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); } }
+	return (crc ^ 0xffffffff) >>> 0;
+}

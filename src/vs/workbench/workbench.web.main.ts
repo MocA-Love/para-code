@@ -189,4 +189,8 @@ import './contrib/processExplorer/browser/processExplorer.web.contribution.js';
 // Browser View
 import './contrib/browserView/browser/browserView.contribution.js';
 
+// PARA-PATCH: Browser-only Office semantic viewer; desktop keeps its richer native viewers.
+// eslint-disable-next-line local/code-import-patterns -- Explicit web-only fork contribution; common registration would also load it in desktop.
+import '../paradis/contrib/fileViewers/browser/paradisOfficeBrowser.contribution.js';
+
 //#endregion

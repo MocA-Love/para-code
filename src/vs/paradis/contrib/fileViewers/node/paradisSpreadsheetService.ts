@@ -30,6 +30,7 @@ import {
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
+import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
 
 const MAX_ROWS = 2000;
 
@@ -58,6 +59,7 @@ interface IExcelColor {
 	readonly theme?: number;
 	readonly tint?: number;
 	readonly indexed?: number;
+	readonly auto?: boolean;
 }
 interface IExcelBorderSide {
 	readonly style?: string;
@@ -553,7 +555,40 @@ function getCellDiagonal(cell: ExcelJS.Cell): IParadisDiagonalBorder | undefined
 	}
 	const base = BORDER_STYLES[dg.style] || '1px solid';
 	const color = resolveColor(dg.color) || '#000';
-	return { up, down, style: base, color };
+	const rawColor = rawExcelColor(dg.color);
+	return {
+		up,
+		down,
+		style: base,
+		color,
+		rawStyle: dg.style,
+		...(rawColor ? { rawColor } : {}),
+	};
+}
+
+/** Test seam for ExcelJS color variants that its XLSX round-trip does not preserve. */
+export function getCellDiagonalForTest(cell: ExcelJS.Cell): IParadisDiagonalBorder | undefined {
+	return getCellDiagonal(cell);
+}
+
+function rawExcelColor(color: IExcelColor | undefined): ParadisSpreadsheetColor | undefined {
+	if (!color) {
+		return undefined;
+	}
+	const tint = color.tint !== undefined ? String(color.tint) : undefined;
+	if (color.argb !== undefined) {
+		return { kind: 'rgb', rgb: color.argb, ...(tint !== undefined ? { tint } : {}) };
+	}
+	if (color.theme !== undefined) {
+		return { kind: 'theme', theme: color.theme, ...(tint !== undefined ? { tint } : {}) };
+	}
+	if (color.indexed !== undefined) {
+		return { kind: 'indexed', indexed: color.indexed, ...(tint !== undefined ? { tint } : {}) };
+	}
+	if (color.auto !== undefined) {
+		return { kind: 'auto', auto: color.auto, ...(tint !== undefined ? { tint } : {}) };
+	}
+	return undefined;
 }
 
 /**

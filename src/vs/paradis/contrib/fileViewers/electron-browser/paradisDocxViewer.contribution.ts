@@ -6,12 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Word(.docx)ビューア/差分(vendored docx-preview 依存)の登録入り口。paradis.electron-browser.contribution.ts から import。
-// exclusive 登録により、標準のバイナリ警告(BinaryFileEditor)より優先して .docx をレンダリング表示する。
+// Word OOXMLビューア/差分(vendored docx-preview 依存)の登録入り口。macro/template variantsもread-onlyで扱う。
+// paradis.electron-browser.contribution.ts から import。exclusive 登録により標準のバイナリ警告より優先する。
 // 通常オープン(createEditorInput)と SCM の差分オープン(createDiffEditorInput)の両方を横取りする。
 
 import { localize } from '../../../../nls.js';
-import { Schemas } from '../../../../base/common/network.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -22,20 +21,17 @@ import { IEditorResolverService, RegisteredEditorPriority } from '../../../../wo
 import { ParadisDocxFileEditor } from './paradisDocxFileEditor.js';
 import { ParadisDocxDiffEditor } from './paradisDocxDiffEditor.js';
 import {
+	PARADIS_DOCX_SERIALIZER_REGISTRATIONS,
 	ParadisDocxDiffInput,
-	ParadisDocxDiffInputSerializer,
 	ParadisDocxInput,
-	ParadisDocxInputSerializer,
 } from './paradisDocxInput.js';
 import {
 	PARADIS_DOCX_DIFF_EDITOR_ID,
-	PARADIS_DOCX_DIFF_INPUT_TYPE_ID,
 	PARADIS_DOCX_EDITOR_ID,
-	PARADIS_DOCX_EXTENSIONS,
-	PARADIS_DOCX_INPUT_TYPE_ID,
 	isParadisDocxResource,
 	paradisGlobForExtension,
 } from '../browser/paradisFileViewers.js';
+import { PARADIS_DOCX_VIEWER_REGISTRATION, registerParadisOfficeViewerSerializers } from '../browser/paradisOfficeConfiguration.js';
 
 // allow-any-unicode-next-line
 const DOCX_LABEL = localize('paradis.docxPreview', "Word プレビュー");
@@ -51,20 +47,12 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	[new SyncDescriptor(ParadisDocxDiffInput)]
 );
 
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
-	PARADIS_DOCX_INPUT_TYPE_ID,
-	ParadisDocxInputSerializer
-);
-
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
-	PARADIS_DOCX_DIFF_INPUT_TYPE_ID,
-	ParadisDocxDiffInputSerializer
-);
+registerParadisOfficeViewerSerializers(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory), PARADIS_DOCX_SERIALIZER_REGISTRATIONS);
 
 // 差分の旧版は git: スキーム(git拡張のreadonly FSプロバイダ)で渡ってくるため、canSupportResource で許可する必要がある。
 // これが無いと editorResolverService が「両サイドが同じ editor に解決されない」と判断し、
 // createDiffEditorInput は一度も呼ばれずに標準のバイナリ差分へフォールバックする。
-const SUPPORTED_SCHEMES = new Set<string>([Schemas.file, Schemas.vscodeRemote, 'git']);
+const SUPPORTED_SCHEMES = new Set<string>(PARADIS_DOCX_VIEWER_REGISTRATION.schemes);
 
 class ParadisDocxViewerResolverContribution implements IWorkbenchContribution {
 	static readonly ID = 'paradis.contrib.docxViewerResolver';
@@ -73,13 +61,13 @@ class ParadisDocxViewerResolverContribution implements IWorkbenchContribution {
 		@IEditorResolverService editorResolverService: IEditorResolverService,
 		@IInstantiationService instantiationService: IInstantiationService,
 	) {
-		for (const ext of PARADIS_DOCX_EXTENSIONS) {
+		for (const ext of PARADIS_DOCX_VIEWER_REGISTRATION.extensions) {
 			editorResolverService.registerEditor(
 				paradisGlobForExtension(ext),
 				{
-					id: PARADIS_DOCX_EDITOR_ID,
+					id: PARADIS_DOCX_VIEWER_REGISTRATION.editorId,
 					label: DOCX_LABEL,
-					// exclusive: バイナリ(.docx)を常にビューアで開く(PDF ビューアと同じ扱い)。
+					// exclusive: Word OOXML packagesを常にビューアで開く(PDF ビューアと同じ扱い)。
 					priority: RegisteredEditorPriority.exclusive
 				},
 				{

@@ -127,6 +127,8 @@ import { registerParadisSessionResumeForServer } from '../../paradis/contrib/ses
 import { registerParadisSpaceDiskForServer } from '../../paradis/contrib/spaceDisk/node/paradisSpaceDiskChannel.js';
 // PARA-PATCH: a page previewed from this machine reads its files from here, served on this machine's loopback and reached over a forwarded port
 import { registerParadisHtmlPreviewForServer } from '../../paradis/contrib/fileViewers/node/paradisHtmlPreviewChannel.js';
+// PARA-PATCH: new remote servers parse Office sources beside the files; old clients retain the legacy channel.
+import { registerParadisOfficeForServer } from '../../paradis/contrib/fileViewers/node/paradisOfficeServerChannel.js';
 // PARA-PATCH: a connected client's Codex state DB / rollouts live on this machine, so the terminal title tracker asks here
 import { registerParadisCodexTerminalTitleForServer } from '../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
 // PARA-PATCH: a connected client's mobile find/grep needs ripgrep to run against this machine's files
@@ -459,6 +461,7 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// client can render a page that lives on this machine with its own files alongside it. The
 		// client forwards this port; nothing here is reachable from outside this machine.
 		disposables.add(registerParadisHtmlPreviewForServer(socketServer));
+		disposables.add(registerParadisOfficeForServer(socketServer, configurationService));
 		// PARA-PATCH: expose the same Codex terminal title channel the shared process has, so a
 		// connected client can read Codex thread metadata that lives on this machine.
 		disposables.add(registerParadisCodexTerminalTitleForServer(socketServer, logService));

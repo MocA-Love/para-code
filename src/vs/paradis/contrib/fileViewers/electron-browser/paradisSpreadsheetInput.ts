@@ -18,6 +18,7 @@ import { EditorInputCapabilities, IEditorSerializer, IUntypedEditorInput } from 
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { ParadisFileViewerInput, ParadisFileViewerInputSerializer } from '../browser/paradisFileViewerInput.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID, PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_EDITOR_ID, PARADIS_SPREADSHEET_INPUT_TYPE_ID } from '../browser/paradisFileViewers.js';
+import type { ParadisOfficeSerializerRegistration } from '../browser/paradisOfficeConfiguration.js';
 
 /** Excel ビューア(単一ファイル)の EditorInput。Excel には Raw テキストモードが無いので読み取り専用。 */
 export class ParadisSpreadsheetInput extends ParadisFileViewerInput {
@@ -122,3 +123,8 @@ export class ParadisSpreadsheetDiffInputSerializer implements IEditorSerializer 
 		}
 	}
 }
+
+export const PARADIS_SPREADSHEET_SERIALIZER_REGISTRATIONS = Object.freeze([
+	[PARADIS_SPREADSHEET_INPUT_TYPE_ID, ParadisSpreadsheetInputSerializer],
+	[PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID, ParadisSpreadsheetDiffInputSerializer],
+] satisfies readonly ParadisOfficeSerializerRegistration[]);

@@ -22,6 +22,9 @@ import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { parseUnifiedDiff } from './diffParser.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
+import { classifyMobileFileKind } from './officeCapability.js';
+
+const OFFICE_DIFF_UNAVAILABLE = 'このOffice形式のDiffは利用できません';
 
 interface DiffViewProps {
 	ws: string;
@@ -90,9 +93,11 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 		: undefined;
 	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
 	const name = path.split('/').pop() ?? path;
+	const officeKind = classifyMobileFileKind(name);
 	const kind = /\.(?:md|markdown)$/i.test(name) ? 'markdown'
 		: /\.(?:html?|xhtml)$/i.test(name) ? 'html'
-			: /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : 'other';
+			: officeKind === 'spreadsheet' && /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet'
+				: officeKind !== undefined ? 'officeUnavailable' : 'other';
 
 	// 文書として読めるものは、開いた瞬間から読める形で出す（ファイルビューアも同じ既定）。
 	// 表計算はPC側が作る「セルの色分け差分」の方が情報量が多いのでDiffのまま。
@@ -126,7 +131,9 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 		}
 		const requestTarget = rendererTarget;
 		setError(undefined);
-		if (kind === 'spreadsheet') {
+		if (kind === 'officeUnavailable') {
+			setError(OFFICE_DIFF_UNAVAILABLE);
+		} else if (kind === 'spreadsheet') {
 			scmXlsxDiff(ws, path)
 				.then(r => { if (!cancelled && currentRendererTarget(ws) === requestTarget) { setDiffHtml(r.html); } })
 				.catch(e => { if (!cancelled && currentRendererTarget(ws) === requestTarget) { setError(String(e instanceof Error ? e.message : e)); } });
@@ -177,7 +184,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	}), [rows]);
 
 	const showWebView = mode === 'render' ? renderHtml : kind === 'spreadsheet' ? diffHtml : undefined;
-	const loading = mode === 'render' ? renderHtml === undefined : kind === 'spreadsheet' ? diffHtml === undefined : diffText === undefined;
+	const loading = kind === 'officeUnavailable' ? false : mode === 'render' ? renderHtml === undefined : kind === 'spreadsheet' ? diffHtml === undefined : diffText === undefined;
 
 	// iPad幅では pageSheet にして、常設サイドバーを覆い隠さないようにする
 	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。ヘッダーの拡大ボタンで
@@ -203,7 +210,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 							<Text style={styles.statDel}>-{stats.del}</Text>
 						</>
 					) : null}
-					{kind !== 'other' ? (
+					{kind !== 'other' && kind !== 'officeUnavailable' ? (
 						// 並びはファイルビューアと揃える（左がレンダー）。
 						<View style={styles.segment}>
 							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('render'); }}>
@@ -239,7 +246,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 						style={styles.web}
 						source={{ html: showWebView }}
 						originWhitelist={['*']}
-						javaScriptEnabled={isDiffViewerJavaScriptEnabled(kind)}
+						javaScriptEnabled={isDiffViewerJavaScriptEnabled(kind === 'officeUnavailable' ? 'other' : kind)}
 						onShouldStartLoadWithRequest={guardWebViewNavigation}
 					/>
 				) : loading && !error ? (
