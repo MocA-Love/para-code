@@ -477,6 +477,9 @@ export function trimFrozenPaneClone(table: HTMLElement, rowCount: number | undef
 	}
 }
 
+/** 診断リボンへ渡す coverage の上限。数万件の配列を作らずに件数だけを伝える。 */
+const MAX_DIAGNOSTIC_COVERAGE_SAMPLES = 100_000;
+
 export class ParadisSpreadsheetEditor extends EditorPane {
 
 	static readonly ID = PARADIS_SPREADSHEET_EDITOR_ID;
@@ -899,18 +902,39 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				});
 			}
 		}
-		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...placeholders.map(() => 'placeholder' as const)];
-		if (workbook.sheets.some(sheet => sheet.truncated)) {
+		// 診断は node 側で実際に OOXML を読んだ結果(到達度)に基づく。解析できなかった場合だけ、
+		// 従来の表示方法で開いている旨を出す。
+		const semantic = workbook.semanticDiagnostics;
+		const truncated = workbook.sheets.some(sheet => sheet.truncated);
+		const coverages: ParadisOfficeRenderCoverage[] = [
+			...(semantic?.available
+				? Array.from({ length: Math.min(semantic.parsedCells, MAX_DIAGNOSTIC_COVERAGE_SAMPLES) }, () => 'rendered' as const)
+				: ['approximated' as const]),
+			...placeholders.map(() => 'placeholder' as const),
+		];
+		if (truncated) {
 			coverages.push('noAnchor');
 		}
 		if (this._diagnosticsEl) {
+			const complete = semantic?.available === true && semantic.terminal
+				&& semantic.parsedParts === semantic.expectedParts
+				&& semantic.parsedSheets === semantic.expectedSheets
+				&& semantic.parsedCells === semantic.expectedCells
+				&& !truncated && placeholders.length === 0;
 			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, {
-				outcome: 'degraded',
+				outcome: complete ? 'complete' : 'degraded',
 				coverages,
-				warnings: [{
-					code: 'spreadsheet.legacyProjection',
-					message: localize('paradis.spreadsheet.legacyProjection', "この形式では詳細な解析に対応していないため、従来の表示方法で開いています。"),
-				}],
+				warnings: semantic?.available
+					? (truncated
+						? [{
+							code: 'spreadsheet.truncatedRows',
+							message: localize('paradis.spreadsheet.truncatedRows', "行数が多いため、先頭部分だけを表示しています。"),
+						}]
+						: [])
+					: [{
+						code: 'spreadsheet.legacyProjection',
+						message: localize('paradis.spreadsheet.legacyProjection', "この形式では詳細な解析に対応していないため、従来の表示方法で開いています。"),
+					}],
 			});
 		}
 		if (!this._inspectorPanel || !this._inspectorToggle) {
