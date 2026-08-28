@@ -80,7 +80,7 @@ interface IParadisSpreadsheetCommittedInput {
 }
 
 export function isParadisSpreadsheetV1Enabled(configuration: ParadisOfficeRuntimeConfiguration): boolean {
-	return configuration.engine !== 'legacy' && configuration.semanticSpreadsheet;
+	return configuration.engine !== 'legacy' && configuration.platformBackend && configuration.semanticSpreadsheet;
 }
 
 export function createParadisSpreadsheetSourceDescriptor(resource: URI, side?: 'original' | 'modified'): ParadisOfficeSourceDescriptor {

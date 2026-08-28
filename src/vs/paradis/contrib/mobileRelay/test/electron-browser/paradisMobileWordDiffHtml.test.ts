@@ -20,6 +20,7 @@ import {
 	PARADIS_MOBILE_OFFICE_ALL_FEATURES,
 	decodeParadisMobileOfficeRequest,
 } from '../../common/paradisMobileOfficeProtocol.js';
+import * as mobileOfficeProtocol from '../../common/paradisMobileOfficeProtocol.js';
 
 const handle = { kind: 'comparison' as const, id: 'a'.repeat(48) };
 const revision = { kind: 'comparison' as const, originalRevision: 'original-1', modifiedRevision: 'modified-1', comparisonRevision: 'comparison-1' };
@@ -98,6 +99,8 @@ suite('ParadisMobileWordDiffHtml', () => {
 	});
 
 	test('rejects handle-bearing mobile source messages and accepts the v1 descriptor-only handshake/diff contract', () => {
+		const advertisedBits = (mobileOfficeProtocol as typeof mobileOfficeProtocol & { readonly getParadisMobileOfficeHostFeatureBits?: (requestedBits: number) => number }).getParadisMobileOfficeHostFeatureBits;
+		assert.strictEqual(advertisedBits?.(PARADIS_MOBILE_OFFICE_ALL_FEATURES), 0);
 		assert.deepStrictEqual(decodeParadisMobileOfficeRequest({ t: 'office/hello', id: 'hello-1', version: 1, featureBits: PARADIS_MOBILE_OFFICE_ALL_FEATURES }), {
 			t: 'office/hello', id: 'hello-1', version: 1, featureBits: PARADIS_MOBILE_OFFICE_ALL_FEATURES,
 		});

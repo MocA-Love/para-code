@@ -67,7 +67,7 @@ const INCOMPLETE_WORD_MANIFEST: ParadisOfficeCompletenessManifest = Object.freez
 });
 
 export function isParadisWordV1Enabled(configuration: ParadisOfficeRuntimeConfiguration): boolean {
-	return configuration.engine !== 'legacy' && configuration.semanticWord;
+	return configuration.engine !== 'legacy' && configuration.platformBackend && configuration.semanticWord;
 }
 
 export function createParadisWordSourceDescriptor(resource: URI, side?: 'original' | 'modified'): ParadisOfficeSourceDescriptor {

@@ -1,6 +1,6 @@
 # Office Viewer Acceptance Matrix
 
-`docs/report-officee.html` の A/B/C/D 監査行と、`docs/report-office-mock.html` の追加網羅行を追跡する台帳。Task 2 時点では実機ランタイムを再実行していないため、`implemented` は使用しない。各 `safe-fallback` 行は `action=legacy-preview|diagnostic|explicit-unavailable` と `reason=fail-closed|no-unsupported-projection|no-external-fetch|no-semantic-claim` を必須とし、行ごとのformat/platform/featureに適したUI行動を記録する。実機・fixture・unit の実行結果は後続の検証Gateで置き換える。
+`docs/report-officee.html` の A/B/C/D 監査行と、`docs/report-office-mock.html` の追加網羅行を追跡する台帳。Task 2 時点では実機ランタイムを再実行していないため、`implemented` は使用しない。各 `safe-fallback` 行には `action`、`reason` に加えて実在する `source=repo/path#symbol` が必要である。既存173行はそのソース証跡を持たないため、現行checkerでは意図的に未達として拒否される。行数を満たすためのソース対応表は作らず、fixture・unit・runtimeと実装箇所を個別に確認できた行だけを後続Gateで更新する。
 
 | id | requirement | ownerTask | behavior | fixture | unit | runtime | status | commit |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

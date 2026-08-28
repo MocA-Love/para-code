@@ -237,60 +237,7 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 		if (!this.rootElement) {
 			return;
 		}
-		this.rootElement.replaceChildren();
-		const title = dom.append(this.rootElement, dom.$('h2'));
-		title.textContent = summary.kind === 'diff'
-			? localize('paradis.office.diff.title', "Office semantic changes")
-			: localize('paradis.office.summary.title', "Office semantic preview");
-		if (summary.kind === 'spreadsheet') {
-			for (const sheet of summary.sheets) {
-				const heading = dom.append(this.rootElement, dom.$('h3'));
-				heading.textContent = sheet.name;
-				const table = dom.append(this.rootElement, dom.$('table'));
-				for (const cell of sheet.cells) {
-					const row = dom.append(table, dom.$('tr'));
-					const address = dom.append(row, dom.$('th'));
-					address.textContent = cell.address;
-					const value = dom.append(row, dom.$('td'));
-					value.style.position = 'relative';
-					value.style.minWidth = '120px';
-					value.textContent = cell.text;
-					if (cell.diagonal) {
-						appendSpreadsheetDiagonal(value, cell.diagonal);
-					}
-				}
-			}
-			return;
-		}
-		if (summary.kind === 'word') {
-			for (const story of summary.stories) {
-				const heading = dom.append(this.rootElement, dom.$('h3'));
-				heading.textContent = story.kind;
-				const text = dom.append(this.rootElement, dom.$('pre'));
-				text.style.whiteSpace = 'pre-wrap';
-				text.textContent = story.text;
-			}
-			if (summary.tableDiagonals.length > 0) {
-				const heading = dom.append(this.rootElement, dom.$('h3'));
-				heading.textContent = localize('paradis.office.word.diagonals', "Table diagonals");
-				for (const diagonal of summary.tableDiagonals) {
-					const sample = dom.append(this.rootElement, dom.$('span'));
-					sample.style.display = 'inline-block';
-					sample.style.position = 'relative';
-					sample.style.width = '80px';
-					sample.style.height = '40px';
-					sample.style.border = '1px solid currentColor';
-					sample.style.margin = '4px';
-					appendDiagonalLine(sample, diagonal.direction === 'topLeftToBottomRight', diagonal.direction === 'topRightToBottomLeft', diagonal.color);
-				}
-			}
-			return;
-		}
-		const list = dom.append(this.rootElement, dom.$('ul'));
-		for (const change of summary.changes) {
-			const item = dom.append(list, dom.$('li'));
-			item.textContent = `${change.category}: ${change.locator}`;
-		}
+		renderParadisOfficeSummary(this.rootElement, summary);
 	}
 
 	override clearInput(): void {
@@ -304,6 +251,89 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 			this.rootElement.style.width = `${dimension.width}px`;
 			this.rootElement.style.height = `${dimension.height}px`;
 		}
+	}
+}
+
+export function renderParadisOfficeSummary(container: HTMLElement, summary: ParadisOfficeBrowserSemanticSummary): void {
+	container.replaceChildren();
+	const title = dom.append(container, dom.$('h2'));
+	title.textContent = summary.kind === 'diff'
+		? localize('paradis.office.diff.title', "Office semantic changes")
+		: localize('paradis.office.summary.title', "Office semantic preview");
+	if (summary.kind === 'spreadsheet') {
+		if (summary.sheets.some(sheet => sheet.truncated)) {
+			appendSummaryWarning(container, localize('paradis.office.summary.truncated', "This preview is incomplete because content was truncated."));
+		}
+		appendExternalRelationshipWarning(container, summary.externalRelationshipCount);
+		for (const sheet of summary.sheets) {
+			const heading = dom.append(container, dom.$('h3'));
+			heading.textContent = sheet.name;
+			const table = dom.append(container, dom.$('table'));
+			for (const cell of sheet.cells) {
+				const row = dom.append(table, dom.$('tr'));
+				const address = dom.append(row, dom.$('th'));
+				address.textContent = cell.address;
+				const value = dom.append(row, dom.$('td'));
+				value.style.position = 'relative';
+				value.style.minWidth = '120px';
+				value.textContent = cell.text;
+				if (cell.diagonal) {
+					appendSpreadsheetDiagonal(value, cell.diagonal);
+				}
+			}
+		}
+		return;
+	}
+	if (summary.kind === 'word') {
+		if (summary.truncated || summary.stories.some(story => story.truncated)) {
+			appendSummaryWarning(container, localize('paradis.office.summary.truncated', "This preview is incomplete because content was truncated."));
+		}
+		appendExternalRelationshipWarning(container, summary.externalRelationshipCount);
+		if (summary.drawings.length > 0) {
+			appendSummaryWarning(container, localize('paradis.office.summary.drawingPlaceholders', "{0} drawing placeholder(s) are not rendered in this diagnostic preview.", summary.drawings.length));
+		}
+		for (const story of summary.stories) {
+			const heading = dom.append(container, dom.$('h3'));
+			heading.textContent = story.kind;
+			const text = dom.append(container, dom.$('pre'));
+			text.style.whiteSpace = 'pre-wrap';
+			text.textContent = story.text;
+		}
+		if (summary.tableDiagonals.length > 0) {
+			const heading = dom.append(container, dom.$('h3'));
+			heading.textContent = localize('paradis.office.word.diagonals', "Table diagonals");
+			for (const diagonal of summary.tableDiagonals) {
+				const sample = dom.append(container, dom.$('span'));
+				sample.style.display = 'inline-block';
+				sample.style.position = 'relative';
+				sample.style.width = '80px';
+				sample.style.height = '40px';
+				sample.style.border = '1px solid currentColor';
+				sample.style.margin = '4px';
+				appendDiagonalLine(sample, diagonal.direction === 'topLeftToBottomRight', diagonal.direction === 'topRightToBottomLeft', diagonal.color);
+			}
+		}
+		return;
+	}
+	if (!summary.terminal) {
+		appendSummaryWarning(container, localize('paradis.office.diff.incomplete', "This comparison is not complete."));
+	}
+	const list = dom.append(container, dom.$('ul'));
+	for (const change of summary.changes) {
+		const item = dom.append(list, dom.$('li'));
+		item.textContent = `${change.category}: ${change.locator}`;
+	}
+}
+
+function appendSummaryWarning(container: HTMLElement, text: string): void {
+	const warning = dom.append(container, dom.$('p'));
+	warning.setAttribute('role', 'status');
+	warning.textContent = text;
+}
+
+function appendExternalRelationshipWarning(container: HTMLElement, count: number): void {
+	if (count > 0) {
+		appendSummaryWarning(container, localize('paradis.office.summary.externalRelationships', "{0} external relationships are not loaded.", count));
 	}
 }
 

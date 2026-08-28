@@ -44,7 +44,7 @@ import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCr
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { loadParadisMobileWordDiffBundle, renderParadisMobileWordDiffHtml } from './paradisMobileWordDiffHtml.js';
 import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind, NotifyPayload, ParadisMobileWarmLeaseRequest } from '../common/paradisMobileProtocol.js';
-import { decodeParadisMobileOfficeRequest, PARADIS_MOBILE_OFFICE_ALL_FEATURES, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
+import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
@@ -2164,7 +2164,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (msg.t === 'office/hello') {
 			const negotiation = await this.negotiateMobileOfficeHost();
 			const body: ParadisMobileOfficeResponse = negotiation
-				? { t: 'office/capabilities', version: PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, featureBits: msg.featureBits & PARADIS_MOBILE_OFFICE_ALL_FEATURES, warnings: [] }
+				? { t: 'office/capabilities', version: PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, featureBits: getParadisMobileOfficeHostFeatureBits(msg.featureBits), warnings: ['office.capability.featureUnavailable'] }
 				: { t: 'office/capabilities', version: 0, featureBits: 0, warnings: ['office.capability.mobileHostV0'] };
 			reply(body);
 			return;

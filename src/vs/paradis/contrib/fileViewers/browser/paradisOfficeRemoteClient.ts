@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationTokenSource, type CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import type { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -14,11 +14,12 @@ import {
 	marshalParadisOfficeRequest,
 	marshalParadisOfficeWireValue,
 	unmarshalParadisOfficeResponse,
+	type ParadisOfficeOperation,
 	type ParadisOfficeV1Negotiation,
 	type ParadisOfficeWireAuthority,
 } from '../common/paradisOfficeChannel.js';
 import type { IOfficeSourceBroker, IOfficeSpoolClient, ParadisOfficeBackendSource, ParadisOfficeSealedSpoolReference } from '../common/paradisOfficeSourceBroker.js';
-import type { ParadisOfficeRequest, ParadisOfficeResponse, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
+import type { ParadisOfficeHandleRef, ParadisOfficeRequest, ParadisOfficeResponse, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 
 export interface IParadisOfficeRemoteConnection {
 	readonly remoteAuthority: string;
@@ -50,6 +51,12 @@ interface RemoteRoute {
 	readonly channel: IChannel;
 	readonly kind: 'remoteV1' | 'boundedLocalSpool';
 	readonly authority?: ParadisOfficeWireAuthority;
+	readonly capabilities: readonly ParadisOfficeOperation[];
+}
+
+interface OwnedHandleRoute {
+	readonly route: RemoteRoute;
+	readonly handle: ParadisOfficeHandleRef;
 }
 
 type AuthorityAwareSourceBroker = IOfficeSourceBroker & {
@@ -63,7 +70,7 @@ type AuthorityAwareSpoolClient = IOfficeSpoolClient & {
 export class ParadisOfficeRemoteClientError extends Error {
 	override readonly name = 'ParadisOfficeRemoteClientError';
 
-	constructor(readonly code: 'noConnection' | 'negotiationFailed' | 'sourceFailed' | 'cancelled' | 'transportFailed') {
+	constructor(readonly code: 'noConnection' | 'negotiationFailed' | 'sourceFailed' | 'cancelled' | 'transportFailed' | 'featureUnsupported') {
 		super('The remote Office source could not be opened safely.');
 		Object.defineProperty(this, 'stack', { configurable: true, value: '' });
 	}
@@ -88,9 +95,11 @@ function isV1Negotiation(value: unknown): value is ParadisOfficeV1Negotiation {
 			return descriptor?.enumerable && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : undefined;
 		};
 		const capabilities = field('capabilities');
-		if (!Array.isArray(capabilities) || Object.getPrototypeOf(capabilities) !== Array.prototype || capabilities.length !== PARADIS_OFFICE_OPERATIONS.length
-			|| Reflect.ownKeys(capabilities).length !== PARADIS_OFFICE_OPERATIONS.length + 1
-			|| !PARADIS_OFFICE_OPERATIONS.every((operation, index) => Object.getOwnPropertyDescriptor(capabilities, String(index))?.value === operation)) {
+		if (!Array.isArray(capabilities) || Object.getPrototypeOf(capabilities) !== Array.prototype
+			|| Reflect.ownKeys(capabilities).length !== capabilities.length + 1
+			|| new Set(capabilities).size !== capabilities.length
+			|| capabilities.some((operation, index) => !PARADIS_OFFICE_OPERATIONS.includes(operation as ParadisOfficeOperation)
+				|| Object.getOwnPropertyDescriptor(capabilities, String(index))?.value !== operation)) {
 			return false;
 		}
 		const ownerCapability = field('ownerCapability');
@@ -138,7 +147,9 @@ function safeDispose(disposable: IDisposable): void {
 /** Selects the remote Task 6 channel or a local Task 3 bounded-spool fallback. */
 export class ParadisOfficeRemoteClient extends Disposable {
 	private route: RemoteRoute | undefined;
-	private readonly handleRoutes = new Map<string, RemoteRoute>();
+	private readonly handleRoutes = new Map<string, OwnedHandleRoute>();
+	private readonly requestCancellations = new Set<CancellationTokenSource>();
+	private disposeRequestSequence = 0;
 	private disposed = false;
 	private readonly pendingSpools = new Set<ParadisOfficeSealedSpoolReference>();
 	private readonly spoolBindings = new Map<ParadisOfficeSealedSpoolReference, { readonly descriptor: ParadisOfficeSourceDescriptor; readonly authority: ParadisOfficeWireAuthority }>();
@@ -148,6 +159,17 @@ export class ParadisOfficeRemoteClient extends Disposable {
 	}
 
 	async request(request: ParadisOfficeRequest, token: CancellationToken): Promise<ParadisOfficeRemoteRequestResult> {
+		const cancellation = new CancellationTokenSource(token);
+		this.requestCancellations.add(cancellation);
+		try {
+			return await this.requestOwned(request, cancellation.token);
+		} finally {
+			this.requestCancellations.delete(cancellation);
+			cancellation.dispose();
+		}
+	}
+
+	private async requestOwned(request: ParadisOfficeRequest, token: CancellationToken): Promise<ParadisOfficeRemoteRequestResult> {
 		if (this.disposed || token.isCancellationRequested) {
 			throw new ParadisOfficeRemoteClientError('cancelled');
 		}
@@ -162,12 +184,16 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		}
 		const spools: ParadisOfficeSealedSpoolReference[] = [];
 		try {
+			if (!route.capabilities.includes(request.operation)) {
+				throw new ParadisOfficeRemoteClientError('featureUnsupported');
+			}
 			const routedRequest = route.kind === 'remoteV1' ? this.validateDirectRemoteRequest(request, route.connection) : await this.prepareLocalFallback(request, route, spools, token);
 			const response = await this.callCancellable(route.channel, 'request', marshalParadisOfficeRequest(routedRequest, route.authority), token);
 			const parsed = unmarshalParadisOfficeResponse(response);
 			this.rememberHandleRoute(parsed, route, request);
-			const warnings = route.kind === 'remoteV1' ? [] : ['office.capability.remoteBackendV0'];
-			return { route: route.kind, quality: route.kind === 'remoteV1' ? 'complete' : 'degraded', warnings, response: parsed };
+			const complete = route.kind === 'remoteV1' && route.capabilities.length === PARADIS_OFFICE_OPERATIONS.length;
+			const warnings = complete ? [] : [route.kind === 'remoteV1' ? 'office.capability.summaryOnly' : 'office.capability.remoteBackendV0'];
+			return { route: route.kind, quality: complete ? 'complete' : 'degraded', warnings, response: parsed };
 		} catch (error) {
 			if (error instanceof ParadisOfficeRemoteClientError) {
 				throw error;
@@ -183,6 +209,21 @@ export class ParadisOfficeRemoteClient extends Disposable {
 			return;
 		}
 		this.disposed = true;
+		for (const cancellation of this.requestCancellations) {
+			cancellation.cancel();
+			cancellation.dispose();
+		}
+		this.requestCancellations.clear();
+		const ownedHandles = [...this.handleRoutes.values()];
+		this.handleRoutes.clear();
+		for (const owned of ownedHandles) {
+			void owned.route.channel.call('request', marshalParadisOfficeRequest({
+				version: 1,
+				requestId: `dispose-${++this.disposeRequestSequence}`,
+				operation: 'close',
+				handle: owned.handle,
+			}, owned.route.authority)).catch(() => undefined);
+		}
 		void this.cleanupSpools([...this.pendingSpools]);
 		this.route = undefined;
 		super.dispose();
@@ -217,7 +258,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 			const negotiation = await this.callCancellable(remoteChannel, 'negotiate', { versions: [1, 0] }, token);
 			if (isV1Negotiation(negotiation) && negotiation.ownerCapability && negotiation.connectionEpoch) {
 				const authority = { ownerCapability: negotiation.ownerCapability, connectionEpoch: negotiation.connectionEpoch };
-				return this.route = { connection, channel: remoteChannel, kind: 'remoteV1', authority };
+				return this.route = { connection, channel: remoteChannel, kind: 'remoteV1', authority, capabilities: negotiation.capabilities };
 			}
 		} catch {
 			if (token.isCancellationRequested) {
@@ -239,7 +280,7 @@ export class ParadisOfficeRemoteClient extends Disposable {
 		} catch {
 			// Warning delivery cannot expose UI extension failures or prevent the safe fallback.
 		}
-		return this.route = { connection, channel: this.options.localChannel, kind: 'boundedLocalSpool', authority };
+		return this.route = { connection, channel: this.options.localChannel, kind: 'boundedLocalSpool', authority, capabilities: localNegotiation.capabilities };
 	}
 
 	private validateDirectRemoteRequest(request: ParadisOfficeRequest, connection: IParadisOfficeRemoteConnection): ParadisOfficeRequest {
@@ -353,16 +394,16 @@ export class ParadisOfficeRemoteClient extends Disposable {
 	private routeForHandle(request: ParadisOfficeRequest): RemoteRoute | undefined {
 		switch (request.operation) {
 			case 'getViewport': case 'search': case 'getRenderableAsset': case 'getPrintModel': case 'exportPrint':
-				return this.handleRoutes.get(`${request.handle.kind}:${request.handle.id}`);
+				return this.handleRoutes.get(`${request.handle.kind}:${request.handle.id}`)?.route;
 			case 'close': case 'cancel':
-				return request.handle ? this.handleRoutes.get(`${request.handle.kind}:${request.handle.id}`) : undefined;
+				return request.handle ? this.handleRoutes.get(`${request.handle.kind}:${request.handle.id}`)?.route : undefined;
 			default: return undefined;
 		}
 	}
 
 	private rememberHandleRoute(response: ParadisOfficeResponse, route: RemoteRoute, request: ParadisOfficeRequest): void {
 		if (response.ok && (response.operation === 'open' || response.operation === 'compare')) {
-			this.handleRoutes.set(`${response.handle.kind}:${response.handle.id}`, route);
+			this.handleRoutes.set(`${response.handle.kind}:${response.handle.id}`, { route, handle: response.handle });
 		}
 		if (response.ok && request.operation === 'close' && request.handle) {
 			this.handleRoutes.delete(`${request.handle.kind}:${request.handle.id}`);

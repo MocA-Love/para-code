@@ -166,13 +166,14 @@ function semanticFeatures(featureBits: number, host: boolean): ParadisOfficeCapa
 
 function v1Capabilities(route: 'localV1' | 'remoteV1' | 'mobileRelayV1' | 'webWorkerV1', featureBits: number): ParadisOfficeCapabilitySet {
 	const complete = featureBits === PARADIS_OFFICE_ALL_FEATURES;
+	const summaryOnly = route === 'webWorkerV1';
 	return {
 		version: 1,
 		route,
-		quality: complete ? 'complete' : 'degraded',
-		semanticCompleteness: complete,
+		quality: complete && !summaryOnly ? 'complete' : 'degraded',
+		semanticCompleteness: complete && !summaryOnly,
 		features: semanticFeatures(featureBits, route === 'mobileRelayV1'),
-		warnings: complete ? [] : ['office.capability.featureUnavailable'],
+		warnings: summaryOnly ? ['office.capability.summaryOnly'] : complete ? [] : ['office.capability.featureUnavailable'],
 	};
 }
 
@@ -309,7 +310,7 @@ export interface ParadisOfficeRuntimeOverrides {
 }
 
 const officeConfigurationDefaults: ParadisOfficeRuntimeConfiguration = {
-	engine: 'v1',
+	engine: 'legacy',
 	kernelShadow: false,
 	semanticSpreadsheet: true,
 	virtualizedSpreadsheet: true,
@@ -503,7 +504,7 @@ export const PARADIS_OFFICE_CONFIGURATION_PROPERTIES: Readonly<Record<typeof PAR
 	'paradis.officeViewer.engine': {
 		type: 'string',
 		enum: ['auto', 'legacy', 'v1'],
-		default: 'v1',
+		default: 'legacy',
 		scope: ConfigurationScope.WINDOW,
 		restricted: true,
 		included: false,

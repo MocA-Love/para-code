@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it, vi } from 'vitest';
+import * as officeCapability from './officeCapability.js';
 import {
 	MOBILE_OFFICE_ALL_FEATURES,
 	MOBILE_OFFICE_FEATURE_EXCEL_VIEW,
@@ -19,6 +20,13 @@ const legacyFeatures = {
 } as const;
 
 describe('mobile Office capability', () => {
+	it.each([
+		['book.xlsx', 'spreadsheet'], ['book.xlsm', 'spreadsheet'], ['book.xltx', 'spreadsheet'], ['book.xltm', 'spreadsheet'],
+		['document.docx', 'docx'], ['document.docm', 'docx'], ['document.dotx', 'docx'], ['document.dotm', 'docx'],
+	])('routes %s through the existing safe Office %s view', (name, expected) => {
+		const classify = (officeCapability as typeof officeCapability & { readonly classifyMobileFileKind?: (name: string) => string }).classifyMobileFileKind;
+		expect(classify?.(name)).toBe(expected);
+	});
 	it.each([
 		{
 			name: 'old mobile / old PC',

@@ -17,6 +17,7 @@ import { ParadisOfficePackageError } from '../common/office/paradisOfficeArchive
 import { inspectOfficePackage, type ParadisOfficePackageInventory } from '../common/office/paradisOfficePackageCore.js';
 import {
 	PARADIS_OFFICE_BUDGET_PROFILES,
+	isOfficeSerializableData,
 	type ParadisOfficeChangeCategory,
 	type ParadisOfficeFormat,
 	type ParadisOfficeFingerprint,
@@ -91,6 +92,7 @@ export interface ParadisOfficeBrowserWordSummary {
 	readonly format: Extract<ParadisOfficeFormat, 'docx' | 'docm' | 'dotx' | 'dotm'>;
 	readonly budgetProfile: 'browser';
 	readonly stories: readonly { readonly kind: string; readonly text: string; readonly truncated: boolean }[];
+	readonly truncated: boolean;
 	readonly drawings: readonly { readonly nodeId: string; readonly geometry: ParadisWordDrawingGeometry }[];
 	readonly tableDiagonals: readonly ParadisWordTableDiagonalBorder[];
 	readonly externalRelationshipCount: number;
@@ -258,7 +260,12 @@ export class ParadisOfficeWebWorkerClient<TTimer = number> {
 				reapTimer = this.setTimer(() => finish(reason === 'cancelled' ? { kind: 'cancelled' } : { kind: 'blocked', reason: 'deadline' }), webWorkerCancelGraceMilliseconds);
 			};
 			const onMessage = (event: MessageEvent<ParadisOfficeWebWorkerMessage>) => {
-				const message = event.data;
+				const rawMessage: unknown = event.data;
+				if (!isOfficeSerializableData(rawMessage)) {
+					finish({ kind: 'blocked', reason: 'limitExceeded' });
+					return;
+				}
+				const message = rawMessage as ParadisOfficeWebWorkerMessage;
 				if (!message || message.requestId !== requestId || (message.kind !== 'result' && message.kind !== 'cancelled' && message.kind !== 'failure')) {
 					return;
 				}
@@ -374,7 +381,7 @@ export async function executeParadisOfficeWebWorkerRequest(
 					request.format,
 					originalInventory.relationships.filter(relationship => relationship.targetMode === 'external').length,
 				);
-			return { kind: 'result', requestId: request.requestId, value };
+			return boundedWorkerResult(request.requestId, value);
 		}
 
 		if (!request.modifiedBytes) {
@@ -401,7 +408,7 @@ export async function executeParadisOfficeWebWorkerRequest(
 				await parseWordSemanticWeb(modifiedBytes, modifiedInventory, token),
 				{ cancellationToken: token, deadlineMilliseconds: PARADIS_OFFICE_BUDGET_PROFILES.browser.diffMilliseconds },
 			));
-		return { kind: 'result', requestId: request.requestId, value };
+		return boundedWorkerResult(request.requestId, value);
 	} catch (error) {
 		if (token.isCancellationRequested || error instanceof ParadisOfficePackageError && error.code === 'cancelled') {
 			return { kind: 'cancelled', requestId: request.requestId };
@@ -412,6 +419,11 @@ export async function executeParadisOfficeWebWorkerRequest(
 			reason: error instanceof ParadisOfficePackageError && (error.code === 'limitExceeded' || error.code === 'zipBomb') ? 'limitExceeded' : 'workerFailed',
 		};
 	}
+}
+
+function boundedWorkerResult(requestId: string, value: ParadisOfficeBrowserSemanticSummary): Extract<ParadisOfficeWebWorkerMessage, { readonly kind: 'result' | 'failure' }> {
+	const result = { kind: 'result', requestId, value } as const;
+	return isOfficeSerializableData(result) ? result : { kind: 'failure', requestId, reason: 'limitExceeded' };
 }
 
 function projectSpreadsheetSummary(
@@ -493,8 +505,9 @@ function projectWordSummary(
 ): ParadisOfficeBrowserWordSummary {
 	const drawings: { nodeId: string; geometry: ParadisWordDrawingGeometry }[] = [];
 	const tableDiagonals: ParadisWordTableDiagonalBorder[] = [];
+	const observed = { drawings: 0, tableDiagonals: 0 };
 	for (const story of document.stories) {
-		collectWordGeometry(story.nodes, drawings, tableDiagonals);
+		collectWordGeometry(story.nodes, drawings, tableDiagonals, observed);
 	}
 	return {
 		kind: 'word',
@@ -505,6 +518,10 @@ function projectWordSummary(
 			text: story.text.slice(0, maximumWordStoryCharacters),
 			truncated: story.text.length > maximumWordStoryCharacters,
 		})),
+		truncated: document.stories.length > maximumWordSummaryStories
+			|| document.stories.some(story => story.text.length > maximumWordStoryCharacters)
+			|| observed.drawings > maximumWordSummaryDrawings
+			|| observed.tableDiagonals > maximumWordSummaryDiagonals,
 		drawings,
 		tableDiagonals,
 		externalRelationshipCount,
@@ -515,18 +532,25 @@ function collectWordGeometry(
 	nodes: readonly ParadisWordNode[],
 	drawings: { nodeId: string; geometry: ParadisWordDrawingGeometry }[],
 	tableDiagonals: ParadisWordTableDiagonalBorder[],
+	observed: { drawings: number; tableDiagonals: number },
 ): void {
 	for (const node of nodes) {
-		if (node.kind === 'drawing' && drawings.length < maximumWordSummaryDrawings) {
-			drawings.push({ nodeId: node.id, geometry: copyWordGeometry(node) });
+		if (node.kind === 'drawing') {
+			observed.drawings++;
+			if (drawings.length < maximumWordSummaryDrawings) {
+				drawings.push({ nodeId: node.id, geometry: copyWordGeometry(node) });
+			}
 		}
-		if (node.kind === 'table' && tableDiagonals.length < maximumWordSummaryDiagonals) {
-			for (const diagonal of node.diagonalBorders.slice(0, maximumWordSummaryDiagonals - tableDiagonals.length)) {
-				tableDiagonals.push(copyWordDiagonal(diagonal));
+		if (node.kind === 'table') {
+			observed.tableDiagonals += node.diagonalBorders.length;
+			if (tableDiagonals.length < maximumWordSummaryDiagonals) {
+				for (const diagonal of node.diagonalBorders.slice(0, maximumWordSummaryDiagonals - tableDiagonals.length)) {
+					tableDiagonals.push(copyWordDiagonal(diagonal));
+				}
 			}
 		}
 		if (node.children) {
-			collectWordGeometry(node.children, drawings, tableDiagonals);
+			collectWordGeometry(node.children, drawings, tableDiagonals, observed);
 		}
 	}
 }
@@ -609,7 +633,9 @@ function installWorkerHandler(scope: WorkerGlobalScopeLike): void {
 		const cancellation = new CancellationTokenSource();
 		active = { requestId: message.requestId, cancellation };
 		void executeParadisOfficeWebWorkerRequest(message, cancellation.token).then(result => {
-			scope.postMessage(result);
+			scope.postMessage(isOfficeSerializableData(result)
+				? result
+				: { kind: 'failure', requestId: message.requestId, reason: 'limitExceeded' });
 		}).finally(() => {
 			cancellation.dispose();
 			if (active?.requestId === message.requestId) {

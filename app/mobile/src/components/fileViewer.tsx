@@ -21,7 +21,7 @@ import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
-import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
+import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 
 interface FileViewerProps {
@@ -570,7 +570,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 		onClose();
 	};
 	const name = path.split('/').pop() ?? path;
-	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
+	const kind = classifyMobileFileKind(name) ?? (/\.pdf$/i.test(name) ? 'pdf' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other');
 	const officeKind = kind === 'spreadsheet' || kind === 'docx';
 	const officeNonce = useMemo(() => officeKind ? createMobileOfficeNonce() : undefined, [officeKind, spreadsheetHtml, docxData]);
 	const guardOfficeNavigation = useMemo(() => (request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {

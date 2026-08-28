@@ -14,6 +14,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import {
 	PARADIS_OFFICE_CHANNEL,
+	PARADIS_OFFICE_OPERATIONS,
 	ParadisOfficeWireError,
 	decodeParadisOfficeWireValue,
 	isParadisOfficeWireEnvelope,
@@ -25,6 +26,7 @@ import {
 	type IParadisOfficeDocumentBackend,
 	type ParadisOfficeCancelRequest,
 	type ParadisOfficeCloseRequest,
+	type ParadisOfficeOperation,
 	type ParadisOfficeControlRequest,
 	type ParadisOfficeV1Negotiation,
 	type ParadisOfficeWireAuthority,
@@ -408,7 +410,8 @@ function combineCompleteness(left: ParadisOfficeCompletenessManifest, right: Par
 
 /** Minimal local backend. Semantic adapters replace its safe unsupported operations in later tasks. */
 export class LocalParadisOfficeDocumentBackend implements IParadisOfficeDocumentBackend {
-	private readonly capabilities = new Map<string, OfficeHandleCapability>();
+	readonly capabilities: readonly ParadisOfficeOperation[] = ['inspect', 'open', 'close', 'cancel'];
+	private readonly handleCapabilities = new Map<string, OfficeHandleCapability>();
 
 	constructor(
 		private readonly resolver: IParadisOfficeChannelSourceResolver = new LocalParadisOfficeSourceResolver(),
@@ -432,7 +435,7 @@ export class LocalParadisOfficeDocumentBackend implements IParadisOfficeDocument
 		const inventory = inventoryFromOutcome(outcome);
 		if (!inventory) { return this.workerFailure(request, outcome); }
 		const capability = this.handles.create(ownerId, 'document', resolved.revision, resolved.bytes.byteLength);
-		this.capabilities.set(this.capabilityKey(ownerId, capability), capability);
+		this.handleCapabilities.set(this.capabilityKey(ownerId, capability), capability);
 		return { version: 1, requestId: request.requestId, operation: 'open', ok: true, outcome: inventory.outcome, warnings: inventory.warnings, budgetUsage: { ...inventory.budgetUsage }, timings: { total: inventory.budgetUsage.elapsedMilliseconds }, revision: { kind: 'document', sourceRevision: resolved.revision }, completeness: inventory.completeness, handle: { kind: 'document', id: capability.id }, capabilities: [] };
 	}
 
@@ -451,7 +454,7 @@ export class LocalParadisOfficeDocumentBackend implements IParadisOfficeDocument
 		if (!modifiedInventory) { return this.workerFailure(request, modifiedOutcome); }
 		const comparisonRevision = createHash('sha256').update(original.revision).update('\0').update(modified.revision).digest('hex');
 		const capability = this.handles.create(ownerId, 'comparison', comparisonRevision, original.bytes.byteLength + modified.bytes.byteLength);
-		this.capabilities.set(this.capabilityKey(ownerId, capability), capability);
+		this.handleCapabilities.set(this.capabilityKey(ownerId, capability), capability);
 		return { version: 1, requestId: request.requestId, operation: 'compare', ok: true, outcome: 'degraded', warnings: [{ code: 'semanticComparisonPending', message: 'Semantic comparison is not available for this adapter.' }], budgetUsage: {}, timings: {}, revision: { kind: 'comparison', originalRevision: original.revision, modifiedRevision: modified.revision, comparisonRevision }, completeness: combineCompleteness(originalInventory.completeness, modifiedInventory.completeness), handle: { kind: 'comparison', id: capability.id }, changes: [], terminal: true };
 	}
 
@@ -464,9 +467,9 @@ export class LocalParadisOfficeDocumentBackend implements IParadisOfficeDocument
 	close(ownerId: string, request: ParadisOfficeCloseRequest, _token: CancellationToken): Promise<unknown> {
 		if (request.handle) {
 			const key = this.capabilityKey(ownerId, request.handle);
-			const capability = this.capabilities.get(key);
+			const capability = this.handleCapabilities.get(key);
 			if (!capability || !this.handles.close(capability)) { return Promise.resolve(sourceFailure(request, 'transport', 'cancelled')); }
-			this.capabilities.delete(key);
+			this.handleCapabilities.delete(key);
 		}
 		return Promise.resolve(acknowledged(request));
 	}
@@ -475,7 +478,7 @@ export class LocalParadisOfficeDocumentBackend implements IParadisOfficeDocument
 
 	disconnect(ownerId: string): void {
 		this.handles.onWindowClose(ownerId);
-		for (const key of [...this.capabilities.keys()]) { if (key.startsWith(`${ownerId}\0`)) { this.capabilities.delete(key); } }
+		for (const key of [...this.handleCapabilities.keys()]) { if (key.startsWith(`${ownerId}\0`)) { this.handleCapabilities.delete(key); } }
 	}
 
 	private async resolve(ownerId: string, request: ParadisOfficeRequest, descriptor: ParadisOfficeSourceDescriptor, token: CancellationToken): Promise<OfficeWorkerBytesSource | ParadisOfficeResponse> {
@@ -526,7 +529,7 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		if (this.connectionAuthority && (!Number.isSafeInteger(currentEpoch) || currentEpoch < 1)) { return channelError(); }
 		if (command === 'negotiate') {
 			try {
-				const negotiation = negotiateParadisOffice(decodedArg);
+				const negotiation = negotiateParadisOffice(decodedArg, this.backend.capabilities ?? PARADIS_OFFICE_OPERATIONS);
 				if (!this.connectionAuthority || negotiation.version === 0) { return negotiation as T; }
 				const existing = this.sessions.get(ctx);
 				if (existing && existing.connectionEpoch !== currentEpoch) { this.disconnect(ctx, existing.connectionEpoch); }
@@ -551,6 +554,9 @@ export class ParadisOfficeChannel extends Disposable implements IServerChannel<s
 		if (command !== 'request') { return channelError(); }
 		let request: ParadisOfficeRequest;
 		try { request = snapshotParadisOfficeRequest(decodedArg); } catch { return channelError(); }
+		if (this.backend.capabilities && !this.backend.capabilities.includes(request.operation)) {
+			return this.publishResponse(request, sourceFailure(request, 'format', 'featureUnsupported'), encoded) as T;
+		}
 		this.validateRequestBinding(ctx, request);
 		const handleReservation = request.operation === 'open' || request.operation === 'compare' && request.cursor === undefined;
 		if (handleReservation && !this.reserveHandle(ctx)) { return channelError(); }

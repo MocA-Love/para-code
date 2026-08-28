@@ -338,6 +338,7 @@ suite('ParadisSpreadsheetInspector', () => {
 		strictEqual(isParadisSpreadsheetV1Enabled(legacy), false);
 		strictEqual(isParadisSpreadsheetV1Enabled(v1), true);
 		strictEqual(isParadisSpreadsheetV1Enabled({ ...v1, semanticSpreadsheet: false }), false);
+		strictEqual(isParadisSpreadsheetV1Enabled({ ...v1, platformBackend: false }), false);
 	});
 
 	test('adapts the existing workbook to bounded semantic-search and script-free print callbacks', () => {

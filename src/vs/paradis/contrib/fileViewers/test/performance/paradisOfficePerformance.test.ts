@@ -32,7 +32,7 @@ import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type P
 import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from '../../electron-browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { buildShapeOverlay } from '../../electron-browser/paradisSpreadsheetRender.js';
 import { computePageLayout, pageRectangles } from '../../common/paradisSpreadsheetPageLayout.js';
-import { assertParadisOfficeVisualGolden } from '../visual/paradisOfficeVisualGolden.js';
+import { assertParadisOfficeSerializedGeometryGolden } from '../visual/paradisOfficeVisualGolden.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
 interface IFixtureCase {
@@ -45,7 +45,7 @@ interface IFixtureCase {
 interface IFixtureDocument {
 	readonly schema: 2;
 	readonly caseHash: string;
-	readonly visualHash: string;
+	readonly serializedGeometryHash: string;
 	readonly attachedPaintBaseline: {
 		readonly environmentIdentity: string;
 		readonly rendererSourceSha256: string;
@@ -61,7 +61,7 @@ interface IFixtureDocument {
 	};
 	readonly cases: readonly IFixtureCase[];
 	readonly resourcePeak: { readonly workerBytes: number; readonly cacheBytes: number; readonly spoolBytes: number; readonly totalBytes: number };
-	readonly visual: { readonly regions: readonly { readonly id: string; readonly pixels: number; readonly requiredLandmarks: readonly string[]; readonly goldenGeometry: string; readonly rawGeometryHash: string }[] };
+	readonly serializedGeometry: { readonly regions: readonly { readonly id: string; readonly serializedGeometryBytes: number; readonly requiredLandmarks: readonly string[]; readonly goldenGeometry: string; readonly rawGeometryHash: string }[] };
 }
 
 class FakeClock {
@@ -287,7 +287,7 @@ function changedBytes(expected: Uint8Array, actual: Uint8Array): number {
 	return changed;
 }
 
-async function actualVisualGeometry(expected: string): Promise<{ readonly pixels: number; readonly changedPixels: number; readonly landmarks: readonly string[]; readonly rawGeometryHash: string }> {
+async function actualSerializedGeometry(expected: string): Promise<{ readonly serializedGeometryBytes: number; readonly changedGeometryBytes: number; readonly landmarks: readonly string[]; readonly rawGeometryHash: string }> {
 	const document = mainWindow.document.implementation.createHTMLDocument('office visual geometry');
 	const container = document.createElement('div');
 	const viewport = new ParadisSpreadsheetViewport({ rowCount: 20, columnCount: 20, defaultRowHeight: 20, defaultColumnWidth: 80, revision: 'visual' });
@@ -305,8 +305,8 @@ async function actualVisualGeometry(expected: string): Promise<{ readonly pixels
 		const actual = new TextEncoder().encode(lines.join('\n'));
 		const golden = new TextEncoder().encode(expected);
 		return {
-			pixels: actual.byteLength,
-			changedPixels: changedBytes(golden, actual),
+			serializedGeometryBytes: actual.byteLength,
+			changedGeometryBytes: changedBytes(golden, actual),
 			landmarks: [container.querySelectorAll('.paradis-spreadsheet-diagonal-base line').length === 2 ? 'diagonal-border' : '', drawing.querySelector('line') ? 'drawing-line' : ''].filter(Boolean),
 			rawGeometryHash: createHash('sha256').update(actual).digest('hex'),
 		};
@@ -319,7 +319,7 @@ suite('ParadisOfficePerformance', () => {
 		const fixture = loadFixtures();
 		strictEqual(fixture.schema, 2);
 		strictEqual(createHash('sha256').update(JSON.stringify(fixture.cases)).digest('hex'), fixture.caseHash);
-		strictEqual(createHash('sha256').update(JSON.stringify(fixture.visual.regions)).digest('hex'), fixture.visualHash);
+		strictEqual(createHash('sha256').update(JSON.stringify(fixture.serializedGeometry.regions)).digest('hex'), fixture.serializedGeometryHash);
 		strictEqual(fixture.attachedPaintBaseline.rendererSourceSha256, sha256File('src/vs/paradis/contrib/fileViewers/electron-browser/spreadsheet/paradisSpreadsheetGridRenderer.ts'));
 		strictEqual(fixture.attachedPaintBaseline.rendererCompiledSha256, sha256File('out/vs/paradis/contrib/fileViewers/electron-browser/spreadsheet/paradisSpreadsheetGridRenderer.js'));
 		strictEqual(fixture.attachedPaintBaseline.environmentIdentity, rendererEnvironmentIdentity());
@@ -544,25 +544,25 @@ suite('ParadisOfficePerformance', () => {
 		}
 	});
 
-	test('compares production diagonal and drawing geometry with the immutable golden', async () => {
+	test('compares serialized production diagonal and drawing geometry with the immutable golden', async () => {
 		const fixture = loadFixtures();
-		const region = fixture.visual.regions[0];
-		const expected = { hash: fixture.visualHash, regions: [{ id: region.id, pixels: region.pixels, changedPixels: 0, requiredLandmarks: region.requiredLandmarks, landmarks: [], rawGeometryHash: region.rawGeometryHash }] };
-		const actual = await actualVisualGeometry(region.goldenGeometry);
-		assertParadisOfficeVisualGolden(expected, { hash: fixture.visualHash, regions: [{ id: region.id, ...actual, requiredLandmarks: [] }] });
-		const missing = { hash: fixture.visualHash, regions: [{ id: region.id, ...actual, requiredLandmarks: [], landmarks: [] }] };
+		const region = fixture.serializedGeometry.regions[0];
+		const expected = { hash: fixture.serializedGeometryHash, regions: [{ id: region.id, serializedGeometryBytes: region.serializedGeometryBytes, changedGeometryBytes: 0, requiredLandmarks: region.requiredLandmarks, landmarks: [], rawGeometryHash: region.rawGeometryHash }] };
+		const actual = await actualSerializedGeometry(region.goldenGeometry);
+		assertParadisOfficeSerializedGeometryGolden(expected, { hash: fixture.serializedGeometryHash, regions: [{ id: region.id, ...actual, requiredLandmarks: [] }] });
+		const missing = { hash: fixture.serializedGeometryHash, regions: [{ id: region.id, ...actual, requiredLandmarks: [], landmarks: [] }] };
 		let failed = false;
-		try { assertParadisOfficeVisualGolden(expected, missing); } catch { failed = true; }
+		try { assertParadisOfficeSerializedGeometryGolden(expected, missing); } catch { failed = true; }
 		strictEqual(failed, true);
 	});
 
-	test('rejects non-finite and negative visual measurements', () => {
+	test('rejects non-finite and negative serialized geometry measurements', () => {
 		const fixture = loadFixtures();
-		const region = fixture.visual.regions[0];
-		const expected = { hash: fixture.visualHash, regions: [{ id: region.id, pixels: region.pixels, changedPixels: 0, requiredLandmarks: region.requiredLandmarks, landmarks: [], rawGeometryHash: region.rawGeometryHash }] };
-		for (const changedPixels of [Number.NaN, -1]) {
+		const region = fixture.serializedGeometry.regions[0];
+		const expected = { hash: fixture.serializedGeometryHash, regions: [{ id: region.id, serializedGeometryBytes: region.serializedGeometryBytes, changedGeometryBytes: 0, requiredLandmarks: region.requiredLandmarks, landmarks: [], rawGeometryHash: region.rawGeometryHash }] };
+		for (const changedGeometryBytes of [Number.NaN, -1]) {
 			let failed = false;
-			try { assertParadisOfficeVisualGolden(expected, { hash: fixture.visualHash, regions: expected.regions.map(region => ({ ...region, changedPixels })) }); } catch { failed = true; }
+			try { assertParadisOfficeSerializedGeometryGolden(expected, { hash: fixture.serializedGeometryHash, regions: expected.regions.map(region => ({ ...region, changedGeometryBytes })) }); } catch { failed = true; }
 			strictEqual(failed, true);
 		}
 	});

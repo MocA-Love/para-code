@@ -5,7 +5,8 @@
 - 監査基点: `0e123d9598d9c098e7c6f6dc082a858524301eb7`
 - matrix checker: `/Users/magu/.local/bin/mise exec node@24.18.0 -- node scripts/check-office-matrix.ts docs/office-viewer-acceptance-matrix.md`
 - 実機ランタイム: 未実施。Desktop / Web / Remote / Mobile への接続、画面操作、スクリーンショットはこのTaskの証跡に含めない。
-- 判定: 実機runtimeが未実行のため `implemented` は使用しない。各 `safe-fallback` 行はaction/reasonを構造化しており、checkerがrowごとに検証する。
+- 判定: 実機runtimeが未実行のため `implemented` は使用しない。既存matrixはaction/reasonを持つが、行ごとの実在source証跡を持たないため、現行checkerでは未達として拒否される。
+- 製品既定値: `paradis.officeViewer.engine=legacy`。既存ユーザー/ワークスペースが明示的に `v1` を選ぶ実験経路は残すが、完成済みとは扱わない。
 
 ## 安全フォールバックの行動
 
@@ -23,7 +24,7 @@
 
 ## Commit 検証規則
 
-checkerは各行のcommitが現在の`HEAD`の祖先であることを `git merge-base --is-ancestor <sha> HEAD` で検証する。台帳に個別のTask列挙がない既存commitも、この祖先性を満たす限り検証可能な既存証跡として扱う。例: `f516d5d52f5` と `aa7a5be4791`。祖先でないSHA、`pending`、空欄は拒否する。
+checkerは各行のcommitが現在の`HEAD`の祖先であることを `git merge-base --is-ancestor <sha> HEAD` で検証する。全fixture/unit/runtimeが`not-run:`のsafe-fallbackには、action/reasonに加えて実在するリポジトリ相対パスとsymbol (`source=path#symbol`) を要求する。台帳に個別のTask列挙がない既存commitも、この祖先性を満たす限り検証可能な既存証跡として扱う。祖先でないSHA、`pending`、空欄、存在しないsourceは拒否する。
 
 ## 次の検証Gate
 
@@ -55,7 +56,7 @@ Task 3以降でfixture/unit/runtimeを実行した後に、該当行だけを `i
 
 - 比較基点 SHA: `b6c1ee0dff86040f3828e78c8247b8f0a78c1e78`
 - 実行対象: 上記基点に Task 4 harness を適用した worktree。launcher Node `24.18.0`、Electron renderer Node `24.18.1` / Electron `42.8.1` / Chrome `148.0.7778.280`、macOS `26.5.2 (25F84)`、Apple M4（10 cores）、RAM 32 GiB。
-- fixture SHA: case `eab6b45f6516a47ddab4b6dcea2e6486b9d7c0745982a8be6267cdbffcca2b3f`、visual `716472cf8345dccac0dcaf6158f675201c157c8d5a903f8b2951eb04c6613d41`。
+- fixture SHA: case `eab6b45f6516a47ddab4b6dcea2e6486b9d7c0745982a8be6267cdbffcca2b3f`、serialized geometry `befa51cea63bb0f69d0cbca37d0c08190dbb3086997372c1982514a728105be5`。
 - renderer SHA: source `97fd10e1f0946b42c581a6f247cf4d110d6c618acd2b3c1e7f15d283a7c189f7`、compiled `7464a7be30ff859df946fee63098a7676cbc195e66979543b87ec4d56c39d4ee`。
 
 | 対象 | 実行コマンド | exit | 結果 |
@@ -65,7 +66,7 @@ Task 3以降でfixture/unit/runtimeを実行した後に、該当行だけを `i
 | memory | `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- node --expose-gc test/unit/node/index.js --runGlob 'vs/paradis/contrib/fileViewers/test/performance/paradisOfficeMemory.test.js'` | 0 | 2 passing。実 semantic snapshot payload、worker cancel、handle close/store dispose、強制 GC 3回、snapshot ownership release 1回、retained snapshot/cache/handle/worker 0、heap <= baseline + 20 MiB |
 | client typecheck | `rtk /Users/magu/.local/bin/mise exec node@24.18.0 -- npm run typecheck-client` | 0 | diagnostics 0 |
 
-固定 fixture は small、100k cells、5M cells、16,384 columns、200 pages の shape だけを表現する。各 case を実際の `ParadisSpreadsheetViewport` と `ParadisSpreadsheetGridRenderer` に渡し、main document へ接続して次の animation frame まで待機した実測 paint、IPC serializer byte length、live DOM count を assert する。200 pages は実 `computePageLayout` / `pageRectangles` path で 200 page model を展開する。5M cells は実体化せず、virtual viewport が tile だけを生成する。実 Word OPC を parser へ渡し、その結果を実 semantic diff の terminal まで処理する。production accountant/spool transport/handle cache/worker host を同時に通した peak は worker 4 MiB、cache 3 MiB、spool 1 MiB、total 10 MiB。協調 cancel は実時間 <=250ms、unresponsive worker は fake clock で正確な 250ms terminate 境界を検証する。visual gate は production renderer の diagonal SVG と production drawing overlay から byte-like geometry を生成し、独立した JSON golden との region diff <= 0.5%、required landmark、raw geometry hash を検証する。
+固定 fixture は small、100k cells、5M cells、16,384 columns、200 pages の shape だけを表現する。各 case を実際の `ParadisSpreadsheetViewport` と `ParadisSpreadsheetGridRenderer` に渡し、main document へ接続して次の animation frame まで待機したpaint時間、IPC serializer byte length、live DOM countをassertする。200 pages は実 `computePageLayout` / `pageRectangles` path で 200 page model を展開する。5M cells は実体化せず、virtual viewport が tile だけを生成する。実 Word OPC を parser へ渡し、その結果を実 semantic diff の terminal まで処理する。production accountant/spool transport/handle cache/worker host を同時に通した peak は worker 4 MiB、cache 3 MiB、spool 1 MiB、total 10 MiB。協調 cancel は実時間 <=250ms、unresponsive worker は fake clock で正確な 250ms terminate 境界を検証する。旧称visual gateはproduction rendererのdiagonal/drawingから得たserialized geometry bytesの不変条件であり、pixel diffではない。実runtimeのpixel比較Gateは未実施・利用不可であり、この検証で達成済みとは扱わない。
 
 attached paint は 2026-08-28T00:11:55Z に上記 renderer SHA / hardware / runtime identity で small case を実 DOM に attach し、render 後の実 `requestAnimationFrame` まで41回測定した。初回 immutable sample の median は `13.099999994039536ms`、許容上限はその `1.10` 倍の `14.40999999344349ms` である。harness は同じ41回の median を計算して `median <= immutableBaselineMedian * 1.10` を直接 assert し、test 実行中に fixture を生成・更新しない。source SHA、compiled SHA、または OS/kernel/CPU/core/RAM/Node/Electron/Chrome identity が1項目でも異なる場合は skip や再校正をせず、測定前に fail closed とする。
 

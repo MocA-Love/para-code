@@ -223,9 +223,14 @@ suite('ParadisOfficeServerChannel', () => {
 		assert.strictEqual(runtime.accountant.reserveWorker(384 * 1024 * 1024), true);
 		assert.strictEqual(runtime.accountant.reserveWorker(1), false);
 		runtime.accountant.releaseWorker(768 * 1024 * 1024);
+		const ownedHandle = runtime.handles.create('remote:lifecycle', 'document', 'revision:lifecycle', 1024);
+		let released = 0;
+		assert.strictEqual(runtime.handles.putSemanticSnapshot(ownedHandle, 'projection', {}, 2048, () => released++), true);
 		firstConnection.disconnect('remote:first');
 		secondConnection.disconnect('remote:second');
 		runtime.dispose();
+		runtime.dispose();
+		assert.deepStrictEqual({ handles: runtime.handles.size, snapshots: runtime.handles.semanticSnapshotCount, cacheBytes: runtime.handles.semanticCacheBytes, totalBytes: runtime.accountant.snapshot().totalBytes, released }, { handles: 0, snapshots: 0, cacheBytes: 0, totalBytes: 0, released: 1 });
 	});
 
 	test('carries actual Office packages unchanged through Git, authority-fenced spool IPC, remote resolution, and worker input', async function () {
@@ -457,6 +462,14 @@ suite('ParadisOfficeServerChannel', () => {
 		assert.strictEqual(backendDisconnects, 1);
 		channel.dispose();
 		disconnected.dispose();
+	});
+
+	test('advertises only operations implemented by the production remote backend', async () => {
+		const context = { remoteAuthority: 'ssh-remote+host', clientId: 'client-minimal' };
+		const channel = new ParadisOfficeServerChannel(context, { connectionEpoch: 43 });
+		const negotiation = await channel.call<ParadisOfficeV1Negotiation>(context, 'negotiate', { versions: [1] });
+		assert.deepStrictEqual(negotiation.capabilities, ['inspect', 'open', 'close', 'cancel']);
+		channel.dispose();
 	});
 
 	test('forwards the exact cancellation token and rechecks new-source capability without breaking handle operations', async () => {
