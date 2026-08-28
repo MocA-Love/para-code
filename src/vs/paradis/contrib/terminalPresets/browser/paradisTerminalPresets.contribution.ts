@@ -42,6 +42,7 @@ import {
 	paradisPresetCommandSignature,
 	paradisPresetQualifiers,
 	paradisPresetTooltip,
+	PARADIS_PRESET_FOLDERS_SETTING,
 	PARADIS_PRESET_LAUNCH_MODES,
 	PARADIS_PRESET_LAYOUTS,
 	PARADIS_PRESETS_SETTING,
@@ -104,6 +105,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 							localize('paradis.terminal.presets.layout.tabs', "タスクごとのターミナルをタブとして並べる"),
 							localize('paradis.terminal.presets.layout.split', "エディタグループを分割してタスクごとに並べる"),
 							localize('paradis.terminal.presets.layout.current', "全コマンドを連結してアクティブなターミナルで実行"),
+							localize('paradis.terminal.presets.layout.smart', "アクティブなターミナルが空いていればそこで実行し、実行中なら新しいターミナルを使う（自動判定）"),
 						],
 						description: localize('paradis.terminal.presets.layout', "タスク群（＝ターミナル群）の並べ方。既定は tabs。")
 					},
@@ -136,6 +138,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 					}
 				}
 			},
+			default: []
+		},
+		[PARADIS_PRESET_FOLDERS_SETTING]: {
+			type: 'array',
+			scope: ConfigurationScope.APPLICATION,
+			items: { type: 'string' },
+			description: localize('paradis.terminal.presetFolders', "空のフォルダも一覧に残しておくための台帳。プリセットを1件でもフォルダに入れると、そのフォルダ名はここに書かなくても一覧に現れる。"),
 			default: []
 		}
 	}

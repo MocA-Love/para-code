@@ -25,11 +25,14 @@
 // ダイアログの実装様式は paradisYouTubeImportDialog.ts / paradisCreateWorktreeDialog.ts と同じ
 // 自前 DOM + backdrop 方式。
 //
-// 一覧はフォルダでグループ化して表示できる（paradisGroupPresetsByFolder）。フォルダは独立した
-// 実体ではなく、複数プリセットが同じ folder 文字列を持つことだけで成り立つ——そのため「空の
-// フォルダを単体で作る」操作は無い。フォルダは必ず「1件以上のプリセットをそこへ移動する」ことで
-// 生まれる（選択 → 一括操作 → フォルダへ移動 → 新しいフォルダを作成、またはプリセット編集フォームの
-// フォルダ欄に名前を書く）。
+// 一覧はフォルダでグループ化して表示できる（paradisGroupPresetsByFolder）。フォルダは基本的には
+// 独立した実体ではなく、複数プリセットが同じ folder 文字列を持つことだけで成り立つ——メイン一覧の
+// グループ化はこの仕組みのまま変えていない。フォルダは通常「1件以上のプリセットをそこへ移動する」
+// ことで生まれる（選択 → 一括操作 → フォルダへ移動 → 新しいフォルダを作成、またはプリセット編集
+// フォームのフォルダ欄に名前を書く）。加えて、ヘッダーの「新規フォルダ」ボタンから中身が0件の
+// 「空フォルダ」も作れる——こちらは軽量な台帳（IParadisResolvedPresetFolder）に名前だけを記録し、
+// ナビ（左サイドバー）とフォルダ名の入力補完（datalist・移動先メニュー）にだけ反映される
+// （paradisAllFolderNames）。空フォルダの削除はナビでの右クリックから行う。
 
 import './media/paradisPresetEditorDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -50,8 +53,8 @@ import {
 	IParadisPresetService,
 	IParadisPresetTask,
 	IParadisResolvedPreset,
+	paradisAllFolderNames,
 	paradisBuildPresetHosts,
-	paradisDistinctFolderNames,
 	paradisFindPresetNameConflict,
 	paradisGetPresetTasks,
 	paradisGroupPresetsByFolder,
@@ -106,6 +109,8 @@ const STR_EMPTY = localize('paradis.presetEditor.empty', "プリセットがま�
 // allow-any-unicode-next-line
 const STR_NEW = localize('paradis.presetEditor.new', "新規作成");
 // allow-any-unicode-next-line
+const STR_NEW_FOLDER = localize('paradis.presetEditor.newFolder', "新規フォルダ");
+// allow-any-unicode-next-line
 const STR_CLOSE = localize('paradis.presetEditor.close', "閉じる");
 // allow-any-unicode-next-line
 const STR_RUN = localize('paradis.presetEditor.run', "実行");
@@ -154,6 +159,8 @@ const STR_LAYOUT_TABS = localize('paradis.presetEditor.layout.tabs', "タブで�
 const STR_LAYOUT_SPLIT = localize('paradis.presetEditor.layout.split', "分割して並べる");
 // allow-any-unicode-next-line
 const STR_LAYOUT_CURRENT = localize('paradis.presetEditor.layout.current', "アクティブなターミナルで実行（全コマンド連結）");
+// allow-any-unicode-next-line
+const STR_LAYOUT_SMART = localize('paradis.presetEditor.layout.smart', "空いていれば実行・忙しければ新規（自動判定）");
 // allow-any-unicode-next-line
 const STR_PINNED = localize('paradis.presetEditor.pinned', "ターミナルタブバー右側にボタンとして表示する");
 // allow-any-unicode-next-line
@@ -259,6 +266,8 @@ const STR_FOLDER_NAME = localize('paradis.presetEditor.folderName', "フォル�
 // allow-any-unicode-next-line
 const STR_FOLDER_NAME_REQUIRED = localize('paradis.presetEditor.folderNameRequired', "フォルダ名を入力してください。");
 // allow-any-unicode-next-line
+const STR_FOLDER_NAME_DUPLICATE = localize('paradis.presetEditor.folderNameDuplicate', "同じ名前のフォルダが既にあります。");
+// allow-any-unicode-next-line
 const strFolderRenameTitle = (name: string) => localize('paradis.presetEditor.folderRenameTitle', "{0} — フォルダ名を変更", name);
 // allow-any-unicode-next-line
 const strFolderCreateTitle = () => localize('paradis.presetEditor.folderCreateTitle', "{0} — 新しいフォルダ", STR_TITLE);
@@ -274,6 +283,8 @@ const strDeleteFolderDetail = (count: number) => localize('paradis.presetEditor.
 const STR_DELETE_FOLDER_KEEP = localize('paradis.presetEditor.deleteFolderKeep', "フォルダだけ削除する（中身は残す）");
 // allow-any-unicode-next-line
 const strDeleteFolderAll = (count: number) => localize('paradis.presetEditor.deleteFolderAll', "中身ごと削除する（{0}件）", count);
+// allow-any-unicode-next-line
+const strDeleteEmptyFolderMultiScopeConfirm = (name: string, count: number) => localize('paradis.presetEditor.deleteEmptyFolderMultiScopeConfirm', "フォルダ「{0}」を削除しますか？（{1}箇所に存在します）", name, count);
 // allow-any-unicode-next-line
 const strBulkCount = (count: number) => localize('paradis.presetEditor.bulkCount', "{0}件選択中", count);
 // allow-any-unicode-next-line
@@ -309,6 +320,8 @@ const STR_NAV_CAPTION_PRESETS = localize('paradis.presetEditor.navCaptionPresets
 const STR_NAV_ALL = localize('paradis.presetEditor.navAll', "すべて");
 // allow-any-unicode-next-line
 const STR_NAV_UNFILED = localize('paradis.presetEditor.navUnfiled', "(フォルダなし)");
+// allow-any-unicode-next-line
+const strNavFolderEmptyHint = (name: string) => localize('paradis.presetEditor.navFolderEmptyHint', "{0}（空のフォルダ。右クリックで削除できます）", name);
 // allow-any-unicode-next-line
 const STR_NAV_CAPTION_SOURCE = localize('paradis.presetEditor.navCaptionSource', "出所");
 // allow-any-unicode-next-line
@@ -350,6 +363,7 @@ const LAYOUT_LABELS: readonly { layout: ParadisPresetLayout; label: string }[] =
 	{ layout: 'tabs', label: STR_LAYOUT_TABS },
 	{ layout: 'split', label: STR_LAYOUT_SPLIT },
 	{ layout: 'current', label: STR_LAYOUT_CURRENT },
+	{ layout: 'smart', label: STR_LAYOUT_SMART },
 ];
 
 // 開いているダイアログの参照。コマンド・設定内リンク・タブバーのボタンなど複数の入り口から
@@ -464,6 +478,16 @@ class ParadisPresetEditorDialog extends Disposable {
 				}
 			});
 		}));
+		const newFolderBtnEl = dom.append(headerActions, $('button.ppe-btn')) as HTMLButtonElement;
+		newFolderBtnEl.type = 'button';
+		newFolderBtnEl.textContent = STR_NEW_FOLDER;
+		this._chromeStore.add(dom.addDisposableListener(newFolderBtnEl, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this._renderFolderCreateEmpty();
+				}
+			});
+		}));
 		const closeBtn = dom.append(headerActions, $('button.ppe-btn.ppe-close-btn')) as HTMLButtonElement;
 		closeBtn.type = 'button';
 		// allow-any-unicode-next-line
@@ -523,6 +547,43 @@ class ParadisPresetEditorDialog extends Disposable {
 				this._filter = filter;
 				this._renderList();
 			});
+		}));
+		// 空フォルダ（data-empty-folder）だけ、右クリックで確認なしに台帳から削除する。中身が
+		// 1件以上あるフォルダは対象外（そちらは一覧のフォルダ行の「削除」ボタンを使う——
+		// 中身をどうするか選ばせる必要があるため、右クリックの1手では済ませられない）。
+		this._chromeStore.add(dom.addDisposableListener(this._navEl, 'contextmenu', async e => {
+			const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button.ppe-nav-item');
+			if (!btn || btn.dataset.kind !== 'folder' || !btn.dataset.emptyFolder || !btn.dataset.folder) {
+				return;
+			}
+			e.preventDefault();
+			// 同名のフォルダがスコープ違いで複数（user と workspace の両方など）あることがあるので、
+			// 1件だけ探して消すと見た目には消えたのに別スコープのエントリが台帳に残ってしまう。
+			// このボタンはどのスコープのフォルダかという情報を持たないため、ここでは名前だけで
+			// 一括して消す（_confirmDeleteFolder はスコープが分かっているのでそちらに絞る）。
+			const name = btn.dataset.folder;
+			const folders = this.presetService.folders.filter(candidate => candidate.name === name);
+			if (folders.length === 0) {
+				return;
+			}
+			// 2箇所以上（複数スコープ）にまたがるときだけ、消える前に確認する。1件しか無いときは
+			// 従来どおり確認なしで即削除する。
+			if (folders.length > 1) {
+				const result = await this.dialogService.confirm({ message: strDeleteEmptyFolderMultiScopeConfirm(name, folders.length), primaryButton: STR_DELETE });
+				if (!result.confirmed) {
+					return;
+				}
+			}
+			try {
+				// 同一ファイル・同一設定に同名エントリが複数あるとき、並列の read-modify-write だと
+				// 片方の削除が消えてしまう（lost update）。直列に処理する。
+				for (const folder of folders) {
+					await this.presetService.deleteFolder(folder);
+				}
+			} catch (error) {
+				await this.dialogService.error(STR_DELETE_FAILED, error instanceof Error ? error.message : String(error));
+			}
+			this._renderList();
 		}));
 		dom.append(navScroll, $('.ppe-nav-caption')).textContent = STR_NAV_CAPTION_HINTS;
 		const navHint = dom.append(navScroll, $('.ppe-nav-hint'));
@@ -802,12 +863,13 @@ class ParadisPresetEditorDialog extends Disposable {
 			readonly count?: number;
 			readonly active: boolean;
 			readonly dataset: Record<string, string>;
+			readonly title?: string;
 		}): HTMLButtonElement => {
 			const btn = dom.append(parent, $('button.ppe-nav-item')) as HTMLButtonElement;
 			btn.type = 'button';
 			btn.classList.toggle('on', options.active);
 			btn.setAttribute('aria-pressed', String(options.active));
-			btn.title = label;
+			btn.title = options.title ?? label;
 			for (const [key, value] of Object.entries(options.dataset)) {
 				btn.dataset[key] = value;
 			}
@@ -828,16 +890,21 @@ class ParadisPresetEditorDialog extends Disposable {
 			dataset: { kind: 'all' },
 		});
 
-		// フォルダはツリー状に字下げして表示する（paradisDistinctFolderNames の出現順）。
-		const folderNames = paradisDistinctFolderNames(presets);
+		// フォルダはツリー状に字下げして表示する（実プリセット由来 + 空フォルダ台帳、
+		// paradisAllFolderNames の出現順）。空フォルダ（folderCounts に無い＝0件）は
+		// data-empty-folder を立てておき、右クリック削除の委譲リスナーがここを見て判定する。
+		const folders = this.presetService.folders;
+		const folderNames = paradisAllFolderNames(presets, folders);
 		if (folderNames.length > 0) {
 			const tree = dom.append(this._navItemsEl, $('.ppe-nav-tree'));
 			for (const name of folderNames) {
+				const isEmpty = !folderCounts.has(name);
 				mkItem(tree, name, {
 					icon: Codicon.folder,
 					count: folderCounts.get(name) ?? 0,
 					active: this._filter.kind === 'folder' && this._filter.folder === name,
-					dataset: { kind: 'folder', folder: name },
+					dataset: { kind: 'folder', folder: name, ...(isEmpty ? { emptyFolder: '1' } : {}) },
+					title: isEmpty ? strNavFolderEmptyHint(name) : name,
 				});
 			}
 		}
@@ -1350,7 +1417,9 @@ class ParadisPresetEditorDialog extends Disposable {
 
 	/** 「フォルダへ移動」ボタンから開くコンテキストメニュー（既存フォルダ一覧＋新規作成）。 */
 	private _showMoveToFolderMenu(anchor: HTMLElement, selected: readonly IParadisResolvedPreset[]): void {
-		const folderNames = paradisDistinctFolderNames(this.presetService.presets);
+		const presets = this.presetService.presets;
+		const folders = this.presetService.folders;
+		const folderNames = paradisAllFolderNames(presets, folders);
 		const actions: IAction[] = folderNames.map(name => toAction({
 			id: `paradis.presetEditor.moveToFolder.${name}`,
 			label: name,
@@ -1483,6 +1552,78 @@ class ParadisPresetEditorDialog extends Disposable {
 	}
 
 	/**
+	 * 空のフォルダを作るビュー（ヘッダーの「新規フォルダ」から）。{@link _renderFolderCreate}
+	 * （選択済みプリセットをフォルダへ移す版）と違い移す対象が無いため、保存先（ユーザー設定 /
+	 * このリポジトリ）を own で選ばせる——空フォルダは「どのプリセットが選ばれているか」から
+	 * 保存先を推測できない。
+	 */
+	private _renderFolderCreateEmpty(): void {
+		this._mode = 'edit';
+		this._viewStore.clear();
+		const { grid } = this._openEditPane(strFolderCreateTitle());
+
+		const nameControl = this._formRow(grid, STR_FOLDER_NAME);
+		const nameInput = dom.append(nameControl, $('input.ppe-input')) as HTMLInputElement;
+		nameInput.type = 'text';
+		nameInput.placeholder = STR_FOLDER_PLACEHOLDER;
+
+		// 保存先ラジオ。_renderEdit の makeTargetRadio と同じ組み立てで、プリセットの保存先選択と
+		// 見た目を揃える（ここだけ別の UI に見えると、同じ機能の一部だと気づきにくい）。
+		const folder = this.contextService.getWorkspace().folders[0];
+		const targetRow = dom.append(this._formRow(grid, STR_TARGET), $('.ppe-target-row'));
+		const makeTargetRadio = (value: ParadisPresetSource, label: string, disabled: boolean): HTMLInputElement => {
+			const wrap = dom.append(targetRow, $('.ppe-check-row'));
+			const input = dom.append(wrap, $('input.ppe-radio')) as HTMLInputElement;
+			input.type = 'radio';
+			input.name = 'ppe-folder-target';
+			input.value = value;
+			input.disabled = disabled;
+			const labelEl = dom.append(wrap, $('label.ppe-check-label'));
+			labelEl.textContent = label;
+			if (!disabled) {
+				this._viewStore.add(dom.addDisposableListener(labelEl, 'click', () => { input.checked = true; }));
+			}
+			return input;
+		};
+		const userRadio = makeTargetRadio('user', STR_TARGET_USER, false);
+		const workspaceRadio = makeTargetRadio('workspace', folder ? strTargetWorkspace(basename(folder.uri)) : PARADIS_WORKSPACE_PRESET_FILE, !folder);
+		userRadio.checked = true;
+
+		this._trackEditState(() => ({ name: nameInput.value, target: workspaceRadio.checked ? 'workspace' : 'user' }));
+
+		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
+		const footer = dom.append(this._contentEl, $('.ppe-footer'));
+		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
+		backBtn.textContent = STR_BACK;
+		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
+			void this._confirmDiscardUnsaved().then(proceed => {
+				if (proceed) {
+					this._renderList();
+				}
+			});
+		}));
+		const createBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
+		createBtn.textContent = STR_FOLDER_CREATE;
+		this._viewStore.add(dom.addDisposableListener(createBtn, 'click', async () => {
+			const name = nameInput.value.trim();
+			if (!name) {
+				errorEl.textContent = STR_FOLDER_NAME_REQUIRED;
+				return;
+			}
+			try {
+				const created = await this.presetService.createFolder(name, workspaceRadio.checked ? 'workspace' : 'user');
+				if (!created) {
+					errorEl.textContent = STR_FOLDER_NAME_DUPLICATE;
+					return;
+				}
+				this._renderList();
+			} catch (error) {
+				errorEl.textContent = error instanceof Error ? error.message : String(error);
+			}
+		}));
+	}
+
+	/**
 	 * フォルダ削除の確認。中身をどうするか（残す／消す）を選ばせる——「フォルダを消したつもりが
 	 * 中のプリセットまで消えていた」という取り返しの付かない事故を避けるため、既定の1クリックには
 	 * しない。
@@ -1505,6 +1646,19 @@ class ParadisPresetEditorDialog extends Disposable {
 				await this.presetService.setPresetsFolder(group.presets, undefined);
 			} else {
 				await this.presetService.deletePresets(group.presets);
+			}
+			// 空フォルダ台帳（presetService.folders）に同名のエントリが残っていると、中身が0件に
+			// なった直後にゴーストの空フォルダとしてナビへ復活してしまう。ここは削除したフォルダの
+			// スコープ（source + sourceUri）が分かっているので、名前だけでなくスコープも一致する
+			// エントリだけに絞る——名前だけで絞ると、無関係な別リポジトリの .paracode.json にある
+			// 同名フォルダまで巻き込んで消してしまう。
+			const scope = paradisPresetScopeKey(group.presets[0]);
+			const ghostFolders = this.presetService.folders.filter(folder =>
+				paradisPresetScopeKey(folder) === scope && folder.name === group.folder);
+			// 同一ファイル・同一設定に同名エントリが複数あるとき、並列の read-modify-write だと
+			// 片方の削除が消えてしまう（lost update）。直列に処理する。
+			for (const folder of ghostFolders) {
+				await this.presetService.deleteFolder(folder);
 			}
 			this._selectedKeys.clear();
 			this._renderList();
@@ -1556,7 +1710,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		folderInput.type = 'text';
 		folderInput.placeholder = STR_FOLDER_PLACEHOLDER;
 		folderInput.value = editing?.folder ?? '';
-		const folderNames = paradisDistinctFolderNames(this.presetService.presets);
+		const presets = this.presetService.presets;
+		const folders = this.presetService.folders;
+		const folderNames = paradisAllFolderNames(presets, folders);
 		if (folderNames.length > 0) {
 			const datalist = dom.append(folderField, $('datalist#ppe-folder-datalist'));
 			for (const name of folderNames) {

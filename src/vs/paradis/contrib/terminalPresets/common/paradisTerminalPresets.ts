@@ -34,6 +34,14 @@ export const PARADIS_PROJECT_ROOT_ENV_VAR = 'PARACODE_PROJECT_ROOT_PATH';
 export const PARADIS_PRESETS_SETTING = 'paradis.terminal.presets';
 
 /**
+ * 設定キー（空でも存在する「フォルダ」の台帳、ユーザーレベル）。
+ * フォルダ自体はプリセットの folder フィールドが一致するだけの存在（下記コメント参照）だが、
+ * それだと中身が0件になった瞬間に一覧・ナビから消えてしまう。中身が無くてもフォルダを
+ * 残しておきたい場合に、この台帳へ名前だけを書く。
+ */
+export const PARADIS_PRESET_FOLDERS_SETTING = 'paradis.terminal.presetFolders';
+
+/**
  * hosts 条件の特殊値: SSH 未接続（ローカル）のウィンドウでのみ有効。
  * ホスト名との衝突は受け入れる——`local` という名前の SSH ホストを「hosts: ["local"]」で
  * 指した場合もローカル扱いになるが、その運用は設定側でホスト別名を変えて避ける。
@@ -61,8 +69,10 @@ export type ParadisPresetLaunchMode = typeof PARADIS_PRESET_LAUNCH_MODES[number]
  *   - tabs: 各タスクをアクティブグループのタブとして並べる
  *   - split: エディタグループを右→下の交互に分割してタスクごとに並べる
  *   - current: 全タスクのコマンドを連結してアクティブなターミナルに送る（旧 current-terminal 相当）
+ *   - smart: current と同じくアクティブなターミナルへ連結して送るが、そのターミナルが
+ *     コマンド実行中（busy）なら送らずに新しいターミナルを作る
  */
-export const PARADIS_PRESET_LAYOUTS = ['tabs', 'split', 'current'] as const;
+export const PARADIS_PRESET_LAYOUTS = ['tabs', 'split', 'current', 'smart'] as const;
 export type ParadisPresetLayout = typeof PARADIS_PRESET_LAYOUTS[number];
 
 /** 1タスク = 1ターミナル。名前・作業ディレクトリ・そのターミナルで順に実行するコマンド列を持つ。 */
@@ -171,6 +181,15 @@ export interface IParadisResolvedPreset extends IParadisPresetDefinition {
 	readonly envInactive?: boolean;
 }
 
+/** 空でも存在できるフォルダの台帳エントリ（プリセットが1件も無くても一覧に残せる）。 */
+export interface IParadisResolvedPresetFolder {
+	readonly name: string;
+	readonly source: ParadisPresetSource;
+	readonly sourceUri?: URI;
+	/** 定義元配列（設定 or .paracode.json の presetFolders）内の位置。削除に使う。 */
+	readonly sourceIndex: number;
+}
+
 /** プリセット実行時に呼び出し側が指定できる一時的な実行条件。 */
 export interface IParadisRunPresetOptions {
 	/** 相対 cwd の基準（および cwd 未指定時の作業ディレクトリ）。 */
@@ -190,8 +209,9 @@ export interface IParadisRunPresetOptions {
 	 * terminal.integrated.env.* 設定）へマージされる（strictEnv を立てないため）。
 	 * ただし既定プロファイル自身が同じキーを持つ場合はプロファイル側が優先される。
 	 * 値に null を入れるとその変数を削除できる。
-	 * 既存ターミナルを再利用する経路（layout: current かつ forceNewTerminal 未指定）では、
-	 * 起動済みプロセスの環境を変更できないため反映されない。
+	 * 既存ターミナルを再利用する経路（layout: current かつ forceNewTerminal 未指定、または
+	 * layout: smart でアクティブなターミナルが busy でなく再利用されたとき）では、起動済み
+	 * プロセスの環境を変更できないため反映されない。
 	 */
 	readonly env?: ITerminalEnvironment;
 	/** 最初のターミナルまたはコマンドを開始した時点で呼び出す。 */
@@ -224,6 +244,9 @@ export interface IParadisPresetService {
 
 	/** 現在のワークスペースで有効なプリセット（appliesTo 解決済み）。 */
 	readonly presets: readonly IParadisResolvedPreset[];
+
+	/** 空でも存在するフォルダの台帳（既にプリセットが1件以上あるフォルダ名は含まない——重複表示を避けるため）。 */
+	readonly folders: readonly IParadisResolvedPresetFolder[];
 
 	/**
 	 * 指定フォルダで有効なプリセットをその場で読み直して返す（キャッシュ非依存）。
@@ -264,6 +287,16 @@ export interface IParadisPresetService {
 
 	/** 複数プリセットをまとめて削除する（対象が複数の定義元ファイルにまたがっていてもよい）。 */
 	deletePresets(presets: readonly IParadisResolvedPreset[]): Promise<void>;
+
+	/**
+	 * 空のフォルダを作る。同名のフォルダ（台帳・実プリセットの folder いずれか）が既にあれば
+	 * 何もせず false を返す（作成できたときは true）。呼び出し側は false のとき、無言で
+	 * 成功したかのように扱わず、名前が重複している旨をユーザーへ伝えること。
+	 */
+	createFolder(name: string, target: ParadisPresetSource): Promise<boolean>;
+
+	/** 台帳から空フォルダを削除する（中身のプリセットには触れない——呼び出し側は中身が0件であることを確認してから呼ぶこと）。 */
+	deleteFolder(folder: IParadisResolvedPresetFolder): Promise<void>;
 
 	/**
 	 * ピン留め（タブバーへの表示）だけを切り替える。定義元ファイルの他のフィールドには一切触れない
@@ -530,17 +563,24 @@ export function paradisPresetQualifiers(presets: readonly IParadisResolvedPreset
 
 // --- フォルダ ------------------------------------------------------------------------------------
 //
-// フォルダは独立した実体を持たない——プリセットの folder フィールドが同じ値であることだけで
-// 成り立つ（{@link IParadisPresetDefinition.folder}）。そのため「空フォルダ」は表現できないが、
-// 保存先ファイルへ実装都合のレコードを足さずに済む。
+// フォルダは基本的には独立した実体を持たない——プリセットの folder フィールドが同じ値であることだけで
+// 成り立つ（{@link IParadisPresetDefinition.folder}）。そのため保存先ファイルへ実装都合のレコードを
+// 足さずに済むが、それだけだと中身が0件になった瞬間にフォルダそのものが一覧から消えてしまう。
+// 空でもフォルダを残したい場合だけ、軽量な台帳（{@link IParadisResolvedPresetFolder}、
+// PARADIS_PRESET_FOLDERS_SETTING）に名前を書く。台帳はメイン一覧のフォルダグループ化には関わらず、
+// ナビ（左サイドバー）とフォルダ名の入力補完（datalist・移動先メニュー）にだけ使われる
+// （{@link paradisAllFolderNames}）。
 
 /**
- * プリセットの保存先の識別キー。保存先が異なれば同じフォルダ名でも別のフォルダとして扱う
- * （書き込み先を跨がないため）。↑↓の移動可否判定（隣接プリセットが同一スコープか）にも使う——
- * ロジックを2箇所に重複させると、フォルダのグループ化と移動可否判定が食い違いかねない。
+ * プリセット（または空フォルダ台帳エントリ）の保存先の識別キー。保存先が異なれば同じフォルダ名
+ * でも別のフォルダとして扱う（書き込み先を跨がないため）。↑↓の移動可否判定（隣接プリセットが
+ * 同一スコープか）や、ゴースト台帳削除のスコープ絞り込みにも使う——ロジックを複数箇所に
+ * 重複させると、フォルダのグループ化・移動可否判定・削除範囲が食い違いかねない。
+ * {@link IParadisResolvedPreset} と {@link IParadisResolvedPresetFolder} はどちらも
+ * `source`/`sourceUri` を持つため、そのどちらも受け取れる。
  */
-export function paradisPresetScopeKey(preset: IParadisResolvedPreset): string {
-	return preset.source === 'workspace' ? `workspace:${preset.sourceUri?.toString() ?? ''}` : 'user';
+export function paradisPresetScopeKey(entry: { readonly source: ParadisPresetSource; readonly sourceUri?: URI }): string {
+	return entry.source === 'workspace' ? `workspace:${entry.sourceUri?.toString() ?? ''}` : 'user';
 }
 
 /** 一覧の1グループ。folder が undefined の場合は「フォルダに入っていない」単独のプリセット（presets は必ず1件）。 */
@@ -584,6 +624,25 @@ export function paradisDistinctFolderNames(presets: readonly IParadisResolvedPre
 		if (folder && !seen.has(folder)) {
 			seen.add(folder);
 			result.push(folder);
+		}
+	}
+	return result;
+}
+
+/**
+ * 実プリセットの folder 名（{@link paradisDistinctFolderNames}）と、空フォルダ台帳
+ * （{@link IParadisResolvedPresetFolder}）をマージした名前一覧。実プリセット由来を先に、
+ * 台帳にしかない名前をその後ろに、それぞれ出現順で並べる。
+ */
+export function paradisAllFolderNames(presets: readonly IParadisResolvedPreset[], folders: readonly IParadisResolvedPresetFolder[]): readonly string[] {
+	const fromPresets = paradisDistinctFolderNames(presets);
+	const seen = new Set(fromPresets);
+	const result = [...fromPresets];
+	for (const folder of folders) {
+		const name = folder.name.trim();
+		if (name && !seen.has(name)) {
+			seen.add(name);
+			result.push(name);
 		}
 	}
 	return result;

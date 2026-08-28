@@ -240,8 +240,8 @@ export interface PresetDef {
 	name: string;
 	/** user = PCの設定 / workspace = リポジトリの .paracode.json。 */
 	source: 'user' | 'workspace';
-	/** tabs / split はターミナルが複数できる。current はPCのアクティブ端末向けの指定。 */
-	layout: 'tabs' | 'split' | 'current';
+	/** tabs / split はターミナルが複数できる。current / smart はPCのアクティブ端末向けの指定。 */
+	layout: 'tabs' | 'split' | 'current' | 'smart';
 	/**
 	 * PCが出した承認署名（コマンド本文と作業ディレクトリから作られる）。この端末は中身から
 	 * 署名を作らない——ここに届く tasks は表示のために切り詰められており、切り詰めた形から
