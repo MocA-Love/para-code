@@ -329,7 +329,31 @@ suite('ParadisOfficeConfiguration', () => {
 			'paradis.officeViewer.semanticWord': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerSemanticWord' },
 			'paradis.officeViewer.platformBackend': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerPlatformBackend' },
 			'paradis.officeViewer.searchPrint': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerSearchPrint' },
+			'paradis.officeViewer.enabled': { type: 'boolean', default: false, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerEnabled' },
 		});
+	});
+
+	test('the Settings UI checkbox promotes engine to v1 for the next open snapshot', () => {
+		const configuration = new MutableConfigurationReader();
+		configuration.values.set('paradis.officeViewer.enabled', true);
+
+		deepStrictEqual(snapshotParadisOfficeRuntimeConfiguration(configuration, { profile: {}, cli: {} }), {
+			engine: 'v1',
+			kernelShadow: false,
+			semanticSpreadsheet: true,
+			virtualizedSpreadsheet: true,
+			semanticWord: true,
+			platformBackend: true,
+			searchPrint: true,
+		});
+	});
+
+	test('an explicit engine setting still wins over the Settings UI checkbox left off', () => {
+		const configuration = new MutableConfigurationReader();
+		configuration.values.set('paradis.officeViewer.engine', 'legacy');
+		configuration.values.set('paradis.officeViewer.enabled', false);
+
+		strictEqual(snapshotParadisOfficeRuntimeConfiguration(configuration, { profile: {}, cli: {} }).engine, 'legacy');
 	});
 
 	test('resolves policy over CLI over profile over configuration per setting', () => {
