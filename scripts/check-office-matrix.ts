@@ -3,8 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-const { readFileSync } = require('node:fs');
+const { readFileSync, statSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
+const { resolve, sep } = require('node:path');
 
 const REQUIRED_COLUMNS = ['id', 'requirement', 'ownerTask', 'behavior', 'fixture', 'unit', 'runtime', 'status', 'commit'] as const;
 const ALLOWED_STATUSES = new Set(['implemented', 'safe-fallback', 'intentional-unsupported']);
@@ -27,6 +28,27 @@ function isSeparator(line: string): boolean {
 
 function fallbackField(value: string, field: 'action' | 'reason'): string | undefined {
 	return new RegExp(`(?:^Fallback:\\s*|;\\s*)${field}=([a-z-]+)(?:;|$)`).exec(value)?.[1];
+}
+
+function validFallbackSource(value: string): boolean {
+	const source = /(?:^Fallback:\s*|;\s*)source=([^;\s]+)(?:;|$)/.exec(value)?.[1];
+	if (!source) {
+		return false;
+	}
+	const [relativePath, symbol, ...extra] = source.split('#');
+	if (!relativePath || !symbol || extra.length > 0 || !/^[A-Za-z_$][\w$.-]*$/.test(symbol)) {
+		return false;
+	}
+	const root = resolve(process.cwd());
+	const absolute = resolve(root, relativePath);
+	if (!absolute.startsWith(`${root}${sep}`)) {
+		return false;
+	}
+	try {
+		return statSync(absolute).isFile() && readFileSync(absolute, 'utf8').includes(symbol);
+	} catch {
+		return false;
+	}
 }
 
 const file = process.argv[2];
@@ -98,6 +120,9 @@ for (let lineIndex = headerIndex + 2; lineIndex < lines.length && lines[lineInde
 		}
 		if (!runtimeReason || runtimeReason !== behaviorReason) {
 			errors.push(`${id}: safe-fallback runtime requires the matching structured reason`);
+		}
+		if (fixture.startsWith('not-run:') && unit.startsWith('not-run:') && runtime.startsWith('not-run:') && !validFallbackSource(behavior)) {
+			errors.push(`${id}: all-not-run safe-fallback requires an existing repo-relative source=path#symbol`);
 		}
 	}
 	if (status === 'intentional-unsupported' && (!behavior.includes('Policy:') || !runtime.includes('policy'))) {

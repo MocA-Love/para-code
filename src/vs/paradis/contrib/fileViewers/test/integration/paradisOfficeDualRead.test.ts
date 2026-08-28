@@ -300,7 +300,7 @@ suite('ParadisOfficeDualRead', () => {
 		});
 	});
 
-	test('registers the final v1 defaults, stable input type IDs, and their concrete serializers', async () => {
+	test('registers the safe legacy default, stable input type IDs, and their concrete serializers', async () => {
 		const [spreadsheetInputModule, docxInputModule, browserInputModule] = await Promise.all([
 			import('../../electron-browser/paradisSpreadsheetInput.js'),
 			import('../../electron-browser/paradisDocxInput.js'),
@@ -327,7 +327,7 @@ suite('ParadisOfficeDualRead', () => {
 			platformBackend: properties?.['paradis.officeViewer.platformBackend']?.default,
 			searchPrint: properties?.['paradis.officeViewer.searchPrint']?.default,
 		}, {
-			engine: 'v1', kernelShadow: false, semanticSpreadsheet: true, virtualizedSpreadsheet: true,
+			engine: 'legacy', kernelShadow: false, semanticSpreadsheet: true, virtualizedSpreadsheet: true,
 			semanticWord: true, platformBackend: true, searchPrint: true,
 		});
 		deepStrictEqual(PARADIS_SPREADSHEET_VIEWER_REGISTRATION, {
@@ -376,8 +376,9 @@ suite('ParadisOfficeDualRead', () => {
 		}
 	});
 
-	test('snapshots actual opens and engine=legacy bypasses semantic inputs and disables search and print', () => {
+	test('snapshots explicit v1 opens and engine=legacy bypasses semantic inputs and disables search and print', () => {
 		const reader = new MutableConfigurationReader();
+		reader.values.set('paradis.officeViewer.engine', 'v1');
 		const firstOpen = snapshotParadisOfficeRuntimeConfiguration(reader);
 		const resolverFactories: {
 			createEditorInput(input: { readonly resource: URI; readonly options?: undefined }): { readonly editor: ParadisOfficeDiagnosticInput };

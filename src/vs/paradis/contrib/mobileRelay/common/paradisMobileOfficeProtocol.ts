@@ -21,6 +21,11 @@ export const PARADIS_MOBILE_OFFICE_FEATURE_WORD_VIEW = PARADIS_OFFICE_FEATURE_WO
 export const PARADIS_MOBILE_OFFICE_FEATURE_WORD_DIFF = PARADIS_OFFICE_FEATURE_WORD_DIFF;
 export const PARADIS_MOBILE_OFFICE_ALL_FEATURES = PARADIS_OFFICE_ALL_FEATURES;
 
+/** The relay UI/transport is not connected yet, so the host must not advertise semantic features. */
+export function getParadisMobileOfficeHostFeatureBits(_requestedBits: number): number {
+	return 0;
+}
+
 export type ParadisMobileOfficeRequest =
 	| {
 		readonly t: 'office/hello';

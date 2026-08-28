@@ -104,7 +104,7 @@ const compatibilityFixtures: readonly CompatibilityFixture[] = [
 	{
 		name: 'Web v1 / Worker v1',
 		handshake: { client: { version: 1, platform: 'web', featureBits: PARADIS_OFFICE_ALL_FEATURES }, backend: { version: 1, kind: 'webWorker', available: true, featureBits: PARADIS_OFFICE_ALL_FEATURES } },
-		expected: { version: 1, route: 'webWorkerV1', quality: 'complete', semanticCompleteness: true, features: semanticFeatures, warnings: [] },
+		expected: { version: 1, route: 'webWorkerV1', quality: 'degraded', semanticCompleteness: false, features: semanticFeatures, warnings: ['office.capability.summaryOnly'] },
 	},
 	{
 		name: 'Web v1 / Worker unavailable',
@@ -306,7 +306,7 @@ suite('ParadisOfficeCapabilities', () => {
 suite('ParadisOfficeConfiguration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('registers the exact hidden runtime setting schema and final-gate defaults', () => {
+	test('registers the exact hidden runtime setting schema and safe pre-gate defaults', () => {
 		const actual = Object.fromEntries(PARADIS_OFFICE_CONFIGURATION_KEYS.map(key => {
 			const property = PARADIS_OFFICE_CONFIGURATION_PROPERTIES[key];
 			ok(property);
@@ -322,7 +322,7 @@ suite('ParadisOfficeConfiguration', () => {
 		}));
 
 		deepStrictEqual(actual, {
-			'paradis.officeViewer.engine': { type: 'string', default: 'v1', scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: ['auto', 'legacy', 'v1'], policy: 'ParadisOfficeViewerEngine' },
+			'paradis.officeViewer.engine': { type: 'string', default: 'legacy', scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: ['auto', 'legacy', 'v1'], policy: 'ParadisOfficeViewerEngine' },
 			'paradis.officeViewer.kernelShadow': { type: 'boolean', default: false, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerKernelShadow' },
 			'paradis.officeViewer.semanticSpreadsheet': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerSemanticSpreadsheet' },
 			'paradis.officeViewer.virtualizedSpreadsheet': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerVirtualizedSpreadsheet' },
@@ -423,7 +423,7 @@ suite('ParadisOfficeConfiguration', () => {
 	test('advertises only core features enabled for the next open snapshot', () => {
 		const configuration = new MutableConfigurationReader();
 		const snapshot = snapshotParadisOfficeRuntimeConfiguration(configuration, {
-			cli: { semanticSpreadsheet: true, semanticWord: false, platformBackend: true },
+			cli: { engine: 'v1', semanticSpreadsheet: true, semanticWord: false, platformBackend: true },
 		});
 
 		strictEqual(getParadisOfficeRuntimeFeatureBits(snapshot), PARADIS_OFFICE_FEATURE_EXCEL_VIEW | PARADIS_OFFICE_FEATURE_EXCEL_DIFF);

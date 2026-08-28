@@ -174,6 +174,7 @@ export class ParadisOfficeRemoteBackend extends LocalParadisOfficeDocumentBacken
 
 /** Registration-owned remote resources; connections contribute only owner/epoch state. */
 export class ParadisOfficeRemoteRuntime implements IDisposable {
+	private disposed = false;
 	readonly accountant = new OfficeMemoryAccountant(768 * 1024 * 1024);
 	readonly handles = new OfficeHandleStore({ accountant: this.accountant });
 	readonly workers = new ParadisOfficeRemoteWorkerHost({ accountant: this.accountant, onWorkerCrashed: workerId => this.handles.invalidateWorker(workerId) });
@@ -184,7 +185,14 @@ export class ParadisOfficeRemoteRuntime implements IDisposable {
 		return new ParadisOfficeRemoteBackend(remoteAuthority, options, { resolver, workers: this.workers, handles: this.handles });
 	}
 
-	dispose(): void { this.workers.dispose(); }
+	dispose(): void {
+		if (this.disposed) {
+			return;
+		}
+		this.disposed = true;
+		this.workers.dispose();
+		this.handles.dispose();
+	}
 }
 
 function createRemoteDependencies(remoteAuthority: string, options: ParadisOfficeRemoteSourceResolverOptions): {

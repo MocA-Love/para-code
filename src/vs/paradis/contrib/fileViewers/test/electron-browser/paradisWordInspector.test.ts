@@ -257,7 +257,8 @@ suite('ParadisWordInspector', () => {
 			isParadisWordV1Enabled(legacy),
 			isParadisWordV1Enabled(v1),
 			isParadisWordV1Enabled({ ...v1, semanticWord: false }),
-		], [false, true, false]);
+			isParadisWordV1Enabled({ ...v1, platformBackend: false }),
+		], [false, true, false, false]);
 		deepStrictEqual(createParadisWordSourceDescriptor(URI.parse('vscode-remote://host/workspace/contract.docx')), {
 			kind: 'remote', uri: 'vscode-remote://host/workspace/contract.docx', displayName: 'contract.docx',
 		});

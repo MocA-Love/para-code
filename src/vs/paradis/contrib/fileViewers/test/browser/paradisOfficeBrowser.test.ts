@@ -17,6 +17,7 @@ import {
 	getParadisOfficeFormat,
 	isParadisOfficeDiagnosticResource,
 } from '../../browser/paradisFileViewers.js';
+import { PARADIS_OFFICE_LIMITS } from '../../common/paradisOfficeProtocol.js';
 import {
 	ParadisOfficeWebWorkerClient,
 	createParadisOfficeWebWorkerEndpoint,
@@ -25,7 +26,7 @@ import {
 	type IParadisOfficeWebWorkerEndpoint,
 	type ParadisOfficeWebWorkerMessage,
 } from '../../browser/paradisOfficeWebWorker.js';
-import { createParadisOfficeDiagnostic, renderParadisOfficeDiagnostic } from '../../browser/paradisOfficeDiagnosticEditor.js';
+import { createParadisOfficeDiagnostic, renderParadisOfficeDiagnostic, renderParadisOfficeSummary } from '../../browser/paradisOfficeDiagnosticEditor.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
 const spreadsheetNamespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
@@ -190,6 +191,30 @@ suite('ParadisOfficeBrowser', () => {
 		strictEqual(JSON.stringify(result.value).includes('https://example.invalid/private'), false);
 	});
 
+	test('blocks an OOXML spreadsheet whose aggregate worker summary exceeds the serialized response budget', async () => {
+		const repeated = 'x'.repeat(300);
+		const result = await executeParadisOfficeWebWorkerRequest({
+			kind: 'run', requestId: 'aggregate-xlsx', operation: 'view', format: 'xlsx', originalBytes: await repeatedSharedStringSpreadsheetFixture(repeated, 10_000),
+		}, CancellationToken.None);
+		deepStrictEqual(result, { kind: 'failure', requestId: 'aggregate-xlsx', reason: 'limitExceeded' });
+	});
+
+	test('accepts the exact aggregate worker response boundary and blocks plus one on the client boundary', async () => {
+		const exactEndpoint = new TestWorkerEndpoint();
+		const exactClient = new ParadisOfficeWebWorkerClient({ createWorker: () => exactEndpoint });
+		const exact = exactClient.run('view', 'xlsx', new Uint8Array([1]), undefined, CancellationToken.None);
+		const exactRequestId = exactEndpoint.posted[0].message.requestId;
+		exactEndpoint.reply(spreadsheetSummaryMessage(exactRequestId, PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes));
+		strictEqual((await exact).kind, 'result');
+
+		const overEndpoint = new TestWorkerEndpoint();
+		const overClient = new ParadisOfficeWebWorkerClient({ createWorker: () => overEndpoint });
+		const over = overClient.run('view', 'xlsx', new Uint8Array([1]), undefined, CancellationToken.None);
+		const overRequestId = overEndpoint.posted[0].message.requestId;
+		overEndpoint.reply(spreadsheetSummaryMessage(overRequestId, PARADIS_OFFICE_LIMITS.maxSerializedResponseBytes + 1));
+		deepStrictEqual(await over, { kind: 'blocked', reason: 'limitExceeded' });
+	});
+
 	test('reports cancelled work without starting a parser', async () => {
 		const result = await executeParadisOfficeWebWorkerRequest({
 			kind: 'run', requestId: '4', operation: 'view', format: 'xlsx', originalBytes: new Uint8Array([1, 2, 3]),
@@ -293,7 +318,38 @@ suite('ParadisOfficeBrowser', () => {
 		renderParadisOfficeDiagnostic(container, unsafe, () => { throw new Error('must not open'); });
 		strictEqual((container.querySelector('button') as HTMLButtonElement).disabled, true);
 	});
+
+	test('surfaces every summary incompleteness signal in the diagnostic DOM', () => {
+		const container = mainWindow.document.createElement('div');
+		renderParadisOfficeSummary(container, {
+			kind: 'word', format: 'docx', budgetProfile: 'browser', externalRelationshipCount: 2, truncated: true,
+			stories: [{ kind: 'main', text: 'partial', truncated: true }],
+			drawings: [{ nodeId: 'drawing-1', geometry: { placement: 'inline', distances: {}, sourcePartFingerprint: { algorithm: 'sha256', value: 'a'.repeat(64), byteLength: 1 } } }],
+			tableDiagonals: [],
+		});
+		strictEqual(container.textContent?.includes('incomplete'), true);
+		strictEqual(container.textContent?.includes('truncated'), true);
+		strictEqual(container.textContent?.includes('2 external relationships'), true);
+		strictEqual(container.textContent?.includes('1 drawing placeholder'), true);
+
+		renderParadisOfficeSummary(container, { kind: 'diff', format: 'docx', budgetProfile: 'browser', changes: [], terminal: false });
+		strictEqual(container.textContent?.includes('not complete'), true);
+	});
 });
+
+function spreadsheetSummaryMessage(requestId: string, serializedBytes: number): ParadisOfficeWebWorkerMessage {
+	const empty: ParadisOfficeWebWorkerMessage = {
+		kind: 'result', requestId,
+		value: { kind: 'spreadsheet', format: 'xlsx', budgetProfile: 'browser', externalRelationshipCount: 0, sheets: [{ name: 'Sheet1', truncated: false, cells: [{ address: 'A1', row: 1, column: 1, text: '', storedType: 'string' }] }] },
+	};
+	const overhead = new TextEncoder().encode(JSON.stringify(empty)).byteLength;
+	const message: ParadisOfficeWebWorkerMessage = {
+		kind: 'result', requestId,
+		value: { kind: 'spreadsheet', format: 'xlsx', budgetProfile: 'browser', externalRelationshipCount: 0, sheets: [{ name: 'Sheet1', truncated: false, cells: [{ address: 'A1', row: 1, column: 1, text: 'a'.repeat(serializedBytes - overhead), storedType: 'string' }] }] },
+	};
+	strictEqual(new TextEncoder().encode(JSON.stringify(message)).byteLength, serializedBytes);
+	return message;
+}
 
 const spreadsheetMainContentTypes = {
 	xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
@@ -313,6 +369,22 @@ async function spreadsheetFixture(value: string, format: keyof typeof spreadshee
 			{ id: 'rIdRoot', type: `${relationshipNamespace}/officeDocument`, target: 'xl/workbook.xml' },
 			{ source: '/xl/workbook.xml', id: 'rIdSheet1', type: `${relationshipNamespace}/worksheet`, target: 'worksheets/sheet1.xml' },
 			{ source: '/xl/workbook.xml', id: 'rIdStyles', type: `${relationshipNamespace}/styles`, target: 'styles.xml' },
+		],
+	});
+}
+
+async function repeatedSharedStringSpreadsheetFixture(value: string, cellCount: number): Promise<Uint8Array> {
+	const rows = Array.from({ length: cellCount }, (_, index) => `<row r="${index + 1}"><c r="A${index + 1}" t="s"><v>0</v></c></row>`).join('');
+	return buildOpcFixture({
+		parts: [
+			['/xl/workbook.xml', `<workbook xmlns="${spreadsheetNamespace}" xmlns:r="${relationshipNamespace}"><sheets><sheet name="Sheet1" sheetId="1" r:id="rIdSheet1"/></sheets></workbook>`, spreadsheetMainContentTypes.xlsx],
+			['/xl/sharedStrings.xml', `<sst xmlns="${spreadsheetNamespace}" count="${cellCount}" uniqueCount="1"><si><t>${value}</t></si></sst>`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'],
+			['/xl/worksheets/sheet1.xml', `<worksheet xmlns="${spreadsheetNamespace}"><dimension ref="A1:A${cellCount}"/><sheetData>${rows}</sheetData></worksheet>`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'],
+		],
+		relationships: [
+			{ id: 'rIdRoot', type: `${relationshipNamespace}/officeDocument`, target: 'xl/workbook.xml' },
+			{ source: '/xl/workbook.xml', id: 'rIdSheet1', type: `${relationshipNamespace}/worksheet`, target: 'worksheets/sheet1.xml' },
+			{ source: '/xl/workbook.xml', id: 'rIdShared', type: `${relationshipNamespace}/sharedStrings`, target: 'sharedStrings.xml' },
 		],
 	});
 }

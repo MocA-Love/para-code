@@ -34,7 +34,18 @@ test('rejects a generic safe-fallback that has no structured UI action or policy
 
 test('accepts a safe-fallback with matching structured action and product reason', () => {
 	assert.equal(check(
+		'Fallback: action=legacy-preview; reason=no-semantic-claim; source=src/vs/paradis/contrib/fileViewers/electron-browser/paradisSpreadsheetEditor.ts#isParadisSpreadsheetV1Enabled; existing preview remains available.',
+		'not-run: target=desktop:xlsx-render; action=legacy-preview; reason=no-semantic-claim; runtime not executed.',
+	), 0);
+});
+
+test('rejects all-not-run fallback evidence when the source is absent or nonexistent', () => {
+	assert.notEqual(check(
 		'Fallback: action=legacy-preview; reason=no-semantic-claim; existing preview remains available.',
+		'not-run: target=desktop:xlsx-render; action=legacy-preview; reason=no-semantic-claim; runtime not executed.',
+	), 0);
+	assert.notEqual(check(
+		'Fallback: action=legacy-preview; reason=no-semantic-claim; source=src/does-not-exist.ts#fallback; existing preview remains available.',
 		'not-run: target=desktop:xlsx-render; action=legacy-preview; reason=no-semantic-claim; runtime not executed.',
 	), 0);
 });

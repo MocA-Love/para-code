@@ -119,10 +119,10 @@ const remoteFailedResponse = (requestId: string): ParadisOfficeResponse => ({
 
 class RecordingRemoteChannel implements IChannel {
 	readonly calls: { readonly command: string; readonly arg: unknown }[] = [];
-	constructor(private readonly handler: (command: string, arg: unknown) => unknown | Promise<unknown>) { }
-	call<T>(command: string, arg?: unknown): Promise<T> {
+	constructor(private readonly handler: (command: string, arg: unknown, token: CancellationToken) => unknown | Promise<unknown>) { }
+	call<T>(command: string, arg?: unknown, token: CancellationToken = CancellationToken.None): Promise<T> {
 		this.calls.push({ command, arg });
-		return Promise.resolve(this.handler(command, arg)) as Promise<T>;
+		return Promise.resolve(this.handler(command, arg, token)) as Promise<T>;
 	}
 	listen<T>(): never { throw new Error('No events'); }
 }
@@ -486,6 +486,38 @@ suite('ParadisOfficeGitSource', () => {
 		assert.strictEqual(existing.route, 'remoteV1');
 		assert.deepStrictEqual(remote.calls.map(call => call.command), ['negotiate', 'request', 'request']);
 		client.dispose();
+	});
+
+	test('dispose cancels owned requests and closes every owned handle exactly once', async () => {
+		const authority = { ownerCapability: 'd'.repeat(64), connectionEpoch: 7 };
+		const handle = { kind: 'document' as const, id: 'a'.repeat(48) };
+		let pendingToken: CancellationToken | undefined;
+		let releasePending!: () => void;
+		const remote = new RecordingRemoteChannel((command, arg, token) => {
+			if (command === 'negotiate') { return { version: 1, channel: PARADIS_OFFICE_CHANNEL, capabilities: [...v1Capabilities], ...authority }; }
+			const request = decodeParadisOfficeWireValue(arg).value as ParadisOfficeRequest;
+			if (request.operation === 'open') {
+				return marshalParadisOfficeResponse({ version: 1, requestId: request.requestId, operation: 'open', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, revision: { kind: 'document', sourceRevision: 'raw-revision' }, completeness: { expectedParts: 0, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0, expectedSemanticUnits: 0, visitedSemanticUnits: 0, terminal: true }, handle, capabilities: [] });
+			}
+			if (request.operation === 'search') {
+				pendingToken = token;
+				return new Promise(resolve => releasePending = () => resolve(marshalParadisOfficeResponse({ ...remoteFailedResponse(request.requestId), operation: 'search' })));
+			}
+			return marshalParadisOfficeResponse({ version: 1, requestId: request.requestId, operation: 'close', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true });
+		});
+		const connection = { remoteAuthority: 'ssh-remote+host', getChannel: () => remote };
+		const client = new ParadisOfficeRemoteClient({ remoteAgentService: { getConnection: () => connection }, localChannel: new RecordingRemoteChannel(() => { throw new Error('must stay remote'); }), sourceBroker: new RemoteBroker({ kind: 'direct', backend: 'remote', protocolVersion: 1, descriptor: remoteDescriptor }), spoolClient: new RemoteSpoolClient(), onWarning: () => { } });
+		await client.request({ version: 1, requestId: 'owned-open', operation: 'open', source: remoteDescriptor }, CancellationToken.None);
+		const pending = client.request({ version: 1, requestId: 'owned-search', operation: 'search', handle, query: 'x' }, CancellationToken.None);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		client.dispose();
+		client.dispose();
+		assert.strictEqual(pendingToken?.isCancellationRequested, true);
+		releasePending();
+		await assert.rejects(pending, error => error instanceof ParadisOfficeRemoteClientError && error.code === 'cancelled');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const requests = remote.calls.filter(call => call.command === 'request').map(call => decodeParadisOfficeWireValue(call.arg).value as ParadisOfficeRequest);
+		assert.deepStrictEqual(requests.map(request => request.operation), ['open', 'search', 'close']);
 	});
 
 	test('keeps sideMissing order and unbinds an unused comparison spool before the next bind', async () => {

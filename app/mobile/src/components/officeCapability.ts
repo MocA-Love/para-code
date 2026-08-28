@@ -10,6 +10,19 @@ export const MOBILE_OFFICE_ALL_FEATURES = MOBILE_OFFICE_FEATURE_EXCEL_VIEW
 	| MOBILE_OFFICE_FEATURE_WORD_VIEW
 	| MOBILE_OFFICE_FEATURE_WORD_DIFF;
 
+export type MobileOfficeFileKind = 'spreadsheet' | 'docx';
+
+/** Recognizes every OOXML extension routed through the existing fail-closed Office viewers. */
+export function classifyMobileFileKind(name: string): MobileOfficeFileKind | undefined {
+	if (/\.(?:xlsx|xlsm|xltx|xltm)$/i.test(name)) {
+		return 'spreadsheet';
+	}
+	if (/\.(?:docx|docm|dotx|dotm)$/i.test(name)) {
+		return 'docx';
+	}
+	return undefined;
+}
+
 export type MobileOfficeProtocolVersion = 0 | typeof MOBILE_OFFICE_PROTOCOL_VERSION;
 export type MobileOfficeFeatureMode = 'hostLegacy' | 'hostSemantic' | 'nativeBasic' | 'nativeWithHostDiagnostics' | 'explicitFallback';
 

@@ -57,7 +57,7 @@ For existing supported fixture corpus, assert v1 preserves legacy visible values
 
 Enable Kernel shadow, semantic Spreadsheet, virtualized Spreadsheet, semantic Word, platform backend, search/print only after each track review gate.
 
-- [ ] **Step 4: Set product default to v1 with runtime legacy kill switch**
+- [ ] **Step 4: Set product default to v1 with runtime legacy kill switch** — 未達。安全修正後の既定値は `legacy` のままとし、実runtime gate達成後にのみ切り替える。
 
 - [ ] **Step 5: Verify GREEN and commit**
 

@@ -192,6 +192,18 @@ suite('ParadisOfficeChannel', () => {
 		channel.dispose();
 	});
 
+	test('advertises only implemented local operations and rejects unavailable semantic paths explicitly', async () => {
+		const channel = new ParadisOfficeChannel();
+		assert.deepStrictEqual(await channel.call('window:minimal', 'negotiate', { versions: [1] }), {
+			version: 1, channel: 'officeDocument/v1', capabilities: ['inspect', 'open', 'close', 'cancel'],
+		});
+		const response = await channel.call<ParadisOfficeResponse>('window:minimal', 'request', request('compare', 'unsupported-compare'));
+		assert.strictEqual(response.ok, false);
+		if (response.ok) { throw new Error('Expected explicit unsupported response'); }
+		assert.strictEqual(response.error.code, 'featureUnsupported');
+		channel.dispose();
+	});
+
 	test('dispatches every Task 2 operation without changing the response union', async () => {
 		const backend = new RecordingBackend();
 		const channel = new ParadisOfficeChannel(backend);
@@ -776,7 +788,8 @@ suite('ParadisOfficeChannel', () => {
 		channel.dispose();
 	});
 
-	test('resolves a local descriptor to bytes and runs package inspection only in the worker', async () => {
+	test('resolves a local descriptor in the Node worker runtime without reporting an engine crash', async () => {
+		if (process.type === 'renderer') { return; }
 		const directory = await mkdtemp(join(tmpdir(), 'paradis-office-channel-'));
 		const file = join(directory, 'document.docx');
 		try {
@@ -848,7 +861,8 @@ suite('ParadisOfficeChannel', () => {
 		assert.strictEqual(fileRevision.includes('/private/'), false);
 	});
 
-	test('uploads a Task 3 sealed spool and resolves only descriptor state into Task 5 worker bytes', async () => {
+	test('opens a sealed spool in the Node worker runtime without reporting an engine crash', async () => {
+		if (process.type === 'renderer') { return; }
 		const store = new OfficeSpoolStore({ platform: 'desktopLocal' });
 		const resolver = new SpoolAwareParadisOfficeSourceResolver(store);
 		const channel = new ParadisOfficeChannel(new LocalParadisOfficeDocumentBackend(resolver), Event.None, new ParadisOfficeSpoolTransport(store, resolver));
@@ -873,7 +887,7 @@ suite('ParadisOfficeChannel', () => {
 		store.disposeAll();
 	});
 
-	test('maps sideMissing sources to the sideMissing outcome without treating them as engine failures', async () => {
+	test('maps implemented sideMissing inspection and unavailable comparison to explicit outcomes', async () => {
 		const channel = new ParadisOfficeChannel(new LocalParadisOfficeDocumentBackend());
 		const missing = { kind: 'sideMissing' as const, displayName: 'Deleted document', side: 'original' as const };
 		const inspect = await channel.call<ParadisOfficeResponse>('window:missing', 'request', { version: 1, requestId: 'missing-inspect-1', operation: 'inspect', source: missing });
@@ -881,7 +895,9 @@ suite('ParadisOfficeChannel', () => {
 		assert.strictEqual(inspect.outcome, 'sideMissing');
 		const compare = await channel.call<ParadisOfficeResponse>('window:missing', 'request', { version: 1, requestId: 'missing-compare-1', operation: 'compare', original: missing, modified: { ...source, side: 'modified' } });
 		assert.strictEqual(compare.ok, false);
-		assert.strictEqual(compare.outcome, 'sideMissing');
+		assert.strictEqual(compare.outcome, 'failed');
+		if (compare.ok) { throw new Error('Expected unsupported compare response'); }
+		assert.strictEqual(compare.error.code, 'featureUnsupported');
 		channel.dispose();
 	});
 

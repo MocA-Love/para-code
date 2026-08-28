@@ -23,6 +23,7 @@ export const PARADIS_OFFICE_CHANNEL = 'officeDocument/v1';
 export const PARADIS_OFFICE_PROTOCOL_VERSION = 1 as const;
 export const PARADIS_OFFICE_LEGACY_PROTOCOL_VERSION = 0 as const;
 export const PARADIS_OFFICE_OPERATIONS = ['inspect', 'open', 'getViewport', 'compare', 'search', 'getRenderableAsset', 'getPrintModel', 'exportPrint', 'close', 'cancel'] as const;
+export type ParadisOfficeOperation = typeof PARADIS_OFFICE_OPERATIONS[number];
 export const PARADIS_OFFICE_WIRE_ENVELOPE = 'paradis-office-wire/v1' as const;
 /** Public semantic payload and flattened IPC body are independently capped at 2 MiB. */
 export const PARADIS_OFFICE_MAX_IPC_BYTES = 2 * 1024 * 1024;
@@ -31,7 +32,7 @@ export const PARADIS_OFFICE_MAX_SPOOL_APPEND_METADATA_BYTES = 64 * 1024;
 export interface ParadisOfficeV1Negotiation {
 	readonly version: 1;
 	readonly channel: typeof PARADIS_OFFICE_CHANNEL;
-	readonly capabilities: typeof PARADIS_OFFICE_OPERATIONS;
+	readonly capabilities: readonly ParadisOfficeOperation[];
 	readonly ownerCapability?: string;
 	readonly connectionEpoch?: number;
 }
@@ -54,6 +55,8 @@ export type ParadisOfficeCancelRequest = ParadisOfficeControlRequest & { readonl
 
 /** Transport backend. Format adapters implement behavior; the channel owns validation and capabilities. */
 export interface IParadisOfficeDocumentBackend {
+	/** Operations with real backend implementations. Omitted only by complete test/adaptor backends. */
+	readonly capabilities?: readonly ParadisOfficeOperation[];
 	inspect(ownerId: string, request: Extract<ParadisOfficeRequest, { readonly operation: 'inspect' }>, token: CancellationToken): Promise<unknown>;
 	open(ownerId: string, request: Extract<ParadisOfficeRequest, { readonly operation: 'open' }>, token: CancellationToken): Promise<unknown>;
 	getViewport(ownerId: string, request: Extract<ParadisOfficeRequest, { readonly operation: 'getViewport' }>, token: CancellationToken): Promise<unknown>;
@@ -483,12 +486,12 @@ export function snapshotParadisOfficeRequest(value: unknown): ParadisOfficeReque
 	return snapshot.value;
 }
 
-export function negotiateParadisOffice(value: unknown): ParadisOfficeNegotiation {
+export function negotiateParadisOffice(value: unknown, capabilities: readonly ParadisOfficeOperation[] = PARADIS_OFFICE_OPERATIONS): ParadisOfficeNegotiation {
 	const snapshot = snapshotWire(value, 1024);
 	const request = record(snapshot.value, ['versions']);
 	const versions = array(request.versions, 2);
 	if (versions.some(version => version !== 0 && version !== 1) || new Set(versions).size !== versions.length) { return wireError(); }
-	if (versions.includes(1)) { return { version: 1, channel: PARADIS_OFFICE_CHANNEL, capabilities: PARADIS_OFFICE_OPERATIONS }; }
+	if (versions.includes(1)) { return { version: 1, channel: PARADIS_OFFICE_CHANNEL, capabilities: [...capabilities] }; }
 	if (versions.includes(0)) { return { version: 0, channel: PARADIS_SPREADSHEET_CHANNEL, capabilities: ['parseWorkbook'] }; }
 	return wireError();
 }

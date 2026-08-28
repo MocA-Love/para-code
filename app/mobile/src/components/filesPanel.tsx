@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
+import { classifyMobileFileKind } from './officeCapability.js';
 import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { matchRanges, useFilesSearch } from '../filesSearch.js';
@@ -252,7 +253,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 			return;
 		}
 		try {
-			if (/\.(?:xlsx|xlsm)$/i.test(p)) {
+			if (classifyMobileFileKind(p) === 'spreadsheet') {
 				// Excel は PC 側でレンダリングされた静的HTML（1シート分）を受け取る。
 				// シート一覧はビューアのネイティブタブになり、切替時に個別要求する
 				const result = await fsXlsx(wsId, p);
@@ -265,7 +266,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
 					setViewerPdf(result.data);
 				}
-			} else if (/\.docx$/i.test(p)) {
+			} else if (classifyMobileFileKind(p) === 'docx') {
 				// Word はバイナリを base64 で受け取り、WebView 内の docx-preview（PC版と同じ
 				// vendored ライブラリ）でレンダリングする
 				const result = await fsDocx(wsId, p);
