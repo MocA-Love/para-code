@@ -36,7 +36,7 @@ import {
 	paradisGithubSeverity,
 	paradisGithubWorstRemainingRatio,
 } from '../common/paradisGithubMetrics.js';
-import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_ENABLED } from './paradisGithubMetricsClient.js';
+import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL, PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_ENABLED } from './paradisGithubMetricsClient.js';
 import { ParadisGithubMetricsEditor } from './paradisGithubMetricsEditor.js';
 import { paradisGithubRoundedPercent } from './paradisGithubMetricsFormat.js';
 import { ParadisGithubMetricsInput, ParadisGithubMetricsInputSerializer, PARADIS_GITHUB_METRICS_EDITOR_ID, PARADIS_GITHUB_METRICS_INPUT_TYPE_ID } from './paradisGithubMetricsInput.js';
@@ -65,7 +65,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	EditorPaneDescriptor.create(
 		ParadisGithubMetricsEditor,
 		PARADIS_GITHUB_METRICS_EDITOR_ID,
-		localize('paradis.githubMetrics.editorName', "GitHub API Usage")
+		localize('paradis.githubMetrics.editorName', "GitHub API 利用状況")
 	),
 	[
 		new SyncDescriptor(ParadisGithubMetricsInput)
@@ -83,7 +83,7 @@ registerAction2(class ShowGithubMetricsDashboardAction extends Action2 {
 	constructor() {
 		super({
 			id: SHOW_DASHBOARD_COMMAND_ID,
-			title: localize2('paradis.githubMetrics.showDashboard', "Show GitHub API Usage"),
+			title: localize2('paradis.githubMetrics.showDashboard', "GitHub API 利用状況を表示"),
 			category: Categories.View,
 			f1: true,
 		});
@@ -101,14 +101,27 @@ registerAction2(class ShowGithubMetricsDashboardAction extends Action2 {
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradisGithubMetrics',
-	title: localize('paradis.githubMetrics.configTitle', "GitHub API Usage (Para Code)"),
+	title: localize('paradis.githubMetrics.configTitle', "GitHub API 利用状況（Para Code）"),
 	type: 'object',
 	properties: {
 		[PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_ENABLED]: {
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.githubMetrics.statusBarEnabled', "Show the remaining GitHub API rate limit in the status bar."),
+			description: localize('paradis.githubMetrics.statusBarEnabled', "ステータスバーにGitHub APIのレート制限の残量を表示します。"),
+		},
+		[PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL]: {
+			type: 'number',
+			enum: [0, 60, 300, 900],
+			default: 60,
+			scope: ConfigurationScope.APPLICATION,
+			enumDescriptions: [
+				localize('paradis.githubMetrics.refreshInterval.manual', "手動で更新したときだけ取得します。"),
+				localize('paradis.githubMetrics.refreshInterval.60', "1分ごと。"),
+				localize('paradis.githubMetrics.refreshInterval.300', "5分ごと。"),
+				localize('paradis.githubMetrics.refreshInterval.900', "15分ごと。"),
+			],
+			description: localize('paradis.githubMetrics.refreshInterval', "GitHub APIダッシュボードを開いている間の自動更新間隔（秒）。0にすると手動更新のみになります。"),
 		},
 	},
 });
@@ -178,11 +191,11 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 		const kind: StatusbarEntryKind | undefined = severity === 'critical' ? 'error' : severity === 'warning' ? 'warning' : undefined;
 
 		const properties: IStatusbarEntry = {
-			name: localize('paradis.githubMetrics.statusName', "GitHub API Usage"),
+			name: localize('paradis.githubMetrics.statusName', "GitHub API 利用状況"),
 			text: ratio !== undefined ? `$(github) ${paradisGithubRoundedPercent(ratio)}%` : '$(github)',
 			ariaLabel: ratio !== undefined
-				? localize('paradis.githubMetrics.statusAria', "GitHub API rate limit: {0}% left", paradisGithubRoundedPercent(ratio))
-				: localize('paradis.githubMetrics.statusAriaNoData', "GitHub API usage"),
+				? localize('paradis.githubMetrics.statusAria', "GitHub APIレート制限：残り{0}%", paradisGithubRoundedPercent(ratio))
+				: localize('paradis.githubMetrics.statusAriaNoData', "GitHub API 利用状況"),
 			// ホバーは短いテキストだけにする。ここに詳細（HTMLElement）を載せると、ステータスバーを
 			// 通り過ぎるだけで 500ms 後に開き（statusbarPart の dynamicDelay）、離れて閉じ、
 			// 直後は instantHover の猶予で遅延ゼロになって即また開く、を繰り返す。
@@ -207,12 +220,12 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 		const remoteHost = this.client.remoteHostLabel;
 		if (ratio === undefined) {
 			return remoteHost
-				? localize('paradis.githubMetrics.statusTooltipNoDataRemote', "GitHub API usage on {0} — click for details", remoteHost)
-				: localize('paradis.githubMetrics.statusTooltipNoData', "GitHub API usage — click for details");
+				? localize('paradis.githubMetrics.statusTooltipNoDataRemote', "{0} のGitHub API利用状況 — クリックで詳細表示", remoteHost)
+				: localize('paradis.githubMetrics.statusTooltipNoData', "GitHub API利用状況 — クリックで詳細表示");
 		}
 		return remoteHost
-			? localize('paradis.githubMetrics.statusTooltipRemote', "GitHub API rate limit on {0}: {1}% left — click for details", remoteHost, paradisGithubRoundedPercent(ratio))
-			: localize('paradis.githubMetrics.statusTooltip', "GitHub API rate limit: {0}% left — click for details", paradisGithubRoundedPercent(ratio));
+			? localize('paradis.githubMetrics.statusTooltipRemote', "{0} のGitHub APIレート制限：残り{1}% — クリックで詳細表示", remoteHost, paradisGithubRoundedPercent(ratio))
+			: localize('paradis.githubMetrics.statusTooltip', "GitHub APIレート制限：残り{0}% — クリックで詳細表示", paradisGithubRoundedPercent(ratio));
 	}
 
 	/**

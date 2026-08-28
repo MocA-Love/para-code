@@ -32,9 +32,11 @@ import {
 	IParadisLimitsSnapshot,
 	IParadisLimitsWindow,
 	paradisLimitsFormatCountdown,
+	paradisLimitsNeedsRelogin,
 	paradisLimitsSeverity,
 	paradisLimitsWorstPercent,
-	ParadisLimitsProvider
+	ParadisLimitsProvider,
+	ParadisLimitsSeverity
 } from '../common/paradisLimitsMonitor.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
@@ -51,6 +53,24 @@ const IDLE_POLL_INTERVAL_MS = 120_000;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const RING_RADIUS = 8;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+/** リングのホバーに出す1行の状態説明（パネルの説明文より短く保つ）。 */
+function paradisLimitsStatusSummary(account: IParadisLimitsAccount): string {
+	switch (account.status) {
+		case 'refreshing':
+			return localize('paradis.limitsMonitor.tooltipRefreshing', "トークンを更新中（操作は要りません）");
+		case 'unavailable':
+			return account.unavailableReason === 'api_key'
+				? localize('paradis.limitsMonitor.tooltipApiKey', "APIキー利用のため使用状況はありません")
+				: localize('paradis.limitsMonitor.tooltipUnavailable', "使用状況を取得できていません");
+		case 'relogin_required':
+			return localize('paradis.limitsMonitor.tooltipRelogin', "再ログインが必要です");
+		case 'no_credentials':
+			return localize('paradis.limitsMonitor.tooltipNoCredentials', "認証情報がありません");
+		default:
+			return account.statusDetail ?? localize('paradis.limitsMonitor.tooltipFetchFailed', "使用状況を取得できませんでした");
+	}
+}
 
 /** titlebarPart.ts の PARA-PATCH 点から呼ばれるファクトリ。 */
 export function createParadisLimitsMonitorWidget(instantiationService: IInstantiationService, container: HTMLElement): IDisposable {
@@ -258,6 +278,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 
 		this.renderProvider('claude', snapshot.claude.accounts);
 		this.renderProvider('codex', snapshot.codex.accounts);
+		this.updateTriggerAria([...snapshot.claude.accounts, ...snapshot.codex.accounts]);
 
 		if (this.button.childElementCount === 0) {
 			// どちらのプロバイダーも見つからない場合は最低限のプレースホルダーを出す
@@ -265,6 +286,28 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			appendParadisLimitsLogo(this.button, 'claude');
 			appendParadisLimitsLogo(this.button, 'codex');
 		}
+	}
+
+	/**
+	 * 状態を色と記号だけで伝えていたので、同じ内容をボタンの名前にも載せる。
+	 *
+	 * リング1つずつに aria-label を付けても、フォーカスできるのはボタンだけで、そのボタンが
+	 * 自前の aria-label を持つ以上は読み上げられない（子孫のテキストは名前に使われない）。
+	 * 使用率は再描画間隔ぶん古くなりうるので、数値より状態を先に読ませる。
+	 */
+	private updateTriggerAria(accounts: readonly IParadisLimitsAccount[]): void {
+		const base = localize('paradis.limitsMonitor.triggerAria', "AI利用リミット");
+		const summaries = accounts.map(account => {
+			const name = account.email ?? account.homeLabel ?? account.id;
+			if (account.status !== 'ok') {
+				return `${name}: ${paradisLimitsStatusSummary(account)}`;
+			}
+			const worst = paradisLimitsWorstPercent(account);
+			return worst === undefined
+				? name
+				: localize('paradis.limitsMonitor.triggerAriaAccount', "{0}: 最大{1}%使用", name, Math.round(worst));
+		});
+		this.button.setAttribute('aria-label', [base, ...summaries].join('、'));
 	}
 
 	private renderProvider(provider: ParadisLimitsProvider, accounts: readonly IParadisLimitsAccount[]): void {
@@ -279,8 +322,19 @@ class ParadisLimitsMonitorWidget extends Disposable {
 
 	private renderRing(account: IParadisLimitsAccount): void {
 		const worst = paradisLimitsWorstPercent(account);
-		const hasError = account.status !== 'ok';
-		const severity = hasError ? 'error' : paradisLimitsSeverity(worst ?? 0);
+		// 'unavailable'（読めていないだけ。制限に達したアカウントはリセットまで再取得が止まる）と
+		// 'refreshing'（Claude Codeが自動で更新する）は壊れていないので、赤い「!」ではなく
+		// 灰色の「?」で示す。
+		const hasError = paradisLimitsNeedsRelogin(account.status);
+		const isUnknown = !hasError && account.status !== 'ok';
+		let severity: ParadisLimitsSeverity | 'error' | 'unknown';
+		if (hasError) {
+			severity = 'error';
+		} else if (isUnknown) {
+			severity = 'unknown';
+		} else {
+			severity = paradisLimitsSeverity(worst ?? 0);
+		}
 
 		const svg = document.createElementNS(SVG_NS, 'svg');
 		svg.setAttribute('viewBox', '0 0 20 20');
@@ -298,13 +352,13 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		track.classList.add('paradis-limits-ring-track');
 		svg.appendChild(track);
 
-		if (hasError) {
+		if (hasError || isUnknown) {
 			const mark = document.createElementNS(SVG_NS, 'text');
 			mark.setAttribute('x', '10');
 			mark.setAttribute('y', '14');
 			mark.setAttribute('text-anchor', 'middle');
-			mark.classList.add('paradis-limits-ring-error-mark');
-			mark.textContent = '!';
+			mark.classList.add(isUnknown ? 'paradis-limits-ring-unknown-mark' : 'paradis-limits-ring-error-mark');
+			mark.textContent = isUnknown ? '?' : '!';
 			svg.appendChild(mark);
 		} else {
 			const arcLength = Math.max(0.5, Math.min(100, worst ?? 0) / 100 * RING_CIRCUMFERENCE);
@@ -321,6 +375,10 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			svg.appendChild(arc);
 		}
 
+		// 個々のリングはフォーカスできず、ボタン側に aria-label がある以上、svgに名前を付けても
+		// 読み上げられない。状態はボタンのラベルへ畳み込む（renderTrigger）。
+		svg.setAttribute('aria-hidden', 'true');
+
 		this.button.appendChild(svg);
 		// 関数で渡してホバー時に評価する。文字列を確定させると、リングの再描画間隔
 		// （パネル非表示中は120秒）まで固定され、分単位のカウントダウンが最大2分ズレる。
@@ -335,7 +393,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private ringTooltip(account: IParadisLimitsAccount): string {
 		const name = account.email ?? account.homeLabel ?? account.id;
 		if (account.status !== 'ok') {
-			return `${name} — ${account.statusDetail ?? account.status}`;
+			return `${name} — ${paradisLimitsStatusSummary(account)}`;
 		}
 		const now = Date.now();
 		const describe = (window: IParadisLimitsWindow): string => {

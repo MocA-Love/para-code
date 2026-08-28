@@ -11,7 +11,7 @@
 // 重ねる方式。レイアウトは Settings Editor 型（幅880px・左ナビ + コンテンツ）で、
 // 色はハードコードせず --vscode-* テーマトークンを使う。
 // また、ペイン行の hover/focus を paradisPaneIndicator.ts のレジストリへ通知することで、
-// 背面の対応ターミナルグリッドセルを3パターン（枠グロー/エージェント色/他を暗く）で強調する。
+// 背面の対応ターミナル（グリッドセル/エディタタブ）を枠グローで強調する。
 
 import './media/paradisBindingDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -25,7 +25,6 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
@@ -34,6 +33,7 @@ import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/parad
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
+import { ParadisBindingDialogPaneListResources, ParadisBindingDialogTab, ParadisBindingDialogTabController } from './paradisBindingDialogResources.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 
@@ -199,32 +199,6 @@ const strNavBadgeShared = (n: number) => localize('paradis.bindingDialog.navBadg
 // allow-any-unicode-next-line
 const strNavBadgeFix = (n: number) => localize('paradis.bindingDialog.navBadgeFix', "要修正 {0}", n);
 
-// --- 背面ターミナルハイライト ---
-// allow-any-unicode-next-line
-const STR_HL_LABEL = localize('paradis.bindingDialog.highlightLabel', "背面ハイライト");
-// allow-any-unicode-next-line
-const STR_HL_GLOW = localize('paradis.bindingDialog.highlightGlow', "枠グロー");
-// allow-any-unicode-next-line
-const STR_HL_TINT = localize('paradis.bindingDialog.highlightTint', "エージェント色");
-// allow-any-unicode-next-line
-const STR_HL_DIM = localize('paradis.bindingDialog.highlightDim', "他を暗く");
-
-/** 背面ターミナルセルの強調表示パターン。 */
-type ParadisPaneHighlightStyle = 'glow' | 'tint' | 'dim';
-
-const PARADIS_HIGHLIGHT_STYLES: readonly ParadisPaneHighlightStyle[] = ['glow', 'tint', 'dim'];
-
-/** 選択を永続化するキー（StorageScope.PROFILE）。 */
-const PARADIS_HIGHLIGHT_STYLE_STORAGE_KEY = 'paradis.browserShare.highlightStyle';
-
-const HIGHLIGHT_STYLE_LABELS: Readonly<Record<ParadisPaneHighlightStyle, string>> = {
-	glow: STR_HL_GLOW,
-	tint: STR_HL_TINT,
-	dim: STR_HL_DIM,
-};
-
-type DialogTab = 'panes' | 'devices' | 'mcp';
-
 /** CLIごとの「自動セットアップ / 修正」実行状態。 */
 interface IParadisSetupState {
 	readonly busy: boolean;
@@ -252,21 +226,16 @@ export class ParadisBindingDialog extends Disposable {
 	private readonly _body: HTMLElement;
 	private readonly _footer: HTMLElement;
 	private readonly _headerPills: HTMLElement;
-	/** ダイアログ上部 toolbar の強調スタイル切替（seg）ボタン。 */
-	private readonly _hlButtons = new Map<ParadisPaneHighlightStyle, HTMLButtonElement>();
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	private readonly _paneListResources = this._register(new ParadisBindingDialogPaneListResources());
+	private readonly _tabController: ParadisBindingDialogTabController;
 
-	private _activeTab: DialogTab = 'panes';
 	private _filterText = '';
 	private _bindError: string | undefined;
 	private _mcpStatus: IParadisMcpConfigStatus | undefined;
 	private readonly _setupStates = new Map<ParadisMcpCli, IParadisSetupState>();
 	/** 「アタッチ」を押して渡し先ペインの一覧を開いている端末（開いていなければ undefined）。 */
 	private _attachTargetDeviceId: string | undefined;
-	/** 背面ハイライトの強調パターン（StorageScope.PROFILE に永続化）。 */
-	private _highlightStyle: ParadisPaneHighlightStyle;
-	/** hover/focus 中のペイン行に対応するターミナルインスタンスID。 */
-	private _hoveredInstanceId: number | undefined;
 
 	constructor(
 		// モバイル端末のアタッチだけを目的に開く場合はページが無い（ブラウザページを1枚も
@@ -280,16 +249,13 @@ export class ParadisBindingDialog extends Disposable {
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@IParadisMobileCanvasModel private readonly mobileCanvasModel: IParadisMobileCanvasModel,
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
-		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
 
-		this._highlightStyle = this._loadHighlightStyle();
-		// ページ無しで開いた場合（モバイル端末アタッチ目的）、ページ起点のビューは意味を持たないので
-		// 端末ビューを初期表示にする。
-		if (!this.pageModel) {
-			this._activeTab = 'devices';
-		}
+		this._tabController = this._register(new ParadisBindingDialogTabController(
+			() => this.mobileCanvasModel.beginPolling(),
+			() => this._render(),
+		));
 
 		this._backdrop = $('.paradis-binding-dialog-backdrop');
 		const modal = $('.paradis-binding-dialog');
@@ -306,10 +272,9 @@ export class ParadisBindingDialog extends Disposable {
 		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
 		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.close()));
 
-		// --- toolbar（ページバー + 背面ハイライト切替） ---
+		// --- toolbar（ページバー） ---
 		const toolbar = dom.append(modal, $('.pbd-toolbar'));
 		this._pageBar = dom.append(toolbar, $('.pbd-pagebar'));
-		this._renderHighlightSeg(toolbar);
 
 		// --- nav + body ---
 		const navwrap = dom.append(modal, $('.pbd-navwrap'));
@@ -335,16 +300,16 @@ export class ParadisBindingDialog extends Disposable {
 		}));
 
 		this._register(this.bindingModel.onDidChange(() => this._render()));
-		// 端末一覧はホスト起動を伴うことがあるため、このダイアログが開いている間だけ取りに行く。
 		this._register(this.mobileCanvasModel.onDidChange(() => this._render()));
-		this._register(this.mobileCanvasModel.beginPolling());
 		if (this.pageModel) {
 			this._register(this.pageModel.onDidChangeTitle(() => this._render()));
 			this._register(this.pageModel.onDidChangeSharingState(() => this._render()));
 		}
 
 		layoutService.activeContainer.appendChild(this._backdrop);
-		this._render();
+		// ページ無しで開いた場合（モバイル端末アタッチ目的）は端末ビュー、
+		// ページ起点のダイアログはターミナルペインビューを初期表示にする。
+		this._tabController.initialize(this.pageModel !== undefined);
 		modal.focus();
 		void this.bindingModel.refresh();
 		void this._loadMcpStatus();
@@ -357,76 +322,32 @@ export class ParadisBindingDialog extends Disposable {
 	override dispose(): void {
 		// 背面ハイライトの後始末。_setHoveredPane は disposed ガードを持つため直接外す。
 		setParadisHoveredPaneInstanceId(undefined);
-		const doc = this._backdrop.ownerDocument;
-		for (const style of PARADIS_HIGHLIGHT_STYLES) {
-			doc.body.classList.remove(`paradis-pvh-${style}`);
-		}
+		this._backdrop.ownerDocument.body.classList.remove('paradis-pvh-glow');
 		this._backdrop.remove();
 		super.dispose();
 	}
 
 	// --- rendering ------------------------------------------------------
 
-	/**
-	 * 背面ハイライトの強調パターンを切り替える seg。ダイアログ上部の toolbar に置く。
-	 * 選択は StorageScope.PROFILE へ保存し、次回以降も引き継ぐ。
-	 */
-	private _renderHighlightSeg(toolbar: HTMLElement): void {
-		const wrap = dom.append(toolbar, $('.pbd-hlseg'));
-		dom.append(wrap, $('span.pbd-hl-label')).textContent = STR_HL_LABEL;
-		const seg = dom.append(wrap, $('.pbd-seg'));
-		for (const style of PARADIS_HIGHLIGHT_STYLES) {
-			const button = dom.append(seg, $('button.pbd-seg-btn')) as HTMLButtonElement;
-			button.type = 'button';
-			button.textContent = HIGHLIGHT_STYLE_LABELS[style];
-			if (style === this._highlightStyle) {
-				button.classList.add('active');
-			}
-			this._register(dom.addDisposableListener(button, 'click', () => this._setHighlightStyle(style)));
-			this._hlButtons.set(style, button);
-		}
-	}
-
-	private _loadHighlightStyle(): ParadisPaneHighlightStyle {
-		const stored = this.storageService.get(PARADIS_HIGHLIGHT_STYLE_STORAGE_KEY, StorageScope.PROFILE);
-		return stored === 'tint' || stored === 'dim' ? stored : 'glow';
-	}
-
-	private _setHighlightStyle(style: ParadisPaneHighlightStyle): void {
-		this._highlightStyle = style;
-		for (const [candidate, button] of this._hlButtons) {
-			button.classList.toggle('active', candidate === style);
-		}
-		this.storageService.store(PARADIS_HIGHLIGHT_STYLE_STORAGE_KEY, style, StorageScope.PROFILE, StorageTarget.USER);
-		// ホバー中に切り替えた場合も即座に効くよう、現在のホバー状態で再適用する。
-		this._setHoveredPane(this._hoveredInstanceId);
-	}
-
-	/**
-	 * 「いま指しているペイン」を背面セル側へ通知する。強調スタイル（body クラス）は
-	 * ホバー中の間だけ載せる —— パターンC「他を暗く」は対象がいる間だけ全セルを暗く
-	 * する必要があるため、スタイル適用とセットで管理する。
-	 */
+	/** 「いま指しているペイン」を背面（グリッドセル/エディタターミナル）側へ通知する。 */
 	private _setHoveredPane(instanceId: number | undefined): void {
 		if (this._store.isDisposed) {
 			return;
 		}
-		this._hoveredInstanceId = instanceId;
 		setParadisHoveredPaneInstanceId(instanceId);
-		const body = dom.getWindow(this._backdrop).document.body;
-		for (const style of PARADIS_HIGHLIGHT_STYLES) {
-			body.classList.toggle(`paradis-pvh-${style}`, instanceId !== undefined && this._highlightStyle === style);
-		}
+		dom.getWindow(this._backdrop).document.body.classList.toggle('paradis-pvh-glow', instanceId !== undefined);
 	}
+
+	private get _activeTab(): ParadisBindingDialogTab { return this._tabController.activeTab; }
 
 	/** ペイン行に hover/focus での背面ハイライト通知を張る（a11y: キーボードフォーカスでも効く）。 */
 	private _wireRowHighlight(row: HTMLElement, instanceId: number): void {
 		row.tabIndex = 0;
 		row.dataset['instanceId'] = String(instanceId);
-		this._renderDisposables.add(dom.addDisposableListener(row, dom.EventType.MOUSE_ENTER, () => this._setHoveredPane(instanceId)));
-		this._renderDisposables.add(dom.addDisposableListener(row, dom.EventType.MOUSE_LEAVE, () => this._setHoveredPane(undefined)));
-		this._renderDisposables.add(dom.addDisposableListener(row, 'focusin', () => this._setHoveredPane(instanceId)));
-		this._renderDisposables.add(dom.addDisposableListener(row, 'focusout', () => this._setHoveredPane(undefined)));
+		this._paneListResources.add(dom.addDisposableListener(row, dom.EventType.MOUSE_ENTER, () => this._setHoveredPane(instanceId)));
+		this._paneListResources.add(dom.addDisposableListener(row, dom.EventType.MOUSE_LEAVE, () => this._setHoveredPane(undefined)));
+		this._paneListResources.add(dom.addDisposableListener(row, 'focusin', () => this._setHoveredPane(instanceId)));
+		this._paneListResources.add(dom.addDisposableListener(row, 'focusout', () => this._setHoveredPane(undefined)));
 	}
 
 	/**
@@ -490,6 +411,7 @@ export class ParadisBindingDialog extends Disposable {
 		if (this._store.isDisposed) {
 			return;
 		}
+		this._paneListResources.beginRender();
 		this._renderDisposables.clear();
 
 		this._renderHeaderPills();
@@ -555,8 +477,7 @@ export class ParadisBindingDialog extends Disposable {
 				}
 				if (isCurrent) {
 					this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => {
-						this._activeTab = 'panes';
-						this._render();
+						this._tabController.setActiveTab('panes');
 					}));
 				}
 			}
@@ -587,7 +508,7 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _createNavItem(
 		label: string,
-		tab: DialogTab,
+		tab: ParadisBindingDialogTab,
 		badge?: { readonly text: string; readonly className: string; readonly title?: string },
 		warnBadge?: { readonly text: string; readonly className: string; readonly title?: string },
 	): void {
@@ -603,8 +524,7 @@ export class ParadisBindingDialog extends Disposable {
 			}
 		}
 		this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => {
-			this._activeTab = tab;
-			this._render();
+			this._tabController.setActiveTab(tab);
 		}));
 	}
 
@@ -684,6 +604,7 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _renderPaneList(container: HTMLElement): void {
+		this._paneListResources.beginRender();
 		dom.clearNode(container);
 		const filter = this._filterText.trim().toLowerCase();
 		const visible = this._visiblePanes()
@@ -725,7 +646,7 @@ export class ParadisBindingDialog extends Disposable {
 		switchEl.disabled = action === 'disabled';
 		switchEl.setAttribute('aria-label', isUnshareVerb ? STR_SWITCH_UNSHARE_ARIA : STR_SWITCH_SHARE_ARIA);
 		if (action !== 'disabled') {
-			this._renderDisposables.add(dom.addDisposableListener(switchEl, 'change', () => {
+			this._paneListResources.add(dom.addDisposableListener(switchEl, 'change', () => {
 				void this._runRowToggle(pane, switchEl.checked);
 			}));
 		}

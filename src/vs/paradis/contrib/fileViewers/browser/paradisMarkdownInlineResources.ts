@@ -165,8 +165,8 @@ function createUnavailableNode(doc: Document, src: string, reason: ParadisMediaF
 	const node = doc.createElement('span');
 	node.className = 'paradis-media-unavailable';
 	node.textContent = reason === 'too-large'
-		? localize('paradis.markdown.mediaTooLarge', "The image is too large to show here: {0}", src)
-		: localize('paradis.markdown.mediaMissing', "The image could not be found: {0}", src);
+		? localize('paradis.markdown.mediaTooLarge', "画像が大きすぎるためここには表示できません: {0}", src)
+		: localize('paradis.markdown.mediaMissing', "画像が見つかりませんでした: {0}", src);
 	return node;
 }
 

@@ -74,7 +74,7 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.addRepositoryFlow', "Add Repository (Clone from URL or Local Folder)..."),
+			title: localize2('paradis.workspaceSwitch.addRepositoryFlow', "リポジトリを追加（URLまたはローカルフォルダからクローン）..."),
 			category: localize2('paradis.category', "Para Code"),
 			// 「Add Repository...」(browser側) がここへ委譲するため、パレットには出さない
 			f1: false

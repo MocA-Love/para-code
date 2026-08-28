@@ -52,7 +52,7 @@ export interface IParadisBookmarkBarHost {
 }
 
 function untitledFolderLabel(): string {
-	return localize('paradis.bookmarks.untitledFolder', "Untitled Folder");
+	return localize('paradis.bookmarks.untitledFolder', "無題のフォルダ");
 }
 
 function folderDisplayTitle(folder: IParadisBookmarkFolder): string {
@@ -111,8 +111,8 @@ export class ParadisBookmarkBarWidget extends Disposable {
 	openFolderDialog(folder?: IParadisBookmarkFolder): void {
 		this._openDialog.value = this.instantiationService.createInstance(ParadisFolderDialog, {
 			dialogTitle: folder
-				? localize('paradis.bookmarks.editFolderTitle', "Edit Folder")
-				: localize('paradis.bookmarks.newFolderTitle', "New Folder"),
+				? localize('paradis.bookmarks.editFolderTitle', "フォルダを編集")
+				: localize('paradis.bookmarks.newFolderTitle', "新しいフォルダ"),
 			initial: folder ? { title: folder.title, icon: folder.icon ?? 'folder', color: folder.color } : undefined,
 			onSubmit: result => {
 				if (folder) {
@@ -128,19 +128,19 @@ export class ParadisBookmarkBarWidget extends Disposable {
 	openEditBookmarkDialog(bookmark: IParadisBookmark): void {
 		const folderId = findParadisParentFolderId(this.bookmarksService.nodes, bookmark.id) ?? undefined;
 		this._openDialog.value = this.instantiationService.createInstance(ParadisEditBookmarkDialog, {
-			dialogTitle: localize('paradis.bookmarks.editBookmarkTitle', "Edit Bookmark"),
+			dialogTitle: localize('paradis.bookmarks.editBookmarkTitle', "ブックマークを編集"),
 			initial: { title: bookmark.title, url: bookmark.url, folderId },
 			folderOptions: getParadisFolderOptions(this.bookmarksService.nodes, untitledFolderLabel()),
 			onSubmit: result => {
 				if (!normalizeParadisBookmarkUrl(result.url)) {
-					return localize('paradis.bookmarks.invalidUrl', "Enter a valid URL.");
+					return localize('paradis.bookmarks.invalidUrl', "有効なURLを入力してください。");
 				}
 				const updated = this.bookmarksService.updateBookmark(bookmark.id, {
 					url: result.url,
 					title: result.title,
 					folderId: result.folderId ?? null,
 				});
-				return updated ? undefined : localize('paradis.bookmarks.duplicateUrl', "A bookmark for this URL already exists.");
+				return updated ? undefined : localize('paradis.bookmarks.duplicateUrl', "このURLのブックマークは既に存在します。");
 			},
 		});
 	}
@@ -154,7 +154,7 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		const nodes = this.bookmarksService.nodes;
 		if (nodes.length === 0) {
 			const hint = dom.append(this.element, $('.paradis-bookmark-bar-hint'));
-			hint.textContent = localize('paradis.bookmarks.emptyHint', "Click the star in the address bar to add bookmarks.");
+			hint.textContent = localize('paradis.bookmarks.emptyHint', "アドレスバーの星マークをクリックしてブックマークを追加できます。");
 			return;
 		}
 
@@ -225,7 +225,7 @@ export class ParadisBookmarkBarWidget extends Disposable {
 
 	private _folderMenuActions(folder: IParadisBookmarkFolder): IAction[] {
 		if (folder.children.length === 0) {
-			return [new Action('paradis.bookmarks.folderEmpty', localize('paradis.bookmarks.folderEmpty', "Folder Is Empty"), undefined, false)];
+			return [new Action('paradis.bookmarks.folderEmpty', localize('paradis.bookmarks.folderEmpty', "フォルダは空です"), undefined, false)];
 		}
 		return folder.children.map(child => this._nodeMenuAction(child));
 	}
@@ -241,11 +241,11 @@ export class ParadisBookmarkBarWidget extends Disposable {
 
 	private _showBookmarkContextMenu(e: MouseEvent, bookmark: IParadisBookmark): void {
 		const actions: IAction[] = [
-			new Action('paradis.bookmarks.ctx.open', localize('paradis.bookmarks.ctx.open', "Open"), undefined, true, () => this.host.openUrl(bookmark.url)),
-			new Action('paradis.bookmarks.ctx.duplicate', localize('paradis.bookmarks.ctx.duplicate', "Duplicate"), undefined, true, () => this.bookmarksService.duplicateBookmark(bookmark.id)),
-			new Action('paradis.bookmarks.ctx.edit', localize('paradis.bookmarks.ctx.edit', "Edit..."), undefined, true, () => this.openEditBookmarkDialog(bookmark)),
+			new Action('paradis.bookmarks.ctx.open', localize('paradis.bookmarks.ctx.open', "開く"), undefined, true, () => this.host.openUrl(bookmark.url)),
+			new Action('paradis.bookmarks.ctx.duplicate', localize('paradis.bookmarks.ctx.duplicate', "複製"), undefined, true, () => this.bookmarksService.duplicateBookmark(bookmark.id)),
+			new Action('paradis.bookmarks.ctx.edit', localize('paradis.bookmarks.ctx.edit', "編集..."), undefined, true, () => this.openEditBookmarkDialog(bookmark)),
 			new Separator(),
-			new Action('paradis.bookmarks.ctx.remove', localize('paradis.bookmarks.ctx.remove', "Remove"), undefined, true, () => this.bookmarksService.removeNode(bookmark.id)),
+			new Action('paradis.bookmarks.ctx.remove', localize('paradis.bookmarks.ctx.remove', "削除"), undefined, true, () => this.bookmarksService.removeNode(bookmark.id)),
 		];
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => ({ x: e.clientX, y: e.clientY }),
@@ -255,9 +255,9 @@ export class ParadisBookmarkBarWidget extends Disposable {
 
 	private _showFolderContextMenu(e: MouseEvent, folder: IParadisBookmarkFolder): void {
 		const actions: IAction[] = [
-			new Action('paradis.bookmarks.ctx.editFolder', localize('paradis.bookmarks.ctx.editFolder', "Edit Folder..."), undefined, true, () => this.openFolderDialog(folder)),
+			new Action('paradis.bookmarks.ctx.editFolder', localize('paradis.bookmarks.ctx.editFolder', "フォルダを編集..."), undefined, true, () => this.openFolderDialog(folder)),
 			new Separator(),
-			new Action('paradis.bookmarks.ctx.removeFolder', localize('paradis.bookmarks.ctx.removeFolder', "Remove Folder"), undefined, true, () => this.bookmarksService.removeNode(folder.id)),
+			new Action('paradis.bookmarks.ctx.removeFolder', localize('paradis.bookmarks.ctx.removeFolder', "フォルダを削除"), undefined, true, () => this.bookmarksService.removeNode(folder.id)),
 		];
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => ({ x: e.clientX, y: e.clientY }),
@@ -268,17 +268,17 @@ export class ParadisBookmarkBarWidget extends Disposable {
 	private _showBarContextMenu(e: MouseEvent): void {
 		const currentPage = this.host.getCurrentPage();
 		const actions: IAction[] = [
-			new Action('paradis.bookmarks.ctx.addPage', localize('paradis.bookmarks.ctx.addPage', "Bookmark Current Page"), undefined, !!currentPage && !!currentPage.url, () => {
+			new Action('paradis.bookmarks.ctx.addPage', localize('paradis.bookmarks.ctx.addPage', "現在のページをブックマーク"), undefined, !!currentPage && !!currentPage.url, () => {
 				if (currentPage?.url) {
 					this.bookmarksService.addBookmark({ url: currentPage.url, title: currentPage.title, faviconDataUri: currentPage.faviconDataUri });
 				}
 			}),
-			new Action('paradis.bookmarks.ctx.newFolder', localize('paradis.bookmarks.ctx.newFolder', "New Folder..."), undefined, true, () => this.openFolderDialog()),
+			new Action('paradis.bookmarks.ctx.newFolder', localize('paradis.bookmarks.ctx.newFolder', "新しいフォルダ..."), undefined, true, () => this.openFolderDialog()),
 			new Separator(),
-			new Action('paradis.bookmarks.ctx.import', localize('paradis.bookmarks.ctx.import', "Import Bookmarks..."), undefined, true, () => this.commandService.executeCommand(PARADIS_IMPORT_BOOKMARKS_COMMAND_ID)),
-			new Action('paradis.bookmarks.ctx.export', localize('paradis.bookmarks.ctx.export', "Export Bookmarks..."), undefined, true, () => this.commandService.executeCommand(PARADIS_EXPORT_BOOKMARKS_COMMAND_ID)),
+			new Action('paradis.bookmarks.ctx.import', localize('paradis.bookmarks.ctx.import', "ブックマークをインポート..."), undefined, true, () => this.commandService.executeCommand(PARADIS_IMPORT_BOOKMARKS_COMMAND_ID)),
+			new Action('paradis.bookmarks.ctx.export', localize('paradis.bookmarks.ctx.export', "ブックマークをエクスポート..."), undefined, true, () => this.commandService.executeCommand(PARADIS_EXPORT_BOOKMARKS_COMMAND_ID)),
 			new Separator(),
-			new Action('paradis.bookmarks.ctx.hideBar', localize('paradis.bookmarks.ctx.hideBar', "Hide Bookmarks Bar"), undefined, true, () => this.commandService.executeCommand(PARADIS_TOGGLE_BOOKMARK_BAR_COMMAND_ID)),
+			new Action('paradis.bookmarks.ctx.hideBar', localize('paradis.bookmarks.ctx.hideBar', "ブックマークバーを隠す"), undefined, true, () => this.commandService.executeCommand(PARADIS_TOGGLE_BOOKMARK_BAR_COMMAND_ID)),
 		];
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => ({ x: e.clientX, y: e.clientY }),

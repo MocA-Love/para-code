@@ -6,8 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// ターミナルグリッドの各セル右上に表示する「エージェント共有インジケータ」のDIフリーな実装。
-// `SessionTerminalGridCell`（vs/sessions/contrib/terminalGrid、DIを持たないプレーンクラス）から
+// ターミナルの右上に表示する「エージェント共有インジケータ」のDIフリーな実装。
+// `SessionTerminalGridCell`（vs/sessions/contrib/terminalGrid、DIを持たないプレーンクラス）や
+// `SessionTerminalEditor`（vs/sessions/contrib/terminalGrid、エディタタブのターミナル向け）から
 // `createParadisPaneIndicator` を呼ぶだけで済むよう、状態の供給元（バインディングモデル）は
 // electron-browser 側の contribution が `setParadisPaneIndicatorHost` でモジュールレジストリへ
 // 登録する（デスクトップ以外ではホスト未登録のままインジケータは非表示になる）。
@@ -38,11 +39,6 @@ export interface IParadisPaneIndicatorHost {
 	getBoundPage(instanceId: number): IParadisPaneIndicatorBoundPage | undefined;
 	/** メインウィンドウをそのページのスペースへ切り替え、ブラウザを前面に出す。 */
 	revealBoundPage(instanceId: number): void;
-	/**
-	 * ハイライトパターンB（エージェント色ティント）で使うペインのブランド色。
-	 * 実装しない場合はテーマのフォーカス色へフォールバックする。
-	 */
-	getPaneAccentColor?(instanceId: number): string | undefined;
 }
 
 let currentHost: IParadisPaneIndicatorHost | undefined;
@@ -66,13 +62,14 @@ export function getParadisPaneIndicatorHost(): IParadisPaneIndicatorHost | undef
 /** ホストの差し替え（登録・解除）通知。 */
 export const onDidChangeParadisPaneIndicatorHost: Event<void> = onDidChangeHost.event;
 
-// --- 背面ターミナルハイライト（バインディングダイアログ ⇔ グリッドセル） ---
+// --- 背面ターミナルハイライト（バインディングダイアログ ⇔ グリッドセル/エディタターミナル） ---
 //
-// ダイアログのペイン行をホバー/フォーカスしている間、そのペインのグリッドセルを強調表示する。
-// dialog（electron-browser）とセル（vs/sessions）は互いを import できない/しないため、
+// ダイアログのペイン行をホバー/フォーカスしている間、そのペインの背面（グリッドセルまたは
+// エディタタブのターミナル）を枠グローで強調表示する。dialog（electron-browser）と
+// セル（vs/sessions）/エディタターミナル（vs/workbench）は互いを import できない/しないため、
 // indicator と同じくこのモジュールのレジストリを疎結合な通知路として使う:
-//   dialog → setParadisHoveredPaneInstanceId() → event → 各セルの indicator が自分宛てか
-//   判定し、親要素（= グリッドセル）へ .paradis-pvh-target クラスと --paradis-agent-color を設定。
+//   dialog → setParadisHoveredPaneInstanceId() → event → 各 indicator が自分宛てか
+//   判定し、親要素へ .paradis-pvh-target クラスを設定。
 
 let currentHoveredInstanceId: number | undefined;
 const onDidChangeHoveredPane = new Emitter<number | undefined>();
@@ -125,8 +122,9 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 		e.stopPropagation();
 		currentHost?.openBindingDialog(instanceId);
 	}));
-	// ダイアログのペイン行 hover/focus 中は、親要素（グリッドセル）へハイライトを反映する。
-	// セルはこの indicator をちょうど1つ子に持つため、親経由の直接DOM操作で足りる。
+	// ダイアログのペイン行 hover/focus 中は、親要素（グリッドセル/エディタターミナルの
+	// overflow guard）へハイライトを反映する。親はこの indicator をちょうど1つ子に持つため、
+	// 親経由の直接DOM操作で足りる。
 	const applyHoverHighlight = () => {
 		const cell = element.parentElement;
 		if (!cell) {
@@ -134,17 +132,9 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 		}
 		const active = currentHost !== undefined && currentHoveredInstanceId === instanceId;
 		cell.classList.toggle('paradis-pvh-target', active);
-		const accentColor = active ? currentHost?.getPaneAccentColor?.(instanceId) : undefined;
-		if (accentColor) {
-			cell.style.setProperty('--paradis-agent-color', accentColor);
-		} else {
-			cell.style.removeProperty('--paradis-agent-color');
-		}
 	};
 	const clearHoverHighlight = () => {
-		const cell = element.parentElement;
-		cell?.classList.remove('paradis-pvh-target');
-		cell?.style.removeProperty('--paradis-agent-color');
+		element.parentElement?.classList.remove('paradis-pvh-target');
 	};
 	disposables.add(onDidChangeParadisHoveredPane(() => applyHoverHighlight()));
 	// ハイライトは「変化した瞬間」だけでなくマウント時にも反映する必要がある。ダイアログのペイン行を
@@ -166,5 +156,30 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 			element.remove();
 			disposables.dispose();
 		},
+	};
+}
+
+/** {@link createParadisEditorTerminalIndicator} が返す、対象ペインを差し替え可能なハンドル。 */
+export interface IParadisEditorTerminalIndicatorController extends IDisposable {
+	/** インジケータの対象ペインを差し替える。`undefined` なら非表示にする。 */
+	setInstance(instanceId: number | undefined): void;
+}
+
+/**
+ * エディタタブのターミナル向け版の {@link createParadisPaneIndicator}。グリッドセルは
+ * インスタンスごとに使い捨てだが、`TerminalEditor` のコンテナ（overflow guard）はタブ切り替えの
+ * 間ずっと再利用され続けるため、コンテナは呼び出し側から一度だけ渡し、対象ペインは
+ * `setInstance()` で都度差し替える。
+ */
+export function createParadisEditorTerminalIndicator(container: HTMLElement): IParadisEditorTerminalIndicatorController {
+	const current = new MutableDisposable<{ readonly element: HTMLElement } & IDisposable>();
+	return {
+		setInstance(instanceId) {
+			current.value = instanceId !== undefined ? createParadisPaneIndicator(instanceId) : undefined;
+			if (current.value) {
+				container.appendChild(current.value.element);
+			}
+		},
+		dispose: () => current.dispose(),
 	};
 }

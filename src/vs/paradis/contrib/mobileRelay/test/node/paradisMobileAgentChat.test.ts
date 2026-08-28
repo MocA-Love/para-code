@@ -8,6 +8,7 @@
 
 import assert from 'assert';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'fs/promises';
+import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import * as sinon from 'sinon';
 import { join } from '../../../../../base/common/path.js';
@@ -18,6 +19,104 @@ import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/
 import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
+
+const nodeRequire = createRequire(import.meta.url);
+
+interface IDirectoryWalkBudget {
+	mayRun(key: string): boolean;
+	mark(key: string): void;
+}
+
+interface IDirectoryWalkFixture {
+	readonly workspace: string;
+	readonly claudeHome: string;
+	readonly codexHome: string;
+}
+
+async function withDirectoryWalkFixture(run: (fixture: IDirectoryWalkFixture) => Promise<void>): Promise<void> {
+	const root = await realpath(await mkdtemp(join(tmpdir(), 'paradis-directory-walk-')));
+	const workspace = join(root, 'workspace');
+	const claudeHome = join(root, 'claude-home');
+	const codexHome = join(root, 'codex-home');
+	await Promise.all([
+		mkdir(workspace, { recursive: true }),
+		mkdir(claudeHome, { recursive: true }),
+		mkdir(codexHome, { recursive: true }),
+	]);
+	const previousClaudeHome = process.env['CLAUDE_CONFIG_DIR'];
+	const previousCodexHome = process.env['CODEX_HOME'];
+	process.env['CLAUDE_CONFIG_DIR'] = claudeHome;
+	process.env['CODEX_HOME'] = codexHome;
+	try {
+		await run({ workspace: await realpath(workspace), claudeHome, codexHome });
+	} finally {
+		if (previousClaudeHome === undefined) {
+			delete process.env['CLAUDE_CONFIG_DIR'];
+		} else {
+			process.env['CLAUDE_CONFIG_DIR'] = previousClaudeHome;
+		}
+		if (previousCodexHome === undefined) {
+			delete process.env['CODEX_HOME'];
+		} else {
+			process.env['CODEX_HOME'] = previousCodexHome;
+		}
+		await rm(root, { recursive: true, force: true });
+	}
+}
+
+function createDirectoryWalkBudget(allow: boolean): { readonly budget: IDirectoryWalkBudget; readonly events: { readonly method: 'mayRun' | 'mark'; readonly key: string }[] } {
+	const events: { method: 'mayRun' | 'mark'; key: string }[] = [];
+	return {
+		events,
+		budget: {
+			mayRun: key => {
+				events.push({ method: 'mayRun', key });
+				return allow;
+			},
+			mark: key => events.push({ method: 'mark', key }),
+		},
+	};
+}
+
+function createChatWithDirectoryWalkBudget(budget: IDirectoryWalkBudget): ParadisMobileAgentChat {
+	return new ParadisMobileAgentChat(
+		() => { }, () => { }, () => { }, new NullLogService(),
+		undefined, async () => true, () => { }, undefined, undefined, budget,
+	);
+}
+
+async function scanOnePane(chat: ParadisMobileAgentChat, cwd: string): Promise<'claude' | 'codex' | undefined> {
+	const token = 'pane-directory-walk';
+	const access = chat as unknown as {
+		paneSessions: Map<string, { readonly agent: 'claude' | 'codex' }>;
+		scanPanesForUnclaimedSessions(): Promise<void>;
+	};
+	assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token, cwd }]), true);
+	await access.scanPanesForUnclaimedSessions();
+	return access.paneSessions.get(token)?.agent;
+}
+
+function createEmptyCodexStateDatabase(codexHome: string): void {
+	const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+	const database = new DatabaseSync(join(codexHome, 'state_1.sqlite'));
+	try {
+		database.exec(`
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				rollout_path TEXT NOT NULL,
+				source TEXT NOT NULL,
+				cwd TEXT NOT NULL,
+				archived INTEGER NOT NULL,
+				updated_at_ms INTEGER,
+				updated_at INTEGER,
+				created_at_ms INTEGER,
+				created_at INTEGER
+			)
+		`);
+	} finally {
+		database.close();
+	}
+}
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
 	const deadline = Date.now() + 2_000;
@@ -96,6 +195,110 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'tool-image', id: 1, requestId: 'request-1', epoch: 'epoch-1', rev: 3, index: 100 }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'tool-image', id: 1, requestId: 'request-1', rev: 3, index: 0 }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'unknown', id: 1 }), false);
+	});
+
+	test('uses the production five-minute directory walk budget', () => {
+		const clock = sinon.useFakeTimers({ now: 1_000 });
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const budget = (chat as unknown as { codexDirectoryWalkLedger: IDirectoryWalkBudget }).codexDirectoryWalkLedger;
+		try {
+			budget.mark('workspace');
+			clock.tick(5 * 60_000 - 1);
+			assert.strictEqual(budget.mayRun('workspace'), false);
+			clock.tick(1);
+			assert.strictEqual(budget.mayRun('workspace'), true);
+		} finally {
+			chat.dispose();
+			clock.restore();
+		}
+	});
+
+	test('uses the production 128-entry directory walk limit', () => {
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const budget = (chat as unknown as { codexDirectoryWalkLedger: IDirectoryWalkBudget }).codexDirectoryWalkLedger;
+		try {
+			for (let index = 0; index < 129; index++) {
+				budget.mark(`cwd-${index}`);
+			}
+			assert.deepStrictEqual({
+				oldest: budget.mayRun('cwd-0'),
+				secondOldest: budget.mayRun('cwd-1'),
+				newest: budget.mayRun('cwd-128'),
+			}, {
+				oldest: true,
+				secondOldest: false,
+				newest: false,
+			});
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('does not touch the Codex directory budget when Claude claims the pane', async () => {
+		await withDirectoryWalkFixture(async ({ workspace, claudeHome }) => {
+			const project = join(claudeHome, 'projects', workspace.replace(/[^a-zA-Z0-9]/g, '-'));
+			await mkdir(project, { recursive: true });
+			await writeFile(join(project, 'session.jsonl'), '');
+			const probe = createDirectoryWalkBudget(true);
+			const chat = createChatWithDirectoryWalkBudget(probe.budget);
+			try {
+				assert.deepStrictEqual({ session: await scanOnePane(chat, `${workspace}/`), events: probe.events }, {
+					session: 'claude',
+					events: [],
+				});
+			} finally {
+				chat.dispose();
+			}
+		});
+	});
+
+	test('does not mark or enter the fallback when the Codex directory budget denies admission', async () => {
+		await withDirectoryWalkFixture(async ({ workspace }) => {
+			const probe = createDirectoryWalkBudget(false);
+			const chat = createChatWithDirectoryWalkBudget(probe.budget);
+			try {
+				assert.deepStrictEqual({ session: await scanOnePane(chat, `${workspace}/`), events: probe.events }, {
+					session: undefined,
+					events: [{ method: 'mayRun', key: workspace }],
+				});
+			} finally {
+				chat.dispose();
+			}
+		});
+	});
+
+	test('does not mark when the Codex state database answers without a directory fallback', async () => {
+		await withDirectoryWalkFixture(async ({ workspace, codexHome }) => {
+			createEmptyCodexStateDatabase(codexHome);
+			const probe = createDirectoryWalkBudget(true);
+			const chat = createChatWithDirectoryWalkBudget(probe.budget);
+			try {
+				assert.deepStrictEqual({ session: await scanOnePane(chat, `${workspace}/`), events: probe.events }, {
+					session: undefined,
+					events: [{ method: 'mayRun', key: workspace }],
+				});
+			} finally {
+				chat.dispose();
+			}
+		});
+	});
+
+	test('marks exactly once when Codex attempts the directory fallback and its read fails', async () => {
+		await withDirectoryWalkFixture(async ({ workspace }) => {
+			const probe = createDirectoryWalkBudget(true);
+			const chat = createChatWithDirectoryWalkBudget(probe.budget);
+			try {
+				assert.deepStrictEqual({ session: await scanOnePane(chat, `${workspace}/`), events: probe.events }, {
+					session: undefined,
+					events: [
+						{ method: 'mayRun', key: workspace },
+						{ method: 'mark', key: workspace },
+					],
+				});
+			} finally {
+				chat.dispose();
+			}
+		});
 	});
 
 	test('requests an owning renderer cwd sync and delivers a reconnect error without a subscriber', async () => {

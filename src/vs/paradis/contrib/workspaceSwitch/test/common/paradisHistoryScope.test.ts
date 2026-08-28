@@ -17,16 +17,16 @@ suite('paradisHistoryScope', () => {
 	const BASE_KEY = 'history.entries';
 
 	test('derives a per-space key only while a single folder is open', () => {
-		const backend = folder('/develop/paradis/ai-zyusetu/backend');
-		const worktree = folder('/develop/paradis/ai-zyusetu-worktrees/add-broker-support/backend');
+		const backend = folder('/develop/paradis/sample-app/backend');
+		const worktree = folder('/develop/paradis/sample-app-worktrees/feature-branch/backend');
 		const backendKey = paradisHistoryStorageKey(BASE_KEY, [backend]);
 
 		assert.deepStrictEqual({
 			// キーの形は固定する。変わると全ユーザーの履歴が無言で孤児になる
 			shape: /^history\.entries\.[0-9a-f]{1,8}$/.test(backendKey),
-			stable: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/ai-zyusetu/backend')]) === backendKey,
+			stable: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/sample-app/backend')]) === backendKey,
 			// 大文字小文字と末尾スラッシュの違いで別バケットにしない
-			normalized: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/AI-zyusetu/backend/')]) === backendKey,
+			normalized: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/Sample-App/backend/')]) === backendKey,
 			perSpace: paradisHistoryStorageKey(BASE_KEY, [worktree]) !== backendKey,
 			noFolder: paradisHistoryStorageKey(BASE_KEY, []),
 			multiRoot: paradisHistoryStorageKey(BASE_KEY, [backend, worktree]),
@@ -43,15 +43,15 @@ suite('paradisHistoryScope', () => {
 	});
 
 	test('drops editors that leaked in from the next space, and keeps everything else', () => {
-		const previous = folder('/develop/paradis/ai-zyusetu/backend');
-		const next = folder('/develop/paradis/ai-zyusetu-worktrees/add-broker-support/backend');
+		const previous = folder('/develop/paradis/sample-app/backend');
+		const next = folder('/develop/paradis/sample-app-worktrees/feature-branch/backend');
 		const plan = paradisHistorySwitchPlan(event([previous], [next]), [next]);
 
 		assert.deepStrictEqual({
 			// 切り替え中に開かれた切り替え先のファイルは、切り替え元の履歴へ書き戻さない
-			leakedFromNextSpace: plan?.isForeign(URI.file('/develop/paradis/ai-zyusetu-worktrees/add-broker-support/backend/.env')),
+			leakedFromNextSpace: plan?.isForeign(URI.file('/develop/paradis/sample-app-worktrees/feature-branch/backend/.env')),
 			// 切り替え元自身のファイルと、どちらにも属さないファイルは残す
-			ownFile: plan?.isForeign(URI.file('/develop/paradis/ai-zyusetu/backend/.env')),
+			ownFile: plan?.isForeign(URI.file('/develop/paradis/sample-app/backend/.env')),
 			outsideBothSpaces: plan?.isForeign(URI.file('/Downloads/notes.md')),
 		}, {
 			leakedFromNextSpace: true,
@@ -63,17 +63,17 @@ suite('paradisHistoryScope', () => {
 	test('keeps nested spaces from evicting each other', () => {
 		// 親ディレクトリと、その配下のディレクトリを別々のスペースとして開いている場合。
 		// 切り替え先が親でも、切り替え元 (配下) のファイルは切り替え元の履歴に残す
-		const previous = folder('/develop/paradis/ai-zyusetu/backend');
-		const next = folder('/develop/paradis/ai-zyusetu');
+		const previous = folder('/develop/paradis/sample-app/backend');
+		const next = folder('/develop/paradis/sample-app');
 		const plan = paradisHistorySwitchPlan(event([previous], [next]), [next]);
 
-		assert.strictEqual(plan?.isForeign(URI.file('/develop/paradis/ai-zyusetu/backend/.env')), false);
+		assert.strictEqual(plan?.isForeign(URI.file('/develop/paradis/sample-app/backend/.env')), false);
 	});
 
 	test('has nothing to strip when the transition is not a single-folder swap', () => {
 		// これらの遷移でも保存先キーは変わり得るが、取り除くべき「紛れ込み」は判定できない。
 		// 履歴の切り替え自体は呼び出し側がキーの変化で判断する
-		const backend = folder('/develop/paradis/ai-zyusetu/backend');
+		const backend = folder('/develop/paradis/sample-app/backend');
 		const other = folder('/develop/paradis/other');
 
 		assert.deepStrictEqual({
@@ -88,16 +88,16 @@ suite('paradisHistoryScope', () => {
 	});
 
 	test('migrates only the entries that belong to the space', () => {
-		const backend = folder('/develop/paradis/ai-zyusetu/backend');
+		const backend = folder('/develop/paradis/sample-app/backend');
 		const entries = [
-			{ resource: URI.file('/develop/paradis/ai-zyusetu/backend/.env') },
-			{ resource: URI.file('/develop/paradis/ai-zyusetu-worktrees/add-broker-support/backend/.env') },
+			{ resource: URI.file('/develop/paradis/sample-app/backend/.env') },
+			{ resource: URI.file('/develop/paradis/sample-app-worktrees/feature-branch/backend/.env') },
 			{ resource: URI.file('/Downloads/notes.md') },
 		];
 
 		assert.deepStrictEqual(
 			paradisMigratedHistoryEntries(entries, [backend]).map(entry => entry.resource.path),
-			['/develop/paradis/ai-zyusetu/backend/.env']
+			['/develop/paradis/sample-app/backend/.env']
 		);
 	});
 

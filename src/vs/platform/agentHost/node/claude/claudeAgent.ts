@@ -63,6 +63,8 @@ import { readClaudePermissionMode } from './claudeSessionPermissionMode.js';
 import { ClaudeSessionMetadataStore, IClaudeSessionOverlay } from './claudeSessionMetadataStore.js';
 import { IAgentHostSessionTitleSignal } from '../agentHostSessionTitleSignal.js';
 import { IAgentHostOTelService } from '../../common/otel/agentHostOTelService.js';
+import { IParadisTurnCacheKey, ParadisTurnCache } from '../paradisTurnCache.js';
+import { paradisClaudeTurnCacheStamp } from './paradisClaudeTurnCacheStamp.js';
 
 const USER_AGENT_PREFIX = 'vscode_claude_code';
 
@@ -460,6 +462,9 @@ export class ClaudeAgent extends Disposable implements IAgent {
 
 	private readonly _metadataStore: ClaudeSessionMetadataStore;
 
+	// PARA-PATCH: disk cache of reconstructed transcripts, so re-opening a chat whose SDK transcript hasn't changed skips the full getSessionMessages() read. See CLAUDE.md.
+	private readonly _turnCache: ParadisTurnCache;
+
 	private _findAnySession(sessionId: string): ClaudeAgentSession | undefined {
 		return this._chatEntriesBySdkId.get(sessionId)?.chatSession;
 	}
@@ -619,6 +624,8 @@ export class ClaudeAgent extends Disposable implements IAgent {
 	) {
 		super();
 		this._metadataStore = _instantiationService.createInstance(ClaudeSessionMetadataStore);
+		// PARA-PATCH: see the _turnCache field declaration above. See CLAUDE.md.
+		this._turnCache = _instantiationService.createInstance(ParadisTurnCache, 'claude-replay-1');
 		// CAPI reports each request's billed credits via the proxy (the SDK
 		// strips `copilot_usage` from its `result`). Route every report to
 		// the originating session by the session id the proxy decoded from
@@ -1909,6 +1916,12 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		return sess?.isPipelineReady ? sess : undefined;
 	}
 
+	// PARA-PATCH: test-only accessor so tests can await the fire-and-forget ParadisTurnCache write before asserting a cache hit. See CLAUDE.md.
+	/** Test-only: resolves once every {@link ParadisTurnCache} write queued so far has landed. */
+	whenTurnCacheIdleForTesting(): Promise<void> {
+		return this._turnCache.whenIdle();
+	}
+
 	private async _readChatMessages(context: IResolvedClaudeChatContext): Promise<readonly Turn[]> {
 		// Don't trigger a cold SDK download just to reconstruct a transcript
 		// during restore (the renderer subscribes to the last-active session
@@ -1984,7 +1997,22 @@ export class ClaudeAgent extends Disposable implements IAgent {
 	 * SDK encoded in Task tool_result blocks. Resilient: any failure warn-logs
 	 * and returns `[]` rather than propagating.
 	 */
+	// PARA-PATCH: disk-cache fast path — a stamp match skips the SDK read entirely. See CLAUDE.md.
 	private async _reconstructTurns(sdkSessionId: string, routingUri: URI, subagents: SubagentRegistry | undefined): Promise<readonly Turn[]> {
+		const cacheKey: IParadisTurnCacheKey = { id: sdkSessionId, routing: routingUri.toString() };
+		const stamp = await paradisClaudeTurnCacheStamp(this._sdkService, sdkSessionId);
+		if (stamp) {
+			const cached = await this._turnCache.read(routingUri, cacheKey, stamp);
+			if (cached) {
+				try {
+					subagents?.primeFromTranscript(cached);
+				} catch (err) {
+					this._logService.warn(`[Claude] primeFromTranscript threw for ${sdkSessionId}`, err);
+				}
+				return cached;
+			}
+		}
+
 		let messages;
 		try {
 			messages = await this._sdkService.getSessionMessages(sdkSessionId, { includeSystemMessages: true });
@@ -2004,7 +2032,8 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		// Always a bug: the SDK handed back a transcript but replay produced
 		// nothing, which surfaces to the user as a chat that opens completely
 		// empty. Warn so the next report is diagnosable from the log alone.
-		if (turns.length === 0 && messages.length > 0) {
+		const degenerate = turns.length === 0 && messages.length > 0;
+		if (degenerate) {
 			this._logService.warn(`[Claude] replay produced no turns from ${messages.length} transcript message(s) for ${sdkSessionId}; chat will render empty`);
 		}
 		// A bug in `primeFromTranscript` MUST NOT break an otherwise-successful
@@ -2013,6 +2042,12 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			subagents?.primeFromTranscript(turns);
 		} catch (err) {
 			this._logService.warn(`[Claude] primeFromTranscript threw for ${sdkSessionId}`, err);
+		}
+		// Never persist the degenerate-replay case above: caching it would turn
+		// a one-off rendering bug into a permanently empty chat (until the
+		// transcript file itself changes) and silence the warn on every later open.
+		if (stamp && !degenerate) {
+			this._turnCache.write(routingUri, cacheKey, stamp, turns);
 		}
 		return turns;
 	}

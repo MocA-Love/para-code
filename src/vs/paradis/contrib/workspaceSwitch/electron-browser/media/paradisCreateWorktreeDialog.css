@@ -296,41 +296,76 @@
 
 .paradis-create-worktree-dialog.pcw-d {
 	width: 540px;
-	border-radius: 12px;
-	padding: 20px 22px 18px;
+	border-radius: 8px;
+	padding: 0;
+	gap: 0;
+	overflow: hidden;
+	/* allow-any-unicode-next-line */
+	/* overflow:hidden にしたので、背の低い画面では本文側 (.pcw-d-body) がスクロールする必要がある。
+	max-height を置かないとダイアログが伸び続けて画面外へはみ出す。 */
+	max-height: 92vh;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-header {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 12px 18px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-body {
+	display: flex;
+	flex-direction: column;
 	gap: 14px;
-	position: relative;
+	padding: 16px 18px 18px;
+	/* allow-any-unicode-next-line */
+	/* overflow-y だけ指定すると overflow-x も auto 扱いになり、横スクロールバーが出得る */
+	overflow: hidden auto;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-field {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	min-width: 0;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-field > span,
+.paradis-create-worktree-dialog.pcw-d .pcw-d-field-label {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-field-label {
+	display: block;
+	margin-bottom: 5px;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-title {
 	margin: 0;
-	font-size: 16px;
-	font-weight: 700;
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	padding-right: 30px;
+	font-size: 14.5px;
+	font-weight: 600;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-sub {
-	font-size: 11.5px;
+	font-size: 11px;
 	font-weight: 400;
 	color: var(--vscode-descriptionForeground);
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-close {
-	position: absolute;
-	top: 12px;
-	right: 12px;
-	width: 26px;
-	height: 26px;
+	margin-left: auto;
+	flex: none;
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	padding: 4px;
 	border: none;
 	background: transparent;
-	color: var(--vscode-descriptionForeground);
-	border-radius: 5px;
+	color: var(--vscode-icon-foreground);
+	border-radius: 4px;
 	cursor: pointer;
 }
 
@@ -339,31 +374,30 @@
 	color: var(--vscode-foreground);
 }
 
-/* 入力は枠を外し下線だけにする（欄が多いので、罫線を減らして視線の止まる場所を減らす） */
+/* 入力は他ダイアログ（設定 / 通知設定）と同じ「塗り + 枠 + 角丸 5px」に揃える */
 .paradis-create-worktree-dialog.pcw-d .pcw-d-input,
 .paradis-create-worktree-dialog.pcw-d .pcw-d-area {
 	width: 100%;
-	background: transparent;
-	color: var(--vscode-foreground);
-	border: none;
-	border-bottom: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 0;
-	padding: 5px 2px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	border-radius: 5px;
+	padding: 4px 8px;
 	font-family: inherit;
-	font-size: 13.5px;
+	font-size: 12.5px;
 	outline: none;
-	transition: border-color 0.15s;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-input:focus,
 .paradis-create-worktree-dialog.pcw-d .pcw-d-area:focus {
-	border-bottom-color: var(--vscode-focusBorder);
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-area {
 	resize: vertical;
 	min-height: 64px;
-	line-height: 1.65;
+	line-height: 1.6;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-two {
@@ -378,7 +412,7 @@
 
 .paradis-create-worktree-dialog.pcw-d .pcw-branch {
 	font-family: var(--monaco-monospace-font);
-	font-size: 12px;
+	font-size: 11.5px;
 }
 
 /* --- エージェントセグメント --- */
@@ -386,9 +420,9 @@
 .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-seg {
 	display: flex;
 	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 9px;
-	padding: 3px;
-	gap: 3px;
+	border-radius: 6px;
+	padding: 2px;
+	gap: 2px;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-btn {
@@ -401,10 +435,10 @@
 	border: none;
 	background: transparent;
 	color: var(--vscode-descriptionForeground);
-	border-radius: 7px;
-	padding: 6px 10px;
+	border-radius: 4px;
+	padding: 5px 10px;
 	font-family: inherit;
-	font-size: 12.5px;
+	font-size: 12px;
 	cursor: pointer;
 }
 
@@ -474,11 +508,11 @@
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-sub-select {
-	background: transparent;
-	color: var(--vscode-foreground);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
 	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 6px;
-	padding: 3px 8px;
+	border-radius: 5px;
+	padding: 4px 8px;
 	font-family: inherit;
 	font-size: 12px;
 	outline: none;
@@ -496,16 +530,16 @@
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-seg {
-	border-radius: 9px;
-	padding: 3px;
-	gap: 3px;
+	border-radius: 6px;
+	padding: 2px;
+	gap: 2px;
 	overflow: visible;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-seg-btn {
 	border-right: none;
-	border-radius: 7px;
-	padding: 5px 12px;
+	border-radius: 4px;
+	padding: 4px 11px;
 }
 
 /* --- 詳細オプション（折りたたみ） --- */
@@ -517,7 +551,7 @@
 	list-style: none;
 	user-select: none;
 	padding: 6px 0;
-	border-top: 1px dashed var(--vscode-input-border, var(--vscode-widget-border));
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-adv > summary::-webkit-details-marker {
@@ -559,11 +593,11 @@
 .paradis-create-worktree-dialog.pcw-d .pcw-d-adv-select {
 	flex: 1;
 	min-width: 0;
-	background: transparent;
-	color: var(--vscode-foreground);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
 	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 6px;
-	padding: 3px 8px;
+	border-radius: 5px;
+	padding: 4px 8px;
 	font-family: inherit;
 	font-size: 12px;
 	outline: none;
@@ -589,13 +623,13 @@
 /* --- フッター --- */
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-foot {
+	flex: none;
 	display: flex;
 	align-items: center;
 	justify-content: unset;
 	gap: 10px;
-	padding-top: 14px;
-	margin-top: 2px;
-	border-top: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	padding: 10px 18px;
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-path-preview {
@@ -611,26 +645,56 @@
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-btn {
-	border-radius: 7px;
-	padding: 6px 16px;
-	font-size: 12.5px;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-btn:not(.pcw-btn-primary) {
-	background: transparent;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-btn:not(.pcw-btn-primary):hover:not(:disabled) {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-btn-primary {
-	font-weight: 600;
+	border-radius: 5px;
+	padding: 4px 13px;
+	font-size: 12px;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-kbd {
 	margin-left: 6px;
 	font-size: 10px;
 	opacity: 0.85;
+}
+
+/* allow-any-unicode-next-line */
+/* setup の ON/OFF は、他ダイアログと同じトグルスイッチの見た目にする
+（素のチェックボックスはここだけ浮いていた）。 */
+.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox {
+	appearance: none;
+	flex: none;
+	width: 34px;
+	height: 18px;
+	margin: 0;
+	border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border));
+	border-radius: 10px;
+	background: var(--vscode-checkbox-background, var(--vscode-input-background));
+	position: relative;
+	cursor: pointer;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox::after {
+	content: '';
+	position: absolute;
+	left: 1px;
+	top: 1px;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--vscode-descriptionForeground);
+	transition: transform 0.15s;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox:checked {
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox:checked::after {
+	transform: translateX(16px);
+	background: var(--vscode-button-foreground);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
 }

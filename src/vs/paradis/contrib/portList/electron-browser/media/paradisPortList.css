@@ -44,7 +44,8 @@
 /* ---------- panel ---------- */
 
 .paradis-port-list-panel {
-	/* width は paradisPortListPanel.ts の PANEL_WIDTH から element.style.width で設定される(reposition() と値を1箇所で管理するため、ここでは指定しない)。 */
+	/* width は paradisPortListPanel.ts の reposition() から element.style.width で設定される。 */
+	box-sizing: border-box;
 	position: fixed;
 	z-index: 2500;
 	max-height: 70vh;
@@ -299,7 +300,46 @@
 	animation: paradis-port-list-spin 1s linear infinite;
 }
 
+@media (max-width: 455px) {
+	.paradis-port-list-panel .ppl-row {
+		gap: 6px;
+		padding-inline: 10px;
+	}
+
+	.paradis-port-list-panel .ppl-port {
+		width: 46px;
+	}
+
+	.paradis-port-list-panel .ppl-pid {
+		width: 48px;
+	}
+
+	.paradis-port-list-panel .ppl-risk-badge {
+		max-width: 64px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+}
+
+/* Preserve wide row information for touch displays while enlarging their tap target. */
+@media (max-width: 455px), (pointer: coarse) {
+	.paradis-port-list-panel .ppl-kill-btn {
+		width: 44px;
+		height: 44px;
+	}
+}
+
 @keyframes paradis-port-list-spin {
 	from { transform: rotate(0deg); }
 	to { transform: rotate(360deg); }
+}
+
+/* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
+	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
+	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
+	同等以上の詳細度で打ち消す必要がある（クラス単独の `outline: none` では負ける）。 */
+.monaco-workbench .paradis-port-list-panel:focus,
+.monaco-workbench .paradis-port-list-panel:focus-visible {
+	outline: none;
 }

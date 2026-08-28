@@ -7,11 +7,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ポート一覧ウィジェットのタイトルバートリガー(アイコンのみ)。
-// titlebarPart.ts の PARA-PATCH 点(レイアウト/アクションツールバーの手前)から
+// titlebarPart.ts の PARA-PATCH 点(左側の他ステータスウィジェット群)から
 // createParadisPortListWidget(instantiationService, container) として1回だけ生成される。
 //
 // ポーリングの唯一の主体はこのウィジェット(パネルは表示のみ、limitsMonitorWidget.tsと同じ構造)。
-// lsof/proc直読みは軽くないため、パネル非表示中は間隔を広げる。
 
 import './media/paradisPortList.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -27,30 +26,33 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IParadisPortEntry, IParadisPortListSnapshot } from '../common/paradisPortList.js';
 import { ParadisPortListClient } from './paradisPortListClient.js';
 import { IParadisPortListPanelOptions, ParadisPortListPanel } from './paradisPortListPanel.js';
+import { IParadisPortListPollTimer, ParadisPortListPolling } from './paradisPortListPolling.js';
 
 const $ = dom.$;
-
-/** パネル表示中のポーリング間隔。 */
-const PANEL_OPEN_POLL_INTERVAL_MS = 15_000;
-/** パネル非表示中(トリガーのみ)のポーリング間隔。 */
-const IDLE_POLL_INTERVAL_MS = 60_000;
 
 export interface IParadisPortListWidgetHandle extends IDisposable {
 	readonly element: HTMLElement;
 }
 
-/** titlebarPart.ts の PARA-PATCH 点から呼ばれるファクトリ。 */
-export function createParadisPortListWidget(instantiationService: IInstantiationService, container: HTMLElement): IParadisPortListWidgetHandle {
-	return instantiationService.createInstance(ParadisPortListWidget, container);
+export interface IParadisPortListWidgetDependencies {
+	readonly document: EventTarget & { readonly hidden: boolean };
+	readonly pollTimer: IParadisPortListPollTimer & IDisposable;
 }
 
-class ParadisPortListWidget extends Disposable implements IParadisPortListWidgetHandle {
+/** titlebarPart.ts の PARA-PATCH 点から呼ばれるファクトリ。 */
+export function createParadisPortListWidget(instantiationService: IInstantiationService, container: HTMLElement): IParadisPortListWidgetHandle {
+	return instantiationService.createInstance(ParadisPortListWidget, container, undefined);
+}
+
+export class ParadisPortListWidget extends Disposable implements IParadisPortListWidgetHandle {
 
 	readonly element: HTMLElement;
 
 	private readonly client: ParadisPortListClient;
 	private readonly panel = this._register(new MutableDisposable<ParadisPortListPanel>());
-	private readonly pollTimer = this._register(new IntervalTimer());
+	private readonly document: EventTarget & { readonly hidden: boolean };
+	private readonly pollTimer: IParadisPortListPollTimer & IDisposable;
+	private readonly polling: ParadisPortListPolling;
 
 	private latestSnapshot: IParadisPortListSnapshot | undefined;
 	private isFetching = false;
@@ -58,12 +60,16 @@ class ParadisPortListWidget extends Disposable implements IParadisPortListWidget
 
 	constructor(
 		container: HTMLElement,
+		dependencies: IParadisPortListWidgetDependencies = { document: dom.getDocument(container), pollTimer: new IntervalTimer() },
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
+		this.document = dependencies.document;
+		this.pollTimer = this._register(dependencies.pollTimer);
+		this.polling = this._register(new ParadisPortListPolling(this.pollTimer, () => void this.poll(false)));
 
 		this.client = this.instantiationService.createInstance(ParadisPortListClient);
 
@@ -73,26 +79,11 @@ class ParadisPortListWidget extends Disposable implements IParadisPortListWidget
 		this.element.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.plug)}`));
 
 		this._register(dom.addDisposableListener(this.element, 'click', () => this.togglePanel()));
-
-		// 可視復帰時に(パネル非表示なら)即時1回だけ更新する(resourceMonitor/limitsMonitorと同じ方式)
-		this._register(dom.addDisposableListener(dom.getDocument(this.element), 'visibilitychange', () => {
-			if (!dom.getDocument(this.element).hidden && !this.panel.value) {
-				void this.poll(false);
-			}
-		}));
-
-		this.reschedulePolling();
-		void this.poll(false);
 	}
 
 	override dispose(): void {
 		this.element.remove();
 		super.dispose();
-	}
-
-	private reschedulePolling(): void {
-		const interval = this.panel.value ? PANEL_OPEN_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
-		this.pollTimer.cancelAndSet(() => this.poll(false), interval);
 	}
 
 	private togglePanel(): void {
@@ -114,18 +105,18 @@ class ParadisPortListWidget extends Disposable implements IParadisPortListWidget
 		};
 		this.element.classList.add('active');
 		this.panel.value = this.instantiationService.createInstance(ParadisPortListPanel, this.element, options);
-		this.reschedulePolling();
+		this.polling.setPanelOpen(true);
 		void this.poll(true);
 	}
 
 	private closePanel(): void {
 		this.element.classList.remove('active');
+		this.polling.setPanelOpen(false);
 		this.panel.clear();
-		this.reschedulePolling();
 	}
 
 	private async poll(force: boolean): Promise<void> {
-		if (!force && !this.panel.value && dom.getDocument(this.element).hidden) {
+		if (!force && !this.panel.value && this.document.hidden) {
 			return;
 		}
 		if (this.isFetching) {
@@ -180,14 +171,13 @@ class ParadisPortListWidget extends Disposable implements IParadisPortListWidget
 		if (!confirmed) {
 			return;
 		}
-		let failures = 0;
-		for (const entry of entries) {
-			try {
-				await this.client.kill({ port: entry.port, pid: entry.pid, processName: entry.processName }, viaRemote);
-			} catch (error) {
-				failures++;
-				this.logService.error('[ParadisPortList] Failed to kill port during Kill All', entry.port, error);
-			}
+		let failures: number;
+		try {
+			const result = await this.client.killAll(entries.map(entry => ({ port: entry.port, pid: entry.pid, processName: entry.processName })), viaRemote);
+			failures = result.failed;
+		} catch (error) {
+			failures = entries.length;
+			this.logService.error('[ParadisPortList] Failed to kill ports during Kill All', error);
 		}
 		await this.poll(true);
 		if (failures > 0) {

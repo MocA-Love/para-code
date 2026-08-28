@@ -162,7 +162,7 @@ export class ParadisGithubMetricsService {
 			const finishedAt = this.now();
 			if (entries.length === 0) {
 				this.consecutiveFailures++;
-				this.rateLimitError = localize('paradis.githubMetrics.unexpectedResponse', "Unexpected response from `gh api rate_limit`");
+				this.rateLimitError = localize('paradis.githubMetrics.unexpectedResponse', "`gh api rate_limit` から予期しない応答がありました");
 			} else {
 				this.consecutiveFailures = 0;
 				this.rateLimitError = undefined;

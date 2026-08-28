@@ -96,6 +96,13 @@
 	font-weight: 700;
 }
 
+/* 使用状況が読めないだけ（多くは制限到達中で再取得が止まっている）。壊れてはいないので赤くしない。 */
+.paradis-limits-ring.unknown .paradis-limits-ring-unknown-mark {
+	fill: var(--vscode-descriptionForeground, rgba(128, 128, 128, 0.9));
+	font-size: 10px;
+	font-weight: 700;
+}
+
 /* ---------- panel ---------- */
 
 .paradis-limits-panel {
@@ -578,4 +585,13 @@
 .paradis-limits-setup .pls-btn:disabled {
 	opacity: 0.5;
 	cursor: default;
+}
+
+/* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
+	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
+	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
+	同等以上の詳細度で打ち消す必要がある（クラス単独の `outline: none` では負ける）。 */
+.monaco-workbench .paradis-limits-panel:focus,
+.monaco-workbench .paradis-limits-panel:focus-visible {
+	outline: none;
 }

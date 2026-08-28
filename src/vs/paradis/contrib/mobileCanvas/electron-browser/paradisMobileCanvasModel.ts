@@ -15,6 +15,7 @@
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { equals } from '../../../../base/common/objects.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -48,6 +49,25 @@ export interface IParadisMobileCanvasModel {
 const POLL_INTERVAL_MS = 4000;
 const EMPTY_SNAPSHOT: IParadisMobileCanvasSnapshot = { devices: [], attachments: [] };
 
+/** Tracks the first load and publishes only structurally changed normalized snapshots. */
+export class ParadisMobileCanvasSnapshotState {
+	private current: IParadisMobileCanvasSnapshot = EMPTY_SNAPSHOT;
+	private loaded = false;
+
+	get snapshot(): IParadisMobileCanvasSnapshot { return this.current; }
+
+	beginRefresh(): boolean { return !this.loaded; }
+
+	complete(next: IParadisMobileCanvasSnapshot): boolean {
+		this.loaded = true;
+		if (equals(this.current, next)) {
+			return false;
+		}
+		this.current = next;
+		return true;
+	}
+}
+
 export class ParadisMobileCanvasModel extends Disposable implements IParadisMobileCanvasModel {
 
 	declare readonly _serviceBrand: undefined;
@@ -55,7 +75,7 @@ export class ParadisMobileCanvasModel extends Disposable implements IParadisMobi
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	readonly onDidChange = this._onDidChange.event;
 
-	private _snapshot: IParadisMobileCanvasSnapshot = EMPTY_SNAPSHOT;
+	private readonly _snapshotState = new ParadisMobileCanvasSnapshotState();
 	private _loading = false;
 	private _pollers = 0;
 	private readonly _timer = this._register(new IntervalTimer());
@@ -69,7 +89,7 @@ export class ParadisMobileCanvasModel extends Disposable implements IParadisMobi
 		super();
 	}
 
-	get snapshot(): IParadisMobileCanvasSnapshot { return this._snapshot; }
+	get snapshot(): IParadisMobileCanvasSnapshot { return this._snapshotState.snapshot; }
 	get loading(): boolean { return this._loading; }
 
 	refresh(): Promise<void> {
@@ -108,18 +128,24 @@ export class ParadisMobileCanvasModel extends Disposable implements IParadisMobi
 	}
 
 	private async _refresh(): Promise<void> {
-		this._loading = true;
-		this._onDidChange.fire();
+		const publishLoading = this._snapshotState.beginRefresh();
+		if (publishLoading) {
+			this._loading = true;
+			this._onDidChange.fire();
+		}
+		let next: IParadisMobileCanvasSnapshot;
 		try {
 			const snapshot = await this.sharedProcessService.getChannel(PARADIS_MOBILE_CANVAS_CHANNEL)
 				.call<IParadisMobileCanvasSnapshot>('getSnapshot');
-			this._snapshot = normalizeSnapshot(snapshot);
+			next = normalizeSnapshot(snapshot);
 		} catch (error) {
 			// shared process が落ちている等。UIは理由を出せるよう空+理由にする。
 			this.logService.warn('[paradis-mobile-canvas] could not read the device snapshot', error);
-			this._snapshot = { devices: [], attachments: [], unavailableReason: toMessage(error) };
-		} finally {
-			this._loading = false;
+			next = { devices: [], attachments: [], unavailableReason: toMessage(error) };
+		}
+		const changed = this._snapshotState.complete(next);
+		this._loading = false;
+		if (changed || publishLoading) {
 			this._onDidChange.fire();
 		}
 	}
@@ -131,11 +157,11 @@ function normalizeSnapshot(snapshot: IParadisMobileCanvasSnapshot | undefined): 
 	if (!snapshot) {
 		return EMPTY_SNAPSHOT;
 	}
-	return {
-		devices: Array.isArray(snapshot.devices) ? snapshot.devices as IParadisMobileDevice[] : [],
-		attachments: Array.isArray(snapshot.attachments) ? snapshot.attachments as IParadisMobileAttachment[] : [],
-		unavailableReason: snapshot.unavailableReason,
-	};
+	const devices = Array.isArray(snapshot.devices) ? snapshot.devices as IParadisMobileDevice[] : [];
+	const attachments = Array.isArray(snapshot.attachments) ? snapshot.attachments as IParadisMobileAttachment[] : [];
+	return snapshot.unavailableReason === undefined
+		? { devices, attachments }
+		: { devices, attachments, unavailableReason: snapshot.unavailableReason };
 }
 
 function toMessage(error: unknown): string {

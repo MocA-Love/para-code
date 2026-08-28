@@ -18,6 +18,7 @@ interface IExecResult {
 	readonly stdout?: string;
 	readonly stderr?: string;
 	readonly error?: NodeJS.ErrnoException & { killed?: boolean };
+	readonly delayMs?: number;
 }
 
 interface IExecInvocation {
@@ -76,7 +77,11 @@ suite('ParadisCcusageService', () => {
 				windowsHide: options.windowsHide,
 			});
 			void Promise.resolve(behaviour(invocation)).then(result => {
-				callback(result.error ?? null, result.stdout ?? '', result.stderr ?? '');
+				if (result.delayMs === undefined) {
+					callback(result.error ?? null, result.stdout ?? '', result.stderr ?? '');
+				} else {
+					setTimeout(() => callback(result.error ?? null, result.stdout ?? '', result.stderr ?? ''), result.delayMs);
+				}
 			});
 			const kill = sinon.spy(() => true);
 			const child = { kill } as unknown as cp.ChildProcess;
@@ -443,8 +448,8 @@ suite('ParadisCcusageService', () => {
 	});
 
 	test('does not reset three-failure suppression when the same target renews', async () => {
-		const timeout = Object.assign(new Error('timed out'), { killed: true });
-		const { clock, invocations, service } = createService(() => ({ error: timeout, stderr: 'timed out' }));
+		const timeout = Object.assign(new Error('timed out'), { killed: false });
+		const { clock, invocations, service } = createService(() => ({ error: timeout, stderr: 'timed out', delayMs: 180_000 }));
 		const channel = new ParadisCcusageChannel(service);
 		const payload = { ownerId: 'status-owner', active: true, targets: [dailyWarmTarget] };
 
@@ -525,7 +530,7 @@ suite('ParadisCcusageService', () => {
 		});
 	});
 
-	test('bounds each child with the ccusage timeout and output limit', async () => {
+	test('owns each child deadline and preserves the output limit', async () => {
 		const { invocations, service } = createService(() => ({ stdout: dailyOutput('bounded') }));
 
 		await service.fetchDaily({ executablePath: '/test/ccusage' });
@@ -535,7 +540,7 @@ suite('ParadisCcusageService', () => {
 			file: '/test/ccusage',
 			args: ['daily', '--json'],
 			encoding: 'utf8',
-			timeout: 60_000,
+			timeout: undefined,
 			maxBuffer: 64 * 1024 * 1024,
 			windowsHide: true,
 		});

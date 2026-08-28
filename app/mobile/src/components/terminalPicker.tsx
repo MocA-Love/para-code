@@ -1,10 +1,19 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { StyleSheet, Text, View } from 'react-native';
+import * as React from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
-import { colors, mono } from '../theme.js';
+import { GlassSurface } from './glassSurface.js';
+import { colors, mono, radius, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
+import {
+	COMPACT_TERMINAL_MENU_WIDTH,
+	decodeTerminalCompactMenuAction,
+	TERMINAL_CREATE_ACTION_ID,
+	TERMINAL_PICK_PREFIX,
+	TERMINAL_PRESETS_ACTION_ID,
+} from './terminalHeaderBehavior.js';
 
 /**
  * ターミナルタブの「ターミナル名 ▾」。**切り替えのメニューはOSに出させる。**
@@ -37,9 +46,6 @@ export interface TerminalPickerEntry {
 	readonly working: boolean;
 }
 
-/** メニューが返す識別子。ターミナルの選択だけ `pick:` を前置して区別する。 */
-const PICK_PREFIX = 'pick:';
-
 /** ネイティブの標準メニューを使えるか。使えないビルドでは呼び出し側がチップ列に戻す。 */
 export const terminalPickerIsNative = ParaPlusMenuButton !== undefined;
 
@@ -61,13 +67,13 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 
 	const items: ParaPlusMenuItem[] = [
 		...entries.map(entry => ({
-			id: `${PICK_PREFIX}${entry.terminalKey}`,
+			id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
 			title: `${entry.index}: ${entry.title}`,
 			// 色は付けられないので形で示す。何も無い＝手が空いている。
 			systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
 			selected: entry.terminalKey === activeKey,
 		})),
-		{ id: 'new-terminal', title: '新しいターミナル', systemImage: 'plus', startsSection: true },
+		{ id: TERMINAL_CREATE_ACTION_ID, title: '新しいターミナル', systemImage: 'plus', startsSection: true },
 	];
 
 	return (
@@ -80,8 +86,8 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 			onSelect={event => {
 				hapticSelection();
 				const id = event.nativeEvent.id;
-				if (id.startsWith(PICK_PREFIX)) {
-					onSelect(id.slice(PICK_PREFIX.length));
+				if (id.startsWith(TERMINAL_PICK_PREFIX)) {
+					onSelect(id.slice(TERMINAL_PICK_PREFIX.length));
 					return;
 				}
 				onCreate();
@@ -101,7 +107,95 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 	);
 }
 
+export function TerminalCompactMenu({ entries, activeKey, onSelect, onOpenPresets, onCreate }: {
+	entries: readonly TerminalPickerEntry[];
+	activeKey: string | undefined;
+	onSelect: (terminalKey: string) => void;
+	onOpenPresets: () => void;
+	onCreate: () => void;
+}) {
+	if (ParaPlusMenuButton === undefined) {
+		return null;
+	}
+
+	const items: ParaPlusMenuItem[] = [];
+	if (entries.length > 0) {
+		items.push({
+			id: 'terminals',
+			title: 'ターミナルを切り替える',
+			systemImage: 'terminal',
+			children: entries.map(entry => ({
+				id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
+				title: `${entry.index}: ${entry.title}`,
+				systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
+				selected: entry.terminalKey === activeKey,
+			})),
+		});
+	}
+	items.push(
+		{ id: TERMINAL_PRESETS_ACTION_ID, title: 'コマンドプリセット', systemImage: 'bolt', startsSection: true },
+		{ id: TERMINAL_CREATE_ACTION_ID, title: '新しいターミナル', systemImage: 'plus' },
+	);
+
+	return (
+		<ParaPlusMenuButton
+			style={styles.compactMenu}
+			symbol="ellipsis.circle"
+			items={items}
+			accessibilityTitle="ターミナル操作"
+			onSelect={event => {
+				const action = decodeTerminalCompactMenuAction(event.nativeEvent.id);
+				if (action?.kind === 'terminal') {
+					hapticSelection();
+					onSelect(action.terminalKey);
+				} else if (action?.kind === 'presets') {
+					hapticSelection();
+					onOpenPresets();
+				} else if (action?.kind === 'create') {
+					onCreate();
+				}
+			}}
+		/>
+	);
+}
+
+export function TerminalFallbackBand({ entries, activeKey, onSelect }: {
+	entries: readonly TerminalPickerEntry[];
+	activeKey: string | undefined;
+	onSelect: (terminalKey: string) => void;
+}) {
+	return (
+		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.fallbackTabContent} keyboardShouldPersistTaps="always">
+			{entries.map(entry => {
+				const active = entry.terminalKey === activeKey;
+				const state = entry.waiting ? '応答待ち' : entry.working ? '実行中' : '待機中';
+				const body = (
+					<Pressable
+						style={styles.fallbackTabHit}
+						onPress={() => { hapticSelection(); onSelect(entry.terminalKey); }}
+						accessibilityRole="button"
+						accessibilityLabel={`ターミナル ${entry.index}: ${entry.title}、${state}`}
+						accessibilityState={{ selected: active }}
+					>
+						{entry.waiting
+							? <View style={styles.fallbackDotWaiting} />
+							: entry.working ? <View style={styles.fallbackDotWorking} /> : null}
+						<Text style={[styles.fallbackTabText, active && styles.fallbackTabTextActive]} numberOfLines={1}>{entry.index}: {entry.title}</Text>
+					</Pressable>
+				);
+				return active
+					? <View key={entry.terminalKey} style={[styles.fallbackTabChip, styles.fallbackTabChipActive]}>{body}</View>
+					: <GlassSurface key={entry.terminalKey} style={styles.fallbackTabChip} interactive>{body}</GlassSurface>;
+			})}
+		</ScrollView>
+	);
+}
+
 const styles = StyleSheet.create({
+	compactMenu: {
+		width: COMPACT_TERMINAL_MENU_WIDTH,
+		height: COMPACT_TERMINAL_MENU_WIDTH,
+	},
 	// **`flex` に頼らず自分の大きさを持つこと。** 以前はヘッダー層の「左右の間に伸びる島」の
 	// 中に居たので親が幅と高さをくれたが、いまはOS標準のバーの項目として置かれる。
 	// バー項目の親は中身なりの大きさなので、`flex: 1` だと 0×0 に潰れて見えなくなる
@@ -115,4 +209,12 @@ const styles = StyleSheet.create({
 	index: { color: colors.textDim, fontSize: 11, fontFamily: mono.ios },
 	// 上限で止める。長い端末名でバーの右側が押し出されると、左の島が削られる。
 	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
+	fallbackTabContent: { gap: 7, alignItems: 'center' },
+	fallbackTabChip: { height: 44, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
+	fallbackTabChipActive: { backgroundColor: 'rgba(9,175,217,0.30)', borderWidth: 1, borderColor: 'rgba(9,175,217,0.5)' },
+	fallbackTabHit: { flex: 1, minWidth: 44, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
+	fallbackTabText: { color: colors.text, fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	fallbackTabTextActive: { color: '#bfeeff', fontWeight: '700' },
+	fallbackDotWaiting: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
+	fallbackDotWorking: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
 });

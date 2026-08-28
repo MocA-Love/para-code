@@ -14,7 +14,7 @@ import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { useNow } from '../../src/time.js';
 import { hapticImpact } from '../../src/haptics.js';
-import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitWindow, RateLimitsResult } from '../../src/store.js';
+import type { RateLimitAccount, RateLimitAccountStatus, RateLimitProviderSnapshot, RateLimitWindow, RateLimitsResult } from '../../src/store.js';
 
 /**
  * Rate Limit(AIリミット)画面。設定 → Rate Limit から開く。
@@ -68,6 +68,52 @@ function accountWindows(account: RateLimitAccount): { label: string; window: Rat
 
 function accountName(account: RateLimitAccount): string {
 	return account.email ?? account.homeLabel ?? account.id;
+}
+
+function statusBadgeLabel(status: RateLimitAccountStatus): string {
+	switch (status) {
+		case 'refreshing': return '更新待ち';
+		case 'relogin_required': return '要再ログイン';
+		case 'no_credentials': return '認証情報なし';
+		case 'unavailable': return '取得できず';
+		case 'error': return 'エラー';
+		// PC側が先に更新されて未知の状態が届いても、壊れていると決めつけない。
+		default: return '取得できず';
+	}
+}
+
+/** 再ログインが要るのはこの3つだけ。未知の状態は中立に倒す（PC側と同じ判定）。 */
+function needsRelogin(status: RateLimitAccountStatus): boolean {
+	return status === 'relogin_required' || status === 'no_credentials' || status === 'error';
+}
+
+/**
+ * 状態の説明文。
+ *
+ * 'refreshing' と 'unavailable' は認証の問題ではない（制限に達したアカウントは、PC側の
+ * cswapが枠のリセットまで使用状況の再取得を止める）ので、再ログインを促してはいけない。
+ */
+function statusMessage(account: RateLimitAccount): string {
+	switch (account.status) {
+		case 'refreshing':
+			return 'アクセストークンの期限が切れています。PC側で自動更新されるので、操作は要りません';
+		case 'unavailable':
+			if (account.unavailableReason === 'api_key') {
+				return 'APIキーで利用しているアカウントのため、サブスクリプションの使用状況はありません';
+			}
+			if (account.unavailableReason === 'keychain_unavailable') {
+				return 'キーチェーンを読み取れないため、使用状況を取得できません。しばらくしてからお試しください';
+			}
+			return '使用状況を一時的に取得できていません（制限に達したアカウントは、枠がリセットされるまで取得を止めるため、この表示になることがあります）';
+		case 'no_credentials':
+			return '認証情報が見つかりません — PC側のリミットモニターから再ログインしてください';
+		case 'error':
+			return account.statusDetail ?? '使用状況を取得できませんでした';
+		case 'relogin_required':
+			return '再ログインが必要です — PC側のリミットモニターから操作してください';
+		default:
+			return '使用状況を取得できていません';
+	}
 }
 
 export default function RateLimitScreen() {
@@ -161,11 +207,11 @@ export default function RateLimitScreen() {
 					) : null}
 					{account.active ? <Text style={[styles.badge, styles.badgeActive]}>使用中</Text> : null}
 					{account.status !== 'ok' ? (
-						<Text style={[styles.badge, styles.badgeErr]}>{account.status === 'token_expired' ? 'トークン失効' : 'エラー'}</Text>
+						<Text style={needsRelogin(account.status) ? [styles.badge, styles.badgeErr] : styles.badge}>{statusBadgeLabel(account.status)}</Text>
 					) : null}
 				</View>
 				{account.status !== 'ok' ? (
-					<Text style={styles.errText}>再ログインが必要です — PC側のリミットモニターから操作してください</Text>
+					<Text style={styles.errText}>{statusMessage(account)}</Text>
 				) : windows.length > 0 ? (
 					windows.map((row, meterIndex) => renderMeter(row.label, row.window, meterIndex))
 				) : (

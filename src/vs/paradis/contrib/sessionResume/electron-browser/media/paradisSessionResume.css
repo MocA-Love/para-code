@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
 /* allow-any-unicode-next-line */
 /* モーダルダイアログの殻。エディタ(タブ)ではなくダイアログにしているのは、3カラムの最小幅
  * (216 + 300 + 420 = 936px) をエディタのペイン幅では満たせないことがあるため
@@ -17,8 +19,10 @@
 	display: flex; flex-direction: column; min-width: 0; min-height: 0;
 	/* 3カラムの最小 936px に余白を足した既定寸法。狭い画面では vw/vh で頭打ちにし、
 	 * 下の @container で 2カラム → 1カラムへ段階的に畳む。 */
-	width: 1240px; max-width: 94vw;
-	height: 780px; max-height: 92vh;
+	/* allow-any-unicode-next-line */
+	/* 3カラム(絞り込み/一覧/会話)なので、広げた幅は列の配分に使える。幅も高さも伸ばす。 */
+	width: clamp(1240px, 80vw, 2200px); max-width: 94vw;
+	height: clamp(780px, 88vh, 1400px); max-height: 92vh;
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border)); border-radius: 8px;
 	overflow: hidden; outline: none;
 	background: var(--vscode-editor-background); color: var(--vscode-foreground);
@@ -54,8 +58,30 @@
 .paradis-session-resume .nav-cap { padding: 14px 12px 4px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .nav-group,
 .paradis-session-resume .nav-tree { display: flex; flex-direction: column; gap: 1px; }
-.paradis-session-resume .nav-group { padding: 0 6px; }
-.paradis-session-resume .nav-tree { margin: 2px 10px 0 16px; border-left: 1px solid var(--vscode-panel-border); padding-left: 4px; }
+.paradis-session-resume .nav-group,
+.paradis-session-resume .nav-tree { padding: 0 6px; }
+/* allow-any-unicode-next-line */
+/* リポジトリ行 + そのワークツリー群。ワークツリーが多いリポジトリで一覧が埋まらないよう、
+既定で折りたたむ(.expanded が付くまで .nav-tree-children は隠す)。開閉は twistie 単体が担い、
+リポジトリ名(.nav-item)は従来通りフィルタ選択のまま押せる(役割を分けて誤操作を避ける)。 */
+.paradis-session-resume .nav-tree-repo { display: flex; flex-direction: column; }
+.paradis-session-resume .nav-repo-row { display: flex; align-items: center; gap: 2px; }
+.paradis-session-resume .nav-repo-row .nav-item { flex: 1; min-width: 0; }
+.paradis-session-resume .nav-twistie {
+	flex: none; width: 20px; height: 26px; padding: 0; display: flex; align-items: center; justify-content: center;
+	border: 0; border-radius: 4px; background: transparent; color: var(--vscode-descriptionForeground);
+}
+.paradis-session-resume .nav-twistie:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+.paradis-session-resume .nav-twistie .codicon { transition: transform .12s ease; transform: rotate(0deg); }
+.paradis-session-resume .nav-tree-repo.expanded .nav-twistie .codicon { transform: rotate(90deg); }
+.paradis-session-resume .nav-twistie.spacer { visibility: hidden; }
+.paradis-session-resume .nav-tree-children {
+	display: none; flex-direction: column; gap: 1px;
+	margin: 2px 0 2px 20px; padding-left: 4px; border-left: 1px solid var(--vscode-panel-border);
+}
+.paradis-session-resume .nav-tree-repo.expanded .nav-tree-children { display: flex; }
+.paradis-session-resume .nav-tree-children .nav-item { font-size: 12px; }
+.paradis-session-resume .nav-tree-children .nav-item .nav-label { color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .nav-item {
 	display: flex; align-items: center; gap: 6px; width: 100%; min-height: 26px; padding: 3px 8px;
 	border: 0; border-radius: 5px; text-align: left; color: inherit; background: transparent; font-size: 12.5px;
@@ -63,6 +89,7 @@
 .paradis-session-resume .nav-item:hover { background: var(--vscode-list-hoverBackground); }
 .paradis-session-resume .nav-item.on { background: color-mix(in srgb, var(--vscode-focusBorder) 28%, transparent); }
 .paradis-session-resume .nav-item:focus-visible,
+.paradis-session-resume .nav-twistie:focus-visible,
 .paradis-session-resume .fchip:focus-visible,
 .paradis-session-resume .paradis-session-resume-refresh:focus-visible,
 .paradis-session-resume .paradis-session-resume-rail-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
@@ -199,6 +226,23 @@
 .paradis-session-resume .paradis-session-resume-state { min-height: 180px; height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
 /* 広い幅では左ナビが常に見えるため、開閉トグルは不要 */
 .paradis-session-resume .paradis-session-resume-rail-toggle { display: none; }
+/* 広い幅では一覧へ戻るボタンは不要（一覧が常に見えている）。 */
+.paradis-session-resume .paradis-session-resume-detail-back {
+	display: none; align-items: center; gap: 5px; margin-bottom: 10px; height: 24px; padding: 0 9px;
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); border-radius: 5px;
+	background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); font-size: 11px;
+}
+.paradis-session-resume .paradis-session-resume-detail-back:hover { background: var(--vscode-list-hoverBackground); }
+/* allow-any-unicode-next-line */
+/* 広い画面では、増えた幅を一覧列に配る。会話本文は .message の max-width:720px で
+中央寄せのままなので、詳細列をこれ以上広げても余白が増えるだけになるため。
+1fr を一覧側に置き、詳細側は 1000px で頭打ちにする (逆にすると余りを詳細が全部吸う)。 */
+@container paradis-session-resume (min-width: 1500px) {
+	.paradis-session-resume .paradis-session-resume-content {
+		grid-template-columns: 240px minmax(420px, 1fr) minmax(620px, 1000px);
+	}
+}
+
 /* allow-any-unicode-next-line */
 /* 閾値 935px は 3カラムの最小合計幅(216 + 300 + 420 = 936px)から 1px 引いた値。
 ウィンドウ幅ではなくダイアログ自身の幅(@container)で測る。ダイアログは 94vw で頭打ちになるので、
@@ -225,10 +269,3 @@
 	.paradis-session-resume.detail-open .paradis-session-resume-detail { display: flex; }
 	.paradis-session-resume .paradis-session-resume-detail-back { display: inline-flex; }
 }
-/* 広い幅では一覧へ戻るボタンは不要（一覧が常に見えている）。 */
-.paradis-session-resume .paradis-session-resume-detail-back {
-	display: none; align-items: center; gap: 5px; margin-bottom: 10px; height: 24px; padding: 0 9px;
-	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); border-radius: 5px;
-	background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); font-size: 11px;
-}
-.paradis-session-resume .paradis-session-resume-detail-back:hover { background: var(--vscode-list-hoverBackground); }

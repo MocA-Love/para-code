@@ -158,6 +158,8 @@ import { registerParadisAivisMuteBridge } from '../../../paradis/contrib/notific
 import { registerParadisSpreadsheet } from '../../../paradis/contrib/fileViewers/node/paradisSpreadsheetChannel.js';
 // PARA-PATCH: versioned Office document backend (fork独自、旧paradisSpreadsheet channelは互換用に維持)
 import { registerParadisOffice } from '../../../paradis/contrib/fileViewers/node/paradisOfficeChannel.js';
+// PARA-PATCH: 「Para ホスト」ビューが未接続ホストを ssh 越しに読むためのバックエンド（fork独自、src/vs/paradis/contrib/remoteHosts/ 参照）
+import { registerParadisRemoteHosts } from '../../../paradis/contrib/remoteHosts/node/paradisRemoteHostsChannel.js';
 // PARA-PATCH: HTMLプレビューの配信サーバ（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
 import { registerParadisHtmlPreview } from '../../../paradis/contrib/fileViewers/node/paradisHtmlPreviewChannel.js';
 // PARA-PATCH: worktree作成用の git 実行バックエンド（fork独自、src/vs/paradis/contrib/workspaceSwitch/ 参照）
@@ -573,6 +575,10 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		// PARA-PATCH: Excelビューア/差分の xlsx パースバックエンド（exceljs。rendererでは動かないためshared processで実行）
 		this._register(registerParadisSpreadsheet(this.server));
 		this._register(registerParadisOffice(this.server));
+
+		// PARA-PATCH: 「Para ホスト」ビューが、このウィンドウが繋がっていないホストの中身を
+		// ssh 越しに読むためのバックエンド（繋がっているホストは IFileService 経由なのでここは通らない）
+		registerParadisRemoteHosts(this.server, accessor.get(ILogService));
 
 		// PARA-PATCH: HTMLプレビューが読むファイルを 127.0.0.1 だけに配るローカルサーバ
 		// （最初にプレビューを開くまで listen しない）

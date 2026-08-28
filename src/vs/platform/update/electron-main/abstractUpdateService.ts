@@ -91,6 +91,26 @@ export function getUpdateAccessHeaders(productService: IProductService): Record<
 	};
 }
 
+/**
+ * PARA-PATCH: redacts Cloudflare Access service token values from a headers
+ * object before it is passed to trace logging, so secrets never end up in
+ * log output (see CLAUDE.md).
+ */
+export function redactUpdateHeadersForLog(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+	if (!headers) {
+		return headers;
+	}
+
+	const redacted = { ...headers };
+	for (const key of ['CF-Access-Client-Id', 'CF-Access-Client-Secret']) {
+		if (Object.hasOwn(redacted, key)) {
+			redacted[key] = '<redacted>';
+		}
+	}
+
+	return redacted;
+}
+
 export type UpdateErrorClassification = {
 	owner: 'joaomoreno';
 	messageHash: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'The hash of the error message.' };
@@ -565,7 +585,7 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 
 		// PARA-PATCH: merge Cloudflare Access service token headers (see CLAUDE.md).
 		const headers = { ...getUpdateRequestHeaders(this.productService.version), ...getUpdateAccessHeaders(this.productService) };
-		this.logService.trace('update#isLatestVersion() - checking update server', { url, headers });
+		this.logService.trace('update#isLatestVersion() - checking update server', { url, headers: redactUpdateHeadersForLog(headers) });
 
 		try {
 			const context = await this.requestService.request({ url, headers, callSite: 'updateService.isLatestVersion' }, token);

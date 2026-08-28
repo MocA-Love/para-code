@@ -531,7 +531,12 @@ export interface RateLimitWindow {
 	resetsAt?: number;
 	label?: string;
 }
-export type RateLimitAccountStatus = 'ok' | 'token_expired' | 'no_credentials' | 'error';
+// PC側 ParadisLimitsAccountStatus と同形。'refreshing'（PC側のCLIが自動で更新する）と
+// 'unavailable'（今は使用状況を読めないだけ。制限に達したアカウントは枠のリセットまで再取得が
+// 止まる）は認証の問題ではないので、再ログインを促してはいけない。
+export type RateLimitAccountStatus = 'ok' | 'refreshing' | 'relogin_required' | 'no_credentials' | 'unavailable' | 'error';
+/** 'unavailable' の内訳。PC側 ParadisLimitsUnavailableReason と同形。 */
+export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable';
 /** Rate Limitの1アカウント。PC側 IParadisLimitsAccount と同形。 */
 export interface RateLimitAccount {
 	provider: 'claude' | 'codex';
@@ -541,6 +546,7 @@ export interface RateLimitAccount {
 	homeLabel?: string;
 	slot?: number;
 	status: RateLimitAccountStatus;
+	unavailableReason?: RateLimitUnavailableReason;
 	statusDetail?: string;
 	planType?: string;
 	fiveHour?: RateLimitWindow;

@@ -22,9 +22,12 @@
 }
 
 .paradis-settings-dialog {
-	width: 940px;
+	width: 980px;
 	max-width: 94vw;
-	height: 700px;
+	/* allow-any-unicode-next-line */
+	/* 大きなモニタでは高さだけ伸ばす。設定行は縦に並ぶだけなので、幅を足しても
+	行が間延びするか右が空くだけで得がない。短い画面では従来どおり max-height が効く。 */
+	height: clamp(700px, 88vh, 1200px);
 	max-height: 92vh;
 	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
@@ -232,16 +235,6 @@
 	flex-wrap: wrap;
 }
 
-.paradis-settings-dialog .psd-row-label code {
-	font-family: var(--monaco-monospace-font);
-	font-size: 10px;
-	font-weight: 400;
-	background: var(--vscode-textCodeBlock-background, var(--vscode-input-background));
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 4px;
-	padding: 0 5px;
-	color: var(--vscode-textLink-foreground);
-}
 
 .paradis-settings-dialog .psd-row-desc {
 	font-size: 11.5px;
@@ -277,15 +270,15 @@
 	position: absolute;
 	left: 2px;
 	top: 2px;
-	width: 14px;
-	height: 14px;
+	width: 16px;
+	height: 16px;
 	border-radius: 50%;
 	background: var(--vscode-foreground);
 	transition: left 0.15s;
 }
 
 .paradis-settings-dialog .psd-toggle:checked::after {
-	left: 20px;
+	left: 19px;
 	background: var(--vscode-button-foreground);
 }
 

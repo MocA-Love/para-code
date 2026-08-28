@@ -22,7 +22,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAuthorityResolverService } from '../../../../platform/remote/common/remoteAuthorityResolver.js';
-import { ITunnelService, RemoteTunnel } from '../../../../platform/tunnel/common/tunnel.js';
+import { getRemoteTunnelGeneration, ITunnelService, RemoteTunnel } from '../../../../platform/tunnel/common/tunnel.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPreviewMount, PARADIS_HTML_PREVIEW_CHANNEL } from '../common/paradisHtmlPreview.js';
 
@@ -60,8 +60,24 @@ export class ParadisRemotePreviewMounter extends Disposable {
 	) {
 		super();
 		// 転送はユーザーからも見えていて、Ports ビューの「転送を停止」で閉じられる。閉じられた
-		// ものを持ち続けると、死んだ転送のポートを指したまま二度と張り直さない。
-		this._register(this._tunnelService.onTunnelClosed(({ port }) => this._tunnels.delete(port)));
+		// ものを持ち続けると、死んだ転送のポートを指したまま二度と張り直さない。旧 entry の close
+		// は新しい同一 port entry の生成後に遅れて届き得るので、generation があれば現在 Promise と
+		// 両方を照合する。custom/legacy service の port-only event は従来どおりに扱う。
+		this._register(this._tunnelService.onTunnelClosed(({ port, generation }) => {
+			const current = this._tunnels.get(port);
+			if (!current) {
+				return;
+			}
+			if (generation === undefined) {
+				this._tunnels.delete(port);
+				return;
+			}
+			current.then(tunnel => {
+				if (this._tunnels.get(port) === current && getRemoteTunnelGeneration(tunnel) === generation) {
+					this._tunnels.delete(port);
+				}
+			}, () => { });
+		}));
 	}
 
 	/** 載せられなければ投げる。呼び出し側は従来の service worker 経路へ戻すこと。 */
@@ -122,14 +138,23 @@ export class ParadisRemotePreviewMounter extends Disposable {
 			// 文字列が返るのは「張れなかった理由」。
 			throw new Error(`Could not forward the remote preview port: ${tunnelOrError ?? 'no tunnel'}`);
 		}
-		// **明示しただけでは足りない。** トンネルは (リモートのホスト, ポート) だけで使い回され、
-		// 手元の bind 先はキーに入らない。`remote.autoForwardPorts`（既定 on）が先に同じポートを
-		// 0.0.0.0 で張っていれば、こちらの指定は黙って無視されて既存のものが返る。**返ってきた
-		// 実際の bind 先を確かめ、ループバックでなければ使わない**（従来経路へ倒す）。
-		if (!isLoopbackAddress(tunnelOrError.localAddress)) {
-			throw new Error(`The remote preview port was forwarded to ${tunnelOrError.localAddress}, which is not loopback`);
+		const tunnel = tunnelOrError;
+		let transferred = false;
+		try {
+			// **明示しただけでは足りない。** トンネルは (リモートのホスト, ポート) だけで使い回され、
+			// 手元の bind 先はキーに入らない。`remote.autoForwardPorts`（既定 on）が先に同じポートを
+			// 0.0.0.0 で張っていれば、こちらの指定は黙って無視されて既存のものが返る。**返ってきた
+			// 実際の bind 先を確かめ、ループバックでなければ使わない**（従来経路へ倒す）。
+			if (!isLoopbackAddress(tunnel.localAddress)) {
+				throw new Error('The remote preview port was forwarded to ' + tunnel.localAddress + ', which is not loopback');
+			}
+			transferred = true;
+			return tunnel;
+		} finally {
+			if (!transferred) {
+				await tunnel.dispose();
+			}
 		}
-		return tunnelOrError;
 	}
 }
 

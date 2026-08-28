@@ -472,13 +472,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._inspectorPanel.style.display = 'none';
 
 		// ズーム −/%/＋（HTMLビューアと同じUI）。
-		const zoomOutLabel = localize('paradis.spreadsheet.zoomOut', "Zoom Out");
+		const zoomOutLabel = localize('paradis.spreadsheet.zoomOut', "ズームアウト");
 		this._accessibility.labelButton(appendIconButton(right, Codicon.zoomOut, zoomOutLabel, this._headerDisposables, () => this._zoom(1 / 1.2)), zoomOutLabel);
 		this._percentBtn = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
-		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "Reset Zoom");
-		this._accessibility.labelButton(this._percentBtn, localize('paradis.spreadsheet.resetZoom', "Reset Zoom"));
+		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "ズームをリセット");
+		this._accessibility.labelButton(this._percentBtn, localize('paradis.spreadsheet.resetZoom', "ズームをリセット"));
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
-		const zoomInLabel = localize('paradis.spreadsheet.zoomIn', "Zoom In");
+		const zoomInLabel = localize('paradis.spreadsheet.zoomIn', "ズームイン");
 		this._accessibility.labelButton(appendIconButton(right, Codicon.zoomIn, zoomInLabel, this._headerDisposables, () => this._zoom(1.2)), zoomInLabel);
 
 		// 「既定のアプリで開く」ボタンは resource 依存なので入力ごとに作り直す。
@@ -646,7 +646,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const generation = ++this._loadGeneration;
 		if (!preserveCommitted) {
 			this._clearSemanticUi();
-			this._renderMessage(localize('paradis.spreadsheet.loading', "Loading spreadsheet..."));
+			this._renderMessage(localize('paradis.spreadsheet.loading', "スプレッドシートを読み込み中..."));
 		}
 		let workbook: IParadisWorkbookData;
 		try {
@@ -656,7 +656,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
 				this._recoveryState = transition.state;
 				if (!preserveCommitted || transition.effects.length === 0) {
-					this._renderMessage(localize('paradis.spreadsheet.error', "Failed to open spreadsheet: {0}", err instanceof Error ? err.message : String(err)));
+					this._renderMessage(localize('paradis.spreadsheet.error', "スプレッドシートを開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
 				}
 			}
 			return false;
@@ -888,7 +888,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		const sheet = this._sheets[this._activeSheetIndex];
 		if (!sheet) {
-			this._renderMessage(localize('paradis.spreadsheet.noSheets', "No sheets found"));
+			this._renderMessage(localize('paradis.spreadsheet.noSheets', "シートが見つかりません"));
 			return;
 		}
 
@@ -923,7 +923,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		if (sheet.truncated) {
 			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
-			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
+			notice.textContent = localize('paradis.spreadsheet.truncated', "先頭2,000行のみ表示しています。ファイル全体にはさらに行があります。");
 		}
 
 		this._renderOverlays(sheet, inner);
@@ -967,7 +967,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		});
 		if (sheet.truncated) {
 			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
-			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
+			notice.textContent = localize('paradis.spreadsheet.truncated', "先頭2,000行のみ表示しています。ファイル全体にはさらに行があります。");
 		}
 		if (this._percentBtn) {
 			this._percentBtn.textContent = `${Math.round(target * 100)}%`;
@@ -1155,7 +1155,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			}
 			if (sheet.protectedSheet) {
 				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
-				lock.title = localize('paradis.spreadsheet.protected', "This sheet is protected");
+				lock.title = localize('paradis.spreadsheet.protected', "このシートは保護されています");
 				lock.setAttribute('aria-hidden', 'true');
 			}
 			const label = dom.append(tab, $('span'));

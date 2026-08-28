@@ -13,6 +13,13 @@
 
 export const PARADIS_CCUSAGE_CHANNEL = 'paradisCcusage';
 
+/**
+ * ccusage 実行1回あたりのタイムアウト(秒)の設定キー。node 層(shared process)と
+ * electron-browser 層(設定スキーマ登録・設定ダイアログ)の両方から参照するため、
+ * どちらのレイヤーからも import できる common に置く。
+ */
+export const PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS = 'paradis.ccusage.execTimeoutSeconds';
+
 /** renderer から shared process へ渡す実行オプション。args はサービス側でホワイトリスト構築する。 */
 export interface IParadisCcusageExecOptions {
 	/** 設定 paradis.ccusage.executablePath の明示パス(空なら自動解決)。 */

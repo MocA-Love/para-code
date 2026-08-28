@@ -42,8 +42,6 @@ export type ParadisUsageDashboardTab = 'ccusage' | 'github' | 'rtk' | 'settings'
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.usage.title', "使用量・コスト");
 // allow-any-unicode-next-line
-const STR_SUBTITLE = localize('paradis.usage.subtitle', "ccusage · GitHub API · rtk の集計を1か所で");
-// allow-any-unicode-next-line
 const STR_CLOSE_ARIA = localize('paradis.usage.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_REFRESH = localize('paradis.usage.refresh', "更新");
@@ -66,7 +64,7 @@ const STR_SETTINGS_DESC = localize('paradis.usage.settingsDesc', "このダイ�
 // allow-any-unicode-next-line
 const STR_UNSET = localize('paradis.usage.unset', "(未設定)");
 // allow-any-unicode-next-line
-const STR_RTK_PATH_PLACEHOLDER = localize('paradis.usage.rtkPathPlaceholder', "(PATH 上の rtk)");
+const STR_RTK_PATH_PLACEHOLDER = localize('paradis.usage.rtkPathPlaceholder', "(自動で探す)");
 
 interface IParadisUsageTabSpec {
 	readonly id: ParadisUsageDashboardTab;
@@ -88,15 +86,17 @@ interface IParadisUsageSettingSpec {
 	readonly label: string;
 	readonly description?: string;
 	readonly placeholder?: string;
+	/** 数値 select の選択肢。指定するとテキスト欄ではなくプルダウンになる。 */
+	readonly choices?: readonly { readonly value: number; readonly label: string }[];
 }
 
 const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 	{
 		key: 'paradis.ccusage.executablePath',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.ccusagePath', "ccusage 実行ファイルの絶対パス"),
+		label: localize('paradis.usage.ccusagePath', "ccusage のパス"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.usage.ccusagePathDesc', "空欄時は PATH 探索 → 固定バージョンの npx フォールバック。"),
+		description: localize('paradis.usage.ccusagePathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
 		placeholder: '/usr/local/bin/ccusage',
 	},
 	{
@@ -105,22 +105,58 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 		label: localize('paradis.usage.ccusageStatusBar', "今日の AI コストをステータスバーに表示"),
 	},
 	{
+		key: 'paradis.ccusage.execTimeoutSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.usage.ccusageExecTimeout', "ccusage の実行タイムアウト"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.usage.ccusageExecTimeoutDesc', "ログの量が多いと集計に時間がかかります。取得できない場合は延ばしてください。"),
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.usage.ccusageExecTimeout60', "60秒") },
+			// allow-any-unicode-next-line
+			{ value: 120, label: localize('paradis.usage.ccusageExecTimeout120', "2分") },
+			// allow-any-unicode-next-line
+			{ value: 180, label: localize('paradis.usage.ccusageExecTimeout180', "3分（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 300, label: localize('paradis.usage.ccusageExecTimeout300', "5分") },
+			// allow-any-unicode-next-line
+			{ value: 600, label: localize('paradis.usage.ccusageExecTimeout600', "10分") },
+		],
+	},
+	{
 		key: 'paradis.githubMetrics.statusBar.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.ghStatusBar', "GitHub API 残量をステータスバーに表示"),
+		label: localize('paradis.usage.ghStatusBar', "GitHub API の残量をステータスバーに表示"),
 	},
 	{
 		key: 'paradis.rtk.executablePath',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.rtkPath', "rtk 実行ファイルの絶対パス"),
+		label: localize('paradis.usage.rtkPath', "rtk のパス"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.usage.rtkPathDesc', "SSH 中は接続先の rtk を実行するため、リモート側設定で指定してください。"),
+		description: localize('paradis.usage.rtkPathDesc', "空欄なら自動で探します。SSH 中は接続先の rtk を使うので、リモート側の設定に書いてください。"),
 		placeholder: STR_RTK_PATH_PLACEHOLDER,
 	},
 	{
 		key: 'paradis.rtk.statusBar.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.usage.rtkStatusBar', "今日の rtk 削減トークン数を表示"),
+		label: localize('paradis.usage.rtkStatusBar', "今日 rtk が減らしたトークン数をステータスバーに表示"),
+	},
+	{
+		key: 'paradis.githubMetrics.refreshIntervalSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.usage.refreshInterval', "自動更新の間隔"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.usage.refreshIntervalDesc', "GitHub API のタブを開いている間に取り直す間隔です。AI コストと rtk は、開いたときと更新ボタンでのみ取り直します。"),
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 0, label: localize('paradis.usage.refreshManual', "手動のみ") },
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.usage.refresh60', "1 分ごと") },
+			// allow-any-unicode-next-line
+			{ value: 300, label: localize('paradis.usage.refresh300', "5 分ごと") },
+			// allow-any-unicode-next-line
+			{ value: 900, label: localize('paradis.usage.refresh900', "15 分ごと") },
+		],
 	},
 ];
 
@@ -150,7 +186,6 @@ export class ParadisUsageDashboardDialog extends Disposable {
 		// ---------- header ----------
 		const header = dom.append(modal, $('.pud-header'));
 		dom.append(header, $('h2')).textContent = STR_TITLE;
-		dom.append(header, $('.pud-subtitle')).textContent = STR_SUBTITLE;
 
 		const refreshBtn = dom.append(header, $('button.pud-refresh')) as HTMLButtonElement;
 		refreshBtn.type = 'button';
@@ -271,12 +306,39 @@ export class ParadisUsageDashboardDialog extends Disposable {
 			const main = dom.append(row, $('.pud-setting-main'));
 			const label = dom.append(main, $('.pud-setting-label'));
 			dom.append(label, $('span')).textContent = spec.label;
-			dom.append(label, $('code')).textContent = spec.key;
+			// allow-any-unicode-next-line
+			// 設定キー (paradis.*) は画面に出さない (paradisSettingsDialog.ts と同じ方針)。
 			if (spec.description) {
 				dom.append(main, $('.pud-setting-desc')).textContent = spec.description;
 			}
 
-			if (typeof this.configurationService.getValue(spec.key) === 'boolean') {
+			if (spec.choices) {
+				const select = dom.append(row, $('select.pud-select')) as HTMLSelectElement;
+				for (const choice of spec.choices) {
+					const option = dom.append(select, $('option')) as HTMLOptionElement;
+					option.value = String(choice.value);
+					option.textContent = choice.label;
+				}
+				// 用意した刻みに載らない値が既に入っていることがあるので、そのときは
+				// 実際の値を選択肢へ足して選んでおく（開いただけで設定が変わったように見せない）
+				let extraOption: HTMLOptionElement | undefined;
+				const sync = () => {
+					const current = String(this.configurationService.getValue(spec.key) ?? '');
+					extraOption?.remove();
+					extraOption = undefined;
+					if (!spec.choices?.some(choice => String(choice.value) === current)) {
+						extraOption = dom.append(select, $('option')) as HTMLOptionElement;
+						extraOption.value = current;
+						extraOption.textContent = current;
+					}
+					select.value = current;
+				};
+				sync();
+				this._settingRefreshers.push(sync);
+				store.add(dom.addDisposableListener(select, 'change', () => {
+					void this.configurationService.updateValue(spec.key, Number(select.value), ConfigurationTarget.USER);
+				}));
+			} else if (typeof this.configurationService.getValue(spec.key) === 'boolean') {
 				const toggle = dom.append(row, $('input.pud-toggle')) as HTMLInputElement;
 				toggle.type = 'checkbox';
 				const sync = () => { toggle.checked = this.configurationService.getValue<boolean>(spec.key) === true; };

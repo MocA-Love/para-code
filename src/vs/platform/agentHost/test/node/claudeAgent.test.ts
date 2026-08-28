@@ -7889,6 +7889,90 @@ suite('ClaudeAgent (Phase 13 — transcript reconstruction)', () => {
 		});
 	});
 
+	// PARA-PATCH: coverage for the ParadisTurnCache fast path wired into _reconstructTurns. See CLAUDE.md.
+	test('getMessages caches the reconstructed transcript to disk and skips the SDK on a stamp-matching re-open', async () => {
+		const { agent, sdk, fileService } = createTestContext(disposables);
+		disposables.add(fileService.registerProvider(Schemas.inMemory, disposables.add(new InMemoryFileSystemProvider())));
+		const sessionId = 'turn-cache-hit';
+		sdk.sessionMessagesById.set(sessionId, [
+			makeUserSessionMessage('u1', 'hi'),
+			makeAssistantSessionMessage('a1', 'hello'),
+		]);
+		sdk.getSessionInfoOverride = async () => ({ sessionId, summary: '', lastModified: 1000, fileSize: 42 });
+
+		const sessionUri = AgentSession.uri(agent.id, sessionId);
+		await bindDefaultChat(agent, sessionUri);
+		const chat = defaultChatUri(sessionUri);
+
+		const first = await agent.chats.getMessages(chat, chatContext(chat));
+		await agent.whenTurnCacheIdleForTesting(); // The cache write is fire-and-forget; wait for it before the second read.
+		const second = await agent.chats.getMessages(chat, chatContext(chat));
+
+		assert.deepStrictEqual({
+			firstTurnIds: first.map(t => t.id),
+			secondTurnIds: second.map(t => t.id),
+			getSessionMessagesCalls: sdk.getSessionMessagesCalls.length,
+		}, {
+			firstTurnIds: ['u1'],
+			secondTurnIds: ['u1'],
+			getSessionMessagesCalls: 1,
+		});
+	});
+
+	test('getMessages re-reads the SDK when the cached transcript stamp goes stale', async () => {
+		const { agent, sdk, fileService } = createTestContext(disposables);
+		disposables.add(fileService.registerProvider(Schemas.inMemory, disposables.add(new InMemoryFileSystemProvider())));
+		const sessionId = 'turn-cache-stale';
+		sdk.sessionMessagesById.set(sessionId, [makeUserSessionMessage('u1', 'hi')]);
+		let fileSize = 10;
+		sdk.getSessionInfoOverride = async () => ({ sessionId, summary: '', lastModified: 1000, fileSize });
+
+		const sessionUri = AgentSession.uri(agent.id, sessionId);
+		await bindDefaultChat(agent, sessionUri);
+		const chat = defaultChatUri(sessionUri);
+
+		await agent.chats.getMessages(chat, chatContext(chat));
+		await agent.whenTurnCacheIdleForTesting();
+		fileSize = 20; // Transcript grew since the first read: stamp no longer matches.
+		await agent.chats.getMessages(chat, chatContext(chat));
+
+		assert.strictEqual(sdk.getSessionMessagesCalls.length, 2);
+	});
+
+	test('getMessages does not persist a degenerate (zero-turn) replay to the cache', async () => {
+		const log = new CapturingLogService();
+		const { agent, sdk, fileService } = createTestContext(disposables, { logService: log });
+		disposables.add(fileService.registerProvider(Schemas.inMemory, disposables.add(new InMemoryFileSystemProvider())));
+		const sessionId = 'turn-cache-degenerate';
+		// An assistant envelope with no content blocks parses to nothing, so
+		// replay produces zero turns from a non-empty transcript — the "always
+		// a bug" case `_reconstructTurns` must never cache.
+		sdk.sessionMessagesById.set(sessionId, [
+			{ type: 'assistant', uuid: 'a1', session_id: sessionId, parent_tool_use_id: null, parent_agent_id: null, message: { id: 'msg_a1', role: 'assistant', content: [] } },
+		]);
+		sdk.getSessionInfoOverride = async () => ({ sessionId, summary: '', lastModified: 1000, fileSize: 42 });
+
+		const sessionUri = AgentSession.uri(agent.id, sessionId);
+		await bindDefaultChat(agent, sessionUri);
+		const chat = defaultChatUri(sessionUri);
+
+		const first = await agent.chats.getMessages(chat, chatContext(chat));
+		await agent.whenTurnCacheIdleForTesting();
+		const second = await agent.chats.getMessages(chat, chatContext(chat));
+
+		assert.deepStrictEqual({
+			first,
+			second,
+			getSessionMessagesCalls: sdk.getSessionMessagesCalls.length,
+			warnedEmptyReplay: log.warns.filter(w => w.includes('replay produced no turns')).length,
+		}, {
+			first: [],
+			second: [],
+			getSessionMessagesCalls: 2,
+			warnedEmptyReplay: 2,
+		});
+	});
+
 	test('getMessages resolves a released peer-chat subagent through the exact source backing', async () => {
 		const { agent, sdk, stateManager } = createTestContext(disposables);
 		const parentSessionId = 'sdk-parent';

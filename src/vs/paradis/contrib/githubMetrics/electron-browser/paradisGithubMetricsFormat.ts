@@ -19,9 +19,9 @@ export function paradisGithubResourceLabel(resource: string): string {
 	switch (resource) {
 		case 'core': return 'REST';
 		case 'graphql': return 'GraphQL';
-		case 'search': return localize('paradis.githubMetrics.resource.search', "Search");
-		case 'code_search': return localize('paradis.githubMetrics.resource.codeSearch', "Code Search");
-		case 'integration_manifest': return localize('paradis.githubMetrics.resource.integrationManifest', "App Manifest");
+		case 'search': return localize('paradis.githubMetrics.resource.search', "検索");
+		case 'code_search': return localize('paradis.githubMetrics.resource.codeSearch', "コード検索");
+		case 'integration_manifest': return localize('paradis.githubMetrics.resource.integrationManifest', "アプリマニフェスト");
 		default: return resource;
 	}
 }

@@ -34,7 +34,7 @@ import {
 } from '../browser/paradisFileViewers.js';
 import { PARADIS_SPREADSHEET_VIEWER_REGISTRATION, registerParadisOfficeViewerSerializers } from '../browser/paradisOfficeConfiguration.js';
 
-const SPREADSHEET_LABEL = localize('paradis.spreadsheet', "Spreadsheet");
+const SPREADSHEET_LABEL = localize('paradis.spreadsheet', "スプレッドシート");
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(ParadisSpreadsheetEditor, PARADIS_SPREADSHEET_EDITOR_ID, SPREADSHEET_LABEL),
@@ -42,7 +42,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 );
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(ParadisSpreadsheetDiffEditor, PARADIS_SPREADSHEET_DIFF_EDITOR_ID, localize('paradis.spreadsheetDiff', "Spreadsheet Diff")),
+	EditorPaneDescriptor.create(ParadisSpreadsheetDiffEditor, PARADIS_SPREADSHEET_DIFF_EDITOR_ID, localize('paradis.spreadsheetDiff', "スプレッドシート差分")),
 	[new SyncDescriptor(ParadisSpreadsheetDiffInput)]
 );
 

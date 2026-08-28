@@ -54,6 +54,7 @@ import { ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLi
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLookupBatch, ParadisIssueState } from '../../../common/paradisIssueDetection.js';
+import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_WORKTREE_ROW_HEIGHT, PARADIS_WORKTREE_ROW_META_SETTING_ID, ParadisWorktreeMetaId, paradisCanMoveWorktreeMeta, paradisMoveWorktreeMeta, paradisNormalizeWorktreeRowMeta, paradisSetWorktreeMetaAlign, paradisSetWorktreeMetaVisible, paradisWorktreeMetaLabel, paradisWorktreeMetaOrder, paradisWorktreeMetaShown, paradisWorktreeRowHasMeta, paradisWorktreeRowHeight } from '../common/paradisWorktreeRowMeta.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
@@ -337,9 +338,17 @@ interface IWorktreeTemplateData {
 	readonly name: HTMLElement;
 	readonly branch: HTMLElement;
 	/**
-	 * 行の右端は上下2段。上段は「自分が抱えているもの」(エージェントの状態・未完了メモ)、
-	 * 下段は「コードとGitHubの状態」(PR・差分)。44pxの1段に5要素を横並びにすると
-	 * 名前とブランチの幅が食い潰されるため、2段へ分けている。
+	 * 案E のメタ専用段。PR・Issue・差分・メモをユーザー設定の順序で並べ、left 寄せの
+	 * ものを spacer の前、right 寄せのものを spacer の後ろへ置く。表示対象の情報を
+	 * 1つも持たない行ではこの段ごと隠れ、行は従来どおりの2段 (44px) に戻る。
+	 */
+	readonly meta: HTMLElement;
+	readonly metaSpacer: HTMLElement;
+	/** メタ段に並べる要素の実体。並べ替えは要素を作り直さず、この対応表から順に append し直す */
+	readonly metaElements: ReadonlyMap<ParadisWorktreeMetaId, HTMLElement>;
+	/**
+	 * エージェント1体につき1つのドット。1段目 (名前の右) に置き、幅を食う情報とは
+	 * 場所を奪い合わせない。要素を作り直すと明滅アニメが巻き戻るため使い回す。
 	 */
 	readonly dots: HTMLElement;
 	readonly dotsHover: IManagedHover;
@@ -440,11 +449,25 @@ function prStateLabel(state: ParadisPrState): string {
 	}
 }
 
+/** メタを1つも持たない行の presence (毎回オブジェクトを作らないよう共有する)。 */
+const PARADIS_NO_WORKTREE_META: IParadisWorktreeMetaPresence = Object.freeze({ pr: false, issues: false, diff: false, notes: false });
+
 class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
+
+	/**
+	 * 案E (メタ専用段): worktree 行は「名前 + ドット列」「ブランチ名」の2段が基本で、
+	 * 表示対象のメタ情報 (PR / Issue / 差分 / メモ) を1つでも持つ行だけ3段目が生えて高くなる。
+	 * ListView は行の高さをここでしか決められないため、可変高の入口はこの1箇所に集約する。
+	 */
+	constructor(private readonly getWorktreeHeight: (worktree: IParadisWorktree) => number) { }
+
 	getHeight(element: WorkspaceTreeElement): number {
 		// リポジトリ行は純粋なグルーピング見出し (main checkout も worktree 行として
 		// 子要素に含まれる)。worktree 行・作成中行は名前の下に2段目を重ねる表示のため高くする
-		return isWorktree(element) || isCreating(element) ? 44 : 30;
+		if (isWorktree(element)) {
+			return this.getWorktreeHeight(element);
+		}
+		return isCreating(element) ? PARADIS_WORKTREE_ROW_HEIGHT : 30;
 	}
 
 	getTemplateId(element: WorkspaceTreeElement): string {
@@ -562,7 +585,7 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		templateData.actionBar.clear();
 		templateData.actionBar.push(new Action(
 			'paradis.workspaceSwitch.createWorktreeInline',
-			localize('paradis.workspaceSwitch.createWorktreeContext', "New Worktree Space..."),
+			localize('paradis.workspaceSwitch.createWorktreeContext', "新しいワークツリースペース..."),
 			ThemeIcon.asClassName(Codicon.add),
 			true,
 			() => this.onCreateWorktree(repository)
@@ -599,27 +622,57 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly openPrUrl: (url: string) => void,
 		private readonly hoverService: IHoverService,
 		/** そのスペースへの切り替えが進行中か (チェックの代わりにスピナーを出す) */
-		private readonly isSwitchTarget: (worktree: IParadisWorktree) => boolean = () => false,
+		private readonly isSwitchTarget: (worktree: IParadisWorktree) => boolean,
+		/** メタ段の表示/並び順/寄せの現在設定 (paradis.workspaceSwitch.rowMeta) */
+		private readonly getMetaEntries: () => readonly IParadisWorktreeMetaEntry[],
+		/**
+		 * その行が実際にどのメタ情報を持っているか。行の高さを決める WorkspaceTreeDelegate と
+		 * **同じ Map** を読む。既定値を持たせない (片方だけ渡した実装が高さと中身を食い違わせ、
+		 * 3段の中身が2段の高さに押し込まれる形で静かに壊れるため)。
+		 */
+		private readonly getMetaPresence: (worktree: IParadisWorktree) => IParadisWorktreeMetaPresence,
 	) { }
+
+	/**
+	 * メタ段の子要素を設定どおりの並びへ揃える。要素は作り直さず append で移動するだけ
+	 * (使い回しの原則)。順序が既に一致していれば DOM には触らない。
+	 */
+	private applyMetaOrder(templateData: IWorktreeTemplateData, entries: readonly IParadisWorktreeMetaEntry[]): void {
+		const { left, right } = paradisWorktreeMetaOrder(entries);
+		const desired: HTMLElement[] = [
+			...left.map(id => templateData.metaElements.get(id)!),
+			templateData.metaSpacer,
+			...right.map(id => templateData.metaElements.get(id)!),
+		];
+		const current = templateData.meta.children;
+		if (desired.length === current.length && desired.every((element, index) => current.item(index) === element)) {
+			return;
+		}
+		// replaceChildren は既にある要素をそのまま使い回す (再マウントしない) ので、
+		// チップのホバーや状態は保たれる。append の繰り返しと違い、desired に無い子が
+		// 置き去りにならない点も明示的
+		templateData.meta.replaceChildren(...desired);
+	}
 
 	renderTemplate(container: HTMLElement): IWorktreeTemplateData {
 		const templateDisposables = new DisposableStore();
 		const row = DOM.append(container, DOM.$('.paradis-worktree-row'));
 		const icon = DOM.append(row, DOM.$('.codicon'));
-		// 名前の下にブランチ名を重ねる2段表示 (リポジトリ行が見出し化される前の従来スタイルを踏襲)
-		const labels = DOM.append(row, DOM.$('.paradis-worktree-labels'));
-		const name = DOM.append(labels, DOM.$('.paradis-worktree-name'));
-		const branch = DOM.append(labels, DOM.$('.paradis-worktree-branch'));
-		// 右端の2段。上段 = エージェントのドット列 + メモ、下段 = PR チップ + 差分
-		const stack = DOM.append(row, DOM.$('.paradis-worktree-stack'));
-		const upperTier = DOM.append(stack, DOM.$('.paradis-worktree-tier'));
-		const lowerTier = DOM.append(stack, DOM.$('.paradis-worktree-tier'));
+		// 案E: 1段目 = 名前 + エージェントのドット列、2段目 = ブランチ名 (行幅をいっぱいに使える)、
+		// 3段目 = メタ段 (表示対象の情報を持つ行にだけ生える)
+		const body = DOM.append(row, DOM.$('.paradis-worktree-body'));
+		const line1 = DOM.append(body, DOM.$('.paradis-worktree-line1'));
+		const name = DOM.append(line1, DOM.$('.paradis-worktree-name'));
+		const line2 = DOM.append(body, DOM.$('.paradis-worktree-line2'));
+		const branch = DOM.append(line2, DOM.$('.paradis-worktree-branch'));
+		const meta = DOM.append(body, DOM.$('.paradis-worktree-meta'));
+		const metaSpacer = DOM.append(meta, DOM.$('.paradis-worktree-meta-spacer'));
 		// スコープ内のエージェント1体につき1つのドット (集約アイコンでは消えてしまう内訳を出す)
-		const dots = DOM.append(upperTier, DOM.$('.paradis-worktree-dots'));
+		const dots = DOM.append(line1, DOM.$('.paradis-worktree-dots'));
 		const dotsHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), dots, ''));
 		// ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
 		// クリックは行の切り替えではなく PR ページを開くため、リスト側のハンドラへ届く前に止める
-		const pr = DOM.append(lowerTier, DOM.$('.paradis-worktree-pr'));
+		const pr = DOM.append(meta, DOM.$('.paradis-worktree-pr'));
 		const prIcon = DOM.append(pr, DOM.$('.codicon'));
 		const prNumber = DOM.append(pr, DOM.$('span.paradis-worktree-pr-number'));
 		const prContext: { url?: string } = {};
@@ -639,7 +692,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		// アイコン＋件数のみ（メモ件数バッジと同じ語彙）。行の切り替えには繋げず、
 		// クリックでホバーカードを即時表示する (ホバー待ちが長いというフィードバックへの対応。
 		// 複数件を束ねているため、開くリンクの選択はホバー内の各番号で行う)。
-		const issue = DOM.append(lowerTier, DOM.$('.paradis-worktree-issue'));
+		const issue = DOM.append(meta, DOM.$('.paradis-worktree-issue'));
 		issue.setAttribute('role', 'button');
 		const issueIcon = DOM.append(issue, DOM.$('.codicon'));
 		issueIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.issueOpened).replace('codicon ', '')}`;
@@ -655,12 +708,12 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			issueHover.show(true);
 		}));
 		// メモの未完了件数。行の情報量を増やしすぎないよう、未完了が1件以上あるときだけ出す
-		const note = DOM.append(upperTier, DOM.$('.paradis-worktree-note'));
+		const note = DOM.append(meta, DOM.$('.paradis-worktree-note'));
 		const noteIcon = DOM.append(note, DOM.$('.codicon'));
 		noteIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.checklist).replace('codicon ', '')}`;
 		const noteCount = DOM.append(note, DOM.$('span.paradis-worktree-note-count'));
 		const noteHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), note, ''));
-		const diff = DOM.append(lowerTier, DOM.$('.paradis-worktree-diff'));
+		const diff = DOM.append(meta, DOM.$('.paradis-worktree-diff'));
 		const diffAdded = DOM.append(diff, DOM.$('span.paradis-worktree-diff-added'));
 		const diffRemoved = DOM.append(diff, DOM.$('span.paradis-worktree-diff-removed'));
 		// ピンの留め外し。PR チップと同じく、行のクリック (切り替え) へ届く前に止める
@@ -679,12 +732,19 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			}));
 		}
 		const pinHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pin, ''));
-		return { row, icon, name, branch, dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
+		return { row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['issues', issue], ['diff', diff], ['notes', note]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
 		const worktree = node.element;
 		const active = this.isActive(worktree);
+		// 案E のメタ段。並びは設定 (rowMeta) が、出す/出さないは「設定で表示 かつ その行が実際に持っている」
+		// の両方が揃ったときだけ。1つも残らなければ段ごと隠れ、行は2段 (44px) に戻る
+		// (高さ側の判定は WorkspaceTreeDelegate.getHeight が同じ getMetaPresence で行う)
+		const metaEntries = this.getMetaEntries();
+		const metaPresence = worktree.missing ? { pr: false, issues: false, diff: false, notes: false } : this.getMetaPresence(worktree);
+		this.applyMetaOrder(templateData, metaEntries);
+		templateData.meta.classList.toggle('hidden', !paradisWorktreeRowHasMeta(metaEntries, metaPresence));
 		// この行への切り替えが進行中。チェックはもう付いている (active) が、まだ着いていないことを
 		// 同時に伝える必要があるので、アイコンだけスピナーに差し替える
 		const switching = !worktree.missing && this.isSwitchTarget(worktree);
@@ -743,15 +803,20 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 
 		const diffStat = worktree.missing ? undefined : this.getDiffStat(worktree);
 		const hasDiff = !!diffStat && (diffStat.insertions > 0 || diffStat.deletions > 0);
-		templateData.diff.classList.toggle('hidden', !hasDiff);
+		templateData.diff.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'diff'));
 		if (hasDiff && diffStat) {
 			templateData.diffAdded.textContent = diffStat.insertions > 0 ? `+${diffStat.insertions}` : '';
 			templateData.diffRemoved.textContent = diffStat.deletions > 0 ? `-${diffStat.deletions}` : '';
+		} else {
+			// テンプレートは使い回されるので、消さないと前にこの枠を使っていた行の増減が残る
+			// (メモ・PR と同じ後始末)。
+			templateData.diffAdded.textContent = '';
+			templateData.diffRemoved.textContent = '';
 		}
 
 		const noteSummary = worktree.missing ? undefined : this.getNoteSummary(worktree);
 		const hasOpenTasks = !!noteSummary && noteSummary.open > 0;
-		templateData.note.classList.toggle('hidden', !hasOpenTasks);
+		templateData.note.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'notes'));
 		if (hasOpenTasks && noteSummary) {
 			templateData.noteCount.textContent = String(noteSummary.open);
 			// allow-any-unicode-next-line
@@ -762,7 +827,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		}
 
 		const prStatus = worktree.missing ? undefined : this.getPrStatus(worktree);
-		templateData.pr.classList.toggle('hidden', !prStatus);
+		templateData.pr.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'pr'));
 		templateData.prContext.url = prStatus?.url;
 		for (const state of ['open', 'draft', 'merged', 'closed'] as const) {
 			templateData.pr.classList.toggle(`paradis-pr-${state}`, prStatus?.state === state);
@@ -785,7 +850,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		// 件数の変化がなくても getIssueUrls は毎回配列を作るため、空配列との比較で
 		// hidden の付け外しだけ行う。
 		const issueUrls = worktree.missing ? [] : this.getIssueUrls(worktree);
-		templateData.issue.classList.toggle('hidden', issueUrls.length === 0);
+		templateData.issue.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'issues'));
 		if (issueUrls.length > 0) {
 			templateData.issueCount.textContent = String(issueUrls.length);
 			const content = issueHoverContent(issueUrls, this.getIssueStatus);
@@ -947,6 +1012,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	private readonly _updateTreeScheduler: RunOnceScheduler;
 	/** ツリーのインデント1段ぶんの幅 (workbench.tree.indent に追従する) */
 	private treeIndent = DEFAULT_TREE_INDENT;
+	/** メタ段 (案E) の表示/並び順/寄せ。設定 paradis.workspaceSwitch.rowMeta に追従する */
+	private rowMeta = PARADIS_DEFAULT_WORKTREE_ROW_META;
 	/** ビュー下端に固定される「いま開いているスペースのメモ」欄 */
 	private notesPanel: ParadisSpaceNotesPanel | undefined;
 	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
@@ -1033,9 +1100,16 @@ export class ParadisWorkspacesView extends ViewPane {
 		// ピン留めの控え行を子行と同じ位置に見せるため、ツリーと同じインデント幅を持っておく
 		// (listService が同じ設定値でツリーの indent を決めている)
 		this.updateTreeIndent();
+		this.updateRowMeta();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(TREE_INDENT_CONFIGURATION_KEY)) {
 				this.updateTreeIndent();
+				this.updateTree();
+			}
+			// メタ段の設定は行の中身だけでなく高さも変えるため、必ずツリーを組み直す
+			// (setChildren を通さないと ListView が高さを測り直さない)
+			if (e.affectsConfiguration(PARADIS_WORKTREE_ROW_META_SETTING_ID)) {
+				this.updateRowMeta();
 				this.updateTree();
 			}
 		}));
@@ -1063,7 +1137,9 @@ export class ParadisWorkspacesView extends ViewPane {
 			() => this.treeIndent,
 			url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
 			this.hoverService,
-			worktree => this.workspaceSwitchService.pendingSwitchTargetKey === worktreeStateKeyFor(worktree)
+			worktree => this.workspaceSwitchService.pendingSwitchTargetKey === worktreeStateKeyFor(worktree),
+			() => this.rowMeta,
+			worktree => this.worktreeMetaPresence(worktree)
 		);
 		const creatingRenderer = new CreatingSpaceRenderer(
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)
@@ -1073,7 +1149,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			WorkbenchObjectTree<WorkspaceTreeElement, FuzzyScore>,
 			'ParadisWorkspaces',
 			treeContainer,
-			new WorkspaceTreeDelegate(),
+			new WorkspaceTreeDelegate(worktree => paradisWorktreeRowHeight(this.rowMeta, this.worktreeMetaPresence(worktree))),
 			[repositoryRenderer, worktreeRenderer, creatingRenderer],
 			{
 				identityProvider: {
@@ -1091,7 +1167,7 @@ export class ParadisWorkspacesView extends ViewPane {
 				expandOnlyOnTwistieClick: true,
 				accessibilityProvider: {
 					getAriaLabel: (element: WorkspaceTreeElement) => isCreating(element) ? creatingElementLabel(element) : element.name,
-					getWidgetAriaLabel: () => localize('paradisWorkspaces', "Workspaces")
+					getWidgetAriaLabel: () => localize('paradisWorkspaces', "スペース")
 				}
 			}
 		));
@@ -1406,6 +1482,13 @@ export class ParadisWorkspacesView extends ViewPane {
 				}
 			}
 		}
+		// 高さ (delegate) と中身 (renderer) が同じ判定を読むよう、setChildren の前に作り直す。
+		// **ルート要素だけを見てはいけない**: worktree 行はリポジトリ行の children にいるため、
+		// ルートだけを拾うと折りたたみ中のピン留め控え行しか presence に載らず、他の全行が
+		// 「メタ無し」= メタ段ごと非表示・行の高さも2段のまま、という状態で固定される。
+		this.rebuildMetaPresence(elements
+			.flatMap(entry => [entry.element, ...[...entry.children ?? []].map(child => child.element)])
+			.filter((element): element is IParadisWorktree => isWorktree(element)));
 		this.tree.setChildren(null, elements);
 		this._onDidChangeViewWelcomeState.fire();
 	}
@@ -1456,6 +1539,50 @@ export class ParadisWorkspacesView extends ViewPane {
 	}
 
 	/** ツリーのインデント幅 (workbench.tree.indent) を控え行の字下げ用に控えておく。 */
+	private updateRowMeta(): void {
+		this.rowMeta = paradisNormalizeWorktreeRowMeta(this.configurationService.getValue(PARADIS_WORKTREE_ROW_META_SETTING_ID));
+	}
+
+	/**
+	 * 描画と高さが読む presence を、setChildren の直前に1回だけ作る。
+	 *
+	 * 行の描画 (WorktreeRenderer) と行の高さ (WorkspaceTreeDelegate) が食い違うと、3段ぶんの
+	 * 中身が2段の高さに押し込まれる。同じ関数を2回呼ぶ約束にしていると、片方だけ条件が
+	 * 変わったときに黙って崩れるので、**同じ Map を両方が引く**形にして構造で担保する。
+	 *
+	 * ついでに、メモの件数は本文を毎回パースして求めている (キャッシュ無し)。行ごとに
+	 * 2回呼ぶと、2秒ごとのエージェント状態更新でスペース数×2回のパースが定常的に走る。
+	 */
+	private rebuildMetaPresence(worktrees: readonly IParadisWorktree[]): void {
+		this._metaPresence.clear();
+		for (const worktree of worktrees) {
+			this._metaPresence.set(worktreeStateKeyFor(worktree), this.computeMetaPresence(worktree));
+		}
+	}
+
+	/** 作った Map を引く。まだ無い行 (作成中など) は「メタ無し」= 2段扱い。 */
+	private worktreeMetaPresence(worktree: IParadisWorktree): IParadisWorktreeMetaPresence {
+		return this._metaPresence.get(worktreeStateKeyFor(worktree)) ?? PARADIS_NO_WORKTREE_META;
+	}
+
+	/** 行ごとの presence。updateTree のたびに作り直し、delegate と renderer の両方が引く。 */
+	private readonly _metaPresence = new Map<string, IParadisWorktreeMetaPresence>();
+
+	private computeMetaPresence(worktree: IParadisWorktree): IParadisWorktreeMetaPresence {
+		if (worktree.missing) {
+			return PARADIS_NO_WORKTREE_META;
+		}
+		const stateKey = worktreeStateKeyFor(worktree);
+		const diffStat = this._diffStats.get(worktree.uri.fsPath);
+		const noteSummary = this.spaceNotesService.summary(stateKey);
+		return {
+			pr: this._prStatuses.has(worktree.uri.fsPath),
+			issues: this.agentStatusStore.getScopeIssueUrls(stateKey).length > 0,
+			diff: !!diffStat && (diffStat.insertions > 0 || diffStat.deletions > 0),
+			notes: noteSummary.open > 0,
+		};
+	}
+
 	private updateTreeIndent(): void {
 		const configured = this.configurationService.getValue(TREE_INDENT_CONFIGURATION_KEY);
 		this.treeIndent = typeof configured === 'number' ? configured : DEFAULT_TREE_INDENT;
@@ -1502,7 +1629,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		});
 		const defaultAction = new Action(
 			'paradis.workspaceSwitch.color.default',
-			localize('paradis.workspaceSwitch.colorDefault', "Default"),
+			localize('paradis.workspaceSwitch.colorDefault', "既定"),
 			'paradis-menu-icon paradis-menu-color paradis-color-default',
 			true,
 			() => this.workspaceSwitchService.setRepositoryColor(repository.id, undefined)
@@ -1518,7 +1645,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		return [
 			new Action(
 				'paradis.workspaceSwitch.createWorktreeContext',
-				localize('paradis.workspaceSwitch.createWorktreeContext', "New Worktree Space..."),
+				localize('paradis.workspaceSwitch.createWorktreeContext', "新しいワークツリースペース..."),
 				'paradis-menu-icon codicon codicon-add',
 				true,
 				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
@@ -1579,7 +1706,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.configureLifecycleScripts',
-				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup/Teardown Scripts..."),
+				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup / Teardown スクリプト..."),
 				'paradis-menu-icon codicon codicon-tools',
 				true,
 				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
@@ -1615,6 +1742,99 @@ export class ParadisWorkspacesView extends ViewPane {
 		if (reordered) {
 			this.worktreeService.setWorktreeOrder(worktree.repositoryId, reordered);
 		}
+	}
+
+	/**
+	 * 「表示する情報」サブメニュー (案E のメタ段の設定)。上半分が各情報の表示/非表示、
+	 * 下半分が情報ごとの並び順・寄せ方。VS Code のメニューは SubmenuAction にチェック状態を
+	 * 持てないため、トグルは平のアクション (checked) で並べ、並び順と寄せだけを情報ごとの
+	 * サブメニューへ1段下げている。既存のリポジトリ行「色を設定」と同じ作り。
+	 */
+	private buildRowMetaSubmenuAction(): SubmenuAction {
+		const entries = this.rowMeta;
+		const setEntries = (next: readonly IParadisWorktreeMetaEntry[]) =>
+			this.configurationService.updateValue(PARADIS_WORKTREE_ROW_META_SETTING_ID, next);
+
+		const toggles: IAction[] = entries.map(entry => {
+			const action = new Action(
+				`paradis.workspaceSwitch.rowMeta.toggle.${entry.id}`,
+				paradisWorktreeMetaLabel(entry.id),
+				undefined,
+				true,
+				() => setEntries(paradisSetWorktreeMetaVisible(entries, entry.id, !entry.visible))
+			);
+			action.checked = entry.visible;
+			return action;
+		});
+
+		const arrangements: IAction[] = entries.map((entry, index) => {
+			const left = new Action(
+				`paradis.workspaceSwitch.rowMeta.align.left.${entry.id}`,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.rowMeta.alignLeft', "左に寄せる"),
+				undefined,
+				true,
+				() => setEntries(paradisSetWorktreeMetaAlign(entries, entry.id, 'left'))
+			);
+			left.checked = entry.align === 'left';
+			const right = new Action(
+				`paradis.workspaceSwitch.rowMeta.align.right.${entry.id}`,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.rowMeta.alignRight', "右に寄せる"),
+				undefined,
+				true,
+				() => setEntries(paradisSetWorktreeMetaAlign(entries, entry.id, 'right'))
+			);
+			right.checked = entry.align === 'right';
+			return new SubmenuAction(
+				`paradis.workspaceSwitch.rowMeta.arrange.${entry.id}`,
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.rowMeta.arrange', "{0}の並び", paradisWorktreeMetaLabel(entry.id)),
+				[
+					new Action(
+						`paradis.workspaceSwitch.rowMeta.moveUp.${entry.id}`,
+						// allow-any-unicode-next-line
+						localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
+						'paradis-menu-icon codicon codicon-arrow-up',
+						// 動かせるのは同じ寄せの中だけ。押しても見た目が変わらない状態では出さない
+						paradisCanMoveWorktreeMeta(entries, entry.id, -1),
+						() => setEntries(paradisMoveWorktreeMeta(entries, entry.id, -1))
+					),
+					new Action(
+						`paradis.workspaceSwitch.rowMeta.moveDown.${entry.id}`,
+						// allow-any-unicode-next-line
+						localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
+						'paradis-menu-icon codicon codicon-arrow-down',
+						paradisCanMoveWorktreeMeta(entries, entry.id, 1),
+						() => setEntries(paradisMoveWorktreeMeta(entries, entry.id, 1))
+					),
+					new Separator(),
+					left,
+					right
+				]
+			);
+		});
+
+		return new SubmenuAction(
+			'paradis.workspaceSwitch.rowMeta',
+			// allow-any-unicode-next-line
+			localize('paradis.workspaceSwitch.rowMetaMenu', "表示する情報"),
+			[
+				...toggles,
+				new Separator(),
+				...arrangements,
+				new Separator(),
+				new Action(
+					'paradis.workspaceSwitch.rowMeta.reset',
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.rowMetaReset', "既定に戻す"),
+					'paradis-menu-icon codicon codicon-discard',
+					// 設定を消して既定へ戻す (すべて非表示にした状態からも必ずここで戻れる)
+					true,
+					() => this.configurationService.updateValue(PARADIS_WORKTREE_ROW_META_SETTING_ID, undefined)
+				)
+			]
+		);
 	}
 
 	private buildWorktreeContextMenuActions(worktree: IParadisWorktree): IAction[] {
@@ -1662,7 +1882,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		// main checkout (リポジトリ本体) は並び替え・削除の対象外。常に先頭固定で、
 		// 削除相当の操作はリポジトリ行側の「Remove from List」で行う
 		if (worktree.isMainCheckout) {
-			return actions;
+			return [...actions, new Separator(), this.buildRowMetaSubmenuAction()];
 		}
 
 		const { siblings, index } = this.worktreeSiblingIndex(worktree);
@@ -1675,7 +1895,9 @@ export class ParadisWorkspacesView extends ViewPane {
 				'paradis-menu-icon codicon codicon-edit',
 				!worktree.missing,
 				() => this.promptRenameWorktree(worktree)
-			)
+			),
+			// 行の見え方の設定。取り消せない操作 (削除) より上に置く
+			this.buildRowMetaSubmenuAction()
 		);
 
 		// 折りたたみ中の控え行から並び替えても、動いた結果はリポジトリを開くまで見えない。
@@ -1737,10 +1959,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		const name = await this.quickInputService.input({
 			value: repository.name,
 			valueSelection: [0, repository.name.length],
-			prompt: localize('paradis.workspaceSwitch.renamePrompt', "Enter a new name for this repository"),
+			prompt: localize('paradis.workspaceSwitch.renamePrompt', "このリポジトリの新しい名前を入力してください"),
 			validateInput: async value => value.trim()
 				? undefined
-				: localize('paradis.workspaceSwitch.renameEmpty', "Name cannot be empty")
+				: localize('paradis.workspaceSwitch.renameEmpty', "名前を空にすることはできません")
 		});
 		if (name !== undefined && name.trim()) {
 			await this.workspaceSwitchService.renameRepository(repository.id, name.trim());
@@ -1757,10 +1979,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		const name = await this.quickInputService.input({
 			value: worktree.name,
 			valueSelection: [0, worktree.name.length],
-			prompt: localize('paradis.workspaceSwitch.worktreeRenamePrompt', "Enter a new name for this worktree"),
+			prompt: localize('paradis.workspaceSwitch.worktreeRenamePrompt', "このワークツリーの新しい名前を入力してください"),
 			validateInput: async value => value.trim()
 				? undefined
-				: localize('paradis.workspaceSwitch.renameEmpty', "Name cannot be empty")
+				: localize('paradis.workspaceSwitch.renameEmpty', "名前を空にすることはできません")
 		});
 		if (name !== undefined && name.trim()) {
 			this.worktreeService.addKnownWorktree({ ...worktree, name: name.trim() });

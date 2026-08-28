@@ -24,14 +24,16 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 
 const $ = dom.$;
 
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.settings.title', "設定 (Para Code)");
 // allow-any-unicode-next-line
-const STR_SEARCH_PLACEHOLDER = localize('paradis.settings.searchPlaceholder', "Para Code 設定を検索 (worktree, ccusage, rtk…)");
+const STR_SEARCH_PLACEHOLDER = localize('paradis.settings.searchPlaceholder', "設定を検索");
 // allow-any-unicode-next-line
 const STR_AUTOSAVE = localize('paradis.settings.autosave', "変更は即保存されます");
 // allow-any-unicode-next-line
@@ -61,7 +63,7 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navSpace', "スペース切替"),
 		// allow-any-unicode-next-line
-		heading: localize('paradis.settings.headSpace', "スペース切替 (worktree)"),
+		heading: localize('paradis.settings.headSpace', "スペース切替"),
 	},
 	{
 		id: 'psd-sec-preset',
@@ -71,11 +73,18 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		heading: localize('paradis.settings.headPreset', "コマンドプリセット"),
 	},
 	{
+		id: 'psd-sec-layout',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navLayout', "レイアウトプリセット"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headLayout', "レイアウトプリセット"),
+	},
+	{
 		id: 'psd-sec-usage',
 		// allow-any-unicode-next-line
-		navLabel: localize('paradis.settings.navUsage', "使用量ダッシュボード"),
+		navLabel: localize('paradis.settings.navUsage', "使用量"),
 		// allow-any-unicode-next-line
-		heading: localize('paradis.settings.headUsage', "使用量ダッシュボード (ccusage · GitHub API · rtk)"),
+		heading: localize('paradis.settings.headUsage', "使用量"),
 	},
 	{
 		id: 'psd-sec-notif',
@@ -89,7 +98,7 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navBrowser', "ブラウザ共有"),
 		// allow-any-unicode-next-line
-		heading: localize('paradis.settings.headBrowser', "ブラウザ共有 (agentBrowser)"),
+		heading: localize('paradis.settings.headBrowser', "ブラウザ共有"),
 	},
 	{
 		id: 'psd-sec-terminal',
@@ -104,6 +113,13 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		navLabel: localize('paradis.settings.navMobile', "モバイル連携"),
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headMobile', "モバイル連携"),
+	},
+	{
+		id: 'psd-sec-remote',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navRemote', "リモート (SSH)"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headRemote', "リモート (SSH)"),
 	},
 	{
 		id: 'psd-sec-window',
@@ -132,6 +148,13 @@ interface IParadisSettingRowSpec {
 	readonly placeholder?: string;
 	/** 数値 select の選択肢 (値 → 表示ラベル)。 */
 	readonly choices?: readonly { readonly value: string | number; readonly label: string }[];
+	// allow-any-unicode-next-line
+	/**
+	 * enum 選択肢の表示名だけを差し替える (値 → 表示名)。
+	 * choices と違い一覧そのものはスキーマ側が持ち続けるので、後から enum に値が増えても
+	 * ここに書き忘れた値が画面から消えることがない (その値はスキーマの説明で出る)。
+	 */
+	readonly choiceLabels?: Readonly<Record<string, string>>;
 	/** 行の右端に置くボタン。押すとコマンドを実行してこのダイアログは閉じる。 */
 	readonly action?: { readonly label: string; readonly commandId: string; readonly primary?: boolean };
 }
@@ -142,9 +165,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-space',
 		key: 'paradis.workspaceSwitch.worktreeRoot',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.worktreeRoot', "worktree 作成先ルート"),
+		label: localize('paradis.settings.worktreeRoot', "スペースの作成先"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.worktreeRootDesc', "空欄の場合、リポジトリ隣の「{リポジトリ名}-worktrees/」に作成します。"),
+		description: localize('paradis.settings.worktreeRootDesc', "空欄なら、リポジトリの隣に「{リポジトリ名}-worktrees」を作ってその中に置きます。"),
 		// allow-any-unicode-next-line
 		placeholder: localize('paradis.settings.unset', "(未設定)"),
 		keywords: 'worktree root space path',
@@ -153,31 +176,85 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-space',
 		key: 'paradis.workspaceSwitch.autoImportWorktrees',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.autoImport', "既存の worktree を自動で取り込む"),
+		label: localize('paradis.settings.autoImport', "既にある worktree を一覧に取り込む"),
 		keywords: 'auto import worktree detect',
 	},
 	{
 		sectionId: 'psd-sec-space',
 		key: 'paradis.workspaceSwitch.autoRemoveMissingWorktrees',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.autoRemove', "消えた worktree を一覧から自動で外す"),
+		label: localize('paradis.settings.autoRemove', "無くなったスペースを一覧から外す"),
 		keywords: 'auto remove missing worktree prune',
 	},
 	{
 		sectionId: 'psd-sec-space',
 		key: 'paradis.workspaceSwitch.scopeScmRepositories',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.scopeScm', "ソース管理ビューを現在のスペースに絞る"),
+		label: localize('paradis.settings.scopeScm', "ソース管理を今のスペースだけに絞る"),
 		keywords: 'scm git scope repository filter',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.defaultAgent',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.defaultAgent', "既定のエージェント"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.defaultAgentDesc', "空欄なら、前回選んだものを覚えて使います。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.defaultAgentPlaceholder', "(前回選択を記憶)"),
+		keywords: 'default agent last selected claude codex',
 	},
 	{
 		sectionId: 'psd-sec-space',
 		key: 'paradis.workspaceSwitch.agents',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.agents', "エージェント定義"),
+		label: localize('paradis.settings.agents', "エージェントの一覧"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.agentsDesc', "新規スペースで選べるエージェントと、モデル/エフォート/権限の選択肢。設定エディタで JSON を編集します。"),
+		description: localize('paradis.settings.agentsDesc', "新しいスペースで選べるエージェントと、モデル・エフォート・権限の候補を編集します。"),
 		keywords: 'agents claude codex gemini model effort permission',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.cloneParentDirectory',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.cloneParentDir', "リポジトリのクローン先"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.cloneParentDirDesc', "空欄なら、クローンのたびに保存先を尋ねます。"),
+		placeholder: '~/github',
+		keywords: 'clone parent directory repository add url',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.workspaceSwitch.rowMeta',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.rowMeta', "スペース一覧に表示する情報"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.rowMetaDesc', "行を右クリックした「表示する情報」からも変えられます。"),
+		keywords: 'workspaces view row meta pull request issue diff notes order',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.agentLiveWindow.titleBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentLiveTitleBar', "タイトルバーに「エージェント一覧」ボタンを表示"),
+		keywords: 'agent live window titlebar list',
+	},
+
+	// --- レイアウトプリセット ---
+	{
+		sectionId: 'psd-sec-layout',
+		key: 'paradis.editor.layoutPresets',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.layoutPresets', "レイアウトプリセット"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.layoutPresetsDesc', "エディタ内のターミナル・ブラウザ・ファイルの並べ方を保存して呼び出せます。"),
+		keywords: 'layout presets editor area terminal browser file split',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.layoutPresetsAction', "レイアウトプリセットを管理…"),
+			commandId: 'paradis.editor.showLayoutPresets',
+			primary: true,
+		},
 	},
 
 	// --- コマンドプリセット ---
@@ -185,9 +262,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-preset',
 		key: 'paradis.terminal.presets',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.presets', "ユーザー プリセット"),
+		label: localize('paradis.settings.presets', "コマンドプリセット"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.presetsDesc', "リポジトリ共有分は {リポジトリ}/.paracode.json に保存されます。"),
+		description: localize('paradis.settings.presetsDesc', "よく使うコマンドを登録して、ターミナルからすぐ実行できます。"),
 		keywords: 'terminal presets command manage',
 		action: {
 			// allow-any-unicode-next-line
@@ -201,9 +278,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-usage',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.usageDashboard', "統合ダッシュボード"),
+		label: localize('paradis.settings.usageDashboard', "使用量ダッシュボード"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.usageDashboardDesc', "ccusage / GitHub API / rtk を 1 つのダイアログでまとめて確認します。"),
+		description: localize('paradis.settings.usageDashboardDesc', "AI コスト・GitHub API の残量・rtk の節約量をまとめて見ます。"),
 		keywords: 'usage dashboard ccusage github rtk unified',
 		action: {
 			// allow-any-unicode-next-line
@@ -216,9 +293,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-usage',
 		key: 'paradis.ccusage.executablePath',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.ccusagePath', "ccusage 実行ファイルの絶対パス"),
+		label: localize('paradis.settings.ccusagePath', "ccusage のパス"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.ccusagePathDesc', "空欄時は PATH 探索 → 固定バージョンの npx フォールバック。"),
+		description: localize('paradis.settings.ccusagePathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
 		placeholder: '/usr/local/bin/ccusage',
 		keywords: 'ccusage executable path cost',
 	},
@@ -231,41 +308,89 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-usage',
+		key: 'paradis.ccusage.execTimeoutSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.ccusageExecTimeout', "ccusage の実行タイムアウト"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.ccusageExecTimeoutDesc', "ログの量が多いと集計に時間がかかります。取得できない場合は延ばしてください。"),
+		keywords: 'ccusage timeout seconds exec collecting slow',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			'60': localize('paradis.settings.ccusageExecTimeout60', "60秒"),
+			// allow-any-unicode-next-line
+			'120': localize('paradis.settings.ccusageExecTimeout120', "2分"),
+			// allow-any-unicode-next-line
+			'180': localize('paradis.settings.ccusageExecTimeout180', "3分（既定）"),
+			// allow-any-unicode-next-line
+			'300': localize('paradis.settings.ccusageExecTimeout300', "5分"),
+			// allow-any-unicode-next-line
+			'600': localize('paradis.settings.ccusageExecTimeout600', "10分"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-usage',
 		key: 'paradis.githubMetrics.statusBar.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.ghStatusBar', "GitHub API 残量をステータスバーに表示"),
+		label: localize('paradis.settings.ghStatusBar', "GitHub API の残量をステータスバーに表示"),
 		keywords: 'github metrics rate limit status bar remaining',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.githubMetrics.refreshIntervalSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.ghRefreshInterval', "GitHub API の自動更新の間隔"),
+		keywords: 'github metrics refresh interval dashboard',
 	},
 	{
 		sectionId: 'psd-sec-usage',
 		key: 'paradis.rtk.executablePath',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.rtkPath', "rtk 実行ファイルの絶対パス"),
+		label: localize('paradis.settings.rtkPath', "rtk のパス"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.rtkPathDesc', "SSH 中は接続先の rtk を実行するため、リモート側設定で指定してください。"),
+		description: localize('paradis.settings.rtkPathDesc', "空欄なら自動で探します。SSH 中は接続先の rtk を使うので、リモート側の設定に書いてください。"),
 		// allow-any-unicode-next-line
-		placeholder: localize('paradis.settings.rtkPathPlaceholder', "(PATH 上の rtk)"),
+		placeholder: localize('paradis.settings.rtkPathPlaceholder', "(自動で探す)"),
 		keywords: 'rtk executable path token killer',
 	},
 	{
 		sectionId: 'psd-sec-usage',
 		key: 'paradis.rtk.statusBar.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.rtkStatusBar', "今日の rtk 削減トークン数を表示"),
+		label: localize('paradis.settings.rtkStatusBar', "今日 rtk が減らしたトークン数をステータスバーに表示"),
 		keywords: 'rtk status bar saved tokens today',
 	},
 	{
 		sectionId: 'psd-sec-usage',
 		key: 'paradis.limitsMonitor.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.limitsMonitor', "AI 利用量リミットをタイトルバーに表示"),
+		label: localize('paradis.settings.limitsMonitor', "利用上限の残りをタイトルバーに表示"),
 		keywords: 'limits monitor claude codex usage titlebar',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.limitsMonitor.cswapPath',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.cswapPath', "claude-swap のパス"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.cswapPathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.unset', "(未設定)"),
+		keywords: 'cswap claude-swap executable path limits monitor',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.limitsMonitor.codexHomes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexHomes', "追加で見る Codex のフォルダ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexHomesDesc', "既定では ~/.codex とその派生を自動で探します。別の場所にもあるときだけ指定します。"),
+		keywords: 'codex home directory limits monitor scan',
 	},
 	{
 		sectionId: 'psd-sec-usage',
 		key: 'paradis.resourceMonitor.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.resourceMonitor', "CPU / メモリをタイトルバーに表示"),
+		label: localize('paradis.settings.resourceMonitor', "CPU・メモリをタイトルバーに表示"),
 		keywords: 'resource monitor cpu memory titlebar',
 	},
 
@@ -273,9 +398,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-notif',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.notifications', "通知・音声報告の詳細設定"),
+		label: localize('paradis.settings.notifications', "通知と音声報告"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.notificationsDesc', "着信音・デスクトップ通知イベント・おやすみモード・Aivis 音声報告。専用ダイアログで設定します。"),
+		description: localize('paradis.settings.notificationsDesc', "着信音、デスクトップ通知、おやすみモード、音声報告をまとめて設定します。"),
 		keywords: 'notification sound desktop aivis voice do not disturb',
 		action: {
 			// allow-any-unicode-next-line
@@ -289,9 +414,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-browser',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.binding', "MCP サーバー (para-browser) の接続状態"),
+		label: localize('paradis.settings.binding', "エージェントとの接続状態"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.bindingDesc', "内蔵ブラウザのページをターミナルのエージェント CLI へ渡すための MCP 登録を確認・修正します。"),
+		description: localize('paradis.settings.bindingDesc', "内蔵ブラウザのページをエージェントへ渡すための設定を確認します。"),
 		keywords: 'browser share mcp para-browser binding',
 		action: {
 			// allow-any-unicode-next-line
@@ -304,7 +429,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-browser',
 		key: 'paradis.agentBrowser.showCursorOverlay',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.cursorOverlay', "エージェント操作時にカーソルを表示"),
+		label: localize('paradis.settings.cursorOverlay', "エージェントの操作をカーソルで見せる"),
 		keywords: 'agent browser cursor overlay',
 	},
 	{
@@ -316,10 +441,28 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.browserLiveWindow.titleBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserLiveTitleBar', "タイトルバーに「ブラウザ一覧」ボタンを表示"),
+		keywords: 'browser live window titlebar list',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.downloads.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.downloads', "ダウンロードを保存ダイアログなしで受け取る"),
+		label: localize('paradis.settings.downloads', "ダウンロードを確認なしで受け取る"),
 		keywords: 'browser downloads auto save',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.downloads.path',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.downloadsPath', "ダウンロードの保存先"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.downloadsPathDesc', "空欄なら、OS のダウンロードフォルダの中の Paracode に保存します。絶対パスで指定してください。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.unset', "(未設定)"),
+		keywords: 'browser downloads path folder save',
 	},
 
 	// --- ターミナル ---
@@ -327,15 +470,36 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-terminal',
 		key: 'paradis.terminal.daemon.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.daemon', "ターミナルをアプリ終了後も生かす (常駐 pty)"),
+		label: localize('paradis.settings.daemon', "ターミナルをアプリの終了後も残す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.daemonDesc', "Para Code を閉じても、走っているコマンドが止まりません。"),
 		keywords: 'terminal daemon pty keep alive persistent',
 	},
 	{
 		sectionId: 'psd-sec-terminal',
 		key: 'paradis.terminal.daemon.keepAliveOnClose',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.daemonKeepAlive', "ウィンドウを閉じてもターミナルを残す"),
+		label: localize('paradis.settings.daemonKeepAlive', "ウィンドウを閉じるときの動き"),
 		keywords: 'terminal daemon keep alive close',
+		// allow-any-unicode-next-line
+		// スキーマの説明をそのまま出すと長いので、この 3 値だけ短い表示名にする
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			ask: localize('paradis.settings.keepAliveAsk', "毎回尋ねる"),
+			// allow-any-unicode-next-line
+			always: localize('paradis.settings.keepAliveAlways', "尋ねずに残す"),
+			// allow-any-unicode-next-line
+			never: localize('paradis.settings.keepAliveNever', "尋ねずに終了する"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.daemon.reattachAcrossUpdates',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.daemonReattach', "更新をまたいで繋ぎ直す (実験的)"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.daemonReattachDesc', "更新したあとも、それまでのターミナルにそのまま繋がります。SSH 接続先でも同じように動きます。"),
+		keywords: 'terminal daemon reattach update experimental pty host',
 	},
 	{
 		sectionId: 'psd-sec-terminal',
@@ -348,15 +512,32 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-terminal',
 		key: 'paradis.editor.openTerminalOnSplit',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.openTerminalOnSplit', "エディタ分割時にターミナルを開く"),
+		label: localize('paradis.settings.openTerminalOnSplit', "エディタを分割したらターミナルを開く"),
 		keywords: 'editor split terminal',
 	},
 	{
 		sectionId: 'psd-sec-terminal',
 		key: 'paradis.power.keepAwake',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.keepAwake', "エージェント実行中はスリープさせない"),
+		label: localize('paradis.settings.keepAwake', "エージェント実行中のスリープ"),
 		keywords: 'power keep awake sleep prevent',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			off: localize('paradis.settings.keepAwakeOff', "防がない"),
+			// allow-any-unicode-next-line
+			system: localize('paradis.settings.keepAwakeSystem', "システムのスリープを防ぐ"),
+			// allow-any-unicode-next-line
+			display: localize('paradis.settings.keepAwakeDisplay', "画面のスリープも防ぐ"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.codex.terminalTitle.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexTerminalTitle', "Codex の会話からタブ名を付ける"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexTerminalTitleDesc', "手動で変更したタブ名や Codex の /rename は常に優先されます。"),
+		keywords: 'codex terminal title tab name rename',
 	},
 
 	// --- モバイル連携 ---
@@ -364,7 +545,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-mobile',
 		key: 'paradis.mobile.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.mobileEnabled', "モバイルアプリからの接続を有効にする"),
+		label: localize('paradis.settings.mobileEnabled', "モバイルアプリからの接続を許可する"),
 		keywords: 'mobile relay iphone ipad remote',
 	},
 	{
@@ -382,10 +563,58 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.mobileRelayUrl', "リレーサーバー URL"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.mobileRelayUrlDesc', "空欄なら既定のリレーを使います。自前で運用する場合のみ指定します。"),
+		description: localize('paradis.settings.mobileRelayUrlDesc', "自分でリレーを運用する場合だけ指定します。"),
 		// allow-any-unicode-next-line
 		placeholder: localize('paradis.settings.mobileRelayUrlPlaceholder', "(既定のリレー)"),
 		keywords: 'mobile relay url server',
+	},
+	{
+		sectionId: 'psd-sec-mobile',
+		key: 'paradis.mobile.agent.codexDaemonStreaming',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexDaemonStreaming', "Codex のライブ連携をモバイルへ送る"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexDaemonStreamingDesc', "生成中の文字やツールの出力をその場で送ります。Codex を開いたターミナルごとに裏方のプロセスが増えるので、メモリと起動時間は増えます。"),
+		keywords: 'codex daemon streaming mobile live',
+	},
+
+	// --- リモート (SSH) ---
+	{
+		sectionId: 'psd-sec-remote',
+		key: 'paradis.remote.openDefaultWorkspace',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteOpenDefaultWorkspace', "接続先のリポジトリ一覧を自動で開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteOpenDefaultWorkspaceDesc', "一覧は接続先ごとに独立します。"),
+		keywords: 'remote ssh default workspace open multi repo',
+	},
+	{
+		sectionId: 'psd-sec-remote',
+		key: 'paradis.remote.agentReturnTunnel',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteAgentReturnTunnel', "SSH 接続先からの通知経路を開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteAgentReturnTunnelDesc', "オフにすると、実行状態のドットやモバイルへの会話の転送が接続先からは届きません。"),
+		keywords: 'remote ssh agent return tunnel notification mobile mirror hook mcp',
+	},
+	{
+		sectionId: 'psd-sec-remote',
+		key: 'paradis.remote.keepTerminalsAliveOnClose',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteKeepTerminals', "接続先でウィンドウを閉じるときの動き"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteKeepTerminalsDesc', "残したターミナルは、次に同じ接続先へつなぎ直したときにタブや分割ごと戻ります。"),
+		keywords: 'remote ssh terminal keep alive close ask always never',
+		// allow-any-unicode-next-line
+		// スキーマの説明は長いので、ローカル側 (daemon.keepAliveOnClose) と同じ短い表示名にする
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			ask: localize('paradis.settings.remoteKeepAsk', "毎回尋ねる"),
+			// allow-any-unicode-next-line
+			always: localize('paradis.settings.remoteKeepAlways', "尋ねずに残す"),
+			// allow-any-unicode-next-line
+			never: localize('paradis.settings.remoteKeepNever', "尋ねずに終了する"),
+		},
 	},
 
 	// --- ウィンドウ ---
@@ -395,7 +624,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.transparency', "ウィンドウを透過させる"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.transparencyDesc', "タイトルバー・ターミナル背景を透過させます。"),
+		description: localize('paradis.settings.transparencyDesc', "切り替えたあと、ウィンドウの再読み込みが必要です。"),
 		keywords: 'window transparency transparent',
 	},
 	{
@@ -417,14 +646,14 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-window',
 		key: 'paradis.releaseNotes.showOnUpdate',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.releaseNotes', "更新後に変更履歴を表示する"),
+		label: localize('paradis.settings.releaseNotes', "更新のあとに更新履歴を表示する"),
 		keywords: 'release notes changelog update',
 	},
 	{
 		sectionId: 'psd-sec-window',
 		key: 'paradis.serviceStatus.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.serviceStatus', "各サービスの稼働状況を表示する"),
+		label: localize('paradis.settings.serviceStatus', "サービスの稼働状況を表示する"),
 		keywords: 'service status incident chip',
 	},
 ];
@@ -557,8 +786,12 @@ export class ParadisSettingsDialog extends Disposable {
 		const main = dom.append(row, $('.psd-row-main'));
 		const label = dom.append(main, $('.psd-row-label'));
 		dom.append(label, $('span')).textContent = spec.label;
+		// allow-any-unicode-next-line
+		// 設定キー (paradis.*) は画面に出さない。行が名前だけになって読みやすくなるため。
+		// 下の searchText には key を残してあるので、キーを知っている人はそれで引ける。
+		// settings.json を直接編集したいときのために、ホバーでは読めるようにしておく。
 		if (spec.key) {
-			dom.append(label, $('code')).textContent = spec.key;
+			row.title = spec.key;
 		}
 		if (spec.description) {
 			dom.append(main, $('.psd-row-desc')).textContent = spec.description;
@@ -584,9 +817,43 @@ export class ParadisSettingsDialog extends Disposable {
 		});
 	}
 
-	/** 設定値の型 (と choices 指定) を見てコントロールを選ぶ。 */
+	/**
+	 * 設定スキーマに enum が宣言されていれば、その選択肢を拾う。
+	 * ここを見ずに型だけで判断すると、enum の文字列設定 (スリープ防止のモード等) が
+	 * 自由入力のテキスト欄になり、綴りを間違えた値をそのまま書けてしまう。
+	 */
+	private _enumChoices(key: string): readonly { value: string; label: string }[] | undefined {
+		const schema = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).getConfigurationProperties()[key];
+		const values = schema?.enum;
+		if (!Array.isArray(values) || values.length === 0) {
+			return undefined;
+		}
+		const descriptions = schema?.enumDescriptions;
+		return values.map((value, index) => {
+			const raw = String(value);
+			const description = descriptions?.[index];
+			// 説明があれば短く添える (設定エディタと違い1行なので、先頭の一文だけ)
+			const summary = description?.split(/[。\n]/)[0]?.trim();
+			// allow-any-unicode-next-line
+			// 生の設定値 (ask / off など) は利用者に意味がないので出さない。
+			// 説明が無いスキーマのときだけ、やむを得ず値そのものを出す。
+			return { value: raw, label: summary || raw };
+		});
+	}
+
+	/** 設定値の型 (と choices 指定・スキーマの enum) を見てコントロールを選ぶ。 */
 	private _buildControl(row: HTMLElement, key: string, spec: IParadisSettingRowSpec): void {
 		const value = this.configurationService.getValue(key);
+		const enumChoices = spec.choices ? undefined : this._enumChoices(key);
+		if (enumChoices) {
+			const overrides = spec.choiceLabels;
+			spec = {
+				...spec,
+				choices: overrides
+					? enumChoices.map(choice => ({ value: choice.value, label: overrides[choice.value] ?? choice.label }))
+					: enumChoices,
+			};
+		}
 
 		if (spec.choices) {
 			const select = dom.append(row, $('select.psd-select')) as HTMLSelectElement;
@@ -595,11 +862,21 @@ export class ParadisSettingsDialog extends Disposable {
 				option.value = String(choice.value);
 				option.textContent = choice.label;
 			}
+			// 用意した刻み (不透明度の 96% など) に載らない値が既に入っていることがある。
+			// そのまま黙って別の値を選んだ状態にすると、開いただけで設定が変わったように
+			// 見えるので、実際の値を選択肢へ足して選んでおく。差し替え式にして増殖させない。
+			let extraOption: HTMLOptionElement | undefined;
 			const sync = () => {
 				const current = String(this.configurationService.getValue(key) ?? '');
-				if (spec.choices?.some(choice => String(choice.value) === current)) {
-					select.value = current;
+				const known = spec.choices?.some(choice => String(choice.value) === current) ?? false;
+				extraOption?.remove();
+				extraOption = undefined;
+				if (!known) {
+					extraOption = dom.append(select, $('option')) as HTMLOptionElement;
+					extraOption.value = current;
+					extraOption.textContent = current;
 				}
+				select.value = current;
 			};
 			sync();
 			this._refreshers.push(sync);

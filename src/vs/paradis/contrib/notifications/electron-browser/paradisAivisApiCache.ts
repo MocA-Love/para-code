@@ -15,7 +15,49 @@
 // ただしダイアログを閉じている間にAivisSpeech側（外部）で辞書・モデルが変更されている可能性が
 // あるため、ダイアログを開き直すたびに `clearAivisApiCaches()` でキャッシュを破棄する。
 
-import { IParadisAivisDictionaryListItem, IParadisAivisModelSummary } from '../common/paradisNotifications.js';
+import { IParadisAivisDictionaryListItem, IParadisAivisMeResult, IParadisAivisModelSummary, IParadisAivisUsageResult } from '../common/paradisNotifications.js';
+
+export interface IParadisAivisUsageBundle {
+	readonly usage: IParadisAivisUsageResult;
+	readonly me: IParadisAivisMeResult | null;
+}
+
+export class ParadisAivisUsageRequestCache {
+	private readonly entries = new Map<string, Promise<IParadisAivisUsageBundle>>();
+
+	getOrCreate(apiKey: string, start: string, end: string, factory: () => Promise<IParadisAivisUsageBundle>): Promise<IParadisAivisUsageBundle> {
+		const key = JSON.stringify([apiKey, start, end]);
+		const existing = this.entries.get(key);
+		if (existing) {
+			return existing;
+		}
+
+		const created = factory().catch(error => {
+			if (this.entries.get(key) === created) {
+				this.entries.delete(key);
+			}
+			throw error;
+		});
+		this.entries.set(key, created);
+		return created;
+	}
+
+	clear(): void {
+		this.entries.clear();
+	}
+}
+
+export class ParadisAivisRenderGeneration {
+	private current = 0;
+
+	begin(): number {
+		return ++this.current;
+	}
+
+	isCurrent(generation: number): boolean {
+		return generation === this.current;
+	}
+}
 
 let dictionaryListCache = new Map<string, IParadisAivisDictionaryListItem[]>();
 

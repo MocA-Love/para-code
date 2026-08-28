@@ -10,11 +10,12 @@
 // Aivis Cloud API のリクエスト数・文字数・クレジット消費を日別に集計して表示する。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisAivisMeResult, IParadisAivisUsageDayEntry, IParadisAivisUsageResult, PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { ParadisAivisRenderGeneration, ParadisAivisUsageRequestCache } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 
 const $ = dom.$;
@@ -99,6 +100,8 @@ function fillMissingDates(days: readonly IParadisAivisUsageDayEntry[], start: st
 export class ParadisAivisUsageSection extends Disposable {
 
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	private readonly _requestCache: ParadisAivisUsageRequestCache;
+	private readonly _renderGeneration = new ParadisAivisRenderGeneration();
 	private _period: Period = '30';
 	private _metric: ChartMetric = 'requests';
 
@@ -108,6 +111,8 @@ export class ParadisAivisUsageSection extends Disposable {
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 	) {
 		super();
+		this._requestCache = new ParadisAivisUsageRequestCache();
+		this._register(toDisposable(() => this._requestCache.clear()));
 		this._register(this.settingsService.onDidChange(scope => {
 			if (scope === 'aivis') {
 				this._render();
@@ -126,6 +131,7 @@ export class ParadisAivisUsageSection extends Disposable {
 	}
 
 	private _renderBody(): void {
+		const generation = this._renderGeneration.begin();
 		dom.clearNode(this.container);
 		this._renderDisposables.clear();
 
@@ -156,18 +162,22 @@ export class ParadisAivisUsageSection extends Disposable {
 		bodyEl.textContent = STR_LOADING;
 
 		const range = rangeFor(this._period);
-		const channel = this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL);
-		void Promise.all([
-			channel.call<IParadisAivisUsageResult>('getAivisUsageDaily', [apiKey, range.start, range.end]),
-			channel.call<IParadisAivisMeResult>('getAivisMe', [apiKey]).catch(() => null),
-		]).then(([usage, me]) => {
-			if (this._store.isDisposed) {
+		const request = this._requestCache.getOrCreate(apiKey, range.start, range.end, async () => {
+			const channel = this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL);
+			const [usage, me] = await Promise.all([
+				channel.call<IParadisAivisUsageResult>('getAivisUsageDaily', [apiKey, range.start, range.end]),
+				channel.call<IParadisAivisMeResult>('getAivisMe', [apiKey]).catch(() => null),
+			]);
+			return { usage, me };
+		});
+		void request.then(({ usage, me }) => {
+			if (this._store.isDisposed || !this._renderGeneration.isCurrent(generation)) {
 				return;
 			}
 			dom.clearNode(bodyEl);
 			this._renderUsage(bodyEl, usage, me, range);
 		}, error => {
-			if (this._store.isDisposed) {
+			if (this._store.isDisposed || !this._renderGeneration.isCurrent(generation)) {
 				return;
 			}
 			dom.clearNode(bodyEl);

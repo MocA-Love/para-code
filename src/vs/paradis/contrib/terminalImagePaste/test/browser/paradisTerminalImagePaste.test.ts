@@ -88,8 +88,8 @@ suite('ParadisTerminalImagePaste', () => {
 						return {} as never;
 					},
 				}),
-				remoteAuthority: 'ssh-remote+paradis-pc',
-				cwd: '/home/yuasa/develop/maguro/ai-zyusetu'
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: '/home/user/develop/workspace/sample-app'
 			}
 		);
 
@@ -103,10 +103,10 @@ suite('ParadisTerminalImagePaste', () => {
 				sentCtrlV: inputs.length
 			},
 			{
-				returnedPathDirectory: '/home/yuasa/develop/maguro/ai-zyusetu/.para-code/pasted-images',
+				returnedPathDirectory: '/home/user/develop/workspace/sample-app/.para-code/pasted-images',
 				isPng: true,
 				writeOrder: ['gitignore', 'image'],
-				wroteToHost: 'ssh-remote+paradis-pc',
+				wroteToHost: 'ssh-remote+dev-pc',
 				wroteImageBytes: 4,
 				sentCtrlV: 0
 			}
@@ -125,21 +125,21 @@ suite('ParadisTerminalImagePaste', () => {
 						return {} as never;
 					},
 				}),
-				remoteAuthority: 'ssh-remote+paradis-pc',
-				cwd: '/home/yuasa/develop/maguro/ai-zyusetu/packages/app'
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: '/home/user/develop/workspace/sample-app/packages/app'
 			}
 		);
 
 		assert.strictEqual(
-			written.get('/home/yuasa/develop/maguro/ai-zyusetu/packages/app/.para-code/pasted-images/.gitignore'),
+			written.get('/home/user/develop/workspace/sample-app/packages/app/.para-code/pasted-images/.gitignore'),
 			'*\n'
 		);
 	});
 
 	test('does not touch .gitignore again when it already exists, but still writes the image', async () => {
 		const written: Array<{ path: string; content: string }> = [];
-		const gitignorePath = '/home/yuasa/develop/maguro/.para-code/pasted-images/.gitignore';
-		const imagePath = '/home/yuasa/develop/maguro/.para-code/pasted-images/'; // prefix check below
+		const gitignorePath = '/home/user/develop/workspace/.para-code/pasted-images/.gitignore';
+		const imagePath = '/home/user/develop/workspace/.para-code/pasted-images/'; // prefix check below
 		const result = await paradisTryTerminalImagePaste(
 			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
 			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
@@ -151,8 +151,8 @@ suite('ParadisTerminalImagePaste', () => {
 					},
 					exists: async (resource: URI) => resource.path === gitignorePath,
 				}),
-				remoteAuthority: 'ssh-remote+paradis-pc',
-				cwd: '/home/yuasa/develop/maguro'
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: '/home/user/develop/workspace'
 			}
 		);
 
@@ -183,8 +183,8 @@ suite('ParadisTerminalImagePaste', () => {
 						return false;
 					},
 				}),
-				remoteAuthority: 'ssh-remote+paradis-pc',
-				cwd: '/home/yuasa/develop/maguro'
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: '/home/user/develop/workspace'
 			}
 		);
 
@@ -203,20 +203,20 @@ suite('ParadisTerminalImagePaste', () => {
 				fileService: makeFileService({
 					resolve: async () => ({
 						children: [
-							{ name: `${staleTimestamp}.png`, isDirectory: false, resource: URI.parse(`vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/${staleTimestamp}.png`) },
-							{ name: `${freshTimestamp}.png`, isDirectory: false, resource: URI.parse(`vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/${freshTimestamp}.png`) },
-							{ name: '.png', isDirectory: false, resource: URI.parse('vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/.png') },
-							{ name: '.gitignore', isDirectory: false, resource: URI.parse('vscode-remote://ssh-remote+paradis-pc/home/yuasa/.para-code/pasted-images/.gitignore') },
+							{ name: `${staleTimestamp}.png`, isDirectory: false, resource: URI.parse(`vscode-remote://ssh-remote+dev-pc/home/user/.para-code/pasted-images/${staleTimestamp}.png`) },
+							{ name: `${freshTimestamp}.png`, isDirectory: false, resource: URI.parse(`vscode-remote://ssh-remote+dev-pc/home/user/.para-code/pasted-images/${freshTimestamp}.png`) },
+							{ name: '.png', isDirectory: false, resource: URI.parse('vscode-remote://ssh-remote+dev-pc/home/user/.para-code/pasted-images/.png') },
+							{ name: '.gitignore', isDirectory: false, resource: URI.parse('vscode-remote://ssh-remote+dev-pc/home/user/.para-code/pasted-images/.gitignore') },
 						],
 					} as never),
 					del: async (resource: URI) => { deleted.push(resource.path); },
 				}),
-				remoteAuthority: 'ssh-remote+paradis-pc',
-				cwd: '/home/yuasa'
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: '/home/user'
 			}
 		);
 
-		assert.deepStrictEqual(deleted, [`/home/yuasa/.para-code/pasted-images/${staleTimestamp}.png`]);
+		assert.deepStrictEqual(deleted, [`/home/user/.para-code/pasted-images/${staleTimestamp}.png`]);
 	});
 
 	test('falls through when connected but the terminal has no working directory', async () => {
@@ -226,7 +226,7 @@ suite('ParadisTerminalImagePaste', () => {
 			{ raw: { input: (data: string) => inputs.push(data) } } as unknown as { raw: RawXtermTerminal },
 			{
 				fileService: {} as unknown as IFileService,
-				remoteAuthority: 'ssh-remote+paradis-pc',
+				remoteAuthority: 'ssh-remote+dev-pc',
 				cwd: undefined
 			}
 		);

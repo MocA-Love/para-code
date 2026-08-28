@@ -66,13 +66,13 @@ suite('ParadisAgentHooksSetup', () => {
 	});
 
 	test('bakes the port file location in for the SSH host, where the env var points at this machine', () => {
-		const remote = paradisGetNotifyScriptContent('/home/yuasa/.para-code/paradis-browser-mcp.json');
+		const remote = paradisGetNotifyScriptContent('/home/user/.para-code/paradis-browser-mcp.json');
 		const local = paradisGetNotifyScriptContent();
 
 		assert.deepStrictEqual(
 			{
 				// 接続先版はその場所を直接見る。env を経由しない（手元のパスが渡ってくるため）
-				remoteReadsBakedPath: remote.includes('"/home/yuasa/.para-code/paradis-browser-mcp.json"'),
+				remoteReadsBakedPath: remote.includes('"/home/user/.para-code/paradis-browser-mcp.json"'),
 				remoteIgnoresEnvVar: !remote.includes('PARA_CODE_MCP_PORT_FILE'),
 				// ペイントークンの判定は接続先でも要る（Para Code の外では素通りさせる）
 				remoteStillChecksPaneToken: remote.includes('PARA_CODE_TERMINAL_PANE_ID'),

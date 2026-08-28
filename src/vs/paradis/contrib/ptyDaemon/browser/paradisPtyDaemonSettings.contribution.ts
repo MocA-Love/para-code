@@ -31,7 +31,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[PARADIS_PTY_HOST_DAEMON_ENABLED]: {
 			type: 'boolean',
 			default: false,
-			scope: ConfigurationScope.APPLICATION,
+			// MACHINE スコープ: **この設定だけは接続先(REH)にも読み手が居る**
+			// (`paradisRemotePtyHost.ts`)。しかも読むのは接続先のマシン設定で、こちらの
+			// ユーザー設定ではない。APPLICATION のままだと設定画面から接続先側へ書く手立てが
+			// 無く、「SSH 先でも同じように動きます」と書いてある機能を、接続先の
+			// settings.json を手で開く以外に有効にできない。
+			// MACHINE はワークスペースからの上書きを許さない点は APPLICATION と同じなので、
+			// 「ターミナルのプロセスを持つのはマシンごとの1つ」という前提は保たれる。
+			scope: ConfigurationScope.MACHINE,
 			markdownDescription: localize('paradis.terminal.daemon.reattachAcrossUpdates', "ターミナルを常駐プロセスで動かし、**Para Code を更新しても繋ぎ直せる**ようにします。SSH 先でも同じように動きます。\n\n{0} との違いは、更新したときの振る舞いだけです。あちらは更新すると新しい常駐に切り替わり、それまでのターミナルは古い常駐に取り残されます。\n\nまた、閉じている間もコマンドは止まらずに走り切ります（そのぶん、長く走ると古い出力から消えることがあります。消えた場合は画面にその旨が出ます）。\n\n変更は Para Code の再起動後に反映されます。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
 			tags: ['experimental'],
 		},

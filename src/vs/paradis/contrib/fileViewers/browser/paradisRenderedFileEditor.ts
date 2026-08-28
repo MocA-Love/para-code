@@ -249,10 +249,10 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
 		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
 		this._renderedBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._renderedBtn.textContent = localize('paradis.fileViewer.rendered', "Rendered");
+		this._renderedBtn.textContent = localize('paradis.fileViewer.rendered', "プレビュー");
 		this._register(dom.addDisposableListener(this._renderedBtn, dom.EventType.CLICK, () => this.setViewMode('rendered')));
 		this._rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._rawBtn.textContent = localize('paradis.fileViewer.raw', "Raw");
+		this._rawBtn.textContent = localize('paradis.fileViewer.raw', "ソース");
 		this._register(dom.addDisposableListener(this._rawBtn, dom.EventType.CLICK, () => this.setViewMode('raw')));
 
 		this._toolbarRightElement = dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
@@ -466,7 +466,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 		this._notificationService.notify({
 			severity: Severity.Warning,
-			message: localize('paradis.fileViewer.blankFallback', "The rendered preview could not be displayed, so the file was opened in Raw view."),
+			message: localize('paradis.fileViewer.blankFallback', "プレビューを表示できなかったため、ソース表示で開きました。"),
 		});
 		this._applyViewModeFromRecovery('raw');
 	}
@@ -735,6 +735,27 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	override getControl(): ICodeEditor | undefined {
 		return this._mode === 'raw' ? this._codeEditor : undefined;
+	}
+
+	/** Rendered 表示中のみ有効。webview 標準の find widget（トグル/件数表示なし）を出す。 */
+	showFind(): void {
+		if (this._mode === 'rendered') {
+			this._webview?.showFind();
+		}
+	}
+
+	/** Rendered 表示中のみ有効。表示中の find widget を閉じる。 */
+	hideFind(): void {
+		if (this._mode === 'rendered') {
+			this._webview?.hideFind();
+		}
+	}
+
+	/** Rendered 表示中のみ有効。次/前のマッチへ移動する。 */
+	runFindAction(previous: boolean): void {
+		if (this._mode === 'rendered') {
+			this._webview?.runFindAction(previous);
+		}
 	}
 
 	override focus(): void {

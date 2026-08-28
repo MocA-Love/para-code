@@ -8,7 +8,49 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { parseLsofOutput, parseNetstatOutput } from '../../node/paradisPortListChannel.js';
+import { IParadisPortEntry } from '../../common/paradisPortList.js';
+import { ParadisPortListService, parseLsofOutput, parseNetstatOutput, registerParadisPortList } from '../../node/paradisPortListChannel.js';
+
+const batchEntries: readonly IParadisPortEntry[] = [
+	{ port: 3000, proto: 'TCP', pid: 10, processName: 'node', address: '127.0.0.1', risky: false },
+	{ port: 3001, proto: 'TCP', pid: process.pid, processName: 'shared-process', address: '127.0.0.1', risky: false },
+];
+
+interface ICapturedChannel {
+	call<T>(context: undefined, command: string, arg?: unknown): Promise<T>;
+}
+
+suite('ParadisPortList - batch kill', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('collects once and protects the shared process when killing all', async () => {
+		let collections = 0;
+		const signalled: number[] = [];
+		const service = new ParadisPortListService(
+			{} as never,
+			async () => { collections++; return batchEntries; },
+			pid => { signalled.push(pid); },
+		);
+
+		const result = await service.killAll([batchEntries[0], batchEntries[1]]);
+		assert.strictEqual(collections, 1);
+		assert.deepStrictEqual(signalled, [10]);
+		assert.deepStrictEqual(result, { failed: 1 });
+	});
+
+	test('forwards a killAll IPC array to the registered channel', async () => {
+		let captured: ICapturedChannel | undefined;
+		const service = new ParadisPortListService({} as never, async () => batchEntries, () => { });
+		const server = {
+			registerChannel: (_name: string, channel: ICapturedChannel) => captured = channel,
+		};
+		registerParadisPortList(server as never, {} as never, service);
+
+		const result = await captured!.call<{ readonly failed: number }>(undefined, 'killAll', [[batchEntries[0]]]);
+		assert.deepStrictEqual(result, { failed: 0 });
+	});
+});
 
 suite('ParadisPortList - parseLsofOutput', () => {
 
@@ -17,7 +59,7 @@ suite('ParadisPortList - parseLsofOutput', () => {
 	test('parses a plain LISTEN line', () => {
 		const stdout = [
 			'COMMAND     PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME',
-			'node      82913 magu   20u  IPv4 0x1234567890abcdef      0t0  TCP 127.0.0.1:5173 (LISTEN)',
+			'node      82913 user   20u  IPv4 0x1234567890abcdef      0t0  TCP 127.0.0.1:5173 (LISTEN)',
 		].join('\n');
 		assert.deepStrictEqual(parseLsofOutput(stdout), [
 			{ port: 5173, proto: 'TCP', pid: 82913, processName: 'node', address: '127.0.0.1', risky: false },
@@ -25,7 +67,7 @@ suite('ParadisPortList - parseLsofOutput', () => {
 	});
 
 	test('strips brackets from an IPv6 address and does not misparse the embedded colons as the port separator', () => {
-		const stdout = 'node      82913 magu   20u  IPv6 0x1234567890abcdef      0t0  TCP [::1]:8080 (LISTEN)';
+		const stdout = 'node      82913 user   20u  IPv6 0x1234567890abcdef      0t0  TCP [::1]:8080 (LISTEN)';
 		assert.deepStrictEqual(parseLsofOutput(stdout), [
 			{ port: 8080, proto: 'TCP', pid: 82913, processName: 'node', address: '::1', risky: false },
 		]);
@@ -33,8 +75,8 @@ suite('ParadisPortList - parseLsofOutput', () => {
 
 	test('marks a wildcard/0.0.0.0 bind as risky', () => {
 		const stdout = [
-			'node      1 magu   1u  IPv4 0x1 0t0 TCP *:3000 (LISTEN)',
-			'node      2 magu   1u  IPv4 0x2 0t0 TCP 0.0.0.0:3001 (LISTEN)',
+			'node      1 user   1u  IPv4 0x1 0t0 TCP *:3000 (LISTEN)',
+			'node      2 user   1u  IPv4 0x2 0t0 TCP 0.0.0.0:3001 (LISTEN)',
 		].join('\n');
 		const entries = parseLsofOutput(stdout);
 		assert.strictEqual(entries.length, 2);
@@ -64,8 +106,8 @@ suite('ParadisPortList - parseLsofOutput', () => {
 
 	test('deduplicates identical proto/port/pid rows (e.g. IPv4 and IPv6 dual-stack entries reported twice)', () => {
 		const stdout = [
-			'node      1 magu   1u  IPv4 0x1 0t0 TCP 127.0.0.1:3000 (LISTEN)',
-			'node      1 magu   2u  IPv4 0x2 0t0 TCP 127.0.0.1:3000 (LISTEN)',
+			'node      1 user   1u  IPv4 0x1 0t0 TCP 127.0.0.1:3000 (LISTEN)',
+			'node      1 user   2u  IPv4 0x2 0t0 TCP 127.0.0.1:3000 (LISTEN)',
 		].join('\n');
 		assert.strictEqual(parseLsofOutput(stdout).length, 1);
 	});
