@@ -36,8 +36,10 @@ describe('command presets on the phone', () => {
 			isValidPresetDef({ ...preset(), tasks: undefined }),
 			isValidPresetDef({ ...preset(), tasks: [{ commands: [1] }] }),
 			isValidPresetDef({ ...preset(), layout: 'grid' }),
+			// smart（空いていれば実行・忙しければ新規）もPC側の正規のレイアウトとして通す
+			isValidPresetDef({ ...preset(), layout: 'smart' }),
 			isValidPresetDef(null),
-		]).toEqual([true, false, false, false, false, false]);
+		]).toEqual([true, false, false, false, false, true, false]);
 	});
 
 	it('describes how many terminals a preset will create', () => {
@@ -47,7 +49,9 @@ describe('command presets on the phone', () => {
 			presetTerminalCount(preset({ tasks, layout: 'split' })),
 			// current は既存の端末へ送る指定なので、タスクが分かれていても端末は増えない
 			presetTerminalCount(preset({ tasks, layout: 'current' })),
-		]).toEqual([2, 2, 1]);
+			// smart もモバイルからは常に新規1本（forceNewTerminal）で実行されるので同じ扱い
+			presetTerminalCount(preset({ tasks, layout: 'smart' })),
+		]).toEqual([2, 2, 1, 1]);
 	});
 
 	it('hides only what this phone turned off, keeping the PC order', () => {
