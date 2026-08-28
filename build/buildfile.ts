@@ -32,6 +32,10 @@ export const workbenchDesktop = [
 	createModuleDescription('vs/platform/agentHost/node/agentHostMain'),
 	createModuleDescription('vs/platform/agentHost/node/diffWorkerMain'),
 	createModuleDescription('vs/workbench/api/node/extensionHostProcess'),
+	// PARA-PATCH: ship the Para Code agent-browser MCP stdio shim. Agent CLIs (Claude Code / Codex)
+	// run it directly via `node out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js`
+	// (see paradisMcpSnippets.ts), so packaged builds must emit it at that exact path.
+	createModuleDescription('vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim'),
 	createModuleDescription('vs/workbench/workbench.desktop.main'),
 	createModuleDescription('vs/sessions/sessions.desktop.main')
 ];
