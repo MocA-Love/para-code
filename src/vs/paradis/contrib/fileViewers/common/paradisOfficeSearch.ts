@@ -118,15 +118,15 @@ const badgeKinds = new Set<ParadisOfficeSearchResult['locationBadge']['kind']>([
 const sides = new Set<NonNullable<ParadisOfficeSearchResult['side']>>(['original', 'modified', 'combined']);
 
 const fieldLabels: Readonly<Record<ParadisOfficeSearchFieldKind, string>> = Object.freeze({
-	formatted: localize('paradis.office.searchField.formatted', "Formatted"),
-	raw: localize('paradis.office.searchField.raw', "Raw"),
-	formula: localize('paradis.office.searchField.formula', "Formula"),
-	comment: localize('paradis.office.searchField.comment', "Comment"),
-	link: localize('paradis.office.searchField.link', "Link"),
-	alternativeText: localize('paradis.office.searchField.alternativeText', "Alternative Text"),
-	placeholder: localize('paradis.office.searchField.placeholder', "Placeholder"),
-	story: localize('paradis.office.searchField.story', "Story"),
-	hidden: localize('paradis.office.searchField.hidden', "Hidden"),
+	formatted: localize('paradis.office.searchField.formatted', "表示テキスト"),
+	raw: localize('paradis.office.searchField.raw', "生データ"),
+	formula: localize('paradis.office.searchField.formula', "数式"),
+	comment: localize('paradis.office.searchField.comment', "コメント"),
+	link: localize('paradis.office.searchField.link', "リンク"),
+	alternativeText: localize('paradis.office.searchField.alternativeText', "代替テキスト"),
+	placeholder: localize('paradis.office.searchField.placeholder', "代替表示"),
+	story: localize('paradis.office.searchField.story', "文書パーツ"),
+	hidden: localize('paradis.office.searchField.hidden', "非表示"),
 });
 
 /** Bounded semantic search over caller-owned safe projections. Cursors never contain source identities. */

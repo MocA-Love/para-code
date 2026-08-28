@@ -176,9 +176,9 @@ function boundingRange(cells: readonly ParadisOfficeSpreadsheetPrintCell[]): Par
 
 function lineDirectionLabel(direction: Extract<ParadisOfficePrintLinePrimitive, { readonly kind: 'cellDiagonal' | 'tableDiagonal' }>['direction']): string {
 	switch (direction) {
-		case 'topLeftToBottomRight': return localize('paradis.office.print.line.down', "top-left to bottom-right");
-		case 'topRightToBottomLeft': return localize('paradis.office.print.line.up', "top-right to bottom-left");
-		case 'both': return localize('paradis.office.print.line.both', "both diagonals");
+		case 'topLeftToBottomRight': return localize('paradis.office.print.line.down', "左上から右下");
+		case 'topRightToBottomLeft': return localize('paradis.office.print.line.up', "右上から左下");
+		case 'both': return localize('paradis.office.print.line.both', "両方向");
 	}
 }
 
@@ -187,15 +187,15 @@ export function createParadisOfficeLineLabelBlock(line: ParadisOfficePrintLinePr
 	let text: string;
 	switch (line.kind) {
 		case 'cellDiagonal':
-			text = localize('paradis.office.print.cellDiagonal', "Diagonal border: {0}", lineDirectionLabel(line.direction));
+			text = localize('paradis.office.print.cellDiagonal', "斜線: {0}", lineDirectionLabel(line.direction));
 			break;
 		case 'tableDiagonal':
-			text = localize('paradis.office.print.tableDiagonal', "Table diagonal border: {0}", lineDirectionLabel(line.direction));
+			text = localize('paradis.office.print.tableDiagonal', "表の斜線: {0}", lineDirectionLabel(line.direction));
 			break;
 		case 'drawingLine':
 			text = line.label
-				? localize('paradis.office.print.drawingLineNamed', "Drawing line: {0}", line.label)
-				: localize('paradis.office.print.drawingLine', "Drawing line");
+				? localize('paradis.office.print.drawingLineNamed', "図形の線: {0}", line.label)
+				: localize('paradis.office.print.drawingLine', "図形の線");
 			break;
 	}
 	return { kind: 'text', nodeId: `${line.nodeId}:print-label`, runs: [{ text }] };
@@ -296,7 +296,7 @@ export function createParadisOfficeSpreadsheetPrintModel(input: ParadisOfficeSpr
 	}
 	const approximationWarnings = approximated ? [{
 		code: 'spreadsheet.pagination.approximate',
-		message: localize('paradis.office.print.spreadsheetApproximate', "Spreadsheet pagination is approximate because no saved page rectangles were available."),
+		message: localize('paradis.office.print.spreadsheetApproximate', "保存されたページ情報がないため、ページ区切りは概算です。"),
 	}] : [];
 	const model = { title: input.title, pages, approximationWarnings };
 	validatePrintModel(model, token);
@@ -371,7 +371,7 @@ export function createParadisOfficeWordPrintModel(input: ParadisOfficeWordPrintI
 		pages,
 		approximationWarnings: [{
 			code: 'word.pagination.approximate',
-			message: localize('paradis.office.print.wordApproximate', "Word pagination uses saved and explicit breaks; automatic pagination may differ from Microsoft Word."),
+			message: localize('paradis.office.print.wordApproximate', "ページ区切りは、文書に保存された改ページ情報をもとに表示しています。Microsoft Word での自動的なページ分けとは異なる場合があります。"),
 		}],
 	};
 	validatePrintModel(model, token);
@@ -483,7 +483,7 @@ function renderPrintBlock(block: ParadisOfficePrintBlock): string {
 			return `<${tag} data-node-id="${nodeId}" data-print-role="${escapeHtml(block.role)}">${block.children.map(renderPrintBlock).join('')}</${tag}>`;
 		}
 		case 'object': {
-			const label = block.object.altText ?? localize('paradis.office.print.object', "Document object: {0}", block.object.kind);
+			const label = block.object.altText ?? localize('paradis.office.print.object', "文書オブジェクト: {0}", block.object.kind);
 			return `<figure data-node-id="${nodeId}" data-object-kind="${escapeHtml(block.object.kind)}" data-render-coverage="${escapeHtml(block.object.coverage)}"><figcaption>${escapeHtml(label)}</figcaption></figure>`;
 		}
 		case 'placeholder': {

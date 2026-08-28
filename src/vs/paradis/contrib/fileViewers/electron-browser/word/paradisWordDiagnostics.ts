@@ -80,14 +80,14 @@ export function renderWordDiagnosticsRibbon(container: HTMLElement, input: Parad
 	ribbon.style.alignItems = 'center';
 	ribbon.style.gap = '4px';
 	ribbon.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.foreground;
-	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.faithful', "Faithful {0}", summary.faithful), 'faithful');
-	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.approximate', "Approximate {0}", summary.approximate), 'approximate');
-	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.alternatives', "Alternatives {0}", summary.alternatives), 'alternatives');
+	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.faithful', "完全再現 {0}", summary.faithful), 'faithful');
+	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.approximate', "近似 {0}", summary.approximate), 'approximate');
+	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.alternatives', "代替表示 {0}", summary.alternatives), 'alternatives');
 	if (summary.incomplete) {
 		const incomplete = dom.append(ribbon, dom.$('span.paradis-word-diagnostic-incomplete'));
 		incomplete.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
 		incomplete.style.borderBottom = `1px solid ${PARADIS_WORD_HIGH_CONTRAST_TOKENS.border}`;
-		incomplete.textContent = localize('paradis.word.diagnostics.incomplete', "Analysis Incomplete");
+		incomplete.textContent = localize('paradis.word.diagnostics.incomplete', "解析未完了");
 	}
 	for (const warning of input.warnings ?? []) {
 		const warningElement = dom.append(ribbon, dom.$('span.paradis-word-diagnostic-warning'));

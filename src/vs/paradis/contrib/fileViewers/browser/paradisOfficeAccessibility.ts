@@ -184,7 +184,7 @@ export class ParadisOfficeAccessibility extends Disposable {
 		const logicalIndex = Math.min(logicalTotal - 1, Math.max(0, Number.isSafeInteger(index) ? index : 0));
 		this.liveRegion.textContent = localize(
 			'paradis.office.accessibility.changePosition',
-			"Change {0} of {1}: {2}",
+			"{1} 件中 {0} 件目の変更: {2}",
 			logicalIndex + 1,
 			logicalTotal,
 			boundedAccessibleText(label),
@@ -194,8 +194,8 @@ export class ParadisOfficeAccessibility extends Disposable {
 	announceChangeCount(total: number): void {
 		const logicalTotal = Math.max(0, Number.isSafeInteger(total) ? total : 0);
 		this.liveRegion.textContent = logicalTotal === 1
-			? localize('paradis.office.accessibility.oneChange', "1 change")
-			: localize('paradis.office.accessibility.changeCount', "{0} changes", logicalTotal);
+			? localize('paradis.office.accessibility.oneChange', "1 件の変更")
+			: localize('paradis.office.accessibility.changeCount', "{0} 件の変更", logicalTotal);
 	}
 
 	private observePreference(kind: 'forcedColors' | 'reducedMotion', override: boolean | undefined, query: string): void {
@@ -400,19 +400,19 @@ export function applyParadisOfficeChangeLegendSemantics(item: HTMLElement, swatc
 /** Human-facing semantic label; raw before/after values and geometry are deliberately excluded. */
 export function paradisOfficeChangeLabel(change: Pick<ParadisOfficeChange, 'category' | 'subject'>): string {
 	switch (change.subject.kind) {
-		case 'cell.diagonalBorder': return localize('paradis.office.change.baseDiagonal', "Base Diagonal Border");
-		case 'conditionalFormatting.diagonalBorder': return localize('paradis.office.change.conditionalDiagonal', "Conditional Formatting Diagonal");
-		case 'table.diagonalBorder': return localize('paradis.office.change.tableDiagonal', "Table Diagonal Border");
-		case 'object.lineGeometry': return localize('paradis.office.change.drawingLine', "Drawing Line");
+		case 'cell.diagonalBorder': return localize('paradis.office.change.baseDiagonal', "セルの斜線");
+		case 'conditionalFormatting.diagonalBorder': return localize('paradis.office.change.conditionalDiagonal', "条件付き書式の斜線");
+		case 'table.diagonalBorder': return localize('paradis.office.change.tableDiagonal', "表の斜線");
+		case 'object.lineGeometry': return localize('paradis.office.change.drawingLine', "図形の線");
 	}
 	switch (change.category) {
-		case 'content': return localize('paradis.office.change.content', "Content Change");
-		case 'formatting': return localize('paradis.office.change.formatting', "Formatting Change");
-		case 'structure': return localize('paradis.office.change.structure', "Structure Change");
-		case 'annotation': return localize('paradis.office.change.annotation', "Annotation Change");
-		case 'revision': return localize('paradis.office.change.revision', "Revision Change");
-		case 'object': return localize('paradis.office.change.object', "Object Change");
-		case 'security': return localize('paradis.office.change.security', "Security Change");
+		case 'content': return localize('paradis.office.change.content', "内容の変更");
+		case 'formatting': return localize('paradis.office.change.formatting', "書式の変更");
+		case 'structure': return localize('paradis.office.change.structure', "構造の変更");
+		case 'annotation': return localize('paradis.office.change.annotation', "コメントの変更");
+		case 'revision': return localize('paradis.office.change.revision', "変更履歴の変更");
+		case 'object': return localize('paradis.office.change.object', "オブジェクトの変更");
+		case 'security': return localize('paradis.office.change.security', "セキュリティの変更");
 	}
 }
 

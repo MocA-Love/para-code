@@ -117,7 +117,7 @@ suite('paradisSpreadsheetDiff', () => {
 			['mergedColumns', '1', '2'],
 			['wrapText', 'false', 'true'],
 		]);
-		strictEqual(formatDiffDetails(details ?? []), 'Value: {{name}} → Alice\nMerged Columns: 1 → 2\nWrap Text: false → true');
+		strictEqual(formatDiffDetails(details ?? []), '値: {{name}} → Alice\n結合列: 1 → 2\n折り返して全体を表示: false → true');
 	});
 
 	test('marks changed, removed, and added data validation rules', () => {
@@ -293,7 +293,7 @@ suite('paradisSpreadsheetDiff', () => {
 
 		const title = overlay?.querySelector('title');
 		ok(title);
-		strictEqual(title.textContent, 'Object Outline Color: #000000 → #ff0000');
+		strictEqual(title.textContent, '枠線の色: #000000 → #ff0000');
 	});
 	// ── 改ページ(ページ区切り)の差分 ──
 

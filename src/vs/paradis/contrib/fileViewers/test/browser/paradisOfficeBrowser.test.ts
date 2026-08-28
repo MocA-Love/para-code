@@ -327,13 +327,13 @@ suite('ParadisOfficeBrowser', () => {
 			drawings: [{ nodeId: 'drawing-1', geometry: { placement: 'inline', distances: {}, sourcePartFingerprint: { algorithm: 'sha256', value: 'a'.repeat(64), byteLength: 1 } } }],
 			tableDiagonals: [],
 		});
-		strictEqual(container.textContent?.includes('incomplete'), true);
-		strictEqual(container.textContent?.includes('truncated'), true);
-		strictEqual(container.textContent?.includes('2 external relationships'), true);
-		strictEqual(container.textContent?.includes('1 drawing placeholder'), true);
+		strictEqual(container.textContent?.includes('不完全'), true);
+		strictEqual(container.textContent?.includes('途中で省略'), true);
+		strictEqual(container.textContent?.includes('2 件の外部参照'), true);
+		strictEqual(container.textContent?.includes('1 件の図形'), true);
 
 		renderParadisOfficeSummary(container, { kind: 'diff', format: 'docx', budgetProfile: 'browser', changes: [], terminal: false });
-		strictEqual(container.textContent?.includes('not complete'), true);
+		strictEqual(container.textContent?.includes('完了していません'), true);
 	});
 });
 

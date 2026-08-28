@@ -324,11 +324,11 @@ suite('ParadisOfficeConfiguration', () => {
 		deepStrictEqual(actual, {
 			'paradis.officeViewer.engine': { type: 'string', default: 'legacy', scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: ['auto', 'legacy', 'v1'], policy: 'ParadisOfficeViewerEngine' },
 			'paradis.officeViewer.kernelShadow': { type: 'boolean', default: false, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerKernelShadow' },
-			'paradis.officeViewer.semanticSpreadsheet': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerSemanticSpreadsheet' },
-			'paradis.officeViewer.virtualizedSpreadsheet': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerVirtualizedSpreadsheet' },
-			'paradis.officeViewer.semanticWord': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerSemanticWord' },
+			'paradis.officeViewer.semanticSpreadsheet': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerSemanticSpreadsheet' },
+			'paradis.officeViewer.virtualizedSpreadsheet': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerVirtualizedSpreadsheet' },
+			'paradis.officeViewer.semanticWord': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerSemanticWord' },
 			'paradis.officeViewer.platformBackend': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerPlatformBackend' },
-			'paradis.officeViewer.searchPrint': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerSearchPrint' },
+			'paradis.officeViewer.searchPrint': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerSearchPrint' },
 			'paradis.officeViewer.enabled': { type: 'boolean', default: false, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerEnabled' },
 		});
 	});

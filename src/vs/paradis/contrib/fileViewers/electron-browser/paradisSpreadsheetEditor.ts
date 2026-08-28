@@ -218,8 +218,8 @@ export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData
 			nodeId: `legacy:${sheetIndex}:drawing:${shapeIndex}`,
 			feature: `drawing.${shape.type}`,
 			reason: 'unsupported',
-			title: shape.name ?? localize('paradis.spreadsheet.printDrawing', "Drawing Object"),
-			detail: localize('paradis.spreadsheet.printDrawingFallback', "Printed as alternative content from the legacy projection."),
+			title: shape.name ?? localize('paradis.spreadsheet.printDrawing', "図形"),
+			detail: localize('paradis.spreadsheet.printDrawingFallback', "従来の表示方法のため、代替のコンテンツとして印刷されます。"),
 		}));
 		return {
 			nodeId: `legacy:${sheetIndex}`,
@@ -240,12 +240,12 @@ export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData
 	const model = createParadisOfficeSpreadsheetPrintModel({ title, sheets });
 	const approximationWarnings = [...model.approximationWarnings, {
 		code: 'spreadsheet.legacyPrintProjection',
-		message: localize('paradis.spreadsheet.legacyPrintProjection', "Pagination is approximate while the legacy spreadsheet renderer is active."),
+		message: localize('paradis.spreadsheet.legacyPrintProjection', "従来の表示方法で開いているため、ページの区切りはおおよその位置になります。"),
 	}];
 	if (truncated) {
 		approximationWarnings.push({
 			code: 'spreadsheet.legacyPrintLimit',
-			message: localize('paradis.spreadsheet.legacyPrintLimit', "The compatibility print preview is limited to 10,000 cells."),
+			message: localize('paradis.spreadsheet.legacyPrintLimit', "互換表示の印刷プレビューは 10,000 セルまでです。"),
 		});
 	}
 	return { ...model, approximationWarnings };
@@ -352,6 +352,131 @@ export function rebuildSpreadsheetStickyStrips(
 	return { headHeight, hasRows: dataRows.length > 0 };
 }
 
+/** 固定枠の対象範囲。Excel の xSplit/ySplit を「実際に描画されている行・列」の本数へ読み替える。 */
+export interface IParadisFrozenPaneExtent {
+	/** 先頭から固定する描画済み行の本数。 */
+	readonly rowCount: number;
+	/** 先頭から固定する描画済み列の本数。 */
+	readonly colCount: number;
+	/** 固定行の合計高さ(自然座標)。 */
+	readonly height: number;
+	/** 固定列の合計幅(自然座標)。 */
+	readonly width: number;
+}
+
+/**
+ * Excel の固定枠(行 N・列 M は「シート先頭からの本数」)を、描画済み行・列の本数へ変換する。
+ * 使用範囲が途中の行・列から始まるシートでは、固定対象が描画範囲より上/左に外れることがある。
+ */
+export function resolveFrozenPaneExtent(sheet: IParadisSheetData): IParadisFrozenPaneExtent {
+	const freeze = sheet.freezePane;
+	if (!freeze) {
+		return { rowCount: 0, colCount: 0, height: 0, width: 0 };
+	}
+	let rowCount = 0;
+	let height = 0;
+	for (const row of sheet.rows) {
+		if (row.excelRow > freeze.rows) {
+			break;
+		}
+		rowCount++;
+		height += row.height;
+	}
+	let colCount = 0;
+	let width = 0;
+	for (let index = 0; index < sheet.columnWidths.length; index++) {
+		if (sheet.minCol + index > freeze.cols) {
+			break;
+		}
+		colCount++;
+		width += sheet.columnWidths[index];
+	}
+	return { rowCount, colCount, height, width };
+}
+
+export interface IParadisFrozenPaneBox {
+	readonly top: number;
+	readonly left: number;
+	readonly width?: number;
+	readonly height?: number;
+}
+
+/**
+ * 固定枠3枚の位置と大きさを求める。
+ *
+ * 重要: 固定行は `translateX(-scrollLeft)`、固定列は `translateY(-scrollTop)` だけを掛けて
+ * 本体の表と座標を合わせる。したがって**どの枠も箱の起点は見出し帯の直下(headHeight)で揃える**。
+ * 固定列の箱を `headHeight + frozenHeight` から始めると、内側の translate は据え置きなので
+ * 中身が frozenHeight ぶん下へずれる(行・列を同時に固定したときに必ず起きる)。
+ * 固定行と重なる上部は、より前面にある角の枠が覆う。
+ */
+export function computeFrozenPaneBoxes(input: {
+	readonly headHeight: number;
+	readonly frozenHeight: number;
+	readonly frozenWidth: number;
+	readonly scale: number;
+}): { readonly rows: IParadisFrozenPaneBox; readonly cols: IParadisFrozenPaneBox; readonly corner: IParadisFrozenPaneBox } {
+	const headH = Math.round(input.headHeight * input.scale);
+	const rowW = Math.round(PARADIS_ROW_NUM_COL_WIDTH * input.scale);
+	const frozenH = Math.round(input.frozenHeight * input.scale);
+	const frozenW = Math.round(input.frozenWidth * input.scale);
+	return {
+		rows: { top: headH, left: rowW, height: frozenH },
+		cols: { top: headH, left: rowW, width: frozenW },
+		corner: { top: headH, left: rowW, width: frozenW, height: frozenH },
+	};
+}
+
+/** 複製した表の子孫要素を、セレクタに依存せず全て辿る。 */
+function frozenPaneDescendants(root: HTMLElement): HTMLElement[] {
+	const found: HTMLElement[] = [];
+	const walk = (element: Element): void => {
+		for (const child of Array.from(element.children)) {
+			if (dom.isHTMLElement(child)) {
+				found.push(child);
+			}
+			walk(child);
+		}
+	};
+	walk(root);
+	return found;
+}
+
+/** 複製した表の tbody 行を、DOM API だけで順に取り出す(セレクタに依存しない)。 */
+function frozenPaneBodyRows(table: HTMLElement): HTMLTableRowElement[] {
+	const rows: HTMLTableRowElement[] = [];
+	const bodies = (table as HTMLTableElement).tBodies;
+	for (let bodyIndex = 0; bodyIndex < (bodies?.length ?? 0); bodyIndex++) {
+		rows.push(...Array.from(bodies[bodyIndex].rows));
+	}
+	return rows;
+}
+
+/** 複製した表から、固定枠に不要な行・列を落として軽くする。 */
+export function trimFrozenPaneClone(table: HTMLElement, rowCount: number | undefined, colCount: number | undefined): void {
+	const bodyRows = frozenPaneBodyRows(table);
+	if (rowCount !== undefined) {
+		for (let index = rowCount; index < bodyRows.length; index++) {
+			bodyRows[index].remove();
+		}
+	}
+	if (colCount === undefined) {
+		return;
+	}
+	// 行番号セル(先頭)は帯側が描くので固定枠側では残さず、データ列だけを colCount 本に切り詰める。
+	for (const row of frozenPaneBodyRows(table)) {
+		const cells = Array.from(row.children).slice(1);
+		let spanned = 0;
+		for (const cell of cells) {
+			if (spanned >= colCount) {
+				cell.remove();
+				continue;
+			}
+			spanned += Math.max(1, Number((cell as HTMLTableCellElement).colSpan) || 1);
+		}
+	}
+}
+
 export class ParadisSpreadsheetEditor extends EditorPane {
 
 	static readonly ID = PARADIS_SPREADSHEET_EDITOR_ID;
@@ -377,6 +502,17 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _rowStripEl: HTMLElement | undefined;
 	private _rowStripInner: HTMLElement | undefined;
 	private _cornerEl: HTMLElement | undefined;
+	// ウィンドウ枠の固定(freeze pane)。ヘッダー帯と同じ理由で position:sticky が使えないため、
+	// 固定したい行・列だけを複製した重ね要素をスクロールに追従させる。
+	private _frozenRowsEl: HTMLElement | undefined;
+	private _frozenRowsInner: HTMLElement | undefined;
+	private _frozenColsEl: HTMLElement | undefined;
+	private _frozenColsInner: HTMLElement | undefined;
+	private _frozenCornerEl: HTMLElement | undefined;
+	private _frozenCornerInner: HTMLElement | undefined;
+	/** 固定領域の自然サイズ(倍率を掛ける前)。0 なら固定なし。 */
+	private _frozenRowsHeight = 0;
+	private _frozenColsWidth = 0;
 	private _headHeight = 0;
 	private _naturalTableWidth = 0;
 	private _naturalTableHeight = 0;
@@ -433,7 +569,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._root = dom.append(parent, $('.paradis-spreadsheet'));
 		this._root.style.position = 'relative';
 		this._accessibility = this._register(new ParadisOfficeAccessibility(this._root, {
-			label: localize('paradis.spreadsheet.viewer', "Spreadsheet Viewer"),
+			label: localize('paradis.spreadsheet.viewer', "スプレッドシートビューアー"),
 		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
 			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
@@ -441,14 +577,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		const header = dom.append(this._root, $('.paradis-spreadsheet-header'));
 		header.setAttribute('role', 'toolbar');
-		header.setAttribute('aria-label', localize('paradis.spreadsheet.toolbar', "Spreadsheet Toolbar"));
+		header.setAttribute('aria-label', localize('paradis.spreadsheet.toolbar', "スプレッドシートのツールバー"));
 		const left = dom.append(header, $('.paradis-spreadsheet-header-left'));
 		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
 		const right = dom.append(header, $('.paradis-spreadsheet-header-right'));
 		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
-		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "Inspector");
-		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "Inspector"));
+		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "変更点");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "変更点"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._inspectorToggle.style.display = 'none';
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -493,6 +629,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._rowStripEl = dom.append(bodyWrap, $('.paradis-spreadsheet-rowstrip'));
 		this._rowStripInner = dom.append(this._rowStripEl, $('.paradis-spreadsheet-strip-inner'));
 		this._cornerEl = dom.append(bodyWrap, $('.paradis-spreadsheet-stickycorner.paradis-spreadsheet-corner'));
+		// 固定枠は行帯・列帯より内側(角より下)に重ねる。複製した表を内部に持つ。
+		this._frozenRowsEl = dom.append(bodyWrap, $('.paradis-spreadsheet-frozenrows'));
+		this._frozenRowsInner = dom.append(this._frozenRowsEl, $('.paradis-spreadsheet-strip-inner'));
+		this._frozenColsEl = dom.append(bodyWrap, $('.paradis-spreadsheet-frozencols'));
+		this._frozenColsInner = dom.append(this._frozenColsEl, $('.paradis-spreadsheet-strip-inner'));
+		this._frozenCornerEl = dom.append(bodyWrap, $('.paradis-spreadsheet-frozencorner'));
+		this._frozenCornerInner = dom.append(this._frozenCornerEl, $('.paradis-spreadsheet-strip-inner'));
 		this._register(dom.addDisposableListener(this._bodyEl, dom.EventType.SCROLL, () => this._updateStickyStripTransforms()));
 
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
@@ -696,7 +839,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
-		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.spreadsheet.searchDisabledOrUnavailable', "Search is disabled or unavailable for this source."));
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.spreadsheet.searchDisabledOrUnavailable', "この文書では検索を利用できません。"));
 		if (this._diagnosticsEl) {
 			dom.clearNode(this._diagnosticsEl);
 		}
@@ -739,8 +882,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
 		this._findWidget.value?.setSearchProvider(callbacks.search?.find, callbacks.search
-			? localize('paradis.spreadsheet.searchUnavailableAdapter', "Search is unavailable for this compatible source adapter.")
-			: localize('paradis.spreadsheet.searchDisabled', "Search is disabled by configuration."));
+			? localize('paradis.spreadsheet.searchUnavailableAdapter', "この形式では検索を利用できません。")
+			: localize('paradis.spreadsheet.searchDisabled', "検索は設定で無効になっています。"));
 		const placeholders: ParadisOfficePlaceholder[] = [];
 		for (let sheetIndex = 0; sheetIndex < workbook.sheets.length; sheetIndex++) {
 			const sheet = workbook.sheets[sheetIndex];
@@ -751,8 +894,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 					nodeId: `${sheet.name}!object:${name}`,
 					feature: `drawing.${shape.type}`,
 					reason: 'unsupported',
-					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "Drawing Object"),
-					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "Rendered through the compatible legacy projection."),
+					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
+					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "従来の表示方法で表示しています。"),
 				});
 			}
 		}
@@ -766,7 +909,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				coverages,
 				warnings: [{
 					code: 'spreadsheet.legacyProjection',
-					message: localize('paradis.spreadsheet.legacyProjection', "Semantic diagnostics are not available for this source adapter; the compatible spreadsheet renderer remains active."),
+					message: localize('paradis.spreadsheet.legacyProjection', "この形式では詳細な解析に対応していないため、従来の表示方法で開いています。"),
 				}],
 			});
 		}
@@ -829,6 +972,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._gridAccessibility.clear();
 		dom.clearNode(this._bodyEl);
 		this._setStickyStripsVisible(false);
+		this._clearFrozenPanes();
 		if (this._tabsEl) {
 			dom.clearNode(this._tabsEl);
 		}
@@ -837,14 +981,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	private _renderRecoveryError(resource: URI): void {
-		this._renderMessage(localize('paradis.spreadsheet.blank', "The spreadsheet renderer produced no visible content."));
+		this._renderMessage(localize('paradis.spreadsheet.blank', "シートの内容を表示できませんでした。"));
 		if (!this._bodyEl) {
 			return;
 		}
 		const actions = dom.append(this._bodyEl, $('.paradis-spreadsheet-recovery-actions'));
 		const retry = dom.append(actions, $('button')) as HTMLButtonElement;
 		retry.type = 'button';
-		retry.textContent = localize('paradis.spreadsheet.retry', "Retry");
+		retry.textContent = localize('paradis.spreadsheet.retry', "再試行");
 		this._inputDisposables.value?.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
 			this._recoveryState = transition.state;
@@ -853,7 +997,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (resource.scheme === Schemas.file) {
 			const open = dom.append(actions, $('button')) as HTMLButtonElement;
 			open.type = 'button';
-			open.textContent = localize('paradis.spreadsheet.openAfterBlank', "Open in Default Application");
+			open.textContent = localize('paradis.spreadsheet.openAfterBlank', "既定のアプリで開く");
 			this._inputDisposables.value?.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
 				void this._nativeHostService.openExternal(resource.toString(true));
 			}));
@@ -885,6 +1029,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._virtualHostEl = undefined;
 		// 前のシートのヘッダー帯が残らないよう一旦隠す(行位置の実測後 _rebuildStickyStrips が再表示する)。
 		this._setStickyStripsVisible(false);
+		this._clearFrozenPanes();
 
 		const sheet = this._sheets[this._activeSheetIndex];
 		if (!sheet) {
@@ -915,7 +1060,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		inner.style.width = `${naturalWidth}px`;
 		dom.append(inner, table);
 		this._gridAccessibility.value = wireParadisOfficeTableGrid(table, {
-			label: localize('paradis.spreadsheet.sheetGrid', "Sheet {0}", sheet.name),
+			label: localize('paradis.spreadsheet.sheetGrid', "シート「{0}」", sheet.name),
 			rowCount: Math.max(1, sheet.rows.length),
 			columnCount: Math.max(1, sheet.columnCount),
 			logicalCellColumns: sheet.rows.map(row => row.cells.flatMap((cell, column) => cell.hidden ? [] : [column])),
@@ -936,6 +1081,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		this._setStickyStripsVisible(false);
+		this._clearFrozenPanes();
 		this._bodyEl.classList.add('virtualized');
 		const host = dom.append(this._bodyEl, $('.paradis-spreadsheet-virtual-host'));
 		this._virtualHostEl = host;
@@ -957,7 +1103,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			getViewport: async request => legacyGridTile(sheet, request),
 			fontsReady: dom.getWindow(host).document.fonts.ready,
 		});
-		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "Sheet {0}", sheet.name), Math.max(1, sheet.rows.length), Math.max(1, sheet.columnCount));
+		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "シート「{0}」", sheet.name), Math.max(1, sheet.rows.length), Math.max(1, sheet.columnCount));
 		this._virtualRenderer.value = renderer;
 		void renderer.render({
 			scrollTop: 0,
@@ -1066,6 +1212,132 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const result = rebuildSpreadsheetStickyStrips(colInner, rowInner, thead, this._headCellEls, this._dataRowEls);
 		this._headHeight = result.headHeight;
 		this._setStickyStripsVisible(result.hasRows);
+		this._rebuildFrozenPanes();
+	}
+
+	/**
+	 * 固定枠(freeze pane)の重ね要素を組み直す。表を複製して不要な行・列を落とし、
+	 * 帯と同じ要領でスクロールへ追従させる。仮想化表示では表そのものが無いため何もしない。
+	 */
+	private _rebuildFrozenPanes(): void {
+		this._clearFrozenPanes();
+
+		const sheet = this._activeSheet;
+		const table = this._tableEl;
+		if (!sheet?.freezePane || !table || this._virtualHostEl) {
+			return;
+		}
+		const extent = resolveFrozenPaneExtent(sheet);
+		if (extent.rowCount === 0 && extent.colCount === 0) {
+			return;
+		}
+		// 高さはモデル値ではなく実測を使う。折り返しのある行は指定より高くなるため、
+		// モデル値のままだとペインの下端が行の途中で切れる(帯と同じく offsetTop/offsetHeight で測る)。
+		this._frozenRowsHeight = extent.rowCount > 0 ? this._measureFrozenRowsHeight(extent.rowCount, extent.height) : 0;
+		this._frozenColsWidth = extent.colCount > 0 ? extent.width : 0;
+
+		const mount = (inner: HTMLElement | undefined, rowCount: number | undefined, colCount: number | undefined): void => {
+			if (!inner) {
+				return;
+			}
+			const clone = table.cloneNode(true) as HTMLElement;
+			clone.removeAttribute('id');
+			// 複製は読み上げ・操作の対象にしない(本体の表と二重に読まれるのを防ぐ)。
+			clone.setAttribute('aria-hidden', 'true');
+			clone.setAttribute('role', 'presentation');
+			// 複製に残った id は本体と重複し、タブストップは aria-hidden の内側に置けないので剥がす。
+			// (選択中セルは tabindex=0 を持つ)
+			for (const element of frozenPaneDescendants(clone)) {
+				element.removeAttribute('id');
+				element.removeAttribute('tabindex');
+			}
+			trimFrozenPaneClone(clone, rowCount, colCount);
+			// 見出し行と行番号列は帯が描くので、複製側では負のオフセットで画面外へ送る。
+			const shift = $('.paradis-spreadsheet-frozen-shift');
+			shift.style.marginTop = `${-this._headHeight}px`;
+			shift.style.marginLeft = `${-PARADIS_ROW_NUM_COL_WIDTH}px`;
+			shift.style.width = `${this._naturalTableWidth}px`;
+			dom.append(shift, clone);
+			dom.append(inner, shift);
+		};
+
+		if (extent.rowCount > 0) {
+			mount(this._frozenRowsInner, extent.rowCount, undefined);
+		}
+		if (extent.colCount > 0) {
+			mount(this._frozenColsInner, undefined, extent.colCount);
+		}
+		if (extent.rowCount > 0 && extent.colCount > 0) {
+			mount(this._frozenCornerInner, extent.rowCount, extent.colCount);
+		}
+		this._setFrozenPanesVisible(true);
+		this._applyFrozenPaneGeometry();
+	}
+
+	/**
+	 * 固定行の実際の高さを、描画済み行の実測位置から求める。まだ測れない場合はモデル値へ戻す。
+	 * 行の実測は帯の再構築と同じく thead を差し引いた自然座標で行う。
+	 */
+	private _measureFrozenRowsHeight(rowCount: number, fallback: number): number {
+		const last = this._dataRowEls[rowCount - 1]?.tr;
+		if (!last) {
+			return fallback;
+		}
+		const measured = last.offsetTop - this._headHeight + last.offsetHeight;
+		return measured > 0 ? measured : fallback;
+	}
+
+	/** シート切替・破棄で固定枠の複製を捨てる(複製した表を残すと次のシートに重なる)。 */
+	private _clearFrozenPanes(): void {
+		this._frozenRowsHeight = 0;
+		this._frozenColsWidth = 0;
+		for (const inner of [this._frozenRowsInner, this._frozenColsInner, this._frozenCornerInner]) {
+			if (inner) {
+				dom.clearNode(inner);
+			}
+		}
+		this._setFrozenPanesVisible(false);
+	}
+
+	private _setFrozenPanesVisible(visible: boolean): void {
+		const rowsVisible = visible && this._frozenRowsHeight > 0;
+		const colsVisible = visible && this._frozenColsWidth > 0;
+		if (this._frozenRowsEl) {
+			this._frozenRowsEl.style.display = rowsVisible ? 'block' : 'none';
+		}
+		if (this._frozenColsEl) {
+			this._frozenColsEl.style.display = colsVisible ? 'block' : 'none';
+		}
+		if (this._frozenCornerEl) {
+			this._frozenCornerEl.style.display = rowsVisible && colsVisible ? 'block' : 'none';
+		}
+	}
+
+	/** 固定枠の位置・大きさを現在の倍率に合わせる(帯の直下・右側に置く)。 */
+	private _applyFrozenPaneGeometry(): void {
+		const boxes = computeFrozenPaneBoxes({
+			headHeight: this._headHeight,
+			frozenHeight: this._frozenRowsHeight,
+			frozenWidth: this._frozenColsWidth,
+			scale: this._scale,
+		});
+		for (const [element, box] of [
+			[this._frozenRowsEl, boxes.rows],
+			[this._frozenColsEl, boxes.cols],
+			[this._frozenCornerEl, boxes.corner],
+		] as const) {
+			if (!element) {
+				continue;
+			}
+			element.style.top = `${box.top}px`;
+			element.style.left = `${box.left}px`;
+			if (box.width !== undefined) {
+				element.style.width = `${box.width}px`;
+			}
+			if (box.height !== undefined) {
+				element.style.height = `${box.height}px`;
+			}
+		}
 	}
 
 	private _setStickyStripsVisible(visible: boolean): void {
@@ -1092,6 +1364,16 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		if (this._rowStripInner) {
 			this._rowStripInner.style.transform = `translateY(${-this._bodyEl.scrollTop}px) scale(${scale})`;
+		}
+		// 固定行は横スクロールだけ、固定列は縦スクロールだけ追従する。角はどちらにも動かない。
+		if (this._frozenRowsInner) {
+			this._frozenRowsInner.style.transform = `translateX(${-this._bodyEl.scrollLeft}px) scale(${scale})`;
+		}
+		if (this._frozenColsInner) {
+			this._frozenColsInner.style.transform = `translateY(${-this._bodyEl.scrollTop}px) scale(${scale})`;
+		}
+		if (this._frozenCornerInner) {
+			this._frozenCornerInner.style.transform = `scale(${scale})`;
 		}
 	}
 
@@ -1163,8 +1445,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			accessibleTabs.push({
 				element: tab,
 				label: sheet.protectedSheet
-					? localize('paradis.spreadsheet.protectedSheetTab', "{0}, protected sheet", sheet.name)
-					: localize('paradis.spreadsheet.sheetTab', "{0} sheet", sheet.name),
+					? localize('paradis.spreadsheet.protectedSheetTab', "{0} シート、保護あり", sheet.name)
+					: localize('paradis.spreadsheet.sheetTab', "{0} シート", sheet.name),
 				selected: idx === this._activeSheetIndex,
 			});
 			tabsStore.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
@@ -1178,7 +1460,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			}));
 		});
 		tabsStore.add(wireParadisOfficeTabList(this._tabsEl, {
-			label: localize('paradis.spreadsheet.sheetTabs', "Workbook Sheets"),
+			label: localize('paradis.spreadsheet.sheetTabs', "シート一覧"),
 			tabs: accessibleTabs,
 		}));
 	}
@@ -1244,6 +1526,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._cornerEl.style.width = `${rowW}px`;
 				this._cornerEl.style.height = `${headH}px`;
 			}
+			this._applyFrozenPaneGeometry();
 		}
 		this._updateStickyStripTransforms();
 		if (this._percentBtn) {
@@ -1270,6 +1553,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._outerEl = undefined;
 		this._virtualHostEl = undefined;
 		this._setStickyStripsVisible(false);
+		this._clearFrozenPanes();
 		this._headHeight = 0;
 		this._naturalTableHeight = 0;
 		this._shapeOverlay = undefined;

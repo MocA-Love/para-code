@@ -312,6 +312,18 @@ export interface IParadisSheetData {
 	readonly printArea?: IParadisCellRange;
 	/** 手動改ページ＋用紙設定から求めたページ割り(自動改ページとページ番号)。 */
 	readonly pageLayout?: IParadisPageLayout;
+	/** ウィンドウ枠の固定(sheetView.pane)。行・列とも「固定する本数」で、0 は固定なし。 */
+	readonly freezePane?: IParadisFreezePane;
+	/** オートフィルタ/テーブルのフィルタ範囲(見出し行にフィルタ記号を出すため)。 */
+	readonly filterRanges?: readonly IParadisCellRange[];
+}
+
+/** ウィンドウ枠の固定。Excel の xSplit/ySplit(固定される列数・行数)に対応する。 */
+export interface IParadisFreezePane {
+	/** 固定する列数(左から)。 */
+	readonly cols: number;
+	/** 固定する行数(上から)。 */
+	readonly rows: number;
 }
 
 /** パース結果のワークブック全体。 */
