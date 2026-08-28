@@ -43,7 +43,7 @@ import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
-import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
+import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -51,6 +51,7 @@ import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsM
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpToolProvider } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
+import { PARADIS_FILE_DROP_MAX_BYTES_LABEL, ParadisFileDropStaging, paradisBuildFileDropDragCancelCommand, paradisBuildFileDropDragCommands, paradisDecodeFileDropContent, paradisParseResolvedDropTarget, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
 
 /**
  * PlaywrightChannel（vs/platform/browserView/node/playwrightChannel.ts）の `call` と構造的に一致する
@@ -228,99 +229,15 @@ function parseMainRendererManifest(value: unknown): IParadisMobileRendererManife
 // allow-any-unicode-next-line
 const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。注意: 共有はPara Codeの再起動（自動アップデート適用を含む）でリセットされるため、以前共有していた場合も再共有が必要です。再共有しても届かない場合は、このCLIをペインで起動し直してから再共有してください（ペインの識別トークンが再起動で変わっている可能性があります）。';
 
-/** メモ系ツールに共通の `space` 引数（未指定＝呼び出し元ペインが属するスペース）。 */
-const SPACE_ARGUMENT = {
-	type: 'string',
-	description: 'Space key from list_space_notes (a repository id or "worktree:<uri>"). Omit to use the space this terminal pane belongs to.',
-} as const;
-
-const TOOLS = [
-	{
-		name: 'get_shared_page',
-		description: 'Get the URL and title of the browser page currently shared with this terminal pane in Para Code. Returns an error message if no page is shared yet.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'preview_file',
-		description: 'Open a file in the Para Code space that this terminal pane belongs to, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path. If the user is currently looking at a different space, the file is queued and opens when they switch back, so it never interrupts the space on screen.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				path: { type: 'string', description: 'Absolute path of the file to open (relative paths are rejected because this server does not share your working directory).' },
-			},
-			required: ['path'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'list_space_notes',
-		description: 'List the spaces (registered repositories and their worktrees) of the Para Code window that owns this terminal pane, with the note checklist counts of each. Use the returned "space" key with the other space note tools; the space of this terminal pane is marked with "current": true.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'read_space_note',
-		description: 'Read the note of a Para Code space. The note is a Markdown scratchpad the user keeps per space, where checklist items look like "- [ ] todo" and "- [x] done". Returns the raw text plus every line with its 0-based "line" number, which the check and delete tools take. Defaults to the space this terminal pane belongs to.',
-		inputSchema: { type: 'object', properties: { space: SPACE_ARGUMENT }, additionalProperties: false },
-	},
-	{
-		name: 'write_space_note',
-		description: 'Replace the entire note text of a Para Code space (Markdown; checklist items look like "- [ ] todo"). This overwrites everything the user wrote, so prefer add_space_note_task / check_space_note_task / delete_space_note_task for single-item edits, and read_space_note first if you must rewrite. Pass an empty string to clear the note.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				text: { type: 'string', description: 'The full note text to store (empty string clears the note).' },
-			},
-			required: ['text'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'add_space_note_task',
-		description: 'Append one checklist item ("- [ ] ...") to the note of a Para Code space, leaving everything else untouched.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				task: { type: 'string', description: 'The checklist item text (without the "- [ ] " marker). Extra lines are kept as indented notes under the item, so do not start them with "- [ ]" unless you want a separate nested item.' },
-			},
-			required: ['task'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'check_space_note_task',
-		description: 'Check or uncheck one checklist item of a Para Code space note, addressed by the 0-based "line" number returned by read_space_note. Omit "done" to toggle it.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
-				done: { type: 'boolean', description: 'true to check the item, false to uncheck it. Omit to toggle.' },
-			},
-			required: ['line'],
-			additionalProperties: false,
-		},
-	},
-	{
-		name: 'delete_space_note_task',
-		description: 'Delete one checklist item (together with its indented continuation lines) from a Para Code space note, addressed by the 0-based "line" number returned by read_space_note.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				space: SPACE_ARGUMENT,
-				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
-			},
-			required: ['line'],
-			additionalProperties: false,
-		},
-	},
-] as const;
+/**
+ * para固有の静的ツール定義。以前はこのファイルと `paradisBrowserMcpShim.ts`
+ * （Para Code未起動時／ペイン外起動時にオフライン応答するstdioシム）の両方に手で複製しており、
+ * 更新漏れが繰り返し起きたため、vs/* に依存しない `paradisBrowserMcpShimCore.ts` 側の
+ * `PARADIS_MCP_LOCAL_TOOLS` へ一本化した。ここへツールを足す/消す/変えるときは、あちらの配列を
+ * 直接編集すること（このファイルからも同じ配列を参照しているだけなので、複製先を追いかける
+ * 必要はない）。`test/node/paradisMcpToolsSync.test.ts` が単一ソースであることを検査する。
+ */
+export const TOOLS = PARADIS_MCP_LOCAL_TOOLS;
 
 /** para-browser側の静的ツール名（chrome-devtools-mcp側で同名ツールが現れた場合に隠すための予約集合）。 */
 const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.map(tool => tool.name));
@@ -514,6 +431,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _devtoolsProxy: ParadisDevtoolsMcpProxy;
 	/** ファイルに落としたスクリーンショットを、別の機械から取りに来るための台帳。 */
 	private readonly _screenshotHandoff = new ParadisScreenshotHandoff(() => randomUUID());
+	/** upload_file_to_drop_zone がbase64本文を一時ファイルへ書き出すためのステージング領域。 */
+	private readonly _fileDropStaging = new ParadisFileDropStaging();
 	private readonly _devtoolsGenerationCoordinator: ParadisDevtoolsGenerationCoordinator;
 	private readonly _mcpSetupController: ParadisMcpSetupController;
 	/** 現renderer IPC connection。ctxだけではreload前後を区別できないためobject identityをauthorityにする。 */
@@ -2506,6 +2425,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._spaceNote(ingressLease, name, params?.arguments, signal);
 		}
 
+		if (name === 'get_session_health') {
+			// バインド有無・接続の生死そのものを切り分けるためのツールなので、バインド必須の
+			// ガード（この直後の `if (!binding)`）より前で扱う。
+			return this._toolText(JSON.stringify(this._buildSessionHealthReport(token), null, 2));
+		}
+
 		if (name === 'get_cdp_endpoint') {
 			// CDPエンドポイント自体はバインド無しでも案内する（バインド状況も添える）。
 			const boundEntry = this._bindings.get(token);
@@ -2532,6 +2457,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		switch (name) {
 			case 'get_shared_page':
 				return this._toolText(JSON.stringify({ url: binding.pageInfo.url, title: binding.pageInfo.title, pageId: binding.pageId }, null, 2));
+			case 'upload_file_to_drop_zone':
+				return this._uploadFileToDropZone(ingressLease, binding, params?.arguments, signal);
 			default:
 				throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
 		}
@@ -2599,8 +2526,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				if (result !== undefined) {
 					// ファイルへ落ちたスクリーンショットは、呼び出し元が別の機械に居ると見えない。
-					// 取りに来るための口を添える。
-					return name === 'take_screenshot' ? this._offerScreenshotHandoff(token, result) : result;
+					// 取りに来るための口を添える（保存に失敗した場合も、どこへ書こうとしたかは示す）。
+					return name === 'take_screenshot' ? this._offerScreenshotHandoff(token, result, args) : result;
 				}
 			}
 			throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
@@ -2608,20 +2535,164 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * take_screenshot がファイルへ保存したとき、そのファイルを取りに来る口を応答へ添える。
+	 * `upload_file_to_drop_zone` の実体。座標解決を内蔵chrome-devtools-mcpの `evaluate_script`
+	 * （uid引数付き）へ委譲し、取れた中心座標へ dragEnter → dragOver → drop の
+	 * `Input.dispatchDragEvent` 列を `_dispatchBoundPageInput` 経由で信頼済み配信する
+	 * （組み立て・base64検証・一時ファイル書き出しは paradisFileDropUpload.ts が担う）。
+	 */
+	private async _uploadFileToDropZone(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, args: unknown, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const token = ingressLease.token;
+		const toolArgs = args && typeof args === 'object' ? args as Record<string, unknown> : undefined;
+		const uid = typeof toolArgs?.uid === 'string' && toolArgs.uid.length > 0 ? toolArgs.uid : undefined;
+		const fileName = paradisSanitizeFileDropName(toolArgs?.fileName);
+		const content = paradisDecodeFileDropContent(toolArgs?.contentBase64);
+		if (!uid) {
+			return this._toolError('upload_file_to_drop_zone requires "uid" (the drop zone element\'s uid from a recent take_snapshot).');
+		}
+		if (fileName === undefined) {
+			return this._toolError('upload_file_to_drop_zone requires a valid "fileName" (no path separators or control characters, 1-200 characters).');
+		}
+		if (content === undefined) {
+			return this._toolError(`upload_file_to_drop_zone requires "contentBase64" to be non-empty, valid base64, and decode to at most ${PARADIS_FILE_DROP_MAX_BYTES_LABEL} — this is the MCP transport's request-size limit, not an arbitrary choice; a larger value would make the whole MCP connection for this pane crash.`);
+		}
+
+		// 座標解決: uid → 要素は chrome-devtools-mcp内部の状態でしかないため、evaluate_script
+		// (vendored、uid引数付き) へ委譲してビューポート座標を取得する。評価関数自身に
+		// scrollIntoViewさせ、メインフレーム所属か・ビューポート寸法・遮蔽の有無も一緒に返させる
+		// ことで、「iframe内の別要素」「スクロール外」「stickyヘッダー/モーダルに覆われている」を
+		// 後段で検出できるようにしている（HIGH-2 / Warning対応）。
+		// - behavior: "instant" を明示: 省略するとページの `scroll-behavior: smooth` に従い、
+		//   アニメーション中に getBoundingClientRect() が走ってスクロール前の座標を返しかねない。
+		// - occluded: 中心座標へ document.elementFromPoint した実際の最前面要素が、対象要素
+		//   自身でもその祖先/子孫でもなければ true（信頼済み入力なので、無関係な要素へ誤って
+		//   ドロップしないよう後段で拒否する）。
+		let evaluation: unknown;
+		try {
+			evaluation = await this._callDevtoolsTool(ingressLease, 'evaluate_script', {
+				function: '(el) => { el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" }); const r = el.getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2; const hit = document.elementFromPoint(cx, cy); return { x: cx, y: cy, width: r.width, height: r.height, inMainFrame: window.top === window, viewW: innerWidth, viewH: innerHeight, occluded: !(hit && (el === hit || el.contains(hit) || hit.contains(el))) }; }',
+				args: [uid],
+			}, signal);
+		} catch (error) {
+			if (error instanceof ParadisIngressLeaseError) {
+				throw error;
+			}
+			// evaluate_scriptがツールとして解決できない＝内蔵DevToolsブリッジが使えない状態。
+			// JSON-RPCの生エラーではなくLLMが読める案内にする（get_session_healthへの誘導つき）。
+			return this._toolError('upload_file_to_drop_zone could not resolve the drop zone\'s position because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.');
+		}
+		this._requireIngressLease(ingressLease);
+		if ((evaluation as { isError?: unknown } | undefined)?.isError === true) {
+			// 既にLLMが読める形のエラー（evaluate_script側のuid未解決メッセージ等）なのでそのまま返す。
+			return evaluation;
+		}
+		const target = paradisParseResolvedDropTarget(evaluation);
+		if (!target) {
+			return this._toolError(`Could not resolve the drop zone's position from uid "${uid}". Take a fresh take_snapshot and make sure the uid still refers to a visible element.`);
+		}
+		if (target.width <= 0 || target.height <= 0) {
+			return this._toolError(`The drop zone (uid "${uid}") has zero size, so it may not currently be visible or laid out. Take a fresh take_snapshot and retry.`);
+		}
+		if (!target.inMainFrame) {
+			// Input.dispatchDragEvent の x/y はメインフレームのビューポート基準なので、iframe内の
+			// 要素へは正しい座標を出せない（別の要素へ誤ってドロップされかねない、信頼済み入力なので
+			// サイレントな誤動作は避ける）。
+			return this._toolError(`The drop zone (uid "${uid}") is inside a nested frame (iframe). upload_file_to_drop_zone only supports drop zones in the page's main frame, because trusted drag-and-drop coordinates are relative to the main frame's viewport and would land on the wrong element inside a nested frame.`);
+		}
+		if (target.x < 0 || target.y < 0 || target.x >= target.viewportWidth || target.y >= target.viewportHeight) {
+			return this._toolError(`The drop zone (uid "${uid}") is not currently within the visible viewport (resolved at (${Math.round(target.x)}, ${Math.round(target.y)}) against a ${Math.round(target.viewportWidth)}x${Math.round(target.viewportHeight)} viewport), so a trusted drop there would miss it or land on the wrong element. Take a fresh take_snapshot after any scrolling/animation settles and retry.`);
+		}
+		if (target.occluded) {
+			// 中心座標の実際の最前面要素が対象要素自身でもその祖先/子孫でもない＝stickyヘッダーや
+			// モーダル等に覆われている。信頼済み入力なので、無関係な要素への誤ドロップを避ける。
+			return this._toolError(`The drop zone (uid "${uid}") is currently covered by another element at its center point (for example a sticky header, overlay, or modal), so a trusted drop there would land on that element instead. Dismiss whatever is covering it, take a fresh take_snapshot, and retry.`);
+		}
+		if (this._bindings.get(token) !== binding) {
+			return this._toolError('PARA_BROWSER_RETRYABLE: the shared page binding changed while resolving the drop target; retry.');
+		}
+
+		let filePath: string;
+		try {
+			filePath = await this._fileDropStaging.stage(content, fileName);
+		} catch (error) {
+			return this._toolError(`Failed to stage "${fileName}" for upload: ${error instanceof Error ? error.message : String(error)}`);
+		}
+
+		const commands = paradisBuildFileDropDragCommands(target.x, target.y, filePath);
+		let dragEntered = false;
+		let completed = false;
+		try {
+			for (const [index, command] of commands.entries()) {
+				if (this._bindings.get(token) !== binding) {
+					return this._toolError('PARA_BROWSER_RETRYABLE: the shared page binding changed mid-drag; retry.');
+				}
+				const operation = this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, command.method, command.paramsJson, () => true);
+				// `_requireIngressLease` がここで（abort等により）throwすると、finally節が
+				// dragEntered済みかどうかに応じて後始末を担う（下記）。
+				this._requireIngressLease(ingressLease);
+				const result = await operation.response;
+				if (result.status !== 'success') {
+					const stage = index === 0 ? 'dragenter' : index === 1 ? 'dragover' : 'drop';
+					return this._toolError(`upload_file_to_drop_zone failed while dispatching "${stage}": ${result.message}`);
+				}
+				if (index === 0) {
+					dragEntered = true;
+				}
+				if (index < commands.length - 1) {
+					// dragOver→drop間に短い猶予を置く（vendoredの `drag` ツールも同様に挟んでいる。
+					// isDragActive等のReact状態遷移がイベントハンドラの後で反映されるのを待つ）。
+					await new Promise<void>(resolve => setTimeout(resolve, 50));
+				}
+			}
+			completed = true;
+			return this._toolText(`Dispatched a trusted drag-and-drop of "${fileName}" (${content.byteLength} bytes) onto the drop zone (uid "${uid}").`);
+		} finally {
+			// dragEnterまで届いたのに最後まで完走しなかった（早期return・例外・abortのいずれでも）
+			// 場合、ページ側に残りうる isDragActive 等の状態をベストエフォートで片付ける。
+			// `_cancelFileDropDrag` 自体は内部で例外を握りつぶすため、ここではthrowしない。
+			if (dragEntered && !completed) {
+				await this._cancelFileDropDrag(token, binding, target.x, target.y, filePath);
+			}
+		}
+	}
+
+	/**
+	 * dragEnter/dragOverが成功した後に中断・失敗したとき、ページ側に残りうる `isDragActive` 等の
+	 * ドラッグ中状態を片付けるベストエフォートの `dragCancel`。この呼び出し自体の成否は、
+	 * 呼び出し元が既に確定させた元のエラーには一切影響させない。
+	 */
+	private async _cancelFileDropDrag(token: string, binding: IBindingEntry, x: number, y: number, filePath: string): Promise<void> {
+		try {
+			const cancel = paradisBuildFileDropDragCancelCommand(x, y, filePath);
+			const operation = this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, cancel.method, cancel.paramsJson, () => true);
+			await operation.response;
+		} catch {
+			// ベストエフォート。キャンセルに失敗しても呼び出し元は元のエラーを返す。
+		}
+	}
+
+	/**
+	 * take_screenshot が `filePath` 付きで呼ばれたとき、そのファイルを取りに来る口を応答へ添える。
 	 *
 	 * SSH で繋いだ先で動くエージェントが `filePath` を渡すと、画像は**手元**に落ちて接続先からは
 	 * 見えない。既に張ってある戻り経路で取り出せるが、接続先で開いている番号は ssh が空きから
 	 * 選ぶので手元とは違う。案内には手元の番号だけを書き、接続先にはポートファイルを読ませる。
+	 *
+	 * 保存が成功したか失敗したかに関わらず、`filePath` が渡されている限り「実際にどのマシン/
+	 * プロセスで書き込みを試みたか」は必ず案内する（詳細は paradisAppendScreenshotFetchHint 参照）。
 	 */
-	private _offerScreenshotHandoff(token: string, result: unknown): unknown {
-		if (this._port === undefined) {
-			return result;
-		}
+	private _offerScreenshotHandoff(token: string, result: unknown, toolArgs: unknown): unknown {
+		const requestedFilePath = typeof (toolArgs as { filePath?: unknown } | undefined)?.filePath === 'string';
+		// パスの解析（応答本文から読めるかどうか）と、取り出し口を登録できるかどうか（ゲートウェイの
+		// ポートが確定しているか）は別の話。混同すると、保存には成功しているのにポート未確定な
+		// だけの状況で「パースできなかった」という誤った案内が出る。paths はポートの有無に関係なく
+		// 常に読み、targets（実際の取り出し口）だけをポート確定時に限って作る。
+		const paths = paradisScreenshotPathsFromToolResult(result);
 		const localPort = this._port;
-		const targets = paradisScreenshotPathsFromToolResult(result)
-			.map(path => ({ id: this._screenshotHandoff.register(token, path), localPort }));
-		return paradisAppendScreenshotFetchHint(result, targets);
+		const targets = localPort === undefined
+			? []
+			: paths.map(path => ({ id: this._screenshotHandoff.register(token, path), localPort }));
+		return paradisAppendScreenshotFetchHint(result, targets, requestedFilePath, paths.length > 0);
 	}
 
 	/**
@@ -2670,6 +2741,59 @@ export class ParadisAgentBrowserService extends Disposable {
 			activeRequest?.dispose();
 			ingressReservation.dispose();
 		}
+	}
+
+	/**
+	 * `get_session_health` の実体。バインド有無・接続状態に関わらず動作する
+	 * （そもそもそれを切り分けるためのツールなので）。秘密情報（生トークン等）は含めない。
+	 */
+	private _buildSessionHealthReport(token: string): unknown {
+		const binding = this._bindings.get(token);
+		const paneShell = this._paneShells.get(token);
+		const paneStatus = this._paneStatuses.get(token);
+		const wsEndpoint = this._devtoolsWsEndpoint(token);
+		return {
+			pane: {
+				// このMCPサーバーへ実際に (HTTPでもCDPゲートウェイのPID識別でも) 接続実績があるか。
+				seenByMcpServer: this._seenTokens.has(token),
+				// renderer側から同期された「PTYがまだ生きているペイン」台帳に載っているか。
+				shellRegistered: paneShell !== undefined,
+				shellPid: paneShell?.shellPid,
+				// TerminalExitを受理済み（owner retirementまでingressを抑止中）か。
+				terminalExited: this._terminalExitedTokens.has(token),
+				// リタイア不整合等で個別隔離され、バインド・ingressが一切通らない状態か。
+				quarantined: this._faultedTokens.has(token),
+			},
+			binding: binding ? {
+				bound: true,
+				generation: binding.generation,
+				boundAtEpochMs: binding.boundAt,
+				pageUrl: binding.pageInfo.url,
+				pageTitle: binding.pageInfo.title,
+			} : { bound: false },
+			agent: {
+				// エージェントCLIのhook (POST /agent-hook) がこのペインで一度でも発火したか。
+				hookEverFired: this._agentHookTokens.has(token),
+				status: paneStatus?.status,
+				statusChangedAtEpochMs: paneStatus?.changedAt,
+			},
+			devtoolsBridge: {
+				wsEndpointConfigured: wsEndpoint !== undefined,
+				// ペイン専用のvendored chrome-devtools-mcp子プロセスが今生きているか
+				// (未起動/アイドルkill後は false。次回ツール呼び出しで透過的に再起動する)。
+				childProcessAlive: this._devtoolsProxy.hasLiveChild(token),
+			},
+			gateway: {
+				httpServerListening: this._httpServer !== undefined,
+				port: this._port,
+				cdpHttpBase: this._port !== undefined ? `http://127.0.0.1:${this._port}/cdp` : undefined,
+			},
+			mcpServer: {
+				instanceId: this._mcpInstanceId,
+				startedAtEpochMs: this._mcpServiceStartedAt,
+				portFilePath: this._portFilePath,
+			},
+		};
 	}
 
 	/**
@@ -3095,6 +3219,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._activeMobileVoiceBytes = 0;
 		this._mobileVoiceTickets.clear();
 		this._runNonThrowingCleanup('devtools-generation-coordinator', () => this._devtoolsGenerationCoordinator.dispose());
+		this._runNonThrowingCleanup('file-drop-staging', () => this._fileDropStaging.dispose());
 		for (const token of new Set([
 			...this._paneShells.keys(),
 			...this._paneStatuses.keys(),
