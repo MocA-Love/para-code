@@ -306,7 +306,13 @@ suite('ParadisOfficeDualRead', () => {
 			import('../../electron-browser/paradisDocxInput.js'),
 			import('../../browser/paradisOfficeDiagnosticInput.js'),
 		]);
-		const properties = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).getExcludedConfigurationProperties();
+		// engine/kernelShadow/platformBackend は設定UIに出さないので除外レジストリ側、
+		// 設定ダイアログへ出した4件は通常のレジストリ側に載る。既定値はどちらも同じ意味なので束ねて見る。
+		const configurationRegistry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
+		const properties = {
+			...configurationRegistry.getExcludedConfigurationProperties(),
+			...configurationRegistry.getConfigurationProperties(),
+		};
 		const serializerRegistrations = new Map<string, unknown>();
 		const serializerRegistry = {
 			registerEditorSerializer: (inputTypeId: string, serializer: unknown) => {
@@ -319,13 +325,13 @@ suite('ParadisOfficeDualRead', () => {
 		registerParadisOfficeViewerSerializers(serializerRegistry, browserInputModule.PARADIS_OFFICE_BROWSER_SERIALIZER_REGISTRATIONS);
 
 		deepStrictEqual({
-			engine: properties?.['paradis.officeViewer.engine']?.default,
-			kernelShadow: properties?.['paradis.officeViewer.kernelShadow']?.default,
-			semanticSpreadsheet: properties?.['paradis.officeViewer.semanticSpreadsheet']?.default,
-			virtualizedSpreadsheet: properties?.['paradis.officeViewer.virtualizedSpreadsheet']?.default,
-			semanticWord: properties?.['paradis.officeViewer.semanticWord']?.default,
-			platformBackend: properties?.['paradis.officeViewer.platformBackend']?.default,
-			searchPrint: properties?.['paradis.officeViewer.searchPrint']?.default,
+			engine: properties['paradis.officeViewer.engine']?.default,
+			kernelShadow: properties['paradis.officeViewer.kernelShadow']?.default,
+			semanticSpreadsheet: properties['paradis.officeViewer.semanticSpreadsheet']?.default,
+			virtualizedSpreadsheet: properties['paradis.officeViewer.virtualizedSpreadsheet']?.default,
+			semanticWord: properties['paradis.officeViewer.semanticWord']?.default,
+			platformBackend: properties['paradis.officeViewer.platformBackend']?.default,
+			searchPrint: properties['paradis.officeViewer.searchPrint']?.default,
 		}, {
 			engine: 'legacy', kernelShadow: false, semanticSpreadsheet: true, virtualizedSpreadsheet: true,
 			semanticWord: true, platformBackend: true, searchPrint: true,

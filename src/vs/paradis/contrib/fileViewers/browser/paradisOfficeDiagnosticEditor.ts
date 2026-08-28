@@ -93,14 +93,14 @@ export function renderParadisOfficeDiagnostic(
 ): void {
 	container.replaceChildren();
 	const title = dom.append(container, dom.$('h2'));
-	title.textContent = localize('paradis.office.unsupported.title', "This Office format cannot be previewed here");
+	title.textContent = localize('paradis.office.unsupported.title', "この形式の Office ファイルはプレビューできません");
 	const format = dom.append(container, dom.$('p'));
-	format.textContent = localize('paradis.office.unsupported.format', "Detected format: {0}", diagnostic.format);
+	format.textContent = localize('paradis.office.unsupported.format', "検出した形式: {0}", diagnostic.format);
 	const explanation = dom.append(container, dom.$('p'));
 	explanation.textContent = diagnosticText(diagnostic.reason);
 	const button = dom.append(container, dom.$('button')) as HTMLButtonElement;
 	button.type = 'button';
-	button.textContent = localize('paradis.office.unsupported.openExternal', "Open in an external application");
+	button.textContent = localize('paradis.office.unsupported.openExternal', "外部のアプリで開く");
 	button.disabled = !diagnostic.canOpenExternal;
 	button.addEventListener(dom.EventType.CLICK, () => {
 		if (diagnostic.canOpenExternal) {
@@ -111,11 +111,11 @@ export function renderParadisOfficeDiagnostic(
 
 function diagnosticText(reason: ParadisOfficeDiagnosticReason): string {
 	switch (reason) {
-		case 'legacyBinaryUnsupported': return localize('paradis.office.unsupported.legacy', "Legacy binary Office files are not supported by the semantic preview.");
-		case 'binaryWorkbookUnsupported': return localize('paradis.office.unsupported.xlsb', "Binary Excel workbooks are not supported by the semantic preview.");
-		case 'openDocumentUnsupported': return localize('paradis.office.unsupported.ods', "OpenDocument spreadsheets are not supported by the semantic preview.");
-		case 'richTextUnsupported': return localize('paradis.office.unsupported.rtf', "Rich Text Format files are not supported by the semantic preview.");
-		case 'unknownUnsupported': return localize('paradis.office.unsupported.unknown', "This file is not a supported semantic Office package.");
+		case 'legacyBinaryUnsupported': return localize('paradis.office.unsupported.legacy', "従来のバイナリ形式の Office ファイルは、詳細な解析に対応していません。");
+		case 'binaryWorkbookUnsupported': return localize('paradis.office.unsupported.xlsb', "バイナリ形式の Excel ブックは、詳細な解析に対応していません。");
+		case 'openDocumentUnsupported': return localize('paradis.office.unsupported.ods', "OpenDocument 形式のスプレッドシートは、詳細な解析に対応していません。");
+		case 'richTextUnsupported': return localize('paradis.office.unsupported.rtf', "Rich Text Format のファイルは、詳細な解析に対応していません。");
+		case 'unknownUnsupported': return localize('paradis.office.unsupported.unknown', "このファイルは、詳細な解析に対応した Office ファイルではありません。");
 	}
 }
 
@@ -158,7 +158,7 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 			this.renderWorkerFallback(officeInput.resource, workerAvailable ? 'configurationDisabled' : 'workerUnavailable');
 			return;
 		}
-		this.renderStatus(localize('paradis.office.loading', "Reading Office semantics…"));
+		this.renderStatus(localize('paradis.office.loading', "Office ファイルを解析しています…"));
 		try {
 			const [original, modified] = officeInput.originalResource
 				? await Promise.all([
@@ -218,13 +218,13 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 		}
 		this.rootElement.replaceChildren();
 		const title = dom.append(this.rootElement, dom.$('h2'));
-		title.textContent = localize('paradis.office.workerUnavailable.title', "Office semantic preview is unavailable");
+		title.textContent = localize('paradis.office.workerUnavailable.title', "Office ファイルのプレビューを表示できません");
 		const detail = dom.append(this.rootElement, dom.$('p'));
-		detail.textContent = localize('paradis.office.workerUnavailable.detail', "The browser worker could not safely complete this preview ({0}).", reason);
+		detail.textContent = localize('paradis.office.workerUnavailable.detail', "この内容を安全にプレビューできませんでした（{0}）。", reason);
 		const diagnostic = createParadisOfficeDiagnostic(resource);
 		const button = dom.append(this.rootElement, dom.$('button')) as HTMLButtonElement;
 		button.type = 'button';
-		button.textContent = localize('paradis.office.unsupported.openExternal', "Open in an external application");
+		button.textContent = localize('paradis.office.unsupported.openExternal', "外部のアプリで開く");
 		button.disabled = !diagnostic.canOpenExternal;
 		button.addEventListener(dom.EventType.CLICK, () => {
 			if (diagnostic.canOpenExternal) {
@@ -258,11 +258,11 @@ export function renderParadisOfficeSummary(container: HTMLElement, summary: Para
 	container.replaceChildren();
 	const title = dom.append(container, dom.$('h2'));
 	title.textContent = summary.kind === 'diff'
-		? localize('paradis.office.diff.title', "Office semantic changes")
-		: localize('paradis.office.summary.title', "Office semantic preview");
+		? localize('paradis.office.diff.title', "Office ファイルの変更点")
+		: localize('paradis.office.summary.title', "Office ファイルのプレビュー");
 	if (summary.kind === 'spreadsheet') {
 		if (summary.sheets.some(sheet => sheet.truncated)) {
-			appendSummaryWarning(container, localize('paradis.office.summary.truncated', "This preview is incomplete because content was truncated."));
+			appendSummaryWarning(container, localize('paradis.office.summary.truncated', "内容が途中で省略されたため、このプレビューは不完全です。"));
 		}
 		appendExternalRelationshipWarning(container, summary.externalRelationshipCount);
 		for (const sheet of summary.sheets) {
@@ -286,11 +286,11 @@ export function renderParadisOfficeSummary(container: HTMLElement, summary: Para
 	}
 	if (summary.kind === 'word') {
 		if (summary.truncated || summary.stories.some(story => story.truncated)) {
-			appendSummaryWarning(container, localize('paradis.office.summary.truncated', "This preview is incomplete because content was truncated."));
+			appendSummaryWarning(container, localize('paradis.office.summary.truncated', "内容が途中で省略されたため、このプレビューは不完全です。"));
 		}
 		appendExternalRelationshipWarning(container, summary.externalRelationshipCount);
 		if (summary.drawings.length > 0) {
-			appendSummaryWarning(container, localize('paradis.office.summary.drawingPlaceholders', "{0} drawing placeholder(s) are not rendered in this diagnostic preview.", summary.drawings.length));
+			appendSummaryWarning(container, localize('paradis.office.summary.drawingPlaceholders', "このプレビューでは {0} 件の図形を表示していません。", summary.drawings.length));
 		}
 		for (const story of summary.stories) {
 			const heading = dom.append(container, dom.$('h3'));
@@ -301,7 +301,7 @@ export function renderParadisOfficeSummary(container: HTMLElement, summary: Para
 		}
 		if (summary.tableDiagonals.length > 0) {
 			const heading = dom.append(container, dom.$('h3'));
-			heading.textContent = localize('paradis.office.word.diagonals', "Table diagonals");
+			heading.textContent = localize('paradis.office.word.diagonals', "表の斜線");
 			for (const diagonal of summary.tableDiagonals) {
 				const sample = dom.append(container, dom.$('span'));
 				sample.style.display = 'inline-block';
@@ -316,7 +316,7 @@ export function renderParadisOfficeSummary(container: HTMLElement, summary: Para
 		return;
 	}
 	if (!summary.terminal) {
-		appendSummaryWarning(container, localize('paradis.office.diff.incomplete', "This comparison is not complete."));
+		appendSummaryWarning(container, localize('paradis.office.diff.incomplete', "この比較は完了していません。"));
 	}
 	const list = dom.append(container, dom.$('ul'));
 	for (const change of summary.changes) {
@@ -333,7 +333,7 @@ function appendSummaryWarning(container: HTMLElement, text: string): void {
 
 function appendExternalRelationshipWarning(container: HTMLElement, count: number): void {
 	if (count > 0) {
-		appendSummaryWarning(container, localize('paradis.office.summary.externalRelationships', "{0} external relationships are not loaded.", count));
+		appendSummaryWarning(container, localize('paradis.office.summary.externalRelationships', "{0} 件の外部参照は読み込んでいません。", count));
 	}
 }
 
@@ -394,7 +394,7 @@ function appendSvgLine(svg: SVGSVGElement, x1: string, y1: string, x2: string, y
 	svg.appendChild(line);
 }
 
-const OFFICE_BROWSER_LABEL = localize('paradis.office.browser.label', "Office Viewer");
+const OFFICE_BROWSER_LABEL = localize('paradis.office.browser.label', "Office ビューアー");
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(ParadisOfficeDiagnosticEditor, PARADIS_OFFICE_BROWSER_EDITOR_ID, OFFICE_BROWSER_LABEL),

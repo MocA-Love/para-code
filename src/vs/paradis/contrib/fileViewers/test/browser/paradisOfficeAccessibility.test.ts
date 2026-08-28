@@ -198,7 +198,7 @@ suite('ParadisOfficeAccessibility', () => {
 			paradisOfficeChangeLabel(change('conditional', 'formatting', 'conditionalFormatting.diagonalBorder')),
 			paradisOfficeChangeLabel(change('table', 'formatting', 'table.diagonalBorder')),
 			paradisOfficeChangeLabel(change('line', 'object', 'object.lineGeometry')),
-		], ['Base Diagonal Border', 'Conditional Formatting Diagonal', 'Table Diagonal Border', 'Drawing Line']);
+		], ['セルの斜線', '条件付き書式の斜線', '表の斜線', '図形の線']);
 	});
 
 	test('applies forced-color and reduced-motion preferences to the rendered controls', () => {
@@ -232,12 +232,12 @@ suite('ParadisOfficeAccessibility', () => {
 
 		const live = root.querySelector('[aria-live="polite"]');
 		strictEqual(live?.getAttribute('aria-atomic'), 'true');
-		strictEqual(live?.textContent, 'Change 2 of 3: Drawing Line');
+		strictEqual(live?.textContent, '3 件中 2 件目の変更: 図形の線');
 		ok(!root.textContent?.includes('before secret'));
 		ok(!root.textContent?.includes('after-secret'));
 
 		accessibility.announceChange(change('diagonal', 'formatting', 'conditionalFormatting.diagonalBorder'), 0, 1);
-		strictEqual(live?.textContent, 'Change 1 of 1: Conditional Formatting Diagonal');
+		strictEqual(live?.textContent, '1 件中 1 件目の変更: 条件付き書式の斜線');
 		ok(!root.textContent?.includes('before secret'));
 		ok(!root.textContent?.includes('after-secret'));
 	});

@@ -108,6 +108,13 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		heading: localize('paradis.settings.headTerminal', "ターミナル"),
 	},
 	{
+		id: 'psd-sec-office',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navOffice', "Office ビューア"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headOffice', "Office ビューア"),
+	},
+	{
 		id: 'psd-sec-mobile',
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navMobile', "モバイル連携"),
@@ -538,6 +545,53 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.codexTerminalTitleDesc', "手動で変更したタブ名や Codex の /rename は常に優先されます。"),
 		keywords: 'codex terminal title tab name rename',
+	},
+
+	// --- Office ビューア ---
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.officeViewer.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.officeEnabled', "Word・Excel を新しいビューアで開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.officeEnabledDesc', "Word・Excel の変更点パネル・検索・印刷が使えるようになります。オフのときは従来の表示のみになります。"),
+		keywords: 'office excel word xlsx docx viewer engine',
+	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.officeViewer.semanticWord',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.officeSemanticWord', "Word で変更点パネルを表示する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.officeSemanticWordDesc', "Word 文書の変更点を一覧するパネルを表示します。上の項目がオンのときだけ有効です。"),
+		keywords: 'office word docx semantic diff',
+	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.officeViewer.semanticSpreadsheet',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.officeSemanticSpreadsheet', "Excel で変更点パネルを表示する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.officeSemanticSpreadsheetDesc', "Excel ブックの変更点を一覧するパネルを表示します。上の項目がオンのときだけ有効です。"),
+		keywords: 'office excel xlsx spreadsheet semantic diff',
+	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.officeViewer.virtualizedSpreadsheet',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.officeVirtualizedSpreadsheet', "大きな表を高速に表示する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.officeVirtualizedSpreadsheetDesc', "画面に見えている範囲だけを描画して、行数の多いシートを軽くします。上の項目がオンのときだけ有効です。"),
+		keywords: 'office excel xlsx spreadsheet virtualized rows performance',
+	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.officeViewer.searchPrint',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.officeSearchPrint', "検索と印刷を有効にする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.officeSearchPrintDesc', "変更点パネルから文書の検索と印刷ができるようにします。上の項目がオンのときだけ有効です。"),
+		keywords: 'office excel word search print find',
 	},
 
 	// --- モバイル連携 ---
