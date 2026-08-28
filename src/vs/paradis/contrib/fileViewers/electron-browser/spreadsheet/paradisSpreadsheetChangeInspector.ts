@@ -256,22 +256,22 @@ export class ParadisSpreadsheetInputRestoration {
 
 function categoryLabel(category: ParadisOfficeChangeCategory): string {
 	switch (category) {
-		case 'content': return localize('paradis.spreadsheet.change.content', "Content");
-		case 'formatting': return localize('paradis.spreadsheet.change.formatting', "Formatting");
-		case 'structure': return localize('paradis.spreadsheet.change.structure', "Structure");
-		case 'annotation': return localize('paradis.spreadsheet.change.annotation', "Annotations");
-		case 'revision': return localize('paradis.spreadsheet.change.revision', "Revisions");
-		case 'object': return localize('paradis.spreadsheet.change.object', "Objects");
-		case 'security': return localize('paradis.spreadsheet.change.security', "Security");
+		case 'content': return localize('paradis.spreadsheet.change.content', "内容");
+		case 'formatting': return localize('paradis.spreadsheet.change.formatting', "書式");
+		case 'structure': return localize('paradis.spreadsheet.change.structure', "構造");
+		case 'annotation': return localize('paradis.spreadsheet.change.annotation', "コメント");
+		case 'revision': return localize('paradis.spreadsheet.change.revision', "変更履歴");
+		case 'object': return localize('paradis.spreadsheet.change.object', "オブジェクト");
+		case 'security': return localize('paradis.spreadsheet.change.security', "セキュリティ");
 	}
 }
 
 /** Keeps the three visually similar diagonal sources distinct in the Inspector. */
 export function spreadsheetChangeLabel(change: ParadisOfficeChange): string {
 	switch (change.subject.kind) {
-		case 'cell.diagonalBorder': return localize('paradis.spreadsheet.change.baseDiagonal', "Base Diagonal Border");
-		case 'conditionalFormatting.diagonalBorder': return localize('paradis.spreadsheet.change.conditionalDiagonal', "Conditional Formatting Diagonal");
-		case 'object.lineGeometry': return localize('paradis.spreadsheet.change.drawingLine', "Drawing Line");
+		case 'cell.diagonalBorder': return localize('paradis.spreadsheet.change.baseDiagonal', "セルの斜線");
+		case 'conditionalFormatting.diagonalBorder': return localize('paradis.spreadsheet.change.conditionalDiagonal', "条件付き書式の斜線");
+		case 'object.lineGeometry': return localize('paradis.spreadsheet.change.drawingLine', "図形の線");
 		default: return categoryLabel(change.category);
 	}
 }
@@ -308,7 +308,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		super();
 		this.root = dom.append(container, dom.$('.paradis-spreadsheet-change-inspector'));
 		this.root.setAttribute('role', 'region');
-		this.root.setAttribute('aria-label', localize('paradis.spreadsheet.changeInspector', "Spreadsheet Change Inspector"));
+		this.root.setAttribute('aria-label', localize('paradis.spreadsheet.changeInspector', "スプレッドシートの変更インスペクター"));
 		this.root.style.display = 'flex';
 		this.root.style.flexDirection = 'column';
 		this.root.style.gap = '6px';
@@ -324,8 +324,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.completeness = completeness;
 		this.outcome = outcome;
 		this.announcement = changes.length === 1
-			? localize('paradis.spreadsheet.changeCountOne', "1 change")
-			: localize('paradis.spreadsheet.changeCountMany', "{0} changes", changes.length);
+			? localize('paradis.spreadsheet.changeCountOne', "1 件の変更")
+			: localize('paradis.spreadsheet.changeCountMany', "{0} 件の変更", changes.length);
 		this.render();
 	}
 
@@ -365,8 +365,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.results = [...results].slice(0, MAX_STORED_SEARCH_RESULTS);
 		this.resultPage = 0;
 		this.announcement = this.results.length === 1
-			? localize('paradis.spreadsheet.searchResultOne', "1 search result")
-			: localize('paradis.spreadsheet.searchResultMany', "{0} search results", this.results.length);
+			? localize('paradis.spreadsheet.searchResultOne', "1 件の検索結果")
+			: localize('paradis.spreadsheet.searchResultMany', "{0} 件の検索結果", this.results.length);
 		this.render();
 	}
 
@@ -377,7 +377,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		const model = await this.options.getPrintModel();
 		this.printWarning = spreadsheetPrintWarning(model);
 		this.printPlaceholderCount = model.pages.reduce((count, page) => count + page.placeholders.length, 0);
-		this.announcement = this.printWarning ?? localize('paradis.spreadsheet.printReady', "Print Preview Ready");
+		this.announcement = this.printWarning ?? localize('paradis.spreadsheet.printReady', "印刷プレビューの準備ができました");
 		this.render();
 		return model;
 	}
@@ -409,12 +409,12 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		const pager = dom.append(parent, dom.$('.paradis-spreadsheet-inspector-pager'));
 		pager.dataset.pageList = kind;
 		pager.setAttribute('role', 'group');
-		pager.setAttribute('aria-label', localize('paradis.spreadsheet.pageNavigation', "{0} page navigation", kind));
-		const previous = appendButton(pager, localize('paradis.spreadsheet.previousPage', "Previous"));
+		pager.setAttribute('aria-label', localize('paradis.spreadsheet.pageNavigation', "{0} のページ移動", kind));
+		const previous = appendButton(pager, localize('paradis.spreadsheet.previousPage', "前へ"));
 		previous.disabled = page === 0;
 		const status = dom.append(pager, dom.$('span'));
-		status.textContent = localize('paradis.spreadsheet.pageStatus', "Page {0} of {1}", page + 1, pageCount);
-		const next = appendButton(pager, localize('paradis.spreadsheet.nextPage', "Next"));
+		status.textContent = localize('paradis.spreadsheet.pageStatus', "{1} ページ中 {0} ページ目", page + 1, pageCount);
+		const next = appendButton(pager, localize('paradis.spreadsheet.nextPage', "次へ"));
 		next.disabled = page + 1 >= pageCount;
 		this.renderDisposables.add(dom.addDisposableListener(previous, dom.EventType.CLICK, () => setPage(Math.max(0, page - 1))));
 		this.renderDisposables.add(dom.addDisposableListener(next, dom.EventType.CLICK, () => setPage(Math.min(pageCount - 1, page + 1))));
@@ -425,11 +425,11 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		dom.clearNode(this.root);
 		const document = this.root.ownerDocument;
 		const title = dom.append(this.root, dom.$('strong'));
-		title.textContent = localize('paradis.spreadsheet.changes', "Changes");
+		title.textContent = localize('paradis.spreadsheet.changes', "変更点");
 
 		const categories = dom.append(this.root, dom.$('.paradis-spreadsheet-change-categories'));
 		categories.setAttribute('role', 'toolbar');
-		categories.setAttribute('aria-label', localize('paradis.spreadsheet.changeCategories', "Change Categories"));
+		categories.setAttribute('aria-label', localize('paradis.spreadsheet.changeCategories', "変更の種類"));
 		categories.style.display = 'flex';
 		categories.style.flexWrap = 'wrap';
 		categories.style.gap = '3px';
@@ -447,13 +447,13 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		const visibleChanges = this.changes.filter(change => this.viewState.categories.includes(change.category));
 		const changeCount = dom.append(changeList, dom.$('span'));
 		changeCount.textContent = visibleChanges.length === 1
-			? localize('paradis.spreadsheet.visibleChangeCountOne', "1 change")
-			: localize('paradis.spreadsheet.visibleChangeCountMany', "{0} changes", visibleChanges.length);
+			? localize('paradis.spreadsheet.visibleChangeCountOne', "1 件の変更")
+			: localize('paradis.spreadsheet.visibleChangeCountMany', "{0} 件の変更", visibleChanges.length);
 		if (visibleChanges.length === 0) {
 			const empty = dom.append(changeList, dom.$('span'));
 			empty.textContent = this.completeness && canShowSpreadsheetNoChanges(this.completeness, this.outcome, this.changes.length)
-				? localize('paradis.spreadsheet.noChangesStrict', "No Changes")
-				: localize('paradis.spreadsheet.analysisIncomplete', "Analysis Incomplete");
+				? localize('paradis.spreadsheet.noChangesStrict', "変更なし")
+				: localize('paradis.spreadsheet.analysisIncomplete', "解析未完了");
 		} else {
 			const pageCount = Math.max(1, Math.ceil(visibleChanges.length / INSPECTOR_PAGE_SIZE));
 			this.changePage = Math.min(this.changePage, pageCount - 1);
@@ -462,7 +462,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 				item.setAttribute('role', 'listitem');
 				const button = appendButton(item, `${spreadsheetChangeLabel(change)} — ${change.subject.locator}`);
 				button.dataset.changeId = change.id;
-				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigateChange', "Navigate to {0} at {1}", spreadsheetChangeLabel(change), change.subject.locator));
+				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigateChange', "{1} の{0}へ移動", spreadsheetChangeLabel(change), change.subject.locator));
 				button.setAttribute('aria-current', String(this.viewState.selectedChangeId === change.id));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('change', change.subject.locator, change.navigableAnchor, change.id)));
 			}
@@ -475,13 +475,13 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		if (this.placeholders.length > 0) {
 			const placeholderList = dom.append(this.root, dom.$('.paradis-spreadsheet-placeholder-list'));
 			placeholderList.setAttribute('role', 'list');
-			placeholderList.setAttribute('aria-label', localize('paradis.spreadsheet.placeholders', "Alternative Content"));
+			placeholderList.setAttribute('aria-label', localize('paradis.spreadsheet.placeholders', "代替表示のコンテンツ"));
 			const placeholderCount = dom.append(placeholderList, dom.$('span'));
-			placeholderCount.textContent = localize('paradis.spreadsheet.placeholderCount', "{0} placeholders", this.placeholders.length);
+			placeholderCount.textContent = localize('paradis.spreadsheet.placeholderCount', "代替表示 {0} 件", this.placeholders.length);
 			for (const placeholder of this.placeholders.slice(this.placeholderPage * INSPECTOR_PAGE_SIZE, (this.placeholderPage + 1) * INSPECTOR_PAGE_SIZE)) {
 				const button = appendButton(placeholderList, placeholder.detail ? `${placeholder.title} — ${placeholder.detail}` : placeholder.title);
 				button.dataset.placeholderId = placeholder.nodeId;
-				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigatePlaceholder', "Navigate to alternative content {0}", placeholder.title));
+				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigatePlaceholder', "代替表示「{0}」へ移動", placeholder.title));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('placeholder', placeholder.nodeId)));
 			}
 			this.appendPager(placeholderList, 'placeholders', this.placeholders.length, this.placeholderPage, page => {
@@ -496,8 +496,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 			const input = dom.append(search, dom.$('input')) as HTMLInputElement;
 			input.type = 'search';
 			input.maxLength = 4096;
-			input.setAttribute('aria-label', localize('paradis.spreadsheet.search', "Search Spreadsheet"));
-			const button = appendButton(search, localize('paradis.spreadsheet.searchButton', "Search"));
+			input.setAttribute('aria-label', localize('paradis.spreadsheet.search', "スプレッドシートを検索"));
+			const button = appendButton(search, localize('paradis.spreadsheet.searchButton', "検索"));
 			button.type = 'submit';
 			this.renderDisposables.add(dom.addDisposableListener(search, dom.EventType.SUBMIT, event => {
 				event.preventDefault();
@@ -507,7 +507,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 				event.preventDefault();
 				void this.search(input.value);
 			}));
-			button.setAttribute('aria-label', localize('paradis.spreadsheet.searchButton', "Search"));
+			button.setAttribute('aria-label', localize('paradis.spreadsheet.searchButton', "検索"));
 		}
 
 		if (this.results.length > 0) {
@@ -517,7 +517,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 				const label = `${result.locationBadge.label}: ${result.preview.before}${result.preview.match}${result.preview.after}`;
 				const button = appendButton(results, label);
 				button.dataset.searchResultId = result.id;
-				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigateSearchResult', "Navigate to search result in {0}", result.locationBadge.label));
+				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigateSearchResult', "{0} 内の検索結果へ移動", result.locationBadge.label));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('search', result.locator, result.navigableAnchor)));
 			}
 			this.appendPager(results, 'results', this.results.length, this.resultPage, page => {
@@ -527,8 +527,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		}
 
 		if (this.options.getPrintModel) {
-			const print = appendButton(this.root, localize('paradis.spreadsheet.printPreview', "Print Preview"));
-			print.setAttribute('aria-label', localize('paradis.spreadsheet.printPreview', "Print Preview"));
+			const print = appendButton(this.root, localize('paradis.spreadsheet.printPreview', "印刷プレビュー"));
+			print.setAttribute('aria-label', localize('paradis.spreadsheet.printPreview', "印刷プレビュー"));
 			this.renderDisposables.add(dom.addDisposableListener(print, dom.EventType.CLICK, () => void this.requestPrintModel()));
 		}
 		if (this.printWarning || this.printPlaceholderCount > 0) {
@@ -536,8 +536,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 			alert.setAttribute('role', 'alert');
 			alert.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.warning;
 			const placeholders = this.printPlaceholderCount === 1
-				? localize('paradis.spreadsheet.printPlaceholderOne', "1 placeholder")
-				: localize('paradis.spreadsheet.printPlaceholderMany', "{0} placeholders", this.printPlaceholderCount);
+				? localize('paradis.spreadsheet.printPlaceholderOne', "代替表示 1 件")
+				: localize('paradis.spreadsheet.printPlaceholderMany', "代替表示 {0} 件", this.printPlaceholderCount);
 			alert.textContent = [this.printWarning, this.printPlaceholderCount > 0 ? placeholders : undefined].filter((value): value is string => !!value).join(' ');
 		}
 

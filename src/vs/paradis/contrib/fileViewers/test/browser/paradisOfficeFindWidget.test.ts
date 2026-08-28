@@ -57,15 +57,15 @@ suite('ParadisOfficeFindWidget', () => {
 			badge: result.locationBadge.label,
 			match: result.preview.match,
 		})), [
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Formatted', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Raw', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Formula', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Comment', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Link', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Alternative Text', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Placeholder', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Story', match: 'needle' },
-			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · Hidden', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · 表示テキスト', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · 生データ', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · 数式', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · コメント', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · リンク', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · 代替テキスト', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · 代替表示', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · 文書パーツ', match: 'needle' },
+			{ anchor: 'cell:Sheet 1:A1', badge: 'Sheet 1 · 非表示', match: 'needle' },
 		]);
 	});
 
@@ -242,7 +242,7 @@ suite('ParadisOfficeFindWidget', () => {
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
 
 		strictEqual(document.activeElement, input);
-		strictEqual(host.querySelector('[aria-live="polite"]')?.textContent, '1 of 2');
+		strictEqual(host.querySelector('[aria-live="polite"]')?.textContent, '2 件中 1 件目');
 		strictEqual(host.querySelector('.paradis-office-find-current')?.textContent, '<b>Sheet 1</b>: <img src=x needle onerror=alert(1)>');
 		strictEqual(host.querySelector('img'), null);
 		deepStrictEqual(navigated, ['Sheet 1!A1|cell:Sheet 1:A1']);
@@ -253,7 +253,7 @@ suite('ParadisOfficeFindWidget', () => {
 			'Sheet 1!A1|cell:Sheet 1:A1',
 			'story:header:/word/header1.xml:default|word-node-2',
 		]);
-		strictEqual(host.querySelector('[aria-live="polite"]')?.textContent, '2 of 2');
+		strictEqual(host.querySelector('[aria-live="polite"]')?.textContent, '2 件中 2 件目');
 
 		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 		strictEqual(widget.isVisible(), false);
@@ -270,7 +270,7 @@ suite('ParadisOfficeFindWidget', () => {
 
 		strictEqual(host.querySelector<HTMLInputElement>('input[type="search"]')?.disabled, true);
 		strictEqual(host.querySelector('[aria-live="polite"]')?.textContent, 'Search is unavailable for this adapter.');
-		strictEqual(mainWindow.document.activeElement?.getAttribute('aria-label'), 'Close');
+		strictEqual(mainWindow.document.activeElement?.getAttribute('aria-label'), '閉じる');
 	});
 
 	test('accepts forwarded find keys only for the active external surface', () => {

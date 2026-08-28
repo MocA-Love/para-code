@@ -215,16 +215,16 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._root = dom.append(parent, $('.paradis-docx-diff'));
 		this._root.style.position = 'relative';
 		this._accessibility = this._register(new ParadisOfficeAccessibility(this._root, {
-			label: localize('paradis.word.diffViewer', "Word Document Comparison"),
+			label: localize('paradis.word.diffViewer', "Word 文書の比較"),
 		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
-			unavailableMessage: localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter."),
+			unavailableMessage: localize('paradis.word.diffSearchUnavailable', "この比較では文書内の検索を利用できません。"),
 			isActive: () => !!this._webview?.isFocused,
 		});
 
 		const toolbar = dom.append(this._root, $('.paradis-docx-diff-toolbar'));
 		toolbar.setAttribute('role', 'toolbar');
-		toolbar.setAttribute('aria-label', localize('paradis.word.diffToolbar', "Word Comparison Toolbar"));
+		toolbar.setAttribute('aria-label', localize('paradis.word.diffToolbar', "Word 比較のツールバー"));
 		const left = dom.append(toolbar, $('.paradis-docx-diff-toolbar-left'));
 		this._countEl = dom.append(left, $('span.paradis-docx-diff-count'));
 		this._noticeEl = dom.append(left, $('span.paradis-docx-diff-notice'));
@@ -243,8 +243,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		const right = dom.append(toolbar, $('.paradis-docx-diff-toolbar-right'));
 		this._inspectorToggle = dom.append(right, $('button.paradis-docx-diff-toggle')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
-		this._inspectorToggle.textContent = localize('paradis.word.diffInspector', "Inspector");
-		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.diffInspector', "Inspector"));
+		this._inspectorToggle.textContent = localize('paradis.word.diffInspector', "変更点");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.diffInspector', "変更点"));
 		this._inspectorToggle.style.display = 'none';
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -285,7 +285,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 		this._webviewContainer = dom.append(this._root, $('.paradis-docx-diff-body'));
 		this._webviewContainer.setAttribute('role', 'region');
-		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.comparisonContent', "Word Comparison Content"));
+		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.comparisonContent', "Word 比較の内容"));
 		this._inspectorPanel = dom.append(this._root, $('.paradis-word-diff-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
 		this._inspectorPanel.style.top = '42px';
@@ -665,14 +665,14 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	}
 
 	private _renderRecoveryError(): void {
-		this._setNotice(localize('paradis.docxDiff.blank', "Word comparison produced no visible content."));
+		this._setNotice(localize('paradis.docxDiff.blank', "比較結果を表示できませんでした。"));
 		const resource = this._modifiedResource;
 		if (!this._noticeEl || !resource) {
 			return;
 		}
 		const retry = dom.append(this._noticeEl, $('button')) as HTMLButtonElement;
 		retry.type = 'button';
-		retry.textContent = localize('paradis.docxDiff.retry', "Retry");
+		retry.textContent = localize('paradis.docxDiff.retry', "再試行");
 		this._inputDisposables.value?.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
 			this._recoveryState = transition.state;
@@ -681,7 +681,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		if (resource.scheme === Schemas.file) {
 			const open = dom.append(this._noticeEl, $('button')) as HTMLButtonElement;
 			open.type = 'button';
-			open.textContent = localize('paradis.docxDiff.openAfterBlank', "Open in Default Application");
+			open.textContent = localize('paradis.docxDiff.openAfterBlank', "既定のアプリで開く");
 			this._inputDisposables.value?.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
 				void this._nativeHostService.openExternal(resource.toString(true));
 			}));
@@ -742,7 +742,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
-		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.word.diffSearchDisabled', "Search is disabled or unavailable for this comparison."));
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.word.diffSearchDisabled', "この比較では検索を利用できません。"));
 		if (this._diagnosticsEl) {
 			dom.clearNode(this._diagnosticsEl);
 		}
@@ -776,8 +776,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			return;
 		}
 		this._findWidget.value?.setSearchProvider(callbacks.search, callbacks.print
-			? localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter.")
-			: localize('paradis.word.searchDisabled', "Search is disabled by configuration."));
+			? localize('paradis.word.diffSearchUnavailable', "この比較では文書内の検索を利用できません。")
+			: localize('paradis.word.searchDisabled', "検索は設定で無効になっています。"));
 		const adapted = adaptLegacyWordInspectorChangeSet(result);
 		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...this._assetPlaceholders.map(() => 'placeholder' as const)];
 		if (adapted.truncated || result.degraded?.length) {
@@ -789,7 +789,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				coverages,
 				warnings: [{
 					code: 'word.diff.legacyProjection',
-					message: localize('paradis.word.diffLegacyProjection', "This compatible comparison is visible but does not claim complete semantic analysis."),
+					message: localize('paradis.word.diffLegacyProjection', "互換表示で比較を表示していますが、詳細な解析は完了していません。"),
 				}],
 			});
 		}
@@ -800,11 +800,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
 			searchUnavailable: callbacks.print
-				? localize('paradis.word.diffSearchUnavailable', "Story search is unavailable for this compatible comparison adapter.")
-				: localize('paradis.word.searchDisabled', "Search is disabled by configuration."),
+				? localize('paradis.word.diffSearchUnavailable', "この比較では文書内の検索を利用できません。")
+				: localize('paradis.word.searchDisabled', "検索は設定で無効になっています。"),
 			...(callbacks.print ? {
 				getPrintModel: callbacks.print,
-			} : { printUnavailable: localize('paradis.word.printDisabled', "Print preview is disabled by configuration.") }),
+			} : { printUnavailable: localize('paradis.word.printDisabled', "印刷プレビューは設定で無効になっています。") }),
 			onNavigate: target => {
 				const match = /^legacy-change:(\d+)$/.exec(target.anchor ?? '');
 				if (match) {

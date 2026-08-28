@@ -444,7 +444,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._root = dom.append(parent, $('.paradis-spreadsheet-diff'));
 		this._root.style.position = 'relative';
 		this._accessibility = this._register(new ParadisOfficeAccessibility(this._root, {
-			label: localize('paradis.spreadsheet.diffViewer', "Spreadsheet Comparison"),
+			label: localize('paradis.spreadsheet.diffViewer', "スプレッドシートの比較"),
 		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
 			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
@@ -452,7 +452,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		const toolbar = dom.append(this._root, $('.paradis-spreadsheet-diff-toolbar'));
 		toolbar.setAttribute('role', 'toolbar');
-		toolbar.setAttribute('aria-label', localize('paradis.spreadsheet.diffToolbar', "Spreadsheet Comparison Toolbar"));
+		toolbar.setAttribute('aria-label', localize('paradis.spreadsheet.diffToolbar', "スプレッドシート比較のツールバー"));
 		const left = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-left'));
 		this._countEl = dom.append(left, $('span.paradis-spreadsheet-diff-count'));
 		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
@@ -473,8 +473,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const right = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-right'));
 		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
-		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "Inspector");
-		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "Inspector"));
+		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "変更点");
+		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "変更点"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._inspectorToggle.style.display = 'none';
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -661,7 +661,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	private _clearSemanticUi(): void {
 		this._changeInspector.clear();
-		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.spreadsheet.diffSearchDisabledOrUnavailable', "Search is disabled or unavailable for this comparison."));
+		this._findWidget.value?.setSearchProvider(undefined, localize('paradis.spreadsheet.diffSearchDisabledOrUnavailable', "この比較では検索を利用できません。"));
 		if (this._diagnosticsEl) {
 			dom.clearNode(this._diagnosticsEl);
 		}
@@ -704,8 +704,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		const viewState = restoredViewState ?? this._currentSpreadsheetViewState();
 		this._findWidget.value?.setSearchProvider(callbacks.search?.find, callbacks.search
-			? localize('paradis.spreadsheet.diffSearchUnavailableAdapter', "Search is unavailable for this compatible comparison adapter.")
-			: localize('paradis.spreadsheet.diffSearchDisabled', "Search is disabled by configuration."));
+			? localize('paradis.spreadsheet.diffSearchUnavailableAdapter', "この形式の比較では検索を利用できません。")
+			: localize('paradis.spreadsheet.diffSearchDisabled', "検索は設定で無効になっています。"));
 		const legacyChangeSet = adaptLegacySpreadsheetInspectorChangeSet(this._diffSheets);
 		const changes = legacyChangeSet.changes;
 		const placeholders: ParadisOfficePlaceholder[] = [];
@@ -717,8 +717,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 					nodeId: `${sheet.name}!object:${name}`,
 					feature: `drawing.${shape.type}`,
 					reason: 'unsupported',
-					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "Drawing Object"),
-					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "Rendered through the compatible legacy projection."),
+					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
+					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "従来の表示方法で表示しています。"),
 				});
 			}
 		}
@@ -735,10 +735,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				coverages,
 				warnings: [{
 					code: 'spreadsheet.legacyDiffProjection',
-					message: localize('paradis.spreadsheet.legacyDiffProjection', "The typed Inspector uses the compatible spreadsheet comparison while semantic backend results are unavailable."),
+					message: localize('paradis.spreadsheet.legacyDiffProjection', "詳細な解析の結果が利用できないため、変更点は互換表示の比較結果をもとに表示しています。"),
 				}, ...(legacyChangeSet.truncated ? [{
 					code: 'spreadsheet.legacyDiffInspectorLimit',
-					message: localize('paradis.spreadsheet.legacyDiffInspectorLimit', "Showing the first {0} changes; at least {1} were detected, so analysis remains incomplete.", changes.length, legacyChangeSet.minimumChangeCount),
+					message: localize('paradis.spreadsheet.legacyDiffInspectorLimit', "先頭の {0} 件の変更のみ表示しています。少なくとも {1} 件が見つかっているため、解析は未完了です。", changes.length, legacyChangeSet.minimumChangeCount),
 				}] : [])],
 			});
 		}
@@ -1296,7 +1296,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	}
 
 	private _renderRecoveryError(): void {
-		this._renderMessage(localize('paradis.spreadsheet.diffBlank', "The spreadsheet comparison renderer produced no visible content."));
+		this._renderMessage(localize('paradis.spreadsheet.diffBlank', "比較結果を表示できませんでした。"));
 		const resource = this._modifiedResource;
 		if (!this._bodyEl || !resource) {
 			return;
@@ -1304,7 +1304,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const actions = dom.append(this._bodyEl, $('.paradis-spreadsheet-recovery-actions'));
 		const retry = dom.append(actions, $('button')) as HTMLButtonElement;
 		retry.type = 'button';
-		retry.textContent = localize('paradis.spreadsheet.diffRetry', "Retry");
+		retry.textContent = localize('paradis.spreadsheet.diffRetry', "再試行");
 		this._renderDisposables.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
 			this._recoveryState = transition.state;
@@ -1313,7 +1313,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (resource.scheme === Schemas.file) {
 			const open = dom.append(actions, $('button')) as HTMLButtonElement;
 			open.type = 'button';
-			open.textContent = localize('paradis.spreadsheet.diffOpenAfterBlank', "Open in Default Application");
+			open.textContent = localize('paradis.spreadsheet.diffOpenAfterBlank', "既定のアプリで開く");
 			this._renderDisposables.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
 				void this._nativeHostService.openExternal(resource.toString(true));
 			}));
@@ -1511,7 +1511,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 		});
 		this._renderDisposables.add(wireParadisOfficeTableGrid(table, {
-			label: localize('paradis.spreadsheet.diffGrid', "{0} Spreadsheet Grid", label),
+			label: localize('paradis.spreadsheet.diffGrid', "{0} のシート", label),
 			rowCount: Math.max(1, rows.length),
 			columnCount: Math.max(1, columnWidths.length),
 			logicalCellColumns: rows.map(row => row.cells.flatMap((cell, column) => cell.hidden ? [] : [column])),
@@ -1819,15 +1819,15 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			const labelEl = dom.append(tab, $('span'));
 			labelEl.textContent = label;
 			const statusLabel = sheet.sheetStatus === 'added'
-				? localize('paradis.spreadsheet.addedSheet', "added")
+				? localize('paradis.spreadsheet.addedSheet', "追加")
 				: sheet.sheetStatus === 'removed'
-					? localize('paradis.spreadsheet.removedSheet', "removed")
-					: localize('paradis.spreadsheet.existingSheet', "existing");
+					? localize('paradis.spreadsheet.removedSheet', "削除")
+					: localize('paradis.spreadsheet.existingSheet', "既存");
 			accessibleTabs.push({
 				element: tab,
 				label: sheet.protectedSheet
-					? localize('paradis.spreadsheet.diffProtectedSheetTab', "{0} sheet, {1}, protected", sheet.name, statusLabel)
-					: localize('paradis.spreadsheet.diffSheetTab', "{0} sheet, {1}", sheet.name, statusLabel),
+					? localize('paradis.spreadsheet.diffProtectedSheetTab', "{0} シート、{1}、保護あり", sheet.name, statusLabel)
+					: localize('paradis.spreadsheet.diffSheetTab', "{0} シート、{1}", sheet.name, statusLabel),
 				selected: idx === this._activeSheetIndex,
 			});
 			tabsStore.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
@@ -1852,7 +1852,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}));
 		});
 		tabsStore.add(wireParadisOfficeTabList(this._tabsEl, {
-			label: localize('paradis.spreadsheet.sheetTabs', "Workbook Sheets"),
+			label: localize('paradis.spreadsheet.sheetTabs', "シート一覧"),
 			tabs: accessibleTabs,
 		}));
 	}
@@ -1893,12 +1893,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		} else {
 			this._accessibility?.announceChangeLabel(
 				location.validation
-					? localize('paradis.spreadsheet.inputRuleChange', "Input Rule Change")
+					? localize('paradis.spreadsheet.inputRuleChange', "入力規則の変更")
 					: location.shape?.render.type === 'line'
-						? localize('paradis.spreadsheet.drawingLineChange', "Drawing Line")
+						? localize('paradis.spreadsheet.drawingLineChange', "図形の線")
 						: location.shape
-							? localize('paradis.spreadsheet.drawingChange', "Drawing Change")
-							: localize('paradis.spreadsheet.cellChange', "Cell Change"),
+							? localize('paradis.spreadsheet.drawingChange', "図形の変更")
+							: localize('paradis.spreadsheet.cellChange', "セルの変更"),
 				idx,
 				this._diffLocations.length,
 			);

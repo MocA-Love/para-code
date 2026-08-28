@@ -83,10 +83,10 @@ suite('ParadisWordInspector', () => {
 			unterminated: canShowWordNoChanges({ ...completeManifest, terminal: false }, 'complete', 0),
 			degraded: canShowWordNoChanges(completeManifest, 'degraded', 0),
 		}, { role: 'status', live: 'polite', unsafeElement: null, complete: true, unterminated: false, degraded: false });
-		ok(ribbon.textContent?.includes('Faithful 1'));
-		ok(ribbon.textContent?.includes('Approximate 1'));
-		ok(ribbon.textContent?.includes('Alternatives 3'));
-		ok(ribbon.textContent?.includes('Analysis Incomplete'));
+		ok(ribbon.textContent?.includes('完全再現 1'));
+		ok(ribbon.textContent?.includes('近似 1'));
+		ok(ribbon.textContent?.includes('代替表示 3'));
+		ok(ribbon.textContent?.includes('解析未完了'));
 		ok(ribbon.textContent?.includes('<img src=x onerror=alert(1)>'));
 	});
 
@@ -111,12 +111,12 @@ suite('ParadisWordInspector', () => {
 		strictEqual(host.querySelector('[data-story-kind="footnote"]')?.getAttribute('data-count'), '1');
 		strictEqual(host.querySelector('[data-story-kind="package"]')?.getAttribute('data-count'), '1');
 		strictEqual(host.querySelectorAll('[data-change-id]').length, 6, 'package/style changes without a render marker stay visible');
-		deepStrictEqual(changes.map(wordChangeLabel), ['Content', 'Content', 'Content', 'Math', 'Image', 'Style']);
+		deepStrictEqual(changes.map(wordChangeLabel), ['内容', '内容', '内容', '数式', '画像', 'スタイル']);
 
 		inspector.setComparison([], completeManifest, 'complete');
-		ok(host.textContent?.includes('No Changes'));
+		ok(host.textContent?.includes('変更なし'));
 		inspector.setComparison([], { ...completeManifest, visitedSemanticUnits: 23 }, 'complete');
-		ok(host.textContent?.includes('Analysis Incomplete'));
+		ok(host.textContent?.includes('解析未完了'));
 	});
 
 	test('switches Final, Original, and Markup and persists bounded view state', () => {
@@ -182,7 +182,7 @@ suite('ParadisWordInspector', () => {
 		const button = host.querySelector<HTMLButtonElement>('[data-search-result-id="word-search:header-story:0"]');
 		button?.click();
 		deepStrictEqual(results.map(result => [result.locator, result.locationBadge.kind, result.locationBadge.label, result.preview.match]), [
-			['story:header:/word/header1.xml:0', 'story', 'Header', 'Café'],
+			['story:header:/word/header1.xml:0', 'story', 'ヘッダー', 'Café'],
 		]);
 		deepStrictEqual(navigated, [{ kind: 'search', locator: 'story:header:/word/header1.xml:0', anchor: 'header-story' }]);
 	});
@@ -201,7 +201,7 @@ suite('ParadisWordInspector', () => {
 		await inspector.requestPrintModel();
 		strictEqual(wordPrintWarning(model), 'Pagination is approximate.');
 		ok(host.querySelector('[role="alert"]')?.textContent?.includes('Pagination is approximate.'));
-		ok(host.querySelector('[role="alert"]')?.textContent?.includes('1 placeholder'));
+		ok(host.querySelector('[role="alert"]')?.textContent?.includes('代替表示 1 件'));
 	});
 
 	test('restores committed SourceDescriptor/view state and fences stale or blank opens', () => {
@@ -238,7 +238,7 @@ suite('ParadisWordInspector', () => {
 		});
 		const diagonal = change('diagonal', 'formatting', 'table.diagonalBorder', 'story:body:/word/document.xml:0/node:table-1', 'table-1');
 		const drawing = change('line', 'object', 'object.lineGeometry', 'story:textbox:/word/document.xml:0/node:line-1', 'line-1');
-		deepStrictEqual([wordChangeLabel(diagonal), wordChangeLabel(drawing)], ['Table Diagonal Border', 'Drawing Line']);
+		deepStrictEqual([wordChangeLabel(diagonal), wordChangeLabel(drawing)], ['表の斜線', '図形の線']);
 		strictEqual(JSON.stringify(resolveParadisWordNavigation(diagonal.subject.locator, diagonal.navigableAnchor)).includes('pixel'), false);
 		strictEqual(JSON.stringify(resolveParadisWordNavigation(drawing.subject.locator, drawing.navigableAnchor)).includes('geometry'), false);
 	});
@@ -301,7 +301,7 @@ suite('ParadisWordInspector', () => {
 			printUnavailable: 'Print preview is unavailable in compatibility mode.',
 		}));
 
-		strictEqual(host.querySelector('[role="region"]')?.getAttribute('aria-label'), 'Word Change Inspector');
+		strictEqual(host.querySelector('[role="region"]')?.getAttribute('aria-label'), 'Word の変更インスペクター');
 		strictEqual(host.querySelector('[aria-live="polite"]')?.getAttribute('aria-atomic'), 'true');
 		ok(host.textContent?.includes('Semantic search is unavailable in compatibility mode.'));
 		ok(host.textContent?.includes('Print preview is unavailable in compatibility mode.'));

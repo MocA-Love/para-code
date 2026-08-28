@@ -80,10 +80,10 @@ suite('ParadisSpreadsheetInspector', () => {
 
 		strictEqual(ribbon.getAttribute('role'), 'status');
 		strictEqual(ribbon.getAttribute('aria-live'), 'polite');
-		ok(ribbon.textContent?.includes('Faithful 1'));
-		ok(ribbon.textContent?.includes('Approximate 1'));
-		ok(ribbon.textContent?.includes('Alternatives 3'));
-		ok(ribbon.textContent?.includes('Analysis Incomplete'));
+		ok(ribbon.textContent?.includes('完全再現 1'));
+		ok(ribbon.textContent?.includes('近似 1'));
+		ok(ribbon.textContent?.includes('代替表示 3'));
+		ok(ribbon.textContent?.includes('解析未完了'));
 		strictEqual(ribbon.querySelector('img,script'), null);
 		ok(ribbon.textContent?.includes('<img src=x onerror=alert(1)>'));
 	});
@@ -107,9 +107,9 @@ suite('ParadisSpreadsheetInspector', () => {
 		strictEqual(canShowSpreadsheetNoChanges({ ...completeManifest, terminal: false }, 'complete', 0), false);
 		strictEqual(canShowSpreadsheetNoChanges(completeManifest, 'degraded', 0), false);
 		inspector.setComparison([], completeManifest, 'complete');
-		ok(host.textContent?.includes('No Changes'));
+		ok(host.textContent?.includes('変更なし'));
 		inspector.setComparison([], { ...completeManifest, visitedSemanticUnits: 11 }, 'complete');
-		ok(host.textContent?.includes('Analysis Incomplete'));
+		ok(host.textContent?.includes('解析未完了'));
 	});
 
 	test('navigates placeholders by logical node identity without interpreting document markup', () => {
@@ -201,8 +201,8 @@ suite('ParadisSpreadsheetInspector', () => {
 		ok(host.querySelectorAll('[data-change-id]').length <= 100);
 		ok(host.querySelectorAll('[data-placeholder-id]').length <= 100);
 		ok(host.querySelectorAll('[data-search-result-id]').length <= 100);
-		ok(host.textContent?.includes('250 changes'));
-		ok(host.textContent?.includes('250 placeholders'));
+		ok(host.textContent?.includes('250 件の変更'));
+		ok(host.textContent?.includes('代替表示 250 件'));
 	});
 
 	test('announces print-model approximation warnings and keeps placeholders in the model contract', async () => {
@@ -225,7 +225,7 @@ suite('ParadisSpreadsheetInspector', () => {
 		strictEqual(spreadsheetPrintWarning(printModel), 'Page breaks are approximate.');
 		const alert = host.querySelector('[role="alert"]');
 		ok(alert?.textContent?.includes('Page breaks are approximate.'));
-		ok(alert?.textContent?.includes('1 placeholder'));
+		ok(alert?.textContent?.includes('代替表示 1 件'));
 	});
 
 	test('restores bounded zoom, category filters, and active sheet view state', () => {
@@ -314,11 +314,11 @@ suite('ParadisSpreadsheetInspector', () => {
 		];
 		inspector.setComparison(changes, completeManifest, 'complete');
 
-		strictEqual(host.querySelector('[role="region"]')?.getAttribute('aria-label'), 'Spreadsheet Change Inspector');
+		strictEqual(host.querySelector('[role="region"]')?.getAttribute('aria-label'), 'スプレッドシートの変更インスペクター');
 		strictEqual(host.querySelector('[aria-live="polite"]')?.getAttribute('aria-atomic'), 'true');
 		ok(PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border.includes('--vscode-contrastBorder'));
 		ok(PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.focus.includes('--vscode-contrastActiveBorder'));
-		deepStrictEqual(changes.map(spreadsheetChangeLabel), ['Base Diagonal Border', 'Conditional Formatting Diagonal', 'Drawing Line']);
+		deepStrictEqual(changes.map(spreadsheetChangeLabel), ['セルの斜線', '条件付き書式の斜線', '図形の線']);
 		const drawingButton = host.querySelector<HTMLButtonElement>('[data-change-id="drawing"]');
 		drawingButton?.click();
 		deepStrictEqual(navigated, [{ kind: 'change', locator: 'Data!object:Line 1', anchor: 'anchor:drawing' }]);
@@ -394,8 +394,8 @@ suite('ParadisSpreadsheetInspector', () => {
 		const changes = adaptLegacySpreadsheetInspectorChanges([sheet]);
 
 		deepStrictEqual(changes.map(item => [item.category, item.subject.kind, spreadsheetChangeLabel(item)]), [
-			['formatting', 'cell.diagonalBorder', 'Base Diagonal Border'],
-			['object', 'object.lineGeometry', 'Drawing Line'],
+			['formatting', 'cell.diagonalBorder', 'セルの斜線'],
+			['object', 'object.lineGeometry', '図形の線'],
 		]);
 		deepStrictEqual(changes.map(item => item.subject.locator), ['Data!B2', 'Data!object:Line 1']);
 	});

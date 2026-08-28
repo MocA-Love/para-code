@@ -156,6 +156,38 @@
 	box-sizing: border-box;
 }
 
+/* allow-any-unicode-next-line */
+/* ウィンドウ枠の固定。帯と同じく、スクロールしない兄弟要素として重ねて追従させる。 */
+.paradis-spreadsheet-frozenrows,
+.paradis-spreadsheet-frozencols,
+.paradis-spreadsheet-frozencorner {
+	position: absolute;
+	overflow: hidden;
+	pointer-events: none;
+	display: none;
+	background-color: #ffffff;
+}
+
+.paradis-spreadsheet-frozenrows {
+	right: 0;
+	z-index: 8;
+}
+
+.paradis-spreadsheet-frozencols {
+	bottom: 0;
+	z-index: 8;
+}
+
+/* allow-any-unicode-next-line */
+/* 角は固定行・固定列の交差部。両方より前面に置く。 */
+.paradis-spreadsheet-frozencorner {
+	z-index: 9;
+}
+
+.paradis-spreadsheet-frozen-shift {
+	position: relative;
+}
+
 .paradis-spreadsheet-strip-inner {
 	position: relative;
 	transform-origin: top left;
