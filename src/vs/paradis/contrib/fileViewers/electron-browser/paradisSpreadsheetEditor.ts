@@ -793,7 +793,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		let workbook: IParadisWorkbookData;
 		try {
-			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource);
+			// 到達度の診断は、診断表示を出す設定のときだけ費用を払う。
+			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, {
+				semanticDiagnostics: !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration),
+			});
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
@@ -899,19 +902,35 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				});
 			}
 		}
+		// 表示そのものは互換の投影(exceljs)で作っているので、再現度は常に「近似」と申告する。
+		// 意味解析の結果は「ファイルをどこまで読めたか」を伝えるためだけに使い、再現度の主張には
+		// 使わない(読めたことと、同じ見た目に描けたことは別の話)。
+		const semantic = workbook.semanticDiagnostics;
+		const truncated = workbook.sheets.some(sheet => sheet.truncated);
 		const coverages: ParadisOfficeRenderCoverage[] = ['approximated', ...placeholders.map(() => 'placeholder' as const)];
-		if (workbook.sheets.some(sheet => sheet.truncated)) {
+		if (truncated) {
 			coverages.push('noAnchor');
 		}
 		if (this._diagnosticsEl) {
-			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, {
-				outcome: 'degraded',
-				coverages,
-				warnings: [{
-					code: 'spreadsheet.legacyProjection',
-					message: localize('paradis.spreadsheet.legacyProjection', "この形式では詳細な解析に対応していないため、従来の表示方法で開いています。"),
-				}],
-			});
+			const warnings: { readonly code: string; readonly message: string }[] = [];
+			if (truncated) {
+				warnings.push({
+					code: 'spreadsheet.truncatedRows',
+					message: localize('paradis.spreadsheet.truncatedRows', "行数が多いため、先頭部分だけを表示しています。"),
+				});
+			}
+			if (semantic?.available === false) {
+				warnings.push({
+					code: 'spreadsheet.semanticUnavailable',
+					message: localize('paradis.spreadsheet.semanticUnavailable', "このファイルの詳しい解析はできませんでしたが、表示には影響していません。"),
+				});
+			} else if (semantic && (semantic.unresolvedReferences > 0 || semantic.unknownElements > 0)) {
+				warnings.push({
+					code: 'spreadsheet.semanticGaps',
+					message: localize('paradis.spreadsheet.semanticGaps', "このファイルには、まだ対応していない要素が含まれています。"),
+				});
+			}
+			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, { outcome: 'degraded', coverages, warnings });
 		}
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;

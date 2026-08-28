@@ -229,6 +229,31 @@ DevTools から `.docx-wrapper > section.docx` 各要素の `getBoundingClientRe
 機能（無効だとタブが全角空白1つになり、右揃えタブや点線リーダーが機能しない）。
 `paradisDocxFileEditor.ts` 側の renderAsync オプションで有効化している。
 
+## 描画対象へ目印を出させるパッチ（2026-08-29 追加。バグ修正ではなく機能追加）
+
+docx-preview はグラフ・SmartArt・DrawingML 図形を描かない。Para Code はその中身を自前の
+SVG（`electron-browser/word/paradisWordObjectRenderer.ts`）で補うが、差し込み先を決めるには
+「この枠がどの図のものか」を知る必要がある。
+
+docx-preview は理解できない drawing でも `renderDrawing` が extent の大きさを持つ空の
+`inline-block` を残すので枠自体はある。しかし目印が無いと出現順で推測するしかなく、それは
+実運用で必ずずれる。
+
+- `mc:AlternateContent` は対応名前空間リストが空（`Le=[]`）のため **Choice を捨てて Fallback の
+  VML を描く**。Word が書く図形・テキストボックスはほぼこの形で、枠が作られない
+- 画像は `<img>` になるので枠にならない
+- ヘッダーはページごとに複製される
+
+1件でもずれると以降が全部ずれ、別の図の位置に描いてしまう。そこで次の2箇所を書き換え、
+`wp:docPr@id` を枠の属性として出させている。
+
+1. `parseDrawingWrapper` の要素ループに `case"docPr":t.paradisDrawingId=v.attr(o,"id");break;` を追加
+2. `renderDrawing` に `null!=e.paradisDrawingId&&t.setAttribute("data-paradis-drawing-id",e.paradisDrawingId),` を追加
+
+上流の描画結果には影響しない（属性が1つ増えるだけ）。対応づけの実装は
+`common/word/paradisWordOverlayPlacement.ts`、差し込みは `paradisDocxFileEditor.ts` の
+webview スクリプト内。
+
 ## モバイルアプリ用バンドル（要同期）
 
 Para Code Mobile の Word ビューア（`app/mobile/src/components/fileViewer.tsx` の

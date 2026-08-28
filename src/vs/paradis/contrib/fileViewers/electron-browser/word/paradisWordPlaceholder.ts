@@ -31,14 +31,23 @@ export function formatWordSvgNumber(value: number): string {
 	return String(Object.is(rounded, -0) ? 0 : rounded);
 }
 
+/** 属性値の長さ上限。診断用の識別子なので、これを超える分は捨ててよい。 */
+const MAX_PLACEHOLDER_ATTRIBUTE_LENGTH = 4_096;
+
+function boundedAttributeValue(value: string): string {
+	return value.length <= MAX_PLACEHOLDER_ATTRIBUTE_LENGTH ? value : value.slice(0, MAX_PLACEHOLDER_ATTRIBUTE_LENGTH);
+}
+
 /** Appends a script-free, fixed-structure placeholder for one Word object. */
 export function appendWordObjectPlaceholder(root: SVGSVGElement, options: ParadisWordPlaceholderOptions): SVGGElement {
 	const document = root.ownerDocument;
 	const group = document.createElementNS(SVG_NAMESPACE, 'g');
 	group.setAttribute('class', 'paradis-word-object-placeholder');
-	group.setAttribute('data-node-id', options.nodeId);
-	group.setAttribute('data-feature', options.feature);
-	group.setAttribute('data-coverage', options.coverage);
+	// 文書由来の値がそのまま属性に入る唯一の場所。長さを縛らないと、巨大な id を並べた
+	// ファイルだけで数十 MB の SVG を作らされる(テキスト側の safeText と同じ扱いにする)。
+	group.setAttribute('data-node-id', boundedAttributeValue(options.nodeId));
+	group.setAttribute('data-feature', boundedAttributeValue(options.feature));
+	group.setAttribute('data-coverage', boundedAttributeValue(options.coverage));
 
 	const fallback = { x: 0, y: (options.ordinal ?? 0) * 18, width: 120, height: 16 };
 	const bounds = options.bounds ?? fallback;
