@@ -12,6 +12,11 @@ const ALLOWED_STATUSES = new Set(['implemented', 'safe-fallback', 'intentional-u
 const FALLBACK_ACTIONS = new Set(['legacy-preview', 'diagnostic', 'explicit-unavailable']);
 const FALLBACK_REASONS = new Set(['fail-closed', 'no-unsupported-projection', 'no-external-fetch', 'no-semantic-claim']);
 const PLACEHOLDERS = /^(?:pending|future:|historical:|existing regression$|report-office-mock correction$)/i;
+const FALLBACK_SOURCE_BINDINGS = {
+	'legacy-preview': 'src/vs/paradis/contrib/fileViewers/electron-browser/paradisSpreadsheetEditor.ts#createLegacySpreadsheetPrintModel',
+	diagnostic: 'src/vs/paradis/contrib/fileViewers/browser/paradisOfficeDiagnosticEditor.ts#renderParadisOfficeDiagnostic',
+	'explicit-unavailable': 'src/vs/paradis/contrib/fileViewers/browser/paradisOfficeDiagnosticEditor.ts#renderWorkerFallback',
+} as const;
 
 function fail(message: string): never {
 	console.error(`office matrix: ${message}`);
@@ -30,9 +35,9 @@ function fallbackField(value: string, field: 'action' | 'reason'): string | unde
 	return new RegExp(`(?:^Fallback:\\s*|;\\s*)${field}=([a-z-]+)(?:;|$)`).exec(value)?.[1];
 }
 
-function validFallbackSource(value: string): boolean {
+function validFallbackSource(value: string, action: string): boolean {
 	const source = /(?:^Fallback:\s*|;\s*)source=([^;\s]+)(?:;|$)/.exec(value)?.[1];
-	if (!source) {
+	if (!source || FALLBACK_SOURCE_BINDINGS[action as keyof typeof FALLBACK_SOURCE_BINDINGS] !== source) {
 		return false;
 	}
 	const [relativePath, symbol, ...extra] = source.split('#');
@@ -121,7 +126,7 @@ for (let lineIndex = headerIndex + 2; lineIndex < lines.length && lines[lineInde
 		if (!runtimeReason || runtimeReason !== behaviorReason) {
 			errors.push(`${id}: safe-fallback runtime requires the matching structured reason`);
 		}
-		if (fixture.startsWith('not-run:') && unit.startsWith('not-run:') && runtime.startsWith('not-run:') && !validFallbackSource(behavior)) {
+		if (fixture.startsWith('not-run:') && unit.startsWith('not-run:') && runtime.startsWith('not-run:') && !validFallbackSource(behavior, behaviorAction ?? '')) {
 			errors.push(`${id}: all-not-run safe-fallback requires an existing repo-relative source=path#symbol`);
 		}
 	}

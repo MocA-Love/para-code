@@ -34,7 +34,7 @@ test('rejects a generic safe-fallback that has no structured UI action or policy
 
 test('accepts a safe-fallback with matching structured action and product reason', () => {
 	assert.equal(check(
-		'Fallback: action=legacy-preview; reason=no-semantic-claim; source=src/vs/paradis/contrib/fileViewers/electron-browser/paradisSpreadsheetEditor.ts#isParadisSpreadsheetV1Enabled; existing preview remains available.',
+		'Fallback: action=legacy-preview; reason=no-semantic-claim; source=src/vs/paradis/contrib/fileViewers/electron-browser/paradisSpreadsheetEditor.ts#createLegacySpreadsheetPrintModel; existing preview remains available.',
 		'not-run: target=desktop:xlsx-render; action=legacy-preview; reason=no-semantic-claim; runtime not executed.',
 	), 0);
 });
@@ -47,5 +47,27 @@ test('rejects all-not-run fallback evidence when the source is absent or nonexis
 	assert.notEqual(check(
 		'Fallback: action=legacy-preview; reason=no-semantic-claim; source=src/does-not-exist.ts#fallback; existing preview remains available.',
 		'not-run: target=desktop:xlsx-render; action=legacy-preview; reason=no-semantic-claim; runtime not executed.',
+	), 0);
+});
+
+test('rejects fallback evidence whose source binding does not match the action', () => {
+	assert.notEqual(check(
+		'Fallback: action=diagnostic; reason=no-semantic-claim; source=src/vs/paradis/contrib/fileViewers/electron-browser/paradisSpreadsheetEditor.ts#createLegacySpreadsheetPrintModel; existing preview remains available.',
+		'not-run: target=desktop:xlsx-render; action=diagnostic; reason=no-semantic-claim; runtime not executed.',
+	), 0);
+});
+
+test('rejects malformed source evidence and accepts each action-specific binding', () => {
+	assert.notEqual(check(
+		'Fallback: action=legacy-preview; reason=no-semantic-claim; source=not-a-path; existing preview remains available.',
+		'not-run: target=desktop:xlsx-render; action=legacy-preview; reason=no-semantic-claim; runtime not executed.',
+	), 0);
+	assert.equal(check(
+		'Fallback: action=diagnostic; reason=no-external-fetch; source=src/vs/paradis/contrib/fileViewers/browser/paradisOfficeDiagnosticEditor.ts#renderParadisOfficeDiagnostic; diagnostic remains available.',
+		'not-run: target=desktop:xlsx-render; action=diagnostic; reason=no-external-fetch; runtime not executed.',
+	), 0);
+	assert.equal(check(
+		'Fallback: action=explicit-unavailable; reason=fail-closed; source=src/vs/paradis/contrib/fileViewers/browser/paradisOfficeDiagnosticEditor.ts#renderWorkerFallback; unavailable state remains explicit.',
+		'not-run: target=web:workbench; action=explicit-unavailable; reason=fail-closed; runtime not executed.',
 	), 0);
 });
