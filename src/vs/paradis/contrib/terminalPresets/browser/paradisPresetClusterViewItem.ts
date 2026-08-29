@@ -70,6 +70,7 @@ import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
 	paradisGroupPresetsByFolder,
+	paradisPresetFolderKey,
 	paradisPresetQualifiers,
 	paradisPresetTooltip,
 } from '../common/paradisTerminalPresets.js';
@@ -104,6 +105,8 @@ const STR_UNDO_HIDE = localize('paradis.presetCluster.undoHide', "元に戻す")
 // allow-any-unicode-next-line
 const strHideFailed = (name: string, message: string) => localize('paradis.presetCluster.hideFailed', "プリセット「{0}」を非表示にできませんでした: {1}", name, message);
 // allow-any-unicode-next-line
+// allow-any-unicode-next-line
+const STR_SHOW_FOLDER_LABEL = localize('paradis.presetCluster.showFolderLabel', "フォルダ名も表示する");
 const STR_MANAGE_PRESETS = localize('paradis.presetCluster.managePresets', "コマンドプリセットを管理...");
 const CONFIGURE_PRESETS_COMMAND_ID = 'paradis.terminal.configurePresets';
 
@@ -316,8 +319,14 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			const folderLabel = group.folderLabel !== undefined && (folderLabelCounts.get(group.folderLabel) ?? 0) > 1
 				? strFolderLabelWithScope(group.folderLabel, this.folderScopeLabel(group.presets[0]))
 				: group.folderLabel;
-			this.renderItem(fullEl, group.presets, qualifiers, { folderLabel });
-			this.renderItem(flyout, group.presets, qualifiers, { folderLabel });
+			// キーは表示用に飾る前の生のフォルダ名から作る（同名フォルダが増減してスコープの区別語が
+			// 付いたり消えたりしても、覚えた表示設定が別物扱いにならないようにする）。
+			const folderKey = group.folderLabel !== undefined
+				? paradisPresetFolderKey(group.presets[0], group.folderLabel)
+				: undefined;
+			const options = { folderLabel, folderKey };
+			this.renderItem(fullEl, group.presets, qualifiers, options);
+			this.renderItem(flyout, group.presets, qualifiers, options);
 		}
 
 		container.classList.toggle('is-collapsed', this.collapsed);
@@ -341,7 +350,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		return preset.sourceUri ? basename(dirname(preset.sourceUri)) : STR_FOLDER_SCOPE_WORKSPACE;
 	}
 
-	private renderItem(target: HTMLElement, group: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>, options?: { readonly folderLabel?: string }): void {
+	private renderItem(target: HTMLElement, group: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>, options?: { readonly folderLabel?: string; readonly folderKey?: string }): void {
 		const preset = group[0];
 		const btn = dom.append(target, $('button.paradis-preset-cluster-item')) as HTMLButtonElement;
 		btn.type = 'button';
@@ -352,7 +361,17 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		if (folderLabel !== undefined || group.length > 1) {
 			const iconId = folderLabel !== undefined ? 'folder' : (preset.icon ?? 'play');
 			const groupTitle = strPresetGroupTitle(folderLabel ?? preset.name.trim(), group.length);
-			dom.append(btn, $('span.paradis-preset-cluster-item-icon')).classList.add(...ThemeIcon.asClassNameArray(ThemeIcon.fromId(iconId)));
+			// フォルダは既定でアイコンのみ（ボタン数が増えてもタブ側を圧迫しない）。名前も出すかは
+			// フォルダごとに右クリックで選べる（showHideMenu の STR_SHOW_FOLDER_LABEL）。
+			const showFolderLabel = folderLabel !== undefined
+				&& options?.folderKey !== undefined
+				&& this.presetService.isFolderLabelShown(options.folderKey);
+			if (showFolderLabel) {
+				const label = dom.append(btn, $('span.paradis-preset-cluster-item-label'));
+				dom.reset(label, ...renderLabelWithIcons(`$(${iconId}) ${folderLabel}`));
+			} else {
+				dom.append(btn, $('span.paradis-preset-cluster-item-icon')).classList.add(...ThemeIcon.asClassNameArray(ThemeIcon.fromId(iconId)));
+			}
 			btn.setAttribute('aria-label', groupTitle);
 			btn.setAttribute('aria-haspopup', 'true');
 			btn.setAttribute('aria-expanded', 'false');
@@ -364,7 +383,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			}));
 			this.contentStore.add(dom.addDisposableListener(btn, 'contextmenu', e => {
 				dom.EventHelper.stop(e, true);
-				this.showHideMenu(btn, group, qualifiers);
+				this.showHideMenu(btn, group, qualifiers, options?.folderKey);
 			}));
 			return;
 		}
@@ -569,12 +588,24 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 	 * 低い右クリック操作であることに加え、標準メニューが持つキーボード操作・破棄確認的な
 	 * 挙動を自前実装で作り直すコストに見合わないため。直し忘れではなく見送り。
 	 */
-	private showHideMenu(anchor: HTMLElement, presets: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>): void {
-		const actions: IAction[] = presets.map(preset => toAction({
+	private showHideMenu(anchor: HTMLElement, presets: readonly IParadisResolvedPreset[], qualifiers: Map<string, string>, folderKey?: string): void {
+		const actions: IAction[] = [];
+		// フォルダボタンから開いたときだけ、そのフォルダの名前表示を切り替えるチェック項目を先頭に出す。
+		if (folderKey !== undefined) {
+			const shown = this.presetService.isFolderLabelShown(folderKey);
+			actions.push(toAction({
+				id: 'paradis.presetCluster.toggleFolderLabel',
+				label: STR_SHOW_FOLDER_LABEL,
+				checked: shown,
+				run: () => this.presetService.setFolderLabelShown(folderKey, !shown),
+			}));
+			actions.push(new Separator());
+		}
+		actions.push(...presets.map(preset => toAction({
 			id: `paradis.presetCluster.hide.${preset.key}`,
 			label: strHideLabel(preset.name, qualifiers.get(preset.key)),
 			run: () => this.hidePreset(preset),
-		}));
+		})));
 		if (actions.length > 0) {
 			actions.push(new Separator());
 		}

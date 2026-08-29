@@ -317,6 +317,20 @@ export interface IParadisPresetService {
 	setWorkspacePresetLocallyHidden(preset: IParadisResolvedPreset, hidden: boolean): void;
 
 	/**
+	 * タブバーのフォルダボタンに、アイコンだけでなくフォルダ名も出すか（既定はアイコンのみ）。
+	 * キーは {@link paradisPresetFolderKey}。
+	 */
+	isFolderLabelShown(folderKey: string): boolean;
+
+	/**
+	 * {@link isFolderLabelShown} の切り替え。この端末だけの表示設定として記録し、ユーザー設定の
+	 * プリセット定義にも .paracode.json にも書き込まない——フォルダは複数プリセットの共有タグで
+	 * あり、「どのプリセットへ書くか」を決められないうえ、git 共有ファイルへ個人の見た目都合の
+	 * 差分を作りたくないため。
+	 */
+	setFolderLabelShown(folderKey: string, shown: boolean): void;
+
+	/**
 	 * 2つのプリセットの並び順（定義元ファイル内の位置）を入れ替える。
 	 * 保存先や定義元ファイルが異なる組み合わせでは何もしない。
 	 */
@@ -581,6 +595,16 @@ export function paradisPresetQualifiers(presets: readonly IParadisResolvedPreset
  */
 export function paradisPresetScopeKey(entry: { readonly source: ParadisPresetSource; readonly sourceUri?: URI }): string {
 	return entry.source === 'workspace' ? `workspace:${entry.sourceUri?.toString() ?? ''}` : 'user';
+}
+
+/**
+ * フォルダ1個を指す安定キー（保存先 + フォルダ名）。フォルダは独立した実体を持たないため、
+ * 「このフォルダについての設定」を覚えたい側はこのキーを使う。保存先を含めるのは、user と
+ * workspace（あるいは別リポジトリ）に同名フォルダがあっても別物として扱うため
+ * （タブバーでも別ボタンとして描かれる）。
+ */
+export function paradisPresetFolderKey(entry: { readonly source: ParadisPresetSource; readonly sourceUri?: URI }, folder: string): string {
+	return `${paradisPresetScopeKey(entry)}::${folder.trim()}`;
 }
 
 /** 一覧の1グループ。folder が undefined の場合は「フォルダに入っていない」単独のプリセット（presets は必ず1件）。 */
