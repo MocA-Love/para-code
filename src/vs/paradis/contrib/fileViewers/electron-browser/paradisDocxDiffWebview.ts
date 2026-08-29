@@ -902,6 +902,21 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		}
 	}
 
+	/**
+	 * 描画結果が使い物になるか。
+	 *
+	 * ホスト側はこの判定材料を持っていない（本文は webview の中にしかない）ので、描き終わりの
+	 * 合図に必ず添えること。**添え忘れるとホストは「常に描画成功」と受け取り**、白紙の作り直しが
+	 * 一度も走らなくなる。
+	 *
+	 * **両側とも空のときだけ白紙と呼ぶ。** 片側が空なのは正当にあり得る（本文の無い .docx、
+	 * 追加されたばかりのファイルの旧版）ので、そこで白紙と報告すると、正しく出ている比較を
+	 * 作り直しにいった挙句「比較結果を表示できませんでした」に化ける。
+	 */
+	function renderedHasExpectedRoot(): boolean {
+		return !SIDES.every(side => host.isPaneBlank?.(side) === true);
+	}
+
 	async function handleAnnotate(annotations: readonly IParadisDocxAnnotation[], fillers: readonly IParadisDocxFiller[]): Promise<void> {
 		if (state.annotated) {
 			// 注入は AST を書き換えるので冪等ではない（ゴーストが二重に入る）。1回だけ通す。
@@ -926,7 +941,7 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 			return;
 		}
 		host.setStatus(undefined);
-		host.post({ type: 'rendered' });
+		host.post({ type: 'rendered', hasExpectedRoot: renderedHasExpectedRoot() });
 	}
 
 	host.onMessage(message => {
@@ -957,7 +972,7 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 				state.blankRetryUsed = false;
 				host.setRevisionMode?.(wordMessage.mode);
 				if (state.annotated) {
-					void renderDocuments().then(() => host.post({ type: 'rendered' }), error => host.post({ type: 'error', message: messageOf(error) }));
+					void renderDocuments().then(() => host.post({ type: 'rendered', hasExpectedRoot: renderedHasExpectedRoot() }), error => host.post({ type: 'error', message: messageOf(error) }));
 				}
 				break;
 			default:

@@ -55,6 +55,14 @@ export interface IParadisOfficeRecoveryState {
 
 export type ParadisOfficeRecoveryEvent =
 	| { readonly type: 'rendered'; readonly generation: number; readonly hasExpectedRoot: boolean }
+	/**
+	 * The render budget elapsed without any `rendered` observation for this generation.
+	 *
+	 * Without this the reducer only ever advances when a render reports back, so a surface whose
+	 * renderer never answers at all stays in `loading` forever and no effect is ever produced.
+	 * A timeout escalates exactly like a blank render, so the bounded retry ladder is shared.
+	 */
+	| { readonly type: 'renderTimedOut'; readonly generation: number }
 	| { readonly type: 'cancelled'; readonly generation: number }
 	| { readonly type: 'sourceUnavailable'; readonly generation: number }
 	| { readonly type: 'watchChanged' }
@@ -105,6 +113,44 @@ function blankError(): ParadisOfficeRecoveryBlankError {
 }
 
 /**
+ * Advances the bounded retry ladder for a generation that produced no usable render.
+ *
+ * The first failure remounts the already parsed snapshot. The second recreates the isolated
+ * surface. A third never retries: it exposes the stable `render.blank` result and explicit actions.
+ * A blank render and an elapsed render budget share this ladder — both mean the same thing to the
+ * user (nothing readable is on screen) and neither is worth an unbounded number of attempts.
+ */
+function escalateFailedRender(state: IParadisOfficeRecoveryState & { readonly active: IParadisOfficeRecoverySnapshot }): IParadisOfficeRecoveryTransition {
+	if (state.retryCount === 0) {
+		const generation = state.generation + 1;
+		return {
+			state: {
+				phase: 'loading', generation, retryCount: 1, pendingWatch: state.pendingWatch, active: state.active,
+				...(state.committed ? { committed: state.committed } : {}),
+			},
+			effects: [{ type: 'remount', generation }],
+		};
+	}
+	if (state.retryCount === 1) {
+		const generation = state.generation + 1;
+		return {
+			state: {
+				phase: 'loading', generation, retryCount: 2, pendingWatch: state.pendingWatch, active: state.active,
+				...(state.committed ? { committed: state.committed } : {}),
+			},
+			effects: [{ type: 'recreate', generation }],
+		};
+	}
+	return {
+		state: {
+			phase: 'failed', generation: state.generation, retryCount: 2, pendingWatch: false, active: state.active,
+			...(state.committed ? { committed: state.committed } : {}), error: blankError(),
+		},
+		effects: [{ type: 'showError', generation: state.generation, code: 'render.blank', actions: ['retry', 'openExternally'] }],
+	};
+}
+
+/**
  * Reduces lifecycle observations into bounded, platform-neutral effects.
  *
  * The first blank remounts the already parsed snapshot. The second recreates the isolated surface.
@@ -129,33 +175,13 @@ export function reduceParadisOfficeRecovery(state: IParadisOfficeRecoveryState, 
 					effects: [],
 				};
 			}
-			if (state.retryCount === 0) {
-				const generation = state.generation + 1;
-				return {
-					state: {
-						phase: 'loading', generation, retryCount: 1, pendingWatch: state.pendingWatch, active: state.active,
-						...(state.committed ? { committed: state.committed } : {}),
-					},
-					effects: [{ type: 'remount', generation }],
-				};
+			return escalateFailedRender({ ...state, active: state.active });
+		}
+		case 'renderTimedOut': {
+			if (event.generation !== state.generation || state.phase !== 'loading' || !state.active) {
+				return noEffect(state);
 			}
-			if (state.retryCount === 1) {
-				const generation = state.generation + 1;
-				return {
-					state: {
-						phase: 'loading', generation, retryCount: 2, pendingWatch: state.pendingWatch, active: state.active,
-						...(state.committed ? { committed: state.committed } : {}),
-					},
-					effects: [{ type: 'recreate', generation }],
-				};
-			}
-			return {
-				state: {
-					phase: 'failed', generation: state.generation, retryCount: 2, pendingWatch: false, active: state.active,
-					...(state.committed ? { committed: state.committed } : {}), error: blankError(),
-				},
-				effects: [{ type: 'showError', generation: state.generation, code: 'render.blank', actions: ['retry', 'openExternally'] }],
-			};
+			return escalateFailedRender({ ...state, active: state.active });
 		}
 		case 'cancelled': {
 			if (event.generation !== state.generation) {

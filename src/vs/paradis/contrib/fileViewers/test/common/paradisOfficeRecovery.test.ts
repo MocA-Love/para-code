@@ -41,6 +41,44 @@ suite('ParadisOfficeRecovery', () => {
 		});
 	});
 
+	test('an elapsed render budget walks the same bounded ladder as a blank render', () => {
+		// 「一度も答えが来ない」表示は、白紙と同じ手順で畳む。作り直し2回で直らなければ、
+		// 利用者に理由と操作を出して**必ず止まる**こと（無限に作り直さない）。
+		const opened = beginParadisOfficeRecovery(createParadisOfficeRecoveryState(), FIRST);
+		const first = reduceParadisOfficeRecovery(opened.state, { type: 'renderTimedOut', generation: 1 });
+		const second = reduceParadisOfficeRecovery(first.state, { type: 'renderTimedOut', generation: 2 });
+		const third = reduceParadisOfficeRecovery(second.state, { type: 'renderTimedOut', generation: 3 });
+
+		assert.deepStrictEqual({
+			effects: [...first.effects, ...second.effects, ...third.effects],
+			state: third.state,
+		}, {
+			effects: [
+				{ type: 'remount', generation: 2 },
+				{ type: 'recreate', generation: 3 },
+				{ type: 'showError', generation: 3, code: 'render.blank', actions: ['retry', 'openExternally'] },
+			],
+			state: {
+				phase: 'failed', generation: 3, retryCount: 2, pendingWatch: false, active: FIRST,
+				error: {
+					stage: 'render', code: 'blank', safeMessage: 'The Office renderer produced no visible content.',
+					severity: 'error', retryable: true, recoverable: true, userAction: 'retry',
+				},
+			},
+		});
+	});
+
+	test('an elapsed budget from a superseded generation changes nothing', () => {
+		// 読み直しをまたいで鳴った古い時計で作り直すと、いま出ている表示を壊す。
+		const opened = beginParadisOfficeRecovery(createParadisOfficeRecoveryState(), FIRST);
+		const advanced = reduceParadisOfficeRecovery(opened.state, { type: 'renderTimedOut', generation: 1 });
+
+		assert.deepStrictEqual(
+			reduceParadisOfficeRecovery(advanced.state, { type: 'renderTimedOut', generation: 1 }),
+			{ state: advanced.state, effects: [] },
+		);
+	});
+
 	test('blank detection requests one remount without changing the semantic snapshot', () => {
 		const opened = beginParadisOfficeRecovery(createParadisOfficeRecoveryState(), FIRST);
 

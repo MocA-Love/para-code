@@ -53,6 +53,8 @@ import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } fr
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
+import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
+import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
@@ -190,6 +192,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
 	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
 	private _renderSnapshot: { readonly resource: URI; readonly inlineData: string | undefined; readonly assetPlaceholderCount: number; readonly viewState: ParadisWordViewState } | undefined;
+	/**
+	 * 表示の見張りと観測。
+	 * 状態機械は `rendered` を受けて初めて動くので、一度も答えが来ない経路はこれでしか拾えない。
+	 */
+	private readonly _probe = this._register(new ParadisOfficeViewerProbe('word-view', generation => this._onRenderTimeout(generation)));
 	private _recreatingForRecovery = false;
 
 	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, layoutService: IWorkbenchLayoutService);
@@ -303,6 +310,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 		const resource = (input as ParadisDocxInput).resource;
 		this._runtimeConfiguration = this._configurationService ? snapshotWordRuntimeConfiguration(this._configurationService) : undefined;
+		// 母数は「利用者が1つの文書を開いた」回数。同じ文書ならタブを往復しても増えない。
+		this._probe.beginOpen(input.resource?.toString() ?? '', this._diagnosticEngine());
+
 		this._wordViewState = wordViewStateFromOptions(options?.viewState, this._currentWordViewState());
 		this._clearSemanticUi();
 		this._currentResource = resource;
@@ -415,10 +425,44 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._webviewStore.clear();
 	}
 
+	// ── 表示失敗の観測 ────────────────────────────────────────────────────
+
+	/** Sentry へ載せる、いま有効な処理エンジン。設定が読めない間は既定側に倒す。 */
+	private _diagnosticEngine(): ParadisOfficeDiagnosticEngine {
+		return this._runtimeConfiguration?.engine === 'legacy' || !this._runtimeConfiguration ? 'legacy' : 'v1';
+	}
+
+	/**
+	 * 予算内に描き終わりが来なかった。作り直し→作り直し→エラー表示の決まった順で畳ませる。
+	 * **ここでは送らない**（途中経過を送るとレートリミットの枠を使い切る）。送るのは終端だけ。
+	 */
+	private _onRenderTimeout(generation: number): void {
+		const resource = this._currentResource;
+		if (!resource) {
+			return;
+		}
+		// 時間切れにしたのに読み出しが走り続けていると、遅れて届いた結果が古い世代で
+		// setHtml され、画面は出るのに状態機械は `loading` に取り残される。経路を1本に畳む。
+		this._assetSanitization.value?.cancel();
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'renderTimedOut', generation });
+		if (transition.effects.length === 0) {
+			// 状態機械が受理しなかった時計。原因として記録すると、後で起きる本当の失敗の
+			// 理由が `timeout` に置き換わってしまう。
+			return;
+		}
+		this._probe.noteAcceptedTimeout();
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, resource);
+	}
+
 	private _finishRecoveryWithoutProbe(recoveryGeneration: number): void {
+		this._probe.disarmFor(recoveryGeneration);
 		const transition = reduceParadisOfficeRecovery(this._recoveryState, {
 			type: 'rendered', generation: recoveryGeneration, hasExpectedRoot: true,
 		});
+		if (transition.state.phase === 'ready') {
+			this._probe.noteSuccess();
+		}
 		this._recoveryState = transition.state;
 		if (this._currentResource) {
 			this._applyRecoveryEffects(transition.effects, this._currentResource);
@@ -431,9 +475,20 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		const candidate = message as { readonly type?: unknown; readonly generation?: unknown; readonly hasExpectedRoot?: unknown; readonly action?: unknown };
 		if (candidate.type === 'paradisOfficeRecovery' && typeof candidate.generation === 'number' && typeof candidate.hasExpectedRoot === 'boolean') {
+			// **いま待っている世代の応答だけが見張りを解ける。** 読み直しをまたいで届いた
+			// 古い応答で解くと、新しい世代が無防備になり、そちらが黙っても誰も気づかない。
+			this._probe.disarmFor(candidate.generation);
+			if (!candidate.hasExpectedRoot) {
+				// 白紙も梯子を1周ぶん進める。ここで記録しないと `attempt` の意味が
+				// 時間切れ経路とずれる（同じ3周でも 4 と 1 になる）。
+				this._probe.note({ cause: 'blank', stage: 'render' });
+			}
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, {
 				type: 'rendered', generation: candidate.generation, hasExpectedRoot: candidate.hasExpectedRoot,
 			});
+			if (transition.state.phase === 'ready') {
+				this._probe.noteSuccess();
+			}
 			this._recoveryState = transition.state;
 			if (this._currentResource) {
 				this._applyRecoveryEffects(transition.effects, this._currentResource);
@@ -444,6 +499,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			return;
 		}
 		if (candidate.action === 'retry') {
+			// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
+			this._probe.beginRetry();
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
 			this._recoveryState = transition.state;
 			this._applyRecoveryEffects(transition.effects, this._currentResource);
@@ -459,29 +516,46 @@ export class ParadisDocxFileEditor extends EditorPane {
 					this._renderResource(resource, effect.generation);
 					break;
 				case 'remount':
-					this._mountRenderSnapshot(effect.generation);
+					if (!this._mountRenderSnapshot(effect.generation)) {
+						this._escalateUnmountable(effect.generation, resource);
+					}
 					break;
 				case 'recreate':
 					this._disposeWebview();
 					this._recreatingForRecovery = true;
 					this._updateWebviewPlacement();
 					this._recreatingForRecovery = false;
-					this._mountRenderSnapshot(effect.generation);
+					if (!this._mountRenderSnapshot(effect.generation)) {
+						this._escalateUnmountable(effect.generation, resource);
+					}
 					break;
 				case 'restore':
+					// 直前に確定していた表示を戻すだけの経路。ラダーの一部ではない
+					// （状態は `loading` ではないので、進めようとしても状態機械が無視する）。
 					this._mountRenderSnapshot(effect.generation);
 					break;
 				case 'showError':
+					this._probe.disarm();
+					// 梯子を使い切った終端。ここが利用者の見る失敗なので、溜めた観測を1件だけ送る。
+					// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
+					this._probe.reportFailure();
 					this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
 					break;
 			}
 		}
 	}
 
-	private _mountRenderSnapshot(recoveryGeneration: number): void {
+	/**
+	 * 解析済みの中身を webview へ載せ直す。**載せる素材が無ければ `false`**。
+	 *
+	 * 素材が入るのは読み出しが成功した後だけなので、「読み出しが返ってこないまま時間切れ」の
+	 * 場合はここへ来ても何もできない。呼び出し側はその場合ラダーを1段進めること。黙って戻ると
+	 * 状態は `loading` のまま誰も次を蹴らず、**再試行の導線にも到達しない永久停止になる**。
+	 */
+	private _mountRenderSnapshot(recoveryGeneration: number): boolean {
 		const snapshot = this._renderSnapshot;
 		if (!snapshot || !isEqual(snapshot.resource, this._currentResource) || !this._webviewClaimed) {
-			return;
+			return false;
 		}
 		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(
 			snapshot.resource,
@@ -490,6 +564,22 @@ export class ParadisDocxFileEditor extends EditorPane {
 			snapshot.viewState,
 			recoveryGeneration,
 		)));
+		this._probe.armRender(recoveryGeneration);
+		return true;
+	}
+
+	/**
+	 * 作り直す素材が無かったときに、ラダーを1段進めて最終的にエラー表示まで落とす。
+	 * 深さは retryCount が2で頭打ちになるぶんだけなので、高々3段で必ず止まる。
+	 *
+	 * ここも梯子の1周なので観測を1つ積む。積まないと `attempt` が実際に試した回数より
+	 * 少なく出て、「1回目で必ず落ちるのか、作り直しで直ることがあるのか」が読めなくなる。
+	 */
+	private _escalateUnmountable(recoveryGeneration: number, resource: URI): void {
+		this._probe.noteAcceptedTimeout();
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'renderTimedOut', generation: recoveryGeneration });
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, resource);
 	}
 
 	private _ensureWebview(resource: URI): IOverlayWebview {
@@ -545,6 +635,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const inputEpoch = this._inputEpoch;
 		this._assetSanitization.value?.cancel();
 		const source = new CancellationTokenSource(); this._assetSanitization.value = source;
+		// ヘッダーの下読み・本体の読み出し・消毒も返ってこないことがある区間なので、ここから見張る。
+		this._probe.armSource(recoveryGeneration);
 		void this._renderResourceAfterPreflight(resource, generation, inputEpoch, recoveryGeneration, source.token);
 	}
 
@@ -560,6 +652,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
 		let decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
 		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed || token.isCancellationRequested) {
+			// **何も走らせずに戻るので、見張りも解くこと。** 残すと、走っていない読み込みが
+			// 予算切れで時間切れ扱いになり、作り直しの梯子が空回りする。
+			this._probe.disarm();
 			return;
 		}
 		let inlineData: string | undefined;
@@ -568,12 +663,18 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (decision === 'viewer') {
 			try {
 				const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
+				this._probe.setBytes(content.value.byteLength);
 				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`, token);
 				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
 				this._assetPlaceholders = sanitized.placeholders;
 				overlaySource = sanitized.bytes;
-			} catch {
+			} catch (error) {
+				// 理由を覚えておく。この先 `rejected` として画面に出るときに、これが原因欄になる
+				// （記録しないと「読めなかった」だけが残り、なぜ読めなかったのかが失われる）。
+				this._probe.note({ cause: 'source', stage: 'source', error });
 				if (isValid === undefined && this._recoveryState.committed) {
+					// 直前の表示が残っているので利用者には失敗が見えない。監視の再読み込みを待つ。
+					this._probe.disarm();
 					const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
 					this._recoveryState = transition.state;
 					// Keep the previously committed webview DOM mounted until the correlated watcher sees the file again.
@@ -587,6 +688,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		switch (decision) {
 			case 'rejected':
+				// **記録があるときだけ送る。** ここへ来る経路は意味が正反対の2つがあり、
+				// 「ヘッダーが .docx ではなかった」は拡張子だけ .docx の別形式を開いただけの
+				// 通常操作。これを失敗として送ると、正常系でレート枠を食い潰し、以後10分間
+				// この面の**本物の失敗が無言で落ちる**。読み出しが例外で落ちた場合だけ、
+				// その理由が catch で記録されているので、それが原因欄になって送られる。
+				this._probe.reportFailure();
 				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildRejectedFileHtml()));
 				// A rejected-file page has no renderer root probe, but it is still a completed load.
 				this._finishRecoveryWithoutProbe(recoveryGeneration);
@@ -607,6 +714,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 				// established watcher lifecycle while modern overlays report the real probe.
 				if (!this._webviewSupportsRecoveryMessages) {
 					this._finishRecoveryWithoutProbe(recoveryGeneration);
+				} else {
+					// 応答を待つのはこの経路だけ。応答を返さない webview まで見張ると、
+					// 既に畳んだ読み込みを時間切れで作り直してしまう。
+					this._probe.armRender(recoveryGeneration);
 				}
 				return;
 		}
@@ -1034,6 +1145,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._probe.endOpen();
 		this._assetSanitization.value?.cancel();
 		this._inputEpoch++;
 		this._inputDisposables.clear();
@@ -1070,6 +1182,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 	protected override setEditorVisible(visible: boolean): void {
 		if (visible !== this._editorVisible) {
 			this._editorVisible = visible;
+			if (!visible) {
+				// 非表示になると webview の貸し出しを返すので、描き終わりは**原理的に来ない**。
+				// 見張ったままにすると、裏に置いただけの表示が時間切れとして扱われる。
+				// 表示に戻ると claim し直して読み込みからやり直すので、そこで張り直る。
+				this._probe.disarm();
+			}
 			this._updateWebviewPlacement();
 		}
 		super.setEditorVisible(visible);

@@ -29,8 +29,12 @@ export async function parseSpreadsheetResource(
 	sharedProcessService: ISharedProcessService,
 	resource: URI,
 	options?: IParadisParseWorkbookOptions,
+	// PARA-CODE: 読み出した大きさは呼び出し側の観測（時間切れの予算・失敗イベントの大きさ段階）に要る。
+	// 返り値ではなくコールバックにしてあるのは、既存の呼び出し側の戻り値の形を変えないため。
+	onSourceBytes?: (totalBytes: number) => void,
 ): Promise<IParadisWorkbookData> {
 	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
+	onSourceBytes?.(content.value.byteLength);
 	const base64 = encodeBase64(content.value);
 	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64, options]);
 
