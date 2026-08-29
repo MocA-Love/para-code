@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Delayer } from '../../../../base/common/async.js';
+// PARA-PATCH: used by the find fallback below.
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
@@ -27,6 +29,18 @@ import { WindowIgnoreMenuShortcutsManager } from './windowIgnoreMenuShortcutsMan
  * Webview backed by an iframe but that uses Electron APIs to power the webview.
  */
 export class ElectronWebviewElement extends WebviewElement {
+
+	// PARA-PATCH: `WebFrameMain.findInFrame` only exists in the Electron build Microsoft ships. On stock
+	// Electron the main-process call is a no-op, so every webview find (this viewer, the extension
+	// editor, extension webview panels) silently finds nothing. Whether the API exists is a property of
+	// the running Electron build, so once any webview learns it is missing, all of them switch to the
+	// browser find path (`window.find` inside the webview) that the base class implements.
+	private static _findInFrameUnsupported = false;
+
+	// PARA-PATCH: a find and an update can be in flight at the same time (Enter pressed right after the
+	// debounced update fired). Only the first answer re-runs the search, so the fallback does not skip a
+	// match by searching twice.
+	private _findFellBack = false;
 
 	private readonly _webviewKeyboardHandler: WindowIgnoreMenuShortcutsManager;
 
@@ -98,17 +112,34 @@ export class ElectronWebviewElement extends WebviewElement {
 			return;
 		}
 
+		// PARA-PATCH: no Electron find support in this build, so let the base class search the webview.
+		if (ElectronWebviewElement._findInFrameUnsupported) {
+			super.find(value, previous);
+			return;
+		}
+
 		if (!this._findStarted) {
 			this.updateFind(value);
 		} else {
 			// continuing the find, so set findNext to false
 			const options: FindInFrameOptions = { forward: !previous, findNext: false, matchCase: false };
-			this._webviewMainService.findInFrame({ windowId: this._nativeHostService.windowId }, this.id, value, options);
+			this._webviewMainService.findInFrame({ windowId: this._nativeHostService.windowId }, this.id, value, options).then(found => {
+				// PARA-PATCH: the call that discovers the missing API also has to run the find itself.
+				if (!found && this._fallBackToWebviewFind()) {
+					super.find(value, previous);
+				}
+			}, onUnexpectedError);
 		}
 	}
 
 	public override updateFind(value: string) {
 		if (!value || !this.element) {
+			return;
+		}
+
+		// PARA-PATCH: see find().
+		if (ElectronWebviewElement._findInFrameUnsupported) {
+			super.updateFind(value);
 			return;
 		}
 
@@ -121,7 +152,12 @@ export class ElectronWebviewElement extends WebviewElement {
 
 		this._iframeDelayer.trigger(() => {
 			this._findStarted = true;
-			this._webviewMainService.findInFrame({ windowId: this._nativeHostService.windowId }, this.id, value, options);
+			this._webviewMainService.findInFrame({ windowId: this._nativeHostService.windowId }, this.id, value, options).then(found => {
+				// PARA-PATCH: see find().
+				if (!found && this._fallBackToWebviewFind()) {
+					super.updateFind(value);
+				}
+			}, onUnexpectedError);
 		});
 	}
 
@@ -131,10 +167,41 @@ export class ElectronWebviewElement extends WebviewElement {
 		}
 		this._iframeDelayer.cancel();
 		this._findStarted = false;
+
+		// PARA-PATCH: see find(). The base class fires `onDidStopFind` itself.
+		if (ElectronWebviewElement._findInFrameUnsupported) {
+			super.stopFind(keepSelection);
+			return;
+		}
+
 		this._webviewMainService.stopFindInFrame({ windowId: this._nativeHostService.windowId }, this.id, {
 			keepSelection
-		});
+		}).then(stopped => {
+			// PARA-PATCH: see find(). `onDidStopFind` was already fired below; the base class fires it
+			// again here, which only re-disables the find widget buttons and happens once per webview.
+			if (!stopped && this._fallBackToWebviewFind()) {
+				super.stopFind(keepSelection);
+			}
+		}, onUnexpectedError);
 		this._onDidStopFind.fire();
+	}
+
+	/**
+	 * PARA-PATCH: remember that this Electron build cannot search webviews. Returns whether this is the
+	 * first answer for this webview, i.e. whether the caller still has to run the search itself.
+	 *
+	 * `_findStarted` stays `false` from here on: it only gates the Electron path, so the "content
+	 * changed, drop the running find" reset above no longer fires. That matches the web build, which
+	 * has no such reset either.
+	 */
+	private _fallBackToWebviewFind(): boolean {
+		ElectronWebviewElement._findInFrameUnsupported = true;
+		this._findStarted = false;
+		if (this._findFellBack) {
+			return false;
+		}
+		this._findFellBack = true;
+		return true;
 	}
 
 	protected override handleFocusChange(isFocused: boolean): void {
