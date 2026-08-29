@@ -120,6 +120,7 @@ export class RemoteTerminalChannel extends Disposable implements IServerChannel<
 				return this._createProcess(uriTransformer, <ICreateTerminalProcessArguments>args);
 			}
 			case RemoteTerminalChannelRequest.AttachToProcess: return this._ptyHostService.attachToProcess.apply(this._ptyHostService, args);
+			case RemoteTerminalChannelRequest.ParadisClaimAndAttachToProcess: return this._ptyHostService.paradisClaimAndAttachToProcess.apply(this._ptyHostService, args);
 			case RemoteTerminalChannelRequest.DetachFromProcess: return this._ptyHostService.detachFromProcess.apply(this._ptyHostService, args);
 
 			case RemoteTerminalChannelRequest.ListProcesses: return this._ptyHostService.listProcesses.apply(this._ptyHostService, args);

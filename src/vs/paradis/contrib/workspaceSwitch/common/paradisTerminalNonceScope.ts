@@ -19,6 +19,8 @@
 // この台帳は既存の ID 台帳を置き換えず、先に引く索引として足す。引けなければ従来どおりの経路へ
 // 落ちるだけなので、既存の解決結果は変わらない。
 
+import { paradisPreviousSessionPtyId } from './paradisTerminalProcessScope.js';
+
 /**
  * nonce の長さ上限。`paradisTerminalIdentityNonce`（platform 側）が通す上限と同じ値にしてある。
  * ここだけ緩いと、ストレージ経由でのみ生き残る「実行時には絶対に一致しない」記録を受け入れて
@@ -141,10 +143,11 @@ export interface IParadisScopedProcessDetailLike {
  * nonce 側に任せる（{@link paradisLookupProcessDetailScope}）。
  */
 export function paradisProcessDetailScopeLookupId(detail: IParadisScopedProcessDetailLike): number | undefined {
-	if (detail.paradisRevivedFromPersistentProcessId !== undefined) {
-		return detail.paradisRevivedFromPersistentProcessId;
-	}
-	return detail.paradisAdopted === true ? undefined : detail.id;
+	return paradisPreviousSessionPtyId({
+		persistentProcessId: detail.id,
+		restoredPersistentProcessId: detail.paradisRevivedFromPersistentProcessId,
+		currentPersistentProcessIdOnly: detail.paradisAdopted === true,
+	});
 }
 
 /**

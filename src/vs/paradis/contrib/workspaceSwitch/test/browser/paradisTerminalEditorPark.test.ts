@@ -77,11 +77,30 @@ suite('paradisTerminalEditorPark', () => {
 			listHeldPtyIds: () => new Set<number>(),
 		}));
 
-		await paradisRefreshTerminalReviveIndex('worktree:other');
+		const otherRestore = await paradisRefreshTerminalReviveIndex('worktree:other', { expectedNonces: new Set(['nonce-shared']) });
 		assert.strictEqual(paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(120, 'nonce-shared')), undefined);
+		otherRestore.dispose();
 
-		await paradisRefreshTerminalReviveIndex('worktree:owner');
+		const ownerRestore = await paradisRefreshTerminalReviveIndex('worktree:owner', { expectedNonces: new Set(['nonce-shared']) });
 		assert.strictEqual(paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(120, 'nonce-shared')), fake.instance);
+		ownerRestore.dispose();
+	});
+
+	test('a legacy Working Set can reuse a parked instance only from its target space', async () => {
+		const fake = createFakeInstance(22, 122, 'nonce-legacy');
+		assert.strictEqual(paradisParkTerminalEditorInstance(fake.instance, 'worktree:owner'), true);
+		const disposables = store.add(new DisposableStore());
+		disposables.add(paradisRegisterTerminalReviveIndexSource({
+			listOrphanPtyIdsByNonce: async () => new Map(),
+			listHeldPtyIds: () => new Set<number>(),
+		}));
+		const legacyRestore = await paradisRefreshTerminalReviveIndex('worktree:owner');
+
+		assert.strictEqual(
+			paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(122, 'nonce-legacy')),
+			fake.instance,
+		);
+		legacyRestore.dispose();
 	});
 
 	test('outside a space restore the ownership check does not apply', () => {

@@ -29,10 +29,22 @@ export interface IParadisScopedTerminalInstanceLike {
 	readonly instanceId: number;
 	readonly persistentProcessId?: number;
 	readonly restoredPersistentProcessId?: number;
+	/** The current id was assigned by a new pty host and cannot address the previous-session ledger. */
+	readonly currentPersistentProcessIdOnly?: boolean;
 }
 
-function restoredPersistentProcessId(instance: IParadisScopedTerminalInstanceLike): number | undefined {
-	return instance.restoredPersistentProcessId ?? instance.persistentProcessId;
+/**
+ * Selects the only process id that is valid in the previous-session ledger.
+ *
+ * A revived process carries its previous id explicitly. An adopted process, or an editor input
+ * resolved through the current orphan index, only carries a current-generation id. Those ids must
+ * never be used as a fallback because pty ids are small counters that restart with the pty host.
+ */
+export function paradisPreviousSessionPtyId(instance: Pick<IParadisScopedTerminalInstanceLike, 'persistentProcessId' | 'restoredPersistentProcessId' | 'currentPersistentProcessIdOnly'>): number | undefined {
+	if (instance.restoredPersistentProcessId !== undefined) {
+		return instance.restoredPersistentProcessId;
+	}
+	return instance.currentPersistentProcessIdOnly === true ? undefined : instance.persistentProcessId;
 }
 
 export interface IParadisTerminalScopeCandidateInput {
@@ -222,7 +234,7 @@ export function paradisRecordPersistentProcessScopes(instanceScopes: ReadonlyMap
 /** 再接続されたinstanceへ、前回セッションのpersistent process台帳から所属を復元する。 */
 export function paradisRestorePersistentProcessScope(instanceScopes: Map<number, string>, persistentProcessScopes: ReadonlyMap<number, string>, instance: IParadisScopedTerminalInstanceLike): string | undefined {
 	const recordedStateKey = instanceScopes.get(instance.instanceId);
-	const persistentProcessId = restoredPersistentProcessId(instance);
+	const persistentProcessId = paradisPreviousSessionPtyId(instance);
 	if (recordedStateKey !== undefined || persistentProcessId === undefined) {
 		return recordedStateKey;
 	}
@@ -262,7 +274,7 @@ export function paradisLookupInstanceScope(instanceScopes: ReadonlyMap<number, s
 		}
 	}
 	for (const instance of instances) {
-		const persistentProcessId = restoredPersistentProcessId(instance);
+		const persistentProcessId = paradisPreviousSessionPtyId(instance);
 		if (persistentProcessId !== undefined) {
 			const restored = restoredMapping.get(persistentProcessId);
 			if (restored) {

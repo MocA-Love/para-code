@@ -11,7 +11,7 @@ import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/com
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
-import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource, paradisResolveRevivedTerminalEditorInput } from '../../browser/paradisTerminalEditorRevive.js';
+import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource, paradisResolveRevivedTerminalEditorInput, paradisTerminalRestoreStateKey } from '../../browser/paradisTerminalEditorRevive.js';
 
 suite('paradisTerminalEditorRevive', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,7 +31,7 @@ suite('paradisTerminalEditorRevive', () => {
 	function register(orphans: ReadonlyMap<string, number>, held: ReadonlySet<number>): DisposableStore {
 		const disposables = store.add(new DisposableStore());
 		disposables.add(paradisRegisterTerminalReviveIndexSource({
-			listOrphanPtyIdsByNonce: async () => orphans,
+			listOrphanPtyIdsByNonce: async () => new Map([...orphans].map(([nonce, id]) => [nonce, { id, stateKey: 'worktree:target' }])),
 			listHeldPtyIds: () => held,
 		}));
 		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
@@ -45,7 +45,52 @@ suite('paradisTerminalEditorRevive', () => {
 		// 保存された id は前世代の 12 だが、nonce で今世代の 77 と同定できる。
 		assert.deepStrictEqual(
 			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a')),
-			{ id: 77, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: false });
+			{ id: 77, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: false, paradisResolvedToCurrentPtyId: true });
+	});
+
+	test('scopes a restore target to the exact terminal nonces serialized in that Working Set', async () => {
+		register(new Map(), new Set());
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']) });
+
+		assert.deepStrictEqual({
+			target: paradisTerminalRestoreStateKey('nonce-a'),
+			unrelated: paradisTerminalRestoreStateKey('nonce-from-another-restore'),
+		}, { target: 'worktree:target', unrelated: undefined });
+	});
+
+	test('keeps overlapping restore contexts independent until their own handle is disposed', async () => {
+		register(new Map(), new Set());
+		const first = await paradisRefreshTerminalReviveIndex('worktree:first', { expectedNonces: new Set(['nonce-a']) });
+		const second = await paradisRefreshTerminalReviveIndex('worktree:second', { expectedNonces: new Set(['nonce-b']) });
+
+		assert.deepStrictEqual({
+			first: paradisTerminalRestoreStateKey('nonce-a'),
+			second: paradisTerminalRestoreStateKey('nonce-b'),
+		}, { first: 'worktree:first', second: 'worktree:second' });
+		first.dispose();
+		assert.strictEqual(paradisTerminalRestoreStateKey('nonce-b'), 'worktree:second');
+		second.dispose();
+	});
+
+	test('a single legacy restore exposes its target for owner-checked park reuse', async () => {
+		register(new Map(), new Set());
+		const context = await paradisRefreshTerminalReviveIndex('worktree:legacy');
+		assert.strictEqual(paradisTerminalRestoreStateKey('nonce-from-legacy-input'), 'worktree:legacy');
+		context.dispose();
+	});
+
+	test('does not attach an orphan owned by another space', async () => {
+		const disposables = store.add(new DisposableStore());
+		disposables.add(paradisRegisterTerminalReviveIndexSource({
+			listOrphanPtyIdsByNonce: async () => new Map([['nonce-a', { id: 77, stateKey: 'worktree:other' }]]),
+			listHeldPtyIds: () => new Set(),
+		}));
+		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']) });
+
+		const resolved = paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a'));
+		assert.strictEqual(resolved.findRevivedId, false);
+		assert.notStrictEqual(resolved.id, 77);
 	});
 
 	test('refuses to attach to a pty id this window already holds when the nonce proves nothing', async () => {
@@ -60,13 +105,27 @@ suite('paradisTerminalEditorRevive', () => {
 		assert.notStrictEqual(resolved.id, 37);
 	});
 
-	test('falls back to the upstream revived-id lookup for an id nobody holds', async () => {
+	test('leaves an input outside an exact Working Set restore on the upstream path', async () => {
 		register(new Map(), new Set([37]));
-		await paradisRefreshTerminalReviveIndex('worktree:target');
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']) });
 
 		assert.deepStrictEqual(
 			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(41, 'nonce-unknown')),
-			{ id: 41, pid: 0, shellIntegrationNonce: 'nonce-unknown', findRevivedId: true });
+			{ id: 41, pid: 0, shellIntegrationNonce: 'nonce-unknown', findRevivedId: true },
+		);
+	});
+
+	test('fails closed when an exact and a legacy restore could both own the nonce', async () => {
+		register(new Map([['nonce-shared', 77]]), new Set());
+		const legacy = await paradisRefreshTerminalReviveIndex('worktree:legacy');
+		const exact = await paradisRefreshTerminalReviveIndex('worktree:exact', { expectedNonces: new Set(['nonce-shared']) });
+
+		assert.strictEqual(paradisTerminalRestoreStateKey('nonce-shared'), undefined);
+		const resolved = paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-shared'));
+		assert.strictEqual(resolved.findRevivedId, false);
+		assert.notStrictEqual(resolved.id, 77);
+		legacy.dispose();
+		exact.dispose();
 	});
 
 	test('an unusable nonce still gets the held-id guard', async () => {
@@ -113,7 +172,7 @@ suite('paradisTerminalEditorRevive', () => {
 		collectUnexpectedErrors();
 		const disposables = store.add(new DisposableStore());
 		disposables.add(paradisRegisterTerminalReviveIndexSource({
-			listOrphanPtyIdsByNonce: async () => new Map([['nonce-a', 77]]),
+			listOrphanPtyIdsByNonce: async () => new Map([['nonce-a', { id: 77, stateKey: 'worktree:target' }]]),
 			listHeldPtyIds: () => { throw new Error('no live instances'); },
 		}));
 		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
@@ -138,8 +197,8 @@ suite('paradisTerminalEditorRevive', () => {
 		// refresh が投げると切替がロールバックしてしまうので、ここは必ず解決すること。
 		await paradisRefreshTerminalReviveIndex('worktree:target');
 
-		assert.deepStrictEqual(
-			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(5, 'nonce-a')),
-			{ id: 5, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: true });
+		const resolved = paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(5, 'nonce-a'));
+		assert.strictEqual(resolved.findRevivedId, false);
+		assert.notStrictEqual(resolved.id, 5);
 	});
 });
