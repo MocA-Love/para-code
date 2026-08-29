@@ -99,6 +99,15 @@ const MAX_REMEMBERED_PRESET_TITLES = 200;
  */
 const LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY = 'paradis.terminal.presets.locallyHiddenWorkspace';
 
+/**
+ * タブバーのフォルダボタンにフォルダ名も出すフォルダの台帳。値は
+ * {@link paradisPresetFolderKey} の配列。フォルダは複数プリセットが同じ文字列タグを持つだけの
+ * 存在で「設定を書き込む先の1件」が無いため、定義ファイル側ではなくこの端末の台帳に持つ。
+ * PROFILE スコープなので、ユーザー設定由来のフォルダはどのワークスペースでも同じ見た目になる
+ * （workspace 由来のフォルダはキーに .paracode.json の URI を含むため、他リポジトリと混ざらない）。
+ */
+const FOLDER_LABEL_SHOWN_STORAGE_KEY = 'paradis.terminal.presets.folderLabelShown';
+
 export class ParadisPresetService extends Disposable implements IParadisPresetService {
 
 	declare readonly _serviceBrand: undefined;
@@ -117,6 +126,8 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	private readonly _workspacePresetFolders = new Map<string, IParadisResolvedPresetFolder[]>();
 	/** `${定義元ファイルのURI}::${指紋}` の集合。LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY 参照。 */
 	private readonly _locallyHiddenWorkspacePresets = new Set<string>();
+	/** フォルダ名をボタンに出すフォルダのキー集合。FOLDER_LABEL_SHOWN_STORAGE_KEY 参照。 */
+	private readonly _folderLabelShown = new Set<string>();
 
 	/**
 	 * 現在のウィンドウの remote authority。未接続（ローカル）は undefined に正規化する。
@@ -154,6 +165,19 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				this._locallyHiddenWorkspacePresets.add(key);
 			}
 			this._reapplyLocallyHidden();
+			this._onDidChangePresets.fire();
+		}));
+
+		for (const key of this._readFolderLabelShown()) {
+			this._folderLabelShown.add(key);
+		}
+		// 非表示台帳と同じ理由（複数ウィンドウで同じ台帳を共有する）で、他ウィンドウの書き込みを
+		// 都度取り込んでから自分が書けるようにしておく。
+		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, FOLDER_LABEL_SHOWN_STORAGE_KEY, this._store)(() => {
+			this._folderLabelShown.clear();
+			for (const key of this._readFolderLabelShown()) {
+				this._folderLabelShown.add(key);
+			}
 			this._onDidChangePresets.fire();
 		}));
 
@@ -671,6 +695,43 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		this._writeLocallyHiddenWorkspacePresets();
 		this._reapplyLocallyHidden();
 		this._onDidChangePresets.fire();
+	}
+
+	isFolderLabelShown(folderKey: string): boolean {
+		return this._folderLabelShown.has(folderKey);
+	}
+
+	setFolderLabelShown(folderKey: string, shown: boolean): void {
+		// 書き込む直前に読み直して合流させる（複数ウィンドウで先勝ちの上書き消失を避ける）。
+		for (const key of this._readFolderLabelShown()) {
+			this._folderLabelShown.add(key);
+		}
+		if (shown === this._folderLabelShown.has(folderKey)) {
+			return;
+		}
+		if (shown) {
+			this._folderLabelShown.add(folderKey);
+		} else {
+			this._folderLabelShown.delete(folderKey);
+		}
+		this.storageService.store(
+			FOLDER_LABEL_SHOWN_STORAGE_KEY,
+			JSON.stringify([...this._folderLabelShown]),
+			StorageScope.PROFILE,
+			StorageTarget.MACHINE,
+		);
+		this._onDidChangePresets.fire();
+	}
+
+	private _readFolderLabelShown(): string[] {
+		try {
+			const raw = this.storageService.get(FOLDER_LABEL_SHOWN_STORAGE_KEY, StorageScope.PROFILE);
+			const parsed: unknown = raw ? JSON.parse(raw) : undefined;
+			return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+		} catch {
+			// 壊れた台帳は空扱い（全フォルダがアイコンのみに戻るだけで、機能は動く）。
+			return [];
+		}
 	}
 
 	// --- フォルダ・一括操作 ------------------------------------------------------------------------
