@@ -231,4 +231,28 @@ suite('ParadisTerminalAdoption', () => {
 			},
 		);
 	});
+	// 同じ nonce を持つ2本が並ぶことがある。繋ぎ直しに失敗すると upstream はそのタブでシェルを
+	// 起こし直すが、nonce は端末に付いたまま引き継がれるため。どちらをタブに返すかは、この
+	// 並び順と、先に見たほうを採る `ptyService` の登録が組で決めている。
+	//
+	// 常駐は終わった端末も控えごと残すので、**古い順だけで並べると、先に終わった1本が、いま
+	// 走っている1本から nonce を奪う**。タブは死んだ端末に繋がり、走っているほうが見えなくなる。
+	test('走っているものを先に返す。終わったものが、生きているものを押しのけない', async () => {
+		const { host, ptys } = daemon();
+		const first = await host.spawn(spawnRequest('{}'));
+		await host.spawn(spawnRequest('{}'));
+		// 先に起きたほうが先に終わる。
+		ptys[0].quit(0);
+		await timeout(0);
+
+		const result = await paradisAdoptTerminals(host);
+
+		assert.deepStrictEqual(
+			result.adopted.map(terminal => ({ handle: terminal.summary.handle, alive: terminal.summary.alive })),
+			[
+				{ handle: first.handle + 1, alive: true },
+				{ handle: first.handle, alive: false },
+			],
+		);
+	});
 });

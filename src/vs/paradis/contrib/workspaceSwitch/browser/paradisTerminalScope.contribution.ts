@@ -28,7 +28,7 @@ import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreati
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
-import { IParadisTerminalNonceScopeDisagreement, paradisMigrateProcessScopesToNonceScopes, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
+import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { paradisCurrentRestoreStateKey, paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
@@ -707,8 +707,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// revive 元 ID が分かっているのに引けなかった時に生 ID へ落ちてしまい、
 			// 塞いだはずの「旧表を新 ID で引く」誤りがそのまま復活する
 			// (同じ意図の純粋関数 common/paradisTerminalProcessScope.ts の paradisLookupInstanceScope と同型)。
-			const scopeLookupId = detail.paradisRevivedFromPersistentProcessId ?? detail.id;
-			const stateKey = persistentProcessScopes.get(scopeLookupId);
+			// 常駐から引き取った端末は**今世代の ID しか持たない**（前世代の ID は常駐に預けて
+			// いないので復元しようがない）。それを旧表へ当てるのは、すぐ上が禁じている
+			// 「旧表を新 ID で引く」そのもので、当たれば別スコープのタグを拾う。引く ID の選び方と
+			// nonce への退避は `paradisLookupProcessDetailScope` に寄せてある。
+			const stateKey = paradisLookupProcessDetailScope(detail, persistentProcessScopes, this._restoredNonceScopes);
 			if (!detail.isOrphan
 				|| detail.workspaceId !== workspaceId
 				|| detail.isFeatureTerminal === true
@@ -816,7 +819,14 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// 台帳のキーは「前セッションの PTY ID」で、`detail.id` は今世代の ID。revive 元が
 			// 分かっているならそちらで引く（引く ID を先に1つ選ぶ形。ルックアップ結果へ `??` を
 			// 掛けるのは別の誤りで、孤児ループのコメントが禁じているのはそちら）。
-			const scopeLookupId = detail.paradisRevivedFromPersistentProcessId ?? detail.id;
+			// 引き取った端末の nonce は既に台帳の鍵そのものなので、翻訳する相手が居ない。それどころか
+			// 今世代の ID を旧表の鍵として登録すると、別端末の記録に nonce を結び付けてしまい、
+			// nonce は不変なのでその誤対応は永久に残る。`paradisProcessDetailScopeLookupId` が
+			// そういう端末に `undefined` を返す。
+			const scopeLookupId = paradisProcessDetailScopeLookupId(detail);
+			if (scopeLookupId === undefined) {
+				continue;
+			}
 			if (nonceByPtyId.has(scopeLookupId)) {
 				duplicated.add(scopeLookupId);
 				continue;

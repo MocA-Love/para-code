@@ -288,7 +288,13 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 				const env = await this._resolveEnvironment(backend, variableResolver, shellLaunchConfig);
 				const shouldPersist = ((this._configurationService.getValue(TaskSettingId.Reconnection) && shellLaunchConfig.reconnectionProperties) || !shellLaunchConfig.isFeatureTerminal) && this._terminalConfigurationService.config.enablePersistentSessions && !shellLaunchConfig.isTransient;
 				if (shellLaunchConfig.attachPersistentProcess) {
-					const result = await backend.attachToProcess(shellLaunchConfig.attachPersistentProcess.id);
+					// PARA-PATCH: same as the local branch below. A restored tab carries the id it was
+					// given generations ago, which on its own names whichever terminal holds that number
+					// now; the nonce is what says which one was meant.
+					const remoteAttachTarget = shellLaunchConfig.attachPersistentProcess;
+					const result = remoteAttachTarget.findRevivedId
+						? await backend.attachToRevivedProcess(remoteAttachTarget.id, remoteAttachTarget.shellIntegrationNonce)
+						: await backend.attachToProcess(remoteAttachTarget.id);
 					if (result) {
 						newProcess = result;
 					} else {

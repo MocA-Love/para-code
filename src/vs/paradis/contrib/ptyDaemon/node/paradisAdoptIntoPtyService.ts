@@ -42,7 +42,14 @@ export interface IParadisAdoptionTarget {
 		rawReviveBuffer?: string,
 		paradisAdoptTarget?: IParadisAdoptTarget,
 	): Promise<number>;
-	setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void>;
+	/**
+	 * 配置を器の中だけに置く。**常駐へは書き戻さない。**
+	 *
+	 * ここで戻す配置は、常駐から読んだものから「引き取れなかった端末」を落としたもの
+	 * （`paradisDecodeLayout`）。それを元の上に書くと「今回は届かなかった」が「元から無かった」に
+	 * 化け、以後どの起動でも戻らない。
+	 */
+	paradisSetTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): void;
 }
 
 /** 預かりものから取り出せた起動時の材料。読めなければ既定へ倒す。 */
@@ -69,14 +76,26 @@ function remainsOf(adopted: IParadisAdoptedTerminal): IParadisLaunchRemains {
 		shellLaunchConfig: launch?.shellLaunchConfig ?? { name: adopted.metadata.name },
 		env: launch?.env ?? {},
 		executableEnv: launch?.executableEnv ?? {},
-		options: launch?.options ?? {
-			shellIntegration: { enabled: false, suggestEnabled: false, nonce: '' },
-			windowsUseConptyDll: false,
-			environmentVariableCollections: undefined,
-			workspaceFolder: undefined,
-			isScreenReaderOptimized: false,
-		},
+		// **形を確かめてから通す。** ここは、別のビルドが書いて JSON を往復してきた値を器へ
+		// 入れる唯一の道。器はこの中の `shellIntegration.nonce` を無条件に読むので、`options` は
+		// 在るが `shellIntegration` を欠く形（古い版・将来の版・壊れた預かりもの）だと、そこで
+		// 例外になる。落ちるのは1本だけとはいえ、**その1本は毎起動落ち続け、永久に画面へ出て
+		// こない**。読めない形は既定へ倒して、走っているプロセスのほうを助ける。
+		options: paradisIsUsableOptions(launch?.options) ? launch.options : FALLBACK_OPTIONS,
 	};
+}
+
+const FALLBACK_OPTIONS: ITerminalProcessOptions = {
+	shellIntegration: { enabled: false, suggestEnabled: false, nonce: '' },
+	windowsUseConptyDll: false,
+	environmentVariableCollections: undefined,
+	workspaceFolder: undefined,
+	isScreenReaderOptimized: false,
+};
+
+function paradisIsUsableOptions(options: unknown): options is ITerminalProcessOptions {
+	const shellIntegration = (options as ITerminalProcessOptions | undefined)?.shellIntegration as { nonce?: unknown } | undefined;
+	return typeof shellIntegration === 'object' && shellIntegration !== null && typeof shellIntegration.nonce === 'string';
 }
 
 /**
@@ -195,7 +214,7 @@ async function paradisRestoreLayouts(
 			const raw = await host.getLayout(workspaceId);
 			const layout = raw === undefined ? undefined : paradisDecodeLayout(raw, handle => idByHandle.get(handle));
 			if (layout) {
-				await ptyService.setTerminalLayoutInfo(layout);
+				ptyService.paradisSetTerminalLayoutInfo(layout);
 			}
 		} catch (error) {
 			logService.warn(`[ParadisPtyHost] could not restore the layout for ${workspaceId}`, error);

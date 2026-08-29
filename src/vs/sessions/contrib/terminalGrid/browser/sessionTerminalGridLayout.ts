@@ -77,6 +77,7 @@ export interface ISessionTerminalGridLayoutInstanceLike {
 		readonly attachPersistentProcess?: {
 			readonly id: number;
 			readonly paradisRevivedFromPersistentProcessId?: number;
+			readonly paradisAdopted?: boolean;
 		};
 	};
 }
@@ -95,10 +96,18 @@ export interface ISessionTerminalGridLayoutInstanceLike {
  * same restarted counter, so a freshly created pane could otherwise collide with the id of an
  * unrelated terminal of the previous session and claim (and consume) a layout that belongs to a
  * space which has not been restored yet.
+ *
+ * A terminal taken back from a daemon that outlived the app falls in the same bucket, and for the
+ * same reason: it was handed a fresh id and, unlike a revived terminal, cannot say what its id was
+ * before — nothing in what the daemon holds records it. Placing it by that id would be the very
+ * collision described above, so it goes unplaced instead.
  */
 export function sessionResolveGridLayoutTerminalId(instance: ISessionTerminalGridLayoutInstanceLike): number | undefined {
 	const attachTarget = instance.shellLaunchConfig.attachPersistentProcess;
 	if (attachTarget === undefined) {
+		return undefined;
+	}
+	if (attachTarget.paradisRevivedFromPersistentProcessId === undefined && attachTarget.paradisAdopted === true) {
 		return undefined;
 	}
 	const terminal = attachTarget.paradisRevivedFromPersistentProcessId ?? attachTarget.id;

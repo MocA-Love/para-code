@@ -118,7 +118,28 @@ let settling: Promise<unknown> | undefined;
 
 export function paradisAwaitAdoption(work: Promise<unknown> | undefined): void {
 	settling = work;
+	settleBy = work === undefined ? undefined : Date.now() + ADOPTION_TIMEOUT;
+	// 済んだら待ちを外す。**この待ちは一度きりの口だけを通らない** —— 繋ぎ直しも一覧も毎回
+	// ここを通るので、外しておかないと以後ずっと呼ばれるたびにタイマーを1つ起こすことになる。
+	// 失敗しても外す（待つ相手がもう居ない点は同じ）。
+	work?.then(clear, clear);
+	function clear(): void {
+		if (settling === work) {
+			settling = undefined;
+			settleBy = undefined;
+		}
+	}
 }
+
+/**
+ * 待つのをやめる時刻。**呼び出しごとではなく、引き取りを預けた時点から数える。**
+ *
+ * 呼び出しごとに数えると、遅れて来た口がそのつど上限いっぱい待ち直すので、起動が止まる時間は
+ * 上限ではなく「上限×口の数」になる。逆に最初の1人が使い切ったところで待ちを捨ててしまうと、
+ * **その直後に配置を聞きに来た窓が一切待たずに空を受け取る** —— いちばん待たせたい相手が
+ * いちばん待たなくなる。期限を1本にすれば、期限内の全員が待ち、期限を過ぎたら全員が通る。
+ */
+let settleBy: number | undefined;
 
 /**
  * 引き取りが終わるのを待つ上限。
@@ -131,10 +152,23 @@ const ADOPTION_TIMEOUT = 3_000;
 
 /** 引き取りが終わるのを待つ。常駐を使っていなければ即座に戻る。 */
 export async function paradisAdoptionSettled(): Promise<void> {
-	if (settling) {
-		// 拒否は飲む。引き取れなかったことを、配置を答えられないことにしない。
-		await raceTimeout(settling.catch(() => { }), ADOPTION_TIMEOUT);
+	const work = settling;
+	if (!work) {
+		return;
 	}
+	const remaining = (settleBy ?? 0) - Date.now();
+	if (remaining <= 0) {
+		// 期限切れ。**以後は誰も待たない。** 外さないと、常駐が応答しないまま固まったときに
+		// **この pty ホストが生きている限り、繋ぎ直しも一覧も毎回待つ**ことになり、「常駐が不調」が
+		// 「アプリ全体が重い」に化ける。
+		if (settling === work) {
+			settling = undefined;
+			settleBy = undefined;
+		}
+		return;
+	}
+	// 拒否は飲む。引き取れなかったことを、配置を答えられないことにしない。
+	await raceTimeout(work.catch(() => { }), remaining);
 }
 
 /** いま常駐に持たせているか。引き取りや状態表示が同じ答えを見るための唯一の口。 */

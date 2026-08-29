@@ -65,6 +65,18 @@ export interface IProcessDetails {
 	// PARA-PATCH: space ownership — `listProcesses` already reports this for orphans (ptyService.ts)
 	/** PARA-CODE: The process ID used by the previous PTY host before full application revival. */
 	paradisRevivedFromPersistentProcessId?: number;
+	// PARA-PATCH: space ownership — an adopted terminal's id says nothing about earlier sessions
+	/**
+	 * PARA-CODE: Whether this terminal was taken back from a daemon that kept it running across an
+	 * update, rather than started here.
+	 *
+	 * It matters to anything keyed by persistent process id. Adoption hands out a new id and, unlike
+	 * reviving, cannot say which id the terminal had before — the previous id is nowhere in what the
+	 * daemon was given to hold. So the new id must not be used to read a table written by an earlier
+	 * session: it does not merely miss, it can land on another terminal's entry. Match on the nonce
+	 * instead, which is carried across.
+	 */
+	paradisAdopted?: boolean;
 	tabActions?: ITerminalTabAction[];
 }
 

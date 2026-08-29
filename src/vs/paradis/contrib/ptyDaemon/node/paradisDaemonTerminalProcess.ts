@@ -181,6 +181,13 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		super();
 		this.initialCwd = cwd;
 		this.dispatch = dispatch ?? this._register(new ParadisPtyDispatch(host));
+		if (adoptTarget) {
+			// **題名は繋ぐ前から分かっている。** `adopt()` で入れるのでは遅い: あれが走るのは
+			// 窓がこの端末を開きに来たときで、それまで器は題名を空として配る。誰も開いていない
+			// 端末を一覧から選ぶ場面（常駐が抱えているものを拾い直すとき）は、まさにその「まだ
+			// 開いていない」端末しか並ばないので、全部が名前無しになって見分けが付かなくなる。
+			this.title = adoptTarget.title;
+		}
 	}
 
 	private readonly dispatch: ParadisPtyDispatch;
