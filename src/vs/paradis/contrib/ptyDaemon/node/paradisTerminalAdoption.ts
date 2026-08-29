@@ -73,7 +73,19 @@ export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IPar
 
 	const adopted: IParadisAdoptedTerminal[] = [];
 	let skipped = 0;
-	for (const summary of summaries) {
+	// **生きているものから、次に古いものから並べる。** 順番が意味を持つのは、同じ nonce を持つ
+	// 2本が居ることがあるため。繋ぎ直しに失敗すると upstream はそのタブでシェルを起こし直すが、
+	// **nonce は端末に付いたままなので引き継がれる**。だから失敗を挟んだ常駐は「元の1本」と
+	// 「そのせいで起きた1本」を同じ nonce で抱える。先に見たほうを採る側（`ptyService.ts` の
+	// 引き取り時の登録）と組で、タブが戻る先をここで決めている。
+	//
+	// **生死を先に見るのが要。** 常駐は終わった端末も控えごと残す（`paradisPtyDaemonHost.ts`）ので、
+	// 古い順だけで並べると、**先に終わった元の1本が、いま走っている1本から nonce を奪う**。
+	// タブは死んだ端末に繋がり、走っているほうは誰にも見えなくなる —— この機能が直そうとしている
+	// のと同じ症状の、役割を入れ替えただけの形になる。
+	//
+	// 常駐の `list()` は今のところ handle 昇順で返すが、それに黙って寄りかからない。
+	for (const summary of [...summaries].sort((a, b) => (a.alive === b.alive ? a.handle - b.handle : (a.alive ? -1 : 1)))) {
 		if (summary.attached) {
 			// **すでに誰かが見ている。** 割り込むと、入力も出力も二重になり、こちらの終了操作が
 			// 向こうの端末を殺す。見ている相手が居なくなれば、次の起動で引き取れる。

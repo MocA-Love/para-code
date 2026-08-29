@@ -10,7 +10,9 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisTerminalNonceScopeDisagreement,
+	paradisLookupProcessDetailScope,
 	paradisMigrateProcessScopesToNonceScopes,
+	paradisProcessDetailScopeLookupId,
 	paradisParseTerminalNonceScopeStorage,
 	paradisPruneNonceScopes,
 	paradisResolveNonceScope,
@@ -140,6 +142,31 @@ suite('Paradis terminal nonce scope', () => {
 		}, {
 			write: [[NONCE_A, 'scope:active']],
 			resolvedAfterSwitch: 'worktree:other',
+		});
+	});
+
+	// 常駐から引き取った端末は、前世代の ID を持たないまま今世代の ID を渡されて現れる。ID 台帳の
+	// 鍵は前世代の ID なので、そのまま引くと**空振りでは済まず別端末の記録に当たる**。実機では、
+	// 更新をまたいだ端末がどのスペースにも出てこない／別スペースに紛れる、という形になる。
+	test('a terminal taken back from a daemon is placed by its nonce, never by its new id', () => {
+		// 前セッションの ID 5 は、いまは無関係な端末のもの。
+		const processScopes = new Map([[5, 'worktree:someone-else']]);
+		const nonceScopes = new Map([[NONCE_A, 'worktree:mine']]);
+
+		assert.deepStrictEqual({
+			adopted: paradisLookupProcessDetailScope(
+				{ id: 5, shellIntegrationNonce: NONCE_A, paradisAdopted: true }, processScopes, nonceScopes),
+			lookupId: paradisProcessDetailScopeLookupId({ id: 5, shellIntegrationNonce: NONCE_A, paradisAdopted: true }),
+			// 引き取り以外は今までどおり: revive は前世代の ID を教えてくれるし、リロードは ID が変わらない。
+			revived: paradisLookupProcessDetailScope(
+				{ id: 20, shellIntegrationNonce: NONCE_B, paradisRevivedFromPersistentProcessId: 5 }, processScopes, nonceScopes),
+			reloaded: paradisLookupProcessDetailScope(
+				{ id: 5, shellIntegrationNonce: NONCE_B }, processScopes, nonceScopes),
+		}, {
+			adopted: 'worktree:mine',
+			lookupId: undefined,
+			revived: 'worktree:someone-else',
+			reloaded: 'worktree:someone-else',
 		});
 	});
 });

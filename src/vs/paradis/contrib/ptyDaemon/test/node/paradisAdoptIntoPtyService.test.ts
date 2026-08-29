@@ -18,11 +18,11 @@ import { DisposableStore, IDisposable, toDisposable } from '../../../../../base/
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisEncodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
-import { paradisEncodeLayout } from '../../node/paradisTerminalLayout.js';
-import { paradisHandleOf, paradisUsePtyDaemon } from '../../node/paradisTerminalProcessFactory.js';
+import { paradisUsePtyDaemon } from '../../node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../node/paradisTerminalLayoutStore.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../../platform/terminal/common/terminalProcess.js';
+import { ITerminalProcessOptions } from '../../../../../platform/terminal/common/terminal.js';
 import { IParadisAdoptionTarget, paradisAdoptIntoPtyService } from '../../node/paradisAdoptIntoPtyService.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
@@ -52,7 +52,7 @@ function recordingPtyService(): { service: IParadisAdoptionTarget; calls: Record
 	const calls: Record<string, unknown>[] = [];
 	const layouts: ISetTerminalLayoutInfoArgs[] = [];
 	const service: IParadisAdoptionTarget = {
-		async setTerminalLayoutInfo(args) { layouts.push(args); },
+		paradisSetTerminalLayoutInfo(args) { layouts.push(args); },
 		async createProcess(shellLaunchConfig, cwd, cols, rows, unicodeVersion, env, executableEnv, options, shouldPersist, workspaceId, workspaceName, isReviving, rawReviveBuffer, paradisAdoptTarget) {
 			calls.push({ initialText: shellLaunchConfig.initialText, name: shellLaunchConfig.name, cols, rows, shouldPersist, workspaceId, workspaceName, isReviving, rawReviveBuffer, adopt: paradisAdoptTarget });
 			return calls.length;
@@ -134,26 +134,25 @@ suite('ParadisAdoptIntoPtyService', () => {
 			background: [],
 		}));
 
-		// 器は本物と同じく「配置を書いたら常駐へ預け直す」ふるまいをする。
-		const written: string[] = [];
+		const before = await host.getLayout('ws-A');
+		const restored: ISetTerminalLayoutInfoArgs[] = [];
 		const service: IParadisAdoptionTarget = {
 			async createProcess() { return 7; },
-			async setTerminalLayoutInfo(args) {
-				written.push(paradisEncodeLayout(args, paradisHandleOf));
-			},
+			paradisSetTerminalLayoutInfo(args) { restored.push(args); },
 		};
 
 		await paradisAdoptIntoPtyService(service, host, new NullLogService());
 
-		const rewritten = JSON.parse(written[0]) as { tabs: unknown[] };
-
 		assert.deepStrictEqual(
-			{ restored: written.length, keptTabs: rewritten.tabs.length },
+			{ restored: restored.length, keptTabs: restored[0]?.tabs.length, daemonStillHas: await host.getLayout('ws-A') },
 			{
 				restored: 1,
-				// **ここが本題。** 登録簿が空のまま書き戻すと、戻したばかりの配置が空になる。
-				// いま開いていないスペースは誰も開き直さないので、永久に画面へ出てこなくなる。
+				// 戻す配置は新しい番号で書かれている。空で戻すと、いま開いていないスペースは
+				// 誰も開き直さないので永久に画面へ出てこなくなる。
 				keptTabs: 1,
+				// **書き戻さない。** 戻す配置は「引き取れなかったぶんを落とした後」の姿なので、
+				// これを元の上に書くと、届かなかった端末が次の起動からも消える。
+				daemonStillHas: before,
 			},
 		);
 	});
@@ -179,7 +178,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 
 		let first = true;
 		const service: IParadisAdoptionTarget = {
-			async setTerminalLayoutInfo() { },
+			paradisSetTerminalLayoutInfo() { },
 			async createProcess() {
 				if (first) {
 					first = false;
@@ -198,6 +197,36 @@ suite('ParadisAdoptIntoPtyService', () => {
 				// **常駐からは外さない。** 器を作れないだけで走っているプロセスを畳む理由が無い。
 				stillHeld: 2,
 			},
+		);
+	});
+	// 預かりものは**別のビルドが書いて JSON を往復してきた値**。`launch.options` が在るのに
+	// `shellIntegration` を欠く形（古い版・将来の版・壊れた預かりもの）はあり得るが、器はその中の
+	// nonce を無条件に読む。素通しすると器の生成で例外になり、その1本は毎起動落ち続けて永久に
+	// 画面へ出てこない。読めない形は既定へ倒して、走っているプロセスのほうを助ける。
+	test('預かりものの形が違っても、器が読める材料に均してから渡す', async () => {
+		const { host } = daemon();
+		await host.spawn({
+			file: '/bin/zsh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, term: 'xterm-256color',
+			metadata: paradisEncodeTerminalMetadata({
+				workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true, name: undefined,
+				launch: { shellLaunchConfig: {}, env: {}, executableEnv: {}, options: { windowsUseConptyDll: false } },
+			}),
+		});
+
+		const seen: ITerminalProcessOptions[] = [];
+		const service: IParadisAdoptionTarget = {
+			paradisSetTerminalLayoutInfo() { },
+			async createProcess(_shellLaunchConfig, _cwd, _cols, _rows, _unicodeVersion, _env, _executableEnv, options) {
+				seen.push(options);
+				return 1;
+			},
+		};
+
+		const outcome = await paradisAdoptIntoPtyService(service, host, new NullLogService());
+
+		assert.deepStrictEqual(
+			{ outcome, nonce: seen[0]?.shellIntegration?.nonce },
+			{ outcome: { reachable: true, adopted: 1, skipped: 0 }, nonce: '' },
 		);
 	});
 });

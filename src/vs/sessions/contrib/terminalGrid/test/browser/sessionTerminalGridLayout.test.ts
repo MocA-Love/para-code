@@ -143,8 +143,11 @@ suite('sessionTerminalGridLayout', () => {
 			// Created in this session: its id comes from the restarted counter and would collide with
 			// an unrelated terminal of the previous session.
 			sessionResolveGridLayoutTerminalId({ shellLaunchConfig: {} }),
+			// Taken back from a daemon that outlived the app: a fresh id, and nothing records what its
+			// id was before, so placing it by that id would be the same collision.
+			sessionResolveGridLayoutTerminalId({ shellLaunchConfig: { attachPersistentProcess: { id: 9, paradisAdopted: true } } }),
 		];
 
-		assert.deepStrictEqual(resolved, [5, 7, undefined]);
+		assert.deepStrictEqual(resolved, [5, 7, undefined, undefined]);
 	});
 });

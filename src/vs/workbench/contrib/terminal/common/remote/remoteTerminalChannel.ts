@@ -316,8 +316,12 @@ export class RemoteTerminalChannelClient implements IPtyHostController {
 		return this._channel.call(RemoteTerminalChannelRequest.ReviveTerminalProcesses, [workspaceId, state, dateTimeFormatLocate]);
 	}
 
-	getRevivedPtyNewId(id: number): Promise<number | undefined> {
-		return this._channel.call(RemoteTerminalChannelRequest.GetRevivedPtyNewId, [id]);
+	// PARA-PATCH: the server spreads these onto `IPtyService.getRevivedPtyNewId(workspaceId, id,
+	// nonce)`. Sending only the id put the id where the workspace goes and left the id undefined, so
+	// the lookup could never hit and the caller fell back to attaching by the id it already had —
+	// which, after ids are handed out afresh, names a different terminal. Send what it asks for.
+	getRevivedPtyNewId(workspaceId: string, id: number, paradisExpectedNonce?: string): Promise<number | undefined> {
+		return this._channel.call(RemoteTerminalChannelRequest.GetRevivedPtyNewId, [workspaceId, id, paradisExpectedNonce]);
 	}
 
 	serializeTerminalState(ids: number[]): Promise<string> {

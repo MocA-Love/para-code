@@ -228,13 +228,16 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 		return undefined;
 	}
 
-	async attachToRevivedProcess(id: number): Promise<ITerminalChildProcess | undefined> {
+	// PARA-PATCH: `paradisExpectedNonce` names the terminal the caller means, the same way the local
+	// backend does. Without it a restored tab on a remote host attaches to whatever holds its old
+	// number now. See PtyService#getRevivedPtyNewId.
+	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string): Promise<ITerminalChildProcess | undefined> {
 		if (!this._remoteTerminalChannel) {
 			throw new Error(`Cannot create remote terminal when there is no remote!`);
 		}
 
 		try {
-			const newId = await this._remoteTerminalChannel.getRevivedPtyNewId(id) ?? id;
+			const newId = await this._remoteTerminalChannel.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
 			return await this.attachToProcess(newId);
 		} catch (e) {
 			this._logService.trace(`Couldn't attach to process ${e.message}`);

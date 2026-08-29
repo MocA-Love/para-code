@@ -117,6 +117,53 @@ export function paradisMigrateProcessScopesToNonceScopes(
 	return added;
 }
 
+/** 所属を引くのに要るぶんだけの `IProcessDetails`。 */
+export interface IParadisScopedProcessDetailLike {
+	readonly id: number;
+	readonly shellIntegrationNonce: string;
+	readonly paradisRevivedFromPersistentProcessId?: number;
+	readonly paradisAdopted?: boolean;
+}
+
+/**
+ * ID 台帳を引くための ID を選ぶ。**引けない端末には `undefined` を返す。**
+ *
+ * ID 台帳の鍵は「前セッションの PTY ID」で、今セッションの ID とは別の空間にある。同じ小さな
+ * 整数空間なので、今世代の ID で旧表を引くと**空振りでは済まず、別の端末の記録に当たる**。
+ *
+ * 引いてよいのは2つだけ:
+ *
+ *  - `paradisRevivedFromPersistentProcessId` がある（revive が前世代の ID を教えてくれている）
+ *  - どちらでもない（リロードなどで ID が振り直されていない）
+ *
+ * **常駐から引き取った端末は前者に見えて後者ではない。** 新しい ID を渡されており、しかも
+ * 前の ID は常駐に預けていないので復元しようがない。だからここでは引かず、`undefined` を返して
+ * nonce 側に任せる（{@link paradisLookupProcessDetailScope}）。
+ */
+export function paradisProcessDetailScopeLookupId(detail: IParadisScopedProcessDetailLike): number | undefined {
+	if (detail.paradisRevivedFromPersistentProcessId !== undefined) {
+		return detail.paradisRevivedFromPersistentProcessId;
+	}
+	return detail.paradisAdopted === true ? undefined : detail.id;
+}
+
+/**
+ * PTY の一覧の1件から所属スペースを引く。
+ *
+ * ID 台帳と nonce 台帳の両方を見る。ID で引けるならそちらを優先し（{@link paradisResolveNonceScope}
+ * と同じ理由）、引けないときだけ nonce に頼る。引き取った端末はここで初めて所属を取り戻す。
+ */
+export function paradisLookupProcessDetailScope(
+	detail: IParadisScopedProcessDetailLike,
+	processScopes: ReadonlyMap<number, string>,
+	nonceScopes: ReadonlyMap<string, string>,
+	onDisagreement?: (disagreement: IParadisTerminalNonceScopeDisagreement) => void,
+): string | undefined {
+	const lookupId = paradisProcessDetailScopeLookupId(detail);
+	const processStateKey = lookupId === undefined ? undefined : processScopes.get(lookupId);
+	return paradisResolveNonceScope(nonceScopes, detail.shellIntegrationNonce, processStateKey, onDisagreement);
+}
+
 /** nonce 台帳と ID 台帳が食い違ったときの記録。nonce の不変性を実機で確かめるために残す。 */
 export interface IParadisTerminalNonceScopeDisagreement {
 	readonly nonce: string;
