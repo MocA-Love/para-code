@@ -39,6 +39,8 @@ import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeCo
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell } from '../common/paradisOfficePrint.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
+import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
+import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
@@ -549,6 +551,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private readonly _inputGeneration = new ParadisSpreadsheetOpenGeneration();
 	private _committedInput: IParadisSpreadsheetCommittedInput | undefined;
 	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
+	/**
+	 * 表示の見張りと観測。
+	 * ブックの解析は共有プロセス側で走るので、あちらが黙ると renderer からは何も起きない。
+	 */
+	private readonly _probe = this._register(new ParadisOfficeViewerProbe('excel-view', generation => this._onRenderTimeout(generation)));
+
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
 
@@ -654,6 +662,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		const resource = (input as ParadisSpreadsheetInput).resource;
 		this._runtimeConfiguration = snapshotSpreadsheetRuntimeConfiguration(this._configurationService);
+		// 母数は「利用者が1つのブックを開いた」回数。同じブックならタブを往復しても増えない。
+		this._probe.beginOpen(resource.toString(), this._diagnosticEngine());
 		const fallbackViewState = this._currentSpreadsheetViewState();
 		const requestedViewState = spreadsheetViewStateFromOptions(options?.viewState, fallbackViewState);
 		this._currentResource = resource;
@@ -677,6 +687,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		if (!loaded && token.isCancellationRequested && previous) {
+			// 取り消された読み込みは誰も待っていない。見張りを残すと偽の時間切れになる。
+			this._probe.disarm();
 			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
 			this._currentResource = previous.resource;
 			this._workbook = previous.workbook;
@@ -698,6 +710,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		if (!loaded && token.isCancellationRequested) {
+			// 取り消された読み込みは誰も待っていない。見張りを残すと偽の時間切れになる。
+			this._probe.disarm();
 			this._recoveryState = reduceParadisOfficeRecovery(this._recoveryState, { type: 'cancelled', generation: this._recoveryState.generation }).state;
 			this.clearInput();
 		} else if (loaded) {
@@ -778,15 +792,58 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 	}
 
+	// ── 表示失敗の観測 ────────────────────────────────────────────────────
+
+	/** Sentry へ載せる、いま有効な処理エンジン。設定が読めない間は既定側に倒す。 */
+	private _diagnosticEngine(): ParadisOfficeDiagnosticEngine {
+		return this._runtimeConfiguration?.engine === 'legacy' || !this._runtimeConfiguration ? 'legacy' : 'v1';
+	}
+
+	/**
+	 * 予算内に解析・描画が終わらなかった。作り直し→作り直し→エラー表示の決まった順で畳ませる。
+	 * **ここでは送らない**（途中経過を送るとレートリミットの枠を使い切る）。送るのは終端だけ。
+	 */
+	private _onRenderTimeout(generation: number): void {
+		const resource = this._currentResource;
+		if (!resource) {
+			return;
+		}
+		// **走っている解析は止められない**（`parseSpreadsheetResource` に取り消しの口が無い）。
+		// 遅れて返った結果がエラー画面を本物の表に描き替えることはあるが、表示としては良い方向
+		// なので放置している。Word 2面は消毒を取り消せるので、あちらでは経路を1本に畳んでいる。
+		// 大きさは読み出しの時点で分かるので `setBytes` 済み（Excel が固まる原因の第一候補が
+		// 大きさなので、失敗イベントには必ず載せる）。
+		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'renderTimedOut', generation });
+		if (transition.effects.length === 0) {
+			// 状態機械が受理しなかった時計。原因として記録すると、後で起きる本当の失敗の
+			// 理由が `timeout` に置き換わってしまう。
+			return;
+		}
+		this._probe.noteAcceptedTimeout();
+		this._recoveryState = transition.state;
+		this._applyRecoveryEffects(transition.effects, resource, this._currentSpreadsheetViewState());
+	}
+
 	private _finishRecoveryRender(recoveryGeneration: number, resource: URI, viewState: ParadisSpreadsheetViewState): void {
+		this._probe.disarmFor(recoveryGeneration);
 		const hasExpectedRoot = this._sheets.length > 0 && (!!this._tableEl || !!this._virtualHostEl);
+		if (!hasExpectedRoot) {
+			// 白紙も梯子を1周ぶん進める。ここで記録しないと `attempt` の意味が
+			// 時間切れ経路とずれる（同じ3周でも 4 と 1 になる）。
+			this._probe.note({ cause: 'blank', stage: 'render' });
+		}
 		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'rendered', generation: recoveryGeneration, hasExpectedRoot });
+		if (transition.state.phase === 'ready') {
+			this._probe.noteSuccess();
+		}
 		this._recoveryState = transition.state;
 		this._applyRecoveryEffects(transition.effects, resource, viewState);
 	}
 
 	private async _load(resource: URI, token: CancellationToken, viewState = this._currentSpreadsheetViewState(), recoveryGeneration = this._recoveryState.generation, preserveCommitted = false): Promise<boolean> {
 		const generation = ++this._loadGeneration;
+		// 解析は共有プロセス側で走る。あちらが黙ると renderer では何も起きないので、ここから見張る。
+		this._probe.armSource(recoveryGeneration);
 		if (!preserveCommitted) {
 			this._clearSemanticUi();
 			this._renderMessage(localize('paradis.spreadsheet.loading', "スプレッドシートを読み込み中..."));
@@ -796,12 +853,15 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			// 到達度の診断は、診断表示を出す設定のときだけ費用を払う。
 			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, {
 				semanticDiagnostics: !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration),
-			});
+			}, totalBytes => this._probe.setBytes(totalBytes));
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
+				this._probe.disarm();
 				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'sourceUnavailable', generation: recoveryGeneration });
 				this._recoveryState = transition.state;
 				if (!preserveCommitted || transition.effects.length === 0) {
+					// 理由をその場で画面に出す＝利用者はここで失敗を目にする。1件だけ送る。
+					this._probe.noteAndReport({ cause: 'source', stage: 'source', error: err });
 					this._renderMessage(localize('paradis.spreadsheet.error', "スプレッドシートを開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
 				}
 			}
@@ -809,6 +869,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		// 応答の逆順到着で古い結果が新しい結果を上書きしないよう、最新ロードでなければ破棄する。
 		if (generation !== this._loadGeneration || token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
+			// 追い越された結果。この世代はもう誰も待っていないので見張りも解く。
+			this._probe.disarmFor(recoveryGeneration);
 			return false;
 		}
 		this._workbook = workbook;
@@ -1000,6 +1062,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	private _renderRecoveryError(resource: URI): void {
+		this._probe.disarm();
+		// 梯子を使い切った終端。ここが利用者の見る失敗なので、溜めた観測を1件だけ送る。
+		// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
+		this._probe.reportFailure();
 		this._renderMessage(localize('paradis.spreadsheet.blank', "シートの内容を表示できませんでした。"));
 		if (!this._bodyEl) {
 			return;
@@ -1009,6 +1075,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		retry.type = 'button';
 		retry.textContent = localize('paradis.spreadsheet.retry', "再試行");
 		this._inputDisposables.value?.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
+			// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
+			this._probe.beginRetry();
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
 			this._recoveryState = transition.state;
 			this._applyRecoveryEffects(transition.effects, resource, this._currentSpreadsheetViewState());
@@ -1554,6 +1622,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._probe.endOpen();
 		this._inputGeneration.invalidate();
 		this._loadGeneration++;
 		this._inputDisposables.clear();

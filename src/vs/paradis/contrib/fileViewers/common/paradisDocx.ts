@@ -314,6 +314,8 @@ export type ParadisDocxWebviewMessage =
 	// webview 内のスクリプトが受信を始めた合図。これを待たずに 'load' を送ると取りこぼす。
 	| { readonly type: 'ready' }
 	| { readonly type: 'outline'; readonly generation: number; readonly original: IParadisDocxOutline; readonly modified: IParadisDocxOutline }
-	| { readonly type: 'rendered' }
+	// 描き終わりの合図。`hasExpectedRoot` は**実際に本文が生えたか**で、白紙の作り直し判断に使う。
+	// 省略されたら「判定できなかった」ではなく「本文あり」として扱う（古い webview との互換）。
+	| { readonly type: 'rendered'; readonly hasExpectedRoot?: boolean }
 	| { readonly type: 'activeChange'; readonly changeId: number }
 	| { readonly type: 'error'; readonly side?: ParadisDocxSide; readonly message: string };
