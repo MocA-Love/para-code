@@ -8,9 +8,9 @@
 import assert from 'assert';
 import { ISerializedGrid, ISerializedNode, Orientation } from '../../../../../base/browser/ui/grid/grid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { sessionCollectGridLayoutTerminals, sessionMergeGridLayoutEntries, sessionParseGridLayoutStorage, sessionPruneGridLayout, sessionRekeyOwnedGridLayoutEntries, sessionResolveGridLayoutTerminalId, sessionSerializeGridLayoutStorage } from '../../browser/sessionTerminalGridLayout.js';
+import { SessionTerminalGridIdentity, sessionCollectGridLayoutTerminals, sessionMergeGridLayoutEntries, sessionParseGridLayoutStorage, sessionPruneGridLayout, sessionRekeyOwnedGridLayoutEntries, sessionResolveGridLayoutTerminalId, sessionResolveGridLayoutTerminalNonce, sessionSerializeGridLayoutStorage } from '../../browser/sessionTerminalGridLayout.js';
 
-function leaf(terminal: number, size = 100): ISerializedNode {
+function leaf(terminal: SessionTerminalGridIdentity, size = 100): ISerializedNode {
 	return { type: 'leaf', data: { terminal }, size };
 }
 
@@ -65,6 +65,14 @@ suite('sessionTerminalGridLayout', () => {
 
 	test('storage round-trips a valid snapshot', () => {
 		const entries = [{ terminals: [1, 2, 3, 4], layout: quadLayout() }];
+		const raw = sessionSerializeGridLayoutStorage(entries);
+
+		assert.deepStrictEqual(raw && sessionParseGridLayoutStorage(raw), entries);
+	});
+
+	test('storage round-trips a nonce-keyed v2 snapshot', () => {
+		const layout = grid(branch([leaf('nonce-a'), leaf('nonce-b')]));
+		const entries = [{ version: 2 as const, terminals: ['nonce-a', 'nonce-b'], layout }];
 		const raw = sessionSerializeGridLayoutStorage(entries);
 
 		assert.deepStrictEqual(raw && sessionParseGridLayoutStorage(raw), entries);
@@ -149,5 +157,12 @@ suite('sessionTerminalGridLayout', () => {
 		];
 
 		assert.deepStrictEqual(resolved, [5, 7, undefined, undefined]);
+	});
+
+	test('an adopted terminal keeps a stable nonce identity for v2 layouts', () => {
+		assert.strictEqual(sessionResolveGridLayoutTerminalNonce({
+			shellIntegrationNonce: 'nonce-adopted',
+			shellLaunchConfig: { attachPersistentProcess: { id: 9, paradisAdopted: true } },
+		}), 'nonce-adopted');
 	});
 });

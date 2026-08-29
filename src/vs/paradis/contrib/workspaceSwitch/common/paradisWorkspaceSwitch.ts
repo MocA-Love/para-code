@@ -721,6 +721,8 @@ export interface IParadisWorkspaceSwitchService {
 	discardScopeState(stateKey: string): Promise<boolean>;
 	acknowledgeScopeRetirement(stateKey: string): void;
 	replayCommittedScopeRetirements(): Promise<void>;
+	/** Reconciles a switch transaction that was interrupted after editor state and folders diverged. */
+	recoverInterruptedSwitch(): Promise<void>;
 }
 
 // --- Extension Host 再起動の抑止フラグ ---------------------------------------------------------

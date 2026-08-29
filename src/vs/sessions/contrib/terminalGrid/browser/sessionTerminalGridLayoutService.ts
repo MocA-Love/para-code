@@ -12,7 +12,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISerializedGrid } from '../../../../base/browser/ui/grid/grid.js';
-import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridTerminalGeneration, sessionIsValidGridLayoutEntry, sessionMergeGridLayoutEntries, sessionParseGridLayoutStorage, sessionPruneGridLayout, sessionRekeyOwnedGridLayoutEntries, sessionSerializeGridLayoutStorage } from './sessionTerminalGridLayout.js';
+import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridTerminalGeneration, SessionTerminalGridIdentity, sessionIsValidGridLayoutEntry, sessionMergeGridLayoutEntries, sessionParseGridLayoutStorage, sessionPruneGridLayout, sessionRekeyOwnedGridLayoutEntries, sessionSerializeGridLayoutStorage } from './sessionTerminalGridLayout.js';
 
 /** A grid group that takes part in the persisted snapshot. */
 export interface ISessionTerminalGridLayoutSource {
@@ -29,7 +29,7 @@ export interface ISessionTerminalGridLayoutService {
 	/** Asks for the layouts to be saved, at most once per {@link SAVE_DELAY_MS} window. */
 	scheduleSave(): void;
 	/** Claims the persisted layout of the group made of `terminalIds`, if there is one. */
-	takeRestoredLayout(terminalIds: ReadonlySet<number>): ISerializedGrid | undefined;
+	takeRestoredLayout(terminalIds: ReadonlySet<SessionTerminalGridIdentity>): ISerializedGrid | undefined;
 }
 
 export const ISessionTerminalGridLayoutService = createDecorator<ISessionTerminalGridLayoutService>('sessionTerminalGridLayoutService');
@@ -87,7 +87,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 	 * actually came back. Returns `undefined` unless the whole group is covered by a single stored
 	 * entry, so an unrelated group can never inherit someone else's layout.
 	 */
-	takeRestoredLayout(terminalIds: ReadonlySet<number>): ISerializedGrid | undefined {
+	takeRestoredLayout(terminalIds: ReadonlySet<SessionTerminalGridIdentity>): ISerializedGrid | undefined {
 		if (terminalIds.size < 2) {
 			return undefined;
 		}
@@ -130,7 +130,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 		// own older copies in storage instead of mistaking them for another window's groups. Entries
 		// it cannot account for are deliberately absent: whatever is stored for them now is newer than
 		// this window's startup snapshot, so it is kept rather than written back.
-		const ownedTerminals = new Set<number>();
+		const ownedTerminals = new Set<SessionTerminalGridIdentity>();
 		for (const { restored, current } of generations) {
 			ownedTerminals.add(restored);
 			ownedTerminals.add(current);

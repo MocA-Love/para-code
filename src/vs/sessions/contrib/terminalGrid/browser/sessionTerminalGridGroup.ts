@@ -26,7 +26,7 @@ import { containsDragType } from '../../../../platform/dnd/browser/dnd.js';
 import { createParadisPaneIndicator } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneIndicator.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
-import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridLeafData, ISessionTerminalGridTerminalGeneration, sessionCollectGridLayoutTerminals, sessionReadGridLayoutLeafTerminal, sessionResolveGridLayoutTerminalId } from './sessionTerminalGridLayout.js';
+import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridLeafData, ISessionTerminalGridTerminalGeneration, SessionTerminalGridIdentity, sessionCollectGridLayoutTerminals, sessionReadGridLayoutLeafTerminal, sessionResolveGridLayoutTerminalId, sessionResolveGridLayoutTerminalNonce } from './sessionTerminalGridLayout.js';
 import { ISessionTerminalGridLayoutService, ISessionTerminalGridLayoutSource } from './sessionTerminalGridLayoutService.js';
 
 const enum Constants {
@@ -285,7 +285,7 @@ class SessionTerminalGridCell implements ISerializableView {
 	 * onto a revived terminal is `sessionResolveGridLayoutTerminalId`'s job.
 	 */
 	toJSON(): object {
-		return { terminal: this.instance.persistentProcessId ?? 0 } satisfies ISessionTerminalGridLeafData;
+		return { terminal: this.instance.shellIntegrationNonce } satisfies ISessionTerminalGridLeafData;
 	}
 
 	dispose(): void {
@@ -415,7 +415,7 @@ class SessionTerminalGridContainer extends Disposable {
 	 * reject the tree, the previous cells are gone by then, so the panes are rebuilt in their old
 	 * order rather than left detached.
 	 */
-	restoreLayout(layout: ISerializedGrid, instanceByTerminalId: ReadonlyMap<number, ITerminalInstance>): boolean {
+	restoreLayout(layout: ISerializedGrid, instanceByTerminalId: ReadonlyMap<SessionTerminalGridIdentity, ITerminalInstance>): boolean {
 		if (!this._grid) {
 			return false;
 		}
@@ -539,6 +539,19 @@ function collectLayoutInstancesByTerminalId(instances: readonly ITerminalInstanc
 		const terminal = sessionResolveGridLayoutTerminalId(instance);
 		// A pane whose process is not resolved yet cannot be placed, and restoring the rest would
 		// silently drop it out of the group's arrangement.
+		if (terminal === undefined || result.has(terminal)) {
+			return undefined;
+		}
+		result.set(terminal, instance);
+	}
+	return result;
+}
+
+/** Resolves stable nonce identities for a v2 layout. */
+function collectLayoutInstancesByTerminalNonce(instances: readonly ITerminalInstance[]): Map<string, ITerminalInstance> | undefined {
+	const result = new Map<string, ITerminalInstance>();
+	for (const instance of instances) {
+		const terminal = sessionResolveGridLayoutTerminalNonce(instance);
 		if (terminal === undefined || result.has(terminal)) {
 			return undefined;
 		}
@@ -921,7 +934,10 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 		if (terminals.length < 2 || terminals.length !== this._terminalInstances.length) {
 			return undefined;
 		}
-		return { terminals, layout };
+		if (!terminals.every((terminal): terminal is string => typeof terminal === 'string')) {
+			return undefined;
+		}
+		return { version: 2, terminals, layout };
 	}
 
 	/**
@@ -974,15 +990,20 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 		if (!this._gridContainer || this._terminalInstances.length < 2) {
 			return;
 		}
-		const instancesByTerminalId = collectLayoutInstancesByTerminalId(this._terminalInstances);
-		if (!instancesByTerminalId) {
+		const instancesByTerminalNonce = collectLayoutInstancesByTerminalNonce(this._terminalInstances);
+		const nonceLayout = instancesByTerminalNonce
+			? this._gridLayoutService.takeRestoredLayout(new Set(instancesByTerminalNonce.keys()))
+			: undefined;
+		const instancesByTerminalId = nonceLayout === undefined ? collectLayoutInstancesByTerminalId(this._terminalInstances) : undefined;
+		const legacyLayout = instancesByTerminalId
+			? this._gridLayoutService.takeRestoredLayout(new Set(instancesByTerminalId.keys()))
+			: undefined;
+		const layout = nonceLayout ?? legacyLayout;
+		const instances = nonceLayout !== undefined ? instancesByTerminalNonce : instancesByTerminalId;
+		if (!layout || !instances) {
 			return;
 		}
-		const layout = this._gridLayoutService.takeRestoredLayout(new Set(instancesByTerminalId.keys()));
-		if (!layout) {
-			return;
-		}
-		if (this._gridContainer.restoreLayout(layout, instancesByTerminalId)) {
+		if (this._gridContainer.restoreLayout(layout, instances)) {
 			this._adoptVisualPaneOrder();
 		}
 	}

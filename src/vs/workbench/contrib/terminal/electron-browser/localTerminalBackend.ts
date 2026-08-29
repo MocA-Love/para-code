@@ -234,9 +234,15 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 	}
 
 	// PARA-PATCH: `paradisExpectedNonce` keeps a restored editor tab from attaching to another terminal
-	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string): Promise<ITerminalChildProcess | undefined> {
+	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
 		await this._connectToDirectProxy();
 		try {
+			if (paradisRequireOrphanClaim && paradisExpectedNonce !== undefined) {
+				const claimedId = await this._proxy.paradisClaimAndAttachToProcess(this._getWorkspaceId(), id, paradisExpectedNonce);
+				const claimedPty = new LocalPty(claimedId, true, this._proxy);
+				this._ptys.set(claimedId, claimedPty);
+				return claimedPty;
+			}
 			const newId = await this._proxy.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
 			return await this.attachToProcess(newId);
 		} catch (e) {

@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize } from '../../../../nls.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { raceTimeout, Sequencer } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -30,13 +31,15 @@ import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState }
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
-import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
+import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder, paradisTakeVerifiedWorkspaceFolderHits } from '../common/paradisWorkspaceFolderVerification.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { paradisBlockTerminalInput } from './paradisTerminalInputGate.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IParadisWorkspaceSwitchTransaction, PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, ParadisWorkspaceSwitchPhase, paradisParseWorkspaceSwitchTransactions, paradisSerializeWorkspaceSwitchTransactions, paradisWorkspaceSwitchRecoveryEndpoint } from '../common/paradisWorkspaceSwitchTransaction.js';
 
 interface ISerializedRepository {
 	readonly id: string;
@@ -56,6 +59,8 @@ interface ISerializedWorkingSetEntry {
 	 * 欠けている場合は「いるかもしれない」として索引を引く側（従来どおり）に倒すこと。
 	 */
 	readonly terminalEditors?: number;
+	/** Exact terminal identities serialized in this Working Set, used to scope synchronous revive. */
+	readonly terminalNonces?: readonly string[];
 }
 
 interface ISerializedActiveEntry {
@@ -198,6 +203,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * 内部呼び出しが未成立のまま先へ進む。
 	 */
 	private static readonly SWITCH_SLOT_TIMEOUT_MS = 60_000;
+	private static readonly SHUTDOWN_JOIN_TIMEOUT_MS = 5_000;
+	private static readonly SWITCH_OWNER_LEASE_REFRESH_MS = 3_000;
+	private static readonly SWITCH_OWNER_LEASE_STALE_MS = 10_000;
+	private static readonly SWITCH_OWNER_LEASE_STORAGE_PREFIX = 'paradis.workspaceSwitch.ownerLease.';
 
 	private readonly _onDidChangeRepositories = this._register(new Emitter<void>());
 	readonly onDidChangeRepositories = this._onDidChangeRepositories.event;
@@ -236,6 +245,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * 再起動後は空＝孤児索引を必ず引く側へ倒れる（世代跨ぎの復元は索引が唯一の防波堤）。
 	 */
 	private readonly _workingSetTerminalNonces = new Map<string, ReadonlySet<string>>();
+	/** Persisted identities of the terminal editor inputs that belong to each Working Set. */
+	private readonly _workingSetRestoreNonces = new Map<string, ReadonlySet<string>>();
 
 	/** 切り替え処理の直列化 (連打時に退避と復元が交錯して状態が壊れるのを防ぐ) */
 	private readonly _switchSequencer = new Sequencer();
@@ -247,6 +258,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private _coalesceGeneration = 0;
 
 	private _switching = false;
+	private readonly _activeSwitchBodies = new Set<Promise<void>>();
+	private readonly _shutdownOperations = new Set<Promise<void>>();
+	private _switchRecovery: Promise<void> | undefined;
+	private _hasAttemptedSwitchRecovery = false;
+	private _shuttingDown = false;
+	private readonly _liveSwitchTransactionIds = new Set<string>();
+	private readonly _ownerWindowId = mainWindow.vscodeWindowId;
+	private _switchOwnerLeaseTimer: ReturnType<typeof setInterval> | undefined;
 	get isSwitching(): boolean {
 		return this._switching;
 	}
@@ -298,8 +317,15 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// 切り替えが終わらないときの警告。進行表示 (`IProgressService`) と同じ理由で省略可能に
 		// できないので、手組みのテストハーネスはスタブを渡すこと。
 		@INotificationService private readonly notificationService: INotificationService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
+		this._register(toDisposable(() => {
+			if (this._switchOwnerLeaseTimer !== undefined) {
+				clearInterval(this._switchOwnerLeaseTimer);
+				this._switchOwnerLeaseTimer = undefined;
+			}
+		}));
 
 		this._repositories = this.loadRepositories();
 		this.loadWorkingSets();
@@ -325,6 +351,20 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			markParadisManagedWorkspaceWindow();
 		}
 		this.auxiliaryWindowScopeService.setMainScope(this.activeStateKey, this.isManagedWorkspaceWindow, false);
+		this._register(lifecycleService.onWillShutdown(event => {
+			this._shuttingDown = true;
+			const activeOperations = [...this._shutdownOperations];
+			if (activeOperations.length > 0) {
+				const boundedJoin = raceTimeout(
+					Promise.all(activeOperations.map(operation => operation.catch(() => undefined))).then(() => undefined),
+					ParadisWorkspaceSwitchService.SHUTDOWN_JOIN_TIMEOUT_MS,
+				).then(() => undefined);
+				event.join(boundedJoin, {
+					id: 'paradis.workspaceSwitch.complete',
+					label: localize('paradis.workspaceSwitch.shutdownJoin', "Finishing space switch"),
+				});
+			}
+		}));
 
 		// 自分の枠を共有領域へ出しておく。保存はスペースを足し引きしたときにしか走らないので、
 		// 開いただけで何も触らなかったウィンドウは相手側から「存在しない」ままになり、
@@ -582,6 +622,243 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 	}
 
+	recoverInterruptedSwitch(): Promise<void> {
+		if (this._switchRecovery !== undefined) {
+			return this._switchRecovery;
+		}
+		// A released sequencer slot can coexist with an older live body. Its journal is not
+		// interrupted and must never be replayed underneath it by the next switch request.
+		if (this._activeSwitchBodies.size > 0) {
+			return Promise.resolve();
+		}
+		// The first call is startup recovery. A lease left by the renderer that crashed must not defer
+		// automatic repair merely because the new process received another window id. Electron main
+		// already prevents two live main windows from owning the same workspace.
+		const ignoreOwnerLease = !this._hasAttemptedSwitchRecovery;
+		this._hasAttemptedSwitchRecovery = true;
+		const recovery = this.trackShutdownOperation(this.doRecoverInterruptedSwitch(ignoreOwnerLease));
+		this._switchRecovery = recovery;
+		const clearRecovery = () => {
+			if (this._switchRecovery === recovery) {
+				this._switchRecovery = undefined;
+			}
+		};
+		void recovery.then(clearRecovery, clearRecovery);
+		return recovery;
+	}
+
+	private async doRecoverInterruptedSwitch(ignoreOwnerLease: boolean): Promise<void> {
+		const transactions = paradisParseWorkspaceSwitchTransactions(
+			this.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+		);
+		if (transactions.length === 0) {
+			return;
+		}
+		const folders = this.contextService.getWorkspace().folders;
+		const currentUri = folders.length === 1 ? folders[0].uri : undefined;
+		const relevant: { transaction: IParadisWorkspaceSwitchTransaction; endpoint: 'from' | 'to'; fromUri: URI; toUri: URI }[] = [];
+		for (const candidate of transactions) {
+			try {
+				const fromUri = URI.parse(candidate.fromUri);
+				const toUri = URI.parse(candidate.toUri);
+				if (currentUri !== undefined && isEqual(currentUri, fromUri)) {
+					relevant.push({ transaction: candidate, endpoint: 'from', fromUri, toUri });
+				} else if (currentUri !== undefined && isEqual(currentUri, toUri)) {
+					relevant.push({ transaction: candidate, endpoint: 'to', fromUri, toUri });
+				}
+			} catch (error) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to parse an interrupted switch transaction', error);
+			}
+		}
+		if (relevant.length === 0) {
+			return;
+		}
+		const structurallyValid = relevant.filter(candidate => this.isValidStateKeyUri(candidate.transaction.fromStateKey, candidate.fromUri)
+			&& this.isValidStateKeyUri(candidate.transaction.toStateKey, candidate.toUri));
+		if (!ignoreOwnerLease && structurallyValid.some(candidate => !this.canClaimSwitchTransaction(candidate.transaction))) {
+			// Do not replay an older journal underneath a live owner of the same current endpoint.
+			return;
+		}
+		const valid = structurallyValid.filter(candidate => ignoreOwnerLease || this.canClaimSwitchTransaction(candidate.transaction))
+			.sort((left, right) => right.transaction.createdAt - left.transaction.createdAt);
+		// A newer `started` entry has not changed the UI and must not hide an older transaction that
+		// proves target/source state was already applied.
+		const selected = valid.find(candidate => paradisWorkspaceSwitchRecoveryEndpoint(candidate.transaction.phase, candidate.endpoint) !== undefined)
+			?? valid[0];
+		if (selected === undefined) {
+			if (structurallyValid.length > 0) {
+				// Another renderer still renews this transaction's lease. It is live, not interrupted.
+				return;
+			}
+			this.logService.error('[ParadisWorkspaceSwitch] Discarding interrupted switch transactions with invalid state-key/URI pairs');
+			this.clearSwitchTransactions(new Set(relevant.map(candidate => candidate.transaction.id)));
+			return;
+		}
+		const supersededTransactionIds = new Set(valid
+			.filter(candidate => candidate.transaction.fromStateKey === selected.transaction.fromStateKey
+				&& candidate.transaction.toStateKey === selected.transaction.toStateKey
+				&& isEqual(candidate.fromUri, selected.fromUri)
+				&& isEqual(candidate.toUri, selected.toUri)
+				&& (candidate.transaction.createdAt <= selected.transaction.createdAt
+					|| paradisWorkspaceSwitchRecoveryEndpoint(candidate.transaction.phase, candidate.endpoint) === undefined))
+			.map(candidate => candidate.transaction.id));
+		const recoveryEndpoint = paradisWorkspaceSwitchRecoveryEndpoint(selected.transaction.phase, selected.endpoint);
+		if (recoveryEndpoint === undefined) {
+			this.clearSwitchTransactions(supersededTransactionIds);
+			return;
+		}
+		const stateKey = recoveryEndpoint === 'from' ? selected.transaction.fromStateKey : selected.transaction.toStateKey;
+		const uri = recoveryEndpoint === 'from' ? selected.fromUri : selected.toUri;
+
+		this._switching = true;
+		this.setPendingSwitchKey(stateKey);
+		this.editorScopeService.beginSwitch();
+		try {
+			markParadisManagedWorkspaceWindow();
+			this.setActiveEntry(stateKey, uri);
+			await this.editorScopeService.commitSwitch(stateKey, uri);
+			this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
+			const restoreContext = await paradisRefreshTerminalReviveIndex(stateKey, { expectedNonces: this._workingSetRestoreNonces.get(stateKey) });
+			try {
+				await this.applyWorkingSetFor(stateKey);
+			} finally {
+				restoreContext.dispose();
+			}
+			await this.editorScopeService.restoreScope(stateKey);
+			await this.editorScopeService.restoreBackups();
+			this.restorePanelVisibilityFor(stateKey);
+			await this.runSwitchCompletionParticipants(stateKey);
+			this._onDidSwitchScope.fire(stateKey);
+			// Older attempts for the same endpoint pair are superseded by this recovery. Transactions for
+			// another pair may belong to another window sharing WORKSPACE storage and are left untouched.
+			try {
+				this.clearSwitchTransactions(supersededTransactionIds);
+			} catch (clearError) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to clear recovered switch transactions', clearError);
+			}
+		} finally {
+			this._switching = false;
+			this.setPendingSwitchKey(undefined);
+		}
+	}
+
+	private isValidStateKeyUri(stateKey: string, uri: URI): boolean {
+		if (!this.belongsToThisHost(uri)) {
+			return false;
+		}
+		const repository = this._repositories.find(candidate => candidate.id === stateKey);
+		if (repository !== undefined) {
+			return isEqual(repository.uri, uri);
+		}
+		return stateKey.startsWith('worktree:') && stateKey === paradisWorktreeStateKey(uri);
+	}
+
+	private switchOwnerLeaseStorageKey(ownerWindowId: number): string {
+		return `${ParadisWorkspaceSwitchService.SWITCH_OWNER_LEASE_STORAGE_PREFIX}${ownerWindowId}`;
+	}
+
+	private canClaimSwitchTransaction(transaction: IParadisWorkspaceSwitchTransaction): boolean {
+		if (transaction.ownerWindowId === undefined || transaction.ownerWindowId === this._ownerWindowId) {
+			return true;
+		}
+		const renewedAt = this.storageService.getNumber(
+			this.switchOwnerLeaseStorageKey(transaction.ownerWindowId),
+			StorageScope.WORKSPACE,
+		);
+		return renewedAt === undefined || Date.now() - renewedAt > ParadisWorkspaceSwitchService.SWITCH_OWNER_LEASE_STALE_MS;
+	}
+
+	private renewSwitchOwnerLease(): void {
+		try {
+			this.storageService.store(
+				this.switchOwnerLeaseStorageKey(this._ownerWindowId),
+				Date.now(),
+				StorageScope.WORKSPACE,
+				StorageTarget.MACHINE,
+			);
+		} catch (error) {
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to renew the switch owner lease', error);
+		}
+	}
+
+	private trackLiveSwitchTransaction(transaction: IParadisWorkspaceSwitchTransaction): void {
+		if (transaction.ownerWindowId !== this._ownerWindowId) {
+			return;
+		}
+		this._liveSwitchTransactionIds.add(transaction.id);
+		this.renewSwitchOwnerLease();
+		if (this._switchOwnerLeaseTimer === undefined) {
+			this._switchOwnerLeaseTimer = setInterval(
+				() => this.renewSwitchOwnerLease(),
+				ParadisWorkspaceSwitchService.SWITCH_OWNER_LEASE_REFRESH_MS,
+			);
+		}
+	}
+
+	private untrackLiveSwitchTransaction(transactionId: string): void {
+		this._liveSwitchTransactionIds.delete(transactionId);
+		if (this._liveSwitchTransactionIds.size > 0) {
+			return;
+		}
+		if (this._switchOwnerLeaseTimer !== undefined) {
+			clearInterval(this._switchOwnerLeaseTimer);
+			this._switchOwnerLeaseTimer = undefined;
+		}
+		try {
+			this.storageService.remove(
+				this.switchOwnerLeaseStorageKey(this._ownerWindowId),
+				StorageScope.WORKSPACE,
+			);
+		} catch (error) {
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to clear the switch owner lease', error);
+		}
+	}
+
+	private writeSwitchTransaction(transaction: IParadisWorkspaceSwitchTransaction): void {
+		this.trackLiveSwitchTransaction(transaction);
+		const stored = paradisParseWorkspaceSwitchTransactions(
+			this.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+		);
+		const transactions = [...stored.filter(entry => entry.id !== transaction.id), transaction]
+			.sort((left, right) => left.createdAt - right.createdAt)
+			.slice(-128);
+		this.storageService.store(
+			PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY,
+			paradisSerializeWorkspaceSwitchTransactions(transactions),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE,
+		);
+	}
+
+	private updateSwitchTransaction(transaction: IParadisWorkspaceSwitchTransaction | undefined, phase: ParadisWorkspaceSwitchPhase): void {
+		if (transaction !== undefined) {
+			this.writeSwitchTransaction({ ...transaction, phase });
+		}
+	}
+
+	private clearSwitchTransaction(transactionId: string): void {
+		this.clearSwitchTransactions(new Set([transactionId]));
+	}
+
+	private clearSwitchTransactions(transactionIds: ReadonlySet<string>): void {
+		for (const transactionId of transactionIds) {
+			this.untrackLiveSwitchTransaction(transactionId);
+		}
+		const transactions = paradisParseWorkspaceSwitchTransactions(
+			this.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+		).filter(transaction => !transactionIds.has(transaction.id));
+		if (transactions.length === 0) {
+			this.storageService.remove(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE);
+			return;
+		}
+		this.storageService.store(
+			PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY,
+			paradisSerializeWorkspaceSwitchTransactions(transactions),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE,
+		);
+	}
+
 	private stageScopeRetirement(stateKeys: readonly string[], repositoryId?: string): string {
 		const transactionId = generateUuid();
 		this.retirementJournal.stage(transactionId, stateKeys, repositoryId);
@@ -727,6 +1004,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	private switchToTarget(stateKey: string, uri: URI, options?: IParadisSwitchOptions): Promise<void> {
+		if (this._shuttingDown) {
+			return Promise.reject(new Error('Cannot start a space switch while the workbench is shutting down'));
+		}
 		this.ensureMultiRootWorkspace();
 
 		// 連打の畳み込み。`coalesce` 付きの要求だけが世代を進め、実行開始時点で自分より新しい
@@ -749,7 +1029,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// なければならない (`paradisWorktreeHeadlessCreate` などの内部呼び出しは成立を前提に後続を
 		// 走らせる)。締め切りで `undefined` を返して解決してしまうと、未成立のまま先へ進む。
 		let switchBody: Promise<void> | undefined;
-		const queued = this._switchSequencer.queue(() => {
+		const queued = this._switchSequencer.queue(async () => {
+			if (this._shuttingDown) {
+				throw new Error('Cancelled a queued space switch because the workbench is shutting down');
+			}
+			// The previous slot may have been released by the 60s watchdog while its uncancellable body
+			// is still alive. Starting another folder mutation would corrupt shared switch state.
+			if (this._activeSwitchBodies.size > 0) {
+				throw new Error('The previous space switch is still running');
+			}
+			await this.recoverInterruptedSwitch();
 			// 実行が始まる前に追い越されていたら、この回は何もしない。**span を張る前に判定する**：
 			// 飛ばした回まで計測に載せると、フェーズ内訳の分布に 0ms 付近の山ができて読めなくなる。
 			if (coalesceGeneration !== undefined && coalesceGeneration !== this._coalesceGeneration) {
@@ -776,7 +1065,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			});
 			const watchdog = setTimeout(() => this.onSwitchWatchdogFired(stateKey, uri, inputGate), ParadisWorkspaceSwitchService.SWITCH_WATCHDOG_MS);
 
-			const switching = this.withSwitchProgress(stateKey, uri, () => runInParadisSpan('workspaceSwitch', 'switch', {
+			const switching = this.trackSwitchBody(this.withSwitchProgress(stateKey, uri, () => runInParadisSpan('workspaceSwitch', 'switch', {
 				safe_terminal_editors: terminalEditors,
 				safe_editors: editors,
 			}, async () => {
@@ -825,6 +1114,23 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					);
 					return;
 				}
+				const switchTransaction: IParadisWorkspaceSwitchTransaction | undefined = previousKey !== undefined && previousUri !== undefined
+					? {
+						version: 1,
+						id: generateUuid(),
+						createdAt: Date.now(),
+						ownerWindowId: this._ownerWindowId,
+						fromStateKey: previousKey,
+						fromUri: previousUri.toString(),
+						toStateKey: stateKey,
+						toUri: uri.toString(),
+						phase: 'started',
+					}
+					: undefined;
+				if (switchTransaction !== undefined) {
+					// Store the recovery anchor before editor state can diverge from folders.
+					this.writeSwitchTransaction(switchTransaction);
+				}
 
 				// updateFolders で folders[0] が変わる前に必ずフラグを立てる。
 				// relauncher の RunOnceScheduler はフォルダ変更の 10ms 後に発火するため、
@@ -856,12 +1162,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 					if (previousKey !== undefined) {
 						timeSyncPhase('capture_scope', () => {
-							this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
+						this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
 							// **`sourceCaptured` はここで立てる。** 退避が済んだ時点でロールバックの
 							// 対象になる。パネル表示の保存まで含めた後ろへ動かすと、そちらが投げたときに
 							// 退避済みのエディタ状態を復元しないまま戻ってしまう。
-							sourceCaptured = true;
-							this.savePanelVisibilityFor(previousKey);
+						sourceCaptured = true;
+						this.updateSwitchTransaction(switchTransaction, 'sourceCaptured');
+						this.savePanelVisibilityFor(previousKey);
 						});
 
 						// エディタターミナルは working set の保存後・適用前にインスタンスを input から
@@ -907,7 +1214,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
 						// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
 						this._workingSetTerminalNonces.set(previousKey, parkedNonces);
-					}
+				}
 
 					// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
 					// 「可視エディタが使用中のリポジトリ」を close しない (extensions/git/src/model.ts の
@@ -957,7 +1264,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					const restoreTerminals = this._workingSets.has(stateKey)
 						? this._workingSetTerminals.get(stateKey)
 						: 0;
-					await timePhase('revive_index', () => {
+					const restoreContext = await timePhase('revive_index', () => {
 						// 判定は**使う直前で**取る。カウントを先に取って await を挟むと、その間に
 						// pty exit が届いて台帳が縮んでも「引かない」が確定済みになってしまう。
 						const expectedNonces = this._workingSetTerminalNonces.get(stateKey);
@@ -985,13 +1292,15 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 							// 同じスコープへ載っている＝件数比較が危険だった実態が本番で確認できる。
 							parkedCount: expectedNonces?.size,
 							expectedCount: restoreTerminals,
+							expectedNonces: this._workingSetRestoreNonces.get(stateKey),
 						});
 					});
 					try {
 						await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
 					} finally {
-						paradisClearTerminalReviveIndex();
+						restoreContext.dispose();
 					}
+					this.updateSwitchTransaction(switchTransaction, 'targetApplied');
 
 					await timePhase('trust_uris', () => this.trustUris(uri));
 					// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
@@ -1051,13 +1360,24 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 					this.setActiveEntry(stateKey, uri);
 					await timePhase('commit_switch', () => this.editorScopeService.commitSwitch(stateKey, uri));
+					this.updateSwitchTransaction(switchTransaction, 'foldersCommitted');
 					this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
 					await timePhase('restore_scope', () => this.editorScopeService.restoreScope(stateKey));
 					await timePhase('restore_backups', () => this.editorScopeService.restoreBackups());
 					timeSyncPhase('restore_panels', () => this.restorePanelVisibilityFor(stateKey));
 					completed = true;
+					if (switchTransaction !== undefined) {
+						try {
+							this.clearSwitchTransaction(switchTransaction.id);
+						} catch (error) {
+							// The switch is already committed. A journal cleanup failure must not enter the
+							// source rollback path while completion events are emitted for the target.
+							this.logService.error('[ParadisWorkspaceSwitch] Failed to clear a completed switch transaction', error);
+						}
+					}
 				} catch (error) {
 					switchError = error;
+					let rollbackFailed = false;
 					await paradisRunBestEffortPhases([
 						async () => {
 							const currentFolders = this.contextService.getWorkspace().folders;
@@ -1090,7 +1410,20 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						() => this.editorScopeService.rollbackSwitch(previousKey, previousUri),
 						() => this.auxiliaryWindowScopeService.setMainScope(previousKey, this.isManagedWorkspaceWindow, false),
 						() => this.editorScopeService.restoreBackups(),
-					], rollbackError => this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch phase', rollbackError));
+					], rollbackError => {
+						rollbackFailed = true;
+						this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch phase', rollbackError);
+					});
+					const rolledBackFolders = this.contextService.getWorkspace().folders;
+					if (!rollbackFailed && previousUri !== undefined && rolledBackFolders.length === 1 && isEqual(rolledBackFolders[0].uri, previousUri)) {
+						if (switchTransaction !== undefined) {
+							try {
+								this.clearSwitchTransaction(switchTransaction.id);
+							} catch (clearError) {
+								this.logService.error('[ParadisWorkspaceSwitch] Failed to clear a rolled-back switch transaction', clearError);
+							}
+						}
+					}
 					throw error;
 				} finally {
 					this._switching = false;
@@ -1134,7 +1467,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				clearTimeout(watchdog);
 				inputGate.dispose();
 				this.setPendingSwitchKey(undefined);
-			});
+			}));
 			switchBody = switching;
 
 			// スロットは時間で必ず手放す。**ここでロールバックを走らせないこと** (定数のコメント参照)。
@@ -1148,7 +1481,21 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// **呼び出し側には本体の完了を返す。** 上の締め切りが解放するのは Sequencer のスロットだけで、
 		// 「解決＝切り替えが成立した」という契約は変えない。ここを `queued` のまま返すと、締め切りで
 		// 解決した回に未成立のまま後続処理が走る。
-		return queued.then(() => switchBody ?? Promise.resolve());
+		return this.trackShutdownOperation(queued.then(() => switchBody ?? Promise.resolve()));
+	}
+
+	private trackSwitchBody(operation: Promise<void>): Promise<void> {
+		this._activeSwitchBodies.add(operation);
+		// The returned promise settles only after deleting the body, so the next Sequencer callback
+		// cannot mistake a just-completed predecessor for a still-running one.
+		return operation.finally(() => this._activeSwitchBodies.delete(operation));
+	}
+
+	private trackShutdownOperation<T>(operation: Promise<T>): Promise<T> {
+		const tracked = operation.then(() => undefined, () => undefined);
+		this._shutdownOperations.add(tracked);
+		void tracked.then(() => this._shutdownOperations.delete(tracked));
+		return operation;
 	}
 
 	/**
@@ -1341,10 +1688,23 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			// 除外された入力 (retain 中＝子プロセス実行中の端末) は working set に載らないので、
 			// 復元時に索引を引く相手にもならない。数えるのは実際に載るものだけ。
 			let terminalCount: number | undefined;
+			let restoreNonces: ReadonlySet<string> | undefined;
 			try {
-				terminalCount = this.terminalEditorService.instances
-					.filter(instance => !excludedEditors.includes(this.terminalEditorService.getInputFromResource(instance.resource)))
-					.length;
+				const terminalInstances = this.terminalEditorService.instances
+					.filter(instance => {
+						const input = this.terminalEditorService.getInputFromResource(instance.resource);
+						if (excludedEditors.includes(input)) {
+							return false;
+						}
+						const group = this.editorGroupsService.groups.find(candidate => candidate.contains(input));
+						return group !== undefined && this.editorGroupsService.getPart(group) === this.editorGroupsService.mainPart;
+					});
+				terminalCount = terminalInstances.length;
+				const terminalNonces = terminalInstances.map(instance => paradisTerminalIdentityNonce(instance.shellIntegrationNonce));
+				if (terminalNonces.every((nonce): nonce is string => nonce !== undefined)
+					&& new Set(terminalNonces).size === terminalNonces.length) {
+					restoreNonces = new Set(terminalNonces);
+				}
 			} catch (error) {
 				this.logService.warn('[ParadisWorkspaceSwitch] Failed to count terminal editors for the working set', error);
 			}
@@ -1353,6 +1713,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				includeAuxiliaryWindows: false
 			});
 			this._workingSets.set(stateKey, workingSet);
+			if (restoreNonces === undefined) {
+				this._workingSetRestoreNonces.delete(stateKey);
+			} else {
+				this._workingSetRestoreNonces.set(stateKey, restoreNonces);
+			}
 			if (terminalCount === undefined) {
 				this._workingSetTerminals.delete(stateKey);
 			} else {
@@ -1368,6 +1733,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			this._workingSets.delete(stateKey);
 			this._workingSetTerminals.delete(stateKey);
 			this._workingSetTerminalNonces.delete(stateKey);
+			this._workingSetRestoreNonces.delete(stateKey);
 		}
 		this.saveWorkingSets();
 	}
@@ -1409,6 +1775,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this._workingSets.delete(repositoryId);
 		this._workingSetTerminals.delete(repositoryId);
 		this._workingSetTerminalNonces.delete(repositoryId);
+		this._workingSetRestoreNonces.delete(repositoryId);
 		this.saveWorkingSets();
 	}
 
@@ -1509,6 +1876,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				if (entry.terminalEditors !== undefined) {
 					this._workingSetTerminals.set(entry.repositoryId, entry.terminalEditors);
 				}
+				if (Array.isArray(entry.terminalNonces)) {
+					const terminalNonces = entry.terminalNonces.map(paradisTerminalIdentityNonce);
+					if (terminalNonces.every((nonce): nonce is string => nonce !== undefined)
+						&& new Set(terminalNonces).size === terminalNonces.length
+						&& (entry.terminalEditors === undefined || entry.terminalEditors === terminalNonces.length)) {
+						this._workingSetRestoreNonces.set(entry.repositoryId, new Set(terminalNonces));
+					}
+				}
 			}
 		} catch {
 			// 壊れたデータは無視 (次の切り替えで作り直される)
@@ -1518,7 +1893,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private saveWorkingSets(): void {
 		const serialized: ISerializedWorkingSetEntry[] = [];
 		for (const [repositoryId, workingSet] of this._workingSets) {
-			serialized.push({ repositoryId, workingSet, terminalEditors: this._workingSetTerminals.get(repositoryId) });
+			const terminalNonces = this._workingSetRestoreNonces.get(repositoryId);
+			serialized.push({
+				repositoryId,
+				workingSet,
+				terminalEditors: this._workingSetTerminals.get(repositoryId),
+				terminalNonces: terminalNonces === undefined ? undefined : [...terminalNonces],
+			});
 		}
 		this.storageService.store(ParadisWorkspaceSwitchService.WORKING_SETS_STORAGE_KEY, JSON.stringify(serialized), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}

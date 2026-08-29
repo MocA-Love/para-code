@@ -375,6 +375,8 @@ export interface IPtyService {
 		workspaceName: string
 	): Promise<number>;
 	attachToProcess(id: number): Promise<void>;
+	/** PARA-CODE: atomically resolves, claims and attaches an orphan PTY by nonce. */
+	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void>;
 	shutdownAll(): Promise<void>;
 
@@ -410,6 +412,8 @@ export interface IPtyService {
 	getWslPath(original: string, direction: 'unix-to-win' | 'win-to-unix'): Promise<string>;
 	// PARA-PATCH: `paradisExpectedNonce` proves the caller means this very terminal, see PtyService
 	getRevivedPtyNewId(workspaceId: string, id: number, paradisExpectedNonce?: string): Promise<number | undefined>;
+	/** PARA-CODE: atomically resolves, claims and attaches an orphan PTY by nonce. */
+	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
 	setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void>;
 	getTerminalLayoutInfo(args: IGetTerminalLayoutInfoArgs): Promise<ITerminalsLayoutInfo | undefined>;
 	reduceConnectionGraceTime(): Promise<void>;
@@ -634,6 +638,8 @@ export interface IShellLaunchConfig {
 		paradisRevivedFromPersistentProcessId?: number;
 		/** PARA-CODE: See {@link IProcessDetails.paradisAdopted}. */
 		paradisAdopted?: boolean;
+		/** PARA-CODE: The id was resolved in the current pty host and cannot address an older ledger. */
+		paradisResolvedToCurrentPtyId?: boolean;
 		tabActions?: ITerminalTabAction[];
 	};
 
@@ -1228,7 +1234,7 @@ export interface ITerminalBackend extends ITerminalBackendPtyServiceContribution
 
 	attachToProcess(id: number): Promise<ITerminalChildProcess | undefined>;
 	// PARA-PATCH: `paradisExpectedNonce` proves the caller means this very terminal, see PtyService
-	attachToRevivedProcess(id: number, paradisExpectedNonce?: string): Promise<ITerminalChildProcess | undefined>;
+	attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined>;
 	listProcesses(): Promise<IProcessDetails[]>;
 	getLatency(): Promise<IPtyHostLatencyMeasurement[]>;
 	getDefaultSystemShell(osOverride?: OperatingSystem): Promise<string>;
