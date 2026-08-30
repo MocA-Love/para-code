@@ -27,6 +27,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsSnapshot,
@@ -49,6 +50,9 @@ const $ = dom.$;
 const PANEL_OPEN_POLL_INTERVAL_MS = 30_000;
 /** パネル非表示中(トリガーのみ)のポーリング間隔。 */
 const IDLE_POLL_INTERVAL_MS = 120_000;
+
+/** 「一覧から隠した」アカウントID(account.id)の配列をJSONで保持するストレージキー。 */
+const PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY = 'paradis.limitsMonitor.hiddenAccountIds';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const RING_RADIUS = 8;
@@ -92,6 +96,16 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private isFetching = false;
 	private refreshRequested = false;
 	private readonly removingHomes = new Set<string>();
+	/**
+	 * 一覧から個別に隠したアカウントの台帳。真の保持者はここ(永続化もここ)。
+	 *
+	 * account.id だけをキーにしない: Codexのidはホームの絶対パス、Claudeはcswapの
+	 * スロット番号で、どちらも削除された分は次のアカウント追加やスロット再利用で
+	 * 別のアカウントに再割り当てされ得る(node/paradisLimitsMonitorChannel.ts)。
+	 * 非表示にした時点のemailも一緒に持ち、一致するときだけ非表示を適用することで、
+	 * 「同じidだが中身は別アカウント」になった行を自動的に復帰させる。
+	 */
+	private readonly hiddenAccounts = new Map<string, string | undefined>();
 
 	constructor(
 		container: HTMLElement,
@@ -101,9 +115,27 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		@IDialogService private readonly dialogService: IDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
 
+		this.loadHiddenAccountIds();
+		// 同じプロファイルを2ウィンドウで開いていると、この台帳は両方から見える。片方だけが
+		// メモリ上のMapを持ち続けると、後から書き込んだ方が先勝ちで上書きし、相手が隠した分を
+		// 消してしまう(paradisPresetServiceのlocallyHiddenWorkspacePresetsと同じ理由)。
+		// external=falseは自分のsaveHiddenAccountIds()による発火(store()は同期発火するため、
+		// 素通しするとトグル操作のたびに自分自身のクリックハンドラ内でパネルが二重に
+		// 作り直される)。他ウィンドウ発の変更(external=true)だけを取り込む。
+		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, this._store)(e => {
+			if (!e.external) {
+				return;
+			}
+			this.loadHiddenAccountIds();
+			if (this.latestSnapshot) {
+				this.renderTrigger(this.latestSnapshot);
+				this.panel.value?.updateSnapshot(this.latestSnapshot);
+			}
+		}));
 		this.client = this.instantiationService.createInstance(ParadisLimitsMonitorClient);
 
 		this.button = dom.append(container, $('button.paradis-limits-trigger'));
@@ -134,6 +166,78 @@ class ParadisLimitsMonitorWidget extends Disposable {
 
 	private isEnabled(): boolean {
 		return this.configurationService.getValue<boolean>(PARADIS_LIMITS_SETTING_ENABLED);
+	}
+
+	private loadHiddenAccountIds(): void {
+		// 外部変更(他ウィンドウの書き込み)を取り込む再読み込みでも呼ぶため、まず現在の内容を捨てる。
+		this.hiddenAccounts.clear();
+		const raw = this.storageService.get(PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, StorageScope.PROFILE);
+		if (!raw) {
+			return;
+		}
+		try {
+			const entries: unknown = JSON.parse(raw);
+			if (Array.isArray(entries)) {
+				for (const entry of entries) {
+					if (typeof entry === 'string') {
+						// 旧形式(id文字列のみ)からの移行。emailは分からないのでundefinedのまま扱う。
+						this.hiddenAccounts.set(entry, undefined);
+					} else if (entry && typeof entry === 'object' && typeof entry.id === 'string') {
+						this.hiddenAccounts.set(entry.id, typeof entry.email === 'string' ? entry.email : undefined);
+					}
+				}
+			}
+		} catch {
+			// 壊れた値は無視する(全アカウント表示側に倒す。非表示状態を失うだけで実害はない)
+		}
+	}
+
+	private saveHiddenAccountIds(): void {
+		// Codexの account.id はホームの絶対パス(例: /Users/<user>/.codex-2)で、マシン固有。
+		// StorageTarget.USERはSettings Syncの対象になるため、他マシンでは無関係な非表示設定
+		// やゴミが乗ってしまう。MACHINEにして同期対象から外す。
+		const entries = [...this.hiddenAccounts.entries()].map(([id, email]) => ({ id, email }));
+		this.storageService.store(
+			PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY,
+			JSON.stringify(entries),
+			StorageScope.PROFILE,
+			StorageTarget.MACHINE,
+		);
+	}
+
+	/**
+	 * account.id が非表示にした時点と同じアカウントを指しているか。
+	 *
+	 * id(ホームパス/スロット番号)は削除→再利用で別アカウントに割り当てられ得るため、
+	 * 非表示にした時点のemailと食い違ったら「もう同じアカウントではない」とみなし、
+	 * 台帳から明示的に消さなくても自動的に非表示を解く。
+	 *
+	 * ただし両方のemailが分かっているときだけ不一致を見る: node/paradisLimitsMonitorChannel.ts
+	 * の fetchCodexAccount は auth.json が読めない('error')・アクセストークンが無い
+	 * ('no_credentials')場合、同じidのままemailを載せずに返す。片方(または両方)が
+	 * undefinedなだけで「別アカウントになった」と誤判定すると、トークン読み取りが
+	 * 一時的にこけただけ・ログアウトしただけで、隠していたはずの行が勝手に復活する。
+	 */
+	private isAccountHidden(account: IParadisLimitsAccount): boolean {
+		if (!this.hiddenAccounts.has(account.id)) {
+			return false;
+		}
+		const hiddenEmail = this.hiddenAccounts.get(account.id);
+		return hiddenEmail === undefined || account.email === undefined || hiddenEmail === account.email;
+	}
+
+	/** パネル(削除ボタンの隣の目アイコン)・非表示中リスト双方から呼ばれる、非表示状態の唯一の変更点。 */
+	private toggleHiddenAccount(account: IParadisLimitsAccount): void {
+		if (this.isAccountHidden(account)) {
+			this.hiddenAccounts.delete(account.id);
+		} else {
+			this.hiddenAccounts.set(account.id, account.email);
+		}
+		this.saveHiddenAccountIds();
+		if (this.latestSnapshot) {
+			this.renderTrigger(this.latestSnapshot);
+			this.panel.value?.updateSnapshot(this.latestSnapshot);
+		}
 	}
 
 	private applyEnabled(): void {
@@ -171,6 +275,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			onAddAccount: provider => this.openSetupDialog(provider, undefined),
 			onRelogin: account => this.openSetupDialog(account.provider, account),
 			onRemoveAccount: account => void this.removeAccount(account),
+			isAccountHidden: account => this.isAccountHidden(account),
+			onToggleHiddenAccount: account => this.toggleHiddenAccount(account),
 		};
 		this.button.classList.add('active');
 		this.panel.value = this.instantiationService.createInstance(ParadisLimitsMonitorPanel, this.button, options);
@@ -230,6 +336,11 @@ class ParadisLimitsMonitorWidget extends Disposable {
 				return;
 			}
 			await this.client.removeCodexHome(account.id, remote);
+			// account.id(ホームパス)は次の追加で再利用され得る。email不一致で自動的に非表示は
+			// 解けるが、email不明のまま隠していた場合の保険としてここでも明示的に落としておく。
+			if (this.hiddenAccounts.delete(account.id)) {
+				this.saveHiddenAccountIds();
+			}
 			await this.poll(true);
 		} catch (error) {
 			this.logService.error('[ParadisLimitsMonitor] Failed to remove Codex home', error);
@@ -278,11 +389,15 @@ class ParadisLimitsMonitorWidget extends Disposable {
 
 		this.renderProvider('claude', snapshot.claude.accounts);
 		this.renderProvider('codex', snapshot.codex.accounts);
-		this.updateTriggerAria([...snapshot.claude.accounts, ...snapshot.codex.accounts]);
+		const allAccounts = [...snapshot.claude.accounts, ...snapshot.codex.accounts];
+		const visibleAccounts = allAccounts.filter(account => !this.isAccountHidden(account));
+		this.updateTriggerAria(visibleAccounts, allAccounts.length - visibleAccounts.length);
 
 		if (this.button.childElementCount === 0) {
-			// どちらのプロバイダーも見つからない場合は最低限のプレースホルダーを出す
-			// (完全に空だとクリック面が消えてパネルから設定状況を確認できなくなるため)
+			// アカウントが1件も取得できていない場合と、取得できているが全部を非表示に
+			// している場合の両方でここに来る(完全に空だとクリック面が消えてパネルから
+			// 設定状況を確認できなくなるため、最低限のプレースホルダーは常に必要)。
+			// 見分けはupdateTriggerAriaが付けるaria-labelの「非表示 N件」で付く。
 			appendParadisLimitsLogo(this.button, 'claude');
 			appendParadisLimitsLogo(this.button, 'codex');
 		}
@@ -295,7 +410,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	 * 自前の aria-label を持つ以上は読み上げられない（子孫のテキストは名前に使われない）。
 	 * 使用率は再描画間隔ぶん古くなりうるので、数値より状態を先に読ませる。
 	 */
-	private updateTriggerAria(accounts: readonly IParadisLimitsAccount[]): void {
+	private updateTriggerAria(accounts: readonly IParadisLimitsAccount[], hiddenCount: number): void {
 		const base = localize('paradis.limitsMonitor.triggerAria', "AI利用リミット");
 		const summaries = accounts.map(account => {
 			const name = account.email ?? account.homeLabel ?? account.id;
@@ -307,15 +422,19 @@ class ParadisLimitsMonitorWidget extends Disposable {
 				? name
 				: localize('paradis.limitsMonitor.triggerAriaAccount', "{0}: 最大{1}%使用", name, Math.round(worst));
 		});
+		if (hiddenCount > 0) {
+			summaries.push(localize('paradis.limitsMonitor.triggerAriaHidden', "非表示 {0}件", hiddenCount));
+		}
 		this.button.setAttribute('aria-label', [base, ...summaries].join('、'));
 	}
 
 	private renderProvider(provider: ParadisLimitsProvider, accounts: readonly IParadisLimitsAccount[]): void {
-		if (accounts.length === 0) {
+		const visibleAccounts = accounts.filter(account => !this.isAccountHidden(account));
+		if (visibleAccounts.length === 0) {
 			return;
 		}
 		appendParadisLimitsLogo(this.button, provider);
-		for (const account of accounts) {
+		for (const account of visibleAccounts) {
 			this.renderRing(account);
 		}
 	}

@@ -126,6 +126,12 @@
 	font-weight: 600;
 }
 
+/* .plm-account + .plm-account の隣接セレクタ方式に変えたことで消えていた、
+	プロバイダー節どうしの区切り線をここで明示する(最初の節には要らない)。 */
+.paradis-limits-panel .plm-provider-header:not(:first-child) {
+	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
 .paradis-limits-panel .plm-provider-header .plm-provider-count {
 	font-weight: 400;
 	color: var(--vscode-descriptionForeground);
@@ -153,11 +159,15 @@
 
 .paradis-limits-panel .plm-account {
 	padding: 8px 14px 10px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
 }
 
-.paradis-limits-panel .plm-account:last-child {
-	border-bottom: none;
+/* :last-child/:last-of-typeで「最後の1件だけ線を消す」方式だと、末尾に非表示中アカウントの
+	折りたたみ(.plm-hidden-disclosure)が続く場合に正しく機能しない(:last-of-typeは要素の
+	タグ名で判定するため、bodyElement直下に別のdiv要素が増えると簡単に壊れる)。代わりに
+	「直前もアカウント行のときだけ線を引く」隣接セレクタにして、末尾要素が何であっても
+	崩れないようにする。 */
+.paradis-limits-panel .plm-account + .plm-account {
+	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
 }
 
 .paradis-limits-panel .plm-account-top {
@@ -174,9 +184,25 @@
 	white-space: nowrap;
 }
 
+/* バッジ・アイコンボタンをまとめて右寄せする列。高さをここで20pxに揃えることで、
+	角丸バッジ(padding由来の高さ)とアイコンボタン(width/height固定)が align-items:center
+	だけでは微妙にずれて見える問題を避ける。 */
+.paradis-limits-panel .plm-badge-group {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	margin-left: auto;
+	flex: none;
+	height: 20px;
+}
+
 .paradis-limits-panel .plm-badge {
+	height: 20px;
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
 	font-size: 10px;
-	padding: 1px 6px;
+	padding: 0 7px;
 	border-radius: 8px;
 	background: var(--vscode-badge-background);
 	color: var(--vscode-badge-foreground);
@@ -204,16 +230,17 @@
 	display: flex;
 	align-items: center;
 	gap: 4px;
-	margin-left: auto;
 	flex: none;
 }
 
-.paradis-limits-panel .plm-account-delete {
+/* 削除ボタン(plm-account-delete)と非表示トグル(plm-account-hide)の共通の見た目。 */
+.paradis-limits-panel .plm-account-icon-btn {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	width: 20px;
 	height: 20px;
+	box-sizing: border-box;
 	padding: 0;
 	border: none;
 	border-radius: var(--vscode-cornerRadius-small, 4px);
@@ -223,32 +250,41 @@
 	opacity: 0.65;
 }
 
-.paradis-limits-panel .plm-account-delete .codicon {
+.paradis-limits-panel .plm-account-icon-btn .codicon {
 	font-size: 12px;
 }
 
-.paradis-limits-panel .plm-account-delete:hover {
+.paradis-limits-panel .plm-account-icon-btn:hover {
 	background: var(--vscode-toolbar-hoverBackground);
 	color: var(--vscode-foreground);
 	opacity: 1;
 }
 
-.paradis-limits-panel .plm-account-delete:focus-visible {
+.paradis-limits-panel .plm-account-icon-btn:focus-visible {
 	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 	opacity: 1;
 }
 
-.paradis-limits-panel .plm-meter {
+/* 5時間/7日/モデル別枠の複数行を1つのgridにまとめる。行ごとに.plm-meterがgridを
+	持っていた頃は、行ごとにラベル列の最大幅が独立に決まり、バーの開始位置・%・リセット表示の
+	位置が行ごとにずれて見えた(縦位置が揃わない問題)。.plm-meterはdisplay:contentsにして
+	自分の子要素をこの親gridへ直接参加させ、列幅をアカウント内の全行で共有する。
+	注意: display:contentsの子はgridの自動配置に直接乗るため、各.plm-meterは必ず
+	ラベル/バー/%/リセットの4要素を出すこと(reset省略のような条件付きappendはNG)。
+	1つでも欠けると、gridはセルを飛ばさないので以降の行が丸ごと1列ずれる。 */
+.paradis-limits-panel .plm-meters {
 	display: grid;
 	/* 枠名 / バー / 使用率 / リセット の4カラム。使用率とリセットは内容に合わせ、余りをバーが
-	吸う。固定幅にすると `3d 12h後（7/29 00:30）` のような最長ケース（7日枠＝この表示の主目的）が
-	右から省略され、一番読ませたい絶対時刻が消える。枠名はモデル別枠のラベルが識別子そのものなので、
-	最低幅だけ確保して内容に合わせて伸ばす。 */
+	吸う。枠名はモデル別枠のラベルが識別子そのものなので、最低幅だけ確保して内容に合わせて伸ばす。 */
 	grid-template-columns: minmax(48px, max-content) 1fr max-content max-content;
 	align-items: center;
-	gap: 6px;
-	margin: 4px 0;
+	row-gap: 4px;
+	column-gap: 6px;
+}
+
+.paradis-limits-panel .plm-meter {
+	display: contents;
 }
 
 .paradis-limits-panel .plm-meter-label {
@@ -270,16 +306,22 @@
 .paradis-limits-panel .plm-meter-fill {
 	display: block;
 	height: 100%;
+	/* 幅は常に100%で描き、実際の使用率はclip-path(JS側でinsetを設定)で切り取る。widthで
+	縮めたり、あるいはtransform: scaleXで縮尺したりすると、linear-gradientはどちらの
+	場合も要素自身の描画結果に対して正規化されるため、5%でも95%でも同じ暗→明のフル
+	ランプが出てしまい、色が使用量の手掛かりにならない。clip-pathは描画自体を全幅基準の
+	ままにして表示範囲だけを切るので、塗り幅に応じて実際に見える色の範囲が変わる。 */
+	width: 100%;
 	border-radius: 2px;
-	background: #2ea043;
+	background: linear-gradient(90deg, #227c38, #2ea043);
 }
 
 .paradis-limits-panel .plm-meter-fill.elevated {
-	background: #f59e0b;
+	background: linear-gradient(90deg, #c67b0d, #f59e0b);
 }
 
 .paradis-limits-panel .plm-meter-fill.high {
-	background: #ef4444;
+	background: linear-gradient(90deg, #c62828, #ef4444);
 }
 
 .paradis-limits-panel .plm-meter-value {
@@ -299,6 +341,107 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+/* ---------- hidden accounts disclosure ---------- */
+/* ログイン用(~/.codex)と使用量確認用(~/.codex-2)のように重複しがちな行を、削除せず
+	一覧から個別に隠せるようにする。隠したアカウントはここへ畳まれ、いつでも再表示できる。 */
+
+.paradis-limits-panel .plm-hidden-disclosure {
+	margin: 4px 14px 8px;
+	border: var(--vscode-strokeThickness, 1px) dashed var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.3));
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	overflow: hidden;
+}
+
+.paradis-limits-panel .plm-hidden-disclosure summary {
+	list-style: none;
+	cursor: pointer;
+	padding: 6px 10px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-limits-panel .plm-hidden-disclosure summary::-webkit-details-marker {
+	display: none;
+}
+
+.paradis-limits-panel .plm-hidden-disclosure summary .codicon {
+	font-size: 12px;
+	transition: transform 0.1s;
+}
+
+.paradis-limits-panel .plm-hidden-disclosure[open] summary .codicon {
+	transform: rotate(90deg);
+}
+
+.paradis-limits-panel .plm-hidden-count {
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	font-size: 10px;
+	padding: 0 6px;
+	border-radius: 8px;
+}
+
+.paradis-limits-panel .plm-hidden-list {
+	padding: 0 8px 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.paradis-limits-panel .plm-hidden-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 6px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+}
+
+.paradis-limits-panel .plm-hidden-row:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-limits-panel .plm-hidden-row .plm-hidden-mail {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-limits-panel .plm-hidden-row .plm-hidden-home {
+	flex: none;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.8;
+}
+
+.paradis-limits-panel .plm-hidden-unhide {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	font-size: 11px;
+	cursor: pointer;
+	padding: 2px 6px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+}
+
+.paradis-limits-panel .plm-hidden-unhide .codicon {
+	font-size: 12px;
+}
+
+.paradis-limits-panel .plm-hidden-unhide:hover {
+	background: var(--vscode-toolbar-hoverBackground);
 }
 
 /* ---------- cswap setup guide ---------- */
