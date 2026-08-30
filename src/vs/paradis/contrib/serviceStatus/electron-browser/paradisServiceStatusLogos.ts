@@ -9,6 +9,8 @@
 // サービスステータスチップのロゴ(インラインSVG)。Claude/Codexは limitsMonitor が既に持つ
 // 本物のロゴ(appendParadisAgentLogoSvg)をそのまま流用し、ここでは重複させない。GitHubの
 // Octocatだけ、同じ流儀(createElementNSでCSP/trusted types対応)でここに追加する。
+// パスデータは @dev.icons/react/mono (MIT) の GithubIcon から移植。fill="currentColor"で
+// 地色バッジは持たずテーマの前景色にそのまま追従する。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
@@ -16,22 +18,22 @@ import { ParadisServiceStatusProvider } from '../common/paradisServiceStatus.js'
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-/** primer/octicons "mark-github" (MIT)。viewBox 0 0 16 16。 */
-const GITHUB_PATH = 'M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8Z';
+/** @dev.icons/react/mono "GithubIcon"。viewBox 0 0 600 600。 */
+const GITHUB_PATH = 'M300 7.4a300 300 0 0 0-94.8 584.7c15 2.8 20.5-6.5 20.5-14.5l-.4-55.8c-83.5 18.1-101.1-35.4-101.1-35.4-13.7-34.7-33.3-43.9-33.3-43.9-27.3-18.6 2-18.2 2-18.2 30.1 2 46 30.9 46 30.9 26.8 45.8 70.2 32.6 87.3 25a64 64 0 0 1 19-40.2c-66.6-7.6-136.6-33.3-136.6-148.3a116 116 0 0 1 30.9-80.5c-3.1-7.5-13.4-38 2.9-79.4 0 0 25.2-8 82.5 30.8a288 288 0 0 1 150.3 0c57.2-38.8 82.4-30.8 82.4-30.8 16.3 41.3 6 71.9 3 79.4a116 116 0 0 1 30.8 80.5c0 115.3-70.2 140.6-137 148 10.8 9.4 20.4 27.6 20.4 55.6 0 40.2-.4 72.5-.4 82.3 0 8 5.4 17.4 20.6 14.4A300 300 0 0 0 300 7.4M112.4 434.8c-.7 1.5-3 1.9-5.2.9s-3.4-3-2.7-4.5c.7-1.6 3-2 5.2-1s3.4 3 2.7 4.6m14.7 13.1c-1.4 1.4-4.2.7-6.1-1.4-2-2-2.3-4.8-.9-6.2 1.5-1.3 4.2-.7 6.2 1.4s2.3 4.9.8 6.2m10.1 16.9c-1.8 1.3-4.8 0-6.7-2.6-1.8-2.7-1.8-5.9 0-7.2 2-1.2 4.9 0 6.8 2.6 1.8 2.7 1.8 5.9 0 7.2m17.2 19.5c-1.7 1.8-5.2 1.3-7.7-1.2-2.7-2.4-3.4-5.8-1.8-7.6 1.7-1.8 5.2-1.3 7.8 1.1s3.4 5.9 1.7 7.7m22 6.6c-.6 2.3-4 3.4-7.4 2.4s-5.6-3.8-5-6.2c.8-2.3 4.2-3.4 7.6-2.4s5.6 3.8 4.9 6.2m25.3 2.8c0 2.4-2.8 4.5-6.4 4.5-3.6.1-6.5-1.9-6.5-4.3 0-2.5 2.8-4.5 6.4-4.6s6.5 2 6.5 4.4m24.7-1c.4 2.4-2 5-5.6 5.6s-6.7-.9-7.1-3.3c-.5-2.4 2-5 5.5-5.6 3.6-.6 6.8.9 7.2 3.3';
 
 function appendGithubLogoSvg(container: HTMLElement): SVGSVGElement {
 	const svg = document.createElementNS(SVG_NS, 'svg');
-	svg.setAttribute('viewBox', '0 0 16 16');
+	svg.setAttribute('viewBox', '0 0 600 600');
 	svg.setAttribute('aria-hidden', 'true');
 	const path = document.createElementNS(SVG_NS, 'path');
 	path.setAttribute('d', GITHUB_PATH);
-	path.setAttribute('fill', '#ffffff');
+	path.setAttribute('fill', 'currentColor');
 	svg.appendChild(path);
 	container.appendChild(svg);
 	return svg;
 }
 
-/** プロバイダーロゴ(角丸地＋グリフ)をcontainerへ追加して返す。 */
+/** プロバイダーロゴ(グリフのみ、地色バッジなし)をcontainerへ追加して返す。 */
 export function appendParadisServiceStatusLogo(container: HTMLElement, provider: ParadisServiceStatusProvider): HTMLElement {
 	const badge = dom.append(container, dom.$(`.paradis-service-status-logo.${provider}`));
 	if (provider === 'github') {
