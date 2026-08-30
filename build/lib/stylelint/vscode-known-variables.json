@@ -1218,6 +1218,7 @@
 		"--paradis-pr-color",
 		"--paradis-preset-cluster-flyout-max-width",
 		"--paradis-space-accent",
+		"--paradis-space-accent-unfocused",
 		"--paradis-statusbar-bg",
 		"--paradis-titlebar-bg",
 		"--paradis-transparency-opacity",

@@ -6,15 +6,32 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
- * エディタタブのフォーカスリングだけを、いま開いているスペースの色に差し替える。
- * リング自体は upstream の汎用ルール (workbench/browser/media/style.css の
- * `[tabindex]:focus { outline-color: var(--vscode-focusBorder) }`) が描いているので、
- * ここでは色だけを上書きする (太さ・位置・角丸は upstream のまま)。
+ * エディタタブ上端の色帯 (アクティブ/選択中タブに常時出る帯。upstream の
+ * `tab.selectedBorderTop` / `tab.activeBorderTop` が塗る `--tab-border-top-color` を
+ * ここで上書きする) だけを、いま開いているスペースの色に差し替える。
+ * 帯自体の表示可否・太さ・位置は upstream (multieditortabscontrol.css) のまま。
  *
  * `--paradis-space-accent` はスペース色が無い / コントラストが取れない場合は設定されないため、
- * その時は従来どおり `--vscode-focusBorder` にフォールバックする。
- * リスト・入力欄など他のフォーカス表示には影響しない。
+ * その時は従来どおり `--tab-border-top-color` (テーマの色) にフォールバックする。
+ *
+ * セレクタは upstream (multieditortabscontrol.css) と同じ詳細度になるため、勝敗が import 順
+ * だけに依存してしまう。`.tab-border-top-container` を重ねてクラス数を1つ増やし、順序に関係なく
+ * 確実に上書きされるようにしている (`!important` は使わない)。
+ *
+ * フォーカスされているグループのアクティブタブと、アクティブではない選択中タブ (複数選択時) は
+ * フル濃度、フォーカスされていないグループのアクティブタブは `--paradis-space-accent-unfocused`
+ * (contribution 側で 50% に減光済み) を使う。upstream がこの2つを別の色
+ * (`tab.activeBorderTop` / `tab.unfocusedActiveBorderTop`) で塗り分けているのに合わせないと、
+ * 色帯からグループのフォーカス有無が読めなくなるため。
+ * `.selected` 側は `:not(.active)` で `.active` タブと排他にし、同じ要素に両方のルールが
+ * 競合して詳細度勝負になるのを避けている (`.active` があるタブの帯色は常にactive系の値を使う。
+ * upstream の `doRedrawTabActive` も isActive を isSelected より優先している)。
  */
-.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab:focus {
-	outline-color: var(--paradis-space-accent, var(--vscode-focusBorder));
+.monaco-workbench .part.editor > .content .editor-group-container.active > .title .tabs-container > .tab.active.tab-border-top:not(:focus) > .tab-border-top-container.tab-border-top-container,
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.selected:not(.active).tab-border-top:not(:focus) > .tab-border-top-container.tab-border-top-container {
+	background-color: var(--paradis-space-accent, var(--tab-border-top-color));
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container:not(.active) > .title .tabs-container > .tab.active.tab-border-top:not(:focus) > .tab-border-top-container.tab-border-top-container {
+	background-color: var(--paradis-space-accent-unfocused, var(--tab-border-top-color));
 }
