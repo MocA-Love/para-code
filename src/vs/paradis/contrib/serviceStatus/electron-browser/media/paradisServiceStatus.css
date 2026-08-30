@@ -40,31 +40,17 @@
 }
 
 .paradis-service-status-logo {
-	width: 16px;
-	height: 16px;
-	border-radius: 3px;
+	width: 15px;
+	height: 15px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	flex: none;
 }
 
-/* ブランドの地色。トリガーチップとポップオーバー両方の .paradis-service-status-logo に効かせる(以前はポップオーバー限定だったため、ライト/高コントラストテーマでチップの白グリフが透明地に浮いて見えなくなっていた)。 */
-.paradis-service-status-logo.claude {
-	background: #d97757;
-}
-
-.paradis-service-status-logo.codex {
-	background: #f5f5f5;
-}
-
-.paradis-service-status-logo.github {
-	background: #24292e;
-}
-
 .paradis-service-status-logo svg {
-	width: 13px;
-	height: 13px;
+	width: 15px;
+	height: 15px;
 	display: block;
 }
 
@@ -127,8 +113,8 @@
 }
 
 .paradis-service-status-popover .pssp-title .paradis-service-status-logo svg {
-	width: 10px;
-	height: 10px;
+	width: 12px;
+	height: 12px;
 }
 
 .paradis-service-status-popover .pssp-level {

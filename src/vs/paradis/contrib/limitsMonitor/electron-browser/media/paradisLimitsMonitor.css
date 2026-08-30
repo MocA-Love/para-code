@@ -39,14 +39,13 @@
 }
 
 .paradis-limits-logo {
-	width: 14px;
-	height: 14px;
-	border-radius: 3px;
+	width: 13px;
+	height: 13px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	flex: none;
-	margin-left: 2px;
+	margin-left: 3px;
 }
 
 .paradis-limits-logo:first-child {
@@ -54,17 +53,9 @@
 }
 
 .paradis-limits-logo svg {
-	width: 10px;
-	height: 10px;
+	width: 13px;
+	height: 13px;
 	display: block;
-}
-
-.paradis-limits-logo.claude {
-	background: #d97757;
-}
-
-.paradis-limits-logo.codex {
-	background: #f5f5f5;
 }
 
 .paradis-limits-ring {
