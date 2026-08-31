@@ -455,28 +455,14 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 14px;
-	height: 14px;
+	width: 13px;
+	height: 13px;
 	flex: none;
 }
 
-/* ブランドロゴは角丸地に載せる（limitsMonitor のロゴ表示と同じ扱い） */
-.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon.claude,
-.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon.codex {
-	border-radius: 3px;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon.claude {
-	background: #d97757;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon.codex {
-	background: #f5f5f5;
-}
-
 .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon svg {
-	width: 10px;
-	height: 10px;
+	width: 13px;
+	height: 13px;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon .codicon {

@@ -8,9 +8,9 @@
 /* ---------------------------------------------------------------- タイトルバーのボタン */
 
 /*
- * 隣の「エージェントで開く」(openInAgents.css) と作法を揃える: 平常時はアイコンだけ、
- * ホバー / キーボードフォーカスでラベルが開く。稼働数のバッジだけは閉じているときも
- * 出す —— ウィンドウを開かずに「何体動いているか」を知れることがこのボタンの主目的なので。
+ * 隣の「ブラウザ一覧」(paradisBrowserLiveWindow.css) と作法を揃える: アイコンだけでは
+ * 「四角を並べたグリッド」調の意匠が近く見分けづらいという指摘があったため、ラベルは
+ * ホバー展開ではなく常時表示にしている。稼働数のバッジも閉じているときから出す。
  */
 .monaco-workbench .paradis-agent-live-titlebar-widget {
 	display: inline-flex;
@@ -49,38 +49,11 @@
 
 .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label {
 	display: inline-block;
-	max-width: 0;
-	opacity: 0;
-	margin-left: 0;
+	margin-left: 6px;
 	color: var(--vscode-foreground);
 	font: inherit;
 	overflow: hidden;
 	white-space: nowrap;
-}
-
-.monaco-enable-motion .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label,
-.monaco-workbench.monaco-enable-motion .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label {
-	transition: max-width 160ms ease, opacity 160ms ease, margin-left 160ms ease;
-	transition-delay: 200ms;
-}
-
-.monaco-reduce-motion .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label,
-.monaco-workbench.monaco-reduce-motion .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label {
-	transition-duration: 0ms !important;
-}
-
-.monaco-workbench .paradis-agent-live-titlebar-widget:hover > .paradis-agent-live-titlebar-label,
-.monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible > .paradis-agent-live-titlebar-label {
-	max-width: 200px;
-	opacity: 1;
-	margin-left: 6px;
-}
-
-.monaco-enable-motion .monaco-workbench .paradis-agent-live-titlebar-widget:hover > .paradis-agent-live-titlebar-label,
-.monaco-enable-motion .monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible > .paradis-agent-live-titlebar-label,
-.monaco-workbench.monaco-enable-motion .paradis-agent-live-titlebar-widget:hover > .paradis-agent-live-titlebar-label,
-.monaco-workbench.monaco-enable-motion .paradis-agent-live-titlebar-widget:focus-visible > .paradis-agent-live-titlebar-label {
-	transition-delay: 0ms;
 }
 
 .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-badge {
