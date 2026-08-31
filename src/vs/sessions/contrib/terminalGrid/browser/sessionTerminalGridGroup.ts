@@ -946,6 +946,17 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 	 * is available even for a group that has no grid yet, which is what keeps the stored entry of a
 	 * space that is never visited from going stale.
 	 */
+	getGridLayoutTerminalNonces(): readonly string[] {
+		const nonces: string[] = [];
+		for (const instance of this._terminalInstances) {
+			const nonce = sessionResolveGridLayoutTerminalNonce(instance);
+			if (nonce !== undefined) {
+				nonces.push(nonce);
+			}
+		}
+		return nonces;
+	}
+
 	getGridLayoutTerminalGenerations(): readonly ISessionTerminalGridTerminalGeneration[] {
 		const generations: ISessionTerminalGridTerminalGeneration[] = [];
 		for (const instance of this._terminalInstances) {

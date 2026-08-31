@@ -679,19 +679,30 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			// Do not replay an older journal underneath a live owner of the same current endpoint.
 			return;
 		}
-		const valid = [...structurallyValid]
+		// **他ウィンドウが書いたジャーナルは「捨てるだけ」にする。**
+		// 復旧は保存済み working set を**現在の状態を退避せずに**適用するので、別ウィンドウの
+		// 中断を肩代わりすると、こちらのタブ集合が「そのスペースを最後に離れた時点」へ黙って
+		// 巻き戻る。中断復旧はユーザーの状態を守るための機能なので、他人の中断を直すために
+		// 自分の状態を捨てるのは目的と逆。リースが stale でも、適用してよいのは自分のものだけ。
+		//
+		// 再起動直後の window id は振り直されるため、単独ウィンドウのクラッシュ復旧
+		// （最も普通の中断）は id が一致して従来どおり効く。
+		const ownedByThisWindow = (transaction: IParadisWorkspaceSwitchTransaction): boolean =>
+			transaction.ownerWindowId === undefined || transaction.ownerWindowId === this._ownerWindowId;
+		const valid = structurallyValid.filter(candidate => ownedByThisWindow(candidate.transaction))
 			.sort((left, right) => right.transaction.createdAt - left.transaction.createdAt);
+		// 適用しないと決めたもの（構造不正・他ウィンドウ所有）は必ず捨てる。残すと storage 永続
+		// なので、起動のたび・切り替えのたびに parse され続けて上限枠を食い潰す。
+		const undeliverableTransactionIds = new Set(relevant
+			.filter(candidate => !valid.includes(candidate))
+			.map(candidate => candidate.transaction.id));
 		// A newer `started` entry has not changed the UI and must not hide an older transaction that
 		// proves target/source state was already applied.
 		const selected = valid.find(candidate => paradisWorkspaceSwitchRecoveryEndpoint(candidate.transaction.phase, candidate.endpoint) !== undefined)
 			?? valid[0];
 		if (selected === undefined) {
-			if (structurallyValid.length > 0) {
-				// Another renderer still renews this transaction's lease. It is live, not interrupted.
-				return;
-			}
-			this.logService.error('[ParadisWorkspaceSwitch] Discarding interrupted switch transactions with invalid state-key/URI pairs');
-			this.clearSwitchTransactions(new Set(relevant.map(candidate => candidate.transaction.id)));
+			this.logService.warn('[ParadisWorkspaceSwitch] Discarding interrupted switch transactions this window cannot apply');
+			this.clearSwitchTransactions(undeliverableTransactionIds);
 			return;
 		}
 		const supersededTransactionIds = new Set(valid
@@ -701,7 +712,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				&& isEqual(candidate.toUri, selected.toUri)
 				&& (candidate.transaction.createdAt <= selected.transaction.createdAt
 					|| paradisWorkspaceSwitchRecoveryEndpoint(candidate.transaction.phase, candidate.endpoint) === undefined))
-			.map(candidate => candidate.transaction.id));
+			.map(candidate => candidate.transaction.id)
+			.concat([...undeliverableTransactionIds]));
 		const recoveryEndpoint = paradisWorkspaceSwitchRecoveryEndpoint(selected.transaction.phase, selected.endpoint);
 		if (recoveryEndpoint === undefined) {
 			this.clearSwitchTransactions(supersededTransactionIds);
@@ -713,6 +725,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this._switching = true;
 		this.setPendingSwitchKey(stateKey);
 		this.editorScopeService.beginSwitch();
+		// 途中で落ちても `activeStateKey` は既に切り替わっているので、通知は**必ず**配る。
+		// `onDidSwitchScope` を受け皿にしている側（SCM入力の下書き復元、タブ上端のスペース色、
+		// park 済みターミナルの復帰など）が古い表示のまま取り残されるのを防ぐ。通常の切り替えは
+		// finally に同じ保険を持っているので、復旧側にだけ無いという非対称をなくす。
+		let recoveredKey: string | undefined;
 		try {
 			markParadisManagedWorkspaceWindow();
 			this.setActiveEntry(stateKey, uri);
@@ -727,8 +744,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			await this.editorScopeService.restoreScope(stateKey);
 			await this.editorScopeService.restoreBackups();
 			this.restorePanelVisibilityFor(stateKey);
-			await this.runSwitchCompletionParticipants(stateKey);
-			this._onDidSwitchScope.fire(stateKey);
+			recoveredKey = stateKey;
 			// Older attempts for the same endpoint pair are superseded by this recovery. Transactions for
 			// another pair may belong to another window sharing WORKSPACE storage and are left untouched.
 			try {
@@ -751,6 +767,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		} finally {
 			this._switching = false;
 			this.setPendingSwitchKey(undefined);
+			const notifyKey = recoveredKey ?? stateKey;
+			try {
+				await this.runSwitchCompletionParticipants(notifyKey);
+				this._onDidSwitchScope.fire(notifyKey);
+			} catch (notifyError) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to notify listeners after an interrupted switch recovery', notifyError);
+			}
 		}
 	}
 

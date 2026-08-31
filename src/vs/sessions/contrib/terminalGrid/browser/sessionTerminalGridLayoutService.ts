@@ -20,6 +20,16 @@ export interface ISessionTerminalGridLayoutSource {
 	getGridLayoutEntry(): ISessionTerminalGridLayoutEntry | undefined;
 	/** How the ids of this group's terminals map from the session that persisted them to this one. */
 	getGridLayoutTerminalGenerations(): readonly ISessionTerminalGridTerminalGeneration[];
+	/**
+	 * The stable identities of this group's live panes.
+	 *
+	 * The generations above only carry numeric ids, so they cannot speak for a v2 (nonce-keyed) entry.
+	 * Without this, a group that stops reporting a layout — the user closed a pane and only one is
+	 * left — leaves its stored entry naming identities nothing claims, and the merge keeps it forever
+	 * as another window's. Those corpses then compete for the entry budget with the layouts of spaces
+	 * that have not been visited yet.
+	 */
+	getGridLayoutTerminalNonces(): readonly string[];
 }
 
 export interface ISessionTerminalGridLayoutService {
@@ -121,6 +131,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 		this._saveScheduler.cancel();
 		const live: ISessionTerminalGridLayoutEntry[] = [];
 		const generations: ISessionTerminalGridTerminalGeneration[] = [];
+		const liveNonces: string[] = [];
 		for (const source of this._sources) {
 			// A group with no usable layout (fewer than two panes, no process ids yet, never laid out)
 			// is simply left out; its stored entry, if any, is preserved by the merge below.
@@ -129,6 +140,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 				live.push(entry);
 			}
 			generations.push(...source.getGridLayoutTerminalGenerations());
+			liveNonces.push(...source.getGridLayoutTerminalNonces());
 		}
 
 		// Entries that no group has claimed are still keyed by the ids of the session that wrote them.
@@ -150,6 +162,12 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 			for (const terminal of entry.terminals) {
 				ownedTerminals.add(terminal);
 			}
+		}
+		// A nonce names one terminal instance, and that instance lives in exactly one window, so
+		// claiming it here cannot take another window's entry. Groups that no longer describe a layout
+		// still speak for their panes, which is what lets their stale entry be dropped.
+		for (const nonce of liveNonces) {
+			ownedTerminals.add(nonce);
 		}
 
 		// A group that reports a layout but never claimed the stored one (its panes no longer match any
