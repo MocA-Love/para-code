@@ -30,9 +30,10 @@ import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IPar
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
-import { paradisCurrentRestoreStateKey, paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
+import { IParadisTerminalOrphanPty, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
 
 /**
  * ターミナルグループをリポジトリ単位でスコープする (機能1 Phase 2)。
@@ -56,6 +57,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private static readonly MAPPING_STORAGE_KEY = 'paradis.workspaceSwitch.terminalRepositories';
 	/** nonce をキーにした所属台帳。旧 MAPPING_STORAGE_KEY とは別に持ち、当面は併存させる。 */
 	private static readonly NONCE_MAPPING_STORAGE_KEY = 'paradis.workspaceSwitch.terminalScopesByNonce';
+	private static readonly ACTIVE_GROUPS_STORAGE_KEY = 'paradis.workspaceSwitch.activeTerminalGroups';
 
 	/**
 	 * park の保留を打ち切るまでの上限 (詳細は `_parkDeferralReleased`)。
@@ -76,6 +78,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 入れる側も必ず stateKey を渡すこと。
 	 */
 	private readonly _parkedGroups = new Map<string, ITerminalGroup[]>();
+
+	/**
+	 * スコープ復帰の最中は active group の記録を止める。復帰そのものが発火させる
+	 * `onDidChangeActiveGroup` で台帳を上書きさせないため（`applyScope` のコメント参照）。
+	 */
+	private _suppressActiveGroupTracking = false;
 
 	/** 孤児復活のやり直しが走っている最中か（切り替えのたびに多重起動しないため）。 */
 	private _orphanRevivalRetrying = false;
@@ -272,7 +280,14 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this._restoredNonceScopes = new Map(loadedNonceMapping);
 
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
-		this._register(this.terminalService.onDidChangeInstances(() => this.refreshAllStableScopes()));
+		this._register(this.terminalGroupService.onDidChangeActiveGroup(group => this.rememberActiveGroup(group)));
+		this._register(this.workspaceSwitchService.onWillSwitchScope(stateKey => this.rememberActiveGroup(this.terminalGroupService.activeGroup, stateKey, true)));
+		this._register(this.terminalService.onDidChangeInstances(() => {
+			this.refreshAllStableScopes();
+			// Split add/remove changes the nonce set that forms the identity without necessarily changing
+			// the active group. Refresh the ledger at the same event that exposes the new instance list.
+			this.rememberActiveGroup(this.terminalGroupService.activeGroup);
+		}));
 		this._register(this.terminalService.onDidChangeConnectionState(() => this.refreshAllStableScopes()));
 
 		// リモート接続 (SSH 等) のときだけ、接続完了の時点で park の保留を打ち切る。
@@ -752,8 +767,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 孤児 PTY を nonce で引けるようにする。`listProcesses()` は最後に `isOrphan` で絞っているので、
 	 * 返ってくるのは「今どの renderer も掴んでいない = 安全に attach してよい」ものだけになる。
 	 */
-	private async listOrphanPtyIdsByNonce(): Promise<ReadonlyMap<string, number>> {
-		const result = new Map<string, number>();
+	private async listOrphanPtyIdsByNonce(): Promise<ReadonlyMap<string, IParadisTerminalOrphanPty>> {
+		const result = new Map<string, IParadisTerminalOrphanPty>();
 		try {
 			const backend = await this.terminalInstanceService.getBackend(this.environmentService.remoteAuthority);
 			const details = await backend?.listProcesses();
@@ -766,17 +781,36 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			setParadisSpanAttributes({ safe_pty_processes: details.length });
 			const workspaceId = this.workspaceContextService.getWorkspace().id;
 			// 同じ nonce が2件返ることは無い想定だが、万一あれば同一性を証明できないので両方捨てる。
+			const seen = new Set<string>();
 			const duplicated = new Set<string>();
 			for (const detail of details) {
 				const nonce = paradisTerminalIdentityNonce(detail.shellIntegrationNonce);
 				if (nonce === undefined || detail.workspaceId !== workspaceId) {
 					continue;
 				}
-				if (result.has(nonce)) {
+				if (seen.has(nonce)) {
 					duplicated.add(nonce);
+					result.delete(nonce);
 					continue;
 				}
-				result.set(nonce, detail.id);
+				seen.add(nonce);
+				const restoredStateKey = paradisLookupProcessDetailScope(
+					detail,
+					this._restoredPersistentProcessScopes,
+					this._restoredNonceScopes,
+				);
+				const currentNonceStateKey = this._nonceScopes.get(nonce);
+				// A stale/colliding ledger cannot prove ownership. Unknown and disagreeing owners are both
+				// excluded rather than allowing nonce identity alone to move a terminal across spaces.
+				if (restoredStateKey !== undefined && currentNonceStateKey !== undefined
+					&& restoredStateKey !== currentNonceStateKey) {
+					continue;
+				}
+				const stateKey = currentNonceStateKey ?? restoredStateKey;
+				if (stateKey === undefined) {
+					continue;
+				}
+				result.set(nonce, { id: detail.id, stateKey });
 			}
 			for (const nonce of duplicated) {
 				result.delete(nonce);
@@ -912,7 +946,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			);
 			// 端末が現れた瞬間にしか読めない。スペース切り替えの復元区間を抜けると消えるため、
 			// 後から「この端末はどの working set から出てきたのか」を引き直すことはできない。
-			const restoreStateKey = paradisCurrentRestoreStateKey();
+			const restoreStateKey = paradisTerminalRestoreStateKey(instance.shellIntegrationNonce);
 			if (restoreStateKey !== undefined) {
 				this._restoreScopeCandidates.set(instance.instanceId, restoreStateKey);
 			}
@@ -1004,6 +1038,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				instanceId: instance.instanceId,
 				persistentProcessId: attachTarget.id,
 				restoredPersistentProcessId: attachTarget.paradisRevivedFromPersistentProcessId,
+				currentPersistentProcessIdOnly: attachTarget.paradisAdopted === true || attachTarget.paradisResolvedToCurrentPtyId === true,
 			};
 	}
 
@@ -1267,6 +1302,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 			this._groupRepositories.set(group, stateKey);
 			this.recordInstanceScopes(group, stateKey, false, true);
+			if (group === groupService.activeGroup && stateKey === activeStateKey) {
+				this.rememberActiveGroup(group, stateKey);
+			}
 			changed = true;
 
 			if (stateKey !== activeStateKey) {
@@ -1767,21 +1805,36 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 
-		// 他エントリのグループを退避
-		for (const group of [...groupService.groups]) {
-			const stateKey = this._groupRepositories.get(group);
-			if (stateKey !== undefined && stateKey !== targetStateKey) {
-				this.parkGroup(groupService, group, stateKey);
+		// **入れ替えの間は active group の記録を止める。** park も unpark も
+		// `onDidChangeActiveGroup` を発火しうる（`paradisUnparkGroup` は groups が1件になった
+		// 時点で `setActiveGroupByIndex(0, true)` を呼ぶ）。このとき `isSwitching` は既に false
+		// （`_switching` は switch 本体の finally で戻り、applyScope はその後の完了参加者から
+		// 走る）なので、記録側のガードを素通りして「たまたま最初に並んだグループ」で台帳を
+		// 上書きしてしまい、直後の `restoreActiveGroup` がその値を読んで復元が無意味になる。
+		//
+		// 抑止は**入れ替えの開始から**かける。unpark 直前からでは、target のタグを持つ可視
+		// グループが残っている状態で他スコープを park したときに同じ上書きが起きる。
+		this._suppressActiveGroupTracking = true;
+		try {
+			// 他エントリのグループを退避
+			for (const group of [...groupService.groups]) {
+				const stateKey = this._groupRepositories.get(group);
+				if (stateKey !== undefined && stateKey !== targetStateKey) {
+					this.parkGroup(groupService, group, stateKey);
+				}
 			}
-		}
 
-		// 切り替え先のグループを復帰
-		const parked = this._parkedGroups.get(targetStateKey);
-		if (parked) {
-			this._parkedGroups.delete(targetStateKey);
-			for (const group of parked) {
-				groupService.paradisUnparkGroup(group);
+			// 切り替え先のグループを復帰
+			const parked = this._parkedGroups.get(targetStateKey);
+			if (parked) {
+				this._parkedGroups.delete(targetStateKey);
+				for (const group of parked) {
+					groupService.paradisUnparkGroup(group);
+				}
 			}
+			this.restoreActiveGroup(groupService, targetStateKey);
+		} finally {
+			this._suppressActiveGroupTracking = false;
 		}
 
 		// エディタターミナルの復元は working set の deserialize → reviveInput が担うが、
@@ -1793,6 +1846,53 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 		this.persistMapping();
 		this.refreshAllStableScopes();
+	}
+
+	private rememberActiveGroup(group: ITerminalGroup | undefined, stateKey = this.workspaceSwitchService.activeStateKey, allowDuringSwitch = false): void {
+		if (this._suppressActiveGroupTracking
+			|| (!allowDuringSwitch && this.workspaceSwitchService.isSwitching)
+			|| group === undefined || stateKey === undefined || this._groupRepositories.get(group) !== stateKey) {
+			return;
+		}
+		const identity = paradisTerminalGroupIdentity(group.terminalInstances);
+		if (identity === undefined) {
+			return;
+		}
+		const persisted = paradisParseTerminalActiveGroups(
+			this.storageService.get(ParadisTerminalWorkspaceScope.ACTIVE_GROUPS_STORAGE_KEY, StorageScope.WORKSPACE),
+		).get(stateKey);
+		if (persisted === identity) {
+			return;
+		}
+		this.persistActiveGroup(stateKey, identity);
+	}
+
+	private restoreActiveGroup(groupService: TerminalGroupService, stateKey: string): void {
+		// Another window may have selected a different group since this contribution was constructed.
+		// Refresh this scope before using the ledger, not only before writing it.
+		const identity = paradisParseTerminalActiveGroups(
+			this.storageService.get(ParadisTerminalWorkspaceScope.ACTIVE_GROUPS_STORAGE_KEY, StorageScope.WORKSPACE),
+		).get(stateKey);
+		if (identity === undefined) {
+			return;
+		}
+		const group = groupService.groups.find(candidate => paradisTerminalGroupIdentity(candidate.terminalInstances) === identity);
+		if (group !== undefined) {
+			groupService.activeGroup = group;
+		}
+	}
+
+	private persistActiveGroup(stateKey: string, identity: string | undefined): void {
+		// Re-read immediately before every write so another window's independently owned scope is not
+		// erased by the constructor snapshot. Only this scope is changed in the merged ledger.
+		const raw = paradisUpdateTerminalActiveGroup(
+			this.storageService.get(ParadisTerminalWorkspaceScope.ACTIVE_GROUPS_STORAGE_KEY, StorageScope.WORKSPACE),
+			stateKey,
+			identity,
+		);
+		if (raw !== undefined) {
+			this.storageService.store(ParadisTerminalWorkspaceScope.ACTIVE_GROUPS_STORAGE_KEY, raw, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		}
 	}
 
 	/** 切り替え先スコープの park 台帳に残留したエディタターミナルをエディタとして開き直す */
@@ -1845,6 +1945,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 永続化から除外)、こちらの discardGroup が _groupRepositories / _parkedGroups を掃除する。
 	 */
 	private retireScope(stateKey: string): void {
+		this.persistActiveGroup(stateKey, undefined);
 		const liveInstances = [...this.collectLiveInstances().values()];
 		const retiringInstanceIds = paradisCollectRetiringTerminalInstanceIds(
 			this._instanceScopes,

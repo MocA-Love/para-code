@@ -5,7 +5,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { deepStrictEqual } from 'assert';
+import { deepStrictEqual, rejects, strictEqual } from 'assert';
+import { DeferredPromise } from '../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { ILogService, NullLogService } from '../../../log/common/log.js';
 import { PARADIS_UNRESOLVABLE_PTY_ID } from '../../common/terminal.js';
@@ -111,5 +112,42 @@ suite('Para Code revived pty identity', () => {
 		});
 
 		deepStrictEqual(resolved, undefined);
+	});
+
+	test('only one renderer can claim the same orphan snapshot', async () => {
+		const service = Object.create(PtyService.prototype) as PtyService;
+		const orphanCheck = new DeferredPromise<boolean>();
+		let attachCount = 0;
+		const state = service as unknown as {
+			_ptys: Map<number, {
+				workspaceId: string;
+				processLaunchOptions: { options: { shellIntegration: { nonce: string } } };
+				isOrphaned(): Promise<boolean>;
+				attach(): Promise<void>;
+			}>;
+			_paradisRevivedNewIdByNonce: Map<string, number>;
+			_revivedPtyIdMap: Map<string, unknown>;
+			_paradisOrphanAttachClaims: Map<number, number>;
+			_logService: ILogService;
+		};
+		state._ptys = new Map([[7, {
+			workspaceId: 'workspace',
+			processLaunchOptions: { options: { shellIntegration: { nonce: 'nonce-a' } } },
+			isOrphaned: () => orphanCheck.p,
+			attach: async () => { attachCount++; },
+		}]]);
+		state._paradisRevivedNewIdByNonce = new Map([['nonce-a', 7]]);
+		state._revivedPtyIdMap = new Map();
+		state._paradisOrphanAttachClaims = new Map();
+		state._logService = new NullLogService();
+		Object.defineProperty(service, 'traceRpcArgs', { value: { logService: state._logService, simulatedLatency: 0 } });
+
+		const first = service.paradisClaimAndAttachToProcess('workspace', 7, 'nonce-a');
+		await Promise.resolve();
+		await rejects(service.paradisClaimAndAttachToProcess('workspace', 7, 'nonce-a'), /already being attached/);
+		orphanCheck.complete(true);
+
+		strictEqual(await first, 7);
+		strictEqual(attachCount, 1);
 	});
 });

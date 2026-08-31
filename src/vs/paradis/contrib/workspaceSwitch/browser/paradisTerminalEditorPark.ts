@@ -10,7 +10,7 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IDeserializedTerminalEditorInput, ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
-import { paradisCurrentRestoreStateKey } from './paradisTerminalEditorRevive.js';
+import { paradisIsTerminalRestoreInputAmbiguous, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 
 /**
  * エディタエリアのターミナルを Paradis ワークスペース切り替えを跨いで生かすためのパーク台帳 (機能1)。
@@ -272,7 +272,10 @@ export function paradisTakeParkedTerminalEditorInstance(deserializedInput: IDese
 	}
 	// nonce は「どの端末か」は証明するが「どのスペースのものか」は証明しない。スペース復元中は
 	// 所有スコープの一致まで要求し、「正しい端末を、間違ったスペースへ出す」を残さない。
-	const expectedStateKey = paradisCurrentRestoreStateKey();
+	const expectedStateKey = paradisTerminalRestoreStateKey(deserializedInput.shellIntegrationNonce);
+	if (paradisIsTerminalRestoreInputAmbiguous(deserializedInput.shellIntegrationNonce)) {
+		return undefined;
+	}
 	if (expectedStateKey !== undefined && entry.stateKey !== expectedStateKey) {
 		return undefined;
 	}

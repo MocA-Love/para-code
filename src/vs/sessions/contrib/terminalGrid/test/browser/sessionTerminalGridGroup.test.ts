@@ -18,6 +18,7 @@ import { type IWorkbenchLayoutService, Position } from '../../../../../workbench
 import { type IViewDescriptorService, ViewContainerLocation } from '../../../../../workbench/common/views.js';
 import { Direction, type ITerminalConfigurationService, type ITerminalEditorService, type ITerminalGroup, type ITerminalGroupService, type ITerminalInstance, type ITerminalInstanceService, ITerminalService, TerminalDataTransfers } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { SessionTerminalGridGroup } from '../../browser/sessionTerminalGridGroup.js';
+import { sessionCollectGridLayoutTerminals } from '../../browser/sessionTerminalGridLayout.js';
 import type { ISessionTerminalGridLayoutService, ISessionTerminalGridLayoutSource } from '../../browser/sessionTerminalGridLayoutService.js';
 
 interface ITestTerminalInstance {
@@ -35,9 +36,10 @@ interface ITestTerminalInstance {
 }
 
 interface ITestTerminalOptions {
-	readonly attachPersistentProcess?: { readonly id: number; readonly paradisRevivedFromPersistentProcessId?: number };
+	readonly attachPersistentProcess?: { readonly id: number; readonly paradisRevivedFromPersistentProcessId?: number; readonly paradisAdopted?: boolean };
 	readonly hadFocusOnExit?: boolean;
 	readonly persistentProcessId?: number;
+	readonly shellIntegrationNonce?: string;
 	readonly shouldPersist?: boolean;
 	readonly target?: TerminalLocation;
 }
@@ -99,6 +101,7 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 			description: undefined,
 			statusList: { statuses: [] } as Partial<ITerminalInstance['statusList']> as ITerminalInstance['statusList'],
 			persistentProcessId: options.persistentProcessId,
+			shellIntegrationNonce: options.shellIntegrationNonce ?? `nonce-${options.persistentProcessId ?? instanceId}`,
 			shellLaunchConfig: options.attachPersistentProcess
 				? { attachPersistentProcess: options.attachPersistentProcess } as Partial<IShellLaunchConfig> as IShellLaunchConfig
 				: {} as IShellLaunchConfig,
@@ -158,7 +161,14 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 		_serviceBrand: undefined,
 		registerSource: source => { layoutSources.push(source); return Disposable.None; },
 		scheduleSave: () => { },
-		takeRestoredLayout: () => restoredLayout,
+		takeRestoredLayout: terminalIds => {
+			if (!restoredLayout) {
+				return undefined;
+			}
+			return sessionCollectGridLayoutTerminals(restoredLayout).every(terminal => terminalIds.has(terminal))
+				? restoredLayout
+				: undefined;
+		},
 	};
 	const terminalEditorService = {
 		detachInstance: (instance: ITerminalInstance) => {
@@ -234,7 +244,7 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 	};
 }
 
-function leafOf(terminal: number): ISerializedNode {
+function leafOf(terminal: number | string): ISerializedNode {
 	return { type: 'leaf', data: { terminal }, size: 100 };
 }
 
@@ -564,10 +574,10 @@ suite('SessionTerminalGridGroup', () => {
 	});
 
 	for (const { name, point, terminalOrder, cellSize } of [
-		{ name: 'up', point: [300, 10], terminalOrder: [2, 1], cellSize: { width: 800, height: 200 } },
-		{ name: 'down', point: [300, 290], terminalOrder: [1, 2], cellSize: { width: 800, height: 200 } },
-		{ name: 'left', point: [10, 150], terminalOrder: [2, 1], cellSize: { width: 400, height: 400 } },
-		{ name: 'right', point: [590, 150], terminalOrder: [1, 2], cellSize: { width: 400, height: 400 } },
+		{ name: 'up', point: [300, 10], terminalOrder: ['nonce-2', 'nonce-1'], cellSize: { width: 800, height: 200 } },
+		{ name: 'down', point: [300, 290], terminalOrder: ['nonce-1', 'nonce-2'], cellSize: { width: 800, height: 200 } },
+		{ name: 'left', point: [10, 150], terminalOrder: ['nonce-2', 'nonce-1'], cellSize: { width: 400, height: 400 } },
+		{ name: 'right', point: [590, 150], terminalOrder: ['nonce-1', 'nonce-2'], cellSize: { width: 400, height: 400 } },
 	]) {
 		test(`drops a terminal ${name} of its target with the requested order, cell dimensions, and relative sizes`, async () => {
 			const harness = createTestHarness(disposables);
@@ -597,7 +607,7 @@ suite('SessionTerminalGridGroup', () => {
 	}
 
 	test('keeps horizontal and vertical splits in visual order with equal relative sizes', async () => {
-		const results: Array<{ readonly direction: Direction; readonly visualOrder: readonly number[]; readonly relativeSizes: readonly number[] }> = [];
+		const results: Array<{ readonly direction: Direction; readonly visualOrder: readonly string[]; readonly relativeSizes: readonly number[] }> = [];
 		for (const { direction } of [
 			{ direction: Direction.Right, visualOrder: [1, 2] },
 			{ direction: Direction.Down, visualOrder: [1, 2] },
@@ -613,14 +623,15 @@ suite('SessionTerminalGridGroup', () => {
 
 			results.push({
 				direction,
-				visualOrder: harness.layoutSources[0].getGridLayoutEntry()?.terminals ?? [],
+				visualOrder: (harness.layoutSources[0].getGridLayoutEntry()?.terminals ?? [])
+					.filter((terminal): terminal is string => typeof terminal === 'string'),
 				relativeSizes: group.getLayoutInfo(true).terminals.map(terminal => terminal.relativeSize),
 			});
 		}
 
 		assert.deepStrictEqual(results, [
-			{ direction: Direction.Right, visualOrder: [1, 2], relativeSizes: [0.5, 0.5] },
-			{ direction: Direction.Down, visualOrder: [1, 2], relativeSizes: [0.5, 0.5] },
+			{ direction: Direction.Right, visualOrder: ['nonce-1', 'nonce-2'], relativeSizes: [0.5, 0.5] },
+			{ direction: Direction.Down, visualOrder: ['nonce-1', 'nonce-2'], relativeSizes: [0.5, 0.5] },
 		]);
 	});
 
@@ -728,6 +739,20 @@ suite('SessionTerminalGridGroup', () => {
 				activeInstanceId: restored[0].instance.instanceId,
 			},
 		);
+	});
+
+	test('restores an adopted group by stable nonces when no previous pty ids exist', async () => {
+		const harness = createTestHarness(disposables);
+		const restored = [
+			harness.createTerminal({ persistentProcessId: 31, shellIntegrationNonce: 'nonce-a', attachPersistentProcess: { id: 31, paradisAdopted: true } }),
+			harness.createTerminal({ persistentProcessId: 32, shellIntegrationNonce: 'nonce-b', attachPersistentProcess: { id: 32, paradisAdopted: true } }),
+		];
+		const group = harness.createAttachedGroup(restored[0].instance);
+		group.addInstance(restored[1].instance);
+
+		await harness.completeRestore(gridOf(branchOf(leafOf('nonce-b'), leafOf('nonce-a'))));
+
+		assert.deepStrictEqual(group.terminalInstances.map(instance => instance.persistentProcessId), [32, 31]);
 	});
 
 	test('leaves the restored row alone when a pane is missing from the stored arrangement', async () => {

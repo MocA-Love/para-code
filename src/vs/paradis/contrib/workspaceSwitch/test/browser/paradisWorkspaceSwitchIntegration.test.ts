@@ -41,8 +41,10 @@ import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScop
 import { paradisParseTerminalNonceScopeStorage } from '../../common/paradisTerminalNonceScope.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from '../../browser/paradisTerminalEditorRevive.js';
 import { IProgressService } from '../../../../../platform/progress/common/progress.js';
+import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
+import { PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions } from '../../common/paradisWorkspaceSwitchTransaction.js';
 
 suite('ParadisWorkspaceSwitchService integration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -876,6 +878,267 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	test('recovers the source Working Set when shutdown persisted the target before folders changed', async () => {
+		const testDisposables = new DisposableStore();
+		let sourceEditor: TestFileEditorInput | undefined;
+		let targetEditor: TestFileEditorInput | undefined;
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+				sourceEditor = context.createEditor('/workspace-a/source.txt', false);
+				targetEditor = context.createEditor('/workspace-b/target.txt', false);
+				await context.parts.activeGroup.openEditor(sourceEditor, { pinned: true });
+				const sourceWorkingSet = context.parts.saveWorkingSet('source-before-interruption');
+				await context.parts.applyWorkingSet('empty');
+				await context.parts.activeGroup.openEditor(targetEditor, { pinned: true });
+				const targetWorkingSet = context.parts.saveWorkingSet('target-before-interruption');
+				context.storageService.store('paradis.workspaceSwitch.workingSets', JSON.stringify([
+					{ repositoryId: 'space-a', workingSet: sourceWorkingSet, terminalEditors: 0, terminalNonces: [] },
+					{ repositoryId: 'space-b', workingSet: targetWorkingSet, terminalEditors: 0, terminalNonces: [] },
+				]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				context.storageService.store(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions([{
+					version: 1,
+					id: 'interrupted-test-switch',
+					createdAt: 1,
+					fromStateKey: 'space-a',
+					fromUri: URI.file('/workspace-a').toString(),
+					toStateKey: 'space-b',
+					toUri: URI.file('/workspace-b').toString(),
+					phase: 'targetApplied',
+				}, {
+					version: 1,
+					id: 'newer-started-test-switch',
+					createdAt: 2,
+					fromStateKey: 'space-a',
+					fromUri: URI.file('/workspace-a').toString(),
+					toStateKey: 'space-b',
+					toUri: URI.file('/workspace-b').toString(),
+					phase: 'started',
+				}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			});
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+
+			assert.deepStrictEqual({
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				sourceVisible: harness.parts.activeGroup.contains(sourceEditor!),
+				targetVisible: harness.parts.activeGroup.contains(targetEditor!),
+				transaction: harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+			}, { activeStateKey: 'space-a', sourceVisible: true, targetVisible: false, transaction: undefined });
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	// 失敗した復旧のジャーナルは残さない。残すと storage 永続なので、起動のたび・切り替えのたびに
+	// 同じ場所で落ち続け、スペース切り替えがそのウィンドウで二度と成立しなくなる。
+	test('discards the journal when a recovery phase fails so the failure cannot repeat forever', async () => {
+		const testDisposables = new DisposableStore();
+		let sourceEditor: TestFileEditorInput | undefined;
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+				sourceEditor = context.createEditor('/workspace-a/source.txt', false);
+				await context.parts.activeGroup.openEditor(sourceEditor, { pinned: true });
+				const sourceWorkingSet = context.parts.saveWorkingSet('source-before-failed-recovery');
+				context.storageService.store('paradis.workspaceSwitch.workingSets', JSON.stringify([
+					{ repositoryId: 'space-a', workingSet: sourceWorkingSet, terminalEditors: 0, terminalNonces: [] },
+				]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				context.storageService.store(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions([{
+					version: 1,
+					id: 'failed-recovery-switch',
+					createdAt: 1,
+					fromStateKey: 'space-a',
+					fromUri: URI.file('/workspace-a').toString(),
+					toStateKey: 'space-b',
+					toUri: URI.file('/workspace-b').toString(),
+					phase: 'targetApplied',
+				}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			});
+			const recoveryEditorScope = (harness.workspaceSwitchService as unknown as {
+				editorScopeService: { restoreScope(stateKey: string): Promise<void> };
+			}).editorScopeService;
+			recoveryEditorScope.restoreScope = async () => { throw new Error('restore scope failed'); };
+
+			await assert.rejects(harness.workspaceSwitchService.recoverInterruptedSwitch(), /restore scope failed/);
+
+			assert.deepStrictEqual({
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				sourceVisible: harness.parts.activeGroup.contains(sourceEditor!),
+				isSwitching: harness.workspaceSwitchService.isSwitching,
+				journalPresent: harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE) !== undefined,
+			}, { activeStateKey: 'space-a', sourceVisible: true, isSwitching: false, journalPresent: false });
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	test('discards a started journal without replacing the current editor layout', async () => {
+		const testDisposables = new DisposableStore();
+		let staleEditor: TestFileEditorInput | undefined;
+		let currentEditor: TestFileEditorInput | undefined;
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+				staleEditor = context.createEditor('/workspace-a/stale.txt', false);
+				currentEditor = context.createEditor('/workspace-a/current.txt', false);
+				await context.parts.activeGroup.openEditor(staleEditor, { pinned: true });
+				const staleWorkingSet = context.parts.saveWorkingSet('stale-before-start');
+				await context.parts.applyWorkingSet('empty');
+				await context.parts.activeGroup.openEditor(currentEditor, { pinned: true });
+				context.storageService.store('paradis.workspaceSwitch.workingSets', JSON.stringify([
+					{ repositoryId: 'space-a', workingSet: staleWorkingSet, terminalEditors: 0, terminalNonces: [] },
+				]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				context.storageService.store(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions([{
+					version: 1,
+					id: 'started-test-switch',
+					createdAt: 1,
+					ownerWindowId: 999,
+					fromStateKey: 'space-a',
+					fromUri: URI.file('/workspace-a').toString(),
+					toStateKey: 'space-b',
+					toUri: URI.file('/workspace-b').toString(),
+					phase: 'started',
+				}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				// リースは張らない。**起動時でも生きたリースは尊重する**ようになったので、リースを
+				// 張ると「他ウィンドウが処理中」として正しく見送られ、この test の主題（`started` は
+				// UI を触らずジャーナルだけ捨てる）が確かめられなくなる。生きたリースの側は
+				// 'does not recover a transaction whose other window owner still renews its lease' が見る。
+			});
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+
+			assert.deepStrictEqual({
+				currentVisible: harness.parts.activeGroup.contains(currentEditor!),
+				staleVisible: harness.parts.activeGroup.contains(staleEditor!),
+				transaction: harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+			}, { currentVisible: true, staleVisible: false, transaction: undefined });
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	// タイマーだけは、ロールバックが途中で失敗してジャーナルを消せなかった回でも必ず止める。
+	// 止め損ねると 3 秒ごとの storage 書き込みがウィンドウを閉じるまで走り続ける。
+	test('stops renewing the owner lease even when the rollback could not clear the journal', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (phase === 'end' && uri.path === '/workspace-b') {
+					throw new Error('target deleted');
+				}
+			});
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const editorScope = (harness.workspaceSwitchService as unknown as {
+				editorScopeService: { rollbackSwitch(stateKey: string | undefined, uri: URI | undefined): Promise<void> };
+			}).editorScopeService;
+			// ロールバックも失敗させて `clearSwitchTransaction` へ到達させない（ジャーナルは残る）。
+			editorScope.rollbackSwitch = async () => { throw new Error('rollback failed'); };
+
+			await assert.rejects(harness.workspaceSwitchService.switchRepository('space-b'));
+
+			assert.deepStrictEqual({
+				leaseKeys: harness.storageService.keys(StorageScope.WORKSPACE, StorageTarget.MACHINE)
+					.filter(key => key.startsWith('paradis.workspaceSwitch.ownerLease.')),
+				journalPresent: harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE) !== undefined,
+			}, { leaseKeys: [], journalPresent: true });
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	test('discards a journal whose state key does not match its URI', async () => {
+		const testDisposables = new DisposableStore();
+		let currentEditor: TestFileEditorInput | undefined;
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+				currentEditor = context.createEditor('/workspace-a/current.txt', false);
+				await context.parts.activeGroup.openEditor(currentEditor, { pinned: true });
+				context.storageService.store(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions([{
+					version: 1,
+					id: 'mismatched-test-switch',
+					createdAt: 1,
+					fromStateKey: 'space-b',
+					fromUri: URI.file('/workspace-a').toString(),
+					toStateKey: 'space-a',
+					toUri: URI.file('/workspace-b').toString(),
+					phase: 'targetApplied',
+				}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			});
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+
+			assert.deepStrictEqual({
+				currentVisible: harness.parts.activeGroup.contains(currentEditor!),
+				transaction: harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+			}, { currentVisible: true, transaction: undefined });
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	test('re-reads the journal after an earlier recovery completed with no entries', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+			harness.storageService.store(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions([{
+				version: 1,
+				id: 'late-started-switch',
+				createdAt: 1,
+				fromStateKey: 'space-a',
+				fromUri: URI.file('/workspace-a').toString(),
+				toStateKey: 'space-b',
+				toUri: URI.file('/workspace-b').toString(),
+				phase: 'started',
+			}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+
+			assert.strictEqual(
+				harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+				undefined,
+			);
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	test('does not recover a transaction whose other window owner still renews its lease', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+			const transaction = paradisSerializeWorkspaceSwitchTransactions([{
+				version: 1,
+				id: 'foreign-live-switch',
+				createdAt: 1,
+				ownerWindowId: 999,
+				fromStateKey: 'space-a',
+				fromUri: URI.file('/workspace-a').toString(),
+				toStateKey: 'space-b',
+				toUri: URI.file('/workspace-b').toString(),
+				phase: 'targetApplied',
+			}]);
+			harness.storageService.store(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, transaction, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			harness.storageService.store('paradis.workspaceSwitch.ownerLease.999', Date.now(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+
+			assert.strictEqual(
+				harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
+				transaction,
+			);
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 
 	// 所属の分からない復元ターミナルは、アクティブスペースへ推測で寄せず待避させる。
 	// 待避の印を外し忘れると「台帳には所属があるのに resolveScope は pending」という
@@ -908,6 +1171,34 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				//   binding scope 側の判定ではなく台帳を直接見る）
 				stateKey: scope.getStateKeyForInstance(4001),
 			}, { adopted: 1, remaining: 0, stateKey: 'space-a' });
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	test('restores the terminal group last selected in each space', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const firstA = createRestoredTerminalGroup(4101);
+			const selectedA = createRestoredTerminalGroup(4102);
+			const onlyB = createRestoredTerminalGroup(4103);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			harness.installTerminalScope(async () => { }, {
+				groups: [firstA, selectedA, onlyB],
+				worktreeReady: true,
+				connected: true,
+				persistentProcessScopes: [[4101, 'space-a'], [4102, 'space-a'], [4103, 'space-b']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			harness.setActiveTerminalGroup(selectedA);
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.strictEqual(harness.activeTerminalGroup(), selectedA);
 		} finally {
 			testDisposables.dispose();
 		}
@@ -997,7 +1288,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 
 			// 切り替えでの復元中は「アクティブ＝切り替え元、復元先＝切り替え先」なので、
 			// アクティブスペースを見ると必ず取り違える。復元先が勝つことをここで固定する。
-			await paradisRefreshTerminalReviveIndex('space-b', { skipLookup: true });
+			await paradisRefreshTerminalReviveIndex('space-b', { skipLookup: true, expectedNonces: new Set(['nonce-4006']) });
 			const scope = harness.installTerminalScope(async () => { }, { editorInstances: [editorTerminal], worktreeReady: true });
 			await settle();
 			harness.fireInstancesChanged();
@@ -1428,6 +1719,7 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly editorScopeService: ParadisEditorScopeService;
 	readonly parts: IEditorGroupsService;
 	readonly terminalEditorService: Pick<ITerminalEditorService, 'instances'>;
+	readonly storageService: IStorageService;
 	readonly detachedTerminalInstanceIds: readonly number[];
 	/** park 中のグループ。待避されたかを見るのに使う。 */
 	readonly parkedGroups: ReadonlySet<ITerminalGroup>;
@@ -1438,6 +1730,8 @@ interface IWorkspaceSwitchIntegrationHarness {
 	fireGroupsChanged(): void;
 	/** ターミナルの増減を知らせる（所属の引き直しを走らせる）。 */
 	fireInstancesChanged(): void;
+	setActiveTerminalGroup(group: ITerminalGroup): void;
+	activeTerminalGroup(): ITerminalGroup | undefined;
 	/** 後からグループを増やす（タグ付けもあわせて走らせる）。 */
 	addGroup(group: ITerminalGroup): void;
 	/** `connectLater` で止めていたターミナルの復元完了を進める。 */
@@ -1454,6 +1748,12 @@ interface IWorkspaceSwitchIntegrationHarness {
 	disposeGroup(group: ITerminalGroup): void;
 	createEditor(path: string, modified: boolean): TestFileEditorInput;
 	addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number, shellIntegrationNonce: string): ITerminalInstance;
+}
+
+interface IWorkspaceSwitchHarnessBootstrap {
+	readonly parts: IEditorGroupsService;
+	readonly storageService: IStorageService;
+	createEditor(path: string, modified: boolean): TestFileEditorInput;
 }
 
 /** ターミナルスコープを組み立てるときの、テストごとに変えたい前提。 */
@@ -1604,6 +1904,7 @@ async function createHarness(
 	foreignRepositories: readonly { id: string; name: string; uri: string }[] = [],
 	/** 切り替え先フォルダの先行確認。答えない stat (リモートの詰まり) を作るために差し替える。 */
 	statTargetFolder: () => Promise<Partial<IFileStat>> = async () => ({ isDirectory: true }),
+	bootstrap?: (context: IWorkspaceSwitchHarnessBootstrap) => Promise<void>,
 ): Promise<IWorkspaceSwitchIntegrationHarness> {
 	const repositories = stateKeys.map(stateKey => ({
 		id: stateKey,
@@ -1675,6 +1976,13 @@ async function createHarness(
 	const terminals: ITerminalInstance[] = [];
 	const detachedTerminalInstanceIds: number[] = [];
 	const inputs = new Map<string, TestFileEditorInput>();
+	const createEditor = (path: string, modified: boolean): TestFileEditorInput => {
+		const editor = testDisposables.add(new TestFileEditorInput(URI.file(path), editorTypeId));
+		editor.modified = modified;
+		inputs.set(editor.resource.toString(), editor);
+		return editor;
+	};
+	await bootstrap?.({ parts, storageService, createEditor });
 	let onOpenTerminalEditor: (instance: ITerminalInstance) => Promise<void> = async () => { };
 	const terminalEditorService = {
 		get instances() { return terminals; },
@@ -1712,10 +2020,12 @@ async function createHarness(
 		// 同じであることをここで担保する (表示そのものはこのハーネスの対象外)
 		{ withProgress: (_options, task) => task({ report: () => { } }) } as IProgressService,
 		notificationService,
+		instantiationService.get(ILifecycleService),
 	));
 
 	const parkedGroups = new Set<ITerminalGroup>();
 	const onDidChangeGroups = testDisposables.add(new Emitter<void>());
+	const onDidChangeActiveGroup = testDisposables.add(new Emitter<ITerminalGroup | undefined>());
 	const onDidChangeInstances = testDisposables.add(new Emitter<void>());
 	const liveGroups: ITerminalGroup[] = [];
 	const deferredConnection = new DeferredPromise<void>();
@@ -1724,9 +2034,12 @@ async function createHarness(
 	const onDidChangeWorktrees = testDisposables.add(new Emitter<void>());
 	const worktrees = new Map<string, IParadisWorktree[]>();
 	const onDidDisposeGroup = testDisposables.add(new Emitter<ITerminalGroup>());
+	let setActiveTerminalGroup = (_group: ITerminalGroup): void => { };
+	let activeTerminalGroup = (): ITerminalGroup | undefined => undefined;
 
 	return {
 		workspaceSwitchService,
+		storageService,
 		parkedGroups,
 		persistedNonceScopes(): readonly (readonly [string, string])[] {
 			const raw = storageService.get('paradis.workspaceSwitch.terminalScopesByNonce', StorageScope.WORKSPACE);
@@ -1735,6 +2048,8 @@ async function createHarness(
 		},
 		fireGroupsChanged: () => onDidChangeGroups.fire(),
 		fireInstancesChanged: () => onDidChangeInstances.fire(),
+		setActiveTerminalGroup: group => setActiveTerminalGroup(group),
+		activeTerminalGroup: () => activeTerminalGroup(),
 		finishConnecting: () => deferredConnection.complete(),
 		markTerminalsConnected: () => {
 			connectionState = TerminalConnectionState.Connected;
@@ -1761,14 +2076,36 @@ async function createHarness(
 			const terminalGroupService = Object.create(TerminalGroupService.prototype) as TerminalGroupService;
 			const groups = liveGroups;
 			liveGroups.push(...(options.groups ?? []));
+			let activeGroup: ITerminalGroup | undefined = groups[0];
 			Object.defineProperties(terminalGroupService, {
 				groups: { get: () => groups.filter(group => !parkedGroups.has(group)) },
+				activeGroup: {
+					get: () => activeGroup,
+					set: (group: ITerminalGroup | undefined) => {
+						activeGroup = group;
+						onDidChangeActiveGroup.fire(group);
+					},
+				},
 				paradisParkedGroups: { get: () => [...parkedGroups] },
 				onDidChangeGroups: { value: onDidChangeGroups.event },
+				onDidChangeActiveGroup: { value: onDidChangeActiveGroup.event },
 				onDidDisposeGroup: { value: onDidDisposeGroup.event },
 				paradisParkGroup: { value: (group: ITerminalGroup) => { parkedGroups.add(group); } },
-				paradisUnparkGroup: { value: (group: ITerminalGroup) => { parkedGroups.delete(group); } },
+				paradisUnparkGroup: {
+					value: (group: ITerminalGroup) => {
+						parkedGroups.delete(group);
+						// 実物は復帰後に見えるグループが1件になった時点で `setActiveGroupByIndex(0, true)`
+						// を呼び、`onDidChangeActiveGroup` を発火する。この副作用が active group 台帳を
+						// 上書きしうるので、ハーネスでも再現する（省くと復元のリグレッションを検知できない）。
+						const visible = groups.filter(candidate => !parkedGroups.has(candidate));
+						if (visible.length === 1) {
+							terminalGroupService.activeGroup = visible[0];
+						}
+					},
+				},
 			});
+			setActiveTerminalGroup = group => { terminalGroupService.activeGroup = group; };
+			activeTerminalGroup = () => terminalGroupService.activeGroup;
 			for (const instance of options.editorInstances ?? []) {
 				terminals.push(instance);
 			}
@@ -1818,12 +2155,7 @@ async function createHarness(
 			testDisposables.add(scope);
 			return scope;
 		},
-		createEditor(path: string, modified: boolean): TestFileEditorInput {
-			const editor = testDisposables.add(new TestFileEditorInput(URI.file(path), editorTypeId));
-			editor.modified = modified;
-			inputs.set(editor.resource.toString(), editor);
-			return editor;
-		},
+		createEditor,
 		addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number, shellIntegrationNonce: string): ITerminalInstance {
 			const onDisposed = testDisposables.add(new Emitter<ITerminalInstance>());
 			const instance = {
