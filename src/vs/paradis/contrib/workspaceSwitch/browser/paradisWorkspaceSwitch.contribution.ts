@@ -144,9 +144,14 @@ class ParadisScopeRetirementRecoveryContribution implements IWorkbenchContributi
 		@IParadisWorktreeService _worktreeService: IParadisWorktreeService,
 		@ILogService logService: ILogService,
 	) {
-		void workspaceSwitchService.replayCommittedScopeRetirements().catch(error => {
-			logService.error('[ParadisWorkspaceSwitch] Failed to replay a committed scope retirement', error);
-		});
+		void workspaceSwitchService.recoverInterruptedSwitch()
+			.catch(error => {
+				logService.error('[ParadisWorkspaceSwitch] Failed to recover an interrupted workspace switch', error);
+			})
+			.then(() => workspaceSwitchService.replayCommittedScopeRetirements())
+			.catch(error => {
+				logService.error('[ParadisWorkspaceSwitch] Failed to replay committed scope retirements', error);
+			});
 	}
 }
 

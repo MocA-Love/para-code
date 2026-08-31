@@ -23,18 +23,19 @@ const MAX_ENTRIES = 32;
 const MAX_LEAVES_PER_ENTRY = 64;
 const MAX_NODE_DEPTH = 32;
 
-/**
- * What a grid cell writes into its serialized leaf. The id is the terminal's **current generation**
- * `persistentProcessId`; matching a restored instance back onto it is the caller's job (see
- * `sessionResolveGridLayoutTerminalId`).
- */
+/** A v1 process id or a v2 shell-integration nonce identifying one terminal pane. */
+export type SessionTerminalGridIdentity = number | string;
+
+/** What a grid cell writes into its serialized leaf. */
 export interface ISessionTerminalGridLeafData {
-	readonly terminal: number;
+	readonly terminal: SessionTerminalGridIdentity;
 }
 
 /** One persisted grid group: its serialized layout plus the terminals it was made of. */
 export interface ISessionTerminalGridLayoutEntry {
-	readonly terminals: readonly number[];
+	/** Missing means the legacy process-id format. */
+	readonly version?: 2;
+	readonly terminals: readonly SessionTerminalGridIdentity[];
 	readonly layout: ISerializedGrid;
 }
 
@@ -42,13 +43,22 @@ function isValidTerminalId(value: unknown): value is number {
 	return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
-/** Reads the terminal id out of a serialized leaf, or `undefined` when the leaf is not ours. */
-export function sessionReadGridLayoutLeafTerminal(data: unknown): number | undefined {
+function isValidTerminalNonce(value: unknown): value is string {
+	return typeof value === 'string' && value.length > 0 && value.length <= 200
+		&& value.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function isValidTerminalIdentity(value: unknown): value is SessionTerminalGridIdentity {
+	return isValidTerminalId(value) || isValidTerminalNonce(value);
+}
+
+/** Reads the terminal identity out of a serialized leaf, or `undefined` when the leaf is not ours. */
+export function sessionReadGridLayoutLeafTerminal(data: unknown): SessionTerminalGridIdentity | undefined {
 	if (typeof data !== 'object' || data === null) {
 		return undefined;
 	}
 	const terminal = (data as Partial<ISessionTerminalGridLeafData>).terminal;
-	return isValidTerminalId(terminal) ? terminal : undefined;
+	return isValidTerminalIdentity(terminal) ? terminal : undefined;
 }
 
 function isValidNode(node: unknown, depth: number, leaves: { count: number }): node is ISerializedNode {
@@ -73,6 +83,7 @@ function isValidNode(node: unknown, depth: number, leaves: { count: number }): n
  * The parts of an `ITerminalInstance` needed to match it against a persisted leaf.
  */
 export interface ISessionTerminalGridLayoutInstanceLike {
+	readonly shellIntegrationNonce?: string;
 	readonly shellLaunchConfig: {
 		readonly attachPersistentProcess?: {
 			readonly id: number;
@@ -80,6 +91,11 @@ export interface ISessionTerminalGridLayoutInstanceLike {
 			readonly paradisAdopted?: boolean;
 		};
 	};
+}
+
+/** The stable v2 identity used for all newly persisted grid layouts. */
+export function sessionResolveGridLayoutTerminalNonce(instance: ISessionTerminalGridLayoutInstanceLike): string | undefined {
+	return isValidTerminalNonce(instance.shellIntegrationNonce) ? instance.shellIntegrationNonce : undefined;
 }
 
 /**
@@ -137,9 +153,9 @@ function isValidLayout(layout: unknown): layout is ISerializedGrid {
 	return isValidNode(candidate.root, 0, { count: 0 }) && (candidate.root as ISerializedNode).type === 'branch';
 }
 
-/** Collects every terminal id referenced by a layout, in traversal order. */
-export function sessionCollectGridLayoutTerminals(layout: ISerializedGrid): number[] {
-	const result: number[] = [];
+/** Collects every terminal identity referenced by a layout, in traversal order. */
+export function sessionCollectGridLayoutTerminals(layout: ISerializedGrid): SessionTerminalGridIdentity[] {
+	const result: SessionTerminalGridIdentity[] = [];
 	const visit = (node: ISerializedNode): void => {
 		if (node.type === 'leaf') {
 			const terminal = sessionReadGridLayoutLeafTerminal(node.data);
@@ -165,7 +181,7 @@ export function sessionCollectGridLayoutTerminals(layout: ISerializedGrid): numb
  * doing so would reinterpret that child's own children along the wrong axis. Instead the surviving
  * grandchildren are lifted into the grandparent's list, where they already line up with its axis.
  */
-function pruneNodes(nodes: readonly ISerializedNode[], keep: ReadonlySet<number>): ISerializedNode[] {
+function pruneNodes(nodes: readonly ISerializedNode[], keep: ReadonlySet<SessionTerminalGridIdentity>): ISerializedNode[] {
 	const result: ISerializedNode[] = [];
 	for (const node of nodes) {
 		if (node.type === 'leaf') {
@@ -195,7 +211,7 @@ function pruneNodes(nodes: readonly ISerializedNode[], keep: ReadonlySet<number>
  * Restricts a persisted layout to the terminals that actually came back. Returns `undefined` when
  * nothing is left to restore.
  */
-export function sessionPruneGridLayout(layout: ISerializedGrid, keep: ReadonlySet<number>): ISerializedGrid | undefined {
+export function sessionPruneGridLayout(layout: ISerializedGrid, keep: ReadonlySet<SessionTerminalGridIdentity>): ISerializedGrid | undefined {
 	if (layout.root.type !== 'branch') {
 		return undefined;
 	}
@@ -214,10 +230,10 @@ export function sessionPruneGridLayout(layout: ISerializedGrid, keep: ReadonlySe
  * A layout only describes an arrangement once it has at least two panes, and the ids have to be
  * unique: a duplicate would make a lookup believe an entry covers more panes than it does.
  */
-function isValidEntryTerminals(terminals: unknown): terminals is number[] {
+function isValidEntryTerminals(terminals: unknown, version: unknown): terminals is SessionTerminalGridIdentity[] {
 	return Array.isArray(terminals)
 		&& terminals.length >= 2
-		&& terminals.every(isValidTerminalId)
+		&& (version === 2 ? terminals.every(isValidTerminalNonce) : version === undefined && terminals.every(isValidTerminalId))
 		&& new Set(terminals).size === terminals.length;
 }
 
@@ -227,7 +243,7 @@ function isValidEntryTerminals(terminals: unknown): terminals is number[] {
  * of panes.
  */
 export function sessionIsValidGridLayoutEntry(entry: Partial<ISessionTerminalGridLayoutEntry> | undefined): entry is ISessionTerminalGridLayoutEntry {
-	if (entry === undefined || !isValidEntryTerminals(entry.terminals) || !isValidLayout(entry.layout)) {
+	if (entry === undefined || !isValidEntryTerminals(entry.terminals, entry.version) || !isValidLayout(entry.layout)) {
 		return false;
 	}
 	const leaves = sessionCollectGridLayoutTerminals(entry.layout);
@@ -257,7 +273,7 @@ export function sessionParseGridLayoutStorage(raw: string): ISessionTerminalGrid
 	for (const value of parsed.slice(0, MAX_ENTRIES)) {
 		const entry = typeof value === 'object' && value !== null ? value as Partial<ISessionTerminalGridLayoutEntry> : undefined;
 		if (sessionIsValidGridLayoutEntry(entry)) {
-			entries.push({ terminals: [...entry.terminals], layout: entry.layout });
+			entries.push({ ...(entry.version === 2 ? { version: 2 as const } : {}), terminals: [...entry.terminals], layout: entry.layout });
 		}
 	}
 	return entries;
@@ -330,13 +346,17 @@ export function sessionRekeyOwnedGridLayoutEntries(entries: readonly ISessionTer
 			return { ...node, data: node.data.map(rekeyNode) };
 		}
 		const terminal = sessionReadGridLayoutLeafTerminal(node.data);
-		const current = terminal === undefined ? undefined : currentByRestored.get(terminal);
+		const current = typeof terminal === 'number' ? currentByRestored.get(terminal) : undefined;
 		return current === undefined ? node : { ...node, data: { terminal: current } satisfies ISessionTerminalGridLeafData };
 	};
 
 	const owned: ISessionTerminalGridLayoutEntry[] = [];
 	for (const entry of entries) {
-		const known = new Set(entry.terminals.filter(terminal => currentByRestored.has(terminal)));
+		if (entry.version === 2) {
+			continue;
+		}
+		const legacyTerminals = entry.terminals.filter((terminal): terminal is number => typeof terminal === 'number');
+		const known = new Set(legacyTerminals.filter(terminal => currentByRestored.has(terminal)));
 		if (known.size === 0) {
 			continue;
 		}
@@ -365,7 +385,7 @@ export function sessionRekeyOwnedGridLayoutEntries(entries: readonly ISessionTer
  * knows about — while entries naming none of them belong to another window on the same workspace and
  * must be preserved.
  */
-export function sessionMergeGridLayoutEntries(owned: readonly ISessionTerminalGridLayoutEntry[], stored: readonly ISessionTerminalGridLayoutEntry[], ownedTerminals: ReadonlySet<number>): ISessionTerminalGridLayoutEntry[] {
+export function sessionMergeGridLayoutEntries(owned: readonly ISessionTerminalGridLayoutEntry[], stored: readonly ISessionTerminalGridLayoutEntry[], ownedTerminals: ReadonlySet<SessionTerminalGridIdentity>): ISessionTerminalGridLayoutEntry[] {
 	const foreign = stored.filter(entry => !entry.terminals.some(terminal => ownedTerminals.has(terminal)));
 	return [...owned, ...foreign].slice(0, MAX_ENTRIES);
 }

@@ -59,6 +59,8 @@ import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { hasKey, isString } from '../../../../base/common/types.js';
 import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
 import { paradisCaptureTerminalCreationScopeLease, paradisSetTerminalCreationScopeLease } from './paradisTerminalCreationScope.js';
+// PARA-PATCH: Para Code restores the active pane after every group member has been created
+import { paradisRestoreTerminalGroupActiveInstance } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalGroupRestore.js';
 import { paradisJoinKeptDetaches, paradisPrepareTerminalShutdown, paradisShouldKeepTerminalProcessAlive, paradisShouldKeepTerminalProcessesAlive } from './paradisTerminalShutdownPolicy.js';
 // PARA-PATCH: Para Code parks editor terminals of other spaces outside any editor input
 import { paradisListParkedTerminalEditorInstances } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js';
@@ -517,10 +519,6 @@ export class TerminalService extends Disposable implements ITerminalService {
 					if (tabLayout.isActive) {
 						activeGroup = promise;
 					}
-					const activeInstance = this.instances.find(t => t.shellLaunchConfig.attachPersistentProcess?.id === tabLayout.activePersistentProcessId);
-					if (activeInstance) {
-						this.setActiveInstance(activeInstance);
-					}
 				}
 			}
 			if (layoutInfo.tabs.length) {
@@ -560,6 +558,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		const group = lastInstance?.then(instance => {
 			const g = this._terminalGroupService.getGroupForInstance(instance);
 			g?.resizePanes(tabLayout.terminals.map(terminal => terminal.relativeSize));
+			paradisRestoreTerminalGroupActiveInstance(g, tabLayout.activePersistentProcessId);
 			return g;
 		});
 		return group;

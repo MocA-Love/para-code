@@ -724,6 +724,8 @@ interface ITerminalEditorInputObject {
 	readonly hideFromUser?: boolean;
 	readonly reconnectionProperties?: IReconnectionProperties;
 	readonly shellIntegrationNonce: string;
+	/** PARA-CODE: The id was resolved in the current pty host and cannot address an older ledger. */
+	readonly paradisResolvedToCurrentPtyId?: boolean;
 }
 
 export interface ISerializedTerminalEditorInput extends ITerminalEditorInputObject {

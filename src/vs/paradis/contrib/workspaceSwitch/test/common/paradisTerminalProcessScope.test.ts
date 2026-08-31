@@ -115,6 +115,18 @@ suite('paradisRecordInstanceScopes / paradisLookupInstanceScope', () => {
 		assert.deepStrictEqual([...instanceScopes], [[8, 'scope:expected']]);
 	});
 
+	test('never reads the previous-session ledger with an adopted current pty id', () => {
+		const instanceScopes = new Map<number, string>();
+		const restoredScopes = new Map<number, string>([[1, 'scope:wrong-collision']]);
+
+		assert.strictEqual(paradisRestorePersistentProcessScope(instanceScopes, restoredScopes, {
+			instanceId: 8,
+			persistentProcessId: 1,
+			currentPersistentProcessIdOnly: true,
+		}), undefined);
+		assert.deepStrictEqual([...instanceScopes], []);
+	});
+
 	test('prunes restored process entries that have no live terminal after reconnect', () => {
 		const persistentScopes = new Map<number, string>([
 			[11, 'scope:live-panel'],

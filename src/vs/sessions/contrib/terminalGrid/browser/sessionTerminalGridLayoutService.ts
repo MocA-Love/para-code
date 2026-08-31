@@ -12,7 +12,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISerializedGrid } from '../../../../base/browser/ui/grid/grid.js';
-import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridTerminalGeneration, sessionIsValidGridLayoutEntry, sessionMergeGridLayoutEntries, sessionParseGridLayoutStorage, sessionPruneGridLayout, sessionRekeyOwnedGridLayoutEntries, sessionSerializeGridLayoutStorage } from './sessionTerminalGridLayout.js';
+import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridTerminalGeneration, SessionTerminalGridIdentity, sessionIsValidGridLayoutEntry, sessionMergeGridLayoutEntries, sessionParseGridLayoutStorage, sessionPruneGridLayout, sessionRekeyOwnedGridLayoutEntries, sessionSerializeGridLayoutStorage } from './sessionTerminalGridLayout.js';
 
 /** A grid group that takes part in the persisted snapshot. */
 export interface ISessionTerminalGridLayoutSource {
@@ -20,6 +20,16 @@ export interface ISessionTerminalGridLayoutSource {
 	getGridLayoutEntry(): ISessionTerminalGridLayoutEntry | undefined;
 	/** How the ids of this group's terminals map from the session that persisted them to this one. */
 	getGridLayoutTerminalGenerations(): readonly ISessionTerminalGridTerminalGeneration[];
+	/**
+	 * The stable identities of this group's live panes.
+	 *
+	 * The generations above only carry numeric ids, so they cannot speak for a v2 (nonce-keyed) entry.
+	 * Without this, a group that stops reporting a layout — the user closed a pane and only one is
+	 * left — leaves its stored entry naming identities nothing claims, and the merge keeps it forever
+	 * as another window's. Those corpses then compete for the entry budget with the layouts of spaces
+	 * that have not been visited yet.
+	 */
+	getGridLayoutTerminalNonces(): readonly string[];
 }
 
 export interface ISessionTerminalGridLayoutService {
@@ -29,7 +39,7 @@ export interface ISessionTerminalGridLayoutService {
 	/** Asks for the layouts to be saved, at most once per {@link SAVE_DELAY_MS} window. */
 	scheduleSave(): void;
 	/** Claims the persisted layout of the group made of `terminalIds`, if there is one. */
-	takeRestoredLayout(terminalIds: ReadonlySet<number>): ISerializedGrid | undefined;
+	takeRestoredLayout(terminalIds: ReadonlySet<SessionTerminalGridIdentity>): ISerializedGrid | undefined;
 }
 
 export const ISessionTerminalGridLayoutService = createDecorator<ISessionTerminalGridLayoutService>('sessionTerminalGridLayoutService');
@@ -49,7 +59,18 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 
 	declare readonly _serviceBrand: undefined;
 
-	private static readonly STORAGE_KEY = 'paradis.terminalGrid.layouts';
+	/**
+	 * Where nonce-keyed (v2) layouts are written.
+	 *
+	 * **Never write these back to the legacy key.** An older build's `isValidEntryTerminals` only
+	 * accepts numeric ids, so it drops every v2 entry on parse and then persists that pruned set,
+	 * silently destroying the layouts; the "keep what another window stored" merge cannot save them
+	 * because they never survive the read. A separate key lets both builds keep their own snapshot.
+	 */
+	private static readonly STORAGE_KEY = 'paradis.terminalGrid.layouts.v2';
+
+	/** The numeric-id era key. Read **only**, for the one-time migration. */
+	private static readonly LEGACY_STORAGE_KEY = 'paradis.terminalGrid.layouts';
 
 	private readonly _sources = new Set<ISessionTerminalGridLayoutSource>();
 	private readonly _saveScheduler = this._register(new RunOnceScheduler(() => this.flush(), SAVE_DELAY_MS));
@@ -87,7 +108,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 	 * actually came back. Returns `undefined` unless the whole group is covered by a single stored
 	 * entry, so an unrelated group can never inherit someone else's layout.
 	 */
-	takeRestoredLayout(terminalIds: ReadonlySet<number>): ISerializedGrid | undefined {
+	takeRestoredLayout(terminalIds: ReadonlySet<SessionTerminalGridIdentity>): ISerializedGrid | undefined {
 		if (terminalIds.size < 2) {
 			return undefined;
 		}
@@ -110,6 +131,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 		this._saveScheduler.cancel();
 		const live: ISessionTerminalGridLayoutEntry[] = [];
 		const generations: ISessionTerminalGridTerminalGeneration[] = [];
+		const liveNonces: string[] = [];
 		for (const source of this._sources) {
 			// A group with no usable layout (fewer than two panes, no process ids yet, never laid out)
 			// is simply left out; its stored entry, if any, is preserved by the merge below.
@@ -118,6 +140,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 				live.push(entry);
 			}
 			generations.push(...source.getGridLayoutTerminalGenerations());
+			liveNonces.push(...source.getGridLayoutTerminalNonces());
 		}
 
 		// Entries that no group has claimed are still keyed by the ids of the session that wrote them.
@@ -130,7 +153,7 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 		// own older copies in storage instead of mistaking them for another window's groups. Entries
 		// it cannot account for are deliberately absent: whatever is stored for them now is newer than
 		// this window's startup snapshot, so it is kept rather than written back.
-		const ownedTerminals = new Set<number>();
+		const ownedTerminals = new Set<SessionTerminalGridIdentity>();
 		for (const { restored, current } of generations) {
 			ownedTerminals.add(restored);
 			ownedTerminals.add(current);
@@ -139,6 +162,12 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 			for (const terminal of entry.terminals) {
 				ownedTerminals.add(terminal);
 			}
+		}
+		// A nonce names one terminal instance, and that instance lives in exactly one window, so
+		// claiming it here cannot take another window's entry. Groups that no longer describe a layout
+		// still speak for their panes, which is what lets their stale entry be dropped.
+		for (const nonce of liveNonces) {
+			ownedTerminals.add(nonce);
 		}
 
 		// A group that reports a layout but never claimed the stored one (its panes no longer match any
@@ -159,7 +188,14 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 
 	private _readStoredEntries(): ISessionTerminalGridLayoutEntry[] {
 		const raw = this._storageService.get(SessionTerminalGridLayoutService.STORAGE_KEY, StorageScope.WORKSPACE);
-		return (raw ? sessionParseGridLayoutStorage(raw) : undefined) ?? [];
+		const entries = (raw ? sessionParseGridLayoutStorage(raw) : undefined) ?? [];
+		if (entries.length > 0 || raw !== undefined) {
+			return entries;
+		}
+		// Adopt the pre-v2 snapshot once. Afterwards only the new key matters; the legacy key is left
+		// untouched so an older build still finds the layout it last wrote.
+		const legacyRaw = this._storageService.get(SessionTerminalGridLayoutService.LEGACY_STORAGE_KEY, StorageScope.WORKSPACE);
+		return (legacyRaw ? sessionParseGridLayoutStorage(legacyRaw) : undefined) ?? [];
 	}
 
 	private _restoreEntries(): ISessionTerminalGridLayoutEntry[] {
