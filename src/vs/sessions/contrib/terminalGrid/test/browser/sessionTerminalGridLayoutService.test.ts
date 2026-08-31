@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import type { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
-import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridTerminalGeneration } from '../../browser/sessionTerminalGridLayout.js';
+import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridTerminalGeneration, SessionTerminalGridIdentity } from '../../browser/sessionTerminalGridLayout.js';
 import { ISessionTerminalGridLayoutSource, SessionTerminalGridLayoutService } from '../../browser/sessionTerminalGridLayoutService.js';
 
 const STORAGE_KEY = 'paradis.terminalGrid.layouts.v2';
@@ -24,11 +24,11 @@ const STORAGE_KEY = 'paradis.terminalGrid.layouts.v2';
  */
 const LEGACY_STORAGE_KEY = 'paradis.terminalGrid.layouts';
 
-function leaf(terminal: number, size = 100): ISerializedNode {
+function leaf(terminal: SessionTerminalGridIdentity, size = 100): ISerializedNode {
 	return { type: 'leaf', data: { terminal }, size };
 }
 
-function layoutOf(...terminals: number[]): ISerializedGrid {
+function layoutOf(...terminals: SessionTerminalGridIdentity[]): ISerializedGrid {
 	return { root: { type: 'branch', data: terminals.map(terminal => leaf(terminal)), size: 200 }, orientation: Orientation.VERTICAL, width: 800, height: 400 };
 }
 
@@ -36,10 +36,16 @@ function entryOf(...terminals: number[]): ISessionTerminalGridLayoutEntry {
 	return { terminals, layout: layoutOf(...terminals) };
 }
 
+/** nonce ベース (v2) のエントリ。葉も nonce でないと検証を通らない。 */
+function v2EntryOf(...terminals: string[]): ISessionTerminalGridLayoutEntry {
+	return { version: 2, terminals, layout: layoutOf(...terminals) };
+}
+
 class TestLayoutSource implements ISessionTerminalGridLayoutSource {
 	constructor(
 		private readonly _entry: ISessionTerminalGridLayoutEntry | undefined,
 		private readonly _generations: readonly ISessionTerminalGridTerminalGeneration[] = [],
+		private readonly _nonces: readonly string[] = [],
 	) { }
 
 	getGridLayoutEntry(): ISessionTerminalGridLayoutEntry | undefined {
@@ -48,6 +54,10 @@ class TestLayoutSource implements ISessionTerminalGridLayoutSource {
 
 	getGridLayoutTerminalGenerations(): readonly ISessionTerminalGridTerminalGeneration[] {
 		return this._generations;
+	}
+
+	getGridLayoutTerminalNonces(): readonly string[] {
+		return this._nonces;
 	}
 }
 
@@ -125,6 +135,29 @@ suite('SessionTerminalGridLayoutService', () => {
 		service.flush();
 
 		assert.deepStrictEqual(readStored(storageService), [entryOf(1, 2), rearranged]);
+	});
+
+	// パネルを1枚閉じてレイアウトを名乗らなくなったグループの v2 エントリが、
+	// 「別ウィンドウのもの」として永久に居座らないこと。放置すると死んだエントリが
+	// 保存枠を埋め、まだ訪れていないスペースの正当なレイアウトを押し出す。
+	test('drops the stored entry of a group that no longer describes a layout', () => {
+		const { service, storageService } = createService(disposables, [v2EntryOf('nonce-a', 'nonce-b')]);
+		// レイアウトは名乗らない（ペインが1枚になった）が、残ったペインの身元は名乗る。
+		disposables.add(service.registerSource(new TestLayoutSource(undefined, [], ['nonce-a'])));
+
+		service.flush();
+
+		assert.deepStrictEqual(readStored(storageService), []);
+	});
+
+	test('keeps the stored entry of a group that belongs to another window', () => {
+		const foreign = v2EntryOf('nonce-x', 'nonce-y');
+		const { service, storageService } = createService(disposables, [foreign]);
+		disposables.add(service.registerSource(new TestLayoutSource(undefined, [], ['nonce-a'])));
+
+		service.flush();
+
+		assert.deepStrictEqual(readStored(storageService), [foreign]);
 	});
 
 	test('picks up the pre-v2 layout once and then leaves the old key to older builds', () => {
