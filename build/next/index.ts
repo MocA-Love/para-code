@@ -337,6 +337,10 @@ const desktopResourcePatterns = [
 	// (LICENSE-docx-preview / LICENSE-jszip have no extension, so they need the separate glob below)
 	'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**/*.*',
 	'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**/LICENSE*',
+	// PARA-PATCH: ship the vendored mermaid.js runtime inlined into the Markdown viewer webview
+	// (LICENSE-mermaid has no extension, so it needs the separate glob below)
+	'vs/paradis/contrib/fileViewers/browser/media/mermaid/**/*.*',
+	'vs/paradis/contrib/fileViewers/browser/media/mermaid/**/LICENSE*',
 	// PARA-PATCH: ship the vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server
 	// (extension-less LICENSE / THIRD_PARTY_NOTICES need the separate globs below)
 	'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**/*.*',

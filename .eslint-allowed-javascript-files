@@ -181,6 +181,8 @@ src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/pdf.min.mjs
 src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/pdf.worker.min.mjs
 src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/docx-preview.min.js
 src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/jszip.min.js
+# PARA-PATCH: vendored mermaid.js used by the Markdown viewer's Mermaid diagram rendering (Para Code)
+src/vs/paradis/contrib/fileViewers/browser/media/mermaid/mermaid.min.js
 # PARA-PATCH: vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server (Para Code)
 # (regenerate on package update: find src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp -type f \( -name '*.js' -o -name '*.cjs' -o -name '*.mjs' \) | sort)
 src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/HeapSnapshotManager.js
