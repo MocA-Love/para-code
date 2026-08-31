@@ -51,7 +51,7 @@ import {
 	paradisSanitizeBranchName,
 	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
-import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
+import { paradisCompleteCreatedWorktree } from './paradisCompleteCreatedWorktree.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';

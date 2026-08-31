@@ -22,7 +22,7 @@ import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { IParadisAdoptedTerminal, paradisAdoptTerminals } from './paradisTerminalAdoption.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisDecodeLayout } from './paradisTerminalLayout.js';
-import { IParadisAdoptTarget, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisRememberHandle } from './paradisTerminalHandleRegistry.js';
 
 /** 器を作れる相手。`PtyService` のうち、ここが使う部分だけ。 */
 export interface IParadisAdoptionTarget {

@@ -9,8 +9,10 @@ name: Sessions E2E Tests
 #       - 'src/vs/sessions/**'
 #       - 'scripts/code-sessions-web.*'
 
-# just commenting "on" property causes emails to be sent to everyone
-on: workflow_dispatch
+# PARA-PATCH: callable from Para CI so the Agents window UI is part of the release gate.
+on:
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -24,7 +24,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisPtySpawnRequest } from '../../common/paradisPtyProtocol.js';
 import { paradisDecodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
 import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalProcess.js';
-import { paradisHandleOf } from '../../node/paradisTerminalProcessFactory.js';
+import { paradisHandleOf } from '../../node/paradisTerminalHandleRegistry.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
 

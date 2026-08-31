@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCompleteCreatedWorktree } from '../../electron-browser/paradisCreateWorktreeDialog.js';
+import { paradisCompleteCreatedWorktree } from '../../electron-browser/paradisCompleteCreatedWorktree.js';
 import { paradisRemoveWorktreeSequence } from '../../electron-browser/paradisCreateWorktree.contribution.js';
 
 suite('worktree lifecycle order', () => {

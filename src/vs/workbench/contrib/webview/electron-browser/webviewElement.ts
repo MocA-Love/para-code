@@ -25,22 +25,45 @@ import { WebviewInitInfo } from '../browser/webview.js';
 import { WebviewElement } from '../browser/webviewElement.js';
 import { WindowIgnoreMenuShortcutsManager } from './windowIgnoreMenuShortcutsManager.js';
 
+// PARA-PATCH: shared capability for stock Electron builds that do not expose WebFrameMain.findInFrame.
+export interface IParadisWebviewFindFallbackCapability {
+	unsupported: boolean;
+}
+
+const sharedParadisWebviewFindFallbackCapability: IParadisWebviewFindFallbackCapability = { unsupported: false };
+
+/**
+ * PARA-PATCH: keeps build-wide find capability separate from the one-time retry owned by each webview.
+ */
+export class ParadisWebviewFindFallbackState {
+	private _didFallBack = false;
+
+	constructor(
+		private readonly capability: IParadisWebviewFindFallbackCapability = sharedParadisWebviewFindFallbackCapability,
+	) { }
+
+	get isUnsupported(): boolean {
+		return this.capability.unsupported;
+	}
+
+	activate(): boolean {
+		this.capability.unsupported = true;
+		if (this._didFallBack) {
+			return false;
+		}
+		this._didFallBack = true;
+		return true;
+	}
+}
+
 /**
  * Webview backed by an iframe but that uses Electron APIs to power the webview.
  */
 export class ElectronWebviewElement extends WebviewElement {
 
-	// PARA-PATCH: `WebFrameMain.findInFrame` only exists in the Electron build Microsoft ships. On stock
-	// Electron the main-process call is a no-op, so every webview find (this viewer, the extension
-	// editor, extension webview panels) silently finds nothing. Whether the API exists is a property of
-	// the running Electron build, so once any webview learns it is missing, all of them switch to the
-	// browser find path (`window.find` inside the webview) that the base class implements.
-	private static _findInFrameUnsupported = false;
-
-	// PARA-PATCH: a find and an update can be in flight at the same time (Enter pressed right after the
-	// debounced update fired). Only the first answer re-runs the search, so the fallback does not skip a
-	// match by searching twice.
-	private _findFellBack = false;
+	// PARA-PATCH: a missing Electron API is shared by the build, while duplicate in-flight answers are
+	// suppressed per webview so the fallback does not skip a match by searching twice.
+	private readonly _findFallback = new ParadisWebviewFindFallbackState();
 
 	private readonly _webviewKeyboardHandler: WindowIgnoreMenuShortcutsManager;
 
@@ -113,7 +136,7 @@ export class ElectronWebviewElement extends WebviewElement {
 		}
 
 		// PARA-PATCH: no Electron find support in this build, so let the base class search the webview.
-		if (ElectronWebviewElement._findInFrameUnsupported) {
+		if (this._findFallback.isUnsupported) {
 			super.find(value, previous);
 			return;
 		}
@@ -138,7 +161,7 @@ export class ElectronWebviewElement extends WebviewElement {
 		}
 
 		// PARA-PATCH: see find().
-		if (ElectronWebviewElement._findInFrameUnsupported) {
+		if (this._findFallback.isUnsupported) {
 			super.updateFind(value);
 			return;
 		}
@@ -169,7 +192,7 @@ export class ElectronWebviewElement extends WebviewElement {
 		this._findStarted = false;
 
 		// PARA-PATCH: see find(). The base class fires `onDidStopFind` itself.
-		if (ElectronWebviewElement._findInFrameUnsupported) {
+		if (this._findFallback.isUnsupported) {
 			super.stopFind(keepSelection);
 			return;
 		}
@@ -195,13 +218,8 @@ export class ElectronWebviewElement extends WebviewElement {
 	 * has no such reset either.
 	 */
 	private _fallBackToWebviewFind(): boolean {
-		ElectronWebviewElement._findInFrameUnsupported = true;
 		this._findStarted = false;
-		if (this._findFellBack) {
-			return false;
-		}
-		this._findFellBack = true;
-		return true;
+		return this._findFallback.activate();
 	}
 
 	protected override handleFocusChange(isFocused: boolean): void {

@@ -13,7 +13,8 @@
 
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisEncodeLayout } from './paradisTerminalLayout.js';
-import { paradisHandleOf, paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
+import { paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
+import { paradisHandleOf } from './paradisTerminalHandleRegistry.js';
 
 /**
  * 配置を常駐へ預ける。

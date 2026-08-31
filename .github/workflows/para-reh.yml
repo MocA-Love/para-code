@@ -41,7 +41,11 @@ on:
       - 'v*'
 
 jobs:
+  verify:
+    uses: ./.github/workflows/para-ci.yml
+
   build-reh-linux-x64:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write # gh release upload（固定タグ reh への添付）

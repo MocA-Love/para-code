@@ -14,7 +14,8 @@ import { NullLogService } from '../../../log/common/log.js';
 import { IProductService } from '../../../product/common/productService.js';
 import { IReconnectConstants, IShellLaunchConfig, ITerminalProcessOptions, TitleEventSource } from '../../common/terminal.js';
 import { PtyService } from '../../node/ptyService.js';
-import { paradisAdoptionSettled, paradisAwaitAdoption, paradisForgetHandle, paradisRememberHandle, paradisUsePtyDaemon } from '../../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { paradisAdoptionSettled, paradisAwaitAdoption, paradisUsePtyDaemon } from '../../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { paradisForgetHandle, paradisRememberHandle } from '../../../../paradis/contrib/ptyDaemon/node/paradisTerminalHandleRegistry.js';
 
 /**
  * Covers taking a terminal back from the daemon that kept it running across an app update, from the

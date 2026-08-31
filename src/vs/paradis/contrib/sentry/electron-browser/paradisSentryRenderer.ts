@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import * as Sentry from '@sentry/electron/renderer';
+import type * as SentryRenderer from '@sentry/electron/renderer';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
@@ -30,7 +30,13 @@ import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepa
 const PARADIS_ROUTINE_TRACE_SAMPLE_RATE = 1;
 const PARADIS_ROUTINE_TRACE_PREFIXES = ['para.workspaceSwitch.'];
 
-try {
+let sentry: typeof SentryRenderer | undefined;
+
+// The development workbench is loaded directly from transpiled ESM over vscode-file://, where a
+// browser cannot resolve npm bare specifiers. Keep this import asynchronous so an unavailable SDK
+// disables diagnostics without preventing the workbench from starting. Production builds inline
+// this renderer-only import via inlineParadisSentryPlugin in build/next/index.ts.
+import('@sentry/electron/renderer').then(Sentry => {
 	Sentry.init({
 		sendDefaultPii: false,
 		enableLogs: false,
@@ -58,11 +64,8 @@ try {
 	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
 		captureParadisRendererException(scope, feature, operation, error, safeExtra, severity);
 	});
-} catch (error) {
-	console.error('[Para Code] Failed to initialize renderer Sentry.', error);
-}
+	sentry = Sentry;
 
-try {
 	// Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
 	// workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
 	// preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
@@ -73,9 +76,9 @@ try {
 		captureParadisRendererException('patched', 'webview', 'insecure-context',
 			new Error('Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount'));
 	}
-} catch (error) {
-	console.error('[Para Code] Failed to report the insecure-context sentinel.', error);
-}
+}).catch(error => {
+	console.error('[Para Code] Failed to initialize renderer Sentry.', error);
+});
 
 export function captureParadisRendererException(
 	scope: 'owned' | 'patched',
@@ -85,6 +88,10 @@ export function captureParadisRendererException(
 	safeExtra?: Record<string, unknown>,
 	severity?: ParadisDiagnosticSeverity,
 ): string {
+	if (!sentry) {
+		return '';
+	}
+	const Sentry = sentry;
 	return Sentry.withScope(sentryScope => {
 		sentryScope.setTags({
 			'para.scope': scope,
@@ -108,7 +115,10 @@ export function startParadisRendererSpan<T>(
 	callback: () => T,
 	attributes?: ParadisSpanAttributes,
 ): T {
-	return Sentry.startSpan({
+	if (!sentry) {
+		return callback();
+	}
+	return sentry.startSpan({
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
 		attributes: {

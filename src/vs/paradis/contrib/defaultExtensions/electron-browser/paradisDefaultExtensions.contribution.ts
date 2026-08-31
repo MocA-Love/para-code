@@ -133,6 +133,14 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 	}
 
 	private async run(): Promise<void> {
+		// Smoke tests use a fresh profile for every suite. Installing the full default-extension set
+		// there makes otherwise local product tests depend on the gallery and competes with the UI
+		// under test for CPU, disk, and network resources.
+		if (this.environmentService.enableSmokeTestDriver) {
+			this.logService.info('[ParadisDefaultExtensions] skipped in smoke-test mode');
+			return;
+		}
+
 		// インストール対象が残っている初回のみ、進行状況を通知トーストで見せる。
 		// 何も入れるものが無ければ通知は一切出さない（2回目以降の起動では静か）。
 		const hasWork = this.hasPendingInstalls();

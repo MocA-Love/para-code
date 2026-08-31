@@ -26,7 +26,8 @@ import { ShellIntegrationAddon } from '../common/xterm/shellIntegrationAddon.js'
 import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
 import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
-import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { paradisAdoptionSettled, paradisCreateTerminalProcess } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisHandleOf } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalHandleRegistry.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
