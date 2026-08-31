@@ -235,6 +235,16 @@ export async function renderMarkdownDocument(
 					return escape(code);
 				}
 
+				// allow-any-unicode-next-line
+				// PARA-PATCH: Mermaid ブロックはシンタックスハイライト（トークン化 HTML）にせず生テキストのまま返す。
+				// allow-any-unicode-next-line
+				// `options.markedExtensions` 側の renderer.code 拡張が図として描画し直すため、
+				// allow-any-unicode-next-line
+				// ここで HTML 化すると元のダイアグラム記法を復元できなくなる。
+				if (lang.trim().toLowerCase() === 'mermaid') {
+					return code;
+				}
+
 				await extensionService.whenInstalledExtensionsRegistered();
 				if (token?.isCancellationRequested) {
 					return '';

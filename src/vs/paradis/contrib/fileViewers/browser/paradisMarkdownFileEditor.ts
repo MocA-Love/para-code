@@ -37,6 +37,7 @@ import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
 import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
+import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 
@@ -64,8 +65,11 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
 	}
 
+	// Mermaid ブロック（```mermaid```）を webview 内で mermaid.js に描画させるため許可する。実行できる
+	// スクリプトは CSP の `script-src 'nonce-...'` により、この HTML が自分で埋め込んだ nonce 付き
+	// <script>（vendored mermaid.js 本体 + 初期化コード）だけに限定される。
 	protected override get allowScripts(): boolean {
-		return false;
+		return true;
 	}
 
 	// 画像は data: で埋め込むので、`vscode-resource` を解決する service worker は要らない。
@@ -95,7 +99,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			sanitizerConfig: {
 				allowRelativeMediaPaths: true,
 				allowRelativeLinkPaths: true,
-			}
+			},
+			markedExtensions: [markedMermaidExtension()],
 		}, token);
 
 		// サニタイズ済みの HTML を受け取ってから、ローカルの画像だけを data: に差し替える。
@@ -112,22 +117,69 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const colorMap = TokenizationRegistry.getColorMap();
 		const tokenCss = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
 
+		// mermaid ブロックを含む文書だけ vendored mermaid.js（約3.5MB）を読み込む。含まない文書で
+		// 毎回読み込む無駄を避けるための条件分岐。
+		const hasMermaid = containsParadisMermaidBlock(media.html);
+		const mermaidScriptSource = hasMermaid ? await loadParadisMermaidScriptSource(this._fileService) : undefined;
+		if (token.isCancellationRequested) {
+			return '';
+		}
+		const mermaidEnabled = hasMermaid && mermaidScriptSource !== undefined;
+
+		// script-src は mermaid を使う文書でだけ許可する。許可しても実行できるのは、この HTML 自身が
+		// 埋め込む nonce 付き <script>（vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
+		// Markdown の記述内容や外部ソースからスクリプトを注入する余地はない。
+		const scriptSrc = mermaidEnabled ? ` script-src 'nonce-${nonce}';` : '';
+
 		return `<!DOCTYPE html>
 <html>
 	<head>
 		<meta charset="utf-8">
-		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;">
+		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;${scriptSrc}">
 		<style nonce="${nonce}">
 			${DEFAULT_MARKDOWN_STYLES}
 			${PARADIS_FRONTMATTER_STYLES}
 			${PARADIS_INLINE_MEDIA_STYLES}
 			${tokenCss}
 			${this.getTransparencyBackgroundCssRule('body.paradis-markdown-body')}
+			.paradis-mermaid.mermaid { display: flex; justify-content: center; background: none; }
 		</style>
 	</head>
 	<body class="paradis-markdown-body">
 		${frontMatter.htmlPrefix}${media.html}
+		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
 	</body>
 </html>`;
+	}
+
+	/**
+	 * vendored mermaid.js 本体と、それに続く初期化コードを nonce 付き <script> として埋め込む。
+	 *
+	 * `securityLevel: 'strict'` で HTML ラベル注入やクリックイベント等のスクリプト機能を無効化する
+	 * （mermaid 標準のサンドボックスモード）。テーマは `--vscode-editor-background` の輝度から
+	 * 単純に判定する（webview 内側のこのドキュメント自身には `vscode-dark` 等のクラスが付かないため）。
+	 */
+	private _renderMermaidScripts(nonce: string, mermaidScriptSource: string): string {
+		return `<script nonce="${nonce}">${mermaidScriptSource}</script>
+		<script nonce="${nonce}">
+			(function () {
+				function isDarkBackground() {
+					var probe = document.createElement('div');
+					probe.style.color = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background');
+					document.body.appendChild(probe);
+					var rgb = getComputedStyle(probe).color;
+					document.body.removeChild(probe);
+					var m = rgb.match(/\\d+/g);
+					if (!m || m.length < 3) { return false; }
+					return (0.299 * Number(m[0]) + 0.587 * Number(m[1]) + 0.114 * Number(m[2])) < 128;
+				}
+				try {
+					mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: isDarkBackground() ? 'dark' : 'default' });
+					mermaid.run({ querySelector: '.paradis-mermaid' });
+				} catch (err) {
+					console.error('[paradis] mermaid render failed', err);
+				}
+			})();
+		</script>`;
 	}
 }
