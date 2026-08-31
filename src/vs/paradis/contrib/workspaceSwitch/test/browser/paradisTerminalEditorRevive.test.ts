@@ -88,9 +88,12 @@ suite('paradisTerminalEditorRevive', () => {
 		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
 		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']) });
 
-		const resolved = paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a'));
-		assert.strictEqual(resolved.findRevivedId, false);
-		assert.notStrictEqual(resolved.id, 77);
+		// 別スペースが持つ孤児は**払い出さない**。ただし新規シェルには倒さず、数値 ID のまま
+		// pty host 側の nonce 照合（`getRevivedPtyNewId`）へ委ねる。
+		assert.deepStrictEqual(
+			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a')),
+			{ id: 12, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: true },
+		);
 	});
 
 	test('refuses to attach to a pty id this window already holds when the nonce proves nothing', async () => {
@@ -185,7 +188,7 @@ suite('paradisTerminalEditorRevive', () => {
 		assert.notStrictEqual(resolved.id, 12);
 	});
 
-	test('an unreachable pty host neither throws out of the switch nor blocks resolving', async () => {
+	test('an unreachable pty host keeps the nonce-checked path instead of dropping the session', async () => {
 		collectUnexpectedErrors();
 		const disposables = store.add(new DisposableStore());
 		disposables.add(paradisRegisterTerminalReviveIndexSource({
@@ -197,8 +200,11 @@ suite('paradisTerminalEditorRevive', () => {
 		// refresh が投げると切替がロールバックしてしまうので、ここは必ず解決すること。
 		await paradisRefreshTerminalReviveIndex('worktree:target');
 
-		const resolved = paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(5, 'nonce-a'));
-		assert.strictEqual(resolved.findRevivedId, false);
-		assert.notStrictEqual(resolved.id, 5);
+		// **索引が引けないことを理由に新規シェルへ倒さない。** pty host が遅い/落ちている回に
+		// 生きているシェルを捨てることになるため。行き先の nonce 照合が最終的な安全弁になる。
+		assert.deepStrictEqual(
+			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(5, 'nonce-a')),
+			{ id: 5, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: true },
+		);
 	});
 });

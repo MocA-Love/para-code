@@ -78,7 +78,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 入れる側も必ず stateKey を渡すこと。
 	 */
 	private readonly _parkedGroups = new Map<string, ITerminalGroup[]>();
-	private readonly _activeGroupsByScope: Map<string, string>;
+
+	/**
+	 * スコープ復帰の最中は active group の記録を止める。復帰そのものが発火させる
+	 * `onDidChangeActiveGroup` で台帳を上書きさせないため（`applyScope` のコメント参照）。
+	 */
+	private _suppressActiveGroupTracking = false;
 
 	/** 孤児復活のやり直しが走っている最中か（切り替えのたびに多重起動しないため）。 */
 	private _orphanRevivalRetrying = false;
@@ -273,9 +278,6 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		const loadedNonceMapping = this.loadNonceMapping();
 		this._nonceScopes = new Map(loadedNonceMapping);
 		this._restoredNonceScopes = new Map(loadedNonceMapping);
-		this._activeGroupsByScope = paradisParseTerminalActiveGroups(
-			this.storageService.get(ParadisTerminalWorkspaceScope.ACTIVE_GROUPS_STORAGE_KEY, StorageScope.WORKSPACE),
-		);
 
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
 		this._register(this.terminalGroupService.onDidChangeActiveGroup(group => this.rememberActiveGroup(group)));
@@ -1803,23 +1805,37 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 
-		// 他エントリのグループを退避
-		for (const group of [...groupService.groups]) {
-			const stateKey = this._groupRepositories.get(group);
-			if (stateKey !== undefined && stateKey !== targetStateKey) {
-				this.parkGroup(groupService, group, stateKey);
+		// **入れ替えの間は active group の記録を止める。** park も unpark も
+		// `onDidChangeActiveGroup` を発火しうる（`paradisUnparkGroup` は groups が1件になった
+		// 時点で `setActiveGroupByIndex(0, true)` を呼ぶ）。このとき `isSwitching` は既に false
+		// （`_switching` は switch 本体の finally で戻り、applyScope はその後の完了参加者から
+		// 走る）なので、記録側のガードを素通りして「たまたま最初に並んだグループ」で台帳を
+		// 上書きしてしまい、直後の `restoreActiveGroup` がその値を読んで復元が無意味になる。
+		//
+		// 抑止は**入れ替えの開始から**かける。unpark 直前からでは、target のタグを持つ可視
+		// グループが残っている状態で他スコープを park したときに同じ上書きが起きる。
+		this._suppressActiveGroupTracking = true;
+		try {
+			// 他エントリのグループを退避
+			for (const group of [...groupService.groups]) {
+				const stateKey = this._groupRepositories.get(group);
+				if (stateKey !== undefined && stateKey !== targetStateKey) {
+					this.parkGroup(groupService, group, stateKey);
+				}
 			}
-		}
 
-		// 切り替え先のグループを復帰
-		const parked = this._parkedGroups.get(targetStateKey);
-		if (parked) {
-			this._parkedGroups.delete(targetStateKey);
-			for (const group of parked) {
-				groupService.paradisUnparkGroup(group);
+			// 切り替え先のグループを復帰
+			const parked = this._parkedGroups.get(targetStateKey);
+			if (parked) {
+				this._parkedGroups.delete(targetStateKey);
+				for (const group of parked) {
+					groupService.paradisUnparkGroup(group);
+				}
 			}
+			this.restoreActiveGroup(groupService, targetStateKey);
+		} finally {
+			this._suppressActiveGroupTracking = false;
 		}
-		this.restoreActiveGroup(groupService, targetStateKey);
 
 		// エディタターミナルの復元は working set の deserialize → reviveInput が担うが、
 		// 復路の working set が park 世代と一致しない等でルックアップに到達しないと、
@@ -1833,7 +1849,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	private rememberActiveGroup(group: ITerminalGroup | undefined, stateKey = this.workspaceSwitchService.activeStateKey, allowDuringSwitch = false): void {
-		if ((!allowDuringSwitch && this.workspaceSwitchService.isSwitching)
+		if (this._suppressActiveGroupTracking
+			|| (!allowDuringSwitch && this.workspaceSwitchService.isSwitching)
 			|| group === undefined || stateKey === undefined || this._groupRepositories.get(group) !== stateKey) {
 			return;
 		}
@@ -1841,7 +1858,6 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (identity === undefined) {
 			return;
 		}
-		this._activeGroupsByScope.set(stateKey, identity);
 		const persisted = paradisParseTerminalActiveGroups(
 			this.storageService.get(ParadisTerminalWorkspaceScope.ACTIVE_GROUPS_STORAGE_KEY, StorageScope.WORKSPACE),
 		).get(stateKey);
@@ -1858,10 +1874,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this.storageService.get(ParadisTerminalWorkspaceScope.ACTIVE_GROUPS_STORAGE_KEY, StorageScope.WORKSPACE),
 		).get(stateKey);
 		if (identity === undefined) {
-			this._activeGroupsByScope.delete(stateKey);
 			return;
 		}
-		this._activeGroupsByScope.set(stateKey, identity);
 		const group = groupService.groups.find(candidate => paradisTerminalGroupIdentity(candidate.terminalInstances) === identity);
 		if (group !== undefined) {
 			groupService.activeGroup = group;
@@ -1931,7 +1945,6 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 永続化から除外)、こちらの discardGroup が _groupRepositories / _parkedGroups を掃除する。
 	 */
 	private retireScope(stateKey: string): void {
-		this._activeGroupsByScope.delete(stateKey);
 		this.persistActiveGroup(stateKey, undefined);
 		const liveInstances = [...this.collectLiveInstances().values()];
 		const retiringInstanceIds = paradisCollectRetiringTerminalInstanceIds(

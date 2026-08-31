@@ -16,7 +16,13 @@ import { TestStorageService } from '../../../../../workbench/test/common/workben
 import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridTerminalGeneration } from '../../browser/sessionTerminalGridLayout.js';
 import { ISessionTerminalGridLayoutSource, SessionTerminalGridLayoutService } from '../../browser/sessionTerminalGridLayoutService.js';
 
-const STORAGE_KEY = 'paradis.terminalGrid.layouts';
+const STORAGE_KEY = 'paradis.terminalGrid.layouts.v2';
+
+/**
+ * 数値 ID 時代のキー。**書き込みは v2 キーへ移した**ので、旧ビルドが v2 のエントリを読んで
+ * 弾き、次の保存で丸ごと落としてしまう事故が起きない（旧キーは旧ビルドのために据え置く）。
+ */
+const LEGACY_STORAGE_KEY = 'paradis.terminalGrid.layouts';
 
 function leaf(terminal: number, size = 100): ISerializedNode {
 	return { type: 'leaf', data: { terminal }, size };
@@ -119,5 +125,26 @@ suite('SessionTerminalGridLayoutService', () => {
 		service.flush();
 
 		assert.deepStrictEqual(readStored(storageService), [entryOf(1, 2), rearranged]);
+	});
+
+	test('picks up the pre-v2 layout once and then leaves the old key to older builds', () => {
+		const storageService = disposables.add(new TestStorageService());
+		const legacy = [entryOf(1, 2)];
+		storageService.store(LEGACY_STORAGE_KEY, JSON.stringify(legacy), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		const lifecycleService = { onWillShutdown: Event.None } as ILifecycleService;
+		const service = disposables.add(new SessionTerminalGridLayoutService(storageService, lifecycleService));
+		disposables.add(service.registerSource(new TestLayoutSource(entryOf(31, 32), [{ restored: 1, current: 31 }, { restored: 2, current: 32 }])));
+
+		// 旧キーのレイアウトはそのまま引き継げる（アップグレードで並びが消えない）。
+		assert.notStrictEqual(service.takeRestoredLayout(new Set([1, 2])), undefined);
+
+		service.flush();
+
+		assert.deepStrictEqual({
+			v2: JSON.parse(storageService.get(STORAGE_KEY, StorageScope.WORKSPACE) ?? '[]'),
+			// **旧キーは書き換えない。** 旧ビルドは数値 ID しか読めないので、v2 を旧キーへ書くと
+			// 旧ビルドが弾いて次の保存で丸ごと落とす。据え置けば互いのデータを壊さない。
+			legacyUntouched: JSON.parse(storageService.get(LEGACY_STORAGE_KEY, StorageScope.WORKSPACE) ?? '[]'),
+		}, { v2: [entryOf(31, 32)], legacyUntouched: legacy });
 	});
 });

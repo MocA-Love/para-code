@@ -931,7 +931,9 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
-	test('keeps the folder-matched recovered state when a later recovery phase fails', async () => {
+	// 失敗した復旧のジャーナルは残さない。残すと storage 永続なので、起動のたび・切り替えのたびに
+	// 同じ場所で落ち続け、スペース切り替えがそのウィンドウで二度と成立しなくなる。
+	test('discards the journal when a recovery phase fails so the failure cannot repeat forever', async () => {
 		const testDisposables = new DisposableStore();
 		let sourceEditor: TestFileEditorInput | undefined;
 		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
@@ -966,7 +968,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				sourceVisible: harness.parts.activeGroup.contains(sourceEditor!),
 				isSwitching: harness.workspaceSwitchService.isSwitching,
 				journalPresent: harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE) !== undefined,
-			}, { activeStateKey: 'space-a', sourceVisible: true, isSwitching: false, journalPresent: true });
+			}, { activeStateKey: 'space-a', sourceVisible: true, isSwitching: false, journalPresent: false });
 		} finally {
 			await harness?.parts.activeGroup.closeAllEditors();
 			testDisposables.dispose();
@@ -1000,7 +1002,10 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 					toUri: URI.file('/workspace-b').toString(),
 					phase: 'started',
 				}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-				context.storageService.store('paradis.workspaceSwitch.ownerLease.999', Date.now(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				// リースは張らない。**起動時でも生きたリースは尊重する**ようになったので、リースを
+				// 張ると「他ウィンドウが処理中」として正しく見送られ、この test の主題（`started` は
+				// UI を触らずジャーナルだけ捨てる）が確かめられなくなる。生きたリースの側は
+				// 'does not recover a transaction whose other window owner still renews its lease' が見る。
 			});
 
 			await harness.workspaceSwitchService.recoverInterruptedSwitch();
@@ -1012,6 +1017,35 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			}, { currentVisible: true, staleVisible: false, transaction: undefined });
 		} finally {
 			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	// タイマーだけは、ロールバックが途中で失敗してジャーナルを消せなかった回でも必ず止める。
+	// 止め損ねると 3 秒ごとの storage 書き込みがウィンドウを閉じるまで走り続ける。
+	test('stops renewing the owner lease even when the rollback could not clear the journal', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (phase === 'end' && uri.path === '/workspace-b') {
+					throw new Error('target deleted');
+				}
+			});
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const editorScope = (harness.workspaceSwitchService as unknown as {
+				editorScopeService: { rollbackSwitch(stateKey: string | undefined, uri: URI | undefined): Promise<void> };
+			}).editorScopeService;
+			// ロールバックも失敗させて `clearSwitchTransaction` へ到達させない（ジャーナルは残る）。
+			editorScope.rollbackSwitch = async () => { throw new Error('rollback failed'); };
+
+			await assert.rejects(harness.workspaceSwitchService.switchRepository('space-b'));
+
+			assert.deepStrictEqual({
+				leaseKeys: harness.storageService.keys(StorageScope.WORKSPACE, StorageTarget.MACHINE)
+					.filter(key => key.startsWith('paradis.workspaceSwitch.ownerLease.')),
+				journalPresent: harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE) !== undefined,
+			}, { leaseKeys: [], journalPresent: true });
+		} finally {
 			testDisposables.dispose();
 		}
 	});
@@ -2057,7 +2091,18 @@ async function createHarness(
 				onDidChangeActiveGroup: { value: onDidChangeActiveGroup.event },
 				onDidDisposeGroup: { value: onDidDisposeGroup.event },
 				paradisParkGroup: { value: (group: ITerminalGroup) => { parkedGroups.add(group); } },
-				paradisUnparkGroup: { value: (group: ITerminalGroup) => { parkedGroups.delete(group); } },
+				paradisUnparkGroup: {
+					value: (group: ITerminalGroup) => {
+						parkedGroups.delete(group);
+						// 実物は復帰後に見えるグループが1件になった時点で `setActiveGroupByIndex(0, true)`
+						// を呼び、`onDidChangeActiveGroup` を発火する。この副作用が active group 台帳を
+						// 上書きしうるので、ハーネスでも再現する（省くと復元のリグレッションを検知できない）。
+						const visible = groups.filter(candidate => !parkedGroups.has(candidate));
+						if (visible.length === 1) {
+							terminalGroupService.activeGroup = visible[0];
+						}
+					},
+				},
 			});
 			setActiveTerminalGroup = group => { terminalGroupService.activeGroup = group; };
 			activeTerminalGroup = () => terminalGroupService.activeGroup;

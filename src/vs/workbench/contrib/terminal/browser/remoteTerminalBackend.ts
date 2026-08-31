@@ -238,10 +238,15 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 
 		try {
 			if (paradisRequireOrphanClaim && paradisExpectedNonce !== undefined) {
-				const claimedId = await this._remoteTerminalChannel.paradisClaimAndAttachToProcess(this._getWorkspaceId(), id, paradisExpectedNonce);
-				const claimedPty = this._instantiationService.createInstance(RemotePty, claimedId, true, this._remoteTerminalChannel);
-				this._ptys.set(claimedId, claimedPty);
-				return claimedPty;
+				try {
+					const claimedId = await this._remoteTerminalChannel.paradisClaimAndAttachToProcess(this._getWorkspaceId(), id, paradisExpectedNonce);
+					const claimedPty = this._instantiationService.createInstance(RemotePty, claimedId, true, this._remoteTerminalChannel);
+					this._ptys.set(claimedId, claimedPty);
+					return claimedPty;
+				} catch (claimError) {
+					// PARA-PATCH: losing the claim must not cost the user their shell, see localTerminalBackend.
+					this._logService.warn(`Couldn't claim the orphan process, falling back to the nonce lookup: ${claimError.message}`);
+				}
 			}
 			const newId = await this._remoteTerminalChannel.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
 			return await this.attachToProcess(newId);

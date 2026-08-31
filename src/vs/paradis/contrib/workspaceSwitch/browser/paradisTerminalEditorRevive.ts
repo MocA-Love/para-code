@@ -275,8 +275,10 @@ export function paradisClearTerminalReviveIndex(): void {
  *
  * 1. nonce で孤児 PTY が引ければ、その現世代 ID へ**書き換えて** `findRevivedId: false` で繋ぐ。
  *    `_revivedPtyIdMap` の世代問題を完全に迂回できる。
- * 2. 復元中に対象を証明できなければ、数値 ID へは触らず新規端末へ倒す。
- * 3. 復元外では、その `id` を今このウィンドウの誰かが掴んでいなければ upstream 復元へ委ねる。
+ * 2. 引けなくても nonce で身元が定まるなら、数値 ID のまま `findRevivedId: true` へ委ねる。
+ *    行き先の `getRevivedPtyNewId` が nonce を照合するので、そこが最終的な安全弁になる。
+ * 3. 身元が一意に決まらない（`ambiguous`）か、その `id` を今このウィンドウの誰かが掴んで
+ *    いるときだけ、数値 ID へ触らず新規端末へ倒す。
  */
 export function paradisResolveRevivedTerminalEditorInput(deserializedInput: IDeserializedTerminalEditorInput): IDeserializedTerminalEditorInput & { findRevivedId: boolean } {
 	// 供給元が未登録なら（起動直後のエディタ復元など、このサービスが立ち上がる前）判定材料が
@@ -314,10 +316,17 @@ export function paradisResolveRevivedTerminalEditorInput(deserializedInput: IDes
 		}
 	}
 
-	// During a Working Set restore, an input must be attributable to exactly one restore context.
-	// Falling through to an old numeric id would re-open the cross-generation collision this guard
-	// exists to prevent. Outside a restore, upstream startup revival remains unchanged.
-	if (restoreResolution.kind !== 'unrelated' || heldPtyIdsUnknown || heldPtyIds?.has(deserializedInput.id) === true) {
+	// 索引で引けなかった入力を新規端末へ倒すのは、身元が**まったく**定まらないときだけにする。
+	// nonce がある入力の行き先（`findRevivedId: true` → `attachToRevivedProcess(id, nonce)` →
+	// `PtyService.getRevivedPtyNewId`）は、この fork が既に nonce 照合を入れてあり、別端末を
+	// 指していれば `PARADIS_UNRESOLVABLE_PTY_ID` を返す fail-closed 経路。世代跨ぎの取り違えは
+	// そこで塞がれるので、ここで重ねて塞ぐ必要はない。
+	//
+	// **ここを `kind !== 'unrelated'` にしないこと。** 索引は `raceTimeout(500ms)` で落ちうるし、
+	// 所有権フィルタで孤児が落ちることもある。「索引ミス＝新規シェル」にすると、pty host が
+	// 遅いだけの回に生きているシェルのセッションを黙って捨てることになり、この索引が防ごうと
+	// している取り違えより実害が大きい。塞ぐのは身元を一意に決められない `ambiguous` だけ。
+	if (restoreResolution.kind === 'ambiguous' || heldPtyIdsUnknown || heldPtyIds?.has(deserializedInput.id) === true) {
 		return { ...deserializedInput, id: PARADIS_UNRESOLVABLE_PTY_ID, findRevivedId: false };
 	}
 
