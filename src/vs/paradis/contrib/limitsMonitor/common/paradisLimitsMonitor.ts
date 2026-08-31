@@ -228,22 +228,6 @@ export function paradisLimitsWorstPercent(account: IParadisLimitsAccount): numbe
 	return values.length > 0 ? Math.max(...values) : undefined;
 }
 
-/**
- * リセットの絶対時刻を短く整形する（例: '00:30'、日を跨ぐなら '7/29 00:30'）。
- *
- * 相対表記だけだと、7日枠のように残りが長い枠で「結局いつ空くのか」が掴めない。
- * PC・モバイルとも epoch ms だけを運び、見せ方は表示する端末側で決める
- * （PC側で文字列化するとタイムゾーン差がそのまま混入する）。
- */
-export function paradisLimitsFormatResetClock(resetsAt: number | undefined, now: number): string | undefined {
-	if (resetsAt === undefined || !isFinite(resetsAt) || resetsAt <= now) {
-		return undefined;
-	}
-	const date = new Date(resetsAt);
-	const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-	return new Date(now).toDateString() === date.toDateString() ? time : `${date.getMonth() + 1}/${date.getDate()} ${time}`;
-}
-
 /** 'in 3h 23m' / 'in 3d 12h' 形式の残り時間表示。過去や不正値は undefined。 */
 export function paradisLimitsFormatCountdown(resetsAt: number | undefined, now: number): string | undefined {
 	if (resetsAt === undefined || !isFinite(resetsAt)) {

@@ -8,25 +8,31 @@
 
 // いま開いているスペース (リポジトリ / worktree) に設定された色を CSS 変数
 // `--paradis-space-accent` として各ウィンドウの <body> に流すだけの contribution。
-// 実際に色を使うのは media/paradisSpaceAccent.css (エディタタブのフォーカスリングのみ)。
-//
-// テーマの `focusBorder` 自体は書き換えない。リスト・入力欄・ボタンのフォーカス表示まで
-// スペース色になると、暗いパレット色を選んだスペースでフォーカス位置が読めなくなるため。
+// 実際に色を使うのは media/paradisSpaceAccent.css (エディタタブ上端の色帯のみ)。
 
 import { getWindows, onDidRegisterWindow } from '../../../../base/browser/dom.js';
 import { Color } from '../../../../base/common/color.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { editorBackground } from '../../../../platform/theme/common/colors/editorColors.js';
+import { isHighContrast } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { TAB_ACTIVE_BACKGROUND } from '../../../../workbench/common/theme.js';
+import { TAB_ACTIVE_BACKGROUND, TAB_SELECTED_BACKGROUND } from '../../../../workbench/common/theme.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisResolveSpaceInfo } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import './media/paradisSpaceAccent.css';
 
-/** タブのフォーカスリングとして成立させたい、タブ背景との最小コントラスト比。 */
+/** タブ上端の色帯として成立させたい、タブ背景との最小コントラスト比。 */
 const MIN_CONTRAST_RATIO = 3;
 
+/**
+ * フォーカスされていないグループのアクティブタブに使う減光率。upstream の
+ * `tab.unfocusedActiveBorderTop` 既定値 (`transparent(tab.activeBorderTop, 0.5)`,
+ * theme.ts) と同じ 0.5 に揃え、フォーカスの有無が帯の濃さからも分かる状態を保つ。
+ */
+const UNFOCUSED_GROUP_ALPHA = 0.5;
+
 const CSS_VARIABLE = '--paradis-space-accent';
+const CSS_VARIABLE_UNFOCUSED = '--paradis-space-accent-unfocused';
 
 /**
  * スペース色を CSS 変数として全ウィンドウへ配る。
@@ -62,20 +68,24 @@ class ParadisSpaceAccentContribution extends Disposable implements IWorkbenchCon
 		}
 	}
 
-	private applyTo(targetWindow: Window, accent: string | undefined): void {
+	private applyTo(targetWindow: Window, accent: Color | undefined): void {
 		const body = targetWindow.document.body;
 		if (accent) {
-			body.style.setProperty(CSS_VARIABLE, accent);
+			body.style.setProperty(CSS_VARIABLE, accent.toString());
+			// フォーカスされていないグループのアクティブタブ用に、あらかじめ減光した値も配る
+			// (upstream の `tab.unfocusedActiveBorderTop` と同じ考え方。CSS 側で毎回演算しない)。
+			body.style.setProperty(CSS_VARIABLE_UNFOCUSED, accent.transparent(UNFOCUSED_GROUP_ALPHA).toString());
 		} else {
 			body.style.removeProperty(CSS_VARIABLE);
+			body.style.removeProperty(CSS_VARIABLE_UNFOCUSED);
 		}
 	}
 
 	/**
 	 * いま開いているスペースの色を、タブ背景に対して見えるところまで明度を寄せて返す。
-	 * スペース色が未設定なら undefined (CSS 側が `focusBorder` にフォールバックする)。
+	 * スペース色が未設定なら undefined (CSS 側が upstream 既定の色帯にフォールバックする)。
 	 */
-	private resolveAccent(): string | undefined {
+	private resolveAccent(): Color | undefined {
 		const spaceColor = paradisResolveSpaceInfo(
 			this.workspaceSwitchService.activeStateKey,
 			this.workspaceSwitchService.repositories,
@@ -85,22 +95,33 @@ class ParadisSpaceAccentContribution extends Disposable implements IWorkbenchCon
 			return undefined;
 		}
 
-		const accent = Color.fromHex(spaceColor);
 		const theme = this.themeService.getColorTheme();
+		// ハイコントラストテーマの帯色 (`activeContrastBorder` 等) はアクセシビリティ上テーマが
+		// 意図的に握っている値なので、装飾目的のスペース色で上書きしない。
+		if (isHighContrast(theme.type)) {
+			return undefined;
+		}
+
+		const accent = Color.fromHex(spaceColor);
 		// タブ背景は既定でエディタ背景を引き継ぐが、テーマによっては半透明を指定できるため、
 		// エディタ背景と合成してから比較する (透明のまま比べると輝度が実際と食い違う)。
 		const editorBg = theme.getColor(editorBackground) ?? (theme.type === 'light' ? Color.white : Color.black);
-		const tabBg = theme.getColor(TAB_ACTIVE_BACKGROUND)?.makeOpaque(editorBg) ?? editorBg;
-		if (tabBg.getContrastRatio(accent) >= MIN_CONTRAST_RATIO) {
-			return accent.toString();
+		// 色帯はアクティブタブ (tab.activeBackground) だけでなく、選択中タブ (tab.selectedBackground、
+		// 既定は listInactiveSelectionBackground で別の色) にも出る。両方に対して見える色を選ぶため、
+		// コントラストが厳しい方を基準に判定・調整する。
+		const candidateBackgrounds = [TAB_ACTIVE_BACKGROUND, TAB_SELECTED_BACKGROUND]
+			.map(colorId => theme.getColor(colorId)?.makeOpaque(editorBg) ?? editorBg);
+		const worstBg = candidateBackgrounds.reduce((worst, bg) =>
+			bg.getContrastRatio(accent) < worst.getContrastRatio(accent) ? bg : worst);
+		if (worstBg.getContrastRatio(accent) >= MIN_CONTRAST_RATIO) {
+			return accent;
 		}
 
 		// 12色のパレットには背景に沈む暗い色 (slate 等) も混ざる。暗い背景では明るく、
-		// 明るい背景では暗く寄せて、どのスペースでもリングが見える状態を保つ。
-		const adjusted = tabBg.isLighter()
-			? tabBg.reduceRelativeLuminace(accent, MIN_CONTRAST_RATIO)
-			: tabBg.increaseRelativeLuminace(accent, MIN_CONTRAST_RATIO);
-		return adjusted.toString();
+		// 明るい背景では暗く寄せて、どのスペースでも色帯が見える状態を保つ。
+		return worstBg.isLighter()
+			? worstBg.reduceRelativeLuminace(accent, MIN_CONTRAST_RATIO)
+			: worstBg.increaseRelativeLuminace(accent, MIN_CONTRAST_RATIO);
 	}
 }
 

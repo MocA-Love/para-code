@@ -46,8 +46,9 @@ function formatCountdown(resetsAt: number | undefined, now: number): string | un
 }
 
 /**
- * リセットの絶対時刻（PC版 paradisLimitsFormatResetClock と同じ規則）。
- * PCは epoch ms だけを送り、見せ方は端末側で決める（タイムゾーン差の混入を避ける）。
+ * リセットの絶対時刻。PC版パネルは相対時間のみの表示に変えたが（2026-08-30、バッジ縦位置
+ * ずれ修正と合わせて絶対時刻表記を撤去）、モバイルは見る場面が異なるため引き続き併記する
+ * (意図的な分岐)。PCは epoch ms だけを送り、見せ方は端末側で決める（タイムゾーン差の混入を避ける）。
  */
 function formatResetClock(resetsAt: number | undefined, now: number): string | undefined {
 	if (resetsAt === undefined || !isFinite(resetsAt) || resetsAt <= now) { return undefined; }

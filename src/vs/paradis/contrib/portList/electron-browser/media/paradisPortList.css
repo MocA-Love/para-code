@@ -100,6 +100,12 @@
 	border-color: var(--vscode-focusBorder);
 }
 
+/* upstream の `.monaco-workbench input[type="text"]:focus`(vs/workbench/browser/media/style.css)を打ち消す。
+	フォーカス表示は上の `:focus-within` の border-color が担う。 */
+.monaco-workbench .paradis-port-list-panel .ppl-search-box input:focus {
+	outline: none !important;
+}
+
 .paradis-port-list-panel .ppl-search-box input {
 	background: none;
 	border: none;
@@ -338,8 +344,9 @@
 /* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
 	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
 	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
-	同等以上の詳細度で打ち消す必要がある（クラス単独の `outline: none` では負ける）。 */
+	同等以上の詳細度で打ち消す必要がある（クラス単独の `outline: none` では負ける）。
+	詳細度が同点(0,3,0)になるため、読み込み順に依存させず !important で確定させる。 */
 .monaco-workbench .paradis-port-list-panel:focus,
 .monaco-workbench .paradis-port-list-panel:focus-visible {
-	outline: none;
+	outline: none !important;
 }

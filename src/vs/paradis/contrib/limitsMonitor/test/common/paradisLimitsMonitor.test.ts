@@ -8,7 +8,6 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisLimitsAccount,
 	paradisLimitsFormatCountdown,
-	paradisLimitsFormatResetClock,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsSeverity,
 	paradisLimitsStatusFromCswap,
@@ -105,7 +104,6 @@ suite('ParadisLimitsMonitor', () => {
 		assert.deepStrictEqual(paradisNormalizeCodexLimitWindows(undefined, null, () => undefined), {});
 		assert.strictEqual(paradisLimitsWorstPercent(account), undefined);
 		assert.strictEqual(paradisLimitsWorstPercent({ ...account, scoped: [] }), undefined);
-		assert.strictEqual(paradisLimitsFormatResetClock(undefined, Date.now()), undefined);
 		assert.strictEqual(paradisLimitsFormatCountdown(undefined, Date.now()), undefined);
 	});
 

@@ -539,9 +539,8 @@
 }
 
 .paradis-binding-dialog .pbd-mcp-logo {
-	width: 22px;
-	height: 22px;
-	border-radius: 5px;
+	width: 18px;
+	height: 18px;
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -549,17 +548,9 @@
 }
 
 .paradis-binding-dialog .pbd-mcp-logo svg {
-	width: 15px;
-	height: 15px;
+	width: 18px;
+	height: 18px;
 	display: block;
-}
-
-.paradis-binding-dialog .pbd-mcp-logo.claude {
-	background: #d97757;
-}
-
-.paradis-binding-dialog .pbd-mcp-logo.codex {
-	background: #f5f5f5;
 }
 
 .paradis-binding-dialog .pbd-mc-name {

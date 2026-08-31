@@ -7,8 +7,9 @@
 
 /* ---------------------------------------------------------------- タイトルバーのボタン */
 
-/* 隣の「エージェント一覧」(paradisAgentLiveWindow.css) と作法を揃える: 平常時はアイコンだけ、
- * ホバー / キーボードフォーカスでラベルが開く。件数バッジだけは閉じているときも出す。 */
+/* 隣の「エージェント一覧」(paradisAgentLiveWindow.css) と作法を揃える: アイコンだけでは
+ * 「四角を並べたグリッド」調の意匠が近く見分けづらいという指摘があったため、ラベルは
+ * ホバー展開ではなく常時表示にしている。件数バッジも閉じているときから出す。 */
 .monaco-workbench .paradis-browser-live-titlebar-widget {
 	display: inline-flex;
 	align-items: center;
@@ -46,38 +47,11 @@
 
 .monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label {
 	display: inline-block;
-	max-width: 0;
-	opacity: 0;
-	margin-left: 0;
+	margin-left: 6px;
 	color: var(--vscode-foreground);
 	font: inherit;
 	overflow: hidden;
 	white-space: nowrap;
-}
-
-.monaco-enable-motion .monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label,
-.monaco-workbench.monaco-enable-motion .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label {
-	transition: max-width 160ms ease, opacity 160ms ease, margin-left 160ms ease;
-	transition-delay: 200ms;
-}
-
-.monaco-reduce-motion .monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label,
-.monaco-workbench.monaco-reduce-motion .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label {
-	transition-duration: 0ms !important;
-}
-
-.monaco-workbench .paradis-browser-live-titlebar-widget:hover > .paradis-browser-live-titlebar-label,
-.monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible > .paradis-browser-live-titlebar-label {
-	max-width: 200px;
-	opacity: 1;
-	margin-left: 6px;
-}
-
-.monaco-enable-motion .monaco-workbench .paradis-browser-live-titlebar-widget:hover > .paradis-browser-live-titlebar-label,
-.monaco-enable-motion .monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible > .paradis-browser-live-titlebar-label,
-.monaco-workbench.monaco-enable-motion .paradis-browser-live-titlebar-widget:hover > .paradis-browser-live-titlebar-label,
-.monaco-workbench.monaco-enable-motion .paradis-browser-live-titlebar-widget:focus-visible > .paradis-browser-live-titlebar-label {
-	transition-delay: 0ms;
 }
 
 .monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge {
