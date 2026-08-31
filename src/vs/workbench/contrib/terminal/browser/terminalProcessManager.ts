@@ -292,8 +292,8 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 					// given generations ago, which on its own names whichever terminal holds that number
 					// now; the nonce is what says which one was meant.
 					const remoteAttachTarget = shellLaunchConfig.attachPersistentProcess;
-						const result = remoteAttachTarget.findRevivedId || remoteAttachTarget.paradisResolvedToCurrentPtyId === true
-							? await backend.attachToRevivedProcess(remoteAttachTarget.id, remoteAttachTarget.shellIntegrationNonce, remoteAttachTarget.paradisResolvedToCurrentPtyId === true)
+					const result = remoteAttachTarget.findRevivedId || remoteAttachTarget.paradisResolvedToCurrentPtyId === true
+						? await backend.attachToRevivedProcess(remoteAttachTarget.id, remoteAttachTarget.shellIntegrationNonce, remoteAttachTarget.paradisResolvedToCurrentPtyId === true)
 						: await backend.attachToProcess(remoteAttachTarget.id);
 					if (result) {
 						newProcess = result;
@@ -345,8 +345,8 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 				if (shellLaunchConfig.attachPersistentProcess) {
 					// PARA-PATCH: hand the recorded nonce over so the pty host can refuse a mismatched terminal
 					const attachTarget = shellLaunchConfig.attachPersistentProcess;
-						const result = attachTarget.findRevivedId || attachTarget.paradisResolvedToCurrentPtyId === true
-							? await backend.attachToRevivedProcess(attachTarget.id, attachTarget.shellIntegrationNonce, attachTarget.paradisResolvedToCurrentPtyId === true)
+					const result = attachTarget.findRevivedId || attachTarget.paradisResolvedToCurrentPtyId === true
+						? await backend.attachToRevivedProcess(attachTarget.id, attachTarget.shellIntegrationNonce, attachTarget.paradisResolvedToCurrentPtyId === true)
 						: await backend.attachToProcess(attachTarget.id);
 					if (result) {
 						newProcess = result;

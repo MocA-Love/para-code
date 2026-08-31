@@ -3,10 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisRestoreTerminalGroupActiveInstance } from '../../browser/paradisTerminalGroupRestore.js';
-import { ITerminalGroup, ITerminalInstance } from '../../browser/terminal.js';
+import { ITerminalGroup, ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 
 suite('paradisRestoreTerminalGroupActiveInstance', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();

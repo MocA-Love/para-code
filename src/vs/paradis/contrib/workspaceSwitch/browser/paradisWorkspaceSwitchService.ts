@@ -261,11 +261,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private readonly _activeSwitchBodies = new Set<Promise<void>>();
 	private readonly _shutdownOperations = new Set<Promise<void>>();
 	private _switchRecovery: Promise<void> | undefined;
-	private _hasAttemptedSwitchRecovery = false;
 	private _shuttingDown = false;
 	private readonly _liveSwitchTransactionIds = new Set<string>();
 	private readonly _ownerWindowId = mainWindow.vscodeWindowId;
-	private _switchOwnerLeaseTimer: ReturnType<typeof setInterval> | undefined;
+	private _switchOwnerLeaseTimer: number | undefined;
 	get isSwitching(): boolean {
 		return this._switching;
 	}
@@ -322,7 +321,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		super();
 		this._register(toDisposable(() => {
 			if (this._switchOwnerLeaseTimer !== undefined) {
-				clearInterval(this._switchOwnerLeaseTimer);
+				mainWindow.clearInterval(this._switchOwnerLeaseTimer);
 				this._switchOwnerLeaseTimer = undefined;
 			}
 		}));
@@ -631,12 +630,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		if (this._activeSwitchBodies.size > 0) {
 			return Promise.resolve();
 		}
-		// The first call is startup recovery. A lease left by the renderer that crashed must not defer
-		// automatic repair merely because the new process received another window id. Electron main
-		// already prevents two live main windows from owning the same workspace.
-		const ignoreOwnerLease = !this._hasAttemptedSwitchRecovery;
-		this._hasAttemptedSwitchRecovery = true;
-		const recovery = this.trackShutdownOperation(this.doRecoverInterruptedSwitch(ignoreOwnerLease));
+		// **他ウィンドウのリースは起動時も尊重する。** 同一ワークスペースを1ウィンドウしか開けない
+		// 前提は、この機能自身が WORKSPACE ストレージを複数ウィンドウで共有している事実と矛盾する
+		// （active group 台帳・グリッド台帳・このジャーナルはいずれも共有前提で書かれている）。
+		// クラッシュした renderer のリースは 3 秒ごとの更新が止まるため
+		// `SWITCH_OWNER_LEASE_STALE_MS` (10 秒) で自然に stale になり、そこから復旧できる。
+		// それまでの間に見送っても、復旧は次の切り替えでも試みるので取りこぼさない。
+		const recovery = this.trackShutdownOperation(this.doRecoverInterruptedSwitch());
 		this._switchRecovery = recovery;
 		const clearRecovery = () => {
 			if (this._switchRecovery === recovery) {
@@ -647,7 +647,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		return recovery;
 	}
 
-	private async doRecoverInterruptedSwitch(ignoreOwnerLease: boolean): Promise<void> {
+	private async doRecoverInterruptedSwitch(): Promise<void> {
 		const transactions = paradisParseWorkspaceSwitchTransactions(
 			this.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE),
 		);
@@ -675,11 +675,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 		const structurallyValid = relevant.filter(candidate => this.isValidStateKeyUri(candidate.transaction.fromStateKey, candidate.fromUri)
 			&& this.isValidStateKeyUri(candidate.transaction.toStateKey, candidate.toUri));
-		if (!ignoreOwnerLease && structurallyValid.some(candidate => !this.canClaimSwitchTransaction(candidate.transaction))) {
+		if (structurallyValid.some(candidate => !this.canClaimSwitchTransaction(candidate.transaction))) {
 			// Do not replay an older journal underneath a live owner of the same current endpoint.
 			return;
 		}
-		const valid = structurallyValid.filter(candidate => ignoreOwnerLease || this.canClaimSwitchTransaction(candidate.transaction))
+		const valid = [...structurallyValid]
 			.sort((left, right) => right.transaction.createdAt - left.transaction.createdAt);
 		// A newer `started` entry has not changed the UI and must not hide an older transaction that
 		// proves target/source state was already applied.
@@ -736,6 +736,18 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			} catch (clearError) {
 				this.logService.error('[ParadisWorkspaceSwitch] Failed to clear recovered switch transactions', clearError);
 			}
+		} catch (error) {
+			// **失敗した復旧を繰り返さない。** ジャーナルは storage 永続なので、残したままだと
+			// 起動のたび・切り替えのたびに同じ場所で落ち続ける（フォルダは復旧では変わらないので
+			// 選定条件が自然に解けることもない）。`restoreScope` が失敗した working set を
+			// finally で捨てるのと同じ考え方で、再現する死んだ状態はここで手放す。
+			this.logService.error('[ParadisWorkspaceSwitch] Discarding an interrupted switch transaction after a failed recovery', error);
+			try {
+				this.clearSwitchTransactions(supersededTransactionIds);
+			} catch (clearError) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to discard a failed switch transaction', clearError);
+			}
+			throw error;
 		} finally {
 			this._switching = false;
 			this.setPendingSwitchKey(undefined);
@@ -788,7 +800,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this._liveSwitchTransactionIds.add(transaction.id);
 		this.renewSwitchOwnerLease();
 		if (this._switchOwnerLeaseTimer === undefined) {
-			this._switchOwnerLeaseTimer = setInterval(
+			this._switchOwnerLeaseTimer = mainWindow.setInterval(
 				() => this.renewSwitchOwnerLease(),
 				ParadisWorkspaceSwitchService.SWITCH_OWNER_LEASE_REFRESH_MS,
 			);
@@ -801,7 +813,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			return;
 		}
 		if (this._switchOwnerLeaseTimer !== undefined) {
-			clearInterval(this._switchOwnerLeaseTimer);
+			mainWindow.clearInterval(this._switchOwnerLeaseTimer);
 			this._switchOwnerLeaseTimer = undefined;
 		}
 		try {
@@ -1033,12 +1045,33 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			if (this._shuttingDown) {
 				throw new Error('Cancelled a queued space switch because the workbench is shutting down');
 			}
-			// The previous slot may have been released by the 60s watchdog while its uncancellable body
-			// is still alive. Starting another folder mutation would corrupt shared switch state.
+			// 60秒の締め切りでスロットだけ解放された回は、キャンセル不能な本体がまだ生きている
+			// ことがある。その上に別のフォルダ変更を重ねると共有状態が壊れるので、ここで**待つ**。
+			//
+			// **即 throw で弾かないこと。** 締め切りによるスロット解放は「本体が生きていても次を
+			// 通す」ための仕組みなので、弾いてしまうと解放の意味が消える。1度ハングしただけで
+			// そのウィンドウの切り替えが二度と成立しなくなり、リロードするまで直らない。
 			if (this._activeSwitchBodies.size > 0) {
-				throw new Error('The previous space switch is still running');
+				await raceTimeout(
+					Promise.all([...this._activeSwitchBodies].map(body => body.catch(() => undefined))),
+					ParadisWorkspaceSwitchService.SWITCH_SLOT_TIMEOUT_MS,
+				);
+				if (this._activeSwitchBodies.size > 0) {
+					throw new Error('The previous space switch is still running');
+				}
+				// 待っている間にシャットダウンが始まっていることがある。**必ず取り直す。**
+				// 上の判定は待機の前なので、ここで見ないと畳んでいる最中に updateFolders まで進む。
+				if (this._shuttingDown) {
+					throw new Error('Cancelled a queued space switch because the workbench is shutting down');
+				}
 			}
-			await this.recoverInterruptedSwitch();
+			// 復旧は best-effort。ここで投げると、壊れたジャーナルが残っている限り毎回同じ例外で
+			// 切り替えが落ち続ける（ジャーナルは storage 永続なので再起動でも直らない）。
+			try {
+				await this.recoverInterruptedSwitch();
+			} catch (recoveryError) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to recover an interrupted switch; continuing with the requested switch', recoveryError);
+			}
 			// 実行が始まる前に追い越されていたら、この回は何もしない。**span を張る前に判定する**：
 			// 飛ばした回まで計測に載せると、フェーズ内訳の分布に 0ms 付近の山ができて読めなくなる。
 			if (coalesceGeneration !== undefined && coalesceGeneration !== this._coalesceGeneration) {
@@ -1162,13 +1195,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 					if (previousKey !== undefined) {
 						timeSyncPhase('capture_scope', () => {
-						this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
+							this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
 							// **`sourceCaptured` はここで立てる。** 退避が済んだ時点でロールバックの
 							// 対象になる。パネル表示の保存まで含めた後ろへ動かすと、そちらが投げたときに
 							// 退避済みのエディタ状態を復元しないまま戻ってしまう。
-						sourceCaptured = true;
-						this.updateSwitchTransaction(switchTransaction, 'sourceCaptured');
-						this.savePanelVisibilityFor(previousKey);
+							sourceCaptured = true;
+							this.updateSwitchTransaction(switchTransaction, 'sourceCaptured');
+							this.savePanelVisibilityFor(previousKey);
 						});
 
 						// エディタターミナルは working set の保存後・適用前にインスタンスを input から
@@ -1214,7 +1247,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
 						// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
 						this._workingSetTerminalNonces.set(previousKey, parkedNonces);
-				}
+					}
 
 					// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
 					// 「可視エディタが使用中のリポジトリ」を close しない (extensions/git/src/model.ts の
@@ -1427,6 +1460,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					throw error;
 				} finally {
 					this._switching = false;
+
+					// **リースのタイマーだけは必ず止める。** ジャーナル自体は復旧のために残ってよいが、
+					// ロールバックのどれか1フェーズが投げて `clearSwitchTransaction` に到達しなかった
+					// 回に、3秒ごとの storage 書き込みがウィンドウを閉じるまで走り続けるのは別問題。
+					// 既に消えている id を渡しても無害（Set の delete）。
+					if (switchTransaction !== undefined) {
+						this.untrackLiveSwitchTransaction(switchTransaction.id);
+					}
 
 					// 完了時は切り替え先スコープへ、途中で例外が起きた場合は元スコープへ発火する。
 					// onWillSwitchScope で退避済みの状態 (SCM入力の下書き・park済みターミナル) は

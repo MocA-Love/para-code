@@ -49,7 +49,18 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 
 	declare readonly _serviceBrand: undefined;
 
-	private static readonly STORAGE_KEY = 'paradis.terminalGrid.layouts';
+	/**
+	 * Where nonce-keyed (v2) layouts are written.
+	 *
+	 * **Never write these back to the legacy key.** An older build's `isValidEntryTerminals` only
+	 * accepts numeric ids, so it drops every v2 entry on parse and then persists that pruned set,
+	 * silently destroying the layouts; the "keep what another window stored" merge cannot save them
+	 * because they never survive the read. A separate key lets both builds keep their own snapshot.
+	 */
+	private static readonly STORAGE_KEY = 'paradis.terminalGrid.layouts.v2';
+
+	/** The numeric-id era key. Read **only**, for the one-time migration. */
+	private static readonly LEGACY_STORAGE_KEY = 'paradis.terminalGrid.layouts';
 
 	private readonly _sources = new Set<ISessionTerminalGridLayoutSource>();
 	private readonly _saveScheduler = this._register(new RunOnceScheduler(() => this.flush(), SAVE_DELAY_MS));
@@ -159,7 +170,14 @@ export class SessionTerminalGridLayoutService extends Disposable implements ISes
 
 	private _readStoredEntries(): ISessionTerminalGridLayoutEntry[] {
 		const raw = this._storageService.get(SessionTerminalGridLayoutService.STORAGE_KEY, StorageScope.WORKSPACE);
-		return (raw ? sessionParseGridLayoutStorage(raw) : undefined) ?? [];
+		const entries = (raw ? sessionParseGridLayoutStorage(raw) : undefined) ?? [];
+		if (entries.length > 0 || raw !== undefined) {
+			return entries;
+		}
+		// Adopt the pre-v2 snapshot once. Afterwards only the new key matters; the legacy key is left
+		// untouched so an older build still finds the layout it last wrote.
+		const legacyRaw = this._storageService.get(SessionTerminalGridLayoutService.LEGACY_STORAGE_KEY, StorageScope.WORKSPACE);
+		return (legacyRaw ? sessionParseGridLayoutStorage(legacyRaw) : undefined) ?? [];
 	}
 
 	private _restoreEntries(): ISessionTerminalGridLayoutEntry[] {

@@ -238,10 +238,18 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 		await this._connectToDirectProxy();
 		try {
 			if (paradisRequireOrphanClaim && paradisExpectedNonce !== undefined) {
-				const claimedId = await this._proxy.paradisClaimAndAttachToProcess(this._getWorkspaceId(), id, paradisExpectedNonce);
-				const claimedPty = new LocalPty(claimedId, true, this._proxy);
-				this._ptys.set(claimedId, claimedPty);
-				return claimedPty;
+				try {
+					const claimedId = await this._proxy.paradisClaimAndAttachToProcess(this._getWorkspaceId(), id, paradisExpectedNonce);
+					const claimedPty = new LocalPty(claimedId, true, this._proxy);
+					this._ptys.set(claimedId, claimedPty);
+					return claimedPty;
+				} catch (claimError) {
+					// PARA-PATCH: losing the claim must not cost the user their shell. The claim also demands
+					// the pty still be an orphan, so it fails merely by racing the winner's short lease or
+					// a re-run of `isOrphaned()`. The nonce lookup below stays fail-closed against another
+					// terminal, so fall back to it rather than launching a new shell.
+					this._logService.warn(`Couldn't claim the orphan process, falling back to the nonce lookup: ${claimError.message}`);
+				}
 			}
 			const newId = await this._proxy.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
 			return await this.attachToProcess(newId);

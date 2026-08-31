@@ -412,8 +412,6 @@ export interface IPtyService {
 	getWslPath(original: string, direction: 'unix-to-win' | 'win-to-unix'): Promise<string>;
 	// PARA-PATCH: `paradisExpectedNonce` proves the caller means this very terminal, see PtyService
 	getRevivedPtyNewId(workspaceId: string, id: number, paradisExpectedNonce?: string): Promise<number | undefined>;
-	/** PARA-CODE: atomically resolves, claims and attaches an orphan PTY by nonce. */
-	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
 	setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void>;
 	getTerminalLayoutInfo(args: IGetTerminalLayoutInfoArgs): Promise<ITerminalsLayoutInfo | undefined>;
 	reduceConnectionGraceTime(): Promise<void>;
