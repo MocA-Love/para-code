@@ -59,6 +59,7 @@ import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { hasKey, isString } from '../../../../base/common/types.js';
 import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
 import { paradisCaptureTerminalCreationScopeLease, paradisSetTerminalCreationScopeLease } from './paradisTerminalCreationScope.js';
+// PARA-PATCH: Para Code restores the active pane after every group member has been created
 import { paradisRestoreTerminalGroupActiveInstance } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalGroupRestore.js';
 import { paradisJoinKeptDetaches, paradisPrepareTerminalShutdown, paradisShouldKeepTerminalProcessAlive, paradisShouldKeepTerminalProcessesAlive } from './paradisTerminalShutdownPolicy.js';
 // PARA-PATCH: Para Code parks editor terminals of other spaces outside any editor input
