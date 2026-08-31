@@ -38,7 +38,10 @@ const result = spawnSync(process.execPath, [
 	'--strip-common-prefix',
 	'--validate',
 	'--strict',
-	'--wait',
+	// NOTE: do not pass --wait. It blocks on Sentry's server-side processing with a fixed 300s
+	// budget, and that budget repeatedly expired *after* the upload itself had already succeeded,
+	// failing whole release builds over telemetry post-processing. Sentry processes the bundle
+	// asynchronously either way; --validate/--strict still catch bad source maps locally.
 ], {
 	cwd: repositoryRoot,
 	env: process.env,
