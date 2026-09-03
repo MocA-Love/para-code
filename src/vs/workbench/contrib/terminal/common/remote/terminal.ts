@@ -61,6 +61,7 @@ export const enum RemoteTerminalChannelRequest {
 	RestartPtyHost = '$restartPtyHost',
 	CreateProcess = '$createProcess',
 	AttachToProcess = '$attachToProcess',
+	ParadisClaimAndAttachToProcess = '$paradisClaimAndAttachToProcess',
 	DetachFromProcess = '$detachFromProcess',
 	ListProcesses = '$listProcesses',
 	GetLatency = '$getLatency',

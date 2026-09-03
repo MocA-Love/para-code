@@ -2492,6 +2492,9 @@ class AreaPicker {
 }
 
 // PARA-PATCH: only initialize the preload in Electron so Node tests can import its extracted automation-key state machine safely (Para Browser MCP automation input isolation)
-if ((globalThis as { process?: { versions?: { electron?: string } } }).process?.versions?.electron) {
+// NOTE: sandboxed preloads receive `process` as an injected wrapper argument, not as a property of
+// `globalThis`, so `globalThis.process` is always undefined here. Reading it disabled this preload
+// entirely (no automation-key acks, no `__vscode_helpers`); always probe the bare `process` binding.
+if (typeof process !== 'undefined' && (process.versions?.electron || process.type === 'renderer')) {
 	init();
 }

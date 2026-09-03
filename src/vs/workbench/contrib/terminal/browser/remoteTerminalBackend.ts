@@ -231,12 +231,23 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 	// PARA-PATCH: `paradisExpectedNonce` names the terminal the caller means, the same way the local
 	// backend does. Without it a restored tab on a remote host attaches to whatever holds its old
 	// number now. See PtyService#getRevivedPtyNewId.
-	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string): Promise<ITerminalChildProcess | undefined> {
+	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
 		if (!this._remoteTerminalChannel) {
 			throw new Error(`Cannot create remote terminal when there is no remote!`);
 		}
 
 		try {
+			if (paradisRequireOrphanClaim && paradisExpectedNonce !== undefined) {
+				try {
+					const claimedId = await this._remoteTerminalChannel.paradisClaimAndAttachToProcess(this._getWorkspaceId(), id, paradisExpectedNonce);
+					const claimedPty = this._instantiationService.createInstance(RemotePty, claimedId, true, this._remoteTerminalChannel);
+					this._ptys.set(claimedId, claimedPty);
+					return claimedPty;
+				} catch (claimError) {
+					// PARA-PATCH: losing the claim must not cost the user their shell, see localTerminalBackend.
+					this._logService.warn(`Couldn't claim the orphan process, falling back to the nonce lookup: ${claimError.message}`);
+				}
+			}
 			const newId = await this._remoteTerminalChannel.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
 			return await this.attachToProcess(newId);
 		} catch (e) {

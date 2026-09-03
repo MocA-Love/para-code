@@ -116,6 +116,8 @@ export class PtyService extends Disposable implements IPtyService {
 	private readonly _paradisRevivedNewIdByNonce = new Map<string, number>();
 	/** PARA-CODE: which entries above name a terminal taken back from the daemon rather than revived. */
 	private readonly _paradisAdoptedNonces = new Set<string>();
+	/** Short leases serialize nonce-proven orphan attachment across renderer processes. */
+	private readonly _paradisOrphanAttachClaims = new Map<number, number>();
 
 	// #region Pty service contribution RPC calls
 
@@ -370,6 +372,7 @@ export class PtyService extends Disposable implements IPtyService {
 		};
 		const persistentProcess = new PersistentTerminalProcess(id, process, workspaceId, workspaceName, shouldPersist, cols, rows, processLaunchOptions, unicodeVersion, this._reconnectConstants, this._logService, isReviving && isString(shellLaunchConfig.initialText) ? shellLaunchConfig.initialText : undefined, rawReviveBuffer, shellLaunchConfig.icon, shellLaunchConfig.color, shellLaunchConfig.name, shellLaunchConfig.fixedDimensions, paradisAdoptTarget);
 		process.onProcessExit(event => {
+			this._paradisOrphanAttachClaims.delete(id);
 			this._revivedPtyOldIdByNewId.delete(this._getRevivingProcessId(workspaceId, id));
 			// PARA-PATCH: let go of the nonce this terminal was answering for. Nothing else clears
 			// these, and an entry naming a terminal that has exited is worse than no entry: the
@@ -440,6 +443,45 @@ export class PtyService extends Disposable implements IPtyService {
 		}
 	}
 
+	/**
+	 * Resolve and claim an orphan in one pty-host RPC. Renderer-side list/held checks cannot prevent
+	 * two windows from racing on the same snapshot, so the final nonce/orphan decision lives here.
+	 */
+	@traceRpc
+	async paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number> {
+		await paradisAdoptionSettled();
+		const expectedNonce = paradisTerminalIdentityNonce(paradisExpectedNonce);
+		if (expectedNonce === undefined) {
+			throw new Error('Cannot claim a terminal without a valid nonce');
+		}
+		const resolvedId = await this.getRevivedPtyNewId(workspaceId, id, expectedNonce) ?? id;
+		const pty = this._throwIfNoPty(resolvedId);
+		if (pty.workspaceId !== workspaceId || this._paradisNonceOf(resolvedId) !== expectedNonce) {
+			throw new Error('The terminal claim did not match the requested workspace and nonce');
+		}
+		const now = Date.now();
+		const existingClaim = this._paradisOrphanAttachClaims.get(resolvedId);
+		if (existingClaim !== undefined && existingClaim > now) {
+			throw new Error('The terminal is already being attached by another renderer');
+		}
+		// Hold the reservation across the async orphan question. A bounded lease recovers if the
+		// renderer disappears before the RPC completes.
+		this._paradisOrphanAttachClaims.set(resolvedId, now + 10_000);
+		try {
+			if (!await pty.isOrphaned()) {
+				throw new Error('The terminal is already attached to a renderer');
+			}
+			await pty.attach();
+			// Keep a brief post-RPC lease until the winning renderer has registered its Local/RemotePty
+			// and can answer the next orphan question.
+			this._paradisOrphanAttachClaims.set(resolvedId, Date.now() + 2_000);
+			return resolvedId;
+		} catch (error) {
+			this._paradisOrphanAttachClaims.delete(resolvedId);
+			throw error;
+		}
+	}
+
 	@traceRpc
 	async updateTitle(id: number, title: string, titleSource: TitleEventSource): Promise<void> {
 		this._throwIfNoPty(id).setTitle(title, titleSource);
@@ -467,6 +509,7 @@ export class PtyService extends Disposable implements IPtyService {
 
 	@traceRpc
 	async detachFromProcess(id: number, forcePersist?: boolean): Promise<void> {
+		this._paradisOrphanAttachClaims.delete(id);
 		return this._throwIfNoPty(id).detach(forcePersist);
 	}
 
@@ -804,9 +847,13 @@ export class PtyService extends Disposable implements IPtyService {
 	private async _expandTerminalTab(workspaceId: string, tab: ITerminalTabLayoutInfoById, doneSet: Set<number>): Promise<ITerminalTabLayoutInfoDto> {
 		const expandedTerminals = (await Promise.all(tab.terminals.map(t => this._expandTerminalInstance(workspaceId, t, doneSet))));
 		const filtered = expandedTerminals.filter(term => term.terminal !== null) as IRawTerminalInstanceLayoutInfo<IProcessDetails>[];
+		const activePersistentProcessId = tab.activePersistentProcessId === undefined
+			? undefined
+			: filtered.find(term => term.terminal.id === tab.activePersistentProcessId
+				|| term.terminal.paradisRevivedFromPersistentProcessId === tab.activePersistentProcessId)?.terminal.id;
 		return {
 			isActive: tab.isActive,
-			activePersistentProcessId: tab.activePersistentProcessId,
+			activePersistentProcessId,
 			terminals: filtered
 		};
 	}
