@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { FindInFrameOptions, FoundInFrameResult } from '../../common/webviewManagerService.js';
-import { findInWebviewFrame, IWebviewFindFrame, stopFindInWebviewFrame } from '../../electron-main/webviewFrameFind.js';
+import { paradisFindInWebviewFrame, IParadisWebviewFindFrame, paradisStopFindInWebviewFrame } from '../../electron-main/paradisWebviewFrameFind.js';
 
 suite('Webview frame find fallback contract', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -16,10 +16,10 @@ suite('Webview frame find fallback contract', () => {
 	test('reports a missing frame or stock Electron frame as unsupported', () => {
 		const stockFrame = frameWithoutFind();
 		assert.deepStrictEqual([
-			findInWebviewFrame(undefined, 'term', {}, () => assert.fail('missing frame emitted a result')),
-			stopFindInWebviewFrame(undefined, false),
-			findInWebviewFrame(stockFrame, 'term', { findNext: true }, () => assert.fail('stock frame emitted a result')),
-			stopFindInWebviewFrame(stockFrame, true),
+			paradisFindInWebviewFrame(undefined, 'term', {}, () => assert.fail('missing frame emitted a result')),
+			paradisStopFindInWebviewFrame(undefined, false),
+			paradisFindInWebviewFrame(stockFrame, 'term', { findNext: true }, () => assert.fail('stock frame emitted a result')),
+			paradisStopFindInWebviewFrame(stockFrame, true),
 		], [false, false, false, false]);
 	});
 
@@ -27,7 +27,7 @@ suite('Webview frame find fallback contract', () => {
 		const findCalls: { readonly text: string; readonly options: FindInFrameOptions }[] = [];
 		const stopCalls: string[] = [];
 		const listeners = new Set<(event: unknown, result: FoundInFrameResult) => void>();
-		const frame: IWebviewFindFrame = {
+		const frame: IParadisWebviewFindFrame = {
 			findInFrame: (text, options) => findCalls.push({ text, options }),
 			stopFindInFrame: option => stopCalls.push(option),
 			on(_event, listener) { listeners.add(listener); return this; },
@@ -35,7 +35,7 @@ suite('Webview frame find fallback contract', () => {
 		};
 		const results: FoundInFrameResult[] = [];
 
-		assert.strictEqual(findInWebviewFrame(frame, 'needle', { findNext: true, forward: false }, result => results.push(result)), true);
+		assert.strictEqual(paradisFindInWebviewFrame(frame, 'needle', { findNext: true, forward: false }, result => results.push(result)), true);
 		assert.deepStrictEqual(findCalls, [{ text: 'needle', options: { findNext: true, forward: false } }]);
 		assert.strictEqual(listeners.size, 1);
 
@@ -50,12 +50,12 @@ suite('Webview frame find fallback contract', () => {
 		assert.deepStrictEqual(results, [finalResult]);
 		assert.strictEqual(listeners.size, 0);
 
-		assert.strictEqual(stopFindInWebviewFrame(frame, true), true);
+		assert.strictEqual(paradisStopFindInWebviewFrame(frame, true), true);
 		assert.deepStrictEqual(stopCalls, ['keepSelection']);
 	});
 });
 
-function frameWithoutFind(): IWebviewFindFrame {
+function frameWithoutFind(): IParadisWebviewFindFrame {
 	return {
 		on() { return this; },
 		removeListener() { return this; },

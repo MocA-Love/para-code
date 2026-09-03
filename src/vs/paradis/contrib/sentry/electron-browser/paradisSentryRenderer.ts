@@ -65,20 +65,40 @@ import('@sentry/electron/renderer').then(Sentry => {
 		captureParadisRendererException(scope, feature, operation, error, safeExtra, severity);
 	});
 	sentry = Sentry;
-
-	// Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
-	// workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
-	// preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
-	// Upstream surfaces this only as an unhandled rejection the first time a webview is opened, and
-	// the scope filter drops upstream-only events — so report it here instead: once per window, at
-	// startup, whether or not the user ever opens a webview.
-	if (!globalThis.isSecureContext || !globalThis.crypto?.subtle) {
-		captureParadisRendererException('patched', 'webview', 'insecure-context',
-			new Error('Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount'));
-	}
 }).catch(error => {
 	console.error('[Para Code] Failed to initialize renderer Sentry.', error);
+}).finally(() => {
+	// **The sentinel must not depend on Sentry having come up.** It used to sit in its own
+	// try/catch precisely so that a failed `Sentry.init` could not take it down with it, and a
+	// broken Sentry is exactly when an insecure context is most likely to go unnoticed.
+	try {
+		reportParadisInsecureContextSentinel();
+	} catch (error) {
+		console.error('[Para Code] Failed to report the insecure-context sentinel.', error);
+	}
 });
+
+/**
+ * Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
+ * workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
+ * preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
+ * Upstream surfaces this only as an unhandled rejection the first time a webview is opened, and
+ * the scope filter drops upstream-only events — so report it here instead: once per window, at
+ * startup, whether or not the user ever opens a webview.
+ *
+ * Falls back to the console when Sentry never initialized: `captureParadisRendererException`
+ * answers with an empty id in that case, and losing the sentinel silently is the one outcome
+ * this check exists to prevent.
+ */
+function reportParadisInsecureContextSentinel(): void {
+	if (globalThis.isSecureContext && globalThis.crypto?.subtle) {
+		return;
+	}
+	const message = 'Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount';
+	if (captureParadisRendererException('patched', 'webview', 'insecure-context', new Error(message)) === '') {
+		console.error(`[Para Code] ${message}`);
+	}
+}
 
 export function captureParadisRendererException(
 	scope: 'owned' | 'patched',

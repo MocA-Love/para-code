@@ -10,7 +10,7 @@ import { FoundInFrameResult, IWebviewManagerService, WebviewWebContentsId, Webvi
 import { WebviewProtocolProvider } from './webviewProtocolProvider.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { IFileService } from '../../files/common/files.js';
-import { findInWebviewFrame, IWebviewFindFrame, stopFindInWebviewFrame } from './webviewFrameFind.js';
+import { paradisFindInWebviewFrame, IParadisWebviewFindFrame, paradisStopFindInWebviewFrame } from './paradisWebviewFrameFind.js';
 
 export class WebviewMainService extends Disposable implements IWebviewManagerService {
 
@@ -60,7 +60,7 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 			return false;
 		}
 
-		return findInWebviewFrame(initialFrame as unknown as IWebviewFindFrame, text, {
+		return paradisFindInWebviewFrame(initialFrame as unknown as IParadisWebviewFindFrame, text, {
 			findNext: options.findNext,
 			forward: options.forward,
 		}, result => this._onFoundInFrame.fire(result));
@@ -74,7 +74,7 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 			return false;
 		}
 
-		return stopFindInWebviewFrame(initialFrame as unknown as IWebviewFindFrame, options.keepSelection);
+		return paradisStopFindInWebviewFrame(initialFrame as unknown as IParadisWebviewFindFrame, options.keepSelection);
 	}
 
 	// PARA-PATCH: non-throwing variant used by the find calls above.

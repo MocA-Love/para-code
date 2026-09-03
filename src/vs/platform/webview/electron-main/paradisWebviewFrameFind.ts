@@ -7,16 +7,16 @@
 
 import { FindInFrameOptions, FoundInFrameResult } from '../common/webviewManagerService.js';
 
-export interface IWebviewFindFrame {
+export interface IParadisWebviewFindFrame {
 	findInFrame?(text: string, options: FindInFrameOptions): void;
 	stopFindInFrame?(option: 'keepSelection' | 'clearSelection'): void;
-	on(event: 'found-in-frame', listener: (event: unknown, result: FoundInFrameResult) => void): IWebviewFindFrame;
-	removeListener(event: 'found-in-frame', listener: (event: unknown, result: FoundInFrameResult) => void): IWebviewFindFrame;
+	on(event: 'found-in-frame', listener: (event: unknown, result: FoundInFrameResult) => void): IParadisWebviewFindFrame;
+	removeListener(event: 'found-in-frame', listener: (event: unknown, result: FoundInFrameResult) => void): IParadisWebviewFindFrame;
 }
 
 /** Runs the optional Electron frame API and forwards only its terminal result. */
-export function findInWebviewFrame(
-	frame: IWebviewFindFrame | undefined,
+export function paradisFindInWebviewFrame(
+	frame: IParadisWebviewFindFrame | undefined,
 	text: string,
 	options: FindInFrameOptions,
 	onFinalResult: (result: FoundInFrameResult) => void,
@@ -36,7 +36,7 @@ export function findInWebviewFrame(
 }
 
 /** Stops Electron frame find when the running Electron version exposes that API. */
-export function stopFindInWebviewFrame(frame: IWebviewFindFrame | undefined, keepSelection: boolean | undefined): boolean {
+export function paradisStopFindInWebviewFrame(frame: IParadisWebviewFindFrame | undefined, keepSelection: boolean | undefined): boolean {
 	if (typeof frame?.stopFindInFrame !== 'function') {
 		return false;
 	}
