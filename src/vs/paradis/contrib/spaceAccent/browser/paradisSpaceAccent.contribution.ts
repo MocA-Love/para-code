@@ -19,10 +19,8 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { TAB_ACTIVE_BACKGROUND, TAB_SELECTED_BACKGROUND } from '../../../../workbench/common/theme.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisResolveSpaceInfo } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisAdjustSpaceAccent } from './paradisSpaceAccentColor.js';
 import './media/paradisSpaceAccent.css';
-
-/** タブ上端の色帯として成立させたい、タブ背景との最小コントラスト比。 */
-const MIN_CONTRAST_RATIO = 3;
 
 /**
  * フォーカスされていないグループのアクティブタブに使う減光率。upstream の
@@ -111,17 +109,7 @@ class ParadisSpaceAccentContribution extends Disposable implements IWorkbenchCon
 		// コントラストが厳しい方を基準に判定・調整する。
 		const candidateBackgrounds = [TAB_ACTIVE_BACKGROUND, TAB_SELECTED_BACKGROUND]
 			.map(colorId => theme.getColor(colorId)?.makeOpaque(editorBg) ?? editorBg);
-		const worstBg = candidateBackgrounds.reduce((worst, bg) =>
-			bg.getContrastRatio(accent) < worst.getContrastRatio(accent) ? bg : worst);
-		if (worstBg.getContrastRatio(accent) >= MIN_CONTRAST_RATIO) {
-			return accent;
-		}
-
-		// 12色のパレットには背景に沈む暗い色 (slate 等) も混ざる。暗い背景では明るく、
-		// 明るい背景では暗く寄せて、どのスペースでも色帯が見える状態を保つ。
-		return worstBg.isLighter()
-			? worstBg.reduceRelativeLuminace(accent, MIN_CONTRAST_RATIO)
-			: worstBg.increaseRelativeLuminace(accent, MIN_CONTRAST_RATIO);
+		return paradisAdjustSpaceAccent(accent, candidateBackgrounds);
 	}
 }
 

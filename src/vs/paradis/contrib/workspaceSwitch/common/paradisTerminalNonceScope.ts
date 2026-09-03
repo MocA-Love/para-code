@@ -19,6 +19,7 @@
 // この台帳は既存の ID 台帳を置き換えず、先に引く索引として足す。引けなければ従来どおりの経路へ
 // 落ちるだけなので、既存の解決結果は変わらない。
 
+import { paradisTerminalIdentityNonce } from '../../../../platform/terminal/common/terminal.js';
 import { paradisPreviousSessionPtyId } from './paradisTerminalProcessScope.js';
 
 /**
@@ -214,4 +215,71 @@ export function paradisPruneNonceScopes(nonceScopes: Map<string, string>, liveNo
 			nonceScopes.delete(nonce);
 		}
 	}
+}
+
+/** 孤児 PTY 1件の「今世代の PTY ID」と、台帳が証明できた所有スペース。 */
+export interface IParadisTerminalOrphanPtyOwner {
+	readonly id: number;
+	readonly stateKey: string;
+}
+
+/** 所有権の判定に必要な PTY 一覧の1件分。 */
+export interface IParadisOrphanPtyDetailLike extends IParadisScopedProcessDetailLike {
+	readonly workspaceId: string;
+}
+
+/**
+ * 孤児 PTY の一覧から「nonce で引けて、かつ所有スペースを証明できるもの」だけを取り出す。
+ *
+ * **nonce の一致だけでは attach を許さない。** nonce は端末の同一性は示すが、所属スペースは
+ * 示さない。台帳が所有者を答えられない、あるいは2つの台帳が食い違う端末をここで通すと、
+ * スペースをまたいで端末が移動し、前のスペースの作業ディレクトリでコマンドを打つ事故になる。
+ * したがって次の3つはいずれも除外する:
+ *
+ *  - 同じ nonce が2件以上ある（同一性を証明できない。先に見つかった方も含めて捨てる）
+ *  - どちらの台帳も所有者を知らない
+ *  - 復元時の台帳と現在の nonce 台帳が別のスペースを指している
+ *
+ * @param details `listProcesses()` が返した孤児 PTY の一覧。
+ * @param workspaceId このウィンドウのワークスペース ID。別ワークスペースの PTY は対象外。
+ * @param restoredPersistentProcessScopes 復元時点の ID 台帳。
+ * @param restoredNonceScopes 復元時点の nonce 台帳。
+ * @param nonceScopes 現在の nonce 台帳。
+ */
+export function paradisResolveOrphanPtyOwners(
+	details: readonly IParadisOrphanPtyDetailLike[],
+	workspaceId: string,
+	restoredPersistentProcessScopes: ReadonlyMap<number, string>,
+	restoredNonceScopes: ReadonlyMap<string, string>,
+	nonceScopes: ReadonlyMap<string, string>,
+): Map<string, IParadisTerminalOrphanPtyOwner> {
+	const result = new Map<string, IParadisTerminalOrphanPtyOwner>();
+	const seen = new Set<string>();
+	const duplicated = new Set<string>();
+	for (const detail of details) {
+		const nonce = paradisTerminalIdentityNonce(detail.shellIntegrationNonce);
+		if (nonce === undefined || detail.workspaceId !== workspaceId) {
+			continue;
+		}
+		if (seen.has(nonce)) {
+			duplicated.add(nonce);
+			result.delete(nonce);
+			continue;
+		}
+		seen.add(nonce);
+		const restoredStateKey = paradisLookupProcessDetailScope(detail, restoredPersistentProcessScopes, restoredNonceScopes);
+		const currentNonceStateKey = nonceScopes.get(nonce);
+		if (restoredStateKey !== undefined && currentNonceStateKey !== undefined && restoredStateKey !== currentNonceStateKey) {
+			continue;
+		}
+		const stateKey = currentNonceStateKey ?? restoredStateKey;
+		if (stateKey === undefined) {
+			continue;
+		}
+		result.set(nonce, { id: detail.id, stateKey });
+	}
+	for (const nonce of duplicated) {
+		result.delete(nonce);
+	}
+	return result;
 }

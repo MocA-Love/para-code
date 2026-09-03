@@ -37,7 +37,7 @@ import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
 import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
-import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
+import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension, paradisMarkdownCspContent } from './paradisMarkdownMermaid.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 
@@ -126,16 +126,11 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		}
 		const mermaidEnabled = hasMermaid && mermaidScriptSource !== undefined;
 
-		// script-src は mermaid を使う文書でだけ許可する。許可しても実行できるのは、この HTML 自身が
-		// 埋め込む nonce 付き <script>（vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
-		// Markdown の記述内容や外部ソースからスクリプトを注入する余地はない。
-		const scriptSrc = mermaidEnabled ? ` script-src 'nonce-${nonce}';` : '';
-
 		return `<!DOCTYPE html>
 <html>
 	<head>
 		<meta charset="utf-8">
-		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;${scriptSrc}">
+		<meta http-equiv="Content-Security-Policy" content="${paradisMarkdownCspContent(nonce, mermaidEnabled)}">
 		<style nonce="${nonce}">
 			${DEFAULT_MARKDOWN_STYLES}
 			${PARADIS_FRONTMATTER_STYLES}
