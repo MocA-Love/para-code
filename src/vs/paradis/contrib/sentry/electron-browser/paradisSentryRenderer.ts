@@ -10,6 +10,7 @@ import type * as SentryRenderer from '@sentry/electron/renderer';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
+import { paradisReportInsecureContextSentinel } from '../common/paradisInsecureContextSentinel.js';
 
 /**
  * Sample rate for spans that trace a routine user action rather than a failure.
@@ -78,26 +79,14 @@ import('@sentry/electron/renderer').then(Sentry => {
 	}
 });
 
-/**
- * Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
- * workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
- * preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
- * Upstream surfaces this only as an unhandled rejection the first time a webview is opened, and
- * the scope filter drops upstream-only events — so report it here instead: once per window, at
- * startup, whether or not the user ever opens a webview.
- *
- * Falls back to the console when Sentry never initialized: `captureParadisRendererException`
- * answers with an empty id in that case, and losing the sentinel silently is the one outcome
- * this check exists to prevent.
- */
+/** 実際の globals と Sentry を sentinel へ渡す。判定は `paradisInsecureContextSentinel.ts` 側。 */
 function reportParadisInsecureContextSentinel(): void {
-	if (globalThis.isSecureContext && globalThis.crypto?.subtle) {
-		return;
-	}
-	const message = 'Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount';
-	if (captureParadisRendererException('patched', 'webview', 'insecure-context', new Error(message)) === '') {
-		console.error(`[Para Code] ${message}`);
-	}
+	paradisReportInsecureContextSentinel({
+		isSecureContext: globalThis.isSecureContext,
+		subtleCrypto: globalThis.crypto?.subtle,
+		report: message => captureParadisRendererException('patched', 'webview', 'insecure-context', new Error(message)),
+		log: message => console.error(message),
+	});
 }
 
 export function captureParadisRendererException(

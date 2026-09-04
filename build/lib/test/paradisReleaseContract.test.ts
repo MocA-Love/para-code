@@ -160,6 +160,15 @@ suite('Para Code release contract', () => {
 		);
 	});
 
+	// **チェックサムをここに焼き付けない。** 以前は version と sha256 を固定値で突き合わせていたが、
+	// open-vsx は同じ version（1.0.11）を別のバイト列で再公開することがあり（9655b1741b3、
+	// 本家 microsoft/vscode も同じ理由で product.json を更新している）、そのたびにリリースビルドが
+	// 「Download built-in extensions」のチェックサム不一致で落ちた。固定値は自分たちの変更ではなく
+	// 第三者の都合で壊れるため、門としては機能せず更新作業だけが残る。
+	//
+	// 「product.json の値が実際の配布物と合っているか」は build/lib/extensions.ts の fromMarketplace が
+	// checksumSha256 を fetchUrls へ渡して実際のダウンロード時に検証する（para-release.yml）。
+	// ここで見るのは形式と、その値が fromMarketplace の要求どおりに消費されることまで。
 	test('consumes the current Open VSX manifest contract through fromMarketplace', async () => {
 		const product = readProductManifest();
 		assert.strictEqual(product.extensionsGallery.serviceUrl, 'https://open-vsx.org/vscode/gallery');
