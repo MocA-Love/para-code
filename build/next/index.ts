@@ -24,6 +24,7 @@ import { useEsbuildTranspile } from '../buildConfig.ts';
 import { isWebExtension, type IScannedBuiltinExtension } from '../lib/extensions.ts';
 import { runBuildFast } from './build-fast.ts';
 import { copyFile, mapWithConcurrency, MAX_CONCURRENT_FILE_OPERATIONS, transpileFile } from './transpile.ts';
+import { shouldInlineParadisSentryImport } from '../lib/paradisSentryBundling.ts';
 
 const globAsync = promisify(glob);
 
@@ -650,15 +651,16 @@ function inlineMinimistPlugin(): esbuild.Plugin {
 // PARA-PATCH: '@sentry/electron/renderer' is statically imported by the workbench bundle,
 // but packaged renderer windows load over vscode-file:// where a bare specifier can never
 // resolve (no Node resolver and no importmap for npm packages) — so statically imported
-// @sentry modules are inlined into the importing bundle. Dynamic @sentry imports (main and
-// shared/utility processes) stay external and resolve from node_modules.asar at runtime
-// via the bootstrap loader hooks.
+// @sentry modules are inlined into the importing bundle. The renderer import is deliberately
+// dynamic so an unbundled development workbench can fail open, but it must still be inlined for
+// production. Other dynamic @sentry imports (main and shared/utility processes) stay external and
+// resolve from node_modules.asar at runtime via the bootstrap loader hooks.
 function inlineParadisSentryPlugin(): esbuild.Plugin {
 	return {
 		name: 'inline-paradis-sentry',
 		setup(build) {
 			build.onResolve({ filter: /^@sentry(-internal)?\// }, (args) => {
-				if (args.kind === 'dynamic-import') {
+				if (!shouldInlineParadisSentryImport(args.path, args.kind)) {
 					return { path: args.path, external: true };
 				}
 				return { path: fileURLToPath(import.meta.resolve(args.path)), external: false };

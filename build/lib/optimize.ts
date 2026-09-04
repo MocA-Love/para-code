@@ -17,6 +17,7 @@ import { getTargetStringFromTsConfig } from './tsconfigUtils.ts';
 import { createRequire } from 'module';
 // PARA-PATCH: used by the @sentry inlining rule in the external-override esbuild plugin below.
 import { fileURLToPath } from 'url';
+import { shouldInlineParadisSentryImport } from './paradisSentryBundling.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -133,15 +134,11 @@ function bundleESMTask(opts: IBundleESMTaskOpts): NodeJS.ReadWriteStream {
 					build.onResolve({ filter: /^minimist$/ }, () => {
 						return { path: path.join(REPO_ROOT_PATH, 'node_modules', 'minimist', 'index.js'), external: false };
 					});
-					// PARA-PATCH: '@sentry/electron/renderer' is statically imported by the
-					// workbench bundle, but packaged renderer windows load over vscode-file://
-					// where a bare specifier can never resolve (no Node resolver and no
-					// importmap for npm packages) — so statically imported @sentry modules are
-					// inlined into the importing bundle. Dynamic @sentry imports (main and
-					// shared/utility processes) stay external and resolve from
-					// node_modules.asar at runtime via the bootstrap loader hooks.
+					// PARA-PATCH: renderer Sentry is asynchronous so unbundled browser ESM can fail
+					// open, but packaged vscode-file pages still need it inlined. Dynamic main and
+					// utility imports remain external for node_modules.asar resolution.
 					build.onResolve({ filter: /^@sentry(-internal)?\// }, args => {
-						if (args.kind === 'dynamic-import') {
+						if (!shouldInlineParadisSentryImport(args.path, args.kind)) {
 							return { path: args.path, external: true };
 						}
 						return { path: fileURLToPath(import.meta.resolve(args.path)), external: false };
@@ -296,4 +293,3 @@ function getBuildTarget() {
 	const tsconfigPath = path.join(REPO_ROOT_PATH, 'src', 'tsconfig.base.json');
 	return getTargetStringFromTsConfig(tsconfigPath);
 }
-

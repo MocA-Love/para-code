@@ -28,7 +28,7 @@ import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreati
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
-import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
+import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisResolveOrphanPtyOwners, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { IParadisTerminalOrphanPty, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
@@ -779,42 +779,15 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// 返事を待つ (ptyService の _isOrphaned)。所要時間がこの件数に比例するなら、孤児候補
 			// だけを判定する方向で往復を減らせる。手元の計測では件数が動かず確かめられなかった。
 			setParadisSpanAttributes({ safe_pty_processes: details.length });
-			const workspaceId = this.workspaceContextService.getWorkspace().id;
-			// 同じ nonce が2件返ることは無い想定だが、万一あれば同一性を証明できないので両方捨てる。
-			const seen = new Set<string>();
-			const duplicated = new Set<string>();
-			for (const detail of details) {
-				const nonce = paradisTerminalIdentityNonce(detail.shellIntegrationNonce);
-				if (nonce === undefined || detail.workspaceId !== workspaceId) {
-					continue;
-				}
-				if (seen.has(nonce)) {
-					duplicated.add(nonce);
-					result.delete(nonce);
-					continue;
-				}
-				seen.add(nonce);
-				const restoredStateKey = paradisLookupProcessDetailScope(
-					detail,
-					this._restoredPersistentProcessScopes,
-					this._restoredNonceScopes,
-				);
-				const currentNonceStateKey = this._nonceScopes.get(nonce);
-				// A stale/colliding ledger cannot prove ownership. Unknown and disagreeing owners are both
-				// excluded rather than allowing nonce identity alone to move a terminal across spaces.
-				if (restoredStateKey !== undefined && currentNonceStateKey !== undefined
-					&& restoredStateKey !== currentNonceStateKey) {
-					continue;
-				}
-				const stateKey = currentNonceStateKey ?? restoredStateKey;
-				if (stateKey === undefined) {
-					continue;
-				}
-				result.set(nonce, { id: detail.id, stateKey });
-			}
-			for (const nonce of duplicated) {
-				result.delete(nonce);
-			}
+			// 所有権の判定そのものは純粋な処理として切り出してある（判定規則は
+			// `paradisResolveOrphanPtyOwners` のコメントを参照）。
+			return paradisResolveOrphanPtyOwners(
+				details,
+				this.workspaceContextService.getWorkspace().id,
+				this._restoredPersistentProcessScopes,
+				this._restoredNonceScopes,
+				this._nonceScopes,
+			);
 		} catch (error) {
 			onUnexpectedError(error);
 		}

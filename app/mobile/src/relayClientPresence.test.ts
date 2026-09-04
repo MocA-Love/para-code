@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 /**
@@ -98,26 +103,36 @@ async function connectedClient(timers: Timers = new ManualTimers()): Promise<{ s
 	return { sockets, presence };
 }
 
+function requireSocket(sockets: readonly FakeSocket[], index: number): FakeSocket {
+	const socket = sockets[index];
+	if (!socket) {
+		throw new Error(`Expected relay socket ${index}, found ${sockets.length}`);
+	}
+	return socket;
+}
+
 describe('RelayClient presence handling', () => {
 	it('reconnects when the PC comes back, even while the handshake is still in flight', async () => {
 		// mux が無い＝ハンドシェイク中でも張り直すこと。PCは「捨てたセッションの応答」を
 		// 送れてしまうので、「muxが無いなら壊れようがない」という前提は成り立たない。
 		const { sockets } = await connectedClient();
-		sockets[0].deliverPresence(true);
-		sockets[0].deliverPresence(false);
-		sockets[0].deliverPresence(true);
+		const socket = requireSocket(sockets, 0);
+		socket.deliverPresence(true);
+		socket.deliverPresence(false);
+		socket.deliverPresence(true);
 
-		expect(sockets[0].closes).toEqual([{ code: 4002, reason: 'pc restarted' }]);
+		expect(socket.closes).toEqual([{ code: 4002, reason: 'pc restarted' }]);
 	});
 
 	it('leaves a freshly opened socket alone when the first presence says the PC is online', async () => {
 		// 判定はソケット単位。接続をまたいで持ち越した presence を offline→online と読み違えると、
 		// 開いたばかりのソケットを毎回無駄に閉じることになる。
 		const { sockets } = await connectedClient();
-		sockets[0].deliverPresence(true);
-		sockets[0].deliverPresence(true);
+		const socket = requireSocket(sockets, 0);
+		socket.deliverPresence(true);
+		socket.deliverPresence(true);
 
-		expect(sockets[0].closes).toEqual([]);
+		expect(socket.closes).toEqual([]);
 	});
 
 	it('does not carry an offline PC across a reconnect and close the new socket at once', async () => {
@@ -125,20 +140,23 @@ describe('RelayClient presence handling', () => {
 		// 接続をまたぐ値で判断していると、ここで開いたばかりのソケットを閉じてしまう。
 		const timers = new ManualTimers();
 		const { sockets } = await connectedClient(timers);
-		sockets[0].deliverPresence(false);
-		sockets[0].onclose?.({ code: 1006 });
+		const firstSocket = requireSocket(sockets, 0);
+		firstSocket.deliverPresence(false);
+		firstSocket.onclose?.({ code: 1006 });
 		// 予約された再接続だけを進める（接続タイムアウトは進めない）。
 		timers.runOldest();
 
 		expect(sockets.length).toBeGreaterThan(1);
-		sockets[1].deliverPresence(true);
-		expect(sockets[1].closes).toEqual([]);
+		const secondSocket = requireSocket(sockets, 1);
+		secondSocket.deliverPresence(true);
+		expect(secondSocket.closes).toEqual([]);
 	});
 
 	it('reports every presence change to the caller', async () => {
 		const { sockets, presence } = await connectedClient();
-		sockets[0].deliverPresence(false);
-		sockets[0].deliverPresence(true);
+		const socket = requireSocket(sockets, 0);
+		socket.deliverPresence(false);
+		socket.deliverPresence(true);
 
 		expect(presence).toEqual([false, true]);
 	});

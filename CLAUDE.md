@@ -43,6 +43,19 @@
 - 既存の関数・メソッドのシグネチャは変更しない。拡張が必要な場合はオプショナル引数の追加、または新規メソッドの追加で対応する（既存呼び出し側の差分＝コンフリクト面を増やさない）
 - `src/vs/base/`（`grid.ts`等の汎用エンジン）は import して再利用するのみとし、改変しない。ここはupstreamの変更頻度が高くコンフリクトしやすい領域
 
+### upstreamディレクトリへ新規ファイルを置かざるを得ない場合（2026-09-04追記）
+
+「新規ファイルは `src/vs/paradis/` か `src/vs/sessions/contrib/` に置く」が原則だが、**呼び出し元がupstreamの下位レイヤー（`src/vs/platform/` 等）にある抽出ヘルパー**は、この原則をそのまま適用できない。`src/vs/paradis/` は `src/vs/workbench/` の兄弟なので、platform や workbench から参照するには `eslint.config.js` へ逆方向importの許可を1件追加することになり、共有ファイルへのパッチ面が増える。ヘルパー1個のためにそれを増やすのは本末転倒。
+
+この場合に限り、**upstreamのディレクトリ内に新規ファイルを置いてよい**。ただし次を必ず守る:
+
+- ファイル名に `paradis` 接頭辞を付ける（例: `src/vs/platform/webview/electron-main/paradisWebviewFrameFind.ts`）
+- **exportするシンボル名にも接頭辞を付ける**（`IParadisWebviewFindFrame` / `paradisFindInWebviewFrame` のように）。ファイル名だけ避けてもシンボル名が衝突すると同じこと
+- ファイル冒頭に `PARA-CODE:` マーカーを付ける（通常の新規ファイルと同じ）
+- 対応するテストも同じ接頭辞で、対象ファイルの隣のtestディレクトリに置いてよい（`src/vs/workbench/contrib/**/test/` や `src/vs/platform/**/test/` を含む）。**PARA-PATCH箇所を検証するテストは、原則の「`workbench/contrib` 配下に新規ファイルを作らない」の例外として扱う**。テストのためだけに本体をレイヤーをまたいで動かさない
+
+判断基準は「呼び出し元をレイヤー的に移せるか」。移せるなら原則どおり `src/vs/paradis/` へ置く。移せないときだけこの例外を使う。
+
 ## 独自実装であることを明示するマーカー規約（2026-07-02整備、厳守）
 
 upstreamを定期的に取り込み続ける前提のため、「どこが独自実装か」を機械的に判別できることが常に重要。以下の2種類のマーカーを**必ず**使い分けること。

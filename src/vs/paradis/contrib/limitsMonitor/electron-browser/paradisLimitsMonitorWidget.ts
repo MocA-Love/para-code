@@ -39,6 +39,7 @@ import {
 	ParadisLimitsProvider,
 	ParadisLimitsSeverity
 } from '../common/paradisLimitsMonitor.js';
+import { paradisIsLimitsAccountHidden, paradisParseHiddenLimitsAccounts, paradisSerializeHiddenLimitsAccounts } from '../common/paradisLimitsHiddenAccounts.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './paradisLimitsMonitorPanel.js';
@@ -171,24 +172,9 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private loadHiddenAccountIds(): void {
 		// 外部変更(他ウィンドウの書き込み)を取り込む再読み込みでも呼ぶため、まず現在の内容を捨てる。
 		this.hiddenAccounts.clear();
-		const raw = this.storageService.get(PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, StorageScope.PROFILE);
-		if (!raw) {
-			return;
-		}
-		try {
-			const entries: unknown = JSON.parse(raw);
-			if (Array.isArray(entries)) {
-				for (const entry of entries) {
-					if (typeof entry === 'string') {
-						// 旧形式(id文字列のみ)からの移行。emailは分からないのでundefinedのまま扱う。
-						this.hiddenAccounts.set(entry, undefined);
-					} else if (entry && typeof entry === 'object' && typeof entry.id === 'string') {
-						this.hiddenAccounts.set(entry.id, typeof entry.email === 'string' ? entry.email : undefined);
-					}
-				}
-			}
-		} catch {
-			// 壊れた値は無視する(全アカウント表示側に倒す。非表示状態を失うだけで実害はない)
+		const loaded = paradisParseHiddenLimitsAccounts(this.storageService.get(PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, StorageScope.PROFILE));
+		for (const [id, email] of loaded) {
+			this.hiddenAccounts.set(id, email);
 		}
 	}
 
@@ -196,10 +182,9 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		// Codexの account.id はホームの絶対パス(例: /Users/<user>/.codex-2)で、マシン固有。
 		// StorageTarget.USERはSettings Syncの対象になるため、他マシンでは無関係な非表示設定
 		// やゴミが乗ってしまう。MACHINEにして同期対象から外す。
-		const entries = [...this.hiddenAccounts.entries()].map(([id, email]) => ({ id, email }));
 		this.storageService.store(
 			PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY,
-			JSON.stringify(entries),
+			paradisSerializeHiddenLimitsAccounts(this.hiddenAccounts),
 			StorageScope.PROFILE,
 			StorageTarget.MACHINE,
 		);
@@ -219,11 +204,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	 * 一時的にこけただけ・ログアウトしただけで、隠していたはずの行が勝手に復活する。
 	 */
 	private isAccountHidden(account: IParadisLimitsAccount): boolean {
-		if (!this.hiddenAccounts.has(account.id)) {
-			return false;
-		}
-		const hiddenEmail = this.hiddenAccounts.get(account.id);
-		return hiddenEmail === undefined || account.email === undefined || hiddenEmail === account.email;
+		return paradisIsLimitsAccountHidden(this.hiddenAccounts, account);
 	}
 
 	/** パネル(削除ボタンの隣の目アイコン)・非表示中リスト双方から呼ばれる、非表示状態の唯一の変更点。 */

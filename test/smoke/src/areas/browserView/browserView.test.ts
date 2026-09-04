@@ -161,6 +161,33 @@ export function setup(logger: Logger): void {
 			await browserPage.locator('#request-count', { hasText: String(previousCount + 1) }).waitFor();
 		});
 
+		// PARA-PATCH: the fork keeps a persistent zoom control in the browser URL bar.
+		it('shows and operates the persistent Para Code browser zoom control', async function () {
+			const app = this.app as Application;
+			await openBrowserPage(app, `${baseUrl}/navigation/a`, openPages);
+			const workbenchPage = app.code.driver.currentPage;
+			const stepper = workbenchPage.locator('.paradis-browser-zoom-stepper');
+			await stepper.waitFor();
+
+			const value = stepper.locator('.paradis-browser-zoom-value');
+			const initial = await value.textContent();
+			assert.match(initial ?? '', /^\d+%$/);
+			await stepper.locator('.paradis-browser-zoom-step', { hasText: '＋' }).click();
+			await workbenchPage.waitForFunction(
+				({ selector, previous }) => document.querySelector(selector)?.textContent !== previous,
+				{ selector: '.paradis-browser-zoom-value', previous: initial },
+			);
+			const changed = await value.textContent();
+			assert.match(changed ?? '', /^\d+%$/);
+			assert.ok((await value.getAttribute('aria-label'))?.includes(changed!), 'zoom value is missing from its accessible label');
+
+			await value.click();
+			await workbenchPage.waitForFunction(
+				({ selector, expected }) => document.querySelector(selector)?.textContent === expected,
+				{ selector: '.paradis-browser-zoom-value', expected: initial },
+			);
+		});
+
 		it('integrates page find and keyboard routing with the workbench', async function () {
 			const app = this.app as Application;
 			const browserPage = await openBrowserPage(app, `${baseUrl}/keyboard`, openPages);

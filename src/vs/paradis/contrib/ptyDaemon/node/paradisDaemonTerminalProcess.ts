@@ -71,7 +71,7 @@ export interface IParadisTerminalOrigin {
 	readonly shouldPersist: boolean;
 }
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
-import { IParadisAdoptTarget, paradisForgetHandle, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisForgetHandle, paradisRememberHandle } from './paradisTerminalHandleRegistry.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
 
 /**

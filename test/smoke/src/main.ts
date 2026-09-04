@@ -35,6 +35,9 @@ import { setup as setupChatModelConfigTests } from './areas/chat/chatModelConfig
 import { setup as setupAccessibilityTests } from './areas/accessibility/accessibility.test';
 import { setup as setupAgentsWindowTests } from './areas/agentsWindow/agentsWindow.test';
 import { setup as setupBrowserViewTests } from './areas/browserView/browserView.test';
+// PARA-PATCH: include fork-owned UI contracts in the product smoke runner.
+import { setup as setupOfficeViewerTests } from './areas/fileViewers/office.test';
+import { setup as setupParadisSettingsTests } from './areas/preferences/paradisSettings.test';
 
 const rootPath = path.join(__dirname, '..', '..', '..');
 
@@ -427,6 +430,8 @@ after(async function () {
 describe(`VSCode Smoke Tests (${opts.web ? 'Web' : 'Electron'})`, () => {
 	if (!opts.web) { setupDataLossTests(() => { return { stableCodePath: opts['stable-build'], stableCodeVersion: opts['stable-version'] } /* Do not change, deferred for a reason! */; }, logger); }
 	setupPreferencesTests(logger);
+	// PARA-PATCH: Para settings is available in desktop and web workbenches.
+	setupParadisSettingsTests(logger);
 	setupSearchTests(logger);
 	if (!opts.web) { setupNotebookTests(logger); }
 	setupLanguagesTests(logger);
@@ -445,5 +450,7 @@ describe(`VSCode Smoke Tests (${opts.web ? 'Web' : 'Electron'})`, () => {
 	if (!opts.web && !opts.remote) { setupChatModelConfigTests(logger); }
 	if (!opts.web && !opts.remote) { setupAgentsWindowTests(logger); }
 	if (!opts.web && !opts.remote) { setupBrowserViewTests(logger); }
+	// PARA-PATCH: the Office viewers depend on Electron webviews and the desktop backend.
+	if (!opts.web && !opts.remote) { setupOfficeViewerTests(logger); }
 	setupAccessibilityTests(logger, opts, quality);
 });

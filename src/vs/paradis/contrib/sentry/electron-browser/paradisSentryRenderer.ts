@@ -6,10 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import * as Sentry from '@sentry/electron/renderer';
+import type * as SentryRenderer from '@sentry/electron/renderer';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
+import { paradisReportInsecureContextSentinel } from '../common/paradisInsecureContextSentinel.js';
 
 /**
  * Sample rate for spans that trace a routine user action rather than a failure.
@@ -30,7 +31,13 @@ import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepa
 const PARADIS_ROUTINE_TRACE_SAMPLE_RATE = 1;
 const PARADIS_ROUTINE_TRACE_PREFIXES = ['para.workspaceSwitch.'];
 
-try {
+let sentry: typeof SentryRenderer | undefined;
+
+// The development workbench is loaded directly from transpiled ESM over vscode-file://, where a
+// browser cannot resolve npm bare specifiers. Keep this import asynchronous so an unavailable SDK
+// disables diagnostics without preventing the workbench from starting. Production builds inline
+// this renderer-only import via inlineParadisSentryPlugin in build/next/index.ts.
+import('@sentry/electron/renderer').then(Sentry => {
 	Sentry.init({
 		sendDefaultPii: false,
 		enableLogs: false,
@@ -58,23 +65,28 @@ try {
 	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
 		captureParadisRendererException(scope, feature, operation, error, safeExtra, severity);
 	});
-} catch (error) {
+	sentry = Sentry;
+}).catch(error => {
 	console.error('[Para Code] Failed to initialize renderer Sentry.', error);
-}
-
-try {
-	// Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
-	// workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
-	// preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
-	// Upstream surfaces this only as an unhandled rejection the first time a webview is opened, and
-	// the scope filter drops upstream-only events — so report it here instead: once per window, at
-	// startup, whether or not the user ever opens a webview.
-	if (!globalThis.isSecureContext || !globalThis.crypto?.subtle) {
-		captureParadisRendererException('patched', 'webview', 'insecure-context',
-			new Error('Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount'));
+}).finally(() => {
+	// **The sentinel must not depend on Sentry having come up.** It used to sit in its own
+	// try/catch precisely so that a failed `Sentry.init` could not take it down with it, and a
+	// broken Sentry is exactly when an insecure context is most likely to go unnoticed.
+	try {
+		reportParadisInsecureContextSentinel();
+	} catch (error) {
+		console.error('[Para Code] Failed to report the insecure-context sentinel.', error);
 	}
-} catch (error) {
-	console.error('[Para Code] Failed to report the insecure-context sentinel.', error);
+});
+
+/** 実際の globals と Sentry を sentinel へ渡す。判定は `paradisInsecureContextSentinel.ts` 側。 */
+function reportParadisInsecureContextSentinel(): void {
+	paradisReportInsecureContextSentinel({
+		isSecureContext: globalThis.isSecureContext,
+		subtleCrypto: globalThis.crypto?.subtle,
+		report: message => captureParadisRendererException('patched', 'webview', 'insecure-context', new Error(message)),
+		log: message => console.error(message),
+	});
 }
 
 export function captureParadisRendererException(
@@ -85,6 +97,10 @@ export function captureParadisRendererException(
 	safeExtra?: Record<string, unknown>,
 	severity?: ParadisDiagnosticSeverity,
 ): string {
+	if (!sentry) {
+		return '';
+	}
+	const Sentry = sentry;
 	return Sentry.withScope(sentryScope => {
 		sentryScope.setTags({
 			'para.scope': scope,
@@ -108,7 +124,10 @@ export function startParadisRendererSpan<T>(
 	callback: () => T,
 	attributes?: ParadisSpanAttributes,
 ): T {
-	return Sentry.startSpan({
+	if (!sentry) {
+		return callback();
+	}
+	return sentry.startSpan({
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
 		attributes: {

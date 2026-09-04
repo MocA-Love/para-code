@@ -16,6 +16,7 @@ import {
 	paradisParseTerminalNonceScopeStorage,
 	paradisPruneNonceScopes,
 	paradisResolveNonceScope,
+	paradisResolveOrphanPtyOwners,
 	paradisSerializeTerminalNonceScopeStorage,
 } from '../../common/paradisTerminalNonceScope.js';
 
@@ -167,6 +168,105 @@ suite('Paradis terminal nonce scope', () => {
 			lookupId: undefined,
 			revived: 'worktree:someone-else',
 			reloaded: 'worktree:someone-else',
+		});
+	});
+
+	// 孤児 PTY への attach は、端末をスペースまたぎで動かしうる唯一の経路。nonce は「同じ端末か」
+	// しか示さないので、所有スペースを台帳で証明できないものは全部落とす、という判定を固定する。
+	suite('paradisResolveOrphanPtyOwners', () => {
+
+		const WORKSPACE = 'workspace:mine';
+
+		function resolve(
+			details: readonly { id: number; shellIntegrationNonce: string; workspaceId: string; paradisRevivedFromPersistentProcessId?: number; paradisAdopted?: boolean }[],
+			ledgers: {
+				restoredProcess?: readonly (readonly [number, string])[];
+				restoredNonce?: readonly (readonly [string, string])[];
+				nonce?: readonly (readonly [string, string])[];
+			} = {},
+		) {
+			const owners = paradisResolveOrphanPtyOwners(
+				details,
+				WORKSPACE,
+				new Map(ledgers.restoredProcess ?? []),
+				new Map(ledgers.restoredNonce ?? []),
+				new Map(ledgers.nonce ?? []),
+			);
+			return Object.fromEntries([...owners].map(([nonce, owner]) => [nonce, owner]));
+		}
+
+		test('claims a pty whose owner the current nonce ledger knows', () => {
+			assert.deepStrictEqual(
+				resolve([{ id: 7, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE }], { nonce: [[NONCE_A, 'worktree:mine']] }),
+				{ [NONCE_A]: { id: 7, stateKey: 'worktree:mine' } },
+			);
+		});
+
+		test('falls back to the restored ledgers when the current one has forgotten the terminal', () => {
+			assert.deepStrictEqual({
+				byRestoredNonce: resolve(
+					[{ id: 7, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE }],
+					{ restoredNonce: [[NONCE_A, 'worktree:mine']] }),
+				byRestoredProcessId: resolve(
+					[{ id: 7, shellIntegrationNonce: NONCE_B, workspaceId: WORKSPACE }],
+					{ restoredProcess: [[7, 'worktree:mine']] }),
+			}, {
+				byRestoredNonce: { [NONCE_A]: { id: 7, stateKey: 'worktree:mine' } },
+				byRestoredProcessId: { [NONCE_B]: { id: 7, stateKey: 'worktree:mine' } },
+			});
+		});
+
+		test('refuses every pty whose owning space cannot be proven', () => {
+			assert.deepStrictEqual({
+				// どの台帳も知らない。nonce が一致するというだけで attach すると、所属不明の端末が
+				// 「今のスペース」に吸い寄せられて混ざる。
+				unknownOwner: resolve([{ id: 7, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE }]),
+				// 復元時と現在で別のスペースを指している。どちらが正しいか決められない。
+				disagreeingLedgers: resolve(
+					[{ id: 7, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE }],
+					{ restoredNonce: [[NONCE_A, 'worktree:mine']], nonce: [[NONCE_A, 'worktree:other']] }),
+				// 別ウィンドウ (別ワークスペース) の端末。
+				otherWorkspace: resolve(
+					[{ id: 7, shellIntegrationNonce: NONCE_A, workspaceId: 'workspace:other' }],
+					{ nonce: [[NONCE_A, 'worktree:mine']] }),
+				// nonce を持たない端末は同一性を示せない。
+				missingNonce: resolve(
+					[{ id: 7, shellIntegrationNonce: '', workspaceId: WORKSPACE }],
+					{ restoredProcess: [[7, 'worktree:mine']] }),
+			}, {
+				unknownOwner: {},
+				disagreeingLedgers: {},
+				otherWorkspace: {},
+				missingNonce: {},
+			});
+		});
+
+		test('drops both sides when the same nonce comes back twice', () => {
+			// 同一性を証明できないので、先に見つかった方も残さない。
+			assert.deepStrictEqual(
+				resolve([
+					{ id: 7, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE },
+					{ id: 8, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE },
+					{ id: 9, shellIntegrationNonce: NONCE_B, workspaceId: WORKSPACE },
+				], { nonce: [[NONCE_A, 'worktree:mine'], [NONCE_B, 'worktree:mine']] }),
+				{ [NONCE_B]: { id: 9, stateKey: 'worktree:mine' } },
+			);
+		});
+
+		test('keeps a terminal taken back from a daemon out of the space its new id happens to hit', () => {
+			// 引き取った端末は今世代の ID で現れる。ID 台帳を引くと別端末の記録に当たるため、
+			// ID 側は引かず nonce だけで判断する（paradisProcessDetailScopeLookupId と同じ理由）。
+			assert.deepStrictEqual({
+				withoutNonceLedger: resolve(
+					[{ id: 5, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE, paradisAdopted: true }],
+					{ restoredProcess: [[5, 'worktree:someone-else']] }),
+				withNonceLedger: resolve(
+					[{ id: 5, shellIntegrationNonce: NONCE_A, workspaceId: WORKSPACE, paradisAdopted: true }],
+					{ restoredProcess: [[5, 'worktree:someone-else']], nonce: [[NONCE_A, 'worktree:mine']] }),
+			}, {
+				withoutNonceLedger: {},
+				withNonceLedger: { [NONCE_A]: { id: 5, stateKey: 'worktree:mine' } },
+			});
 		});
 	});
 });

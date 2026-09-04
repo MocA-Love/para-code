@@ -43,6 +43,29 @@ export function containsParadisMermaidBlock(html: string): boolean {
 	return html.includes('class="paradis-mermaid mermaid"');
 }
 
+/**
+ * Markdown ビューアの webview に入れる CSP。
+ *
+ * **`script-src` は mermaid を実際に埋め込む文書でだけ許可する。** 許可した場合でも実行できるのは
+ * この HTML 自身が埋め込む nonce 付き `<script>`（vendored mermaid.js 本体 + 初期化コード）だけで、
+ * Markdown の記述内容や外部ソースからスクリプトを注入する余地は無い。逆に mermaid を含まない文書
+ * まで一律に許可すると、その保証の範囲が理由なく広がる。
+ */
+export function paradisMarkdownCspContent(nonce: string, mermaidEnabled: boolean): string {
+	const scriptSrc = mermaidEnabled ? ` script-src 'nonce-${nonce}';` : '';
+	return `default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;${scriptSrc}`;
+}
+
+/**
+ * `<script>` の本文として埋め込むソースを無害化する。中に "</script" という文字列（コメント・
+ * 文字列リテラル等）が出てくると、そこで HTML パーサーがタグを閉じてしまい後続が壊れるため
+ * `<\/script` に置き換える（実行結果は変わらない。JS の文字列/正規表現リテラル内でも `\/` は
+ * 単なる `/` として解釈される）。
+ */
+export function paradisNeutralizeScriptEnd(source: string): string {
+	return source.replace(/<\/script/gi, '<\\/script');
+}
+
 let cachedMermaidScript: Promise<string | undefined> | undefined;
 
 /**
@@ -55,10 +78,8 @@ export async function loadParadisMermaidScriptSource(fileService: IFileService):
 		try {
 			const uri: URI = FileAccess.asFileUri(`${MERMAID_MEDIA_ROOT}/mermaid.min.js`);
 			const content = await fileService.readFile(uri);
-			// このソースは <script> の本文としてそのまま埋め込む。中に "</script" という文字列（コメント・
-			// 文字列リテラル等）が出てくると、そこで HTML パーサーがタグを閉じてしまい後続が壊れるため無害化する
-			// （実行結果は変わらない。JS の文字列/正規表現リテラル内でも `\/` は単なる `/` として解釈される）。
-			return content.value.toString().replace(/<\/script/gi, '<\\/script');
+			// このソースは <script> の本文としてそのまま埋め込むため無害化する。
+			return paradisNeutralizeScriptEnd(content.value.toString());
 		} catch {
 			// 読めなくても Markdown 自体の表示は継続できる（mermaid ブロックだけコードとして残る）。
 			return undefined;

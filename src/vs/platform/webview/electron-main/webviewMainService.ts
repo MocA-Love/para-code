@@ -6,10 +6,11 @@
 import { WebContents, webContents, WebFrameMain } from 'electron';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
-import { FindInFrameOptions, FoundInFrameResult, IWebviewManagerService, WebviewWebContentsId, WebviewWindowId } from '../common/webviewManagerService.js';
+import { FoundInFrameResult, IWebviewManagerService, WebviewWebContentsId, WebviewWindowId } from '../common/webviewManagerService.js';
 import { WebviewProtocolProvider } from './webviewProtocolProvider.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { IFileService } from '../../files/common/files.js';
+import { paradisFindInWebviewFrame, IParadisWebviewFindFrame, paradisStopFindInWebviewFrame } from './paradisWebviewFrameFind.js';
 
 export class WebviewMainService extends Disposable implements IWebviewManagerService {
 
@@ -59,27 +60,10 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 			return false;
 		}
 
-		type WebFrameMainWithFindSupport = WebFrameMain & {
-			findInFrame?(text: string, findOptions: FindInFrameOptions): void;
-			on(event: 'found-in-frame', listener: Function): WebFrameMain;
-			removeListener(event: 'found-in-frame', listener: Function): WebFrameMain;
-		};
-		const frame = initialFrame as unknown as WebFrameMainWithFindSupport;
-		if (typeof frame.findInFrame === 'function') {
-			frame.findInFrame(text, {
-				findNext: options.findNext,
-				forward: options.forward,
-			});
-			const foundInFrameHandler = (_: unknown, result: FoundInFrameResult) => {
-				if (result.finalUpdate) {
-					this._onFoundInFrame.fire(result);
-					frame.removeListener('found-in-frame', foundInFrameHandler);
-				}
-			};
-			frame.on('found-in-frame', foundInFrameHandler);
-			return true;
-		}
-		return false;
+		return paradisFindInWebviewFrame(initialFrame as unknown as IParadisWebviewFindFrame, text, {
+			findNext: options.findNext,
+			forward: options.forward,
+		}, result => this._onFoundInFrame.fire(result));
 	}
 
 	// PARA-PATCH: see findInFrame — report whether this Electron build could stop the find.
@@ -90,16 +74,7 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 			return false;
 		}
 
-		type WebFrameMainWithFindSupport = WebFrameMain & {
-			stopFindInFrame?(stopOption: 'keepSelection' | 'clearSelection'): void;
-		};
-
-		const frame = initialFrame as unknown as WebFrameMainWithFindSupport;
-		if (typeof frame.stopFindInFrame === 'function') {
-			frame.stopFindInFrame(options.keepSelection ? 'keepSelection' : 'clearSelection');
-			return true;
-		}
-		return false;
+		return paradisStopFindInWebviewFrame(initialFrame as unknown as IParadisWebviewFindFrame, options.keepSelection);
 	}
 
 	// PARA-PATCH: non-throwing variant used by the find calls above.

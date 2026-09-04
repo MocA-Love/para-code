@@ -43,7 +43,11 @@ env:
   PARA_UPDATE_ACCESS_CLIENT_SECRET: ${{ secrets.PARA_UPDATE_ACCESS_CLIENT_SECRET }}
 
 jobs:
+  verify:
+    uses: ./.github/workflows/para-ci.yml
+
   build-darwin:
+    needs: verify
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'darwin') }}
     strategy:
       fail-fast: false
@@ -192,6 +196,7 @@ jobs:
           retention-days: 7
 
   build-win32:
+    needs: verify
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'win32') }}
     strategy:
       fail-fast: false
@@ -266,6 +271,7 @@ jobs:
           retention-days: 7
 
   build-linux:
+    needs: verify
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'linux') }}
     runs-on: ubuntu-latest
     env:
