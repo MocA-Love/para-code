@@ -158,6 +158,22 @@ suite('ParadisSentryCommon', () => {
 		assert.ok(first.includes('connection.js'));
 	});
 
+	test('splits explicit reports by the original error name and leaves untagged events unchanged', () => {
+		const explicit = (errorName: string) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'patched', 'para.feature': 'unhandled-error', 'para.operation': 'on-unexpected-error', 'para.error_name': errorName },
+			exception: { values: [{ type: 'Error', value: 'Para Code diagnostic: unhandled-error.on-unexpected-error' }] },
+		});
+		const untagged = paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'x', 'para.operation': 'y' },
+			exception: { values: [{ type: 'Error', value: 'auto' }] },
+		});
+		assert.deepStrictEqual([explicit('TypeError'), explicit('ListenerLeakError'), untagged], [
+			'patched|unhandled-error|on-unexpected-error|Error|unknown|unknown|TypeError',
+			'patched|unhandled-error|on-unexpected-error|Error|unknown|unknown|ListenerLeakError',
+			'owned|x|y|Error|unknown|unknown',
+		]);
+	});
+
 	test('classifies automatic errors only when their stack enters Para Code-owned source', () => {
 		assert.strictEqual(paradisClassifySentryEvent({
 			exception: {

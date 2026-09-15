@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as Sentry from '@sentry/electron/renderer';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisSafeErrorName, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
@@ -98,6 +98,7 @@ export function captureParadisRendererException(
 			'para.scope': scope,
 			'para.feature': feature,
 			'para.operation': operation,
+			'para.error_name': paradisSafeErrorName(error),
 		},
 		...(safeExtra ? { extra: safeExtra } : {}),
 		...(severity ? { level: severity } : {}),

@@ -29,6 +29,11 @@ Explicit diagnostics should go through `reportParadisDiagnosticError` on desktop
 terminal contents in `safeExtra`. The shared sanitizer removes user/request fields, non-allowlisted
 extras, non-Para breadcrumbs, URL queries, user home directory names, and common credential forms.
 
+Explicit reports replace the error message with `Para Code diagnostic: <feature>.<operation>`,
+drop `cause`, and keep only stack frames under `out/vs/**` (extension, `node_modules`, and user
+frames are removed). The original error's name or `code` is sent as the `para.error_name` tag only
+when it is identifier-shaped; anything else becomes `Error` / `object`.
+
 Each process sends at most three copies of the same normalized error in a ten-minute window. Sentry
 Spike Protection is also enabled on both projects.
 
