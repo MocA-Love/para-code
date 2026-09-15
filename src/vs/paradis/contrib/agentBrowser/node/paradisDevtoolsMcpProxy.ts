@@ -27,6 +27,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -90,6 +91,7 @@ interface IChildEntry {
 	readonly generation: number;
 	readonly wsEndpoint: string;
 	readonly tokenFingerprint: string;
+	readonly spawnedAt: number;
 	/** initialize ハンドシェイク完了（失敗時はreject）。spawn直後に一度だけ代入される。 */
 	ready: Promise<void>;
 	readonly pending: Map<number, IPendingRequest>;
@@ -120,9 +122,37 @@ class ParadisDevtoolsResourceLimitError extends Error {
 }
 
 class ParadisDevtoolsUnavailableError extends Error {
-	constructor() {
+	/** JSON-RPC error code from the child, when that is what made the call unavailable. */
+	constructor(readonly rpcCode?: number) {
 		super(TERMINATED_ERROR_MESSAGE);
 	}
+}
+
+/** Vendored chrome-devtools-mcp tool names only; anything else is folded so no free text reaches Sentry. */
+const vendoredToolName = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * Buckets a failed tool result's leading text. Until 2026-09 the shared process never looked
+ * at `result.isError`, so a page whose every call answered `Protocol error: Target closed`
+ * left no trace here (the agent saw the text, Sentry saw nothing).
+ */
+function classifyToolErrorText(text: string): 'target-closed' | 'protocol-error' | 'timeout' | 'dialog' | 'navigation' | 'other' {
+	if (/Target closed|Session closed|frame was detached/i.test(text)) {
+		return 'target-closed';
+	}
+	if (/Protocol error/i.test(text)) {
+		return 'protocol-error';
+	}
+	if (/timed? ?out|TimeoutError/i.test(text)) {
+		return 'timeout';
+	}
+	if (/dialog/i.test(text)) {
+		return 'dialog';
+	}
+	if (/navigat/i.test(text)) {
+		return 'navigation';
+	}
+	return 'other';
 }
 
 /**
@@ -209,14 +239,57 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (!known) {
 			return undefined;
 		}
+		const startedAt = Date.now();
+		const safeToolName = vendoredToolName.test(name) ? name : 'other';
 		try {
 			const entry = this._ensureChild(token, generation, wsEndpoint);
 			await this._awaitReady(token, entry, signal);
 			const result = await this._request(token, entry, 'tools/call', { name, arguments: args ?? {} }, this.options.callTimeoutMs ?? CALL_TIMEOUT_MS, signal);
+			this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
 			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す
 			return result ?? { content: [] };
 		} catch (error) {
+			this._reportToolCallFailure(safeToolName, error, Date.now() - startedAt, signal);
 			return this._toolCallError(name, error);
+		}
+	}
+
+	/** Transport succeeded but the tool itself failed (`result.isError`): the text stays with the agent, the bucket goes to Sentry. */
+	private _reportToolResultError(safeToolName: string, result: unknown, durationMs: number): void {
+		if (!this._isRecord(result) || result.isError !== true) {
+			return;
+		}
+		const content = Array.isArray(result.content) ? result.content : [];
+		const first = content.find((part): part is { type: 'text'; text: string } => this._isRecord(part) && part.type === 'text' && typeof part.text === 'string');
+		reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-tool-error', new Error('chrome-devtools-mcp tool returned isError'), {
+			duration_ms: durationMs,
+			safe_tool_name: safeToolName,
+			safe_error_kind: first ? classifyToolErrorText(first.text) : 'other',
+		}, 'info');
+	}
+
+	/** The call never produced a result: timeout, JSON-RPC error, or a bridge we killed ourselves. */
+	private _reportToolCallFailure(safeToolName: string, error: unknown, durationMs: number, signal: AbortSignal | undefined): void {
+		if (signal?.aborted || error instanceof StaleParadisDevtoolsGenerationError || error instanceof ParadisDevtoolsResourceLimitError) {
+			return;
+		}
+		if (error instanceof ParadisDevtoolsUnavailableError) {
+			if (error.rpcCode !== undefined) {
+				reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-rpc-error', error, {
+					duration_ms: durationMs,
+					safe_tool_name: safeToolName,
+					safe_rpc_code: error.rpcCode,
+				}, 'warning');
+			}
+			return;
+		}
+		const message = error instanceof Error ? error.message : '';
+		if (/ timed out after \d+ms$/.test(message)) {
+			reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-call-timeout', error, {
+				duration_ms: durationMs,
+				safe_tool_name: safeToolName,
+				safe_method: message.startsWith('tools/call') ? 'tools/call' : message.startsWith('initialize') ? 'initialize' : 'other',
+			}, 'warning');
 		}
 	}
 
@@ -327,6 +400,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			generation,
 			wsEndpoint,
 			tokenFingerprint,
+			spawnedAt: Date.now(),
 			ready: Promise.resolve(),
 			pending: new Map(),
 			nextId: 1,
@@ -355,6 +429,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		entry.processExitListener = (code, signal) => {
 			if (!entry.killed) {
 				this._debug(`[ParadisDevtoolsProxy] chrome-devtools-mcp for pane ${tokenFingerprint} generation=${generation} exited (code=${code}, signal=${signal})`);
+				// Not one of our kills (idle, retire, generation change): the bridge died under the agent.
+				reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-exited', new Error('chrome-devtools-mcp exited unexpectedly'), {
+					duration_ms: Date.now() - entry.spawnedAt,
+					safe_pending_count: entry.pending.size,
+					...(typeof code === 'number' ? { exit_code: code } : {}),
+					...(signal ? { signal } : {}),
+				});
 			}
 			this._cleanupEntry(token, entry, `process exited (code=${code}, signal=${signal})`);
 			this._releaseChildSlot(entry);
@@ -464,7 +545,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 					pending.reject(new ParadisDevtoolsUnavailableError());
 					continue;
 				}
-				pending.reject(new ParadisDevtoolsUnavailableError());
+				pending.reject(new ParadisDevtoolsUnavailableError(typeof responseError.code === 'number' ? responseError.code : undefined));
 			} else {
 				pending.resolve(message.result);
 			}

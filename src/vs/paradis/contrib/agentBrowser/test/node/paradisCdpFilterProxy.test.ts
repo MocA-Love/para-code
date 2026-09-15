@@ -11,6 +11,7 @@ import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../.
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 import { IParadisBoundContext, IParadisWsModule, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage } from '../../node/paradisCdpFilterProxy.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpGatewayDelegate, ParadisCdpGateway, paradisPageUpgradeTargetIsCurrent } from '../../node/paradisCdpGateway.js';
 import { ParadisCdpUpstream } from '../../node/paradisCdpUpstream.js';
 
@@ -482,6 +483,33 @@ suite('Paradis CDP screenshot filter', () => {
 		]);
 		assert.ok(fixture.client.sentOptions.every(options => options?.binary === false));
 		assert.strictEqual(fixture.client.closeCalls, 0);
+	});
+
+	test('reports one upstream transport failure per connection to Sentry, by kind and never by text', async () => {
+		const reports: Array<{ operation: string; extra: Record<string, unknown> | undefined }> = [];
+		configureParadisDiagnosticReporter((_scope, _feature, operation, _error, extra) => { reports.push({ operation, extra }); });
+		try {
+			// error followed by close: a single report
+			const errored = await createOpenBrowserProxyFixture();
+			errored.upstream.emit('error', new Error('Invalid WebSocket frame: invalid UTF-8 sequence /Users/alice'));
+			errored.upstream.emit('close', 1006);
+			// upstream-initiated close while the client is still open
+			const closed = createProxyFixture(context());
+			paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), closed.ws, closed.wss, 41001, 'target-1', closed.ctx, closed.logService);
+			closed.upstream.emit('close', 1011);
+			// client went away first: normal reconnect traffic, no report
+			const clientFirst = await createOpenBrowserProxyFixture();
+			clientFirst.client.readyState = TestWebSocket.CLOSED;
+			clientFirst.upstream.emit('close', 1000);
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
+
+		assert.deepStrictEqual(reports.map(r => ({ operation: r.operation, extra: { ...r.extra, duration_ms: typeof r.extra?.duration_ms } })), [
+			{ operation: 'cdp-upstream-error-invalid-utf8', extra: { transport: 'browser', duration_ms: 'number', safe_error_kind: 'invalid-utf8' } },
+			{ operation: 'cdp-upstream-closed', extra: { transport: 'page', duration_ms: 'number', close_code: 1011 } },
+		]);
+		assert.ok(!JSON.stringify(reports).includes('alice'));
 	});
 
 	test('upstream transport errors are logged with their protocol-level reason', async () => {
