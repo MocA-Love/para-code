@@ -19,6 +19,13 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 type ParadisViewPlacement = 'left' | 'right' | 'hidden';
 
 interface IParadisContainerPlacement {
+	/**
+	 * 拡張の `contributes.viewsContainers` に書かれた素の ID。移動系（left/right）の照合時は
+	 * {@link registeredContainerId} で `workbench.view.extension.` を前置した登録 ID に変換する
+	 * （`viewsExtensionPoint.ts` が登録時に付与するため。素の ID のまま照合していた 2026-07〜09 は
+	 * 5 件の移動が一度も一致せず、毎ウィンドウ 10 分後に placement-incomplete を報告していた）。
+	 * 非表示系はビュー ID で照合するので接頭辞は付かない。
+	 */
 	readonly containerId: string;
 	readonly placement: ParadisViewPlacement;
 	/** 'hidden' 指定時に非表示にするビューID。独自コンテナは全ビュー、標準コンテナ（scm/explorer）は差し込みビューだけを列挙する。 */
@@ -50,6 +57,11 @@ const DEFAULT_PLACEMENTS: readonly IParadisContainerPlacement[] = [
 	// Houston: エクスプローラー内の挨拶ビューを非表示
 	{ containerId: 'workbench.view.explorer', placement: 'hidden', viewIds: ['houston.hello'] }
 ];
+
+/** 拡張由来のコンテナが `IViewDescriptorService` に登録される際の ID。 */
+function registeredContainerId(placement: IParadisContainerPlacement): string {
+	return `workbench.view.extension.${placement.containerId}`;
+}
 
 // 移動系（left/right）はコンテナ単位、非表示系はビュー単位で「適用済み」を記録する。
 // 拡張のアクティベーションでコンテナやビューが遅れて登録されるため、両者を別々に追跡し、
@@ -102,8 +114,8 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 						this.pendingHides.add(viewId);
 					}
 				}
-			} else if (!this.appliedContainers.has(p.containerId)) {
-				this.pendingMoves.set(p.containerId, p.placement === 'left' ? ViewContainerLocation.Sidebar : ViewContainerLocation.AuxiliaryBar);
+			} else if (!this.appliedContainers.has(registeredContainerId(p))) {
+				this.pendingMoves.set(registeredContainerId(p), p.placement === 'left' ? ViewContainerLocation.Sidebar : ViewContainerLocation.AuxiliaryBar);
 			}
 		}
 
