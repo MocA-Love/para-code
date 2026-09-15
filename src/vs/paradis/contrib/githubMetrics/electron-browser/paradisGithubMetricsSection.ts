@@ -35,6 +35,7 @@ import {
 	paradisGithubFormatCountdown,
 	paradisGithubSeverity,
 	PARADIS_GITHUB_PRIMARY_RESOURCES,
+	PARADIS_GITHUB_MONITOR_SPACE,
 	PARADIS_GITHUB_UNSCOPED_SPACE,
 } from '../common/paradisGithubMetrics.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
@@ -63,7 +64,7 @@ const DEFAULT_SECTION_WIDTH = 900;
 /** 内訳・概況カードで見る時間窓。「セッション」はレート枠消費(アカウント全体)には対応する集計が無いため、1時間相当にフォールバックする。 */
 type ParadisGithubWindowKey = '5m' | '1h' | 'session';
 /** 資源での絞り込み。'all' は全資源を合算表示する。 */
-type ParadisGithubResourceFilter = 'all' | 'core' | 'graphql' | 'search';
+type ParadisGithubResourceFilter = 'all' | 'core' | 'graphql';
 
 export class ParadisGithubMetricsSection extends Disposable implements IParadisUsageSection {
 
@@ -245,7 +246,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			{ key: 'all', label: localize('paradis.githubMetrics.resource.all', "すべて") },
 			{ key: 'core', label: localize('paradis.githubMetrics.resource.core', "コア（REST）") },
 			{ key: 'graphql', label: localize('paradis.githubMetrics.resource.graphql', "GraphQL"), gql: true },
-			{ key: 'search', label: localize('paradis.githubMetrics.resource.search', "検索") },
+			// search は枠の取得経路が無い（専用エンドポイントを叩かないとヘッダが返らない）ため出さない
 		];
 		for (const option of resourceOptions) {
 			const button = dom.append(resourceSeg, $('button')) as HTMLButtonElement;
@@ -366,7 +367,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.trend', "消費量の推移");
 			const panel = dom.append(container, $('.paradis-ghm-panel.padded'));
 			dom.append(panel, $('.paradis-ghm-chart-caption')).textContent =
-				localize('paradis.githubMetrics.trend.caption.all', "サンプル間で消費したリクエスト数（全ソース合算、右が最新。searchは割合が小さいためグラフから省略）。サンプルはこの画面またはステータスバーが表示されている間だけ取得するため、各バーの時間幅は揃いません。");
+				localize('paradis.githubMetrics.trend.caption.all', "サンプル間で消費したリクエスト数（全ソース合算、右が最新）。サンプルはこの画面またはステータスバーが表示されている間だけ取得するため、各バーの時間幅は揃いません。");
 			const legend = dom.append(panel, $('.paradis-ghm-legend'));
 			const coreLegend = dom.append(legend, $('span'));
 			dom.append(coreLegend, $('i', { style: 'background:var(--vscode-charts-blue)' }));
@@ -419,9 +420,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			.sort((a, b) => countsForWindow(b, this.windowKey).calls - countsForWindow(a, this.windowKey).calls);
 
 		if (operations.length === 0) {
-			dom.append(panel, $('.paradis-ghm-empty')).textContent = this.resourceFilter === 'search'
-				? localize('paradis.githubMetrics.caller.emptySearch', "Para CodeはSearch APIを直接呼び出しません。")
-				: localize('paradis.githubMetrics.operations.empty', "Para Codeはまだ GitHub へリクエストを送信していません。");
+			dom.append(panel, $('.paradis-ghm-empty')).textContent = localize('paradis.githubMetrics.operations.empty', "Para Codeはまだ GitHub へリクエストを送信していません。");
 			return;
 		}
 
@@ -556,7 +555,7 @@ function resourceRank(entry: IParadisGithubRateLimitEntry): number {
 /**
  * サンプル間の消費量を棒グラフにする（軸なし・相対比較だけを見るためのミニチャート）。
  * 補助ウィンドウでも動くよう、要素は必ず描画先の Document から作る。
- * `resourceClass` は CSS 側の `.paradis-ghm-chart rect.<class>` で色付けする（core/graphql/search）。
+ * `resourceClass` は CSS 側の `.paradis-ghm-chart rect.<class>` で色付けする（core/graphql）。
  */
 function createBarChart(doc: Document, series: readonly number[], resourceClass: string): SVGElement {
 	const width = 100;
@@ -677,11 +676,16 @@ function sumConsumption(consumption: readonly IParadisGithubConsumption[], resou
 	return total;
 }
 
-/** ワークツリー等に紐付かない呼び出し（Agent Sessionsウィンドウ自身のGitHub APIクライアント経由）を分かりやすい名前にする。 */
+/** ワークツリー等に紐付かない呼び出し（Agent Sessionsウィンドウ自身のGitHub APIクライアント経由、レート枠の取得）を分かりやすい名前にする。 */
 function spaceLabel(space: string): string {
-	return space === PARADIS_GITHUB_UNSCOPED_SPACE
-		? localize('paradis.githubMetrics.space.unscoped', "Agent Sessionsウィンドウ（worktree外）")
-		: space;
+	switch (space) {
+		case PARADIS_GITHUB_UNSCOPED_SPACE:
+			return localize('paradis.githubMetrics.space.unscoped', "Agent Sessionsウィンドウ（worktree外）");
+		case PARADIS_GITHUB_MONITOR_SPACE:
+			return localize('paradis.githubMetrics.space.monitor', "残量の取得（自動監視）");
+		default:
+			return space;
+	}
 }
 
 /** 概況カードの見出しに使う、時間窓の短い表現。 */

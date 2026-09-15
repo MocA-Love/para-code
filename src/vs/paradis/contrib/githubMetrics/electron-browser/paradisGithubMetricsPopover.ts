@@ -143,6 +143,10 @@ export class ParadisGithubMetricsPopover extends Disposable {
 			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
 			message.textContent = snapshot.rateLimitError
 				?? localize('paradis.githubMetrics.popover.noData', "まだレート制限のデータがありません。");
+		} else if (snapshot.rateLimitError) {
+			// 片方の資源だけ読めなかったとき。行は残るので、理由を出さないと古い値に見えない
+			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
+			message.textContent = localize('paradis.githubMetrics.popover.partialError', "一部の値を更新できませんでした: {0}", snapshot.rateLimitError);
 		}
 
 		for (const entry of primary) {

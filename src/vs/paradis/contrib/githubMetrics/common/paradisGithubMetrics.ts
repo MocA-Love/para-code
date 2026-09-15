@@ -11,7 +11,7 @@
 // renderer 側(electron-browser/*)がスナップショットを描画する。
 //
 // 計測対象は2種類ある。混同しないよう UI でも区別して表示すること:
-//  1. アカウント全体のレート枠 (`gh api rate_limit` が返す core/graphql/search)。
+//  1. アカウント全体のレート枠 (GitHub のレスポンスヘッダ `X-RateLimit-*` が返す core/graphql)。
 //     Para Code 以外(ブラウザ・他ツール・拡張)の消費も含む。
 //  2. Para Code 自身が発行した gh 呼び出し (worktree の PR 状態取得など)。
 //     「誰が枠を食っているか」の内訳はこちらでしか分からない。
@@ -64,6 +64,7 @@ const MAX_CONSUMPTION_SERIES = 40;
 /**
  * ステータスバーの残量%表示や警告色の対象にする資源。
  * search 等は枠が小さく（30/分）通常運用で常に低い値を示すため、代表値には含めない。
+ * レート枠の取得はこの2資源へプローブを投げて行うため、実際に収集できるのもこの2つだけ。
  */
 export const PARADIS_GITHUB_PRIMARY_RESOURCES: readonly string[] = ['core', 'graphql'];
 
@@ -74,7 +75,7 @@ export const PARADIS_GITHUB_CRITICAL_RATIO = 0.05;
 
 export type ParadisGithubSeverity = 'ok' | 'warning' | 'critical';
 
-/** `gh api rate_limit` の1資源分。 */
+/** レート枠1資源分。 */
 export interface IParadisGithubRateLimitEntry {
 	readonly resource: string;
 	readonly limit: number;
@@ -85,7 +86,7 @@ export interface IParadisGithubRateLimitEntry {
 }
 
 /**
- * 呼び出し1回が消費するGitHubの資源区分。`gh api rate_limit` が返す資源名（'core'/'graphql'/'search'…）と
+ * 呼び出し1回が消費するGitHubの資源区分。GitHub の `X-RateLimit-Resource` が返す資源名（'core'/'graphql'/'search'…）と
  * 語彙を揃え、`core` はREST全般を指す（gh CLI・sessions側GitHubApiClientの'rest'は記録の境界でcoreへ正規化する）。
  */
 export type IParadisGithubCallResource = 'core' | 'graphql';
@@ -141,6 +142,13 @@ export function paradisCoerceGithubCallEvent(value: unknown): IParadisGithubCall
  * 制御文字を先頭に置く。表示名への変換はUI層（editor/mobile）の責務とし、ここではローカライズしない。
  */
 export const PARADIS_GITHUB_UNSCOPED_SPACE = '\u0000agent-sessions';
+
+/**
+ * レート枠を読むためのプローブ（node 側の RATE_LIMIT_PROBES）が属する仮想スペースID。
+ * プローブも枠を消費する以上は内訳に出すが、{@link PARADIS_GITHUB_UNSCOPED_SPACE} へ混ぜると
+ * 監視自身の消費が Agent Sessions ウィンドウの消費として見えてしまうため、別枠にする。
+ */
+export const PARADIS_GITHUB_MONITOR_SPACE = '\u0000rate-limit-monitor';
 
 export interface IParadisGithubCallCounts {
 	readonly calls: number;
@@ -231,53 +239,63 @@ export interface IParadisGithubMetricsSnapshot {
 	readonly lastErrors: readonly IParadisGithubErrorEntry[];
 }
 
-// ---------- gh api rate_limit のパース ----------
-
-interface IRawRateLimitResource {
-	readonly limit?: unknown;
-	readonly used?: unknown;
-	readonly remaining?: unknown;
-	readonly reset?: unknown;
-}
-
-function toFiniteNumber(value: unknown): number | undefined {
-	return typeof value === 'number' && isFinite(value) ? value : undefined;
-}
+// ---------- レート枠ヘッダのパース ----------
 
 /**
- * `gh api rate_limit` の stdout を資源ごとのエントリへ変換する。
- * 壊れた/欠けたフィールドを含む資源は黙って捨てる（表示できないだけで他の資源は活かす）。
+ * `gh api -i` が出力するレスポンスヘッダから `X-RateLimit-*` を読み取る。
+ *
+ * 以前は `gh api rate_limit` の JSON ボディを使っていたが、2026-09 時点の GitHub は
+ * このエンドポイントで実際のカウンタを返さなくなり、同一トークン・同一時刻でも
+ * `used: 0` / `remaining: 上限` / `reset` は呼ぶたびに「現在時刻+3600秒」を返す。
+ * 一方で通常のエンドポイントのレスポンスヘッダは正しい値を返し続けているため、
+ * そちらを唯一の情報源にしている（詳細は NOTES.md）。
+ *
+ * `resource` は呼び出し側が投げたプローブの資源区分を渡す。ヘッダの
+ * `X-RateLimit-Resource` を信じると、GitHub が別の区分を返したときに同じ資源が
+ * 二重に並ぶため、キーは呼び出し側で固定する。
+ *
+ * 必須のヘッダが欠けている／数値でない場合は undefined を返す（表示しないだけで
+ * もう一方のプローブの結果は活かす）。
  */
-export function paradisParseGhRateLimit(stdout: string): IParadisGithubRateLimitEntry[] {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(stdout);
-	} catch {
-		return [];
-	}
-	const resources = (parsed as { resources?: Record<string, IRawRateLimitResource> } | undefined)?.resources;
-	if (!resources || typeof resources !== 'object') {
-		return [];
-	}
-
-	const entries: IParadisGithubRateLimitEntry[] = [];
-	for (const [resource, raw] of Object.entries(resources)) {
-		const limit = toFiniteNumber(raw?.limit);
-		const remaining = toFiniteNumber(raw?.remaining);
-		const reset = toFiniteNumber(raw?.reset);
-		if (limit === undefined || remaining === undefined || limit <= 0) {
+export function paradisParseGhRateLimitHeaders(stdout: string, resource: string): IParadisGithubRateLimitEntry | undefined {
+	const headers = new Map<string, string>();
+	for (const rawLine of stdout.split('\n')) {
+		// gh はヘッダを CRLF で出す。ヘッダ部とボディは空行で区切られる
+		const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+		if (line === '') {
+			break;
+		}
+		const colon = line.indexOf(':');
+		if (colon <= 0) {
+			// ステータス行（`HTTP/2.0 200 OK`）など
 			continue;
 		}
-		entries.push({
-			resource,
-			limit,
-			remaining,
-			used: toFiniteNumber(raw?.used) ?? Math.max(0, limit - remaining),
-			// GitHub は秒エポックで返す
-			resetAt: reset !== undefined ? reset * 1000 : 0,
-		});
+		headers.set(line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim());
 	}
-	return entries;
+
+	const limit = toHeaderNumber(headers.get('x-ratelimit-limit'));
+	const remaining = toHeaderNumber(headers.get('x-ratelimit-remaining'));
+	const reset = toHeaderNumber(headers.get('x-ratelimit-reset'));
+	if (limit === undefined || remaining === undefined || limit <= 0) {
+		return undefined;
+	}
+
+	return {
+		resource,
+		limit,
+		remaining,
+		used: toHeaderNumber(headers.get('x-ratelimit-used')) ?? Math.max(0, limit - remaining),
+		// GitHub は秒エポックで返す
+		resetAt: reset !== undefined ? reset * 1000 : 0,
+	};
+}
+
+function toHeaderNumber(value: string | undefined): number | undefined {
+	if (value === undefined || value === '') {
+		return undefined;
+	}
+	const parsed = Number(value);
+	return isFinite(parsed) ? parsed : undefined;
 }
 
 // ---------- ステータスバー表示用の要約 ----------
@@ -670,13 +688,17 @@ export class ParadisGithubRateLimitHistory {
 	}
 
 	consumption(now: number): IParadisGithubConsumption[] {
-		const latest = this.samples[this.samples.length - 1];
-		if (!latest) {
-			return [];
+		// 資源は最新サンプルではなく全サンプルから集める。片方のプローブだけ失敗した回は
+		// その資源がサンプルに入らないため、最新サンプルだけを見ると行が一度消えて点滅する。
+		const latestByResource = new Map<string, IParadisGithubRateLimitEntry>();
+		for (const sample of this.samples) {
+			for (const [resource, entry] of sample.byResource) {
+				latestByResource.set(resource, entry);
+			}
 		}
 
 		const result: IParadisGithubConsumption[] = [];
-		for (const resource of latest.byResource.keys()) {
+		for (const resource of latestByResource.keys()) {
 			const deltas = this.deltas(resource);
 			const rolling5m = sumDeltas(deltas, now - PARADIS_GITHUB_ROLLING_WINDOW_MS, now);
 			const rolling1h = sumDeltas(deltas, now - 60 * 60 * 1000, now);
@@ -688,7 +710,7 @@ export class ParadisGithubRateLimitHistory {
 				perMinute = rolling5m.paceConsumed / (rolling5m.paceSpanMs / 60_000);
 			}
 
-			const current = latest.byResource.get(resource);
+			const current = latestByResource.get(resource);
 			let exhaustionEtaMs: number | undefined;
 			if (current && perMinute !== undefined && perMinute > 0) {
 				const eta = (current.remaining / perMinute) * 60_000;

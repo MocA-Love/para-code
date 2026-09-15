@@ -11,7 +11,7 @@ import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
-import { GITHUB_UNSCOPED_SPACE } from '../../src/store.js';
+import { GITHUB_MONITOR_SPACE, GITHUB_UNSCOPED_SPACE } from '../../src/store.js';
 import type { GithubCallCounts, GithubOperationStat, GithubSpaceStat, GithubUsageResult } from '../../src/store.js';
 import { useNow } from '../../src/time.js';
 
@@ -35,7 +35,13 @@ function countsForWindow(stat: { session: GithubCallCounts; rolling5m: GithubCal
 }
 
 function spaceLabel(space: string): string {
-	return space === GITHUB_UNSCOPED_SPACE ? 'Agent Sessionsウィンドウ（worktree外）' : space;
+	if (space === GITHUB_UNSCOPED_SPACE) {
+		return 'Agent Sessionsウィンドウ（worktree外）';
+	}
+	if (space === GITHUB_MONITOR_SPACE) {
+		return '残量の取得（自動監視）';
+	}
+	return space;
 }
 
 function resourceLabel(resource: string): string {

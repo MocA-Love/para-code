@@ -565,6 +565,27 @@ upstream由来の`pr.yml`/`pr-node-modules.yml`/`copilot-setup-steps.yml`（と�
 - 代わりに`.github/workflows/para-ci.yml`を新規追加。GitHub標準の`ubuntu-latest`のみで完結する軽量CI（typecheck/hygiene/eslint、node.jsユニットテスト、fork独自ワークスペース（`cloudflare/update-server`・`app/mobile`）のtypecheck/test、`extensions/copilot`のtypecheck/lint/unit test）
 - `chat-lib-package.yml`・`telemetry.yml`（元からGitHub標準ランナーで完結）と`para-release.yml`・`para-reh.yml`（fork独自のリリースビルド）はそのまま維持
 
+## GitHub API 利用状況が常に100%になっていた件（githubMetrics、2026-09-15）
+
+`GET /rate_limit` のレスポンスボディが実際のカウンタを返さなくなっていた。`gh` CLI（v2.99.0）の仕様変更ではなく、GitHub 側の挙動。同一トークン（`gh auth login` で作られる gh CLI の OAuth トークン）・同一時刻で次のように食い違う。
+
+| 取得元 | used | remaining | reset |
+| --- | --- | --- | --- |
+| `GET /rate_limit` のボディ | 0 | 5000 | 呼ぶたびに「現在時刻+3600秒」へずれる |
+| `GET /user` のレスポンスヘッダ | 113 → 117 | 4887 → 4883 | 1789438679（固定） |
+
+`gh api user` を3回連続で叩くと `X-RateLimit-Used` は 114 → 115 → 116 と正しく増えるが、その直後の `gh api rate_limit` は `{"limit":5000,"used":0,"remaining":5000}` を返す。`gh` を介さず `curl -H "Authorization: Bearer $(gh auth token)" https://api.github.com/rate_limit` を直接叩いても同じなので、CLI 側の問題ではない。`reset` が毎回ずれる点から、カウンタを引けずに新しいウィンドウを返しているように見える。
+
+対応として `src/vs/paradis/contrib/githubMetrics/` を `X-RateLimit-*` ヘッダ方式へ切り替えた。
+
+- `gh api --method HEAD user -i` で `core`、`gh api graphql -i -f query={viewer{login}}` で `graphql` を取得し、ヘッダを `paradisParseGhRateLimitHeaders()` で読む。`search` などその他の資源は、専用のエンドポイントを叩かないとヘッダが取れないため収集対象から外し、ダッシュボードの資源フィルタからも削除した（UI の代表値は元から `core`/`graphql` のみ）
+- 既存の `gh` 呼び出し（`paradisWorktreeGitChannel.ts` の `execGh()`）へのピギーバックは不可能。実際に走るのは `gh pr view` などの高レベルサブコマンドで `-i` を付けられず、ヘッダが stdout に出ない。`GH_DEBUG=api` の stderr 解析は `gh` のバージョンで書式が変わるため採らなかった
+- プローブ自体が資源ごとに枠を1消費する。ウィンドウ1つなら `STATUS_POLL_INTERVAL_MS`（2分）どおりで core/graphql それぞれ1時間あたり30消費（5000枠の0.6%）。ウィンドウを複数開いて位相がずれると shared process 側の下限 `RATE_LIMIT_MIN_REFRESH_MS`（45秒）まで縮むため、最悪で80消費/時（1.6%）になる
+- ユーザーが自分の消費と区別できるよう、`gh api user (rate limit probe)` / `gh api graphql (rate limit probe)` という `callSite` と、専用の仮想スペース `PARADIS_GITHUB_MONITOR_SPACE` で呼び出し内訳に出している。`PARADIS_GITHUB_UNSCOPED_SPACE`（Agent Sessions ウィンドウ）へ混ぜると、監視自身の消費がそのウィンドウの消費として見えてしまう
+- `gh api -i` は HTTP エラーでも非0終了しつつヘッダを stdout に出す（`gh: HTTP 404` は stderr）。枠を使い切ったときの 403 レスポンスにも `X-RateLimit-Remaining: 0` と `X-RateLimit-Reset` が載るため、`execGh()` は非0終了でも stdout を捨てない。捨てると「あと何分で戻るか」を最も知りたい瞬間に情報が落ちる
+- 片方のプローブだけ失敗した回は、その資源の前回値を残す。ただしリセット時刻を過ぎた前回値は捨てる（窓が回った後の `remaining` は意味を持たず、残すとステータスバーの%と警告色が固まる）
+- 将来 GitHub が `/rate_limit` を直したとしても、ヘッダ方式のほうが正確（プローブ分のコストだけが差分）なので戻す必要はない
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）
