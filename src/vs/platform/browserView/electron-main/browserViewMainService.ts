@@ -102,7 +102,8 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 		}
 
 		if (options.initialState?.url) {
-			void view.loadURL(options.initialState.url);
+			// PARA-PATCH: the initial load rejects with ERR_ABORTED when a reload supersedes it and ERR_CONNECTION_REFUSED/RESET when a dev server is down; the view already shows its error page via did-fail-load, so swallow it like the other loadURL calls here instead of raising an unhandled rejection in main (upstream fixed this in ec0c2dd6, drop on the next merge) (Para Code)
+			void view.loadURL(options.initialState.url).catch(() => { });
 		}
 
 		const info = {
