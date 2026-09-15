@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { ParadisSentryScope } from './paradisSentryCommon.js';
+import { paradisSanitizeSentryText, type ParadisSentryScope } from './paradisSentryCommon.js';
 
 /**
  * Sentry's own `SeverityLevel` without importing the SDK into this Electron-agnostic module.
@@ -130,13 +130,80 @@ export function reportParadisDiagnosticError(
 	reporter?.(scope, feature, operation, error, safeExtra, severity);
 }
 
+/** Stack lines that point into our own compiled sources. Anything else (extensions, node_modules, user code) is dropped. */
+const ownStackLine = /^\s+at .*\/vs\/(?:base|platform|editor|workbench|sessions|paradis|code|server)\//;
+const MAX_SAFE_STACK_LINES = 20;
+// 50 covers Node's longest error code (`ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND`, 49)
+// and keeps a 64-hex hash from passing as a name.
+const identifierLike = /^[A-Za-z_$][\w$]{0,49}$/;
+
+/**
+ * A grouping key for the error that carries no content: the constructor name of an `Error`,
+ * an identifier-shaped `name`/`code` of a thrown plain object (`{ code: 'ENOENT' }`, a JSON-
+ * transported `{ name, message }`), else the primitive type. Getters are never invoked twice
+ * and a throwing one yields `'unknown'`.
+ */
+export function paradisSafeErrorName(error: unknown): string {
+	try {
+		if (error instanceof Error) {
+			return typeof error.name === 'string' && identifierLike.test(error.name) ? error.name : 'Error';
+		}
+		if (typeof error === 'object' && error !== null) {
+			for (const key of ['name', 'code'] as const) {
+				const value = (error as Record<string, unknown>)[key];
+				if (typeof value === 'string' && identifierLike.test(value)) {
+					return value;
+				}
+			}
+			return 'object';
+		}
+		return typeof error;
+	} catch {
+		return 'unknown';
+	}
+}
+
+/**
+ * Replaces the reported error with one whose message is the fixed feature/operation label and
+ * whose stack keeps only frames inside `out/vs/**`, each run through the text sanitizer. The
+ * message, `cause` and any non-`vs/` frame are dropped, so response bodies, extension code and
+ * user paths never leave the process. Automatic captures already ship the same `vs/` frames, so
+ * this adds grouping information (see `paradisSentryFingerprint`) without a new exposure: until
+ * 2026-09 every explicit report shared one frame-less stack, and 676 unhandled errors in 90 days
+ * collapsed into a single undiagnosable issue.
+ */
 export function toParadisSentrySafeError(
 	feature: string,
 	operation: string,
-	_error: unknown,
+	error: unknown,
 ): Error {
 	const safeError = new Error('Para Code diagnostic: ' + feature + '.' + operation);
-	safeError.stack = safeError.name + ': ' + safeError.message;
+	const header = safeError.name + ': ' + safeError.message;
+	safeError.stack = header;
+	if (!(error instanceof Error)) {
+		return safeError;
+	}
+	let stack: unknown;
+	try {
+		stack = error.stack;
+	} catch {
+		return safeError;
+	}
+	if (typeof stack !== 'string') {
+		return safeError;
+	}
+	const frames: string[] = [];
+	for (const line of stack.split('\n')) {
+		if (frames.length >= MAX_SAFE_STACK_LINES) {
+			break;
+		}
+		if (ownStackLine.test(line.replace(/\\/g, '/'))) {
+			frames.push(paradisSanitizeSentryText(line));
+		}
+	}
+	if (frames.length > 0) {
+		safeError.stack = header + '\n' + frames.join('\n');
+	}
 	return safeError;
 }
 

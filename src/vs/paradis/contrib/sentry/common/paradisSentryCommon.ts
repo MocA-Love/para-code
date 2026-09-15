@@ -189,6 +189,10 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	const exception = event.exception?.values?.[0];
 	const frames = exception?.stacktrace?.frames;
 	const topFrame = frames?.[frames.length - 1];
+	// Explicit reports replace the exception type with a fixed label, so the original error's
+	// name travels as a tag; without it every unhandled error shared one issue. Appended only
+	// when present so automatic captures and native crashes keep their existing issue history.
+	const errorName = event.tags?.['para.error_name'];
 	return [
 		event.tags?.['para.scope'] ?? 'unknown',
 		event.tags?.['para.feature'] ?? 'unknown',
@@ -196,6 +200,7 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 		exception?.type ?? event.message ?? event.debug_meta?.images?.[0]?.code_file ?? 'Error',
 		topFrame?.filename ?? 'unknown',
 		topFrame?.function ?? 'unknown',
+		...(errorName !== undefined ? [errorName] : []),
 	].map(value => paradisSanitizeSentryText(String(value))).join('|');
 }
 
@@ -342,6 +347,8 @@ export function paradisSanitizeSentryEvent<T extends IParadisSentryEvent>(event:
 					...frame,
 					filename: frame.filename ? paradisNormalizeSentryFramePath(frame.filename) : frame.filename,
 					abs_path: frame.abs_path ? paradisNormalizeSentryFramePath(frame.abs_path) : frame.abs_path,
+					// Native frames name the binary here (`/Users/<name>/.local/bin/x`, `C:\Users\<name>\...`).
+					package: frame.package ? paradisNormalizeSentryFramePath(frame.package) : frame.package,
 					function: frame.function ? paradisSanitizeSentryText(frame.function) : frame.function,
 				})),
 			} : value.stacktrace,
@@ -366,6 +373,8 @@ export function paradisSanitizeSentryEvent<T extends IParadisSentryEvent>(event:
 					...frame,
 					filename: frame.filename ? paradisNormalizeSentryFramePath(frame.filename) : frame.filename,
 					abs_path: frame.abs_path ? paradisNormalizeSentryFramePath(frame.abs_path) : frame.abs_path,
+					// Native frames name the binary here (`/Users/<name>/.local/bin/x`, `C:\Users\<name>\...`).
+					package: frame.package ? paradisNormalizeSentryFramePath(frame.package) : frame.package,
 					function: frame.function ? paradisSanitizeSentryText(frame.function) : frame.function,
 				})),
 			} : thread.stacktrace,
