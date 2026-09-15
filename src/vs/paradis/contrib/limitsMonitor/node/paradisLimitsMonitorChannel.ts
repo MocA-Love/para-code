@@ -14,7 +14,7 @@
 //     マルチアカウント設計と同じ方式。Keychainには一切触れない)
 //   - Codex: ~/.codex / ~/.codex-* 各ホームの auth.json からaccess tokenを読み、
 //     `GET https://chatgpt.com/backend-api/wham/usage` を直叩き。401/403時のみ
-//     `CODEX_HOME=<home> codex -s read-only -a untrusted app-server` (JSON-RPC over stdio) へ
+//     `CODEX_HOME=<home> codex -s read-only -a never app-server` (JSON-RPC over stdio) へ
 //     フォールバックし、トークンリフレッシュとauth.json書き戻しはcodex CLI自身に任せる
 //     (このプロセスがauth.jsonへ書き込むことは決してない)
 //
@@ -83,6 +83,39 @@ const MAX_CODEX_HOME_INDEX = 20;
  * 再ログインでしか解決しない失敗か。この種の失敗はユーザーが対処するまで毎ポーリングで再発し、
  * かつパネル上に復帰導線（「再ログイン…」ボタン）が出ているので、Sentryへは報告しない。
  */
+/**
+ * Sentryへ載せる失敗種別。文言は全てこのファイルが組み立てる固定文字列由来なので、
+ * 種別だけを送ればパス・トークン・レスポンス本文を含まない。
+ */
+export type ParadisCodexRpcFailureKind = 'auth' | 'binary-missing' | 'spawn-failed' | 'exited' | 'init-timeout' | 'request-timeout' | 'rpc-error' | 'unknown';
+
+/** {@link ParadisCodexRpcSession} が投げるエラー文言をSentry用の種別に分類する。 */
+export function classifyCodexRpcFailure(error: unknown): ParadisCodexRpcFailureKind {
+	if (isCodexAuthFailure(error)) {
+		return 'auth';
+	}
+	const message = error instanceof Error ? error.message : String(error ?? '');
+	if (message.startsWith('codex not found')) {
+		return 'binary-missing';
+	}
+	if (message.startsWith('failed to launch codex app-server')) {
+		return 'spawn-failed';
+	}
+	if (message.startsWith('codex app-server exited')) {
+		return 'exited';
+	}
+	if (/request 'initialize' timed out$/.test(message)) {
+		return 'init-timeout';
+	}
+	if (/ timed out$/.test(message)) {
+		return 'request-timeout';
+	}
+	if (message.startsWith('failed to fetch codex')) {
+		return 'rpc-error';
+	}
+	return 'unknown';
+}
+
 function isCodexAuthFailure(error: unknown): boolean {
 	const httpStatus = (error as { httpStatus?: number } | undefined)?.httpStatus;
 	if (httpStatus === 401 || httpStatus === 403) {
@@ -91,7 +124,9 @@ function isCodexAuthFailure(error: unknown): boolean {
 	// 数字では判定しない。RPCのエラー文にはリクエストIDや所要msが混ざるので、`401` 単独で
 	// 拾うと本物の障害まで無言で握りつぶす。認証を指す語が出ていることを条件にする。
 	const message = error instanceof Error ? error.message : String(error ?? '');
-	return /unauthorized|forbidden|re-?login|token (?:has )?expired|expired token/i.test(message);
+	// `authentication required` は app-server が未認証ホームに返す文言(codex 0.154 では
+	// `codex account …` / `chatgpt …` の2系統)で、これも再ログインでしか解決しない。
+	return /unauthorized|forbidden|re-?login|token (?:has )?expired|expired token|authentication required/i.test(message);
 }
 
 // ---------- cswap --list --json の出力型(schemaVersion 1) ----------
@@ -194,6 +229,12 @@ export class ParadisLimitsMonitorService {
 	private inflightKey: string | undefined;
 	/** RPCフォールバックまで失敗したCodexホーム → 失敗時刻(クールダウン用)。 */
 	private readonly rpcFailureAt = new Map<string, number>();
+	/**
+	 * Sentryへ報告済みのCodexホーム。クールダウン明けごとに同じ失敗が再発するため
+	 * (2026-08〜09に1台から90日で2,400件)、ホームごとにプロセス生存中1回だけ報告し、
+	 * RPCが成功したら解除して次の失敗をまた1回だけ報告する。
+	 */
+	private readonly rpcFailureReported = new Set<string>();
 	private readonly setupSessions = new Map<string, ISetupSession>();
 	private readonly childProcesses: ParadisChildProcessTreeTracker;
 	private disposed = false;
@@ -500,6 +541,7 @@ export class ParadisLimitsMonitorService {
 			}
 			this.snapshotCache = undefined;
 			this.rpcFailureAt.delete(homePath);
+			this.rpcFailureReported.delete(homePath);
 			session.state = { ...session.state, phase: 'done', email: identity.email };
 			this.scheduleSetupCleanup(session);
 		} finally {
@@ -546,16 +588,22 @@ export class ParadisLimitsMonitorService {
 		try {
 			const viaRpc = await this.fetchCodexAccountViaRpc(homePath);
 			this.rpcFailureAt.delete(homePath);
+			this.rpcFailureReported.delete(homePath);
 			return { account: { ...base, email: viaRpc.email ?? email, ...viaRpc.windows, planType: viaRpc.planType, status: 'ok' }, accountId };
 		} catch (error) {
 			this.rpcFailureAt.set(homePath, Date.now());
 			// 認証切れはユーザーが再ログインするまで続くので、報告すると同じ内容が積み上がる。
 			// パネル側は status='relogin_required' を受けて「要再ログイン」バッジと「再ログイン…」
 			// ボタンを出す（paradisLimitsMonitorPanel.ts）ため、ユーザーはそこから復帰できる。
-			if (!isCodexAuthFailure(error)) {
+			if (!isCodexAuthFailure(error) && !this.rpcFailureReported.has(homePath)) {
+				this.rpcFailureReported.add(homePath);
+				const { exitCode, exitSignal } = error as { exitCode?: number | null; exitSignal?: string | null };
 				reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
 					phase: 'refresh',
 					transport: 'stdio',
+					safe_error_kind: classifyCodexRpcFailure(error),
+					...(typeof exitCode === 'number' ? { safe_exit_code: exitCode } : {}),
+					...(typeof exitSignal === 'string' ? { signal: exitSignal } : {}),
 				});
 			}
 			this.logService.warn(`[ParadisLimitsMonitor] codex app-server fallback failed for ${base.homeLabel}: ${(error as Error).message}`);
@@ -650,7 +698,8 @@ export class ParadisLimitsMonitorService {
 			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_REQUEST_TIMEOUT_MS) as IRpcRateLimitsResult;
 			let account: IRpcAccountResult | undefined;
 			try {
-				account = await rpc.request('account/read', undefined, RPC_REQUEST_TIMEOUT_MS) as IRpcAccountResult;
+				// codex 0.154 は `params` 省略を `missing field 'params'` で拒否するので空オブジェクトを渡す
+				account = await rpc.request('account/read', {}, RPC_REQUEST_TIMEOUT_MS) as IRpcAccountResult;
 			} catch {
 				// email/planは補助情報。rate limitsが取れていれば成立させる
 			}
@@ -962,6 +1011,7 @@ export class ParadisLimitsMonitorService {
 		}
 		this.snapshotCache = undefined;
 		this.rpcFailureAt.delete(session.codexHomePath);
+		this.rpcFailureReported.delete(session.codexHomePath);
 		session.codexHomePath = undefined;
 		session.state = { ...session.state, phase: 'done' };
 		this.scheduleSetupCleanup(session);
@@ -1135,7 +1185,9 @@ class ParadisCodexRpcSession extends Disposable {
 		super();
 		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
 		// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
-		const args = ['-s', 'read-only', '-a', 'untrusted', 'app-server'];
+		// `-a untrusted` は codex 0.149 (2026-08-24) で受け付けられなくなり、usage エラー(exit 2)で
+		// 即終了していた。読み取り専用 RPC しか呼ばないので `never` で動作は変わらない。
+		const args = ['-s', 'read-only', '-a', 'never', 'app-server'];
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
 		this.logService = logService;
 		this.child = cp.spawn(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
@@ -1148,7 +1200,11 @@ class ParadisCodexRpcSession extends Disposable {
 		this.child.stderr?.on('data', (chunk: Buffer) => {
 			logService.trace(`[ParadisLimitsMonitor] codex app-server stderr: ${chunk.toString('utf8').trim()}`);
 		});
-		this.child.on('exit', () => this.failAll(new Error('codex app-server exited')));
+		this.child.on('exit', (code, signal) => {
+			const error = new Error(`codex app-server exited (code=${code}, signal=${signal})`);
+			Object.assign(error, { exitCode: code, exitSignal: signal });
+			this.failAll(error);
+		});
 		this.child.on('error', error => this.failAll(new Error(`failed to launch codex app-server: ${error.message}`)));
 		this._register({ dispose: () => this.terminate() });
 	}
