@@ -261,10 +261,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		const content = Array.isArray(result.content) ? result.content : [];
 		const first = content.find((part): part is { type: 'text'; text: string } => this._isRecord(part) && part.type === 'text' && typeof part.text === 'string');
-		reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-tool-error', new Error('chrome-devtools-mcp tool returned isError'), {
+		// The kind is part of the operation so each bucket gets its own issue and rate-limit
+		// window; otherwise an agent's ordinary mis-clicks would crowd out a real transport fault.
+		const kind = first ? classifyToolErrorText(first.text) : 'other';
+		reportParadisDiagnosticError('owned', 'agent-browser', `devtools-tool-error-${kind}`, new Error('chrome-devtools-mcp tool returned isError'), {
 			duration_ms: durationMs,
 			safe_tool_name: safeToolName,
-			safe_error_kind: first ? classifyToolErrorText(first.text) : 'other',
+			safe_error_kind: kind,
 		}, 'info');
 	}
 
@@ -422,8 +425,14 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		child.stdout.on('data', entry.stdoutDataListener);
 		// 子プロセスのstderrは秘密情報を含み得るため、内容を保持・表示せずdrainだけ行う。
 		child.stderr.resume();
-		entry.processErrorListener = (_error: Error) => {
+		entry.processErrorListener = (error: Error) => {
 			this._warn(`[ParadisDevtoolsProxy] chrome-devtools-mcp process error for pane ${tokenFingerprint} generation=${generation}`);
+			// spawn failures (ENOENT, EACCES) never reach the exit listener's report; `code` is the errno name only.
+			const code = (error as NodeJS.ErrnoException).code;
+			reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-error', error, {
+				duration_ms: Date.now() - entry.spawnedAt,
+				...(typeof code === 'string' && /^[A-Z_]{1,32}$/.test(code) ? { safe_errno: code } : {}),
+			});
 			this._killChild(token, entry, 'process error');
 		};
 		entry.processExitListener = (code, signal) => {
