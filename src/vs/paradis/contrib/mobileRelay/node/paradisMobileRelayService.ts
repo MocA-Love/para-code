@@ -505,6 +505,20 @@ export interface IParadisMobileRelayServiceTestSeams {
 	readonly disableHostResourceSampling?: boolean;
 }
 
+/**
+ * `fetch` の失敗理由を識別子 1 語に落とす。`err.cause.code`（Node の errno 名）か `err.cause.name`
+ * （`TimeoutError` 等）だけを見るので、ホスト名や URL は含まれない。
+ */
+function probeFailureCause(err: unknown): string {
+	const cause = (err as { cause?: { code?: unknown; name?: unknown } } | undefined)?.cause;
+	for (const value of [cause?.code, cause?.name, (err as { name?: unknown } | undefined)?.name]) {
+		if (typeof value === 'string' && /^[A-Za-z_][\w]{0,47}$/.test(value)) {
+			return value;
+		}
+	}
+	return 'unknown';
+}
+
 export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService {
 	declare readonly _serviceBrand: undefined;
 
@@ -974,8 +988,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		} catch (err) {
 			// ネットワーク自体が死んでいる＝認証の問題ではないので何も確定させない。
 			this.logService.trace('[paradisMobileRelay] auth probe failed', String(err));
-			// ただし「到達すらできない」ことは経路側の証拠なので、それは残す。
-			this.reportAuthProbe('unreachable', undefined);
+			// ただし「到達すらできない」ことは経路側の証拠なので、それは残す。undici の cause code
+			// （ENOTFOUND / ECONNREFUSED / CERT_* / TimeoutError）で DNS・拒否・TLS・黒穴が 1 件で決まる。
+			this.reportAuthProbe('unreachable', undefined, probeFailureCause(err));
 		} finally {
 			this.authProbeInFlight = false;
 		}
@@ -989,7 +1004,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {
-		this.relayUrlOverride = relayUrl;
+		// 設定は既定値を持つので、未設定でも renderer は既定 URL を文字列で渡してくる。それを
+		// override として持つと `safe_relay_kind` が全員 `custom` になり（2026-09 の Sentry で
+		// 3 台・全イベントがそうだった）、自前リレー利用者だけの障害を切り分けられない。
+		this.relayUrlOverride = relayUrl === undefined || relayUrl.replace(/\/$/, '') === PARADIS_MOBILE_DEFAULT_RELAY_URL ? undefined : relayUrl;
 		// renderer が設定値を持ってくる前でも名前が空にならないよう、ホスト名を既定として入れておく
 		// （まだ誰も繋がっていないので、ここではブロードキャストしない）。
 		if (this.pcName === undefined) {
@@ -2276,7 +2294,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 断が復帰したら {@link lastAuthProbeOutcome} は onopen で捨てるので、
 	 * **次のインシデントでは改めて1件残る**（機体あたり1件で打ち止めにはならない）。
 	 */
-	private reportAuthProbe(outcome: 'ok' | 'unauthorized' | 'rejected' | 'unreachable', status: number | undefined): void {
+	private reportAuthProbe(outcome: 'ok' | 'unauthorized' | 'rejected' | 'unreachable', status: number | undefined, cause?: string): void {
 		if (this.lastAuthProbeOutcome === outcome) {
 			return;
 		}
@@ -2286,6 +2304,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			safe_reconnect_count: this.reconnectAttempt,
 			safe_http_status: status ?? -1,
 			safe_relay_kind: this.relayUrlOverride === undefined ? 'default' : 'custom',
+			...(cause !== undefined ? { safe_cause: cause } : {}),
 		}, () => { });
 	}
 
