@@ -106,10 +106,21 @@ const MAX_CDP_PENDING_REQUESTS = 1_024;
 // the parser is not rejected by an earlier queue or later backpressure check.
 const MAX_CDP_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_CDP_SCREENSHOT_FRAME_BYTES = MAX_CDP_FRAME_BYTES;
+// Chromium serializes lone surrogates in page strings (a truncated emoji in app data, a console
+// message, an exception text) as raw WTF-8 bytes. `ws` validates every incoming text frame and
+// turns such a frame into an `error` event, which tore the whole upstream connection down for
+// every page that contained one — puppeteer then saw `Target closed` on each call, while the
+// browser-level tools and the BrowserView screenshot path kept working. The proxy re-encodes
+// what it forwards (`JSON.stringify` on the browser route, `reencodeUtf8` on the page route),
+// so skipping the validation here is what makes the downstream frame valid UTF-8 again.
+const UPSTREAM_SOCKET_OPTIONS: wsTypes.ClientOptions = { maxPayload: MAX_CDP_SCREENSHOT_FRAME_BYTES, skipUTF8Validation: true };
 const MAX_CDP_CONNECTING_QUEUE_BYTES = MAX_CDP_FRAME_BYTES;
 const MAX_CDP_OPEN_BUFFERED_BYTES = MAX_CDP_FRAME_BYTES;
 const MAX_CDP_METHOD_LENGTH = 256;
 const MAX_CDP_IDENTIFIER_LENGTH = 512;
+// `ws` transport errors are protocol-level ("invalid UTF-8 sequence", "Max payload size exceeded",
+// ECONNRESET) and carry no page content, but keep them bounded like every other logged value.
+const MAX_UPSTREAM_ERROR_DETAIL_LENGTH = 256;
 const MAX_CDP_ROUTING_ENTRIES = 4_096;
 const MAX_CDP_PENDING_POLICY_BYTES = 1024 * 1024;
 const PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS = 5_000;
@@ -187,6 +198,30 @@ function rawDataText(data: wsTypes.RawData): string {
 		return Buffer.concat(data).toString('utf8');
 	}
 	return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8');
+}
+
+// `buffer.isUtf8` is not importable under the node layer's import rules; a fatal decoder is the
+// same check without the dependency.
+const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * Returns the frame unchanged when it is already valid UTF-8 (no re-encoded copy for multi-megabyte
+ * screenshot frames); otherwise decodes it with U+FFFD replacement so the client's own `ws`
+ * validation accepts the forwarded text frame.
+ */
+function reencodeUtf8(data: wsTypes.RawData): wsTypes.RawData | string {
+	const buffer = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
+	try {
+		strictUtf8Decoder.decode(buffer);
+		return data;
+	} catch {
+		return buffer.toString('utf8');
+	}
+}
+
+function upstreamErrorDetail(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error ?? '');
+	return message.length > MAX_UPSTREAM_ERROR_DETAIL_LENGTH ? `${message.slice(0, MAX_UPSTREAM_ERROR_DETAIL_LENGTH)}…` : message;
 }
 
 function payloadByteLength(data: wsTypes.RawData | string): number {
@@ -837,7 +872,7 @@ export function paradisProxyPageUpgrade(
 	logService: ILogService,
 ): void {
 	wss.handleUpgrade(req, socket, head, clientWs => {
-		const upstream = paradisRegisterPageUpgrade(targetId, clientWs, ctx, () => new ws.WebSocket(`ws://127.0.0.1:${upstreamPort}/devtools/page/${targetId}`, { maxPayload: MAX_CDP_SCREENSHOT_FRAME_BYTES }));
+		const upstream = paradisRegisterPageUpgrade(targetId, clientWs, ctx, () => new ws.WebSocket(`ws://127.0.0.1:${upstreamPort}/devtools/page/${targetId}`, UPSTREAM_SOCKET_OPTIONS));
 		if (!upstream) {
 			return;
 		}
@@ -1083,15 +1118,17 @@ export function paradisProxyPageUpgrade(
 					}
 				}
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
-					if (!sendWithBoundedBackpressure(clientWs, data, frameBytes > MAX_CDP_FRAME_BYTES, true)) {
+					// U+FFFD replacement can grow the frame, so size the backpressure check on what is actually sent.
+					const forwarded = reencodeUtf8(data);
+					if (!sendWithBoundedBackpressure(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true)) {
 						closeBoth();
 					}
 				}
 			});
 		});
-		upstream.on('error', () => {
+		upstream.on('error', (error: unknown) => {
 			closeBoth();
-			logNonThrowing(logService, 'debug', '[ParadisCdpGateway] page upstream transport failed');
+			logNonThrowing(logService, 'debug', `[ParadisCdpGateway] page upstream transport failed: ${upstreamErrorDetail(error)}`);
 		});
 		upstream.on('close', () => {
 			rawScreenshots.release(rawScreenshotOwner);
@@ -1129,7 +1166,7 @@ export async function paradisProxyBrowserUpgrade(
 			return;
 		}
 
-		const upstream = new ws.WebSocket(upstreamBrowserWsUrl, { maxPayload: MAX_CDP_SCREENSHOT_FRAME_BYTES });
+		const upstream = new ws.WebSocket(upstreamBrowserWsUrl, UPSTREAM_SOCKET_OPTIONS);
 		const rawScreenshots = ctx.rawScreenshotCoordinator;
 		const rawScreenshotOwner = {};
 		const pendingRequests = new Map<number, IParadisPendingRequest>();
@@ -1846,9 +1883,9 @@ export async function paradisProxyBrowserUpgrade(
 			// Unknown root events are not part of the browser-root capability surface.
 		});
 
-		upstream.on('error', () => {
+		upstream.on('error', (error: unknown) => {
 			closeBoth();
-			logNonThrowing(logService, 'debug', '[ParadisCdpGateway] browser upstream transport failed');
+			logNonThrowing(logService, 'debug', `[ParadisCdpGateway] browser upstream transport failed: ${upstreamErrorDetail(error)}`);
 		});
 		upstream.on('close', () => {
 			rawScreenshots.release(rawScreenshotOwner);
