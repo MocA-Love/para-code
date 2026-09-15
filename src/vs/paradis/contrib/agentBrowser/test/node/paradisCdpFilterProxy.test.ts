@@ -460,8 +460,8 @@ suite('Paradis CDP screenshot filter', () => {
 		await paradisProxyBrowserUpgrade({} as never, {} as never, Buffer.alloc(0), browser.ws, browser.wss, 41001, 'ws://127.0.0.1:41001/devtools/browser/live', browser.ctx, browser.logService);
 
 		assert.deepStrictEqual([...page.upstreamOptions, ...browser.upstreamOptions], [
-			{ maxPayload: 32 * 1024 * 1024, skipUTF8Validation: true },
-			{ maxPayload: 32 * 1024 * 1024, skipUTF8Validation: true },
+			{ maxPayload: 256 * 1024 * 1024, skipUTF8Validation: true },
+			{ maxPayload: 256 * 1024 * 1024, skipUTF8Validation: true },
 		]);
 	});
 
@@ -943,10 +943,53 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.strictEqual(forwarded.params?.sourceMapURL, sourceMapUrl);
 	});
 
-	test('rejects ordinary upstream frames above 32 MiB but permits a bounded raw screenshot response', async () => {
-		const ordinary = await createOpenBrowserProxyFixture();
-		ordinary.upstream.emit('message', Buffer.alloc(32 * 1024 * 1024 + 1, 0x20));
-		assert.ok(ordinary.client.closeCalls >= 1);
+	test('drops an oversized upstream frame without closing the connection and answers a pending request with an error', async () => {
+		const reports: Array<{ operation: string; extra: Record<string, unknown> | undefined }> = [];
+		configureParadisDiagnosticReporter((_scope, _feature, operation, _error, extra) => { reports.push({ operation, extra }); });
+		const fixture = await createOpenBrowserProxyFixture();
+		try {
+			publishAllowedSession(fixture, 'session-1');
+			fixture.client.sent.length = 0;
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 9, sessionId: 'session-1', method: 'Network.getResponseBody', params: { requestId: 'r1' } })));
+			// A 33 MiB response shaped the way Chromium serializes it: id first, sessionId last.
+			const oversizedResponse = Buffer.concat([
+				Buffer.from('{"id":9,"result":{"body":"'),
+				Buffer.alloc(33 * 1024 * 1024, 0x78),
+				Buffer.from('"},"sessionId":"session-1"}'),
+			]);
+			fixture.upstream.emit('message', oversizedResponse);
+			// A 33 MiB event: dropped silently.
+			const oversizedEvent = Buffer.concat([
+				Buffer.from('{"method":"Runtime.consoleAPICalled","params":{"args":"'),
+				Buffer.alloc(33 * 1024 * 1024, 0x78),
+				Buffer.from('"},"sessionId":"session-1"}'),
+			]);
+			fixture.upstream.emit('message', oversizedEvent);
+			// The connection is still usable afterwards.
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 10, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: 10, sessionId: 'session-1', result: { value: 1 } })));
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
+
+		assert.deepStrictEqual({
+			closeCalls: fixture.client.closeCalls,
+			sent: parseSent(fixture.client),
+			reports,
+		}, {
+			closeCalls: 0,
+			sent: [
+				{ id: 9, sessionId: 'session-1', error: { code: -32000, message: 'PARA_BROWSER_RETRYABLE: CDP response exceeded 32 MiB and was dropped by Para Code; retry with a smaller request' } },
+				{ id: 10, sessionId: 'session-1', result: { value: 1 } },
+			],
+			reports: [
+				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Network.getResponseBody', safe_frame_mib: 33, safe_is_response: true } },
+				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Runtime.consoleAPICalled', safe_frame_mib: 33, safe_is_response: false } },
+			],
+		});
+	});
+
+	test('permits a bounded raw screenshot response on the page route', async () => {
 
 		const screenshot = createProxyFixture(context());
 		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), screenshot.ws, screenshot.wss, 41001, 'target-1', screenshot.ctx, screenshot.logService);

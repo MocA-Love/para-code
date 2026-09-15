@@ -114,7 +114,14 @@ const MAX_CDP_SCREENSHOT_FRAME_BYTES = MAX_CDP_FRAME_BYTES;
 // browser-level tools and the BrowserView screenshot path kept working. The proxy re-encodes
 // what it forwards (`JSON.stringify` on the browser route, `reencodeUtf8` on the page route),
 // so skipping the validation here is what makes the downstream frame valid UTF-8 again.
-const UPSTREAM_SOCKET_OPTIONS: wsTypes.ClientOptions = { maxPayload: MAX_CDP_SCREENSHOT_FRAME_BYTES, skipUTF8Validation: true };
+// Sized to puppeteer's own client limit. A frame between this and MAX_CDP_FRAME_BYTES reaches
+// the message handler and is dropped there with a proper error to the client; below 32 MiB
+// the ws error ("Max payload size exceeded") took the whole connection down instead, which
+// is what made every tool call on a page that emits one such event fail with "Target closed"
+// (2026-09, confirmed via the cdp-upstream-error-max-payload report).
+const MAX_UPSTREAM_WS_PAYLOAD_BYTES = 256 * 1024 * 1024;
+const UPSTREAM_SOCKET_OPTIONS: wsTypes.ClientOptions = { maxPayload: MAX_UPSTREAM_WS_PAYLOAD_BYTES, skipUTF8Validation: true };
+const OVERSIZED_RESPONSE_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: CDP response exceeded 32 MiB and was dropped by Para Code; retry with a smaller request';
 const MAX_CDP_CONNECTING_QUEUE_BYTES = MAX_CDP_FRAME_BYTES;
 const MAX_CDP_OPEN_BUFFERED_BYTES = MAX_CDP_FRAME_BYTES;
 const MAX_CDP_METHOD_LENGTH = 256;
@@ -280,6 +287,42 @@ class ParadisUpstreamTransportReporter {
 			close_code: code,
 		}, 'warning');
 	}
+}
+
+interface IParadisOversizedFramePeek {
+	readonly id: number | undefined;
+	readonly method: string | undefined;
+	readonly sessionId: string | undefined;
+}
+
+/**
+ * Reads only the head and tail of a frame that is too large to parse. Chromium serializes
+ * `{"id":N,...}` / `{"method":"X",...}` first and `"sessionId":"..."}` last, which is all the
+ * proxy needs to answer the client and to name the offender in Sentry.
+ */
+function peekOversizedFrame(data: wsTypes.RawData): IParadisOversizedFramePeek {
+	const buffer = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
+	const head = buffer.subarray(0, 256).toString('latin1');
+	const tail = buffer.subarray(Math.max(0, buffer.length - 128)).toString('latin1');
+	const id = /^\{"id":(\d{1,15})[,}]/.exec(head);
+	const method = /^\{"method":"([A-Za-z]{1,32}\.[A-Za-z]{1,64})"/.exec(head);
+	const sessionId = /"sessionId":"([0-9A-Fa-f]{1,64})"\}\s*$/.exec(tail);
+	return {
+		id: id ? Number(id[1]) : undefined,
+		method: method?.[1],
+		sessionId: sessionId?.[1],
+	};
+}
+
+function reportOversizedFrame(transport: 'page' | 'browser', peek: IParadisOversizedFramePeek, pendingMethod: string | undefined, frameBytes: number, logService: ILogService): void {
+	const method = pendingMethod ?? peek.method ?? 'unknown';
+	logNonThrowing(logService, 'warn', `[ParadisCdpGateway] dropped a ${Math.round(frameBytes / 1048576)} MiB ${transport} upstream frame (${peek.id !== undefined ? 'response to ' : ''}${method})`);
+	reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-frame-dropped', new Error('CDP upstream frame exceeded the forwarding limit'), {
+		transport,
+		safe_method: method,
+		safe_frame_mib: Math.round(frameBytes / 1048576),
+		safe_is_response: peek.id !== undefined,
+	}, 'warning');
 }
 
 function upstreamErrorDetail(error: unknown): string {
@@ -1161,7 +1204,19 @@ export function paradisProxyPageUpgrade(
 				const frameBytes = rawDataByteLength(data);
 				const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
 				if (frameBytes > (rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES)) {
-					closeBoth();
+					// Drop just this frame. A response gets an error so the client's promise settles;
+					// an event is simply lost, which every CDP client tolerates.
+					const peek = peekOversizedFrame(data);
+					reportOversizedFrame('page', peek, undefined, frameBytes, logService);
+					if (peek.id !== undefined) {
+						completeForwardedRequestBarrier(forwardedRequestBarriers, peek.id, peek.sessionId);
+						if (clientWs.readyState === ws.WebSocket.OPEN) {
+							const serialized = JSON.stringify({ id: peek.id, ...(peek.sessionId !== undefined ? { sessionId: peek.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
+							if (!sendWithBoundedBackpressure(clientWs, serialized, false, true)) {
+								closeBoth();
+							}
+						}
+					}
 					return;
 				}
 				const response = parseJsonRecord(data, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
@@ -1749,6 +1804,31 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			const frameBytes = rawDataByteLength(data);
 			const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
+			if (frameBytes > (rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES)) {
+				// Drop just this frame (see the page route). Responses to forwarded requests are
+				// answered with an error and released from the pending books; internal ones are
+				// released silently; events are lost.
+				const peek = peekOversizedFrame(data);
+				if (peek.id !== undefined && peek.id < 0) {
+					const pending = internalPending.get(peek.id);
+					reportOversizedFrame('browser', peek, pending?.method, frameBytes, logService);
+					if (pending) {
+						internalPending.delete(peek.id);
+						pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					}
+					return;
+				}
+				const pending = peek.id !== undefined ? pendingRequests.get(peek.id) : undefined;
+				reportOversizedFrame('browser', peek, pending?.method, frameBytes, logService);
+				if (peek.id !== undefined && pending) {
+					completeForwardedRequestBarrier(forwardedRequestBarriers, peek.id, pending.sessionId);
+					pendingRequests.delete(peek.id);
+					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					rawScreenshots.complete(rawScreenshotOwner, peek.id, pending.sessionId);
+					sendToClient({ id: peek.id, ...(pending.sessionId !== undefined ? { sessionId: pending.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
+				}
+				return;
+			}
 			const message = parseJsonRecord(data, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
 			if (!message
 				|| (message.params !== undefined && !isRecord(message.params))
