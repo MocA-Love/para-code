@@ -452,6 +452,48 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.ok([...fixture.upstream.sentOptions, ...fixture.client.sentOptions].every(options => options?.binary === false));
 	});
 
+	test('upstream sockets skip ws UTF-8 validation so a lone surrogate from Chromium cannot tear the transport down', async () => {
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		const browser = createProxyFixture(context());
+		await paradisProxyBrowserUpgrade({} as never, {} as never, Buffer.alloc(0), browser.ws, browser.wss, 41001, 'ws://127.0.0.1:41001/devtools/browser/live', browser.ctx, browser.logService);
+
+		assert.deepStrictEqual([...page.upstreamOptions, ...browser.upstreamOptions], [
+			{ maxPayload: 32 * 1024 * 1024, skipUTF8Validation: true },
+			{ maxPayload: 32 * 1024 * 1024, skipUTF8Validation: true },
+		]);
+	});
+
+	test('page proxy re-encodes an invalid UTF-8 upstream frame before forwarding it to the client', () => {
+		const fixture = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'target-1', fixture.ctx, fixture.logService);
+		fixture.upstream.readyState = TestWebSocket.OPEN;
+		fixture.upstream.emit('open');
+
+		// A lone high surrogate (U+D83D) as Chromium emits it: WTF-8 bytes ED A0 BD inside otherwise valid JSON.
+		const valid = Buffer.from(JSON.stringify({ id: 1, result: { value: 'ok' } }));
+		const invalid = Buffer.concat([Buffer.from('{"id":2,"result":{"value":"'), Buffer.from([0xED, 0xA0, 0xBD]), Buffer.from('"}}')]);
+		fixture.upstream.emit('message', valid);
+		fixture.upstream.emit('message', invalid);
+
+		assert.deepStrictEqual(fixture.client.sent.map(frame => ({ isBuffer: Buffer.isBuffer(frame), text: String(frame) })), [
+			{ isBuffer: true, text: valid.toString('utf8') },
+			{ isBuffer: false, text: '{"id":2,"result":{"value":"\ufffd\ufffd\ufffd"}}' },
+		]);
+		assert.ok(fixture.client.sentOptions.every(options => options?.binary === false));
+		assert.strictEqual(fixture.client.closeCalls, 0);
+	});
+
+	test('upstream transport errors are logged with their protocol-level reason', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		fixture.upstream.emit('error', new Error('Invalid WebSocket frame: invalid UTF-8 sequence'));
+
+		assert.deepStrictEqual(fixture.debugLogs.filter(message => message.includes('transport failed')), [
+			'[ParadisCdpGateway] browser upstream transport failed: Invalid WebSocket frame: invalid UTF-8 sequence',
+		]);
+		assert.ok(fixture.client.closeCalls >= 1);
+	});
+
 	test('browser proxy closes the connection when the bound target is force-detached upstream', async () => {
 		const fixture = await createOpenBrowserProxyFixture();
 		publishAllowedSession(fixture, 'primary-session');
@@ -899,7 +941,7 @@ suite('Paradis CDP screenshot filter', () => {
 			warn: () => { throw new Error('logger unavailable'); },
 		} as never;
 		await paradisProxyBrowserUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'ws://127.0.0.1:41001/devtools/browser/live', fixture.ctx, throwingLog);
-		assert.doesNotThrow(() => fixture.upstream.emit('error', new Error('private upstream URL')));
+		assert.doesNotThrow(() => fixture.upstream.emit('error', new Error('Max payload size exceeded')));
 		assert.ok(fixture.client.closeCalls >= 1);
 	});
 
@@ -1346,14 +1388,18 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 	readonly ws: IParadisWsModule;
 	readonly wss: import('ws').WebSocketServer;
 	readonly logService: import('../../../../../platform/log/common/log.js').ILogService;
+	readonly upstreamOptions: readonly unknown[];
+	readonly debugLogs: readonly string[];
 } {
 	const client = new TestWebSocket();
 	client.readyState = TestWebSocket.OPEN;
 	let upstream: TestWebSocket | undefined;
+	const upstreamOptions: unknown[] = [];
 	class UpstreamWebSocket extends TestWebSocket {
-		constructor(_url: string) {
+		constructor(_url: string, options?: unknown) {
 			super();
 			upstream = this;
+			upstreamOptions.push(options);
 		}
 	}
 	const ws = {
@@ -1368,13 +1414,14 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 	const wss = {
 		handleUpgrade: (_req: unknown, _socket: unknown, _head: unknown, callback: (socket: TestWebSocket) => void) => callback(client),
 	} as never;
+	const debugLogs: string[] = [];
 	const logService = {
 		trace: () => undefined,
-		debug: () => undefined,
+		debug: (message: string) => { debugLogs.push(message); },
 		warn: () => undefined,
 	} as never;
 	// The proxy constructors synchronously create the upstream from handleUpgrade's callback.
-	return new Proxy({ ctx, client, ws, wss, logService } as object, {
+	return new Proxy({ ctx, client, ws, wss, logService, upstreamOptions, debugLogs } as object, {
 		get(target, property) {
 			if (property === 'upstream') {
 				assert.ok(upstream);
