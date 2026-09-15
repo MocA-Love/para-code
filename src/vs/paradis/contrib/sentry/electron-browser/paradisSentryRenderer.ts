@@ -85,20 +85,22 @@ export function captureParadisRendererException(
 	safeExtra?: Record<string, unknown>,
 	severity?: ParadisDiagnosticSeverity,
 ): string {
-	return Sentry.withScope(sentryScope => {
-		sentryScope.setTags({
+	// The breadcrumb goes to the isolation scope, and any isolation-scope write makes
+	// @sentry/electron ship the *merged* scope (including a withScope fork) to the main
+	// process, whose handler only ever adds tags/extras. Reporting through withScope
+	// therefore leaked every feature/operation/extra onto main's scope for the rest of
+	// the session (see stripLeakedScopeFromNativeEvent in paradisSentryEvent.ts for the
+	// damage). Attach the context to this one event via the capture hint instead; that
+	// path clones a scope without notifying listeners.
+	Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
+	return Sentry.captureException(toParadisSentrySafeError(feature, operation, error), {
+		tags: {
 			'para.scope': scope,
 			'para.feature': feature,
 			'para.operation': operation,
-		});
-		if (safeExtra) {
-			sentryScope.setExtras(safeExtra);
-		}
-		if (severity) {
-			sentryScope.setLevel(severity);
-		}
-		Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
-		return Sentry.captureException(toParadisSentrySafeError(feature, operation, error));
+		},
+		...(safeExtra ? { extra: safeExtra } : {}),
+		...(severity ? { level: severity } : {}),
 	});
 }
 

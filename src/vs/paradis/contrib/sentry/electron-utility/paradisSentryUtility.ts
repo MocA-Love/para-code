@@ -57,20 +57,17 @@ export function captureParadisUtilityException(
 		return '';
 	}
 	const Sentry = sentry;
-	return Sentry.withScope(sentryScope => {
-		sentryScope.setTags({
+	// The utility SDK has no scope sync, so nothing leaks from here; this mirrors the renderer
+	// and main reporters (capture hint, not withScope) so all three stay identical.
+	Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
+	return Sentry.captureException(toParadisSentrySafeError(feature, operation, error), {
+		tags: {
 			'para.scope': scope,
 			'para.feature': feature,
 			'para.operation': operation,
-		});
-		if (safeExtra) {
-			sentryScope.setExtras(safeExtra);
-		}
-		if (severity) {
-			sentryScope.setLevel(severity);
-		}
-		Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
-		return Sentry.captureException(toParadisSentrySafeError(feature, operation, error));
+		},
+		...(safeExtra ? { extra: safeExtra } : {}),
+		...(severity ? { level: severity } : {}),
 	});
 }
 

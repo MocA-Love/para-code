@@ -50,30 +50,30 @@ suite('ParadisSentryUtility', () => {
 		});
 	});
 
-	test('forwards explicit captures through an isolated scope', () => {
+	test('forwards explicit captures with a per-event capture context instead of a shared scope', () => {
 		assert.strictEqual(result.directCaptureId, 'fake-sentry-event-id');
 	});
 
 	test('connects the diagnostic reporter and correlation tag APIs to the utility SDK', () => {
 		assert.deepStrictEqual(result.captures, [{
 			errorMessage: 'Para Code diagnostic: mobile-relay.reconnect',
-			scope: {
+			context: {
 				tags: {
 					'para.scope': 'patched',
 					'para.feature': 'mobile-relay',
 					'para.operation': 'reconnect',
 				},
-				extras: { attempt: 2 },
+				extra: { attempt: 2 },
 			},
 		}, {
 			errorMessage: 'Para Code diagnostic: terminal-environment.resolve',
-			scope: {
+			context: {
 				tags: {
 					'para.scope': 'owned',
 					'para.feature': 'terminal-environment',
 					'para.operation': 'resolve',
 				},
-				extras: { duration_ms: 321, phase: 'resolve' },
+				extra: { duration_ms: 321, phase: 'resolve' },
 			},
 		}]);
 		assert.deepStrictEqual(result.breadcrumbs, [{
