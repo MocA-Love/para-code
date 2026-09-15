@@ -21,6 +21,8 @@ para.feature:codex-app-server
 para.feature:terminal-environment
 para.feature:terminal-preset
 para.feature:agent-browser
+para.operation:devtools-tool-error
+para.operation:cdp-upstream-closed
 para.feature:desktop-relay
 ```
 

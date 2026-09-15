@@ -13,6 +13,27 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { ParadisDevtoolsMcpProxy } from '../../node/paradisDevtoolsMcpProxy.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
+
+interface IRecordedReport {
+	readonly feature: string;
+	readonly operation: string;
+	readonly extra: Record<string, unknown> | undefined;
+	readonly severity: string | undefined;
+}
+
+/** Captures Sentry diagnostics for the duration of `run`, restoring the no-op reporter afterwards. */
+async function withRecordedReports<T>(run: () => Promise<T>): Promise<{ readonly result: T; readonly reports: IRecordedReport[] }> {
+	const reports: IRecordedReport[] = [];
+	configureParadisDiagnosticReporter((_scope, feature, operation, _error, extra, severity) => {
+		reports.push({ feature, operation, extra, severity });
+	});
+	try {
+		return { result: await run(), reports };
+	} finally {
+		configureParadisDiagnosticReporter(() => { });
+	}
+}
 
 interface IFakeDevtoolsChild {
 	readonly child: ChildProcessWithoutNullStreams;
@@ -79,13 +100,14 @@ class ThrowingDiagnosticLogService extends NullLogService {
 	}
 }
 
-function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBeforeHungToolCall?: string; toolCallErrors?: readonly string[]; toolsListResult?: unknown; ignoreKillExit?: boolean } = {}): IFakeDevtoolsChildren {
+function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBeforeHungToolCall?: string; toolCallErrors?: readonly string[]; toolCallResults?: readonly unknown[]; toolsListResult?: unknown; ignoreKillExit?: boolean } = {}): IFakeDevtoolsChildren {
 	const children: IFakeDevtoolsChild[] = [];
 	const spawnOptions: IFakeDevtoolsSpawnOptions[] = [];
 	let remainingHungToolCalls = options.hangToolCalls ?? 0;
 	let stderrBeforeHungToolCall = options.stderrBeforeHungToolCall;
 	let hungToolCallCount = 0;
 	const toolCallErrors = [...(options.toolCallErrors ?? [])];
+	const toolCallResults = [...(options.toolCallResults ?? [])];
 	const hungToolCallWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
 	const resolveHungToolCallWaiters = () => {
 		for (let index = hungToolCallWaiters.length - 1; index >= 0; index--) {
@@ -137,7 +159,7 @@ function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBef
 				const result = request.method === 'tools/list'
 					? options.toolsListResult ?? { tools: [{ name: 'take_snapshot' }] }
 					: request.method === 'tools/call'
-						? { content: [{ type: 'text', text: 'ok' }] }
+						? (toolCallResults.length > 0 ? toolCallResults.shift() : { content: [{ type: 'text', text: 'ok' }] })
 						: {};
 				respond(request.id, result);
 			}
@@ -275,6 +297,49 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			retryable: stale.content?.[0]?.text?.includes('PARA_BROWSER_RETRYABLE'),
 			childCount: fixture.children.length,
 		}, { isError: true, retryable: true, childCount: 0 });
+	});
+
+	test('reports a failed tool result to Sentry as a bucket, never the text', async () => {
+		const fixture = createFakeDevtoolsChildren({
+			toolCallResults: [
+				{ content: [{ type: 'text', text: 'Error: Protocol error (Accessibility.getFullAXTree): Target closed at /Users/alice/private' }], isError: true },
+				{ content: [{ type: 'text', text: 'ok' }] },
+			],
+		});
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { spawnChild: fixture.spawn }));
+		const { result, reports } = await withRecordedReports(async () => [
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {}),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {}),
+		]);
+
+		assert.deepStrictEqual({
+			isError: result.map(r => (r as { isError?: boolean }).isError),
+			reports: reports.map(r => ({ ...r, extra: { ...r.extra, duration_ms: typeof r.extra?.duration_ms } })),
+		}, {
+			isError: [true, undefined],
+			reports: [{
+				feature: 'agent-browser',
+				operation: 'devtools-tool-error',
+				extra: { duration_ms: 'number', safe_tool_name: 'take_snapshot', safe_error_kind: 'target-closed' },
+				severity: 'info',
+			}],
+		});
+		assert.ok(!JSON.stringify(reports).includes('alice'));
+	});
+
+	test('reports JSON-RPC errors and timeouts with their code and method only', async () => {
+		const fixture = createFakeDevtoolsChildren({ toolCallErrors: ['Invalid arguments token=secret'], hangToolCalls: 1 });
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { spawnChild: fixture.spawn, callTimeoutMs: 10 }));
+		const { reports } = await withRecordedReports(async () => [
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {}),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {}),
+		]);
+
+		assert.deepStrictEqual(reports.map(r => ({ operation: r.operation, extra: { ...r.extra, duration_ms: typeof r.extra?.duration_ms }, severity: r.severity })), [
+			{ operation: 'devtools-rpc-error', extra: { duration_ms: 'number', safe_tool_name: 'take_snapshot', safe_rpc_code: -32000 }, severity: 'warning' },
+			{ operation: 'devtools-call-timeout', extra: { duration_ms: 'number', safe_tool_name: 'take_snapshot', safe_method: 'tools/call' }, severity: 'warning' },
+		]);
+		assert.ok(!JSON.stringify(reports).includes('secret'));
 	});
 
 	test('redacts token and endpoint from JSON-RPC tool errors', async () => {

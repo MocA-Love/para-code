@@ -42,6 +42,7 @@ import type * as wsTypes from 'ws';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX, BROWSER_VIEW_SCREENSHOT_MAX_EDGE, BROWSER_VIEW_SCREENSHOT_MAX_PIXELS, BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS } from '../../../../platform/browserView/common/browserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
@@ -216,6 +217,68 @@ function reencodeUtf8(data: wsTypes.RawData): wsTypes.RawData | string {
 		return data;
 	} catch {
 		return buffer.toString('utf8');
+	}
+}
+
+type ParadisUpstreamErrorKind = 'invalid-utf8' | 'max-payload' | 'econnreset' | 'econnrefused' | 'handshake' | 'other';
+
+/** Buckets a `ws` client error so Sentry gets a kind, never the text. */
+function classifyUpstreamError(error: unknown): ParadisUpstreamErrorKind {
+	const message = error instanceof Error ? error.message : '';
+	if (/invalid UTF-8/i.test(message)) {
+		return 'invalid-utf8';
+	}
+	if (/Max payload size/i.test(message)) {
+		return 'max-payload';
+	}
+	if (/ECONNRESET/.test(message)) {
+		return 'econnreset';
+	}
+	if (/ECONNREFUSED/.test(message)) {
+		return 'econnrefused';
+	}
+	if (/Unexpected server response|before the connection was established/i.test(message)) {
+		return 'handshake';
+	}
+	return 'other';
+}
+
+/**
+ * Sentry side of the upstream `error`/`close` handlers. The connection is torn down either way;
+ * this records why, which the shared-process log alone did not (the 2026-09 "Target closed"
+ * incident needed the log file carried over by hand). One report per connection: an `error`
+ * is always followed by `close`, so the close is only reported when it arrived on its own and
+ * the client had not already gone away (a client-initiated close is normal reconnect traffic).
+ */
+class ParadisUpstreamTransportReporter {
+	private readonly openedAt = Date.now();
+	private reported = false;
+
+	constructor(private readonly transport: 'page' | 'browser') { }
+
+	error(error: unknown): void {
+		if (this.reported) {
+			return;
+		}
+		this.reported = true;
+		const kind = classifyUpstreamError(error);
+		reportParadisDiagnosticError('owned', 'agent-browser', `cdp-upstream-error-${kind}`, error, {
+			transport: this.transport,
+			duration_ms: Date.now() - this.openedAt,
+			safe_error_kind: kind,
+		}, 'warning');
+	}
+
+	close(code: number, clientStillOpen: boolean): void {
+		if (this.reported || !clientStillOpen) {
+			return;
+		}
+		this.reported = true;
+		reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-upstream-closed', new Error('CDP upstream closed while the client was still connected'), {
+			transport: this.transport,
+			duration_ms: Date.now() - this.openedAt,
+			close_code: code,
+		}, 'warning');
 	}
 }
 
@@ -1126,11 +1189,14 @@ export function paradisProxyPageUpgrade(
 				}
 			});
 		});
+		const transportReporter = new ParadisUpstreamTransportReporter('page');
 		upstream.on('error', (error: unknown) => {
+			transportReporter.error(error);
 			closeBoth();
 			logNonThrowing(logService, 'debug', `[ParadisCdpGateway] page upstream transport failed: ${upstreamErrorDetail(error)}`);
 		});
-		upstream.on('close', () => {
+		upstream.on('close', (code: number) => {
+			transportReporter.close(code, clientWs.readyState === ws.WebSocket.OPEN);
 			rawScreenshots.release(rawScreenshotOwner);
 			closeBoth();
 		});
@@ -1883,11 +1949,14 @@ export async function paradisProxyBrowserUpgrade(
 			// Unknown root events are not part of the browser-root capability surface.
 		});
 
+		const transportReporter = new ParadisUpstreamTransportReporter('browser');
 		upstream.on('error', (error: unknown) => {
+			transportReporter.error(error);
 			closeBoth();
 			logNonThrowing(logService, 'debug', `[ParadisCdpGateway] browser upstream transport failed: ${upstreamErrorDetail(error)}`);
 		});
-		upstream.on('close', () => {
+		upstream.on('close', (code: number) => {
+			transportReporter.close(code, clientWs.readyState === ws.WebSocket.OPEN);
 			rawScreenshots.release(rawScreenshotOwner);
 			closeBoth();
 		});
