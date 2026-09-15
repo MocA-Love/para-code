@@ -133,6 +133,41 @@ suite('ParadisSentryEvent', () => {
 		assert.strictEqual(reported?.tags?.['para.scope'], 'owned');
 	});
 
+	test('strips scope tags and extras that leaked from a renderer report onto a native crash', () => {
+		// A main-process scope polluted by an earlier renderer report (including `para.prepared`)
+		// used to make a minidump skip classification and file under that report's issue.
+		const leaked: IParadisSentryEvent = {
+			platform: 'native',
+			tags: {
+				'event.environment': 'native',
+				'para.scope': 'owned',
+				'para.feature': 'terminal-count',
+				'para.operation': 'rapid-shrink',
+				'para.prepared': '1',
+				'para.pairing': '95501db8',
+			},
+			extra: { safe_total_instances: 6, phase: 'startup' },
+			exception: { values: [{ type: 'EXC_BAD_ACCESS', value: 'Fatal Error' }] },
+		};
+		const prepared = paradisPrepareSentryEvent(leaked, 'main');
+
+		assert.deepStrictEqual({
+			tags: prepared?.tags,
+			extra: prepared?.extra,
+			fingerprint: prepared?.fingerprint,
+		}, {
+			tags: {
+				'event.environment': 'native',
+				'para.pairing': '95501db8',
+				'para.scope': 'unknown',
+				'process.type': 'main',
+				'para.prepared': '1',
+			},
+			extra: undefined,
+			fingerprint: ['unknown|unknown|unknown|EXC_BAD_ACCESS|unknown|unknown'],
+		});
+	});
+
 	test('drops a foreign native crash before preparing it for Sentry', () => {
 		assert.strictEqual(paradisPrepareSentryEvent({
 			platform: 'native',

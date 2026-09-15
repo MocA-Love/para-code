@@ -55,10 +55,11 @@ export interface IUtilitySentryChildResult {
 	readonly tags: Record<string, unknown>;
 	readonly captures: Array<{
 		readonly errorMessage: string;
-		readonly scope: {
-			readonly tags: Record<string, unknown>;
-			readonly extras: Record<string, unknown>;
-		};
+		readonly context: {
+			readonly tags?: Record<string, unknown>;
+			readonly extra?: Record<string, unknown>;
+			readonly level?: string;
+		} | undefined;
 	}>;
 	readonly breadcrumbs: unknown[];
 	readonly spans: unknown[];
@@ -136,7 +137,7 @@ async function main(): Promise<void> {
 		tags: FakeSentry.tags,
 		captures: FakeSentry.captures.map(capture => ({
 			errorMessage: capture.error instanceof Error ? capture.error.message : String(capture.error),
-			scope: capture.scope,
+			context: capture.context,
 		})),
 		breadcrumbs: FakeSentry.breadcrumbs,
 		spans: FakeSentry.spans,

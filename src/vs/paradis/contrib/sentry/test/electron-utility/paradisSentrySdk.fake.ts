@@ -8,21 +8,22 @@
 import type * as SentryUtility from '@sentry/electron/utility';
 
 type FakeSentrySdk = Pick<typeof SentryUtility,
-	'addBreadcrumb' | 'captureException' | 'init' | 'setTag' | 'setTags' | 'startSpan' | 'withScope'>;
+	'addBreadcrumb' | 'captureException' | 'init' | 'setTag' | 'setTags' | 'startSpan'>;
 
-export interface IFakeSentryScope {
-	readonly tags: Record<string, unknown>;
-	readonly extras: Record<string, unknown>;
+/** The capture-context hint a reporter attaches to one event (never to a shared scope). */
+export interface IFakeSentryCaptureContext {
+	readonly tags?: Record<string, unknown>;
+	readonly extra?: Record<string, unknown>;
+	readonly level?: string;
 }
 
 export interface IFakeSentryCapture {
 	readonly error: unknown;
-	readonly scope: IFakeSentryScope;
+	readonly context: IFakeSentryCaptureContext | undefined;
 }
 
 let initOptions: Record<string, unknown> | undefined;
 let initializedResolvers: Array<() => void> = [];
-let activeScope: IFakeSentryScope | undefined;
 
 export const breadcrumbs: unknown[] = [];
 export const captures: IFakeSentryCapture[] = [];
@@ -32,7 +33,6 @@ export const tags: Record<string, unknown> = {};
 export function reset(): void {
 	initOptions = undefined;
 	initializedResolvers = [];
-	activeScope = undefined;
 	breadcrumbs.length = 0;
 	captures.length = 0;
 	spans.length = 0;
@@ -69,30 +69,12 @@ export const setTag: FakeSentrySdk['setTag'] = (key, value) => {
 	tags[key] = value;
 };
 
-const fakeWithScope = <T>(callback: (scope: {
-	setTags(values: Record<string, unknown>): void;
-	setExtras(values: Record<string, unknown>): void;
-}) => T): T => {
-	const scope: IFakeSentryScope = { tags: {}, extras: {} };
-	activeScope = scope;
-	try {
-		return callback({
-			setTags: values => Object.assign(scope.tags, values),
-			setExtras: values => Object.assign(scope.extras, values),
-		});
-	} finally {
-		activeScope = undefined;
-	}
-};
-export const withScope = fakeWithScope as FakeSentrySdk['withScope'];
-
 export const addBreadcrumb: FakeSentrySdk['addBreadcrumb'] = breadcrumb => {
 	breadcrumbs.push(breadcrumb);
 };
 
-export const captureException: FakeSentrySdk['captureException'] = error => {
-	assertInitialized(activeScope);
-	captures.push({ error, scope: activeScope });
+export const captureException: FakeSentrySdk['captureException'] = (error, hint) => {
+	captures.push({ error, context: hint as IFakeSentryCaptureContext | undefined });
 	return 'fake-sentry-event-id';
 };
 

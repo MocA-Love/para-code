@@ -197,19 +197,19 @@ export function captureParadisMainException(
 		return '';
 	}
 	const Sentry = sentry;
-	return Sentry.withScope(sentryScope => {
-		sentryScope.setTags({
+	// Same shape as the renderer reporter, for a different sink: in main, an isolation-scope
+	// write (the breadcrumb) makes sentry-minidump persist the *merged* scope, including a
+	// withScope fork, to its scope_v3 store, and the next startup pins those tags onto any
+	// crash dump from the previous run (see stripLeakedScopeFromNativeEvent in
+	// paradisSentryEvent.ts). The capture hint attaches the context to this one event only.
+	Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
+	return Sentry.captureException(toParadisSentrySafeError(feature, operation, error), {
+		tags: {
 			'para.scope': scope,
 			'para.feature': feature,
 			'para.operation': operation,
-		});
-		if (safeExtra) {
-			sentryScope.setExtras(safeExtra);
-		}
-		if (severity) {
-			sentryScope.setLevel(severity);
-		}
-		Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
-		return Sentry.captureException(toParadisSentrySafeError(feature, operation, error));
+		},
+		...(safeExtra ? { extra: safeExtra } : {}),
+		...(severity ? { level: severity } : {}),
 	});
 }

@@ -52,10 +52,30 @@ function sanitizeForwardedEvent<T extends IParadisSentryEvent>(event: T): T {
 	return paradisSanitizeSentryEvent(event);
 }
 
+/**
+ * ネイティブクラッシュ（minidump / renderer OOM）は自分では `para.*` タグも `extra` も付けない。
+ * それでも届いていたのは main の scope に残った renderer の明示レポートの値で、2026-09 の集計では
+ * desktop のネイティブ 58 件中 56 件が別機能のタグを背負って誤った issue に束ねられていた
+ * （`para.prepared=1` まで引き継ぐので分類自体を素通りする）。発生源（withScope）は塞いだが、
+ * 既存ユーザーの `scope_v3` ストアには汚れた scope が永続化済みなので、ここで剥がして
+ * ネイティブ用の分類に戻す。相関用の `para.pairing` は残す。
+ */
+function stripLeakedScopeFromNativeEvent<T extends IParadisSentryEvent>(event: T): T {
+	if (event.platform !== 'native' && event.tags?.['event.environment'] !== 'native') {
+		return event;
+	}
+	const tags = { ...event.tags };
+	for (const key of ['para.scope', 'para.feature', 'para.operation', PARADIS_PREPARED_TAG]) {
+		delete tags[key];
+	}
+	return Object.assign({}, event, { tags, extra: undefined });
+}
+
 export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
-	event: T,
+	incoming: T,
 	processType: string,
 ): T | null {
+	const event = stripLeakedScopeFromNativeEvent(incoming);
 	// 分類より先に落とす。転送されてきたイベントにも効かせたいので isAlreadyPrepared より前に置く。
 	if (paradisIsCancellationEvent(event)) {
 		return null;
