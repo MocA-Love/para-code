@@ -307,7 +307,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 		}
 	}
 
-	private async _doScreenshot(): Promise<void> {
+	private async _doScreenshot(periodic = false): Promise<void> { // PARA-PATCH: `periodic` marks the timer tick
 		if (!this._model) {
 			return;
 		}
@@ -315,13 +315,21 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 		if (!this._model.visible) {
 			return;
 		}
-		try {
-			const screenshot = await this._model.captureScreenshot({ quality: 80 });
-			this._setBackgroundImage(screenshot);
-		} catch (error) {
-			this.logService.error('Failed to capture browser view screenshot', error);
+		// PARA-PATCH: this loop captured a full-resolution JPEG every second for as long as a browser
+		// tab was on screen (70+ captures a minute in the field), and each capture occupied the view's
+		// serialized screenshot queue that agent screenshots also wait on. The image is only a
+		// placeholder for the moment the view hides, and the hide path in _refresh() takes a fresh one
+		// anyway (that call is not periodic, so it still captures while the window is hidden), so the
+		// timer tick skips while the window itself is hidden and refreshes less often.
+		if (!periodic || this.editor.window.document.visibilityState !== 'hidden') {
+			try {
+				const screenshot = await this._model.captureScreenshot({ quality: 80 });
+				this._setBackgroundImage(screenshot);
+			} catch (error) {
+				this.logService.error('Failed to capture browser view screenshot', error);
+			}
 		}
-		const handle = setTimeout(() => void this._doScreenshot(), 1000);
+		const handle = setTimeout(() => void this._doScreenshot(true), 5000); // PARA-PATCH: was 1000
 		this._screenshotHandle.value = toDisposable(() => clearTimeout(handle));
 	}
 
