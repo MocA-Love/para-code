@@ -304,7 +304,7 @@ function peekOversizedFrame(data: wsTypes.RawData): IParadisOversizedFramePeek {
 	const buffer = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
 	const head = buffer.subarray(0, 256).toString('latin1');
 	const tail = buffer.subarray(Math.max(0, buffer.length - 128)).toString('latin1');
-	const id = /^\{"id":(\d{1,15})[,}]/.exec(head);
+	const id = /^\{"id":(-?\d{1,15})[,}]/.exec(head);
 	const method = /^\{"method":"([A-Za-z]{1,32}\.[A-Za-z]{1,64})"/.exec(head);
 	const sessionId = /"sessionId":"([0-9A-Fa-f]{1,64})"\}\s*$/.exec(tail);
 	return {
@@ -1210,6 +1210,10 @@ export function paradisProxyPageUpgrade(
 					reportOversizedFrame('page', peek, undefined, frameBytes, logService);
 					if (peek.id !== undefined) {
 						completeForwardedRequestBarrier(forwardedRequestBarriers, peek.id, peek.sessionId);
+						const completion = rawScreenshots.complete(rawScreenshotOwner, peek.id, peek.sessionId);
+						if (completion.handled && completion.suppress) {
+							return;
+						}
 						if (clientWs.readyState === ws.WebSocket.OPEN) {
 							const serialized = JSON.stringify({ id: peek.id, ...(peek.sessionId !== undefined ? { sessionId: peek.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
 							if (!sendWithBoundedBackpressure(clientWs, serialized, false, true)) {
@@ -1824,7 +1828,10 @@ export async function paradisProxyBrowserUpgrade(
 					completeForwardedRequestBarrier(forwardedRequestBarriers, peek.id, pending.sessionId);
 					pendingRequests.delete(peek.id);
 					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
-					rawScreenshots.complete(rawScreenshotOwner, peek.id, pending.sessionId);
+					const completion = rawScreenshots.complete(rawScreenshotOwner, peek.id, pending.sessionId);
+					if (completion.handled && completion.suppress) {
+						return;
+					}
 					sendToClient({ id: peek.id, ...(pending.sessionId !== undefined ? { sessionId: pending.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
 				}
 				return;

@@ -965,6 +965,19 @@ suite('Paradis CDP screenshot filter', () => {
 				Buffer.from('"},"sessionId":"session-1"}'),
 			]);
 			fixture.upstream.emit('message', oversizedEvent);
+			// A 33 MiB response to one of the proxy's own (negative id) requests: released silently.
+			fixture.upstream.sent.length = 0;
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+				method: 'Target.targetCreated',
+				params: { targetInfo: { targetId: 'target-1', type: 'page', attached: false } },
+			})));
+			const internal = (parseSent(fixture.upstream) as Array<{ id?: number; method?: string }>).find(frame => frame.method === 'Target.attachToTarget');
+			assert.ok(internal && typeof internal.id === 'number' && internal.id < 0);
+			fixture.upstream.emit('message', Buffer.concat([
+				Buffer.from(`{"id":${internal.id},"result":{"sessionId":"`),
+				Buffer.alloc(33 * 1024 * 1024, 0x78),
+				Buffer.from('"}}'),
+			]));
 			// The connection is still usable afterwards.
 			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 10, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
 			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: 10, sessionId: 'session-1', result: { value: 1 } })));
@@ -980,11 +993,13 @@ suite('Paradis CDP screenshot filter', () => {
 			closeCalls: 0,
 			sent: [
 				{ id: 9, sessionId: 'session-1', error: { code: -32000, message: 'PARA_BROWSER_RETRYABLE: CDP response exceeded 32 MiB and was dropped by Para Code; retry with a smaller request' } },
+				{ method: 'Target.targetCreated', params: { targetInfo: { targetId: 'target-1', type: 'page', attached: false } } },
 				{ id: 10, sessionId: 'session-1', result: { value: 1 } },
 			],
 			reports: [
 				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Network.getResponseBody', safe_frame_mib: 33, safe_is_response: true } },
 				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Runtime.consoleAPICalled', safe_frame_mib: 33, safe_is_response: false } },
+				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Target.attachToTarget', safe_frame_mib: 33, safe_is_response: true } },
 			],
 		});
 	});
