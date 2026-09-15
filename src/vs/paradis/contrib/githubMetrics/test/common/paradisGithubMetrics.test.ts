@@ -17,7 +17,7 @@ import {
 	paradisGithubWorstRemainingRatio,
 	paradisIsGithubNoPullRequestMessage,
 	paradisIsGithubRateLimitMessage,
-	paradisParseGhRateLimit,
+	paradisParseGhRateLimitHeaders,
 	paradisRedactHomePath,
 	ParadisGithubCallLog,
 	ParadisGithubRateLimitHistory,
@@ -27,37 +27,74 @@ import {
 suite('ParadisGithubMetrics', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const RATE_LIMIT_JSON = JSON.stringify({
-		resources: {
-			core: { limit: 5000, used: 769, remaining: 4231, reset: 1000 },
-			graphql: { limit: 5000, used: 1820, remaining: 3180, reset: 2000 },
-			search: { limit: 30, used: 0, remaining: 30, reset: 1100 },
-			broken: { limit: 0, remaining: 0, reset: 1000 },
-		},
-	});
+	/** `gh api -i` の実出力に合わせ、ステータス行 + CRLF 区切りのヘッダ + 空行 + ボディ で組み立てる。 */
+	function headerResponse(headers: Record<string, string>, body = ''): string {
+		const lines = ['HTTP/2.0 200 OK', ...Object.entries(headers).map(([name, value]) => `${name}: ${value}\r`)];
+		return `${lines.join('\n')}\n\r\n${body}`;
+	}
 
-	test('parses gh api rate_limit output and drops unusable resources', () => {
-		assert.deepStrictEqual(paradisParseGhRateLimit(RATE_LIMIT_JSON), [
-			{ resource: 'core', limit: 5000, remaining: 4231, used: 769, resetAt: 1_000_000 },
-			{ resource: 'graphql', limit: 5000, remaining: 3180, used: 1820, resetAt: 2_000_000 },
-			{ resource: 'search', limit: 30, remaining: 30, used: 0, resetAt: 1_100_000 },
-		]);
-	});
+	const CORE_RESPONSE = headerResponse({
+		'Content-Type': 'application/json; charset=utf-8',
+		'X-Ratelimit-Limit': '5000',
+		'X-Ratelimit-Remaining': '4231',
+		'X-Ratelimit-Used': '769',
+		'X-Ratelimit-Reset': '1000',
+		'X-Ratelimit-Resource': 'core',
+	}, '{"login":"octocat"}');
 
-	test('returns nothing for malformed output', () => {
+	const GRAPHQL_RESPONSE = headerResponse({
+		'X-Ratelimit-Limit': '5000',
+		'X-Ratelimit-Remaining': '3180',
+		'X-Ratelimit-Used': '1820',
+		'X-Ratelimit-Reset': '2000',
+		'X-Ratelimit-Resource': 'graphql',
+	}, '{"data":{"viewer":{"login":"octocat"}}}');
+
+	test('reads the rate limit headers from a gh api -i response', () => {
 		assert.deepStrictEqual({
-			notJson: paradisParseGhRateLimit('gh: command failed'),
-			noResources: paradisParseGhRateLimit('{"message":"Bad credentials"}'),
-			empty: paradisParseGhRateLimit(''),
+			core: paradisParseGhRateLimitHeaders(CORE_RESPONSE, 'core'),
+			graphql: paradisParseGhRateLimitHeaders(GRAPHQL_RESPONSE, 'graphql'),
 		}, {
-			notJson: [],
-			noResources: [],
-			empty: [],
+			core: { resource: 'core', limit: 5000, remaining: 4231, used: 769, resetAt: 1_000_000 },
+			graphql: { resource: 'graphql', limit: 5000, remaining: 3180, used: 1820, resetAt: 2_000_000 },
+		});
+	});
+
+	test('derives used from the limit when the header is absent, and ignores the body', () => {
+		const withoutUsed = headerResponse({
+			'X-Ratelimit-Limit': '5000',
+			'X-Ratelimit-Remaining': '4900',
+			'X-Ratelimit-Reset': '1000',
+			// ボディにヘッダらしき行があっても、空行より後ろは読まない
+		}, 'X-Ratelimit-Limit: 1\r\nX-Ratelimit-Remaining: 0\r\n');
+
+		assert.deepStrictEqual(paradisParseGhRateLimitHeaders(withoutUsed, 'core'), {
+			resource: 'core', limit: 5000, remaining: 4900, used: 100, resetAt: 1_000_000,
+		});
+	});
+
+	test('returns nothing when the rate limit headers are missing or unusable', () => {
+		assert.deepStrictEqual({
+			empty: paradisParseGhRateLimitHeaders('', 'core'),
+			noHeaders: paradisParseGhRateLimitHeaders('gh: command failed', 'core'),
+			zeroLimit: paradisParseGhRateLimitHeaders(headerResponse({ 'X-Ratelimit-Limit': '0', 'X-Ratelimit-Remaining': '0' }), 'core'),
+			notNumeric: paradisParseGhRateLimitHeaders(headerResponse({ 'X-Ratelimit-Limit': 'many', 'X-Ratelimit-Remaining': '10' }), 'core'),
+			missingRemaining: paradisParseGhRateLimitHeaders(headerResponse({ 'X-Ratelimit-Limit': '5000' }), 'core'),
+		}, {
+			empty: undefined,
+			noHeaders: undefined,
+			zeroLimit: undefined,
+			notNumeric: undefined,
+			missingRemaining: undefined,
 		});
 	});
 
 	test('summarizes the worst primary resource for the status bar', () => {
-		const entries = paradisParseGhRateLimit(RATE_LIMIT_JSON);
+		const entries = [
+			paradisParseGhRateLimitHeaders(CORE_RESPONSE, 'core')!,
+			paradisParseGhRateLimitHeaders(GRAPHQL_RESPONSE, 'graphql')!,
+			{ resource: 'search', limit: 30, used: 0, remaining: 30, resetAt: 1_100_000 },
+		];
 		assert.deepStrictEqual({
 			// search(30/30 = 100%) は代表値に含めない。graphql の 63.6% が最小
 			worst: paradisGithubWorstRemainingRatio(entries)?.toFixed(3),

@@ -569,7 +569,10 @@ export interface RateLimitsResult {
 export type GithubCallResource = 'core' | 'graphql';
 /** worktreeに紐付かない呼び出し（Agent Sessionsウィンドウ自身のGitHub APIクライアント経由）を束ねる仮想スペースID。PC側 PARADIS_GITHUB_UNSCOPED_SPACE と同じ値。 */
 export const GITHUB_UNSCOPED_SPACE = '\u0000agent-sessions';
-/** `gh api rate_limit` の1資源分。PC側 IParadisGithubRateLimitEntry と同形。 */
+
+/** レート枠を読むためのプローブを束ねる仮想スペースID。PC側 PARADIS_GITHUB_MONITOR_SPACE と同じ値。 */
+export const GITHUB_MONITOR_SPACE = '\u0000rate-limit-monitor';
+/** レート枠1資源分。PC側 IParadisGithubRateLimitEntry と同形。 */
 export interface GithubRateLimitEntry {
 	resource: string;
 	limit: number;
