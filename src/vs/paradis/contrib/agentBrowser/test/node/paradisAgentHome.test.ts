@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisClaudeConfigDir, paradisCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../node/paradisAgentHome.js';
+import { paradisClaudeConfigDir, paradisCodexHome, paradisCodexHomes, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../node/paradisAgentHome.js';
 
 suite('ParadisAgentHome', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -20,6 +20,8 @@ suite('ParadisAgentHome', () => {
 			assert.deepStrictEqual(paradisResolveAgentHomes(cwd), {
 				claude: paradisClaudeConfigDir(),
 				codex: paradisCodexHome(),
+				// アカウントごとの Codex ホームは追加の探索先として並ぶだけで、主のホームは変わらない。
+				codexHomes: paradisCodexHomes(),
 				matchCwd: cwd,
 			});
 		}

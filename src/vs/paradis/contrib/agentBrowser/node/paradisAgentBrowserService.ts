@@ -44,7 +44,7 @@ import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } f
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
-import { paradisCodexHome } from './paradisAgentHome.js';
+import { paradisCodexAccountHomes, paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
@@ -632,6 +632,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				reportParadisDiagnosticError('owned', 'agent-browser', 'configure-mcp', error ?? new Error(message), { phase: 'setup' });
 				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error));
 			},
+			// アカウントを切り替えた先の Codex（~/.codex-2 等）にも同じ設定を入れる。
+			() => paradisCodexAccountHomes(),
 		);
 		// 設定でオフにできる。オフに切り替わったその時だけ取り外し、起動時には取り外さない
 		// （paradisAgentHooksAutoInstall.ts）。
