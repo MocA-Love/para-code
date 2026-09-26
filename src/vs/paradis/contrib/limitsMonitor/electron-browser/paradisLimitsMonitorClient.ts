@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // renderer から shared process のリミットモニターチャネルを呼ぶ薄いクライアント。
-// 設定値(cswapパス・追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
+// 設定値(追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
 // このクライアント経由でのみバックエンドへアクセスする。
 //
 // Claude の分は別のチャネル（PARADIS_CLAUDE_ACCOUNTS_CHANNEL）から取り、Codex の分と1つの
@@ -32,7 +32,6 @@ import {
 import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClaudeSwitchResult, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
-export const PARADIS_LIMITS_SETTING_CSWAP_PATH = 'paradis.limitsMonitor.cswapPath';
 export const PARADIS_LIMITS_SETTING_CODEX_HOMES = 'paradis.limitsMonitor.codexHomes';
 
 export class ParadisLimitsMonitorClient {
@@ -59,11 +58,7 @@ export class ParadisLimitsMonitorClient {
 	}
 
 	private fetchOptions(bypassCache: boolean): IParadisLimitsFetchOptions {
-		const options: { bypassCache?: boolean; cswapPath?: string; codexHomes?: string[] } = {};
-		const cswapPath = this.configurationService.getValue<string>(PARADIS_LIMITS_SETTING_CSWAP_PATH);
-		if (typeof cswapPath === 'string' && cswapPath.trim().length > 0) {
-			options.cswapPath = cswapPath.trim();
-		}
+		const options: { bypassCache?: boolean; codexHomes?: string[] } = {};
 		const codexHomes = this.configurationService.getValue<string[]>(PARADIS_LIMITS_SETTING_CODEX_HOMES);
 		if (Array.isArray(codexHomes) && codexHomes.length > 0) {
 			options.codexHomes = codexHomes.filter(entry => typeof entry === 'string' && entry.trim().length > 0);

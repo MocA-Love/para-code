@@ -18,10 +18,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
-import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
-import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -83,8 +80,6 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		private readonly anchor: HTMLElement,
 		private readonly options: IParadisLimitsMonitorPanelOptions,
 		@ILayoutService layoutService: ILayoutService,
-		@IClipboardService private readonly clipboardService: IClipboardService,
-		@ICommandService private readonly commandService: ICommandService,
 		@IHoverService private readonly hoverService: IHoverService,
 		@IInstantiationService instantiationService: IInstantiationService,
 	) {
@@ -214,10 +209,6 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	}
 
 	private renderProviderAccounts(provider: ParadisLimitsProvider, providerSnapshot: IParadisLimitsProviderSnapshot): void {
-		if (providerSnapshot.cswapMissing) {
-			this.renderCswapGuide();
-			return;
-		}
 		if (providerSnapshot.sourceError) {
 			dom.append(this.bodyElement, $('.plm-source-error')).textContent = providerSnapshot.sourceError;
 			return;
@@ -271,50 +262,6 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			dom.append(unhideButton, $('span')).textContent = localize('paradis.limitsMonitor.unhideAccount', "再表示");
 			this._bodyListeners.add(dom.addDisposableListener(unhideButton, 'click', () => this.options.onToggleHiddenAccount(account)));
 		}
-	}
-
-	/** cswap未検出時のセットアップ案内(OS別のインストールコマンドとコピー導線)。 */
-	private renderCswapGuide(): void {
-		const guide = dom.append(this.bodyElement, $('.plm-install'));
-		dom.append(guide, $('.plm-install-message')).textContent = localize('paradis.limitsMonitor.cswapMissing', "Claude アカウントの表示には claude-swap (cswap) が必要です。ターミナルで以下を実行してください:");
-
-		this.renderCommandRow(guide, 'uv tool install claude-swap');
-
-		// uv自体が未導入のユーザー向けのOS別の導入コマンド
-		dom.append(guide, $('.plm-install-hint')).textContent = localize('paradis.limitsMonitor.uvMissing', "uv が未導入の場合:");
-		if (isWindows) {
-			this.renderCommandRow(guide, 'winget install astral-sh.uv');
-		} else if (isMacintosh) {
-			this.renderCommandRow(guide, 'brew install uv');
-		} else {
-			this.renderCommandRow(guide, 'curl -LsSf https://astral.sh/uv/install.sh | sh');
-		}
-
-		const settingsHint = dom.append(guide, $('.plm-install-hint'));
-		dom.append(settingsHint, $('span')).textContent = localize('paradis.limitsMonitor.cswapInstalled', "インストール済みの場合は、実行ファイルの場所を");
-		const settingsLink = dom.append(settingsHint, $('a.plm-install-link'));
-		settingsLink.textContent = localize('paradis.limitsMonitor.cswapPathSetting', "設定 (cswapPath)");
-		settingsLink.setAttribute('role', 'button');
-		this._bodyListeners.add(dom.addDisposableListener(settingsLink, 'click', () => {
-			void this.commandService.executeCommand('workbench.action.openSettings', 'paradis.limitsMonitor');
-		}));
-		dom.append(settingsHint, $('span')).textContent = localize('paradis.limitsMonitor.cswapInstalledSuffix', "で指定できます。");
-	}
-
-	/** コピー・ボタン付きのコマンド表示行。 */
-	private renderCommandRow(container: HTMLElement, command: string): void {
-		const row = dom.append(container, $('.plm-install-command'));
-		dom.append(row, $('code')).textContent = command;
-		const copyButton = dom.append(row, $('.plm-icon-btn'));
-		copyButton.setAttribute('role', 'button');
-		copyButton.setAttribute('aria-label', localize('paradis.limitsMonitor.copyCommand', "コマンドをコピー"));
-		const icon = copyButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.copy)}`));
-		this._bodyListeners.add(dom.addDisposableListener(copyButton, 'click', async () => {
-			await this.clipboardService.writeText(command);
-			// コピーできたことをアイコンで短時間フィードバックする
-			icon.className = ThemeIcon.asClassName(Codicon.check);
-			setTimeout(() => { icon.className = ThemeIcon.asClassName(Codicon.copy); }, 1200);
-		}));
 	}
 
 	private renderAccount(account: IParadisLimitsAccount): void {
@@ -446,7 +393,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	/**
 	 * 状態の説明文。
 	 *
-	 * 以前は cswap の usageStatus 生値（'unavailable' 等）をそのまま出していたため、
+	 * 以前は取得元の状態の生値（'unavailable' 等）をそのまま出していたため、
 	 * 制限に到達しただけのアカウントが英語のエラーとして並んでいた。
 	 */
 	private statusMessage(account: IParadisLimitsAccount): string {

@@ -41,6 +41,21 @@ function currentUserName(): string | undefined {
 	}
 }
 
+/**
+ * claude-swap のデータのフォルダの候補（claude_swap/paths.py の get_backup_root と同じ規則）。
+ * 移行の案内のために sequence.json を読むだけで、書き込みはしない。
+ */
+function legacyCswapDirs(): string[] {
+	const home = os.homedir();
+	const legacy = path.join(home, '.claude-swap-backup');
+	if (process.platform !== 'linux') {
+		return [legacy];
+	}
+	const xdg = process.env['XDG_DATA_HOME'];
+	const xdgDir = xdg && path.isAbsolute(xdg) ? path.join(xdg, 'claude-swap') : path.join(home, '.local', 'share', 'claude-swap');
+	return [xdgDir, legacy];
+}
+
 ParadisSharedProcessContributions.register('claudeAccounts', ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
 	const environmentService = accessor.get(INativeEnvironmentService);
@@ -72,6 +87,7 @@ ParadisSharedProcessContributions.register('claudeAccounts', ({ server, accessor
 		oauth: new ParadisClaudeOAuthClient(),
 		logService,
 		loginRunner: new ParadisClaudeCliLoginRunner(() => shellEnv.getEnv(), os.homedir(), message => logService.trace(`[ParadisClaudeAccounts] ${message}`)),
+		legacyCswapDirs: legacyCswapDirs(),
 	});
 	server.registerChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL, new ParadisClaudeAccountsChannel(service));
 	return service;

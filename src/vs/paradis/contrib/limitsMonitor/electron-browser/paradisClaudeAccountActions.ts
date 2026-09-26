@@ -10,6 +10,8 @@
 //  - 登録していない、いまのログイン: 「Para Code に登録」（ブラウザでのログインなしで登録する）
 //  - 登録した控えのアカウント: 「このアカウントを使う」（設問 Q5）。この PC の Claude のログインを
 //    書き換える（設問 Q2）ので、押したら確認し、動いている Claude Code への影響を説明する
+//  - 節の末尾: claude-swap に登録されていて Para Code にはまだ無いアカウントの一覧と、登録し直しの
+//    案内（設問 Q3。claude-swap のデータは読むだけ）
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -17,7 +19,7 @@ import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IParadisClaudeSwitchResult } from '../common/paradisClaudeAccounts.js';
-import { IParadisLimitsAccount, paradisLimitsNeedsRelogin } from '../common/paradisLimitsMonitor.js';
+import { IParadisLimitsAccount, IParadisLimitsProviderSnapshot, paradisLimitsNeedsRelogin } from '../common/paradisLimitsMonitor.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from './paradisLimitsPanelContributions.js';
 
 const $ = dom.$;
@@ -59,6 +61,24 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			store.add(dom.addDisposableListener(button, 'click', () => void this.switchTo(account, context)));
 		}
 		return store;
+	}
+
+	renderProviderFooter(container: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot): IDisposable | undefined {
+		const legacy = providerSnapshot.legacyAccounts ?? [];
+		if (legacy.length === 0) {
+			return undefined;
+		}
+		dom.append(container, $('div')).textContent = localize(
+			'paradis.claudeAccounts.legacyNotice',
+			"claude-swap (cswap) に登録されていた次のアカウントは、Para Code ではまだ使えません。「＋ アカウントを追加」からログインし直して登録してください（いまログインしているアカウントは、カードの「Para Code に登録」で登録できます）。claude-swap のデータは読むだけで、書き換えません。",
+		);
+		const list = dom.append(container, $('ul.plm-legacy-list'));
+		for (const account of legacy) {
+			dom.append(list, $('li')).textContent = account.organizationName
+				? localize('paradis.claudeAccounts.legacyWithOrganization', "{0}（{1}）", account.email, account.organizationName)
+				: account.email;
+		}
+		return undefined;
 	}
 
 	private async switchTo(account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): Promise<void> {

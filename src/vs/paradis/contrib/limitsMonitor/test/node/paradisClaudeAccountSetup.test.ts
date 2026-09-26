@@ -246,3 +246,51 @@ suite('ParadisEncryptedFileClaudeSecretStore', () => {
 		}
 	});
 });
+
+suite('ParadisClaudeAccountService claude-swap migration', () => {
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('lists claude-swap accounts that are not registered yet and never writes to its data', async () => {
+		const dirs = await paradisCreateClaudeTestHome();
+		try {
+			const cswapDir = path.join(dirs.home, '.claude-swap-backup');
+			await fs.promises.mkdir(cswapDir);
+			const sequencePath = path.join(cswapDir, 'sequence.json');
+			const sequence = JSON.stringify({
+				activeAccountNumber: 1,
+				accounts: {
+					'1': { email: 'alice@example.com', organizationUuid: 'org-1', organizationName: 'Alice Org', uuid: 'u-alice' },
+					'2': { email: 'bob@example.com', organizationUuid: 'org-1', organizationName: 'Bob Org', uuid: 'u-bob' },
+				},
+			});
+			await fs.promises.writeFile(sequencePath, sequence);
+			const statBefore = await fs.promises.stat(sequencePath);
+			const keychain = new ParadisMemoryKeychain();
+			const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), 'darwin');
+			await registry.save([{ id: '11111111-1111-4111-8111-111111111111', email: 'alice@example.com', accountUuid: 'u-alice', organizationUuid: 'org-1', oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com'), createdAt: 1, updatedAt: 1 }]);
+			const service = disposables.add(new ParadisClaudeAccountService({
+				liveAuth: new ParadisClaudeLiveAuth({ homedir: dirs.home, platform: 'darwin', keychain, userName: USER }),
+				registry,
+				secrets: new ParadisKeychainClaudeSecretStore(keychain),
+				oauth: new ParadisFakeClaudeOAuth(),
+				logService: new NullLogService(),
+				legacyCswapDirs: [path.join(dirs.home, 'missing'), cswapDir],
+			}));
+
+			const state = await service.getState(undefined);
+			await service.pollDue();
+			const statAfter = await fs.promises.stat(sequencePath);
+			assert.deepStrictEqual({
+				legacy: state.claude.legacyAccounts,
+				unchanged: await fs.promises.readFile(sequencePath, 'utf8') === sequence && statAfter.mtimeMs === statBefore.mtimeMs,
+				entries: await fs.promises.readdir(cswapDir),
+			}, {
+				legacy: [{ email: 'bob@example.com', organizationName: 'Bob Org' }],
+				unchanged: true,
+				entries: ['sequence.json'],
+			});
+		} finally {
+			await dirs.dispose();
+		}
+	});
+});

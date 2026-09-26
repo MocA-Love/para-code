@@ -7,10 +7,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // AIリミットモニター(Claude Code / Codex のレート制限可視化)の共有型定義。
-// データ源はshared process側(node/paradisLimitsMonitorChannel.ts)が保有する:
-//   - Claude: claude-swap (cswap --list --json) のサブプロセス実行。認証はcswap自身が管理する
-//     ため、Para CodeはKeychain/credentialsに一切触れない
-//   - Codex: ~/.codex* 各ホームの auth.json を読み、wham/usage API をHTTP直叩き。トークンの
+// データ源はshared process側が保有する:
+//   - Claude: node/paradisClaudeAccountService.ts。Claude の使用量 API を直接呼び、アカウントの
+//     保存と切り替えもここで行う（以前の claude-swap (cswap) 依存は撤去した）
+//   - Codex: node/paradisLimitsMonitorChannel.ts。 ~/.codex* 各ホームの auth.json を読み、wham/usage API をHTTP直叩き。トークンの
 //     リフレッシュ/永続化は行わず、401時のみ `codex app-server` RPC にフォールバックして
 //     codex CLI 自身にリフレッシュさせる(auth.jsonへの書き込みを自前で行わないため)
 
@@ -29,14 +29,12 @@ export interface IParadisLimitsWindow {
 }
 
 /**
- * アカウントの取得状態。
- *
- * cswap の usageStatus（json_output.py のセンチネル）と1:1で対応させる。特に以下の2つは
- * 「壊れている」ように見えて壊れていないので、'error' と同列にしてはいけない:
- *  - 'refreshing'   : cswap の 'token_expired'。使用中アカウントのトークンが切れているが、
- *                     所有者である Claude Code 自身が更新する。ユーザーの操作は要らない
- *  - 'unavailable'  : 使用状況を読めていないだけ。cswap は制限に達したアカウントの再取得を
- *                     枠のリセットまで止めるため（レート予算の節約）、日常的にこの状態になる
+ * アカウントの取得状態。以下の2つは「壊れている」ように見えて壊れていないので、'error' と
+ * 同列にしてはいけない:
+ *  - 'refreshing'   : 使用中アカウントのトークンが切れているが、所有者である Claude Code 自身が
+ *                     更新する。ユーザーの操作は要らない
+ *  - 'unavailable'  : 使用状況を読めていないだけ（まだ取っていない、取得回数の上限で待っている、
+ *                     API キーで使っている、キーチェーンが読めない）
  *
  * 再ログインが要るのは 'relogin_required'（リフレッシュトークンが失効）・'no_credentials'・
  * 'error' のみ。
@@ -52,27 +50,6 @@ export type ParadisLimitsUnavailableReason = 'not_fetched' | 'api_key' | 'keycha
 /** 再ログインで解消し得る状態か（'refreshing'・'unavailable' は再ログインしても直らない）。 */
 export function paradisLimitsNeedsRelogin(status: ParadisLimitsAccountStatus): boolean {
 	return status === 'relogin_required' || status === 'no_credentials' || status === 'error';
-}
-
-/**
- * cswap の usageStatus をこちらの状態へ写す。
- *
- * cswap 側の契約が変わったときに真っ先に壊れる箇所なので、純関数にしてテストできるようにする。
- * 未知の値は 'error'（＝人の対処が要る）に倒す: 黙って「取得できず」に混ぜると、本当に壊れた
- * アカウントが放置される。
- */
-export function paradisLimitsStatusFromCswap(usageStatus: string | undefined): { readonly status: ParadisLimitsAccountStatus; readonly unavailableReason?: ParadisLimitsUnavailableReason } {
-	switch (usageStatus) {
-		case 'ok': return { status: 'ok' };
-		case 'token_expired': return { status: 'refreshing' };
-		case 'relogin_required': return { status: 'relogin_required' };
-		case 'no_credentials': return { status: 'no_credentials' };
-		case 'api_key': return { status: 'unavailable', unavailableReason: 'api_key' };
-		case 'keychain_unavailable': return { status: 'unavailable', unavailableReason: 'keychain_unavailable' };
-		case 'unavailable':
-		case undefined: return { status: 'unavailable', unavailableReason: 'not_fetched' };
-		default: return { status: 'error' };
-	}
 }
 
 export interface IParadisLimitsAccount {
@@ -95,8 +72,6 @@ export interface IParadisLimitsAccount {
 	readonly fetchedAt?: number;
 	/** Codex: '~/.codex-2' のような表示用ホームラベル。 */
 	readonly homeLabel?: string;
-	/** Claude: cswapのスロット番号(再ログイン時の --slot 指定に使う)。 */
-	readonly slot?: number;
 	/** Codex: Para Codeが自動作成した追加ホームで、安全な削除条件を満たすか。 */
 	readonly removable?: boolean;
 	/** Codex: 同じaccount_idを持つ、自分以外のホームの表示用ラベル。 */
@@ -122,10 +97,8 @@ export interface IParadisLimitsProviderSnapshot {
 	readonly accounts: readonly IParadisLimitsAccount[];
 	/** Claude: 移行の案内に出す claude-swap のアカウント（読み取り専用。書き込みはしない）。 */
 	readonly legacyAccounts?: readonly IParadisLimitsLegacyAccount[];
-	/** データ源自体が使えない場合の理由(cswap未インストール等)。accountsは空になる。 */
+	/** データ源自体が使えない場合の理由。accountsは空になる。 */
 	readonly sourceError?: string;
-	/** Claudeのみ: cswap実行ファイルが見つからなかった(パネルでセットアップ案内を出す)。 */
-	readonly cswapMissing?: boolean;
 }
 
 export interface IParadisLimitsSnapshot {
@@ -136,8 +109,6 @@ export interface IParadisLimitsSnapshot {
 
 export interface IParadisLimitsFetchOptions {
 	readonly bypassCache?: boolean;
-	/** 設定 paradis.limitsMonitor.cswapPath の値(絶対パス)。 */
-	readonly cswapPath?: string;
 	/** 設定 paradis.limitsMonitor.codexHomes の値(自動走査に追加するホーム)。 */
 	readonly codexHomes?: readonly string[];
 }
