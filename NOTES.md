@@ -604,6 +604,16 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 - 【未対応】SSH 先の REH サーバーは pty ホストを遅延 fork するため同じ手が使えず、サーバーの `process.env` に残る。シェルへは上の除去で届かないが、接続先の拡張ホストが起こす子プロセスには残る
 - ペイントークン（`PARA_CODE_TERMINAL_PANE_ID`）、`PARA_CODE_MCP_PORT_FILE`、`PARA_CODE_VOICE_TOKEN`、`PARA_CODE_CODEX_*`、`PARACODE_PROJECT_ROOT_PATH` はシェルの中のエージェントやスクリプトが読むために入れているので残す。`PARADIS_MIRROR_CAPTURE_VIEW` と `PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS` は開発者が手で設定する診断用で、fork は設定しない
 
+## エディタエリアのターミナル操作の仕掛け（2026-09-27、フェーズ1 担当B）
+
+TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規ファイルで完結し、upstream への変更は `xtermTerminal.ts` の `getFont()` 1か所（+ import 1行）だけ。upstream 取り込み時に壊れやすいのは次の3点で、どれも upstream 側のファイルに印が無いので、ここで追う。
+
+- **コマンドを `DEFAULT_COMMANDS_TO_SKIP_SHELL` へ起動時に追記している**（`terminalFontZoom` と `terminalReopen` のモジュール先頭）。`terminal.ts` は変更していない。upstream がこの配列を `readonly` にしたり、`TerminalConfigurationService` がモジュール読み込み時にスキップ集合を固めるように変わったら、ターミナルにフォーカスがあるときの `⌘=` / `⌘⇧T` がシェルへ流れる（Windows/Linux で顕著。macOS は ⌘ キーが xterm を素通りするので気づきにくい）。
+- **右クリックしたリンクは xterm の非公開 API `raw._core.linkifier.currentLink` から読む**（`terminalLinkMenu`）。xterm を上げたら、`lib/xterm.mjs` に `get linkifier(){` と `get currentLink(){` が残っているかを `grep` で確かめる。消えていてもメニュー項目が出なくなるだけで、例外にはならない。
+- **`⌘⇧T` は fork のコマンドが weight +1 で先に受け、ターミナル以外なら `workbench.action.reopenClosedEditor` へそのまま渡す**（`terminalReopen`）。upstream の `TerminalEditorInput.canReopen()` が `true` になったら（= upstream がターミナルの開き直しを始めたら）、二重に開くのでこちらを畳む。
+
+ターミナルごとの文字サイズ（TM21）は、shell integration の nonce をキーに WORKSPACE storage（`paradis.terminal.fontZoom`、最大 200 件）へ差分を保存し、リロード後の再接続で戻す。nonce はスペースの park/revive と同じ同一性（`paradisTerminalEditorPark.ts` 参照）。
+
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
 HTML プレビューは、ファイルの属するワークスペースフォルダーを 127.0.0.1 のローカルサーバへ載せ、

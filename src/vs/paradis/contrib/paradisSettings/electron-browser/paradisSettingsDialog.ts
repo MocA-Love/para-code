@@ -526,6 +526,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-terminal',
+		key: 'accessibility.dimUnfocused.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.dimUnfocused', "操作していないエディタとターミナルを薄くする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.dimUnfocusedDesc', "エディタを分割して並べたとき、いま文字が入る場所を見分けやすくなります。"),
+		keywords: 'dim unfocused opacity terminal editor focus accessibility',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
 		key: 'paradis.editor.openTerminalOnSplit',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.openTerminalOnSplit', "エディタを分割したらターミナルを開く"),
