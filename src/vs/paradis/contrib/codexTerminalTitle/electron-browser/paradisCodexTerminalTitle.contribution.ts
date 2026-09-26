@@ -18,6 +18,7 @@ import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ICommandDetectionCapability, ITerminalCommand, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
@@ -29,6 +30,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisRemoteUserHome } from '../../agentBrowser/common/paradisRemoteUserHome.js';
+import { ParadisCodexAccountsClient } from '../../codexAccounts/electron-browser/paradisCodexAccountsClient.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -555,6 +557,7 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 	static readonly ID = 'workbench.contrib.paradisCodexTerminalTitle';
 
 	private writeQueue = Promise.resolve();
+	private readonly codexAccountsClient: ParadisCodexAccountsClient;
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -562,8 +565,10 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 		@ILogService private readonly logService: ILogService,
 		@IPathService private readonly pathService: IPathService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
+		this.codexAccountsClient = instantiationService.createInstance(ParadisCodexAccountsClient);
 		this.applySetting();
 		this._register(this.configurationService.onDidChangeConfiguration(event => {
 			if (event.affectsConfiguration(PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING)) {
@@ -595,10 +600,24 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 			return;
 		}
 		const codexHome = joinPath(userHome, '.codex');
-		const configFile = joinPath(codexHome, 'config.toml');
 		if (!(await this.fileService.exists(codexHome))) {
 			await this.fileService.createFolder(codexHome);
 		}
+		await this.writeTerminalTitleConfig(codexHome);
+		// Codex のアカウントを切り替えると、Codex は ~/.codex-2 のような別のホームの config.toml を
+		// 読む。手元のウィンドウでは、ログイン済みのアカウント用ホームにも同じ設定を入れる。
+		if (this.environmentService.remoteAuthority === undefined) {
+			const state = await this.codexAccountsClient.getState().catch(() => undefined);
+			for (const home of state?.homes ?? []) {
+				if (!home.isDefault && home.signedIn) {
+					await this.writeTerminalTitleConfig(URI.file(home.homePath));
+				}
+			}
+		}
+	}
+
+	private async writeTerminalTitleConfig(codexHome: URI): Promise<void> {
+		const configFile = joinPath(codexHome, 'config.toml');
 		const currentConfig = (await this.fileService.exists(configFile))
 			? (await this.fileService.readFile(configFile)).value.toString()
 			: '';

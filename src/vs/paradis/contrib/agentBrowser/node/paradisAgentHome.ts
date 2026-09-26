@@ -64,7 +64,7 @@ export function paradisCodexHomes(homeDirectory?: string): readonly string[] {
 			codexHomesCache = { at: now, home, found };
 		}
 	}
-	return [...new Set<string>([primary, ...found, ...registeredCodexHomes])];
+	return [...new Set<string>([primary, ...found, ...(homeDirectory === undefined ? registeredCodexHomes : [])])];
 }
 
 function scanCodexHomes(home: string): string[] {

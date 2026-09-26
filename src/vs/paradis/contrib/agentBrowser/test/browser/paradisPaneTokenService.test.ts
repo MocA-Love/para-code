@@ -19,21 +19,31 @@ import type { ITerminalInstance, ITerminalInstanceService } from '../../../../..
 import type { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY } from '../../../mobileRelay/common/paradisMobileRelay.js';
 import { ParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
+import type { IParadisCodexLaunchHomeService } from '../../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 
 const PANE_TOKEN = '12345678-1234-4234-8234-123456789abc';
 const USER_DATA_PATH = '/tmp/para-code-user-data';
 const APP_ROOT = '/Applications/Para Code.app/Contents/Resources/app';
 
-function paneEnvironmentFor(mobileEnabled: unknown, codexLive: unknown): Record<string, string | null | undefined> {
+function codexLaunchHomeStub(launchHome: string | undefined, recorded: Map<string, string | undefined> = new Map()): IParadisCodexLaunchHomeService {
+	return {
+		getLaunchHome: () => launchHome,
+		recordPaneHome: (token: string, homePath: string | undefined) => recorded.set(token, homePath),
+		forgetPaneHome: (token: string) => recorded.delete(token),
+	} as unknown as IParadisCodexLaunchHomeService;
+}
+
+function paneEnvironmentFor(mobileEnabled: unknown, codexLive: unknown, options: { readonly launchHome?: string; readonly remoteAuthority?: string; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
 	const configurationService = new TestConfigurationService();
 	configurationService.setUserConfiguration(PARADIS_MOBILE_ENABLED_KEY, mobileEnabled);
 	configurationService.setUserConfiguration(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, codexLive);
 
 	const service = new ParadisPaneTokenService(
 		{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
-		{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code` } as unknown as IWorkbenchEnvironmentService,
+		{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code`, remoteAuthority: options.remoteAuthority } as unknown as IWorkbenchEnvironmentService,
 		{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
 		configurationService,
+		codexLaunchHomeStub(options.launchHome, options.recorded),
 	);
 	const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
 	try {
@@ -72,6 +82,7 @@ suite('Paradis pane token service', () => {
 			{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code` } as unknown as IWorkbenchEnvironmentService,
 			{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
 			new TestConfigurationService(),
+			codexLaunchHomeStub(undefined),
 		);
 		try {
 			const createdConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
@@ -125,5 +136,23 @@ suite('Paradis pane token service', () => {
 		// ペイン単位の宛先。POSIXはUnixソケット、WindowsはNodeが繋げるws endpointファイル。
 		const paneEndpoint = isWindows ? environment.PARA_CODE_CODEX_APP_SERVER_ENDPOINT : environment.PARA_CODE_CODEX_APP_SERVER_SOCKET;
 		assert.ok(String(paneEndpoint ?? '').includes(PANE_TOKEN));
+	});
+
+	// Codex のアカウント切替は、新しく開くターミナルへ CODEX_HOME を渡すだけ。既定のホームを選んで
+	// いるときは何も足さない（ユーザー自身の CODEX_HOME を潰さない）。SSH の接続先で動くターミナルへ
+	// 手元のホームのパスを渡すと存在しない場所を指すので、そこでも渡さない。
+	test('passes the selected Codex home only to local terminals and remembers it per pane', () => {
+		const recorded = new Map<string, string | undefined>();
+		assert.deepStrictEqual({
+			selected: paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', recorded }).CODEX_HOME,
+			recorded: recorded.get(PANE_TOKEN),
+			defaultHome: paneEnvironmentFor(false, false, { launchHome: undefined }).CODEX_HOME,
+			remote: paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host' }).CODEX_HOME,
+		}, {
+			selected: '/home/test/.codex-2',
+			recorded: '/home/test/.codex-2',
+			defaultHome: undefined,
+			remote: undefined,
+		});
 	});
 });

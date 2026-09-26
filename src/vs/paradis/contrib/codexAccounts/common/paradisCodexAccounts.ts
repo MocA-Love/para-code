@@ -208,6 +208,28 @@ export function paradisSelectedCodexHome(state: IParadisCodexAccountsState): IPa
 	return state.homes.find(home => home.isDefault);
 }
 
+/**
+ * 選択から、新しく開くターミナルへ渡す CODEX_HOME を決める。既定のホーム・一覧に無いホーム
+ * （消されたアカウント）なら undefined（何も渡さない）。
+ */
+export function paradisCodexLaunchHomeFor(state: IParadisCodexAccountsState): string | undefined {
+	const selected = state.selection.homePath;
+	if (selected === undefined) {
+		return undefined;
+	}
+	const home = state.homes.find(candidate => candidate.homePath === selected);
+	return home !== undefined && home.signedIn && !home.isDefault ? home.homePath : undefined;
+}
+
+/** 実行中のコマンドが Codex の対話画面らしいか。シェル統合が無いときはプロセス名で見る。 */
+export function paradisLooksLikeRunningCodex(executingCommand: string | undefined, processName: string | undefined): boolean {
+	if (executingCommand !== undefined && executingCommand.trim().length > 0) {
+		const first = executingCommand.trim().split(/\s+/)[0] ?? '';
+		return /(?:^|[\\/])codex(?:\.cmd|\.exe)?$/i.test(first);
+	}
+	return processName !== undefined && /^codex(?:\.exe)?$/i.test(processName.trim());
+}
+
 /** 会話ログのハードリンクの結果（件数だけ。パスは返さない）。 */
 export interface IParadisCodexSessionLinkSummary {
 	readonly linked: number;

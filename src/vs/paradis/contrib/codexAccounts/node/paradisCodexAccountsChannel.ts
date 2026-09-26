@@ -33,7 +33,11 @@ export class ParadisCodexAccountsChannel implements IServerChannel<string> {
 	constructor(private readonly service: ParadisCodexAccountsService) { }
 
 	listen<T>(_ctx: string, event: string): Event<T> {
-		throw new Error(`Event not found: ${event}`);
+		switch (event) {
+			case 'onDidChangeState': return this.service.onDidChangeState as Event<T>;
+			default:
+				throw new Error(`Event not found: ${event}`);
+		}
 	}
 
 	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
@@ -41,6 +45,8 @@ export class ParadisCodexAccountsChannel implements IServerChannel<string> {
 		switch (command) {
 			case 'readResetCredits': return this.service.readResetCredits(typeof args[0] === 'string' ? args[0] : '', args[1] === true) as Promise<T>;
 			case 'consumeResetCredit': return this.service.consumeResetCredit(args[0] as IParadisCodexResetConsumeRequest) as Promise<T>;
+			case 'getState': return this.service.getState() as Promise<T>;
+			case 'selectHome': return this.service.selectHome(typeof args[0] === 'string' ? args[0] : undefined) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
