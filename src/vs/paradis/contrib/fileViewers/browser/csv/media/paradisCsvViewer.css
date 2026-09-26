@@ -1,0 +1,209 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * CSV / TSV table viewer. The grid itself comes from the Excel viewer (paradisSpreadsheetGrid.css);
+ * the rules below re-skin it with editor theme colors, since a CSV has no sheet styling of its own.
+ */
+
+.paradis-csv-table-area {
+	position: absolute;
+	inset: 0;
+}
+
+.paradis-csv-table-area.hidden {
+	display: none;
+}
+
+.paradis-csv-table {
+	position: absolute;
+	inset: 0;
+}
+
+.paradis-csv-table .paradis-csv-grid.paradis-spreadsheet-virtual-grid {
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+}
+
+/* The active cell carries the focus outline; the scroll container itself does not need one. */
+.monaco-workbench .paradis-csv-table .paradis-csv-grid:focus {
+	outline: none;
+}
+
+.paradis-csv-grid .paradis-spreadsheet-virtual-pane-top,
+.paradis-csv-grid .paradis-spreadsheet-virtual-pane-left,
+.paradis-csv-grid .paradis-spreadsheet-virtual-pane-corner {
+	background-color: var(--vscode-editor-background);
+	border-color: var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-csv-grid .paradis-spreadsheet-virtual-cell {
+	padding: 0 var(--vscode-spacing-size60);
+	border-right: var(--vscode-strokeThickness) solid var(--vscode-editorIndentGuide-background1);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorIndentGuide-background1);
+	font-family: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 21px;
+	color: var(--vscode-editor-foreground);
+	text-overflow: ellipsis;
+	cursor: default;
+	user-select: none;
+}
+
+.paradis-csv-grid .paradis-csv-number {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-csv-grid .paradis-csv-header {
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 23px;
+	background-color: var(--vscode-keybindingTable-headerBackground);
+	cursor: pointer;
+}
+
+.paradis-csv-grid .paradis-csv-header.paradis-csv-sorted-asc,
+.paradis-csv-grid .paradis-csv-header.paradis-csv-sorted-desc {
+	padding-right: var(--vscode-spacing-size200);
+}
+
+/* Sort indicator: a small chevron drawn with borders so the cell text stays the raw header value. */
+.paradis-csv-grid .paradis-csv-sorted-asc::after,
+.paradis-csv-grid .paradis-csv-sorted-desc::after {
+	content: '';
+	position: absolute;
+	top: 50%;
+	right: var(--vscode-spacing-size80);
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+}
+
+.paradis-csv-grid .paradis-csv-sorted-asc::after {
+	margin-top: -3px;
+	border-bottom: 5px solid var(--vscode-textLink-foreground);
+}
+
+.paradis-csv-grid .paradis-csv-sorted-desc::after {
+	margin-top: -2px;
+	border-top: 5px solid var(--vscode-textLink-foreground);
+}
+
+.paradis-csv-grid .paradis-csv-rownum,
+.paradis-csv-grid .paradis-csv-corner {
+	text-align: right;
+	color: var(--vscode-editorLineNumber-foreground);
+	background-color: var(--vscode-keybindingTable-headerBackground);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-csv-grid .paradis-csv-rownum {
+	cursor: pointer;
+}
+
+.paradis-csv-grid .paradis-csv-rownum-selected,
+.paradis-csv-grid .paradis-csv-header-selected {
+	color: var(--vscode-editorLineNumber-activeForeground);
+}
+
+.paradis-csv-grid .paradis-csv-selected {
+	background-color: var(--vscode-editor-inactiveSelectionBackground);
+}
+
+.paradis-csv-grid:focus .paradis-csv-selected,
+.paradis-csv-grid:focus-within .paradis-csv-selected {
+	background-color: var(--vscode-editor-selectionBackground);
+}
+
+.paradis-csv-grid .paradis-csv-match {
+	background-color: var(--vscode-editor-findMatchHighlightBackground);
+}
+
+.paradis-csv-grid .paradis-csv-match-current {
+	background-color: var(--vscode-editor-findMatchBackground);
+	outline: var(--vscode-strokeThickness) solid var(--vscode-editor-findMatchBorder, transparent);
+	outline-offset: -1px;
+}
+
+.paradis-csv-grid .paradis-csv-active {
+	z-index: 5;
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: -2px;
+}
+
+.paradis-csv-grid.paradis-csv-resize-cursor,
+.paradis-csv-grid.paradis-csv-resize-cursor .paradis-spreadsheet-virtual-cell {
+	cursor: col-resize;
+}
+
+/* Loading / empty / error message shown instead of the grid. */
+.paradis-csv-message {
+	position: absolute;
+	inset: 0;
+	display: none;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size160);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-body1);
+	text-align: center;
+	background-color: var(--vscode-editor-background);
+	z-index: 20;
+}
+
+.paradis-csv-message.visible {
+	display: flex;
+}
+
+/* Truncation notice (large files) between the toolbar and the grid. */
+.paradis-csv-notice {
+	display: none;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.paradis-csv-notice.visible {
+	display: flex;
+}
+
+.paradis-csv-link-button {
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	font: inherit;
+	cursor: pointer;
+}
+
+.paradis-csv-link-button:hover {
+	text-decoration: underline;
+}
+
+.paradis-csv-footer {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.paradis-csv-footer.hidden {
+	display: none;
+}
