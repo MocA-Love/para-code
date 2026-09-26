@@ -14,7 +14,7 @@
 // 行数/列数の計算）はすべて `getFont()` を通るので、設定の文字サイズを変えてもこの差分は保たれる。
 //
 // キーは XtermTerminal のオブジェクトそのもの（WeakMap）。ターミナルが破棄されれば差分も消える。
-// 操作（⌘= / ⌘− / ⌘0）は terminalFontZoom/browser/paradisTerminalFontZoom.contribution.ts が持つ。
+// 操作（⌘= / ⌘− / テンキーの ⌘0）は terminalFontZoom/browser/paradisTerminalFontZoom.contribution.ts が持つ。
 
 import type { ITerminalFont } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import type { IXtermCore } from '../../../../workbench/contrib/terminal/browser/xterm-private.js';
