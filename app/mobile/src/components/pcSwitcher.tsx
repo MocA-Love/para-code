@@ -12,7 +12,7 @@ import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
-import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { Badge } from './badge.js';
 import { SectionHeader } from './sectionHeader.js';
@@ -113,7 +113,7 @@ function PcRow({ pc, active, now, onPress }: { pc: PcSummary; active: boolean; /
 				</View>
 			</View>
 			{pc.waiting > 0 && !active ? (
-				<Badge label={`質問 ${pc.waiting}`} tone="red" style={styles.badge} />
+				<Badge label={`${status.attention.label} ${pc.waiting}`} tone="red" style={styles.badge} />
 			) : null}
 			{active ? <Ionicons name="checkmark" size={17} color={colors.accent} /> : null}
 		</Pressable>

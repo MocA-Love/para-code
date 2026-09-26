@@ -75,16 +75,17 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices,
 }
 
 const styles = StyleSheet.create({
-	approvalBar: { backgroundColor: tint(colors.yellow, alpha.wash), borderWidth: 1, borderColor: colors.yellow, borderRadius: radius.card, ...squircle, padding: 14, gap: 8 },
+	// 面は無彩色にし、色は主ボタン（白）と拒否（赤文字）だけに使う。要対応であることはホームの札・見出しが示す。
+	approvalBar: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.card, ...squircle, padding: 14, gap: 8 },
 	approvalText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	approvalDetail: { color: colors.text, fontSize: type.meta, lineHeight: 17, fontFamily: monoFamily, backgroundColor: colors.surface2, borderRadius: radius.control, paddingHorizontal: 10, paddingVertical: 8 },
 	approvalButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
 	approvalBtn: { flexGrow: 1, flexBasis: '46%', borderRadius: radius.control, ...squircle, paddingHorizontal: 10, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
 	disabled: { opacity: 0.6 },
-	approveBtn: { backgroundColor: colors.green },
+	approveBtn: { backgroundColor: colors.primary },
 	neutralBtn: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
 	denyBtn: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: tint(colors.red, alpha.line) },
-	approveBtnText: { color: colors.bg, fontSize: type.body, fontWeight: '700' },
+	approveBtnText: { color: colors.onPrimary, fontSize: type.body, fontWeight: '700' },
 	neutralBtnText: { color: colors.text, fontSize: type.meta, fontWeight: '600', textAlign: 'center' },
 	denyBtnText: { color: colors.red, fontSize: type.body, fontWeight: '700' },
 	approvalHint: { color: colors.textDim, fontSize: type.badge },

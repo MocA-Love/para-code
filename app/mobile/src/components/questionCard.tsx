@@ -77,7 +77,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 	return (
 		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
 			<View style={styles.questionHeader}>
-				<Ionicons name="help-circle" size={16} color={answered ? colors.textDim : colors.accent2} />
+				<Ionicons name="help-circle" size={16} color={answered ? colors.textDim : colors.red} />
 				{message.header ? <Text style={styles.questionChip}>{message.header}</Text> : null}
 				{multiSelect ? <Text style={styles.questionChip}>複数選択可</Text> : null}
 				{answered ? <Text style={styles.questionAnswered}>回答済み</Text> : null}
@@ -207,7 +207,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 	return (
 		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
 			<View style={styles.questionHeader}>
-				<Ionicons name="help-circle" size={16} color={answered ? colors.textDim : colors.accent2} />
+				<Ionicons name="help-circle" size={16} color={answered ? colors.textDim : colors.red} />
 				<Text style={styles.questionChip}>複数の質問（全{messages.length}問）</Text>
 				{answered ? <Text style={styles.questionAnswered}>回答済み</Text> : null}
 			</View>
@@ -334,7 +334,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 	&& prev.messages.every((m, i) => m === next.messages[i]));
 
 const styles = StyleSheet.create({
-	questionCard: { backgroundColor: tint(colors.accent, alpha.wash), borderWidth: 1, borderColor: colors.accent2, borderRadius: radius.card, ...squircle, padding: 14, gap: 8 },
+	questionCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.card, ...squircle, padding: 14, gap: 8 },
 	questionCardAnswered: { borderColor: colors.border, backgroundColor: colors.surface, opacity: 0.75 },
 	questionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 	questionChip: { color: colors.text, fontSize: type.caption, fontWeight: '600', backgroundColor: colors.surface2, borderRadius: radius.key, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },

@@ -67,7 +67,7 @@ describe('HomePlusMenuButton fallback', () => {
 		expect(renderer!.root.findAllByType('Pressable' as ElementType).map(node => node.props.accessibilityLabel)).toEqual(expect.arrayContaining([
 			'アーカイブ 2件を見る',
 			'音声通知（受信中）',
-			'通知（応答待ち 3件）',
+			'通知（要対応 3件）',
 			'Claude を起動',
 			'Codex を起動',
 			'ターミナルを起動',
@@ -83,7 +83,7 @@ describe('HomePlusMenuButton fallback', () => {
 		const selections = [
 			['アーカイブ 2件を見る', 'archive'],
 			['音声通知（受信中）', 'voice-notifications'],
-			['通知（応答待ち 3件）', 'notifications'],
+			['通知（要対応 3件）', 'notifications'],
 			['Claude を起動', 'launch-claude'],
 			['Codex を起動', 'launch-codex'],
 			['ターミナルを起動', 'new-terminal'],

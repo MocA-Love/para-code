@@ -24,7 +24,7 @@ import { WsHeaderActions, WsHeaderIsland } from './nativeHeaderItems.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { useConnectionGateBlocked } from './connectionGate.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
-import { alpha, colors, radius, squircle, tint, type, withAlpha } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type, withAlpha, status } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { Badge } from './badge.js';
 import { SectionHeader } from './sectionHeader.js';
@@ -42,7 +42,7 @@ import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
  * 使い方: `(tabs)/_layout.tsx` で `WsDrawerLayout` がNativeTabs全体を1回だけ包み、
  * 各画面のヘッダー（`WsHeader`）のチップは `useWsDrawer().open()` で開く。
  *  - 上部: 接続中PCのステータスと統計（旧ホームの「接続中のPC」カードから移設）
- *  - 中央: ワークスペース一覧（応答待ちは「質問あり」バッジで強調）
+ *  - 中央: ワークスペース一覧（要対応は赤いバッジで強調）
  *  - 下部: 接続/切断トグルとペアリング解除（同じく旧ホームカードから移設）
  */
 
@@ -452,7 +452,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				    （留め外しはPC側の Workspaces ビューで行う） */}
 				{ws.pinned ? <Ionicons name="pin" size={11} color={colors.accent} /> : null}
 				{waiting > 0 ? (
-					<Badge label={waiting > 1 ? `質問あり ${waiting}` : '質問あり'} tone="red" style={styles.badge} />
+					<Badge label={waiting > 1 ? `${status.attention.label} ${waiting}` : status.attention.label} tone="red" style={styles.badge} />
 				) : null}
 				{/* メモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）。未完了があれば件数を出す。
 				    **押したら必ずドロワーを閉じてから開く。** 以前は Link.AppleZoom のズーム遷移を
@@ -552,7 +552,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					</View>
 					<View style={styles.stat}>
 						<Text style={[styles.statValue, waitingTotal > 0 && styles.statValueAlert]}>{waitingTotal}</Text>
-						<Text style={styles.statLabel}>応答待ち</Text>
+						<Text style={styles.statLabel}>{status.attention.label}</Text>
 					</View>
 				</View>
 				{/* PC本体のCPU/メモリ/ディスク。接続中でPCが配信している場合だけ出す
@@ -759,7 +759,7 @@ export function useWsHeader({ subtitle, actions, mid, allWorkspaces, wide = fals
 			label: regular
 				? (sub ? `スペース ${name}、${sub}` : `スペース ${name}`)
 				: offline !== undefined ? `スペース ${name}。${offline.text}。切り替える`
-					: (otherWaiting > 0 ? `スペース ${name}。他のスペースに応答待ちがあります。切り替える` : `スペース ${name}。切り替える`),
+					: (otherWaiting > 0 ? `スペース ${name}。他のスペースに要対応があります。切り替える` : `スペース ${name}。切り替える`),
 			...(allWorkspaces ? { avatarIcon: 'apps-outline' as const } : { avatarText: current ? current.name.charAt(0).toUpperCase() : '—' }),
 			color: chipColor,
 			// ガラスへの色被せはスペースの固有色があるときだけ。「すべてのスペース」の
@@ -939,7 +939,7 @@ const styles = StyleSheet.create({
 	rowBranch: { color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily, flexShrink: 1 },
 	// `Badge` は既定で上寄せ（alignSelf: 'flex-start'）なので、行の中で縦中央に戻す。
 	badge: { alignSelf: 'center' },
-	runOrb: { width: 8, height: 8, borderRadius: radius.pill, backgroundColor: colors.green },
+	runOrb: { width: 8, height: 8, borderRadius: radius.pill, backgroundColor: status.running.color },
 	noteBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: radius.key, ...squircle, paddingHorizontal: 6, paddingVertical: 3 },
 	noteBtnActive: { backgroundColor: colors.accentWash },
 	noteBtnText: { color: colors.accent, fontSize: type.badge, fontWeight: '700', fontFamily: monoFamily },

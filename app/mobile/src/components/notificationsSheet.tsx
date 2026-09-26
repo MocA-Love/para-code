@@ -29,7 +29,7 @@ export function NotificationsButton({ notifications }: {
 					hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
 					onPress={() => hapticImpact('light')}
 					accessibilityRole="button"
-					accessibilityLabel={questionCount > 0 ? `通知。応答待ち ${questionCount}件` : '通知'}
+					accessibilityLabel={questionCount > 0 ? `通知。要対応 ${questionCount}件` : '通知'}
 				>
 					<Ionicons name="notifications-outline" size={17} color={colors.text} />
 					{questionCount > 0 ? <View style={styles.bellBadge} /> : null}

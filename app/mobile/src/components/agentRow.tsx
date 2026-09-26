@@ -6,7 +6,8 @@ import { Ionicons } from '@expo/vector-icons';
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { Badge, BADGE_HEIGHT, type BadgeTone } from './badge.js';
+import { Badge, BADGE_HEIGHT, STATUS_TONE } from './badge.js';
+import { agentStatusColor, agentStatusKind, agentStatusLabel } from '../agentStatus.js';
 
 /**
  * ホーム一覧のエージェント行の見た目を、リスト本体と長押し時の「リフト（浮き上がり）
@@ -36,14 +37,8 @@ export interface AgentRowRect {
 	height: number;
 }
 
-export function agentLabel(status: string | undefined): string {
-	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : status === 'working' ? '実行中' : status === undefined ? 'アイドル' : 'レビュー';
-}
-
 function orbStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.orbWaiting
-		: status === 'working' ? styles.orbRunning
-			: status === undefined ? styles.orbIdle : styles.orbReview;
+	return { backgroundColor: agentStatusColor(status) };
 }
 
 /**
@@ -55,11 +50,6 @@ function orbStyle(status: string | undefined) {
  */
 export const CHIP_HEIGHT = BADGE_HEIGHT;
 
-function badgeTone(status: string | undefined): BadgeTone {
-	return status === 'permission' || status === 'question' ? 'red'
-		: status === 'working' ? 'green'
-			: status === undefined ? 'neutral' : 'yellow';
-}
 
 /**
  * ステータスバッジ（非インタラクティブ）。レビュー行のタップ操作はリスト側でこれをPressableで包む。
@@ -68,7 +58,7 @@ function badgeTone(status: string | undefined): BadgeTone {
  * 上に寄らないよう縦中央に戻す。
  */
 export function AgentBadge({ status }: { status: string | undefined }) {
-	return <Badge label={agentLabel(status)} tone={badgeTone(status)} style={styles.badge} />;
+	return <Badge label={agentStatusLabel(status)} tone={STATUS_TONE[agentStatusKind(status)]} style={styles.badge} />;
 }
 
 /**
@@ -127,13 +117,9 @@ export const agentRowStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
 	pinIcon: { marginRight: -2 },
+	// 色は状態ごとに agentStatusColor が決める。idle は最も沈んだ状態だが、非テキスト3:1規範に
+	// 届かないと「描画漏れ」と区別がつかないため colors.idle（#6e7681 = 4.04:1）を使っている。
 	orb: { width: 10, height: 10, borderRadius: radius.pill },
-	orbWaiting: { backgroundColor: colors.red },
-	orbRunning: { backgroundColor: colors.green },
-	orbReview: { backgroundColor: colors.yellow },
-	// idleは最も沈んだ状態。ただし非テキスト3:1規範には届かないと「描画漏れ」と
-	// 区別がつかないため、textDimより暗めのグレーに上げる(colors.idle #6e7681 = 4.04:1)。
-	orbIdle: { backgroundColor: colors.idle },
 	agentBody: { flex: 1, minWidth: 0 },
 	agentTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	agentSub: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },

@@ -1,16 +1,24 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-/** モックアップ (mock-2.html、案A「Aftermath」) のデザイントークン。全画面で共有する。 */
+/**
+ * デザイントークン。全画面で共有する。
+ *
+ * 方針（2026-09、Orca の STYLEGUIDE を参考にした「静かな配色」）:
+ *  - 面は bg → surface → surface2/3 の段だけで作り、色は状態を表すときだけ使う
+ *  - accent（水色）は選択中の印・リンクなど「今どこか」を示すものに限る
+ *  - 流れを先へ進める主ボタンは白地（primary）に黒文字。1画面に1つだけ置く
+ * OS が描くタブバー・ナビバーのガラスは対象外（純正部品の見た目に合わせる）。
+ */
 export const colors = {
-	bg: '#050506',
-	panel: '#131316',
-	surface: '#131316',
-	surface2: '#1c1c20',
-	surface3: '#232328',
+	bg: '#0b0b0c',
+	panel: '#151517',
+	surface: '#151517',
+	surface2: '#1e1e21',
+	surface3: '#28282c',
 	border: 'rgba(255,255,255,0.08)',
 	borderStrong: 'rgba(255,255,255,0.16)',
-	text: '#f0f0f2',
-	textDim: '#8a8a92',
+	text: '#ececef',
+	textDim: '#8e8e96',
 	// PC版のブランドプライマリカラー（paradisDefaultSettings.contribution.ts の #09AFD9）と統一。
 	// accent2 はPC版ライトテーマ用の濃い版 #0598BD をボタン等の面塗りに流用する。
 	accent: '#09AFD9',
@@ -18,6 +26,8 @@ export const colors = {
 	accentWash: 'rgba(9,175,217,0.14)',
 	green: '#4fd1a5',
 	yellow: '#e0c07d',
+	/** 実行中を示す琥珀。 */
+	amber: '#e0b04d',
 	orange: '#d99a6c',
 	red: '#f47272',
 	purple: '#c193d9',
@@ -29,16 +39,16 @@ export const colors = {
 	glassBorder: 'rgba(255,255,255,0.14)',
 	attentionBg: 'rgba(36,20,20,0.92)',
 	/** 本文より一段弱い文字（コード本文・補足の本文など）。中間グレーを画面ごとに発明しない。 */
-	textSoft: '#c9c9d2',
+	textSoft: '#b0b0b8',
 	/** 状態を持たない（待機中など）点・アイコン。 */
 	idle: '#6e7681',
 	/** 白文字を載せる濃い赤の面（タブのバッジ・スワイプの削除）。 */
 	redStrong: '#c0413f',
 	/** ドロワー・サイドバーの地。bg と surface の間。 */
-	sidebar: '#0e0e11',
+	sidebar: '#101012',
 	/** 塗りの主ボタン（`primary`）の地と、その上の文字。 */
-	primary: '#0598BD',
-	onPrimary: '#00222c',
+	primary: '#f5f5f7',
+	onPrimary: '#0b0b0c',
 	/** 端末・コード表示。アプリの面とは別の系統として持つ。 */
 	terminalBg: '#1e1e1e',
 	terminalFg: '#d4d4d4',
@@ -163,15 +173,18 @@ export function tint(color: ThemeColor, opacity: number): string {
 
 /**
  * エージェントの状態と、その色・呼び名の対応。状態の表現はここだけで決め、
- * 画面ごとに色や文言を割り当てない。
+ * 画面ごとに色や文言を割り当てない（判定は `src/agentStatus.ts`）。
+ *
+ * 色は「人が何かすべきか」の順に強くする: 要対応（赤）→ 実行中（琥珀）→ 完了・未確認（緑）→ 待機（灰）。
+ * エラーも赤だが、要対応とはアイコン・文言で区別する。
  */
 export const status = {
 	/** 許可待ち・質問など、人の操作を待っている。 */
-	attention: { color: colors.red, label: '応答待ち' },
-	running: { color: colors.green, label: '実行中' },
+	attention: { color: colors.red, label: '要対応' },
+	running: { color: colors.amber, label: '実行中' },
 	/** 作業を終えて、まだ人が確認していない。 */
-	review: { color: colors.yellow, label: 'レビュー' },
-	idle: { color: colors.idle, label: 'アイドル' },
+	review: { color: colors.green, label: '未確認' },
+	idle: { color: colors.idle, label: '待機' },
 	error: { color: colors.red, label: 'エラー' },
 } as const;
 

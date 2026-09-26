@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { activityStatusColor as statusColor, activityStatusLabel as statusLabel } from '../src/agentStatus.js';
 import { useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -19,20 +20,7 @@ import { flattenAgentActivity, isRunningAgentActivity, partitionRecentAgentActiv
 
 type ActivityRow = { kind: 'section'; title: string; empty?: string } | { kind: 'agent'; value: AgentActivityAgent; depth: number } | { kind: 'task'; value: AgentActivityTask } | { kind: 'more'; count: number; expanded: boolean };
 
-function statusLabel(status: AgentActivityStatus): string {
-	switch (status) {
-		case 'running': return '実行中';
-		case 'idle': return '待機中';
-		case 'completed': return '完了';
-		case 'failed': return '失敗';
-		case 'interrupted': return '中断';
-		case 'unknown': return '状態不明';
-	}
-}
 
-function statusColor(status: AgentActivityStatus) {
-	return status === 'failed' ? colors.red : status === 'running' ? colors.accent : status === 'idle' || status === 'unknown' || status === 'interrupted' ? colors.yellow : colors.green;
-}
 
 function duration(startedAt: number, updatedAt: number): string {
 	const seconds = Math.max(0, Math.round((updatedAt - startedAt) / 1000));

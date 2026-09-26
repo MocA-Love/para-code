@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { activityStatusLabel as statusLabel } from '../src/agentStatus.js';
 import { useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -41,9 +42,6 @@ function groupConversation(messages: readonly AgentActivityDetailMessage[]): Con
 	return result;
 }
 
-function statusLabel(status: AgentActivityStatus): string {
-	return status === 'running' ? '実行中' : status === 'idle' ? '待機中' : status === 'completed' ? '完了' : status === 'failed' ? '失敗' : status === 'interrupted' ? '中断' : '状態不明';
-}
 
 /** 本文（text）1件。thinking / tool は AgentTimeline が受け持つ。 */
 function ActivityMessage({ message, parentLabel }: { message: AgentActivityDetailMessage; parentLabel: string }) {

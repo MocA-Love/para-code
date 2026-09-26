@@ -6,7 +6,8 @@ import type { AgentChatMessage, AgentChatState } from '../store.js';
 import type { AgentActions } from '../hooks/useAgentActions.js';
 import { QuestionCard } from './questionCard.js';
 import { ApprovalCard } from './approvalCard.js';
-import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
+import { agentStatusLabel } from '../agentStatus.js';
 
 /** チャット履歴から最新の未回答質問(question)を探す（agent.tsxの回答済み判定と同じロジック）。 */
 function findPendingQuestion(chat: AgentChatState | undefined): AgentChatMessage | undefined {
@@ -56,7 +57,7 @@ export type AttentionStatus = 'permission' | 'question';
 
 /** 畳んだ行に出す待たせ方のラベル。中身を購読していなくてもステータスだけで書ける。 */
 function waitingLabel(agentStatus: AttentionStatus): string {
-	return agentStatus === 'permission' ? '許可の確認' : '質問';
+	return agentStatusLabel(agentStatus);
 }
 
 /**
@@ -170,8 +171,8 @@ export function AttentionStack({ items, total, openKey, onToggle, onLongPress, h
 			    分かるので、そのぶん本文がヘッダーの直下から始まるほうがよい。複数あるときだけ
 			    「ここからここまでが応答待ち」の塊として見出しを付ける。 */}
 			{total > 1 ? (
-				<View style={styles.header} accessibilityRole="header" accessibilityLabel={`応答待ち ${total}件`}>
-					<Text style={styles.headerTitle}>応答待ち</Text>
+				<View style={styles.header} accessibilityRole="header" accessibilityLabel={`${status.attention.label} ${total}件`}>
+					<Text style={styles.headerTitle}>{status.attention.label}</Text>
 					<Text style={styles.headerCount}>{total}</Text>
 				</View>
 			) : null}
@@ -218,7 +219,7 @@ export function AttentionStack({ items, total, openKey, onToggle, onLongPress, h
 					style={styles.more}
 					onPress={onShowAll}
 					accessibilityRole="button"
-					accessibilityLabel={`応答待ちの残り ${hiddenCount}件を表示`}
+					accessibilityLabel={`${status.attention.label}の残り ${hiddenCount}件を表示`}
 				>
 					<Text style={styles.moreText}>他 {hiddenCount} 件を表示</Text>
 				</Pressable>

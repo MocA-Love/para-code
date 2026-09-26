@@ -157,7 +157,7 @@ describe('terminal header behavior', () => {
 			keyboardShouldPersistTaps: 'always',
 			chips: [
 				{ accessibilityLabel: 'ターミナル 1: First、実行中', minHeight: 44, minWidth: 44 },
-				{ accessibilityLabel: 'ターミナル 2: Second、応答待ち', minHeight: 44, minWidth: 44 },
+				{ accessibilityLabel: 'ターミナル 2: Second、要対応', minHeight: 44, minWidth: 44 },
 			],
 		});
 		act(() => renderer!.unmount());

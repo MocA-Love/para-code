@@ -3,10 +3,10 @@
 import React from 'react';
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { alpha, colors, radius, tint, type } from '../theme.js';
+import { alpha, colors, radius, tint, type, type StatusKey } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 
-export type BadgeTone = 'neutral' | 'accent' | 'red' | 'green' | 'yellow' | 'purple';
+export type BadgeTone = 'neutral' | 'accent' | 'red' | 'amber' | 'green' | 'yellow' | 'purple';
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
@@ -14,9 +14,19 @@ const TONE: Record<BadgeTone, { bg: string; fg: string }> = {
 	neutral: { bg: colors.surface3, fg: colors.textDim },
 	accent: { bg: colors.accentWash, fg: colors.accent },
 	red: { bg: tint(colors.red, alpha.wash), fg: colors.red },
+	amber: { bg: tint(colors.amber, alpha.wash), fg: colors.amber },
 	green: { bg: tint(colors.green, alpha.wash), fg: colors.green },
 	yellow: { bg: tint(colors.yellow, alpha.wash), fg: colors.yellow },
 	purple: { bg: tint(colors.purple, alpha.wash), fg: colors.purple },
+};
+
+/** エージェントの状態（`src/agentStatus.ts` の kind）に対応するバッジの色。 */
+export const STATUS_TONE: Record<StatusKey, BadgeTone> = {
+	attention: 'red',
+	running: 'amber',
+	review: 'green',
+	idle: 'neutral',
+	error: 'red',
 };
 
 /** バッジの高さ（既定の文字サイズのとき）。行の中に置いても行の高さを揺らさない。 */

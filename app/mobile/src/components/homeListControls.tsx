@@ -9,7 +9,7 @@ import {
 	HOME_SORT_KEYS, HOME_STATUS_BUCKETS, bucketCounts, reconcileSecondary, secondaryCandidates, toggleFilter,
 	type HomeListPreferences, type HomeSortKey, type HomeStatusBucket, type SortableTerminal,
 } from '../homeSort.js';
-import { colors, radius, squircle, type } from '../theme.js';
+import { colors, radius, squircle, type, status } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /**
@@ -29,10 +29,10 @@ const OPTION_ICON = 22;
 const OPTION_GAP = 11;
 
 const BUCKET_LABEL: Record<HomeStatusBucket, string> = {
-	waiting: '応答待ち',
-	working: '実行中',
-	review: 'レビュー',
-	idle: 'アイドル',
+	waiting: status.attention.label,
+	working: status.running.label,
+	review: status.review.label,
+	idle: status.idle.label,
 };
 
 const SORT_LABEL: Record<HomeSortKey, string> = {
@@ -45,7 +45,7 @@ const SORT_LABEL: Record<HomeSortKey, string> = {
 const SORT_DESCRIPTION: Record<HomeSortKey, string> = {
 	// 応答待ちは上部のスタックが持つのでこの一覧には現れない。ここに書くと
 	// 「応答待ちが上に来ないのは壊れている」と読まれる。
-	status: '実行中 → レビュー → アイドル',
+	status: '実行中 → 未確認 → 待機',
 	space: 'ワークスペース一覧と同じ並び',
 	name: 'ターミナル名の順',
 	added: 'PCでターミナルを作った順',
