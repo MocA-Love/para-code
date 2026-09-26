@@ -137,6 +137,9 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			}
 		}));
 		this.client = this.instantiationService.createInstance(ParadisLimitsMonitorClient);
+		// Claude の使用量は shared process が自分の予定で取りに行く（設問 Q8）。取れたらここへ届くので、
+		// 次のポーリングを待たずに描き直す。
+		this._register(this.client.onDidChangeClaudeState(() => void this.refreshClaudeState()));
 
 		this.button = dom.append(container, $('button.paradis-limits-trigger'));
 		this.button.setAttribute('type', 'button');
@@ -381,6 +384,20 @@ class ParadisLimitsMonitorWidget extends Disposable {
 				void this.poll(true);
 			}
 		}
+	}
+
+	/** Claude の分だけ取り直して、手元のスナップショットへ差し込む。 */
+	private async refreshClaudeState(): Promise<void> {
+		if (!this.isEnabled() || !this.latestSnapshot) {
+			return;
+		}
+		const claudeState = await this.client.getClaudeState(false);
+		if (!this.latestSnapshot) {
+			return;
+		}
+		this.latestSnapshot = ParadisLimitsMonitorClient.mergeClaudeState(this.latestSnapshot, claudeState);
+		this.renderTrigger(this.latestSnapshot);
+		this.panel.value?.updateSnapshot(this.latestSnapshot);
 	}
 
 	private renderTrigger(snapshot: IParadisLimitsSnapshot): void {

@@ -43,8 +43,11 @@ export interface IParadisLimitsWindow {
  */
 export type ParadisLimitsAccountStatus = 'ok' | 'refreshing' | 'relogin_required' | 'no_credentials' | 'unavailable' | 'error';
 
-/** 'unavailable' の内訳。表示の分岐キーにする（statusDetail は自由文字列なので分岐に使わない）。 */
-export type ParadisLimitsUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable';
+/**
+ * 'unavailable' の内訳。表示の分岐キーにする（statusDetail は自由文字列なので分岐に使わない）。
+ * 'rate_limited' は Claude の使用量 API に 429 を返されて待っている間（時間が経てば戻る）。
+ */
+export type ParadisLimitsUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited';
 
 /** 再ログインで解消し得る状態か（'refreshing'・'unavailable' は再ログインしても直らない）。 */
 export function paradisLimitsNeedsRelogin(status: ParadisLimitsAccountStatus): boolean {
@@ -74,11 +77,22 @@ export function paradisLimitsStatusFromCswap(usageStatus: string | undefined): {
 
 export interface IParadisLimitsAccount {
 	readonly provider: ParadisLimitsProvider;
-	/** 安定ID。Claudeは 'claude-swap:<slot>'、Codexはホームの絶対パス。 */
+	/**
+	 * 安定ID。Claude は Para Code に登録したアカウントが 'para-claude:<uuid>'、登録していない
+	 * いまのログインが 'claude-live'。Codex はホームの絶対パス。
+	 */
 	readonly id: string;
 	readonly email?: string;
-	/** Claude: cswap上でアクティブなスロットか。 */
+	/** Claude: この PC の Claude Code がいま使っているアカウントか。 */
 	readonly active?: boolean;
+	/** Claude: Para Code に登録済み（認証情報を保存してあり、切り替えに使える）。 */
+	readonly managed?: boolean;
+	/** Claude: いまのログインだが Para Code に登録していない（登録ボタンを出す）。 */
+	readonly registrable?: boolean;
+	/** Claude: 組織名（同じメールで個人と組織を持つ場合の見分け用）。 */
+	readonly organizationName?: string;
+	/** 使用状況を最後に取れた時刻（epoch ms）。 */
+	readonly fetchedAt?: number;
 	/** Codex: '~/.codex-2' のような表示用ホームラベル。 */
 	readonly homeLabel?: string;
 	/** Claude: cswapのスロット番号(再ログイン時の --slot 指定に使う)。 */
@@ -98,8 +112,16 @@ export interface IParadisLimitsAccount {
 	readonly scoped?: readonly IParadisLimitsWindow[];
 }
 
+/** Claude: claude-swap に登録されていたが、Para Code にはまだ登録していないアカウント（表示のみ）。 */
+export interface IParadisLimitsLegacyAccount {
+	readonly email: string;
+	readonly organizationName?: string;
+}
+
 export interface IParadisLimitsProviderSnapshot {
 	readonly accounts: readonly IParadisLimitsAccount[];
+	/** Claude: 移行の案内に出す claude-swap のアカウント（読み取り専用。書き込みはしない）。 */
+	readonly legacyAccounts?: readonly IParadisLimitsLegacyAccount[];
 	/** データ源自体が使えない場合の理由(cswap未インストール等)。accountsは空になる。 */
 	readonly sourceError?: string;
 	/** Claudeのみ: cswap実行ファイルが見つからなかった(パネルでセットアップ案内を出す)。 */

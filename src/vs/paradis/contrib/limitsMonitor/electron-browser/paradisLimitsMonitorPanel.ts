@@ -402,6 +402,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 						return localize('paradis.limitsMonitor.apiKeyAccount', "APIキーで利用しているアカウントのため、サブスクリプションの使用状況はありません");
 					case 'keychain_unavailable':
 						return localize('paradis.limitsMonitor.keychainUnavailable', "キーチェーンを読み取れないため、使用状況を取得できません。しばらくしてからお試しください");
+					case 'rate_limited':
+						return localize('paradis.limitsMonitor.rateLimited', "使用状況の取得回数が上限に達したため、しばらく待ってから取り直します");
 					default:
 						// 制限到達で取得が止まっている場合が多いが、通信断や取得失敗でも同じ状態になる。
 						return localize('paradis.limitsMonitor.usageUnavailable', "使用状況を一時的に取得できていません（制限に達したアカウントは、枠がリセットされるまで取得を止めるため、この表示になることがあります）");
