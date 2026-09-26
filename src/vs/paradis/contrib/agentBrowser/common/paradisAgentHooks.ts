@@ -178,3 +178,22 @@ export function paradisManagedHookDefinition(event: IParadisManagedHookEvent, co
 	const entry = { type: 'command', command };
 	return event.matcher !== undefined ? { matcher: event.matcher, hooks: [entry] } : { hooks: [entry] };
 }
+
+/**
+ * Claude Code / Codex への hook の自動設置をするかどうかの設定。
+ *
+ * 既定はオン。オフにした**その時だけ** Para Code が置いた hook を取り外し、オフの間は置き直さない。
+ * 起動時に「オフだから外す」はしない: hook の設定ファイルは PC 全体で共有されるので、同じ PC で
+ * 動く別の Para Code（開発版など）が使っている hook まで壊すため。
+ */
+export const PARADIS_AGENT_HOOKS_ENABLED_SETTING = 'paradis.agentHooks.enabled';
+
+/**
+ * 設定値から「自動設置が有効か」を読む。
+ *
+ * shared process には設定のスキーマ（既定値）が登録されていないので、未設定は `undefined` で
+ * 届く。**明示的に false のときだけ無効**と読む。
+ */
+export function paradisAgentHooksEnabled(value: unknown): boolean {
+	return value !== false;
+}

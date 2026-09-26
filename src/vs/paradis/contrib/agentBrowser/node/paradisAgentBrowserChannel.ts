@@ -138,6 +138,11 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const existingRaw = typeof args[2] === 'string' ? args[2] : undefined;
 				return this.service.buildRemoteAgentHooksJson(String(args[0]), String(args[1]), existingRaw) as Promise<T>;
 			}
+			case 'buildRemoteAgentHooksRemovalJson': {
+				const args = requireArgs(arg, 1);
+				const existingRaw = typeof args[0] === 'string' ? args[0] : undefined;
+				return this.service.buildRemoteAgentHooksRemovalJson(existingRaw) as Promise<T>;
+			}
 			case 'syncRemoteCodexSockets': {
 				const args = requireArgs(arg, 3);
 				const tokens = Array.isArray(args[2]) ? args[2].filter((entry): entry is string => typeof entry === 'string') : [];
