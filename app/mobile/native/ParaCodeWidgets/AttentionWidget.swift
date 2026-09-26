@@ -65,7 +65,7 @@ struct WidgetCanvas<Content: View>: View {
 	@ViewBuilder var content: (WidgetPalette) -> Content
 
 	var body: some View {
-		let palette = WidgetPalette.make(mode: mode, scheme: scheme, accentHex: settings.accentHex)
+		let palette = WidgetPalette.make(mode: mode, scheme: scheme, accentHex: settings.accentHex, accentTextHex: settings.accentTextHex)
 		content(palette)
 			.containerBackground(for: .widget) { palette.background }
 	}

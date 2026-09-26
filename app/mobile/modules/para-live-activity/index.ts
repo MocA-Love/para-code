@@ -91,6 +91,7 @@ interface NativeModuleShape {
 	// ウィジェット（App Group の要約ファイル）。古いビルドには無いので optional にしておく。
 	widgetStoreAvailable?(): boolean;
 	writeWidgetFile?(name: string, contents: string): Promise<void>;
+	writeWidgetFileIfUnchanged?(name: string, expected: string | null, contents: string): Promise<boolean>;
 	readWidgetFile?(name: string): Promise<string | null>;
 	removeWidgetOutboxEntries?(entriesJson: string): Promise<void>;
 	reloadWidgets?(kinds: string[]): void;
@@ -152,8 +153,24 @@ export async function readWidgetFile(name: WidgetFileName): Promise<string | und
 	return raw ?? undefined;
 }
 
-/** 積み置き（ウィジェットの「確認済みにする」）から、送り終えたものを消す。 */
-export async function removeWidgetOutboxEntries(entries: readonly { pcId: string; key: string }[]): Promise<void> {
+/**
+ * ファイルがいま `expected`（読んだときの中身。無かったなら undefined）のままなら `contents` を書く。
+ * 読んでから書くまでの間に通知拡張・ウィジェットが書き換えていたら書かずに false を返す（呼び出し側が読み直して合わせる）。
+ * 比べて書くのは 1 回の NSFileCoordinator の中で行う。
+ */
+export async function writeWidgetFileIfUnchanged(name: WidgetFileName, expected: string | undefined, contents: string): Promise<boolean> {
+	if (native?.writeWidgetFileIfUnchanged === undefined) {
+		await native?.writeWidgetFile?.(name, contents);
+		return true;
+	}
+	return native.writeWidgetFileIfUnchanged(name, expected ?? null, contents);
+}
+
+/**
+ * 積み置き（ウィジェットの「確認済みにする」）から、片付けたものを消す。`at`（積んだ時刻）が違うもの
+ * （片付けを決めた後にウィジェットで押し直して積み直したもの）は消さない。
+ */
+export async function removeWidgetOutboxEntries(entries: readonly { pcId: string; key: string; at: number }[]): Promise<void> {
 	if (entries.length === 0) {
 		return;
 	}

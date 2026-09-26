@@ -90,6 +90,18 @@ private func dateFromMillis(_ ms: Double) -> Date {
 	return Date(timeIntervalSince1970: ms / 1000)
 }
 
+/// まだ終えていない Live Activity か。staleDate（最後の更新の 2 分後）を過ぎると `.stale` になるが、
+/// 終えてはいないので `.active` と同じく更新・終了の対象にする（`.ended` / `.dismissed` は完了の要約か消えたもの）。
+@available(iOS 16.2, *)
+private func isLive(_ activity: Activity<ParaCodeActivityAttributes>) -> Bool {
+	switch activity.activityState {
+	case .active, .stale:
+		return true
+	default:
+		return false
+	}
+}
+
 /**
  * JSからLive Activityを開始/更新/終了するExpoローカルモジュール。
  * 状態はJSON文字列で受けて ContentState へデコードする（Expoの型ブリッジを介さず
@@ -122,7 +134,8 @@ public class ParaLiveActivityModule: Module {
 			var current: Activity<ParaCodeActivityAttributes>?
 			for activity in Activity<ParaCodeActivityAttributes>.activities {
 				let same = activity.attributes.pcId == attributes.pcId && activity.attributes.pcName == attributes.pcName
-				if current == nil && same && activity.activityState == .active {
+				// staleDate を過ぎたもの（.stale）も生きている。作り直さず update する（背面では request が失敗するため）
+				if current == nil && same && isLive(activity) {
 					current = activity
 				} else {
 					await activity.end(nil, dismissalPolicy: .immediate)
@@ -145,7 +158,7 @@ public class ParaLiveActivityModule: Module {
 			}
 			let state = try JSONDecoder().decode(ParaCodeActivityAttributes.ContentState.self, from: data)
 			let content = ActivityContent(state: state, staleDate: nil)
-			for activity in Activity<ParaCodeActivityAttributes>.activities where activity.activityState == .active {
+			for activity in Activity<ParaCodeActivityAttributes>.activities where isLive(activity) {
 				await activity.end(content, dismissalPolicy: .after(dateFromMillis(dismissAt)))
 			}
 		}
@@ -156,7 +169,7 @@ public class ParaLiveActivityModule: Module {
 				return
 			}
 			for activity in Activity<ParaCodeActivityAttributes>.activities {
-				if !includeFinished && activity.activityState != .active {
+				if !includeFinished && !isLive(activity) {
 					continue
 				}
 				await activity.end(nil, dismissalPolicy: .immediate)
@@ -173,6 +186,10 @@ public class ParaLiveActivityModule: Module {
 
 		AsyncFunction("writeWidgetFile") { (name: String, contents: String) throws in
 			try ParaWidgetFiles.write(name: name, contents: contents)
+		}
+
+		AsyncFunction("writeWidgetFileIfUnchanged") { (name: String, expected: String?, contents: String) throws -> Bool in
+			return try ParaWidgetFiles.writeIfUnchanged(name: name, expected: expected, contents: contents)
 		}
 
 		AsyncFunction("readWidgetFile") { (name: String) throws -> String? in
@@ -238,6 +255,34 @@ enum ParaWidgetFiles {
 		}
 	}
 
+	/// いまの中身が `expected`（無ければ nil）のときだけ書く。比べて書くのを 1 回の協調の中で行い、
+	/// 読んでから書くまでの間に通知拡張・ウィジェットが書いたぶんを上書きしない（違えば false。JS が読み直して合わせる）。
+	static func writeIfUnchanged(name: String, expected: String?, contents: String) throws -> Bool {
+		let target = try url(for: name)
+		guard let data = contents.data(using: .utf8) else {
+			throw ParaLiveActivityError.badState
+		}
+		var coordinationError: NSError?
+		var writeError: Error?
+		var wrote = false
+		NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: target, options: .forMerging, error: &coordinationError) { url in
+			let current = (try? Data(contentsOf: url)).flatMap { String(data: $0, encoding: .utf8) }
+			guard current == expected else {
+				return
+			}
+			do {
+				try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+				wrote = true
+			} catch {
+				writeError = error
+			}
+		}
+		if let error = coordinationError ?? writeError {
+			throw error
+		}
+		return wrote
+	}
+
 	static func read(name: String) throws -> String? {
 		let target = try url(for: name)
 		var coordinationError: NSError?
@@ -260,11 +305,12 @@ enum ParaWidgetFiles {
 			  let removeList = try JSONSerialization.jsonObject(with: removeData) as? [[String: Any]] else {
 			throw ParaLiveActivityError.badState
 		}
+		// 積んだ時刻（at）まで揃うものだけを消す（片付けを決めた後に押し直して積み直したものは残す）。
 		let removeKeys = Set(removeList.compactMap { item -> String? in
 			guard let pcId = item["pcId"] as? String, let key = item["key"] as? String else {
 				return nil
 			}
-			return pcId + "\u{0}" + key
+			return entryKey(pcId: pcId, key: key, at: item["at"])
 		})
 		if removeKeys.isEmpty {
 			return
@@ -282,7 +328,7 @@ enum ParaWidgetFiles {
 				guard let pcId = entry["pcId"] as? String, let key = entry["key"] as? String else {
 					return false
 				}
-				return !removeKeys.contains(pcId + "\u{0}" + key)
+				return !removeKeys.contains(entryKey(pcId: pcId, key: key, at: entry["at"]))
 			}
 			root["entries"] = kept
 			do {
@@ -295,6 +341,17 @@ enum ParaWidgetFiles {
 		if let error = coordinationError ?? writeError {
 			throw error
 		}
+	}
+}
+
+extension ParaWidgetFiles {
+	/// 積み置きの1件を指す鍵。at は JSON の数（NSNumber）を整数のミリ秒にそろえて比べる。
+	static func entryKey(pcId: String, key: String, at: Any?) -> String {
+		var atMs = ""
+		if let value = (at as? NSNumber)?.doubleValue, value.isFinite, abs(value) < 9.0e15 {
+			atMs = String(Int64(value.rounded()))
+		}
+		return pcId + "\u{0}" + key + "\u{0}" + atMs
 	}
 }
 

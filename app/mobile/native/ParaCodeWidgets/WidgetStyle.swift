@@ -30,7 +30,7 @@ struct WidgetPalette {
 	/// ティント・クリア（accented）とロック画面（vibrant）。色を捨てて白の濃淡で描く。
 	var monochrome: Bool
 
-	static func make(mode: WidgetRenderingMode, scheme: ColorScheme, accentHex: String?) -> WidgetPalette {
+	static func make(mode: WidgetRenderingMode, scheme: ColorScheme, accentHex: String?, accentTextHex: String? = nil) -> WidgetPalette {
 		if mode != .fullColor {
 			return WidgetPalette(
 				text: .white, dim: .white.opacity(0.72), muted: .white.opacity(0.55),
@@ -55,10 +55,15 @@ struct WidgetPalette {
 				add: Color(hex: 0x2F8A3E), del: Color(hex: 0xB8412B),
 				priBg: Color(hex: 0x1A1A1A), priTx: .white, background: .white, monochrome: false
 			)
-		// 設定 → ウィジェットのアクセント（主ボタンの色）。文字色は明るさで白黒を選ぶ。
+		// 設定 → ウィジェットのアクセント（主ボタンの色）。文字色はアプリが主ボタンと同じ決め方（WCAG の
+		// コントラスト比）で選んで書いた accentTextHex を使う。無い古い設定だけ明るさで白黒を選ぶ。
 		if let accentHex, let value = parseHex(accentHex) {
 			palette.priBg = Color(hex: value)
-			palette.priTx = luminance(value) > 0.55 ? Color(hex: 0x111111) : .white
+			if let accentTextHex, let text = parseHex(accentTextHex) {
+				palette.priTx = Color(hex: text)
+			} else {
+				palette.priTx = luminance(value) > 0.55 ? Color(hex: 0x111111) : .white
+			}
 		}
 		return palette
 	}

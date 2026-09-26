@@ -227,6 +227,11 @@ export function buildLiveActivityState(input: {
 	readonly statusSince: LiveStatusSince;
 	readonly memory: LiveMemory;
 	readonly battery?: { readonly level: number; readonly charging: boolean };
+	/**
+	 * 質問文とコマンド（ツール名を含む）を載せるか。設定 → ウィジェットの「質問文とコマンドを表示」
+	 * （`src/widgets/settings.ts` の `showDetail`）に従う。オフならロック画面にも出さない。
+	 */
+	readonly includeDetail: boolean;
 	readonly now: number;
 }): LiveActivityState {
 	const agents = input.terminals.filter(terminal => terminal.agent === true);
@@ -245,7 +250,7 @@ export function buildLiveActivityState(input: {
 	const attention = waiting.slice(0, LIVE_ATTENTION_MAX).map(({ terminal, since }, index): LiveActivityAttentionItem => {
 		const kind = terminal.agentStatus === 'question' ? 'question' : 'permission';
 		// 2件目は「次」として名前だけを出すので、中身は先頭の1件だけに載せる（4KB の節約）。
-		const detail = index === 0 ? attentionDetail(kind, input.chats.get(terminal.terminalKey)) : {};
+		const detail = index === 0 && input.includeDetail ? attentionDetail(kind, input.chats.get(terminal.terminalKey)) : {};
 		return {
 			key: terminal.terminalKey,
 			...(terminal.ws !== undefined ? { space: terminal.ws } : {}),
@@ -288,6 +293,14 @@ export function buildLiveActivityState(input: {
 	};
 }
 
+/** 要対応の質問文とコマンド（ツール名を含む）を外す。設定でオフにしたときに、前に出した中身へ当てる。 */
+export function withoutAttentionDetail(state: LiveActivityState): LiveActivityState {
+	if (state.attention.every(item => item.tool === undefined && item.detail === undefined)) {
+		return state;
+	}
+	return { ...state, attention: state.attention.map(({ tool: _tool, detail: _detail, ...item }) => item) };
+}
+
 /**
  * PC に繋がらないときの中身。直前の中身をそのまま灰色で見せ、PC を最後に見た時刻を添える
  * （件数や名前を消さない。何が止まっているかは分かったままにする）。
@@ -326,6 +339,14 @@ export type LiveAction =
 	| { readonly kind: 'show'; readonly state: LiveActivityState }
 	| { readonly kind: 'finish'; readonly state: LiveActivityState; readonly dismissAt: number }
 	| { readonly kind: 'end' };
+
+/**
+ * 出している（または完了の要約を残している）Live Activity が、いま見ている PC とは別の PC のものか。
+ * 繋がらない PC へ切り替えたときは中身を作れないので、前の PC のものをここで見つけて終える。
+ */
+export function isShownForOtherPc(mode: LiveMode, pcId: string): boolean {
+	return mode.kind !== 'none' && mode.pcId !== pcId;
+}
 
 /**
  * 中身と今の出し方から、次にすることを決める。

@@ -6,12 +6,13 @@ import {
 	readWidgetFile,
 	reloadWidgets,
 	removeWidgetOutboxEntries,
-	writeWidgetFile,
+	writeWidgetFileIfUnchanged,
 } from '../../modules/para-live-activity/index.js';
 import { useAppStore } from '../appState.js';
 import { startStatusSinceTracking, useStatusSince } from '../features/pc/statusSinceStore.js';
 import {
 	buildWidgetSnapshot,
+	mergeUnviewedPcsFromDisk,
 	outboxSentKey,
 	parseWidgetOutbox,
 	parseWidgetSnapshot,
@@ -65,6 +66,8 @@ let lastWriteAt = 0;
 let writeTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let writing: Promise<void> = Promise.resolve();
+/** 組み立てるたびに進める。書き終えた要約を `previous` に戻すのは、その後に組み立て直していないときだけ。 */
+let generation = 0;
 let outbox: WidgetOutboxEntry[] = [];
 const sentOutbox = new Set<string>();
 const usageByPc = new Map<string, { usage: WidgetUsage | undefined; at: number }>();
@@ -160,6 +163,8 @@ function flush(force: boolean): void {
 	}
 	const now = Date.now();
 	processOutbox(state);
+	const active = activeInput(state);
+	const includeDetail = useWidgetSettings.getState().settings.showDetail;
 	if (appActive) {
 		maybeFetchUsage(state, now);
 		maybeFetchScm(state, now);
@@ -168,8 +173,8 @@ function flush(force: boolean): void {
 		ready: state.ready,
 		pcs: appActive ? state.pcs : keepOnlineWhileBackgrounding(state.pcs),
 		activePcId: state.activePcId,
-		active: activeInput(state),
-		includeDetail: useWidgetSettings.getState().settings.showDetail,
+		active,
+		includeDetail,
 		outbox,
 	}, previous, now);
 	const key = snapshotContentKey(snapshot);
@@ -179,11 +184,35 @@ function flush(force: boolean): void {
 	lastKey = key;
 	lastWriteAt = now;
 	previous = snapshot;
-	const json = JSON.stringify(snapshot);
+	const livePcId = active !== undefined ? state.activePcId : undefined;
+	const written = ++generation;
 	writing = writing
-		.then(() => writeWidgetFile(SNAPSHOT_FILE, json))
-		.then(() => reloadWidgets())
+		.then(() => writeMergedSnapshot(snapshot, livePcId, includeDetail))
+		.then(merged => {
+			if (written === generation) {
+				previous = merged;
+			}
+			reloadWidgets();
+		})
 		.catch(() => { lastKey = ''; /* 次の変化で書き直す */ });
+}
+
+/** 読み直しても書く間に変わり続けたときに諦めるまでの回数。 */
+const MERGE_WRITE_ATTEMPTS = 3;
+
+/**
+ * 書く直前に App Group の要約を読み直し、前面の間に通知拡張が書いた「見ていない PC の要対応」を
+ * 合わせてから書く（`mergeUnviewedPcsFromDisk`）。読んでから書くまでに書き換えられていたら読み直す。
+ */
+async function writeMergedSnapshot(snapshot: WidgetSnapshot, livePcId: string | undefined, includeDetail: boolean): Promise<WidgetSnapshot> {
+	for (let attempt = 0; attempt < MERGE_WRITE_ATTEMPTS; attempt++) {
+		const raw = await readWidgetFile(SNAPSHOT_FILE);
+		const merged = mergeUnviewedPcsFromDisk(snapshot, parseWidgetSnapshot(raw), livePcId, includeDetail);
+		if (await writeWidgetFileIfUnchanged(SNAPSHOT_FILE, raw, JSON.stringify(merged))) {
+			return merged;
+		}
+	}
+	throw new Error('widget snapshot changed while writing');
 }
 
 /**
@@ -248,17 +277,16 @@ function processOutbox(state: AppStoreState): void {
 		activePcId: state.activePcId,
 		online: isOnline(state),
 		terminals: state.workspace?.terminals,
+		statusSince: useStatusSince.getState().map,
 		alreadySent: sentOutbox,
 	});
-	for (const key of plan.send) {
-		if (state.activePcId !== undefined) {
-			sentOutbox.add(outboxSentKey(state.activePcId, key));
-		}
-		state.ackAgentStatus(key);
+	for (const entry of plan.send) {
+		sentOutbox.add(outboxSentKey(entry));
+		state.ackAgentStatus(entry.key);
 	}
 	if (plan.remove.length > 0) {
-		const removed = new Set(plan.remove.map(entry => outboxSentKey(entry.pcId, entry.key)));
-		outbox = outbox.filter(entry => !removed.has(outboxSentKey(entry.pcId, entry.key)));
+		const removed = new Set(plan.remove.map(entry => `${entry.pcId}\u0000${entry.key}\u0000${entry.at}`));
+		outbox = outbox.filter(entry => !removed.has(`${entry.pcId}\u0000${entry.key}\u0000${entry.at}`));
 		void removeWidgetOutboxEntries(plan.remove).catch(() => undefined);
 	}
 }

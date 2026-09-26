@@ -9,6 +9,7 @@ import {
 	EMPTY_LIVE_MEMORY,
 	fitLiveActivityBudget,
 	isOfflineConfirmed,
+	isShownForOtherPc,
 	LIVE_ACTIVITY_MAX_BYTES,
 	LIVE_DONE_LINGER_MS,
 	LIVE_OFFLINE_GRACE_MS,
@@ -19,6 +20,7 @@ import {
 	nextUnreachableSince,
 	runningTool,
 	toOfflineState,
+	withoutAttentionDetail,
 	type LiveChatInput,
 	type LiveMemory,
 	type LiveStatusSince,
@@ -35,12 +37,13 @@ function since(entries: readonly [string, string | undefined, number | undefined
 	return new Map(entries.map(([key, status, at]) => [key, { status, since: at }]));
 }
 
-function build(terminals: readonly LiveTerminalInput[], opts: { chats?: Map<string, LiveChatInput>; statusSince?: LiveStatusSince; memory?: LiveMemory; now?: number } = {}) {
+function build(terminals: readonly LiveTerminalInput[], opts: { chats?: Map<string, LiveChatInput>; statusSince?: LiveStatusSince; memory?: LiveMemory; includeDetail?: boolean; now?: number } = {}) {
 	return buildLiveActivityState({
 		terminals,
 		chats: opts.chats ?? new Map(),
 		statusSince: opts.statusSince ?? new Map(),
 		memory: opts.memory ?? EMPTY_LIVE_MEMORY,
+		includeDetail: opts.includeDetail ?? true,
 		now: opts.now ?? T0,
 	});
 }
@@ -99,6 +102,31 @@ describe('buildLiveActivityState', () => {
 		expect(state.attention[1]?.detail).toBeUndefined();
 	});
 
+	it('設定で質問文とコマンドをオフにしていれば、先頭の1件にも載せない', () => {
+		const chats = new Map<string, LiveChatInput>([
+			['a', { interaction: { kind: 'approval', title: 'Bash', detail: 'pnpm test --filter relay' } }],
+			['b', { messages: [{ kind: 'question', text: 'どちらの案にしますか' }] }],
+		]);
+		const permission = build([terminal('a', 'permission')], { chats, includeDetail: false });
+		expect(permission.attention[0]).toMatchObject({ key: 'a', kind: 'permission' });
+		expect(permission.attention[0]?.tool).toBeUndefined();
+		expect(permission.attention[0]?.detail).toBeUndefined();
+		const question = build([terminal('b', 'question')], { chats, includeDetail: false });
+		expect(question.attention[0]?.detail).toBeUndefined();
+	});
+
+	it('前に出した中身から質問文とコマンドを外せる（設定をオフにしたとき）', () => {
+		const chats = new Map<string, LiveChatInput>([
+			['a', { interaction: { kind: 'approval', title: 'Bash', detail: 'git status' } }],
+		]);
+		const shown = build([terminal('a', 'permission')], { chats });
+		const stripped = withoutAttentionDetail(shown);
+		expect(stripped.attention).toEqual([{ key: 'a', space: '1:w1', name: '作業 a', kind: 'permission' }]);
+		expect(stripped.waitingCount).toBe(1);
+		const plain = build([terminal('a', 'working')]);
+		expect(withoutAttentionDetail(plain)).toBe(plain);
+	});
+
 	it('名前は上限で切り、空ならエージェントと出す', () => {
 		const state = build([terminal('a', 'working', { title: 'あ'.repeat(60) }), terminal('b', 'working', { title: '  ' })]);
 		expect(state.running[0]?.name).toHaveLength(40);
@@ -107,7 +135,7 @@ describe('buildLiveActivityState', () => {
 	});
 
 	it('バッテリーは整数に丸めて載せる', () => {
-		const state = buildLiveActivityState({ terminals: [terminal('a', 'working')], chats: new Map(), statusSince: new Map(), memory: EMPTY_LIVE_MEMORY, battery: { level: 63.6, charging: true }, now: T0 });
+		const state = buildLiveActivityState({ terminals: [terminal('a', 'working')], chats: new Map(), statusSince: new Map(), memory: EMPTY_LIVE_MEMORY, battery: { level: 63.6, charging: true }, includeDetail: true, now: T0 });
 		expect(state.battery).toEqual({ level: 64, charging: true });
 	});
 });
@@ -230,6 +258,19 @@ describe('decideLiveActivity', () => {
 		const offline = toOfflineState(running, T0 - 60_000, T0 + 5);
 		expect(offline).toMatchObject({ phase: 'offline', asOf: T0 - 60_000, updatedAt: T0 + 5, running: running.running });
 		expect(decideLiveActivity({ kind: 'active', pcId: 'pc' }, offline, 'pc', T0).action).toEqual({ kind: 'show', state: offline });
+	});
+});
+
+describe('isShownForOtherPc', () => {
+	it('出している・完了の要約を残しているものが別の PC のものなら終える対象', () => {
+		expect(isShownForOtherPc({ kind: 'active', pcId: 'pc-a' }, 'pc-b')).toBe(true);
+		expect(isShownForOtherPc({ kind: 'finished', pcId: 'pc-a', until: T0 }, 'pc-b')).toBe(true);
+	});
+
+	it('同じ PC のもの・出していないときは対象にしない', () => {
+		expect(isShownForOtherPc({ kind: 'active', pcId: 'pc-a' }, 'pc-a')).toBe(false);
+		expect(isShownForOtherPc({ kind: 'finished', pcId: 'pc-a', until: T0 }, 'pc-a')).toBe(false);
+		expect(isShownForOtherPc({ kind: 'none' }, 'pc-a')).toBe(false);
 	});
 });
 

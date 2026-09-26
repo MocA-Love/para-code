@@ -14,6 +14,11 @@ import {
 	WIDGET_AGENTS_LIMIT_MAX,
 	WIDGET_AGENTS_LIMIT_MIN,
 } from './settings.js';
+import { textColorOn } from '../ui/themeColors.js';
+
+function accentTextOf(json: string): string | undefined {
+	return (JSON.parse(json) as { accentTextHex?: string }).accentTextHex;
+}
 
 describe('widget settings', () => {
 	it('hides question text and commands by default', () => {
@@ -64,6 +69,12 @@ describe('widget settings', () => {
 		const json = JSON.parse(serializeWidgetSettings({ ...DEFAULT_WIDGET_SETTINGS, accent: 'theme' }, '#123456')) as { accentHex?: string; accent: string };
 		expect(json.accentHex).toBe('#123456');
 		expect(json.accent).toBe('theme');
+		// 上に載せる文字の色はアプリの主ボタンと同じ決め方（WCAG のコントラスト比）で添える。
+		expect(accentTextOf(serializeWidgetSettings({ ...DEFAULT_WIDGET_SETTINGS, accent: 'theme' }, '#123456'))).toBe(textColorOn('#123456'));
+		expect(accentTextOf(serializeWidgetSettings({ ...DEFAULT_WIDGET_SETTINGS, accent: 'theme' }, '#123456'))).toBe('#ffffff');
+		expect(accentTextOf(serializeWidgetSettings({ ...DEFAULT_WIDGET_SETTINGS, accent: 'theme' }, '#f5f5f5'))).toBe('#111111');
+		// 白黒（mono）は色を持たないので文字の色も添えない。
+		expect(accentTextOf(serializeWidgetSettings({ ...DEFAULT_WIDGET_SETTINGS, accent: 'mono' }, '#123456'))).toBeUndefined();
 		// 書いたものを読み戻すと同じ設定になる（accentHex は読むときに捨てる）。
 		expect(parseWidgetSettings(serializeWidgetSettings(DEFAULT_WIDGET_SETTINGS, undefined))).toEqual(DEFAULT_WIDGET_SETTINGS);
 	});

@@ -118,9 +118,9 @@ export default function WidgetSettingsScreen() {
 					trailing={<SettingsSwitch value={settings.showNames} onValueChange={value => update({ ...settings, showNames: value })} accessibilityLabel="名前を表示" />}
 				/>
 				<ListRow
-					label="質問文とコマンドを表示"
-					hint="オフのときはウィジェットに渡しません"
-					trailing={<SettingsSwitch value={settings.showDetail} onValueChange={value => update({ ...settings, showDetail: value })} accessibilityLabel="質問文とコマンドを表示" />}
+					label="質問文とコマンドを表示（ウィジェットと Live Activity）"
+					hint="オフのときはウィジェットにも Live Activity にも渡しません"
+					trailing={<SettingsSwitch value={settings.showDetail} onValueChange={value => update({ ...settings, showDetail: value })} accessibilityLabel="質問文とコマンドを表示（ウィジェットと Live Activity）" />}
 				/>
 				<ListRow label="「◯分前の状態」" value={WIDGET_FRESHNESS_LABELS[settings.freshness]} trailing="chevron" onPress={() => open('freshness')} />
 			</ListGroup>

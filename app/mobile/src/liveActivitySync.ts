@@ -17,6 +17,7 @@ import {
 	EMPTY_LIVE_MEMORY,
 	fitLiveActivityBudget,
 	isOfflineConfirmed,
+	isShownForOtherPc,
 	LIVE_HEARTBEAT_MS,
 	LIVE_OFFLINE_GRACE_MS,
 	LIVE_STALE_AFTER_MS,
@@ -25,11 +26,13 @@ import {
 	nextLiveMemory,
 	nextUnreachableSince,
 	toOfflineState,
+	withoutAttentionDetail,
 	type LiveAction,
 	type LiveMemory,
 	type LiveMode,
 } from './liveActivityState.js';
 import { reportMobileDiagnosticError } from './mobileDiagnostics.js';
+import { loadWidgetSettings, useWidgetSettings } from './widgets/widgetSettingsStore.js';
 
 /**
  * アプリの状態を Live Activity（案 D「状態で切り替え」）へ同期する。中身の組み立てと判断は純関数の
@@ -75,6 +78,13 @@ export function startLiveActivitySync(): void {
 	startStatusSinceTracking();
 	useAppStore.subscribe(() => scheduleEvaluate());
 	useStatusSince.subscribe(() => scheduleEvaluate());
+	// 質問文とコマンドを載せるかはウィジェットの設定に従う。読み終えた・変えたら出し直す。
+	useWidgetSettings.subscribe((next, before) => {
+		if (next.settings.showDetail !== before.settings.showDetail) {
+			scheduleEvaluate();
+		}
+	});
+	void loadWidgetSettings().catch(() => undefined);
 	AppState.addEventListener('change', onAppStateChange);
 	startHeartbeat();
 	// subscribe はストア変化時にしか発火しないため、購読開始時点の状態も反映する。
@@ -168,11 +178,19 @@ function evaluate(): void {
 			statusSince,
 			memory,
 			...(state.workspace?.battery !== undefined ? { battery: state.workspace.battery } : {}),
+			includeDetail: useWidgetSettings.getState().settings.showDetail,
 			now,
 		});
 	} else {
 		// 繋がっていない間は、ターミナルの一覧から「全部終わった」を判断しない（一覧が空になっていることがある）。
 		// 前面で出している間だけ、猶予を過ぎたらオフライン表示にする。背面では止まる前の中身のまま置く。
+		if (isShownForOtherPc(mode, pcId)) {
+			// 繋がらない PC へ切り替えた。前の PC の中身を出したままにしない。
+			clearOfflineTimer();
+			mode = { kind: 'none' };
+			run({ kind: 'end' }, undefined);
+			return;
+		}
 		const last = lastLive;
 		if (!appActive || mode.kind !== 'active' || last === undefined || last.attributes.pcId !== pcId) {
 			return;
@@ -181,7 +199,7 @@ function evaluate(): void {
 			scheduleOfflineCheck(now);
 			return;
 		}
-		next = toOfflineState(last.state, pc.lastOnlineAt, now);
+		next = toOfflineState(applyDetailSetting(last.state), pc.lastOnlineAt, now);
 	}
 	const decision = decideLiveActivity(mode, next, pcId, now);
 	mode = decision.mode;
@@ -257,11 +275,16 @@ function refreshBeforeSuspend(): void {
 		return;
 	}
 	const now = Date.now();
-	const state = { ...last.state, updatedAt: now };
+	const state = { ...applyDetailSetting(last.state), updatedAt: now };
 	const fitted = fitLiveActivityBudget(last.attributes, state);
 	lastKey = liveActivityContentKey(last.attributes, fitted);
 	lastShownAt = now;
 	enqueue(() => upsertLiveActivity(last.attributes, fitted, now + LIVE_STALE_AFTER_MS), 'upsert');
+}
+
+/** 設定で質問文とコマンドをオフにしたら、前に出した中身からも外す（オフライン表示・背面へ移るときの送り直し）。 */
+function applyDetailSetting(state: LiveActivityState): LiveActivityState {
+	return useWidgetSettings.getState().settings.showDetail ? state : withoutAttentionDetail(state);
 }
 
 function enqueue(task: () => Promise<void>, operation: string): void {
