@@ -35,6 +35,7 @@ import {
 	BrowserEditor,
 	BrowserEditorContribution,
 } from '../browserEditor.js';
+import { paradisWebAuthnDeviceTypeLabel } from '../../../../../paradis/contrib/browserWebAuthn/common/paradisBrowserWebAuthn.js'; // PARA-PATCH: passkey account chooser
 
 /**
  * Surfaces per-origin permission prompts and a management picker for the active
@@ -176,6 +177,7 @@ function deviceTypeLabel(deviceType: BrowserDeviceType): string {
 		case 'serial': return localize('browser.device.kind.serial', "a serial port");
 		case 'hid': return localize('browser.device.kind.hid', "an HID device");
 		case 'bluetooth': return localize('browser.device.kind.bluetooth', "a Bluetooth device");
+		case 'webauthn': return paradisWebAuthnDeviceTypeLabel(); // PARA-PATCH: passkey account chooser
 		default: assertNever(deviceType);
 	}
 }
