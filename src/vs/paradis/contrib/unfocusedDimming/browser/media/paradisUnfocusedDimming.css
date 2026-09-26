@@ -1,0 +1,31 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * ウィンドウが非アクティブの間は、フォーカスの無いビューを薄くする upstream の減光
+ * (accessibility.dimUnfocused.*) を打ち消す。
+ *
+ * Chromium はウィンドウがフォーカスを失うと、フォーカスを持っていた要素にも :focus-within を
+ * 当てなくなる (document.activeElement は残る)。upstream の減光は
+ * ":not(:focus-within)" で選んでいるので、そのままだと別のアプリへ切り替えた瞬間に
+ * エディタもターミナルも全部が薄くなる。
+ *
+ * セレクタは unfocusedViewDimmingContribution.ts の規則をそのまま写し、先頭に
+ * html.paradis-window-inactive を足して詳細度で必ず勝たせている。upstream が減光の対象を
+ * 増やしたら、ここにも同じ形で足すこと。
+ */
+html.paradis-window-inactive .monaco-workbench .pane-body.integrated-terminal:not(:focus-within) .tabs-container,
+html.paradis-window-inactive .monaco-workbench .pane-body.integrated-terminal .terminal-wrapper:not(:focus-within),
+html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .monaco-editor,
+html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .breadcrumbs-below-tabs,
+html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .terminal-wrapper,
+html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .settings-editor,
+html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .keybindings-editor,
+html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .monaco-editor-pane-placeholder,
+html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .gettingStartedContainer {
+	filter: none;
+}

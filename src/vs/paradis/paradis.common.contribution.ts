@@ -48,3 +48,4 @@ import './contrib/terminalEditorMenu/browser/paradisTerminalEditorMenu.contribut
 import './contrib/terminalFontZoom/browser/paradisTerminalFontZoom.contribution.js';
 import './contrib/terminalLinkMenu/browser/paradisTerminalLinkMenu.contribution.js';
 import './contrib/terminalReopen/browser/paradisReopenClosedTerminal.contribution.js';
+import './contrib/unfocusedDimming/browser/paradisUnfocusedDimming.contribution.js';
