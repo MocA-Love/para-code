@@ -9,6 +9,7 @@ import { ScreenHeader } from '../../src/components/screenHeader.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import {
+	TERMINAL_FOLLOW_MIN_FONT_SIZE,
 	TERMINAL_FONT_SIZE_MAX,
 	TERMINAL_FONT_SIZE_MIN,
 	terminalGridFor,
@@ -16,11 +17,17 @@ import {
 import { SectionHeader } from '../../src/components/sectionHeader.js';
 import { SettingsCard, SettingsRow } from '../../src/components/settingsRow.js';
 import { monoFamily } from '../../src/monoFont.js';
-import { colors, radius, squircle, type } from '../../src/theme.js';
+import { colors, HIT_SIZE, radius, squircle, type } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 
 /**
  * 設定 →「ターミナル」。文字サイズと、PC側のターミナルをこの画面の幅に合わせるかを決める。
+ *
+ * 文字サイズは「スマホの幅に合わせる」をオンにしたときに使う（この大きさで入る桁数へPCのターミナルを合わせる）。
+ * オフ（既定）の間は、PCの桁数に合わせて文字を自動で縮める。縮める下限は 7pt 固定
+ * （`TERMINAL_FOLLOW_MIN_FONT_SIZE`。理由は terminalViewport.ts）で、7pt でも入りきらないときだけ横にスクロールする。
+ * 以前はオフのときも設定の文字サイズ（既定10pt）を下限にしていたため、PCの80桁の端末でも既定で横スクロールになっていた。
+ * 説明文とプレビューはオン・オフで出し分ける（オフのときは最小の 7pt で見せる）。
  *
  * ここでの選択はこの端末の中だけに保存し、PCへは送らない（PCが持つと複数台のスマホで
  * 奪い合いになる）。実際にPCへ届くのはターミナル画面を開いている間の寸法申告だけで、
@@ -51,10 +58,12 @@ export default function TerminalSettingsScreen() {
 	// ここから概算した桁数がそのまま目安になる。
 	const [previewWidth, setPreviewWidth] = useState(0);
 
+	// プレビューの文字サイズ。オンなら選んだ大きさ、オフなら自動で縮めたときの最小（7pt）。
+	const previewFontSize = terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : TERMINAL_FOLLOW_MIN_FONT_SIZE;
 	const preview = useMemo(
 		// 高さはこの画面からは分からないので、行数は使わず桁数だけを見る。
-		() => terminalGridFor(previewWidth - 16, 1000, terminalPrefs.fontSize, MENLO_APPROX),
-		[previewWidth, terminalPrefs.fontSize],
+		() => terminalGridFor(previewWidth - 16, 1000, previewFontSize, MENLO_APPROX),
+		[previewWidth, previewFontSize],
 	);
 
 	const stepFontSize = (delta: number) => {
@@ -75,7 +84,9 @@ export default function TerminalSettingsScreen() {
 				<View style={styles.card}>
 					<SettingsRow
 						title="文字サイズ"
-						description="小さいほど1画面に入る情報が増えます"
+						description={terminalPrefs.matchPcWidth
+							? 'この大きさで入る桁数に、PCのターミナルを合わせます'
+							: '下の「スマホの幅に合わせる」をオンにしたときの大きさです。オフの間は、PCの桁数に合わせて自動で縮めます'}
 						right={(
 							<View style={styles.stepper}>
 								<Pressable
@@ -99,18 +110,24 @@ export default function TerminalSettingsScreen() {
 						)}
 					/>
 					<View style={styles.preview} onLayout={event => setPreviewWidth(event.nativeEvent.layout.width)}>
-						<Text style={[styles.previewLine, { fontSize: terminalPrefs.fontSize }]} numberOfLines={1}>
+						<Text style={[styles.previewLine, { fontSize: previewFontSize }]} numberOfLines={1}>
 							user@paracode ~/projects/example % git status --short
 						</Text>
-						<Text style={[styles.previewLine, styles.previewDim, { fontSize: terminalPrefs.fontSize }]} numberOfLines={1}>
+						<Text style={[styles.previewLine, styles.previewDim, { fontSize: previewFontSize }]} numberOfLines={1}>
 							 M src/components/termView.tsx
 						</Text>
-						<Text style={[styles.previewLine, { fontSize: terminalPrefs.fontSize }]} numberOfLines={1}>
+						<Text style={[styles.previewLine, { fontSize: previewFontSize }]} numberOfLines={1}>
 							user@paracode ~/projects/example % ▊
 						</Text>
 					</View>
 					{preview !== undefined ? (
-						<Text style={styles.rowDesc}>この幅ではおよそ <Text style={styles.emphasis}>1行 {preview.cols} 桁</Text> になります</Text>
+						terminalPrefs.matchPcWidth ? (
+							<Text style={styles.rowDesc}>この幅ではおよそ <Text style={styles.emphasis}>1行 {preview.cols} 桁</Text> になります</Text>
+						) : (
+							<Text style={styles.rowDesc}>
+								見本は最小の {TERMINAL_FOLLOW_MIN_FONT_SIZE}pt です。PCのターミナルがおよそ <Text style={styles.emphasis}>1行 {preview.cols} 桁</Text> までなら、文字を縮めて全体を表示します。それより広いときだけ横にスクロールして見ます（下の「スマホの幅に合わせる」をオンにすると、PC側をこの画面の幅に合わせます）
+							</Text>
+						)
 					) : null}
 					<View style={styles.cardBottomPad} />
 				</View>
@@ -168,7 +185,8 @@ const styles = StyleSheet.create({
 	beta: { color: colors.textDim, fontSize: type.badge, fontWeight: '600' },
 	disabled: { opacity: 0.4 },
 	stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface2, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
-	stepBtn: { width: 34, height: 32, alignItems: 'center', justifyContent: 'center' },
+	// 当たり判定の最小（44pt）。枠が `overflow: hidden` なので hitSlop では広げられず、見た目ごと大きくする。
+	stepBtn: { width: HIT_SIZE, height: HIT_SIZE, alignItems: 'center', justifyContent: 'center' },
 	stepBtnPressed: { backgroundColor: colors.accentWash },
 	stepValue: { color: colors.text, fontFamily: monoFamily, fontSize: type.body, minWidth: 46, textAlign: 'center' },
 	// 実際のターミナルと同じ背景で出す（選んだサイズが実物でどう見えるかを確かめるため）。
