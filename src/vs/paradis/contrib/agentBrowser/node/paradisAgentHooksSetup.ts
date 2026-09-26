@@ -15,11 +15,12 @@
 // 既存ファイルのJSONパースに失敗した場合は何も書かない (ユーザーファイルを壊すくらいなら諦める)。
 
 import { execFile } from 'child_process';
-import { promises as fs, readFileSync, watch, writeFileSync } from 'fs';
+import { chmodSync, lstatSync, promises as fs, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, watch, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, join } from '../../../../base/common/path.js';
+import { basename, dirname, join, resolve } from '../../../../base/common/path.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { findExecutable } from '../../../../base/node/processes.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
@@ -395,6 +396,70 @@ async function installNotifyScript(logService: ILogService): Promise<void> {
 	}
 }
 
+/**
+ * 設定ファイルを原子的に置き換える（同期）。
+ *
+ * Claude Code / Codex が書き込み途中の中身を読んで壊れた設定と判断しないよう、同じディレクトリの
+ * 一時ファイルへ書いてから `rename` で差し替える。
+ *
+ * - symlink は壊さない。実体（`realpath`）の隣に一時ファイルを作って実体を差し替える
+ *   （dotfiles をリポジトリから symlink している人の設定が、ただのファイルに化けないように）
+ * - 元のファイルの mode（`~/.claude.json` の 0600 など）を引き継ぐ。新規作成のときは umask に任せる
+ * - `rename` が通らないとき（Windows で他のプロセスが開いている等）は、一時ファイルを消して
+ *   これまでどおりその場へ書く。原子的でなくなるだけで、設定が置けないよりはよい
+ */
+export function paradisWriteFileAtomicallySync(filePath: string, content: string): void {
+	const target = resolveWriteTarget(filePath);
+	let mode: number | undefined;
+	try {
+		mode = statSync(target).mode & 0o7777;
+	} catch {
+		mode = undefined; // まだ無い（新規作成）
+	}
+	const temp = join(dirname(target), `.${basename(target)}.paradis-${generateUuid()}.tmp`);
+	try {
+		writeFileSync(temp, content, { mode: mode ?? 0o666, flag: 'wx' });
+		if (mode !== undefined) {
+			// writeFileSync の mode は umask で削られるので、元と同じになるよう当て直す
+			chmodSync(temp, mode);
+		}
+	} catch (error) {
+		removeQuietly(temp);
+		throw error;
+	}
+	try {
+		renameSync(temp, target);
+	} catch {
+		removeQuietly(temp);
+		writeFileSync(target, content);
+	}
+}
+
+/** 書き込み先の実体。symlink を辿る（辿った先がまだ無い symlink も、リンク先へ書く）。 */
+function resolveWriteTarget(filePath: string): string {
+	try {
+		return realpathSync(filePath);
+	} catch {
+		// 無いファイル、またはリンク先がまだ無い symlink
+	}
+	try {
+		if (lstatSync(filePath).isSymbolicLink()) {
+			return resolve(dirname(filePath), readlinkSync(filePath));
+		}
+	} catch {
+		// 無いファイル
+	}
+	return filePath;
+}
+
+function removeQuietly(filePath: string): void {
+	try {
+		unlinkSync(filePath);
+	} catch {
+		// 作れていなかった
+	}
+}
+
 export interface IParadisAgentHooksFileIO {
 	readFile(filePath: string): Promise<string | undefined>;
 	writeFileIfUnchanged(filePath: string, expected: string | undefined, content: string): boolean;
@@ -422,7 +487,8 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 		// 比較後にイベントループへ制御を返さず直ちに保存し、外部writerとの競合窓を
 		// 最小化する。非協調プロセスとの完全なCASは通常ファイルAPIでは不可能だが、
 		// 少なくともPara Code自身が非同期処理を挟んで古い内容を書くことはない。
-		writeFileSync(filePath, content);
+		// 読む側が書きかけの中身を見ないよう、一時ファイル経由で差し替える。
+		paradisWriteFileAtomicallySync(filePath, content);
 		return true;
 	},
 	async mkdir(directory) {
