@@ -8,24 +8,26 @@ import Svg, { Circle } from 'react-native-svg';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
-import { ScreenHeader } from '../../src/components/screenHeader.js';
+import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
+import { PillHitArea, hitInset } from '../../src/components/pillHitArea.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { Meter } from '../../src/components/meter.js';
 import { SectionHeader } from '../../src/components/sectionHeader.js';
 import { colors, radius, squircle, type } from '../../src/theme.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type SpaceDiskResult, type SystemResourcesResult } from '../../src/store.js';
 import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, buildProcessRows, buildScopeRows, diskLevel, formatBytes, formatCpu,
-	buildSpaceDiskRows, sortRowsBy, usageLevel, usagePercent, type ResourceRow, type UsageLevel,
+	buildSpaceDiskRows, sortRowsBy, usageLevel, usagePercent, type ResourceRow,
 } from '../../src/systemResources.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
+import { resourceLevelColor, updatedAtLabel } from '../../src/usageFormat.js';
 
 /**
- * 「システム」画面。設定 →「システム」またはワークスペースドロワーのPCカードから開く。
+ * 「システム」画面。設定 → 使用量 →「システム」またはワークスペースドロワーのPCカードから開く。
  * ドロワーに常時出る3値（desktop state 経由）と違い、こちらは開いている間だけPCへ問い合わせて
  * 「何がリソースを食っているか」まで見せる。
  *
@@ -37,6 +39,12 @@ import { formatRelativeTime, useNow } from '../../src/time.js';
 const REFRESH_INTERVAL_MS = 6_000;
 /** 内訳に出す行の表示上限件数。 */
 const MAX_ROWS = 12;
+/** 内訳の軸チップの見た目の高さ（最小）。当たり判定は PillHitArea で HIT_SIZE まで広げる。 */
+const CHIP_HEIGHT = 26;
+const CHIP_INSET = hitInset(CHIP_HEIGHT);
+/** スペース容量の「測り直す」ボタンの見た目の大きさ。当たり判定は hitSlop で HIT_SIZE まで広げる。 */
+const SPACE_REFRESH_SIZE = 26;
+const SPACE_REFRESH_SLOP = hitInset(SPACE_REFRESH_SIZE);
 
 type AxisKey = 'process' | 'scope' | 'volume';
 
@@ -57,10 +65,6 @@ export function updateSystemSpaceDiskWarmLeaseLifecycle(
 ): void {
 	lifecycle.update(shouldMaintainMobileWarmLease('spaceDisk', state), acquire,
 		mobileWarmLeaseOwnerRevision(state.activePcId, state.controllerRevision));
-}
-
-function levelColor(level: UsageLevel, normal: string): string {
-	return level === 'critical' ? colors.red : level === 'warn' ? colors.yellow : normal;
 }
 
 /** 円グラフ1つ。percent は 0〜100（undefined は未取得＝トラックだけ描く）。 */
@@ -286,10 +290,23 @@ export default function SystemScreen() {
 	// 「〇秒前に更新」を経時で進めるため、取得時刻ではなく現在時刻を使う
 	const now = useNow(10_000);
 
+	// **actions は参照を安定させる**（他の使用量の画面と同じ。インライン JSX だと毎レンダー
+	// バーの項目が付け替わる）。6秒ごとの自動更新で loading は常に揺れるので、無効化は
+	// 手動の再取得中（pullRefreshing）だけにする——loading に連動させるとボタンが点滅する。
+	const headerActions = useMemo(() => (
+		<HeaderCircleButton
+			icon="refresh-outline"
+			label="再取得"
+			onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+			disabled={pullRefreshing}
+		/>
+	), [onPullRefresh, pullRefreshing]);
+
 	/**
 	 * スペースごとの容量。worktree を持つ行は押すと内訳が開く。
 	 *
-	 * 本体（青）と worktree（紫）を分けて出す。実測では AZ-2 が 28.3GB のうち 21.2GB が
+	 * 本体（青）と worktree（紫）を分けて出す。紫はこの画面では worktree だけの意味にしてある
+	 * （以前はメモリの内訳のバーも紫で、軸を切り替えると同じ色が別の意味になっていた）。実測では AZ-2 が 28.3GB のうち 21.2GB が
 	 * worktree で、合計だけでは何が重いのか分からなかったため。
 	 * PC側が worktree を親から引いて返すので、ここで足し引きはしない。
 	 */
@@ -318,6 +335,7 @@ export default function SystemScreen() {
 							) : null}
 							<Pressable
 								style={styles.spaceRefresh}
+								hitSlop={SPACE_REFRESH_SLOP}
 								onPress={() => { hapticSelection(); void loadSpaceDisk(true); }}
 								disabled={spaceLoading}
 								accessibilityLabel="スペースの容量を測り直す"
@@ -433,7 +451,7 @@ export default function SystemScreen() {
 
 	/**
 	 * 1つの指標ぶんの内訳。バーは1本だけで、見出しと各行の数値がその指標を名指しする
-	 * （色に意味を持たせないので凡例が要らない）。
+	 * （色に意味を持たせないので凡例が要らない。CPU・メモリとも同じ色にしてある）。
 	 */
 	const renderMetricSection = (title: string, sorted: ResourceRow[], metric: 'cpu' | 'memory', max: number) => (
 		<>
@@ -450,7 +468,7 @@ export default function SystemScreen() {
 							<Text style={styles.barValue}>{metric === 'cpu' ? formatCpu(row.cpu) : formatBytes(row.memory)}</Text>
 						</View>
 						<Text style={styles.barSub} numberOfLines={1}>{row.sub}</Text>
-							<Meter ratio={Math.max(0.01, row[metric] / max)} color={metric === 'cpu' ? colors.accent : colors.purple} />
+							<Meter ratio={Math.max(0.01, row[metric] / max)} color={colors.accent} />
 					</View>
 				))}
 			</View>
@@ -462,7 +480,8 @@ export default function SystemScreen() {
 			<View style={styles.screen}>
 				<ScreenHeader
 					title="システム"
-					subtitle={data ? `${formatRelativeTime(data.host.collectedAt, now)}に更新 · ${data.host.cores}コア` : undefined}
+					subtitle={data ? `${updatedAtLabel(data.host.collectedAt, now)} · ${data.host.cores}コア` : undefined}
+					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
 				<ScrollView
@@ -481,21 +500,21 @@ export default function SystemScreen() {
 									percent={data.host.cpu}
 									value={formatCpu(data.host.cpu)}
 									sub={`Para Code ${formatCpu(data.host.cores > 0 ? data.snapshot.app.cpu / data.host.cores : undefined)}`}
-									color={levelColor(cpuLevel, colors.accent)}
+									color={resourceLevelColor(cpuLevel)}
 								/>
 								<RingCard
 									name="RAM"
 									percent={memoryPercent}
 									value={`${Math.round(memoryPercent)}%`}
 									sub={`${formatBytes(data.host.memory.used)} / ${formatBytes(data.host.memory.total)}`}
-									color={levelColor(memoryLevel, colors.yellow)}
+									color={resourceLevelColor(memoryLevel)}
 								/>
 								<RingCard
 									name="SSD"
 									percent={primaryDisk ? diskPercent : undefined}
 									value={primaryDisk ? `${Math.round(diskPercent)}%` : '—'}
 									sub={primaryDisk ? `空き ${formatBytes(primaryDisk.free)}` : '取得できません'}
-									color={levelColor(volumeLevel, colors.green)}
+									color={resourceLevelColor(volumeLevel)}
 								/>
 							</View>
 
@@ -503,18 +522,20 @@ export default function SystemScreen() {
 							<View style={styles.chipRow}>
 								{([['process', 'プロセス'], ['scope', 'スペース'], ['volume', 'ボリューム']] as [AxisKey, string][]).map(([key, label]) => {
 									const active = axis === key;
+									const select = () => { hapticSelection(); setAxis(key); };
 									return (
-										<SelectablePill
-											key={key}
-											active={active}
-											onPress={() => { hapticSelection(); setAxis(key); }}
-											style={styles.chip}
-											hitStyle={styles.chipHit}
-											activeColor={colors.accentWash}
-											accessibilityLabel={label}
-										>
-											<Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-										</SelectablePill>
+										<PillHitArea key={key} onPress={select}>
+											<SelectablePill
+												active={active}
+												onPress={select}
+												style={styles.chip}
+												hitStyle={styles.chipHit}
+												activeColor={colors.accentWash}
+												accessibilityLabel={label}
+											>
+												<Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+											</SelectablePill>
+										</PillHitArea>
 									);
 								})}
 							</View>
@@ -535,7 +556,7 @@ export default function SystemScreen() {
 												</View>
 												<Text style={styles.barSub} numberOfLines={1}>空き {formatBytes(disk.free)} / {formatBytes(disk.total)}</Text>
 												{/* 色は使用率ではなく空き容量のしきい値（diskLevel）で決めるので、meterColor に任せず渡す */}
-												<Meter ratio={percent / 100} color={levelColor(level, colors.green)} />
+												<Meter ratio={percent / 100} color={resourceLevelColor(level)} />
 											</View>
 										);
 									})}
@@ -576,12 +597,13 @@ const styles = StyleSheet.create({
 	ringName: { color: colors.text, fontSize: type.caption, fontWeight: '700', letterSpacing: 0.3 },
 	ringSub: { color: colors.textDim, fontSize: type.badge, textAlign: 'center', lineHeight: 13 },
 	// 下の余白が2ptしかないと、チップ（押せるもの）と直下のカードが触れて見える。
-	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
+	// 当たり判定（PillHitArea）が上下にはみ出すぶんを余白から引き、見た目の位置を包む前（上2・下12）に揃える。
+	chipRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 8, marginTop: 2 - CHIP_INSET, marginBottom: 12 - CHIP_INSET },
 	// スペースごとの容量
 	spaceHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 	spaceAgo: { color: colors.textDim, fontSize: type.badge },
 	// alignSelf を指定しないと、親を baseline 揃えにしたときスピナー⇔アイコンの切替で上下へ跳ねる。
-	spaceRefresh: { width: 26, height: 26, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
+	spaceRefresh: { width: SPACE_REFRESH_SIZE, height: SPACE_REFRESH_SIZE, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
 	spaceChevronSpacer: { width: 12 },
 	worktreeList: { marginTop: 6, marginLeft: 12, paddingLeft: 10, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
 	worktreeRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingVertical: 4 },
@@ -592,7 +614,7 @@ const styles = StyleSheet.create({
 	// 9pt の四角に key(6) を当てるとほぼ円になる。凡例は四角で見せたいので小さい角丸のまま残す。
 	legendSwatch: { width: 9, height: 9, borderRadius: 2 },
 	legendText: { color: colors.textDim, fontSize: type.badge },
-	chip: { borderRadius: radius.control, ...squircle },
+	chip: { borderRadius: radius.control, ...squircle, minHeight: CHIP_HEIGHT },
 	chipHit: { paddingVertical: 6, paddingHorizontal: 12 },
 	chipText: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },
