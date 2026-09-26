@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
 import { GlassSurface } from './glassSurface.js';
 import { monoFamily } from '../monoFont.js';
-import { alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
+import { alpha, colors, HIT_SIZE, radius, squircle, tint, type, status } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import {
 	COMPACT_TERMINAL_MENU_WIDTH,
@@ -14,6 +14,9 @@ import {
 	TERMINAL_CREATE_ACTION_ID,
 	TERMINAL_PICK_PREFIX,
 	TERMINAL_PRESETS_ACTION_ID,
+	terminalEntryStatusLabel,
+	terminalMenuItemTitle,
+	type TerminalStatusSource,
 } from './terminalHeaderBehavior.js';
 
 /**
@@ -31,14 +34,15 @@ import {
  *
  * **失ったもの**: チップ列は各ターミナルの要対応（赤）／実行中（琥珀）を常に見せていた。
  * 畳むと開くまで気づけないので、
- *  - 島の右上に赤い点を出す（**他の**ターミナルに応答待ちがあるとき。器側の `badge`）
- *  - 島の中に色付きのドットを出す（**いま見ている**ターミナルの応答待ち／実行中）
- *  - メニューの各項目に状態の記号を付ける（`?`＝応答待ち、`▶`＝実行中）
- * の3つで補っている。メニューの記号に色は付けられない（`systemImage` は単色）ので形で示し、
- * かつ選択中の項目は✓が記号を置き換えるため、アクティブな端末の状態は島の中で見せる。
+ *  - 島の右上に赤い点を出し、スペースの島の副題に件数を出す（**他の**ターミナルに要対応が
+ *    あるとき。点は器側の `badge`、件数は `terminalAttentionSubtitle`）
+ *  - 島の中に色付きのドットを出す（**いま見ている**ターミナルの要対応／実行中）
+ *  - メニューの各項目に状態の呼び名を添える（「1: claude（許可待ち）」。`terminalMenuItemTitle`）
+ * の3つで補っている。メニューの項目に色は付けられない（`systemImage` は単色）ので文字で示す。
+ * 以前は記号（`?`＝応答待ち、`▶`＝実行中）だったが、意味を覚えていないと読めなかった。
  */
 
-export interface TerminalPickerEntry {
+export interface TerminalPickerEntry extends TerminalStatusSource {
 	readonly terminalKey: string;
 	readonly title: string;
 	/** 1始まりの並び順（チップ列の「1:」「2:」と同じ数字）。 */
@@ -57,7 +61,7 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 	onCreate: () => void;
 }) {
 	const active = entries.find(entry => entry.terminalKey === activeKey);
-	const state = active?.waiting === true ? status.attention.label : active?.working === true ? status.running.label : undefined;
+	const state = active !== undefined ? terminalEntryStatusLabel(active) : undefined;
 	const label = active !== undefined
 		? `ターミナル ${active.index}: ${active.title}${state !== undefined ? `、${state}` : ''}。切り替える`
 		: 'ターミナルなし。作成する';
@@ -69,9 +73,8 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 	const items: ParaPlusMenuItem[] = [
 		...entries.map(entry => ({
 			id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
-			title: `${entry.index}: ${entry.title}`,
-			// 色は付けられないので形で示す。何も無い＝手が空いている。
-			systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
+			// 状態は呼び名で添える（色は付けられない）。何も無い＝手が空いている。
+			title: terminalMenuItemTitle(entry),
 			selected: entry.terminalKey === activeKey,
 		})),
 		{ id: TERMINAL_CREATE_ACTION_ID, title: '新しいターミナル', systemImage: 'plus', startsSection: true },
@@ -127,8 +130,7 @@ export function TerminalCompactMenu({ entries, activeKey, onSelect, onOpenPreset
 			systemImage: 'terminal',
 			children: entries.map(entry => ({
 				id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
-				title: `${entry.index}: ${entry.title}`,
-				systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
+				title: terminalMenuItemTitle(entry),
 				selected: entry.terminalKey === activeKey,
 			})),
 		});
@@ -169,7 +171,7 @@ export function TerminalFallbackBand({ entries, activeKey, onSelect }: {
 		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.fallbackTabContent} keyboardShouldPersistTaps="always">
 			{entries.map(entry => {
 				const active = entry.terminalKey === activeKey;
-				const state = entry.waiting ? status.attention.label : entry.working ? status.running.label : status.idle.label;
+				const state = terminalEntryStatusLabel(entry) ?? status.idle.label;
 				const body = (
 					<Pressable
 						style={styles.fallbackTabHit}
@@ -201,9 +203,10 @@ const styles = StyleSheet.create({
 	// 中に居たので親が幅と高さをくれたが、いまはOS標準のバーの項目として置かれる。
 	// バー項目の親は中身なりの大きさなので、`flex: 1` だと 0×0 に潰れて見えなくなる
 	// （実機で確認済み: 中央に置いたときは名前が1文字まで削られた）。
-	hit: { height: 32 },
+	// 高さは当たり判定の最小（44pt）に揃える（以前の32ptでは押し損じた）。
+	hit: { height: HIT_SIZE, minWidth: HIT_SIZE },
 	// ネイティブのボタンは最前面に居るので、こちらは見た目だけ（タッチは通さない）。
-	body: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 32 },
+	body: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: HIT_SIZE },
 	dot: { width: 7, height: 7, borderRadius: radius.pill, ...squircle },
 	dotWaiting: { backgroundColor: colors.red },
 	dotWorking: { backgroundColor: status.running.color },

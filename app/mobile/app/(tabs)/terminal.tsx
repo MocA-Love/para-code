@@ -1,18 +1,19 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
-import { isAgentWaiting } from '../../src/store.js';
+import { isAttentionAgent } from '../../src/attentionCount.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TerminalBodyLayout } from '../../src/components/terminalBodyLayout.js';
 import { TermView } from '../../src/components/termView.js';
 import { useWsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
 import { TerminalCompactMenu, TerminalFallbackBand, TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
-import { terminalNativeHeaderLayout } from '../../src/components/terminalHeaderBehavior.js';
+import { otherAttentionCount, terminalAttentionSubtitle, terminalNativeHeaderLayout } from '../../src/components/terminalHeaderBehavior.js';
+import { TerminalKeyRow, useTerminalKeyInput } from '../../src/components/terminalKeyRow.js';
 import { PresetSheet } from '../../src/components/presetSheet.js';
 import { useKeyboardCoverage, useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useSizeClass } from '../../src/hooks/useSizeClass.js';
@@ -20,14 +21,15 @@ import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { monoFamily } from '../../src/monoFont.js';
 import { alpha, colors, radius, squircle, tint, type } from '../../src/theme.js';
-import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
+import { hapticSelection } from '../../src/haptics.js';
 import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
 import { terminalViewportForPrefs, type TerminalGrid } from '../../src/terminalViewport.js';
+import { terminalSubmitIcon, terminalSubmitPlan } from '../../src/terminalKeys.js';
 
 /**
  * ターミナル画面（モックアップ準拠）。選択中ワークスペースのターミナルタブを
  * チップで切り替え、PCの実ターミナルをミラー表示・入力する。応答待ちのタブは
- * 赤ドットで示す。修飾キー行から Esc/Tab/^C/矢印も送れる。
+ * 赤ドットで示す。キー行（terminalKeyRow.tsx）から Esc/Tab/Ctrl/矢印なども送れる。
  *
  * 表示は xterm.js（WebView、termView.tsx）で行い、claude / codex などの TUI も
  * PC と同じ描画になる。cols/rows は PC 側ターミナルと同一に保つ。
@@ -50,6 +52,9 @@ export default function TerminalScreen() {
 	const outputWidthRef = useRef(0);
 	const [input, setInput] = useState('');
 	const [submitting, setSubmitting] = useState(false);
+	// 「Enterなし」: 送信しても Enter を付けない（コマンドを PC 側で直してから実行したいとき用）。
+	// この画面を開いている間だけの切り替えで、保存はしない。
+	const [enterless, setEnterless] = useState(false);
 	const keyboardVisible = useKeyboardVisible();
 	// 下端がキーボードに食われる高さ。枠をこのぶん縮める（ターミナルの中身の高さは変えない）。
 	const keyboardCover = useKeyboardCoverage();
@@ -124,12 +129,16 @@ export default function TerminalScreen() {
 		terminalKey: t.terminalKey,
 		title: t.title,
 		index: i + 1,
-		waiting: isAgentWaiting(t.agentStatus),
+		// 要対応かどうかはタブのバッジ・ホームと同じ判定（attentionCount.ts）で決める。
+		waiting: isAttentionAgent(t),
 		working: t.agentStatus === 'working',
+		agentStatus: t.agentStatus,
 	})), [terminals]);
 	// 他のターミナルに応答待ちがあることの合図。畳んだぶん、ここで気づけるようにする
-	// （チップ列は各行の赤ドットを常に見せていた）。
-	const otherWaiting = pickerEntries.some(entry => entry.waiting && entry.terminalKey !== activeKey);
+	// （チップ列は各行の赤ドットを常に見せていた）。赤い点だけでは何件あるか分からないので、
+	// 件数を島の副題にも出す。数えるのはこのスペースのターミナルだけ（切り替え先の一覧と同じ範囲）。
+	const otherWaitingCount = otherAttentionCount(pickerEntries, activeKey);
+	const otherWaiting = otherWaitingCount > 0;
 	// 右のボタン群。regularではターミナルの切り替えもここに並べる。
 	//
 	// 以前はバーの中央に置いていたが、中央（`titleView`）に使える幅は
@@ -207,6 +216,14 @@ export default function TerminalScreen() {
 			sendArrowKey(activeKey, key);
 		}
 	};
+	// ターミナルを切り替えたら Ctrl のラッチを外す（切り替え先へ持ち越さない）。
+	const keyInput = useTerminalKeyInput({ send, sendArrow, resetKey: activeKey });
+	const onChangeInput = (next: string) => {
+		const accepted = keyInput.filterComposerText(input, next);
+		if (accepted !== undefined) {
+			setInput(accepted);
+		}
+	};
 	const submit = async () => {
 		if (activeKey === undefined || submitting) {
 			return;
@@ -214,14 +231,16 @@ export default function TerminalScreen() {
 		setSubmitting(true);
 		const submitted = input;
 		const submittedKey = activeKey;
+		const plan = terminalSubmitPlan(submitted, enterless);
 		let accepted = false;
-		if (input === '') {
+		if (plan.kind === 'enter') {
 			// 空のまま送信 = Enter 単独（TUIの確認プロンプト等に必要）。bracketed paste で
 			// 包むと空ペーストになってしまうため生のEnterを送る。
 			accepted = await sendInput(activeKey, '\r');
 		} else {
-			// テキストはPC側でbracketed paste対応の上で実行される（複数行対応）。
-			accepted = await sendTextInput(activeKey, submitted, true);
+			// テキストはPC側でbracketed paste対応の上で送られる（複数行対応）。
+			// 「Enterなし」のときは実行せず、PCのコマンド行に置くだけにする。
+			accepted = await sendTextInput(activeKey, plan.text, plan.execute);
 		}
 		if (accepted && activeKeyRef.current === submittedKey) {
 			setInput(current => current === submitted ? '' : current);
@@ -229,26 +248,17 @@ export default function TerminalScreen() {
 		setSubmitting(false);
 	};
 
-	useWsHeader({ actions });
+	// 島の副題（既定はブランチ名）の頭に、他のターミナルの要対応の件数を足す。
+	useWsHeader({ actions, subtitle: terminalAttentionSubtitle(otherWaitingCount, ws?.branch) });
 
 	const terminalKeyTools = (
-		<ScrollView
-			horizontal
-			showsHorizontalScrollIndicator={false}
-			style={styles.keyRowScroll}
-			contentContainerStyle={styles.keyRow}
-			keyboardShouldPersistTaps="always"
-		>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('\u001b'); }}><Text style={styles.keyText}>Esc</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('\t'); }}><Text style={styles.keyText}>Tab</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticWarning(); send('\u0003'); }}><Text style={[styles.keyText, styles.keyDanger]}>^C</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('up'); }}><Text style={styles.keyText}>↑</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('down'); }}><Text style={styles.keyText}>↓</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('left'); }}><Text style={styles.keyText}>←</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('right'); }}><Text style={styles.keyText}>→</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('/'); }}><Text style={styles.keyText}>/</Text></Pressable>
-			<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('|'); }}><Text style={styles.keyText}>|</Text></Pressable>
-		</ScrollView>
+		<TerminalKeyRow
+			keyboardVisible={keyboardVisible}
+			ctrlLatched={keyInput.ctrlLatched}
+			enterless={enterless}
+			onKey={keyInput.pressKey}
+			onToggleEnterless={() => setEnterless(value => !value)}
+		/>
 	);
 
 	return (
@@ -304,7 +314,8 @@ export default function TerminalScreen() {
 							rows={activeTerminal?.rows}
 							subscribe={subscribeActive}
 							onNeedResync={resyncActive}
-									fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
+							// 幅合わせがオフ（既定）のときは PC の桁数に合わせて縮める（下限 7pt、TermView 側の固定値）。
+							fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
 							onGridChange={setGrid}
 							onScroll={scroll}
 						/>
@@ -317,10 +328,11 @@ export default function TerminalScreen() {
 					<View style={{ paddingBottom: keyboardVisible ? 8 : tabBarSpacer }}>
 				<GlassComposer
 					value={input}
-					onChangeText={setInput}
+					onChangeText={onChangeInput}
 					onSubmit={submit}
-					placeholder="コマンドまたは回答を入力…"
-					sendIcon={input ? 'arrow-up' : 'return-down-back'}
+					placeholder={enterless ? 'Enter なしで入力…' : 'コマンドまたは回答を入力…'}
+					// ⏎ = Enter を押す送信、↑ = コマンド行に置くだけの送信（Enterなし）。
+					sendIcon={terminalSubmitIcon(input, enterless)}
 					monospace
 					tools={terminalKeyTools}
 				/>
@@ -343,10 +355,4 @@ const styles = StyleSheet.create({
 	// 注意: この余白を変えると箱の高さが変わり、PCへ申告するPTYの行数まで変わる。
 	output: { backgroundColor: colors.terminalBg, overflow: 'hidden' },
 	placeholder: { color: colors.textDim, fontFamily: monoFamily, fontSize: type.caption, padding: 10 },
-	keyRowScroll: { flex: 1, minWidth: 0 },
-	keyRow: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: 8 },
-	key: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, borderRadius: radius.pill, ...squircle, paddingHorizontal: 13, paddingVertical: 7 },
-	keyPressed: { backgroundColor: colors.accentWash, borderColor: colors.accent },
-	keyText: { color: colors.text, fontSize: type.caption, fontFamily: monoFamily },
-	keyDanger: { color: colors.red },
 });
