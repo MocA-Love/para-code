@@ -13,12 +13,12 @@ import {
 	mapSpreadsheetLogicalAnchor,
 	ParadisSpreadsheetViewport,
 	type ParadisSpreadsheetTileRequest,
-} from '../../electron-browser/spreadsheet/paradisSpreadsheetViewport.js';
+} from '../../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import {
 	ParadisSpreadsheetGridRenderer,
 	type ParadisSpreadsheetGridCell,
 	type ParadisSpreadsheetGridTile,
-} from '../../electron-browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
+} from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
 import { scaleSpreadsheetLogicalOffset } from '../../electron-browser/paradisSpreadsheetDiffEditor.js';
 import { shouldVirtualizeSpreadsheetSheet } from '../../electron-browser/paradisSpreadsheetEditor.js';
 
