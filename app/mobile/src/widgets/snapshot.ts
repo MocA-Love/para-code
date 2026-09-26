@@ -144,6 +144,11 @@ export interface WidgetOutboxEntry {
 	readonly pcId: string;
 	readonly key: string;
 	readonly at: number;
+	/**
+	 * 押した時点の「未確認の始まり」（要約の `agent.since`）。これと同じか前に始まった未確認だけを確認済みにする
+	 * （押した後に終わった別の完了まで確認済みにしない）。分からなければ無しで、そのときは送らない。
+	 */
+	readonly since?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +288,7 @@ function percent(used: number, total: number): number | undefined {
 	return Math.round(Math.min(100, Math.max(0, (used / total) * 100)));
 }
 
-function buildAgents(active: SnapshotActiveInput, includeDetail: boolean, previous: WidgetPc | undefined, dismissed: ReadonlySet<string>): WidgetAgent[] {
+function buildAgents(active: SnapshotActiveInput, includeDetail: boolean, previous: WidgetPc | undefined, dismissed: DismissedSince): WidgetAgent[] {
 	const previousByKey = new Map((previous?.agents ?? []).map(agent => [agent.key, agent]));
 	const agents: WidgetAgent[] = [];
 	for (const terminal of active.terminals) {
@@ -292,7 +297,8 @@ function buildAgents(active: SnapshotActiveInput, includeDetail: boolean, previo
 		}
 		let state = widgetAgentState(terminal.agent, terminal.agentStatus);
 		// ウィジェットで確認済みにしたものは、PC が受け取るまで待機として見せる（押したのに戻らないように）。
-		if (state === 'unread' && dismissed.has(terminal.terminalKey)) {
+		// 送るときと同じ基準で、押した時点の未確認に当たるものだけ（押した後の完了は隠さない）。
+		if (state === 'unread' && outboxCoversUnread(dismissed, terminal.terminalKey, unreadStartedAt(active.statusSince, terminal))) {
 			state = 'idle';
 		}
 		const chat = active.chats.get(terminal.terminalKey);
@@ -372,8 +378,36 @@ function buildResources(active: SnapshotActiveInput): WidgetResources | undefine
 	};
 }
 
-function dismissedKeys(outbox: readonly WidgetOutboxEntry[], pcId: string): Set<string> {
-	return new Set(outbox.filter(entry => entry.t === 'dismiss' && entry.pcId === pcId).map(entry => entry.key));
+/** 1台ぶんの積み置き。ターミナル → 押した時点の未確認の始まり（分からなければ undefined）。 */
+type DismissedSince = ReadonlyMap<string, number | undefined>;
+
+function dismissedKeys(outbox: readonly WidgetOutboxEntry[], pcId: string): DismissedSince {
+	return new Map(outbox.filter(entry => entry.t === 'dismiss' && entry.pcId === pcId).map(entry => [entry.key, entry.since]));
+}
+
+/**
+ * いま見ている PC のターミナルの、いまの未確認が始まった時刻（この端末が目の前で見た変化）。
+ * 状態が変わったのを見ていなければ（アプリを開いたときから同じ状態なら）分からない。
+ */
+export function unreadStartedAt(
+	statusSince: SnapshotActiveInput['statusSince'],
+	terminal: Pick<SnapshotTerminalInput, 'terminalKey' | 'agentStatus'>,
+): number | undefined {
+	const seen = statusSince.get(terminal.terminalKey);
+	return seen !== undefined && seen.status === terminal.agentStatus ? seen.since : undefined;
+}
+
+/**
+ * 押した時点の未確認（`pressedSince`）が、いまの未確認（`currentSince` に始まった）に当たるか。
+ * いまの未確認が押した時点のものと同じか前に始まったときだけ当たる。どちらかが分からなければ当たらない
+ * （押した後に終わった別の完了を確認済みにしない）。
+ */
+export function isSameUnread(pressedSince: number | undefined, currentSince: number | undefined): boolean {
+	return pressedSince !== undefined && currentSince !== undefined && currentSince <= pressedSince;
+}
+
+function outboxCoversUnread(dismissed: DismissedSince, key: string, currentSince: number | undefined): boolean {
+	return dismissed.has(key) && isSameUnread(dismissed.get(key), currentSince);
 }
 
 /**
@@ -415,7 +449,8 @@ export function buildWidgetSnapshot(input: SnapshotInput, previous: WidgetSnapsh
 		}
 		// 見ていない PC: 前回の中身を残す。質問文は設定がオフになったら消す。
 		const keptAgents = (before?.agents ?? []).map(agent => {
-			const state = agent.state === 'unread' && dismissed.has(agent.key) ? 'idle' : agent.state;
+			// 確認済みにしたものを隠す基準は見ている PC と同じ（押した時点の未確認に当たるものだけ）。
+			const state = agent.state === 'unread' && outboxCoversUnread(dismissed, agent.key, agent.since) ? 'idle' : agent.state;
 			const { detail, ...rest } = agent;
 			return { ...rest, state, ...(input.includeDetail && detail !== undefined ? { detail } : {}) };
 		});
@@ -449,6 +484,48 @@ export function snapshotContentKey(snapshot: WidgetSnapshot): string {
 		writtenAt: 0,
 		pcs: snapshot.pcs.map(pc => ({ ...pc, updatedAt: pc.updatedAt !== undefined ? 1 : 0 })),
 	});
+}
+
+/**
+ * アプリが書こうとしている要約（`ours`）に、App Group にいまある要約（`onDisk`）のうち、通知拡張が
+ * あとから書いた「見ていない PC の要対応」を合わせる（書く直前に読み直して使う）。
+ *
+ * アプリは見ていない PC の中身を前回の要約から引き継ぐだけなので、前面にいる間に通知拡張が書いた
+ * 要対応をそのまま上書きすると消してしまう。見ていない PC（`livePcId` 以外）ごとに、ディスク側の
+ * `eventAt`（通知拡張が書き換えた時刻）が、こちらの `eventAt` とも中身を取った時刻（`updatedAt`）とも
+ * 新しいときだけ、ディスク側のエージェント・要対応の件数・`eventAt` を採る。接続・バッテリーなどは
+ * アプリの値のまま。質問文は設定でオフなら外す。
+ */
+export function mergeUnviewedPcsFromDisk(
+	ours: WidgetSnapshot,
+	onDisk: WidgetSnapshot | undefined,
+	livePcId: string | undefined,
+	includeDetail: boolean,
+): WidgetSnapshot {
+	if (onDisk === undefined) {
+		return ours;
+	}
+	const diskById = new Map(onDisk.pcs.map(pc => [pc.id, pc]));
+	let changed = false;
+	const pcs = ours.pcs.map(pc => {
+		if (pc.id === livePcId) {
+			return pc;
+		}
+		const disk = diskById.get(pc.id);
+		if (disk === undefined || disk.eventAt === undefined || disk.eventAt <= Math.max(pc.eventAt ?? -Infinity, pc.updatedAt ?? -Infinity)) {
+			return pc;
+		}
+		changed = true;
+		const agents = disk.agents.map(agent => {
+			if (includeDetail || agent.detail === undefined) {
+				return agent;
+			}
+			const { detail: _detail, ...rest } = agent;
+			return rest;
+		});
+		return { ...pc, agents, attention: disk.attention, eventAt: disk.eventAt };
+	});
+	return changed ? { ...ours, pcs } : ours;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,56 +565,79 @@ export function parseWidgetOutbox(raw: string | undefined | null, now: number): 
 		if (now - at > WIDGET_OUTBOX_TTL_MS) {
 			continue;
 		}
-		entries.push({ t: 'dismiss', pcId, key, at });
+		const since = record['since'];
+		entries.push({ t: 'dismiss', pcId, key, at, ...(typeof since === 'number' && Number.isFinite(since) ? { since } : {}) });
 	}
 	return entries;
 }
 
+export interface OutboxRemoval {
+	readonly pcId: string;
+	readonly key: string;
+	/** 積んだ時刻。同じものを押し直して積み直したぶん（`at` が違う）は消さない。 */
+	readonly at: number;
+}
+
 export interface OutboxPlan {
-	/** いま PC へ確認済みを送るターミナル。 */
-	readonly send: readonly string[];
-	/** 積み置きから消してよいもの（送り終えた・もう未確認ではない・ターミナルが無い）。 */
-	readonly remove: readonly { readonly pcId: string; readonly key: string }[];
+	/** いま PC へ確認済みを送るもの。 */
+	readonly send: readonly WidgetOutboxEntry[];
+	/** 積み置きから消してよいもの（もう未確認ではない・ターミナルが無い・押した後に別の未確認に変わった・始まりが分からないまま積まれた）。 */
+	readonly remove: readonly OutboxRemoval[];
 }
 
 /**
  * 積み置きをどう片付けるか。いま見ている PC に繋がっていて状態が揃っているときだけ動く
  * （ほかの PC のぶんは、その PC を開くまで残す）。送るのは既存の「確認済みにする」
  * （`ackAgentStatus`）で、PC の状態が「未確認」でなくなったら積み置きから消す。
+ *
+ * 送るのは、いまの未確認の始まり（`statusSince`）が押した時点の始まりと同じか前のときだけ
+ * （`isSameUnread`）。押した後に一度動いてまた終わったもの（別の完了）は送らずに消す。いまの始まりが
+ * 分からない（状態が変わるのを見ていない）ときは送らず、分かるか未確認でなくなるまで残す。
  */
 export function planWidgetOutbox(input: {
 	readonly entries: readonly WidgetOutboxEntry[];
 	readonly activePcId: string | undefined;
 	readonly online: boolean;
 	readonly terminals: readonly SnapshotTerminalInput[] | undefined;
-	/** この起動のうちに送ったもの（`pcId` と `key` を連ねた鍵）。 */
+	readonly statusSince: SnapshotActiveInput['statusSince'];
+	/** この起動のうちに送ったもの（`outboxSentKey`）。 */
 	readonly alreadySent: ReadonlySet<string>;
 }): OutboxPlan {
 	if (!input.online || input.activePcId === undefined || input.terminals === undefined) {
 		return { send: [], remove: [] };
 	}
 	const byKey = new Map(input.terminals.map(terminal => [terminal.terminalKey, terminal]));
-	const send: string[] = [];
-	const remove: { pcId: string; key: string }[] = [];
+	const send: WidgetOutboxEntry[] = [];
+	const remove: OutboxRemoval[] = [];
 	for (const entry of input.entries) {
 		if (entry.pcId !== input.activePcId) {
 			continue;
 		}
 		const terminal = byKey.get(entry.key);
 		const state = terminal === undefined ? undefined : widgetAgentState(terminal.agent, terminal.agentStatus);
-		if (state !== 'unread') {
-			remove.push({ pcId: entry.pcId, key: entry.key });
+		const removal = { pcId: entry.pcId, key: entry.key, at: entry.at };
+		if (terminal === undefined || state !== 'unread' || entry.since === undefined) {
+			remove.push(removal);
 			continue;
 		}
-		if (!input.alreadySent.has(outboxSentKey(entry.pcId, entry.key))) {
-			send.push(entry.key);
+		const current = unreadStartedAt(input.statusSince, terminal);
+		if (current === undefined) {
+			continue;
+		}
+		if (!isSameUnread(entry.since, current)) {
+			remove.push(removal);
+			continue;
+		}
+		if (!input.alreadySent.has(outboxSentKey(entry))) {
+			send.push(entry);
 		}
 	}
 	return { send, remove };
 }
 
-export function outboxSentKey(pcId: string, key: string): string {
-	return `${pcId}\u0000${key}`;
+/** 送ったかどうかの鍵。押した時点の始まりまで含める（別の完了で押し直したものは、また送る）。 */
+export function outboxSentKey(entry: Pick<WidgetOutboxEntry, 'pcId' | 'key' | 'since'>): string {
+	return `${entry.pcId}\u0000${entry.key}\u0000${entry.since ?? ''}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -146,6 +146,9 @@ struct WidgetOutboxEntry: Codable, Hashable {
 	var pcId: String
 	var key: String
 	var at: Double
+	/// 押した時点の「未確認の始まり」（要約の agent.since）。アプリはこれと同じか前に始まった未確認だけを
+	/// 確認済みにする（押した後に終わった別の完了まで確認済みにしない）。分からなければ無し（アプリは送らない）。
+	var since: Double?
 }
 
 struct WidgetOutbox: Codable {
@@ -223,6 +226,8 @@ struct WidgetAppSettings: Decodable, Hashable {
 	}
 
 	var accentHex: String?
+	/// 主ボタンの上の文字の色。アプリがコントラスト比で決めて書く（無い古い設定は WidgetPalette が明るさで補う）。
+	var accentTextHex: String?
 	var showNames = true
 	var showDetail = false
 	var freshness = "always"
@@ -236,6 +241,7 @@ struct WidgetAppSettings: Decodable, Hashable {
 	init(from decoder: Decoder) throws {
 		let c = try decoder.container(keyedBy: CodingKeys.self)
 		accentHex = try? c.decodeIfPresent(String.self, forKey: .accentHex)
+		accentTextHex = try? c.decodeIfPresent(String.self, forKey: .accentTextHex)
 		showNames = (try? c.decodeIfPresent(Bool.self, forKey: .showNames)) ?? showNames
 		showDetail = (try? c.decodeIfPresent(Bool.self, forKey: .showDetail)) ?? showDetail
 		freshness = (try? c.decodeIfPresent(String.self, forKey: .freshness)) ?? freshness
@@ -246,7 +252,7 @@ struct WidgetAppSettings: Decodable, Hashable {
 	}
 
 	enum CodingKeys: String, CodingKey {
-		case accentHex, showNames, showDetail, freshness, attention, agents, pc, space
+		case accentHex, accentTextHex, showNames, showDetail, freshness, attention, agents, pc, space
 	}
 }
 
@@ -303,14 +309,37 @@ enum WidgetStore {
 	}
 
 	/// ウィジェットの「確認済みにする」: 要約の表示を先に変え、アプリが PC へ送るための積み置きに足す。
+	/// 積み置きには押した時点の未確認の始まり（agent.since）を入れる（要約を書き換える前に読む）。
 	static func markReviewed(pcId: String, keys: [String], now: Date = Date()) {
 		let at = (now.timeIntervalSince1970 * 1000).rounded()
 		let targets = Set(keys)
 		if targets.isEmpty { return }
+		var sinceByKey: [String: Double] = [:]
+		var unreadKeys = Set<String>()
+		mutate(WidgetFiles.snapshot, as: WidgetSnapshot.self) { current in
+			guard var snapshot = current, let index = snapshot.pcs.firstIndex(where: { $0.id == pcId }) else {
+				return nil
+			}
+			for agentIndex in snapshot.pcs[index].agents.indices where targets.contains(snapshot.pcs[index].agents[agentIndex].key) && snapshot.pcs[index].agents[agentIndex].state == "unread" {
+				let agent = snapshot.pcs[index].agents[agentIndex]
+				unreadKeys.insert(agent.key)
+				if let since = agent.since {
+					sinceByKey[agent.key] = since
+				}
+				snapshot.pcs[index].agents[agentIndex].state = "idle"
+				snapshot.pcs[index].agents[agentIndex].since = nil
+			}
+			snapshot.source = "widget"
+			return snapshot
+		}
+		// 押した時点で未確認でなかったもの（もう要約に無い・別の状態）は積まない。
+		if unreadKeys.isEmpty { return }
 		mutate(WidgetFiles.outbox, as: WidgetOutbox.self) { current in
 			var outbox = current ?? WidgetOutbox(v: 1, entries: [])
-			for key in keys where !outbox.entries.contains(where: { $0.pcId == pcId && $0.key == key }) {
-				outbox.entries.append(WidgetOutboxEntry(t: "dismiss", pcId: pcId, key: key, at: at))
+			for key in keys where unreadKeys.contains(key) {
+				// 同じものを積み直すときは、押した時点の始まりで置き換える。
+				outbox.entries.removeAll { $0.pcId == pcId && $0.key == key }
+				outbox.entries.append(WidgetOutboxEntry(t: "dismiss", pcId: pcId, key: key, at: at, since: sinceByKey[key]))
 			}
 			// 押し続けても膨らまないよう、古いものから捨てる。
 			if outbox.entries.count > 100 {
@@ -318,22 +347,13 @@ enum WidgetStore {
 			}
 			return outbox
 		}
-		mutate(WidgetFiles.snapshot, as: WidgetSnapshot.self) { current in
-			guard var snapshot = current, let index = snapshot.pcs.firstIndex(where: { $0.id == pcId }) else {
-				return nil
-			}
-			for agentIndex in snapshot.pcs[index].agents.indices where targets.contains(snapshot.pcs[index].agents[agentIndex].key) && snapshot.pcs[index].agents[agentIndex].state == "unread" {
-				snapshot.pcs[index].agents[agentIndex].state = "idle"
-				snapshot.pcs[index].agents[agentIndex].since = nil
-			}
-			snapshot.source = "widget"
-			return snapshot
-		}
 	}
 
 	/// 通知拡張が通知を開けたときに、要約の要対応の部分を書き換える（アプリが閉じている間の更新）。
 	/// 要約がまだ無い（アプリが一度も書いていない）ときは何もしない。
-	static func applyNotification(_ payload: [String: Any], pcId: String?, now: Date = Date()) {
+	/// `pcId` は通知鍵の項目名から分かった PC だけを渡す（封緘の中で PC が名乗った値は使わない。
+	/// ペアリング済みの PC 同士なら互いの ID を騙れるため）。分からなければ呼ばない。
+	static func applyNotification(_ payload: [String: Any], pcId: String, now: Date = Date()) {
 		guard let kind = payload["kind"] as? String else { return }
 		let nowMs = (now.timeIntervalSince1970 * 1000).rounded()
 		let at = (payload["at"] as? Double) ?? nowMs
@@ -343,9 +363,7 @@ enum WidgetStore {
 		let body = payload["body"] as? String
 		let showDetail = loadSettings().showDetail
 		mutate(WidgetFiles.snapshot, as: WidgetSnapshot.self) { current in
-			guard var snapshot = current else { return nil }
-			let targetId = pcId ?? (snapshot.pcs.count == 1 ? snapshot.pcs.first?.id : nil)
-			guard let targetId, let index = snapshot.pcs.firstIndex(where: { $0.id == targetId }) else {
+			guard var snapshot = current, let index = snapshot.pcs.firstIndex(where: { $0.id == pcId }) else {
 				return nil
 			}
 			var pc = snapshot.pcs[index]

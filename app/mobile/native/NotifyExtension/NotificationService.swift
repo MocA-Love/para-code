@@ -93,7 +93,11 @@ final class NotificationService: UNNotificationServiceExtension {
 		// ホーム画面・ロック画面のウィジェットの要約（App Group）の要対応を書き換えて描き直させる
 		// （アプリが閉じている間にウィジェットを新しくできる唯一の経路）。要約がまだ無い・App Group が
 		// 使えないときは何もしない。通知の表示はこの成否に関わらず行う。
-		WidgetStore.applyNotification(json, pcId: userInfo["pcId"] as? String)
+		// 書き換える PC は鍵の項目名から分かったものだけにする。封緘の中で PC が名乗った pcId は、ペアリング済みの
+		// PC 同士なら騙れるので、別の PC の行を書き換えさせない（分からなければ要約はそのまま）。
+		if let keyPcId = opened.pcId, !keyPcId.isEmpty {
+			WidgetStore.applyNotification(json, pcId: keyPcId)
+		}
 
 		contentHandler(bestAttempt)
 	}

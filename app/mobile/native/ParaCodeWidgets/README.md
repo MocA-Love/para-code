@@ -44,7 +44,12 @@ C PC の状態・D スペース。iOS 17 以上）のソース一式。JS側の�
 - 要約を書くのはアプリ（`src/widgets/widgetSync.ts`。前面の間は間引いて、背面へ移るときは必ず）と、
   通知拡張（`NotificationService.swift` → `WidgetStore.applyNotification`。閉じている間の要対応）
 - 「確認済みにする」は `MarkReviewedIntent`（iOS 17。ロック中は解除が要る）。要約の表示をすぐ変え、
-  `widget-outbox.json` に積む。アプリが次に PC へ繋いだら既存の `ackAgentStatus` で送り、積み置きから消す
+  `widget-outbox.json` に押した時点の未確認の始まり（`since`）と一緒に積む。アプリが次に PC へ繋いだら、
+  いまの未確認の始まりがそれと同じか前のときだけ既存の `ackAgentStatus` で送り、積み置きから消す
+  （押した後に終わった別の完了は確認済みにしない。始まりが分からなければ送らない。`src/widgets/snapshot.ts` の `planWidgetOutbox`）
+- 要約は通知拡張も書くので、アプリは書く直前に読み直し、見ていない PC の要対応は `eventAt` の新しい方を残して
+  合わせてから書く（`mergeUnviewedPcsFromDisk`。比べて書くのは `writeWidgetFileIfUnchanged` の 1 回の協調の中）。
+  通知拡張が書き換える PC は、通知鍵の項目名から分かったものだけ（分からなければ要約はそのまま）
 - 押したときのリンクは `paracode-mobile:///widget/<行き先>?pc=…&space=…&terminal=…`。いまのルートへの
   書き換えは `src/features/links/widgetLinks.ts`（ルートを変えてもウィジェットは直さなくてよい）
 - 設定（長押し →「ウィジェットを編集」）は `WidgetIntents.swift` の AppIntentConfiguration。PC・スペースの

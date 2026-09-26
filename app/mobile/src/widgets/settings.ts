@@ -11,6 +11,8 @@
  * 形の判定・既定値・並べ替えは純関数（`settings.test.ts`）。保存は `widgetSettingsStore.ts`。
  */
 
+import { textColorOn } from '../ui/themeColors.js';
+
 export const WIDGET_SETTINGS_VERSION = 1;
 
 /** アクセントの色。`theme` は「設定 → 色」の主ボタンの色に合わせる。 */
@@ -104,7 +106,7 @@ export interface WidgetSettings {
 	readonly accent: WidgetAccent;
 	/** ホーム画面にエージェント名・スペース名を出す（ロック画面は OS の設定に従って隠す）。 */
 	readonly showNames: boolean;
-	/** 質問文とコマンドを出す（既定は出さない。オフのときは要約にも入れない）。 */
+	/** 質問文とコマンドを出す（既定は出さない。オフのときは要約にも Live Activity にも入れない）。 */
 	readonly showDetail: boolean;
 	readonly freshness: WidgetFreshness;
 	readonly attention: {
@@ -263,11 +265,12 @@ export function resolveWidgetAccentHex(accent: WidgetAccent, themePrimaryHex: st
 }
 
 /**
- * App Group へ書く JSON。ウィジェットは色の計算を持たないので、解決済みの色（`accentHex`）を添える。
+ * App Group へ書く JSON。ウィジェットは色の計算を持たないので、解決済みの色（`accentHex`）と、その上に載せる
+ * 文字の色（`accentTextHex`。アプリの主ボタンと同じ WCAG のコントラスト比で選ぶ `textColorOn`）を添える。
  */
 export function serializeWidgetSettings(settings: WidgetSettings, themePrimaryHex: string | undefined): string {
 	const accentHex = resolveWidgetAccentHex(settings.accent, themePrimaryHex);
-	return JSON.stringify({ ...settings, ...(accentHex !== undefined ? { accentHex } : {}) });
+	return JSON.stringify({ ...settings, ...(accentHex !== undefined ? { accentHex, accentTextHex: textColorOn(accentHex) } : {}) });
 }
 
 /** 指標を1つ上（-1）・下（+1）へ動かす。端なら同じものを返す。 */

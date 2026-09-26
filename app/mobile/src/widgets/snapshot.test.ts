@@ -5,6 +5,9 @@ import {
 	agentDetail,
 	buildWidgetSnapshot,
 	clampText,
+	isSameUnread,
+	mergeUnviewedPcsFromDisk,
+	outboxSentKey,
 	parseWidgetOutbox,
 	parseWidgetSnapshot,
 	planWidgetOutbox,
@@ -17,6 +20,7 @@ import {
 	widgetAgentState,
 	type SnapshotActiveInput,
 	type SnapshotInput,
+	type WidgetOutboxEntry,
 	type WidgetSnapshot,
 } from './snapshot.js';
 
@@ -125,8 +129,53 @@ describe('buildWidgetSnapshot', () => {
 	});
 
 	it('shows dismissed agents as idle until the PC catches up', () => {
-		const snapshot = buildWidgetSnapshot(input({ outbox: [{ t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW }] }), undefined, NOW);
+		const statusSince = new Map([['t-done', { status: 'done', since: NOW - 60_000 }]]);
+		const snapshot = buildWidgetSnapshot(input({
+			active: active({ statusSince }),
+			outbox: [{ t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW, since: NOW - 60_000 }],
+		}), undefined, NOW);
 		expect(snapshot.pcs[0]?.agents.find(a => a.key === 't-done')?.state).toBe('idle');
+	});
+
+	it('does not hide a completion that finished after the widget button was pressed', () => {
+		// 押した時点の未確認は NOW - 60 秒に始まったもの。その後に一度動いてまた終わった（NOW - 5 秒）。
+		const statusSince = new Map([['t-done', { status: 'done', since: NOW - 5_000 }]]);
+		const snapshot = buildWidgetSnapshot(input({
+			active: active({ statusSince }),
+			outbox: [{ t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW - 30_000, since: NOW - 60_000 }],
+		}), undefined, NOW);
+		expect(snapshot.pcs[0]?.agents.find(a => a.key === 't-done')?.state).toBe('unread');
+	});
+
+	it('does not hide when the start of the unread state is unknown', () => {
+		// 押した時点の始まりが分からない・いまの始まりが分からない（状態が変わるのを見ていない）ときは隠さない。
+		const unknownPressed = buildWidgetSnapshot(input({
+			active: active({ statusSince: new Map([['t-done', { status: 'done', since: NOW - 60_000 }]]) }),
+			outbox: [{ t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW }],
+		}), undefined, NOW);
+		expect(unknownPressed.pcs[0]?.agents.find(a => a.key === 't-done')?.state).toBe('unread');
+		const unknownNow = buildWidgetSnapshot(input({
+			outbox: [{ t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW, since: NOW - 60_000 }],
+		}), undefined, NOW);
+		expect(unknownNow.pcs[0]?.agents.find(a => a.key === 't-done')?.state).toBe('unread');
+	});
+
+	it('hides dismissed agents of a PC not being viewed with the same rule', () => {
+		const previous: WidgetSnapshot = {
+			v: 1, writtenAt: NOW - 10_000, source: 'app', paired: true, pcs: [{
+				id: 'pc-b', name: 'Desktop', online: false, attention: 0, spaces: [], agents: [
+					{ key: 'b-old', title: 'old', kind: 'claude', state: 'unread', since: NOW - 60_000 },
+					{ key: 'b-new', title: 'new', kind: 'claude', state: 'unread', since: NOW - 5_000 },
+				],
+			}],
+		};
+		const snapshot = buildWidgetSnapshot(input({ outbox: [
+			{ t: 'dismiss', pcId: 'pc-b', key: 'b-old', at: NOW - 30_000, since: NOW - 60_000 },
+			{ t: 'dismiss', pcId: 'pc-b', key: 'b-new', at: NOW - 30_000, since: NOW - 60_000 },
+		] }), previous, NOW);
+		const pcB = snapshot.pcs.find(pc => pc.id === 'pc-b');
+		expect(pcB?.agents.find(a => a.key === 'b-old')?.state).toBe('idle');
+		expect(pcB?.agents.find(a => a.key === 'b-new')?.state).toBe('unread');
 	});
 
 	it('keeps the time a state started from the previous snapshot only while the state stays the same', () => {
@@ -207,25 +256,129 @@ describe('widget outbox', () => {
 			'broken',
 		] });
 		expect(parseWidgetOutbox(raw, NOW)).toEqual([{ t: 'dismiss', pcId: 'pc-a', key: 'k1', at: NOW }]);
+		const withSince = JSON.stringify({ v: 1, entries: [
+			{ t: 'dismiss', pcId: 'pc-a', key: 'k1', at: NOW, since: NOW - 60_000 },
+			{ t: 'dismiss', pcId: 'pc-a', key: 'k2', at: NOW, since: 'bogus' },
+		] });
+		expect(parseWidgetOutbox(withSince, NOW)).toEqual([
+			{ t: 'dismiss', pcId: 'pc-a', key: 'k1', at: NOW, since: NOW - 60_000 },
+			{ t: 'dismiss', pcId: 'pc-a', key: 'k2', at: NOW },
+		]);
 		expect(parseWidgetOutbox('not json', NOW)).toEqual([]);
 		expect(parseWidgetOutbox(undefined, NOW)).toEqual([]);
 	});
 
 	it('sends dismissals only to the connected active PC and clears the finished ones', () => {
-		const entries = [
-			{ t: 'dismiss' as const, pcId: 'pc-a', key: 't-done', at: NOW },
-			{ t: 'dismiss' as const, pcId: 'pc-a', key: 't-run', at: NOW },
-			{ t: 'dismiss' as const, pcId: 'pc-a', key: 'gone', at: NOW },
-			{ t: 'dismiss' as const, pcId: 'pc-b', key: 't-done', at: NOW },
+		const pressed = NOW - 60_000;
+		const entries: WidgetOutboxEntry[] = [
+			{ t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW, since: pressed },
+			{ t: 'dismiss', pcId: 'pc-a', key: 't-run', at: NOW, since: pressed },
+			{ t: 'dismiss', pcId: 'pc-a', key: 'gone', at: NOW, since: pressed },
+			{ t: 'dismiss', pcId: 'pc-b', key: 't-done', at: NOW, since: pressed },
 		];
 		const terminals = active().terminals;
-		const plan = planWidgetOutbox({ entries, activePcId: 'pc-a', online: true, terminals, alreadySent: new Set() });
-		expect(plan.send).toEqual(['t-done']);
-		expect(plan.remove).toEqual([{ pcId: 'pc-a', key: 't-run' }, { pcId: 'pc-a', key: 'gone' }]);
-		const offline = planWidgetOutbox({ entries, activePcId: 'pc-a', online: false, terminals, alreadySent: new Set() });
+		const statusSince = new Map([['t-done', { status: 'done', since: pressed }]]);
+		const plan = planWidgetOutbox({ entries, activePcId: 'pc-a', online: true, terminals, statusSince, alreadySent: new Set() });
+		expect(plan.send).toEqual([entries[0]]);
+		expect(plan.remove).toEqual([{ pcId: 'pc-a', key: 't-run', at: NOW }, { pcId: 'pc-a', key: 'gone', at: NOW }]);
+		const offline = planWidgetOutbox({ entries, activePcId: 'pc-a', online: false, terminals, statusSince, alreadySent: new Set() });
 		expect(offline).toEqual({ send: [], remove: [] });
-		const again = planWidgetOutbox({ entries, activePcId: 'pc-a', online: true, terminals, alreadySent: new Set(['pc-a\u0000t-done']) });
+		const again = planWidgetOutbox({ entries, activePcId: 'pc-a', online: true, terminals, statusSince, alreadySent: new Set(plan.send.map(outboxSentKey)) });
 		expect(again.send).toEqual([]);
+	});
+
+	it('sends only when the unread state started at or before the press', () => {
+		const terminals = active().terminals;
+		const entry: WidgetOutboxEntry = { t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW - 30_000, since: NOW - 60_000 };
+		const plan = (statusSince: SnapshotActiveInput['statusSince'], entries: readonly WidgetOutboxEntry[] = [entry]) =>
+			planWidgetOutbox({ entries, activePcId: 'pc-a', online: true, terminals, statusSince, alreadySent: new Set() });
+		// 押した時点と同じ未確認 → 送る。それより前に始まったもの（記録の方が古い）→ 送る。
+		expect(plan(new Map([['t-done', { status: 'done', since: NOW - 60_000 }]])).send).toEqual([entry]);
+		expect(plan(new Map([['t-done', { status: 'done', since: NOW - 90_000 }]])).send).toEqual([entry]);
+		// 押した後に終わった別の完了 → 送らずに積み置きから消す。
+		const later = plan(new Map([['t-done', { status: 'done', since: NOW - 5_000 }]]));
+		expect(later.send).toEqual([]);
+		expect(later.remove).toEqual([{ pcId: 'pc-a', key: 't-done', at: NOW - 30_000 }]);
+		// いまの始まりが分からない（状態が変わるのを見ていない・別の状態の記録）→ 送らずに残す。
+		expect(plan(new Map())).toEqual({ send: [], remove: [] });
+		expect(plan(new Map([['t-done', { status: 'working', since: NOW - 60_000 }]]))).toEqual({ send: [], remove: [] });
+		// 押した時点の始まりが分からない（古い形・要約に時刻が無かった）→ 送らずに消す。
+		const noSince: WidgetOutboxEntry = { t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW };
+		const unknown = plan(new Map([['t-done', { status: 'done', since: NOW - 60_000 }]]), [noSince]);
+		expect(unknown.send).toEqual([]);
+		expect(unknown.remove).toEqual([{ pcId: 'pc-a', key: 't-done', at: NOW }]);
+	});
+
+	it('sends again when the widget is pressed for a later completion', () => {
+		const first: WidgetOutboxEntry = { t: 'dismiss', pcId: 'pc-a', key: 't-done', at: NOW - 30_000, since: NOW - 60_000 };
+		const second: WidgetOutboxEntry = { ...first, at: NOW, since: NOW - 5_000 };
+		expect(outboxSentKey(first)).not.toBe(outboxSentKey(second));
+		const plan = planWidgetOutbox({
+			entries: [second],
+			activePcId: 'pc-a',
+			online: true,
+			terminals: active().terminals,
+			statusSince: new Map([['t-done', { status: 'done', since: NOW - 5_000 }]]),
+			alreadySent: new Set([outboxSentKey(first)]),
+		});
+		expect(plan.send).toEqual([second]);
+	});
+
+	it('compares the start of the unread state', () => {
+		expect(isSameUnread(10, 10)).toBe(true);
+		expect(isSameUnread(10, 5)).toBe(true);
+		expect(isSameUnread(10, 11)).toBe(false);
+		expect(isSameUnread(undefined, 10)).toBe(false);
+		expect(isSameUnread(10, undefined)).toBe(false);
+	});
+});
+
+describe('mergeUnviewedPcsFromDisk', () => {
+	const agentsOf = (snapshot: WidgetSnapshot, pcId: string) => snapshot.pcs.find(pc => pc.id === pcId)?.agents;
+
+	function withNse(base: WidgetSnapshot, pcId: string, eventAt: number): WidgetSnapshot {
+		return {
+			...base,
+			source: 'nse',
+			pcs: base.pcs.map(pc => pc.id === pcId
+				? { ...pc, eventAt, attention: 1, agents: [{ key: 'b-q', title: '質問', kind: 'claude', state: 'question', since: eventAt, detail: 'どちらにしますか' }] }
+				: pc),
+		};
+	}
+
+	it('keeps attention written by the notification extension for a PC not being viewed', () => {
+		const ours = buildWidgetSnapshot(input(), undefined, NOW);
+		const disk = withNse(ours, 'pc-b', NOW + 1_000);
+		const merged = mergeUnviewedPcsFromDisk(ours, disk, 'pc-a', true);
+		expect(agentsOf(merged, 'pc-b')?.map(a => a.key)).toEqual(['b-q']);
+		expect(merged.pcs.find(pc => pc.id === 'pc-b')?.eventAt).toBe(NOW + 1_000);
+		expect(merged.pcs.find(pc => pc.id === 'pc-b')?.attention).toBe(1);
+		// 接続などはアプリの値のまま。
+		expect(merged.pcs.find(pc => pc.id === 'pc-b')?.online).toBe(ours.pcs.find(pc => pc.id === 'pc-b')?.online);
+	});
+
+	it('does not take the PC being viewed from the disk', () => {
+		const ours = buildWidgetSnapshot(input(), undefined, NOW);
+		const disk = withNse(ours, 'pc-a', NOW + 1_000);
+		expect(mergeUnviewedPcsFromDisk(ours, disk, 'pc-a', true)).toBe(ours);
+	});
+
+	it('ignores events older than what the app already has', () => {
+		const ours = buildWidgetSnapshot(input(), undefined, NOW);
+		// 見ていた PC を離れた後: こちらは中身を取った時刻（updatedAt = NOW）を持つ。それより前の通知は採らない。
+		const disk = withNse(ours, 'pc-a', NOW - 1_000);
+		expect(mergeUnviewedPcsFromDisk(ours, disk, 'pc-b', true)).toBe(ours);
+		// こちらの eventAt と同じ（もう合わせたもの）も採らない。
+		const mergedOnce = mergeUnviewedPcsFromDisk(ours, withNse(ours, 'pc-b', NOW + 1_000), 'pc-a', true);
+		expect(mergeUnviewedPcsFromDisk(mergedOnce, withNse(ours, 'pc-b', NOW + 1_000), 'pc-a', true)).toBe(mergedOnce);
+		expect(mergeUnviewedPcsFromDisk(ours, undefined, 'pc-a', true)).toBe(ours);
+	});
+
+	it('drops question text when the setting is off', () => {
+		const ours = buildWidgetSnapshot(input(), undefined, NOW);
+		const merged = mergeUnviewedPcsFromDisk(ours, withNse(ours, 'pc-b', NOW + 1_000), 'pc-a', false);
+		expect(agentsOf(merged, 'pc-b')?.[0]?.detail).toBeUndefined();
+		expect(agentsOf(merged, 'pc-b')?.[0]?.state).toBe('question');
 	});
 });
 
