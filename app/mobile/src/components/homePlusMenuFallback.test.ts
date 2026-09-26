@@ -3,7 +3,7 @@
 import { createElement, type ElementType } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import { HomePlusMenuButton } from './homePlusMenu.js';
+import { HomeCreateFab, HomePlusMenuButton } from './homePlusMenu.js';
 
 vi.mock('react-native', () => ({
 	BackHandler: { addEventListener: vi.fn(() => ({ remove: vi.fn() })) },
@@ -53,7 +53,6 @@ describe('HomePlusMenuButton fallback', () => {
 				compact: true,
 				archivedCount: 2,
 				voiceActive: true,
-				notificationQuestionCount: 3,
 				ackCount: 1,
 				hasSpace: true,
 				onSelect: action => selected.push(action),
@@ -67,13 +66,9 @@ describe('HomePlusMenuButton fallback', () => {
 		expect(renderer!.root.findAllByType('Pressable' as ElementType).map(node => node.props.accessibilityLabel)).toEqual(expect.arrayContaining([
 			'アーカイブ 2件を見る',
 			'音声通知（受信中）',
-			'通知（要対応 3件）',
-			'Claude を起動',
-			'Codex を起動',
-			'ターミナルを起動',
 			'ワークツリーを作成',
 			'メモ',
-			'並び替えと絞り込み',
+			'並び替え',
 			'すべて確認済みにする',
 		]));
 
@@ -83,13 +78,9 @@ describe('HomePlusMenuButton fallback', () => {
 		const selections = [
 			['アーカイブ 2件を見る', 'archive'],
 			['音声通知（受信中）', 'voice-notifications'],
-			['通知（要対応 3件）', 'notifications'],
-			['Claude を起動', 'launch-claude'],
-			['Codex を起動', 'launch-codex'],
-			['ターミナルを起動', 'new-terminal'],
 			['ワークツリーを作成', 'new-worktree'],
 			['メモ', 'space-note'],
-			['並び替えと絞り込み', 'sort'],
+			['並び替え', 'sort'],
 			['すべて確認済みにする', 'ack-all'],
 		] as const;
 		for (const [label, action] of selections) {
@@ -98,6 +89,27 @@ describe('HomePlusMenuButton fallback', () => {
 			expect(renderer!.root.findAllByType('OverlayPortal' as ElementType)).toHaveLength(0);
 			expect(selected.at(-1)).toBe(action);
 		}
+		act(() => renderer!.unmount());
+	});
+
+	test('create FAB fallback opens upward from the button and forwards creation actions', () => {
+		const selected: string[] = [];
+		let renderer: ReactTestRenderer | undefined;
+		act(() => {
+			renderer = create(createElement(HomeCreateFab, { hasSpace: true, onSelect: action => selected.push(action) }));
+		});
+		const fab = renderer!.root.findAllByType('Pressable' as ElementType).find(node => node.props.accessibilityLabel === '新規作成');
+		expect(fab).toBeDefined();
+		// 押した位置からボタンの上端（y=240）を求め、パネルはその上へ伸ばす（画面の高さは320）。
+		act(() => fab!.props.onPress({ nativeEvent: { pageY: 260, locationY: 20 } }));
+		const panel = renderer!.root.findByType('PopIn' as ElementType);
+		expect(panel.props.style).toEqual(expect.arrayContaining([expect.objectContaining({ bottom: 90 })]));
+		expect(renderer!.root.findAllByType('Pressable' as ElementType).map(node => node.props.accessibilityLabel)).toEqual(expect.arrayContaining([
+			'Claude を起動', 'Codex を起動', 'ターミナルを起動', 'ワークツリーを作成', 'メモ',
+		]));
+		press(renderer!, 'Codex を起動');
+		expect(selected).toEqual(['launch-codex']);
+		expect(renderer!.root.findAllByType('OverlayPortal' as ElementType)).toHaveLength(0);
 		act(() => renderer!.unmount());
 	});
 });

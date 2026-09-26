@@ -3,8 +3,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useAppStore } from '../appState.js';
-import { isAgentWaiting } from '../store.js';
+import { useAttentionCount } from '../hooks/useAttentionCount.js';
 import { colors, radius, squircle } from '../theme.js';
 import { activeSidebarTab, SIDEBAR_TABS } from './ipadTabs.js';
 import { selectTab } from './ipadSelectTab.js';
@@ -19,7 +18,7 @@ export function IpadSidebarRail() {
 	const router = useRouter();
 	const pathname = usePathname();
 	const active = activeSidebarTab(pathname);
-	const pending = useAppStore(s => (s.workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length);
+	const pending = useAttentionCount();
 
 	return (
 		<View style={styles.wrap}>

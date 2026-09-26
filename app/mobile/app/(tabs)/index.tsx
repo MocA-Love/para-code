@@ -9,6 +9,7 @@ import { GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
+import { countAttentionAgents, isAttentionAgent } from '../../src/attentionCount.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { VoiceNotificationControl } from '../../src/components/voiceNotificationControl.js';
 import { useWsHeader, useEffectiveWs, useOpenDrawerPan, wsColor } from '../../src/components/wsDrawer.js';
@@ -17,7 +18,7 @@ import {
 	ATTENTION_VISIBLE_LIMIT, CLOSED_ATTENTION, reconcileAttention, sortWaiting, toggleAttention, visibleWaiting,
 	type AttentionOpenState,
 } from '../../src/components/attentionStackBehavior.js';
-import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
+import { HomeAgentActionsMenu, type HomeAgentMenuTarget } from '../../src/components/homeAgentActionsMenu.js';
 import { type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
 import { HomeAgentRow, type HomeAgentRowHandlers } from '../../src/components/homeAgentRow.js';
 import { closeOpenedSwipeRow } from '../../src/components/swipeRow.js';
@@ -27,11 +28,15 @@ import { useParaHeaderHeight } from '../../src/paraHeader.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
-import { colors, radius, squircle, type } from '../../src/theme.js';
+import { Ionicons } from '@expo/vector-icons';
+import { HIT_SIZE, colors, radius, space, squircle, status, type } from '../../src/theme.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { EmptyState } from '../../src/components/emptyState.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
-import { arrangeHomeRows } from '../../src/homeSort.js';
-import { HomeFilterChips, HomeSortSheet } from '../../src/components/homeListControls.js';
+import { arrangeHomeRows, groupRowsByStatus, idleSectionView, type HomeStatusSection } from '../../src/homeSort.js';
+import { HomeSortSheet } from '../../src/components/homeListControls.js';
+import { HOME_CREATE_FAB_SIZE, HomeCreateFab } from '../../src/components/homePlusMenu.js';
 import {
 	dispatchHomeHeaderMenuAction,
 	homeHeaderLayout,
@@ -40,7 +45,7 @@ import {
 } from '../../src/components/homeHeaderMenuBehavior.js';
 import { useHomeHeaderActions } from '../../src/components/homeHeaderActions.js';
 import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
-import { listColumnsFor, CONTENT_MAX_WIDTH } from '../../src/ipad/ipadLayout.js';
+import { listColumnsFor } from '../../src/ipad/ipadLayout.js';
 
 /**
  * エージェント行の並べ方。1列のときは行をそのまま返し（iPhoneと同じツリー）、
@@ -57,16 +62,64 @@ function renderAgentRows(nodes: readonly ReactElement[], columns: 1 | 2) {
 	);
 }
 
+/** ステータス順の一覧の段の見出し（呼び名は theme.status に揃える）。 */
+const SECTION_LABEL: Record<HomeStatusSection<unknown>['key'], string> = {
+	working: status.running.label,
+	review: status.review.label,
+	idle: status.idle.label,
+};
+
+/** アーカイブの取り消しバーを出しておく時間。読んでから指を運ぶ余裕を取る。 */
+const UNDO_ARCHIVE_MS = 6_000;
+
+/**
+ * 押すと段を開閉する見出し（既定で畳む「待機」に使う）。見出しの書式は `SectionHeader` のまま、
+ * 当たり判定だけ44pt以上にする。
+ */
+function CollapsibleSectionHeader({ title, count, first, open, onToggle }: {
+	title: string;
+	count: number;
+	first: boolean;
+	open: boolean;
+	onToggle: () => void;
+}) {
+	return (
+		<Pressable
+			style={styles.sectionToggle}
+			onPress={onToggle}
+			accessibilityRole="button"
+			accessibilityState={{ expanded: open }}
+			accessibilityLabel={`${title} ${count}件`}
+		>
+			<SectionHeader
+				title={title}
+				count={count}
+				first={first}
+				right={<Ionicons name={open ? 'chevron-down' : 'chevron-forward'} size={13} color={colors.textDim} />}
+			/>
+		</Pressable>
+	);
+}
+
 /**
  * ホーム画面（mock.html 案A準拠のリデザイン）。旧デザインの「接続中のPC」カードと
  * ワークスペース別グループ表示を廃止し、全ワークスペース横断のエージェント一覧に
  * 再定義した（PCステータス・接続管理はワークスペースドロワーへ移設）。
- * 応答待ちのエージェントは最上部の「応答待ち」スタックに全件を積み、開いた1件にその場で
+ * 要対応のエージェントは最上部の要対応スタックに全件を積み、開いた1件にその場で
  * 回答できる（積んだぶんは下の一覧からは外す）。
  *
+ * 並びがステータス順（既定）のときは、一覧を状態の見出しで区切った1本にする:
+ * 要対応（スタック）→ 実行中 → 未確認 → 待機。待機は既定で畳み、見出しを押すと開く
+ * （畳んでいてもピン留めの行は出す。段が待機だけのときは開いて出す）。
+ * 他の並び（スペース順・名前順・追加順）は見出しなしの一覧のまま。
+ *
  * ドロワーで特定のワークスペースを選択している間（homeShowAllWorkspaces=false）は、
- * 一覧をそのワークスペース（＋配下のworktree）だけに絞り込む。ドロワー上部の
+ * 一覧をそのワークスペース（＋配下のworktree）だけに絞り込む。**要対応だけは絞り込まない**
+ * （件数をタブのバッジと揃えるため。理由は `attentionCount.ts`）。ドロワー上部の
  * 「すべて表示」を選ぶとこれまで通り全ワークスペース横断の一覧に戻る。
+ *
+ * 新規作成（エージェントの起動・ワークツリー・メモ）の入口は、iPhone では画面右下の＋、
+ * iPad ではヘッダーの＋。
  */
 export default function HomeScreen() {
 	const router = useRouter();
@@ -87,10 +140,14 @@ export default function HomeScreen() {
 	const workspaces = useAppStore(s => s.workspace?.workspaces);
 	const activeWs = useAppStore(s => s.workspace?.activeWs);
 	const effectiveWs = useEffectiveWs();
-	// 長押しで開くアクションメニュー（名前を変更/ピン留め/削除）の表示状態。
+	// 長押し・行の ⋯ で開くアクションメニュー（名前を変更/ピン留め/確認済み/アーカイブ/削除）の表示状態。
 	// rect/rowData は「リフト&ディム」で対象行を前面へ浮かせるクローン描画に使う
 	// （上部スタックの行から開いたときは持たないため、その場合はクローン無しでメニューだけ出す）。
-	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number }; rect?: AgentRowRect; rowData?: AgentRowData } | undefined>(undefined);
+	const [menu, setMenu] = useState<{ target: HomeAgentMenuTarget; anchor: { x: number; y: number }; rect?: AgentRowRect; rowData?: AgentRowData } | undefined>(undefined);
+	// ステータス順の「待機」の段を利用者が開閉したか（undefined は既定のまま）。既定で畳む（手の空いた
+	// エージェントは眺める対象ではなく、並べると動いているものが画面の下へ押し出される）。
+	// 段が「待機」だけのときの既定の開閉と、畳んでもピン留めは見せる規則は homeSort.ts の idleSectionView。
+	const [idleOpenOverride, setIdleOpenOverride] = useState<boolean | undefined>(undefined);
 	// 各行の実ビューへの参照。長押し時に measureInWindow でウィンドウ座標を取得するために持つ。
 	const rowRefs = useRef(new Map<string, View>());
 	// 並び替えシートの開閉。コンポーネント側に持たせると、一覧が0件になった瞬間に
@@ -107,10 +164,6 @@ export default function HomeScreen() {
 	const regular = useIsRegularWidth();
 	const homeHeader = useMemo(() => homeHeaderLayout(regular ? 'regular' : 'compact'), [regular]);
 	const voiceActive = useAppStore(state => state.voiceNotifications.desired);
-	const notificationQuestionCount = useMemo(
-		() => notifications.filter(notification => notification.kind === 'agent-question').length,
-		[notifications],
-	);
 	// 一覧を何列で並べるか。ウィンドウ幅ではなく実際の一覧の幅で決める
 	// （左のサイドバーぶん狭いので、ウィンドウ幅で決めると2列に入らない幅でも2列にしてしまう）。
 	const [listWidth, setListWidth] = useState(0);
@@ -123,7 +176,7 @@ export default function HomeScreen() {
 	// それらの操作でワークスペースが切り替わった後にホームへ戻ると、絞り込み先も追従する
 	// （ヘッダーのチップ色・ドロワーのアクティブ行と一貫させるための意図的な挙動）。
 	// **参照を安定させる。** ここが毎レンダー新しい `Set` だと、これを依存に持つ `listable` の
-	// memo が毎回外れ、その下流（＋メニュー・絞り込みチップ・ヘッダーの仕様）まで全部作り直しに
+	// memo が毎回外れ、その下流（＋メニュー・ヘッダーの仕様）まで全部作り直しに
 	// なる。先に文字列のキーを作り、それが変わったときだけ `Set` を組む。
 	const scopeKey = !homeShowAllWorkspaces && effectiveWs !== undefined
 		? [effectiveWs.id, ...(workspaces ?? []).filter(w => w.parent === effectiveWs.id).map(w => w.id)].join('\n')
@@ -149,18 +202,21 @@ export default function HomeScreen() {
 		return ws !== undefined && scopeIds.has(ws.id);
 	}, [scopeIds, resolveWs]);
 
-	// 応答待ちのターミナル（絞り込み中は対象外のワークスペース分は無視する）。全件を上部の
-	// スタックに積み、開いた1件だけ中身を購読する。同時に複数へ attach しないのは、
-	// フックが1ターミナル単位であることと、閉じた行に中身が要らないため。
-	// 一覧と同じく、エージェントCLIが動いた実績のあるターミナルだけを対象にする
-	// （プレーンなターミナルが状態を拾って最上部に居座るのを防ぐ）。
+	// 要対応のターミナル。全件を上部のスタックに積み、開いた1件だけ中身を購読する。
+	// 同時に複数へ attach しないのは、フックが1ターミナル単位であることと、閉じた行に中身が
+	// 要らないため。選び方は件数と同じ `isAttentionAgent`（エージェントCLIが動いた実績のある
+	// ターミナルだけ。プレーンなターミナルが状態を拾って最上部に居座るのを防ぐ）。
+	//
+	// **ドロワーのスペースの絞り込みは掛けない。** 見出しの件数をタブのバッジ・ドロワーの統計と
+	// 同じ数（`countAttentionAgents`）にするため、スタックの中身もそれに揃える
+	// （理由は `attentionCount.ts`）。
 	const waitingTerminals = useMemo(
-		() => sortWaiting((terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus) && inScope(t))),
-		[terminals, inScope]);
+		() => sortWaiting((terminals ?? []).filter(isAttentionAgent)),
+		[terminals]);
+	const attentionCount = countAttentionAgents(terminals);
 	const waitingKeys = waitingTerminals.map(t => t.terminalKey);
-	// 「見たことがある」の記録は絞り込みの外側で取る（ドロワーで表示範囲を往復しただけで
-	// 記録が消え、自分で畳んだ1件が開き直るのを防ぐ）。
-	const knownWaitingKeys = (terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus)).map(t => t.terminalKey);
+	// 「見たことがある」の記録。スタックが絞り込みを掛けなくなったので、並べる顔ぶれと同じでよい。
+	const knownWaitingKeys = waitingKeys;
 	const [attention, setAttention] = useState<AttentionOpenState>(CLOSED_ATTENTION);
 	const [attentionExpanded, setAttentionExpanded] = useState(false);
 	// 顔ぶれの変化に合わせた開閉は描画に即反映したいので、レンダー中に解決してから状態へ書き戻す
@@ -232,7 +288,7 @@ export default function HomeScreen() {
 		if (undoTimer.current !== undefined) {
 			clearTimeout(undoTimer.current);
 		}
-		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, 4_000);
+		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, UNDO_ARCHIVE_MS);
 	}, [setArchived]);
 
 	/** 削除は取り返しがつかないので、スワイプから直に消さず一度だけ聞く。 */
@@ -272,7 +328,7 @@ export default function HomeScreen() {
 			}
 		},
 		onLongPress: (terminalKey, title, pinned, rowData, anchor) => {
-			const target = { terminalKey, title, pinned };
+			const target: HomeAgentMenuTarget = { terminalKey, title, pinned, origin: 'list' };
 			const node = rowRefs.current.get(terminalKey);
 			if (node) {
 				// ウィンドウ座標を取得してから、その位置に浮かせたクローンとメニューを開く。
@@ -295,7 +351,7 @@ export default function HomeScreen() {
 	// 動いた実績のあるターミナルだけを載せる（プレーンなターミナルを開いただけで
 	// ホームに行が増えないように）。
 	// 応答待ちは上部のスタックが受け持つので、ここには載せない（同じ行を上下に二度出さない）。
-	// **memo する。** この配列はヘッダーの仕様（絞り込みチップの帯・＋メニューの対象件数）へ
+	// **memo する。** この配列はヘッダーの仕様（＋メニューの対象件数）へ
 	// 流れるので、毎レンダー新しいと下流の `useCallback`/`useMemo` が全部無効になり、
 	// PCからのstate再送（最大10Hz）ごとにヘッダー層へ書き込みが走る。
 	const listable = useMemo(
@@ -371,29 +427,18 @@ export default function HomeScreen() {
 	// 並びは「たまに使う → よく使う」で、＋を右端に置く。メニューはその＋から生えるので、
 	// 右端でないと開く場所と押した場所がずれる。状態を持つボタン（音声・通知・＋）は
 	// データにできないので `node` で差し込む。
+	// iPhone ではベル（未読の質問通知の件数付き）と `…` の2つ、iPad ではこれまでの4つ。
 	const actions = useHomeHeaderActions({
 		header: homeHeader,
 		archivedCount,
 		voiceActive,
-		notificationQuestionCount,
 		ackCount: reviewable.length,
 		hasSpace: effectiveWs !== undefined,
 		notifications,
 		onArchive: openArchive,
+		onNotifications: openNotifications,
 		onSelect: onHeaderMenuSelect,
 	});
-
-	// 絞り込みチップ。要素も memo で安定させる（同じ理由）。
-	//
-	// **ヘッダーではなく本文側の「上に張り付いた帯」として置く。** 以前はヘッダー層の一部
-	// （帯）として描いていたが、ヘッダーをOS標準のナビゲーションバーへ移す方針になったため
-	// ——ネイティブのバーにチップの列は入らない。見た目は変えず、絶対配置でバーのすぐ下に
-	// 固定し、一覧はその下を流れる（スクロールで消えると「何で絞られているか」が分からなくなる）。
-	const filterBand = useMemo(() => (listable.length > 0
-		? <HomeFilterChips preferences={homePreferences} onChange={setHomePreferences} rows={listable} />
-		: undefined), [listable, homePreferences, setHomePreferences]);
-	// 張り付いた帯の実測高さ。一覧の頭をこのぶん空ける。
-	const [bandHeight, setBandHeight] = useState(0);
 
 	useWsHeader({
 		allWorkspaces: homeShowAllWorkspaces,
@@ -406,7 +451,7 @@ export default function HomeScreen() {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
 	}
 
-	// 並び順・絞り込みはユーザーが選べる（判定は homeSort.ts、設定は端末に保存される）。
+	// 並び順はユーザーが選べる（判定は homeSort.ts、設定は端末に保存される）。
 	// スペース順の基準はドロワーのワークスペース一覧と同じ並びにする。所属の解決は
 	// resolveWs を通す（ws未タグをPC側アクティブスペース所属として扱う共通の規則。
 	// ここを飛ばすと、行に出ているスペース名と並び順がずれる）。
@@ -415,7 +460,39 @@ export default function HomeScreen() {
 		spaceIndexOf: t => { const ws = resolveWs(t); return ws !== undefined ? spaceIndex.get(ws.id) : undefined; },
 		isPinned: t => pinnedKeys.has(pinKeyForTerminal(t)),
 	});
+	// ステータス順のときだけ、状態の見出しで区切る。
+	const sectioned = homePreferences.sort === 'status';
+	const sections = sectioned ? groupRowsByStatus(rows) : [];
+	// 要対応の見出し。ステータス順では他の段と同じく常に付ける。他の並びでは1件だけのときは
+	// 付けない（赤い枠のカードが1枚あるだけで何を待っているかは分かり、本文がヘッダーの
+	// 直下から始まるほうがよい。複数あるときだけ「ここまでが要対応」の塊として示す）。
+	const attentionHeader = attentionCount > 0 && (sectioned || attentionCount > 1);
+	// iPhone は新規作成の入口を右下の＋に置く（iPad はヘッダーの＋）。
+	const showFab = homeHeader.kind === 'compact-menu';
+	const fabBottom = tabBarSpacer + space.md;
+	const noWorkspaces = (workspaces?.length ?? 0) === 0;
+	const createHint = showFab ? '右下の＋' : '右上の＋';
 
+	const renderRow = (t: (typeof rows)[number]) => {
+		const ws = resolveWs(t);
+		return (
+			<HomeAgentRow
+				key={t.terminalKey}
+				terminalKey={t.terminalKey}
+				wsId={ws?.id}
+				title={t.title}
+				wsName={ws?.name ?? '—'}
+				wsColor={ws ? wsColor(ws) : colors.accent}
+				branch={ws?.branch}
+				pinned={pinnedKeys.has(pinKeyForTerminal(t))}
+				agentStatus={t.agentStatus}
+				handlers={rowHandlers}
+				// 長押しメニューが開いている行はスワイプを止める。メニュー成立後に指が
+				// 横へずれると、背面の行だけが動いて浮かせたクローンとズレるため。
+				locked={menu?.target.terminalKey === t.terminalKey}
+			/>
+		);
+	};
 
 	return (
 		<ConnectionGate><GestureDetector gesture={openDrawerPan}><View style={styles.screen}>
@@ -423,20 +500,26 @@ export default function HomeScreen() {
 			    「押し忘れ」であり、その近くを狙ったタップがカードの即時実行を踏み得る。 */}
 			<ScrollView
 				style={styles.scroll}
-				contentContainerStyle={[styles.content, { paddingTop: headerHeight + bandHeight, paddingBottom: tabBarSpacer }]}
+				contentContainerStyle={[styles.content, {
+					paddingTop: headerHeight,
+					// 右下の＋の下へ最後の行が潜らないよう、そのぶん下を空ける。
+					paddingBottom: showFab ? fabBottom + HOME_CREATE_FAB_SIZE + space.md : tabBarSpacer,
+				}]}
 				onScrollBeginDrag={closeOpenedSwipeRow}
 				// 幅の測定はiPad幅のときだけ。iPhoneでは列数が常に1なので測る必要が無く、
 				// onLayoutを付けるとマウント時に無駄な再描画が1回増える。
 				onLayout={regular ? e => setListWidth(e.nativeEvent.layout.width) : undefined}
 			>
+				{/* 要対応の見出し。件数はタブのバッジ・ドロワーの統計と同じ数え方（attentionCount.ts）。
+				    スタック側は見出しを持たないので二重にならない。 */}
+				{attentionHeader ? <SectionHeader title={status.attention.label} count={attentionCount} first /> : null}
 				<AttentionStack
 					items={stackItems}
-					total={waitingTerminals.length}
 					openKey={openState.openKey}
 					onToggle={toggleAttentionRow}
 					onLongPress={(item, anchor) => {
 						hapticImpact('medium');
-						setMenu({ target: { terminalKey: item.terminalKey, title: item.title, pinned: item.pinned }, anchor });
+						setMenu({ target: { terminalKey: item.terminalKey, title: item.title, pinned: item.pinned, origin: 'attention' }, anchor });
 					}}
 					hiddenCount={waitingTerminals.length - stackItems.length}
 					onShowAll={() => { hapticSelection(); setAttentionExpanded(true); }}
@@ -449,71 +532,87 @@ export default function HomeScreen() {
 							openAgent(ws.id, terminalKey);
 						}
 					}}
+					// 見出しで区切る一覧では、次の見出しが上の余白を持つ。
+					style={sectioned ? styles.stackInSections : undefined}
 				/>
 
 				{/* 「エージェント — <スペース名>」の見出しは置かない。いま何を見ているかは
-				    ヘッダーの島（スペース名）と絞り込みチップが既に示しており、同じことを
-				    3段目でもう一度言うと本文の始まりがそのぶん下がるだけになる。
-				    絞り込みチップも本文ではなくヘッダーの帯（WsHeader の below）にある。 */}
-				{renderAgentRows(rows.map(t => {
-					const ws = resolveWs(t);
-					return (
-						<HomeAgentRow
-							key={t.terminalKey}
-							terminalKey={t.terminalKey}
-							wsId={ws?.id}
-							title={t.title}
-							wsName={ws?.name ?? '—'}
-							wsColor={ws ? wsColor(ws) : colors.accent}
-							branch={ws?.branch}
-							pinned={pinnedKeys.has(pinKeyForTerminal(t))}
-							agentStatus={t.agentStatus}
-							handlers={rowHandlers}
-							// 長押しメニューが開いている行はスワイプを止める。メニュー成立後に指が
-							// 横へずれると、背面の行だけが動いて浮かせたクローンとズレるため。
-							locked={menu?.target.terminalKey === t.terminalKey}
-						/>
-					);
-				}), columns)}
-				{rows.length === 0 && listable.length > 0 ? (
-					<Text style={styles.dimSmall}>絞り込みに合うエージェントがありません。上のチップで絞り込みを外してください。</Text>
-				) : null}
-				{listable.length === 0 && waitingTerminals.length === 0 ? (
-					<Text style={styles.dimSmall}>
-						{homeShowAllWorkspaces || effectiveWs === undefined
-							? 'エージェントはまだありません。ターミナルタブでターミナルを作成し、claude / codex を起動すると表示されます。'
-							: `${effectiveWs.name} のエージェントはまだありません。ドロワー上部の「すべて表示」で他のワークスペースも確認できます。`}
-					</Text>
-				) : null}
-				{(workspaces?.length ?? 0) === 0 ? (
-					<Text style={styles.dimSmall}>ワークスペース情報を取得中… PCの Para Code でリポジトリを登録すると表示されます。</Text>
+				    ヘッダーの島（スペース名）が既に示しており、同じことをもう一度言うと本文の
+				    始まりがそのぶん下がるだけになる。 */}
+				{sectioned
+					? sections.map((section, index) => {
+						const first = !attentionHeader && index === 0;
+						const title = SECTION_LABEL[section.key];
+						if (section.key === 'idle') {
+							const idleView = idleSectionView(sections, section.rows, idleOpenOverride, t => pinnedKeys.has(pinKeyForTerminal(t)));
+							return (
+								<View key={section.key}>
+									<CollapsibleSectionHeader
+										title={title}
+										count={section.rows.length}
+										first={first}
+										open={idleView.open}
+										onToggle={() => { hapticSelection(); setIdleOpenOverride(!idleView.open); }}
+									/>
+									{/* 畳んでいてもピン留めの行は出す。 */}
+									{idleView.visibleRows.length > 0 ? renderAgentRows(idleView.visibleRows.map(renderRow), columns) : null}
+								</View>
+							);
+						}
+						return (
+							<View key={section.key}>
+								<SectionHeader title={title} count={section.rows.length} first={first} />
+								{renderAgentRows(section.rows.map(renderRow), columns)}
+							</View>
+						);
+					})
+					: renderAgentRows(rows.map(renderRow), columns)}
+				{/* 空のときの案内は1つだけ出す。ワークスペースが届いていない間は、エージェントが
+				    無いことより先にそちらが原因なので、取得中の案内だけにする。 */}
+				{noWorkspaces ? (
+					<EmptyState
+						title="ワークスペース情報を取得中…"
+						message="PCの Para Code でリポジトリを登録すると表示されます。"
+					/>
+				) : listable.length === 0 && waitingTerminals.length === 0 ? (
+					<EmptyState
+						title={homeShowAllWorkspaces || effectiveWs === undefined
+							? 'エージェントはまだありません'
+							: `${effectiveWs.name} のエージェントはまだありません`}
+						message={homeShowAllWorkspaces || effectiveWs === undefined
+							? `${createHint}から Claude・Codex を起動すると、ここに表示されます。`
+							: `${createHint}から起動できます。ドロワー上部の「すべて表示」で他のワークスペースも確認できます。`}
+					/>
 				) : null}
 			</ScrollView>
-			{/* 上に張り付いた絞り込みチップ。ScrollViewより後に置いて前面に出す。
-			    高さは実測して一覧の頭を空ける（チップの数で折り返して高さが変わるため）。 */}
-			{filterBand === undefined ? null : (
-				<View
-					style={[styles.pinnedBand, { top: headerHeight }, regular && styles.pinnedBandWide]}
-					pointerEvents="box-none"
-					onLayout={event => setBandHeight(Math.round(event.nativeEvent.layout.height))}
-				>
-					{filterBand}
-				</View>
-			)}
 			{undoArchive !== undefined ? (
-				<View style={[styles.undoWrap, { bottom: tabBarSpacer + 10 }]} pointerEvents="box-none">
+				<View
+					style={[
+						styles.undoWrap,
+						// iPhone は右下の＋の左に並べ、＋と縦の中心を揃える（重ねない）。
+						showFab
+							? { bottom: fabBottom + (HOME_CREATE_FAB_SIZE - HIT_SIZE) / 2, right: 16 + HOME_CREATE_FAB_SIZE + space.sm }
+							: { bottom: tabBarSpacer + 10 },
+					]}
+					pointerEvents="box-none"
+				>
 					<GlassSurface style={styles.undoGlass} />
 					<Text style={styles.undoText} numberOfLines={1}>「{undoArchive.title}」をアーカイブしました</Text>
 					<Pressable
-						hitSlop={8}
+						style={styles.undoAction}
 						onPress={() => { hapticSelection(); setArchived(undoArchive.key, false); setUndoArchive(undefined); }}
 						accessibilityRole="button"
 					>
-						<Text style={styles.undoAction}>元に戻す</Text>
+						<Text style={styles.undoActionText}>元に戻す</Text>
 					</Pressable>
 				</View>
 			) : null}
-			<TerminalActionsMenu
+			{showFab ? (
+				<View style={[styles.fabWrap, { bottom: fabBottom }]} pointerEvents="box-none">
+					<HomeCreateFab hasSpace={effectiveWs !== undefined} onSelect={onPlusMenuSelect} />
+				</View>
+			) : null}
+			<HomeAgentActionsMenu
 				target={menu?.target}
 				anchor={menu?.anchor}
 				rect={menu?.rect}
@@ -526,6 +625,8 @@ export default function HomeScreen() {
 						togglePin(pinKeyForTerminal(terminal));
 					}
 				}}
+				onAck={terminalKey => ackAgentStatus(terminalKey)}
+				onArchive={archive}
 				onDelete={terminalKey => closeTerminal(terminalKey)}
 			/>
 			<AgentStatusPopover
@@ -553,21 +654,21 @@ const styles = StyleSheet.create({
 	scroll: { flex: 1 },
 	// 上下の余白は使う側がヘッダー高さ・タブバー高さから決めるので、ここでは持たない。
 	content: { paddingHorizontal: 16 },
-	// 上に張り付いた絞り込みチップ。ヘッダーのすぐ下に据えて、一覧はこの下を流れる。
-	// 左右の余白と下の余白は、以前ヘッダー層の帯が持っていた値をそのまま引き継いでいる。
-	pinnedBand: { position: 'absolute', left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12 },
-	// iPad: 本文カラムと左端を揃える（一覧が2列に広がっても帯だけ画面幅にならないように）。
-	pinnedBandWide: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
-	dimSmall: { color: colors.textDim, fontSize: type.meta, marginTop: 4, lineHeight: 18 },
-	// アーカイブ直後の「元に戻す」（タブバーの上のLiquid Glass）
+	// 見出しで区切る一覧では、スタックの下の余白は次の見出しが持つ。
+	stackInSections: { marginBottom: 0 },
+	// 開閉できる見出し。書式は SectionHeader のまま、押せる高さだけ44pt以上にする。
+	sectionToggle: { minHeight: HIT_SIZE, justifyContent: 'flex-end' },
+	// 右下の＋の置き場所（タブバーの上、右端）。
+	fabWrap: { position: 'absolute', right: 16 },
+	// アーカイブ直後の「元に戻す」（タブバーの上のLiquid Glass）。高さは「元に戻す」の当たり判定（44pt）が決める。
 	undoWrap: {
 		position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10,
-		borderRadius: radius.card, ...squircle, paddingVertical: 11, paddingHorizontal: 14,
+		borderRadius: radius.card, ...squircle, paddingLeft: 14, paddingRight: 4,
 	},
 	undoGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius.card, ...squircle },
 	undoText: { color: colors.text, fontSize: type.meta, flex: 1 },
-	undoAction: { color: colors.accent, fontSize: type.meta, fontWeight: '700' },
-	sectionTitle: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },
+	undoAction: { minHeight: HIT_SIZE, justifyContent: 'center', paddingHorizontal: 10 },
+	undoActionText: { color: colors.accent, fontSize: type.meta, fontWeight: '700' },
 	// iPadの広い幅でエージェント行を2列に並べるときだけ使う折り返しグリッド。
 	// 各セルの左右に隙間を作るため、グリッド側を負のマージンで相殺する。
 	grid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5 },

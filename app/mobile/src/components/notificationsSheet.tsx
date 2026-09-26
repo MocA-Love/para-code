@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import type { NotifyPayload } from '@para/protocol';
-import { colors, radius, squircle } from '../theme.js';
+import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
+import { unreadQuestionNotificationCount } from './notificationCount.js';
 
 /**
  * ヘッダー右上の通知ボタン（Liquid Glassの丸ボタン）。タップで通知一覧ルート
@@ -17,7 +18,7 @@ import { hapticImpact } from '../haptics.js';
 export function NotificationsButton({ notifications }: {
 	notifications: readonly NotifyPayload[];
 }) {
-	const questionCount = notifications.filter(n => n.kind === 'agent-question').length;
+	const questionCount = unreadQuestionNotificationCount(notifications);
 
 	return (
 		<Link href="/notifications" asChild>
@@ -39,7 +40,46 @@ export function NotificationsButton({ notifications }: {
 	);
 }
 
+/**
+ * iPhone のホームのヘッダーに直接置くベル。未読の質問通知の件数（`notificationCount.ts`。
+ * 押した先の通知一覧に残っている質問の数）を赤い数字で重ね、押すと通知一覧を開く
+ * （`…` メニューにあった「通知」と同じ行き先・同じ数）。要対応のエージェント数は重ねない
+ * （押した先に同じ数の項目が無く、食い違って見えるため。要対応はタブのバッジとホームの見出しが示す）。
+ *
+ * iPad の {@link NotificationsButton} と違い件数を出すのは、iPhone ではベルが `…` から
+ * 独立して1つだけ置かれ、数字を読める大きさを取れるため。
+ */
+export function HomeBellButton({ count, onPress }: { count: number; onPress: () => void }) {
+	return (
+		<Pressable
+			style={({ pressed }) => [styles.homeBell, pressed && styles.bellBtnPressed]}
+			onPress={onPress}
+			accessibilityRole="button"
+			accessibilityLabel={count > 0 ? `通知。未読の質問 ${count}件` : '通知'}
+		>
+			<Ionicons name="notifications-outline" size={19} color={colors.text} />
+			{count > 0 ? (
+				<View style={styles.countBadge} pointerEvents="none">
+					<Text style={styles.countText}>{count > 99 ? '99+' : String(count)}</Text>
+				</View>
+			) : null}
+		</Pressable>
+	);
+}
+
+/** 件数バッジの高さ。数字1桁のときは丸になる。 */
+const COUNT_BADGE = 16;
+
 const styles = StyleSheet.create({
+	// ヘッダーの `…`（44pt）と同じ大きさ。器（ガラス）はバーが持つので、ここでは重ねない。
+	homeBell: { width: HIT_SIZE, height: HIT_SIZE, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
+	// 白抜きの件数は暗い赤の面に載せる（タブのバッジと同じ規範）。
+	countBadge: {
+		position: 'absolute', top: 5, right: 4, minWidth: COUNT_BADGE, height: COUNT_BADGE, paddingHorizontal: 4,
+		borderRadius: radius.pill, ...squircle, alignItems: 'center', justifyContent: 'center',
+		backgroundColor: colors.redStrong,
+	},
+	countText: { color: colors.text, fontSize: type.badge, fontWeight: '700' },
 	bellBtn: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 	bellBtnPressed: { backgroundColor: colors.borderStrong },
 	// 件数は出さない。同じ数はタブバーのバッジが持っており、ガラスのピルの中に小さな数字を
