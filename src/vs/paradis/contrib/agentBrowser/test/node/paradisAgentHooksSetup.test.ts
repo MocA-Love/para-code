@@ -17,7 +17,7 @@ import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay, paradisWriteFileAtomicallySync } from '../../node/paradisAgentHooksSetup.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -335,6 +335,44 @@ suite('ParadisAgentHooksSetup', () => {
 			assert.deepStrictEqual({ claudeExists, codex: await fs.readFile(codexHooksPath, 'utf8') }, {
 				claudeExists: false,
 				codex: JSON.stringify({ hooks: {} }, undefined, 2) + '\n',
+			});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('writes the settings file through a temp file, keeping a symlink and the original mode', async function () {
+		if (process.platform === 'win32') {
+			this.skip(); // symlink と mode の扱いが違う
+		}
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-atomic-'));
+		try {
+			const realDir = join(root, 'dotfiles');
+			const linkDir = join(root, 'home');
+			await fs.mkdir(realDir);
+			await fs.mkdir(linkDir);
+			const realFile = join(realDir, 'settings.json');
+			const link = join(linkDir, 'settings.json');
+			await fs.writeFile(realFile, '{"old":true}\n');
+			await fs.chmod(realFile, 0o600);
+			await fs.symlink(realFile, link);
+			const newFile = join(linkDir, 'new.json');
+
+			paradisWriteFileAtomicallySync(link, '{"new":true}\n');
+			paradisWriteFileAtomicallySync(newFile, '{"created":true}\n');
+
+			assert.deepStrictEqual({
+				linkIsSymlink: (await fs.lstat(link)).isSymbolicLink(),
+				content: await fs.readFile(link, 'utf8'),
+				mode: (await fs.stat(realFile)).mode & 0o777,
+				created: await fs.readFile(newFile, 'utf8'),
+				leftovers: [...await fs.readdir(realDir), ...await fs.readdir(linkDir)].filter(name => name.endsWith('.tmp')),
+			}, {
+				linkIsSymlink: true,
+				content: '{"new":true}\n',
+				mode: 0o600,
+				created: '{"created":true}\n',
+				leftovers: [],
 			});
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
