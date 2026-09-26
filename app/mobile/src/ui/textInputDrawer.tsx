@@ -23,7 +23,7 @@ import { DrawerTitle } from './drawerHeader.js';
  */
 export function TextInputDrawer({
 	visible, title, message, defaultValue = '', placeholder, submitLabel = '保存', cancelLabel = 'キャンセル',
-	allowEmpty = false, selectTextOnFocus = true, keyboardType, onSubmit, onClose,
+	allowEmpty = false, selectTextOnFocus = true, keyboardType, maxLength, validate, onSubmit, onClose,
 }: {
 	visible: boolean;
 	title: string;
@@ -35,6 +35,13 @@ export function TextInputDrawer({
 	allowEmpty?: boolean;
 	selectTextOnFocus?: boolean;
 	keyboardType?: KeyboardTypeOptions;
+	/** 入れられる文字数の上限（入力欄が止める）。 */
+	maxLength?: number;
+	/**
+	 * 前後の空白を落とした値を見て、保存できない理由を返す（保存できるなら undefined）。
+	 * 理由は入力欄の下に出し、保存のボタンを押せなくする（重複など、入力欄だけでは止められないもの）。
+	 */
+	validate?: (value: string) => string | undefined;
 	onSubmit: (value: string) => void;
 	onClose: () => void;
 }) {
@@ -48,7 +55,8 @@ export function TextInputDrawer({
 		}
 	}
 	const trimmed = value.trim();
-	const canSubmit = allowEmpty || trimmed.length > 0;
+	const problem = validate?.(trimmed);
+	const canSubmit = (allowEmpty || trimmed.length > 0) && problem === undefined;
 	const submit = () => {
 		if (!canSubmit) {
 			return;
@@ -73,11 +81,13 @@ export function TextInputDrawer({
 				autoCorrect={false}
 				selectTextOnFocus={selectTextOnFocus}
 				keyboardType={keyboardType}
+				maxLength={maxLength}
 				keyboardAppearance="dark"
 				returnKeyType="done"
 				onSubmitEditing={submit}
 				accessibilityLabel={title}
 			/>
+			{problem !== undefined && trimmed.length > 0 ? <Text style={styles.problem}>{problem}</Text> : null}
 			<View style={styles.buttons}>
 				<Button label={cancelLabel} variant="secondary" onPress={onClose} style={styles.button} />
 				<Button label={submitLabel} onPress={submit} disabled={!canSubmit} style={styles.button} />
@@ -103,6 +113,12 @@ const styles = StyleSheet.create({
 		paddingHorizontal: space.md,
 		paddingVertical: space.sm + 2,
 		fontSize: type.input,
+	},
+	problem: {
+		fontSize: type.meta,
+		color: colors.amber,
+		paddingHorizontal: space.xs,
+		marginTop: space.sm,
 	},
 	buttons: {
 		flexDirection: 'row',
