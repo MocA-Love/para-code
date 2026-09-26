@@ -427,6 +427,33 @@ done
 - **`RNSVG-RNSVGFilters` の deployment target**: react-native-svg のリソースバンドル target が 12.4 のままで、Xcode 27（下限 15.0）ではエラーになる。`xcodebuild ... IPHONEOS_DEPLOYMENT_TARGET=16.4` で本体と同じ値を渡して回避している
 - **実機で開発ビルドを動かす手順**: Para Code 本体が 127.0.0.1:8081 を使っているので Metro は 8082 番にする。`RCT_METRO_PORT=8082 SENTRY_DISABLE_AUTO_UPLOAD=true xcodebuild -workspace ParaCodeMobile.xcworkspace -scheme ParaCodeMobile -configuration Debug -destination 'id=<UDID>' -allowProvisioningUpdates IPHONEOS_DEPLOYMENT_TARGET=16.4 build` → `xcrun devicectl device install app` → `pnpm exec expo start --port 8082`。`expo run:ios` は `ios/` を作り直しうるので使わない。開発ビルドでは `src/devProbe.tsx` が表示中の画面を `globalThis.__paraDev` とログに出すので、Metro の `/json/list` から CDP でつなげば画面とログを外から読める（CDP クライアントは `Origin: http://127.0.0.1:8082` を付けないと Metro に拒否される）
 
+### ホーム画面・ロック画面のウィジェットと App Group（2026-09-27）
+
+ホーム画面・ロック画面のウィジェット（案 A 要対応・B エージェント・C PC の状態・D スペース）を足した。`ios/` は gitignore 対象なので、**手で当てた設定をここに記録する**（`npx expo prebuild` 禁止は変わらない）。
+
+| 対象 | 変更 |
+|---|---|
+| App Group | `group.ltd.paradis.paracode.mobile` を本体・ParaCodeWidgets・NotifyExtension の3つに追加。Developer サイトへの登録とプロビジョニングの更新は `xcodebuild ... -allowProvisioningUpdates` が自動で行った |
+| `ios/ParaCodeMobile/ParaCodeMobile.entitlements` | `com.apple.security.application-groups` を追加 |
+| `ios/NotifyExtension/NotifyExtension.entitlements` | 同上（追跡用コピーは `app/mobile/native/NotifyExtension/`） |
+| `ios/ParaCodeWidgets/ParaCodeWidgets.entitlements` | 新規（それまで ParaCodeWidgets には entitlements ファイルが無かった）。追跡用コピーは `app/mobile/native/ParaCodeWidgets/` |
+| `ios/ParaCodeMobile.xcodeproj/project.pbxproj` | ParaCodeWidgets の Debug / Release に `CODE_SIGN_ENTITLEMENTS = ParaCodeWidgets/ParaCodeWidgets.entitlements`。Swift 8本（`WidgetShared` / `WidgetStyle` / `WidgetIntents` / `WidgetTimeline` / `AttentionWidget` / `AgentsWidget` / `PcStatusWidget` / `SpaceWidget`）を ParaCodeWidgets の Sources へ。**`WidgetShared.swift` は NotifyExtension の Sources にも入れる**。ID は既存の手書きの並び（`FD…A7`〜`FD…AF`、`FD…B5`〜`FD…BC`、`FE…B3`）に続けた |
+
+**`ios/` と `native/` の同期**: Swift・entitlements は `app/mobile/native/` を正として編集し、`ios/` へ写す（逆にしない）。2026-09-27 時点で `ios/ParaCodeWidgets/ParaCodeWidgetsBundle.swift` が native 版より古く（Live Activity の `widgetURL` と `privacySensitive` が無かった）、ビルドには古い方が使われていた。写し漏れの確認は次で行う（`README.md` を除いて差が無いこと。`NotifyExtension/Info.plist` の版番号の差は配信手順どおり ios 側だけを上げる運用なので残る）:
+
+```sh
+cd app/mobile
+for f in native/ParaCodeWidgets/* native/NotifyExtension/*; do b=$(basename "$f"); [ "$b" = README.md ] && continue
+  cmp -s "$f" "$(dirname "$f" | sed 's|native|ios|')/$b" || echo "DIFF $f"; done
+```
+
+設計の要点（詳細は `app/mobile/native/ParaCodeWidgets/README.md`）:
+
+- ウィジェットは PC・リレーへ繋がない。アプリ（`src/widgets/widgetSync.ts`）と通知拡張が App Group に書いた要約（`widget-snapshot.json`）を読むだけ。アプリのネイティブ側の読み書きは `modules/para-live-activity/ios/ParaLiveActivityModule.swift` の `ParaWidgetFiles`（新しい Expo モジュールを足すと `pod install` が要るので、既存のモジュールに足した）
+- 要約の形は JS（`src/widgets/snapshot.ts`）と Swift（`WidgetShared.swift`）の二重定義。版番号 `v` を上げたら両方直す
+- 設定 → ウィジェット（`app/settings/widgets.tsx`）の値は `widget-settings.json`。ウィジェット側の設定（長押し →「ウィジェットを編集」）と重なる項目はウィジェット側が優先
+- ホーム画面のウィジェットは iOS 17 以上だけ（配信の下限 16.4 では出ない。Live Activity は従来どおり）
+
 ## モバイルアプリのiPad対応（2026-08-05）
 
 `app/mobile` はiPhone専用（portrait固定・`supportsTablet: false`）だったが、iPadを2カラムで使えるようにした。設計の要点:

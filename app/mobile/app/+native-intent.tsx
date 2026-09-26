@@ -5,7 +5,8 @@ import { redirectLegacyLink } from '../src/features/links/legacyLinks.js';
 /**
  * OS から開かれたリンク（Live Activity・通知以外のディープリンク）を、画面を探す前に書き換える
  * （expo-router の `+native-intent`）。作り直し前のルート（Live Activity の `paracode-mobile:///agent` など）を
- * いまのルートへ寄せる。対応表は `src/features/links/legacyLinks.ts`。
+ * いまのルートへ寄せる。ホーム画面・ロック画面のウィジェットのリンク（`paracode-mobile:///widget/…`）もここで
+ * 書き換える。対応表は `src/features/links/legacyLinks.ts` と `src/features/links/widgetLinks.ts`。
  *
  * ここで例外を出すとアプリが落ちるので、書き換えに失敗したら元のまま開く。
  */

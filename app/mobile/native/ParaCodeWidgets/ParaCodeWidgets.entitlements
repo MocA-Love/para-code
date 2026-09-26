@@ -6,9 +6,5 @@
     <array>
       <string>group.ltd.paradis.paracode.mobile</string>
     </array>
-    <key>keychain-access-groups</key>
-    <array>
-      <string>$(AppIdentifierPrefix)ltd.paradis.paracode.mobile.shared</string>
-    </array>
   </dict>
 </plist>

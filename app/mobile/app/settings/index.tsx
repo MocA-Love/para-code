@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
-import { Activity, Bell, Info, ListChecks, MessageSquare, MessageSquareReply, Monitor, Palette, Terminal } from 'lucide-react-native';
+import { Activity, Bell, Info, LayoutGrid, ListChecks, MessageSquare, MessageSquareReply, Monitor, Palette, Terminal } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { APP_VERSION } from '../../src/components/updateSheet.js';
@@ -20,7 +20,8 @@ import { settingsRoutes } from '../../src/features/settings/settingsRoutes.js';
  * 1つの束に各ページへの行を並べ、行の右に今の状態を出して開かなくても分かるようにする。
  *
  * 並びはモックに合わせる（ターミナル → チャット UI → 通知と音声 → …）。チャット UI の下に、モックに無い
- * クイック返信（会話画面の入力欄の上のチップ）と色（主ボタン・自分の発言・リンクの色）を足している。モックの「音声」「通知」は
+ * クイック返信（会話画面の入力欄の上のチップ）と色（主ボタン・自分の発言・リンクの色）と、ホーム画面・ロック画面の
+ * ウィジェットの見た目を足している。モックの「音声」「通知」は
  * Para Code では1ページ（通知と音声）にまとまっている。Para Code に無いもの（トラブルシューティング・
  * プライバシーポリシー・サポート）は置かず、モックに無いコマンドプリセットを足している。
  */
@@ -61,6 +62,7 @@ export default function SettingsScreenRoute() {
 					trailing="chevron"
 					onPress={() => open(settingsRoutes.colors())}
 				/>
+				<ListRow icon={LayoutGrid} label="ウィジェット" trailing="chevron" onPress={() => open(settingsRoutes.widgets())} />
 				<ListRow
 					icon={Bell}
 					label="通知と音声"

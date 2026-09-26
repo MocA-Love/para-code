@@ -12,13 +12,16 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
 
 ## `npx expo prebuild --clean` 等で ios/ を作り直した場合の復元手順
 
-1. このディレクトリの3ファイルを `app/mobile/ios/NotifyExtension/` へコピー
+1. このディレクトリの3ファイルを `app/mobile/ios/NotifyExtension/` へコピー。あわせて
+   `native/ParaCodeWidgets/WidgetShared.swift` を NotifyExtension ターゲットの Sources にも入れる
+   （ファイルの実体は `ios/ParaCodeWidgets/` に置いたまま、両方のターゲットに属させる）
 2. Xcode で `ParaCodeMobile.xcworkspace` を開き、File → New → Target… → **Notification Service Extension** を追加
    - Product Name: `NotifyExtension` / Team: WB4G82C384 / Language: Swift
    - Bundle Identifier が `ltd.paradis.paracode.mobile.NotifyExtension` になることを確認
 3. 生成されたテンプレートの `NotificationService.swift` / `Info.plist` を本ディレクトリのもので置き換え、
    ターゲットの Signing & Capabilities で **Keychain Sharing** を追加し
-   `ltd.paradis.paracode.mobile.shared` を登録（= `NotifyExtension.entitlements`）
+   `ltd.paradis.paracode.mobile.shared` を登録、**App Groups** に `group.ltd.paradis.paracode.mobile` を登録
+   （= `NotifyExtension.entitlements`）
 4. メインアプリ（ParaCodeMobile）側にも同じ **Keychain Sharing** グループを追加し、
    `Info.plist` に `UIBackgroundModes: [remote-notification]` があることを確認
    （app.json にも設定済みだが、prebuild が反映しない場合は手動で）
@@ -47,3 +50,12 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
 - ワイヤ形式は `12Bノンス || AES-256-GCM暗号文(tag込み)` = CryptoKit の
   `AES.GCM.SealedBox(combined:)` がそのまま受ける形式
 - 復号した JSON は `NotifyPayload`（`app/protocol/src/notify.ts`）
+
+## ウィジェットの要約の書き換え（2026-09-27）
+
+復号できた通知は、ウィジェットの要約（App Group の `widget-snapshot.json`）の要対応も書き換えて
+`WidgetCenter.shared.reloadAllTimelines()` を呼ぶ（`WidgetShared.swift` の `WidgetStore.applyNotification`）。
+アプリが閉じている間にウィジェットを新しくできるのはこの経路だけ。要約がまだ無い・App Group が使えない・
+リロードが効かない場合も通知の表示には影響しない。質問文はアプリの設定（設定 → ウィジェット →
+質問文とコマンドを表示）がオンのときだけ要約に入れる。
+【要確認】通知拡張からのリロードが実機で反映されるか・ウィジェットの予算にどう数えられるかは公式に明記が無い。

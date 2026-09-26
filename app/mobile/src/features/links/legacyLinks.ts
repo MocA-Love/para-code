@@ -10,7 +10,12 @@
  *
  * ほかの旧ルートはアプリの中からしか開かれていなかったが、残っていても「Unmatched Route」にならないよう、
  * 近い画面へ寄せておく（スペースを決められない画面はホーム）。
+ *
+ * ホーム画面・ロック画面のウィジェットのリンク（`/widget/…`）も、ここでいまのルートへ書き換える
+ * （対応表は `widgetLinks.ts`）。
  */
+
+import { redirectWidgetLink, WIDGET_LINK_PREFIX } from './widgetLinks.js';
 
 /** 中継の画面（要対応のセッションへ、無ければホームへ置き換える）。 */
 export const OPEN_SESSION_PATH = '/open-session';
@@ -67,6 +72,9 @@ export function redirectLegacyLink(path: string): string | undefined {
 	const rawPath = queryAt >= 0 ? withoutHash.slice(0, queryAt) : withoutHash;
 	const query = queryAt >= 0 ? withoutHash.slice(queryAt + 1) : '';
 	const pathname = `/${rawPath.replace(/^\/+/, '').replace(/\/+$/, '')}`;
+	if (pathname.startsWith(WIDGET_LINK_PREFIX)) {
+		return redirectWidgetLink(pathname, query);
+	}
 	const target = LEGACY_PATHS[pathname];
 	if (target === undefined) {
 		return undefined;
