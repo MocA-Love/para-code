@@ -26,6 +26,7 @@ import { IProductService } from '../../../../platform/product/common/productServ
 import { IShellLaunchConfig, ITerminalProcessOptions } from '../../../../platform/terminal/common/terminal.js';
 import { TerminalProcess } from '../../../../platform/terminal/node/terminalProcess.js';
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
+import { paradisWithoutPtyDaemonEnv } from '../common/paradisPtyEnvHygiene.js';
 import { IParadisPtyHostConnection } from './paradisEnsurePtyHost.js';
 import { IParadisTerminalOrigin, ParadisDaemonTerminalProcess } from './paradisDaemonTerminalProcess.js';
 import { ParadisPtyDispatch } from './paradisPtyDispatch.js';
@@ -223,6 +224,10 @@ export async function paradisCreateTerminalProcess(
 	 */
 	adoptTarget?: IParadisAdoptTarget,
 ): Promise<IParadisTerminalProcessLike> {
+	// 常駐の置き場所などの内部用の変数をシェルへ持ち込まない。ここはローカル・SSH 先・常駐経由の
+	// どのターミナルも通る唯一の生成点なので、ここで1回落とせば漏れ口が塞がる
+	// （詳しくは paradisPtyEnvHygiene.ts）。
+	env = paradisWithoutPtyDaemonEnv(env);
 	if (arriving) {
 		// 繋ぎ終わるまで待つ。**ここで待つのは安全**で、この時点ではチャネルは登録済み。
 		// 拒否は飲む。常駐に繋げなかったことを、ターミナルを作れないことにしない。
