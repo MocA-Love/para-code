@@ -10,6 +10,7 @@ import { hitSlopToMinimum } from './hitSlop.js';
 import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import { clipForDisplay } from './agentIoClip.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 /**
  * タイムラインのステップを開いたときに出す「入力／結果」の枠。
@@ -64,14 +65,16 @@ export function useFullText(message: AgentChatMessage, terminalKey: string | und
  */
 export function ExpandableText({ message, terminalKey, style }: { message: AgentChatMessage; terminalKey?: string; style?: StyleProp<TextStyle> }) {
 	const { full, loading, error, load, available } = useFullText(message, terminalKey);
+	const theme = useThemeColors();
+	const plainNote = [styles.plainNote, { color: theme.accent }];
 	const clipped = clipForDisplay(full ?? message.text);
 	return (
 		<View>
 			<Text style={style} selectable>{clipped.text}</Text>
-			{clipped.omittedLines > 0 ? <Text style={styles.plainNote}>ほか {clipped.omittedLines} 行を省略しています</Text> : null}
+			{clipped.omittedLines > 0 ? <Text style={plainNote}>ほか {clipped.omittedLines} 行を省略しています</Text> : null}
 			{message.truncated === true && full === undefined ? (
 				<Pressable onPress={load} disabled={!available || loading} hitSlop={PLAIN_NOTE_HIT_SLOP} accessibilityRole="button" accessibilityLabel="全文を表示">
-					<Text style={styles.plainNote}>
+					<Text style={plainNote}>
 						{loading ? '全文を取得しています…' : error ?? (available ? '全文を表示' : 'PCに接続すると全文を表示できます')}
 					</Text>
 				</Pressable>
@@ -84,6 +87,7 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 	const [wrap, setWrap] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const { full, loading, error, load, available } = useFullText(message, terminalKey);
+	const theme = useThemeColors();
 	// text 指定は「入力JSONから抜き出したコマンド本文」など、表示だけ差し替えたい場合に使う。
 	// 全文取得後は取得結果（＝元の生テキスト）へ切り替える。
 	const body = (full ?? text ?? message.text).replace(/\n+$/, '');
@@ -109,7 +113,7 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 					style={styles.ioAction}
 					hitSlop={IO_ACTION_HIT_SLOP}
 				>
-					<Text style={[styles.ioActionText, wrap ? styles.ioActionOn : null]}>折り返し</Text>
+					<Text style={[styles.ioActionText, wrap ? { color: theme.accent } : null]}>折り返し</Text>
 				</Pressable>
 				{clip !== undefined ? (
 					<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction} hitSlop={IO_ACTION_HIT_SLOP}>
@@ -130,7 +134,7 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 			{message.truncated === true && full === undefined ? (
 				<Pressable style={styles.ioFoot} onPress={load} disabled={!available || loading} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={styles.ioFootText}>{loading ? '全文を取得しています…' : error ?? 'PC側で切り詰め済み'}</Text>
-					{error === undefined && !loading ? <Text style={styles.fullLink}>{available ? '全文を表示' : 'PCに接続が必要'}</Text> : null}
+					{error === undefined && !loading ? <Text style={[styles.fullLink, { color: theme.accent }]}>{available ? '全文を表示' : 'PCに接続が必要'}</Text> : null}
 				</Pressable>
 			) : null}
 		</View>
@@ -174,7 +178,6 @@ const styles = StyleSheet.create({
 	ioLabel: { flex: 1, color: colors.textDim, fontSize: type.badge, fontWeight: '800', letterSpacing: 0.9, textTransform: 'uppercase' },
 	ioAction: { minHeight: IO_ACTION_HEIGHT, justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.key, ...squircle, paddingHorizontal: 7, paddingVertical: 2 },
 	ioActionText: { color: colors.textDim, fontSize: type.badge },
-	ioActionOn: { color: colors.accent },
 	ioActionDone: { color: colors.green },
 	ioScroll: { maxHeight: 200 },
 	ioScrollContent: { paddingVertical: 8 },

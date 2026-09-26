@@ -12,7 +12,7 @@ import { useAnswerSubmission } from '../../hooks/useAnswerSubmission.js';
 import { setMobileSpanAttributes, startMobileSpan } from '../../sentry.js';
 import type { AgentChatMessage, AgentMessageSendResult } from '../../store.js';
 import { colors, radius, space, type } from '../../theme.js';
-import { Button, Icon, iconSize } from '../../ui/index.js';
+import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { cardStyles } from './answerCardStyles.js';
 import { SubmissionStatus } from './submissionStatus.js';
 
@@ -39,6 +39,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 	onRequestFreeText: (request: QuestionFreeTextRequest | undefined) => void;
 	freeTextActive: boolean;
 }) {
+	const theme = useThemeColors();
 	const [selected, setSelected] = useState<number | undefined>(undefined);
 	const [toggled, setToggled] = useState<ReadonlySet<number>>(new Set());
 	const multiSelect = message.multiSelect === true;
@@ -115,7 +116,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 	return (
 		<View style={cardStyles.card}>
 			<View style={cardStyles.head}>
-				<Icon icon={CircleHelp} size={15} color={colors.accent} strokeWidth={2.2} />
+				<Icon icon={CircleHelp} size={15} color={theme.accent} strokeWidth={2.2} />
 				<Text style={cardStyles.question} selectable>{message.text}</Text>
 			</View>
 			{message.header !== undefined || multiSelect ? (
@@ -176,6 +177,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 	onRequestFreeText: (request: QuestionFreeTextRequest | undefined) => void;
 	freeTextActiveId: string | undefined;
 }) {
+	const theme = useThemeColors();
 	const [step, setStep] = useState(0);
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
 	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
@@ -275,7 +277,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 	return (
 		<View style={cardStyles.card}>
 			<View style={cardStyles.head}>
-				<Icon icon={CircleHelp} size={15} color={colors.accent} strokeWidth={2.2} />
+				<Icon icon={CircleHelp} size={15} color={theme.accent} strokeWidth={2.2} />
 				<Text style={cardStyles.title}>{`${messages.length}つの質問`}</Text>
 			</View>
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.steps} keyboardShouldPersistTaps="handled">
@@ -285,7 +287,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 						disabled={disabled}
 						onPress={() => { hapticSelection(); setStep(index); }}
 						hitSlop={STEP_SLOP}
-						style={[styles.step, index === step ? styles.stepOn : undefined]}
+						style={[styles.step, index === step ? { borderColor: theme.accent, backgroundColor: theme.accentWash } : undefined]}
 						accessibilityRole="tab"
 						accessibilityState={{ selected: index === step, disabled }}
 					>
@@ -342,6 +344,7 @@ function OptionButton({ label, description, selected, multiSelect = false, disab
 	hint?: string;
 	onPress: () => void;
 }) {
+	const theme = useThemeColors();
 	return (
 		<Pressable
 			disabled={disabled}
@@ -349,7 +352,7 @@ function OptionButton({ label, description, selected, multiSelect = false, disab
 			style={({ pressed }) => [
 				cardStyles.option,
 				styles.option,
-				selected ? cardStyles.optionSelected : undefined,
+				selected ? [cardStyles.optionSelected, { borderColor: theme.accent, backgroundColor: theme.accentWash }] : undefined,
 				disabled ? cardStyles.optionDisabled : undefined,
 				pressed ? cardStyles.optionPressed : undefined,
 			]}
@@ -357,7 +360,7 @@ function OptionButton({ label, description, selected, multiSelect = false, disab
 			accessibilityState={{ selected, disabled }}
 			accessibilityHint={hint}
 		>
-			{multiSelect ? <Icon icon={selected ? SquareCheck : Square} color={selected ? colors.accent : colors.textDim} /> : null}
+			{multiSelect ? <Icon icon={selected ? SquareCheck : Square} color={selected ? theme.accent : colors.textDim} /> : null}
 			<View style={styles.optionBody}>
 				<Text style={cardStyles.optionLabel}>{label}</Text>
 				{description !== undefined && description.length > 0 ? <Text style={cardStyles.optionDescription} numberOfLines={3}>{description}</Text> : null}
@@ -398,10 +401,6 @@ const styles = StyleSheet.create({
 		borderWidth: StyleSheet.hairlineWidth,
 		borderColor: colors.border,
 		backgroundColor: colors.raised,
-	},
-	stepOn: {
-		borderColor: colors.accent,
-		backgroundColor: colors.accentWash,
 	},
 	stepText: {
 		fontSize: type.meta,

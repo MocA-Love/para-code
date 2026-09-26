@@ -6,7 +6,7 @@ import { hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentCommandCatalogState, AgentCommandOption } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
-import { Icon } from '../../ui/index.js';
+import { Icon, useThemeColors } from '../../ui/index.js';
 
 /** 候補の一覧の高さの上限（5行ぶん。超えたら中でスクロールする）。 */
 const LIST_MAX_HEIGHT = 260;
@@ -21,6 +21,7 @@ export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 	onSelect: (command: AgentCommandOption) => void;
 	onRetry: () => void;
 }) {
+	const theme = useThemeColors();
 	return (
 		<View style={styles.surface}>
 			{catalog === undefined || catalog.status === 'loading' ? (
@@ -33,7 +34,7 @@ export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 					<Icon icon={RotateCw} color={colors.textDim} />
 					<View style={styles.body}>
 						<Text style={styles.error}>{catalog.errorMessage ?? 'コマンドの一覧を取得できませんでした'}</Text>
-						<Text style={styles.retry}>押して取り直す</Text>
+						<Text style={[styles.retry, { color: theme.accent }]}>押して取り直す</Text>
 					</View>
 				</Pressable>
 			) : commands.length === 0 ? (

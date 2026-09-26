@@ -6,7 +6,7 @@ import { Check, ChevronRight } from 'lucide-react-native';
 import { ProviderLogo } from '../../components/providerLogo.js';
 import type { RateLimitAccount, RateLimitProviderSnapshot } from '../../store.js';
 import { alpha, colors, radius, space, type } from '../../theme.js';
-import { Icon, Meter, MeterRow, iconSize, type LucideIcon } from '../../ui/index.js';
+import { Icon, Meter, MeterRow, iconSize, useThemeColors, type LucideIcon } from '../../ui/index.js';
 import { accountName, accountStatusMessage, accountWindows, providerEmptyMessage, resetInLabel } from './usageSummary.js';
 
 /**
@@ -42,12 +42,13 @@ export function UsageSection({ title, icon, logo, onPress, children, dimmed = fa
 
 /** 面の中の1行（モックの `.acrow`）。右端に選択中の印や山かっこを置ける。 */
 export function UsageRow({ children, trailing }: { children: ReactNode; trailing?: 'check' | 'chevron' }) {
+	const theme = useThemeColors();
 	return (
 		<View style={styles.row}>
 			<View style={styles.main}>{children}</View>
 			{trailing !== undefined ? (
 				<View style={styles.trailing}>
-					<Icon icon={trailing === 'check' ? Check : ChevronRight} color={trailing === 'check' ? colors.accent : colors.textMuted} />
+					<Icon icon={trailing === 'check' ? Check : ChevronRight} color={trailing === 'check' ? theme.accent : colors.textMuted} />
 				</View>
 			) : null}
 		</View>

@@ -9,7 +9,7 @@ import { matchRanges, type FilesSearchMode } from '../../filesSearch.js';
 import { hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
-import { Icon, iconSize } from '../../ui/index.js';
+import { Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { formatSize, type TreeRow } from './fileTree.js';
 import { viewerKindOf } from './fileViewerModel.js';
 
@@ -38,6 +38,7 @@ export function TreeRowView({ row, expanded, highlighted, disabled, onToggle, on
 	onOpen: (path: string) => void;
 	onRetry: (path: string) => void;
 }) {
+	const theme = useThemeColors();
 	const indent = { paddingLeft: space.lg + row.depth * INDENT };
 	if (row.kind === 'loading') {
 		return (
@@ -77,7 +78,7 @@ export function TreeRowView({ row, expanded, highlighted, disabled, onToggle, on
 				}
 			}}
 			disabled={disabled && !dir}
-			style={({ pressed }) => [styles.row, indent, highlighted ? styles.rowHit : undefined, pressed ? styles.pressed : undefined]}
+			style={({ pressed }) => [styles.row, indent, highlighted ? { backgroundColor: theme.accentWash } : undefined, pressed ? styles.pressed : undefined]}
 			accessibilityRole="button"
 			accessibilityState={dir ? { expanded } : undefined}
 			accessibilityLabel={dir ? `フォルダ ${row.name}` : `ファイル ${row.name}`}
@@ -150,6 +151,7 @@ export function FilesSearchBar({ mode, onChangeMode, onChangeQuery, editable }: 
 
 /** 一致した箇所を青の太字で示す（地は敷かない）。規則は PC 側と同じ `matchRanges`。 */
 function Highlighted({ text, query, smartCase, lines, style }: { text: string; query: string; smartCase: boolean; lines: number; style: StyleProp<TextStyle> }) {
+	const theme = useThemeColors();
 	const ranges = matchRanges(text, query, smartCase);
 	const parts: ReactNode[] = [];
 	let at = 0;
@@ -157,7 +159,7 @@ function Highlighted({ text, query, smartCase, lines, style }: { text: string; q
 		if (range.start > at) {
 			parts.push(text.slice(at, range.start));
 		}
-		parts.push(<Text key={index} style={styles.hit}>{text.slice(range.start, range.end)}</Text>);
+		parts.push(<Text key={index} style={[styles.hit, { color: theme.accent }]}>{text.slice(range.start, range.end)}</Text>);
 		at = range.end;
 	}
 	if (at < text.length) {
@@ -246,9 +248,6 @@ const styles = StyleSheet.create({
 	resultRow: {
 		paddingLeft: space.lg,
 		paddingVertical: space.sm,
-	},
-	rowHit: {
-		backgroundColor: colors.accentWash,
 	},
 	pressed: {
 		backgroundColor: colors.raised,

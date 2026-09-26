@@ -7,7 +7,7 @@ import { hapticImpact, hapticSelection } from '../../haptics.js';
 import type { HomeStatusBucket } from '../../homeSort.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { colors, radius, space, type } from '../../theme.js';
-import { EmptyState, Icon, agentDotColor, iconSize } from '../../ui/index.js';
+import { EmptyState, Icon, agentDotColor, iconSize, useThemeColors } from '../../ui/index.js';
 
 /** 状態のまとまり → 点の色（theme の状態の色。待機は薄めた灰）。 */
 export function bucketDotColor(bucket: HomeStatusBucket): string {
@@ -49,12 +49,17 @@ export function SectionToggle({ title, count, collapsed, onToggle, icon, iconCol
 	);
 }
 
-/** 右下の白い ＋（モックの `.fab`。48×48）。エージェントの起動シートを開く。 */
+/** 右下の白い ＋（モックの `.fab`。48×48）。エージェントの起動シートを開く。色は設定 → 色の「主ボタン」。 */
 export function LaunchFab({ disabled, onPress }: { disabled: boolean; onPress: () => void }) {
 	const insets = useStableInsets();
+	const theme = useThemeColors();
 	return (
 		<Pressable
-			style={({ pressed }) => [styles.fab, { bottom: insets.bottom + space.xl }, pressed ? styles.fabPressed : undefined, disabled ? styles.fabDisabled : undefined]}
+			style={({ pressed }) => [
+				styles.fab,
+				{ bottom: insets.bottom + space.xl, backgroundColor: pressed ? theme.primaryPressed : theme.primary },
+				disabled ? styles.fabDisabled : undefined,
+			]}
 			onPress={() => {
 				hapticImpact('light');
 				onPress();
@@ -64,7 +69,7 @@ export function LaunchFab({ disabled, onPress }: { disabled: boolean; onPress: (
 			accessibilityLabel="エージェントを起動"
 			accessibilityState={{ disabled }}
 		>
-			<Icon icon={Plus} size={FAB_ICON} color={colors.onPrimary} strokeWidth={2.75} />
+			<Icon icon={Plus} size={FAB_ICON} color={theme.onPrimary} strokeWidth={2.75} />
 		</Pressable>
 	);
 }
@@ -137,7 +142,6 @@ const styles = StyleSheet.create({
 		width: FAB_SIZE,
 		height: FAB_SIZE,
 		borderRadius: radius.pill,
-		backgroundColor: colors.primary,
 		alignItems: 'center',
 		justifyContent: 'center',
 		shadowColor: colors.shadow,
@@ -145,9 +149,6 @@ const styles = StyleSheet.create({
 		shadowOpacity: 0.25,
 		shadowRadius: 4,
 		elevation: 4,
-	},
-	fabPressed: {
-		backgroundColor: colors.text,
 	},
 	fabDisabled: {
 		opacity: 0.45,

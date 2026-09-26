@@ -5,6 +5,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, t
 import { Check, ChevronRight } from 'lucide-react-native';
 import { HIT_SIZE, colors, radius, space, type } from '../theme.js';
 import { Icon, type LucideIcon } from './icon.js';
+import { useThemeColors } from './themeColorsStore.js';
 
 /**
  * 行を束ねる面（設定の inset grouped・シートの選択肢の束。モックの `.sec` / `.agroup`）。
@@ -37,6 +38,8 @@ export interface ListRowProps {
 	readonly label: string;
 	/** ラベルの下の補足（12pt）。 */
 	readonly hint?: string;
+	/** 補足の下に出す注意（12pt の琥珀色。保存はできるが気をつけてほしいこと）。 */
+	readonly warning?: string;
 	/** 行の頭のアイコン（16pt）。 */
 	readonly icon?: LucideIcon;
 	/** アイコンの色（既定は補足の灰。破壊的な行は赤）。 */
@@ -63,15 +66,16 @@ export interface ListRowProps {
  * 高さは 44pt 以上。押している間は `colors.raised` を敷く。
  */
 export function ListRow({
-	label, hint, icon, iconColor, leading, value, trailing = 'none', destructive = false,
+	label, hint, warning, icon, iconColor, leading, value, trailing = 'none', destructive = false,
 	disabled = false, loading = false, onPress, onLongPress, accessibilityLabel, selected,
 }: ListRowProps) {
+	const theme = useThemeColors();
 	const tone = destructive ? colors.red : iconColor ?? colors.textDim;
 	const lead = leading ?? (icon !== undefined ? <Icon icon={icon} color={tone} /> : null);
 	const trail = trailing === 'chevron'
 		? <Icon icon={ChevronRight} color={colors.textMuted} />
 		: trailing === 'check'
-			? <Icon icon={Check} color={colors.accent} />
+			? <Icon icon={Check} color={theme.accent} />
 			: trailing === 'none' ? null : trailing;
 	const interactive = onPress !== undefined || onLongPress !== undefined;
 	return (
@@ -81,13 +85,14 @@ export function ListRow({
 			disabled={!interactive || disabled || loading}
 			style={({ pressed }) => [styles.row, pressed && interactive ? styles.rowPressed : undefined, disabled ? styles.rowDisabled : undefined]}
 			accessibilityRole={interactive ? 'button' : undefined}
-			accessibilityLabel={accessibilityLabel ?? (hint !== undefined ? `${label}、${hint}` : label)}
+			accessibilityLabel={accessibilityLabel ?? [label, hint, warning].filter(part => part !== undefined).join('、')}
 			accessibilityState={{ disabled: disabled || loading, selected }}
 		>
 			{lead !== null ? <View style={styles.lead}>{lead}</View> : null}
 			<View style={styles.textCol}>
 				<Text style={[styles.label, destructive ? styles.labelDestructive : undefined]}>{label}</Text>
 				{hint !== undefined ? <Text style={styles.hint}>{hint}</Text> : null}
+				{warning !== undefined ? <Text style={styles.warning}>{warning}</Text> : null}
 			</View>
 			{value !== undefined ? <Text style={styles.value} numberOfLines={1}>{value}</Text> : null}
 			{loading ? <ActivityIndicator size="small" color={colors.textDim} /> : trail}
@@ -143,6 +148,11 @@ const styles = StyleSheet.create({
 	hint: {
 		fontSize: type.meta,
 		color: colors.textMuted,
+		marginTop: 2,
+	},
+	warning: {
+		fontSize: type.meta,
+		color: colors.amber,
 		marginTop: 2,
 	},
 	value: {

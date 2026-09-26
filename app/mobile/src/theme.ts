@@ -37,8 +37,16 @@ export const colors = {
 	textMuted: '#8c8c8c',
 	/** 旧名。本文より一段弱い文字。textDim と同じ。 */
 	textSoft: '#a1a1a1',
-	/** 選択中の印・リンク（Orca の accentBlue）。 */
+	/**
+	 * 選択中の印・リンク（Orca の accentBlue）。**利用者が設定 → 色で変えられる**ので、画面では
+	 * `useThemeColors().accent`（`src/ui/themeColorsStore.ts`）を使う。ここの値はその既定。
+	 */
 	accent: '#3b82f6',
+	/**
+	 * データの系列色の青（グラフ・スペースの色など）。accent と同じ値だが、色の設定で変わらないよう
+	 * 別に持つ。データの色分けに accent を流用しない。
+	 */
+	blue: '#3b82f6',
 	/** 旧名。accent の濃い版（面塗り用）。 */
 	accent2: '#2563eb',
 	/** accent を薄く敷く地（検索の一致行など）。 */
@@ -79,9 +87,14 @@ export const colors = {
 	redStrong: '#ef4444',
 	/** ドロワー・サイドバーの地。 */
 	sidebar: '#111111',
-	/** 塗りの主ボタン（`primary`）の地と、その上の文字（Orca の surfaceBright / bgBase）。 */
+	/**
+	 * 塗りの主ボタン（`primary`）の地と、その上の文字（Orca の surfaceBright / bgBase）。
+	 * 主ボタンの色は利用者が設定 → 色で変えられるので、画面では `useThemeColors().primary` を使う。
+	 */
 	primary: '#f5f5f5',
 	onPrimary: '#111111',
+	/** 利用者が選んだ暗い色の面の上に載せる文字（明るい色の上は `bg`）。 */
+	onDarkFill: '#ffffff',
 	/**
 	 * 端末・コード表示。アプリの面とは別の系統として持つ。
 	 * `terminalBg` は `src/components/termView.tsx` の `TERM_BG`（WebView の地色）と同じ値でなければ
@@ -250,3 +263,22 @@ export const status = {
 } as const;
 
 export type StatusKey = keyof typeof status;
+
+/**
+ * 設定 → 色で選べる候補（6列×2段。モックの PALETTE）。選んだ色は `src/ui/themeColors.ts` が
+ * 主ボタン・自分の発言と送信・選択の印とリンクへ配る。候補の外の色も hex で入れられる。
+ */
+export const colorChoices: readonly { readonly name: string; readonly hex: string }[] = [
+	{ name: '白', hex: '#f5f5f5' },
+	{ name: '灰', hex: '#a1a1a1' },
+	{ name: '水色', hex: '#09afd9' },
+	{ name: '青', hex: '#3b82f6' },
+	{ name: '藍', hex: '#6366f1' },
+	{ name: '紫', hex: '#a78bfa' },
+	{ name: '桃', hex: '#ec4899' },
+	{ name: '橙', hex: '#f97316' },
+	{ name: 'ティール', hex: '#14b8a6' },
+	{ name: '空', hex: '#7dd3fc' },
+	{ name: '砂', hex: '#d6c7a1' },
+	{ name: '濃灰', hex: '#3f3f46' },
+];

@@ -12,7 +12,7 @@ import { useAnswerSubmission } from '../../hooks/useAnswerSubmission.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentApprovalChoice, AgentMessageSendResult } from '../../store.js';
 import { alpha, colors, radius, space, tint, type } from '../../theme.js';
-import { BottomDrawer, DrawerTitle, Icon } from '../../ui/index.js';
+import { BottomDrawer, DrawerTitle, Icon, useThemeColors } from '../../ui/index.js';
 import { cardStyles } from './answerCardStyles.js';
 import { SubmissionStatus } from './submissionStatus.js';
 
@@ -26,7 +26,7 @@ const LINK_HEIGHT = 20;
  * `onApprove` で送り、送信後の状態は `useAnswerSubmission`（送信済み・応答なし・受け付け済み）。
  * 選択肢が届いていない旧経路では「許可 / 拒否」の2択へ倒す。
  *
- * 見た目はモックに合わせ、主ボタン（最初の許可）を青の塗りで先頭に置き、その他・拒否の順に並べる。
+ * 見た目はモックに合わせ、主ボタン（最初の許可）を主ボタンの色（設定 → 色）の塗りで先頭に置き、その他・拒否の順に並べる。
  * 取り消しの利かない操作を含むコマンドは赤いラベルで示し、長い詳細は「全文を表示」でシートに開く。
  */
 export function PermissionCard({ interactionId, onApprove, title, detail, choices, refreshing }: {
@@ -38,6 +38,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	refreshing: boolean;
 }) {
 	const submission = useAnswerSubmission(interactionId);
+	const theme = useThemeColors();
 	const [detailOpen, setDetailOpen] = useState(false);
 	const locked = isSubmissionLocked(submission.state);
 	const disabled = locked || refreshing;
@@ -70,7 +71,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	return (
 		<View style={cardStyles.card}>
 			<View style={cardStyles.head}>
-				<Icon icon={ShieldQuestion} color={colors.accent} />
+				<Icon icon={ShieldQuestion} color={theme.accent} />
 				<Text style={cardStyles.title}>{title ?? 'エージェントが確認を求めています'}</Text>
 			</View>
 			{dangers.length > 0 ? (
@@ -88,7 +89,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 			) : null}
 			{longDetail ? (
 				<Pressable onPress={() => { hapticSelection(); setDetailOpen(true); }} hitSlop={hitSlopToMinimum(LINK_HEIGHT)} accessibilityRole="button">
-					<Text style={cardStyles.link}>全文を表示</Text>
+					<Text style={[cardStyles.link, { color: theme.accent }]}>全文を表示</Text>
 				</Pressable>
 			) : null}
 			{locked ? (
@@ -103,14 +104,14 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 							style={({ pressed }) => [
 								cardStyles.option,
 								styles.choice,
-								variant === 'primary' ? styles.primary : undefined,
+								variant === 'primary' ? { backgroundColor: theme.primary, borderColor: theme.primary } : undefined,
 								disabled ? cardStyles.optionDisabled : undefined,
 								pressed ? cardStyles.optionPressed : undefined,
 							]}
 							accessibilityRole="button"
 							accessibilityState={{ disabled }}
 						>
-							<Text style={[styles.choiceText, variant === 'primary' ? styles.primaryText : undefined]}>{choice.label}</Text>
+							<Text style={[styles.choiceText, variant === 'primary' ? { color: theme.onPrimary } : undefined]}>{choice.label}</Text>
 						</Pressable>
 					))}
 				</View>
@@ -164,13 +165,6 @@ const styles = StyleSheet.create({
 		fontSize: type.body,
 		fontWeight: '600',
 		color: colors.text,
-	},
-	primary: {
-		backgroundColor: colors.accent,
-		borderColor: colors.accent,
-	},
-	primaryText: {
-		color: colors.onAccent,
 	},
 	full: {
 		fontFamily: monoFamily,

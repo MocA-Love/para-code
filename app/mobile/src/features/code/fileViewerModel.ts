@@ -5,6 +5,7 @@ import { classifyMobileFileKind } from '../../components/officeCapability.js';
 import { breadcrumbItems, type BreadcrumbItem } from '../../filesBreadcrumb.js';
 import type { FsReadResult } from '../../store.js';
 import { colors, radius, type } from '../../theme.js';
+import type { ThemeColors } from '../../ui/themeColors.js';
 import { parentPath } from './fileTree.js';
 
 /**
@@ -143,7 +144,11 @@ export function codeLines(result: Pick<FsReadResult, 'content' | 'html'>): strin
  * トークン色（`css`）と地の色を当てる。`focusLine`（検索の一致行）があればその行に色を敷いて
  * 中央までスクロールする（このときだけ WebView のスクリプトを有効にする。`webViewScriptPolicy`）。
  */
-export function buildCodeHtml(result: FsReadResult, focusLine?: number): string {
+/** 選択の印・リンクの色（設定 → 色）。渡さなければ既定。 */
+type AccentColors = Pick<ThemeColors, 'accent' | 'accentWash'>;
+const DEFAULT_ACCENT: AccentColors = { accent: colors.accent, accentWash: colors.accentWash };
+
+export function buildCodeHtml(result: FsReadResult, focusLine?: number, accent: AccentColors = DEFAULT_ACCENT): string {
 	const bg = result.bg ?? colors.codeBg;
 	const fg = result.fg ?? colors.terminalFg;
 	const rows = codeLines(result)
@@ -161,13 +166,13 @@ export function buildCodeHtml(result: FsReadResult, focusLine?: number): string 
 	.l { display: flex; }
 	.l i { font-style: normal; width: 40px; flex: none; text-align: right; padding-right: 12px; color: ${colors.idle}; user-select: none; -webkit-user-select: none; }
 	.l span { white-space: pre; padding-right: 12px; }
-	.l.f { background: ${colors.accentWash}; }
+	.l.f { background: ${accent.accentWash}; }
 </style>
 </head><body><div class="src monaco-tokenized-source">${rows}</div>${focusScript}</body></html>`;
 }
 
 /** Markdown のプレビュー（モックの `.mdv`）。地と文字は PC のテーマに合わせる。 */
-export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>): string {
+export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>, accent: AccentColors = DEFAULT_ACCENT): string {
 	const bg = result.bg ?? colors.codeBg;
 	const fg = result.fg ?? colors.text;
 	const rendered = marked.parse(result.content, { async: false });
@@ -180,7 +185,7 @@ export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 
 	h3 { font-size: ${type.heading}px; margin: 16px 0 8px; }
 	p { margin: 0 0 10px; }
 	ul, ol { margin: 0 0 10px; padding-left: 22px; }
-	a { color: ${colors.accent}; }
+	a { color: ${accent.accent}; }
 	img { max-width: 100%; }
 	code { font-family: Menlo, ui-monospace, monospace; font-size: ${type.label}px; background: ${colors.raised}; border-radius: ${radius.key}px; padding: 1px 4px; }
 	pre { background: ${colors.bg}; border: 0.5px solid ${colors.border}; border-radius: ${radius.row}px; padding: 10px 12px; font-size: ${type.meta}px; line-height: 18px; overflow-x: auto; margin: 0 0 10px; }

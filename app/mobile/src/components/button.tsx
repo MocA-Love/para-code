@@ -4,6 +4,8 @@ import React, { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import type { ThemeColors } from '../ui/themeColors.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'destructive' | 'ghost';
 export type ButtonSize = 'md' | 'sm';
@@ -23,6 +25,18 @@ const VARIANT: Record<ButtonVariant, { bg: string; fg: string; border?: string }
 	// 地を持たない文字だけの操作（「全文を表示」「さらに読み込む」など）。
 	ghost: { bg: 'transparent', fg: colors.accent },
 };
+
+/** 設定 → 色に付いていく種類（主ボタンと、リンクの色の ghost）だけ色を差し替える。 */
+function variantColors(variant: ButtonVariant, theme: ThemeColors): { bg: string; fg: string; border?: string } {
+	switch (variant) {
+		case 'primary':
+			return { bg: theme.primary, fg: theme.onPrimary };
+		case 'ghost':
+			return { ...VARIANT.ghost, fg: theme.accent };
+		default:
+			return VARIANT[variant];
+	}
+}
 
 /**
  * ボタンの共通部品。角丸・高さ・文字サイズ・押下時の見た目をここで決め、
@@ -47,7 +61,8 @@ export function Button({ label, children, onPress, variant = 'primary', size = '
 	accessibilityLabel?: string;
 	testID?: string;
 }) {
-	const v = VARIANT[variant];
+	const theme = useThemeColors();
+	const v = variantColors(variant, theme);
 	const height = HEIGHT[size];
 	const slop = Math.max(0, (HIT_SIZE - height) / 2);
 	const inactive = disabled === true || loading === true;

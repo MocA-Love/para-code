@@ -6,7 +6,7 @@ import { Check, Plus, type LucideIcon } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { SPACE_NOTE_MAX_LENGTH, type SpaceNoteLine } from '../../spaceNote.js';
 import { colors, radius, space, type } from '../../theme.js';
-import { Icon, iconSize } from '../../ui/index.js';
+import { Icon, iconSize, useThemeColors } from '../../ui/index.js';
 
 /**
  * スペースのメモの画面の部品（旧画面 `legacy-screens/space-note.tsx` を Orca の見た目で作り直したもの）。
@@ -24,6 +24,7 @@ export function NoteLines({ lines, onToggle, disabled }: {
 	onToggle: (lineIndex: number) => void;
 	disabled: boolean;
 }) {
+	const theme = useThemeColors();
 	return (
 		<>
 			{lines.map(line => {
@@ -45,8 +46,8 @@ export function NoteLines({ lines, onToggle, disabled }: {
 								accessibilityState={{ checked: line.done, disabled }}
 								accessibilityLabel={line.text.length > 0 ? line.text : '空のチェック項目'}
 							>
-								<View style={[styles.check, line.done ? styles.checkDone : undefined]}>
-									{line.done ? <Icon icon={Check} size={iconSize.xs} color={colors.onPrimary} strokeWidth={3} /> : null}
+								<View style={[styles.check, line.done ? { borderColor: theme.primary, backgroundColor: theme.primary } : undefined]}>
+									{line.done ? <Icon icon={Check} size={iconSize.xs} color={theme.onPrimary} strokeWidth={3} /> : null}
 								</View>
 								<Text style={[styles.taskLabel, line.done ? styles.taskLabelDone : undefined]}>{line.text}</Text>
 							</Pressable>
@@ -181,10 +182,6 @@ const styles = StyleSheet.create({
 		borderColor: colors.textMuted,
 		alignItems: 'center',
 		justifyContent: 'center',
-	},
-	checkDone: {
-		borderColor: colors.primary,
-		backgroundColor: colors.primary,
 	},
 	checkGhost: {
 		borderStyle: 'dashed',

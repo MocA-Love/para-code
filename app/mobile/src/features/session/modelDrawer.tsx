@@ -8,7 +8,7 @@ import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
 import type { AgentMessageSendResult, AgentModelControlState } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
-import { BottomDrawer, Button, Icon, iconSize } from '../../ui/index.js';
+import { BottomDrawer, Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 
 /** ピルの見た目の高さ（モックの `.pill`: 28）。当たり判定は 44 に広げる。 */
 const PILL_HEIGHT = 28;
@@ -41,6 +41,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	onRequestCodexCatalog: () => void;
 	onUpdateCodexSettings: (model: string, effort: string) => void;
 }) {
+	const theme = useThemeColors();
 	const [open, setOpen] = useState(false);
 	const [pickedModelId, setPickedModelId] = useState<string | undefined>(undefined);
 	const [pickedEffort, setPickedEffort] = useState<string | undefined>(undefined);
@@ -196,7 +197,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 										<Text style={styles.rowLabel}>{option.label}</Text>
 										{currentModel?.id === option.id ? <Text style={styles.rowHint}>使用中</Text> : null}
 									</View>
-									{isSelected ? <Icon icon={Check} color={colors.accent} /> : null}
+									{isSelected ? <Icon icon={Check} color={theme.accent} /> : null}
 								</Pressable>
 							);
 						})}
@@ -213,7 +214,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 										key={level}
 										disabled={locked}
 										onPress={() => { hapticSelection(); setPickedEffort(level); }}
-										style={[styles.effort, on ? styles.effortOn : undefined]}
+										style={[styles.effort, on ? { borderColor: theme.accent, backgroundColor: theme.accentWash } : undefined]}
 										accessibilityRole="button"
 										accessibilityState={{ selected: on, disabled: locked }}
 									>
@@ -335,10 +336,6 @@ const styles = StyleSheet.create({
 		borderWidth: StyleSheet.hairlineWidth,
 		borderColor: colors.border,
 		backgroundColor: colors.raised,
-	},
-	effortOn: {
-		borderColor: colors.accent,
-		backgroundColor: colors.accentWash,
 	},
 	effortText: {
 		fontSize: type.body,

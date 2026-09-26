@@ -136,7 +136,7 @@ export default function RtkScreen() {
 								label={day.date.slice(5)}
 								value={formatTokens(day.savedTokens)}
 								percent={barPercent(day.savedTokens, maxDailySaved)}
-								color={colors.accent}
+								color={colors.blue}
 							/>
 						))}
 					</DetailCard>
@@ -150,7 +150,7 @@ export default function RtkScreen() {
 								key={`${row.command}-${index}`}
 								name={row.command}
 								value={formatTokens(row.savedTokens)}
-								segments={[{ percent: barPercent(row.savedTokens, maxCommandSaved), color: colors.accent }]}
+								segments={[{ percent: barPercent(row.savedTokens, maxCommandSaved), color: colors.blue }]}
 								footer={<Text style={styles.meta}>{row.count} 回 · 平均 {row.avgSavingsPct.toFixed(0)}% 削減</Text>}
 							/>
 						))}

@@ -5,6 +5,7 @@ import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { alpha, colors, radius, tint, type, type StatusKey } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 export type BadgeTone = 'neutral' | 'accent' | 'red' | 'amber' | 'green' | 'yellow' | 'purple';
 
@@ -46,7 +47,9 @@ export function Badge({ label, tone = 'neutral', icon, mono, style }: {
 	mono?: boolean;
 	style?: StyleProp<ViewStyle>;
 }) {
-	const t = TONE[tone];
+	const theme = useThemeColors();
+	// accent は設定 → 色の「選択の印・リンク」に付いていく。
+	const t = tone === 'accent' ? { bg: theme.accentWash, fg: theme.accent } : TONE[tone];
 	return (
 		<View style={[styles.badge, { backgroundColor: t.bg }, style]}>
 			{icon !== undefined && <Ionicons name={icon} size={11} color={t.fg} />}

@@ -8,9 +8,11 @@ import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
-import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
+import { tintOf } from '../ui/themeColors.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 /** RTCView（react-native-webrtc）。未リンクのビルドでは undefined（JPEGミラーのみ）。 */
 const RTCViewComponent = getRtcView() as ComponentType<{
@@ -41,6 +43,7 @@ interface BrowserTarget {
  * `active` が false の間（画面がフォーカスを失った間）は screencast を停止する。
  */
 export function BrowserPanel({ active, preferredToken }: { active: boolean; preferredToken?: string }) {
+	const theme = useThemeColors();
 	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection, sidebarCollapsed, setSidebarCollapsed } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
 		browserInput: s.browserInput, frame: s.browserFrame, connection: s.connection,
@@ -433,7 +436,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 						<Pressable
 							key={t.targetId}
 							disabled={!live}
-							style={[styles.tabChip, selected && styles.tabChipSelected]}
+							style={[styles.tabChip, selected && { backgroundColor: theme.accentWash, borderColor: tintOf(theme.accent, alpha.strong) }]}
 							onPress={() => {
 								if (t.targetId === activeTargetId && mirrorActiveRef.current === t.targetId) {
 									return;
@@ -442,8 +445,8 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 								void start(t.targetId, t.url);
 							}}
 						>
-							{shared ? <Ionicons name="link" size={11} color={selected ? colors.accent : colors.green} /> : null}
-							<Text style={[styles.tabChipText, selected && styles.tabChipTextSelected]} numberOfLines={1}>{chipLabel(t)}</Text>
+							{shared ? <Ionicons name="link" size={11} color={selected ? theme.accent : colors.green} /> : null}
+							<Text style={[styles.tabChipText, selected && { color: theme.accent }]} numberOfLines={1}>{chipLabel(t)}</Text>
 						</Pressable>
 					);
 				})}
@@ -466,7 +469,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 					) : null}
 					{targets !== undefined ? (
 						<Pressable disabled={!live} style={[styles.reloadTargets, !live && styles.disabled]} onPress={() => { hapticImpact('light'); autoStartedRef.current = false; void loadTargets(); }}>
-							<Text style={styles.link}>一覧を更新</Text>
+							<Text style={[styles.link, { color: theme.accent }]}>一覧を更新</Text>
 						</Pressable>
 					) : null}
 				</View>
@@ -592,10 +595,8 @@ const styles = StyleSheet.create({
 		flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 6,
 		borderRadius: radius.card, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, maxWidth: 220,
 	},
-	tabChipSelected: { backgroundColor: colors.accentWash, borderColor: tint(colors.accent, alpha.strong) },
 	disabled: { opacity: 0.45 },
 	tabChipText: { color: colors.textDim, fontSize: type.caption },
-	tabChipTextSelected: { color: colors.accent },
 	emptyBox: { flex: 1, justifyContent: 'center', padding: 24 },
 	spinner: { marginTop: 24 },
 	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', marginTop: 16, lineHeight: 22 },

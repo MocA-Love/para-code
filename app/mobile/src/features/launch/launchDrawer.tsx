@@ -13,7 +13,7 @@ import { useParaToast } from '../../paraToast.js';
 import { routes } from '../../routes.js';
 import type { WorktreeFormResult } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
-import { BottomDrawer, Button, DrawerTitle, Icon, PickerDrawer, iconSize, type PickerOption } from '../../ui/index.js';
+import { BottomDrawer, Button, DrawerTitle, Icon, PickerDrawer, iconSize, useThemeColors, type PickerOption } from '../../ui/index.js';
 import { spaceColor } from '../pc/spaceColor.js';
 import {
 	TERMINAL_KIND,
@@ -66,6 +66,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 	const spaces = useAppStore(s => s.workspace?.workspaces) ?? NO_SPACES;
 	const activeWs = useAppStore(s => s.workspace?.activeWs);
 
+	const theme = useThemeColors();
 	const [sheet, setSheet] = useState<Sheet | undefined>(undefined);
 	const next = useRef<Sheet | 'launched' | undefined>(undefined);
 	const launchedSpace = useRef<string | undefined>(undefined);
@@ -285,7 +286,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 							onChangeText={setName}
 							placeholder="例: fix/login（空欄なら自動で決めます）"
 							placeholderTextColor={colors.textMuted}
-							selectionColor={colors.accent}
+							selectionColor={theme.accent}
 							autoCapitalize="none"
 							autoCorrect={false}
 							keyboardAppearance="dark"
@@ -304,7 +305,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 							onChangeText={setPrompt}
 							placeholder="例: ログイン画面のエラー表示を直して"
 							placeholderTextColor={colors.textMuted}
-							selectionColor={colors.accent}
+							selectionColor={theme.accent}
 							multiline
 							textAlignVertical="top"
 							keyboardAppearance="dark"

@@ -11,7 +11,7 @@ import { hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentChatMessage } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
-import { Icon } from '../../ui/index.js';
+import { Icon, useThemeColors } from '../../ui/index.js';
 import type { ChatRow } from './chatRows.js';
 
 /** ツールの行は見た目 28。当たり判定は上下に 8 ずつ広げて 44 にする。 */
@@ -47,6 +47,8 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 function MessageRow({ message, terminalKey }: { message: AgentChatMessage; terminalKey: string }) {
 	const hasImages = (message.images?.length ?? 0) > 0;
 	const hasText = message.text.trim().length > 0;
+	// 自分の発言の吹き出しは設定 → 色の「自分の発言と送信」。
+	const theme = useThemeColors();
 	if (message.kind === 'peer_message') {
 		return (
 			<View style={styles.row}>
@@ -62,8 +64,8 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 	if (message.role === 'user') {
 		return (
 			<View style={[styles.row, styles.userRow]}>
-				<View style={styles.bubble}>
-					{hasText ? <Text style={styles.bubbleText} selectable>{message.text}</Text> : null}
+				<View style={[styles.bubble, { backgroundColor: theme.bubble }]}>
+					{hasText ? <Text style={[styles.bubbleText, { color: theme.onBubble }]} selectable>{message.text}</Text> : null}
 					{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
 				</View>
 			</View>

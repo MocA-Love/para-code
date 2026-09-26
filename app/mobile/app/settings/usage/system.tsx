@@ -254,7 +254,7 @@ export default function SystemScreen() {
 						name={row.name}
 						value={metric === 'cpu' ? formatCpu(row.cpu) : formatBytes(row.memory)}
 						sub={row.sub}
-						segments={[{ percent: barPercent(row[metric], max, 1), color: colors.accent }]}
+						segments={[{ percent: barPercent(row[metric], max, 1), color: colors.blue }]}
 					/>
 				))}
 			</DetailCard>
@@ -340,7 +340,7 @@ export default function SystemScreen() {
 											{row.error !== undefined ? <Text style={styles.spaceSub} numberOfLines={1}>{row.error}</Text> : null}
 											<Bar
 												segments={[
-													{ percent: barPercent(row.ownBytes, max, 1), color: colors.accent },
+													{ percent: barPercent(row.ownBytes, max, 1), color: colors.blue },
 													...(hasWorktrees ? [{ percent: barPercent(worktreeBytes, max, 1), color: colors.purple }] : []),
 												]}
 											/>
@@ -365,7 +365,7 @@ export default function SystemScreen() {
 						</DetailCard>
 						{worktreeTotal > 0 ? (
 							<View style={styles.legend}>
-								<View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: colors.accent }]} /><Text style={styles.legendText}>本体</Text></View>
+								<View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: colors.blue }]} /><Text style={styles.legendText}>本体</Text></View>
 								<View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: colors.purple }]} /><Text style={styles.legendText}>worktree</Text></View>
 							</View>
 						) : null}

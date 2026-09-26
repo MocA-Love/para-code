@@ -11,6 +11,8 @@ import { formatImageBytes } from '../agentToolImages.js';
 import { hapticSelection } from '../haptics.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
+import { tintOf } from '../ui/themeColors.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 /**
  * タイムラインのステップを開いたときの中身を、ツールの性質ごとに作り分ける。
@@ -293,10 +295,11 @@ function safeStringify(value: unknown): string | undefined {
 function FileCard({ path }: { path: string }) {
 	const name = basename(path);
 	const dir = path.slice(0, Math.max(0, path.length - name.length));
+	const theme = useThemeColors();
 	return (
 		<View style={ioStyles.card}>
-			<View style={ioStyles.cardIcon}>
-				<Ionicons name="document-text-outline" size={14} color={colors.accent} />
+			<View style={[ioStyles.cardIcon, { backgroundColor: theme.accentWash }]}>
+				<Ionicons name="document-text-outline" size={14} color={theme.accent} />
 			</View>
 			<View style={ioStyles.cardBody}>
 				<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
@@ -309,10 +312,11 @@ function FileCard({ path }: { path: string }) {
 /** WebFetch の取得先。 */
 function SiteCard({ url }: { url: string }) {
 	const host = url.replace(/^https?:\/\//, '').split('/')[0] ?? url;
+	const theme = useThemeColors();
 	return (
 		<View style={ioStyles.card}>
-			<View style={ioStyles.cardIcon}>
-				<Ionicons name="globe-outline" size={14} color={colors.accent} />
+			<View style={[ioStyles.cardIcon, { backgroundColor: theme.accentWash }]}>
+				<Ionicons name="globe-outline" size={14} color={theme.accent} />
 			</View>
 			<View style={ioStyles.cardBody}>
 				<Text style={ioStyles.cardTitle} numberOfLines={1}>{host}</Text>
@@ -380,6 +384,7 @@ function HitList({ message, terminalKey }: { message: AgentChatMessage; terminal
 
 /** TodoWrite のチェックリスト。 */
 function TodoList({ input }: { input: Record<string, unknown> | undefined }) {
+	const theme = useThemeColors();
 	const todos = Array.isArray(input?.['todos']) ? input['todos'] : [];
 	const items: { content: string; status: string }[] = [];
 	for (const todo of todos) {
@@ -397,10 +402,10 @@ function TodoList({ input }: { input: Record<string, unknown> | undefined }) {
 	return (
 		<View style={ioStyles.list}>
 			{items.map((item, index) => (
-				<View key={`${index}:${item.content}`} style={[ioStyles.listRow, index === 0 ? ioStyles.listRowFirst : null, item.status === 'in_progress' ? styles.todoActive : null]}>
-					<View style={[styles.todoBox, item.status === 'completed' ? styles.todoBoxDone : null, item.status === 'in_progress' ? styles.todoBoxActive : null]}>
+				<View key={`${index}:${item.content}`} style={[ioStyles.listRow, index === 0 ? ioStyles.listRowFirst : null, item.status === 'in_progress' ? { backgroundColor: tintOf(theme.accent, alpha.faint) } : null]}>
+					<View style={[styles.todoBox, item.status === 'completed' ? styles.todoBoxDone : null, item.status === 'in_progress' ? { borderColor: theme.accent } : null]}>
 						{item.status === 'completed' ? <Ionicons name="checkmark" size={9} color={colors.bg} /> : null}
-						{item.status === 'in_progress' ? <View style={styles.todoDot} /> : null}
+						{item.status === 'in_progress' ? <View style={[styles.todoDot, { backgroundColor: theme.accent }]} /> : null}
 					</View>
 					<Text style={[styles.todoText, item.status === 'completed' ? styles.todoTextDone : null]} numberOfLines={2}>{item.content}</Text>
 				</View>
@@ -427,10 +432,8 @@ const styles = StyleSheet.create({
 	diffLine: { fontSize: type.badge, lineHeight: 15, fontFamily: monoFamily, paddingHorizontal: 9 },
 	diffAdd: { color: colors.green, backgroundColor: tint(colors.green, alpha.faint) },
 	diffDel: { color: colors.red, backgroundColor: tint(colors.red, alpha.faint) },
-	todoActive: { backgroundColor: tint(colors.accent, alpha.faint) },
 	todoBox: { width: 14, height: 14, borderRadius: radius.key, ...squircle, borderWidth: 1.5, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
 	todoBoxDone: { backgroundColor: colors.green, borderColor: colors.green },
-	todoBoxActive: { borderColor: colors.accent },
 	todoDot: { width: 6, height: 6, borderRadius: radius.pill, ...squircle, backgroundColor: colors.accent },
 	todoText: { flex: 1, color: colors.text, fontSize: type.meta, lineHeight: 17 },
 	todoTextDone: { color: colors.textDim, textDecorationLine: 'line-through' },

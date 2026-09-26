@@ -10,6 +10,7 @@ import type { RouteHref } from '../../routes.js';
  * |---|---|
  * | `/settings/session-view` | セッションの開き方（チャット UI かターミナルか） |
  * | `/settings/quick-replies` | 会話画面のクイック返信（入力欄の上のチップ） |
+ * | `/settings/colors` | 色（主ボタン・自分の発言と送信・選択の印とリンクの色） |
  * | `/settings/usage/cost` | コスト（日別・モデル別） |
  * | `/settings/usage/rtk` | RTK の節約 |
  * | `/settings/usage/github` | GitHub API |
@@ -20,5 +21,6 @@ export type UsageDetailPage = 'cost' | 'rtk' | 'github' | 'system';
 export const settingsRoutes = {
 	sessionView: (): RouteHref => '/settings/session-view',
 	quickReplies: (): RouteHref => '/settings/quick-replies',
+	colors: (): RouteHref => '/settings/colors',
 	usageDetail: (page: UsageDetailPage): RouteHref => `/settings/usage/${page}`,
 } as const;

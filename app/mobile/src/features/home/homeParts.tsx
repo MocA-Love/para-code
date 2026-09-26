@@ -8,7 +8,7 @@ import { useStableInsets } from '../../hooks/useStableInsets.js';
 import type { RateLimitAccount, RateLimitsResult } from '../../store.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { pickRateLimitAccount } from '../../usageFormat.js';
-import { Card, HeaderButton, Icon, Meter, MeterRow, SectionHeader, iconSize } from '../../ui/index.js';
+import { Card, HeaderButton, Icon, Meter, MeterRow, SectionHeader, iconSize, useThemeColors } from '../../ui/index.js';
 import { ParaLogo } from '../pairing/paraLogo.js';
 import { accountName } from '../settings/usageSummary.js';
 
@@ -130,6 +130,7 @@ export function AccountUsageCard({ limits, onPress }: { limits: RateLimitsResult
 
 /** PC が1台も無いときのホーム（Orca の MobileHomeEmptyState）。 */
 export function HomeEmptyState({ onPair }: { onPair: () => void }) {
+	const theme = useThemeColors();
 	const steps = [
 		{ title: 'PC で Para Code を開く', body: '設定 → モバイル を開き、ペアリング用の QR コードを表示します。' },
 		{ title: 'コードを読み取る', body: '上のボタンを押すと読み取り画面が開きます。PC の画面の QR コードに向けてください。' },
@@ -141,13 +142,13 @@ export function HomeEmptyState({ onPair }: { onPair: () => void }) {
 				<Text style={styles.emptyTitle} accessibilityRole="header">デスクトップをつなぐ</Text>
 				<Text style={styles.emptyBody}>PC の Para Code とペアリングすると、エージェントの様子を確かめたり、どのターミナルにも入ったり、スマホから作業を進めたりできます。</Text>
 				<Pressable
-					style={({ pressed }) => [styles.pairButton, pressed ? styles.pairButtonPressed : undefined]}
+					style={({ pressed }) => [styles.pairButton, { backgroundColor: theme.primary }, pressed ? styles.pairButtonPressed : undefined]}
 					onPress={onPair}
 					accessibilityRole="button"
 					accessibilityLabel="デスクトップとペアリング"
 				>
-					<Icon icon={QrCode} size={iconSize.lg} color={colors.onPrimary} />
-					<Text style={styles.pairButtonText}>デスクトップとペアリング</Text>
+					<Icon icon={QrCode} size={iconSize.lg} color={theme.onPrimary} />
+					<Text style={[styles.pairButtonText, { color: theme.onPrimary }]}>デスクトップとペアリング</Text>
 				</Pressable>
 			</View>
 			<View style={styles.steps}>
