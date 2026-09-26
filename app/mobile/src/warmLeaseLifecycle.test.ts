@@ -104,7 +104,9 @@ vi.mock('./components/selectablePill.js', () => ({ SelectablePill: 'SelectablePi
 vi.mock('./hooks/useAppIsActive.js', () => ({ useAppIsActive: () => componentHarness.appActive }));
 vi.mock('./hooks/useStableInsets.js', () => ({ useStableInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 vi.mock('./ipad/useContentColumn.js', () => ({ useContentColumnStyle: () => ({}) }));
-vi.mock('./theme.js', () => ({
+// 追加されたトークン（type / alpha など）まで列挙し続けなくて済むよう、本物を土台にして色などだけ差し替える。
+vi.mock('./theme.js', async (importOriginal) => ({
+	...await importOriginal<typeof import('./theme.js')>(),
 	colors: new Proxy({}, { get: () => '#000000' }),
 	radius: { card: 12 },
 	squircle: () => ({}),
