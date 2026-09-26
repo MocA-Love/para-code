@@ -66,7 +66,8 @@ const styles = StyleSheet.create({
 		gap: space.xs,
 	},
 	label: {
-		width: LABEL_WIDTH,
+		// 「5h」「7d」は既定の幅に揃え、「メモリ」「GraphQL」のような長い名前は切らずに伸ばす。
+		minWidth: LABEL_WIDTH,
 		fontSize: type.meta,
 		color: colors.textMuted,
 	},

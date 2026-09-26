@@ -11,6 +11,9 @@
  * | `/pc/[pcId]/source-control/[spaceId]` | ソース管理 |
  * | `/pc/[pcId]/review/[spaceId]?path=…` | 差分レビュー |
  * | `/pc/[pcId]/files/[spaceId]?path=…` | ファイル |
+ * | `/pc/[pcId]/note/[spaceId]` | スペースのメモ |
+ * | `/pc/[pcId]/session/[spaceId]/activity?terminal=…&epoch=…` | エージェントのサブエージェントとタスク |
+ * | `/pc/[pcId]/session/[spaceId]/activity/[agentId]?terminal=…&epoch=…` | サブエージェント1つの詳細 |
  * | `/notifications` | 通知の一覧 |
  * | `/settings`・`/settings/<page>` | 設定と、その下の各ページ |
  * | `/pair`・`/onboarding` | ペアリング・はじめて |
@@ -109,6 +112,23 @@ export const routes = {
 	files: (pcId: string, spaceId: string, path?: string): RouteHref => ({
 		pathname: '/pc/[pcId]/files/[spaceId]',
 		params: withOptional({ pcId, spaceId }, { path }),
+	}),
+	note: (pcId: string, spaceId: string): RouteHref => ({
+		pathname: '/pc/[pcId]/note/[spaceId]',
+		params: { pcId, spaceId },
+	}),
+	/**
+	 * エージェント（`terminalKey` のターミナル）のサブエージェントとタスク。`epoch` は開いたときの
+	 * 会話のセッション（`AgentChatState.epoch`）で、開いている間に親のセッションが替わったら知らせるのに使う。
+	 */
+	activity: (pcId: string, spaceId: string, terminalKey: string, epoch?: string): RouteHref => ({
+		pathname: '/pc/[pcId]/session/[spaceId]/activity',
+		params: withOptional({ pcId, spaceId, terminal: terminalKey }, { epoch }),
+	}),
+	/** サブエージェント1つの詳細（会話・ツールの履歴と子）。 */
+	activityAgent: (pcId: string, spaceId: string, terminalKey: string, agentId: string, epoch?: string): RouteHref => ({
+		pathname: '/pc/[pcId]/session/[spaceId]/activity/[agentId]',
+		params: withOptional({ pcId, spaceId, agentId, terminal: terminalKey }, { epoch }),
 	}),
 	notifications: (): RouteHref => '/notifications',
 	settings: (page?: SettingsPage): RouteHref => (page === undefined ? '/settings' : `/settings/${page}`),

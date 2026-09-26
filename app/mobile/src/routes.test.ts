@@ -52,6 +52,22 @@ describe('routes', () => {
 		expect(routes.files('p', 's')).toEqual({ pathname: '/pc/[pcId]/files/[spaceId]', params: { pcId: 'p', spaceId: 's' } });
 	});
 
+	test('メモはスペースの下、サブエージェントはセッションの下（ターミナルと会話のセッションはクエリ）', () => {
+		expect(routes.note('p', 's')).toEqual({ pathname: '/pc/[pcId]/note/[spaceId]', params: { pcId: 'p', spaceId: 's' } });
+		expect(routes.activity('p', 's', 'k', 'e1')).toEqual({
+			pathname: '/pc/[pcId]/session/[spaceId]/activity',
+			params: { pcId: 'p', spaceId: 's', terminal: 'k', epoch: 'e1' },
+		});
+		expect(routes.activity('p', 's', 'k')).toEqual({
+			pathname: '/pc/[pcId]/session/[spaceId]/activity',
+			params: { pcId: 'p', spaceId: 's', terminal: 'k' },
+		});
+		expect(routes.activityAgent('p', 's', 'k', 'a1', 'e1')).toEqual({
+			pathname: '/pc/[pcId]/session/[spaceId]/activity/[agentId]',
+			params: { pcId: 'p', spaceId: 's', agentId: 'a1', terminal: 'k', epoch: 'e1' },
+		});
+	});
+
 	test('根の画面', () => {
 		expect(routes.home()).toBe('/');
 		expect(routes.notifications()).toBe('/notifications');
