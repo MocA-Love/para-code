@@ -7,7 +7,7 @@ import { useAppStore } from '../appState.js';
 import { isAgentWaiting } from '../store.js';
 import { GlassSurface } from '../components/glassSurface.js';
 import { WsDrawerContent } from '../components/wsDrawer.js';
-import { colors, radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { swipeActionColors } from '../components/swipeRow.js';
 import { activeSidebarTab, SIDEBAR_TABS, type SidebarTab } from './ipadTabs.js';
 import { IpadSidebarRail } from './ipadSidebarRail.js';
@@ -93,13 +93,14 @@ const styles = StyleSheet.create({
 		paddingVertical: 8, paddingHorizontal: 4,
 	},
 	tab: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 4 },
-	label: { color: colors.textDim, fontSize: 9.5, fontWeight: '600' },
+	label: { color: colors.textDim, fontSize: type.badge, fontWeight: '600' },
 	labelActive: { color: colors.accent },
 	badge: {
-		position: 'absolute', top: -5, right: -9, minWidth: 15, height: 15, borderRadius: 8,
+		position: 'absolute', top: -5, right: -9, minWidth: 15, height: 15, borderRadius: radius.pill, ...squircle,
 		// 白抜きの件数バッジを載せる面。明るいred(#f47272)のままだと白文字が2.80:1で読めないため、
 		// 「白抜きを載せる面として暗くした赤」(swipeActionColors.destructive、5.16:1)を使う。
 		backgroundColor: swipeActionColors.destructive, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
 	},
+	// 高さ15ptの件数バッジの中の数字なので、文字サイズの段ではなくバッジの大きさから決めている。
 	badgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
 });

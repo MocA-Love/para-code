@@ -8,7 +8,7 @@ import { OverlayPortal, PopIn } from './overlayHost.js';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
 import { PARA_HEADER_PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT } from '../paraHeader.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { colors, radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import {
 	buildHomeHeaderMenuItems,
@@ -199,7 +199,7 @@ function MenuRow({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMa
 			accessibilityRole="button"
 			accessibilityLabel={label}
 		>
-			<View style={styles.rowIcon}><Ionicons name={icon} size={18} color="#d6d6de" /></View>
+			<View style={styles.rowIcon}><Ionicons name={icon} size={18} color={colors.textSoft} /></View>
 			<Text style={styles.rowLabel}>{label}</Text>
 		</Pressable>
 	);
@@ -215,9 +215,9 @@ const styles = StyleSheet.create({
 	compactButton: { width: 44, height: 44, borderRadius: radius.pill },
 	fallbackButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 
-	scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)' },
+	scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.scrim },
 	fallbackPanelPos: { position: 'absolute', right: 12, width: PANEL_WIDTH },
-	fallbackPanel: { borderRadius: 26, ...squircle, overflow: 'hidden' },
+	fallbackPanel: { borderRadius: radius.composer, ...squircle, overflow: 'hidden' },
 	fallbackScroll: { flexGrow: 0 },
 	// 素のガラスだと後ろの一覧の文字が項目名と重なって読めない。ただし埋めすぎると
 	// ガラスに見えないので、コントラストを一段だけ持ち上げる薄さに抑える。
@@ -226,6 +226,6 @@ const styles = StyleSheet.create({
 	divider: { height: StyleSheet.hairlineWidth, marginHorizontal: 18, marginVertical: 5, backgroundColor: 'rgba(255,255,255,0.12)' },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 14, height: 46, paddingHorizontal: 20 },
 	rowIcon: { width: 22, alignItems: 'center' },
-	rowLabel: { color: colors.text, fontSize: 14.5 },
+	rowLabel: { color: colors.text, fontSize: type.body },
 	pressed: { backgroundColor: 'rgba(255,255,255,0.10)' },
 });

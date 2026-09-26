@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, BackHandler, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, BackHandler, Image, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
 import type { AgentChatImage } from '../store.js';
@@ -9,7 +9,8 @@ import { formatImageBytes, loadToolImage, toolImageCache, toolImageKey } from '.
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal } from './overlayHost.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
-import { colors, mono } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 
 /**
  * ツール結果に含まれていた画像（Readで読んだスクリーンショット、MCPのスクショ等）の表示。
@@ -105,7 +106,7 @@ export function useToolImage(terminalKey: string | undefined, rev: number, image
  */
 export function ToolImagePreview({ load, size = 28 }: { load: ImageLoad; size?: number }) {
 	return (
-		<View style={[styles.thumb, { width: size, height: size, borderRadius: size <= 32 ? 8 : 10 }]}>
+		<View style={[styles.thumb, { width: size, height: size, borderRadius: radius.control, ...squircle }]}>
 			{load.status === 'ready' ? (
 				<Image source={{ uri: load.uri }} style={styles.thumbImage} resizeMode="cover" accessibilityIgnoresInvertColors />
 			) : load.status === 'loading' ? (
@@ -245,22 +246,22 @@ const styles = StyleSheet.create({
 	lightbox: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000' },
 	stage: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: CHROME_RESERVED_HEIGHT },
 	stageMessage: { alignItems: 'center', gap: 10, paddingHorizontal: 32 },
-	stageError: { color: colors.textDim, fontSize: 12.5, textAlign: 'center', lineHeight: 19 },
+	stageError: { color: colors.textDim, fontSize: type.meta, textAlign: 'center', lineHeight: 19 },
 	bar: {
 		position: 'absolute', top: BAR_TOP, left: 12, right: 12,
 		flexDirection: 'row', alignItems: 'center', gap: 10,
 		paddingHorizontal: 12, paddingVertical: 10,
-		borderRadius: 20, overflow: 'hidden',
+		borderRadius: radius.panel, ...squircle, overflow: 'hidden',
 	},
-	close: { width: 28, height: 28, borderRadius: 999, backgroundColor: colors.surface3, alignItems: 'center', justifyContent: 'center' },
+	close: { width: 28, height: 28, borderRadius: radius.pill, ...squircle, backgroundColor: colors.surface3, alignItems: 'center', justifyContent: 'center' },
 	barBody: { flex: 1, minWidth: 0 },
-	barTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	barSub: { color: colors.textDim, fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default, marginTop: 2 },
+	barTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	barSub: { color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily, marginTop: 2 },
 	pager: {
 		position: 'absolute', bottom: PAGER_BOTTOM, alignSelf: 'center',
 		flexDirection: 'row', alignItems: 'center', gap: 14,
 		paddingHorizontal: 16, paddingVertical: 9,
-		borderRadius: 999, overflow: 'hidden',
+		borderRadius: radius.pill, ...squircle, overflow: 'hidden',
 	},
-	pagerText: { color: colors.text, fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
+	pagerText: { color: colors.text, fontSize: type.meta, fontWeight: '700', fontVariant: ['tabular-nums'] },
 });

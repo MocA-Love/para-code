@@ -5,7 +5,7 @@ import { BackHandler, Dimensions, Pressable, StyleSheet, Text, View } from 'reac
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 
 export interface AgentStatusPopoverTarget {
@@ -91,12 +91,12 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 const styles = StyleSheet.create({
 	pos: { position: 'absolute', width: POPOVER_WIDTH },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
-	popover: { borderRadius: 12, overflow: 'hidden' },
-	head: { color: colors.textDim, fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingTop: 9, paddingHorizontal: 13, paddingBottom: 5 },
+	popover: { borderRadius: radius.control, ...squircle, overflow: 'hidden' },
+	head: { color: colors.textDim, fontSize: type.badge, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingTop: 9, paddingHorizontal: 13, paddingBottom: 5 },
 	item: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 10, paddingHorizontal: 13 },
-	itemLabel: { color: colors.text, fontSize: 13.5, flex: 1 },
+	itemLabel: { color: colors.text, fontSize: type.body, flex: 1 },
 	itemLabelDim: { color: colors.textDim },
-	dot: { width: 8, height: 8, borderRadius: 4 },
-	dotIdle: { backgroundColor: '#55555c' },
+	dot: { width: 8, height: 8, borderRadius: radius.pill },
+	dotIdle: { backgroundColor: colors.idle },
 	divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.glassBorder },
 });

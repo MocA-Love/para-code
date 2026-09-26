@@ -8,7 +8,7 @@ import { useAppStore } from '../appState.js';
 import { GlassSurface } from './glassSurface.js';
 import { useParaToast, type ParaToast as ParaToastItem } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { colors, radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 
 /**
@@ -213,7 +213,7 @@ const styles = StyleSheet.create({
 	capsule: { borderRadius: radius.pill, ...squircle },
 	body: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 16, paddingVertical: 11 },
 	textCol: { flexShrink: 1, minWidth: 0 },
-	text: { color: colors.text, fontSize: 12.5, fontWeight: '600', lineHeight: 17 },
-	sub: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
-	action: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
+	text: { color: colors.text, fontSize: type.meta, fontWeight: '600', lineHeight: 17 },
+	sub: { color: colors.textDim, fontSize: type.badge, marginTop: 1 },
+	action: { color: colors.accent, fontSize: type.meta, fontWeight: '700' },
 });

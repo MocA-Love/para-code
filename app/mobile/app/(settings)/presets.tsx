@@ -10,7 +10,10 @@ import { useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { presetCommandSummary, presetIonicon, presetTerminalCount } from '../../src/presets.js';
-import { colors, mono, radius, squircle } from '../../src/theme.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { SettingsCard } from '../../src/components/settingsRow.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 import type { PresetDef } from '../../src/store.js';
 
@@ -64,7 +67,7 @@ export default function PresetSettingsScreen() {
 		<View style={styles.screen}>
 			<ScreenHeader title="コマンドプリセット" onHeightChange={setHeaderHeight} />
 			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
-				<Text style={styles.sectionTitle}>{ws?.name ?? 'スペース未選択'}</Text>
+				<SectionHeader first title={ws?.name ?? 'スペース未選択'} />
 				{presets === undefined ? (
 					<View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
 				) : presets.length === 0 ? (
@@ -78,34 +81,32 @@ export default function PresetSettingsScreen() {
 						</Text>
 					</View>
 				) : (
-					<View style={styles.card}>
-						{presets.map((preset, index) => {
+					// アイコンの地・出どころの添え字・等幅のコマンドを並べる行なので、SettingsRow ではなく自前で組む
+					<SettingsCard>
+						{presets.map(preset => {
 							const count = presetTerminalCount(preset);
 							return (
-								<View key={preset.key}>
-									{index > 0 ? <View style={styles.separator} /> : null}
-									<View style={styles.row}>
-										<View style={styles.icon}>
-											<Ionicons name={presetIonicon(preset.icon) as keyof typeof Ionicons.glyphMap} size={16} color={colors.accent} />
-										</View>
-										<View style={styles.rowBody}>
-											<Text style={styles.rowTitle} numberOfLines={1}>
-												{preset.name}
-												<Text style={styles.rowSource}>{preset.source === 'workspace' ? '  リポジトリ' : '  ユーザー'}</Text>
-												{count > 1 ? <Text style={styles.rowSource}>{`  ${count} 端末`}</Text> : null}
-											</Text>
-											<Text style={styles.rowCommand} numberOfLines={2}>{presetCommandSummary(preset)}</Text>
-										</View>
-										<Switch
-											value={!hiddenKeys.has(preset.key)}
-											onValueChange={value => { hapticSelection(); setPresetHidden(preset.key, !value); }}
-											trackColor={{ true: colors.accent2 }}
-										/>
+								<View key={preset.key} style={styles.row}>
+									<View style={styles.icon}>
+										<Ionicons name={presetIonicon(preset.icon) as keyof typeof Ionicons.glyphMap} size={16} color={colors.accent} />
 									</View>
+									<View style={styles.rowBody}>
+										<Text style={styles.rowTitle} numberOfLines={1}>
+											{preset.name}
+											<Text style={styles.rowSource}>{preset.source === 'workspace' ? '  リポジトリ' : '  ユーザー'}</Text>
+											{count > 1 ? <Text style={styles.rowSource}>{`  ${count} 端末`}</Text> : null}
+										</Text>
+										<Text style={styles.rowCommand} numberOfLines={2}>{presetCommandSummary(preset)}</Text>
+									</View>
+									<Switch
+										value={!hiddenKeys.has(preset.key)}
+										onValueChange={value => { hapticSelection(); setPresetHidden(preset.key, !value); }}
+										trackColor={{ true: colors.accent2 }}
+									/>
 								</View>
 							);
 						})}
-					</View>
+					</SettingsCard>
 				)}
 				<Text style={styles.note}>
 					オフにしたものはターミナル画面の一覧に出ません。PC側では今までどおり使えます。
@@ -123,16 +124,14 @@ export default function PresetSettingsScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8, marginBottom: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
 	center: { paddingVertical: 34, alignItems: 'center' },
-	empty: { color: colors.textDim, fontSize: 12, lineHeight: 18, paddingVertical: 16 },
-	separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 12 },
-	icon: { width: 30, height: 30, borderRadius: 10, ...squircle, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentWash },
+	empty: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, paddingVertical: 16 },
+	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 12, minHeight: 44 },
+	icon: { width: 30, height: 30, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentWash },
 	rowBody: { flex: 1, minWidth: 0 },
-	rowTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
-	rowSource: { color: colors.textDim, fontSize: 10.5, fontWeight: '600' },
-	rowCommand: { color: colors.textDim, fontSize: 10.5, marginTop: 3, fontFamily: mono.ios, lineHeight: 15 },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 12, paddingHorizontal: 4 },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	rowSource: { color: colors.textDim, fontSize: type.badge, fontWeight: '600' },
+	rowCommand: { color: colors.textDim, fontSize: type.badge, marginTop: 3, fontFamily: monoFamily, lineHeight: 15 },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 12, paddingHorizontal: 4 },
 });

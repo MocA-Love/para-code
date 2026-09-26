@@ -7,10 +7,12 @@ import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { BottomSheet, useSheetCloseThen } from './bottomSheet.js';
+import { Button } from './button.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { presetApprovalKey, presetCommandSummary, presetIonicon, presetTerminalCount, visiblePresets } from '../presets.js';
 import { runPresetInBackground } from '../presetLaunch.js';
-import { colors, mono, radius, squircle } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { PresetDef } from '../store.js';
 
@@ -135,10 +137,7 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 					<Text style={styles.note}>
 						このプリセットの確認はこれが最初の1回だけです。次からは押すとすぐ実行します（PC側でコマンドや作業ディレクトリが書き換わったら、もう一度ここに戻ります）。
 					</Text>
-					<Pressable style={({ pressed }) => [styles.cta, pressed && styles.ctaPressed]} onPress={confirm} accessibilityRole="button">
-						<Ionicons name="flash" size={17} color="#04222b" />
-						<Text style={styles.ctaText}>実行</Text>
-					</Pressable>
+					<Button label="実行" icon="flash" onPress={confirm} />
 					<Pressable style={styles.secondary} onPress={() => setConfirming(undefined)} accessibilityRole="button">
 						<Text style={styles.secondaryText}>戻る</Text>
 					</Pressable>
@@ -217,12 +216,12 @@ const ROW_GAP = 11;
 
 const styles = StyleSheet.create({
 	body: { paddingHorizontal: 16 },
-	lead: { color: colors.textDim, fontSize: 12, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 10 },
+	lead: { color: colors.textDim, fontSize: type.meta, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 10 },
 	center: { paddingVertical: 30, alignItems: 'center' },
 	empty: { paddingVertical: 26, paddingHorizontal: 22, alignItems: 'center', gap: 10 },
-	emptyText: { color: colors.textDim, fontSize: 12, textAlign: 'center', lineHeight: 18 },
+	emptyText: { color: colors.textDim, fontSize: type.meta, textAlign: 'center', lineHeight: 18 },
 	group: {
-		borderRadius: 16, ...squircle, overflow: 'hidden',
+		borderRadius: radius.card, ...squircle, overflow: 'hidden',
 		backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
 	},
 	row: { flexDirection: 'row', alignItems: 'center', gap: ROW_GAP, paddingVertical: 11, paddingHorizontal: ROW_PADDING },
@@ -232,41 +231,35 @@ const styles = StyleSheet.create({
 		height: StyleSheet.hairlineWidth, backgroundColor: colors.border,
 	},
 	rowIcon: {
-		width: ROW_ICON, height: ROW_ICON, borderRadius: 10, ...squircle,
+		width: ROW_ICON, height: ROW_ICON, borderRadius: radius.control, ...squircle,
 		alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentWash,
 	},
 	rowBody: { flex: 1, minWidth: 0 },
 	rowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-	rowTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600', flexShrink: 1 },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600', flexShrink: 1 },
 	tag: {
-		color: colors.textDim, fontSize: 9.5, fontWeight: '700', paddingHorizontal: 6, paddingVertical: 1.5,
-		borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.09)', overflow: 'hidden',
+		color: colors.textDim, fontSize: type.badge, fontWeight: '700', paddingHorizontal: 6, paddingVertical: 1.5,
+		borderRadius: radius.key, backgroundColor: 'rgba(255,255,255,0.09)', overflow: 'hidden',
 	},
-	tagCount: { color: colors.green, backgroundColor: 'rgba(79,209,165,0.15)' },
+	tagCount: { color: colors.green, backgroundColor: tint(colors.green, alpha.wash) },
 	// 区別語は名前の補足。保存元タグと同じ強さで並べると名前より目立つので、枠だけにする
 	// 枠は colors.border より濃くする。同名を見分ける唯一の手掛かりが、ガラス面の上で
 	// 一番読めない要素になってしまう
 	tagQualifier: { backgroundColor: 'transparent', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.24)', flexShrink: 1 },
-	rowCommand: { color: colors.textDim, fontSize: 10.5, marginTop: 2, fontFamily: mono.ios },
+	rowCommand: { color: colors.textDim, fontSize: type.badge, marginTop: 2, fontFamily: monoFamily },
 
 	confirmQualifierLine: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingTop: 4 },
-	confirmName: { color: colors.text, fontSize: 14, fontWeight: '700', flexShrink: 1 },
-	confirmLead: { color: colors.text, fontSize: 13, lineHeight: 19, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 12 },
+	confirmName: { color: colors.text, fontSize: type.body, fontWeight: '700', flexShrink: 1 },
+	confirmLead: { color: colors.text, fontSize: type.body, lineHeight: 20, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 12 },
 	// 実行される本文をそのまま出す。要約すると「押す前に分かる」が成り立たない。
 	taskCard: {
-		backgroundColor: '#1a1a1e', borderRadius: radius.control, ...squircle,
+		backgroundColor: colors.surface2, borderRadius: radius.control, ...squircle,
 		borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, padding: 10, marginBottom: 8,
 	},
-	taskName: { color: colors.textDim, fontSize: 10.5, fontWeight: '700', marginBottom: 5 },
-	taskCommand: { color: '#d4d4d4', fontSize: 11, fontFamily: mono.ios, lineHeight: 17 },
-	note: { color: colors.textDim, fontSize: 11, lineHeight: 16, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 14 },
-	warn: { color: colors.yellow, fontSize: 11, lineHeight: 16, paddingHorizontal: 12, paddingTop: 2 },
-	cta: {
-		flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
-		backgroundColor: colors.accent, borderRadius: radius.pill, ...squircle, paddingVertical: 13,
-	},
-	ctaPressed: { opacity: 0.85 },
-	ctaText: { color: '#04222b', fontSize: 15, fontWeight: '700' },
+	taskName: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', marginBottom: 5 },
+	taskCommand: { color: colors.terminalFg, fontSize: type.caption, fontFamily: monoFamily, lineHeight: 17 },
+	note: { color: colors.textDim, fontSize: type.caption, lineHeight: 16, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 14 },
+	warn: { color: colors.yellow, fontSize: type.caption, lineHeight: 16, paddingHorizontal: 12, paddingTop: 2 },
 	secondary: { alignItems: 'center', paddingVertical: 14 },
-	secondaryText: { color: colors.accent, fontSize: 13 },
+	secondaryText: { color: colors.accent, fontSize: type.body },
 });

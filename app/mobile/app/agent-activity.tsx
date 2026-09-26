@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
-import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../src/appState.js';
@@ -10,7 +10,8 @@ import { GlassSurface } from '../src/components/glassSurface.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors } from '../src/theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../src/theme.js';
+import { monoFamily } from '../src/monoFont.js';
 import { hapticSelection } from '../src/haptics.js';
 import { useNow } from '../src/time.js';
 import type { AgentActivityAgent, AgentActivityStatus, AgentActivityTask } from '../src/store.js';
@@ -29,7 +30,7 @@ function statusLabel(status: AgentActivityStatus): string {
 	}
 }
 
-function statusColor(status: AgentActivityStatus): string {
+function statusColor(status: AgentActivityStatus) {
 	return status === 'failed' ? colors.red : status === 'running' ? colors.accent : status === 'idle' || status === 'unknown' || status === 'interrupted' ? colors.yellow : colors.green;
 }
 
@@ -112,9 +113,9 @@ export default function AgentActivityScreen() {
 							) : item.kind === 'agent' ? (() => { const agent = item.value; return (
 								<Pressable key={agent.id} disabled={agent.role !== 'subagent'} accessibilityRole={agent.role === 'subagent' ? 'button' : undefined} accessibilityLabel={agent.role === 'subagent' ? `${agent.label}の詳細を開く` : `${agent.label} teammate`} onPress={() => selectAgent(agent)} style={[styles.agentRow, { marginLeft: Math.min(54, (item.depth - 1) * 18) }]}>
 									{item.depth > 1 ? <Text style={styles.treeBranch}>└</Text> : null}
-									<View style={[styles.avatar, { backgroundColor: agent.provider === 'claude' ? 'rgba(216,142,92,.16)' : colors.accentWash }]}><Text style={[styles.avatarText, { color: agent.provider === 'claude' ? colors.claude : colors.accent }]}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>
+									<View style={[styles.avatar, { backgroundColor: agent.provider === 'claude' ? tint(colors.claude, alpha.wash) : colors.accentWash }]}><Text style={[styles.avatarText, { color: agent.provider === 'claude' ? colors.claude : colors.accent }]}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>
 									<View style={styles.agentBody}><Text style={styles.agentLabel} numberOfLines={1}>{agent.label}</Text><Text style={styles.agentMeta} numberOfLines={1}>{agent.provider ?? chat?.agent ?? 'agent'} · {duration(agent.startedAt, agent.status === 'running' || agent.status === 'idle' ? now : agent.updatedAt)}</Text></View>
-									<View style={[styles.status, { backgroundColor: `${statusColor(agent.status)}1F` }]}><Text style={[styles.statusText, { color: statusColor(agent.status) }]}>{statusLabel(agent.status)}</Text></View>
+									<View style={[styles.status, { backgroundColor: tint(statusColor(agent.status), alpha.wash) }]}><Text style={[styles.statusText, { color: statusColor(agent.status) }]}>{statusLabel(agent.status)}</Text></View>
 									{agent.role === 'subagent' ? <Ionicons name="chevron-forward" size={14} color={colors.textDim} /> : null}
 								</Pressable>
 							); })() : (() => { const task = item.value; return (
@@ -132,20 +133,21 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	listArea: { flex: 1 },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-	backBtn: { width: 44, height: 44, borderRadius: 22, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-	headerBody: { flex: 1, minWidth: 0 }, contextRow: { flexDirection: 'row', alignItems: 'center', gap: 4 }, context: { color: colors.purple, fontSize: 9, fontWeight: '700' },
-	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' }, headerSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	content: { padding: 14, gap: 10 }, overview: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 16, paddingVertical: 14 },
-	metric: { color: colors.text, fontSize: 20, fontWeight: '700', textAlign: 'center' }, metricLabel: { color: colors.textDim, fontSize: 9, marginTop: 2 }, metricDivider: { width: StyleSheet.hairlineWidth, height: 28, backgroundColor: colors.border },
-	sectionTitle: { color: colors.textDim, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.7, marginTop: 10 }, muted: { color: colors.textDim, fontSize: 11, paddingVertical: 8 },
-	agentRow: { flexDirection: 'row', alignItems: 'center', gap: 9, padding: 11, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface }, agentRowSelected: { borderColor: colors.purple, backgroundColor: 'rgba(193,147,217,.08)' },
-	avatar: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }, avatarText: { fontSize: 11, fontWeight: '800' }, agentBody: { flex: 1, minWidth: 0 }, agentLabel: { color: colors.text, fontSize: 12.5, fontWeight: '600' }, agentMeta: { color: colors.textDim, fontSize: 9.5, marginTop: 2, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	status: { borderRadius: 9, paddingHorizontal: 7, paddingVertical: 4 }, statusText: { fontSize: 8.5, fontWeight: '700' },
-	treeBranch: { color: colors.textDim, fontSize: 13, marginRight: -3 },
-	moreRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderStyle: 'dashed' },
-	moreText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
-	detailCard: { backgroundColor: 'rgba(193,147,217,.08)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(193,147,217,.30)', borderRadius: 16, padding: 13, gap: 6 }, detailHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }, detailTitle: { color: colors.text, fontSize: 12, fontWeight: '700' }, detailLabel: { color: colors.textDim, fontSize: 8.5, fontWeight: '700', textTransform: 'uppercase', marginTop: 5 }, detailText: { color: colors.text, fontSize: 11.5, lineHeight: 17 }, code: { color: colors.purple, fontSize: 9.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	message: { padding: 9, borderRadius: 11, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, gap: 3 }, messageUser: { backgroundColor: colors.accentWash }, messageTool: { backgroundColor: colors.surface2 }, messageRole: { color: colors.textDim, fontSize: 8, fontWeight: '700', textTransform: 'uppercase' }, messageText: { color: colors.text, fontSize: 10.5, lineHeight: 15 }, errorText: { color: colors.red, fontSize: 10.5, lineHeight: 15 },
-	taskRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, padding: 11, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface }, taskBody: { flex: 1, minWidth: 0 }, taskLabel: { color: colors.text, fontSize: 12, fontWeight: '600' }, taskDetail: { color: colors.textDim, fontSize: 10.5, lineHeight: 15, marginTop: 3 }, taskStatus: { fontSize: 9, fontWeight: '700' },
-	empty: { alignItems: 'center', paddingVertical: 60, paddingHorizontal: 30, gap: 8 }, emptyTitle: { color: colors.text, fontSize: 14, fontWeight: '700' }, emptyText: { color: colors.textDim, fontSize: 11, lineHeight: 17, textAlign: 'center' },
+	backBtn: { width: 44, height: 44, borderRadius: radius.pill, ...squircle, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+	headerBody: { flex: 1, minWidth: 0 }, contextRow: { flexDirection: 'row', alignItems: 'center', gap: 4 }, context: { color: colors.purple, fontSize: type.badge, fontWeight: '700' },
+	headerTitle: { color: colors.text, fontSize: type.title, fontWeight: '700' }, headerSub: { color: colors.textDim, fontSize: type.badge, marginTop: 1, fontFamily: monoFamily },
+	content: { padding: 14, gap: 10 }, overview: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.card, ...squircle, paddingVertical: 14 },
+	metric: { color: colors.text, fontSize: type.large, fontWeight: '700', textAlign: 'center' }, metricLabel: { color: colors.textDim, fontSize: type.badge, marginTop: 2 }, metricDivider: { width: StyleSheet.hairlineWidth, height: 28, backgroundColor: colors.border },
+	sectionTitle: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.7, marginTop: 10 }, muted: { color: colors.textDim, fontSize: type.caption, paddingVertical: 8 },
+	agentRow: { flexDirection: 'row', alignItems: 'center', gap: 9, padding: 11, borderRadius: radius.card, ...squircle, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface }, agentRowSelected: { borderColor: colors.purple, backgroundColor: tint(colors.purple, alpha.faint) },
+	// avatarText は固定サイズ（32）の頭文字枠の中の文字なので枠から決めた値のまま。
+	avatar: { width: 32, height: 32, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center' }, avatarText: { fontSize: 11, fontWeight: '800' }, agentBody: { flex: 1, minWidth: 0 }, agentLabel: { color: colors.text, fontSize: type.meta, fontWeight: '600' }, agentMeta: { color: colors.textDim, fontSize: type.badge, marginTop: 2, fontFamily: monoFamily },
+	status: { borderRadius: radius.control, ...squircle, paddingHorizontal: 7, paddingVertical: 4 }, statusText: { fontSize: type.badge, fontWeight: '700' },
+	treeBranch: { color: colors.textDim, fontSize: type.body, marginRight: -3 },
+	moreRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: radius.control, ...squircle, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderStyle: 'dashed' },
+	moreText: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
+	detailCard: { backgroundColor: tint(colors.purple, alpha.faint), borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.purple, alpha.line), borderRadius: radius.card, ...squircle, padding: 13, gap: 6 }, detailHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }, detailTitle: { color: colors.text, fontSize: type.meta, fontWeight: '700' }, detailLabel: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', textTransform: 'uppercase', marginTop: 5 }, detailText: { color: colors.text, fontSize: type.meta, lineHeight: 18 }, code: { color: colors.purple, fontSize: type.badge, fontFamily: monoFamily },
+	message: { padding: 9, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, gap: 3 }, messageUser: { backgroundColor: colors.accentWash }, messageTool: { backgroundColor: colors.surface2 }, messageRole: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', textTransform: 'uppercase' }, messageText: { color: colors.text, fontSize: type.badge, lineHeight: 15 }, errorText: { color: colors.red, fontSize: type.badge, lineHeight: 15 },
+	taskRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, padding: 11, borderRadius: radius.card, ...squircle, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface }, taskBody: { flex: 1, minWidth: 0 }, taskLabel: { color: colors.text, fontSize: type.meta, fontWeight: '600' }, taskDetail: { color: colors.textDim, fontSize: type.badge, lineHeight: 15, marginTop: 3 }, taskStatus: { fontSize: type.badge, fontWeight: '700' },
+	empty: { alignItems: 'center', paddingVertical: 60, paddingHorizontal: 30, gap: 8 }, emptyTitle: { color: colors.text, fontSize: type.body, fontWeight: '700' }, emptyText: { color: colors.textDim, fontSize: type.caption, lineHeight: 17, textAlign: 'center' },
 });

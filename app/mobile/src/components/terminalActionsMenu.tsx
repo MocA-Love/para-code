@@ -9,7 +9,7 @@ import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { AgentRowClone, type AgentRowData, type AgentRowRect } from './agentRow.js';
 import { promptTerminalName } from '../promptTerminalName.js';
-import { colors } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hapticImpact, hapticWarning } from '../haptics.js';
 
 export interface TerminalActionsMenuTarget {
@@ -185,20 +185,20 @@ const styles = StyleSheet.create({
 	scrimDim: { backgroundColor: 'rgba(0,0,0,0.55)' },
 	menuPos: { position: 'absolute', width: MENU_WIDTH },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（glassComposerと同じ流儀）
-	menu: { borderRadius: 14, overflow: 'hidden' },
+	menu: { borderRadius: radius.card, ...squircle, overflow: 'hidden' },
 	menuItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 15 },
-	menuItemLabel: { color: colors.text, fontSize: 15 },
+	menuItemLabel: { color: colors.text, fontSize: type.title },
 	menuItemLabelDestructive: { color: colors.red },
 	menuDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.glassBorder },
 	alertWrap: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-	alert: { width: 270, borderRadius: 16, overflow: 'hidden' },
+	alert: { width: 270, borderRadius: radius.card, ...squircle, overflow: 'hidden' },
 	alertIconWrap: { alignItems: 'center', paddingTop: 16 },
-	alertIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(244,114,114,0.14)', alignItems: 'center', justifyContent: 'center' },
-	alertTitle: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', paddingTop: 18, paddingHorizontal: 16 },
-	alertSub: { color: colors.textDim, fontSize: 12, textAlign: 'center', paddingTop: 4, paddingHorizontal: 16, paddingBottom: 12, lineHeight: 17 },
-	alertBtns: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.14)' },
+	alertIcon: { width: 40, height: 40, borderRadius: radius.pill, ...squircle, backgroundColor: tint(colors.red, alpha.wash), alignItems: 'center', justifyContent: 'center' },
+	alertTitle: { color: colors.text, fontSize: type.title, fontWeight: '700', textAlign: 'center', paddingTop: 18, paddingHorizontal: 16 },
+	alertSub: { color: colors.textDim, fontSize: type.meta, textAlign: 'center', paddingTop: 4, paddingHorizontal: 16, paddingBottom: 12, lineHeight: 17 },
+	alertBtns: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.glassBorder },
 	alertBtn: { flex: 1, alignItems: 'center', paddingVertical: 13 },
-	alertBtnDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.14)' },
-	alertBtnText: { color: colors.text, fontSize: 16 },
+	alertBtnDivider: { width: StyleSheet.hairlineWidth, backgroundColor: colors.glassBorder },
+	alertBtnText: { color: colors.text, fontSize: type.title },
 	alertBtnDanger: { color: colors.red, fontWeight: '700' },
 });

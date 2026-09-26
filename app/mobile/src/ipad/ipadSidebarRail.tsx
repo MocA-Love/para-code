@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting } from '../store.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle } from '../theme.js';
 import { activeSidebarTab, SIDEBAR_TABS } from './ipadTabs.js';
 import { selectTab } from './ipadSelectTab.js';
 import { swipeActionColors } from '../components/swipeRow.js';
@@ -49,12 +49,13 @@ export function IpadSidebarRail() {
 
 const styles = StyleSheet.create({
 	wrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 22 },
-	tab: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+	tab: { width: 40, height: 40, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center' },
 	badge: {
-		position: 'absolute', top: -5, right: -9, minWidth: 15, height: 15, borderRadius: 8,
+		position: 'absolute', top: -5, right: -9, minWidth: 15, height: 15, borderRadius: radius.pill, ...squircle,
 		// 白抜きの件数バッジを載せる面。明るいred(#f47272)のままだと白文字が2.80:1で読めないため、
 		// 「白抜きを載せる面として暗くした赤」(swipeActionColors.destructive、5.16:1)を使う。
 		backgroundColor: swipeActionColors.destructive, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
 	},
+	// 高さ15ptの件数バッジの中の数字なので、文字サイズの段ではなくバッジの大きさから決めている。
 	badgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
 });

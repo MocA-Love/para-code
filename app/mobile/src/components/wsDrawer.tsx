@@ -24,7 +24,10 @@ import { WsHeaderActions, WsHeaderIsland } from './nativeHeaderItems.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { useConnectionGateBlocked } from './connectionGate.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
-import { colors, radius, squircle, withAlpha } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type, withAlpha } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { Badge } from './badge.js';
+import { SectionHeader } from './sectionHeader.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 /**
@@ -428,12 +431,12 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 		// ツリーの形を変えない」に抵触するため、常に同じPressableのままstyleだけを変える）。
 		// ワークスペースは多いとScrollView内に数十行並ぶため、選択行だけでも毎回ネイティブの
 		// GlassSurfaceへ差し替えることはしない（UIVisualEffectView量産を避ける）。
-		const activeTint = withAlpha(color, 0.16) ?? colors.accentWash;
+		const activeTint = withAlpha(color, alpha.wash) ?? colors.accentWash;
 		const content = (
 			<>
 				{active && !opts.child ? <View style={[styles.rowIndicator, { backgroundColor: color }]} /> : null}
 				{opts.child ? <View style={[styles.wtGuide, (active || opts.kept) && styles.wtGuideActive]} /> : null}
-				<View style={[styles.avatar, opts.child && styles.wtAvatar, { backgroundColor: withAlpha(color, 0.13) ?? colors.surface2 }]}>
+				<View style={[styles.avatar, opts.child && styles.wtAvatar, { backgroundColor: withAlpha(color, alpha.wash) ?? colors.surface2 }]}>
 					<Text style={[styles.avatarText, opts.child && styles.wtAvatarText, { color }]}>{opts.child ? '✦' : name.charAt(0).toUpperCase()}</Text>
 				</View>
 				<View style={styles.rowBody}>
@@ -449,7 +452,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				    （留め外しはPC側の Workspaces ビューで行う） */}
 				{ws.pinned ? <Ionicons name="pin" size={11} color={colors.accent} /> : null}
 				{waiting > 0 ? (
-					<View style={styles.alertBadge}><Text style={styles.alertBadgeText}>{waiting > 1 ? `質問あり ${waiting}` : '質問あり'}</Text></View>
+					<Badge label={waiting > 1 ? `質問あり ${waiting}` : '質問あり'} tone="red" style={styles.badge} />
 				) : null}
 				{/* メモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）。未完了があれば件数を出す。
 				    **押したら必ずドロワーを閉じてから開く。** 以前は Link.AppleZoom のズーム遷移を
@@ -471,10 +474,10 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					{(ws.note?.open ?? 0) > 0 ? <Text style={styles.noteBtnText}>{ws.note?.open}</Text> : null}
 				</Pressable>
 				{running > 0 ? <View style={styles.runOrb} /> : null}
-				{!grouped && wsTerminals.length === 0 ? <Text style={styles.countText}>0</Text> : null}
+				{!grouped && wsTerminals.length === 0 ? <Badge label="0" style={styles.badge} /> : null}
 				{grouped ? (
 					<>
-						<Text style={styles.wtCount}>{opts.childCount}</Text>
+						<Badge label={`${opts.childCount ?? 0}`} mono style={styles.badge} />
 						<Pressable
 							style={styles.twistBtn}
 							hitSlop={6}
@@ -562,25 +565,28 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				) : null}
 			</View>
 
-			<View style={styles.sectionHead}>
-				<Text style={styles.sectionTitle}>ワークスペース</Text>
-				{/* PC版の「スペース名右の＋」に対応する、新しいスペース（worktree）作成の入口。
-				    箱自体を当たり判定ぶんの大きさにする（GlassViewはhitTestを上書きしないため、
-				    内側Pressableのhitslopは箱の外側では効かない）。無効時はガラスにopacityを
-				    当てず、アイコンの色だけ落とす（素材にopacityを当てると効果ごと薄まって見える）。 */}
-				<GlassSurface style={styles.addSpaceBtn} interactive={online}>
-					<Pressable
-						disabled={!online}
-						style={styles.addSpaceHit}
-						onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
-						accessibilityRole="button"
-						accessibilityLabel="新しいスペースを作成"
-						accessibilityState={{ disabled: !online }}
-					>
-						<Ionicons name="add" size={15} color={online ? colors.text : colors.textDim} />
-					</Pressable>
-				</GlassSurface>
-			</View>
+			{/* 右端の＋は PC版の「スペース名右の＋」に対応する、新しいスペース（worktree）作成の入口。
+			    箱自体を当たり判定ぶんの大きさにする（GlassViewはhitTestを上書きしないため、
+			    内側Pressableのhitslopは箱の外側では効かない）。無効時はガラスにopacityを
+			    当てず、アイコンの色だけ落とす（素材にopacityを当てると効果ごと薄まって見える）。 */}
+			<SectionHeader
+				title="ワークスペース"
+				style={styles.sectionHead}
+				right={(
+					<GlassSurface style={styles.addSpaceBtn} interactive={online}>
+						<Pressable
+							disabled={!online}
+							style={styles.addSpaceHit}
+							onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
+							accessibilityRole="button"
+							accessibilityLabel="新しいスペースを作成"
+							accessibilityState={{ disabled: !online }}
+						>
+							<Ionicons name="add" size={15} color={online ? colors.text : colors.textDim} />
+						</Pressable>
+					</GlassSurface>
+				)}
+			/>
 			<ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
 				<Pressable style={[styles.row, styles.allRow, homeShowAllWorkspaces && styles.rowActive]} onPress={selectAll}>
 					{homeShowAllWorkspaces ? <View style={styles.rowIndicator} /> : null}
@@ -874,7 +880,7 @@ const styles = StyleSheet.create({
 
 	// ドロワー
 	drawer: {
-		flex: 1, backgroundColor: '#0e0e11',
+		flex: 1, backgroundColor: colors.sidebar,
 		borderRightWidth: 1, borderRightColor: colors.borderStrong,
 	},
 	// PCカード（接続状態・バッテリー・切り替え）は pcSwitcher.tsx が描く。ここは器だけを持つ。
@@ -885,17 +891,18 @@ const styles = StyleSheet.create({
 		flex: 1, borderRadius: radius.control, ...squircle, paddingVertical: 7, alignItems: 'center',
 		backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
 	},
-	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },
+	statValue: { color: colors.accent, fontSize: type.title, fontWeight: '700' },
 	statValueAlert: { color: colors.red },
-	statLabel: { color: colors.textDim, fontSize: 9.5, marginTop: 1 },
-	resourceRow: { marginTop: 8, borderRadius: 11, ...squircle },
+	statLabel: { color: colors.textDim, fontSize: type.badge, marginTop: 1 },
+	resourceRow: { marginTop: 8, borderRadius: radius.control, ...squircle },
 	resourceHit: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, paddingHorizontal: 10 },
 	resourceItem: { flex: 1, gap: 5 },
 	resourceHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 4 },
-	resourceLabel: { color: colors.textDim, fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
-	resourceValue: { fontSize: 11, fontWeight: '800' },
-	resourceTrack: { height: 3, borderRadius: 2, backgroundColor: colors.surface3, overflow: 'hidden' },
-	resourceFill: { height: 3, borderRadius: 2 },
+	resourceLabel: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', letterSpacing: 0.4 },
+	resourceValue: { fontSize: type.caption, fontWeight: '800' },
+	// 細いバーは角丸を高さの半分にする（端が丸く閉じる）。
+	resourceTrack: { height: 3, borderRadius: 1.5, backgroundColor: colors.surface3, overflow: 'hidden' },
+	resourceFill: { height: 3, borderRadius: 1.5 },
 	resourceChevron: { marginLeft: 2 },
 	// **余白は行が持つ。** 以前は見出しの文字が `paddingTop/Bottom` で余白を抱えていたため、
 	// 行の高さが「文字（36.5pt） vs ＋（36+marginTop:2＝38pt）」の背比べで決まり、背の高い
@@ -904,52 +911,53 @@ const styles = StyleSheet.create({
 	sectionHead: {
 		flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
 		paddingLeft: 18, paddingRight: 16, paddingTop: 16, paddingBottom: 10,
+		// 見出しの書式は SectionHeader。余白はこの行が持つので、SectionHeader 側の上下マージンは打ち消す。
+		marginTop: 0, marginBottom: 0,
 	},
-	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
-	// 10.5ptの小さな見出しに36ptのボタンは大きすぎる。30ptへ落として行の主役を見出しに戻す。
+	// 11ptの小さな見出しに36ptのボタンは大きすぎる。30ptへ落として行の主役を見出しに戻す。
 	// 44ptの当たり判定規範には届かないが、ヘッダーのピルボタン(PARA_HEADER_PILL_BUTTON=34)
 	// と寸法を揃え、最低限の大きさを確保する。GlassSurface の内側では hitSlop が効かない
 	// (hitTest を上書きしないため)ため、箱ごと広げる。
-	addSpaceBtn: { width: 34, height: 34, borderRadius: 10, ...squircle },
+	addSpaceBtn: { width: 34, height: 34, borderRadius: radius.control, ...squircle },
 	addSpaceHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },
-	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, ...squircle, marginBottom: 2 },
+	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: radius.control, ...squircle, marginBottom: 2 },
 	rowActive: { backgroundColor: colors.accentWash },
-	rowIndicator: { position: 'absolute', left: 0, top: 10, bottom: 10, width: 3, borderRadius: 2, backgroundColor: colors.accent },
+	rowIndicator: { position: 'absolute', left: 0, top: 10, bottom: 10, width: 3, borderRadius: 1.5, backgroundColor: colors.accent },
 	// 「すべて表示」行: 通常のワークスペース行とアイコン以外は共通のスタイルを流用する
 	allRow: { marginBottom: 8 },
 	allIcon: { backgroundColor: colors.surface2 },
-	allSub: { color: colors.textDim, fontSize: 10.5, marginTop: 2 },
-	avatar: { width: 36, height: 36, borderRadius: 10, ...squircle, alignItems: 'center', justifyContent: 'center' },
-	avatarText: { fontSize: 13, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	allSub: { color: colors.textDim, fontSize: type.badge, marginTop: 2 },
+	avatar: { width: 36, height: 36, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center' },
+	// 頭文字は固定サイズのアイコン（36pt）の中の文字なので、文字サイズの段ではなく枠から決める。
+	avatarText: { fontSize: 13, fontWeight: '800', fontFamily: monoFamily },
 	rowBody: { flex: 1, minWidth: 0 },
-	rowName: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
+	rowName: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	rowNameActive: { color: colors.accent },
 	rowBranchRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
-	rowBranch: { color: colors.textDim, fontSize: 10.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flexShrink: 1 },
-	alertBadge: { backgroundColor: 'rgba(244,114,114,0.15)', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
-	alertBadgeText: { color: colors.red, fontSize: 9.5, fontWeight: '700' },
-	runOrb: { width: 8, height: 8, borderRadius: 5, backgroundColor: colors.green },
-	countText: { color: colors.textDim, fontSize: 10, backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
-	noteBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
-	noteBtnActive: { backgroundColor: 'rgba(9,175,217,0.14)' },
-	noteBtnText: { color: colors.accent, fontSize: 10, fontWeight: '700', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	rowBranch: { color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily, flexShrink: 1 },
+	// `Badge` は既定で上寄せ（alignSelf: 'flex-start'）なので、行の中で縦中央に戻す。
+	badge: { alignSelf: 'center' },
+	runOrb: { width: 8, height: 8, borderRadius: radius.pill, backgroundColor: colors.green },
+	noteBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: radius.key, ...squircle, paddingHorizontal: 6, paddingVertical: 3 },
+	noteBtnActive: { backgroundColor: colors.accentWash },
+	noteBtnText: { color: colors.accent, fontSize: type.badge, fontWeight: '700', fontFamily: monoFamily },
 	// ワークツリー（グループ子行）: インデント＋左端の縦ガイド線で親子関係を示す
 	wtRow: { marginLeft: 27, paddingLeft: 14, paddingVertical: 9 },
 	// 折りたたみ中もピン留めで残している行（閉じたグループにぶら下がっていることを薄い地色で示す）
-	wtRowKept: { backgroundColor: 'rgba(9,175,217,0.05)' },
+	wtRowKept: { backgroundColor: tint(colors.accent, alpha.faint) },
 	wtGuide: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 1.5, borderRadius: 1, backgroundColor: colors.borderStrong },
 	wtGuideActive: { backgroundColor: colors.accent },
-	wtAvatar: { width: 26, height: 26, borderRadius: 8, ...squircle },
+	wtAvatar: { width: 26, height: 26, borderRadius: radius.control, ...squircle },
+	// 頭文字と同じく、固定サイズのアイコン（26pt）の中の文字なので枠から決める。
 	wtAvatarText: { fontSize: 11 },
-	wtName: { fontSize: 12.5 },
+	wtName: { fontSize: type.meta },
 	// グループ親行: ワークツリー数バッジ＋開閉シェブロン（行本体タップ=選択と分離した独立ヒット領域）
-	wtCount: { color: colors.textDim, fontSize: 10, backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	twistBtn: { width: 30, height: 30, borderRadius: 8, ...squircle, alignItems: 'center', justifyContent: 'center', marginVertical: -6, marginRight: -4 },
-	dim: { color: colors.textDim, fontSize: 12, paddingHorizontal: 8, lineHeight: 18 },
+	twistBtn: { width: 30, height: 30, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center', marginVertical: -6, marginRight: -4 },
+	dim: { color: colors.textDim, fontSize: type.meta, paddingHorizontal: 8, lineHeight: 18 },
 	footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
 	footerBtn: { flex: 1, borderRadius: radius.control, ...squircle },
 	footerBtnHit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9 },
-	footerBtnText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
+	footerBtnText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 });

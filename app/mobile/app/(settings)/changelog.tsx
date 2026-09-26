@@ -7,7 +7,7 @@ import { APP_VERSION, ChangelogRow, formatDate } from '../../src/components/upda
 import { ScreenHeader } from '../../src/components/screenHeader.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../../src/theme.js';
 
 /**
  * 更新履歴の一覧。起動時のお知らせシートを閉じたあとでも読み返せるようにするための画面で、
@@ -45,10 +45,10 @@ const styles = StyleSheet.create({
 	body: { paddingHorizontal: 18, gap: 26 },
 	release: { gap: 12 },
 	releaseHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-	versionChip: { color: colors.accent, backgroundColor: colors.accentWash, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(9,175,217,0.26)', borderRadius: radius.pill, ...squircle, paddingHorizontal: 9, paddingVertical: 2, fontSize: 10.5, fontWeight: '800', overflow: 'hidden' },
+	versionChip: { color: colors.accent, backgroundColor: colors.accentWash, borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.accent, alpha.line), borderRadius: radius.pill, ...squircle, paddingHorizontal: 9, paddingVertical: 2, fontSize: type.badge, fontWeight: '800', overflow: 'hidden' },
 	versionChipOld: { color: colors.textDim, backgroundColor: colors.surface2, borderColor: colors.border },
-	date: { color: colors.textDim, fontSize: 11 },
-	headline: { color: colors.text, fontSize: 15, fontWeight: '700', lineHeight: 21 },
+	date: { color: colors.textDim, fontSize: type.caption },
+	headline: { color: colors.text, fontSize: type.title, fontWeight: '700', lineHeight: 22 },
 	items: { gap: 14 },
-	empty: { color: colors.textDim, fontSize: 12, fontStyle: 'italic' },
+	empty: { color: colors.textDim, fontSize: type.meta, fontStyle: 'italic' },
 });

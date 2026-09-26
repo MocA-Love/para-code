@@ -9,7 +9,9 @@ import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHea
 import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { Meter } from '../../src/components/meter.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { alpha, colors, radius, squircle, tint, type } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { GITHUB_MONITOR_SPACE, GITHUB_UNSCOPED_SPACE } from '../../src/store.js';
 import type { GithubCallCounts, GithubOperationStat, GithubSpaceStat, GithubUsageResult } from '../../src/store.js';
@@ -217,9 +219,7 @@ export default function GithubUsageScreen() {
 									{core ? (
 										<>
 											<Text style={styles.kpiSub}>/ {core.limit.toLocaleString()} · {formatCountdown(core.resetAt, now)}</Text>
-											<View style={styles.kpiGauge}>
-												<View style={[styles.kpiGaugeFill, { width: `${core.limit > 0 ? Math.min(100, Math.max(0, (core.remaining / core.limit) * 100)) : 0}%`, backgroundColor: colors.accent }]} />
-											</View>
+											<Meter ratio={core.limit > 0 ? core.remaining / core.limit : 0} color={colors.accent} style={styles.kpiGauge} />
 										</>
 									) : null}
 								</View>
@@ -229,15 +229,13 @@ export default function GithubUsageScreen() {
 									{graphql ? (
 										<>
 											<Text style={styles.kpiSub}>/ {graphql.limit.toLocaleString()} · {formatCountdown(graphql.resetAt, now)}</Text>
-											<View style={styles.kpiGauge}>
-												<View style={[styles.kpiGaugeFill, { width: `${graphql.limit > 0 ? Math.min(100, Math.max(0, (graphql.remaining / graphql.limit) * 100)) : 0}%`, backgroundColor: colors.yellow }]} />
-											</View>
+											<Meter ratio={graphql.limit > 0 ? graphql.remaining / graphql.limit : 0} color={colors.yellow} style={styles.kpiGauge} />
 										</>
 									) : null}
 								</View>
 							</View>
 
-							<Text style={styles.sectionTitle}>期間</Text>
+							<SectionHeader title="期間" />
 							<View style={styles.pillRow}>
 								{(['5m', '1h', 'session'] as WindowKey[]).map(key => {
 									const active = windowKey === key;
@@ -257,7 +255,7 @@ export default function GithubUsageScreen() {
 								})}
 							</View>
 
-							<Text style={styles.sectionTitle}>内訳</Text>
+							<SectionHeader title="内訳" />
 							<View style={styles.chipRow}>
 								{([['caller', '呼び出し元'], ['space', 'スペース']] as [GroupKey, string][]).map(([key, label]) => {
 									const active = groupKey === key;
@@ -332,41 +330,42 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
-	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
-	warn: { color: colors.yellow, fontSize: 11.5, marginTop: 8, marginBottom: 4 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
-	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	warn: { color: colors.yellow, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 13, gap: 3 },
-	kpiLabel: { color: colors.textDim, fontSize: 10.5, fontWeight: '600' },
-	kpiValue: { color: colors.text, fontSize: 19, fontWeight: '800' },
-	kpiSub: { color: colors.textDim, fontSize: 10 },
-	kpiGauge: { height: 4, borderRadius: 2, backgroundColor: colors.surface3, marginTop: 8, overflow: 'hidden' },
-	kpiGaugeFill: { height: 4, borderRadius: 2 },
+	// 残量のゲージを抱えるため StatCard には載せられない。寸法と文字は StatCard に合わせる。
+	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 14 },
+	kpiLabel: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', letterSpacing: 0.4 },
+	kpiValue: { color: colors.text, fontSize: type.large, fontWeight: '800', marginTop: 4, fontVariant: ['tabular-nums'] },
+	kpiSub: { color: colors.textDim, fontSize: type.caption, marginTop: 2 },
+	// 残量を表すので色は固定で渡す（meterColor は使用率用）。Meter の track は flex: 1 を持つので、縦に積む中では伸ばさない。
+	kpiGauge: { flex: 0, marginTop: 8 },
 	// 下の余白が2ptしかないと、押せるピル／チップと直下のカードが触れて見える。
 	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
 	pill: { borderRadius: radius.pill, ...squircle },
 	pillHit: { paddingVertical: 7, paddingHorizontal: 13 },
-	pillText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
+	pillText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
 	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	chip: { borderRadius: 8, ...squircle },
+	chip: { borderRadius: radius.control, ...squircle },
 	chipHit: { paddingVertical: 6, paddingHorizontal: 12 },
-	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
+	chipText: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },
 	barRow: { paddingVertical: 9, gap: 4 },
 	barSeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	barHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-	barName: { color: colors.text, fontSize: 12, flex: 1 },
-	barSub: { color: colors.textDim, fontSize: 10 },
-	barValue: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
-	barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surface3, overflow: 'hidden', flexDirection: 'row' },
-	barFill: { height: 8 },
+	barName: { color: colors.text, fontSize: type.meta, flex: 1 },
+	barSub: { color: colors.textDim, fontSize: type.badge },
+	barValue: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
+	// Core と GraphQL の積み上げで Meter では描けないため、高さ・角丸だけ Meter（6 / 3）に揃える。
+	barTrack: { height: 6, borderRadius: 3, backgroundColor: colors.surface3, overflow: 'hidden', flexDirection: 'row' },
+	barFill: { height: 6 },
 	// 失敗・レート制限・所要時間。行が長くなりすぎないよう折り返す。
 	statRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
-	stat: { color: colors.textDim, fontSize: 9.5, fontWeight: '700', backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden' },
-	statWarn: { color: colors.yellow, backgroundColor: 'rgba(224,192,125,0.14)' },
-	statBad: { color: colors.red, backgroundColor: 'rgba(244,114,114,0.14)' },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 10, paddingHorizontal: 4 },
+	stat: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', backgroundColor: colors.surface3, borderRadius: radius.key, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden' },
+	statWarn: { color: colors.yellow, backgroundColor: tint(colors.yellow, alpha.wash) },
+	statBad: { color: colors.red, backgroundColor: tint(colors.red, alpha.wash) },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 10, paddingHorizontal: 4 },
 });

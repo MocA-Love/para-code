@@ -11,7 +11,8 @@ import { GlassSurface } from '../../src/components/glassSurface.js';
 import { ScreenHeader } from '../../src/components/screenHeader.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors, mono, radius, squircle } from '../../src/theme.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { alpha, colors, radius, squircle, tint, type } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 
 /**
@@ -418,14 +419,14 @@ const SLOT_H = 44;
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1 },
-	sectionTitle: { color: colors.textDim, fontSize: 12, fontWeight: '700', marginTop: 22, marginBottom: 8, marginHorizontal: 20, letterSpacing: 0.3 },
+	sectionTitle: { color: colors.textDim, fontSize: type.meta, fontWeight: '700', marginTop: 22, marginBottom: 8, marginHorizontal: 20, letterSpacing: 0.3 },
 	card: { backgroundColor: colors.panel, borderRadius: radius.card, ...squircle, marginHorizontal: 16, paddingHorizontal: 14, paddingVertical: 4 },
 	separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 0 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
 	rowBody: { flex: 1, minWidth: 0 },
-	rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	rowTitleOn: { color: colors.accent },
-	rowDesc: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 2 },
+	rowDesc: { color: colors.textDim, fontSize: type.meta, lineHeight: 16, marginTop: 2 },
 
 	// 実験台。ヘッダーと同じ寸法・同じ地色にして、本番の見え方に近づける。
 	stage: { marginHorizontal: 16, backgroundColor: colors.bg, borderRadius: radius.card, ...squircle, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, paddingVertical: 18, paddingHorizontal: 16, overflow: 'hidden' },
@@ -436,35 +437,36 @@ const styles = StyleSheet.create({
 	fill: { flex: 1 },
 	overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
 	titleLayer: { position: 'absolute', left: 0, right: 0, top: 18, height: SLOT_H, alignItems: 'center', justifyContent: 'center' },
-	title: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2, textAlign: 'center' },
-	titleSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1, textAlign: 'center', fontFamily: mono.default },
+	title: { color: colors.text, fontSize: type.title, fontWeight: '700', letterSpacing: -0.2, textAlign: 'center' },
+	titleSub: { color: colors.textDim, fontSize: type.badge, marginTop: 1, textAlign: 'center', fontFamily: monoFamily },
 
 	islandHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 7, paddingRight: 15 },
-	avatar: { width: 30, height: 30, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(9,175,217,.28)', flexShrink: 0 },
-	avatarText: { color: colors.accent, fontSize: 13, fontWeight: '800', fontFamily: mono.default },
+	avatar: { width: 30, height: 30, borderRadius: radius.pill, ...squircle, alignItems: 'center', justifyContent: 'center', backgroundColor: tint(colors.accent, alpha.line), flexShrink: 0 },
+	// 固定サイズの丸アバターの頭文字なので、文字の段ではなく丸の大きさから決める。
+	avatarText: { color: colors.accent, fontSize: 13, fontWeight: '800', fontFamily: monoFamily },
 	islandText: { flexShrink: 1, minWidth: 0 },
-	islandName: { color: colors.text, fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+	islandName: { color: colors.text, fontSize: type.title, fontWeight: '700', letterSpacing: -0.2 },
 	centerHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	pillHit: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, gap: 2 },
-	pillButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+	pillButton: { width: 34, height: 34, borderRadius: radius.pill, ...squircle, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 
 	toggle: { marginTop: 14, marginHorizontal: 16, height: 46, borderRadius: radius.pill, ...squircle, backgroundColor: colors.accent, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
 	togglePressed: { opacity: 0.85 },
-	toggleLabel: { color: colors.bg, fontSize: 15, fontWeight: '700' },
-	hint: { color: colors.textDim, fontSize: 11.5, marginTop: 8, marginHorizontal: 20, textAlign: 'center' },
-	hintTight: { color: colors.textDim, fontSize: 11, marginBottom: 10, textAlign: 'center' },
+	toggleLabel: { color: colors.bg, fontSize: type.title, fontWeight: '700' },
+	hint: { color: colors.textDim, fontSize: type.meta, marginTop: 8, marginHorizontal: 20, textAlign: 'center' },
+	hintTight: { color: colors.textDim, fontSize: type.caption, marginBottom: 10, textAlign: 'center' },
 
 	blurPreviewRow: { alignItems: 'flex-start', marginTop: 12, marginBottom: 12, gap: 6 },
-	blurPreviewLabel: { color: colors.textDim, fontSize: 10.5, marginTop: 4 },
+	blurPreviewLabel: { color: colors.textDim, fontSize: type.badge, marginTop: 4 },
 	blurPreviewShell: { width: LIST_LEFT_W, height: SLOT_H, borderRadius: radius.pill, ...squircle, overflow: 'hidden' },
 	stepper: { flexDirection: 'row', gap: 8, justifyContent: 'center', marginBottom: 6 },
 	stepBtn: { minWidth: 46, height: 34, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	stepBtnOn: { backgroundColor: colors.accent },
 	stepBtnPressed: { opacity: 0.8 },
-	stepValue: { color: colors.text, fontSize: 13, fontWeight: '700' },
+	stepValue: { color: colors.text, fontSize: type.body, fontWeight: '700' },
 	stepValueOn: { color: colors.bg },
 	nativeBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12, marginTop: 4 },
-	nativeBtnLabel: { flex: 1, color: colors.accent, fontSize: 14, fontWeight: '700' },
+	nativeBtnLabel: { flex: 1, color: colors.accent, fontSize: type.body, fontWeight: '700' },
 
-	footnote: { color: colors.textDim, fontSize: 11, lineHeight: 16, marginTop: 24, marginHorizontal: 20 },
+	footnote: { color: colors.textDim, fontSize: type.caption, lineHeight: 16, marginTop: 24, marginHorizontal: 20 },
 });

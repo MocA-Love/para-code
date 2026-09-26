@@ -2,7 +2,7 @@
 
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SelectablePill } from './selectablePill.js';
-import { colors, radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import type { RelayHost } from '../relayHosts.js';
 
@@ -49,7 +49,7 @@ const styles = StyleSheet.create({
 	pill: { borderRadius: radius.pill, ...squircle },
 	pillOffline: { opacity: 0.55 },
 	pillHit: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 7, paddingHorizontal: 13 },
-	dot: { width: 5, height: 5, borderRadius: 999, opacity: 0.8 },
-	text: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
+	dot: { width: 5, height: 5, borderRadius: radius.pill, ...squircle, opacity: 0.8 },
+	text: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 	textActive: { color: colors.bg },
 });

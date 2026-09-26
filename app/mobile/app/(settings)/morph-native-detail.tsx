@@ -3,7 +3,8 @@
 import { Stack } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, mono, radius, squircle } from '../../src/theme.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 
 /**
  * 「OSに任せた場合を見る」の遷移先。**実験台。出荷しない。**
@@ -65,11 +66,11 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1 },
 	content: { padding: 16, paddingBottom: 48 },
-	lead: { color: colors.textDim, fontSize: 12.5, lineHeight: 19 },
-	sectionTitle: { color: colors.textDim, fontSize: 12, fontWeight: '700', marginTop: 24, marginBottom: 8, letterSpacing: 0.3 },
+	lead: { color: colors.textDim, fontSize: type.meta, lineHeight: 19 },
+	sectionTitle: { color: colors.textDim, fontSize: type.meta, fontWeight: '700', marginTop: 24, marginBottom: 8, letterSpacing: 0.3 },
 	card: { backgroundColor: colors.panel, borderRadius: radius.card, ...squircle, paddingHorizontal: 14, paddingVertical: 6 },
 	row: { paddingVertical: 9 },
-	rowKey: { color: colors.accent, fontSize: 11, fontWeight: '700', fontFamily: mono.default },
-	rowValue: { color: colors.text, fontSize: 13, lineHeight: 19, marginTop: 2 },
-	footnote: { color: colors.textDim, fontSize: 11, lineHeight: 17, marginTop: 22 },
+	rowKey: { color: colors.accent, fontSize: type.caption, fontWeight: '700', fontFamily: monoFamily },
+	rowValue: { color: colors.text, fontSize: type.body, lineHeight: 20, marginTop: 2 },
+	footnote: { color: colors.textDim, fontSize: type.caption, lineHeight: 17, marginTop: 22 },
 });

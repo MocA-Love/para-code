@@ -4,12 +4,14 @@ import { Linking, Pressable, StyleSheet, Text } from 'react-native';
 import { Octicons } from '@expo/vector-icons';
 import { hapticSelection } from '../haptics.js';
 import type { WorkspacePrStatus } from '../store.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 
 /**
  * エージェントコンポーザーのPRピル（prr.html 案A）。エージェントの所属ワークスペースの
  * 現在ブランチにGitHub PRが紐づいている場合のみ表示し、タップで外部ブラウザのPRページを開く。
- * 状態色・アイコンはPC版WorkspacesビューのPRチップ（paradisWorkspaceSwitch.css）と同一の
- * GitHub準拠4状態（open/draft/merged/closed）。
+ * 状態・アイコンはPC版WorkspacesビューのPRチップ（paradisWorkspaceSwitch.css）と同じ
+ * GitHub準拠4状態（open/draft/merged/closed）。色はテーマの対応色に寄せている。
  */
 export function PrPill({ pr }: { pr: WorkspacePrStatus }) {
 	const look = PR_STATE_LOOK[pr.state] ?? PR_STATE_LOOK.open;
@@ -29,7 +31,7 @@ export function PrPill({ pr }: { pr: WorkspacePrStatus }) {
 	);
 }
 
-/** 状態 → 色・アイコン。色はPC版CSSの16進値、ウォッシュ/枠線は同CSSのcolor-mix比率（12%/38%）を焼き込んだもの。 */
+/** 状態 → 色・アイコン。PC版CSSのGitHub準拠4状態をテーマの green / textDim / purple / red に寄せ、ウォッシュ/枠線は alpha の段（wash/line）で重ねる。 */
 const PR_STATE_LOOK: Record<WorkspacePrStatus['state'], {
 	color: string;
 	wash: string;
@@ -37,10 +39,10 @@ const PR_STATE_LOOK: Record<WorkspacePrStatus['state'], {
 	icon: 'git-pull-request' | 'git-pull-request-draft' | 'git-merge' | 'git-pull-request-closed';
 	label: string;
 }> = {
-	open: { color: '#3fb950', wash: 'rgba(63,185,80,0.12)', border: 'rgba(63,185,80,0.38)', icon: 'git-pull-request', label: 'Open' },
-	draft: { color: '#8b949e', wash: 'rgba(139,148,158,0.12)', border: 'rgba(139,148,158,0.38)', icon: 'git-pull-request-draft', label: 'Draft' },
-	merged: { color: '#a371f7', wash: 'rgba(163,113,247,0.12)', border: 'rgba(163,113,247,0.38)', icon: 'git-merge', label: 'Merged' },
-	closed: { color: '#f85149', wash: 'rgba(248,81,73,0.12)', border: 'rgba(248,81,73,0.38)', icon: 'git-pull-request-closed', label: 'Closed' },
+	open: { color: colors.green, wash: tint(colors.green, alpha.wash), border: tint(colors.green, alpha.line), icon: 'git-pull-request', label: 'Open' },
+	draft: { color: colors.textDim, wash: tint(colors.textDim, alpha.wash), border: tint(colors.textDim, alpha.line), icon: 'git-pull-request-draft', label: 'Draft' },
+	merged: { color: colors.purple, wash: tint(colors.purple, alpha.wash), border: tint(colors.purple, alpha.line), icon: 'git-merge', label: 'Merged' },
+	closed: { color: colors.red, wash: tint(colors.red, alpha.wash), border: tint(colors.red, alpha.line), icon: 'git-pull-request-closed', label: 'Closed' },
 };
 
 const styles = StyleSheet.create({
@@ -48,7 +50,7 @@ const styles = StyleSheet.create({
 	// 幅が足りないときはModelPill側（maxWidth指定あり）を省略させる。
 	pill: {
 		flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 0,
-		borderWidth: 1, borderRadius: 999, paddingVertical: 9, paddingHorizontal: 12,
+		borderWidth: 1, borderRadius: radius.pill, ...squircle, paddingVertical: 9, paddingHorizontal: 12,
 	},
-	number: { fontSize: 12, fontWeight: '600', fontFamily: 'Menlo' },
+	number: { fontSize: type.meta, fontWeight: '600', fontFamily: monoFamily },
 });

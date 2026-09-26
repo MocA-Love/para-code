@@ -12,7 +12,10 @@ import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { Meter } from '../../src/components/meter.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { StatCard } from '../../src/components/statCard.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
@@ -309,7 +312,7 @@ export default function CcusageScreen() {
 							    上の数字が変わったことに気づけない。 */}
 							{availableAgents.length > 1 ? (
 								<>
-									<Text style={styles.sectionTitle}>エージェント</Text>
+									<SectionHeader title="エージェント" />
 									<View style={styles.pillRow}>
 										{(['all', ...availableAgents] as AgentFilter[]).map(key => {
 											const active = agentFilter === key;
@@ -332,40 +335,38 @@ export default function CcusageScreen() {
 							) : null}
 
 							<View style={styles.kpiRow}>
-								<View style={styles.kpiCard}>
-									<Text style={styles.kpiLabel}>今日のコスト</Text>
-									<Text style={styles.kpiValue}>{formatCost(todayCost ?? 0)}</Text>
-									{agentFiltered ? <Text style={styles.kpiSub}>{AGENT_LABEL[agentFilter as UsageAgent]}のみ</Text> : null}
-								</View>
+								<StatCard
+									label="今日のコスト"
+									value={formatCost(todayCost ?? 0)}
+									sub={agentFiltered ? `${AGENT_LABEL[agentFilter as UsageAgent]}のみ` : undefined}
+								/>
 								{data.block ? (
-									<View style={styles.kpiCard}>
-										<Text style={styles.kpiLabel}>アクティブブロック</Text>
-										<Text style={styles.kpiValue}>{formatCost(data.block.costUSD)}</Text>
-										{/* ブロックはエージェント別の内訳を持たないので、絞り込み中は
-										    隣のカードと集計範囲が違うことを明示する。 */}
-										{agentFiltered
-											? <Text style={styles.kpiSub}>すべてのエージェント</Text>
+									<StatCard
+										label="アクティブブロック"
+										value={formatCost(data.block.costUSD)}
+										// ブロックはエージェント別の内訳を持たないので、絞り込み中は
+										// 隣のカードと集計範囲が違うことを明示する。
+										sub={agentFiltered
+											? 'すべてのエージェント'
 											: data.block.costPerHour !== undefined
-												? <Text style={styles.kpiSub}>{formatCost(data.block.costPerHour)}/時</Text>
-												: null}
-									</View>
+												? `${formatCost(data.block.costPerHour)}/時`
+												: undefined}
+									/>
 								) : null}
 							</View>
 
-							<Text style={styles.sectionTitle}>日別（直近{DAILY_WINDOW_DAYS}日）</Text>
+							<SectionHeader title={`日別（直近${DAILY_WINDOW_DAYS}日）`} />
 							<View style={styles.card}>
 								{dailyCosts.map(d => (
 									<View key={d.date} style={styles.barRow}>
 										<Text style={styles.barLabel} numberOfLines={1}>{d.date.slice(5)}</Text>
-										<View style={styles.barTrack}>
-											<View style={[styles.barFill, { width: `${Math.max(2, (d.cost / maxDailyCost) * 100)}%`, backgroundColor: colors.accent }]} />
-										</View>
-										<Text style={styles.barValue}>{formatCost(d.cost)}</Text>
+										<Meter ratio={Math.max(0.02, d.cost / maxDailyCost)} color={colors.accent} />
+										<Text style={styles.barValue} numberOfLines={1} adjustsFontSizeToFit>{formatCost(d.cost)}</Text>
 									</View>
 								))}
 							</View>
 
-							<Text style={styles.sectionTitle}>集計期間</Text>
+							<SectionHeader title="集計期間" />
 							<View style={styles.pillRow}>
 								{PERIOD_OPTIONS.map(days => {
 									const active = periodDays === days;
@@ -384,7 +385,7 @@ export default function CcusageScreen() {
 								})}
 							</View>
 
-							<Text style={styles.sectionTitle}>モデル別（直近{periodDays}日）</Text>
+							<SectionHeader title={`モデル別（直近${periodDays}日）`} />
 							<View style={styles.card}>
 								{models.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
 								{models.map(m => (
@@ -392,27 +393,23 @@ export default function CcusageScreen() {
 									<View key={m.model} style={styles.modelRow}>
 										<View style={styles.modelHead}>
 											<Text style={styles.modelName} numberOfLines={1}>{m.model}</Text>
-											<Text style={styles.barValue}>{formatCost(m.cost)}</Text>
+											<Text style={styles.barValue} numberOfLines={1} adjustsFontSizeToFit>{formatCost(m.cost)}</Text>
 										</View>
-										<View style={styles.barTrack}>
-											<View style={[styles.barFill, { width: `${Math.max(2, (m.cost / maxModelCost) * 100)}%`, backgroundColor: AGENT_COLOR[m.agent] }]} />
-										</View>
+										<Meter ratio={Math.max(0.02, m.cost / maxModelCost)} color={AGENT_COLOR[m.agent]} />
 									</View>
 								))}
 							</View>
 
-							<Text style={styles.sectionTitle}>プロジェクト別（直近{periodDays}日）</Text>
+							<SectionHeader title={`プロジェクト別（直近${periodDays}日）`} />
 							<View style={styles.card}>
 								{projects.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
 								{projects.map(p => (
 									<View key={p.name} style={styles.modelRow}>
 										<View style={styles.modelHead}>
 											<Text style={styles.modelName} numberOfLines={1}>{p.name}</Text>
-											<Text style={styles.barValue}>{formatCost(p.cost)}</Text>
+											<Text style={styles.barValue} numberOfLines={1} adjustsFontSizeToFit>{formatCost(p.cost)}</Text>
 										</View>
-										<View style={styles.barTrack}>
-											<View style={[styles.barFill, { width: `${Math.max(2, (p.cost / maxProjectCost) * 100)}%`, backgroundColor: colors.accent }]} />
-										</View>
+										<Meter ratio={Math.max(0.02, p.cost / maxProjectCost)} color={colors.accent} />
 									</View>
 								))}
 							</View>
@@ -421,7 +418,7 @@ export default function CcusageScreen() {
 							) : null}
 
 							{/* セッションはPCが「直近のもの」を選んで送ってくるので、期間もエージェントも効かない。 */}
-							<Text style={styles.sectionTitle}>直近セッション{agentFiltered ? '（すべてのエージェント）' : ''}</Text>
+							<SectionHeader title={`直近セッション${agentFiltered ? '（すべてのエージェント）' : ''}`} />
 							<View style={styles.card}>
 								{sessions.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
 								{sessions.map((s, i) => (
@@ -448,37 +445,30 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
-	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
-	warn: { color: colors.yellow, fontSize: 11.5, marginTop: 8, marginBottom: 4 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	warn: { color: colors.yellow, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
 	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
 	stale: { opacity: 0.5 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
-	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
+	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	// 押せるピルと直下のカードが触れて見えないよう、下に余白を残す。
 	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
 	pill: { borderRadius: radius.pill, ...squircle },
 	pillHit: { paddingVertical: 7, paddingHorizontal: 13 },
-	pillText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
+	pillText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 8, paddingHorizontal: 4 },
 	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 4 },
-	kpiLabel: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
-	kpiValue: { color: colors.text, fontSize: 22, fontWeight: '800' },
-	kpiSub: { color: colors.textDim, fontSize: 11 },
 	barRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
-	barLabel: { color: colors.text, fontSize: 11.5, width: 72 },
+	barLabel: { color: colors.text, fontSize: type.meta, width: 72 },
 	modelRow: { paddingVertical: 8, gap: 6 },
 	modelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-	modelName: { color: colors.text, fontSize: 12, flex: 1 },
-	barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: colors.surface3, overflow: 'hidden' },
-	barFill: { height: 8, borderRadius: 4 },
-	barValue: { color: colors.textDim, fontSize: 11.5, width: 56, textAlign: 'right' },
+	modelName: { color: colors.text, fontSize: type.meta, flex: 1 },
+	barValue: { color: colors.textDim, fontSize: type.meta, width: 56, textAlign: 'right' },
 	sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
 	sessionSeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	rowBody: { flex: 1, minWidth: 0 },
-	rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
-	rowDesc: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-	sessionCost: { color: colors.text, fontSize: 13, fontWeight: '700' },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	rowDesc: { color: colors.textDim, fontSize: type.meta, marginTop: 2 },
+	sessionCost: { color: colors.text, fontSize: type.body, fontWeight: '700' },
 });

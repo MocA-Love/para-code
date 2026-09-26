@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticSuccess, hapticWarning } from '../haptics.js';
 import type { AgentApprovalChoice, AgentMessageSendResult } from '../store.js';
 
@@ -74,18 +75,18 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices,
 }
 
 const styles = StyleSheet.create({
-	approvalBar: { backgroundColor: 'rgba(224,192,125,.10)', borderWidth: 1, borderColor: colors.yellow, borderRadius: 16, padding: 14, gap: 8 },
-	approvalText: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	approvalDetail: { color: colors.text, fontSize: 11.5, lineHeight: 16, fontFamily: 'Menlo', backgroundColor: colors.surface2, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 },
+	approvalBar: { backgroundColor: tint(colors.yellow, alpha.wash), borderWidth: 1, borderColor: colors.yellow, borderRadius: radius.card, ...squircle, padding: 14, gap: 8 },
+	approvalText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	approvalDetail: { color: colors.text, fontSize: type.meta, lineHeight: 17, fontFamily: monoFamily, backgroundColor: colors.surface2, borderRadius: radius.control, paddingHorizontal: 10, paddingVertical: 8 },
 	approvalButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-	approvalBtn: { flexGrow: 1, flexBasis: '46%', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
+	approvalBtn: { flexGrow: 1, flexBasis: '46%', borderRadius: radius.control, ...squircle, paddingHorizontal: 10, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
 	disabled: { opacity: 0.6 },
 	approveBtn: { backgroundColor: colors.green },
 	neutralBtn: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
-	denyBtn: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: 'rgba(244,114,114,.3)' },
-	approveBtnText: { color: colors.bg, fontSize: 13, fontWeight: '700' },
-	neutralBtnText: { color: colors.text, fontSize: 12, fontWeight: '600', textAlign: 'center' },
-	denyBtnText: { color: colors.red, fontSize: 13, fontWeight: '700' },
-	approvalHint: { color: colors.textDim, fontSize: 10 },
-	approvalError: { color: colors.red, fontSize: 11, lineHeight: 15 },
+	denyBtn: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: tint(colors.red, alpha.line) },
+	approveBtnText: { color: colors.bg, fontSize: type.body, fontWeight: '700' },
+	neutralBtnText: { color: colors.text, fontSize: type.meta, fontWeight: '600', textAlign: 'center' },
+	denyBtnText: { color: colors.red, fontSize: type.body, fontWeight: '700' },
+	approvalHint: { color: colors.textDim, fontSize: type.badge },
+	approvalError: { color: colors.red, fontSize: type.caption, lineHeight: 15 },
 });

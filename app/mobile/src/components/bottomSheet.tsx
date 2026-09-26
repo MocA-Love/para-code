@@ -5,7 +5,7 @@ import { Animated, Easing, Keyboard, KeyboardEvent, LayoutAnimation, Modal, PanR
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { HeaderEdgeFade } from './headerEdgeFade.js';
-import { colors, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { keyboardCoverage } from '../keyboardCoverage.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
@@ -239,7 +239,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 			borderBottomLeftRadius: SHEET_BOTTOM_RADIUS, borderBottomRightRadius: SHEET_BOTTOM_RADIUS,
 			...squircle,
 		}
-		: { borderTopLeftRadius: 28, borderTopRightRadius: 28, ...squircle };
+		: { borderTopLeftRadius: radius.sheet, borderTopRightRadius: radius.sheet, ...squircle };
 
 	const head = onConfirm ? (
 		<>
@@ -317,7 +317,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 }
 
 const styles = StyleSheet.create({
-	overlay: { backgroundColor: 'rgba(0,0,0,.5)' },
+	overlay: { backgroundColor: colors.scrim },
 	// 影は浮かせたシートを地から離すために要る。切り抜かない層に置くこと。
 	// **この層が地色と角丸を持つ。** 透明なままだと iOS は影の形を作れず影が出ないし、
 	// Android の `elevation` は View の矩形 outline から描くので角丸の背後に矩形の
@@ -337,15 +337,15 @@ const styles = StyleSheet.create({
 	// 全高のときだけ器の高さいっぱいに広げる（top と bottom の両方が決まっているため）。
 	sheetFill: { flex: 1 },
 	glassSheet: { backgroundColor: 'transparent' },
-	handle: { width: 36, height: 5, borderRadius: 3, backgroundColor: colors.borderStrong, alignSelf: 'center', marginTop: 10, marginBottom: 6 },
+	handle: { width: 36, height: 5, borderRadius: 2.5, backgroundColor: colors.borderStrong, alignSelf: 'center', marginTop: 10, marginBottom: 6 },
 	head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingBottom: 12 },
 	// 見出しの下に重ねる帯。本文はこの下を流れる（`top` は実測値を当てる）。
 	topFade: { position: 'absolute', left: 0, right: 0, height: 20, zIndex: 1 },
-	title: { color: colors.text, fontSize: 16, fontWeight: '700' },
+	title: { color: colors.text, fontSize: type.title, fontWeight: '700' },
 	// **真円にしない。** 他の画面の丸は44ptのガラス（screenHeader.tsx）で、ここだけ30ptの
 	// 塗りの真円だと寸法も素材も違う三番目の言語になる。シート内の操作要素（アクションの
 	// r14・ダイアログボタンのr12）と同じ角丸長方形の言語に寄せる。
-	close: { width: 34, height: 34, borderRadius: 11, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
-	headerBtn: { width: 34, height: 34, borderRadius: 11, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+	close: { width: 34, height: 34, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+	headerBtn: { width: 34, height: 34, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
 	confirmBtn: { backgroundColor: colors.accent, borderColor: colors.accent },
 });

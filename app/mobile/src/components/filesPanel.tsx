@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -11,7 +11,8 @@ import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { matchRanges, useFilesSearch } from '../filesSearch.js';
 import { useFilesLive } from '../filesLive.js';
-import { colors, radius, squircle } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult, StoreState } from '../store.js';
 
@@ -496,21 +497,21 @@ function formatSize(bytes: number): string {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	breadcrumb: { color: colors.textDim, fontSize: 12, paddingVertical: 8 },
+	breadcrumb: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	list: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 16 },
-	error: { color: colors.red, fontSize: 12, marginVertical: 8 },
+	error: { color: colors.red, fontSize: type.meta, marginVertical: 8 },
 	// 行を収める札。SCMのカードと同じ面（surface + 枠線 + 角丸14）。
 	card: { backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.card, ...squircle, paddingHorizontal: 14, marginBottom: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	// カードの最終行。締めの下線はカードの縁が担うので消す。
 	rowLast: { borderBottomWidth: 0 },
-	rowName: { flex: 1, color: colors.text, fontSize: 14 },
-	size: { color: colors.textDim, fontSize: 11 },
+	rowName: { flex: 1, color: colors.text, fontSize: type.body },
+	size: { color: colors.textDim, fontSize: type.caption },
 	resultCol: { flex: 1, gap: 2 },
-	resultPath: { color: colors.textDim, fontSize: 11 },
-	resultPreview: { color: colors.text, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	dimNote: { color: colors.textDim, fontSize: 12, paddingVertical: 12, textAlign: 'center' },
+	resultPath: { color: colors.textDim, fontSize: type.caption },
+	resultPreview: { color: colors.text, fontSize: type.meta, fontFamily: monoFamily },
+	dimNote: { color: colors.textDim, fontSize: type.meta, paddingVertical: 12, textAlign: 'center' },
 	// 一致箇所。色だけで示し、地は敷かない（モノスペースの行を壊さない）。
 	hit: { color: colors.accent, fontWeight: '700' },
 });

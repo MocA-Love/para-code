@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { usePathname } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { colors } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 
 /**
@@ -77,8 +77,8 @@ export function ConnectionStatusBanner() {
 
 const styles = StyleSheet.create({
 	stack: { position: 'absolute', left: 12, right: 12, gap: 6, zIndex: 100 },
-	unknown: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(245,158,11,.35)', backgroundColor: 'rgba(24,24,27,.96)', paddingHorizontal: 10, paddingVertical: 8 },
-	text: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 15 },
-	action: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7, backgroundColor: colors.surface },
-	actionText: { color: colors.accent, fontSize: 11, fontWeight: '700' },
+	unknown: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: tint(colors.orange, alpha.line), backgroundColor: 'rgba(24,24,27,.96)', paddingHorizontal: 10, paddingVertical: 8 },
+	text: { flex: 1, color: colors.text, fontSize: type.caption, lineHeight: 15 },
+	action: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: radius.key, ...squircle, backgroundColor: colors.surface },
+	actionText: { color: colors.accent, fontSize: type.caption, fontWeight: '700' },
 });

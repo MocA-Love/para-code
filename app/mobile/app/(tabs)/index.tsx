@@ -27,7 +27,7 @@ import { useParaHeaderHeight } from '../../src/paraHeader.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
-import { colors, squircle } from '../../src/theme.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 import { arrangeHomeRows } from '../../src/homeSort.js';
@@ -558,16 +558,16 @@ const styles = StyleSheet.create({
 	pinnedBand: { position: 'absolute', left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12 },
 	// iPad: 本文カラムと左端を揃える（一覧が2列に広がっても帯だけ画面幅にならないように）。
 	pinnedBandWide: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
-	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4, lineHeight: 18 },
+	dimSmall: { color: colors.textDim, fontSize: type.meta, marginTop: 4, lineHeight: 18 },
 	// アーカイブ直後の「元に戻す」（タブバーの上のLiquid Glass）
 	undoWrap: {
 		position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10,
-		borderRadius: 16, ...squircle, paddingVertical: 11, paddingHorizontal: 14,
+		borderRadius: radius.card, ...squircle, paddingVertical: 11, paddingHorizontal: 14,
 	},
-	undoGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 16, ...squircle },
-	undoText: { color: colors.text, fontSize: 12, flex: 1 },
-	undoAction: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },
+	undoGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius.card, ...squircle },
+	undoText: { color: colors.text, fontSize: type.meta, flex: 1 },
+	undoAction: { color: colors.accent, fontSize: type.meta, fontWeight: '700' },
+	sectionTitle: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },
 	// iPadの広い幅でエージェント行を2列に並べるときだけ使う折り返しグリッド。
 	// 各セルの左右に隙間を作るため、グリッド側を負のマージンで相殺する。
 	grid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5 },

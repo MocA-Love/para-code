@@ -10,7 +10,10 @@ import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHea
 import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { Meter } from '../../src/components/meter.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { StatCard } from '../../src/components/statCard.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact } from '../../src/haptics.js';
 import type { RtkSavingsResult } from '../../src/store.js';
@@ -165,32 +168,30 @@ export default function RtkScreen() {
 					{data ? (
 						<View style={hostStale ? styles.stale : undefined}>
 							<View style={styles.kpiRow}>
-								<View style={styles.kpiCard}>
-									<Text style={styles.kpiLabel}>今日の節約</Text>
-									<Text style={styles.kpiValue}>{formatTokens(today?.savedTokens ?? 0)}</Text>
-									<Text style={styles.kpiSub}>{today ? `${today.commands}コマンド` : '記録なし'}</Text>
-								</View>
-								<View style={styles.kpiCard}>
-									<Text style={styles.kpiLabel}>累計の節約</Text>
-									<Text style={styles.kpiValue}>{formatTokens(data.totals.savedTokens)}</Text>
-									<Text style={styles.kpiSub}>入力の{savingsPercent(data.totals.savedTokens, data.totals.inputTokens).toFixed(0)}%を削減</Text>
-								</View>
+								<StatCard
+									label="今日の節約"
+									value={formatTokens(today?.savedTokens ?? 0)}
+									sub={today ? `${today.commands}コマンド` : '記録なし'}
+								/>
+								<StatCard
+									label="累計の節約"
+									value={formatTokens(data.totals.savedTokens)}
+									sub={`入力の${savingsPercent(data.totals.savedTokens, data.totals.inputTokens).toFixed(0)}%を削減`}
+								/>
 							</View>
 
-							<Text style={styles.sectionTitle}>日別（直近{DAILY_WINDOW_DAYS}日）</Text>
+							<SectionHeader title={`日別（直近${DAILY_WINDOW_DAYS}日）`} />
 							<View style={styles.card}>
 								{dailySaved.map(day => (
 									<View key={day.date} style={styles.barRow}>
 										<Text style={styles.barLabel} numberOfLines={1}>{day.date.slice(5)}</Text>
-										<View style={styles.barTrack}>
-											<View style={[styles.barFill, { width: `${Math.max(2, (day.savedTokens / maxDailySaved) * 100)}%`, backgroundColor: colors.accent }]} />
-										</View>
+										<Meter ratio={Math.max(0.02, day.savedTokens / maxDailySaved)} color={colors.accent} />
 										<Text style={styles.barValue}>{formatTokens(day.savedTokens)}</Text>
 									</View>
 								))}
 							</View>
 
-							<Text style={styles.sectionTitle}>コマンド別</Text>
+							<SectionHeader title="コマンド別" />
 							<View style={styles.card}>
 								{commands.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
 								{commands.map((row, i) => (
@@ -201,15 +202,13 @@ export default function RtkScreen() {
 											<Text style={styles.commandName} numberOfLines={1}>{row.command}</Text>
 											<Text style={styles.barValue}>{formatTokens(row.savedTokens)}</Text>
 										</View>
-										<View style={styles.barTrack}>
-											<View style={[styles.barFill, { width: `${Math.max(2, (row.savedTokens / maxCommandSaved) * 100)}%`, backgroundColor: colors.accent }]} />
-										</View>
+										<Meter ratio={Math.max(0.02, row.savedTokens / maxCommandSaved)} color={colors.accent} />
 										<Text style={styles.commandMeta}>{row.count}回 · 平均{row.avgSavingsPct.toFixed(0)}%削減</Text>
 									</View>
 								))}
 							</View>
 
-							<Text style={styles.sectionTitle}>直近のコマンド</Text>
+							<SectionHeader title="直近のコマンド" />
 							<View style={styles.card}>
 								{history.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
 								{history.map((entry, i) => (
@@ -234,31 +233,24 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
-	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
-	warn: { color: colors.yellow, fontSize: 11.5, marginTop: 8, marginBottom: 4 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	warn: { color: colors.yellow, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
 	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
 	stale: { opacity: 0.5 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
-	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
+	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 4 },
-	kpiLabel: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
-	kpiValue: { color: colors.text, fontSize: 22, fontWeight: '800' },
-	kpiSub: { color: colors.textDim, fontSize: 11 },
 	barRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
-	barLabel: { color: colors.text, fontSize: 11.5, width: 48 },
-	barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: colors.surface3, overflow: 'hidden' },
-	barFill: { height: 8, borderRadius: 4 },
-	barValue: { color: colors.textDim, fontSize: 11.5, width: 56, textAlign: 'right' },
+	barLabel: { color: colors.text, fontSize: type.meta, width: 48 },
+	barValue: { color: colors.textDim, fontSize: type.meta, width: 56, textAlign: 'right' },
 	commandRow: { paddingVertical: 8, gap: 6 },
 	commandHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-	commandName: { color: colors.text, fontSize: 12, flex: 1 },
-	commandMeta: { color: colors.textDim, fontSize: 11 },
+	commandName: { color: colors.text, fontSize: type.meta, flex: 1 },
+	commandMeta: { color: colors.textDim, fontSize: type.caption },
 	historyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
 	historySeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	rowBody: { flex: 1, minWidth: 0 },
-	rowTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
-	rowDesc: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-	historyPct: { color: colors.text, fontSize: 13, fontWeight: '700' },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	rowDesc: { color: colors.textDim, fontSize: type.meta, marginTop: 2 },
+	historyPct: { color: colors.text, fontSize: type.body, fontWeight: '700' },
 });

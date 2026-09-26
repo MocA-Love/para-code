@@ -13,7 +13,9 @@ import { ScreenHeader } from '../../src/components/screenHeader.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { pcStatusText, shouldShowBattery } from '../../src/pcStatus.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { SettingsCard, SettingsRow } from '../../src/components/settingsRow.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 
 /**
@@ -157,22 +159,18 @@ export default function PcDetailScreen() {
 					</GlassSurface>
 				) : null}
 
-				<Text style={styles.sectionTitle}>使用量</Text>
-				<View style={styles.card}>
-					{USAGE_LINKS.map((link, index) => (
-						<View key={link.route}>
-							{index > 0 ? <View style={styles.separator} /> : null}
-							<Pressable style={styles.row} onPress={() => openUsage(link.route)}>
-								<Ionicons name={link.icon} size={18} color={colors.accent} />
-								<View style={styles.rowBody}>
-									<Text style={styles.rowTitle}>{link.title}</Text>
-									<Text style={styles.rowDesc}>{link.desc}</Text>
-								</View>
-								<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
-							</Pressable>
-						</View>
+				<SectionHeader title="使用量" />
+				<SettingsCard>
+					{USAGE_LINKS.map(link => (
+						<SettingsRow
+							key={link.route}
+							icon={link.icon}
+							title={link.title}
+							description={link.desc}
+							onPress={() => openUsage(link.route)}
+						/>
 					))}
-				</View>
+				</SettingsCard>
 				{!isActive ? (
 					<Text style={styles.note}>
 						使用量を開くと、見ているPCがこのPCに切り替わります（数字は必ず開いたPCのものになります）。
@@ -180,25 +178,23 @@ export default function PcDetailScreen() {
 					</Text>
 				) : null}
 
-				<Text style={styles.sectionTitle}>このPCの設定</Text>
-				<View style={styles.card}>
-					<Pressable style={styles.row} onPress={promptRename}>
-						<Ionicons name="pencil-outline" size={18} color={colors.textDim} />
-						<View style={styles.rowBody}>
-							<Text style={styles.rowTitle}>名前を変更</Text>
-							<Text style={styles.rowDesc}>この端末だけで使う呼び名です（PC側の名前より優先されます）</Text>
-						</View>
-						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
-					</Pressable>
-					<View style={styles.separator} />
-					<Pressable style={styles.row} onPress={confirmRemove}>
-						<Ionicons name="trash-outline" size={18} color={colors.red} />
-						<View style={styles.rowBody}>
-							<Text style={[styles.rowTitle, { color: colors.red }]}>ペアリングを解除</Text>
-							<Text style={styles.rowDesc}>この端末からこのPCへの接続情報を削除します</Text>
-						</View>
-					</Pressable>
-				</View>
+				<SectionHeader title="このPCの設定" />
+				<SettingsCard>
+					<SettingsRow
+						icon="pencil-outline"
+						iconColor={colors.textDim}
+						title="名前を変更"
+						description="この端末だけで使う呼び名です（PC側の名前より優先されます）"
+						onPress={promptRename}
+					/>
+					<SettingsRow
+						icon="trash-outline"
+						title="ペアリングを解除"
+						description="この端末からこのPCへの接続情報を削除します"
+						destructive
+						onPress={confirmRemove}
+					/>
+				</SettingsCard>
 			</ScrollView>
 		</View>
 	);
@@ -207,23 +203,18 @@ export default function PcDetailScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
-	missing: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 20 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
+	missing: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, paddingHorizontal: 20 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
 	identity: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, marginTop: 4 },
 	identityBody: { flex: 1, minWidth: 0 },
-	identityName: { color: colors.text, fontSize: 15, fontWeight: '700' },
-	switchBtn: { marginTop: 10, borderRadius: 12, ...squircle },
+	identityName: { color: colors.text, fontSize: type.title, fontWeight: '700' },
+	switchBtn: { marginTop: 10, borderRadius: radius.control, ...squircle },
 	switchBtnHit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 11 },
-	switchText: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
-	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
-	rowBody: { flex: 1, minWidth: 0 },
-	rowTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
-	rowDesc: { color: colors.textDim, fontSize: 11, marginTop: 2, lineHeight: 15 },
+	switchText: { color: colors.accent, fontSize: type.meta, fontWeight: '700' },
+	rowDesc: { color: colors.textDim, fontSize: type.caption, marginTop: 2, lineHeight: 15 },
 	// 行の marginTop は statusRow 側で持つ。バッテリーは縮まないので、詰まるときは文字を縮める。
 	statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
 	statusText: { marginTop: 0, flexShrink: 1 },
-	statusSep: { color: colors.textDim, fontSize: 11, opacity: 0.6 },
-	separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 },
+	statusSep: { color: colors.textDim, fontSize: type.caption, opacity: 0.6 },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 8, paddingHorizontal: 4 },
 });

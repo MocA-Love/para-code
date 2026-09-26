@@ -8,7 +8,8 @@ import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
-import { colors } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /** RTCView（react-native-webrtc）。未リンクのビルドでは undefined（JPEGミラーのみ）。 */
@@ -570,24 +571,24 @@ const styles = StyleSheet.create({
 	tabStripContent: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingVertical: 8 },
 	tabChip: {
 		flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 6,
-		borderRadius: 14, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, maxWidth: 220,
+		borderRadius: radius.card, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, maxWidth: 220,
 	},
-	tabChipSelected: { backgroundColor: colors.accentWash, borderColor: 'rgba(9,175,217,0.5)' },
+	tabChipSelected: { backgroundColor: colors.accentWash, borderColor: tint(colors.accent, alpha.strong) },
 	disabled: { opacity: 0.45 },
-	tabChipText: { color: colors.textDim, fontSize: 11 },
+	tabChipText: { color: colors.textDim, fontSize: type.caption },
 	tabChipTextSelected: { color: colors.accent },
 	emptyBox: { flex: 1, justifyContent: 'center', padding: 24 },
 	spinner: { marginTop: 24 },
-	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 16, lineHeight: 20 },
-	error: { color: colors.red, fontSize: 12, marginBottom: 8, textAlign: 'center' },
+	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', marginTop: 16, lineHeight: 22 },
+	error: { color: colors.red, fontSize: type.meta, marginBottom: 8, textAlign: 'center' },
 	reloadTargets: { alignItems: 'center', marginTop: 16 },
-	link: { color: colors.accent, fontSize: 13 },
-	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 2, paddingVertical: 4, paddingHorizontal: 12 },
-	urlInput: { flex: 1, color: colors.text, fontSize: 12, fontFamily: 'Menlo', paddingVertical: 6 },
-	viewport: { flex: 1, margin: 12, borderRadius: 10, overflow: 'hidden', backgroundColor: '#000' },
+	link: { color: colors.accent, fontSize: type.body },
+	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 2, paddingVertical: 4, paddingHorizontal: 12 },
+	urlInput: { flex: 1, color: colors.text, fontSize: type.meta, fontFamily: monoFamily, paddingVertical: 6 },
+	viewport: { flex: 1, margin: 12, borderRadius: radius.control, ...squircle, overflow: 'hidden', backgroundColor: '#000' },
 	frameWrap: { flex: 1 },
 	frameImage: { flex: 1 },
 	center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
 	toolbar: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 12, gap: 8 },
-	toolBtn: { flex: 1, alignItems: 'center', paddingVertical: 9, backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border },
+	toolBtn: { flex: 1, alignItems: 'center', paddingVertical: 9, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border },
 });

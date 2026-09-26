@@ -133,6 +133,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: 'このモードのプリセットも、これまでのプリセットと同じように一覧に表示され、実行できます。',
 				tone: 'green',
 			},
+			{
+				icon: 'color-palette-outline',
+				title: '画面ごとにばらついていた文字の大きさ・角の丸み・色をそろえました',
+				body: '特に小さすぎた注記やバッジの文字を読みやすい大きさに上げ、設定の各画面は行の高さと見出しの形、使用量のメーターの描き方を同じにしました。',
+			},
 		],
 	},
 	{

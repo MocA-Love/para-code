@@ -5,7 +5,8 @@ import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppStore } from '../src/appState.js';
-import { colors } from '../src/theme.js';
+import { colors, radius, squircle, type } from '../src/theme.js';
+import { Button } from '../src/components/button.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
@@ -101,20 +102,18 @@ export default function PairScreen() {
 					value={pastedUri}
 					onChangeText={setPastedUri}
 					placeholder="paracode-mobile://pair?d=..."
-					placeholderTextColor="#8b8b8b"
+					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
 					autoCorrect={false}
 					onFocus={() => hapticSelection()}
 					multiline
 				/>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
-				<Pressable style={styles.primaryBtn} accessibilityRole="button" accessibilityState={{ disabled: connecting }} onPress={() => { hapticImpact('medium'); void onSubmitPasted(); }} disabled={connecting}>
-					<Text style={styles.primaryBtnText}>{connecting ? '接続中…' : '接続'}</Text>
-				</Pressable>
+				<Button label={connecting ? '接続中…' : '接続'} variant="primary" onPress={() => { hapticImpact('medium'); void onSubmitPasted(); }} loading={connecting} />
 				{!permission.granted ? (
-					<Pressable onPress={() => { hapticImpact('light'); void requestPermission(); }} accessibilityRole="button"><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
+					<Button label="カメラでQRを読み取る" variant="ghost" onPress={() => { hapticImpact('light'); void requestPermission(); }} />
 				) : (
-					<Pressable onPress={() => { hapticImpact('light'); setPasteMode(false); }} accessibilityRole="button"><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
+					<Button label="QRを読み取る（カメラを使う）" variant="ghost" onPress={() => { hapticImpact('light'); setPasteMode(false); }} />
 				)}
 			</KeyboardAvoidingView>
 		);
@@ -145,18 +144,15 @@ const PAIR_MAX_WIDTH = 420;
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: '#000' },
-	center: { flex: 1, backgroundColor: '#0d1117', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 },
-	title: { color: '#fff', fontSize: 22, fontWeight: '700' },
+	center: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 },
+	title: { color: colors.text, fontSize: type.large, fontWeight: '700' },
 	// maxWidth はiPad用。iPhoneは画面幅からpaddingを引いても366pt以下なので当たらない。
-	dim: { color: '#8b8b8b', fontSize: 13, textAlign: 'center', lineHeight: 20, maxWidth: PAIR_MAX_WIDTH },
-	sas: { color: '#09AFD9', fontSize: 44, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
+	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', lineHeight: 21, maxWidth: PAIR_MAX_WIDTH },
+	sas: { color: colors.accent, fontSize: type.display, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
 	appIcon: { width: 72, height: 72 },
 	overlay: { position: 'absolute', bottom: 60, left: 20, right: 20, alignItems: 'center', gap: 8 },
-	scanHint: { color: '#fff', fontSize: 13, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, overflow: 'hidden' },
-	error: { color: '#f48771', fontSize: 12, textAlign: 'center' },
-	primaryBtn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
-	primaryBtnText: { color: '#00222c', fontWeight: '600', fontSize: 15 },
-	input: { width: '100%', maxWidth: PAIR_MAX_WIDTH, minHeight: 90, backgroundColor: '#252526', borderRadius: 10, borderWidth: 1, borderColor: '#3c3c3c', color: '#cccccc', fontSize: 13, padding: 12, textAlignVertical: 'top' },
-	linkText: { color: '#09AFD9', fontSize: 13, marginTop: 4 },
-	linkTextLight: { color: '#fff', fontSize: 13, textDecorationLine: 'underline' },
+	scanHint: { color: '#fff', fontSize: type.body, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: radius.control, overflow: 'hidden' },
+	error: { color: colors.red, fontSize: type.meta, textAlign: 'center' },
+	input: { width: '100%', maxWidth: PAIR_MAX_WIDTH, minHeight: 90, backgroundColor: colors.surface2, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: type.body, padding: 12, textAlignVertical: 'top' },
+	linkTextLight: { color: '#fff', fontSize: type.body, textDecorationLine: 'underline' },
 });

@@ -6,7 +6,7 @@ import type { AgentChatMessage, AgentChatState } from '../store.js';
 import type { AgentActions } from '../hooks/useAgentActions.js';
 import { QuestionCard } from './questionCard.js';
 import { ApprovalCard } from './approvalCard.js';
-import { colors, squircle } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 
 /** チャット履歴から最新の未回答質問(question)を探す（agent.tsxの回答済み判定と同じロジック）。 */
 function findPendingQuestion(chat: AgentChatState | undefined): AgentChatMessage | undefined {
@@ -230,24 +230,24 @@ export function AttentionStack({ items, total, openKey, onToggle, onLongPress, h
 const styles = StyleSheet.create({
 	stack: { marginBottom: 16 },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8, marginHorizontal: 2 },
-	headerTitle: { color: colors.textDim, fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
-	headerCount: { color: colors.red, backgroundColor: 'rgba(244,114,114,0.14)', borderRadius: 999, paddingHorizontal: 7, paddingVertical: 1, fontSize: 10, fontWeight: '700', overflow: 'hidden' },
-	item: { backgroundColor: colors.attentionBg, borderWidth: 1, borderColor: 'rgba(244,114,114,0.32)', borderRadius: 16, ...squircle, marginBottom: 8, overflow: 'hidden' },
-	itemOpen: { borderColor: 'rgba(244,114,114,0.5)' },
+	headerTitle: { color: colors.textDim, fontSize: type.caption, fontWeight: '700', letterSpacing: 0.3 },
+	headerCount: { color: colors.red, backgroundColor: tint(colors.red, alpha.wash), borderRadius: radius.pill, paddingHorizontal: 7, paddingVertical: 1, fontSize: type.badge, fontWeight: '700', overflow: 'hidden' },
+	item: { backgroundColor: colors.attentionBg, borderWidth: 1, borderColor: tint(colors.red, alpha.line), borderRadius: radius.card, ...squircle, marginBottom: 8, overflow: 'hidden' },
+	itemOpen: { borderColor: tint(colors.red, alpha.strong) },
 	head: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 12, paddingHorizontal: 14 },
 	pin: { marginRight: -2 },
-	orb: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.red },
+	orb: { width: 10, height: 10, borderRadius: radius.pill, backgroundColor: colors.red },
 	headBody: { flex: 1, minWidth: 0 },
-	title: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	sub: { color: colors.textDim, fontSize: 11, marginTop: 2 },
+	title: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	sub: { color: colors.textDim, fontSize: type.caption, marginTop: 2 },
 	subKind: { color: colors.red, fontWeight: '700' },
 	body: { paddingHorizontal: 14, paddingBottom: 12, gap: 8 },
-	notice: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: 16, padding: 14, gap: 4 },
-	groupNotice: { backgroundColor: 'rgba(9,175,217,.10)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 16, padding: 14, gap: 4 },
-	noticeTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	noticeBody: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
+	notice: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: radius.card, ...squircle, padding: 14, gap: 4 },
+	groupNotice: { backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.accent2, borderRadius: radius.card, ...squircle, padding: 14, gap: 4 },
+	noticeTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	noticeBody: { color: colors.textDim, fontSize: type.meta, lineHeight: 17 },
 	openLink: { alignItems: 'center', paddingTop: 2 },
-	openLinkText: { color: colors.textDim, fontSize: 11 },
-	more: { alignItems: 'center', paddingVertical: 9, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-	moreText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
+	openLinkText: { color: colors.textDim, fontSize: type.caption },
+	more: { alignItems: 'center', paddingVertical: 9, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+	moreText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 });
