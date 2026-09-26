@@ -15,14 +15,18 @@
 // 検出をやり直さず、upstream のファイルにも手を入れない。
 //
 // 右クリックのメニューは contextmenu イベントで同期的に組み立てられるため、その前に来る mousedown
-// （キャプチャ段階）でリンクを読み取り、グローバルのコンテキストキーに反映しておく。
+// （キャプチャ段階）でリンクを読み取っておき、contextmenu のキャプチャ段階でグローバルの
+// コンテキストキーに反映する。メニューを開くたびに、まずウィンドウのキャプチャ段階で消してから
+// 入れ直すので、リンクの無い場所（ターミナルの余白など）やキーボードで開いたメニューに、前回の
+// リンクが残らない。
 // エディタエリアのターミナル（TerminalEditor）とパネルのターミナルは同じ `TerminalInstanceContext`
 // メニューを使うので、どちらでも出る。
 
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
-import { addDisposableListener, EventType } from '../../../../base/browser/dom.js';
+import { addDisposableListener, EventType, getWindow } from '../../../../base/browser/dom.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -104,6 +108,43 @@ class ParadisTerminalLinkAtMouseService implements IParadisTerminalLinkAtMouseSe
 
 registerSingleton(IParadisTerminalLinkAtMouseService, ParadisTerminalLinkAtMouseService, InstantiationType.Delayed);
 
+/** 右クリック（macOS の Control+クリックを含む）か。 */
+function isSecondaryClick(event: MouseEvent, isMac: boolean): boolean {
+	return event.button === 2 || (isMac && event.button === 0 && event.ctrlKey);
+}
+
+/**
+ * 1つのターミナルについて、メニューを開くたびに「右クリックしたリンク」を取り直す。
+ *
+ * - `root`（ターミナルのあるウィンドウ）のキャプチャ段階で、どこで開かれたメニューでもまず消す。
+ *   ウィンドウのキャプチャはターミナル要素のキャプチャより先に走る
+ * - ターミナル要素の上で開かれたときだけ、右クリックを押した時点のリンクを入れ直す。押した後に
+ *   upstream が単語を選択するなどして、xterm がリンクの下線を外すことがあるので、押した時点で取る
+ */
+export function paradisTrackTerminalLinkAtMouse(
+	root: EventTarget,
+	element: HTMLElement,
+	hoveredLinkText: () => string | undefined,
+	setUrl: (url: string | undefined) => void,
+	isMac: boolean = isMacintosh,
+): IDisposable {
+	const store = new DisposableStore();
+	let pressed: string | undefined;
+	store.add(addDisposableListener(element, EventType.MOUSE_DOWN, (event: MouseEvent) => {
+		pressed = isSecondaryClick(event, isMac) ? paradisHttpUrlFromTerminalLinkText(hoveredLinkText()) : undefined;
+	}, true));
+	store.add(addDisposableListener(element, EventType.KEY_DOWN, () => {
+		pressed = undefined;
+		setUrl(undefined);
+	}, true));
+	store.add(addDisposableListener(root, EventType.CONTEXT_MENU, () => setUrl(undefined), true));
+	store.add(addDisposableListener(element, EventType.CONTEXT_MENU, () => {
+		setUrl(pressed);
+		pressed = undefined;
+	}, true));
+	return store;
+}
+
 /** 各ターミナルで、右クリックの直前にマウスの下のリンクを読み取る。 */
 class ParadisTerminalLinkAtMouseContribution extends Disposable implements ITerminalContribution {
 	static readonly ID = 'paradis.terminal.linkAtMouse';
@@ -120,11 +161,12 @@ class ParadisTerminalLinkAtMouseContribution extends Disposable implements ITerm
 		if (!element) {
 			return;
 		}
-		this._register(addDisposableListener(element, EventType.MOUSE_DOWN, (event: MouseEvent) => {
-			this._linkAtMouse.setUrl(event.button === 2 ? paradisHttpUrlFromTerminalLinkText(hoveredLinkText(xterm.raw)) : undefined);
-		}, true));
-		// キーボードで開いたメニューに前回の右クリックのリンクが残らないようにする
-		this._register(addDisposableListener(element, EventType.KEY_DOWN, () => this._linkAtMouse.setUrl(undefined), true));
+		this._register(paradisTrackTerminalLinkAtMouse(
+			getWindow(element),
+			element,
+			() => hoveredLinkText(xterm.raw),
+			url => this._linkAtMouse.setUrl(url),
+		));
 	}
 }
 
