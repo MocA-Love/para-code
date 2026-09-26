@@ -974,7 +974,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				currentSpace: session.currentSpace,
 			}, options, {
 				switchToStateKey: stateKey => this.workspaceSwitchService.switchToStateKey(stateKey),
-				resumeAgent: request => this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, request),
+				resumeAgent: async request => { await this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, request); },
 			});
 			// 再開できたらこのダイアログの役目は終わり。開いたままだと再開先の作業を隠してしまう。
 			this.close();
