@@ -4,7 +4,7 @@ import { forwardRef, memo, ReactNode, type Ref } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
-import { colors, radius, squircle, type } from '../theme.js';
+import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { glassComposerTextInputBehavior } from './glassComposerBehavior.js';
@@ -96,7 +96,7 @@ const styles = StyleSheet.create({
 	tools: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 	// 下段ツール列（特殊キー等）に送信ボタン以外の全幅を使わせる（キーが見切れないように）
 	toolsLeft: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 },
-	sendBtn: { width: 38, height: 38, borderRadius: radius.pill, ...squircle, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+	sendBtn: { width: HIT_SIZE, height: HIT_SIZE, borderRadius: radius.pill, ...squircle, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 	sendBtnDisabled: { backgroundColor: colors.surface3 },
 	sendBtnPressed: { opacity: 0.6 },
 });

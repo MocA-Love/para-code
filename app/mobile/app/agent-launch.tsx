@@ -15,9 +15,11 @@ import { ScreenHeader } from '../src/components/screenHeader.js';
 import { ProviderLogo } from '../src/components/providerLogo.js';
 import { useEffectiveWs, wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
+import { Button } from '../src/components/button.js';
 import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { alpha, colors, radius, squircle, tint, type, withAlpha } from '../src/theme.js';
+import { alpha, colors, radius, space, squircle, tint, type, withAlpha } from '../src/theme.js';
 import { monoFamily } from '../src/monoFont.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
@@ -42,6 +44,7 @@ export default function AgentLaunchScreen() {
 	// そのエージェントを選んだ状態でフォームを開く（押した意思をここで捨てない）。
 	const { agent: requestedAgentId } = useLocalSearchParams<{ agent?: string }>();
 	const insets = useStableInsets();
+	const keyboardVisible = useKeyboardVisible();
 	// この画面は `ScreenHeader` を自分で描く（押し込みで開くので層が上に残ってしまう）。
 	// 設定はモーダルなので伏せる必要がないが、ここは push なので明示的に伏せる。
 	useParaHeader(PARA_HEADER_HIDDEN);
@@ -228,7 +231,7 @@ export default function AgentLaunchScreen() {
 	return (
 		<View style={styles.screen}>
 			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-				<ScrollView ref={scrollRef} contentContainerStyle={[styles.content, { paddingTop: headerHeight, paddingBottom: insets.bottom + 30 }, column]} keyboardShouldPersistTaps="handled">
+				<ScrollView ref={scrollRef} contentContainerStyle={[styles.content, { paddingTop: headerHeight, paddingBottom: space.xl }, column]} keyboardShouldPersistTaps="handled">
 					{formError ? <Text style={styles.error}>{formError}</Text> : null}
 					{!form && !formError ? <ActivityIndicator style={styles.spinner} /> : null}
 					{form && agent !== undefined ? (
@@ -415,32 +418,30 @@ export default function AgentLaunchScreen() {
 								placeholder="何をしますか？（エージェントへの最初の指示）"
 								placeholderTextColor={colors.textDim}
 								multiline
-								// キーボードで縮んだ後に、入力欄とCTAが見える位置まで送る
+								// キーボードで縮んだ後に、入力欄とコマンドのプレビューが見える位置まで送る（起動ボタンは下に固定）
 								// （キーボードアニメーションの完了を待つ）
 								onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 300)}
 							/>
 
+							{/* 実行されるコマンドは折り返して全文を見せる（1行で切ると、フラグや指示の末尾が
+							    何になっているのか起動前に確かめられない）。 */}
 							{commandPreview !== undefined ? (
-								<Text style={styles.cmdPreview} numberOfLines={1}>{commandPreview}</Text>
+								<Text style={styles.cmdPreview} selectable>{commandPreview}</Text>
 							) : null}
 							{launchBlockedByOldPc ? (
 								<Text style={styles.hint}>PC側の Para Code が古いため、既存スペースへの起動には未対応です。PCを更新するか「新規スペース」を選んでください。</Text>
 							) : null}
-							<Pressable
-								// claude面はブランドオレンジ(#d97757)のままだと白文字が3.12:1で読めないため、
-								// swipeActionColors と同じ「白抜きを載せる面として暗くした」考え方の専用色
-								// (#bf5033 = 4.76:1。色相はオレンジ側に保つ)にする。
-								style={[styles.launchBtn, { backgroundColor: agentId === 'claude' ? '#bf5033' : colors.primary }, !canLaunch && styles.launchBtnDisabled]}
-								onPress={launch}
-								disabled={!canLaunch}
-								accessibilityRole="button"
-								accessibilityState={{ disabled: !canLaunch }}
-							>
-								<Text style={styles.launchBtnText}>起動する</Text>
-							</Pressable>
 						</>
 					) : null}
 				</ScrollView>
+				{/* 起動ボタンは画面下に固定する。フォームを最後までスクロールしないと押せない配置だと、
+				    既定のまま起動したいときにも毎回下まで送る必要があった。キーボード表示中は
+				    KeyboardAvoidingView がこの行ごとキーボードの上へ持ち上げる。 */}
+				{form && agent !== undefined ? (
+					<View style={[styles.footer, { paddingBottom: keyboardVisible ? space.sm : insets.bottom + space.sm }, column]}>
+						<Button label="起動する" variant="primary" onPress={launch} disabled={!canLaunch} />
+					</View>
+				) : null}
 			</KeyboardAvoidingView>
 			<ScreenHeader title="新しいエージェント" onHeightChange={setHeaderHeight} />
 		</View>
@@ -526,7 +527,6 @@ const styles = StyleSheet.create({
 		marginTop: 12, color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily,
 		backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: radius.control, ...squircle, paddingHorizontal: 10, paddingVertical: 7, overflow: 'hidden',
 	},
-	launchBtn: { marginTop: 10, borderRadius: radius.card, ...squircle, paddingVertical: 13, alignItems: 'center' },
-	launchBtnDisabled: { opacity: 0.5 },
-	launchBtnText: { color: '#fff', fontSize: type.body, fontWeight: '800' },
+	// 画面下に固定した起動ボタンの行。本文とは細い線で区切る（本文はこの行の上で終わる）。
+	footer: { paddingHorizontal: 18, paddingTop: space.sm, backgroundColor: colors.bg, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 });

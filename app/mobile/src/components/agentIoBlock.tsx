@@ -5,7 +5,8 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { useAppStore } from '../appState.js';
 import type { AgentChatMessage } from '../store.js';
-import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { hitSlopToMinimum } from './hitSlop.js';
 import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import { clipForDisplay } from './agentIoClip.js';
@@ -69,7 +70,7 @@ export function ExpandableText({ message, terminalKey, style }: { message: Agent
 			<Text style={style} selectable>{clipped.text}</Text>
 			{clipped.omittedLines > 0 ? <Text style={styles.plainNote}>ほか {clipped.omittedLines} 行を省略しています</Text> : null}
 			{message.truncated === true && full === undefined ? (
-				<Pressable onPress={load} disabled={!available || loading} accessibilityRole="button" accessibilityLabel="全文を表示">
+				<Pressable onPress={load} disabled={!available || loading} hitSlop={PLAIN_NOTE_HIT_SLOP} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={styles.plainNote}>
 						{loading ? '全文を取得しています…' : error ?? (available ? '全文を表示' : 'PCに接続すると全文を表示できます')}
 					</Text>
@@ -106,11 +107,12 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 					accessibilityRole="button"
 					accessibilityLabel={wrap ? '折り返しを解除' : '折り返して表示'}
 					style={styles.ioAction}
+					hitSlop={IO_ACTION_HIT_SLOP}
 				>
 					<Text style={[styles.ioActionText, wrap ? styles.ioActionOn : null]}>折り返し</Text>
 				</Pressable>
 				{clip !== undefined ? (
-					<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction}>
+					<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction} hitSlop={IO_ACTION_HIT_SLOP}>
 						<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{copied ? 'コピー済' : 'コピー'}</Text>
 					</Pressable>
 				) : null}
@@ -134,6 +136,17 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 		</View>
 	);
 }
+
+/**
+ * 枠の見出し行の小さな操作（「折り返し」「コピー」）の見た目の高さ。見出し行の高さを変えずに、
+ * 当たり判定だけを広げる（横に並ぶ操作どうしで判定が重ならないよう、左右は広げない）。
+ * 下へは広げない。すぐ下は本文（コードや出力）で、そこを選択・スクロールしようとした指を
+ * 「コピー」「折り返し」が拾ってしまうため。
+ */
+const IO_ACTION_HEIGHT = 20;
+const IO_ACTION_HIT_SLOP = { ...hitSlopToMinimum(IO_ACTION_HEIGHT), bottom: 0 };
+/** 枠を持たない本文の「全文を表示」の見た目の高さ（文字1行＋上余白）。 */
+const PLAIN_NOTE_HIT_SLOP = hitSlopToMinimum(20);
 
 export const ioStyles = StyleSheet.create({
 	/** ツール別ボディで共有する余白・区切りの基本形。 */
@@ -159,7 +172,7 @@ const styles = StyleSheet.create({
 	io: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, overflow: 'hidden', backgroundColor: colors.codeBg },
 	ioBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: 'rgba(255,255,255,0.035)', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	ioLabel: { flex: 1, color: colors.textDim, fontSize: type.badge, fontWeight: '800', letterSpacing: 0.9, textTransform: 'uppercase' },
-	ioAction: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.key, ...squircle, paddingHorizontal: 7, paddingVertical: 2 },
+	ioAction: { minHeight: IO_ACTION_HEIGHT, justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.key, ...squircle, paddingHorizontal: 7, paddingVertical: 2 },
 	ioActionText: { color: colors.textDim, fontSize: type.badge },
 	ioActionOn: { color: colors.accent },
 	ioActionDone: { color: colors.green },
@@ -168,7 +181,7 @@ const styles = StyleSheet.create({
 	ioWide: { paddingHorizontal: 10 },
 	ioText: { color: colors.textSoft, fontSize: type.caption, lineHeight: 16, fontFamily: monoFamily },
 	ioWrapText: { paddingHorizontal: 10 },
-	ioFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 9, paddingVertical: 5, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: 'rgba(255,255,255,0.02)' },
+	ioFoot: { minHeight: HIT_SIZE, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 9, paddingVertical: 5, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: 'rgba(255,255,255,0.02)' },
 	ioFootText: { color: colors.textDim, fontSize: type.badge },
 	fullLink: { color: colors.accent, fontSize: type.badge, fontWeight: '700' },
 	plainNote: { color: colors.accent, fontSize: type.caption, fontStyle: 'italic', paddingLeft: 12, paddingTop: 4 },

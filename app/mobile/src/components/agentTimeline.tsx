@@ -9,7 +9,7 @@ import {
 	type AgentStepTone, type AgentTimelineStep,
 } from '../agentToolMeta.js';
 import { ThinkingBody, ToolStepBody } from './agentToolBodies.js';
-import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 
@@ -152,9 +152,11 @@ function metaToneStyle(tone: 'default' | 'good' | 'bad' | 'warn'): { color?: str
 
 const NODE = 12;
 const GUTTER = 24;
+/** ステップ見出しは 44pt の行。ノードはその縦中央に置く。 */
+const NODE_TOP = (HIT_SIZE - NODE) / 2;
 
 const styles = StyleSheet.create({
-	aggRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 3 },
+	aggRow: { minHeight: HIT_SIZE, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4 },
 	aggText: { color: colors.textDim, fontSize: type.meta, flex: 1 },
 	lane: { marginLeft: 8, marginTop: 2 },
 	step: { flexDirection: 'row', alignItems: 'stretch' },
@@ -162,13 +164,13 @@ const styles = StyleSheet.create({
 	// Android で描画されないことがあるため、はみ出さない構造にしている）。
 	gutter: { width: GUTTER, alignItems: 'center' },
 	laneLine: { position: 'absolute', width: 1.5, backgroundColor: 'rgba(255,255,255,0.10)', left: (GUTTER - 1.5) / 2 },
-	laneLineTop: { top: 0, height: 9 + NODE / 2 },
-	laneLineBottom: { top: 9 + NODE / 2, bottom: 0 },
-	node: { position: 'absolute', top: 9, width: NODE, height: NODE, borderRadius: NODE / 2, backgroundColor: colors.bg, borderWidth: 1.5, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
+	laneLineTop: { top: 0, height: NODE_TOP + NODE / 2 },
+	laneLineBottom: { top: NODE_TOP + NODE / 2, bottom: 0 },
+	node: { position: 'absolute', top: NODE_TOP, width: NODE, height: NODE, borderRadius: NODE / 2, backgroundColor: colors.bg, borderWidth: 1.5, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
 	nodeError: { borderColor: tint(colors.red, alpha.strong) },
 	nodeDot: { width: 5, height: 5, borderRadius: radius.pill, ...squircle, backgroundColor: colors.textDim },
 	stepBody: { flex: 1, minWidth: 0 },
-	head: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingRight: 8, paddingVertical: 6 },
+	head: { minHeight: HIT_SIZE, flexDirection: 'row', alignItems: 'center', gap: 7, paddingRight: 8 },
 	chip: { width: 20, height: 20, borderRadius: radius.key, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
 	name: { color: colors.text, fontSize: type.meta, fontWeight: '700', flexShrink: 0 },
 	namespace: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
