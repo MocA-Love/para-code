@@ -8,8 +8,8 @@ import React, { createElement, type ComponentType } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { encodePairingUri, generateIdentity, toBase64Url, type Identity } from '@para/protocol';
-import CcusageScreen, { updateCcusageWarmLeaseLifecycle } from '../app/(settings)/ccusage.js';
-import SystemScreen, { updateSystemSpaceDiskWarmLeaseLifecycle } from '../app/(settings)/system.js';
+import CcusageScreen, { updateCcusageWarmLeaseLifecycle } from '../legacy-screens/(settings)/ccusage.js';
+import SystemScreen, { updateSystemSpaceDiskWarmLeaseLifecycle } from '../legacy-screens/(settings)/system.js';
 import { MobileWarmLeaseAppStateBridge, useAppStore } from './appState.js';
 import {
 	mobileWarmLeaseOwnerRevision, MobileController, MobileWarmLeaseLifecycle,
