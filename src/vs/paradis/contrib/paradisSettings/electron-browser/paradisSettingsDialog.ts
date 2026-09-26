@@ -27,6 +27,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 
 const $ = dom.$;
 
@@ -164,6 +165,14 @@ interface IParadisSettingRowSpec {
 	readonly choiceLabels?: Readonly<Record<string, string>>;
 	/** 行の右端に置くボタン。押すとコマンドを実行してこのダイアログは閉じる。 */
 	readonly action?: { readonly label: string; readonly commandId: string; readonly primary?: boolean };
+	/**
+	 * オン/オフの設定がオフの間、行の中に出す警告。
+	 *
+	 * オフにしたときの警告を通知で出す機能は、このダイアログが開いている間は通知を出さない
+	 * （通知はダイアログの背景より下の層にあり、裏に隠れて「元に戻す」が押せないため）。
+	 * 代わりにここで、その行の中に何が起きるかを出す。
+	 */
+	readonly offWarning?: string;
 }
 
 const ROWS: readonly IParadisSettingRowSpec[] = [
@@ -424,6 +433,8 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.agentHooksDesc', "オフにすると、Para Code が設置した hook だけをその場で取り外します（自分で書いた hook は残ります）。エージェントの状態表示、完了・許可待ちの通知、モバイルへの通知、読み上げが弱くなります。"),
 		keywords: 'agent hooks claude codex hook status notification',
+		// allow-any-unicode-next-line
+		offWarning: localize('paradis.settings.agentHooksOffWarning', "オフの間は、Para Code が設置した hook を取り外し、置き直しません。エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、読み上げが弱くなるか、働かなくなります。元に戻すには、このスイッチをオンにします。"),
 	},
 
 	// --- ブラウザ共有 ---
@@ -759,6 +770,7 @@ export class ParadisSettingsDialog extends Disposable {
 		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
+		this._register(paradisMarkSettingsDialogOpen());
 
 		this._backdrop = $('.paradis-settings-dialog-backdrop');
 		const modal = $('.paradis-settings-dialog');
@@ -891,6 +903,9 @@ export class ParadisSettingsDialog extends Disposable {
 			}));
 		} else if (spec.key) {
 			this._buildControl(row, spec.key, spec);
+			if (spec.offWarning) {
+				this._buildOffWarning(main, spec.key, spec.offWarning);
+			}
 		}
 
 		this._rows.push({
@@ -1004,6 +1019,17 @@ export class ParadisSettingsDialog extends Disposable {
 			this.dispose();
 			void this.commandService.executeCommand('workbench.action.openSettings', `@id:${key}`);
 		}));
+	}
+
+	/** オン/オフの設定がオフの間だけ、行の中に警告を出す。 */
+	private _buildOffWarning(main: HTMLElement, key: string, text: string): void {
+		const warning = dom.append(main, $('.psd-row-warning'));
+		warning.setAttribute('role', 'status');
+		warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
+		dom.append(warning, $('span')).textContent = text;
+		const sync = () => warning.classList.toggle('hidden', this.configurationService.getValue(key) !== false);
+		sync();
+		this._refreshers.push(sync);
 	}
 
 	private async _write(key: string, value: unknown): Promise<void> {
