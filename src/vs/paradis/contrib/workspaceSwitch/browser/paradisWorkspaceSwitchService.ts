@@ -34,7 +34,7 @@ import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTe
 import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder, paradisTakeVerifiedWorkspaceFolderHits } from '../common/paradisWorkspaceFolderVerification.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { paradisBlockTerminalInput } from './paradisTerminalInputGate.js';
@@ -452,7 +452,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		const cancelPreparedAfterScopeRollback = () => paradisCancelRetirementAfterScopeRollback(
 			retirementSourceStateKey,
 			this.activeStateKey,
-			stateKey => this.switchToStateKey(stateKey),
+			// 取り消しのための戻りは、消しかけの worktree でも戻す（台帳の取り消しを必ず走らせる）
+			stateKey => this.doSwitchToStateKey(stateKey, undefined, false),
 			cancelPrepared,
 			error => this.logService.error('[ParadisWorkspaceSwitch] Failed to restore source scope before cancelling retirement', error)
 		);
@@ -1028,14 +1029,39 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	async switchToStateKey(stateKey: string, options?: IParadisSwitchOptions): Promise<void> {
+		return this.doSwitchToStateKey(stateKey, options, true);
+	}
+
+	/**
+	 * @param rejectMissingWorktree 作業ツリーのディレクトリが消えている worktree へは切り替えない。
+	 * 通知・固定した別ウィンドウ・セッション再開・ブラウザ共有などは古い状態キーを持ち続けるので、
+	 * worktree を消した後にそれを押すと、無いフォルダへ切り替えてしまう（`switchToWorktree` が
+	 * `missing` を拒むのと同じ判断を、状態キーから来た場合にも効かせる）。「無い」と言い切れる
+	 * ときだけ拒み、接続先に繋がっていない等で確かめられないときは今までどおり進める。
+	 */
+	private async doSwitchToStateKey(stateKey: string, options: IParadisSwitchOptions | undefined, rejectMissingWorktree: boolean): Promise<void> {
 		const repository = this._repositories.find(candidate => candidate.id === stateKey);
 		if (repository) {
 			return this.switchToTarget(repository.id, repository.uri, options);
 		}
 		if (stateKey.startsWith('worktree:')) {
-			return this.switchToTarget(stateKey, URI.parse(stateKey.slice('worktree:'.length)), options);
+			const uri = URI.parse(stateKey.slice('worktree:'.length));
+			if (rejectMissingWorktree && await this.isMissingOnDisk(uri)) {
+				throw new Error(`Para Code worktree is missing on disk: ${uri.fsPath}`);
+			}
+			return this.switchToTarget(stateKey, uri, options);
 		}
 		throw new Error(`Unknown Para Code space: ${stateKey}`);
+	}
+
+	/** 「無い」と確かめられたときだけ true。確かめられなかったときは false（切り替え側に任せる）。 */
+	private async isMissingOnDisk(uri: URI): Promise<boolean> {
+		try {
+			await this.fileService.stat(uri);
+			return false;
+		} catch (error) {
+			return error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND;
+		}
 	}
 
 	private switchToTarget(stateKey: string, uri: URI, options?: IParadisSwitchOptions): Promise<void> {
