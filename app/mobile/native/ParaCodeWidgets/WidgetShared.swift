@@ -409,7 +409,7 @@ enum WidgetStore {
 	}
 }
 
-// MARK: - リンク（アプリの src/features/links/widgetLinks.ts が今のルートへ書き換える）
+// MARK: - リンク（アプリの src/features/links/widgetLinks.ts が今のルートへ書き換える。Live Activity も使う）
 
 enum WidgetLink {
 	private static let allowed: CharacterSet = {
@@ -429,6 +429,7 @@ enum WidgetLink {
 	}
 
 	static var attention: URL { make("attention") }
+	static var home: URL { make("home") }
 	static var pair: URL { make("pair") }
 	static var settings: URL { make("settings") }
 

@@ -23,6 +23,7 @@ describe('widget links', () => {
 		expect(redirectLegacyLink('/widget/system?pc=pc-1')).toBe('/settings/usage/system');
 		expect(redirectLegacyLink('/widget/source-control?pc=pc-1&space=1%3Aw1')).toBe('/pc/pc-1/source-control/1%3Aw1');
 		expect(redirectLegacyLink('/widget/review?pc=pc-1&space=1%3Aw1')).toBe('/pc/pc-1/review/1%3Aw1');
+		expect(redirectLegacyLink('paracode-mobile:///widget/home')).toBe('/');
 		expect(redirectLegacyLink('/widget/pair')).toBe('/pair');
 		expect(redirectLegacyLink('/widget/settings')).toBe('/settings/widgets');
 		expect(redirectLegacyLink('/widget/unknown')).toBe('/');

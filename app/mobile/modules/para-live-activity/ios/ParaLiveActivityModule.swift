@@ -6,15 +6,49 @@ import Foundation
 import WidgetKit
 
 /// ParaCodeActivityAttributes のアプリ本体側コピー。
-/// ios/ParaCodeWidgets/ParaCodeActivityAttributes.swift と完全に同一定義を保つこと
-/// （ActivityKit は型名でアクティビティをマッチングする。フィールド変更時は両方を揃える）。
+/// native/ParaCodeWidgets/ParaCodeActivityAttributes.swift（ios/ParaCodeWidgets/ へ写したもの）と完全に同一定義を保つこと
+/// （ActivityKit は型名でアクティビティをマッチングする。フィールド変更時は両方と JS 側を揃える）。
+/// 各フィールドの意味は Widget 側のファイルに書いてある。
 struct ParaCodeActivityAttributes: ActivityAttributes {
 	public struct ContentState: Codable, Hashable {
+		var phase: String
 		var waitingCount: Int
 		var runningCount: Int
-		var agents: [AgentRow]
-		var questionPreview: String?
+		var doneCount: Int
+		var attention: [AttentionItem]
+		var running: [RunningItem]
+		var done: [DoneItem]
 		var battery: Battery?
+		var updatedAt: Double
+		var asOf: Double?
+		var endsAt: Double?
+	}
+
+	public struct AttentionItem: Codable, Hashable {
+		var key: String
+		var space: String?
+		var name: String
+		var kind: String
+		var since: Double?
+		var tool: String?
+		var detail: String?
+	}
+
+	public struct RunningItem: Codable, Hashable {
+		var key: String
+		var space: String?
+		var name: String
+		var since: Double?
+		var tool: String?
+		var target: String?
+	}
+
+	public struct DoneItem: Codable, Hashable {
+		var key: String
+		var space: String?
+		var name: String
+		var at: Double?
+		var took: Double?
 	}
 
 	public struct Battery: Codable, Hashable {
@@ -22,19 +56,44 @@ struct ParaCodeActivityAttributes: ActivityAttributes {
 		var charging: Bool
 	}
 
-	public struct AgentRow: Codable, Hashable {
-		var name: String
-		var ws: String
-		var status: String
-	}
-
+	var pcId: String
 	var pcName: String
+}
+
+extension ParaCodeActivityAttributes {
+	init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: CodingKeys.self)
+		pcId = try c.decodeIfPresent(String.self, forKey: .pcId) ?? ""
+		pcName = try c.decodeIfPresent(String.self, forKey: .pcName) ?? "PC"
+	}
+}
+
+extension ParaCodeActivityAttributes.ContentState {
+	init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: CodingKeys.self)
+		phase = try c.decodeIfPresent(String.self, forKey: .phase) ?? "running"
+		waitingCount = try c.decodeIfPresent(Int.self, forKey: .waitingCount) ?? 0
+		runningCount = try c.decodeIfPresent(Int.self, forKey: .runningCount) ?? 0
+		doneCount = try c.decodeIfPresent(Int.self, forKey: .doneCount) ?? 0
+		attention = (try? c.decodeIfPresent([ParaCodeActivityAttributes.AttentionItem].self, forKey: .attention)) ?? []
+		running = (try? c.decodeIfPresent([ParaCodeActivityAttributes.RunningItem].self, forKey: .running)) ?? []
+		done = (try? c.decodeIfPresent([ParaCodeActivityAttributes.DoneItem].self, forKey: .done)) ?? []
+		battery = try? c.decodeIfPresent(ParaCodeActivityAttributes.Battery.self, forKey: .battery)
+		updatedAt = try c.decodeIfPresent(Double.self, forKey: .updatedAt) ?? 0
+		asOf = try c.decodeIfPresent(Double.self, forKey: .asOf)
+		endsAt = try c.decodeIfPresent(Double.self, forKey: .endsAt)
+	}
+}
+
+/// epoch ミリ秒を Date へ。
+private func dateFromMillis(_ ms: Double) -> Date {
+	return Date(timeIntervalSince1970: ms / 1000)
 }
 
 /**
  * JSからLive Activityを開始/更新/終了するExpoローカルモジュール。
  * 状態はJSON文字列で受けて ContentState へデコードする（Expoの型ブリッジを介さず
- * Widget側と同一のCodable定義を直接使うため）。
+ * Widget側と同一のCodable定義を直接使うため）。組み立てと判断は JS（src/liveActivityState.ts）。
  */
 public class ParaLiveActivityModule: Module {
 	public func definition() -> ModuleDefinition {
@@ -47,7 +106,37 @@ public class ParaLiveActivityModule: Module {
 			return false
 		}
 
-		AsyncFunction("startOrUpdate") { (pcName: String, stateJson: String) throws in
+		// 同じ PC で動いているものがあれば更新し、無ければ始める。ほか（別の PC・PC 名が変わった・完了の要約として
+		// 残しているもの）は即時に終えて消す（Live Activity は 1 本だけにする。HIG: 件ごとに分けない）。
+		// 段階 2 では pushType を .token にし、activity.pushTokenUpdates を JS へ渡して PC に登録する。
+		AsyncFunction("upsert") { (attributesJson: String, stateJson: String, staleAt: Double?) async throws in
+			guard #available(iOS 16.2, *) else {
+				return
+			}
+			guard let attributesData = attributesJson.data(using: .utf8), let stateData = stateJson.data(using: .utf8) else {
+				throw ParaLiveActivityError.badState
+			}
+			let attributes = try JSONDecoder().decode(ParaCodeActivityAttributes.self, from: attributesData)
+			let state = try JSONDecoder().decode(ParaCodeActivityAttributes.ContentState.self, from: stateData)
+			let content = ActivityContent(state: state, staleDate: staleAt.map(dateFromMillis))
+			var current: Activity<ParaCodeActivityAttributes>?
+			for activity in Activity<ParaCodeActivityAttributes>.activities {
+				let same = activity.attributes.pcId == attributes.pcId && activity.attributes.pcName == attributes.pcName
+				if current == nil && same && activity.activityState == .active {
+					current = activity
+				} else {
+					await activity.end(nil, dismissalPolicy: .immediate)
+				}
+			}
+			if let current {
+				await current.update(content)
+			} else {
+				_ = try Activity.request(attributes: attributes, content: content, pushType: nil)
+			}
+		}
+
+		// 最後の中身（完了の要約）を載せて終え、dismissAt までロック画面に残す（Dynamic Island からは消える）。
+		AsyncFunction("finish") { (stateJson: String, dismissAt: Double) async throws in
 			guard #available(iOS 16.2, *) else {
 				return
 			}
@@ -56,24 +145,21 @@ public class ParaLiveActivityModule: Module {
 			}
 			let state = try JSONDecoder().decode(ParaCodeActivityAttributes.ContentState.self, from: data)
 			let content = ActivityContent(state: state, staleDate: nil)
-			if let activity = Activity<ParaCodeActivityAttributes>.activities.first {
-				Task {
-					await activity.update(content)
-				}
-			} else {
-				let attributes = ParaCodeActivityAttributes(pcName: pcName)
-				_ = try Activity.request(attributes: attributes, content: content, pushType: nil)
+			for activity in Activity<ParaCodeActivityAttributes>.activities where activity.activityState == .active {
+				await activity.end(content, dismissalPolicy: .after(dateFromMillis(dismissAt)))
 			}
 		}
 
-		AsyncFunction("end") { () in
+		// 即時に終えて消す。includeFinished が false なら、完了の要約として残しているもの（終了済み）は残す。
+		AsyncFunction("end") { (includeFinished: Bool) async in
 			guard #available(iOS 16.2, *) else {
 				return
 			}
 			for activity in Activity<ParaCodeActivityAttributes>.activities {
-				Task {
-					await activity.end(nil, dismissalPolicy: .immediate)
+				if !includeFinished && activity.activityState != .active {
+					continue
 				}
+				await activity.end(nil, dismissalPolicy: .immediate)
 			}
 		}
 
