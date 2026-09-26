@@ -36,6 +36,7 @@ import './contrib/mobileRelay/browser/paradisMobileRelaySettings.contribution.js
 import './contrib/terminalShiftEnter/browser/paradisTerminalShiftEnter.contribution.js';
 import './contrib/codexTerminalTitle/browser/paradisCodexTerminalTitleSettings.contribution.js';
 import './contrib/browserDownloads/browser/paradisBrowserDownloadsSettings.contribution.js';
+import './contrib/browserUserAgent/browser/paradisBrowserUserAgentSettings.contribution.js';
 import './contrib/terminalDiagnostics/browser/paradisTerminalCountDiagnostics.contribution.js';
 import './contrib/settingsMenu/browser/paradisSettingsMenu.contribution.js';
 import './contrib/terminalWordSeparators/browser/paradisTerminalWordSeparators.contribution.js';
