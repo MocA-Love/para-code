@@ -1,0 +1,9 @@
+{
+  "repo": "stablyai/orca",
+  "lastReviewedSha": "457a84d5a1660f358df1c196f4b7fe64239960b5",
+  "lastReviewedAt": "2026-09-26T05:05:55Z",
+  "note": "Para Code Mobile を Orca 構成で作り直したとき（PR MocA-Love/para-code#99、2026-09-27 マージ）に参照した Orca の mobile の最新コミット。次回はこれより後を見る。",
+  "history": [
+    { "checkedOn": "2026-09-27", "from": null, "to": "457a84d5a1660f358df1c196f4b7fe64239960b5", "report": null, "adopted": [], "comment": "基準点の登録（作り直しの時点で全体を取り込み済み）" }
+  ]
+}
