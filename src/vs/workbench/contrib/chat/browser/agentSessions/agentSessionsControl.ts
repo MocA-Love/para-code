@@ -30,6 +30,7 @@ import { RenderIndentGuides, TreeFindMode } from '../../../../../base/browser/ui
 import { IAgentSessionsService } from './agentSessionsService.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
 import { IListStyles } from '../../../../../base/browser/ui/list/listWidget.js';
+// PARA-PATCH: defaultFindWidgetStyles/defaultToggleStyles for the findWidgetStyles override below
 import { IStyleOverride, defaultFindWidgetStyles, defaultToggleStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
 import { IAgentSessionsControl } from './agentSessions.js';
 import { HoverPosition } from '../../../../../base/browser/ui/hover/hoverWidget.js';

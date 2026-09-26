@@ -12,6 +12,7 @@ import { EventType } from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+// PARA-PATCH: layout service and chip-lane drag helper so the phone filter chip row can be scrolled by touch
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { installMobileChipLaneScroll } from './mobileChipLaneScroll.js';
 import { SessionStatus } from '../../../services/sessions/common/session.js';

@@ -35,6 +35,7 @@ const PHONE_MAX_WIDTH = 640;
  * Whether the current platform is a phone/tablet OS. The phone layout is
  * only applied on actual mobile devices so that resizing a desktop window
  * below 640px does not switch the agents workbench into phone mode.
+ * PARA-PATCH: fold isIOS into the mobile-OS check so iPadOS Safari (Macintosh UA) gets tablet/phone layout.
  *
  * iPadOS Safari reports a desktop-like "Macintosh" UA without "Mobi", so
  * `isMobile` alone never matches there. Fold in `isIOS` (Macintosh UA +

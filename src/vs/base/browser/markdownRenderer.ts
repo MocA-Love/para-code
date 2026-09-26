@@ -13,6 +13,7 @@ import * as marked from '../common/marked/marked.js';
 import { parse } from '../common/marshalling.js';
 import { FileAccess, Schemas } from '../common/network.js';
 import { cloneAndChange } from '../common/objects.js';
+// PARA-PATCH: keep bare autolinks from swallowing trailing full-width punctuation. See paradisFullWidthLinkTermination.ts.
 import { paradisTruncateAtFullWidthLinkTermination } from '../common/paradisFullWidthLinkTermination.js';
 import { basename as pathBasename } from '../common/path.js';
 import { basename, dirname, resolvePath } from '../common/resources.js';
@@ -161,6 +162,7 @@ const defaultMarkedRenderers = Object.freeze({
 			.replace(/'/g, '&#39;');
 
 		const effectiveTitle = title || (isCommandUri ? '' : href);
+		// PARA-PATCH: append the full-width text split off the raw link above, outside the anchor.
 		return `<a href="${href}" title="${effectiveTitle}" draggable="false">${text}</a>${escape(linkTrailingText)}`;
 	},
 });

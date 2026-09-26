@@ -63,6 +63,7 @@ import { readClaudePermissionMode } from './claudeSessionPermissionMode.js';
 import { ClaudeSessionMetadataStore, IClaudeSessionOverlay } from './claudeSessionMetadataStore.js';
 import { IAgentHostSessionTitleSignal } from '../agentHostSessionTitleSignal.js';
 import { IAgentHostOTelService } from '../../common/otel/agentHostOTelService.js';
+// PARA-PATCH: disk cache of reconstructed Claude transcripts (see _turnCache)
 import { IParadisTurnCacheKey, ParadisTurnCache } from '../paradisTurnCache.js';
 import { paradisClaudeTurnCacheStamp } from './paradisClaudeTurnCacheStamp.js';
 
@@ -2032,6 +2033,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		// Always a bug: the SDK handed back a transcript but replay produced
 		// nothing, which surfaces to the user as a chat that opens completely
 		// empty. Warn so the next report is diagnosable from the log alone.
+		// PARA-PATCH: keep the degenerate flag so the turn cache write below can skip it
 		const degenerate = turns.length === 0 && messages.length > 0;
 		if (degenerate) {
 			this._logService.warn(`[Claude] replay produced no turns from ${messages.length} transcript message(s) for ${sdkSessionId}; chat will render empty`);
@@ -2043,6 +2045,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		} catch (err) {
 			this._logService.warn(`[Claude] primeFromTranscript threw for ${sdkSessionId}`, err);
 		}
+		// PARA-PATCH: write the reconstructed turns back to the disk turn cache (see _turnCache)
 		// Never persist the degenerate-replay case above: caching it would turn
 		// a one-off rendering bug into a permanently empty chat (until the
 		// transcript file itself changes) and silence the warn on every later open.

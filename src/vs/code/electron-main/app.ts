@@ -229,6 +229,7 @@ type OSProxyConfigClassification = {
  * even if the user starts many instances (e.g. from the command line).
  */
 export class CodeApplication extends Disposable {
+	// PARA-PATCH: relaunch the app once (with a cooldown) when the Shared Process crashes, to restore mobile relay one-shot IPC channels
 	private static readonly SHARED_PROCESS_CRASH_RELAUNCH_AT_KEY = 'paracode.sharedProcessCrashRelaunchAt';
 	private static readonly SHARED_PROCESS_CRASH_RELAUNCH_COOLDOWN = 5 * 60 * 1000;
 
@@ -240,6 +241,7 @@ export class CodeApplication extends Disposable {
 	private windowsMainService: IWindowsMainService | undefined;
 	private auxiliaryWindowsMainService: IAuxiliaryWindowsMainService | undefined;
 	private nativeHostMainService: INativeHostMainService | undefined;
+	// PARA-PATCH: state for the Shared Process crash auto-relaunch (see recoverFromSharedProcessCrash)
 	private sharedProcessCrashRecoveryTriggered = false;
 	private applicationShutdownStarted = false;
 
@@ -568,6 +570,7 @@ export class CodeApplication extends Disposable {
 	private registerListeners(): void {
 
 		// Dispose on shutdown
+		// PARA-PATCH: remember that shutdown started so a Shared Process exit during quit does not trigger the crash auto-relaunch
 		Event.once(this.lifecycleMainService.onWillShutdown)(() => {
 			this.applicationShutdownStarted = true;
 			this.dispose();
@@ -1196,6 +1199,7 @@ export class CodeApplication extends Disposable {
 	private setupSharedProcess(machineId: string, sqmId: string, devDeviceId: string): { sharedProcessReady: Promise<MessagePortClient>; sharedProcessClient: Promise<MessagePortClient> } {
 		const sharedProcess = this._register(this.mainInstantiationService.createInstance(SharedProcess, machineId, sqmId, devDeviceId));
 
+		// PARA-PATCH: also relaunch the app after a Shared Process crash (see recoverFromSharedProcessCrash)
 		this._register(sharedProcess.onDidCrash(() => {
 			this.windowsMainService?.sendToFocused('vscode:reportSharedProcessCrash');
 			this.recoverFromSharedProcessCrash();
@@ -1220,6 +1224,7 @@ export class CodeApplication extends Disposable {
 		return { sharedProcessReady, sharedProcessClient };
 	}
 
+	// PARA-PATCH: relaunch once per cooldown after a Shared Process crash so the mobile relay one-shot IPC channels come back
 	private recoverFromSharedProcessCrash(): void {
 		if (this.applicationShutdownStarted || this.sharedProcessCrashRecoveryTriggered) {
 			return;

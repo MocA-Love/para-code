@@ -9,11 +9,13 @@ import './media/workbench.css';
 import './media/phoneLayout.css';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { Emitter, Event, setGlobalLeakWarningThreshold } from '../../base/common/event.js';
+// PARA-PATCH: getWindow/scheduleAtNextAnimationFrame for the visual viewport relayout in registerLayoutListeners
 import { addDisposableGenericMouseDownListener, addDisposableListener, EventType, getActiveDocument, getActiveElement, getClientArea, getWindow, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, scheduleAtNextAnimationFrame, size, Dimension, runWhenWindowIdle } from '../../base/browser/dom.js';
 import { DeferredPromise, RunOnceScheduler } from '../../base/common/async.js';
 import { isFullscreen, onDidChangeFullscreen, isChrome, isFirefox, isSafari } from '../../base/browser/browser.js';
 import { mark } from '../../base/common/performance.js';
 import { onUnexpectedError, setUnexpectedErrorHandler } from '../../base/common/errors.js';
+// PARA-PATCH: isIOS/isMobile gate the visual viewport relayout in registerLayoutListeners
 import { isWindows, isLinux, isWeb, isNative, isMacintosh, isIOS, isMobile } from '../../base/common/platform.js';
 import { Parts, Position, PanelAlignment, IWorkbenchLayoutService, SINGLE_WINDOW_PARTS, MULTI_WINDOW_PARTS, IPartVisibilityChangeEvent, positionToString } from '../../workbench/services/layout/browser/layoutService.js';
 import { ILayoutOffsetInfo } from '../../platform/layout/browser/layoutService.js';
@@ -75,6 +77,7 @@ import {
 } from '../../workbench/common/notifications.js';
 import { SessionsLayoutPolicy } from './layoutPolicy.js';
 import { AGENTS_PART_CARD_CLASS } from './parts/agentsPartCard.js';
+// PARA-PATCH: MobileNavigationLayer types the extracted handleMobileNavPop
 import { MobileNavigationLayer, MobileNavigationStack } from './mobileNavigationStack.js';
 import { MobileTitlebarPart } from './parts/mobile/mobileTitlebarPart.js';
 import { IMobileVisualViewport } from './parts/mobile/mobileVisualViewport.js';

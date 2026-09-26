@@ -413,6 +413,7 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 				return tunnel;
 			}
 			this.logService.trace('ForwardedPorts: (TunnelService) New tunnel established.');
+			// PARA-PATCH: pass the captured entry generation so the returned lease keeps it
 			const newTunnel = this.makeTunnel(tunnel, generation);
 			if (tunnel.tunnelRemoteHost !== remoteHost || tunnel.tunnelRemotePort !== remotePort) {
 				this.logService.warn('ForwardedPorts: (TunnelService) Created tunnel does not match requirements of requested tunnel. Host or port mismatch.');
@@ -425,6 +426,7 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		});
 	}
 
+	// PARA-PATCH: extra generation parameter; the lease is kept in a local so its generation can be recorded below
 	private makeTunnel(tunnel: RemoteTunnel, generation: object): RemoteTunnel {
 		const lease: RemoteTunnel = {
 			tunnelRemotePort: tunnel.tunnelRemotePort,
@@ -451,6 +453,7 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		return lease;
 	}
 
+	// PARA-PATCH: take the whole TunnelEntry (renamed from tunnel to entry) so the close event can carry its generation
 	private async tryDisposeTunnel(remoteHost: string, remotePort: number, entry: TunnelEntry): Promise<void> {
 		if (entry.refcount <= 0) {
 			this.logService.trace(`ForwardedPorts: (TunnelService) Tunnel is being disposed ${remoteHost}:${remotePort}.`);
@@ -509,6 +512,7 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		}
 	}
 
+	// PARA-PATCH: return type widened to TunnelEntry so callers can read the entry generation
 	protected getTunnelFromMap(remoteHost: string, remotePort: number): TunnelEntry | undefined {
 		const hosts = [remoteHost];
 		// Order matters. We want the original host to be first.

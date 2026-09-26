@@ -26,6 +26,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Node.js
+        # PARA-PATCH: Use the fork-selected setup-node v7 action; upstream still uses setup-node v6.
         uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc

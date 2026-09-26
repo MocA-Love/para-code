@@ -25,6 +25,7 @@ import { IRequestService } from '../../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../../storage/electron-main/storageMainService.js';
 import { NullTelemetryService } from '../../../telemetry/common/telemetryUtils.js';
 import { DisablementReason, State, StateType } from '../../common/update.js';
+// PARA-PATCH: +getUpdateAccessHeaders for the fork's Cloudflare Access header tests
 import { AbstractUpdateService, getUpdateAccessHeaders, IUpdateURLOptions } from '../../electron-main/abstractUpdateService.js';
 
 class TestUpdateService extends AbstractUpdateService {

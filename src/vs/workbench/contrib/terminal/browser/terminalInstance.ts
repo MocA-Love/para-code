@@ -22,6 +22,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import * as path from '../../../../base/common/path.js';
 import { OS, OperatingSystem, isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ScrollbarVisibility } from '../../../../base/common/scrollable.js';
+// PARA-PATCH: sanitize transient titles (automatic Codex terminal titles)
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
 import { URI } from '../../../../base/common/uri.js';
 import { TabFocus } from '../../../../editor/browser/config/tabFocus.js';
@@ -206,6 +207,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	private _processName: string = '';
 	private _sequence?: string;
 	private _staticTitle?: string;
+	// PARA-PATCH: renderer-only transient title (automatic Codex terminal titles), never persisted
 	private _transientTitle?: {
 		readonly owner: string;
 		readonly title: string;
@@ -311,6 +313,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	get processName(): string { return this._processName; }
 	get sequence(): string | undefined { return this._sequence; }
 	get staticTitle(): string | undefined { return this._staticTitle; }
+	// PARA-PATCH: transient title getters; persistentTitle/persistentTitleSource keep the pre-transient title for persistence
 	get transientTitle(): string | undefined { return this._transientTitle?.title; }
 	get persistentTitle(): string { return this._transientTitle?.persistentTitle ?? this._title; }
 	get persistentTitleSource(): TitleEventSource { return this._transientTitle?.persistentTitleSource ?? this._titleSource; }
@@ -1083,6 +1086,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 			this._attachBarrier.open();
 		}
 
+		// PARA-PATCH: remember the document to detect a move to another window (redraw terminals after window moves)
 		const previousDocument = this._wrapperElement.ownerDocument;
 
 		// The container changed, reattach
@@ -1092,6 +1096,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		// If xterm is already attached, call open again to pick up any changes to the window.
 		if (this.xterm?.raw.element) {
 			this.xterm.raw.open(this.xterm.raw.element);
+			// PARA-PATCH: recreate document-bound renderers after the terminal DOM moved to another window
 			if (previousDocument !== this._wrapperElement.ownerDocument) {
 				this.xterm.recreateRendererAfterWindowChange();
 			}
@@ -1911,6 +1916,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	}
 
 	async reuseTerminal(shell: IShellLaunchConfig, reset: boolean = false): Promise<void> {
+		// PARA-PATCH: a reused terminal must not keep the previous transient title
 		this._clearTransientTitle();
 		// Unsubscribe any key listener we may have.
 		this._pressAnyKeyToCloseListener?.dispose();
@@ -2172,6 +2178,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	}
 
 	private _updateTitleProperties(title: string | undefined, eventSource: TitleEventSource): string {
+		// PARA-PATCH: an API title or a changed OSC sequence title invalidates the transient title
 		if (eventSource === TitleEventSource.Api || (eventSource === TitleEventSource.Sequence && title !== this._transientTitle?.expectedSequence)) {
 			this._transientTitle = undefined;
 		}
@@ -2460,6 +2467,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		this._setTitle(title, source ?? TitleEventSource.Api);
 	}
 
+	// PARA-PATCH: renderer-only transient titles (automatic Codex terminal titles), see ITerminalInstance#setTransientTitle
 	setTransientTitle(owner: string, title: string, expectedSequence: string): boolean {
 		const sanitizedTitle = removeAnsiEscapeCodes(title).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim();
 		if (!this._labelComputer || this._staticTitle || !owner || !sanitizedTitle || this._sequence !== expectedSequence
@@ -2883,6 +2891,7 @@ export class TerminalLabelComputer extends Disposable {
 		if (!reset && instance.staticTitle && labelType === TerminalLabelType.Title) {
 			return instance.staticTitle.replace(/[\n\r\t]/g, '') || templateProperties.process?.replace(/[\n\r\t]/g, '') || '';
 		}
+		// PARA-PATCH: a transient title wins over the template, but not over a static title
 		if (!reset && instance.transientTitle && labelType === TerminalLabelType.Title) {
 			return instance.transientTitle.replace(/[\n\r\t]/g, '') || templateProperties.process?.replace(/[\n\r\t]/g, '') || '';
 		}

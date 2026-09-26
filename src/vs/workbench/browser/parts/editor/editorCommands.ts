@@ -36,6 +36,7 @@ import { EditorGroupLayout, GroupDirection, GroupLocation, GroupsOrder, IEditorG
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
 import { IEditorService, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
+// PARA-PATCH: optionally open a terminal in the group created by splitEditor.
 import { IParadisEditorSplitTerminalService } from '../../../services/editor/common/paradisEditorSplitTerminalService.js';
 import { IPathService } from '../../../services/path/common/pathService.js';
 import { ITextFileService } from '../../../services/textfile/common/textfiles.js';
@@ -749,12 +750,14 @@ function registerFocusEditorGroupAtIndexCommands(): void {
 	}
 }
 
+// PARA-PATCH: async with a leading accessor so the new group can optionally get a terminal (IParadisEditorSplitTerminalService).
 export async function splitEditor(accessor: ServicesAccessor, editorGroupsService: IEditorGroupsService, direction: GroupDirection, resolvedContext: IResolvedEditorCommandsContext): Promise<void> {
 	if (!resolvedContext.groupedEditors.length) {
 		return;
 	}
 
 	// Only support splitting from one source group
+	// PARA-PATCH: editors/preserveFocus are unused because the new group is left empty (see below).
 	const { group } = resolvedContext.groupedEditors[0];
 	const newGroup = editorGroupsService.addGroup(group, direction);
 
@@ -777,6 +780,7 @@ function registerSplitEditorCommands() {
 	].forEach(({ id, direction }) => {
 		CommandsRegistry.registerCommand(id, function (accessor, ...args) {
 			const resolvedContext = resolveCommandsContext(args, accessor.get(IEditorService), accessor.get(IEditorGroupsService), accessor.get(IListService));
+			// PARA-PATCH: pass the accessor and return the promise of the async splitEditor.
 			return splitEditor(accessor, accessor.get(IEditorGroupsService), direction, resolvedContext);
 		});
 	});

@@ -480,6 +480,7 @@ appendEditorToolItem(
 	SPLIT_ORDER
 );
 
+// PARA-PATCH: separate Split Editor Down toolbar button (see above).
 appendEditorToolItem(
 	{
 		id: SPLIT_EDITOR_DOWN,
@@ -503,6 +504,7 @@ MenuRegistry.appendMenuItem(MenuId.EditorTitle, {
 	order: 10,
 	when: IsSessionsWindowContext
 });
+// PARA-PATCH: separate Split Editor Down entry in the agents window overflow menu (see above).
 MenuRegistry.appendMenuItem(MenuId.EditorTitle, {
 	command: {
 		id: SPLIT_EDITOR_DOWN,

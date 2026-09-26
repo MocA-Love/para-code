@@ -393,6 +393,7 @@ export function setupTerminalMenus(disposables: Pick<DisposableStore, 'add'>): v
 						id: TerminalCommandId.NewWithProfile,
 						title: localize('workbench.action.terminal.newWithProfile.short', "New Terminal With Profile...")
 					},
+					// PARA-PATCH: explicit order so the fork-added Split entry comes first in this menu
 					group: TerminalContextMenuGroup.Create,
 					order: 2
 				}
@@ -404,6 +405,7 @@ export function setupTerminalMenus(disposables: Pick<DisposableStore, 'add'>): v
 						id: TerminalCommandId.New,
 						title: terminalStrings.new
 					},
+					// PARA-PATCH: explicit order so the fork-added Split entry comes first in this menu
 					group: TerminalContextMenuGroup.Create,
 					order: 3
 				}
