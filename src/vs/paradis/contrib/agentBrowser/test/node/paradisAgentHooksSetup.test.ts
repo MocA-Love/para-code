@@ -17,7 +17,7 @@ import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -287,6 +287,58 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.deepStrictEqual(JSON.parse(merged), {
 			hooks: { Stop: [paradisManagedHookDefinition({ eventName: 'Stop' }), userHook] },
 		});
+	});
+
+	test('removing takes out only Para Code hooks, keeps user hooks and other settings, and is a no-op when none are there', () => {
+		const userHook = { type: 'command', command: '/tmp/user-hook.sh' };
+		const existing = JSON.stringify({
+			model: 'opus',
+			hooks: {
+				Stop: [paradisManagedHookDefinition({ eventName: 'Stop' }), { hooks: [userHook] }],
+				SessionStart: [paradisManagedHookDefinition({ eventName: 'SessionStart' })],
+				PreToolUse: [{ matcher: '*', hooks: [userHook, { type: 'command', command: paradisManagedAgentHookCommand() }] }],
+			},
+		}, undefined, 2);
+		const removed = paradisRemoveAgentHooksJson(existing);
+		assert.ok(removed !== undefined);
+		const userOnly = JSON.stringify({ hooks: { Stop: [{ hooks: [userHook] }] } }, undefined, 2);
+		assert.deepStrictEqual({
+			removed: JSON.parse(removed),
+			again: paradisRemoveAgentHooksJson(removed) === removed,
+			userOnlyUntouched: paradisRemoveAgentHooksJson(userOnly) === userOnly,
+			unparseable: paradisRemoveAgentHooksJson('{ broken'),
+		}, {
+			removed: {
+				model: 'opus',
+				hooks: {
+					Stop: [{ hooks: [userHook] }],
+					PreToolUse: [{ matcher: '*', hooks: [userHook] }],
+				},
+			},
+			again: true,
+			userOnlyUntouched: true,
+			unparseable: undefined,
+		});
+	});
+
+	test('removing from the hook files leaves a missing file missing', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-remove-'));
+		try {
+			const claudeSettingsPath = join(root, '.claude', 'settings.json');
+			const codexHooksPath = join(root, '.codex', 'hooks.json');
+			await fs.mkdir(join(root, '.codex'), { recursive: true });
+			await fs.writeFile(codexHooksPath, JSON.stringify({ hooks: { Stop: [paradisManagedHookDefinition({ eventName: 'Stop' })] } }, undefined, 2) + '\n');
+
+			await paradisRemoveAgentHooks(undefined, { claudeSettingsPath, codexHooksPath });
+
+			const claudeExists = await fs.stat(claudeSettingsPath).then(() => true, () => false);
+			assert.deepStrictEqual({ claudeExists, codex: await fs.readFile(codexHooksPath, 'utf8') }, {
+				claudeExists: false,
+				codex: JSON.stringify({ hooks: {} }, undefined, 2) + '\n',
+			});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 
 	test('does not let an older process replace newer managed hooks', () => {

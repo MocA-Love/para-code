@@ -24,7 +24,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
-import { PARADIS_NOTIFY_HOOK_RELATIVE_PATH } from '../common/paradisAgentHooks.js';
+import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
 import { paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
@@ -193,6 +193,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	/** 上書きの警告を、30秒ごとの見直しで出し続けないための目印。 */
 	private hasWarnedAboutForeignPortFile = false;
 
+	/** hook の自動設置が有効か。オフに切り替わった瞬間だけ、接続先からも取り外すために覚えておく。 */
+	private agentHooksEnabled: boolean;
+
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -203,6 +206,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 	) {
 		super();
+		this.agentHooksEnabled = paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING));
 
 		// SSH の接続先だけを対象にする。他の種類の接続先（WSL・コンテナ）は ssh を通らないので、
 		// 置いたものへ実行権も付けられず、ソケットも引けない。戻りトンネルが設定で切られている
@@ -212,6 +216,13 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			&& this.configurationService.getValue<boolean>(PARADIS_REMOTE_AGENT_TUNNEL_SETTING)
 		) {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
+			// hook の自動設置の切り替えに合わせる。オフにした瞬間だけ接続先からも取り外し、
+			// オンに戻したらすぐ置き直す（次の見直しを待たない）
+			this._register(this.configurationService.onDidChangeConfiguration(e => {
+				if (e.affectsConfiguration(PARADIS_AGENT_HOOKS_ENABLED_SETTING)) {
+					void this.onDidChangeAgentHooksEnabled();
+				}
+			}));
 			// ペインが増減するたび、接続先の Codex ソケットの引き込みを合わせ直す
 			this._register(this.paneTokenService.onDidChange(() => {
 				void this.remoteUserHome().then(home => {
@@ -292,8 +303,11 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 			await this.installCodexLauncher(home, channel);
 
-			await this.mergeAgentHooks(joinPath(home, '.claude', 'settings.json'), 'claude');
-			await this.mergeAgentHooks(joinPath(home, '.codex', 'hooks.json'), 'codex');
+			// 自動設置をオフにしている間は hook だけ置かない（MCP と戻り経路は hook と関係なく使う）
+			if (this.agentHooksEnabled) {
+				await this.mergeAgentHooks(joinPath(home, '.claude', 'settings.json'), 'claude');
+				await this.mergeAgentHooks(joinPath(home, '.codex', 'hooks.json'), 'codex');
+			}
 			await this.mergeClaudeMcp(home, remotePort);
 			await this.mergeCodexMcp(home, remotePort);
 			this.syncCodexSockets(home, channel);
@@ -401,6 +415,42 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			'buildRemoteAgentHooksJson',
 			[this.environmentService.remoteAuthority, cli, current]
 		));
+	}
+
+	private async onDidChangeAgentHooksEnabled(): Promise<void> {
+		const enabled = paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING));
+		if (enabled === this.agentHooksEnabled) {
+			return;
+		}
+		this.agentHooksEnabled = enabled;
+		try {
+			const home = await this.remoteUserHome();
+			if (home === undefined) {
+				return;
+			}
+			const files: readonly [URI, 'claude' | 'codex'][] = [
+				[joinPath(home, '.claude', 'settings.json'), 'claude'],
+				[joinPath(home, '.codex', 'hooks.json'), 'codex'],
+			];
+			for (const [file, cli] of files) {
+				if (enabled) {
+					await this.mergeAgentHooks(file, cli);
+				} else {
+					await this.removeAgentHooks(file);
+				}
+			}
+			this.logService.info(`[paradis] ${enabled ? 'installed' : 'removed'} the agent hooks on ${this.environmentService.remoteAuthority} after the setting changed`);
+		} catch (error) {
+			this.logService.warn('[paradis] could not apply the agent hook setting on the host', error);
+		}
+	}
+
+	/** 接続先の設定ファイルから、Para Code が置いた hook だけを外す（判断は shared process 側）。 */
+	private async removeAgentHooks(file: URI): Promise<void> {
+		const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
+		await this.mergeJson(file, current => current === undefined
+			? undefined
+			: channel.call<string | undefined>('buildRemoteAgentHooksRemovalJson', [current]));
 	}
 
 	/**

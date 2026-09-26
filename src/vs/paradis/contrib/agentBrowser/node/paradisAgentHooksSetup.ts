@@ -431,42 +431,89 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 };
 
 /**
- * 設定ファイル1つ分の冪等マージ + 書き込み。書き込み直前に再読込し、外部更新が
- * 入っていれば最新内容からマージし直す。上限内に安定しなければユーザーファイルを
- * 優先して書き込みを見送る。失敗しても例外は投げない。
+ * 当fork管理のhookだけを取り除いたJSON文字列を返す。ユーザーのhook・その他の設定キーは残す。
+ *
+ * 自hookが1つも無ければ受け取ったものをそのまま返す（書き込みを起こさない）。パース不能・
+ * ルートがオブジェクトでない場合は undefined（呼び出し側は何も書かない）。
  */
-export async function paradisMergeAgentHooksFile(filePath: string, managedEvents: readonly IParadisManagedHookEvent[], logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+export function paradisRemoveAgentHooksJson(existingRaw: string): string | undefined {
+	let parsed: unknown;
 	try {
-		await io.mkdir(dirname(filePath));
+		parsed = JSON.parse(existingRaw);
+	} catch {
+		return undefined;
+	}
+	if (!isPlainObject(parsed)) {
+		return undefined;
+	}
+	const hooks = parsed.hooks;
+	if (!isPlainObject(hooks) || highestParadisManagedHookSchema(hooks) === undefined) {
+		return existingRaw;
+	}
+	for (const eventName of Object.keys(hooks)) {
+		const current = hooks[eventName];
+		if (!Array.isArray(current)) {
+			continue;
+		}
+		const { definitions } = replaceManagedHooksInDefinitions(current, undefined);
+		if (definitions.length === 0 && current.length > 0) {
+			delete hooks[eventName];
+		} else {
+			hooks[eventName] = definitions;
+		}
+	}
+	return JSON.stringify(parsed, undefined, 2);
+}
+
+type ParadisAgentHooksFileUpdate =
+	| { readonly kind: 'content'; readonly content: string }
+	| { readonly kind: 'unchanged' }
+	| { readonly kind: 'unparseable' };
+
+/**
+ * 設定ファイル1つ分の書き換え。書き込み直前に再読込し、外部更新が入っていれば最新内容から
+ * 作り直す。上限内に安定しなければユーザーファイルを優先して書き込みを見送る。
+ * 失敗しても例外は投げない。
+ *
+ * @param operation ログと診断の名前（'merge' は既存の診断名を変えないため）
+ */
+async function updateAgentHooksFile(filePath: string, operation: 'merge' | 'remove', update: (existingRaw: string | undefined) => ParadisAgentHooksFileUpdate, logService: ILogService | undefined, io: IParadisAgentHooksFileIO): Promise<void> {
+	try {
+		if (operation === 'merge') {
+			await io.mkdir(dirname(filePath));
+		}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const existingRaw = await io.readFile(filePath);
-			const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
-			if (merged === undefined) {
-				logService?.warn(`[ParadisAgentHooks] Could not parse ${filePath}; skipping hook merge (user file left untouched)`);
+			const result = update(existingRaw);
+			if (result.kind === 'unchanged') {
+				return;
+			}
+			if (result.kind === 'unparseable') {
+				logService?.warn(`[ParadisAgentHooks] Could not parse ${filePath}; skipping hook ${operation} (user file left untouched)`);
 				// ここで見送ると hook が1つも設置されず、エージェントの状態表示・通知・モバイルの
 				// 応答性がまとめて静かに縮退する。ログしか残らないと後から原因に到達できないので
 				// 記録する（ファイルパスや中身は載せない）。
-				reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-unparseable', new Error('Managed hook file could not be parsed'), {
+				reportParadisDiagnosticError('owned', 'agent-hooks', `${operation}-unparseable`, new Error('Managed hook file could not be parsed'), {
 					phase: 'setup',
 					safe_target: basename(filePath),
 				});
 				return;
 			}
 			// 既存ファイルの末尾改行は維持する (余計な毎回書き込みを防ぐ)
-			const content = existingRaw !== undefined && existingRaw.endsWith('\n') ? `${merged}\n` : merged;
+			const content = existingRaw !== undefined && existingRaw.endsWith('\n') ? `${result.content}\n` : result.content;
 			if (content === existingRaw) {
 				return; // 既に最新
 			}
 			// read→write間にユーザーや別ツールが保存していれば、古いスナップショットで
-			// 上書きせず、最新内容を起点に再マージする。
+			// 上書きせず、最新内容を起点に作り直す。
 			if (!io.writeFileIfUnchanged(filePath, existingRaw, content)) {
 				continue;
 			}
-			logService?.info(`[ParadisAgentHooks] Updated agent hooks in ${filePath}`);
+			logService?.info(operation === 'merge' ? `[ParadisAgentHooks] Updated agent hooks in ${filePath}` : `[ParadisAgentHooks] Removed Para Code agent hooks from ${filePath}`);
 			return;
 		}
-		logService?.warn(`[ParadisAgentHooks] ${filePath} kept changing during hook merge; skipped update to preserve external changes`);
-		reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-contended', new Error('Managed hook file kept changing during merge'), {
+		logService?.warn(`[ParadisAgentHooks] ${filePath} kept changing during hook ${operation}; skipped update to preserve external changes`);
+		reportParadisDiagnosticError('owned', 'agent-hooks', `${operation}-contended`, new Error(`Managed hook file kept changing during ${operation}`), {
 			phase: 'setup',
 			safe_target: basename(filePath),
 			attempt: 3,
@@ -475,11 +522,47 @@ export async function paradisMergeAgentHooksFile(filePath: string, managedEvents
 		logService?.warn(`[ParadisAgentHooks] Failed to update ${filePath}`, error);
 		// error は fs のエラーで、message に絶対パスを含む（EACCES: ... open '/Users/.../settings.json'）。
 		// ホームディレクトリは送信前のサニタイズで ~ に置換されるが、それ以上の詳細は載せない。
-		reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-failed', error, {
+		reportParadisDiagnosticError('owned', 'agent-hooks', `${operation}-failed`, error, {
 			phase: 'setup',
 			safe_target: basename(filePath),
 		});
 	}
+}
+
+/**
+ * 設定ファイル1つ分の冪等マージ + 書き込み。書き込み直前に再読込し、外部更新が
+ * 入っていれば最新内容からマージし直す。上限内に安定しなければユーザーファイルを
+ * 優先して書き込みを見送る。失敗しても例外は投げない。
+ */
+export async function paradisMergeAgentHooksFile(filePath: string, managedEvents: readonly IParadisManagedHookEvent[], logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+	await updateAgentHooksFile(filePath, 'merge', existingRaw => {
+		const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
+		return merged === undefined ? { kind: 'unparseable' } : { kind: 'content', content: merged };
+	}, logService, io);
+}
+
+/**
+ * 設定ファイル1つ分から当fork管理のhookだけを取り外す。ファイルが無ければ何もしない
+ * （取り外すために作ることはしない）。失敗しても例外は投げない。
+ */
+export async function paradisRemoveAgentHooksFile(filePath: string, logService: ILogService | undefined, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+	await updateAgentHooksFile(filePath, 'remove', existingRaw => {
+		if (existingRaw === undefined || existingRaw.trim().length === 0) {
+			return { kind: 'unchanged' };
+		}
+		const removed = paradisRemoveAgentHooksJson(existingRaw);
+		return removed === undefined ? { kind: 'unparseable' } : { kind: 'content', content: removed };
+	}, logService, io);
+}
+
+/**
+ * Claude Code の settings.json と Codex の hooks.json から、当fork管理のhookを取り外す。
+ * 設置先の解決は自動設置と同じ（$CLAUDE_CONFIG_DIR / $CODEX_HOME を尊重する）。
+ * notify スクリプト自体は消さない: 同じ PC の別の Para Code がまだ使っていることがある。
+ */
+export async function paradisRemoveAgentHooks(logService: ILogService | undefined, paths: { readonly claudeSettingsPath?: string; readonly codexHooksPath?: string } = {}): Promise<void> {
+	await paradisRemoveAgentHooksFile(paths.claudeSettingsPath ?? join(paradisClaudeConfigDir(), 'settings.json'), logService);
+	await paradisRemoveAgentHooksFile(paths.codexHooksPath ?? join(paradisCodexHome(), 'hooks.json'), logService);
 }
 
 /**
