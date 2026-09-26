@@ -6,7 +6,12 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// ターミナルにフォーカスがあるときだけ ⌘= / ⌘− / ⌘0 をそのターミナル単体の文字サイズ変更にする（Q41 B / TM21）。
+// ターミナルにフォーカスがあるときだけ、ウィンドウ全体の拡大・縮小と同じキー（⌘= / ⌘− / テンキーの ⌘0）を
+// そのターミナル単体の文字サイズ変更にする（Q41 B / TM21）。
+//
+// キーの割り当ては upstream の workbench.action.zoomIn / zoomOut / zoomReset とまったく同じにする。
+// 数字キーの ⌘0 は upstream ではサイドバーへのフォーカス（workbench.action.focusSideBar）に使われている
+// ので奪わない。
 //
 // - ターミナル以外にフォーカスがあるときは、今まで通りウィンドウ全体の拡大・縮小（workbench.action.zoomIn 等）。
 //   キーバインドは `terminalFocus` 条件付きで weight を1つ上げ、そのときだけ優先させる。
@@ -44,6 +49,8 @@ const PARADIS_TERMINAL_FONT_ZOOM_STORAGE_KEY = 'paradis.terminal.fontZoom';
 const PARADIS_TERMINAL_FONT_ZOOM_MAX_ENTRIES = 200;
 
 // ターミナルにフォーカスがあっても、キーをシェルへ送らずコマンドとして扱わせる。
+// upstream の zoomIn / zoomOut / zoomReset も同じリストに入っているので、同じキーの扱いを揃えるために
+// 追記する（外すと Windows/Linux でだけ Ctrl+= がシェルへ流れ、ウィンドウの拡大とも食い違う）。
 // upstream の既定リストへ起動時に追記するだけで、terminal.ts は変更しない
 // （TerminalConfigurationService はこの配列からスキップ集合を作る）。
 for (const id of [ParadisTerminalFontZoomCommandId.ZoomIn, ParadisTerminalFontZoomCommandId.ZoomOut, ParadisTerminalFontZoomCommandId.ZoomReset]) {
@@ -199,6 +206,10 @@ registerAction2(class extends ParadisTerminalFontZoomAction {
 				weight: KeybindingWeight.WorkbenchContrib + 1,
 				primary: KeyMod.CtrlCmd | KeyCode.Minus,
 				secondary: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.Minus, KeyMod.CtrlCmd | KeyCode.NumpadSubtract],
+				linux: {
+					primary: KeyMod.CtrlCmd | KeyCode.Minus,
+					secondary: [KeyMod.CtrlCmd | KeyCode.NumpadSubtract],
+				},
 			},
 		});
 	}
@@ -215,8 +226,7 @@ registerAction2(class extends ParadisTerminalFontZoomAction {
 			keybinding: {
 				when: TerminalContextKeys.focus,
 				weight: KeybindingWeight.WorkbenchContrib + 1,
-				primary: KeyMod.CtrlCmd | KeyCode.Digit0,
-				secondary: [KeyMod.CtrlCmd | KeyCode.Numpad0],
+				primary: KeyMod.CtrlCmd | KeyCode.Numpad0,
 			},
 		});
 	}
