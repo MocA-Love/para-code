@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisWithoutPtyDaemonEnv } from '../../common/paradisPtyEnvHygiene.js';
+import { paradisDeletePtyDaemonEnv, paradisWithoutPtyDaemonEnv } from '../../common/paradisPtyEnvHygiene.js';
 
 suite('ParadisPtyEnvHygiene', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -39,5 +39,21 @@ suite('ParadisPtyEnvHygiene', () => {
 	test('内部用の変数が無ければ写しを作らずそのまま返す', () => {
 		const env = { PATH: '/usr/bin' };
 		assert.strictEqual(paradisWithoutPtyDaemonEnv(env), env);
+	});
+
+	test('main が受け継いだ内部用の変数はその場で消し、消した名前を返す', () => {
+		const env: { [key: string]: string | undefined } = {
+			PATH: '/usr/bin',
+			PARADIS_PTY_HOST_STATE_DIR: '/Users/example/Library/Application Support/Para Code',
+			PARADIS_PTY_DAEMON_SOCKET: '/tmp/s.sock',
+			PARA_CODE_TERMINAL_PANE_ID: 'pane-token',
+		};
+		const removed = paradisDeletePtyDaemonEnv(env);
+		const removedAgain = paradisDeletePtyDaemonEnv(env);
+		assert.deepStrictEqual({ removed, removedAgain, env }, {
+			removed: ['PARADIS_PTY_HOST_STATE_DIR', 'PARADIS_PTY_DAEMON_SOCKET'],
+			removedAgain: [],
+			env: { PATH: '/usr/bin', PARA_CODE_TERMINAL_PANE_ID: 'pane-token' },
+		});
 	});
 });

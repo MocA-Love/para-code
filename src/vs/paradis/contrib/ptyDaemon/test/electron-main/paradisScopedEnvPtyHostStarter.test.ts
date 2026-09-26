@@ -55,7 +55,7 @@ suite('ParadisScopedEnvPtyHostStarter', () => {
 		});
 	});
 
-	test('もともと入っていた値は起こした後に元へ戻す', () => {
+	test('受け継いだ値が残っていても、起こした後は元へ戻さず消した状態にする', () => {
 		const env: { [key: string]: string | undefined } = { PARADIS_PTY_HOST_STATE_DIR: '/inherited' };
 		const exit = store.add(new Emitter<{ code: number; signal: string }>());
 		const inner = new RecordingStarter(env, exit);
@@ -65,7 +65,7 @@ suite('ParadisScopedEnvPtyHostStarter', () => {
 
 		assert.deepStrictEqual({ seen: inner.seen, env }, {
 			seen: ['/state'],
-			env: { PARADIS_PTY_HOST_STATE_DIR: '/inherited' },
+			env: {},
 		});
 	});
 });

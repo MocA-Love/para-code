@@ -17,6 +17,10 @@
 // （`_createPtyHostConfiguration()` → `UtilityProcess.start()`）。だから `start()` の前後だけ
 // 足して戻せば、pty ホストにだけ届き、main には残らない。pty ホストが落ちて起こし直すときも
 // `start()` を通るので、毎回同じように届く。
+//
+// `start()` の後は**元の値に戻すのではなく、消した状態に戻す**。起動時に受け継いだ値が
+// あっても `paradisCreatePtyHostStarter()` が先に消しているはずで、ここで「元の値」を書き
+// 戻すと、消したはずの親の値が main に蘇る。
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Event } from '../../../../base/common/event.js';
@@ -44,20 +48,14 @@ export class ParadisScopedEnvPtyHostStarter extends Disposable implements IPtyHo
 	}
 
 	start(): IPtyHostConnection {
-		const previous = new Map<string, string | undefined>();
 		for (const [key, value] of Object.entries(this.scopedEnv)) {
-			previous.set(key, Object.prototype.hasOwnProperty.call(this.env, key) ? this.env[key] : undefined);
 			this.env[key] = value;
 		}
 		try {
 			return this.inner.start();
 		} finally {
-			for (const [key, value] of previous) {
-				if (value === undefined) {
-					delete this.env[key];
-				} else {
-					this.env[key] = value;
-				}
+			for (const key of Object.keys(this.scopedEnv)) {
+				delete this.env[key];
 			}
 		}
 	}
