@@ -282,7 +282,7 @@ export class BrowserSession {
 		/** Resolved storage scope. */
 		readonly storageScope: BrowserViewStorageScope,
 		@IAgentNetworkFilterService private readonly agentNetworkFilterService: IAgentNetworkFilterService,
-		// PARA-PATCH: read paradis.browser.downloads.* to auto-save downloads without a save dialog
+		// PARA-PATCH: read paradis.browser.downloads.* / paradis.browser.userAgent.* in configure()
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		this._trust = new BrowserSessionTrust(this);
@@ -359,7 +359,7 @@ export class BrowserSession {
 	 */
 	private configure(): void {
 		paradisInstallBrowserExtensions(this.electronSession); // PARA-PATCH: bundled React DevTools
-		paradisApplyChromeLikeUserAgent(this.electronSession); // PARA-PATCH: strip Electron token from UA so Google sign-in works
+		paradisApplyChromeLikeUserAgent(this.electronSession, this.configurationService); // PARA-PATCH: strip Electron (and by default ParaCode) tokens from UA
 		paradisConfigureBrowserDownloads(this.electronSession, this.configurationService); // PARA-PATCH: auto-save downloads to a fixed folder, no save dialog
 		this._permissions.configure(this.electronSession);
 		this.electronSession.registerPreloadScript({
