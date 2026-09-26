@@ -1,0 +1,80 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Codex account card part (paradisCodexAccountCard.ts): the reset-credit row and the
+ * "use this account" row appended to each Codex account card of the limits monitor panel.
+ * Buttons reuse the quiet secondary-button look of the panel's re-login button.
+ */
+
+.paradis-codex-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.paradis-codex-card .pcc-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 20px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-codex-card .pcc-row .codicon {
+	font-size: 12px;
+	flex: none;
+}
+
+.paradis-codex-card .pcc-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-codex-card .pcc-text.available {
+	color: var(--vscode-foreground);
+}
+
+.paradis-codex-card .pcc-btn {
+	flex: none;
+	margin-left: auto;
+	background: var(--vscode-button-secondaryBackground, #313131);
+	border: 1px solid var(--vscode-contrastBorder, transparent);
+	border-radius: 3px;
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	font-size: 11px;
+	padding: 2px 10px;
+	cursor: pointer;
+}
+
+.paradis-codex-card .pcc-btn:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground));
+}
+
+.paradis-codex-card .pcc-btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.paradis-codex-card .pcc-badge {
+	flex: none;
+	margin-left: auto;
+	height: 20px;
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	font-size: 10px;
+	padding: 0 7px;
+	border-radius: 8px;
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+	white-space: nowrap;
+}

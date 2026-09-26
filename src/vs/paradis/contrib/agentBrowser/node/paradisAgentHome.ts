@@ -14,8 +14,9 @@
 // (シェルrcでのみ設定している場合は拾えない)。その場合は既定パスへフォールバックするため、
 // 従来 (ハードコード) と同じ挙動になる。
 
+import * as fs from 'fs';
 import { homedir } from 'os';
-import { isAbsolute, join } from '../../../../base/common/path.js';
+import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { IParadisWslAgentHome, paradisResolveWslAgentHome, paradisWslUncPathFrom } from '../../../common/paradisWslAgentHome.js';
 
 function resolveAgentHome(envVarName: string, fallbackDirName: string): string {
@@ -29,6 +30,83 @@ function resolveAgentHome(envVarName: string, fallbackDirName: string): string {
 /** Codex CLI の状態ディレクトリ ($CODEX_HOME、既定 ~/.codex)。hooks.json / sessions/ / config.toml の親。 */
 export function paradisCodexHome(): string {
 	return resolveAgentHome('CODEX_HOME', '.codex');
+}
+
+/** `~/.codex` と、Para Code がアカウントごとに作る `~/.codex-2` 等。`.codexbar` のような別物は含めない。 */
+const CODEX_HOME_DIR_PATTERN = /^\.codex(?:-[\w.]+)?$/;
+/** ホームの走査結果を使い回す時間。hook のたびにホームディレクトリを読まないため。 */
+const CODEX_HOMES_CACHE_MS = 5_000;
+
+let codexHomesCache: { readonly at: number; readonly homes: readonly string[] } | undefined;
+/** 既定の走査に掛からない場所（設定で足したホーム）を、選ばれたときに覚えておく。 */
+const registeredCodexHomes = new Set<string>();
+
+/**
+ * Para Code が Codex のホームとして扱う全ディレクトリ。先頭は既定のホーム（{@link paradisCodexHome}）。
+ *
+ * Codex のアカウントを切り替えると、新しく開いたターミナルの Codex は `CODEX_HOME=~/.codex-2` の
+ * ように別のホームへ transcript・state DB・hooks.json を置く。transcript の許可 root、hook の設置先、
+ * 会話の探索は「既定のホーム1つ」ではなくこの一覧を見ること。
+ *
+ * @param homeDirectory テスト用。指定したときはキャッシュを使わない。
+ */
+export function paradisCodexHomes(homeDirectory?: string): readonly string[] {
+	const now = Date.now();
+	if (homeDirectory === undefined && codexHomesCache && now - codexHomesCache.at < CODEX_HOMES_CACHE_MS) {
+		return codexHomesCache.homes;
+	}
+	const home = homeDirectory ?? homedir();
+	const primary = homeDirectory === undefined ? paradisCodexHome() : join(home, '.codex');
+	const homes = new Set<string>([primary]);
+	let entries: fs.Dirent[] = [];
+	try {
+		entries = fs.readdirSync(home, { withFileTypes: true });
+	} catch {
+		// 読めなければ既定のホームだけ
+	}
+	const found: string[] = [];
+	for (const entry of entries) {
+		if (!CODEX_HOME_DIR_PATTERN.test(entry.name)) {
+			continue;
+		}
+		const candidate = join(home, entry.name);
+		try {
+			if (entry.isDirectory() || (entry.isSymbolicLink() && fs.statSync(candidate).isDirectory())) {
+				found.push(candidate);
+			}
+		} catch {
+			// 壊れたリンクは飛ばす
+		}
+	}
+	found.sort();
+	for (const candidate of found) {
+		homes.add(candidate);
+	}
+	for (const registered of registeredCodexHomes) {
+		homes.add(registered);
+	}
+	const result = [...homes];
+	if (homeDirectory === undefined) {
+		codexHomesCache = { at: now, homes: result };
+	}
+	return result;
+}
+
+/**
+ * 既定の走査（`~/.codex*`）に掛からない Codex ホームを一覧へ加える。設定で足したホームが
+ * 切替で選ばれたとき、その transcript を許可 root に入れるために使う。
+ */
+export function paradisRegisterCodexHome(homePath: string): void {
+	if (isAbsolute(homePath) && !registeredCodexHomes.has(homePath)) {
+		registeredCodexHomes.add(homePath);
+		codexHomesCache = undefined;
+	}
+}
+
+/** パスがどれかの Codex ホームの中（またはホームそのもの）か。字面だけで判定する。 */
+export function paradisIsWithinCodexHome(candidate: string, homes: readonly string[] = paradisCodexHomes()): boolean {
+	const resolved = resolve(candidate);
+	return homes.some(home => resolved === home || resolved.startsWith(home + sep));
 }
 
 /** Claude Code の設定ディレクトリ ($CLAUDE_CONFIG_DIR、既定 ~/.claude)。settings.json / projects/ の親。 */
