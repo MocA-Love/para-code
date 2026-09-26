@@ -54,7 +54,7 @@ const CONNECT_TIMEOUT = 20_000;
 /** 繋ぎ直しの間隔。常駐が listen を始めるまでの数百ミリ秒を埋めるだけなので短くてよい。 */
 const CONNECT_RETRY_DELAY = 100;
 
-/** 橋渡しプロセスの入口。ビルドのエントリ一覧 (build/buildfile.ts) にも同じ名前が要る。 */
+/** 橋渡しプロセスの入口。ビルドのエントリ一覧 (build/next/index.ts の desktopEntryPoints) にも同じ名前が要る。 */
 const BRIDGE_ENTRY_POINT = 'vs/paradis/contrib/ptyDaemon/node/paradisPtyDaemonBridgeMain';
 
 /**
@@ -278,9 +278,9 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		};
 		// これが残っていると `bootstrap-fork.ts` が5秒ごとに親を見て自分を殺す。常駐にする以上、
 		// 親が死ぬのは異常ではなく普通のことなので、監視そのものを渡さない。
-		delete env['VSCODE_PARENT_PID'];
+		delete env.VSCODE_PARENT_PID;
 		// ログをパイプで親へ返す仕掛けも外す。受け取る親がもう居ない。
-		delete env['VSCODE_PIPE_LOGGING'];
+		delete env.VSCODE_PIPE_LOGGING;
 		// upstream が fork するときに通している前処理 (`DEBUG` と `NODE_OPTIONS` を落とす)。
 		// アプリの中で動く pty host では「起動が壊れる」程度の話だが、常駐では意味が変わる。
 		// `.envrc` などから `NODE_OPTIONS=--inspect=…` が紛れ込むと、**アプリを終了した後も
@@ -377,7 +377,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		// 橋も相手が本物かを確かめる。token は台帳から読むので、その場所を渡す
 		// (token そのものを環境変数で渡すと、`ps` から見えるプラットフォームがある)。
 		env[PARADIS_PTY_DAEMON_LEDGER] = this.paths.ledgerFile;
-		env['VSCODE_ESM_ENTRYPOINT'] = BRIDGE_ENTRY_POINT;
+		env.VSCODE_ESM_ENTRYPOINT = BRIDGE_ENTRY_POINT;
 
 		const bridge = new UtilityProcess(this.logService, NullTelemetryService, this.lifecycleMainService);
 		bridge.start({

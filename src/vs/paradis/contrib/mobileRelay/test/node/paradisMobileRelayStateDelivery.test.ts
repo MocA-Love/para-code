@@ -253,7 +253,7 @@ suite('ParadisMobileRelay State delivery', () => {
 		service.handleDisconnected('test-disconnect', 'test disconnect', {});
 
 		assert.deepStrictEqual({
-			safeMobileSessions: reports[0]?.extras['safe_mobile_sessions'],
+			safeMobileSessions: reports[0]?.extras.safe_mobile_sessions,
 			remainingSessions: sessions.size,
 			voiceSubscriptionsCleared,
 			stopped,

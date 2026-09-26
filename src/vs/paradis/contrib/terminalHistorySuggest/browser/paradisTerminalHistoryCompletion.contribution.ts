@@ -200,7 +200,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		if (remoteEnvironment?.os === OperatingSystem.Windows || !remoteEnvironment && isWindows) {
 			return undefined;
 		}
-		const home = remoteEnvironment?.userHome?.fsPath ?? env['HOME'];
+		const home = remoteEnvironment?.userHome?.fsPath ?? env.HOME;
 		if (!home) {
 			// zsh/bash 向けのファイル履歴マージが以後ずっと無効化される(undefinedが
 			// ParadisTerminalHistorySharedValue にキャッシュされ、再解決されない)。頻度不明な

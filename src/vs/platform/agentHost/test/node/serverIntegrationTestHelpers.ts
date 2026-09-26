@@ -5,14 +5,16 @@
 
 import { ChildProcess, fork } from 'child_process';
 import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'fs/promises';
-import { raceTimeout } from '../../../../base/common/async.js';
+import { Promises, raceTimeout } from '../../../../base/common/async.js';
+import { getErrorCode } from '../../../../base/common/errors.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { createRequire } from 'module';
 import { mkdirSync } from 'fs';
 import { userInfo } from 'os';
+import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
-import { CapiReplayProxy, type CapiReplayMode } from './e2e/harness/capiReplayProxy.js';
+import { CapiReplayProxy, type CapiReplayMode, type ICapiReplayResponse } from './e2e/harness/capiReplayProxy.js';
 import { dirname, resolve as resolvePath } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
 import {
@@ -48,9 +50,11 @@ import { MessageKind, buildDefaultChatUri, mergeSessionWithDefaultChat, parseDef
 import { PROTOCOL_VERSION } from '../../common/state/protocol/version/registry.js';
 import { AgentHostCodexAgentBinaryArgsEnvVar, AgentHostCodexAgentCodexHomeEnvVar, AgentHostCodexAgentEnabledEnvVar } from '../../common/agentService.js';
 import {
+	AhpErrorCodes,
 	isJsonRpcNotification,
 	isJsonRpcRequest,
 	isJsonRpcResponse,
+	JsonRpcErrorCodes,
 	ProtocolError,
 	type AhpNotification,
 	type JsonRpcNotification,
@@ -74,9 +78,17 @@ interface IPendingCall {
 	reject: (err: Error) => void;
 }
 
+/**
+ * Default bound for one protocol request or notification wait. Short locally
+ * so a wedged host fails fast; longer on CI, where the E2E entrypoints run in
+ * parallel on a shared agent and contention alone can push a call past 5s.
+ */
 function getProtocolOperationTimeout(): number {
 	if (AGENT_HOST_E2E_COVERAGE) {
 		return 30_000;
+	}
+	if (isCI) {
+		return 20_000;
 	}
 	return isWindows ? 8_000 : 5_000;
 }
@@ -206,16 +218,41 @@ export class TestProtocolClient {
 			this._ahpSnapshot.record('c2s', response);
 			this._ws.send(JSON.stringify(response));
 		} catch (error) {
+			const protocolError = this._toReverseRequestProtocolError(error);
 			const response: JsonRpcErrorResponse = {
 				jsonrpc: '2.0',
 				id: msg.id,
 				error: {
-					code: -32603,
-					message: error instanceof Error ? error.message : String(error),
+					code: protocolError.code,
+					message: protocolError.message,
+					data: protocolError.data,
 				},
 			};
 			this._ahpSnapshot.record('c2s', response);
 			this._ws.send(JSON.stringify(response));
+		}
+	}
+
+	private _toReverseRequestProtocolError(error: unknown): ProtocolError {
+		if (error instanceof ProtocolError) {
+			return error;
+		}
+		const errorCodeValue: unknown = error instanceof Error ? Object.getOwnPropertyDescriptor(error, 'code')?.value : undefined;
+		const errorCode = typeof errorCodeValue === 'string' ? errorCodeValue : undefined;
+		const message = error instanceof Error ? error.message : String(error);
+		switch (errorCode) {
+			case 'ENOENT':
+			case 'ENOTDIR':
+				return new ProtocolError(AhpErrorCodes.NotFound, message);
+			case 'EACCES':
+			case 'EPERM':
+				return new ProtocolError(AhpErrorCodes.PermissionDenied, message);
+			case 'EEXIST':
+				return new ProtocolError(AhpErrorCodes.AlreadyExists, message);
+			case 'ENOTEMPTY':
+				return new ProtocolError(AhpErrorCodes.Conflict, message);
+			default:
+				return new ProtocolError(JsonRpcErrorCodes.InternalError, message);
 		}
 	}
 
@@ -361,11 +398,7 @@ export class TestProtocolClient {
 		const createOnly = params.createOnly ?? false;
 
 		await mkdir(dirname(filePath), { recursive: true });
-		const exists = await this._pathExists(filePath);
-		if (createOnly && exists) {
-			throw new Error(`File already exists: ${filePath}`);
-		}
-		const existing = exists ? await readFile(filePath) : Buffer.alloc(0);
+		const existing = !createOnly && await this._pathExists(filePath) ? await readFile(filePath) : Buffer.alloc(0);
 		const clampedStart = Math.min(position, existing.length);
 		let next: Buffer;
 		switch (mode) {
@@ -382,7 +415,7 @@ export class TestProtocolClient {
 				next = Buffer.concat([existing.subarray(0, clampedStart), incoming]);
 				break;
 		}
-		await writeFile(filePath, next);
+		await writeFile(filePath, next, createOnly ? { flag: 'wx' } : undefined);
 		return {};
 	}
 
@@ -405,7 +438,7 @@ export class TestProtocolClient {
 		const destination = this._assertFileUri(this._coerceUri(params.destination));
 		const failIfExists = params.failIfExists ?? false;
 		if (failIfExists && await this._pathExists(destination)) {
-			throw new Error(`Destination already exists: ${destination}`);
+			throw new ProtocolError(AhpErrorCodes.AlreadyExists, `Destination already exists: ${destination}`);
 		}
 		await mkdir(dirname(destination), { recursive: true });
 		await rename(source, destination);
@@ -417,7 +450,7 @@ export class TestProtocolClient {
 		const destination = this._assertFileUri(this._coerceUri(params.destination));
 		const failIfExists = params.failIfExists ?? false;
 		if (failIfExists && await this._pathExists(destination)) {
-			throw new Error(`Destination already exists: ${destination}`);
+			throw new ProtocolError(AhpErrorCodes.AlreadyExists, `Destination already exists: ${destination}`);
 		}
 		await mkdir(dirname(destination), { recursive: true });
 		await cp(source, destination, { recursive: true, force: !failIfExists, errorOnExist: failIfExists });
@@ -631,13 +664,23 @@ export interface IServerHandle {
 
 const SERVER_SHUTDOWN_TIMEOUT_MS = isCI || isWindows || AGENT_HOST_E2E_COVERAGE ? 30_000 : 5_000;
 
+async function getServerDescendants(pid: number): Promise<number[]> {
+	if (!isWindows) {
+		return [];
+	}
+	// Once the parent exits, taskkill /T can no longer discover its descendants.
+	const { getProcessList } = await import('@vscode/windows-process-tree');
+	return (await promisify(getProcessList)(pid)).filter(process => process.pid !== pid).map(process => process.pid);
+}
+
 /** Gracefully stop an Agent Host test server, killing it if shutdown stalls. */
-export async function stopServer(server: IServerHandle | undefined): Promise<void> {
+export async function stopServer(server: IServerHandle | undefined, getDescendants = getServerDescendants, timeoutMs = SERVER_SHUTDOWN_TIMEOUT_MS): Promise<void> {
 	const serverProcess = server?.process;
 	if (!serverProcess || serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
 		return;
 	}
 
+	const deadline = Date.now() + timeoutMs;
 	const serverExit = new Promise<void>(resolve => {
 		const onExit = () => resolve();
 		serverProcess.once('exit', onExit);
@@ -646,8 +689,21 @@ export async function stopServer(server: IServerHandle | undefined): Promise<voi
 			resolve();
 		}
 	});
+	let descendants: number[] = [];
+	let snapshotError: Error | undefined;
+	try {
+		if (serverProcess.pid !== undefined) {
+			const snapshot = await raceTimeout(getDescendants(serverProcess.pid), Math.max(0, deadline - Date.now()));
+			if (snapshot === undefined) {
+				throw new Error('Timed out capturing Agent Host test server descendants');
+			}
+			descendants = snapshot;
+		}
+	} catch (error) {
+		snapshotError = new Error('Failed to capture Agent Host test server descendants', { cause: error });
+	}
 	serverProcess.stdin?.end();
-	if (!await raceTimeout(serverExit.then(() => true), SERVER_SHUTDOWN_TIMEOUT_MS)) {
+	if (!await raceTimeout(serverExit.then(() => true), Math.max(0, deadline - Date.now()))) {
 		try {
 			if (serverProcess.exitCode === null && serverProcess.signalCode === null) {
 				const pid = serverProcess.pid;
@@ -663,6 +719,54 @@ export async function stopServer(server: IServerHandle | undefined): Promise<voi
 		}
 		await serverExit;
 	}
+	if (snapshotError) {
+		throw snapshotError;
+	}
+
+	await Promises.settled(descendants.map(async pid => {
+		try {
+			await killTree(pid, true);
+		} catch (error) {
+			try {
+				process.kill(pid, 0);
+			} catch (probeError) {
+				if (getErrorCode(probeError) === 'ESRCH') {
+					return; // The descendant already exited during graceful shutdown.
+				}
+				throw probeError;
+			}
+			throw error;
+		}
+	}));
+}
+
+/** Forcefully kill an Agent Host test server and its child processes without graceful shutdown. */
+export async function killServer(server: IServerHandle | undefined): Promise<void> {
+	const serverProcess = server?.process;
+	if (!serverProcess || serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
+		return;
+	}
+	const pid = serverProcess.pid;
+	if (pid === undefined) {
+		throw new Error('Agent Host test server has no process id');
+	}
+
+	const serverExit = new Promise<void>(resolve => {
+		const onExit = () => resolve();
+		serverProcess.once('exit', onExit);
+		if (serverProcess.exitCode !== null || serverProcess.signalCode !== null) {
+			serverProcess.removeListener('exit', onExit);
+			resolve();
+		}
+	});
+	try {
+		await killTree(pid, true);
+	} catch (error) {
+		if (serverProcess.exitCode === null && serverProcess.signalCode === null) {
+			throw error;
+		}
+	}
+	await serverExit;
 }
 
 interface IMockLlmServerHandle {
@@ -782,7 +886,7 @@ export async function startServer(options?: { readonly quiet?: boolean; readonly
  * Start the agent host server with the Copilot SDK agent with either a real or mocked LLM.
  * The server is started with logging enabled so the CopilotAgent is registered.
  */
-export async function startRealServer(options: { readonly homeDir: string; readonly claudeSdkRoot?: string; readonly codexSdkRoot?: string; readonly codexHomeDir?: string; readonly codexAgentEnabled?: boolean; readonly mockLlm?: boolean; readonly userDataDir?: string; readonly logLevel?: string; readonly env?: NodeJS.ProcessEnv; readonly capiReplay?: { readonly fixturePath: string; readonly mode?: CapiReplayMode; readonly workDir?: string; readonly real?: boolean; readonly allowPosixCommands?: boolean; readonly allowStaleRecordedRequest?: boolean }; readonly existingCapiReplay?: CapiReplayProxy; readonly mockScenarios?: readonly IMockScenario[] }): Promise<IServerHandle> {
+export async function startRealServer(options: { readonly homeDir: string; readonly claudeSdkRoot?: string; readonly codexSdkRoot?: string; readonly codexHomeDir?: string; readonly codexAgentEnabled?: boolean; readonly mockLlm?: boolean; readonly userDataDir?: string; readonly logLevel?: string; readonly env?: NodeJS.ProcessEnv; readonly capiReplay?: { readonly fixturePath: string; readonly mode?: CapiReplayMode; readonly workDir?: string; readonly real?: boolean; readonly allowPosixCommands?: boolean; readonly allowStaleRecordedRequest?: boolean; readonly recordingModelResponse?: ICapiReplayResponse }; readonly existingCapiReplay?: CapiReplayProxy; readonly mockScenarios?: readonly IMockScenario[] }): Promise<IServerHandle> {
 	// `capiReplay` records/replays in front of the mock LLM server, so it implies
 	// a mock upstream even when `mockLlm` was not explicitly requested — unless
 	// `real` is set, in which case the proxy forwards to real CAPI/GitHub.
@@ -799,6 +903,7 @@ export async function startRealServer(options: { readonly homeDir: string; reado
 			workDir: options.capiReplay.workDir,
 			allowPosixCommands: options.capiReplay.allowPosixCommands,
 			allowStaleRecordedRequest: options.capiReplay.allowStaleRecordedRequest,
+			recordingModelResponse: options.capiReplay.recordingModelResponse,
 			homeDir: options.homeDir,
 			userName: userInfo().username,
 			// Real hosts (consumer defaults); override for Enterprise/Business accounts.
@@ -988,7 +1093,10 @@ export function dispatchTurnStarted(c: TestProtocolClient, session: string, turn
 		action: {
 			type: ActionType.ChatTurnStarted,
 			turnId,
-			startedAt: '2025-01-01T00:00:00.000Z',
+			// A real timestamp, because the chat reducer derives `modifiedAt`
+			// from the turn: a fixed past `startedAt` would make a completed
+			// turn look older than the session it belongs to.
+			startedAt: new Date().toISOString(),
 			message: { text, origin: { kind: MessageKind.User } },
 		},
 	});
@@ -1001,11 +1109,11 @@ export function dispatchTurnStarted(c: TestProtocolClient, session: string, turn
  * requests) live on the session's default chat channel, so reading them
  * requires merging the session snapshot with its default chat snapshot.
  */
-export async function fetchSessionWithChat(c: TestProtocolClient, sessionUri: string): Promise<ISessionWithDefaultChat> {
+export async function fetchSessionWithChat(c: TestProtocolClient, sessionUri: string, timeoutMs?: number): Promise<ISessionWithDefaultChat> {
 	const owningSession = parseDefaultChatUri(sessionUri) ?? sessionUri;
 	const chatUri = parseDefaultChatUri(sessionUri) ? sessionUri : buildDefaultChatUri(sessionUri);
-	const sessionSnap = await c.call<SubscribeResult>('subscribe', { channel: owningSession });
-	const chatSnap = await c.call<SubscribeResult>('subscribe', { channel: chatUri });
+	const sessionSnap = await c.call<SubscribeResult>('subscribe', { channel: owningSession }, timeoutMs);
+	const chatSnap = await c.call<SubscribeResult>('subscribe', { channel: chatUri }, timeoutMs);
 	return mergeSessionWithDefaultChat(
 		sessionSnap.snapshot!.state as SessionState,
 		chatSnap.snapshot?.state as ChatState | undefined,

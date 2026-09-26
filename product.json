@@ -29,6 +29,7 @@
 	"darwinBundleIdentifier": "ltd.paradis.paracode",
 	"darwinProfileUUID": "8F2A5E10-3B4C-4A9D-9B7E-6C1F2D3A4B5C",
 	"darwinProfilePayloadUUID": "1D4E7F20-8A9B-4C3D-BE1F-2A3B4C5D6E7F",
+	"linuxDesktopName": "ltd.paradis.ParaCode",
 	"linuxIconName": "para-code",
 	"licenseFileName": "LICENSE.txt",
 	"reportIssueUrl": "https://github.com/MocA-Love/para-code/issues/new",
@@ -187,6 +188,10 @@
 			"apple": {
 				"id": "apple",
 				"name": "Apple"
+			},
+			"microsoft": {
+				"id": "microsoft",
+				"name": "Microsoft"
 			}
 		},
 		"providerExtensionId": "vscode.github-authentication",
@@ -227,6 +232,9 @@
 		],
 		"github-enterprise": [
 			"GitHub.copilot-chat"
+		],
+		"microsoft": [
+			"vscode.github-authentication"
 		]
 	},
 	"onboardingKeymaps": [

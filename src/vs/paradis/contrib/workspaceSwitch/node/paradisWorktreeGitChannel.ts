@@ -195,7 +195,7 @@ export class ParadisWorktreeGitService {
 			// ディストロの中での作業ディレクトリは挟んだ `sh -c` の cd で入る。wsl.exe 自身の
 			// cwd は触らない（UNC を cwd にすると Windows 側で扱えないプロセスがある）。
 			cwd: undefined,
-			env: { ...env, WSLENV: paradisMergeWslEnvNames(env['WSLENV'], envNamesForWsl) },
+			env: { ...env, WSLENV: paradisMergeWslEnvNames(env.WSLENV, envNamesForWsl) },
 			viaWsl: true,
 		};
 	}

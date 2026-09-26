@@ -4,7 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
-import { autorun, derived, derivedOpts, IReader } from '../../../../base/common/observable.js';
+// PARA-PATCH: +IObservable (session activity flag threaded into _pollPullRequest)
+import { autorun, derived, derivedOpts, IObservable, IReader, IReaderWithStore } from '../../../../base/common/observable.js';
 import { structuralEquals } from '../../../../base/common/equals.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -13,10 +14,11 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 // PARA-PATCH: window-focus gating for this window's GitHub polling
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
-import { ISession } from '../../../services/sessions/common/session.js';
+import { getGitHubPullRequestRefs, ISession } from '../../../services/sessions/common/session.js';
 import { ISessionsChangeEvent, ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { ISessionsService } from '../../../services/sessions/browser/sessionsService.js';
 import { GitHubPullRequestState } from '../common/types.js';
+import { AUTO_DELETE_MARKED_AS_DONE_MERGED_SESSIONS_AFTER_DAYS_SETTING, AUTO_MARK_AS_DONE_MERGED_SESSIONS_AFTER_DAYS_SETTING } from '../common/sessionLifecycleSettings.js';
 import { GitHubService, IGitHubService } from './githubService.js';
 import { IPullRequestIconCache, PullRequestIconCache } from './pullRequestIconCache.js';
 
@@ -32,14 +34,22 @@ import './sessionParaGithubSettingsMigration.js';
 
 const TRACE_PREFIX = '[PR-ICON-TRACE]';
 
+export { AUTO_DELETE_MARKED_AS_DONE_MERGED_SESSIONS_AFTER_DAYS_SETTING, AUTO_MARK_AS_DONE_MERGED_SESSIONS_AFTER_DAYS_SETTING };
+
 /**
  * Resolved PR identity for a session's poller, or the specific stage at which
  * resolution bailed out. Only the `ok` state keeps a PR model warm/polling; the
  * other kinds are logged so the trace pinpoints *why* a non-active session's PR
  * icon never refreshes (its model was never kept warm).
  */
+interface IPullRequestIdentity {
+	readonly owner: string;
+	readonly repo: string;
+	readonly prNumber: number;
+}
+
 type PullRequestIdentityState =
-	| { readonly kind: 'ok'; readonly owner: string; readonly repo: string; readonly prNumber: number }
+	| { readonly kind: 'ok'; readonly pullRequests: readonly IPullRequestIdentity[] }
 	| { readonly kind: 'archived' }
 	| { readonly kind: 'no-workspace' }
 	| { readonly kind: 'no-git-repository' }
@@ -246,11 +256,15 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 				}
 
 				const gitHubInfo = gitRepository.gitHubInfo.read(reader);
-				if (!gitHubInfo?.pullRequest) {
+				const pullRequests = getGitHubPullRequestRefs(gitHubInfo);
+				if (pullRequests.length === 0) {
 					return { kind: 'no-pull-request' };
 				}
 
-				return { kind: 'ok', owner: gitHubInfo.owner, repo: gitHubInfo.repo, prNumber: gitHubInfo.pullRequest.number };
+				return {
+					kind: 'ok',
+					pullRequests: pullRequests.map(({ owner, repo, number: prNumber }) => ({ owner, repo, prNumber })),
+				};
 			});
 
 		// PARA-PATCH: session-scoped activity flag. Deriving a boolean (with default
@@ -268,92 +282,104 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 				return;
 			}
 
-			const { owner, repo, prNumber } = identity;
-			this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} resolved PR identity ${owner}/${repo}#${prNumber}; acquiring model and refreshing`);
-
-			const modelRef = reader.store.add(this._gitHubService.createPullRequestModelReference(owner, repo, prNumber));
-			const model = modelRef.object;
-
-			// PARA-PATCH: upstream refreshed the model immediately here ("fetch once so
-			// we learn the PR state") — with hundreds of sessions resolving their PR
-			// identity around startup that is a request flood. The initial fetch is now
-			// owned by the tiers below: the active session is refreshed by the
-			// active-session autoruns in the constructor, and every other session's
-			// cold model is served first by the background round-robin scheduler.
-
-			// Gate the repeating poll loop on a stable boolean so poll results (which
-			// update `pullRequest`) don't toggle the loop on every refresh.
-			const shouldPollObs = derived(this, pollReader => {
-				const prDetails = model.pullRequest.read(pollReader);
-				const isMerged = prDetails?.state === GitHubPullRequestState.Merged;
-				return !isMerged || this._isActiveSession(session, pollReader);
-			});
-			reader.store.add(autorun(pollReader => {
-				if (!shouldPollObs.read(pollReader)) {
-					this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} PR ${owner}/${repo}#${prNumber} is merged and not active; not polling`);
-					return;
-				}
-
-				this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} starting PR polling for ${owner}/${repo}#${prNumber}`);
-				// PARA-PATCH: tiered polling — only the active session polls at the fast
-				// default cadence; every other session's PR model joins the shared
-				// background round-robin, so total traffic stays bounded regardless of
-				// how many worktree sessions are open.
-				if (isActiveObs.read(pollReader)) {
-					// PARA-PATCH: suspend while the window is in the background. The
-					// background tier is suspended inside the scheduler instead, so its
-					// per-model timers survive a focus round-trip.
-					if (this._windowActivity.isActive.read(pollReader)) {
-						pollReader.store.add(model.startPolling());
-					}
-				} else {
-					pollReader.store.add(this._backgroundRefreshScheduler.register(model, model.pullRequest.read(undefined) !== undefined));
-				}
-			}));
-
-			// Poll CI checks so the session's PR icon can reflect failing checks. Only
-			// open, non-draft PRs need this (merged/closed/draft don't surface it).
-			//
-			// PARA-PATCH: CI polling is restricted to the active session. With hundreds
-			// of sessions these per-session polls dominated the GitHub quota; non-active
-			// session icons now reflect PR state only, which the background PR-model
-			// refresh keeps warm. Review threads used to be polled here too — they are
-			// now driven by the active session's change token instead (see the
-			// constructor), so they no longer need a per-session poll at all.
-			//
-			// The head SHA is projected through a structurally-compared observable so a
-			// routine pull-request refresh (which produces a new object every minute)
-			// does not tear down and re-acquire the CI model on every cycle.
-			const ciTargetObs = derivedOpts<{ readonly headSha: string } | undefined>(
-				{ owner: this, equalsFn: structuralEquals },
-				statusReader => {
-					// PARA-PATCH: `isActive` also covers window focus — see above.
-					if (!isActiveObs.read(statusReader) || !this._windowActivity.isActive.read(statusReader)) {
-						return undefined;
-					}
-
-					const prDetails = model.pullRequest.read(statusReader);
-					if (!prDetails || prDetails.isDraft || prDetails.state !== GitHubPullRequestState.Open) {
-						return undefined;
-					}
-
-					return { headSha: prDetails.headSha };
-				});
-
-			reader.store.add(autorun(statusReader => {
-				// PARA-PATCH: read the projected ciTarget (active session only); per-session review-thread polling removed
-				const ciTarget = ciTargetObs.read(statusReader);
-				if (!ciTarget) {
-					return;
-				}
-
-				this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} starting CI polling for ${owner}/${repo}#${prNumber}@${ciTarget.headSha}`);
-
-				const ciModelRef = statusReader.store.add(this._gitHubService.createPullRequestCIModelReference(owner, repo, prNumber, ciTarget.headSha));
-				ciModelRef.object.refresh();
-				statusReader.store.add(ciModelRef.object.startPolling());
-			}));
+			this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} resolved ${identity.pullRequests.length} PR identities; acquiring models and refreshing`);
+			for (const pullRequest of identity.pullRequests) {
+				// PARA-PATCH: forward the session-scoped activity flag so the tiered polling inside
+				// _pollPullRequest can tell the active session apart from the background ones.
+				this._pollPullRequest(session, pullRequest, reader, isActiveObs);
+			}
 		});
+	}
+
+	// PARA-PATCH: `isActiveObs` is the session-scoped activity flag owned by _createSessionPoller.
+	// Passed in rather than re-derived so an active-session switch only re-runs the two sessions
+	// whose flag actually flips.
+	private _pollPullRequest(session: ISession, identity: IPullRequestIdentity, reader: IReaderWithStore, isActiveObs: IObservable<boolean>): void {
+		const { owner, repo, prNumber } = identity;
+		this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} polling ${owner}/${repo}#${prNumber}`);
+
+		const modelRef = reader.store.add(this._gitHubService.createPullRequestModelReference(owner, repo, prNumber));
+		const model = modelRef.object;
+
+		// PARA-PATCH: upstream refreshed the model immediately here ("fetch once so
+		// we learn the PR state") — with hundreds of sessions resolving their PR
+		// identity around startup that is a request flood. The initial fetch is now
+		// owned by the tiers below: the active session is refreshed by the
+		// active-session autoruns in the constructor, and every other session's
+		// cold model is served first by the background round-robin scheduler.
+
+		// Gate the repeating poll loop on a stable boolean so poll results (which
+		// update `pullRequest`) don't toggle the loop on every refresh.
+		const shouldPollObs = derived(this, pollReader => {
+			const prDetails = model.pullRequest.read(pollReader);
+			const isMerged = prDetails?.state === GitHubPullRequestState.Merged;
+			return !isMerged || this._isActiveSession(session, pollReader);
+		});
+		reader.store.add(autorun(pollReader => {
+			if (!shouldPollObs.read(pollReader)) {
+				this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} PR ${owner}/${repo}#${prNumber} is merged and not active; not polling`);
+				return;
+			}
+
+			this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} starting PR polling for ${owner}/${repo}#${prNumber}`);
+			// PARA-PATCH: tiered polling — only the active session polls at the fast
+			// default cadence; every other session's PR model joins the shared
+			// background round-robin, so total traffic stays bounded regardless of
+			// how many worktree sessions are open.
+			if (isActiveObs.read(pollReader)) {
+				// PARA-PATCH: suspend while the window is in the background. The
+				// background tier is suspended inside the scheduler instead, so its
+				// per-model timers survive a focus round-trip.
+				if (this._windowActivity.isActive.read(pollReader)) {
+					pollReader.store.add(model.startPolling());
+				}
+			} else {
+				pollReader.store.add(this._backgroundRefreshScheduler.register(model, model.pullRequest.read(undefined) !== undefined));
+			}
+		}));
+
+		// PARA-PATCH: CI polling is restricted to the active session. upstream (1.139)
+		// polls CI for every open PR of every session (so reference hovers can show
+		// the status) and refreshes inactive drafts once; with hundreds of sessions
+		// these per-session polls dominated the GitHub quota, so non-active session
+		// icons/hovers reflect PR state only, which the background PR-model refresh
+		// keeps warm. Following upstream, the active session's drafts are polled too.
+		// Review threads used to be polled here as well — they are now driven by the
+		// active session's change token instead (see the constructor), so they no
+		// longer need a per-session poll at all.
+		//
+		// The head SHA is projected through a structurally-compared observable so a
+		// routine pull-request refresh (which produces a new object every minute)
+		// does not tear down and re-acquire the CI model on every cycle.
+		const ciTargetObs = derivedOpts<{ readonly headSha: string } | undefined>(
+			{ owner: this, equalsFn: structuralEquals },
+			statusReader => {
+				// PARA-PATCH: `isActive` also covers window focus — see above.
+				if (!isActiveObs.read(statusReader) || !this._windowActivity.isActive.read(statusReader)) {
+					return undefined;
+				}
+
+				const prDetails = model.pullRequest.read(statusReader);
+				if (!prDetails || prDetails.state !== GitHubPullRequestState.Open) {
+					return undefined;
+				}
+
+				return { headSha: prDetails.headSha };
+			});
+
+		reader.store.add(autorun(statusReader => {
+			// PARA-PATCH: read the projected ciTarget (active session only); per-session review-thread polling removed
+			const ciTarget = ciTargetObs.read(statusReader);
+			if (!ciTarget) {
+				return;
+			}
+
+			this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} starting CI polling for ${owner}/${repo}#${prNumber}@${ciTarget.headSha}`);
+
+			const ciModelRef = statusReader.store.add(this._gitHubService.createPullRequestCIModelReference(owner, repo, prNumber, ciTarget.headSha));
+			ciModelRef.object.refresh();
+			statusReader.store.add(ciModelRef.object.startPolling());
+		}));
 	}
 
 	private _isActiveSession(session: ISession, reader: IReader): boolean {

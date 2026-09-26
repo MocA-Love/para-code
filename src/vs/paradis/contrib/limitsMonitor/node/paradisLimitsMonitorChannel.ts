@@ -619,12 +619,12 @@ export class ParadisLimitsMonitorService {
 		try {
 			const payloadPart = idToken.split('.')[1];
 			const payload = JSON.parse(Buffer.from(payloadPart, 'base64url').toString('utf8')) as Record<string, unknown>;
-			if (typeof payload['email'] === 'string') {
-				return payload['email'];
+			if (typeof payload.email === 'string') {
+				return payload.email;
 			}
 			const profile = payload['https://api.openai.com/profile'];
-			if (profile && typeof (profile as Record<string, unknown>)['email'] === 'string') {
-				return (profile as Record<string, unknown>)['email'] as string;
+			if (profile && typeof (profile as Record<string, unknown>).email === 'string') {
+				return (profile as Record<string, unknown>).email as string;
 			}
 		} catch {
 			// 表示用の補助情報なので失敗は無視

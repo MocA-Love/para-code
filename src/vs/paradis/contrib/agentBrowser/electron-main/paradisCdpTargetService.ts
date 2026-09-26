@@ -277,7 +277,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 			const view = this.browserViewMainService.tryGetBrowserView(info.id);
 			try {
 				if (view?.debugger.targetId === targetId) {
-					return info.owner.mainWindowId;
+					return info.host.windowId;
 				}
 			} catch { /* 破棄と競合したviewだけを飛ばして残りを調べる */ }
 		}
@@ -720,7 +720,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 	/** Read owner, destroyed state and target from one known BrowserView object. */
 	private readViewIdentity(view: BrowserView, expectedWindowId: number): string | undefined {
 		try {
-			if (view.owner.mainWindowId !== expectedWindowId || view.webContents.isDestroyed()) {
+			if (view.host.windowId !== expectedWindowId || view.webContents.isDestroyed()) {
 				return undefined;
 			}
 			const targetId = view.debugger.targetId;

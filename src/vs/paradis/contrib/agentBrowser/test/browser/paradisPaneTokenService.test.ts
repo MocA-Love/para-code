@@ -63,9 +63,9 @@ suite('Paradis pane token service', () => {
 	test('points Codex at a pane app-server when both mobile settings are on', () => {
 		const environment = paneEnvironmentFor(true, true);
 
-		assert.ok(String(environment['PARA_CODE_CODEX_LAUNCHER_DIR'] ?? '').endsWith(join('resources', 'paradis', 'bin')));
+		assert.ok(String(environment.PARA_CODE_CODEX_LAUNCHER_DIR ?? '').endsWith(join('resources', 'paradis', 'bin')));
 		// ペイン単位の宛先。POSIXはUnixソケット、WindowsはNodeが繋げるws endpointファイル。
-		const paneEndpoint = isWindows ? environment['PARA_CODE_CODEX_APP_SERVER_ENDPOINT'] : environment['PARA_CODE_CODEX_APP_SERVER_SOCKET'];
+		const paneEndpoint = isWindows ? environment.PARA_CODE_CODEX_APP_SERVER_ENDPOINT : environment.PARA_CODE_CODEX_APP_SERVER_SOCKET;
 		assert.ok(String(paneEndpoint ?? '').includes(PANE_TOKEN));
 	});
 });

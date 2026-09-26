@@ -190,11 +190,11 @@ suite('ParadisAgentBrowserStatus', () => {
 			value: 'x'.repeat(20_000),
 			deep,
 		});
-		assert.ok(typeof result?.['value'] === 'string' && result['value'].length < 20_000);
-		let cursor = result?.['deep'] as Record<string, unknown> | undefined;
+		assert.ok(typeof result?.value === 'string' && result.value.length < 20_000);
+		let cursor = result?.deep as Record<string, unknown> | undefined;
 		let depth = 1;
-		while (cursor !== undefined && cursor['nest'] !== undefined) {
-			cursor = cursor['nest'] as Record<string, unknown>;
+		while (cursor !== undefined && cursor.nest !== undefined) {
+			cursor = cursor.nest as Record<string, unknown>;
 			depth++;
 		}
 		assert.ok(depth < 25, `depth must be bounded, got ${depth}`);
@@ -213,7 +213,7 @@ suite('ParadisAgentBrowserStatus', () => {
 				}],
 			},
 		});
-		assert.deepStrictEqual(result?.['tool_input'], {
+		assert.deepStrictEqual(result?.tool_input, {
 			questions: [{
 				question: 'どうしますか？', header: '方針', multiSelect: false,
 				options: [{ label: 'A案', description: '説明A' }, { label: 'B案' }],
@@ -228,7 +228,7 @@ suite('ParadisAgentBrowserStatus', () => {
 
 	test('recursively freezes sanitized hook payload objects and arrays', () => {
 		const payload = paradisSanitizeAgentHookPayload({ nested: { values: [{ safe: true }] } });
-		const nested = payload?.['nested'] as { values: Array<{ safe: boolean }> };
+		const nested = payload?.nested as { values: Array<{ safe: boolean }> };
 		assert.strictEqual(Object.isFrozen(payload), true);
 		assert.strictEqual(Object.isFrozen(nested), true);
 		assert.strictEqual(Object.isFrozen(nested.values), true);
@@ -241,7 +241,7 @@ suite('ParadisAgentBrowserStatus', () => {
 		const observed: IParadisAgentHookEvent[] = [];
 		const mutator = onParadisAgentHookEvent(event => {
 			Reflect.set(event, 'sessionId', 'changed');
-			const nested = event.payload?.['nested'] as { safe?: boolean } | undefined;
+			const nested = event.payload?.nested as { safe?: boolean } | undefined;
 			if (nested) {
 				Reflect.set(nested, 'safe', false);
 			}

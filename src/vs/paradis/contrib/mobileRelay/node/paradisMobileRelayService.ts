@@ -1225,7 +1225,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
 				return undefined;
 			}
-			const body = parsed['body'];
+			const body = parsed.body;
 			if (typeof body !== 'string' || body.length === 0) {
 				return undefined;
 			}

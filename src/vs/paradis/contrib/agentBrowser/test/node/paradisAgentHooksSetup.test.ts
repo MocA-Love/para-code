@@ -114,7 +114,7 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.strictEqual(PARADIS_AGENT_HOOK_SCHEMA_VERSION, 3);
 		assert.ok(merged !== undefined);
 		const parsed = JSON.parse(merged) as { hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
-		assert.deepStrictEqual(parsed.hooks['Stop'].flatMap(definition => definition.hooks.map(hook => hook.command)), [
+		assert.deepStrictEqual(parsed.hooks.Stop.flatMap(definition => definition.hooks.map(hook => hook.command)), [
 			'/tmp/user-hook.sh',
 			paradisManagedAgentHookCommand(),
 		]);
@@ -272,8 +272,8 @@ suite('ParadisAgentHooksSetup', () => {
 		const second = paradisMergeAgentHooksJson(first, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS);
 		assert.strictEqual(second, first);
 		const parsed = JSON.parse(first) as { hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
-		assert.deepStrictEqual(parsed.hooks['Stop'], [{ hooks: [userHook] }]);
-		assert.ok(parsed.hooks['SubagentStart'][0].hooks[0].command.includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
+		assert.deepStrictEqual(parsed.hooks.Stop, [{ hooks: [userHook] }]);
+		assert.ok(parsed.hooks.SubagentStart[0].hooks[0].command.includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
 	});
 
 	test('retries from the latest settings when another writer changes them before write', async () => {
@@ -309,7 +309,7 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.strictEqual(compareAttempts, 2);
 		const parsed = JSON.parse(written) as { concurrentSetting: boolean; hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
 		assert.strictEqual(parsed.concurrentSetting, true);
-		assert.deepStrictEqual(parsed.hooks['Stop'][0].hooks.map(hook => hook.command), [
+		assert.deepStrictEqual(parsed.hooks.Stop[0].hooks.map(hook => hook.command), [
 			'/tmp/first-user-hook.sh',
 			'/tmp/concurrent-user-hook.sh',
 		]);
@@ -335,8 +335,8 @@ suite('ParadisAgentHooksSetup', () => {
 
 			const parsed = JSON.parse(await fs.readFile(claudeSettingsPath, 'utf8')) as { customSetting: boolean; hooks: Record<string, readonly { matcher?: string; hooks: readonly { command: string }[] }[]> };
 			assert.strictEqual(parsed.customSetting, true);
-			assert.deepStrictEqual(parsed.hooks['Stop'][0], { matcher: 'custom', hooks: [userHook] });
-			assert.ok(parsed.hooks['SubagentStart'].some(definition => definition.hooks.some(hook => hook.command.includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`))));
+			assert.deepStrictEqual(parsed.hooks.Stop[0], { matcher: 'custom', hooks: [userHook] });
+			assert.ok(parsed.hooks.SubagentStart.some(definition => definition.hooks.some(hook => hook.command.includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`))));
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}
@@ -403,8 +403,8 @@ suite('ParadisAgentHooksSetup', () => {
 			reconciler.dispose();
 
 			const parsed = JSON.parse(await fs.readFile(claudeSettingsPath, 'utf8')) as { hooks: Record<string, unknown> };
-			assert.ok(parsed.hooks['Stop']);
-			assert.strictEqual(parsed.hooks['SubagentStart'], undefined);
+			assert.ok(parsed.hooks.Stop);
+			assert.strictEqual(parsed.hooks.SubagentStart, undefined);
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}

@@ -19,7 +19,7 @@
 // 未登録のとき（Agent Sessions ウィンドウ、Web ビルド、テスト）は fallback をそのまま返す。
 // つまりこの機能を読み込んでいない環境では upstream と完全に同じ挙動になる。
 
-import type { IBrowserSessionOptions } from '../../../../platform/browserView/common/browserView.js';
+import { BrowserViewStorageScope, type IBrowserViewSessionOptions } from '../../../../platform/browserView/common/browserView.js';
 
 /** ビューIDごとにセッションの決め方を差し替える口。 */
 export interface IParadisBrowserProfileRouter {
@@ -28,7 +28,7 @@ export interface IParadisBrowserProfileRouter {
 	 * @param fallback upstream が決めた既定のセッションオプション
 	 * @returns 名前付きプロファイルを使うならそのオプション、使わないなら `fallback` そのもの
 	 */
-	resolveSessionOptions(viewId: string, fallback: IBrowserSessionOptions): IBrowserSessionOptions;
+	resolveSessionOptions(viewId: string, fallback: IBrowserViewSessionOptions): IBrowserViewSessionOptions;
 }
 
 let router: IParadisBrowserProfileRouter | undefined;
@@ -52,7 +52,8 @@ export function paradisRegisterBrowserProfileRouter(candidate: IParadisBrowserPr
  * upstream から呼ばれる唯一の関数（PARA-PATCH 点）。ルーターが未登録、あるいは例外を投げた
  * 場合は fallback を返す: プロファイルの解決に失敗してもブラウザが開かなくなってはいけない。
  */
-export function paradisResolveBrowserSessionOptions(viewId: string, fallback: IBrowserSessionOptions): IBrowserSessionOptions {
+export function paradisResolveBrowserSessionOptions(viewId: string, fallbackScope: BrowserViewStorageScope): IBrowserViewSessionOptions {
+	const fallback = paradisFallbackSessionOptions(fallbackScope);
 	if (!router) {
 		return fallback;
 	}
@@ -60,5 +61,25 @@ export function paradisResolveBrowserSessionOptions(viewId: string, fallback: IB
 		return router.resolveSessionOptions(viewId, fallback) ?? fallback;
 	} catch {
 		return fallback;
+	}
+}
+
+/**
+ * upstream 1.137 で `IBrowserSessionOptions`（scope だけの素のレコード）が判別付きユニオン
+ * `IBrowserViewSessionOptions` に置き換わった。upstream 側は scope の enum しか手元に持って
+ * いないので、ユニオンの構築はここで一度だけ行う（PARA-PATCH 点を1行の関数呼び出しに保つ）。
+ * `Profile` は profileId 無しでは成立しないため、万一渡ってきたらエフェメラルへ倒す。
+ */
+function paradisFallbackSessionOptions(scope: BrowserViewStorageScope): IBrowserViewSessionOptions {
+	switch (scope) {
+		case BrowserViewStorageScope.Global:
+			return { scope: BrowserViewStorageScope.Global };
+		case BrowserViewStorageScope.Workspace:
+			return { scope: BrowserViewStorageScope.Workspace };
+		case BrowserViewStorageScope.Agent:
+			return { scope: BrowserViewStorageScope.Agent };
+		case BrowserViewStorageScope.Ephemeral:
+		case BrowserViewStorageScope.Profile:
+			return { scope: BrowserViewStorageScope.Ephemeral };
 	}
 }

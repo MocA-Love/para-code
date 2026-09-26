@@ -136,9 +136,9 @@ function flattenText(value: unknown): string {
 		if (!block) {
 			continue;
 		}
-		const type = string(block['type']);
+		const type = string(block.type);
 		if (type === 'text' || type === 'input_text' || type === 'output_text') {
-			const text = string(block['text']);
+			const text = string(block.text);
 			if (text) {
 				parts.push(text);
 			}
@@ -159,7 +159,7 @@ function isCodexRootSource(source: string | undefined): boolean {
 	}
 	try {
 		const parsed = record(JSON.parse(source));
-		return record(record(parsed?.['subagent'])?.['thread_spawn']) === undefined;
+		return record(record(parsed?.subagent)?.thread_spawn) === undefined;
 	} catch {
 		return true;
 	}
@@ -168,16 +168,16 @@ function isCodexRootSource(source: string | undefined): boolean {
 function parseCodexSessionMeta(line: string): { id: string; cwd: string } | undefined {
 	try {
 		const item = record(JSON.parse(line));
-		const payload = record(item?.['payload']);
-		if (item?.['type'] !== 'session_meta' || !payload) {
+		const payload = record(item?.payload);
+		if (item?.type !== 'session_meta' || !payload) {
 			return undefined;
 		}
-		const id = string(payload['id']) ?? string(payload['session_id']);
-		const cwd = string(payload['cwd']);
-		const sourceSpawn = record(record(record(payload['source'])?.['subagent'])?.['thread_spawn']);
-		const parentThreadId = string(payload['parent_thread_id']) ?? string(sourceSpawn?.['parent_thread_id']);
-		const ownThreadId = string(payload['id']) ?? id;
-		const subagent = sourceSpawn !== undefined || string(payload['thread_source']) === 'subagent'
+		const id = string(payload.id) ?? string(payload.session_id);
+		const cwd = string(payload.cwd);
+		const sourceSpawn = record(record(record(payload.source)?.subagent)?.thread_spawn);
+		const parentThreadId = string(payload.parent_thread_id) ?? string(sourceSpawn?.parent_thread_id);
+		const ownThreadId = string(payload.id) ?? id;
+		const subagent = sourceSpawn !== undefined || string(payload.thread_source) === 'subagent'
 			|| (parentThreadId !== undefined && parentThreadId !== ownThreadId);
 		return id && cwd && !subagent ? { id, cwd } : undefined;
 	} catch {
@@ -196,36 +196,36 @@ function parseLine(line: string, agent: 'claude' | 'codex'): IParadisResumeMessa
 		return undefined;
 	}
 	if (agent === 'claude') {
-		if (item['isSidechain'] === true || item['isMeta'] === true) {
+		if (item.isSidechain === true || item.isMeta === true) {
 			return undefined;
 		}
-		const type = string(item['type']);
+		const type = string(item.type);
 		if (type !== 'user' && type !== 'assistant') {
 			return undefined;
 		}
-		const message = record(item['message']);
-		const text = flattenText(message?.['content']);
+		const message = record(item.message);
+		const text = flattenText(message?.content);
 		if (!text.trim()) {
 			return undefined;
 		}
-		return { role: type, text: clipped(text), timestamp: parseTimestamp(item['timestamp']) };
+		return { role: type, text: clipped(text), timestamp: parseTimestamp(item.timestamp) };
 	}
-	if (item['type'] !== 'response_item') {
+	if (item.type !== 'response_item') {
 		return undefined;
 	}
-	const payload = record(item['payload']);
-	if (payload?.['type'] !== 'message') {
+	const payload = record(item.payload);
+	if (payload?.type !== 'message') {
 		return undefined;
 	}
-	const role = string(payload['role']);
+	const role = string(payload.role);
 	if (role !== 'user' && role !== 'assistant') {
 		return undefined;
 	}
-	const text = flattenText(payload['content']);
+	const text = flattenText(payload.content);
 	if (!text.trim() || (role === 'user' && isInjectedCodexContext(text))) {
 		return undefined;
 	}
-	return { role, text: clipped(text), timestamp: parseTimestamp(item['timestamp']) };
+	return { role, text: clipped(text), timestamp: parseTimestamp(item.timestamp) };
 }
 
 interface IFileIdentity {
@@ -747,7 +747,7 @@ export class ParadisSessionResumeService {
 						let item: Record<string, unknown> | undefined;
 						try { item = record(JSON.parse(line)); } catch { continue; }
 						if (!item) { continue; }
-						title = string(item['customTitle']) ?? string(item['aiTitle']) ?? title;
+						title = string(item.customTitle) ?? string(item.aiTitle) ?? title;
 						const message = parseLine(line, 'claude');
 						if (message?.role === 'user' && !firstPrompt) {
 							firstPrompt = message.text;
@@ -825,22 +825,22 @@ export class ParadisSessionResumeService {
 			let accepted = 0;
 			for (const value of rows) {
 				const row = record(value);
-				const id = string(row?.['id']);
-				const cwd = string(row?.['cwd']);
-				const rollout = string(row?.['rollout_path']);
+				const id = string(row?.id);
+				const cwd = string(row?.cwd);
+				const rollout = string(row?.rollout_path);
 				const space = cwd ? this.matchSpace(spaceAliases, cwd) : undefined;
-				if (!id || !cwd || !rollout || !space || !isCodexRootSource(string(row?.['source']))) {
+				if (!id || !cwd || !rollout || !space || !isCodexRootSource(string(row?.source))) {
 					continue;
 				}
 				const homes = this.resolveAgentHomes(space.cwd);
 				const transcriptPath = paradisLocalAgentPath(homes, rollout);
-				const title = string(row?.['name']) ?? string(row?.['title']) ?? string(row?.['first_user_message']) ?? string(row?.['preview']) ?? id;
-				const preview = string(row?.['preview']) ?? string(row?.['first_user_message']) ?? title;
+				const title = string(row?.name) ?? string(row?.title) ?? string(row?.first_user_message) ?? string(row?.preview) ?? id;
+				const preview = string(row?.preview) ?? string(row?.first_user_message) ?? title;
 				this.addSession({
 					id, agent: 'codex', title: clipped(title, 160), preview: clipped(preview, 260), cwd: space.cwd,
 					spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
-					createdAt: number(row?.['created_at_value']), updatedAt: number(row?.['updated_at_value']) || Date.now(),
-					archived: number(row?.['archived']) === 1, gitBranch: string(row?.['git_branch']),
+					createdAt: number(row?.created_at_value), updatedAt: number(row?.updated_at_value) || Date.now(),
+					archived: number(row?.archived) === 1, gitBranch: string(row?.git_branch),
 				}, transcriptPath, codexHome, target);
 				accepted++;
 				if (accepted >= MAX_SESSIONS) {

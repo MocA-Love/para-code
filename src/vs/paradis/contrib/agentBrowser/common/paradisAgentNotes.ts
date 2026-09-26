@@ -127,7 +127,7 @@ type SpaceParse = { readonly ok: true; readonly space?: string } | { readonly ok
 type LineParse = { readonly ok: true; readonly line: number } | { readonly ok: false; readonly error: string };
 
 function optionalSpace(args: Record<string, unknown>): SpaceParse {
-	const space = args['space'];
+	const space = args.space;
 	if (space === undefined || space === null) {
 		return { ok: true };
 	}
@@ -141,7 +141,7 @@ function optionalSpace(args: Record<string, unknown>): SpaceParse {
 }
 
 function requiredLine(args: Record<string, unknown>): LineParse {
-	const line = args['line'];
+	const line = args.line;
 	if (typeof line !== 'number' || !Number.isInteger(line) || line < 0) {
 		return { ok: false, error: 'The "line" argument must be a 0-based line number from read_space_note.' };
 	}
@@ -175,7 +175,7 @@ export function paradisParseAgentNoteToolArgs(name: string, args: unknown): IPar
 		case 'read':
 			return { ok: true, request: { op, ...space } };
 		case 'write': {
-			const text = record['text'];
+			const text = record.text;
 			if (typeof text !== 'string') {
 				return { ok: false, error: 'The "text" argument is required and must be a string (pass an empty string to clear the note).' };
 			}
@@ -185,7 +185,7 @@ export function paradisParseAgentNoteToolArgs(name: string, args: unknown): IPar
 			return { ok: true, request: { op, ...space, text: normalizeNewlines(text) } };
 		}
 		case 'addTask': {
-			const task = record['task'];
+			const task = record.task;
 			if (typeof task !== 'string' || task.trim().length === 0) {
 				return { ok: false, error: 'The "task" argument is required and must be a non-empty string.' };
 			}
@@ -199,7 +199,7 @@ export function paradisParseAgentNoteToolArgs(name: string, args: unknown): IPar
 			if (!parsedLine.ok) {
 				return parsedLine;
 			}
-			const done = record['done'];
+			const done = record.done;
 			if (done !== undefined && done !== null && typeof done !== 'boolean') {
 				return { ok: false, error: 'The "done" argument must be a boolean (omit it to toggle the item).' };
 			}

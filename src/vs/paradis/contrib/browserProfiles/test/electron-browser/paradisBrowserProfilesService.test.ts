@@ -10,7 +10,7 @@ import assert from 'assert';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { BrowserViewStorageScope, IBrowserSessionOptions } from '../../../../../platform/browserView/common/browserView.js';
+import { BrowserViewStorageScope, IBrowserViewSessionOptions } from '../../../../../platform/browserView/common/browserView.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
 import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../../platform/workspace/common/workspace.js';
@@ -26,7 +26,8 @@ import { ParadisBrowserProfilesService } from '../../electron-browser/paradisBro
 const PROFILES_STORAGE_KEY = 'paradis.browser.profiles';
 const PROFILE_VIEWS_STORAGE_KEY = 'paradis.browser.profileViews';
 
-const FALLBACK: IBrowserSessionOptions = { scope: BrowserViewStorageScope.Global };
+const FALLBACK_SCOPE = BrowserViewStorageScope.Global;
+const FALLBACK: IBrowserViewSessionOptions = { scope: FALLBACK_SCOPE };
 
 suite('ParadisBrowserProfilesService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -58,7 +59,9 @@ suite('ParadisBrowserProfilesService', () => {
 		const browserViewWorkbenchService = {
 			onDidChangeBrowserViews: Event.None,
 			getKnownBrowserViews: () => known,
-			getOrCreateLazy: (id: string) => {
+			// PARA-PATCH: upstream 1.137 folded the view id into the data argument.
+			getOrCreateLazy: (data: { readonly id: string }) => {
+				const id = data.id;
 				openedViewIds.push(id);
 				const input = {
 					onWillDispose: Event.None,
@@ -134,11 +137,11 @@ suite('ParadisBrowserProfilesService', () => {
 
 		// 実際に upstream が通る経路（モジュールレベルのレジストリ）で確かめる。
 		assert.deepStrictEqual(
-			paradisResolveBrowserSessionOptions(openedViewIds[0], FALLBACK),
+			paradisResolveBrowserSessionOptions(openedViewIds[0], FALLBACK_SCOPE),
 			{ scope: BrowserViewStorageScope.Profile, profileId: created.profile.id },
 		);
 		// 別のビューIDには一切影響しない（既定のまま）。
-		assert.strictEqual(paradisResolveBrowserSessionOptions('some-other-view', FALLBACK), FALLBACK);
+		assert.deepStrictEqual(paradisResolveBrowserSessionOptions('some-other-view', FALLBACK_SCOPE), FALLBACK);
 	});
 
 	test('removing a profile drops its view mappings and clears its stored data in main', async () => {
@@ -157,7 +160,7 @@ suite('ParadisBrowserProfilesService', () => {
 				cleared,
 				// 台帳から消えた以上、そのビューは既定のセッションへ戻る（消したプロファイルの
 				// パーティションを作り直さない）。
-				routed: paradisResolveBrowserSessionOptions(viewId, FALLBACK),
+				routed: paradisResolveBrowserSessionOptions(viewId, FALLBACK_SCOPE),
 			},
 			{ profiles: 0, views: {}, cleared: [created.profile.id], routed: FALLBACK },
 		);
@@ -267,9 +270,9 @@ suite('ParadisBrowserProfilesService', () => {
 
 		assert.deepStrictEqual(
 			[
-				paradisResolveBrowserSessionOptions('restored-view', FALLBACK),
+				paradisResolveBrowserSessionOptions('restored-view', FALLBACK_SCOPE),
 				// 壊れた1件は捨てられ、既定へ落ちるだけ（他の行は生きている）。
-				paradisResolveBrowserSessionOptions('broken-view', FALLBACK),
+				paradisResolveBrowserSessionOptions('broken-view', FALLBACK_SCOPE),
 			],
 			[{ scope: BrowserViewStorageScope.Profile, profileId: created.profile.id }, FALLBACK],
 		);

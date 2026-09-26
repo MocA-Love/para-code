@@ -13,14 +13,15 @@
 // バインド/解除の実処理もここに集約する（コマンドパレットとダイアログの二重実装を避ける）。
 
 import { mainWindow } from '../../../../base/browser/window.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { raceTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IAgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
@@ -123,6 +124,8 @@ export interface IParadisAgentBrowserBindingModel {
 const BINDING_FAST_POLL_INTERVAL = 3_000;
 const BINDING_IDLE_POLL_INTERVAL = 30_000;
 const BROWSER_VIEW_RECONCILE_RETRY_INTERVAL = 3_000;
+/** How long a bind retry waits for a replacement share tab to receive its space before giving up. */
+const REPLACEMENT_SCOPE_WAIT_TIMEOUT = 5_000;
 type ParadisAgentBrowserBindingPollCadence = typeof BINDING_FAST_POLL_INTERVAL | typeof BINDING_IDLE_POLL_INTERVAL;
 
 /** Model-local timer abstraction, module-exported for deterministic poll and coalescer tests. */
@@ -135,6 +138,8 @@ export interface IParadisAgentBrowserBindingPollTimer {
 export interface IParadisAgentBrowserBindingModelOptions {
 	readonly pollTimerFactory?: () => IParadisAgentBrowserBindingPollTimer;
 	readonly tokenRefreshTimerFactory?: () => IParadisAgentBrowserBindingPollTimer;
+	/** Overrides {@link REPLACEMENT_SCOPE_WAIT_TIMEOUT} so tests do not wait for the real deadline. */
+	readonly replacementScopeWaitTimeoutMs?: number;
 }
 
 /** Owns the single adaptive one-shot poll deadline; module-exported to test cadence policy directly. */
@@ -266,6 +271,9 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	private readonly _unverifiedPageBindTokens = new Map<string, Map<string, number>>();
 	private readonly _pendingUnsharePageIds = new Set<string>();
 	private readonly _scheduledUnsharePageIds = new Set<string>();
+	/** Pages whose bindings are being released because they are no longer directly shareable. */
+	private readonly _networkPolicyReleasePageIds = new Set<string>();
+	private readonly _replacementScopeWaitTimeoutMs: number;
 	private _nextRefreshSerial = 0;
 	private _appliedRefreshSerial = 0;
 
@@ -293,8 +301,10 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IPathService private readonly pathService: IPathService,
 		@IFileService private readonly fileService: IFileService,
+		@IAgentNetworkFilterService private readonly agentNetworkFilterService: IAgentNetworkFilterService,
 	) {
 		super();
+		this._replacementScopeWaitTimeoutMs = options?.replacementScopeWaitTimeoutMs ?? REPLACEMENT_SCOPE_WAIT_TIMEOUT;
 		const pollTimer = options?.pollTimerFactory?.() ?? {
 			set: (callback: () => void, delayMs: number) => mainWindow.setTimeout(callback, delayMs),
 			clear: (handle: unknown) => mainWindow.clearTimeout(handle as number),
@@ -354,6 +364,13 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			for (const binding of this.getBindingsForPage(event.viewId)) {
 				void this._runSerializedForPageAndTokens(binding.pageId, [binding.token], () => this._reconcileStableScopeChange(binding)).catch(() => undefined);
 			}
+		}));
+		// Para Browser の CDP 経路は upstream の agent audience を見ずに exact view へ直結する。
+		// フィルタ有効化で upstream が audience を外しても接続は残るため、強制 refresh の結果から
+		// 直接共有できなくなったページのバインドを解除する（_releaseBindingsBlockedByNetworkPolicy）。
+		// 無効へ戻ったときは何もしない。再共有はユーザーかエージェントが改めて行う。
+		this._register(this.agentNetworkFilterService.onDidChange(() => {
+			void this._refreshFromBackend(true);
 		}));
 
 		// 初期refreshの完了だけではreconcileしない。BrowserView復元中の空のknown台帳を
@@ -633,6 +650,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				this._poller.stateChanged();
 			}
 			this._schedulePendingPageUnshares(bindings);
+			this._releaseBindingsBlockedByNetworkPolicy(bindings);
 			return bindings;
 		} catch {
 			if (!this._store.isDisposed && refreshSerial === this._nextRefreshSerial) {
@@ -644,13 +662,48 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	async bindPageToPane(model: IBrowserViewModel, token: string): Promise<boolean> {
-		// Register synchronously so a page-wide unbind invoked before the cache refresh still
-		// reserves this token and queues behind the complete bind transaction.
-		this._addActivePageBind(model.id, token);
+		// PARA-PATCH: upstream 1.137 may satisfy the share request by opening a *new* shareable tab
+		// and returning that model instead of the requested one (see _bindPageToPane). Loop so the
+		// synchronous bookkeeping and the per-page reservation below are always taken against the
+		// model that actually gets bound; recursing inside _bindPageToPane would leave
+		// _findPendingPageForToken() pointing at the superseded page.
+		let current = model;
+		let isReplacement = false;
+		for (; ;) {
+			// Register synchronously so a page-wide unbind invoked before the cache refresh still
+			// reserves this token and queues behind the complete bind transaction.
+			this._addActivePageBind(current.id, token);
+			let outcome: boolean | IBrowserViewModel;
+			try {
+				const target = current;
+				const replacement = isReplacement;
+				outcome = await this._runSerializedForPageAndTokens(target.id, [token], () => this._bindPageToPane(target, token, replacement));
+			} finally {
+				this._removeActivePageBind(current.id, token);
+			}
+			if (typeof outcome === 'boolean') {
+				return outcome;
+			}
+			current = outcome;
+			isReplacement = true;
+			// Upstream opens the replacement tab's editor asynchronously, so its space is usually still
+			// pending here. Give the browser scope a bounded chance to settle before retrying.
+			await this._waitForStableBrowserScope(current.id);
+		}
+	}
+
+	private async _waitForStableBrowserScope(viewId: string): Promise<void> {
+		if (this.browserScopeService.resolveScope(viewId).kind !== 'pending') {
+			return;
+		}
+		const store = new DisposableStore();
 		try {
-			return await this._runSerializedForPageAndTokens(model.id, [token], () => this._bindPageToPane(model, token));
+			await raceTimeout(
+				Event.toPromise(Event.filter(this.browserScopeService.onDidChangeStableScope, event => event.viewId === viewId), store),
+				this._replacementScopeWaitTimeoutMs,
+			);
 		} finally {
-			this._removeActivePageBind(model.id, token);
+			store.dispose();
 		}
 	}
 
@@ -673,14 +726,37 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		};
 	}
 
-	private async _bindPageToPane(model: IBrowserViewModel, token: string): Promise<boolean> {
+	/**
+	 * Binds one page to one pane. Returns a boolean outcome, or - when upstream substituted a
+	 * different view for the share (PARA-PATCH, see below) - that replacement model, which the
+	 * caller must retry against.
+	 */
+	private async _bindPageToPane(model: IBrowserViewModel, token: string, isReplacement: boolean): Promise<boolean | IBrowserViewModel> {
 		// Fail before opening the existing share confirmation when the current scopes are already invalid.
-		paradisRequireBindingScopeEligibility(this.getBindEligibility(model, token));
+		const eligibility = this.getBindEligibility(model, token);
+		if (!eligibility.eligible && isReplacement) {
+			// Upstream created the replacement tab already shared with the agent. Nothing else would
+			// unshare it when the bind cannot proceed, so undo that before reporting the failure.
+			try {
+				await this._rollbackSharingAfterDefinitePreCommitFailure(model);
+			} catch {
+				// Rollback is best-effort and must not replace the actionable scope failure.
+			}
+		}
+		paradisRequireBindingScopeEligibility(eligibility);
 
 		// Keep the existing confirmation + startTrackingPage flow as the first mutation.
 		const shared = await model.setSharedWithAgent(true);
 		if (!shared) {
 			return false;
+		}
+		// PARA-PATCH: upstream 1.137 changed setSharedWithAgent to return the model that actually
+		// ended up shared, which is a *different* view when the original tab is not directly
+		// shareable (it opens a new shareable tab instead). Hand the replacement back so the caller
+		// rebinds against it; binding here would attach the pane to the old, unshared view. The
+		// replacement is created already shared, so the caller's retry settles on its first pass.
+		if (shared !== model) {
+			return shared;
 		}
 
 		let commitDispatched = false;
@@ -884,6 +960,32 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		}
 	}
 
+	/**
+	 * While the agent network filter is enabled, upstream only lets Agent-scoped views be shared.
+	 * Its main process drops the agent audience of every other view, but the Para Browser gateway
+	 * reaches bound pages directly and never consults the audience. Release such bindings here so the
+	 * gateway closes their CDP connections and the pane indicator clears. A known view whose model is
+	 * not resolved cannot prove its storage scope and is released as well (fail closed).
+	 * Runs on every applied refresh, so a failed release is retried by the next poll.
+	 */
+	private _releaseBindingsBlockedByNetworkPolicy(bindings: readonly IParadisPaneBinding[]): void {
+		if (this._disposed || !this.agentNetworkFilterService.isEnabled()) {
+			return;
+		}
+		const knownViews = this.browserViewWorkbenchService.getKnownBrowserViews();
+		for (const pageId of new Set(bindings.map(binding => binding.pageId))) {
+			const input = knownViews.get(pageId);
+			// A page without a known view is handled by the removed-view reconciler.
+			if (!input || input.model?.isDirectlyShareable || this._networkPolicyReleasePageIds.has(pageId)) {
+				continue;
+			}
+			this._networkPolicyReleasePageIds.add(pageId);
+			void this._unbindPage(pageId, input.model).catch(() => undefined).finally(() => {
+				this._networkPolicyReleasePageIds.delete(pageId);
+			});
+		}
+	}
+
 	async setupMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
 		if (this._isSshRemote()) {
 			return this._remoteMcpSetup().fix(cli);
@@ -950,17 +1052,22 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	async unbindPage(model: IBrowserViewModel): Promise<number> {
+		return this._unbindPage(model.id, model);
+	}
+
+	/** Page-wide unbind. Without a resolved model only the bindings are released, not the sharing. */
+	private async _unbindPage(pageId: string, model: IBrowserViewModel | undefined): Promise<number> {
 		const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
-		const matching = this.getBindingsForPage(model.id);
+		const matching = this.getBindingsForPage(pageId);
 		const savedBindings = new Map(matching.map(binding => [binding.token, binding]));
 		const tokens = new Set(matching.map(binding => binding.token));
-		for (const token of this._activePageBindTokens.get(model.id)?.keys() ?? []) {
+		for (const token of this._activePageBindTokens.get(pageId)?.keys() ?? []) {
 			tokens.add(token);
 		}
-		for (const token of this._unverifiedPageBindTokens.get(model.id)?.keys() ?? []) {
+		for (const token of this._unverifiedPageBindTokens.get(pageId)?.keys() ?? []) {
 			tokens.add(token);
 		}
-		return this._runSerializedForPageAndTokens(model.id, [...tokens], async () => {
+		return this._runSerializedForPageAndTokens(pageId, [...tokens], async () => {
 			// A restored BrowserView can be actionable before terminal tokens are repopulated.
 			// This transaction therefore needs a real authority read even on the zero-token fast path.
 			const freshBindings = await this._refreshFromBackend(true);
@@ -972,7 +1079,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				// different page. Keep sharing alive and require an authoritative retry.
 				for (const token of tokens) {
 					const cached = this.getBindingForToken(token);
-					const expected = cached?.pageId === model.id ? cached : savedBindings.get(token);
+					const expected = cached?.pageId === pageId ? cached : savedBindings.get(token);
 					if (expected && await channel.call<boolean>('unbindIfCurrent', [token, expected.generation])) {
 						removed++;
 					}
@@ -984,13 +1091,13 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			// The page reservation blocks same-page binds; generation checks protect concurrent
 			// different-page rebinds for newly discovered tokens.
 			for (const binding of freshBindings) {
-				if (binding.pageId === model.id
+				if (binding.pageId === pageId
 					&& await channel.call<boolean>('unbindIfCurrent', [binding.token, binding.generation])) {
 					removed++;
 				}
 			}
 			// Hold every token reservation through sharing cleanup so a later bind cannot be stopped.
-			await model.setSharedWithAgent(false);
+			await model?.setSharedWithAgent(false);
 			await this._refreshFromBackend(true);
 			return removed;
 		});

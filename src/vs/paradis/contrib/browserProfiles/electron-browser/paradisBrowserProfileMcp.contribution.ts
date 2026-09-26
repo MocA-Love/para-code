@@ -21,8 +21,10 @@
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { BrowserViewStorageScope, isBrowserViewStorageScopeShareableWithAgent } from '../../../../platform/browserView/common/browserView.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IAgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
@@ -58,6 +60,7 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		private readonly worktreeService: IParadisWorktreeService,
 		private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		private readonly agentNetworkFilterService: IAgentNetworkFilterService,
 		private readonly logService: ILogService,
 	) {
 		super();
@@ -91,6 +94,13 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		const profile = this.profilesService.findByName(profileName);
 		if (!profile) {
 			return { ok: false, reason: 'unknownProfile' };
+		}
+		// エージェント向けネットワークフィルタが有効な間、upstream はフィルタを強制しない保存スコープ
+		// （名前付きプロファイルを含む）を共有不可と判定する。そのまま共有に進むと upstream は確認
+		// モーダルを出して Cookie の無い Agent スコープのタブを開き直し、こちらはそれへバインドして
+		// 「ログイン状態を復元した」と答えてしまう。開く前に構造化した失敗で断る。
+		if (!isBrowserViewStorageScopeShareableWithAgent(BrowserViewStorageScope.Profile, this.agentNetworkFilterService.isEnabled())) {
+			return { ok: false, reason: 'profileNotShareable' };
 		}
 
 		const target = this._resolvePaneTarget(token);
@@ -128,7 +138,9 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		let bound = false;
 		try {
 			const model = await input.resolve();
-			if (token !== undefined && model) {
+			// 開いている間にフィルタが有効化された場合も、差し替えタブへのバインドへ進ませない
+			// （上の事前判定と同じ理由。ページは開けているので bound: false で返す）。
+			if (token !== undefined && model && model.isDirectlyShareable) {
 				bound = await this.bindingModel.bindPageToPane(model, token);
 			}
 		} catch (error) {
@@ -191,6 +203,7 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IParadisAuxiliaryWindowScopeService auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		@IAgentNetworkFilterService agentNetworkFilterService: IAgentNetworkFilterService,
 		@ILogService logService: ILogService,
 	) {
 		super();
@@ -203,6 +216,7 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 			workspaceSwitchService,
 			worktreeService,
 			auxiliaryWindowScopeService,
+			agentNetworkFilterService,
 			logService,
 		)));
 	}

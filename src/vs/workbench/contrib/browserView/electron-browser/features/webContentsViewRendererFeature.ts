@@ -190,8 +190,9 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 
 		store.add(model.onDidChangeVisibility(() => void this._doScreenshot()));
 		store.add(model.onDidKeyCommand(keyEvent => void this._handleKeyEvent(keyEvent)));
-		store.add(model.onDidNavigate(() => this._refresh()));
-		store.add(model.onDidChangeLoadingState(() => this._refresh()));
+		// PARA-PATCH: restartScreenshot is the second argument (the first is the fork's boundsArePushed)
+		store.add(model.onDidNavigate(() => this._refresh(false, true)));
+		store.add(model.onDidChangeLoadingState(() => this._refresh(false, true)));
 
 		this._refresh();
 		void this._doScreenshot();
@@ -230,7 +231,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 	 * @param boundsArePushed the caller already pushed current bounds to main, so the page
 	 * can be shown without laying out again (PARA-PATCH).
 	 */
-	private _refresh(boundsArePushed = false): void {
+	private _refresh(boundsArePushed = false, restartScreenshot = false): void { // PARA-PATCH: fork's boundsArePushed first; upstream's restartScreenshot moved to the second argument
 		// Placeholder screenshot: shown whenever there's a page to render
 		// (covered by the WCV when it's up, visible during hide/show swaps).
 		const placeholderActive = !!this._model?.url && !this._model?.error;
@@ -245,6 +246,9 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 		}
 		const show = this._shouldShowPage();
 		if (show === this._model.visible) {
+			if (show && restartScreenshot) {
+				void this._doScreenshot();
+			}
 			return;
 		}
 		if (show) {
@@ -309,11 +313,8 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 	}
 
 	private async _doScreenshot(periodic = false): Promise<void> { // PARA-PATCH: `periodic` marks the timer tick
-		if (!this._model) {
-			return;
-		}
 		this._screenshotHandle.clear();
-		if (!this._model.visible) {
+		if (!this._model?.url || this._model.error || !this._model.visible) {
 			return;
 		}
 		// PARA-PATCH: this loop captured a full-resolution JPEG every second for as long as a browser

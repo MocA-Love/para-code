@@ -71,6 +71,12 @@ jobs:
         if: github.event_name != 'pull_request' && steps.cache-node-modules.outputs.cache-hit != 'true'
         uses: ./.github/actions/save-node-modules
 
+      # Since 1.139 src/tsconfig.base.json reads Electron's typings from .build/typings/electron.d.ts,
+      # which postinstall downloads. The node_modules cache skips postinstall and never archives .build/,
+      # so a cache hit would otherwise type-check without Electron types (upstream pr.yml does the same).
+      - name: Prepare Electron types
+        run: node build/npm/electronTypes.ts
+
       - name: Type check /build/ scripts
         run: npm run typecheck
         working-directory: build

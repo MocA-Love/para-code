@@ -59,8 +59,8 @@ class ParadisShowChangelogAction extends Action2 {
 		const productService = accessor.get(IProductService);
 		const requestService = accessor.get(IRequestService);
 
-		// パッケージ版では out-build へ .md を同梱している (build/gulpfile.vscode.ts の
-		// vscodeResources に PARA-PATCH でグロブを追加済み)
+		// パッケージ版では out へ .md を同梱している (build/next/paradisResources.ts の
+		// paradisDesktopResourcePatterns にグロブを登録済み)
 		const changelogUri = FileAccess.asFileUri('vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md');
 		let bundledMd: string;
 		try {

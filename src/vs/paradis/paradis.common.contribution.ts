@@ -41,3 +41,4 @@ import './contrib/settingsMenu/browser/paradisSettingsMenu.contribution.js';
 import './contrib/terminalWordSeparators/browser/paradisTerminalWordSeparators.contribution.js';
 import './contrib/ptyDaemon/browser/paradisPtyDaemonSettings.contribution.js';
 import './contrib/spaceAccent/browser/paradisSpaceAccent.contribution.js';
+import './contrib/auxiliaryActivityBar/browser/paradisAuxiliaryActivityBar.contribution.js';

@@ -1102,8 +1102,15 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			return;
 		}
 		instance.shellLaunchConfig.titleTemplate = name;
-		// ラベルはもう計算済みなので、計算し直させる。`rename(undefined)` は固定タイトルを付けずに
-		// reset 付きの再計算だけを起こす（_updateTitleProperties が title === undefined で早期 return する）。
+		// ユーザーが手で付けた名前（固定タイトル）が既にある端末は、ラベルがそちらで決まるので再計算は要らない。
+		// upstream 1.139 から `rename(undefined)` は「固定タイトルを消して OSC 購読を張り直す」操作になった
+		// （`_updateTitleProperties` の Api 分岐）。ここで呼ぶと、この端末の復元より後にこのサービスが
+		// 生成された場合に、ユーザーの付けた名前がリロードのたびに消える。
+		if (instance.staticTitle) {
+			return;
+		}
+		// ラベルはもう計算済みなので、計算し直させる。固定タイトルが無い端末では `rename(undefined)` は
+		// reset 付きの再計算（と、既に張られている OSC 購読の張り直し）だけを起こす。
 		void instance.rename(undefined);
 	}
 

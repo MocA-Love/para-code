@@ -22,7 +22,7 @@ suite('ParadisEnsurePtyHost', () => {
 		const env = paradisPtyHostDaemonEnv({}, { VSCODE_ESM_ENTRYPOINT: 'somewhere' });
 
 		assert.deepStrictEqual(
-			{ runAsNode: env['ELECTRON_RUN_AS_NODE'], entry: env['VSCODE_ESM_ENTRYPOINT'] },
+			{ runAsNode: env.ELECTRON_RUN_AS_NODE, entry: env.VSCODE_ESM_ENTRYPOINT },
 			// ローカルの実行ファイルは Para Code 本体なので、無いと2つ目のアプリが起きようとする。
 			{ runAsNode: '1', entry: 'somewhere' },
 		);
@@ -32,7 +32,7 @@ suite('ParadisEnsurePtyHost', () => {
 		const env = paradisPtyHostDaemonEnv({ VSCODE_PARENT_PID: '123', VSCODE_PIPE_LOGGING: 'true' }, {});
 
 		assert.deepStrictEqual(
-			{ parent: env['VSCODE_PARENT_PID'], logging: env['VSCODE_PIPE_LOGGING'] },
+			{ parent: env.VSCODE_PARENT_PID, logging: env.VSCODE_PIPE_LOGGING },
 			{ parent: undefined, logging: undefined },
 		);
 	});
@@ -46,7 +46,7 @@ suite('ParadisEnsurePtyHost', () => {
 		}, {});
 
 		assert.deepStrictEqual(
-			{ lib: env['LD_LIBRARY_PATH'], gtk: env['GTK_PATH'], leftovers: Object.keys(env).filter(key => key.endsWith('_VSCODE_SNAP_ORIG')) },
+			{ lib: env.LD_LIBRARY_PATH, gtk: env.GTK_PATH, leftovers: Object.keys(env).filter(key => key.endsWith('_VSCODE_SNAP_ORIG')) },
 			{
 				// 退避してあった元の値へ戻す。
 				lib: '/usr/lib',

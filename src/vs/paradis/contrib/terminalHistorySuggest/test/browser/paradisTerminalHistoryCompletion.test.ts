@@ -619,8 +619,8 @@ suite('ParadisTerminalHistoryCompletion', () => {
 
 	if (!isWindows) {
 		test('uses local HOME for zsh and bash when the remote environment is null', async () => {
-			const originalHome = env['HOME'];
-			env['HOME'] = '/home/test';
+			const originalHome = env.HOME;
+			env.HOME = '/home/test';
 			try {
 				for (const shellType of [PosixShellType.Zsh, PosixShellType.Bash] as const) {
 					const harness = createHarness({ shellType, environment: null });
@@ -639,9 +639,9 @@ suite('ParadisTerminalHistoryCompletion', () => {
 				}
 			} finally {
 				if (originalHome === undefined) {
-					delete env['HOME'];
+					delete env.HOME;
 				} else {
-					env['HOME'] = originalHome;
+					env.HOME = originalHome;
 				}
 			}
 		});

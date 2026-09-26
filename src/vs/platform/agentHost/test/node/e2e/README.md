@@ -56,6 +56,7 @@ Key properties:
 
 - **Sequence-based matching**, keyed by `(method, path)`: the *Nth* request to an endpoint replays the *Nth* recorded response. There is **no request-body matching** — the recorded responses drive the agent, so it reproduces the same call sequence. The recorded request is separately *asserted* (see [Asserting the model request](#asserting-the-model-request)).
 - **Wire-agnostic**: works for Anthropic Messages (`/v1/messages`) and OpenAI Responses (`/responses`) SSE dialects.
+- **Freeform tools**: Responses `custom_tool_call` items retain `format: custom` and their raw string input in captures, so replay preserves native tools such as `apply_patch` rather than converting them to JSON function calls.
 - **Strict on replay**: a request with no recorded response is a hard cache miss that fails the test — CI can never silently reach real CAPI.
 - **Complete on replay**: every recorded model response must be consumed before teardown, so a provider that stops early cannot pass by leaving the remainder of its fixture unused.
 - **Ancillary bootstrap endpoints are stubbed, not recorded** (see [What's stubbed](#whats-stubbed-vs-recorded)) — keeps identity, tokens, and the model catalog out of fixtures.
@@ -104,17 +105,22 @@ The residual case is `providerHostOnlyTest(...)`: per-provider, but no model tra
 | `conformance/` | The conformance-tier entry point. Registered once; names a reference provider. |
 | `providers/` | Deterministic provider entry points and provider-specific scenarios. Live Codex scenarios are isolated in `codexAgentHostLive.integrationTest.ts`. |
 | `suites/` | Scenario modules, each of which may contribute to either tier. Add new scenarios to the closest existing suite; add a suite module when a new behavior area emerges. |
-| `suites/clientFilesystemSuite.ts` | The `resource*` family in both directions, including the host's reverse requests for client-side files. |
+| `suites/clientFilesystemSuite.ts` | Client-to-host `resource*` operations and resource-watch behavior. |
+| `suites/clientHostedFilesystemSuite.ts` | Host-to-client `resource*` operations against client-hosted files. |
 | `harness/` | Record/replay, AHP snapshots, shared turn drivers, and server lifecycle. |
 | `harness/agentHostTarget.ts` | The portability seam: the only code that knows how to launch a concrete AHP implementation. |
 | `captures/*.yaml` | Committed model fixtures, plus one shared strict empty fixture for tests that declare no model traffic. |
 | `conformance/__snapshots__/`, `providers/__snapshots__/` | Semantic AHP snapshots (`*.traffic.ahp.yaml`) and assembled-prompt snapshots (`*.prompt.md`), resolved relative to the entry point that registered the test. |
-| `providers/copilotPromptsE2E.integrationTest.ts` | The prompt boundary: the system prompt and tool schemas the bundled Copilot CLI assembles, read off a replayed turn. See [Prompt snapshots](#prompt-snapshots). |
+| `providers/copilotPromptsE2E.integrationTest.ts` | The provider request-body boundary: the complete model request body the bundled Copilot CLI sends, read off a replayed turn. See [Prompt snapshots](#prompt-snapshots). |
 | `coverage/summary.json` | Checked-in line coverage of the host implementation. |
 | `coverage/protocol-surface.json` | Checked-in coverage of the AHP contract itself. |
 | [`KNOWN_ISSUES.md`](./KNOWN_ISSUES.md) | Inventory and reevaluation process for disabled or conditional tests. |
 
 Use these deterministic E2E tests when the value comes from running the bundled provider process with realistic captured model behavior: SDK event ordering, tool schemas and execution, provider persistence, protocol-to-provider mapping, or cross-provider parity. Use `../providerIntegration/` for a bundled provider with a synthetic local LLM, and an ordinary unit test when no server process is required. `../protocol/` is frozen; do not add to it.
+
+The Codex-specific entry point also checks that invalid workspace skills remain visible with their source paths and grouped validation diagnostics. The worktree scenario checks that existing subscribers receive the resolved directory before the first turn completes, and that the session announcement, subscription, and catalog agree on the materialized workspace.
+
+Native Copilot shell coverage verifies that lossy output compaction preserves a complete original readable through AHP, using output below the generic spill threshold. Codex persistence coverage restores image attachments after a host restart and reads their original bytes through AHP.
 
 Entries under `KNOWN_ISSUES.md`'s suspected-product-bug section must be understandable without reading the test or knowing Agent Host implementation terminology. Begin with complete sentences that explain the user workflow, the failure, and its likely user impact. Put test titles, protocol actions, provider-specific names, gates, and reproduction commands after that explanation.
 
@@ -156,6 +162,7 @@ exchanges:
   | `${redacted}` | minted session tokens (`token` / `session_token` fields) |
   | `${system}` | the echoed system prompt (Responses API echoes `instructions`) |
   | `${uuid_N}` | the Nth runtime UUID captured across requests and responses |
+  | `${shell_output_N}` | the Nth generated original-output path, rebound from live requests during replay |
   | `${plugin_copy}` | the path-derived directory name of a client plugin copied into the isolated Agent Host home |
 
   Tool-call ids are also normalized to stable ordinals (`toolcall_0`, `toolcall_1`, …).
@@ -179,6 +186,8 @@ Both sides go through the same projection, so captures keep their existing shape
 | Tool names, inputs, and `tool_use_id` wiring | Reasoning blocks |
 
 Each elision has a reason, and dropping any of them would make the assertion either platform-coupled or permanently red. Reasoning blocks are the least obvious: aggregating a recorded reply drops them, so the assistant turn replayed back to the agent never carries one even though the live recording did.
+
+A single text block left after removing reasoning is compared as bare text, matching the replay codec's representation. Multiple text blocks and mixed text/tool content retain their structure.
 
 A mismatch fails the test as `[capi-replay] N model request mismatch(es)` and prints both projections. It usually means the capture is stale — the prompt or the host's prompt assembly changed without a re-record — so **re-record it** (see [Updating snapshots and fixtures](#updating-snapshots-and-fixtures)). Never hand-edit the request block to match. If a capture genuinely cannot be refreshed, add its test title to `STALE_RECORDED_REQUEST_EXCEPTIONS` in `agentHostE2ETestHarness.ts` with a `KNOWN_ISSUES.md` entry.
 
@@ -217,6 +226,8 @@ Each test needs an agent host server (a forked subprocess) fronted by a `CapiRep
 
 The lease also owns a fresh suite data directory. Every server it starts uses that directory as its home and VS Code user-data directory and prevents provider-specific config overrides from escaping it, so both shared and provider-specific scenarios are isolated from developer-machine configuration.
 
+On Windows, test-server cleanup records descendants before requesting graceful shutdown and terminates any survivors after the server exits, before temporary directories are removed. Recording descendants and waiting for graceful exit share the existing shutdown deadline.
+
 - **Per-test** (always while recording) — fork a fresh server + proxy for every test and kill it in teardown. Full isolation: nothing carries over between tests. The cost is that every test re-pays the server fork **and** the provider SDK/CLI cold start (`_ensureClient` spawns and caches the CLI subprocess per server).
 
 - **Shared** (the default in replay, for every provider) — reuse a server + proxy across tests, swapping the per-test fixture and reconnecting a fresh client. The lease recycles after 25 model-backed tests or 40 total tests, whichever comes first. The model cap bounds provider-process load; the total cap bounds host-owned terminals, watchers, subscriptions, and other resource accumulation in host-only suites.
@@ -228,6 +239,8 @@ The swap is what makes sharing cheap: the proxy is an `http.Server` running **in
 **The one invariant: a shared-server test must not leave a turn in flight.** Because one server serves multiple tests, each test's request/response traffic must land inside its own fixture window. If a test returns mid-turn, the SDK's continuation HTTP call fires *after* the fixture is swapped for the next test, landing in that test's window as an unrecorded call. In replay, failure to drain to `turnComplete` is fatal. Direct live recording may use an explicitly bounded best-effort drain because provider latency is not deterministic.
 
 Teardown resolves the default chat's active turn and dispatches the client-supported `chat/turnCancelled` action before disposing the session. Any cancellation, disposal, replay-verification, or server-shutdown failure fails teardown and forces a fresh shared server; cleanup is never silently treated as success.
+
+Remove test workspaces only after disposing the shared server lease in suite teardown. A provider can retain directory watchers after an individual session is released, preventing workspace deletion on Windows while its process is still alive.
 
 > Historical note: an older comment warned that "Claude's mid-turn dispose leaves the agent host in a bad state." That dates from the live real-SDK era (real streaming turns actually in flight). In the deterministic replay suite the only mid-turn paths are gone — the abort test is record-only, and turns drain — so all providers reuse the server safely. Recording still uses a fresh proxy + fixture per test regardless of the flag (a proxy records to one fixture at a time).
 
@@ -312,9 +325,11 @@ The update scope is the tests selected by the command. Running a whole provider 
 
 ### Prompt snapshots
 
-`providers/copilotPromptsE2E.integrationTest.ts` pins what the bundled Copilot CLI actually gives the model: the assembled system prompt, the tool definitions, and the turn messages with the context the CLI injects around them (`<current_datetime>`, `<system_reminder>`).
+`providers/copilotPromptsE2E.integrationTest.ts` pins every field of the model request body the bundled Copilot CLI sends. That covers the assembled system prompt, the tool definitions, and the turn messages with the context the CLI injects around them (`<current_datetime>`, `<system_reminder>`), and equally the sampling parameters (`thinking` / `text.verbosity` / `max_tokens` / `parallel_tool_calls`) that a rendered subset used to leave unpinned.
 
-It keeps as much real prompt text as possible. What is elided is the session id, the clock, the environment probe (OS name, tools found on `PATH`), the platform-specific package-manager hint in the Bash tool, the injected repository instructions, and the model catalog — each keeping its surrounding label or wrapper, so a change to the *shape* of those lines still fails.
+The body is pretty-printed rather than reproduced byte-for-byte — the CLI minifies it onto one line — and no field is dropped, so a parameter the CLI starts sending appears in the next baseline diff on its own. Indenting only reaches the structure: JSON escapes the newlines inside string values, so the system prompt and the longer tool descriptions each stay on one line. A reworded sentence inside one of them therefore shows up as that entire line rewritten, not as a line-level diff.
+
+It keeps as much real prompt text as possible. What is elided is the session id, the clock, the environment probe (OS name, tools found on `PATH`), the platform-specific package-manager hint in the Bash tool, the injected repository instructions, and the model catalog — each keeping its surrounding label or wrapper, so a change to the *shape* of those lines still fails. Request metadata outside the body is deliberately out of scope.
 
 Pinning a new model is opt-in. Nothing here is derived from the live `/models` catalog, so a newly released model does not appear until a maintainer adds it to `capiStubs.ts` — and adding it there alone does not fail the suite, because the CLI's inlined model listing is elided. A model is only pinned once someone also adds it to `SNAPSHOT_MODELS` and commits its fixture and baseline.
 
@@ -326,7 +341,7 @@ The model catalog is the same trade. The CLI inlines the whole `/models` list in
 
 Every model is selected explicitly. Sending no selection is deliberately not pinned: the CLI would then pick from the stub catalog by its own ranking, so the baseline would record a property of this suite's fixture rather than the product, and would move whenever a higher-ranked model was added to or removed from `capiStubs.ts`.
 
-The prompt is the CLI's product, not the host's — it is compiled into the `@github/copilot` native binary and only becomes observable when the CLI serializes it onto the wire. These tests therefore read it from a **replayed** turn, which is deterministic and tokenless. They deliberately do not snapshot while recording: a recording run reaches live CAPI for the model catalog and experiment assignment, and either can move the prompt for reasons unrelated to this repository.
+The prompt is the runtime's product, not the host's — it is compiled into the SDK-owned native binary and only becomes observable when the runtime serializes it onto the wire. These tests therefore read it from a **replayed** turn, which is deterministic and tokenless. They deliberately do not snapshot while recording: a recording run reaches live CAPI for the model catalog and experiment assignment, and either can move the prompt for reasons unrelated to this repository.
 
 Accept a new baseline with the same flag the AHP snapshots use, then review the diff:
 
@@ -421,16 +436,32 @@ Getting the host into that configuration needs a feature that genuinely reaches 
 | Flag / condition | Effect |
 |---|---|
 | `enabled` | Skips the whole suite if the SDK isn't present. |
-| `supportsSubagents` | Gates the two subagent tests. |
+| `supportsSubagents` | Gates subagent routing, custom-agent execution, and restoration scenarios. |
 | `supportsWorktreeIsolation` | Gates the worktree test. |
-| `supportsPlanMode` | Gates the plan-mode test. |
+| `planModeStyle` | Gates the plan-mode test and selects its provider contract: `session-state` for a plan document or `input-request` for an interactive planning question. |
 | `fileOperationStrategy` | Selects native file-tool prompts or pinned portable shell commands for shared file-operation scenarios. |
 | `shellToolReplayUnstableOnLinux` | Skips shell-dependent replay tests on **Linux** for that provider. Recording and other platforms remain enabled. |
+| `fileDeleteReplayUnstableOnWindows` | Skips the file-deletion replay test on **Windows** for that provider. Recording and other platforms remain enabled. |
+| `fileCreateReplayUnstableOnWindows` | Skips the file-creation replay test on **Windows** for that provider. Recording and other platforms remain enabled. |
 | `subagentReplayUnstableOnWindows` | Skips the subagent-reopen ("replay path") test on **Windows** for that provider (e.g. Claude rebuilds the transcript from the SDK's on-disk `subagents/*.jsonl`, not reliably visible there right after the turn). |
 | `RECORD` (env) | Set by `AGENT_HOST_REPLAY_RECORD=1` and internally during the first `AGENT_HOST_UPDATE_SNAPSHOTS=1` pass. The `can abort a running turn` test runs only for direct record mode, not bulk snapshot updates. |
 | `isWindows` | The worktree test is skipped on Windows (POSIX-shaped `.worktrees` paths + host-terminal `pwd`). |
 
 File-operation capability and coverage are separate concerns. A provider with no native file tools can still run the behavior scenarios through `fileOperationStrategy: 'shell'`; those prompts pin portable `node -e` commands and retain direct filesystem assertions. Native-tool-only behavior, such as streaming file-creation argument deltas, remains gated by the corresponding tool-name field. A shell strategy also respects `shellToolReplayUnstableOnLinux`, so enabling Codex file coverage on macOS and Windows does not overstate its packaged-Linux replay support.
+
+### Interpreting Codex pending tests
+
+On platforms where Codex unified-shell replay is stable, the baseline suite has 12 intentionally pending registrations:
+
+- freeform and multi-select questions, because `request_user_input` requires non-empty, mutually exclusive options;
+- native streaming file creation and the two subagent scenarios, because Codex advertises neither capability;
+- client-plugin discovery, because plugin synchronization can race the first turn and leave it incomplete;
+- the three live workspace-agent watcher scenarios, because Codex discovers workspace customizations initially but does not watch them;
+- mid-turn abort, which is record-only for every provider;
+- worktree include-file coverage, which remains behind its documented known-issue gate; and
+- the negative multiple-chat scenario, which runs only for a provider that does not advertise multiple chats.
+
+Codex multiple chats, provider-backed forks, side chats, Plan-mode input, input cancellation, workspaceless sessions, runtime slash commands, cross-session server tools, host restart, and workspace customization discovery all run in strict replay. Linux can show additional pending shell-backed scenarios under `shellToolReplayUnstableOnLinux`; those are tracked separately in [`KNOWN_ISSUES.md`](./KNOWN_ISSUES.md).
 
 **Rule of thumb:** if a test relies on real-time behavior, concurrency, or POSIX-specific local execution, gate it rather than fighting the fixture. Prefer a *targeted* gate (per-provider flag or `!isWindows`) so you don't disable coverage where it works.
 
@@ -445,6 +476,7 @@ File-operation capability and coverage are separate concerns. A provider with no
 - `POST /models/session`, `POST /models/session/intent` — auto-mode selection. Deliberately answered with a `500 + x-should-retry:false` so the SDK falls back to the configured model (auto-mode isn't wanted in replay). Not counted as a cache miss.
 - `/copilot_internal/*token*`, `/copilot_internal/*user*` — fake token + generic user/identity.
 - `GET /copilot/mcp_registry` — enterprise MCP registry policy. The Copilot CLI fetches this only when the developer has local MCP servers configured (`~/.copilot/mcp-config.json`) on an org/enterprise plan, so whether it's called varies per machine. Served as an empty registry (`{ mcp_registries: [] }`) so a developer's local MCP config never breaks replay (issue #325248).
+- `POST /mcp`, `POST /mcp/readonly`, and the subsequent GitHub MCP OAuth metadata probes — built-in GitHub MCP bootstrap. These suites do not exercise GitHub MCP tools, so replay returns `404` instead of recording ancillary traffic or changing the fixture's model-visible tool inventory.
 - `/telemetry`, `/agents*` — empty bodies.
 
 Everything else — i.e. the model endpoints `/v1/messages` and `/responses` — is recorded/replayed as turns.
@@ -480,9 +512,15 @@ Usually the *local execution* diverges by platform (the model replay is byte-ide
 
 Codex fixtures use its unified `exec_command` tool, so Codex record/replay servers explicitly enable `features.unified_exec` rather than inheriting an app-server configuration that advertises the incompatible legacy `shell_command` tool. Packaged Linux still completes those recorded turns without command-execution notifications, so the shell-dependent Codex replay tests are gated there.
 
+### A replayed MCP call reports that its tool does not exist
+
+A recorded response can name an MCP tool before the real server finishes starting and enters the turn's tool inventory. For Copilot tests of an initialized server, create an empty chat with `createChat` and wait for its server's `session/customizationUpdated` notification to report `McpServerStatus.Ready` before dispatching the recorded turn. This separates MCP startup from model replay without sleeps or an extra recorded warm-up turn.
+
+Keep asserting the real tool result: the replayed assistant text can report the recorded success even when the actual tool call failed.
+
 ### A turn hangs or times out with no OS pattern
 
-When a test times out waiting for a notification and it is **not** platform-specific local execution (above), the failure is usually inside the bundled provider SDK/CLI. For the **Copilot** provider, a failed test tails the most recent Copilot runtime (`@github/copilot` CLI) `process-*.log` into the test output — look for the `[agent-host-e2e] # …` lines. That is the SDK/CLI's own account of startup, auth, the model request, and the turn lifecycle; a turn that started but never produced a model response, a panic, or an out-of-order / protocol error points at the SDK/CLI. Re-record after an SDK bump if the fixture is stale; otherwise treat it as a genuine regression. The Copilot runtime runs at `--log trace` in this harness, and the full logs live under the server's temp home (`${homeDir}/.copilot/logs`) until the suite tears down. (Claude and Codex use their own runtimes and are not captured here — check their provider CLI's own logs.)
+When a test times out waiting for a notification and it is **not** platform-specific local execution (above), the failure is usually inside the bundled provider SDK/CLI. Every failed test tails the Agent Host process log into the test output before its temporary user-data directory is removed; look for the `[agent-host-e2e] # …` lines, including provider stderr and pipeline errors. For the **Copilot** provider, the harness additionally tails the most recent Copilot runtime (`@github/copilot` CLI) `process-*.log`, which records startup, auth, model requests, and the turn lifecycle. A turn that started but never produced a model response, a panic, or an out-of-order / protocol error points at the SDK/CLI. Re-record after an SDK bump if the fixture is stale; otherwise treat it as a genuine regression. The Copilot runtime runs at `--log trace` in this harness, and its full logs live under the server's temp home (`${homeDir}/.copilot/logs`) until the suite tears down.
 
 ### Replayed text is doubled (`VALUEVALUE`)
 

@@ -22,8 +22,8 @@
 // 定数は `ctx`、外の世界（docx-preview・DOM・メッセージ送受信・タイマー）は `host` 経由で渡し、
 // ヘルパは関数の内側に置くこと。型だけは実行時に消えるので自由に使ってよい。
 //
-// この方式にすると media/*.js を増やさずに済み、ビルド同梱の glob 追加（build/gulpfile.vscode.ts と
-// build/next/index.ts の2箇所）が不要になる。CSS は既存の `media/*.css` の glob に乗るのでそのまま。
+// この方式にすると media/*.js を増やさずに済み、ビルド同梱の glob 追加（build/next/paradisResources.ts）
+// が不要になる。CSS は既存の `media/*.css` の glob に乗るのでそのまま。
 //
 // 外の世界を `host` で受け取るのは、埋め込みコードを**単体テストできるようにする**ため。
 // `window` を直に触ると webview の外からは動かせず、この一番込み入った部分（run の分割・

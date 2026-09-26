@@ -361,7 +361,7 @@ suite('Paradis Word diff webview', () => {
 		]);
 		const runs = test.rendered('original')!.documentPart!.body!.children![0].children!;
 		// 属性が `title` であること自体に意味がある（ブラウザ標準のツールチップがそのまま出る）。
-		strictEqual(runs[0].cssStyle!['$title'], '太字になりました');
+		strictEqual(runs[0].cssStyle!.$title, '太字になりました');
 	});
 
 	test('文字を持たない run には run 自体に印を付ける', async () => {

@@ -159,6 +159,11 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 				return localize('paradis.browserProfiles.scope.ephemeral', "エフェメラル");
 			case BrowserViewStorageScope.Global:
 				return localize('paradis.browserProfiles.scope.global', "グローバル");
+			// upstream の Agent スコープ（メモリ上のみ・エージェントと共有されるセッション）。ネットワーク
+			// フィルタ有効時の「共有用に開き直したタブ」や `workbench.browser.dataStorage: agent` で出る。
+			// 既定の分岐へ落とすと「グローバル」と表示され、ログイン状態が残るセッションだと誤解させる。
+			case BrowserViewStorageScope.Agent:
+				return localize('paradis.browserProfiles.scope.agent', "エージェント");
 			default:
 				// main へまだ問い合わせられていない（起動直後）。空にすると幅が動くので既定を出す。
 				return localize('paradis.browserProfiles.scope.global', "グローバル");

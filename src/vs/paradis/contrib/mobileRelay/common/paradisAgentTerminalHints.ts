@@ -35,9 +35,9 @@ export function stripTerminalControls(text: string): string {
 }
 
 function parseElapsed(value: string): number | undefined {
-	const hours = /(?<hours>\d+)h/.exec(value)?.groups?.['hours'];
-	const minutes = /(?<minutes>\d+)m/.exec(value)?.groups?.['minutes'];
-	const seconds = /(?<seconds>\d+)s/.exec(value)?.groups?.['seconds'];
+	const hours = /(?<hours>\d+)h/.exec(value)?.groups?.hours;
+	const minutes = /(?<minutes>\d+)m/.exec(value)?.groups?.minutes;
+	const seconds = /(?<seconds>\d+)s/.exec(value)?.groups?.seconds;
 	if (hours === undefined && minutes === undefined && seconds === undefined) {
 		return undefined;
 	}
@@ -49,8 +49,8 @@ function parseTokenCount(value: string): number | undefined {
 	if (match?.groups === undefined) {
 		return undefined;
 	}
-	const amount = Number(match.groups['value']);
-	const unit = match.groups['unit'].toLowerCase();
+	const amount = Number(match.groups.value);
+	const unit = match.groups.unit.toLowerCase();
 	const multiplier = unit === 'm' ? 1_000_000 : unit === 'k' ? 1_000 : 1;
 	return Number.isFinite(amount) ? Math.round(amount * multiplier) : undefined;
 }
@@ -117,7 +117,7 @@ export class ParadisAgentTerminalHintParser {
 		// Codexは `Working (1m 02s • esc to interrupt)`。旧Claude/Omnara互換として
 		// `esc to interrupt` / `ctrl+b to run in background` を含む末尾も補助対象にする。
 		const codexMatches = [...this.normalizedBuffer.matchAll(/Working\s+\((?<meta>[^)]*?)\s*•\s*esc to interrupt\)/gi)];
-		const codexMeta = codexMatches.at(-1)?.groups?.['meta'];
+		const codexMeta = codexMatches.at(-1)?.groups?.meta;
 		const activeMarker = codexMeta !== undefined
 			|| /esc to interrupt|ctrl\+b to run in background/i.test(this.normalizedBuffer.slice(-1_000));
 		if (!activeMarker) {

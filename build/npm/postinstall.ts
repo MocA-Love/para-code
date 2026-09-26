@@ -11,6 +11,7 @@ import { dirs } from './dirs.ts';
 // PARA-PATCH: guard against @parcel/watcher#250, which kills the watcher process on long paths
 import { paradisIsParcelWatcherPatched, paradisPatchAndRebuildParcelWatcher } from './paradisParcelWatcherPatch.ts';
 import { root, stateFile, stateContentsFile, computeState, computeContents, isUpToDate } from './installStateHash.ts';
+import { ensureElectronTypes } from './electronTypes.ts';
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const rootNpmrcConfigKeys = getNpmrcConfigKeys(path.join(root, '.npmrc'));
@@ -253,6 +254,8 @@ async function runWithConcurrency(tasks: (() => Promise<void>)[], concurrency: n
 }
 
 async function main() {
+	await ensureElectronTypes();
+
 	// PARA-PATCH: the up-to-date check only hashes package.json/package-lock.json/.npmrc/.nvmrc, so a
 	// checkout whose dependencies are already current would never pick up the @parcel/watcher guard
 	// (see paradisParcelWatcherPatch.ts). Take the slow path until every package has it.

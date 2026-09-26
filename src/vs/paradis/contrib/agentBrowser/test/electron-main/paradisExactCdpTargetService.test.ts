@@ -120,12 +120,13 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 		isFocused: () => state.focused,
 	};
 	const view = {
-		get owner() {
+		// PARA-PATCH: upstream 1.137 moved the window id from `owner.mainWindowId` to `host.windowId`.
+		get host() {
 			counters.owner++;
 			if (state.throwOwner) {
-				throw new Error('owner getter failed');
+				throw new Error('host getter failed');
 			}
-			return { mainWindowId: state.ownerWindowId };
+			return { windowId: state.ownerWindowId };
 		},
 		get debugger() {
 			return {

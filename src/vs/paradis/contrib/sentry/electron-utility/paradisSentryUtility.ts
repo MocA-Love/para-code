@@ -14,7 +14,7 @@ let sentry: typeof SentryUtility | undefined;
 // '@sentry/electron/utility' is loaded with a dynamic import so the bundler keeps it
 // external and it resolves from node_modules.asar at runtime via the bootstrap loader
 // hooks (a static import would get inlined into the shared-process bundle by the
-// build-time @sentry inlining rule in build/lib/optimize.ts, dragging the whole
+// build-time @sentry inlining rule in build/next/index.ts, dragging the whole
 // node/opentelemetry graph — with its dynamic requires — into the bundle).
 import('@sentry/electron/utility').then(Sentry => {
 	Sentry.init({

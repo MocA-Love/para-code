@@ -108,7 +108,7 @@ suite('ParadisServiceStatusClient diagnostics', () => {
 				feature: report.feature,
 				operation: report.operation,
 				message: report.error instanceof Error ? report.error.message : String(report.error),
-				provider: report.safeExtra?.['safe_provider'],
+				provider: report.safeExtra?.safe_provider,
 				safeExtraKeys: report.safeExtra ? Object.keys(report.safeExtra) : [],
 				severity: report.severity,
 			})).sort((left, right) => String(left.provider).localeCompare(String(right.provider))), [{

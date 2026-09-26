@@ -6,13 +6,16 @@
 import * as nls from '../../../nls.js';
 import { IPolicyData } from '../../../base/common/defaultAccount.js';
 import { PolicyCategory } from '../../../base/common/policy.js';
-import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../configuration/common/configurationRegistry.js';
-import { COPILOT_OTEL_CAPTURE_CONTENT_KEY, COPILOT_OTEL_ENABLED_KEY, COPILOT_OTEL_ENDPOINT_KEY, COPILOT_OTEL_HEADERS_KEY, COPILOT_OTEL_LOCK_CAPTURE_CONTENT_KEY, COPILOT_OTEL_PROTOCOL_KEY, COPILOT_OTEL_RESOURCE_ATTRIBUTES_KEY, COPILOT_OTEL_SERVICE_NAME_KEY, managedSettingValue } from '../../policy/common/copilotManagedSettings.js';
+import { AgentHostConfigurationSyncScope, ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../configuration/common/configurationRegistry.js';
+import { COPILOT_OTEL_CAPTURE_CONTENT_KEY, COPILOT_OTEL_ENABLED_KEY, COPILOT_OTEL_ENDPOINT_KEY, COPILOT_OTEL_HEADERS_KEY, COPILOT_OTEL_LOCK_CAPTURE_CONTENT_KEY, COPILOT_OTEL_PROTOCOL_KEY, COPILOT_OTEL_RESOURCE_ATTRIBUTES_KEY, COPILOT_OTEL_SERVICE_NAME_KEY, managedSettingValue, thirdPartyAgentEnabledValue } from '../../policy/common/copilotManagedSettings.js';
 import product from '../../product/common/product.js';
 import { Registry } from '../../registry/common/platform.js';
 import {
+	AgentHostAutoAttachPullRequestsSettingId,
 	AgentHostByokModelsEnabledSettingId,
+	AgentHostGitHubMcpServerEnabledSettingId,
 	AgentHostActiveAgentTitleGenerationSettingId,
+	AgentHostDeferredTitleGenerationSettingId,
 	AgentHostClaudeAgentEnabledSettingId,
 	AgentHostClaudeMultiRootEnabledSettingId,
 	AgentHostCodexAgentBinaryArgsSettingId,
@@ -36,14 +39,18 @@ import {
 import {
 	AgentHostClaudeMultiRootEnabledConfigKey,
 	AgentHostActiveAgentTitleGenerationConfigKey,
+	AgentHostDeferredTitleGenerationConfigKey,
+	AgentHostAutoAttachPullRequestsConfigKey,
 	AgentHostByokModelsEnabledConfigKey,
+	AgentHostGitHubMcpServerEnabledConfigKey,
 	AgentHostCodexEnabledConfigKey,
 	AgentHostCodexMultiRootEnabledConfigKey,
 	AgentHostCopilotMultiRootEnabledConfigKey,
 	AgentHostMarkdownPlanRichLinksEnabledConfigKey,
 	AgentHostSystemProxyEnabledConfigKey,
 } from './agentHostSchema.js';
-import { AgentMergeConfigKey, AgentMergeSettingId } from './agentMerge.js';
+import { AgentMergeConfigKey, AgentMergeSettingId, AGENT_MERGE_SETTING_TAG } from './agentMerge.js';
+import { artifactToolsConfigurationProperties } from './artifactToolsConfiguration.js';
 
 // Settings consumed by the agent host starter (`electronAgentHostStarter.ts`
 // and `nodeAgentHostStarter.ts`) to populate the spawned agent host process's
@@ -112,7 +119,8 @@ configurationRegistry.registerConfiguration({
 			description: nls.localize('chat.agentMerge.enabled', "Enables the experimental Agent Merge controller and its commands. Agent Merge can monitor an agent session's pull request, ask the agent to address selected blockers, and optionally merge the pull request when it is ready."),
 			default: product.quality !== 'stable',
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
+			tags: ['experimental', AGENT_MERGE_SETTING_TAG],
+			experiment: { mode: 'auto' },
 			agentHost: { key: AgentMergeConfigKey.Enabled },
 		},
 		[AgentMergeSettingId.AddressReviews]: {
@@ -120,7 +128,7 @@ configurationRegistry.registerConfiguration({
 			description: nls.localize('chat.agentMerge.addressReviews', "Controls whether enabled Agent Merge sessions address unresolved review threads, changes-requested reviews, and new pull request comments from repository maintainers or the Copilot pull request reviewer."),
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
+			tags: ['experimental', AGENT_MERGE_SETTING_TAG],
 			agentHost: { key: AgentMergeConfigKey.AddressReviews },
 		},
 		[AgentMergeSettingId.FixCI]: {
@@ -128,7 +136,7 @@ configurationRegistry.registerConfiguration({
 			description: nls.localize('chat.agentMerge.fixCI', "Controls whether enabled Agent Merge sessions ask the agent to fix failed required CI checks."),
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
+			tags: ['experimental', AGENT_MERGE_SETTING_TAG],
 			agentHost: { key: AgentMergeConfigKey.FixCI },
 		},
 		[AgentMergeSettingId.ResolveConflicts]: {
@@ -136,15 +144,21 @@ configurationRegistry.registerConfiguration({
 			description: nls.localize('chat.agentMerge.resolveConflicts', "Controls whether enabled Agent Merge sessions ask the agent to update branches that are behind or resolve merge conflicts."),
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
+			tags: ['experimental', AGENT_MERGE_SETTING_TAG],
 			agentHost: { key: AgentMergeConfigKey.ResolveConflicts },
 		},
 		[AgentMergeSettingId.MergePullRequest]: {
-			type: 'boolean',
+			type: 'string',
+			enum: ['always', 'ifUnchanged', 'never'],
+			enumDescriptions: [
+				nls.localize('chat.agentMerge.mergePullRequest.always', "Merges the pull request whenever it is ready, including after Agent Merge has fixed CI failures or addressed review feedback."),
+				nls.localize('chat.agentMerge.mergePullRequest.ifUnchanged', "Merges the pull request only while Agent Merge has not changed it. Once a repair turn lands a commit, automatic merging turns itself off for that session so the changes can be reviewed."),
+				nls.localize('chat.agentMerge.mergePullRequest.never', "Never merges the pull request automatically."),
+			],
 			description: nls.localize('chat.agentMerge.mergePullRequest', "Controls whether the Agent Host automatically merges or enqueues pull requests for enabled Agent Merge sessions after all selected maintenance work is complete."),
-			default: false,
+			default: 'never',
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
+			tags: ['experimental', AGENT_MERGE_SETTING_TAG],
 			agentHost: { key: AgentMergeConfigKey.MergePullRequest },
 		},
 		[AgentMergeSettingId.MergeMethod]: {
@@ -159,7 +173,7 @@ configurationRegistry.registerConfiguration({
 			description: nls.localize('chat.agentMerge.mergeMethod', "Controls the native merge method used by Agent Merge."),
 			default: 'auto',
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
+			tags: ['experimental', AGENT_MERGE_SETTING_TAG],
 			agentHost: { key: AgentMergeConfigKey.MergeMethod },
 		},
 		[AgentMergeSettingId.ReplyAttribution]: {
@@ -167,17 +181,35 @@ configurationRegistry.registerConfiguration({
 			description: nls.localize('chat.agentMerge.replyAttribution', "Controls whether review-thread replies posted by Agent Merge include an automated-reply attribution note."),
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
+			tags: ['experimental', AGENT_MERGE_SETTING_TAG],
 			agentHost: { key: AgentMergeConfigKey.ReplyAttribution },
 		},
 		[AgentHostActiveAgentTitleGenerationSettingId]: {
 			type: 'boolean',
-			description: nls.localize('chat.agentHost.experimental.activeAgentTitleGeneration', "When enabled, the active agent names new sessions and chats using rename tools. When disabled, a utility model generates titles. Changes apply to sessions and chats created afterward."),
+			description: nls.localize('chat.agentHost.experimental.activeAgentTitleGeneration', "When enabled, the active agent names new sessions and chats using rename tools. When disabled, a utility model generates titles immediately. Deferred title generation takes precedence. Changes apply to new sessions; existing sessions and their chats retain their strategy."),
 			default: product.quality !== 'stable',
 			scope: ConfigurationScope.APPLICATION,
 			tags: ['experimental', 'advanced'],
 			experiment: { mode: 'auto' },
 			agentHost: { key: AgentHostActiveAgentTitleGenerationConfigKey },
+		},
+		[AgentHostDeferredTitleGenerationSettingId]: {
+			type: 'boolean',
+			description: nls.localize('chat.agentHost.experimental.deferredTitleGeneration', "Seed titles immediately and refine them in the background if the first response turn completes successfully, without asking the active agent to name chats. Explicit rename tools remain available. Overrides active agent title generation for new sessions; existing sessions and their chats retain their strategy."),
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			tags: ['experimental', 'advanced'],
+			agentHost: { key: AgentHostDeferredTitleGenerationConfigKey },
+		},
+		...artifactToolsConfigurationProperties,
+		[AgentHostAutoAttachPullRequestsSettingId]: {
+			type: 'boolean',
+			description: nls.localize('chat.agentHost.experimental.autoAttachPullRequests', "Controls whether the Agent Host automatically discovers and associates a pull request for the currently checked-out branch. When disabled, only pull requests recorded by the agent as artifacts or explicitly selected or created through session actions are considered."),
+			default: product.quality === 'stable',
+			scope: ConfigurationScope.APPLICATION,
+			tags: ['experimental', 'advanced'],
+			experiment: { mode: 'auto' },
+			agentHost: { key: AgentHostAutoAttachPullRequestsConfigKey },
 		},
 		[AgentHostMarkdownPlanRichLinksEnabledSettingId]: {
 			type: 'boolean',
@@ -195,6 +227,14 @@ configurationRegistry.registerConfiguration({
 			tags: ['experimental', 'advanced'],
 			experiment: { mode: 'startup' },
 			agentHost: { key: AgentHostSystemProxyEnabledConfigKey },
+		},
+		[AgentHostGitHubMcpServerEnabledSettingId]: {
+			type: 'boolean',
+			description: nls.localize('chat.agentHost.githubMcpServer.enabled', "When enabled, agent-host sessions include the GitHub MCP server."),
+			default: true,
+			tags: ['experimental', 'advanced'],
+			experiment: { mode: 'startup' },
+			agentHost: { key: AgentHostGitHubMcpServerEnabledConfigKey },
 		},
 		[AgentHostCopilotMultiRootEnabledSettingId]: {
 			type: 'boolean',
@@ -233,7 +273,7 @@ configurationRegistry.registerConfiguration({
 				name: 'Claude3PIntegration',
 				category: PolicyCategory.InteractiveSession,
 				minimumVersion: '1.113',
-				value: (policyData) => policyData.chat_preview_features_enabled === false ? false : undefined,
+				value: thirdPartyAgentEnabledValue,
 				localization: {
 					description: {
 						key: 'chat.agentHost.claudeAgent.enabled.policy',
@@ -248,13 +288,13 @@ configurationRegistry.registerConfiguration({
 			default: false,
 			tags: ['experimental', 'advanced'],
 			experiment: { mode: 'startup' },
-			agentHost: { key: AgentHostByokModelsEnabledConfigKey, localOnly: true },
+			agentHost: { key: AgentHostByokModelsEnabledConfigKey, scope: AgentHostConfigurationSyncScope.Local },
 		},
 		[AgentHostCodexAgentEnabledSettingId]: {
 			type: 'boolean',
 			description: nls.localize('chat.agentHost.codexAgent.enabled', "When enabled, the agent host registers the Codex provider (subject to the Codex SDK being reachable). Enabling takes effect without restarting the agent host."),
-			default: false,
-			tags: ['experimental', 'advanced'],
+			default: product.quality !== 'stable',
+			tags: ['experimental'],
 			// Allow the default to be overridden by an experiment. Uses `startup`
 			// to match the sibling agent-host provider settings.
 			experiment: { mode: 'startup' },
@@ -267,7 +307,7 @@ configurationRegistry.registerConfiguration({
 				name: 'Codex3PIntegration',
 				category: PolicyCategory.InteractiveSession,
 				minimumVersion: '1.126',
-				value: (policyData) => policyData.chat_preview_features_enabled === false ? false : undefined,
+				value: thirdPartyAgentEnabledValue,
 				localization: {
 					description: {
 						key: 'chat.agentHost.codexAgent.enabled.policy',

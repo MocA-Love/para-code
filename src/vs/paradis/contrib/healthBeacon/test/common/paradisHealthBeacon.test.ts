@@ -154,15 +154,15 @@ suite('ParadisHealthBeacon', () => {
 	test('context carries the breakdown that did not fit into measurements', () => {
 		const context = paradisBuildHealthContext(snapshot());
 		assert.deepStrictEqual({
-			uptimeHours: context['uptime_hours'],
-			processCount: context['process_count'],
-			browserViewCount: context['browser_view_count'],
-			detached: context['safe_main_v8_detached_contexts'],
-			rendererCount: context['safe_renderer_count'],
-			sharedProcess: context['safe_shared_process_memory'],
-			jsHeapTotal: context['safe_window_js_heap_total'],
-			domMax: context['safe_window_dom_elements_max'],
-			terminals: context['safe_terminal_count'],
+			uptimeHours: context.uptime_hours,
+			processCount: context.process_count,
+			browserViewCount: context.browser_view_count,
+			detached: context.safe_main_v8_detached_contexts,
+			rendererCount: context.safe_renderer_count,
+			sharedProcess: context.safe_shared_process_memory,
+			jsHeapTotal: context.safe_window_js_heap_total,
+			domMax: context.safe_window_dom_elements_max,
+			terminals: context.safe_terminal_count,
 		}, {
 			uptimeHours: 5,
 			processCount: 6,
@@ -184,10 +184,10 @@ suite('ParadisHealthBeacon', () => {
 		}));
 		const context = paradisBuildHealthContext(snapshot({ processes }));
 		assert.deepStrictEqual({
-			first: [context['safe_top1_role'], context['safe_top1_memory'], context['safe_top1_cpu']],
-			fifth: [context['safe_top5_role'], context['safe_top5_memory'], context['safe_top5_cpu']],
-			sixth: context['safe_top6_role'],
-			nested: context['top_processes'],
+			first: [context.safe_top1_role, context.safe_top1_memory, context.safe_top1_cpu],
+			fifth: [context.safe_top5_role, context.safe_top5_memory, context.safe_top5_cpu],
+			sixth: context.safe_top6_role,
+			nested: context.top_processes,
 		}, {
 			first: ['other', 1_300, 1],
 			fifth: ['other', 900, 1],

@@ -53,15 +53,6 @@ interface IAvailableUpdate {
 
 const RELAUNCH_ARGUMENTS_FILE_PREFIX = 'relaunch-args-';
 
-let _updateType: UpdateType | undefined = undefined;
-function getUpdateType(): UpdateType {
-	if (typeof _updateType === 'undefined') {
-		_updateType = getWin32UpdateType();
-	}
-
-	return _updateType;
-}
-
 export class Win32UpdateService extends AbstractUpdateService implements IRelaunchHandler {
 
 	private availableUpdate: IAvailableUpdate | undefined;
@@ -220,7 +211,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 	protected buildUpdateFeedUrl(quality: string, commit: string, options?: IUpdateURLOptions): string | undefined {
 		// PARA-PATCH: begin derive the published Para Code update feed platform through the shared contract.
-		const platform = getParadisDesktopUpdatePlatform('win32', process.arch, { isArchive: getUpdateType() === UpdateType.Archive, target: this.productService.target });
+		const platform = getParadisDesktopUpdatePlatform('win32', process.arch, { isArchive: this.getUpdateType() === UpdateType.Archive, target: this.productService.target });
 		// PARA-PATCH: end
 		return createUpdateURL(this.productService.updateUrl!, platform, quality, commit, options);
 	}
@@ -249,7 +240,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		const promise = this.requestService.request({ url, headers, callSite: 'updateService.win32.checkForUpdates' }, token)
 			.then<IUpdate | null>(asJson)
 			.then(update => {
-				const updateType = getUpdateType();
+				const updateType = this.getUpdateType();
 
 				if (token.isCancellationRequested) {
 					return Promise.resolve(null);
@@ -289,11 +280,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 					return Promise.resolve(null);
 				}
 
-				// When connection is metered and this is not an explicit check,
-				// show update is available but don't start downloading
-				if (!explicit && this.meteredConnectionService.isConnectionMetered) {
-					this.logService.info('update#doCheckForUpdates - update available but skipping download because connection is metered');
-					this.setState(State.AvailableForDownload(update));
+				if (this.deferAutomaticDownload(update, explicit)) {
 					return Promise.resolve(null);
 				}
 
@@ -311,6 +298,10 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 								this.logService.warn(`update#doCheckForUpdates - deleting invalid cached update ${basename(updatePackagePath)}`);
 								await unlink(updatePackagePath);
+							}
+
+							if (this.deferAutomaticDownload(update, explicit)) {
+								return undefined;
 							}
 
 							const downloadPath = `${updatePackagePath}.tmp`;
@@ -347,7 +338,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 								.then(() => updatePackagePath);
 						});
 					}).then(packagePath => {
-						if (token.isCancellationRequested) {
+						if (!packagePath || token.isCancellationRequested) {
 							return;
 						}
 
@@ -382,7 +373,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 					this._overwrite = false;
 					this.setState(State.Ready(this.state.update, this.state.explicit, false));
 				} else {
-					this.setState(State.Idle(getUpdateType(), message));
+					this.setState(State.Idle(this.getUpdateType(), message));
 				}
 			});
 
@@ -403,7 +394,12 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		if (state.update.url) {
 			this.nativeHostMainService.openExternal(undefined, state.update.url);
 		}
-		this.setState(State.Idle(getUpdateType()));
+		this.setState(State.Idle(this.getUpdateType()));
+	}
+
+	protected override resumeDeferredDownload(): void {
+		this.setState(State.Idle(this.getUpdateType()));
+		void this.checkForUpdates(false);
 	}
 
 	private async getUpdatePackagePath(version: string): Promise<string> {
@@ -500,7 +496,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 			child.once('exit', () => {
 				this.availableUpdate = undefined;
-				this.setState(State.Idle(getUpdateType()));
+				this.setState(State.Idle(this.getUpdateType()));
 			});
 		}
 
@@ -524,7 +520,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				} else if (seenRunning) {
 					if (!this.availableUpdate?.updateProcess) {
 						this.availableUpdate = undefined;
-						this.setState(State.Idle(getUpdateType()));
+						this.setState(State.Idle(this.getUpdateType()));
 					}
 					return;
 				}
@@ -551,7 +547,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 		const cancelTimeout = new ProcessTimeRunOnceScheduler(() => {
 			this.logService.warn('update#doApplyUpdate: polling timed out waiting for update to be ready');
-			this.setState(State.Idle(getUpdateType(), 'Update did not complete within expected time'));
+			this.setState(State.Idle(this.getUpdateType(), 'Update did not complete within expected time'));
 		}, 60 * 60 * 1000);
 
 		// Poll for progress and ready mutex for 1 hour.
@@ -739,7 +735,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 	}
 
 	protected override getUpdateType(): UpdateType {
-		return getUpdateType();
+		return getWin32UpdateType(this.productService.target);
 	}
 
 	override async _applySpecificUpdate(packagePath: string, commit?: string): Promise<void> {

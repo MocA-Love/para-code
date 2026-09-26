@@ -105,8 +105,8 @@ export function notifyParadisWebviewSignal(signal: IParadisWebviewSignal): void 
 		// これ以外を足すときは `safe_` 接頭辞を付けること（isParadisSafeExtraKey の
 		// 許可リストに無いキーは、送信直前に黙って捨てられる）。
 		reportParadisDiagnosticError('patched', 'webview', signal.code, new Error(`Webview service worker problem (${signal.code})`), {
-			duration_ms: signal.detail?.['duration_ms'],
-			attempt: signal.detail?.['attempt'],
+			duration_ms: signal.detail?.duration_ms,
+			attempt: signal.detail?.attempt,
 		}, severity);
 	}
 	emitter.fire(signal);

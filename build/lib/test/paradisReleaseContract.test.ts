@@ -160,15 +160,20 @@ suite('Para Code release contract', () => {
 		);
 	});
 
-	test('keeps the known Open VSX checksum and consumes it through fromMarketplace', async () => {
+	// This used to pin the digest Open VSX served when its repackaged bytes differed from the
+	// marketplace ones. Open VSX has since gone back to byte-identical packages, so product.json
+	// carries the upstream digest again (see NOTES.md, 2026-08-27) and pinning either literal here
+	// just rots the moment upstream bumps the extension. What matters is that the gallery is Open VSX,
+	// that the builtin carries a well-formed digest, and that `fromMarketplace` actually verifies it.
+	test('pins a well-formed builtin checksum and consumes it through fromMarketplace', async () => {
 		const product = readProductManifest();
 		assert.strictEqual(product.extensionsGallery.serviceUrl, 'https://open-vsx.org/vscode/gallery');
 		const extension = product.builtInExtensions.find(candidate => candidate.name === 'ms-vscode.vscode-js-profile-table');
 		assert.ok(extension);
-		assert.deepStrictEqual({ version: extension.version, sha256: extension.sha256 }, {
-			version: '1.0.11',
-			sha256: '50d002706213bc90d695f05f56d42fffd825035945eaf1cb1ba175effb7ff408',
-		});
+		assert.deepStrictEqual({
+			hasVersion: /^\d+\.\d+\.\d+$/.test(extension.version),
+			hasSha256: /^[0-9a-f]{64}$/.test(extension.sha256 ?? ''),
+		}, { hasVersion: true, hasSha256: true });
 		const result = await consumeMarketplaceFixture(extension);
 		const [publisher, name] = extension.name.split('.');
 		const packageJson = result.files.find(file => file.relative === 'package.json');

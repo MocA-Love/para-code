@@ -4,13 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { session } from 'electron';
+import { createHash } from 'crypto';
 import { normalize } from '../../../base/common/path.js';
 import { isLinux } from '../../../base/common/platform.js';
 import { joinPath } from '../../../base/common/resources.js';
 import { TernarySearchTree } from '../../../base/common/ternarySearchTree.js';
 import { URI } from '../../../base/common/uri.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
-import { BrowserViewStorageScope, IBrowserSessionOptions } from '../common/browserView.js';
+import { BrowserViewStorageScope, IBrowserViewSessionOptions } from '../common/browserView.js';
 import { BrowserSessionTrust, IBrowserSessionTrust } from './browserSessionTrust.js';
 import { BrowserSessionHistory, IBrowserSessionHistory } from './browserSessionHistory.js';
 import { BrowserSessionPermissions, IBrowserSessionPermissions } from './browserSessionPermissions.js';
@@ -20,6 +21,7 @@ import { FileAccess, Schemas } from '../../../base/common/network.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { localize } from '../../../nls.js';
+import { IAgentNetworkFilterService } from '../../networkFilter/common/networkFilterService.js';
 // PARA-PATCH: load bundled devtools extensions (React DevTools) into browser view sessions
 import { paradisInstallBrowserExtensions } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensions.js';
 import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisBrowserUserAgent.js';
@@ -64,7 +66,9 @@ export class BrowserSession {
 	 * ID derivation rules (one-to-one with Electron sessions):
 	 *  - Global scope         -> `"global"`
 	 *  - Workspace scope      -> `"workspace:${workspaceId}"`
-	 *  - Ephemeral scope      -> `"ephemeral:${viewId}"` or `"${type}:${viewId}"` for custom types
+	 *  - Ephemeral per-view   -> `"ephemeral:${viewId}"`
+	 *  - Agent scope          -> `"agent:${identityHash}"`
+	 *  - Custom type          -> `"${type}:${viewId}"`
 	 */
 	private static readonly _byId = new Map<string, WeakRef<BrowserSession>>();
 
@@ -72,7 +76,7 @@ export class BrowserSession {
 	 * Cleans up stale {@link _byId} entries when the Electron session
 	 * they point to is garbage-collected.
 	 */
-	private static readonly _finalizer = new FinalizationRegistry<string>((id) => {
+	private static readonly _finalizer = new FinalizationRegistry<string>(id => {
 		// PARA-PATCH: reference the static map via `this` instead of the hardcoded
 		// class name, so this keeps working if the class is ever renamed
 		this._byId.delete(id);
@@ -123,6 +127,18 @@ export class BrowserSession {
 		return ids;
 	}
 
+	/** Update network filtering on all live browser sessions. */
+	static updateNetworkFiltering(): void {
+		for (const [id, ref] of BrowserSession._byId) {
+			const browserSession = ref.deref();
+			if (browserSession) {
+				browserSession.updateNetworkFilter();
+			} else {
+				BrowserSession._byId.delete(id);
+			}
+		}
+	}
+
 	/**
 	 * Get or create the singleton global-scope session.
 	 */
@@ -143,10 +159,10 @@ export class BrowserSession {
 	}
 
 	/**
-	 * Get or create an ephemeral session for the given view / target id.
+	 * Get or create an ephemeral session for the given view or target ID.
 	 */
 	static getOrCreateEphemeral(instantiationService: IInstantiationService, viewId: string, type?: string): BrowserSession {
-		if (type === 'workspace' || type === 'ephemeral') {
+		if (type === 'workspace' || type === 'ephemeral' || type === 'agent') {
 			throw new Error(`Cannot create session with reserved type '${type}'`);
 		}
 
@@ -154,6 +170,24 @@ export class BrowserSession {
 		const electronSession = session.fromPartition(`vscode-browser-${type}${viewId}`);
 		return BrowserSession._bySession.get(electronSession)
 			?? instantiationService.createInstance(BrowserSession, sessionId, electronSession, BrowserViewStorageScope.Ephemeral);
+	}
+
+	/** Get or create an in-memory agent session by affinity, workspace, or window. */
+	static getOrCreateAgent(instantiationService: IInstantiationService, workspaceId: string | undefined, affinity?: string, windowId?: number): BrowserSession {
+		let identity: string;
+		if (affinity !== undefined) {
+			identity = `affinity:${affinity}`;
+		} else if (workspaceId !== undefined) {
+			identity = `workspace:${workspaceId}`;
+		} else if (windowId !== undefined) {
+			identity = `window:${windowId}`;
+		} else {
+			throw new Error('Agent browser sessions require an affinity, workspace, or window');
+		}
+		const identityHash = createHash('sha256').update(identity).digest('hex');
+		const electronSession = session.fromPartition(`vscode-browser-agent-${identityHash}`);
+		return BrowserSession._bySession.get(electronSession)
+			?? instantiationService.createInstance(BrowserSession, `agent:${identityHash}`, electronSession, BrowserViewStorageScope.Agent);
 	}
 
 	/**
@@ -165,9 +199,8 @@ export class BrowserSession {
 	 * @param instantiationService Used to construct the session and inject
 	 *                             its service dependencies (tunnel proxy,
 	 *                             log) when a new session is needed.
-	 * @param viewId   Used only for ephemeral sessions where every view
-	 *                 needs its own Electron session.
-	 * @param sessionOptions  Determines the storage scope for the session.
+	 * @param viewId   Used for ephemeral sessions without an explicit affinity.
+	 * @param options  Determines the storage scope for the session.
 	 * @param workspaceStorageHome  Root folder under which per-workspace
 	 *                              browser storage is created
 	 *                              (`IEnvironmentMainService.workspaceStorageHome`).
@@ -176,29 +209,35 @@ export class BrowserSession {
 	static getOrCreate(
 		instantiationService: IInstantiationService,
 		viewId: string,
-		sessionOptions: IBrowserSessionOptions,
+		options: IBrowserViewSessionOptions,
 		workspaceStorageHome: URI,
 		workspaceId?: string,
+		windowId?: number,
 	): BrowserSession {
-		// PARA-PATCH: named persistent browser profiles get their own persist: partition. The id is
-		// opaque and never derived from the display name, so renaming a profile keeps its logins.
-		const profile = paradisBrowserProfilePartition(sessionOptions);
-		if (profile) {
-			const electronSession = session.fromPartition(profile.partition);
-			return BrowserSession._bySession.get(electronSession)
-				?? instantiationService.createInstance(BrowserSession, profile.sessionId, electronSession, BrowserViewStorageScope.Profile);
-		}
-		switch (sessionOptions.scope) {
+		switch (options.scope) {
+			// PARA-PATCH: named persistent browser profiles get their own persist: partition. The id is
+			// opaque and never derived from the display name, so renaming a profile keeps its logins.
+			case BrowserViewStorageScope.Profile: {
+				const profile = paradisBrowserProfilePartition(options);
+				if (!profile) {
+					// Corrupt ledger entry: stay ephemeral rather than leaking into the real global session.
+					return BrowserSession.getOrCreateEphemeral(instantiationService, viewId);
+				}
+				const electronSession = session.fromPartition(profile.partition);
+				return BrowserSession._bySession.get(electronSession)
+					?? instantiationService.createInstance(BrowserSession, profile.sessionId, electronSession, BrowserViewStorageScope.Profile);
+			}
 			case BrowserViewStorageScope.Global:
 				return BrowserSession.getOrCreateGlobal(instantiationService);
 			case BrowserViewStorageScope.Workspace:
 				if (workspaceId) {
 					return BrowserSession.getOrCreateWorkspace(instantiationService, workspaceId, workspaceStorageHome);
 				}
-			// fallthrough -- no workspace context -> ephemeral
-			case BrowserViewStorageScope.Ephemeral:
-			default:
 				return BrowserSession.getOrCreateEphemeral(instantiationService, viewId);
+			case BrowserViewStorageScope.Ephemeral:
+				return BrowserSession.getOrCreateEphemeral(instantiationService, viewId);
+			case BrowserViewStorageScope.Agent:
+				return BrowserSession.getOrCreateAgent(instantiationService, workspaceId, options.affinity, windowId);
 		}
 	}
 
@@ -226,6 +265,7 @@ export class BrowserSession {
 	private readonly _history: BrowserSessionHistory;
 	private readonly _remote: BrowserSessionRemote;
 	private readonly _permissions: BrowserSessionPermissions;
+	private _networkFilterEnabled = false;
 
 	/**
 	 * @deprecated Don't use this directly. Create sessions via the static factory methods.
@@ -241,6 +281,7 @@ export class BrowserSession {
 		readonly electronSession: Electron.Session,
 		/** Resolved storage scope. */
 		readonly storageScope: BrowserViewStorageScope,
+		@IAgentNetworkFilterService private readonly agentNetworkFilterService: IAgentNetworkFilterService,
 		// PARA-PATCH: read paradis.browser.downloads.* to auto-save downloads without a save dialog
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
@@ -248,6 +289,7 @@ export class BrowserSession {
 		this._history = new BrowserSessionHistory(this);
 		this._remote = new BrowserSessionRemote(this);
 		this._permissions = new BrowserSessionPermissions(this);
+		this.updateNetworkFilter();
 		this.configure();
 		BrowserSession.knownSessions.add(electronSession);
 		BrowserSession._bySession.set(electronSession, this);
@@ -288,7 +330,32 @@ export class BrowserSession {
 	}
 
 	/**
-	 * Apply the permission policy and preload scripts to the session.
+	 * Dynamically apply network filtering to Agent sessions.
+	 */
+	private updateNetworkFilter(): void {
+		if (this.storageScope !== BrowserViewStorageScope.Agent) {
+			return;
+		}
+
+		const enabled = this.agentNetworkFilterService.isEnabled();
+		if (this._networkFilterEnabled === enabled) {
+			return;
+		}
+		this._networkFilterEnabled = enabled;
+		this.electronSession.webRequest.onBeforeRequest(enabled ? (details, callback) => {
+			let uri: URI;
+			try {
+				uri = URI.parse(details.url, true);
+			} catch {
+				callback({ cancel: true });
+				return;
+			}
+			callback({ cancel: !this.agentNetworkFilterService.isUriAllowed(uri) });
+		} : null);
+	}
+
+	/**
+	 * Apply permissions, protocols, and preload scripts to the session.
 	 */
 	private configure(): void {
 		paradisInstallBrowserExtensions(this.electronSession); // PARA-PATCH: bundled React DevTools

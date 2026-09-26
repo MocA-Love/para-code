@@ -364,8 +364,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			case 'mobile_read_log': {
 				const seconds = Math.max(1, Math.round(optionalNumber(args, 'seconds') ?? 60));
 				const query = new URLSearchParams({ seconds: String(seconds), limit: '500' });
-				const text = typeof args['text'] === 'string' ? args['text'] : undefined;
-				const bundleId = typeof args['bundleId'] === 'string' ? args['bundleId'] : undefined;
+				const text = typeof args.text === 'string' ? args.text : undefined;
+				const bundleId = typeof args.bundleId === 'string' ? args.bundleId : undefined;
 				if (text) { query.set('text', text); }
 				if (bundleId) { query.set('bundleId', bundleId); }
 				const log = await this._hostClient.request('GET', `/api/v1/devices/${id}/log?${query.toString()}`, undefined, signal);
@@ -390,8 +390,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 				return undefined;
 			}
 			return {
-				value: typeof focused['value'] === 'string' ? focused['value'] : '',
-				label: typeof focused['label'] === 'string' ? focused['label'] : undefined,
+				value: typeof focused.value === 'string' ? focused.value : '',
+				label: typeof focused.label === 'string' ? focused.label : undefined,
 			};
 		} catch {
 			// 読み返しはおまけ。取れなくても入力自体は済んでいるので失敗させない。
@@ -430,19 +430,19 @@ function normalizeDevice(raw: unknown): IParadisMobileDevice | undefined {
 		return undefined;
 	}
 	const record = raw as Record<string, unknown>;
-	const id = record['id'];
+	const id = record.id;
 	if (typeof id !== 'string' || !id) {
 		return undefined;
 	}
-	const state = typeof record['state'] === 'string' ? record['state'] : '';
+	const state = typeof record.state === 'string' ? record.state : '';
 	return {
 		id,
-		udid: typeof record['udid'] === 'string' ? record['udid'] : undefined,
-		name: typeof record['name'] === 'string' ? record['name'] : id,
-		platform: typeof record['platform'] === 'string' ? record['platform'] : '',
+		udid: typeof record.udid === 'string' ? record.udid : undefined,
+		name: typeof record.name === 'string' ? record.name : id,
+		platform: typeof record.platform === 'string' ? record.platform : '',
 		// ホストが返すのは `runtimeName`（例: iOS 26.5）と `osVersion`。`runtime` という項目は無い。
-		runtime: firstString(record['runtimeName'], record['osVersion']),
-		display: normalizeDisplay(record['display']),
+		runtime: firstString(record.runtimeName, record.osVersion),
+		display: normalizeDisplay(record.display),
 		state,
 		// ホストは iOS を `Booted`、Android を `device` のように別表記で返すため、
 		// 「起動中か」の判定はここで1箇所に寄せる。
@@ -453,11 +453,11 @@ function normalizeDevice(raw: unknown): IParadisMobileDevice | undefined {
 /** MCPの引数から、ホストの UiQuery へそのまま渡せる形を作る。 */
 function buildUiQuery(args: Record<string, unknown>): { text?: string; identifier?: string; role?: string; exact: boolean; interactableOnly: boolean; limit: number } {
 	return {
-		text: typeof args['text'] === 'string' && args['text'] ? args['text'] : undefined,
-		identifier: typeof args['identifier'] === 'string' && args['identifier'] ? args['identifier'] : undefined,
-		role: typeof args['role'] === 'string' && args['role'] ? args['role'] : undefined,
-		exact: args['exact'] === true,
-		interactableOnly: args['interactableOnly'] === true,
+		text: typeof args.text === 'string' && args.text ? args.text : undefined,
+		identifier: typeof args.identifier === 'string' && args.identifier ? args.identifier : undefined,
+		role: typeof args.role === 'string' && args.role ? args.role : undefined,
+		exact: args.exact === true,
+		interactableOnly: args.interactableOnly === true,
 		limit: 20,
 	};
 }
@@ -468,10 +468,10 @@ function findFocusedElement(node: unknown): Record<string, unknown> | undefined 
 		return undefined;
 	}
 	const record = node as Record<string, unknown>;
-	if (record['focused'] === true) {
+	if (record.focused === true) {
 		return record;
 	}
-	const children = record['children'];
+	const children = record.children;
 	if (Array.isArray(children)) {
 		for (const child of children) {
 			const found = findFocusedElement(child);
@@ -501,7 +501,7 @@ function normalizeDisplay(raw: unknown): IParadisMobileDisplay | undefined {
 		pointWidth,
 		pointHeight,
 		scale: num('scale') ?? 1,
-		orientation: typeof record['orientation'] === 'string' ? record['orientation'] : undefined,
+		orientation: typeof record.orientation === 'string' ? record.orientation : undefined,
 	};
 }
 

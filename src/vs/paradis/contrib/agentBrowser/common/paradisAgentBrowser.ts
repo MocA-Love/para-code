@@ -169,10 +169,10 @@ export function paradisCreateTerminalPaneEnvironment(
 		return environment;
 	}
 	const pathPrefix = `${codexRuntime.launcherDirectory}${codexRuntime.pathDelimiter}`;
-	const currentPath = existing?.['PATH'];
-	const currentPathPrefix = existing?.['VSCODE_PATH_PREFIX'];
-	environment['PATH'] = `${pathPrefix}${typeof currentPath === 'string' ? currentPath : '${env:PATH}'}`;
-	environment['VSCODE_PATH_PREFIX'] = `${pathPrefix}${typeof currentPathPrefix === 'string' ? currentPathPrefix : ''}`;
+	const currentPath = existing?.PATH;
+	const currentPathPrefix = existing?.VSCODE_PATH_PREFIX;
+	environment.PATH = `${pathPrefix}${typeof currentPath === 'string' ? currentPath : '${env:PATH}'}`;
+	environment.VSCODE_PATH_PREFIX = `${pathPrefix}${typeof currentPathPrefix === 'string' ? currentPathPrefix : ''}`;
 	environment[PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR] = codexRuntime.launcherDirectory;
 	if (socketPath.length > 0) {
 		environment[PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR] = socketPath;
