@@ -173,6 +173,8 @@ function createUnavailableNode(doc: Document, src: string, reason: ParadisMediaF
 /**
  * レンダリング済みの Markdown HTML を走査し、ローカルの画像を data: URI に置き換える。
  *
+ * `rewriteBody` を渡すと、同じ解析結果に対してメディア以外の書き換えも行う。
+ *
  * 呼び出し側はサニタイズ済みの HTML を渡すこと。ここは属性値の差し替えしかしないので、
  * サニタイズの結果を緩めることはない（新しいタグも属性も足さない。断り書きの `span` だけ）。
  */
@@ -183,10 +185,14 @@ export async function inlineParadisMarkdownMedia(
 	fileService: IFileService,
 	token: CancellationToken,
 	limits: IParadisInlineMediaLimits = PARADIS_INLINE_MEDIA_LIMITS,
+	rewriteBody?: (body: HTMLElement) => void,
 ): Promise<IParadisInlineMediaResult> {
 	// TrustedHTML はそのまま渡す（文字列化すると Trusted Types に弾かれる）。
 	// 型定義は string しか受け付けないので、その1点だけキャストする。
 	const doc = new DOMParser().parseFromString(rendered as string, 'text/html');
+	// 同じ木に対するほかの書き換え（リンクの絶対化など）。文字列に戻したあとで解析し直すと
+	// Trusted Types に弾かれるので、解析はここの1回で済ませる。
+	rewriteBody?.(doc.body);
 	const elements = collectMediaElements(doc.body);
 
 	// 先に「どの要素がどのファイルを指すか」を出し切ってから、まとめて読む。
