@@ -419,6 +419,14 @@ done
 
 提出は Xcode の Organizer（Window → Organizer → Archives）から行う。
 
+### Xcode 27（iOS 27 SDK）でビルドするときの注意（2026-09-26）
+
+- **UIScene ライフサイクルが必須**: iOS 27 SDK でビルドしたアプリは、Scene に対応していないと起動直後に `EXC_BREAKPOINT`（SIGTRAP）で落ちる。クラッシュログの先頭は UIKit の `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`。`ios/` は gitignore 対象なので、次の2点を**このリポジトリ外で手当てしている**（別の Mac でビルドするときは同じ変更が要る）
+  - `ios/ParaCodeMobile/Info.plist` に `UIApplicationSceneManifest`（`UIApplicationSupportsMultipleScenes` = false、`UISceneDelegateClassName` = `$(PRODUCT_MODULE_NAME).SceneDelegate`）
+  - `ios/ParaCodeMobile/AppDelegate.swift` の `didFinishLaunching` では UIWindow を作らず `launchOptions` だけ保持し、同じファイルに置いた `SceneDelegate` の `scene(_:willConnectTo:options:)` で UIWindow を作って `factory.startReactNative` する。起動時の URL / ユーザーアクティビティ（`connectionOptions`）と `openURLContexts` / `continue userActivity` は AppDelegate の既存メソッドへ中継する（Expo の購読者と `RCTLinkingManager` の両方に届くように）
+- **`RNSVG-RNSVGFilters` の deployment target**: react-native-svg のリソースバンドル target が 12.4 のままで、Xcode 27（下限 15.0）ではエラーになる。`xcodebuild ... IPHONEOS_DEPLOYMENT_TARGET=16.4` で本体と同じ値を渡して回避している
+- **実機で開発ビルドを動かす手順**: Para Code 本体が 127.0.0.1:8081 を使っているので Metro は 8082 番にする。`RCT_METRO_PORT=8082 SENTRY_DISABLE_AUTO_UPLOAD=true xcodebuild -workspace ParaCodeMobile.xcworkspace -scheme ParaCodeMobile -configuration Debug -destination 'id=<UDID>' -allowProvisioningUpdates IPHONEOS_DEPLOYMENT_TARGET=16.4 build` → `xcrun devicectl device install app` → `pnpm exec expo start --port 8082`。`expo run:ios` は `ios/` を作り直しうるので使わない。開発ビルドでは `src/devProbe.tsx` が表示中の画面を `globalThis.__paraDev` とログに出すので、Metro の `/json/list` から CDP でつなげば画面とログを外から読める（CDP クライアントは `Origin: http://127.0.0.1:8082` を付けないと Metro に拒否される）
+
 ## モバイルアプリのiPad対応（2026-08-05）
 
 `app/mobile` はiPhone専用（portrait固定・`supportsTablet: false`）だったが、iPadを2カラムで使えるようにした。設計の要点:
