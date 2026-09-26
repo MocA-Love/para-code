@@ -14,6 +14,7 @@ import { ParaToastHost } from '../src/components/paraToast.js';
 import { ParaHeaderLayer } from '../src/components/paraHeaderLayer.js';
 import { WsDrawerLayout } from '../src/components/wsDrawer.js';
 import { IpadShell } from '../src/ipad/ipadShell.js';
+import { DevProbe } from '../src/devProbe.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
@@ -177,6 +178,8 @@ function RootLayout() {
 		// GestureHandlerRootView: ワークスペースドロワー（ReanimatedDrawerLayout）の
 		// ネイティブジェスチャ認識に必須
 		<GestureHandlerRootView style={styles.root}>
+			{/* 開発ビルドだけ、表示中の画面をデバッガから読めるようにする（__DEV__ は実行中に変わらない） */}
+			{__DEV__ ? <DevProbe /> : null}
 			<ThemeProvider value={appTheme}>
 				<AuthGate onUnlock={handleUnlock}>
 					{/* iPadの広い幅では左にワークスペースサイドバーを常設し、このスタック全体を
