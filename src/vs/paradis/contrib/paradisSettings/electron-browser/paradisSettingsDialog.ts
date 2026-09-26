@@ -480,6 +480,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		placeholder: localize('paradis.settings.unset', "(未設定)"),
 		keywords: 'browser downloads path folder save',
 	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.userAgent.includeParaCodeToken',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.userAgentParaCodeToken', "サイトに Para Code だと名乗る"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.userAgentParaCodeTokenDesc', "オフのときは通常の Chrome と同じ User-Agent を送ります。変更は新しく開いたタブから反映されます。"),
+		keywords: 'browser user agent useragent paracode token chrome',
+	},
 
 	// --- ターミナル ---
 	{
@@ -544,15 +553,17 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-terminal',
 		key: 'paradis.power.keepAwake',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.keepAwake', "エージェント実行中のスリープ"),
-		keywords: 'power keep awake sleep prevent',
+		label: localize('paradis.settings.keepAwake', "PC のスリープ防止"),
+		keywords: 'power keep awake sleep prevent agent auto',
 		choiceLabels: {
 			// allow-any-unicode-next-line
 			off: localize('paradis.settings.keepAwakeOff', "防がない"),
 			// allow-any-unicode-next-line
-			system: localize('paradis.settings.keepAwakeSystem', "システムのスリープを防ぐ"),
+			auto: localize('paradis.settings.keepAwakeAuto', "エージェントの作業中だけ防ぐ"),
 			// allow-any-unicode-next-line
-			display: localize('paradis.settings.keepAwakeDisplay', "画面のスリープも防ぐ"),
+			system: localize('paradis.settings.keepAwakeSystem', "常にシステムのスリープを防ぐ"),
+			// allow-any-unicode-next-line
+			display: localize('paradis.settings.keepAwakeDisplay', "常に画面のスリープも防ぐ"),
 		},
 	},
 	{

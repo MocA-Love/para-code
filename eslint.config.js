@@ -1757,6 +1757,9 @@ export default defineConfig(
 						// PARA-PATCH: browserSession.ts が名前付きブラウザプロファイルの persist:
 						// パーティション名 (paradisBrowserProfilePartition) を解くための逆方向 import
 						'vs/paradis/contrib/browserProfiles/~',
+						// PARA-PATCH: browserSessionPermissions.ts がパスキーのアカウント選択
+						// (paradisInstallWebAuthnAccountChooser) を配線するための逆方向 import
+						'vs/paradis/contrib/browserWebAuthn/~',
 						// PARA-PATCH: ptyHostMain.ts が常駐ターミナル(pty デーモン)として起きたときの
 						// ソケット確保と寿命管理を呼ぶための逆方向 import
 						'vs/paradis/contrib/ptyDaemon/~',
@@ -1930,6 +1933,9 @@ export default defineConfig(
 						// PARA-PATCH: browserViewWorkbenchService.ts が名前付きブラウザプロファイルの
 						// ルーティング (paradisResolveBrowserSessionOptions) を通すための逆方向 import
 						'vs/paradis/contrib/browserProfiles/~',
+						// PARA-PATCH: browserPermissionsFeature.ts がパスキーのアカウント選択の表示名
+						// (paradisWebAuthnDeviceTypeLabel) を読むための逆方向 import
+						'vs/paradis/contrib/browserWebAuthn/~',
 						// PARA-PATCH: relauncher.contribution.ts がワークスペース切替時の拡張ホスト再起動抑止フラグ
 						// (isParadisManagedWorkspaceWindow) を読むための逆方向 import。
 						// scm.service.contribution.ts のスコープ付き ISCMViewService 差し替えも同じ許可を使う。
