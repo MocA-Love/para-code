@@ -268,11 +268,22 @@ function highestParadisManagedHookSchema(hooks: Readonly<Record<string, unknown>
 }
 
 /**
- * hook定義配列から当fork管理のhookだけを取り除く (ユーザーhookは構造ごと保持)。
- * 定義の hooks 配列が空になった場合は定義自体を落とす。
+ * hook定義配列の中で、当fork管理のhookを置き換える (並び順は変えない)。
+ *
+ * 当fork管理のhookだけから成る定義は、最初の1つを `replacement` に差し替え、2つ目以降は落とす。
+ * ユーザーhookと混在する定義からは当fork管理のhookだけを取り除く。`replacement` が無い
+ * (もう登録しないイベント) なら差し替えずに落とす。
+ *
+ * **位置を保つのは Codex の hook の信頼のため。** Codex は信頼した hook を
+ * `<hooks.json のパス>:<イベント>:<定義の位置>:<hookの位置>` の鍵で config.toml に記録する。
+ * 以前は自hookを毎回いったん全部外して末尾へ付け直していたため、自hookより後ろにユーザーの
+ * hook があると、設置し直すたびにその位置がずれて信頼が黙って外れ得た。
+ *
+ * @returns 新しい定義配列と、`replacement` を既存の位置に置けたか
  */
-function removeManagedHooksFromDefinitions(definitions: readonly unknown[]): unknown[] {
+function replaceManagedHooksInDefinitions(definitions: readonly unknown[], replacement: unknown | undefined): { readonly definitions: unknown[]; readonly placed: boolean } {
 	const result: unknown[] = [];
+	let placed = false;
 	for (const definition of definitions) {
 		if (!isPlainObject(definition) || !Array.isArray(definition.hooks)) {
 			result.push(definition);
@@ -285,18 +296,23 @@ function removeManagedHooksFromDefinitions(definitions: readonly unknown[]): unk
 			continue;
 		}
 		if (filtered.length === 0) {
+			if (replacement !== undefined && !placed) {
+				result.push(replacement);
+				placed = true;
+			}
 			continue;
 		}
 		result.push({ ...definition, hooks: filtered });
 	}
-	return result;
+	return { definitions: result, placed };
 }
 
 /**
  * 既存の settings.json / hooks.json (生テキスト) に当fork管理のhook定義を冪等マージし、
  * 新しいJSON文字列を返す。パース不能・ルートがオブジェクトでない場合は undefined
  * (呼び出し側は何も書かない)。既存のユーザーhook・その他の設定キーはすべて保持する。
- * 2回適用しても結果が変わらない (先に自hookを全除去してから追記し直すため)。
+ * 2回適用しても結果が変わらず、既に置いてある自hookの位置も動かさない
+ * (置き場所の規則は {@link replaceManagedHooksInDefinitions})。
  */
 export function paradisMergeAgentHooksJson(existingRaw: string | undefined, managedEvents: readonly IParadisManagedHookEvent[], hookCommand?: string): string | undefined {
 	let parsed: unknown = {};
@@ -318,29 +334,31 @@ export function paradisMergeAgentHooksJson(existingRaw: string | undefined, mana
 		return existingRaw;
 	}
 
-	// 全イベントから当fork管理のhookを一旦取り除く。もう登録しないイベント
-	// (旧スニペットの PreToolUse 等) に残った自hookの掃除も兼ねる。
+	// 既に並んでいる自hookはその場で最新の定義へ差し替える。もう登録しないイベント
+	// (旧スニペットの PreToolUse 等) に残った自hookは取り除く。
 	for (const eventName of Object.keys(hooks)) {
 		const current = hooks[eventName];
 		if (!Array.isArray(current)) {
 			continue;
 		}
-		const filtered = removeManagedHooksFromDefinitions(current);
-		if (filtered.length === 0 && current.length > 0 && !managedEvents.some(e => e.eventName === eventName)) {
+		const event = managedEvents.find(e => e.eventName === eventName);
+		const replacement = event !== undefined ? paradisManagedHookDefinition(event, hookCommand) : undefined;
+		const { definitions, placed } = replaceManagedHooksInDefinitions(current, replacement);
+		if (replacement !== undefined && !placed) {
+			// まだ置いていないイベントは末尾へ足す (ユーザーhookの位置は動かない)
+			definitions.push(replacement);
+		}
+		if (definitions.length === 0 && current.length > 0 && event === undefined) {
 			delete hooks[eventName];
 		} else {
-			hooks[eventName] = filtered;
+			hooks[eventName] = definitions;
 		}
 	}
 
-	// 管理対象イベントへ自hookを追記する (既存ユーザーhookは上で保持済み)。
+	// イベント自体がまだ無い管理対象イベントを足す。
 	for (const event of managedEvents) {
-		const definition = paradisManagedHookDefinition(event, hookCommand);
-		const current = hooks[event.eventName];
-		if (Array.isArray(current)) {
-			current.push(definition);
-		} else {
-			hooks[event.eventName] = [definition];
+		if (!Array.isArray(hooks[event.eventName])) {
+			hooks[event.eventName] = [paradisManagedHookDefinition(event, hookCommand)];
 		}
 	}
 

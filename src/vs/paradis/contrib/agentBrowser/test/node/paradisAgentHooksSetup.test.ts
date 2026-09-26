@@ -16,7 +16,7 @@ import { join } from '../../../../../base/common/path.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
-import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, paradisManagedAgentHookCommand } from '../../common/paradisAgentHooks.js';
+import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
 
 const execFileAsync = promisify(execFile);
@@ -252,6 +252,41 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.match(script, /\$captureLimit = 4194305/);
 		assert.match(script, /if \(\$bodyBytes\.Length -gt 4194304\)/);
 		assert.match(script, /Invoke-RestMethod -Method Get/);
+	});
+
+	test('reinstalling leaves its hooks where they are, so Codex trust keyed by position stays valid', () => {
+		// Codex は hook の信頼を `<path>:<event>:<定義の位置>:<hookの位置>` で覚えている。
+		// 自hookの後ろにユーザーの hook があっても、設置し直しで位置が動いてはいけない
+		const userEarlier = { hooks: [{ type: 'command', command: '/tmp/user-earlier.sh' }] };
+		const userLater = { hooks: [{ type: 'command', command: '/tmp/user-later.sh' }] };
+		const hooks: Record<string, unknown[]> = {};
+		for (const event of PARADIS_CODEX_HOOK_EVENTS) {
+			hooks[event.eventName] = [paradisManagedHookDefinition(event)];
+		}
+		hooks.Stop = [userEarlier, paradisManagedHookDefinition({ eventName: 'Stop' }), userLater];
+		hooks.SessionStart = [paradisManagedHookDefinition({ eventName: 'SessionStart' }), userLater];
+		const existing = JSON.stringify({ hooks }, undefined, 2);
+
+		assert.strictEqual(paradisMergeAgentHooksJson(existing, PARADIS_CODEX_HOOK_EVENTS), existing);
+	});
+
+	test('upgrades an older-schema hook in the same position and drops duplicates after it', () => {
+		const schema1Command = '[ -x "$HOME/.para-code/hooks/notify-v1.sh" ] && "$HOME/.para-code/hooks/notify-v1.sh" || true';
+		const userHook = { hooks: [{ type: 'command', command: '/tmp/user-hook.sh' }] };
+		const existing = JSON.stringify({
+			hooks: {
+				Stop: [
+					{ hooks: [{ type: 'command', command: schema1Command }] },
+					userHook,
+					{ hooks: [{ type: 'command', command: paradisManagedAgentHookCommand() }] },
+				],
+			},
+		});
+		const merged = paradisMergeAgentHooksJson(existing, [{ eventName: 'Stop' }]);
+		assert.ok(merged !== undefined);
+		assert.deepStrictEqual(JSON.parse(merged), {
+			hooks: { Stop: [paradisManagedHookDefinition({ eventName: 'Stop' }), userHook] },
+		});
 	});
 
 	test('does not let an older process replace newer managed hooks', () => {
