@@ -4,10 +4,12 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, type StyleProp, type Vi
 import { hitSlopToMinimum } from '../components/hitSlop.js';
 import { HIT_SIZE, colors, radius, space, type } from '../theme.js';
 import { Icon, iconSize, type LucideIcon } from './icon.js';
+import { useThemeColors } from './themeColorsStore.js';
 
 /**
  * ボタンの種類（モックの値）。
- *  - `primary`: 白地に黒文字。流れを先へ進める操作。**1画面に1つだけ**（起動する・コミット・保存）
+ *  - `primary`: 白地に黒文字。流れを先へ進める操作。**1画面に1つだけ**（起動する・コミット・保存）。
+ *    地の色は設定 → 色の「主ボタン」で変わる（上の文字の色は地の明るさから決まる）
  *  - `secondary`: 一段明るい面（`colors.raised`）に白文字。キャンセル・並べて置く操作
  *  - `outline`: 枠だけ。主ボタンの下の「あとで」など
  *  - `ghost`: 地も枠も無い。見出しの横の「クリア」「すべて既読」など
@@ -60,7 +62,8 @@ export function Button({ label, onPress, variant = 'primary', size = 'md', icon,
 	accessibilityLabel?: string;
 }) {
 	const height = HEIGHT[size];
-	const fg = FOREGROUND[variant];
+	const theme = useThemeColors();
+	const fg = variant === 'primary' ? theme.onPrimary : FOREGROUND[variant];
 	return (
 		<Pressable
 			onPress={onPress}
@@ -70,6 +73,7 @@ export function Button({ label, onPress, variant = 'primary', size = 'md', icon,
 				styles.base,
 				{ minHeight: height, paddingHorizontal: size === 'md' ? space.lg : space.md },
 				SURFACE[variant],
+				variant === 'primary' ? { backgroundColor: theme.primary } : undefined,
 				pressed ? styles.pressed : undefined,
 				disabled ? styles.disabled : undefined,
 				style,

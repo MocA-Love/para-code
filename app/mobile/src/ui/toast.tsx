@@ -8,6 +8,7 @@ import { useParaToast, type ParaToast } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { hapticImpact } from '../haptics.js';
 import { colors, radius, space, type } from '../theme.js';
+import { useThemeColors } from './themeColorsStore.js';
 
 /**
  * 一時的なお知らせ（モックの `.toast`）。画面の下寄りに浮かぶ小さな札で、数秒で消える。
@@ -21,6 +22,7 @@ import { colors, radius, space, type } from '../theme.js';
  * （`icon` / `tone` は旧来のストアの形に合わせて渡すが、Orca の札はアイコンを出さない）
  */
 export function Toast({ toast, onAction }: { toast: ParaToast; onAction?: () => void }) {
+	const theme = useThemeColors();
 	return (
 		<View style={styles.toast}>
 			<View style={styles.textCol}>
@@ -29,7 +31,7 @@ export function Toast({ toast, onAction }: { toast: ParaToast; onAction?: () => 
 			</View>
 			{toast.action !== undefined ? (
 				<Pressable onPress={onAction} hitSlop={space.md} accessibilityRole="button" accessibilityLabel={toast.action.label}>
-					<Text style={styles.action}>{toast.action.label}</Text>
+					<Text style={[styles.action, { color: theme.accent }]}>{toast.action.label}</Text>
 				</Pressable>
 			) : null}
 		</View>

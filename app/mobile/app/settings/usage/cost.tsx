@@ -57,7 +57,7 @@ const PERIOD_OPTIONS: readonly { value: PeriodDays; label: string }[] = [
 /** モデルの棒の色（エージェントを見分ける。同じ画面では他の意味に使わない）。 */
 const AGENT_COLOR: Record<UsageAgent, string> = {
 	claude: colors.claude,
-	codex: colors.accent,
+	codex: colors.blue,
 	gemini: colors.purple,
 	other: colors.textDim,
 };
@@ -234,7 +234,7 @@ export default function CostScreen() {
 								label={day.date.slice(5)}
 								value={formatUsd(day.cost)}
 								percent={barPercent(day.cost, maxDailyCost)}
-								color={colors.accent}
+								color={colors.blue}
 							/>
 						))}
 					</DetailCard>
@@ -264,7 +264,7 @@ export default function CostScreen() {
 								key={project.name}
 								name={project.name}
 								value={formatUsd(project.cost)}
-								segments={[{ percent: barPercent(project.cost, maxProjectCost), color: colors.accent }]}
+								segments={[{ percent: barPercent(project.cost, maxProjectCost), color: colors.blue }]}
 							/>
 						))}
 					</DetailCard>

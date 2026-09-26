@@ -6,6 +6,7 @@ import { colors, radius, space, type } from '../theme.js';
 import { BottomDrawer } from './bottomDrawer.js';
 import { Button } from './button.js';
 import { DrawerTitle } from './drawerHeader.js';
+import { useThemeColors } from './themeColorsStore.js';
 
 /**
  * 1行の文字を入れるシート（モックの名前の変更）。開くと入力欄にフォーカスし、キーボードの上に
@@ -45,6 +46,7 @@ export function TextInputDrawer({
 	onSubmit: (value: string) => void;
 	onClose: () => void;
 }) {
+	const theme = useThemeColors();
 	const [value, setValue] = useState(defaultValue);
 	const [wasVisible, setWasVisible] = useState(visible);
 	// 開いた瞬間に前回の入力を捨てて初期値へ戻す（描画の前に済ませ、古い値を1フレームも見せない）。
@@ -75,7 +77,7 @@ export function TextInputDrawer({
 				onChangeText={setValue}
 				placeholder={placeholder}
 				placeholderTextColor={colors.textMuted}
-				selectionColor={colors.accent}
+				selectionColor={theme.accent}
 				autoFocus
 				autoCapitalize="none"
 				autoCorrect={false}

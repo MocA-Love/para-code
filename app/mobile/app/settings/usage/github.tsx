@@ -40,7 +40,7 @@ const MAX_ROWS = 10;
  * GraphQL の資源を示す色。Core（REST）は青。警告の琥珀・使用率のメーターの色と重ねないため紫にしている
  * （旧画面で GraphQL を黄で描き、警告と読み分けられなかった反省）。
  */
-const CORE_COLOR = colors.accent;
+const CORE_COLOR = colors.blue;
 const GRAPHQL_COLOR = colors.purple;
 
 const WINDOW_OPTIONS: readonly { value: GithubWindowKey; label: string }[] = [

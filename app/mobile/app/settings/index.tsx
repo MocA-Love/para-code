@@ -2,14 +2,14 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
-import { Activity, Bell, Info, ListChecks, MessageSquare, MessageSquareReply, Monitor, Terminal } from 'lucide-react-native';
+import { Activity, Bell, Info, ListChecks, MessageSquare, MessageSquareReply, Monitor, Palette, Terminal } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { APP_VERSION } from '../../src/components/updateSheet.js';
 import { hapticSelection } from '../../src/haptics.js';
 import { notificationSettingsSummary } from '../../src/notificationSettingsSummary.js';
 import { routes, type RouteHref } from '../../src/routes.js';
-import { ListGroup, ListRow } from '../../src/ui/index.js';
+import { ListGroup, ListRow, THEME_COLOR_SLOTS, isDefaultThemeColor, useThemeColorStore } from '../../src/ui/index.js';
 import { effectiveSessionView, useSessionViewPreference } from '../../src/features/settings/onboardingStore.js';
 import { useQuickReplyList } from '../../src/features/settings/quickRepliesStore.js';
 import { SettingsScreen } from '../../src/features/settings/settingsScaffold.js';
@@ -20,7 +20,7 @@ import { settingsRoutes } from '../../src/features/settings/settingsRoutes.js';
  * 1つの束に各ページへの行を並べ、行の右に今の状態を出して開かなくても分かるようにする。
  *
  * 並びはモックに合わせる（ターミナル → チャット UI → 通知と音声 → …）。チャット UI の下に、モックに無い
- * クイック返信（会話画面の入力欄の上のチップ）を足している。モックの「音声」「通知」は
+ * クイック返信（会話画面の入力欄の上のチップ）と色（主ボタン・自分の発言・リンクの色）を足している。モックの「音声」「通知」は
  * Para Code では1ページ（通知と音声）にまとまっている。Para Code に無いもの（トラブルシューティング・
  * プライバシーポリシー・サポート）は置かず、モックに無いコマンドプリセットを足している。
  */
@@ -37,6 +37,7 @@ export default function SettingsScreenRoute() {
 	const loadSessionView = useSessionViewPreference(s => s.load);
 	useEffect(() => { void loadSessionView(); }, [loadSessionView]);
 	const quickReplies = useQuickReplyList();
+	const customColorCount = useThemeColorStore(s => THEME_COLOR_SLOTS.filter(slot => !isDefaultThemeColor(s.settings, slot)).length);
 	const open = (href: RouteHref) => {
 		hapticSelection();
 		router.push(href);
@@ -52,6 +53,13 @@ export default function SettingsScreenRoute() {
 					value={quickReplies === undefined ? undefined : quickReplies.length > 0 ? `${quickReplies.length} 件` : 'なし'}
 					trailing="chevron"
 					onPress={() => open(settingsRoutes.quickReplies())}
+				/>
+				<ListRow
+					icon={Palette}
+					label="色"
+					value={customColorCount > 0 ? `${customColorCount} か所を変更` : '既定'}
+					trailing="chevron"
+					onPress={() => open(settingsRoutes.colors())}
 				/>
 				<ListRow
 					icon={Bell}

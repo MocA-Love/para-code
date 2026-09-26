@@ -4,8 +4,10 @@ import { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { monoFamily } from '../monoFont.js';
-import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
+import { tintOf } from '../ui/themeColors.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
@@ -55,12 +57,13 @@ export function ViewerHeader<T extends string>({ icon, title, top, backLabel, on
 	onToggleExpanded: () => void;
 }) {
 	const close = () => { hapticImpact('light'); onClose(); };
+	const theme = useThemeColors();
 	return (
 		<View style={[styles.header, { paddingTop: top }]}>
 			{backLabel !== undefined ? (
 				<Pressable style={styles.back} onPress={close} accessibilityRole="button" accessibilityLabel={`${backLabel}に戻る`}>
-					<Ionicons name="chevron-back" size={21} color={colors.accent} />
-					<Text style={styles.backText} numberOfLines={1}>{backLabel}</Text>
+					<Ionicons name="chevron-back" size={21} color={theme.accent} />
+					<Text style={[styles.backText, { color: theme.accent }]} numberOfLines={1}>{backLabel}</Text>
 				</Pressable>
 			) : <Ionicons name={icon} size={16} color={colors.textDim} />}
 			<Text style={styles.title} numberOfLines={1} ellipsizeMode="head">{title}</Text>
@@ -79,7 +82,7 @@ export function ViewerHeader<T extends string>({ icon, title, top, backLabel, on
 								accessibilityState={{ selected: active }}
 								accessibilityLabel={option.label}
 							>
-								<View style={[styles.segmentLabel, active && styles.segmentLabelActive]}>
+								<View style={[styles.segmentLabel, active && { backgroundColor: tintOf(theme.accent, alpha.line) }]}>
 									<Text style={[styles.segmentText, active && styles.segmentTextActive]}>{option.label}</Text>
 								</View>
 							</Pressable>
@@ -130,7 +133,6 @@ const styles = StyleSheet.create({
 	segmentTrack: { position: 'absolute', left: 0, right: 0, top: 8, bottom: 8, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border },
 	segmentBtn: { height: HIT_SIZE, minWidth: HIT_SIZE, justifyContent: 'center', alignItems: 'center' },
 	segmentLabel: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: radius.key, ...squircle },
-	segmentLabelActive: { backgroundColor: tint(colors.accent, alpha.line) },
 	segmentText: { color: colors.textDim, fontSize: type.meta },
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
 });

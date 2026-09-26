@@ -7,7 +7,7 @@ import { useAppStore } from '../../appState.js';
 import { hapticImpact } from '../../haptics.js';
 import { routes } from '../../routes.js';
 import { colors, radius, space, type } from '../../theme.js';
-import { Icon, SectionHeader, iconSize } from '../../ui/index.js';
+import { Icon, SectionHeader, iconSize, useThemeColors } from '../../ui/index.js';
 
 /**
  * PC を1台もペアリングしていないか（起動の読み込みが済んだうえで）。
@@ -35,6 +35,7 @@ const STEPS: readonly { readonly title: string; readonly body: string }[] = [
  */
 export function PairingEmptyState() {
 	const router = useRouter();
+	const theme = useThemeColors();
 	return (
 		<ScrollView contentContainerStyle={styles.root}>
 			<View style={styles.hero}>
@@ -42,12 +43,12 @@ export function PairingEmptyState() {
 				<Text style={styles.body}>PC の Para Code とペアリングすると、エージェントの様子を確かめたり、どのターミナルにも入ったり、スマホから作業を進めたりできます。</Text>
 				<Pressable
 					onPress={() => { hapticImpact('medium'); router.push(routes.pair()); }}
-					style={({ pressed }) => [styles.button, pressed ? styles.buttonPressed : undefined]}
+					style={({ pressed }) => [styles.button, { backgroundColor: theme.primary }, pressed ? styles.buttonPressed : undefined]}
 					accessibilityRole="button"
 					accessibilityLabel="デスクトップとペアリング"
 				>
-					<Icon icon={QrCode} size={iconSize.md} color={colors.onPrimary} />
-					<Text style={styles.buttonText}>デスクトップとペアリング</Text>
+					<Icon icon={QrCode} size={iconSize.md} color={theme.onPrimary} />
+					<Text style={[styles.buttonText, { color: theme.onPrimary }]}>デスクトップとペアリング</Text>
 				</Pressable>
 			</View>
 			<View style={styles.steps}>

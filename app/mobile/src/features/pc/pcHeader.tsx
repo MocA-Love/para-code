@@ -8,7 +8,7 @@ import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { colors, radius, space, type } from '../../theme.js';
-import { Icon, connectionColor, iconSize, type ConnectionKind, type LucideIcon } from '../../ui/index.js';
+import { Icon, connectionColor, iconSize, useThemeColors, type ConnectionKind, type LucideIcon } from '../../ui/index.js';
 
 /**
  * PC の画面の2段のヘッダー（Orca の host-screen-header。モックの `.chrome`）。
@@ -156,6 +156,7 @@ export function ToolbarRight({ archivedCount, unread, searching, usageDisabled, 
 
 /** ヘッダーの下の検索欄（モックの `.searchbar`）。 */
 export function PcSearchBar({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+	const theme = useThemeColors();
 	return (
 		<View style={styles.searchBar}>
 			<View style={styles.searchField}>
@@ -166,7 +167,7 @@ export function PcSearchBar({ value, onChange }: { value: string; onChange: (val
 					onChangeText={onChange}
 					placeholder="エージェントやスペースを検索…"
 					placeholderTextColor={colors.textMuted}
-					selectionColor={colors.accent}
+					selectionColor={theme.accent}
 					autoFocus
 					autoCapitalize="none"
 					autoCorrect={false}

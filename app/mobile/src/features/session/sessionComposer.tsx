@@ -13,7 +13,7 @@ import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
 import type { AgentCommandCatalogState, AgentCommandOption, AgentMessageSendResult, AgentModelControlState, FsUploadResult } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
-import { Button, Icon, iconSize } from '../../ui/index.js';
+import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { errorKind } from './errorKind.js';
 import { ModelPill } from './modelDrawer.js';
 import { SlashCommandList } from './slashCommandList.js';
@@ -71,6 +71,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 }, ref) {
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
 	const nativeInputRef = useRef<TextInput>(null);
+	const theme = useThemeColors();
 	const inputRef = useRef(loadDraft(draftKey));
 	const defaultValueRef = useRef(inputRef.current);
 	const submissionGenerationRef = useRef(0);
@@ -316,12 +317,12 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						onPress={() => { hapticImpact('medium'); submit(); }}
 						disabled={sendDisabled}
 						hitSlop={ROUND_SLOP}
-						style={({ pressed }) => [styles.round, styles.send, !sendDisabled ? styles.sendOn : undefined, pressed ? styles.pressed : undefined]}
+						style={({ pressed }) => [styles.round, styles.send, !sendDisabled ? { backgroundColor: theme.bubble } : undefined, pressed ? styles.pressed : undefined]}
 						accessibilityRole="button"
 						accessibilityState={{ disabled: sendDisabled }}
 						accessibilityLabel={answering ? '回答を送信' : '送信'}
 					>
-						<Icon icon={ArrowUp} size={20} color={sendDisabled ? colors.textMuted : colors.bg} strokeWidth={2.6} />
+						<Icon icon={ArrowUp} size={20} color={sendDisabled ? colors.textMuted : theme.onBubble} strokeWidth={2.6} />
 					</Pressable>
 				</View>
 			</View>
@@ -402,9 +403,6 @@ const styles = StyleSheet.create({
 	},
 	send: {
 		backgroundColor: colors.raised,
-	},
-	sendOn: {
-		backgroundColor: colors.text,
 	},
 	pressed: {
 		opacity: 0.7,

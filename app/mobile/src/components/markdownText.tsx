@@ -20,6 +20,7 @@ import { useAppStore } from '../appState.js';
 import { hapticSelection } from '../haptics.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 import { HorizontalScrollFade } from './horizontalScrollFade.js';
 import { WorkspaceFileViewer } from './workspaceFileViewer.js';
 
@@ -224,9 +225,10 @@ const HIGHLIGHT_REQUEST_DELAY_MS = 250;
  * `onOpenLocal` は呼び出し側で useCallback 済みという前提。
  */
 const HeadingBlock = memo(function HeadingBlock({ text, level, onOpenLocal }: { text: string; level: number; onOpenLocal: (target: LocalFileTarget) => void }) {
+	const theme = useThemeColors();
 	return (
 		<Text style={[styles.body, styles.heading, level === 1 ? styles.h1 : level === 2 ? styles.h2 : null]} selectable>
-			{renderInlineTokens(parseInline(text), styles.body, onOpenLocal)}
+			{renderInlineTokens(parseInline(text), styles.body, onOpenLocal, theme.accent)}
 		</Text>
 	);
 });
@@ -237,6 +239,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 	// 列幅は内容から見積もって固定する。flex:1 で画面幅へ押し込むと列が潰れて
 	// 縦に折り返し、桁が崩れるため（本家Claudeアプリと同じく表だけ横に流す）。
 	const widths = tableColumnWidths(block, cols);
+	const theme = useThemeColors();
 	return (
 		<HorizontalScrollFade style={styles.tableWrap}>
 			<View style={styles.table}>
@@ -244,7 +247,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 					{block.header.map((cell, c) => (
 						<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
 							<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-								{renderInlineTokens(parseInline(cell), styles.body, onOpenLocal)}
+								{renderInlineTokens(parseInline(cell), styles.body, onOpenLocal, theme.accent)}
 							</Text>
 						</View>
 					))}
@@ -254,7 +257,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 						{Array.from({ length: cols }, (_, c) => (
 							<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
 								<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-									{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, onOpenLocal)}
+									{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, onOpenLocal, theme.accent)}
 								</Text>
 							</View>
 						))}
@@ -521,7 +524,8 @@ function parseInline(text: string): InlineToken[] {
 	return tokens;
 }
 
-function renderInlineTokens(tokens: InlineToken[], baseStyle: object, onOpenLocal: (target: LocalFileTarget) => void): ReactNode[] {
+/** `linkColor` はリンクの色（設定 → 色の「選択の印・リンク」）。 */
+function renderInlineTokens(tokens: InlineToken[], baseStyle: object, onOpenLocal: (target: LocalFileTarget) => void, linkColor: string): ReactNode[] {
 	return tokens.map((token, i) => {
 		if (token.kind === 'code') {
 			return <Text key={i} style={[baseStyle, styles.inlineCode]}>{token.text}</Text>;
@@ -530,10 +534,10 @@ function renderInlineTokens(tokens: InlineToken[], baseStyle: object, onOpenLoca
 			return <Text key={i} style={[baseStyle, styles.bold]}>{token.text}</Text>;
 		}
 		if (token.kind === 'external') {
-			return <Text key={i} style={[baseStyle, styles.link]} onPress={() => { void Linking.openURL(token.url).catch(() => { /* 開けないURLは無視 */ }); }}>{token.label}</Text>;
+			return <Text key={i} style={[baseStyle, styles.link, { color: linkColor }]} onPress={() => { void Linking.openURL(token.url).catch(() => { /* 開けないURLは無視 */ }); }}>{token.label}</Text>;
 		}
 		if (token.kind === 'local') {
-			return <Text key={i} style={[baseStyle, styles.link]} onPress={() => onOpenLocal(token.target)}>{token.label}</Text>;
+			return <Text key={i} style={[baseStyle, styles.link, { color: linkColor }]} onPress={() => onOpenLocal(token.target)}>{token.label}</Text>;
 		}
 		return <Text key={i} style={baseStyle}>{token.text}</Text>;
 	});
@@ -541,23 +545,25 @@ function renderInlineTokens(tokens: InlineToken[], baseStyle: object, onOpenLoca
 
 function LocalFileCard({ label, target, opening, onPress }: { label: string; target: LocalFileTarget; opening: boolean; onPress: () => void }) {
 	const name = target.path.split(/[\\/]/).pop() ?? target.path;
+	const theme = useThemeColors();
 	const location = target.line !== undefined ? `行 ${target.line}${target.column !== undefined ? `、列 ${target.column}` : ''}` : undefined;
 	return (
 		<Pressable style={({ pressed }) => [styles.fileCard, pressed ? styles.fileCardPressed : null]} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${label}を開く`}>
-			<View style={styles.fileIcon}><Ionicons name="document-text-outline" size={18} color={colors.accent} /></View>
+			<View style={[styles.fileIcon, { backgroundColor: theme.accentWash }]}><Ionicons name="document-text-outline" size={18} color={theme.accent} /></View>
 			<View style={styles.fileInfo}>
 				<Text style={styles.fileLabel} numberOfLines={1}>{label || name}</Text>
 				<Text style={styles.filePath} numberOfLines={2}>{target.path}{location !== undefined ? ` · ${location}` : ''}</Text>
 			</View>
-			{opening ? <ActivityIndicator size="small" color={colors.accent} /> : <Ionicons name="chevron-forward" size={18} color={colors.textDim} />}
+			{opening ? <ActivityIndicator size="small" color={theme.accent} /> : <Ionicons name="chevron-forward" size={18} color={colors.textDim} />}
 		</Pressable>
 	);
 }
 
 const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLocal: (target: LocalFileTarget) => void; openingKey?: string }) {
+	const theme = useThemeColors();
 	const tokens = parseInline(text);
 	if (!tokens.some(token => token.kind === 'local')) {
-		return <Text style={styles.body} selectable>{renderInlineTokens(tokens, styles.body, onOpenLocal)}</Text>;
+		return <Text style={styles.body} selectable>{renderInlineTokens(tokens, styles.body, onOpenLocal, theme.accent)}</Text>;
 	}
 	const groups: InlineToken[][] = [];
 	for (const token of tokens) {
@@ -576,7 +582,7 @@ const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }:
 					const key = `${local.target.path}:${local.target.line ?? ''}:${local.target.column ?? ''}`;
 					return <LocalFileCard key={i} label={local.label} target={local.target} opening={openingKey === key} onPress={() => onOpenLocal(local.target)} />;
 				}
-				return <Text key={i} style={styles.body} selectable>{renderInlineTokens(group, styles.body, onOpenLocal)}</Text>;
+				return <Text key={i} style={styles.body} selectable>{renderInlineTokens(group, styles.body, onOpenLocal, theme.accent)}</Text>;
 			})}
 		</View>
 	);

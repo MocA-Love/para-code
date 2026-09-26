@@ -11,7 +11,7 @@ import { isFileViewerJavaScriptEnabled } from '../../components/webViewScriptPol
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
 import { colors, radius, space, type } from '../../theme.js';
-import { Button, EmptyState } from '../../ui/index.js';
+import { Button, EmptyState, useThemeColors } from '../../ui/index.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 import { CenterSpinner } from './codeParts.js';
 import { buildCodeHtml, buildMarkdownHtml, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
@@ -250,6 +250,8 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			{ text: '開く', onPress: () => { void Linking.openURL(url).catch(() => undefined); } },
 		]);
 	}), []);
+	// Markdown のリンクと、開いた行の地は設定 → 色の「選択の印・リンク」。
+	const theme = useThemeColors();
 	const html = useMemo(() => {
 		if (kind === 'spreadsheet') {
 			return spreadsheetHtml !== undefined && officeNonce !== undefined ? secureMobileOfficeHtml(spreadsheetHtml, officeNonce) : undefined;
@@ -267,10 +269,10 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			return text.content;
 		}
 		if (mode === 'render' && kind === 'markdown') {
-			return buildMarkdownHtml(text);
+			return buildMarkdownHtml(text, theme);
 		}
-		return buildCodeHtml(text, focusLine);
-	}, [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name]);
+		return buildCodeHtml(text, focusLine, theme);
+	}, [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name, theme]);
 	const officeViewState = useMemo(() => ({
 		mode,
 		...(kind === 'spreadsheet' && content?.xlsx?.sheet !== undefined ? { activeSheetIndex: content.xlsx.sheet } : {}),

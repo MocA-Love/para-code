@@ -7,7 +7,7 @@ import type { DiffRow } from '../../components/diffParser.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
-import { HeaderButton, Icon, iconSize } from '../../ui/index.js';
+import { HeaderButton, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { ChangeBadge } from './codeParts.js';
 import { REVIEW_FILTERS, diffLineNumber, diffSign, type ReviewFilter } from './diffReview.js';
 import { splitPath, type ScmEntry } from './scmModel.js';
@@ -118,6 +118,7 @@ export function ReviewFooter({ reviewed, canOpen, canMove, bottomInset, onPrev, 
 	onOpen: () => void;
 	onToggleReviewed: () => void;
 }) {
+	const theme = useThemeColors();
 	return (
 		<View style={[styles.footer, { paddingBottom: space.sm + bottomInset }]}>
 			<Pressable
@@ -141,13 +142,13 @@ export function ReviewFooter({ reviewed, canOpen, canMove, bottomInset, onPrev, 
 			</Pressable>
 			<Pressable
 				onPress={() => { hapticImpact('light'); onToggleReviewed(); }}
-				style={({ pressed }) => [styles.mark, reviewed ? styles.markDone : undefined, pressed ? styles.markPressed : undefined]}
+				style={({ pressed }) => [styles.mark, { backgroundColor: theme.primary }, reviewed ? styles.markDone : undefined, pressed ? styles.markPressed : undefined]}
 				accessibilityRole="button"
 				accessibilityState={{ checked: reviewed }}
 				accessibilityLabel={reviewed ? '確認済み（押すと未確認に戻す）' : '確認済みにする'}
 			>
-				<Icon icon={Check} size={iconSize.md} color={reviewed ? colors.green : colors.onPrimary} strokeWidth={2.4} />
-				<Text style={[styles.markText, reviewed ? styles.markTextDone : undefined]}>{reviewed ? '確認済み' : '確認済みにする'}</Text>
+				<Icon icon={Check} size={iconSize.md} color={reviewed ? colors.green : theme.onPrimary} strokeWidth={2.4} />
+				<Text style={[styles.markText, { color: theme.onPrimary }, reviewed ? styles.markTextDone : undefined]}>{reviewed ? '確認済み' : '確認済みにする'}</Text>
 			</Pressable>
 			<Pressable
 				onPress={() => { hapticSelection(); onNext(); }}

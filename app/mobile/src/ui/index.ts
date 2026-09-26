@@ -32,4 +32,22 @@ export {
 	type ConnectionKind,
 } from './statusColors.js';
 export { TextInputDrawer } from './textInputDrawer.js';
+export {
+	DEFAULT_THEME_COLORS,
+	THEME_COLOR_SLOTS,
+	THEME_COLOR_SLOT_LABELS,
+	colorName,
+	colorWarnings,
+	contrastRatio,
+	isDefaultThemeColor,
+	parseHexInput,
+	textColorOn,
+	textToneOn,
+	themeColorOf,
+	tintOf,
+	type ThemeColorSettings,
+	type ThemeColorSlot,
+	type ThemeColors,
+} from './themeColors.js';
+export { useThemeColorStore, useThemeColors } from './themeColorsStore.js';
 export { Toast, ToastHost } from './toast.js';

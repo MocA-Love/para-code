@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { CameraView } from 'expo-camera';
-import { colors, radius, space, tint, type } from '../../theme.js';
+import { colors, radius, space, type } from '../../theme.js';
+import { tintOf, useThemeColors } from '../../ui/index.js';
 
 /** 枠の大きさ＝カメラの短い辺のこの割合（Orca の SCAN_RETICLE_SCALE）。 */
 const RETICLE_SCALE = 0.62;
@@ -12,6 +13,8 @@ const RETICLE_MAX_SIZE = 360;
 /** 四隅の鉤の長さと太さ（pt。Orca の pair-scan-styles）。 */
 const CORNER_SIZE = 28;
 const CORNER_WIDTH = 2.5;
+/** 四隅の鉤の不透明度。 */
+const CORNER_OPACITY = 0.7;
 
 /**
  * QR コードの読み取り（Orca の pair-scan のカメラ）。角丸の枠の中にカメラを出し、
@@ -27,6 +30,9 @@ export function PairScanner({ onScanned }: {
 		const height = Math.round(event.nativeEvent.layout.height);
 		setBounds(current => (current.width === width && current.height === height ? current : { width, height }));
 	};
+	const theme = useThemeColors();
+	// 四隅の鉤は主ボタンの色（設定 → 色）を 70% で。
+	const cornerColor = { borderColor: tintOf(theme.primary, CORNER_OPACITY) };
 	const reticle = Math.min(Math.round(Math.min(bounds.width, bounds.height) * RETICLE_SCALE), RETICLE_MAX_SIZE);
 	return (
 		<View style={styles.wrap} onLayout={onLayout}>
@@ -38,10 +44,10 @@ export function PairScanner({ onScanned }: {
 			/>
 			<View style={styles.reticle} pointerEvents="none">
 				<View style={{ width: reticle, height: reticle }}>
-					<View style={[styles.corner, styles.cornerTL]} />
-					<View style={[styles.corner, styles.cornerTR]} />
-					<View style={[styles.corner, styles.cornerBL]} />
-					<View style={[styles.corner, styles.cornerBR]} />
+					<View style={[styles.corner, cornerColor, styles.cornerTL]} />
+					<View style={[styles.corner, cornerColor, styles.cornerTR]} />
+					<View style={[styles.corner, cornerColor, styles.cornerBL]} />
+					<View style={[styles.corner, cornerColor, styles.cornerBR]} />
 				</View>
 			</View>
 		</View>
@@ -85,7 +91,6 @@ const styles = StyleSheet.create({
 		position: 'absolute',
 		width: CORNER_SIZE,
 		height: CORNER_SIZE,
-		borderColor: tint(colors.primary, 0.7),
 	},
 	cornerTL: {
 		top: 0,

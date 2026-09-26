@@ -10,7 +10,7 @@ import { commitFileKind, scmChangeMeta } from '../../scmChangeKind.js';
 import type { ScmLogResult } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { formatRelativeTime } from '../../time.js';
-import { Icon, iconSize } from '../../ui/index.js';
+import { Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import type { CommitAction, ScmCounts, ScmEntry } from './scmModel.js';
 import { splitPath } from './scmModel.js';
 import type { CommitFiles } from './useScmData.js';
@@ -82,6 +82,7 @@ export function CommitBar({ action, message, onChangeMessage, onCommit, onBlocke
 	bottomInset: number;
 	onLayout?: (event: LayoutChangeEvent) => void;
 }) {
+	const theme = useThemeColors();
 	const press = () => {
 		if (action.disabled) {
 			if (action.reason !== undefined) {
@@ -117,13 +118,13 @@ export function CommitBar({ action, message, onChangeMessage, onCommit, onBlocke
 				<Pressable
 					onPress={press}
 					hitSlop={hitSlopToMinimum(COMMIT_BAR_CONTROL)}
-					style={({ pressed }) => [styles.primary, action.disabled ? styles.primaryOff : pressed ? styles.primaryPressed : undefined]}
+					style={({ pressed }) => [styles.primary, { backgroundColor: theme.primary }, action.disabled ? styles.primaryOff : pressed ? styles.primaryPressed : undefined]}
 					accessibilityRole="button"
 					accessibilityLabel={action.label}
 					accessibilityState={{ disabled: action.disabled, busy: action.busy }}
 					accessibilityHint={action.reason}
 				>
-					<Text style={styles.primaryText} numberOfLines={1}>{action.label}</Text>
+					<Text style={[styles.primaryText, { color: theme.onPrimary }]} numberOfLines={1}>{action.label}</Text>
 				</Pressable>
 			</View>
 			<Text style={styles.commitHint}>ステージの操作は PC で行います。ここからは未追跡を含むすべての変更をまとめてコミットします。</Text>
