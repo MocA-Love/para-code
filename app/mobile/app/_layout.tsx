@@ -16,6 +16,7 @@ import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { notificationDestination, notificationNavigationDecision } from '../src/notificationNavigation.js';
+import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 
 /**
  * 深いルート（通知から開いたセッションなど）をいきなり開いたときも、下にホームを敷く。
@@ -83,6 +84,8 @@ function RootLayout() {
 	useEffect(() => {
 		void init().finally(() => Sentry.appLoaded());
 		startLiveActivitySync();
+		// セッションの開き方（会話表示かターミナル表示か）は、セッション画面を開く前に読み終えておく。
+		loadSessionViewSettings();
 	}, [init]);
 
 	const tryNavigate = useCallback(() => {
