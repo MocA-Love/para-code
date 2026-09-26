@@ -19,7 +19,7 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IPowerService } from '../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
-import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeBlockerMode, ParadisKeepAwakeMode, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
+import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeBlockerMode, ParadisKeepAwakeMode, paradisAgentsActiveAfterSnapshotFailure, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { ParadisKeepAwakeController } from '../common/paradisKeepAwakeController.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -41,7 +41,8 @@ const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
  *
  * `auto` モードでは、このウィンドウのペインのエージェント状態（hook / transcript 由来。
  * {@link IParadisAgentStatusSnapshotService} が約2秒ごとに配る）を見て、作業中・許可待ち・質問中の
- * ペインがある間だけ 'system' の blocker を掛ける。スナップショットの取得に失敗した回は直前の判断を保つ。
+ * ペインがある間だけ 'system' の blocker を掛ける。スナップショットの取得に失敗した回は直前の判断を保つが、
+ * 約60秒続けて取れなければ「動いていない」に倒す。
  */
 export class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContribution {
 
@@ -52,6 +53,8 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 	private readonly agentStatusSubscription = this._register(new MutableDisposable());
 	/** auto モードで直近に判断した「エージェントが動いているか」。 */
 	private agentsActive = false;
+	/** auto モードで最後にスナップショットが取れた時刻（購読を張った時刻から数え始める）。 */
+	private lastSnapshotAt = 0;
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -96,13 +99,21 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 		if (this.getMode() === 'auto') {
 			if (!this.agentStatusSubscription.value) {
 				this.agentsActive = false;
+				this.lastSnapshotAt = Date.now();
 				// subscribe は最新のスナップショットをその場で配ることがあるので、コールバックからは
 				// 購読の張り直しを伴わない applyBlocker だけを呼ぶ。
 				this.agentStatusSubscription.value = this.agentStatusSnapshotService.subscribe(outcome => {
-					if (!outcome.snapshot) {
-						return;
+					const now = Date.now();
+					let active: boolean;
+					if (outcome.snapshot) {
+						this.lastSnapshotAt = now;
+						active = paradisAgentsNeedKeepAwake(outcome.snapshot.paneStatuses, now);
+					} else {
+						active = paradisAgentsActiveAfterSnapshotFailure(this.agentsActive, this.lastSnapshotAt, now);
+						if (active !== this.agentsActive) {
+							this.logService.info('[paradisKeepAwake] agent status has been unavailable for a while; letting the PC sleep');
+						}
 					}
-					const active = paradisAgentsNeedKeepAwake(outcome.snapshot.paneStatuses, Date.now());
 					if (active !== this.agentsActive) {
 						this.agentsActive = active;
 						this.applyBlocker();
