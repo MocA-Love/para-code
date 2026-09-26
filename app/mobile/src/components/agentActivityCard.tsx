@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { activityStatusColor as statusColor, activityStatusLabel as statusLabel } from '../agentStatus.js';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentActivityState, AgentActivityStatus } from '../store.js';
@@ -8,20 +9,7 @@ import { GlassSurface } from './glassSurface.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 
-function statusLabel(status: AgentActivityStatus): string {
-	switch (status) {
-		case 'running': return '実行中';
-		case 'idle': return '待機中';
-		case 'completed': return '完了';
-		case 'failed': return '失敗';
-		case 'interrupted': return '中断';
-		case 'unknown': return '状態不明';
-	}
-}
 
-function statusColor(status: AgentActivityStatus) {
-	return status === 'failed' ? colors.red : status === 'interrupted' || status === 'unknown' ? colors.yellow : status === 'running' ? colors.accent : colors.green;
-}
 
 export function AgentActivityCard({ activity, onOpen }: { activity: AgentActivityState; onOpen?: (agentId?: string) => void }) {
 	const activeAgents = activity.agents.filter(item => isRunningAgentActivity(item.status));

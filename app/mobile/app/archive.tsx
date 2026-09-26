@@ -78,7 +78,7 @@ export default function ArchiveScreen() {
 				{rows.length === 0 ? (
 					<EmptyState title="アーカイブしたエージェントはありません" message="ホームの一覧を左へスワイプするとここに入ります" style={styles.empty} />
 				) : (
-					<Text style={styles.note}>PCではそのまま動いています。質問や応答待ちになったものは自動でホームへ戻ります。</Text>
+					<Text style={styles.note}>PCではそのまま動いています。質問や許可待ちになったものは自動でホームへ戻ります。</Text>
 				)}
 				{rows.map(t => {
 					const ws = resolveWs(t);

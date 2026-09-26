@@ -115,9 +115,9 @@ function toneChipStyle(tone: AgentStepTone): { backgroundColor?: string; borderC
 		case 'thinking': return { backgroundColor: tint(colors.purple, alpha.wash), borderColor: tint(colors.purple, alpha.line), color: colors.purple };
 		case 'mcp': return { backgroundColor: tint(colors.accent, alpha.wash), borderColor: tint(colors.accent, alpha.line), color: colors.accent };
 		case 'agent': return { backgroundColor: tint(colors.claude, alpha.wash), borderColor: tint(colors.claude, alpha.line), color: colors.claude };
-		case 'approval': return { backgroundColor: tint(colors.yellow, alpha.wash), borderColor: tint(colors.yellow, alpha.line), color: colors.yellow };
+		case 'approval': return { backgroundColor: tint(colors.red, alpha.wash), borderColor: tint(colors.red, alpha.line), color: colors.red };
 		case 'error': return { backgroundColor: tint(colors.red, alpha.wash), borderColor: tint(colors.red, alpha.line), color: colors.red };
-		case 'live': return { backgroundColor: colors.accentWash, borderColor: tint(colors.accent, alpha.line), color: colors.accent };
+		case 'live': return { backgroundColor: tint(colors.amber, alpha.wash), borderColor: tint(colors.amber, alpha.line), color: colors.amber };
 		default: return {};
 	}
 }
@@ -126,7 +126,7 @@ function toneNameStyle(tone: AgentStepTone): { color?: string } {
 	switch (tone) {
 		case 'thinking': return { color: colors.purple };
 		case 'agent': return { color: colors.claude };
-		case 'approval': return { color: colors.yellow };
+		case 'approval': return { color: colors.red };
 		default: return {};
 	}
 }
@@ -135,8 +135,8 @@ function toneDotStyle(tone: AgentStepTone): { backgroundColor?: string } {
 	switch (tone) {
 		case 'thinking': return { backgroundColor: colors.purple };
 		case 'error': return { backgroundColor: colors.red };
-		case 'approval': return { backgroundColor: colors.yellow };
-		case 'live': return { backgroundColor: colors.accent };
+		case 'approval': return { backgroundColor: colors.red };
+		case 'live': return { backgroundColor: colors.amber };
 		default: return { backgroundColor: colors.green };
 	}
 }

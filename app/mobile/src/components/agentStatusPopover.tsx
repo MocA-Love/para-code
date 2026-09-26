@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { agentStatusColor, agentStatusLabel } from '../agentStatus.js';
 import { useEffect } from 'react';
 import { BackHandler, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,13 +19,8 @@ const POPOVER_WIDTH = 200;
 // 項目2つ+区切り線の概算高さ（実測値を使わずクランプするための見積もり。terminalActionsMenuと同じ流儀）。
 const POPOVER_HEIGHT_ESTIMATE = 120;
 
-function statusLabel(status: string): string {
-	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : 'レビュー';
-}
-
-function statusDotColor(status: string): string {
-	return status === 'permission' || status === 'question' ? colors.red : colors.yellow;
-}
+const statusLabel = agentStatusLabel;
+const statusDotColor = agentStatusColor;
 
 /**
  * ホーム一覧のステータスバッジをタップして開くポップオーバー（status.html 案B準拠）。

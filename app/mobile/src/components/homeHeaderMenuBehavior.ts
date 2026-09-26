@@ -63,7 +63,7 @@ export function buildHomeHeaderMenuItems(options: HomeHeaderMenuOptions): HomeHe
 		}
 		items.push(
 			{ id: 'voice-notifications', title: options.voiceActive ? '音声通知（受信中）' : '音声通知', fallbackTitle: options.voiceActive ? '音声通知（受信中）' : '音声通知', systemImage: options.voiceActive ? 'speaker.wave.2.fill' : 'speaker.wave.2', fallbackIcon: options.voiceActive ? 'volume-high' : 'volume-high-outline' },
-			{ id: 'notifications', title: options.notificationQuestionCount > 0 ? `通知（応答待ち ${options.notificationQuestionCount}件）` : '通知', fallbackTitle: options.notificationQuestionCount > 0 ? `通知（応答待ち ${options.notificationQuestionCount}件）` : '通知', systemImage: 'bell', fallbackIcon: 'notifications-outline' },
+			{ id: 'notifications', title: options.notificationQuestionCount > 0 ? `通知（要対応 ${options.notificationQuestionCount}件）` : '通知', fallbackTitle: options.notificationQuestionCount > 0 ? `通知（要対応 ${options.notificationQuestionCount}件）` : '通知', systemImage: 'bell', fallbackIcon: 'notifications-outline' },
 		);
 	}
 	items.push({

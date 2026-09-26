@@ -39,7 +39,7 @@ describe('pcStatusText', () => {
 
 	test('見ていないPCで待っている件数は添えるが、使用中のPCには出さない', () => {
 		expect([pcStatusText(pc({ waiting: 2 }), false), pcStatusText(pc({ waiting: 2 }), true)])
-			.toStrictEqual(['待機中 · 応答待ち 2件', '接続中 · 使用中']);
+			.toStrictEqual(['待機中 · 要対応 2件', '接続中 · 使用中']);
 	});
 });
 

@@ -778,7 +778,7 @@ function WorkingIndicator({ live, pendingCount = 0, onOpenPending }: {
 	const label = live?.phase === 'tool'
 		? `実行中: ${formatToolName(live.tool ?? 'tool')}`
 		: live?.phase === 'message' ? '応答を生成中'
-			: live?.phase === 'permission' ? '確認待ち' : '考え中';
+			: live?.phase === 'permission' ? '許可待ち' : '考え中';
 	// preview はツールの開始で現れ、終了（phase='thinking'）で消えるため、そのままだと
 	// フッターの高さがツール1回ごとに 0〜4行ぶん振れる。下端に張り付いている以上、
 	// その伸縮がそのまま会話本文の上下動になる（ツール連打時は毎秒数回＝「高速にガクガク」）。
