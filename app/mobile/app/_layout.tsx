@@ -13,6 +13,7 @@ import { UpdateSheetHost } from '../src/components/updateSheet.js';
 import { ToastHost } from '../src/ui/toast.js';
 import { DevProbe } from '../src/devProbe.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
+import { startWidgetSync } from '../src/widgets/widgetSync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { notificationDestination, notificationNavigationDecision } from '../src/notificationNavigation.js';
@@ -86,6 +87,8 @@ function RootLayout() {
 	useEffect(() => {
 		void init().finally(() => Sentry.appLoaded());
 		startLiveActivitySync();
+		// ホーム画面・ロック画面のウィジェットへ要約を書き出す（前面の間と、バックグラウンドへ移るとき）。
+		startWidgetSync();
 		// セッションの開き方（会話表示かターミナル表示か）は、セッション画面を開く前に読み終えておく。
 		loadSessionViewSettings();
 		// 設定 → 色で変えた色は、最初の画面を描くときから当てる。

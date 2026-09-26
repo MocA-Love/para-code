@@ -9,6 +9,14 @@ import WidgetKit
 struct ParaCodeWidgetsBundle: WidgetBundle {
 	var body: some Widget {
 		ParaCodeLiveActivity()
+		// ホーム画面・ロック画面のウィジェット（案 A〜D）。設定とボタンに iOS 17 の App Intents を使うため 17 以上だけ。
+		// 中身は App Group の要約（WidgetShared.swift）を読むだけで、PC やリレーには繋がない。
+		if #available(iOS 17.0, *) {
+			AttentionWidget()
+			AgentsWidget()
+			PcStatusWidget()
+			SpaceWidget()
+		}
 	}
 }
 

@@ -1,9 +1,10 @@
-# ParaCodeWidgets（iOS Widget Extension / Live Activity）
+# ParaCodeWidgets（iOS Widget Extension / Live Activity・ホーム画面とロック画面のウィジェット）
 
 PARA-CODE: fork-owned directory (Para Code).
 
 エージェントの実行状況・応答待ちをロック画面/Dynamic Islandに表示する Live Activity
-（ActivityKit + WidgetKit）のソース一式。JS側の同期は `app/mobile/src/liveActivitySync.ts`、
+（ActivityKit + WidgetKit）と、ホーム画面・ロック画面のウィジェット（案 A 要対応・B エージェント・
+C PC の状態・D スペース。iOS 17 以上）のソース一式。JS側の同期は `app/mobile/src/liveActivitySync.ts`、
 ネイティブ橋渡しは Expo ローカルモジュール `app/mobile/modules/para-live-activity/`
 （こちらは `ios/` 外なのでリポジトリに追跡される）。
 
@@ -14,7 +15,7 @@ PARA-CODE: fork-owned directory (Para Code).
 
 ## `npx expo prebuild --clean` 等で ios/ を作り直した場合の復元手順
 
-1. このディレクトリのファイル一式（Swift 2つ + Info.plist + `paracode-logo.png`）を
+1. このディレクトリのファイル一式（Swift 10個 + Info.plist + `ParaCodeWidgets.entitlements` + `paracode-logo.png`）を
    `app/mobile/ios/ParaCodeWidgets/` へコピー
 2. Xcode で `ParaCodeMobile.xcworkspace` を開き、File → New → Target… → **Widget Extension** を追加
    - Product Name: `ParaCodeWidgets` / Team: WB4G82C384 / Language: Swift
@@ -30,6 +31,26 @@ PARA-CODE: fork-owned directory (Para Code).
    （不一致だとビルド時に CFBundleVersion / CFBundleShortVersionString の警告が出る）
 5. メインアプリ側の `Info.plist` に `NSSupportsLiveActivities: true` があることを確認
    （`app.json` の `ios.infoPlist` に設定済みなので prebuild で再生成される）
+6. Swift はすべて ParaCodeWidgets ターゲットの Sources に入れる。**`WidgetShared.swift` だけは NotifyExtension
+   ターゲットの Sources にも入れる**（通知拡張が要約を書き換えるため）
+7. ParaCodeWidgets の Build Settings の `CODE_SIGN_ENTITLEMENTS` を `ParaCodeWidgets/ParaCodeWidgets.entitlements` に
+   する（Debug / Release の両方）。App Group `group.ltd.paradis.paracode.mobile` はメインアプリ・NotifyExtension の
+   entitlements にも入れる（Signing & Capabilities → App Groups）
+
+## ホーム画面・ロック画面のウィジェット（2026-09-27）
+
+- ウィジェットは PC・リレーに繋がない。App Group の `widget-snapshot.json`（要約）と `widget-settings.json`
+  （設定 → ウィジェット）を読むだけ。形は `WidgetShared.swift` と JS の `src/widgets/snapshot.ts`・`settings.ts` で
+  二重定義になっているので、片方だけ変えないこと
+- 要約を書くのはアプリ（`src/widgets/widgetSync.ts`。前面の間は間引いて、背面へ移るときは必ず）と、
+  通知拡張（`NotificationService.swift` → `WidgetStore.applyNotification`。閉じている間の要対応）
+- 「確認済みにする」は `MarkReviewedIntent`（iOS 17。ロック中は解除が要る）。要約の表示をすぐ変え、
+  `widget-outbox.json` に積む。アプリが次に PC へ繋いだら既存の `ackAgentStatus` で送り、積み置きから消す
+- 押したときのリンクは `paracode-mobile:///widget/<行き先>?pc=…&space=…&terminal=…`。いまのルートへの
+  書き換えは `src/features/links/widgetLinks.ts`（ルートを変えてもウィジェットは直さなくてよい）
+- 設定（長押し →「ウィジェットを編集」）は `WidgetIntents.swift` の AppIntentConfiguration。PC・スペースの
+  候補は要約から出す。「既定」はアプリの設定（設定 → ウィジェット）に従う
+- iOS 16.x（配信の下限 16.4）ではホーム画面のウィジェットは出ない（WidgetBundle の `if #available(iOS 17.0, *)`）
 
 ## 設計メモ
 

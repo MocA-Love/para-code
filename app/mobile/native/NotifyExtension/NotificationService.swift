@@ -7,6 +7,7 @@
 //  (base64url でエンコードされた AES-256-GCM 暗号文) を復号し、
 //  通知の title / body を実際の内容へ差し替える。
 //  復号鍵はメインアプリが共有 Keychain に保存した 32 バイト鍵 (hex 文字列)。
+//  復号できたら、ウィジェットの要約（App Group。WidgetShared.swift の WidgetStore）の要対応も書き換える。
 
 import UserNotifications
 import CryptoKit
@@ -88,6 +89,11 @@ final class NotificationService: UNNotificationServiceExtension {
 			userInfo["pcId"] = pcId
 		}
 		bestAttempt.userInfo = userInfo
+
+		// ホーム画面・ロック画面のウィジェットの要約（App Group）の要対応を書き換えて描き直させる
+		// （アプリが閉じている間にウィジェットを新しくできる唯一の経路）。要約がまだ無い・App Group が
+		// 使えないときは何もしない。通知の表示はこの成否に関わらず行う。
+		WidgetStore.applyNotification(json, pcId: userInfo["pcId"] as? String)
 
 		contentHandler(bestAttempt)
 	}
