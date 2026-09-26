@@ -77,6 +77,8 @@ export interface IParadisClaudeLiveAuthOptions {
 	/** キーチェーンのアカウント名に使う OS のユーザー名（$USER を優先）。 */
 	readonly userName: string | undefined;
 	readonly now?: () => number;
+	/** ロック1つを待つ上限（テストで短くする）。 */
+	readonly lockTimeoutMs?: number;
 }
 
 interface IConfigCache {
@@ -87,7 +89,7 @@ interface IConfigCache {
 }
 
 /** proper-lockfile 互換のディレクトリロックを1つ取る。 */
-async function acquireDirectoryLock(lockPath: string, staleMs: number, now: () => number): Promise<() => Promise<void>> {
+async function acquireDirectoryLock(lockPath: string, staleMs: number, timeoutMs: number, now: () => number): Promise<() => Promise<void>> {
 	const started = now();
 	await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
 	while (true) {
@@ -99,7 +101,7 @@ async function acquireDirectoryLock(lockPath: string, staleMs: number, now: () =
 				throw error;
 			}
 		}
-		if (now() - started > LOCK_TIMEOUT_MS) {
+		if (now() - started > timeoutMs) {
 			throw new ParadisClaudeLockTimeoutError(`could not acquire ${path.basename(lockPath)}`);
 		}
 		try {
@@ -263,10 +265,11 @@ export class ParadisClaudeLiveAuth {
 	async withLocks<T>(fn: () => Promise<T>): Promise<T> {
 		const releases: (() => Promise<void>)[] = [];
 		try {
-			releases.push(await acquireDirectoryLock(path.join(this.configHome, '.oauth_refresh.lock'), CREDENTIALS_LOCK_STALE_MS, this.now));
-			releases.push(await acquireDirectoryLock(`${this.configHome}.lock`, CREDENTIALS_LOCK_STALE_MS, this.now));
+			const timeoutMs = this.options.lockTimeoutMs ?? LOCK_TIMEOUT_MS;
+			releases.push(await acquireDirectoryLock(path.join(this.configHome, '.oauth_refresh.lock'), CREDENTIALS_LOCK_STALE_MS, timeoutMs, this.now));
+			releases.push(await acquireDirectoryLock(`${this.configHome}.lock`, CREDENTIALS_LOCK_STALE_MS, timeoutMs, this.now));
 			const configPath = await this.globalConfigPath();
-			releases.push(await acquireDirectoryLock(`${configPath}.lock`, CONFIG_LOCK_STALE_MS, this.now));
+			releases.push(await acquireDirectoryLock(`${configPath}.lock`, CONFIG_LOCK_STALE_MS, timeoutMs, this.now));
 			return await fn();
 		} finally {
 			for (const release of releases.reverse()) {
@@ -438,13 +441,19 @@ export class ParadisClaudeLiveAuth {
 		}
 	}
 
-	/** {@link captureSnapshot} の状態へ戻す。できる限り全部戻し、失敗があれば最後に投げる。 */
+	/**
+	 * {@link captureSnapshot} の状態へ戻す。できる限り全部戻し、失敗があれば最後に投げる。
+	 * 既に控えと同じ中身のところ（書く前に失敗したところ）は書き直さない。
+	 */
 	async restore(snapshot: IParadisClaudeLiveSnapshot): Promise<void> {
 		const failures: unknown[] = [];
 		if (this.usesKeychain) {
 			const account = snapshot.keychainAccount ?? this.keychainAccountNames()[0];
 			try {
-				if (snapshot.keychainValue !== undefined) {
+				const current = await this.options.keychain!.read(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account);
+				if (current === snapshot.keychainValue) {
+					// 変わっていない
+				} else if (snapshot.keychainValue !== undefined) {
 					await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account, snapshot.keychainValue);
 				} else {
 					await this.options.keychain!.delete(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account);
@@ -454,7 +463,9 @@ export class ParadisClaudeLiveAuth {
 			}
 		}
 		try {
-			if (snapshot.credentialsFile !== undefined) {
+			if (await readFileIfExists(this.credentialsPath) === snapshot.credentialsFile) {
+				// 変わっていない
+			} else if (snapshot.credentialsFile !== undefined) {
 				await paradisWriteFileAtomically(this.credentialsPath, snapshot.credentialsFile, this.options.platform);
 			} else {
 				await fs.promises.rm(this.credentialsPath, { force: true });
@@ -464,7 +475,9 @@ export class ParadisClaudeLiveAuth {
 		}
 		try {
 			const configPath = await this.globalConfigPath();
-			if (snapshot.globalConfig !== undefined) {
+			if (await readFileIfExists(configPath) === snapshot.globalConfig) {
+				// 変わっていない
+			} else if (snapshot.globalConfig !== undefined) {
 				await paradisWriteFileAtomically(configPath, snapshot.globalConfig, this.options.platform);
 			} else {
 				await fs.promises.rm(configPath, { force: true });

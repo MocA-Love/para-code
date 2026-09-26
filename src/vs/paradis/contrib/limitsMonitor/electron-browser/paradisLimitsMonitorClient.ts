@@ -29,7 +29,7 @@ import {
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsDuplicateDecision
 } from '../common/paradisLimitsMonitor.js';
-import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
+import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClaudeSwitchResult, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
 export const PARADIS_LIMITS_SETTING_CSWAP_PATH = 'paradis.limitsMonitor.cswapPath';
@@ -166,6 +166,11 @@ export class ParadisLimitsMonitorClient {
 	/** いまの Claude のログインを Para Code に登録する。 */
 	registerLiveClaudeAccount(): Promise<IParadisClaudeRegisterResult> {
 		return this.claudeChannel.call<IParadisClaudeRegisterResult>('registerLiveAccount', []);
+	}
+
+	/** この PC の Claude のログインを、登録したアカウントに切り替える（全ウィンドウ共通）。 */
+	switchClaudeAccount(managedId: string): Promise<IParadisClaudeSwitchResult> {
+		return this.claudeChannel.call<IParadisClaudeSwitchResult>('switchAccount', [managedId]);
 	}
 
 	/** Claude アカウントの登録を消す（この PC のログインはそのまま）。 */
