@@ -9,7 +9,12 @@
 // renderer から shared process のリミットモニターチャネルを呼ぶ薄いクライアント。
 // 設定値(cswapパス・追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
 // このクライアント経由でのみバックエンドへアクセスする。
+//
+// Claude の分は別のチャネル（PARADIS_CLAUDE_ACCOUNTS_CHANNEL）から取り、Codex の分と1つの
+// スナップショットに合わせて返す。Claude のチャネルは SSH で繋いでいる間も常に手元の shared process
+// に聞く（切り替えるのはこの PC のログインで、保存した認証情報もこの PC にしか無いため）。
 
+import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -24,6 +29,7 @@ import {
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsDuplicateDecision
 } from '../common/paradisLimitsMonitor.js';
+import { IParadisClaudeAccountsState, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
 export const PARADIS_LIMITS_SETTING_CSWAP_PATH = 'paradis.limitsMonitor.cswapPath';
@@ -68,8 +74,40 @@ export class ParadisLimitsMonitorClient {
 		return options;
 	}
 
-	getSnapshot(bypassCache = false): Promise<IParadisLimitsSnapshot> {
-		return this.channel.call<IParadisLimitsSnapshot>('getSnapshot', [this.fetchOptions(bypassCache)]);
+	private get claudeChannel() {
+		return this.sharedProcessService.getChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL);
+	}
+
+	/** Claude の取得結果・登録・切り替えで状態が変わったとき（どのウィンドウの操作でも）に発火する。 */
+	get onDidChangeClaudeState(): Event<void> {
+		return this.claudeChannel.listen<void>('onDidChangeState');
+	}
+
+	/**
+	 * Claude の状態。`refresh` は手動の更新で、180 秒より古い結果だけ取り直す。取り直した結果は
+	 * {@link onDidChangeClaudeState} の後にもう一度聞くと届く。
+	 */
+	async getClaudeState(refresh = false): Promise<IParadisClaudeAccountsState> {
+		try {
+			return await this.claudeChannel.call<IParadisClaudeAccountsState>('getState', [{ refresh }]);
+		} catch (error) {
+			return { claude: { accounts: [], sourceError: (error as Error).message }, switching: false };
+		}
+	}
+
+	/** Codex 側のスナップショットに Claude の状態を差し込む。 */
+	static mergeClaudeState(snapshot: IParadisLimitsSnapshot, claudeState: IParadisClaudeAccountsState): IParadisLimitsSnapshot {
+		// 「N 秒前に更新」は古い方に合わせる（Claude は数分おきにしか取りに行かないため）。
+		const fetchedAt = claudeState.oldestFetchedAt !== undefined ? Math.min(snapshot.fetchedAt, claudeState.oldestFetchedAt) : snapshot.fetchedAt;
+		return { ...snapshot, claude: claudeState.claude, fetchedAt };
+	}
+
+	async getSnapshot(bypassCache = false): Promise<IParadisLimitsSnapshot> {
+		const [snapshot, claudeState] = await Promise.all([
+			this.channel.call<IParadisLimitsSnapshot>('getSnapshot', [this.fetchOptions(bypassCache)]),
+			this.getClaudeState(bypassCache),
+		]);
+		return ParadisLimitsMonitorClient.mergeClaudeState(snapshot, claudeState);
 	}
 
 	/** Codexアカウント追加(existingHome指定時は既存ホームの再ログイン)を開始する。 */
