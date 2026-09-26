@@ -188,6 +188,8 @@ import { registerParadisGithubMetrics } from '../../../paradis/contrib/githubMet
 import { registerParadisCopilotUtility } from '../../../paradis/contrib/copilotUtility/node/paradisCopilotUtilityChannel.js';
 // PARA-PATCH: ローカルでリッスン中のポート一覧バックエンド（fork独自、src/vs/paradis/contrib/portList/ 参照）
 import { registerParadisPortList } from '../../../paradis/contrib/portList/node/paradisPortListChannel.js';
+// PARA-PATCH: single entry point for further fork shared-process channels (see paradis.sharedProcess.contribution.ts)
+import { registerParadisSharedProcessContributions } from '../../../paradis/paradis.sharedProcess.contribution.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
@@ -619,6 +621,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: ローカルでリッスン中のポート一覧バックエンド（src/vs/paradis/contrib/portList/ 参照）
 		this._register(registerParadisPortList(this.server, accessor.get(ILogService)));
+
+		// PARA-PATCH: every fork channel registered through paradis.sharedProcess.contribution.ts
+		this._register(registerParadisSharedProcessContributions(this.server, accessor));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);
