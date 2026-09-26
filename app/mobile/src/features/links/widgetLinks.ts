@@ -1,8 +1,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 /**
- * ホーム画面・ロック画面のウィジェットが開くリンク（`paracode-mobile:///widget/<行き先>?…`）を、
+ * ホーム画面・ロック画面のウィジェットと Live Activity が開くリンク（`paracode-mobile:///widget/<行き先>?…`）を、
  * いまの画面のルートへ書き換える純関数（`legacyLinks.ts` の `redirectLegacyLink` から呼ぶ）。
+ * Live Activity（`native/ParaCodeWidgets/ParaCodeLiveActivity.swift`）は、表示していた1件のセッションを
+ * `session` で直接開く（中継の画面で PC の状態を待たない）。PC・スペースが分からないときだけ中継の画面へ落ちる。
  *
  * ウィジェット（Swift）はルートの形を知らず、行き先の種類と ID だけをクエリで渡す。ルートを変えたときに
  * 直すのはここだけで済み、ウィジェットのタイムラインに古い URL が残っていても開ける。
@@ -13,6 +15,7 @@
  * | `/widget/attention` | 中継の画面（要対応のセッションへ。無ければホーム） |
  * | `/widget/session?pc=…&space=…&terminal=…&latest=…` | セッション（エージェントのタブ）。許可カード・質問はここで答える |
  * | `/widget/pc?pc=…` | PC の画面 |
+ * | `/widget/home` | ホーム |
  * | `/widget/system?pc=…` | 設定 → 使用量 → システム |
  * | `/widget/source-control?pc=…&space=…` | ソース管理 |
  * | `/widget/review?pc=…&space=…` | 差分のレビュー |
@@ -83,6 +86,8 @@ export function redirectWidgetLink(pathname: string, query: string): string {
 		}
 		case 'pc':
 			return pc !== undefined ? `/pc/${segment(pc)}` : '/';
+		case 'home':
+			return '/';
 		case 'system':
 			return '/settings/usage/system';
 		case 'source-control':

@@ -15,7 +15,7 @@ C PC の状態・D スペース。iOS 17 以上）のソース一式。JS側の�
 
 ## `npx expo prebuild --clean` 等で ios/ を作り直した場合の復元手順
 
-1. このディレクトリのファイル一式（Swift 10個 + Info.plist + `ParaCodeWidgets.entitlements` + `paracode-logo.png`）を
+1. このディレクトリのファイル一式（Swift 11個 + Info.plist + `ParaCodeWidgets.entitlements` + `paracode-logo.png`）を
    `app/mobile/ios/ParaCodeWidgets/` へコピー
 2. Xcode で `ParaCodeMobile.xcworkspace` を開き、File → New → Target… → **Widget Extension** を追加
    - Product Name: `ParaCodeWidgets` / Team: WB4G82C384 / Language: Swift
@@ -23,9 +23,8 @@ C PC の状態・D スペース。iOS 17 以上）のソース一式。JS側の�
    - Bundle Identifier が `ltd.paradis.paracode.mobile.ParaCodeWidgets` になることを確認
 3. 生成されたテンプレートの Swift/Info.plist を本ディレクトリのもので置き換える
    （Info.plist の `NSExtensionPointIdentifier` は `com.apple.widgetkit-extension`）。
-   `paracode-logo.png` は ParaCodeWidgets ターゲットの **Resources（Copy Bundle Resources）**
-   へ追加する（ロック画面/Dynamic Island のロゴ。`assets/pairing-logo.png` の
-   `sips -Z 128` 縮小コピー。無くてもビルドは通り、ターミナルシンボルへフォールバックする）
+   `paracode-logo.png` は以前 Live Activity のロゴに使っていたが、案 D（2026-09-27）からは読んでいない。
+   復元時は Resources へ入れなくてよい
 4. ターゲットの iOS Deployment Target をメインアプリと揃え、
    `CURRENT_PROJECT_VERSION` / `MARKETING_VERSION` もメインアプリと一致させる
    （不一致だとビルド時に CFBundleVersion / CFBundleShortVersionString の警告が出る）
@@ -57,11 +56,16 @@ C PC の状態・D スペース。iOS 17 以上）のソース一式。JS側の�
 - `ParaCodeActivityAttributes` 構造体は **メインアプリ側**
   （`modules/para-live-activity/ios/ParaLiveActivityModule.swift`）にも同名で複製してある。
   ActivityKit はプロセス間を「型名の一致」で対応付けるため、両者のフィールド定義を
-  常に一致させること（片方だけ変更すると Live Activity が表示されなくなる）
-- ContentState: `waitingCount` / `runningCount` / `agents`（最大2件の {name, ws, status}）/
-  `questionPreview` / `battery`（PC本体の {level, charging}。旧PCでは未配信＝nil）。
-  JS側の構築は `liveActivitySync.ts`
-- 展開面/ロック画面のデザインは `plan.html`（B-2確定デザイン）: 稼働数の内訳は
-  ステータスリング（赤=応答待ち/緑=実行中、中央が合計数）、ヘッダーにバッテリーピル。
-  低残量（非充電・20%未満）は文言を出さず、枠の赤リングとピルの赤字だけで示す
-- 現状の更新はアプリのJSが動いている間のみ（プッシュ経由のバックグラウンド更新は将来対応）
+  常に一致させること（片方だけ変更すると Live Activity が表示されなくなる）。JS 側の型
+  （`modules/para-live-activity/index.ts`）も同じ形にする。読み込みは欠けた項目を既定値で補う
+- 静的属性: `pcId` / `pcName`（本当の PC 名。変わったらアプリが作り直す）
+- ContentState（案 D「状態で切り替え」、2026-09-27）: `phase`（attention / running / done / offline）、
+  件数（`waitingCount` / `runningCount` / `doneCount`）、`attention`（古い順に最大 2 件。先頭だけツール名と
+  コマンドまたは質問文）、`running`（最大 2 件。最後のツールと対象）、`done`（新しい順に最大 3 件。かかった時間）、
+  `battery`、`updatedAt` / `asOf` / `endsAt`（すべて epoch ミリ秒）。組み立ては `src/liveActivityState.ts`
+- 描画は `ParaCodeLiveActivity.swift`。形はモック `paracode-live-activity-mock.html` の案 D。左に状態の印、右に数
+  （expanded・ロック画面は右に PC 名）の並びは全状態で固定。expanded とロック画面は 160pt 以内に収める
+- 古い表示: `staleDate`（最後の更新の 2 分後）を過ぎるか、phase が offline なら灰色にして時計を止め、右上を「◯時点」にする
+- 押したときのリンクはウィジェットと同じ `WidgetLink`（`WidgetShared.swift`）。表示していた 1 件は `session`、
+  完了は `pc`、オフラインは `home`
+- 現状の更新はアプリのJSが動いている間のみ（段階 2 でプッシュ更新にする。準備の場所はリポジトリルートの NOTES.md）

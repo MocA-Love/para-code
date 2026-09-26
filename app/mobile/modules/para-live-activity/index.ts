@@ -2,26 +2,92 @@
 
 import { requireOptionalNativeModule } from 'expo-modules-core';
 
-/** Live Activity の表示状態（Swift側 ParaCodeActivityAttributes.ContentState と一致させる）。 */
-export interface LiveActivityAgentRow {
+/**
+ * Live Activity の中身（案 D「状態で切り替え」）。Swift 側の `ParaCodeActivityAttributes.ContentState`
+ * （`native/ParaCodeWidgets/ParaCodeActivityAttributes.swift` と、アプリ側の同名コピー
+ * `ios/ParaLiveActivityModule.swift`）と同じ形にすること。時刻はすべて epoch ミリ秒の数値で渡す
+ * （Date の JSON 表現の取り違えを避けるため。段階 2 のプッシュでも同じ数値をそのまま載せる）。
+ *
+ * 形を変えるときは JS（ここと `src/liveActivityState.ts`）と Swift の2か所を必ず一緒に直す。
+ * 静的属性と合わせて 4KB を超えないこと（`src/liveActivityState.ts` の `fitLiveActivityBudget`）。
+ */
+export type LiveActivityPhase = 'attention' | 'running' | 'done' | 'offline';
+
+/** 要対応の1件（許可待ち・質問）。 */
+export interface LiveActivityAttentionItem {
+	/** PC のターミナルの論理 ID（押したときの行き先）。 */
+	key: string;
+	/** スペース（ワークスペース）の ID。分からなければ無し（PC の画面を開く）。 */
+	space?: string;
+	/** ターミナルの名前（作業名）。 */
 	name: string;
-	ws: string;
-	status: 'waiting' | 'running';
+	kind: 'permission' | 'question';
+	/** 今の状態になったのをこの端末が見た時刻。分からなければ無し。 */
+	since?: number;
+	/** 許可待ちのツール名（Bash など）。 */
+	tool?: string;
+	/** 許可待ちのコマンド、または質問文。 */
+	detail?: string;
+}
+
+/** 実行中の1件。 */
+export interface LiveActivityRunningItem {
+	key: string;
+	space?: string;
+	name: string;
+	since?: number;
+	/** 最後のツールと、その対象（会話を開いたことのあるエージェントだけ分かる）。 */
+	tool?: string;
+	target?: string;
+}
+
+/** この Live Activity の間に終わった1件。 */
+export interface LiveActivityDoneItem {
+	key: string;
+	space?: string;
+	name: string;
+	/** 終わったのを見た時刻。 */
+	at?: number;
+	/** かかった時間（ミリ秒）。始まりを見ていなければ無し。 */
+	took?: number;
 }
 
 export interface LiveActivityState {
+	phase: LiveActivityPhase;
 	waitingCount: number;
 	runningCount: number;
-	agents: LiveActivityAgentRow[];
-	questionPreview?: string;
-	/** PC本体のバッテリー（旧PCでは未配信。undefinedならピル非表示）。levelは0〜100。 */
+	/** この Live Activity の間に終わって、まだ未確認のもの。 */
+	doneCount: number;
+	/** 古い順に最大 2 件。 */
+	attention: LiveActivityAttentionItem[];
+	/** 最大 2 件。 */
+	running: LiveActivityRunningItem[];
+	/** 新しい順に最大 3 件。 */
+	done: LiveActivityDoneItem[];
+	/** PC 本体のバッテリー（旧 PC では未配信）。level は 0〜100。 */
 	battery?: { level: number; charging: boolean };
+	/** この中身を作った時刻。staleDate の起点。 */
+	updatedAt: number;
+	/** オフラインのとき、PC を最後に見た時刻。 */
+	asOf?: number;
+	/** 完了の要約が消える時刻。 */
+	endsAt?: number;
+}
+
+/** 開始時に固定される静的属性（変わったら Live Activity を作り直す）。 */
+export interface LiveActivityAttributes {
+	pcId: string;
+	pcName: string;
 }
 
 interface NativeModuleShape {
 	isSupported(): boolean;
-	startOrUpdate(pcName: string, stateJson: string): Promise<void>;
-	end(): Promise<void>;
+	/** 無ければ開始、同じ PC のものがあれば更新する（ほかは終える）。staleAt は epoch ms。 */
+	upsert?(attributesJson: string, stateJson: string, staleAt: number | null): Promise<void>;
+	/** 最後の中身を載せて終え、dismissAt（epoch ms）までロック画面に残す。 */
+	finish?(stateJson: string, dismissAt: number): Promise<void>;
+	/** 終える。includeFinished が false なら、完了の要約として残しているもの（終了済み）は消さない。 */
+	end(includeFinished: boolean): Promise<void>;
 	// ウィジェット（App Group の要約ファイル）。古いビルドには無いので optional にしておく。
 	widgetStoreAvailable?(): boolean;
 	writeWidgetFile?(name: string, contents: string): Promise<void>;
@@ -37,14 +103,25 @@ export function isLiveActivitySupported(): boolean {
 	return native?.isSupported() ?? false;
 }
 
-/** Activityが無ければ開始、あれば状態を更新する。 */
-export async function startOrUpdateLiveActivity(pcName: string, state: LiveActivityState): Promise<void> {
-	await native?.startOrUpdate(pcName, JSON.stringify(state));
+/**
+ * Live Activity が無ければ開始し、あれば中身を更新する。静的属性（PC）が違うものは終えて作り直す。
+ * `staleAt` を過ぎると表示が「古い」に変わる（アプリが止まって更新が来なくなったとき）。
+ */
+export async function upsertLiveActivity(attributes: LiveActivityAttributes, state: LiveActivityState, staleAt: number | undefined): Promise<void> {
+	await native?.upsert?.(JSON.stringify(attributes), JSON.stringify(state), staleAt ?? null);
 }
 
-/** すべてのActivityを即時終了する。 */
-export async function endLiveActivity(): Promise<void> {
-	await native?.end();
+/** 最後の中身（完了の要約）を載せて終え、`dismissAt` までロック画面に残す。 */
+export async function finishLiveActivity(state: LiveActivityState, dismissAt: number): Promise<void> {
+	await native?.finish?.(JSON.stringify(state), dismissAt);
+}
+
+/**
+ * Live Activity を即時に終えて消す。`includeFinished` が false なら、完了の要約として残しているもの
+ * （終了済みで、ロック画面に残っているもの）は消さない。
+ */
+export async function endLiveActivity(includeFinished = true): Promise<void> {
+	await native?.end(includeFinished);
 }
 
 // --- ホーム画面・ロック画面のウィジェット -------------------------------------------
