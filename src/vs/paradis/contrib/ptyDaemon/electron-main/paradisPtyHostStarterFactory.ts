@@ -25,6 +25,7 @@ import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
+import { ParadisScopedEnvPtyHostStarter } from './paradisScopedEnvPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
@@ -129,8 +130,9 @@ export function paradisCreatePtyHostStarter(
 			logService.warn(`[ParadisPtyHost] not using a daemon: the socket path is too long for this platform (${hostPaths.socketPath.length} chars at ${hostPaths.socketPath}). Try a shorter --user-data-dir.`);
 			return inApp();
 		}
-		process.env[PARADIS_PTY_HOST_STATE_DIR] = environmentMainService.userDataPath;
-		return inApp();
+		// 置き場所は pty ホストを起こす瞬間だけ渡す。main の `process.env` へ入れっぱなしにすると、
+		// 拡張ホストなど main が起こすものすべてに漏れる（paradisScopedEnvPtyHostStarter.ts）。
+		return new ParadisScopedEnvPtyHostStarter(inApp(), { [PARADIS_PTY_HOST_STATE_DIR]: environmentMainService.userDataPath });
 	}
 
 	if (configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) !== true) {
