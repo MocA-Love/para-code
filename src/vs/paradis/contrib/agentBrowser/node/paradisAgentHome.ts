@@ -37,7 +37,7 @@ const CODEX_HOME_DIR_PATTERN = /^\.codex(?:-[\w.]+)?$/;
 /** ホームの走査結果を使い回す時間。hook のたびにホームディレクトリを読まないため。 */
 const CODEX_HOMES_CACHE_MS = 5_000;
 
-let codexHomesCache: { readonly at: number; readonly homes: readonly string[] } | undefined;
+let codexHomesCache: { readonly at: number; readonly home: string; readonly found: readonly string[] } | undefined;
 /** 既定の走査に掛からない場所（設定で足したホーム）を、選ばれたときに覚えておく。 */
 const registeredCodexHomes = new Set<string>();
 
@@ -48,21 +48,31 @@ const registeredCodexHomes = new Set<string>();
  * ように別のホームへ transcript・state DB・hooks.json を置く。transcript の許可 root、hook の設置先、
  * 会話の探索は「既定のホーム1つ」ではなくこの一覧を見ること。
  *
- * @param homeDirectory テスト用。指定したときはキャッシュを使わない。
+ * @param homeDirectory テスト用。指定したときはキャッシュを使わず、`<homeDirectory>/.codex` を既定とする。
  */
 export function paradisCodexHomes(homeDirectory?: string): readonly string[] {
-	const now = Date.now();
-	if (homeDirectory === undefined && codexHomesCache && now - codexHomesCache.at < CODEX_HOMES_CACHE_MS) {
-		return codexHomesCache.homes;
-	}
 	const home = homeDirectory ?? homedir();
+	// 既定のホームは $CODEX_HOME で変わるので毎回解決する。キャッシュするのは走査結果だけ。
 	const primary = homeDirectory === undefined ? paradisCodexHome() : join(home, '.codex');
-	const homes = new Set<string>([primary]);
+	const now = Date.now();
+	let found: readonly string[];
+	if (homeDirectory === undefined && codexHomesCache && codexHomesCache.home === home && now - codexHomesCache.at < CODEX_HOMES_CACHE_MS) {
+		found = codexHomesCache.found;
+	} else {
+		found = scanCodexHomes(home);
+		if (homeDirectory === undefined) {
+			codexHomesCache = { at: now, home, found };
+		}
+	}
+	return [...new Set<string>([primary, ...found, ...registeredCodexHomes])];
+}
+
+function scanCodexHomes(home: string): string[] {
 	let entries: fs.Dirent[] = [];
 	try {
 		entries = fs.readdirSync(home, { withFileTypes: true });
 	} catch {
-		// 読めなければ既定のホームだけ
+		return [];
 	}
 	const found: string[] = [];
 	for (const entry of entries) {
@@ -78,18 +88,7 @@ export function paradisCodexHomes(homeDirectory?: string): readonly string[] {
 			// 壊れたリンクは飛ばす
 		}
 	}
-	found.sort();
-	for (const candidate of found) {
-		homes.add(candidate);
-	}
-	for (const registered of registeredCodexHomes) {
-		homes.add(registered);
-	}
-	const result = [...homes];
-	if (homeDirectory === undefined) {
-		codexHomesCache = { at: now, homes: result };
-	}
-	return result;
+	return found.sort();
 }
 
 /**
@@ -101,6 +100,21 @@ export function paradisRegisterCodexHome(homePath: string): void {
 		registeredCodexHomes.add(homePath);
 		codexHomesCache = undefined;
 	}
+}
+
+/**
+ * 設定を書き込む先の Codex ホーム（hook・MCP・TUI の設定）。既定のホームと、ログイン済み
+ * （auth.json がある）ホームだけ。ログインに失敗して log/ しか無いホームへは書かない。
+ */
+export function paradisCodexAccountHomes(homeDirectory?: string): readonly string[] {
+	const [primary, ...others] = paradisCodexHomes(homeDirectory);
+	return [primary, ...others.filter(candidate => {
+		try {
+			return fs.statSync(join(candidate, 'auth.json')).isFile();
+		} catch {
+			return false;
+		}
+	})];
 }
 
 /** パスがどれかの Codex ホームの中（またはホームそのもの）か。字面だけで判定する。 */
@@ -126,6 +140,12 @@ export interface IParadisAgentHomes {
 	readonly claude: string;
 	/** `sessions/` と `state_*.sqlite` の親。 */
 	readonly codex: string;
+	/**
+	 * 探索対象の Codex ホームすべて（先頭は {@link codex}）。アカウントを切り替えると、ペインごとに
+	 * 別のホームで Codex が動く。undefined のときは {@link codex} だけ（WSL など）。
+	 * 1つずつ見るときは {@link paradisEachCodexHome} を使う。
+	 */
+	readonly codexHomes?: readonly string[];
 	/**
 	 * transcript との突き合わせに使う作業ディレクトリ。エージェントCLIが自分で記録した値と
 	 * 比較するので、**そのCLIから見た表記**でなければならない（WSL ならディストロ内の絶対パス）。
@@ -155,7 +175,7 @@ export function paradisLocalAgentPath(homes: IParadisAgentHomes, recordedPath: s
 export function paradisResolveAgentHomes(cwd: string): IParadisAgentHomes {
 	const wsl = paradisResolveWslAgentHome(cwd);
 	if (wsl === undefined) {
-		return { claude: paradisClaudeConfigDir(), codex: paradisCodexHome(), matchCwd: cwd };
+		return { claude: paradisClaudeConfigDir(), codex: paradisCodexHome(), codexHomes: paradisCodexHomes(), matchCwd: cwd };
 	}
 	// ディストロ側のホームには、この Windows プロセスの $CLAUDE_CONFIG_DIR / $CODEX_HOME は効かない
 	// （あれは Windows 側のプロセスにだけ効く設定なので、WSL の中の CLI は見ていない）。
@@ -167,4 +187,13 @@ export function paradisResolveAgentHomes(cwd: string): IParadisAgentHomes {
 		matchCwd: wsl.linuxCwd,
 		wsl,
 	};
+}
+
+/**
+ * {@link IParadisAgentHomes} を Codex ホーム1つずつに展開する（先頭は元の `codex`）。
+ * state DB・sessions/ を読む処理は、これで全ホームを順に見る。
+ */
+export function paradisEachCodexHome(homes: IParadisAgentHomes): readonly IParadisAgentHomes[] {
+	const others = (homes.codexHomes ?? []).filter(candidate => candidate !== homes.codex);
+	return [homes, ...others.map(codex => ({ ...homes, codex, codexHomes: undefined }))];
 }

@@ -37,7 +37,7 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentAwaitingUser, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
-import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisEachCodexHome, paradisIsWithinCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
@@ -313,11 +313,11 @@ function paradisLocalAgentPathOrUndefined(homes: IParadisAgentHomes, recordedPat
 function agentKindForPath(transcriptPath: string): ParadisAgentKind {
 	// CODEX_HOME を移動していると ".codex" がパスに現れないため、rolloutのファイル名規約と
 	// 解決済みhome配下かでも判定する (Claude の transcript は <uuid>.jsonl でrollout-接頭辞を持たない)。
-	if (/[\\/]\.codex[\\/]/.test(transcriptPath) || /[\\/]rollout-[^\\/]*\.jsonl$/.test(transcriptPath)) {
+	// アカウントを切り替えると ~/.codex-2 のような別ホームに書かれるので、その形も Codex とみなす。
+	if (/[\\/]\.codex(?:-[\w.]+)?[\\/]/.test(transcriptPath) || /[\\/]rollout-[^\\/]*\.jsonl$/.test(transcriptPath)) {
 		return 'codex';
 	}
-	const codexHome = paradisCodexHome();
-	return (transcriptPath === codexHome || transcriptPath.startsWith(codexHome + sep)) ? 'codex' : 'claude';
+	return paradisIsWithinCodexHome(transcriptPath) ? 'codex' : 'claude';
 }
 
 /**
@@ -373,7 +373,8 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 	// （macOS の `/tmp` → `/private/tmp`）、エージェントが報告する transcript のパスや、下の実体の確認で得る
 	// パスが root の字面と合わず、正しい transcript を「root の外」として拒んでいた（フェーズ6の実機確認）。
 	// root の外へ抜ける symlink は、実体（realpath）が どちらの綴りの root にも入らないので引き続き拒む。
-	const roots = await paradisRootSpellings([paradisClaudeConfigDir(), paradisCodexHome(), ...paradisRemoteTranscriptMirrorRoots()]);
+	// Codex はアカウントごとに別ホーム（~/.codex-2 等）へ書くので、全ホームを許可 root にする。
+	const roots = await paradisRootSpellings([paradisClaudeConfigDir(), ...paradisCodexHomes(), ...paradisRemoteTranscriptMirrorRoots()]);
 	const within = (candidate: string) => roots.some(root => candidate === root || candidate.startsWith(root + sep));
 	if (!within(resolved)) {
 		return false;
@@ -488,7 +489,28 @@ interface ICodexPersistedSubagentFile {
 	readonly mtime: number;
 }
 
+/**
+ * 全 Codex ホームを順に見て、最初に見つかった結果を返す。アカウントを切り替えるとペインごとに
+ * 別のホームで Codex が動くので、既定のホームだけを見ると取りこぼす。
+ */
+async function firstInCodexHomes<T>(homes: IParadisAgentHomes, find: (home: IParadisAgentHomes) => Promise<T | undefined>): Promise<T | undefined> {
+	for (const home of paradisEachCodexHome(homes)) {
+		const found = await find(home);
+		if (found !== undefined) {
+			return found;
+		}
+	}
+	return undefined;
+}
+
 async function discoverCodexPersistedSubagentFiles(rootThreadId: string, homes: IParadisAgentHomes): Promise<readonly ICodexPersistedSubagentFile[]> {
+	return await firstInCodexHomes(homes, async home => {
+		const found = await discoverCodexPersistedSubagentFilesInHome(rootThreadId, home);
+		return found.length > 0 ? found : undefined;
+	}) ?? [];
+}
+
+async function discoverCodexPersistedSubagentFilesInHome(rootThreadId: string, homes: IParadisAgentHomes): Promise<readonly ICodexPersistedSubagentFile[]> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(rootThreadId)) { return []; }
 	let database: DatabaseSync | undefined;
 	try {
@@ -879,6 +901,30 @@ export function paradisResolveHookSessionTranscript(input: {
 // ---- hook未発火時のセッション探索フォールバック ------------------------------------------------
 
 async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | undefined, homes: IParadisAgentHomes = paradisResolveAgentHomes(cwd)): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] | undefined> {
+	// 全ホームの候補を合わせる。会話ログをホーム間でハードリンクしているので、同じ thread が
+	// 複数のホームに載りうる。thread ID で1つにまとめ、更新が新しい方を残す。
+	// 主のホームの state DB が読めないとき（古い Codex）は従来どおり undefined を返し、呼び出し側の
+	// sessions/ の走査に任せる。
+	const [primary, ...others] = paradisEachCodexHome(homes);
+	const merged = await discoverCodexSessionsFromStateDbInHome(cwd, minMtime, primary);
+	if (merged === undefined) {
+		return undefined;
+	}
+	for (const home of others) {
+		const found = await discoverCodexSessionsFromStateDbInHome(cwd, minMtime, home);
+		for (const candidate of found ?? []) {
+			const index = candidate.sessionId === undefined ? -1 : merged.findIndex(existing => existing.sessionId === candidate.sessionId);
+			if (index < 0) {
+				merged.push(candidate);
+			} else if (candidate.mtime > merged[index].mtime) {
+				merged[index] = candidate;
+			}
+		}
+	}
+	return merged.sort((a, b) => b.mtime - a.mtime);
+}
+
+async function discoverCodexSessionsFromStateDbInHome(cwd: string, minMtime: number | undefined, homes: IParadisAgentHomes): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] | undefined> {
 	let database: DatabaseSync | undefined;
 	try {
 		// realpath は同じ名前空間の中でしか意味を持たない。WSL の作業ディレクトリを Windows 側で
@@ -929,6 +975,10 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 
 /** 現行Codex state DBからthread IDに一致するrolloutを取得する。 */
 async function discoverCodexTranscriptByThreadId(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
+	return firstInCodexHomes(homes, home => discoverCodexTranscriptByThreadIdInHome(threadId, home));
+}
+
+async function discoverCodexTranscriptByThreadIdInHome(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
@@ -949,6 +999,10 @@ async function discoverCodexTranscriptByThreadId(threadId: string, homes: IParad
 
 /** CLIのresume/fork対象として、root threadだけをIDで厳密に取得する。 */
 async function discoverCodexRootTranscriptByThreadId(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
+	return firstInCodexHomes(homes, home => discoverCodexRootTranscriptByThreadIdInHome(threadId, home));
+}
+
+async function discoverCodexRootTranscriptByThreadIdInHome(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
@@ -971,6 +1025,10 @@ async function discoverCodexRootTranscriptByThreadId(threadId: string, homes: IP
 }
 
 async function discoverCodexThreadSourceById(threadId: string, homes: IParadisAgentHomes): Promise<IParadisCodexThreadSource | undefined> {
+	return firstInCodexHomes(homes, home => discoverCodexThreadSourceByIdInHome(threadId, home));
+}
+
+async function discoverCodexThreadSourceByIdInHome(threadId: string, homes: IParadisAgentHomes): Promise<IParadisCodexThreadSource | undefined> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {

@@ -26,7 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { paradisClaudeConfigDir, paradisCodexHome } from './paradisAgentHome.js';
+import { paradisClaudeConfigDir, paradisCodexAccountHomes } from './paradisAgentHome.js';
 
 /**
  * notify.sh の内容を生成する (全行ASCII)。jq には依存せず grep/sed のみでパースする。
@@ -661,7 +661,19 @@ export async function paradisRemoveAgentHooksFile(filePath: string, logService: 
  */
 export async function paradisRemoveAgentHooks(logService: ILogService | undefined, paths: { readonly claudeSettingsPath?: string; readonly codexHooksPath?: string } = {}): Promise<void> {
 	await paradisRemoveAgentHooksFile(paths.claudeSettingsPath ?? join(paradisClaudeConfigDir(), 'settings.json'), logService);
-	await paradisRemoveAgentHooksFile(paths.codexHooksPath ?? join(paradisCodexHome(), 'hooks.json'), logService);
+	// Codex はアカウントごとのホーム（~/.codex-2 等）にも設置しているので、全部から外す。
+	for (const codexHooksPath of paths.codexHooksPath !== undefined ? [paths.codexHooksPath] : paradisCodexHooksPaths()) {
+		await paradisRemoveAgentHooksFile(codexHooksPath, logService);
+	}
+}
+
+/**
+ * hook を置く Codex の hooks.json すべて。既定のホームと、ログイン済みのアカウント用ホーム。
+ * アカウントを切り替えると Codex は `CODEX_HOME=~/.codex-2` の hooks.json を読むので、
+ * 既定のホームにだけ置くと切替後の Codex から状態が届かなくなる。
+ */
+function paradisCodexHooksPaths(): string[] {
+	return paradisCodexAccountHomes().map(home => join(home, 'hooks.json'));
 }
 
 /**
@@ -773,7 +785,8 @@ export interface IParadisAgentHooksReconcilerOptions {
  */
 export class ParadisAgentHooksReconciler extends Disposable {
 	private readonly claudeSettingsPath: string;
-	private readonly codexHooksPath: string;
+	/** テストで固定したときだけ入る。普段は {@link codexHooksPaths} で毎回解決する。 */
+	private readonly fixedCodexHooksPath: string | undefined;
 	private readonly watchDirectory: (directory: string, listener: (fileName: string | null) => void) => IDisposable;
 	private readonly scheduleReconcile: (listener: () => void) => IDisposable;
 	private readonly scheduleAudit: (listener: () => void) => IDisposable;
@@ -794,7 +807,7 @@ export class ParadisAgentHooksReconciler extends Disposable {
 	) {
 		super();
 		this.claudeSettingsPath = options.claudeSettingsPath ?? join(paradisClaudeConfigDir(), 'settings.json');
-		this.codexHooksPath = options.codexHooksPath ?? join(paradisCodexHome(), 'hooks.json');
+		this.fixedCodexHooksPath = options.codexHooksPath;
 		this.watchDirectory = options.watchDirectory ?? ((directory, listener) => {
 			try {
 				const watcher = watch(directory, { persistent: false }, (_eventType, fileName) => listener(fileName?.toString() ?? null));
@@ -824,14 +837,15 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		if (this.disposed) {
 			return;
 		}
-		for (const directory of new Set([dirname(this.claudeSettingsPath), dirname(this.codexHooksPath)])) {
+		// 起動後に増えたアカウント用ホームは監視しないが、定期監査（60秒ごと）で設置される。
+		for (const directory of new Set([dirname(this.claudeSettingsPath), ...this.codexHooksPaths().map(path => dirname(path))])) {
 			this._register(this.watchDirectory(directory, fileName => this.onDirectoryChange(fileName)));
 		}
 		this._register(this.scheduleAudit(() => { void this.reconcile(); }));
 	}
 
 	private onDirectoryChange(fileName: string | null): void {
-		if (this.disposed || (fileName !== null && fileName !== basename(this.claudeSettingsPath) && fileName !== basename(this.codexHooksPath))) {
+		if (this.disposed || (fileName !== null && fileName !== basename(this.claudeSettingsPath) && !this.codexHooksPaths().some(path => basename(path) === fileName))) {
 			return;
 		}
 		if (this.pendingReconcile !== undefined) {
@@ -856,6 +870,10 @@ export class ParadisAgentHooksReconciler extends Disposable {
 
 	whenIdle(): Promise<void> {
 		return this.reconcileTail;
+	}
+
+	private codexHooksPaths(): string[] {
+		return this.fixedCodexHooksPath !== undefined ? [this.fixedCodexHooksPath] : paradisCodexHooksPaths();
 	}
 
 	private async resolveClaudeVersion(allowProbe: boolean): Promise<string | undefined> {
@@ -915,7 +933,9 @@ export class ParadisAgentHooksReconciler extends Disposable {
 			this.logService?.info(`[ParadisAgentHooks] Claude version ${claudeVersion?.trim() ?? 'unknown'}; managed events: ${claudeEvents.map(event => event.eventName).join(', ')}`);
 		}
 		await paradisMergeAgentHooksFile(this.claudeSettingsPath, claudeEvents, this.logService, hookCommand);
-		await paradisMergeAgentHooksFile(this.codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, this.logService, hookCommand);
+		for (const codexHooksPath of this.codexHooksPaths()) {
+			await paradisMergeAgentHooksFile(codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, this.logService, hookCommand);
+		}
 	}
 
 	override dispose(): void {
@@ -955,5 +975,7 @@ export async function paradisSetupAgentHooks(logService: ILogService, shellEnvRe
 		logService.trace('[ParadisAgentHooks] Claude activity hook support not confirmed; leaving version-dependent hooks disabled');
 	}
 	await paradisMergeAgentHooksFile(join(paradisClaudeConfigDir(), 'settings.json'), claudeEvents, logService, hookCommand);
-	await paradisMergeAgentHooksFile(join(paradisCodexHome(), 'hooks.json'), PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);
+	for (const codexHooksPath of paradisCodexHooksPaths()) {
+		await paradisMergeAgentHooksFile(codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);
+	}
 }

@@ -27,8 +27,7 @@
 import { exec } from 'child_process';
 import { statSync } from 'fs';
 import { promisify } from 'util';
-import { sep } from '../../../../base/common/path.js';
-import { paradisCodexHome } from './paradisAgentHome.js';
+import { paradisIsWithinCodexHome } from './paradisAgentHome.js';
 
 const execAsync = promisify(exec);
 
@@ -68,11 +67,11 @@ interface IOwnerRecord {
 
 /** transcript_path からエージェント種別を判定する（mobileRelay 側の判定と同一規約）。 */
 export function paradisHookAgentKindForTranscript(transcriptPath: string): ParadisHookAgentKind {
-	if (/[\\/]\.codex[\\/]/.test(transcriptPath) || /[\\/]rollout-[^\\/]*\.jsonl$/.test(transcriptPath)) {
+	// アカウントを切り替えると ~/.codex-2 のような別ホームに書かれるので、その形も Codex とみなす。
+	if (/[\\/]\.codex(?:-[\w.]+)?[\\/]/.test(transcriptPath) || /[\\/]rollout-[^\\/]*\.jsonl$/.test(transcriptPath)) {
 		return 'codex';
 	}
-	const codexHome = paradisCodexHome();
-	return (transcriptPath === codexHome || transcriptPath.startsWith(codexHome + sep)) ? 'codex' : 'claude';
+	return paradisIsWithinCodexHome(transcriptPath) ? 'codex' : 'claude';
 }
 
 // エージェントかどうかは「そのプロセスが何の実行ファイルか」だけで決める。起動行のどこかに

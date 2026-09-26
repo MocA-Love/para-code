@@ -339,15 +339,29 @@ export class ParadisSessionResumeService {
 		for (const space of request.spaces) {
 			const homes = this.resolveAgentHomes(space.cwd);
 			await this.collectClaude(space, homes.claude, homes.matchCwd, sessions);
-			if (!homesSeen.has(homes.codex)) {
-				homesSeen.add(homes.codex);
-				const indexed = await this.collectCodex(request.spaces, homes.codex, sessions, request.includeArchived);
+			// Codex はアカウントごとに別のホームで動くので、全ホームを見る。
+			for (const codexHome of homes.codexHomes ?? [homes.codex]) {
+				if (homesSeen.has(codexHome)) {
+					continue;
+				}
+				homesSeen.add(codexHome);
+				const indexed = await this.collectCodex(request.spaces, codexHome, sessions, request.includeArchived);
 				if (!indexed) {
-					await this.collectCodexRollouts(request.spaces, homes.codex, sessions);
+					await this.collectCodexRollouts(request.spaces, codexHome, sessions);
 				}
 			}
 		}
-		const visible = sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
+		// 会話ログはホーム間でハードリンクしているので、同じ会話が複数のホームから見つかる。
+		// 新しい順に並べて、同じ会話の2件目以降を落とす。
+		const seenSessions = new Set<string>();
+		const visible = sessions.sort((a, b) => b.updatedAt - a.updatedAt).filter(session => {
+			const key = `${session.agent}\0${session.id}`;
+			if (seenSessions.has(key)) {
+				return false;
+			}
+			seenSessions.add(key);
+			return true;
+		}).slice(0, MAX_SESSIONS);
 		this.trimCatalog(new Set(visible.map(session => session.catalogId)));
 		return await this.attachLatestMessages(visible);
 	}

@@ -232,6 +232,11 @@ export interface IParadisMcpSetupControllerOptions {
 	readonly findExecutable: (command: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>;
 	readonly runCommand: (command: string, args: readonly string[], env: NodeJS.ProcessEnv) => Promise<IParadisMcpSetupCommandResult>;
 	readonly codexHome: string;
+	/**
+	 * 同じ設定を入れておく他の Codex ホーム（アカウントごとの ~/.codex-2 等）。切り替えた先の
+	 * Codex からも para-browser が見えるようにするため。状態表示は {@link codexHome} だけで判断する。
+	 */
+	readonly additionalCodexHomes?: () => readonly string[];
 	/** Claude Code のユーザースコープMCP設定ファイル（既定 `~/.claude.json`）の絶対パス。省略時は既定パス。 */
 	readonly claudeConfigJsonPath?: string;
 	readonly log: (message: string, error?: unknown) => void;
@@ -489,7 +494,23 @@ export class ParadisMcpSetupController {
 		if (cli === 'claude') {
 			return this.setup('claude', gatewayPort);
 		}
-		return this.fixCodex(gatewayPort);
+		return this.fixCodex(gatewayPort).finally(() => this.propagateCodexSetup(gatewayPort));
+	}
+
+	/** 既定のホームへ入れたのと同じ節を、他のアカウント用ホームへも入れる（失敗しても結果は変えない）。 */
+	private async propagateCodexSetup(gatewayPort: number | undefined): Promise<void> {
+		if (gatewayPort === undefined) {
+			return;
+		}
+		for (const codexHome of this.options.additionalCodexHomes?.() ?? []) {
+			if (codexHome === this.options.codexHome) {
+				continue;
+			}
+			const result = await this.setupCodexAt(codexHome, gatewayPort);
+			if (result.servers.some(server => server.outcome === 'error')) {
+				this.options.log('Codex MCP configuration update failed for an additional Codex home');
+			}
+		}
 	}
 
 	private async fixCodex(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
@@ -587,7 +608,13 @@ export class ParadisMcpSetupController {
 	 * 指した節が残っていても、中身を読んで直すより丸ごと入れ替える方が確実。
 	 */
 	private async setupCodex(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
-		const configPath = join(this.options.codexHome, 'config.toml');
+		const result = await this.setupCodexAt(this.options.codexHome, gatewayPort);
+		await this.propagateCodexSetup(gatewayPort);
+		return result;
+	}
+
+	private async setupCodexAt(codexHome: string, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
+		const configPath = join(codexHome, 'config.toml');
 		if (gatewayPort === undefined) {
 			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
 		}
@@ -614,6 +641,7 @@ export function createParadisMcpSetupController(
 	resolveShellEnv: () => Promise<NodeJS.ProcessEnv>,
 	codexHome: string,
 	log: (message: string, error?: unknown) => void,
+	additionalCodexHomes?: () => readonly string[],
 ): ParadisMcpSetupController {
 	return new ParadisMcpSetupController({
 		platform: process.platform,
@@ -621,6 +649,7 @@ export function createParadisMcpSetupController(
 		findExecutable: (command, env) => findExecutable(command, undefined, undefined, env),
 		runCommand: runParadisMcpSetupCommand,
 		codexHome,
+		additionalCodexHomes,
 		// `claude mcp add -s user` はユーザースコープを `~/.claude.json` に書き込む（CLAUDE_CONFIG_DIR ではない）。
 		claudeConfigJsonPath: join(homedir(), '.claude.json'),
 		log,
