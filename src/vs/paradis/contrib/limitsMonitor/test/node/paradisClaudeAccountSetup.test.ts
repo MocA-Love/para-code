@@ -12,7 +12,7 @@ import * as path from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisLimitsSetupState } from '../../common/paradisLimitsMonitor.js';
-import { ParadisClaudeAccountRegistry, ParadisKeychainClaudeSecretStore, PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE } from '../../node/paradisClaudeAccountStore.js';
+import { ParadisClaudeAccountRegistry, ParadisEncryptedFileClaudeSecretStore, ParadisKeychainClaudeSecretStore, PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE } from '../../node/paradisClaudeAccountStore.js';
 import { ParadisClaudeAccountService } from '../../node/paradisClaudeAccountService.js';
 import { ParadisClaudeLiveAuth, PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE } from '../../node/paradisClaudeLiveAuth.js';
 import {
@@ -207,5 +207,42 @@ suite('ParadisClaudeAccountService setup', () => {
 			liveAfter: true,
 			rejectsBadId: false,
 		});
+	});
+});
+
+suite('ParadisEncryptedFileClaudeSecretStore', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('stores only encrypted text, refuses to store without OS encryption and rejects foreign ids', async () => {
+		const dirs = await paradisCreateClaudeTestHome();
+		try {
+			let available = true;
+			const encryption = {
+				isEncryptionAvailable: async () => available,
+				encrypt: async (value: string) => `enc:${Buffer.from(value).toString('base64')}`,
+				decrypt: async (value: string) => Buffer.from(value.slice(4), 'base64').toString(),
+			};
+			const directory = path.join(dirs.userData, 'secrets');
+			const store = new ParadisEncryptedFileClaudeSecretStore(directory, encryption, 'linux');
+			const id = '33333333-3333-4333-8333-333333333333';
+			const secret = paradisTestCredentials('a', 'r', 1);
+			await store.write(id, secret);
+			const onDisk = await fs.promises.readFile(path.join(directory, `${id}.enc`), 'utf8');
+			const readBack = await store.read(id);
+			available = false;
+			const refused = await store.write(id, 'other').then(() => 'stored', () => 'refused');
+			const foreign = await store.read('../../escape').then(() => 'read', () => 'rejected');
+			await store.delete(id);
+			assert.deepStrictEqual({
+				plaintextOnDisk: onDisk.includes('claudeAiOauth'),
+				readBack: readBack === secret,
+				refused,
+				foreign,
+				afterDelete: await store.read(id),
+				fileMode: process.platform === 'win32' ? 0o600 : (await fs.promises.stat(directory)).mode & 0o077,
+			}, { plaintextOnDisk: false, readBack: true, refused: 'refused', foreign: 'rejected', afterDelete: undefined, fileMode: process.platform === 'win32' ? 0o600 : 0 });
+		} finally {
+			await dirs.dispose();
+		}
 	});
 });
