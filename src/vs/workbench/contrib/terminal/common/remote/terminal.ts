@@ -61,6 +61,7 @@ export const enum RemoteTerminalChannelRequest {
 	RestartPtyHost = '$restartPtyHost',
 	CreateProcess = '$createProcess',
 	AttachToProcess = '$attachToProcess',
+	// PARA-PATCH: request id for the fork-owned claim-and-attach pty handshake used by space-scoped terminal restore.
 	ParadisClaimAndAttachToProcess = '$paradisClaimAndAttachToProcess',
 	DetachFromProcess = '$detachFromProcess',
 	ListProcesses = '$listProcesses',

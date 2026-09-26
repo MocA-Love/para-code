@@ -6,7 +6,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { BottomSheet } from './bottomSheet.js';
-import { colors, radius } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { Button } from './button.js';
+import { SettingsCard, SettingsRow } from './settingsRow.js';
 import { hapticImpact } from '../haptics.js';
 
 const STATUS_LABELS = {
@@ -83,45 +85,28 @@ export function VoiceNotificationControl({ visible, onClose }: {
 						</Text>
 					</View>
 
-					<View style={styles.infoCard}>
-						<View style={styles.infoRow}>
-							<Ionicons name="desktop-outline" size={18} color={pcOnline ? colors.green : colors.textDim} />
-							<View style={styles.infoText}>
-								<Text style={styles.infoTitle}>接続中のPC</Text>
-								<Text style={styles.infoValue}>{pcOnline ? 'オンライン' : 'オフライン・接続待ち'}</Text>
-							</View>
-							<View style={[styles.connectionDot, pcOnline && styles.connectionDotOnline]} />
-						</View>
-						<View style={styles.divider} />
-						<View style={styles.infoRow}>
-							<Ionicons name="apps-outline" size={18} color={colors.textDim} />
-							<View style={styles.infoText}>
-								<Text style={styles.infoTitle}>対象</Text>
-								<Text style={styles.infoValue}>すべてのスペース</Text>
-							</View>
-						</View>
-						<View style={styles.divider} />
-						<View style={styles.infoRow}>
-							<Ionicons name="lock-closed-outline" size={18} color={colors.textDim} />
-							<View style={styles.infoText}>
-								<Text style={styles.infoTitle}>再生について</Text>
-								<Text style={styles.infoValue}>開始後はロック画面から停止できます</Text>
-							</View>
-						</View>
-					</View>
+					<SettingsCard style={styles.infoCard}>
+						<SettingsRow
+							icon="desktop-outline"
+							iconColor={pcOnline ? colors.green : colors.textDim}
+							title="接続中のPC"
+							description={pcOnline ? 'オンライン' : 'オフライン・接続待ち'}
+							right={<View style={[styles.connectionDot, pcOnline && styles.connectionDotOnline]} />}
+						/>
+						<SettingsRow icon="apps-outline" iconColor={colors.textDim} title="対象" description="すべてのスペース" />
+						<SettingsRow icon="lock-closed-outline" iconColor={colors.textDim} title="再生について" description="開始後はロック画面から停止できます" />
+					</SettingsCard>
 
 					{voice.error ? <Text style={styles.errorText}>{voice.error}</Text> : null}
 					{Platform.OS !== 'ios' ? <Text style={styles.platformNote}>現在はiOS版のみ対応しています。Android版は後日対応予定です。</Text> : null}
 
-					<Pressable
-						style={({ pressed }) => [styles.primaryButton, active && styles.stopButton, pressed && styles.pressed]}
+					<Button
+						variant={active ? 'secondary' : 'primary'}
+						icon={busy || active ? 'stop' : 'play'}
+						label={busy ? '開始をキャンセル' : active ? '音声通知を停止' : '音声通知を開始'}
 						onPress={toggle}
-						accessibilityRole="button"
 						accessibilityLabel={busy ? '音声通知の開始をキャンセル' : active ? '音声通知を停止' : '音声通知を開始'}
-					>
-						{busy ? <Ionicons name="stop" size={17} color={colors.text} /> : <Ionicons name={active ? 'stop' : 'play'} size={17} color={active ? colors.text : colors.bg} />}
-						<Text style={[styles.primaryText, active && styles.stopText]}>{busy ? '開始をキャンセル' : active ? '音声通知を停止' : '音声通知を開始'}</Text>
-					</Pressable>
+					/>
 					<Text style={styles.footnote}>開始しない限り、iPhoneでは音声を再生しません。</Text>
 				</ScrollView>
 			</BottomSheet>
@@ -132,28 +117,19 @@ export function VoiceNotificationControl({ visible, onClose }: {
 const styles = StyleSheet.create({
 	headerButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 	headerButtonActive: { backgroundColor: colors.accentWash },
-	headerButtonPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
-	liveBadge: { position: 'absolute', top: 0, right: 0, width: 9, height: 9, borderRadius: 5, backgroundColor: colors.green, borderWidth: 2, borderColor: colors.bg },
+	headerButtonPressed: { backgroundColor: colors.borderStrong },
+	liveBadge: { position: 'absolute', top: 0, right: 0, width: 9, height: 9, borderRadius: radius.pill, ...squircle, backgroundColor: colors.green, borderWidth: 2, borderColor: colors.bg },
 	content: { paddingHorizontal: 20, paddingBottom: 28, gap: 16 },
 	hero: { alignItems: 'center', paddingTop: 8, paddingBottom: 4 },
-	heroIcon: { width: 68, height: 68, borderRadius: 34, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
-	heroIconActive: { backgroundColor: colors.accentWash, borderColor: colors.accent + '66' },
-	status: { marginTop: 14, color: colors.text, fontSize: 19, fontWeight: '800' },
-	description: { marginTop: 8, maxWidth: 330, color: colors.textDim, fontSize: 13, lineHeight: 20, textAlign: 'center' },
-	infoCard: { paddingHorizontal: 15, borderRadius: 18, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
-	infoRow: { minHeight: 66, flexDirection: 'row', alignItems: 'center', gap: 12 },
-	infoText: { flex: 1, gap: 3 },
-	infoTitle: { color: colors.text, fontSize: 13, fontWeight: '700' },
-	infoValue: { color: colors.textDim, fontSize: 11 },
-	connectionDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.textDim },
+	heroIcon: { width: 68, height: 68, borderRadius: radius.pill, ...squircle, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
+	heroIconActive: { backgroundColor: colors.accentWash, borderColor: tint(colors.accent, alpha.line) },
+	status: { marginTop: 14, color: colors.text, fontSize: type.large, fontWeight: '800' },
+	description: { marginTop: 8, maxWidth: 330, color: colors.textDim, fontSize: type.body, lineHeight: 21, textAlign: 'center' },
+	// シートの地（panel）から浮かせるため、SettingsCard 既定の surface ではなく一段明るい面にする。
+	infoCard: { backgroundColor: colors.surface2 },
+	connectionDot: { width: 8, height: 8, borderRadius: radius.pill, ...squircle, backgroundColor: colors.textDim },
 	connectionDotOnline: { backgroundColor: colors.green },
-	divider: { height: StyleSheet.hairlineWidth, marginLeft: 30, backgroundColor: colors.borderStrong },
-	errorText: { color: colors.red, fontSize: 12, lineHeight: 18, textAlign: 'center' },
-	platformNote: { color: colors.yellow, fontSize: 11, lineHeight: 17, textAlign: 'center' },
-	primaryButton: { height: 52, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, backgroundColor: colors.accent },
-	stopButton: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.borderStrong },
-	pressed: { opacity: 0.75 },
-	primaryText: { color: colors.bg, fontSize: 14, fontWeight: '800' },
-	stopText: { color: colors.text },
-	footnote: { color: colors.textDim, fontSize: 10, textAlign: 'center' },
+	errorText: { color: colors.red, fontSize: type.meta, lineHeight: 18, textAlign: 'center' },
+	platformNote: { color: colors.yellow, fontSize: type.caption, lineHeight: 17, textAlign: 'center' },
+	footnote: { color: colors.textDim, fontSize: type.badge, textAlign: 'center' },
 });

@@ -28,6 +28,7 @@
 		"expo-router": "~57.0.4",
 		"expo-screen-corner-radius": "^1.1.0",
 		"expo-secure-store": "~57.0.0",
+		"lucide-react-native": "^1.48.0",
 		"marked": "^18.0.5",
 		"react": "19.2.3",
 		"react-native": "0.86.0",

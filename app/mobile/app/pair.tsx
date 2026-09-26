@@ -1,162 +1,275 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'expo-router';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import { Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useCameraPermissions } from 'expo-camera';
+import { Clipboard, QrCode } from 'lucide-react-native';
 import { useAppStore } from '../src/appState.js';
-import { colors } from '../src/theme.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
+import { hapticSelection } from '../src/haptics.js';
+import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { hitSlopToMinimum } from '../src/components/hitSlop.js';
+import { colors, space, type } from '../src/theme.js';
+import { Button, Icon, Screen, ScreenHeader, TextInputDrawer } from '../src/ui/index.js';
+import { continueAfterPairing, leaveToHome } from '../src/features/pairing/leaveSetup.js';
+import { LogoTile, ParaLogo } from '../src/features/pairing/paraLogo.js';
+import { PairScanner, PairScannerPlaceholder, PairStep } from '../src/features/pairing/pairScanner.js';
+import { extractPairingUri, formatSasCode, pairingUriFromLinkParam } from '../src/features/pairing/pairingInput.js';
+import { usePairingFlow } from '../src/features/pairing/usePairingFlow.js';
+
+/** 読み取った・貼り付けたものが Para Code のペアリング用でなかったとき。 */
+const NOT_A_PAIRING_CODE = 'Para Code のペアリング用のコードではありません。PC に表示された QR コードかリンクを使ってください。';
+/** 本文の最大幅（pt）。iPad で1行が伸びきらないようにするためだけの値（Orca の pair-confirm と同じ）。 */
+const TEXT_MAX_WIDTH = 420;
+/** 操作のボタンの列の最大幅（pt。Orca の actionStack）。 */
+const ACTIONS_MAX_WIDTH = 360;
 
 /**
- * ペアリング画面: カメラでQRを読み取り、PCと接続する。
- * 読み取り後に表示されるSAS 6桁を、PC側ダイアログの6桁と突き合わせてもらう。
+ * ペアリング（`/pair`。Orca の pair-scan と pair-confirm）。
  *
- * PC側は現状 QR 画像ではなく paracode-mobile://pair の URI テキストをダイアログに表示するのみ
- * （QR描画ライブラリは未同梱）。またシミュレータには実カメラが無くQRスキャンを試せないため、
- * URI を直接貼り付けて接続する手動入力を併設する。
+ *  - 読み取り: 手順・カメラ（四隅の目印）・「リンクを貼り付ける」。カメラの許可がまだなら先に説明して許可をもらう
+ *  - リンクから開いた（`paracode-mobile://pair?d=…` → `/pair?d=…`）: 「このデスクトップとペアリングしますか？」で確かめてから始める
+ *  - 接続中 → 確認コード（6桁）を出して PC の承認を待つ。キャンセルでいつでも中断できる
+ *  - 成立したら、まだ聞いていないこと（開き方・通知）があれば「はじめて」へ、無ければホームへ
+ *
+ * ペアリングの処理は既存の `pairFromUri`（`src/appState.ts`）で、画面を離れると中断する（`usePairingFlow`）。
+ *
+ * PC 側は「Para Code: モバイルデバイスを接続」で QR コードとリンクを出す。シミュレータにはカメラが
+ * 無いので、リンクの貼り付けで試す。
  */
 export default function PairScreen() {
 	const router = useRouter();
-	const pairFromUri = useAppStore(s => s.pairFromUri);
-	const cancelPairing = useAppStore(s => s.cancelPairing);
+	const insets = useStableInsets();
+	const params = useLocalSearchParams<{ d?: string | string[] }>();
+	const linkUri = pairingUriFromLinkParam(params.d);
+	const ready = useAppStore(s => s.ready);
 	const [permission, requestPermission] = useCameraPermissions();
-	const [sas, setSas] = useState<string | undefined>();
-	const [error, setError] = useState<string | undefined>();
-	const [scanning, setScanning] = useState(true);
-	const [pasteMode, setPasteMode] = useState(false);
-	const [pastedUri, setPastedUri] = useState('');
-	const [connecting, setConnecting] = useState(false);
+	const [pasteOpen, setPasteOpen] = useState(false);
+	// リンクから開いたときの確認を、始めた・断った後は出さない。
+	const [linkHandled, setLinkHandled] = useState(false);
+	// カメラは同じ QR を何度も読むので、1回目で止める（状態の更新が描画に届くまでの間の分も）。
+	const scanLock = useRef(false);
 
-	// 画面を閉じたら進行中のペアリングを中断する（無応答ソケットの残留と、
-	// 離脱後に裏で接続が成立してしまうのを防ぐ）。
-	useEffect(() => {
-		return () => { cancelPairing(); };
-	}, [cancelPairing]);
+	const onPaired = useCallback(() => { void continueAfterPairing(router); }, [router]);
+	const flow = usePairingFlow(onPaired);
 
-	// カメラでのQRスキャンをデフォルト導線にするため、権限が未確定/未許可（まだ
-	// 尋ねていない）の間に自動でリクエストする。拒否された場合やシミュレータ等で
-	// ハードウェアが無い場合は permission.granted が false のままなのでリンク貼り付けへ
-	// フォールバックする（pasteMode || !permission.granted の分岐、下記参照）。
-	useEffect(() => {
-		if (permission && !permission.granted && permission.canAskAgain) {
-			void requestPermission();
-		}
-	}, [permission, requestPermission]);
-
-	const connect = async (uri: string) => {
-		setError(undefined);
-		try {
-			await pairFromUri(uri, deviceName(), code => setSas(code));
-			router.back();
-		} catch (e) {
-			setError(String(e));
-			setScanning(true);
-			setConnecting(false);
-		}
-	};
-
-	const onScan = async (data: string) => {
-		if (!scanning) {
+	const startWith = (text: string) => {
+		const uri = extractPairingUri(text);
+		if (uri === undefined) {
+			flow.fail(NOT_A_PAIRING_CODE);
 			return;
 		}
-		setScanning(false);
-		await connect(data);
+		flow.start(uri);
 	};
-
-	const onSubmitPasted = async () => {
-		if (!pastedUri.trim() || connecting) {
+	const onScanned = (data: string) => {
+		if (scanLock.current) {
 			return;
 		}
-		setConnecting(true);
-		await connect(pastedUri.trim());
+		scanLock.current = true;
+		hapticSelection();
+		startWith(data);
+	};
+	const backToScan = () => {
+		scanLock.current = false;
+		flow.reset();
+	};
+	const cancel = () => {
+		scanLock.current = false;
+		flow.cancel();
 	};
 
-	if (sas) {
-		return (
-			<View style={styles.center}>
-				<Image source={require('../assets/pairing-logo.png')} style={styles.appIcon} resizeMode="contain" />
-				<Text style={styles.title}>Para Code と接続</Text>
-				<Text style={styles.dim}>PC 側に表示されている 6 桁と一致することを確認してください。</Text>
-				<Text style={styles.sas}>{sas.slice(0, 3)} {sas.slice(3)}</Text>
-				<Text style={styles.dim}>PC で「接続を承認」を押すと接続が完了します。{'\n'}接続はエンドツーエンドで暗号化されます</Text>
-			</View>
-		);
-	}
-
-	// 権限の確定前（初回マウント直後、上のuseEffectでリクエスト中）はリンク貼り付けに
-	// 落とさず、確定を待つ（ここでリンク貼り付けを先に出すと、許可済みの実機でも
-	// 一瞬リンク貼り付け画面が見えてからカメラに切り替わるチラつきが起きるため）。
-	if (!permission) {
-		return <View style={styles.center}><Text style={styles.dim}>カメラを準備中…</Text></View>;
-	}
-
-	if (pasteMode || !permission.granted) {
-		return (
-			<KeyboardAvoidingView style={styles.center} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-				<Text style={styles.title}>リンクを貼り付けて接続</Text>
-				<Text style={styles.dim}>PC の Para Code に表示された paracode-mobile://pair の リンクを貼り付けてください。</Text>
-				<TextInput
-					style={styles.input}
-					value={pastedUri}
-					onChangeText={setPastedUri}
-					placeholder="paracode-mobile://pair?d=..."
-					placeholderTextColor="#8b8b8b"
-					autoCapitalize="none"
-					autoCorrect={false}
-					onFocus={() => hapticSelection()}
-					multiline
-				/>
-				{error ? <Text style={styles.error}>{error}</Text> : null}
-				<Pressable style={styles.primaryBtn} accessibilityRole="button" accessibilityState={{ disabled: connecting }} onPress={() => { hapticImpact('medium'); void onSubmitPasted(); }} disabled={connecting}>
-					<Text style={styles.primaryBtnText}>{connecting ? '接続中…' : '接続'}</Text>
-				</Pressable>
-				{!permission.granted ? (
-					<Pressable onPress={() => { hapticImpact('light'); void requestPermission(); }} accessibilityRole="button"><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
-				) : (
-					<Pressable onPress={() => { hapticImpact('light'); setPasteMode(false); }} accessibilityRole="button"><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
-				)}
-			</KeyboardAvoidingView>
-		);
-	}
+	const phase = flow.phase;
+	const confirmingLink = linkUri !== undefined && !linkHandled && phase.kind === 'idle';
 
 	return (
-		<View style={styles.screen}>
-			<CameraView
-				style={StyleSheet.absoluteFill}
-				barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-				onBarcodeScanned={scanning ? ({ data }) => { void onScan(data); } : undefined}
-			/>
-			<View style={styles.overlay}>
-				<Text style={styles.scanHint}>PC の Para Code に表示された QR を枠に収めてください</Text>
-				{error ? <Text style={styles.error}>{error}</Text> : null}
-				<Pressable onPress={() => { hapticSelection(); setPasteMode(true); }} accessibilityRole="button"><Text style={styles.linkTextLight}>リンクを貼り付けて接続</Text></Pressable>
+		<Screen>
+			<ScreenHeader title="デスクトップとペアリング" />
+			<View style={[styles.body, { paddingBottom: insets.bottom + space.sm }]}>
+				{confirmingLink ? (
+					<Centered>
+						<Text style={styles.title}>このデスクトップとペアリングしますか？</Text>
+						<Text style={styles.subtitle}>PC の Para Code から開いたペアリングのリンクです。ペアリングすると、この端末の PC の一覧に加わります。</Text>
+						<View style={styles.actions}>
+							<Button label="ペアリング" onPress={() => { setLinkHandled(true); flow.start(linkUri); }} disabled={!ready} />
+							<Button label="キャンセル" variant="ghost" onPress={() => { setLinkHandled(true); leaveToHome(router); }} />
+						</View>
+					</Centered>
+				) : phase.kind === 'connecting' ? (
+					<Centered>
+						<ActivityIndicator size="large" color={colors.textDim} />
+						<Text style={styles.connecting}>接続しています…</Text>
+						<View style={styles.actions}>
+							<Button label="キャンセル" variant="ghost" onPress={cancel} />
+						</View>
+					</Centered>
+				) : phase.kind === 'sas' ? (
+					<Centered>
+						<LogoTile><ParaLogo size={34} /></LogoTile>
+						<Text style={[styles.title, styles.sasTitle]}>確認コードを照らし合わせる</Text>
+						<Text style={styles.subtitle}>PC に表示されている 6 桁と同じか確かめてください。</Text>
+						<Text style={styles.sas} accessibilityLabel={`確認コード ${phase.code.split('').join(' ')}`}>{formatSasCode(phase.code)}</Text>
+						<Text style={styles.subtitle}>同じなら、PC で「接続を承認」を押すと完了します。通信は端末どうしで暗号化されます。</Text>
+						<View style={styles.actions}>
+							<Button label="キャンセル" variant="outline" onPress={cancel} />
+						</View>
+					</Centered>
+				) : phase.kind === 'error' ? (
+					<Centered>
+						<Text style={styles.error} accessibilityRole="alert">{phase.message}</Text>
+						<View style={styles.actions}>
+							<Button label="もう一度読み取る" onPress={backToScan} />
+							<Button label="リンクを貼り付ける" variant="ghost" onPress={() => { backToScan(); setPasteOpen(true); }} />
+						</View>
+					</Centered>
+				) : permission === null ? (
+					<Centered><ActivityIndicator color={colors.textDim} /></Centered>
+				) : !permission.granted ? (
+					<Centered>
+						<Text style={styles.title}>{permission.canAskAgain ? 'デスクトップとペアリング' : 'カメラへのアクセスがオフです'}</Text>
+						<Text style={styles.subtitle}>
+							{permission.canAskAgain
+								? 'PC の Para Code に出した QR コードを読み取ります。リンクを貼り付けてもつなげます。'
+								: '設定でカメラへのアクセスを許可するか、リンクを貼り付けてつないでください。'}
+						</Text>
+						<View style={styles.actions}>
+							<Button
+								label={permission.canAskAgain ? '続ける' : '設定を開く'}
+								icon={permission.canAskAgain ? QrCode : undefined}
+								onPress={() => {
+									if (permission.canAskAgain) {
+										void requestPermission();
+									} else {
+										void Linking.openSettings();
+									}
+								}}
+							/>
+						</View>
+						<PasteLink onPress={() => setPasteOpen(true)} label="リンクを貼り付ける" />
+					</Centered>
+				) : (
+					<>
+						<View style={styles.steps}>
+							<PairStep number={1} text="PC で Para Code を開く" />
+							<PairStep number={2} text="コマンドパレットで「Para Code: モバイルデバイスを接続」を実行する" />
+							<PairStep number={3} text="表示された QR コードを枠に収める" />
+						</View>
+						{/* 貼り付けのシートを出している間はカメラを外す（裏で読み取って勝手に始まらないように） */}
+						{pasteOpen ? <PairScannerPlaceholder /> : <PairScanner onScanned={onScanned} />}
+						<PasteLink onPress={() => setPasteOpen(true)} label="または、リンクを貼り付ける" />
+					</>
+				)}
 			</View>
-		</View>
+			<TextInputDrawer
+				visible={pasteOpen}
+				title="リンクを貼り付ける"
+				message="PC に出たリンク（paracode-mobile://pair?d=…）を貼り付けます"
+				placeholder="paracode-mobile://pair?d=…"
+				submitLabel="接続"
+				selectTextOnFocus={false}
+				onSubmit={value => { scanLock.current = true; startWith(value); }}
+				onClose={() => setPasteOpen(false)}
+			/>
+		</Screen>
 	);
 }
 
-function deviceName(): string {
-	return 'モバイルデバイス';
+function Centered({ children }: { children: ReactNode }) {
+	return <View style={styles.centered}>{children}</View>;
 }
 
-/** ペアリング画面の本文の最大幅（pt）。iPadで1行が伸びきらないようにするためだけの値。 */
-const PAIR_MAX_WIDTH = 420;
+/** 読み取りの下の「リンクを貼り付ける」（Orca の pasteButton。文字だけのボタン）。 */
+function PasteLink({ label, onPress }: { label: string; onPress: () => void }) {
+	return (
+		<Pressable
+			onPress={() => { hapticSelection(); onPress(); }}
+			hitSlop={hitSlopToMinimum(36)}
+			style={({ pressed }) => [styles.paste, pressed ? styles.pastePressed : undefined]}
+			accessibilityRole="button"
+			accessibilityLabel={label}
+		>
+			<Icon icon={Clipboard} color={colors.textDim} />
+			<Text style={styles.pasteText}>{label}</Text>
+		</Pressable>
+	);
+}
 
 const styles = StyleSheet.create({
-	screen: { flex: 1, backgroundColor: '#000' },
-	center: { flex: 1, backgroundColor: '#0d1117', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 },
-	title: { color: '#fff', fontSize: 22, fontWeight: '700' },
-	// maxWidth はiPad用。iPhoneは画面幅からpaddingを引いても366pt以下なので当たらない。
-	dim: { color: '#8b8b8b', fontSize: 13, textAlign: 'center', lineHeight: 20, maxWidth: PAIR_MAX_WIDTH },
-	sas: { color: '#09AFD9', fontSize: 44, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
-	appIcon: { width: 72, height: 72 },
-	overlay: { position: 'absolute', bottom: 60, left: 20, right: 20, alignItems: 'center', gap: 8 },
-	scanHint: { color: '#fff', fontSize: 13, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, overflow: 'hidden' },
-	error: { color: '#f48771', fontSize: 12, textAlign: 'center' },
-	primaryBtn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
-	primaryBtnText: { color: '#00222c', fontWeight: '600', fontSize: 15 },
-	input: { width: '100%', maxWidth: PAIR_MAX_WIDTH, minHeight: 90, backgroundColor: '#252526', borderRadius: 10, borderWidth: 1, borderColor: '#3c3c3c', color: '#cccccc', fontSize: 13, padding: 12, textAlignVertical: 'top' },
-	linkText: { color: '#09AFD9', fontSize: 13, marginTop: 4 },
-	linkTextLight: { color: '#fff', fontSize: 13, textDecorationLine: 'underline' },
+	body: {
+		flex: 1,
+		paddingHorizontal: space.lg,
+	},
+	centered: {
+		flex: 1,
+		alignItems: 'center',
+		justifyContent: 'center',
+		paddingBottom: space.xl * 2,
+	},
+	steps: {
+		gap: space.sm,
+		marginTop: space.sm,
+		marginBottom: space.lg,
+		marginLeft: space.xs + 3,
+	},
+	title: {
+		fontSize: type.title,
+		fontWeight: '600',
+		color: colors.text,
+		textAlign: 'center',
+		marginBottom: space.sm,
+		maxWidth: TEXT_MAX_WIDTH,
+	},
+	sasTitle: {
+		marginTop: space.xl,
+	},
+	subtitle: {
+		fontSize: type.body,
+		lineHeight: 20,
+		color: colors.textDim,
+		textAlign: 'center',
+		maxWidth: TEXT_MAX_WIDTH,
+	},
+	sas: {
+		fontSize: type.display,
+		fontWeight: '700',
+		letterSpacing: 6,
+		color: colors.text,
+		fontVariant: ['tabular-nums'],
+		marginVertical: space.xl,
+	},
+	connecting: {
+		fontSize: type.body,
+		color: colors.textDim,
+		marginTop: space.lg,
+	},
+	error: {
+		fontSize: type.body,
+		lineHeight: 20,
+		color: colors.red,
+		textAlign: 'center',
+		maxWidth: TEXT_MAX_WIDTH,
+	},
+	actions: {
+		width: '100%',
+		maxWidth: ACTIONS_MAX_WIDTH,
+		gap: space.sm,
+		marginTop: space.xl,
+	},
+	paste: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'center',
+		alignSelf: 'center',
+		gap: space.xs,
+		marginTop: space.md,
+		paddingVertical: space.sm,
+		paddingHorizontal: space.md,
+	},
+	pastePressed: {
+		opacity: 0.6,
+	},
+	pasteText: {
+		fontSize: type.body,
+		fontWeight: '500',
+		color: colors.textDim,
+	},
 });

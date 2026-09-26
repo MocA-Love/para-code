@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentChatImage, AgentChatMessage } from '../store.js';
 import { basename, countLines, parseToolInput, splitMcpTool, type AgentTimelineStep } from '../agentToolMeta.js';
@@ -9,7 +9,10 @@ import { ExpandableText, IOBlock, ioStyles } from './agentIoBlock.js';
 import { ToolImageLightbox, ToolImagePreview, isPreviewableToolImage, useToolImage } from './toolImage.js';
 import { formatImageBytes } from '../agentToolImages.js';
 import { hapticSelection } from '../haptics.js';
-import { colors, mono } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { tintOf } from '../ui/themeColors.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 /**
  * タイムラインのステップを開いたときの中身を、ツールの性質ごとに作り分ける。
@@ -292,10 +295,11 @@ function safeStringify(value: unknown): string | undefined {
 function FileCard({ path }: { path: string }) {
 	const name = basename(path);
 	const dir = path.slice(0, Math.max(0, path.length - name.length));
+	const theme = useThemeColors();
 	return (
 		<View style={ioStyles.card}>
-			<View style={ioStyles.cardIcon}>
-				<Ionicons name="document-text-outline" size={14} color={colors.accent} />
+			<View style={[ioStyles.cardIcon, { backgroundColor: theme.accentWash }]}>
+				<Ionicons name="document-text-outline" size={14} color={theme.accent} />
 			</View>
 			<View style={ioStyles.cardBody}>
 				<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
@@ -308,10 +312,11 @@ function FileCard({ path }: { path: string }) {
 /** WebFetch の取得先。 */
 function SiteCard({ url }: { url: string }) {
 	const host = url.replace(/^https?:\/\//, '').split('/')[0] ?? url;
+	const theme = useThemeColors();
 	return (
 		<View style={ioStyles.card}>
-			<View style={ioStyles.cardIcon}>
-				<Ionicons name="globe-outline" size={14} color={colors.accent} />
+			<View style={[ioStyles.cardIcon, { backgroundColor: theme.accentWash }]}>
+				<Ionicons name="globe-outline" size={14} color={theme.accent} />
 			</View>
 			<View style={ioStyles.cardBody}>
 				<Text style={ioStyles.cardTitle} numberOfLines={1}>{host}</Text>
@@ -379,6 +384,7 @@ function HitList({ message, terminalKey }: { message: AgentChatMessage; terminal
 
 /** TodoWrite のチェックリスト。 */
 function TodoList({ input }: { input: Record<string, unknown> | undefined }) {
+	const theme = useThemeColors();
 	const todos = Array.isArray(input?.['todos']) ? input['todos'] : [];
 	const items: { content: string; status: string }[] = [];
 	for (const todo of todos) {
@@ -396,10 +402,10 @@ function TodoList({ input }: { input: Record<string, unknown> | undefined }) {
 	return (
 		<View style={ioStyles.list}>
 			{items.map((item, index) => (
-				<View key={`${index}:${item.content}`} style={[ioStyles.listRow, index === 0 ? ioStyles.listRowFirst : null, item.status === 'in_progress' ? styles.todoActive : null]}>
-					<View style={[styles.todoBox, item.status === 'completed' ? styles.todoBoxDone : null, item.status === 'in_progress' ? styles.todoBoxActive : null]}>
+				<View key={`${index}:${item.content}`} style={[ioStyles.listRow, index === 0 ? ioStyles.listRowFirst : null, item.status === 'in_progress' ? { backgroundColor: tintOf(theme.accent, alpha.faint) } : null]}>
+					<View style={[styles.todoBox, item.status === 'completed' ? styles.todoBoxDone : null, item.status === 'in_progress' ? { borderColor: theme.accent } : null]}>
 						{item.status === 'completed' ? <Ionicons name="checkmark" size={9} color={colors.bg} /> : null}
-						{item.status === 'in_progress' ? <View style={styles.todoDot} /> : null}
+						{item.status === 'in_progress' ? <View style={[styles.todoDot, { backgroundColor: theme.accent }]} /> : null}
 					</View>
 					<Text style={[styles.todoText, item.status === 'completed' ? styles.todoTextDone : null]} numberOfLines={2}>{item.content}</Text>
 				</View>
@@ -414,30 +420,28 @@ export function resultLineCount(message: AgentChatMessage | undefined): number {
 }
 
 const styles = StyleSheet.create({
-	pending: { color: colors.textDim, fontSize: 11, fontStyle: 'italic' },
+	pending: { color: colors.textDim, fontSize: type.caption, fontStyle: 'italic' },
 	imageError: { color: colors.red },
-	caption: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
-	pattern: { color: colors.text, fontSize: 11, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default, backgroundColor: colors.surface2, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 4, alignSelf: 'flex-start' },
-	query: { color: colors.text, fontSize: 12 },
-	quote: { borderLeftWidth: 2, borderLeftColor: 'rgba(193,147,217,0.40)', paddingLeft: 10, paddingVertical: 2 },
-	quoteText: { color: '#b9b9c2', fontSize: 12, lineHeight: 19, fontStyle: 'italic' },
+	caption: { color: colors.textDim, fontSize: type.caption, lineHeight: 16 },
+	pattern: { color: colors.text, fontSize: type.caption, fontFamily: monoFamily, backgroundColor: colors.surface2, borderRadius: radius.key, paddingHorizontal: 7, paddingVertical: 4, alignSelf: 'flex-start' },
+	query: { color: colors.text, fontSize: type.meta },
+	quote: { borderLeftWidth: 2, borderLeftColor: tint(colors.purple, alpha.line), paddingLeft: 10, paddingVertical: 2 },
+	quoteText: { color: colors.textSoft, fontSize: type.meta, lineHeight: 19, fontStyle: 'italic' },
 	statSpacing: { marginBottom: 5 },
-	diff: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 10, backgroundColor: '#161b22', paddingVertical: 6, overflow: 'hidden' },
-	diffLine: { fontSize: 10.5, lineHeight: 15, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default, paddingHorizontal: 9 },
-	diffAdd: { color: colors.green, backgroundColor: 'rgba(79,209,165,0.07)' },
-	diffDel: { color: colors.red, backgroundColor: 'rgba(244,114,114,0.07)' },
-	todoActive: { backgroundColor: 'rgba(9,175,217,0.06)' },
-	todoBox: { width: 14, height: 14, borderRadius: 4, borderWidth: 1.5, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
+	diff: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, backgroundColor: colors.codeBg, paddingVertical: 6, overflow: 'hidden' },
+	diffLine: { fontSize: type.badge, lineHeight: 15, fontFamily: monoFamily, paddingHorizontal: 9 },
+	diffAdd: { color: colors.green, backgroundColor: tint(colors.green, alpha.faint) },
+	diffDel: { color: colors.red, backgroundColor: tint(colors.red, alpha.faint) },
+	todoBox: { width: 14, height: 14, borderRadius: radius.key, ...squircle, borderWidth: 1.5, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
 	todoBoxDone: { backgroundColor: colors.green, borderColor: colors.green },
-	todoBoxActive: { borderColor: colors.accent },
-	todoDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.accent },
-	todoText: { flex: 1, color: colors.text, fontSize: 11.5, lineHeight: 16 },
+	todoDot: { width: 6, height: 6, borderRadius: radius.pill, ...squircle, backgroundColor: colors.accent },
+	todoText: { flex: 1, color: colors.text, fontSize: type.meta, lineHeight: 17 },
 	todoTextDone: { color: colors.textDim, textDecorationLine: 'line-through' },
-	subagent: { borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(217,119,87,0.24)', backgroundColor: 'rgba(217,119,87,0.045)', borderRadius: 12, padding: 10, gap: 6 },
+	subagent: { borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.claude, alpha.line), backgroundColor: tint(colors.claude, alpha.faint), borderRadius: radius.control, ...squircle, padding: 10, gap: 6 },
 	subagentHead: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-	subagentTitle: { flex: 1, color: colors.claude, fontSize: 11.5, fontWeight: '700' },
-	approval: { borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(224,192,125,0.34)', backgroundColor: 'rgba(224,192,125,0.06)', borderRadius: 12, padding: 10, gap: 6 },
+	subagentTitle: { flex: 1, color: colors.claude, fontSize: type.meta, fontWeight: '700' },
+	approval: { borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.yellow, alpha.line), backgroundColor: tint(colors.yellow, alpha.faint), borderRadius: radius.control, ...squircle, padding: 10, gap: 6 },
 	approvalHead: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-	approvalTitle: { color: colors.yellow, fontSize: 11.5, fontWeight: '700' },
-	approvalBody: { color: colors.text, fontSize: 11.5, lineHeight: 16, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
+	approvalTitle: { color: colors.yellow, fontSize: type.meta, fontWeight: '700' },
+	approvalBody: { color: colors.text, fontSize: type.meta, lineHeight: 17, fontFamily: monoFamily },
 });

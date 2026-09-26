@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
+// PARA-PATCH: extra imports for the fork-owned tunnel generation-ledger regression test below.
 import { TestConfigurationService } from '../../../configuration/test/common/testConfigurationService.js';
 import { NullLogService } from '../../../log/common/log.js';
 import { IAddressProvider } from '../../../remote/common/remoteAgentConnection.js';
@@ -18,6 +19,7 @@ import {
 } from '../../common/tunnel.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 
+// PARA-PATCH: minimal concrete tunnel service used only by the fork-owned generation-ledger test.
 class TestTunnelService extends AbstractTunnelService {
 	override isPortPrivileged(): boolean { return false; }
 
@@ -75,6 +77,7 @@ suite('Tunnel', () => {
 		portMappingTestQuery('http://foo.bar/path?url=http%3A%2F%2Fmicrosoft.com%2Fbad&url2=http%3A%2F%2Flocalhost%3A8081', 'localhost', 8081);
 	});
 
+	// PARA-PATCH: regression test for the fork's tunnel generation ledger (delayed close must not clobber a newer tunnel).
 	test('keeps the disposed ledger generation on a delayed close event', async () => {
 		let oldDisposeStarted!: () => void;
 		const oldDisposeStarting = new Promise<void>(resolve => oldDisposeStarted = resolve);

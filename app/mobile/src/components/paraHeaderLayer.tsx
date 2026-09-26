@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useMemo } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Reanimated from 'react-native-reanimated';
 import { usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,7 +15,8 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { CONTENT_MAX_WIDTH } from '../ipad/ipadLayout.js';
 import { useFilesSearch } from '../filesSearch.js';
-import { colors, mono, radius, squircle, withAlpha } from '../theme.js';
+import { alpha, colors, radius, squircle, type, withAlpha } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 
 /**
  * 全画面で共有する**唯一のヘッダー**（`app/_layout.tsx` に1つだけ置く）。
@@ -80,7 +81,7 @@ function LeftContent({ left, fade }: { left: ParaHeaderLeft; fade: FadeStyle }) 
 			accessibilityRole={left.onPress === undefined ? undefined : 'button'}
 			accessibilityLabel={left.label}
 		>
-			<Reanimated.View style={[styles.islandAvatar, { backgroundColor: withAlpha(left.color ?? colors.accent, 0.28) ?? colors.surface2 }, fade]}>
+			<Reanimated.View style={[styles.islandAvatar, { backgroundColor: withAlpha(left.color ?? colors.accent, alpha.line) ?? colors.surface2 }, fade]}>
 				{left.avatarIcon !== undefined
 					? <Ionicons name={left.avatarIcon} size={15} color={left.color ?? colors.accent} />
 					: <Text style={[styles.islandAvatarText, { color: left.color ?? colors.accent }]}>{left.avatarText ?? '—'}</Text>}
@@ -359,10 +360,11 @@ const styles = StyleSheet.create({
 	islandHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 7, paddingRight: 15 },
 	// 縮むときに潰れず切り取られるように。潰れると丸が楕円になって器と形が合わない。
 	islandAvatar: { width: 30, height: 30, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-	islandAvatarText: { fontSize: 13, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
+	// 30ptの丸の中の頭文字なので、文字サイズの段ではなく丸の大きさから決めている。
+	islandAvatarText: { fontSize: 13, fontWeight: '800', fontFamily: monoFamily },
 	islandText: { flexShrink: 1, minWidth: 0 },
-	islandName: { color: colors.text, fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
-	islandSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
+	islandName: { color: colors.text, fontSize: type.title, fontWeight: '700', letterSpacing: -0.2 },
+	islandSub: { color: colors.textDim, fontSize: type.badge, marginTop: 1 },
 	// 左の島と右のピルの間を埋める島。中身の見た目は画面が持つ。
 	midIsland: { flex: 1, minWidth: 0, height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle },
 	// 他スペースに応答待ちが居ることの合図。件数は出さない（チップ列とタブバーのバッジと
@@ -375,14 +377,14 @@ const styles = StyleSheet.create({
 	// 中のボタンにはガラスを重ねない（Apple HIG）。押下は白のハイライトで返す。
 	pill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, gap: 2, overflow: 'hidden' },
 	pillButton: { width: PILL_BUTTON, height: PILL_BUTTON, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
-	pillButtonPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
+	pillButtonPressed: { backgroundColor: colors.borderStrong },
 	iconBadge: { position: 'absolute', top: 3, right: 3, width: 9, height: 9, borderRadius: radius.pill, borderWidth: 2, borderColor: colors.bg },
 	iconBadgeRed: { backgroundColor: colors.red },
 	iconBadgeGreen: { backgroundColor: colors.green },
 
 	textPill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, maxWidth: 200, overflow: 'hidden' },
 	textPillHit: { flex: 1, justifyContent: 'center', paddingHorizontal: 14 },
-	textPillLabel: { color: colors.text, fontSize: 12.5, fontWeight: '600' },
+	textPillLabel: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
 
 	// **`top` はセーフエリアぶんを自分で足す。** ここの絶対配置は親（`wrap`）の
 	// **ボーダーボックス**基準で、`wrap` の `paddingTop` は効かない（実機で確認: `top: 0` に
@@ -390,6 +392,6 @@ const styles = StyleSheet.create({
 	titleLayer: { position: 'absolute', left: 72, right: 72, height: SLOT_HEIGHT },
 	titleHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-	title: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1 },
-	titleSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
+	title: { color: colors.text, fontSize: type.title, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1 },
+	titleSub: { color: colors.textDim, fontSize: type.badge, marginTop: 1, fontFamily: monoFamily },
 });

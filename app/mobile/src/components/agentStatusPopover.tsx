@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { agentStatusColor, agentStatusLabel } from '../agentStatus.js';
 import { useEffect } from 'react';
 import { BackHandler, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 
 export interface AgentStatusPopoverTarget {
@@ -15,22 +16,17 @@ export interface AgentStatusPopoverTarget {
 }
 
 const POPOVER_WIDTH = 200;
-// 項目2つ+区切り線の概算高さ（実測値を使わずクランプするための見積もり。terminalActionsMenuと同じ流儀）。
+// 項目2つ+区切り線の概算高さ（実測値を使わずクランプするための見積もり。homeAgentActionsMenuと同じ流儀）。
 const POPOVER_HEIGHT_ESTIMATE = 120;
 
-function statusLabel(status: string): string {
-	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : 'レビュー';
-}
-
-function statusDotColor(status: string): string {
-	return status === 'permission' || status === 'question' ? colors.red : colors.yellow;
-}
+const statusLabel = agentStatusLabel;
+const statusDotColor = agentStatusColor;
 
 /**
  * ホーム一覧のステータスバッジをタップして開くポップオーバー（status.html 案B準拠）。
  * 「確認済みにする」でPC側のペイン既読と同じ処理を発火し、レビュー/応答待ちの
  * バッジをアイドルへ戻す。面はGlassSurface（iOS 26+はLiquid Glass）で、
- * terminalActionsMenuと同じくOverlayPortal＋scaleのみの出現演出を使う。
+ * homeAgentActionsMenuと同じくOverlayPortal＋scaleのみの出現演出を使う。
  */
 export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 	target: AgentStatusPopoverTarget | undefined;
@@ -91,12 +87,12 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 const styles = StyleSheet.create({
 	pos: { position: 'absolute', width: POPOVER_WIDTH },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
-	popover: { borderRadius: 12, overflow: 'hidden' },
-	head: { color: colors.textDim, fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingTop: 9, paddingHorizontal: 13, paddingBottom: 5 },
+	popover: { borderRadius: radius.control, ...squircle, overflow: 'hidden' },
+	head: { color: colors.textDim, fontSize: type.badge, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingTop: 9, paddingHorizontal: 13, paddingBottom: 5 },
 	item: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 10, paddingHorizontal: 13 },
-	itemLabel: { color: colors.text, fontSize: 13.5, flex: 1 },
+	itemLabel: { color: colors.text, fontSize: type.body, flex: 1 },
 	itemLabelDim: { color: colors.textDim },
-	dot: { width: 8, height: 8, borderRadius: 4 },
-	dotIdle: { backgroundColor: '#55555c' },
+	dot: { width: 8, height: 8, borderRadius: radius.pill },
+	dotIdle: { backgroundColor: colors.idle },
 	divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.glassBorder },
 });

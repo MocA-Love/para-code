@@ -4,7 +4,10 @@ import { ReactNode, useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { colors, radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { Badge, BADGE_HEIGHT, STATUS_TONE } from './badge.js';
+import { agentStatusColor, agentStatusKind, agentStatusLabel } from '../agentStatus.js';
 
 /**
  * ホーム一覧のエージェント行の見た目を、リスト本体と長押し時の「リフト（浮き上がり）
@@ -34,14 +37,8 @@ export interface AgentRowRect {
 	height: number;
 }
 
-export function agentLabel(status: string | undefined): string {
-	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : status === 'working' ? '実行中' : status === undefined ? 'アイドル' : 'レビュー';
-}
-
 function orbStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.orbWaiting
-		: status === 'working' ? styles.orbRunning
-			: status === undefined ? styles.orbIdle : styles.orbReview;
+	return { backgroundColor: agentStatusColor(status) };
 }
 
 /**
@@ -51,39 +48,26 @@ function orbStyle(status: string | undefined) {
  * `<View>` のチップ（約21.5pt）が隣同士に並び、5.5ptの段差が見えていた。`<Text>` の高さは
  * 行の高さで決まるため、padding を合わせるだけでは揃わない——高さそのものを決める。
  */
-export const CHIP_HEIGHT = 22;
+export const CHIP_HEIGHT = BADGE_HEIGHT;
 
-function badgeStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.badgeWaiting
-		: status === 'working' ? styles.badgeRunning
-			: status === undefined ? styles.badgeIdle : styles.badgeReview;
-}
-
-function badgeTextStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.badgeTextWaiting
-		: status === 'working' ? styles.badgeTextRunning
-			: status === undefined ? styles.badgeTextIdle : styles.badgeTextReview;
-}
 
 /**
  * ステータスバッジ（非インタラクティブ）。レビュー行のタップ操作はリスト側でこれをPressableで包む。
  *
- * 面は `<View>`、文字は `<Text>` に分ける（`<Text>` 1枚では高さを固定できない）。
+ * 見た目は共通の `Badge`。`Badge` は既定で `alignSelf: 'flex-start'` なので、行の中で
+ * 上に寄らないよう縦中央に戻す。
  */
 export function AgentBadge({ status }: { status: string | undefined }) {
-	return (
-		<View style={[styles.badge, badgeStyle(status)]}>
-			<Text style={[styles.badgeText, badgeTextStyle(status)]}>{agentLabel(status)}</Text>
-		</View>
-	);
+	return <Badge label={agentStatusLabel(status)} tone={STATUS_TONE[agentStatusKind(status)]} style={styles.badge} />;
 }
 
 /**
  * 行の内側（ピン・オーブ・タイトル・ワークスペース・バッジ）。リストのPressableと
  * クローンのViewの双方から同じ見た目で描画する。`badge` を渡すとバッジ部分を差し替える
  * （リストのレビュー行は「確認済みにする」ポップオーバーを開くPressableを渡す）。
+ * `more` は右端の ⋯（操作メニューを開くボタン）。渡さなければ出さない（アーカイブ一覧など）。
  */
-export function AgentRowContent({ data, badge }: { data: AgentRowData; badge?: ReactNode }) {
+export function AgentRowContent({ data, badge, more }: { data: AgentRowData; badge?: ReactNode; more?: ReactNode }) {
 	return (
 		<>
 			{data.pinned ? <Ionicons name="bookmark" size={11} color={colors.accent} style={styles.pinIcon} /> : null}
@@ -96,6 +80,7 @@ export function AgentRowContent({ data, badge }: { data: AgentRowData; badge?: R
 				</View>
 			</View>
 			{badge ?? <AgentBadge status={data.agentStatus} />}
+			{more}
 		</>
 	);
 }
@@ -117,9 +102,19 @@ export function AgentRowClone({ data, rect }: { data: AgentRowData; rect: AgentR
 			style={[styles.clonePos, { top: rect.y, left: rect.x, width: rect.width }, animatedStyle]}
 		>
 			<View style={[agentRowStyles.container, styles.cloneRow]}>
-				<AgentRowContent data={data} />
+				{/* 一覧の行と横幅の配分を揃えるため、⋯ も押せない飾りとして描く。 */}
+				<AgentRowContent data={data} more={<View style={agentRowStyles.moreSlot}><AgentRowMoreGlyph /></View>} />
 			</View>
 		</Animated.View>
+	);
+}
+
+/** 右端の ⋯ の見た目。押せる器（当たり判定）は一覧側が持つ。 */
+export function AgentRowMoreGlyph() {
+	return (
+		<View style={agentRowStyles.more}>
+			<Ionicons name="ellipsis-horizontal" size={16} color={colors.textDim} />
+		</View>
 	);
 }
 
@@ -130,32 +125,23 @@ export const agentRowStyles = StyleSheet.create({
 		backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, paddingVertical: 12, paddingHorizontal: 14,
 		borderWidth: 1, borderColor: colors.border, marginBottom: 8,
 	},
+	// ⋯ の見た目の枠。
+	more: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
+	// ⋯ の置き場所。行の右の余白に少し食い込ませ、バッジとの間を詰めすぎない。
+	moreSlot: { marginLeft: -4, marginRight: -6 },
 });
 
 const styles = StyleSheet.create({
 	pinIcon: { marginRight: -2 },
-	orb: { width: 10, height: 10, borderRadius: 6 },
-	orbWaiting: { backgroundColor: colors.red },
-	orbRunning: { backgroundColor: colors.green },
-	orbReview: { backgroundColor: colors.yellow },
-	// idleは最も沈んだ状態。ただし非テキスト3:1規範には届かないと「描画漏れ」と
-	// 区別がつかないため、textDimより暗めのグレーに上げる(#6e7681 = 4.04:1)。
-	orbIdle: { backgroundColor: '#6e7681' },
+	// 色は状態ごとに agentStatusColor が決める。idle は最も沈んだ状態だが、非テキスト3:1規範に
+	// 届かないと「描画漏れ」と区別がつかないため colors.idle（#6e7681 = 4.04:1）を使っている。
+	orb: { width: 10, height: 10, borderRadius: radius.pill },
 	agentBody: { flex: 1, minWidth: 0 },
-	agentTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
+	agentTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	agentSub: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-	agentWs: { fontSize: 11, fontFamily: 'Menlo', flexShrink: 1 },
-	agentBranch: { color: colors.textDim, fontSize: 11, flexShrink: 1 },
-	badge: { height: CHIP_HEIGHT, borderRadius: radius.pill, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-	badgeWaiting: { backgroundColor: 'rgba(244,135,113,0.15)' },
-	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)' },
-	badgeReview: { backgroundColor: 'rgba(220,220,170,0.15)' },
-	badgeIdle: { backgroundColor: 'rgba(139,139,139,0.15)' },
-	badgeText: { fontSize: 10, fontWeight: '700' },
-	badgeTextWaiting: { color: colors.red },
-	badgeTextRunning: { color: colors.green },
-	badgeTextReview: { color: colors.yellow },
-	badgeTextIdle: { color: colors.textDim },
+	agentWs: { fontSize: type.caption, fontFamily: monoFamily, flexShrink: 1 },
+	agentBranch: { color: colors.textDim, fontSize: type.caption, flexShrink: 1 },
+	badge: { alignSelf: 'center' },
 	// クローンは前面へ持ち上げるため、面と枠をわずかに強調し、強い影で浮遊感を出す。
 	// marginBottom はレイアウト用なのでクローンでは打ち消す（絶対配置のため不要）。
 	clonePos: { position: 'absolute' },

@@ -38,6 +38,7 @@
 	box-sizing: content-box;
 }
 
+/* PARA-PATCH: let the file count shrink so the fork-owned mobile Changes toolbar fits on narrow phones. */
 .mobile-multi-diff-file-count {
 	flex: 1;
 	min-width: 0;

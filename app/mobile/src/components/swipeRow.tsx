@@ -7,7 +7,7 @@ import Animated, { Extrapolation, interpolate, useAnimatedStyle, useSharedValue,
 import type { SharedValue } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { CARD_GAP, CARD_WIDTH, cardEdgeIndex, swipeGeometry } from './swipeRowGeometry.js';
-import { radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { spring } from '../motion.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
@@ -270,7 +270,7 @@ const styles = StyleSheet.create({
 		borderRadius: radius.card, ...squircle,
 	},
 	cardPressed: { opacity: 0.72 },
-	cardText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+	cardText: { color: '#fff', fontSize: type.caption, fontWeight: '700' },
 	// 引き切ったときに窓いっぱいへ広がる面。幅はfullStyleで引いた距離に合わせて伸ばすので、
 	// ここでは行に近い側（right/left）へ寄せる位置決めだけを持つ。中身はその面のさらに
 	// 行に近い側へ寄せる（指の先に付いてくる）。
@@ -284,5 +284,5 @@ export const swipeActionColors = {
 	neutral: '#3a3a44',
 	strong: '#4a4a56',
 	// 面としての赤。文字色の red をそのまま地に使うと明るすぎて、白抜きの文字が読めない。
-	destructive: '#c0413f',
+	destructive: colors.redStrong,
 } as const;

@@ -152,10 +152,13 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-clipboard@~57.0.1` を依存に追加 | エージェント詳細画面のタイムライン（`src/components/agentIoBlock.tsx`）で、ツールの入力・出力をコピーするボタンを出すため。RN本体の `Clipboard` は非推奨で、Expo SDK 57 の標準モジュールを使う。ネイティブモジュールのため追加後は iOS/Android の再ビルドが必要 |
 
-| `app/mobile/native/ParaCodeWidgets/paracode-logo.png` | 新規追加（fork所有バイナリ）。`app/mobile/assets/pairing-logo.png` を `sips -Z 128` で縮小したコピー（gitignoreされた `ios/ParaCodeWidgets/` にも同一物を配置し、Widgetターゲットの Resources に pbxproj 手動登録済み） | Live Activity / Dynamic Island のロゴをホームタブのPCカードと同じPara Codeロゴにするため（`ParaCodeWidgetsBundle.swift` の LogoBadge が `UIImage(named:)` で読む。復元手順は同ディレクトリ README 参照）。PNGのためマーカーを埋め込めない |
+| `app/mobile/native/ParaCodeWidgets/paracode-logo.png` | 新規追加（fork所有バイナリ）。`app/mobile/assets/pairing-logo.png` を `sips -Z 128` で縮小したコピー（gitignoreされた `ios/ParaCodeWidgets/` にも同一物を配置し、Widgetターゲットの Resources に pbxproj 手動登録済み） | Live Activity / Dynamic Island のロゴをホームタブのPCカードと同じPara Codeロゴにするため（復元手順は同ディレクトリ README 参照）。PNGのためマーカーを埋め込めない。**2026-09-27 の Live Activity 案 D でロゴを出さなくなり、いまはどのコードも読んでいない**（Resources の登録は残してある。消すなら pbxproj の `FD…A6` / `FD…B4` も一緒に外す） |
 
 | `product.json` | Remote-SSH（リモート開発）対応で4点追加。(1) `serverDownloadUrlTemplate` を新設し、固定タグ `reh` のGitHub Releaseから `para-code-server-${os}-${arch}-${commit}.tar.gz` を取得させる。(2) `builtInExtensions` に `jeanp413.open-remote-ssh@0.3.1` を追加（sha256はOpen VSX実測値 `c6f16b22…`、metadataのUUIDは `open-vsx.org/vscode/gallery` の extensionquery から取得）。(3) `extensionEnabledApiProposals` を新設し同拡張へ `resolvers`/`tunnels`/`terminalDataWriteEvent`/`contribRemoteHelp`/`contribViewsRemote` を許可。(4) `remoteExtensionTips` を新設し `ssh-remote` エントリを登録 | MS純正の `ms-vscode-remote.remote-ssh` はライセンス上forkで使えず、リモートへ入れるVS Code Serverも `update.code.visualstudio.com/commit:<commit>` にforkのcommitが存在しないため取得不能。OSS版の open-remote-ssh + 自前REH配布で代替する。**(3)は必須**: proposed APIを許可しないと接続そのものが始まらない（`extensionsProposedApi.ts` のコメント通り、product.json側の指定が拡張のpackage.json宣言を上書きするため、拡張が宣言している2つも含めて列挙する必要がある）。`serverApplicationName`/`serverDataFolderName` は拡張の `getVSCodeServerConfig()` が product.json を直接読むので追加設定は不要。URLに `${commit}` を使うのはクライアントとサーバーの版ずれを原理的に防ぐため（`remote.SSH.serverVersion` の既定 `match` ではGitHub APIを叩かないので任意ホストで動く）。ビルドは `.github/workflows/para-reh.yml` |
 | `product.json` / `resources/paradis/builtin/mobile-canvas-vscode-0.1.16.vsix` | `builtInExtensions` に `mobile-canvas-vscode@0.1.16`（Marketplace上の実体は `redth.mobile-canvas`、MIT）を追加。**リポジトリに vendoring した「ランタイム非同梱版」VSIX（123KB）を `vsix` フィールドで指す**。metadataのUUIDは Visual Studio Marketplace の extensionquery から取得 | iOSシミュレータ/Androidエミュレータをライブ表示・操作する Mobile Canvas を標準同梱するため。**ネイティブランタイムを同梱してはいけない（paracode-116 で実際にリリースが落ちた）**: プラットフォーム別VSIX（12〜14MB）は `dist/runtimes/<rid>/mobile-canvas.gz` に実行ファイルを内包しており、これをアプリに入れると **Apple の公証が gzip を展開して中の Mach-O を検査し、`The binary is not signed.` / `The signature does not include a secure timestamp.` / `The executable does not have the hardened runtime enabled.` の3点で拒否する**（拒否パスは `Para Code.app/Contents/Resources/app/extensions/mobile-canvas-vscode/dist/runtimes/osx-x64/mobile-canvas.gz/mobile-canvas` と、.gz の内側まで具体的に示される）。非同梱版は manifest だけを持ち、ランタイムは初回利用時に `~/.mobile-canvas/runtimes/` へ展開されるため、アプリの外に出て公証の対象外になる。取得は `paradisMobileCanvasHostClient.ts` の `_downloadArchive()` が manifest の `distribution`（repository/tag）と各ファイルの `asset` から GitHub Release のURLを組み立てて行い、展開後のsha256をmanifestと突き合わせる。同梱に戻したい場合は、ビルド時に自前で Developer ID 署名＋hardened runtime を付与して再gzipし、manifest の sha256/id も書き換える工程が要る。**`name` を `redth.mobile-canvas` にしてはいけない**: `name` は `.build/extensions/<name>/` のフォルダ名にしか使われず拡張IDは同梱 `package.json` の `publisher`+`name` から決まるが、`vsix` パスやアセット名と揃えておかないと版上げのときに取り違える。版を上げる際は `gh release download <tag> --repo Redth/mobile-canvas-ghcp --pattern "mobile-canvas-vscode-thin.vsix"` で取り直し、`shasum -a 256` の値を `sha256` に反映する（リリース同梱の `SHA256SUMS` はランタイム `.gz` のみでvsixを含まない） |
+| `app/mobile/native/ParaCodeWidgets/ParaCodeWidgets.entitlements` | 新規追加（fork所有）。Widget Extension の entitlements（追跡用コピー。実体は gitignore された `ios/ParaCodeWidgets/`）。App Group `group.ltd.paradis.paracode.mobile` だけを持つ | ホーム画面・ロック画面のウィジェットが、アプリ・通知拡張と App Group の要約（`widget-snapshot.json` / `widget-settings.json` / `widget-outbox.json`）を受け渡すため（復元手順は同ディレクトリ README 参照）。plist のためマーカーを埋め込めない |
+| `app/mobile/native/NotifyExtension/NotifyExtension.entitlements` | `com.apple.security.application-groups`（`group.ltd.paradis.paracode.mobile`）を追加 | 通知拡張がアプリの閉じている間にウィジェットの要約の要対応を書き換えるため（`WidgetShared.swift` の `WidgetStore.applyNotification`）。実体の `ios/NotifyExtension/` にも同じものを当てる。plist のためマーカーを埋め込めない |
+| `app/mobile/package.json` / `app/pnpm-lock.yaml` | `lucide-react-native@^1.48.0` を依存に追加 | モバイルの画面の作り直し（Orca に合わせたアイコン）で使うアイコン集。JS だけのパッケージで、描画は既存の `react-native-svg` を使う |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -418,6 +421,67 @@ done
 ```
 
 提出は Xcode の Organizer（Window → Organizer → Archives）から行う。
+
+### Xcode 27（iOS 27 SDK）でビルドするときの注意（2026-09-26）
+
+- **UIScene ライフサイクルが必須**: iOS 27 SDK でビルドしたアプリは、Scene に対応していないと起動直後に `EXC_BREAKPOINT`（SIGTRAP）で落ちる。クラッシュログの先頭は UIKit の `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`。`ios/` は gitignore 対象なので、次の2点を**このリポジトリ外で手当てしている**（別の Mac でビルドするときは同じ変更が要る）
+  - `ios/ParaCodeMobile/Info.plist` に `UIApplicationSceneManifest`（`UIApplicationSupportsMultipleScenes` = false、`UISceneDelegateClassName` = `$(PRODUCT_MODULE_NAME).SceneDelegate`）
+  - `ios/ParaCodeMobile/AppDelegate.swift` の `didFinishLaunching` では UIWindow を作らず `launchOptions` だけ保持し、同じファイルに置いた `SceneDelegate` の `scene(_:willConnectTo:options:)` で UIWindow を作って `factory.startReactNative` する。起動時の URL / ユーザーアクティビティ（`connectionOptions`）と `openURLContexts` / `continue userActivity` は AppDelegate の既存メソッドへ中継する（Expo の購読者と `RCTLinkingManager` の両方に届くように）
+- **`RNSVG-RNSVGFilters` の deployment target**: react-native-svg のリソースバンドル target が 12.4 のままで、Xcode 27（下限 15.0）ではエラーになる。`xcodebuild ... IPHONEOS_DEPLOYMENT_TARGET=16.4` で本体と同じ値を渡して回避している
+- **実機で開発ビルドを動かす手順**: Para Code 本体が 127.0.0.1:8081 を使っているので Metro は 8082 番にする。`RCT_METRO_PORT=8082 SENTRY_DISABLE_AUTO_UPLOAD=true xcodebuild -workspace ParaCodeMobile.xcworkspace -scheme ParaCodeMobile -configuration Debug -destination 'id=<UDID>' -allowProvisioningUpdates IPHONEOS_DEPLOYMENT_TARGET=16.4 build` → `xcrun devicectl device install app` → `pnpm exec expo start --port 8082`。`expo run:ios` は `ios/` を作り直しうるので使わない。開発ビルドでは `src/devProbe.tsx` が表示中の画面を `globalThis.__paraDev` とログに出すので、Metro の `/json/list` から CDP でつなげば画面とログを外から読める（CDP クライアントは `Origin: http://127.0.0.1:8082` を付けないと Metro に拒否される）
+
+### ホーム画面・ロック画面のウィジェットと App Group（2026-09-27）
+
+ホーム画面・ロック画面のウィジェット（案 A 要対応・B エージェント・C PC の状態・D スペース）を足した。`ios/` は gitignore 対象なので、**手で当てた設定をここに記録する**（`npx expo prebuild` 禁止は変わらない）。
+
+| 対象 | 変更 |
+|---|---|
+| App Group | `group.ltd.paradis.paracode.mobile` を本体・ParaCodeWidgets・NotifyExtension の3つに追加。Developer サイトへの登録とプロビジョニングの更新は `xcodebuild ... -allowProvisioningUpdates` が自動で行った |
+| `ios/ParaCodeMobile/ParaCodeMobile.entitlements` | `com.apple.security.application-groups` を追加 |
+| `ios/NotifyExtension/NotifyExtension.entitlements` | 同上（追跡用コピーは `app/mobile/native/NotifyExtension/`） |
+| `ios/ParaCodeWidgets/ParaCodeWidgets.entitlements` | 新規（それまで ParaCodeWidgets には entitlements ファイルが無かった）。追跡用コピーは `app/mobile/native/ParaCodeWidgets/` |
+| `ios/ParaCodeMobile.xcodeproj/project.pbxproj` | ParaCodeWidgets の Debug / Release に `CODE_SIGN_ENTITLEMENTS = ParaCodeWidgets/ParaCodeWidgets.entitlements`。Swift 8本（`WidgetShared` / `WidgetStyle` / `WidgetIntents` / `WidgetTimeline` / `AttentionWidget` / `AgentsWidget` / `PcStatusWidget` / `SpaceWidget`）を ParaCodeWidgets の Sources へ。**`WidgetShared.swift` は NotifyExtension の Sources にも入れる**。ID は既存の手書きの並び（`FD…A7`〜`FD…AF`、`FD…B5`〜`FD…BC`、`FE…B3`）に続けた |
+
+**`ios/` と `native/` の同期**: Swift・entitlements は `app/mobile/native/` を正として編集し、`ios/` へ写す（逆にしない）。2026-09-27 時点で `ios/ParaCodeWidgets/ParaCodeWidgetsBundle.swift` が native 版より古く（Live Activity の `widgetURL` と `privacySensitive` が無かった）、ビルドには古い方が使われていた。写し漏れの確認は次で行う（`README.md` を除いて差が無いこと。`NotifyExtension/Info.plist` の版番号の差は配信手順どおり ios 側だけを上げる運用なので残る）:
+
+```sh
+cd app/mobile
+for f in native/ParaCodeWidgets/* native/NotifyExtension/*; do b=$(basename "$f"); [ "$b" = README.md ] && continue
+  cmp -s "$f" "$(dirname "$f" | sed 's|native|ios|')/$b" || echo "DIFF $f"; done
+```
+
+設計の要点（詳細は `app/mobile/native/ParaCodeWidgets/README.md`）:
+
+- ウィジェットは PC・リレーへ繋がない。アプリ（`src/widgets/widgetSync.ts`）と通知拡張が App Group に書いた要約（`widget-snapshot.json`）を読むだけ。アプリのネイティブ側の読み書きは `modules/para-live-activity/ios/ParaLiveActivityModule.swift` の `ParaWidgetFiles`（新しい Expo モジュールを足すと `pod install` が要るので、既存のモジュールに足した）
+- 要約の形は JS（`src/widgets/snapshot.ts`）と Swift（`WidgetShared.swift`）の二重定義。版番号 `v` を上げたら両方直す
+- 設定 → ウィジェット（`app/settings/widgets.tsx`）の値は `widget-settings.json`。ウィジェット側の設定（長押し →「ウィジェットを編集」）と重なる項目はウィジェット側が優先
+- ホーム画面のウィジェットは iOS 17 以上だけ（配信の下限 16.4 では出ない。Live Activity は従来どおり）
+
+### Live Activity を案 D「状態で切り替え」に作り直した（段階 1、2026-09-27）
+
+見た目と動きの正解は `paracode-live-activity-mock.html` の案 D（リポジトリ外のモック）。3 段階のうち**段階 1（アプリだけで直せる部分）**を入れた。更新はいまもアプリの JS が動いている間だけ（`pushType: nil`）。
+
+| 場所 | 役割 |
+|---|---|
+| `app/mobile/src/liveActivityState.ts`（テスト `liveActivityState.test.ts`） | 中身の組み立て・状態の判定・「終わったもの」の記録・出す／終える判断・4KB に収める削り方。純関数 |
+| `app/mobile/src/liveActivitySync.ts` | ストアの購読（0.5 秒の間引き）、前面の間 1 分ごとの送り直し、背面へ移るときの送り直し、オフラインの猶予（10 秒）、ネイティブ呼び出しの直列化 |
+| `app/mobile/modules/para-live-activity/`（`index.ts`・`ios/ParaLiveActivityModule.swift`） | `upsert`（同じ PC のものを更新、ほかは終える）・`finish`（完了の要約を載せて終え、`dismissalPolicy: .after` で残す）・`end(includeFinished)` |
+| `app/mobile/native/ParaCodeWidgets/ParaCodeLiveActivity.swift`（新規） | compact・minimal・expanded・ロック画面の描画と、押したときのリンク。`ParaCodeWidgetsBundle.swift` からは外した |
+| `app/mobile/native/ParaCodeWidgets/ParaCodeActivityAttributes.swift` | 静的属性（`pcId`・`pcName`）と ContentState。**アプリ側の同名コピー・JS の型と3か所で一致させる**。欠けた項目は既定値で読む（古い版の Live Activity と段階 2 の項目追加に備える） |
+
+動きの要点:
+
+- 状態は `attention`（要対応あり）・`running`（実行中だけ）・`done`（全部完了）・`offline`（PC に繋がらない）。オフラインは直前の形のまま灰色にし「◯時点」を出す。出していないときにオフラインや完了のためだけに始めることはしない
+- 全部終わったら、この Live Activity の間に終わった（未確認の）ものを要約に載せて終え、ロック画面に最長 15 分残す。その間に全部確認されたら消す。終わったものが無い（止めた・閉じた）なら即座に消す。**終えると Dynamic Island からは消える**（Apple の仕様）ので、完了の compact・minimal はいまは出ない（段階 2 で PC が done を送れば出る）
+- `staleDate` は最後の更新の 2 分後。前面の間は 1 分ごとに送り直して先へ送り、背面へ移るときに時刻だけ新しくして送る。アプリが止まると 2 分後に灰色の「◯時点」になる
+- 押すと表示していた 1 件のセッションを直接開く（`paracode-mobile:///widget/session?pc=…&space=…&terminal=…`。書き換えはウィジェットと同じ `src/features/links/widgetLinks.ts`）。完了は PC の画面、オフラインはホーム。PC が分からない古い Live Activity の `paracode-mobile:///agent` と `/widget/attention` は従来どおり中継の画面（`/open-session`、最大 8 秒待つ）
+- 色はアプリのトークン（要対応 `#ef4444`・実行中 `#eab308`・完了 `#10b981`・ツール名 `#3b82f6`）。キーラインも状態の色で、旧シアン `#09AFD9` とロゴはやめた。「設定 → 色」の主役の色はモックの案 D で使っていないので使わない
+
+段階 2・3 で足す場所:
+
+- 段階 2（プッシュ）: `ParaLiveActivityModule.swift` の `upsert` で `pushType: .token` にし、`activity.pushTokenUpdates`（と iOS 17.2 以降の `Activity.pushToStartTokenUpdates`）を JS へイベントで渡して PC に登録する。PC が `liveActivityState.ts` と同じ形の content-state を作り、リレー（`app/relay/src/apns.ts`）が `apns-push-type: liveactivity`・トピック `<bundleID>.push-type.liveactivity` で送る。要対応の発生と全部完了だけ priority 10 とアラート、ほかは 5。`stale-date` は同じ 2 分。content-state は平文で Widget に届く（NSE を通らない）ので、名前・コマンドは暗号化した項目を足すか、アプリを開いたときだけ出すかを決める
+- 段階 3（許可ボタン）: `ParaCodeLiveActivity.swift` の `RequestBlock` のコマンドの右に `Button(intent:)` を 1 つ置く（expanded とロック画面だけ）。ContentState の `AttentionItem` に `interactionId`・`epoch`・`dangerous`（`dangerousCommand.ts` が拾うものはボタンを出さない）を足す
+- 通知との重複: いまはリレーが要対応を通常の通知（`apns-push-type: alert`）でも送るので、要対応は通知と Live Activity の両方に出る。段階 2 で Live Activity が出ている間は要対応の通常の通知を止める（Live Activity のアラートに寄せる）
 
 ## モバイルアプリのiPad対応（2026-08-05）
 

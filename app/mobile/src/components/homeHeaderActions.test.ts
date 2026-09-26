@@ -3,17 +3,22 @@
 import { createElement, type ReactElement } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import type { NotifyPayload } from '@para/protocol';
 import { sizeClassFor } from '../sizeClass.js';
 import { buildHomeHeaderActions, useHomeHeaderActions } from './homeHeaderActions.js';
 import { homeHeaderLayout } from './homeHeaderMenuBehavior.js';
 
 vi.mock('./homePlusMenu.js', () => ({ HomePlusMenuButton: 'HomePlusMenuButton' }));
 vi.mock('./voiceNotificationControl.js', () => ({ VoiceNotificationControl: 'VoiceNotificationControl' }));
-vi.mock('./notificationsSheet.js', () => ({ NotificationsButton: 'NotificationsButton' }));
+vi.mock('./notificationsSheet.js', () => ({ NotificationsButton: 'NotificationsButton', HomeBellButton: 'HomeBellButton' }));
 
 const onArchive = vi.fn();
+const onNotifications = vi.fn();
 const onSelect = vi.fn();
 const notifications: [] = [];
+/** 通知履歴: 質問2件（未読）と完了1件。ベルの数は質問の2件になる。 */
+const notice = (id: string, kind: NotifyPayload['kind']): NotifyPayload => ({ id, kind, title: 'スペース', body: '', at: 0 });
+const historyWithQuestions: NotifyPayload[] = [notice('n1', 'agent-question'), notice('n2', 'agent-question'), notice('n3', 'agent-done')];
 
 beforeAll(() => {
 	(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -28,32 +33,34 @@ function build(width: number, tablet: boolean, archivedCount = 2) {
 		header: homeHeaderLayout(sizeClassFor(width, tablet)),
 		archivedCount,
 		voiceActive: true,
-		notificationQuestionCount: 3,
 		ackCount: 1,
 		hasSpace: true,
-		notifications,
+		notifications: historyWithQuestions,
 		onArchive,
+		onNotifications,
 		onSelect,
 	});
 }
 
 describe('production home header action builder', () => {
-	test.each([390, 375, 320])('registers exactly one 44pt overflow action at %ipt', width => {
+	test.each([390, 375, 320])('registers the bell with the unread question notification count and one overflow action at %ipt', width => {
 		const actions = build(width, false);
-		expect(actions).toHaveLength(1);
-		expect(actions[0]).toMatchObject({ key: 'home-overflow', label: 'ホーム操作' });
-		const node = actions[0]!.node as ReactElement<{
+		expect(actions.map(action => action.key)).toEqual(['bell', 'home-overflow']);
+		const bell = actions[0]!.node as ReactElement<{ count: number; onPress: () => void }>;
+		expect(bell.type).toBe('HomeBellButton');
+		// 押した先（通知履歴）に残っている質問の数。要対応エージェントの数ではない。
+		expect(bell.props).toMatchObject({ count: 2, onPress: onNotifications });
+		expect(actions[1]).toMatchObject({ key: 'home-overflow', label: 'ホーム操作' });
+		const node = actions[1]!.node as ReactElement<{
 			compact: boolean;
 			archivedCount: number;
 			voiceActive: boolean;
-			notificationQuestionCount: number;
 		}>;
 		expect(node.type).toBe('HomePlusMenuButton');
 		expect(node.props).toMatchObject({
 			compact: true,
 			archivedCount: 2,
 			voiceActive: true,
-			notificationQuestionCount: 3,
 		});
 	});
 
@@ -75,11 +82,11 @@ describe('production home header action builder', () => {
 				header: homeHeaderLayout(regular ? 'regular' : 'compact'),
 				archivedCount: 2,
 				voiceActive: true,
-				notificationQuestionCount: 3,
 				ackCount: 1,
 				hasSpace: true,
 				notifications,
 				onArchive,
+				onNotifications,
 				onSelect,
 			});
 			rendered.push(actions);

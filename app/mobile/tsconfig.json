@@ -18,7 +18,8 @@
   },
   "include": [
     "src",
-    "app"
+    "app",
+    "legacy-screens"
   ],
   "extends": "expo/tsconfig.base"
 }

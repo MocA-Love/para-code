@@ -8,8 +8,11 @@ import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
-import { colors } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
+import { tintOf } from '../ui/themeColors.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 /** RTCView（react-native-webrtc）。未リンクのビルドでは undefined（JPEGミラーのみ）。 */
 const RTCViewComponent = getRtcView() as ComponentType<{
@@ -40,6 +43,7 @@ interface BrowserTarget {
  * `active` が false の間（画面がフォーカスを失った間）は screencast を停止する。
  */
 export function BrowserPanel({ active, preferredToken }: { active: boolean; preferredToken?: string }) {
+	const theme = useThemeColors();
 	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection, sidebarCollapsed, setSidebarCollapsed } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
 		browserInput: s.browserInput, frame: s.browserFrame, connection: s.connection,
@@ -432,7 +436,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 						<Pressable
 							key={t.targetId}
 							disabled={!live}
-							style={[styles.tabChip, selected && styles.tabChipSelected]}
+							style={[styles.tabChip, selected && { backgroundColor: theme.accentWash, borderColor: tintOf(theme.accent, alpha.strong) }]}
 							onPress={() => {
 								if (t.targetId === activeTargetId && mirrorActiveRef.current === t.targetId) {
 									return;
@@ -441,8 +445,8 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 								void start(t.targetId, t.url);
 							}}
 						>
-							{shared ? <Ionicons name="link" size={11} color={selected ? colors.accent : colors.green} /> : null}
-							<Text style={[styles.tabChipText, selected && styles.tabChipTextSelected]} numberOfLines={1}>{chipLabel(t)}</Text>
+							{shared ? <Ionicons name="link" size={11} color={selected ? theme.accent : colors.green} /> : null}
+							<Text style={[styles.tabChipText, selected && { color: theme.accent }]} numberOfLines={1}>{chipLabel(t)}</Text>
 						</Pressable>
 					);
 				})}
@@ -465,7 +469,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 					) : null}
 					{targets !== undefined ? (
 						<Pressable disabled={!live} style={[styles.reloadTargets, !live && styles.disabled]} onPress={() => { hapticImpact('light'); autoStartedRef.current = false; void loadTargets(); }}>
-							<Text style={styles.link}>一覧を更新</Text>
+							<Text style={[styles.link, { color: theme.accent }]}>一覧を更新</Text>
 						</Pressable>
 					) : null}
 				</View>
@@ -553,15 +557,34 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 				)}
 			</ScrollView>
 			<View style={[styles.toolbar, { paddingBottom: insets.bottom + 10 }]}>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'back' }); }}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'forward' }); }}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'reload' }); }}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: -0.5 }); }}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: 0.5 }); }}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
+				{TOOLBAR_ITEMS.map(item => (
+					<Pressable
+						key={item.label}
+						disabled={!live}
+						style={[styles.toolBtn, !live && styles.disabled]}
+						onPress={() => { hapticImpact('light'); browserInput(item.input); }}
+						accessibilityRole="button"
+						accessibilityState={{ disabled: !live }}
+						accessibilityLabel={item.label}
+					>
+						<Ionicons name={item.icon} size={17} color={colors.text} />
+					</Pressable>
+				))}
 			</View>
 		</View>
 	);
 }
+
+type BrowserToolbarInput = Parameters<ReturnType<typeof useAppStore.getState>['browserInput']>[0];
+
+/** 下のツールバーの操作。並びは以前と同じ（戻る・進む・再読み込み・上へ・下へ）。 */
+const TOOLBAR_ITEMS: readonly { icon: keyof typeof Ionicons.glyphMap; label: string; input: BrowserToolbarInput }[] = [
+	{ icon: 'chevron-back', label: '戻る', input: { kind: 'back' } },
+	{ icon: 'chevron-forward', label: '進む', input: { kind: 'forward' } },
+	{ icon: 'refresh', label: '再読み込み', input: { kind: 'reload' } },
+	{ icon: 'chevron-up', label: '上へスクロール', input: { kind: 'scroll', dy: -0.5 } },
+	{ icon: 'chevron-down', label: '下へスクロール', input: { kind: 'scroll', dy: 0.5 } },
+];
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
@@ -570,24 +593,23 @@ const styles = StyleSheet.create({
 	tabStripContent: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingVertical: 8 },
 	tabChip: {
 		flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 6,
-		borderRadius: 14, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, maxWidth: 220,
+		borderRadius: radius.card, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, maxWidth: 220,
 	},
-	tabChipSelected: { backgroundColor: colors.accentWash, borderColor: 'rgba(9,175,217,0.5)' },
 	disabled: { opacity: 0.45 },
-	tabChipText: { color: colors.textDim, fontSize: 11 },
-	tabChipTextSelected: { color: colors.accent },
+	tabChipText: { color: colors.textDim, fontSize: type.caption },
 	emptyBox: { flex: 1, justifyContent: 'center', padding: 24 },
 	spinner: { marginTop: 24 },
-	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 16, lineHeight: 20 },
-	error: { color: colors.red, fontSize: 12, marginBottom: 8, textAlign: 'center' },
+	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', marginTop: 16, lineHeight: 22 },
+	error: { color: colors.red, fontSize: type.meta, marginBottom: 8, textAlign: 'center' },
 	reloadTargets: { alignItems: 'center', marginTop: 16 },
-	link: { color: colors.accent, fontSize: 13 },
-	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 2, paddingVertical: 4, paddingHorizontal: 12 },
-	urlInput: { flex: 1, color: colors.text, fontSize: 12, fontFamily: 'Menlo', paddingVertical: 6 },
-	viewport: { flex: 1, margin: 12, borderRadius: 10, overflow: 'hidden', backgroundColor: '#000' },
+	link: { color: colors.accent, fontSize: type.body },
+	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 2, paddingVertical: 4, paddingHorizontal: 12 },
+	urlInput: { flex: 1, color: colors.text, fontSize: type.meta, fontFamily: monoFamily, paddingVertical: 6 },
+	viewport: { flex: 1, margin: 12, borderRadius: radius.control, ...squircle, overflow: 'hidden', backgroundColor: '#000' },
 	frameWrap: { flex: 1 },
 	frameImage: { flex: 1 },
 	center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
 	toolbar: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 12, gap: 8 },
-	toolBtn: { flex: 1, alignItems: 'center', paddingVertical: 9, backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border },
+	// 高さは当たり判定の最小値（44pt）。以前は約35pt で、横に5つ並ぶと押し損ねやすかった。
+	toolBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: HIT_SIZE, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border },
 });

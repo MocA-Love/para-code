@@ -6,7 +6,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './bottomSheet.js';
 import { EffortSlider } from './effortSlider.js';
 import { agentModelOptions, matchAgentModel } from '../agentModels.js';
-import { colors } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { hitSlopToMinimum } from './hitSlop.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import type { AgentMessageSendResult, AgentModelControlState } from '../store.js';
 
@@ -54,7 +56,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 
 	const codexModels = modelControl?.models ?? [];
 	const agentAccent = agent === 'claude' ? colors.claude : colors.accent;
-	const agentAccentWash = agent === 'claude' ? 'rgba(217,119,87,.14)' : colors.accentWash;
+	const agentAccentWash = agent === 'claude' ? tint(colors.claude, alpha.wash) : colors.accentWash;
 	const options = agent === 'codex'
 		? codexModels.map(option => ({
 			id: option.model,
@@ -156,6 +158,8 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		<>
 			<Pressable
 				style={styles.pill}
+				// 見た目はコンポーザーの行に収まる高さのまま、当たり判定だけ 44pt へ広げる。
+				hitSlop={PILL_HIT_SLOP}
 				onPress={openSheet}
 				disabled={modelControl?.status === 'updating' || submitting}
 				accessibilityRole="button"
@@ -181,7 +185,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 					{agent === 'codex' && modelControl?.status === 'error' ? (
 						<View style={styles.errorBox}>
 							<Text style={styles.errorText}>{modelControl.errorMessage ?? 'モデル一覧を取得できませんでした'}</Text>
-							<Pressable onPress={onRequestCodexCatalog} accessibilityRole="button"><Text style={styles.retryText}>再試行</Text></Pressable>
+							<Pressable style={styles.retryBtn} onPress={onRequestCodexCatalog} accessibilityRole="button"><Text style={styles.retryText}>再試行</Text></Pressable>
 						</View>
 					) : null}
 					{options.length === 0 && modelControl?.status !== 'loading' ? (
@@ -228,30 +232,35 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	);
 }
 
+/** コンポーザーのピル（モデル・PR）の見た目の高さ。当たり判定は hitSlop で 44pt にする。 */
+export const PILL_HEIGHT = 36;
+const PILL_HIT_SLOP = hitSlopToMinimum(PILL_HEIGHT);
+
 const styles = StyleSheet.create({
 	// コンポーザー自体がGlassSurfaceなので、ここでネイティブglassを重ねない。
 	pill: {
 		flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: 190,
 		backgroundColor: 'rgba(255,255,255,.06)', borderWidth: 1, borderColor: colors.glassBorder,
-		borderRadius: 999, paddingVertical: 9, paddingHorizontal: 13,
+		borderRadius: radius.pill, ...squircle, paddingVertical: 9, paddingHorizontal: 13, minHeight: PILL_HEIGHT,
 	},
-	pillText: { color: colors.text, fontSize: 11.5, fontWeight: '600', fontFamily: 'Menlo', flexShrink: 1 },
+	pillText: { color: colors.text, fontSize: type.meta, fontWeight: '600', fontFamily: monoFamily, flexShrink: 1 },
 	body: { paddingHorizontal: 20 },
 	bodyContent: { paddingBottom: 40 },
 	loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
-	errorBox: { borderWidth: 1, borderColor: colors.red, borderRadius: 8, padding: 12, gap: 8, marginBottom: 10 },
-	errorText: { color: colors.text, fontSize: 11.5, lineHeight: 17 },
-	retryText: { color: colors.accent, fontSize: 12, fontWeight: '700' },
-	sectionLabel: { color: colors.textDim, fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, marginTop: 4 },
+	errorBox: { borderWidth: 1, borderColor: colors.red, borderRadius: radius.control, ...squircle, padding: 12, gap: 8, marginBottom: 10 },
+	errorText: { color: colors.text, fontSize: type.meta, lineHeight: 18 },
+	retryBtn: { minHeight: HIT_SIZE, justifyContent: 'center', alignSelf: 'flex-start' },
+	retryText: { color: colors.accent, fontSize: type.meta, fontWeight: '700' },
+	sectionLabel: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, marginTop: 4 },
 	sectionLabelGap: { marginTop: 16 },
 	modelRow: {
 		flexDirection: 'row', alignItems: 'center', gap: 10,
 		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
-		borderRadius: 13, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 7,
+		borderRadius: radius.card, ...squircle, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 7,
 	},
 	modelBody: { flex: 1, minWidth: 0 },
-	modelLabel: { color: colors.textDim, fontSize: 13.5, fontWeight: '700' },
+	modelLabel: { color: colors.textDim, fontSize: type.body, fontWeight: '700' },
 	modelLabelActive: { color: colors.text },
-	currentTag: { color: colors.accent, fontSize: 10, fontWeight: '700', backgroundColor: colors.accentWash, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
-	hint: { color: colors.textDim, fontSize: 10.5, lineHeight: 15, marginTop: 4 },
+	currentTag: { color: colors.accent, fontSize: type.badge, fontWeight: '700', backgroundColor: colors.accentWash, borderRadius: radius.key, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
+	hint: { color: colors.textDim, fontSize: type.badge, lineHeight: 15, marginTop: 4 },
 });

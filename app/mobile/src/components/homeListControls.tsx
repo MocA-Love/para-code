@@ -3,37 +3,26 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './bottomSheet.js';
-import { GlassSurface } from './glassSurface.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import {
-	HOME_SORT_KEYS, HOME_STATUS_BUCKETS, bucketCounts, reconcileSecondary, secondaryCandidates, toggleFilter,
-	type HomeListPreferences, type HomeSortKey, type HomeStatusBucket, type SortableTerminal,
+	HOME_SORT_KEYS, reconcileSecondary, secondaryCandidates,
+	type HomeListPreferences, type HomeSortKey,
 } from '../homeSort.js';
-import { colors, radius, squircle } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { hapticSelection } from '../haptics.js';
 
 /**
- * ホーム一覧の絞り込みチップと、並び替えシート。
+ * ホーム一覧の並び替えシート。
  *
- * 「今どういう condition で絞られているか」は画面に出したままにする。シートを開かないと
- * 分からない作りにすると、絞り込んだこと自体を忘れて「エージェントが消えた」と誤解される。
- *
- * 一方で**並び順のほうはチップの下にバーを出さない**。常時見せるほど頻繁には変えないのに
- * 一段まるごと占めてしまい、そのぶん本文の始まりが下がる。入口はヘッダーの＋メニューの
- * 「並び替えと絞り込み」に置く。
+ * 以前はこのファイルに状態の絞り込みチップもあったが、ステータス順の一覧を状態の見出しで
+ * 区切るようにしたことで役目を終えたので外した（見出しが「いま何がどれだけあるか」を示す）。
+ * 入口はヘッダーの `…`（iPad は＋）メニューの「並び替え」。
  */
 
 /** 選択肢の行の寸法。罫線のインセットを同じ値から導くためにまとめておく。 */
 const OPTION_PADDING = 14;
 const OPTION_ICON = 22;
 const OPTION_GAP = 11;
-
-const BUCKET_LABEL: Record<HomeStatusBucket, string> = {
-	waiting: '応答待ち',
-	working: '実行中',
-	review: 'レビュー',
-	idle: 'アイドル',
-};
 
 const SORT_LABEL: Record<HomeSortKey, string> = {
 	status: 'ステータス順',
@@ -43,9 +32,8 @@ const SORT_LABEL: Record<HomeSortKey, string> = {
 };
 
 const SORT_DESCRIPTION: Record<HomeSortKey, string> = {
-	// 応答待ちは上部のスタックが持つのでこの一覧には現れない。ここに書くと
-	// 「応答待ちが上に来ないのは壊れている」と読まれる。
-	status: '実行中 → レビュー → アイドル',
+	// 要対応は上部のスタック（見出しの先頭の段）が持つ。一覧はその下を状態の見出しで区切る。
+	status: '要対応 → 実行中 → 未確認 → 待機（見出しで区切る）',
 	space: 'ワークスペース一覧と同じ並び',
 	name: 'ターミナル名の順',
 	added: 'PCでターミナルを作った順',
@@ -57,99 +45,6 @@ const SORT_ICON: Record<HomeSortKey, keyof typeof Ionicons.glyphMap> = {
 	name: 'text-outline',
 	added: 'time-outline',
 };
-
-const BUCKET_DOT: Record<HomeStatusBucket, string> = {
-	waiting: colors.red,
-	working: colors.green,
-	review: colors.yellow,
-	idle: colors.textDim,
-};
-
-/** 並び順を1行で言い表す（バーのラベル）。第2キーは第1キーと違うときだけ添える。 */
-export function describeSort(preferences: HomeListPreferences): string {
-	return preferences.sort === preferences.secondary
-		? SORT_LABEL[preferences.sort]
-		: `${SORT_LABEL[preferences.sort]} · ${SORT_LABEL[preferences.secondary]}`;
-}
-
-export function HomeFilterChips({ preferences, onChange, rows }: {
-	preferences: HomeListPreferences;
-	onChange: (next: HomeListPreferences) => void;
-	/** 件数を数える対象（絞り込み前の一覧。応答待ちスタックのぶんは含まない）。 */
-	rows: readonly SortableTerminal[];
-}) {
-	const counts = bucketCounts(rows);
-	const noFilter = preferences.filters.length === 0;
-
-	return (
-		// 横スクロールにしない。ホームは画面全体を右スワイプでドロワーを開くジェスチャで
-		// 包んでいる（index.tsx の openDrawerPan）ため、チップを右へ払い戻す操作が
-		// そちらに奪われる。4つ固定で溢れるのは狭いiPhoneの1個ぶんなので、折り返しで足りる。
-		<View style={styles.chipRow}>
-			<Chip
-				label="すべて"
-				count={rows.length}
-				active={noFilter}
-				onPress={() => {
-					if (noFilter) {
-						return;
-					}
-					hapticSelection();
-					onChange({ ...preferences, filters: [] });
-				}}
-			/>
-			{HOME_STATUS_BUCKETS.map(bucket => (
-				<Chip
-					key={bucket}
-					label={BUCKET_LABEL[bucket]}
-					count={counts[bucket]}
-					active={preferences.filters.includes(bucket)}
-					onPress={() => {
-						hapticSelection();
-						onChange({ ...preferences, filters: toggleFilter(preferences.filters, bucket) });
-					}}
-				/>
-			))}
-		</View>
-	);
-}
-
-/**
- * 絞り込みチップ。面はガラスのピルで、ヘッダーの島と同じレイヤーに浮く。
- *
- * **選択中も素材はガラスのまま**にして、色は `tintColor` として素材へ混ぜる。
- * 以前は選択中だけ不透明な地の `View` へ差し替えていたが、
- *  - 同じ列にガラスと不透明が並んで素材が食い違い、選択が「別の部品に化けた」ように見える
- *  - そこだけ背後のスクロールが透けないので、動きが止まって見える
- *  - `active ? <GlassSurface> : <View>` は条件でReactツリーの形を変えるため再マウントが起きる
- *    （CLAUDE.md が禁じている書き方）
- * の3つが起きていた。tint は Apple の言う「前面性を示す」用途そのもの。
- *
- * 状態の色ドットは付けない。同じ意味の色は右端のステータスバッジが行ごとに持っており、
- * チップにも足すと1画面に同じ凡例が二重に並ぶ。
- */
-function Chip({ label, count, active, onPress }: { label: string; count: number; active: boolean; onPress: () => void }) {
-	return (
-		<GlassSurface
-			style={styles.chip}
-			interactive
-			// 枠線は足さない（ガラスが自前で縁の光を持っている）。
-			tintColor={active ? colors.accent : undefined}
-			tintOpacity={0.22}
-		>
-			<Pressable
-				style={styles.chipHit}
-				onPress={onPress}
-				accessibilityRole="button"
-				accessibilityState={{ selected: active }}
-				accessibilityLabel={`${label} ${count}件`}
-			>
-				<Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-				<Text style={[styles.chipText, styles.chipCount, active && styles.chipTextActive]}>{count}</Text>
-			</Pressable>
-		</GlassSurface>
-	);
-}
 
 /** 並び替えシート。第1キー・第2キー・ピン留めの扱いを選ぶ。ヘッダーの＋メニューから開く。 */
 export function HomeSortSheet({ visible, preferences, onChange, onClose }: {
@@ -249,21 +144,12 @@ function OptionRow({ icon, title, description, selected, onPress, first = false 
 }
 
 const styles = StyleSheet.create({
-	// 左右の余白は置き場所（ヘッダーの帯）が持つのでここでは足さない。
-	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
-	chip: { height: 32, borderRadius: radius.pill, ...squircle },
-	chipHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
-	chipText: { color: colors.text, fontSize: 11.5 },
-	chipTextActive: { color: '#bfeeff', fontWeight: '700' },
-	// 件数はラベルと同じ色のまま薄くする。別の色を当てると数字だけが先に目に入る。
-	chipCount: { fontSize: 10.5, opacity: 0.75 },
-
 	sheetBody: { paddingHorizontal: 16 },
 	// iOS 26 のリストは全大文字をやめ、見出しもタイトルの大小で書く。文字も一段大きい。
-	sheetSection: { color: colors.textDim, fontSize: 12.5, fontWeight: '700', paddingHorizontal: 12, paddingTop: 16, paddingBottom: 7 },
+	sheetSection: { color: colors.textDim, fontSize: type.meta, fontWeight: '700', paddingHorizontal: 12, paddingTop: 16, paddingBottom: 7 },
 	// グループを1枚の面にまとめる。行の形はこの器が持つので、行側は角丸も枠線も持たない。
 	optionGroup: {
-		borderRadius: 16, ...squircle, overflow: 'hidden',
+		borderRadius: radius.card, ...squircle, overflow: 'hidden',
 		backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
 	},
 	option: { flexDirection: 'row', alignItems: 'center', gap: OPTION_GAP, paddingVertical: 13, paddingHorizontal: OPTION_PADDING },
@@ -275,6 +161,6 @@ const styles = StyleSheet.create({
 	},
 	optionIcon: { width: OPTION_ICON, textAlign: 'center' },
 	optionBody: { flex: 1, minWidth: 0 },
-	optionTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
-	optionDescription: { color: colors.textDim, fontSize: 10.5, marginTop: 2, lineHeight: 15 },
+	optionTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	optionDescription: { color: colors.textDim, fontSize: type.badge, marginTop: 2, lineHeight: 15 },
 });

@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useFilesSearch } from '../filesSearch.js';
 import { useFilesLive } from '../filesLive.js';
-import { colors, radius, squircle } from '../theme.js';
+import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 
 /**
@@ -80,22 +80,24 @@ export function FilesSearchField({ onClose }: { onClose: () => void }) {
 				accessibilityLabel="検索条件"
 			/>
 			{(['name', 'text'] as const).map(candidate => (
+				// 押せる範囲（44pt 四方）と見た目のチップを分ける。欄の高さ（44pt）いっぱいを押せる。
 				<Pressable
 					key={candidate}
 					disabled={!live}
-					style={[styles.modeChip, mode === candidate && styles.modeChipActive]}
+					style={styles.modeHit}
 					onPress={() => { hapticSelection(); setMode(candidate); }}
 					accessibilityRole="button"
-					accessibilityState={{ selected: mode === candidate }}
+					accessibilityState={{ selected: mode === candidate, disabled: !live }}
 					accessibilityLabel={candidate === 'name' ? 'ファイル名で検索' : '内容で検索'}
 				>
-					<Text style={[styles.modeText, mode === candidate && styles.modeTextActive]}>{candidate === 'name' ? '名前' : '内容'}</Text>
+					<View style={[styles.modeChip, mode === candidate && styles.modeChipActive]}>
+						<Text style={[styles.modeText, mode === candidate && styles.modeTextActive]}>{candidate === 'name' ? '名前' : '内容'}</Text>
+					</View>
 				</Pressable>
 			))}
 			<Pressable
 				style={styles.close}
 				onPress={() => { hapticSelection(); onClose(); }}
-				hitSlop={8}
 				accessibilityRole="button"
 				accessibilityLabel="検索を閉じる"
 			>
@@ -106,11 +108,14 @@ export function FilesSearchField({ onClose }: { onClose: () => void }) {
 }
 
 const styles = StyleSheet.create({
-	box: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12 },
-	input: { flex: 1, color: colors.text, fontSize: 13, paddingVertical: 9 },
-	close: { padding: 2 },
+	// 中のチップと閉じるが 44pt の当たり判定を持つので、欄の高さも 44pt（＋枠線）になる。
+	// 右端は閉じるの当たり判定が欄の縁まで届くよう余白を持たない。
+	box: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, paddingLeft: 12 },
+	input: { flex: 1, color: colors.text, fontSize: type.body, paddingVertical: 9, marginLeft: 6 },
+	close: { width: HIT_SIZE, height: HIT_SIZE, alignItems: 'center', justifyContent: 'center' },
+	modeHit: { minWidth: HIT_SIZE, height: HIT_SIZE, alignItems: 'center', justifyContent: 'center' },
 	modeChip: { borderRadius: radius.pill, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 9, paddingVertical: 4 },
-	modeChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
-	modeText: { color: colors.textDim, fontSize: 11 },
+	modeChipActive: { borderColor: colors.accent2, backgroundColor: colors.accentWash },
+	modeText: { color: colors.textDim, fontSize: type.caption },
 	modeTextActive: { color: colors.text, fontWeight: '600' },
 });

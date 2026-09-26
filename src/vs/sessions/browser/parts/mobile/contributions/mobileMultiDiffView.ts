@@ -20,6 +20,7 @@ import { ILanguageService } from '../../../../../editor/common/languages/languag
 import { TokenizationRegistry } from '../../../../../editor/common/languages.js';
 import { generateTokensCSSForColorMap } from '../../../../../editor/common/languages/supports/tokenization.js';
 import { IFileDiffViewData } from './mobileDiffView.js';
+// PARA-PATCH: pull in the fork-owned mobile Changes toolbar.
 import { appendMobileChangesToolbar, IMobileChangesToolbarContext } from './mobileChangesToolbar.js';
 import { computeUnifiedDiff, hasMultipleTokenClasses, type IDiffHunk, type IDiffLine, regexTokenizeLines, resolveMobileDiffLanguageId, tokenizeFileLines } from './mobileDiffHelpers.js';
 import { computeMobileMultiDiffItemHeight, computeMobileMultiDiffVirtualLayout, type IMobileMultiDiffVirtualItem, type IMobileMultiDiffVirtualItemLayout, type IMobileMultiDiffVirtualizerMetrics } from './mobileMultiDiffVirtualizer.js';
@@ -135,6 +136,7 @@ export class MobileMultiDiffView extends Disposable {
 		private readonly textFileService: ITextFileService,
 		private readonly fileService: IFileService,
 		private readonly languageService: ILanguageService,
+		// PARA-PATCH: optional context for the fork-owned Changes toolbar (kept optional to leave the upstream signature usable).
 		private readonly changesToolbarContext?: IMobileChangesToolbarContext,
 	) {
 		super();
@@ -191,6 +193,7 @@ export class MobileMultiDiffView extends Disposable {
 			this.data.diffs.length,
 			this.data.diffs.length === 1 ? localize('multiDiffView.file', "file") : localize('multiDiffView.files', "files"),
 		);
+		// PARA-PATCH: render the fork-owned Changes toolbar in the overlay top bar.
 		if (this.changesToolbarContext) {
 			appendMobileChangesToolbar(topBar, this.changesToolbarContext, this.viewStore);
 		}
