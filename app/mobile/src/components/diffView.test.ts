@@ -32,6 +32,7 @@ const harness = vi.hoisted(() => {
 });
 
 vi.mock('react-native', () => ({
+	ActivityIndicator: 'ActivityIndicator',
 	Modal: 'Modal',
 	Platform: { OS: 'ios' },
 	Pressable: 'Pressable',
@@ -51,6 +52,7 @@ vi.mock('../appState.js', () => {
 	return { useAppStore };
 });
 vi.mock('./fileViewer.js', () => ({ buildMarkdownHtml: () => '<html></html>' }));
+vi.mock('./workspaceFileViewer.js', () => ({ WorkspaceFileViewer: 'WorkspaceFileViewer' }));
 // 追加されたトークン（type / alpha など）まで列挙し続けなくて済むよう、本物を土台にして色などだけ差し替える。
 vi.mock('../theme.js', async (importOriginal) => ({
 	...await importOriginal<typeof import('../theme.js')>(),
@@ -100,6 +102,44 @@ describe('DiffView Office routing', () => {
 				expect(harness.scmXlsxDiff).not.toHaveBeenCalled();
 				expect(JSON.stringify(renderer.toJSON())).toContain('このOffice形式のDiffは利用できません');
 			}
+		} finally {
+			await act(async () => renderer.unmount());
+		}
+	});
+});
+
+/** モックした WorkspaceFileViewer（文字列の要素型）か。 */
+function isFileViewer(node: { readonly type: unknown }): boolean {
+	return node.type === 'WorkspaceFileViewer';
+}
+
+describe('DiffView から実ファイルを開く', () => {
+	async function render(statusLetter: string | undefined): Promise<ReactTestRenderer> {
+		let renderer: ReactTestRenderer | undefined;
+		await act(async () => {
+			renderer = create(createElement(DiffView, { ws: 'workspace-1', path: 'src/app.ts', staged: false, statusLetter, onClose: () => undefined }));
+			await Promise.resolve();
+		});
+		return renderer!;
+	}
+
+	it('押すと差分の上にファイルビューアを重ね、戻り先を「差分」にする', async () => {
+		const renderer = await render('M');
+		try {
+			expect(renderer.root.findAll(isFileViewer)).toHaveLength(0);
+			const open = renderer.root.findByProps({ accessibilityLabel: 'ファイルを開く' });
+			await act(async () => { open.props.onPress(); });
+			const viewer = renderer.root.find(isFileViewer);
+			expect(viewer.props).toMatchObject({ ws: 'workspace-1', path: 'src/app.ts', backLabel: '差分' });
+		} finally {
+			await act(async () => renderer.unmount());
+		}
+	});
+
+	it('削除されたファイルは作業ツリーに無いので開く操作を出さない', async () => {
+		const renderer = await render('D');
+		try {
+			expect(renderer.root.findAllByProps({ accessibilityLabel: 'ファイルを開く' })).toHaveLength(0);
 		} finally {
 			await act(async () => renderer.unmount());
 		}

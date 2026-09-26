@@ -16,8 +16,11 @@ import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.j
 import { Button } from '../../src/components/button.js';
 import { EmptyState } from '../../src/components/emptyState.js';
 import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { LoadingState, UnavailableNote } from '../../src/components/listStates.js';
+import { useWorkspaceUnavailableReason } from '../../src/hooks/useWorkspaceUnavailableReason.js';
+import { SCM_CHANGE_LEGEND, commitFileKind, scmChangeKind, scmChangeMeta } from '../../src/scmChangeKind.js';
 import { monoFamily } from '../../src/monoFont.js';
-import { colors, radius, squircle, type } from '../../src/theme.js';
+import { HIT_SIZE, colors, radius, space, squircle, type } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
@@ -51,6 +54,8 @@ export default function ScmScreen() {
 		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
 		: undefined;
 	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
+	// 押せないときの理由（一覧を薄くするだけでなく文字で出す）。
+	const unavailable = useWorkspaceUnavailableReason(ws?.id);
 
 	const tabBarSpacer = useTabBarSpacer();
 	// 下端がキーボードに食われる高さ。terminal.tsx と同じく `KeyboardAvoidingView` は使わない
@@ -67,7 +72,11 @@ export default function ScmScreen() {
 	const [log, setLog] = useState<ScmLogResult | undefined>();
 	const [logError, setLogError] = useState<string | undefined>();
 	const [loadingMore, setLoadingMore] = useState(false);
+	// 一覧（status）の読み込みの失敗。コミットの失敗（commitError）とは出す場所を分ける。
 	const [error, setError] = useState<string | undefined>();
+	const [commitError, setCommitError] = useState<string | undefined>();
+	// 変更一覧の記号（M / A / U …）の説明を開いているか。
+	const [legendOpen, setLegendOpen] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean; letter: string } | undefined>();
 	const [message, setMessage] = useState('');
@@ -145,6 +154,9 @@ export default function ScmScreen() {
 		setCommitFiles({});
 		setMessage('');
 		setCommitResult(undefined);
+		setCommitError(undefined);
+		setError(undefined);
+		setLogError(undefined);
 		setCommitting(false);
 	}, [wsId]);
 
@@ -236,7 +248,7 @@ export default function ScmScreen() {
 		}
 		setCommitting(true);
 		setCommitResult(undefined);
-		setError(undefined);
+		setCommitError(undefined);
 		const contextGen = contextGenRef.current;
 		const commitGen = ++commitGenRef.current;
 		const requestTarget = rendererTarget;
@@ -250,7 +262,7 @@ export default function ScmScreen() {
 			await refresh();
 		} catch (e) {
 			if (contextGenRef.current === contextGen && commitGenRef.current === commitGen && currentRendererTarget(wsId) === requestTarget) {
-				setError(String(e instanceof Error ? e.message : e));
+				setCommitError(String(e instanceof Error ? e.message : e));
 			}
 		} finally {
 			if (contextGenRef.current === contextGen && commitGenRef.current === commitGen && currentRendererTarget(wsId) === requestTarget) {
@@ -299,36 +311,82 @@ export default function ScmScreen() {
 						editable={!committing}
 						multiline
 					/>
+					{/* 挙動は「すべての変更をまとめてコミット」（git add -A してからコミット）。ファイルを
+					    選ぶ操作が無いので、押す前にそれが分かる文言にする。 */}
 					<Button
 						variant="primary"
-						label={committing ? 'コミット中…' : 'コミット'}
+						label={committing ? 'コミット中…' : status !== undefined ? `すべての変更（${status.files.length}件）をコミット` : 'すべての変更をコミット'}
 						onPress={() => { hapticImpact('medium'); void commit(); }}
 						disabled={!live || !wsId || !message.trim()}
 						loading={committing}
 					/>
+					<Text style={styles.commitNote}>未追跡のファイルも含めてまとめてコミットします。ファイルを選んでコミットすることはできません。</Text>
 					{commitResult ? <Text style={styles.commitResult}>{commitResult}</Text> : null}
-					{error ? <Text style={styles.error}>{error}</Text> : null}
+					{commitError ? <Text style={styles.error}>コミットに失敗しました: {commitError}</Text> : null}
 				</View>
 
-				<SectionHeader title="変更" count={status?.files.length ?? 0} />
-				{loading && !status ? <ActivityIndicator style={styles.spinner} /> : null}
-				{status && status.files.length === 0 ? <EmptyState title="変更はありません" /> : null}
+				<SectionHeader
+					title="変更"
+					count={status?.files.length ?? 0}
+					right={(status?.files.length ?? 0) > 0 ? (
+						<Pressable
+							style={styles.legendBtn}
+							onPress={() => { hapticSelection(); setLegendOpen(open => !open); }}
+							accessibilityRole="button"
+							accessibilityState={{ expanded: legendOpen }}
+							accessibilityLabel="記号の説明"
+						>
+							<View style={styles.legendInner}>
+								<Ionicons name="help-circle-outline" size={16} color={legendOpen ? colors.text : colors.textDim} />
+								<Text style={[styles.legendBtnText, legendOpen && styles.legendBtnTextOpen]}>記号の説明</Text>
+							</View>
+						</Pressable>
+					) : undefined}
+				/>
+				{legendOpen && (status?.files.length ?? 0) > 0 ? (
+					<View style={styles.legend}>
+						{SCM_CHANGE_LEGEND.map(meta => (
+							<View key={meta.symbol} style={styles.legendItem}>
+								<Text style={[styles.fileLetter, { color: meta.color }]}>{meta.symbol}</Text>
+								<Text style={styles.legendLabel}>{meta.label}</Text>
+							</View>
+						))}
+					</View>
+				) : null}
+				{/* 接続が切れて前回の一覧を薄く出しているときは、理由を文字で添える。 */}
+				{unavailable !== undefined && status !== undefined ? <UnavailableNote reason={unavailable} /> : null}
+				{error !== undefined && status !== undefined ? <Text style={styles.error}>再取得に失敗しました: {error}</Text> : null}
+				{status === undefined ? (
+					error !== undefined ? (
+						<EmptyState icon="alert-circle-outline" title="変更を読み込めませんでした" message={error} action={live ? { label: '再読み込み', onPress: () => { hapticImpact('light'); void refresh(); } } : undefined} />
+					) : unavailable !== undefined ? (
+						<EmptyState icon="cloud-offline-outline" title="変更を読み込めません" message={`${unavailable}。接続が戻ると読み込みます`} />
+					) : <LoadingState />
+				) : null}
+				{status && status.files.length === 0 ? <EmptyState icon="checkmark-circle-outline" title="変更はありません" message="作業ツリーは最後のコミットと同じ状態です" /> : null}
 				{(status?.files ?? []).length > 0 ? <View style={styles.card}>
 				{(status?.files ?? []).map(f => {
 					const staged = f.x !== ' ' && f.x !== '?';
 					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
+					const meta = scmChangeMeta(scmChangeKind(f.x, f.y), letter);
 					return (
 						<View key={`${f.x}${f.y}${f.path}`} style={styles.fileRowWrap}>
-							<Pressable disabled={!live} style={[styles.fileRow, !live && styles.commitBtnDisabled]} onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ', letter }); }}>
+							<Pressable
+								disabled={!live}
+								style={[styles.fileRow, !live && styles.commitBtnDisabled]}
+								onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ', letter }); }}
+								accessibilityRole="button"
+								accessibilityLabel={`${meta.label}: ${f.path}`}
+							>
 								{/* 状態の1文字を先頭に置く。行の意味（追加なのか削除なのか）が
 								    パスを読む前に分かり、縦に並んだとき色の列としても読める。 */}
-								<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
+								<Text style={[styles.fileLetter, { color: meta.color }]}>{meta.symbol}</Text>
 								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
 								<Ionicons name="chevron-forward" size={14} color={colors.textDim} />
 							</Pressable>
 							{log?.webUrl ? (
-								<Pressable style={styles.fileExtBtn} onPress={() => { hapticImpact('light'); openFileExternally(f.path); }} hitSlop={8} accessibilityLabel="外部で開く">
-									<Ionicons name="open-outline" size={13} color={colors.textDim} />
+								<Pressable style={styles.extBtn} onPress={() => { hapticImpact('light'); openFileExternally(f.path); }} accessibilityRole="link" accessibilityLabel="ブラウザでファイルを開く">
+									<Ionicons name="open-outline" size={15} color={colors.textDim} />
 								</Pressable>
 							) : null}
 						</View>
@@ -341,36 +399,51 @@ export default function ScmScreen() {
 				{log !== undefined || logError !== undefined ? (
 					<SectionHeader title="最近のコミット" count={log?.commits.length ?? 0} />
 				) : null}
-				{logError ? <Text style={styles.error}>{logError}</Text> : null}
-				{log && log.commits.length === 0 ? <EmptyState title="コミットはありません" /> : null}
+				{logError !== undefined && log === undefined ? (
+					<EmptyState icon="alert-circle-outline" title="履歴を読み込めませんでした" message={logError} action={live ? { label: '再読み込み', onPress: () => { hapticImpact('light'); void refresh(); } } : undefined} />
+				) : logError !== undefined ? <Text style={styles.error}>続きを読み込めませんでした: {logError}</Text> : null}
+				{log && log.commits.length === 0 ? <EmptyState icon="git-commit-outline" title="コミットはまだありません" message="このブランチにはコミットがありません" /> : null}
 				{(log?.commits ?? []).length > 0 ? <View style={styles.card}>
 				{(log?.commits ?? []).map(c => {
 					const expanded = expandedHash === c.hash;
 					const detail = commitFiles[c.hash];
 					return (
 						<View key={c.hash}>
-							<Pressable style={styles.commitRow} onPress={() => { hapticSelection(); toggleCommit(c.hash); }}>
-								<Ionicons name={expanded ? 'chevron-down' : 'git-commit-outline'} size={14} color={colors.textDim} />
-								<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
-								{/* atが無いのは旧バージョンのPC（whenはPC側整形の英語文字列） */}
-								<Text style={styles.commitWhen}>{c.at !== undefined ? formatRelativeTime(c.at, now) : c.when}</Text>
+							{/* 行の展開とブラウザで開くは別の押し場所にする。以前は展開の行の中に小さな
+							    リンクボタンが入れ子になっていて、押し間違えやすかった。 */}
+							<View style={styles.commitRowWrap}>
+								<Pressable
+									style={styles.commitRow}
+									onPress={() => { hapticSelection(); toggleCommit(c.hash); }}
+									accessibilityRole="button"
+									accessibilityState={{ expanded }}
+									accessibilityLabel={`${c.subject}の変更ファイル`}
+								>
+									<Ionicons name={expanded ? 'chevron-down' : 'git-commit-outline'} size={14} color={colors.textDim} />
+									<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
+									{/* atが無いのは旧バージョンのPC（whenはPC側整形の英語文字列） */}
+									<Text style={styles.commitWhen}>{c.at !== undefined ? formatRelativeTime(c.at, now) : c.when}</Text>
+								</Pressable>
 								{log?.webUrl ? (
-									<Pressable onPress={() => { hapticImpact('light'); openCommit(c.hash); }} hitSlop={8} accessibilityLabel="ブラウザでコミットを開く">
-										<Ionicons name="open-outline" size={13} color={colors.textDim} />
+									<Pressable style={styles.extBtn} onPress={() => { hapticImpact('light'); openCommit(c.hash); }} accessibilityRole="link" accessibilityLabel="ブラウザでコミットを開く">
+										<Ionicons name="open-outline" size={15} color={colors.textDim} />
 									</Pressable>
 								) : null}
-							</Pressable>
+							</View>
 							{expanded ? (
 								<View style={styles.commitDetail}>
 									{!detail ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
-									{detail?.error ? <Text style={styles.error}>{detail.error}</Text> : null}
+									{detail?.error ? <Text style={styles.error}>変更ファイルを読み込めませんでした: {detail.error}</Text> : null}
 									{detail?.files && detail.files.length === 0 ? <Text style={styles.dim}>変更ファイルはありません</Text> : null}
-									{(detail?.files ?? []).map(f => (
-										<View key={`${f.status}${f.path}`} style={styles.commitFileRow}>
-											<Text style={[styles.fileLetter, f.status === 'M' ? styles.mod : f.status === 'A' ? styles.add : f.status === 'D' ? styles.del : undefined]}>{f.status}</Text>
-											<Text style={styles.commitFilePath} numberOfLines={1}>{f.path}</Text>
-										</View>
-									))}
+									{(detail?.files ?? []).map(f => {
+										const meta = scmChangeMeta(commitFileKind(f.status), f.status);
+										return (
+											<View key={`${f.status}${f.path}`} style={styles.commitFileRow} accessibilityLabel={`${meta.label}: ${f.path}`}>
+												<Text style={[styles.fileLetter, { color: meta.color }]}>{meta.symbol}</Text>
+												<Text style={styles.commitFilePath} numberOfLines={1}>{f.path}</Text>
+											</View>
+										);
+									})}
 								</View>
 							) : null}
 						</View>
@@ -412,18 +485,27 @@ const styles = StyleSheet.create({
 	// 押せない行（未接続）の薄め方。Button の disabled と同じ値。
 	commitBtnDisabled: { opacity: 0.45 },
 	commitResult: { color: colors.green, fontSize: type.caption, marginTop: 8, fontFamily: monoFamily },
+	commitNote: { color: colors.textDim, fontSize: type.caption, lineHeight: 16 },
 	error: { color: colors.red, fontSize: type.meta, marginTop: 8 },
-	spinner: { marginTop: 16 },
 	dim: { color: colors.textDim, fontSize: type.meta, marginTop: 8 },
-	fileRowWrap: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-	fileRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
-	fileExtBtn: { paddingHorizontal: 10, paddingVertical: 10 },
+	fileRowWrap: { flexDirection: 'row', alignItems: 'stretch', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+	fileRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, minHeight: HIT_SIZE },
+	// 行の右端の「ブラウザで開く」。行とは別の押し場所として 44pt 四方を取り、区切り線で分ける。
+	// 右へ札の左右の余白（14）ぶん寄せ、押せる範囲を札の縁まで広げる。
+	extBtn: { width: HIT_SIZE, minHeight: HIT_SIZE, marginRight: -14, alignItems: 'center', justifyContent: 'center', borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
 	filePath: { flex: 1, color: colors.text, fontSize: type.body },
 	fileLetter: { width: 18, textAlign: 'center', fontFamily: monoFamily, fontSize: type.meta, fontWeight: '700', color: colors.textDim },
-	mod: { color: colors.mod },
-	add: { color: colors.add },
-	del: { color: colors.del },
-	commitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+	commitRowWrap: { flexDirection: 'row', alignItems: 'stretch' },
+	commitRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingRight: space.sm, minHeight: HIT_SIZE },
+	// 見出しの行の高さは変えずに当たり判定だけ 44pt にする（上の余白18・下の余白8へはみ出させる）。
+	// 中身は見出しの文字と同じ高さに来るよう下寄せにする。
+	legendBtn: { minHeight: HIT_SIZE, marginTop: -22, marginBottom: -8, paddingBottom: 7, paddingLeft: space.sm, justifyContent: 'flex-end' },
+	legendInner: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+	legendBtnText: { color: colors.textDim, fontSize: type.caption },
+	legendBtnTextOpen: { color: colors.text },
+	legend: { flexDirection: 'row', flexWrap: 'wrap', columnGap: space.md, rowGap: space.xs, paddingHorizontal: space.xs, marginBottom: space.sm },
+	legendItem: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+	legendLabel: { color: colors.textDim, fontSize: type.meta },
 	commitDetail: { paddingLeft: 20, paddingBottom: 6, gap: 3 },
 	commitFileRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 	commitFilePath: { flex: 1, color: colors.textDim, fontSize: type.meta },

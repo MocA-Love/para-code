@@ -1,19 +1,24 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
+import { EmptyState } from './emptyState.js';
+import { FilesBreadcrumbs as Breadcrumbs } from './filesBreadcrumbs.js';
+import { LoadingState, UnavailableNote } from './listStates.js';
+import { breadcrumbItems } from '../filesBreadcrumb.js';
+import { useWorkspaceUnavailableReason } from '../hooks/useWorkspaceUnavailableReason.js';
 import { classifyMobileFileKind } from './officeCapability.js';
 import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { matchRanges, useFilesSearch } from '../filesSearch.js';
 import { useFilesLive } from '../filesLive.js';
 import { monoFamily } from '../monoFont.js';
-import { colors, radius, squircle, type } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
+import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
+import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult, StoreState } from '../store.js';
 
 /**
@@ -68,6 +73,8 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 	// 書いておくと、どちらか片方に条件が増えたときに静かにずれる（欄だけ編集できてしまう等）。
 	// `rendererTarget` は「どのrendererへ出した要求か」の照合に使うので、こちらは残す。
 	const live = useFilesLive();
+	// 押せないときの理由（一覧・検索の空状態に書く）。
+	const unavailable = useWorkspaceUnavailableReason(ws?.id);
 
 	const tabBarSpacer = useTabBarSpacer();
 	const [path, setPath] = useState('');
@@ -79,6 +86,11 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 	const [findResult, setFindResult] = useState<FsFindResult | undefined>();
 	const [grepResult, setGrepResult] = useState<FsGrepResult | undefined>();
 	const [searching, setSearching] = useState(false);
+	// 検索の失敗（接続断・タイムアウト・PC側のエラー）。以前は握りつぶしていて、
+	// 「一致なし」とも「検索中」とも区別が付かなかった。
+	const [searchError, setSearchError] = useState<string | undefined>();
+	// 「再検索」を押した回数。同じ条件でも検索し直すための合図（下の effect の依存に入れる）。
+	const [searchRetry, setSearchRetry] = useState(0);
 	// 入力デバウンスと応答順序の入れ替わり対策（最後に発行したクエリのみ反映する）
 	const searchGenRef = useRef(0);
 	const lastSearchKeyRef = useRef<string | undefined>(undefined);
@@ -93,6 +105,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 	const [viewerDocx, setViewerDocx] = useState<string | undefined>();
 	const [viewerMedia, setViewerMedia] = useState<string | undefined>();
 	const [viewerLine, setViewerLine] = useState<number | undefined>();
+	const [viewerError, setViewerError] = useState<string | undefined>();
 	// 同じpathを閉じて開き直す場合やworkspaceを跨ぐ場合も、前のfetchが
 	// 新しいビューアを上書きしないようpathとは別に世代を持つ。
 	const viewerPathRef = useRef<string | undefined>(undefined);
@@ -155,8 +168,10 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 			setViewerDocx(undefined);
 			setViewerMedia(undefined);
 			setViewerLine(undefined);
+			setViewerError(undefined);
 			setFindResult(undefined);
 			setGrepResult(undefined);
+			setSearchError(undefined);
 			lastSearchKeyRef.current = undefined;
 			if (live) {
 				void load('');
@@ -193,6 +208,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 			lastSearchKeyRef.current = undefined;
 			setFindResult(undefined);
 			setGrepResult(undefined);
+			setSearchError(undefined);
 			setSearching(false);
 			return;
 		}
@@ -208,6 +224,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 		lastSearchKeyRef.current = searchKey;
 		setFindResult(undefined);
 		setGrepResult(undefined);
+		setSearchError(undefined);
 		setSearching(true);
 		const timer = setTimeout(async () => {
 			try {
@@ -224,8 +241,11 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 						setFindResult(undefined);
 					}
 				}
-			} catch {
-				// 接続断・タイムアウト等。結果は更新しない（次の入力で再試行）。
+			} catch (e) {
+				// 接続断・タイムアウト等。理由を出し、「再検索」か次の入力で検索し直せるようにする。
+				if (searchGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
+					setSearchError(String(e instanceof Error ? e.message : e));
+				}
 			} finally {
 				if (searchGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
 					setSearching(false);
@@ -233,7 +253,13 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 			}
 		}, 300);
 		return () => clearTimeout(timer);
-	}, [filter, searchMode, wsId, live, rendererTarget, fsFind, fsGrep]);
+	}, [filter, searchMode, wsId, live, rendererTarget, fsFind, fsGrep, searchRetry]);
+
+	const retrySearch = () => {
+		hapticImpact('light');
+		lastSearchKeyRef.current = undefined;
+		setSearchRetry(count => count + 1);
+	};
 
 	const openViewer = async (p: string, line?: number) => {
 		if (!live) {
@@ -250,6 +276,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 		setViewerDocx(undefined);
 		setViewerMedia(undefined);
 		setViewerLine(line);
+		setViewerError(undefined);
 		if (!wsId) {
 			return;
 		}
@@ -290,7 +317,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 			}
 		} catch (e) {
 			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
-				setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
+				setViewerError(String(e instanceof Error ? e.message : e));
 			}
 		}
 	};
@@ -308,6 +335,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 		}
 		// 表示中のHTMLは残したままシートだけ差し替える（タブ位置は即時反映）
 		setViewerXlsx(prev => prev ? { ...prev, sheet: index, html: undefined } : prev);
+		setViewerError(undefined);
 		const viewerGen = viewerGenRef.current;
 		const gen = ++sheetGenRef.current;
 		const requestTarget = rendererTarget;
@@ -318,7 +346,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 			}
 		} catch (e) {
 			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && sheetGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
-				setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
+				setViewerError(String(e instanceof Error ? e.message : e));
 			}
 		}
 	};
@@ -333,7 +361,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 
 	const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
 	const entries = listing?.entries ?? [];
-	const crumbs = [ws?.name ?? '', ...path.split('/').filter(Boolean)];
+	const crumbs = breadcrumbItems(ws?.name, path);
 	// 欄を畳んだら検索状態も畳む。文字を残したまま閉じられると、パンくずが消えたまま
 	// 検索結果だけが出続け、何で絞られているかを見る手段も消す手段も無くなる。
 	const searchActive = searchOpen && filter.trim().length > 0;
@@ -362,54 +390,72 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 					/>
 				}
 			>
-				{!searchActive ? <Text style={styles.breadcrumb} numberOfLines={1}>{crumbs.join(' › ')}</Text> : null}
-				{error && !searchActive ? <Text style={styles.error}>{error}</Text> : null}
+				{!searchActive ? (
+					<Breadcrumbs crumbs={crumbs} disabled={!live} onSelect={target => { hapticSelection(); void load(target, true); }} />
+				) : null}
 				{searchActive ? (
-					<>
-						{findResult !== undefined ? (
-							<>
-								{/* 行はカードに収める（SCMと同じ作法）。素の下線リストだと4タブでここだけ言語が違って見える。 */}
-								{findResult.files.length > 0 ? <View style={styles.card}>
-									{findResult.files.map((p, i) => (
-										<Pressable key={p} style={[styles.row, i === findResult.files.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(p); }}>
-											<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
-											<View style={styles.resultCol}>
-												<Highlighted text={p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p} query={filter} smartCase={false} lines={1} style={styles.rowName} />
-												{p.includes('/') ? <Highlighted text={p.slice(0, p.lastIndexOf('/'))} query={filter} smartCase={false} lines={1} style={styles.resultPath} /> : null}
-											</View>
-										</Pressable>
-									))}
-								</View> : null}
-								{findResult.files.length === 0 && !searching ? <Text style={styles.dimNote}>一致するファイルがありません</Text> : null}
-								{findResult.truncated ? <Text style={styles.dimNote}>（結果が多いため一部のみ表示しています）</Text> : null}
-							</>
-						) : grepResult !== undefined ? (
-							<>
-								{grepResult.matches.length > 0 ? <View style={styles.card}>
-									{grepResult.matches.map((m, i) => (
-										<Pressable key={`${m.path}:${m.line}:${i}`} style={[styles.row, i === grepResult.matches.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(m.path, m.line); }}>
-											<View style={styles.resultCol}>
-												<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
-												<Highlighted text={m.text} query={filter} smartCase lines={2} style={styles.resultPreview} />
-											</View>
-										</Pressable>
-									))}
-								</View> : null}
-								{grepResult.matches.length === 0 && !searching ? <Text style={styles.dimNote}>一致する箇所がありません</Text> : null}
-								{grepResult.truncated ? <Text style={styles.dimNote}>（結果が多いため一部のみ表示しています）</Text> : null}
-							</>
-						) : (
-							<Text style={styles.dimNote}>{searching ? '検索中…' : '接続後に検索条件を編集すると再検索できます'}</Text>
-						)}
-					</>
+					searchError !== undefined ? (
+						<EmptyState icon="alert-circle-outline" title="検索に失敗しました" message={searchError} action={live ? { label: '再検索', onPress: retrySearch } : undefined} />
+					) : findResult !== undefined ? (
+						<>
+							{/* 行はカードに収める（SCMと同じ作法）。素の下線リストだと4タブでここだけ言語が違って見える。 */}
+							{findResult.files.length > 0 ? <View style={styles.card}>
+								{findResult.files.map((p, i) => (
+									<Pressable key={p} style={[styles.row, i === findResult.files.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(p); }}>
+										<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
+										<View style={styles.resultCol}>
+											<Highlighted text={p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p} query={filter} smartCase={false} lines={1} style={styles.rowName} />
+											{p.includes('/') ? <Highlighted text={p.slice(0, p.lastIndexOf('/'))} query={filter} smartCase={false} lines={1} style={styles.resultPath} /> : null}
+										</View>
+									</Pressable>
+								))}
+							</View> : null}
+							{findResult.files.length === 0 && !searching ? <EmptyState icon="search-outline" title="一致するファイルがありません" message="ファイル名（全階層のパス）に検索語を含むものがありません" /> : null}
+							{findResult.truncated ? <Text style={styles.dimNote}>結果が多いため一部のみ表示しています</Text> : null}
+						</>
+					) : grepResult !== undefined ? (
+						<>
+							{grepResult.matches.length > 0 ? <View style={styles.card}>
+								{grepResult.matches.map((m, i) => (
+									<Pressable key={`${m.path}:${m.line}:${i}`} style={[styles.row, i === grepResult.matches.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(m.path, m.line); }}>
+										<View style={styles.resultCol}>
+											<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
+											<Highlighted text={m.text} query={filter} smartCase lines={2} style={styles.resultPreview} />
+										</View>
+									</Pressable>
+								))}
+							</View> : null}
+							{grepResult.matches.length === 0 && !searching ? <EmptyState icon="search-outline" title="一致する箇所がありません" message="ファイルの内容に検索語を含む行がありません" /> : null}
+							{grepResult.truncated ? <Text style={styles.dimNote}>結果が多いため一部のみ表示しています</Text> : null}
+						</>
+					) : searching ? (
+						<LoadingState label="検索中…" />
+					) : (
+						// 接続が切れて検索が走らなかった／途中で切れた。条件はそのまま残っているので、戻れば再検索できる。
+						<EmptyState
+							icon="cloud-offline-outline"
+							title="検索できません"
+							message={unavailable !== undefined ? `${unavailable}。接続が戻ったら再検索できます` : undefined}
+							action={live ? { label: '再検索', onPress: retrySearch } : undefined}
+						/>
+					)
 				) : (
 					<>
-						{loading && !listing ? <ActivityIndicator style={styles.spinner} /> : null}
+						{error !== undefined && listing !== undefined ? <Text style={styles.error}>読み込みに失敗しました: {error}</Text> : null}
+						{/* 接続が切れて一覧が押せないときは、薄くするだけでなく理由を書く。 */}
+						{unavailable !== undefined && listing !== undefined ? <UnavailableNote reason={unavailable} /> : null}
+						{listing === undefined ? (
+							error !== undefined ? (
+								<EmptyState icon="alert-circle-outline" title="フォルダを読み込めませんでした" message={error} action={live ? { label: '再読み込み', onPress: () => { hapticImpact('light'); void load(path); } } : undefined} />
+							) : unavailable !== undefined ? (
+								<EmptyState icon="cloud-offline-outline" title="ファイルを読み込めません" message={`${unavailable}。接続が戻ると読み込みます`} />
+							) : <LoadingState />
+						) : null}
 						{/* 行はカードに収める（SCMと同じ作法）。「..」も同じカードの先頭行として扱う。
 						    出す行が1つも無いとき（ルートで空・読み込み中）は枠だけの空箱を出さない。 */}
 						{(path !== '' || entries.length > 0) ? <View style={styles.card}>
 							{path !== '' ? (
-								<Pressable disabled={!live} style={[styles.row, entries.length === 0 && styles.rowLast]} onPress={() => { hapticSelection(); void load(parent, true); }}>
+								<Pressable disabled={!live} style={[styles.row, entries.length === 0 && styles.rowLast]} onPress={() => { hapticSelection(); void load(parent, true); }} accessibilityLabel="ひとつ上のフォルダへ">
 									<Ionicons name="folder-outline" size={16} color={colors.textDim} />
 									<Text style={styles.rowName}>..</Text>
 								</Pressable>
@@ -430,6 +476,9 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 								);
 							})}
 						</View> : null}
+						{listing !== undefined && entries.length === 0 ? (
+							<EmptyState icon="folder-open-outline" title="このフォルダは空です" message={path === '' ? 'このスペースのフォルダにはファイルがありません' : undefined} />
+						) : null}
 					</>
 				)}
 			</ScrollView>
@@ -445,7 +494,8 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 					pdfData={viewerPdf}
 					docxData={viewerDocx}
 					mediaData={viewerMedia}
-					onClose={() => { viewerGenRef.current++; sheetGenRef.current++; viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerMedia(undefined); setViewerLine(undefined); }}
+					error={viewerError}
+					onClose={() => { viewerGenRef.current++; sheetGenRef.current++; viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerMedia(undefined); setViewerLine(undefined); setViewerError(undefined); }}
 				/>
 			) : null}
 		</View>
@@ -497,13 +547,11 @@ function formatSize(bytes: number): string {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	breadcrumb: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	list: { flex: 1, paddingHorizontal: 16 },
-	spinner: { marginTop: 16 },
 	error: { color: colors.red, fontSize: type.meta, marginVertical: 8 },
 	// 行を収める札。SCMのカードと同じ面（surface + 枠線 + 角丸14）。
 	card: { backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.card, ...squircle, paddingHorizontal: 14, marginBottom: 8 },
-	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, minHeight: HIT_SIZE, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	// カードの最終行。締めの下線はカードの縁が担うので消す。
 	rowLast: { borderBottomWidth: 0 },
 	rowName: { flex: 1, color: colors.text, fontSize: type.body },

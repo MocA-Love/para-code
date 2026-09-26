@@ -8,7 +8,7 @@ import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
-import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
@@ -554,15 +554,34 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 				)}
 			</ScrollView>
 			<View style={[styles.toolbar, { paddingBottom: insets.bottom + 10 }]}>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'back' }); }}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'forward' }); }}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'reload' }); }}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: -0.5 }); }}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
-				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: 0.5 }); }}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
+				{TOOLBAR_ITEMS.map(item => (
+					<Pressable
+						key={item.label}
+						disabled={!live}
+						style={[styles.toolBtn, !live && styles.disabled]}
+						onPress={() => { hapticImpact('light'); browserInput(item.input); }}
+						accessibilityRole="button"
+						accessibilityState={{ disabled: !live }}
+						accessibilityLabel={item.label}
+					>
+						<Ionicons name={item.icon} size={17} color={colors.text} />
+					</Pressable>
+				))}
 			</View>
 		</View>
 	);
 }
+
+type BrowserToolbarInput = Parameters<ReturnType<typeof useAppStore.getState>['browserInput']>[0];
+
+/** 下のツールバーの操作。並びは以前と同じ（戻る・進む・再読み込み・上へ・下へ）。 */
+const TOOLBAR_ITEMS: readonly { icon: keyof typeof Ionicons.glyphMap; label: string; input: BrowserToolbarInput }[] = [
+	{ icon: 'chevron-back', label: '戻る', input: { kind: 'back' } },
+	{ icon: 'chevron-forward', label: '進む', input: { kind: 'forward' } },
+	{ icon: 'refresh', label: '再読み込み', input: { kind: 'reload' } },
+	{ icon: 'chevron-up', label: '上へスクロール', input: { kind: 'scroll', dy: -0.5 } },
+	{ icon: 'chevron-down', label: '下へスクロール', input: { kind: 'scroll', dy: 0.5 } },
+];
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
@@ -590,5 +609,6 @@ const styles = StyleSheet.create({
 	frameImage: { flex: 1 },
 	center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
 	toolbar: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 12, gap: 8 },
-	toolBtn: { flex: 1, alignItems: 'center', paddingVertical: 9, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border },
+	// 高さは当たり判定の最小値（44pt）。以前は約35pt で、横に5つ並ぶと押し損ねやすかった。
+	toolBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: HIT_SIZE, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border },
 });
