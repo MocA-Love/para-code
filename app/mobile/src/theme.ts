@@ -28,9 +28,70 @@ export const colors = {
 	glassBg: 'rgba(28,28,32,0.6)',
 	glassBorder: 'rgba(255,255,255,0.14)',
 	attentionBg: 'rgba(36,20,20,0.92)',
+	/** 本文より一段弱い文字（コード本文・補足の本文など）。中間グレーを画面ごとに発明しない。 */
+	textSoft: '#c9c9d2',
+	/** 状態を持たない（待機中など）点・アイコン。 */
+	idle: '#6e7681',
+	/** 白文字を載せる濃い赤の面（タブのバッジ・スワイプの削除）。 */
+	redStrong: '#c0413f',
+	/** ドロワー・サイドバーの地。bg と surface の間。 */
+	sidebar: '#0e0e11',
+	/** 塗りの主ボタン（`primary`）の地と、その上の文字。 */
+	primary: '#0598BD',
+	onPrimary: '#00222c',
+	/** 端末・コード表示。アプリの面とは別の系統として持つ。 */
+	terminalBg: '#1e1e1e',
+	terminalFg: '#d4d4d4',
+	codeBg: '#161b22',
+	/** 画面を暗く覆う幕。 */
+	scrim: 'rgba(0,0,0,0.5)',
 } as const;
 
 export const mono = { ios: 'Menlo', default: 'monospace' } as const;
+
+/**
+ * 文字サイズの段。画面ごとに 0.5 刻みの値を発明しない。
+ *
+ * 行の高さは `lineHeight` を別に持つ（本文 14 なら 20 前後）。固定サイズの枠（アバターの
+ * 頭文字など）の中の文字は、この段ではなく枠の大きさから決めてよい。
+ */
+export const type = {
+	/** 件数・状態のバッジなど、高さの決まった小さな枠の中だけで使う。 */
+	badge: 10,
+	/** 注記・時刻・メタ情報。 */
+	caption: 11,
+	/** 行の補足・説明・ボタンより小さい操作。 */
+	meta: 12,
+	/** 本文・行のタイトル・ボタン。 */
+	body: 14,
+	/** 画面・シートのタイトル。 */
+	title: 16,
+	/** 数値の見出し（KPI）・ダイアログの大見出し。 */
+	large: 20,
+	/** ペアリングの確認コードのような、1画面1つの表示用。 */
+	display: 44,
+} as const;
+
+/** 余白の段。新しく書く部品はこの値を使う。 */
+export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24 } as const;
+
+/** 指で押す要素の当たり判定の最小値（Apple HIG）。見た目が小さい場合は hitSlop で補う。 */
+export const HIT_SIZE = 44;
+
+/**
+ * 色に重ねる不透明度の段。`withAlpha(colors.red, alpha.wash)` のように使い、
+ * .12/.14/.16 のような近い値を画面ごとに作らない。
+ */
+export const alpha = {
+	/** 面の上にうっすら敷く（押せる領域の地など）。 */
+	faint: 0.06,
+	/** 選択中・状態の色被せ。 */
+	wash: 0.14,
+	/** 色付きの枠線。 */
+	line: 0.3,
+	/** 強い色被せ（開いている状態の枠など）。 */
+	strong: 0.5,
+} as const;
 
 /**
  * 角丸のランプ。役割ごとに1つの値を決めておき、画面ごとに数字を発明しない。
@@ -41,6 +102,8 @@ export const mono = { ios: 'Menlo', default: 'monospace' } as const;
 export const radius = {
 	/** 丸ピル（チップ・バッジ・丸ボタン）。 */
 	pill: 999,
+	/** キー・タグ・行内の小さな枠。 */
+	key: 6,
 	/** 小さな操作要素（入力欄・セグメント・コード枠）。 */
 	control: 10,
 	/** 一覧の行・カード。 */
@@ -81,6 +144,35 @@ export function withAlpha(color: string, opacity: number): string | undefined {
 	if (!/^#[0-9a-fA-F]{6}$/.test(expanded)) {
 		return undefined;
 	}
-	const alpha = Math.round(Math.max(0, opacity) * 255);
-	return expanded + alpha.toString(16).padStart(2, '0');
+	const value = Math.round(Math.max(0, opacity) * 255);
+	return expanded + value.toString(16).padStart(2, '0');
 }
+
+export type ThemeColor = (typeof colors)[keyof typeof colors];
+
+/**
+ * テーマの色（`colors.*` の hex）に不透明度を足す。`withAlpha` と違い必ず文字列を返すので、
+ * `string` を要求するprops（アイコンの color 等）にもそのまま渡せる。
+ *
+ * PCから届くワークスペース色のような任意の文字列には使わない（`withAlpha` を使い、
+ * undefined を受け止めること）。型でテーマの値だけに絞っている。
+ */
+export function tint(color: ThemeColor, opacity: number): string {
+	return withAlpha(color, opacity) ?? color;
+}
+
+/**
+ * エージェントの状態と、その色・呼び名の対応。状態の表現はここだけで決め、
+ * 画面ごとに色や文言を割り当てない。
+ */
+export const status = {
+	/** 許可待ち・質問など、人の操作を待っている。 */
+	attention: { color: colors.red, label: '応答待ち' },
+	running: { color: colors.green, label: '実行中' },
+	/** 作業を終えて、まだ人が確認していない。 */
+	review: { color: colors.yellow, label: 'レビュー' },
+	idle: { color: colors.idle, label: 'アイドル' },
+	error: { color: colors.red, label: 'エラー' },
+} as const;
+
+export type StatusKey = keyof typeof status;

@@ -48,7 +48,9 @@ vi.mock('../appState.js', () => ({
 		stopVoiceNotifications: vi.fn(),
 	}),
 }));
-vi.mock('../theme.js', () => ({
+// 追加されたトークン（type / alpha など）まで列挙し続けなくて済むよう、本物を土台にして色などだけ差し替える。
+vi.mock('../theme.js', async (importOriginal) => ({
+	...await importOriginal<typeof import('../theme.js')>(),
 	colors: new Proxy({}, { get: () => '#000000' }),
 	radius: { pill: 999 },
 	squircle: {},

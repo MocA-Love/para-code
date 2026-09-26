@@ -51,7 +51,11 @@ vi.mock('../appState.js', () => {
 	return { useAppStore };
 });
 vi.mock('./fileViewer.js', () => ({ buildMarkdownHtml: () => '<html></html>' }));
-vi.mock('../theme.js', () => ({ colors: new Proxy({}, { get: () => '#000' }) }));
+// 追加されたトークン（type / alpha など）まで列挙し続けなくて済むよう、本物を土台にして色などだけ差し替える。
+vi.mock('../theme.js', async (importOriginal) => ({
+	...await importOriginal<typeof import('../theme.js')>(),
+	colors: new Proxy({}, { get: () => '#000' }),
+}));
 vi.mock('../haptics.js', () => ({ hapticImpact: () => undefined, hapticSelection: () => undefined }));
 vi.mock('./webViewScriptPolicy.js', () => ({ isDiffViewerJavaScriptEnabled: () => false }));
 vi.mock('./webViewLinkGuard.js', () => ({ guardWebViewNavigation: () => false }));

@@ -21,7 +21,9 @@ vi.mock('./overlayHost.js', () => ({ OverlayPortal: 'OverlayPortal', PopIn: 'Pop
 vi.mock('../paraHeader.js', () => ({ PARA_HEADER_PILL_BUTTON: 34, PARA_HEADER_SLOT_HEIGHT: 44 }));
 vi.mock('../hooks/useStableInsets.js', () => ({ useStableInsets: () => ({ top: 20, right: 0, bottom: 24, left: 0 }) }));
 vi.mock('../haptics.js', () => ({ hapticImpact: vi.fn() }));
-vi.mock('../theme.js', () => ({
+// 追加されたトークン（type / alpha など）まで列挙し続けなくて済むよう、本物を土台にして色などだけ差し替える。
+vi.mock('../theme.js', async (importOriginal) => ({
+	...await importOriginal<typeof import('../theme.js')>(),
 	colors: new Proxy({}, { get: () => '#000000' }),
 	radius: { pill: 999 },
 	squircle: {},
