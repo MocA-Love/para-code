@@ -416,6 +416,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			primary: true,
 		},
 	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.agentHooks.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentHooks', "Claude Code と Codex に状態通知用の hook を自動で設置する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentHooksDesc', "オフにすると、Para Code が設置した hook だけをその場で取り外します（自分で書いた hook は残ります）。エージェントの状態表示、完了・許可待ちの通知、モバイルへの通知、読み上げが弱くなります。"),
+		keywords: 'agent hooks claude codex hook status notification',
+	},
 
 	// --- ブラウザ共有 ---
 	{

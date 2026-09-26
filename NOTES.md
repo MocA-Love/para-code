@@ -36,6 +36,14 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 修正: 通常ウィンドウでも有効にしたい機能（ターミナル2Dグリッドのsplit action等）は、`sessions.common.main.ts`ではなく、既存のDI差し替えポイント（`terminalGroupService.ts`、workbench側で常にロードされる）から直接副作用importするよう変更した。詳細は`CLAUDE.md`の「contributionの登録方法」を参照
 - **教訓**: `src/vs/sessions/`配下は「Agent Sessions window専用のworkbenchレイヤー」という説明を字面通りに受け取ると見誤る。実際に通常ウィンドウで機能させたい場合は、必ず実機（`scripts/code.sh`で起動した通常ウィンドウ）でコマンドパレット等から動作確認すること。型チェック・lintが通ってもロードパスの問題は検出できない
 
+## shared process / REH サーバーへの fork チャネルの登録口（2026-09-27）
+
+新しいチャネルを足すたびに `sharedProcessMain.ts` と `serverServices.ts` へ PARA-PATCH を足さなくて済むよう、登録口を1つにまとめた。`src/vs/paradis/common/paradisProcessContributions.ts` の `ParadisSharedProcessContributions` / `ParadisServerContributions` に `register('<id>', ({ server, accessor }) => ...)` し、集約ファイル `src/vs/paradis/paradis.sharedProcess.contribution.ts` / `paradis.server.contribution.ts` へ副作用 import を1行足すだけでよい。upstream 側は各ファイル1回の呼び出しだけ。
+
+- `accessor` は同期的にしか使えない（`invokeFunction` の中から呼ぶ）。`await` の後で `accessor.get` しない
+- 1つが例外を投げても残りは登録を続ける。同じ id の二重登録は例外にする
+- 既存の `registerParadis*` 直呼びはまだ移していない。agentBrowser → mobileCanvas / mobileRelay のように値を渡し合うものと、REH で pty ホストのサービスを受け取るものがあり、1つずつ引数の出どころを確かめてから移す
+
 ## リポジトリ構成
 
 - `upstream`: `https://github.com/microsoft/vscode.git`（push無効化済み、fetch専用）
@@ -226,6 +234,12 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 - Windows は現状スキップ（notify.sh がPOSIX sh前提。必要になったらSupersetの notify.ps1 方式を移植）
 
 あわせて二次問題2件を修正: (1) `paradisNotificationTrigger.contribution.ts` — スコープ未解決（Workspacesビュー未登録フォルダ/エディタ領域ターミナル）でも、ウィンドウが可視+フォーカス中でなければワークスペースフォルダ名をプレースホルダに音+OS通知+Aivisを発火（アイコン変化はスコープ概念依存のため対象外のまま）。(2) `paradisAgentStatus.contribution.ts` — アクティブスコープの review 即acknowledge に「ウィンドウが可視かつフォーカス中」条件を追加（非フォーカス時に通知トリガーの遷移検知を先食いして握り潰す競合の解消）。
+
+### hook の位置を動かさない理由と、自動設置の ON/OFF（2026-09-27）
+
+Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.json のパス>:<イベント>:<定義の位置>:<hookの位置>"]` の鍵で記録する（手元の config.toml で確認）。以前の `paradisMergeAgentHooksJson` は自hookを毎回いったん全部外して末尾へ付け直していたため、自hookより後ろにユーザーの hook があると、設置し直すたびにユーザー側の位置がずれ、信頼が黙って外れ得た。今は既に置いてある自hookをその位置のまま最新の定義へ差し替え、まだ無いイベントだけ末尾へ足す。
+
+設定 `paradis.agentHooks.enabled`（既定オン）で自動設置を止められる。取り外すのは**オンからオフへ切り替わったその時だけ**で（shared process の `ParadisAgentHooksAutoInstall`、SSH 接続中のウィンドウは接続先の分を `paradisRemoteAgentHooks.contribution.ts` が外す）、起動時にオフでも取り外さない。hook の設定ファイルは PC 全体で1つなので、起動時に外すと同じ PC の別の Para Code（開発版など）が使っている hook まで消えるため。逆に、別の Para Code がオンのまま動いていれば、こちらで外しても向こうの整合処理（ファイル監視と60秒ごとの監査）が置き直す。notify スクリプト自体は消さない。
 
 ## 内蔵ブラウザの前面オーバーレイ機構（overlayManager、2026-08-15整備）
 
@@ -580,6 +594,15 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 ### `terminal.integrated.enablePersistentSessions` をセッション途中で off にした場合
 
 既に開いている端末は生成時の値で `shouldPersist=true` のままなので「残す」と答えられるが、次回起動時は `_reconnectToLocalTerminals()` が走らないため、24時間の孤児になる。設定を触ってから再起動しない、という狭い条件。塞ぐなら常駐側の `prepare` でこの設定を見て `end` へ倒す（接続先側にも同じ穴がある）。
+
+### 常駐の内部用の環境変数はシェルへ渡さない（2026-09-27）
+
+製品版のターミナルのシェルに `PARADIS_PTY_HOST_STATE_DIR=~/Library/Application Support/Para Code` が入っており、そこから開発版を起動すると、開発版のターミナルが製品版の常駐に作られていた。main が `process.env` に入れっぱなしにした値を pty ホストが継ぎ、`PtyService.getEnvironment()`（= `{ ...process.env }`）がターミナルの基底環境として renderer へ返していたのが経路。SSH 先ではサーバーの `process.env` から `buildUserEnvironment` 経由で同じように漏れる。
+
+- すべてのターミナルが通る `paradisCreateTerminalProcess`（`ptyDaemon/node/paradisTerminalProcessFactory.ts`）で、`paradisPtyEnvHygiene.ts` の一覧（`PARADIS_PTY_HOST_STATE_DIR` と `PARADIS_PTY_DAEMON_SOCKET` / `_LEDGER` / `_BUILD_ID` / `_BUILD_KEY`）をシェルの環境から落とす。ローカル・SSH 先・常駐経由のどれもここを通る
+- ローカルでは、main の `process.env` へ入れるのをやめ、pty ホストを起こす `start()` の間だけ足す（`ParadisScopedEnvPtyHostStarter`）。拡張ホストなど main が起こす他のプロセスへも漏れなくなった
+- 【未対応】SSH 先の REH サーバーは pty ホストを遅延 fork するため同じ手が使えず、サーバーの `process.env` に残る。シェルへは上の除去で届かないが、接続先の拡張ホストが起こす子プロセスには残る
+- ペイントークン（`PARA_CODE_TERMINAL_PANE_ID`）、`PARA_CODE_MCP_PORT_FILE`、`PARA_CODE_VOICE_TOKEN`、`PARA_CODE_CODEX_*`、`PARACODE_PROJECT_ROOT_PATH` はシェルの中のエージェントやスクリプトが読むために入れているので残す。`PARADIS_MIRROR_CAPTURE_VIEW` と `PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS` は開発者が手で設定する診断用で、fork は設定しない
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
