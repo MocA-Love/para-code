@@ -12,6 +12,9 @@ import { IConfigurationChangeEvent, IConfigurationService } from '../../../../..
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IPowerService, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
+import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { IParadisAgentPaneStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentStatusSnapshotOutcome, IParadisAgentStatusSnapshotService } from '../../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeMode } from '../../common/paradisKeepAwake.js';
 import { ParadisKeepAwakeContribution } from '../../electron-browser/paradisKeepAwake.contribution.js';
 
@@ -113,17 +116,50 @@ class TestLogService extends NullLogService {
 	}
 }
 
+class TestAgentStatusSnapshotService implements IParadisAgentStatusSnapshotService {
+	declare readonly _serviceBrand: undefined;
+	private readonly listeners = new Set<(outcome: IParadisAgentStatusSnapshotOutcome) => void>();
+	private sequence = 0;
+
+	get subscriberCount(): number {
+		return this.listeners.size;
+	}
+
+	subscribe(listener: (outcome: IParadisAgentStatusSnapshotOutcome) => void): IDisposable {
+		this.listeners.add(listener);
+		return toDisposable(() => this.listeners.delete(listener));
+	}
+
+	requestRefresh(): void { }
+
+	publish(paneStatuses: readonly IParadisAgentPaneStatus[]): void {
+		const outcome: IParadisAgentStatusSnapshotOutcome = { sequence: ++this.sequence, snapshot: { paneStatuses, agentHookTokens: [] } };
+		for (const listener of [...this.listeners]) {
+			listener(outcome);
+		}
+	}
+
+	publishError(): void {
+		const outcome: IParadisAgentStatusSnapshotOutcome = { sequence: ++this.sequence, error: new Error('transport') };
+		for (const listener of [...this.listeners]) {
+			listener(outcome);
+		}
+	}
+}
+
 function createContribution(
 	configurationService: TestConfigurationService,
 	powerService: TestPowerService,
 	statusbarService: TestStatusbarService,
 	logService: TestLogService,
+	agentStatusService: TestAgentStatusSnapshotService = new TestAgentStatusSnapshotService(),
 ): ParadisKeepAwakeContribution {
 	return new ParadisKeepAwakeContribution(
 		configurationService as unknown as IConfigurationService,
 		powerService,
 		statusbarService as unknown as IStatusbarService,
 		logService,
+		agentStatusService,
 	);
 }
 
@@ -226,6 +262,53 @@ suite('ParadisKeepAwakeContribution', () => {
 			addedStatusEntries: 1,
 			statusAccessorDisposeCalls: 1,
 			logOperations: ['[paradisKeepAwake] blocker-stop-failed'],
+		});
+
+		contribution.dispose();
+	});
+
+	test('auto mode blocks system sleep only while an agent is active and stops listening when switched off', async () => {
+		let nextId = 1;
+		const configurationService = new TestConfigurationService('auto');
+		const powerService = new TestPowerService(async () => nextId++, async () => true);
+		const statusbarService = new TestStatusbarService();
+		const logService = disposables.add(new TestLogService());
+		const agentStatusService = new TestAgentStatusSnapshotService();
+		disposables.add(configurationService);
+		const contribution = createContribution(configurationService, powerService, statusbarService, logService, agentStatusService);
+		await settle();
+		const startedWhileIdle = powerService.startedTypes.length;
+
+		agentStatusService.publish([{ token: 'a', status: 'permission', changedAt: Date.now() }]);
+		await settle();
+		const startedWhileWaiting = [...powerService.startedTypes];
+
+		// A failed poll keeps the previous decision instead of releasing the blocker.
+		agentStatusService.publishError();
+		await settle();
+		const stoppedAfterError = powerService.stoppedIds.length;
+
+		agentStatusService.publish([{ token: 'a', status: 'review', changedAt: Date.now() }]);
+		await settle();
+		const stoppedAfterReview = [...powerService.stoppedIds];
+
+		configurationService.setMode('off');
+		await settle();
+
+		assert.deepStrictEqual({
+			startedWhileIdle,
+			startedWhileWaiting,
+			stoppedAfterError,
+			stoppedAfterReview,
+			firstStatusText: statusbarService.added[0]?.entry.text,
+			subscribersAfterOff: agentStatusService.subscriberCount,
+		}, {
+			startedWhileIdle: 0,
+			startedWhileWaiting: ['prevent-app-suspension'],
+			stoppedAfterError: 0,
+			stoppedAfterReview: [1],
+			firstStatusText: '$(zap) \u30b9\u30ea\u30fc\u30d7\u9632\u6b62\u4e2d\uff08\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\uff09',
+			subscribersAfterOff: 0,
 		});
 
 		contribution.dispose();

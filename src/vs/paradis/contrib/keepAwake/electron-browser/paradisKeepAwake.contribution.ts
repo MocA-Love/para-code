@@ -19,7 +19,8 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IPowerService } from '../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
-import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeMode, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
+import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeBlockerMode, ParadisKeepAwakeMode, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
+import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { ParadisKeepAwakeController } from '../common/paradisKeepAwakeController.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
@@ -37,6 +38,10 @@ const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
  *
  * 有効中はステータスバーにインジケーターを表示し、クリックでモード選択の Quick Pick を開く
  * （「なぜ PC が眠らないのか」をユーザーが見失わないための安全装置）。
+ *
+ * `auto` モードでは、このウィンドウのペインのエージェント状態（hook / transcript 由来。
+ * {@link IParadisAgentStatusSnapshotService} が約2秒ごとに配る）を見て、作業中・許可待ち・質問中の
+ * ペインがある間だけ 'system' の blocker を掛ける。スナップショットの取得に失敗した回は直前の判断を保つ。
  */
 export class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContribution {
 
@@ -44,12 +49,16 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly controller: ParadisKeepAwakeController;
+	private readonly agentStatusSubscription = this._register(new MutableDisposable());
+	/** auto モードで直近に判断した「エージェントが動いているか」。 */
+	private agentsActive = false;
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IPowerService private readonly powerService: IPowerService,
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisAgentStatusSnapshotService private readonly agentStatusSnapshotService: IParadisAgentStatusSnapshotService,
 	) {
 		super();
 
@@ -63,17 +72,17 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 					throw new Error('Power save blocker could not be stopped');
 				}
 			},
-			onDidChangeMode: mode => this.updateStatusbar(mode),
+			onDidChangeMode: () => this.updateStatusbar(),
 			report: (operation, error) => {
 				reportParadisDiagnosticError('owned', 'keep-awake', operation, error, undefined, 'warning');
 				this.logService.error('[paradisKeepAwake] ' + operation, error);
 			},
 		}));
-		void this.controller.setMode(this.getMode());
+		this.applyMode();
 
 		this._register(this.configurationService.onDidChangeConfiguration(event => {
 			if (event.affectsConfiguration(PARADIS_KEEP_AWAKE_SETTING)) {
-				void this.controller.setMode(this.getMode());
+				this.applyMode();
 			}
 		}));
 	}
@@ -82,26 +91,67 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 		return toParadisKeepAwakeMode(this.configurationService.getValue(PARADIS_KEEP_AWAKE_SETTING));
 	}
 
-	private updateStatusbar(mode: ParadisKeepAwakeMode): void {
+	/** 設定のモードに合わせて、エージェント状態の購読を張る/外し、blocker を反映する。 */
+	private applyMode(): void {
+		if (this.getMode() === 'auto') {
+			if (!this.agentStatusSubscription.value) {
+				this.agentsActive = false;
+				// subscribe は最新のスナップショットをその場で配ることがあるので、コールバックからは
+				// 購読の張り直しを伴わない applyBlocker だけを呼ぶ。
+				this.agentStatusSubscription.value = this.agentStatusSnapshotService.subscribe(outcome => {
+					if (!outcome.snapshot) {
+						return;
+					}
+					const active = paradisAgentsNeedKeepAwake(outcome.snapshot.paneStatuses, Date.now());
+					if (active !== this.agentsActive) {
+						this.agentsActive = active;
+						this.applyBlocker();
+					}
+				});
+			}
+		} else {
+			this.agentStatusSubscription.clear();
+			this.agentsActive = false;
+		}
+		this.applyBlocker();
+	}
+
+	/** 設定のモードと（auto なら）エージェント状態から、実際に掛ける blocker を決めて反映する。 */
+	private applyBlocker(): void {
+		const mode = this.getMode();
+		const blockerMode: ParadisKeepAwakeBlockerMode = mode === 'auto' ? (this.agentsActive ? 'system' : 'off') : mode;
+		// auto と system は同じ blocker なので actualMode が変わらず onDidChangeMode が来ない。
+		// 表示名だけは変わるので、反映後に必ず表示を更新する。
+		const update = () => this.updateStatusbar();
+		void this.controller.setMode(blockerMode).then(update, update);
+	}
+
+	private updateStatusbar(): void {
 		if (this._store.isDisposed) {
 			return;
 		}
 
+		const mode = this.controller.actualMode;
 		if (mode === 'off') {
 			this.statusbarEntry.clear();
 			return;
 		}
 
+		const auto = this.getMode() === 'auto';
 		const label = mode === 'display'
 			? localize('paradis.keepAwake.statusbar.display', "スリープ防止中（画面）")
-			: localize('paradis.keepAwake.statusbar.system', "スリープ防止中");
+			: auto
+				? localize('paradis.keepAwake.statusbar.auto', "スリープ防止中（エージェント）")
+				: localize('paradis.keepAwake.statusbar.system', "スリープ防止中");
 		const entry = {
 			name: localize('paradis.keepAwake.statusbar.name', "スリープ防止"),
 			text: `$(zap) ${label}`,
 			ariaLabel: label,
 			tooltip: mode === 'display'
 				? localize('paradis.keepAwake.statusbar.tooltip.display', "画面スリープと自動ロックを防止しています。クリックでモードを変更します。")
-				: localize('paradis.keepAwake.statusbar.tooltip.system', "システムスリープを防止しています（画面の消灯・ロックは通常どおり）。クリックでモードを変更します。"),
+				: auto
+					? localize('paradis.keepAwake.statusbar.tooltip.auto', "エージェントが作業中・許可待ち・質問中のため、システムスリープを防止しています（同じ状態が 2 時間続くと解除）。クリックでモードを変更します。")
+					: localize('paradis.keepAwake.statusbar.tooltip.system', "システムスリープを防止しています（画面の消灯・ロックは通常どおり）。クリックでモードを変更します。"),
 			command: PARADIS_KEEP_AWAKE_SELECT_COMMAND
 		};
 
@@ -139,13 +189,18 @@ class ParadisSelectKeepAwakeModeAction extends Action2 {
 				description: localize('paradis.keepAwake.pick.off.description', "スリープを防止しない")
 			},
 			{
+				mode: 'auto',
+				label: localize('paradis.keepAwake.pick.auto', "エージェントの作業中だけ防止"),
+				description: localize('paradis.keepAwake.pick.auto.description', "作業中・許可待ち・質問中のあいだだけシステムスリープを防止（同じ状態が 2 時間続くと解除）")
+			},
+			{
 				mode: 'system',
-				label: localize('paradis.keepAwake.pick.system', "システムスリープを防止"),
+				label: localize('paradis.keepAwake.pick.system', "常にシステムスリープを防止"),
 				description: localize('paradis.keepAwake.pick.system.description', "画面は消灯・ロックしてよい。プロセスは動き続ける（遠隔操作向けの推奨）")
 			},
 			{
 				mode: 'display',
-				label: localize('paradis.keepAwake.pick.display', "画面スリープも防止"),
+				label: localize('paradis.keepAwake.pick.display', "常に画面スリープも防止"),
 				description: localize('paradis.keepAwake.pick.display.description', "画面が消灯せず、無操作の自動ロックも発動しない")
 			}
 		];
