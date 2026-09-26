@@ -46,6 +46,7 @@ export class ParadisCodexAccountsChannel implements IServerChannel<string> {
 			case 'readResetCredits': return this.service.readResetCredits(typeof args[0] === 'string' ? args[0] : '', args[1] === true) as Promise<T>;
 			case 'consumeResetCredit': return this.service.consumeResetCredit(args[0] as IParadisCodexResetConsumeRequest) as Promise<T>;
 			case 'getState': return this.service.getState() as Promise<T>;
+			case 'peekResetCredits': return Promise.resolve(this.service.peekResetCredits()) as Promise<T>;
 			case 'selectHome': return this.service.selectHome(typeof args[0] === 'string' ? args[0] : undefined) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);

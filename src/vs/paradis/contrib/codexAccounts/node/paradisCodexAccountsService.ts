@@ -36,6 +36,7 @@ import {
 	IParadisCodexResetConsumeRequest,
 	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
+	IParadisCodexResetCredits,
 	paradisCodexResetOfferRevision,
 	paradisCodexResetOutcome,
 	paradisMapCodexResetCredits
@@ -389,6 +390,20 @@ export class ParadisCodexAccountsService extends Disposable {
 			result = { offer: { homePath, error: paradisIsCodexAuthError(error) ? 'auth' : 'unavailable', fetchedAt }, accountId: await this.readAccountId(homePath) };
 		}
 		this.offers.set(homePath, result);
+		return result;
+	}
+
+	/**
+	 * 手元にあるリセットクレジットの読み取り結果だけを返す（app-server は起こさない）。
+	 * モバイルへの使用量に添える任意項目用。
+	 */
+	peekResetCredits(): Record<string, IParadisCodexResetCredits> {
+		const result: Record<string, IParadisCodexResetCredits> = {};
+		for (const [homePath, cached] of this.offers) {
+			if (cached.offer.credits && this.now() - cached.offer.fetchedAt < RESET_CREDITS_CACHE_MS) {
+				result[homePath] = cached.offer.credits;
+			}
+		}
 		return result;
 	}
 
