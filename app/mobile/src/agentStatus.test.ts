@@ -33,15 +33,16 @@ describe('agentStatusLabel', () => {
 describe('色の割り当て', () => {
 	test('同じ状態は画面をまたいで同じ色になる', () => {
 		expect(agentStatusColor('permission')).toBe(colors.red);
-		expect(agentStatusColor('working')).toBe(colors.amber);
-		expect(agentStatusColor('review')).toBe(colors.green);
+		// 色は Orca の AgentSpinner / AgentStateDot に合わせた（実行中=黄、未確認=緑）
+		expect(agentStatusColor('working')).toBe(colors.yellow);
+		expect(agentStatusColor('review')).toBe(colors.emerald);
 		expect(agentStatusColor(undefined)).toBe(colors.idle);
 	});
 
 	test('サブエージェントの失敗はエラー、中断と不明は待機と同じ灰', () => {
 		expect(activityStatusKind('failed')).toBe('error');
-		expect(activityStatusColor('running')).toBe(colors.amber);
-		expect(activityStatusColor('completed')).toBe(colors.green);
+		expect(activityStatusColor('running')).toBe(colors.yellow);
+		expect(activityStatusColor('completed')).toBe(colors.emerald);
 		expect(activityStatusColor('interrupted')).toBe(colors.idle);
 		expect(activityStatusColor('unknown')).toBe(colors.idle);
 	});

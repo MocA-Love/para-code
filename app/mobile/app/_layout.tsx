@@ -10,15 +10,18 @@ import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
-import { ParaToastHost } from '../src/components/paraToast.js';
-import { ParaHeaderLayer } from '../src/components/paraHeaderLayer.js';
-import { WsDrawerLayout } from '../src/components/wsDrawer.js';
-import { IpadShell } from '../src/ipad/ipadShell.js';
+import { ToastHost } from '../src/ui/toast.js';
 import { DevProbe } from '../src/devProbe.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
-import { notificationNavigationDecision } from '../src/notificationNavigation.js';
+import { notificationDestination, notificationNavigationDecision } from '../src/notificationNavigation.js';
+
+/**
+ * 深いルート（通知から開いたセッションなど）をいきなり開いたときも、下にホームを敷く。
+ * 戻る操作でアプリの外へ落ちずにホームへ戻れるように。
+ */
+export const unstable_settings = { initialRouteName: 'index' };
 
 /**
  * notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。
@@ -34,10 +37,8 @@ interface NotificationDeepLinkData {
 
 /**
  * このアプリは常時ダークテーマのみ（ライトモード非対応）。expo-routerの既定テーマは
- * ライト（白背景）のため、これを明示的に上書きしないとNativeTabsの画面遷移時や
- * 初回レンダリング時にネイティブ側のデフォルト背景（白）が一瞬見えてしまう
- * （iOS 26ではNativeTabs.Triggerのcontentstyle.backgroundColorがコンテンツにより
- * 自動決定され上書きできないため、テーマ側で合わせる必要がある）。
+ * ライト（白背景）のため、これを明示的に上書きしないと画面遷移時や初回レンダリング時に
+ * ネイティブ側のデフォルト背景（白）が一瞬見えてしまう。
  */
 const appTheme = {
 	...DarkTheme,
@@ -52,9 +53,13 @@ const appTheme = {
 };
 
 /**
- * ルートレイアウト。起動時にコントローラを初期化し、タブ群とペアリングモーダルを持つ。
- * OS通知（ローカル/リモート双方）のタップをエージェント画面へのディープリンクに変換する。
- * AuthGateでロック中に届いた場合は解除まで遷移を保留する。
+ * ルートレイアウト。起動時にコントローラを初期化し、OS 標準の Stack だけを持つ
+ * （作り直し計画の段階2。Orca と同じ「PC → スペース → セッション」の押し進む階層で、
+ * ヘッダーは各画面が自前の `ScreenHeader` で描く。ルートの一覧は `src/routes.ts`）。
+ *
+ * OS通知（ローカル/リモート双方）のタップを、そのエージェントのスペースのセッション
+ * （そのエージェントのタブ）へのディープリンクに変換する。AuthGateでロック中に届いた場合は
+ * 解除まで遷移を保留する。
  */
 function RootLayout() {
 	const router = useRouter();
@@ -121,12 +126,18 @@ function RootLayout() {
 			return;
 		}
 		pendingRef.current = undefined;
-		// setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
-		if (target.ws) {
-			setSelectedWs(target.ws);
+		const pcId = target.pcId ?? store.activePcId;
+		if (pcId === undefined) {
+			return;
+		}
+		const destination = notificationDestination(currentWorkspace, pcId, target.terminalKey, target.ws, createAgentLatestEntryToken());
+		// 行き先はルートのクエリで伝えるが、旧来の部品やストアの操作が既定の対象にしている
+		// 選択も合わせておく。setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
+		if (destination.spaceId !== undefined) {
+			setSelectedWs(destination.spaceId);
 		}
 		setSelectedTerminalKey(target.terminalKey);
-		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
+		router.push(destination.href);
 	}, [router, setSelectedWs, setSelectedTerminalKey]);
 
 	useEffect(() => {
@@ -175,102 +186,26 @@ function RootLayout() {
 	const handleUnlock = useCallback(() => setUnlocked(true), []);
 
 	return (
-		// GestureHandlerRootView: ワークスペースドロワー（ReanimatedDrawerLayout）の
-		// ネイティブジェスチャ認識に必須
+		// GestureHandlerRootView: 画面の中のスワイプ（行のスワイプ操作など）のネイティブジェスチャ認識に必須
 		<GestureHandlerRootView style={styles.root}>
 			{/* 開発ビルドだけ、表示中の画面をデバッガから読めるようにする（__DEV__ は実行中に変わらない） */}
 			{__DEV__ ? <DevProbe /> : null}
 			<ThemeProvider value={appTheme}>
 				<AuthGate onUnlock={handleUnlock}>
-					{/* iPadの広い幅では左にワークスペースサイドバーを常設し、このスタック全体を
-					    右カラムへ収める。iPhone・狭い幅では素通しで従来どおり全幅に描画される */}
-					<IpadShell>
-					{/* ワークスペースドロワーはここで1回だけ包む。**`Stack` と常設のヘッダー層を
-					    まとめて**包むのが要点——開いたときにどくのは「画面の中身」だけでなく
-					    ヘッダーも含めた全部でないと、浮いているヘッダーがドロワーの上に残る
-					    （X等と同じで、スライドするのは画面まるごと）。
-					    タブ以外の画面では錠が掛かる（左端スワイプは「戻る」に使う）。 */}
-					<WsDrawerLayout>
-					{/* 設定まわり（設定・使用量各種・PC詳細・更新履歴・ターミナル設定）は
-					    `app/(settings)/` のネストしたスタックにまとめてある。ここではその入口を
-					    モーダルとして1つ出すだけで、中の移動は向こうのスタックが水平pushで行う。
-
-					    **子画面をここへ直接並べて `presentation: 'card'` を付けてはいけない。**
-					    react-native-screens の `RNSScreenStack.mm` の `updateContainer` は、
-					    `Push` の画面を手前にモーダルがあっても必ずベースのナビゲーション
-					    コントローラへ積む。設定モーダルの裏に隠れて何も起きなくなる。
-					    expo-router が「モーダル以降は全部モーダル扱い」に伝播させているのも、
-					    モーダルの上に積むための意図的な仕様であって回避対象ではない。 */}
-					{/* ヘッダーの地色は画面ごとに決める。**既定に任せてはいけない**——iOSの標準の
-					    ダークグレー（#1c1c1e相当）になり、本文の #050506 との境目が帯として見える
-					    （実機で確認済み）。バー項目のガラスはバーの地色とは別なので、地色を
-					    本文と揃えてもモーフも器も失われない。 */}
-					<Stack screenOptions={{ headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
-						{/* タブのバーは**フォーカスされているタブが書き込む**（`useWsHeader`）。
-						    ここでは伏せておき、画面が中身を登録したときに出す——順番が逆だと、
-						    まだ中身の無いバーが1フレーム見える。 */}
-						<Stack.Screen name="(tabs)" options={{ headerShown: false, headerStyle: { backgroundColor: colors.bg }, headerShadowVisible: false }} />
-						<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal', headerStyle: { backgroundColor: colors.panel } }} />
-						{/* エージェント詳細。ホームの一覧・通知タップから開く（旧エージェントタブの後継）。
-						    **バーはOS標準に任せる**（画面が `useNativeScreenHeader` で登録する）。
-						    **ここを `headerShown: false` にしてはいけない。** 中身を入れるのは画面側なので
-						    「まだ中身の無いバーが1フレーム見える」のを避けたくなるが、伏せるとホームの島が
-						    丸い戻るボタンへ変わる動きが**出る回と出ない回に分かれる**。
-						    `react-native-screens` の `RNSScreenStackHeaderConfig.mm` は、バーを出すときに
-						    `animated && ... && !wasHidden` でしか `animateAlongsideTransition` に乗せない
-						    ——直前にバーが隠れていた遷移は「共有されたバーが無い」と見なし、アニメーション
-						    ブロックを一切走らせない。ここで伏せると push の瞬間に一度バーが隠れるので、
-						    画面側が `headerShown: true` を書くのが遷移の開始に間に合わなかった回だけ
-						    モーフが死ぬ、というレースになる。
-						    バーは最初から出しておき、中身だけを画面が差し替える。地色は本文と同じなので、
-						    中身が入るまでの1フレームは「何も無い上端」に見えるだけで目立たない。 */}
-						<Stack.Screen name="agent" options={{ headerShown: true, title: '', headerStyle: { backgroundColor: colors.bg }, headerShadowVisible: false }} />
-						<Stack.Screen name="agent-activity" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						<Stack.Screen name="agent-activity-detail" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開くため独自ヘッダーを使う */}
-						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開く。
-						    **バーはOS標準に任せず、独自ヘッダー（常設のヘッダー層）を使う。**
-						    一度ネイティブバーへ移したが、(1) ズーム中に島が左端へ寄ってホームの島と
-						    二重に見え、(2) 右上の×が出なくなった（原因未特定）。ズーム遷移は画面
-						    全体を拡大するので、その中のバー項目をOSに任せると位置も生死も制御でき
-						    ない——`src/paraHeader.ts` に「ズーム遷移の画面はヘッダーのアニメーションを
-						    切る（`instant: true`）」と書いてあるのは、まさにこれを避けるためだった。 */}
-						<Stack.Screen name="notifications" options={{ headerShown: false }} />
-						{/* スペースのメモ。ドロワーのメモボタンから同じくズーム遷移で開く */}
-						<Stack.Screen name="space-note" options={{ headerShown: false }} />
-						{/* エージェント起動フォーム。ホームヘッダーの＋から同じくズーム遷移で開く */}
-						<Stack.Screen name="agent-launch" options={{ headerShown: false }} />
-						{/* 設定まわり一式（ネストStack）。ワークスペースドロワーの設定アイコンから開く */}
-						<Stack.Screen name="(settings)" options={{ headerShown: false, presentation: 'modal' }} />
-						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継）。
-						    バーはOS標準に任せる（画面が `NativeScreenHeader` で中身を登録する）。
-						    **`animation` は既定のままにする。** `slide_from_right` は
-						    `RNSScreenStackAnimator` の自前アニメーションで、UIKit標準の push ではないため
-						    ナビゲーションバーの項目が連動しない（＝バー項目の変化がモーフしない）。
-						    見た目はどちらも右からのスライドなので、標準に任せて連動を取る。
-						    `headerShown: false` にしないのは agent と同じ理由（上の説明を読むこと）。 */}
-						<Stack.Screen name="browser" options={{ headerShown: true, title: '', headerStyle: { backgroundColor: colors.bg }, headerShadowVisible: false }} />
-						{/* アーカイブ一覧。ホームヘッダーの箱アイコンから開く */}
-						<Stack.Screen name="archive" options={{ headerShown: false, animation: 'slide_from_right' }} />
-					</Stack>
-					{/* **全画面で共有する唯一のヘッダー。** 各画面は `useParaHeader()` で仕様を
-					    書き込むだけで、Viewはここのものが使い回される——だから遷移でガラスの器が
-					    生き残り、枠の変化が融合になる（src/paraHeader.ts 参照）。
-					    `Stack` の後ろに置くことで前面に出る。ネイティブのモーダル（設定・
-					    ペアリング）はこの層より前面に presented されるので覆われない。 */}
-					<ParaHeaderLayer />
-					</WsDrawerLayout>
-					</IpadShell>
-					{/* glass対応メニュー/ダイアログの描画先（overlayHost.tsx参照）。
+					{/* OS 標準の Stack だけ。**OS のナビゲーションバーは出さない**——各画面が
+					    `src/ui/screenHeader.tsx` の自前ヘッダー（戻る 36pt の円＋タイトル）を描く。
+					    画面ごとの登録（Stack.Screen）は置かず、段階3〜6の担当が画面のファイルを
+					    足すだけで並ぶようにしている。シートは画面の中の BottomDrawer で出す
+					    （`presentation: 'modal'` の画面は作らない）。 */}
+					<Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
+					{/* 旧来の部品が使うメニュー/ダイアログの描画先（overlayHost.tsx参照）。
 					    再ロック時にロック画面より上へ残らないよう、AuthGateの内側に置く */}
 					<OverlayHost />
 					{/* 更新後の初回起動でだけ出るお知らせ。ロック中に出ないようAuthGateの内側に置く */}
 					<UpdateSheetHost />
-					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。**ドロワーの外**に置く
-					    ——通知バナーは画面の状態と関係なく最前面に浮くものなので、ドロワーと一緒に
-					    どく必要がない。継続する状態（再接続中・オフライン）はここではなく島の中で
-					    示す（src/offlineNotice.ts）。ロック中に出さないようAuthGateの内側に置く */}
-					<ParaToastHost />
+					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。ロック中に出さないよう
+					    AuthGateの内側に置く */}
+					<ToastHost />
 				</AuthGate>
 			</ThemeProvider>
 		</GestureHandlerRootView>
