@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting, type DesktopResources } from '../store.js';
+import { countAttentionAgents, isAttentionAgent } from '../attentionCount.js';
 import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, diskLevel, formatCpu, usageLevel, usagePercent,
 	type UsageLevel,
@@ -24,7 +25,7 @@ import { WsHeaderActions, WsHeaderIsland } from './nativeHeaderItems.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { useConnectionGateBlocked } from './connectionGate.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
-import { alpha, colors, radius, squircle, tint, type, withAlpha, status } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type, withAlpha, status } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { Badge } from './badge.js';
 import { SectionHeader } from './sectionHeader.js';
@@ -219,6 +220,15 @@ function onDrawerSettled() {
 	hapticImpact('light');
 }
 
+/**
+ * 行の中の小さなボタンの当たり判定を44ptまで広げる余白。行の高さを変えずに押しやすくする。
+ * メモの見た目は約18×24pt（アイコン12＋余白）、開閉は30pt四方。
+ */
+const NOTE_BTN_HIT_SLOP = { top: 13, bottom: 13, left: 10, right: 10 } as const;
+const TWIST_BTN_HIT_SLOP = (HIT_SIZE - 30) / 2;
+/** 「新しいスペースを作成」のガラスの箱の見た目の大きさ。 */
+const ADD_SPACE_BOX = 34;
+
 /** 逼迫の度合いを色へ。平常時は控えめな既定色のままにして、視線を奪わない。 */
 function resourceColor(level: UsageLevel, normal: string): string {
 	return level === 'critical' ? colors.red : level === 'warn' ? colors.yellow : normal;
@@ -315,7 +325,8 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	const list: WsEntry[] = workspace?.workspaces ?? [];
 	const terminals = workspace?.terminals ?? [];
 	const effective = selectedWs !== undefined && list.some(w => w.id === selectedWs) ? selectedWs : list[0]?.id;
-	const waitingTotal = terminals.filter(t => isAgentWaiting(t.agentStatus)).length;
+	// 統計の「要対応」。タブのバッジ・ホームの要対応の見出しと同じ数え方（`attentionCount.ts`）。
+	const waitingTotal = countAttentionAgents(terminals);
 	const online = connection === 'online' && pcOnline && sessionProtocolReady;
 	// PC本体（マシン全体）のCPU/メモリ/ディスク（旧PCでは未配信）。バッテリーと同じ「PCの体調」
 	// としてこのカードに並べる。内訳（何が使っているか）は行タップで開く「システム」画面が持つ。
@@ -419,7 +430,8 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 		// （ホームの絞り込み先が無いことを一目で示す）。
 		const active = !homeShowAllWorkspaces && ws.id === effective;
 		const wsTerminals = wsTerminalsOf(ws.id);
-		const waiting = wsTerminals.filter(t => isAgentWaiting(t.agentStatus)).length + (opts.aggWaiting ?? 0);
+		// 要対応の件数は統計・タブのバッジと同じ判定（attentionCount.ts）で数える。
+		const waiting = wsTerminals.filter(isAttentionAgent).length + (opts.aggWaiting ?? 0);
 		const running = wsTerminals.filter(t => t.agentStatus === 'working').length + (opts.aggRunning ?? 0);
 		const color = wsColor(ws);
 		// グループ表示ではPCが旧アプリ互換のために付ける「✦ 」接頭辞を取り除く
@@ -461,7 +473,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				    ここはズームより「ずれない」を採る。 */}
 				<Pressable
 					style={[styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive]}
-					hitSlop={6}
+					hitSlop={NOTE_BTN_HIT_SLOP}
 					onPress={() => {
 						hapticSelection();
 						onClose();
@@ -480,7 +492,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 						<Badge label={`${opts.childCount ?? 0}`} mono style={styles.badge} />
 						<Pressable
 							style={styles.twistBtn}
-							hitSlop={6}
+							hitSlop={TWIST_BTN_HIT_SLOP}
 							onPress={() => toggleRepo(ws.id)}
 							accessibilityLabel={opts.open ? 'ワークツリーを折りたたむ' : 'ワークツリーを展開'}
 						>
@@ -566,25 +578,28 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 			</View>
 
 			{/* 右端の＋は PC版の「スペース名右の＋」に対応する、新しいスペース（worktree）作成の入口。
-			    箱自体を当たり判定ぶんの大きさにする（GlassViewはhitTestを上書きしないため、
-			    内側Pressableのhitslopは箱の外側では効かない）。無効時はガラスにopacityを
-			    当てず、アイコンの色だけ落とす（素材にopacityを当てると効果ごと薄まって見える）。 */}
+			    当たり判定（44pt）は外側の Pressable が持ち、見た目のガラスの箱（34pt）はその中に置く
+			    （GlassViewはhitTestを上書きしないため、ガラスの内側に置いたPressableのhitSlopは
+			    箱の外側では効かない）。無効時はガラスにopacityを当てず、アイコンの色だけ落とす
+			    （素材にopacityを当てると効果ごと薄まって見える）。 */}
 			<SectionHeader
 				title="ワークスペース"
 				style={styles.sectionHead}
 				right={(
-					<GlassSurface style={styles.addSpaceBtn} interactive={online}>
-						<Pressable
-							disabled={!online}
-							style={styles.addSpaceHit}
-							onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
-							accessibilityRole="button"
-							accessibilityLabel="新しいスペースを作成"
-							accessibilityState={{ disabled: !online }}
-						>
-							<Ionicons name="add" size={15} color={online ? colors.text : colors.textDim} />
-						</Pressable>
-					</GlassSurface>
+					<Pressable
+						disabled={!online}
+						style={styles.addSpaceHit}
+						onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
+						accessibilityRole="button"
+						accessibilityLabel="新しいスペースを作成"
+						accessibilityState={{ disabled: !online }}
+					>
+						<GlassSurface style={styles.addSpaceBtn} interactive={online}>
+							<View style={styles.addSpaceIcon}>
+								<Ionicons name="add" size={15} color={online ? colors.text : colors.textDim} />
+							</View>
+						</GlassSurface>
+					</Pressable>
 				)}
 			/>
 			<ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
@@ -609,7 +624,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					// 折りたたみ中は配下の応答待ち/実行中を親行に集約表示する。残して見せている
 					// ピン留め行のぶんは、その行自体が出しているので二重に数えない
 					const hidden = open ? [] : children.filter(c => !c.pinned);
-					const aggWaiting = hidden.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => isAgentWaiting(t.agentStatus)).length, 0);
+					const aggWaiting = hidden.reduce((n, c) => n + wsTerminalsOf(c.id).filter(isAttentionAgent).length, 0);
 					const aggRunning = hidden.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => t.agentStatus === 'working').length, 0);
 					return (
 						<View key={repo.id}>
@@ -914,12 +929,12 @@ const styles = StyleSheet.create({
 		// 見出しの書式は SectionHeader。余白はこの行が持つので、SectionHeader 側の上下マージンは打ち消す。
 		marginTop: 0, marginBottom: 0,
 	},
-	// 11ptの小さな見出しに36ptのボタンは大きすぎる。30ptへ落として行の主役を見出しに戻す。
-	// 44ptの当たり判定規範には届かないが、ヘッダーのピルボタン(PARA_HEADER_PILL_BUTTON=34)
-	// と寸法を揃え、最低限の大きさを確保する。GlassSurface の内側では hitSlop が効かない
-	// (hitTest を上書きしないため)ため、箱ごと広げる。
-	addSpaceBtn: { width: 34, height: 34, borderRadius: radius.control, ...squircle },
-	addSpaceHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+	// 11ptの小さな見出しに36ptのボタンは大きすぎるので、見た目はヘッダーのピルボタン
+	// (PARA_HEADER_PILL_BUTTON=34)と揃える。当たり判定は外側の addSpaceHit が44ptで持ち、
+	// 見出しの行が高くならないよう、はみ出した分は負のマージンで相殺する。
+	addSpaceHit: { width: HIT_SIZE, height: HIT_SIZE, alignItems: 'center', justifyContent: 'center', marginVertical: -(HIT_SIZE - ADD_SPACE_BOX) / 2, marginRight: -(HIT_SIZE - ADD_SPACE_BOX) / 2 },
+	addSpaceBtn: { width: ADD_SPACE_BOX, height: ADD_SPACE_BOX, borderRadius: radius.control, ...squircle },
+	addSpaceIcon: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: radius.control, ...squircle, marginBottom: 2 },
@@ -958,6 +973,6 @@ const styles = StyleSheet.create({
 	dim: { color: colors.textDim, fontSize: type.meta, paddingHorizontal: 8, lineHeight: 18 },
 	footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
 	footerBtn: { flex: 1, borderRadius: radius.control, ...squircle },
-	footerBtnHit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9 },
+	footerBtnHit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: HIT_SIZE },
 	footerBtnText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 });

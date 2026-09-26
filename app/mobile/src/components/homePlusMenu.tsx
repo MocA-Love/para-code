@@ -8,9 +8,10 @@ import { OverlayPortal, PopIn } from './overlayHost.js';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
 import { PARA_HEADER_PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT } from '../paraHeader.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { colors, radius, squircle, type } from '../theme.js';
+import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import {
+	buildHomeCreateMenuItems,
 	buildHomeHeaderMenuItems,
 	type HomeHeaderMenuAction,
 	type HomeHeaderMenuItem,
@@ -50,7 +51,6 @@ interface HomePlusMenuProps {
 	compact?: boolean;
 	archivedCount?: number;
 	voiceActive?: boolean;
-	notificationQuestionCount?: number;
 }
 
 /** ヘッダーのピルの中に置く＋ボタン。押すとOSがメニューを出す。 */
@@ -61,25 +61,17 @@ export function HomePlusMenuButton({
 	compact,
 	archivedCount,
 	voiceActive,
-	notificationQuestionCount,
 }: HomePlusMenuProps) {
 	const menuItems = useMemo(() => buildHomeHeaderMenuItems({
 		compact: compact === true,
 		archivedCount: archivedCount ?? 0,
 		voiceActive: voiceActive === true,
-		notificationQuestionCount: notificationQuestionCount ?? 0,
 		ackCount,
 		hasSpace,
-	}), [ackCount, archivedCount, compact, hasSpace, notificationQuestionCount, voiceActive]);
+	}), [ackCount, archivedCount, compact, hasSpace, voiceActive]);
 
 	if (ParaPlusMenuButton !== undefined) {
-		const nativeItems: ParaPlusMenuItem[] = menuItems.map(item => ({
-			id: item.id,
-			title: item.title,
-			systemImage: item.systemImage,
-			startsSection: item.startsSection,
-			children: item.children?.map(child => ({ id: child.id, title: child.title, systemImage: child.systemImage })),
-		}));
+		const nativeItems = toNativeItems(menuItems);
 		return (
 			<ParaPlusMenuButton
 				style={compact === true ? styles.compactButton : styles.nativeButton}
@@ -93,7 +85,61 @@ export function HomePlusMenuButton({
 			/>
 		);
 	}
-	return <FallbackPlusMenu items={menuItems} compact={compact === true} onSelect={onSelect} />;
+	return <FallbackPlusMenu items={menuItems} trigger={compact === true ? 'compact' : 'header'} onSelect={onSelect} />;
+}
+
+function toNativeItems(items: readonly HomeHeaderMenuItem[]): ParaPlusMenuItem[] {
+	return items.map(item => ({
+		id: item.id,
+		title: item.title,
+		systemImage: item.systemImage,
+		startsSection: item.startsSection,
+		children: item.children?.map(child => ({ id: child.id, title: child.title, systemImage: child.systemImage })),
+	}));
+}
+
+/** 右下の＋の直径。 */
+export const HOME_CREATE_FAB_SIZE = 52;
+
+/**
+ * ホームの画面右下の丸い＋（新規作成の入口）。押すとエージェントの起動（Claude / Codex /
+ * ターミナル）・ワークツリーの作成・メモのメニューが開く。**この画面の主ボタン**なので
+ * 白地に黒の＋にする（主ボタンは1画面に1つ）。
+ *
+ * メニューはヘッダーの＋と同じくOSに出させる（`UIMenu`）。見た目はRNの子が描き、
+ * タップはネイティブのボタンが受ける（`symbol=""`。terminalPicker.tsx と同じ作り）。
+ * 置き場所（タブバーの上・右端）は呼び出し側が決める。
+ */
+export function HomeCreateFab({ hasSpace, onSelect }: {
+	hasSpace: boolean;
+	onSelect: (action: HomePlusMenuAction) => void;
+}) {
+	const menuItems = useMemo(() => buildHomeCreateMenuItems({ hasSpace }), [hasSpace]);
+	const select = (action: HomeHeaderMenuAction) => {
+		// 作成メニューには作成系の項目しか無いので、ヘッダー専用の操作はここへ来ない。
+		if (action !== 'archive' && action !== 'voice-notifications' && action !== 'notifications') {
+			onSelect(action);
+		}
+	};
+	if (ParaPlusMenuButton !== undefined) {
+		return (
+			<ParaPlusMenuButton
+				style={styles.fab}
+				symbol=""
+				items={toNativeItems(menuItems)}
+				accessibilityTitle="新規作成"
+				onSelect={event => {
+					hapticImpact('light');
+					select(event.nativeEvent.id as HomeHeaderMenuAction);
+				}}
+			>
+				<View style={styles.fabFace} pointerEvents="none">
+					<Ionicons name="add" size={26} color={colors.onPrimary} />
+				</View>
+			</ParaPlusMenuButton>
+		);
+	}
+	return <FallbackPlusMenu items={menuItems} trigger="fab" onSelect={select} />;
 }
 
 /**
@@ -103,20 +149,28 @@ export function HomePlusMenuButton({
  * 本物を知っている人には壊れて見えるだけなので、別の見せ方だと分かる形にしておく。
  * 入れ子もやめて、エージェントの3つをそのまま並べる。
  */
-function FallbackPlusMenu({ items, compact, onSelect }: {
+function FallbackPlusMenu({ items, trigger, onSelect }: {
 	items: readonly HomeHeaderMenuItem[];
-	compact: boolean;
+	/** 押す場所。`fab` は画面右下の＋で、パネルは上ではなく＋の上へ向かって開く。 */
+	trigger: 'header' | 'compact' | 'fab';
 	onSelect: (action: HomeHeaderMenuAction) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const [fabTop, setFabTop] = useState<number | undefined>(undefined);
 	const insets = useStableInsets();
 	const { height } = useWindowDimensions();
+	const compact = trigger === 'compact';
+	const fab = trigger === 'fab';
 	const panelTop = insets.top + PARA_HEADER_SLOT_HEIGHT + 10;
-	const panelMaxHeight = Math.max(0, height - panelTop - insets.bottom - PANEL_BOTTOM_GAP);
+	// 右下の＋から開くときは、＋の上端から上へ伸ばす（位置は押したときに実測する）。
+	const panelBottom = fab && fabTop !== undefined ? height - fabTop + 10 : undefined;
+	const panelMaxHeight = panelBottom !== undefined
+		? Math.max(0, height - panelBottom - insets.top - PANEL_BOTTOM_GAP)
+		: Math.max(0, height - panelTop - insets.bottom - PANEL_BOTTOM_GAP);
 
 	// Android物理戻るボタンで閉じる。RNのModalではない自作Portalに載せているので、
 	// ここで拾わないとメニューが開いたままタブ画面から抜ける
-	// （terminalActionsMenu / agentStatusPopover / pcSwitcher と同じ扱い）。
+	// （homeAgentActionsMenu / agentStatusPopover / pcSwitcher と同じ扱い）。
 	useEffect(() => {
 		if (!open) {
 			return;
@@ -137,14 +191,32 @@ function FallbackPlusMenu({ items, compact, onSelect }: {
 	return (
 		<>
 			<Pressable
-				style={({ pressed }) => [styles.fallbackButton, compact && styles.compactButton, pressed && styles.pressed]}
-				hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
-				onPress={() => { hapticImpact('light'); setOpen(value => !value); }}
+				style={({ pressed }) => [
+					fab ? styles.fab : styles.fallbackButton,
+					compact && styles.compactButton,
+					pressed && (fab ? styles.fabPressed : styles.pressed),
+				]}
+				// 見た目34ptの＋も当たり判定は44ptにする（compact と右下の＋はそれ自体が44pt以上）。
+				hitSlop={trigger === 'header' ? FALLBACK_BUTTON_HIT_SLOP : undefined}
+				onPress={event => {
+					hapticImpact('light');
+					if (fab) {
+						const { pageY, locationY } = event.nativeEvent;
+						setFabTop(pageY - locationY);
+					}
+					setOpen(value => !value);
+				}}
 				accessibilityRole="button"
-				accessibilityLabel={compact ? 'ホーム操作' : '作成と表示のメニュー'}
+				accessibilityLabel={compact ? 'ホーム操作' : fab ? '新規作成' : '作成と表示のメニュー'}
 				accessibilityState={{ expanded: open }}
 			>
-				<Ionicons name={open ? 'close' : compact ? 'ellipsis-horizontal' : 'add'} size={21} color={colors.text} />
+				{fab ? (
+					<View style={styles.fabFace} pointerEvents="none">
+						<Ionicons name={open ? 'close' : 'add'} size={26} color={colors.onPrimary} />
+					</View>
+				) : (
+					<Ionicons name={open ? 'close' : compact ? 'ellipsis-horizontal' : 'add'} size={21} color={colors.text} />
+				)}
 			</Pressable>
 			{open ? (
 				<OverlayPortal>
@@ -156,7 +228,7 @@ function FallbackPlusMenu({ items, compact, onSelect }: {
 					/>
 					{/* 位置はセーフエリアとお知らせの押し下げから決める（固定値だと
 					    Androidのステータスバーやトースト表示中にヘッダーへ食い込む）。 */}
-					<PopIn style={[styles.fallbackPanelPos, { top: panelTop }]}>
+					<PopIn style={[styles.fallbackPanelPos, panelBottom !== undefined ? { bottom: panelBottom } : { top: panelTop }]}>
 						<GlassSurface style={[styles.fallbackPanel, { maxHeight: panelMaxHeight }]}>
 							<View style={styles.plate} pointerEvents="none" />
 							<ScrollView style={[styles.fallbackScroll, { maxHeight: panelMaxHeight }]} contentContainerStyle={styles.fallbackBody} keyboardShouldPersistTaps="always">
@@ -208,11 +280,20 @@ function MenuRow({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMa
 /** フォールバックのパネル幅。 */
 const PANEL_WIDTH = 262;
 const PANEL_BOTTOM_GAP = 12;
+/** 見た目34ptのフォールバックの＋を、当たり判定44ptまで広げる余白。 */
+const FALLBACK_BUTTON_HIT_SLOP = (HIT_SIZE - 34) / 2;
 
 const styles = StyleSheet.create({
 	// ネイティブのボタン。ピルの中の他のボタンと同じ当たり判定にする。
 	nativeButton: { width: PARA_HEADER_PILL_BUTTON, height: PARA_HEADER_PILL_BUTTON, borderRadius: radius.pill },
-	compactButton: { width: 44, height: 44, borderRadius: radius.pill },
+	compactButton: { width: HIT_SIZE, height: HIT_SIZE, borderRadius: radius.pill },
+	// 右下の＋。白地（主ボタン）の丸。見た目は fabFace が描き、器は当たり判定と形だけを持つ。
+	fab: { width: HOME_CREATE_FAB_SIZE, height: HOME_CREATE_FAB_SIZE, borderRadius: radius.pill },
+	fabFace: {
+		flex: 1, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center',
+		backgroundColor: colors.primary,
+	},
+	fabPressed: { opacity: 0.8 },
 	fallbackButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 
 	scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.scrim },

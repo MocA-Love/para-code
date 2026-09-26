@@ -16,7 +16,7 @@ export interface AgentStatusPopoverTarget {
 }
 
 const POPOVER_WIDTH = 200;
-// 項目2つ+区切り線の概算高さ（実測値を使わずクランプするための見積もり。terminalActionsMenuと同じ流儀）。
+// 項目2つ+区切り線の概算高さ（実測値を使わずクランプするための見積もり。homeAgentActionsMenuと同じ流儀）。
 const POPOVER_HEIGHT_ESTIMATE = 120;
 
 const statusLabel = agentStatusLabel;
@@ -26,7 +26,7 @@ const statusDotColor = agentStatusColor;
  * ホーム一覧のステータスバッジをタップして開くポップオーバー（status.html 案B準拠）。
  * 「確認済みにする」でPC側のペイン既読と同じ処理を発火し、レビュー/応答待ちの
  * バッジをアイドルへ戻す。面はGlassSurface（iOS 26+はLiquid Glass）で、
- * terminalActionsMenuと同じくOverlayPortal＋scaleのみの出現演出を使う。
+ * homeAgentActionsMenuと同じくOverlayPortal＋scaleのみの出現演出を使う。
  */
 export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 	target: AgentStatusPopoverTarget | undefined;

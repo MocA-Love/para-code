@@ -5,8 +5,7 @@ import { usePathname } from 'expo-router';
 import { Tabs } from 'expo-router/js-tabs';
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import { useAppStore } from '../../src/appState.js';
-import { isAgentWaiting } from '../../src/store.js';
+import { useAttentionCount } from '../../src/hooks/useAttentionCount.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { colors } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
@@ -57,10 +56,9 @@ function useTabSwitchHaptics(enabled: boolean): void {
 export default function TabsLayout() {
 	const regular = useIsRegularWidth();
 	useTabSwitchHaptics(!regular);
-	// 応答待ちエージェント数 → ホームタブのバッジ。
-	// workspace 本体ではなく件数（数値）を選ぶ。本体を購読すると、PCからのstate再送のたびに
-	// ドロワーとタブバーごと再構築されてしまう（バッジに要るのはこの数値だけ）。
-	const pending = useAppStore(s => (s.workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length);
+	// 要対応のエージェント数 → ホームタブのバッジ。ホームの要対応の見出し・ドロワーの統計と
+	// 同じ数え方（`attentionCount.ts`）。件数（数値）だけを購読する。
+	const pending = useAttentionCount();
 	const badge = pending > 0 ? String(pending) : undefined;
 
 	// ワークスペースドロワーは **ルートの `_layout.tsx`** で `Stack` ごと包んである

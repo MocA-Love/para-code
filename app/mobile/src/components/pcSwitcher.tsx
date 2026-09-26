@@ -12,7 +12,7 @@ import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
-import { alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { Badge } from './badge.js';
 import { SectionHeader } from './sectionHeader.js';
@@ -361,15 +361,16 @@ const styles = StyleSheet.create({
 	// 歯車ボタンとの間に余白が残らない。複数PC時は chevron の手前に「他N台」バッジ（縮まない）
 	// が増えるため、その状態で chevron が歯車へ食い込んで重なって見えていた。
 	cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-	// 高さは右の歯車ボタン（40）に合わせる。左右で違うと1本の帯に見えない。
-	cardMain: { flex: 1, height: 40, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 8, marginLeft: -8, borderRadius: radius.control, ...squircle, backgroundColor: 'rgba(255,255,255,0.04)' },
+	// 高さは右の歯車ボタン（HIT_SIZE）に合わせる。左右で違うと1本の帯に見えない。
+	cardMain: { flex: 1, minHeight: HIT_SIZE, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 8, marginLeft: -8, borderRadius: radius.control, ...squircle, backgroundColor: 'rgba(255,255,255,0.04)' },
 	logo: { width: 30, height: 30 },
 	cardBody: { flex: 1, minWidth: 0 },
 	cardName: { color: colors.text, fontSize: type.body, fontWeight: '700' },
 	cardStateRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
 	cardState: { color: colors.green, fontSize: type.caption },
 	cardStateOff: { color: colors.textDim },
-	settingsBtn: { width: 40, height: 40, borderRadius: radius.card, ...squircle },
+	// 箱自体が当たり判定（ガラスの内側では hitSlop が効かない）なので、44pt そのものにする。
+	settingsBtn: { width: HIT_SIZE, height: HIT_SIZE, borderRadius: radius.card, ...squircle },
 	settingsBtnHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
 });

@@ -3,8 +3,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useAppStore } from '../appState.js';
-import { isAgentWaiting } from '../store.js';
+import { useAttentionCount } from '../hooks/useAttentionCount.js';
 import { GlassSurface } from '../components/glassSurface.js';
 import { WsDrawerContent } from '../components/wsDrawer.js';
 import { colors, radius, squircle, type } from '../theme.js';
@@ -42,9 +41,8 @@ function SidebarTabBar() {
 	const router = useRouter();
 	const pathname = usePathname();
 	const active = activeSidebarTab(pathname);
-	// 応答待ち件数のバッジ。iPhone版のNativeTabsと同じく件数（数値）だけを購読して、
-	// PCからのstate再送のたびにサイドバーごと再構築されるのを避ける。
-	const pending = useAppStore(s => (s.workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length);
+	// 要対応の件数のバッジ（iPhone版のタブバーと同じ数え方。`attentionCount.ts`）。
+	const pending = useAttentionCount();
 
 	return (
 		<View style={styles.wrap}>

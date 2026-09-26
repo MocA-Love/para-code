@@ -5,6 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { sizeClassFor } from '../sizeClass.js';
 import {
+	buildHomeCreateMenuItems,
 	buildHomeHeaderMenuItems,
 	dispatchHomeHeaderMenuAction,
 	homeHeaderLayout,
@@ -13,7 +14,7 @@ import {
 	type HomeHeaderMenuItem,
 	type HomePlusMenuAction,
 } from './homeHeaderMenuBehavior.js';
-import { HomePlusMenuButton } from './homePlusMenu.js';
+import { HomeCreateFab, HomePlusMenuButton } from './homePlusMenu.js';
 import { VoiceNotificationControl } from './voiceNotificationControl.js';
 
 vi.mock('react-native', () => ({
@@ -69,10 +70,10 @@ function leafIds(items: readonly HomeHeaderMenuItem[]): string[] {
 }
 
 describe('home header menu behavior', () => {
-	test.each([390, 375, 320])('uses one fixed overflow item at %ipt', width => {
+	test.each([390, 375, 320])('uses a bell and one overflow item at %ipt', width => {
 		expect(homeHeaderLayout(sizeClassFor(width, false))).toEqual({
 			kind: 'compact-menu',
-			headerItemCount: 1,
+			headerItemCount: 2,
 			itemWidth: 44,
 		});
 	});
@@ -81,27 +82,41 @@ describe('home header menu behavior', () => {
 		expect(homeHeaderLayout(sizeClassFor(744, true))).toEqual({ kind: 'regular-actions' });
 	});
 
-	test('compact menu exposes archive, voice, notifications, and every existing plus action', () => {
+	test('compact overflow keeps archive, voice, worktree, note, sort, and ack-all (bell and launch live elsewhere)', () => {
 		const items = buildHomeHeaderMenuItems({
 			compact: true,
 			archivedCount: 2,
 			voiceActive: true,
-			notificationQuestionCount: 3,
 			ackCount: 1,
 			hasSpace: true,
 		});
 		expect(leafIds(items)).toEqual([
 			'archive',
 			'voice-notifications',
-			'notifications',
-			'launch-claude',
-			'launch-codex',
-			'new-terminal',
 			'new-worktree',
 			'space-note',
 			'sort',
 			'ack-all',
 		]);
+	});
+
+	test('regular plus menu keeps the agent launch submenu', () => {
+		const items = buildHomeHeaderMenuItems({ compact: false, archivedCount: 0, voiceActive: false, ackCount: 0, hasSpace: true });
+		expect(leafIds(items)).toEqual(['launch-claude', 'launch-codex', 'new-terminal', 'new-worktree', 'space-note', 'sort']);
+		expect(items[0]).toMatchObject({ id: 'agent' });
+	});
+
+	test('create menu lists launches flat, then worktree and note', () => {
+		const items = buildHomeCreateMenuItems({ hasSpace: true });
+		expect(items.map(item => [item.id, item.children === undefined])).toEqual([
+			['launch-claude', true],
+			['launch-codex', true],
+			['new-terminal', true],
+			['new-worktree', true],
+			['space-note', true],
+		]);
+		expect(items.find(item => item.id === 'new-worktree')?.startsSection).toBe(true);
+		expect(buildHomeCreateMenuItems({ hasSpace: false }).map(item => item.id)).not.toContain('space-note');
 	});
 
 	test('dispatches header-only actions and forwards creation actions unchanged', () => {
@@ -127,7 +142,6 @@ describe('home header menu behavior', () => {
 				compact: true,
 				archivedCount: 2,
 				voiceActive: true,
-				notificationQuestionCount: 3,
 				ackCount: 1,
 				hasSpace: true,
 				onSelect: action => selected.push(action),
@@ -140,10 +154,6 @@ describe('home header menu behavior', () => {
 		expect(ids).toEqual([
 			'archive',
 			'voice-notifications',
-			'notifications',
-			'launch-claude',
-			'launch-codex',
-			'new-terminal',
 			'new-worktree',
 			'space-note',
 			'sort',
@@ -154,6 +164,24 @@ describe('home header menu behavior', () => {
 			button.props.onSelect({ nativeEvent: { id: 'new-worktree' } });
 		});
 		expect(selected).toEqual(['archive', 'new-worktree']);
+		act(() => renderer!.unmount());
+	});
+
+	test('create FAB is a 52pt native menu button that forwards creation actions', () => {
+		const selected: HomePlusMenuAction[] = [];
+		let renderer: ReactTestRenderer | undefined;
+		act(() => {
+			renderer = create(createElement(HomeCreateFab, { hasSpace: true, onSelect: action => selected.push(action) }));
+		});
+		const button = renderer!.root.findByType('ParaPlusMenuButton' as ElementType);
+		expect(button.props.style).toMatchObject({ width: 52, height: 52 });
+		expect(button.props.symbol).toBe('');
+		expect(button.props.items.map((item: { id: string }) => item.id)).toEqual(['launch-claude', 'launch-codex', 'new-terminal', 'new-worktree', 'space-note']);
+		act(() => {
+			button.props.onSelect({ nativeEvent: { id: 'launch-codex' } });
+			button.props.onSelect({ nativeEvent: { id: 'space-note' } });
+		});
+		expect(selected).toEqual(['launch-codex', 'space-note']);
 		act(() => renderer!.unmount());
 	});
 

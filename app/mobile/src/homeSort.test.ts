@@ -2,8 +2,8 @@
 
 import { describe, expect, test } from 'vitest';
 import {
-	DEFAULT_HOME_PREFERENCES, arrangeHomeRows, bucketCounts, parseHomePreferences, reconcileSecondary,
-	secondaryCandidates, statusBucket, statusOrder, toggleFilter, type HomeListPreferences, type SortableTerminal,
+	DEFAULT_HOME_PREFERENCES, arrangeHomeRows, groupRowsByStatus, idleSectionView, parseHomePreferences, reconcileSecondary,
+	secondaryCandidates, statusBucket, statusOrder, type HomeListPreferences, type SortableTerminal,
 } from './homeSort.js';
 
 /** ドロワーのワークスペース一覧の並び（w1 → w2 → w3）。 */
@@ -91,14 +91,6 @@ describe('arrangeHomeRows', () => {
 		expect(titlesOf(arrangeHomeRows(rows, prefs({ pinFirst: false }), pinned))[0]).toBe('ask');
 	});
 
-	test('絞り込みは指定したまとまりだけを残す', () => {
-		expect(titlesOf(arrangeHomeRows(rows, prefs({ filters: ['working'] }), noPins))).toEqual(['builder', 'Explore']);
-		expect(titlesOf(arrangeHomeRows(rows, prefs({ filters: ['working', 'idle'] }), noPins)))
-			.toEqual(['builder', 'Explore', 'cleanup']);
-		// 空 = 絞り込みなし
-		expect(arrangeHomeRows(rows, prefs({ filters: [] }), noPins)).toHaveLength(rows.length);
-	});
-
 	test('どのスペースにも解決できない行だけ末尾へ回す', () => {
 		const orphanIndex = (row: SortableTerminal) => SPACE_INDEX.get(row.ws ?? '');
 		const orphan = term({ terminalKey: 'k9', id: 9, title: 'orphan', ws: 'unknown', agentStatus: 'working' });
@@ -148,14 +140,63 @@ describe('第2キーの整合', () => {
 	});
 });
 
-describe('toggleFilter / bucketCounts', () => {
-	test('入っていなければ足し、入っていれば外す', () => {
-		expect(toggleFilter([], 'working')).toEqual(['working']);
-		expect(toggleFilter(['working', 'idle'], 'working')).toEqual(['idle']);
+describe('groupRowsByStatus', () => {
+	test('実行中 → 未確認 → 待機 の段に分け、段の中は並べた順を保つ', () => {
+		const arranged = arrangeHomeRows(rows, DEFAULT_HOME_PREFERENCES, noPins);
+		const sections = groupRowsByStatus(arranged);
+		expect(sections.map(section => [section.key, titlesOf([...section.rows])])).toEqual([
+			['working', ['builder', 'Explore']],
+			['review', ['reviewer']],
+			['idle', ['cleanup']],
+		]);
 	});
 
-	test('件数はまとまりごとに数える', () => {
-		expect(bucketCounts(rows)).toEqual({ waiting: 1, working: 2, review: 1, idle: 1 });
+	test('要対応の行は段に入れない（上部のスタックが持つので二重に出さない）', () => {
+		const keys = groupRowsByStatus(rows).flatMap(section => section.rows.map(row => row.terminalKey));
+		expect(keys).not.toContain('k5');
+	});
+
+	test('行の無い段は返さない', () => {
+		const onlyIdle = rows.filter(row => row.agentStatus === undefined);
+		expect(groupRowsByStatus(onlyIdle).map(section => section.key)).toEqual(['idle']);
+		expect(groupRowsByStatus([])).toEqual([]);
+	});
+
+	test('ピン留めが先頭の並びは、各段の中の先頭として残る', () => {
+		const pinned = { spaceIndexOf, isPinned: (row: SortableTerminal) => row.terminalKey === 'k3' };
+		const sections = groupRowsByStatus(arrangeHomeRows(rows, DEFAULT_HOME_PREFERENCES, pinned));
+		expect(titlesOf([...sections[0]!.rows])).toEqual(['Explore', 'builder']);
+	});
+});
+
+describe('idleSectionView', () => {
+	const idleRows: SortableTerminal[] = [
+		term({ terminalKey: 'p1', id: 11, title: 'pinned-idle', agentStatus: undefined }),
+		term({ terminalKey: 'i1', id: 12, title: 'idle', agentStatus: undefined }),
+	];
+	const isPinned = (row: SortableTerminal) => row.terminalKey === 'p1';
+	const withWorking = groupRowsByStatus([...rows, ...idleRows]);
+	const onlyIdle = groupRowsByStatus(idleRows);
+
+	test('既定では畳むが、ピン留めの行は畳んでも見せる', () => {
+		const view = idleSectionView(withWorking, idleRows, undefined, isPinned);
+		expect(view.open).toBe(false);
+		expect(titlesOf([...view.visibleRows])).toEqual(['pinned-idle']);
+		expect(view.hiddenCount).toBe(1);
+	});
+
+	test('開いたら全行を見せる', () => {
+		const view = idleSectionView(withWorking, idleRows, true, isPinned);
+		expect(view.open).toBe(true);
+		expect(titlesOf([...view.visibleRows])).toEqual(['pinned-idle', 'idle']);
+		expect(view.hiddenCount).toBe(0);
+	});
+
+	test('段が「待機」だけのときは既定で開く（利用者が畳んだらそれに従う）', () => {
+		expect(idleSectionView(onlyIdle, idleRows, undefined, isPinned).open).toBe(true);
+		const closed = idleSectionView(onlyIdle, idleRows, false, isPinned);
+		expect(closed.open).toBe(false);
+		expect(titlesOf([...closed.visibleRows])).toEqual(['pinned-idle']);
 	});
 });
 
@@ -166,20 +207,24 @@ describe('parseHomePreferences', () => {
 	});
 
 	test('正しい値はそのまま読み戻す', () => {
-		const saved = { sort: 'space', secondary: 'name', filters: ['working'], pinFirst: false };
+		const saved = { sort: 'space', secondary: 'name', pinFirst: false };
 		expect(parseHomePreferences(saved)).toEqual(saved);
 	});
 
 	test('壊れている項目だけ既定へ落とし、他は残す', () => {
-		const result = parseHomePreferences({ sort: 'bogus', secondary: 'name', filters: ['working', 'bogus'], pinFirst: 'yes' });
-		expect(result).toEqual({ sort: 'status', secondary: 'name', filters: ['working'], pinFirst: true });
+		const result = parseHomePreferences({ sort: 'bogus', secondary: 'name', pinFirst: 'yes' });
+		expect(result).toEqual({ sort: 'status', secondary: 'name', pinFirst: true });
 	});
 
 	test('保存された第1・第2キーが同じなら整合させる（旧データ対策）', () => {
 		expect(parseHomePreferences({ sort: 'space', secondary: 'space' }).secondary).toBe('status');
 	});
 
-	test('応答待ちは絞り込みに使えない（一覧に降りてこないので選ぶと必ず空になる）', () => {
-		expect(parseHomePreferences({ filters: ['waiting', 'working'] }).filters).toEqual(['working']);
+	test('以前保存した状態の絞り込みは捨てる（外す手段が無いまま行が消えないように）', () => {
+		const result = parseHomePreferences({ sort: 'status', secondary: 'space', filters: ['working'], pinFirst: true });
+		expect(result).toEqual(DEFAULT_HOME_PREFERENCES);
+		expect(result).not.toHaveProperty('filters');
+		// 捨てたうえで並べても、全行が残る
+		expect(arrangeHomeRows(rows, result, noPins)).toHaveLength(rows.length);
 	});
 });

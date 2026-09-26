@@ -8,9 +8,10 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
+import { countAttentionAgents } from './attentionCount.js';
 import { toolImageCache } from './agentToolImages.js';
 import { PairingClient } from './pairingClient.js';
 import {
@@ -461,7 +462,8 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		pcOnline: runtime.state.pcOnline,
 		workspaces: workspace?.workspaces.length ?? 0,
 		terminals: terminals.length,
-		waiting: terminals.filter(terminal => isAgentWaiting(terminal.agentStatus)).length,
+		// 要対応の数え方はタブのバッジ・ドロワーと同じ（`attentionCount.ts`）。
+		waiting: countAttentionAgents(terminals),
 		lastOnlineAt: runtime.lastOnlineAt,
 		battery: workspace?.battery,
 	};

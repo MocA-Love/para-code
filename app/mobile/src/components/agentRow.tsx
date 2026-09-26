@@ -65,8 +65,9 @@ export function AgentBadge({ status }: { status: string | undefined }) {
  * 行の内側（ピン・オーブ・タイトル・ワークスペース・バッジ）。リストのPressableと
  * クローンのViewの双方から同じ見た目で描画する。`badge` を渡すとバッジ部分を差し替える
  * （リストのレビュー行は「確認済みにする」ポップオーバーを開くPressableを渡す）。
+ * `more` は右端の ⋯（操作メニューを開くボタン）。渡さなければ出さない（アーカイブ一覧など）。
  */
-export function AgentRowContent({ data, badge }: { data: AgentRowData; badge?: ReactNode }) {
+export function AgentRowContent({ data, badge, more }: { data: AgentRowData; badge?: ReactNode; more?: ReactNode }) {
 	return (
 		<>
 			{data.pinned ? <Ionicons name="bookmark" size={11} color={colors.accent} style={styles.pinIcon} /> : null}
@@ -79,6 +80,7 @@ export function AgentRowContent({ data, badge }: { data: AgentRowData; badge?: R
 				</View>
 			</View>
 			{badge ?? <AgentBadge status={data.agentStatus} />}
+			{more}
 		</>
 	);
 }
@@ -100,9 +102,19 @@ export function AgentRowClone({ data, rect }: { data: AgentRowData; rect: AgentR
 			style={[styles.clonePos, { top: rect.y, left: rect.x, width: rect.width }, animatedStyle]}
 		>
 			<View style={[agentRowStyles.container, styles.cloneRow]}>
-				<AgentRowContent data={data} />
+				{/* 一覧の行と横幅の配分を揃えるため、⋯ も押せない飾りとして描く。 */}
+				<AgentRowContent data={data} more={<View style={agentRowStyles.moreSlot}><AgentRowMoreGlyph /></View>} />
 			</View>
 		</Animated.View>
+	);
+}
+
+/** 右端の ⋯ の見た目。押せる器（当たり判定）は一覧側が持つ。 */
+export function AgentRowMoreGlyph() {
+	return (
+		<View style={agentRowStyles.more}>
+			<Ionicons name="ellipsis-horizontal" size={16} color={colors.textDim} />
+		</View>
 	);
 }
 
@@ -113,6 +125,10 @@ export const agentRowStyles = StyleSheet.create({
 		backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, paddingVertical: 12, paddingHorizontal: 14,
 		borderWidth: 1, borderColor: colors.border, marginBottom: 8,
 	},
+	// ⋯ の見た目の枠。
+	more: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
+	// ⋯ の置き場所。行の右の余白に少し食い込ませ、バッジとの間を詰めすぎない。
+	moreSlot: { marginLeft: -4, marginRight: -6 },
 });
 
 const styles = StyleSheet.create({

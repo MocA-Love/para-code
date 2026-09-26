@@ -1,12 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentChatMessage, AgentChatState } from '../store.js';
 import type { AgentActions } from '../hooks/useAgentActions.js';
 import { QuestionCard } from './questionCard.js';
 import { ApprovalCard } from './approvalCard.js';
-import { alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
 import { agentStatusLabel } from '../agentStatus.js';
 
 /** チャット履歴から最新の未回答質問(question)を探す（agent.tsxの回答済み判定と同じロジック）。 */
@@ -131,7 +131,7 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 					<Text style={styles.noticeBody}>回答の種類を取得できていないため、ここからは回答できません</Text>
 				</View>
 			)}
-			<Pressable style={styles.openLink} onPress={onOpenAgent}>
+			<Pressable style={styles.openLink} onPress={onOpenAgent} accessibilityRole="button">
 				<Text style={styles.openLinkText}>エージェント画面で詳しく見る ›</Text>
 			</Pressable>
 		</View>
@@ -139,17 +139,19 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 }
 
 /**
- * ホーム最上部の「応答待ち」スタック。応答待ちのエージェントを1行ずつ積み、
+ * ホーム最上部の要対応スタック。要対応のエージェントを1行ずつ積み、
  * タップした1件だけを開いてその場で回答できるようにする。
+ *
+ * **見出しはここでは描かない。** 見出し（「要対応」と件数）はホームの一覧が他の段と同じ
+ * `SectionHeader` で付ける（件数の数え方をタブのバッジと揃えるため、数は画面側が
+ * `attentionCount.ts` から出す）。ここにも見出しを持つと、同じ見出しが二重に並ぶ。
  *
  * 中身（質問・承認）を購読するのは開いている1件だけで、畳んだ行はターミナルの
  * ステータスだけで描く。開閉と並び順の決まりは {@link ./attentionStackBehavior.ts} が持つ。
  */
-export function AttentionStack({ items, total, openKey, onToggle, onLongPress, hiddenCount, onShowAll, chat, actions, onOpenAgent }: {
+export function AttentionStack({ items, openKey, onToggle, onLongPress, hiddenCount, onShowAll, chat, actions, onOpenAgent, style }: {
 	/** 実際に描く行（件数制限を適用済み）。 */
 	items: readonly AttentionStackItem[];
-	/** 応答待ちの総数（見出しの件数）。 */
-	total: number;
 	openKey: string | undefined;
 	onToggle: (terminalKey: string) => void;
 	/** 長押しでターミナルの操作メニュー（名前を変更/ピン留め/削除）を開く。 */
@@ -161,21 +163,14 @@ export function AttentionStack({ items, total, openKey, onToggle, onLongPress, h
 	chat: AgentChatState | undefined;
 	actions: AgentActions;
 	onOpenAgent: (terminalKey: string) => void;
+	/** 下の余白の調整（見出しで区切る一覧では次の見出しが余白を持つので詰める）。 */
+	style?: StyleProp<ViewStyle>;
 }) {
 	if (items.length === 0) {
 		return null;
 	}
 	return (
-		<View style={styles.stack}>
-			{/* 1件のときは見出しを出さない。赤い枠のカードが1枚あるだけで何を待っているかは
-			    分かるので、そのぶん本文がヘッダーの直下から始まるほうがよい。複数あるときだけ
-			    「ここからここまでが応答待ち」の塊として見出しを付ける。 */}
-			{total > 1 ? (
-				<View style={styles.header} accessibilityRole="header" accessibilityLabel={`${status.attention.label} ${total}件`}>
-					<Text style={styles.headerTitle}>{status.attention.label}</Text>
-					<Text style={styles.headerCount}>{total}</Text>
-				</View>
-			) : null}
+		<View style={[styles.stack, style]}>
 			{items.map(item => {
 				const open = item.terminalKey === openKey;
 				return (
@@ -229,10 +224,7 @@ export function AttentionStack({ items, total, openKey, onToggle, onLongPress, h
 }
 
 const styles = StyleSheet.create({
-	stack: { marginBottom: 16 },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8, marginHorizontal: 2 },
-	headerTitle: { color: colors.textDim, fontSize: type.caption, fontWeight: '700', letterSpacing: 0.3 },
-	headerCount: { color: colors.red, backgroundColor: tint(colors.red, alpha.wash), borderRadius: radius.pill, paddingHorizontal: 7, paddingVertical: 1, fontSize: type.badge, fontWeight: '700', overflow: 'hidden' },
+	stack: { marginBottom: 8 },
 	item: { backgroundColor: colors.attentionBg, borderWidth: 1, borderColor: tint(colors.red, alpha.line), borderRadius: radius.card, ...squircle, marginBottom: 8, overflow: 'hidden' },
 	itemOpen: { borderColor: tint(colors.red, alpha.strong) },
 	head: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 12, paddingHorizontal: 14 },
@@ -247,8 +239,9 @@ const styles = StyleSheet.create({
 	groupNotice: { backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.accent2, borderRadius: radius.card, ...squircle, padding: 14, gap: 4 },
 	noticeTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	noticeBody: { color: colors.textDim, fontSize: type.meta, lineHeight: 17 },
-	openLink: { alignItems: 'center', paddingTop: 2 },
+	// 文字は小さいが、当たり判定は44ptにする（カードの下で押し損ねやすい位置にある）。
+	openLink: { alignItems: 'center', justifyContent: 'center', minHeight: HIT_SIZE, marginVertical: -8 },
 	openLinkText: { color: colors.textDim, fontSize: type.caption },
-	more: { alignItems: 'center', paddingVertical: 9, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+	more: { alignItems: 'center', justifyContent: 'center', minHeight: HIT_SIZE, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
 	moreText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 });
