@@ -8,8 +8,10 @@
 
 // renderer から shared process の Codex アカウントチャネルを呼ぶ薄いクライアント。
 
+import { Event } from '../../../../base/common/event.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import {
+	IParadisCodexAccountsState,
 	IParadisCodexResetConsumeRequest,
 	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
@@ -33,5 +35,19 @@ export class ParadisCodexAccountsClient {
 
 	consumeResetCredit(request: IParadisCodexResetConsumeRequest): Promise<IParadisCodexResetConsumeResult> {
 		return this.channel.call<IParadisCodexResetConsumeResult>('consumeResetCredit', [request]);
+	}
+
+	getState(): Promise<IParadisCodexAccountsState> {
+		return this.channel.call<IParadisCodexAccountsState>('getState');
+	}
+
+	/** undefined で既定のホームへ戻す。 */
+	selectHome(homePath: string | undefined): Promise<IParadisCodexAccountsState> {
+		return this.channel.call<IParadisCodexAccountsState>('selectHome', [homePath]);
+	}
+
+	/** 選択が変わった（どのウィンドウから変えても届く）。 */
+	get onDidChangeState(): Event<IParadisCodexAccountsState> {
+		return this.channel.listen<IParadisCodexAccountsState>('onDidChangeState');
 	}
 }

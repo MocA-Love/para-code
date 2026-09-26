@@ -15,6 +15,8 @@
 //
 // 表示するもの:
 //  - リセットクレジット（残数と期限、「使う…」ボタン。押すと確認ダイアログ）
+//  - 切替（「このアカウントを使う」ボタン、または「使用中」バッジ。q.html Q05 案A）。
+//    選んだアカウントは新しく開くターミナルから使われる（全ウィンドウ共通、Q07）
 
 import './media/paradisCodexAccountCard.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -32,7 +34,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisLimitsAccount } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
-import { IParadisCodexResetConsumeResult, IParadisCodexResetCreditOffer, ParadisCodexResetOutcome } from '../common/paradisCodexAccounts.js';
+import { IParadisCodexAccountsState, IParadisCodexResetConsumeResult, IParadisCodexResetCreditOffer, paradisSelectedCodexHome, ParadisCodexResetOutcome } from '../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from './paradisCodexAccountsClient.js';
 
 const $ = dom.$;
@@ -61,6 +63,11 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 	private readonly consuming = new Set<string>();
 	/** ホームの表示内容が変わった（描き直してほしい）。 */
 	private readonly _onDidChangeHome = this._register(new Emitter<string>());
+	/** 切替の状態（全ウィンドウ共通の選択）。初めてカードを描くときに読む。 */
+	private accountsState: IParadisCodexAccountsState | undefined;
+	private accountsStateRequested = false;
+	private switching = false;
+	private readonly _onDidChangeAccountsState = this._register(new Emitter<void>());
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
@@ -71,6 +78,26 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisCodexAccountsClient);
+	}
+
+	private ensureAccountsState(): void {
+		if (this.accountsStateRequested) {
+			return;
+		}
+		this.accountsStateRequested = true;
+		this._register(this.client.onDidChangeState(state => this.setAccountsState(state)));
+		this.client.getState().then(state => this.setAccountsState(state), error => {
+			this.accountsStateRequested = false;
+			this.logService.warn('[ParadisCodexAccounts] failed to read the Codex account selection', error);
+		});
+	}
+
+	private setAccountsState(state: IParadisCodexAccountsState): void {
+		if (this.accountsState && state.selection.revision < this.accountsState.selection.revision) {
+			return;
+		}
+		this.accountsState = state;
+		this._onDidChangeAccountsState.fire();
 	}
 
 	renderAccountCard(container: HTMLElement, account: IParadisLimitsAccount): IDisposable {
@@ -84,24 +111,85 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 		store.add({ dispose: () => root.remove() });
 
 		const resetRow = dom.append(root, $('.pcc-row.pcc-reset'));
-		const render = () => {
+		const switchRow = dom.append(root, $('.pcc-row.pcc-switch'));
+		// 行ごとにリスナーを持ち直す（描き直すたびに古いボタンのリスナーを捨てる）。
+		const resetListeners = store.add(new DisposableStore());
+		const switchListeners = store.add(new DisposableStore());
+		const renderReset = () => {
+			resetListeners.clear();
 			if (account.status === 'ok') {
-				this.renderResetRow(resetRow, store, account);
+				this.renderResetRow(resetRow, resetListeners, account);
 			} else {
 				// 認証が切れたアカウントは読み取れないので行ごと出さない（再ログインが先）。
 				resetRow.style.display = 'none';
 			}
 		};
-		render();
+		const renderSwitch = () => {
+			switchListeners.clear();
+			this.renderSwitchRow(switchRow, switchListeners, account);
+		};
+		renderReset();
+		renderSwitch();
 		store.add(this._onDidChangeHome.event(changed => {
 			if (changed === homePath && root.isConnected) {
-				render();
+				renderReset();
 			}
 		}));
+		store.add(this._onDidChangeAccountsState.event(() => {
+			if (root.isConnected) {
+				renderSwitch();
+			}
+		}));
+		this.ensureAccountsState();
 		if (account.status === 'ok') {
 			this.ensureOffer(homePath, false);
 		}
 		return store;
+	}
+
+	// ---------- 切替 ----------
+
+	private renderSwitchRow(row: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount): void {
+		dom.clearNode(row);
+		const state = this.accountsState;
+		const home = state?.homes.find(candidate => candidate.homePath === account.id);
+		if (!state || !home) {
+			// 選択をまだ読めていない・切替の対象にならない（ログインしていない）ホーム。
+			row.style.display = 'none';
+			return;
+		}
+		row.style.display = '';
+		if (paradisSelectedCodexHome(state)?.homePath === home.homePath) {
+			dom.append(row, $('span.pcc-text')).textContent = localize('paradis.codexAccounts.selectedHint', "新しく開くターミナルで使います");
+			dom.append(row, $('span.pcc-badge')).textContent = localize('paradis.codexAccounts.selectedBadge', "使用中");
+			return;
+		}
+		const button = dom.append(row, $('button.pcc-btn')) as HTMLButtonElement;
+		button.type = 'button';
+		button.disabled = this.switching;
+		button.textContent = localize('paradis.codexAccounts.useThisAccount', "このアカウントを使う");
+		store.add(dom.addDisposableListener(button, 'click', e => {
+			e.preventDefault();
+			e.stopPropagation();
+			void this.switchTo(home.isDefault ? undefined : home.homePath);
+		}));
+	}
+
+	private async switchTo(homePath: string | undefined): Promise<void> {
+		if (this.switching) {
+			return;
+		}
+		this.switching = true;
+		this._onDidChangeAccountsState.fire();
+		try {
+			this.setAccountsState(await this.client.selectHome(homePath));
+		} catch (error) {
+			this.logService.warn('[ParadisCodexAccounts] failed to switch the Codex account', error);
+			this.notificationService.error(localize('paradis.codexAccounts.switchFailed', "Codex のアカウントを切り替えられませんでした。ログインし直してから、もう一度お試しください。"));
+		} finally {
+			this.switching = false;
+			this._onDidChangeAccountsState.fire();
+		}
 	}
 
 	// ---------- リセットクレジット ----------

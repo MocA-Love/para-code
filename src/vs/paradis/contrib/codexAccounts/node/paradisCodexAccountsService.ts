@@ -8,6 +8,11 @@
 
 // Codex のアカウント（ホーム）まわりの shared process 側の実体。
 //
+// 切替（全ウィンドウ共通、q.html Q07）:
+//   - 選択は userData 配下の JSON に1つだけ持ち、変わったら全ウィンドウへ通知する。renderer は
+//     それを受けて、新しく開くターミナルへ `CODEX_HOME` を渡す（paradisCodexLaunchHomeService.ts）
+//   - 切り替えたら、会話ログをアカウント用ホームどうしでハードリンクし合う（paradisCodexSessionLinker.ts）
+//
 // リセットクレジット:
 //   - 読み取り: `CODEX_HOME=<ホーム> codex app-server` の `account/rateLimits/read` の
 //     `rateLimitResetCredits`。パネルを開いたときだけ読み、数分はキャッシュを返す
@@ -17,11 +22,17 @@
 
 import * as fs from 'fs';
 import * as os from 'os';
-import { delimiter, isAbsolute, join, resolve } from '../../../../base/common/path.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { delimiter, dirname, isAbsolute, join, resolve } from '../../../../base/common/path.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisCodexHomes, paradisRegisterCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
+	IParadisCodexAccountSelection,
+	IParadisCodexAccountsState,
+	IParadisCodexHome,
+	IParadisCodexSessionLinkSummary,
 	IParadisCodexResetConsumeRequest,
 	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
@@ -31,12 +42,18 @@ import {
 } from '../common/paradisCodexAccounts.js';
 import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from './paradisCodexAppServerRpc.js';
 import { ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
+import { paradisLinkCodexSessions } from './paradisCodexSessionLinker.js';
 
 /** 読み取り結果を使い回す時間。パネルは30秒ごとに描き直すので、そのたびに app-server を起こさない。 */
 const RESET_CREDITS_CACHE_MS = 3 * 60_000;
 const READ_TIMEOUT_MS = 20_000;
 /** 消費は provider まで往復するので長め。 */
 const CONSUME_TIMEOUT_MS = 45_000;
+/**
+ * 起動してから会話ログのリンクを1回走らせるまでの待ち。前回の切替以降に別のホームで増えた会話を
+ * 拾うため。起動直後の混雑を避けて少し遅らせる。
+ */
+const STARTUP_LINK_DELAY_MS = 60_000;
 
 export interface IParadisCodexAccountsServiceOptions {
 	readonly logService: ILogService;
@@ -51,6 +68,8 @@ export interface IParadisCodexAccountsServiceOptions {
 	readonly startRpc?: ParadisCodexAppServerRpcFactory;
 	readonly resolveCodexCommand?: (env: NodeJS.ProcessEnv) => Promise<string>;
 	readonly now?: () => number;
+	/** テストで起動時のリンクを止める。 */
+	readonly skipStartupLink?: boolean;
 }
 
 interface ICachedOffer {
@@ -96,12 +115,185 @@ export class ParadisCodexAccountsService extends Disposable {
 	private readonly startRpc: ParadisCodexAppServerRpcFactory;
 	private readonly resolveCodexCommand: (env: NodeJS.ProcessEnv) => Promise<string>;
 
+	private readonly selectionPath: string;
+	private selection: IParadisCodexAccountSelection = { revision: 0 };
+	private selectionLoad: Promise<void> | undefined;
+	private selectionWrite: Promise<unknown> = Promise.resolve();
+	private linking: Promise<IParadisCodexSessionLinkSummary> | undefined;
+	private disposed = false;
+
+	private readonly _onDidChangeState = this._register(new Emitter<IParadisCodexAccountsState>());
+	/** 選択が変わった（どのウィンドウから変えても、全ウィンドウへ届く）。 */
+	readonly onDidChangeState: Event<IParadisCodexAccountsState> = this._onDidChangeState.event;
+
 	constructor(protected readonly options: IParadisCodexAccountsServiceOptions) {
 		super();
 		this.now = options.now ?? Date.now;
 		this.startRpc = options.startRpc ?? paradisStartCodexAppServerRpc;
 		this.resolveCodexCommand = options.resolveCodexCommand ?? paradisResolveCodexCommand;
 		this.ledger = new ParadisCodexResetCreditLedger(join(options.stateDirectory, 'codex-reset-credit-ledger.json'), this.now);
+		this.selectionPath = join(options.stateDirectory, 'codex-account-selection.json');
+		if (!options.skipStartupLink) {
+			this._register(disposableTimeout(() => {
+				void this.loadSelection().then(() => {
+					if (this.selection.homePath !== undefined) {
+						void this.linkSessions();
+					}
+				});
+			}, STARTUP_LINK_DELAY_MS));
+		}
+	}
+
+	override dispose(): void {
+		this.disposed = true;
+		super.dispose();
+	}
+
+	// ---------- 切替 ----------
+
+	private loadSelection(): Promise<void> {
+		if (!this.selectionLoad) {
+			this.selectionLoad = (async () => {
+				try {
+					const parsed = JSON.parse(await fs.promises.readFile(this.selectionPath, 'utf8')) as { version?: unknown; homePath?: unknown; revision?: unknown; changedAt?: unknown };
+					if (parsed.version === 1 && typeof parsed.revision === 'number' && Number.isSafeInteger(parsed.revision)) {
+						this.selection = {
+							homePath: typeof parsed.homePath === 'string' && isAbsolute(parsed.homePath) ? parsed.homePath : undefined,
+							revision: parsed.revision,
+							changedAt: typeof parsed.changedAt === 'number' ? parsed.changedAt : undefined,
+						};
+						this.registerSelectedHome(this.selection.homePath);
+					}
+				} catch {
+					// 無い・壊れている → 既定のホーム
+				}
+			})();
+		}
+		return this.selectionLoad;
+	}
+
+	/** アカウント用ホームの一覧（既定のホームを先頭に、ログイン済みのものだけ）と選択。 */
+	async getState(): Promise<IParadisCodexAccountsState> {
+		await this.loadSelection();
+		const [primary, ...others] = this.knownHomes();
+		const homes: IParadisCodexHome[] = [];
+		for (const homePath of [primary, ...others]) {
+			const signedIn = await this.fileExists(join(homePath, 'auth.json'));
+			if (homePath !== primary && !signedIn) {
+				continue;
+			}
+			homes.push({
+				homePath,
+				label: this.homeLabel(homePath),
+				isDefault: homePath === primary,
+				signedIn,
+				email: signedIn ? await this.readEmail(homePath) : undefined,
+			});
+		}
+		return { homes, selection: this.selection };
+	}
+
+	/**
+	 * 新しく開くターミナルで使う Codex のホームを選ぶ。undefined か既定のホームを渡すと既定へ戻す。
+	 * 一覧に無い・ログインしていないホームは受け付けない（任意のパスを CODEX_HOME にさせない）。
+	 */
+	async selectHome(homePath: string | undefined): Promise<IParadisCodexAccountsState> {
+		await this.loadSelection();
+		const primary = this.knownHomes()[0];
+		let next: string | undefined;
+		if (homePath === undefined || homePath === primary) {
+			next = undefined;
+		} else if (await this.isKnownSignedInHome(homePath)) {
+			next = homePath;
+		} else {
+			throw new Error('not a signed-in Codex home');
+		}
+		if (next !== this.selection.homePath) {
+			const selection: IParadisCodexAccountSelection = { homePath: next, revision: this.selection.revision + 1, changedAt: this.now() };
+			await this.writeSelection(selection);
+			this.selection = selection;
+			this.registerSelectedHome(next);
+			const state = await this.getState();
+			this._onDidChangeState.fire(state);
+			// 切り替えた先で過去の会話を開けるよう、裏で会話ログをリンクし合う。
+			void this.linkSessions();
+			return state;
+		}
+		return this.getState();
+	}
+
+	private async writeSelection(selection: IParadisCodexAccountSelection): Promise<void> {
+		const run = this.selectionWrite.then(async () => {
+			await fs.promises.mkdir(dirname(this.selectionPath), { recursive: true });
+			const temporaryPath = `${this.selectionPath}.${process.pid}.${this.now()}.tmp`;
+			await fs.promises.writeFile(temporaryPath, JSON.stringify({ version: 1, ...selection }), { encoding: 'utf8', mode: 0o600 });
+			await fs.promises.rename(temporaryPath, this.selectionPath);
+		});
+		this.selectionWrite = run.catch(() => { });
+		return run;
+	}
+
+	/** ログイン済みのアカウント用ホームどうしで会話ログをハードリンクし合う。同時には1本だけ。 */
+	linkSessions(): Promise<IParadisCodexSessionLinkSummary> {
+		if (!this.linking) {
+			this.linking = (async () => {
+				const homes: string[] = [];
+				for (const homePath of this.knownHomes()) {
+					if (await this.fileExists(join(homePath, 'auth.json'))) {
+						homes.push(homePath);
+					}
+				}
+				const summary = await paradisLinkCodexSessions(homes, { shouldStop: () => this.disposed });
+				this.options.logService.info(`[ParadisCodexAccounts] linked Codex sessions across ${homes.length} homes: ${summary.linked} linked, ${summary.skippedExisting} existing, ${summary.skippedUnsupported} unsupported, ${summary.failed} failed`);
+				return summary;
+			})().finally(() => {
+				this.linking = undefined;
+			});
+		}
+		return this.linking;
+	}
+
+	/**
+	 * 設定で足した場所（~/.codex* 以外）のホームを選んだとき、transcript の許可 root などにも
+	 * 入るよう一覧へ加える。
+	 */
+	private registerSelectedHome(homePath: string | undefined): void {
+		if (homePath !== undefined && this.options.homeDirectory === undefined) {
+			paradisRegisterCodexHome(homePath);
+		}
+	}
+
+	private homeLabel(homePath: string): string {
+		const home = this.options.homeDirectory ?? os.homedir();
+		return homePath === home || homePath.startsWith(home + '/') || homePath.startsWith(home + '\\') ? `~${homePath.slice(home.length)}` : homePath;
+	}
+
+	/** id_token（JWT）の payload からメールアドレスを読む（表示用。署名は検証しない）。 */
+	private async readEmail(homePath: string): Promise<string | undefined> {
+		try {
+			const auth = JSON.parse(await fs.promises.readFile(join(homePath, 'auth.json'), 'utf8')) as { tokens?: { id_token?: unknown } };
+			const idToken = auth.tokens?.id_token;
+			if (typeof idToken !== 'string') {
+				return undefined;
+			}
+			const payload = JSON.parse(Buffer.from(idToken.split('.')[1] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>;
+			if (typeof payload.email === 'string') {
+				return payload.email;
+			}
+			const profile = payload['https://api.openai.com/profile'] as Record<string, unknown> | undefined;
+			return typeof profile?.email === 'string' ? profile.email : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async fileExists(filePath: string): Promise<boolean> {
+		try {
+			await fs.promises.access(filePath, fs.constants.F_OK);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	// ---------- ホーム ----------
