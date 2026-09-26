@@ -20,6 +20,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// ウィンドウ透過との両立は paradisWindowTransparency.css の .floating-panels ルールで対応済み。
 		// upstream が将来この設定を削除/改名した場合、このエントリは未知キーとして無害な no-op になる。
 		'workbench.experimental.modernUI': true,
+		// upstream 1.139 で Modern UI のタブ既定が connected（アクティブタブがエディタ面とつながる形）に変わった。
+		// connected はタブ帯に不透明な背景を敷くため、ウィンドウ透過中にタブ帯だけ透けなくなる。1.134 までと同じ pill を既定に戻す。
+		'workbench.experimental.modernUIEditorTabStyle': 'pill',
 		'workbench.iconTheme': 'material-icon-theme',
 		'workbench.colorTheme': 'Houston',
 		// ステータスバーの Bongo Cat（pixl-garden.BongoCat）を表示するための必須設定。

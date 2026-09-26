@@ -343,7 +343,7 @@ export class ParadisBindingDialog extends Disposable {
 	/** ペイン行に hover/focus での背面ハイライト通知を張る（a11y: キーボードフォーカスでも効く）。 */
 	private _wireRowHighlight(row: HTMLElement, instanceId: number): void {
 		row.tabIndex = 0;
-		row.dataset['instanceId'] = String(instanceId);
+		row.dataset.instanceId = String(instanceId);
 		this._paneListResources.add(dom.addDisposableListener(row, dom.EventType.MOUSE_ENTER, () => this._setHoveredPane(instanceId)));
 		this._paneListResources.add(dom.addDisposableListener(row, dom.EventType.MOUSE_LEAVE, () => this._setHoveredPane(undefined)));
 		this._paneListResources.add(dom.addDisposableListener(row, 'focusin', () => this._setHoveredPane(instanceId)));
@@ -359,7 +359,7 @@ export class ParadisBindingDialog extends Disposable {
 		// elements, it has no equivalent for querying which one the pointer is currently over.
 		// eslint-disable-next-line no-restricted-syntax
 		const hoveredRow = this._body.querySelector<HTMLElement>('.pbd-pane-row[data-instance-id]:hover');
-		const raw = hoveredRow?.dataset['instanceId'];
+		const raw = hoveredRow?.dataset.instanceId;
 		const instanceId = raw !== undefined ? Number(raw) : Number.NaN;
 		this._setHoveredPane(Number.isFinite(instanceId) ? instanceId : undefined);
 	}

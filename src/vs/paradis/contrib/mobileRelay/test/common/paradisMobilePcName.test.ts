@@ -47,7 +47,7 @@ suite('ParadisMobilePcName', () => {
 			const padded = encoded.padEnd(encoded.length + (4 - encoded.length % 4) % 4, '=');
 			return JSON.parse(Buffer.from(padded, 'base64').toString('utf8')) as Record<string, unknown>;
 		};
-		assert.strictEqual(decode(encodePairingUri(base))['n'], undefined);
-		assert.strictEqual(decode(encodePairingUri({ ...base, pcName: ' MacBook Pro ' }))['n'], 'MacBook Pro');
+		assert.strictEqual(decode(encodePairingUri(base)).n, undefined);
+		assert.strictEqual(decode(encodePairingUri({ ...base, pcName: ' MacBook Pro ' })).n, 'MacBook Pro');
 	});
 });

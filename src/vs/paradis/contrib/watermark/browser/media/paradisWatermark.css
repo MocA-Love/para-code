@@ -26,13 +26,17 @@
 /* Split先(他グループにエディタがある状態)でも watermark のショートカット一覧を表示する。 */
 /* allow-any-unicode-next-line */
 /* upstream (editorgroupview.css) は .content:not(.empty) で .shortcuts を隠すが、Para Code では常に出す */
-.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts {
+/* allow-any-unicode-next-line */
+/* upstream と同じ詳細度だと勝敗が読み込み順だけで決まるため、.editor-group-watermark を重ねて1クラス上回る */
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark.editor-group-watermark .shortcuts {
 	display: block;
 }
 
 /* allow-any-unicode-next-line */
 /* 同条件で watermark が 200px に絞られるのを、単一空グループ時と同じ基底幅 (272px) に戻す */
-.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-watermark-wrapper > .editor-group-watermark {
+/* allow-any-unicode-next-line */
+/* (こちらも upstream と同じ詳細度になるため、クラスを重ねて読み込み順に依存させない) */
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-watermark-wrapper > .editor-group-watermark.editor-group-watermark {
 	max-width: 272px;
 }
 

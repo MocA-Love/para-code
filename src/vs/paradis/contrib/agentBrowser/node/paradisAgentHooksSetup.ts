@@ -253,11 +253,11 @@ function highestParadisManagedHookSchema(hooks: Readonly<Record<string, unknown>
 			continue;
 		}
 		for (const definition of definitions) {
-			if (!isPlainObject(definition) || !Array.isArray(definition['hooks'])) {
+			if (!isPlainObject(definition) || !Array.isArray(definition.hooks)) {
 				continue;
 			}
-			for (const hook of definition['hooks']) {
-				const schema = isPlainObject(hook) ? paradisManagedHookSchema(hook['command']) : undefined;
+			for (const hook of definition.hooks) {
+				const schema = isPlainObject(hook) ? paradisManagedHookSchema(hook.command) : undefined;
 				if (schema !== undefined && (highest === undefined || schema > highest)) {
 					highest = schema;
 				}
@@ -274,12 +274,12 @@ function highestParadisManagedHookSchema(hooks: Readonly<Record<string, unknown>
 function removeManagedHooksFromDefinitions(definitions: readonly unknown[]): unknown[] {
 	const result: unknown[] = [];
 	for (const definition of definitions) {
-		if (!isPlainObject(definition) || !Array.isArray(definition['hooks'])) {
+		if (!isPlainObject(definition) || !Array.isArray(definition.hooks)) {
 			result.push(definition);
 			continue;
 		}
-		const hooks = definition['hooks'] as readonly unknown[];
-		const filtered = hooks.filter(hook => !(isPlainObject(hook) && isParadisManagedHookCommand(hook['command'])));
+		const hooks = definition.hooks as readonly unknown[];
+		const filtered = hooks.filter(hook => !(isPlainObject(hook) && isParadisManagedHookCommand(hook.command)));
 		if (filtered.length === hooks.length) {
 			result.push(definition);
 			continue;
@@ -310,9 +310,9 @@ export function paradisMergeAgentHooksJson(existingRaw: string | undefined, mana
 	if (!isPlainObject(parsed)) {
 		return undefined;
 	}
-	const hooksValue = parsed['hooks'];
+	const hooksValue = parsed.hooks;
 	const hooks: Record<string, unknown> = isPlainObject(hooksValue) ? hooksValue : {};
-	parsed['hooks'] = hooks;
+	parsed.hooks = hooks;
 	const existingSchema = highestParadisManagedHookSchema(hooks);
 	if (existingSchema !== undefined && existingSchema > PARADIS_AGENT_HOOK_SCHEMA_VERSION) {
 		return existingRaw;

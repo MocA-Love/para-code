@@ -1402,12 +1402,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						// 積み上げたときに前半が二重に数えられる。既存の `update_folders_to_event` だけは
 						// 開始からの累積のまま残す（前リリースのデータと比較できなくなるため）。
 						if (foldersWillChangeAt !== undefined) {
-							phaseMs['update_folders_write'] = foldersWillChangeAt - updateFoldersStartedAt;
+							phaseMs.update_folders_write = foldersWillChangeAt - updateFoldersStartedAt;
 						}
 						if (foldersChangedAt !== undefined) {
-							phaseMs['update_folders_to_event'] = foldersChangedAt - updateFoldersStartedAt;
+							phaseMs.update_folders_to_event = foldersChangedAt - updateFoldersStartedAt;
 							if (foldersWillChangeAt !== undefined) {
-								phaseMs['update_folders_participants'] = foldersChangedAt - foldersWillChangeAt;
+								phaseMs.update_folders_participants = foldersChangedAt - foldersWillChangeAt;
 							}
 						}
 						// ロールバックの updateFolders は別のフォルダへ戻すので、確認結果を残さない。

@@ -163,13 +163,13 @@ export async function paradisSearchText(rootPath: string, query: string, maxResu
 			return;
 		}
 		const record = event !== null && typeof event === 'object' ? event as Record<string, unknown> : undefined;
-		if (!record || record['type'] !== 'match') {
+		if (!record || record.type !== 'match') {
 			return;
 		}
-		const data = record['data'] as Record<string, unknown> | undefined;
-		const pathText = (data?.['path'] as Record<string, unknown> | undefined)?.['text'];
-		const lineNumber = data?.['line_number'];
-		const linesText = (data?.['lines'] as Record<string, unknown> | undefined)?.['text'];
+		const data = record.data as Record<string, unknown> | undefined;
+		const pathText = (data?.path as Record<string, unknown> | undefined)?.text;
+		const lineNumber = data?.line_number;
+		const linesText = (data?.lines as Record<string, unknown> | undefined)?.text;
 		if (typeof pathText !== 'string' || typeof lineNumber !== 'number' || typeof linesText !== 'string') {
 			return;
 		}

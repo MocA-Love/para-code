@@ -140,15 +140,15 @@ async function windowsProcessSnapshot(): Promise<ReadonlyMap<number, IParadisHoo
 				continue;
 			}
 			const row = entry as Record<string, unknown>;
-			const pid = typeof row['ProcessId'] === 'number' ? row['ProcessId'] : undefined;
+			const pid = typeof row.ProcessId === 'number' ? row.ProcessId : undefined;
 			if (pid === undefined) {
 				continue;
 			}
-			const ppid = typeof row['ParentProcessId'] === 'number' ? row['ParentProcessId'] : undefined;
-			const creation = row['CreationDate'];
-			const commandLine = typeof row['CommandLine'] === 'string' && row['CommandLine'].length > 0
-				? row['CommandLine']
-				: typeof row['Name'] === 'string' ? row['Name'] : '';
+			const ppid = typeof row.ParentProcessId === 'number' ? row.ParentProcessId : undefined;
+			const creation = row.CreationDate;
+			const commandLine = typeof row.CommandLine === 'string' && row.CommandLine.length > 0
+				? row.CommandLine
+				: typeof row.Name === 'string' ? row.Name : '';
 			result.set(pid, {
 				pid, ppid,
 				startKey: typeof creation === 'string' ? creation : typeof creation === 'object' && creation !== null ? JSON.stringify(creation) : undefined,

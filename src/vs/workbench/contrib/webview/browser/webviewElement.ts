@@ -249,7 +249,10 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 		}));
 
 		this._register(this.on('fatal-error', (e) => {
-			notificationService.error(localize('fatalErrorMessage', "Error loading webview: {0}", e.message));
+			const message = this.extension
+				? localize('fatalErrorMessageWithExtension', "Error loading webview provided by '{0}': {1}", this.extension.id.value, e.message)
+				: localize('fatalErrorMessage', "Error loading webview: {0}", e.message);
+			notificationService.error(message);
 			// PARA-PATCH: report to Para Code Sentry — needed to diagnose intermittent
 			// blank webviews in the field (service worker registration failures etc.);
 			// upstream-scoped errors are otherwise dropped by the Sentry scope filter.

@@ -2101,13 +2101,13 @@ export class ParadisAgentBrowserService extends Disposable {
 			const cwd = stringField('cwd');
 			const hookMessage = stringField('message');
 			const toolName = stringField('tool_name');
-			const toolInput = hookPayload?.['tool_input'];
+			const toolInput = hookPayload?.tool_input;
 			const toolUseId = stringField('tool_use_id');
 			const messageId = stringField('message_id');
 			const messageDelta = stringField('delta');
-			const indexValue = hookPayload?.['index'];
+			const indexValue = hookPayload?.index;
 			const messageIndex = typeof indexValue === 'number' && Number.isSafeInteger(indexValue) && indexValue >= 0 ? indexValue : undefined;
-			const finalValue = hookPayload?.['final'];
+			const finalValue = hookPayload?.final;
 			const messageFinal = typeof finalValue === 'boolean' ? finalValue : undefined;
 			if (controller.signal.aborted) {
 				return;
@@ -2901,6 +2901,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				return `There is no browser profile named "${requestedProfile}" in Para Code. Profiles are created by the user - ask them to create it (the profile pill at the right of the browser address bar, "Create Browser Profile"), then call this tool again with the exact name they used.`;
 			case 'untrustedWorkspace':
 				return 'This workspace is not trusted, so Para Code keeps every browser page in a throwaway session and named profiles cannot be used. Ask the user to trust the workspace first.';
+			case 'profileNotShareable':
+				return `Agent network filtering (the chat.agent.networkFilter setting) is enabled, and pages in named browser profiles such as "${requestedProfile}" do not enforce that network policy, so Para Code does not share them with agents. No page was opened. Ask the user to disable agent network filtering, or to share a page from Para Code and log in there.`;
 			case 'spaceNotVisible':
 				return 'The space this terminal pane belongs to is not on screen right now, so opening a page there would not be visible or controllable. Ask the user to switch back to that space, then call this tool again.';
 			case 'unreachableSpace':

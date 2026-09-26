@@ -291,6 +291,11 @@ export const eslintFilter = Object.freeze<string[]>([
 
 export const stylelintFilter = Object.freeze<string[]>([
 	'src/**/*.css',
+	'extensions/**/*.css',
+	'!extensions/**/node_modules/**',
+	'!extensions/**/test/**',
+	'!extensions/**/test-data/**',
+	'!extensions/**/testData/**',
 	// PARA-PATCH: vendored Chrome extension shipped with the built-in browser (see the folder's README.md)
 	'!src/vs/paradis/contrib/browserExtensions/electron-main/media/**',
 ]);

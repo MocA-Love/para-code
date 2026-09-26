@@ -61,7 +61,7 @@ function flattenContent(value: unknown): string {
 	return value.map(item => {
 		if (typeof item === 'string') { return item; }
 		const entry = record(item);
-		return text(entry?.['text']) ?? text(entry?.['thinking']) ?? flattenContent(entry?.['content']);
+		return text(entry?.text) ?? text(entry?.thinking) ?? flattenContent(entry?.content);
 	}).filter(Boolean).join('\n');
 }
 
@@ -84,7 +84,7 @@ function activeOrEnded(mtime: number, now: number): ParadisRecoveredAgentStatus 
 }
 
 function hasBlock(content: unknown, type: string): boolean {
-	return Array.isArray(content) && content.some(item => record(item)?.['type'] === type);
+	return Array.isArray(content) && content.some(item => record(item)?.type === type);
 }
 
 /**
@@ -122,21 +122,21 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 		let entry: Record<string, unknown> | undefined;
 		try { entry = record(JSON.parse(line)); } catch { continue; }
 		if (entry === undefined) { continue; }
-		const at = timestamp(entry['timestamp']) ?? mtime;
+		const at = timestamp(entry.timestamp) ?? mtime;
 		ownerStartedAt = sawOwnerLine ? Math.min(ownerStartedAt, at) : at;
 		ownerUpdatedAt = Math.max(ownerUpdatedAt, at);
 		sawOwnerLine = true;
-		ownerLabel = text(entry['agentType']) ?? text(entry['agent_type']) ?? ownerLabel;
-		const type = text(entry['type']);
-		const message = record(entry['message']);
-		const content = message?.['content'];
+		ownerLabel = text(entry.agentType) ?? text(entry.agent_type) ?? ownerLabel;
+		const type = text(entry.type);
+		const message = record(entry.message);
+		const content = message?.content;
 
 		if (ownerId !== undefined && type === 'user' && ownerDetail === undefined) {
 			const candidate = flattenContent(content).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
 			if (candidate.length > 0 && !candidate.startsWith('<task-notification>')) { ownerDetail = candidate.slice(0, TEXT_LIMIT); }
 		}
 		if (ownerId !== undefined && type === 'assistant') {
-			ownerStatus = assistantTurnStatus(text(message?.['stop_reason']), content, mtime, now) ?? ownerStatus;
+			ownerStatus = assistantTurnStatus(text(message?.stop_reason), content, mtime, now) ?? ownerStatus;
 		} else if (ownerId !== undefined && type === 'user' && hasBlock(content, 'tool_result')) {
 			// ツール結果が返っている＝直前の応答は終端ではない。暫定completedを取り消す。
 			ownerStatus = activeOrEnded(mtime, now);
@@ -160,19 +160,19 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 		for (const rawBlock of content) {
 			const block = record(rawBlock);
 			if (block === undefined) { continue; }
-			if (block['type'] === 'tool_use') {
-				const tool = text(block['name']);
-				const toolUseId = text(block['id']);
+			if (block.type === 'tool_use') {
+				const tool = text(block.name);
+				const toolUseId = text(block.id);
 				if ((tool === 'Agent' || tool === 'Task') && toolUseId !== undefined) {
-					const input = record(block['input']);
-					const detail = text(input?.['description']) ?? text(input?.['prompt']);
-					const label = text(input?.['subagent_type']) ?? text(input?.['agent_type']) ?? 'SubAgent';
+					const input = record(block.input);
+					const detail = text(input?.description) ?? text(input?.prompt);
+					const label = text(input?.subagent_type) ?? text(input?.agent_type) ?? 'SubAgent';
 					pendingTools.set(toolUseId, { label, ...(detail !== undefined ? { detail } : {}), at });
 				}
-			} else if (block['type'] === 'tool_result') {
-				const resultText = flattenContent(block['content']);
+			} else if (block.type === 'tool_result') {
+				const resultText = flattenContent(block.content);
 				const id = agentIdFromToolResult(resultText);
-				const tool = pendingTools.get(text(block['tool_use_id']) ?? '');
+				const tool = pendingTools.get(text(block.tool_use_id) ?? '');
 				if (id !== undefined && (tool !== undefined || /Async agent launched|running in the background/i.test(resultText))) {
 					spawned.set(id, {
 						id, label: tool?.label ?? 'SubAgent', provider: 'claude', ...(tool?.detail !== undefined ? { detail: tool.detail } : {}),
@@ -196,11 +196,11 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 function parseCodexSource(source: string): { readonly parentId?: string; readonly depth?: number; readonly label?: string } {
 	try {
 		const root = record(JSON.parse(source));
-		const spawn = record(record(root?.['subagent'])?.['thread_spawn']);
-		const parentId = text(spawn?.['parent_thread_id']);
-		const rawDepth = number(spawn?.['depth']);
+		const spawn = record(record(root?.subagent)?.thread_spawn);
+		const parentId = text(spawn?.parent_thread_id);
+		const rawDepth = number(spawn?.depth);
 		const depth = rawDepth !== undefined ? Math.min(5, Math.max(1, Math.trunc(rawDepth))) : undefined;
-		const label = text(spawn?.['agent_nickname']) ?? text(spawn?.['agent_role']);
+		const label = text(spawn?.agent_nickname) ?? text(spawn?.agent_role);
 		return { ...(parentId !== undefined ? { parentId } : {}), ...(depth !== undefined ? { depth } : {}), ...(label !== undefined ? { label } : {}) };
 	} catch { return {}; }
 }
@@ -219,21 +219,21 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 		let entry: Record<string, unknown> | undefined;
 		try { entry = record(JSON.parse(line)); } catch { continue; }
 		if (entry === undefined) { continue; }
-		const at = timestamp(entry['timestamp']) ?? mtime;
+		const at = timestamp(entry.timestamp) ?? mtime;
 		startedAt = sawLine ? Math.min(startedAt, at) : at;
 		updatedAt = Math.max(updatedAt, at);
 		sawLine = true;
-		if (entry['type'] === 'session_meta') {
-			const payload = record(entry['payload']);
-			label = text(payload?.['agent_nickname']) ?? text(payload?.['agent_path']) ?? label;
-		} else if (entry['type'] === 'response_item') {
-			const payload = record(entry['payload']);
-			if (payload?.['type'] === 'message' && payload['role'] === 'user' && detail === undefined) {
-				detail = text(flattenContent(payload['content']));
+		if (entry.type === 'session_meta') {
+			const payload = record(entry.payload);
+			label = text(payload?.agent_nickname) ?? text(payload?.agent_path) ?? label;
+		} else if (entry.type === 'response_item') {
+			const payload = record(entry.payload);
+			if (payload?.type === 'message' && payload.role === 'user' && detail === undefined) {
+				detail = text(flattenContent(payload.content));
 			}
-		} else if (entry['type'] === 'event_msg') {
-			const payload = record(entry['payload']);
-			switch (text(payload?.['type'])) {
+		} else if (entry.type === 'event_msg') {
+			const payload = record(entry.payload);
+			switch (text(payload?.type)) {
 				case 'task_started': status = activeOrEnded(mtime, now); break;
 				case 'task_complete': status = 'completed'; break;
 				case 'error': status = 'failed'; break;

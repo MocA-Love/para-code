@@ -1,0 +1,67 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Modern UI (floating panels) styling for the auxiliary activity bar: the fork's vertical
+ * icon rail beside the secondary side bar (`Parts.AUXILIARY_ACTIVITYBAR_PART`). It carries the
+ * `.part.activitybar` classes, so upstream's `floatingPanels.css` treats it like the primary
+ * rail. Those rules only know about the primary side bar, though: they join the rail to it and
+ * make the rail stand alone under `.nosidebar`. Here the auxiliary rail is re-targeted to the
+ * secondary side bar instead, mirroring the primary side:
+ *
+ * - With the secondary side bar open, the rail and the bar read as one surface. The bar gives
+ *   up its facing border and rounded corners; the rail draws the single seam line.
+ * - With the secondary side bar closed (`.noauxiliarybar`), the rail stands alone as a fully
+ *   rounded card. When it sits on the right it follows the editor and supplies the gap itself;
+ *   the extra width is reserved by `ActivitybarPart.needsFloatingLeadingGap`.
+ * - The primary side bar's state (`.nosidebar`) no longer affects the auxiliary rail.
+ *
+ * The rail shares the activity bar's hidden state, so `.noactivitybar` covers both rails. The
+ * element ids keep these selectors more specific than upstream's class-only rules, so they win
+ * regardless of stylesheet order. The margins mirror `getFloatingPaneCompositeHorizontalMargins`.
+ */
+
+/* Secondary side bar meets the rail flush. */
+.monaco-workbench.floating-panels:not(.noactivitybar) #workbench\.parts\.auxiliarybar.right {
+	--modern-ui-floating-card-seam-right-color: transparent;
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+}
+
+.monaco-workbench.floating-panels:not(.noactivitybar) #workbench\.parts\.auxiliarybar.left {
+	--modern-ui-floating-card-seam-left-color: transparent;
+	margin-left: var(--modern-ui-floating-card-inner-margin);
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+}
+
+/* The rail is rounded only on its window side while the secondary side bar is open, whatever
+ * the primary side bar does. */
+.monaco-workbench.floating-panels #workbench\.parts\.auxiliaryactivitybar.right {
+	margin-left: var(--modern-ui-floating-card-inner-margin);
+	border-radius: 0 var(--vscode-cornerRadius-large) var(--vscode-cornerRadius-large) 0;
+}
+
+.monaco-workbench.floating-panels #workbench\.parts\.auxiliaryactivitybar.left {
+	border-radius: var(--vscode-cornerRadius-large) 0 0 var(--vscode-cornerRadius-large);
+}
+
+/* With the secondary side bar closed the rail closes up as a standalone card. Compact density
+ * keeps its cards joined edge to edge, so it is excluded (as upstream does for the primary). */
+.monaco-workbench.floating-panels:not(.modern-ui-compact).noauxiliarybar #workbench\.parts\.auxiliaryactivitybar {
+	border-radius: var(--vscode-cornerRadius-large);
+}
+
+.monaco-workbench.floating-panels:not(.modern-ui-compact).noauxiliarybar #workbench\.parts\.auxiliaryactivitybar.right {
+	margin-left: var(--modern-ui-floating-card-margin);
+}
+
+/* Compact density: a right-hand rail follows the secondary side bar (or the editor), which
+ * already paints the shared seam as its own right edge, so the rail must not paint it again. */
+.monaco-workbench.floating-panels.modern-ui-compact #workbench\.parts\.auxiliaryactivitybar.right {
+	--modern-ui-floating-card-left-border-color: transparent;
+}

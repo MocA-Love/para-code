@@ -176,8 +176,8 @@ export function paradisPtyHostDaemonEnv(
 		...extra,
 	};
 	// 親の生死を見て自分を殺す仕掛けが動くと、常駐にならない。
-	delete env['VSCODE_PARENT_PID'];
-	delete env['VSCODE_PIPE_LOGGING'];
+	delete env.VSCODE_PARENT_PID;
+	delete env.VSCODE_PIPE_LOGGING;
 	paradisUndoSnapEnv(env);
 	removeDangerousEnvVariables(env);
 	return env;

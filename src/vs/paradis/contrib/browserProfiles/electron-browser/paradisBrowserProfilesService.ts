@@ -26,7 +26,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, toDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
-import { BrowserViewStorageScope, IBrowserSessionOptions } from '../../../../platform/browserView/common/browserView.js';
+import { BrowserViewStorageScope, IBrowserViewSessionOptions } from '../../../../platform/browserView/common/browserView.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -144,13 +144,13 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 
 	private _profiles: IParadisBrowserProfile[];
 	/** 復元・切り替え用の対応表（viewId → そのビューに使うセッション）。main の答えより弱い。 */
-	private readonly _viewOverrides = new Map<string, IBrowserSessionOptions>();
+	private readonly _viewOverrides = new Map<string, IBrowserViewSessionOptions>();
 	/**
 	 * これから作るビューに使うセッション。`getOrCreateLazy` の直前に置き、ルーターが
 	 * 拾ったら消す。ここに残ったままにすると、同じ viewId が再生成されたときに古い
 	 * 選択へ戻ってしまう。
 	 */
-	private readonly _pending = new Map<string, IBrowserSessionOptions>();
+	private readonly _pending = new Map<string, IBrowserViewSessionOptions>();
 	/** main が答えた「実際のセッション」のキャッシュ。 */
 	private readonly _resolved = new Map<string, IParadisViewSessionInfo | undefined>();
 	private readonly _inputListeners = this._register(new DisposableMap<string>());
@@ -258,7 +258,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		this._profiles = this._profiles.filter(profile => profile.id !== profileId);
 		// 対応表からも外す。残すと、削除したプロファイルのIDで空のパーティションが作り直される。
 		for (const [viewId, options] of [...this._viewOverrides]) {
-			if (options.profileId === profileId) {
+			if (paradisProfileIdOf(options) === profileId) {
 				this._viewOverrides.delete(viewId);
 			}
 		}
@@ -301,7 +301,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		for (const [viewId, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
 			const usedProfileId = this._resolved.has(viewId)
 				? this._resolved.get(viewId)?.profileId
-				: this._viewOverrides.get(viewId)?.profileId;
+				: paradisProfileIdOf(this._viewOverrides.get(viewId));
 			if (usedProfileId === profileId) {
 				inputs.push(input);
 			}
@@ -336,7 +336,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 			return this._resolved.get(viewId);
 		}
 		const options = this._pending.get(viewId) ?? this._viewOverrides.get(viewId);
-		return options ? { scope: options.scope, profileId: options.profileId } : undefined;
+		return options ? { scope: options.scope, profileId: paradisProfileIdOf(options) } : undefined;
 	}
 
 	async resolveViewSession(viewId: string): Promise<IParadisViewSessionInfo | undefined> {
@@ -378,16 +378,14 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 	 * 返す。ここで上書きすると、信頼していないフォルダを開いているだけで Cookie が永続化
 	 * されることになり、upstream の安全側の判断を黙って壊してしまう。
 	 */
-	private _resolveSessionOptions(viewId: string, fallback: IBrowserSessionOptions): IBrowserSessionOptions {
+	private _resolveSessionOptions(viewId: string, fallback: IBrowserViewSessionOptions): IBrowserViewSessionOptions {
 		const options = this._pending.get(viewId) ?? this._viewOverrides.get(viewId);
 		this._pending.delete(viewId);
 		if (!options || this._isWorkspaceUntrusted()) {
 			return fallback;
 		}
 		if (options.scope === BrowserViewStorageScope.Profile) {
-			return options.profileId !== undefined && this._profiles.some(profile => profile.id === options.profileId)
-				? options
-				: fallback;
+			return this._profiles.some(profile => profile.id === options.profileId) ? options : fallback;
 		}
 		return options;
 	}
@@ -408,7 +406,8 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		}
 		const viewId = this._reserveView({ scope: BrowserViewStorageScope.Profile, profileId });
 		try {
-			const input = this.browserViewWorkbenchService.getOrCreateLazy(viewId, url ? { url } : {});
+			// PARA-PATCH: upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
+			const input = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
 			await this.editorService.openEditor(input, { pinned: true }, group);
 			this.touch(profileId);
 			return input;
@@ -428,11 +427,14 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 	 * 出るとは限らない（呼び出し側がその旨をユーザーへ知らせる）。
 	 */
 	async switchView(input: BrowserEditorInput, target: ParadisProfileTarget): Promise<BrowserEditorInput | undefined> {
-		const options: IBrowserSessionOptions = target.kind === 'profile'
-			? { scope: BrowserViewStorageScope.Profile, profileId: target.profileId }
-			: { scope: target.scope };
-		if (options.scope === BrowserViewStorageScope.Profile) {
-			if (!this._profiles.some(profile => profile.id === options.profileId) || !this.canUseProfiles()) {
+		const options = target.kind === 'profile'
+			? paradisSessionOptionsFor(BrowserViewStorageScope.Profile, target.profileId)
+			: paradisSessionOptionsFor(target.scope);
+		if (!options) {
+			return undefined;
+		}
+		if (target.kind === 'profile') {
+			if (!this._profiles.some(profile => profile.id === target.profileId) || !this.canUseProfiles()) {
 				return undefined;
 			}
 		}
@@ -443,11 +445,12 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		const url = input.model?.url ?? input.serialize().url;
 		const viewId = this._reserveView(options);
 		try {
-			const replacement = this.browserViewWorkbenchService.getOrCreateLazy(viewId, url ? { url } : {});
+			// PARA-PATCH: upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
+			const replacement = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
 			// replaceEditors は同じグループの同じ位置へ差し替える（新しいタブが末尾に増えない）。
 			await group.replaceEditors([{ editor: input, replacement, options: { pinned: true } }]);
-			if (options.profileId !== undefined) {
-				this.touch(options.profileId);
+			if (target.kind === 'profile') {
+				this.touch(target.profileId);
 			}
 			return replacement;
 		} catch (error) {
@@ -458,7 +461,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 	}
 
 	/** 新しいビューIDを取り、そのセッションを予約する（`getOrCreateLazy` を呼ぶ直前に使う）。 */
-	private _reserveView(options: IBrowserSessionOptions): string {
+	private _reserveView(options: IBrowserViewSessionOptions): string {
 		const viewId = generateUuid();
 		this._pending.set(viewId, options);
 		this._viewOverrides.set(viewId, options);
@@ -620,19 +623,48 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 }
 
 /** 対応表から読み戻した1件を検証する。壊れた値はその1件だけ捨てる。 */
-function paradisReviveSessionOptions(value: unknown): IBrowserSessionOptions | undefined {
+function paradisReviveSessionOptions(value: unknown): IBrowserViewSessionOptions | undefined {
 	if (typeof value !== 'object' || value === null) {
 		return undefined;
 	}
-	const candidate = value as Partial<IBrowserSessionOptions>;
+	const candidate = value as { readonly scope?: unknown; readonly profileId?: unknown };
 	const scopes: readonly string[] = Object.values(BrowserViewStorageScope);
 	if (typeof candidate.scope !== 'string' || !scopes.includes(candidate.scope)) {
 		return undefined;
 	}
-	if (candidate.scope === BrowserViewStorageScope.Profile) {
-		return paradisIsValidProfileId(candidate.profileId)
-			? { scope: BrowserViewStorageScope.Profile, profileId: candidate.profileId }
-			: undefined;
+	return paradisSessionOptionsFor(
+		candidate.scope as BrowserViewStorageScope,
+		typeof candidate.profileId === 'string' ? candidate.profileId : undefined,
+	);
+}
+
+/**
+ * PARA-PATCH: read the profile id out of the discriminated `IBrowserViewSessionOptions` union
+ * (upstream 1.137). Only the Profile variant carries one; every other scope yields undefined.
+ */
+function paradisProfileIdOf(options: IBrowserViewSessionOptions | undefined): string | undefined {
+	return options?.scope === BrowserViewStorageScope.Profile ? options.profileId : undefined;
+}
+
+/**
+ * PARA-PATCH: upstream 1.137 replaced the loose `IBrowserSessionOptions` record with the
+ * discriminated `IBrowserViewSessionOptions` union. The fork keeps working with a plain
+ * "scope (+ profileId)" pair at its boundaries (the persisted override table, the profile
+ * pill's switch target) and converts to the union here, in one place. Returns undefined for
+ * a Profile scope without a well-formed profile id, so a corrupt ledger entry is dropped
+ * rather than silently becoming a different session.
+ */
+function paradisSessionOptionsFor(scope: BrowserViewStorageScope, profileId?: string): IBrowserViewSessionOptions | undefined {
+	switch (scope) {
+		case BrowserViewStorageScope.Global:
+			return { scope: BrowserViewStorageScope.Global };
+		case BrowserViewStorageScope.Workspace:
+			return { scope: BrowserViewStorageScope.Workspace };
+		case BrowserViewStorageScope.Ephemeral:
+			return { scope: BrowserViewStorageScope.Ephemeral };
+		case BrowserViewStorageScope.Agent:
+			return { scope: BrowserViewStorageScope.Agent };
+		case BrowserViewStorageScope.Profile:
+			return paradisIsValidProfileId(profileId) ? { scope: BrowserViewStorageScope.Profile, profileId } : undefined;
 	}
-	return { scope: candidate.scope as BrowserViewStorageScope };
 }

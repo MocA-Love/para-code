@@ -1054,14 +1054,14 @@ suite('ParadisAgentBrowser authority integration', () => {
 
 			assert.strictEqual(events.length, 1);
 			const event = events[0];
-			assert.strictEqual(event.sessionId, event.payload?.['session_id']);
-			assert.strictEqual(event.transcriptPath, event.payload?.['transcript_path']);
-			assert.strictEqual(event.cwd, event.payload?.['cwd']);
-			assert.strictEqual(event.toolName, event.payload?.['tool_name']);
-			assert.strictEqual(event.toolUseId, event.payload?.['tool_use_id']);
-			assert.strictEqual(event.messageId, event.payload?.['message_id']);
-			assert.strictEqual(event.messageDelta, event.payload?.['delta']);
-			assert.deepStrictEqual(event.toolInput, event.payload?.['tool_input']);
+			assert.strictEqual(event.sessionId, event.payload?.session_id);
+			assert.strictEqual(event.transcriptPath, event.payload?.transcript_path);
+			assert.strictEqual(event.cwd, event.payload?.cwd);
+			assert.strictEqual(event.toolName, event.payload?.tool_name);
+			assert.strictEqual(event.toolUseId, event.payload?.tool_use_id);
+			assert.strictEqual(event.messageId, event.payload?.message_id);
+			assert.strictEqual(event.messageDelta, event.payload?.delta);
+			assert.deepStrictEqual(event.toolInput, event.payload?.tool_input);
 			assert.strictEqual(event.sessionId?.length, 10_000);
 			assert.strictEqual((event.toolInput as { value: string }).value.length, 10_000);
 			assert.strictEqual(event.messageIndex, undefined);

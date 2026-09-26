@@ -102,12 +102,12 @@ interface ICodexCollaboration {
 }
 
 function codexCollaboration(item: Readonly<Record<string, unknown>>): ICodexCollaboration {
-	const tool = text(item['tool']);
-	const states = record(item['agentsStates']);
+	const tool = text(item.tool);
+	const states = record(item.agentsStates);
 	const agentStatuses = new Map<string, unknown>();
-	const legacyIds = Array.isArray(item['receiverThreadIds']) ? item['receiverThreadIds'].map(text).filter((id): id is string => id !== undefined) : [];
-	const documentedReceiverId = text(item['receiverThreadId']);
-	const documentedNewThreadId = text(item['newThreadId']);
+	const legacyIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.map(text).filter((id): id is string => id !== undefined) : [];
+	const documentedReceiverId = text(item.receiverThreadId);
+	const documentedNewThreadId = text(item.newThreadId);
 	const isSpawn = tool === 'spawnAgent' || tool === 'spawn_agent';
 	const receiverIds = isSpawn && documentedNewThreadId !== undefined
 		? [documentedNewThreadId]
@@ -118,15 +118,15 @@ function codexCollaboration(item: Readonly<Record<string, unknown>>): ICodexColl
 	for (const rawId of Object.keys(states ?? {})) {
 		const id = text(rawId);
 		if (id === undefined) { continue; }
-		agentStatuses.set(id, record(states?.[rawId])?.['status']);
+		agentStatuses.set(id, record(states?.[rawId])?.status);
 	}
-	const documentedStatus = record(item['agentStatus'])?.['status'] ?? item['agentStatus'];
+	const documentedStatus = record(item.agentStatus)?.status ?? item.agentStatus;
 	if (documentedStatus !== undefined) {
 		for (const id of agentStatuses.keys()) {
 			if (agentStatuses.get(id) === undefined) { agentStatuses.set(id, documentedStatus); }
 		}
 	}
-	return { tool, prompt: text(item['prompt']), itemStatus: text(item['status']), agentStatuses };
+	return { tool, prompt: text(item.prompt), itemStatus: text(item.status), agentStatuses };
 }
 
 function codexTaskId(agentId: string): string {
@@ -171,36 +171,36 @@ export class ParadisAgentActivityTracker {
 	applyClaude(event: string, payload: Readonly<Record<string, unknown>>, at: number): boolean {
 		const before = this.serialized();
 		if (event === 'SubagentStart' || event === 'SubagentStop') {
-			const id = text(payload['agent_id']);
+			const id = text(payload.agent_id);
 			if (id !== undefined) {
 				const previous = this.agents.get(id);
 				const nextStatus: ParadisAgentActivityStatus = event === 'SubagentStop' ? 'completed' : 'running';
 				if (!(previous !== undefined && terminal(previous.status) && nextStatus === 'running')) {
-					const detail = event === 'SubagentStop' ? text(payload['last_assistant_message']) ?? previous?.detail : text(payload['prompt']) ?? previous?.detail;
+					const detail = event === 'SubagentStop' ? text(payload.last_assistant_message) ?? previous?.detail : text(payload.prompt) ?? previous?.detail;
 					this.agents.set(id, {
-						id, label: text(payload['agent_type']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'claude',
+						id, label: text(payload.agent_type) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'claude',
 						...(detail !== undefined ? { detail } : {}),
-						...relationship(id, payload['parent_agent_id'] ?? payload['parent_id'], payload['depth'], previous),
+						...relationship(id, payload.parent_agent_id ?? payload.parent_id, payload.depth, previous),
 						status: nextStatus, startedAt: previous?.startedAt ?? at, updatedAt: at,
 					});
 				}
 			}
 		} else if (event === 'TaskCreated' || event === 'TaskCompleted') {
-			const id = text(payload['task_id']);
+			const id = text(payload.task_id);
 			if (id !== undefined) {
 				const previous = this.tasks.get(id);
 				if (previous !== undefined && terminal(previous.status) && event === 'TaskCreated') {
 					return this.finishApply(before, at);
 				}
 				this.tasks.set(id, {
-					id, label: text(payload['task_subject']) ?? previous?.label ?? 'Task',
-					...(text(payload['task_description']) ?? previous?.detail ? { detail: text(payload['task_description']) ?? previous?.detail } : {}),
-					...(text(payload['teammate_name']) ?? previous?.assignee ? { assignee: text(payload['teammate_name']) ?? previous?.assignee } : {}),
+					id, label: text(payload.task_subject) ?? previous?.label ?? 'Task',
+					...(text(payload.task_description) ?? previous?.detail ? { detail: text(payload.task_description) ?? previous?.detail } : {}),
+					...(text(payload.teammate_name) ?? previous?.assignee ? { assignee: text(payload.teammate_name) ?? previous?.assignee } : {}),
 					status: event === 'TaskCompleted' ? 'completed' : 'running', startedAt: previous?.startedAt ?? at, updatedAt: at,
 				});
 			}
 		} else if (event === 'TeammateIdle') {
-			const name = text(payload['teammate_name']);
+			const name = text(payload.teammate_name);
 			if (name !== undefined) {
 				const id = `teammate:${name}`;
 				const previous = this.agents.get(id);
@@ -209,11 +209,11 @@ export class ParadisAgentActivityTracker {
 		} else if (event === 'PreCompact') {
 			const id = `compact:${at}`;
 			this.activeCompactionId = id;
-			this.compactions.set(id, { id, ...(text(payload['trigger']) ? { trigger: text(payload['trigger']) } : {}), status: 'running', startedAt: at, updatedAt: at });
+			this.compactions.set(id, { id, ...(text(payload.trigger) ? { trigger: text(payload.trigger) } : {}), status: 'running', startedAt: at, updatedAt: at });
 		} else if (event === 'PostCompact') {
 			const id = this.activeCompactionId ?? `compact:${at}`;
 			const previous = this.compactions.get(id);
-			this.compactions.set(id, { id, ...(text(payload['trigger']) ?? previous?.trigger ? { trigger: text(payload['trigger']) ?? previous?.trigger } : {}), status: 'completed', startedAt: previous?.startedAt ?? at, updatedAt: at });
+			this.compactions.set(id, { id, ...(text(payload.trigger) ?? previous?.trigger ? { trigger: text(payload.trigger) ?? previous?.trigger } : {}), status: 'completed', startedAt: previous?.startedAt ?? at, updatedAt: at });
 			this.activeCompactionId = undefined;
 		}
 		return this.finishApply(before, at);
@@ -257,20 +257,20 @@ export class ParadisAgentActivityTracker {
 			this.compactions.set(`compact:${at}`, { id: `compact:${at}`, status: 'completed', startedAt: at, updatedAt: at });
 			return this.finishApply(before, at);
 		}
-		const item = record(params['item']);
-		const type = text(item?.['type']);
+		const item = record(params.item);
+		const type = text(item?.type);
 		if (type === 'contextCompaction') {
-			const id = text(item?.['id']) ?? `compact:${at}`;
+			const id = text(item?.id) ?? `compact:${at}`;
 			this.compactions.set(id, { id, status: method === 'item/completed' ? 'completed' : 'running', startedAt: this.compactions.get(id)?.startedAt ?? at, updatedAt: at });
 		} else if (type === 'subAgentActivity') {
-			const id = text(item?.['agentThreadId']);
+			const id = text(item?.agentThreadId);
 			if (id !== undefined) {
 				const previous = this.agents.get(id);
-				const status = codexSubAgentStatus(text(item?.['kind']));
+				const status = codexSubAgentStatus(text(item?.kind));
 				if (!(previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt)))) {
-					this.agents.set(id, { id, label: text(item?.['agentPath']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(previous?.detail ? { detail: previous.detail } : {}), ...relationship(id, item?.['parentThreadId'], item?.['depth'], previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+					this.agents.set(id, { id, label: text(item?.agentPath) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(previous?.detail ? { detail: previous.detail } : {}), ...relationship(id, item?.parentThreadId, item?.depth, previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
-				this.updateCodexTask(id, status, at, { assignee: codexAssignee(item?.['agentPath']) });
+				this.updateCodexTask(id, status, at, { assignee: codexAssignee(item?.agentPath) });
 			}
 		} else if ((type === 'collabAgentToolCall' || type === 'collabToolCall') && item !== undefined) {
 			const collaboration = codexCollaboration(item);
@@ -279,7 +279,7 @@ export class ParadisAgentActivityTracker {
 				const previous = this.agents.get(id);
 				const status = codexCollaborationStatus(collaboration, id, previous?.status, method);
 				if (!(previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt)))) {
-					this.agents.set(id, { id, label: collaboration.prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(collaboration.prompt ?? previous?.detail ? { detail: collaboration.prompt ?? previous?.detail } : {}), ...relationship(id, item['parentThreadId'], item['depth'], previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+					this.agents.set(id, { id, label: collaboration.prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(collaboration.prompt ?? previous?.detail ? { detail: collaboration.prompt ?? previous?.detail } : {}), ...relationship(id, item.parentThreadId, item.depth, previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
 				this.updateCodexTask(id, status, at, { create: isSpawn, ...(isSpawn && collaboration.prompt !== undefined ? { prompt: collaboration.prompt } : {}) });
 			}

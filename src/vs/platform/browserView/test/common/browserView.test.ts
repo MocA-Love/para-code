@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { isBrowserViewAssociatedResourceNavigation, matchesBrowserViewAudience } from '../../common/browserView.js';
+import { BrowserViewStorageScope, getAgentBrowserViewCreationDefaults, isBrowserViewAssociatedResourceNavigation, isBrowserViewStorageScopeShareableWithAgent, isInMemoryStorageScope, matchesBrowserViewAudience } from '../../common/browserView.js';
 
 suite('BrowserView', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -52,6 +52,68 @@ suite('BrowserView', () => {
 			generic: true,
 			session: true,
 			otherSession: false
+		});
+	});
+
+	test('configures agent storage affinity independently from ownership', () => {
+		assert.deepStrictEqual({
+			editorWindow: getAgentBrowserViewCreationDefaults('chat-session'),
+			agentsWindow: getAgentBrowserViewCreationDefaults('chat-session', 'chat-session'),
+		}, {
+			editorWindow: {
+				owner: { type: 'agent', sessionId: 'chat-session' },
+				initialAudiences: [{ type: 'agent' }],
+				session: { scope: BrowserViewStorageScope.Agent }
+			},
+			agentsWindow: {
+				owner: { type: 'agent', sessionId: 'chat-session' },
+				initialAudiences: [{ type: 'agent' }],
+				session: {
+					scope: BrowserViewStorageScope.Agent,
+					affinity: 'chat-session'
+				}
+			}
+		});
+	});
+
+	test('identifies in-memory storage scopes', () => {
+		assert.deepStrictEqual({
+			global: isInMemoryStorageScope(BrowserViewStorageScope.Global),
+			workspace: isInMemoryStorageScope(BrowserViewStorageScope.Workspace),
+			ephemeral: isInMemoryStorageScope(BrowserViewStorageScope.Ephemeral),
+			agent: isInMemoryStorageScope(BrowserViewStorageScope.Agent),
+			// PARA-PATCH: the fork's named browser profile scope is persistent, not in-memory.
+			profile: isInMemoryStorageScope(BrowserViewStorageScope.Profile),
+		}, {
+			global: false,
+			workspace: false,
+			ephemeral: true,
+			agent: true,
+			profile: false,
+		});
+	});
+
+	test('only shares Agent storage when network filtering is enabled', () => {
+		assert.deepStrictEqual({
+			filteringDisabled: Object.fromEntries(Object.values(BrowserViewStorageScope).map(scope => [scope, isBrowserViewStorageScopeShareableWithAgent(scope, false)])),
+			filteringEnabled: Object.fromEntries(Object.values(BrowserViewStorageScope).map(scope => [scope, isBrowserViewStorageScopeShareableWithAgent(scope, true)])),
+		}, {
+			// PARA-PATCH: `profile` is the fork's named persistent browser profile scope. It follows
+			// the persistent scopes: never shareable with an agent once network filtering is on.
+			filteringDisabled: {
+				global: true,
+				workspace: true,
+				ephemeral: true,
+				agent: true,
+				profile: true,
+			},
+			filteringEnabled: {
+				global: false,
+				workspace: false,
+				ephemeral: false,
+				agent: true,
+				profile: false,
+			},
 		});
 	});
 });

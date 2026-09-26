@@ -6,12 +6,18 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { IConfigurationService, IConfigurationValue } from '../../../configuration/common/configuration.js';
-import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../configuration/common/configurationRegistry.js';
+import { AgentHostConfigurationSyncScope, ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../configuration/common/configurationRegistry.js';
 import { Registry } from '../../../registry/common/platform.js';
-import { formatAgentHostConfigurationSyncValueForLog, getAgentHostConfigurationSyncEntries, getGlobalConfigurationValue, inspectValue, resolveAgentHostConfigurationSyncPatch } from '../../common/agentHostConfigurationSync.js';
+import '../../../request/common/request.js';
+import { AgentHostConfigurationSyncTarget, formatAgentHostConfigurationSyncValueForLog, getAgentHostConfigurationSyncEntries, getAgentHostConfigurationSyncTarget, getGlobalConfigurationValue, inspectValue, resolveAgentHostConfigurationSyncPatch } from '../../common/agentHostConfigurationSync.js';
+import { LOCAL_AGENT_HOST_RESOURCE_IDENTITY } from '../../common/agentHostResourceService.js';
+import { AgentHostArtifactToolsCompactPromptsConfigKey, AgentHostArtifactToolsConfigKey } from '../../common/agentHostSchema.js';
+import { ArtifactToolsCompactPromptsSettingId, ArtifactToolsSettingId } from '../../common/agentService.js';
+import { artifactToolsConfigurationProperties } from '../../common/artifactToolsConfiguration.js';
 
 const ALL_HOSTS_SETTING = 'test.agentHostSync.allHosts';
-const LOCAL_ONLY_SETTING = 'test.agentHostSync.localOnly';
+const LOCAL_SETTING = 'test.agentHostSync.local';
+const AMBIENT_SETTING = 'test.agentHostSync.ambient';
 const HIDDEN_SETTING = 'test.agentHostSync.hidden';
 const UNSYNCED_SETTING = 'test.agentHostSync.unsynced';
 const ENUM_SETTING = 'test.agentHostSync.enum';
@@ -38,15 +44,21 @@ suite('AgentHostConfigurationSync', () => {
 		id: 'testAgentHostSync',
 		type: 'object' as const,
 		properties: {
+			...artifactToolsConfigurationProperties,
 			[ALL_HOSTS_SETTING]: {
 				type: 'boolean' as const,
 				default: true,
 				agentHost: { key: 'allHostsValue' },
 			},
-			[LOCAL_ONLY_SETTING]: {
+			[LOCAL_SETTING]: {
 				type: 'boolean' as const,
 				default: false,
-				agentHost: { key: 'localOnlyValue', localOnly: true },
+				agentHost: { key: 'localValue', scope: AgentHostConfigurationSyncScope.Local },
+			},
+			[AMBIENT_SETTING]: {
+				type: 'boolean' as const,
+				default: false,
+				agentHost: { key: 'ambientValue', scope: AgentHostConfigurationSyncScope.Ambient },
 			},
 			[HIDDEN_SETTING]: {
 				type: 'boolean' as const,
@@ -76,6 +88,46 @@ suite('AgentHostConfigurationSync', () => {
 
 	suiteSetup(() => registry.registerConfiguration(node));
 	suiteTeardown(() => registry.deregisterConfigurations([node]));
+
+	test('registers the artifact prompt experiment with the original wording as control', () => {
+		const property = registry.getConfigurationProperties()[ArtifactToolsCompactPromptsSettingId];
+		assert.deepStrictEqual({
+			type: property.type,
+			default: property.default,
+			scope: property.scope,
+			experiment: property.experiment,
+			agentHost: property.agentHost,
+		}, {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			experiment: { mode: 'auto' },
+			agentHost: { key: AgentHostArtifactToolsCompactPromptsConfigKey },
+		});
+	});
+
+	test('syncs artifact prompt treatments and explicit overrides independently of tool enablement', () => {
+		for (const target of [AgentHostConfigurationSyncTarget.Local, AgentHostConfigurationSyncTarget.RemoteExtensionHost, AgentHostConfigurationSyncTarget.Remote]) {
+			for (const enabled of [false, true]) {
+				const values: IConfigurationValue<boolean>[] = [
+					{},
+					{ defaultValue: true },
+					{ defaultValue: true, userValue: false },
+					{ defaultValue: false, userValue: true },
+				];
+				assert.deepStrictEqual(values.map(value => {
+					const patch = resolveAgentHostConfigurationSyncPatch(createConfigurationService({
+						[ArtifactToolsSettingId]: { userValue: enabled },
+						[ArtifactToolsCompactPromptsSettingId]: value,
+					}), target);
+					return {
+						enabled: patch[AgentHostArtifactToolsConfigKey],
+						compactPrompts: patch[AgentHostArtifactToolsCompactPromptsConfigKey],
+					};
+				}), [false, true, false, true].map(compactPrompts => ({ enabled, compactPrompts })));
+			}
+		}
+	});
 
 	test('resolves the global value, ignoring workspace and folder layers', () => {
 		const configurationService = createConfigurationService({
@@ -143,42 +195,118 @@ suite('AgentHostConfigurationSync', () => {
 	test('builds a patch applying transforms, including for hidden settings', () => {
 		const configurationService = createConfigurationService({
 			[ALL_HOSTS_SETTING]: { defaultValue: true },
-			[LOCAL_ONLY_SETTING]: { defaultValue: false, userValue: true },
+			[LOCAL_SETTING]: { defaultValue: false, userValue: true },
+			[AMBIENT_SETTING]: { defaultValue: false, userValue: true },
 			[HIDDEN_SETTING]: { defaultValue: false, userValue: true },
 		});
 
-		const patch = resolveAgentHostConfigurationSyncPatch(configurationService, true);
+		const patch = resolveAgentHostConfigurationSyncPatch(configurationService, AgentHostConfigurationSyncTarget.Local);
 
 		assert.deepStrictEqual({
 			allHostsValue: patch.allHostsValue,
-			localOnlyValue: patch.localOnlyValue,
+			localValue: patch.localValue,
+			ambientValue: patch.ambientValue,
 			hiddenValue: patch.hiddenValue,
 		}, {
 			allHostsValue: true,
-			localOnlyValue: true,
+			localValue: true,
+			ambientValue: true,
 			hiddenValue: 'on',
 		});
 	});
 
-	test('omits localOnly settings for a remote host', () => {
+	test('applies local and ambient scopes to the corresponding host targets', () => {
 		const configurationService = createConfigurationService({
 			[ALL_HOSTS_SETTING]: { defaultValue: true },
-			[LOCAL_ONLY_SETTING]: { defaultValue: false, userValue: true },
+			[LOCAL_SETTING]: { defaultValue: false, userValue: true },
+			[AMBIENT_SETTING]: { defaultValue: false, userValue: true },
 		});
 
-		const patch = resolveAgentHostConfigurationSyncPatch(configurationService, false);
+		const scopedValues = (target: AgentHostConfigurationSyncTarget) => {
+			const patch = resolveAgentHostConfigurationSyncPatch(configurationService, target);
+			return {
+				allHostsValue: patch.allHostsValue,
+				localValue: patch.localValue,
+				ambientValue: patch.ambientValue,
+			};
+		};
+		assert.deepStrictEqual({
+			local: scopedValues(AgentHostConfigurationSyncTarget.Local),
+			remoteExtensionHost: scopedValues(AgentHostConfigurationSyncTarget.RemoteExtensionHost),
+			remote: scopedValues(AgentHostConfigurationSyncTarget.Remote),
+		}, {
+			local: { allHostsValue: true, localValue: true, ambientValue: true },
+			remoteExtensionHost: { allHostsValue: true, localValue: undefined, ambientValue: true },
+			remote: { allHostsValue: true, localValue: undefined, ambientValue: undefined },
+		});
+	});
+
+	test('classifies local, remote-extension ambient, and explicit remote identities', () => {
+		assert.deepStrictEqual({
+			local: getAgentHostConfigurationSyncTarget(LOCAL_AGENT_HOST_RESOURCE_IDENTITY),
+			remoteExtensionHost: getAgentHostConfigurationSyncTarget('vscode-remote://ssh-remote+host'),
+			remote: getAgentHostConfigurationSyncTarget('ssh://host'),
+			sshCredentials: getAgentHostConfigurationSyncTarget('user@127.0.0.1:2222'),
+			ipv6: getAgentHostConfigurationSyncTarget('[::1]:8080'),
+			tunnel: getAgentHostConfigurationSyncTarget('tunnel:host'),
+		}, {
+			local: AgentHostConfigurationSyncTarget.Local,
+			remoteExtensionHost: AgentHostConfigurationSyncTarget.RemoteExtensionHost,
+			remote: AgentHostConfigurationSyncTarget.Remote,
+			sshCredentials: AgentHostConfigurationSyncTarget.Remote,
+			ipv6: AgentHostConfigurationSyncTarget.Remote,
+			tunnel: AgentHostConfigurationSyncTarget.Remote,
+		});
+	});
+
+	test('mirrors HTTP proxy settings only to ambient Agent Hosts', () => {
+		const allProxySettingIds = [
+			'http.proxy',
+			'http.proxyKerberosServicePrincipal',
+			'http.noProxy',
+			'http.proxySupport',
+			'http.systemCertificates',
+			'http.systemCertificatesNode',
+			'http.experimental.systemCertificatesV2',
+			'http.fetchAdditionalSupport',
+			'http.webSocketAdditionalSupport',
+			'http.experimental.networkInterfaceCheckInterval',
+		];
+		const syncedProxySettingIds = ['http.proxy', 'http.proxyKerberosServicePrincipal', 'http.noProxy'];
+		const local = getAgentHostConfigurationSyncEntries(AgentHostConfigurationSyncTarget.Local)
+			.filter(entry => allProxySettingIds.includes(entry.settingId))
+			.map(entry => [entry.settingId, entry.sync.key]);
+		const remoteExtensionHost = getAgentHostConfigurationSyncEntries(AgentHostConfigurationSyncTarget.RemoteExtensionHost)
+			.filter(entry => allProxySettingIds.includes(entry.settingId))
+			.map(entry => [entry.settingId, entry.sync.key]);
+		const remote = getAgentHostConfigurationSyncEntries(AgentHostConfigurationSyncTarget.Remote)
+			.filter(entry => allProxySettingIds.includes(entry.settingId))
+			.map(entry => entry.settingId);
+
+		assert.deepStrictEqual({ local, remoteExtensionHost, remote }, {
+			local: syncedProxySettingIds.map(settingId => [settingId, settingId]),
+			remoteExtensionHost: syncedProxySettingIds.map(settingId => [settingId, settingId]),
+			remote: [],
+		});
+	});
+
+	test('clears unset local proxy strings with empty values', () => {
+		const configurationService = createConfigurationService({});
+		const patch = resolveAgentHostConfigurationSyncPatch(configurationService, AgentHostConfigurationSyncTarget.Local);
 
 		assert.deepStrictEqual({
-			allHostsValue: patch.allHostsValue,
-			mirroredKeys: Object.keys(patch).filter(key => key === 'localOnlyValue'),
+			proxy: patch['http.proxy'],
+			proxyKerberosServicePrincipal: patch['http.proxyKerberosServicePrincipal'],
+			noProxy: patch['http.noProxy'],
 		}, {
-			allHostsValue: true,
-			mirroredKeys: [],
+			proxy: '',
+			proxyKerberosServicePrincipal: '',
+			noProxy: [],
 		});
 	});
 
 	test('only settings declaring `agentHost` are mirrored', () => {
-		const settingIds = getAgentHostConfigurationSyncEntries(true).map(entry => entry.settingId);
+		const settingIds = getAgentHostConfigurationSyncEntries(AgentHostConfigurationSyncTarget.Local).map(entry => entry.settingId);
 
 		assert.deepStrictEqual({
 			hasSynced: settingIds.includes(ALL_HOSTS_SETTING),
@@ -222,7 +350,7 @@ suite('AgentHostConfigurationSync', () => {
 		assert.deepStrictEqual({
 			hidden: getGlobalConfigurationValue(configurationService, HIDDEN_SETTING),
 			visible: getGlobalConfigurationValue(configurationService, ALL_HOSTS_SETTING),
-			mirrored: Object.keys(resolveAgentHostConfigurationSyncPatch(configurationService, true)).includes('hiddenValue'),
+			mirrored: Object.keys(resolveAgentHostConfigurationSyncPatch(configurationService, AgentHostConfigurationSyncTarget.Local)).includes('hiddenValue'),
 		}, {
 			hidden: false,
 			visible: true,
@@ -252,9 +380,9 @@ suite('AgentHostConfigurationSync', () => {
 		};
 
 		registry.registerConfiguration(node);
-		const whileRegistered = getAgentHostConfigurationSyncEntries(true).map(entry => entry.settingId);
+		const whileRegistered = getAgentHostConfigurationSyncEntries(AgentHostConfigurationSyncTarget.Local).map(entry => entry.settingId);
 		registry.deregisterConfigurations([node]);
-		const afterDeregister = getAgentHostConfigurationSyncEntries(true).map(entry => entry.settingId);
+		const afterDeregister = getAgentHostConfigurationSyncEntries(AgentHostConfigurationSyncTarget.Local).map(entry => entry.settingId);
 
 		assert.deepStrictEqual({
 			registeredVisible: whileRegistered.includes('test.agentHostSync.transient'),

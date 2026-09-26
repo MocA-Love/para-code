@@ -32,8 +32,8 @@ async function createFakeAppServer(testRoot: string, name: string, loadedThreads
 	const server: Server = createServer();
 	const webSockets = new WebSocketServer({ noServer: true });
 	server.on('upgrade', (request, socket, head) => {
-		if (paneToken !== undefined && request.headers['authorization'] !== `Bearer ${paneToken}`) {
-			rejectedUpgrades.push(request.headers['authorization']);
+		if (paneToken !== undefined && request.headers.authorization !== `Bearer ${paneToken}`) {
+			rejectedUpgrades.push(request.headers.authorization);
 			socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
 			return;
 		}

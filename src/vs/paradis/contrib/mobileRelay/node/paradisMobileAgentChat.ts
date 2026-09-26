@@ -558,9 +558,9 @@ async function readClaudeSubagentMeta(transcriptPath: string): Promise<IParadisC
 	if (raw === undefined || raw.length > PERSISTED_ACTIVITY_META_MAX_BYTES) { return undefined; }
 	try {
 		const parsed = rec(JSON.parse(raw));
-		const agentType = str(parsed?.['agentType']);
-		const description = str(parsed?.['description']);
-		const spawnDepth = num(parsed?.['spawnDepth']);
+		const agentType = str(parsed?.agentType);
+		const description = str(parsed?.description);
+		const spawnDepth = num(parsed?.spawnDepth);
 		if (agentType === undefined && description === undefined && spawnDepth === undefined) { return undefined; }
 		return {
 			...(agentType !== undefined ? { agentType } : {}),
@@ -620,11 +620,11 @@ async function discoverCodexPersistedSubagentFiles(rootThreadId: string, homes: 
 		`).all() as unknown[];
 		const candidates = rows.map(value => {
 			const row = rec(value);
-			const id = str(row?.['id']);
+			const id = str(row?.id);
 			// state DB に書かれているのは Codex から見たパス。WSL なら Linux 側の表記なので戻す。
-			const path = paradisLocalAgentPathOrUndefined(homes, str(row?.['rollout_path']));
-			const source = str(row?.['source']);
-			const mtime = num(row?.['mtime']);
+			const path = paradisLocalAgentPathOrUndefined(homes, str(row?.rollout_path));
+			const source = str(row?.source);
+			const mtime = num(row?.mtime);
 			const relationship = source !== undefined ? paradisParseCodexThreadSource(source) : undefined;
 			return id !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(id) && path !== undefined && isAbsolute(path) && path.endsWith('.jsonl') && source !== undefined && mtime !== undefined && relationship !== undefined
 				? { id, path, source, mtime, parentId: relationship.parentThreadId, depth: relationship.depth }
@@ -738,7 +738,7 @@ function parseClaudePeerMessage(rawText: string, ts: number | undefined): IRawMe
 	const body = tagged[3].trim();
 	try {
 		const protocol = rec(JSON.parse(body));
-		if (protocol?.['type'] === 'idle_notification') {
+		if (protocol?.type === 'idle_notification') {
 			return null;
 		}
 	} catch {
@@ -937,25 +937,25 @@ export interface IParadisCodexSessionMeta {
 export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSessionMeta | undefined {
 	try {
 		const meta = rec(JSON.parse(firstLine));
-		const payload = rec(meta?.['payload']);
-		const cwd = str(payload?.['cwd']);
-		if (meta?.['type'] !== 'session_meta' || cwd === undefined) {
+		const payload = rec(meta?.payload);
+		const cwd = str(payload?.cwd);
+		if (meta?.type !== 'session_meta' || cwd === undefined) {
 			return undefined;
 		}
-		const sessionId = str(payload?.['session_id']) ?? str(payload?.['id']);
-		const sourceSpawn = rec(rec(rec(payload?.['source'])?.['subagent'])?.['thread_spawn']);
-		const parentThreadId = str(payload?.['parent_thread_id']) ?? str(sourceSpawn?.['parent_thread_id']);
-		const rawDepth = num(payload?.['depth']) ?? num(sourceSpawn?.['depth']);
+		const sessionId = str(payload?.session_id) ?? str(payload?.id);
+		const sourceSpawn = rec(rec(rec(payload?.source)?.subagent)?.thread_spawn);
+		const parentThreadId = str(payload?.parent_thread_id) ?? str(sourceSpawn?.parent_thread_id);
+		const rawDepth = num(payload?.depth) ?? num(sourceSpawn?.depth);
 		const depth = rawDepth !== undefined ? Math.min(5, Math.max(1, Math.trunc(rawDepth))) : undefined;
-		const agentPath = str(payload?.['agent_path']) ?? str(sourceSpawn?.['agent_path']);
-		const agentNickname = str(payload?.['agent_nickname']) ?? str(sourceSpawn?.['agent_nickname']);
+		const agentPath = str(payload?.agent_path) ?? str(sourceSpawn?.agent_path);
+		const agentNickname = str(payload?.agent_nickname) ?? str(sourceSpawn?.agent_nickname);
 		// SubAgentのthreadは `source.subagent.thread_spawn` / `thread_source` で名乗る。これが無い
 		// 形式でも、親を指すthread IDを持つなら子とみなす。比較相手はこのrollout自身のID (`id`) で
 		// あって `session_id` ではない: 現行Codexは子rolloutの `session_id` へ「親の」thread IDを
 		// 書くため、session_idと比べると子が必ずrootへ化ける（このペインのセッションが子の会話に
 		// 差し替わり、モバイルに「親セッションが切り替わりました」が出る）。
-		const ownThreadId = str(payload?.['id']) ?? sessionId;
-		const spawnedAsSubagent = sourceSpawn !== undefined || str(payload?.['thread_source']) === 'subagent';
+		const ownThreadId = str(payload?.id) ?? sessionId;
+		const spawnedAsSubagent = sourceSpawn !== undefined || str(payload?.thread_source) === 'subagent';
 		const subagent = spawnedAsSubagent || (parentThreadId !== undefined && parentThreadId !== ownThreadId);
 		return {
 			cwd, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
@@ -1000,7 +1000,7 @@ const PARADIS_SESSION_SCAN_RECENT_MS = 5 * 60_000;
 /** state DBのsourceはSubAgentだけJSONで親thread情報を持つ。root探索では混在させない。 */
 export function paradisIsCodexRootThreadSource(source: string): boolean {
 	try {
-		return rec(rec(rec(JSON.parse(source))?.['subagent'])?.['thread_spawn']) === undefined;
+		return rec(rec(rec(JSON.parse(source))?.subagent)?.thread_spawn) === undefined;
 	} catch { return true; }
 }
 
@@ -1013,12 +1013,12 @@ export interface IParadisCodexThreadSource {
 
 export function paradisParseCodexThreadSource(source: string): IParadisCodexThreadSource | undefined {
 	try {
-		const spawn = rec(rec(rec(JSON.parse(source))?.['subagent'])?.['thread_spawn']);
-		const parentThreadId = str(spawn?.['parent_thread_id']);
-		const rawDepth = num(spawn?.['depth']);
+		const spawn = rec(rec(rec(JSON.parse(source))?.subagent)?.thread_spawn);
+		const parentThreadId = str(spawn?.parent_thread_id);
+		const rawDepth = num(spawn?.depth);
 		if (parentThreadId === undefined || rawDepth === undefined) { return undefined; }
-		const agentNickname = str(spawn?.['agent_nickname']);
-		const agentRole = str(spawn?.['agent_role']);
+		const agentNickname = str(spawn?.agent_nickname);
+		const agentRole = str(spawn?.agent_role);
 		return { parentThreadId, depth: Math.min(5, Math.max(1, Math.trunc(rawDepth))), ...(agentNickname !== undefined ? { agentNickname } : {}), ...(agentRole !== undefined ? { agentRole } : {}) };
 	} catch { return undefined; }
 }
@@ -1050,15 +1050,15 @@ interface ITranscriptProgress {
 
 /** Claude transcriptのephemeral progress行を、表示に必要な最小情報へ正規化する。 */
 function parseClaudeProgress(obj: Record<string, unknown>): ITranscriptProgress | undefined {
-	if (obj['type'] !== 'progress') {
+	if (obj.type !== 'progress') {
 		return undefined;
 	}
-	const data = rec(obj['data']);
-	const type = str(data?.['type']);
+	const data = rec(obj.data);
+	const type = str(data?.type);
 	if (type === 'bash_progress') {
-		const output = str(data?.['output'])?.trim();
+		const output = str(data?.output)?.trim();
 		const detail = output?.split(/\r?\n/).filter(Boolean).at(-1);
-		const elapsedSeconds = num(data?.['elapsedTimeSeconds']);
+		const elapsedSeconds = num(data?.elapsedTimeSeconds);
 		return {
 			tool: 'Bash',
 			...(detail !== undefined ? { detail: truncateText(detail, 500) } : {}),
@@ -1066,11 +1066,11 @@ function parseClaudeProgress(obj: Record<string, unknown>): ITranscriptProgress 
 		};
 	}
 	if (type === 'mcp_progress') {
-		const toolName = str(data?.['toolName']) ?? 'MCP';
-		const serverName = str(data?.['serverName']);
-		const progressMessage = str(data?.['progressMessage']);
-		const status = str(data?.['status']);
-		const elapsedTimeMs = num(data?.['elapsedTimeMs']);
+		const toolName = str(data?.toolName) ?? 'MCP';
+		const serverName = str(data?.serverName);
+		const progressMessage = str(data?.progressMessage);
+		const status = str(data?.status);
+		const elapsedTimeMs = num(data?.elapsedTimeMs);
 		const detail = [serverName !== undefined ? `${serverName} MCP` : undefined, progressMessage].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
 		return {
 			tool: toolName,
@@ -1171,22 +1171,22 @@ function flattenContentParts(content: unknown): IFlattenedContent {
 			if (!b) {
 				continue;
 			}
-			const text = str(b['text']);
+			const text = str(b.text);
 			if (text !== undefined) {
 				parts.push(text);
-			} else if (b['type'] === 'image') {
+			} else if (b.type === 'image') {
 				// Claude: { type:'image', source:{ type:'base64', media_type, data } }
 				parts.push('[image]');
-				const source = rec(b['source']);
-				const base64 = str(source?.['data']);
-				const mediaType = str(source?.['media_type']);
-				if (str(source?.['type']) === 'base64' && base64 !== undefined && base64.length > 0 && mediaType !== undefined && isImageMediaType(mediaType)) {
+				const source = rec(b.source);
+				const base64 = str(source?.data);
+				const mediaType = str(source?.media_type);
+				if (str(source?.type) === 'base64' && base64 !== undefined && base64.length > 0 && mediaType !== undefined && isImageMediaType(mediaType)) {
 					images.push({ mediaType, base64 });
 				}
-			} else if (b['type'] === 'input_image') {
+			} else if (b.type === 'input_image') {
 				// Codex: { type:'input_image', image_url:'data:image/png;base64,...' }
 				parts.push('[image]');
-				const image = parseImageDataUri(str(b['image_url']));
+				const image = parseImageDataUri(str(b.image_url));
 				if (image !== undefined) {
 					images.push(image);
 				}
@@ -1203,34 +1203,34 @@ function flattenContentParts(content: unknown): IFlattenedContent {
  */
 function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts: number | undefined): IRawMessage[] {
 	const inputRec = rec(input);
-	const questionsRaw = inputRec?.['questions'];
+	const questionsRaw = inputRec?.questions;
 	if (!Array.isArray(questionsRaw)) {
 		return [];
 	}
 	const out: IRawMessage[] = [];
 	for (const questionRaw of questionsRaw) {
 		const q = rec(questionRaw);
-		const questionText = str(q?.['question']);
+		const questionText = str(q?.question);
 		if (!q || questionText === undefined || questionText.trim().length === 0) {
 			continue;
 		}
 		const options: IParadisAgentQuestionOption[] = [];
-		const optionsRaw = q['options'];
+		const optionsRaw = q.options;
 		if (Array.isArray(optionsRaw)) {
 			for (const optionRaw of optionsRaw) {
 				const o = rec(optionRaw);
-				const label = str(o?.['label']);
+				const label = str(o?.label);
 				if (label !== undefined && label.trim().length > 0) {
-					const description = str(o?.['description']);
+					const description = str(o?.description);
 					options.push({ label: truncateText(label, 200), ...(description !== undefined ? { description: truncateText(description, 500) } : {}) });
 				}
 			}
 		}
 		out.push({
 			role: 'assistant', kind: 'question', text: truncateText(questionText, TEXT_LIMIT), ts,
-			...(str(q['header']) !== undefined ? { header: str(q['header']) } : {}),
+			...(str(q.header) !== undefined ? { header: str(q.header) } : {}),
 			...(options.length > 0 ? { options } : {}),
-			...(q['multiSelect'] === true ? { multiSelect: true } : {}),
+			...(q.multiSelect === true ? { multiSelect: true } : {}),
 			...(toolUseId !== undefined ? { toolUseId } : {}),
 		});
 	}
@@ -1414,27 +1414,27 @@ function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | un
 
 /** Claude Code transcript JSONL の1行をパースする。表示対象外の行は空配列。 */
 function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, includeSidechain = false): IRawMessage[] {
-	if ((!includeSidechain && obj['isSidechain'] === true) || obj['isMeta'] === true) {
+	if ((!includeSidechain && obj.isSidechain === true) || obj.isMeta === true) {
 		return []; // サブエージェント内・メタ行はメインの会話に出さない
 	}
 	// 表示対象かどうかに関わらず拾う（どの行にも入っており、最後に見た値が今動いている版）。
-	const version = str(obj['version']);
+	const version = str(obj.version);
 	if (version !== undefined) {
 		signals.cliVersion = version;
 	}
-	const type = str(obj['type']);
+	const type = str(obj.type);
 	if (type !== 'user' && type !== 'assistant') {
 		return []; // summary / system / file-history-snapshot 等
 	}
-	const message = rec(obj['message']);
+	const message = rec(obj.message);
 	if (!message) {
 		return [];
 	}
-	const tsRaw = str(obj['timestamp']);
+	const tsRaw = str(obj.timestamp);
 	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
 	const ts = Number.isFinite(tsParsed) ? tsParsed : undefined;
 	const out: IRawMessage[] = [];
-	const content = message['content'];
+	const content = message.content;
 
 	if (type === 'user') {
 		if (typeof content === 'string') {
@@ -1450,17 +1450,17 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 				if (!b) {
 					continue;
 				}
-				if (b['type'] === 'text') {
-					pushClaudeUserText(out, str(b['text']) ?? '', ts, signals);
-				} else if (b['type'] === 'image') {
+				if (b.type === 'text') {
+					pushClaudeUserText(out, str(b.text) ?? '', ts, signals);
+				} else if (b.type === 'image') {
 					const image = flattenContentParts([b]).images[0];
 					if (image !== undefined) {
 						pastedImages.push(image);
 					}
-				} else if (b['type'] === 'tool_result') {
-					const { text, images } = flattenContentParts(b['content']);
+				} else if (b.type === 'tool_result') {
+					const { text, images } = flattenContentParts(b.content);
 					// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
-					const toolUseId = str(b['tool_use_id']);
+					const toolUseId = str(b.tool_use_id);
 					if (toolUseId !== undefined) {
 						signals.answeredIds.push(toolUseId);
 					}
@@ -1476,7 +1476,7 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 							role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
 							...(toolUseId !== undefined ? { toolUseId } : {}),
 							// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
-							...(b['is_error'] === true ? { isError: true } : {}),
+							...(b.is_error === true ? { isError: true } : {}),
 							...(images.length > 0 ? { imageData: images } : {}),
 						});
 					}
@@ -1498,7 +1498,7 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 	}
 
 	// assistant
-	const model = str(message['model']);
+	const model = str(message.model);
 	if (model !== undefined && model.length > 0) {
 		signals.model = model;
 	}
@@ -1508,24 +1508,24 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 			if (!b) {
 				continue;
 			}
-			if (b['type'] === 'text') {
-				const text = str(b['text']) ?? '';
+			if (b.type === 'text') {
+				const text = str(b.text) ?? '';
 				if (text.trim().length > 0) {
 					out.push({ role: 'assistant', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
 				}
-			} else if (b['type'] === 'thinking') {
-				const text = str(b['thinking']) ?? '';
+			} else if (b.type === 'thinking') {
+				const text = str(b.thinking) ?? '';
 				if (text.trim().length > 0) {
 					out.push({ role: 'assistant', kind: 'thinking', ...withTruncation(text, TOOL_TEXT_LIMIT), ts });
 				}
-			} else if (b['type'] === 'tool_use') {
-				const rawTool = str(b['name']) ?? 'tool';
+			} else if (b.type === 'tool_use') {
+				const rawTool = str(b.name) ?? 'tool';
 				const tool = rawTool === 'WebSearch' ? 'web_search' : rawTool;
-				const toolUseId = str(b['id']);
+				const toolUseId = str(b.id);
 				// AskUserQuestion はユーザーへの選択式質問。汎用ツールとして折りたたむと
 				// モバイルで質問に気づけないため、専用の question メッセージに展開する。
 				if (tool === 'AskUserQuestion') {
-					const questions = parseAskUserQuestions(b['input'], toolUseId, ts);
+					const questions = parseAskUserQuestions(b.input, toolUseId, ts);
 					if (questions.length > 0) {
 						if (toolUseId !== undefined) {
 							signals.askedQuestionIds.push(toolUseId);
@@ -1536,22 +1536,22 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 					// input が想定形でない場合は従来どおり汎用 tool_use として出す
 				}
 				let text = '';
-				const input = rec(b['input']);
+				const input = rec(b.input);
 				if (tool === 'Agent' || tool === 'Task') {
 					// サブエージェント起動は description（何をさせるか）を出す方が JSON より分かりやすい。
-					const description = str(input?.['description']);
-					const subagentType = str(input?.['subagent_type']);
+					const description = str(input?.description);
+					const subagentType = str(input?.subagent_type);
 					if (description !== undefined && description.length > 0) {
 						text = subagentType !== undefined && subagentType.length > 0 ? `${description} (${subagentType})` : description;
 					}
 				}
 				if (tool === 'web_search') {
 					// クエリ文字列をそのまま出す（JSON のままだとモバイルの検索カードで読みにくい）。
-					text = str(input?.['query']) ?? '';
+					text = str(input?.query) ?? '';
 				}
 				if (text.length === 0) {
 					try {
-						text = JSON.stringify(b['input']);
+						text = JSON.stringify(b.input);
 					} catch { /* 表示は空でよい */ }
 				}
 				out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(toolUseId !== undefined ? { toolUseId } : {}) });
@@ -1704,11 +1704,11 @@ export function paradisResolveHookSessionTranscript(input: {
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
 function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
 	// rollout行: { timestamp, type, payload }
-	if (obj['type'] === 'turn_context') {
+	if (obj.type === 'turn_context') {
 		// ターンごとの実行コンテキスト（model / effort 等）。表示メッセージは無いがメタ情報を学習する。
-		const context = rec(obj['payload']);
-		const model = str(context?.['model']);
-		const effort = str(context?.['effort']);
+		const context = rec(obj.payload);
+		const model = str(context?.model);
+		const effort = str(context?.effort);
 		if (model !== undefined && model.length > 0) {
 			signals.model = model;
 		}
@@ -1717,58 +1717,58 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		}
 		return [];
 	}
-	if (obj['type'] === 'event_msg') {
+	if (obj.type === 'event_msg') {
 		// event_msg は表示内容には使わず、SubAgent活動とターン終了の状態復元に使う。
 		// usage limit（error / codex_error_info: usage_limit_exceeded）や
 		// 中断（turn_aborted）は hooks.json に対応イベントが無く Stop hook が発火しないため、
 		// ここで拾わないと「考え中」表示が永久に残る。
-		const eventPayload = rec(obj['payload']);
-		const eventType = str(eventPayload?.['type']);
+		const eventPayload = rec(obj.payload);
+		const eventType = str(eventPayload?.type);
 		if (eventType === 'sub_agent_activity') {
-			const id = str(eventPayload?.['agent_thread_id']);
-			const kind = str(eventPayload?.['kind']);
-			const timestamp = str(obj['timestamp']);
-			const at = num(eventPayload?.['occurred_at_ms']) ?? (timestamp !== undefined ? Date.parse(timestamp) : NaN);
+			const id = str(eventPayload?.agent_thread_id);
+			const kind = str(eventPayload?.kind);
+			const timestamp = str(obj.timestamp);
+			const at = num(eventPayload?.occurred_at_ms) ?? (timestamp !== undefined ? Date.parse(timestamp) : NaN);
 			if (id !== undefined && (kind === 'started' || kind === 'interacted' || kind === 'interrupted') && Number.isFinite(at)) {
-				signals.codexActivityTimeline.push({ type: 'subagent', id, ...(str(eventPayload?.['agent_path']) !== undefined ? { agentPath: str(eventPayload?.['agent_path']) } : {}), kind, at });
+				signals.codexActivityTimeline.push({ type: 'subagent', id, ...(str(eventPayload?.agent_path) !== undefined ? { agentPath: str(eventPayload?.agent_path) } : {}), kind, at });
 			}
 		}
 		if (eventType === 'task_started') {
-			const timestamp = str(obj['timestamp']);
+			const timestamp = str(obj.timestamp);
 			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
 			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnStart', at }); }
 		}
 		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
 			signals.turnEnded = eventType === 'task_complete' ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
-			const timestamp = str(obj['timestamp']);
+			const timestamp = str(obj.timestamp);
 			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
 			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnEnd', reason: signals.turnEnded, at }); }
 		}
 		return [];
 	}
-	if (obj['type'] !== 'response_item') {
+	if (obj.type !== 'response_item') {
 		return []; // session_meta 等も対象外
 	}
-	const payload = rec(obj['payload']);
+	const payload = rec(obj.payload);
 	if (!payload) {
 		return [];
 	}
-	const tsRaw = str(obj['timestamp']);
+	const tsRaw = str(obj.timestamp);
 	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
 	const ts = Number.isFinite(tsParsed) ? tsParsed : undefined;
-	const ptype = str(payload['type']);
+	const ptype = str(payload.type);
 	// Codex のツール呼び出し/結果は call_id で対応付く (Claude の tool_use_id 相当)。
 	// toolUseId に載せてモバイル側で呼び出し⇔結果の突き合わせに使えるようにする
 	// (質問の回答済み判定は kind==='question' 限定なので Codex の ID が混ざっても影響しない)。
-	let callId = str(payload['call_id']) ?? str(payload['id']);
+	let callId = str(payload.call_id) ?? str(payload.id);
 	const out: IRawMessage[] = [];
 
 	if (ptype === 'message') {
-		const role = str(payload['role']);
+		const role = str(payload.role);
 		if (role !== 'user' && role !== 'assistant') {
 			return []; // developer / system プロンプトは出さない
 		}
-		const { text, images } = flattenContentParts(payload['content']);
+		const { text, images } = flattenContentParts(payload.content);
 		// Codexはuserメッセージとして環境コンテキスト/プロジェクト指示を注入するため表示から除く。
 		// 旧CLI(0.4x): <environment_context> / <user_instructions>
 		// 新CLI(0.80+): 「# AGENTS.md instructions for <path>」見出し＋<INSTRUCTIONS>ラッパー
@@ -1803,14 +1803,14 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		}
 		out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
 	} else if (ptype === 'reasoning') {
-		const text = flattenContent(payload['summary']);
+		const text = flattenContent(payload.summary);
 		if (text.trim().length > 0) {
 			out.push({ role: 'assistant', kind: 'thinking', ...withTruncation(text, TOOL_TEXT_LIMIT), ts });
 		}
 	} else if (ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'mcp_tool_call') {
 		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
-		const tool = str(payload['name']) ?? 'tool';
-		const text = str(payload['arguments']) ?? str(payload['input']) ?? '';
+		const tool = str(payload.name) ?? 'tool';
+		const text = str(payload.arguments) ?? str(payload.input) ?? '';
 		if (tool === 'view_image') {
 			// 実体は直後の user メッセージへ書かれる。その画像をこの呼び出しへ繋ぐため覚えておく。
 			signals.pendingCodexImageCallId = callId;
@@ -1818,9 +1818,9 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
 		// web_search_call は action.query、tool_search_call は arguments(オブジェクト)にクエリが入る
-		const action = rec(payload['action']);
-		const args = rec(payload['arguments']);
-		let query = str(action?.['query']) ?? str(args?.['query']) ?? '';
+		const action = rec(payload.action);
+		const args = rec(payload.arguments);
+		let query = str(action?.query) ?? str(args?.query) ?? '';
 		if (ptype === 'web_search_call' && action !== undefined) {
 			try {
 				const actionText = JSON.stringify(action);
@@ -1836,52 +1836,52 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			callId = `web:${tsRaw}:${stableTextHash(query)}`;
 		}
 		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', ...withTruncation(query, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
-		if (ptype === 'web_search_call' && (payload['status'] === 'completed' || payload['status'] === 'failed')) {
-			const resultText = payload['status'] === 'failed' ? `Web検索に失敗しました${query ? `\n${query}` : ''}` : query || 'Web検索完了';
-			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(resultText, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(payload['status'] === 'failed' ? { isError: true } : {}) });
+		if (ptype === 'web_search_call' && (payload.status === 'completed' || payload.status === 'failed')) {
+			const resultText = payload.status === 'failed' ? `Web検索に失敗しました${query ? `\n${query}` : ''}` : query || 'Web検索完了';
+			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(resultText, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(payload.status === 'failed' ? { isError: true } : {}) });
 		}
 	} else if (ptype === 'tool_search_output') {
 		// tool_search_call の結果 ({ call_id, status, execution, tools: [...] })。見つかった
 		// ツール一覧を結果カードとして出す (無視するとツール検索の結果だけ同期から抜ける)。
-		const toolsRaw = payload['tools'];
+		const toolsRaw = payload.tools;
 		let text = '';
 		if (Array.isArray(toolsRaw) && toolsRaw.length > 0) {
 			try {
 				text = toolsRaw.map(tool => {
 					const t = rec(tool);
-					return str(t?.['name']) ?? JSON.stringify(tool);
+					return str(t?.name) ?? JSON.stringify(tool);
 				}).join('\n');
 			} catch { /* 表示は空でよい */ }
 		}
 		if (text.trim().length === 0) {
-			text = str(payload['status']) ?? '';
+			text = str(payload.status) ?? '';
 		}
 		if (text.trim().length > 0) {
 			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		}
 	} else if (ptype === 'custom_tool_call_output') {
-		const text = str(payload['output']) ?? '';
+		const text = str(payload.output) ?? '';
 		if (text.trim().length > 0) {
 			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		}
 	} else if (ptype === 'local_shell_call') {
 		let text = '';
 		try {
-			text = JSON.stringify(payload['action']);
+			text = JSON.stringify(payload.action);
 		} catch { /* 表示は空でよい */ }
 		out.push({ role: 'assistant', kind: 'tool_use', tool: 'shell', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'function_call_output') {
-		const output = payload['output'];
+		const output = payload.output;
 		let text: string;
 		let failed = false;
 		if (typeof output === 'string') {
 			text = output;
 		} else {
 			const o = rec(output);
-			text = str(o?.['content']) ?? flattenContent(output) ?? '';
+			text = str(o?.content) ?? flattenContent(output) ?? '';
 			// Codex は成否を output.success / metadata.exit_code で示す（形は実装依存なので取れた方だけ見る）。
-			const exitCode = rec(o?.['metadata'])?.['exit_code'];
-			failed = o?.['success'] === false || (typeof exitCode === 'number' && exitCode !== 0);
+			const exitCode = rec(o?.metadata)?.exit_code;
+			failed = o?.success === false || (typeof exitCode === 'number' && exitCode !== 0);
 			if (!text) {
 				try {
 					text = JSON.stringify(output);
@@ -1926,14 +1926,14 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 		const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
 		for (const value of rows) {
 			const row = rec(value);
-			const recordedPath = str(row?.['rollout_path']);
+			const recordedPath = str(row?.rollout_path);
 			// state DB に書かれているのは Codex から見たパス。WSL なら Linux 側の表記なので、
 			// この Windows プロセスから開ける UNC へ戻さないと後続の検証も読み取りも通らない。
 			const transcriptPath = recordedPath !== undefined ? paradisLocalAgentPath(homes, recordedPath) : undefined;
-			const sessionId = str(row?.['id']);
-			const mtime = num(row?.['mtime']);
-			const createdAt = num(row?.['created_at']);
-			const source = str(row?.['source']);
+			const sessionId = str(row?.id);
+			const mtime = num(row?.mtime);
+			const createdAt = num(row?.created_at);
+			const source = str(row?.source);
 			if (transcriptPath === undefined || !isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl') || mtime === undefined || source === undefined || !paradisIsCodexRootThreadSource(source)) {
 				continue;
 			}
@@ -1962,7 +1962,7 @@ async function discoverCodexTranscriptByThreadId(threadId: string, homes: IParad
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const row = rec(database.prepare('SELECT rollout_path FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
-		const transcriptPath = paradisLocalAgentPathOrUndefined(homes, str(row?.['rollout_path']));
+		const transcriptPath = paradisLocalAgentPathOrUndefined(homes, str(row?.rollout_path));
 		return transcriptPath !== undefined && isAbsolute(transcriptPath) && transcriptPath.endsWith('.jsonl') ? transcriptPath : undefined;
 	} catch {
 		return undefined;
@@ -1982,8 +1982,8 @@ async function discoverCodexRootTranscriptByThreadId(threadId: string, homes: IP
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const row = rec(database.prepare('SELECT rollout_path, source FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
-		const transcriptPath = paradisLocalAgentPathOrUndefined(homes, str(row?.['rollout_path']));
-		const source = str(row?.['source']);
+		const transcriptPath = paradisLocalAgentPathOrUndefined(homes, str(row?.rollout_path));
+		const source = str(row?.source);
 		// state DB に書かれているのは Codex から見たパス。WSL なら Linux 側の表記なので戻す。
 		return transcriptPath !== undefined && isAbsolute(transcriptPath) && transcriptPath.endsWith('.jsonl')
 			&& source !== undefined && paradisIsCodexRootThreadSource(source) ? paradisLocalAgentPath(homes, transcriptPath) : undefined;
@@ -2004,7 +2004,7 @@ async function discoverCodexThreadSourceById(threadId: string, homes: IParadisAg
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const row = rec(database.prepare('SELECT source FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
-		const source = str(row?.['source']);
+		const source = str(row?.source);
 		return source !== undefined ? paradisParseCodexThreadSource(source) : undefined;
 	} catch { return undefined; } finally { database?.close(); }
 }
@@ -2340,7 +2340,7 @@ class TranscriptTailer {
 	/** ~/.claude/settings.json の effortLevel を、transcript由来の値が無い場合の既定として適用する。 */
 	private async loadClaudeDefaultEffort(): Promise<void> {
 		const raw = await fs.readFile(join(paradisClaudeConfigDir(), 'settings.json'), 'utf8');
-		const effortLevel = str(rec(JSON.parse(raw))?.['effortLevel']);
+		const effortLevel = str(rec(JSON.parse(raw))?.effortLevel);
 		if (!this.disposed && effortLevel !== undefined && effortLevel.length > 0 && this.effort === undefined) {
 			this.effort = effortLevel;
 			this.delegate.onInfo();
@@ -2694,7 +2694,7 @@ class TranscriptTailer {
 			// AskUserQuestion 由来の二重カードは currentInteraction が質問を優先することで
 			// 表示上隠れる（承認は解除されるまで保持しておく必要がある）。
 			const input = rec(toolInput);
-			const detail = str(input?.['description']) ?? str(input?.['command']) ?? (input !== undefined ? JSON.stringify(input) : '');
+			const detail = str(input?.description) ?? str(input?.command) ?? (input !== undefined ? JSON.stringify(input) : '');
 			const text = [toolName, detail].filter(v => v !== undefined && v.length > 0).join(': ');
 			if (text.length === 0) {
 				return;
@@ -4914,8 +4914,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'thread/status/changed') {
-			const status = rec(event.params['status']);
-			const flags = status?.['activeFlags'];
+			const status = rec(event.params.status);
+			const flags = status?.activeFlags;
 			const waiting = Array.isArray(flags) && flags.includes('waitingOnApproval');
 			if (waiting) {
 				tailer?.injectCodexApprovalFallback(event.threadId);
@@ -4927,15 +4927,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (this.activityTracker(token).applyCodex(event.method, event.params, now)) {
 			this.pushActivityToSubscribers(token);
 		}
-		const activityItem = rec(event.params['item']);
-		if (str(activityItem?.['type']) === 'subAgentActivity') {
-			const activityId = str(activityItem?.['agentThreadId']);
+		const activityItem = rec(event.params.item);
+		if (str(activityItem?.type) === 'subAgentActivity') {
+			const activityId = str(activityItem?.agentThreadId);
 			if (activityId !== undefined) { this.enrichCodexActivityRelationship(token, activityId, now).catch(() => { /* state DB未反映中は次イベントで再試行 */ }); }
 		}
 		if (event.method === 'thread/settings/updated') {
-			const settings = rec(event.params['threadSettings']);
-			const model = str(settings?.['model']);
-			const effort = str(settings?.['effort']);
+			const settings = rec(event.params.threadSettings);
+			const model = str(settings?.model);
+			const effort = str(settings?.effort);
 			if (model !== undefined) {
 				this.codexThreadSettings.set(token, { model, ...(effort !== undefined ? { effort } : {}) });
 				this.pushInfoToSubscribers(token);
@@ -4990,10 +4990,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'item/started') {
-			const item = rec(event.params['item']);
-			const itemId = str(item?.['id']);
-			const itemType = str(item?.['type']);
-			const startedAt = num(event.params['startedAtMs']) ?? now;
+			const item = rec(event.params.item);
+			const itemId = str(item?.id);
+			const itemType = str(item?.type);
+			const startedAt = num(event.params.startedAtMs) ?? now;
 			if (itemId !== undefined) {
 				this.codexActiveItems.set(token, itemId);
 			}
@@ -5019,8 +5019,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'item/agentMessage/delta') {
-			const itemId = str(event.params['itemId']);
-			const delta = str(event.params['delta']);
+			const itemId = str(event.params.itemId);
+			const delta = str(event.params.delta);
 			if (itemId === undefined || delta === undefined) {
 				return;
 			}
@@ -5033,7 +5033,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'item/reasoning/summaryTextDelta') {
-			const delta = str(event.params['delta']);
+			const delta = str(event.params.delta);
 			if (delta === undefined) {
 				return;
 			}
@@ -5046,8 +5046,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'item/commandExecution/outputDelta') {
-			const itemId = str(event.params['itemId']);
-			const delta = str(event.params['delta']);
+			const itemId = str(event.params.itemId);
+			const delta = str(event.params.delta);
 			if (delta === undefined) {
 				return;
 			}
@@ -5063,8 +5063,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'item/completed') {
-			const item = rec(event.params['item']);
-			const itemId = str(item?.['id']);
+			const item = rec(event.params.item);
+			const itemId = str(item?.id);
 			if (itemId !== undefined && this.codexActiveItems.get(token) !== itemId) {
 				return;
 			}
@@ -5082,12 +5082,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'fileChange': return 'apply_patch';
 			case 'webSearch': return 'web_search';
 			case 'mcpToolCall': {
-				const server = str(item?.['server']);
-				const tool = str(item?.['tool']) ?? 'tool';
+				const server = str(item?.server);
+				const tool = str(item?.tool) ?? 'tool';
 				return server !== undefined ? `mcp__${server}__${tool}` : tool;
 			}
-			case 'dynamicToolCall': return str(item?.['tool']) ?? 'tool';
-			case 'collabAgentToolCall': return str(item?.['tool']) ?? 'agent';
+			case 'dynamicToolCall': return str(item?.tool) ?? 'tool';
+			case 'collabAgentToolCall': return str(item?.tool) ?? 'agent';
 			case 'sleep': return 'sleep';
 			case 'imageView': return 'view_image';
 			case 'imageGeneration': return 'image_generation';
@@ -5096,10 +5096,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private static codexItemDetail(itemType: string | undefined, item: Record<string, unknown> | undefined): string | undefined {
-		const value = itemType === 'commandExecution' ? str(item?.['command'])
-			: itemType === 'webSearch' ? str(item?.['query'])
-				: itemType === 'imageView' ? str(item?.['path'])
-					: itemType === 'collabAgentToolCall' ? str(item?.['prompt'])
+		const value = itemType === 'commandExecution' ? str(item?.command)
+			: itemType === 'webSearch' ? str(item?.query)
+				: itemType === 'imageView' ? str(item?.path)
+					: itemType === 'collabAgentToolCall' ? str(item?.prompt)
 						: undefined;
 		return value !== undefined && value.length > 0 ? truncateText(value.replace(/\s+/g, ' '), 500) : undefined;
 	}
@@ -5380,7 +5380,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (provider === undefined || key === undefined || key.length === 0) {
 			return;
 		}
-		if (this.activityTracker(event.token).applyNestedAgentHook(provider, key, event.event, event.at, str(event.payload?.['prompt']))) {
+		if (this.activityTracker(event.token).applyNestedAgentHook(provider, key, event.event, event.at, str(event.payload?.prompt))) {
 			this.pushActivityToSubscribers(event.token);
 		}
 	}
@@ -5652,7 +5652,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			clearTimeout(pendingTimer);
 			this.pendingHookTimers.delete(event.token);
 		}
-		const submittedPrompt = str(event.payload?.['prompt'])?.trimStart();
+		const submittedPrompt = str(event.payload?.prompt)?.trimStart();
 		const isLocalSettingCommand = event.event === 'UserPromptSubmit' && submittedPrompt !== undefined && /^\/(?:model|effort)\s+\S/.test(submittedPrompt);
 		if (!isLocalSettingCommand && !isTurnEnd) {
 			this.updateLiveFromHook(event);
@@ -5723,10 +5723,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscribers(event.token);
 		}
-		const subagentActivityId = event.event === 'SubagentStart' || event.event === 'SubagentStop' ? str(event.payload?.['agent_id']) : undefined;
+		const subagentActivityId = event.event === 'SubagentStart' || event.event === 'SubagentStop' ? str(event.payload?.agent_id) : undefined;
 		const subagentId = subagentActivityId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(subagentActivityId) ? subagentActivityId : undefined;
 		if (event.event === 'SubagentStop') {
-			const agentTranscriptPath = str(event.payload?.['agent_transcript_path']);
+			const agentTranscriptPath = str(event.payload?.agent_transcript_path);
 			if (subagentId !== undefined && agentTranscriptPath !== undefined && await isAllowedTranscriptPath(agentTranscriptPath)) {
 				this.claudeSubagentTranscriptPaths.set(`${event.token}\0${subagentId}`, agentTranscriptPath);
 			}
@@ -5771,7 +5771,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// Claudeのsidechainだけ、hook payloadへ親Agent IDを補って活動ツリーへ繋ぐ。
 		// Codexのsubagent threadはrolloutのタイムラインとstate DBから関係を復元済みなので、
 		// ここでClaude形式の親子を注入すると同じSubAgentが二重に現れる。
-		const activityPayload = event.payload !== undefined && claudeNestedAgentId !== undefined && event.payload['parent_agent_id'] === undefined
+		const activityPayload = event.payload !== undefined && claudeNestedAgentId !== undefined && event.payload.parent_agent_id === undefined
 			? { ...event.payload, parent_agent_id: claudeNestedAgentId }
 			: event.payload;
 		const activityChanged = activityPayload !== undefined && this.activityTracker(event.token).applyClaude(event.event, activityPayload, event.at);

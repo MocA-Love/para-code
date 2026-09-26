@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { Event } from '../../../../../base/common/event.js';
-import { IDisposable } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IAgentConnection } from '../../../../../platform/agentHost/common/agentService.js';
 import { AgentHostTerminalService } from '../../browser/agentHostTerminalService.js';
@@ -15,7 +15,7 @@ import { ICreateTerminalOptions, ITerminalInstance, ITerminalService } from '../
 import { ITerminalProfileProvider, ITerminalProfileService } from '../../common/terminal.js';
 
 suite('Paradis Agent Host terminal creation scope', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('forwards the contributed profile creation lease to the terminal service', async () => {
 		let provider: ITerminalProfileProvider | undefined;
@@ -23,6 +23,9 @@ suite('Paradis Agent Host terminal creation scope', () => {
 		const disposable: IDisposable = { dispose() { } };
 		const instance = {
 			onDisposed: Event.None,
+			// upstream (1.137+) registers the pty cleanup on `instance.store`.
+			isDisposed: false,
+			store: store.add(new DisposableStore()),
 		} as Partial<ITerminalInstance> as ITerminalInstance;
 		const terminalService = {
 			createTerminal: async (options: ICreateTerminalOptions) => {
@@ -42,6 +45,7 @@ suite('Paradis Agent Host terminal creation scope', () => {
 			{} as ConstructorParameters<typeof AgentHostTerminalService>[1],
 			terminalProfileService,
 			{} as ConstructorParameters<typeof AgentHostTerminalService>[3],
+			{} as ConstructorParameters<typeof AgentHostTerminalService>[4],
 		);
 		const connection = { clientId: 'client' } as IAgentConnection;
 		const entryRegistration = service.registerEntry({ name: 'host', address: 'host', getConnection: () => connection });

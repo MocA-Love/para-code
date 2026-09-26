@@ -55,6 +55,7 @@ import { ParadisWebglRecovery, paradisWebglSupport } from '../../../../../paradi
 // PARA-PATCH: report webgl fallback / global-disable diagnostics to Sentry (see vs/paradis)
 import { reportParadisDiagnosticError } from '../../../../../paradis/contrib/sentry/common/paradisSentryDiagnostics.js';
 import { LayoutSettings } from '../../../../services/layout/browser/layoutService.js';
+import { ILifecycleService } from '../../../../services/lifecycle/common/lifecycle.js';
 
 const enum RenderConstants {
 	SmoothScrollDuration = 125
@@ -127,7 +128,6 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	private readonly _xtermColorProvider: IXtermColorProvider;
 	private readonly _capabilities: ITerminalCapabilityStore;
 	private readonly _disableOverviewRuler: boolean;
-	private readonly _mainDocument: Document;
 
 	private static _suggestedRendererType: 'dom' | undefined = undefined;
 	private _attached?: { container: HTMLElement; options: IXtermAttachToElementOptions };
@@ -235,6 +235,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		@IClipboardService private readonly _clipboardService: IClipboardService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IAccessibilitySignalService private readonly _accessibilitySignalService: IAccessibilitySignalService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILayoutService layoutService: ILayoutService
 	) {
 		super();
@@ -243,7 +244,6 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this._xtermColorProvider = options.xtermColorProvider;
 		this._capabilities = options.capabilities;
 		this._disableOverviewRuler = options.disableOverviewRuler ?? false;
-		this._mainDocument = layoutService.mainContainer.ownerDocument;
 
 		const font = this._terminalConfigurationService.getFont(dom.getActiveWindow(), undefined, true);
 		const config = this._terminalConfigurationService.config;
@@ -253,7 +253,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			allowProposedApi: true,
 			cols: options.cols,
 			rows: options.rows,
-			documentOverride: this._mainDocument,
+			documentOverride: layoutService.mainContainer.ownerDocument,
 			altClickMovesCursor: config.altClickMovesCursor && editorOptions.multiCursorModifier === 'alt',
 			scrollback: config.scrollback,
 			theme: this.getXtermTheme(),
@@ -340,6 +340,9 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this._register(this._decorationAddon.onDidRequestRunCommand(e => this._onDidRequestRunCommand.fire(e)));
 		this._register(this._decorationAddon.onDidRequestCopyAsHtml(e => this._onDidRequestCopyAsHtml.fire(e)));
 		this.raw.loadAddon(this._decorationAddon);
+		if (!options.detached) {
+			this._register(lifecycleService.onWillShutdown(() => this._decorationAddon.clearDecorations()));
+		}
 		this._shellIntegrationAddon = new ShellIntegrationAddon(options.shellIntegrationNonce ?? '', options.disableShellIntegrationReporting, this._onDidExecuteText, this._telemetryService, this._logService);
 		this.raw.loadAddon(this._shellIntegrationAddon);
 		this._xtermAddonLoader.importAddon('clipboard').then(ClipboardAddon => {
@@ -930,7 +933,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		if (!this.raw.element) {
 			return;
 		}
-		const customGlyphs = this._getWebglCustomGlyphs();
+		const customGlyphs = this._terminalConfigurationService.config.customGlyphs;
 		if ((this._webglAddon || this._webglAddonLoading) && this._webglAddonCustomGlyphs === customGlyphs) {
 			return;
 		}
@@ -962,7 +965,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			return;
 		}
 
-		const currentCustomGlyphs = this._getWebglCustomGlyphs();
+		const currentCustomGlyphs = this._terminalConfigurationService.config.customGlyphs;
 		if (customGlyphs !== currentCustomGlyphs) {
 			this._webglAddonCustomGlyphs = undefined;
 			await this._enableWebglRenderer();
@@ -1023,11 +1026,6 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			this._paradisWebglRecovery.noteLost();
 			this._disposeOfWebglRenderer();
 		}
-	}
-
-	private _getWebglCustomGlyphs(): boolean {
-		// The custom glyph rasterizer creates a canvas through the rendering document, which is blocked in auxiliary windows.
-		return this._terminalConfigurationService.config.customGlyphs && this.raw.element?.ownerDocument === this._mainDocument;
 	}
 
 	@debounce(100)
@@ -1215,9 +1213,6 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	refresh() {
 		this._updateTheme();
 		this._decorationAddon.refreshLayouts();
-		if (this._webglAddon || this._webglAddonLoading) {
-			this._enableWebglRenderer();
-		}
 	}
 
 	private async _updateUnicodeVersion(): Promise<void> {

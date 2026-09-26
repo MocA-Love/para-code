@@ -9,7 +9,7 @@ import { nativeImage, screen, WebContentsView, webContents, type NativeImage, ty
 import { Disposable, MutableDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
-import { IBrowserViewAudience, IBrowserViewBounds, IBrowserViewDevToolsStateEvent, IBrowserViewFocusEvent, IBrowserViewKeyDownEvent, IBrowserViewState, IBrowserViewNavigationEvent, IBrowserViewLoadingEvent, IBrowserViewLoadError, IBrowserViewTitleChangeEvent, IBrowserViewFaviconChangeEvent, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, IBrowserViewFindInPageResult, IBrowserViewVisibilityEvent, browserViewIsolatedWorldId, browserZoomFactors, browserZoomDefaultIndex, IBrowserViewOwner, IBrowserViewOpenOptions, IBrowserViewPermissionRequestEvent, equalsBrowserViewAudience, isBrowserViewAssociatedResourceNavigation, matchesBrowserViewAudience } from '../common/browserView.js';
+import { IBrowserViewAudience, IBrowserViewBounds, IBrowserViewDevToolsStateEvent, IBrowserViewFocusEvent, IBrowserViewKeyDownEvent, IBrowserViewState, IBrowserViewNavigationEvent, IBrowserViewLoadingEvent, IBrowserViewLoadError, IBrowserViewTitleChangeEvent, IBrowserViewFaviconChangeEvent, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, IBrowserViewFindInPageResult, IBrowserViewVisibilityEvent, browserViewIsolatedWorldId, browserZoomFactors, browserZoomDefaultIndex, IBrowserViewOwner, IBrowserViewEditorOpenOptions, IBrowserViewPermissionRequestEvent, equalsBrowserViewAudience, isBrowserViewAssociatedResourceNavigation, matchesBrowserViewAudience, IBrowserViewHost } from '../common/browserView.js';
 import { BrowserViewEmulator } from './browserViewEmulator.js';
 import { BrowserViewInspector } from './browserViewInspector.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
@@ -77,6 +77,7 @@ export class BrowserView extends Disposable {
 	readonly inspector: BrowserViewInspector;
 
 	private _ownerWindow: ICodeWindow;
+	private _owner: IBrowserViewOwner;
 	private _currentWindow: ICodeWindow | IAuxiliaryWindow | undefined;
 	private _isDisposed = false;
 	private _audiences: readonly IBrowserViewAudience[] = [];
@@ -128,6 +129,9 @@ export class BrowserView extends Disposable {
 	private readonly _onDidChangeFavicon = this._register(new Emitter<IBrowserViewFaviconChangeEvent>());
 	readonly onDidChangeFavicon: Event<IBrowserViewFaviconChangeEvent> = this._onDidChangeFavicon.event;
 
+	private readonly _onDidChangeOwner = this._register(new Emitter<IBrowserViewOwner>());
+	readonly onDidChangeOwner: Event<IBrowserViewOwner> = this._onDidChangeOwner.event;
+
 	private readonly _onDidFindInPage = this._register(new Emitter<IBrowserViewFindInPageResult>());
 	readonly onDidFindInPage: Event<IBrowserViewFindInPageResult> = this._onDidFindInPage.event;
 
@@ -148,10 +152,11 @@ export class BrowserView extends Disposable {
 
 	constructor(
 		public readonly id: string,
-		public readonly owner: IBrowserViewOwner,
+		public readonly host: IBrowserViewHost,
+		owner: IBrowserViewOwner,
 		public readonly associatedResource: URI | undefined,
 		public readonly session: BrowserSession,
-		private readonly _createChildView: (url: string, electronOptions: Electron.WebContentsViewConstructorOptions | undefined, openOptions: IBrowserViewOpenOptions) => BrowserView,
+		private readonly _createChildView: (owner: IBrowserViewOwner, url: string, electronOptions: Electron.WebContentsViewConstructorOptions | undefined, editorOptions: IBrowserViewEditorOpenOptions) => BrowserView,
 		openContextMenu: (view: BrowserView, params: Electron.ContextMenuParams) => void,
 		options: Electron.WebContentsViewConstructorOptions | undefined,
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
@@ -160,6 +165,7 @@ export class BrowserView extends Disposable {
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 	) {
 		super();
+		this._owner = owner;
 
 		const webPreferences: Electron.WebPreferences = {
 			...options?.webPreferences,
@@ -190,9 +196,9 @@ export class BrowserView extends Disposable {
 		this._view.setBounds({ x: 0, y: 0, width: 1024, height: 768 });
 		this._view.setBackgroundColor('#FFFFFF');
 
-		this._ownerWindow = this.windowsMainService.getWindowById(owner.mainWindowId)!;
+		this._ownerWindow = this.windowsMainService.getWindowById(host.windowId)!;
 		if (!this._ownerWindow) {
-			throw new Error(`Window with ID ${owner.mainWindowId} not found`);
+			throw new Error(`Window with ID ${host.windowId} not found`);
 		}
 		this._register(this._ownerWindow.onDidClose(() => this.dispose()));
 		this._register(this._ownerWindow.onWillLoad((e) => {
@@ -232,7 +238,7 @@ export class BrowserView extends Disposable {
 						}
 					})());
 
-					const childView = this._createChildView(details.url, options, {
+					const childView = this._createChildView(this.owner, details.url, options, {
 						pinned: true,
 						background: location === NewPageLocation.Background,
 						parentViewId: id,
@@ -933,6 +939,15 @@ export class BrowserView extends Disposable {
 		);
 	}
 
+	get owner(): IBrowserViewOwner {
+		return this._owner;
+	}
+
+	setOwner(owner: IBrowserViewOwner): void {
+		this._owner = owner;
+		this._onDidChangeOwner.fire(owner);
+	}
+
 	get webContents(): Electron.WebContents {
 		return this._view.webContents;
 	}
@@ -1118,7 +1133,7 @@ export class BrowserView extends Disposable {
 		}
 
 		logBrowserOpen(this.telemetryService, 'browserLinkForeground');
-		this._createChildView(url, undefined, {
+		this._createChildView(this.owner, url, undefined, {
 			pinned: true,
 			parentViewId: this.id
 		});
@@ -1557,9 +1572,10 @@ export class BrowserView extends Disposable {
 		// Fire close event BEFORE disposing emitters. This signals the view has been destroyed.
 		this._onDidClose.fire();
 
-		// Clean up the view and all its event listeners
-		if (!this._view.webContents.isDestroyed()) {
-			this._view.webContents.close({ waitForBeforeUnload: false });
+		// Electron clears the view's webContents before emitting destroyed.
+		const webContents = this._view.webContents;
+		if (webContents && !webContents.isDestroyed()) {
+			webContents.close({ waitForBeforeUnload: false });
 		}
 
 		super.dispose();

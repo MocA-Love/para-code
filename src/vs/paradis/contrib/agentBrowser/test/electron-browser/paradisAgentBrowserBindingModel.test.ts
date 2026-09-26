@@ -10,6 +10,7 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { IAgentNetworkFilterService } from '../../../../../platform/networkFilter/common/networkFilterService.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
@@ -115,6 +116,9 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		/** SSHリモート分岐（`_isSshRemote()`）をテストするための接続先authority。既定は未接続。 */
 		remoteAuthority?: string;
 		ensureRemoteAgentTunnel?: () => Promise<number | undefined>;
+		/** Mirrors upstream: only Agent-scoped views stay directly shareable while the network filter is on. */
+		agentScope?: boolean;
+		replacementScopeWaitTimeoutMs?: number;
 	}) {
 		const fixtureStore = options?.store ?? store;
 		const terminalScopeChanged = fixtureStore.add(new Emitter<{ instanceId: number; scope?: unknown }>());
@@ -123,6 +127,8 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		const paneTokensChanged = fixtureStore.add(new Emitter<void>());
 		const terminalInstancesChanged = fixtureStore.add(new Emitter<void>());
 		const terminalTitlesChanged = fixtureStore.add(new Emitter<ITerminalInstance>());
+		const networkFilterChanged = fixtureStore.add(new Emitter<void>());
+		let networkFilterEnabled = false;
 		const instance = { instanceId: 1, title: 'shell', isDisposed: false, processId: 101 } as ITerminalInstance;
 		const secondInstance = { instanceId: 2, title: 'shell', isDisposed: false, processId: 102 } as ITerminalInstance;
 		const paneTokens = new Map<number, string>(options?.hasPaneTokens === false ? [] : [[1, 'token'], [2, 'token-b']]);
@@ -139,10 +145,11 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		const requestsByTicketId = new Map<string, IParadisPrepareBindRequest>();
 		const model = {
 			id: 'view-a', url: 'https://example.test', title: 'Example',
+			get isDirectlyShareable() { return options?.agentScope === true || !networkFilterEnabled; },
 			setSharedWithAgent: async (shared: boolean) => {
 				sharingCalls.push(shared);
 				order.push(`share:${shared}`);
-				return true;
+				return model;
 			},
 		} as unknown as IBrowserViewModel;
 		const knownBrowserViews = new Map([['view-a', { model }]]);
@@ -238,24 +245,30 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		} as unknown as IParadisBrowserScopeService;
 		const pollTimer = options?.pollTimer;
 		const tokenRefreshTimer = options?.tokenRefreshTimer;
-		const modelOptions: IParadisAgentBrowserBindingModelOptions | undefined = pollTimer || tokenRefreshTimer ? {
+		const modelOptions: IParadisAgentBrowserBindingModelOptions | undefined = pollTimer || tokenRefreshTimer || options?.replacementScopeWaitTimeoutMs !== undefined ? {
 			pollTimerFactory: pollTimer ? () => pollTimer : undefined,
 			tokenRefreshTimerFactory: tokenRefreshTimer ? () => tokenRefreshTimer : undefined,
+			replacementScopeWaitTimeoutMs: options?.replacementScopeWaitTimeoutMs,
 		} : undefined;
 		// 既定はSSHリモート未接続（remoteAuthority: undefined）。リモート分岐（_isSshRemote()）を
 		// 試すテストだけ options.remoteAuthority を渡す
 		const environmentService = { remoteAuthority: options?.remoteAuthority } as unknown as IWorkbenchEnvironmentService;
 		const pathService = {} as unknown as IPathService;
 		const fileService = {} as unknown as IFileService;
+		const agentNetworkFilterService = {
+			isEnabled: () => networkFilterEnabled,
+			onDidChange: networkFilterChanged.event,
+		} as unknown as IAgentNetworkFilterService;
 		const bindingModel = fixtureStore.add(new ParadisAgentBrowserBindingModel(modelOptions,
 			sharedProcessService, terminalService, terminalGroupService, paneTokenService,
 			browserViewWorkbenchService, terminalScopeService, browserScopeService, authoritySyncService,
-			environmentService, pathService, fileService));
+			environmentService, pathService, fileService, agentNetworkFilterService));
 		let changeCount = 0;
 		fixtureStore.add(bindingModel.onDidChange(() => changeCount++));
 
 		return {
-			bindingModel, model, order, commands, sharingCalls, terminalScopeChanged, browserScopeChanged,
+			bindingModel, model, order, commands, sharingCalls, terminalScopeChanged, browserScopeChanged, knownBrowserViews,
+			setNetworkFilterEnabled: (enabled: boolean) => { networkFilterEnabled = enabled; networkFilterChanged.fire(); },
 			paneTokens, paneTokensChanged, terminalTitlesChanged, instances: { first: instance, second: secondInstance },
 			get changeCount() { return changeCount; },
 			resetChangeCount: () => changeCount = 0,
@@ -493,12 +506,12 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		const fixture = createFixture();
 		const firstShare = new DeferredPromise<boolean>();
 		let shareCalls = 0;
-		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 			if (!shared) {
-				return true;
+				return fixture.model;
 			}
 			shareCalls++;
-			return shareCalls === 1 ? firstShare.p : true;
+			return shareCalls === 1 ? firstShare.p.then(() => fixture.model) : fixture.model;
 		};
 
 		const first = fixture.bindingModel.bindPageToPane(fixture.model, 'token');
@@ -972,12 +985,12 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 
 	test('rechecks scope after sharing and rolls back before prepare when it becomes pending', async () => {
 		const fixture = createFixture();
-		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 			fixture.sharingCalls.push(shared);
 			if (shared) {
 				fixture.terminalScope = { kind: 'pending' };
 			}
-			return true;
+			return fixture.model;
 		};
 
 		await assert.rejects(fixture.bindingModel.bindPageToPane(fixture.model, 'token'), /pending/);
@@ -1021,9 +1034,9 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 	test('manual unbindToken cannot overtake an in-flight bind for the same token', async () => {
 		const fixture = createFixture();
 		const share = new DeferredPromise<boolean>();
-		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 			fixture.order.push(`share:${shared}`);
-			return shared ? share.p : true;
+			return shared ? share.p.then(() => fixture.model) : fixture.model;
 		};
 
 		const bind = fixture.bindingModel.bindPageToPane(fixture.model, 'token');
@@ -1102,12 +1115,12 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 			await eventually(() => fixture.bindingModel.bindings.length === 1);
 			assert.strictEqual(pollTimer.nextDelay, 3_000);
 
-			(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+			(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 				fixture.sharingCalls.push(shared);
 				if (!shared && rejectUnshare) {
 					throw new Error('sharing cleanup failed');
 				}
-				return true;
+				return fixture.model;
 			};
 			backendSnapshot = [];
 			pollTimer.advance(3_000);
@@ -1130,9 +1143,9 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		fixture.backendBindings = [binding(1)];
 		await fixture.bindingModel.refresh();
 		const share = new DeferredPromise<boolean>();
-		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 			fixture.order.push(`share:${shared}`);
-			return shared ? share.p : true;
+			return shared ? share.p.then(() => fixture.model) : fixture.model;
 		};
 		fixture.order.length = 0;
 
@@ -1151,9 +1164,9 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 	test('manual unbindPage queues behind an initial bind before it reaches the binding cache', async () => {
 		const fixture = createFixture();
 		const share = new DeferredPromise<boolean>();
-		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 			fixture.order.push(`share:${shared}`);
-			return shared ? share.p : true;
+			return shared ? share.p.then(() => fixture.model) : fixture.model;
 		};
 
 		const bind = fixture.bindingModel.bindPageToPane(fixture.model, 'token');
@@ -1185,13 +1198,13 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		});
 		const secondShare = new DeferredPromise<boolean>();
 		let shareCalls = 0;
-		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 			fixture.order.push(`share:${shared}`);
 			if (!shared) {
-				return true;
+				return fixture.model;
 			}
 			shareCalls++;
-			return shareCalls === 2 ? secondShare.p : true;
+			return shareCalls === 2 ? secondShare.p.then(() => fixture.model) : fixture.model;
 		};
 
 		const firstBind = fixture.bindingModel.bindPageToPane(fixture.model, 'token');
@@ -1259,7 +1272,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		await fixture.bindingModel.refresh();
 		const otherModel = {
 			id: 'view-b', url: 'https://other.test', title: 'Other',
-			setSharedWithAgent: async () => true,
+			setSharedWithAgent: async () => otherModel,
 		} as unknown as IBrowserViewModel;
 
 		await assert.rejects(fixture.bindingModel.bindPageToPane(otherModel, 'token'), /commit response lost/);
@@ -1298,7 +1311,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		await fixture.bindingModel.refresh();
 		const otherModel = {
 			id: 'view-b', url: 'https://other.test', title: 'Other',
-			setSharedWithAgent: async () => true,
+			setSharedWithAgent: async () => otherModel,
 		} as unknown as IBrowserViewModel;
 
 		await assert.rejects(fixture.bindingModel.bindPageToPane(fixture.model, 'token'), /commit response 1 lost/);
@@ -1380,16 +1393,16 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 	test('serializes binding mutations even when their cached pages and tokens do not overlap', async () => {
 		const fixture = createFixture();
 		const firstShare = new DeferredPromise<boolean>();
-		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
 			fixture.order.push(`share-a:${shared}`);
-			return shared ? firstShare.p : true;
+			return shared ? firstShare.p.then(() => fixture.model) : fixture.model;
 		};
 		let secondShareCalls = 0;
 		const otherModel = {
 			id: 'view-b', url: 'https://other.test', title: 'Other',
 			setSharedWithAgent: async () => {
 				secondShareCalls++;
-				return true;
+				return otherModel;
 			},
 		} as unknown as IBrowserViewModel;
 
@@ -1462,6 +1475,92 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 
 		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 9]);
 		assert.deepStrictEqual(fixture.sharingCalls, [false]);
+	});
+
+	test('releases a binding whose page stops being directly shareable when the agent network filter turns on, and never rebinds it when the filter turns off', async () => {
+		const fixture = createFixture();
+		fixture.backendBindings = [binding(5)];
+		await fixture.bindingModel.refresh();
+		fixture.commands.length = 0;
+
+		fixture.setNetworkFilterEnabled(true);
+		await eventually(() => fixture.sharingCalls.includes(false) && fixture.bindingModel.bindings.length === 0);
+		fixture.setNetworkFilterEnabled(false);
+		await nextTask();
+
+		assert.deepStrictEqual({
+			unbinds: fixture.commands.filter(call => call.command === 'unbindIfCurrent').map(call => call.args),
+			binds: fixture.commands.filter(call => call.command === 'prepareBind' || call.command === 'commitBind').length,
+			sharing: fixture.sharingCalls,
+			backend: fixture.backendBindings,
+			cache: fixture.bindingModel.getBindingsForPage('view-a'),
+		}, { unbinds: [['token', 5]], binds: 0, sharing: [false], backend: [], cache: [] });
+	});
+
+	test('keeps a binding whose page stays directly shareable when the agent network filter turns on', async () => {
+		const fixture = createFixture({ agentScope: true });
+		fixture.backendBindings = [binding(5)];
+		await fixture.bindingModel.refresh();
+		fixture.commands.length = 0;
+
+		fixture.setNetworkFilterEnabled(true);
+		await eventually(() => fixture.commands.some(call => call.command === 'listBindings'));
+		await nextTask();
+
+		assert.deepStrictEqual({
+			unbinds: fixture.commands.filter(call => call.command === 'unbindIfCurrent').length,
+			sharing: fixture.sharingCalls,
+			cache: fixture.bindingModel.getBindingsForPage('view-a').map(candidate => candidate.generation),
+		}, { unbinds: 0, sharing: [], cache: [5] });
+	});
+
+	function createReplacementShare(fixture: ReturnType<typeof createFixture>) {
+		const replacementSharing: boolean[] = [];
+		const replacement = {
+			id: 'view-b', url: 'https://example.test', title: 'Example', isDirectlyShareable: true,
+			setSharedWithAgent: async (shared: boolean) => {
+				replacementSharing.push(shared);
+				return replacement;
+			},
+		} as unknown as IBrowserViewModel;
+		(fixture.model as { setSharedWithAgent(shared: boolean): Promise<IBrowserViewModel | undefined> }).setSharedWithAgent = async shared => {
+			fixture.sharingCalls.push(shared);
+			// Upstream opens the shareable copy's editor asynchronously, so its space is not known yet.
+			fixture.browserScope = { kind: 'pending' };
+			return replacement;
+		};
+		return { replacementSharing };
+	}
+
+	test('waits for a replacement share tab to leave the pending scope and binds it', async () => {
+		const fixture = createFixture();
+		const { replacementSharing } = createReplacementShare(fixture);
+
+		const bind = fixture.bindingModel.bindPageToPane(fixture.model, 'token');
+		await eventually(() => fixture.sharingCalls.length === 1);
+		await nextTask();
+		fixture.browserScope = { kind: 'managed', stateKey: 'space-a' };
+		fixture.browserScopeChanged.fire({ viewId: 'view-b' });
+
+		assert.deepStrictEqual({
+			bound: await bind,
+			original: fixture.sharingCalls,
+			replacement: replacementSharing,
+			prepared: fixture.commands.filter(call => call.command === 'prepareBind').map(call => (call.args[0] as IParadisPrepareBindRequest).viewId),
+		}, { bound: true, original: [true], replacement: [true], prepared: ['view-b'] });
+	});
+
+	test('unshares a replacement share tab whose scope stays pending', async () => {
+		const fixture = createFixture({ replacementScopeWaitTimeoutMs: 0 });
+		const { replacementSharing } = createReplacementShare(fixture);
+
+		await assert.rejects(fixture.bindingModel.bindPageToPane(fixture.model, 'token'), /pending/);
+
+		assert.deepStrictEqual({
+			original: fixture.sharingCalls,
+			replacement: replacementSharing,
+			prepared: fixture.commands.filter(call => call.command === 'prepareBind').length,
+		}, { original: [true], replacement: [false], prepared: 0 });
 	});
 
 	test('routes MCP setup and the gateway endpoint through the SSH return tunnel instead of the local shared-process commands when connected remotely', async () => {

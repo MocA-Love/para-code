@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// PARA-PATCH: +IBrowserViewState for the _acceptInitializedView event type (Para Browser MCP recovery hardening)
-import { BrowserViewCommandId, BrowserViewStorageScope, IBrowserViewInfo, IBrowserViewOpenOptions, IBrowserViewOwner, IBrowserViewService, IBrowserViewState, IBrowserViewTheme, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
-import { IBrowserViewWorkbenchService, IBrowserViewModel, BrowserViewModel, IBrowserEditorViewState, IBrowserViewContextualFilter, IBrowserViewFilterContext, IBrowserViewOpenHandler } from '../common/browserView.js';
+// PARA-PATCH: IBrowserViewCreatedEvent is needed to type the fork-owned initialization barrier below.
+import { BrowserViewCommandId, BrowserViewStorageScope, IBrowserViewCreatedEvent, IBrowserViewEditorOpenOptions, IBrowserViewInfo, IBrowserViewOwner, IBrowserViewService, IBrowserViewTheme, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
+import { BrowserViewSharingState, IBrowserViewWorkbenchService, IBrowserViewModel, BrowserViewModel, IBrowserViewContextualFilter, IBrowserViewFilterContext, IBrowserViewOpenHandler, IBrowserViewWorkbenchCreateOptions } from '../common/browserView.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -19,7 +19,7 @@ import { ACTIVE_GROUP, AUX_WINDOW_GROUP, IEditorService, PreferredGroup, SIDE_GR
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceTrustEnablementService, IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
-import { BrowserEditorInput } from '../common/browserEditorInput.js';
+import { BrowserEditorInput, IBrowserEditorInputData } from '../common/browserEditorInput.js';
 import { IEditorGroup, IEditorGroupsService, preferredSideBySideGroupDirection } from '../../../services/editor/common/editorGroupsService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
@@ -42,6 +42,11 @@ import { getCopilotRootPaths } from '../../../../platform/agentHost/common/copil
 import { localChatSessionType } from '../../chat/common/chatSessionsService.js';
 import { INativeWorkbenchEnvironmentService } from '../../../services/environment/electron-browser/environmentService.js';
 import { ITunnelProxyInfo } from '../../../../platform/tunnel/common/tunnelProxy.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { raceTimeout } from '../../../../base/common/async.js';
+import { AgentNetworkDomainSettingId } from '../../../../platform/networkFilter/common/settings.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { localize } from '../../../../nls.js';
 // PARA-PATCH: per-view named browser profile routing (see the getOrCreateLazy call below)
 import { paradisResolveBrowserSessionOptions } from '../../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileRouting.js';
 
@@ -276,6 +281,7 @@ export function paradisCreateBrowserViewInitialization<T>(
 export const BrowserMaxHistoryEntriesSettingId = 'workbench.browser.maxHistoryEntries';
 export const BrowserRemoteProxyEnabledSettingId = 'workbench.browser.enableRemoteProxy';
 export const BrowserNewTabPlacementSettingId = 'workbench.browser.newTabPlacement';
+const OPEN_BROWSER_NAVIGATION_TIMEOUT_MS = 30_000;
 
 /**
  * Where new integrated browser tabs are opened.
@@ -359,6 +365,7 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		@IThemeService private readonly themeService: IThemeService,
 		@IChatWidgetService private readonly chatWidgetService: IChatWidgetService,
 		@IAccessibilityService private readonly accessibilityService: IAccessibilityService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 		const channel = mainProcessService.getChannel(ipcBrowserViewChannelName);
@@ -381,6 +388,13 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 			}
 		}));
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (
+				e.affectsConfiguration(AgentNetworkDomainSettingId.NetworkFilter)
+				&& this.configurationService.getValue<boolean>(AgentNetworkDomainSettingId.NetworkFilter)
+				&& [...this._known.values()].some(input => input.model?.sharingState === BrowserViewSharingState.Shared && !input.model.isDirectlyShareable)
+			) {
+				this.notificationService.info(localize('browser.networkFilteringEnabled', "Agent access to browser tabs was revoked because network filtering was enabled."));
+			}
 			if (e.affectsConfiguration(BrowserMaxHistoryEntriesSettingId) || e.affectsConfiguration(BrowserRemoteProxyEnabledSettingId)) {
 				this._updateWindowConfiguration();
 			}
@@ -402,7 +416,7 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		// PARA-PATCH: replace the fire-and-forget _initializeExistingViews() + create listener with the ordered initialization barrier so no view created during startup is lost (Para Browser MCP recovery hardening)
 		// The listener must exist before the existing-view snapshot starts. Otherwise a view
 		// created between getBrowserViews() and listener registration can remain unknown forever.
-		const initialization = paradisCreateBrowserViewInitialization(
+		const initialization = paradisCreateBrowserViewInitialization<IBrowserViewCreatedEvent>(
 			listener => this._browserViewService.onDidCreateBrowserView(event => listener(event)),
 			async () => (await this._browserViewService.getBrowserViews(this._mainWindowId)).map(info => ({ info })),
 			event => this._acceptInitializedView(event),
@@ -548,24 +562,55 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		});
 	}
 
-	getOrCreateLazy(id: string, initialState?: IBrowserEditorViewState, associatedResource?: URI, model?: IBrowserViewModel): BrowserEditorInput {
+	async createBrowserView(options: IBrowserViewWorkbenchCreateOptions, editorOpenOptions?: IBrowserViewEditorOpenOptions): Promise<BrowserEditorInput> {
+		const input = this._getOrCreateLazy({
+			id: generateUuid(),
+			associatedResource: options.associatedResource,
+			url: options.initialUrl
+		}, undefined, { ...options, initialUrl: undefined });
+		const model = await input.resolve();
+		if (editorOpenOptions) {
+			void this._openEditorForCreatedView(input, options.owner, editorOpenOptions).catch(error => {
+				this.logService.error('[BrowserViewWorkbenchService] Failed to open editor for created browser view.', error);
+			});
+		}
+		const initialUrl = options.initialUrl;
+		if (initialUrl) {
+			const didNavigate = await raceTimeout((async () => {
+				await model.loadURL(initialUrl);
+				return true;
+			})(), OPEN_BROWSER_NAVIGATION_TIMEOUT_MS);
+			if (!didNavigate) {
+				throw new Error(`Navigation to ${initialUrl} timed out after ${OPEN_BROWSER_NAVIGATION_TIMEOUT_MS} ms. The page (ID: ${input.id}) is open and can be reused.`);
+			}
+		}
+		return input;
+	}
+
+	getOrCreateLazy(data: IBrowserEditorInputData): BrowserEditorInput {
+		return this._getOrCreateLazy(data);
+	}
+
+	private _getOrCreateLazy(data: IBrowserEditorInputData, model?: IBrowserViewModel, createOptions?: IBrowserViewWorkbenchCreateOptions): BrowserEditorInput {
+		const { id, associatedResource } = data;
 		if (!this._known.has(id)) {
-			const input = this.instantiationService.createInstance(BrowserEditorInput, { id, ...initialState, associatedResource }, async () => {
+			const input = this.instantiationService.createInstance(BrowserEditorInput, data, async () => {
 				const info = await this._browserViewService.getOrCreateBrowserView(
 					id,
 					{
-						owner: this._getDefaultOwner(),
+						host: {
+							windowId: this._mainWindowId
+						},
+						owner: createOptions?.owner ?? { type: 'user' },
 						associatedResource,
 						// PARA-PATCH: let named browser profiles override the resolved scope per view
 						// (vs/paradis/contrib/browserProfiles). A module-level registry rather than a DI
 						// dependency, so this class's constructor signature stays untouched; with nothing
 						// registered the fallback is returned as-is and behaviour is unchanged.
-						sessionOptions: paradisResolveBrowserSessionOptions(id, { scope: await this._resolveStorageScope() }),
-						initialState: {
-							url: initialState?.url,
-							title: initialState?.title,
-							lastFavicon: initialState?.favicon
-						}
+						session: createOptions?.session ?? paradisResolveBrowserSessionOptions(id, await this._resolveStorageScope()),
+						initialAudiences: createOptions?.initialAudiences,
+						initialUrl: createOptions ? createOptions.initialUrl : data.url,
+						openSource: createOptions?.openSource
 					}
 				);
 				return this._createModel(info);
@@ -591,10 +636,6 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 	async clearWorkspaceStorage(): Promise<void> {
 		const workspaceId = this.workspaceContextService.getWorkspace().id;
 		return this._browserViewService.clearWorkspaceStorage(workspaceId);
-	}
-
-	private _getDefaultOwner(): IBrowserViewOwner {
-		return { mainWindowId: this._mainWindowId };
 	}
 
 	private async _resolveStorageScope(): Promise<BrowserViewStorageScope> {
@@ -626,31 +667,42 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 	 * models for them so they are available synchronously.
 	 */
 	// PARA-PATCH: replace _initializeExistingViews() with a per-view accept handler shared by the create listener and the snapshot barrier, also opening the editor when openOptions are present (Para Browser MCP recovery hardening)
-	private _acceptInitializedView(event: { readonly info: { readonly id: string; readonly owner: IBrowserViewOwner; readonly state: IBrowserViewState }; readonly openOptions?: IBrowserViewOpenOptions }): void {
-		if (event.info.owner.mainWindowId !== this._mainWindowId) {
+	private _acceptInitializedView(event: IBrowserViewCreatedEvent): void {
+		if (event.info.host.windowId !== this._mainWindowId) {
 			return;
 		}
-		this._createModel(event.info);
+		this._createModel(event.info, event.initialUrl);
 		const editor = this._known.get(event.info.id);
-		if (editor && event.openOptions) {
-			void this._openEditorForCreatedView(editor, event.info.owner, event.openOptions).catch(error => {
+		if (editor && event.editorOpenRequest) {
+			void this._openEditorForCreatedView(editor, event.info.owner, event.editorOpenRequest).catch(error => {
 				this.logService.error('[BrowserViewWorkbenchService] Failed to open editor for created browser view.', error);
 			});
 		}
 	}
 
-	private _createModel(info: IBrowserViewInfo): IBrowserViewModel {
+	private _createModel(info: IBrowserViewInfo, initialUrl?: string): IBrowserViewModel {
 		const associatedResource = URI.revive(info.associatedResource);
 		// Don't double-create
-		const existing = this._known.get(info.id)?.model;
+		const input = this._known.get(info.id);
+		const existing = input?.model;
 		if (existing) {
 			return existing;
 		}
 
-		const model = this.instantiationService.createInstance(BrowserViewModel, info.id, info.owner, associatedResource, info.state, this._browserViewService);
+		const state = input
+			? {
+				...info.state,
+				url: input.url ?? info.state.url,
+				title: input.title ?? info.state.title,
+				lastFavicon: input.favicon ?? info.state.lastFavicon
+			}
+			: initialUrl
+				? { ...info.state, url: initialUrl }
+				: info.state;
+		const model = this.instantiationService.createInstance(BrowserViewModel, info.id, info.host, info.owner, associatedResource, state, this._browserViewService);
 
 		// Sanity: both pass and assign the model to be sure. It will no-op if already set.
-		this.getOrCreateLazy(info.id, {}, associatedResource, model).model = model;
+		this._getOrCreateLazy({ id: info.id, associatedResource, url: initialUrl }, model).model = model;
 
 		this._onDidChangeBrowserViews.fire();
 
@@ -660,22 +712,20 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 	/**
 	 * Open an editor tab for a newly created browser view.
 	 */
-	private async _openEditorForCreatedView(view: BrowserEditorInput, owner: IBrowserViewOwner, openOptions: IBrowserViewOpenOptions): Promise<void> {
-		const opts = openOptions;
-
+	private async _openEditorForCreatedView(view: BrowserEditorInput, owner: IBrowserViewOwner, options: IBrowserViewEditorOpenOptions): Promise<void> {
 		// Give registered handlers a chance to prevent the editor from opening.
 		for (const handler of this._openHandlers) {
-			if (!handler.shouldOpenEditor(view, owner, opts)) {
+			if (!handler.shouldOpenEditor(view, owner, options)) {
 				return;
 			}
 		}
 
 		// Resolve target group: auxiliary window, parent's group, or default
 		let targetGroup: PreferredGroup | undefined;
-		if (opts.auxiliaryWindow) {
+		if (options.auxiliaryWindow) {
 			targetGroup = AUX_WINDOW_GROUP;
-		} else if (opts.parentViewId) {
-			targetGroup = this._findEditorGroupForView(opts.parentViewId);
+		} else if (options.parentViewId) {
+			targetGroup = this._findEditorGroupForView(options.parentViewId);
 			if (targetGroup === undefined) {
 				return; // If the parent isn't open, don't open the child either
 			}
@@ -686,11 +736,11 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		}
 
 		const editorOptions = {
-			inactive: opts.background,
-			preserveFocus: opts.preserveFocus,
-			pinned: opts.pinned,
-			auxiliary: opts.auxiliaryWindow
-				? { bounds: opts.auxiliaryWindow, compact: true }
+			inactive: options.background,
+			preserveFocus: options.preserveFocus,
+			pinned: options.pinned,
+			auxiliary: options.auxiliaryWindow
+				? { bounds: options.auxiliaryWindow, compact: true }
 				: undefined,
 		};
 
@@ -698,7 +748,7 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		// only open in the foreground if the session's widget is currently visible
 		// and not the active editor in the target group.
 		const [group] = await this.instantiationService.invokeFunction(findGroup, { editor: view, options: editorOptions }, targetGroup);
-		if (owner.sessionId) {
+		if (owner.type === 'agent') {
 			const sessionResource = URI.parse(owner.sessionId);
 			const widget = this.chatWidgetService.getWidgetBySessionResource(sessionResource);
 			const isWidgetVisible = !!widget && widget.domNode.offsetParent !== null;

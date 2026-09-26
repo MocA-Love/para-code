@@ -138,7 +138,7 @@ export function fireParadisAgentNestedHookEvent(event: IParadisAgentNestedHookEv
 /** hookイベントの発火（ParadisAgentBrowserService の /agent-hook ハンドラ専用）。 */
 export function fireParadisAgentHookEvent(event: IParadisAgentHookEvent): void {
 	const payload = event.payload === undefined ? undefined : paradisSanitizeAgentHookPayload(event.payload);
-	const payloadToolInput = payload?.['tool_input'];
+	const payloadToolInput = payload?.tool_input;
 	const toolInput = payloadToolInput !== undefined ? payloadToolInput : sanitizeHookValue(event.toolInput, 0);
 	const ownedEvent = Object.freeze({
 		...event,

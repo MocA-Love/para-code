@@ -227,7 +227,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 注入に失敗しても nonce は渡す。独自シェルでもシェル統合を使えるようにするため
 			// (upstream の `TerminalProcess` と同じ判断)。
 			if (this.options.shellIntegration.nonce) {
-				env['VSCODE_NONCE'] = this.options.shellIntegration.nonce;
+				env.VSCODE_NONCE = this.options.shellIntegration.nonce;
 			}
 		}
 

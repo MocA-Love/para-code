@@ -93,14 +93,12 @@ jobs:
           fi
 
       - name: Checkout
-        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.resolve.outputs.is_version != 'true' && inputs.test_build || github.ref }}
 
       - name: Setup Node.js
-        # PARA-PATCH: Use the fork-selected setup-node v7 action; upstream still uses setup-node v6.
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -158,8 +156,7 @@ jobs:
         run: node build/lib/preLaunch.ts
 
       - name: Cache Electron
-        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ hashFiles('.nvmrc', 'package.json') }}
@@ -168,8 +165,7 @@ jobs:
         run: npx playwright install chromium
 
       - name: Cache Playwright
-        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package.json') }}
@@ -216,14 +212,12 @@ jobs:
       matrix: ${{ fromJSON(needs.setup.outputs.perf_matrix) }}
     steps:
       - name: Checkout
-        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.test_is_version != 'true' && inputs.test_build || github.ref }}
 
       - name: Setup Node.js
-        # PARA-PATCH: Use the fork-selected setup-node v7 action; upstream still uses setup-node v6.
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -261,8 +255,7 @@ jobs:
           name: build-output
 
       - name: Restore Electron cache
-        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ hashFiles('.nvmrc', 'package.json') }}
@@ -271,8 +264,7 @@ jobs:
         run: node build/lib/preLaunch.ts
 
       - name: Restore Playwright cache
-        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package.json') }}
@@ -402,14 +394,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.test_is_version != 'true' && inputs.test_build || github.ref }}
 
       - name: Setup Node.js
-        # PARA-PATCH: Use the fork-selected setup-node v7 action; upstream still uses setup-node v6.
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -447,8 +437,7 @@ jobs:
           name: build-output
 
       - name: Restore Electron cache
-        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ hashFiles('.nvmrc', 'package.json') }}
@@ -457,8 +446,7 @@ jobs:
         run: node build/lib/preLaunch.ts
 
       - name: Restore Playwright cache
-        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package.json') }}
@@ -514,14 +502,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.test_is_version != 'true' && inputs.test_build || github.ref }}
 
       - name: Setup Node.js
-        # PARA-PATCH: Use the fork-selected setup-node v7 action; upstream still uses setup-node v6.
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
 

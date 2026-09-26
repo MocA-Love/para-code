@@ -89,7 +89,7 @@ suite('paradisCreateLocalPtyChannel', () => {
 	test('知らないイベントが増えていたら error で残す', () => {
 		const disposables = store.add(new DisposableStore());
 		const { service } = createFakePtyService(disposables);
-		(service as unknown as Record<string, unknown>)['onSomethingNoisy'] = store.add(new Emitter<unknown>()).event;
+		(service as unknown as Record<string, unknown>).onSomethingNoisy = store.add(new Emitter<unknown>()).event;
 		const { logService, errors } = createLogCollector();
 
 		paradisCreateLocalPtyChannel(service, disposables, logService);

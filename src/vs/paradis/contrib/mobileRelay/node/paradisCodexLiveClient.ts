@@ -189,15 +189,15 @@ function commandDecision(value: unknown): unknown | undefined {
 		return value;
 	}
 	const decision = record(value);
-	const execpolicy = record(decision?.['acceptWithExecpolicyAmendment']);
-	const amendment = execpolicy?.['execpolicy_amendment'];
+	const execpolicy = record(decision?.acceptWithExecpolicyAmendment);
+	const amendment = execpolicy?.execpolicy_amendment;
 	if (Array.isArray(amendment) && amendment.length > 0 && amendment.length <= 100 && amendment.every(part => typeof part === 'string' && part.length <= 1_000)) {
 		return { acceptWithExecpolicyAmendment: { execpolicy_amendment: [...amendment] } };
 	}
-	const network = record(decision?.['applyNetworkPolicyAmendment']);
-	const policy = record(network?.['network_policy_amendment']);
-	const host = stringValue(policy?.['host'], 1_000);
-	const action = policy?.['action'];
+	const network = record(decision?.applyNetworkPolicyAmendment);
+	const policy = record(network?.network_policy_amendment);
+	const host = stringValue(policy?.host, 1_000);
+	const action = policy?.action;
 	return host !== undefined && (action === 'allow' || action === 'deny')
 		? { applyNetworkPolicyAmendment: { network_policy_amendment: { host, action } } }
 		: undefined;
@@ -209,19 +209,19 @@ function decisionLabel(decision: unknown): { readonly label: string; readonly to
 	if (decision === 'decline') { return { label: '拒否', tone: 'deny' }; }
 	if (decision === 'cancel') { return { label: 'キャンセル', tone: 'neutral' }; }
 	const value = record(decision);
-	if (value?.['acceptWithExecpolicyAmendment'] !== undefined) {
+	if (value?.acceptWithExecpolicyAmendment !== undefined) {
 		return { label: '同じ種類のコマンドを今後許可', tone: 'neutral' };
 	}
-	const network = record(record(value?.['applyNetworkPolicyAmendment'])?.['network_policy_amendment']);
-	const host = stringValue(network?.['host'], 1_000);
+	const network = record(record(value?.applyNetworkPolicyAmendment)?.network_policy_amendment);
+	const host = stringValue(network?.host, 1_000);
 	if (host !== undefined) {
-		return { label: network?.['action'] === 'allow' ? `${host} を今後許可` : `${host} を今後拒否`, tone: 'neutral' };
+		return { label: network?.action === 'allow' ? `${host} を今後許可` : `${host} を今後拒否`, tone: 'neutral' };
 	}
 	return undefined;
 }
 
 function commandDecisions(params: Record<string, unknown>): readonly unknown[] {
-	const advertised = params['availableDecisions'];
+	const advertised = params.availableDecisions;
 	if (Array.isArray(advertised)) {
 		const parsed = advertised.slice(0, 12).map(commandDecision).filter(value => value !== undefined);
 		if (parsed.length > 0) {
@@ -229,13 +229,13 @@ function commandDecisions(params: Record<string, unknown>): readonly unknown[] {
 		}
 	}
 	const fallback: unknown[] = ['accept'];
-	const execpolicy = params['proposedExecpolicyAmendment'];
+	const execpolicy = params.proposedExecpolicyAmendment;
 	if (Array.isArray(execpolicy)) {
 		const parsed = commandDecision({ acceptWithExecpolicyAmendment: { execpolicy_amendment: execpolicy } });
 		if (parsed !== undefined) { fallback.push(parsed); }
 	}
-	if (Array.isArray(params['proposedNetworkPolicyAmendments'])) {
-		for (const amendment of params['proposedNetworkPolicyAmendments'].slice(0, 8)) {
+	if (Array.isArray(params.proposedNetworkPolicyAmendments)) {
+		for (const amendment of params.proposedNetworkPolicyAmendments.slice(0, 8)) {
 			const parsed = commandDecision({ applyNetworkPolicyAmendment: { network_policy_amendment: amendment } });
 			if (parsed !== undefined) { fallback.push(parsed); }
 		}
@@ -278,20 +278,20 @@ function parseCodexApprovalRequest(message: IJsonRpcMessage): IParadisCodexAppro
 	const method = message.method;
 	const requestId = requestIdValue(message.id);
 	const params = record(message.params);
-	const threadId = stringValue(params?.['threadId'], 500);
+	const threadId = stringValue(params?.threadId, 500);
 	if (requestId === undefined || params === undefined || threadId === undefined) {
 		return undefined;
 	}
 	if (method === 'item/commandExecution/requestApproval') {
-		return buildDecisionApproval(threadId, requestId, 'コマンドの実行許可', approvalDetail(params['command'], params['reason'], params['cwd']), commandDecisions(params));
+		return buildDecisionApproval(threadId, requestId, 'コマンドの実行許可', approvalDetail(params.command, params.reason, params.cwd), commandDecisions(params));
 	}
 	if (method === 'item/fileChange/requestApproval') {
-		return buildDecisionApproval(threadId, requestId, 'ファイル変更の許可', approvalDetail(params['reason'], params['grantRoot']), [
-			'accept', ...(stringValue(params['grantRoot'], 6_000) !== undefined ? ['acceptForSession'] : []), 'decline',
+		return buildDecisionApproval(threadId, requestId, 'ファイル変更の許可', approvalDetail(params.reason, params.grantRoot), [
+			'accept', ...(stringValue(params.grantRoot, 6_000) !== undefined ? ['acceptForSession'] : []), 'decline',
 		]);
 	}
 	if (method === 'item/permissions/requestApproval') {
-		const requested = record(params['permissions']);
+		const requested = record(params.permissions);
 		if (requested === undefined) { return undefined; }
 		const granted: Record<string, unknown> = {};
 		for (const key of ['network', 'fileSystem']) {
@@ -300,7 +300,7 @@ function parseCodexApprovalRequest(message: IJsonRpcMessage): IParadisCodexAppro
 		}
 		const interaction: IParadisCodexApprovalInteraction = {
 			kind: 'approval', id: interactionIdForRequest(requestId), title: '追加権限の許可',
-			detail: approvalDetail(params['reason'], params['cwd']),
+			detail: approvalDetail(params.reason, params.cwd),
 			choices: [
 				{ id: '0', label: '今回だけ許可', tone: 'approve' },
 				{ id: '1', label: 'セッション中は許可', tone: 'neutral' },
@@ -341,7 +341,7 @@ function threadMessageText(value: unknown): string | undefined {
 	const parts = value.map(part => {
 		if (typeof part === 'string') { return part; }
 		const item = record(part);
-		return typeof item?.['text'] === 'string' ? item['text'] : typeof item?.['content'] === 'string' ? item['content'] : undefined;
+		return typeof item?.text === 'string' ? item.text : typeof item?.content === 'string' ? item.content : undefined;
 	}).filter((part): part is string => part !== undefined && part.trim().length > 0);
 	return parts.length > 0 ? truncateCodexLiveText(parts.join('\n')) : undefined;
 }
@@ -400,7 +400,7 @@ async function readCodexPaneServerPid(socketPath: string, isEndpointTarget: bool
 	try {
 		if (isEndpointTarget) {
 			const parsed: unknown = JSON.parse(await fs.readFile(socketPath, 'utf8'));
-			const pid = record(parsed)?.['pid'];
+			const pid = record(parsed)?.pid;
 			return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 		}
 		const raw = (await fs.readFile(`${socketPath}.pid`, 'utf8')).trim();
@@ -461,7 +461,7 @@ export function paradisParseCodexWsEndpointTarget(targetPath: string): IParadisC
 async function readCodexEndpointPort(endpointPath: string): Promise<number | undefined> {
 	try {
 		const parsed: unknown = JSON.parse(await fs.readFile(endpointPath, 'utf8'));
-		const port = record(parsed)?.['port'];
+		const port = record(parsed)?.port;
 		return typeof port === 'number' && Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
 	} catch {
 		return undefined;
@@ -628,7 +628,7 @@ class ParadisCodexServerConnection extends Disposable {
 		let cursor: string | undefined;
 		for (let page = 0; page < MAX_CATALOG_PAGES; page++) {
 			const result = record(await this.request('model/list', cursor === undefined ? { includeHidden: false } : { includeHidden: false, cursor }));
-			const data = result?.['data'];
+			const data = result?.data;
 			if (!Array.isArray(data)) {
 				throw new ParadisCodexControlError('rpc-error', 'Codexのモデル一覧レスポンスが不正です');
 			}
@@ -641,7 +641,7 @@ class ParadisCodexServerConnection extends Disposable {
 					}
 				}
 			}
-			cursor = stringValue(result?.['nextCursor']);
+			cursor = stringValue(result?.nextCursor);
 			if (cursor === undefined || models.length >= MAX_MODELS) {
 				break;
 			}
@@ -691,18 +691,18 @@ class ParadisCodexServerConnection extends Disposable {
 			throw new ParadisCodexControlError('unavailable', 'Codex app-serverへ接続していません');
 		}
 		const result = record(await this.request('thread/read', { threadId, includeTurns: true }));
-		const thread = record(result?.['thread']) ?? result;
-		const turns = Array.isArray(thread?.['turns']) ? thread['turns'] : [];
+		const thread = record(result?.thread) ?? result;
+		const turns = Array.isArray(thread?.turns) ? thread.turns : [];
 		const messages: IParadisCodexThreadMessage[] = [];
 		for (const turn of turns.slice(-100)) {
-			const items = Array.isArray(record(turn)?.['items']) ? record(turn)?.['items'] as unknown[] : [];
+			const items = Array.isArray(record(turn)?.items) ? record(turn)?.items as unknown[] : [];
 			for (const rawItem of items) {
 				const item = record(rawItem);
-				const type = stringValue(item?.['type']);
+				const type = stringValue(item?.type);
 				const parts = [
-					threadMessageText(item?.['text']), threadMessageText(item?.['content']), threadMessageText(item?.['summary']),
-					threadMessageText(item?.['query']), threadMessageText(item?.['command']), threadMessageText(item?.['aggregatedOutput']),
-					threadMessageText(item?.['output']), threadMessageText(item?.['prompt']), threadMessageText(item?.['error']),
+					threadMessageText(item?.text), threadMessageText(item?.content), threadMessageText(item?.summary),
+					threadMessageText(item?.query), threadMessageText(item?.command), threadMessageText(item?.aggregatedOutput),
+					threadMessageText(item?.output), threadMessageText(item?.prompt), threadMessageText(item?.error),
 				];
 				for (const field of ['changes', 'arguments', 'result'] as const) {
 					const value = item?.[field];
@@ -710,8 +710,8 @@ class ParadisCodexServerConnection extends Disposable {
 						try { parts.push(threadMessageText(JSON.stringify(value))); } catch { /* 循環参照等は表示しない */ }
 					}
 				}
-				if (item?.['action'] !== undefined) {
-					try { parts.push(threadMessageText(JSON.stringify(item['action']))); } catch { /* 表示しない */ }
+				if (item?.action !== undefined) {
+					try { parts.push(threadMessageText(JSON.stringify(item.action))); } catch { /* 表示しない */ }
 				}
 				const text = parts.filter((part, index, values): part is string => part !== undefined && values.indexOf(part) === index).join('\n');
 				if (text === undefined || text.trim().length === 0) { continue; }
@@ -909,14 +909,14 @@ class ParadisCodexServerConnection extends Disposable {
 			return;
 		}
 		const params = record(message.params);
-		const threadId = stringValue(params?.['threadId']);
+		const threadId = stringValue(params?.threadId);
 		if (threadId === undefined || params === undefined) {
 			return;
 		}
 		if (message.method === 'thread/settings/updated') {
 			this.handleSettingsUpdated(threadId, params);
 		} else if (message.method === 'serverRequest/resolved') {
-			const requestId = requestIdValue(params['requestId']);
+			const requestId = requestIdValue(params.requestId);
 			if (requestId !== undefined) {
 				const key = requestIdKey(threadId, requestId);
 				const approval = this.pendingApprovals.get(key);
@@ -948,7 +948,7 @@ class ParadisCodexServerConnection extends Disposable {
 		clearTimeout(pending.timer);
 		if (error !== undefined && error !== null) {
 			const rpcError = record(error);
-			const detail = stringValue(rpcError?.['message']) ?? (typeof rpcError?.['code'] === 'number' ? String(rpcError['code']) : 'unknown error');
+			const detail = stringValue(rpcError?.message) ?? (typeof rpcError?.code === 'number' ? String(rpcError.code) : 'unknown error');
 			pending.reject(new ParadisCodexControlError('rpc-error', `${pending.method}: ${detail}`));
 		} else {
 			pending.resolve(result);
@@ -962,7 +962,7 @@ class ParadisCodexServerConnection extends Disposable {
 		this.loadedRefreshInFlight = true;
 		try {
 			const result = record(await this.request('thread/loaded/list', {}));
-			const data = result?.['data'];
+			const data = result?.data;
 			if (!Array.isArray(data)) {
 				throw new Error('thread/loaded/list returned invalid data');
 			}
@@ -1000,8 +1000,8 @@ class ParadisCodexServerConnection extends Disposable {
 				return;
 			}
 			this.subscribedThreads.add(threadId);
-			const model = stringValue(result?.['model']);
-			const effort = stringValue(result?.['reasoningEffort']);
+			const model = stringValue(result?.model);
+			const effort = stringValue(result?.reasoningEffort);
 			if (model !== undefined) {
 				this.threadSettings.set(threadId, { model, ...(effort !== undefined ? { effort } : {}) });
 			}
@@ -1030,9 +1030,9 @@ class ParadisCodexServerConnection extends Disposable {
 	}
 
 	private handleSettingsUpdated(threadId: string, params: Record<string, unknown>): void {
-		const settings = record(params['threadSettings']);
-		const model = stringValue(settings?.['model']);
-		const effort = stringValue(settings?.['effort']);
+		const settings = record(params.threadSettings);
+		const model = stringValue(settings?.model);
+		const effort = stringValue(settings?.effort);
 		if (model === undefined) {
 			return;
 		}
@@ -1048,28 +1048,28 @@ class ParadisCodexServerConnection extends Disposable {
 
 	private parseModel(value: unknown): IParadisCodexModelOption | undefined {
 		const raw = record(value);
-		const id = stringValue(raw?.['id']);
-		const model = stringValue(raw?.['model']);
-		const displayName = stringValue(raw?.['displayName'], 200);
-		const description = typeof raw?.['description'] === 'string' ? raw['description'].slice(0, 1_000) : '';
-		const defaultEffort = stringValue(raw?.['defaultReasoningEffort'], 100);
-		const rawEfforts = raw?.['supportedReasoningEfforts'];
+		const id = stringValue(raw?.id);
+		const model = stringValue(raw?.model);
+		const displayName = stringValue(raw?.displayName, 200);
+		const description = typeof raw?.description === 'string' ? raw.description.slice(0, 1_000) : '';
+		const defaultEffort = stringValue(raw?.defaultReasoningEffort, 100);
+		const rawEfforts = raw?.supportedReasoningEfforts;
 		if (id === undefined || model === undefined || displayName === undefined || defaultEffort === undefined || !Array.isArray(rawEfforts)) {
 			return undefined;
 		}
 		const efforts: IParadisCodexReasoningEffort[] = [];
 		for (const value of rawEfforts.slice(0, 16)) {
 			const effort = record(value);
-			const effortValue = stringValue(effort?.['reasoningEffort'], 100);
+			const effortValue = stringValue(effort?.reasoningEffort, 100);
 			if (effortValue !== undefined && !efforts.some(option => option.value === effortValue)) {
 				efforts.push({
 					value: effortValue,
-					description: typeof effort?.['description'] === 'string' ? effort['description'].slice(0, 500) : '',
+					description: typeof effort?.description === 'string' ? effort.description.slice(0, 500) : '',
 				});
 			}
 		}
 		return efforts.length > 0 ? {
-			id, model, displayName, description, efforts, defaultEffort, isDefault: raw?.['isDefault'] === true,
+			id, model, displayName, description, efforts, defaultEffort, isDefault: raw?.isDefault === true,
 		} : undefined;
 	}
 
