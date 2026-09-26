@@ -4,7 +4,7 @@
  * ファイルのフルスクリーンビューア。
  * - コード表示: PC側で現行テーマのままトークン化されたHTML（mtkクラス + カラーマップCSS）を
  *   WebView に流し込み、PC版とまったく同じ配色でシンタックスハイライトする
- * - .md / .html は PC版のfileViewersと同様に「レンダー / Raw」を切り替えられる
+ * - .md / .html は PC版のfileViewersと同様に「プレビュー / ソース」を切り替えられる
  *   （md は marked でHTML化、html はそのまま表示）
  */
 
@@ -15,7 +15,9 @@ import { WebView } from 'react-native-webview';
 import { marked } from 'marked';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { Button } from './button.js';
-import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { EmptyState } from './emptyState.js';
+import { ViewerHeader } from './viewerHeader.js';
+import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
@@ -47,10 +49,18 @@ interface FileViewerProps {
 	focusLine?: number;
 	/** 指定時は閉じるアイコンの代わりに、遷移元へ戻るラベル付きボタンを表示する。 */
 	backLabel?: string;
+	/** 読み込みに失敗した理由。指定時は本文の代わりに失敗の表示を出す。 */
+	error?: string;
 	onClose: () => void;
 }
 
 type ViewMode = 'render' | 'code';
+
+/** 表示の切り替え。語は差分ビューア（`diffView.tsx`）とそろえる（左は同じ「プレビュー」）。 */
+const MODE_OPTIONS = [
+	{ value: 'render', label: 'プレビュー' },
+	{ value: 'code', label: 'ソース' },
+] as const satisfies readonly { value: ViewMode; label: string }[];
 
 /** 画像として表示する拡張子（PC版の builtin media-preview 拡張と同じ対応範囲）。 */
 const IMAGE_FILE_PATTERN = /\.(?:jpe?g|jpe|png|bmp|gif|ico|webp|avif|svg)$/i;
@@ -535,7 +545,7 @@ function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, o
 	);
 }
 
-export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, onClose }: FileViewerProps) {
+export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, onClose }: FileViewerProps) {
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
 	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
@@ -647,44 +657,30 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			onRequestClose={onClose}
 		>
 			<View style={styles.screen}>
-				<View style={[styles.header, { paddingTop: headerTop }]}>
-					{backLabel !== undefined ? (
-						<Pressable style={styles.backButton} onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel={`${backLabel}に戻る`}>
-							<Ionicons name="chevron-back" size={21} color={colors.accent2} />
-							<Text style={styles.backText}>{backLabel}</Text>
-						</Pressable>
-					) : <Ionicons name="document-text-outline" size={16} color={colors.textDim} />}
-					<Text style={styles.title} numberOfLines={1}>{path}</Text>
-					{kind === 'markdown' || kind === 'html' ? (
-						<View style={styles.segment}>
-							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('render'); }}>
-								<Text style={[styles.segmentText, mode === 'render' && styles.segmentTextActive]}>レンダー</Text>
-							</Pressable>
-							<Pressable style={[styles.segmentBtn, mode === 'code' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('code'); }}>
-								<Text style={[styles.segmentText, mode === 'code' && styles.segmentTextActive]}>Raw</Text>
-							</Pressable>
-						</View>
-					) : null}
-					{presentedAsSheet ? (
-						<Pressable
-							onPress={requestToggleExpanded}
-							hitSlop={14}
-							accessibilityRole="button"
-							accessibilityLabel={expanded ? 'シート表示に戻す' : '全画面表示にする'}
-						>
-							<Ionicons name={expanded ? 'contract' : 'expand'} size={19} color={colors.textDim} />
-						</Pressable>
-					) : null}
-					{backLabel === undefined ? (
-						<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">
-							<Ionicons name="close" size={22} color={colors.text} />
-						</Pressable>
-					) : null}
-				</View>
+				<ViewerHeader
+					icon="document-text-outline"
+					title={path}
+					top={headerTop}
+					backLabel={backLabel}
+					onClose={onClose}
+					// 左がプレビュー（差分ビューアと同じ並び・同じ語）。右は「元の文字列」なのでソース。
+					segment={kind === 'markdown' || kind === 'html' ? { options: MODE_OPTIONS, value: mode, onChange: setMode } : undefined}
+					expandable={presentedAsSheet}
+					expanded={expanded}
+					onToggleExpanded={requestToggleExpanded}
+				/>
 				{kind === 'spreadsheet' && sheets !== undefined && sheets.length > 1 ? (
 					<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.sheetBar} contentContainerStyle={styles.sheetBarContent}>
 						{sheets.map((sheetName, i) => (
-							<Pressable key={i} style={[styles.sheetChip, i === sheetIndex && styles.sheetChipActive]} onPress={() => { hapticSelection(); onSelectSheet?.(i); }}>
+							<Pressable
+								key={i}
+								style={[styles.sheetChip, i === sheetIndex && styles.sheetChipActive]}
+								hitSlop={SHEET_CHIP_SLOP}
+								onPress={() => { hapticSelection(); onSelectSheet?.(i); }}
+								accessibilityRole="button"
+								accessibilityState={{ selected: i === sheetIndex }}
+								accessibilityLabel={`シート ${sheetName}`}
+							>
 								<Text style={[styles.sheetText, i === sheetIndex && styles.sheetTextActive]} numberOfLines={1}>{sheetName}</Text>
 							</Pressable>
 						))}
@@ -693,7 +689,9 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 				{result?.truncated || result?.highlightTruncated ? (
 					<Text style={styles.truncated}>サイズ上限のため先頭のみ表示しています</Text>
 				) : null}
-				{kind === 'pdf' && pdfData !== undefined ? (
+				{error !== undefined ? (
+					<EmptyState icon="alert-circle-outline" title="ファイルを開けませんでした" message={error} />
+				) : kind === 'pdf' && pdfData !== undefined ? (
 					<NativeFileView data={pdfData} ext="pdf" />
 				) : kind === 'av' && mediaData !== undefined ? (
 					<NativeFileView data={mediaData} ext={fileExt(name)} />
@@ -727,17 +725,13 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	);
 }
 
+/** xlsx のシートチップ（見た目の高さ）と、バーの上下の余白。足して44pt。 */
+const SHEET_CHIP_HEIGHT = 32;
+const SHEET_BAR_PAD = (HIT_SIZE - SHEET_CHIP_HEIGHT) / 2;
+const SHEET_CHIP_SLOP = { top: SHEET_BAR_PAD, bottom: SHEET_BAR_PAD, left: 4, right: 4 };
+
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
-	backButton: { flexDirection: 'row', alignItems: 'center', marginLeft: -7, marginRight: 2 },
-	backText: { color: colors.accent2, fontSize: type.body },
-	title: { flex: 1, color: colors.text, fontSize: type.body },
-	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
-	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },
-	segmentBtnActive: { backgroundColor: tint(colors.accent, alpha.line) },
-	segmentText: { color: colors.textDim, fontSize: type.meta },
-	segmentTextActive: { color: colors.text, fontWeight: '600' },
 	truncated: { color: colors.yellow, fontSize: type.badge, paddingHorizontal: 16, paddingVertical: 4 },
 	// WKWebView は初回ペイント前の既定背景が不透明白のため、開いた瞬間に白フラッシュする。
 	// alpha 1.0 の backgroundColor を指定するとネイティブ側が WKWebView 自体を opaque 化して
@@ -748,8 +742,9 @@ const styles = StyleSheet.create({
 	recoveryActions: { flexDirection: 'row', gap: 12 },
 	loadingBox: { alignItems: 'center', gap: 8, marginTop: 24 },
 	sheetBar: { flexGrow: 0, flexShrink: 0, backgroundColor: colors.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-	sheetBarContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-	sheetChip: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: radius.control, ...squircle, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 180 },
+	// チップの見た目は高さ32、上下の余白6へ hitSlop をはみ出させて44pt にする（バーの高さも44）。
+	sheetBarContent: { paddingHorizontal: 12, paddingVertical: SHEET_BAR_PAD, gap: 8 },
+	sheetChip: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: radius.control, ...squircle, paddingHorizontal: 12, minHeight: SHEET_CHIP_HEIGHT, minWidth: HIT_SIZE - 8, justifyContent: 'center', alignItems: 'center', maxWidth: 180 },
 	sheetChipActive: { borderColor: colors.accent2, backgroundColor: colors.accentWash },
 	sheetText: { color: colors.textDim, fontSize: type.meta },
 	sheetTextActive: { color: colors.text, fontWeight: '600' },
