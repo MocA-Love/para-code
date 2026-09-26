@@ -38,6 +38,7 @@ import { getInstanceFromResource, getTerminalUri, parseTerminalUri } from './ter
 import { IRemoteTerminalAttachTarget, IStartExtensionTerminalRequest, ITerminalProcessExtHostProxy, ITerminalProfileService } from '../common/terminal.js';
 import { TerminalContextKeys } from '../common/terminalContextKey.js';
 import { columnToEditorGroup } from '../../../services/editor/common/editorGroupColumn.js';
+// PARA-PATCH: IEditorGroup for the exact editor group destination (paradisExactEditorGroup)
 import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { ACTIVE_GROUP, ACTIVE_GROUP_TYPE, AUX_WINDOW_GROUP, AUX_WINDOW_GROUP_TYPE, IEditorService, SIDE_GROUP, SIDE_GROUP_TYPE } from '../../../services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
@@ -57,10 +58,12 @@ import { isAuxiliaryWindow, mainWindow } from '../../../../base/browser/window.j
 import { GroupIdentifier } from '../../../common/editor.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { hasKey, isString } from '../../../../base/common/types.js';
+// PARA-PATCH: exact editor group guard and terminal creation scope lease (workspace ownership)
 import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
 import { paradisCaptureTerminalCreationScopeLease, paradisSetTerminalCreationScopeLease } from './paradisTerminalCreationScope.js';
 // PARA-PATCH: Para Code restores the active pane after every group member has been created
 import { paradisRestoreTerminalGroupActiveInstance } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalGroupRestore.js';
+// PARA-PATCH: keep terminal processes alive across window shutdown (remote terminals / pty daemon)
 import { paradisJoinKeptDetaches, paradisPrepareTerminalShutdown, paradisShouldKeepTerminalProcessAlive, paradisShouldKeepTerminalProcessesAlive } from './paradisTerminalShutdownPolicy.js';
 // PARA-PATCH: Para Code parks editor terminals of other spaces outside any editor input
 import { paradisListParkedTerminalEditorInstances } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js';
@@ -418,6 +421,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createContributedTerminalProfile(extensionIdentifier: string, id: string, options: ICreateContributedTerminalProfileOptions): Promise<void> {
+		// PARA-PATCH: carry the terminal creation scope lease through the contributed profile provider
 		const creationScopeLease = paradisCaptureTerminalCreationScopeLease(options.paradisTerminalCreationScopeLease);
 		const scopedOptions: ICreateContributedTerminalProfileOptions = {
 			...options,
@@ -431,6 +435,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 			return;
 		}
 		try {
+			// PARA-PATCH: pass the scoped options so the lease reaches the profile provider
 			await profileProvider.createContributedTerminalProfile(scopedOptions);
 			this._terminalGroupService.setActiveInstanceByIndex(this._terminalGroupService.instances.length - 1);
 			await this._terminalGroupService.activeInstance?.focusWhenReady();
@@ -558,6 +563,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		const group = lastInstance?.then(instance => {
 			const g = this._terminalGroupService.getGroupForInstance(instance);
 			g?.resizePanes(tabLayout.terminals.map(terminal => terminal.relativeSize));
+			// PARA-PATCH: restore the active pane once all group members exist (replaces the per-tab setActiveInstance removed above)
 			paradisRestoreTerminalGroupActiveInstance(g, tabLayout.activePersistentProcessId);
 			return g;
 		});
@@ -798,6 +804,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		if (instance.staticTitle) {
 			this._primaryBackend?.updateTitle(instance.persistentProcessId, instance.staticTitle, TitleEventSource.Api);
 		} else {
+			// PARA-PATCH: persist the pre-transient title so automatic Codex titles are never saved
 			this._primaryBackend?.updateTitle(instance.persistentProcessId, instance.persistentTitle, instance.persistentTitleSource);
 		}
 	}
@@ -1029,6 +1036,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {
+		// PARA-PATCH: capture the creation scope lease and validate paradisExactEditorGroup up front
 		const creationScopeLease = paradisCaptureTerminalCreationScopeLease(options?.paradisTerminalCreationScopeLease);
 		this._assertParadisExactEditorGroupOptions(options);
 
@@ -1071,12 +1079,14 @@ export class TerminalService extends Disposable implements ITerminalService {
 			: typeof options?.location === 'object' ? hasKey(options.location, { parentTerminal: true }) : false;
 
 		await this._resolveCwd(shellLaunchConfig, splitActiveTerminal, options);
+		// PARA-PATCH: re-validate the exact editor group after the async cwd resolution
 		this._assertParadisExactEditorGroupOptions(options);
 
 		// Launch the contributed profile
 		// If it's a custom pty implementation, we did not await the profiles ready, so
 		// we cannot launch the contributed profile and doing so would cause an error
 		if (!shellLaunchConfig.customPtyImplementation && contributedProfile) {
+			// PARA-PATCH: contributed profiles cannot honour an exact editor group destination
 			if (options?.paradisExactEditorGroup) {
 				throw new Error('Contributed terminal profiles cannot be opened with an exact editor group destination.');
 			}
@@ -1093,6 +1103,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 				location,
 				cwd: shellLaunchConfig.cwd,
 				titleTemplate: contributedProfile.titleTemplate,
+				// PARA-PATCH: forward the creation scope lease to the contributed profile
 				paradisTerminalCreationScopeLease: creationScopeLease,
 			});
 			const instanceHost = resolvedLocation === TerminalLocation.Editor ? this._terminalEditorService : this._terminalGroupService;
@@ -1105,6 +1116,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		if (!shellLaunchConfig.customPtyImplementation && !this.isProcessSupportRegistered) {
+			// PARA-PATCH: fail closed for an exact editor group before process support is registered
 			if (options?.paradisExactEditorGroup) {
 				throw new Error('A terminal cannot be opened in the exact editor group before process support is registered.');
 			}
@@ -1124,6 +1136,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 					location,
 					cwd: shellLaunchConfig.cwd,
 					titleTemplate: fallbackProfile.titleTemplate,
+					// PARA-PATCH: forward the creation scope lease to the fallback profile
 					paradisTerminalCreationScopeLease: creationScopeLease,
 				});
 				const instance = instanceHost.instances[instanceCount];
@@ -1139,9 +1152,11 @@ export class TerminalService extends Disposable implements ITerminalService {
 
 		this._evaluateLocalCwd(shellLaunchConfig);
 		const location = await this.resolveLocation(options?.location) || this._terminalConfigurationService.defaultLocation;
+		// PARA-PATCH: re-validate the exact editor group after the async location resolution
 		this._assertParadisExactEditorGroupOptions(options);
 
 		if (shellLaunchConfig.hideFromUser) {
+			// PARA-PATCH: attach the creation scope lease to background terminals too
 			paradisSetTerminalCreationScopeLease(shellLaunchConfig, creationScopeLease);
 			const instance = this._terminalInstanceService.createInstance(shellLaunchConfig, location);
 			this._backgroundedTerminalInstances.push({ instance, terminalLocationOptions: options?.location });
@@ -1151,6 +1166,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		const parent = await this._getSplitParent(options?.location);
+		// PARA-PATCH: attach the creation scope lease right before instance creation
 		// The caller may reuse one config object across concurrent creations. Re-associate immediately
 		// before the synchronous instance creation path so completion order cannot swap their leases.
 		paradisSetTerminalCreationScopeLease(shellLaunchConfig, creationScopeLease);
@@ -1159,6 +1175,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		let instance;
 		if (parent) {
 			instance = await this._splitTerminal(shellLaunchConfig, location, parent);
+			// PARA-PATCH: create in the exact destination editor group when one is given
 		} else if (options?.paradisExactEditorGroup) {
 			instance = await this._createTerminalInExactEditorGroup(shellLaunchConfig, location, options);
 		} else {
@@ -1311,6 +1328,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return instance;
 	}
 
+	// PARA-PATCH: open a new editor terminal in the exact destination group, disposing it on failure
 	private async _createTerminalInExactEditorGroup(shellLaunchConfig: IShellLaunchConfig, location: TerminalLocation, options: ICreateTerminalOptions): Promise<ITerminalInstance> {
 		this._assertParadisExactEditorGroupOptions(options);
 		if (location !== TerminalLocation.Editor || !options.paradisExactEditorGroup) {
@@ -1352,6 +1370,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return undefined;
 	}
 
+	// PARA-PATCH: optional paradisExactEditorGroup bypasses the view-column mapping
 	private _getEditorOptions(location?: ITerminalLocationOptions, paradisExactEditorGroup?: IEditorGroup): TerminalEditorLocation | undefined {
 		if (location && typeof location === 'object' && hasKey(location, { viewColumn: true })) {
 			if (paradisExactEditorGroup) {
@@ -1373,6 +1392,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return undefined;
 	}
 
+	// PARA-PATCH: validate that paradisExactEditorGroup matches an explicit editor group destination
 	private _assertParadisExactEditorGroupOptions(options?: ICreateTerminalOptions): void {
 		const exactGroup = options?.paradisExactEditorGroup;
 		if (!exactGroup) {

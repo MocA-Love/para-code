@@ -268,6 +268,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 				this.tryFocus();
 			}
 		} else {
+			// PARA-PATCH: hiding cancels a show that was waiting for layout
 			this._showPendingLayout = false;
 			void this._doScreenshot();
 			// Defer the hide one frame so the latest screenshot has a chance to paint first.

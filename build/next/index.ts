@@ -4,10 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as esbuild from 'esbuild';
+// PARA-PATCH: used to verify the pinned docx-preview 0.3.7 vendor build (buildDocxPreview037).
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
+// PARA-PATCH: used to unpack the docx-preview 0.3.7 tarball (buildDocxPreview037).
 import { gunzipSync } from 'zlib';
 // PARA-PATCH: used by the @sentry inlining rule in inlineParadisSentryPlugin below.
 import { fileURLToPath } from 'url';
@@ -36,6 +38,7 @@ const commit = getVersion(REPO_ROOT);
 const quality = (product as { quality?: string }).quality;
 const version = (quality && quality !== 'stable') ? `${packageJson.version}-${quality}` : packageJson.version;
 
+// PARA-PATCH: document the fork-only docx-preview-037 command.
 // CLI: build-fast [--force] | transpile [--watch] | bundle [--minify] [--nls] [--out <dir>] | docx-preview-037 [--check] [--out <dir>]
 const command = process.argv[2];
 
@@ -54,6 +57,7 @@ const options = {
 	manglePrivates: process.argv.includes('--mangle-privates'),
 	excludeTests: process.argv.includes('--exclude-tests'),
 	force: process.argv.includes('--force'),
+	// PARA-PATCH: --check option of the fork-only docx-preview-037 command.
 	check: process.argv.includes('--check'),
 	out: getArgValue('--out'),
 	target: getArgValue('--target') ?? 'desktop', // 'desktop' | 'server' | 'server-web' | 'web'
@@ -1353,6 +1357,7 @@ async function buildDocxPreview037(outputDirectory: string | undefined, check: b
 }
 
 function printUsage(): void {
+	// PARA-PATCH: the usage text below documents the fork-only docx-preview-037 command and its options.
 	console.log(`Usage: npx tsx build/next/index.ts <command> [options]
 
 Commands:
@@ -1427,6 +1432,7 @@ async function main(): Promise<void> {
 			case 'bundle':
 				await bundle(options.out ?? OUT_VSCODE_DIR, options.minify, options.nls, options.manglePrivates, options.target as BuildTarget, options.sourceMapBaseUrl);
 				break;
+			// PARA-PATCH: dispatch the fork-only docx-preview-037 vendor build.
 			case 'docx-preview-037':
 				await buildDocxPreview037(options.out, options.check);
 				break;

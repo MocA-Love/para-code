@@ -598,6 +598,7 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		this._register(registerParadisRtk(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
 		// PARA-PATCH: おやすみモード ⇔ aivis-mcp のミュート同期（src/vs/paradis/contrib/notifications/ 参照）
 		this._register(registerParadisAivisMuteBridge(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
+		// PARA-PATCH: read-only Claude Code / Codex local session history browser (src/vs/paradis/contrib/sessionResume/)
 		this._register(registerParadisSessionResume(this.server, accessor.get(ILogService)));
 
 		// PARA-PATCH: スペースの容量計測（数十秒かかるのでmainではなくここに置く。src/vs/paradis/contrib/spaceDisk/ 参照）

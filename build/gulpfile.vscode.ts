@@ -811,6 +811,7 @@ BUILD_TARGETS.forEach(buildTarget => {
 		const packageTasks: task.Task[] = [
 			compileNativeExtensionsBuildTask,
 			util.rimraf(path.join(buildRoot, destinationFolderName)),
+			// PARA-PATCH: Inject Sentry Debug IDs into minified output before packaging (see injectParadisSentrySourceMapsTask).
 			...(minified ? [injectParadisSentrySourceMapsTask] : []),
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
 			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName)

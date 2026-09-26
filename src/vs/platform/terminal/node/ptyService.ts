@@ -12,6 +12,7 @@ import { URI } from '../../../base/common/uri.js';
 import { getSystemShell } from '../../../base/node/shell.js';
 import { ILogService, LogLevel } from '../../log/common/log.js';
 import { RequestStore } from '../common/requestStore.js';
+// PARA-PATCH: import the unresolvable pty id and nonce helper used by the revive identity checks
 import { IProcessDataEvent, IProcessReadyEvent, IPtyService, IRawTerminalInstanceLayoutInfo, IReconnectConstants, IShellLaunchConfig, ITerminalInstanceLayoutInfoById, ITerminalLaunchError, ITerminalsLayoutInfo, ITerminalTabLayoutInfoById, TerminalIcon, IProcessProperty, TitleEventSource, ProcessPropertyType, IProcessPropertyMap, IFixedTerminalDimensions, IPersistentTerminalProcessLaunchConfig, ICrossVersionSerializedTerminalState, ISerializedTerminalState, ITerminalProcessOptions, IPtyHostLatencyMeasurement, type IPtyServiceContribution, PosixShellType, ITerminalLaunchResult, PARADIS_UNRESOLVABLE_PTY_ID, paradisTerminalIdentityNonce } from '../common/terminal.js';
 import { TerminalDataBufferer } from '../common/terminalDataBuffering.js';
 import { escapeNonWindowsPath } from '../common/terminalEnvironment.js';
@@ -25,6 +26,7 @@ import { ErrorNoTelemetry } from '../../../base/common/errors.js';
 import { ShellIntegrationAddon } from '../common/xterm/shellIntegrationAddon.js';
 import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
+// PARA-PATCH: pty daemon support; replaces the direct TerminalProcess import (see paradisTerminalProcessFactory.ts)
 import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
 import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
@@ -103,6 +105,7 @@ export class PtyService extends Disposable implements IPtyService {
 	private readonly _workspaceLayoutInfos = new Map<WorkspaceId, ISetTerminalLayoutInfoArgs>();
 	private readonly _detachInstanceRequestStore: RequestStore<IProcessDetails | undefined, { workspaceId: string; instanceId: number }>;
 	private readonly _revivedPtyIdMap: Map<string, { newId: number; state: ISerializedTerminalState }> = new Map();
+	// PARA-PATCH: fork bookkeeping below: new id -> old id revive map, nonce index, adopted nonces, orphan attach claims
 	private readonly _revivedPtyOldIdByNewId: Map<string, number> = new Map();
 	/**
 	 * PARA-PATCH: revived terminals indexed by shell integration nonce, see getRevivedPtyNewId.
@@ -322,6 +325,7 @@ export class PtyService extends Disposable implements IPtyService {
 		// Don't start the process here as there's no terminal to answer CPR
 		const oldId = this._getRevivingProcessId(workspaceId, terminal.id);
 		this._revivedPtyIdMap.set(oldId, { newId, state: terminal });
+		// PARA-PATCH: remember new id -> old id so listProcesses/layouts can report paradisRevivedFromPersistentProcessId
 		this._revivedPtyOldIdByNewId.set(this._getRevivingProcessId(workspaceId, newId), terminal.id);
 		// PARA-PATCH: also index by nonce so a restored editor tab can find this terminal (getRevivedPtyNewId)
 		const nonce = paradisTerminalIdentityNonce(terminal.processDetails.shellIntegrationNonce);
@@ -371,6 +375,7 @@ export class PtyService extends Disposable implements IPtyService {
 		};
 		const persistentProcess = new PersistentTerminalProcess(id, process, workspaceId, workspaceName, shouldPersist, cols, rows, processLaunchOptions, unicodeVersion, this._reconnectConstants, this._logService, isReviving && isString(shellLaunchConfig.initialText) ? shellLaunchConfig.initialText : undefined, rawReviveBuffer, shellLaunchConfig.icon, shellLaunchConfig.color, shellLaunchConfig.name, shellLaunchConfig.fixedDimensions, paradisAdoptTarget);
 		process.onProcessExit(event => {
+			// PARA-PATCH: drop the orphan attach claim and the reverse revive entry of the exited pty
 			this._paradisOrphanAttachClaims.delete(id);
 			this._revivedPtyOldIdByNewId.delete(this._getRevivingProcessId(workspaceId, id));
 			// PARA-PATCH: let go of the nonce this terminal was answering for. Nothing else clears
@@ -442,6 +447,7 @@ export class PtyService extends Disposable implements IPtyService {
 		}
 	}
 
+	// PARA-PATCH: atomic nonce-proven orphan claim and attach RPC, see IPtyService#paradisClaimAndAttachToProcess
 	/**
 	 * Resolve and claim an orphan in one pty-host RPC. Renderer-side list/held checks cannot prevent
 	 * two windows from racing on the same snapshot, so the final nonce/orphan decision lives here.
@@ -508,6 +514,7 @@ export class PtyService extends Disposable implements IPtyService {
 
 	@traceRpc
 	async detachFromProcess(id: number, forcePersist?: boolean): Promise<void> {
+		// PARA-PATCH: release any pending orphan attach claim when the renderer detaches
 		this._paradisOrphanAttachClaims.delete(id);
 		return this._throwIfNoPty(id).detach(forcePersist);
 	}
@@ -559,6 +566,7 @@ export class PtyService extends Disposable implements IPtyService {
 		const persistentProcesses = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
 
 		this._logService.info(`Listing ${persistentProcesses.length} persistent terminals, ${this._ptys.size} total terminals`);
+		// PARA-PATCH: tag orphans with the id they had before revive (paradisRevivedFromPersistentProcessId)
 		const promises = persistentProcesses.map(async ([id, terminalProcessData]) => {
 			const processDetails = await this._buildProcessDetails(id, terminalProcessData);
 			if (!processDetails.isOrphan) {
@@ -846,6 +854,7 @@ export class PtyService extends Disposable implements IPtyService {
 	private async _expandTerminalTab(workspaceId: string, tab: ITerminalTabLayoutInfoById, doneSet: Set<number>): Promise<ITerminalTabLayoutInfoDto> {
 		const expandedTerminals = (await Promise.all(tab.terminals.map(t => this._expandTerminalInstance(workspaceId, t, doneSet))));
 		const filtered = expandedTerminals.filter(term => term.terminal !== null) as IRawTerminalInstanceLayoutInfo<IProcessDetails>[];
+		// PARA-PATCH: map the saved active id through revive (old id -> new id) so the active terminal survives restart
 		const activePersistentProcessId = tab.activePersistentProcessId === undefined
 			? undefined
 			: filtered.find(term => term.terminal.id === tab.activePersistentProcessId
@@ -871,6 +880,7 @@ export class PtyService extends Disposable implements IPtyService {
 			}
 			doneSet.add(persistentProcessId);
 			const persistentProcess = this._throwIfNoPty(persistentProcessId);
+			// PARA-PATCH: build details under the new id and pass the old id so it is reported as paradisRevivedFromPersistentProcessId
 			const processDetails = persistentProcess && await this._buildProcessDetails(
 				persistentProcessId,
 				persistentProcess,
@@ -897,6 +907,7 @@ export class PtyService extends Disposable implements IPtyService {
 		return `${workspaceId}-${ptyId}`;
 	}
 
+	// PARA-PATCH: expose the pre-revive id; _buildProcessDetails takes it instead of a wasRevived flag
 	private _getRevivedFromPersistentProcessId(workspaceId: string, persistentProcessId: number): number | undefined {
 		return this._revivedPtyOldIdByNewId.get(this._getRevivingProcessId(workspaceId, persistentProcessId));
 	}
@@ -992,6 +1003,7 @@ class PersistentTerminalProcess extends Disposable {
 	private _inReplay = false;
 
 	private _pid = -1;
+	// PARA-PATCH: true when the pty was adopted from the pty daemon, see the paradisAdopted getter
 	private _paradisAdopted = false;
 	private _cwd = '';
 	private _title: string | undefined;

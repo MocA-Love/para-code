@@ -14,6 +14,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IKeyMods } from '../../../../platform/quickinput/common/quickInput.js';
 import { IMarkProperties, ITerminalCapabilityImplMap, ITerminalCapabilityStore, ITerminalCommand, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IMergedEnvironmentVariableCollection } from '../../../../platform/terminal/common/environmentVariable.js';
+// PARA-PATCH: ITerminalDimensionsOverride replaces ITerminalDimensions for the widened setOverrideDimensions (mobile relay)
 import { IExtensionTerminalProfile, IReconnectionProperties, IShellIntegration, IShellLaunchConfig, ITerminalBackend, ITerminalDimensionsOverride, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalShellType, TerminalType, TitleEventSource, WaitOnExitValue, type IDecorationAddon, type ShellIntegrationInjectionFailureReason } from '../../../../platform/terminal/common/terminal.js';
 import { IColorTheme } from '../../../../platform/theme/common/themeService.js';
 import { IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
@@ -935,6 +936,7 @@ export interface ITerminalInstance extends IBaseTerminalInstance {
 	readonly processName: string;
 	readonly sequence?: string;
 	readonly staticTitle?: string;
+	// PARA-PATCH: renderer-only transient titles (automatic Codex terminal titles), see terminalInstance.ts
 	/** A renderer-only title override that is never persisted or restored. */
 	readonly transientTitle?: string;
 	/** The title that should be persisted while a transient title is displayed. */
@@ -1377,6 +1379,7 @@ export interface ITerminalInstance extends IBaseTerminalInstance {
 	 */
 	rename(title?: string): Promise<void>;
 
+	// PARA-PATCH: renderer-only transient titles (automatic Codex terminal titles), see terminalInstance.ts
 	/**
 	 * Applies a renderer-only title while the current process title is exactly
 	 * `expectedSequence`. Static/API titles always take precedence.
@@ -1494,6 +1497,7 @@ export interface IXtermTerminal extends IDisposable {
 	 */
 	attachToElement(container: HTMLElement, options?: Partial<IXtermAttachToElementOptions>): void;
 
+	// PARA-PATCH: redraw terminals after the DOM moves to another window (see xtermTerminal.ts)
 	/** Recreate document-bound renderers after the terminal DOM moves to another window. */
 	recreateRendererAfterWindowChange(): void;
 

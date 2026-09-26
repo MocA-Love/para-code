@@ -248,6 +248,7 @@ export class UtilityProcess extends Disposable {
 		const args = this.configuration.args ?? [];
 		const execArgv = [...(this.configuration.execArgv ?? [])];
 		const allowLoadingUnsignedLibraries = this.configuration.allowLoadingUnsignedLibraries;
+		// PARA-PATCH: access through the lazily resolved electron default import (see the import at the top)
 		const jsFlags = electron.app.commandLine.getSwitchValue('js-flags');
 		if (jsFlags) {
 			execArgv.push(`--js-flags=${jsFlags}`);
@@ -259,6 +260,7 @@ export class UtilityProcess extends Disposable {
 		this.log('creating new...', Severity.Info);
 
 		// Fork utility process
+		// PARA-PATCH: access through the lazily resolved electron default import (see the import at the top)
 		this.process = electron.utilityProcess.fork(modulePath, args, {
 			serviceName,
 			env,
@@ -343,6 +345,7 @@ export class UtilityProcess extends Disposable {
 		}));
 
 		// Child process gone
+		// PARA-PATCH: access through the lazily resolved electron default import (see the import at the top)
 		this._register(Event.fromNodeEventEmitter<{ details: Details }>(electron.app, 'child-process-gone', (event, details) => ({ event, details }))(({ details }) => {
 			if (details.type === 'Utility' && details.name === serviceName) {
 				this.log(`crashed with code ${details.exitCode} and reason '${details.reason}'`, Severity.Error);
@@ -396,6 +399,7 @@ export class UtilityProcess extends Disposable {
 	}
 
 	connect(payload?: unknown): Electron.MessagePortMain {
+		// PARA-PATCH: access through the lazily resolved electron default import (see the import at the top)
 		const { port1: outPort, port2: utilityProcessPort } = new electron.MessageChannelMain();
 		this.postMessage(payload, [utilityProcessPort]);
 

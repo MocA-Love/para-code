@@ -517,6 +517,7 @@ export interface IEditorPart extends IEditorGroupsContainer {
 
 export interface IAuxiliaryEditorPart extends IEditorPart {
 
+	// PARA-PATCH: onWillClose lets auxiliary windows pinned to spaces react before the part closes.
 	/**
 	 * Fired immediately before this auxiliary editor part closes.
 	 */
@@ -622,6 +623,7 @@ export interface IEditorWorkingSet {
 
 export interface IEditorWorkingSetOptions {
 	readonly preserveFocus?: boolean;
+	// PARA-PATCH: preserveAuxiliaryWindows keeps space-pinned auxiliary windows open when applying a working set.
 	/**
 	 * Keep currently opened auxiliary editor parts alive and apply only the main
 	 * editor part state. This is an explicit opt-in for scoped workspace state.
@@ -629,6 +631,7 @@ export interface IEditorWorkingSetOptions {
 	readonly preserveAuxiliaryWindows?: boolean;
 }
 
+// PARA-PATCH: IEditorWorkingSetSaveOptions controls what saveWorkingSet persists (scope unsaved editors to spaces).
 /**
  * Options that control which editor inputs are persisted in a newly created
  * working set. Excluded inputs remain the responsibility of the caller.
@@ -720,12 +723,14 @@ export interface IEditorGroupsService extends IEditorGroupsContainer {
 	 */
 	getScopedInstantiationService(part: IEditorPart): IInstantiationService;
 
+	// PARA-PATCH: saveWorkingSet below takes optional IEditorWorkingSetSaveOptions (scope unsaved editors to spaces).
 	/**
 	 * Save a new editor working set from the currently opened
 	 * editors and group layout.
 	 */
 	saveWorkingSet(name: string, options?: IEditorWorkingSetSaveOptions): IEditorWorkingSet;
 
+	// PARA-PATCH: retainEditor keeps detached editor inputs alive across space switches.
 	/**
 	 * Prevents an editor input from being disposed when its final group reference
 	 * is removed. The retention ends when the returned disposable is disposed.
@@ -1038,6 +1043,7 @@ export interface IEditorGroup {
 	 */
 	closeEditor(editor?: EditorInput, options?: ICloseEditorOptions): Promise<boolean>;
 
+	// PARA-PATCH: detachEditor lets space switching move editors out without closing them (scope unsaved editors to spaces).
 	/**
 	 * Removes an editor from this group without confirmation while retaining move
 	 * semantics. Callers must retain the input separately when it has no other

@@ -112,6 +112,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	// PARA-PATCH: renamed and rewritten for tiered polling (only the active session polls fast); passes hostService
 	test('polls the active session fast and tracks non-active sessions without fast polling', () => {
 		const existingSession = sessionsManagementService.addSession('existing', makeGitHubInfo(1));
 		activeSession.set(existingSession as unknown as IActiveSession, undefined);
@@ -130,6 +131,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 	test('rebinds polling when a session is replaced under the same session id', () => {
 		const provisionalSession = sessionsManagementService.addSession('session', makeGitHubInfo(1));
+		// PARA-PATCH: pass the mock hostService (new constructor argument)
 		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		const committedSession = sessionsManagementService.addSession('session', makeGitHubInfo(2));
@@ -144,6 +146,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 	test('stops polling when a session is archived, then resumes when unarchived', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
+		// PARA-PATCH: mark the session active (fast polling is active-session-only) and pass hostService
 		activeSession.set(session as unknown as IActiveSession, undefined);
 		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
@@ -164,6 +167,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 	test('does not poll archived sessions until they are unarchived', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1), true);
+		// PARA-PATCH: mark the session active (fast polling is active-session-only) and pass hostService
 		activeSession.set(session as unknown as IActiveSession, undefined);
 		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
@@ -179,6 +183,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 	test('stops polling tracked pull requests when disposed', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
+		// PARA-PATCH: mark the session active (fast polling is active-session-only) and pass hostService
 		activeSession.set(session as unknown as IActiveSession, undefined);
 		const contribution = store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
@@ -226,6 +231,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 	});
 
 	test('does not poll CI checks or review threads for draft pull requests', () => {
+		// PARA-PATCH: mark the session active (CI polling is active-session-only) and pass hostService
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
 		activeSession.set(session as unknown as IActiveSession, undefined);
 		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
@@ -249,6 +255,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 		// Mirrors the agent-host provider, whose `gitHubInfo` initially has no PR
 		// number (it is resolved asynchronously via findPullRequestNumberByHeadBranch).
 		const session = sessionsManagementService.addSession('async', { owner: 'owner', repo: 'repo' });
+		// PARA-PATCH: mark the session active (fast polling is active-session-only) and pass hostService
 		activeSession.set(session as unknown as IActiveSession, undefined);
 		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
@@ -265,6 +272,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 	test('stops polling a merged pull request unless it is the active session', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
+		// PARA-PATCH: pass the mock hostService (new constructor argument)
 		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		// PARA-PATCH: a non-active open PR is tracked in the background round-robin,

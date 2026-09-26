@@ -5,6 +5,7 @@
 
 import * as DOM from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+// PARA-PATCH: Emitter/Event back the onDidChangeVisualViewport event added below
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { derived, IObservable, observableValue } from '../../../../base/common/observable.js';
 import { IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';

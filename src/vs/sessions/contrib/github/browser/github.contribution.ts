@@ -77,6 +77,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 		@ISessionsManagementService private readonly _sessionsManagementService: ISessionsManagementService,
 		@ISessionsService private readonly _sessionsService: ISessionsService,
 		@ILogService private readonly _logService: ILogService,
+		// PARA-PATCH: host service feeds SessionGithubWindowActivity (window-focus gating)
 		@IHostService hostService: IHostService,
 	) {
 		super();
@@ -340,6 +341,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 				});
 
 			reader.store.add(autorun(statusReader => {
+				// PARA-PATCH: read the projected ciTarget (active session only); per-session review-thread polling removed
 				const ciTarget = ciTargetObs.read(statusReader);
 				if (!ciTarget) {
 					return;

@@ -200,6 +200,7 @@ export class RemoteTerminalChannelClient implements IPtyHostController {
 	attachToProcess(id: number): Promise<void> {
 		return this._channel.call(RemoteTerminalChannelRequest.AttachToProcess, [id]);
 	}
+	// PARA-PATCH: remote channel for the atomic nonce-proven orphan claim and attach
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number> {
 		return this._channel.call(RemoteTerminalChannelRequest.ParadisClaimAndAttachToProcess, [workspaceId, id, paradisExpectedNonce]);
 	}

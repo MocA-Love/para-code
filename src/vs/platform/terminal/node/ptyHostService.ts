@@ -223,6 +223,7 @@ export class PtyHostService extends Disposable implements IPtyHostService {
 	attachToProcess(id: number): Promise<void> {
 		return this._proxy.attachToProcess(id);
 	}
+	// PARA-PATCH: forward the atomic nonce-proven orphan claim and attach to the pty host
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number> {
 		return this._proxy.paradisClaimAndAttachToProcess(workspaceId, id, paradisExpectedNonce);
 	}

@@ -207,6 +207,7 @@ export function createBrowserViewAutomationKeyPreload(ipcRenderer: IAutomationKe
  */
 function init() {
 	const { contextBridge, ipcRenderer } = require('electron');
+	// PARA-PATCH: set up the automation-key expectation state used by the keydown listener below (Para Browser MCP automation input isolation)
 	const automationKeyPreload = createBrowserViewAutomationKeyPreload(ipcRenderer, window, document);
 	const automationSignatureForEvent = (event: KeyboardEvent): IBrowserViewAutomationKeySignature => ({
 		type: 'keyDown',

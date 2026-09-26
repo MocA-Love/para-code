@@ -302,6 +302,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 				return this.cleanup(update.version).then(() => {
 					return this.getUpdatePackagePath(update.version).then(updatePackagePath => {
+						// PARA-PATCH: reuse a cached installer only if its sha256 matches the feed; otherwise delete it and download again
 						return pfs.Promises.exists(updatePackagePath).then(async exists => {
 							if (exists) {
 								if (await this.isUpdatePackageValid(updatePackagePath, update.sha256hash)) {
@@ -410,6 +411,7 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		return path.join(cachePath, `CodeSetup-${this.productService.quality}-${version}.exe`);
 	}
 
+	// PARA-PATCH: sha256 check for a cached Windows installer (prevents reusing a stale or partial installer)
 	private async isUpdatePackageValid(packagePath: string, expectedSha256Hash: string | undefined): Promise<boolean> {
 		if (!expectedSha256Hash) {
 			return false;

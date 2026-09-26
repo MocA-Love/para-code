@@ -483,6 +483,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	}
 
 	private async onDidChangeWorkspaceFolders({ added, removed }: WorkspaceFoldersChangeEvent): Promise<void> {
+		// PARA-PATCH: the try body below is rewritten to park repositories instead of disposing them; generation guards stale handlers. See paradisUnaccountedToPark.ts.
 		const generation = ++this._workspaceFolderChangeGeneration;
 		try {
 			// PARA-PATCH: bring back repositories parked by an earlier space switch before deciding
@@ -973,6 +974,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			updateOperationInProgressContext();
 		};
 
+		// PARA-PATCH: unpark is the counterpart of park: re-adds a parked repository to the active set. See paradisRepositoryPark.ts.
 		const unpark = () => {
 			if (this.openRepositories.includes(openRepository)) {
 				return;
@@ -995,6 +997,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			updateOperationInProgressContext();
 		};
 
+		// PARA-PATCH: expose park/unpark on OpenRepository (upstream only has dispose). See paradisRepositoryPark.ts.
 		const openRepository = { repository, dispose, park, unpark };
 		this.openRepositories.push(openRepository);
 		updateMergeChanges();

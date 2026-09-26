@@ -10,6 +10,7 @@ import { Part } from '../../../workbench/browser/part.js';
 import { IPartVisibilityChangeEvent, Parts } from '../../../workbench/services/layout/browser/layoutService.js';
 import { DockedAuxiliaryBarController, IDockedAuxiliaryBarHost } from '../../browser/dockedAuxiliaryBarController.js';
 import { ISidePaneToggleEvent, Workbench } from '../../browser/workbench.js';
+// PARA-PATCH: typed layer for the handleMobileNavPop tests at the end of this suite
 import { MobileNavigationLayer } from '../../browser/mobileNavigationStack.js';
 import { DockedEditorSizeMemento, SinglePaneWorkbench } from '../../browser/singlePaneWorkbench.js';
 import { SinglePaneMainEditorPart } from '../../browser/parts/singlePaneEditorPart.js';

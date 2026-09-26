@@ -16,6 +16,7 @@ import { BrowserSessionHistory, IBrowserSessionHistory } from './browserSessionH
 import { BrowserSessionPermissions, IBrowserSessionPermissions } from './browserSessionPermissions.js';
 import { BrowserSessionRemote, IBrowserSessionRemote } from './browserSessionRemote.js';
 import { FileAccess, Schemas } from '../../../base/common/network.js';
+// PARA-PATCH: IConfigurationService is injected to read paradis.browser.downloads.* (auto-save downloads)
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { localize } from '../../../nls.js';

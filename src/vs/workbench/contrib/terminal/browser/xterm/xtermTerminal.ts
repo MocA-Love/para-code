@@ -551,6 +551,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		return this._attached?.container.querySelector('.xterm-screen')!;
 	}
 
+	// PARA-PATCH: Recreate the WebGL renderer after a window move so the terminal does not render stale glyphs.
 	recreateRendererAfterWindowChange(): void {
 		const recreateWebgl = this._webglAddon !== undefined;
 		if (recreateWebgl) {

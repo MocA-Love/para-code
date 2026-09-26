@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../base/common/uri.js';
+// PARA-PATCH: getComparisonKey replaces isEqual for the O(1) stats index below
 import { getComparisonKey } from '../../../../base/common/resources.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { isIChatSessionFileChange2 } from '../../../../workbench/contrib/chat/common/chatSessionsService.js';
@@ -14,6 +15,7 @@ export interface IChangesEditorLabels {
 	readonly description: string;
 }
 
+// PARA-PATCH: exported so sessionChangesEditor.ts can type the stats index observable
 export interface IChangesEditorFileStats {
 	readonly insertions: number;
 	readonly deletions: number;

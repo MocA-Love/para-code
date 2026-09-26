@@ -113,6 +113,7 @@ class MobileOpenChangesViewAction extends Action2 {
 		// exists — jump straight to the single-file diff view.
 		if (diffs.length === 1) {
 			const commandService = accessor.get(ICommandService);
+			// PARA-PATCH: forward the session resource so the diff view can build the fork-owned Changes toolbar
 			commandService.executeCommand(MOBILE_OPEN_DIFF_VIEW_COMMAND_ID, { diff: diffs[0], sessionResource: session?.resource });
 			return;
 		}

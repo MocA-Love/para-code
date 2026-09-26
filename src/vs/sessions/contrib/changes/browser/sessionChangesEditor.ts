@@ -7,6 +7,7 @@ import './media/sessionChangesEditor.css';
 import { $, append, Dimension } from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+// PARA-PATCH: derived builds the per-changeset stats index (_scopedChangesStatsIndex)
 import { autorun, derived, derivedObservableWithCache, IObservable, observableValue } from '../../../../base/common/observable.js';
 import { Range } from '../../../../editor/common/core/range.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -51,6 +52,7 @@ import { MenuItemAction } from '../../../../platform/actions/common/actions.js';
 import { CheckboxActionViewItem } from '../../../../base/browser/ui/toggle/toggle.js';
 import { defaultCheckboxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { localize } from '../../../../nls.js';
+// PARA-PATCH: stats index helpers replace the per-label linear lookup (see changesEditorLabels.ts)
 import { buildChangesEditorFileStatsIndex, getChangesEditorFileStats, lookupChangesEditorFileStats, type IChangesEditorFileStats } from './changesEditorLabels.js';
 
 const HEADER_HEIGHT = 35;
@@ -82,6 +84,7 @@ class SessionChangesUIElementFactory implements IWorkbenchUIElementFactory {
 	createResourceLabel(element: HTMLElement, kind: MultiDiffEditorItemLabelKind): IResourceLabel {
 		const label = this.instantiationService.createInstance(ResourceLabel, element, {});
 		const showDiffStats = kind === MultiDiffEditorItemLabelKind.Primary;
+		// PARA-PATCH: pass the stats index instead of the raw change array
 		return new SessionChangesResourceLabel(label, element, showDiffStats, this.statsIndexObs);
 	}
 
@@ -90,6 +93,7 @@ class SessionChangesUIElementFactory implements IWorkbenchUIElementFactory {
 			return false;
 		}
 
+		// PARA-PATCH: comment reworded after changesObs was replaced by statsIndexObs
 		// The middle-clicked row can be stale during a session switch; validate against the active changeset.
 		if (!getChangesEditorFileStats(resource, this.changesViewService.activeSessionChangesObs.get())) {
 			return false;
@@ -115,6 +119,7 @@ class SessionChangesResourceLabel extends Disposable implements IResourceLabel {
 		private readonly label: ResourceLabel,
 		element: HTMLElement,
 		showDiffStats: boolean,
+		// PARA-PATCH: takes the stats index instead of the raw change array
 		statsIndexObs: IObservable<ReadonlyMap<string, IChangesEditorFileStats>>,
 	) {
 		super();
@@ -130,6 +135,7 @@ class SessionChangesResourceLabel extends Disposable implements IResourceLabel {
 			this._register(autorun(reader => {
 				const resource = this.resource.read(reader);
 				const stats = resource
+					// PARA-PATCH: O(1) index lookup instead of a linear find over the change array
 					? lookupChangesEditorFileStats(statsIndexObs.read(reader), resource)
 					: undefined;
 				statsContainer.style.display = stats ? '' : 'none';
@@ -264,6 +270,7 @@ export class SessionChangesEditor extends AbstractEditorWithViewState<IMultiDiff
 		this.widget = this._register(paneInstantiationService.createInstance(
 			MultiDiffEditorWidget,
 			this.bodyContainer,
+			// PARA-PATCH: hand the label factory the stats index instead of _scopedChangesObs
 			paneInstantiationService.createInstance(SessionChangesUIElementFactory, this._scopedChangesStatsIndex),
 			CHANGES_DIFF_EDITOR_OPTIONS,
 		));

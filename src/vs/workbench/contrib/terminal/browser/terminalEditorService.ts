@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-PATCH: Event and DisposableMap back _retainedInstanceListeners (Paradis space switch)
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, dispose, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -21,6 +22,7 @@ import { TerminalContextKeys } from '../common/terminalContextKey.js';
 import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService, ACTIVE_GROUP, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
 import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.js';
+// PARA-PATCH: exact destination editor group guard for the terminal-on-split flow
 import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
 
 export class TerminalEditorService extends Disposable implements ITerminalEditorService {
@@ -171,6 +173,7 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 	async openEditor(instance: ITerminalInstance, editorOptions?: TerminalEditorLocation): Promise<void> {
 		const resource = this.resolveResource(instance);
 		if (resource) {
+			// PARA-PATCH: openEditor rewritten down to its end: a failed request must not poison the queue, and paradisExactEditorGroup is asserted before and after opening
 			while (this._activeOpenEditorRequest) {
 				const previousRequest = this._activeOpenEditorRequest;
 				try {
@@ -184,6 +187,7 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 			if (exactGroup) {
 				assertParadisExactEditorGroup(this._editorGroupsService, exactGroup, editorOptions.viewColumn);
 			}
+			// PARA-PATCH: open in the exact destination group when one is given (see the group argument below)
 			const request = {
 				instanceId: instance.instanceId,
 				promise: this._editorService.openEditor({

@@ -241,6 +241,7 @@ export class BrowserNavigationFeatures extends BrowserEditorContribution {
 	private readonly _navbar: BrowserNavigationBar;
 	private readonly _canGoBackContext: IContextKey<boolean>;
 	private readonly _canGoForwardContext: IContextKey<boolean>;
+	// PARA-PATCH: browserHasModel context key backing the Reload/Hard Reload precondition (see CONTEXT_BROWSER_HAS_MODEL)
 	private readonly _hasModelContext: IContextKey<boolean>;
 	private readonly _pendingTryFocus = this._register(new MutableDisposable());
 
@@ -262,6 +263,7 @@ export class BrowserNavigationFeatures extends BrowserEditorContribution {
 		this._navbar = this._register(new BrowserNavigationBar(editor, instantiationService, contextKeyService, configurationService, preferencesService));
 		this._canGoBackContext = CONTEXT_BROWSER_CAN_GO_BACK.bindTo(contextKeyService);
 		this._canGoForwardContext = CONTEXT_BROWSER_CAN_GO_FORWARD.bindTo(contextKeyService);
+		// PARA-PATCH: see CONTEXT_BROWSER_HAS_MODEL above.
 		this._hasModelContext = CONTEXT_BROWSER_HAS_MODEL.bindTo(contextKeyService);
 
 		// Keep the URL bar presentation (placeholder, primary action) in sync
@@ -301,6 +303,7 @@ export class BrowserNavigationFeatures extends BrowserEditorContribution {
 		// A model that is already loading on attach (e.g. switching back to a
 		// tab mid-navigation) counts as having initiated navigation.
 		this._hasInitiatedNavigation = model.loading;
+		// PARA-PATCH: see CONTEXT_BROWSER_HAS_MODEL above.
 		this._hasModelContext.set(true);
 		this._updateFromModel(model);
 		store.add(model.onDidNavigate(() => this._updateFromModel(model)));
@@ -315,6 +318,7 @@ export class BrowserNavigationFeatures extends BrowserEditorContribution {
 		this._navbar.clear();
 		this._canGoBackContext.reset();
 		this._canGoForwardContext.reset();
+		// PARA-PATCH: see CONTEXT_BROWSER_HAS_MODEL above.
 		this._hasModelContext.reset();
 	}
 
