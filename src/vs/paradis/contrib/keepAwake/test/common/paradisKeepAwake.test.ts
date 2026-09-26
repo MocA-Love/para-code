@@ -6,12 +6,12 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_KEEP_AWAKE_AUTO_MAX_SAME_STATE_MS, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../../common/paradisKeepAwake.js';
+import { PARADIS_KEEP_AWAKE_AUTO_MAX_SAME_STATE_MS, PARADIS_KEEP_AWAKE_AUTO_SNAPSHOT_STALE_MS, paradisAgentsActiveAfterSnapshotFailure, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../../common/paradisKeepAwake.js';
 
 suite('ParadisKeepAwake', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('accepts only supported modes and falls back to auto for every other setting value', () => {
+	test('accepts only supported modes and turns every other setting value off', () => {
 		assert.deepStrictEqual([
 			toParadisKeepAwakeMode('system'),
 			toParadisKeepAwakeMode('display'),
@@ -26,10 +26,10 @@ suite('ParadisKeepAwake', () => {
 			'display',
 			'off',
 			'auto',
-			'auto',
-			'auto',
-			'auto',
-			'auto',
+			'off',
+			'off',
+			'off',
+			'off',
 		]);
 	});
 
@@ -46,5 +46,15 @@ suite('ParadisKeepAwake', () => {
 			paradisAgentsNeedKeepAwake([{ status: 'permission', changedAt: stale }], now),
 			paradisAgentsNeedKeepAwake([{ status: 'permission', changedAt: stale }, { status: 'working', changedAt: fresh }], now),
 		], [false, true, true, true, false, false, true]);
+	});
+
+	test('keeps the last decision through short snapshot failures and stops keeping awake after about a minute', () => {
+		const lastSnapshotAt = 1_000_000;
+		assert.deepStrictEqual([
+			paradisAgentsActiveAfterSnapshotFailure(true, lastSnapshotAt, lastSnapshotAt + 2_000),
+			paradisAgentsActiveAfterSnapshotFailure(true, lastSnapshotAt, lastSnapshotAt + PARADIS_KEEP_AWAKE_AUTO_SNAPSHOT_STALE_MS - 1),
+			paradisAgentsActiveAfterSnapshotFailure(true, lastSnapshotAt, lastSnapshotAt + PARADIS_KEEP_AWAKE_AUTO_SNAPSHOT_STALE_MS),
+			paradisAgentsActiveAfterSnapshotFailure(false, lastSnapshotAt, lastSnapshotAt + 2_000),
+		], [true, true, false, false]);
 	});
 });
