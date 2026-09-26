@@ -15,6 +15,7 @@ import {
 	IParadisCodexResetConsumeRequest,
 	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
+	IParadisCodexResetCredits,
 	PARADIS_CODEX_ACCOUNTS_CHANNEL
 } from '../common/paradisCodexAccounts.js';
 
@@ -35,6 +36,11 @@ export class ParadisCodexAccountsClient {
 
 	consumeResetCredit(request: IParadisCodexResetConsumeRequest): Promise<IParadisCodexResetConsumeResult> {
 		return this.channel.call<IParadisCodexResetConsumeResult>('consumeResetCredit', [request]);
+	}
+
+	/** 読み取り済みのリセットクレジット（ホームの絶対パス → 残り）。app-server は起こさない。 */
+	peekResetCredits(): Promise<Record<string, IParadisCodexResetCredits>> {
+		return this.channel.call<Record<string, IParadisCodexResetCredits>>('peekResetCredits');
 	}
 
 	getState(): Promise<IParadisCodexAccountsState> {
