@@ -71,3 +71,17 @@ export interface IParadisClaudeRegisterResult {
 	readonly outcome: ParadisClaudeRegisterOutcome;
 	readonly email?: string;
 }
+
+/**
+ * アカウント追加・再ログインの失敗の種類。`IParadisLimitsSetupState.error` にこの値が入る
+ * （ダイアログが日本語の説明に置き換える。これ以外の値は診断用の英文としてそのまま出す）。
+ */
+export type ParadisClaudeSetupErrorCode =
+	| 'busy'
+	| 'cancelled'
+	| 'no_credentials'
+	| 'no_identity'
+	| 'different_account'
+	| 'not_found'
+	| 'keychain_unavailable'
+	| 'unsupported';

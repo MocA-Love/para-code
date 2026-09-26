@@ -25,6 +25,7 @@
 //
 // `CLAUDE_CONFIG_DIR` で既定以外の場所を使っている構成には対応しない（既定の ~/.claude だけを見る）。
 
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
 import { IParadisClaudeIdentity, paradisClaudeIdentityFromOauthAccount } from '../common/paradisClaudeUsage.js';
@@ -332,6 +333,109 @@ export class ParadisClaudeLiveAuth {
 		config.oauthAccount = oauthAccount;
 		await paradisWriteFileAtomically(configPath, JSON.stringify(config, null, 2), this.options.platform);
 		this.configCache = undefined;
+	}
+
+	// ---------- アカウント追加用の一時ディレクトリ ----------
+
+	/**
+	 * `CLAUDE_CONFIG_DIR`（`CLAUDE_SECURESTORAGE_CONFIG_DIR`）を指定して動かした Claude Code が使う
+	 * キーチェーンのサービス名。Claude Code 2.1 以降はディレクトリの文字列（NFC）の SHA-256 の先頭
+	 * 8 桁を付ける（Orca・claude-swap で確認）。
+	 */
+	static scopedKeychainService(configDir: string): string {
+		return `${PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE}-${createHash('sha256').update(configDir.normalize('NFC')).digest('hex').slice(0, 8)}`;
+	}
+
+	/** macOS の一時ディレクトリは /var → /private/var の別名がある。Claude Code が実パスで項目名を作る場合に備えて両方見る。 */
+	private async configDirAliases(configDir: string): Promise<string[]> {
+		const aliases = [configDir];
+		try {
+			const real = await fs.promises.realpath(configDir);
+			if (real !== configDir) {
+				aliases.push(real);
+			}
+		} catch {
+			// 無ければ別名も無い
+		}
+		return aliases;
+	}
+
+	/** 一時ディレクトリに向けて `claude auth login` した結果の認証情報を読む。 */
+	async readScopedCredentials(configDir: string): Promise<string | undefined> {
+		if (this.usesKeychain) {
+			for (const dir of await this.configDirAliases(configDir)) {
+				for (const account of this.keychainAccountNames()) {
+					const value = await this.options.keychain!.read(ParadisClaudeLiveAuth.scopedKeychainService(dir), account);
+					if (value && value.trim()) {
+						return value;
+					}
+				}
+			}
+		}
+		const file = await readFileIfExists(path.join(configDir, '.credentials.json'));
+		return file && file.trim() ? file : undefined;
+	}
+
+	/** 一時ディレクトリの `.claude.json`（古い版は `.config.json`）の oauthAccount を読む。 */
+	async readScopedOauthAccount(configDir: string): Promise<unknown> {
+		for (const name of ['.claude.json', '.config.json']) {
+			const raw = await readFileIfExists(path.join(configDir, name)).catch(() => undefined);
+			if (!raw) {
+				continue;
+			}
+			try {
+				const parsed: unknown = JSON.parse(raw);
+				const oauthAccount = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).oauthAccount : undefined;
+				if (oauthAccount && typeof oauthAccount === 'object') {
+					return oauthAccount;
+				}
+			} catch {
+				// 次の候補
+			}
+		}
+		return undefined;
+	}
+
+	/** 一時ディレクトリ用にできたキーチェーン項目を消す（失敗しても続ける）。 */
+	async deleteScopedCredentials(configDir: string): Promise<void> {
+		if (!this.usesKeychain) {
+			return;
+		}
+		for (const dir of await this.configDirAliases(configDir)) {
+			for (const account of this.keychainAccountNames()) {
+				await this.options.keychain!.delete(ParadisClaudeLiveAuth.scopedKeychainService(dir), account).catch(() => undefined);
+			}
+		}
+	}
+
+	/**
+	 * macOS: いまのログインのキーチェーン項目だけを控える。古い Claude Code は `CLAUDE_CONFIG_DIR` を
+	 * 指定しても既定の項目へ書くことがあるので、アカウント追加の前後で比べて戻すのに使う。
+	 * macOS 以外は undefined。キーチェーンが読めなければ投げる。
+	 */
+	async snapshotKeychainItem(): Promise<IParadisClaudeLiveSnapshot | undefined> {
+		if (!this.usesKeychain) {
+			return undefined;
+		}
+		for (const account of this.keychainAccountNames()) {
+			const value = await this.options.keychain!.read(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account);
+			if (value !== undefined) {
+				return { keychainValue: value, keychainAccount: account };
+			}
+		}
+		return { keychainAccount: this.keychainAccountNames()[0] };
+	}
+
+	/** {@link snapshotKeychainItem} の状態へ、キーチェーンの項目だけを戻す。 */
+	async restoreKeychainItem(snapshot: IParadisClaudeLiveSnapshot): Promise<void> {
+		if (!this.usesKeychain || !snapshot.keychainAccount) {
+			return;
+		}
+		if (snapshot.keychainValue !== undefined) {
+			await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount, snapshot.keychainValue);
+		} else {
+			await this.options.keychain!.delete(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount);
+		}
 	}
 
 	/** {@link captureSnapshot} の状態へ戻す。できる限り全部戻し、失敗があれば最後に投げる。 */

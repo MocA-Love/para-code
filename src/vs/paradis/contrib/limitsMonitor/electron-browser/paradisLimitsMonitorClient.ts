@@ -29,7 +29,7 @@ import {
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsDuplicateDecision
 } from '../common/paradisLimitsMonitor.js';
-import { IParadisClaudeAccountsState, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
+import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
 export const PARADIS_LIMITS_SETTING_CSWAP_PATH = 'paradis.limitsMonitor.cswapPath';
@@ -150,17 +150,31 @@ export class ParadisLimitsMonitorClient {
 		return this.channel.call<void>('resolveCodexDuplicate', [sessionId, decision]);
 	}
 
-	/** Claudeアカウント追加(slot指定時は既存スロットの再ログイン)を開始する。 */
-	startClaudeSetup(slot?: number): Promise<IParadisLimitsSetupHandle> {
-		return this.channel.call<IParadisLimitsSetupHandle>('startClaudeSetup', [slot]);
+	/** Claude アカウントの追加（`managedId` を渡すとそのアカウントの再ログイン）を始める。 */
+	startClaudeLogin(managedId?: string): Promise<IParadisLimitsSetupHandle> {
+		return this.claudeChannel.call<IParadisLimitsSetupHandle>('startLogin', [managedId]);
+	}
+
+	getClaudeSetupState(sessionId: string): Promise<IParadisLimitsSetupState> {
+		return this.claudeChannel.call<IParadisLimitsSetupState>('getSetupState', [sessionId]);
+	}
+
+	cancelClaudeSetup(sessionId: string): Promise<void> {
+		return this.claudeChannel.call<void>('cancelSetup', [sessionId]);
+	}
+
+	/** いまの Claude のログインを Para Code に登録する。 */
+	registerLiveClaudeAccount(): Promise<IParadisClaudeRegisterResult> {
+		return this.claudeChannel.call<IParadisClaudeRegisterResult>('registerLiveAccount', []);
+	}
+
+	/** Claude アカウントの登録を消す（この PC のログインはそのまま）。 */
+	removeClaudeAccount(managedId: string): Promise<boolean> {
+		return this.claudeChannel.call<boolean>('removeAccount', [managedId]);
 	}
 
 	getSetupState(sessionId: string): Promise<IParadisLimitsSetupState> {
 		return this.channel.call<IParadisLimitsSetupState>('getSetupState', [sessionId]);
-	}
-
-	submitClaudeSetupCode(sessionId: string, code: string): Promise<void> {
-		return this.channel.call<void>('submitClaudeSetupCode', [sessionId, code]);
 	}
 
 	cancelSetup(sessionId: string): Promise<void> {
