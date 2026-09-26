@@ -17,6 +17,7 @@
 // 新しいチャネルは `contrib/<feature>/node/` 側で下のレジストリへ `register` し、その集約ファイルへ
 // 副作用 import を1行足せば登録される。
 
+import { isThenable } from '../../base/common/async.js';
 import { DisposableStore, IDisposable, isDisposable } from '../../base/common/lifecycle.js';
 import { IPCServer } from '../../base/parts/ipc/common/ipc.js';
 import { ServicesAccessor } from '../../platform/instantiation/common/instantiation.js';
@@ -36,6 +37,10 @@ export interface IParadisProcessContributionContext<TContext> {
 
 /**
  * チャネルなどを登録する関数。後片付けが要るものは `IDisposable` を返す。
+ *
+ * 同期的に登録を済ませること（`accessor` が同期の間しか使えないため）。型の上では Promise を
+ * 返せないが、`() => void` 型の関数として async 関数が渡ってくることはあり得るので、
+ * 実行時に Promise が返ってきたら失敗をログへ出す（握りつぶされて何も分からなくなるのを防ぐ）。
  */
 export type ParadisProcessContribution<TContext> = (context: IParadisProcessContributionContext<TContext>) => IDisposable | void;
 
@@ -51,17 +56,23 @@ export class ParadisProcessContributionRegistry<TContext> {
 
 	private readonly contributions: IParadisRegisteredProcessContribution<TContext>[] = [];
 
+	/** 同じ id で後から来て捨てたもの。登録時にはログの出し先が無いので、`instantiate` で出す。 */
+	private readonly ignoredDuplicateIds: string[] = [];
+
 	constructor(private readonly processName: string) { }
 
 	/**
 	 * 登録する。モジュールの最上位で1回呼ぶ想定。
 	 *
-	 * 同じ id を2回登録すると例外にする。同じチャネル名を2回 `registerChannel` すると後勝ちで
-	 * 黙って上書きされ、どちらが動いているのか分からなくなるため。
+	 * 同じ id が2回来たら、後から来た方を捨てて先の方を残し、`instantiate` のときにログへ出す。
+	 * 同じチャネル名を2回 `registerChannel` すると後勝ちで黙って上書きされ、どちらが動いているのか
+	 * 分からなくなるため、両方は通さない。例外にはしない: ここはモジュールの読み込み中に呼ばれるので、
+	 * 投げると集約ファイルの import ごと失敗し、shared process / サーバーの起動まで巻き込む。
 	 */
 	register(id: string, contribution: ParadisProcessContribution<TContext>): void {
 		if (this.contributions.some(entry => entry.id === id)) {
-			throw new Error(`[Paradis] ${this.processName} contribution '${id}' is already registered`);
+			this.ignoredDuplicateIds.push(id);
+			return;
 		}
 		this.contributions.push({ id, contribution });
 	}
@@ -79,10 +90,15 @@ export class ParadisProcessContributionRegistry<TContext> {
 	 */
 	instantiate(server: IPCServer<TContext>, accessor: ServicesAccessor, logService: ILogService): IDisposable {
 		const store = new DisposableStore();
+		for (const id of this.ignoredDuplicateIds) {
+			logService.error(`[Paradis] ${this.processName} contribution '${id}' was registered more than once; ignoring the later registration`);
+		}
 		for (const { id, contribution } of this.contributions) {
 			try {
-				const result = contribution({ server, accessor });
-				if (isDisposable(result)) {
+				const result: unknown = contribution({ server, accessor });
+				if (isThenable(result)) {
+					Promise.resolve(result).catch(error => logService.error(`[Paradis] ${this.processName} contribution '${id}' failed after returning a promise`, error));
+				} else if (isDisposable(result)) {
 					store.add(result);
 				}
 			} catch (error) {

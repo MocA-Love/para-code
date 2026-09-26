@@ -57,9 +57,39 @@ suite('ParadisProcessContributionRegistry', () => {
 		});
 	});
 
-	test('refuses a second registration under the same id', () => {
+	test('keeps the first registration of an id, ignores the later one, and logs it without throwing', () => {
 		const registry = new ParadisProcessContributionRegistry<string>('test');
-		registry.register('channel', () => undefined);
-		assert.throws(() => registry.register('channel', () => undefined), /already registered/);
+		const server = store.add(new IPCServer<string>(Event.None));
+		const logService = new RecordingLogService();
+		const events: string[] = [];
+		registry.register('channel', () => { events.push('first'); });
+		registry.register('channel', () => { events.push('second'); });
+
+		registry.instantiate(server, accessor, logService).dispose();
+
+		assert.deepStrictEqual({ ids: registry.getIds(), events, errors: logService.errors }, {
+			ids: ['channel'],
+			events: ['first'],
+			errors: [`[Paradis] test contribution 'channel' was registered more than once; ignoring the later registration`],
+		});
+	});
+
+	test('logs a contribution that fails after returning a promise', async () => {
+		const registry = new ParadisProcessContributionRegistry<string>('test');
+		const server = store.add(new IPCServer<string>(Event.None));
+		const logService = new RecordingLogService();
+		let rejected!: Promise<void>;
+		// 型の上では Promise を返せないが、`() => void` として async 関数が紛れ込むことはある
+		const asyncContribution: () => void = () => {
+			rejected = Promise.reject(new Error('late failure'));
+			return rejected;
+		};
+		registry.register('late', asyncContribution);
+
+		registry.instantiate(server, accessor, logService).dispose();
+		await rejected.catch(() => undefined);
+		await Promise.resolve();
+
+		assert.deepStrictEqual(logService.errors, [`[Paradis] test contribution 'late' failed after returning a promise`]);
 	});
 });
