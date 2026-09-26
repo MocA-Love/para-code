@@ -43,6 +43,8 @@ import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './paradisLimitsMonitorPanel.js';
 import { ParadisLimitsSetupDialog } from './paradisLimitsSetupDialog.js';
+// 使用量パネルへ差し込む部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
+import './paradisClaudeAccountActions.js';
 
 const $ = dom.$;
 
@@ -273,7 +275,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		}
 		const options: IParadisLimitsMonitorPanelOptions = {
 			initialSnapshot: this.latestSnapshot,
-			onManualRefresh: () => this.poll(true),
+			client: this.client,
+			onManualRefresh: force => void this.poll(force ?? true),
 			onClose: () => this.closePanel(),
 			onAddAccount: provider => this.openSetupDialog(provider, undefined),
 			onRelogin: account => this.openSetupDialog(account.provider, account),
@@ -307,7 +310,40 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		});
 	}
 
+	/** Claude の登録を消す。この PC の Claude のログインは変えない。 */
+	private async removeClaudeAccount(account: IParadisLimitsAccount): Promise<void> {
+		if (!account.managed || this.removingHomes.has(account.id)) {
+			return;
+		}
+		this.removingHomes.add(account.id);
+		try {
+			const { confirmed } = await this.dialogService.confirm({
+				message: localize('paradis.limitsMonitor.unregisterConfirm', "この Claude アカウントの登録を削除しますか？"),
+				detail: account.active
+					? localize('paradis.limitsMonitor.unregisterDetailActive', "Para Code に保存した {0} の認証情報を削除します。いまこの PC で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
+					: localize('paradis.limitsMonitor.unregisterDetail', "Para Code に保存した {0} の認証情報を削除します。この PC の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id),
+				primaryButton: localize('paradis.limitsMonitor.unregister', "登録を削除"),
+			});
+			if (!confirmed) {
+				return;
+			}
+			if (this.hiddenAccounts.delete(account.id)) {
+				this.saveHiddenAccountIds();
+			}
+			await this.client.removeClaudeAccount(account.id);
+			await this.refreshClaudeState();
+		} catch (error) {
+			this.logService.error('[ParadisLimitsMonitor] Failed to remove a Claude account', error);
+			this.notificationService.error(localize('paradis.limitsMonitor.unregisterFailed', "Claude アカウントの登録を削除できませんでした。もう一度お試しください。"));
+		} finally {
+			this.removingHomes.delete(account.id);
+		}
+	}
+
 	private async removeAccount(account: IParadisLimitsAccount): Promise<void> {
+		if (account.provider === 'claude') {
+			return this.removeClaudeAccount(account);
+		}
 		if (account.provider !== 'codex' || !account.removable || this.removingHomes.has(account.id)) {
 			return;
 		}

@@ -23,6 +23,7 @@ import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import {
 	IParadisLimitsAccount,
@@ -36,6 +37,8 @@ import {
 	ParadisLimitsProvider
 } from '../common/paradisLimitsMonitor.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
+import { ParadisLimitsMonitorClient } from './paradisLimitsMonitorClient.js';
+import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from './paradisLimitsPanelContributions.js';
 
 const $ = dom.$;
 
@@ -43,7 +46,10 @@ const PANEL_WIDTH = 400;
 
 export interface IParadisLimitsMonitorPanelOptions {
 	readonly initialSnapshot: IParadisLimitsSnapshot | undefined;
-	readonly onManualRefresh: () => void;
+	/** 差し込み部品（{@link ParadisLimitsPanelContributions}）へ渡すクライアント。 */
+	readonly client: ParadisLimitsMonitorClient;
+	/** 取り直す。`force` を省略すると手動更新（true）として扱う。 */
+	readonly onManualRefresh: (force?: boolean) => void;
 	readonly onClose: () => void;
 	readonly onAddAccount: (provider: ParadisLimitsProvider) => void;
 	readonly onRelogin: (account: IParadisLimitsAccount) => void;
@@ -69,6 +75,9 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	 * 保持して再描画のたびに復元する。持たないと、開いて眺めている最中に勝手に閉じてしまう。
 	 */
 	private readonly _hiddenDisclosureOpen = new Set<ParadisLimitsProvider>();
+	/** プロバイダごとの差し込み部品（パネルを開いている間だけ生きる）。 */
+	private readonly contributions: readonly IParadisLimitsPanelContribution[];
+	private readonly contributionContext: IParadisLimitsPanelContext;
 
 	constructor(
 		private readonly anchor: HTMLElement,
@@ -77,8 +86,16 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
+
+		this.contributionContext = {
+			client: options.client,
+			requestRefresh: force => options.onManualRefresh(force),
+			closePanel: () => options.onClose(),
+		};
+		this.contributions = ParadisLimitsPanelContributions.getAll().map(contribution => this._register(instantiationService.createInstance(contribution)));
 
 		this.element = $('.paradis-limits-panel');
 		this.element.tabIndex = -1;
@@ -180,6 +197,23 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		addButton.setAttribute('role', 'button');
 		this._bodyListeners.add(dom.addDisposableListener(addButton, 'click', () => this.options.onAddAccount(provider)));
 
+		this.renderProviderAccounts(provider, providerSnapshot);
+		for (const contribution of this.contributions) {
+			if (contribution.provider !== provider || !contribution.renderProviderFooter) {
+				continue;
+			}
+			const footer = dom.append(this.bodyElement, $('.plm-provider-footer'));
+			const disposable = contribution.renderProviderFooter(footer, providerSnapshot, this.contributionContext);
+			if (disposable) {
+				this._bodyListeners.add(disposable);
+			}
+			if (footer.childElementCount === 0) {
+				footer.remove();
+			}
+		}
+	}
+
+	private renderProviderAccounts(provider: ParadisLimitsProvider, providerSnapshot: IParadisLimitsProviderSnapshot): void {
 		if (providerSnapshot.cswapMissing) {
 			this.renderCswapGuide();
 			return;
@@ -324,10 +358,13 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		this._bodyListeners.add(dom.addDisposableListener(hideButton, 'click', () => this.options.onToggleHiddenAccount(account)));
 		this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, hideButton, hideLabel));
 
-		if (account.provider === 'codex' && account.removable) {
+		// Claude は Para Code に登録したものだけ登録を消せる（この PC のログインには触らない）。
+		if ((account.provider === 'codex' && account.removable) || (account.provider === 'claude' && account.managed)) {
 			const removeButton = dom.append(actions, $('button.plm-account-icon-btn.plm-account-delete')) as HTMLButtonElement;
 			removeButton.type = 'button';
-			const removeLabel = localize('paradis.limitsMonitor.removeAccount', "{0} を削除", account.homeLabel ?? account.email ?? account.id);
+			const removeLabel = account.provider === 'claude'
+				? localize('paradis.limitsMonitor.unregisterAccount', "{0} の登録を削除", account.email ?? account.id)
+				: localize('paradis.limitsMonitor.removeAccount', "{0} を削除", account.homeLabel ?? account.email ?? account.id);
 			removeButton.setAttribute('aria-label', removeLabel);
 			removeButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.trash)}`));
 			this._bodyListeners.add(dom.addDisposableListener(removeButton, 'click', e => {
@@ -340,27 +377,47 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (account.status !== 'ok') {
 			const errorRow = dom.append(card, $('.plm-error-row'));
 			dom.append(errorRow, $('span')).textContent = this.statusMessage(account);
-			if (paradisLimitsNeedsRelogin(account.status)) {
+			// Claude の登録していないログインは Para Code からは直せない（ターミナルで claude に
+			// ログインし直す）。再ログインのボタンは登録したアカウントと Codex にだけ出す。
+			const canRelogin = account.provider === 'codex' || account.managed === true;
+			if (paradisLimitsNeedsRelogin(account.status) && canRelogin) {
 				const reloginButton = dom.append(errorRow, $('button.plm-relogin-btn'));
 				reloginButton.setAttribute('type', 'button');
 				reloginButton.textContent = localize('paradis.limitsMonitor.relogin', "再ログイン…");
 				this._bodyListeners.add(dom.addDisposableListener(reloginButton, 'click', () => this.options.onRelogin(account)));
 			}
-			return;
+		} else {
+			const meters = dom.append(card, $('.plm-meters'));
+			if (account.fiveHour) {
+				this.renderMeter(meters, localize('paradis.limitsMonitor.window5h', "5時間"), account.fiveHour);
+			}
+			if (account.sevenDay) {
+				this.renderMeter(meters, localize('paradis.limitsMonitor.window7d', "7日"), account.sevenDay);
+			}
+			for (const scoped of account.scoped ?? []) {
+				this.renderMeter(meters, scoped.label ?? localize('paradis.limitsMonitor.windowExtra', "追加枠"), scoped);
+			}
+			if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
+				dom.append(card, $('.plm-error-row')).textContent = localize('paradis.limitsMonitor.noWindows', "使用状況データがありません");
+			}
 		}
+		this.renderAccountActions(card, account);
+	}
 
-		const meters = dom.append(card, $('.plm-meters'));
-		if (account.fiveHour) {
-			this.renderMeter(meters, localize('paradis.limitsMonitor.window5h', "5時間"), account.fiveHour);
+	/** 差し込み部品のボタン列。何も足されなければ列ごと消す。 */
+	private renderAccountActions(card: HTMLElement, account: IParadisLimitsAccount): void {
+		const row = dom.append(card, $('.plm-card-actions'));
+		for (const contribution of this.contributions) {
+			if (contribution.provider !== account.provider || !contribution.renderAccountActions) {
+				continue;
+			}
+			const disposable = contribution.renderAccountActions(row, account, this.contributionContext);
+			if (disposable) {
+				this._bodyListeners.add(disposable);
+			}
 		}
-		if (account.sevenDay) {
-			this.renderMeter(meters, localize('paradis.limitsMonitor.window7d', "7日"), account.sevenDay);
-		}
-		for (const scoped of account.scoped ?? []) {
-			this.renderMeter(meters, scoped.label ?? localize('paradis.limitsMonitor.windowExtra', "追加枠"), scoped);
-		}
-		if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
-			dom.append(card, $('.plm-error-row')).textContent = localize('paradis.limitsMonitor.noWindows', "使用状況データがありません");
+		if (row.childElementCount === 0) {
+			row.remove();
 		}
 	}
 

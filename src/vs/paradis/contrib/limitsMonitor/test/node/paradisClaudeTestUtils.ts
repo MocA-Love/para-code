@@ -112,3 +112,21 @@ export async function paradisWriteClaudeGlobalConfig(home: string, config: objec
 export async function paradisReadClaudeGlobalConfig(home: string): Promise<Record<string, unknown>> {
 	return JSON.parse(await fs.promises.readFile(path.join(home, '.claude.json'), 'utf8'));
 }
+
+/** `claude auth login` の代わり。台本の関数でログインの結果（キーチェーンやファイルへの書き込み）を再現する。 */
+export class ParadisFakeClaudeLoginRunner {
+
+	readonly configDirs: string[] = [];
+
+	constructor(private readonly onLogin: (configDir: string, signal: AbortSignal) => Promise<void>) { }
+
+	async login(configDir: string, onUrl: (url: string) => void, signal: AbortSignal): Promise<void> {
+		this.configDirs.push(configDir);
+		onUrl('https://claude.ai/oauth/authorize?code=true');
+		await this.onLogin(configDir, signal);
+	}
+
+	async status(): Promise<string> {
+		return '';
+	}
+}

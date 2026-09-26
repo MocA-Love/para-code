@@ -25,12 +25,16 @@
 //  - 使用中の登録アカウントは、Claude Code が更新して書き戻した新しいトークンを保存し直す
 //    （切り替えで控えに回ったとき、古いトークンしか残っていないと使えなくなるため）
 
+import * as fs from 'fs';
+import * as os from 'os';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import * as path from '../../../../base/common/path.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisClaudeAccountsState, IParadisClaudeStateRequest } from '../common/paradisClaudeAccounts.js';
+import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClaudeStateRequest, ParadisClaudeSetupErrorCode } from '../common/paradisClaudeAccounts.js';
 import {
 	PARADIS_CLAUDE_SERVE_TTL_S,
 	paradisClaudeFailureBackoffS,
@@ -42,16 +46,21 @@ import {
 	IParadisClaudeUsageWindows,
 	paradisClaudeAccessToken,
 	paradisClaudeIdentitiesMatch,
+	paradisClaudeIdentityFromOauthAccount,
 	paradisIsClaudeTokenExpiring,
-	paradisIsUsableClaudeCredentials
+	paradisIsUsableClaudeCredentials,
+	paradisParseClaudeOAuthBlob
 } from '../common/paradisClaudeUsage.js';
 import {
 	IParadisLimitsAccount,
+	IParadisLimitsSetupHandle,
+	IParadisLimitsSetupState,
 	ParadisLimitsAccountStatus,
 	ParadisLimitsUnavailableReason
 } from '../common/paradisLimitsMonitor.js';
 import { IParadisClaudeAccountRecord, IParadisClaudeSecretStore, ParadisClaudeAccountRegistry, paradisIsClaudeAccountId } from './paradisClaudeAccountStore.js';
 import { ParadisClaudeLiveAuth } from './paradisClaudeLiveAuth.js';
+import { IParadisClaudeLoginRunner, paradisOauthAccountFromClaudeStatus } from './paradisClaudeLogin.js';
 import { IParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
 
 /** 登録したアカウントの、レンダラーへ見せる ID の接頭辞。 */
@@ -67,6 +76,14 @@ const DEMAND_WINDOW_MS = 10 * 60_000;
 const ACTIVE_EXPIRED_RETRY_S = 300;
 /** 403 など、すぐには直らない失敗の待ち時間の下限。 */
 const FORBIDDEN_RETRY_S = 600;
+/** 終わったログインの状態を残しておく時間（ダイアログの最後の問い合わせ用）。 */
+const SETUP_RETENTION_MS = 5 * 60_000;
+
+/** ダイアログが日本語の説明に置き換える失敗（メッセージは種類の値そのもの）。 */
+function paradisClaudeSetupError(code: ParadisClaudeSetupErrorCode): Error {
+	return new Error(code);
+}
+
 
 export interface IParadisClaudeAccountServiceOptions {
 	readonly liveAuth: ParadisClaudeLiveAuth;
@@ -74,8 +91,18 @@ export interface IParadisClaudeAccountServiceOptions {
 	readonly secrets: IParadisClaudeSecretStore;
 	readonly oauth: IParadisClaudeOAuthClient;
 	readonly logService: ILogService;
+	/** アカウント追加で `claude auth login` を動かす。無ければ追加・再ログインはできない。 */
+	readonly loginRunner?: IParadisClaudeLoginRunner;
+	/** アカウント追加の一時ディレクトリを作る場所（既定は OS の一時フォルダ）。 */
+	readonly tmpdir?: string;
 	readonly now?: () => number;
 	readonly random?: () => number;
+}
+
+interface IParadisClaudeSetupSession {
+	readonly id: string;
+	state: IParadisLimitsSetupState;
+	readonly abort: AbortController;
 }
 
 interface IParadisClaudeUsageState {
@@ -114,8 +141,12 @@ export class ParadisClaudeAccountService extends Disposable {
 	protected readonly logService: ILogService;
 	private readonly registry: ParadisClaudeAccountRegistry;
 	private readonly oauth: IParadisClaudeOAuthClient;
+	private readonly loginRunner: IParadisClaudeLoginRunner | undefined;
+	private readonly tmpdir: string;
 	protected readonly now: () => number;
 	private readonly random: () => number;
+	private readonly setupSessions = new Map<string, IParadisClaudeSetupSession>();
+	private readonly setupCleanupTimers = new Set<ReturnType<typeof setTimeout>>();
 
 	private records: IParadisClaudeAccountRecord[] | undefined;
 	private readonly usage = new Map<string, IParadisClaudeUsageState>();
@@ -138,8 +169,20 @@ export class ParadisClaudeAccountService extends Disposable {
 		this.secrets = options.secrets;
 		this.oauth = options.oauth;
 		this.logService = options.logService;
+		this.loginRunner = options.loginRunner;
+		this.tmpdir = options.tmpdir ?? os.tmpdir();
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
+		this._register(toDisposable(() => {
+			for (const session of this.setupSessions.values()) {
+				session.abort.abort();
+			}
+			this.setupSessions.clear();
+			for (const timer of this.setupCleanupTimers) {
+				clearTimeout(timer);
+			}
+			this.setupCleanupTimers.clear();
+		}));
 	}
 
 	protected fireChange(): void {
@@ -471,6 +514,13 @@ export class ParadisClaudeAccountService extends Disposable {
 		await this.serialize(async () => {
 			try {
 				const stored = await this.readSecret(record.id);
+				// 保存してある方が新しい（再ログインした直後で、いまのログインは失効したまま）なら取り込まない。
+				// Claude Code が更新したトークンは期限が延びているので、この比較で取りこぼさない。
+				const storedExpiresAt = paradisParseClaudeOAuthBlob(stored)?.expiresAt;
+				const liveExpiresAt = paradisParseClaudeOAuthBlob(liveCredentials)?.expiresAt;
+				if (typeof storedExpiresAt === 'number' && typeof liveExpiresAt === 'number' && liveExpiresAt < storedExpiresAt) {
+					return;
+				}
 				if (stored !== liveCredentials) {
 					await this.writeSecret(record.id, liveCredentials);
 				}
@@ -531,6 +581,213 @@ export class ParadisClaudeAccountService extends Disposable {
 		void this.pollDue();
 	}
 
+	// ---------- 登録・再ログイン・削除 ----------
+
+	/**
+	 * 認証情報と oauthAccount を登録する。同じアカウントが既にあればその認証情報を差し替える。
+	 * @param reloginId 再ログインのときの登録 ID。違うアカウントでログインしていたら登録しない。
+	 * @returns 登録（または更新）したアカウントのメールアドレスと、新規かどうか。
+	 */
+	protected saveAccount(credentials: string, oauthAccount: unknown, reloginId: string | undefined): Promise<{ email: string; created: boolean }> {
+		return this.serialize(async () => {
+			const identity = paradisClaudeIdentityFromOauthAccount(oauthAccount);
+			if (!identity?.email) {
+				throw paradisClaudeSetupError('no_identity');
+			}
+			const records = [...await this.loadRecords()];
+			const target = reloginId !== undefined
+				? records.find(record => record.id === reloginId)
+				: records.find(record => paradisClaudeIdentitiesMatch(recordIdentity(record), identity));
+			if (reloginId !== undefined && !target) {
+				throw paradisClaudeSetupError('not_found');
+			}
+			if (reloginId !== undefined && target && !paradisClaudeIdentitiesMatch(recordIdentity(target), identity)) {
+				throw paradisClaudeSetupError('different_account');
+			}
+			const now = this.now();
+			const fields = {
+				email: identity.email,
+				accountUuid: identity.accountUuid,
+				organizationUuid: identity.organizationUuid,
+				organizationName: identity.organizationName,
+				oauthAccount,
+				updatedAt: now,
+			};
+			if (target) {
+				await this.writeSecret(target.id, credentials);
+				await this.saveRecords(records.map(record => record.id === target.id ? { ...record, ...fields } : record));
+				this.resetUsage(target.id);
+				return { email: identity.email, created: false };
+			}
+			const id = generateUuid();
+			await this.writeSecret(id, credentials);
+			try {
+				await this.saveRecords([...records, { id, createdAt: now, ...fields }]);
+			} catch (error) {
+				// 一覧に載らない認証情報を残さない。
+				await this.secrets.delete(id).catch(() => undefined);
+				this.forgetSecret(id);
+				throw error;
+			}
+			return { email: identity.email, created: true };
+		});
+	}
+
+	/** いまのログインを Para Code に登録する（ブラウザでのログインは要らない）。 */
+	async registerLiveAccount(): Promise<IParadisClaudeRegisterResult> {
+		if (this.switching) {
+			return { outcome: 'busy' };
+		}
+		const live = await this.liveAuth.readCredentials();
+		const oauthAccount = await this.liveAuth.readOauthAccount();
+		const identity = paradisClaudeIdentityFromOauthAccount(oauthAccount);
+		if (!live.value || !identity) {
+			return { outcome: 'no_live_login' };
+		}
+		if (!paradisIsUsableClaudeCredentials(live.value)) {
+			return { outcome: 'not_oauth' };
+		}
+		try {
+			const { email, created } = await this.saveAccount(live.value, oauthAccount, undefined);
+			this.fireChange();
+			this.scheduleSoon();
+			return { outcome: created ? 'registered' : 'updated', email };
+		} catch (error) {
+			this.logService.warn(`[ParadisClaudeAccounts] failed to register the current Claude login: ${(error as Error).message}`);
+			return { outcome: 'failed' };
+		}
+	}
+
+	/** 登録を消す。Claude のいまのログインには触らない（使用中のアカウントでもログアウトはしない）。 */
+	removeAccount(managedId: string): Promise<boolean> {
+		const accountId = ParadisClaudeAccountService.parseManagedId(managedId);
+		if (!accountId) {
+			return Promise.resolve(false);
+		}
+		return this.serialize(async () => {
+			const records = await this.loadRecords();
+			if (!records.some(record => record.id === accountId)) {
+				return false;
+			}
+			await this.secrets.delete(accountId);
+			this.forgetSecret(accountId);
+			await this.saveRecords(records.filter(record => record.id !== accountId));
+			this.resetUsage(accountId);
+			this.fireChange();
+			return true;
+		});
+	}
+
+	/**
+	 * アカウントの追加（`managedId` を渡したときはそのアカウントの再ログイン）を始める。
+	 * 進み具合は {@link getSetupState} で聞く。同時に進められるのは1つだけ。
+	 */
+	startLogin(managedId: string | undefined): IParadisLimitsSetupHandle {
+		const id = generateUuid();
+		const session: IParadisClaudeSetupSession = { id, state: { phase: 'starting' }, abort: new AbortController() };
+		this.setupSessions.set(id, session);
+		const reloginId = managedId !== undefined ? ParadisClaudeAccountService.parseManagedId(managedId) : undefined;
+		const busy = [...this.setupSessions.values()].some(other => other !== session && other.state.phase !== 'done' && other.state.phase !== 'error');
+		const run = busy
+			? Promise.reject(paradisClaudeSetupError('busy'))
+			: managedId !== undefined && !reloginId
+				? Promise.reject(paradisClaudeSetupError('not_found'))
+				: this.runLogin(session, reloginId);
+		run.then(({ email }) => {
+			session.state = { ...session.state, phase: 'done', email };
+			this.fireChange();
+			this.scheduleSoon();
+		}, error => {
+			session.state = { ...session.state, phase: 'error', error: session.abort.signal.aborted ? 'cancelled' : (error as Error).message };
+		}).finally(() => this.scheduleSetupCleanup(session));
+		return { sessionId: id };
+	}
+
+	private async runLogin(session: IParadisClaudeSetupSession, reloginId: string | undefined): Promise<{ email: string }> {
+		if (!this.loginRunner) {
+			throw paradisClaudeSetupError('unsupported');
+		}
+		let keychainBefore;
+		try {
+			keychainBefore = await this.liveAuth.snapshotKeychainItem();
+		} catch {
+			throw paradisClaudeSetupError('keychain_unavailable');
+		}
+		const tempRoot = await fs.promises.mkdtemp(path.join(this.tmpdir, 'paradis-claude-login-'));
+		let configDir = tempRoot;
+		try {
+			configDir = await fs.promises.realpath(tempRoot);
+		} catch {
+			// 実パスが取れなければ作ったパスのまま
+		}
+		let credentials: string | undefined;
+		try {
+			if (session.abort.signal.aborted) {
+				throw paradisClaudeSetupError('cancelled');
+			}
+			session.state = { phase: 'waiting_browser' };
+			await this.loginRunner.login(configDir, url => {
+				if (session.state.phase === 'waiting_browser') {
+					session.state = { ...session.state, url };
+				}
+			}, session.abort.signal);
+			session.state = { ...session.state, phase: 'registering' };
+			credentials = await this.liveAuth.readScopedCredentials(configDir);
+			if (!credentials && keychainBefore) {
+				// 古い Claude Code は既定の項目へ書く。ログインの前後で変わっていればそれが今回のもの。
+				const after = await this.liveAuth.snapshotKeychainItem();
+				if (after?.keychainValue !== keychainBefore.keychainValue) {
+					credentials = after?.keychainValue;
+				}
+			}
+			if (!credentials || !paradisIsUsableClaudeCredentials(credentials)) {
+				throw paradisClaudeSetupError('no_credentials');
+			}
+			const oauthAccount = await this.liveAuth.readScopedOauthAccount(configDir)
+				?? paradisOauthAccountFromClaudeStatus(await this.loginRunner.status(configDir));
+			return await this.saveAccount(credentials, oauthAccount, reloginId);
+		} finally {
+			await this.liveAuth.deleteScopedCredentials(configDir);
+			if (keychainBefore) {
+				// ログインが既定の項目（いまのログイン）を今回の認証情報で上書きしていたら元へ戻す。
+				// 待っている間に Claude Code 自身がトークンを更新しただけなら戻さない（古いトークンを
+				// 書き戻すと、いまのログインが使えなくなる）。
+				try {
+					const after = await this.liveAuth.snapshotKeychainItem();
+					if (credentials !== undefined && after?.keychainValue === credentials && after.keychainValue !== keychainBefore.keychainValue) {
+						await this.liveAuth.restoreKeychainItem(keychainBefore);
+					}
+				} catch (error) {
+					this.logService.warn(`[ParadisClaudeAccounts] could not check the Claude login after adding an account: ${(error as Error).message}`);
+				}
+			}
+			await fs.promises.rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+		}
+	}
+
+	getSetupState(sessionId: string): IParadisLimitsSetupState {
+		return this.setupSessions.get(sessionId)?.state ?? { phase: 'error', error: 'not_found' };
+	}
+
+	cancelSetup(sessionId: string): void {
+		const session = this.setupSessions.get(sessionId);
+		if (!session) {
+			return;
+		}
+		session.abort.abort();
+		this.setupSessions.delete(sessionId);
+	}
+
+	private scheduleSetupCleanup(session: IParadisClaudeSetupSession): void {
+		const timer = setTimeout(() => {
+			this.setupCleanupTimers.delete(timer);
+			if (this.setupSessions.get(session.id) === session) {
+				this.setupSessions.delete(session.id);
+			}
+		}, SETUP_RETENTION_MS);
+		this.setupCleanupTimers.add(timer);
+	}
+
 	/** レンダラーから来た ID を登録 ID にする。形が違えば undefined。 */
 	static parseManagedId(id: unknown): string | undefined {
 		if (typeof id !== 'string' || !id.startsWith(PARADIS_CLAUDE_MANAGED_ID_PREFIX)) {
@@ -559,6 +816,11 @@ export class ParadisClaudeAccountsChannel implements IServerChannel<string> {
 				const request = args[0] && typeof args[0] === 'object' ? { refresh: (args[0] as IParadisClaudeStateRequest).refresh === true } : undefined;
 				return this.service.getState(request) as Promise<T>;
 			}
+			case 'startLogin': return Promise.resolve(this.service.startLogin(typeof args[0] === 'string' ? args[0] : undefined)) as Promise<T>;
+			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
+			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]))) as Promise<T>;
+			case 'registerLiveAccount': return this.service.registerLiveAccount() as Promise<T>;
+			case 'removeAccount': return this.service.removeAccount(String(args[0])) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
