@@ -26,7 +26,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import {
 	IParadisLimitsAccount,
@@ -52,6 +52,9 @@ const $ = dom.$;
 const PANEL_OPEN_POLL_INTERVAL_MS = 30_000;
 /** パネル非表示中(トリガーのみ)のポーリング間隔。 */
 const IDLE_POLL_INTERVAL_MS = 120_000;
+
+/** claude-swap からの移行の案内（通知）を出したか。1回だけ出す。 */
+const PARADIS_LIMITS_CLAUDE_LEGACY_NOTICE_STORAGE_KEY = 'paradis.limitsMonitor.claudeLegacyNoticeShown';
 
 /** 「一覧から隠した」アカウントID(account.id)の配列をJSONで保持するストレージキー。 */
 const PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY = 'paradis.limitsMonitor.hiddenAccountIds';
@@ -101,9 +104,10 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	/**
 	 * 一覧から個別に隠したアカウントの台帳。真の保持者はここ(永続化もここ)。
 	 *
-	 * account.id だけをキーにしない: Codexのidはホームの絶対パス、Claudeはcswapの
-	 * スロット番号で、どちらも削除された分は次のアカウント追加やスロット再利用で
-	 * 別のアカウントに再割り当てされ得る(node/paradisLimitsMonitorChannel.ts)。
+	 * account.id だけをキーにしない: Codexのidはホームの絶対パスで、削除された分は次の
+	 * アカウント追加で別のアカウントに再割り当てされ得る(node/paradisLimitsMonitorChannel.ts)。
+	 * Claude の登録していないいまのログインは常に 'claude-live' で、ログインし直すと別の
+	 * アカウントを指す。
 	 * 非表示にした時点のemailも一緒に持ち、一致するときだけ非表示を適用することで、
 	 * 「同じidだが中身は別アカウント」になった行を自動的に復帰させる。
 	 */
@@ -436,7 +440,31 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		this.panel.value?.updateSnapshot(this.latestSnapshot);
 	}
 
+	/**
+	 * claude-swap を使っていた人へ、アカウントを登録し直すよう1回だけ知らせる（設問 Q3）。
+	 * 詳しい一覧はパネルの Claude の節の末尾に出る。
+	 */
+	private maybeShowClaudeLegacyNotice(snapshot: IParadisLimitsSnapshot): void {
+		if (!snapshot.claude.legacyAccounts?.length || this.storageService.getBoolean(PARADIS_LIMITS_CLAUDE_LEGACY_NOTICE_STORAGE_KEY, StorageScope.APPLICATION, false)) {
+			return;
+		}
+		this.storageService.store(PARADIS_LIMITS_CLAUDE_LEGACY_NOTICE_STORAGE_KEY, true, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this.notificationService.prompt(
+			Severity.Info,
+			localize('paradis.limitsMonitor.claudeLegacyNotice', "Para Code は claude-swap を使わずに Claude の使用量を表示し、アカウントを切り替えられるようになりました。claude-swap に登録していたアカウントは、使用量パネルからログインし直して登録してください。"),
+			[{
+				label: localize('paradis.limitsMonitor.openPanel', "使用量パネルを開く"),
+				run: () => {
+					if (!this.panel.value) {
+						this.togglePanel();
+					}
+				},
+			}],
+		);
+	}
+
 	private renderTrigger(snapshot: IParadisLimitsSnapshot): void {
+		this.maybeShowClaudeLegacyNotice(snapshot);
 		this.ringDisposables.clear();
 		dom.clearNode(this.button);
 

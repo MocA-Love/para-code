@@ -27,12 +27,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.WINDOW,
 			description: localize('paradis.limitsMonitor.enabled', "タイトルバーに Claude Code / Codex のレート制限モニターを表示するかどうかを制御します。")
 		},
-		'paradis.limitsMonitor.cswapPath': {
-			type: 'string',
-			default: '',
-			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.limitsMonitor.cswapPath', "claude-swap (cswap) 実行ファイルの絶対パス。空の場合は PATH とよくあるインストール先から自動解決します。")
-		},
 		'paradis.limitsMonitor.codexHomes': {
 			type: 'array',
 			items: { type: 'string' },

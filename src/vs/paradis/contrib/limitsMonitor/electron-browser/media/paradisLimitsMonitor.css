@@ -444,47 +444,6 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-/* ---------- cswap setup guide ---------- */
-
-.paradis-limits-panel .plm-install {
-	padding: 4px 14px 12px;
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-}
-
-.paradis-limits-panel .plm-install-message,
-.paradis-limits-panel .plm-install-hint {
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.6;
-}
-
-.paradis-limits-panel .plm-install-command {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
-	border-radius: 4px;
-	padding: 4px 4px 4px 10px;
-}
-
-.paradis-limits-panel .plm-install-command code {
-	flex: 1;
-	font-family: var(--monaco-monospace-font);
-	font-size: 11px;
-	overflow-x: auto;
-	white-space: nowrap;
-}
-
-.paradis-limits-panel .plm-install-link {
-	color: var(--vscode-textLink-foreground);
-	cursor: pointer;
-}
-
-.paradis-limits-panel .plm-install-link:hover {
-	text-decoration: underline;
-}
-
 .paradis-limits-panel .plm-error-row {
 	display: flex;
 	align-items: center;

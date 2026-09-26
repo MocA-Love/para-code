@@ -6,25 +6,23 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// AIリミットモニターのshared processバックエンド。
+// AIリミットモニターのshared processバックエンド（Codex の分）。
+//
+// Claude の分は paradisClaudeAccountService.ts（別チャネル、常に手元の shared process）が持つ。
+// 以前は claude-swap (cswap) を呼んでいたが撤去した。このチャネルの getSnapshot は Claude を
+// 空で返し、レンダラー側のクライアントが Claude のチャネルの結果を差し込む。
 //
 // データ取得(getSnapshot):
-//   - Claude: `cswap --list --json` (claude-swap) をexecFile直叩き。マルチアカウントの認証・
-//     usage取得はcswap自身が行うため、ここではJSONのパースだけを行う(CodexBarの正式
-//     マルチアカウント設計と同じ方式。Keychainには一切触れない)
 //   - Codex: ~/.codex / ~/.codex-* 各ホームの auth.json からaccess tokenを読み、
 //     `GET https://chatgpt.com/backend-api/wham/usage` を直叩き。401/403時のみ
 //     `CODEX_HOME=<home> codex -s read-only -a never app-server` (JSON-RPC over stdio) へ
 //     フォールバックし、トークンリフレッシュとauth.json書き戻しはcodex CLI自身に任せる
 //     (このプロセスがauth.jsonへ書き込むことは決してない)
 //
-// アカウント追加(startCodexLogin / startClaudeSetup):
+// アカウント追加(startCodexLogin):
 //   - Codex: 空き番号の新ホーム(~/.codex-N)をmkdir(EEXISTなら次の番号、既存ディレクトリは
 //     決して再利用・上書きしない)し、`CODEX_HOME=<新ホーム> codex login` を起動。ブラウザで
 //     ログインが完了するとcodexがauth.jsonを書いてexitする
-//   - Claude: `claude setup-token` をPTYで駆動し、確認コードをrendererから中継、出力された
-//     sk-ant-oat01トークンを `cswap add-token -` (stdin渡し)でスロット登録する。現在アクティブな
-//     Claude資格情報には一切触れない
 
 import * as cp from 'child_process';
 import * as fs from 'fs';
@@ -53,7 +51,6 @@ import {
 	IParadisLimitsWindow,
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsDuplicateDecision,
-	paradisLimitsStatusFromCswap,
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
 
@@ -63,8 +60,6 @@ import {
  * リミットの変化は緩やかなので十分で、手動更新(bypassCache)は常に実取得する。
  */
 const SNAPSHOT_CACHE_TTL_MS = 150_000;
-/** cswap実行のタイムアウト(全スロットのusage取得でネットワークを跨ぐため長め)。 */
-const CSWAP_TIMEOUT_MS = 60_000;
 /** wham/usage HTTPタイムアウト。 */
 const USAGE_HTTP_TIMEOUT_MS = 30_000;
 /** app-server RPCの初期化/リクエストタイムアウト。 */
@@ -127,31 +122,6 @@ function isCodexAuthFailure(error: unknown): boolean {
 	// `authentication required` は app-server が未認証ホームに返す文言(codex 0.154 では
 	// `codex account …` / `chatgpt …` の2系統)で、これも再ログインでしか解決しない。
 	return /unauthorized|forbidden|re-?login|token (?:has )?expired|expired token|authentication required/i.test(message);
-}
-
-// ---------- cswap --list --json の出力型(schemaVersion 1) ----------
-
-interface ICswapWindow {
-	readonly pct?: number;
-	readonly resetsAt?: string;
-	readonly name?: string;
-}
-
-interface ICswapAccount {
-	readonly number?: number;
-	readonly email?: string;
-	readonly active?: boolean;
-	readonly usageStatus?: string;
-	readonly usage?: {
-		readonly fiveHour?: ICswapWindow;
-		readonly sevenDay?: ICswapWindow;
-		readonly scoped?: readonly ICswapWindow[];
-	};
-}
-
-interface ICswapListResult {
-	readonly schemaVersion?: number;
-	readonly accounts?: readonly ICswapAccount[];
 }
 
 // ---------- wham/usage レスポンス型(CodexBar CodexOAuthUsageFetcher.swift と同じマッピング) ----------
@@ -218,8 +188,6 @@ interface ISetupSession {
 	codexExtraHomes?: readonly string[];
 	/** セッション終了時の後始末(子プロセスkill等)。 */
 	dispose(): void;
-	/** Claudeセットアップのみ: 確認コードの投入。 */
-	submitCode?(code: string): void;
 }
 
 export class ParadisLimitsMonitorService {
@@ -281,7 +249,7 @@ export class ParadisLimitsMonitorService {
 	// ---------- スナップショット取得 ----------
 
 	async getSnapshot(options: IParadisLimitsFetchOptions): Promise<IParadisLimitsSnapshot> {
-		const key = JSON.stringify([options.cswapPath ?? '', options.codexHomes ?? []]);
+		const key = JSON.stringify(options.codexHomes ?? []);
 		if (!options.bypassCache && this.snapshotCache && this.snapshotCache.key === key && Date.now() - this.snapshotCache.at < SNAPSHOT_CACHE_TTL_MS) {
 			return this.snapshotCache.value;
 		}
@@ -305,83 +273,9 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private async doGetSnapshot(options: IParadisLimitsFetchOptions): Promise<IParadisLimitsSnapshot> {
-		const [claude, codex] = await Promise.all([
-			this.fetchClaudeAccounts(options.cswapPath),
-			this.fetchCodexAccounts(options.codexHomes),
-		]);
-		return { claude, codex, fetchedAt: Date.now() };
-	}
-
-	// ---------- Claude (cswap) ----------
-
-	private async fetchClaudeAccounts(cswapPath: string | undefined): Promise<IParadisLimitsProviderSnapshot> {
-		let command: string;
-		try {
-			command = await this.resolveCommand('cswap', cswapPath);
-		} catch (error) {
-			return { accounts: [], sourceError: (error as Error).message, cswapMissing: true };
-		}
-		let stdout: string;
-		try {
-			stdout = await this.execFile(command, ['--list', '--json'], { timeoutMs: CSWAP_TIMEOUT_MS });
-		} catch (error) {
-			this.logService.warn(`[ParadisLimitsMonitor] cswap --list failed: ${(error as Error).message}`);
-			return { accounts: [], sourceError: (error as Error).message };
-		}
-		let parsed: ICswapListResult;
-		try {
-			parsed = JSON.parse(stdout) as ICswapListResult;
-		} catch {
-			return { accounts: [], sourceError: 'cswap returned invalid JSON output' };
-		}
-		if (parsed.schemaVersion !== 1) {
-			return { accounts: [], sourceError: `unsupported cswap schemaVersion: ${parsed.schemaVersion}` };
-		}
-		const accounts: IParadisLimitsAccount[] = [];
-		for (const raw of parsed.accounts ?? []) {
-			if (typeof raw?.number !== 'number') {
-				continue;
-			}
-			accounts.push(this.mapCswapAccount(raw));
-		}
-		return { accounts };
-	}
-
-	private mapCswapAccount(raw: ICswapAccount): IParadisLimitsAccount {
-		// cswap の usageStatus の意味づけは common 側の純関数に集約する（テスト可能にするため）。
-		const { status, unavailableReason } = paradisLimitsStatusFromCswap(raw.usageStatus);
-		const mapWindow = (window: ICswapWindow | undefined, label?: string): IParadisLimitsWindow | undefined => {
-			if (typeof window?.pct !== 'number') {
-				return undefined;
-			}
-			const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
-			return {
-				usedPercent: window.pct,
-				resetsAt: isNaN(resetsAt) ? undefined : resetsAt,
-				label: label ?? window.name,
-			};
-		};
-		const scoped: IParadisLimitsWindow[] = [];
-		for (const rawScoped of raw.usage?.scoped ?? []) {
-			const mapped = mapWindow(rawScoped);
-			if (mapped) {
-				scoped.push(mapped);
-			}
-		}
-		return {
-			provider: 'claude',
-			id: `claude-swap:${raw.number}`,
-			slot: raw.number,
-			email: raw.email,
-			active: raw.active === true,
-			status,
-			unavailableReason,
-			// 既知の状態は表示側が文言を持つので、生値は未知の値の診断用にだけ残す。
-			statusDetail: status === 'error' ? raw.usageStatus : undefined,
-			fiveHour: mapWindow(raw.usage?.fiveHour),
-			sevenDay: mapWindow(raw.usage?.sevenDay),
-			scoped: scoped.length > 0 ? scoped : undefined,
-		};
+		const codex = await this.fetchCodexAccounts(options.codexHomes);
+		// Claude はレンダラー側で paradisClaudeAccounts チャネルの結果を差し込む。
+		return { claude: { accounts: [] }, codex, fetchedAt: Date.now() };
 	}
 
 	// ---------- Codex (auth.json + wham/usage) ----------
@@ -854,148 +748,6 @@ export class ParadisLimitsMonitorService {
 		throw new Error(`no free Codex home slot up to ~/.codex-${MAX_CODEX_HOME_INDEX}`);
 	}
 
-	// ---------- アカウント追加: Claude (claude setup-token + cswap add-token) ----------
-
-	async startClaudeSetup(slot: number | undefined): Promise<IParadisLimitsSetupHandle> {
-		const sessionId = generateUuid();
-		const session: ISetupSession = {
-			id: sessionId,
-			state: { phase: 'starting' },
-			dispose: () => { },
-		};
-		this.setupSessions.set(sessionId, session);
-		this.runClaudeSetup(session, slot).catch(error => {
-			session.state = { ...session.state, phase: 'error', error: (error as Error).message };
-			this.scheduleSetupCleanup(session);
-		});
-		return { sessionId };
-	}
-
-	private async runClaudeSetup(session: ISetupSession, slot: number | undefined): Promise<void> {
-		const claudeCommand = await this.resolveCommand('claude', undefined);
-		const cswapCommand = await this.resolveCommand('cswap', undefined);
-		const env = await this.getExecEnv();
-
-		// claude setup-token はInk製の対話UIでTTYを要求するためPTYで駆動する。
-		// ptyHostと同じnode-ptyをshared processから直接使う
-		const pty = await import('node-pty');
-		const ptyEnv: { [key: string]: string } = { NO_COLOR: '1' };
-		for (const [key, value] of Object.entries(env)) {
-			if (typeof value === 'string') {
-				ptyEnv[key] = value;
-			}
-		}
-		// Windowsのnode-pty(ConPTY)はfileをそのままCreateProcessWへ渡すため、npmが
-		// 生成する.cmdシムを直接起動できない(起動失敗)。cmd.exe /c経由にラップして解決する。
-		// 注意: 通常のchild_process系は旧Nodeがlibuv経由で.cmd/.batを検知してcmd.exeへ
-		// 自動委譲していたが、この挙動はCVE-2024-27980対策で撤去済みであり、現行Nodeでは
-		// shell指定なしのspawn自体がEINVALになる。child_process系は各呼び出し口で
-		// paradisWrapWindowsScriptShim による明示的なcmd.exeラップを行うこと。
-		// /cの引数はcmdが自前の"/"クォート規則で再解釈するため、args文字列側をもう一重
-		// 丸ごとクォートしないと(/s指定でも)外側のクォートが剥がれてパス中の空白で壊れる
-		// (Node.jsのchild_process内部が同じ組み立てを行っている実装に合わせた)
-		const isWindows = process.platform === 'win32';
-		const ptyFile = isWindows ? (process.env.ComSpec || 'cmd.exe') : claudeCommand;
-		const ptyArgs: string[] | string = isWindows ? `/d /s /v:off /c ""${claudeCommand}" setup-token"` : ['setup-token'];
-		const child = pty.spawn(ptyFile, ptyArgs, {
-			name: 'xterm-256color',
-			cols: 200,
-			rows: 50,
-			cwd: os.homedir(),
-			env: ptyEnv,
-		});
-
-		let output = '';
-		let finished = false;
-		let tokenResolve: ((token: string) => void) | undefined;
-		let tokenReject: ((error: Error) => void) | undefined;
-		const tokenPromise = new Promise<string>((resolve, reject) => {
-			tokenResolve = resolve;
-			tokenReject = reject;
-		});
-
-		const extractToken = () => /sk-ant-oat01-[A-Za-z0-9_-]{20,}/.exec(stripAnsi(output))?.[0];
-		let tokenSettleTimer: ReturnType<typeof setTimeout> | undefined;
-		child.onData(data => {
-			output += data;
-			const plain = stripAnsi(output);
-			// チャンク境界でURLが途切れた状態を確定させないよう、蓄積出力から毎回抽出し直して更新する
-			const url = /https:\/\/[^\s"')]+oauth[^\s"')]*/i.exec(plain)?.[0] ?? /https:\/\/(?:claude\.ai|console\.anthropic\.com)[^\s"')]+/.exec(plain)?.[0];
-			if (url && url !== session.state.url && session.state.phase !== 'done' && session.state.phase !== 'error' && session.state.phase !== 'registering') {
-				session.state = { ...session.state, phase: 'waiting_code', url };
-			}
-			// トークンもチャンク境界で途切れうるため、初検出から少し待って蓄積出力から取り直して確定する
-			if (extractToken() && !finished && tokenSettleTimer === undefined) {
-				tokenSettleTimer = setTimeout(() => {
-					const settled = extractToken();
-					if (settled && !finished) {
-						finished = true;
-						tokenResolve?.(settled);
-					}
-				}, 500);
-			}
-		});
-		child.onExit(({ exitCode }) => {
-			if (finished) {
-				return;
-			}
-			// トークン表示直後にexitした場合は確定待ちタイマーと競合するため、ここで最終抽出を試みる
-			const settled = extractToken();
-			finished = true;
-			if (settled) {
-				tokenResolve?.(settled);
-			} else {
-				// 蓄積出力全体をエラーに乗せない(Ink製TUIは\r描画で\nを含まないことがあり、
-				// その場合は最後の非空行=全文になりうるため長さも切る)
-				const lines = stripAnsi(output).trim().split('\n');
-				const detail = (lines.findLast(line => line.trim().length > 0) ?? '').trim().slice(-200);
-				tokenReject?.(new Error(`claude setup-token exited with code ${exitCode}${detail ? `: ${detail}` : ''} before producing a token`));
-			}
-		});
-
-		session.submitCode = code => {
-			// PTYへの書き込みは制御文字を除去した1行に限定する(貼り付け内容の混入対策)
-			child.write(code.trim().replace(/[\u0000-\u001F\u007F]/g, '') + '\r');
-		};
-		session.dispose = () => {
-			if (!finished) {
-				finished = true;
-				tokenReject?.(new Error('cancelled'));
-			}
-			try {
-				child.kill();
-			} catch {
-				// already dead
-			}
-		};
-		this.scheduleSetupTimeout(session);
-		if (session.state.phase === 'starting') {
-			session.state = { phase: 'waiting_code' };
-		}
-
-		let token: string;
-		try {
-			token = await tokenPromise;
-		} finally {
-			try {
-				child.kill();
-			} catch {
-				// already dead
-			}
-		}
-
-		session.state = { ...session.state, phase: 'registering' };
-		const addArgs = ['add-token', '-'];
-		if (typeof slot === 'number') {
-			addArgs.push('--slot', String(slot));
-		}
-		// トークンはargvに載せない(psに見えるため)。stdin渡しはcswapが公式サポートしている
-		await this.execFile(cswapCommand, addArgs, { timeoutMs: CSWAP_TIMEOUT_MS, stdin: token });
-		this.snapshotCache = undefined;
-		session.state = { ...session.state, phase: 'done' };
-		this.scheduleSetupCleanup(session);
-	}
-
 	// ---------- セットアップセッション共通 ----------
 
 	async resolveCodexDuplicate(sessionId: string, decision: ParadisLimitsDuplicateDecision): Promise<void> {
@@ -1023,17 +775,6 @@ export class ParadisLimitsMonitorService {
 			return { phase: 'error', error: 'setup session not found' };
 		}
 		return session.state;
-	}
-
-	submitClaudeSetupCode(sessionId: string, code: string): void {
-		const session = this.setupSessions.get(sessionId);
-		if (!session?.submitCode) {
-			throw new Error('setup session not found or does not accept a code');
-		}
-		if (typeof code !== 'string' || code.trim().length === 0 || code.length > 512) {
-			throw new Error('invalid confirmation code');
-		}
-		session.submitCode(code);
 	}
 
 	cancelSetup(sessionId: string): void {
@@ -1068,48 +809,11 @@ export class ParadisLimitsMonitorService {
 
 	// ---------- 実行ヘルパー ----------
 
-	private async execFile(command: string, args: string[], options: { timeoutMs: number; stdin?: string }): Promise<string> {
-		const env = await this.getExecEnv();
-		if (this.disposed) {
-			throw new Error('ParadisLimitsMonitorService is disposed');
-		}
-		return new Promise<string>((resolve, reject) => {
-			// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
-			// (shell 指定なしの execFile は CVE-2024-27980 対策後の Node では EINVAL になる)。
-			const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
-			const execution: { tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
-			const child = this._execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
-				encoding: 'utf8',
-				maxBuffer: 16 * 1024 * 1024,
-				windowsHide: true,
-				windowsVerbatimArguments: shimInvocation !== undefined,
-				env: { ...env, NO_COLOR: '1' },
-			}, (err, stdout, stderr) => {
-				execution.completed = true;
-				const timedOut = execution.tracked?.timedOut === true;
-				execution.tracked?.dispose();
-				if (err || timedOut) {
-					const message = stderr?.trim() || (timedOut ? 'command timed out after ' + options.timeoutMs + 'ms' : err!.message);
-					reject(new Error(message));
-				} else {
-					resolve(stdout);
-				}
-			});
-			if (!execution.completed) {
-				execution.tracked = this.childProcesses.track(child, options.timeoutMs);
-			}
-			if (options.stdin !== undefined) {
-				child.stdin?.write(options.stdin);
-				child.stdin?.end();
-			}
-		});
-	}
-
 	/**
 	 * コマンドを解決する。優先順: 明示パス(絶対パス必須) → PATH → よくあるインストール先。
 	 * GUI起動ではログインシェルのPATHが継承されないため、候補ディレクトリを直接確認する。
 	 */
-	private async resolveCommand(name: 'cswap' | 'claude' | 'codex', explicitPath: string | undefined): Promise<string> {
+	private async resolveCommand(name: 'codex', explicitPath: string | undefined): Promise<string> {
 		if (explicitPath) {
 			if (!path.isAbsolute(explicitPath)) {
 				throw new Error(`configured path for ${name} must be absolute: ${explicitPath}`);
@@ -1165,11 +869,6 @@ export class ParadisLimitsMonitorService {
 			fs.access(filePath, fs.constants.F_OK, err => resolve(!err));
 		});
 	}
-}
-
-/** ANSIエスケープ(CSI/OSC)を除去する。PTY出力からURL/トークンを抽出するための最小実装。 */
-function stripAnsi(value: string): string {
-	return value.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
 /** `codex app-server` との改行区切りJSON-RPCセッション(読み取り専用サンドボックスで起動)。 */
@@ -1294,9 +993,7 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 			case 'validateCodexHomeRemoval': return this.service.validateCodexHomeRemoval(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'removeCodexHome': return this.service.removeCodexHome(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
-			case 'startClaudeSetup': return this.service.startClaudeSetup(typeof args[0] === 'number' ? args[0] : undefined) as Promise<T>;
 			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
-			case 'submitClaudeSetupCode': return Promise.resolve(this.service.submitClaudeSetupCode(String(args[0]), String(args[1]))) as Promise<T>;
 			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]))) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);

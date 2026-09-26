@@ -24,6 +24,9 @@
 //  - 控えのアカウントは保存してあるトークンで聞く。期限が近ければここで更新して保存し直す
 //  - 使用中の登録アカウントは、Claude Code が更新して書き戻した新しいトークンを保存し直す
 //    （切り替えで控えに回ったとき、古いトークンしか残っていないと使えなくなるため）
+//
+// claude-swap (cswap) からの移行（設問 Q3）: cswap の一覧（sequence.json）を読むだけで、書き込みも
+// 認証情報の取り込みもしない。Para Code にまだ登録していないアカウントを並べて、登録し直しを案内する。
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -53,6 +56,7 @@ import {
 } from '../common/paradisClaudeUsage.js';
 import {
 	IParadisLimitsAccount,
+	IParadisLimitsLegacyAccount,
 	IParadisLimitsSetupHandle,
 	IParadisLimitsSetupState,
 	ParadisLimitsAccountStatus,
@@ -96,6 +100,8 @@ export interface IParadisClaudeAccountServiceOptions {
 	readonly loginRunner?: IParadisClaudeLoginRunner;
 	/** アカウント追加の一時ディレクトリを作る場所（既定は OS の一時フォルダ）。 */
 	readonly tmpdir?: string;
+	/** claude-swap のデータのフォルダの候補（sequence.json を読むだけ）。 */
+	readonly legacyCswapDirs?: readonly string[];
 	readonly now?: () => number;
 	readonly random?: () => number;
 }
@@ -117,6 +123,11 @@ interface IParadisClaudeUsageState {
 	last429At?: number;
 	backoffUntil?: number;
 	failures: number;
+}
+
+/** claude-swap の一覧の1件。 */
+interface IParadisClaudeLegacyEntry extends IParadisLimitsLegacyAccount {
+	readonly organizationUuid?: string;
 }
 
 /** 表示と取得の単位（登録したアカウント、または登録していないいまのログイン）。 */
@@ -147,6 +158,8 @@ export class ParadisClaudeAccountService extends Disposable {
 	protected readonly now: () => number;
 	private readonly random: () => number;
 	private readonly setupSessions = new Map<string, IParadisClaudeSetupSession>();
+	private readonly legacyCswapDirs: readonly string[];
+	private legacyCache: { readonly path: string; readonly mtimeMs: number; readonly accounts: readonly IParadisClaudeLegacyEntry[] } | undefined;
 	private readonly setupCleanupTimers = new Set<ReturnType<typeof setTimeout>>();
 
 	private records: IParadisClaudeAccountRecord[] | undefined;
@@ -172,6 +185,7 @@ export class ParadisClaudeAccountService extends Disposable {
 		this.logService = options.logService;
 		this.loginRunner = options.loginRunner;
 		this.tmpdir = options.tmpdir ?? os.tmpdir();
+		this.legacyCswapDirs = options.legacyCswapDirs ?? [];
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
 		this._register(toDisposable(() => {
@@ -275,10 +289,53 @@ export class ParadisClaudeAccountService extends Disposable {
 		if (due) {
 			void this.pollDue();
 		}
-		return this.buildState(targets);
+		return this.buildState(targets, await this.readLegacyAccounts(targets));
 	}
 
-	private buildState(targets: readonly IParadisClaudeTarget[]): IParadisClaudeAccountsState {
+	/**
+	 * claude-swap に登録されていて、Para Code にはまだ登録していないアカウント。
+	 * `sequence.json` を読むだけで、claude-swap のデータには書き込まない。
+	 */
+	private async readLegacyAccounts(targets: readonly IParadisClaudeTarget[]): Promise<IParadisLimitsLegacyAccount[]> {
+		let accounts: readonly IParadisClaudeLegacyEntry[] = [];
+		for (const dir of this.legacyCswapDirs) {
+			const sequencePath = path.join(dir, 'sequence.json');
+			let stat: fs.Stats;
+			try {
+				stat = await fs.promises.stat(sequencePath);
+			} catch {
+				continue;
+			}
+			if (this.legacyCache?.path === sequencePath && this.legacyCache.mtimeMs === stat.mtimeMs) {
+				accounts = this.legacyCache.accounts;
+				break;
+			}
+			try {
+				const parsed = JSON.parse(await fs.promises.readFile(sequencePath, 'utf8')) as { accounts?: Record<string, { email?: unknown; organizationName?: unknown; organizationUuid?: unknown }> };
+				const list: IParadisClaudeLegacyEntry[] = [];
+				for (const entry of Object.values(parsed.accounts ?? {})) {
+					if (entry && typeof entry.email === 'string' && entry.email.trim()) {
+						list.push({
+							email: entry.email.trim(),
+							organizationName: typeof entry.organizationName === 'string' && entry.organizationName.trim() ? entry.organizationName.trim() : undefined,
+							organizationUuid: typeof entry.organizationUuid === 'string' && entry.organizationUuid.trim() ? entry.organizationUuid.trim() : undefined,
+						});
+					}
+				}
+				accounts = list;
+			} catch {
+				accounts = [];
+			}
+			this.legacyCache = { path: sequencePath, mtimeMs: stat.mtimeMs, accounts };
+			break;
+		}
+		// 登録済み（または、いまのログインとして見えている）アカウントは案内しない。
+		return accounts
+			.filter(legacy => !targets.some(target => target.record && paradisClaudeIdentitiesMatch(target.identity, { email: legacy.email, organizationUuid: legacy.organizationUuid })))
+			.map(legacy => ({ email: legacy.email, organizationName: legacy.organizationName }));
+	}
+
+	private buildState(targets: readonly IParadisClaudeTarget[], legacyAccounts: readonly IParadisLimitsLegacyAccount[]): IParadisClaudeAccountsState {
 		let oldestFetchedAt: number | undefined;
 		const accounts: IParadisLimitsAccount[] = targets.map(target => {
 			const state = this.usage.get(target.key);
@@ -302,7 +359,7 @@ export class ParadisClaudeAccountService extends Disposable {
 				fetchedAt: state?.fetchedAt,
 			};
 		});
-		return { claude: { accounts }, oldestFetchedAt, switching: this.switching };
+		return { claude: { accounts, legacyAccounts: legacyAccounts.length > 0 ? legacyAccounts : undefined }, oldestFetchedAt, switching: this.switching };
 	}
 
 	private markDemand(): void {
