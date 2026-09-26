@@ -1,13 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Gesture, GestureDetector, GestureHandlerRootView, type PanGesture } from 'react-native-gesture-handler';
 import {
 	Animated,
 	Easing,
 	Keyboard,
 	LayoutAnimation,
 	Modal,
-	PanResponder,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -15,7 +15,6 @@ import {
 	View,
 	useWindowDimensions,
 	type KeyboardEvent,
-	type PanResponderInstance,
 } from 'react-native';
 import { keyboardCoverage } from '../keyboardCoverage.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
@@ -25,9 +24,6 @@ import {
 	backdropFadeDistance,
 	dragOffset,
 	shouldDismissDrag,
-	shouldGrabContent,
-	shouldGrabHandle,
-	shouldGrabHeader,
 } from './drawerDrag.js';
 
 /**
@@ -44,11 +40,12 @@ import {
  *  - iPad などの広い幅では幅を 480pt に抑えて中央に置く
  *
  * 実装の約束（既存の `src/components/bottomSheet.tsx` で踏んだものを引き継ぐ）:
- *  - ジェスチャは `PanResponder`（素の JS）。RNGH は Modal の中に別の GestureHandlerRootView が要るうえ、
- *    worklet から予約した処理は予約元が木から外れた後に走ると落ちる
+ *  - ジェスチャは react-native-gesture-handler（理由は buildGrabGesture のコメント）。Modal は別の画面として
+ *    出るので、中に GestureHandlerRootView を置き直す。コールバックは JS で走らせる（runOnJS）
+ *  - 中身がスクロールするシートは、上端でさらに下へ引いた跳ね返りの量で閉じる（中身のスクロールと
+ *    シートのドラッグを取り合わせない）
  *  - **位置は1つの値（`offset`、下げた量 pt）だけで持つ。** 開閉のアニメーションもドラッグの
- *    `setValue` もばねの戻りも、同じ値を動かす（旧シートと同じ作り。実機でドラッグが付いてくる
- *    ことを確かめ済みの形）。開閉用の値とドラッグ用の値を `Animated.add` で足す形にしない
+ *    `setValue` もばねの戻りも、同じ値を動かす。開閉用の値とドラッグ用の値を `Animated.add` で足す形にしない
  *  - 閉じる動きが終わってから木から外し、そのあとで `onAfterClose` を呼ぶ。
  *    **別のシートを開く・画面を移るのは `onAfterClose` で行う。** 閉じる途中で次のネイティブの
  *    モーダルを出すと iOS が取りこぼし、画面を移ると最初のタップが幕に吸われる
@@ -62,17 +59,49 @@ const WIDE_MAX_WIDTH = 480;
 /** つまみの大きさ（pt）。 */
 const HANDLE_WIDTH = 36;
 const HANDLE_HEIGHT = 4;
+/** 縦にこれだけ動いたら掴んだとみなす／横にこれだけ動いたら諦める（pt）。 */
+const DRAG_ACTIVATE = 6;
+const DRAG_FAIL_X = 24;
+/** 中身を上端より下へ引いて離したとき、ここを超えていれば閉じる（pt。スクロールの跳ね返り量）。 */
+const CONTENT_PULL_DISMISS = 70;
 /** 離したあと元の位置へ戻るばね。 */
 const SNAP_BACK_SPRING = { damping: 28, stiffness: 400, mass: 1 } as const;
 
-type PanHandlers = PanResponderInstance['panHandlers'];
+/** 掴んだときの動き（シート本体が持つ）。見出しの行が自分の GestureDetector を作るために受け取る。 */
+interface DrawerGrabCallbacks {
+	readonly begin: () => void;
+	readonly update: (dy: number) => void;
+	readonly end: (dy: number, vyPerMs: number, completed: boolean) => void;
+}
 
 /** 見出しの行（`DrawerTitle` / `DrawerCaption`）をつまみと同じように掴めるようにするための受け渡し。 */
-const DrawerGrabContext = createContext<PanHandlers | undefined>(undefined);
+const DrawerGrabContext = createContext<DrawerGrabCallbacks | undefined>(undefined);
 
-/** シートの中で「ここも掴める」ようにしたい行が、自分の View に広げる手。シートの外では undefined。 */
-export function useDrawerGrabHandlers(): PanHandlers | undefined {
-	return useContext(DrawerGrabContext);
+/**
+ * 縦のドラッグでシートを動かすジェスチャ。
+ *
+ * **PanResponder ではなく react-native-gesture-handler を使う。** 実機（iOS 26・Fabric）で、Modal の中の
+ * PanResponder は指を置いた瞬間（onStartShouldSetResponder）までは呼ばれるのに、動かしたときの
+ * onMoveShouldSetResponder が一度も呼ばれず、指に付いてこなかった（生の onTouchMove は届いていた）。
+ * コールバックは JS で走らせ（runOnJS）、worklet から予約した処理が木から外れた後に走る問題を避ける。
+ * 横に大きく動いたら諦め、中のボタンのタップは縦に動き出すまで妨げない。
+ */
+function buildGrabGesture(callbacks: DrawerGrabCallbacks): PanGesture {
+	return Gesture.Pan()
+		.runOnJS(true)
+		.activeOffsetY([-DRAG_ACTIVATE, DRAG_ACTIVATE])
+		.failOffsetX([-DRAG_FAIL_X, DRAG_FAIL_X])
+		.onStart(() => callbacks.begin())
+		.onUpdate(event => callbacks.update(event.translationY))
+		// velocityY は pt/秒。判定（shouldDismissDrag）は pt/ms で持っている。
+		.onEnd((event, success) => callbacks.end(event.translationY, event.velocityY / 1000, success));
+}
+
+/** シートの中で「ここも掴める」ようにしたい行が使うジェスチャ。シートの外では undefined。 */
+export function useDrawerGrabGesture(): PanGesture | undefined {
+	const callbacks = useContext(DrawerGrabContext);
+	// manual-memo: audited — ジェスチャを描画ごとに作り直すと、掴んでいる最中に差し替わってドラッグが途切れるため
+	return useMemo(() => (callbacks === undefined ? undefined : buildGrabGesture(callbacks)), [callbacks]);
 }
 
 /** iOS のキーボードが画面の下からどれだけ覆っているか（pt）。 */
@@ -141,7 +170,6 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 	const offset = useRef(new Animated.Value(hiddenOffset)).current;
 	/** 閉じきって木から外れた状態か。開き直すときに画面外から始めるかどうかの判定に使う。 */
 	const closed = useRef(true);
-	const scrollOffset = useRef(0);
 	const [sheetHeight, setSheetHeight] = useState(0);
 	const onCloseRef = useRef(onClose);
 	onCloseRef.current = onClose;
@@ -153,7 +181,6 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 			if (closed.current) {
 				closed.current = false;
 				offset.setValue(hiddenOffset);
-				scrollOffset.current = 0;
 			}
 			const open = Animated.timing(offset, { toValue: 0, duration: OPEN_MS, easing: Easing.bezier(0.2, 0.8, 0.2, 1), useNativeDriver: true });
 			open.start();
@@ -177,43 +204,24 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 		return () => close.stop();
 	}, [visible, mounted, offset, hiddenOffset]);
 
-	// manual-memo: audited — PanResponder は作り直すと掴んでいる最中の手が差し替わり、ドラッグが途切れるため
-	const panHandlers = useMemo(() => {
-		const follow = (dy: number) => offset.setValue(dragOffset(dy));
+	// manual-memo: audited — ジェスチャの受け渡し先（見出しの行）が参照の同一性で作り直しを判断するため
+	const grab = useMemo<DrawerGrabCallbacks>(() => {
 		const snapBack = () => Animated.spring(offset, { toValue: 0, ...SNAP_BACK_SPRING, useNativeDriver: true }).start();
-		const release = (dy: number, vy: number) => {
-			if (shouldDismissDrag(dy, vy)) {
-				// 親が visible を false にすると、閉じる動きが今の位置から続く。
-				onCloseRef.current();
-				return;
-			}
-			snapBack();
+		return {
+			begin: () => offset.stopAnimation(),
+			update: dy => offset.setValue(dragOffset(dy)),
+			end: (dy, vy, completed) => {
+				if (completed && shouldDismissDrag(dy, vy)) {
+					// 親が visible を false にすると、閉じる動きが今の位置から続く。
+					onCloseRef.current();
+					return;
+				}
+				snapBack();
+			},
 		};
-		const common = {
-			onStartShouldSetPanResponder: () => false,
-			// 掴んだ後は、ボタンやスクロールに取り返されない（途中で指から離れるのを防ぐ）。
-			onPanResponderTerminationRequest: () => false,
-			onPanResponderGrant: () => offset.stopAnimation(),
-			onPanResponderMove: (_event: unknown, gesture: { dy: number }) => follow(gesture.dy),
-			onPanResponderRelease: (_event: unknown, gesture: { dy: number; vy: number }) => release(gesture.dy, gesture.vy),
-			onPanResponderTerminate: snapBack,
-		};
-		const handle = PanResponder.create({
-			...common,
-			onMoveShouldSetPanResponder: (_event, gesture) => shouldGrabHandle(gesture.dx, gesture.dy),
-		});
-		// 見出しの行: 中の「クリア」などのボタンは押せたまま、縦に動かしたときだけボタンから奪う。
-		const header = PanResponder.create({
-			...common,
-			onMoveShouldSetPanResponder: (_event, gesture) => shouldGrabHeader(scrollOffset.current, gesture.dx, gesture.dy),
-		});
-		// 中身: 上端までスクロールされていて、下へ引いたときだけスクロールから奪う。
-		const content = PanResponder.create({
-			...common,
-			onMoveShouldSetPanResponderCapture: (_event, gesture) => shouldGrabContent(scrollOffset.current, gesture.dx, gesture.dy),
-		});
-		return { handle: handle.panHandlers, header: header.panHandlers, content: content.panHandlers };
 	}, [offset]);
+	// manual-memo: audited — つまみの GestureDetector に渡すジェスチャ。描画ごとに作り直すとドラッグが途切れるため
+	const handleGesture = useMemo(() => buildGrabGesture(grab), [grab]);
 
 	if (!mounted) {
 		return null;
@@ -229,6 +237,8 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 
 	return (
 		<Modal visible transparent animationType="none" statusBarTranslucent onRequestClose={() => onCloseRef.current()}>
+			{/* Modal は別の画面として出るので、ジェスチャの根をここに置き直す（アプリの根のものは届かない）。 */}
+			<GestureHandlerRootView style={styles.gestureRoot}>
 			<Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
 				<Pressable style={StyleSheet.absoluteFill} onPress={() => onCloseRef.current()} accessibilityRole="button" accessibilityLabel="閉じる" />
 			</Animated.View>
@@ -248,18 +258,27 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 						},
 					]}
 				>
-					<View style={styles.handleArea} {...panHandlers.handle} accessibilityRole="button" accessibilityLabel="シートを閉じる" onAccessibilityTap={() => onCloseRef.current()}>
-						<View style={styles.handle} />
-					</View>
-					<DrawerGrabContext.Provider value={panHandlers.header}>
+					<GestureDetector gesture={handleGesture}>
+						<View style={styles.handleArea} accessibilityRole="button" accessibilityLabel="シートを閉じる" onAccessibilityTap={() => onCloseRef.current()}>
+							<View style={styles.handle} />
+						</View>
+					</GestureDetector>
+					<DrawerGrabContext.Provider value={grab}>
 						{scrollable ? (
-							<View style={styles.contentWrap} {...panHandlers.content}>
+							<View style={styles.contentWrap}>
 								<ScrollView
-									bounces={false}
+									// 上端でさらに下へ引くと跳ね返りで中身が下がる。離したときに十分引いていれば閉じる
+									// （中身のスクロールとシートのドラッグを取り合わせないため、中身の側はこの形にしている）。
+									bounces
+									alwaysBounceVertical={false}
+									onScrollEndDrag={event => {
+										if (event.nativeEvent.contentOffset.y < -CONTENT_PULL_DISMISS) {
+											onCloseRef.current();
+										}
+									}}
 									keyboardShouldPersistTaps="handled"
 									showsVerticalScrollIndicator={false}
 									scrollEventThrottle={16}
-									onScroll={event => { scrollOffset.current = Math.max(0, event.nativeEvent.contentOffset.y); }}
 								>
 									{children}
 								</ScrollView>
@@ -272,11 +291,15 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 					<View style={styles.bottomExtension} pointerEvents="none" />
 				</Animated.View>
 			</View>
+			</GestureHandlerRootView>
 		</Modal>
 	);
 }
 
 const styles = StyleSheet.create({
+	gestureRoot: {
+		flex: 1,
+	},
 	backdrop: {
 		position: 'absolute',
 		top: 0,

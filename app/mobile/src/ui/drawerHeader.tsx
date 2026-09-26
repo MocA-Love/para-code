@@ -3,23 +3,34 @@
 import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { colors, space, type } from '../theme.js';
-import { useDrawerGrabHandlers } from './bottomDrawer.js';
+import { GestureDetector } from 'react-native-gesture-handler';
+import { useDrawerGrabGesture } from './bottomDrawer.js';
+
+/**
+ * シートの中なら、子を掴んで下へ引けるようにする（シートの外ではそのまま描く）。
+ * 中のボタンは、縦に動き出すまでタップを妨げない。
+ */
+function Grabbable({ children }: { children: ReactNode }) {
+	const gesture = useDrawerGrabGesture();
+	return gesture === undefined ? children : <GestureDetector gesture={gesture}>{children}</GestureDetector>;
+}
 
 /**
  * 選択肢のシートの上に置く小さな見出し（モックの `.ash`）。13pt の弱い灰で、何についての
  * 操作かを添えるだけ。操作そのものの名前（「削除しますか？」など）には {@link DrawerTitle} を使う。
  */
 export function DrawerCaption({ title, message }: { title?: string; message?: string }) {
-	// シートの見出しとして、つまみと同じように下へ引いて閉じられる。
-	const grab = useDrawerGrabHandlers();
 	if (title === undefined && message === undefined) {
 		return null;
 	}
+	// シートの見出しとして、つまみと同じように下へ引いて閉じられる。
 	return (
-		<View style={styles.caption} {...grab}>
-			{title !== undefined ? <Text style={styles.captionTitle} numberOfLines={1}>{title}</Text> : null}
-			{message !== undefined ? <Text style={styles.captionMessage}>{message}</Text> : null}
-		</View>
+		<Grabbable>
+			<View style={styles.caption}>
+				{title !== undefined ? <Text style={styles.captionTitle} numberOfLines={1}>{title}</Text> : null}
+				{message !== undefined ? <Text style={styles.captionMessage}>{message}</Text> : null}
+			</View>
+		</Grabbable>
 	);
 }
 
@@ -28,12 +39,13 @@ export function DrawerCaption({ title, message }: { title?: string; message?: st
  */
 export function DrawerTitle({ title, right }: { title: string; right?: ReactNode }) {
 	// シートの見出しとして、つまみと同じように下へ引いて閉じられる（右のボタンは押せたまま）。
-	const grab = useDrawerGrabHandlers();
 	return (
-		<View style={styles.titleRow} {...grab}>
-			<Text style={styles.title} accessibilityRole="header">{title}</Text>
-			{right}
-		</View>
+		<Grabbable>
+			<View style={styles.titleRow}>
+				<Text style={styles.title} accessibilityRole="header">{title}</Text>
+				{right}
+			</View>
+		</Grabbable>
 	);
 }
 
