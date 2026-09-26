@@ -24,7 +24,7 @@ import { SyncDescriptor } from '../../../../../platform/instantiation/common/des
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService } from '../../../../../workbench/services/layout/browser/layoutService.js';
-import { IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
 import { paradisIsTerminalInputBlocked, paradisResetTerminalInputGateForTest } from '../../browser/paradisTerminalInputGate.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
@@ -736,6 +736,37 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			} finally {
 				testDisposables.dispose();
 			}
+		}
+	});
+
+	test('refuses to switch by state key to a worktree whose folder is gone, and still switches to one that exists', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const gone = URI.file('/workspace-a-worktrees/gone');
+			const present = URI.file('/workspace-a-worktrees/present');
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], async uri => {
+				if (uri?.toString() === gone.toString()) {
+					throw new FileOperationError('not found', FileOperationResult.FILE_NOT_FOUND);
+				}
+				return { isDirectory: true };
+			});
+
+			let refusal: string | undefined;
+			try {
+				await harness.workspaceSwitchService.switchToStateKey(paradisWorktreeStateKey(gone));
+			} catch (error) {
+				refusal = error instanceof Error ? error.message : String(error);
+			}
+			const afterRefusal = harness.workspaceSwitchService.activeStateKey;
+			await harness.workspaceSwitchService.switchToStateKey(paradisWorktreeStateKey(present));
+
+			assert.deepStrictEqual({ refusal, afterRefusal, afterPresent: harness.workspaceSwitchService.activeStateKey }, {
+				refusal: `Para Code worktree is missing on disk: ${gone.fsPath}`,
+				afterRefusal: 'space-a',
+				afterPresent: paradisWorktreeStateKey(present),
+			});
+		} finally {
+			testDisposables.dispose();
 		}
 	});
 
@@ -1903,7 +1934,7 @@ async function createHarness(
 	/** 保存済み一覧に混ざっている、別の接続先のスペース。 */
 	foreignRepositories: readonly { id: string; name: string; uri: string }[] = [],
 	/** 切り替え先フォルダの先行確認。答えない stat (リモートの詰まり) を作るために差し替える。 */
-	statTargetFolder: () => Promise<Partial<IFileStat>> = async () => ({ isDirectory: true }),
+	statTargetFolder: (uri?: URI) => Promise<Partial<IFileStat>> = async () => ({ isDirectory: true }),
 	bootstrap?: (context: IWorkspaceSwitchHarnessBootstrap) => Promise<void>,
 ): Promise<IWorkspaceSwitchIntegrationHarness> {
 	const repositories = stateKeys.map(stateKey => ({
