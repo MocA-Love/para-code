@@ -15,28 +15,15 @@ import { Badge } from '../../src/components/badge.js';
 import { Meter } from '../../src/components/meter.js';
 import { colors, radius, space, squircle, type } from '../../src/theme.js';
 import { useNow } from '../../src/time.js';
+import { formatLimitCountdown, staleValueLabel, updatedAtLabel } from '../../src/usageFormat.js';
 import { hapticImpact } from '../../src/haptics.js';
 import type { RateLimitAccount, RateLimitAccountStatus, RateLimitProviderSnapshot, RateLimitWindow, RateLimitsResult } from '../../src/store.js';
 
 /**
- * Rate Limit(AIリミット)画面。設定 → Rate Limit から開く。
+ * 利用上限（Rate Limit / AIリミット）画面。設定 → 使用量 →「利用上限」から開く。
  * PC版タイトルバーのリミットモニターと同じスナップショット（Claude=claude-swap全スロット、
  * Codex=各ホーム）を閲覧専用で表示する。アカウントの追加・再ログインはPC側のみ。
  */
-
-/** '3d 12h' / '2h 27m' / '41m' 形式の残り時間（PC版 paradisLimitsFormatCountdown と同じ規則）。 */
-function formatCountdown(resetsAt: number | undefined, now: number): string | undefined {
-	if (resetsAt === undefined || !isFinite(resetsAt)) { return undefined; }
-	const remainingMs = resetsAt - now;
-	if (remainingMs <= 0) { return undefined; }
-	const totalMinutes = Math.ceil(remainingMs / 60_000);
-	const days = Math.floor(totalMinutes / (60 * 24));
-	const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
-	const minutes = totalMinutes % 60;
-	if (days > 0) { return `${days}d ${hours}h`; }
-	if (hours > 0) { return `${hours}h ${minutes}m`; }
-	return `${minutes}m`;
-}
 
 /**
  * リセットの絶対時刻。PC版パネルは相対時間のみの表示に変えたが（2026-08-30、バッジ縦位置
@@ -174,12 +161,12 @@ export default function RateLimitScreen() {
 	// key は label だけだと scoped.label の重複や '5時間' との衝突で React の警告になる。
 	const renderMeter = (label: string, window: RateLimitWindow, index: number) => {
 		const percent = Math.min(100, Math.max(0, window.usedPercent));
-		const countdown = formatCountdown(window.resetsAt, now);
+		const countdown = formatLimitCountdown(window.resetsAt, now);
 		const clock = formatResetClock(window.resetsAt, now);
 		return (
 			<View key={`${label}-${index}`} style={styles.meterRow}>
 				<Text style={styles.meterLabel} numberOfLines={1}>{label}</Text>
-				{/* 色は使用率から meterColor（60% / 80%）で決める */}
+				{/* 色は使用率から meterColor（60% / 85%）で決める */}
 				<Meter ratio={percent / 100} />
 				<Text style={styles.meterValue}>{Math.round(window.usedPercent)}%</Text>
 				<Text style={styles.meterReset} numberOfLines={1}>
@@ -251,7 +238,9 @@ export default function RateLimitScreen() {
 		<ConnectionGate>
 			<View style={styles.screen}>
 				<ScreenHeader
-					title="Rate Limit"
+					title="利用上限"
+					// いつの値かが分からないと「更新すべきか」を判断できない（他の使用量の画面と同じ書き方）。
+					subtitle={data ? updatedAtLabel(data.fetchedAt, now) : undefined}
 					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
@@ -269,6 +258,8 @@ export default function RateLimitScreen() {
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 
+					{/* 薄くするだけだと読み込み中と見分けが付かないので、いつの値かを文字で添える。 */}
+					{data && hostStale ? <Text style={styles.staleNote}>{staleValueLabel(data.fetchedAt, now)}</Text> : null}
 					{data ? (
 						<View style={hostStale ? styles.stale : undefined}>
 							{renderProvider('claude', 'Claude', data.claude, true)}
@@ -293,6 +284,7 @@ const styles = StyleSheet.create({
 	warn: { color: colors.yellow, fontSize: type.meta, lineHeight: 17, marginTop: 4, marginBottom: 4 },
 	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
 	stale: { opacity: 0.5 },
+	staleNote: { color: colors.textDim, fontSize: type.meta, lineHeight: 17, marginTop: 4, marginBottom: 4 },
 	// 先頭のセクション見出しは上の余白を詰める（集約KPIカードを外したぶん、頭が空きすぎる）。
 	// 見出しの左にロゴを置くので SectionHeader は使えない。書式と上下の余白は SectionHeader に合わせる（大文字化しない）。
 	sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 18, marginBottom: space.sm, paddingHorizontal: space.xs },

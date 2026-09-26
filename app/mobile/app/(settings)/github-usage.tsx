@@ -7,6 +7,7 @@ import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
+import { PillHitArea, hitInset } from '../../src/components/pillHitArea.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { Meter } from '../../src/components/meter.js';
@@ -16,11 +17,24 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { GITHUB_MONITOR_SPACE, GITHUB_UNSCOPED_SPACE } from '../../src/store.js';
 import type { GithubCallCounts, GithubOperationStat, GithubSpaceStat, GithubUsageResult } from '../../src/store.js';
 import { useNow } from '../../src/time.js';
+import { updatedAtLabel, usedRatio } from '../../src/usageFormat.js';
 
 /**
- * GitHub API利用状況画面。設定 →「GitHub API」から開く。
+ * GitHub API利用状況画面。設定 → 使用量 →「GitHub API」から開く。
  * PC版のGitHub API Usageダッシュボード（githubMetrics）と同じスナップショットを閲覧専用で表示する。
+ *
+ * 資源の色分けは Core/REST=青、GraphQL=紫。以前は GraphQL を黄で描いていたが、同じ画面の
+ * 「所要時間が長い・レート制限」の警告も黄で、上の使用率のメーターも60%を超えると黄になるため、
+ * 資源の区別なのか警告なのか読み分けられなかった。
  */
+
+/** 期間ピル・内訳チップの見た目の高さ（最小）。当たり判定は PillHitArea で HIT_SIZE まで広げる。 */
+const PILL_HEIGHT = 28;
+const CHIP_HEIGHT = 26;
+const PILL_INSET = hitInset(PILL_HEIGHT);
+const CHIP_INSET = hitInset(CHIP_HEIGHT);
+/** GraphQL の資源を示す色（上の説明のとおり、警告の黄と重ねない）。 */
+const GRAPHQL_COLOR = colors.purple;
 
 /** 内訳に出す行の表示上限件数。 */
 const MAX_ROWS = 10;
@@ -193,8 +207,8 @@ export default function GithubUsageScreen() {
 					title="GitHub API"
 					// GitHub APIのレート枠はPC(マシン)単位で共有され、rtk/ccusage/rate limitと違い
 					// 「どのウィンドウ（ローカル/SSHリモート）から見ても同じ値」になる。接続先セグメントは
-					// 出さず、その旨をここで明示する。
-					subtitle="PC全体の値です"
+					// 出さず、その旨をここで明示する。取得時刻は他の使用量の画面と同じ書き方で先頭に置く。
+					subtitle={data ? `${updatedAtLabel(data.generatedAt, now)} · PC全体の値` : 'PC全体の値です'}
 					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
@@ -212,27 +226,25 @@ export default function GithubUsageScreen() {
 
 					{data ? (
 						<>
+							{/* 他の使用量の画面（利用上限など）と同じく「使用率」で見せる。以前は残量を
+							    数字とゲージで出しており、同じ満ちたゲージが画面によって「余裕」と「逼迫」の
+							    逆の意味になっていた。色は使用率から meterColor で決める。 */}
 							<View style={styles.kpiRow}>
-								<View style={styles.kpiCard}>
-									<Text style={styles.kpiLabel}>CORE 残量</Text>
-									<Text style={styles.kpiValue}>{core ? core.remaining.toLocaleString() : '—'}</Text>
-									{core ? (
-										<>
-											<Text style={styles.kpiSub}>/ {core.limit.toLocaleString()} · {formatCountdown(core.resetAt, now)}</Text>
-											<Meter ratio={core.limit > 0 ? core.remaining / core.limit : 0} color={colors.accent} style={styles.kpiGauge} />
-										</>
-									) : null}
-								</View>
-								<View style={styles.kpiCard}>
-									<Text style={styles.kpiLabel}>GRAPHQL 残量</Text>
-									<Text style={[styles.kpiValue, { color: colors.yellow }]}>{graphql ? graphql.remaining.toLocaleString() : '—'}</Text>
-									{graphql ? (
-										<>
-											<Text style={styles.kpiSub}>/ {graphql.limit.toLocaleString()} · {formatCountdown(graphql.resetAt, now)}</Text>
-											<Meter ratio={graphql.limit > 0 ? graphql.remaining / graphql.limit : 0} color={colors.yellow} style={styles.kpiGauge} />
-										</>
-									) : null}
-								</View>
+								{([['REST 使用率', core], ['GraphQL 使用率', graphql]] as const).map(([label, entry]) => {
+									const ratio = entry ? usedRatio(entry.used, entry.limit) : 0;
+									return (
+										<View key={label} style={styles.kpiCard}>
+											<Text style={styles.kpiLabel}>{label}</Text>
+											<Text style={styles.kpiValue}>{entry ? `${Math.round(ratio * 100)}%` : '—'}</Text>
+											{entry ? (
+												<>
+													<Text style={styles.kpiSub}>{entry.used.toLocaleString()} / {entry.limit.toLocaleString()} · {formatCountdown(entry.resetAt, now)}</Text>
+													<Meter ratio={ratio} style={styles.kpiGauge} />
+												</>
+											) : null}
+										</View>
+									);
+								})}
 							</View>
 
 							<SectionHeader title="期間" />
@@ -240,17 +252,19 @@ export default function GithubUsageScreen() {
 								{(['5m', '1h', 'session'] as WindowKey[]).map(key => {
 									const active = windowKey === key;
 									const label = key === '5m' ? '5分' : key === '1h' ? '1時間' : 'セッション';
+									const select = () => { hapticSelection(); setWindowKey(key); };
 									return (
-										<SelectablePill
-											key={key}
-											active={active}
-											onPress={() => { hapticSelection(); setWindowKey(key); }}
-											style={styles.pill}
-											hitStyle={styles.pillHit}
-											accessibilityLabel={label}
-										>
-											<Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
-										</SelectablePill>
+										<PillHitArea key={key} onPress={select}>
+											<SelectablePill
+												active={active}
+												onPress={select}
+												style={styles.pill}
+												hitStyle={styles.pillHit}
+												accessibilityLabel={label}
+											>
+												<Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+											</SelectablePill>
+										</PillHitArea>
 									);
 								})}
 							</View>
@@ -259,18 +273,20 @@ export default function GithubUsageScreen() {
 							<View style={styles.chipRow}>
 								{([['caller', '呼び出し元'], ['space', 'スペース']] as [GroupKey, string][]).map(([key, label]) => {
 									const active = groupKey === key;
+									const select = () => { hapticSelection(); setGroupKey(key); };
 									return (
-										<SelectablePill
-											key={key}
-											active={active}
-											onPress={() => { hapticSelection(); setGroupKey(key); }}
-											style={styles.chip}
-											hitStyle={styles.chipHit}
-											activeColor={colors.accentWash}
-											accessibilityLabel={label}
-										>
-											<Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-										</SelectablePill>
+										<PillHitArea key={key} onPress={select}>
+											<SelectablePill
+												active={active}
+												onPress={select}
+												style={styles.chip}
+												hitStyle={styles.chipHit}
+												activeColor={colors.accentWash}
+												accessibilityLabel={label}
+											>
+												<Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+											</SelectablePill>
+										</PillHitArea>
 									);
 								})}
 							</View>
@@ -293,7 +309,7 @@ export default function GithubUsageScreen() {
 											<Text style={styles.barSub} numberOfLines={1}>{row.sub}</Text>
 											<View style={styles.barTrack}>
 												<View style={[styles.barFill, { width: `${widthPercent * corePercent / 100}%`, backgroundColor: colors.accent }]} />
-												<View style={[styles.barFill, { width: `${widthPercent * (100 - corePercent) / 100}%`, backgroundColor: colors.yellow }]} />
+												<View style={[styles.barFill, { width: `${widthPercent * (100 - corePercent) / 100}%`, backgroundColor: GRAPHQL_COLOR }]} />
 											</View>
 											{/* 問題があるときだけ赤・黄が増える。平常時は所要時間だけの静かな行にする。 */}
 											{row.value > 0 ? (
@@ -316,7 +332,7 @@ export default function GithubUsageScreen() {
 							</View>
 
 							<Text style={styles.note}>
-								棒の色は資源の内訳（青=Core/REST、黄=GraphQL）。「スペース」に切り替えるとworktreeごとの合計になり、worktreeに紐付かない呼び出し（Agent Sessionsウィンドウ自身のGitHub API利用）は1つにまとまります。
+								棒の色は資源の内訳（青=Core/REST、紫=GraphQL）。「スペース」に切り替えるとworktreeごとの合計になり、worktreeに紐付かない呼び出し（Agent Sessionsウィンドウ自身のGitHub API利用）は1つにまとまります。
 							</Text>
 						</>
 					) : null}
@@ -335,21 +351,22 @@ const styles = StyleSheet.create({
 	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	// 残量のゲージを抱えるため StatCard には載せられない。寸法と文字は StatCard に合わせる。
+	// 使用率のゲージを抱えるため StatCard には載せられない。寸法と文字は StatCard に合わせる。
 	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 14 },
 	kpiLabel: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', letterSpacing: 0.4 },
 	kpiValue: { color: colors.text, fontSize: type.large, fontWeight: '800', marginTop: 4, fontVariant: ['tabular-nums'] },
 	kpiSub: { color: colors.textDim, fontSize: type.caption, marginTop: 2 },
-	// 残量を表すので色は固定で渡す（meterColor は使用率用）。Meter の track は flex: 1 を持つので、縦に積む中では伸ばさない。
+	// Meter の track は flex: 1 を持つので、縦に積む中では伸ばさない。
 	kpiGauge: { flex: 0, marginTop: 8 },
 	// 下の余白が2ptしかないと、押せるピル／チップと直下のカードが触れて見える。
-	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	pill: { borderRadius: radius.pill, ...squircle },
+	// 当たり判定（PillHitArea）が上下にはみ出すぶんを余白から引き、見た目の位置を包む前（上2・下12）に揃える。
+	pillRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 8, marginTop: 2 - PILL_INSET, marginBottom: 12 - PILL_INSET },
+	pill: { borderRadius: radius.pill, ...squircle, minHeight: PILL_HEIGHT },
 	pillHit: { paddingVertical: 7, paddingHorizontal: 13 },
 	pillText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
-	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	chip: { borderRadius: radius.control, ...squircle },
+	chipRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 8, marginTop: 2 - CHIP_INSET, marginBottom: 12 - CHIP_INSET },
+	chip: { borderRadius: radius.control, ...squircle, minHeight: CHIP_HEIGHT },
 	chipHit: { paddingVertical: 6, paddingHorizontal: 12 },
 	chipText: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },

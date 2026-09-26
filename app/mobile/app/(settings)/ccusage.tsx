@@ -7,6 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { HostSegment } from '../../src/components/hostSegment.js';
+import { PillHitArea, hitInset } from '../../src/components/pillHitArea.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
 import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
@@ -17,6 +18,7 @@ import { SectionHeader } from '../../src/components/sectionHeader.js';
 import { StatCard } from '../../src/components/statCard.js';
 import { colors, radius, squircle, type } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
+import { dayCost, localDateKey, staleValueLabel, updatedAtLabel } from '../../src/usageFormat.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
@@ -25,6 +27,9 @@ import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
 const TOP_MODELS = 6;
 const TOP_PROJECTS = 6;
 const TOP_SESSIONS = 10;
+/** 絞り込みピルの見た目の高さ（最小）。当たり判定は PillHitArea で HIT_SIZE まで広げる。 */
+const PILL_HEIGHT = 28;
+const PILL_INSET = hitInset(PILL_HEIGHT);
 /** 「日別」は最近の推移を見るためのものなので、集計期間とは独立に直近7日で固定する。 */
 const DAILY_WINDOW_DAYS = 7;
 /** モデル別・プロジェクト別の集計期間の選択肢（PCからは90日ぶん届いている）。 */
@@ -79,22 +84,12 @@ function formatCompactTokens(tokens: number): string {
 	return String(tokens);
 }
 
-/** ローカル日付の YYYY-MM-DD（PC側 daily の period と同じ形式）。 */
-function localDateKey(date: Date): string {
-	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
 function relativeTime(ts: number | undefined, now: number): string {
 	if (ts === undefined) { return '—'; }
 	return formatRelativeTime(ts, now);
 }
 
 interface ModelAgg { model: string; agent: UsageAgent; cost: number; tokens: number }
-
-/** その日のうち、選んだエージェントぶんだけのコスト合計。 */
-function dayCost(day: UsageDashboardResult['days'][number], agent: AgentFilter): number {
-	return day.models.reduce((sum, m) => (agent === 'all' || m.agent === agent ? sum + m.cost : sum), 0);
-}
 
 /** データに実際に出てくるエージェント（使っていないものをピルに並べても選べるだけ無駄なので）。 */
 function agentsInData(data: UsageDashboardResult): UsageAgent[] {
@@ -282,10 +277,10 @@ export default function CcusageScreen() {
 		<ConnectionGate>
 			<View style={styles.screen}>
 				<ScreenHeader
-					title="Ccusage"
+					title="コスト"
 					// PC側は30分ごとに裏で集計し直す。いつの数字を見ているかが分からないと
-					// 「更新すべきか」を判断できないので、取得時刻を必ず添える。
-					subtitle={data ? `${relativeTime(data.fetchedAt, now)}に取得` : undefined}
+					// 「更新すべきか」を判断できないので、取得時刻を必ず添える（書き方は使用量の各画面で共通）。
+					subtitle={data ? updatedAtLabel(data.fetchedAt, now) : undefined}
 					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
@@ -306,6 +301,8 @@ export default function CcusageScreen() {
 						<Text style={styles.warn}>一部のレポート取得に失敗しました（{data.failedReports.join(', ')}）</Text>
 					) : null}
 
+					{/* 薄くするだけだと読み込み中と見分けが付かないので、いつの値かを文字で添える。 */}
+					{data && hostStale ? <Text style={styles.staleNote}>{staleValueLabel(data.fetchedAt, now)}</Text> : null}
 					{data ? (
 						<View style={hostStale ? styles.stale : undefined}>
 							{/* 絞り込みは、それが効く数字より先に出す。後ろに置くと、押しても
@@ -317,17 +314,19 @@ export default function CcusageScreen() {
 										{(['all', ...availableAgents] as AgentFilter[]).map(key => {
 											const active = agentFilter === key;
 											const label = key === 'all' ? 'すべて' : AGENT_LABEL[key];
+											const select = () => { hapticSelection(); setAgentFilter(key); };
 											return (
-												<SelectablePill
-													key={key}
-													active={active}
-													onPress={() => { hapticSelection(); setAgentFilter(key); }}
-													style={styles.pill}
-													hitStyle={styles.pillHit}
-													accessibilityLabel={label}
-												>
-													<Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
-												</SelectablePill>
+												<PillHitArea key={key} onPress={select}>
+													<SelectablePill
+														active={active}
+														onPress={select}
+														style={styles.pill}
+														hitStyle={styles.pillHit}
+														accessibilityLabel={label}
+													>
+														<Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+													</SelectablePill>
+												</PillHitArea>
 											);
 										})}
 									</View>
@@ -370,17 +369,19 @@ export default function CcusageScreen() {
 							<View style={styles.pillRow}>
 								{PERIOD_OPTIONS.map(days => {
 									const active = periodDays === days;
+									const select = () => { hapticSelection(); setPeriodDays(days); };
 									return (
-										<SelectablePill
-											key={days}
-											active={active}
-											onPress={() => { hapticSelection(); setPeriodDays(days); }}
-											style={styles.pill}
-											hitStyle={styles.pillHit}
-											accessibilityLabel={`${days}日`}
-										>
-											<Text style={[styles.pillText, active && styles.pillTextActive]}>{days}日</Text>
-										</SelectablePill>
+										<PillHitArea key={days} onPress={select}>
+											<SelectablePill
+												active={active}
+												onPress={select}
+												style={styles.pill}
+												hitStyle={styles.pillHit}
+												accessibilityLabel={`${days}日`}
+											>
+												<Text style={[styles.pillText, active && styles.pillTextActive]}>{days}日</Text>
+											</SelectablePill>
+										</PillHitArea>
 									);
 								})}
 							</View>
@@ -449,11 +450,14 @@ const styles = StyleSheet.create({
 	warn: { color: colors.yellow, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
 	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
 	stale: { opacity: 0.5 },
+	staleNote: { color: colors.textDim, fontSize: type.meta, lineHeight: 17, marginTop: 4, marginBottom: 4 },
 	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	// 押せるピルと直下のカードが触れて見えないよう、下に余白を残す。
-	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	pill: { borderRadius: radius.pill, ...squircle },
+	// ピルの当たり判定（PillHitArea）は上下に PILL_INSET ずつはみ出すので、そのぶん余白から引いて
+	// 見た目の位置を包む前（上2・下12）と揃える。
+	pillRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 8, marginTop: 2 - PILL_INSET, marginBottom: 12 - PILL_INSET },
+	pill: { borderRadius: radius.pill, ...squircle, minHeight: PILL_HEIGHT },
 	pillHit: { paddingVertical: 7, paddingHorizontal: 13 },
 	pillText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },

@@ -14,7 +14,8 @@ import { Meter } from '../../src/components/meter.js';
 import { SectionHeader } from '../../src/components/sectionHeader.js';
 import { StatCard } from '../../src/components/statCard.js';
 import { colors, radius, squircle, type } from '../../src/theme.js';
-import { formatRelativeTime, useNow } from '../../src/time.js';
+import { useNow } from '../../src/time.js';
+import { localDateKey, staleValueLabel, updatedAtLabel } from '../../src/usageFormat.js';
 import { hapticImpact } from '../../src/haptics.js';
 import type { RtkSavingsResult } from '../../src/store.js';
 
@@ -35,11 +36,6 @@ function formatTokens(tokens: number): string {
 /** 節約率(%)。PC側と同じく「入力に対して何%削れたか」で出す。 */
 function savingsPercent(savedTokens: number, inputTokens: number): number {
 	return inputTokens > 0 ? (savedTokens / inputTokens) * 100 : 0;
-}
-
-/** ローカル日付の YYYY-MM-DD（PC側 days の date と同じ形式）。 */
-function localDateKey(date: Date): string {
-	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 /** 直近 windowDays 分の日別節約量（日付降順＝新しい日が先頭、記録の無い日も0埋め）。 */
@@ -141,10 +137,10 @@ export default function RtkScreen() {
 		<ConnectionGate>
 			<View style={styles.screen}>
 				<ScreenHeader
-					title="RTK節約状況"
+					title="RTK の節約"
 					// PC側はTTL付きのキャッシュを返す。いつの数字を見ているかが分からないと
-					// 「更新すべきか」を判断できないので、取得時刻を必ず添える。
-					subtitle={data ? `${formatRelativeTime(data.fetchedAt, now)}に取得` : undefined}
+					// 「更新すべきか」を判断できないので、取得時刻を必ず添える（書き方は使用量の各画面で共通）。
+					subtitle={data ? updatedAtLabel(data.fetchedAt, now) : undefined}
 					actions={headerActions}
 					onHeightChange={setHeaderHeight}
 				/>
@@ -165,6 +161,8 @@ export default function RtkScreen() {
 						<Text style={styles.warn}>一部のレポート取得に失敗しました（{data.failedReports.join(', ')}）</Text>
 					) : null}
 
+					{/* 薄くするだけだと読み込み中と見分けが付かないので、いつの値かを文字で添える。 */}
+					{data && hostStale ? <Text style={styles.staleNote}>{staleValueLabel(data.fetchedAt, now)}</Text> : null}
 					{data ? (
 						<View style={hostStale ? styles.stale : undefined}>
 							<View style={styles.kpiRow}>
@@ -237,6 +235,7 @@ const styles = StyleSheet.create({
 	warn: { color: colors.yellow, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
 	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
 	stale: { opacity: 0.5 },
+	staleNote: { color: colors.textDim, fontSize: type.meta, lineHeight: 17, marginTop: 4, marginBottom: 4 },
 	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },

@@ -19,23 +19,17 @@ import { colors, radius, squircle, type } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 
 /**
- * PCごとの詳細画面。設定 →「ペアリング済みのPC」の行から開く。
+ * PCごとの詳細画面。設定 →「PC」の行から開く。
  *
- * 使用量（Ccusage / Rate Limit / GitHub API / システム）は「いま見ているPC」のものを出す作りなので、
- * ここから開くときは先にそのPCへ切り替える。そうしないと、Aの詳細から開いたのにBの数字が出る、
- * という取り違えが起きる（複数PC対応で使用量がどのPCのものか分からなくなった、という指摘の本体）。
+ * 使用量（まとめ画面「使用量」と、その先のコスト / 利用上限 / RTK の節約 / GitHub API / システム）は
+ * 「いま見ているPC」のものを出す作りなので、ここから開くときは先にそのPCへ切り替える。そうしないと、
+ * Aの詳細から開いたのにBの数字が出る、という取り違えが起きる（複数PC対応で使用量がどのPCのものか
+ * 分からなくなった、という指摘の本体）。以前は使用量の5画面への行をここにも並べていたが、
+ * 設定トップと同じく「使用量」の1行にまとめてある。
  *
  * 名前の変更・ペアリング解除もこの画面に集めてある（一覧の行にアイコンを並べると、
  * 「開く」つもりの指が消すボタンに当たる）。
  */
-
-const USAGE_LINKS = [
-	{ route: '/ccusage', icon: 'stats-chart-outline', title: 'Ccusage', desc: 'コーディングエージェントのトークン使用量・コストを確認します' },
-	{ route: '/rtk', icon: 'flash-outline', title: 'RTK節約状況', desc: 'RTKがコマンド出力から削ったトークン量を確認します' },
-	{ route: '/ratelimit', icon: 'speedometer-outline', title: 'Rate Limit', desc: 'Claude Code / Codex のレート制限と残量をアカウントごとに確認します' },
-	{ route: '/github-usage', icon: 'logo-github', title: 'GitHub API', desc: 'GitHubのレート枠と、Para Codeが送ったリクエストの内訳を確認します' },
-	{ route: '/system', icon: 'hardware-chip-outline', title: 'システム', desc: 'PCのCPU・メモリ・ディスクの空きと、何が使っているかを確認します' },
-] as const;
 
 export default function PcDetailScreen() {
 	const router = useRouter();
@@ -71,17 +65,21 @@ export default function PcDetailScreen() {
 	 * 使用量を開く。対象が「いま見ているPC」でなければ、先に切り替えてから開く
 	 * （使用量の画面はいま見ているPCのものを出すので、切り替えないと別のPCの数字が出る）。
 	 *
+	 * **副作用として、アプリ全体の「いま見ているPC」がこのPCに変わる**（設定を閉じたあとの
+	 * ホームや他のタブもこのPCになる）。使用量の画面をPCごとに持たせない限り避けられないので、
+	 * 意図して残している。その旨は下の注記で開く前に伝えている。
+	 *
 	 * `switchPcWithReturn`（画面上部に「戻る」付きの告知を出す版）は**ここでは使えない**。
 	 * この画面は設定シートの上に載っており、告知の描画先（OverlayHost）はシートの背面にある。
 	 * 出しても隠れたまま数秒で消えるので、あるはずの戻り道を約束することになってしまう。
 	 * 代わりに、切り替わること自体を下の注記で先に伝えている。
 	 */
-	const openUsage = (route: string) => {
+	const openUsage = () => {
 		hapticSelection();
 		if (!isActive) {
 			switchPc(pc.id);
 		}
-		router.push(route as '/ccusage');
+		router.push('/usage');
 	};
 
 	/**
@@ -161,15 +159,12 @@ export default function PcDetailScreen() {
 
 				<SectionHeader title="使用量" />
 				<SettingsCard>
-					{USAGE_LINKS.map(link => (
-						<SettingsRow
-							key={link.route}
-							icon={link.icon}
-							title={link.title}
-							description={link.desc}
-							onPress={() => openUsage(link.route)}
-						/>
-					))}
+					<SettingsRow
+						icon="stats-chart-outline"
+						title="使用量"
+						description="利用上限・コスト・RTK の節約・GitHub API・PCのリソースをまとめて確認します"
+						onPress={openUsage}
+					/>
 				</SettingsCard>
 				{!isActive ? (
 					<Text style={styles.note}>

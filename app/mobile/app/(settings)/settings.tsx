@@ -18,11 +18,15 @@ import { SettingsCard, SettingsRow } from '../../src/components/settingsRow.js';
 import { colors, type } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 import { formatCpu, usagePercent } from '../../src/systemResources.js';
+import { notificationSettingsSummary } from '../../src/notificationSettingsSummary.js';
 
 /**
  * 設定画面。ワークスペースドロワーの設定アイコンから開く。
- * 現状は通知設定のみ（エージェントの完了通知・質問通知のON/OFF）。
- * OFFにするとOS通知（バナー）を抑制する。アプリ内の通知一覧には引き続き残る。
+ *
+ * 並びは「本来の設定が先」: 通知 → 表示 → PC → 使用量 → このアプリについて → 開発者向け。
+ * 以前は閲覧専用の使用量ダッシュボード5行が最上段にあり、設定（通知・表示）がその下に埋もれていた。
+ * 通知まわりのスイッチ（3か所に分散していた）は「通知と音声」、使用量の5画面は「使用量」の
+ * まとめ画面へそれぞれ1行に集め、行の右に現在の状態を出して開かなくても分かるようにしている。
  */
 export default function SettingsScreen() {
 	const router = useRouter();
@@ -32,65 +36,40 @@ export default function SettingsScreen() {
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const {
-		notifyPrefs, setNotifyPref, resources, pcs, activePcId,
-		keepBackgroundPcs, setKeepBackgroundPcs, notifyOtherPcs, setNotifyOtherPcs, terminalPrefs,
+		notifyPrefs, resources, pcs, activePcId,
+		keepBackgroundPcs, setKeepBackgroundPcs, notifyOtherPcs, voiceDesired, terminalPrefs,
 	} = useAppStore(useShallow(s => ({
-		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref, resources: s.workspace?.resources,
+		notifyPrefs: s.notifyPrefs, resources: s.workspace?.resources,
 		pcs: s.pcs, activePcId: s.activePcId,
 		keepBackgroundPcs: s.keepBackgroundPcs, setKeepBackgroundPcs: s.setKeepBackgroundPcs,
-		notifyOtherPcs: s.notifyOtherPcs, setNotifyOtherPcs: s.setNotifyOtherPcs,
+		notifyOtherPcs: s.notifyOtherPcs, voiceDesired: s.voiceNotifications.desired,
 		terminalPrefs: s.terminalPrefs,
 	})));
 	const activePc = pcs.find(pc => pc.id === activePcId);
 	// 行を開かずに済むよう、ドロワーと同じ配信値（CPU · RAM）を右端に出す。旧PCでは届かないので出さない。
 	const systemSummary = resources !== undefined
-		? `${formatCpu(resources.cpu)} · ${Math.round(usagePercent(resources.memUsed, resources.memTotal))}%`
+		? `CPU ${formatCpu(resources.cpu)} · RAM ${Math.round(usagePercent(resources.memUsed, resources.memTotal))}%`
 		: undefined;
-
-	const toggle = (key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused') => (value: boolean) => {
-		hapticSelection();
-		setNotifyPref(key, value);
-	};
+	const notificationSummary = notificationSettingsSummary({
+		agentDone: notifyPrefs.agentDone,
+		agentQuestion: notifyPrefs.agentQuestion,
+		notifyOtherPcs,
+		voice: voiceDesired,
+	});
 
 	return (
 		<View style={styles.screen}>
 			{/* ここが設定の最上段なので、戻る先はこのモーダルの中に無い */}
 			<ScreenHeader title="設定" showBack={false} onHeightChange={setHeaderHeight} />
 			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
-				{/* どのPCの数字なのかを見出しで名指しする（複数PCだと「使用量」だけでは分からない）。
-				    他のPCの数字は「ペアリング済みのPC」の行から開く。 */}
-				<SectionHeader first title={`使用量${activePc !== undefined && pcs.length > 1 ? `（${activePc.name}）` : ''}`} />
+				<SectionHeader first title="通知" />
 				<SettingsCard>
 					<SettingsRow
-						icon="stats-chart-outline"
-						title="Ccusage"
-						description="コーディングエージェントのトークン使用量・コストを確認します"
-						onPress={() => { hapticSelection(); router.push('/ccusage'); }}
-					/>
-					<SettingsRow
-						icon="flash-outline"
-						title="RTK節約状況"
-						description="RTKがコマンド出力から削ったトークン量を確認します"
-						onPress={() => { hapticSelection(); router.push('/rtk'); }}
-					/>
-					<SettingsRow
-						icon="speedometer-outline"
-						title="Rate Limit"
-						description="Claude Code / Codex のレート制限と残量をアカウントごとに確認します"
-						onPress={() => { hapticSelection(); router.push('/ratelimit'); }}
-					/>
-					<SettingsRow
-						icon="logo-github"
-						title="GitHub API"
-						description="GitHubのレート枠と、Para Codeが送ったリクエストの内訳を確認します"
-						onPress={() => { hapticSelection(); router.push('/github-usage'); }}
-					/>
-					<SettingsRow
-						icon="hardware-chip-outline"
-						title="システム"
-						description="PCのCPU・メモリ・ディスクの空きと、何が使っているかを確認します"
-						value={systemSummary}
-						onPress={() => { hapticSelection(); router.push('/system'); }}
+						icon="notifications-outline"
+						title="通知と音声"
+						description="作業完了・質問のバナー、鳴らす条件、音声通知を設定します"
+						value={notificationSummary}
+						onPress={() => { hapticSelection(); router.push('/notification-settings'); }}
 					/>
 				</SettingsCard>
 
@@ -109,16 +88,9 @@ export default function SettingsScreen() {
 						description="ターミナル画面の一覧に出すプリセットを選びます"
 						onPress={() => { hapticSelection(); router.push('/presets'); }}
 					/>
-					{/* 見た目を決めるための実験台。決まったら本番へ移してこの行は消す。 */}
-					<SettingsRow
-						icon="color-wand-outline"
-						title="ヘッダーの動きを試す"
-						description="画面を移るときの上のバーの動きを、案ごとに見比べます"
-						onPress={() => { hapticSelection(); router.push('/morph-lab'); }}
-					/>
 				</SettingsCard>
 
-				<SectionHeader title="ペアリング済みのPC" />
+				<SectionHeader title="PC" />
 				<SettingsCard>
 					{/* 行はアバター・名前・状態だけにして、開くことに専念させる。
 						    名前の変更とペアリング解除は開いた先（pc-detail）に集めてある
@@ -158,6 +130,7 @@ export default function SettingsScreen() {
 						</View>
 					</Pressable>
 				</SettingsCard>
+				{/* 通知の話ではなく接続（通信量）の話なので、「通知と音声」へは移さずPCの下に残す。 */}
 				<SettingsCard style={styles.cardSpaced}>
 					<SettingsRow
 						title="見ていないPCとの接続を保つ"
@@ -170,40 +143,20 @@ export default function SettingsScreen() {
 							/>
 						)}
 					/>
-					<SettingsRow
-						title="他のPCからの通知も出す"
-						description="アプリを開いている間の話です。オフにすると、いま見ているPCの通知だけがバナーで出ます（アプリを閉じている間はどのPCからも届きます）"
-						right={(
-							<Switch
-								value={notifyOtherPcs}
-								onValueChange={value => { hapticSelection(); setNotifyOtherPcs(value); }}
-								trackColor={{ true: colors.accent2 }}
-							/>
-						)}
-					/>
 				</SettingsCard>
 
-				<SectionHeader title="通知" />
+				{/* どのPCの数字なのかを見出しで名指しする（複数PCだと「使用量」だけでは分からない）。
+				    他のPCの数字は「PC」の行（pc-detail）から開く。 */}
+				<SectionHeader title={`使用量${activePc !== undefined && pcs.length > 1 ? `（${activePc.name}）` : ''}`} />
 				<SettingsCard>
 					<SettingsRow
-						title="作業完了を通知"
-						description="エージェントの作業が終わったときにバナーを出します"
-						right={<Switch value={notifyPrefs.agentDone} onValueChange={toggle('agentDone')} trackColor={{ true: colors.accent2 }} />}
-					/>
-					<SettingsRow
-						title="質問を通知"
-						description="エージェントから質問・承認要求があったときにバナーを出します"
-						right={<Switch value={notifyPrefs.agentQuestion} onValueChange={toggle('agentQuestion')} trackColor={{ true: colors.accent2 }} />}
-					/>
-					<SettingsRow
-						title="PC作業中は鳴らさない"
-						description="PCを操作している間はバナーを出しません"
-						right={<Switch value={notifyPrefs.suppressWhenPcFocused} onValueChange={toggle('suppressWhenPcFocused')} trackColor={{ true: colors.accent2 }} />}
+						icon="stats-chart-outline"
+						title="使用量"
+						description="利用上限・コスト・RTK の節約・GitHub API・PCのリソースをまとめて確認します"
+						value={systemSummary}
+						onPress={() => { hapticSelection(); router.push('/usage'); }}
 					/>
 				</SettingsCard>
-				<Text style={styles.note}>
-					どれもバナーを止めるだけで、通知そのものは届きます（ホーム右上のベルからあとで読み返せます）。このアプリでそのエージェントの画面を開いている間も、同じ内容のバナーは出しません。
-				</Text>
 
 				<SectionHeader title="このアプリについて" />
 				<SettingsCard>
@@ -213,6 +166,17 @@ export default function SettingsScreen() {
 						description="アプリの各バージョンで何が変わったかを確認します"
 						value={APP_VERSION}
 						onPress={() => { hapticSelection(); router.push('/changelog'); }}
+					/>
+				</SettingsCard>
+
+				<SectionHeader title="開発者向け" />
+				<SettingsCard>
+					{/* 見た目を決めるための実験台。決まったら本番へ移してこの行は消す。 */}
+					<SettingsRow
+						icon="color-wand-outline"
+						title="ヘッダーの動きを試す"
+						description="画面を移るときの上のバーの動きを、案ごとに見比べます"
+						onPress={() => { hapticSelection(); router.push('/morph-lab'); }}
 					/>
 				</SettingsCard>
 			</ScrollView>
@@ -234,5 +198,4 @@ const styles = StyleSheet.create({
 	// 行の marginTop は statusRow 側で持つ。バッテリーは縮まないので、詰まるときは文字を縮める。
 	statusText: { marginTop: 0, flexShrink: 1 },
 	statusSep: { color: colors.textDim, fontSize: type.meta, opacity: 0.6 },
-	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 10, paddingHorizontal: 4 },
 });
