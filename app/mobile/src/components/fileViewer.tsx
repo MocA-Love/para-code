@@ -14,7 +14,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { marked } from 'marked';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { colors } from '../theme.js';
+import { Button } from './button.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
@@ -484,8 +485,8 @@ function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, o
 			<View style={styles.recoveryBox}>
 				<Text style={styles.dim}>Office ファイルの表示結果が空でした。</Text>
 				<View style={styles.recoveryActions}>
-					<Pressable style={styles.recoveryButton} onPress={retry} accessibilityRole={'button'}><Text style={styles.recoveryButtonText}>再試行</Text></Pressable>
-					<Pressable style={styles.recoveryButton} onPress={openExternally} accessibilityRole={'button'}><Text style={styles.recoveryButtonText}>既定のアプリで開く</Text></Pressable>
+					<Button variant="secondary" label="再試行" onPress={retry} />
+					<Button variant="secondary" label="既定のアプリで開く" onPress={openExternally} />
 				</View>
 			</View>
 		);
@@ -730,28 +731,26 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
 	backButton: { flexDirection: 'row', alignItems: 'center', marginLeft: -7, marginRight: 2 },
-	backText: { color: colors.accent2, fontSize: 14 },
-	title: { flex: 1, color: colors.text, fontSize: 13 },
-	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	backText: { color: colors.accent2, fontSize: type.body },
+	title: { flex: 1, color: colors.text, fontSize: type.body },
+	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },
-	segmentBtnActive: { backgroundColor: 'rgba(9,175,217,.25)' },
-	segmentText: { color: colors.textDim, fontSize: 12 },
+	segmentBtnActive: { backgroundColor: tint(colors.accent, alpha.line) },
+	segmentText: { color: colors.textDim, fontSize: type.meta },
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
-	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
+	truncated: { color: colors.yellow, fontSize: type.badge, paddingHorizontal: 16, paddingVertical: 4 },
 	// WKWebView は初回ペイント前の既定背景が不透明白のため、開いた瞬間に白フラッシュする。
 	// alpha 1.0 の backgroundColor を指定するとネイティブ側が WKWebView 自体を opaque 化して
 	// 背景色を適用するため、初回ペイント前もダーク面が見える（opaque prop には効果が無い）。
 	web: { flex: 1, backgroundColor: colors.bg },
-	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
+	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', marginTop: 24 },
 	recoveryBox: { alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24, flex: 1 },
 	recoveryActions: { flexDirection: 'row', gap: 12 },
-	recoveryButton: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 9 },
-	recoveryButtonText: { color: colors.text, fontSize: 13, fontWeight: '600' },
 	loadingBox: { alignItems: 'center', gap: 8, marginTop: 24 },
 	sheetBar: { flexGrow: 0, flexShrink: 0, backgroundColor: colors.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	sheetBarContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-	sheetChip: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 180 },
-	sheetChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
-	sheetText: { color: colors.textDim, fontSize: 12 },
+	sheetChip: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: radius.control, ...squircle, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 180 },
+	sheetChipActive: { borderColor: colors.accent2, backgroundColor: colors.accentWash },
+	sheetText: { color: colors.textDim, fontSize: type.meta },
 	sheetTextActive: { color: colors.text, fontWeight: '600' },
 });

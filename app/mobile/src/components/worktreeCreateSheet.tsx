@@ -6,7 +6,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import type { WorktreeFormResult } from '../store.js';
 import { BottomSheet } from './bottomSheet.js';
-import { colors } from '../theme.js';
+import { Button } from './button.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /**
@@ -234,12 +236,8 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 							</ScrollView>
 							{error ? <Text style={styles.error}>{error}</Text> : null}
 							<View style={styles.btnRow}>
-								<Pressable style={[styles.btn, styles.btnCancel]} onPress={() => { hapticImpact('light'); onClose(); }} disabled={busy}>
-									<Text style={styles.btnCancelText}>キャンセル</Text>
-								</Pressable>
-								<Pressable style={[styles.btn, styles.btnCreate, !canCreate && styles.btnDisabled]} onPress={() => { void create(); }} disabled={!canCreate}>
-									<Text style={styles.btnCreateText}>{busy ? '作成中…' : '作成'}</Text>
-								</Pressable>
+								<Button label="キャンセル" variant="secondary" flex onPress={() => { hapticImpact('light'); onClose(); }} disabled={busy} />
+								<Button label={busy ? '作成中…' : '作成'} variant="primary" flex onPress={() => { void create(); }} disabled={!canCreate} />
 							</View>
 						</>
 					) : null}
@@ -255,24 +253,18 @@ const styles = StyleSheet.create({
 	fieldRow: { flexDirection: 'row', gap: 8 },
 	fieldHalf: { flex: 1 },
 	input: {
-		backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10,
-		paddingHorizontal: 12, paddingVertical: 10, color: colors.text, fontSize: 13, marginBottom: 8,
+		backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.control, ...squircle,
+		paddingHorizontal: 12, paddingVertical: 10, color: colors.text, fontSize: type.body, marginBottom: 8,
 	},
 	promptInput: { minHeight: 74, textAlignVertical: 'top' },
-	label: { color: colors.textDim, fontSize: 12, marginTop: 6, marginBottom: 6 },
+	label: { color: colors.textDim, fontSize: type.meta, marginTop: 6, marginBottom: 6 },
 	pillRow: { flexDirection: 'row', gap: 8, paddingBottom: 4 },
-	pill: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 8, paddingHorizontal: 11, paddingVertical: 6 },
+	pill: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.control, ...squircle, paddingHorizontal: 11, paddingVertical: 6 },
 	pillActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
-	pillText: { color: colors.text, fontSize: 12 },
-	pillTextMono: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11 },
+	pillText: { color: colors.text, fontSize: type.meta },
+	pillTextMono: { fontFamily: monoFamily, fontSize: type.caption },
 	pillTextActive: { color: colors.accent, fontWeight: '700' },
-	dim: { color: colors.textDim, fontSize: 12 },
-	error: { color: colors.red, fontSize: 12, marginTop: 8, lineHeight: 17 },
+	dim: { color: colors.textDim, fontSize: type.meta },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, lineHeight: 17 },
 	btnRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
-	btn: { flex: 1, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
-	btnCancel: { backgroundColor: colors.surface3 },
-	btnCancelText: { color: colors.text, fontSize: 14, fontWeight: '700' },
-	btnCreate: { backgroundColor: colors.accent2 },
-	btnDisabled: { opacity: 0.5 },
-	btnCreateText: { color: '#00222c', fontSize: 14, fontWeight: '700' },
 });

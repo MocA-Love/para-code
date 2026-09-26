@@ -17,7 +17,8 @@ import { useEffectiveWs, wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors, mono, radius, squircle } from '../src/theme.js';
+import { alpha, colors, radius, squircle, tint, type, withAlpha } from '../src/theme.js';
+import { monoFamily } from '../src/monoFont.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
@@ -125,7 +126,7 @@ export default function AgentLaunchScreen() {
 
 	const agent = form?.agents.find(candidate => candidate.id === agentId);
 	const agentAccent = agentId === 'claude' ? colors.claude : colors.accent;
-	const agentAccentWash = agentId === 'claude' ? 'rgba(217,119,87,.14)' : colors.accentWash;
+	const agentAccentWash = agentId === 'claude' ? tint(colors.claude, alpha.wash) : colors.accentWash;
 	const selectedModel = modelId !== 'default' ? agent?.models?.find(model => model.id === modelId) : undefined;
 	const efforts = agent !== undefined ? allowedEfforts(agent, selectedModel) : undefined;
 	const newRepo = form?.repos.find(r => r.id === newRepoId);
@@ -240,7 +241,7 @@ export default function AgentLaunchScreen() {
 									return (
 										<Pressable
 											key={candidate.id}
-											style={[styles.agentCard, active && { borderColor: accent, backgroundColor: candidate.id === 'claude' ? 'rgba(217,119,87,.13)' : colors.accentWash }]}
+											style={[styles.agentCard, active && { borderColor: accent, backgroundColor: candidate.id === 'claude' ? tint(colors.claude, alpha.wash) : colors.accentWash }]}
 											onPress={() => selectAgent(candidate.id)}
 											accessibilityRole="button"
 											accessibilityState={{ selected: active }}
@@ -269,7 +270,7 @@ export default function AgentLaunchScreen() {
 											accessibilityRole="button"
 											accessibilityState={{ selected: active }}
 										>
-											<View style={[styles.spaceAvatar, { backgroundColor: color + '26' }]}>
+											<View style={[styles.spaceAvatar, { backgroundColor: withAlpha(color, alpha.wash) ?? colors.surface2 }]}>
 												<Text style={[styles.spaceAvatarText, { color }]}>{ws.parent !== undefined ? '✦' : name.charAt(0).toUpperCase()}</Text>
 											</View>
 											<View style={styles.spaceMeta}>
@@ -429,7 +430,7 @@ export default function AgentLaunchScreen() {
 								// claude面はブランドオレンジ(#d97757)のままだと白文字が3.12:1で読めないため、
 								// swipeActionColors と同じ「白抜きを載せる面として暗くした」考え方の専用色
 								// (#bf5033 = 4.76:1。色相はオレンジ側に保つ)にする。
-								style={[styles.launchBtn, { backgroundColor: agentId === 'claude' ? '#bf5033' : colors.accent2 }, !canLaunch && styles.launchBtnDisabled]}
+								style={[styles.launchBtn, { backgroundColor: agentId === 'claude' ? '#bf5033' : colors.primary }, !canLaunch && styles.launchBtnDisabled]}
 								onPress={launch}
 								disabled={!canLaunch}
 								accessibilityRole="button"
@@ -451,9 +452,9 @@ const styles = StyleSheet.create({
 	flex: { flex: 1 },
 	content: { paddingHorizontal: 18 },
 	spinner: { marginVertical: 24 },
-	error: { color: colors.red, fontSize: 12, marginTop: 8, lineHeight: 17 },
-	label: { color: colors.textDim, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 12, marginBottom: 7 },
-	hint: { color: colors.textDim, fontSize: 10.5, lineHeight: 15, marginTop: 6 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, lineHeight: 17 },
+	label: { color: colors.textDim, fontSize: type.caption, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 12, marginBottom: 7 },
+	hint: { color: colors.textDim, fontSize: type.badge, lineHeight: 15, marginTop: 6 },
 	// エージェントカード（コンパクトな横並び行）
 	agentCards: { flexDirection: 'row', gap: 8 },
 	agentCard: {
@@ -461,7 +462,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.surface2, borderWidth: 1.5, borderColor: colors.border,
 		borderRadius: radius.card, ...squircle, paddingVertical: 9, paddingHorizontal: 10,
 	},
-	agentCardName: { flex: 1, color: colors.textDim, fontSize: 12.5, fontWeight: '700' },
+	agentCardName: { flex: 1, color: colors.textDim, fontSize: type.meta, fontWeight: '700' },
 	agentCardNameActive: { color: colors.text },
 	agentCardCheck: { marginLeft: -4 },
 	// スペースチップ
@@ -472,13 +473,14 @@ const styles = StyleSheet.create({
 		borderRadius: radius.pill, ...squircle, paddingVertical: 6, paddingHorizontal: 10, paddingLeft: 6, maxWidth: 190,
 	},
 	newSpaceChip: { borderStyle: 'dashed', backgroundColor: 'transparent' },
-	spaceAvatar: { width: 24, height: 24, borderRadius: 8, ...squircle, alignItems: 'center', justifyContent: 'center' },
+	spaceAvatar: { width: 24, height: 24, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center' },
 	newSpaceAvatar: { borderWidth: 1.2, borderColor: colors.textDim, borderStyle: 'dashed' },
-	spaceAvatarText: { fontSize: 11, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
+	// 固定サイズ（24）の頭文字枠の中の文字なので枠から決めた値のまま。
+	spaceAvatarText: { fontSize: 11, fontWeight: '800', fontFamily: monoFamily },
 	spaceMeta: { flexShrink: 1 },
-	spaceName: { color: colors.text, fontSize: 12, fontWeight: '600' },
+	spaceName: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
 	spaceBranchRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 1 },
-	spaceBranch: { color: colors.textDim, fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default, flexShrink: 1 },
+	spaceBranch: { color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily, flexShrink: 1 },
 	// 新規スペースのインラインパネル
 	newSpacePanel: {
 		marginTop: 10, padding: 10, borderRadius: radius.card, ...squircle, gap: 8,
@@ -488,26 +490,26 @@ const styles = StyleSheet.create({
 	fieldHalf: { flex: 1 },
 	input: {
 		backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.control, ...squircle,
-		paddingHorizontal: 12, paddingVertical: 10, color: colors.text, fontSize: 13,
+		paddingHorizontal: 12, paddingVertical: 10, color: colors.text, fontSize: type.body,
 	},
 	promptInput: { minHeight: 64, textAlignVertical: 'top' },
 	pillRow: { flexDirection: 'row', gap: 7, paddingBottom: 2 },
 	pill: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.pill, ...squircle, paddingHorizontal: 11, paddingVertical: 6 },
 	pillActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
-	pillText: { color: colors.text, fontSize: 12 },
+	pillText: { color: colors.text, fontSize: type.meta },
 	pillTextActive: { color: colors.accent, fontWeight: '700' },
 	setupRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-	setupLabel: { color: colors.text, fontSize: 11.5, flexShrink: 0 },
+	setupLabel: { color: colors.text, fontSize: type.meta, flexShrink: 0 },
 	setupScript: {
-		flex: 1, color: colors.textDim, fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default,
-		backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden',
+		flex: 1, color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily,
+		backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: radius.key, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden',
 	},
 	// 権限セグメント
 	segRow: { flexDirection: 'row', gap: 3, backgroundColor: colors.surface3, borderRadius: radius.card, ...squircle, padding: 3, borderWidth: 1, borderColor: colors.border },
 	segBtn: { flex: 1, borderRadius: radius.control, ...squircle, paddingVertical: 9, paddingHorizontal: 4, alignItems: 'center' },
 	segBtnActive: { backgroundColor: colors.surface2 },
-	segBtnDanger: { backgroundColor: 'rgba(244,114,114,.16)' },
-	segText: { color: colors.textDim, fontSize: 12, fontWeight: '700' },
+	segBtnDanger: { backgroundColor: tint(colors.red, alpha.wash) },
+	segText: { color: colors.textDim, fontSize: type.meta, fontWeight: '700' },
 	segTextActive: { color: colors.text },
 	segTextDanger: { color: colors.red },
 	// 詳細設定（モデル行はエージェント詳細画面の ModelPill シートと同デザイン）
@@ -517,14 +519,14 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
 		borderRadius: radius.card, ...squircle, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 7,
 	},
-	modelLabel: { flex: 1, color: colors.textDim, fontSize: 13.5, fontWeight: '700' },
+	modelLabel: { flex: 1, color: colors.textDim, fontSize: type.body, fontWeight: '700' },
 	modelLabelActive: { color: colors.text },
 	// フッター
 	cmdPreview: {
-		marginTop: 12, color: colors.textDim, fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default,
+		marginTop: 12, color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily,
 		backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: radius.control, ...squircle, paddingHorizontal: 10, paddingVertical: 7, overflow: 'hidden',
 	},
 	launchBtn: { marginTop: 10, borderRadius: radius.card, ...squircle, paddingVertical: 13, alignItems: 'center' },
 	launchBtnDisabled: { opacity: 0.5 },
-	launchBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+	launchBtnText: { color: '#fff', fontSize: type.body, fontWeight: '800' },
 });

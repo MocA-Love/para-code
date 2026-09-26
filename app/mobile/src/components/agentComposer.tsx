@@ -9,7 +9,7 @@ import type { AgentCommandCatalogState, AgentCommandOption, AgentMessageSendResu
 import { GlassComposer } from './glassComposer.js';
 import { ModelPill } from './modelPill.js';
 import { PrPill } from './prPill.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
 import { agentSlashQuery, filterAgentSlashCommands, normalizeAgentSlashSubmission, selectedAgentSlashCommandText } from './agentSlashCommands.js';
@@ -244,5 +244,5 @@ const styles = StyleSheet.create({
 	// flexShrink: 画面の空きが足りないとき、GlassComposer本体ではなくスラッシュメニュー側
 	// （agentSlashCommandMenu の flexShrink: 1）が縮んで収まるように、rootまで縮小を伝播させる
 	root: { width: '100%', flexShrink: 1 },
-	attachBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+	attachBtn: { width: 38, height: 38, borderRadius: radius.pill, ...squircle, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 });

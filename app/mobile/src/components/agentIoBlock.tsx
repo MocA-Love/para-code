@@ -2,10 +2,11 @@
 
 import { useState } from 'react';
 import { requireOptionalNativeModule } from 'expo-modules-core';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { useAppStore } from '../appState.js';
 import type { AgentChatMessage } from '../store.js';
-import { colors, mono } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import { clipForDisplay } from './agentIoClip.js';
 
@@ -137,38 +138,38 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 export const ioStyles = StyleSheet.create({
 	/** ツール別ボディで共有する余白・区切りの基本形。 */
 	body: { paddingBottom: 11, gap: 7 },
-	card: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
-	cardIcon: { width: 28, height: 28, borderRadius: 8, backgroundColor: colors.accentWash, alignItems: 'center', justifyContent: 'center' },
+	card: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, paddingHorizontal: 10, paddingVertical: 8 },
+	cardIcon: { width: 28, height: 28, borderRadius: radius.control, ...squircle, backgroundColor: colors.accentWash, alignItems: 'center', justifyContent: 'center' },
 	cardBody: { flex: 1, minWidth: 0 },
-	cardTitle: { color: colors.text, fontSize: 12, fontWeight: '600' },
-	cardSub: { color: colors.textDim, fontSize: 9.5, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
+	cardTitle: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
+	cardSub: { color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily },
 	statRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-	stat: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface2, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2, color: colors.textDim, fontSize: 9.5, fontWeight: '700', overflow: 'hidden' },
-	statAdd: { color: colors.green, borderColor: 'rgba(79,209,165,0.30)', backgroundColor: 'rgba(79,209,165,0.10)' },
-	statDel: { color: colors.red, borderColor: 'rgba(244,114,114,0.30)', backgroundColor: 'rgba(244,114,114,0.10)' },
-	list: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface, overflow: 'hidden' },
+	stat: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface2, borderRadius: radius.pill, paddingHorizontal: 7, paddingVertical: 2, color: colors.textDim, fontSize: type.badge, fontWeight: '700', overflow: 'hidden' },
+	statAdd: { color: colors.green, borderColor: tint(colors.green, alpha.line), backgroundColor: tint(colors.green, alpha.wash) },
+	statDel: { color: colors.red, borderColor: tint(colors.red, alpha.line), backgroundColor: tint(colors.red, alpha.wash) },
+	list: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface, overflow: 'hidden' },
 	listRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 9, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	listRowFirst: { borderTopWidth: 0 },
-	listText: { flex: 1, minWidth: 0, color: '#c9d1d9', fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
-	listMeta: { color: colors.textDim, fontSize: 9.5 },
-	listMore: { paddingHorizontal: 9, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, color: colors.textDim, fontSize: 10.5, textAlign: 'center' },
+	listText: { flex: 1, minWidth: 0, color: colors.textSoft, fontSize: type.badge, fontFamily: monoFamily },
+	listMeta: { color: colors.textDim, fontSize: type.badge },
+	listMore: { paddingHorizontal: 9, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, color: colors.textDim, fontSize: type.badge, textAlign: 'center' },
 });
 
 const styles = StyleSheet.create({
-	io: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 10, overflow: 'hidden', backgroundColor: '#161b22' },
+	io: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, overflow: 'hidden', backgroundColor: colors.codeBg },
 	ioBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: 'rgba(255,255,255,0.035)', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-	ioLabel: { flex: 1, color: colors.textDim, fontSize: 9, fontWeight: '800', letterSpacing: 0.9, textTransform: 'uppercase' },
-	ioAction: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
-	ioActionText: { color: colors.textDim, fontSize: 10 },
+	ioLabel: { flex: 1, color: colors.textDim, fontSize: type.badge, fontWeight: '800', letterSpacing: 0.9, textTransform: 'uppercase' },
+	ioAction: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.key, ...squircle, paddingHorizontal: 7, paddingVertical: 2 },
+	ioActionText: { color: colors.textDim, fontSize: type.badge },
 	ioActionOn: { color: colors.accent },
 	ioActionDone: { color: colors.green },
 	ioScroll: { maxHeight: 200 },
 	ioScrollContent: { paddingVertical: 8 },
 	ioWide: { paddingHorizontal: 10 },
-	ioText: { color: '#c9d1d9', fontSize: 11, lineHeight: 16, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
+	ioText: { color: colors.textSoft, fontSize: type.caption, lineHeight: 16, fontFamily: monoFamily },
 	ioWrapText: { paddingHorizontal: 10 },
 	ioFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 9, paddingVertical: 5, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: 'rgba(255,255,255,0.02)' },
-	ioFootText: { color: colors.textDim, fontSize: 9.5 },
-	fullLink: { color: colors.accent, fontSize: 9.5, fontWeight: '700' },
-	plainNote: { color: colors.accent, fontSize: 11, fontStyle: 'italic', paddingLeft: 12, paddingTop: 4 },
+	ioFootText: { color: colors.textDim, fontSize: type.badge },
+	fullLink: { color: colors.accent, fontSize: type.badge, fontWeight: '700' },
+	plainNote: { color: colors.accent, fontSize: type.caption, fontStyle: 'italic', paddingLeft: 12, paddingTop: 4 },
 });

@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -14,7 +14,9 @@ import { promptTerminalName } from '../promptTerminalName.js';
 import { CHIP_HEIGHT } from './agentRow.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface } from './glassSurface.js';
-import { colors, mono, squircle } from '../theme.js';
+import { Button } from './button.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 /**
@@ -262,18 +264,15 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 						<Text style={styles.confirmTitle}>ターミナルを削除しますか？</Text>
 						<Text style={styles.confirmBody}>「{title}」とPCの実ターミナルも閉じられます。この操作は取り消せません。</Text>
 						<View style={styles.dialogBtns}>
-							<Pressable style={styles.dialogBtn} onPress={() => { hapticImpact('light'); setMode('main'); }} accessibilityRole="button">
-								<Text style={styles.dialogBtnText}>キャンセル</Text>
-							</Pressable>
-							<Pressable
-								style={[styles.dialogBtn, styles.dialogBtnDanger]}
+							<Button label="キャンセル" variant="secondary" flex onPress={() => { hapticImpact('light'); setMode('main'); }} />
+							<Button
+								label="削除"
+								variant="destructive"
+								flex
 								// 戻る側は遅延させない。router.back() は画面ごと畳むので暗幕は残らないうえ、
 								// 削除が即座にPCへ反映されるとこのシートはアンマウントされ、予約は破棄される
 								onPress={() => { hapticWarning(); closeTerminal(terminalKey); onClose(); onLeaveScreen(); }}
-								accessibilityRole="button"
-							>
-								<Text style={[styles.dialogBtnText, styles.dialogBtnTextDanger]}>削除</Text>
-							</Pressable>
+							/>
 						</View>
 					</>
 				) : (
@@ -351,7 +350,7 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 													accessibilityState={{ checked: line.done }}
 												>
 													<View style={[styles.check, line.done && styles.checkDone]}>
-														{line.done ? <Ionicons name="checkmark" size={12} color="#04252c" /> : null}
+														{line.done ? <Ionicons name="checkmark" size={12} color={colors.onPrimary} /> : null}
 													</View>
 													<Text style={[styles.taskLabel, line.done && styles.taskLabelDone]} numberOfLines={2}>{line.text}</Text>
 												</Pressable>
@@ -436,15 +435,14 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 							/>
 						</View>
 
-						<Pressable
+						<Button
+							label="このターミナルを削除"
+							icon="trash-outline"
+							variant="destructive"
 							style={styles.deleteRow}
 							onPress={() => { hapticWarning(); setMode('confirm-delete'); }}
-							accessibilityRole="button"
 							accessibilityLabel="このターミナルを削除"
-						>
-							<Ionicons name="trash-outline" size={15} color={colors.red} />
-							<Text style={styles.deleteText}>このターミナルを削除</Text>
-						</Pressable>
+						/>
 					</>
 				)}
 			</ScrollView>
@@ -482,59 +480,55 @@ const styles = StyleSheet.create({
 	bodyContent: { paddingHorizontal: 20, paddingTop: 2 },
 
 	nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
-	name: { flex: 1, color: colors.text, fontSize: 19, fontWeight: '700', letterSpacing: -0.2 },
+	name: { flex: 1, color: colors.text, fontSize: type.large, fontWeight: '700', letterSpacing: -0.2 },
 
 	chips: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 10 },
 	// 高さは `CHIP_HEIGHT` に揃える。以前は `<Text>` のバッジ（約16pt）と `<View>` のチップ
 	// （約21.5pt）が隣同士に並び、5.5ptの段差が見えていた。
-	chip: { flexDirection: 'row', alignItems: 'center', gap: 5, height: CHIP_HEIGHT, maxWidth: '100%', borderRadius: 999, paddingHorizontal: 9, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, overflow: 'hidden' },
+	chip: { flexDirection: 'row', alignItems: 'center', gap: 5, height: CHIP_HEIGHT, maxWidth: '100%', borderRadius: radius.pill, ...squircle, paddingHorizontal: 9, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, overflow: 'hidden' },
+	// 7ptの色見本。key(6)にすると円になり四角い見本でなくなるため、この値のまま。
 	chipSwatch: { width: 7, height: 7, borderRadius: 2 },
-	chipText: { color: '#b6b6be', fontSize: 10.5 },
-	chipMono: { fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
+	chipText: { color: colors.textSoft, fontSize: type.badge },
+	chipMono: { fontFamily: monoFamily },
 
-	noteCard: { marginTop: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: 'rgba(255,255,255,0.028)', padding: 12 },
+	noteCard: { marginTop: 14, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, backgroundColor: 'rgba(255,255,255,0.028)', padding: 12 },
 	noteHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 },
 	noteHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
-	noteTitle: { color: '#c9c9d2', fontSize: 11.5, fontWeight: '700' },
-	noteCount: { color: colors.textDim, fontSize: 10.5 },
-	noteOpen: { color: colors.accent, fontSize: 11, fontWeight: '600' },
+	noteTitle: { color: colors.textSoft, fontSize: type.meta, fontWeight: '700' },
+	noteCount: { color: colors.textDim, fontSize: type.badge },
+	noteOpen: { color: colors.accent, fontSize: type.caption, fontWeight: '600' },
 	noteOpenDisabled: { color: colors.textDim },
 	noteLoading: { paddingVertical: 14, alignItems: 'center' },
-	notePlaceholder: { color: colors.textDim, fontSize: 12, lineHeight: 18, paddingVertical: 4 },
-	noteLine: { color: '#c4c4cc', fontSize: 12.5, lineHeight: 19, paddingVertical: 2 },
+	notePlaceholder: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, paddingVertical: 4 },
+	noteLine: { color: colors.textSoft, fontSize: type.meta, lineHeight: 19, paddingVertical: 2 },
 	noteHeading: { color: colors.text, fontWeight: '700' },
-	noteMore: { color: colors.textDim, fontSize: 11, paddingVertical: 4 },
-	noteErrorText: { color: colors.red, fontSize: 11, paddingTop: 8, lineHeight: 16 },
+	noteMore: { color: colors.textDim, fontSize: type.caption, paddingVertical: 4 },
+	noteErrorText: { color: colors.red, fontSize: type.caption, paddingTop: 8, lineHeight: 16 },
 
 	task: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 5 },
 	// 未チェックが空白に見えないよう、枠と面のコントラストを space-note 画面・PC側と揃える
-	check: { width: 17, height: 17, borderRadius: 5, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)', backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+	check: { width: 17, height: 17, borderRadius: radius.key, ...squircle, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)', backgroundColor: colors.border, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
 	checkDone: { backgroundColor: colors.accent, borderColor: colors.accent },
 	// 追加中の行。まだ存在しない項目なので、枠を弱めて「これから増える1件」に見せる
 	checkGhost: { borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', backgroundColor: 'transparent' },
-	taskLabel: { flex: 1, color: colors.text, fontSize: 12.5, lineHeight: 18 },
+	taskLabel: { flex: 1, color: colors.text, fontSize: type.meta, lineHeight: 18 },
 	taskLabelDone: { color: colors.textDim, textDecorationLine: 'line-through' },
-	addInput: { flex: 1, color: colors.text, fontSize: 12.5, padding: 0, minHeight: 20 },
+	addInput: { flex: 1, color: colors.text, fontSize: type.meta, padding: 0, minHeight: 20 },
 	addRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 6 },
-	addPlus: { width: 17, height: 17, borderRadius: 5, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
-	addLabel: { color: colors.textDim, fontSize: 12.5 },
+	addPlus: { width: 17, height: 17, borderRadius: radius.key, ...squircle, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+	addLabel: { color: colors.textDim, fontSize: type.meta },
 
 	actions: { flexDirection: 'row', gap: 8, marginTop: 14 },
-	action: { flex: 1, borderRadius: 14, ...squircle },
+	action: { flex: 1, borderRadius: radius.card, ...squircle },
 	actionHit: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 11, paddingHorizontal: 4 },
-	actionLabel: { color: '#d0d0d8', fontSize: 10 },
+	actionLabel: { color: colors.textSoft, fontSize: type.badge },
 	actionLabelActive: { color: colors.accent },
 
-	deleteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 12, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(244,114,114,0.28)', paddingVertical: 11 },
-	deleteText: { color: colors.red, fontSize: 12.5, fontWeight: '600' },
+	deleteRow: { marginTop: 12 },
 
 	dangerIconWrap: { alignItems: 'center', paddingTop: 2 },
-	dangerIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(244,114,114,0.14)', alignItems: 'center', justifyContent: 'center' },
-	confirmTitle: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', marginTop: 12 },
-	confirmBody: { color: colors.textDim, fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: 6 },
+	dangerIcon: { width: 40, height: 40, borderRadius: radius.pill, ...squircle, backgroundColor: tint(colors.red, alpha.wash), alignItems: 'center', justifyContent: 'center' },
+	confirmTitle: { color: colors.text, fontSize: type.title, fontWeight: '700', textAlign: 'center', marginTop: 12 },
+	confirmBody: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, textAlign: 'center', marginTop: 6 },
 	dialogBtns: { flexDirection: 'row', gap: 8, marginTop: 16 },
-	dialogBtn: { flex: 1, alignItems: 'center', borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface2, paddingVertical: 12 },
-	dialogBtnDanger: { borderColor: 'rgba(244,114,114,0.35)', backgroundColor: 'rgba(244,114,114,0.12)' },
-	dialogBtnText: { color: colors.text, fontSize: 14 },
-	dialogBtnTextDanger: { color: colors.red, fontWeight: '700' },
 });

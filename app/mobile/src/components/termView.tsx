@@ -35,6 +35,7 @@ import { WebView } from 'react-native-webview';
 import xtermBundle from '../../assets/xterm/xtermBundle.json';
 import type { TermStreamEvent } from '../store.js';
 import { terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
+import { colors } from '../theme.js';
 
 interface TermViewProps {
 	/** レガシーモード（旧PC）用: これまでに受信した出力バッファ全体（差分書き込みする）。 */
@@ -65,6 +66,7 @@ type TermViewMessage =
 	| { t: 'metrics'; width: number; height: number; charWidth100: number; lineHeight100: number }
 	| { t: 'scroll'; dir: 'up' | 'down'; lines: number };
 
+/** WebView に流す HTML/CSS 用の地色。RN 側のスタイルは `colors.terminalBg`（同じ値）を使う。 */
 const TERM_BG = '#1e1e1e';
 /**
  * 1回のスワイプで送るスクロール行数の上限。速くなぞったときにPCへ大量のキーを
@@ -567,5 +569,5 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 }
 
 const styles = StyleSheet.create({
-	web: { flex: 1, backgroundColor: TERM_BG },
+	web: { flex: 1, backgroundColor: colors.terminalBg },
 });

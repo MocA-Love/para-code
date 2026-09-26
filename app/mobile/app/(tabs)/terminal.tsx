@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -18,7 +18,8 @@ import { useKeyboardCoverage, useKeyboardVisible } from '../../src/hooks/useKeyb
 import { useSizeClass } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { alpha, colors, radius, squircle, tint, type } from '../../src/theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
 import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
 import { terminalViewportForPrefs, type TerminalGrid } from '../../src/terminalViewport.js';
@@ -334,18 +335,18 @@ export default function TerminalScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	operationWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(245,158,11,.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,.35)' },
-	operationWarningText: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 16 },
+	operationWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: radius.control, ...squircle, backgroundColor: tint(colors.orange, alpha.wash), borderWidth: 1, borderColor: tint(colors.orange, alpha.line) },
+	operationWarningText: { flex: 1, color: colors.text, fontSize: type.caption, lineHeight: 16 },
 	// キーボードで縮む「枠」。中の箱は高さを保ったまま下端で揃え、はみ出す上側をここで切る。
 	// **左右の余白と枠は持たない。** エージェント詳細の会話が地色に直接流れているのと同じ
 	// 言語に揃える（枠があると同じアプリの同じ役割の画面に見えない）。
 	// 注意: この余白を変えると箱の高さが変わり、PCへ申告するPTYの行数まで変わる。
-	output: { backgroundColor: '#1e1e1e', overflow: 'hidden' },
-	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
+	output: { backgroundColor: colors.terminalBg, overflow: 'hidden' },
+	placeholder: { color: colors.textDim, fontFamily: monoFamily, fontSize: type.caption, padding: 10 },
 	keyRowScroll: { flex: 1, minWidth: 0 },
 	keyRow: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: 8 },
 	key: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, borderRadius: radius.pill, ...squircle, paddingHorizontal: 13, paddingVertical: 7 },
 	keyPressed: { backgroundColor: colors.accentWash, borderColor: colors.accent },
-	keyText: { color: colors.text, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	keyText: { color: colors.text, fontSize: type.caption, fontFamily: monoFamily },
 	keyDanger: { color: colors.red },
 });

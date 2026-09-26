@@ -13,7 +13,10 @@ import {
 	TERMINAL_FONT_SIZE_MIN,
 	terminalGridFor,
 } from '../../src/terminalViewport.js';
-import { colors, mono, radius, squircle } from '../../src/theme.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { SettingsCard, SettingsRow } from '../../src/components/settingsRow.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 
 /**
@@ -67,33 +70,34 @@ export default function TerminalSettingsScreen() {
 		<View style={styles.screen}>
 			<ScreenHeader title="ターミナル" onHeightChange={setHeaderHeight} />
 			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
-				<Text style={styles.sectionTitle}>表示</Text>
+				<SectionHeader first title="表示" />
+				{/* 行の下にプレビューと桁数を続けるカードなので、区切り線を入れる SettingsCard は使わない */}
 				<View style={styles.card}>
-					<View style={styles.row}>
-						<View style={styles.rowBody}>
-							<Text style={styles.rowTitle}>文字サイズ</Text>
-							<Text style={styles.rowDesc}>小さいほど1画面に入る情報が増えます</Text>
-						</View>
-						<View style={styles.stepper}>
-							<Pressable
-								style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
-								onPress={() => stepFontSize(-1)}
-								disabled={terminalPrefs.fontSize <= TERMINAL_FONT_SIZE_MIN}
-								accessibilityLabel="文字を小さく"
-							>
-								<Ionicons name="remove" size={17} color={terminalPrefs.fontSize <= TERMINAL_FONT_SIZE_MIN ? colors.textDim : colors.accent} />
-							</Pressable>
-							<Text style={styles.stepValue}>{terminalPrefs.fontSize}pt</Text>
-							<Pressable
-								style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
-								onPress={() => stepFontSize(1)}
-								disabled={terminalPrefs.fontSize >= TERMINAL_FONT_SIZE_MAX}
-								accessibilityLabel="文字を大きく"
-							>
-								<Ionicons name="add" size={17} color={terminalPrefs.fontSize >= TERMINAL_FONT_SIZE_MAX ? colors.textDim : colors.accent} />
-							</Pressable>
-						</View>
-					</View>
+					<SettingsRow
+						title="文字サイズ"
+						description="小さいほど1画面に入る情報が増えます"
+						right={(
+							<View style={styles.stepper}>
+								<Pressable
+									style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+									onPress={() => stepFontSize(-1)}
+									disabled={terminalPrefs.fontSize <= TERMINAL_FONT_SIZE_MIN}
+									accessibilityLabel="文字を小さく"
+								>
+									<Ionicons name="remove" size={17} color={terminalPrefs.fontSize <= TERMINAL_FONT_SIZE_MIN ? colors.textDim : colors.accent} />
+								</Pressable>
+								<Text style={styles.stepValue}>{terminalPrefs.fontSize}pt</Text>
+								<Pressable
+									style={({ pressed }) => [styles.stepBtn, pressed && styles.stepBtnPressed]}
+									onPress={() => stepFontSize(1)}
+									disabled={terminalPrefs.fontSize >= TERMINAL_FONT_SIZE_MAX}
+									accessibilityLabel="文字を大きく"
+								>
+									<Ionicons name="add" size={17} color={terminalPrefs.fontSize >= TERMINAL_FONT_SIZE_MAX ? colors.textDim : colors.accent} />
+								</Pressable>
+							</View>
+						)}
+					/>
 					<View style={styles.preview} onLayout={event => setPreviewWidth(event.nativeEvent.layout.width)}>
 						<Text style={[styles.previewLine, { fontSize: terminalPrefs.fontSize }]} numberOfLines={1}>
 							user@paracode ~/projects/example % git status --short
@@ -111,8 +115,9 @@ export default function TerminalSettingsScreen() {
 					<View style={styles.cardBottomPad} />
 				</View>
 
-				<Text style={styles.sectionTitle}>PC側の端末幅</Text>
-				<View style={styles.card}>
+				<SectionHeader title="PC側の端末幅" />
+				{/* タイトルに「ベータ」を添える行と、文字だけを薄くする行（Switch は自前で無効表示になる）なので、行は自前で組む */}
+				<SettingsCard>
 					<View style={styles.row}>
 						<View style={styles.rowBody}>
 							<Text style={styles.rowTitle}>スマホの幅に合わせる<Text style={styles.beta}>  ベータ</Text></Text>
@@ -126,7 +131,6 @@ export default function TerminalSettingsScreen() {
 							trackColor={{ true: colors.accent2 }}
 						/>
 					</View>
-					<View style={styles.separator} />
 					<View style={styles.row}>
 						<View style={styles.rowBody}>
 							<Text style={[styles.rowTitle, !terminalPrefs.matchPcWidth && styles.disabled]}>行数も合わせる</Text>
@@ -141,7 +145,7 @@ export default function TerminalSettingsScreen() {
 							trackColor={{ true: colors.accent2 }}
 						/>
 					</View>
-				</View>
+				</SettingsCard>
 				<Text style={styles.note}>
 					幅を変えるとシェルやTUIが画面を描き直すため、コマンドの実行中でも表示が一度作り直されます（出力そのものが消えることはありません）。
 					同じターミナルを他のスマホやiPadからも見ている場合は、いちばん狭い画面に合わせます。
@@ -154,24 +158,24 @@ export default function TerminalSettingsScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8, marginBottom: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
-	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+	// 寸法は SettingsRow に合わせる。
+	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, minHeight: 44 },
 	rowBody: { flex: 1, minWidth: 0 },
-	rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
-	rowDesc: { color: colors.textDim, fontSize: 11.5, marginTop: 2, lineHeight: 15 },
-	emphasis: { color: colors.accent, fontFamily: mono.ios },
-	beta: { color: colors.textDim, fontSize: 10.5, fontWeight: '600' },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	rowDesc: { color: colors.textDim, fontSize: type.meta, marginTop: 2, lineHeight: 16 },
+	emphasis: { color: colors.accent, fontFamily: monoFamily },
+	beta: { color: colors.textDim, fontSize: type.badge, fontWeight: '600' },
 	disabled: { opacity: 0.4 },
-	separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-	stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface2, borderRadius: 9, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface2, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	stepBtn: { width: 34, height: 32, alignItems: 'center', justifyContent: 'center' },
 	stepBtnPressed: { backgroundColor: colors.accentWash },
-	stepValue: { color: colors.text, fontFamily: mono.ios, fontSize: 13, minWidth: 46, textAlign: 'center' },
+	stepValue: { color: colors.text, fontFamily: monoFamily, fontSize: type.body, minWidth: 46, textAlign: 'center' },
 	// 実際のターミナルと同じ背景で出す（選んだサイズが実物でどう見えるかを確かめるため）。
-	preview: { backgroundColor: '#1e1e1e', borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 8, marginBottom: 10, overflow: 'hidden' },
-	previewLine: { color: '#d4d4d4', fontFamily: mono.ios, lineHeight: undefined },
+	preview: { backgroundColor: colors.terminalBg, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 8, marginBottom: 10, overflow: 'hidden' },
+	previewLine: { color: colors.terminalFg, fontFamily: monoFamily, lineHeight: undefined },
+	// 端末の git status の「M」の色を真似た見本なので、アプリの配色ではなく端末側の色のまま置く。
 	previewDim: { color: '#d7ba7d' },
 	cardBottomPad: { height: 12 },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 10, paddingHorizontal: 4 },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 10, paddingHorizontal: 4 },
 });

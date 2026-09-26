@@ -9,7 +9,7 @@ import {
 	HOME_SORT_KEYS, HOME_STATUS_BUCKETS, bucketCounts, reconcileSecondary, secondaryCandidates, toggleFilter,
 	type HomeListPreferences, type HomeSortKey, type HomeStatusBucket, type SortableTerminal,
 } from '../homeSort.js';
-import { colors, radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /**
@@ -253,17 +253,18 @@ const styles = StyleSheet.create({
 	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
 	chip: { height: 32, borderRadius: radius.pill, ...squircle },
 	chipHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
-	chipText: { color: colors.text, fontSize: 11.5 },
-	chipTextActive: { color: '#bfeeff', fontWeight: '700' },
+	chipText: { color: colors.text, fontSize: type.meta },
+	// 地に accent を混ぜているので、文字は accent ではなく本文色の太字にする。
+	chipTextActive: { color: colors.text, fontWeight: '700' },
 	// 件数はラベルと同じ色のまま薄くする。別の色を当てると数字だけが先に目に入る。
-	chipCount: { fontSize: 10.5, opacity: 0.75 },
+	chipCount: { fontSize: type.badge, opacity: 0.75 },
 
 	sheetBody: { paddingHorizontal: 16 },
 	// iOS 26 のリストは全大文字をやめ、見出しもタイトルの大小で書く。文字も一段大きい。
-	sheetSection: { color: colors.textDim, fontSize: 12.5, fontWeight: '700', paddingHorizontal: 12, paddingTop: 16, paddingBottom: 7 },
+	sheetSection: { color: colors.textDim, fontSize: type.meta, fontWeight: '700', paddingHorizontal: 12, paddingTop: 16, paddingBottom: 7 },
 	// グループを1枚の面にまとめる。行の形はこの器が持つので、行側は角丸も枠線も持たない。
 	optionGroup: {
-		borderRadius: 16, ...squircle, overflow: 'hidden',
+		borderRadius: radius.card, ...squircle, overflow: 'hidden',
 		backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
 	},
 	option: { flexDirection: 'row', alignItems: 'center', gap: OPTION_GAP, paddingVertical: 13, paddingHorizontal: OPTION_PADDING },
@@ -275,6 +276,6 @@ const styles = StyleSheet.create({
 	},
 	optionIcon: { width: OPTION_ICON, textAlign: 'center' },
 	optionBody: { flex: 1, minWidth: 0 },
-	optionTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
-	optionDescription: { color: colors.textDim, fontSize: 10.5, marginTop: 2, lineHeight: 15 },
+	optionTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	optionDescription: { color: colors.textDim, fontSize: type.badge, marginTop: 2, lineHeight: 15 },
 });

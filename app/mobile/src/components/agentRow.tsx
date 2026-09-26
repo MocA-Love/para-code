@@ -4,7 +4,9 @@ import { ReactNode, useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { colors, radius, squircle } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { Badge, BADGE_HEIGHT, type BadgeTone } from './badge.js';
 
 /**
  * ホーム一覧のエージェント行の見た目を、リスト本体と長押し時の「リフト（浮き上がり）
@@ -51,31 +53,22 @@ function orbStyle(status: string | undefined) {
  * `<View>` のチップ（約21.5pt）が隣同士に並び、5.5ptの段差が見えていた。`<Text>` の高さは
  * 行の高さで決まるため、padding を合わせるだけでは揃わない——高さそのものを決める。
  */
-export const CHIP_HEIGHT = 22;
+export const CHIP_HEIGHT = BADGE_HEIGHT;
 
-function badgeStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.badgeWaiting
-		: status === 'working' ? styles.badgeRunning
-			: status === undefined ? styles.badgeIdle : styles.badgeReview;
-}
-
-function badgeTextStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.badgeTextWaiting
-		: status === 'working' ? styles.badgeTextRunning
-			: status === undefined ? styles.badgeTextIdle : styles.badgeTextReview;
+function badgeTone(status: string | undefined): BadgeTone {
+	return status === 'permission' || status === 'question' ? 'red'
+		: status === 'working' ? 'green'
+			: status === undefined ? 'neutral' : 'yellow';
 }
 
 /**
  * ステータスバッジ（非インタラクティブ）。レビュー行のタップ操作はリスト側でこれをPressableで包む。
  *
- * 面は `<View>`、文字は `<Text>` に分ける（`<Text>` 1枚では高さを固定できない）。
+ * 見た目は共通の `Badge`。`Badge` は既定で `alignSelf: 'flex-start'` なので、行の中で
+ * 上に寄らないよう縦中央に戻す。
  */
 export function AgentBadge({ status }: { status: string | undefined }) {
-	return (
-		<View style={[styles.badge, badgeStyle(status)]}>
-			<Text style={[styles.badgeText, badgeTextStyle(status)]}>{agentLabel(status)}</Text>
-		</View>
-	);
+	return <Badge label={agentLabel(status)} tone={badgeTone(status)} style={styles.badge} />;
 }
 
 /**
@@ -134,28 +127,19 @@ export const agentRowStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
 	pinIcon: { marginRight: -2 },
-	orb: { width: 10, height: 10, borderRadius: 6 },
+	orb: { width: 10, height: 10, borderRadius: radius.pill },
 	orbWaiting: { backgroundColor: colors.red },
 	orbRunning: { backgroundColor: colors.green },
 	orbReview: { backgroundColor: colors.yellow },
 	// idleは最も沈んだ状態。ただし非テキスト3:1規範には届かないと「描画漏れ」と
-	// 区別がつかないため、textDimより暗めのグレーに上げる(#6e7681 = 4.04:1)。
-	orbIdle: { backgroundColor: '#6e7681' },
+	// 区別がつかないため、textDimより暗めのグレーに上げる(colors.idle #6e7681 = 4.04:1)。
+	orbIdle: { backgroundColor: colors.idle },
 	agentBody: { flex: 1, minWidth: 0 },
-	agentTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
+	agentTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	agentSub: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-	agentWs: { fontSize: 11, fontFamily: 'Menlo', flexShrink: 1 },
-	agentBranch: { color: colors.textDim, fontSize: 11, flexShrink: 1 },
-	badge: { height: CHIP_HEIGHT, borderRadius: radius.pill, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-	badgeWaiting: { backgroundColor: 'rgba(244,135,113,0.15)' },
-	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)' },
-	badgeReview: { backgroundColor: 'rgba(220,220,170,0.15)' },
-	badgeIdle: { backgroundColor: 'rgba(139,139,139,0.15)' },
-	badgeText: { fontSize: 10, fontWeight: '700' },
-	badgeTextWaiting: { color: colors.red },
-	badgeTextRunning: { color: colors.green },
-	badgeTextReview: { color: colors.yellow },
-	badgeTextIdle: { color: colors.textDim },
+	agentWs: { fontSize: type.caption, fontFamily: monoFamily, flexShrink: 1 },
+	agentBranch: { color: colors.textDim, fontSize: type.caption, flexShrink: 1 },
+	badge: { alignSelf: 'center' },
 	// クローンは前面へ持ち上げるため、面と枠をわずかに強調し、強い影で浮遊感を出す。
 	// marginBottom はレイアウト用なのでクローンでは打ち消す（絶対配置のため不要）。
 	clonePos: { position: 'absolute' },

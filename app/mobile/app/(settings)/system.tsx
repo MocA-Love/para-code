@@ -13,7 +13,9 @@ import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { Meter } from '../../src/components/meter.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type SpaceDiskResult, type SystemResourcesResult } from '../../src/store.js';
 import {
@@ -300,29 +302,33 @@ export default function SystemScreen() {
 		const worktreeTotal = rows.reduce((sum, row) => sum + row.worktrees.reduce((a, w) => a + w.bytes, 0), 0);
 		return (
 			<>
-				<View style={styles.spaceHead}>
-					<Text style={[styles.sectionTitle, styles.spaceHeadTitle]}>スペースごとの容量</Text>
-					{spaceDisk ? (
-						<Text style={styles.spaceAgo}>
-							{spaceLoading
-								? '計測しています…'
-								// formatRelativeTime は60秒未満で「今」を返すので、そのまま繋ぐと「今に計測」になる。
-								: now - spaceDisk.measuredAt < 60_000
-									? 'たった今 計測'
-									: `${formatRelativeTime(spaceDisk.measuredAt, now)}に計測`}
-						</Text>
-					) : null}
-					<Pressable
-						style={styles.spaceRefresh}
-						onPress={() => { hapticSelection(); void loadSpaceDisk(true); }}
-						disabled={spaceLoading}
-						accessibilityLabel="スペースの容量を測り直す"
-					>
-						{spaceLoading
-							? <ActivityIndicator size="small" color={colors.textDim} />
-							: <Ionicons name="refresh" size={14} color={colors.accent} />}
-					</Pressable>
-				</View>
+				<SectionHeader
+					title="スペースごとの容量"
+					right={(
+						<View style={styles.spaceHeadRight}>
+							{spaceDisk ? (
+								<Text style={styles.spaceAgo}>
+									{spaceLoading
+										? '計測しています…'
+										// formatRelativeTime は60秒未満で「今」を返すので、そのまま繋ぐと「今に計測」になる。
+										: now - spaceDisk.measuredAt < 60_000
+											? 'たった今 計測'
+											: `${formatRelativeTime(spaceDisk.measuredAt, now)}に計測`}
+								</Text>
+							) : null}
+							<Pressable
+								style={styles.spaceRefresh}
+								onPress={() => { hapticSelection(); void loadSpaceDisk(true); }}
+								disabled={spaceLoading}
+								accessibilityLabel="スペースの容量を測り直す"
+							>
+								{spaceLoading
+									? <ActivityIndicator size="small" color={colors.textDim} />
+									: <Ionicons name="refresh" size={14} color={colors.accent} />}
+							</Pressable>
+						</View>
+					)}
+				/>
 				{spaceError ? <Text style={styles.error}>{spaceError}</Text> : null}
 				{!spaceDisk && spaceLoading ? (
 					<View style={styles.card}><Text style={styles.dim}>スペースごとの容量を数えています…</Text></View>
@@ -431,7 +437,7 @@ export default function SystemScreen() {
 	 */
 	const renderMetricSection = (title: string, sorted: ResourceRow[], metric: 'cpu' | 'memory', max: number) => (
 		<>
-			<Text style={styles.sectionTitle}>{title}</Text>
+			<SectionHeader title={title} />
 			<View style={styles.card}>
 				{sorted.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
 				{sorted.length > MAX_ROWS ? (
@@ -444,9 +450,7 @@ export default function SystemScreen() {
 							<Text style={styles.barValue}>{metric === 'cpu' ? formatCpu(row.cpu) : formatBytes(row.memory)}</Text>
 						</View>
 						<Text style={styles.barSub} numberOfLines={1}>{row.sub}</Text>
-						<View style={styles.barTrack}>
-							<View style={[styles.barFill, { width: `${Math.max(1, (row[metric] / max) * 100)}%`, backgroundColor: metric === 'cpu' ? colors.accent : colors.purple }]} />
-						</View>
+							<Meter ratio={Math.max(0.01, row[metric] / max)} color={metric === 'cpu' ? colors.accent : colors.purple} />
 					</View>
 				))}
 			</View>
@@ -495,7 +499,7 @@ export default function SystemScreen() {
 								/>
 							</View>
 
-							<Text style={styles.sectionTitle}>内訳</Text>
+							<SectionHeader title="内訳" />
 							<View style={styles.chipRow}>
 								{([['process', 'プロセス'], ['scope', 'スペース'], ['volume', 'ボリューム']] as [AxisKey, string][]).map(([key, label]) => {
 									const active = axis === key;
@@ -530,9 +534,8 @@ export default function SystemScreen() {
 													<Text style={styles.barValue}>{Math.round(percent)}%</Text>
 												</View>
 												<Text style={styles.barSub} numberOfLines={1}>空き {formatBytes(disk.free)} / {formatBytes(disk.total)}</Text>
-												<View style={styles.barTrack}>
-													<View style={[styles.barFill, { width: `${Math.max(2, percent)}%`, backgroundColor: levelColor(level, colors.green) }]} />
-												</View>
+												{/* 色は使用率ではなく空き容量のしきい値（diskLevel）で決めるので、meterColor に任せず渡す */}
+												<Meter ratio={percent / 100} color={levelColor(level, colors.green)} />
 											</View>
 										);
 									})}
@@ -562,45 +565,45 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
-	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
-	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	rings: { flexDirection: 'row', gap: 10, marginTop: 4 },
 	ringCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingVertical: 14, paddingHorizontal: 6, alignItems: 'center', gap: 7 },
 	ring: { width: 78, height: 78, alignItems: 'center', justifyContent: 'center' },
 	ringValue: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-	ringValueText: { fontSize: 17, fontWeight: '800', letterSpacing: -0.4 },
-	ringName: { color: colors.text, fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
-	ringSub: { color: colors.textDim, fontSize: 9.5, textAlign: 'center', lineHeight: 13 },
+	ringValueText: { fontSize: type.title, fontWeight: '800', letterSpacing: -0.4 },
+	ringName: { color: colors.text, fontSize: type.caption, fontWeight: '700', letterSpacing: 0.3 },
+	ringSub: { color: colors.textDim, fontSize: type.badge, textAlign: 'center', lineHeight: 13 },
 	// 下の余白が2ptしかないと、チップ（押せるもの）と直下のカードが触れて見える。
 	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
 	// スペースごとの容量
-	spaceHead: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 18, marginBottom: 8 },
-	spaceHeadTitle: { flex: 1, marginTop: 0, marginBottom: 0 },
-	spaceAgo: { color: colors.textDim, fontSize: 10.5 },
-	// alignSelf を指定しないと、親の baseline 揃えでスピナー⇔アイコンの切替時に上下へ跳ねる。
-	spaceRefresh: { width: 26, height: 26, borderRadius: 8, ...squircle, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
+	spaceHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+	spaceAgo: { color: colors.textDim, fontSize: type.badge },
+	// alignSelf を指定しないと、親を baseline 揃えにしたときスピナー⇔アイコンの切替で上下へ跳ねる。
+	spaceRefresh: { width: 26, height: 26, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
 	spaceChevronSpacer: { width: 12 },
 	worktreeList: { marginTop: 6, marginLeft: 12, paddingLeft: 10, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
 	worktreeRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingVertical: 4 },
-	worktreeName: { color: colors.textDim, fontSize: 11, flex: 1, minWidth: 0 },
-	worktreeValue: { color: colors.purple, fontSize: 11, fontWeight: '600' },
+	worktreeName: { color: colors.textDim, fontSize: type.caption, flex: 1, minWidth: 0 },
+	worktreeValue: { color: colors.purple, fontSize: type.caption, fontWeight: '600' },
 	legend: { flexDirection: 'row', gap: 14, marginTop: 8, paddingHorizontal: 4 },
 	legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-	legendSwatch: { width: 9, height: 9, borderRadius: 3 },
-	legendText: { color: colors.textDim, fontSize: 10.5 },
-	chip: { borderRadius: 8, ...squircle },
+	// 9pt の四角に key(6) を当てるとほぼ円になる。凡例は四角で見せたいので小さい角丸のまま残す。
+	legendSwatch: { width: 9, height: 9, borderRadius: 2 },
+	legendText: { color: colors.textDim, fontSize: type.badge },
+	chip: { borderRadius: radius.control, ...squircle },
 	chipHit: { paddingVertical: 6, paddingHorizontal: 12 },
-	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
+	chipText: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },
 	barRow: { paddingVertical: 9, gap: 4 },
 	barSeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	barHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-	barName: { color: colors.text, fontSize: 12, flex: 1 },
-	barSub: { color: colors.textDim, fontSize: 10 },
-	barValue: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
+	barName: { color: colors.text, fontSize: type.meta, flex: 1 },
+	barSub: { color: colors.textDim, fontSize: type.badge },
+	barValue: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
+	// スペースの容量は本体と worktree の積み上げで Meter では描けないため、高さ・角丸だけ Meter（6 / 3）に揃える。
 	barTrack: { height: 6, borderRadius: 3, backgroundColor: colors.surface3, overflow: 'hidden', flexDirection: 'row' },
 	barFill: { height: 6 },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 12, paddingHorizontal: 4 },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 12, paddingHorizontal: 4 },
 });

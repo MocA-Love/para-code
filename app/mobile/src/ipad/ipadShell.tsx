@@ -7,7 +7,7 @@ import { useAppStore } from '../appState.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { hapticSelection } from '../haptics.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle } from '../theme.js';
 import { IpadSidebar } from './ipadSidebar.js';
 import { sidebarWidthFor, SIDEBAR_RAIL_WIDTH } from './ipadLayout.js';
 
@@ -81,7 +81,7 @@ const styles = StyleSheet.create({
 	// サイドバーを画面外へ押し出してしまう。
 	content: { flex: 1, minWidth: 0, backgroundColor: colors.bg },
 	toggle: {
-		position: 'absolute', width: 26, height: 26, borderRadius: 13,
+		position: 'absolute', width: 26, height: 26, borderRadius: radius.pill, ...squircle,
 		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
 		alignItems: 'center', justifyContent: 'center', zIndex: 10,
 	},

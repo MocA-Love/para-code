@@ -3,7 +3,8 @@
 import { Stack, router } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, mono, radius, squircle } from '../../src/theme.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { alpha, colors, radius, squircle, tint, type } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 
 /**
@@ -99,22 +100,23 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1 },
 	content: { padding: 16, paddingBottom: 48 },
-	lead: { color: colors.textDim, fontSize: 12.5, lineHeight: 19 },
+	lead: { color: colors.textDim, fontSize: type.meta, lineHeight: 19 },
 
 	capsule: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 6 },
-	avatar: { width: 26, height: 26, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(9,175,217,.28)' },
-	avatarText: { color: colors.accent, fontSize: 12, fontWeight: '800', fontFamily: mono.default },
-	capsuleName: { color: colors.text, fontSize: 14, fontWeight: '700' },
+	avatar: { width: 26, height: 26, borderRadius: radius.pill, ...squircle, alignItems: 'center', justifyContent: 'center', backgroundColor: tint(colors.accent, alpha.line) },
+	// 固定サイズの丸アバターの頭文字なので、文字の段ではなく丸の大きさから決める。
+	avatarText: { color: colors.accent, fontSize: 12, fontWeight: '800', fontFamily: monoFamily },
+	capsuleName: { color: colors.text, fontSize: type.body, fontWeight: '700' },
 	rightGroup: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 
 	push: { marginTop: 18, height: 46, borderRadius: radius.pill, ...squircle, backgroundColor: colors.accent, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
 	pushPressed: { opacity: 0.85 },
-	pushLabel: { color: colors.bg, fontSize: 15, fontWeight: '700' },
+	pushLabel: { color: colors.bg, fontSize: type.title, fontWeight: '700' },
 
-	sectionTitle: { color: colors.textDim, fontSize: 12, fontWeight: '700', marginTop: 24, marginBottom: 8, letterSpacing: 0.3 },
+	sectionTitle: { color: colors.textDim, fontSize: type.meta, fontWeight: '700', marginTop: 24, marginBottom: 8, letterSpacing: 0.3 },
 	card: { backgroundColor: colors.panel, borderRadius: radius.card, ...squircle, paddingHorizontal: 14, paddingVertical: 6 },
 	checkRow: { flexDirection: 'row', gap: 10, paddingVertical: 9 },
 	checkIcon: { marginTop: 2 },
-	checkText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 19 },
-	footnote: { color: colors.textDim, fontSize: 11, lineHeight: 17, marginTop: 22 },
+	checkText: { flex: 1, color: colors.text, fontSize: type.body, lineHeight: 20 },
+	footnote: { color: colors.textDim, fontSize: type.caption, lineHeight: 17, marginTop: 22 },
 });

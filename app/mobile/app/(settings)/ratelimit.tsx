@@ -11,7 +11,9 @@ import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHea
 import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { Badge } from '../../src/components/badge.js';
+import { Meter } from '../../src/components/meter.js';
+import { colors, radius, space, squircle, type } from '../../src/theme.js';
 import { useNow } from '../../src/time.js';
 import { hapticImpact } from '../../src/haptics.js';
 import type { RateLimitAccount, RateLimitAccountStatus, RateLimitProviderSnapshot, RateLimitWindow, RateLimitsResult } from '../../src/store.js';
@@ -21,15 +23,6 @@ import type { RateLimitAccount, RateLimitAccountStatus, RateLimitProviderSnapsho
  * PC版タイトルバーのリミットモニターと同じスナップショット（Claude=claude-swap全スロット、
  * Codex=各ホーム）を閲覧専用で表示する。アカウントの追加・再ログインはPC側のみ。
  */
-
-const SEVERITY_ELEVATED_PERCENT = 60;
-const SEVERITY_HIGH_PERCENT = 85;
-
-function severityColor(usedPercent: number): string {
-	if (usedPercent >= SEVERITY_HIGH_PERCENT) { return colors.red; }
-	if (usedPercent >= SEVERITY_ELEVATED_PERCENT) { return colors.yellow; }
-	return colors.green;
-}
 
 /** '3d 12h' / '2h 27m' / '41m' 形式の残り時間（PC版 paradisLimitsFormatCountdown と同じ規則）。 */
 function formatCountdown(resetsAt: number | undefined, now: number): string | undefined {
@@ -186,9 +179,8 @@ export default function RateLimitScreen() {
 		return (
 			<View key={`${label}-${index}`} style={styles.meterRow}>
 				<Text style={styles.meterLabel} numberOfLines={1}>{label}</Text>
-				<View style={styles.barTrack}>
-					<View style={[styles.barFill, { width: `${percent}%`, backgroundColor: severityColor(window.usedPercent) }]} />
-				</View>
+				{/* 色は使用率から meterColor（60% / 80%）で決める */}
+				<Meter ratio={percent / 100} />
 				<Text style={styles.meterValue}>{Math.round(window.usedPercent)}%</Text>
 				<Text style={styles.meterReset} numberOfLines={1}>
 					{countdown !== undefined ? (clock !== undefined ? `${countdown}後（${clock}）` : `${countdown}後`) : ''}
@@ -204,11 +196,11 @@ export default function RateLimitScreen() {
 				<View style={styles.acctTop}>
 					<Text style={styles.acctMail} numberOfLines={1}>{accountName(account)}</Text>
 					{account.provider === 'codex' && account.homeLabel && account.email ? (
-						<Text style={styles.badge}>{account.homeLabel}</Text>
+						<Badge label={account.homeLabel} />
 					) : null}
-					{account.active ? <Text style={[styles.badge, styles.badgeActive]}>使用中</Text> : null}
+					{account.active ? <Badge label="使用中" tone="accent" /> : null}
 					{account.status !== 'ok' ? (
-						<Text style={needsRelogin(account.status) ? [styles.badge, styles.badgeErr] : styles.badge}>{statusBadgeLabel(account.status)}</Text>
+						<Badge label={statusBadgeLabel(account.status)} tone={needsRelogin(account.status) ? 'red' : 'neutral'} />
 					) : null}
 				</View>
 				{account.status !== 'ok' ? (
@@ -297,30 +289,26 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
-	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
-	warn: { color: colors.yellow, fontSize: 11.5, lineHeight: 16, marginTop: 4, marginBottom: 4 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	warn: { color: colors.yellow, fontSize: type.meta, lineHeight: 17, marginTop: 4, marginBottom: 4 },
 	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
 	stale: { opacity: 0.5 },
 	// 先頭のセクション見出しは上の余白を詰める（集約KPIカードを外したぶん、頭が空きすぎる）。
-	sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 18, marginBottom: 8 },
-	sectionTitleRowFirst: { marginTop: 6 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+	// 見出しの左にロゴを置くので SectionHeader は使えない。書式と上下の余白は SectionHeader に合わせる（大文字化しない）。
+	sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 18, marginBottom: space.sm, paddingHorizontal: space.xs },
+	sectionTitleRowFirst: { marginTop: space.sm },
+	sectionTitle: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', letterSpacing: 0.5 },
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 2 },
-	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 10, lineHeight: 18 },
+	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 10, lineHeight: 18 },
 	acct: { paddingVertical: 10 },
 	acctSeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	acctTop: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6, minWidth: 0 },
-	acctMail: { color: colors.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
-	badge: { fontSize: 10, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 9, ...squircle, overflow: 'hidden', backgroundColor: colors.surface3, color: colors.textDim },
-	badgeActive: { backgroundColor: colors.accentWash, color: colors.accent },
-	badgeErr: { backgroundColor: 'rgba(244,114,114,0.16)', color: colors.red },
+	acctMail: { color: colors.text, fontSize: type.body, fontWeight: '600', flexShrink: 1 },
 	meterRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
-	meterLabel: { color: colors.text, fontSize: 11.5, width: 64 },
-	barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: colors.surface3, overflow: 'hidden' },
-	barFill: { height: 8, borderRadius: 4 },
-	meterValue: { color: colors.textDim, fontSize: 11.5, width: 40, textAlign: 'right', fontVariant: ['tabular-nums'] },
+	meterLabel: { color: colors.text, fontSize: type.meta, width: 64 },
+	meterValue: { color: colors.textDim, fontSize: type.meta, width: 40, textAlign: 'right', fontVariant: ['tabular-nums'] },
 	// 固定幅にすると '3d 12h後（7/29 00:30）' が末尾から切れる（7日枠＝この表示の主目的）。
-	meterReset: { color: colors.textDim, fontSize: 11, opacity: 0.85, flexShrink: 0, textAlign: 'right', fontVariant: ['tabular-nums'] },
-	errText: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 14, paddingHorizontal: 4 },
+	meterReset: { color: colors.textDim, fontSize: type.caption, opacity: 0.85, flexShrink: 0, textAlign: 'right', fontVariant: ['tabular-nums'] },
+	errText: { color: colors.textDim, fontSize: type.meta, lineHeight: 17 },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 14, paddingHorizontal: 4 },
 });

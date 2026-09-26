@@ -13,12 +13,13 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
-import { ActivityIndicator, Alert, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { hapticSelection } from '../haptics.js';
-import { colors } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { HorizontalScrollFade } from './horizontalScrollFade.js';
 import { WorkspaceFileViewer } from './workspaceFileViewer.js';
 
@@ -656,39 +657,38 @@ const [openingKey, setOpeningKey] = useState<string | undefined>();
 	);
 }
 
-const mono = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
-
 const styles = StyleSheet.create({
 	root: { gap: 6 },
-	body: { color: colors.text, fontSize: 13, lineHeight: 19 },
+	body: { color: colors.text, fontSize: type.body, lineHeight: 20 },
 	bold: { fontWeight: '700' },
-	link: { color: '#58a6ff', textDecorationLine: 'underline' },
-	inlineCode: { fontFamily: mono, fontSize: 12, backgroundColor: 'rgba(110,118,129,.25)', borderRadius: 3 },
+	link: { color: colors.accent, textDecorationLine: 'underline' },
+	inlineCode: { fontFamily: monoFamily, fontSize: type.meta, backgroundColor: tint(colors.idle, alpha.line), borderRadius: radius.key },
 	heading: { fontWeight: '700' },
-	h1: { fontSize: 16 },
-	h2: { fontSize: 15 },
-	codeBlock: { backgroundColor: '#161b22', borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	h1: { fontSize: type.title },
+	// h1 と同じ大きさにすると見出しの段が消えるので、h2 は本文と同じ大きさの太字で区別する。
+	h2: { fontSize: type.body },
+	codeBlock: { backgroundColor: colors.codeBg, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	codeContent: { padding: 8 },
-	codeText: { color: colors.text, fontFamily: mono, fontSize: 11, lineHeight: 16 },
+	codeText: { color: colors.text, fontFamily: monoFamily, fontSize: type.caption, lineHeight: 16 },
 	codeItalic: { fontStyle: 'italic' },
 	codeBold: { fontWeight: '700' },
 	bulletRow: { flexDirection: 'row', gap: 6 },
 	bulletMarker: { color: colors.textDim },
 	bulletBody: { flex: 1 },
 	inlineStack: { gap: 6 },
-	fileCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.glassBg, borderWidth: 1, borderColor: colors.glassBorder, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 11 },
+	fileCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.glassBg, borderWidth: 1, borderColor: colors.glassBorder, borderRadius: radius.control, ...squircle, paddingVertical: 10, paddingHorizontal: 11 },
 	fileCardPressed: { opacity: 0.72 },
-	fileIcon: { width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentWash },
+	fileIcon: { width: 32, height: 32, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentWash },
 	fileInfo: { flex: 1, gap: 2 },
-	fileLabel: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	filePath: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 14 },
-	tableWrap: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: 'hidden', marginVertical: 2 },
+	fileLabel: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	filePath: { color: colors.textDim, fontFamily: monoFamily, fontSize: type.badge, lineHeight: 14 },
+	tableWrap: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.control, ...squircle, overflow: 'hidden', marginVertical: 2 },
 	table: { flexDirection: 'column' },
 	tableRow: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
-	tableHead: { backgroundColor: 'rgba(110,118,129,.18)', borderTopWidth: 0 },
-	tableRowAlt: { backgroundColor: 'rgba(110,118,129,.07)' },
+	tableHead: { backgroundColor: tint(colors.idle, alpha.wash), borderTopWidth: 0 },
+	tableRowAlt: { backgroundColor: tint(colors.idle, alpha.faint) },
 	tableCell: { paddingVertical: 5, paddingHorizontal: 7 },
 	tableCellBorder: { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
-	tableHeadText: { fontWeight: '700', fontSize: 12, lineHeight: 17 },
-	tableCellText: { fontSize: 12, lineHeight: 17 },
+	tableHeadText: { fontWeight: '700', fontSize: type.meta, lineHeight: 17 },
+	tableCellText: { fontSize: type.meta, lineHeight: 17 },
 });

@@ -10,7 +10,8 @@ import { useAppStore } from '../src/appState.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useParaHeader, useParaHeaderHeight, type ParaHeaderSpec } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors, radius, squircle } from '../src/theme.js';
+import { colors, radius, squircle, type } from '../src/theme.js';
+import { EmptyState } from '../src/components/emptyState.js';
 import { formatRelativeTime, useNow } from '../src/time.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { notificationNavigationDecision } from '../src/notificationNavigation.js';
@@ -105,7 +106,7 @@ export default function NotificationsScreen() {
 				contentContainerStyle={[styles.listContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}
 			>
 				{notifications.length === 0 ? (
-					<Text style={styles.empty}>通知はありません</Text>
+					<EmptyState title="通知はありません" style={styles.empty} />
 				) : notifications.map(n => {
 					const openable = notificationNavigationDecision(workspace, n.terminalKey) === 'open';
 					return (
@@ -137,7 +138,7 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	list: { flex: 1, paddingHorizontal: 14 },
 	listContent: { paddingBottom: 32 },
-	empty: { color: colors.textDim, fontSize: 13, textAlign: 'center', paddingVertical: 32 },
+	empty: { paddingVertical: 32 },
 	// 行はホームのエージェント行と同じ札にする。同じ「押すと開く1件」なのに、片方だけ
 	// 面を持たないと別の種類のものに見える。
 	row: {
@@ -146,15 +147,15 @@ const styles = StyleSheet.create({
 		borderRadius: radius.card, ...squircle, marginBottom: 4,
 	},
 	rowPressed: { backgroundColor: colors.surface2 },
-	dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+	dot: { width: 8, height: 8, borderRadius: radius.pill, flexShrink: 0 },
 	body: { flex: 1, minWidth: 0 },
 	// ワークツリー名（太字）とエージェント名を同じ行に置く。入りきらないときは
 	// エージェント名から先に削る（どこで待たれているかの方が要る）。
 	titleRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, minWidth: 0 },
 	// 縮む割合を副題側へ大きく寄せる。両方を同じにすると、flexboxは長い方（＝ワークツリー名）から
 	// 削るため、見せたい名前の方が先に消える。
-	rowTitle: { color: colors.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
-	rowSubtitle: { color: colors.textDim, fontSize: 11, flexShrink: 8 },
-	rowBody: { color: colors.textDim, fontSize: 11.5, marginTop: 1, lineHeight: 15 },
-	time: { color: colors.textDim, fontSize: 10.5, flexShrink: 0 },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600', flexShrink: 1 },
+	rowSubtitle: { color: colors.textDim, fontSize: type.caption, flexShrink: 8 },
+	rowBody: { color: colors.textDim, fontSize: type.meta, marginTop: 1, lineHeight: 16 },
+	time: { color: colors.textDim, fontSize: type.badge, flexShrink: 0 },
 });

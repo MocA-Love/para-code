@@ -13,7 +13,8 @@ import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { appendSpaceNoteEntry, applySpaceNotePrefix, continueSpaceNoteChecklist, parseSpaceNote, SPACE_NOTE_MAX_LENGTH, spaceNoteSummary, toggleSpaceNoteTask, trimSpaceNoteTrailingEmptyTask, type SpaceNotePrefix } from '../src/spaceNote.js';
-import { colors, mono, squircle } from '../src/theme.js';
+import { alpha, colors, radius, squircle, type, withAlpha } from '../src/theme.js';
+import { monoFamily } from '../src/monoFont.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
@@ -375,7 +376,7 @@ export default function SpaceNoteScreen() {
 				accessibilityLabel={canPickSpace ? `スペース ${name || 'スペース'}。押すと切り替え` : undefined}
 				accessibilityState={canPickSpace ? { expanded: pickerOpen } : undefined}
 			>
-				<View style={[styles.avatar, { backgroundColor: color + '22' }]}>
+				<View style={[styles.avatar, { backgroundColor: withAlpha(color, alpha.wash) ?? colors.surface2 }]}>
 					<Text style={[styles.avatarText, { color }]}>✦</Text>
 				</View>
 				<View style={styles.spaceBody}>
@@ -432,7 +433,7 @@ export default function SpaceNoteScreen() {
 							return (
 								<Pressable key={line.index} style={styles.task} onPress={() => toggle(line.index)} accessibilityRole="checkbox" accessibilityState={{ checked: line.done }}>
 									<View style={[styles.check, line.done && styles.checkDone]}>
-										{line.done ? <Ionicons name="checkmark" size={13} color="#04252c" /> : null}
+										{line.done ? <Ionicons name="checkmark" size={13} color={colors.onPrimary} /> : null}
 									</View>
 									<Text style={[styles.taskLabel, line.done && styles.taskLabelDone]}>{line.text}</Text>
 								</Pressable>
@@ -523,7 +524,8 @@ export default function SpaceNoteScreen() {
 										accessibilityState={{ selected: active }}
 										accessibilityLabel={open > 0 ? `${spaceName}（未完了 ${open}件）` : spaceName}
 									>
-										<View style={[styles.pickerAvatar, { backgroundColor: spaceColor + '22' }]}>
+										<View style={[styles.pickerAvatar, { backgroundColor: withAlpha(spaceColor, alpha.wash) ?? colors.surface2 }]}>
+											{/* 26ptの固定枠の中の記号なので枠から決めた値のまま */}
 											<Text style={[styles.avatarText, { color: spaceColor, fontSize: 11 }]}>✦</Text>
 										</View>
 										<View style={styles.spaceBody}>
@@ -614,61 +616,62 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	flex: { flex: 1 },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingBottom: 12 },
-	title: { flex: 1, color: colors.text, fontSize: 20, fontWeight: '800', letterSpacing: -0.3, textAlign: 'center' },
-	iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-	iconGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: 18, overflow: 'hidden' },
-	pillBtn: { height: 36, borderRadius: 18, paddingHorizontal: 15, alignItems: 'center', justifyContent: 'center' },
-	pillGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: 18, overflow: 'hidden' },
-	btnText: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
+	title: { flex: 1, color: colors.text, fontSize: type.large, fontWeight: '800', letterSpacing: -0.3, textAlign: 'center' },
+	iconBtn: { width: 36, height: 36, borderRadius: radius.pill, ...squircle, alignItems: 'center', justifyContent: 'center' },
+	iconGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: radius.pill, ...squircle, overflow: 'hidden' },
+	pillBtn: { height: 36, borderRadius: radius.pill, ...squircle, paddingHorizontal: 15, alignItems: 'center', justifyContent: 'center' },
+	pillGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: radius.pill, ...squircle, overflow: 'hidden' },
+	btnText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	btnTextStrong: { fontWeight: '800' },
 	btnDisabled: { opacity: 0.45 },
 	spaceRow: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingBottom: 12 },
 	spaceRowPressed: { opacity: 0.6 },
-	avatar: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-	avatarText: { fontSize: 13, fontWeight: '800', fontFamily: mono.default },
+	avatar: { width: 32, height: 32, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center' },
+	// 固定サイズ（32 / 26）の頭文字枠の中の記号なので枠から決めた値のまま。
+	avatarText: { fontSize: 13, fontWeight: '800', fontFamily: monoFamily },
 	spaceBody: { flex: 1, minWidth: 0 },
-	spaceName: { color: colors.text, fontSize: 14.5, fontWeight: '700' },
-	spaceBranch: { color: colors.textDim, fontSize: 11, fontFamily: mono.default, marginTop: 2 },
+	spaceName: { color: colors.text, fontSize: type.body, fontWeight: '700' },
+	spaceBranch: { color: colors.textDim, fontSize: type.caption, fontFamily: monoFamily, marginTop: 2 },
 
 	// スペース選択メニュー
-	pickerScrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)', zIndex: 20 },
-	pickerMenu: { position: 'absolute', left: 14, right: 14, zIndex: 21, borderRadius: 22, ...squircle, overflow: 'hidden', paddingBottom: 6 },
+	pickerScrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.scrim, zIndex: 20 },
+	pickerMenu: { position: 'absolute', left: 14, right: 14, zIndex: 21, borderRadius: radius.panel, ...squircle, overflow: 'hidden', paddingBottom: 6 },
 	pickerGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
-	pickerHead: { color: colors.textDim, fontSize: 11.5, fontWeight: '700', paddingHorizontal: 16, paddingTop: 13, paddingBottom: 7 },
+	pickerHead: { color: colors.textDim, fontSize: type.meta, fontWeight: '700', paddingHorizontal: 16, paddingTop: 13, paddingBottom: 7 },
 	pickerScroll: { maxHeight: 340 },
 	pickerRow: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 14, paddingVertical: 9 },
 	pickerRowActive: { backgroundColor: colors.accentWash },
-	pickerRowPressed: { backgroundColor: 'rgba(255,255,255,0.08)' },
-	pickerAvatar: { width: 26, height: 26, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-	pickerName: { color: colors.text, fontSize: 13.5, fontWeight: '700' },
-	pickerCount: { color: colors.yellow, fontSize: 10.5, fontWeight: '700' },
-	summaryChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.surface3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
-	summaryText: { color: colors.textDim, fontSize: 11, fontFamily: mono.default },
+	pickerRowPressed: { backgroundColor: colors.border },
+	pickerAvatar: { width: 26, height: 26, borderRadius: radius.control, ...squircle, alignItems: 'center', justifyContent: 'center' },
+	pickerName: { color: colors.text, fontSize: type.body, fontWeight: '700' },
+	pickerCount: { color: colors.yellow, fontSize: type.badge, fontWeight: '700' },
+	summaryChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.surface3, borderRadius: radius.control, ...squircle, paddingHorizontal: 8, paddingVertical: 3 },
+	summaryText: { color: colors.textDim, fontSize: type.caption, fontFamily: monoFamily },
 	summaryTextOpen: { color: colors.accent },
-	error: { color: colors.red, fontSize: 12, paddingHorizontal: 18, paddingBottom: 6 },
+	error: { color: colors.red, fontSize: type.meta, paddingHorizontal: 18, paddingBottom: 6 },
 	center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	bodyContent: { paddingHorizontal: 18 },
-	placeholder: { color: colors.textDim, fontSize: 13.5, fontStyle: 'italic', lineHeight: 22 },
+	placeholder: { color: colors.textDim, fontSize: type.body, fontStyle: 'italic', lineHeight: 23 },
 	blank: { height: 10 },
-	heading: { color: colors.text, fontSize: 14.5, fontWeight: '700', marginTop: 12, marginBottom: 2 },
-	text: { color: colors.textDim, fontSize: 13.5, lineHeight: 23 },
+	heading: { color: colors.text, fontSize: type.body, fontWeight: '700', marginTop: 12, marginBottom: 2 },
+	text: { color: colors.textDim, fontSize: type.body, lineHeight: 24 },
 	task: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 3 },
 	// 未チェックが空白に見えないよう、枠と面のコントラストをPC側と揃える
-	check: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)', backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+	check: { width: 20, height: 20, borderRadius: radius.key, ...squircle, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)', backgroundColor: colors.border, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
 	checkDone: { backgroundColor: colors.accent, borderColor: colors.accent },
 	// 追加中の行。まだ存在しない項目なので、枠を弱めて「これから増える1件」に見せる
 	checkGhost: { borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', backgroundColor: 'transparent' },
-	taskLabel: { flex: 1, color: colors.text, fontSize: 13.5, lineHeight: 23 },
+	taskLabel: { flex: 1, color: colors.text, fontSize: type.body, lineHeight: 24 },
 	taskLabelDone: { color: colors.textDim, textDecorationLine: 'line-through' },
-	addInput: { flex: 1, color: colors.text, fontSize: 13.5, lineHeight: 23, padding: 0, marginTop: Platform.OS === 'ios' ? 0 : -4 },
+	addInput: { flex: 1, color: colors.text, fontSize: type.body, lineHeight: 24, padding: 0, marginTop: Platform.OS === 'ios' ? 0 : -4 },
 	addRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 },
-	addPlus: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center' },
-	addLabel: { color: colors.textDim, fontSize: 13.5 },
-	editor: { flex: 1, marginHorizontal: 14, marginBottom: 10, padding: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, color: colors.text, fontSize: 14, lineHeight: 23, textAlignVertical: 'top' },
-	toolbar: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 14, paddingHorizontal: 6, paddingVertical: 6, borderRadius: 20 },
-	toolbarGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: 20, overflow: 'hidden' },
+	addPlus: { width: 20, height: 20, borderRadius: radius.key, ...squircle, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center' },
+	addLabel: { color: colors.textDim, fontSize: type.body },
+	editor: { flex: 1, marginHorizontal: 14, marginBottom: 10, padding: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.card, ...squircle, color: colors.text, fontSize: type.body, lineHeight: 23, textAlignVertical: 'top' },
+	toolbar: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 14, paddingHorizontal: 6, paddingVertical: 6, borderRadius: radius.panel, ...squircle },
+	toolbarGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: radius.panel, ...squircle, overflow: 'hidden' },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
-	toolbarBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 34, borderRadius: 14, paddingHorizontal: 4 },
+	toolbarBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 34, borderRadius: radius.card, ...squircle, paddingHorizontal: 4 },
 	toolbarBtnPressed: { backgroundColor: 'rgba(255,255,255,0.10)' },
-	toolbarLabel: { color: colors.text, fontSize: 12, fontWeight: '600' },
+	toolbarLabel: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
 });

@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import type { AgentChatMessage, AgentMessageSendResult } from '../store.js';
-import { colors } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { setMobileSpanAttributes, startMobileSpan } from '../sentry.js';
 
@@ -137,7 +137,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit('text', () => onFreeText(interactionId, question, freeText.trim())); } }}
 						accessibilityLabel="自由入力で回答"
 					>
-						<Ionicons name="arrow-up" size={16} color="#00222c" />
+						<Ionicons name="arrow-up" size={16} color={colors.onPrimary} />
 					</Pressable>
 				</View>
 			) : null}
@@ -334,29 +334,29 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 	&& prev.messages.every((m, i) => m === next.messages[i]));
 
 const styles = StyleSheet.create({
-	questionCard: { backgroundColor: 'rgba(9,175,217,.10)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 16, padding: 14, gap: 8 },
+	questionCard: { backgroundColor: tint(colors.accent, alpha.wash), borderWidth: 1, borderColor: colors.accent2, borderRadius: radius.card, ...squircle, padding: 14, gap: 8 },
 	questionCardAnswered: { borderColor: colors.border, backgroundColor: colors.surface, opacity: 0.75 },
 	questionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-	questionChip: { color: colors.text, fontSize: 11, fontWeight: '600', backgroundColor: colors.surface2, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
-	questionAnswered: { color: colors.textDim, fontSize: 11, marginLeft: 'auto' },
-	questionText: { color: colors.text, fontSize: 13, lineHeight: 19, fontWeight: '600' },
-	questionOption: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: 13, paddingHorizontal: 13, paddingVertical: 11, gap: 3 },
+	questionChip: { color: colors.text, fontSize: type.caption, fontWeight: '600', backgroundColor: colors.surface2, borderRadius: radius.key, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
+	questionAnswered: { color: colors.textDim, fontSize: type.caption, marginLeft: 'auto' },
+	questionText: { color: colors.text, fontSize: type.body, lineHeight: 20, fontWeight: '600' },
+	questionOption: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: radius.card, ...squircle, paddingHorizontal: 13, paddingVertical: 11, gap: 3 },
 	questionOptionSelected: { borderColor: colors.accent, backgroundColor: colors.accentWash },
 	questionOptionDisabled: { opacity: 0.6 },
-	questionOptionLabel: { color: colors.text, fontSize: 12.5, fontWeight: '600' },
-	questionOptionDesc: { color: colors.textDim, fontSize: 11, lineHeight: 15 },
-	questionConfirmBtn: { backgroundColor: colors.accent2, borderRadius: 12, paddingVertical: 10, alignItems: 'center' },
+	questionOptionLabel: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
+	questionOptionDesc: { color: colors.textDim, fontSize: type.caption, lineHeight: 15 },
+	questionConfirmBtn: { backgroundColor: colors.primary, borderRadius: radius.control, ...squircle, paddingVertical: 10, alignItems: 'center' },
 	questionFreeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-	questionFreeInput: { flex: 1, backgroundColor: colors.surface2, borderRadius: 12, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 12.5, paddingHorizontal: 13, paddingVertical: 10 },
-	questionFreeSend: { backgroundColor: colors.accent2, borderRadius: 12, width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+	questionFreeInput: { flex: 1, backgroundColor: colors.surface2, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: type.meta, paddingHorizontal: 13, paddingVertical: 10 },
+	questionFreeSend: { backgroundColor: colors.primary, borderRadius: radius.control, ...squircle, width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
 	confirmBtnDisabled: { opacity: 0.4 },
-	confirmBtnText: { color: '#00222c', fontSize: 12.5, fontWeight: '700' },
-	hint: { color: colors.textDim, fontSize: 10 },
-	questionError: { color: colors.red, fontSize: 11, lineHeight: 15 },
+	confirmBtnText: { color: colors.onPrimary, fontSize: type.meta, fontWeight: '700' },
+	hint: { color: colors.textDim, fontSize: type.badge },
+	questionError: { color: colors.red, fontSize: type.caption, lineHeight: 15 },
 	stepTabs: { flexDirection: 'row', gap: 6 },
-	stepTab: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 11, paddingVertical: 5 },
+	stepTab: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: radius.pill, ...squircle, paddingHorizontal: 11, paddingVertical: 5 },
 	stepTabActive: { borderColor: colors.accent, backgroundColor: colors.accentWash },
 	stepTabAnswered: { borderColor: colors.accent2 },
-	stepTabText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
+	stepTabText: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
 	stepTabTextActive: { color: colors.text },
 });

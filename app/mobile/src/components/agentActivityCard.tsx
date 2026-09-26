@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentActivityState, AgentActivityStatus } from '../store.js';
 import { isRunningAgentActivity, summarizeAgentActivity } from '../agentActivityTree.js';
 import { GlassSurface } from './glassSurface.js';
-import { colors, radius, squircle } from '../theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 
 function statusLabel(status: AgentActivityStatus): string {
 	switch (status) {
@@ -18,7 +19,7 @@ function statusLabel(status: AgentActivityStatus): string {
 	}
 }
 
-function statusColor(status: AgentActivityStatus): string {
+function statusColor(status: AgentActivityStatus) {
 	return status === 'failed' ? colors.red : status === 'interrupted' || status === 'unknown' ? colors.yellow : status === 'running' ? colors.accent : colors.green;
 }
 
@@ -43,7 +44,7 @@ export function AgentActivityCard({ activity, onOpen }: { activity: AgentActivit
 					<Pressable key={agent.id} accessibilityRole="button" accessibilityLabel={`${agent.label}の詳細を開く`} disabled={onOpen === undefined} onPress={() => onOpen?.(agent.id)} style={styles.row}>
 						<View style={styles.avatar}><Text style={styles.avatarText}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>
 						<View style={styles.body}><Text style={styles.label} numberOfLines={1}>{agent.label}</Text><Text style={styles.meta}>{agent.role === 'teammate' ? 'teammate' : 'SubAgent'}</Text></View>
-						<View style={[styles.pill, { backgroundColor: `${statusColor(agent.status)}20` }]}><Text style={[styles.pillText, { color: statusColor(agent.status) }]}>{statusLabel(agent.status)}</Text></View>
+						<View style={[styles.pill, { backgroundColor: tint(statusColor(agent.status), alpha.wash) }]}><Text style={[styles.pillText, { color: statusColor(agent.status) }]}>{statusLabel(agent.status)}</Text></View>
 					</Pressable>
 				))}
 				{activeTasks.length > 0 ? <View style={styles.tasks}><Text style={styles.taskTitle}>実行中のTask {activeTasks.length}</Text>{activeTasks.map(task => <View key={task.id} style={styles.taskRow}><Ionicons name="ellipse-outline" size={12} color={statusColor(task.status)} /><Text style={styles.taskText} numberOfLines={1}>{task.label}</Text></View>)}</View> : null}
@@ -74,16 +75,17 @@ export function AgentActivityStrip({ activity, onOpen }: { activity: AgentActivi
 
 const styles = StyleSheet.create({
 	wrap: { gap: 7, paddingVertical: 4 },
-	card: { backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 12, padding: 10 },
+	card: { backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, padding: 10 },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-	dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent },
-	title: { color: colors.text, fontSize: 11, fontWeight: '600', flex: 1 }, count: { color: colors.textDim, fontSize: 10 },
+	dot: { width: 7, height: 7, borderRadius: radius.pill, backgroundColor: colors.accent },
+	title: { color: colors.text, fontSize: type.caption, fontWeight: '600', flex: 1 }, count: { color: colors.textDim, fontSize: type.badge },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingTop: 8, marginTop: 8 },
-	avatar: { width: 23, height: 23, borderRadius: 7, backgroundColor: colors.accentWash, alignItems: 'center', justifyContent: 'center' }, avatarText: { color: colors.accent, fontSize: 9, fontWeight: '700' },
-	body: { flex: 1, minWidth: 0 }, label: { color: colors.text, fontSize: 10 }, meta: { color: colors.textDim, fontSize: 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	pill: { borderRadius: 9, paddingHorizontal: 6, paddingVertical: 3 }, pillText: { fontSize: 8 },
-	tasks: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, marginTop: 8, paddingTop: 8, gap: 5 }, taskTitle: { color: colors.textDim, fontSize: 9 }, taskRow: { flexDirection: 'row', alignItems: 'center', gap: 6 }, taskText: { color: colors.text, fontSize: 9, flex: 1 },
-	compaction: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: 'rgba(193,147,217,0.10)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(193,147,217,0.20)' }, compactionText: { color: colors.purple, fontSize: 9 },
-	summary: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border }, summaryText: { color: colors.textDim, fontSize: 10, flex: 1 },
-	strip: { height: 42, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, borderRadius: radius.card, ...squircle }, stripTitle: { color: colors.text, fontSize: 10.5, fontWeight: '700' }, stripAvatars: { flexDirection: 'row', paddingRight: 4 }, stripAvatar: { width: 20, height: 20, borderRadius: 7, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.bg, alignItems: 'center', justifyContent: 'center', marginRight: -5 }, stripAvatarText: { color: colors.accent, fontSize: 7.5, fontWeight: '800' }, stripCount: { flex: 1, color: colors.textDim, fontSize: 9 },
+	// avatarText / stripAvatarText は固定サイズの頭文字枠の中の文字なので枠から決めた値のまま。
+	avatar: { width: 23, height: 23, borderRadius: radius.key, ...squircle, backgroundColor: colors.accentWash, alignItems: 'center', justifyContent: 'center' }, avatarText: { color: colors.accent, fontSize: 9, fontWeight: '700' },
+	body: { flex: 1, minWidth: 0 }, label: { color: colors.text, fontSize: type.badge }, meta: { color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily },
+	pill: { borderRadius: radius.control, ...squircle, paddingHorizontal: 6, paddingVertical: 3 }, pillText: { fontSize: type.badge },
+	tasks: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, marginTop: 8, paddingTop: 8, gap: 5 }, taskTitle: { color: colors.textDim, fontSize: type.badge }, taskRow: { flexDirection: 'row', alignItems: 'center', gap: 6 }, taskText: { color: colors.text, fontSize: type.badge, flex: 1 },
+	compaction: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 7, borderRadius: radius.control, ...squircle, backgroundColor: tint(colors.purple, alpha.wash), borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.purple, alpha.wash) }, compactionText: { color: colors.purple, fontSize: type.badge },
+	summary: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border }, summaryText: { color: colors.textDim, fontSize: type.badge, flex: 1 },
+	strip: { height: 42, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, borderRadius: radius.card, ...squircle }, stripTitle: { color: colors.text, fontSize: type.badge, fontWeight: '700' }, stripAvatars: { flexDirection: 'row', paddingRight: 4 }, stripAvatar: { width: 20, height: 20, borderRadius: radius.key, ...squircle, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.bg, alignItems: 'center', justifyContent: 'center', marginRight: -5 }, stripAvatarText: { color: colors.accent, fontSize: 7.5, fontWeight: '800' }, stripCount: { flex: 1, color: colors.textDim, fontSize: type.badge },
 });

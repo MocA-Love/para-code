@@ -10,6 +10,7 @@ import { pinKeyForTerminal, type AgentChatMessage, type AgentLiveState } from '.
 import { ConnectionGate, useConnectionGateBlocked } from '../src/components/connectionGate.js';
 import { MarkdownText } from '../src/components/markdownText.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
+import { Button } from '../src/components/button.js';
 import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentActivityCard.js';
@@ -32,7 +33,7 @@ import { useParaHeader, useParaHeaderHeight, PARA_HEADER_HIDDEN, type ParaHeader
 import { NativeScreenHeader, NATIVE_BAR_HEIGHT } from '../src/components/nativeHeaderItems.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
-import { colors } from '../src/theme.js';
+import { alpha, colors, radius, squircle, tint, type } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
 import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
@@ -485,10 +486,7 @@ export default function AgentDetailScreen() {
 							claude / codex をこのターミナルで起動（または一度発言）すると表示されます。
 							生の画面はターミナルタブで確認できます。
 						</Text>
-						<Pressable style={styles.retryBtn} onPress={() => { hapticImpact('light'); refreshAgent(activeKey); }}>
-							<Ionicons name="refresh" size={14} color={colors.text} />
-							<Text style={styles.retryText}>再試行</Text>
-						</Pressable>
+						<Button label="再試行" icon="refresh" variant="secondary" size="sm" style={styles.retryBtn} onPress={() => { hapticImpact('light'); refreshAgent(activeKey); }} />
 					</View>
 				) : (
 					<FlatList
@@ -824,10 +822,10 @@ const styles = StyleSheet.create({
 	// ストリップより後ろに置く（`zIndex` は帯の9より小さく保つ）。角は丸めない——全幅の
 	// 板なので、丸めると上端の隅に本文が覗く。
 	headerGlass: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 8, overflow: 'hidden' },
-	peerMessageCard: { alignSelf: 'stretch', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, gap: 6 },
+	peerMessageCard: { alignSelf: 'stretch', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.card, ...squircle, padding: 12, gap: 6 },
 	peerMessageHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-	peerMessageLabel: { color: colors.accent2, fontSize: 11, fontWeight: '700' },
-	peerMessageSummary: { color: colors.text, fontSize: 12, fontWeight: '600' },
+	peerMessageLabel: { color: colors.accent2, fontSize: type.caption, fontWeight: '700' },
+	peerMessageSummary: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
 	// 案A「フルフラット」: チャット領域の外枠カードを廃止し、背景に直接描画する
 	// （Claude公式アプリ風。コードブロックや長文が画面幅を最大限使える）。
 	chatArea: { flex: 1 },
@@ -846,37 +844,37 @@ const styles = StyleSheet.create({
 	overlayCenter: { left: 0, right: 0, alignItems: 'center' },
 	overlayColumn: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, paddingHorizontal: 12 },
 	overlayColumnRight: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignItems: 'flex-end', paddingRight: 14 },
-	placeholder: { color: colors.textDim, fontSize: 13, lineHeight: 20, padding: 16 },
+	placeholder: { color: colors.textDim, fontSize: type.body, lineHeight: 22, padding: 16 },
 	noneBox: { alignItems: 'flex-start' },
-	retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
-	retryText: { color: colors.text, fontSize: 12 },
-	truncatedNote: { color: colors.textDim, fontSize: 11, textAlign: 'center', paddingBottom: 8 },
+	retryBtn: { marginLeft: 16 },
+	truncatedNote: { color: colors.textDim, fontSize: type.caption, textAlign: 'center', paddingBottom: 8 },
 	bubble: {},
 	// ユーザー発言のみ控えめなグレーバブル（右寄せ・送信側の角だけ詰める）。
 	// エージェント側はバブルを使わず背景に直接テキストを流す（案Aフルフラット）。
-	bubbleUser: { alignSelf: 'flex-end', backgroundColor: colors.surface2, borderRadius: 16, borderBottomRightRadius: 5, paddingHorizontal: 12, paddingVertical: 8, maxWidth: '86%' },
+	bubbleUser: { alignSelf: 'flex-end', backgroundColor: colors.surface2, borderRadius: radius.card, ...squircle, borderBottomRightRadius: radius.key, paddingHorizontal: 12, paddingVertical: 8, maxWidth: '86%' },
 	bubbleAssistant: { alignSelf: 'stretch', paddingHorizontal: 2 },
-	bubbleText: { color: colors.text, fontSize: 13, lineHeight: 19 },
+	bubbleText: { color: colors.text, fontSize: type.body, lineHeight: 20 },
 	activityBody:{ gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
-	webWrap: { marginVertical: 2 }, webRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 13, backgroundColor: 'rgba(9,175,217,.07)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(9,175,217,.18)' },
-	faviconStack: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 }, favicon: { width: 22, height: 22, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: -5, overflow: 'hidden' }, faviconImage: { width: 14, height: 14, borderRadius: 3 }, faviconLetter: { color: colors.textDim, fontSize: 9, fontWeight: '800' },
-	webBody: { flex: 1, minWidth: 0 }, webLabel: { color: colors.accent2, fontSize: 9.5, fontWeight: '700' }, webQuery: { color: colors.text, fontSize: 11, marginTop: 1 }, domainRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }, domainText: { color: colors.textDim, fontSize: 10.5 },
+	webWrap: { marginVertical: 2 }, webRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, paddingVertical: 8, borderRadius: radius.card, ...squircle, backgroundColor: tint(colors.accent, alpha.faint), borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.accent, alpha.wash) },
+	// faviconImage（14pt）は key(6) だと円に近づくため、faviconLetter は22ptの固定枠の中の頭文字なので、どちらも元の値のまま。
+	faviconStack: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 }, favicon: { width: 22, height: 22, borderRadius: radius.key, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: -5, overflow: 'hidden' }, faviconImage: { width: 14, height: 14, borderRadius: 3 }, faviconLetter: { color: colors.textDim, fontSize: 9, fontWeight: '800' },
+	webBody: { flex: 1, minWidth: 0 }, webLabel: { color: colors.accent2, fontSize: type.badge, fontWeight: '700' }, webQuery: { color: colors.text, fontSize: type.caption, marginTop: 1 }, domainRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }, domainText: { color: colors.textDim, fontSize: type.badge },
 	approvalBarWrap: { marginHorizontal: 12, marginTop: 8 },
-	approvalSyncing: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, gap: 4 },
-	approvalSyncingText: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	approvalSyncingHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
+	approvalSyncing: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: radius.card, ...squircle, paddingVertical: 12, paddingHorizontal: 14, gap: 4 },
+	approvalSyncingText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	approvalSyncingHint: { color: colors.textDim, fontSize: type.meta, lineHeight: 17 },
 	workingRow: { gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
 	workingHeader: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
+	workingDot: { width: 7, height: 7, borderRadius: radius.pill, ...squircle, backgroundColor: colors.accent2 },
 	// flexShrink が無いと row 内で折り返さず右へはみ出す。長いMCPツール名でも1行に収める。
-	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4, flexShrink: 1 },
+	workingText: { color: colors.textDim, fontSize: type.meta, marginLeft: 4, flexShrink: 1 },
 	// minHeight 固定（lineHeight 18 × 2行）。preview の有無・行数でフッターの高さを動かさない。
 	// height ではなく minHeight なのは、Dynamic Type で文字を大きくしたときに2行目が切れないようにするため。
-	workingPreview: { color: colors.text, fontSize: 12, lineHeight: 18, minHeight: 36, marginLeft: 4, opacity: 0.82 },
+	workingPreview: { color: colors.text, fontSize: type.meta, lineHeight: 18, minHeight: 36, marginLeft: 4, opacity: 0.82 },
 	jumpWrap: { position: 'absolute', bottom: 12, right: 14 },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（他のglassボタンと同じ流儀）
-	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: 40, height: 40, borderRadius: 20, paddingHorizontal: 12, overflow: 'hidden' },
-	jumpText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: 40, height: 40, borderRadius: radius.pill, ...squircle, paddingHorizontal: 12, overflow: 'hidden' },
+	jumpText: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10, flexShrink: 1 },
 	// 実行中インジケータが出ていないときの送信予定チップ（右寄せで入力欄の上）
 	pendingRow: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 6 },

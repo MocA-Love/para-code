@@ -9,14 +9,15 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { buildMarkdownHtml } from './fileViewer.js';
-import { colors } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
@@ -283,39 +284,38 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	);
 }
 
-const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
-
 const styles = StyleSheet.create({
-	screen: { flex: 1, backgroundColor: '#0d1117' },
+	screen: { flex: 1, backgroundColor: colors.bg },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
-	title: { flex: 1, color: colors.text, fontSize: 13, fontFamily: MONO },
-	statAdd: { color: '#3fb950', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
-	statDel: { color: '#f85149', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
-	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	title: { flex: 1, color: colors.text, fontSize: type.body, fontFamily: monoFamily },
+	// 増減の色は SCM の一覧と同じ add / del にそろえる。
+	statAdd: { color: colors.add, fontSize: type.meta, fontFamily: monoFamily, fontWeight: '700' },
+	statDel: { color: colors.del, fontSize: type.meta, fontFamily: monoFamily, fontWeight: '700' },
+	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },
-	segmentBtnActive: { backgroundColor: 'rgba(9,175,217,.25)' },
-	segmentText: { color: colors.textDim, fontSize: 12 },
+	segmentBtnActive: { backgroundColor: tint(colors.accent, alpha.line) },
+	segmentText: { color: colors.textDim, fontSize: type.meta },
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
 	// WKWebView は初回ペイント前の既定背景が不透明白のため、開いた瞬間に白フラッシュする。
 	// fileViewer と同じく alpha 1.0 の backgroundColor を指定して初回ペイント前も暗く保つ
-	// （screen の地色 #0d1117 に揃える）。
-	web: { flex: 1, backgroundColor: '#0d1117' },
-	error: { color: colors.red, fontSize: 12, paddingHorizontal: 16, paddingVertical: 8 },
-	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
+	// （screen の地色 colors.bg に揃える）。
+	web: { flex: 1, backgroundColor: colors.bg },
+	error: { color: colors.red, fontSize: type.meta, paddingHorizontal: 16, paddingVertical: 8 },
+	truncated: { color: colors.yellow, fontSize: type.badge, paddingHorizontal: 16, paddingVertical: 4 },
 	body: { flex: 1 },
 	bodyContent: { paddingVertical: 8 },
-	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
+	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', marginTop: 24 },
 	row: { flexDirection: 'row', alignItems: 'flex-start', minHeight: 20 },
-	hunkRow: { backgroundColor: 'rgba(56,139,253,0.12)', paddingHorizontal: 10, paddingVertical: 4, marginVertical: 4 },
-	hunkText: { color: '#58a6ff', fontSize: 11, fontFamily: MONO },
-	addRow: { backgroundColor: 'rgba(46,160,67,0.16)' },
-	delRow: { backgroundColor: 'rgba(248,81,73,0.14)' },
-	lineNo: { width: 34, textAlign: 'right', color: '#8b949e', fontSize: 10, fontFamily: MONO, paddingTop: 3, paddingRight: 4 },
-	addNum: { color: '#7ee2a8' },
-	delNum: { color: '#ffa198' },
-	sign: { width: 14, textAlign: 'center', fontSize: 11, fontFamily: MONO, paddingTop: 2 },
-	signAdd: { color: '#3fb950', fontWeight: '700' },
-	signDel: { color: '#f85149', fontWeight: '700' },
-	signCtx: { color: '#8b949e' },
-	code: { flex: 1, color: '#e6edf3', fontSize: 11, lineHeight: 17, fontFamily: MONO, paddingRight: 10, paddingTop: 2 },
+	hunkRow: { backgroundColor: tint(colors.accent, alpha.wash), paddingHorizontal: 10, paddingVertical: 4, marginVertical: 4 },
+	hunkText: { color: colors.accent, fontSize: type.caption, fontFamily: monoFamily },
+	addRow: { backgroundColor: tint(colors.add, alpha.wash) },
+	delRow: { backgroundColor: tint(colors.del, alpha.wash) },
+	lineNo: { width: 34, textAlign: 'right', color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily, paddingTop: 3, paddingRight: 4 },
+	addNum: { color: colors.add },
+	delNum: { color: colors.del },
+	sign: { width: 14, textAlign: 'center', fontSize: type.caption, fontFamily: monoFamily, paddingTop: 2 },
+	signAdd: { color: colors.add, fontWeight: '700' },
+	signDel: { color: colors.del, fontWeight: '700' },
+	signCtx: { color: colors.textDim },
+	code: { flex: 1, color: colors.text, fontSize: type.caption, lineHeight: 17, fontFamily: monoFamily, paddingRight: 10, paddingTop: 2 },
 });

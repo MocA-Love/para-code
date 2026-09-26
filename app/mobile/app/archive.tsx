@@ -14,7 +14,8 @@ import { wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useParaHeader, useParaHeaderHeight, type ParaHeaderSpec } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors } from '../src/theme.js';
+import { colors, type } from '../src/theme.js';
+import { EmptyState } from '../src/components/emptyState.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 
@@ -75,7 +76,7 @@ export default function ArchiveScreen() {
 			{/* スクロールし始めたら開きっぱなしのスワイプ行を畳む（ホーム一覧と同じ流儀）。 */}
 			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]} onScrollBeginDrag={closeOpenedSwipeRow}>
 				{rows.length === 0 ? (
-					<Text style={styles.empty}>アーカイブしたエージェントはありません{'\n'}ホームの一覧を左へスワイプするとここに入ります</Text>
+					<EmptyState title="アーカイブしたエージェントはありません" message="ホームの一覧を左へスワイプするとここに入ります" style={styles.empty} />
 				) : (
 					<Text style={styles.note}>PCではそのまま動いています。質問や応答待ちになったものは自動でホームへ戻ります。</Text>
 				)}
@@ -94,7 +95,7 @@ export default function ArchiveScreen() {
 								key: 'restore',
 								label: '戻す',
 								icon: 'arrow-undo-outline',
-								color: colors.accent2,
+								color: colors.primary,
 								fullSwipe: true,
 								onPress: () => setArchived(pinKeyForTerminal(t), false),
 							}]}
@@ -118,8 +119,8 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	list: { flex: 1, paddingHorizontal: 14 },
 	listContent: { paddingBottom: 32 },
-	empty: { color: colors.textDim, fontSize: 13, lineHeight: 21, textAlign: 'center', paddingVertical: 32 },
-	note: { color: colors.textDim, fontSize: 11, lineHeight: 16, paddingHorizontal: 4, paddingBottom: 10 },
+	empty: { paddingVertical: 32 },
+	note: { color: colors.textDim, fontSize: type.caption, lineHeight: 16, paddingHorizontal: 4, paddingBottom: 10 },
 	// しまってあるものなので、ホームの行より一段落とす
 	rowDim: { opacity: 0.72 },
 });

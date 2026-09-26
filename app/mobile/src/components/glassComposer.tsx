@@ -4,7 +4,8 @@ import { forwardRef, memo, ReactNode, type Ref } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { glassComposerTextInputBehavior } from './glassComposerBehavior.js';
 
@@ -48,7 +49,7 @@ export function GlassComposer({ value, defaultValue, inputKey, inputRef, onChang
 					accessibilityState={{ disabled: sendDisabled }}
 					accessibilityLabel="送信"
 				>
-					<Ionicons name={sendIcon} size={18} color="#00222c" />
+					<Ionicons name={sendIcon} size={18} color={colors.onPrimary} />
 				</Pressable>
 			</View>
 		</GlassSurface>
@@ -87,15 +88,15 @@ const ComposerTextInput = memo(forwardRef<TextInput, {
 
 const styles = StyleSheet.create({
 	wrap: {
-		borderRadius: 26,
+		borderRadius: radius.composer, ...squircle,
 		overflow: 'hidden', paddingTop: 12, paddingBottom: 10, paddingHorizontal: 14,
 	},
-	input: { color: colors.text, fontSize: 15, paddingHorizontal: 4, paddingBottom: 12, maxHeight: 120 },
-	inputMono: { fontFamily: 'Menlo', fontSize: 13 },
+	input: { color: colors.text, fontSize: type.title, paddingHorizontal: 4, paddingBottom: 12, maxHeight: 120 },
+	inputMono: { fontFamily: monoFamily, fontSize: type.body },
 	tools: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 	// 下段ツール列（特殊キー等）に送信ボタン以外の全幅を使わせる（キーが見切れないように）
 	toolsLeft: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 },
-	sendBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.accent2, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+	sendBtn: { width: 38, height: 38, borderRadius: radius.pill, ...squircle, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 	sendBtnDisabled: { backgroundColor: colors.surface3 },
 	sendBtnPressed: { opacity: 0.6 },
 });

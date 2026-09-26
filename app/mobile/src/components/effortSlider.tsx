@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from 'react-native';
-import { colors, mono } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import { effortSliderGestureBehavior } from './effortSliderBehavior.js';
 
@@ -265,18 +266,18 @@ const styles = StyleSheet.create({
 	container: { marginTop: 14 },
 	disabled: { opacity: 0.55 },
 	labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7 },
-	label: { color: colors.textDim, fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
-	value: { fontFamily: mono.ios, fontSize: 11, fontWeight: '800' },
+	label: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+	value: { fontFamily: monoFamily, fontSize: type.caption, fontWeight: '800' },
 	slider: { height: 32, justifyContent: 'center', marginHorizontal: 14 },
 	track: { height: 24, borderRadius: 12, backgroundColor: 'rgba(255,255,255,.07)', borderWidth: 0.5, borderColor: colors.border, overflow: 'hidden' },
 	range: { height: '100%', borderTopLeftRadius: 12, borderBottomLeftRadius: 12 },
 	particleClip: { position: 'absolute', top: 0, left: 0, bottom: 0, overflow: 'hidden' },
-	particle: { position: 'absolute', left: 0, width: 3, height: 3, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,.78)', shadowColor: '#fff', shadowOpacity: 0.7, shadowRadius: 3 },
-	tick: { position: 'absolute', top: 10, width: 4, height: 4, marginLeft: -2, borderRadius: 2, backgroundColor: 'rgba(255,255,255,.27)' },
+	particle: { position: 'absolute', left: 0, width: 3, height: 3, borderRadius: radius.pill, ...squircle, backgroundColor: 'rgba(255,255,255,.78)', shadowColor: '#fff', shadowOpacity: 0.7, shadowRadius: 3 },
+	tick: { position: 'absolute', top: 10, width: 4, height: 4, marginLeft: -2, borderRadius: radius.pill, ...squircle, backgroundColor: 'rgba(255,255,255,.27)' },
 	tickActive: { backgroundColor: 'rgba(255,255,255,.68)' },
-	burstRing: { position: 'absolute', top: -2, width: 36, height: 36, marginLeft: -18, borderRadius: 18, borderWidth: 2, shadowOpacity: 0.9, shadowRadius: 7 },
-	thumb: { position: 'absolute', top: 2, width: 28, height: 28, marginLeft: -14, borderRadius: 14, backgroundColor: '#fff', borderWidth: 0.5, borderColor: colors.borderStrong, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2 },
+	burstRing: { position: 'absolute', top: -2, width: 36, height: 36, marginLeft: -18, borderRadius: radius.pill, ...squircle, borderWidth: 2, shadowOpacity: 0.9, shadowRadius: 7 },
+	thumb: { position: 'absolute', top: 2, width: 28, height: 28, marginLeft: -14, borderRadius: radius.pill, ...squircle, backgroundColor: '#fff', borderWidth: 0.5, borderColor: colors.borderStrong, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2 },
 	thumbMaximum: { shadowOpacity: 0.8, shadowRadius: 10 },
 	scaleLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
-	scaleLabel: { color: colors.textDim, fontSize: 9.5 },
+	scaleLabel: { color: colors.textDim, fontSize: type.badge },
 });

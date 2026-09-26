@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -13,7 +13,11 @@ import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useKeyboardCoverage } from '../../src/hooks/useKeyboardVisible.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { Button } from '../../src/components/button.js';
+import { EmptyState } from '../../src/components/emptyState.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
@@ -295,23 +299,20 @@ export default function ScmScreen() {
 						editable={!committing}
 						multiline
 					/>
-					<Pressable
-						style={[styles.commitBtn, (!live || !wsId || !message.trim() || committing) && styles.commitBtnDisabled]}
+					<Button
+						variant="primary"
+						label={committing ? 'コミット中…' : 'コミット'}
 						onPress={() => { hapticImpact('medium'); void commit(); }}
-						disabled={!live || !wsId || !message.trim() || committing}
-					>
-						<Text style={styles.commitBtnText}>{committing ? 'コミット中…' : 'コミット'}</Text>
-					</Pressable>
+						disabled={!live || !wsId || !message.trim()}
+						loading={committing}
+					/>
 					{commitResult ? <Text style={styles.commitResult}>{commitResult}</Text> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 				</View>
 
-				<View style={styles.sectionRow}>
-					<Text style={styles.sectionTitle}>変更</Text>
-					<Text style={styles.sectionCount}>{status?.files.length ?? 0}</Text>
-				</View>
+				<SectionHeader title="変更" count={status?.files.length ?? 0} />
 				{loading && !status ? <ActivityIndicator style={styles.spinner} /> : null}
-				{status && status.files.length === 0 ? <Text style={styles.dim}>変更はありません</Text> : null}
+				{status && status.files.length === 0 ? <EmptyState title="変更はありません" /> : null}
 				{(status?.files ?? []).length > 0 ? <View style={styles.card}>
 				{(status?.files ?? []).map(f => {
 					const staged = f.x !== ' ' && f.x !== '?';
@@ -335,16 +336,13 @@ export default function ScmScreen() {
 				})}
 				</View> : null}
 
-				{/* 見出しは必ず `sectionRow` に入れる。素の `<Text>` を置くと下の余白を誰も
+				{/* 見出しは必ず `SectionHeader` で出す。素の `<Text>` を置くと下の余白を誰も
 				    持たず（札は marginBottom しか持たない）、見出しの文字と札の上端が接する。 */}
 				{log !== undefined || logError !== undefined ? (
-					<View style={styles.sectionRow}>
-						<Text style={styles.sectionTitle}>最近のコミット</Text>
-						<Text style={styles.sectionCount}>{log?.commits.length ?? 0}</Text>
-					</View>
+					<SectionHeader title="最近のコミット" count={log?.commits.length ?? 0} />
 				) : null}
 				{logError ? <Text style={styles.error}>{logError}</Text> : null}
-				{log && log.commits.length === 0 ? <Text style={styles.dim}>コミットはありません</Text> : null}
+				{log && log.commits.length === 0 ? <EmptyState title="コミットはありません" /> : null}
 				{(log?.commits ?? []).length > 0 ? <View style={styles.card}>
 				{(log?.commits ?? []).map(c => {
 					const expanded = expandedHash === c.hash;
@@ -380,9 +378,14 @@ export default function ScmScreen() {
 				})}
 				</View> : null}
 				{log?.hasMore ? (
-					<Pressable style={[styles.loadMoreBtn, (!live || loading || loadingMore) && styles.commitBtnDisabled]} onPress={() => { hapticImpact('light'); void loadMore(); }} disabled={!live || loading || loadingMore}>
-						<Text style={styles.loadMoreText}>{loadingMore ? '読み込み中…' : 'さらに読み込む'}</Text>
-					</Pressable>
+					<Button
+						variant="secondary"
+						label={loadingMore ? '読み込み中…' : 'さらに読み込む'}
+						onPress={() => { hapticImpact('light'); void loadMore(); }}
+						disabled={!live || loading}
+						loading={loadingMore}
+						style={styles.loadMoreBtn}
+					/>
 				) : null}
 				<View style={{ height: tabBarSpacer }} />
 			</ScrollView>
@@ -402,35 +405,29 @@ const styles = StyleSheet.create({
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, marginBottom: 8 },
 	repoCard: { gap: 8, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 10 },
 	repoRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-	repoName: { color: colors.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
-	repoBranch: { color: colors.accent, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flexShrink: 1 },
-	repoCount: { color: colors.textDim, fontSize: 11, marginLeft: 'auto' },
-	commitInput: { backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top' },
-	commitBtn: { backgroundColor: colors.accent2, borderRadius: radius.control, ...squircle, paddingVertical: 12, alignItems: 'center' },
+	repoName: { color: colors.text, fontSize: type.body, fontWeight: '600', flexShrink: 1 },
+	repoBranch: { color: colors.accent, fontSize: type.meta, fontFamily: monoFamily, flexShrink: 1 },
+	repoCount: { color: colors.textDim, fontSize: type.caption, marginLeft: 'auto' },
+	commitInput: { backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: type.body, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top' },
+	// 押せない行（未接続）の薄め方。Button の disabled と同じ値。
 	commitBtnDisabled: { opacity: 0.45 },
-	commitBtnText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
-	commitResult: { color: colors.green, fontSize: 11, marginTop: 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	error: { color: colors.red, fontSize: 12, marginTop: 8 },
-	// 見出しの上下の余白はここ1箇所に持たせる（画面ごとに数字を発明しない）。
-	sectionRow: { flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 8 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, flex: 1 },
-	sectionCount: { color: colors.textDim, fontSize: 12 },
+	commitResult: { color: colors.green, fontSize: type.caption, marginTop: 8, fontFamily: monoFamily },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8 },
 	spinner: { marginTop: 16 },
-	dim: { color: colors.textDim, fontSize: 12, marginTop: 8 },
+	dim: { color: colors.textDim, fontSize: type.meta, marginTop: 8 },
 	fileRowWrap: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	fileRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
 	fileExtBtn: { paddingHorizontal: 10, paddingVertical: 10 },
-	filePath: { flex: 1, color: colors.text, fontSize: 13 },
-	fileLetter: { width: 18, textAlign: 'center', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, fontWeight: '700', color: colors.textDim },
+	filePath: { flex: 1, color: colors.text, fontSize: type.body },
+	fileLetter: { width: 18, textAlign: 'center', fontFamily: monoFamily, fontSize: type.meta, fontWeight: '700', color: colors.textDim },
 	mod: { color: colors.mod },
 	add: { color: colors.add },
 	del: { color: colors.del },
 	commitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
 	commitDetail: { paddingLeft: 20, paddingBottom: 6, gap: 3 },
 	commitFileRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-	commitFilePath: { flex: 1, color: colors.textDim, fontSize: 12 },
-	loadMoreBtn: { alignItems: 'center', paddingVertical: 10, marginTop: 4, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-	loadMoreText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
-	commitSubject: { flex: 1, color: colors.text, fontSize: 13 },
-	commitWhen: { color: colors.textDim, fontSize: 11 },
+	commitFilePath: { flex: 1, color: colors.textDim, fontSize: type.meta },
+	loadMoreBtn: { marginTop: 4 },
+	commitSubject: { flex: 1, color: colors.text, fontSize: type.body },
+	commitWhen: { color: colors.textDim, fontSize: type.caption },
 });

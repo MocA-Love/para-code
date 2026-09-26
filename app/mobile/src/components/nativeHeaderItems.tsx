@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack, useIsFocused, useNavigation } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, mono, radius } from '../theme.js';
+import { alpha, colors, radius, type, withAlpha } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { useParaHeaderStore, type ParaHeaderIcon } from '../paraHeader.js';
 
 /**
@@ -50,7 +51,7 @@ export function WsHeaderIsland({ name, sub, subColor, color, avatarText, avatarI
 			accessibilityRole={onPress === undefined ? undefined : 'button'}
 			accessibilityLabel={label}
 		>
-			<View style={[styles.avatar, { backgroundColor: withAlpha(color) }]}>
+			<View style={[styles.avatar, { backgroundColor: withAlpha(color, alpha.line) ?? colors.surface2 }]}>
 				{avatarIcon !== undefined
 					? <Ionicons name={avatarIcon} size={14} color={color} />
 					: <Text style={[styles.avatarText, { color }]}>{avatarText ?? '—'}</Text>}
@@ -235,19 +236,15 @@ export function NativeScreenHeader({ title, sub, subColor, chevron = false, labe
  */
 export const NATIVE_BAR_HEIGHT = 59;
 
-/** アバターの地色。色の指定は `#rrggbb` 前提（テーマの色はすべてこの形）。 */
-function withAlpha(color: string): string {
-	return color.length === 7 ? `${color}47` : colors.surface2;
-}
-
 const styles = StyleSheet.create({
 	// 高さは決めない（バーが決める）。左の余白も付けない——バー項目の位置はOSが決める。
 	island: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 6 },
 	avatar: { width: 26, height: 26, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
-	avatarText: { fontSize: 12, fontWeight: '800', fontFamily: mono.default },
+	// 26ptの丸の中の頭文字なので、文字サイズの段ではなく丸の大きさから決めている。
+	avatarText: { fontSize: 12, fontWeight: '800', fontFamily: monoFamily },
 	islandText: { flexShrink: 1, minWidth: 0, maxWidth: 150 },
-	islandName: { color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
-	islandSub: { color: colors.textDim, fontSize: 10, marginTop: 1 },
+	islandName: { color: colors.text, fontSize: type.body, fontWeight: '700', letterSpacing: -0.2 },
+	islandSub: { color: colors.textDim, fontSize: type.badge, marginTop: 1 },
 	// 他のスペースに応答待ちが居る合図。器の縁に載るので、バーの地色で縁取る。
 	badge: {
 		position: 'absolute', top: -2, left: -2, width: 9, height: 9, borderRadius: radius.pill,
@@ -261,8 +258,8 @@ const styles = StyleSheet.create({
 	// 両側60ptを avoid した残りに収める。
 	title: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, maxWidth: 240 },
 	titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: '100%' },
-	titleText: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1, minWidth: 0 },
-	titleSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1, maxWidth: '100%' },
+	titleText: { color: colors.text, fontSize: type.title, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1, minWidth: 0 },
+	titleSub: { color: colors.textDim, fontSize: type.badge, marginTop: 1, maxWidth: '100%' },
 
 	actions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
 	actionHit: { width: 32, height: 32, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },

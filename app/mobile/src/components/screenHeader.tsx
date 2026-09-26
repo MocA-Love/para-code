@@ -4,7 +4,7 @@ import { ReactNode, useCallback, useEffect, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, radius } from '../theme.js';
+import { colors, radius, type } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 
 /** ヘッダーの丸ボタン。44ptはHIGの最小タップ領域そのもの。 */
@@ -145,6 +145,6 @@ const styles = StyleSheet.create({
 	// 0件になると、右上の×が消えた。実機で確認済み）。
 	rightGroup: { flexDirection: 'row', alignItems: 'center', gap: 2, height: 36 },
 	circleHit: { width: 32, height: 32, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
-	title: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2 },
-	subtitle: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
+	title: { color: colors.text, fontSize: type.title, fontWeight: '700', letterSpacing: -0.2 },
+	subtitle: { color: colors.textDim, fontSize: type.badge, marginTop: 1 },
 });

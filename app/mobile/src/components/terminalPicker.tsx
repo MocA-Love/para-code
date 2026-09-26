@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as React from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
 import { GlassSurface } from './glassSurface.js';
-import { colors, mono, radius, squircle } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import {
 	COMPACT_TERMINAL_MENU_WIDTH,
@@ -203,18 +204,19 @@ const styles = StyleSheet.create({
 	hit: { height: 32 },
 	// ネイティブのボタンは最前面に居るので、こちらは見た目だけ（タッチは通さない）。
 	body: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 32 },
-	dot: { width: 7, height: 7, borderRadius: 4 },
+	dot: { width: 7, height: 7, borderRadius: radius.pill, ...squircle },
 	dotWaiting: { backgroundColor: colors.red },
 	dotWorking: { backgroundColor: colors.green },
-	index: { color: colors.textDim, fontSize: 11, fontFamily: mono.ios },
+	index: { color: colors.textDim, fontSize: type.caption, fontFamily: monoFamily },
 	// 上限で止める。長い端末名でバーの右側が押し出されると、左の島が削られる。
-	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
+	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: type.body, fontWeight: '700', letterSpacing: -0.2 },
 	fallbackTabContent: { gap: 7, alignItems: 'center' },
 	fallbackTabChip: { height: 44, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
-	fallbackTabChipActive: { backgroundColor: 'rgba(9,175,217,0.30)', borderWidth: 1, borderColor: 'rgba(9,175,217,0.5)' },
+	fallbackTabChipActive: { backgroundColor: tint(colors.accent, alpha.line), borderWidth: 1, borderColor: tint(colors.accent, alpha.strong) },
 	fallbackTabHit: { flex: 1, minWidth: 44, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
-	fallbackTabText: { color: colors.text, fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	fallbackTabTextActive: { color: '#bfeeff', fontWeight: '700' },
-	fallbackDotWaiting: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
-	fallbackDotWorking: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
+	fallbackTabText: { color: colors.text, fontSize: type.meta, fontFamily: monoFamily },
+	// accent の地の上に accent の文字を載せると読めないので、選択中は本文色の太字にする。
+	fallbackTabTextActive: { color: colors.text, fontWeight: '700' },
+	fallbackDotWaiting: { width: 7, height: 7, borderRadius: radius.pill, ...squircle, backgroundColor: colors.red },
+	fallbackDotWorking: { width: 7, height: 7, borderRadius: radius.pill, ...squircle, backgroundColor: colors.green },
 });
