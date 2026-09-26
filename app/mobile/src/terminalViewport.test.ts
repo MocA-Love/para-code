@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from 'vitest';
 import {
+	TERMINAL_FOLLOW_MIN_FONT_SIZE,
 	TERMINAL_FONT_SIZE_DEFAULT,
 	TERMINAL_VIEWPORT_MIN_COLS,
 	clampTerminalFontSize,
@@ -31,6 +32,10 @@ describe('terminalGridFor', () => {
 
 	test('極端に狭くても下限で止める（PTYを壊さない）', () => {
 		expect(terminalGridFor(20, 20, 20, MENLO)).toEqual({ cols: TERMINAL_VIEWPORT_MIN_COLS, rows: 5 });
+	});
+
+	test('追従モードの下限（7pt）なら、iPhoneでPCの80桁の端末が横スクロールせずに入る', () => {
+		expect(terminalGridFor(IPHONE.width, IPHONE.height, TERMINAL_FOLLOW_MIN_FONT_SIZE, MENLO)?.cols).toBeGreaterThanOrEqual(80);
 	});
 
 	test('寸法が測れていないうちは申告しない', () => {

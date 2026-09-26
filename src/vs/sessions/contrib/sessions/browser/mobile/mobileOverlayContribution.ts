@@ -8,6 +8,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { registerAction2, Action2 } from '../../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ILanguageService } from '../../../../../editor/common/languages/language.js';
+// PARA-PATCH: IInstantiationService is needed to build the fork-owned mobile Changes toolbar context.
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -50,6 +51,7 @@ class MobileOpenDiffViewAction extends Action2 {
 		const data: IMobileDiffViewData = isMobileDiffViewData(arg)
 			? arg
 			: { diff: arg };
+		// PARA-PATCH: build the fork-owned Changes toolbar context only when a session resource was passed in.
 		const changesToolbarContext = data.sessionResource === undefined
 			? undefined
 			: {
@@ -89,6 +91,7 @@ class MobileOpenChangesViewAction extends Action2 {
 		const languageService = accessor.get(ILanguageService);
 		const notificationService = accessor.get(INotificationService);
 		const sessionsService = accessor.get(ISessionsService);
+		// PARA-PATCH: needed for the fork-owned mobile Changes toolbar.
 		const instantiationService = accessor.get(IInstantiationService);
 
 		const session = sessionsService.activeSession.get();
@@ -121,6 +124,7 @@ class MobileOpenChangesViewAction extends Action2 {
 			textFileService,
 			fileService,
 			languageService,
+			// PARA-PATCH: hand the fork-owned Changes toolbar context to the multi-diff view.
 			{ instantiationService, sessionResource: session!.resource },
 		);
 		const view = activeMultiDiffView.value;

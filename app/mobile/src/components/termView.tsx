@@ -19,7 +19,9 @@
  * - 寸法の決め方は2通り:
  *   - **追従モード（既定）**: cols/rows は PC 側ターミナルと同じ値に resize し、フォントサイズを
  *     画面幅に合わせて自動計算する（TUIはPCの端末寸法前提でレイアウトするため寸法一致が必須）。
- *     PCが150桁だとフォントが下限の4ptまで潰れる。
+ *     ただし `TERMINAL_FOLLOW_MIN_FONT_SIZE`（7pt 固定。理由は terminalViewport.ts）より小さくはしない。
+ *     7pt でも入りきらないときだけ横スクロールにする。入りきらない分の見せ方は `fit()` の説明を読むこと。
+ *     設定「文字サイズ」は追従モードでは使わない（固定モード専用）。
  *   - **固定モード（設定「スマホの幅に合わせる」オン）**: フォントサイズを先に決め、そこから
  *     何桁×何行入るかを逆算する。求めた寸法は `onGridChange` で上へ渡され、PCへ申告されて
  *     PTY自体がその寸法へ寄る。以後 PC から届く cols/rows は申告した値と一致するので、
@@ -34,7 +36,8 @@ import { StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 import xtermBundle from '../../assets/xterm/xtermBundle.json';
 import type { TermStreamEvent } from '../store.js';
-import { terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
+import { TERMINAL_FOLLOW_MIN_FONT_SIZE, terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
+import { colors } from '../theme.js';
 
 interface TermViewProps {
 	/** レガシーモード（旧PC）用: これまでに受信した出力バッファ全体（差分書き込みする）。 */
@@ -65,6 +68,7 @@ type TermViewMessage =
 	| { t: 'metrics'; width: number; height: number; charWidth100: number; lineHeight100: number }
 	| { t: 'scroll'; dir: 'up' | 'down'; lines: number };
 
+/** WebView に流す HTML/CSS 用の地色。RN 側のスタイルは `colors.terminalBg`（同じ値）を使う。 */
 const TERM_BG = '#1e1e1e';
 /**
  * 1回のスワイプで送るスクロール行数の上限。速くなぞったときにPCへ大量のキーを
@@ -84,10 +88,18 @@ function buildHtml(): string {
 	   （代替バッファのスワイプは touchmove ハンドラが専有する設計なので、ページ自体が
 	   動く余地を無くしておく）。 */
 	html, body { margin: 0; padding: 0; background: ${TERM_BG}; height: 100%; overflow: hidden; }
-	#wrap { padding: 4px; height: 100%; box-sizing: border-box; }
+	#wrap { padding: 4px; height: 100%; box-sizing: border-box; overflow: hidden; }
+	/* 文字を下限より小さくできず、端末が表示領域に入りきらないときの見せ方（fit() の説明）。
+	   横: #wrap だけを横スクロールにする。常時 auto にしないのは、上の body と同じく
+	   端数ぶんのはみ出しで横へ動いてしまうのを避けるため（本当にはみ出すときだけクラスを付ける）。
+	   横スクロール中はカーソルの列が見える位置へ寄せる（followCursor）。
+	   縦: 下端（プロンプト行）に揃えて上側を切る。 */
+	body.pan-x #wrap { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+	body.clip-top #wrap { display: flex; flex-direction: column; justify-content: flex-end; }
+	body.clip-top #term { flex: none; }
 	.xterm .xterm-viewport { background-color: ${TERM_BG} !important; }
 </style>
-</head><body><div id="wrap"></div>
+</head><body><div id="wrap"><div id="term"></div></div>
 <script>${xtermBundle.js}</script>
 <script>${xtermBundle.unicode11Js}</script>
 <script>
@@ -107,7 +119,9 @@ function buildHtml(): string {
 		term.loadAddon(new Unicode11Addon.Unicode11Addon());
 		term.unicode.activeVersion = '11';
 	} catch (e) { /* 古い/破損バンドル: Unicode 6 幅のまま続行 */ }
-	term.open(document.getElementById('wrap'));
+	var wrapEl = document.getElementById('wrap');
+	var termEl = document.getElementById('term');
+	term.open(termEl);
 	var currentCols = 80;
 	var currentRows = 24;
 	// RN→WebView の inject 連番。欠落（=injectの取りこぼし）を検出したら desync を
@@ -128,6 +142,14 @@ function buildHtml(): string {
 	}
 	// 固定モードの文字サイズ（pt）。0 なら追従モード（従来どおりフォントを縮めて収める）。
 	var pinnedFontSize = 0;
+	// 追従モードで縮める下限（pt）。固定値（terminalViewport.ts の TERMINAL_FOLLOW_MIN_FONT_SIZE）。
+	var followFloor = ${TERMINAL_FOLLOW_MIN_FONT_SIZE};
+	// 横スクロール中か（applyOverflow が決める）と、そのときの1桁ぶんの幅（px）。
+	var panningX = false;
+	var cellWidthPx = 0;
+	// 利用者が横へ動かしている最中・直後は、カーソルへ寄せない（見たい所から引き戻さない）。
+	var userPanning = false;
+	var userPanUntil = 0;
 	// フォントの実寸を測る（100px時の1文字送りと行送り）。フォント・OS・端末で変わるため、
 	// 定数ではなく毎回測る。
 	function measure() {
@@ -174,32 +196,93 @@ function buildHtml(): string {
 	// 幅だけで決めると、キーボード表示等でWebViewの高さが縮んでも行数×行高は
 	// 変わらないため、上部が画面外に押し出されてしまう。幅ベース・高さベース
 	// それぞれで算出したフォントサイズの小さい方を採用し、両軸に収める。
+	//
+	// **ただし下限（7pt）より小さくはしない。** 以前は下限が4ptで、PCが150桁だとiPhoneでは読めない
+	// 大きさまで潰れた。下限に当たって入りきらない分は、次のように見せる（applyOverflow）:
+	//  - 横: 端末を横スクロールさせ、カーソルの列が見える位置へ寄せる（followCursor）。
+	//    **折り返し（桁数をこちらで減らす）はしない。** PCのPTYは
+	//    PCの桁数前提でカーソル位置を指定して描くので、xterm の桁数を変えると claude / codex の
+	//    TUI も、シェルのプロンプト行の書き換えも崩れる（寸法一致が必須なのは冒頭の説明のとおり）
+	//  - 縦: 下端（プロンプト行）に揃えて上側を切る。RN側でキーボードを出したときと同じ見せ方。
+	//    縦スクロールにしないのは、通常バッファでは xterm 自身のスクロールバック、代替バッファでは
+	//    PCへのスクロール送出（下の touchmove）が同じ縦の指の動きを使っているため
+	// どちらも起きないようにするには、PC側の桁数をこの画面に合わせる（設定「スマホの幅に合わせる」）。
 	function fit(cols, rows) {
 		var m = measure();
 		var charWidthAt100 = m.charWidth100;
 		var lineHeightAt100 = m.lineHeight100;
 		var availWidth = document.documentElement.clientWidth - 10;
+		var availHeight = document.documentElement.clientHeight - 10;
 		var fontSizeByWidth = Math.floor(100 * availWidth / (charWidthAt100 * cols));
 		var fontSize = fontSizeByWidth;
 		if (rows > 0) {
-			var availHeight = document.documentElement.clientHeight - 10;
 			var fontSizeByHeight = Math.floor(100 * availHeight / (lineHeightAt100 * rows));
 			fontSize = Math.min(fontSizeByWidth, fontSizeByHeight);
 		}
-		// 固定モードでは選んだ文字サイズを**上限**として扱う。PCが寸法を合わせてくれていれば
-		// 計算値は必ず選んだサイズ以上になる（その寸法に収まるよう桁数を決めたため）ので、
-		// そのまま選んだサイズが使われる。PCが古くて寸法を合わせられない場合だけ計算値が
-		// 下回り、従来どおり縮めて収める側へ自動で落ちる（画面外へはみ出させない）。
+		var size;
 		if (pinnedFontSize > 0) {
-			term.options.fontSize = Math.max(4, Math.min(pinnedFontSize, fontSize));
+			// 固定モードでは選んだ文字サイズのまま描く。PCが寸法を合わせてくれていれば計算値は
+			// 必ず選んだサイズ以上になる（その寸法に収まるよう桁数を決めたため）。PCが古くて
+			// 寸法を合わせられない場合は、以前は縮めて収めていたが、いまは追従モードと同じく
+			// 縮めずにはみ出し側の見せ方へ任せる（選んだ大きさより小さくすると読めなくなるため）。
+			size = pinnedFontSize;
+		} else {
+			// 上限は画面の広さで変える。iPhone幅（<700px）はこれまで通り16ptで頭打ちにし、
+			// iPadの広い幅では上限に張り付いて右側に黒帯が残らないところまで許す
+			// （PC側のcols/rowsは変えられないので、埋められるのは文字を大きくする方向だけ）。
+			var maxFontSize = availWidth >= 700 ? 26 : 16;
+			size = Math.max(followFloor, Math.min(maxFontSize, fontSize));
+		}
+		term.options.fontSize = size;
+		applyOverflow(cols, rows, size, m, availWidth, availHeight);
+	}
+	// 下限に当たって入りきらないときだけ、横スクロール／上側の切り落としを有効にする。
+	// 寸法は描画を待たずに計算で出す（xterm の再描画は非同期なので DOM を測ると1拍遅れる）。
+	// 端数ぶんのはみ出し（2px 以内）では何もしない。
+	function applyOverflow(cols, rows, size, m, availWidth, availHeight) {
+		var needWidth = Math.ceil(cols * m.charWidth100 / 100 * size);
+		var panX = needWidth > availWidth + 2;
+		var clipTop = rows > 0 && rows * m.lineHeight100 / 100 * size > availHeight + 2;
+		document.body.classList.toggle('pan-x', panX);
+		document.body.classList.toggle('clip-top', clipTop);
+		// 横にはみ出すときは器の幅を端末の幅まで広げ、#wrap の横スクロールで見せる。
+		// 実際のセル幅と数px違っても、はみ出た子孫もスクロール範囲に入るので欠けない。
+		termEl.style.width = panX ? (needWidth + 2) + 'px' : '';
+		panningX = panX;
+		cellWidthPx = m.charWidth100 / 100 * size;
+		if (!panX) {
+			wrapEl.scrollLeft = 0;
+		} else {
+			followCursor();
+		}
+	}
+	// 横スクロール中は、カーソルの列が見えていなければ見える位置まで寄せる。左右に数桁の余白を残す。
+	// 既定の表示位置（左端）のままだと、入力中の行末やTUIの入力欄が画面の外に隠れる。
+	var FOLLOW_MARGIN_COLS = 4;
+	function followCursor() {
+		if (!panningX || cellWidthPx <= 0 || userPanning || Date.now() < userPanUntil) {
 			return;
 		}
-		// 上限は画面の広さで変える。iPhone幅（<700px）はこれまで通り16ptで頭打ちにし、
-		// iPadの広い幅では上限に張り付いて右側に黒帯が残らないところまで許す
-		// （PC側のcols/rowsは変えられないので、埋められるのは文字を大きくする方向だけ）。
-		var maxFontSize = availWidth >= 700 ? 26 : 16;
-		term.options.fontSize = Math.max(4, Math.min(maxFontSize, fontSize));
+		// #wrap の padding（4px）ぶんを足した、カーソルの左端・右端（#wrap の中の座標）。
+		var left = 4 + term.buffer.active.cursorX * cellWidthPx;
+		var right = left + cellWidthPx;
+		var margin = FOLLOW_MARGIN_COLS * cellWidthPx;
+		var viewLeft = wrapEl.scrollLeft;
+		var viewWidth = wrapEl.clientWidth;
+		if (left - margin < viewLeft) {
+			wrapEl.scrollLeft = Math.max(0, left - margin);
+		} else if (right + margin > viewLeft + viewWidth) {
+			wrapEl.scrollLeft = right + margin - viewWidth;
+		}
 	}
+	wrapEl.addEventListener('touchstart', function () { userPanning = true; }, { passive: true });
+	function endUserPan() {
+		userPanning = false;
+		// 指を離したあとも慣性で動き、見たい所を読む時間も要る。しばらくは寄せない。
+		userPanUntil = Date.now() + 3000;
+	}
+	wrapEl.addEventListener('touchend', endUserPan, { passive: true });
+	wrapEl.addEventListener('touchcancel', endUserPan, { passive: true });
 	window.__para = {
 		resize: function (cols, rows) {
 			currentCols = cols;
@@ -232,7 +315,7 @@ function buildHtml(): string {
 			if (!checkSeq(n)) {
 				return;
 			}
-			term.write(data, function () { term.scrollToBottom(); });
+			term.write(data, function () { term.scrollToBottom(); followCursor(); });
 		},
 		// snapshot: バッファ全体の置き換え。reset→unicode→resize→write を原子的に行い、
 		// inject 連番もここで張り直す（desync からの復帰点でもある）。
@@ -245,13 +328,18 @@ function buildHtml(): string {
 				}
 			} catch (e) { /* 幅版の切替失敗は表示継続を優先 */ }
 			term.reset();
+			// 画面の丸ごと置き換え（ターミナルへ付け直したとき）。横の位置は左端から始め直し、
+			// 書き終えたらカーソルへ寄せる。ターミナルの切り替えは TermView ごと作り直す（key）ので
+			// そちらも左端から始まる。
+			wrapEl.scrollLeft = 0;
+			userPanUntil = 0;
 			if (cols > 0 && rows > 0 && (cols !== term.cols || rows !== term.rows)) {
 				currentCols = cols;
 				currentRows = rows;
 				fit(cols, rows);
 				term.resize(cols, rows);
 			}
-			term.write(data, function () { term.scrollToBottom(); });
+			term.write(data, function () { term.scrollToBottom(); followCursor(); });
 		},
 		reset: function () { term.reset(); },
 	};
@@ -567,5 +655,5 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 }
 
 const styles = StyleSheet.create({
-	web: { flex: 1, backgroundColor: TERM_BG },
+	web: { flex: 1, backgroundColor: colors.terminalBg },
 });

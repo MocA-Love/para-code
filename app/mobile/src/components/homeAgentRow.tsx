@@ -17,9 +17,27 @@
 
 import { memo, useMemo } from 'react';
 import { Pressable, type GestureResponderEvent, type View } from 'react-native';
-import { AgentBadge, AgentRowContent, agentRowStyles, type AgentRowData } from './agentRow.js';
+import { AgentBadge, AgentRowContent, AgentRowMoreGlyph, agentRowStyles, type AgentRowData } from './agentRow.js';
 import { SwipeRow, swipeActionColors } from './swipeRow.js';
+import { BADGE_HEIGHT } from './badge.js';
+import { HIT_SIZE } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
+
+/** 状態バッジ（見た目 BADGE_HEIGHT）を縦44ptまで押せるようにする余白。 */
+const BADGE_HIT_SLOP = { top: (HIT_SIZE - BADGE_HEIGHT) / 2, bottom: (HIT_SIZE - BADGE_HEIGHT) / 2, left: 8, right: 4 };
+/** バッジと ⋯ の見た目の隙間（行の gap 11 − ⋯ の置き場所の marginLeft 4。agentRow.tsx の agentRowStyles）。 */
+const BADGE_TO_MORE_GAP = 7;
+/**
+ * 見た目24ptの ⋯ を押しやすくする余白。上下・右は44ptまで広げる。左は隣のバッジ（レビュー行では
+ * 「確認済みにする」を押せる）の当たり判定と重ならないところで止める。重なると、バッジの右端を
+ * 押したつもりで操作メニューが開く（重なった所はどちらが拾うか見た目から分からない）。
+ */
+const MORE_HIT_SLOP = {
+	top: (HIT_SIZE - 24) / 2,
+	bottom: (HIT_SIZE - 24) / 2,
+	right: (HIT_SIZE - 24) / 2,
+	left: Math.max(0, BADGE_TO_MORE_GAP - BADGE_HIT_SLOP.right),
+};
 
 /**
  * 行から呼ぶ操作。**1つのオブジェクトにまとめて呼び出し側で useMemo する**こと
@@ -29,6 +47,7 @@ export interface HomeAgentRowHandlers {
 	registerRef: (terminalKey: string, node: View | null) => void;
 	/** wsId が undefined の行は開けない（所属ワークスペースを解決できていない）。 */
 	onOpen: (wsId: string | undefined, terminalKey: string) => void;
+	/** 行の長押しと、右端の ⋯ の両方から呼ぶ（同じ操作メニューを開く）。 */
 	onLongPress: (terminalKey: string, title: string, pinned: boolean, rowData: AgentRowData, anchor: { x: number; y: number }) => void;
 	onStatusPress: (terminalKey: string, anchor: { x: number; y: number }) => void;
 	onAck: (terminalKey: string) => void;
@@ -90,7 +109,7 @@ export const HomeAgentRow = memo(function HomeAgentRow({
 		// レビューのみタップで「確認済みにする」ポップオーバーを開ける
 		// （応答待ち/質問は回答して解消するもの、実行中/アイドルは既読の概念が無い）
 		<Pressable
-			hitSlop={8}
+			hitSlop={BADGE_HIT_SLOP}
 			onPress={(event: GestureResponderEvent) => {
 				hapticSelection();
 				handlers.onStatusPress(terminalKey, { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY });
@@ -100,6 +119,21 @@ export const HomeAgentRow = memo(function HomeAgentRow({
 			<AgentBadge status={agentStatus} />
 		</Pressable>
 	) : undefined;
+	// 右端の ⋯。長押しと同じメニューを開く（長押しやスワイプを知らなくても操作に辿り着けるように）。
+	const more = (
+		<Pressable
+			style={agentRowStyles.moreSlot}
+			hitSlop={MORE_HIT_SLOP}
+			onPress={(event: GestureResponderEvent) => {
+				hapticSelection();
+				handlers.onLongPress(terminalKey, title, pinned, rowData, { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY });
+			}}
+			accessibilityRole="button"
+			accessibilityLabel={`${title} の操作`}
+		>
+			<AgentRowMoreGlyph />
+		</Pressable>
+	);
 	return (
 		<SwipeRow direction="left" actions={actions} panLocked={locked === true}>
 			<Pressable
@@ -113,7 +147,7 @@ export const HomeAgentRow = memo(function HomeAgentRow({
 					handlers.onLongPress(terminalKey, title, pinned, rowData, { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY });
 				}}
 			>
-				<AgentRowContent data={rowData} badge={badge} />
+				<AgentRowContent data={rowData} badge={badge} more={more} />
 			</Pressable>
 		</SwipeRow>
 	);

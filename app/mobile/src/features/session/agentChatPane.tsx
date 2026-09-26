@@ -1,0 +1,302 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
+import { RotateCw } from 'lucide-react-native';
+import { useShallow } from 'zustand/react/shallow';
+import { shouldShowQuickReplies } from '../../agentConversationUx.js';
+import { useAppStore } from '../../appState.js';
+import { findLatestApprovalRequest } from '../../components/attentionStack.js';
+import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
+import { hapticImpact } from '../../haptics.js';
+import { useAgentActions } from '../../hooks/useAgentActions.js';
+import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
+import type { SpaceTerminal } from '../../navigationTargets.js';
+import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgentMessages.js';
+import { pinKeyForTerminal, type AgentChatMessage } from '../../store.js';
+import { colors, space, type } from '../../theme.js';
+import { EmptyState } from '../../ui/index.js';
+import { cardStyles } from './answerCardStyles.js';
+import { AskCard, AskGroupCard } from './askCard.js';
+import { ChatChromeRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
+import { ChatList, type ChatListHandle } from './chatList.js';
+import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
+import { PermissionCard } from './permissionCard.js';
+import { SessionComposer, type SessionComposerHandle } from './sessionComposer.js';
+
+/** 回答カードの高さの上限。選択肢が多いと会話が見えなくなるので、超えたぶんはカードの中でスクロールする。 */
+const PINNED_CARD_MAX_HEIGHT = 380;
+
+/**
+ * エージェントのタブの会話表示（Orca の MobileNativeChatView）。
+ *
+ * 会話は PC のターミナルで動いている Claude Code / Codex の記録を写したもの（agent チャネル）で、
+ * 入力・承認・質問への回答は既存の `useAgentActions`（term チャネル）で送る。送る内容・順序・
+ * 対象のターミナルは旧画面（legacy-screens/agent.tsx）と同じ。
+ *
+ * 並びは上から: 会話 → 回答カード（許可・質問。1枚だけ）→ クイック返信 → 作業中の行 → コンポーザー。
+ */
+export function AgentChatPane({ terminal, latest, active, bottomInset }: {
+	terminal: SpaceTerminal;
+	latest: string | undefined;
+	/** この画面が前面にあり、このタブを見ているか。 */
+	active: boolean;
+	/** 下端に空ける余白（キーボードが出ていないときのセーフエリア）。 */
+	bottomInset: number;
+}) {
+	const terminalKey = terminal.terminalKey;
+	const chat = useAppStore(s => s.agentChats.get(terminalKey));
+	const { attachAgent, detachAgent, refreshAgent, setViewingTerminalKey, fsUpload, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings } = useAppStore(useShallow(s => ({
+		attachAgent: s.attachAgent,
+		detachAgent: s.detachAgent,
+		refreshAgent: s.refreshAgent,
+		setViewingTerminalKey: s.setViewingTerminalKey,
+		fsUpload: s.fsUpload,
+		requestAgentModelCatalog: s.requestAgentModelCatalog,
+		requestAgentCommandCatalog: s.requestAgentCommandCatalog,
+		updateAgentSettings: s.updateAgentSettings,
+	})));
+	const actions = useAgentActions(terminalKey, chat?.agent);
+	const column = useContentColumnStyle();
+
+	useEffect(() => {
+		attachAgent(terminalKey);
+		return () => detachAgent(terminalKey);
+	}, [terminalKey, attachAgent, detachAgent]);
+	// 見ている間は同じエージェントの通知バナーを出さない（目の前に出ている内容を被せないため）。
+	useFocusEffect(useCallback(() => {
+		if (!active) {
+			return undefined;
+		}
+		setViewingTerminalKey(terminalKey);
+		return () => setViewingTerminalKey(undefined);
+	}, [active, terminalKey, setViewingTerminalKey]));
+
+	const chatReady = chat !== undefined && chat.none !== true;
+	const approval = chat?.interaction?.kind === 'approval' ? chat.interaction : undefined;
+	// interaction が届いていないのに許可待ちと言われている（実 ID が無く回答を送れない）。
+	const approvalUnavailable = chat?.interaction === undefined && terminal.agentStatus === 'permission';
+	const refreshing = chat?.stale === true;
+	const working = terminal.agentStatus === 'working' || chat?.live !== undefined;
+
+	// 送ったがまだ読まれていないメッセージの控え（作業中に送ったものだけ）。
+	const pendingMessages = usePendingAgentMessages(s => s.byTerminal[terminalKey]) ?? NO_PENDING_MESSAGES;
+	const [pendingOpen, setPendingOpen] = useState(false);
+	const messagesRef = useRef<readonly AgentChatMessage[] | undefined>(undefined);
+	messagesRef.current = chat?.messages;
+	const workingRef = useRef(false);
+	workingRef.current = working;
+	const chatEpoch = chat?.epoch;
+	const sendTextAction = actions.sendText;
+	const sendText = useCallback((text: string) => {
+		const afterRev = (messagesRef.current ?? []).reduce((max, message) => Math.max(max, message.rev), 0);
+		const wasWorking = workingRef.current;
+		return sendTextAction(text).then(result => {
+			if (wasWorking && result.status === 'accepted' && chatEpoch !== undefined) {
+				usePendingAgentMessages.getState().add(terminalKey, text, afterRev, chatEpoch);
+			}
+			return result;
+		});
+	}, [sendTextAction, terminalKey, chatEpoch]);
+	const messages = chat?.messages;
+	useEffect(() => {
+		usePendingAgentMessages.getState().reconcile(
+			terminalKey,
+			chatEpoch,
+			(messages ?? []).filter(message => message.role === 'user' && message.kind === 'text'),
+		);
+	}, [terminalKey, chatEpoch, messages]);
+	useEffect(() => {
+		if (pendingMessages.length === 0) {
+			setPendingOpen(false);
+		}
+	}, [pendingMessages.length]);
+
+	const rows = useMemo(() => buildChatRows(messages ?? []), [messages]);
+	const interactionKind = chat?.interaction?.kind;
+	const interactionId = chat?.interaction?.id;
+	const { pinned, listRows } = useMemo(
+		() => splitPinnedQuestion(rows, interactionKind !== undefined && interactionId !== undefined ? { kind: interactionKind, id: interactionId } : undefined, terminal.agentStatus),
+		[rows, interactionKind, interactionId, terminal.agentStatus],
+	);
+	const pinnedId = pinned !== undefined ? questionRowId(pinned) : undefined;
+	const questionWithoutRow = interactionKind === 'question' && pinned === undefined;
+
+	// 「その他（入力して回答）」でコンポーザーを回答入力に切り替える依頼。固定している質問のときだけ有効。
+	const composerRef = useRef<SessionComposerHandle>(null);
+	const listRef = useRef<ChatListHandle>(null);
+	const [answerRequest, setAnswerRequest] = useState<QuestionFreeTextRequest | undefined>(undefined);
+	const requestFreeText = useCallback((request: QuestionFreeTextRequest | undefined) => {
+		if (request === undefined) {
+			setAnswerRequest(undefined);
+			return;
+		}
+		setAnswerRequest({
+			...request,
+			submit: text => request.submit(text).then(result => {
+				if (result.status !== 'rejected') {
+					setAnswerRequest(current => current?.id === request.id ? undefined : current);
+				}
+				return result;
+			}),
+		});
+		composerRef.current?.focus();
+	}, []);
+	const cancelAnswer = useCallback(() => setAnswerRequest(undefined), []);
+	const activeAnswerRequest = answerRequest !== undefined && pinnedId !== undefined
+		&& (answerRequest.id === pinnedId || answerRequest.id.startsWith(`${pinnedId}:`))
+		? answerRequest
+		: undefined;
+	const insertQuickReply = useCallback((text: string) => composerRef.current?.insertText(text), []);
+	const scrollToLatest = useCallback(() => listRef.current?.scrollToLatest(), []);
+	const [allToolsOpen, setAllToolsOpen] = useState(false);
+
+	const card = approval !== undefined ? (
+		<PermissionCard
+			key={approval.id}
+			interactionId={approval.id}
+			onApprove={actions.approve}
+			title={approval.title}
+			detail={approval.detail ?? findLatestApprovalRequest(chat)}
+			choices={approval.choices}
+			refreshing={refreshing}
+		/>
+	) : approvalUnavailable ? (
+		<Notice title="PC で内容を確認してください" body="許可の内容を取得できていないため、ここからは回答できません" />
+	) : pinned?.type === 'question' ? (
+		<AskCard
+			key={pinnedId ?? pinned.m.rev}
+			message={pinned.m}
+			refreshing={refreshing}
+			onAnswer={actions.answerQuestion}
+			onMulti={actions.answerQuestionMulti}
+			onFreeText={actions.answerQuestionFreeText}
+			onRequestFreeText={requestFreeText}
+			freeTextActive={activeAnswerRequest !== undefined}
+		/>
+	) : pinned?.type === 'questionGroup' ? (
+		<AskGroupCard
+			key={pinned.key}
+			messages={pinned.msgs}
+			refreshing={refreshing}
+			onSubmit={actions.answerQuestionGroup}
+			onRequestFreeText={requestFreeText}
+			freeTextActiveId={activeAnswerRequest?.id}
+		/>
+	) : questionWithoutRow ? (
+		<Notice title="質問の内容を読み込んでいます…" body="表示されない場合は、ターミナル表示で回答してください" />
+	) : undefined;
+	const showQuickReplies = shouldShowQuickReplies({
+		agentStatus: terminal.agentStatus,
+		working,
+		hasPinnedCard: card !== undefined,
+		chatReady,
+		answering: activeAnswerRequest !== undefined,
+	});
+
+	return (
+		<View style={[styles.root, { paddingBottom: bottomInset }]}>
+			{chat === undefined ? (
+				<View style={styles.center}><ActivityIndicator color={colors.textDim} /><Text style={styles.loading}>会話を読み込んでいます…</Text></View>
+			) : chat.none === true ? (
+				<EmptyState
+					icon={RotateCw}
+					title="エージェントのセッションが見つかりません"
+					body={'このターミナルで claude / codex を起動する（または一度発言する）と表示されます。\n画面はターミナル表示で確認できます。'}
+					action={{ label: '再試行', onPress: () => { hapticImpact('light'); refreshAgent(terminalKey); } }}
+				/>
+			) : (
+				<ChatList
+					ref={listRef}
+					rows={listRows}
+					epoch={chat.epoch}
+					terminalKey={terminalKey}
+					latest={latest}
+					truncated={chat.truncated}
+					allToolsOpen={allToolsOpen}
+				/>
+			)}
+			<View style={[styles.bottom, column]}>
+				{card !== undefined ? (
+					<ScrollView style={styles.cardScroll} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+						{card}
+					</ScrollView>
+				) : null}
+				{showQuickReplies ? <QuickReplies onPick={insertQuickReply} /> : null}
+				{chatReady ? (
+					<ChatChromeRow
+						working={working}
+						live={chat?.live}
+						allToolsOpen={allToolsOpen}
+						onToggleTools={() => setAllToolsOpen(value => !value)}
+						pendingCount={pendingMessages.length}
+						onOpenPending={() => setPendingOpen(true)}
+					/>
+				) : null}
+				<SessionComposer
+					ref={composerRef}
+					draftKey={pinKeyForTerminal(terminal)}
+					terminalKey={terminalKey}
+					sessionEpoch={chat?.epoch}
+					agent={chatReady ? chat?.agent : undefined}
+					model={chat?.info?.model}
+					effort={chat?.info?.effort}
+					modelControl={chat?.modelControl}
+					commandCatalog={chat?.commandCatalog}
+					sendText={sendText}
+					updateClaudeSetting={actions.updateClaudeSetting}
+					onAfterSubmit={scrollToLatest}
+					fsUpload={fsUpload}
+					requestAgentModelCatalog={requestAgentModelCatalog}
+					requestAgentCommandCatalog={requestAgentCommandCatalog}
+					updateAgentSettings={updateAgentSettings}
+					answerTarget={activeAnswerRequest}
+					onCancelAnswer={cancelAnswer}
+					answerRefreshing={refreshing}
+				/>
+			</View>
+			<PendingMessagesDrawer visible={pendingOpen} messages={pendingMessages} onClose={() => setPendingOpen(false)} />
+		</View>
+	);
+}
+
+/** 回答カードの代わりに出す案内（内容がまだ届いていないとき）。 */
+function Notice({ title, body }: { title: string; body: string }) {
+	return (
+		<View style={cardStyles.card}>
+			<Text style={cardStyles.title}>{title}</Text>
+			<Text style={cardStyles.detail}>{body}</Text>
+		</View>
+	);
+}
+
+const styles = StyleSheet.create({
+	root: {
+		flex: 1,
+		minHeight: 0,
+		backgroundColor: colors.bg,
+	},
+	center: {
+		flex: 1,
+		alignItems: 'center',
+		justifyContent: 'center',
+		gap: space.sm,
+	},
+	loading: {
+		fontSize: type.meta,
+		color: colors.textMuted,
+	},
+	bottom: {
+		flexShrink: 1,
+	},
+	cardScroll: {
+		flexGrow: 0,
+		flexShrink: 1,
+		maxHeight: PINNED_CARD_MAX_HEIGHT,
+	},
+	cardContent: {
+		paddingHorizontal: space.lg,
+		paddingVertical: space.sm,
+	},
+});

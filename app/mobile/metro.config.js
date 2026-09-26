@@ -49,4 +49,13 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
 	return context.resolveRequest(context, moduleName, platform);
 };
 
+// PC 版と共有している依存なしのモジュールを、モバイルは `src/vs` から直接 import している
+// （例: fileViewer.tsx が読む Office ビューアの復旧状態機械 paradisOfficeRecovery.ts）。
+// Metro は watchFolders の外のファイルを解決しないため、その置き場所だけを加える。
+// `src/vs` 全体を加えると VS Code 本体の巨大なツリーを監視することになるので、ディレクトリ単位で足す。
+config.watchFolders = [
+	...(config.watchFolders ?? []),
+	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'fileViewers', 'common'),
+];
+
 module.exports = config;

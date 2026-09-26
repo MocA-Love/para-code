@@ -1,0 +1,515 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { DiffView } from '../../src/components/diffView.js';
+import { GestureDetector } from 'react-native-gesture-handler';
+import { useWsHeader, useOpenDrawerPan, useEffectiveWs } from '../../src/components/wsDrawer.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useKeyboardCoverage } from '../../src/hooks/useKeyboardVisible.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
+import { Button } from '../../src/components/button.js';
+import { EmptyState } from '../../src/components/emptyState.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { LoadingState, UnavailableNote } from '../../src/components/listStates.js';
+import { useWorkspaceUnavailableReason } from '../../src/hooks/useWorkspaceUnavailableReason.js';
+import { SCM_CHANGE_LEGEND, commitFileKind, scmChangeKind, scmChangeMeta } from '../../src/scmChangeKind.js';
+import { monoFamily } from '../../src/monoFont.js';
+import { HIT_SIZE, colors, radius, space, squircle, type } from '../../src/theme.js';
+import { formatRelativeTime, useNow } from '../../src/time.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
+import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
+
+function currentRendererTarget(wsId: string | undefined): string | undefined {
+	const state = useAppStore.getState();
+	if (wsId === undefined || state.connection !== 'online' || !state.pcOnline || !state.sessionProtocolReady) {
+		return undefined;
+	}
+	const selectedWorkspace = state.workspace?.workspaces.find(candidate => candidate.id === wsId);
+	const renderer = selectedWorkspace !== undefined ? state.workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	return renderer?.ready === true && state.workspace !== undefined
+		? `${state.workspace.desktopEpoch}:${renderer.windowId}:${renderer.rendererGeneration}`
+		: undefined;
+}
+
+/**
+ * ソース管理画面（モックアップ準拠）。リポジトリ/ブランチ表示、コミット入力、
+ * 変更一覧（タップでフルスクリーンのDiffビューア）、最近のコミット
+ * （タップで外部ブラウザのコミットページを開く）。
+ */
+export default function ScmScreen() {
+	const ws = useEffectiveWs();
+	const { scmStatus, scmCommit, scmLog, scmCommitFiles, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
+		scmStatus: s.scmStatus, scmCommit: s.scmCommit, scmLog: s.scmLog, scmCommitFiles: s.scmCommitFiles, connection: s.connection,
+		pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
+	})));
+	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
+	const selectedRenderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	const rendererTarget = selectedRenderer?.ready === true && workspace !== undefined
+		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
+		: undefined;
+	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
+	// 押せないときの理由（一覧を薄くするだけでなく文字で出す）。
+	const unavailable = useWorkspaceUnavailableReason(ws?.id);
+
+	const tabBarSpacer = useTabBarSpacer();
+	// 下端がキーボードに食われる高さ。terminal.tsx と同じく `KeyboardAvoidingView` は使わない
+	// （OS標準バーの下では keyboardVerticalOffset がずれる。固定90ptの頃はコミット欄が
+	// キーボードに潜った）。「下端から何pt隠れるか」を直接測って下余白にする。
+	const keyboardCover = useKeyboardCoverage();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
+	// 相対時刻表示（最近のコミットの「〇分前」）を画面を開いたままでも追従させる
+	const now = useNow();
+	const headerHeight = useParaHeaderHeight();
+	const openDrawerPan = useOpenDrawerPan();
+	const [status, setStatus] = useState<ScmStatusResult | undefined>();
+	const [log, setLog] = useState<ScmLogResult | undefined>();
+	const [logError, setLogError] = useState<string | undefined>();
+	const [loadingMore, setLoadingMore] = useState(false);
+	// 一覧（status）の読み込みの失敗。コミットの失敗（commitError）とは出す場所を分ける。
+	const [error, setError] = useState<string | undefined>();
+	const [commitError, setCommitError] = useState<string | undefined>();
+	// 変更一覧の記号（M / A / U …）の説明を開いているか。
+	const [legendOpen, setLegendOpen] = useState(false);
+	const [loading, setLoading] = useState(false);
+	const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean; letter: string } | undefined>();
+	const [message, setMessage] = useState('');
+	// コミット行タップで展開する「そのコミットの変更ファイル一覧」。hash単位でキャッシュする
+	const [expandedHash, setExpandedHash] = useState<string | undefined>();
+	const [commitFiles, setCommitFiles] = useState<Record<string, { files?: { status: string; path: string }[]; error?: string }>>({});
+	const [committing, setCommitting] = useState(false);
+	const [commitResult, setCommitResult] = useState<string | undefined>();
+
+	const wsId = ws?.id;
+	const contextGenRef = useRef(0);
+	const wsIdRef = useRef(wsId);
+	const rendererTargetRef = useRef(rendererTarget);
+	const refreshGenRef = useRef(0);
+	const refreshInFlightRef = useRef(false);
+	const commitGenRef = useRef(0);
+	if (wsIdRef.current !== wsId || rendererTargetRef.current !== rendererTarget) {
+		wsIdRef.current = wsId;
+		rendererTargetRef.current = rendererTarget;
+		contextGenRef.current++;
+		refreshGenRef.current++;
+		refreshInFlightRef.current = false;
+		commitGenRef.current++;
+	}
+
+	const refresh = useCallback(async () => {
+		if (!wsId || !live) {
+			return;
+		}
+		setError(undefined);
+		setLogError(undefined);
+		setLoading(true);
+		setLoadingMore(false);
+		refreshInFlightRef.current = true;
+		const contextGen = contextGenRef.current;
+		const refreshGen = ++refreshGenRef.current;
+		const requestTarget = rendererTarget;
+		try {
+			// 履歴取得の失敗はstatus表示を巻き添えにせず、履歴セクション側にエラーを出す
+			const [statusResult, logResult] = await Promise.allSettled([
+				scmStatus(wsId),
+				scmLog(wsId, { limit: 10 }),
+			]);
+			if (contextGenRef.current !== contextGen || refreshGenRef.current !== refreshGen || currentRendererTarget(wsId) !== requestTarget) {
+				return;
+			}
+			if (statusResult.status === 'rejected') {
+				throw statusResult.reason;
+			}
+			setStatus(statusResult.value);
+			if (logResult.status === 'fulfilled') {
+				setLog(logResult.value);
+			} else {
+				setLogError(String(logResult.reason instanceof Error ? logResult.reason.message : logResult.reason));
+			}
+		} catch (e) {
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				setError(String(e instanceof Error ? e.message : e));
+			}
+		} finally {
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				refreshInFlightRef.current = false;
+				setLoading(false);
+			}
+		}
+	}, [scmStatus, scmLog, wsId, live, rendererTarget]);
+
+	useEffect(() => {
+		setLoading(false);
+		setLoadingMore(false);
+		setStatus(undefined);
+		setLog(undefined);
+		setDiffTarget(undefined);
+		setExpandedHash(undefined);
+		setCommitFiles({});
+		setMessage('');
+		setCommitResult(undefined);
+		setCommitError(undefined);
+		setError(undefined);
+		setLogError(undefined);
+		setCommitting(false);
+	}, [wsId]);
+
+	useEffect(() => {
+		setCommitting(false);
+	}, [rendererTarget]);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	useEffect(() => {
+		if (!live) {
+			refreshGenRef.current++;
+			refreshInFlightRef.current = false;
+			setLoading(false);
+			setLoadingMore(false);
+		}
+	}, [live]);
+
+	const loadMore = async () => {
+		if (!live || !wsId || !log || loadingMore || refreshInFlightRef.current) {
+			return;
+		}
+		setLoadingMore(true);
+		const contextGen = contextGenRef.current;
+		const refreshGen = refreshGenRef.current;
+		const requestTarget = rendererTarget;
+		try {
+			const more = await scmLog(wsId, { limit: 10, skip: log.commits.length });
+			if (contextGenRef.current !== contextGen || refreshGenRef.current !== refreshGen || currentRendererTarget(wsId) !== requestTarget) {
+				return;
+			}
+			// ページ読み込みの合間に新規コミットが積まれるとウィンドウがずれて同じhashが再来しうるため去重する
+			const seen = new Set(log.commits.map(c => c.hash));
+			setLog({ ...log, commits: [...log.commits, ...more.commits.filter(c => !seen.has(c.hash))], hasMore: more.hasMore });
+		} catch (e) {
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				setLogError(String(e instanceof Error ? e.message : e));
+			}
+		} finally {
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				setLoadingMore(false);
+			}
+		}
+	};
+
+	const openCommit = (hash: string) => {
+		if (log?.webUrl) {
+			void Linking.openURL(`${log.webUrl}/commit/${hash}`);
+		}
+	};
+
+	/**
+	 * 変更ファイルを外部ブラウザ（GitHub形式のURL）で開く。openCommitと同様の制約を継承する。
+	 * branchはパス区切り(/)を含みうる（例: feature/foo）ためencodeせず、pathはセグメントごとに
+	 * encodeする（空白・日本語・#等を含むパスがURLとして壊れるのを防ぐ）。
+	 */
+	const openFileExternally = (path: string) => {
+		if (log?.webUrl) {
+			const branch = status?.branch ?? 'HEAD';
+			const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+			void Linking.openURL(`${log.webUrl}/blob/${branch}/${encodedPath}`);
+		}
+	};
+
+	/** コミット行のタップ: 変更ファイル一覧を展開/折りたたみ（初回のみ取得）。 */
+	const toggleCommit = (hash: string) => {
+		if (expandedHash === hash) {
+			setExpandedHash(undefined);
+			return;
+		}
+		if (!commitFiles[hash] && (!live || !wsId)) {
+			return;
+		}
+		setExpandedHash(hash);
+		if (!commitFiles[hash] && wsId) {
+			const contextGen = contextGenRef.current;
+			const requestTarget = rendererTarget;
+			scmCommitFiles(wsId, hash)
+				.then(r => { if (contextGenRef.current === contextGen && currentRendererTarget(wsId) === requestTarget) { setCommitFiles(prev => ({ ...prev, [hash]: { files: r.files } })); } })
+				.catch((e: unknown) => { if (contextGenRef.current === contextGen && currentRendererTarget(wsId) === requestTarget) { setCommitFiles(prev => ({ ...prev, [hash]: { error: String(e instanceof Error ? e.message : e) } })); } });
+		}
+	};
+
+	const commit = async () => {
+		if (!live || !wsId || !message.trim() || committing) {
+			return;
+		}
+		setCommitting(true);
+		setCommitResult(undefined);
+		setCommitError(undefined);
+		const contextGen = contextGenRef.current;
+		const commitGen = ++commitGenRef.current;
+		const requestTarget = rendererTarget;
+		try {
+			const result = await scmCommit(wsId, message.trim(), true);
+			if (contextGenRef.current !== contextGen || commitGenRef.current !== commitGen || currentRendererTarget(wsId) !== requestTarget) {
+				return;
+			}
+			setCommitResult(result.output);
+			setMessage('');
+			await refresh();
+		} catch (e) {
+			if (contextGenRef.current === contextGen && commitGenRef.current === commitGen && currentRendererTarget(wsId) === requestTarget) {
+				setCommitError(String(e instanceof Error ? e.message : e));
+			}
+		} finally {
+			if (contextGenRef.current === contextGen && commitGenRef.current === commitGen && currentRendererTarget(wsId) === requestTarget) {
+				setCommitting(false);
+			}
+		}
+	};
+
+	const actions = useMemo<ParaHeaderIcon[]>(() => [{
+		key: 'refresh',
+		icon: 'refresh-outline',
+		label: '変更を再取得',
+		color: loading ? colors.textDim : colors.text,
+		onPress: () => { hapticImpact('light'); void refresh(); },
+	}], [loading, refresh]);
+
+	useWsHeader({ actions });
+
+	return (
+		<ConnectionGate>
+		<GestureDetector gesture={openDrawerPan}>
+		<View style={[styles.screen, { paddingBottom: keyboardCover }]}>
+			<ScrollView
+				style={styles.list}
+				contentContainerStyle={[{ paddingTop: headerHeight }, column]}
+				refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void refresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
+			>
+				{/* コミットは「このリポジトリに対して行うこと」なので、リポジトリの札の中に
+				    入力欄とボタンまで収める。外に並べると、どのリポジトリへコミットするのかが
+				    ワークツリーを複数開いているときに読み取りづらい。 */}
+				<View style={styles.repoCard}>
+					<View style={styles.repoRow}>
+						<Ionicons name="git-branch-outline" size={14} color={colors.accent} />
+						<Text style={styles.repoName} numberOfLines={1}>{ws?.name ?? '—'}</Text>
+						<Text style={styles.repoBranch} numberOfLines={1}>{status?.branch ?? ws?.branch ?? '…'}</Text>
+						<Text style={styles.repoCount}>{status?.files.length ?? 0} 変更</Text>
+					</View>
+					<TextInput
+						style={styles.commitInput}
+						value={message}
+						onChangeText={setMessage}
+						placeholder="コミットメッセージ"
+						placeholderTextColor={colors.textDim}
+						autoCapitalize="none"
+						onFocus={() => hapticSelection()}
+						editable={!committing}
+						multiline
+					/>
+					{/* 挙動は「すべての変更をまとめてコミット」（git add -A してからコミット）。ファイルを
+					    選ぶ操作が無いので、押す前にそれが分かる文言にする。 */}
+					<Button
+						variant="primary"
+						label={committing ? 'コミット中…' : status !== undefined ? `すべての変更（${status.files.length}件）をコミット` : 'すべての変更をコミット'}
+						onPress={() => { hapticImpact('medium'); void commit(); }}
+						disabled={!live || !wsId || !message.trim()}
+						loading={committing}
+					/>
+					<Text style={styles.commitNote}>未追跡のファイルも含めてまとめてコミットします。ファイルを選んでコミットすることはできません。</Text>
+					{commitResult ? <Text style={styles.commitResult}>{commitResult}</Text> : null}
+					{commitError ? <Text style={styles.error}>コミットに失敗しました: {commitError}</Text> : null}
+				</View>
+
+				<SectionHeader
+					title="変更"
+					count={status?.files.length ?? 0}
+					right={(status?.files.length ?? 0) > 0 ? (
+						<Pressable
+							style={styles.legendBtn}
+							onPress={() => { hapticSelection(); setLegendOpen(open => !open); }}
+							accessibilityRole="button"
+							accessibilityState={{ expanded: legendOpen }}
+							accessibilityLabel="記号の説明"
+						>
+							<View style={styles.legendInner}>
+								<Ionicons name="help-circle-outline" size={16} color={legendOpen ? colors.text : colors.textDim} />
+								<Text style={[styles.legendBtnText, legendOpen && styles.legendBtnTextOpen]}>記号の説明</Text>
+							</View>
+						</Pressable>
+					) : undefined}
+				/>
+				{legendOpen && (status?.files.length ?? 0) > 0 ? (
+					<View style={styles.legend}>
+						{SCM_CHANGE_LEGEND.map(meta => (
+							<View key={meta.symbol} style={styles.legendItem}>
+								<Text style={[styles.fileLetter, { color: meta.color }]}>{meta.symbol}</Text>
+								<Text style={styles.legendLabel}>{meta.label}</Text>
+							</View>
+						))}
+					</View>
+				) : null}
+				{/* 接続が切れて前回の一覧を薄く出しているときは、理由を文字で添える。 */}
+				{unavailable !== undefined && status !== undefined ? <UnavailableNote reason={unavailable} /> : null}
+				{error !== undefined && status !== undefined ? <Text style={styles.error}>再取得に失敗しました: {error}</Text> : null}
+				{status === undefined ? (
+					error !== undefined ? (
+						<EmptyState icon="alert-circle-outline" title="変更を読み込めませんでした" message={error} action={live ? { label: '再読み込み', onPress: () => { hapticImpact('light'); void refresh(); } } : undefined} />
+					) : unavailable !== undefined ? (
+						<EmptyState icon="cloud-offline-outline" title="変更を読み込めません" message={`${unavailable}。接続が戻ると読み込みます`} />
+					) : <LoadingState />
+				) : null}
+				{status && status.files.length === 0 ? <EmptyState icon="checkmark-circle-outline" title="変更はありません" message="作業ツリーは最後のコミットと同じ状態です" /> : null}
+				{(status?.files ?? []).length > 0 ? <View style={styles.card}>
+				{(status?.files ?? []).map(f => {
+					const staged = f.x !== ' ' && f.x !== '?';
+					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
+					const meta = scmChangeMeta(scmChangeKind(f.x, f.y), letter);
+					return (
+						<View key={`${f.x}${f.y}${f.path}`} style={styles.fileRowWrap}>
+							<Pressable
+								disabled={!live}
+								style={[styles.fileRow, !live && styles.commitBtnDisabled]}
+								onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ', letter }); }}
+								accessibilityRole="button"
+								accessibilityLabel={`${meta.label}: ${f.path}`}
+							>
+								{/* 状態の1文字を先頭に置く。行の意味（追加なのか削除なのか）が
+								    パスを読む前に分かり、縦に並んだとき色の列としても読める。 */}
+								<Text style={[styles.fileLetter, { color: meta.color }]}>{meta.symbol}</Text>
+								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
+								<Ionicons name="chevron-forward" size={14} color={colors.textDim} />
+							</Pressable>
+							{log?.webUrl ? (
+								<Pressable style={styles.extBtn} onPress={() => { hapticImpact('light'); openFileExternally(f.path); }} accessibilityRole="link" accessibilityLabel="ブラウザでファイルを開く">
+									<Ionicons name="open-outline" size={15} color={colors.textDim} />
+								</Pressable>
+							) : null}
+						</View>
+					);
+				})}
+				</View> : null}
+
+				{/* 見出しは必ず `SectionHeader` で出す。素の `<Text>` を置くと下の余白を誰も
+				    持たず（札は marginBottom しか持たない）、見出しの文字と札の上端が接する。 */}
+				{log !== undefined || logError !== undefined ? (
+					<SectionHeader title="最近のコミット" count={log?.commits.length ?? 0} />
+				) : null}
+				{logError !== undefined && log === undefined ? (
+					<EmptyState icon="alert-circle-outline" title="履歴を読み込めませんでした" message={logError} action={live ? { label: '再読み込み', onPress: () => { hapticImpact('light'); void refresh(); } } : undefined} />
+				) : logError !== undefined ? <Text style={styles.error}>続きを読み込めませんでした: {logError}</Text> : null}
+				{log && log.commits.length === 0 ? <EmptyState icon="git-commit-outline" title="コミットはまだありません" message="このブランチにはコミットがありません" /> : null}
+				{(log?.commits ?? []).length > 0 ? <View style={styles.card}>
+				{(log?.commits ?? []).map(c => {
+					const expanded = expandedHash === c.hash;
+					const detail = commitFiles[c.hash];
+					return (
+						<View key={c.hash}>
+							{/* 行の展開とブラウザで開くは別の押し場所にする。以前は展開の行の中に小さな
+							    リンクボタンが入れ子になっていて、押し間違えやすかった。 */}
+							<View style={styles.commitRowWrap}>
+								<Pressable
+									style={styles.commitRow}
+									onPress={() => { hapticSelection(); toggleCommit(c.hash); }}
+									accessibilityRole="button"
+									accessibilityState={{ expanded }}
+									accessibilityLabel={`${c.subject}の変更ファイル`}
+								>
+									<Ionicons name={expanded ? 'chevron-down' : 'git-commit-outline'} size={14} color={colors.textDim} />
+									<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
+									{/* atが無いのは旧バージョンのPC（whenはPC側整形の英語文字列） */}
+									<Text style={styles.commitWhen}>{c.at !== undefined ? formatRelativeTime(c.at, now) : c.when}</Text>
+								</Pressable>
+								{log?.webUrl ? (
+									<Pressable style={styles.extBtn} onPress={() => { hapticImpact('light'); openCommit(c.hash); }} accessibilityRole="link" accessibilityLabel="ブラウザでコミットを開く">
+										<Ionicons name="open-outline" size={15} color={colors.textDim} />
+									</Pressable>
+								) : null}
+							</View>
+							{expanded ? (
+								<View style={styles.commitDetail}>
+									{!detail ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
+									{detail?.error ? <Text style={styles.error}>変更ファイルを読み込めませんでした: {detail.error}</Text> : null}
+									{detail?.files && detail.files.length === 0 ? <Text style={styles.dim}>変更ファイルはありません</Text> : null}
+									{(detail?.files ?? []).map(f => {
+										const meta = scmChangeMeta(commitFileKind(f.status), f.status);
+										return (
+											<View key={`${f.status}${f.path}`} style={styles.commitFileRow} accessibilityLabel={`${meta.label}: ${f.path}`}>
+												<Text style={[styles.fileLetter, { color: meta.color }]}>{meta.symbol}</Text>
+												<Text style={styles.commitFilePath} numberOfLines={1}>{f.path}</Text>
+											</View>
+										);
+									})}
+								</View>
+							) : null}
+						</View>
+					);
+				})}
+				</View> : null}
+				{log?.hasMore ? (
+					<Button
+						variant="secondary"
+						label={loadingMore ? '読み込み中…' : 'さらに読み込む'}
+						onPress={() => { hapticImpact('light'); void loadMore(); }}
+						disabled={!live || loading}
+						loading={loadingMore}
+						style={styles.loadMoreBtn}
+					/>
+				) : null}
+				<View style={{ height: tabBarSpacer }} />
+			</ScrollView>
+			{diffTarget !== undefined && wsId ? (
+				<DiffView ws={wsId} path={diffTarget.path} staged={diffTarget.staged} statusLetter={diffTarget.letter} onClose={() => setDiffTarget(undefined)} />
+			) : null}
+		</View>
+		</GestureDetector>
+		</ConnectionGate>
+	);
+}
+
+const styles = StyleSheet.create({
+	screen: { flex: 1, backgroundColor: colors.bg },
+	list: { flex: 1, paddingHorizontal: 16 },
+	// 行をまとめる札。角丸は card、中に入る入力欄やボタンは control（同心円則で1段内側）。
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, marginBottom: 8 },
+	repoCard: { gap: 8, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 10 },
+	repoRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+	repoName: { color: colors.text, fontSize: type.body, fontWeight: '600', flexShrink: 1 },
+	repoBranch: { color: colors.accent, fontSize: type.meta, fontFamily: monoFamily, flexShrink: 1 },
+	repoCount: { color: colors.textDim, fontSize: type.caption, marginLeft: 'auto' },
+	commitInput: { backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: type.body, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top' },
+	// 押せない行（未接続）の薄め方。Button の disabled と同じ値。
+	commitBtnDisabled: { opacity: 0.45 },
+	commitResult: { color: colors.green, fontSize: type.caption, marginTop: 8, fontFamily: monoFamily },
+	commitNote: { color: colors.textDim, fontSize: type.caption, lineHeight: 16 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8 },
+	dim: { color: colors.textDim, fontSize: type.meta, marginTop: 8 },
+	fileRowWrap: { flexDirection: 'row', alignItems: 'stretch', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+	fileRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, minHeight: HIT_SIZE },
+	// 行の右端の「ブラウザで開く」。行とは別の押し場所として 44pt 四方を取り、区切り線で分ける。
+	// 右へ札の左右の余白（14）ぶん寄せ、押せる範囲を札の縁まで広げる。
+	extBtn: { width: HIT_SIZE, minHeight: HIT_SIZE, marginRight: -14, alignItems: 'center', justifyContent: 'center', borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
+	filePath: { flex: 1, color: colors.text, fontSize: type.body },
+	fileLetter: { width: 18, textAlign: 'center', fontFamily: monoFamily, fontSize: type.meta, fontWeight: '700', color: colors.textDim },
+	commitRowWrap: { flexDirection: 'row', alignItems: 'stretch' },
+	commitRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingRight: space.sm, minHeight: HIT_SIZE },
+	// 見出しの行の高さは変えずに当たり判定だけ 44pt にする（上の余白18・下の余白8へはみ出させる）。
+	// 中身は見出しの文字と同じ高さに来るよう下寄せにする。
+	legendBtn: { minHeight: HIT_SIZE, marginTop: -22, marginBottom: -8, paddingBottom: 7, paddingLeft: space.sm, justifyContent: 'flex-end' },
+	legendInner: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+	legendBtnText: { color: colors.textDim, fontSize: type.caption },
+	legendBtnTextOpen: { color: colors.text },
+	legend: { flexDirection: 'row', flexWrap: 'wrap', columnGap: space.md, rowGap: space.xs, paddingHorizontal: space.xs, marginBottom: space.sm },
+	legendItem: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+	legendLabel: { color: colors.textDim, fontSize: type.meta },
+	commitDetail: { paddingLeft: 20, paddingBottom: 6, gap: 3 },
+	commitFileRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+	commitFilePath: { flex: 1, color: colors.textDim, fontSize: type.meta },
+	loadMoreBtn: { marginTop: 4 },
+	commitSubject: { flex: 1, color: colors.text, fontSize: type.body },
+	commitWhen: { color: colors.textDim, fontSize: type.caption },
+});

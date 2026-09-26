@@ -3,7 +3,8 @@
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentCommandCatalogState, AgentCommandOption } from '../store.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import { GlassSurface } from './glassSurface.js';
 
@@ -72,20 +73,20 @@ function sourceLabel(source: AgentCommandOption['source']): string {
 const styles = StyleSheet.create({
 	// flexShrink: キーボードが高い端末でヘッダー（＋Subagentストリップ）と重なる場合は
 	// maxHeightより優先して縮む（親チェーンのminHeight/flexShrink制約による。内容はScrollViewで送る）
-	surface: { maxHeight: 292, flexShrink: 1, borderRadius: 20, overflow: 'hidden', marginBottom: 8 },
+	surface: { maxHeight: 292, flexShrink: 1, borderRadius: radius.panel, ...squircle, overflow: 'hidden', marginBottom: 8 },
 	// flexShrink: surfaceの圧縮にビューポートを追随させ、クリップされた行へもスクロールで到達できるようにする
 	list: { maxHeight: 292, flexShrink: 1 },
 	row: { minHeight: 54, paddingHorizontal: 14, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	rowPressed: { backgroundColor: colors.surface2 },
 	commandBody: { flex: 1, minWidth: 0 },
 	commandHead: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-	commandName: { color: colors.text, fontFamily: 'Menlo', fontSize: 13, fontWeight: '700' },
-	argumentHint: { color: colors.textDim, fontFamily: 'Menlo', fontSize: 10, flexShrink: 1 },
-	description: { color: colors.textDim, fontSize: 12, marginTop: 2 },
-	source: { color: colors.textDim, fontSize: 9, flexShrink: 0 },
+	commandName: { color: colors.text, fontFamily: monoFamily, fontSize: type.body, fontWeight: '700' },
+	argumentHint: { color: colors.textDim, fontFamily: monoFamily, fontSize: type.badge, flexShrink: 1 },
+	description: { color: colors.textDim, fontSize: type.meta, marginTop: 2 },
+	source: { color: colors.textDim, fontSize: type.badge, flexShrink: 0 },
 	messageRow: { minHeight: 58, paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
 	messageBody: { flex: 1 },
-	message: { color: colors.textDim, fontSize: 13 },
-	errorText: { color: colors.text, fontSize: 12 },
-	retryText: { fontSize: 11, marginTop: 2 },
+	message: { color: colors.textDim, fontSize: type.body },
+	errorText: { color: colors.text, fontSize: type.meta },
+	retryText: { fontSize: type.caption, marginTop: 2 },
 });

@@ -1,0 +1,478 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useIsFocused } from 'expo-router';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { HostSegment } from '../../src/components/hostSegment.js';
+import { PillHitArea, hitInset } from '../../src/components/pillHitArea.js';
+import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
+import { SelectablePill } from '../../src/components/selectablePill.js';
+import { useRelayHostSelection } from '../../src/hooks/useRelayHostSelection.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { Meter } from '../../src/components/meter.js';
+import { SectionHeader } from '../../src/components/sectionHeader.js';
+import { StatCard } from '../../src/components/statCard.js';
+import { colors, radius, squircle, type } from '../../src/theme.js';
+import { formatRelativeTime, useNow } from '../../src/time.js';
+import { dayCost, localDateKey, staleValueLabel, updatedAtLabel } from '../../src/usageFormat.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
+import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
+import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
+
+/** モデル・プロジェクト別バーの表示上限件数。 */
+const TOP_MODELS = 6;
+const TOP_PROJECTS = 6;
+const TOP_SESSIONS = 10;
+/** 絞り込みピルの見た目の高さ（最小）。当たり判定は PillHitArea で HIT_SIZE まで広げる。 */
+const PILL_HEIGHT = 28;
+const PILL_INSET = hitInset(PILL_HEIGHT);
+/** 「日別」は最近の推移を見るためのものなので、集計期間とは独立に直近7日で固定する。 */
+const DAILY_WINDOW_DAYS = 7;
+/** モデル別・プロジェクト別の集計期間の選択肢（PCからは90日ぶん届いている）。 */
+const PERIOD_OPTIONS = [7, 30, 90] as const;
+type PeriodDays = typeof PERIOD_OPTIONS[number];
+/** エージェント絞り込み。'all' は絞り込みなし。 */
+type AgentFilter = UsageAgent | 'all';
+
+export interface CcusageWarmLeaseScreenState {
+	readonly focused: boolean;
+	readonly appActive: boolean;
+	readonly online: boolean;
+	readonly activePcId: string | undefined;
+	readonly controllerRevision: number;
+}
+
+/** Ccusage screen effect が所有する lease の全入力を一度に適用する production seam。 */
+export function updateCcusageWarmLeaseLifecycle(
+	lifecycle: MobileWarmLeaseLifecycle,
+	state: CcusageWarmLeaseScreenState,
+	acquire: () => MobileDisposable,
+): void {
+	lifecycle.update(shouldMaintainMobileWarmLease('ccusage', {
+		focused: state.focused,
+		appActive: state.appActive,
+		online: state.online,
+		volumeAxis: false,
+	}), acquire, mobileWarmLeaseOwnerRevision(state.activePcId, state.controllerRevision));
+}
+
+const AGENT_LABEL: Record<UsageAgent, string> = {
+	claude: 'Claude',
+	codex: 'Codex',
+	gemini: 'Gemini',
+	other: 'その他',
+};
+
+const AGENT_COLOR: Record<UsageAgent, string> = {
+	claude: colors.claude,
+	codex: colors.accent,
+	gemini: colors.purple,
+	other: colors.textDim,
+};
+
+function formatCost(cost: number): string {
+	return `$${cost.toFixed(2)}`;
+}
+
+function formatCompactTokens(tokens: number): string {
+	if (tokens >= 1_000_000) { return `${(tokens / 1_000_000).toFixed(1)}M`; }
+	if (tokens >= 1_000) { return `${(tokens / 1_000).toFixed(1)}K`; }
+	return String(tokens);
+}
+
+function relativeTime(ts: number | undefined, now: number): string {
+	if (ts === undefined) { return '—'; }
+	return formatRelativeTime(ts, now);
+}
+
+interface ModelAgg { model: string; agent: UsageAgent; cost: number; tokens: number }
+
+/** データに実際に出てくるエージェント（使っていないものをピルに並べても選べるだけ無駄なので）。 */
+function agentsInData(data: UsageDashboardResult): UsageAgent[] {
+	const seen = new Set<UsageAgent>();
+	for (const day of data.days) {
+		for (const slice of day.models) {
+			seen.add(slice.agent);
+		}
+	}
+	return (['claude', 'codex', 'gemini', 'other'] as const).filter(agent => seen.has(agent));
+}
+
+/** 直近 windowDays 分のモデル別合算（コスト降順）。 */
+function aggregateModels(data: UsageDashboardResult, windowDays: number, agent: AgentFilter): ModelAgg[] {
+	const cutoff = localDateKey(new Date(Date.now() - (windowDays - 1) * 86_400_000));
+	const byModel = new Map<string, ModelAgg>();
+	for (const day of data.days) {
+		if (day.date < cutoff) { continue; }
+		for (const slice of day.models) {
+			if (agent !== 'all' && slice.agent !== agent) { continue; }
+			const entry = byModel.get(slice.model) ?? { model: slice.model, agent: slice.agent, cost: 0, tokens: 0 };
+			entry.cost += slice.cost;
+			entry.tokens += slice.inputTokens + slice.outputTokens + slice.cacheCreationTokens + slice.cacheReadTokens;
+			byModel.set(slice.model, entry);
+		}
+	}
+	return [...byModel.values()].sort((a, b) => b.cost - a.cost);
+}
+
+/**
+ * 直近 windowDays 分のプロジェクト別合算（コスト降順）。
+ * PCからは元々 `projects` が届いていたが、これまで画面では一度も使っていなかった。
+ * `UsageProjectData` はエージェントの内訳を持たないので、エージェント絞り込みは効かない。
+ */
+function aggregateProjects(data: UsageDashboardResult, windowDays: number): { name: string; cost: number }[] {
+	const cutoff = localDateKey(new Date(Date.now() - (windowDays - 1) * 86_400_000));
+	return data.projects
+		.map(project => ({
+			name: project.name,
+			cost: project.dailyCosts.reduce((sum, entry) => (entry.date >= cutoff ? sum + entry.cost : sum), 0),
+		}))
+		.filter(project => project.cost > 0)
+		.sort((a, b) => b.cost - a.cost);
+}
+
+/** 直近 windowDays 分の日別合計コスト（日付降順＝新しい日が先頭、欠損日も0埋め）。 */
+function recentDailyCosts(data: UsageDashboardResult, windowDays: number, agent: AgentFilter): { date: string; cost: number }[] {
+	const byDate = new Map(data.days.map(d => [d.date, dayCost(d, agent)]));
+	const out: { date: string; cost: number }[] = [];
+	for (let i = 0; i < windowDays; i++) {
+		const date = localDateKey(new Date(Date.now() - i * 86_400_000));
+		out.push({ date, cost: byDate.get(date) ?? 0 });
+	}
+	return out;
+}
+
+export default function CcusageScreen() {
+	// この画面は設定モーダル内に提示されタブバーが存在しないため、モーダル内他画面と
+	// 同じ下余白を直接使う（NativeTabs 前提の tabBarSpacer は約40ptの死に余白になる）。
+	const insets = useStableInsets();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
+	// 相対時刻表示（セッションの最終アクティビティ）を画面を開いたままでも追従させる
+	const now = useNow();
+	const { usageDashboard, connection, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease } = useAppStore(useShallow(s => ({
+		usageDashboard: s.usageDashboard,
+		connection: s.connection,
+		warmLeaseReady: s.connection === 'online' && s.pcOnline && s.sessionProtocolReady,
+		activePcId: s.activePcId,
+		controllerRevision: s.controllerRevision,
+		acquireUsageWarmLease: s.acquireUsageWarmLease,
+	})));
+	const isFocused = useIsFocused();
+	const isAppActive = useAppIsActive();
+	// 「接続先セグメント」: PCが複数のウィンドウ（ローカル/SSHリモート）を同時に開いているとき、
+	// どのホストのccusageを見ているかを選ぶ。1台しかなければ hosts は空でセグメントは出ない。
+	const { hosts, effectiveHostId, selectHost } = useRelayHostSelection();
+	const selectedHost = hosts.find(host => host.id === effectiveHostId);
+	// hosts が空（旧PC・host未同期）のときは接続先を選べないので、常に従来経路（windowId未指定）
+	// で取得する。hosts があるのに選んだホストが一覧に無い（消えた）・未readyのときだけ
+	// stale扱いにする（取得を止め、直近値を薄く残す）。
+	const hostStale = hosts.length > 0 && selectedHost?.ready !== true;
+	// hosts が空の間は接続先という概念が無いので、単一の既定キーへ統一する。
+	const hostKey = effectiveHostId ?? 'default';
+	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
+	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
+	useEffect(() => {
+		const lifecycle = warmLeaseLifecycle.current!;
+		updateCcusageWarmLeaseLifecycle(lifecycle, {
+			focused: isFocused,
+			appActive: isAppActive,
+			online: warmLeaseReady,
+			activePcId,
+			controllerRevision,
+		}, () => acquireUsageWarmLease(selectedHost?.windowId));
+		// active=false の update はこの factory を呼ばない（既存のleaseへ非活性を送るだけ）ので、
+		// ここは「何も取得しない」ことが分かるダミーを渡す。
+		return () => lifecycle.update(false, () => ({ dispose: () => { } }));
+	}, [isFocused, isAppActive, warmLeaseReady, activePcId, controllerRevision, acquireUsageWarmLease, selectedHost?.windowId]);
+
+	// ホストごとに直近の値を持つ。切り替えても他ホストの値は消えない。
+	const [dataByHost, setDataByHost] = useState<Record<string, UsageDashboardResult>>({});
+	const data = dataByHost[hostKey];
+	const [loading, setLoading] = useState(false);
+	// pull-to-refresh 由来の読み込みだけ RefreshControl のスピナーに紐付ける
+	// （初回ロードを refreshing にすると中央の ActivityIndicator と二重表示になる）。
+	const [pullRefreshing, setPullRefreshing] = useState(false);
+	const [error, setError] = useState<string | undefined>();
+	const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
+	const [agentFilter, setAgentFilter] = useState<AgentFilter>('all');
+
+	// PCを切り替えてもこの画面を開いたままだと、切り替え直後は前のPCの値が「今のPC」の顔で
+	// 残ってしまう（hostId はPCごとの意味しか持たず、'local'/'default' はPCをまたいで衝突する）。
+	useEffect(() => { setDataByHost({}); }, [activePcId]);
+
+	const refresh = useCallback(async (bypassCache = false) => {
+		if (connection !== 'online' || hostStale) { return; }
+		setLoading(true);
+		setError(undefined);
+		try {
+			const result = await usageDashboard(bypassCache, selectedHost?.windowId);
+			setDataByHost(prev => ({ ...prev, [hostKey]: result }));
+		} catch (e) {
+			setError(String(e instanceof Error ? e.message : e));
+		} finally {
+			setLoading(false);
+		}
+	}, [usageDashboard, connection, hostStale, hostKey, selectedHost?.windowId]);
+
+	useEffect(() => { void refresh(); }, [refresh]);
+
+	const onPullRefresh = useCallback(async () => {
+		setPullRefreshing(true);
+		try {
+			await refresh(true);
+		} finally {
+			setPullRefreshing(false);
+		}
+	}, [refresh]);
+
+	const todayCost = useMemo(() => {
+		if (!data?.days) { return undefined; }
+		const today = localDateKey(new Date());
+		const row = data.days.find(d => d.date === today);
+		return row ? dayCost(row, agentFilter) : 0;
+	}, [data, agentFilter]);
+
+	const availableAgents = useMemo(() => data ? agentsInData(data) : [], [data]);
+	const dailyCosts = useMemo(() => data?.days ? recentDailyCosts(data, DAILY_WINDOW_DAYS, agentFilter) : [], [data, agentFilter]);
+	const maxDailyCost = useMemo(() => Math.max(0.01, ...dailyCosts.map(d => d.cost)), [dailyCosts]);
+	const models = useMemo(
+		() => data?.days ? aggregateModels(data, periodDays, agentFilter).slice(0, TOP_MODELS) : [],
+		[data, periodDays, agentFilter],
+	);
+	const maxModelCost = useMemo(() => Math.max(0.01, ...models.map(m => m.cost)), [models]);
+	const projects = useMemo(() => data ? aggregateProjects(data, periodDays).slice(0, TOP_PROJECTS) : [], [data, periodDays]);
+	const maxProjectCost = useMemo(() => Math.max(0.01, ...projects.map(p => p.cost)), [projects]);
+	const sessions = useMemo(() => (data?.sessions ?? []).slice(0, TOP_SESSIONS), [data]);
+	const agentFiltered = agentFilter !== 'all';
+
+	// データ側からそのエージェントが消える（90日窓の縁など）とピル自体が出なくなる。
+	// 選択だけが残ると全部0円の画面から戻れなくなるので、「すべて」へ落とす。
+	useEffect(() => {
+		if (agentFilter !== 'all' && data !== undefined && !availableAgents.includes(agentFilter)) {
+			setAgentFilter('all');
+		}
+	}, [agentFilter, availableAgents, data]);
+
+	// **actions は参照を安定させる。** インライン JSX のままだと毎レンダー新しい要素になり、
+	// ScreenHeader 内の headerRight→options が毎回切れてバーの全項目付け替えが走る。
+	// screenHeader.tsx は自ら「参照を安定させる」と明言しており、呼び出し側がそれを崩していた形
+	// （deps は useCallback 済みの onPullRefresh とプリミティブだけ）。
+	const headerActions = useMemo(() => (
+		<HeaderCircleButton
+			icon="refresh-outline"
+			label="再取得"
+			onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+			disabled={pullRefreshing || loading}
+		/>
+	), [onPullRefresh, pullRefreshing, loading]);
+
+	return (
+		<ConnectionGate>
+			<View style={styles.screen}>
+				<ScreenHeader
+					title="コスト"
+					// PC側は30分ごとに裏で集計し直す。いつの数字を見ているかが分からないと
+					// 「更新すべきか」を判断できないので、取得時刻を必ず添える（書き方は使用量の各画面で共通）。
+					subtitle={data ? updatedAtLabel(data.fetchedAt, now) : undefined}
+					actions={headerActions}
+					onHeightChange={setHeaderHeight}
+				/>
+				<ScrollView
+					style={styles.scroll}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}
+					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
+				>
+					<HostSegment hosts={hosts} selectedId={effectiveHostId} onSelect={selectHost} />
+					{hostStale ? (
+						<Text style={styles.warn}>{selectedHost === undefined
+							? 'この接続先のウィンドウは閉じられました。上のボタンで別の接続先を選んでください。'
+							: 'この接続先のPC画面はいま応答していません。PC側でウィンドウを開き直すと再取得できます。'}</Text>
+					) : null}
+					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
+					{error ? <Text style={styles.error}>{error}</Text> : null}
+					{data && (data.failedReports?.length ?? 0) > 0 ? (
+						<Text style={styles.warn}>一部のレポート取得に失敗しました（{data.failedReports.join(', ')}）</Text>
+					) : null}
+
+					{/* 薄くするだけだと読み込み中と見分けが付かないので、いつの値かを文字で添える。 */}
+					{data && hostStale ? <Text style={styles.staleNote}>{staleValueLabel(data.fetchedAt, now)}</Text> : null}
+					{data ? (
+						<View style={hostStale ? styles.stale : undefined}>
+							{/* 絞り込みは、それが効く数字より先に出す。後ろに置くと、押しても
+							    上の数字が変わったことに気づけない。 */}
+							{availableAgents.length > 1 ? (
+								<>
+									<SectionHeader title="エージェント" />
+									<View style={styles.pillRow}>
+										{(['all', ...availableAgents] as AgentFilter[]).map(key => {
+											const active = agentFilter === key;
+											const label = key === 'all' ? 'すべて' : AGENT_LABEL[key];
+											const select = () => { hapticSelection(); setAgentFilter(key); };
+											return (
+												<PillHitArea key={key} onPress={select}>
+													<SelectablePill
+														active={active}
+														onPress={select}
+														style={styles.pill}
+														hitStyle={styles.pillHit}
+														accessibilityLabel={label}
+													>
+														<Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+													</SelectablePill>
+												</PillHitArea>
+											);
+										})}
+									</View>
+								</>
+							) : null}
+
+							<View style={styles.kpiRow}>
+								<StatCard
+									label="今日のコスト"
+									value={formatCost(todayCost ?? 0)}
+									sub={agentFiltered ? `${AGENT_LABEL[agentFilter as UsageAgent]}のみ` : undefined}
+								/>
+								{data.block ? (
+									<StatCard
+										label="アクティブブロック"
+										value={formatCost(data.block.costUSD)}
+										// ブロックはエージェント別の内訳を持たないので、絞り込み中は
+										// 隣のカードと集計範囲が違うことを明示する。
+										sub={agentFiltered
+											? 'すべてのエージェント'
+											: data.block.costPerHour !== undefined
+												? `${formatCost(data.block.costPerHour)}/時`
+												: undefined}
+									/>
+								) : null}
+							</View>
+
+							<SectionHeader title={`日別（直近${DAILY_WINDOW_DAYS}日）`} />
+							<View style={styles.card}>
+								{dailyCosts.map(d => (
+									<View key={d.date} style={styles.barRow}>
+										<Text style={styles.barLabel} numberOfLines={1}>{d.date.slice(5)}</Text>
+										<Meter ratio={Math.max(0.02, d.cost / maxDailyCost)} color={colors.accent} />
+										<Text style={styles.barValue} numberOfLines={1} adjustsFontSizeToFit>{formatCost(d.cost)}</Text>
+									</View>
+								))}
+							</View>
+
+							<SectionHeader title="集計期間" />
+							<View style={styles.pillRow}>
+								{PERIOD_OPTIONS.map(days => {
+									const active = periodDays === days;
+									const select = () => { hapticSelection(); setPeriodDays(days); };
+									return (
+										<PillHitArea key={days} onPress={select}>
+											<SelectablePill
+												active={active}
+												onPress={select}
+												style={styles.pill}
+												hitStyle={styles.pillHit}
+												accessibilityLabel={`${days}日`}
+											>
+												<Text style={[styles.pillText, active && styles.pillTextActive]}>{days}日</Text>
+											</SelectablePill>
+										</PillHitArea>
+									);
+								})}
+							</View>
+
+							<SectionHeader title={`モデル別（直近${periodDays}日）`} />
+							<View style={styles.card}>
+								{models.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
+								{models.map(m => (
+									// モデル名は固定幅ラベルだと省略されるため、名前+金額の行とバーの2段組にする
+									<View key={m.model} style={styles.modelRow}>
+										<View style={styles.modelHead}>
+											<Text style={styles.modelName} numberOfLines={1}>{m.model}</Text>
+											<Text style={styles.barValue} numberOfLines={1} adjustsFontSizeToFit>{formatCost(m.cost)}</Text>
+										</View>
+										<Meter ratio={Math.max(0.02, m.cost / maxModelCost)} color={AGENT_COLOR[m.agent]} />
+									</View>
+								))}
+							</View>
+
+							<SectionHeader title={`プロジェクト別（直近${periodDays}日）`} />
+							<View style={styles.card}>
+								{projects.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
+								{projects.map(p => (
+									<View key={p.name} style={styles.modelRow}>
+										<View style={styles.modelHead}>
+											<Text style={styles.modelName} numberOfLines={1}>{p.name}</Text>
+											<Text style={styles.barValue} numberOfLines={1} adjustsFontSizeToFit>{formatCost(p.cost)}</Text>
+										</View>
+										<Meter ratio={Math.max(0.02, p.cost / maxProjectCost)} color={colors.accent} />
+									</View>
+								))}
+							</View>
+							{agentFiltered && projects.length > 0 ? (
+								<Text style={styles.note}>プロジェクト別はエージェントの内訳を持たないため、すべてのエージェントの合計を出しています。</Text>
+							) : null}
+
+							{/* セッションはPCが「直近のもの」を選んで送ってくるので、期間もエージェントも効かない。 */}
+							<SectionHeader title={`直近セッション${agentFiltered ? '（すべてのエージェント）' : ''}`} />
+							<View style={styles.card}>
+								{sessions.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
+								{sessions.map((s, i) => (
+									<View key={`${s.rawProject}-${i}`} style={[styles.sessionRow, i > 0 && styles.sessionSeparator]}>
+										<View style={styles.rowBody}>
+											<Text style={styles.rowTitle} numberOfLines={1}>{s.project}</Text>
+											<Text style={styles.rowDesc} numberOfLines={1}>
+												{s.models.join(', ') || '—'} · {formatCompactTokens(s.totalTokens)} tok · {relativeTime(s.lastActivity, now)}
+											</Text>
+										</View>
+										<Text style={styles.sessionCost}>{formatCost(s.totalCost)}</Text>
+									</View>
+								))}
+							</View>
+						</View>
+					) : null}
+				</ScrollView>
+			</View>
+		</ConnectionGate>
+	);
+}
+
+const styles = StyleSheet.create({
+	screen: { flex: 1, backgroundColor: colors.bg },
+	scroll: { flex: 1, paddingHorizontal: 16 },
+	spinner: { marginTop: 24 },
+	error: { color: colors.red, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	warn: { color: colors.yellow, fontSize: type.meta, marginTop: 8, marginBottom: 4 },
+	// オフラインの接続先を選んでいる間、直近の値をそれと分かるように薄く残す。
+	stale: { opacity: 0.5 },
+	staleNote: { color: colors.textDim, fontSize: type.meta, lineHeight: 17, marginTop: 4, marginBottom: 4 },
+	dim: { color: colors.textDim, fontSize: type.meta, paddingVertical: 8 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
+	// 押せるピルと直下のカードが触れて見えないよう、下に余白を残す。
+	// ピルの当たり判定（PillHitArea）は上下に PILL_INSET ずつはみ出すので、そのぶん余白から引いて
+	// 見た目の位置を包む前（上2・下12）と揃える。
+	pillRow: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 8, marginTop: 2 - PILL_INSET, marginBottom: 12 - PILL_INSET },
+	pill: { borderRadius: radius.pill, ...squircle, minHeight: PILL_HEIGHT },
+	pillHit: { paddingVertical: 7, paddingHorizontal: 13 },
+	pillText: { color: colors.textDim, fontSize: type.meta, fontWeight: '600' },
+	pillTextActive: { color: colors.bg },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginTop: 8, paddingHorizontal: 4 },
+	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+	barRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+	barLabel: { color: colors.text, fontSize: type.meta, width: 72 },
+	modelRow: { paddingVertical: 8, gap: 6 },
+	modelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+	modelName: { color: colors.text, fontSize: type.meta, flex: 1 },
+	barValue: { color: colors.textDim, fontSize: type.meta, width: 56, textAlign: 'right' },
+	sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+	sessionSeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+	rowBody: { flex: 1, minWidth: 0 },
+	rowTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	rowDesc: { color: colors.textDim, fontSize: type.meta, marginTop: 2 },
+	sessionCost: { color: colors.text, fontSize: type.body, fontWeight: '700' },
+});

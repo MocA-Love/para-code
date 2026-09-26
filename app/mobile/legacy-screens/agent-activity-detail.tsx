@@ -1,0 +1,150 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { activityStatusLabel as statusLabel } from '../src/agentStatus.js';
+import { useEffect, useMemo, useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useAppStore } from '../src/appState.js';
+import { ConnectionGate } from '../src/components/connectionGate.js';
+import { GlassSurface } from '../src/components/glassSurface.js';
+import { MarkdownText } from '../src/components/markdownText.js';
+import { AgentTimeline } from '../src/components/agentTimeline.js';
+import { detailToChatMessages } from '../src/agentToolMeta.js';
+import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
+import { useNow } from '../src/time.js';
+import { alpha, colors, radius, squircle, tint, type } from '../src/theme.js';
+import { monoFamily } from '../src/monoFont.js';
+import { hapticSelection } from '../src/haptics.js';
+import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, agentActivityTasksForAgent } from '../src/agentActivityTree.js';
+import type { AgentActivityAgent, AgentActivityDetailMessage, AgentActivityStatus } from '../src/store.js';
+
+type ConversationItem = { kind: 'message'; value: AgentActivityDetailMessage; index: number } | { kind: 'activity'; key: string; values: AgentActivityDetailMessage[] } | { kind: 'child'; value: AgentActivityAgent };
+
+/** 親エージェント画面と同じUX: 連続する thinking / tool を1つの集約行にまとめ、本文(text)はそのまま独立行にする。 */
+function groupConversation(messages: readonly AgentActivityDetailMessage[]): ConversationItem[] {
+	const result: ConversationItem[] = [];
+	let activity: AgentActivityDetailMessage[] = [];
+	const flush = () => {
+		if (activity.length > 0) { result.push({ kind: 'activity', key: `activity:${result.length}`, values: activity }); activity = []; }
+	};
+	messages.forEach((value, index) => {
+		if (value.kind === 'thinking' || value.kind === 'tool') {
+			activity.push(value);
+		} else {
+			flush();
+			result.push({ kind: 'message', value, index });
+		}
+	});
+	flush();
+	return result;
+}
+
+
+/** 本文（text）1件。thinking / tool は AgentTimeline が受け持つ。 */
+function ActivityMessage({ message, parentLabel }: { message: AgentActivityDetailMessage; parentLabel: string }) {
+	const fromParent = message.role === 'user';
+	return <View style={fromParent ? styles.rightLane : styles.leftLane}>
+		<Text style={[styles.speaker, fromParent && styles.speakerRight]}>{fromParent ? parentLabel : 'SubAgent'}</Text>
+		<View style={[styles.chatBubble, fromParent ? styles.parentBubble : styles.agentBubble]}><MarkdownText text={message.text} /></View>
+	</View>;
+}
+
+export default function AgentActivityDetailScreen() {
+	const router = useRouter();
+	const insets = useStableInsets();
+	// この画面は独自のヘッダー（パンくず・スペース選択など層の型に収まらないもの）を
+	// 自分で描くので、常設のヘッダー層は伏せる。伏せないと前の画面のヘッダーが上に残る。
+	useParaHeader(PARA_HEADER_HIDDEN);
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
+	const now = useNow();
+	const { terminalKey, agentId, epoch } = useLocalSearchParams<{ terminalKey?: string; agentId?: string; epoch?: string }>();
+	// **`s.workspace` 本体を購読しない。** 必要なのはこのターミナルの title ぶんだけ
+	// （本体を買うと10Hz再送のたびに再描画していた。agent-activity.tsx と同じ流儀）。
+	const terminal = useAppStore(state => state.workspace?.terminals.find(item => item.terminalKey === terminalKey));
+	const chat = useAppStore(state => terminalKey !== undefined ? state.agentChats.get(terminalKey) : undefined);
+	const requestDetail = useAppStore(state => state.requestAgentActivityDetail);
+	const sessionChanged = chat !== undefined && typeof epoch === 'string' && chat.epoch !== epoch;
+	const agents = !sessionChanged ? chat?.activity?.agents ?? [] : [];
+	const agent = typeof agentId === 'string' ? agents.find(item => item.id === agentId) : undefined;
+	const selectedAgentId = agent?.id;
+	const parent = agent?.parentId !== undefined ? agents.find(item => item.id === agent.parentId) : undefined;
+	const parentLabel = parent?.label ?? terminal?.title ?? '親Agent';
+	const ancestors = agent !== undefined ? agentActivityAncestors(agents, agent.id) : [];
+	const tasks = agent === undefined ? [] : agentActivityTasksForAgent(chat?.activity?.tasks ?? [], agent);
+	const [messages, setMessages] = useState<AgentActivityDetailMessage[]>([]);
+	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState<string | undefined>();
+
+	useEffect(() => {
+		setMessages([]); setError(undefined);
+		if (terminalKey === undefined || selectedAgentId === undefined) { setLoading(false); return; }
+		let cancelled = false; setLoading(true);
+		requestDetail(terminalKey, selectedAgentId).then(result => { if (!cancelled) { setMessages(result); } })
+			.catch(reason => { if (!cancelled) { setError(reason instanceof Error ? reason.message : 'SubAgent transcriptを取得できませんでした'); } })
+			.finally(() => { if (!cancelled) { setLoading(false); } });
+		return () => { cancelled = true; };
+	}, [chat?.epoch, requestDetail, selectedAgentId, terminalKey]);
+
+	const elapsedEnd = agent?.status === 'running' || agent?.status === 'idle' ? now : agent?.updatedAt;
+	const elapsed = agent !== undefined && elapsedEnd !== undefined ? Math.max(0, Math.round((elapsedEnd - agent.startedAt) / 1000)) : 0;
+	// **レンダーのたびに作り直さない。** conversation は FlatList の data なので、ここが
+	// 毎回新品だと全マウント済みセルの props が新しくなり、'activity' セルでは
+	// detailToChatMessages（O(n) 変換）まで毎回走っていた。useNow(60秒) の経過時間更新でも
+	// 再描画は来るため、データ由来の値だけで memo する。
+	const children = useMemo(() => (agent !== undefined ? agentActivityChildren(agents, agent.id) : []), [agents, agent]);
+	const descendants = useMemo(() => (agent !== undefined ? agentActivityDescendants(agents, agent.id) : []), [agents, agent]);
+	// 子カードの「配下 N」表示用。renderItem の中で都度 O(n×深さ) の子孫計算をしないため
+	// 先に1回だけ数えておく。
+	const descendantCounts = useMemo(() => new Map(children.map(value => [value.id, agentActivityDescendants(agents, value.id).length])), [children, agents]);
+	const conversation = useMemo<ConversationItem[]>(() => [
+		...groupConversation(messages),
+		...children.map(value => ({ kind: 'child' as const, value })),
+	], [messages, children]);
+	const navigateAgent = (target: AgentActivityAgent) => {
+		hapticSelection();
+		router.push({ pathname: '/agent-activity-detail', params: { terminalKey, agentId: target.id, epoch: epoch ?? '' } });
+	};
+
+	return <ConnectionGate><View style={styles.screen}>
+		<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+			<Pressable hitSlop={8} accessibilityRole="button" accessibilityLabel="SubAgent一覧へ戻る" onPress={() => { hapticSelection(); router.back(); }}><GlassSurface style={styles.backBtn} interactive><Ionicons name="chevron-back" size={20} color={colors.text} /></GlassSurface></Pressable>
+			<View style={styles.headerBody}>
+				<View style={styles.breadcrumbs}><Text style={styles.crumb} numberOfLines={1}>{terminal?.title ?? 'Agent'}</Text>{ancestors.map(value => <Pressable key={value.id} accessibilityRole="button" accessibilityLabel={`${value.label}へ戻る`} onPress={() => navigateAgent(value)}><Text style={styles.crumb} numberOfLines={1}> › {value.label}</Text></Pressable>)}</View>
+				<Text style={styles.headerTitle} numberOfLines={1}>{agent?.label ?? 'SubAgent detail'}</Text>
+				<Text style={styles.headerSub}>親: {parentLabel} · {agent?.provider ?? chat?.agent ?? 'unknown'}</Text>
+			</View>
+		</View>
+		<FlatList
+			data={conversation}
+			keyExtractor={item => item.kind === 'message' ? `message:${item.index}` : item.kind === 'activity' ? item.key : `child:${item.value.id}`}
+			contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }, column]}
+			ListHeaderComponent={agent !== undefined ? <View>
+				<View style={styles.summaryCard}>
+					<View style={styles.metric}><Text style={styles.metricValue}>{statusLabel(agent.status)}</Text><Text style={styles.metricLabel}>{elapsed < 60 ? `${elapsed}秒` : `${Math.floor(elapsed / 60)}分${elapsed % 60}秒`}</Text></View>
+					<View style={styles.metric}><Text style={styles.metricValue}>{children.length}</Text><Text style={styles.metricLabel}>直接の子</Text></View>
+					<View style={styles.metric}><Text style={styles.metricValue}>{descendants.length}</Text><Text style={styles.metricLabel}>配下全体</Text></View>
+					<View style={styles.metric}><Text style={styles.metricValue}>{descendants.filter(value => value.status === 'completed').length}</Text><Text style={styles.metricLabel}>完了</Text></View>
+				</View>
+				<View style={styles.promptCard}><Text style={styles.promptLabel}>Prompt / Description</Text><MarkdownText text={agent.detail ?? agent.label} /><Text style={styles.agentId} selectable>{agent.id}</Text></View>
+				{tasks.length > 0 ? <View style={styles.taskCard}><Text style={styles.promptLabel}>担当Task</Text>{tasks.map(task => <View key={task.id} style={styles.task}><Ionicons name={task.status === 'completed' ? 'checkmark-circle' : 'ellipse-outline'} size={13} color={colors.accent} /><Text style={styles.taskTitle}>{task.label}</Text></View>)}</View> : null}
+				<Text style={styles.section}>会話・ツール履歴</Text>
+			</View> : null}
+			ListEmptyComponent={<View style={styles.empty}>{sessionChanged ? <Text style={styles.error}>親セッションが切り替わりました。親エージェントから開き直してください。</Text> : loading ? <Text style={styles.emptyText}>SubAgent transcriptを読み込み中…</Text> : error !== undefined ? <Text style={styles.error}>{error}</Text> : <Text style={styles.emptyText}>保存済みの子セッション履歴はありません</Text>}</View>}
+			renderItem={({ item }) => item.kind === 'message' ? <ActivityMessage message={item.value} parentLabel={parentLabel} /> : item.kind === 'activity' ? <View style={styles.timelineLane}><AgentTimeline msgs={detailToChatMessages(item.values)} /></View> : <View style={styles.leftLane}><Pressable accessibilityRole="button" accessibilityLabel={`${item.value.label}を開く`} onPress={() => navigateAgent(item.value)} style={styles.childCard}><View style={styles.childIcon}><Ionicons name="git-branch-outline" size={14} color={colors.purple} /></View><View style={styles.childBody}><Text style={styles.childCaption}>子Agentを起動</Text><Text style={styles.childTitle} numberOfLines={1}>{item.value.label}</Text><Text style={styles.childMeta}>{statusLabel(item.value.status)} · 配下 {descendantCounts.get(item.value.id) ?? 0}</Text></View><Ionicons name="chevron-forward" size={14} color={colors.textDim} /></Pressable></View>}
+		/>
+	</View></ConnectionGate>;
+}
+
+const styles = StyleSheet.create({
+	screen: { flex: 1, backgroundColor: colors.bg }, header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }, backBtn: { width: 44, height: 44, borderRadius: radius.pill, ...squircle, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }, headerBody: { flex: 1, minWidth: 0 }, breadcrumbs: { flexDirection: 'row', minWidth: 0, overflow: 'hidden' }, crumb: { color: colors.purple, fontSize: type.badge, fontWeight: '700', maxWidth: 105 }, headerTitle: { color: colors.text, fontSize: type.title, fontWeight: '700' }, headerSub: { color: colors.textDim, fontSize: type.badge, marginTop: 1, fontFamily: monoFamily },
+	content: { padding: 14, gap: 10 }, summaryCard: { flexDirection: 'row', backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.card, ...squircle, paddingVertical: 12, marginBottom: 10 }, metric: { flex: 1, alignItems: 'center', paddingHorizontal: 3 }, metricValue: { color: colors.text, fontSize: type.meta, fontWeight: '700' }, metricLabel: { color: colors.textDim, fontSize: type.badge, marginTop: 3 }, promptCard: { backgroundColor: tint(colors.purple, alpha.faint), borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.purple, alpha.line), borderRadius: radius.card, ...squircle, padding: 13, gap: 7, marginBottom: 8 }, promptLabel: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', textTransform: 'uppercase' }, agentId: { color: colors.purple, fontSize: type.badge, fontFamily: monoFamily }, taskCard: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, padding: 11, gap: 7, marginBottom: 8 }, task: { flexDirection: 'row', gap: 7, alignItems: 'center' }, taskTitle: { color: colors.text, fontSize: type.badge, flex: 1 }, section: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', textTransform: 'uppercase', marginTop: 6, marginBottom: 2 },
+	leftLane: { alignSelf: 'flex-start', maxWidth: '92%', gap: 3 },
+	// タイムラインは中身が flex で幅を分け合うため、吹き出しと違って行幅いっぱいに置く
+	// （alignSelf: 'flex-start' だと幅が内容依存になり、ツール名と引数が0幅に潰れる）。
+	timelineLane: { alignSelf: 'stretch', gap: 3 }, rightLane: { alignSelf: 'flex-end', maxWidth: '88%', gap: 3 }, speaker: { color: colors.textDim, fontSize: type.badge, fontWeight: '700', marginLeft: 5 }, speakerRight: { textAlign: 'right', marginRight: 5 }, chatBubble: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.card, ...squircle, borderWidth: StyleSheet.hairlineWidth }, parentBubble: { backgroundColor: colors.accentWash, borderColor: tint(colors.accent, alpha.line), borderBottomRightRadius: radius.key }, agentBubble: { backgroundColor: colors.surface, borderColor: colors.border, borderBottomLeftRadius: radius.key },
+	childCard: { minWidth: 245, flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: tint(colors.purple, alpha.faint), borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.purple, alpha.line), borderRadius: radius.card, ...squircle, padding: 11 }, childIcon: { width: 30, height: 30, borderRadius: radius.control, ...squircle, backgroundColor: tint(colors.purple, alpha.wash), alignItems: 'center', justifyContent: 'center' }, childBody: { flex: 1, minWidth: 0 }, childCaption: { color: colors.textDim, fontSize: type.badge }, childTitle: { color: colors.text, fontSize: type.meta, fontWeight: '700' }, childMeta: { color: colors.purple, fontSize: type.badge, marginTop: 2 }, empty: { paddingVertical: 40, alignItems: 'center' }, emptyText: { color: colors.textDim, fontSize: type.caption }, error: { color: colors.red, fontSize: type.caption, textAlign: 'center' },
+});

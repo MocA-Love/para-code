@@ -51,13 +51,15 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 	const [pdf, setPdf] = useState<string | undefined>();
 	const [docx, setDocx] = useState<string | undefined>();
 	const [media, setMedia] = useState<string | undefined>();
+	// 読み込みの失敗。以前は本文の位置に「エラー: …」をコードとして流していた。
+	const [error, setErrorMessage] = useState<string | undefined>();
 	const loadGeneration = useRef(0);
 	const sheetGeneration = useRef(0);
 	const contentIdentity = `${ws}\0${path}`;
 	const contentIdentityRef = useRef(contentIdentity);
 
 	const setError = useCallback((error: unknown) => {
-		setResult({ content: `エラー: ${String(error instanceof Error ? error.message : error)}`, truncated: false, size: 0 });
+		setErrorMessage(String(error instanceof Error ? error.message : error));
 	}, []);
 
 	useEffect(() => {
@@ -70,6 +72,7 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 			setPdf(undefined);
 			setDocx(undefined);
 			setMedia(undefined);
+			setErrorMessage(undefined);
 		}
 		if (!live) {
 			return;
@@ -79,6 +82,7 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 		setPdf(undefined);
 		setDocx(undefined);
 		setMedia(undefined);
+		setErrorMessage(undefined);
 		const current = () => loadGeneration.current === generation;
 		const requestTarget = rendererTarget;
 		const currentRequest = () => current() && currentRendererTarget(ws) === requestTarget;
@@ -116,6 +120,7 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 		const generation = ++sheetGeneration.current;
 		const requestTarget = rendererTarget;
 		setXlsx(previous => previous ? { ...previous, sheet: index, html: undefined } : previous);
+		setErrorMessage(undefined);
 		try {
 			const value = await fsXlsx(ws, path, index);
 			if (sheetGeneration.current === generation && currentRendererTarget(ws) === requestTarget) {
@@ -139,6 +144,7 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 			mediaData={media}
 			focusLine={focusLine}
 			backLabel={backLabel}
+			error={error}
 			onClose={onClose}
 		/>
 	);

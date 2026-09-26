@@ -3,7 +3,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { batteryLevelClass } from '../batteryLevel.js';
-import { colors } from '../theme.js';
+import { alpha, colors, tint, type } from '../theme.js';
 
 /**
  * PCのバッテリー表示（電池グリフ + 残量%）。
@@ -32,11 +32,12 @@ export function BatteryGauge({ level, charging }: { level: number; charging: boo
 }
 
 const styles = StyleSheet.create({
+	// 角丸は電池のグリフの形（17×9の箱・端子）を描くための値なので、角丸の段には寄せない。
 	body: { width: 17, height: 9, borderRadius: 2.5, borderWidth: 1.2, borderColor: 'rgba(255,255,255,0.5)', padding: 1.5, justifyContent: 'center' },
-	bodyLow: { borderColor: 'rgba(244,114,114,0.7)' },
+	bodyLow: { borderColor: tint(colors.red, alpha.strong) },
 	fill: { height: '100%', borderRadius: 1 },
 	tip: { width: 2, height: 3.5, borderTopRightRadius: 1, borderBottomRightRadius: 1, backgroundColor: 'rgba(255,255,255,0.5)', marginLeft: -3 },
-	tipLow: { backgroundColor: 'rgba(244,114,114,0.7)' },
-	pct: { color: colors.textDim, fontSize: 10.5, fontWeight: '700' },
+	tipLow: { backgroundColor: tint(colors.red, alpha.strong) },
+	pct: { color: colors.textDim, fontSize: type.badge, fontWeight: '700' },
 	pctLow: { color: colors.red },
 });

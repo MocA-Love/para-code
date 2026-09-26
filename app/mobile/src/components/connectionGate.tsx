@@ -12,10 +12,11 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { ConnectionStatusBanner } from './connectionStatusBanner.js';
+import { Button } from './button.js';
 
 /**
  * 未ペアリング時の案内。ConnectionGateと、ホーム画面（独自に接続状態を出す都合上
@@ -27,9 +28,7 @@ export function PairingRequiredNotice({ onStart }: { onStart: () => void }) {
 			<Ionicons name="qr-code-outline" size={40} color={colors.textDim} />
 			<Text style={styles.title}>ペアリングが必要です</Text>
 			<Text style={styles.dim}>PCとペアリングすると、離れた場所からでも遠隔操作できます。</Text>
-			<Pressable style={styles.btn} accessibilityRole="button" onPress={() => { hapticImpact('medium'); onStart(); }}>
-				<Text style={styles.btnText}>ペアリングを開始</Text>
-			</Pressable>
+			<Button label="ペアリングを開始" variant="primary" style={styles.btn} onPress={() => { hapticImpact('medium'); onStart(); }} />
 		</View>
 	);
 }
@@ -99,9 +98,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 			<Ionicons name="cloud-offline-outline" size={40} color={colors.red} />
 			<Text style={styles.title}>起動に失敗しました</Text>
 			<Text style={styles.dim}>{initError}</Text>
-			<Pressable style={styles.btn} accessibilityRole="button" onPress={() => { hapticImpact('light'); retry(); }}>
-				<Text style={styles.btnText}>再試行</Text>
-			</Pressable>
+			<Button label="再試行" variant="primary" style={styles.btn} onPress={() => { hapticImpact('light'); retry(); }} />
 		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
 	}
 
@@ -137,9 +134,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 			<Text style={styles.title}>{connecting ? '接続中' : '未接続'}</Text>
 			<Text style={styles.dim}>{message}</Text>
 			{!connecting ? (
-				<Pressable style={styles.btn} accessibilityRole="button" onPress={() => { hapticImpact('light'); connectRelay(); }}>
-					<Text style={styles.btnText}>{manualOffline ? '接続する' : '再接続'}</Text>
-				</Pressable>
+				<Button label={manualOffline ? '接続する' : '再接続'} variant="primary" style={styles.btn} onPress={() => { hapticImpact('light'); connectRelay(); }} />
 			) : null}
 		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>
 	);
@@ -153,9 +148,8 @@ const styles = StyleSheet.create({
 	gated: { flex: 1, backgroundColor: colors.bg },
 	cached: { flex: 1, backgroundColor: colors.bg },
 	center: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 14 },
-	back: { position: 'absolute', left: 16, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface }, backText: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	title: { color: colors.text, fontSize: 17, fontWeight: '700' },
-	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', lineHeight: 20 },
-	btn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 11, paddingHorizontal: 26, marginTop: 4 },
-	btnText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
+	back: { position: 'absolute', left: 16, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 8, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface }, backText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	title: { color: colors.text, fontSize: type.title, fontWeight: '700' },
+	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', lineHeight: 21 },
+	btn: { marginTop: 4 },
 });

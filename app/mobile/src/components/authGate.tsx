@@ -7,10 +7,11 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { colors } from '../theme.js';
+import { colors, type } from '../theme.js';
+import { Button } from './button.js';
 import { hapticImpact } from '../haptics.js';
 
 /** 離脱後に再認証を免除する猶予時間。 */
@@ -109,9 +110,7 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 			<Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
 			<Text style={styles.title}>Para Code はロックされています</Text>
 			{state === 'locked' ? (
-				<Pressable style={styles.unlockBtn} accessibilityRole="button" accessibilityLabel="ロック解除" onPress={() => { hapticImpact('medium'); void authenticate(); }}>
-					<Text style={styles.unlockText}>ロック解除</Text>
-				</Pressable>
+				<Button label="ロック解除" variant="primary" accessibilityLabel="ロック解除" onPress={() => { hapticImpact('medium'); void authenticate(); }} />
 			) : (
 				<Text style={styles.dim}>認証中…</Text>
 			)}
@@ -121,8 +120,6 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, backgroundColor: colors.bg },
-	title: { color: colors.text, fontSize: 15, fontWeight: '600' },
-	dim: { color: colors.textDim, fontSize: 13 },
-	unlockBtn: { backgroundColor: colors.accent2, borderRadius: 10, paddingHorizontal: 24, paddingVertical: 12 },
-	unlockText: { color: '#00222c', fontWeight: '600', fontSize: 14 },
+	title: { color: colors.text, fontSize: type.title, fontWeight: '600' },
+	dim: { color: colors.textDim, fontSize: type.body },
 });

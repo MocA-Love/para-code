@@ -98,26 +98,37 @@ async function connectedClient(timers: Timers = new ManualTimers()): Promise<{ s
 	return { sockets, presence };
 }
 
+/** 作られた順の index 番目のソケット。まだ作られていなければテストを失敗させる。 */
+function socketAt(sockets: readonly FakeSocket[], index: number): FakeSocket {
+	const socket = sockets[index];
+	if (socket === undefined) {
+		throw new Error(`socket #${index} was not created`);
+	}
+	return socket;
+}
+
 describe('RelayClient presence handling', () => {
 	it('reconnects when the PC comes back, even while the handshake is still in flight', async () => {
 		// mux が無い＝ハンドシェイク中でも張り直すこと。PCは「捨てたセッションの応答」を
 		// 送れてしまうので、「muxが無いなら壊れようがない」という前提は成り立たない。
 		const { sockets } = await connectedClient();
-		sockets[0].deliverPresence(true);
-		sockets[0].deliverPresence(false);
-		sockets[0].deliverPresence(true);
+		const first = socketAt(sockets, 0);
+		first.deliverPresence(true);
+		first.deliverPresence(false);
+		first.deliverPresence(true);
 
-		expect(sockets[0].closes).toEqual([{ code: 4002, reason: 'pc restarted' }]);
+		expect(first.closes).toEqual([{ code: 4002, reason: 'pc restarted' }]);
 	});
 
 	it('leaves a freshly opened socket alone when the first presence says the PC is online', async () => {
 		// 判定はソケット単位。接続をまたいで持ち越した presence を offline→online と読み違えると、
 		// 開いたばかりのソケットを毎回無駄に閉じることになる。
 		const { sockets } = await connectedClient();
-		sockets[0].deliverPresence(true);
-		sockets[0].deliverPresence(true);
+		const first = socketAt(sockets, 0);
+		first.deliverPresence(true);
+		first.deliverPresence(true);
 
-		expect(sockets[0].closes).toEqual([]);
+		expect(first.closes).toEqual([]);
 	});
 
 	it('does not carry an offline PC across a reconnect and close the new socket at once', async () => {
@@ -125,20 +136,23 @@ describe('RelayClient presence handling', () => {
 		// 接続をまたぐ値で判断していると、ここで開いたばかりのソケットを閉じてしまう。
 		const timers = new ManualTimers();
 		const { sockets } = await connectedClient(timers);
-		sockets[0].deliverPresence(false);
-		sockets[0].onclose?.({ code: 1006 });
+		const first = socketAt(sockets, 0);
+		first.deliverPresence(false);
+		first.onclose?.({ code: 1006 });
 		// 予約された再接続だけを進める（接続タイムアウトは進めない）。
 		timers.runOldest();
 
 		expect(sockets.length).toBeGreaterThan(1);
-		sockets[1].deliverPresence(true);
-		expect(sockets[1].closes).toEqual([]);
+		const second = socketAt(sockets, 1);
+		second.deliverPresence(true);
+		expect(second.closes).toEqual([]);
 	});
 
 	it('reports every presence change to the caller', async () => {
 		const { sockets, presence } = await connectedClient();
-		sockets[0].deliverPresence(false);
-		sockets[0].deliverPresence(true);
+		const first = socketAt(sockets, 0);
+		first.deliverPresence(false);
+		first.deliverPresence(true);
 
 		expect(presence).toEqual([false, true]);
 	});

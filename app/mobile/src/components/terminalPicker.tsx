@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as React from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
 import { GlassSurface } from './glassSurface.js';
-import { colors, mono, radius, squircle } from '../theme.js';
+import { monoFamily } from '../monoFont.js';
+import { alpha, colors, HIT_SIZE, radius, squircle, tint, type, status } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import {
 	COMPACT_TERMINAL_MENU_WIDTH,
@@ -13,6 +14,9 @@ import {
 	TERMINAL_CREATE_ACTION_ID,
 	TERMINAL_PICK_PREFIX,
 	TERMINAL_PRESETS_ACTION_ID,
+	terminalEntryStatusLabel,
+	terminalMenuItemTitle,
+	type TerminalStatusSource,
 } from './terminalHeaderBehavior.js';
 
 /**
@@ -28,16 +32,17 @@ import {
  * 見た目はここのRNの子が描く）、押すと標準の `UIMenu` が開く。ボタン→メニューのモーフ・
  * ばね・押し込みの手応えはOSが描くので、こちらは項目を渡すだけ。
  *
- * **失ったもの**: チップ列は各ターミナルの応答待ち（赤）／実行中（緑）を常に見せていた。
+ * **失ったもの**: チップ列は各ターミナルの要対応（赤）／実行中（琥珀）を常に見せていた。
  * 畳むと開くまで気づけないので、
- *  - 島の右上に赤い点を出す（**他の**ターミナルに応答待ちがあるとき。器側の `badge`）
- *  - 島の中に色付きのドットを出す（**いま見ている**ターミナルの応答待ち／実行中）
- *  - メニューの各項目に状態の記号を付ける（`?`＝応答待ち、`▶`＝実行中）
- * の3つで補っている。メニューの記号に色は付けられない（`systemImage` は単色）ので形で示し、
- * かつ選択中の項目は✓が記号を置き換えるため、アクティブな端末の状態は島の中で見せる。
+ *  - 島の右上に赤い点を出し、スペースの島の副題に件数を出す（**他の**ターミナルに要対応が
+ *    あるとき。点は器側の `badge`、件数は `terminalAttentionSubtitle`）
+ *  - 島の中に色付きのドットを出す（**いま見ている**ターミナルの要対応／実行中）
+ *  - メニューの各項目に状態の呼び名を添える（「1: claude（許可待ち）」。`terminalMenuItemTitle`）
+ * の3つで補っている。メニューの項目に色は付けられない（`systemImage` は単色）ので文字で示す。
+ * 以前は記号（`?`＝応答待ち、`▶`＝実行中）だったが、意味を覚えていないと読めなかった。
  */
 
-export interface TerminalPickerEntry {
+export interface TerminalPickerEntry extends TerminalStatusSource {
 	readonly terminalKey: string;
 	readonly title: string;
 	/** 1始まりの並び順（チップ列の「1:」「2:」と同じ数字）。 */
@@ -56,7 +61,7 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 	onCreate: () => void;
 }) {
 	const active = entries.find(entry => entry.terminalKey === activeKey);
-	const state = active?.waiting === true ? '応答待ち' : active?.working === true ? '実行中' : undefined;
+	const state = active !== undefined ? terminalEntryStatusLabel(active) : undefined;
 	const label = active !== undefined
 		? `ターミナル ${active.index}: ${active.title}${state !== undefined ? `、${state}` : ''}。切り替える`
 		: 'ターミナルなし。作成する';
@@ -68,9 +73,8 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 	const items: ParaPlusMenuItem[] = [
 		...entries.map(entry => ({
 			id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
-			title: `${entry.index}: ${entry.title}`,
-			// 色は付けられないので形で示す。何も無い＝手が空いている。
-			systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
+			// 状態は呼び名で添える（色は付けられない）。何も無い＝手が空いている。
+			title: terminalMenuItemTitle(entry),
 			selected: entry.terminalKey === activeKey,
 		})),
 		{ id: TERMINAL_CREATE_ACTION_ID, title: '新しいターミナル', systemImage: 'plus', startsSection: true },
@@ -126,8 +130,7 @@ export function TerminalCompactMenu({ entries, activeKey, onSelect, onOpenPreset
 			systemImage: 'terminal',
 			children: entries.map(entry => ({
 				id: `${TERMINAL_PICK_PREFIX}${entry.terminalKey}`,
-				title: `${entry.index}: ${entry.title}`,
-				systemImage: entry.waiting ? 'questionmark.circle' : entry.working ? 'play.circle' : '',
+				title: terminalMenuItemTitle(entry),
 				selected: entry.terminalKey === activeKey,
 			})),
 		});
@@ -168,7 +171,7 @@ export function TerminalFallbackBand({ entries, activeKey, onSelect }: {
 		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.fallbackTabContent} keyboardShouldPersistTaps="always">
 			{entries.map(entry => {
 				const active = entry.terminalKey === activeKey;
-				const state = entry.waiting ? '応答待ち' : entry.working ? '実行中' : '待機中';
+				const state = terminalEntryStatusLabel(entry) ?? status.idle.label;
 				const body = (
 					<Pressable
 						style={styles.fallbackTabHit}
@@ -200,21 +203,23 @@ const styles = StyleSheet.create({
 	// 中に居たので親が幅と高さをくれたが、いまはOS標準のバーの項目として置かれる。
 	// バー項目の親は中身なりの大きさなので、`flex: 1` だと 0×0 に潰れて見えなくなる
 	// （実機で確認済み: 中央に置いたときは名前が1文字まで削られた）。
-	hit: { height: 32 },
+	// 高さは当たり判定の最小（44pt）に揃える（以前の32ptでは押し損じた）。
+	hit: { height: HIT_SIZE, minWidth: HIT_SIZE },
 	// ネイティブのボタンは最前面に居るので、こちらは見た目だけ（タッチは通さない）。
-	body: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 32 },
-	dot: { width: 7, height: 7, borderRadius: 4 },
+	body: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: HIT_SIZE },
+	dot: { width: 7, height: 7, borderRadius: radius.pill, ...squircle },
 	dotWaiting: { backgroundColor: colors.red },
-	dotWorking: { backgroundColor: colors.green },
-	index: { color: colors.textDim, fontSize: 11, fontFamily: mono.ios },
+	dotWorking: { backgroundColor: status.running.color },
+	index: { color: colors.textDim, fontSize: type.caption, fontFamily: monoFamily },
 	// 上限で止める。長い端末名でバーの右側が押し出されると、左の島が削られる。
-	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
+	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: type.body, fontWeight: '700', letterSpacing: -0.2 },
 	fallbackTabContent: { gap: 7, alignItems: 'center' },
 	fallbackTabChip: { height: 44, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
-	fallbackTabChipActive: { backgroundColor: 'rgba(9,175,217,0.30)', borderWidth: 1, borderColor: 'rgba(9,175,217,0.5)' },
+	fallbackTabChipActive: { backgroundColor: tint(colors.accent, alpha.line), borderWidth: 1, borderColor: tint(colors.accent, alpha.strong) },
 	fallbackTabHit: { flex: 1, minWidth: 44, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
-	fallbackTabText: { color: colors.text, fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	fallbackTabTextActive: { color: '#bfeeff', fontWeight: '700' },
-	fallbackDotWaiting: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
-	fallbackDotWorking: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
+	fallbackTabText: { color: colors.text, fontSize: type.meta, fontFamily: monoFamily },
+	// accent の地の上に accent の文字を載せると読めないので、選択中は本文色の太字にする。
+	fallbackTabTextActive: { color: colors.text, fontWeight: '700' },
+	fallbackDotWaiting: { width: 7, height: 7, borderRadius: radius.pill, ...squircle, backgroundColor: colors.red },
+	fallbackDotWorking: { width: 7, height: 7, borderRadius: radius.pill, ...squircle, backgroundColor: status.running.color },
 });

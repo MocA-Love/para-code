@@ -5,7 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import type { PendingAgentMessage } from '../pendingAgentMessages.js';
 import { BottomSheet } from './bottomSheet.js';
 import { GlassSurface } from './glassSurface.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle, type } from '../theme.js';
+import { hitSlopToMinimum } from './hitSlop.js';
 import { hapticSelection } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 
@@ -24,7 +25,7 @@ export function PendingMessagesChip({ count, onPress }: { count: number; onPress
 		<Pressable
 			style={styles.chip}
 			onPress={() => { hapticSelection(); onPress(); }}
-			hitSlop={6}
+			hitSlop={CHIP_HIT_SLOP}
 			accessibilityRole="button"
 			accessibilityLabel={`送信予定 ${count}件。開いて内容を確認`}
 		>
@@ -36,6 +37,10 @@ export function PendingMessagesChip({ count, onPress }: { count: number; onPress
 		</Pressable>
 	);
 }
+
+/** チップの見た目の高さ（実行中インジケータの行に収まる大きさ）。当たり判定は 44pt へ広げる。 */
+const CHIP_HEIGHT = 20;
+const CHIP_HIT_SLOP = { ...hitSlopToMinimum(CHIP_HEIGHT), left: 6, right: 6 };
 
 /** 最後の行とホームインジケータの間に空ける余白（これにセーフエリアを足す）。 */
 const BOTTOM_GAP = 24;
@@ -75,23 +80,23 @@ export function PendingMessagesSheet({ visible, messages, onClose }: {
 const styles = StyleSheet.create({
 	chip: {
 		flexDirection: 'row', alignItems: 'center', gap: 5,
-		paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, marginLeft: 'auto',
+		minHeight: CHIP_HEIGHT, paddingHorizontal: 9, paddingVertical: 3, borderRadius: radius.pill, ...squircle, marginLeft: 'auto',
 	},
-	chipGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 999, overflow: 'hidden' },
-	chipDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: colors.yellow },
-	chipText: { color: colors.text, fontSize: 10.5, fontWeight: '600' },
+	chipGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius.pill, ...squircle, overflow: 'hidden' },
+	chipDot: { width: 5, height: 5, borderRadius: radius.pill, ...squircle, backgroundColor: colors.yellow },
+	chipText: { color: colors.text, fontSize: type.badge, fontWeight: '600' },
 	body: { paddingHorizontal: 20 },
-	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginBottom: 12 },
+	note: { color: colors.textDim, fontSize: type.meta, lineHeight: 18, marginBottom: 12 },
 	list: { gap: 8 },
 	row: {
 		flexDirection: 'row', alignItems: 'flex-start', gap: 9,
 		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
-		borderRadius: 13, paddingHorizontal: 12, paddingVertical: 10,
+		borderRadius: radius.card, ...squircle, paddingHorizontal: 12, paddingVertical: 10,
 	},
 	num: {
-		width: 18, height: 18, borderRadius: 9, borderWidth: 1, borderColor: colors.borderStrong,
+		width: 18, height: 18, borderRadius: radius.pill, ...squircle, borderWidth: 1, borderColor: colors.borderStrong,
 		alignItems: 'center', justifyContent: 'center', marginTop: 1,
 	},
-	numText: { color: colors.textDim, fontSize: 9.5, fontWeight: '700' },
-	rowText: { flex: 1, color: colors.text, fontSize: 12.5, lineHeight: 18 },
+	numText: { color: colors.textDim, fontSize: type.badge, fontWeight: '700' },
+	rowText: { flex: 1, color: colors.text, fontSize: type.meta, lineHeight: 18 },
 });

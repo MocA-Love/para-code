@@ -3,21 +3,26 @@
 /**
  * 変更ファイルのフルスクリーンビューア。
  * - テキスト: GitHub モバイルアプリ風の unified diff（行番号つき・緑/赤背景）
- * - .md / .html: 「Diff / レンダー」を切り替えられる（レンダーは現在の作業ツリーの内容）
+ * - .md / .html: 「プレビュー / 差分」を切り替えられる（プレビューは現在の作業ツリーの内容）
  * - .xlsx / .xlsm: PC側でレンダリングされたExcel差分HTML（HEAD vs 作業ツリー、セル色分け）を
- *   表示し、「レンダー」で現在のブックそのものも見られる。どちらもピンチ拡大縮小可
+ *   表示し、「プレビュー」で現在のブックそのものも見られる。どちらもピンチ拡大縮小可
+ * - 削除以外は、ヘッダーのボタンで実ファイルをファイルビューアで開ける（差分の上に重ねる）
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { buildMarkdownHtml } from './fileViewer.js';
-import { colors } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { monoFamily } from '../monoFont.js';
+import { alpha, colors, tint, type } from '../theme.js';
+import { hapticImpact } from '../haptics.js';
+import { EmptyState } from './emptyState.js';
+import { ViewerHeader } from './viewerHeader.js';
+import { WorkspaceFileViewer } from './workspaceFileViewer.js';
+import { useWorkspaceUnavailableReason } from '../hooks/useWorkspaceUnavailableReason.js';
 import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { parseUnifiedDiff } from './diffParser.js';
@@ -51,6 +56,12 @@ function currentRendererTarget(ws: string): string | undefined {
 }
 
 type ViewMode = 'diff' | 'render';
+
+/** 表示の切り替え。語はファイルビューア（`fileViewer.tsx`）とそろえる（左は同じ「プレビュー」）。 */
+const MODE_OPTIONS = [
+	{ value: 'render', label: 'プレビュー' },
+	{ value: 'diff', label: '差分' },
+] as const satisfies readonly { value: ViewMode; label: string }[];
 
 export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewProps) {
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
@@ -92,6 +103,8 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
 		: undefined;
 	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
+	const unavailable = useWorkspaceUnavailableReason(ws);
+	const deleted = statusLetter === 'D';
 	const name = path.split('/').pop() ?? path;
 	const officeKind = classifyMobileFileKind(name);
 	const kind = /\.(?:md|markdown)$/i.test(name) ? 'markdown'
@@ -102,7 +115,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	// 文書として読めるものは、開いた瞬間から読める形で出す（ファイルビューアも同じ既定）。
 	// 表計算はPC側が作る「セルの色分け差分」の方が情報量が多いのでDiffのまま。
 	// 削除されたファイルは作業ツリーに中身が無いのでレンダーできない。
-	const canRenderByDefault = (kind === 'markdown' || kind === 'html') && statusLetter !== 'D';
+	const canRenderByDefault = (kind === 'markdown' || kind === 'html') && !deleted;
 	const [mode, setMode] = useState<ViewMode>(canRenderByDefault ? 'render' : 'diff');
 	const [diffText, setDiffText] = useState<string | undefined>();
 	const [diffHtml, setDiffHtml] = useState<string | undefined>();
@@ -112,6 +125,8 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	// （fileViewer.tsx の FileViewer と同じ注意喚起をここでも出す）。
 	const [renderTruncated, setRenderTruncated] = useState(false);
 	const [error, setError] = useState<string | undefined>();
+	// 差分から開いた実ファイル（既存のファイルビューアを差分の上に重ねる）。
+	const [fileOpen, setFileOpen] = useState(false);
 	const contentIdentity = `${ws}\0${path}\0${staged}`;
 	const contentIdentityRef = useRef(contentIdentity);
 
@@ -199,47 +214,33 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 			onRequestClose={onClose}
 		>
 			<View style={styles.screen}>
-				<View style={[styles.header, { paddingTop: headerTop }]}>
-					<Ionicons name="git-compare-outline" size={16} color={colors.textDim} />
-					<Text style={styles.title} numberOfLines={1}>{path}</Text>
-					{/* レンダーを既定にすると「どれだけ変わったか」の手がかりが消えるので、
-					    増減行数はモードによらず出す（差分そのものはDiffに切り替えれば見られる）。 */}
-					{kind !== 'spreadsheet' && diffText !== undefined ? (
+				<ViewerHeader
+					icon="git-compare-outline"
+					title={path}
+					top={headerTop}
+					onClose={onClose}
+					// レンダーを既定にすると「どれだけ変わったか」の手がかりが消えるので、
+					// 増減行数はモードによらず出す（差分そのものは「差分」に切り替えれば見られる）。
+					accessory={kind !== 'spreadsheet' && diffText !== undefined ? (
 						<>
 							<Text style={styles.statAdd}>+{stats.add}</Text>
 							<Text style={styles.statDel}>-{stats.del}</Text>
 						</>
-					) : null}
-					{kind !== 'other' && kind !== 'officeUnavailable' ? (
-						// 並びはファイルビューアと揃える（左がレンダー）。
-						<View style={styles.segment}>
-							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('render'); }}>
-								<Text style={[styles.segmentText, mode === 'render' && styles.segmentTextActive]}>レンダー</Text>
-							</Pressable>
-							<Pressable style={[styles.segmentBtn, mode === 'diff' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('diff'); }}>
-								<Text style={[styles.segmentText, mode === 'diff' && styles.segmentTextActive]}>Diff</Text>
-							</Pressable>
-						</View>
-					) : null}
-					{presentedAsSheet ? (
-						<Pressable
-							onPress={requestToggleExpanded}
-							hitSlop={14}
-							accessibilityRole="button"
-							accessibilityLabel={expanded ? 'シート表示に戻す' : '全画面表示にする'}
-						>
-							<Ionicons name={expanded ? 'contract' : 'expand'} size={19} color={colors.textDim} />
-						</Pressable>
-					) : null}
-					<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">
-						<Ionicons name="close" size={22} color={colors.text} />
-					</Pressable>
-				</View>
-				{error ? <Text style={styles.error}>{error}</Text> : null}
+					) : undefined}
+					// 並びと語はファイルビューアとそろえる（左がプレビュー）。
+					segment={kind !== 'other' && kind !== 'officeUnavailable' ? { options: MODE_OPTIONS, value: mode, onChange: setMode } : undefined}
+					// 削除されたファイルは作業ツリーに無いので開けない。
+					actions={deleted ? undefined : [{ key: 'open', icon: 'document-text-outline', label: 'ファイルを開く', onPress: () => setFileOpen(true) }]}
+					expandable={presentedAsSheet}
+					expanded={expanded}
+					onToggleExpanded={requestToggleExpanded}
+				/>
 				{mode === 'render' && renderTruncated ? (
 					<Text style={styles.truncated}>サイズ上限のため先頭のみ表示しています</Text>
 				) : null}
-				{showWebView !== undefined ? (
+				{error !== undefined ? (
+					<EmptyState icon="alert-circle-outline" title={mode === 'render' ? 'プレビューを表示できませんでした' : '差分を表示できませんでした'} message={error} />
+				) : showWebView !== undefined ? (
 					// ペアリング済みワークスペースのHTMLはPC版と同様にスクリプト実行を許可する。
 					// xlsxは自前生成HTMLのシート切替スクリプトを実行する。
 					<WebView
@@ -249,11 +250,19 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 						javaScriptEnabled={isDiffViewerJavaScriptEnabled(kind === 'officeUnavailable' ? 'other' : kind)}
 						onShouldStartLoadWithRequest={guardWebViewNavigation}
 					/>
-				) : loading && !error ? (
-					<Text style={styles.dim}>読み込み中…</Text>
+				) : loading && unavailable !== undefined ? (
+					<EmptyState icon="cloud-offline-outline" title="読み込めません" message={`${unavailable}。接続が戻ると読み込みます`} />
+				) : loading ? (
+					<View style={styles.loadingBox}>
+						<ActivityIndicator color={colors.textDim} />
+						<Text style={styles.dim}>読み込み中…</Text>
+					</View>
+				) : rows.length === 0 && diffText !== undefined && diffText.trim() === '' ? (
+					<EmptyState icon="checkmark-circle-outline" title="差分はありません" />
 				) : (
 					<ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
-						{rows.length === 0 && diffText !== undefined ? <Text style={styles.dim}>{diffText.trim() || '差分はありません'}</Text> : null}
+						{/* 解析できる行が無い差分（バイナリなど）は、git の出力をそのまま見せる。 */}
+						{rows.length === 0 && diffText !== undefined ? <Text style={styles.raw}>{diffText.trim()}</Text> : null}
 						{rows.map((row, i) => {
 							if (row.kind === 'hunk') {
 								return (
@@ -279,43 +288,40 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 					</ScrollView>
 				)}
 			</View>
+			{/* 差分の上に重ねて実ファイルを開く。閉じると差分へ戻るので「‹ 差分」を出す。 */}
+			{fileOpen ? (
+				<WorkspaceFileViewer ws={ws} path={path} backLabel="差分" onClose={() => setFileOpen(false)} />
+			) : null}
 		</Modal>
 	);
 }
 
-const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
-
 const styles = StyleSheet.create({
-	screen: { flex: 1, backgroundColor: '#0d1117' },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
-	title: { flex: 1, color: colors.text, fontSize: 13, fontFamily: MONO },
-	statAdd: { color: '#3fb950', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
-	statDel: { color: '#f85149', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
-	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
-	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },
-	segmentBtnActive: { backgroundColor: 'rgba(9,175,217,.25)' },
-	segmentText: { color: colors.textDim, fontSize: 12 },
-	segmentTextActive: { color: colors.text, fontWeight: '600' },
+	screen: { flex: 1, backgroundColor: colors.bg },
+	// 増減の色は SCM の一覧と同じ add / del にそろえる。
+	statAdd: { color: colors.add, fontSize: type.meta, fontFamily: monoFamily, fontWeight: '700' },
+	statDel: { color: colors.del, fontSize: type.meta, fontFamily: monoFamily, fontWeight: '700' },
 	// WKWebView は初回ペイント前の既定背景が不透明白のため、開いた瞬間に白フラッシュする。
 	// fileViewer と同じく alpha 1.0 の backgroundColor を指定して初回ペイント前も暗く保つ
-	// （screen の地色 #0d1117 に揃える）。
-	web: { flex: 1, backgroundColor: '#0d1117' },
-	error: { color: colors.red, fontSize: 12, paddingHorizontal: 16, paddingVertical: 8 },
-	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
+	// （screen の地色 colors.bg に揃える）。
+	web: { flex: 1, backgroundColor: colors.bg },
+	truncated: { color: colors.yellow, fontSize: type.badge, paddingHorizontal: 16, paddingVertical: 4 },
 	body: { flex: 1 },
 	bodyContent: { paddingVertical: 8 },
-	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
+	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center' },
+	loadingBox: { alignItems: 'center', gap: 8, marginTop: 24 },
+	raw: { color: colors.textDim, fontSize: type.caption, fontFamily: monoFamily, paddingHorizontal: 16, paddingTop: 16 },
 	row: { flexDirection: 'row', alignItems: 'flex-start', minHeight: 20 },
-	hunkRow: { backgroundColor: 'rgba(56,139,253,0.12)', paddingHorizontal: 10, paddingVertical: 4, marginVertical: 4 },
-	hunkText: { color: '#58a6ff', fontSize: 11, fontFamily: MONO },
-	addRow: { backgroundColor: 'rgba(46,160,67,0.16)' },
-	delRow: { backgroundColor: 'rgba(248,81,73,0.14)' },
-	lineNo: { width: 34, textAlign: 'right', color: '#8b949e', fontSize: 10, fontFamily: MONO, paddingTop: 3, paddingRight: 4 },
-	addNum: { color: '#7ee2a8' },
-	delNum: { color: '#ffa198' },
-	sign: { width: 14, textAlign: 'center', fontSize: 11, fontFamily: MONO, paddingTop: 2 },
-	signAdd: { color: '#3fb950', fontWeight: '700' },
-	signDel: { color: '#f85149', fontWeight: '700' },
-	signCtx: { color: '#8b949e' },
-	code: { flex: 1, color: '#e6edf3', fontSize: 11, lineHeight: 17, fontFamily: MONO, paddingRight: 10, paddingTop: 2 },
+	hunkRow: { backgroundColor: tint(colors.accent, alpha.wash), paddingHorizontal: 10, paddingVertical: 4, marginVertical: 4 },
+	hunkText: { color: colors.accent, fontSize: type.caption, fontFamily: monoFamily },
+	addRow: { backgroundColor: tint(colors.add, alpha.wash) },
+	delRow: { backgroundColor: tint(colors.del, alpha.wash) },
+	lineNo: { width: 34, textAlign: 'right', color: colors.textDim, fontSize: type.badge, fontFamily: monoFamily, paddingTop: 3, paddingRight: 4 },
+	addNum: { color: colors.add },
+	delNum: { color: colors.del },
+	sign: { width: 14, textAlign: 'center', fontSize: type.caption, fontFamily: monoFamily, paddingTop: 2 },
+	signAdd: { color: colors.add, fontWeight: '700' },
+	signDel: { color: colors.del, fontWeight: '700' },
+	signCtx: { color: colors.textDim },
+	code: { flex: 1, color: colors.text, fontSize: type.caption, lineHeight: 17, fontFamily: monoFamily, paddingRight: 10, paddingTop: 2 },
 });
