@@ -3,11 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react-native';
-import { QUICK_REPLIES } from '../../agentConversationUx.js';
 import { formatToolName } from '../../agentToolMeta.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
 import { useAppIsActive } from '../../hooks/useAppIsActive.js';
+import { useQuickReplyList } from '../settings/quickRepliesStore.js';
 import type { PendingAgentMessage } from '../../pendingAgentMessages.js';
 import type { AgentLiveState } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
@@ -137,13 +137,29 @@ export function PendingMessagesDrawer({ visible, messages, onClose }: {
 }
 
 /**
- * 作業を終えたエージェントへの短い返信（旧部品 `components/agentQuickReplies.tsx` と同じ文言）。
+ * 作業を終えたエージェントへの短い返信。一覧は設定の「クイック返信」で変えられる（既定は
+ * 旧部品 `components/agentQuickReplies.tsx` と同じ文言）。0件にしたら行ごと出さない。
  * 押すと入力欄へ入るだけで送信はしない。出すかどうかは既存の `shouldShowQuickReplies`。
+ *
+ * 左右の余白は会話の本文（`chatItems` の行の `space.lg`）に揃える。先頭のチップの左端を
+ * 画面の縁に寄せすぎない。
  */
 export function QuickReplies({ onPick }: { onPick: (text: string) => void }) {
+	const replies = useQuickReplyList();
+	// 読み込む前（既定をちらっと見せない）と、0件にしたときは行ごと出さない。
+	if (replies === undefined || replies.length === 0) {
+		return null;
+	}
 	return (
-		<ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={styles.replies}>
-			{QUICK_REPLIES.map(reply => (
+		<ScrollView
+			horizontal
+			showsHorizontalScrollIndicator={false}
+			keyboardShouldPersistTaps="always"
+			contentInsetAdjustmentBehavior="never"
+			style={styles.repliesScroll}
+			contentContainerStyle={styles.replies}
+		>
+			{replies.map(reply => (
 				<Pressable
 					key={reply}
 					onPress={() => { hapticSelection(); onPick(reply); }}
@@ -152,7 +168,7 @@ export function QuickReplies({ onPick }: { onPick: (text: string) => void }) {
 					accessibilityRole="button"
 					accessibilityLabel={`「${reply}」を入力欄に入れる`}
 				>
-					<Text style={styles.replyText}>{reply}</Text>
+					<Text style={styles.replyText} numberOfLines={1}>{reply}</Text>
 				</Pressable>
 			))}
 		</ScrollView>
@@ -253,9 +269,12 @@ const styles = StyleSheet.create({
 		lineHeight: 20,
 		color: colors.text,
 	},
+	repliesScroll: {
+		flexGrow: 0,
+	},
 	replies: {
 		gap: space.sm,
-		paddingHorizontal: space.md,
+		paddingHorizontal: space.lg,
 		paddingVertical: 6,
 	},
 	reply: {

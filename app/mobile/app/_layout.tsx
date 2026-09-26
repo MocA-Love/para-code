@@ -17,6 +17,7 @@ import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { notificationDestination, notificationNavigationDecision } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
+import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 
 /**
  * 深いルート（通知から開いたセッションなど）をいきなり開いたときも、下にホームを敷く。
@@ -86,6 +87,8 @@ function RootLayout() {
 		startLiveActivitySync();
 		// セッションの開き方（会話表示かターミナル表示か）は、セッション画面を開く前に読み終えておく。
 		loadSessionViewSettings();
+		// 会話画面を開いた瞬間にクイック返信の行が遅れて出ないよう、起動時に読んでおく。
+		useQuickReplies.getState().load();
 	}, [init]);
 
 	const tryNavigate = useCallback(() => {
