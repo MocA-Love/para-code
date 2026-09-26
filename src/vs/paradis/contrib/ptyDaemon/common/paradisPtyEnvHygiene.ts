@@ -48,3 +48,23 @@ export function paradisWithoutPtyDaemonEnv(env: IProcessEnvironment): IProcessEn
 	}
 	return copy;
 }
+
+/**
+ * 受け継いだ内部用の変数を `env` から**その場で**消す。消した名前を返す。
+ *
+ * main プロセスが起動時に呼ぶ。Para Code のターミナルから起動された別の Para Code
+ * （開発版など）は、親のシェルに残っていた値を `process.env` に持ったまま起きることがある。
+ * それを放っておくと、main が起こす pty ホスト・拡張ホスト・shared process のすべてへ流れ、
+ * 自分のものではない常駐へ繋ぎに行く。main 自身はこれらの値を読まない（必要な値は起こす
+ * 瞬間にだけ渡す）ので、最初に消してしまってよい。
+ */
+export function paradisDeletePtyDaemonEnv(env: { [key: string]: string | undefined }): readonly string[] {
+	const removed: string[] = [];
+	for (const key of PARADIS_PTY_SHELL_EXCLUDED_ENV_KEYS) {
+		if (Object.prototype.hasOwnProperty.call(env, key)) {
+			delete env[key];
+			removed.push(key);
+		}
+	}
+	return removed;
+}

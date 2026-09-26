@@ -23,6 +23,7 @@ import { IReconnectConstants } from '../../../../platform/terminal/common/termin
 import { ElectronPtyHostStarter } from '../../../../platform/terminal/electron-main/electronPtyHostStarter.js';
 import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
+import { paradisDeletePtyDaemonEnv } from '../common/paradisPtyEnvHygiene.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
 import { ParadisScopedEnvPtyHostStarter } from './paradisScopedEnvPtyHostStarter.js';
@@ -109,6 +110,14 @@ export function paradisCreatePtyHostStarter(
 	logService: ILogService,
 	productService: IProductService,
 ): IPtyHostStarter {
+	// 親から受け継いだ常駐の内部用の変数は、どの分岐に進むにしても最初に消す。Para Code の
+	// ターミナルから起動された別の Para Code が、親の常駐の置き場所を持ったまま起きると、
+	// ここで起こす pty ホストや拡張ホストがそれを継いで親の常駐へ繋ぎに行く。
+	const inherited = paradisDeletePtyDaemonEnv(process.env);
+	if (inherited.length > 0) {
+		logService.info(`[ParadisPtyHost] ignoring inherited pty daemon variables: ${inherited.join(', ')}`);
+	}
+
 	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService);
 
 	// 更新をまたいで繋ぎ直せる薄い常駐。**pty ホストはアプリの中のまま**で、その中から常駐へ
