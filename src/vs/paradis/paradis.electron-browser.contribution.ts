@@ -60,6 +60,7 @@ import './contrib/heapSnapshot/electron-browser/paradisHeapSnapshot.contribution
 import './contrib/workspaceSwitch/electron-browser/paradisRemoteDefaultWorkspace.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentTunnel.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.js';
+import './contrib/agentBrowser/electron-browser/paradisAgentHooksSettings.contribution.js';
 import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mobileRelay/electron-browser/paradisRemoteTranscriptMirror.contribution.js';
 
 registerParadisRemoteTranscriptMirrorContribution();

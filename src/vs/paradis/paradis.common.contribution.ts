@@ -43,7 +43,6 @@ import './contrib/terminalWordSeparators/browser/paradisTerminalWordSeparators.c
 import './contrib/ptyDaemon/browser/paradisPtyDaemonSettings.contribution.js';
 import './contrib/spaceAccent/browser/paradisSpaceAccent.contribution.js';
 import './contrib/auxiliaryActivityBar/browser/paradisAuxiliaryActivityBar.contribution.js';
-import './contrib/agentBrowser/browser/paradisAgentHooksSettings.contribution.js';
 import './contrib/terminalEditorMenu/browser/paradisTerminalEditorMenu.contribution.js';
 import './contrib/terminalFontZoom/browser/paradisTerminalFontZoom.contribution.js';
 import './contrib/terminalLinkMenu/browser/paradisTerminalLinkMenu.contribution.js';

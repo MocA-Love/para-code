@@ -9,7 +9,11 @@
 // hook の自動設置の ON/OFF 設定と、オフにしたときの警告。
 //
 // 取り外しそのものは shared process（手元の ~/.claude・~/.codex）と、SSH で繋いでいるウィンドウ
-// （接続先）がそれぞれ設定の変化を見て行う。ここは「何が起きたか・何が弱くなるか」を伝えるだけ。
+// （接続先）がそれぞれ設定の変化を見て行う。ここは「何が起きるか・何が弱くなるか」を伝えるだけ。
+// 取り外しは別のプロセスで後から走るので、結果を待たずに「取り外します」と予告する。
+//
+// electron-browser に置く。取り外す側（shared process と SSH 接続先向けの処理）がデスクトップにしか
+// 無いため、Web ビルドでこの設定を出すと、オフにしても何も外れないのに外すと告げることになる。
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
@@ -20,6 +24,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
+import { paradisIsSettingsDialogOpen } from '../../paradisSettings/common/paradisSettingsDialogState.js';
 
 // 他の Para Code 設定と同じ id/title にして、設定 UI では1つの「Para Code」セクションにまとめる。
 const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
@@ -48,6 +53,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
  *
  * 設定の変化はすべてのウィンドウに届くので、**フォーカスのあるウィンドウだけ**が出す
  * （設定を変えた本人が見ているウィンドウ）。
+ *
+ * 「設定 (Para Code)」ダイアログの中で切り替えたときは通知を出さない。通知はダイアログの背景より
+ * 下の層に出るので、裏に隠れて「元に戻す」が押せない。その場合はダイアログの行の中に同じ内容を
+ * 出す（paradisSettingsDialog.ts の `offWarning`）。通知は設定エディタや settings.json から
+ * 変えたときだけ出る。
  */
 class ParadisAgentHooksSettingWarning extends Disposable implements IWorkbenchContribution {
 
@@ -68,7 +78,7 @@ class ParadisAgentHooksSettingWarning extends Disposable implements IWorkbenchCo
 			}
 			const wasEnabled = this.enabled;
 			this.enabled = this.readEnabled();
-			if (wasEnabled && !this.enabled && this.hostService.hasFocus) {
+			if (wasEnabled && !this.enabled && this.hostService.hasFocus && !paradisIsSettingsDialogOpen()) {
 				this.warnTurnedOff();
 			}
 		}));
@@ -82,7 +92,7 @@ class ParadisAgentHooksSettingWarning extends Disposable implements IWorkbenchCo
 		this.notificationService.prompt(
 			Severity.Warning,
 			// allow-any-unicode-next-line
-			localize('paradis.agentHooks.turnedOff', "Claude Code と Codex から、Para Code が設置した hook を取り外しました。エージェントの状態表示、完了・許可待ちの通知、モバイルへの通知、読み上げが弱くなります。あなた自身の hook はそのままです。"),
+			localize('paradis.agentHooks.turnedOff', "Claude Code と Codex から、Para Code が設置した hook を取り外します。エージェントの状態表示、完了・許可待ちの通知、モバイルへの通知、読み上げが弱くなります。あなた自身の hook はそのままです。"),
 			[{
 				// allow-any-unicode-next-line
 				label: localize('paradis.agentHooks.turnBackOn', "元に戻す"),
