@@ -6,6 +6,7 @@ import type { PendingAgentMessage } from '../pendingAgentMessages.js';
 import { BottomSheet } from './bottomSheet.js';
 import { GlassSurface } from './glassSurface.js';
 import { colors, radius, squircle, type } from '../theme.js';
+import { hitSlopToMinimum } from './hitSlop.js';
 import { hapticSelection } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 
@@ -24,7 +25,7 @@ export function PendingMessagesChip({ count, onPress }: { count: number; onPress
 		<Pressable
 			style={styles.chip}
 			onPress={() => { hapticSelection(); onPress(); }}
-			hitSlop={6}
+			hitSlop={CHIP_HIT_SLOP}
 			accessibilityRole="button"
 			accessibilityLabel={`送信予定 ${count}件。開いて内容を確認`}
 		>
@@ -36,6 +37,10 @@ export function PendingMessagesChip({ count, onPress }: { count: number; onPress
 		</Pressable>
 	);
 }
+
+/** チップの見た目の高さ（実行中インジケータの行に収まる大きさ）。当たり判定は 44pt へ広げる。 */
+const CHIP_HEIGHT = 20;
+const CHIP_HIT_SLOP = { ...hitSlopToMinimum(CHIP_HEIGHT), left: 6, right: 6 };
 
 /** 最後の行とホームインジケータの間に空ける余白（これにセーフエリアを足す）。 */
 const BOTTOM_GAP = 24;
@@ -75,7 +80,7 @@ export function PendingMessagesSheet({ visible, messages, onClose }: {
 const styles = StyleSheet.create({
 	chip: {
 		flexDirection: 'row', alignItems: 'center', gap: 5,
-		paddingHorizontal: 9, paddingVertical: 3, borderRadius: radius.pill, ...squircle, marginLeft: 'auto',
+		minHeight: CHIP_HEIGHT, paddingHorizontal: 9, paddingVertical: 3, borderRadius: radius.pill, ...squircle, marginLeft: 'auto',
 	},
 	chipGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius.pill, ...squircle, overflow: 'hidden' },
 	chipDot: { width: 5, height: 5, borderRadius: radius.pill, ...squircle, backgroundColor: colors.yellow },

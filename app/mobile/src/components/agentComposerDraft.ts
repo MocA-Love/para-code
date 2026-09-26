@@ -34,3 +34,17 @@ export function reconcileSubmittedDraftTarget(
 export function shouldShowSubmissionAlert(status: AgentMessageSendResult['status'], currentGeneration: number, submittedGeneration: number): boolean {
 	return status === 'consumed' || (status === 'rejected' && currentGeneration === submittedGeneration);
 }
+
+/**
+ * 質問への回答入力で、改行を空白に置き換える。回答はPCでキー列に直すときに1行へ平坦化される
+ * （agentQuestionKeys.ts の flattenText）ので、入力欄でも送られる形のまま見せる。
+ * 入力途中なので前後の空白は落とさない。改行を含まなければ同じ文字列を返す。
+ */
+export function flattenAnswerInput(text: string): string {
+	return /[\r\n]/.test(text) ? text.replace(/\r\n|[\r\n]/g, ' ') : text;
+}
+
+/** 添付画像の保存先パスを入力の末尾へ足す（前後を空白で区切る）。 */
+export function appendUploadedPath(current: string, path: string): string {
+	return current.length > 0 ? current + ' ' + path + ' ' : path + ' ';
+}

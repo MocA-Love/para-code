@@ -260,7 +260,7 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 						<View style={styles.dangerIconWrap}>
 							<View style={styles.dangerIcon}><Ionicons name="trash-outline" size={20} color={colors.red} /></View>
 						</View>
-						{/* 文言はホーム長押しの確認ダイアログ（terminalActionsMenu.tsx）と揃える */}
+						{/* 文言はホームの行メニューの確認ダイアログ（homeAgentActionsMenu.tsx）と揃える */}
 						<Text style={styles.confirmTitle}>ターミナルを削除しますか？</Text>
 						<Text style={styles.confirmBody}>「{title}」とPCの実ターミナルも閉じられます。この操作は取り消せません。</Text>
 						<View style={styles.dialogBtns}>
@@ -417,7 +417,15 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 										setSelectedWs(ws.id);
 									}
 									setSelectedTerminalKey(terminalKey);
-									closeThen(() => router.navigate('/terminal'));
+									// スタック画面から navigate するとタブ群がもう1枚積まれるので、畳んで既存の (tabs) へ戻す
+									// （会話画面のリンク行・iPad サイドバーの ipadSelectTab.ts と同じ作法）。
+									closeThen(() => {
+										if (router.canDismiss()) {
+											router.dismissTo('/terminal');
+											return;
+										}
+										router.navigate('/terminal');
+									});
 								}}
 							/>
 							<ActionButton

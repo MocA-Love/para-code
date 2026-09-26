@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, FlatList, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -11,7 +11,7 @@ import { ConnectionGate, useConnectionGateBlocked } from '../src/components/conn
 import { MarkdownText } from '../src/components/markdownText.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
 import { Button } from '../src/components/button.js';
-import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
+import { QuestionCard, QuestionGroupCard, type QuestionFreeTextRequest } from '../src/components/questionCard.js';
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentActivityCard.js';
 import { AgentTimeline } from '../src/components/agentTimeline.js';
@@ -19,7 +19,10 @@ import { ToolImageCards } from '../src/components/agentToolBodies.js';
 import { IOBlock } from '../src/components/agentIoBlock.js';
 import { formatToolName } from '../src/agentToolMeta.js';
 import { findLatestApprovalRequest } from '../src/components/attentionStack.js';
-import { AgentComposer } from '../src/components/agentComposer.js';
+import { AgentComposer, type AgentComposerHandle } from '../src/components/agentComposer.js';
+import { AGENT_LINKS_HEIGHT, AgentScreenLinks } from '../src/components/agentScreenLinks.js';
+import { AgentQuickReplies } from '../src/components/agentQuickReplies.js';
+import { nextAttentionAgent, pinnedQuestionIndex, shouldShowQuickReplies } from '../src/agentConversationUx.js';
 import { AgentInfoSheet } from '../src/components/agentInfoSheet.js';
 import { PendingMessagesChip, PendingMessagesSheet } from '../src/components/pendingMessages.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgentMessages.js';
@@ -29,14 +32,14 @@ import { useKeyboardCoverage, useKeyboardVisible } from '../src/hooks/useKeyboar
 import { useIsRegularWidth } from '../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useOfflineNotice } from '../src/offlineNotice.js';
-import { useParaHeader, useParaHeaderHeight, PARA_HEADER_HIDDEN, type ParaHeaderIcon } from '../src/paraHeader.js';
+import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
 import { NativeScreenHeader, NATIVE_BAR_HEIGHT } from '../src/components/nativeHeaderItems.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
-import { alpha, colors, radius, squircle, tint, type } from '../src/theme.js';
+import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
-import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
+import { createAgentLatestEntryToken, resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
 import { AgentInitialRevealGate } from '../src/agentInitialReveal.js';
 import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 
@@ -58,7 +61,7 @@ import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { terminals, workspaces, activeWs, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
+	const { terminals, workspaces, activeWs, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey, setSelectedWs, setSelectedTerminalKey, scmStatus } = useAppStore(useShallow(s => ({
 		// **workspace 本体ではなく部分を購読する。** state 全体の参照は revision が進む限り毎回
 		// 新しくなる（`workspaceIdentity.ts`）ので、本体を選ぶと裏に回った（非フォーカスの）この画面が
 		// PC再送（最大10Hz）のたびに再レンダーし続け、ヘッダー options の再生成＝バーの全項目
@@ -74,6 +77,7 @@ export default function AgentDetailScreen() {
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, requestAgentCommandCatalog: s.requestAgentCommandCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
 		browserTargets: s.browserTargets, setViewingTerminalKey: s.setViewingTerminalKey,
+		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey, scmStatus: s.scmStatus,
 	})));
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
@@ -216,11 +220,10 @@ export default function AgentDetailScreen() {
 			.catch(() => undefined);
 		return () => { cancelled = true; };
 	}, [agentToken, connection, pcOnline, sessionProtocolReady, browserTargets]);
-	// **参照を安定させる。** 素の関数のままだと毎レンダー新しい関数になり、下の headerActions の
-	// useMemo が常に切れて NativeScreenHeader の options 再生成（＝バーの全項目付け替え）が
-	// 遷移のたびに走る。iOS 26 の標準バーは push/pop の開始時点で新旧バー項目の対応付けを
-	// 確定させるため、遷移と同刻の全付け替えはモーフ不発・ボタン消失の原因になる
-	// （経緯は `nativeHeaderItems.tsx` と `screenHeader.tsx` の説明を読むこと）。
+	// **参照を安定させる。** ブラウザはヘッダー直下のリンク行と情報シートから開く。以前はヘッダーの
+	// 地球ボタンにも渡しており、参照が毎レンダー変わると NativeScreenHeader の options 再生成
+	// （＝バーの全項目付け替え）が遷移のたびに走ってモーフ不発・ボタン消失の原因になった
+	// （経緯は `nativeHeaderItems.tsx` と `screenHeader.tsx` の説明を読むこと）。ヘッダーへ戻すときのために安定させておく。
 	// deps はプリミティブと安定参照だけ: router は useRouter() の返却値で安定、agentToken は文字列。
 	const openBrowser = useCallback(() => {
 		hapticSelection();
@@ -238,8 +241,8 @@ export default function AgentDetailScreen() {
 			: { pathname: '/agent-activity', params: { terminalKey: activeKey, epoch: chat?.epoch ?? '' } });
 	};
 
-	// ヘッダーの仕様。左は‹の丸、中央はタイトル（押すと情報シート）、右は地球の丸1つ。
-	// ホームの［島］［4連ピル］からここへ push すると、層が枠を補間して融合する。
+	// ヘッダーの仕様。左は‹の丸、中央はタイトル（押すと情報シート）。右の地球の丸（ブラウザ）は
+	// ヘッダー直下のリンク行（ターミナル / 変更 / ブラウザ）と役目が重なるので置かない。
 	const headerTitle = activeTerminal?.title ?? 'エージェント';
 	const headerSub = offline?.text
 		?? (agentWs !== undefined ? `${agentWs.name}${agentWs.branch ? ` · ${agentWs.branch}` : ''}` : undefined);
@@ -247,14 +250,6 @@ export default function AgentDetailScreen() {
 	// **戻るボタンは渡さない。** ホームの島がこの丸へ形ごと変わる動きは、UIKitが
 	// 「バー項目の集合が変わった」と見なして自分で描くもので、自前の丸を置くとその
 	// 対応付けから外れる（`nativeHeaderItems.tsx` の説明を読むこと）。
-	const headerActions = useMemo<ParaHeaderIcon[]>(() => [{
-		key: 'browser',
-		icon: 'globe-outline',
-		label: 'ブラウザを開く',
-		onPress: openBrowser,
-		// 共有中のページがあれば緑の点で示す。
-		...(hasSharedPage ? { badge: 'green' as const } : {}),
-	}], [openBrowser, hasSharedPage]);
 	const openInfo = useCallback(() => { hapticSelection(); setInfoOpen(true); }, []);
 	// 自前のヘッダー層は使わない。伏せておかないと、この画面でも層が描かれて二重になる。
 	// バーの宣言は下の JSX（`NativeScreenHeader`）で行う——`setOptions` を effect でやると
@@ -319,6 +314,133 @@ export default function AgentDetailScreen() {
 		flush();
 		return result;
 	}, [chat?.messages]);
+
+	// **回答カードの置き場は1つ。** そのエージェントがいま待っている質問は会話の中ではなく
+	// コンポーザーの直上に1枚だけ固定する（会話の中に置くとスクロールで見失い、答える場所が
+	// 2か所に分かれる）。固定した行は会話から外し、回答済みの質問だけを履歴として残す。
+	// 承認は interaction が質問と排他なので、承認が出ている間は質問を固定しない（承認が優先）。
+	const interactionKind = chat?.interaction?.kind;
+	const interactionId = chat?.interaction?.id;
+	const agentStatus = activeTerminal?.agentStatus;
+	const { pinnedRow, listRows } = useMemo(() => {
+		const index = pinnedQuestionIndex(
+			rows.map(row => row.type === 'question'
+				? { interactionId: row.m.questionGroup ?? row.m.toolUseId, answered: row.answered }
+				: row.type === 'questionGroup'
+					? { interactionId: row.msgs[0]?.questionGroup ?? row.msgs[0]?.toolUseId, answered: row.answered }
+					: undefined),
+			interactionKind !== undefined && interactionId !== undefined ? { kind: interactionKind, id: interactionId } : undefined,
+			agentStatus,
+		);
+		const pinned = index >= 0 ? rows[index] : undefined;
+		return { pinnedRow: pinned, listRows: pinned !== undefined ? rows.filter(row => row !== pinned) : rows };
+	}, [rows, interactionKind, interactionId, agentStatus]);
+	const pinnedQuestion = pinnedRow?.type === 'question' || pinnedRow?.type === 'questionGroup' ? pinnedRow : undefined;
+	const pinnedQuestionId = pinnedQuestion?.type === 'question'
+		? pinnedQuestion.m.questionGroup ?? pinnedQuestion.m.toolUseId
+		: pinnedQuestion?.type === 'questionGroup' ? pinnedQuestion.msgs[0]?.questionGroup ?? pinnedQuestion.msgs[0]?.toolUseId : undefined;
+	// PCは質問を待っていると言っているのに、その行がまだ届いていない。
+	const questionWithoutRow = interactionKind === 'question' && pinnedQuestion === undefined;
+
+	// 質問カードの「その他（入力して回答）」で、コンポーザーを回答入力に切り替える依頼。
+	// 固定している質問への依頼のときだけ有効にする（質問が替わったら自然に通常の入力へ戻る）。
+	const composerRef = useRef<AgentComposerHandle>(null);
+	const [answerRequest, setAnswerRequest] = useState<QuestionFreeTextRequest | undefined>(undefined);
+	const requestFreeText = useCallback((request: QuestionFreeTextRequest | undefined) => {
+		if (request === undefined) {
+			setAnswerRequest(undefined);
+			return;
+		}
+		setAnswerRequest({
+			...request,
+			// 受け付けられたら通常の入力へ戻す（コンポーザーが外していた書きかけの下書きを入力欄へ戻す）。
+			// 拒否ならそのまま（本文は入力欄へ戻り、理由はカードに出る）。
+			submit: text => request.submit(text).then(result => {
+				if (result.status !== 'rejected') {
+					setAnswerRequest(current => current?.id === request.id ? undefined : current);
+				}
+				return result;
+			}),
+		});
+		composerRef.current?.focus();
+	}, []);
+	// 「やめる」: 回答入力を閉じる。入力中の回答は捨て、書きかけの下書きを入力欄へ戻す（コンポーザー側）。
+	const cancelAnswer = useCallback(() => setAnswerRequest(undefined), []);
+	const activeAnswerRequest = answerRequest !== undefined && pinnedQuestionId !== undefined
+		&& (answerRequest.id === pinnedQuestionId || answerRequest.id.startsWith(`${pinnedQuestionId}:`))
+		? answerRequest
+		: undefined;
+	const insertQuickReply = useCallback((text: string) => composerRef.current?.insertText(text), []);
+
+	// ヘッダー直下のリンク行: このエージェントのターミナル / このスペースのソース管理 / ブラウザ。
+	// タブへ移るときはスタックを畳んで既存の (tabs) へ戻す（`navigate` だとタブ群がもう1枚積まれる。
+	// iPad サイドバーのタブ切り替え `ipadSelectTab.ts` と同じ作法）。
+	const goToTab = (href: '/terminal' | '/scm') => {
+		if (router.canDismiss()) {
+			router.dismissTo(href);
+			return;
+		}
+		router.navigate(href);
+	};
+	const openTerminal = () => {
+		hapticSelection();
+		// ターミナルタブは selectedWs で絞ってから selectedTerminalKey を引くので両方を合わせる。
+		// setSelectedWs は selectedTerminalKey をリセットするため、他の遷移元と同じくこの順序を厳守する。
+		if (agentWs !== undefined) {
+			setSelectedWs(agentWs.id);
+		}
+		if (activeKey !== undefined) {
+			setSelectedTerminalKey(activeKey);
+		}
+		goToTab('/terminal');
+	};
+	const openChanges = () => {
+		hapticSelection();
+		if (agentWs !== undefined) {
+			setSelectedWs(agentWs.id);
+		}
+		if (activeKey !== undefined) {
+			setSelectedTerminalKey(activeKey);
+		}
+		goToTab('/scm');
+	};
+	// 「変更」に添える件数。表示補助なので取得失敗は無視して件数無しにする。画面に戻ったときと、
+	// エージェントの状態が変わったとき（作業を終えた等）に取り直す。
+	const agentWsId = agentWs?.id;
+	const [changeCount, setChangeCount] = useState<{ ws: string; count: number } | undefined>(undefined);
+	useFocusEffect(useCallback(() => {
+		if (agentWsId === undefined || connection !== 'online' || !pcOnline || !sessionProtocolReady) {
+			return;
+		}
+		let cancelled = false;
+		scmStatus(agentWsId)
+			.then(result => {
+				if (!cancelled) {
+					setChangeCount({ ws: agentWsId, count: result.files.length });
+				}
+			})
+			.catch(() => undefined);
+		return () => { cancelled = true; };
+	}, [agentWsId, connection, pcOnline, sessionProtocolReady, scmStatus, agentStatus]));
+	// 他のエージェントの要対応。押すとホームへ戻らずに次の1件を開く（この画面のまま対象を差し替える）。
+	const attention = nextAttentionAgent(allTerminals, activeKey);
+	const goNextAttention = () => {
+		const next = attention.next;
+		if (next === undefined) {
+			return;
+		}
+		hapticSelection();
+		const nextWs = next.ws ?? activeWs;
+		if (nextWs !== undefined) {
+			setSelectedWs(nextWs);
+		}
+		setSelectedTerminalKey(next.terminalKey);
+		// 開いた直後は最新の位置から見せる（ホームから開いたときと同じ）。
+		router.setParams({ latest: createAgentLatestEntryToken() });
+	};
+	const linksHeight = activeTerminal !== undefined ? AGENT_LINKS_HEIGHT : 0;
+	// ヘッダーとリンク行を合わせた、会話の上に重なる帯の高さ。
+	const topInset = headerHeight + linksHeight;
 
 	useEffect(() => {
 		if (activeKey === undefined) {
@@ -448,6 +570,60 @@ export default function AgentDetailScreen() {
 		}
 	};
 
+	// コンポーザー直上に固定する回答カード。再取得中もカードは差し替えず、無効化だけする
+	// （別のViewへ入れ替えると送信中・失敗理由といったカード側のローカル状態が消える）。
+	const pinnedCard = activeKey === undefined ? undefined
+		: approval !== undefined ? (
+			<ApprovalCard
+				key={approval.id}
+				interactionId={approval.id}
+				onApprove={actions.approve}
+				title={approval.title}
+				detail={approval.detail ?? findLatestApprovalRequest(chat)}
+				choices={approval.choices}
+				refreshing={refreshing}
+			/>
+		) : approvalUnavailable ? (
+			<View style={styles.approvalSyncing}>
+				<Text style={styles.approvalSyncingText}>PCで内容を確認してください</Text>
+				<Text style={styles.approvalSyncingHint}>許可の内容を取得できていないため、ここからは回答できません</Text>
+			</View>
+		) : pinnedQuestion?.type === 'question' ? (
+			<QuestionCard
+				key={pinnedQuestion.m.questionGroup ?? pinnedQuestion.m.toolUseId ?? pinnedQuestion.m.rev}
+				message={pinnedQuestion.m}
+				answered={false}
+				refreshing={refreshing}
+				onAnswer={actions.answerQuestion}
+				onMulti={actions.answerQuestionMulti}
+				onFreeText={actions.answerQuestionFreeText}
+				onRequestFreeText={requestFreeText}
+				freeTextActive={activeAnswerRequest !== undefined}
+			/>
+		) : pinnedQuestion?.type === 'questionGroup' ? (
+			<QuestionGroupCard
+				key={pinnedQuestion.key}
+				messages={pinnedQuestion.msgs}
+				answered={false}
+				refreshing={refreshing}
+				onSubmit={actions.answerQuestionGroup}
+				onRequestFreeText={requestFreeText}
+				freeTextActiveId={activeAnswerRequest?.id}
+			/>
+		) : questionWithoutRow ? (
+			<View style={styles.approvalSyncing}>
+				<Text style={styles.approvalSyncingText}>質問の内容を読み込んでいます…</Text>
+				<Text style={styles.approvalSyncingHint}>表示されない場合は、ターミナルで回答してください</Text>
+			</View>
+		) : undefined;
+	const showQuickReplies = shouldShowQuickReplies({
+		agentStatus,
+		working: workingVisible,
+		hasPinnedCard: pinnedCard !== undefined,
+		chatReady,
+		answering: activeAnswerRequest !== undefined,
+	});
+
 	return (
 		<>
 		{/* **ゲートの外に置く。** 中に入れるとゲートが閉じた瞬間にこれ自体が外れ、
@@ -459,7 +635,6 @@ export default function AgentDetailScreen() {
 			chevron={activeTerminal !== undefined}
 			label={`${headerTitle}${headerSub !== undefined ? `、${headerSub}` : ''}`}
 			onTitlePress={activeTerminal === undefined ? undefined : openInfo}
-			actions={headerActions}
 			hidden={gated}
 			translucent
 		/>
@@ -474,13 +649,13 @@ export default function AgentDetailScreen() {
 			{/* minHeight: スラッシュメニュー等でinputBarが伸びても、チャット領域が
 			    ヘッダー（＋Subagentストリップ表示中はその帯）より上まで潰れないようにする下限。
 			    これによりinputBar側（flexShrink: 1）が縮み、メニューはヘッダー/ストリップの下に収まる */}
-			<View style={[styles.chatArea, { minHeight: headerHeight + (hasActivityHistory ? 54 : 8) }]}>
+			<View style={[styles.chatArea, { minHeight: topInset + (hasActivityHistory ? 54 : 8) }]}>
 				{activeKey === undefined ? (
-					<Text style={[styles.placeholder, { marginTop: headerHeight }]}>ターミナルがありません。ターミナルタブから作成し、claude / codex を起動してください。</Text>
+					<Text style={[styles.placeholder, { marginTop: topInset }]}>ターミナルがありません。ターミナルタブから作成し、claude / codex を起動してください。</Text>
 				) : chat === undefined ? (
-					<Text style={[styles.placeholder, { marginTop: headerHeight }]}>読み込み中…</Text>
+					<Text style={[styles.placeholder, { marginTop: topInset }]}>読み込み中…</Text>
 				) : chat.none ? (
-					<View style={[styles.noneBox, { marginTop: headerHeight }]}>
+					<View style={[styles.noneBox, { marginTop: topInset }]}>
 						<Text style={styles.placeholder}>
 							このターミナルのエージェントセッションが見つかりません。{'\n\n'}
 							claude / codex をこのターミナルで起動（または一度発言）すると表示されます。
@@ -496,7 +671,7 @@ export default function AgentDetailScreen() {
 						// 参照が変わるとFlatListごと再描画されるためStyleSheetの定数を出し分ける。
 						style={listRevealed ? styles.listShown : styles.listHidden}
 						pointerEvents={listRevealed ? 'auto' : 'none'}
-						data={rows}
+						data={listRows}
 						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={<>{chat.activity !== undefined && !hasActiveActivity ? <AgentActivityCard activity={chat.activity} onOpen={openAgentActivity} /> : null}{chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}</>}
 						ListFooterComponent={workingVisible
@@ -504,11 +679,14 @@ export default function AgentDetailScreen() {
 							: null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} terminalKey={activeKey} />
-								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} refreshing={refreshing} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
-								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} refreshing={refreshing} onSubmit={actions.answerQuestionGroup} />
+								// 会話の中の質問は履歴として出すだけ。いま待っている質問はコンポーザーの上に固定して
+								// ここから外してあるので、残っている未回答の質問は PC がもう待っていないもの
+								// （readOnly のカードが「PC で回答済み、または対象外になりました」と添える）。
+								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} readOnly={!item.answered} refreshing={refreshing} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
+								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} readOnly={!item.answered} refreshing={refreshing} onSubmit={actions.answerQuestionGroup} />
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
 									: <AgentTimeline msgs={item.msgs} terminalKey={activeKey} />}
-						contentContainerStyle={[styles.listContent, regular && styles.readingColumn, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
+						contentContainerStyle={[styles.listContent, regular && styles.readingColumn, { paddingTop: topInset + (hasActivityHistory ? 52 : 6) }]}
 						// **iOSの自動調整を切る。** 既定（`automatic`）だとナビバーのぶんの
 						// `contentInset` をOSが勝手に足すので、`headerTransparent` で枠をバーの
 						// 背後まで伸ばしても**中身だけがバーの下へ押し出される**。その結果、
@@ -517,7 +695,7 @@ export default function AgentDetailScreen() {
 						// `paddingTop` で自分で持っているので、OSの調整は要らない。
 						contentInsetAdjustmentBehavior="never"
 						// 本文はバーの背後から始まるので、スクロールバーの上端はバーの下へずらす。
-						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
+						scrollIndicatorInsets={{ top: topInset - insets.top }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
 						onScrollBeginDrag={onScrollBeginDrag}
@@ -552,38 +730,50 @@ export default function AgentDetailScreen() {
 			    本文より明るくなって下端に境目が出た。地色のグラデーション
 			    （`headerEdgeFade.tsx`。自前ヘッダー層がやっていたこと）も、タイトルの高さで
 			    透けきってしまい文字の裏に会話が読めた。**帯と同じものを敷くのが答え。** */}
-			<View style={[styles.headerGlass, { height: headerHeight }]} pointerEvents="none">
+			<View style={[styles.headerGlass, { height: topInset }]} pointerEvents="none">
 				<GlassSurface style={StyleSheet.absoluteFill} pointerEvents="none" />
 			</View>
 
+			{/* ヘッダー直下のリンク行（ターミナル / 変更 / ブラウザ）と「要対応 あと N 件」。
+			    ガラスの板はこの行の下端まで敷いてあるので、会話はこの行の裏を流れる。 */}
+			{activeTerminal !== undefined ? (
+				<View style={[styles.linksOverlay, regular && styles.overlayCenter, { top: headerHeight }]}>
+					<View style={regular ? styles.overlayColumnFlush : styles.linksFull}>
+						<AgentScreenLinks
+							onTerminal={openTerminal}
+							onChanges={openChanges}
+							changeCount={changeCount !== undefined && changeCount.ws === agentWsId ? changeCount.count : undefined}
+							onBrowser={openBrowser}
+							browserShared={hasSharedPage}
+							attentionCount={attention.count}
+							onNextAttention={goNextAttention}
+						/>
+					</View>
+				</View>
+			) : null}
+
 			{hasActivityHistory && chat?.activity !== undefined ? (
-				<View style={[styles.activityStripOverlay, regular && styles.overlayCenter, { top: headerHeight + 4 }]}>
+				<View style={[styles.activityStripOverlay, regular && styles.overlayCenter, { top: topInset + 4 }]}>
 					{regular
 						? <View style={styles.overlayColumn}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View>
 						: <AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} />}
 				</View>
 			) : null}
 
-			{approval !== undefined && activeKey !== undefined ? (
-				<View style={[styles.approvalBarWrap, regular && styles.readingColumn, regular && styles.approvalBarWrapRegular]}>
-					{/* 再取得中もカードは差し替えず、無効化だけする。別のViewへ入れ替えると
-					    送信中・失敗理由といったカード側のローカル状態が消える。 */}
-					<ApprovalCard
-						key={approval.id}
-						interactionId={approval.id}
-						onApprove={actions.approve}
-						title={approval.title}
-						detail={approval.detail ?? findLatestApprovalRequest(chat)}
-						choices={approval.choices}
-						refreshing={refreshing}
-					/>
+			{/* コンポーザー直上の回答カード（1枚だけ）。承認 → 質問の順に優先する。
+			    カードが長いときは枠の中でスクロールさせ、キーボード表示中は枠ごと縮めて
+			    コンポーザーを押し出さない（`flexShrink`）。 */}
+			{pinnedCard !== undefined ? (
+				<View style={[styles.approvalBarWrap, styles.pinnedWrap, regular && styles.readingColumn, regular && styles.approvalBarWrapRegular]}>
+					<ScrollView style={styles.pinnedScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+						{pinnedCard}
+					</ScrollView>
 				</View>
-			) : approvalUnavailable && activeKey !== undefined ? (
-				<View style={[styles.approvalBarWrap, regular && styles.readingColumn, regular && styles.approvalBarWrapRegular]}>
-					<View style={styles.approvalSyncing}>
-						<Text style={styles.approvalSyncingText}>PCで内容を確認してください</Text>
-						<Text style={styles.approvalSyncingHint}>許可の内容を取得できていないため、ここからは回答できません</Text>
-					</View>
+			) : null}
+
+			{showQuickReplies ? (
+				<View style={[styles.quickRow, regular && styles.readingColumn]}>
+					<AgentQuickReplies onPick={insertQuickReply} />
 				</View>
 			) : null}
 
@@ -637,6 +827,10 @@ export default function AgentDetailScreen() {
 					requestAgentModelCatalog={requestAgentModelCatalog}
 					requestAgentCommandCatalog={requestAgentCommandCatalog}
 					updateAgentSettings={updateAgentSettings}
+					ref={composerRef}
+					answerTarget={activeAnswerRequest}
+					onCancelAnswer={cancelAnswer}
+					answerRefreshing={refreshing}
 				/>
 			</View>
 		</View>
@@ -815,6 +1009,12 @@ function WorkingIndicator({ live, pendingCount = 0, onOpenPending }: {
 	);
 }
 
+/**
+ * コンポーザー直上の回答カードの高さの上限。質問の選択肢が多いと画面の半分以上を占め、
+ * 会話がほとんど見えなくなるので、超えたぶんはカードの中でスクロールさせる。
+ */
+const PINNED_CARD_MAX_HEIGHT = 380;
+
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	activityStripOverlay: { position: 'absolute', left: 12, right: 12, zIndex: 9 },
@@ -858,8 +1058,17 @@ const styles = StyleSheet.create({
 	webWrap: { marginVertical: 2 }, webRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, paddingVertical: 8, borderRadius: radius.card, ...squircle, backgroundColor: tint(colors.accent, alpha.faint), borderWidth: StyleSheet.hairlineWidth, borderColor: tint(colors.accent, alpha.wash) },
 	// faviconImage（14pt）は key(6) だと円に近づくため、faviconLetter は22ptの固定枠の中の頭文字なので、どちらも元の値のまま。
 	faviconStack: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 }, favicon: { width: 22, height: 22, borderRadius: radius.key, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: -5, overflow: 'hidden' }, faviconImage: { width: 14, height: 14, borderRadius: 3 }, faviconLetter: { color: colors.textDim, fontSize: 9, fontWeight: '800' },
-	webBody: { flex: 1, minWidth: 0 }, webLabel: { color: colors.accent2, fontSize: type.badge, fontWeight: '700' }, webQuery: { color: colors.text, fontSize: type.caption, marginTop: 1 }, domainRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }, domainText: { color: colors.textDim, fontSize: type.badge },
+	webBody: { flex: 1, minWidth: 0 }, webLabel: { color: colors.accent2, fontSize: type.badge, fontWeight: '700' }, webQuery: { color: colors.text, fontSize: type.caption, marginTop: 1 }, domainRow: { minHeight: HIT_SIZE, flexDirection: 'row', alignItems: 'center', gap: 8 }, domainText: { color: colors.textDim, fontSize: type.badge },
 	approvalBarWrap: { marginHorizontal: 12, marginTop: 8 },
+	// 回答カードの枠。長いカードは中でスクロールさせ、キーボードで空きが減ったら枠ごと縮む。
+	pinnedWrap: { flexShrink: 1 },
+	pinnedScroll: { flexGrow: 0, flexShrink: 1, maxHeight: PINNED_CARD_MAX_HEIGHT },
+	// クイック返信のチップ列（コンポーザーの上）。
+	quickRow: { paddingHorizontal: 12, paddingTop: 6 },
+	// ヘッダー直下のリンク行。ガラスの板の上に載るので地は持たない（zIndex は帯と同じ層）。
+	linksOverlay: { position: 'absolute', left: 0, right: 0, zIndex: 9 },
+	linksFull: { width: '100%' },
+	overlayColumnFlush: { width: '100%', maxWidth: CONTENT_MAX_WIDTH },
 	approvalSyncing: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: radius.card, ...squircle, paddingVertical: 12, paddingHorizontal: 14, gap: 4 },
 	approvalSyncingText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	approvalSyncingHint: { color: colors.textDim, fontSize: type.meta, lineHeight: 17 },
@@ -873,7 +1082,7 @@ const styles = StyleSheet.create({
 	workingPreview: { color: colors.text, fontSize: type.meta, lineHeight: 18, minHeight: 36, marginLeft: 4, opacity: 0.82 },
 	jumpWrap: { position: 'absolute', bottom: 12, right: 14 },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（他のglassボタンと同じ流儀）
-	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: 40, height: 40, borderRadius: radius.pill, ...squircle, paddingHorizontal: 12, overflow: 'hidden' },
+	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: HIT_SIZE, height: HIT_SIZE, borderRadius: radius.pill, ...squircle, paddingHorizontal: 12, overflow: 'hidden' },
 	jumpText: { color: colors.text, fontSize: type.meta, fontWeight: '600' },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10, flexShrink: 1 },
 	// 実行中インジケータが出ていないときの送信予定チップ（右寄せで入力欄の上）

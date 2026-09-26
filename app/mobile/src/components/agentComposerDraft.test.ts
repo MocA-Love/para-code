@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { reconcileSubmittedDraft, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
+import { appendUploadedPath, flattenAnswerInput, reconcileSubmittedDraft, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
 
 describe('reconcileSubmittedDraft', () => {
 	it('keeps text typed after a successful send without resending the submitted prefix', () => {
@@ -28,5 +28,24 @@ describe('reconcileSubmittedDraft', () => {
 	it('still reports a consumed-but-unexecuted paste after navigation', () => {
 		expect(shouldShowSubmissionAlert('consumed', 2, 1)).toBe(true);
 		expect(shouldShowSubmissionAlert('rejected', 2, 1)).toBe(false);
+	});
+});
+
+describe('flattenAnswerInput', () => {
+	it('turns line breaks into spaces so the answer looks the way the PC will send it', () => {
+		expect(flattenAnswerInput('一行目\n二行目')).toBe('一行目 二行目');
+		expect(flattenAnswerInput('a\r\nb\rc')).toBe('a b c');
+	});
+
+	it('returns the same string when there is no line break (keeps trailing spaces while typing)', () => {
+		const text = '入力中 ';
+		expect(flattenAnswerInput(text)).toBe(text);
+	});
+});
+
+describe('appendUploadedPath', () => {
+	it('separates the path from existing text with spaces', () => {
+		expect(appendUploadedPath('', '/tmp/a.jpg')).toBe('/tmp/a.jpg ');
+		expect(appendUploadedPath('見て', '/tmp/a.jpg')).toBe('見て /tmp/a.jpg ');
 	});
 });
