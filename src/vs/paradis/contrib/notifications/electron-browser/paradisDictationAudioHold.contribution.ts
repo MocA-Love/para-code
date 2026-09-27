@@ -10,9 +10,13 @@
 // （q.html Q38 案A「読み上げが話している間は、声を拾わないよう読み上げを止めます」）。
 //
 // 音声入力はチャット・エディタ・ターミナルのどの入口から始めても、内蔵エンジンなら
-// IChatSpeechToTextService を通る。マイクはモデルの準備中から開いているので、状態が Idle 以外、
-// または開始・停止の途中（isBusy）の間を「音声入力中」とみなす。拡張機能（vscode-speech 等）の
-// 音声入力は ISpeechService のセッションで見る。
+// IChatSpeechToTextService を通る。状態が Idle 以外か、モデルの準備中（マイクはこの間も開いている）を
+// 「音声入力中」とみなす。拡張機能（vscode-speech 等）の音声入力は ISpeechService のセッションで見る。
+//
+// `isBusy` は使わない。upstream は停止の途中（_pendingStop / _startInProgress）も busy に数えるが、
+// それが消えるときにはイベントを出さないので、Idle の知らせの時点で busy が残っていると
+// 「音声入力中」から戻れなくなる（読み上げと通知音がアプリ全体で止まったままになる）。
+// ここで見るのは、変わるたびに必ずイベントが出る値だけにする。
 //
 // 外部の aivis-mcp（ターミナルのエージェントが直接喋らせるもの）はここでは止めない。止める口
 // （`aivis --mute`）はおやすみモードと共有で、解除のときにおやすみモードやユーザー自身のミュートまで
@@ -26,15 +30,18 @@ import { ChatSpeechToTextState, IChatSpeechToTextService } from '../../../../wor
 import { ISpeechService } from '../../../../workbench/contrib/speech/common/speechService.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 
-class ParadisDictationAudioHold extends Disposable implements IWorkbenchContribution {
+export type ParadisDictationSpeechToText = Pick<IChatSpeechToTextService, 'state' | 'isPreparingModel' | 'onDidChangeState' | 'onDidChangePreparingModel'>;
+export type ParadisDictationSpeech = Pick<ISpeechService, 'hasActiveSpeechToTextSession' | 'onDidStartSpeechToTextSession' | 'onDidEndSpeechToTextSession'>;
+
+export class ParadisDictationAudioHold extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisDictationAudioHold';
 
 	private active = false;
 
 	constructor(
-		@IChatSpeechToTextService private readonly speechToTextService: IChatSpeechToTextService,
-		@ISpeechService private readonly speechService: ISpeechService,
+		@IChatSpeechToTextService private readonly speechToTextService: ParadisDictationSpeechToText,
+		@ISpeechService private readonly speechService: ParadisDictationSpeech,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -45,19 +52,22 @@ class ParadisDictationAudioHold extends Disposable implements IWorkbenchContribu
 		this._register(this.speechService.onDidStartSpeechToTextSession(update));
 		this._register(this.speechService.onDidEndSpeechToTextSession(update));
 		this._register({ dispose: () => this.send(false) });
+		// 再読み込みの前に音声入力中だった分を、このウィンドウ（同じ接続名）から確実に解く。
+		this.send(this.isDictating(), true);
+	}
+
+	private isDictating(): boolean {
+		return this.speechToTextService.state !== ChatSpeechToTextState.Idle
+			|| this.speechToTextService.isPreparingModel
+			|| this.speechService.hasActiveSpeechToTextSession;
 	}
 
 	private update(): void {
-		const active = this.speechToTextService.state !== ChatSpeechToTextState.Idle
-			|| this.speechToTextService.isBusy
-			|| this.speechService.hasActiveSpeechToTextSession;
-		if (active !== this.active) {
-			this.send(active);
-		}
+		this.send(this.isDictating());
 	}
 
-	private send(active: boolean): void {
-		if (active === this.active) {
+	private send(active: boolean, force = false): void {
+		if (active === this.active && !force) {
 			return;
 		}
 		this.active = active;
