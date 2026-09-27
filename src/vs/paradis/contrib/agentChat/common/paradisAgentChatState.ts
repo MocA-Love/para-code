@@ -25,8 +25,8 @@ export function paradisAgentChatCursor(state: IParadisAgentChatState | undefined
 
 /**
  * 届いた差分を手元の写しへ当てる。全量（reset）なら置き換え、差分なら後ろへ足す。
- * 差分が手元と噛み合わない（別の epoch、または rev が飛んでいる）ときは undefined を返すので、
- * 呼び出し側は起点なしで全量を取り直す。
+ * 差分が手元と噛み合わない（別の epoch）ときは undefined を返すので、
+ * 呼び出し側は起点なしで全量を取り直す。rev の連続は中継が保証する（起点の続きが欠けていれば全量で返す）。
  */
 export function paradisApplyAgentChatView(state: IParadisAgentChatState | undefined, view: IParadisAgentChatView): IParadisAgentChatState | undefined {
 	const { messages: incoming, reset, ...rest } = view;

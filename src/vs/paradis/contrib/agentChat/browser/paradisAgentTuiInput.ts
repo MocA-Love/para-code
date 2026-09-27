@@ -60,32 +60,93 @@ export function paradisScreenShowsMarker(screen: string, marker: string): boolea
 }
 
 /**
- * 画面に、エージェントの TUI が利用者の回答を待つ画面（許可の確認・質問の選択肢）が出ているか。
- *
- * デスクトップのチャット表示が文を送る前と、許可の確認へ打鍵する前に使う。送った文の Enter が許可の
- * 既定の「Yes」や質問のハイライト中の選択肢を確定してしまうのを防ぐため。【推測】文言は Claude Code
- * 2.1 系と Codex 0.14x の表示から取った（実測したキー注入の文言ではない）。TUI の文言が変わると
- * 見落とす（＝従来どおり送る）方向に外れる。
+ * 回答待ちの画面を探す範囲（見えている範囲の下からの行数）。確認の画面は常に最下部に出る。上の方に
+ * 残っている会話の本文（エージェントが「Do you want to proceed?」と書いた返答など）に反応しないよう、
+ * 下端に限る。
  */
-export function paradisScreenShowsAgentPrompt(screen: string): boolean {
-	const compact = screen.replace(/\s+/g, '').toLowerCase();
-	return PARADIS_AGENT_PROMPT_MARKERS.some(marker => compact.includes(marker));
-}
+const PROMPT_REGION_LINES = 14;
 
-/** 回答待ちの画面に出る文言（空白を除いた小文字）。 */
-const PARADIS_AGENT_PROMPT_MARKERS: readonly string[] = [
-	// Claude Code の許可の確認（Bash / 編集 / 作成 / その他）
+/**
+ * 許可の確認の文言（空白を除いた小文字）。【推測】Claude Code 2.1 系と Codex 0.14x の表示から取った
+ * （実測したキー注入の文言ではない）。文言が変わると見落とす（＝従来どおり送る）方向に外れる。
+ */
+const PERMISSION_PROMPT_MARKERS: readonly string[] = [
+	// Claude Code の許可の確認（Bash / 編集 / 作成 / その他）と、計画の確定（ExitPlanMode）
 	'doyouwanttoproceed?',
 	'doyouwanttomakethisedit',
 	'doyouwanttocreate',
 	'doyouwanttoallow',
-	// Claude Code の AskUserQuestion の操作説明
-	'entertoselect',
+	'wouldyouliketoproceed?',
 	// Codex の承認
 	'wouldyouliketorunthefollowingcommand',
 	'wouldyouliketomakethefollowingedits',
 	'allowcommand?',
 ];
+
+/** 質問（AskUserQuestion）の画面の操作説明と確認画面。 */
+const QUESTION_PROMPT_MARKERS: readonly string[] = [
+	'entertoselect',
+	'reviewyouranswers',
+];
+
+/** 選択肢の1行目（`❯ 1. Yes` / `› 1. Yes, proceed` / `1) OK`。枠の縦線 `│` の内側でもよい）。 */
+const FIRST_OPTION_LINE = /^[\s│┃|]*[❯›>▶]?\s*1[.)]\s*\S/;
+
+function compact(text: string): string {
+	return text.replace(/\s+/g, '').toLowerCase();
+}
+
+/** 見えている範囲の下端の行（末尾の空行は除く）。 */
+function promptRegion(screen: string): string[] {
+	const lines = screen.split('\n');
+	while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) {
+		lines.pop();
+	}
+	return lines.slice(-PROMPT_REGION_LINES);
+}
+
+/**
+ * 下端の範囲に、いずれかの文言があり、しかもその後ろに選択肢の1行目が続いているか。折り返しで文言が
+ * 2行にまたがっても見つけられるよう、行を足しながら空白を除いて照合する。
+ */
+function regionShowsPromptWithOptions(lines: readonly string[], markers: readonly string[]): boolean {
+	let joined = '';
+	for (let index = 0; index < lines.length; index++) {
+		joined += compact(lines[index]);
+		if (markers.some(marker => joined.includes(marker))) {
+			return lines.slice(index + 1).some(line => FIRST_OPTION_LINE.test(line));
+		}
+	}
+	return false;
+}
+
+/**
+ * 画面の下端に、許可の確認（Claude Code の許可・計画の確定、Codex の承認）が出ているか。文言に続いて
+ * 選択肢の行が見えているときだけ true（会話の本文に同じ文言があるだけでは反応しない）。
+ */
+export function paradisScreenShowsPermissionPrompt(screen: string): boolean {
+	return regionShowsPromptWithOptions(promptRegion(screen), PERMISSION_PROMPT_MARKERS);
+}
+
+/** 画面の下端に、質問の選択の画面（操作説明か回答の確認）が出ているか。 */
+export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
+	const region = compact(promptRegion(screen).join('\n'));
+	return QUESTION_PROMPT_MARKERS.some(marker => region.includes(marker));
+}
+
+/**
+ * 画面に、エージェントの TUI が利用者の回答を待つ画面（許可の確認・質問の選択肢）が出ているか。
+ * デスクトップのチャット表示が文を送る前に使う。送った文の Enter が許可の既定の「Yes」や、質問の
+ * ハイライト中の選択肢を確定してしまうのを防ぐため。
+ */
+export function paradisScreenShowsAgentPrompt(screen: string): boolean {
+	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen);
+}
+
+/** 画面の下端に、この一片（空白を除いたもの）が見えているか。 */
+export function paradisPromptRegionShows(screen: string, piece: string): boolean {
+	return compact(promptRegion(screen).join('\n')).includes(compact(piece));
+}
 
 /** 打鍵の送り先（ITerminalInstance の必要な部分だけ。テストで差し替えられるように）。 */
 export interface IParadisAgentTuiTarget {
@@ -105,6 +166,8 @@ export interface IParadisAgentTuiReadyOptions {
 	readonly strict: boolean;
 	/** 計測で経路を分けるため。 */
 	readonly source: 'mobile' | 'desktop';
+	/** 目印を待つ上限（テストで短くする）。既定は INTERACTION_READY_TIMEOUT_MS。 */
+	readonly timeoutMs?: number;
 }
 
 /**
@@ -150,7 +213,7 @@ export async function paradisWaitForAgentInteractionTarget(options: IParadisAgen
 		return true;
 	}
 	const matches = typeof ready === 'string' ? (screen: string) => paradisScreenShowsMarker(screen, ready) : ready;
-	const deadline = startedAt + INTERACTION_READY_TIMEOUT_MS;
+	const deadline = startedAt + (options.timeoutMs ?? INTERACTION_READY_TIMEOUT_MS);
 	while (Date.now() < deadline) {
 		if (matches(options.readScreen())) {
 			// 描かれてからフォーカスが移るまでのわずかな隙間を越えるための一拍。

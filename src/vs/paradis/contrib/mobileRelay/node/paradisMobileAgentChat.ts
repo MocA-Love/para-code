@@ -250,6 +250,21 @@ const CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT = 512;
  */
 const LATE_HOOK_AFTER_TURN_END_MS = 3_000;
 const nodeRequire = createRequire(import.meta.url);
+/** ペインごとに覚える未完了のツール呼び出しの上限（hook の取りこぼしで伸び続けないように）。 */
+const PARADIS_OPEN_TOOL_USE_LIMIT = 256;
+
+/** キーの順序に依らない JSON（PreToolUse と PermissionRequest の tool_input を突き合わせるため）。 */
+function paradisStableJson(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(paradisStableJson).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const record = value as Record<string, unknown>;
+		return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${paradisStableJson(record[key])}`).join(',')}}`;
+	}
+	return JSON.stringify(value) ?? 'undefined';
+}
+
 /** デスクトップのチャット表示の登録の期限。表示側はこれより短い間隔で送り直す。 */
 const PARADIS_DESKTOP_CHAT_WATCH_TTL_MS = 30_000;
 /** 1ウィンドウが一度に見られるペインの数（外からの入力で Set が伸び続けないための上限）。 */
@@ -1625,8 +1640,6 @@ class TranscriptTailer {
 	 * 以前と変えないため（tool_use_id の無い承認は合成 id になり、ターン終了まで解けない）。
 	 */
 	private desktopOnlyApprovalId: string | undefined;
-	/** 合成 id（tool_use_id の無い PermissionRequest）の承認を求めたツール名。次のそのツールの完了で解く。 */
-	private syntheticApprovalTool: string | undefined;
 	/** デスクトップのチャット表示のためだけに入れた質問の合成 id。ペインの状態（質問中）に数えない。 */
 	readonly desktopOnlyQuestionIds = new Set<string>();
 
@@ -1655,7 +1668,6 @@ class TranscriptTailer {
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
 			this.lastApprovalKey = key;
 			this.desktopOnlyApprovalId = desktopOnly ? interactionId : undefined;
-			this.syntheticApprovalTool = toolUseId === undefined ? toolName ?? '' : undefined;
 			this.pendingApproval = {
 				kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
 				choices: [
@@ -1792,24 +1804,17 @@ class TranscriptTailer {
 	}
 
 	/**
-	 * 合成 id の承認を解く。tool_use_id の無い PermissionRequest から作った承認は PostToolUse と
-	 * id が合わず、以前はターン終了まで残っていた（答えた後もカードが押せ、`1`+Enter がエージェントへの
-	 * 発言として入る）。承認を待つ間ターンは止まっているので、同じツールの完了（PostToolUse /
-	 * PostToolUseFailure）か次の依頼が来た時点で決着済みとみなす。toolName が分からない hook では解かない。
+	 * 合成 id（tool_use_id の無い PermissionRequest から作った承認）の承認を解く。いつ解くかは呼び出し側が
+	 * PreToolUse / PostToolUse の tool_use_id を数えて決める（ParadisMobileAgentChat.syntheticApprovalWaits）。
 	 */
-	clearSyntheticApproval(toolName: string | undefined, newTurn: boolean): void {
+	clearSyntheticApproval(): void {
 		this.enqueue(async () => {
 			const approval = this.pendingApproval;
 			if (approval === undefined || !approval.id.startsWith('approval:')) {
 				return;
 			}
-			const tool = this.syntheticApprovalTool;
-			if (!newTurn && (toolName === undefined || (tool !== undefined && tool.length > 0 && tool !== toolName))) {
-				return;
-			}
 			this.pendingApproval = undefined;
 			this.lastApprovalKey = undefined;
-			this.syntheticApprovalTool = undefined;
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
@@ -4519,6 +4524,79 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	// ---- 許可要求と tool_use_id の対応付け ---------------------------------------------------------
+	//
+	// Claude Code の PermissionRequest hook には tool_use_id が無い（公式の hook リファレンスの
+	// 「PermissionRequest input」: "like PreToolUse hooks, but without tool_use_id"）。そのままだと承認は
+	// 合成 id になり PostToolUse と照合できず、ターン終了まで残る。PreToolUse（tool_use_id・tool_name・
+	// tool_input を持つ）を覚えておき、ツール名と入力が同じ未完了の呼び出しが1つだけならその id を承認に付ける。
+	// 決まらないときは合成 id のまま、その時点で未完了だった同名のツール（とその後に始まった同名のツール）が
+	// 全部終わったときだけ解く。1つも覚えていなければ、以前どおりターン終了まで解かない。
+
+	/** ペイン → 未完了のツール呼び出し（tool_use_id → ツール名と入力の指紋）。 */
+	private readonly openToolUses = new Map<string, Map<string, { readonly tool: string; readonly inputKey: string }>>();
+	/** ペイン → 合成 id の承認が待っている、同名の未完了のツール呼び出し。 */
+	private readonly syntheticApprovalWaits = new Map<string, { readonly tool: string; readonly ids: Set<string> }>();
+
+	/**
+	 * hook からツール呼び出しの開始・完了を覚える。PermissionRequest なら、承認に付ける tool_use_id を返す
+	 * （hook 自身が持っていればそれ、決まらなければ undefined = 合成 id）。
+	 */
+	private trackToolUse(event: IParadisAgentHookEvent): string | undefined {
+		const token = event.token;
+		if (paradisIsTurnEndHookEvent(event.event) || event.event === 'SessionStart') {
+			this.openToolUses.delete(token);
+			this.syntheticApprovalWaits.delete(token);
+			return undefined;
+		}
+		let open = this.openToolUses.get(token);
+		if (event.event === 'PreToolUse' && event.toolUseId !== undefined && event.toolName !== undefined) {
+			if (open === undefined) {
+				open = new Map();
+				this.openToolUses.set(token, open);
+			}
+			if (open.size >= PARADIS_OPEN_TOOL_USE_LIMIT) {
+				open.delete(open.keys().next().value!);
+			}
+			open.set(event.toolUseId, { tool: event.toolName, inputKey: paradisStableJson(event.toolInput) });
+			// 承認の後に始まった同名のツールも待つ（PermissionRequest が PreToolUse より先に届いた場合に備える）。
+			const wait = this.syntheticApprovalWaits.get(token);
+			if (wait !== undefined && wait.tool === event.toolName) {
+				wait.ids.add(event.toolUseId);
+			}
+			return undefined;
+		}
+		if ((event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined) {
+			open?.delete(event.toolUseId);
+			const wait = this.syntheticApprovalWaits.get(token);
+			if (wait !== undefined && wait.ids.delete(event.toolUseId) && wait.ids.size === 0) {
+				this.syntheticApprovalWaits.delete(token);
+				this.tailers.get(token)?.clearSyntheticApproval();
+			}
+			return undefined;
+		}
+		if (event.event !== 'PermissionRequest') {
+			return undefined;
+		}
+		if (event.toolUseId !== undefined) {
+			return event.toolUseId;
+		}
+		const inputKey = paradisStableJson(event.toolInput);
+		const matches = [...(open ?? [])].filter(([, use]) => use.tool === event.toolName && use.inputKey === inputKey);
+		if (matches.length === 1) {
+			this.syntheticApprovalWaits.delete(token);
+			return matches[0][0];
+		}
+		// 決まらない。今の同名の未完了の呼び出しが全部終わるまで待つ（空なら待たない＝ターン終了まで残る）。
+		const sameTool = [...(open ?? [])].filter(([, use]) => use.tool === event.toolName).map(([id]) => id);
+		if (event.toolName !== undefined && sameTool.length > 0) {
+			this.syntheticApprovalWaits.set(token, { tool: event.toolName, ids: new Set(sameTool) });
+		} else {
+			this.syntheticApprovalWaits.delete(token);
+		}
+		return undefined;
+	}
+
 	/** デスクトップのチャット表示が打鍵で答えている interaction の claim（`token\0kind\0id` → claim）。 */
 	private readonly desktopInteractionClaims = new Map<string, { readonly key: string; readonly claim: string }>();
 	private readonly desktopClaimTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -5304,21 +5382,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		// こちらも注入すると生JSONの承認カードが二重に出る（回答も質問カード側で完結する）。
 		// tool_name が取れない PermissionRequest（旧CLI・パース失敗）でも、質問回答待ち中は
 		// AskUserQuestion 由来とみなして注入しない（質問カードと承認カードの二重表示防止）。
+		const approvalToolUseId = this.trackToolUse(event);
 		if (event.event === 'PermissionRequest' && event.toolName !== 'AskUserQuestion'
+			// 質問の回答待ちかは、ペインの状態（デスクトップ専用の質問を数えない）ではなく tailer の実際の有無で見る
 			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
+			&& !((this.tailers.get(event.token)?.pendingQuestions.size ?? 0) > 0)
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, event.toolUseId, !mobileWants);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalToolUseId, !mobileWants);
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
 		if ((forceApprovalClear || matchingApprovalClear) && this.tailers.has(event.token)) {
 			this.tailers.get(event.token)?.clearApprovalRequest(event.toolUseId, forceApprovalClear);
-		}
-		const toolFinished = event.event === 'PostToolUse' || event.event === 'PostToolUseFailure';
-		if ((toolFinished || (event.event === 'UserPromptSubmit' && !isLocalSettingCommand)) && event.toolName !== 'AskUserQuestion') {
-			this.tailers.get(event.token)?.clearSyntheticApproval(event.toolName, !toolFinished);
 		}
 		// 未回答のまま残った質問の解除。質問を承認より優先するようになったため、決着し損ねた
 		// 合成IDの質問が残ると以後の承認が回答不能になる（clearPendingQuestions 参照）。

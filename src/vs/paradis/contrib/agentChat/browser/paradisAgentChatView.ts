@@ -27,8 +27,9 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
-import { CodeDataTransfers, getPathForFile } from '../../../../platform/dnd/browser/dnd.js';
+import { CodeDataTransfers, containsDragType, getPathForFile, LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
+import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../../workbench/browser/dnd.js';
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
@@ -97,6 +98,8 @@ export interface IParadisAgentChatApprovalCardState {
 export interface IParadisAgentChatCardStates {
 	readonly questions: Map<string, IParadisAgentChatQuestionDraft>;
 	readonly approvals: Map<string, IParadisAgentChatApprovalCardState>;
+	/** 入力欄から送っている最中か。 */
+	readonly composer: { sending: boolean };
 }
 
 export class ParadisAgentChatView extends Disposable {
@@ -136,7 +139,7 @@ export class ParadisAgentChatView extends Disposable {
 	/** 一度取り寄せ終えた画像（捨てた後に自動で取り直して、取り直すたびに別の画像を捨て続けないため）。 */
 	private readonly settledImages = new Set<string>();
 	private readonly pendingImages = new Set<string>();
-	private readonly emptyCardStates: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map() };
+	private readonly emptyCardStates: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map(), composer: { sending: false } };
 	private liveClock: HTMLElement | undefined;
 	private readonly liveMarkdown = this._register(new MutableDisposable<IDisposable>());
 	private readonly fallbackStore = this._register(new DisposableStore());
@@ -174,8 +177,13 @@ export class ParadisAgentChatView extends Disposable {
 		this._register(addDisposableListener(this.element, EventType.CONTEXT_MENU, e => this.showContextMenu(e)));
 		// ターミナルはドロップされたファイルのパスを TUI へ入れる。見えていない TUI に入らないよう
 		// 止めて、チャットの入力欄へ入れる。
+		// ファイルのドラッグだけを受ける。エディタのタブ・グループ・ターミナルのタブのドラッグは親へ流し、
+		// エディタの分割や移動をそのまま使えるようにする。
 		for (const type of [EventType.DRAG_ENTER, EventType.DRAG_OVER, EventType.DRAG_LEAVE]) {
 			this._register(addDisposableListener(this.element, type, (e: DragEvent) => {
+				if (!paradisIsFileDrag(e)) {
+					return;
+				}
 				e.stopPropagation();
 				e.preventDefault();
 				if (e.dataTransfer) {
@@ -262,6 +270,9 @@ export class ParadisAgentChatView extends Disposable {
 
 	/** ドロップされたファイルのパスを入力欄へ入れる（空白を含むものは引用符で囲む）。 */
 	private onDrop(e: DragEvent): void {
+		if (!paradisIsFileDrag(e)) {
+			return;
+		}
 		e.stopPropagation();
 		e.preventDefault();
 		const data = e.dataTransfer;
@@ -309,6 +320,8 @@ export class ParadisAgentChatView extends Disposable {
 		}
 		this.instanceId = instanceId;
 		this.composer.setToken(visible ? token : undefined);
+		// 送っている途中のペインへ戻ったら、送り終わるまで送れないままにする（二重に送らないため）。
+		this.composer.setSending(visible && token !== undefined && this.host.cardStates(token).composer.sending);
 		if (this.visible !== visible) {
 			this.visible = visible;
 			this.element.style.display = visible ? '' : 'none';
@@ -656,7 +669,7 @@ export class ParadisAgentChatView extends Disposable {
 			if (this.isFileWrite(use)) {
 				// 切り詰められた入力の全文は、最近の行か「差分を読み込む」を押した行だけ取り寄せる
 				// （古い行まで一度に取りに行くと、長い会話を開いたときに IPC とメモリが膨らむ）。
-				const diffSource = !use.truncated || this.recentKeys.has(item.key) || this.expanded.has(`${item.key}:load`) ? this.fullTextOf(use) : undefined;
+				const diffSource = !use.truncated || this.recentKeys.has(item.key) || this.expanded.has(`${item.key}:load`) || this.fullTexts.has(this.fullTextKey(use.rev)) ? this.fullTextOf(use) : undefined;
 				const diff = diffSource !== undefined ? paradisAgentChatEditDiff(use.tool, diffSource) : undefined;
 				if (diff !== undefined) {
 					element.appendChild(this.renderDiff(item.key, diff, store));
@@ -924,7 +937,8 @@ export class ParadisAgentChatView extends Disposable {
 			store.add(addDisposableListener(button, EventType.CLICK, () => {
 				currentDraft.other.delete(index);
 				if (multiSelect) {
-					const next = new Set(selected);
+					// 描いた時点の集合ではなく今の集合から作る（「その他」に打って選択を外した後にも正しく動く）。
+					const next = new Set(currentDraft.multi.get(index) ?? []);
 					if (next.has(optionIndex)) {
 						next.delete(optionIndex);
 					} else {
@@ -1101,17 +1115,21 @@ export class ParadisAgentChatView extends Disposable {
 		if (instanceId === undefined || token === undefined) {
 			return;
 		}
-		const previous = this.approvalStates.get(interactionId);
+		// 結果は、送っている間に表示やタブを切り替えても元のペインへ書く（今の this.token ではなく）。
+		const states = this.host.cardStates(token).approvals;
+		const previous = states.get(interactionId);
 		if (previous?.sending || previous?.sent) {
 			return;
 		}
-		this.approvalStates.set(interactionId, { sending: true });
+		states.set(interactionId, { sending: true });
 		this.rerenderQuestionCard();
 		this.host.answerApproval(instanceId, token, interactionId, choiceId).then(error => {
 			// 送れたら、TUI が消費して承認が消えるまで押せないままにする（押し直した `1`+Enter が入力欄へ流れるため）。
-			this.approvalStates.set(interactionId, error !== undefined ? { sending: false, error } : { sending: false, sent: true });
-			this.rerenderQuestionCard();
-			void this.session?.refresh();
+			states.set(interactionId, error !== undefined ? { sending: false, error } : { sending: false, sent: true });
+			if (this.token === token && !this._store.isDisposed) {
+				this.rerenderQuestionCard();
+				void this.session?.refresh();
+			}
 		});
 	}
 
@@ -1204,8 +1222,11 @@ export class ParadisAgentChatView extends Disposable {
 			return;
 		}
 		this.composer.showNotice(undefined);
+		const states = this.host.cardStates(token);
+		states.composer.sending = true;
 		this.composer.setSending(true);
 		this.host.sendMessage(instanceId, token, text).then(error => {
+			states.composer.sending = false;
 			// 送っている間に別のペインへ切り替えた・閉じたなら、今の入力欄には何もしない。
 			if (this._store.isDisposed || this.token !== token) {
 				return;
@@ -1220,4 +1241,17 @@ export class ParadisAgentChatView extends Disposable {
 			void this.session?.refresh();
 		});
 	}
+}
+
+/**
+ * ファイルのドラッグか（エクスプローラーや OS のファイル）。エディタのタブ・グループ（LocalSelectionTransfer）と
+ * ターミナルのタブ（`Terminals`）のドラッグは含めない。
+ */
+function paradisIsFileDrag(e: DragEvent): boolean {
+	if (LocalSelectionTransfer.getInstance<DraggedEditorIdentifier>().hasData(DraggedEditorIdentifier.prototype)
+		|| LocalSelectionTransfer.getInstance<DraggedEditorGroupIdentifier>().hasData(DraggedEditorGroupIdentifier.prototype)
+		|| containsDragType(e, 'Terminals')) {
+		return false;
+	}
+	return containsDragType(e, DataTransfers.FILES, DataTransfers.RESOURCES, CodeDataTransfers.FILES);
 }
