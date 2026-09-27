@@ -45,6 +45,7 @@ import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './
 import { ParadisLimitsSetupDialog } from './paradisLimitsSetupDialog.js';
 // 使用量パネルへ差し込む部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
 import './paradisClaudeAccountActions.js';
+import '../../codexAccounts/electron-browser/paradisCodexAccountActions.js';
 
 const $ = dom.$;
 

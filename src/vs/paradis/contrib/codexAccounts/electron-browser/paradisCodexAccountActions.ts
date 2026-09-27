@@ -6,68 +6,54 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 使用量パネル（limitsMonitor）の Codex アカウントカードへ差し込む部品。
+// 使用量パネルの Codex のアカウントカードに出す操作（limitsMonitor の
+// paradisLimitsPanelContributions.ts の部品）。カード下端の右寄せの列へ次を並べる。
 //
-// パネル本体は別の作業で作り替えが進んでいるので、ここは独立した部品として作り、パネル側からは
-// `renderAccountCard(カードの要素, アカウント)` を1回呼ぶだけで済むようにしてある。
-// パネルは30秒ごとにDOMを作り直すので、この部品は「手元のキャッシュから同期で描く → 古ければ
-// 裏で読み直して、まだ画面にあれば描き直す」を繰り返す。
+//  - リセットクレジット: 残数と期限、「使う…」ボタン（押すと確認ダイアログ）。二重消費は
+//    shared process の台帳が防ぐ（ここでの押下中フラグは見た目のためだけ）
+//  - 切替: 「このアカウントを使う」ボタン、または「使用中」バッジ（q.html Q05 案A）。選んだ
+//    アカウントは、すべてのウィンドウで新しく開くターミナルから使われる（Q07）
 //
-// 表示するもの:
-//  - リセットクレジット（残数と期限、「使う…」ボタン。押すと確認ダイアログ）
-//  - 切替（「このアカウントを使う」ボタン、または「使用中」バッジ。q.html Q05 案A）。
-//    選んだアカウントは新しく開くターミナルから使われる（全ウィンドウ共通、Q07）
+// 部品はパネルを開くたびに作られ、閉じると破棄される。残数と選択は shared process 側が
+// キャッシュしているので、開くたびに聞き直しても app-server が毎回起きることはない。
+// SSH の接続先を開いているウィンドウでは何も出さない（台帳と選択はこの PC のもの）。
 
-import './media/paradisCodexAccountCard.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { Codicon } from '../../../../base/common/codicons.js';
-import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { language } from '../../../../base/common/platform.js';
-import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisLimitsAccount } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
-import { IParadisCodexAccountsState, IParadisCodexResetConsumeResult, IParadisCodexResetCreditOffer, paradisSelectedCodexHome, ParadisCodexResetOutcome } from '../common/paradisCodexAccounts.js';
+import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from '../../limitsMonitor/electron-browser/paradisLimitsPanelContributions.js';
+import {
+	IParadisCodexAccountsState,
+	IParadisCodexResetConsumeResult,
+	IParadisCodexResetCreditOffer,
+	paradisSelectedCodexHome,
+	ParadisCodexResetOutcome
+} from '../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from './paradisCodexAccountsClient.js';
 
 const $ = dom.$;
 
-/** renderer 側で読み直す間隔。shared process 側にも同じ長さのキャッシュがある。 */
-const OFFER_REFRESH_MS = 3 * 60_000;
+class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPanelContribution {
 
-export const IParadisCodexAccountCardService = createDecorator<IParadisCodexAccountCardService>('paradisCodexAccountCardService');
-
-export interface IParadisCodexAccountCardService {
-	readonly _serviceBrand: undefined;
-
-	/**
-	 * Codex アカウントのカード（`container`）の末尾に部品を足す。Codex 以外・SSH 接続中の
-	 * ウィンドウでは何もしない。返り値はカードを描き直すときに dispose する。
-	 */
-	renderAccountCard(container: HTMLElement, account: IParadisLimitsAccount): IDisposable;
-}
-
-export class ParadisCodexAccountCardService extends Disposable implements IParadisCodexAccountCardService {
-	declare readonly _serviceBrand: undefined;
+	readonly provider = 'codex';
 
 	private readonly client: ParadisCodexAccountsClient;
 	private readonly offers = new Map<string, IParadisCodexResetCreditOffer>();
-	private readonly loading = new Set<string>();
-	private readonly consuming = new Set<string>();
-	/** ホームの表示内容が変わった（描き直してほしい）。 */
-	private readonly _onDidChangeHome = this._register(new Emitter<string>());
-	/** 切替の状態（全ウィンドウ共通の選択）。初めてカードを描くときに読む。 */
+	private readonly requestedOffers = new Set<string>();
 	private accountsState: IParadisCodexAccountsState | undefined;
 	private accountsStateRequested = false;
+	private readonly consuming = new Set<string>();
 	private switching = false;
-	private readonly _onDidChangeAccountsState = this._register(new Emitter<void>());
+	/** 裏で読んだ結果が届いたら、パネルに描き直してもらうための口（最後に描いたときのもの）。 */
+	private context: IParadisLimitsPanelContext | undefined;
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
@@ -80,6 +66,32 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 		this.client = instantiationService.createInstance(ParadisCodexAccountsClient);
 	}
 
+	renderAccountActions(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined {
+		// SSH 中のパネルは接続先のホームを並べている。台帳と選択はこの PC のものなので混ぜない。
+		if (this.remoteAgentService.getConnection()) {
+			return undefined;
+		}
+		this.context = context;
+		this.ensureAccountsState();
+		const store = new DisposableStore();
+		if (account.status === 'ok') {
+			// 認証が切れたアカウントは読み取れないので出さない（カードの「再ログイン…」が先）。
+			this.ensureOffer(account.id);
+			this.renderReset(container, store, account);
+		}
+		this.renderSwitch(container, store, account);
+		return store;
+	}
+
+	/** 裏の読み取りが終わったら描き直してもらう（取り直しはしない）。 */
+	private redraw(): void {
+		if (!this._store.isDisposed) {
+			this.context?.requestRefresh(false);
+		}
+	}
+
+	// ---------- 切替 ----------
+
 	private ensureAccountsState(): void {
 		if (this.accountsStateRequested) {
 			return;
@@ -87,7 +99,6 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 		this.accountsStateRequested = true;
 		this._register(this.client.onDidChangeState(state => this.setAccountsState(state)));
 		this.client.getState().then(state => this.setAccountsState(state), error => {
-			this.accountsStateRequested = false;
 			this.logService.warn('[ParadisCodexAccounts] failed to read the Codex account selection', error);
 		});
 	}
@@ -97,82 +108,30 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 			return;
 		}
 		this.accountsState = state;
-		this._onDidChangeAccountsState.fire();
+		this.redraw();
 	}
 
-	renderAccountCard(container: HTMLElement, account: IParadisLimitsAccount): IDisposable {
-		// SSH 中のパネルは接続先のホームを並べている。台帳と選択はこの PC のものなので混ぜない。
-		if (account.provider !== 'codex' || this.remoteAgentService.getConnection()) {
-			return Disposable.None;
-		}
-		const homePath = account.id;
-		const store = new DisposableStore();
-		const root = dom.append(container, $('.paradis-codex-card'));
-		store.add({ dispose: () => root.remove() });
-
-		const resetRow = dom.append(root, $('.pcc-row.pcc-reset'));
-		const switchRow = dom.append(root, $('.pcc-row.pcc-switch'));
-		// 行ごとにリスナーを持ち直す（描き直すたびに古いボタンのリスナーを捨てる）。
-		const resetListeners = store.add(new DisposableStore());
-		const switchListeners = store.add(new DisposableStore());
-		const renderReset = () => {
-			resetListeners.clear();
-			if (account.status === 'ok') {
-				this.renderResetRow(resetRow, resetListeners, account);
-			} else {
-				// 認証が切れたアカウントは読み取れないので行ごと出さない（再ログインが先）。
-				resetRow.style.display = 'none';
-			}
-		};
-		const renderSwitch = () => {
-			switchListeners.clear();
-			this.renderSwitchRow(switchRow, switchListeners, account);
-		};
-		renderReset();
-		renderSwitch();
-		store.add(this._onDidChangeHome.event(changed => {
-			if (changed === homePath && root.isConnected) {
-				renderReset();
-			}
-		}));
-		store.add(this._onDidChangeAccountsState.event(() => {
-			if (root.isConnected) {
-				renderSwitch();
-			}
-		}));
-		this.ensureAccountsState();
-		if (account.status === 'ok') {
-			this.ensureOffer(homePath, false);
-		}
-		return store;
-	}
-
-	// ---------- 切替 ----------
-
-	private renderSwitchRow(row: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount): void {
-		dom.clearNode(row);
+	private renderSwitch(container: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount): void {
 		const state = this.accountsState;
 		const home = state?.homes.find(candidate => candidate.homePath === account.id);
 		if (!state || !home) {
 			// 選択をまだ読めていない・切替の対象にならない（ログインしていない）ホーム。
-			row.style.display = 'none';
 			return;
 		}
-		row.style.display = '';
 		if (paradisSelectedCodexHome(state)?.homePath === home.homePath) {
-			dom.append(row, $('span.pcc-text')).textContent = localize('paradis.codexAccounts.selectedHint', "新しく開くターミナルで使います");
-			dom.append(row, $('span.pcc-badge')).textContent = localize('paradis.codexAccounts.selectedBadge', "使用中");
+			const badge = dom.append(container, $('span.plm-badge.active'));
+			badge.textContent = localize('paradis.codexAccounts.selectedBadge', "使用中");
+			badge.title = localize('paradis.codexAccounts.selectedHint', "新しく開くターミナルの Codex はこのアカウントを使います");
 			return;
 		}
-		const button = dom.append(row, $('button.pcc-btn')) as HTMLButtonElement;
+		const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
 		button.type = 'button';
 		button.disabled = this.switching;
-		button.textContent = localize('paradis.codexAccounts.useThisAccount', "このアカウントを使う");
-		store.add(dom.addDisposableListener(button, 'click', e => {
-			e.preventDefault();
-			e.stopPropagation();
-			void this.switchTo(home.isDefault ? undefined : home.homePath);
-		}));
+		button.textContent = this.switching
+			? localize('paradis.codexAccounts.switching', "切り替え中…")
+			: localize('paradis.codexAccounts.useThisAccount', "このアカウントを使う");
+		button.title = localize('paradis.codexAccounts.useThisAccountHint', "すべてのウィンドウで、これから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです");
+		store.add(dom.addDisposableListener(button, 'click', () => void this.switchTo(home.isDefault ? undefined : home.homePath)));
 	}
 
 	private async switchTo(homePath: string | undefined): Promise<void> {
@@ -180,7 +139,7 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 			return;
 		}
 		this.switching = true;
-		this._onDidChangeAccountsState.fire();
+		this.redraw();
 		try {
 			this.setAccountsState(await this.client.selectHome(homePath));
 		} catch (error) {
@@ -188,58 +147,49 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 			this.notificationService.error(localize('paradis.codexAccounts.switchFailed', "Codex のアカウントを切り替えられませんでした。ログインし直してから、もう一度お試しください。"));
 		} finally {
 			this.switching = false;
-			this._onDidChangeAccountsState.fire();
+			this.redraw();
 		}
 	}
 
 	// ---------- リセットクレジット ----------
 
-	private ensureOffer(homePath: string, bypassCache: boolean): void {
-		const cached = this.offers.get(homePath);
-		if (!bypassCache && cached && Date.now() - cached.fetchedAt < OFFER_REFRESH_MS) {
+	private ensureOffer(homePath: string): void {
+		if (this.requestedOffers.has(homePath)) {
 			return;
 		}
-		if (this.loading.has(homePath)) {
-			return;
-		}
-		this.loading.add(homePath);
+		this.requestedOffers.add(homePath);
+		this.readOffer(homePath, false);
+	}
+
+	private readOffer(homePath: string, bypassCache: boolean): void {
 		this.client.readResetCredits(homePath, bypassCache).then(offer => {
 			this.offers.set(homePath, offer);
+			this.redraw();
 		}, error => {
 			this.logService.warn('[ParadisCodexAccounts] failed to read reset credits', error);
-		}).finally(() => {
-			this.loading.delete(homePath);
-			this._onDidChangeHome.fire(homePath);
 		});
 	}
 
-	private renderResetRow(row: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount): void {
-		dom.clearNode(row);
+	private renderReset(container: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount): void {
 		const offer = this.offers.get(account.id);
 		const credits = offer?.credits;
 		if (!offer || (!credits && !offer.pendingUnknown)) {
 			// 未取得・読めない・リセットクレジットの仕組みが無いアカウントでは何も出さない。
-			row.style.display = 'none';
 			return;
 		}
-		row.style.display = '';
-		row.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.history)}`));
-		const text = dom.append(row, $('span.pcc-text'));
 		const count = credits?.availableCount ?? 0;
-		text.classList.toggle('available', count > 0);
+		const note = dom.append(container, $('span.plm-card-action-note'));
 		if (offer.pendingUnknown) {
-			text.textContent = localize('paradis.codexAccounts.resetPending', "前回のリセットの結果を確認できていません");
+			note.textContent = localize('paradis.codexAccounts.resetPending', "前回のリセットの結果を確認できていません");
 		} else if (count === 0) {
-			text.textContent = localize('paradis.codexAccounts.resetNone', "枠のリセット: 残りなし");
-		} else if (credits?.nextExpiresAt !== undefined) {
-			text.textContent = localize('paradis.codexAccounts.resetAvailableWithExpiry', "枠のリセット: 残り {0} 回（{1} まで）", count, formatDateTime(credits.nextExpiresAt));
-		} else {
-			text.textContent = localize('paradis.codexAccounts.resetAvailable', "枠のリセット: 残り {0} 回", count);
-		}
-		if (count === 0 && !offer.pendingUnknown) {
+			note.textContent = localize('paradis.codexAccounts.resetNone', "枠のリセット: 残りなし");
 			return;
+		} else if (credits?.nextExpiresAt !== undefined) {
+			note.textContent = localize('paradis.codexAccounts.resetAvailableWithExpiry', "枠のリセット: 残り {0} 回（{1} まで）", count, formatDateTime(credits.nextExpiresAt));
+		} else {
+			note.textContent = localize('paradis.codexAccounts.resetAvailable', "枠のリセット: 残り {0} 回", count);
 		}
-		const button = dom.append(row, $('button.pcc-btn')) as HTMLButtonElement;
+		const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
 		button.type = 'button';
 		const busy = this.consuming.has(account.id);
 		button.disabled = busy;
@@ -248,11 +198,7 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 			: offer.pendingUnknown
 				? localize('paradis.codexAccounts.resetRetry', "結果を確認…")
 				: localize('paradis.codexAccounts.resetUse', "使う…");
-		store.add(dom.addDisposableListener(button, 'click', e => {
-			e.preventDefault();
-			e.stopPropagation();
-			void this.consume(account);
-		}));
+		store.add(dom.addDisposableListener(button, 'click', () => void this.consume(account)));
 	}
 
 	private async consume(account: IParadisLimitsAccount): Promise<void> {
@@ -278,7 +224,7 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 			return;
 		}
 		this.consuming.add(homePath);
-		this._onDidChangeHome.fire(homePath);
+		this.redraw();
 		let result: IParadisCodexResetConsumeResult | undefined;
 		try {
 			result = await this.client.consumeResetCredit({ homePath, offerRevision: offer.offerRevision ?? '', idempotencyKey: generateUuid() });
@@ -291,7 +237,11 @@ export class ParadisCodexAccountCardService extends Disposable implements IParad
 		if (result) {
 			this.notifyResult(result, name);
 		}
-		this.ensureOffer(homePath, true);
+		// 残数を読み直し、使用枠のメーターも取り直してもらう。
+		this.readOffer(homePath, true);
+		if (!this._store.isDisposed) {
+			this.context?.requestRefresh(true);
+		}
 	}
 
 	private notifyResult(result: IParadisCodexResetConsumeResult, name: string): void {
@@ -335,4 +285,4 @@ function formatDateTime(epochMs: number): string {
 	}
 }
 
-registerSingleton(IParadisCodexAccountCardService, ParadisCodexAccountCardService, InstantiationType.Delayed);
+ParadisLimitsPanelContributions.register(ParadisCodexAccountActions);
