@@ -873,6 +873,46 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 - エディタのターミナルのバッジは、ターミナルの検索ウィジェットと同じ右上の角に出る。検索ウィジェットが開いている間は CSS（`:has(.simple-find-part.visible)`）で隠し、ボタンを覆ったりクリックを奪ったりしないようにしている
 - エディタエリアのターミナルのバッジは、ペインインジケータと同じく DI を持たない `SessionTerminalEditor` から置く。値の供給元はモジュールのレジストリ（`setParadisPromptCacheBadgeHost`）で、`vs/sessions/contrib/*` から `vs/paradis/contrib/agentInsights/~` を import するための許可を `eslint.config.js` に足している
 
+## エージェント向けの IDE 操作ツールとガイド（agentIde、2026-09-27、フェーズ8 担当A）
+
+O1（Q75）と O4（Q79）。`src/vs/paradis/contrib/agentIde/` に実装し、para-browser MCP サーバーへツールを12個足した。upstream のファイルは触っていない（`sharedProcessMain.ts` も触らずに済むよう、ツールのプロバイダの登録口を足した）。
+
+| ツール | 種類 | 権限 |
+|---|---|---|
+| `read_para_code_guide` / `list_spaces` / `list_terminals` / `read_terminal` / `wait_for_terminal` | 読み取り | 常に使える。範囲は呼び出し元ペインのウィンドウの中だけ |
+| `send_terminal_input` / `send_terminal_key` | 送信 | 設定 `paradis.agentIde.allowActions`（既定オフ）。同じスペース（`paradis.agentIde.actionScope` を `window` にすると同じウィンドウ全体）と、自分が作ったターミナル・スペース。自分自身・許可待ち・質問中へは送らない |
+| `launch_agent` / `create_terminal` / `create_space` | 作成 | 同上。作成先は自分のスペース（`create_space` は自分のリポジトリ）か自分が作ったスペース |
+| `close_terminal` / `remove_space` | 閉じる・削除 | 同上、かつ自分が作ったものだけ。`remove_space` は Workspaces ビューの「ワークツリーを削除」を呼ぶだけで、削除は利用者が確認ダイアログで決める |
+
+- **ツールの足し方**: `agentBrowser/common/paradisMcpToolProvider.ts` の `paradisRegisterMcpToolProvider(provider)` を shared process の登録（`ParadisSharedProcessContributions`）から呼ぶ。サーバーは `tools/list` / `tools/call` のたびに読む。`callTool` の5番目の引数 `context` で、呼び出し元ペインのウィンドウへのIPC（`callOwningWindow`、`timeoutMs` で待ち時間を延ばせる）と、hook から分かるペインの状態（`getPaneAgentStatus`）を借りられる。`instructions()` を実装すると `initialize` の `instructions`（サーバーの説明）へ足される
+- **ペイントークンはエージェントへ出さない**。ターミナルの ID は `t_` + SHA-1(`paradis-agent-ide:` + トークン) の先頭12桁（`paradisAgentIdeTerminalId`）。トークンから決まるので再読み込みでも変わらない。ウィンドウ側はトークンを `internal` に入れて shared process へ返し、shared process はそれを状態の照会にだけ使って応答から落とす
+- **「誰が作ったか」の台帳はウィンドウのメモリだけ**（`ParadisAgentIdeChannel._ledgers`）。ウィンドウを再読み込みすると、作ったターミナル・スペースを閉じる・削除できなくなり、スペース外の子へ送れなくなる（安全側に倒れる）。`create_space` の呼び出しが時間切れ（150 秒）になっても、作成が終わった時点で台帳に載る
+- **許可待ち・質問中の判定は二重**。shared process が hook の状態（`_paneStatuses`、即時）で送る前に止め、ウィンドウ側も表示用の状態（2 秒ごとの取り直し）で止める。Enter は貼り付けから 250ms 空けて送り、その間に状態が変わったら送らない
+- **待機の上限は 240 秒**。codex-cli 0.155.1 の MCP ツールの既定のタイムアウトが 300 秒（`codex-rs/codex-mcp/src/rmcp_client.rs` の `DEFAULT_TOOL_TIMEOUT`。2026-06-15 の #28234 で 60 秒から引き上げ。0.140.0 は 120 秒）で、stdio シムの全体の上限が 310 秒、HTTP サーバーのソケットの無通信の上限が 300 秒のため。**0.14x 以前の Codex（120 秒）や `tool_timeout_sec` を短くしている環境では、`timeout_seconds` を大きくするとクライアント側で先に切れる**（ガイドには「時間切れなら呼び直す」と書いてある）。待機中は1秒ごとにウィンドウへ画面と状態を聞く
+- **文字列の待機は部分一致だけ**（正規表現を受けない）。shared process で利用者由来の正規表現を回すと、壊滅的なバックトラックで MCP サーバーごと止まるため
+- **送る本文**は制御文字（ESC・タブ・C1 など）を落とし改行だけ残す（`paradisAgentIdeSanitizeInput`。ESC を通すと貼り付けの終わりの印を偽造できる）。複数行は貼り付けの囲みを受け付ける相手（Claude Code / Codex の TUI、bracketed paste を有効にしたシェル）にしか送らない
+- **起動するエージェントの権限モードは渡せない**（テンプレートの既定のまま）。エージェントが子を「全許可」で起こして権限を広げないため
+- 設定は2つとも `ConfigurationScope.APPLICATION` + `restricted`（リポジトリの `.vscode/settings.json` からオンにできない）。ただしエージェントは利用者の `settings.json` を書き換えられるので、設定で完全には守れない（ガイドとツールの説明で「自分で変えるな」と書いているだけ）
+- 新しく開くターミナル（`create_terminal`）はフォーカスを奪わない（`preserveFocus`）。`launch_agent` はフェーズ1の `paradisLaunchAgentInWorkspace` をそのまま使うので、今のスペースへ起動するとそのタブが前に出る
+
+### スキルファイルの設置（O4）
+
+「設定 (Para Code)」→「エージェントの操作」→「スキルを設置…」（コマンド `paradis.agentIde.installSkills`）を押したときだけ書く。置き場所は shared process が決め、画面からパスは受け取らない。
+
+- Claude Code: `$CLAUDE_CONFIG_DIR/skills/para-code/SKILL.md`（既定 `~/.claude/skills/...`）
+- Codex: `~/.agents/skills/para-code/SKILL.md`。codex-cli 0.155.1 の利用者スキルの置き場所（`codex-rs/ext/skills/src/host_roots.rs`）。`$CODEX_HOME/skills` は非推奨として読まれるだけなので使わない
+- 中身は「MCP の `read_para_code_guide` を呼べ」と指すだけの入口で、本文はアプリが返す（Orca の orca-cli スキルと同じ考え方。版がずれない）
+- 置く前に場所と状態（新規・同じ・別の内容・ファイルでない）を見せて確認し、別の内容があれば上書きするかを別に聞く。書く直前にもう一度比べ、新規は排他作成（`wx`）。シンボリックリンク・ディレクトリは触らない。手元の PC にだけ置く（SSH 先・WSL への導入はスキル管理（O6）の範囲）
+
+### 担当B（定期実行 O3 など）が使える部品
+
+| 用途 | 置き場所 | API |
+|---|---|---|
+| ターミナルへ安全に文字を送る（制御文字を落とす、複数行の確かめ、貼り付けと Enter の間の確かめ） | `agentIde/browser/paradisAgentIdeTerminalInput.ts` | `paradisSendTextToTerminal(instance, text, pressEnter, validate)` → `{ kind: 'sent' \| 'multilineRefused' \| 'invalidBeforeSend' \| 'typedButNotSubmitted' }` |
+| エージェントの起動 | `workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.ts`（フェーズ1） | `paradisLaunchAgentInWorkspace` / `paradisRunWorktreeCreateFlow`（`switchToCreated: false`）。どちらも `{ instanceId, paneToken }` を返す |
+| 作業が終わるまでの判定 | `agentIde/common/paradisAgentIde.ts` | `new ParadisAgentStopWatcher(startedAt).observe(status, statusChangedAt, now)`。状態は `paradisAgentIdeStatusLabel(hook の状態)`。hook の状態は shared process なら `ParadisAgentBrowserService` の `_paneStatuses`（MCP のプロバイダからは `context.getPaneAgentStatus`） |
+| 人の答えを待っているか | 同上 | `paradisAgentIdeNeedsHuman(status)` |
+
 ## ターミナルの共通化・スペース別履歴・タブの状態表示（2026-09-27、フェーズ5 担当A）
 
 TM1 / TM2 / TM11 / TM18 / TM22。ロジックはすべて `src/vs/paradis/contrib/` の新規ファイル（`terminalSharedPanel` / `terminalSpaceHistory` / `terminalTabStatus` / `terminalResumeBanner`）にあり、upstream 側の変更は次の表だけ。

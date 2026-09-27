@@ -102,6 +102,15 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		heading: localize('paradis.settings.headBrowser', "ブラウザ共有"),
 	},
 	{
+		id: 'psd-sec-agentide',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navAgentIde', "エージェントの操作"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headAgentIde', "エージェントの操作"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.descAgentIde', "エージェントが Para Code の MCP ツールで、ほかのターミナルの画面を読んだり入力を送ったりできます。一覧・画面の読み取り・待機はいつでも使えます。"),
+	},
+	{
 		id: 'psd-sec-terminal',
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navTerminal', "ターミナル"),
@@ -499,6 +508,43 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			auto: localize('paradis.settings.codexHookTrust.auto', "自動で付ける"),
 			// allow-any-unicode-next-line
 			off: localize('paradis.settings.codexHookTrust.off', "付けない"),
+		},
+	},
+
+	// --- エージェントの操作 ---
+	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.allowActions',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeAllowActions', "エージェントがターミナルとスペースを操作できるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeAllowActionsDesc', "ほかのターミナルへの入力、Claude Code / Codex の起動、スペースの作成、自分で作ったターミナルを閉じることを許可します。許可待ち・質問中のターミナルへは送りません。Web ページなどに仕込まれた指示が別のエージェントへ伝わる危険があるので、必要なときだけオンにしてください。"),
+		keywords: 'agent mcp terminal send input launch space worktree orchestration',
+	},
+	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.actionScope',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeActionScope', "入力を送れる範囲"),
+		keywords: 'agent scope space window',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			space: localize('paradis.settings.agentIdeActionScope.space', "同じスペースだけ"),
+			// allow-any-unicode-next-line
+			window: localize('paradis.settings.agentIdeActionScope.window', "同じウィンドウ全体"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-agentide',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeSkills', "Claude Code と Codex にスキルを設置"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeSkillsDesc', "エージェントが Para Code の使い方を思い出しやすくなる短いスキルファイルを置きます（~/.claude/skills と ~/.agents/skills）。置く前に場所を確かめ、既にあるファイルは上書きするかを聞きます。"),
+		keywords: 'skill skills claude codex SKILL.md guide',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.agentIdeSkillsAction', "スキルを設置…"),
+			commandId: 'paradis.agentIde.installSkills',
 		},
 	},
 	{
