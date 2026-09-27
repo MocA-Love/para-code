@@ -6,58 +6,50 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// ターミナルの描画ずれ（文字の欠け・古いグリフ）の自動修復と記録（Q58 B / TM12）。
+// ターミナルの描画ずれ（文字の欠け・古いグリフ）の自動修復と記録（TM12）。
 //
-// いつ検査するか: ターミナルが見えるようになったとき（スペースの切り替えから戻った等）、
-// ウィンドウにフォーカスが戻ったとき、ページが見える状態に戻ったとき（スリープ復帰・最小化から
-// の復帰）。常時の監視はしない。
+// いつ検査するか: そのターミナルが見えるようになったとき（スペースの切り替えから戻った等）と、
+// そのターミナルにフォーカスが入ったとき（ウィンドウに戻ったとき・スリープから復帰したときも、
+// 前にフォーカスのあった要素にフォーカスが戻るのでここに入る）。常時の監視はせず、ウィンドウに
+// 戻るたびに見えている全ターミナルを読むこともしない（WebGL の画面を読み戻すのは重い）。
+// 購読はターミナル単位なので、補助ウィンドウへ移したターミナルでもそのまま効く。
 //
 // 何をするか: WebGL の画面を抜き取り（判定は common/paradisRenderDesync.ts）、2回続けて同じ場所が
-// 欠けていれば、その時の画面（PNG）とバッファの文字と状況をログのフォルダへ記録してから、
-// WebGL レンダラを作り直す（upstream の `recreateRendererAfterWindowChange`。ウィンドウを
-// 移したときの古いグリフ対策に PARA-PATCH で足してあるもの）。作り直した後の画面も記録する。
+// 欠けていれば、WebGL レンダラを作り直す（`recreateRendererAfterWindowChange`。ウィンドウを
+// 移したときの古いグリフ対策として fork が xtermTerminal.ts に PARA-PATCH で足したもの）。
+//
+// 記録（既定オフ、設定 `paradis.terminal.renderRepair.recordScreen`）: 修復前後の画面の画像と、
+// 欠けていたセルの場所（画面の文字は残さない）を、main プロセス経由で本人だけが読める権限
+// （0600）でログのフォルダの `paradisTerminalRender/` へ書く。最大4件・7日で消える。
 //
 // 検出と記録の方式は Orca（stablyai/orca、MIT）の render-desync sentinel を移植した。
-// Orca は修飾キー付きクリックで抜き取りを始めるが、Para Code は上のきっかけで検査する。
-//
-// 記録先: ログのフォルダ（`<ユーザーデータ>/logs`）の下の `paradisTerminalRender/`。
-// セッションごとのフォルダ（`logs/<日時>/`）ではなく1つのフォルダに置き、全体で
-// {@link PARADIS_RENDER_EVIDENCE_MAX_RECORDS} 件を超えたら古いものから消す。画面には秘密情報が
-// 写りうるので、設定 `paradis.terminal.renderRepair.recordScreen` で記録だけ止められる。
 
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
-import { addDisposableListener, getWindow } from '../../../../base/browser/dom.js';
-import { decodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { dirname, joinPath } from '../../../../base/common/resources.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
+import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ITerminalContribution, IXtermTerminal } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { registerTerminalContribution, type ITerminalContributionContext } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisTerminalPrivateFiles, PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL } from '../../terminalPrivateFiles/common/paradisTerminalPrivateFiles.js';
 import {
 	IParadisRenderDivergence,
 	IParadisRenderGrid,
 	paradisIsSuspectDivergence,
+	paradisIsThinGlyph,
 	paradisMeasureRenderDivergence,
+	paradisMissingCellCoordinates,
 	paradisMissingSetsOverlap,
 	ParadisRenderDesyncGate,
-	paradisRenderRecordName,
-	paradisRenderRecordsToPrune,
-	PARADIS_RENDER_EVIDENCE_MAX_RECORDS,
 } from '../common/paradisRenderDesync.js';
 
 export const PARADIS_RENDER_REPAIR_ENABLED_SETTING = 'paradis.terminal.renderRepair.enabled';
 export const PARADIS_RENDER_REPAIR_RECORD_SETTING = 'paradis.terminal.renderRepair.recordScreen';
-
-/** 記録を置くフォルダ名（ログのフォルダの直下）。 */
-export const PARADIS_RENDER_EVIDENCE_FOLDER = 'paradisTerminalRender';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -69,13 +61,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.terminal.renderRepair.enabled', "ターミナルの文字が欠けて描かれているのを見つけたら、自動で描き直します。スペースを切り替えて戻ったとき、ウィンドウに戻ったとき、スリープから復帰したときに検査します（GPU 描画のときだけ）。"),
+			description: localize('paradis.terminal.renderRepair.enabled', "ターミナルの文字が欠けて描かれているのを見つけたら、自動で描き直します。ターミナルが見えるようになったときと、フォーカスが入ったとき（ウィンドウに戻ったとき・スリープから復帰したときを含む）に検査します（GPU 描画のときだけ）。"),
 		},
 		[PARADIS_RENDER_REPAIR_RECORD_SETTING]: {
 			type: 'boolean',
-			default: true,
+			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.terminal.renderRepair.recordScreen', "描き直したとき、その時の画面の画像と文字をログのフォルダ（paradisTerminalRender）に記録します。最大4件で、古いものから消えます。画面に写っていた秘密情報も残るため、気になる場合はオフにしてください。"),
+			description: localize('paradis.terminal.renderRepair.recordScreen', "描き直したとき、その前後の画面の画像と、欠けていた場所をログのフォルダ（paradisTerminalRender）に記録します。不具合の調査用です。画像には画面に写っていた秘密情報も残ります。記録は本人だけが読める権限で書き、最大4件・7日で消えます。"),
 		},
 	},
 });
@@ -106,9 +98,9 @@ interface IXtermRenderInternals {
 
 interface IParadisRenderSnapshot {
 	readonly divergence: IParadisRenderDivergence;
-	/** 画面の画像（PNG の data URL）。記録するときだけ作る。 */
-	readonly pngDataUrl: string | undefined;
-	/** ビューポートに見えている文字。1回目と2回目で変わっていたら出力が流れているので判定しない。 */
+	/** 画面の画像（PNG の base64）。記録するときだけ作る。 */
+	readonly png: string | undefined;
+	/** ビューポートに見えている文字。1回目と2回目で変わっていたら出力が流れているので判定しない。記録には残さない。 */
 	readonly bufferText: string;
 	readonly rows: number;
 	readonly cols: number;
@@ -179,11 +171,12 @@ function takeSnapshot(raw: RawXtermTerminal, withImage: boolean): IParadisRender
 				return false;
 			}
 			const chars = cell.getChars();
-			return chars !== '' && chars !== ' ';
+			return chars !== '' && chars !== ' ' && !paradisIsThinGlyph(chars);
 		});
+		const dataUrl = withImage ? readback.toDataURL('image/png') : undefined;
 		return {
 			divergence,
-			pngDataUrl: withImage ? readback.toDataURL('image/png') : undefined,
+			png: dataUrl?.slice(dataUrl.indexOf(',') + 1),
 			bufferText: viewportText(raw),
 			rows: grid.rows,
 			cols: grid.cols,
@@ -196,14 +189,6 @@ function takeSnapshot(raw: RawXtermTerminal, withImage: boolean): IParadisRender
 	}
 }
 
-/** 記録の書き込みは1本ずつ（古いものを消す判断が並行して走ると上限を超える）。 */
-let paradisEvidenceQueue: Promise<void> = Promise.resolve();
-
-function pngFromDataUrl(dataUrl: string | undefined): VSBuffer | undefined {
-	const comma = dataUrl?.indexOf(',') ?? -1;
-	return dataUrl && comma >= 0 ? decodeBase64(dataUrl.slice(comma + 1)) : undefined;
-}
-
 class ParadisRenderRepairContribution extends Disposable implements ITerminalContribution {
 
 	static readonly ID = 'terminal.paradisRenderRepair';
@@ -213,36 +198,27 @@ class ParadisRenderRepairContribution extends Disposable implements ITerminalCon
 	/** 検査中（待ちを含む）か。重ねて始めない。 */
 	private _inspecting = false;
 	private _timer: ReturnType<typeof setTimeout> | undefined;
+	private readonly _files: IParadisTerminalPrivateFiles;
 
 	constructor(
 		private readonly _ctx: ITerminalContributionContext,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
-		@IFileService private readonly _fileService: IFileService,
-		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
+		@IMainProcessService mainProcessService: IMainProcessService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
+		this._files = ProxyChannel.toService<IParadisTerminalPrivateFiles>(mainProcessService.getChannel(PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL));
 		this._register(toDisposable(() => this._clearTimer()));
 		this._register(this._ctx.instance.onDidChangeVisibility(visible => {
 			if (visible) {
 				this._schedule('visible');
 			}
 		}));
+		this._register(this._ctx.instance.onDidFocus(() => this._schedule('focus')));
 	}
 
 	xtermOpen(xterm: IXtermTerminal & { raw: RawXtermTerminal }): void {
 		this._xterm = xterm;
-		const element = xterm.raw.element;
-		if (!element) {
-			return;
-		}
-		const targetWindow = getWindow(element);
-		this._register(addDisposableListener(targetWindow, 'focus', () => this._schedule('window-focus')));
-		this._register(addDisposableListener(targetWindow.document, 'visibilitychange', () => {
-			if (targetWindow.document.visibilityState === 'visible') {
-				this._schedule('page-visible');
-			}
-		}));
 	}
 
 	private _clearTimer(): void {
@@ -328,39 +304,15 @@ class ParadisRenderRepairContribution extends Disposable implements ITerminalCon
 				before: { textCells, missing, missPct },
 				after: after ? { textCells: after.divergence.textCells, missing: after.divergence.missing, missPct: after.divergence.missPct } : undefined,
 				healed: after !== undefined && !stillSuspect,
-				bufferText: second.bufferText,
+				// 画面の文字は残さず、欠けていたセルの場所（ビューポートの [行, 列]）だけを残す
+				missingCells: paradisMissingCellCoordinates(second.divergence, second.cols),
 			};
-			paradisEvidenceQueue = paradisEvidenceQueue.then(() => this._writeEvidence(second.pngDataUrl, after?.pngDataUrl, info));
-			await paradisEvidenceQueue;
-		}
-	}
-
-	private async _writeEvidence(beforePng: string | undefined, afterPng: string | undefined, info: object): Promise<void> {
-		try {
-			const folder = joinPath(dirname(this._environmentService.logsHome), PARADIS_RENDER_EVIDENCE_FOLDER);
 			try {
-				const existing = await this._fileService.resolve(folder);
-				const names = (existing.children ?? []).filter(child => child.isDirectory).map(child => child.name);
-				for (const name of paradisRenderRecordsToPrune(names, PARADIS_RENDER_EVIDENCE_MAX_RECORDS - 1)) {
-					await this._fileService.del(joinPath(folder, name), { recursive: true });
-				}
-			} catch {
-				// まだフォルダが無い
+				const folder = await this._files.writeRenderEvidence({ beforePng: second.png, afterPng: after?.png, info: JSON.stringify(info, null, '\t') + '\n' });
+				this._logService.info(`[ParadisRenderRepair] recorded the screen to ${folder}`);
+			} catch (error) {
+				this._logService.warn('[ParadisRenderRepair] could not record the screen', error);
 			}
-			const recordFolder = joinPath(folder, paradisRenderRecordName(Date.now(), generateUuid()));
-			await this._fileService.createFolder(recordFolder);
-			const before = pngFromDataUrl(beforePng);
-			if (before) {
-				await this._fileService.writeFile(joinPath(recordFolder, 'before.png'), before);
-			}
-			const after = pngFromDataUrl(afterPng);
-			if (after) {
-				await this._fileService.writeFile(joinPath(recordFolder, 'after.png'), after);
-			}
-			await this._fileService.writeFile(joinPath(recordFolder, 'info.json'), VSBuffer.fromString(JSON.stringify(info, null, '\t') + '\n'));
-			this._logService.info(`[ParadisRenderRepair] recorded the screen to ${recordFolder.fsPath}`);
-		} catch (error) {
-			this._logService.warn('[ParadisRenderRepair] could not record the screen', error);
 		}
 	}
 }
