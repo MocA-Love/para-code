@@ -21,6 +21,8 @@ interface IResult {
 const FINDER = { pid: 100, name: 'Finder', bundleId: 'com.apple.finder', active: false, hidden: false };
 const NOTES = { pid: 200, name: 'Notes', bundleId: 'com.apple.Notes', active: true, hidden: false };
 
+const INPUT_METHODS = new Set(['activateApp', 'click', 'drag', 'scroll', 'typeText', 'pasteText', 'pressKey', 'hotkey']);
+
 /** 補助アプリの代わり。 */
 class FakeHelper implements IParadisComputerUseHelper {
 	availability: ParadisComputerUseAvailability = 'ok';
@@ -29,10 +31,18 @@ class FakeHelper implements IParadisComputerUseHelper {
 	apps: object[] = [FINDER, NOTES, { pid: 300, name: '1Password', bundleId: 'com.1password.1password', active: false, hidden: false }, { pid: 400, name: 'Para Code', bundleId: 'ltd.paradis.paracode', active: false, hidden: false }, { pid: 500, name: 'System Settings', bundleId: 'com.apple.systempreferences', active: false, hidden: false }, { pid: 600, name: 'NoId', active: false, hidden: false }];
 	permissions = { accessibility: 'granted', screenRecording: 'granted' };
 	readonly calls: string[] = [];
+	/** 入力の命令と、渡した引数。 */
+	readonly inputs: { method: string; params: Record<string, unknown> }[] = [];
 	failTree: string | undefined;
+	/** 入力の命令の答え（既定は成功）。 */
+	onInput: (method: string, params: Record<string, unknown>) => Promise<unknown> = async () => ({ ok: true });
 
 	async request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 		this.calls.push(params.pid !== undefined ? `${method}:${params.pid}${params.windowId !== undefined ? `/${params.windowId}` : ''}` : method);
+		if (INPUT_METHODS.has(method)) {
+			this.inputs.push({ method, params });
+			return this.onInput(method, params);
+		}
 		switch (method) {
 			case 'listApps':
 				return { apps: this.apps };
@@ -80,21 +90,22 @@ suite('ParadisComputerUseToolProvider', () => {
 		const helper = new FakeHelper();
 		const ledger = new ParadisComputerUseGrantLedger();
 		const state = { enabled: options.enabled ?? true };
-		const provider = new ParadisComputerUseToolProvider(helper, ledger, { enabled: () => state.enabled, blockOptions: { blockSystemSurfaces: options.blockSystemSurfaces ?? false } }, undefined);
+		const blockOptions = options.blockSystemSurfaces === undefined ? undefined : { blockSystemSurfaces: options.blockSystemSurfaces };
+		const provider = new ParadisComputerUseToolProvider(helper, ledger, { enabled: () => state.enabled, blockOptions, settleMs: 0 }, undefined);
 		return { helper, ledger, state, provider };
 	}
 
 	test('shows the tools only while the setting is on and the helper is ready', () => {
 		const { helper, state, provider } = setup();
 		const shown = provider.listTools().map(tool => tool.name);
-		const readOnly = provider.listTools().every(tool => (tool.annotations as { readOnlyHint?: boolean }).readOnlyHint === true);
+		const readOnly = provider.listTools().filter(tool => (tool.annotations as { readOnlyHint?: boolean }).readOnlyHint === true).map(tool => tool.name);
 		helper.availability = 'launch-failed';
 		const failed = provider.listTools().length;
 		helper.availability = 'ok';
 		state.enabled = false;
 		assert.deepStrictEqual({ shown, readOnly, failed, off: provider.listTools().length, instructions: provider.instructions() }, {
-			shown: ['computer_status', 'computer_list_apps', 'computer_list_windows', 'computer_get_app_state'],
-			readOnly: true,
+			shown: ['computer_status', 'computer_list_apps', 'computer_list_windows', 'computer_get_app_state', 'computer_activate_app', 'computer_click', 'computer_drag', 'computer_scroll', 'computer_type_text', 'computer_paste_text', 'computer_press_key', 'computer_hotkey'],
+			readOnly: ['computer_status', 'computer_list_apps', 'computer_list_windows', 'computer_get_app_state'],
 			failed: 0,
 			off: 0,
 			instructions: undefined,
@@ -134,20 +145,20 @@ suite('ParadisComputerUseToolProvider', () => {
 		ledger.set('pane-b', 'com.apple.finder', 'denied');
 		const result = await provider.callTool('pane-a', 'computer_list_apps', {}, undefined, createContext('pane', []).context);
 		const apps = JSON.parse(text(result)).apps.map((app: { name: string; blocked?: string; access: string }) => [app.name, app.blocked ?? '', app.access]);
-		const systemBlocked = setup({ blockSystemSurfaces: true });
-		const withSystem = JSON.parse(text(await systemBlocked.provider.callTool('pane-a', 'computer_list_apps', {}, undefined, createContext('pane', []).context))).apps
+		const systemAllowed = setup({ blockSystemSurfaces: false });
+		const withoutSystem = JSON.parse(text(await systemAllowed.provider.callTool('pane-a', 'computer_list_apps', {}, undefined, createContext('pane', []).context))).apps
 			.filter((app: { blocked?: string }) => app.blocked).map((app: { name: string }) => app.name);
-		assert.deepStrictEqual({ apps, withSystem }, {
+		assert.deepStrictEqual({ apps, withoutSystem }, {
 			apps: [
 				['Finder', '', 'none'],
 				['Notes', '', 'read'],
 				['1Password', 'password-manager', 'none'],
 				['Para Code', 'para-code', 'none'],
-				// Q97 の回答待ち。既定では断らない
-				['System Settings', '', 'none'],
+				// Q97 の回答 A で常に断る
+				['System Settings', 'system', 'none'],
 				['NoId', 'no-bundle-id', 'none'],
 			],
-			withSystem: ['1Password', 'Para Code', 'System Settings', 'NoId'],
+			withoutSystem: ['1Password', 'Para Code', 'NoId'],
 		});
 	});
 
@@ -163,7 +174,7 @@ suite('ParadisComputerUseToolProvider', () => {
 			grants: ledger.listForPane('pane-a'),
 			calls: helper.calls,
 		}, {
-			prompts: [{ method: 'requestAccess', token: 'pane-a', prompt: { appName: 'Finder', bundleId: 'com.apple.finder', requested: 'read', offerOperate: false }, timeoutMs: 120_000 }],
+			prompts: [{ method: 'requestAccess', token: 'pane-a', prompt: { appName: 'Finder', bundleId: 'com.apple.finder', requested: 'read', upgrade: false, offerOperate: true }, timeoutMs: 120_000 }],
 			firstError: undefined,
 			windows: [71, 72],
 			grants: [{ bundleId: 'com.apple.finder', grant: 'read' }],
@@ -291,6 +302,135 @@ suite('ParadisComputerUseToolProvider', () => {
 	});
 
 	test('keeps the tool list in sync with the handler', () => {
-		assert.deepStrictEqual(PARADIS_COMPUTER_USE_TOOLS.map(tool => tool.name).sort(), ['computer_get_app_state', 'computer_list_apps', 'computer_list_windows', 'computer_status']);
+		assert.strictEqual(PARADIS_COMPUTER_USE_TOOLS.length, 12);
+	});
+
+	test('asks to operate on first use, then clicks in the chosen window without asking again', async () => {
+		const { helper, ledger, provider } = setup();
+		const { context, prompts } = createContext('pane', ['operate']);
+		const first = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 3, button: 'right', clickCount: 2, modifiers: ['cmd'], includeState: false }, undefined, context) as IResult;
+		const second = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'hello', includeState: false }, undefined, context) as IResult;
+		assert.deepStrictEqual({
+			prompts: prompts.map(entry => entry.prompt),
+			first: JSON.parse((first.content[0] as { text: string }).text),
+			secondError: second.isError,
+			inputs: helper.inputs,
+			grants: ledger.listForPane('pane-a'),
+		}, {
+			prompts: [{ appName: 'Notes', bundleId: 'com.apple.Notes', requested: 'operate', upgrade: false, offerOperate: true }],
+			first: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, action: 'click', ok: true },
+			secondError: undefined,
+			inputs: [
+				{ method: 'click', params: { elementIndex: 3, button: 'right', clickCount: 2, modifiers: ['cmd'], pid: 200, windowId: 72 } },
+				{ method: 'typeText', params: { text: 'hello', pid: 200 } },
+			],
+			grants: [{ bundleId: 'com.apple.Notes', grant: 'operate' }],
+		});
+	});
+
+	test('never sends input to an app the user allowed only to read', async () => {
+		const { helper, ledger, provider } = setup();
+		// 初回の操作の求めに「読み取りのみ」
+		const readOnly = createContext('pane', ['read']);
+		const refused = await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'return' }, undefined, readOnly.context);
+		const again = await provider.callTool('pane-a', 'computer_hotkey', { app: 'Notes', keys: ['cmd', 's'] }, undefined, readOnly.context);
+		const read = await provider.callTool('pane-a', 'computer_list_windows', { app: 'Notes' }, undefined, readOnly.context) as IResult;
+		// 読み取りを許可済みのアプリへの操作は格上げを聞き、断られたら読み取りだけ残す
+		ledger.set('pane-b', 'com.apple.finder', 'read');
+		const upgrade = createContext('pane', ['denied']);
+		const declined = await provider.callTool('pane-b', 'computer_click', { app: 'Finder', x: 5, y: 5 }, undefined, upgrade.context);
+		const afterDecline = await provider.callTool('pane-b', 'computer_scroll', { app: 'Finder', direction: 'down' }, undefined, upgrade.context);
+		assert.deepStrictEqual({
+			refused: text(refused).split('.')[0],
+			again: text(again).split('.')[0],
+			readError: read.isError,
+			readOnlyPrompts: readOnly.prompts.map(entry => entry.prompt.requested),
+			upgradePrompts: upgrade.prompts.map(entry => ({ requested: entry.prompt.requested, upgrade: entry.prompt.upgrade })),
+			declined: text(declined).split('.')[0],
+			afterDecline: text(afterDecline).split('.')[0],
+			grants: [...ledger.listForPane('pane-a'), ...ledger.listForPane('pane-b')],
+			inputs: helper.inputs,
+		}, {
+			refused: 'The user allowed this terminal pane only to read Notes, so Para Code does not send it any input',
+			again: 'The user allowed this terminal pane only to read Notes, so Para Code does not send it any input',
+			readError: undefined,
+			readOnlyPrompts: ['operate'],
+			upgradePrompts: [{ requested: 'operate', upgrade: true }],
+			declined: 'The user allowed this terminal pane only to read Finder, so Para Code does not send it any input',
+			afterDecline: 'The user allowed this terminal pane only to read Finder, so Para Code does not send it any input',
+			grants: [{ bundleId: 'com.apple.Notes', grant: 'read' }, { bundleId: 'com.apple.finder', grant: 'read' }],
+			inputs: [],
+		});
+	});
+
+	test('refuses malformed input before asking the user and explains helper refusals', async () => {
+		const { helper, ledger, provider } = setup();
+		const { context, prompts } = createContext('pane', []);
+		const noTarget = await provider.callTool('pane-a', 'computer_click', { app: 'Notes' }, undefined, context);
+		const noText = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: '' }, undefined, context);
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const codes = ['user_active', 'window_not_focused', 'point_obscured', 'stale_element', 'key_blocked', 'accessibility_not_granted'];
+		const messages: string[] = [];
+		for (const code of codes) {
+			helper.onInput = async () => { throw new ParadisComputerUseHelperError(code, 'Spotlight shortcuts are never sent'); };
+			messages.push(text(await provider.callTool('pane-a', 'computer_hotkey', { app: 'Notes', keys: ['cmd', 'space'], includeState: false }, undefined, context)).split('.')[0]);
+		}
+		assert.deepStrictEqual({ noTarget: text(noTarget), noText: text(noText), prompts: prompts.length, messages }, {
+			noTarget: 'Give "elementIndex" from computer_get_app_state, or "x" and "y".',
+			noText: '"text" must be a non-empty string.',
+			prompts: 0,
+			messages: [
+				'The user is using the keyboard or mouse right now, so Para Code did not send input',
+				'The app is not in front (or another app took focus), so Para Code stopped before sending input',
+				'Another window covers that point, so Para Code did not send input there',
+				'That element number is not from the latest accessibility tree of this window',
+				'Para Code never sends this shortcut (Spotlight shortcuts are never sent)',
+				'macOS has not granted Accessibility to "Para Code Computer Use"',
+			],
+		});
+	});
+
+	test('sends input from all panes one at a time', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		ledger.set('pane-b', 'com.apple.finder', 'operate');
+		const events: string[] = [];
+		let release: () => void = () => { };
+		const firstHeld = new Promise<void>(resolve => release = resolve);
+		helper.onInput = async method => {
+			events.push(`start ${method}`);
+			if (method === 'click') {
+				await firstHeld;
+			}
+			events.push(`end ${method}`);
+			return { ok: true };
+		};
+		const context = createContext('pane', []).context;
+		const first = provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		const second = provider.callTool('pane-b', 'computer_press_key', { app: 'Finder', key: 'escape', includeState: false }, undefined, context);
+		await new Promise(resolve => setTimeout(resolve, 20));
+		const whileHeld = [...events];
+		release();
+		await Promise.all([first, second]);
+		assert.deepStrictEqual({ whileHeld, events }, {
+			whileHeld: ['start click'],
+			events: ['start click', 'end click', 'start pressKey', 'end pressKey'],
+		});
+	});
+
+	test('returns the window state after an action and says when the clipboard was not restored', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.onInput = async () => ({ pasted: true, clipboardRestored: false });
+		const result = await provider.callTool('pane-a', 'computer_paste_text', { app: 'Notes', text: '日本語' }, undefined, createContext('pane', []).context) as IResult;
+		assert.deepStrictEqual({
+			summary: JSON.parse((result.content[0] as { text: string }).text),
+			parts: result.content.map(part => part.type),
+			calls: helper.calls,
+		}, {
+			summary: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, action: 'paste_text', pasted: true, clipboardRestored: false, note: 'Something else changed the clipboard while pasting, so the user\'s previous clipboard was not put back.' },
+			parts: ['text', 'text', 'text', 'image'],
+			calls: ['listApps', 'listWindows:200', 'pasteText:200', 'permissions', 'accessibilityTree:200/72', 'screenshotWindow:200/72'],
+		});
 	});
 });

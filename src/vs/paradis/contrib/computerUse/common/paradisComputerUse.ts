@@ -13,8 +13,9 @@
 // 補助アプリを起動して Unix ソケットで話し、para-browser MCP へツールを足す。
 // 設計: phase7-b3/design.md（リポジトリ外）。安全の決め事は同 6 章。
 //
-// 今の版は読み取りだけ（状態・アプリとウィンドウの一覧・スクショ・アクセシビリティのツリー）。
-// クリック・文字入力などの操作と、設定画面の許可の取り消しは後の段で足す。
+// 読み取り（状態・アプリとウィンドウの一覧・スクショ・アクセシビリティのツリー）と、操作（前面に出す・クリック・
+// ドラッグ・スクロール・文字入力・貼り付け・キー・ホットキー）を持つ。設定画面での許可の取り消しは後の段で足す。
+// 回答済みの設問: Q97〜Q101 はすべて案 A（2026-09-28）。
 
 // --- 設定 ---
 
@@ -34,7 +35,7 @@ export const PARADIS_COMPUTER_USE_EXECUTABLE = 'ParadisComputerUse';
  * 補助アプリとの約束の版。Swift 側の `ParadisComputerUseVersion.protocolVersion`
  * （native/macos/Sources/ParadisComputerUseCore/ParadisProtocol.swift）と同じ値にする。
  */
-export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 1;
+export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 2;
 /** 対応する macOS の最低の Darwin の版（macOS 14 = Darwin 23）。ScreenCaptureKit の単一ウィンドウ撮影に要る。 */
 export const PARADIS_COMPUTER_USE_MIN_DARWIN_MAJOR = 23;
 
@@ -114,17 +115,18 @@ export type ParadisComputerUseGrant = 'read' | 'operate' | 'denied';
 
 /**
  * 操作系のツールがこの版にあるか。無い間は承認ダイアログで「操作も許可」を出さない
- * （押せても何も増えないうえ、「クリックと文字入力もします」という説明が事実と合わなくなるため）。
- * 操作系のツールを足す段（設計書 7 章 S3）で true にする。
+ * （押せても何も増えないうえ、説明が事実と合わなくなるため）。
  */
-export const PARADIS_COMPUTER_USE_OPERATE_AVAILABLE = false;
+export const PARADIS_COMPUTER_USE_OPERATE_AVAILABLE = true;
 
 /** 承認ダイアログへ渡す中身。文字列はダイアログ側でもう一度削る。 */
 export interface IParadisComputerUseApprovalPrompt {
 	readonly appName: string;
 	readonly bundleId: string;
-	/** 求める許可。`operate` は読み取りを許可済みのアプリの格上げ（「読み取りのみ」を出さない）。 */
+	/** 求める許可。見出しの文言が変わる。 */
 	readonly requested: 'read' | 'operate';
+	/** 読み取りを許可済みのアプリの格上げ。「拒否」と「操作も許可」だけを出す。 */
+	readonly upgrade: boolean;
 	/** 「操作も許可」を選べるようにするか。 */
 	readonly offerOperate: boolean;
 }
@@ -177,8 +179,8 @@ export const PARADIS_COMPUTER_USE_PARA_CODE_BUNDLE_ID = 'ltd.paradis.paracode';
 export const PARADIS_COMPUTER_USE_DEVELOPMENT_BUNDLE_ID = 'com.github.Electron';
 
 /**
- * システム設定と認証のダイアログ（Q97、回答待ち。推しは「常に操作させない」に足す案 A）。
- * 回答が A なら {@link PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES} を true にするだけで効く。
+ * システム設定と認証のダイアログ（Q97 の回答 A で「常に操作させない」に入れた）。
+ * エージェントが「プライバシーとセキュリティ」で許可を足したり、管理者パスワードの入力欄に打ったりできないように。
  * `prefix` は、その id で始まるもの全部（`com.apple.settings.*` の拡張など）。
  */
 export const PARADIS_COMPUTER_USE_SYSTEM_SURFACES: readonly { readonly id: string; readonly prefix?: boolean }[] = [
@@ -187,10 +189,11 @@ export const PARADIS_COMPUTER_USE_SYSTEM_SURFACES: readonly { readonly id: strin
 	{ id: 'com.apple.SecurityAgent' },
 	{ id: 'com.apple.LocalAuthentication.UIAgent' },
 	{ id: 'com.apple.loginwindow' },
+	{ id: 'com.apple.coreservices.uiagent' },
 ];
 
-/** Q97 の回答で決める。true でシステム設定と認証のダイアログも常に断る。 */
-export const PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES = false;
+/** システム設定と認証のダイアログも常に断る（Q97 の回答 A）。 */
+export const PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES = true;
 
 export interface IParadisComputerUseBlockOptions {
 	/** Q97 の分も断るか（既定は {@link PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES}）。テストで切り替える。 */
@@ -218,4 +221,33 @@ export function paradisComputerUseBlockReason(bundleId: string, options: IParadi
 		}
 	}
 	return undefined;
+}
+
+// --- コマンドを打てるアプリ（Q98） ---
+
+/**
+ * 操作を許可すると任意のコマンドを打てるアプリ（ターミナル類とスクリプトエディタ）。Q98 の回答 A で、
+ * 拒否リストには入れず、承認ダイアログに警告の一文を出すだけにした（Claude Code や Codex はもともと利用者の
+ * 権限でコマンドを実行できるので、新しく危険が増えるわけではないため）。
+ */
+export const PARADIS_COMPUTER_USE_COMMAND_APPS: readonly string[] = [
+	'com.apple.Terminal',
+	'com.googlecode.iterm2',
+	'com.mitchellh.ghostty',
+	'dev.warp.Warp-Stable',
+	'dev.warp.Warp-Preview',
+	'net.kovidgoyal.kitty',
+	'org.alacritty',
+	'io.alacritty',
+	'com.github.wez.wezterm',
+	'co.zeit.hyper',
+	'com.raphaelamorim.rio',
+	'com.apple.ScriptEditor2',
+	'com.apple.Automator',
+];
+
+/** 操作を許可するとコマンドを打てるアプリか（承認ダイアログの警告に使う）。 */
+export function paradisComputerUseRunsCommands(bundleId: string): boolean {
+	const id = bundleId.toLowerCase();
+	return PARADIS_COMPUTER_USE_COMMAND_APPS.some(candidate => candidate.toLowerCase() === id);
 }
