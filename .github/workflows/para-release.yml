@@ -37,6 +37,13 @@ on:
         description: 'Comma-separated subset to build for debugging (darwin,win32,linux). Empty = all + publish.'
         required: false
         default: ''
+      dictation_runtime:
+        # Off until the Foundry Local Core license (Microsoft Software License Terms, not MIT) is
+        # cleared for Para Code users. Tag pushes never stamp it. See NOTES.md.
+        description: 'Stamp the upstream dictation runtime download URL into product.json (license review pending).'
+        required: false
+        type: boolean
+        default: false
 
 env:
   PARA_UPDATE_ACCESS_CLIENT_ID: ${{ secrets.PARA_UPDATE_ACCESS_CLIENT_ID }}
@@ -110,9 +117,24 @@ jobs:
       # on first use, because packaging strips it from node_modules (getFoundryLocalExcludeFilter).
       # The download URL only reaches product.json when this step writes the results file; without
       # it the mic button shows up but dictation fails. VSCODE_PUBLISH is unset, so this never
-      # uploads anything: it only stamps upstream's CDN URL (q.html Q38).
+      # uploads anything: it only stamps upstream's CDN URL. Off by default: the runtime is under
+      # Microsoft's Foundry Local Core license terms, which are still under review (NOTES.md).
       - name: Stamp dictation runtime URL
+        if: ${{ github.event.inputs.dictation_runtime == 'true' }}
         run: node build/dictation-runtime/produce.ts --vscode-platform=darwin --arch=${{ matrix.arch }}
+
+      # The stamped URL is built from package.json's foundry-local-sdk version without touching the
+      # network, so check that the CDN really has that version before shipping it.
+      - name: Check dictation runtime on the CDN
+        if: ${{ github.event.inputs.dictation_runtime == 'true' }}
+        shell: bash
+        run: |
+          TEMPLATE="$(node -p "require(process.env.DICTATION_RUNTIME_RESULTS_FILE).urlTemplate")"
+          for target in darwin-arm64 win32-x64 win32-arm64 linux-x64; do
+            url="${TEMPLATE/\{target\}/$target}"
+            curl -fsSIL --retry 3 "$url" > /dev/null || { echo "::error::dictation runtime not found on the CDN: $url"; exit 1; }
+            echo "OK $url"
+          done
 
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
@@ -243,7 +265,19 @@ jobs:
 
       # See the darwin job: stamps the dictation runtime URL into product.json, uploads nothing.
       - name: Stamp dictation runtime URL
+        if: ${{ github.event.inputs.dictation_runtime == 'true' }}
         run: node build/dictation-runtime/produce.ts --vscode-platform=win32 --arch=${{ matrix.arch }}
+
+      - name: Check dictation runtime on the CDN
+        if: ${{ github.event.inputs.dictation_runtime == 'true' }}
+        shell: bash
+        run: |
+          TEMPLATE="$(node -p "require(process.env.DICTATION_RUNTIME_RESULTS_FILE).urlTemplate")"
+          for target in darwin-arm64 win32-x64 win32-arm64 linux-x64; do
+            url="${TEMPLATE/\{target\}/$target}"
+            curl -fsSIL --retry 3 "$url" > /dev/null || { echo "::error::dictation runtime not found on the CDN: $url"; exit 1; }
+            echo "OK $url"
+          done
 
       - name: Package (vscode-win32-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-win32-${{ matrix.arch }}-min"
@@ -336,7 +370,19 @@ jobs:
 
       # See the darwin job: stamps the dictation runtime URL into product.json, uploads nothing.
       - name: Stamp dictation runtime URL
+        if: ${{ github.event.inputs.dictation_runtime == 'true' }}
         run: node build/dictation-runtime/produce.ts --vscode-platform=linux --arch=x64
+
+      - name: Check dictation runtime on the CDN
+        if: ${{ github.event.inputs.dictation_runtime == 'true' }}
+        shell: bash
+        run: |
+          TEMPLATE="$(node -p "require(process.env.DICTATION_RUNTIME_RESULTS_FILE).urlTemplate")"
+          for target in darwin-arm64 win32-x64 win32-arm64 linux-x64; do
+            url="${TEMPLATE/\{target\}/$target}"
+            curl -fsSIL --retry 3 "$url" > /dev/null || { echo "::error::dictation runtime not found on the CDN: $url"; exit 1; }
+            echo "OK $url"
+          done
 
       - name: Package (vscode-linux-x64-min)
         run: npm run gulp "vscode-linux-x64-min"
