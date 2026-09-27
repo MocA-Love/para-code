@@ -95,4 +95,11 @@ suite('paradisBrowserProfileModel', () => {
 			[agentMade, profile('b1c2d3e4f506', 'USER'), { ...profile('c1c2d3e4f506', 'BAD OWNER'), createdByAgent: true }],
 		);
 	});
+
+	test('names drop zero-width and bidi characters so an agent cannot mimic a user profile name', () => {
+		assert.deepStrictEqual(
+			[paradisNormalizeProfileName('P\u200bRD'), paradisNormalizeProfileName('Gmail\u202eliamG'), paradisNormalizeProfileName('\ufeffWork\u2066')],
+			['P RD', 'Gmail liamG', 'Work'],
+		);
+	});
 });

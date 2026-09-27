@@ -121,12 +121,14 @@ export type ParadisAgentPageRequestFailure =
 	| 'noPages'
 	/** このペインからの要求がまだ画面に出ている。 */
 	| 'alreadyPending'
+	/** 少し前にユーザーがこのペインの求めを断った（しばらくは自動で断る）。 */
+	| 'recentlyDenied'
 	/** ユーザーは承認したが、共有そのものに失敗した（upstream の共有確認で断られた場合を含む）。 */
 	| 'shareFailed';
 
 export type IParadisAgentPageRequestResult =
 	| { readonly ok: true; readonly approved: true; readonly tab: IParadisAgentTabInfo }
-	/** timedOut: 締め切りまでに答えが無かった（断られたのとは区別する）。 */
+	/** timedOut: 締め切りまでに確かな答えが得られなかった（断られたのとは区別する）。 */
 	| { readonly ok: true; readonly approved: false; readonly timedOut: boolean }
 	| { readonly ok: false; readonly reason: ParadisAgentPageRequestFailure };
 

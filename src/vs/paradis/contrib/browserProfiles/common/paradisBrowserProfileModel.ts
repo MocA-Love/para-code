@@ -60,11 +60,12 @@ export const PARADIS_BROWSER_PROFILE_COLORS: readonly string[] = [
 export const PARADIS_BROWSER_PROFILE_NAME_MAX_LENGTH = 64;
 
 /**
- * 表示名を正規化する。前後の空白を落とし、連続空白（改行・タブを含む）を1つに畳み、
- * 64文字で切る。サロゲートペアの途中で割らないよう文字単位で数える。
+ * 表示名を正規化する。制御文字・ゼロ幅文字・双方向制御文字を空白へ寄せ（エージェントがユーザーの
+ * プロファイルに見た目だけ似せた名前を作れないように）、前後の空白を落とし、連続空白（改行・タブを
+ * 含む）を1つに畳み、64文字で切る。サロゲートペアの途中で割らないよう文字単位で数える。
  */
 export function paradisNormalizeProfileName(name: string): string {
-	const flattened = name.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+	const flattened = name.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
 	const characters = Array.from(flattened);
 	return characters.length > PARADIS_BROWSER_PROFILE_NAME_MAX_LENGTH
 		? characters.slice(0, PARADIS_BROWSER_PROFILE_NAME_MAX_LENGTH).join('')

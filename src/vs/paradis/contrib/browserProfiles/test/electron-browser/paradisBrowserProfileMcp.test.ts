@@ -15,7 +15,7 @@ import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView
 import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { IEditorGroup } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
-import { IParadisAgentBrowserTabsService, ParadisAgentApprovalChoice } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
+import { IParadisAgentBrowserTabsService, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisWorkspaceSwitchService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../common/paradisBrowserProfileMcp.js';
 import { IParadisBrowserProfile } from '../../common/paradisBrowserProfileModel.js';
@@ -26,7 +26,7 @@ function profile(id: string, name: string, extra: Partial<IParadisBrowserProfile
 	return { id, name, color: '#3fb950', createdAt: 1, lastUsedAt: 2, ...extra };
 }
 
-function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalChoice | undefined) {
+function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome) {
 	const calls: string[] = [];
 	const profilesService = {
 		list: () => profiles,
@@ -48,6 +48,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		reserveSlot: () => toDisposable(() => { }),
 		registerAgentTab: () => { },
 		bindTab: async () => true,
+		bindTabWithin: async () => true,
 		isOpenedBy: () => false,
 	} as unknown as IParadisAgentBrowserTabsService;
 	const channel = new ParadisBrowserProfileMcpChannel(
@@ -65,35 +66,44 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 suite('ParadisBrowserProfileMcpChannel', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('lists only agent-made profiles by name and just counts the user profiles', async () => {
+	test('lists by name only the profiles this pane created and just counts the rest', async () => {
 		const mine = paradisAgentOwnerMark('pane-a');
 		const { channel } = createChannel([
 			profile('a3f19c2b7e04', 'Personal Gmail'),
 			profile('b1c2d3e4f506', 'agent-test', { createdByAgent: true, agentOwner: mine }),
 			profile('c1c2d3e4f506', 'other-agent', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-b') }),
-		], undefined);
+		], 'denied');
 		store.add(channel);
 		const result = await channel.call<IParadisListProfilesResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, ['pane-a']);
 		assert.deepStrictEqual(
-			[result.profiles.map(entry => [entry.name, entry.createdByYou]), result.userProfileCount],
-			[[['agent-test', true], ['other-agent', false]], 1],
+			[result.profiles.map(entry => [entry.name, entry.createdByYou]), result.hiddenProfileCount],
+			[[['agent-test', true]], 2],
 		);
 	});
 
-	test('opening a user profile needs approval, an agent-made one does not', async () => {
-		const denied = createChannel([profile('a3f19c2b7e04', 'PRD'), profile('b1c2d3e4f506', 'TEST', { createdByAgent: true })], undefined);
+	test('a profile of the user or of another pane needs approval, one made by this pane does not', async () => {
+		const denied = createChannel([
+			profile('a3f19c2b7e04', 'PRD'),
+			profile('b1c2d3e4f506', 'TEST', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') }),
+			profile('c1c2d3e4f506', 'OTHER', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-b') }),
+		], 'denied');
 		store.add(denied.channel);
 		const userResult = await denied.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
-		const agentResult = await denied.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'TEST'], CancellationToken.None);
+		const otherPaneResult = await denied.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'OTHER'], CancellationToken.None);
+		const ownResult = await denied.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'TEST'], CancellationToken.None);
 		assert.deepStrictEqual(
-			[userResult, agentResult.ok, denied.calls],
-			[{ ok: false, reason: 'denied' }, true, ['ask', 'open:b1c2d3e4f506']],
+			[userResult, otherPaneResult, ownResult.ok, denied.calls],
+			[{ ok: false, reason: 'denied' }, { ok: false, reason: 'denied' }, true, ['ask', 'ask', 'open:b1c2d3e4f506']],
 		);
 
 		const approved = createChannel([profile('a3f19c2b7e04', 'PRD')], 'approve');
 		store.add(approved.channel);
 		const approvedResult = await approved.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
 		assert.deepStrictEqual([approvedResult.ok, approved.calls], [true, ['ask', 'open:a3f19c2b7e04']]);
+
+		const busy = createChannel([profile('a3f19c2b7e04', 'PRD')], 'busy');
+		store.add(busy.channel);
+		assert.deepStrictEqual(await busy.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None), { ok: false, reason: 'alreadyPending' });
 	});
 
 	test('rejects non-http URLs before asking anything', async () => {
@@ -103,18 +113,28 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 		assert.deepStrictEqual([result, calls], [{ ok: false, reason: 'invalidUrl' }, []]);
 	});
 
-	test('only the pane that created a profile can delete it, and never a user profile', async () => {
-		const { channel, calls, profiles } = createChannel([profile('a3f19c2b7e04', 'USER')], undefined);
+	test('only the pane that created a profile can delete it; other names get the same answer as a missing one', async () => {
+		const { channel, calls, profiles } = createChannel([profile('a3f19c2b7e04', 'USER')], 'denied');
 		store.add(channel);
 		const created = await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, ['pane-a', 'scratch']);
 		const results = [
 			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'USER']),
+			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'NOPE']),
 			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-b', 'scratch']),
 			(await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'scratch'])).ok,
 		];
 		assert.deepStrictEqual(
 			[created.ok, profiles[1].agentOwner === paradisAgentOwnerMark('pane-a'), results, calls],
-			[true, true, [{ ok: false, reason: 'notCreatedByAgent' }, { ok: false, reason: 'notOwner' }, true], [`remove:${profiles[1].id}`]],
+			[true, true, [{ ok: false, reason: 'unknownProfile' }, { ok: false, reason: 'unknownProfile' }, { ok: false, reason: 'unknownProfile' }, true], [`remove:${profiles[1].id}`]],
 		);
+	});
+
+	test('creating a profile with a taken or empty name gets one answer, so user profile names cannot be probed', async () => {
+		const { channel } = createChannel([profile('a3f19c2b7e04', 'Personal Gmail')], 'denied');
+		store.add(channel);
+		assert.deepStrictEqual([
+			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, ['pane-a', 'personal gmail']),
+			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, ['pane-a', '   ']),
+		], [{ ok: false, reason: 'invalidName' }, { ok: false, reason: 'invalidName' }]);
 	});
 });

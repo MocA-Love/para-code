@@ -28,7 +28,10 @@
 // もう閉じられない）。安全側に倒れるだけなので、永続化はしていない。
 
 import './media/paradisAgentApproval.css';
-import { raceCancellation, raceTimeout } from '../../../../base/common/async.js';
+import { raceCancellation, raceTimeout, Sequencer } from '../../../../base/common/async.js';
+import * as dom from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -117,6 +120,21 @@ export interface IParadisAgentApprovalRequest {
 
 export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
 
+/**
+ * 承認の結果。承認以外は次のとおり:
+ *  - denied: ユーザーが拒否した（拒否・Esc・閉じる）。しばらくは同じペインからの求めを自動で断る
+ *  - cancelled: 呼び出し側が取り消した（締め切り・MCP の取り消し）
+ *  - unanswered: 表示直後やショートカットでの承認が続き、確かな答えが得られなかった
+ *  - busy: 同じペインの別の求めがまだ答えを待っている
+ *  - recentlyDenied: 同じペインの求めを少し前にユーザーが断った
+ */
+export type ParadisAgentApprovalOutcome = ParadisAgentApprovalChoice | 'denied' | 'cancelled' | 'unanswered' | 'busy' | 'recentlyDenied';
+
+/** 拒否の後、同じペインからの求めを自動で断る時間。承認疲れを誘う繰り返しを止める。 */
+const DENIAL_COOLDOWN_MS = 3 * 60_000;
+/** 承認ダイアログが実際に画面に出たかを確かめる間隔。 */
+const DIALOG_SHOWN_POLL_MS = 50;
+
 export const IParadisAgentBrowserTabsService = createDecorator<IParadisAgentBrowserTabsService>('paradisAgentBrowserTabsService');
 
 /** ペインから解いた、タブを開く先。 */
@@ -153,7 +171,13 @@ export interface IParadisAgentBrowserTabsService {
 	 * エージェントの求めをユーザーに承認してもらう（ページの共有、ユーザーのプロファイルを使うなど）。
 	 * 「拒否」が先頭で既定のフォーカス。表示直後の承認は聞き直す。拒否・閉じる・取り消しは undefined。
 	 */
-	askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalChoice | undefined>;
+	askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome>;
+
+	/**
+	 * {@link bindTab} を締め切り付きで行う。締め切りまでに終われば結果、過ぎたら undefined を返し、
+	 * 後から共有が成立しても外す（時間切れと答えたエージェントのペインの共有先が黙って移らないように）。
+	 */
+	bindTabWithin(token: string, input: BrowserEditorInput, cancellation: CancellationToken): Promise<boolean | undefined>;
 
 	/** 上限の確認とタブを開く処理の間に、同じペインの別の呼び出しが割り込まないよう枠を取る。 */
 	reserveSlot(token: string): IDisposable | undefined;
@@ -173,8 +197,15 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	/** viewId → エージェントが開いたタブ（閉じるときと一覧に使う）。 */
 	private readonly _agentInputs = new Map<string, BrowserEditorInput>();
 	private readonly _agentTabListeners = this._register(new DisposableMap<string, IDisposable>());
-	/** 承認ダイアログが出ているペイン。 */
+	/** request_browser_page の処理中（締め切り後に遅れて成立する共有が片付くまでを含む）のペイン。 */
 	private readonly _pendingRequests = new Set<string>();
+	/** 承認を待っているペイン（ページでもプロファイルでも、1ペインにつき1つ）。 */
+	private readonly _pendingApprovals = new Set<string>();
+	/** ペイン → この時刻までは求めを自動で断る。 */
+	private readonly _deniedUntil = new Map<string, number>();
+	/** 承認ダイアログは1つずつ出す（重なると、1件目へのダブルクリックが2件目の承認に当たる）。 */
+	private readonly _approvalQueue = new Sequencer();
+	private _approvalSerial = 0;
 
 	constructor(
 		@IBrowserViewWorkbenchService private readonly _browserViewWorkbenchService: IBrowserViewWorkbenchService,
@@ -440,18 +471,28 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		this._pendingRequests.add(token);
 		// 締め切りは1本: ダイアログ・ページ選び・共有の完了までをまとめて打ち切る。
 		const deadline = new ParadisApprovalDeadline(cancellation);
+		let lateBinding: Promise<unknown> | undefined;
 		try {
-			const chosen = await this._askForPage(token, paradisSanitizeAgentPageRequestReason(reason), primary, candidates, deadline.token);
-			if (!chosen || deadline.token.isCancellationRequested) {
-				return { ok: true, approved: false, timedOut: deadline.timedOut };
+			const answer = await this._askForPage(token, paradisSanitizeAgentPageRequestReason(reason), primary, candidates, deadline.token);
+			if (answer === 'busy') {
+				return { ok: false, reason: 'alreadyPending' };
 			}
+			if (answer === 'recentlyDenied') {
+				return { ok: false, reason: 'recentlyDenied' };
+			}
+			if (typeof answer === 'string' || deadline.token.isCancellationRequested) {
+				// 断られた（denied）のか、答えが得られなかった（締め切り・速押しの打ち切り）のかを分けて返す。
+				return { ok: true, approved: false, timedOut: answer !== 'denied' };
+			}
+			const chosen = answer;
 			const binding = this.bindTab(token, chosen);
 			const bound = await raceCancellation(binding, deadline.token);
 			if (bound === undefined) {
-				// 締め切りを過ぎた。エージェントには時間切れと返したので、後から共有が成立しても外す
-				// （断られたと思っているエージェントのペインの共有先が、黙ってユーザーのタブへ移らないように）。
-				void binding.then(ok => ok ? this._unbindIfCurrent(token, chosen) : undefined);
-				return { ok: true, approved: false, timedOut: deadline.timedOut };
+				// 締め切りを過ぎた。エージェントには時間切れと返したので、後から共有が成立しても外す。
+				// 外し終えるまでこのペインの次の求めを受け付けない（新しい求めの共有を、古い共有が
+				// 上書きしてから外してしまうのを防ぐ）。
+				lateBinding = binding.then(ok => ok ? this._unbindIfCurrent(token, chosen) : undefined);
+				return { ok: true, approved: false, timedOut: true };
 			}
 			if (!bound) {
 				return { ok: false, reason: 'shareFailed' };
@@ -462,8 +503,21 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			return { ok: true, approved: true, tab: this._describe(token, shared) };
 		} finally {
 			deadline.dispose();
-			this._pendingRequests.delete(token);
+			if (lateBinding) {
+				void lateBinding.finally(() => this._pendingRequests.delete(token));
+			} else {
+				this._pendingRequests.delete(token);
+			}
 		}
+	}
+
+	async bindTabWithin(token: string, input: BrowserEditorInput, cancellation: CancellationToken): Promise<boolean | undefined> {
+		const binding = this.bindTab(token, input);
+		const bound = await raceCancellation(binding, cancellation);
+		if (bound === undefined) {
+			void binding.then(ok => ok ? this._unbindIfCurrent(token, input) : undefined);
+		}
+		return bound;
 	}
 
 	/** 締め切り後に成立した共有を外す。その間にほかのタブへ移っていたら触らない。 */
@@ -489,45 +543,119 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前ダイアログ（z-index 2600〜2800）
 	 * が開いていてもその裏に隠れないよう、このダイアログの層だけ上げてある（media/paradisAgentApproval.css）。
 	 */
-	async askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalChoice | undefined> {
+	async askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> {
+		const deniedUntil = this._deniedUntil.get(token);
+		if (deniedUntil !== undefined) {
+			if (Date.now() < deniedUntil) {
+				return 'recentlyDenied';
+			}
+			this._deniedUntil.delete(token);
+		}
+		if (this._pendingApprovals.has(token)) {
+			return 'busy';
+		}
+		this._pendingApprovals.add(token);
+		try {
+			// ほかのペインの承認が出ている間は順番を待つ（待っている間も締め切りは進む）。
+			const outcome = await this._approvalQueue.queue(() => cancellation.isCancellationRequested
+				? Promise.resolve<ParadisAgentApprovalOutcome>('cancelled')
+				: this._showApproval(token, request, cancellation));
+			if (outcome === 'denied') {
+				this._deniedUntil.set(token, Date.now() + DENIAL_COOLDOWN_MS);
+			}
+			return outcome;
+		} finally {
+			this._pendingApprovals.delete(token);
+		}
+	}
+
+	private async _showApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> {
 		type Choice = ParadisAgentApprovalChoice | 'deny';
+		// ボタンの並びは意味を持つ:
+		//  - 先頭（index 0）に既定のフォーカスが当たる。打ちかけの Enter が当たるよう「拒否」を置く
+		//  - macOS の ⌘D は index 1 を押す。2つ目の選択肢（ページを選び直す）があればそれを置く
+		//    （選び直しは続けて一覧から選ぶ必要がある）。無ければ承認が index 1 になるので、⌘D で
+		//    決まった承認は下で聞き直す
+		// ニーモニック（&&）は付けない。Alt との組み合わせで意図せず押されないようにするため。
 		const buttons: { label: string; run: () => Choice }[] = [
-			// 先頭のボタンに既定のフォーカスが当たる。打ちかけの Enter が「拒否」に当たるよう、拒否を先頭にする。
-			{ label: localize({ key: 'paradis.agentTabs.approval.deny', comment: ['&& denotes a mnemonic'] }, "拒否(&&D)"), run: () => 'deny' },
-			{ label: request.approveLabel, run: () => 'approve' },
+			{ label: localize('paradis.agentTabs.approval.deny', "拒否"), run: () => 'deny' },
 		];
 		if (request.alternativeLabel) {
 			buttons.push({ label: request.alternativeLabel, run: () => 'alternative' });
 		}
+		buttons.push({ label: request.approveLabel, run: () => 'approve' });
+
 		const message = request.messageTemplate(this._describePane(token));
 		let detail = request.detail;
 		for (let attempt = 0; attempt < 3; attempt++) {
-			const shownAt = Date.now();
-			// cancelButton を付けないので、Esc と閉じるボタンは結果なし（＝拒否）になる。
-			const { result } = await this._dialogService.prompt<Choice>({
-				type: 'warning',
-				message,
-				detail: detail.join('\n\n'),
-				buttons,
-				custom: { classes: ['paradis-agent-approval-dialog'] },
-				token: cancellation,
-			});
-			if (cancellation.isCancellationRequested || result === undefined || result === 'deny') {
-				return undefined;
+			const marker = `paradis-agent-approval-${++this._approvalSerial}`;
+			const calledAt = Date.now();
+			const watch = new DisposableStore();
+			let shownAt: number | undefined;
+			let shortcutUsed = false;
+			try {
+				// 1秒の猶予は、ダイアログが実際に画面に出た時刻から数える（upstream はダイアログを1つずつ
+				// 出すので、前のダイアログの後ろで待っていた間を数えない）。
+				const poll = mainWindow.setInterval(() => {
+					if (shownAt === undefined && this._isDialogShown(marker)) {
+						shownAt = Date.now();
+					}
+				}, DIALOG_SHOWN_POLL_MS);
+				watch.add(toDisposable(() => mainWindow.clearInterval(poll)));
+				if (isMacintosh) {
+					for (const { window } of dom.getWindows()) {
+						watch.add(dom.addDisposableListener(window, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+							if (event.metaKey && event.key.toLowerCase() === 'd') {
+								shortcutUsed = true;
+							}
+						}, true));
+					}
+				}
+				// cancelButton を付けないので、Esc と閉じるボタンは結果なし（＝拒否）になる。
+				const { result } = await this._dialogService.prompt<Choice>({
+					type: 'warning',
+					message,
+					detail: detail.join('\n\n'),
+					buttons,
+					custom: { classes: ['paradis-agent-approval-dialog', marker] },
+					token: cancellation,
+				});
+				if (cancellation.isCancellationRequested) {
+					return 'cancelled';
+				}
+				if (result === undefined || result === 'deny') {
+					return 'denied';
+				}
+				const elapsed = Date.now() - (shownAt ?? calledAt);
+				if (!shortcutUsed && elapsed >= PARADIS_AGENT_APPROVAL_GUARD_MS) {
+					return result;
+				}
+			} finally {
+				watch.dispose();
 			}
-			if (Date.now() - shownAt >= PARADIS_AGENT_APPROVAL_GUARD_MS) {
-				return result;
-			}
-			// 表示直後の承認は、ほかの場所へ打っていた Enter が当たった可能性が高い。もう一度聞く。
+			// 表示直後の承認や ⌘D での承認は、ほかの場所へ打っていたキーが当たった可能性が高い。もう一度聞く。
 			detail = [
-				localize('paradis.agentTabs.approval.tooFast', "表示された直後に押されたため、もう一度確認しています。"),
+				localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。"),
 				...request.detail,
 			];
 		}
-		return undefined;
+		return 'unanswered';
 	}
 
-	private async _askForPage(token: string, reason: string | undefined, primary: BrowserEditorInput, candidates: readonly BrowserEditorInput[], cancellation: CancellationToken): Promise<BrowserEditorInput | undefined> {
+	/** その印の付いた承認ダイアログが、どれかのウィンドウに出ているか。 */
+	private _isDialogShown(marker: string): boolean {
+		for (const { window } of dom.getWindows()) {
+			// 生きた一覧を1回引くだけで、要素の中身は触らない。
+			// eslint-disable-next-line no-restricted-syntax
+			if (window.document.getElementsByClassName(marker).length > 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** 選ばれたタブ、または承認されなかった理由を返す。 */
+	private async _askForPage(token: string, reason: string | undefined, primary: BrowserEditorInput, candidates: readonly BrowserEditorInput[], cancellation: CancellationToken): Promise<BrowserEditorInput | Exclude<ParadisAgentApprovalOutcome, ParadisAgentApprovalChoice>> {
 		const detail = [
 			reason ? localize('paradis.agentTabs.request.reason', "エージェントが書いた理由: {0}", reason) : undefined,
 			localize('paradis.agentTabs.request.page', "共有するページ: {0}", this._pageLabel(primary)),
@@ -536,14 +664,14 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		const choice = await this.askApproval(token, {
 			messageTemplate: pane => localize('paradis.agentTabs.request.message', "{0} のエージェントが、ブラウザのページを使いたいと求めています", pane),
 			detail,
-			approveLabel: localize({ key: 'paradis.agentTabs.request.share', comment: ['&& denotes a mnemonic'] }, "このページを共有(&&S)"),
-			alternativeLabel: candidates.length > 1 ? localize({ key: 'paradis.agentTabs.request.pick', comment: ['&& denotes a mnemonic'] }, "別のページを選ぶ(&&P)…") : undefined,
+			approveLabel: localize('paradis.agentTabs.request.share', "このページを共有"),
+			alternativeLabel: candidates.length > 1 ? localize('paradis.agentTabs.request.pick', "別のページを選ぶ…") : undefined,
 		}, cancellation);
-		if (choice === undefined) {
-			return undefined;
-		}
 		if (choice === 'approve') {
 			return primary;
+		}
+		if (choice !== 'alternative') {
+			return choice;
 		}
 
 		type Item = IQuickPickItem & { readonly input: BrowserEditorInput };
@@ -553,7 +681,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			placeHolder: localize('paradis.agentTabs.request.pickPlaceholder', "共有するページを選んでください（Esc で拒否）"),
 			ignoreFocusLost: true,
 		}, cancellation);
-		return picked?.input;
+		if (cancellation.isCancellationRequested) {
+			return 'cancelled';
+		}
+		return picked?.input ?? 'denied';
 	}
 
 	/**
