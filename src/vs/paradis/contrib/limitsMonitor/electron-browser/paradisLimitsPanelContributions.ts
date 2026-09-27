@@ -20,8 +20,9 @@
 //       renderAccountActions(container, account, context) { ...ボタンを足して IDisposable を返す... }
 //   }
 //   ParadisLimitsPanelContributions.register(MyCodexCardActions);
-// 登録するモジュールは、タイトルバーのウィジェット（paradisLimitsMonitorWidget.ts）から副作用
-// import で読み込む。
+// 登録するモジュールは、そのプロバイダの contrib 自身の読み込み口から副作用 import で読み込む
+// （Codex は codexAccounts/electron-browser/paradisCodexAccounts.contribution.ts）。パネル側から
+// 各プロバイダを import しない。同じ limitsMonitor の中にある Claude の部品だけはウィジェットが読み込む。
 
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { BrandedService } from '../../../../platform/instantiation/common/instantiation.js';
