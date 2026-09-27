@@ -35,7 +35,7 @@ export abstract class ParadisFileViewerInput extends EditorInput {
 
 	constructor(
 		private readonly _resource: URI,
-		@ITextFileService private readonly _textFileService: ITextFileService,
+		@ITextFileService protected readonly _textFileService: ITextFileService,
 		@IWorkingCopyService workingCopyService: IWorkingCopyService,
 	) {
 		super();

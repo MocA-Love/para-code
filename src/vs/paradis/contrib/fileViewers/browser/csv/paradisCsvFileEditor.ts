@@ -81,6 +81,7 @@ const MODEL_RELOAD_DELAY_MS = 400;
 interface FileStamp {
 	readonly mtime: number;
 	readonly size: number;
+	readonly etag?: string;
 }
 
 interface LoadedText {
@@ -89,6 +90,8 @@ interface LoadedText {
 	readonly truncated: boolean;
 	/** ディスクから読んだときの時刻と大きさ（未保存のモデルから作ったときは無い）。 */
 	readonly stamp?: FileStamp;
+	/** 64 MB より小さい `workbench.editorLargeFileConfirmation`（SSH 先は既定 10 MB）で切った。 */
+	readonly limitedByConfirmation?: boolean;
 }
 
 interface MessageAction {
@@ -142,6 +145,12 @@ export class ParadisCsvFileEditor extends EditorPane {
 	private _pendingTextOptions: ITextEditorOptions | undefined;
 	/** 大きいファイルをテキストで開くことをユーザーが確認したファイル。 */
 	private readonly _largeFileConfirmed = new Set<string>();
+	/** 表の読み込み上限を `workbench.editorLargeFileConfirmation` から 64 MB まで広げることを確認したファイル。 */
+	private readonly _fullReadConfirmed = new Set<string>();
+	private _readMoreButton: HTMLButtonElement | undefined;
+	private _lastLoadLimited = false;
+	/** 保持している表の文書の元になった input が閉じられたら文書を手放すための購読。 */
+	private readonly _documentOwnerListener = this._register(new MutableDisposable());
 
 	constructor(
 		group: IEditorGroup,
@@ -179,6 +188,16 @@ export class ParadisCsvFileEditor extends EditorPane {
 		const openAsText = dom.append(this._noticeElement, dom.$('button.paradis-csv-link-button')) as HTMLButtonElement;
 		openAsText.textContent = localize('paradis.csv.openAsText', "テキストで開く");
 		this._register(dom.addDisposableListener(openAsText, dom.EventType.CLICK, () => this.setViewMode('text')));
+		this._readMoreButton = dom.append(this._noticeElement, dom.$('button.paradis-csv-link-button')) as HTMLButtonElement;
+		this._readMoreButton.textContent = localize('paradis.csv.readMore', "それでも表に読み込む（64 MB まで）");
+		this._readMoreButton.style.display = 'none';
+		this._register(dom.addDisposableListener(this._readMoreButton, dom.EventType.CLICK, () => {
+			const resource = this._currentResource;
+			if (resource) {
+				this._fullReadConfirmed.add(resource.toString());
+				this._loadTable(resource, true).catch(onUnexpectedError);
+			}
+		}));
 
 		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
 		this._tableArea = dom.append(content, dom.$('.paradis-csv-table-area'));
@@ -190,7 +209,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._messageElement = dom.append(this._tableArea, dom.$('.paradis-csv-message'));
 		this._editorContainer = dom.append(content, dom.$('.paradis-file-viewer-editor'));
 		// テキスト表示に切り替えられなかったとき（大きすぎる・読めない）の案内。表の案内とは別に持つ。
-		this._textMessageElement = dom.append(content, dom.$('.paradis-csv-message'));
+		this._textMessageElement = dom.append(content, dom.$('.paradis-csv-message.paradis-csv-text-message'));
 
 		this._footerElement = dom.append(this._rootElement, dom.$('.paradis-csv-footer'));
 	}
@@ -202,14 +221,14 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._currentResource = resource;
 		this._missingResource = undefined;
 		if (!isEqual(this._documentResource, resource)) {
-			this._cancelLoad();
-			this._tableView?.setDocument(undefined, false);
-			this._documentResource = undefined;
-			this._loadedStamp = undefined;
-			this._tableStale = true;
-			this._updateNotice(undefined);
-			this._hideMessage();
+			this._releaseDocument();
 		}
+		// タブが閉じられて input が破棄されたら、保持している表の文書（最大 64 MB と索引）も手放す。
+		this._documentOwnerListener.value = input.onWillDispose(() => {
+			if (!isEqual(this._currentResource, resource) && isEqual(this._documentResource, resource)) {
+				this._releaseDocument();
+			}
+		});
 		if (this._modelRef.value && !isEqual(this._modelRef.value.object.textEditorModel.uri, resource)) {
 			this._codeEditor?.setModel(null);
 			this._modelRef.clear();
@@ -222,9 +241,16 @@ export class ParadisCsvFileEditor extends EditorPane {
 				this._loadTable(resource, true).catch(onUnexpectedError);
 			}
 		}, RELOAD_DELAY_MS));
+		// 読み直しは throttle する（予約済みなら延ばさない）。書き込みが続くファイルでも一定間隔で最新になり、
+		// 打鍵のたびに予約し直して永遠に読み直さない、ということも起きない。
 		const scheduleReload = (delay: number) => {
 			this._tableStale = true;
-			if (this._mode === 'table') {
+			if (this._mode !== 'table') {
+				return;
+			}
+			if (delay === 0) {
+				reloadScheduler.schedule(0);
+			} else if (!reloadScheduler.isScheduled()) {
 				reloadScheduler.schedule(Math.max(delay, this._reloadDelay()));
 			}
 		};
@@ -261,6 +287,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 		store.add(this._textFileService.files.onDidResolve(e => attachModel(e.model)));
 		store.add(this._textFileService.files.onDidChangeEncoding(model => {
 			if (isEqual(model.resource, resource)) {
+				// テキストモデルが解放された後も同じエンコーディングで読めるよう input に覚えさせる。
+				csvInput.setPreferredEncoding(model.getEncoding());
 				scheduleReload(0);
 			}
 		}));
@@ -271,14 +299,15 @@ export class ParadisCsvFileEditor extends EditorPane {
 		}));
 		store.add(this._filesConfigurationService.onDidChangeReadonly(() => this._updateReadonly(resource)));
 
-		if (hasTextSelection(options)) {
-			// 行を指定された開き方は、テキストで開いてその位置へ移動する（記憶は変えない）。
-			csvInput.setCsvViewMode('text');
+		// 行を指定された開き方は、その開き方に限ってテキストで開きその位置へ移動する。input の表示モード
+		// （タブを選び直したときや復元時の表示）とファイルごとの記憶は変えない。
+		const textForSelection = hasTextSelection(options);
+		if (textForSelection) {
 			this._pendingTextOptions = options;
 		}
 
 		// 表の読み込み（大きなファイルでは時間がかかる）はタブを開く処理から切り離し、その間は「読み込み中…」を出す。
-		const mode = csvInput.csvViewMode;
+		const mode = textForSelection ? 'text' : csvInput.csvViewMode;
 		const applied = this._applyViewMode(mode, resource, false);
 		if (mode === 'text') {
 			await applied;
@@ -294,9 +323,6 @@ export class ParadisCsvFileEditor extends EditorPane {
 			return;
 		}
 		this._pendingTextOptions = options;
-		if (this.input instanceof ParadisCsvFileInput) {
-			this.input.setCsvViewMode('text');
-		}
 		this._applyViewMode('text', resource, false).catch(onUnexpectedError);
 	}
 
@@ -395,7 +421,13 @@ export class ParadisCsvFileEditor extends EditorPane {
 						return false;
 					}
 				}
+				// 「エンコード付きで再度開く」で選んだエンコーディングで、テキストモデルを作り直す。
+				const preferredEncoding = this.input instanceof ParadisCsvFileInput ? this.input.preferredEncoding : undefined;
+				if (preferredEncoding && !this._textFileService.files.get(resource)?.isResolved()) {
+					await this._textFileService.files.resolve(resource, { encoding: preferredEncoding });
+				}
 				const ref = await this._textModelService.createModelReference(resource);
+				// 破棄済み（_currentResource は dispose で消える）や別ファイルへ切り替わった後に届いた参照は即座に返す。
 				if (!isEqual(this._currentResource, resource)) {
 					ref.dispose();
 					return false;
@@ -433,7 +465,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 	/** `workbench.editorLargeFileConfirmation`（明示されていなければ本家と同じ既定値）をバイト数で返す。 */
 	private _largeFileLimit(resource: URI): number {
 		const configured = this._configurationService.inspect<number>('workbench.editorLargeFileConfirmation', { resource });
-		return isConfigured(configured) && configured.value > 0 ? configured.value * ByteSize.MB : getLargeFileConfirmationLimit(resource);
+		return isConfigured(configured) && configured.value > 0 ? Math.floor(configured.value * ByteSize.MB) : getLargeFileConfirmationLimit(resource);
 	}
 
 	private _reloadDelay(): number {
@@ -449,7 +481,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 		}
 		try {
 			const stat = await this._fileService.stat(resource);
-			return stat.mtime === stamp.mtime && stat.size === stamp.size;
+			return stat.mtime === stamp.mtime && stat.size === stamp.size && (!stamp.etag || !stat.etag || stat.etag === stamp.etag);
 		} catch {
 			return false;
 		}
@@ -504,6 +536,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 			this._delimiter = delimiter;
 			this._documentResource = resource;
 			this._loadedStamp = loaded.stamp;
+			this._lastLoadLimited = !!loaded.limitedByConfirmation;
 			if (document.recordCount === 0) {
 				this._tableView?.setDocument(undefined, false);
 				this._showMessage(localize('paradis.csv.empty', "空のファイルです。"));
@@ -543,7 +576,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 	}
 
 	private async _readText(resource: URI): Promise<LoadedText> {
-		const limit = Math.min(PARADIS_CSV_MAX_BYTES, this._largeFileLimit(resource));
+		const confirmationLimit = this._fullReadConfirmed.has(resource.toString()) ? PARADIS_CSV_MAX_BYTES : this._largeFileLimit(resource);
+		const limit = Math.min(PARADIS_CSV_MAX_BYTES, confirmationLimit);
 		const fileModel = this._textFileService.files.get(resource);
 		// 未保存の変更があれば、ディスクではなくその内容を表にする。上限はここでは UTF-16 のコード単位で数える
 		// （バイト数ではないが、大きなモデルの全文を一度に文字列にしないための目安として十分）。
@@ -556,8 +590,14 @@ export class ParadisCsvFileEditor extends EditorPane {
 			return { text: textModel.getValue(), truncated: false };
 		}
 		// テキスト側で「エンコード付きで再度開く」を選んでいれば、そのエンコーディングで読む。
-		const content = await this._textFileService.read(resource, { acceptTextOnly: true, length: limit, encoding: fileModel?.getEncoding() });
-		return { text: content.value, truncated: content.size > limit, stamp: { mtime: content.mtime, size: content.size } };
+		const encoding = fileModel?.getEncoding() ?? (this.input instanceof ParadisCsvFileInput ? this.input.preferredEncoding : undefined);
+		const content = await this._textFileService.read(resource, { acceptTextOnly: true, length: limit, encoding });
+		return {
+			text: content.value,
+			truncated: content.size > limit,
+			limitedByConfirmation: content.size > limit && limit < PARADIS_CSV_MAX_BYTES,
+			stamp: { mtime: content.mtime, size: content.size, etag: content.etag },
+		};
 	}
 
 	private _showMessage(message: string, actions: readonly MessageAction[] = []): void {
@@ -609,6 +649,10 @@ export class ParadisCsvFileEditor extends EditorPane {
 		if (this._noticeText) {
 			this._noticeText.textContent = message;
 		}
+		if (this._readMoreButton) {
+			// SSH 先などで確認の上限（既定 10 MB）で切ったときだけ、64 MB まで読み直す手段を出す。
+			this._readMoreButton.style.display = document?.flags.truncatedRecords && this._lastLoadLimited ? '' : 'none';
+		}
 		this._noticeElement?.classList.toggle('visible', !!message && this._mode === 'table');
 	}
 
@@ -655,14 +699,33 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._codeEditor?.setModel(null);
 		this._modelRef.clear();
 		this._hideTextMessage();
-		// 表の文書は捨てない。同じファイルへ戻ったとき、ディスクの内容が変わっていなければそのまま使う
-		// （大きなファイルを読み直さず、スクロール位置・並べ替え・列幅も残る）。別のファイルを開いたときに捨てる。
+		// 表の文書は、タブがまだグループに残っている（別のタブへ切り替えただけ）ときだけ残す。同じファイルへ
+		// 戻ったとき、ディスクの内容が変わっていなければそのまま使う（大きなファイルを読み直さず、スクロール位置・
+		// 並べ替え・列幅も残る）。タブを閉じたときは手放す（閉じるのが先に来る経路は input の onWillDispose で拾う）。
+		if (!this.input || !this.group.contains(this.input)) {
+			this._releaseDocument();
+		}
 		super.clearInput();
+	}
+
+	/** 保持している表の文書と索引を手放す。 */
+	private _releaseDocument(): void {
+		this._cancelLoad();
+		this._tableView?.setDocument(undefined, false);
+		this._documentResource = undefined;
+		this._loadedStamp = undefined;
+		this._lastLoadLimited = false;
+		this._documentOwnerListener.clear();
+		this._tableStale = true;
+		this._updateNotice(undefined);
+		this._updateFooter();
+		this._hideMessage();
 	}
 
 	override dispose(): void {
 		// MutableDisposable は CancellationTokenSource を取り消さずに捨てるので、先に取り消して読み込みを止める。
 		this._cancelLoad();
+		this._currentResource = undefined;
 		super.dispose();
 	}
 

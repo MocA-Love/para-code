@@ -17,6 +17,7 @@ import { CodeEditorWidget } from '../../../../../editor/browser/widget/codeEdito
 import { IRange } from '../../../../../editor/common/core/range.js';
 import { ITextModelService } from '../../../../../editor/common/services/resolverService.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -30,7 +31,7 @@ import { IWorkingCopyService } from '../../../../../workbench/services/workingCo
 import { TestEditorGroupView } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisCsvFileEditor } from '../../browser/csv/paradisCsvFileEditor.js';
-import { isParadisCsvTextModePreferred, ParadisCsvFileInput } from '../../browser/csv/paradisCsvFileInput.js';
+import { isParadisCsvTextModePreferred, ParadisCsvFileInput, ParadisCsvFileInputSerializer } from '../../browser/csv/paradisCsvFileInput.js';
 
 const resource = URI.file('/workspace/orders.csv');
 
@@ -49,7 +50,8 @@ class FakeFileModel {
 	isDirty(): boolean { return this.dirty; }
 	isResolved(): boolean { return true; }
 	isReadonly(): boolean { return false; }
-	getEncoding(): string { return 'utf8'; }
+	encoding = 'utf8';
+	getEncoding(): string { return this.encoding; }
 	edit(value: string): void {
 		this.value = value;
 		this.dirty = true;
@@ -58,11 +60,22 @@ class FakeFileModel {
 	dispose(): void { this._onDidChangeContent.dispose(); }
 }
 
+/** A group whose `contains` can be toggled (whether the tab is still open). */
+class TestGroup extends TestEditorGroupView {
+	containsInput = true;
+	override contains(): boolean { return this.containsInput; }
+}
+
 interface Harness {
 	readonly editor: ParadisCsvFileEditor;
 	readonly input: ParadisCsvFileInput;
+	readonly group: TestGroup;
 	readonly storage: TestStorageService;
+	readonly textFileService: ITextFileService;
+	readonly workingCopyService: IWorkingCopyService;
+	readonly encodingChanged: Emitter<FakeFileModel>;
 	readonly reads: string[];
+	readonly readEncodings: (string | undefined)[];
 	readonly modelReferences: string[];
 	readonly selections: IRange[];
 	readonly root: HTMLElement;
@@ -72,14 +85,16 @@ interface Harness {
 	readGate: DeferredPromise<void> | undefined;
 }
 
-function createHarness(store: Pick<DisposableStore, 'add'>): Harness {
+function createHarness(store: Pick<DisposableStore, 'add'>, configuration: Record<string, unknown> = {}): Harness {
 	const parent = mainWindow.document.createElement('div');
 	parent.style.cssText = 'position: fixed; left: 0; top: 0; width: 640px; height: 320px;';
 	mainWindow.document.body.appendChild(parent);
 	store.add(toDisposable(() => parent.remove()));
 
+	const encodingChanged = store.add(new Emitter<FakeFileModel>());
 	const harness = {
 		reads: [] as string[],
+		readEncodings: [] as (string | undefined)[],
 		modelReferences: [] as string[],
 		selections: [] as IRange[],
 		disk: 'id,name\n1,a\n2,b\n',
@@ -91,13 +106,14 @@ function createHarness(store: Pick<DisposableStore, 'add'>): Harness {
 		files: {
 			get: () => harness.fileModel,
 			onDidResolve: Event.None,
-			onDidChangeEncoding: Event.None,
+			onDidChangeEncoding: encodingChanged.event,
 			onDidChangeReadonly: Event.None,
 		},
-		read: async () => {
+		read: async (_resource: URI, options?: { length?: number; encoding?: string }) => {
 			harness.reads.push(harness.disk);
+			harness.readEncodings.push(options?.encoding);
 			await harness.readGate?.p;
-			return { value: harness.disk, size: harness.stat.size, mtime: harness.stat.mtime };
+			return { value: harness.disk.slice(0, options?.length ?? harness.disk.length), size: harness.stat.size, mtime: harness.stat.mtime };
 		},
 		isDirty: () => false,
 	} as unknown as ITextFileService;
@@ -123,8 +139,9 @@ function createHarness(store: Pick<DisposableStore, 'add'>): Harness {
 	});
 	const filesConfigurationService = { isReadonly: () => false, onDidChangeReadonly: Event.None } as unknown as IFilesConfigurationService;
 	const storage = store.add(new TestStorageService());
+	const group = new TestGroup(1);
 	const editor = store.add(new ParadisCsvFileEditor(
-		new TestEditorGroupView(1),
+		group,
 		NullTelemetryService,
 		new TestThemeService(),
 		storage,
@@ -134,13 +151,14 @@ function createHarness(store: Pick<DisposableStore, 'add'>): Harness {
 		instantiationService,
 		{ writeText: async () => { } } as unknown as IClipboardService,
 		{ notify: () => undefined } as unknown as INotificationService,
-		new TestConfigurationService(),
+		new TestConfigurationService(configuration),
 		filesConfigurationService,
 	));
 	editor.create(parent);
 	editor.layout(new Dimension(640, 320));
-	const input = store.add(new ParadisCsvFileInput(resource, textFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
-	return Object.assign(harness, { editor, input, storage, root: parent });
+	const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
+	const input = store.add(new ParadisCsvFileInput(resource, textFileService, workingCopyService));
+	return Object.assign(harness, { editor, input, group, storage, textFileService, workingCopyService, encodingChanged, root: parent });
 }
 
 function footer(harness: Harness): string {
@@ -169,8 +187,10 @@ suite('ParadisCsvFileEditor', () => {
 			selections: harness.selections,
 			reads: harness.reads.length,
 			remembered: isParadisCsvTextModePreferred(harness.storage, resource),
+			inputMode: harness.input.csvViewMode,
 		}, {
 			mode: 'text',
+			inputMode: 'table',
 			control: true,
 			selections: [{ startLineNumber: 3, startColumn: 2, endLineNumber: 3, endColumn: 2 }],
 			reads: 0,
@@ -193,9 +213,9 @@ suite('ParadisCsvFileEditor', () => {
 		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
 		harness.stat = { size: 2 * 1024 * 1024 * 1024, mtime: 1 };
 		harness.editor.setViewMode('text');
-		await until(() => !!harness.root.querySelector('.paradis-csv-message.visible .paradis-csv-link-button'), 'confirmation');
+		await until(() => !!harness.root.querySelector('.paradis-csv-text-message.visible .paradis-csv-link-button'), 'confirmation');
 		const before = harness.modelReferences.length;
-		const openAnyway = [...harness.root.querySelectorAll<HTMLButtonElement>('.paradis-csv-message.visible .paradis-csv-link-button')][0];
+		const openAnyway = [...harness.root.querySelectorAll<HTMLButtonElement>('.paradis-csv-text-message.visible .paradis-csv-link-button')][0];
 		openAnyway.click();
 		await until(() => harness.modelReferences.length > before, 'model reference after confirming');
 		deepStrictEqual({ before, after: harness.modelReferences.length, control: !!harness.editor.getControl() }, { before: 0, after: 1, control: true });
@@ -226,5 +246,73 @@ suite('ParadisCsvFileEditor', () => {
 		harness.readGate.complete();
 		await timeout(20);
 		deepStrictEqual(harness.root.querySelectorAll('.paradis-spreadsheet-virtual-cell').length, 0);
+	});
+	test('releases the retained table when its tab is closed', async () => {
+		const harness = createHarness(store);
+		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
+		await until(() => footer(harness).startsWith('2 '), 'initial table');
+		// Switching to another tab keeps the table; closing the tab (input disposed) releases it.
+		harness.editor.clearInput();
+		const keptWhileOpen = footer(harness);
+		harness.input.dispose();
+		const afterClose = footer(harness);
+		// Clearing while the tab is no longer in the group releases immediately.
+		const other = store.add(new ParadisCsvFileInput(resource, harness.textFileService, harness.workingCopyService));
+		await harness.editor.setInput(other, undefined, Object.create(null), CancellationToken.None);
+		await until(() => footer(harness).startsWith('2 '), 'table for the second input');
+		harness.group.containsInput = false;
+		harness.editor.clearInput();
+		deepStrictEqual({ keptWhileOpen: keptWhileOpen.startsWith('2 '), afterClose, afterClear: footer(harness) }, { keptWhileOpen: true, afterClose: '', afterClear: '' });
+	});
+
+	test('remembers an encoding chosen with Reopen with Encoding after the text model is gone', async () => {
+		const harness = createHarness(store);
+		const model = harness.fileModel = store.add(new FakeFileModel());
+		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
+		await until(() => footer(harness).startsWith('2 '), 'initial table');
+		model.encoding = 'shiftjis';
+		harness.encodingChanged.fire(model);
+		await until(() => harness.reads.length === 2, 'reload after the encoding change');
+		// The text model is released (no text editor open any more); the table still reads with the chosen encoding.
+		harness.fileModel = undefined;
+		harness.disk = 'id,name\n1,a\n';
+		harness.stat = { size: 12, mtime: 2 };
+		harness.editor.clearInput();
+		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
+		await until(() => footer(harness).startsWith('1 '), 'reload without a text model');
+		const serializer = new ParadisCsvFileInputSerializer();
+		const instantiationService = store.add(new TestInstantiationService());
+		instantiationService.stub(IConfigurationService, new TestConfigurationService());
+		instantiationService.stub(ITextFileService, harness.textFileService);
+		instantiationService.stub(IWorkingCopyService, harness.workingCopyService);
+		const restored = serializer.deserialize(instantiationService, serializer.serialize(harness.input)!);
+		if (restored) {
+			store.add(restored);
+		}
+		// The input exposes IEncodingSupport so Reopen with Encoding and the status bar work on this tab.
+		const inputEncoding = harness.input.getEncoding();
+		deepStrictEqual({
+			readEncodings: harness.readEncodings,
+			restored: restored instanceof ParadisCsvFileInput ? restored.preferredEncoding : undefined,
+			inputEncoding,
+		}, {
+			readEncodings: ['utf8', 'shiftjis', 'shiftjis'],
+			restored: 'shiftjis',
+			inputEncoding: 'shiftjis',
+		});
+	});
+
+	test('offers to read up to 64 MB when the table was cut at the large file confirmation limit', async () => {
+		// 0.00001 MB = 10 bytes, standing in for the 10 MB default over SSH.
+		const harness = createHarness(store, { 'workbench.editorLargeFileConfirmation': 0.00001 });
+		harness.disk = 'id,name\n1,a\n2,b\n3,c\n';
+		harness.stat = { size: harness.disk.length, mtime: 1 };
+		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
+		await until(() => footer(harness).includes('\u5217'), 'truncated table');
+		const readMore = [...harness.root.querySelectorAll<HTMLButtonElement>('.paradis-csv-notice .paradis-csv-link-button')].find(button => button.style.display !== 'none' && button.textContent?.includes('64 MB'));
+		const truncatedFooter = footer(harness);
+		readMore?.click();
+		await until(() => footer(harness).startsWith('3 '), 'full table');
+		deepStrictEqual({ offered: !!readMore, truncatedFooter: truncatedFooter.split(' ')[0], hidden: readMore?.style.display }, { offered: true, truncatedFooter: '0', hidden: 'none' });
 	});
 });
