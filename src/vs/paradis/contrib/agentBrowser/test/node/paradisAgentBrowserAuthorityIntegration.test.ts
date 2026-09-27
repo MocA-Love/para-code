@@ -617,6 +617,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 		const record = (token: string, event: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd?: string) =>
 			Reflect.apply(Reflect.get(fixture.service, '_recordPaneSession'), fixture.service, [token, event, sessionId, transcriptPath, cwd]);
 		record('claude-a', 'UserPromptSubmit', 'session-claude', '/Users/example/.claude/projects/repo/session-claude.jsonl', '/repo/a');
+		// ツールが cd した後の hook。分岐は会話を始めたフォルダで行うので、最初の cwd を保つ。
+		record('claude-a', 'PostToolUse', 'session-claude', '/Users/example/.claude/projects/repo/session-claude.jsonl', '/repo/a/packages/web');
 		record('codex-a', 'Stop', 'session-codex', '/Users/example/.codex/sessions/2026/rollout-session-codex.jsonl');
 		record('ended-a', 'UserPromptSubmit', 'session-ended', '/Users/example/.claude/projects/repo/session-ended.jsonl');
 		record('ended-a', 'SessionEnd', 'session-ended', undefined);

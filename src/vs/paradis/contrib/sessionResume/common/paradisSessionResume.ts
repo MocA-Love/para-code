@@ -96,3 +96,19 @@ export interface IParadisSessionResumeService {
 
 /** 先頭の `-` を拒否し、CLIオプションとして解釈されない単一引数だけを許す。 */
 export const PARADIS_RESUME_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,499}$/;
+
+/**
+ * 会話を続ける（`resume`）／CLI の fork で会話ごと複製して始める（`fork`）コマンド。
+ * ID はホワイトリスト（先頭に `-` を許さない）を通ったものだけを使い、シェルの特殊文字を含まない。
+ * 通らなければ undefined。
+ */
+export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean }): string | undefined {
+	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
+		return undefined;
+	}
+	const bypass = options?.dangerouslyBypassPermissions === true;
+	if (agent === 'claude') {
+		return `claude ${bypass ? '--dangerously-skip-permissions ' : ''}--resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
+	}
+	return `codex ${bypass ? '--dangerously-bypass-approvals-and-sandbox ' : ''}${mode === 'fork' ? 'fork' : 'resume'} ${sessionId}`;
+}

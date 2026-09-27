@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 復元したターミナルタブの右上に出すバナー（Q53 案B）。DOM だけを持ち、判断と操作は
+// 復元したターミナルタブの右上に出すバナー。DOM だけを持ち、判断と操作は
 // ホスト（electron-browser の contribution）に任せる。共有ドット（agentBrowser の
 // paradisPaneIndicator）と同じ場所・同じ切り替えで出るよう、その重ね合わせの口に乗る。
 // 見えるのは選んでいるタブの分だけで、裏のタブのバナーはそのタブを選んだときに出る。
