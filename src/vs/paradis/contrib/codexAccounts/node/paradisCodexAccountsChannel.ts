@@ -24,6 +24,8 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCodexResetConsumeRequest, PARADIS_CODEX_ACCOUNTS_CHANNEL, PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING } from '../common/paradisCodexAccounts.js';
+import { IParadisHookProcessInspector, ParadisDefaultHookProcessInspector } from '../../agentBrowser/node/paradisAgentHookOwnership.js';
+import { PARADIS_CODEX_PANE_SHELLS_MAX, paradisShellsRunningCodex } from './paradisCodexPaneProcesses.js';
 import { paradisEnableCodexAccountHomes, paradisNotifyCodexHomesChanged, paradisSetConfiguredCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisCodexAccountsService } from './paradisCodexAccountsService.js';
 
@@ -32,7 +34,10 @@ const CODEX_HOMES_SETTING = 'paradis.limitsMonitor.codexHomes';
 
 export class ParadisCodexAccountsChannel implements IServerChannel<string> {
 
-	constructor(private readonly service: ParadisCodexAccountsService) { }
+	constructor(
+		private readonly service: ParadisCodexAccountsService,
+		private readonly processInspector: IParadisHookProcessInspector = new ParadisDefaultHookProcessInspector(),
+	) { }
 
 	listen<T>(_ctx: string, event: string): Event<T> {
 		switch (event) {
@@ -50,6 +55,10 @@ export class ParadisCodexAccountsChannel implements IServerChannel<string> {
 			case 'getState': return this.service.getState() as Promise<T>;
 			case 'peekResetCredits': return Promise.resolve(this.service.peekResetCredits()) as Promise<T>;
 			case 'selectHome': return this.service.selectHome(typeof args[0] === 'string' ? args[0] : undefined) as Promise<T>;
+			case 'shellsRunningCodex': {
+				const pids = (Array.isArray(args[0]) ? args[0] : []).filter((pid: unknown): pid is number => typeof pid === 'number' && Number.isInteger(pid) && pid > 0).slice(0, PARADIS_CODEX_PANE_SHELLS_MAX);
+				return (pids.length === 0 ? Promise.resolve([]) : this.processInspector.snapshot().then(snapshot => paradisShellsRunningCodex(pids, snapshot))) as Promise<T>;
+			}
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

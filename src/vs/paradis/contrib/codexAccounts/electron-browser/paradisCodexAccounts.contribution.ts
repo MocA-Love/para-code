@@ -138,11 +138,18 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 	}
 
 	private async notifyPanesOnPreviousAccount(previous: string | undefined, next: string | undefined): Promise<void> {
-		let count = 0;
-		const previousHomes = new Set<string | undefined>();
+		const panes: { readonly token: string; readonly instance: ITerminalInstance }[] = [];
 		for (const { instanceId, token } of this.paneTokenService.listPaneTokens()) {
 			const instance = this.terminalService.getInstanceFromId(instanceId);
-			if (!instance || !this.isRunningCodex(instance)) {
+			if (instance) {
+				panes.push({ token, instance });
+			}
+		}
+		const running = await this.panesRunningCodex(panes.map(pane => pane.instance));
+		let count = 0;
+		const previousHomes = new Set<string | undefined>();
+		for (const { token, instance } of panes) {
+			if (!running.has(instance)) {
 				continue;
 			}
 			// 開いたときのホームが分からない（再接続した）ペインは、切替の直前の選択で開いたものとみなす。
@@ -165,9 +172,36 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 			: localize('paradis.codexAccounts.switchedWithRunningMixed', "Codex のアカウントを {0} に切り替えました。開いている Codex {1} 個は前のアカウントのまま動いています。新しく開いたターミナルから切り替わります。", nextName, count));
 	}
 
-	private isRunningCodex(instance: ITerminalInstance): boolean {
-		const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
-		return paradisLooksLikeRunningCodex(commandDetection?.executingCommand, instance.processName);
+	/**
+	 * Codex が動いているペイン。シェル統合の実行中コマンドとプロセス名で分かるものに加え、分からないもの
+	 * （再接続したペイン、npm 版の `node`、`echo …; codex` のような行）はシェルの子孫を shared process の
+	 * プロセス表で調べる。調べられなければ画面側で分かった分だけにする。
+	 */
+	private async panesRunningCodex(instances: readonly ITerminalInstance[]): Promise<Set<ITerminalInstance>> {
+		const running = new Set<ITerminalInstance>();
+		const unknown = new Map<number, ITerminalInstance>();
+		for (const instance of instances) {
+			const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
+			if (paradisLooksLikeRunningCodex(commandDetection?.executingCommand, instance.processName)) {
+				running.add(instance);
+			} else if (instance.processId !== undefined && instance.processId > 0) {
+				unknown.set(instance.processId, instance);
+			}
+		}
+		// SSH の接続先のウィンドウではこの通知自体を出さない（コンストラクタ）ので、pid は常にこの PC のもの
+		if (unknown.size > 0) {
+			try {
+				for (const pid of await this.client.shellsRunningCodex([...unknown.keys()])) {
+					const instance = unknown.get(pid);
+					if (instance) {
+						running.add(instance);
+					}
+				}
+			} catch (error) {
+				this.logService.warn('[ParadisCodexAccounts] could not check the terminal processes for Codex', error);
+			}
+		}
+		return running;
 	}
 }
 
