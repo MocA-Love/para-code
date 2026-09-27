@@ -16,6 +16,11 @@
 
 import { Event } from '../../../../base/common/event.js';
 
+/** デスクトップのチャット表示（エディタエリアのターミナルタブを ⌘⇧J でチャットに切り替える）を使うか。 */
+export const PARADIS_AGENT_CHAT_ENABLED_SETTING = 'paradis.agentChat.enabled';
+/** チャット表示の送信キー（Q32）。'enter' = Enter で送信・Shift+Enter で改行、'modEnter' = ⌘Enter で送信・Enter で改行。 */
+export const PARADIS_AGENT_CHAT_SEND_KEY_SETTING = 'paradis.agentChat.sendKey';
+
 /** 承認要求の選択肢1件（Codex app-server の構造化された承認と、hook 由来の許可/拒否の共通形）。 */
 export interface IParadisAgentApprovalChoice {
 	readonly id: string;
@@ -237,4 +242,9 @@ export interface IParadisAgentChatSource {
 	getAgentChatImage(token: string, epoch: string, rev: number, index: number): Promise<IParadisAgentChatImageData | undefined>;
 	/** そのペインのエージェントで使えるスラッシュコマンド。 */
 	getAgentChatCommands(token: string): Promise<readonly IParadisAgentChatCommand[]>;
+	/**
+	 * Codex の app-server 経由の承認（id が `codex:` で始まるもの）に答える。キーを打つ承認は
+	 * 画面側が TUI へ打鍵するので、ここは通らない。答えられたら true。
+	 */
+	answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean>;
 }

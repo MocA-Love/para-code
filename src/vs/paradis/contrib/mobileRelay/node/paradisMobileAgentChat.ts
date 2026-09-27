@@ -29,6 +29,7 @@
 
 import { watch, type Dirent, FSWatcher, promises as fs } from 'fs';
 import { createRequire } from 'module';
+import { homedir } from 'os';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
@@ -4386,7 +4387,38 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (session === undefined || !this.isLiveToken(token) || this.isRemoteAgentPane(token)) {
 			return [];
 		}
-		return paradisBuildAgentCommandCatalog(session.agent, cwd);
+		// cwd がまだ同期されていないときは、プロジェクトのコマンドを探さずホームの分だけにする。
+		return paradisBuildAgentCommandCatalog(session.agent, cwd ?? homedir());
+	}
+
+	/**
+	 * Codex の app-server 経由の承認にデスクトップのチャット表示から答える。モバイルからの回答と
+	 * 同じ interaction の取り合いにならないよう、答えている間は同じ claim を持つ。
+	 */
+	async answerDesktopCodexApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		const interaction = tailer?.currentInteraction();
+		if (session?.agent !== 'codex' || session.sessionId === undefined || tailer === undefined
+			|| interaction?.kind !== 'approval' || interaction.id !== interactionId
+			|| !this.codexLiveClient.hasPendingApproval(session.sessionId, interactionId)) {
+			return false;
+		}
+		const interactionKey = `${token}\0${tailer.epoch}\0approval\0${interactionId}`;
+		if (this.interactionClaims.has(interactionKey)) {
+			return false;
+		}
+		const claim = `desktop\0${interactionId}`;
+		this.interactionClaims.set(interactionKey, claim);
+		try {
+			await this.codexLiveClient.answerApproval(session.sessionId, interactionId, choiceId);
+			return true;
+		} catch (error) {
+			this.logService.warn('[paradisAgentChat] desktop Codex approval failed', error);
+			return false;
+		} finally {
+			this.releaseInteractionClaim(interactionKey, claim);
+		}
 	}
 
 	/** 見られているペインの指紋を比べ、変わったものだけを知らせる。 */

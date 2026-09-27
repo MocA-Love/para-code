@@ -961,6 +961,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return paradisIsAgentChatToken(token) ? this.agentChat.getDesktopChatCommands(token) : [];
 	}
 
+	async answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
+		return paradisIsAgentChatToken(token) && typeof interactionId === 'string' && interactionId.length <= 500 && typeof choiceId === 'string' && choiceId.length <= 100
+			? this.agentChat.answerDesktopCodexApproval(token, interactionId, choiceId)
+			: false;
+	}
+
 	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'> {
 		return await this.withCurrentRegisteredLease(lease, async () => this.agentChat.claimSendMessageAction(mobileId, requestId, token, epoch, lease.windowId, lease.windowSession)) ?? 'stale';
 	}
