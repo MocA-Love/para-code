@@ -47,14 +47,21 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 ## 会話ログの集計 worker と全文索引（agentActivity、2026-09-27）
 
-使用量ダッシュボードの「スペース別」「作業実績」と、セッション履歴の全文索引は、どれも shared process が起動する worker（`src/vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain.ts`）で会話ログを読む。会話ログは合計で数 GB になり、shared process 本体で読むとエージェントの状態通知が遅れるため（q.html Q26）。
+使用量ダッシュボードの「スペース別」「作業実績」と、セッション履歴の全文索引は、どれも shared process が起動する worker（`src/vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain.ts`）で会話ログを読む。会話ログは合計で数 GB になり、shared process 本体で読むとエージェントの状態通知が遅れるため。なお contrib 名の `agentActivity` は、既存の `mobileRelay/node/paradisAgentActivity.ts`（サブエージェントの活動ツリー）とは別物。全文索引の本体もセッション履歴側ではなくこちらにある。
 
 - worker はパスを指定して起動するのでどこからも import されない。パッケージ版に出力させるため `build/next/index.ts` の `desktopEntryPoints` に PARA-PATCH で1行足し、`build/next/test/entryPoints.test.ts` で検査している。依頼が 90 秒途絶えると終了する
-- 読むのは手元の `~/.claude/projects/*/*.jsonl`・`*/<session>/subagents/*.jsonl` と `~/.codex/sessions/**/rollout-*.jsonl` だけ。SSH で接続しているウィンドウでは「スペース別」は出さない（ccusage は接続先を数えるので、手元の会話ログで按分すると合わない）。REH サーバーには登録していない
-- shared process はファイルごとの集計結果を（大きさ・更新日時・inode が同じなら）使い回す。期間の開始より前に最後に更新されたファイルは読まない
-- 金額の按分（Q27）は ccusage の日別・モデル別の金額を、同じ日・同じモデルのトークン比率で分ける。トークンは種類ごとに重みを付ける（入力 1・出力 5・キャッシュ書き込み 1.25・キャッシュ読み取り 0.1）。生のトークン数で割ると、量は多いが安いキャッシュ読み取りで按分がほぼ決まってしまうため。価格表は持たない
-- 全文索引は `<userData>/paradis/sessionIndex/sessionIndex.sqlite`。`node:sqlite` の FTS5 の trigram トークナイザを使う（Electron 同梱の Node 24.20 / SQLite 3.53.4 で動作確認）。3 文字未満の検索語は FTS の表を LIKE でなめる。既定はオン（q.html Q15 の回答 A「最初からオン」。確認は出さない）。会話ログの全文のコピーになるので、そのことを設定の説明に明記している。設定 `paradis.sessionIndex.enabled` をオフにすると索引ファイルを消し、コマンド「会話の全文索引を削除」は削除して設定もオフにする。保存日数（`paradis.sessionIndex.retentionDays`、既定 90）とツール出力を入れるか（`paradis.sessionIndex.includeToolOutput`、既定オフ）も設定で変えられる
-- 索引はファイルごとに「どこまで読んだか」をバイト位置で持ち、伸びた分だけ足す。inode が変わった・縮んだファイルは読み直し、一覧から消えたファイル（削除、保存日数切れ）の分は消す。一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の先頭・末尾の読み取りで探す）
+- 読むのは手元の既定のホーム（`$CLAUDE_CONFIG_DIR` / `$CODEX_HOME`、無ければ `~/.claude` / `~/.codex`）の `projects/*/*.jsonl`・`*/<session>/subagents/*.jsonl` と `sessions/**/rollout-*.jsonl` だけ。**複数の Codex ホーム（`~/.codex-2` など）と WSL のホームは読まない**（統合時にホームの一覧を共通の解決関数へ寄せること）。SSH で接続しているウィンドウでは「スペース別」は出さない（ccusage は接続先を数えるので、手元の会話ログで按分すると合わない）。REH サーバーには登録していない
+- shared process はファイルごとの集計結果を（大きさ・更新日時・inode が同じなら）使い回す。更新ボタンでも同じ。期間の開始より前に最後に更新されたファイルは読まない。追記されたファイルは先頭から読み直す（途中から読むには解析の状態を持ち越す必要があり、見送った）
+- Claude Code の応答（`message.id:requestId`）と依頼（行の `uuid`）は、再開・分岐で前の会話の行が新しいファイルへ写されることがあるので、集計時にファイルをまたいで重複を除く（古いファイルが勝つ）。稼働時間はファイルごとの記録の間隔から出すので、写された区間は重ねて数えることがある
+- 金額の按分は ccusage の日別・モデル別の金額を、同じ日・同じモデル（無ければ同じエージェント）のトークン比率で分ける。トークンは種類ごとに重みを付ける（入力 1・出力 5・キャッシュ書き込み 1.25・キャッシュ読み取り 0.1）。生のトークン数で割ると、量は多いが安いキャッシュ読み取りで按分がほぼ決まってしまうため。価格表は持たない。Claude Code・Codex 以外（Gemini など）の金額と、会話ログに対応する記録が無い金額は「未割り当て」に残す
+- 全文索引は `<userData>/paradis/sessionIndex/sessionIndex.sqlite`（ディレクトリ 0700、ファイル 0600）。`node:sqlite` の FTS5 の trigram トークナイザを使う（Electron 同梱の Node 24.20 / SQLite 3.53.4 で動作確認）。既定はオンで確認は出さない。会話ログの全文のコピーになるので、そのことを設定の説明に明記している
+- **「オフなら索引が残っていない」は shared process（`ParadisAgentActivityService`）が守る**。起動時と設定 `paradis.sessionIndex.*` の変更時に照合し、オフなら消す。画面側の更新依頼も、設定がオフなら断る。スキーマは画面側でしか登録されないので、shared process は未設定を既定値（オン・90 日・ツール出力なし）として読む。コマンド「会話の全文索引を削除」は削除して設定もオフにする
+- 消した本文をファイルに残さない: `secure_delete` を有効にし、行を消したあとは FTS5 の `optimize` と `wal_checkpoint(TRUNCATE)` を行う。ツール出力を入れない設定に変わったとき・スキーマが古いとき・開けないときは、DB ファイル一式を消して作り直す。保存日数とツール出力の設定の変更は、会話ログを読まずに今ある索引へすぐ反映する
+- 索引の削除は worker の更新と同じ列で「接続を閉じる → ファイルを消す」を行い、実行中の更新は行の切れ目で打ち切らせる。削除中の更新依頼は断る
+- 索引はファイルごとに「どこまで読んだか」と先頭 4KB の指紋を持ち、伸びた分だけ足す。inode が変わった・縮んだ・先頭が書き変わったファイルは読み直し、一覧から消えたファイル（削除、保存日数切れ）の分は消す。読んでいる間に差し替えられたら、入れた分を消して次回読み直す
+- ツール出力を入れない設定（既定）では、利用者が打ったシェルコマンドの出力（`<bash-stdout>` など）も発言から除く。Codex の利用者シェルコマンドの記録形式は未確認
+- 検索は更新とは別の読み取り専用の接続で行い、更新の列に並ばない。3 文字未満の語を含む検索は索引を使わず従来の検索（会話の先頭と末尾を読む）で探す。画面側は語ごとに「セッション情報か本文のどちらかに含まれる」を見て AND を取る（従来の検索と同じ意味）
+- 一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の方法で探す）
 
 ## リポジトリ構成
 
