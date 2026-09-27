@@ -1,326 +1,47 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Fragment, useCallback, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Layers, SlidersHorizontal } from 'lucide-react-native';
-import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../../src/appState.js';
-import { unreadQuestionNotificationCount } from '../../../src/components/notificationCount.js';
-import { batteryLine, pcConnectionLine } from '../../../src/features/home/homeSummary.js';
-import { useLastSession } from '../../../src/features/home/lastSessionStore.js';
-import { LaunchDrawer, type LaunchPreset } from '../../../src/features/launch/launchDrawer.js';
-import { AgentListRow, EmptySpaceRow, RowSeparator } from '../../../src/features/pc/agentListRow.js';
-import { ArchiveDrawer } from '../../../src/features/pc/archiveDrawer.js';
-import { FilterDrawer } from '../../../src/features/pc/filterDrawer.js';
-import { openSession } from '../../../src/features/pc/openSession.js';
-import { FilterChip, ModeButton, PcHeader, PcSearchBar, ToolbarRight } from '../../../src/features/pc/pcHeader.js';
-import {
-	DEFAULT_PC_LIST_GROUP,
-	EMPTY_PC_LIST_FILTER,
-	PC_LIST_GROUP_OPTIONS,
-	PC_LIST_SORT_OPTIONS,
-	archivedTerminals,
-	buildPcList,
-	filterCount,
-	groupShortLabel,
-	resolveTerminalSpace,
-	sortShortLabel,
-	withSort,
-	type PcListFilter,
-	type PcListGroup,
-} from '../../../src/features/pc/pcList.js';
-import { FAB_SIZE, LaunchFab, PcOfflineState, SectionToggle } from '../../../src/features/pc/pcListParts.js';
-import { RowActions, type RowActionTarget } from '../../../src/features/pc/rowActions.js';
-import { spaceColor } from '../../../src/features/pc/spaceColor.js';
-import { startStatusSinceTracking } from '../../../src/features/pc/statusSinceStore.js';
-import type { HomeSortKey } from '../../../src/homeSort.js';
-import { hapticSelection } from '../../../src/haptics.js';
-import { useRoutePc } from '../../../src/hooks/useRouteTargets.js';
-import { useStableInsets } from '../../../src/hooks/useStableInsets.js';
-import { useContentColumnStyle } from '../../../src/ipad/useContentColumn.js';
-import { useParaToast } from '../../../src/paraToast.js';
-import { shouldShowBattery } from '../../../src/pcStatus.js';
-import { routes } from '../../../src/routes.js';
-import type { WorkspaceState } from '../../../src/store.js';
-import { space } from '../../../src/theme.js';
-import { formatRelativeTime, useNow } from '../../../src/time.js';
-import { EmptyState, PickerDrawer, Screen, connectionKind } from '../../../src/ui/index.js';
-
-// 行の経過時間の元（状態が変わった時刻）を早めに見張り始める（ホームと同じ。何度呼んでも1回だけ）。
-startStatusSinceTracking();
-
-type Terminal = WorkspaceState['terminals'][number];
-type Space = WorkspaceState['workspaces'][number];
-
-const NO_TERMINALS: Terminal[] = [];
-const NO_SPACES: Space[] = [];
-
-type Sheet = 'filter' | 'sort' | 'group' | 'archive' | 'launch';
+import { useEffect } from 'react';
+import { useIsFocused, useNavigation } from 'expo-router';
+import { usePcRouteId } from '../../../src/features/pc/pcRouteContext.js';
+import { PcScreen } from '../../../src/features/pc/pcScreen.js';
+import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
+import { DetailPlaceholder } from '../../../src/ipad/detailPlaceholder.js';
+import { useDetailColumn } from '../../../src/ipad/detailColumn.js';
 
 /**
- * PC の画面（`/pc/[pcId]`。Orca の host-screen、モックの「PC の画面（スペース一覧）」）。
+ * 詳細の列の根（`/pc/[pcId]`）。
  *
- *  - 2段のヘッダー: 戻る・状態の点と PC 名・再接続 ／ 絞り込み・並び順・グループ・アーカイブ・使用量・通知・検索
- *  - 一覧: 既定はスペースごとの段で、段の中は「エージェントの状態」順（要対応 → 実行中 → 未確認 → 待機）。
- *    行を押すとそのセッション、長押しと ⋯ で操作のシート。**要対応にはここでは答えない**（押すとセッションへ）
- *  - 右下の白い ＋ でエージェントを起動
- *  - つながっていない PC は「デスクトップに届きません」と再接続
+ *  - 1列（iPhone、狭い iPad）: PC の画面（スペースとエージェントの一覧）を全面に出す。行を押すとセッションへ押し進む
+ *  - iPad の2列: PC の画面は左の列（`_layout.tsx`）にあるので、ここは「エージェントが開かれていません」
  *
- * 一覧の組み立て（絞り込み・並び・グループ）は `src/features/pc/pcList.ts` の純関数。
+ * 2列の間は、詳細の列を根まで戻す手段と「何か開いているか」を `detailColumn.ts` に置く（左の列の行を押したとき
+ * に開いていたものを閉じて入れ替える、左の列を隠すボタンを出す、に使う）。
  */
-export default function PcScreen() {
-	const router = useRouter();
-	const insets = useStableInsets();
-	const column = useContentColumnStyle();
-	const now = useNow();
-	const params = useLocalSearchParams<{ pcId?: string }>();
-	const { pcId, pc, status } = useRoutePc(params.pcId);
-	const active = status === 'active';
-	// **`s.workspace` 本体は購読しない**（PC からの再送のたびに作り直される）。必要な部分だけを選ぶ。
-	const terminals = useAppStore(s => (active ? s.workspace?.terminals ?? NO_TERMINALS : NO_TERMINALS));
-	const spaces = useAppStore(s => (active ? s.workspace?.workspaces ?? NO_SPACES : NO_SPACES));
-	const activeWs = useAppStore(s => (active ? s.workspace?.activeWs : undefined));
-	const loaded = useAppStore(s => active && s.workspace !== undefined);
-	const { archivedKeys, pinnedKeys, preferences, setPreferences, notifications, setArchived, connectRelay } = useAppStore(useShallow(s => ({
-		archivedKeys: s.archivedKeys, pinnedKeys: s.pinnedKeys, preferences: s.homePreferences, setPreferences: s.setHomePreferences,
-		notifications: s.notifications, setArchived: s.setArchived, connectRelay: s.connectRelay,
-	})));
-	const lastTerminalKey = useLastSession(s => (s.value?.pcId === pcId ? s.value?.terminalKey : undefined));
-	const toast = useParaToast(s => s.show);
+export default function PcIndexRoute() {
+	const regular = useIsRegularWidth();
+	const navigation = useNavigation();
+	const focused = useIsFocused();
+	const pcId = usePcRouteId();
 
-	const [group, setGroup] = useState<PcListGroup>(DEFAULT_PC_LIST_GROUP);
-	const [filter, setFilter] = useState<PcListFilter>(EMPTY_PC_LIST_FILTER);
-	const [searching, setSearching] = useState(false);
-	const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-	const [sheet, setSheet] = useState<Sheet | undefined>(undefined);
-	const [menuKey, setMenuKey] = useState<string | undefined>(undefined);
-
-	const kind = pc !== undefined ? connectionKind(pc.connection, pc.pcOnline) : 'offline';
-	// 一時的に再接続している間は一覧を消さない（行が点滅すると押し間違える）。
-	const showList = active && loaded && (kind === 'connected' || kind === 'connecting');
-	const sections = buildPcList({ terminals, spaces, activeWs, archivedKeys, pinnedKeys, preferences, group, filter });
-	const archived = archivedTerminals(terminals, archivedKeys);
-	const unread = unreadQuestionNotificationCount(notifications);
-	const detail = [
-		pcConnectionLine(kind, pc?.lastOnlineAt, now),
-		pc !== undefined && shouldShowBattery(pc) && pc.battery !== undefined ? batteryLine(pc.battery) : undefined,
-	].filter((part): part is string => part !== undefined).join(' · ');
-
-	const spaceOf = (terminal: Terminal) => resolveTerminalSpace(terminal, spaces, activeWs);
-	const openTerminal = (terminalKey: string) => {
-		const terminal = terminals.find(candidate => candidate.terminalKey === terminalKey);
-		const owner = terminal !== undefined ? spaceOf(terminal) : undefined;
-		if (pcId === undefined || terminal === undefined || owner === undefined) {
+	useEffect(() => {
+		if (!regular || pcId === undefined) {
 			return;
 		}
-		openSession(router, {
-			pcId,
-			spaceId: owner.id,
-			spaceName: owner.name,
-			color: spaceColor(owner),
-			terminalKey,
-			title: terminal.title,
-			...(owner.branch !== undefined ? { branch: owner.branch } : {}),
-		});
-	};
-	// 行は memo で止めるので、渡す関数の参照は固定する（中身は最新の一覧を見る）。
-	const openTerminalRef = useRef(openTerminal);
-	openTerminalRef.current = openTerminal;
-	const onOpenRow = useCallback((terminalKey: string) => openTerminalRef.current(terminalKey), []);
-	const openSpace = (target: Space) => {
-		if (pcId === undefined) {
-			return;
-		}
-		openSession(router, { pcId, spaceId: target.id, spaceName: target.name, color: spaceColor(target), ...(target.branch !== undefined ? { branch: target.branch } : {}) });
-	};
-	const reconnect = () => {
-		hapticSelection();
-		connectRelay();
-		toast({ key: 'pc-reconnect', text: `${pc?.name ?? 'PC'} に再接続しています…`, icon: 'refresh-outline', tone: 'info' }, 2_500);
-	};
-	const toggleSection = (key: string) => {
-		setCollapsed(current => {
-			const next = new Set(current);
-			if (next.has(key)) {
-				next.delete(key);
-			} else {
-				next.add(key);
+		return useDetailColumn.getState().attach(pcId, () => {
+			// この画面の navigation は詳細の列の Stack のもの。根だけのときに POP_TO_TOP を送ると、処理できずに
+			// 親（ルートの Stack）へ伝わって PC の画面ごと閉じてしまうので、積んであるときだけ送る。
+			const stacked = navigation.getState()?.routes;
+			if (stacked !== undefined && stacked.length > 1) {
+				navigation.dispatch({ type: 'POP_TO_TOP' });
 			}
-			return next;
 		});
-	};
+	}, [regular, pcId, navigation]);
 
-	const menuTerminal = menuKey !== undefined ? terminals.find(candidate => candidate.terminalKey === menuKey) : undefined;
-	const menuSpace = menuTerminal !== undefined ? spaceOf(menuTerminal) : undefined;
-	const menuTarget: RowActionTarget | undefined = menuTerminal !== undefined ? {
-		terminalKey: menuTerminal.terminalKey,
-		title: menuTerminal.title,
-		agent: menuTerminal.agent === true,
-		agentStatus: menuTerminal.agentStatus,
-		pinned: pinnedKeys.has(menuTerminal.terminalKey),
-		spaceId: menuSpace?.id,
-		spaceName: menuSpace?.name,
-		branch: menuSpace?.branch,
-	} : undefined;
-	// 絞り込みでスペースを1つだけ選んでいれば、そこへ起動する形でシートを開く。
-	const onlySpace = filter.spaces.length === 1 ? filter.spaces[0] : undefined;
-	const launchPreset: LaunchPreset | undefined = onlySpace !== undefined ? { kind: 'space', spaceId: onlySpace } : undefined;
+	useEffect(() => {
+		if (pcId !== undefined) {
+			useDetailColumn.getState().setOpen(pcId, !focused);
+		}
+	}, [pcId, focused, regular]);
 
-	const renderBody = () => {
-		if (status === 'unknown') {
-			return <EmptyState title="この PC は見つかりません" body="ペアリングを解除した PC かもしれません。" />;
-		}
-		if (!showList) {
-			if (kind === 'connecting' || status === 'inactive' || (active && !loaded && kind === 'connected')) {
-				return <EmptyState title="接続しています…" body={`${pc?.name ?? 'PC'} の状態を読み込んでいます。`} />;
-			}
-			return (
-				<PcOfflineState
-					name={pc?.name ?? 'PC'}
-					lastOnline={pc?.lastOnlineAt !== undefined ? formatRelativeTime(pc.lastOnlineAt, now) : undefined}
-					onReconnect={reconnect}
-				/>
-			);
-		}
-		if (spaces.length === 0 && terminals.length === 0) {
-			return <EmptyState title="スペースはまだありません" body="PC の Para Code でフォルダやリポジトリを開くと、ここに表示されます。右下の ＋ から新しいスペースも作れます。" />;
-		}
-		if (sections.length === 0) {
-			return (
-				<EmptyState
-					title="該当するエージェントがありません"
-					body="検索語や絞り込みを変えてください。"
-					action={{ label: '絞り込みをクリア', onPress: () => setFilter(EMPTY_PC_LIST_FILTER) }}
-				/>
-			);
-		}
-		return (
-			<ScrollView
-				contentContainerStyle={[{ paddingBottom: insets.bottom + space.xl + FAB_SIZE + space.lg }, column]}
-				keyboardShouldPersistTaps="handled"
-				keyboardDismissMode="on-drag"
-			>
-				{sections.map(section => {
-					const isCollapsed = collapsed.has(section.key);
-					const hideSpace = section.kind === 'space';
-					return (
-						<View key={section.key}>
-							{section.title !== undefined ? (
-								<SectionToggle
-									title={section.title}
-									count={section.rows.length}
-									collapsed={isCollapsed}
-									onToggle={() => toggleSection(section.key)}
-									{...(section.kind === 'pinned' ? { icon: 'pin' as const } : {})}
-									{...(section.space !== undefined ? { icon: 'folder' as const, iconColor: spaceColor(section.space) } : {})}
-									{...(section.bucket !== undefined ? { bucket: section.bucket } : {})}
-								/>
-							) : null}
-							{isCollapsed ? null : section.emptySpace === true && section.space !== undefined ? (
-								<EmptySpaceRow onPress={() => { const target = spaces.find(candidate => candidate.id === section.space?.id); if (target !== undefined) { openSpace(target); } }} />
-							) : section.rows.map((row, index) => (
-								<Fragment key={row.terminal.terminalKey}>
-									{index > 0 ? <RowSeparator /> : null}
-									<AgentListRow
-										terminalKey={row.terminal.terminalKey}
-										title={row.terminal.title}
-										agent={row.terminal.agent === true}
-										agentStatus={row.terminal.agentStatus}
-										spaceName={row.space?.name}
-										spaceColor={row.space !== undefined ? spaceColor(row.space) : spaceColor({ id: row.terminal.terminalKey })}
-										branch={row.space?.branch}
-										hideSpace={hideSpace}
-										pinned={row.pinned}
-										current={row.terminal.terminalKey === lastTerminalKey}
-										now={now}
-										onOpen={onOpenRow}
-										onMenu={setMenuKey}
-									/>
-								</Fragment>
-							))}
-						</View>
-					);
-				})}
-			</ScrollView>
-		);
-	};
-
-	return (
-		<Screen>
-			<PcHeader
-				name={pc?.name ?? 'PC'}
-				kind={kind}
-				detail={detail}
-				{...(kind !== 'connected' && status !== 'unknown' ? { onReconnect: reconnect } : {})}
-				toolbar={(
-					<>
-						<FilterChip count={filterCount(filter)} onPress={() => { hapticSelection(); setSheet('filter'); }} />
-						<ModeButton kind="sort" label={sortShortLabel(preferences.sort)} onPress={() => { hapticSelection(); setSheet('sort'); }} />
-						<ModeButton kind="group" label={groupShortLabel(group)} onPress={() => { hapticSelection(); setSheet('group'); }} />
-						<ToolbarRight
-							archivedCount={archived.length}
-							unread={unread}
-							searching={searching}
-							usageDisabled={kind !== 'connected'}
-							onArchive={() => { hapticSelection(); setSheet('archive'); }}
-							onUsage={() => { hapticSelection(); router.push(routes.settings('usage')); }}
-							onNotifications={() => { hapticSelection(); router.push(routes.notifications()); }}
-							onToggleSearch={() => {
-								hapticSelection();
-								if (searching) {
-									setFilter(current => ({ ...current, query: '' }));
-								}
-								setSearching(!searching);
-							}}
-						/>
-					</>
-				)}
-				{...(searching ? { search: <PcSearchBar value={filter.query} onChange={query => setFilter(current => ({ ...current, query }))} /> } : {})}
-			/>
-			<View style={styles.body}>{renderBody()}</View>
-			<LaunchFab disabled={!showList || kind !== 'connected'} onPress={() => setSheet('launch')} />
-			<FilterDrawer
-				visible={sheet === 'filter'}
-				filter={filter}
-				spaces={spaces}
-				onChange={setFilter}
-				onClose={() => setSheet(undefined)}
-			/>
-			<PickerDrawer<HomeSortKey>
-				visible={sheet === 'sort'}
-				title="並び順"
-				options={PC_LIST_SORT_OPTIONS.map(option => ({ value: option.value, label: option.label, hint: option.hint, icon: SlidersHorizontal }))}
-				selected={preferences.sort}
-				onSelect={value => setPreferences(withSort(preferences, value))}
-				onClose={() => setSheet(undefined)}
-			/>
-			<PickerDrawer<PcListGroup>
-				visible={sheet === 'group'}
-				title="グループ"
-				options={PC_LIST_GROUP_OPTIONS.map(option => ({ value: option.value, label: option.label, icon: Layers }))}
-				selected={group}
-				onSelect={setGroup}
-				onClose={() => setSheet(undefined)}
-			/>
-			<ArchiveDrawer
-				visible={sheet === 'archive'}
-				rows={archived.map(terminal => {
-					const owner = spaceOf(terminal);
-					return { terminalKey: terminal.terminalKey, title: terminal.title, agentStatus: terminal.agentStatus, spaceName: owner?.name, branch: owner?.branch };
-				})}
-				onRestore={key => setArchived(key, false)}
-				onOpen={openTerminal}
-				onClose={() => setSheet(undefined)}
-			/>
-			<LaunchDrawer visible={sheet === 'launch'} {...(launchPreset !== undefined ? { preset: launchPreset } : {})} onClose={() => setSheet(undefined)} />
-			<RowActions pcId={pcId} target={menuTarget} onClose={() => setMenuKey(undefined)} />
-		</Screen>
-	);
+	return regular ? <DetailPlaceholder /> : <PcScreen placement="page" />;
 }
-
-const styles = StyleSheet.create({
-	body: {
-		flex: 1,
-	},
-});

@@ -6,6 +6,8 @@ import {
 	TERMINAL_FONT_SIZE_DEFAULT,
 	TERMINAL_VIEWPORT_MIN_COLS,
 	clampTerminalFontSize,
+	defaultTerminalFontSize,
+	normalizeTerminalPrefs,
 	terminalGridFor,
 	terminalViewportEquals,
 } from './terminalViewport.js';
@@ -59,5 +61,21 @@ describe('terminalViewportEquals', () => {
 			terminalViewportEquals(undefined, undefined),
 			terminalViewportEquals({ cols: 59, rows: 42 }, undefined),
 		]).toEqual([true, false, true, false]);
+	});
+});
+
+describe('端末ごとの既定の文字サイズ', () => {
+	test('iPad は 12pt、iPhone は 10pt', () => {
+		expect([defaultTerminalFontSize(true), defaultTerminalFontSize(false)]).toEqual([12, 10]);
+	});
+
+	test('保存が無い・文字サイズが欠けているときは端末の既定を使う', () => {
+		expect(normalizeTerminalPrefs(undefined, true).fontSize).toBe(12);
+		expect(normalizeTerminalPrefs({ matchPcWidth: true }, true).fontSize).toBe(12);
+		expect(normalizeTerminalPrefs({ matchPcWidth: true }).fontSize).toBe(10);
+	});
+
+	test('保存した文字サイズは iPad でもそのまま使う', () => {
+		expect(normalizeTerminalPrefs({ fontSize: 9 }, true).fontSize).toBe(9);
 	});
 });

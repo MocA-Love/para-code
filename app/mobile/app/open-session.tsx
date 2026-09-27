@@ -53,10 +53,11 @@ export default function OpenSessionScreen() {
 				const store = useAppStore.getState();
 				store.setSelectedWs(target.spaceId);
 				store.setSelectedTerminalKey(target.terminalKey);
+				// withAnchor: PC の中の Stack の根（1列では PC の画面、2列では「エージェントが開かれていません」）を下に敷く。
 				router.replace(routes.session(target.pcId, target.spaceId, {
 					tab: { kind: 'terminal', terminalKey: target.terminalKey },
 					latest: latest ?? createAgentLatestEntryToken(),
-				}));
+				}), { withAnchor: true });
 				return;
 			}
 		}

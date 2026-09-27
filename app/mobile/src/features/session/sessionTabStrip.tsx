@@ -6,9 +6,10 @@ import { Globe, Plus, Sparkles, SquareChevronRight } from 'lucide-react-native';
 import { useAppStore } from '../../appState.js';
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { hapticSelection } from '../../haptics.js';
-import { HIT_SIZE, colors, space, type } from '../../theme.js';
+import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { AgentStateDot, Icon, agentKindFromStatus } from '../../ui/index.js';
 import type { SessionTabItem } from './sessionTabs.js';
+import { PointerHover } from '../../ipad/pointerHover.js';
 
 /**
  * タブの大きさ（モックの `.tab` は 128×36、下線 2）。横スクロールの中の要素は hitSlop が
@@ -79,6 +80,7 @@ function SessionTab({ item, active, onPress, onLongPress }: {
 	onLongPress: () => void;
 }) {
 	return (
+		<PointerHover effect="highlight" cornerRadius={radius.button}>
 		<Pressable
 			onPress={() => { hapticSelection(); onPress(); }}
 			onLongPress={() => { hapticSelection(); onLongPress(); }}
@@ -94,6 +96,7 @@ function SessionTab({ item, active, onPress, onLongPress }: {
 				<Text style={[styles.text, active ? styles.textOn : undefined]} numberOfLines={1}>{item.title}</Text>
 			</View>
 		</Pressable>
+		</PointerHover>
 	);
 }
 
@@ -112,6 +115,7 @@ function AgentTabGlyph({ terminalKey, agentStatus }: { terminalKey: string; agen
 
 function StripButton({ icon, label, onPress }: { icon: typeof Plus; label: string; onPress: () => void }) {
 	return (
+		<PointerHover effect="highlight" cornerRadius={radius.button}>
 		<Pressable
 			onPress={() => { hapticSelection(); onPress(); }}
 			hitSlop={TAB_BUTTON_SLOP}
@@ -121,6 +125,7 @@ function StripButton({ icon, label, onPress }: { icon: typeof Plus; label: strin
 		>
 			<Icon icon={icon} color={colors.textDim} strokeWidth={2.2} />
 		</Pressable>
+		</PointerHover>
 	);
 }
 
