@@ -28,6 +28,26 @@ export function paradisWebAuthnDeviceTypeLabel(): string {
 	return localize('paradis.browser.webauthn.kind', "パスキーのアカウント");
 }
 
+/** {@link paradisPrepareWebAuthnAccountPicker} が触るデバイス選択の QuickPick の部分。 */
+export interface IParadisWebAuthnAccountPicker {
+	title: string | undefined;
+	placeholder: string | undefined;
+	busy: boolean;
+}
+
+/**
+ * デバイス選択の QuickPick を、パスキーのアカウント選択向けの文言にする。
+ *
+ * upstream の文言（「{サイト} wants to connect to {種類}」「Select a device to connect to」）は
+ * 機器の接続を前提にしていて、アカウント選びには合わない。探索中の表示（busy）も消す: アカウントは
+ * 最初から全部揃っていて、USB 機器のように後から増えないので、回り続けると待たされているように見える。
+ */
+export function paradisPrepareWebAuthnAccountPicker(picker: IParadisWebAuthnAccountPicker, displayOrigin: string): void {
+	picker.title = localize('paradis.browser.webauthn.title', "{0} にログインするパスキーのアカウントを選択", displayOrigin);
+	picker.placeholder = localize('paradis.browser.webauthn.placeholder', "使うアカウントを選んでください");
+	picker.busy = false;
+}
+
 /**
  * アカウントを選択肢に直す。表示名が無いアカウントは「パスキー N」とし、ユーザー名（多くはメール
  * アドレス）は表示名と違うときだけ補足に出す。`deviceId` には資格情報 ID をそのまま入れる。
