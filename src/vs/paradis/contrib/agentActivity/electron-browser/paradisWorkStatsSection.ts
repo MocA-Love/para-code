@@ -198,7 +198,9 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 		svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
 		svg.setAttribute('role', 'img');
 		svg.setAttribute('aria-label', localize('paradis.workStats.chartAria', "日別のターン数のグラフ"));
-		const max = Math.max(1, ...values);
+		// Round the scale up to an even number so the middle grid line lands on a whole turn count.
+		const peak = Math.max(1, ...values);
+		const max = peak + (peak % 2);
 		const plotHeight = height - bottom - top;
 		for (const fraction of [0, 0.5, 1]) {
 			const y = top + plotHeight * (1 - fraction);
