@@ -205,7 +205,15 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 		}
 
 		this._options.statusStore.setScopeBreakdowns(scopeBreakdowns);
-		this._options.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds, acknowledgedInstances);
+		// 止まって次の指示を待っているために状態を消したペイン（許可の拒否）。状態の消滅を完了と数えないのに使う
+		const stoppedForUserInstances = new Set<number>();
+		for (const token of snapshot.awaitingUserTokens ?? []) {
+			const instanceId = this._options.paneTokenService.getInstanceForToken(token);
+			if (instanceId !== undefined) {
+				stoppedForUserInstances.add(instanceId);
+			}
+		}
+		this._options.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds, acknowledgedInstances, stoppedForUserInstances);
 		this._options.statusStore.setScopeIssueUrls(scopeIssueUrls);
 	}
 }

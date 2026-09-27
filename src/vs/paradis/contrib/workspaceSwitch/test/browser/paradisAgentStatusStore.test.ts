@@ -135,4 +135,21 @@ suite('ParadisAgentStatusStore', () => {
 			{ afterWorking: 1, acknowledged: true, afterAck: 2, afterPollFailure: true, afterNextTurn: false });
 	});
 
+	test('says which panes stopped for the user in the same update that removes their status, and forgets it once they report again', () => {
+		// タブの印が、許可の拒否による状態の消滅を完了と数えないのに使う
+		const { store, fired } = createStore();
+		store.setInstanceStates(new Map([[7, 'permission'], [8, 'working']]), new Set([7, 8]));
+		let seenOnRemoval: boolean | undefined;
+		const listener = store.onDidChangeAgentStatuses(() => { seenOnRemoval ??= store.wasStoppedForUser(7); });
+		// 8 は状態が付いているので載らない
+		store.setInstanceStates(new Map([[8, 'working']]), new Set([7, 8]), undefined, new Set([7, 8]));
+		listener.dispose();
+		const stopped = { seven: store.wasStoppedForUser(7), eight: store.wasStoppedForUser(8) };
+		const beforeNextTurn = fired();
+		store.setInstanceStates(new Map([[7, 'working'], [8, 'working']]), new Set([7, 8]));
+
+		assert.deepStrictEqual({ seenOnRemoval, stopped, beforeNextTurn, afterNextTurn: store.wasStoppedForUser(7) },
+			{ seenOnRemoval: true, stopped: { seven: true, eight: false }, beforeNextTurn: 2, afterNextTurn: false });
+	});
+
 });

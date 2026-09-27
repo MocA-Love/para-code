@@ -36,6 +36,8 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 	private _agentInstanceIds = new Set<number>();
 	/** review を既読にして状態から外したインスタンス（次の状態が届くまで覚える）。 */
 	private _acknowledgedReviews = new Set<number>();
+	/** 止まって次の指示を待っているために状態が消えているインスタンス（許可の拒否。完了ではない）。 */
+	private _stoppedForUser = new Set<number>();
 	/**
 	 * hook 以外の根拠（記録ファイルの探索）でセッションが確定しているペイン。
 	 * インスタンスIDではなくペイントークンで持つのは、ターミナルを開き直しても同じ
@@ -63,6 +65,10 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 
 	wasReviewAcknowledged(instanceId: number): boolean {
 		return this._acknowledgedReviews.has(instanceId);
+	}
+
+	wasStoppedForUser(instanceId: number): boolean {
+		return this._stoppedForUser.has(instanceId);
 	}
 
 	isAgentInstance(instanceId: number): boolean {
@@ -104,8 +110,12 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 		this._onDidChangeAgentStatuses.fire();
 	}
 
-	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>): void {
-		let acknowledgedChanged = false;
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>, stoppedForUserInstanceIds?: ReadonlySet<number>): void {
+		// 状態の変化を知らせる前に入れ替える（受け側は状態の消滅と同じ回にこれを見る）
+		const stoppedForUser = new Set([...stoppedForUserInstanceIds ?? []].filter(instanceId => !statuses.has(instanceId)));
+		const stoppedChanged = stoppedForUser.size !== this._stoppedForUser.size || [...stoppedForUser].some(instanceId => !this._stoppedForUser.has(instanceId));
+		this._stoppedForUser = stoppedForUser;
+		let acknowledgedChanged = stoppedChanged;
 		for (const instanceId of statuses.keys()) {
 			acknowledgedChanged = this._acknowledgedReviews.delete(instanceId) || acknowledgedChanged;
 		}
