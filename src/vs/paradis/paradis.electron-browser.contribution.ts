@@ -31,6 +31,9 @@ import './contrib/notifications/electron-browser/paradisNotificationTrigger.cont
 import './contrib/notifications/electron-browser/paradisNotificationSettingsDialog.contribution.js';
 import './contrib/notifications/electron-browser/paradisDoNotDisturbStatusBar.contribution.js';
 import './contrib/notifications/electron-browser/paradisAivisMuteSync.contribution.js';
+import './contrib/notifications/electron-browser/paradisDictationAudioHold.contribution.js';
+import './contrib/dictation/browser/paradisDictationAvailability.contribution.js';
+import './contrib/notificationInbox/electron-browser/paradisNotificationInbox.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
