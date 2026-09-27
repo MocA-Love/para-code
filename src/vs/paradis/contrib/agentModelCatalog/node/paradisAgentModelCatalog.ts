@@ -22,7 +22,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
-import { paradisDetachedAgentCliEnv, paradisResolveAgentCli, paradisRunAgentCli } from '../../../node/paradisAgentCli.js';
+import { IParadisRunAgentCliOptions, IParadisRunAgentCliResult, paradisDetachedAgentCliEnv, paradisResolveAgentCli, paradisRunAgentCli } from '../../../node/paradisAgentCli.js';
 import { paradisOpenCodexAppServer } from '../../../node/paradisCodexAppServerSession.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -175,8 +175,29 @@ function isCachedCatalog(value: unknown, agentId: string): value is ICachedCatal
 		&& entry.models.every(model => typeof model?.id === 'string' && Array.isArray(model.efforts));
 }
 
-async function probeClaude(cli: IParadisResolvedCli, workDir: string): Promise<IParadisDiscoveredModel[]> {
-	const run = (args: readonly string[]) => paradisRunAgentCli(cli.command, args, {
+/** CLI を1回動かす関数（テストでは偽物に差し替える）。 */
+export type ParadisAgentCliRunner = (command: string, args: readonly string[], options: IParadisRunAgentCliOptions) => Promise<IParadisRunAgentCliResult>;
+
+/**
+ * この取得のためだけに作る自分専用（0700）の空のディレクトリで `task` を動かし、終わったら
+ * 成否にかかわらず消す。Linux の共有 /tmp をそのまま作業ディレクトリにすると、他の利用者が
+ * 置いたプロジェクト設定を読みうるため。
+ */
+export async function paradisWithPrivateWorkDir<T>(parentDir: string, task: (workDir: string) => Promise<T>): Promise<T> {
+	const workDir = await fs.mkdtemp(join(parentDir, 'paradis-models-'));
+	try {
+		return await task(workDir);
+	} finally {
+		await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+	}
+}
+
+/**
+ * Claude Code に `list_models` を聞く。`--no-session-persistence` を知らない古い CLI
+ * （stderr にこのフラグ名が出て一覧が空）では、フラグだけ外して1回だけ取り直す。
+ */
+export async function paradisProbeClaudeModels(cli: IParadisResolvedCli, workDir: string, runCli: ParadisAgentCliRunner = paradisRunAgentCli): Promise<IParadisDiscoveredModel[]> {
+	const run = (args: readonly string[]) => runCli(cli.command, args, {
 		env: cli.env,
 		cwd: workDir,
 		stdin: PARADIS_CLAUDE_MODEL_LIST_STDIN,
@@ -187,7 +208,6 @@ async function probeClaude(cli: IParadisResolvedCli, workDir: string): Promise<I
 	if (models.length > 0 || !result.stderr.includes(PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG)) {
 		return models;
 	}
-	// このフラグを知らない古い CLI。フラグだけ外して取り直す
 	return paradisParseClaudeModelList((await run(PARADIS_CLAUDE_MODEL_LIST_ARGS.filter(arg => arg !== PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG))).stdout);
 }
 
@@ -229,16 +249,7 @@ export function createParadisAgentModelCatalogBackend(userDataPath: string, getE
 				return undefined;
 			}
 		},
-		async probe(agentId, cli) {
-			// 作業ディレクトリは、この取得のためだけに作る自分専用（0700）の空のディレクトリにする。
-			// Linux の共有 /tmp をそのまま使うと、他の利用者が置いたプロジェクト設定を読みうる
-			const workDir = await fs.mkdtemp(join(tmpdir(), 'paradis-models-'));
-			try {
-				return agentId === 'claude' ? await probeClaude(cli, workDir) : await probeCodex(cli, workDir);
-			} finally {
-				await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
-			}
-		},
+		probe: (agentId, cli) => paradisWithPrivateWorkDir(tmpdir(), workDir => agentId === 'claude' ? paradisProbeClaudeModels(cli, workDir) : probeCodex(cli, workDir)),
 		async readCache() {
 			let raw: string;
 			try {
