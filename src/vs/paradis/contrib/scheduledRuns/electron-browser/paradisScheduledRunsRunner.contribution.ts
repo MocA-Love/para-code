@@ -200,6 +200,8 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 					agentId: definition.agentId,
 					prompt: definition.prompt,
 					...options,
+					// 利用者の作業中に時刻で起動するので、入力を新しいターミナルへ横取りしない
+					preserveFocus: true,
 				});
 			}
 		} catch (error) {
