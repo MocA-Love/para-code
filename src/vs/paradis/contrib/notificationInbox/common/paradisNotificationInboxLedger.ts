@@ -89,8 +89,8 @@ export class ParadisNotificationInboxLedger {
 		return this.update(entry => !entry.read, true);
 	}
 
-	markPanesRead(tokens: readonly string[]): boolean {
-		const targets = new Set(tokens);
+	markPanesRead(paneKeys: readonly string[]): boolean {
+		const targets = new Set(paneKeys);
 		return this.update(entry => targets.has(entry.paneKey) && !entry.read, true);
 	}
 
@@ -113,26 +113,31 @@ export class ParadisNotificationInboxLedger {
 	}
 
 	/** あるウィンドウ（接続）がいま開いているペインを丸ごと置き換える。 */
-	setLivePanes(client: string, tokens: readonly string[]): boolean {
+	setLivePanes(client: string, paneKeys: readonly string[]): boolean {
 		const before = this.attentionSignature();
-		this.livePanesByClient.set(client, new Set(tokens));
+		this.livePanesByClient.set(client, new Set(paneKeys));
+		this.forgetClosedPaneStatuses();
 		return before !== this.attentionSignature();
 	}
 
 	removeClient(client: string): boolean {
-		const panes = this.livePanesByClient.get(client);
-		if (panes === undefined) {
+		if (!this.livePanesByClient.has(client)) {
 			return false;
 		}
 		const before = this.attentionSignature();
 		this.livePanesByClient.delete(client);
+		this.forgetClosedPaneStatuses();
+		return before !== this.attentionSignature();
+	}
+
+	/** どのウィンドウにも開いていないペインの状態を忘れる（閉じたペインの分が溜まり続けないように）。 */
+	private forgetClosedPaneStatuses(): void {
 		const live = this.livePanes();
-		for (const paneKey of panes) {
+		for (const paneKey of [...this.lastStatusByPane.keys()]) {
 			if (!live.has(paneKey)) {
 				this.lastStatusByPane.delete(paneKey);
 			}
 		}
-		return before !== this.attentionSignature();
 	}
 
 	/** 変更系のメソッドが true を返したら呼ぶ（スナップショットの番号を進める）。 */
@@ -164,9 +169,9 @@ export class ParadisNotificationInboxLedger {
 
 	private livePanes(): ReadonlySet<string> {
 		const live = new Set<string>();
-		for (const tokens of this.livePanesByClient.values()) {
-			for (const token of tokens) {
-				live.add(token);
+		for (const paneKeys of this.livePanesByClient.values()) {
+			for (const paneKey of paneKeys) {
+				live.add(paneKey);
 			}
 		}
 		return live;

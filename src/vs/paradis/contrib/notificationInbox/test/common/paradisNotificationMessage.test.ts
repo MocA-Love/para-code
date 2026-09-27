@@ -14,21 +14,65 @@ suite('Paradis notification message', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('masks secret-looking values before a message reaches a notification', () => {
-		const fakeGithub = ['ghp', 'abcdefghijklmnopqrstuvwxyz0123'].join('_');
-		const fakeOpenAi = ['sk', 'proj', 'abcdefghijklmnopqrstu'].join('-');
-		assert.deepStrictEqual([
-			paradisRedactSecrets(`curl -H "Authorization: Bearer ${fakeGithub}" https://api.github.com`),
-			paradisRedactSecrets(`export OPENAI_API_KEY=${fakeOpenAi} && run`),
-			paradisRedactSecrets('mysql --password=hunter2 -u root'),
-			paradisRedactSecrets('git clone https://user:pa55word@example.com/repo.git'),
-			paradisRedactSecrets('型エラーを 3 件直し、monkey patch も外しました'),
-		], [
+		// 実物に見えないよう、トークンは部品をつないで作る
+		const join = (...parts: string[]) => parts.join('');
+		const fakeGithub = join('ghp', '_', 'abcdefghijklmnopqrstuvwxyz0123');
+		const fakeOpenAi = join('sk', '-proj-', 'abcdefghijklmnopqrstu');
+		const fakeStripe = join('sk', '_live_', 'abcdefghijklmnop');
+		const fakeNpm = join('npm', '_', 'abcdefghijklmnopqrstuvwx1234');
+		const fakeGitlab = join('glpat', '-', 'abcdefghijklmnopqrst');
+		const fakeHf = join('hf', '_', 'abcdefghijklmnopqrstuvwxyz');
+		const dsnKey = '0123456789abcdef0123456789abcdef';
+		const cases = [
+			`curl -H "Authorization: Bearer ${fakeGithub}" https://api.github.com`,
+			`export OPENAI_API_KEY=${fakeOpenAi} && run`,
+			`export STRIPE_SECRET_KEY=${fakeStripe} && npm run deploy`,
+			'OPENAI_KEY=abc123def456 node x',
+			'mysql --password=hunter2 -u root',
+			'mysql -u root -phunter2 db',
+			'docker login -p hunter2 registry.io',
+			'curl -u admin:hunter2 https://example.com',
+			'aws configure set aws_secret_access_key AbCdEf1234567890',
+			`echo ${fakeNpm} ${fakeGitlab} ${fakeHf}`,
+			`SENTRY_DSN=https://${dsnKey}@o1.ingest.sentry.io/1`,
+			`curl https://${dsnKey}@o1.ingest.sentry.io/1`,
+			'curl -X POST https://hooks.slack.com/services/T000/B000/XXXXXXXX',
+			'-----BEGIN RSA PRIVATE KEY----- MIIEowIBAAKCAQEA',
+			'git clone https://user:pa55word@example.com/repo.git',
+			`git push ${join('ghp', '_abcdef')}\u2026`,
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), [
 			'curl -H "Authorization: *** ***" https://api.github.com',
 			'export OPENAI_API_KEY=*** && run',
+			'export STRIPE_SECRET_KEY=*** && npm run deploy',
+			'OPENAI_KEY=*** node x',
 			'mysql --password=*** -u root',
+			'mysql -u root -p*** db',
+			'docker login -p *** registry.io',
+			'curl -u admin:*** https://example.com',
+			'aws configure set aws_secret_access_key ***',
+			'echo *** *** ***',
+			'SENTRY_DSN=***',
+			'curl https://***@o1.ingest.sentry.io/1',
+			'curl -X POST https://hooks.slack.com/services/***',
+			'-----BEGIN RSA PRIVATE KEY----- ***',
 			'git clone https://***@example.com/repo.git',
-			'型エラーを 3 件直し、monkey patch も外しました',
+			'git push ***\u2026',
 		]);
+	});
+
+	test('does not mask ordinary text that only looks like a key assignment', () => {
+		const cases = [
+			'型エラーを 3 件直し、monkey patch も外しました',
+			'password:必須チェックを追加しました。テストも通っています',
+			'Authorization: ヘッダーを付けるようにしました',
+			'the non-secret value is fine',
+			'rg --sort-key path src',
+			'ssh -p 22 host',
+			'docker run -p 8080:80 image',
+			'token の残り時間を表示しました',
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), cases);
 	});
 
 	test('keeps permission previews to the tool name and a masked summary', () => {

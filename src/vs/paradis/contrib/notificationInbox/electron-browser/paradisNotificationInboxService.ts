@@ -83,8 +83,8 @@ export class ParadisNotificationInboxClient extends Disposable implements IParad
 		return this.send('markAllRead', []);
 	}
 
-	markPanesRead(tokens: readonly string[]): Promise<void> {
-		return tokens.length > 0 ? this.send('markPanesRead', [tokens]) : Promise.resolve();
+	markPanesRead(paneKeys: readonly string[]): Promise<void> {
+		return paneKeys.length > 0 ? this.send('markPanesRead', [paneKeys]) : Promise.resolve();
 	}
 
 	remove(id: string): Promise<void> {
@@ -103,8 +103,8 @@ export class ParadisNotificationInboxClient extends Disposable implements IParad
 		return this.send('syncPaneStatuses', [statuses]);
 	}
 
-	setLivePanes(tokens: readonly string[]): Promise<void> {
-		return this.send('setLivePanes', [tokens]);
+	setLivePanes(paneKeys: readonly string[]): Promise<void> {
+		return this.send('setLivePanes', [paneKeys]);
 	}
 
 	private async send(command: string, args: unknown[]): Promise<void> {
