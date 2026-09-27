@@ -17,6 +17,7 @@ import {
 	paradisAgentIdeActionsAllowed,
 	paradisAgentIdeKeySequence,
 	paradisAgentIdeMessagePrefix,
+	paradisAgentIdeScreenShowsPrompt,
 	paradisAgentIdeSanitizeInput,
 	paradisAgentIdeStatusLabel,
 	paradisAgentIdeTailLines,
@@ -104,6 +105,15 @@ suite('paradisAgentIde (common)', () => {
 			launched: launchedWatcher.observe('idle', undefined, 30_000),
 			needsHuman: new ParadisAgentStopWatcher(1000).observe('asking_question', 500, 1000),
 		}, { busy: ['waiting', 'waiting', 'stopped'], idle: ['waiting', 'no_agent_status'], launched: 'waiting', needsHuman: 'needs_input' });
+	});
+
+	test('prompt detection ignores the text that was just typed, across wrapping and box borders', () => {
+		const screen = '\u256d\u2500\u2500\u2500\u256e\n\u2502 > Reply (y/n) \u2502\n\u2502 when done   \u2502\n\u2570\u2500\u2500\u2500\u256f';
+		assert.deepStrictEqual([
+			paradisAgentIdeScreenShowsPrompt(screen),
+			paradisAgentIdeScreenShowsPrompt(screen, 'Reply (y/n) when done'),
+			paradisAgentIdeScreenShowsPrompt(`${screen}\nDo you want to overwrite foo.ts?`, 'Reply (y/n) when done'),
+		], [true, false, true]);
 	});
 
 	test('status labels, key sequences, tail lines, titles and the agent marker', () => {
