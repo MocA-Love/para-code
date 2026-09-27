@@ -285,4 +285,45 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			chat.dispose();
 		}
 	}));
+	test('queues a second identical permission request for a second identical call, and settles the waiting state after a rejection with no hook', () => withClaudeHome(async claudeHome => {
+		const token = 'pane-desktop-twins';
+		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-6.jsonl');
+		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: '読んで' } }));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		const settled = async () => {
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			await access.tailers.get(token)?.enqueue(async () => { });
+		};
+		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'session-6', transcriptPath, cwd: '/repo', at: Date.now(), ...extra });
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			hook('SessionStart');
+			await settled();
+			chat.watchDesktopChat('window-1', [token], [token]);
+			const view = () => chat.getDesktopChat(token, undefined);
+
+			// 同じ内容の呼び出しが2つ → 同じ内容の許可要求も2件まで積む。3件目は同じ hook の再送として捨てる
+			hook('UserPromptSubmit', { payload: { prompt: '読んで' } });
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_x', toolInput: { file_path: '/outside/same.txt' } });
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_y', toolInput: { file_path: '/outside/same.txt' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/outside/same.txt' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/outside/same.txt' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/outside/same.txt' } });
+			await settled();
+			const cards = (await view())?.messages.filter(message => message.tool === 'approval_request').length;
+			const livePhase = (await view())?.live?.phase;
+
+			// Esc で拒否: hook は来ず、両方の結果が transcript に書かれるだけ（Claude Code 2.1.283）
+			const rejected = `The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.`;
+			await appendFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:05.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_x', is_error: true, content: rejected }, { type: 'tool_result', tool_use_id: 'toolu_y', is_error: true, content: rejected }] } }));
+			await waitFor(async () => (await view())?.interaction === null, 'the approvals were not settled');
+			await waitFor(async () => (await view())?.live === null, 'the waiting state was not cleared');
+			const after = await view();
+
+			assert.deepStrictEqual({ cards, livePhase, busy: after?.busy }, { cards: 2, livePhase: 'permission', busy: false });
+		} finally {
+			chat.dispose();
+		}
+	}));
 });

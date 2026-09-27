@@ -100,6 +100,8 @@ export interface IParadisAgentChatCardStates {
 	readonly approvals: Map<string, IParadisAgentChatApprovalCardState>;
 	/** 入力欄から送っている最中か。 */
 	readonly composer: { sending: boolean };
+	/** 読んでいた位置（別のペインへ切り替えて戻ったときに戻す）。 */
+	scroll?: { readonly top: number; readonly stick: boolean };
 }
 
 export class ParadisAgentChatView extends Disposable {
@@ -334,12 +336,20 @@ export class ParadisAgentChatView extends Disposable {
 	/** 表示する対象のペインを差し替える。undefined なら隠す（ターミナルが見える）。 */
 	setTarget(instanceId: number | undefined, token: string | undefined): void {
 		const visible = instanceId !== undefined && token !== undefined;
+		let restoreScrollTop: number | undefined;
 		if (this.token !== token) {
+			// 読んでいた位置をペインごとに覚え、戻ってきたら同じ位置から見せる（最下部へ飛ばさない）。
+			if (this.token !== undefined) {
+				this.host.cardStates(this.token).scroll = { top: this.visible && this.scroller.clientHeight > 0 ? this.scroller.scrollTop : this.lastScrollTop, stick: this.stickToBottom };
+			}
 			this.resetRendered();
 			this.token = token;
 			this.session = token !== undefined ? this.host.session(token) : undefined;
 			this.sessionListener.value = this.session?.onDidChange(() => this.renderScheduler.schedule());
-			this.stickToBottom = true;
+			const saved = token !== undefined ? this.host.cardStates(token).scroll : undefined;
+			this.stickToBottom = saved?.stick ?? true;
+			this.lastScrollTop = saved?.top ?? 0;
+			restoreScrollTop = saved !== undefined && !saved.stick ? saved.top : undefined;
 		}
 		this.instanceId = instanceId;
 		this.composer.setToken(visible ? token : undefined);
@@ -357,6 +367,10 @@ export class ParadisAgentChatView extends Disposable {
 		if (visible) {
 			void this.session?.refresh();
 			this.render();
+			if (restoreScrollTop !== undefined) {
+				this.scroller.scrollTop = restoreScrollTop;
+				this.jumpButton.classList.toggle('visible', !this.isAtBottom());
+			}
 		}
 	}
 
