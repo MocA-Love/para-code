@@ -13,11 +13,11 @@
 // 空で返し、レンダラー側のクライアントが Claude のチャネルの結果を差し込む。
 //
 // データ取得(getSnapshot):
-//   - Codex: ~/.codex / ~/.codex-* 各ホームの auth.json からaccess tokenを読み、
-//     `GET https://chatgpt.com/backend-api/wham/usage` を直叩き。401/403時のみ
-//     `CODEX_HOME=<home> codex -s read-only -a never app-server` (JSON-RPC over stdio) へ
-//     フォールバックし、トークンリフレッシュとauth.json書き戻しはcodex CLI自身に任せる
-//     (このプロセスがauth.jsonへ書き込むことは決してない)
+//   - Codex: ~/.codex / ~/.codex-* 各ホームについて、Orca（codex-fetcher.ts）と同じく
+//     `CODEX_HOME=<home> codex -s read-only -a never app-server` (JSON-RPC over stdio) の
+//     `account/rateLimits/read` から先に取る。トークンリフレッシュとauth.json書き戻しはcodex CLI自身に
+//     任せる(このプロセスがauth.jsonへ書き込むことは決してない)。RPC が認証切れ以外で失敗したときは
+//     auth.json の access token で `GET https://chatgpt.com/backend-api/wham/usage` を直叩きする
 //
 // アカウント追加(startCodexLogin):
 //   - Codex: 空き番号の新ホーム(~/.codex-N)をmkdir(EEXISTなら次の番号、既存ディレクトリは
@@ -128,19 +128,19 @@ function isCodexAuthFailure(error: unknown): boolean {
 
 // ---------- wham/usage レスポンス型(CodexBar CodexOAuthUsageFetcher.swift と同じマッピング) ----------
 
-interface IWhamWindow {
+export interface IWhamWindow {
 	readonly used_percent?: number;
 	/** epoch秒。 */
 	readonly reset_at?: number;
 	readonly limit_window_seconds?: number;
 }
 
-interface IWhamRateLimit {
+export interface IWhamRateLimit {
 	readonly primary_window?: IWhamWindow | null;
 	readonly secondary_window?: IWhamWindow | null;
 }
 
-interface IWhamUsageResponse {
+export interface IWhamUsageResponse {
 	readonly plan_type?: string;
 	readonly rate_limit?: IWhamRateLimit | null;
 	readonly additional_rate_limits?: readonly { readonly limit_name?: string; readonly rate_limit?: IWhamRateLimit | null }[];
@@ -175,7 +175,7 @@ interface ICodexAuthJson {
 	};
 }
 
-interface ICodexAccountResult {
+export interface ICodexAccountResult {
 	readonly account: IParadisLimitsAccount;
 	/** rendererへは返さず、shared process内の重複判定だけに使う。 */
 	readonly accountId?: string;
@@ -451,7 +451,7 @@ export class ParadisLimitsMonitorService {
 		}
 	}
 
-	private async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {
+	protected async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {
 		const base: { provider: 'codex'; id: string; homeLabel: string; removable: boolean } = {
 			provider: 'codex',
 			id: homePath,
@@ -472,45 +472,73 @@ export class ParadisLimitsMonitorService {
 		}
 		const email = this.emailFromIdToken(auth.tokens?.id_token);
 
+		// Orca（codex-fetcher.ts）と同じく、`codex app-server` の RPC から先に取る。トークンの更新と
+		// auth.json の書き戻しは codex 自身がする。RPC で取れないときだけ wham/usage を使う。
+		// 認証切れ以外で RPC に失敗したホームは、しばらく RPC を飛ばして wham/usage だけにする
+		// （そのたびに app-server を起こさない）。画面を読む方式（PTY の /status）は使わない。
+		const lastFailure = this.rpcFailureAt.get(homePath);
+		const rpcCoolingDown = lastFailure !== undefined && Date.now() - lastFailure < RPC_FAILURE_COOLDOWN_MS;
+		if (!rpcCoolingDown) {
+			try {
+				const viaRpc = await this.fetchCodexAccountViaRpc(homePath);
+				this.rpcFailureAt.delete(homePath);
+				this.rpcFailureReported.delete(homePath);
+				return { account: { ...base, email: viaRpc.email ?? email, ...await this.supplementRpcWindows(viaRpc, accessToken, accountId), status: 'ok' }, accountId };
+			} catch (error) {
+				if (isCodexAuthFailure(error)) {
+					// 認証切れは再ログインでしか直らない（Orca も PTY へは落ちずにそのまま返す）。パネルは
+					// status='relogin_required' を受けて「再ログイン…」を出す（paradisLimitsMonitorPanel.ts）。
+					return { account: { ...base, email, status: 'relogin_required', statusDetail: (error as Error).message }, accountId };
+				}
+				this.rpcFailureAt.set(homePath, Date.now());
+				if (!this.rpcFailureReported.has(homePath)) {
+					this.rpcFailureReported.add(homePath);
+					const { exitCode, exitSignal } = error as { exitCode?: number | null; exitSignal?: string | null };
+					reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
+						phase: 'refresh',
+						transport: 'stdio',
+						safe_error_kind: classifyCodexRpcFailure(error),
+						...(typeof exitCode === 'number' ? { safe_exit_code: exitCode } : {}),
+						...(typeof exitSignal === 'string' ? { signal: exitSignal } : {}),
+					});
+				}
+				this.logService.warn(`[ParadisLimitsMonitor] codex app-server failed for ${base.homeLabel}; reading wham/usage instead: ${(error as Error).message}`);
+			}
+		}
+
 		try {
 			const usage = await this.fetchWhamUsage(accessToken, accountId);
 			return { account: { ...base, email, ...this.mapWhamUsage(usage), status: 'ok' }, accountId };
 		} catch (error) {
 			const httpStatus = (error as { httpStatus?: number }).httpStatus;
-			if (httpStatus !== 401 && httpStatus !== 403) {
-				return { account: { ...base, email, status: 'error', statusDetail: (error as Error).message }, accountId };
+			if (httpStatus === 401 || httpStatus === 403) {
+				return { account: { ...base, email, status: 'relogin_required', statusDetail: 'access token expired (re-login required)' }, accountId };
 			}
+			return { account: { ...base, email, status: 'error', statusDetail: (error as Error).message }, accountId };
 		}
+	}
 
-		// access token失効 → codex app-server RPCへフォールバック(codex CLI自身にリフレッシュさせる)
-		const lastFailure = this.rpcFailureAt.get(homePath);
-		if (lastFailure !== undefined && Date.now() - lastFailure < RPC_FAILURE_COOLDOWN_MS) {
-			return { account: { ...base, email, status: 'relogin_required', statusDetail: 'access token expired (re-login required)' }, accountId };
-		}
+	/**
+	 * RPC の結果に、wham/usage の分を足す（取れなければ RPC の結果のまま）。Orca の
+	 * supplementCodexSessionWindow と同じく、5時間の枠が無く週の枠だけのときは wham/usage の枠で埋める。
+	 * RPC は追加の枠（`additional_rate_limits`）を返さないので、Para Code が出しているその枠も
+	 * wham/usage から足す（Orca は追加の枠を出さないので、ここだけ Para Code の独自）。
+	 */
+	private async supplementRpcWindows(viaRpc: { planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }, accessToken: string, accountId: string | undefined): Promise<{ planType?: string; fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow; scoped?: IParadisLimitsWindow[] }> {
+		const fromRpc = { planType: viaRpc.planType, fiveHour: viaRpc.windows.fiveHour, sevenDay: viaRpc.windows.sevenDay };
+		let usage: ReturnType<ParadisLimitsMonitorService['mapWhamUsage']>;
 		try {
-			const viaRpc = await this.fetchCodexAccountViaRpc(homePath);
-			this.rpcFailureAt.delete(homePath);
-			this.rpcFailureReported.delete(homePath);
-			return { account: { ...base, email: viaRpc.email ?? email, ...viaRpc.windows, planType: viaRpc.planType, status: 'ok' }, accountId };
-		} catch (error) {
-			this.rpcFailureAt.set(homePath, Date.now());
-			// 認証切れはユーザーが再ログインするまで続くので、報告すると同じ内容が積み上がる。
-			// パネル側は status='relogin_required' を受けて「要再ログイン」バッジと「再ログイン…」
-			// ボタンを出す（paradisLimitsMonitorPanel.ts）ため、ユーザーはそこから復帰できる。
-			if (!isCodexAuthFailure(error) && !this.rpcFailureReported.has(homePath)) {
-				this.rpcFailureReported.add(homePath);
-				const { exitCode, exitSignal } = error as { exitCode?: number | null; exitSignal?: string | null };
-				reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
-					phase: 'refresh',
-					transport: 'stdio',
-					safe_error_kind: classifyCodexRpcFailure(error),
-					...(typeof exitCode === 'number' ? { safe_exit_code: exitCode } : {}),
-					...(typeof exitSignal === 'string' ? { signal: exitSignal } : {}),
-				});
-			}
-			this.logService.warn(`[ParadisLimitsMonitor] codex app-server fallback failed for ${base.homeLabel}: ${(error as Error).message}`);
-			return { account: { ...base, email, status: 'relogin_required', statusDetail: (error as Error).message }, accountId };
+			usage = this.mapWhamUsage(await this.fetchWhamUsage(accessToken, accountId));
+		} catch {
+			return fromRpc;
 		}
+		const fillSession = fromRpc.fiveHour === undefined && fromRpc.sevenDay !== undefined && usage.fiveHour !== undefined;
+		return {
+			planType: fromRpc.planType ?? usage.planType,
+			fiveHour: fillSession ? usage.fiveHour : fromRpc.fiveHour,
+			sevenDay: fillSession ? usage.sevenDay ?? fromRpc.sevenDay : fromRpc.sevenDay,
+			scoped: usage.scoped,
+		};
 	}
 
 	/** id_token(JWT)のpayloadからemailを取り出す(署名検証はしない。表示用途のみ)。 */
@@ -534,7 +562,7 @@ export class ParadisLimitsMonitorService {
 		return undefined;
 	}
 
-	private async fetchWhamUsage(accessToken: string, accountId: string | undefined): Promise<IWhamUsageResponse> {
+	protected async fetchWhamUsage(accessToken: string, accountId: string | undefined): Promise<IWhamUsageResponse> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), USAGE_HTTP_TIMEOUT_MS);
 		try {
@@ -590,7 +618,7 @@ export class ParadisLimitsMonitorService {
 	}
 
 	/** `codex app-server` (JSON-RPC over stdio) でrate limitsとアカウント情報を取得する。 */
-	private async fetchCodexAccountViaRpc(homePath: string): Promise<{ email?: string; planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }> {
+	protected async fetchCodexAccountViaRpc(homePath: string): Promise<{ email?: string; planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }> {
 		const command = await this.resolveCommand('codex', undefined);
 		const env = { ...await this.getExecEnv(), CODEX_HOME: homePath };
 		// initialize の失敗は開始関数の中で子プロセスを片付けてから投げる。
