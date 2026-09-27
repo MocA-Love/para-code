@@ -15,7 +15,7 @@
 // 既存ファイルのJSONパースに失敗した場合は何も書かない (ユーザーファイルを壊すくらいなら諦める)。
 
 import { execFile } from 'child_process';
-import { chmodSync, lstatSync, promises as fs, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, watch, writeFileSync } from 'fs';
+import { accessSync, chmodSync, constants as fsConstants, lstatSync, promises as fs, readFileSync, readlinkSync, realpathSync, renameSync, Stats, statSync, unlinkSync, watch, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from '../../../../base/common/path.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -402,20 +402,38 @@ async function installNotifyScript(logService: ILogService): Promise<void> {
  * Claude Code / Codex が書き込み途中の中身を読んで壊れた設定と判断しないよう、同じディレクトリの
  * 一時ファイルへ書いてから `rename` で差し替える。
  *
- * - symlink は壊さない。実体（`realpath`）の隣に一時ファイルを作って実体を差し替える
+ * - symlink は壊さない。実体（多段でも最後まで辿った先）の隣に一時ファイルを作って実体を差し替える
  *   （dotfiles をリポジトリから symlink している人の設定が、ただのファイルに化けないように）
  * - 元のファイルの mode（`~/.claude.json` の 0600 など）を引き継ぐ。新規作成のときは umask に任せる
- * - `rename` が通らないとき（Windows で他のプロセスが開いている等）は、一時ファイルを消して
- *   これまでどおりその場へ書く。原子的でなくなるだけで、設定が置けないよりはよい
+ * - ユーザーが書き込めなくしたファイル（`chmod 444` など）は、その場へ書くときと同じく失敗させる。
+ *   `rename` はディレクトリの権限で通ってしまい、読み取り専用の意図を黙って破るため
+ * - ハードリンク（リンク数が2以上）は、差し替えると片方だけが新しい中身になるので、その場へ書く
+ * - 一時ファイルを作れない（ディレクトリに書き込めない等）ときや `rename` が通らないとき（Windows で
+ *   他のプロセスが開いている等）は、一時ファイルを消してこれまでどおりその場へ書く。原子的でなく
+ *   なるだけで、設定が置けないよりはよい
+ *
+ * 所有者・ACL・拡張属性は一時ファイルへ引き継がない（NOTES.md の hook の節を参照）。
  */
 export function paradisWriteFileAtomicallySync(filePath: string, content: string): void {
 	const target = resolveWriteTarget(filePath);
-	let mode: number | undefined;
+	let stat: Stats | undefined;
 	try {
-		mode = statSync(target).mode & 0o7777;
+		stat = statSync(target);
 	} catch {
-		mode = undefined; // まだ無い（新規作成）
+		stat = undefined; // まだ無い（新規作成）
 	}
+	if (stat) {
+		if ((stat.mode & 0o200) === 0) {
+			// root は accessSync が通ってしまうので、所有者の書き込みビットでも見る
+			throw Object.assign(new Error(`EACCES: permission denied, open '${target}'`), { code: 'EACCES', path: target });
+		}
+		accessSync(target, fsConstants.W_OK);
+		if (stat.nlink > 1) {
+			writeFileSync(target, content);
+			return;
+		}
+	}
+	const mode = stat ? stat.mode & 0o7777 : undefined;
 	const temp = join(dirname(target), `.${basename(target)}.paradis-${generateUuid()}.tmp`);
 	try {
 		writeFileSync(temp, content, { mode: mode ?? 0o666, flag: 'wx' });
@@ -423,9 +441,10 @@ export function paradisWriteFileAtomicallySync(filePath: string, content: string
 			// writeFileSync の mode は umask で削られるので、元と同じになるよう当て直す
 			chmodSync(temp, mode);
 		}
-	} catch (error) {
+	} catch {
 		removeQuietly(temp);
-		throw error;
+		writeFileSync(target, content);
+		return;
 	}
 	try {
 		renameSync(temp, target);
@@ -435,19 +454,26 @@ export function paradisWriteFileAtomicallySync(filePath: string, content: string
 	}
 }
 
-/** 書き込み先の実体。symlink を辿る（辿った先がまだ無い symlink も、リンク先へ書く）。 */
+/** symlink の段数の上限（OS の ELOOP と同程度）。循環していたら諦めてリンクそのものへ書く。 */
+const MAX_SYMLINK_HOPS = 40;
+
+/** 書き込み先の実体。symlink を最後まで辿る（辿った先がまだ無い symlink も、リンク先へ書く）。 */
 function resolveWriteTarget(filePath: string): string {
 	try {
 		return realpathSync(filePath);
 	} catch {
-		// 無いファイル、またはリンク先がまだ無い symlink
+		// 無いファイル、またはリンク先がまだ無い symlink（多段を含む）
 	}
-	try {
-		if (lstatSync(filePath).isSymbolicLink()) {
-			return resolve(dirname(filePath), readlinkSync(filePath));
+	let current = filePath;
+	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
+		try {
+			if (!lstatSync(current).isSymbolicLink()) {
+				return current;
+			}
+			current = resolve(dirname(current), readlinkSync(current));
+		} catch {
+			return current; // 辿った先が無い。ここへ新しく作る
 		}
-	} catch {
-		// 無いファイル
 	}
 	return filePath;
 }
