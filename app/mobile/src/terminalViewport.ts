@@ -22,6 +22,16 @@ export const TERMINAL_FONT_SIZE_MAX = 20;
  */
 export const TERMINAL_FONT_SIZE_DEFAULT = 10;
 /**
+ * iPad の既定の文字サイズ。広い画面では 10pt だと小さすぎて読みにくいので上げる
+ * （2列の右の列 870pt でおよそ 120 桁）。設定で選び直せば、その値を使う。
+ */
+export const TERMINAL_FONT_SIZE_DEFAULT_TABLET = 12;
+
+/** 端末ごとの既定の文字サイズ（iPad は 12pt、iPhone は 10pt）。 */
+export function defaultTerminalFontSize(tablet: boolean): number {
+	return tablet ? TERMINAL_FONT_SIZE_DEFAULT_TABLET : TERMINAL_FONT_SIZE_DEFAULT;
+}
+/**
  * 追従モード（設定「スマホの幅に合わせる」オフ・既定）で、PCの桁数に合わせて縮めるときの下限（pt）。
  * これでも入りきらないときだけ横スクロールにする（termView.tsx の `fit()`）。
  *
@@ -146,14 +156,20 @@ export const DEFAULT_TERMINAL_PREFS: TerminalPrefs = {
 	matchPcRows: true,
 };
 
-/** 保存済みの設定を読み戻す（欠けている・壊れている項目は既定へ倒す）。 */
-export function normalizeTerminalPrefs(stored: unknown): TerminalPrefs {
+/** 端末ごとの既定の設定（文字サイズだけが iPad と iPhone で違う）。 */
+export function defaultTerminalPrefs(tablet: boolean): TerminalPrefs {
+	return { ...DEFAULT_TERMINAL_PREFS, fontSize: defaultTerminalFontSize(tablet) };
+}
+
+/** 保存済みの設定を読み戻す（欠けている・壊れている項目は既定へ倒す。`tablet` は既定の文字サイズに使う）。 */
+export function normalizeTerminalPrefs(stored: unknown, tablet = false): TerminalPrefs {
+	const defaults = defaultTerminalPrefs(tablet);
 	if (typeof stored !== 'object' || stored === null) {
-		return DEFAULT_TERMINAL_PREFS;
+		return defaults;
 	}
 	const raw = stored as Partial<Record<keyof TerminalPrefs, unknown>>;
 	return {
-		fontSize: typeof raw.fontSize === 'number' ? clampTerminalFontSize(raw.fontSize) : DEFAULT_TERMINAL_PREFS.fontSize,
+		fontSize: typeof raw.fontSize === 'number' ? clampTerminalFontSize(raw.fontSize) : defaults.fontSize,
 		matchPcWidth: raw.matchPcWidth === true,
 		// 既定オンの項目は「明示的にオフにした人だけオフ」にする。この項目が無い時代の
 		// 保存値を読み戻したときに、新しい既定が効かなくなるのを防ぐ。

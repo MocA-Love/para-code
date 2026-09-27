@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { keyboardCoverage } from '../keyboardCoverage.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
+import { useShortcutSlot } from '../ipad/shortcutRegistry.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { HIT_SIZE, colors, radius, space } from '../theme.js';
 import {
@@ -175,6 +176,8 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 	onCloseRef.current = onClose;
 	const onAfterCloseRef = useRef(onAfterClose);
 	onAfterCloseRef.current = onAfterClose;
+	// 外付けキーボードの Esc で閉じる（iPad）。重なっていれば上のシートから。
+	useShortcutSlot('escape', visible ? { escape: () => onCloseRef.current() } : undefined);
 
 	useEffect(() => {
 		if (visible) {

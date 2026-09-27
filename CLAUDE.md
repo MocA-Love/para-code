@@ -91,11 +91,14 @@ PC版・モバイルアプリ版のそれぞれに、ユーザーが読む更新
 `app/mobile/` はiPhone専用ではない。**UIを触るときは必ずiPadの広い幅（2カラム）も考えること。**
 
 - 幅の判定は `app/mobile/src/sizeClass.ts` の `sizeClassFor(width, tablet)` に一本化してある。**画面ごとに独自のしきい値や `Platform.isPad` を書かない**。UIからは `useIsRegularWidth()`（`src/hooks/useSizeClass.ts`）を使う
-- iPadでは左に常設サイドバー（`src/ipad/ipadShell.tsx`）が出て、本文は右カラムに収まる。**画面の実装は「与えられた幅に収まる」ことだけを考える**。ウィンドウ幅（`useWindowDimensions().width`）を本文幅と思って計算しない
-- 新しく画面を足したら、本文のスクロール領域に `useContentColumnStyle()`（`src/ipad/useContentColumn.ts`）を当てる。iPhoneでは `undefined` を返すので無害。当てないと広い画面で1行が1000ptに伸びる
+- iPadの広い幅では、PCの中の画面（`/pc/[pcId]/…`）だけが2列になる。器は `app/pc/[pcId]/_layout.tsx` で、左の列にPCの画面（`src/features/pc/pcScreen.tsx`）、右の列（詳細の列）にセッション・ソース管理・差分などのStackを置く。ホーム・設定・通知・使用量は全面のスタックのまま。**画面の実装は「与えられた幅に収まる」ことだけを考える**。ウィンドウ幅（`useWindowDimensions().width`）を本文幅と思って計算しない（詳細の列の幅は左の列の幅で変わる）
+- 2列の寸法（左の列 280〜560pt、ドックは詳細の列が 640pt 以上のとき）は `src/ipad/ipadLayout.ts` の純関数に一本化してある。ソース管理・ファイル・メモはルートとセッションの右のドックで同じ部品（`SourceControlPanel` / `FileTreePanel` / `SpaceNotePanel`）を使う。ドックでは `dock`（`PanelDock`）を渡し、差分やファイルへ進むときはドックを閉じて詳細の列で押し進める
+- 本文が一覧・記事的なスクロール領域には `useContentColumnStyle()`（`src/ipad/useContentColumn.ts`）を当てる。iPhoneでは `undefined` を返すので無害。当てないと広い画面で1行が長く伸びる
+- 外付けキーボードのショートカットは `src/ipad/shortcuts.ts`（一覧と操作の対応。純関数）に一本化してある。画面は `useShortcutSlot`（`src/ipad/shortcutRegistry.ts`）で受け口を置き、前面でなくなったら外す。**画面ごとにキー入力を拾う処理を書かない**。ネイティブ側（`modules/para-ipad-input`）は UIKeyCommand を作って押されたことを知らせるだけ。ポインタのホバーは `PointerHover`（`src/ipad/pointerHover.tsx`）で包む
+- 画面の上端に見出しを新しく作るときは、先頭の余白に `useWindowControlsInset()`（`src/ipad/windowControls.tsx`）を足す（iPad のウィンドウアプリで左上に出る操作ボタンを避けるため。iPhone・全画面では 0）。画面ごとに独自に計算しない
 - `maxWidth: '86%'` のような**割合指定は広い画面で効かなくなる**（iPhoneの311ptが iPadでは650pt超になる）。絶対値で書く
 - **条件分岐でReactツリーの形を変えない。** 幅で早期returnして階層を出し入れすると、配下が丸ごと再マウントされてターミナルのWebViewや入力途中の文字が消える。出し分けは幅0やスタイルで表現する
-- 変更したら**iPad（横向き含む）とiPhoneの両方のシミュレータで確認する**。片方だけ見て済ませない
+- 変更したら**iPad（横向き含む）とiPhoneの両方のシミュレータで確認する**。片方だけ見て済ませない。ペアリングの無いシミュレータでは、開発ビルドだけにある `globalThis.__paraDev.demo()`（見本のデータ）と `__paraDev.setWidth(600)`（アプリの幅を狭めて 2列 ⇄ 1列 を確かめる。`undefined` で戻す）を Metro の CDP から呼ぶ（`src/devProbe.tsx`）
 
 **`npx expo prebuild` は実行してはいけない**（`--clean` 無しでも `ios/` を作り直し、手動追加の `NotifyExtension` と `ParaCodeWidgets` が消える）。ネイティブ設定は `ios/` へ直接当てる。詳細と実際に踏んだ落とし穴は `NOTES.md` の「モバイルアプリのiPad対応」を読むこと。
 

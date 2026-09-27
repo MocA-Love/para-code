@@ -10,6 +10,8 @@ import { terminalSubmitIcon } from '../../terminalKeys.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Icon } from '../../ui/index.js';
 import { LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, liveInputStep, type LiveInputEvent, type LiveInputState } from './liveInput.js';
+import { useIsFocused } from 'expo-router';
+import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 
 /** 入力バーの部品の見た目（モックの `.tinput` / `.dict` / `.tsend`: 34）。当たり判定は 44 に広げる。 */
 const CONTROL = 34;
@@ -41,6 +43,9 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 }) {
 	const liveRef = useRef<TextInput>(null);
 	const [liveFocused, setLiveFocused] = useState(false);
+	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ（空なら Enter を送る）。
+	const focused = useIsFocused();
+	useShortcutSlot('send', focused && !submitting ? { send: () => { hapticImpact('medium'); onSubmit(); } } : undefined);
 	const [lastTyped, setLastTyped] = useState('');
 	const onLiveSend = (data: string) => {
 		if (data === LIVE_ENTER) {

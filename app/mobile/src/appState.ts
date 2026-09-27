@@ -37,7 +37,8 @@ import { configureNotificationHandler, createTerminalOperationOutboxStore, delet
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 import { notifySubtitle } from './notifyPresentation.js';
-import { DEFAULT_TERMINAL_PREFS, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
+import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
+import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle } from './voiceLifecycle.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
 
@@ -170,7 +171,7 @@ interface AppState extends StoreState {
 	homePreferences: HomeListPreferences;
 	setHomePreferences(next: HomeListPreferences): void;
 	/**
-	 * iPadの常設サイドバーを畳んでいるか（アイコンのみのレール表示）。狭い幅（iPhone、
+	 * iPadの2列で左の列（PCの画面）を隠しているか（`app/pc/[pcId]/_layout.tsx`）。狭い幅（iPhone、
 	 * Split View/Slide Over）では意味を持たない。端末に保存し、次回起動時も同じ見え方にする。
 	 */
 	sidebarCollapsed: boolean;
@@ -959,7 +960,8 @@ export const useAppStore = create<AppState>(set => ({
 	// 主因だったため、席を外している間だけ鳴る側を既定にしている（PC側の既定と揃えてある）。
 	// 一度でも設定画面で触ればその値が保存され、以降はこの既定を使わない。
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: true },
-	terminalPrefs: DEFAULT_TERMINAL_PREFS,
+	// 文字サイズの既定は iPad が 12pt、iPhone が 10pt。
+	terminalPrefs: defaultTerminalPrefs(isTablet),
 	viewingTerminalKey: undefined,
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
@@ -1027,7 +1029,7 @@ export const useAppStore = create<AppState>(set => ({
 			try {
 				const raw = await secureKeyStore.getItem('terminalPrefs');
 				if (raw) {
-					set({ terminalPrefs: normalizeTerminalPrefs(JSON.parse(raw)) });
+					set({ terminalPrefs: normalizeTerminalPrefs(JSON.parse(raw), isTablet) });
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load terminalPrefs', err);

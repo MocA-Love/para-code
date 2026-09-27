@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
-import { Ellipsis, Folder, GitBranch, SquareTerminal, Unplug } from 'lucide-react-native';
+import { Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { nextAttentionAgent } from '../../../../src/agentConversationUx.js';
 import { launchAgentInBackground } from '../../../../src/agentLaunch.js';
@@ -22,13 +22,21 @@ import { TerminalPane } from '../../../../src/features/session/terminalPane.js';
 import { useSessionView, useSessionViewReady } from '../../../../src/features/session/useSessionView.js';
 import { hapticSelection } from '../../../../src/haptics.js';
 import { useKeyboardCoverage } from '../../../../src/hooks/useKeyboardVisible.js';
+import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
+import { ColumnResizeHandle } from '../../../../src/ipad/columnResizeHandle.js';
+import { useDetailColumnKey, useDetailColumnOpen } from '../../../../src/ipad/detailColumn.js';
+import { canDockPanel, dockWidthFor } from '../../../../src/ipad/ipadLayout.js';
+import { useIpadLayout } from '../../../../src/ipad/ipadLayoutStore.js';
+import { SessionDock } from '../../../../src/ipad/sessionDock.js';
+import { useShortcutSlot } from '../../../../src/ipad/shortcutRegistry.js';
+import { stepIndex, type DockPanel } from '../../../../src/ipad/shortcuts.js';
 import { useSessionRoute } from '../../../../src/hooks/useRouteTargets.js';
 import { useStableInsets } from '../../../../src/hooks/useStableInsets.js';
 import { useLastSession } from '../../../../src/features/home/lastSessionStore.js';
 import { activityMenuHint, hasAgentActivity } from '../../../../src/features/activity/activityModel.js';
 import { spaceColor } from '../../../../src/features/pc/spaceColor.js';
 import type { SpaceTerminal } from '../../../../src/navigationTargets.js';
-import { encodeSessionTab, routes, type SessionTab } from '../../../../src/routes.js';
+import { encodeSessionTab, routes, type RouteHref, type SessionTab } from '../../../../src/routes.js';
 import { colors } from '../../../../src/theme.js';
 import {
 	ActionSheet,
@@ -57,6 +65,10 @@ const META_HEIGHT = 16;
  *  - ターミナルのタブ: xterm とコマンドドック
  *  - ブラウザのタブ: PC の para-browser の写し（既存の BrowserPanel）
  * タブの切り替えはクエリ（`tab`）の差し替えで行い、戻る履歴は増やさない。
+ *
+ * iPad の2列で画面の幅が 640pt 以上あれば、ソース管理・ファイル・メモを右にドックする（足りなければ押し進める）。
+ * ドックの幅は左の縁をドラッグして変える。外付けキーボードのショートカット（⌘1〜9・⌘[ ⌘]・⌘K・⌥⌘1〜3）の
+ * 受け口もここに置く。
  */
 export default function SessionScreen() {
 	const router = useRouter();
@@ -184,6 +196,65 @@ export default function SessionScreen() {
 	const [moreOpen, setMoreOpen] = useState(false);
 	const [quickOpen, setQuickOpen] = useState(false);
 
+	// 右のドック（iPad の2列で、この画面が 640pt 以上あるとき）。
+	const regular = useIsRegularWidth();
+	const [bodyWidth, setBodyWidth] = useState(0);
+	const dockable = canDockPanel(regular, bodyWidth);
+	const [dockPanel, setDockPanel] = useState<DockPanel | undefined>(undefined);
+	if (dockPanel !== undefined && bodyWidth > 0 && !dockable) {
+		// 左の列を広げた・向きを変えたなどで足りなくなったら閉じる（Orca と同じ）。
+		setDockPanel(undefined);
+	}
+	const savedDockWidth = useIpadLayout(s => s.dockWidth);
+	const setDockWidth = useIpadLayout(s => s.setDockWidth);
+	const commitWidths = useIpadLayout(s => s.commit);
+	const dockWidth = dockWidthFor(savedDockWidth, bodyWidth);
+	const dockDragStart = useRef(dockWidth);
+	const openPanel = (panel: DockPanel) => {
+		if (pcId === undefined || spaceId === undefined) {
+			return;
+		}
+		hapticSelection();
+		if (dockable) {
+			setDockPanel(current => (current === panel ? undefined : panel));
+			return;
+		}
+		router.push(panel === 'scm' ? routes.sourceControl(pcId, spaceId) : panel === 'files' ? routes.files(pcId, spaceId) : routes.note(pcId, spaceId));
+	};
+	const dockNavigate = (href: RouteHref) => {
+		setDockPanel(undefined);
+		router.push(href);
+	};
+	// 2列で左の列を隠しているときは、見出しの左端に戻すボタンを出す（⌘\ でも戻せる）。
+	const sidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
+	// 自分のいる器の詳細の列だけを見る（PC の画面が2枚積まれていても、下の画面の様子に引きずられない）。
+	const detailOwned = useDetailColumnOpen(useDetailColumnKey());
+	const sidebarHidden = sidebarCollapsed && regular && detailOwned;
+	const setSidebarCollapsed = useAppStore(s => s.setSidebarCollapsed);
+
+	// 外付けキーボード。前面にいるときだけ受ける（詳細の列の下に隠れたセッションは受けない）。
+	const routeReady = route.status !== 'unknown' && route.spaceStatus !== 'missing';
+	useShortcutSlot('session', focused && routeReady ? {
+		tabCount: items.length,
+		selectTab: index => {
+			const item = items[index];
+			if (item !== undefined) {
+				hapticSelection();
+				openTab(item.tab);
+			}
+		},
+		stepTab: delta => {
+			const next = items[stepIndex(items.findIndex(item => item.key === currentKey), items.length, delta)];
+			if (next !== undefined) {
+				hapticSelection();
+				openTab(next.tab);
+			}
+		},
+		openQuick: () => setQuickOpen(true),
+		openPanel,
+	} : undefined);
+	useShortcutSlot('escape', focused && dockPanel !== undefined ? { escape: () => setDockPanel(undefined) } : undefined);
+
 	const kind = pc !== undefined ? connectionKind(connection, pcOnline) : 'offline';
 	const meta = kind === 'connected'
 		? <><StatusDot kind={kind} /><HeaderMetaText>{`${terminals.length} タブ · ${pc?.name ?? ''}`}</HeaderMetaText></>
@@ -239,10 +310,24 @@ export default function SessionScreen() {
 				title={space?.name ?? 'セッション'}
 				backLabel="スペースの一覧へ戻る"
 				meta={meta}
+				{...(sidebarHidden ? {
+					leading: (
+						<HeaderButton
+							icon={PanelLeftOpen}
+							label="サイドバーを出す"
+							round
+							onPress={() => { hapticSelection(); setSidebarCollapsed(false); }}
+						/>
+					),
+				} : {})}
 				right={pcId !== undefined && spaceId !== undefined ? (
 					<>
-						<HeaderButton icon={Folder} label="ファイル" onPress={() => router.push(routes.files(pcId, spaceId))} />
-						<HeaderButton icon={GitBranch} label="ソース管理" onPress={() => router.push(routes.sourceControl(pcId, spaceId))} />
+						{/* メモは iPhone では ⋯ の中。iPad の2列では見出しに出す（ドックの3つを並べる）。 */}
+						{regular ? (
+							<HeaderButton icon={NotebookPen} label="メモ" badge={space?.note?.open} badgeTone="neutral" active={dockPanel === 'note'} onPress={() => openPanel('note')} />
+						) : null}
+						<HeaderButton icon={Folder} label="ファイル" active={dockPanel === 'files'} onPress={() => openPanel('files')} />
+						<HeaderButton icon={GitBranch} label="ソース管理" active={dockPanel === 'scm'} onPress={() => openPanel('scm')} />
 						<HeaderButton icon={Ellipsis} label="その他の操作" badge={attention.count} onPress={() => setMoreOpen(true)} />
 					</>
 				) : undefined}
@@ -263,7 +348,30 @@ export default function SessionScreen() {
 					/>
 				) : null}
 			</ScreenHeader>
-			{body}
+			<View style={styles.row} onLayout={event => setBodyWidth(event.nativeEvent.layout.width)}>
+				<View style={styles.main}>{body}</View>
+				{/* ドックの枠は常に置き、幅で出し入れする（本文の位置を変えないため）。 */}
+				<View style={[styles.dock, dockPanel !== undefined ? [styles.dockOpen, { width: dockWidth }] : undefined]}>
+					{dockPanel !== undefined && pcId !== undefined && spaceId !== undefined ? (
+						<SessionDock
+							key={dockPanel}
+							panel={dockPanel}
+							target={{ pcId, spaceId }}
+							dock={{ close: () => setDockPanel(undefined), navigate: dockNavigate }}
+						/>
+					) : null}
+				</View>
+				{dockPanel !== undefined ? (
+					<ColumnResizeHandle
+						x={bodyWidth - dockWidth}
+						label="ドックの幅"
+						onStart={() => { dockDragStart.current = dockWidth; }}
+						onMove={dx => setDockWidth(dockDragStart.current - dx)}
+						onEnd={commitWidths}
+						onStep={delta => { setDockWidth(dockWidth - delta); commitWidths(); }}
+					/>
+				) : null}
+			</View>
 
 			{menuItem !== undefined ? (
 				<TabMenu
@@ -334,7 +442,7 @@ export default function SessionScreen() {
 					onNextAttention: goNextAttention,
 					onReview: () => { if (pcId !== undefined && spaceId !== undefined) { router.push(routes.review(pcId, spaceId)); } },
 					noteOpen: space?.note?.open ?? 0,
-					onNote: () => { if (pcId !== undefined && spaceId !== undefined) { router.push(routes.note(pcId, spaceId)); } },
+					onNote: () => openPanel('note'),
 					...(activityHint !== undefined ? { activityHint, onActivity: openActivity } : {}),
 				})}
 				onClose={() => setMoreOpen(false)}
@@ -387,6 +495,22 @@ function TabMenu({ visible, item, pcId, phoneWidth, onToggleWidth, onShow, onRen
 const styles = StyleSheet.create({
 	fill: {
 		flex: 1,
+	},
+	row: {
+		flex: 1,
+		flexDirection: 'row',
+	},
+	main: {
+		flex: 1,
+		minWidth: 0,
+	},
+	dock: {
+		width: 0,
+		overflow: 'hidden',
+	},
+	dockOpen: {
+		borderLeftWidth: 1,
+		borderLeftColor: colors.border,
 	},
 	center: {
 		flex: 1,

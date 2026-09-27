@@ -4,6 +4,7 @@ import type { useRouter } from 'expo-router';
 import { useAppStore } from '../../appState.js';
 import { createAgentLatestEntryToken } from '../../agentNavigation.js';
 import { hapticSelection } from '../../haptics.js';
+import { resetDetailColumnFor } from '../../ipad/detailColumn.js';
 import { routes } from '../../routes.js';
 import { useLastSession } from '../home/lastSessionStore.js';
 
@@ -30,6 +31,8 @@ export interface SessionTarget {
  *   `selectedTerminalKey` を外すので、この順序を守る**（ルートレイアウトの通知タップと同じ）。
  *   別の PC のセッションなら、選択はルートの画面が PC を切り替えたあとに合わせるので触らない
  * - ホームの「再開」カードの記録を更新する
+ * - iPad の2列でその PC の詳細の列が出ていれば、開いていたもの（別のセッションやソース管理）を閉じてから開く
+ *   （詳細の列は積み増さず入れ替える。Orca と同じ）
  */
 export function openSession(router: Router, target: SessionTarget): void {
 	hapticSelection();
@@ -49,8 +52,10 @@ export function openSession(router: Router, target: SessionTarget): void {
 		...(target.branch !== undefined ? { branch: target.branch } : {}),
 		...(target.color !== undefined ? { color: target.color } : {}),
 	});
+	resetDetailColumnFor(target.pcId);
+	// withAnchor: ホームの「再開」から入ったときも、PC の中の Stack の根（PC の画面・2列の置き場）を下に敷く。
 	router.push(routes.session(target.pcId, target.spaceId, {
 		...(target.terminalKey !== undefined ? { tab: { kind: 'terminal', terminalKey: target.terminalKey } } : {}),
 		latest: createAgentLatestEntryToken(),
-	}));
+	}), { withAnchor: true });
 }

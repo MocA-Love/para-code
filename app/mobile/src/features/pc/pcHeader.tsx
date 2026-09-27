@@ -3,10 +3,12 @@
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Archive, Bell, ChevronLeft, CircleUser, Funnel, Layers, Search, SlidersHorizontal, X } from 'lucide-react-native';
+import { Archive, Bell, ChevronLeft, CircleUser, Funnel, Layers, PanelLeftClose, Search, SlidersHorizontal, X } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
+import { PointerHover } from '../../ipad/pointerHover.js';
+import { useWindowControlsInset } from '../../ipad/windowControls.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Icon, connectionColor, iconSize, useThemeColors, type ConnectionKind, type LucideIcon } from '../../ui/index.js';
 
@@ -15,20 +17,30 @@ import { Icon, connectionColor, iconSize, useThemeColors, type ConnectionKind, t
  *  - 上段: 戻る（32）・状態の点と PC 名（15/600）・その下の補足（12）・切れているときの「再接続」
  *  - 下段（ツールバー）: 絞り込みのチップ・並び順・グループ・右端のアイコン（アーカイブ・使用量・通知・検索）
  */
-export function PcHeader({ name, kind, detail, onReconnect, toolbar, search }: {
+export function PcHeader({ name, kind, detail, onReconnect, onBack, onCollapse, toolbar, search }: {
 	name: string;
 	kind: ConnectionKind;
 	detail: string;
 	/** 渡すと右上に「再接続」を出す（つながっていないとき）。 */
 	onReconnect?: () => void;
+	/** 戻る（PC の一覧へ）。省略すると前の画面へ。 */
+	onBack?: () => void;
+	/** 渡すと右上に「サイドバーを隠す」を出す（iPad の2列でセッションを開いているとき）。 */
+	onCollapse?: () => void;
 	toolbar: ReactNode;
 	/** 検索欄（開いているときだけ渡す）。 */
 	search?: ReactNode;
 }) {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// iPad のウィンドウアプリで左上に出る操作ボタンの右から始める（上段だけ。下段のツールバーはボタンより下）。
+	const controlsInset = useWindowControlsInset();
 	const goBack = () => {
 		hapticSelection();
+		if (onBack !== undefined) {
+			onBack();
+			return;
+		}
 		if (router.canGoBack()) {
 			router.back();
 		} else {
@@ -37,7 +49,7 @@ export function PcHeader({ name, kind, detail, onReconnect, toolbar, search }: {
 	};
 	return (
 		<View style={[styles.chrome, { paddingTop: insets.top }]}>
-			<View style={styles.status}>
+			<View style={[styles.status, controlsInset > 0 ? { paddingLeft: space.lg + controlsInset } : undefined]}>
 				<Pressable
 					style={({ pressed }) => [styles.back, pressed ? styles.pressed : undefined]}
 					hitSlop={hitSlopToMinimum(BACK_SIZE, BACK_SIZE)}
@@ -64,6 +76,20 @@ export function PcHeader({ name, kind, detail, onReconnect, toolbar, search }: {
 					>
 						<Text style={styles.reconnectText}>再接続</Text>
 					</Pressable>
+				) : null}
+				{onCollapse !== undefined ? (
+					<PointerHover effect="highlight" cornerRadius={radius.button}>
+						<Pressable
+							style={({ pressed }) => [styles.collapse, pressed ? styles.pressed : undefined]}
+							hitSlop={hitSlopToMinimum(COLLAPSE_SIZE, COLLAPSE_SIZE)}
+							onPress={() => { hapticSelection(); onCollapse(); }}
+							accessibilityRole="button"
+							accessibilityLabel="サイドバーを隠す"
+							accessibilityHint={'⌘\\ でも隠せます'}
+						>
+							<Icon icon={PanelLeftClose} size={iconSize.sm} color={colors.textDim} />
+						</Pressable>
+					</PointerHover>
 				) : null}
 			</View>
 			<View style={styles.toolbar}>{toolbar}</View>
@@ -114,6 +140,7 @@ export function ToolbarIcon({ icon, label, onPress, badge, disabled = false }: {
 	disabled?: boolean;
 }) {
 	return (
+		<PointerHover effect="highlight" cornerRadius={radius.button}>
 		<Pressable
 			style={({ pressed }) => [styles.toolIcon, pressed ? styles.pressed : undefined, disabled ? styles.disabled : undefined]}
 			hitSlop={hitSlopToMinimum(TOOL_ICON_SIZE, TOOL_ICON_SIZE)}
@@ -128,6 +155,7 @@ export function ToolbarIcon({ icon, label, onPress, badge, disabled = false }: {
 				<View style={styles.badge}><Text style={styles.badgeText}>{badge > 99 ? '99+' : badge}</Text></View>
 			) : null}
 		</Pressable>
+		</PointerHover>
 	);
 }
 
@@ -186,6 +214,8 @@ const BACK_SIZE = 32;
 const RECONNECT_HEIGHT = 26;
 const CHIP_HEIGHT = 26;
 const TOOL_ICON_SIZE = 24;
+/** 「サイドバーを隠す」の見た目の大きさ（pt。モックの `.sbcollapse`）。当たり判定は 44 に広げる。 */
+const COLLAPSE_SIZE = 28;
 const SEARCH_HEIGHT = 36;
 const DOT_SIZE = 8;
 
@@ -237,6 +267,14 @@ const styles = StyleSheet.create({
 		marginLeft: space.lg,
 		fontSize: type.meta,
 		color: colors.textDim,
+	},
+	collapse: {
+		width: COLLAPSE_SIZE,
+		height: COLLAPSE_SIZE,
+		borderRadius: radius.button,
+		alignItems: 'center',
+		justifyContent: 'center',
+		marginLeft: space.xs,
 	},
 	reconnect: {
 		minHeight: RECONNECT_HEIGHT,

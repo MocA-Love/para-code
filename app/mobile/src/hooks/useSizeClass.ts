@@ -10,6 +10,9 @@ import { sizeClassFor, sizeClassForWithHysteresis, type SizeClass } from '../siz
  */
 const tablet = Platform.OS === 'ios' && Platform.isPad === true;
 
+/** この端末がタブレット（iPad）か。幅に関係なく端末で決まるもの（ターミナルの既定の文字サイズ、ショートカット）に使う。 */
+export const isTablet = tablet;
+
 /**
  * 現在の判定（幅とsize class）。**モジュール単位の単一ソース**にする。
  *
@@ -38,7 +41,39 @@ function subscribe(listener: () => void): () => void {
 	return () => { listeners.delete(listener); };
 }
 
-function applyWidth(width: number): void {
+/**
+ * 開発ビルド専用: アプリの幅を狭めて見せる（シミュレータで Split View の代わりに 2列 ⇄ 1列 を確かめる）。
+ * `src/dev/devWidthFrame.tsx` が同じ値で画面を狭める。リリースビルドでは常に undefined。
+ */
+let devWidthOverride: number | undefined;
+const devWidthListeners = new Set<() => void>();
+
+function effectiveWidth(width: number): number {
+	return devWidthOverride !== undefined ? Math.min(width, devWidthOverride) : width;
+}
+
+/** 開発ビルド専用: アプリの幅を `width` に狭める（undefined で元に戻す）。 */
+export function setDevWidthOverride(width: number | undefined): void {
+	if (!__DEV__) {
+		return;
+	}
+	devWidthOverride = width;
+	for (const listener of [...devWidthListeners]) {
+		listener();
+	}
+	applyWidth(Dimensions.get('window').width);
+}
+
+/** 開発ビルド専用: 狭めている幅（狭めていなければ undefined）。 */
+export function useDevWidthOverride(): number | undefined {
+	return useSyncExternalStore(listener => {
+		devWidthListeners.add(listener);
+		return () => { devWidthListeners.delete(listener); };
+	}, () => devWidthOverride);
+}
+
+function applyWidth(rawWidth: number): void {
+	const width = effectiveWidth(rawWidth);
 	const next = sizeClassForWithHysteresis(current, width, tablet);
 	if (next === current) {
 		return;
