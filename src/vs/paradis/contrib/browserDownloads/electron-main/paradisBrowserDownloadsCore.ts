@@ -8,7 +8,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as fs from 'fs';
-import type { Session } from 'electron';
+import type { DownloadItem, Session } from 'electron';
 import { basename, extname, isAbsolute, join } from '../../../../base/common/path.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -27,6 +27,7 @@ export function paradisConfigureBrowserDownloadsWithPath(
 	session: Session,
 	configurationService: IConfigurationService,
 	defaultDownloadsPath: () => string,
+	onDownload?: (item: DownloadItem) => void,
 ): void {
 	if (configuredSessions.has(session)) {
 		return;
@@ -34,25 +35,40 @@ export function paradisConfigureBrowserDownloadsWithPath(
 	configuredSessions.add(session);
 
 	session.on('will-download', (_event, item) => {
-		if (configurationService.getValue<boolean>(PARADIS_BROWSER_DOWNLOADS_ENABLED_KEY) === false) {
-			return;
-		}
-
-		const customPath = configurationService.getValue<string>(PARADIS_BROWSER_DOWNLOADS_PATH_KEY)?.trim();
-		const targetDirectory = customPath && isAbsolute(customPath)
-			? customPath
-			: join(defaultDownloadsPath(), PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER);
-
-		try {
-			fs.mkdirSync(targetDirectory, { recursive: true });
-		} catch (error) {
-			console.error('[paradis] Failed to create the browser downloads directory, falling back to the save dialog:', error);
-			reportParadisDiagnosticError('owned', 'browser-downloads', 'dir-create-failed', error);
-			return;
-		}
-
-		item.setSavePath(paradisResolveUniqueDownloadPath(targetDirectory, basename(item.getFilename())));
+		paradisAssignDownloadSavePath(item, configurationService, defaultDownloadsPath);
+		// 一覧（URL バー右のボタン）への登録は、自動保存が無効で保存ダイアログを出す場合も行う。
+		// 保存先を決めた後に登録するのは、一覧の最初の1回目から保存先が見えるようにするため。
+		onDownload?.(item);
 	});
+}
+
+function paradisAssignDownloadSavePath(item: DownloadItem, configurationService: IConfigurationService, defaultDownloadsPath: () => string): void {
+	if (configurationService.getValue<boolean>(PARADIS_BROWSER_DOWNLOADS_ENABLED_KEY) === false) {
+		return;
+	}
+
+	const targetDirectory = paradisResolveBrowserDownloadsDirectory(configurationService, defaultDownloadsPath);
+
+	try {
+		fs.mkdirSync(targetDirectory, { recursive: true });
+	} catch (error) {
+		console.error('[paradis] Failed to create the browser downloads directory, falling back to the save dialog:', error);
+		reportParadisDiagnosticError('owned', 'browser-downloads', 'dir-create-failed', error);
+		return;
+	}
+
+	item.setSavePath(paradisResolveUniqueDownloadPath(targetDirectory, basename(item.getFilename())));
+}
+
+/**
+ * 自動保存先のフォルダ。設定が絶対パスならそれ、そうでなければ OS のダウンロードフォルダ配下の
+ * `Paracode`。ポップオーバーの「フォルダを開く」もここを開く。
+ */
+export function paradisResolveBrowserDownloadsDirectory(configurationService: IConfigurationService, defaultDownloadsPath: () => string): string {
+	const customPath = configurationService.getValue<string>(PARADIS_BROWSER_DOWNLOADS_PATH_KEY)?.trim();
+	return customPath && isAbsolute(customPath)
+		? customPath
+		: join(defaultDownloadsPath(), PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER);
 }
 
 function paradisResolveUniqueDownloadPath(directory: string, filename: string): string {
