@@ -38,7 +38,7 @@ import { paradisIsSharedPanelShell, paradisSharedPanelEnabledAtStartup } from '.
 import { paradisRegisterTerminalLaunchPreparer } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { IParadisTerminalScopeRoot, paradisResolveInitialCwdScope } from '../../workspaceSwitch/common/paradisTerminalProcessScope.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisScopeRootPath, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisSpaceHistoryInstance, PARADIS_SPACE_HISTORY_DIR_ENV, PARADIS_SPACE_HISTORY_FOLDER, PARADIS_SPACE_HISTORY_ID_ENV, PARADIS_TERMINAL_SPACE_HISTORY_ENABLED, paradisFishHistoryFileName, paradisParseCreatedHistoryIds, paradisRegisterSpaceHistoryFileResolver, paradisSpaceHistoryDirectory, paradisSpaceHistoryId } from '../common/paradisTerminalSpaceHistory.js';
+import { IParadisSpaceHistoryInstance, PARADIS_SPACE_HISTORY_DIR_ENV, PARADIS_SPACE_HISTORY_FOLDER, PARADIS_SPACE_HISTORY_ID_ENV, PARADIS_TERMINAL_SPACE_HISTORY_ENABLED, paradisFishHistoryFileName, IParadisCreatedHistoryId, paradisParseCreatedHistoryIds, paradisRegisterSpaceHistoryFileResolver, paradisSerializeCreatedHistoryIds, paradisShouldDeleteOrphanHistory, paradisSpaceHistoryDirectory, paradisSpaceHistoryId } from '../common/paradisTerminalSpaceHistory.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis.terminal',
@@ -107,7 +107,7 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 		// 履歴を消してしまう。
 		this.worktreeService.initializationBarrier.then(() => {
 			if (!this._store.isDisposed) {
-				this.cleanupOrphanedHistory();
+				void this.cleanupOrphanedHistory();
 			}
 		}, error => this.logService.trace('[paradisTerminalSpaceHistory] skipped the orphan cleanup', error));
 	}
@@ -294,21 +294,21 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 		scheduler.schedule();
 	}
 
-	private readCreatedHistoryIds(): Map<string, string> {
+	private readCreatedHistoryIds(): Map<string, IParadisCreatedHistoryId> {
 		return paradisParseCreatedHistoryIds(this.storageService.get(CREATED_HISTORY_IDS_STORAGE_KEY, StorageScope.WORKSPACE));
 	}
 
-	private writeCreatedHistoryIds(ids: ReadonlyMap<string, string>): void {
-		const entries = [...ids].slice(-CREATED_HISTORY_IDS_MAX);
-		this.storageService.store(CREATED_HISTORY_IDS_STORAGE_KEY, JSON.stringify(entries), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	private writeCreatedHistoryIds(ids: ReadonlyMap<string, IParadisCreatedHistoryId>): void {
+		this.storageService.store(CREATED_HISTORY_IDS_STORAGE_KEY, paradisSerializeCreatedHistoryIds(ids, CREATED_HISTORY_IDS_MAX), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	private recordCreatedHistoryId(historyId: string, stateKey: string): void {
 		const ids = this.readCreatedHistoryIds();
-		if (ids.get(historyId) === stateKey) {
+		const existing = ids.get(historyId);
+		if (existing?.stateKey === stateKey && existing.missedStartups === 0) {
 			return;
 		}
-		ids.set(historyId, stateKey);
+		ids.set(historyId, { stateKey, missedStartups: 0 });
 		this.writeCreatedHistoryIds(ids);
 	}
 
@@ -319,8 +319,11 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 		}
 	}
 
-	/** このワークスペースで作った履歴のうち、もうどのスペースにも対応しないものを消す。 */
-	private cleanupOrphanedHistory(): void {
+	/**
+	 * このワークスペースで作った履歴のうち、もうどのスペースにも対応しないものを消す。
+	 * 1回見つからなかっただけでは消さない（`paradisShouldDeleteOrphanHistory`）。
+	 */
+	private async cleanupOrphanedHistory(): Promise<void> {
 		const known = new Set<string>();
 		for (const repository of this.workspaceSwitchService.repositories) {
 			known.add(repository.id);
@@ -329,18 +332,57 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 				known.add(paradisWorktreeStateKey(worktree.uri));
 			}
 		}
-		const ids = this.readCreatedHistoryIds();
-		let changed = false;
-		for (const [historyId, stateKey] of ids) {
-			if (known.has(stateKey)) {
+		const now = Date.now();
+		const decisions = new Map<string, 'known' | 'missed' | 'delete'>();
+		for (const [historyId, entry] of this.readCreatedHistoryIds()) {
+			if (known.has(entry.stateKey)) {
+				decisions.set(historyId, 'known');
 				continue;
 			}
-			this.deleteHistoryFiles(`orphan:${historyId}`, historyId, false);
-			ids.delete(historyId);
-			changed = true;
+			const lastWrittenAt = await this.lastWrittenAt(historyId);
+			decisions.set(historyId, paradisShouldDeleteOrphanHistory(entry.missedStartups + 1, lastWrittenAt, now) ? 'delete' : 'missed');
+		}
+		if (this._store.isDisposed) {
+			return;
+		}
+		// 待っている間にターミナルを開いて控えが変わることがあるので、書く直前に読み直して重ねる。
+		const ids = this.readCreatedHistoryIds();
+		let changed = false;
+		for (const [historyId, decision] of decisions) {
+			const entry = ids.get(historyId);
+			if (entry === undefined) {
+				continue;
+			}
+			if (decision === 'known') {
+				if (entry.missedStartups !== 0) {
+					ids.set(historyId, { stateKey: entry.stateKey, missedStartups: 0 });
+					changed = true;
+				}
+			} else if (decision === 'missed') {
+				ids.set(historyId, { stateKey: entry.stateKey, missedStartups: entry.missedStartups + 1 });
+				changed = true;
+			} else {
+				this.deleteHistoryFiles(`orphan:${historyId}`, historyId, false);
+				ids.delete(historyId);
+				changed = true;
+			}
 		}
 		if (changed) {
 			this.writeCreatedHistoryIds(ids);
+		}
+	}
+
+	/** 履歴フォルダ（とその中のファイル）が最後に書かれた時刻。見つからなければ undefined。 */
+	private async lastWrittenAt(historyId: string): Promise<number | undefined> {
+		const base = this.historyBaseUri();
+		if (base === undefined) {
+			return undefined;
+		}
+		try {
+			const stat = await this.fileService.resolve(joinPath(base, historyId), { resolveMetadata: true });
+			return Math.max(stat.mtime, ...(stat.children ?? []).map(child => child.mtime));
+		} catch {
+			return undefined;
 		}
 	}
 
