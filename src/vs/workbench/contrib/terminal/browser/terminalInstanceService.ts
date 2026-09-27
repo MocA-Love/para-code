@@ -21,6 +21,7 @@ import { hasKey } from '../../../../base/common/types.js';
 // PARA-PATCH: ペイントークンenv注入（ブラウザページ⇔ターミナル上のエージェントCLI紐付け）。ロジック本体は paradisPaneTokenService.ts 側
 import { paradisPrepareTerminalPaneEnv } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisPrepareTerminalIdentity } from '../../../../paradis/contrib/mobileRelay/browser/paradisTerminalIdentityService.js';
+import { paradisPrepareTerminalLaunch } from '../../../../paradis/contrib/workspaceSwitch/common/paradisTerminalLaunchPreparers.js'; // PARA-PATCH: fork launch preparers (shared panel cwd, per-space shell history)
 
 export class TerminalInstanceService extends Disposable implements ITerminalInstanceService {
 	declare _serviceBrand: undefined;
@@ -53,6 +54,7 @@ export class TerminalInstanceService extends Disposable implements ITerminalInst
 		const shellLaunchConfig = this.convertProfileToShellLaunchConfig(config);
 		paradisPrepareTerminalIdentity(this._instantiationService, shellLaunchConfig); // PARA-PATCH: 再起動をまたぐモバイル用terminalKeyを予約
 		paradisPrepareTerminalPaneEnv(this._instantiationService, shellLaunchConfig); // PARA-PATCH: PTY起動前にペイントークンenvを注入（全ターミナル生成経路のチョークポイント）
+		paradisPrepareTerminalLaunch(shellLaunchConfig, target); // PARA-PATCH: let fork features adjust the launch config per location before the PTY starts
 		const instance = this._instantiationService.createInstance(TerminalInstance, this._terminalShellTypeContextKey, shellLaunchConfig);
 		instance.target = target;
 		this._onDidCreateInstance.fire(instance);

@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
+import { IShellLaunchConfig, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { INotificationHandle, INotificationService, IPromptChoice, Severity } from '../../../../../platform/notification/common/notification.js';
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
@@ -18,6 +18,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { Workspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
@@ -1762,10 +1764,60 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 下部パネルは「どのスペースにも属さない共通ターミナル」（Q39 案C）。前のバージョンが別のスペースの
+	// 所属を台帳へ書いていても、切り替えで隠れず、そのスペースを消しても閉じない。設定を切ると従来どおり
+	// スペースごとに退避することも同じシナリオで確かめる（台帳の書き方が変わっていないことの確認を兼ねる）。
+	test('keeps the shared panel terminal visible across switches and alive when its old space is removed', async () => {
+		const run = async (sharedPanel: boolean) => {
+			const testDisposables = new DisposableStore();
+			try {
+				let disposed = false;
+				const instance = createRestoredTerminalInstance(4301, { initialCwd: '/workspace-b' });
+				Object.assign(instance, { target: TerminalLocation.Panel, dispose: () => { disposed = true; } });
+				const group = createTerminalGroup([instance]);
+				const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+				await harness.configurationService.setUserConfiguration('paradis.terminal.sharedPanel.enabled', sharedPanel);
+				await harness.workspaceSwitchService.switchRepository('space-a');
+				const scope = harness.installTerminalScope(async () => { }, {
+					groups: [group],
+					worktreeReady: true,
+					connected: true,
+					connectionState: TerminalConnectionState.Connected,
+					persistentProcessScopes: [[4301, 'space-b']],
+				});
+				await settle();
+				harness.fireGroupsChanged();
+				await settle();
+				const parkedInSpaceA = harness.parkedGroups.has(group);
+				const scopeInSpaceA = scope.resolveScope(4301).kind;
+				await harness.workspaceSwitchService.switchRepository('space-b');
+				const parkedInSpaceB = harness.parkedGroups.has(group);
+				await harness.workspaceSwitchService.switchRepository('space-a');
+				await harness.workspaceSwitchService.removeRepository('space-b');
+				await settle();
+				return {
+					parkedInSpaceA,
+					parkedInSpaceB,
+					scopeInSpaceA,
+					stateKey: scope.getStateKeyForInstance(4301),
+					disposedWithSpaceB: disposed,
+				};
+			} finally {
+				testDisposables.dispose();
+			}
+		};
+
+		assert.deepStrictEqual({ shared: await run(true), perSpace: await run(false) }, {
+			shared: { parkedInSpaceA: false, parkedInSpaceB: false, scopeInSpaceA: 'unscoped', stateKey: undefined, disposedWithSpaceB: false },
+			perSpace: { parkedInSpaceA: true, parkedInSpaceB: false, scopeInSpaceA: 'managed', stateKey: undefined, disposedWithSpaceB: true },
+		});
+	});
+
 });
 
 interface IWorkspaceSwitchIntegrationHarness {
 	readonly workspaceSwitchService: ParadisWorkspaceSwitchService;
+	readonly configurationService: TestConfigurationService;
 	readonly editorScopeService: ParadisEditorScopeService;
 	readonly parts: IEditorGroupsService;
 	readonly terminalEditorService: Pick<ITerminalEditorService, 'instances'>;
@@ -1970,6 +2022,7 @@ async function createHarness(
 	const instantiationService = workbenchInstantiationService(undefined, testDisposables);
 	instantiationService.stub(IWorkspaceContextService, contextService);
 	const storageService = instantiationService.get(IStorageService);
+	const configurationService = instantiationService.get(IConfigurationService) as TestConfigurationService;
 	storageService.store(
 		PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY,
 		JSON.stringify([...repositories.map(repository => ({
@@ -2071,6 +2124,7 @@ async function createHarness(
 		{ withProgress: (_options, task) => task({ report: () => { } }) } as IProgressService,
 		notificationService,
 		instantiationService.get(ILifecycleService),
+		configurationService,
 	));
 
 	const parkedGroups = new Set<ITerminalGroup>();
@@ -2089,6 +2143,7 @@ async function createHarness(
 
 	return {
 		workspaceSwitchService,
+		configurationService,
 		storageService,
 		parkedGroups,
 		persistedNonceScopes(): readonly (readonly [string, string])[] {
@@ -2201,6 +2256,7 @@ async function createHarness(
 				new NullLogService(),
 				notificationService,
 				{ getConnection: () => null } as unknown as IRemoteAgentService,
+				configurationService,
 			);
 			testDisposables.add(scope);
 			return scope;

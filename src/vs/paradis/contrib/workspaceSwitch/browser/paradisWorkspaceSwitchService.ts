@@ -39,6 +39,8 @@ import { IProgressService, ProgressLocation } from '../../../../platform/progres
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { paradisBlockTerminalInput } from './paradisTerminalInputGate.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { PARADIS_TERMINAL_SHARED_PANEL_ENABLED, paradisIsTerminalSharedPanelEnabled } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
 import { IParadisWorkspaceSwitchTransaction, PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, ParadisWorkspaceSwitchPhase, paradisParseWorkspaceSwitchTransactions, paradisSerializeWorkspaceSwitchTransactions, paradisWorkspaceSwitchRecoveryEndpoint } from '../common/paradisWorkspaceSwitchTransaction.js';
 
 interface ISerializedRepository {
@@ -317,6 +319,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// できないので、手組みのテストハーネスはスタブを渡すこと。
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILifecycleService lifecycleService: ILifecycleService,
+		// 下部パネルを共通ターミナルにしている間は、パネルの開閉をスペースごとに切り替えない。
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this._register(toDisposable(() => {
@@ -1850,12 +1854,22 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	/** 状態キー → パネル(ターミナル等)の表示状態。切り替えを跨いでパネル開閉を保つ */
 	private readonly _panelVisibility = new Map<string, boolean>();
+	private _sharedTerminalPanelValue: boolean | undefined;
+	private get _sharedTerminalPanel(): boolean {
+		this._sharedTerminalPanelValue ??= paradisIsTerminalSharedPanelEnabled(this.configurationService.getValue(PARADIS_TERMINAL_SHARED_PANEL_ENABLED));
+		return this._sharedTerminalPanelValue;
+	}
 
 	private savePanelVisibilityFor(stateKey: string): void {
 		this._panelVisibility.set(stateKey, this.layoutService.isVisible(Parts.PANEL_PART));
 	}
 
 	private restorePanelVisibilityFor(stateKey: string): void {
+		// 共通ターミナル（Q39 案C）の置き場を、スペースを切り替えただけで閉じたり開いたりしない。
+		// 設定は起動時の値で揃える（所属の判定側 `paradisTerminalScope` と同じ）。
+		if (this._sharedTerminalPanel) {
+			return;
+		}
 		const visible = this._panelVisibility.get(stateKey);
 		if (visible !== undefined) {
 			this.layoutService.setPartHidden(!visible, Parts.PANEL_PART);
