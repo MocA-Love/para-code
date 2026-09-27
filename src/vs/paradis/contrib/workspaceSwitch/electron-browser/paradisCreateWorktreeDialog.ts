@@ -37,6 +37,7 @@ import {
 } from '../common/paradisWorktreeCreate.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { paradisSyncSelectOptions } from '../../agentModelCatalog/browser/paradisSyncSelectOptions.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
@@ -522,19 +523,17 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 	/** モデルの選択肢を並べる。`preferredModelId` が候補にあればそれを選ぶ（無ければ「既定」）。 */
 	private _fillModelOptions(agent: IParadisAgentCommandTemplate, preferredModelId: string | undefined): void {
+		this._syncModelOptions(agent);
+		this._modelSelect.value = preferredModelId && agent.models?.some(model => model.id === preferredModelId) ? preferredModelId : '';
+	}
+
+	/** モデルの選択肢を選択中エージェントの候補に揃える（差分だけ入れ替える）。何か変えたら true。 */
+	private _syncModelOptions(agent: IParadisAgentCommandTemplate): boolean {
 		this._modelGroup.classList.toggle('hidden', !agent.models || agent.models.length === 0);
-		dom.clearNode(this._modelSelect);
-		const defaultModelOption = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
-		defaultModelOption.value = '';
-		defaultModelOption.textContent = STR_OPTION_DEFAULT;
-		for (const model of agent.models ?? []) {
-			const option = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
-			option.value = model.id;
-			option.textContent = model.label ?? model.id;
-		}
-		if (preferredModelId && agent.models?.some(model => model.id === preferredModelId)) {
-			this._modelSelect.value = preferredModelId;
-		}
+		return paradisSyncSelectOptions(this._modelSelect, [
+			{ value: '', label: STR_OPTION_DEFAULT },
+			...(agent.models ?? []).map(model => ({ value: model.id, label: model.label ?? model.id })),
+		]);
 	}
 
 	/** モデル候補が届き直したとき: 選んでいるモデルとエフォートを保ったまま並べ直す。 */
@@ -543,7 +542,14 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		if (!agent || !this._modelSelect) {
 			return;
 		}
-		this._fillModelOptions(agent, this._modelSelect.value || undefined);
+		// 候補が同じなら何も触らない（開いているドロップダウンを閉じない）
+		const current = this._modelSelect.value;
+		if (!this._syncModelOptions(agent)) {
+			return;
+		}
+		if (this._modelSelect.value !== current && agent.models?.some(model => model.id === current)) {
+			this._modelSelect.value = current;
+		}
 		this._onModelChanged();
 	}
 
