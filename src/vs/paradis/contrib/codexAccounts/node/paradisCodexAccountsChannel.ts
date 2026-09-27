@@ -14,6 +14,7 @@
 // 持つもので、接続先の Codex ホームは扱わない（接続中のウィンドウではカードを出さない）。
 
 import { Event } from '../../../../base/common/event.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -22,7 +23,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisCodexResetConsumeRequest, PARADIS_CODEX_ACCOUNTS_CHANNEL } from '../common/paradisCodexAccounts.js';
+import { IParadisCodexResetConsumeRequest, PARADIS_CODEX_ACCOUNTS_CHANNEL, PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING } from '../common/paradisCodexAccounts.js';
+import { paradisEnableCodexAccountHomes, paradisSetConfiguredCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisCodexAccountsService } from './paradisCodexAccountsService.js';
 
 /** 設定で足した Codex ホーム（limitsMonitor と同じ設定を読む）。 */
@@ -65,15 +67,27 @@ ParadisSharedProcessContributions.register('codexAccounts', ({ server, accessor 
 		Date.now,
 		reportParadisShellEnvDiagnosticError,
 	);
-	const service = new ParadisCodexAccountsService({
+	// この PC の shared process でだけ、アカウント用ホーム（~/.codex-2 等）を扱う。transcript の探索・
+	// hook の設置などは paradisCodexHomes() を見るので、ここで有効にすると全部に効く。
+	paradisEnableCodexAccountHomes();
+	const applyConfiguredHomes = () => {
+		const value = configurationService.getValue<unknown>(CODEX_HOMES_SETTING);
+		paradisSetConfiguredCodexHomes(Array.isArray(value) ? value : []);
+	};
+	applyConfiguredHomes();
+	const store = new DisposableStore();
+	const service = store.add(new ParadisCodexAccountsService({
 		logService,
 		stateDirectory: join(environmentService.userDataPath, 'paradis', 'codexAccounts'),
 		resolveEnv: () => shellEnv.getEnv(),
-		extraHomes: () => {
-			const value = configurationService.getValue<unknown>(CODEX_HOMES_SETTING);
-			return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
-		},
-	});
+		shareConversations: () => configurationService.getValue<unknown>(PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING) !== false,
+	}));
+	store.add(configurationService.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration(CODEX_HOMES_SETTING)) {
+			applyConfiguredHomes();
+			void service.revalidate();
+		}
+	}));
 	server.registerChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL, new ParadisCodexAccountsChannel(service));
-	return service;
+	return store;
 });

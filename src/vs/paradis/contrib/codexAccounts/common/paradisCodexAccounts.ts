@@ -8,15 +8,22 @@
 
 // Codex のアカウント（ホーム）まわりの共有定義。
 //
-// - リセットクレジット: Codex の使用枠を即時に戻せる権利。残数と期限は app-server の
-//   `account/rateLimits/read` の `rateLimitResetCredits`、消費は
-//   `account/rateLimitResetCredit/consume`（codex-cli 0.155.1 の JSON-RPC スキーマで確認）。
-// - 切替: 新しく開くターミナルへ渡す `CODEX_HOME` の選択。全ウィンドウ共通（q.html Q07）で、
-//   正は shared process が持つ（ウィンドウごとの保存にすると食い違うため）。
+// - リセットクレジット: Codex の使用枠を即時に戻せる権利。残数と期限は ChatGPT のバックエンドの
+//   `wham/rate-limit-reset-credits`（app-server の `account/rateLimits/read` の `rateLimitResetCredits`
+//   と同じ内容）、消費は app-server の `account/rateLimitResetCredit/consume`（codex-cli 0.155.1 の
+//   JSON-RPC スキーマで確認）。
+// - 切替: 新しく開くターミナルへ渡す `CODEX_HOME` の選択。全ウィンドウ共通で、正は shared process が
+//   持つ（ウィンドウごとの保存にすると食い違うため）。
 //
 // 実体は shared process 側（node/paradisCodexAccountsService.ts）。renderer はチャネル経由で呼ぶ。
 
 export const PARADIS_CODEX_ACCOUNTS_CHANNEL = 'paradisCodexAccounts';
+
+/**
+ * 切り替えたとき、切替元と切替先のホームの間で会話ログをハードリンクし合うか（既定オン）。
+ * 別の組織のアカウントへ会話の中身を持ち込みたくない人のためにオフにできる。
+ */
+export const PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING = 'paradis.codexAccounts.shareConversations';
 
 // ---------- リセットクレジット ----------
 
@@ -153,6 +160,27 @@ export function paradisMapCodexResetCredits(raw: unknown): IParadisCodexResetCre
 }
 
 /**
+ * ChatGPT のバックエンド `GET /backend-api/wham/rate-limit-reset-credits` の応答（snake_case）を
+ * 正規化する。形が合わなければ undefined。
+ */
+export function paradisMapCodexBackendResetCredits(raw: unknown): IParadisCodexResetCredits | undefined {
+	if (!raw || typeof raw !== 'object') {
+		return undefined;
+	}
+	const response = raw as { available_count?: unknown; credits?: unknown };
+	const credits = Array.isArray(response.credits)
+		? response.credits.map(entry => {
+			const credit = (entry && typeof entry === 'object' ? entry : {}) as { status?: unknown; expires_at?: unknown; granted_at?: unknown };
+			return { status: typeof credit.status === 'string' ? credit.status.toLowerCase() : undefined, expiresAt: credit.expires_at, grantedAt: credit.granted_at };
+		})
+		: undefined;
+	const availableCount = typeof response.available_count === 'number'
+		? response.available_count
+		: credits?.filter(credit => credit.status === 'available').length;
+	return paradisMapCodexResetCredits({ availableCount, credits: credits ?? null });
+}
+
+/**
  * 確認ダイアログで見せた提示を特定する値を作る。
  *
  * アカウント・残数・明細・取得時刻を含める。取得し直すと値が変わるので、古い内容を見て
@@ -234,6 +262,8 @@ export function paradisLooksLikeRunningCodex(executingCommand: string | undefine
 export interface IParadisCodexSessionLinkSummary {
 	readonly linked: number;
 	readonly skippedExisting: number;
+	/** 前にそのホームにあったのに消されていた（削除・アーカイブ）ので足し戻さなかった数。 */
+	readonly skippedRemoved: number;
 	readonly skippedUnsupported: number;
 	readonly failed: number;
 }

@@ -10,23 +10,23 @@
 //
 // ターミナルの env は PTY を起動する直前に同期で組み立てられる（paradisPaneTokenService）ので、
 // shared process へ聞きに行く暇がない。正は shared process の選択で、electron-browser 側の
-// contribution（paradisCodexAccounts.contribution.ts）が変わるたびにここへ反映する。起動直後に
-// 反映が間に合わないターミナルのため、最後の値をアプリ全体の保存領域にも控えておく。
+// contribution（paradisCodexAccounts.contribution.ts）が変わるたびにここへ反映する。
+//
+// 前回の値を保存しておいて起動直後から使うことはしない。保存した後にそのホームが消えたり
+// ログアウトしたりしていても、ここでは確かめられないため。shared process の返事（選んだホームが
+// 今もログイン済みか確かめた結果）が届くまでに開いたターミナルは、既定のホームで開く。
 //
 // あわせて「そのペインをどのホームで開いたか」を覚える。切替後、前のアカウントのまま動いている
-// Codex を数えて知らせるのに使う（q.html Q06）。
+// Codex を数えて知らせるのに使う（知らせるのは通常の通知1回だけで、入力は止めない）。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ITerminalEnvironment } from '../../../../platform/terminal/common/terminal.js';
 
 /** Codex がホームを決めるときに読む環境変数。 */
 export const PARADIS_CODEX_HOME_ENV_VAR = 'CODEX_HOME';
-
-const LAUNCH_HOME_STORAGE_KEY = 'paradis.codexAccounts.launchHome';
 
 /**
  * ターミナルの env へ CODEX_HOME を入れる。`launchHome` が undefined（既定のホーム）なら何もしない
@@ -79,13 +79,6 @@ export class ParadisCodexLaunchHomeService extends Disposable implements IParadi
 	private launchHome: string | undefined;
 	private readonly paneHomes = new Map<string, string | undefined>();
 
-	constructor(
-		@IStorageService private readonly storageService: IStorageService,
-	) {
-		super();
-		const stored = this.storageService.get(LAUNCH_HOME_STORAGE_KEY, StorageScope.APPLICATION);
-		this.launchHome = stored !== undefined && stored.length > 0 ? stored : undefined;
-	}
 
 	getLaunchHome(): string | undefined {
 		return this.launchHome;
@@ -97,11 +90,6 @@ export class ParadisCodexLaunchHomeService extends Disposable implements IParadi
 			return;
 		}
 		this.launchHome = next;
-		if (next === undefined) {
-			this.storageService.remove(LAUNCH_HOME_STORAGE_KEY, StorageScope.APPLICATION);
-		} else {
-			this.storageService.store(LAUNCH_HOME_STORAGE_KEY, next, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		}
 		this._onDidChangeLaunchHome.fire();
 	}
 

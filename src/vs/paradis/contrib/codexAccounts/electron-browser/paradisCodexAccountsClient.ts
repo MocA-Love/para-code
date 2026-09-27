@@ -38,7 +38,7 @@ export class ParadisCodexAccountsClient {
 		return this.channel.call<IParadisCodexResetConsumeResult>('consumeResetCredit', [request]);
 	}
 
-	/** 読み取り済みのリセットクレジット（ホームの絶対パス → 残り）。app-server は起こさない。 */
+	/** 読み取り済みのリセットクレジット（ホームの絶対パス → 残り）。読みに行かない。 */
 	peekResetCredits(): Promise<Record<string, IParadisCodexResetCredits>> {
 		return this.channel.call<Record<string, IParadisCodexResetCredits>>('peekResetCredits');
 	}
