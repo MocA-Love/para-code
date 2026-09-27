@@ -46,6 +46,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'string',
 			default: '',
 			scope: ConfigurationScope.WINDOW,
+			// upstream の `terminal.integrated.cwd` と同じく、信頼していないワークスペースの設定からは
+			// 受け取らない（リポジトリに置かれた設定でシェルの開始場所を変えられないように）。
+			restricted: true,
 			markdownDescription: localize('paradis.terminal.sharedPanel.cwd', "共通ターミナル（下部パネル）を新しく開くときのフォルダです。空のときはホームフォルダで開きます（`#terminal.integrated.cwd#` を設定していればそちらに従います）。`~/` から始めるとホームフォルダからの相対パスになります。フォルダが無いときはホームフォルダで開きます。\n\nSSH で接続しているウィンドウでは、同じ値を接続先のフォルダとして扱います（`~/` から始めておくと、手元と接続先のどちらでもそれぞれのホームを基準にできます）。"),
 		},
 	},
