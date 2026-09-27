@@ -339,15 +339,33 @@ export class ParadisSessionResumeService {
 		for (const space of request.spaces) {
 			const homes = this.resolveAgentHomes(space.cwd);
 			await this.collectClaude(space, homes.claude, homes.matchCwd, sessions);
-			if (!homesSeen.has(homes.codex)) {
-				homesSeen.add(homes.codex);
-				const indexed = await this.collectCodex(request.spaces, homes.codex, sessions, request.includeArchived);
+			// Codex はアカウントごとに別のホームで動くので、全ホームを見る。
+			for (const codexHome of homes.codexHomes ?? [homes.codex]) {
+				if (homesSeen.has(codexHome)) {
+					continue;
+				}
+				homesSeen.add(codexHome);
+				// 会話は、それが見つかったホームで再開しないと Codex が見つけられない（別のアカウントを選んで
+				// いると、そのアカウントのホームには無いことがある）。既定のホームの会話も含め、再開の要求へ
+				// 渡せるよう会話に添える。
+				const resumeCodexHome = codexHome;
+				const indexed = await this.collectCodex(request.spaces, codexHome, sessions, request.includeArchived, resumeCodexHome);
 				if (!indexed) {
-					await this.collectCodexRollouts(request.spaces, homes.codex, sessions);
+					await this.collectCodexRollouts(request.spaces, codexHome, sessions, resumeCodexHome);
 				}
 			}
 		}
-		const visible = sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
+		// 会話ログはホーム間でハードリンクしているので、同じ会話が複数のホームから見つかる。
+		// 新しい順に並べて、同じ会話の2件目以降を落とす。
+		const seenSessions = new Set<string>();
+		const visible = sessions.sort((a, b) => b.updatedAt - a.updatedAt).filter(session => {
+			const key = `${session.agent}\0${session.id}`;
+			if (seenSessions.has(key)) {
+				return false;
+			}
+			seenSessions.add(key);
+			return true;
+		}).slice(0, MAX_SESSIONS);
 		this.trimCatalog(new Set(visible.map(session => session.catalogId)));
 		return await this.attachLatestMessages(visible);
 	}
@@ -702,7 +720,7 @@ export class ParadisSessionResumeService {
 		return aliases.find(alias => pathInside(alias.root, normalizedCwd))?.space;
 	}
 
-	private async collectCodex(spaces: readonly IParadisResumeSpace<string>[], codexHome: string, target: IParadisResumeSession[], includeArchived: boolean): Promise<boolean> {
+	private async collectCodex(spaces: readonly IParadisResumeSpace<string>[], codexHome: string, target: IParadisResumeSession[], includeArchived: boolean, resumeCodexHome?: string): Promise<boolean> {
 		let database: DatabaseSync | undefined;
 		try {
 			const spaceAliases = await this.createSpaceAliases(spaces);
@@ -758,6 +776,7 @@ export class ParadisSessionResumeService {
 					spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 					createdAt: number(row?.created_at_value), updatedAt: number(row?.updated_at_value) || Date.now(),
 					archived: number(row?.archived) === 1, empty: !string(row?.name) && !string(row?.title) && !string(row?.first_user_message) && !string(row?.preview), gitBranch: string(row?.git_branch),
+					...(resumeCodexHome !== undefined ? { codexHome: resumeCodexHome } : {}),
 				}, transcriptPath, codexHome, target);
 				accepted++;
 				if (accepted >= MAX_SESSIONS) {
@@ -777,7 +796,7 @@ export class ParadisSessionResumeService {
 		}
 	}
 
-	private async collectCodexRollouts(spaces: readonly IParadisResumeSpace<string>[], codexHome: string, target: IParadisResumeSession[]): Promise<void> {
+	private async collectCodexRollouts(spaces: readonly IParadisResumeSpace<string>[], codexHome: string, target: IParadisResumeSession[], resumeCodexHome?: string): Promise<void> {
 		const sessionsRoot = join(codexHome, 'sessions');
 		try {
 			const [realHome, realSessionsRoot] = await Promise.all([fs.realpath(codexHome), fs.realpath(sessionsRoot)]);
@@ -840,6 +859,7 @@ export class ParadisSessionResumeService {
 						id: meta.id, agent: 'codex', title: clipped(display, 160), preview: clipped(display, 260), cwd: space.cwd,
 						spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 						createdAt: firstPrompt?.timestamp, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
+						...(resumeCodexHome !== undefined ? { codexHome: resumeCodexHome } : {}),
 					}, candidate.path, codexHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Codex rollout', error);

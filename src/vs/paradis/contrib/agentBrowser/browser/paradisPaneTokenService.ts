@@ -29,6 +29,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
+import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome, PARADIS_CODEX_HOME_ENV_VAR } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
 
@@ -91,6 +92,7 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IPathService pathService: IPathService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IParadisCodexLaunchHomeService private readonly codexLaunchHomeService: IParadisCodexLaunchHomeService,
 	) {
 		super();
 
@@ -145,6 +147,21 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			: paneTokenFromShellIntegrationNonce(nonce);
 		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
 		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(token));
+		// Codex のアカウント切替: 選んだアカウントのホームを新しく開くターミナルへ渡す。選択はこの PC の
+		// ホームを指すので、SSH の接続先で動くターミナルには渡さない。
+		// 呼び出し側が CODEX_HOME を決めているとき（会話を、その会話のあるホームで再開する等）はそちらを使う。
+		const explicitCodexHome = shellLaunchConfig.env?.[PARADIS_CODEX_HOME_ENV_VAR];
+		const codexHome = typeof explicitCodexHome === 'string' && explicitCodexHome.length > 0
+			? explicitCodexHome
+			: this.environmentService.remoteAuthority === undefined ? this.codexLaunchHomeService.getLaunchHome() : undefined;
+		shellLaunchConfig.env = paradisApplyCodexLaunchHome(shellLaunchConfig.env, codexHome);
+		// 開いたときのホームを覚えるのは新しく開いたペインだけ。再接続したペインのプロセスは元の env
+		// （前回起動したときの CODEX_HOME）のまま動いているので、いまの選択を記録すると食い違う。
+		// 記録しないペインは、切替の通知で「切替の直前の選択で開いたもの」とみなされる
+		// （paradisCodexAccounts.contribution.ts）。
+		if (attachTarget === undefined) {
+			this.codexLaunchHomeService.recordPaneHome(token, codexHome);
+		}
 	}
 
 	/**
@@ -284,6 +301,7 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			// 同じPTYをdetach/reattachして新instanceへ移した後の遅延disposeで、新対応を消さない。
 			if (this._instanceIdByToken.get(token) === instance.instanceId) {
 				this._instanceIdByToken.delete(token);
+				this.codexLaunchHomeService.forgetPaneHome(token);
 			}
 			this._instanceListeners.deleteAndDispose(instance.instanceId);
 			this._onDidChange.fire();

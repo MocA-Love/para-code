@@ -23,7 +23,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { IParadisRunAgentCliOptions, IParadisRunAgentCliResult, paradisDetachedAgentCliEnv, paradisResolveAgentCli, paradisRunAgentCli } from '../../../node/paradisAgentCli.js';
-import { paradisOpenCodexAppServer } from '../../../node/paradisCodexAppServerSession.js';
+import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -211,8 +211,8 @@ export async function paradisProbeClaudeModels(cli: IParadisResolvedCli, workDir
 	return paradisParseClaudeModelList((await run(PARADIS_CLAUDE_MODEL_LIST_ARGS.filter(arg => arg !== PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG))).stdout);
 }
 
-async function probeCodex(cli: IParadisResolvedCli, workDir: string): Promise<IParadisDiscoveredModel[]> {
-	const rpc = await paradisOpenCodexAppServer({ command: cli.command, env: cli.env, codexHome: paradisCodexHome(), clientName: 'para-code-model-catalog', cwd: workDir });
+async function probeCodex(cli: IParadisResolvedCli, workDir: string, logService: ILogService): Promise<IParadisDiscoveredModel[]> {
+	const rpc = await paradisStartCodexAppServerRpc(cli.command, cli.env, logService, 'para-code-model-catalog', { codexHome: paradisCodexHome(), cwd: workDir, clientTitle: 'Para Code' });
 	try {
 		const models: IParadisDiscoveredModel[] = [];
 		let cursor: string | undefined;
@@ -230,7 +230,7 @@ async function probeCodex(cli: IParadisResolvedCli, workDir: string): Promise<IP
 	}
 }
 
-export function createParadisAgentModelCatalogBackend(userDataPath: string, getEnv: () => Promise<NodeJS.ProcessEnv>): IParadisAgentModelCatalogBackend {
+export function createParadisAgentModelCatalogBackend(userDataPath: string, getEnv: () => Promise<NodeJS.ProcessEnv>, logService: ILogService): IParadisAgentModelCatalogBackend {
 	const cachePath = join(userDataPath, CACHE_FILE_NAME);
 	return {
 		async resolve(agentId) {
@@ -249,7 +249,7 @@ export function createParadisAgentModelCatalogBackend(userDataPath: string, getE
 				return undefined;
 			}
 		},
-		probe: (agentId, cli) => paradisWithPrivateWorkDir(tmpdir(), workDir => agentId === 'claude' ? paradisProbeClaudeModels(cli, workDir) : probeCodex(cli, workDir)),
+		probe: (agentId, cli) => paradisWithPrivateWorkDir(tmpdir(), workDir => agentId === 'claude' ? paradisProbeClaudeModels(cli, workDir) : probeCodex(cli, workDir, logService)),
 		async readCache() {
 			let raw: string;
 			try {
@@ -280,6 +280,6 @@ ParadisSharedProcessContributions.register('agentModelCatalog', ({ server, acces
 	const configurationService = accessor.get(IConfigurationService);
 	const environmentService = accessor.get(INativeEnvironmentService);
 	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisAgentModelCatalog', createParadisShellEnvResolver(logService, configurationService, environmentService.args));
-	const service = new ParadisAgentModelCatalogService(createParadisAgentModelCatalogBackend(environmentService.userDataPath, () => shellEnv.getEnv()), logService);
+	const service = new ParadisAgentModelCatalogService(createParadisAgentModelCatalogBackend(environmentService.userDataPath, () => shellEnv.getEnv(), logService), logService);
 	server.registerChannel(PARADIS_AGENT_MODEL_CATALOG_CHANNEL, new ParadisAgentModelCatalogChannel(service));
 });

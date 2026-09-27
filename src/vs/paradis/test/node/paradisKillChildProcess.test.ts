@@ -56,6 +56,26 @@ suite('ParadisChildProcessTreeTracker', () => {
 		assert.strictEqual(fixture.kill.callCount, 1);
 	});
 
+	// POSIX で自分のプロセスグループで起こした子（codex app-server）は、グループごと止める（孫まで残さない）。
+	// 既に終わった子にはグループへ送らない（pid が別のプロセスに使い回されていることがある）。
+	test('stops a POSIX child started in its own process group by signalling the whole group', () => {
+		const groupKill = sinon.spy();
+		const running = child({ pid: 4242 });
+		paradisKillChildProcessTree(running.process, undefined, { platform: 'darwin', processGroup: true, groupKill });
+		const exited = child({ pid: 4343, exitCode: 0 });
+		paradisKillChildProcessTree(exited.process, undefined, { platform: 'linux', processGroup: true, groupKill });
+		const failing = child({ pid: 4444 });
+		paradisKillChildProcessTree(failing.process, undefined, { platform: 'linux', processGroup: true, groupKill: () => { throw new Error('ESRCH'); } });
+		assert.deepStrictEqual({
+			group: groupKill.args,
+			directKills: [running.kill.callCount, exited.kill.callCount, failing.kill.callCount],
+		}, {
+			group: [[4242, 'SIGTERM']],
+			// 終わった子は直接の kill だけ（無害）。グループへ送れなければ直接止める
+			directKills: [0, 1, 1],
+		});
+	});
+
 	test('normal completion clears the deadline without terminating the child', () => {
 		const fixture = child();
 		const tracker = new ParadisChildProcessTreeTracker();

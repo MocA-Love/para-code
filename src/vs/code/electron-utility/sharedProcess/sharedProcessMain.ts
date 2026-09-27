@@ -180,7 +180,7 @@ import { registerParadisSessionResume } from '../../../paradis/contrib/sessionRe
 import { registerParadisSpaceDisk } from '../../../paradis/contrib/spaceDisk/node/paradisSpaceDiskChannel.js';
 // PARA-PATCH: Codex terminal title metadata reader（fork独自、read-only SQLite）
 import { registerParadisCodexTerminalTitle } from '../../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
-// PARA-PATCH: AIリミットモニターバックエンド（cswap/wham usage取得。fork独自、src/vs/paradis/contrib/limitsMonitor/ 参照）
+// PARA-PATCH: AIリミットモニターバックエンド（Codex の wham usage 取得。Claude は paradis.sharedProcess.contribution.ts 経由。fork独自、src/vs/paradis/contrib/limitsMonitor/ 参照）
 import { registerParadisLimitsMonitor } from '../../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
 // PARA-PATCH: GitHub API 利用状況バックエンド（gh api rate_limit + gh 呼び出しの計測。fork独自、src/vs/paradis/contrib/githubMetrics/ 参照）
 import { registerParadisGithubMetrics } from '../../../paradis/contrib/githubMetrics/node/paradisGithubMetricsChannel.js';

@@ -17,7 +17,8 @@ import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay, paradisWriteFileAtomicallySync } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { paradisWriteFileAtomicSync } from '../../../../node/paradisWriteFileAtomic.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -360,8 +361,8 @@ suite('ParadisAgentHooksSetup', () => {
 			await fs.symlink(realFile, link);
 			const newFile = join(linkDir, 'new.json');
 
-			paradisWriteFileAtomicallySync(link, '{"new":true}\n');
-			paradisWriteFileAtomicallySync(newFile, '{"created":true}\n');
+			paradisWriteFileAtomicSync(link, '{"new":true}\n');
+			paradisWriteFileAtomicSync(newFile, '{"created":true}\n');
 
 			assert.deepStrictEqual({
 				linkIsSymlink: (await fs.lstat(link)).isSymbolicLink(),
@@ -393,7 +394,7 @@ suite('ParadisAgentHooksSetup', () => {
 
 			let code: string | undefined;
 			try {
-				paradisWriteFileAtomicallySync(file, '{"new":true}\n');
+				paradisWriteFileAtomicSync(file, '{"new":true}\n');
 			} catch (error) {
 				code = (error as NodeJS.ErrnoException).code;
 			}
@@ -428,14 +429,14 @@ suite('ParadisAgentHooksSetup', () => {
 			await fs.writeFile(original, 'old');
 			await fs.link(original, hardLink);
 			const inodeBefore = (await fs.stat(original)).ino;
-			paradisWriteFileAtomicallySync(original, 'hard');
+			paradisWriteFileAtomicSync(original, 'hard');
 
 			// 一時ファイルを作れないディレクトリ（ファイル自体には書ける）
 			await fs.mkdir(lockedDir);
 			const lockedFile = join(lockedDir, 'hooks.json');
 			await fs.writeFile(lockedFile, 'old');
 			await fs.chmod(lockedDir, 0o555);
-			paradisWriteFileAtomicallySync(lockedFile, 'locked');
+			paradisWriteFileAtomicSync(lockedFile, 'locked');
 			await fs.chmod(lockedDir, 0o755);
 
 			// 多段の symlink で、最後のリンク先がまだ無い
@@ -444,7 +445,7 @@ suite('ParadisAgentHooksSetup', () => {
 			const finalTarget = join(root, 'final.json');
 			await fs.symlink(second, first);
 			await fs.symlink(finalTarget, second);
-			paradisWriteFileAtomicallySync(first, 'chain');
+			paradisWriteFileAtomicSync(first, 'chain');
 
 			assert.deepStrictEqual({
 				hardLinkContent: await fs.readFile(hardLink, 'utf8'),

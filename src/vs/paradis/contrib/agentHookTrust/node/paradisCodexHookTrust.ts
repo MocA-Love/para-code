@@ -24,8 +24,8 @@ import { createHash } from 'crypto';
 import { promises as fs, watch } from 'fs';
 import { homedir } from 'os';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { basename, dirname, isAbsolute, join, normalize } from '../../../../base/common/path.js';
+import { Disposable, DisposableMap, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { isAbsolute, join, normalize } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -33,11 +33,11 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { paradisDetachedAgentCliEnv, paradisResolveAgentCli, paradisRunAgentCli } from '../../../node/paradisAgentCli.js';
-import { IParadisCodexRpc, ParadisCodexRpcMethodNotFoundError, paradisOpenCodexAppServer } from '../../../node/paradisCodexAppServerSession.js';
+import { IParadisCodexAppServerRpc, ParadisCodexRpcMethodNotFoundError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisManagedAgentHookCommand, paradisManagedAgentHookCommandWindows } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisCodexHookListing,
 	IParadisCodexHookTrustGrantResult,
@@ -54,7 +54,7 @@ import {
 /** 付与の手順が使う外部とのやり取り（テストでは偽物を渡す）。 */
 export interface IParadisCodexHookTrustIO {
 	/** その CODEX_HOME で `codex app-server` を起こす。codex が無ければ undefined。 */
-	openRpc(codexHome: string): Promise<IParadisCodexRpc | undefined>;
+	openRpc(codexHome: string): Promise<IParadisCodexAppServerRpc | undefined>;
 	/** 実体パス。無ければ undefined。 */
 	realpath(path: string): Promise<string | undefined>;
 }
@@ -89,7 +89,7 @@ async function resolveTarget(target: IParadisCodexHookTrustTarget, io: IParadisC
 	};
 }
 
-async function listManaged(rpc: IParadisCodexRpc, target: IParadisCodexHookTrustTarget, resolved: IResolvedTarget): Promise<IParadisCodexHookListing[]> {
+async function listManaged(rpc: IParadisCodexAppServerRpc, target: IParadisCodexHookTrustTarget, resolved: IResolvedTarget): Promise<IParadisCodexHookListing[]> {
 	// 利用者の層の hook は cwd に関係なく列挙される。cwd はプロジェクト層の hook の範囲を決めるだけ
 	const result = await rpc.request('hooks/list', { cwds: [resolved.realHome] }, HOOKS_LIST_TIMEOUT_MS);
 	return paradisSelectManagedCodexHooks(result, resolved.hooksPaths, target.managedCommand, target.isWindows);
@@ -102,7 +102,7 @@ export async function paradisInspectCodexHookTrust(target: IParadisCodexHookTrus
 	if (resolved === undefined) {
 		return { ...base, supported: true, pending: [], managedCount: 0 };
 	}
-	let rpc: IParadisCodexRpc | undefined;
+	let rpc: IParadisCodexAppServerRpc | undefined;
 	try {
 		rpc = await io.openRpc(target.codexHome);
 		if (rpc === undefined) {
@@ -127,7 +127,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function readUserHooksState(rpc: IParadisCodexRpc): Promise<IUserHooksState> {
+async function readUserHooksState(rpc: IParadisCodexAppServerRpc): Promise<IUserHooksState> {
 	const result = await rpc.request('config/read', { includeLayers: true }, CONFIG_WRITE_TIMEOUT_MS);
 	const layers = isRecord(result) && Array.isArray(result.layers) ? result.layers : [];
 	const user = layers.find(layer => isRecord(layer) && isRecord(layer.name) && layer.name.type === 'user');
@@ -152,7 +152,7 @@ function trustedHashOf(entry: unknown): string | undefined {
  *
  * @returns 戻したか（戻す必要が無かったときも true）
  */
-async function rollbackGrantedKeys(rpc: IParadisCodexRpc, written: Readonly<Record<string, { trusted_hash: string }>>, before: Readonly<Record<string, unknown>>): Promise<boolean> {
+async function rollbackGrantedKeys(rpc: IParadisCodexAppServerRpc, written: Readonly<Record<string, { trusted_hash: string }>>, before: Readonly<Record<string, unknown>>): Promise<boolean> {
 	const current = await readUserHooksState(rpc);
 	const next = { ...current.state };
 	let changed = false;
@@ -191,7 +191,7 @@ export async function paradisGrantCodexHookTrust(target: IParadisCodexHookTrustT
 	if (resolved === undefined) {
 		return { ...base, outcome: 'nothing-installed', grantedEvents: [] };
 	}
-	let rpc: IParadisCodexRpc | undefined;
+	let rpc: IParadisCodexAppServerRpc | undefined;
 	let attempted: { readonly written: Record<string, { trusted_hash: string }>; readonly before: Record<string, unknown> } | undefined;
 	try {
 		rpc = await io.openRpc(target.codexHome);
@@ -285,16 +285,23 @@ export interface IParadisCodexHookTrustBackend {
 	fingerprint(codexHome: string): Promise<string | undefined>;
 	readLedger(): Promise<Record<string, string>>;
 	writeLedger(ledger: Record<string, string>): Promise<void>;
-	/** CODEX_HOME の中の hooks.json の変化を知らせる。 */
-	watchHooks(codexHome: string, listener: () => void): IDisposable;
+	/**
+	 * CODEX_HOME の中の hooks.json の変化を知らせる。監視を張れなければ（ホームがまだ無い等）undefined。
+	 * 張った後に止まったら `onStopped` を呼ぶ（次の確認のときに張り直す）。
+	 */
+	watchHooks(codexHome: string, listener: () => void, onStopped: () => void): IDisposable | undefined;
 	schedule(delayMs: number, callback: () => void): IDisposable;
 }
 
 export interface IParadisCodexHookTrustServiceOptions {
-	/** 既定の CODEX_HOME（`$CODEX_HOME`、無ければ `~/.codex`）。 */
-	readonly defaultCodexHome: string;
-	/** 利用者のホーム。`~/.codex-N` を受け付ける判定に使う。 */
-	readonly userHome: string;
+	/**
+	 * 扱う CODEX_HOME の一覧。先頭が既定のホーム（`$CODEX_HOME`、無ければ `~/.codex`）。実物は
+	 * フェーズ2 の `paradisCodexHomes()`（既定のホーム、ログイン済みの `~/.codex-<数字>`、設定
+	 * `paradis.limitsMonitor.codexHomes` で足したホーム）。hook を置く先と同じ一覧を見る。
+	 */
+	readonly listHomes: () => readonly string[];
+	/** 一覧が変わった（アカウントの追加・削除・ログイン）。 */
+	readonly onDidChangeHomes?: Event<void>;
 	/** 起動してから最初に自動の確認をするまでの待ち時間（hook の設置が先に済むように）。 */
 	readonly startupDelayMs?: number;
 	/** hooks.json が変わってから確認するまでの待ち時間。 */
@@ -311,11 +318,15 @@ export class ParadisCodexHookTrustService extends Disposable {
 
 	private readonly queues = new Map<string, Promise<unknown>>();
 	private ledger: Promise<Record<string, string>> | undefined;
+	/** 台帳の読み直しと書き込みを1本の列にする（ホームごとの列は並んで動くので、同時に書くと片方が消える）。 */
+	private ledgerUpdates: Promise<void> = Promise.resolve();
 	/** 利用者に確かめる通知を、この shared process で出したか。 */
 	private promptShown = false;
 	/** 確かめる役を引き受けた窓がいる間の期限。 */
 	private promptClaimedUntil = 0;
 	private readonly pendingAuto = this._register(new MutableDisposable());
+	/** ホームごとの hooks.json の監視。 */
+	private readonly watchers = this._register(new DisposableMap<string>());
 
 	constructor(
 		private readonly backend: IParadisCodexHookTrustBackend,
@@ -326,26 +337,60 @@ export class ParadisCodexHookTrustService extends Disposable {
 	) {
 		super();
 		this._register(onDidChangeMode(() => this.scheduleAuto(this.options.changeDelayMs ?? DEFAULT_CHANGE_DELAY_MS)));
-		this._register(backend.watchHooks(options.defaultCodexHome, () => this.scheduleAuto(this.options.changeDelayMs ?? DEFAULT_CHANGE_DELAY_MS)));
+		if (options.onDidChangeHomes !== undefined) {
+			this._register(options.onDidChangeHomes(() => {
+				this.refreshWatchers();
+				this.scheduleAuto(this.options.changeDelayMs ?? DEFAULT_CHANGE_DELAY_MS);
+			}));
+		}
+		this.refreshWatchers();
 		this.scheduleAuto(options.startupDelayMs ?? DEFAULT_STARTUP_DELAY_MS);
 	}
 
+	private homes(): readonly string[] {
+		return this.options.listHomes().map(home => normalize(home));
+	}
+
+	/** 一覧にある全ホームの hooks.json を監視し、一覧から消えたホームの監視をやめる。 */
+	private refreshWatchers(): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+		const homes = new Set(this.homes());
+		for (const home of [...this.watchers.keys()]) {
+			if (!homes.has(home)) {
+				this.watchers.deleteAndDispose(home);
+			}
+		}
+		for (const home of homes) {
+			if (!this.watchers.has(home)) {
+				const watcher = this.backend.watchHooks(home, () => this.scheduleAuto(this.options.changeDelayMs ?? DEFAULT_CHANGE_DELAY_MS), () => {
+					if (this.watchers.get(home) === watcher) {
+						this.watchers.deleteAndDispose(home);
+					}
+				});
+				// 張れなかったホームは覚えない（Codex を初めて使ってホームができた後に、次の確認で張る）
+				if (watcher !== undefined) {
+					this.watchers.set(home, watcher);
+				}
+			}
+		}
+	}
+
 	/**
-	 * 受け付ける CODEX_HOME か。IPC 経由の任意パスで codex を起こさないよう、既定のホームか
-	 * `~/.codex-<名前>`（複数アカウント用のホーム）だけにする。
+	 * 受け付ける CODEX_HOME か。IPC 経由の任意パスで codex を起こさないよう、hook を置く先と同じ
+	 * 一覧（{@link IParadisCodexHookTrustServiceOptions.listHomes}）にあるものだけにする。省略時は既定のホーム。
 	 */
 	private resolveHome(requested: unknown): string | undefined {
+		const homes = this.homes();
 		if (requested === undefined || requested === null || requested === '') {
-			return this.options.defaultCodexHome;
+			return homes[0];
 		}
 		if (typeof requested !== 'string' || !isAbsolute(requested)) {
 			return undefined;
 		}
 		const home = normalize(requested);
-		if (home === normalize(this.options.defaultCodexHome)) {
-			return home;
-		}
-		return dirname(home) === normalize(this.options.userHome) && /^\.codex-[A-Za-z0-9._-]+$/.test(basename(home)) ? home : undefined;
+		return homes.includes(home) ? home : undefined;
 	}
 
 	private enqueue<T>(home: string, task: () => Promise<T>): Promise<T> {
@@ -361,6 +406,19 @@ export class ParadisCodexHookTrustService extends Disposable {
 			return Promise.reject(new Error('unsupported CODEX_HOME'));
 		}
 		return this.enqueue(home, () => this.backend.inspect(home));
+	}
+
+	/**
+	 * 一覧の全ホームの状態（画面側の `ask` の確認用）。hook を置く先の全ホームを調べ、どこか1つに
+	 * 未信頼の hook があれば確かめられるようにする。
+	 */
+	getStatusAll(): Promise<IParadisCodexHookTrustStatus[]> {
+		return Promise.all(this.homes().map(home => this.enqueue(home, () => this.backend.inspect(home))));
+	}
+
+	/** 一覧の全ホームへ {@link grant} する（画面側の「信頼する」）。 */
+	grantAll(): Promise<IParadisCodexHookTrustGrantResult[]> {
+		return Promise.all(this.homes().map(home => this.grant(home)));
 	}
 
 	/**
@@ -380,7 +438,7 @@ export class ParadisCodexHookTrustService extends Disposable {
 
 	/**
 	 * 設定が `auto` のときの自動の経路。前回確かめたときと指紋が同じなら codex を起こさない。
-	 * フェーズ2 の複数ホームは、hook を置いたあとにこれを呼べばよい。
+	 * 起動時と hooks.json の変化・ホームの増減のたびに、一覧の全ホームへ呼ぶ（{@link scheduleAuto}）。
 	 */
 	autoGrant(codexHome?: unknown): Promise<IParadisCodexHookTrustGrantResult> {
 		const home = this.resolveHome(codexHome);
@@ -432,9 +490,13 @@ export class ParadisCodexHookTrustService extends Disposable {
 		if (result.outcome === 'granted' || result.outcome === 'already-trusted' || result.outcome === 'nothing-installed') {
 			const fingerprint = await this.backend.fingerprint(home).catch(() => undefined);
 			if (fingerprint !== undefined) {
-				const ledger = { ...await this.readLedger(), [home]: fingerprint };
-				this.ledger = Promise.resolve(ledger);
-				await this.backend.writeLedger(ledger).catch(error => this.logService.warn('[ParadisCodexHookTrust] failed to save the ledger', error));
+				const update = this.ledgerUpdates.then(async () => {
+					const ledger = { ...await this.readLedger(), [home]: fingerprint };
+					this.ledger = Promise.resolve(ledger);
+					await this.backend.writeLedger(ledger).catch(error => this.logService.warn('[ParadisCodexHookTrust] failed to save the ledger', error));
+				});
+				this.ledgerUpdates = update.catch(() => undefined);
+				await update;
 			}
 		}
 		return result;
@@ -451,7 +513,11 @@ export class ParadisCodexHookTrustService extends Disposable {
 		}
 		this.pendingAuto.value = this.backend.schedule(delayMs, () => {
 			this.pendingAuto.clear();
-			this.autoGrant().catch(error => this.logService.warn('[ParadisCodexHookTrust] automatic trust failed', error));
+			// 設定で足したホームは一覧の変化を知らせないので、ここでも監視を合わせる。
+			this.refreshWatchers();
+			for (const home of this.homes()) {
+				this.autoGrant(home).catch(error => this.logService.warn(`[ParadisCodexHookTrust] automatic trust failed for ${home}`, error));
+			}
 		});
 	}
 }
@@ -468,6 +534,8 @@ export class ParadisCodexHookTrustChannel implements IServerChannel<string> {
 		switch (command) {
 			case 'getStatus': return this.service.getStatus(arg) as Promise<T>;
 			case 'grant': return this.service.grant(arg) as Promise<T>;
+			case 'getStatusAll': return this.service.getStatusAll() as Promise<T>;
+			case 'grantAll': return this.service.grantAll() as Promise<T>;
 			case 'claimPrompt': return Promise.resolve(this.service.claimPrompt()) as Promise<T>;
 			case 'releasePrompt': return Promise.resolve(this.service.releasePrompt(arg === true)) as Promise<T>;
 		}
@@ -500,7 +568,7 @@ export function createParadisCodexHookTrustBackend(userDataPath: string, getEnv:
 			if (codex === undefined) {
 				return undefined;
 			}
-			return paradisOpenCodexAppServer({ command: codex.command, env: codex.env, codexHome, clientName: 'para-code-hook-trust', cwd: codexHome });
+			return paradisStartCodexAppServerRpc(codex.command, codex.env, logService, 'para-code-hook-trust', { codexHome, cwd: codexHome, clientTitle: 'Para Code' });
 		},
 	};
 	const target = (codexHome: string): IParadisCodexHookTrustTarget => ({ codexHome, managedCommand: paradisManagedCodexHookCommand(), isWindows: process.platform === 'win32' });
@@ -539,18 +607,22 @@ export function createParadisCodexHookTrustBackend(userDataPath: string, getEnv:
 			return ledger;
 		},
 		writeLedger: ledger => paradisWriteFileAtomic(ledgerPath, Buffer.from(JSON.stringify({ version: 1, homes: ledger }, undefined, '\t'))),
-		watchHooks(codexHome, listener) {
+		watchHooks(codexHome, listener, onStopped) {
 			try {
 				const watcher = watch(codexHome, { persistent: false }, (_eventType, fileName) => {
 					if (fileName === null || fileName.toString() === 'hooks.json') {
 						listener();
 					}
 				});
-				watcher.on('error', error => logService.trace(`[ParadisCodexHookTrust] watcher for ${codexHome} stopped`, error));
+				watcher.on('error', error => {
+					logService.trace(`[ParadisCodexHookTrust] watcher for ${codexHome} stopped`, error);
+					watcher.close();
+					onStopped();
+				});
 				return toDisposable(() => watcher.close());
 			} catch {
-				// ホームがまだ無い（Codex を入れていない）。起動時の確認だけで足りる
-				return Disposable.None;
+				// ホームがまだ無い（Codex を入れていない）。次の確認で張り直す
+				return undefined;
 			}
 		},
 		schedule(delayMs, callback) {
@@ -567,7 +639,9 @@ ParadisSharedProcessContributions.register('codexHookTrust', ({ server, accessor
 	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisCodexHookTrust', createParadisShellEnvResolver(logService, configurationService, environmentService.args));
 	const service = new ParadisCodexHookTrustService(
 		createParadisCodexHookTrustBackend(environmentService.userDataPath, () => shellEnv.getEnv(), logService),
-		{ defaultCodexHome: paradisCodexHome(), userHome: homedir() },
+		// hook を置く先（paradisAgentHooksSetup.ts）と同じ一覧。アカウント用ホームは codexAccounts が
+		// 有効にするので、その登録より後に作る（paradis.sharedProcess.contribution.ts の並び）。
+		{ listHomes: () => paradisCodexHomes(), onDidChangeHomes: onDidChangeParadisCodexHomes },
 		() => configurationService.getValue(PARADIS_CODEX_HOOK_TRUST_SETTING),
 		Event.map(Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_CODEX_HOOK_TRUST_SETTING)), () => undefined),
 		logService,

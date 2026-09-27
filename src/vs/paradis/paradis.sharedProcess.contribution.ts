@@ -25,9 +25,12 @@ import { ILogService } from '../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from './common/paradisProcessContributions.js';
 
 // --- 登録（新しいチャネルはこの下に副作用 import を1行足す） ---
+// 登録（instantiate）はこの import の順に行う。codexAccounts はアカウント用の Codex ホームを有効にする
+// （paradisEnableCodexAccountHomes）ので、ホームの一覧を使う agentHookTrust・agentActivity より先に置く。
+import './contrib/limitsMonitor/node/paradisClaudeAccounts.contribution.js';
+import './contrib/codexAccounts/node/paradisCodexAccountsChannel.js';
 import './contrib/agentHookTrust/node/paradisCodexHookTrust.js';
 import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.js';
-
 import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';

@@ -6,32 +6,30 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// AIリミットモニターのshared processバックエンド。
+// AIリミットモニターのshared processバックエンド（Codex の分）。
+//
+// Claude の分は paradisClaudeAccountService.ts（別チャネル、常に手元の shared process）が持つ。
+// 以前は claude-swap (cswap) を呼んでいたが撤去した。このチャネルの getSnapshot は Claude を
+// 空で返し、レンダラー側のクライアントが Claude のチャネルの結果を差し込む。
 //
 // データ取得(getSnapshot):
-//   - Claude: `cswap --list --json` (claude-swap) をexecFile直叩き。マルチアカウントの認証・
-//     usage取得はcswap自身が行うため、ここではJSONのパースだけを行う(CodexBarの正式
-//     マルチアカウント設計と同じ方式。Keychainには一切触れない)
-//   - Codex: ~/.codex / ~/.codex-* 各ホームの auth.json からaccess tokenを読み、
-//     `GET https://chatgpt.com/backend-api/wham/usage` を直叩き。401/403時のみ
-//     `CODEX_HOME=<home> codex -s read-only -a never app-server` (JSON-RPC over stdio) へ
-//     フォールバックし、トークンリフレッシュとauth.json書き戻しはcodex CLI自身に任せる
-//     (このプロセスがauth.jsonへ書き込むことは決してない)
+//   - Codex: ~/.codex / ~/.codex-* 各ホームについて、Orca（codex-fetcher.ts）と同じく
+//     `CODEX_HOME=<home> codex -s read-only -a never app-server` (JSON-RPC over stdio) の
+//     `account/rateLimits/read` から先に取る。トークンリフレッシュとauth.json書き戻しはcodex CLI自身に
+//     任せる(このプロセスがauth.jsonへ書き込むことは決してない)。RPC が認証切れ以外で失敗したときは
+//     auth.json の access token で `GET https://chatgpt.com/backend-api/wham/usage` を直叩きする
 //
-// アカウント追加(startCodexLogin / startClaudeSetup):
+// アカウント追加(startCodexLogin):
 //   - Codex: 空き番号の新ホーム(~/.codex-N)をmkdir(EEXISTなら次の番号、既存ディレクトリは
 //     決して再利用・上書きしない)し、`CODEX_HOME=<新ホーム> codex login` を起動。ブラウザで
 //     ログインが完了するとcodexがauth.jsonを書いてexitする
-//   - Claude: `claude setup-token` をPTYで駆動し、確認コードをrendererから中継、出力された
-//     sk-ant-oat01トークンを `cswap add-token -` (stdin渡し)でスロット登録する。現在アクティブな
-//     Claude資格情報には一切触れない
 
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import { timeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import * as path from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -42,6 +40,9 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
+import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
+import { paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
+import { paradisNormalizeCodexHomePath, paradisNotifyCodexHomesChanged } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsCodexRemovalTarget,
@@ -53,7 +54,6 @@ import {
 	IParadisLimitsWindow,
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsDuplicateDecision,
-	paradisLimitsStatusFromCswap,
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
 
@@ -63,15 +63,16 @@ import {
  * リミットの変化は緩やかなので十分で、手動更新(bypassCache)は常に実取得する。
  */
 const SNAPSHOT_CACHE_TTL_MS = 150_000;
-/** cswap実行のタイムアウト(全スロットのusage取得でネットワークを跨ぐため長め)。 */
-const CSWAP_TIMEOUT_MS = 60_000;
 /** wham/usage HTTPタイムアウト。 */
 const USAGE_HTTP_TIMEOUT_MS = 30_000;
-/** app-server RPCの初期化/リクエストタイムアウト。 */
-const RPC_INIT_TIMEOUT_MS = 15_000;
+/** app-server RPCのリクエストタイムアウト（初期化は paradisCodexAppServerRpc.ts 側の15秒）。 */
 const RPC_REQUEST_TIMEOUT_MS = 10_000;
-/** RPCフォールバックも失敗したホームの再試行抑止時間(毎ポーリングでcodexを起動しないため)。 */
+/** RPCが失敗したホームの再試行抑止時間(毎ポーリングでcodexを起動しないため)。 */
 const RPC_FAILURE_COOLDOWN_MS = 10 * 60_000;
+/** 同じホームで RPC を起こす最短の間隔（Orca の MIN_REFETCH_MS）。その間は wham/usage で読む。 */
+const MIN_RPC_INTERVAL_MS = 5 * 60_000;
+/** ホームをまたいで RPC を起こすときの間隔（Orca の INACTIVE_CODEX_PROBE_STAGGER_MS）。 */
+const RPC_STAGGER_MS = 2_000;
 /** ログイン/セットアップセッションの完了までの制限時間。 */
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 /** 完了/失敗したセットアップセッションを保持する時間(rendererの最終ポーリング用)。 */
@@ -89,7 +90,7 @@ const MAX_CODEX_HOME_INDEX = 20;
  */
 export type ParadisCodexRpcFailureKind = 'auth' | 'binary-missing' | 'spawn-failed' | 'exited' | 'init-timeout' | 'request-timeout' | 'rpc-error' | 'unknown';
 
-/** {@link ParadisCodexRpcSession} が投げるエラー文言をSentry用の種別に分類する。 */
+/** codex app-server との RPC（paradisCodexAppServerRpc.ts）が投げるエラー文言をSentry用の種別に分類する。 */
 export function classifyCodexRpcFailure(error: unknown): ParadisCodexRpcFailureKind {
 	if (isCodexAuthFailure(error)) {
 		return 'auth';
@@ -122,53 +123,25 @@ function isCodexAuthFailure(error: unknown): boolean {
 		return true;
 	}
 	// 数字では判定しない。RPCのエラー文にはリクエストIDや所要msが混ざるので、`401` 単独で
-	// 拾うと本物の障害まで無言で握りつぶす。認証を指す語が出ていることを条件にする。
-	const message = error instanceof Error ? error.message : String(error ?? '');
-	// `authentication required` は app-server が未認証ホームに返す文言(codex 0.154 では
-	// `codex account …` / `chatgpt …` の2系統)で、これも再ログインでしか解決しない。
-	return /unauthorized|forbidden|re-?login|token (?:has )?expired|expired token|authentication required/i.test(message);
-}
-
-// ---------- cswap --list --json の出力型(schemaVersion 1) ----------
-
-interface ICswapWindow {
-	readonly pct?: number;
-	readonly resetsAt?: string;
-	readonly name?: string;
-}
-
-interface ICswapAccount {
-	readonly number?: number;
-	readonly email?: string;
-	readonly active?: boolean;
-	readonly usageStatus?: string;
-	readonly usage?: {
-		readonly fiveHour?: ICswapWindow;
-		readonly sevenDay?: ICswapWindow;
-		readonly scoped?: readonly ICswapWindow[];
-	};
-}
-
-interface ICswapListResult {
-	readonly schemaVersion?: number;
-	readonly accounts?: readonly ICswapAccount[];
+	// 拾うと本物の障害まで無言で握りつぶす。認証を指す語が出ていることを条件にする（Orca と同じ一覧）。
+	return paradisIsCodexAuthError(error);
 }
 
 // ---------- wham/usage レスポンス型(CodexBar CodexOAuthUsageFetcher.swift と同じマッピング) ----------
 
-interface IWhamWindow {
+export interface IWhamWindow {
 	readonly used_percent?: number;
 	/** epoch秒。 */
 	readonly reset_at?: number;
 	readonly limit_window_seconds?: number;
 }
 
-interface IWhamRateLimit {
+export interface IWhamRateLimit {
 	readonly primary_window?: IWhamWindow | null;
 	readonly secondary_window?: IWhamWindow | null;
 }
 
-interface IWhamUsageResponse {
+export interface IWhamUsageResponse {
 	readonly plan_type?: string;
 	readonly rate_limit?: IWhamRateLimit | null;
 	readonly additional_rate_limits?: readonly { readonly limit_name?: string; readonly rate_limit?: IWhamRateLimit | null }[];
@@ -203,7 +176,7 @@ interface ICodexAuthJson {
 	};
 }
 
-interface ICodexAccountResult {
+export interface ICodexAccountResult {
 	readonly account: IParadisLimitsAccount;
 	/** rendererへは返さず、shared process内の重複判定だけに使う。 */
 	readonly accountId?: string;
@@ -218,8 +191,6 @@ interface ISetupSession {
 	codexExtraHomes?: readonly string[];
 	/** セッション終了時の後始末(子プロセスkill等)。 */
 	dispose(): void;
-	/** Claudeセットアップのみ: 確認コードの投入。 */
-	submitCode?(code: string): void;
 }
 
 export class ParadisLimitsMonitorService {
@@ -229,6 +200,13 @@ export class ParadisLimitsMonitorService {
 	private inflightKey: string | undefined;
 	/** RPCフォールバックまで失敗したCodexホーム → 失敗時刻(クールダウン用)。 */
 	private readonly rpcFailureAt = new Map<string, number>();
+	/** RPC が認証切れと答えたホームと、そのときの auth.json（ログインし直したら試し直す）。 */
+	private readonly rpcAuthFailure = new Map<string, { readonly at: number; readonly authStamp: string | undefined }>();
+	/** ホームごとに最後に RPC を起こした時刻。 */
+	private readonly lastRpcAt = new Map<string, number>();
+	/** RPC をホームをまたいで1つずつ流す列と、最後の RPC が終わった時刻。 */
+	private rpcQueue: Promise<void> = Promise.resolve();
+	private lastRpcEndAt = 0;
 	/**
 	 * Sentryへ報告済みのCodexホーム。クールダウン明けごとに同じ失敗が再発するため
 	 * (2026-08〜09に1台から90日で2,400件)、ホームごとにプロセス生存中1回だけ報告し、
@@ -281,7 +259,7 @@ export class ParadisLimitsMonitorService {
 	// ---------- スナップショット取得 ----------
 
 	async getSnapshot(options: IParadisLimitsFetchOptions): Promise<IParadisLimitsSnapshot> {
-		const key = JSON.stringify([options.cswapPath ?? '', options.codexHomes ?? []]);
+		const key = JSON.stringify(options.codexHomes ?? []);
 		if (!options.bypassCache && this.snapshotCache && this.snapshotCache.key === key && Date.now() - this.snapshotCache.at < SNAPSHOT_CACHE_TTL_MS) {
 			return this.snapshotCache.value;
 		}
@@ -305,83 +283,9 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private async doGetSnapshot(options: IParadisLimitsFetchOptions): Promise<IParadisLimitsSnapshot> {
-		const [claude, codex] = await Promise.all([
-			this.fetchClaudeAccounts(options.cswapPath),
-			this.fetchCodexAccounts(options.codexHomes),
-		]);
-		return { claude, codex, fetchedAt: Date.now() };
-	}
-
-	// ---------- Claude (cswap) ----------
-
-	private async fetchClaudeAccounts(cswapPath: string | undefined): Promise<IParadisLimitsProviderSnapshot> {
-		let command: string;
-		try {
-			command = await this.resolveCommand('cswap', cswapPath);
-		} catch (error) {
-			return { accounts: [], sourceError: (error as Error).message, cswapMissing: true };
-		}
-		let stdout: string;
-		try {
-			stdout = await this.execFile(command, ['--list', '--json'], { timeoutMs: CSWAP_TIMEOUT_MS });
-		} catch (error) {
-			this.logService.warn(`[ParadisLimitsMonitor] cswap --list failed: ${(error as Error).message}`);
-			return { accounts: [], sourceError: (error as Error).message };
-		}
-		let parsed: ICswapListResult;
-		try {
-			parsed = JSON.parse(stdout) as ICswapListResult;
-		} catch {
-			return { accounts: [], sourceError: 'cswap returned invalid JSON output' };
-		}
-		if (parsed.schemaVersion !== 1) {
-			return { accounts: [], sourceError: `unsupported cswap schemaVersion: ${parsed.schemaVersion}` };
-		}
-		const accounts: IParadisLimitsAccount[] = [];
-		for (const raw of parsed.accounts ?? []) {
-			if (typeof raw?.number !== 'number') {
-				continue;
-			}
-			accounts.push(this.mapCswapAccount(raw));
-		}
-		return { accounts };
-	}
-
-	private mapCswapAccount(raw: ICswapAccount): IParadisLimitsAccount {
-		// cswap の usageStatus の意味づけは common 側の純関数に集約する（テスト可能にするため）。
-		const { status, unavailableReason } = paradisLimitsStatusFromCswap(raw.usageStatus);
-		const mapWindow = (window: ICswapWindow | undefined, label?: string): IParadisLimitsWindow | undefined => {
-			if (typeof window?.pct !== 'number') {
-				return undefined;
-			}
-			const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : NaN;
-			return {
-				usedPercent: window.pct,
-				resetsAt: isNaN(resetsAt) ? undefined : resetsAt,
-				label: label ?? window.name,
-			};
-		};
-		const scoped: IParadisLimitsWindow[] = [];
-		for (const rawScoped of raw.usage?.scoped ?? []) {
-			const mapped = mapWindow(rawScoped);
-			if (mapped) {
-				scoped.push(mapped);
-			}
-		}
-		return {
-			provider: 'claude',
-			id: `claude-swap:${raw.number}`,
-			slot: raw.number,
-			email: raw.email,
-			active: raw.active === true,
-			status,
-			unavailableReason,
-			// 既知の状態は表示側が文言を持つので、生値は未知の値の診断用にだけ残す。
-			statusDetail: status === 'error' ? raw.usageStatus : undefined,
-			fiveHour: mapWindow(raw.usage?.fiveHour),
-			sevenDay: mapWindow(raw.usage?.sevenDay),
-			scoped: scoped.length > 0 ? scoped : undefined,
-		};
+		const codex = await this.fetchCodexAccounts(options.codexHomes);
+		// Claude はレンダラー側で paradisClaudeAccounts チャネルの結果を差し込む。
+		return { claude: { accounts: [] }, codex, fetchedAt: Date.now() };
 	}
 
 	// ---------- Codex (auth.json + wham/usage) ----------
@@ -425,8 +329,10 @@ export class ParadisLimitsMonitorService {
 			homes.add(process.env['CODEX_HOME']);
 		}
 		for (const extra of extraHomes ?? []) {
-			if (typeof extra === 'string' && extra.trim().length > 0) {
-				homes.add(extra.startsWith('~') ? path.join(home, extra.slice(1)) : extra);
+			// 切替（codexAccounts）と同じ正規化を通し、同じホームを同じ id（絶対パス）で扱う。
+			const normalized = paradisNormalizeCodexHomePath(extra, home);
+			if (normalized !== undefined) {
+				homes.add(normalized);
 			}
 		}
 		const result: string[] = [];
@@ -492,6 +398,8 @@ export class ParadisLimitsMonitorService {
 	async removeCodexHome(homePath: string): Promise<void> {
 		const resolved = (await this.validateCodexHomeRemoval(homePath)).homePath;
 		await fs.promises.rm(resolved, { recursive: true });
+		// 選ばれていたホームなら、Codex の切替（codexAccounts）が既定のホームへ戻す。
+		paradisNotifyCodexHomesChanged();
 	}
 
 	private async readCodexIdentity(homePath: string): Promise<{ accountId?: string; email?: string }> {
@@ -543,13 +451,15 @@ export class ParadisLimitsMonitorService {
 			this.rpcFailureAt.delete(homePath);
 			this.rpcFailureReported.delete(homePath);
 			session.state = { ...session.state, phase: 'done', email: identity.email };
+			// Codex の切替（codexAccounts）へ、ログインが終わったホームを知らせる。
+			paradisNotifyCodexHomesChanged();
 			this.scheduleSetupCleanup(session);
 		} finally {
 			releaseQueue();
 		}
 	}
 
-	private async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {
+	protected async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {
 		const base: { provider: 'codex'; id: string; homeLabel: string; removable: boolean } = {
 			provider: 'codex',
 			id: homePath,
@@ -570,6 +480,32 @@ export class ParadisLimitsMonitorService {
 		}
 		const email = this.emailFromIdToken(auth.tokens?.id_token);
 
+		// Orca（codex-fetcher.ts）と同じく、`codex app-server` の RPC から先に取る。トークンの更新と
+		// auth.json の書き戻しは codex 自身がする。RPC で取れないときだけ wham/usage を使う。
+		// 画面を読む方式（PTY の /status）は使わない。app-server を起こしすぎないよう、次の抑えを入れる
+		// （Orca と同じ考え方）:
+		// - 同じホームの RPC は最短 5 分おき（Orca の MIN_REFETCH_MS）。その間は wham/usage（HTTP だけ）で読む
+		// - 認証切れ以外で失敗したホームは 10 分間 RPC を飛ばす
+		// - 認証切れのホームは、10 分たつか auth.json が変わる（ログインし直した）まで RPC を飛ばす
+		// - RPC はホームをまたいで1つずつ、2 秒ずつずらして起こす（Orca の INACTIVE_CODEX_PROBE_STAGGER_MS）
+		const now = this.now();
+		const authStamp = await this.authStamp(homePath);
+		const authBackoff = this.rpcAuthFailure.get(homePath);
+		const inAuthBackoff = authBackoff !== undefined && now - authBackoff.at < RPC_FAILURE_COOLDOWN_MS && authBackoff.authStamp === authStamp;
+		const lastFailure = this.rpcFailureAt.get(homePath);
+		const inFailureCooldown = lastFailure !== undefined && now - lastFailure < RPC_FAILURE_COOLDOWN_MS;
+		const lastRpc = this.lastRpcAt.get(homePath);
+		const dueForRpc = lastRpc === undefined || now - lastRpc >= MIN_RPC_INTERVAL_MS;
+
+		let rpcTried = false;
+		if (!inAuthBackoff && !inFailureCooldown && dueForRpc) {
+			rpcTried = true;
+			const viaRpc = await this.tryCodexRpc(homePath, base.homeLabel);
+			if (viaRpc.kind !== 'failed') {
+				return this.rpcResult(viaRpc, homePath, base, email, accountId);
+			}
+		}
+
 		try {
 			const usage = await this.fetchWhamUsage(accessToken, accountId);
 			return { account: { ...base, email, ...this.mapWhamUsage(usage), status: 'ok' }, accountId };
@@ -578,37 +514,136 @@ export class ParadisLimitsMonitorService {
 			if (httpStatus !== 401 && httpStatus !== 403) {
 				return { account: { ...base, email, status: 'error', statusDetail: (error as Error).message }, accountId };
 			}
+			if (inAuthBackoff) {
+				// codex もさっき認証切れと答えた。ログインし直すまで直らない。
+				return { account: { ...base, email, status: 'relogin_required', statusDetail: 'access token expired (re-login required)' }, accountId };
+			}
+			if (!rpcTried && !inFailureCooldown) {
+				// アクセストークンの期限が切れただけかもしれない。間隔を待たずに codex に更新させる。
+				const viaRpc = await this.tryCodexRpc(homePath, base.homeLabel);
+				if (viaRpc.kind !== 'failed') {
+					return this.rpcResult(viaRpc, homePath, base, email, accountId);
+				}
+			}
+			// codex で更新できない（app-server が動かない）。再ログインで直るとは限らないので、要再ログインにはしない。
+			return { account: { ...base, email, status: 'error', statusDetail: 'access token expired and codex app-server is unavailable to refresh it' }, accountId };
 		}
+	}
 
-		// access token失効 → codex app-server RPCへフォールバック(codex CLI自身にリフレッシュさせる)
-		const lastFailure = this.rpcFailureAt.get(homePath);
-		if (lastFailure !== undefined && Date.now() - lastFailure < RPC_FAILURE_COOLDOWN_MS) {
-			return { account: { ...base, email, status: 'relogin_required', statusDetail: 'access token expired (re-login required)' }, accountId };
-		}
+	/** auth.json の更新時刻と大きさ（ログインし直したかの判断に使う）。 */
+	private async authStamp(homePath: string): Promise<string | undefined> {
 		try {
-			const viaRpc = await this.fetchCodexAccountViaRpc(homePath);
+			const stat = await fs.promises.stat(path.join(homePath, 'auth.json'));
+			return `${stat.mtimeMs}:${stat.size}`;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** RPC で取る。ホームをまたいで1つずつ、前の RPC から 2 秒あけて起こす。 */
+	private async tryCodexRpc(homePath: string, homeLabel: string | undefined): Promise<{ kind: 'ok'; value: Awaited<ReturnType<ParadisLimitsMonitorService['fetchCodexAccountViaRpc']>> } | { kind: 'auth'; error: Error } | { kind: 'failed' }> {
+		const run = async () => {
+			const wait = this.lastRpcEndAt + RPC_STAGGER_MS - this.now();
+			if (wait > 0) {
+				await this.delay(wait);
+			}
+			this.lastRpcAt.set(homePath, this.now());
+			try {
+				return await this.fetchCodexAccountViaRpc(homePath);
+			} finally {
+				this.lastRpcEndAt = this.now();
+			}
+		};
+		const queued = this.rpcQueue.then(run, run);
+		this.rpcQueue = queued.then(() => undefined, () => undefined);
+		try {
+			const value = await queued;
 			this.rpcFailureAt.delete(homePath);
 			this.rpcFailureReported.delete(homePath);
-			return { account: { ...base, email: viaRpc.email ?? email, ...viaRpc.windows, planType: viaRpc.planType, status: 'ok' }, accountId };
+			this.rpcAuthFailure.delete(homePath);
+			return { kind: 'ok', value };
 		} catch (error) {
-			this.rpcFailureAt.set(homePath, Date.now());
-			// 認証切れはユーザーが再ログインするまで続くので、報告すると同じ内容が積み上がる。
-			// パネル側は status='relogin_required' を受けて「要再ログイン」バッジと「再ログイン…」
-			// ボタンを出す（paradisLimitsMonitorPanel.ts）ため、ユーザーはそこから復帰できる。
-			if (!isCodexAuthFailure(error) && !this.rpcFailureReported.has(homePath)) {
+			if (isCodexAuthFailure(error)) {
+				// 認証切れは再ログインでしか直らない（Orca も PTY へは落ちずにそのまま返す）。
+				this.rpcAuthFailure.set(homePath, { at: this.now(), authStamp: await this.authStamp(homePath) });
+				return { kind: 'auth', error: error as Error };
+			}
+			this.rpcFailureAt.set(homePath, this.now());
+			const kind = classifyCodexRpcFailure(error);
+			// codex を入れていない人は毎回同じ理由で失敗するので報告しない（パネルは wham/usage で出せる）。
+			if (kind !== 'binary-missing' && !this.rpcFailureReported.has(homePath)) {
 				this.rpcFailureReported.add(homePath);
 				const { exitCode, exitSignal } = error as { exitCode?: number | null; exitSignal?: string | null };
 				reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
 					phase: 'refresh',
 					transport: 'stdio',
-					safe_error_kind: classifyCodexRpcFailure(error),
+					safe_error_kind: kind,
 					...(typeof exitCode === 'number' ? { safe_exit_code: exitCode } : {}),
 					...(typeof exitSignal === 'string' ? { signal: exitSignal } : {}),
 				});
 			}
-			this.logService.warn(`[ParadisLimitsMonitor] codex app-server fallback failed for ${base.homeLabel}: ${(error as Error).message}`);
-			return { account: { ...base, email, status: 'relogin_required', statusDetail: (error as Error).message }, accountId };
+			this.logService.warn(`[ParadisLimitsMonitor] codex app-server failed for ${homeLabel}; reading wham/usage instead: ${(error as Error).message}`);
+			return { kind: 'failed' };
 		}
+	}
+
+	private async rpcResult(viaRpc: { kind: 'ok'; value: Awaited<ReturnType<ParadisLimitsMonitorService['fetchCodexAccountViaRpc']>> } | { kind: 'auth'; error: Error }, homePath: string, base: { provider: 'codex'; id: string; homeLabel: string; removable: boolean }, email: string | undefined, accountId: string | undefined): Promise<ICodexAccountResult> {
+		if (viaRpc.kind === 'auth') {
+			// パネルは status='relogin_required' を受けて「再ログイン…」を出す（paradisLimitsMonitorPanel.ts）。
+			return { account: { ...base, email, status: 'relogin_required', statusDetail: viaRpc.error.message }, accountId };
+		}
+		// codex が RPC の中でトークンを更新していることがあるので、足す分は読み直したトークンで読む。
+		const fresh = await this.readAuthTokens(homePath);
+		const windows = fresh.accessToken !== undefined
+			? await this.supplementRpcWindows(viaRpc.value, fresh.accessToken, fresh.accountId ?? accountId)
+			: { planType: viaRpc.value.planType, fiveHour: viaRpc.value.windows.fiveHour, sevenDay: viaRpc.value.windows.sevenDay };
+		return { account: { ...base, email: viaRpc.value.email ?? email, ...windows, status: 'ok' }, accountId };
+	}
+
+	private async readAuthTokens(homePath: string): Promise<{ accessToken?: string; accountId?: string }> {
+		try {
+			const auth = JSON.parse(await fs.promises.readFile(path.join(homePath, 'auth.json'), 'utf8')) as ICodexAuthJson;
+			const rawAccountId = auth.tokens?.account_id;
+			return {
+				accessToken: typeof auth.tokens?.access_token === 'string' && auth.tokens.access_token.length > 0 ? auth.tokens.access_token : undefined,
+				accountId: typeof rawAccountId === 'string' && rawAccountId.trim().length > 0 ? rawAccountId.trim() : undefined,
+			};
+		} catch {
+			return {};
+		}
+	}
+
+	/** 時刻（テストで差し替える）。 */
+	protected now(): number {
+		return Date.now();
+	}
+
+	/** 待つ（テストで差し替える）。 */
+	protected delay(ms: number): Promise<void> {
+		return timeout(ms);
+	}
+
+	/**
+	 * RPC の結果に、wham/usage の分を足す（取れなければ RPC の結果のまま）。Orca の
+	 * supplementCodexSessionWindow と同じく、5時間の枠が無く週の枠だけのときは wham/usage の枠で埋める。
+	 * RPC は追加の枠（`additional_rate_limits`）を返さないので、Para Code が出しているその枠も
+	 * wham/usage から足す（Orca は追加の枠を出さないので、ここだけ Para Code の独自）。
+	 */
+	private async supplementRpcWindows(viaRpc: { planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }, accessToken: string, accountId: string | undefined): Promise<{ planType?: string; fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow; scoped?: IParadisLimitsWindow[] }> {
+		const fromRpc = { planType: viaRpc.planType, fiveHour: viaRpc.windows.fiveHour, sevenDay: viaRpc.windows.sevenDay };
+		let usage: ReturnType<ParadisLimitsMonitorService['mapWhamUsage']>;
+		try {
+			usage = this.mapWhamUsage(await this.fetchWhamUsage(accessToken, accountId));
+		} catch {
+			return fromRpc;
+		}
+		const fillSession = fromRpc.fiveHour === undefined && fromRpc.sevenDay !== undefined && usage.fiveHour !== undefined;
+		return {
+			planType: fromRpc.planType ?? usage.planType,
+			fiveHour: fillSession ? usage.fiveHour : fromRpc.fiveHour,
+			sevenDay: fillSession ? usage.sevenDay ?? fromRpc.sevenDay : fromRpc.sevenDay,
+			scoped: usage.scoped,
+		};
 	}
 
 	/** id_token(JWT)のpayloadからemailを取り出す(署名検証はしない。表示用途のみ)。 */
@@ -632,7 +667,7 @@ export class ParadisLimitsMonitorService {
 		return undefined;
 	}
 
-	private async fetchWhamUsage(accessToken: string, accountId: string | undefined): Promise<IWhamUsageResponse> {
+	protected async fetchWhamUsage(accessToken: string, accountId: string | undefined): Promise<IWhamUsageResponse> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), USAGE_HTTP_TIMEOUT_MS);
 		try {
@@ -644,7 +679,8 @@ export class ParadisLimitsMonitorService {
 			if (accountId) {
 				headers['ChatGPT-Account-Id'] = accountId;
 			}
-			const response = await fetch('https://chatgpt.com/backend-api/wham/usage', { method: 'GET', headers, signal: controller.signal });
+			// トークンを chatgpt.com の外へ転送させない
+			const response = await fetch('https://chatgpt.com/backend-api/wham/usage', { method: 'GET', headers, redirect: 'error', signal: controller.signal });
 			if (!response.ok) {
 				const error = new Error(`Codex usage API returned ${response.status}`) as Error & { httpStatus: number };
 				error.httpStatus = response.status;
@@ -688,13 +724,12 @@ export class ParadisLimitsMonitorService {
 	}
 
 	/** `codex app-server` (JSON-RPC over stdio) でrate limitsとアカウント情報を取得する。 */
-	private async fetchCodexAccountViaRpc(homePath: string): Promise<{ email?: string; planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }> {
+	protected async fetchCodexAccountViaRpc(homePath: string): Promise<{ email?: string; planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }> {
 		const command = await this.resolveCommand('codex', undefined);
 		const env = { ...await this.getExecEnv(), CODEX_HOME: homePath };
-		const rpc = new ParadisCodexRpcSession(command, env, this.logService);
+		// initialize の失敗は開始関数の中で子プロセスを片付けてから投げる。
+		const rpc = await paradisStartCodexAppServerRpc(command, env, this.logService, 'para-code-limits-monitor', { shortLivedProbe: true });
 		try {
-			await rpc.request('initialize', { clientInfo: { name: 'para-code-limits-monitor', version: '1.0.0' } }, RPC_INIT_TIMEOUT_MS);
-			rpc.notify('initialized');
 			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_REQUEST_TIMEOUT_MS) as IRpcRateLimitsResult;
 			let account: IRpcAccountResult | undefined;
 			try {
@@ -842,7 +877,8 @@ export class ParadisLimitsMonitorService {
 		for (let index = 2; index <= MAX_CODEX_HOME_INDEX; index++) {
 			const candidate = path.join(home, `.codex-${index}`);
 			try {
-				await fs.promises.mkdir(candidate);
+				// 会話ログや認証情報が入るので、同じ PC の別ユーザーから読めないようにする。
+				await fs.promises.mkdir(candidate, { mode: 0o700 });
 				return candidate;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
@@ -852,148 +888,6 @@ export class ParadisLimitsMonitorService {
 			}
 		}
 		throw new Error(`no free Codex home slot up to ~/.codex-${MAX_CODEX_HOME_INDEX}`);
-	}
-
-	// ---------- アカウント追加: Claude (claude setup-token + cswap add-token) ----------
-
-	async startClaudeSetup(slot: number | undefined): Promise<IParadisLimitsSetupHandle> {
-		const sessionId = generateUuid();
-		const session: ISetupSession = {
-			id: sessionId,
-			state: { phase: 'starting' },
-			dispose: () => { },
-		};
-		this.setupSessions.set(sessionId, session);
-		this.runClaudeSetup(session, slot).catch(error => {
-			session.state = { ...session.state, phase: 'error', error: (error as Error).message };
-			this.scheduleSetupCleanup(session);
-		});
-		return { sessionId };
-	}
-
-	private async runClaudeSetup(session: ISetupSession, slot: number | undefined): Promise<void> {
-		const claudeCommand = await this.resolveCommand('claude', undefined);
-		const cswapCommand = await this.resolveCommand('cswap', undefined);
-		const env = await this.getExecEnv();
-
-		// claude setup-token はInk製の対話UIでTTYを要求するためPTYで駆動する。
-		// ptyHostと同じnode-ptyをshared processから直接使う
-		const pty = await import('node-pty');
-		const ptyEnv: { [key: string]: string } = { NO_COLOR: '1' };
-		for (const [key, value] of Object.entries(env)) {
-			if (typeof value === 'string') {
-				ptyEnv[key] = value;
-			}
-		}
-		// Windowsのnode-pty(ConPTY)はfileをそのままCreateProcessWへ渡すため、npmが
-		// 生成する.cmdシムを直接起動できない(起動失敗)。cmd.exe /c経由にラップして解決する。
-		// 注意: 通常のchild_process系は旧Nodeがlibuv経由で.cmd/.batを検知してcmd.exeへ
-		// 自動委譲していたが、この挙動はCVE-2024-27980対策で撤去済みであり、現行Nodeでは
-		// shell指定なしのspawn自体がEINVALになる。child_process系は各呼び出し口で
-		// paradisWrapWindowsScriptShim による明示的なcmd.exeラップを行うこと。
-		// /cの引数はcmdが自前の"/"クォート規則で再解釈するため、args文字列側をもう一重
-		// 丸ごとクォートしないと(/s指定でも)外側のクォートが剥がれてパス中の空白で壊れる
-		// (Node.jsのchild_process内部が同じ組み立てを行っている実装に合わせた)
-		const isWindows = process.platform === 'win32';
-		const ptyFile = isWindows ? (process.env.ComSpec || 'cmd.exe') : claudeCommand;
-		const ptyArgs: string[] | string = isWindows ? `/d /s /v:off /c ""${claudeCommand}" setup-token"` : ['setup-token'];
-		const child = pty.spawn(ptyFile, ptyArgs, {
-			name: 'xterm-256color',
-			cols: 200,
-			rows: 50,
-			cwd: os.homedir(),
-			env: ptyEnv,
-		});
-
-		let output = '';
-		let finished = false;
-		let tokenResolve: ((token: string) => void) | undefined;
-		let tokenReject: ((error: Error) => void) | undefined;
-		const tokenPromise = new Promise<string>((resolve, reject) => {
-			tokenResolve = resolve;
-			tokenReject = reject;
-		});
-
-		const extractToken = () => /sk-ant-oat01-[A-Za-z0-9_-]{20,}/.exec(stripAnsi(output))?.[0];
-		let tokenSettleTimer: ReturnType<typeof setTimeout> | undefined;
-		child.onData(data => {
-			output += data;
-			const plain = stripAnsi(output);
-			// チャンク境界でURLが途切れた状態を確定させないよう、蓄積出力から毎回抽出し直して更新する
-			const url = /https:\/\/[^\s"')]+oauth[^\s"')]*/i.exec(plain)?.[0] ?? /https:\/\/(?:claude\.ai|console\.anthropic\.com)[^\s"')]+/.exec(plain)?.[0];
-			if (url && url !== session.state.url && session.state.phase !== 'done' && session.state.phase !== 'error' && session.state.phase !== 'registering') {
-				session.state = { ...session.state, phase: 'waiting_code', url };
-			}
-			// トークンもチャンク境界で途切れうるため、初検出から少し待って蓄積出力から取り直して確定する
-			if (extractToken() && !finished && tokenSettleTimer === undefined) {
-				tokenSettleTimer = setTimeout(() => {
-					const settled = extractToken();
-					if (settled && !finished) {
-						finished = true;
-						tokenResolve?.(settled);
-					}
-				}, 500);
-			}
-		});
-		child.onExit(({ exitCode }) => {
-			if (finished) {
-				return;
-			}
-			// トークン表示直後にexitした場合は確定待ちタイマーと競合するため、ここで最終抽出を試みる
-			const settled = extractToken();
-			finished = true;
-			if (settled) {
-				tokenResolve?.(settled);
-			} else {
-				// 蓄積出力全体をエラーに乗せない(Ink製TUIは\r描画で\nを含まないことがあり、
-				// その場合は最後の非空行=全文になりうるため長さも切る)
-				const lines = stripAnsi(output).trim().split('\n');
-				const detail = (lines.findLast(line => line.trim().length > 0) ?? '').trim().slice(-200);
-				tokenReject?.(new Error(`claude setup-token exited with code ${exitCode}${detail ? `: ${detail}` : ''} before producing a token`));
-			}
-		});
-
-		session.submitCode = code => {
-			// PTYへの書き込みは制御文字を除去した1行に限定する(貼り付け内容の混入対策)
-			child.write(code.trim().replace(/[\u0000-\u001F\u007F]/g, '') + '\r');
-		};
-		session.dispose = () => {
-			if (!finished) {
-				finished = true;
-				tokenReject?.(new Error('cancelled'));
-			}
-			try {
-				child.kill();
-			} catch {
-				// already dead
-			}
-		};
-		this.scheduleSetupTimeout(session);
-		if (session.state.phase === 'starting') {
-			session.state = { phase: 'waiting_code' };
-		}
-
-		let token: string;
-		try {
-			token = await tokenPromise;
-		} finally {
-			try {
-				child.kill();
-			} catch {
-				// already dead
-			}
-		}
-
-		session.state = { ...session.state, phase: 'registering' };
-		const addArgs = ['add-token', '-'];
-		if (typeof slot === 'number') {
-			addArgs.push('--slot', String(slot));
-		}
-		// トークンはargvに載せない(psに見えるため)。stdin渡しはcswapが公式サポートしている
-		await this.execFile(cswapCommand, addArgs, { timeoutMs: CSWAP_TIMEOUT_MS, stdin: token });
-		this.snapshotCache = undefined;
-		session.state = { ...session.state, phase: 'done' };
-		this.scheduleSetupCleanup(session);
 	}
 
 	// ---------- セットアップセッション共通 ----------
@@ -1014,6 +908,7 @@ export class ParadisLimitsMonitorService {
 		this.rpcFailureReported.delete(session.codexHomePath);
 		session.codexHomePath = undefined;
 		session.state = { ...session.state, phase: 'done' };
+		paradisNotifyCodexHomesChanged();
 		this.scheduleSetupCleanup(session);
 	}
 
@@ -1023,17 +918,6 @@ export class ParadisLimitsMonitorService {
 			return { phase: 'error', error: 'setup session not found' };
 		}
 		return session.state;
-	}
-
-	submitClaudeSetupCode(sessionId: string, code: string): void {
-		const session = this.setupSessions.get(sessionId);
-		if (!session?.submitCode) {
-			throw new Error('setup session not found or does not accept a code');
-		}
-		if (typeof code !== 'string' || code.trim().length === 0 || code.length > 512) {
-			throw new Error('invalid confirmation code');
-		}
-		session.submitCode(code);
 	}
 
 	cancelSetup(sessionId: string): void {
@@ -1068,74 +952,23 @@ export class ParadisLimitsMonitorService {
 
 	// ---------- 実行ヘルパー ----------
 
-	private async execFile(command: string, args: string[], options: { timeoutMs: number; stdin?: string }): Promise<string> {
-		const env = await this.getExecEnv();
-		if (this.disposed) {
-			throw new Error('ParadisLimitsMonitorService is disposed');
-		}
-		return new Promise<string>((resolve, reject) => {
-			// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
-			// (shell 指定なしの execFile は CVE-2024-27980 対策後の Node では EINVAL になる)。
-			const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
-			const execution: { tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
-			const child = this._execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
-				encoding: 'utf8',
-				maxBuffer: 16 * 1024 * 1024,
-				windowsHide: true,
-				windowsVerbatimArguments: shimInvocation !== undefined,
-				env: { ...env, NO_COLOR: '1' },
-			}, (err, stdout, stderr) => {
-				execution.completed = true;
-				const timedOut = execution.tracked?.timedOut === true;
-				execution.tracked?.dispose();
-				if (err || timedOut) {
-					const message = stderr?.trim() || (timedOut ? 'command timed out after ' + options.timeoutMs + 'ms' : err!.message);
-					reject(new Error(message));
-				} else {
-					resolve(stdout);
-				}
-			});
-			if (!execution.completed) {
-				execution.tracked = this.childProcesses.track(child, options.timeoutMs);
-			}
-			if (options.stdin !== undefined) {
-				child.stdin?.write(options.stdin);
-				child.stdin?.end();
-			}
-		});
-	}
-
 	/**
-	 * コマンドを解決する。優先順: 明示パス(絶対パス必須) → PATH → よくあるインストール先。
-	 * GUI起動ではログインシェルのPATHが継承されないため、候補ディレクトリを直接確認する。
+	 * コマンドを解決する。優先順: 明示パス(絶対パス必須) → PATH → よくあるインストール先
+	 * （候補の場所は paradisResolveAgentCli と共通）。PATH 上にあるかは `codex --version` が
+	 * 通るかで確かめ、そのときはコマンド名のまま返す。
 	 */
-	private async resolveCommand(name: 'cswap' | 'claude' | 'codex', explicitPath: string | undefined): Promise<string> {
+	private async resolveCommand(name: 'codex', explicitPath: string | undefined): Promise<string> {
 		if (explicitPath) {
 			if (!path.isAbsolute(explicitPath)) {
 				throw new Error(`configured path for ${name} must be absolute: ${explicitPath}`);
 			}
 			return explicitPath;
 		}
-		const isWindows = process.platform === 'win32';
-		const names = isWindows ? [`${name}.exe`, `${name}.cmd`, name] : [name];
-		for (const candidate of names) {
-			if (await this.canExecute(candidate)) {
-				return candidate;
-			}
+		const found = await paradisResolveAgentCli(name, {}, { isOnPath: candidate => this.canExecute(candidate), fileExists: candidate => this.fileExists(candidate) });
+		if (found === undefined) {
+			throw new Error(`${name} not found (install it or set the executable path in settings)`);
 		}
-		const home = os.homedir();
-		const candidateDirs = isWindows
-			? [path.join(home, '.local', 'bin'), path.join(home, 'AppData', 'Roaming', 'npm'), path.join(home, '.codex', 'bin')]
-			: [path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), path.join(home, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
-		for (const dir of candidateDirs) {
-			for (const candidate of names) {
-				const fullPath = path.join(dir, candidate);
-				if (await this.fileExists(fullPath)) {
-					return fullPath;
-				}
-			}
-		}
-		throw new Error(`${name} not found (install it or set the executable path in settings)`);
+		return found;
 	}
 
 	private async canExecute(command: string): Promise<boolean> {
@@ -1167,113 +1000,6 @@ export class ParadisLimitsMonitorService {
 	}
 }
 
-/** ANSIエスケープ(CSI/OSC)を除去する。PTY出力からURL/トークンを抽出するための最小実装。 */
-function stripAnsi(value: string): string {
-	return value.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
-}
-
-/** `codex app-server` との改行区切りJSON-RPCセッション(読み取り専用サンドボックスで起動)。 */
-class ParadisCodexRpcSession extends Disposable {
-
-	private readonly child: cp.ChildProcess;
-	private readonly logService: ILogService;
-	private buffer = '';
-	private nextId = 1;
-	private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-
-	constructor(command: string, env: NodeJS.ProcessEnv, logService: ILogService) {
-		super();
-		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
-		// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
-		// `-a untrusted` は codex 0.149 (2026-08-24) で受け付けられなくなり、usage エラー(exit 2)で
-		// 即終了していた。読み取り専用 RPC しか呼ばないので `never` で動作は変わらない。
-		const args = ['-s', 'read-only', '-a', 'never', 'app-server'];
-		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
-		this.logService = logService;
-		this.child = cp.spawn(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
-			env,
-			stdio: ['pipe', 'pipe', 'pipe'],
-			windowsHide: true,
-			windowsVerbatimArguments: shimInvocation !== undefined,
-		});
-		this.child.stdout?.on('data', (chunk: Buffer) => this.onStdout(chunk));
-		this.child.stderr?.on('data', (chunk: Buffer) => {
-			logService.trace(`[ParadisLimitsMonitor] codex app-server stderr: ${chunk.toString('utf8').trim()}`);
-		});
-		this.child.on('exit', (code, signal) => {
-			const error = new Error(`codex app-server exited (code=${code}, signal=${signal})`);
-			Object.assign(error, { exitCode: code, exitSignal: signal });
-			this.failAll(error);
-		});
-		this.child.on('error', error => this.failAll(new Error(`failed to launch codex app-server: ${error.message}`)));
-		this._register({ dispose: () => this.terminate() });
-	}
-
-	private onStdout(chunk: Buffer): void {
-		this.buffer += chunk.toString('utf8');
-		let newlineIndex: number;
-		while ((newlineIndex = this.buffer.indexOf('\n')) >= 0) {
-			const line = this.buffer.slice(0, newlineIndex).trim();
-			this.buffer = this.buffer.slice(newlineIndex + 1);
-			if (!line) {
-				continue;
-			}
-			let message: { id?: unknown; result?: unknown; error?: { message?: string } };
-			try {
-				message = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (typeof message.id !== 'number') {
-				continue; // 通知はすべて無視する
-			}
-			const pending = this.pending.get(message.id);
-			if (!pending) {
-				continue;
-			}
-			this.pending.delete(message.id);
-			if (message.error) {
-				pending.reject(new Error(message.error.message ?? 'codex app-server request failed'));
-			} else {
-				pending.resolve(message.result);
-			}
-		}
-	}
-
-	async request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-		const id = this.nextId++;
-		const payload = JSON.stringify({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) });
-		const result = new Promise<unknown>((resolve, reject) => {
-			this.pending.set(id, { resolve, reject });
-		});
-		this.child.stdin?.write(payload + '\n');
-		return Promise.race([
-			result,
-			timeout(timeoutMs).then(() => {
-				if (this.pending.delete(id)) {
-					this.terminate();
-				}
-				throw new Error(`codex app-server request '${method}' timed out`);
-			}),
-		]);
-	}
-
-	notify(method: string): void {
-		this.child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method }) + '\n');
-	}
-
-	private failAll(error: Error): void {
-		for (const pending of this.pending.values()) {
-			pending.reject(error);
-		}
-		this.pending.clear();
-	}
-
-	private terminate(): void {
-		paradisKillChildProcessTree(this.child, error => this.logService.trace(`[ParadisLimitsMonitor] failed to stop codex app-server: ${error}`));
-	}
-}
-
 // 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
 export class ParadisLimitsMonitorChannel<TContext = string> implements IServerChannel<TContext> {
 
@@ -1294,9 +1020,7 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 			case 'validateCodexHomeRemoval': return this.service.validateCodexHomeRemoval(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'removeCodexHome': return this.service.removeCodexHome(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
-			case 'startClaudeSetup': return this.service.startClaudeSetup(typeof args[0] === 'number' ? args[0] : undefined) as Promise<T>;
 			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
-			case 'submitClaudeSetupCode': return Promise.resolve(this.service.submitClaudeSetupCode(String(args[0]), String(args[1]))) as Promise<T>;
 			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]))) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);

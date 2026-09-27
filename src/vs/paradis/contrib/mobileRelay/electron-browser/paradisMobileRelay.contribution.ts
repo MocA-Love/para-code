@@ -49,6 +49,7 @@ import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcus
 // PARA-PATCH: RTK節約データのモバイル配信
 import { ParadisRtkClient } from '../../rtk/electron-browser/paradisRtkClient.js';
 import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
+import { ParadisCodexMobileLimitsFields } from '../../codexAccounts/electron-browser/paradisCodexMobileLimitsFields.js';
 import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser/paradisGithubMetricsClient.js';
 import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
 import { ParadisSpaceDiskClient } from '../../spaceDisk/electron-browser/paradisSpaceDiskClient.js';
@@ -207,6 +208,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const rtkClient = instantiationService.createInstance(ParadisRtkClient);
 		// AIリミット(Rate Limit)スナップショット取得（PC版タイトルバーのリミットモニターと同じクライアント）
 		const limitsClient = instantiationService.createInstance(ParadisLimitsMonitorClient);
+		// Codex の使用中アカウント（active）とリセットの残り（resetCredits）を任意項目として足す（既存の項目は変えない）
+		const codexLimitsFields = instantiationService.createInstance(ParadisCodexMobileLimitsFields);
 		// GitHub API利用状況取得（PC版のGitHub API Usageダッシュボードと同じクライアント）
 		const githubClient = instantiationService.createInstance(ParadisGithubMetricsClient);
 		// PC本体のCPU/メモリ/ディスク取得（PC版タイトルバーのリソースモニタと同じクライアント）
@@ -285,7 +288,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 			(ownerId, active) => ccusageClient.setDashboardWarmLease(ownerId, active),
 			bypassCache => rtkClient.fetchDashboard(bypassCache),
-			bypassCache => limitsClient.getSnapshot(bypassCache),
+			bypassCache => limitsClient.getSnapshot(bypassCache).then(snapshot => codexLimitsFields.addTo(snapshot)),
 			bypassCache => githubClient.getSnapshot(bypassCache),
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
 			() => instantiationService.invokeFunction(paradisGetWorktreeCreateForm),

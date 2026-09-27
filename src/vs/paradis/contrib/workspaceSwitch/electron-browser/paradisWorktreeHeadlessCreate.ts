@@ -17,6 +17,8 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { isAbsolute } from '../../../../base/common/path.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -509,6 +511,11 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 	readonly agent: ParadisResumeAgent;
 	readonly sessionId: string;
 	readonly dangerouslyBypassPermissions?: boolean;
+	/**
+	 * Codex の会話が見つかったホーム（既定のホームを含む）。この PC のターミナルに限り `CODEX_HOME`
+	 * として渡し、選んでいるアカウントより優先する（その会話はそのホームにしか無いことがあるため）。
+	 */
+	readonly codexHome?: string;
 }
 
 /** 検証済みのセッションIDで、指定スペースのエディタターミナルへresumeコマンドを送る。 */
@@ -522,8 +529,11 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	const wsl = paradisResolveWslAgentHome(request.rootUri.fsPath);
+	const codexHome = request.agent === 'codex' && request.rootUri.scheme === Schemas.file && request.codexHome !== undefined && isAbsolute(request.codexHome)
+		? request.codexHome
+		: undefined;
 	const instance = await terminalService.createTerminal(wsl === undefined
-		? { cwd: request.rootUri, location: TerminalLocation.Editor }
+		? { cwd: request.rootUri, location: TerminalLocation.Editor, ...(codexHome !== undefined ? { config: { env: { CODEX_HOME: codexHome } } } : {}) }
 		: {
 			config: {
 				name: request.agent === 'claude' ? 'Claude Code' : 'Codex',

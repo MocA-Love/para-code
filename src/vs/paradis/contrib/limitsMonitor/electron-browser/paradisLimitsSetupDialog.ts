@@ -9,8 +9,9 @@
 // アカウント追加/再ログインのモーダルダイアログ(フェーズ2)。
 //   - Codex: shared processが `CODEX_HOME=<新ホーム> codex login` を起動し、ユーザーは
 //     自動で開くブラウザでログインするだけ。完了はバックエンドの状態ポーリングで検知する
-//   - Claude: shared processが `claude setup-token` をPTYで駆動。ブラウザログイン後に表示される
-//     確認コードをこのダイアログで受け取り、出力トークンを cswap add-token へ登録する
+//   - Claude: shared processが一時ディレクトリに向けて `claude auth login` を動かす。ユーザーは
+//     ブラウザでログインするだけで、終わると認証情報を Para Code の保存場所へ登録する
+//     （node/paradisClaudeAccountService.ts）。いまの Claude のログインは変えない
 // バックエンドのセッション状態(IParadisLimitsSetupState)を1秒間隔でポーリングして
 // ステップ表示を更新するだけの薄いビューで、子プロセスの寿命管理はすべてshared process側。
 
@@ -22,6 +23,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { ParadisClaudeSetupErrorCode } from '../common/paradisClaudeAccounts.js';
 import { IParadisLimitsAccount, IParadisLimitsSetupState, ParadisLimitsProvider } from '../common/paradisLimitsMonitor.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient } from './paradisLimitsMonitorClient.js';
@@ -42,8 +44,6 @@ export class ParadisLimitsSetupDialog extends Disposable {
 	private readonly overlay: HTMLElement;
 	private readonly stepsElement: HTMLElement;
 	private readonly duplicateElement: HTMLElement;
-	private readonly inputRow: HTMLElement;
-	private readonly codeInput: HTMLInputElement;
 	private readonly submitButton: HTMLButtonElement;
 	private readonly keepDuplicateButton: HTMLButtonElement;
 	private readonly errorElement: HTMLElement;
@@ -54,7 +54,6 @@ export class ParadisLimitsSetupDialog extends Disposable {
 	private readonly stepListeners = this._register(new DisposableStore());
 	private sessionId: string | undefined;
 	private latestState: IParadisLimitsSetupState = { phase: 'starting' };
-	private codeSubmitted = false;
 	private resolvingDuplicate = false;
 	private duplicateHomeRemoved = false;
 	/** 重複ホーム削除ボタンを描画した時点の接続経路。実行時にこれと不一致なら削除は中断される。 */
@@ -83,19 +82,6 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		this.duplicateElement = dom.append(body, $('.pls-duplicate'));
 		this.duplicateElement.style.display = 'none';
 
-		this.inputRow = dom.append(body, $('.pls-input-row'));
-		this.inputRow.style.display = 'none';
-		this.codeInput = dom.append(this.inputRow, $('input.pls-input')) as HTMLInputElement;
-		this.codeInput.type = 'text';
-		this.codeInput.placeholder = localize('paradis.limitsSetup.codePlaceholder', "確認コードをここに貼り付け");
-		this.codeInput.setAttribute('aria-label', this.codeInput.placeholder);
-		this._register(dom.addDisposableListener(this.codeInput, 'keydown', e => {
-			if (e.key === 'Enter') {
-				e.preventDefault();
-				void this.submitCode();
-			}
-		}));
-
 		this.errorElement = dom.append(body, $('.pls-error'));
 		this.errorElement.style.display = 'none';
 
@@ -111,15 +97,13 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		this.keepDuplicateButton.style.display = 'none';
 		this._register(dom.addDisposableListener(this.keepDuplicateButton, 'click', () => void this.keepDuplicate()));
 
+		// Codex の重複確認で「新規ホームを削除」に使う。
 		this.submitButton = dom.append(footer, $('button.pls-btn.primary')) as HTMLButtonElement;
 		this.submitButton.type = 'button';
-		this.submitButton.textContent = localize('paradis.limitsSetup.submitCode', "登録");
 		this.submitButton.style.display = 'none';
 		this._register(dom.addDisposableListener(this.submitButton, 'click', () => {
 			if (this.latestState.phase === 'waiting_duplicate') {
 				void this.discardDuplicate();
-			} else {
-				void this.submitCode();
 			}
 		}));
 
@@ -157,14 +141,14 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		if (this.options.provider === 'codex') {
 			return localize('paradis.limitsSetup.descCodex', "ブラウザが開きます。追加したいアカウントでログインしてください。ログインが完了すると自動でこの画面も完了します。");
 		}
-		return localize('paradis.limitsSetup.descClaude', "ブラウザで追加したいアカウントにログインしてください。確認コードが表示されたら下に貼り付けてください。");
+		return localize('paradis.limitsSetup.descClaude', "ブラウザが開きます。追加したいアカウントでログインしてください。ログインが終わると自動で登録されます。いまこの PC で使っている Claude のログインは変わりません。ブラウザで別のアカウントにログインしている場合は、先にログアウトしてください。");
 	}
 
 	private async start(): Promise<void> {
 		try {
 			const handle = this.options.provider === 'codex'
 				? await this.client.startCodexLogin(this.options.reloginAccount?.id)
-				: await this.client.startClaudeSetup(this.options.reloginAccount?.slot);
+				: await this.client.startClaudeLogin(this.options.reloginAccount?.id);
 			this.sessionId = handle.sessionId;
 			this.pollTimer.cancelAndSet(() => this.pollState(), POLL_INTERVAL_MS);
 		} catch (error) {
@@ -178,7 +162,9 @@ export class ParadisLimitsSetupDialog extends Disposable {
 			return;
 		}
 		try {
-			this.latestState = await this.client.getSetupState(this.sessionId);
+			this.latestState = this.options.provider === 'claude'
+				? await this.client.getClaudeSetupState(this.sessionId)
+				: await this.client.getSetupState(this.sessionId);
 		} catch {
 			return; // 一時的なIPC不通は次のポーリングで回復する
 		}
@@ -188,24 +174,6 @@ export class ParadisLimitsSetupDialog extends Disposable {
 			this.close(true);
 		} else if (this.latestState.phase === 'error') {
 			this.pollTimer.cancel();
-		}
-	}
-
-	private async submitCode(): Promise<void> {
-		const code = this.codeInput.value.trim();
-		if (!this.sessionId || code.length === 0 || this.codeSubmitted) {
-			return;
-		}
-		this.codeSubmitted = true;
-		this.submitButton.disabled = true;
-		this.codeInput.disabled = true;
-		try {
-			await this.client.submitClaudeSetupCode(this.sessionId, code);
-		} catch (error) {
-			this.codeSubmitted = false;
-			this.submitButton.disabled = false;
-			this.codeInput.disabled = false;
-			this.showError((error as Error).message);
 		}
 	}
 
@@ -255,15 +223,45 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		this.closed = true;
 		this.pollTimer.cancel();
 		if (!completed && this.sessionId) {
-			void this.client.cancelSetup(this.sessionId);
+			void (this.options.provider === 'claude' ? this.client.cancelClaudeSetup(this.sessionId) : this.client.cancelSetup(this.sessionId));
 		}
 		// 重複確認を閉じてもログイン済みホームは残るため、一覧を再取得してカードから判断できるようにする。
 		this.options.onClose(completed || this.latestState.phase === 'waiting_duplicate');
 	}
 
 	private showError(message: string): void {
-		this.errorElement.textContent = message;
+		this.errorElement.textContent = this.options.provider === 'claude' ? this.claudeErrorText(message) : message;
 		this.errorElement.style.display = '';
+	}
+
+	/** Claude のログインの失敗の種類（ParadisClaudeSetupErrorCode）を説明文にする。知らないものはそのまま。 */
+	private claudeErrorText(error: string): string {
+		const code: ParadisClaudeSetupErrorCode | string = error;
+		switch (code) {
+			case 'busy':
+				return localize('paradis.limitsSetup.claudeBusy', "ほかのアカウントの追加が進行中です。終わってからもう一度お試しください。");
+			case 'cancelled':
+				return localize('paradis.limitsSetup.claudeCancelled', "キャンセルしました。");
+			case 'no_credentials':
+				return localize('paradis.limitsSetup.claudeNoCredentials', "ログインは終わりましたが、認証情報を読み取れませんでした。もう一度お試しください。");
+			case 'no_identity':
+				return localize('paradis.limitsSetup.claudeNoIdentity', "ログインしたアカウントのメールアドレスを確認できませんでした。もう一度お試しください。");
+			case 'different_account':
+				return localize('paradis.limitsSetup.claudeDifferentAccount', "元のアカウントと違うアカウントでログインしました。別のアカウントを足す場合は「＋ アカウントを追加」から追加してください。");
+			case 'not_found':
+				return localize('paradis.limitsSetup.claudeNotFound', "対象のアカウントが見つかりません。一覧を更新してからもう一度お試しください。");
+			case 'keychain_unavailable':
+				return localize('paradis.limitsSetup.claudeKeychain', "キーチェーンを読み取れませんでした。Mac のロックを解除してからもう一度お試しください。");
+			case 'unsupported':
+				return localize('paradis.limitsSetup.claudeUnsupported', "この環境では Claude アカウントを追加できません。");
+		}
+		if (error.startsWith('claude not found')) {
+			return localize('paradis.limitsSetup.claudeMissing', "Claude Code が見つかりません。Claude Code をインストールしてからもう一度お試しください。");
+		}
+		if (error === 'timed out') {
+			return localize('paradis.limitsSetup.claudeTimedOut', "時間内にログインが終わりませんでした。もう一度お試しください。");
+		}
+		return error;
 	}
 
 	private renderSteps(): void {
@@ -354,37 +352,23 @@ export class ParadisLimitsSetupDialog extends Disposable {
 	private renderClaudeSteps(state: IParadisLimitsSetupState): void {
 		this.duplicateElement.style.display = 'none';
 		this.keepDuplicateButton.style.display = 'none';
+		this.submitButton.style.display = 'none';
 		this.cancelButton.textContent = localize('paradis.limitsSetup.cancel', "キャンセル");
-		this.submitButton.textContent = localize('paradis.limitsSetup.submitCode', "登録");
-		const waitingLaunch = state.phase === 'starting';
+		const browserPhase = state.phase === 'starting' || state.phase === 'waiting_browser';
 		this.appendStep(
-			waitingLaunch ? 'now' : 'done',
+			browserPhase ? 'now' : 'done',
 			localize('paradis.limitsSetup.claudeStepBrowser', "ブラウザでログイン"),
-			state.url ? localize('paradis.limitsSetup.browserFallback', "ブラウザが開かない場合はこちら:") : localize('paradis.limitsSetup.claudeLaunching', "claude setup-token を起動中…"),
+			state.url ? localize('paradis.limitsSetup.browserFallback', "ブラウザが開かない場合はこちら:") : localize('paradis.limitsSetup.browserOpening', "ブラウザでのログインを待っています…"),
 			state.url,
-		);
-		const codePhase = state.phase === 'waiting_code';
-		this.appendStep(
-			codePhase && !this.codeSubmitted ? 'now' : (waitingLaunch ? 'pending' : 'done'),
-			localize('paradis.limitsSetup.claudeStepCode', "確認コードを貼り付け"),
-			'',
-			undefined,
 		);
 		this.appendStep(
 			state.phase === 'done' ? 'done' : (state.phase === 'registering' ? 'now' : 'pending'),
 			this.options.reloginAccount
-				? localize('paradis.limitsSetup.claudeStepRegisterSlot', "claude-swap のスロット {0} を更新", this.options.reloginAccount.slot ?? '?')
-				: localize('paradis.limitsSetup.claudeStepRegister', "claude-swap に新しいスロットを登録"),
-			'',
+				? localize('paradis.limitsSetup.claudeStepUpdate', "Para Code に保存し直す")
+				: localize('paradis.limitsSetup.claudeStepSave', "Para Code に保存"),
+			state.email ?? '',
 			undefined,
 		);
-
-		const showInput = codePhase && !this.codeSubmitted;
-		this.inputRow.style.display = showInput ? '' : 'none';
-		this.submitButton.style.display = showInput ? '' : 'none';
-		if (showInput && dom.getActiveElement() !== this.codeInput) {
-			this.codeInput.focus();
-		}
 	}
 
 	private appendStep(status: 'pending' | 'now' | 'done', label: string, detail: string, url: string | undefined): void {
