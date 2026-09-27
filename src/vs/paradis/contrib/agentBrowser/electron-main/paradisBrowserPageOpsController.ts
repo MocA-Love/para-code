@@ -18,7 +18,7 @@
 // - 外すときは、有効にしたもの（Fetch・Network・キャッシュの無効化・Service Worker の迂回・ハイライト）を
 //   自分で戻す。upstream の BrowserViewDebugger はセッションの `Target.detachFromTarget` に失敗して
 //   （空の session id）セッションを残すので、「セッションを外せば元に戻る」を頼りにしない。専用の
-//   セッションはタブを手放すか閉じるまで使い回し、付け直しで無効なセッションが増えないようにする。
+//   セッションはタブが閉じるまで使い回し（エージェントが手放しても残す）、タブ1枚につき1つまでにする。
 // - 1枚のタブに上書きを掛けられるのは1つのペインだけ（持ち主）。別のペインは断られる。
 // - 持ち主の共有が入れ替わった（shared process が世代を進めた）・エージェントがタブを手放した・
 //   タブが閉じた・プロファイルに別のタブが開かれた、のどれでも外す。外すときは、掛けた時点の保存領域の
@@ -116,8 +116,8 @@ const OVERLAY_TEARDOWN_COMMANDS: readonly (readonly [string, object])[] = [
 ];
 
 /**
- * タブ1枚に付けた、このコントローラ専用の CDP セッション。上書きとハイライトで共用し、タブを手放すか
- * 閉じるまで使い回す。外すときは有効にしたものを自分で戻す（`Target.detachFromTarget` が失敗して
+ * タブ1枚に付けた、このコントローラ専用の CDP セッション。上書きとハイライトで共用し、タブが閉じるまで
+ * 使い回す（エージェントが手放しても残し、次の共有でも使う）。タブ1枚につき最大1つ。外すときは有効にしたものを自分で戻す（`Target.detachFromTarget` が失敗して
  * セッションが残っても、止めたままの要求やハイライトが残らないように）。
  */
 interface ITargetSession {
@@ -250,8 +250,23 @@ export class ParadisBrowserPageOpsController {
 		}
 	}
 
-	/** タブの上書きとハイライトをすべて外し、専用のセッションも手放す（エージェントが手放した・タブが閉じた）。 */
+	/**
+	 * タブの上書きとハイライトをすべて外す（エージェントが手放した）。専用のセッションは、有効にしたものを
+	 * 戻したうえでタブが閉じるまで残し、次にまた共有されたときに使い回す。セッションを外そうとしても
+	 * upstream の不具合（空の session id の `Target.detachFromTarget`）で外れずに残るので、手放すたびに
+	 * 付け直すと、共有と解除を繰り返したタブにセッションが増え続けるため。
+	 */
 	releaseTarget(target: IParadisPageOpsTarget): void {
+		this.clear(target);
+		this.clearHighlight(target);
+		const entry = this.targetSessions.get(target);
+		if (entry) {
+			void this.teardown(target, entry);
+		}
+	}
+
+	/** タブが閉じた。上書きとハイライトを外し、専用のセッションを手放す（タブと一緒に消える）。 */
+	private disposeTarget(target: IParadisPageOpsTarget): void {
 		this.clear(target);
 		this.clearHighlight(target);
 		const entry = this.targetSessions.get(target);
@@ -378,7 +393,7 @@ export class ParadisBrowserPageOpsController {
 			this.targetSessions.set(target, entry);
 			this.pendingSessions.delete(target);
 			if (!this.destroyedListeners.has(target)) {
-				const destroyedListener = () => this.releaseTarget(target);
+				const destroyedListener = () => this.disposeTarget(target);
 				this.destroyedListeners.set(target, destroyedListener);
 				target.webContents.once('destroyed', destroyedListener);
 			}
@@ -413,7 +428,8 @@ export class ParadisBrowserPageOpsController {
 		}
 	}
 
-	private async teardownAndDispose(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
+	/** 有効にしたもの（ネットワークの上書きとハイライト）をすべて戻す。セッションは残す。 */
+	private async teardown(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
 		const commands = [
 			...(entry.networkEnabled || entry.fetchEnabled ? NETWORK_TEARDOWN_COMMANDS : []),
 			...(entry.overlayEnabled ? OVERLAY_TEARDOWN_COMMANDS : []),
@@ -422,6 +438,10 @@ export class ParadisBrowserPageOpsController {
 		entry.fetchEnabled = false;
 		entry.overlayEnabled = false;
 		await this.sendTeardown(target, entry.session, commands);
+	}
+
+	private async teardownAndDispose(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
+		await this.teardown(target, entry);
 		entry.store.dispose();
 		try {
 			entry.session.dispose();
@@ -447,7 +467,7 @@ export class ParadisBrowserPageOpsController {
 			disposed: false,
 		};
 		if (!this.destroyedListeners.has(target)) {
-			const destroyedListener = () => this.releaseTarget(target);
+			const destroyedListener = () => this.disposeTarget(target);
 			this.destroyedListeners.set(target, destroyedListener);
 			target.webContents.once('destroyed', destroyedListener);
 		}
