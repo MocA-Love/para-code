@@ -13,6 +13,7 @@ import { promises as fs } from 'fs';
 import { join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { PARADIS_RENDER_EVIDENCE_MAX_AGE, PARADIS_RENDER_EVIDENCE_MAX_RECORDS, paradisRenderRecordName, paradisRenderRecordsToPrune } from '../../terminalRenderer/common/paradisRenderDesync.js';
+import { paradisEncodeTerminalScreens } from '../../ptyDaemon/common/paradisTerminalScreens.js';
 import { IParadisRenderEvidence, IParadisTerminalPrivateFiles, paradisIsSafeWorkspaceId, paradisStripTerminalStateSecrets } from '../common/paradisTerminalPrivateFiles.js';
 
 /** 受け付ける大きさの上限（renderer から来る値なので、際限なく書かせない）。 */
@@ -65,19 +66,17 @@ export class ParadisTerminalPrivateFileStore implements IParadisTerminalPrivateF
 		}
 	}
 
-	async writeScreens(workspaceId: string, content: string): Promise<void> {
-		if (typeof content !== 'string' || content.length > MAX_SCREENS_LENGTH) {
+	async writeScreens(workspaceId: string, savedAt: number, daemon: { readonly pid: number; readonly startedAt: number }, state: string): Promise<void> {
+		if (typeof state !== 'string' || state.length > MAX_SCREENS_LENGTH || typeof savedAt !== 'number'
+			|| typeof daemon?.pid !== 'number' || typeof daemon.startedAt !== 'number') {
 			throw new Error('invalid screens content');
 		}
 		const file = this.screensFile(workspaceId);
-		const saved = JSON.parse(content) as { state?: unknown };
-		if (!saved || typeof saved !== 'object' || typeof saved.state !== 'string') {
-			throw new Error('invalid screens content');
-		}
-		// 内部用の環境変数とペイントークンは、renderer を信じずにここで落とす
-		const stripped = JSON.stringify({ ...saved, state: paradisStripTerminalStateSecrets(saved.state) });
+		// 秘密の値は renderer を信じずにここで落とす。大きな JSON を main で扱うので、解析と
+		// 書き出しは1回ずつにとどめる
+		const content = paradisEncodeTerminalScreens(savedAt, { pid: daemon.pid, startedAt: daemon.startedAt }, paradisStripTerminalStateSecrets(state));
 		await ensurePrivateDir(this.screensDir);
-		await writePrivateFile(file, stripped);
+		await writePrivateFile(file, content);
 	}
 
 	async deleteScreens(workspaceId: string): Promise<void> {
@@ -106,7 +105,16 @@ export class ParadisTerminalPrivateFileStore implements IParadisTerminalPrivateF
 		}
 	}
 
-	async writeRenderEvidence(evidence: IParadisRenderEvidence): Promise<string | undefined> {
+	/** 記録の書き込みは1件ずつ（古いものの刈り込みが並行すると上限を超える）。 */
+	private evidenceQueue: Promise<unknown> = Promise.resolve();
+
+	writeRenderEvidence(evidence: IParadisRenderEvidence): Promise<string | undefined> {
+		const result = this.evidenceQueue.then(() => this.doWriteRenderEvidence(evidence));
+		this.evidenceQueue = result.catch(() => undefined);
+		return result;
+	}
+
+	private async doWriteRenderEvidence(evidence: IParadisRenderEvidence): Promise<string | undefined> {
 		const total = (evidence.beforePng?.length ?? 0) + (evidence.afterPng?.length ?? 0) + (evidence.info?.length ?? 0);
 		if (typeof evidence.info !== 'string' || total > MAX_EVIDENCE_LENGTH) {
 			throw new Error('invalid render evidence');

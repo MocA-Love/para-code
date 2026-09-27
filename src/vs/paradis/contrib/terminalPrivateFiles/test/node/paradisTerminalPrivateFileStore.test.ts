@@ -32,30 +32,42 @@ suite('ParadisTerminalPrivateFileStore', () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	test('writes screens privately and drops internal environment variables and pane tokens', async () => {
+	test('writes screens privately, drops secrets and keeps what a revived shell needs', async () => {
 		const state = JSON.stringify({
 			version: 1,
 			state: [{
 				id: 1,
-				shellLaunchConfig: { env: { PARA_CODE_TERMINAL_PANE_ID: 'secret', KEEP: '1' } },
+				shellLaunchConfig: {
+					env: {
+						PARA_CODE_TERMINAL_PANE_ID: 'secret',
+						PARA_CODE_CODEX_APP_SERVER_SOCKET: '/tmp/secret.sock',
+						// 起こし直したシェルにも要る（スペース別の履歴・MCP のポートファイル）
+						PARA_CODE_SPACE_HISTORY_DIR: '/h',
+						PARA_CODE_SPACE_HISTORY_ID: 'abc',
+						PARA_CODE_MCP_PORT_FILE: '/p',
+						KEEP: '1',
+					},
+				},
 				processDetails: { paradisPaneToken: 'secret', pid: 2 },
-				processLaunchConfig: { env: { PARA_CODE_VOICE_TOKEN: 'secret', PARADIS_PTY_DAEMON_SOCKET: 's', PATH: '/bin' }, executableEnv: { PARA_CODE_CODEX_X: 'secret' } },
+				processLaunchConfig: { env: { API_KEY: 'secret', PATH: '/bin' }, executableEnv: { PARA_CODE_VOICE_TOKEN: 'secret', PARADIS_PTY_DAEMON_SOCKET: 's', PATH: '/bin' } },
 			}],
 		});
-		await store.writeScreens('abc123', JSON.stringify({ version: 2, savedAt: 1, daemon: { pid: 1, startedAt: 1 }, state }));
+		await store.writeScreens('abc123', 1, { pid: 1, startedAt: 1 }, state);
 		const read = JSON.parse((await store.readScreens('abc123'))!);
 		const file = join(root, 'screens', 'abc123.json');
 		assert.deepStrictEqual({
+			header: [read.version, read.savedAt, read.daemon],
 			entry: JSON.parse(read.state).state[0],
 			fileMode: isWindows ? 0o600 : statSync(file).mode & 0o777,
 			dirMode: isWindows ? 0o700 : statSync(join(root, 'screens')).mode & 0o777,
 			leftovers: readdirSync(join(root, 'screens')),
 		}, {
+			header: [2, 1, { pid: 1, startedAt: 1 }],
 			entry: {
 				id: 1,
-				shellLaunchConfig: { env: { KEEP: '1' } },
+				shellLaunchConfig: { env: { PARA_CODE_SPACE_HISTORY_DIR: '/h', PARA_CODE_SPACE_HISTORY_ID: 'abc', PARA_CODE_MCP_PORT_FILE: '/p', KEEP: '1' } },
 				processDetails: { pid: 2 },
-				processLaunchConfig: { env: { PATH: '/bin' }, executableEnv: {} },
+				processLaunchConfig: { env: {}, executableEnv: { PATH: '/bin' } },
 			},
 			fileMode: 0o600,
 			dirMode: 0o700,
@@ -63,8 +75,13 @@ suite('ParadisTerminalPrivateFileStore', () => {
 		});
 	});
 
+	test('writes render records one at a time', async () => {
+		const folders = await Promise.all([1, 2, 3, 4, 5, 6].map(() => store.writeRenderEvidence({ info: '{}' })));
+		assert.deepStrictEqual({ distinct: new Set(folders).size, remaining: readdirSync(join(root, 'logs', 'render')).length }, { distinct: 6, remaining: 4 });
+	});
+
 	test('refuses workspace ids that could escape the folder', async () => {
-		await assert.rejects(store.writeScreens('../x', '{}'));
+		await assert.rejects(store.writeScreens('../x', 1, { pid: 1, startedAt: 1 }, '{"state":[]}'));
 		await assert.rejects(store.readScreens('a/b'));
 	});
 

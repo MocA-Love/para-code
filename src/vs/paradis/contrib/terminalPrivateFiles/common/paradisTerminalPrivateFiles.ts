@@ -26,10 +26,10 @@ export interface IParadisTerminalPrivateFiles {
 	/** ワークスペースの保存画面を読む。無ければ undefined。 */
 	readScreens(workspaceId: string): Promise<string | undefined>;
 	/**
-	 * ワークスペースの保存画面を書く。書く前に、環境変数のうちペイントークンなど fork の内部用の
-	 * 値（{@link paradisIsSecretTerminalEnvKey}）とペイントークンを落とす。
+	 * ワークスペースの保存画面を書く。`state` は pty ホストの `serializeTerminalState` の結果で、
+	 * 書く前に秘密の値を落とす（{@link paradisStripTerminalStateSecrets}）。
 	 */
-	writeScreens(workspaceId: string, content: string): Promise<void>;
+	writeScreens(workspaceId: string, savedAt: number, daemon: { readonly pid: number; readonly startedAt: number }, state: string): Promise<void>;
 	deleteScreens(workspaceId: string): Promise<void>;
 	/** 指定より古い保存画面を全ワークスペースぶん消す。 */
 	sweepScreens(maxAge: number): Promise<void>;
@@ -43,12 +43,18 @@ export function paradisIsSafeWorkspaceId(value: unknown): value is string {
 }
 
 /**
- * 保存画面に残してはいけない環境変数。fork がシェルへ渡す内部用の値（ペイントークン
- * `PARA_CODE_TERMINAL_PANE_ID`、`PARA_CODE_VOICE_TOKEN`、`PARA_CODE_CODEX_*` など）と、常駐の内部用
- * （`PARADIS_*`）。どれも PC を再起動した後には意味が無く、漏れたときの害だけが残る。
+ * 保存画面に残してはいけない環境変数（許可リストではなく、落とすものを名指しする）。
+ *
+ * ペイントークンとそこから作る Codex app-server の置き場所、音声のトークン、常駐の内部用の値。
+ * どれも PC を再起動した後には意味が無く（ペイン用の値は復元のときに付け直す）、漏れたときの害
+ * だけが残る。スペース別の履歴（`PARA_CODE_SPACE_HISTORY_*`）や MCP のポートファイルのように、
+ * 秘密ではなく、起こし直したシェルにも要るものは残す。
  */
 export function paradisIsSecretTerminalEnvKey(key: string): boolean {
-	return /^(PARA_CODE_|PARADIS_)/.test(key);
+	return key === 'PARA_CODE_TERMINAL_PANE_ID'
+		|| key === 'PARA_CODE_VOICE_TOKEN'
+		|| key.startsWith('PARA_CODE_CODEX_APP_SERVER_')
+		|| key.startsWith('PARADIS_PTY_');
 }
 
 function stripEnv(env: unknown): void {
@@ -62,8 +68,19 @@ function stripEnv(env: unknown): void {
 }
 
 /**
- * pty ホストの `serializeTerminalState` の結果から、内部用の環境変数とペイントークンを落とす。
- * 形が読めなければ例外（中身の分からないものは書かない）。
+ * pty ホストの `serializeTerminalState` の結果から秘密の値を落とす。形が読めなければ例外
+ * （中身の分からないものは書かない）。
+ *
+ * - `shellLaunchConfig.env`: 秘密の変数だけ落とす（upstream は復元のときにここから環境変数を
+ *   作り直すので、スペース別の履歴などは残す必要がある）
+ * - `processLaunchConfig.env`: 空にする。起動元から引き継いだ全環境変数（API キーなど）が入って
+ *   いるが、upstream は復元のときに作り直すので要らない
+ * - `processLaunchConfig.executableEnv`: 実行ファイルを探すのに使われるので残し、秘密の変数だけ落とす
+ * - `processDetails.paradisPaneToken`: 落とす
+ *
+ * シェル統合の nonce は残る（エディタのタブと起こし直した端末を結び付けるのに要る）。
+ * ペイントークンは nonce から決まるので、**このファイルを読めればペイントークンも分かる**。
+ * そのためファイルは本人だけが読める権限で書く。
  */
 export function paradisStripTerminalStateSecrets(serialized: string): string {
 	const value = JSON.parse(serialized) as { state?: unknown };
@@ -72,8 +89,10 @@ export function paradisStripTerminalStateSecrets(serialized: string): string {
 	}
 	for (const entry of value.state as Record<string, Record<string, unknown> | undefined>[]) {
 		stripEnv(entry?.shellLaunchConfig?.env);
-		stripEnv(entry?.processLaunchConfig?.env);
-		stripEnv(entry?.processLaunchConfig?.executableEnv);
+		if (entry?.processLaunchConfig) {
+			entry.processLaunchConfig.env = {};
+			stripEnv(entry.processLaunchConfig.executableEnv);
+		}
 		if (entry?.processDetails) {
 			delete entry.processDetails.paradisPaneToken;
 		}
