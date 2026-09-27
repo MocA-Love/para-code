@@ -11,7 +11,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisRenderGrid,
 	paradisIsSuspectDivergence,
+	paradisIsThinGlyph,
 	paradisMeasureRenderDivergence,
+	paradisMissingCellCoordinates,
 	paradisMissingSetsOverlap,
 	ParadisRenderDesyncGate,
 	paradisRenderRecordName,
@@ -63,10 +65,22 @@ suite('ParadisRenderDesync', () => {
 		const small = paradisMeasureRenderDivergence(makeImage(10, 10, () => false), grid(10, 10), () => true);
 		// 背景の alpha が 0（ウィンドウ透過）なら、背景の画素をインクと数えない（欠けとして正しく数える）
 		const transparent = paradisMeasureRenderDivergence(makeImage(20, 20, () => false, 0), grid(20, 20), () => true);
+		// 全部が欠けて見える（描画バッファを読めなかった）ときは測れなかったとみなし、判定しない
+		const blank = paradisMeasureRenderDivergence(makeImage(20, 20, () => false), grid(20, 20), () => true);
 		assert.deepStrictEqual({
 			small: paradisIsSuspectDivergence(small),
 			transparentMissing: transparent.missing,
-		}, { small: false, transparentMissing: 400 });
+			transparentSuspect: paradisIsSuspectDivergence(transparent),
+			blankSuspect: paradisIsSuspectDivergence(blank),
+		}, { small: false, transparentMissing: 400, transparentSuspect: false, blankSuspect: false });
+	});
+
+	test('ignores thin glyphs and records only the coordinates of missing cells', () => {
+		const divergence = paradisMeasureRenderDivergence(makeImage(20, 20, (row, col) => !(row === 1 && col < 3)), grid(20, 20), () => true);
+		assert.deepStrictEqual({
+			thin: ['.', '_', '\u2500', 'a', '\u3042'].map(paradisIsThinGlyph),
+			coords: paradisMissingCellCoordinates(divergence, 20),
+		}, { thin: [true, true, true, false, false], coords: [[1, 0], [1, 1], [1, 2]] });
 	});
 
 	test('requires the same cells to stay missing', () => {

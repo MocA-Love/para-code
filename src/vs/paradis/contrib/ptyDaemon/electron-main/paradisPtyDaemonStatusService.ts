@@ -33,6 +33,7 @@ import {
 } from '../common/paradisPtyDaemonStatus.js';
 import { IParadisDaemonLedgerScope, ParadisDaemonStatusCollector } from '../node/paradisDaemonStatusCollector.js';
 import { paradisActiveDaemonLedger, paradisAllDaemonLedgers, paradisAnyDaemonEnabled } from './paradisPtyHostStarterFactory.js';
+import { paradisRegisterTerminalPrivateFiles } from '../../terminalPrivateFiles/electron-main/paradisTerminalPrivateFiles.js';
 
 /** 立て直すのに必要な、ターミナル側の見え方。 */
 export interface IParadisDaemonPtyAccess {
@@ -104,5 +105,8 @@ export function paradisRegisterPtyDaemonStatus(
 	const store = new DisposableStore();
 	const service = store.add(new ParadisPtyDaemonStatusService(pty, configurationService, environmentMainService, productService, logService));
 	server.registerChannel(PARADIS_PTY_DAEMON_CHANNEL, ProxyChannel.fromService<string>(service, store));
+	// 常駐の保存画面（と描画ずれの記録）を本人だけが読める権限で書くチャネルも、ここで一緒に立てる
+	// （app.ts に行を足さないため）
+	store.add(paradisRegisterTerminalPrivateFiles(server, environmentMainService));
 	return store;
 }

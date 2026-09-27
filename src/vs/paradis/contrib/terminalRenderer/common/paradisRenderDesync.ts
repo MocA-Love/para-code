@@ -26,6 +26,22 @@ const MISSING_SET_MIN_OVERLAP = 0.5;
 export const PARADIS_RENDER_REPAIR_COOLDOWN = 60_000;
 /** 記録を残す上限（古いものから消す）。画面の画像には秘密情報が写りうるので少なく保つ。 */
 export const PARADIS_RENDER_EVIDENCE_MAX_RECORDS = 4;
+/** 記録を残す日数。これより古いものは次に記録するときに消す。 */
+export const PARADIS_RENDER_EVIDENCE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+/**
+ * 欠けの割合がこれ以上なら「測れなかった」とみなす。WebGL の描画バッファが読み取りの時点で
+ * 消えていると全画素が透明になり、文字のある全セルが欠けに見える。本物の描画ずれは一部の
+ * セルに出るもので、画面の全部が消えるのとは見分けが付かないので、そちらは判定しない。
+ */
+const UNMEASURABLE_MISSING_PCT = 95;
+
+/**
+ * 判定に使わない文字。セルの中央を抜き取る方式では、細い記号（`.` `_` `'`）や罫線は
+ * 中央付近にインクが無く、描けていても欠けに見える。
+ */
+export function paradisIsThinGlyph(chars: string): boolean {
+	return /^[.,_'`\-:;|~^"\u00b7\u2500-\u257f]$/.test(chars);
+}
 
 /** 抜き取りに使う画像（CanvasRenderingContext2D.getImageData の結果と同じ形）。 */
 export interface IParadisRenderImage {
@@ -108,7 +124,14 @@ export function paradisMeasureRenderDivergence(image: IParadisRenderImage, grid:
 
 /** 1回の抜き取りが「欠けの疑い」に当たるか。 */
 export function paradisIsSuspectDivergence(divergence: IParadisRenderDivergence): boolean {
-	return divergence.textCells >= PARADIS_RENDER_DESYNC_MIN_TEXT_CELLS && divergence.missPct >= PARADIS_RENDER_DESYNC_MISSING_PCT;
+	return divergence.textCells >= PARADIS_RENDER_DESYNC_MIN_TEXT_CELLS
+		&& divergence.missPct >= PARADIS_RENDER_DESYNC_MISSING_PCT
+		&& divergence.missPct < UNMEASURABLE_MISSING_PCT;
+}
+
+/** 記録に残す欠けの場所（ビューポートの [行, 列]）。画面の文字そのものは残さない。 */
+export function paradisMissingCellCoordinates(divergence: IParadisRenderDivergence, cols: number, limit = 500): [number, number][] {
+	return [...divergence.missingCells].slice(0, limit).map(cell => [Math.floor(cell / cols), cell % cols]);
 }
 
 /** 2回の抜き取りで欠けた場所がほぼ同じか（本物の欠けは同じセルに居座る。描画の遅れは動く）。 */
