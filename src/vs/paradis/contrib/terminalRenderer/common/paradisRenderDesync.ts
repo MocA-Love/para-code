@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ターミナルの描画ずれ（バッファには文字があるのに画面に描かれていない＝文字の欠け・古いグリフ）の
-// 判定部分（Q58 B / TM12）。DOM や xterm には触らない純粋な計算だけを置き、テストから直接確かめる。
+// 判定部分（TM12）。DOM や xterm には触らない純粋な計算だけを置き、テストから直接確かめる。
 //
 // 判定の考え方は Orca（stablyai/orca、MIT）の `terminal-render-desync-frame.ts` /
 // `terminal-render-desync-sentinel.ts` を移植したもの: バッファが「文字あり」と言うセルの中央部を
@@ -127,6 +127,14 @@ export function paradisIsSuspectDivergence(divergence: IParadisRenderDivergence)
 	return divergence.textCells >= PARADIS_RENDER_DESYNC_MIN_TEXT_CELLS
 		&& divergence.missPct >= PARADIS_RENDER_DESYNC_MISSING_PCT
 		&& divergence.missPct < UNMEASURABLE_MISSING_PCT;
+}
+
+/**
+ * 画面を読み取れなかったとみなす結果か（文字は十分あるのに、ほぼ全部が欠けて見える）。
+ * 読み取りが効いているかを後から確かめられるよう、呼び出し側はこの回数をログへ残す。
+ */
+export function paradisIsUnmeasurableDivergence(divergence: IParadisRenderDivergence): boolean {
+	return divergence.textCells >= PARADIS_RENDER_DESYNC_MIN_TEXT_CELLS && divergence.missPct >= UNMEASURABLE_MISSING_PCT;
 }
 
 /** 記録に残す欠けの場所（ビューポートの [行, 列]）。画面の文字そのものは残さない。 */
