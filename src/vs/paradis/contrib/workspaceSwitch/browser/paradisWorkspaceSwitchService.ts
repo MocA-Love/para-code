@@ -1054,14 +1054,21 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		throw new Error(`Unknown Para Code space: ${stateKey}`);
 	}
 
-	/** 「無い」と確かめられたときだけ true。確かめられなかったときは false（切り替え側に任せる）。 */
+	/**
+	 * 「無い」と確かめられたときだけ true。確かめられなかったときは false（切り替え側に任せる）。
+	 *
+	 * 切り替えの先行 stat（`verifyTargetFolder`）と同じ締め切りで打ち切る。接続先が詰まって stat が
+	 * 答えないと、ここで切り替えそのものが止まってしまうため。時間切れも「確かめられない」扱い。
+	 */
 	private async isMissingOnDisk(uri: URI): Promise<boolean> {
-		try {
-			await this.fileService.stat(uri);
-			return false;
-		} catch (error) {
-			return error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND;
-		}
+		const missing = await raceTimeout(
+			this.fileService.stat(uri).then(
+				() => false,
+				error => error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND,
+			),
+			ParadisWorkspaceSwitchService.FOLDER_VERIFY_TIMEOUT_MS,
+		);
+		return missing ?? false;
 	}
 
 	private switchToTarget(stateKey: string, uri: URI, options?: IParadisSwitchOptions): Promise<void> {
