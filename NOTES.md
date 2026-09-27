@@ -750,6 +750,49 @@ TM1 / TM2 / TM11 / TM18 / TM22。ロジックはすべて `src/vs/paradis/contri
 - **タブ左のアイコン（TM18）で `Codicon.loading` を返してはいけない**。`.codicon-loading` の回転がラベルのルート要素に掛かり、タブの文字ごと回る。作業中は土台を `Codicon.sync` にして、CSS で `::before` の中身を loading のグリフに替えて回している。ロゴは SVG を mask にして文字色で塗る（パスデータは `limitsMonitor/common/paradisAgentLogoPaths.ts`）。`workbench.editor.showIcons` がオフだと出ない
 - **復元タブのバナー（TM22）**。shared process の状態スナップショットに `paneSessions`（ペイントークン → hook の session_id）を足し、renderer が WORKSPACE storage の `paradis.terminal.resumeSessions` に控える（Codex はタイトルの `codex | <uuid>` からも拾う）。「エージェントが終わった」の判定はシェルのプロセス ID が変わったか（ウィンドウの再読み込みでは変わらないので出ない。常駐ターミナルが引き取った `paradisAdopted` も出さない）。`hasChildProcesses` はエディタタブの直列化が終了時点の値を持ち越すので使えない。表示は共有ドットと同じ `paradisPaneIndicator.ts` の重ね合わせの口（`paradisRegisterEditorTerminalOverlay`）
 
+## プリセットの種類・描画修復・常駐画面の保存・IME パッチ（2026-09-27、フェーズ5 担当B）
+
+TM23 / TM12 / TM14 / TM16。upstream への変更は `localTerminalBackend.ts`（1行 + import）、`build/npm/postinstall.ts`（呼び出し2か所 + import）、`build/filters.ts`（除外2行）、`eslint.config.js`（許可1行）だけ。
+
+### コマンドプリセットの種類（TM23）
+
+プリセットに `action`（`run` / `insert` / `agent-prompt`）と `prompt` を足した。`run` は書かない（従来の定義と同じ形のまま保存する）。未知の `action` は読み飛ばす。古い版が新しい種類を `run` と読んで Enter 付きで流すと、入れるだけのつもりの文字列が実行されるため。
+
+- `agent-prompt` はシェルのタスクを持たない（`paradisGetPresetTasks` は空を返す）。種類を見ずにタスクを実行する経路があっても、プロンプトがシェルで走らない
+- 入れる先は「アクティブなターミナルで hook が1度でも発火したか」（`IParadisAgentStatusStore.isAgentInstance`）で決め、状態が `question` / `permission` の間は入れない（選択肢の操作として食われる）。エージェントを終了した後のシェルにも入ってしまうが、Enter は送らないので実行はされない
+- 送り方は `sendText(text, false, true)`（貼り付けモード）。貼り付けモードが無効な相手には改行とタブを空白へ均して1行にする（`paradisBuildPresetInsertText`）。ESC などの制御文字は落とす（本文の途中で貼り付けの終わりを偽造できるため）
+- モバイルの一覧と autoRun からは `run` 以外を外している（入れ先の「今のターミナル」がモバイルからは見えない）
+- 指紋（`paradisPresetFingerprint`）には `run` 以外のときだけ種類を足す。指紋は「このマシンだけ隠したリポジトリのプリセット」の保存キーにも使っているので、従来のプリセットの指紋を変えると隠したものが出てくる
+
+### 描画ずれの自動修復（TM12）
+
+`terminalRenderer/browser/paradisRenderRepair.contribution.ts`。ターミナルが見えるようになったとき・ウィンドウに戻ったとき・ページが見える状態に戻ったとき（スリープ復帰）にだけ WebGL の画面を抜き取り、Orca の方式（文字のあるセルの中央に背景色以外の画素が1つも無ければ欠け）で判定する。2回（250ms 空けて）続けて、ビューポートの文字が同じまま同じセルが欠けていたら、upstream の `recreateRendererAfterWindowChange` で作り直す。
+
+- 判定は保守的にしてある: 文字 200 セル以上・欠け 8% 以上・2回で欠けの位置が半分以上重なる。修復後 60 秒は同じターミナルを検査しない。修復後もまだ欠けて見えるなら判定の方が外れている（背景と同じ色の文字など）とみなし、そのターミナルでは以後検査しない
+- **xterm の非公開のプロパティを読んでいる**: `_core._renderService._isPaused` と `_core._renderService._renderer.value` の `_canvas` / `_charAtlas` / `_themeService.colors.background.rgba` / `dimensions.device.cell`。xterm か addon-webgl を上げたら、`lib/xterm.js` と `addon-webgl/lib/addon-webgl.js` にこれらの名前が残っているかを `grep` で確かめる。消えていても検査が走らなくなるだけで、例外にはならない
+- 記録は `<ユーザーデータ>/logs/paradisTerminalRender/<時刻>-<乱数>/`（`before.png` / `after.png` / `info.json`。`info.json` にビューポートの文字が入る）。セッションごとのフォルダではなく logs 直下に1つ置き、全体で4件を超えたら古いものから消す。Sentry へは件数と割合だけ送る（`render-desync-repaired`、info）
+
+### 常駐ターミナルの画面のディスク保存（TM14）
+
+常駐を使うと、アプリを閉じるときの upstream の画面保存（`persistTerminalState`）を飛ばしている（`terminalService.ts` の PARA-PATCH。起こし直すと生きているプロセスと二重になる）。そのため PC を再起動すると画面もタブも戻らず、常駐を使わない方が再起動に強い状態だった。
+
+- 保存: `ptyDaemon/electron-browser/paradisTerminalScreens.contribution.ts`。常駐が有効な間、pty ホストの `serializeTerminalState`（upstream の保存物と同じもの）を `workspaceStorage/<ワークスペース>/paradisTerminalScreens.json` へ書く。1分ごと（出力があったときだけ。無くても10分に1回）、ターミナルを閉じた2秒後、アプリを閉じる前（`onBeforeShutdown`、上限2秒）。対象は upstream が閉じるときに畳む範囲と同じ（待避中のグループとエディタの端末を含む）。1本も無くなったらファイルを消す
+- 復元: `localTerminalBackend.ts` の `getTerminalLayoutInfo` で、ストレージに保存物が無いときだけ `paradisTakeSavedTerminalScreens` を呼び、返ってきた文字列を upstream の復元へそのまま流す。配置はストレージの `terminal.integrated.layoutInfo`（常駐のときも upstream が書き続けている）を upstream が使う
+- **使うかどうかは常駐の起動時刻で決める**（`paradisDecideSavedScreens`）。常駐の起動が保存より後なら、保存した画面のプロセスはもう無い（PC の再起動・24時間の放置で終了・手動の停止）ので戻す。前なら同じ常駐がまだ抱えているので使わない。常駐の状態が3秒で分からなければ戻さない。使ったらファイルを消す（2回使うと、起こし直したシェルを次の起動でまた起こす）
+- 復元の前に保存が走ると、戻すはずの画面を空で上書きする。保存は `take` が済むまで（呼ばれなければ起動から2分）始めない
+- 30日より古いものは使わずに消す。開かれなくなったワークスペースの分は、起動5分後に `workspaceStorage` を一度見回って消す。設定 `paradis.terminal.daemon.saveScreens`（既定 true）を切るとその場で消す
+- **常駐そのものは既定オフのまま**。実機での再起動の確認がまだで、「Terminal: Attach to Session」が残した端末を巻き添えにする件と、SSH 先の環境変数の件（上の節）が残っているため
+- Windows は常駐を使っていないので何もしない（upstream の保存・復元がそのまま働く）。ディスク保存の仕組み自体は OS に依存しない（renderer のファイル読み書きだけ）ので、上の「開けるときの筋道」で Windows の常駐を開ければそのまま効く
+
+### xterm の IME パッチ（TM16）
+
+`build/npm/paradisXtermImePatch.ts` が postinstall で、`node_modules/@xterm/xterm/src/`（配布物に同梱の beta.304 のソース）へ `build/npm/paradisXtermIme/xterm-ime.patch` を当て、esbuild でバンドルし直して `lib/xterm.js`（UMD で包む）と `lib/xterm.mjs` を置き換える。差分は Orca（MIT）の `@xterm__xterm@6.1.0-beta.303.patch` のうち IME の src 部分（CompositionHelper / CoreBrowserTerminal / Types / WidthCache の export）だけ。Orca の lib/ は beta.303 のビルド結果なので使えない。無関係な SortedList の修正は外した。
+
+- **xterm を上げたら**: `PARADIS_XTERM_IME_TARGET_VERSION` と違う版には当てず、install のログに警告だけ出す（素の xterm で動く）。新しい版の `src/` に `git apply --check` が通るか確かめ、通れば版の定数を書き換える。通らなければ Orca の新しいパッチから作り直す
+- 当てたかどうかは `lib/xterm.js` の先頭の印で見る。npm が入れ直せば印ごと消えてまた当たる。esbuild は build/ の依存なので、初回の install では build/ を入れた後（postinstall の最後）に当たる
+- Web ビルド（`remote/web` の xterm）には当てていない
+- パッチには不可視文字（U+200E）と2スペースのインデントが入るので、`build/filters.ts` の unicode / indentation の検査から `build/npm/paradisXtermIme/**` を外してある
+
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
 HTML プレビューは、ファイルの属するワークスペースフォルダーを 127.0.0.1 のローカルサーバへ載せ、
