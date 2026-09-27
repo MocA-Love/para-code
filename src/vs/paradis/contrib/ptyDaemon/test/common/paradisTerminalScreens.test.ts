@@ -9,6 +9,8 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	IParadisDaemonStatusLike,
+	paradisDaemonIdentityForSave,
 	paradisDecideSavedScreens,
 	paradisDecodeTerminalScreens,
 	paradisEncodeTerminalScreens,
@@ -18,35 +20,50 @@ import {
 suite('ParadisTerminalScreens', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	const daemon = { pid: 100, startedAt: 5_000 };
+
 	test('round-trips the saved screens and rejects broken files', () => {
 		assert.deepStrictEqual({
-			ok: paradisDecodeTerminalScreens(paradisEncodeTerminalScreens(1000, '{"version":1,"state":[]}')),
+			ok: paradisDecodeTerminalScreens(paradisEncodeTerminalScreens(1000, daemon, '{"version":1,"state":[]}')),
 			broken: paradisDecodeTerminalScreens('{not json'),
-			empty: paradisDecodeTerminalScreens(paradisEncodeTerminalScreens(1000, '')),
-			otherVersion: paradisDecodeTerminalScreens(JSON.stringify({ version: 2, savedAt: 1, state: 'x' })),
+			empty: paradisDecodeTerminalScreens(paradisEncodeTerminalScreens(1000, daemon, '')),
+			// 保存時の常駐を持たない古い形は使わない
+			oldVersion: paradisDecodeTerminalScreens(JSON.stringify({ version: 1, savedAt: 1, state: 'x' })),
 		}, {
-			ok: { version: 1, savedAt: 1000, state: '{"version":1,"state":[]}' },
+			ok: { version: 2, savedAt: 1000, daemon, state: '{"version":1,"state":[]}' },
 			broken: undefined,
 			empty: undefined,
-			otherVersion: undefined,
+			oldVersion: undefined,
 		});
 	});
 
-	test('revives only when the daemon that held the screens is gone', () => {
-		const savedAt = 10_000;
-		const saved = { version: 1 as const, savedAt, state: 'x' };
+	test('saves only while connected to a daemon', () => {
 		assert.deepStrictEqual([
-			// PC を再起動した: 常駐は保存より後に起きている
-			paradisDecideSavedScreens(saved, savedAt + 1000, { running: true, startedAt: savedAt + 500 }),
-			// アプリだけ閉じて開き直した: 保存したときと同じ常駐がまだ抱えている
-			paradisDecideSavedScreens(saved, savedAt + 1000, { running: true, startedAt: savedAt - 500 }),
-			// 常駐へ繋がれなかった（アプリの中の pty ホストに落ちた）: 引き取れる相手が居ない
-			paradisDecideSavedScreens(saved, savedAt + 1000, { running: false, startedAt: undefined }),
-			// 状態が分からない: 二重に起こさない
+			paradisDaemonIdentityForSave({ running: true, pid: 1, startedAt: 2, foreign: [] }),
+			paradisDaemonIdentityForSave({ running: false, pid: undefined, startedAt: undefined, foreign: [] }),
+			paradisDaemonIdentityForSave(undefined),
+		], [{ pid: 1, startedAt: 2 }, undefined, undefined]);
+	});
+
+	test('revives only when the daemon that held the screens is gone everywhere', () => {
+		const savedAt = 10_000;
+		const saved = { version: 2 as const, savedAt, daemon, state: 'x' };
+		const status = (overrides: Partial<IParadisDaemonStatusLike>): IParadisDaemonStatusLike => ({ running: true, pid: 200, startedAt: savedAt + 500, foreign: [], ...overrides });
+		assert.deepStrictEqual([
+			// PC を再起動した: 別の常駐に繋がっていて、元の常駐はどこにも居ない
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({})),
+			// アプリだけ閉じて開き直した: 同じ常駐がまだ抱えている
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({ pid: daemon.pid, startedAt: daemon.startedAt })),
+			// 更新した: 新しいビルドの常駐に繋がったが、更新前の常駐が元の端末を抱えたまま残っている
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({ foreign: [{ pid: daemon.pid, startedAt: daemon.startedAt }] })),
+			// pid が再利用されていても、起動時刻が違えば別の常駐
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({ pid: daemon.pid, startedAt: savedAt + 500 })),
+			// 常駐へ繋がっていない（アプリの中の pty ホスト。再読み込みなら生きているシェルがある）
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({ running: false, pid: undefined, startedAt: undefined })),
+			// 状態が分からない
 			paradisDecideSavedScreens(saved, savedAt + 1000, undefined),
-			paradisDecideSavedScreens(saved, savedAt + 1000, { running: true, startedAt: undefined }),
 			// 30日を過ぎた
-			paradisDecideSavedScreens(saved, savedAt + PARADIS_TERMINAL_SCREENS_MAX_AGE + 1, { running: true, startedAt: savedAt + 500 }),
-		], ['revive', 'daemonStillHolds', 'revive', 'unknown', 'unknown', 'expired']);
+			paradisDecideSavedScreens(saved, savedAt + PARADIS_TERMINAL_SCREENS_MAX_AGE + 1, status({})),
+		], ['revive', 'daemonStillHolds', 'daemonStillHolds', 'revive', 'unknown', 'unknown', 'expired']);
 	});
 });

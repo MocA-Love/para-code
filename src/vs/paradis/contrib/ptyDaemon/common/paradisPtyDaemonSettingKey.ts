@@ -36,7 +36,7 @@ export const PARADIS_PTY_HOST_DAEMON_ENABLED = 'paradis.terminal.daemon.reattach
 
 /**
  * 常駐を使っている間、ターミナルの画面を定期的にディスクへ保存し、PC を再起動した後に戻すか。
- * 既定は true。画面に写った秘密情報が最大30日ディスクに残るので、止められるようにしてある
+ * 既定は true。画面と環境変数に含まれる秘密情報が最大30日ディスクに残るので、止められるようにしてある
  * （`paradisTerminalScreens.ts`）。
  */
 export const PARADIS_PTY_DAEMON_SAVE_SCREENS = 'paradis.terminal.daemon.saveScreens';
