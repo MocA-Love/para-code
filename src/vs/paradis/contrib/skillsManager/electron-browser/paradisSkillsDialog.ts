@@ -15,10 +15,8 @@
 
 import './media/paradisSkills.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
-import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -48,6 +46,7 @@ import {
 	paradisSkillRootLabel,
 } from '../common/paradisSkills.js';
 import { paradisResolveSkillRoots } from './paradisSkillRoots.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
 
@@ -111,21 +110,23 @@ export class ParadisSkillsDialog extends Disposable {
 				this.dispose();
 			}
 		}));
-		this._register(dom.addDisposableListener(this.backdrop, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape) {
-				event.preventDefault();
-				event.stopPropagation();
+
+		layoutService.activeContainer.appendChild(this.backdrop);
+		// 開く前のフォーカスを覚えて閉じたら戻す・Esc はモーダル全体で受ける・描き直しで外れたフォーカスを
+		// 押していたボタンへ戻す・後から開いたモーダルを前に出す（「設定 (Para Code)」と同じ仕組み）
+		this._register(new ParadisModalFocus({
+			backdrop: this.backdrop,
+			modal: this.modal,
+			onEscape: () => {
 				if (this.selectedSkill) {
 					this.selectedSkill = undefined;
 					this.renderContent();
 				} else {
 					this.dispose();
 				}
-			}
+			},
+			close: () => this.dispose(),
 		}));
-
-		layoutService.activeContainer.appendChild(this.backdrop);
 		this.modal.focus();
 		this.load();
 	}

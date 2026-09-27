@@ -15,9 +15,7 @@
 
 import './media/paradisScheduledRuns.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -59,6 +57,7 @@ import {
 	paradisValidateScheduledRunDraft,
 } from '../common/paradisScheduledRuns.js';
 import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
 
@@ -263,18 +262,6 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				this.dispose();
 			}
 		}));
-		this._register(dom.addDisposableListener(this.backdrop, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape) {
-				event.preventDefault();
-				event.stopPropagation();
-				if (this.editing) {
-					this.cancelEdit();
-				} else {
-					this.dispose();
-				}
-			}
-		}));
 
 		this._register(this.client.onDidChange(() => this.reload()));
 		this._register(this.modelCatalogService.onDidChange(() => {
@@ -284,6 +271,20 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		}));
 		this.modelCatalogService.refresh();
 		layoutService.activeContainer.appendChild(this.backdrop);
+		// 開く前のフォーカスを覚えて閉じたら戻す・Esc はモーダル全体で受ける・描き直しで外れたフォーカスを
+		// 押していたボタンへ戻す・後から開いたモーダルを前に出す（「設定 (Para Code)」と同じ仕組み）
+		this._register(new ParadisModalFocus({
+			backdrop: this.backdrop,
+			modal: this.modal,
+			onEscape: () => {
+				if (this.editing) {
+					this.cancelEdit();
+				} else {
+					this.dispose();
+				}
+			},
+			close: () => this.dispose(),
+		}));
 		this.modal.focus();
 		this.reload();
 	}
