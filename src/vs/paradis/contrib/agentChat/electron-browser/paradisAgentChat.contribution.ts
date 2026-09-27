@@ -25,7 +25,7 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { ContextKeyExpr, IContextKey, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -42,6 +42,7 @@ import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/brow
 import { DEFAULT_COMMANDS_TO_SKIP_SHELL } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisEditorTerminalOverlay, paradisRegisterEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
 import { IParadisAgentInsightsService } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -165,6 +166,8 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		@IKeybindingService private readonly keybindingService: IKeybindingService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
+		@IContextKeyService contextKeyService: IContextKeyService,
+		@IEditorService private readonly editorService: IEditorService,
 	) {
 		super();
 		this.source = ProxyChannel.toService<IParadisAgentChatSource>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
@@ -219,6 +222,19 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		}
 		this._register(this.editorGroupsService.onDidAddGroup(group => this.watchGroup(group)));
 		this._register(this.editorGroupsService.onDidRemoveGroup(group => this.groupListeners.deleteAndDispose(group)));
+		// ウィンドウ全体にも、アクティブなグループの値を置く。カードのボタンが押せなくなってフォーカスが body に
+		// 落ちると、グループのスコープの値が見えず ⌘⇧J が効かなくなるため。
+		const globalAvailable = PARADIS_AGENT_CHAT_AVAILABLE.bindTo(contextKeyService);
+		const globalActive = PARADIS_AGENT_CHAT_ACTIVE.bindTo(contextKeyService);
+		const updateGlobal = () => {
+			const instanceId = this.instanceIdOfGroup(this.editorGroupsService.activeGroup);
+			globalAvailable.set(instanceId !== undefined && this.isAvailable(instanceId));
+			globalActive.set(instanceId !== undefined && this.isChatMode(instanceId));
+		};
+		this._register(this.editorGroupsService.onDidChangeActiveGroup(updateGlobal));
+		this._register(this.editorService.onDidActiveEditorChange(updateGlobal));
+		this._register(this.onDidRequestContextUpdate(updateGlobal));
+		updateGlobal();
 
 		const renew = this._register(new IntervalTimer());
 		renew.cancelAndSet(() => this.renewWatch(), WATCH_RENEW_INTERVAL);

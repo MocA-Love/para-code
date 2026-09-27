@@ -69,6 +69,7 @@ import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, 
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
+import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
@@ -1383,7 +1384,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown };
 		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
@@ -1441,7 +1442,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 			} else {
-				const parts = msg.parts as string[];
+				let parts = msg.parts as string[];
+				// Codex の承認の「拒否」は版でキーが違う（0.155.1 は Esc、それより前は `d`）。中継は画面を
+				// 見られないので `d` を送ってくる。画面の選択肢の表記に合わせて差し替える（`d` の版はそのまま）。
+				const interactionKind = typeof msg.interaction === 'object' && msg.interaction !== null ? (msg.interaction as { kind?: unknown }).kind : undefined;
+				if (interactionKind === 'approval' && parts.length === 1 && parts[0] === 'd') {
+					parts = [paradisCodexApprovalDenyKey(paradisVisibleTerminalText(instance))];
+				}
 				// 先頭の打鍵の前に画面を確かめ、各キーの直前に作り直しと差し替えを確かめる
 				// （paradisSendAgentInteractionKeys。待ちの間に PC で答えられた・別の質問に変わった場合に、
 				// 消えた質問の跡地へ打鍵しないため）。

@@ -854,7 +854,9 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		// 旧CLI(0.4x): <environment_context> / <user_instructions>
 		// 新CLI(0.80+): 「# AGENTS.md instructions for <path>」見出し＋<INSTRUCTIONS>ラッパー
 		const trimmedText = text.trim();
-		if (/^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(trimmedText)
+		// 中断の知らせ（`<turn_aborted>The user interrupted the previous turn on purpose…`、codex-cli 0.155.1）も
+		// ユーザーの発言ではないので出さない。
+		if (/^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS|turn_aborted)/.test(trimmedText)
 			|| trimmedText.startsWith('# AGENTS.md instructions for')) {
 			return [];
 		}

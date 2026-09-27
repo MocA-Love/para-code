@@ -34,7 +34,7 @@ import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgen
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
-import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisDescribeAgentChatTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
+import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 
@@ -144,7 +144,11 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly liveMarkdown = this._register(new MutableDisposable<IDisposable>());
 	private readonly fallbackStore = this._register(new DisposableStore());
 	private lastLiveSignature = '';
+	private renderedEpoch: string | undefined;
+	/** 送れなかった理由を出したときの会話の状態。状態が変わったら理由を消す。 */
+	private errorStateSignature: string | undefined;
 	private stickToBottom = true;
+	private lastScrollTop = 0;
 	private visible = false;
 	private readonly renderScheduler = this._register(new RunOnceScheduler(() => this.render(), 0));
 	private readonly ticker = this._register(new IntervalTimer());
@@ -215,9 +219,28 @@ export class ParadisAgentChatView extends Disposable {
 		this.jumpButton.append(renderIcon(Codicon.arrowDown), $('span', undefined, localize('paradisAgentChat.jumpToLatest', "最新へ")));
 		this._register(addDisposableListener(this.jumpButton, EventType.CLICK, () => this.scrollToBottom()));
 		this._register(addDisposableListener(this.scroller, EventType.SCROLL, () => {
+			// 隠れている間（display: none）に起きるスクロール位置の巻き戻しは、読んでいる位置の変化ではない。
+			if (!this.visible || this.scroller.clientHeight === 0) {
+				return;
+			}
 			this.stickToBottom = this.isAtBottom();
+			this.lastScrollTop = this.scroller.scrollTop;
 			this.jumpButton.classList.toggle('visible', !this.stickToBottom);
 		}));
+		// 分割やタブの切り替えで高さが変わっても、読んでいた位置に留まる（最下部なら最下部、途中ならその位置。
+		// 隠れている間にスクロール位置が 0 へ巻き戻るので、そのままだと先頭へ飛ぶ）。
+		const resizeObserver = new (getWindow(this.element).ResizeObserver)(() => {
+			if (!this.visible || this.scroller.clientHeight === 0) {
+				return;
+			}
+			if (this.stickToBottom) {
+				this.scrollToBottom();
+			} else if (this.scroller.scrollTop === 0 && this.lastScrollTop > 0) {
+				this.scroller.scrollTop = this.lastScrollTop;
+			}
+		});
+		resizeObserver.observe(this.scroller);
+		this._register(toDisposable(() => resizeObserver.disconnect()));
 
 		this.composer = this._register(new ParadisAgentChatComposer(this.element, host));
 		this._register(this.composer.onDidSubmit(text => this.submit(text)));
@@ -355,6 +378,7 @@ export class ParadisAgentChatView extends Disposable {
 			item.element.remove();
 		}
 		this.rendered.clear();
+		this.renderedEpoch = undefined;
 		this.expanded.clear();
 		this.fullTexts.clear();
 		this.fullTextChars = 0;
@@ -403,17 +427,26 @@ export class ParadisAgentChatView extends Disposable {
 		// 質問は PostToolUse ですぐ消えるので対象にしない（先頭の打鍵が取りこぼされて質問が残っているときに、
 		// 送った文の Enter が選択肢を確定するため）。承認も、送る直前に画面を確かめる（ParadisAgentChatInput）。
 		const answeredHere = interaction?.kind === 'approval' && this.approvalStates.get(interaction.id)?.sent === true;
+		const codexQuestion = state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
 		this.composer.setBlockedReason(state === undefined
 			? localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません")
 			: state.agentExited
 				? localize('paradisAgentChat.blockedExited', "エージェントは終了しました。ターミナルに戻って確かめてください")
-				: answeredHere
-					? undefined
-					: state.interaction?.kind === 'question'
-						? localize('paradisAgentChat.blockedQuestion', "質問に答えてから送ってください")
-						: state.interaction?.kind === 'approval'
-							? localize('paradisAgentChat.blockedApproval', "許可の確認に答えてから送ってください")
-							: undefined);
+				: codexQuestion
+					? localize('paradisAgentChat.blockedCodexQuestion', "Codex が質問しています。ターミナルで答えてください")
+					: answeredHere
+						? undefined
+						: state.interaction?.kind === 'question'
+							? localize('paradisAgentChat.blockedQuestion', "質問に答えてから送ってください")
+							: state.interaction?.kind === 'approval'
+								? localize('paradisAgentChat.blockedApproval', "許可の確認に答えてから送ってください")
+								: undefined);
+		// 送れなかった理由は、会話の状態が変わったら消す（次に送るまで残ると、今も送れないように読める）。
+		const stateSignature = state === undefined ? '' : `${state.epoch}:${state.rev}:${state.interaction?.id ?? ''}:${state.busy}`;
+		if (this.errorStateSignature !== undefined && this.errorStateSignature !== stateSignature) {
+			this.errorStateSignature = undefined;
+			this.composer.clearError();
+		}
 		if (follow) {
 			this.scrollToBottom();
 		} else {
@@ -429,7 +462,7 @@ export class ParadisAgentChatView extends Disposable {
 		this.headerModel.textContent = model;
 		this.headerModel.style.display = model.length > 0 ? '' : 'none';
 		let status = '';
-		if (state?.interaction?.kind === 'question') {
+		if (state?.interaction?.kind === 'question' || (state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined)) {
 			status = localize('paradisAgentChat.statusQuestion', "質問に答えるのを待っています");
 		} else if (state?.interaction?.kind === 'approval') {
 			status = localize('paradisAgentChat.statusApproval', "許可を待っています");
@@ -458,7 +491,17 @@ export class ParadisAgentChatView extends Disposable {
 	private renderItems(state: IParadisAgentChatState): void {
 		this.notice.textContent = state.truncated ? localize('paradisAgentChat.truncated', "これより前の会話は省略しています。すべて読むにはターミナルに戻ってください。") : '';
 		this.notice.style.display = state.truncated ? '' : 'none';
-		const items = paradisBuildAgentChatItems(state.messages);
+		// 読み取りが始め直された（同じタブで別の会話が始まった等）なら、前の会話の行を使い回さない
+		// （行の鍵は rev なので、epoch をまたぐと別の会話の行と取り違える）。
+		if (this.renderedEpoch !== state.epoch) {
+			for (const rendered of this.rendered.values()) {
+				rendered.store.dispose();
+				rendered.element.remove();
+			}
+			this.rendered.clear();
+			this.renderedEpoch = state.epoch;
+		}
+		const items = paradisBuildAgentChatItems(state.messages, state.interaction);
 		this.recentKeys = new Set(items.slice(-RECENT_ITEM_COUNT).map(item => item.key));
 		const seen = new Set<string>();
 		let previous: HTMLElement = this.notice;
@@ -738,7 +781,9 @@ export class ParadisAgentChatView extends Disposable {
 		let hidden = 0;
 		for (const file of diff.files) {
 			const header = append(card, $('.paradis-agent-chat-diff-header'));
-			append(header, $('span.paradis-agent-chat-diff-path')).textContent = file.path;
+			// 末尾（ファイル名）が見えるよう右から省略する（direction: rtl）。LRM で挟んで、`/` などの記号が
+			// 右から左の並びに引きずられて前後が入れ替わらないようにする。
+			append(header, $('span.paradis-agent-chat-diff-path')).textContent = `\u200E${file.path}\u200E`;
 			const added = file.rows.filter(row => row.kind === 'add').length;
 			const removed = file.rows.filter(row => row.kind === 'del').length;
 			append(header, $('span.paradis-agent-chat-diff-added')).textContent = `+${added}`;
@@ -1191,7 +1236,10 @@ export class ParadisAgentChatView extends Disposable {
 					? localize('paradisAgentChat.liveTool', "{0} を実行しています", live.tool)
 					: localize('paradisAgentChat.liveToolUnknown', "ツールを実行しています");
 			case 'permission':
-				return localize('paradisAgentChat.livePermission', "許可を待っています");
+				// AskUserQuestion も中継では permission の段階になる。
+				return live.tool === 'AskUserQuestion'
+					? localize('paradisAgentChat.liveQuestion', "質問への回答を待っています")
+					: localize('paradisAgentChat.livePermission', "許可を待っています");
 			case 'message':
 				return localize('paradisAgentChat.liveMessage', "返答を書いています");
 			default:
@@ -1234,6 +1282,8 @@ export class ParadisAgentChatView extends Disposable {
 			this.composer.setSending(false);
 			if (error !== undefined) {
 				this.composer.showNotice(error);
+				const current = this.session?.state;
+				this.errorStateSignature = current === undefined ? '' : `${current.epoch}:${current.rev}:${current.interaction?.id ?? ''}:${current.busy}`;
 				return;
 			}
 			this.composer.clearAfterSend(text);

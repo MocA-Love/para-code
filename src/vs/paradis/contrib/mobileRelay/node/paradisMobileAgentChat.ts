@@ -1065,6 +1065,17 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 
 // ---- tailer ---------------------------------------------------------------------------------
 
+/** 回答待ちの承認1件。 */
+interface IParadisApprovalEntry {
+	readonly interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>;
+	/** 重複の印（同じ要求の再発火を捨てるため）。 */
+	readonly key: string;
+	/** デスクトップのチャット表示のためだけに入れた（ペインの状態に数えない）。 */
+	readonly desktopOnly: boolean;
+	/** 合成 id の承認を、どの待ち合わせで解くか（ParadisMobileAgentChat.syntheticApprovalWaits）。 */
+	readonly waitKey?: string;
+}
+
 interface ITailerDelegate {
 	/**
 	 * 追記分のメッセージが確定した (差分push用)。
@@ -1094,6 +1105,8 @@ interface ITailerDelegate {
 	 * 呼び出し側 (paradisAgentHookBus) でペインの生死に紐づけて自然に消す。
 	 */
 	onIssueUrlsUpdated?(issueUrls: ReadonlySet<string>): void;
+	/** 追記で、これらのツールの結果が transcript に書かれた（PostToolUse が来ない拒否の検出に使う）。 */
+	onToolResults?(toolUseIds: readonly string[]): void;
 }
 
 /**
@@ -1380,8 +1393,7 @@ class TranscriptTailer {
 				this.initialTruncated = false;
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
-				this.pendingApproval = undefined;
-				this.lastApprovalKey = undefined;
+				this.approvalQueue.length = 0;
 				this.liveQuestions.clear();
 				this.liveQuestionRealIds.clear();
 				// rev が 0 から振り直されるため、退避済みの全文・画像をそのまま残すと新しい rev の
@@ -1586,7 +1598,19 @@ class TranscriptTailer {
 			}
 			added[i] = replacement;
 		}
+		// 結果が書かれたツールの承認は決着している（ターミナルで拒否したときは hook が来ず、これが唯一の手がかり）。
+		const resultIds = added.filter(message => message.kind === 'tool_result' && message.toolUseId !== undefined).map(message => message.toolUseId!);
+		const approvalsSettled = emitDelta && this.settleApprovalsByToolResults(resultIds);
+		if (emitDelta && resultIds.length > 0) {
+			this.delegate.onToolResults?.(resultIds);
+		}
 		this.applySignals(signals, emitDelta);
+		if (approvalsSettled && added.length === 0) {
+			this.delegate.onDelta([]);
+		}
+		if (approvalsSettled) {
+			this.delegate.onActivity();
+		}
 		if (latestProgress !== undefined) {
 			this.delegate.onProgress(latestProgress);
 		}
@@ -1630,16 +1654,30 @@ class TranscriptTailer {
 		this.promptCache = { lastUsedAt: usedAt, ttlMs: usage.ttlMs ?? this.promptCache?.ttlMs ?? PARADIS_PROMPT_CACHE_TTL_5M };
 	}
 
-	/** 直近に注入した承認要求の内容キー（PermissionRequest hookの再発火による重複注入の抑止）。 */
-	private lastApprovalKey: string | undefined;
-	private pendingApproval: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined;
-	private approvalSeq = 0;
 	/**
-	 * デスクトップのチャット表示のためだけに入れた承認の id。ペインの状態（許可待ちの表示）へは
-	 * 反映しない（hasPendingApproval）。モバイル向けの注入が動いていない構成で、ペインの状態表示を
-	 * 以前と変えないため（tool_use_id の無い承認は合成 id になり、ターン終了まで解けない）。
+	 * 回答待ちの承認（届いた順）。並列のツールで許可要求が重なることがあり（TUI は後から来たものを先に
+	 * 出し、答えると前のものを出す）、1枠だと先の許可が中継から消える。表に出す（currentInteraction が
+	 * 返す）のは最後の1件で、それが解けたら次のものを出す。モバイルへ送る形は1件のまま変えない。
 	 */
-	private desktopOnlyApprovalId: string | undefined;
+	private readonly approvalQueue: IParadisApprovalEntry[] = [];
+	private approvalSeq = 0;
+
+	/** 今表に出している承認。 */
+	private get pendingApproval(): Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined {
+		return this.approvalQueue.at(-1)?.interaction;
+	}
+
+	/** 承認を列から外す（該当が無ければ何もしない）。外したら true。 */
+	private removeApprovals(predicate: (entry: IParadisApprovalEntry) => boolean): boolean {
+		let removed = false;
+		for (let index = this.approvalQueue.length - 1; index >= 0; index--) {
+			if (predicate(this.approvalQueue[index])) {
+				this.approvalQueue.splice(index, 1);
+				removed = true;
+			}
+		}
+		return removed;
+	}
 	/** デスクトップのチャット表示のためだけに入れた質問の合成 id。ペインの状態（質問中）に数えない。 */
 	readonly desktopOnlyQuestionIds = new Set<string>();
 
@@ -1649,7 +1687,7 @@ class TranscriptTailer {
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -1662,19 +1700,22 @@ class TranscriptTailer {
 				return;
 			}
 			const key = toolUseId !== undefined ? `${toolUseId}:${text}` : text;
-			if (this.lastApprovalKey === key) {
+			if (this.approvalQueue.some(entry => entry.key === key)) {
 				return; // 同一要求の再発火（リトライ等）は無視
 			}
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
-			this.lastApprovalKey = key;
-			this.desktopOnlyApprovalId = desktopOnly ? interactionId : undefined;
-			this.pendingApproval = {
-				kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
-				choices: [
-					{ id: 'yes', label: '許可', tone: 'approve' },
-					{ id: 'no', label: '拒否', tone: 'deny' },
-				],
-			};
+			this.approvalQueue.push({
+				interaction: {
+					kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
+					choices: [
+						{ id: 'yes', label: '許可', tone: 'approve' },
+						{ id: 'no', label: '拒否', tone: 'deny' },
+					],
+				},
+				key,
+				desktopOnly,
+				...(waitKey !== undefined ? { waitKey } : {}),
+			});
 			const message: IParadisAgentChatMessage = {
 				role: 'assistant', kind: 'tool_use', tool: 'approval_request',
 				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
@@ -1691,10 +1732,15 @@ class TranscriptTailer {
 	/** Codex app-server由来の構造化された承認要求を、その選択肢を失わず表示する。 */
 	injectCodexApprovalRequest(interaction: IParadisCodexApprovalInteraction): void {
 		this.enqueue(async () => {
-			if (this.pendingApproval?.id === interaction.id) { return; }
-			const hadApproval = this.pendingApproval !== undefined;
-			this.pendingApproval = interaction;
-			this.lastApprovalKey = `codex:${interaction.id}`;
+			if (this.approvalQueue.some(entry => entry.interaction.id === interaction.id)) { return; }
+			const hadApproval = this.approvalQueue.length > 0;
+			const entry: IParadisApprovalEntry = { interaction, key: `codex:${interaction.id}`, desktopOnly: false };
+			if (hadApproval) {
+				// hook経路が先着していた場合（表の1件）は、正式な選択肢のものへ置き換える。
+				this.approvalQueue[this.approvalQueue.length - 1] = entry;
+			} else {
+				this.approvalQueue.push(entry);
+			}
 			if (hadApproval) {
 				// hook経路が先着していた場合はカードだけ正式な選択肢へ置換し、履歴を重複させない。
 				this.delegate.onDelta([]);
@@ -1734,23 +1780,40 @@ class TranscriptTailer {
 				&& (!replaceExisting || this.pendingApproval.id === fallbackId || !paradisIsCodexDaemonApprovalInteraction(this.pendingApproval.id))) {
 				return;
 			}
-			this.pendingApproval = {
-				kind: 'approval', id: fallbackId, title: 'Codexが許可を待っています',
-				detail: '承認内容を同期できませんでした。PCのCodex画面で確認してください。', choices: [],
+			const fallback: IParadisApprovalEntry = {
+				interaction: {
+					kind: 'approval', id: fallbackId, title: 'Codexが許可を待っています',
+					detail: '承認内容を同期できませんでした。PCのCodex画面で確認してください。', choices: [],
+				},
+				key: fallbackId,
+				desktopOnly: false,
 			};
-			this.lastApprovalKey = fallbackId;
+			if (this.approvalQueue.length > 0) {
+				this.approvalQueue[this.approvalQueue.length - 1] = fallback;
+			} else {
+				this.approvalQueue.push(fallback);
+			}
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
 	}
 
-	clearApprovalRequest(toolUseId: string | undefined, force: boolean): void {
+	/**
+	 * 承認を解く。toolUseId が一致するものを外す。force（拒否の hook）は、一致するものが無ければ表の1件を
+	 * 外す。all（ターン終了）はすべて外す。
+	 */
+	clearApprovalRequest(toolUseId: string | undefined, force: boolean, all = false): void {
 		this.enqueue(async () => {
-			if (this.pendingApproval === undefined || (!force && (toolUseId === undefined || this.pendingApproval.id !== toolUseId))) {
+			let removed = all
+				? this.removeApprovals(() => true)
+				: toolUseId !== undefined && this.removeApprovals(entry => entry.interaction.id === toolUseId);
+			if (!removed && force && this.approvalQueue.length > 0) {
+				this.approvalQueue.pop();
+				removed = true;
+			}
+			if (!removed) {
 				return;
 			}
-			this.pendingApproval = undefined;
-			this.lastApprovalKey = undefined;
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
@@ -1758,9 +1821,10 @@ class TranscriptTailer {
 
 	clearCodexApprovalRequest(interactionId?: string): void {
 		this.enqueue(async () => {
-			if (this.pendingApproval === undefined || (interactionId !== undefined && this.pendingApproval.id !== interactionId)) { return; }
-			this.pendingApproval = undefined;
-			this.lastApprovalKey = undefined;
+			const removed = interactionId !== undefined
+				? this.removeApprovals(entry => entry.interaction.id === interactionId)
+				: this.approvalQueue.pop() !== undefined;
+			if (!removed) { return; }
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
@@ -1775,7 +1839,7 @@ class TranscriptTailer {
 	 * 「承認が存在するか」という事実が必要な箇所（ペイン状態の補正など）はこちらを使う。
 	 */
 	hasPendingApproval(): boolean {
-		return this.pendingApproval !== undefined && this.pendingApproval.id !== this.desktopOnlyApprovalId;
+		return this.approvalQueue.some(entry => !entry.desktopOnly);
 	}
 
 	/**
@@ -1794,10 +1858,12 @@ class TranscriptTailer {
 	/** モバイルが購読を始めた・注入が有効になった: デスクトップ専用の印を外し、ペインの状態へ反映する。 */
 	promoteDesktopOnly(): void {
 		this.enqueue(async () => {
-			if (this.desktopOnlyApprovalId === undefined && this.desktopOnlyQuestionIds.size === 0) {
+			if (!this.approvalQueue.some(entry => entry.desktopOnly) && this.desktopOnlyQuestionIds.size === 0) {
 				return;
 			}
-			this.desktopOnlyApprovalId = undefined;
+			for (let index = 0; index < this.approvalQueue.length; index++) {
+				this.approvalQueue[index] = { ...this.approvalQueue[index], desktopOnly: false };
+			}
 			this.desktopOnlyQuestionIds.clear();
 			this.delegate.onActivity();
 		});
@@ -1807,24 +1873,42 @@ class TranscriptTailer {
 	 * 合成 id（tool_use_id の無い PermissionRequest から作った承認）の承認を解く。いつ解くかは呼び出し側が
 	 * PreToolUse / PostToolUse の tool_use_id を数えて決める（ParadisMobileAgentChat.syntheticApprovalWaits）。
 	 */
-	clearSyntheticApproval(): void {
+	clearSyntheticApproval(waitKey: string): void {
 		this.enqueue(async () => {
-			const approval = this.pendingApproval;
-			if (approval === undefined || !approval.id.startsWith('approval:')) {
+			if (!this.removeApprovals(entry => entry.waitKey === waitKey && entry.interaction.id.startsWith('approval:'))) {
 				return;
 			}
-			this.pendingApproval = undefined;
-			this.lastApprovalKey = undefined;
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
 	}
 
-	/** 同じ本文の承認要求の再発火を、新しい承認として受け付けるようにする（デスクトップから答え終えたとき）。 */
-	forgetApprovalKey(): void {
+	/**
+	 * 同じ本文の承認要求の再発火を、新しい承認として受け付けるようにする（デスクトップから答え終えたとき）。
+	 * 答え終えた承認の重複の印（key）を外す。承認そのものは、ツールの完了で解けるまで残す。
+	 */
+	forgetApprovalKey(interactionId: string): void {
 		this.enqueue(async () => {
-			this.lastApprovalKey = undefined;
+			for (let index = 0; index < this.approvalQueue.length; index++) {
+				const entry = this.approvalQueue[index];
+				if (entry.interaction.id === interactionId) {
+					this.approvalQueue[index] = { ...entry, key: `answered:${entry.key}:${index}:${Date.now()}` };
+				}
+			}
 		});
+	}
+
+	/**
+	 * transcript に書かれたツールの結果で承認を解く。Claude Code は許可をターミナルで拒否したとき、
+	 * PostToolUse も PermissionDenied も出さず、transcript に is_error の tool_result を書くだけ
+	 * （2.1.283 で確認）。結果が書かれた時点でそのツールの承認は決着している。
+	 */
+	private settleApprovalsByToolResults(toolUseIds: readonly string[]): boolean {
+		if (toolUseIds.length === 0 || this.approvalQueue.length === 0) {
+			return false;
+		}
+		const ids = new Set(toolUseIds);
+		return this.removeApprovals(entry => ids.has(entry.interaction.id));
 	}
 
 	/**
@@ -1934,10 +2018,7 @@ class TranscriptTailer {
 			// おく（currentInteraction の質問優先と合わせた二重の保険）。
 			// ただし Codex app-server 由来の承認は実際に serverRequest が応答待ちなので消さない。
 			// 消すと handleApprovalAction の daemon 経路に乗らず Codex が永久にブロックされる。
-			if (this.pendingApproval !== undefined && !paradisIsCodexDaemonApprovalInteraction(this.pendingApproval.id)) {
-				this.pendingApproval = undefined;
-				this.lastApprovalKey = undefined;
-			}
+			this.removeApprovals(entry => !paradisIsCodexDaemonApprovalInteraction(entry.interaction.id));
 			this.messages.push(...added);
 			if (this.messages.length > MESSAGE_RING_LIMIT) {
 				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
@@ -3867,7 +3948,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.pushActivityToSubscribers(event.token);
 		}
 		const tailer = this.tailers.get(event.token);
-		tailer?.clearApprovalRequest(undefined, true);
+		tailer?.clearApprovalRequest(undefined, true, true);
 		tailer?.clearPendingQuestions();
 		this.releaseInteractionClaimsFor(event.token);
 		this.schedulePersistedAgentActivityReconcile(event.token);
@@ -4535,19 +4616,20 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** ペイン → 未完了のツール呼び出し（tool_use_id → ツール名と入力の指紋）。 */
 	private readonly openToolUses = new Map<string, Map<string, { readonly tool: string; readonly inputKey: string }>>();
-	/** ペイン → 合成 id の承認が待っている、同名の未完了のツール呼び出し。 */
-	private readonly syntheticApprovalWaits = new Map<string, { readonly tool: string; readonly ids: Set<string> }>();
+	/** ペイン → 待ち合わせの印 → 合成 id の承認が待っている、同名の未完了のツール呼び出し。 */
+	private readonly syntheticApprovalWaits = new Map<string, Map<string, { readonly tool: string; readonly ids: Set<string> }>>();
+	private syntheticWaitSeq = 0;
 
 	/**
-	 * hook からツール呼び出しの開始・完了を覚える。PermissionRequest なら、承認に付ける tool_use_id を返す
-	 * （hook 自身が持っていればそれ、決まらなければ undefined = 合成 id）。
+	 * hook からツール呼び出しの開始・完了を覚える。PermissionRequest なら、承認に付ける tool_use_id
+	 * （hook 自身が持っていればそれ）か、合成 id の承認を解く待ち合わせの印を返す。
 	 */
-	private trackToolUse(event: IParadisAgentHookEvent): string | undefined {
+	private trackToolUse(event: IParadisAgentHookEvent): { readonly toolUseId?: string; readonly waitKey?: string } {
 		const token = event.token;
 		if (paradisIsTurnEndHookEvent(event.event) || event.event === 'SessionStart') {
 			this.openToolUses.delete(token);
 			this.syntheticApprovalWaits.delete(token);
-			return undefined;
+			return {};
 		}
 		let open = this.openToolUses.get(token);
 		if (event.event === 'PreToolUse' && event.toolUseId !== undefined && event.toolName !== undefined) {
@@ -4560,41 +4642,56 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			open.set(event.toolUseId, { tool: event.toolName, inputKey: paradisStableJson(event.toolInput) });
 			// 承認の後に始まった同名のツールも待つ（PermissionRequest が PreToolUse より先に届いた場合に備える）。
-			const wait = this.syntheticApprovalWaits.get(token);
-			if (wait !== undefined && wait.tool === event.toolName) {
-				wait.ids.add(event.toolUseId);
+			for (const wait of this.syntheticApprovalWaits.get(token)?.values() ?? []) {
+				if (wait.tool === event.toolName) {
+					wait.ids.add(event.toolUseId);
+				}
 			}
-			return undefined;
+			return {};
 		}
 		if ((event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined) {
-			open?.delete(event.toolUseId);
-			const wait = this.syntheticApprovalWaits.get(token);
-			if (wait !== undefined && wait.ids.delete(event.toolUseId) && wait.ids.size === 0) {
-				this.syntheticApprovalWaits.delete(token);
-				this.tailers.get(token)?.clearSyntheticApproval();
-			}
-			return undefined;
+			this.finishToolUses(token, [event.toolUseId]);
+			return {};
 		}
 		if (event.event !== 'PermissionRequest') {
-			return undefined;
+			return {};
 		}
 		if (event.toolUseId !== undefined) {
-			return event.toolUseId;
+			return { toolUseId: event.toolUseId };
 		}
 		const inputKey = paradisStableJson(event.toolInput);
 		const matches = [...(open ?? [])].filter(([, use]) => use.tool === event.toolName && use.inputKey === inputKey);
 		if (matches.length === 1) {
-			this.syntheticApprovalWaits.delete(token);
-			return matches[0][0];
+			return { toolUseId: matches[0][0] };
 		}
 		// 決まらない。今の同名の未完了の呼び出しが全部終わるまで待つ（空なら待たない＝ターン終了まで残る）。
 		const sameTool = [...(open ?? [])].filter(([, use]) => use.tool === event.toolName).map(([id]) => id);
-		if (event.toolName !== undefined && sameTool.length > 0) {
-			this.syntheticApprovalWaits.set(token, { tool: event.toolName, ids: new Set(sameTool) });
-		} else {
-			this.syntheticApprovalWaits.delete(token);
+		if (event.toolName === undefined || sameTool.length === 0) {
+			return {};
 		}
-		return undefined;
+		const waitKey = `w${++this.syntheticWaitSeq}`;
+		let waits = this.syntheticApprovalWaits.get(token);
+		if (waits === undefined) {
+			waits = new Map();
+			this.syntheticApprovalWaits.set(token, waits);
+		}
+		waits.set(waitKey, { tool: event.toolName, ids: new Set(sameTool) });
+		return { waitKey };
+	}
+
+	/** ツール呼び出しが終わった（PostToolUse か、transcript の tool_result）。待ち合わせが空になった承認を解く。 */
+	private finishToolUses(token: string, toolUseIds: readonly string[]): void {
+		const open = this.openToolUses.get(token);
+		const waits = this.syntheticApprovalWaits.get(token);
+		for (const id of toolUseIds) {
+			open?.delete(id);
+			for (const [waitKey, wait] of [...(waits ?? [])]) {
+				if (wait.ids.delete(id) && wait.ids.size === 0) {
+					waits?.delete(waitKey);
+					this.tailers.get(token)?.clearSyntheticApproval(waitKey);
+				}
+			}
+		}
 	}
 
 	/** デスクトップのチャット表示が打鍵で答えている interaction の claim（`token\0kind\0id` → claim）。 */
@@ -4635,7 +4732,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (sent && kind === 'approval') {
 			// 同じ本文の許可要求がもう一度出たら（同じコマンドの再実行）、新しい承認として受け付ける。
 			// 覚えたままだと重複として捨て、答え終えた古いカードだけが残る。
-			this.tailers.get(token)?.forgetApprovalKey();
+			this.tailers.get(token)?.forgetApprovalKey(id);
 		}
 		if (!sent) {
 			this.releaseInteractionClaim(entry.key, entry.claim);
@@ -5382,7 +5479,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// こちらも注入すると生JSONの承認カードが二重に出る（回答も質問カード側で完結する）。
 		// tool_name が取れない PermissionRequest（旧CLI・パース失敗）でも、質問回答待ち中は
 		// AskUserQuestion 由来とみなして注入しない（質問カードと承認カードの二重表示防止）。
-		const approvalToolUseId = this.trackToolUse(event);
+		const approvalTarget = this.trackToolUse(event);
 		if (event.event === 'PermissionRequest' && event.toolName !== 'AskUserQuestion'
 			// 質問の回答待ちかは、ペインの状態（デスクトップ専用の質問を数えない）ではなく tailer の実際の有無で見る
 			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
@@ -5390,7 +5487,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalToolUseId, !mobileWants);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey);
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
@@ -5498,6 +5595,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			// hook が届かない構成（WSL のディストロの中）と、質問を出したまま止まっていた
 			// セッションを、鮮度の推測を持ち込まずに引き継ぎ扱いから解くための唯一の経路。
 			onAppended: () => this.rememberAgentEvidence(token),
+			// PostToolUse が来ない拒否（ターミナルでの Esc）でも、合成 id の承認の待ち合わせを進める。
+			onToolResults: toolUseIds => this.finishToolUses(token, toolUseIds),
 			// ワークスペース一覧のIssueマーク用。ペインの生死に紐づける判定 (activityGuard) は
 			// setParadisAgentPaneIssueUrls 側で行うため、ここでは検出結果をそのまま渡すだけでよい。
 			onIssueUrlsUpdated: issueUrls => setParadisAgentPaneIssueUrls(token, issueUrls),

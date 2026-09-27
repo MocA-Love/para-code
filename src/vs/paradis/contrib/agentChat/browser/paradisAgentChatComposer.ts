@@ -146,6 +146,11 @@ export class ParadisAgentChatComposer extends Disposable {
 		}
 	}
 
+	/** 送れなかった理由の表示を消し、送れない理由（あれば）の表示へ戻す。 */
+	clearError(): void {
+		this.showNotice(this.blockedReason);
+	}
+
 	showNotice(message: string | undefined): void {
 		this.notice.textContent = message ?? '';
 		this.notice.classList.toggle('visible', message !== undefined && message.length > 0);

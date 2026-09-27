@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentChatMessage } from '../../common/paradisAgentChat.js';
-import { paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisDescribeAgentChatTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisLineDiffRows, paradisParseApplyPatch } from '../../common/paradisAgentChatTimeline.js';
+import { paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisLineDiffRows, paradisParseApplyPatch } from '../../common/paradisAgentChatTimeline.js';
 
 function message(rev: number, fields: Omit<IParadisAgentChatMessage, 'rev'>): IParadisAgentChatMessage {
 	return { rev, ...fields };
@@ -100,5 +100,25 @@ suite('paradisAgentChatTimeline', () => {
 			'del:a', 'add:A', 'ctx:b', 'ctx:c', 'hunk:⋯', 'ctx:h', 'ctx:i', 'del:j', 'add:J',
 		]);
 		assert.deepStrictEqual(paradisParseApplyPatch('not a patch'), []);
+	});
+	test('drops the empty twin of a question card and finds a Codex request_user_input that still waits for an answer', () => {
+		const question = (rev: number, id: string, group: string) => message(rev, { role: 'assistant', kind: 'question', text: 'Q?', toolUseId: id, questionGroup: group, options: [{ label: 'A' }] });
+		const pendingTwin = paradisBuildAgentChatItems([question(0, 'toolu_real', 'toolu_real'), question(1, 'live:1', 'liveg:1')], { kind: 'question', id: 'liveg:1' });
+		const answeredTwin = paradisBuildAgentChatItems([question(0, 'toolu_real', 'toolu_real'), question(1, 'live:1', 'liveg:1'), message(2, { role: 'tool', kind: 'tool_result', text: 'A', toolUseId: 'live:1' })], null);
+		const askedAgain = paradisBuildAgentChatItems([question(0, 'live:1', 'liveg:1'), message(1, { role: 'tool', kind: 'tool_result', text: 'A', toolUseId: 'live:1' }), question(2, 'live:2', 'liveg:2')], { kind: 'question', id: 'liveg:2' });
+		const codexCall = message(3, { role: 'assistant', kind: 'tool_use', tool: 'request_user_input', text: '{}', toolUseId: 'call_1' });
+		assert.deepStrictEqual({
+			pendingTwin: pendingTwin.map(item => item.kind === 'questions' ? item.group : item.kind),
+			answeredTwin: answeredTwin.map(item => item.kind === 'questions' ? [item.group, item.answered] : item.kind),
+			askedAgain: askedAgain.map(item => item.kind === 'questions' ? [item.group, item.answered] : item.kind),
+			codexPending: paradisPendingCodexQuestion([codexCall])?.toolUseId,
+			codexAnswered: paradisPendingCodexQuestion([codexCall, message(4, { role: 'tool', kind: 'tool_result', text: 'answer', toolUseId: 'call_1' })]),
+		}, {
+			pendingTwin: ['liveg:1'],
+			answeredTwin: [['liveg:1', true]],
+			askedAgain: [['liveg:1', true], ['liveg:2', false]],
+			codexPending: 'call_1',
+			codexAnswered: undefined,
+		});
 	});
 });
