@@ -93,6 +93,11 @@ export interface IParadisClaudeLiveSnapshot {
 	/** macOS: キーチェーンの項目の値（無ければ undefined）。 */
 	readonly keychainValue?: string;
 	readonly keychainAccount?: string;
+	/**
+	 * macOS: 設定フォルダのハッシュ付きの項目（`Claude Code-credentials-<sha256 先頭8桁>`）の値
+	 * （無ければ undefined）。Orca と同じく、切り替えではこちらにも書く。
+	 */
+	readonly scopedKeychainValue?: string;
 	/** `.credentials.json` の中身（無ければ undefined）。 */
 	readonly credentialsFile?: string;
 	/** `~/.claude.json` の生の中身（無ければ undefined）。 */
@@ -212,6 +217,14 @@ export class ParadisClaudeLiveAuth {
 		return raw && raw !== derived ? [derived, raw] : [derived];
 	}
 
+	/**
+	 * いまのログインの、設定フォルダのハッシュ付きのキーチェーンの項目名。Orca と同じく、既定の設定フォルダ
+	 * （`~/.claude`）の字面をそのままハッシュする。
+	 */
+	private get scopedLiveKeychainService(): string {
+		return ParadisClaudeLiveAuth.scopedKeychainService(this.configHome);
+	}
+
 	/** `~/.claude/.config.json` があればそれ（古い版）、無ければ `~/.claude.json`。 */
 	async globalConfigPath(): Promise<string> {
 		const legacy = path.join(this.configHome, '.config.json');
@@ -324,9 +337,11 @@ export class ParadisClaudeLiveAuth {
 			}
 			keychainAccount ??= this.keychainAccountNames()[0];
 		}
+		const scopedKeychainValue = this.usesKeychain ? await this.options.keychain!.read(this.scopedLiveKeychainService, keychainAccount!) : undefined;
 		return {
 			keychainValue,
 			keychainAccount,
+			scopedKeychainValue,
 			credentialsFile: await readFileIfExists(this.credentialsPath),
 			globalConfig: await readFileIfExists(await this.globalConfigPath()),
 		};
@@ -344,7 +359,12 @@ export class ParadisClaudeLiveAuth {
 		parseGlobalConfig(snapshot.globalConfig);
 
 		if (this.usesKeychain) {
-			await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount ?? this.keychainAccountNames()[0], paradisReplaceClaudeOAuth(snapshot.keychainValue, oauthOnlyJson));
+			const account = snapshot.keychainAccount ?? this.keychainAccountNames()[0];
+			await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account, paradisReplaceClaudeOAuth(snapshot.keychainValue, oauthOnlyJson));
+			// Orca（claude-accounts/keychain.ts の writeActiveClaudeKeychainCredentialsForRuntime）と同じく、
+			// 設定フォルダのハッシュ付きの項目にも書く（既に無くても書く）。Claude Code は `CLAUDE_CONFIG_DIR` を
+			// 指定するとこちらを読む。`mcpOAuth` などは、その項目の値（無ければハッシュ無しの項目の値）から残す。
+			await this.options.keychain!.write(this.scopedLiveKeychainService, account, paradisReplaceClaudeOAuth(snapshot.scopedKeychainValue ?? snapshot.keychainValue, oauthOnlyJson));
 			// キーチェーンだけ書き換えると、動いている Claude Code は覚えているトークンを使い続ける。
 			// `.credentials.json` が既にあるなら更新時刻だけ変えて読み直させる。macOS では中身は書かない
 			// （最新のトークンを平文のファイルへ置かないため。無ければ作らない）。
@@ -464,17 +484,20 @@ export class ParadisClaudeLiveAuth {
 		const failures: unknown[] = [];
 		if (this.usesKeychain) {
 			const account = snapshot.keychainAccount ?? this.keychainAccountNames()[0];
-			try {
-				const current = await this.options.keychain!.read(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account);
-				if (current === snapshot.keychainValue) {
-					// 変わっていない
-				} else if (snapshot.keychainValue !== undefined) {
-					await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account, snapshot.keychainValue);
-				} else {
-					await this.options.keychain!.delete(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account);
+			// ハッシュ無しとハッシュ付きの両方を戻す（書く前に無かった項目は消す）。
+			for (const [service, before] of [[PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainValue], [this.scopedLiveKeychainService, snapshot.scopedKeychainValue]] as const) {
+				try {
+					const current = await this.options.keychain!.read(service, account);
+					if (current === before) {
+						// 変わっていない
+					} else if (before !== undefined) {
+						await this.options.keychain!.write(service, account, before);
+					} else {
+						await this.options.keychain!.delete(service, account);
+					}
+				} catch (error) {
+					failures.push(error);
 				}
-			} catch (error) {
-				failures.push(error);
 			}
 		}
 		try {

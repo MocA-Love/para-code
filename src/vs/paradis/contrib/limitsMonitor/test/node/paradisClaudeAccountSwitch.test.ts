@@ -191,19 +191,54 @@ suite('ParadisClaudeAccountService switching', () => {
 		assert.deepStrictEqual({
 			result,
 			keychain: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === harness.aliceStored,
+			// 書く前に無かったハッシュ付きの項目は、戻すときに消す
+			scopedKeychain: harness.keychain.get(ParadisClaudeLiveAuth.scopedKeychainService(path.join(harness.home, '.claude')), USER),
 			file: await fs.promises.readFile(path.join(harness.home, '.claude', '.credentials.json'), 'utf8') === harness.aliceStored,
 			config: await fs.promises.readFile(path.join(harness.home, '.claude.json'), 'utf8') === configBefore,
 		}, {
 			result: { outcome: 'failed', email: 'bob@example.com', rolledBack: true, detail: 'io' },
 			keychain: true,
+			scopedKeychain: undefined,
 			file: true,
 			config: true,
 		});
 	});
 
+	// Orca と同じく、設定フォルダのハッシュ付きの項目（Claude Code-credentials-<hash>）にも書く。既にあれば
+	// その項目の mcpOAuth を残し、無ければハッシュ無しの項目の mcpOAuth を写す。戻すときは両方を戻す。
+	test('writes and restores the config-dir scoped keychain item as well', async () => {
+		const harness = await createHarness();
+		const scopedService = ParadisClaudeLiveAuth.scopedKeychainService(path.join(harness.home, '.claude'));
+		// 保存分と同じトークン（Claude Code が更新していない）なので、控えに回る Alice の確認は要らない
+		const aliceLive = JSON.stringify({ ...JSON.parse(harness.aliceStored), mcpOAuth: { server: 'legacy' } });
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, aliceLive);
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+		const switched = await harness.service.switchAccount(BOB);
+		const firstScoped = harness.keychain.get(scopedService, USER);
+		// 既にあるハッシュ付きの項目は、その項目の mcpOAuth を残す
+		harness.keychain.set(scopedService, USER, JSON.stringify({ ...JSON.parse(firstScoped!), mcpOAuth: { server: 'scoped' } }));
+		const back = await harness.service.switchAccount(ALICE);
+		const read = (service: string) => {
+			const value = harness.keychain.get(service, USER);
+			const parsed = value === undefined ? undefined : JSON.parse(value);
+			return parsed && { accessToken: parsed.claudeAiOauth?.accessToken, mcpOAuth: parsed.mcpOAuth };
+		};
+		assert.deepStrictEqual({
+			outcomes: [switched.outcome, back.outcome],
+			firstScoped: firstScoped === undefined ? undefined : { accessToken: JSON.parse(firstScoped).claudeAiOauth?.accessToken, mcpOAuth: JSON.parse(firstScoped).mcpOAuth },
+			legacy: read(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE),
+			scoped: read(scopedService),
+		}, {
+			outcomes: ['switched', 'switched'],
+			firstScoped: { accessToken: 'bob-1', mcpOAuth: { server: 'legacy' } },
+			legacy: { accessToken: 'alice-1', mcpOAuth: { server: 'legacy' } },
+			scoped: { accessToken: 'alice-1', mcpOAuth: { server: 'scoped' } },
+		});
+	});
+
 	test('does not run two switches at once and waits for Claude Code\'s lock', async () => {
 		const harness = await createHarness();
-		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('alice-1', 'alice-r1', Date.now() + HOUR));
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, harness.aliceStored);
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
 
 		// Claude Code がトークンを更新している最中（ロックを持っている）
@@ -221,7 +256,7 @@ suite('ParadisClaudeAccountService switching', () => {
 	// 置き換える直前に Claude Code が `~/.claude.json` を書いていたら、読み直してその変更も残す。
 	test('keeps a symlinked ~/.claude.json a link and keeps a change Claude Code wrote while switching', async () => {
 		const harness = await createHarness();
-		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('alice-1', 'alice-r1', Date.now() + HOUR));
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, harness.aliceStored);
 		const realConfig = path.join(harness.home, 'dotfiles-claude.json');
 		await fs.promises.writeFile(realConfig, JSON.stringify({ oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com'), numStartups: 1 }));
 		await fs.promises.symlink(realConfig, path.join(harness.home, '.claude.json'));
@@ -255,12 +290,13 @@ suite('ParadisClaudeAccountService switching', () => {
 		const heldWhileWriting: boolean[] = [];
 		const write = harness.keychain.write.bind(harness.keychain);
 		harness.keychain.write = async (service, account, value) => {
-			if (service === PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE) {
+			if (service.startsWith(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE)) {
 				heldWhileWriting.push(fs.existsSync(lockPath));
 			}
 			return write(service, account, value);
 		};
-		const aliceLive = paradisTestCredentials('alice-1', 'alice-r1', Date.now() + HOUR);
+		// 保存分と同じトークンにする（別の時刻で作ると、控えに回る Alice の確認が要って止まる）
+		const aliceLive = harness.aliceStored;
 		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, aliceLive);
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
 		const configBefore = await fs.promises.readFile(path.join(harness.home, '.claude.json'), 'utf8');
@@ -287,7 +323,8 @@ suite('ParadisClaudeAccountService switching', () => {
 			locked: 'locked',
 			untouched: { keychain: true, config: true },
 			afterStale: 'switched',
-			heldWhileWriting: [true],
+			// ハッシュ無しとハッシュ付きの2つの項目
+			heldWhileWriting: [true, true],
 			released: false,
 		});
 	});
