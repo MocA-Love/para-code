@@ -292,7 +292,7 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 
 既知の制約: 一時ファイルへは所有者・ACL・拡張属性（macOS の `com.apple.*` 等）を引き継がないので、差し替え後はそれらが消える（mode だけは引き継ぐ）。書いてから `rename` までの間にプロセスが落ちると、同じディレクトリに `.<元の名前>.paradis-<uuid>.tmp` が残り、誰も片付けない（Claude Code / Codex はこの名前を読まない）。SSH 接続先のファイルは一時ファイルを経由しない。接続先は `IFileService` 越しにしか触れず、そこでの原子的な書き込み（`atomic: { postfix }`）は元の mode を引き継げず（一時ファイルが umask の既定で作られて元の名前に置き換わる）、symlink にも使えないため。代わりに、書く直前に読み直して、組み立てている間に変わっていたら読み直した中身から組み立て直す。
 
-設定 `paradis.agentHooks.enabled`（既定オン）で自動設置を止められる。取り外すのは**オンからオフへ切り替わったその時だけ**で（shared process の `ParadisAgentHooksAutoInstall`、SSH 接続中のウィンドウは接続先の分を `paradisRemoteAgentHooks.contribution.ts` が外す）、起動時にオフでも取り外さない。hook の設定ファイルは PC 全体で1つなので、起動時に外すと同じ PC の別の Para Code（開発版など）が使っている hook まで消えるため。逆に、別の Para Code がオンのまま動いていれば、こちらで外しても向こうの整合処理（ファイル監視と60秒ごとの監査）が置き直す。notify スクリプト自体は消さない。
+設定 `paradis.agentHooks.enabled`（既定オン）で自動設置を止められる。取り外すのは**オンからオフへ切り替わったその時だけ**で（shared process の `ParadisAgentHooksAutoInstall`、SSH 接続中のウィンドウは接続先の分を `paradisRemoteAgentHooks.contribution.ts` が外す）、起動時にオフでも取り外さない。hook の設定ファイルは PC 全体で共有（Claude は1つ、Codex は既定のホームとログイン済みのアカウント用ホームごとに1つ）なので、起動時に外すと同じ PC の別の Para Code（開発版など）が使っている hook まで消えるため。逆に、別の Para Code がオンのまま動いていれば、こちらで外しても向こうの整合処理（ファイル監視と60秒ごとの監査）が置き直す。notify スクリプト自体は消さない。Codex はオフにしたときに全ホームの `hooks.json` から外し、オンの間は60秒ごとの監査で後から増えたアカウント用ホームにも置く（どちらも上の原子的な書き込みを通る）。SSH の接続先は従来どおり `~/.codex` 1つだけ（Codex の切替はこの PC だけのため）。
 
 - 接続先の設置（ポートが変わるたびの書き直し）と取り外しは、同じ `Sequencer` で1本ずつ流す（`ParadisRemoteAgentHookFiles`）。設置は1ファイルごと・書く直前に設定を見直すので、途中でオフに切り替わっても古い判断で hook を書き戻さない。切り替えた時点で接続先のホームがまだ分からない、またはファイルが読めない・書き換えが3回続いて反映できなかったときは「取り外し待ち」を保持し、30秒ごとの見直しか次の設置で処理する。失敗し続けても警告は 1, 2, 4, 8… 回目だけ出す
 - オフにしたときの警告は、通知では出さず「設定 (Para Code)」ダイアログの行の中に出す場合がある。通知の層（z-index 2545）はダイアログの背景（2700）より下で、ダイアログを開いたままだと裏に隠れて「元に戻す」が押せないため。ダイアログが開いているか（`paradisIsSettingsDialogOpen()`）で出し分け、層の順序そのものは他のダイアログやモーダルとの重なりに関わるので変えない。警告と設定の登録は、取り外す側がデスクトップにしか無いので electron-browser に置いている
@@ -336,7 +336,9 @@ tmux サーバーの環境変数は、サーバーを起こしたペインのも
 
 ## Codex の複数アカウント（切替とリセットクレジット、2026-09-27）
 
-実体は `src/vs/paradis/contrib/codexAccounts/`（fork 所有）。Claude 側のアカウント機能とは別のディレクトリにしてある。
+実体は `src/vs/paradis/contrib/codexAccounts/`（fork 所有）。Claude 側（limitsMonitor の中）とは別のディレクトリにしてある。使用量パネルのカードに出す「このアカウントを使う」「使用中」とリセットの残り・「使う…」は、Claude と同じ差し込み口（`ParadisLimitsPanelContributions`）に `electron-browser/paradisCodexAccountActions.ts` を登録して出している。Claude の切替は PC 全体のログインを書き換え、Codex の切替は新しく開くターミナルにだけ効く、という違いは意図どおり（q.html Q02）。
+
+`codex app-server` と stdio で話すクライアントは `src/vs/paradis/node/paradisCodexAppServerRpc.ts` の1つにまとめ、limitsMonitor（使用量の取得。shared process と REH）とこの機能（リセットの読み取りと消費）が共有している。エラーの文言は limitsMonitor の Sentry 用の分類（`classifyCodexRpcFailure`）が前提にしているので、変えるときは両方のテストを見ること。
 
 **切替は「新しく開くターミナルへ `CODEX_HOME` を渡す」だけ**で、PC 全体の認証は書き換えない（q.html Q02 の Codex 側の決定）。選択は shared process が `userData/paradis/codexAccounts/codex-account-selection.json` に1つだけ持ち、全ウィンドウへイベントで配る（Q07）。renderer は `IParadisCodexLaunchHomeService`（browser 層）に反映し、`paradisPaneTokenService` が PTY 起動直前に env へ入れる。起動直後に shared process の返事が間に合わないターミナルのため、最後の値をアプリ全体の保存領域にも控えている。SSH の接続先で動くターミナルには渡さない（選択はこの PC のホームを指すため）。
 
