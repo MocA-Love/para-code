@@ -29,7 +29,10 @@ const STORAGE_KEY = 'pcListView';
 
 type Edit = (saved: PcListViewSaved) => PcListViewSaved;
 
-/** アプリを終了したら消える、PC ごとのその場の状態。 */
+/**
+ * PC ごとのその場の状態（保存しない）。iPad の2列 ⇄ 1列で `PcScreen` が作り直されても残し、
+ * PC の画面から離れたら（器 `app/pc/[pcId]/_layout.tsx` が外れたら）消す（`holdPc`）。
+ */
 export interface PcListTransient {
 	readonly query: string;
 	readonly searching: boolean;
@@ -42,14 +45,24 @@ interface PcListViewStore {
 	readonly loaded: boolean;
 	readonly transient: Readonly<Record<string, PcListTransient>>;
 	setGroup(group: PcListGroup): void;
-	/** 絞り込みを変える。状態とスペースは保存し、検索語はメモリにだけ置く。 */
-	setFilter(pcId: string, filter: PcListFilter): void;
+	/** 絞り込み（状態とスペース）を変えて保存する。検索語は `setQuery`。 */
+	setFilter(pcId: string, filter: Pick<PcListFilter, 'states' | 'spaces'>): void;
+	/** 検索語を変える（メモリにだけ置く。1文字ごとに Keychain へ書かない）。 */
+	setQuery(pcId: string, query: string): void;
 	/** 検索欄を開く／閉じる。閉じるときは検索語も消す。 */
 	setSearching(pcId: string, searching: boolean): void;
 	toggleSection(pcId: string, key: string): void;
+	/**
+	 * PC の画面を開いている間持つ。返した関数で手放し、その PC を持つ画面が1つも無くなったら
+	 * 検索の状態を消す（同じ PC の画面が2枚積まれていても、上を閉じただけでは下の検索を消さない）。
+	 */
+	holdPc(pcId: string): () => void;
 	/** ペアリングを解除した PC の分を消す。 */
 	forgetPc(pcId: string): void;
 }
+
+/** PC ごとの、いま開いている画面の数（`holdPc`）。 */
+const holders = new Map<string, number>();
 
 let pendingEdits: Edit[] = [];
 let loadStarted = false;
@@ -78,6 +91,13 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 		const current = get().transient[pcId] ?? EMPTY_PC_LIST_TRANSIENT;
 		set({ transient: { ...get().transient, [pcId]: edit(current) } });
 	};
+	const dropTransient = (pcId: string) => {
+		if (get().transient[pcId] !== undefined) {
+			const transient = { ...get().transient };
+			delete transient[pcId];
+			set({ transient });
+		}
+	};
 	return {
 		saved: DEFAULT_PC_LIST_VIEW,
 		loaded: false,
@@ -89,13 +109,14 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 			apply(saved => ({ ...saved, group }));
 		},
 		setFilter(pcId, filter) {
-			// 検索語だけが変わったときは保存しない（1文字ごとに Keychain へ書かない）。
 			const view = pcListViewOf(get().saved, pcId);
 			if (!sameItems(view.states, filter.states) || !sameItems(view.spaces, filter.spaces)) {
 				apply(saved => withPcListView(saved, pcId, current => ({ ...current, states: filter.states, spaces: filter.spaces })));
 			}
-			if ((get().transient[pcId]?.query ?? '') !== filter.query) {
-				setTransient(pcId, current => ({ ...current, query: filter.query }));
+		},
+		setQuery(pcId, query) {
+			if ((get().transient[pcId]?.query ?? '') !== query) {
+				setTransient(pcId, current => ({ ...current, query }));
 			}
 		},
 		setSearching(pcId, searching) {
@@ -104,13 +125,26 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 		toggleSection(pcId, key) {
 			apply(saved => withPcListView(saved, pcId, view => ({ ...view, collapsed: toggleCollapsedKey(view.collapsed, key) })));
 		},
+		holdPc(pcId) {
+			holders.set(pcId, (holders.get(pcId) ?? 0) + 1);
+			let released = false;
+			return () => {
+				if (released) {
+					return;
+				}
+				released = true;
+				const left = (holders.get(pcId) ?? 1) - 1;
+				if (left > 0) {
+					holders.set(pcId, left);
+					return;
+				}
+				holders.delete(pcId);
+				dropTransient(pcId);
+			};
+		},
 		forgetPc(pcId) {
 			apply(saved => withoutPc(saved, pcId));
-			if (get().transient[pcId] !== undefined) {
-				const transient = { ...get().transient };
-				delete transient[pcId];
-				set({ transient });
-			}
+			dropTransient(pcId);
 		},
 	};
 });

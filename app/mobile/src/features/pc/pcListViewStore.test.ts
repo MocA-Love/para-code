@@ -44,8 +44,9 @@ describe('PC の画面の表示条件のストア', () => {
 		await flush();
 		const store = first.usePcListView.getState();
 		store.setGroup('state');
-		store.setFilter('pc1', { states: ['waiting'], spaces: ['w1'], query: 'fix' });
+		store.setFilter('pc1', { states: ['waiting'], spaces: ['w1'] });
 		store.setSearching('pc1', true);
+		store.setQuery('pc1', 'fix');
 		store.toggleSection('pc1', 'space:w2');
 
 		const second = await loadStore();
@@ -69,8 +70,8 @@ describe('PC の画面の表示条件のストア', () => {
 		await flush();
 		const store = usePcListView.getState();
 		store.setSearching('pc1', true);
-		store.setFilter('pc1', { states: [], spaces: [], query: 'a' });
-		store.setFilter('pc1', { states: [], spaces: [], query: 'ab' });
+		store.setQuery('pc1', 'a');
+		store.setQuery('pc1', 'ab');
 		expect(setItem).not.toHaveBeenCalled();
 		expect(usePcListView.getState().transient.pc1).toEqual({ query: 'ab', searching: true });
 		store.setSearching('pc1', false);
@@ -91,6 +92,34 @@ describe('PC の画面の表示条件のストア', () => {
 		expect(JSON.parse(storage.get('pcListView') ?? 'null')).toEqual(expected);
 	});
 
+	test('検索は PC の画面を離れたら消え、同じ PC の画面が残っている間は消えない', async () => {
+		const { ensurePcListViewLoaded, usePcListView } = await loadStore();
+		ensurePcListViewLoaded();
+		await flush();
+		release();
+		await flush();
+		const store = usePcListView.getState();
+		const releaseFirst = store.holdPc('pc1');
+		const releaseOther = store.holdPc('pc2');
+		store.setSearching('pc1', true);
+		store.setQuery('pc1', 'relay');
+		store.setSearching('pc2', true);
+		store.setQuery('pc2', 'docs');
+		store.setFilter('pc1', { states: ['waiting'], spaces: [] });
+		// 同じ PC の画面がもう1枚積まれて、上だけを閉じた（2列 ⇄ 1列の作り直しも器は外れないので同じく残る）。
+		const releaseSecond = store.holdPc('pc1');
+		releaseSecond();
+		expect(usePcListView.getState().transient.pc1).toEqual({ query: 'relay', searching: true });
+		// 最後の画面を閉じた。二重に手放しても数えすぎない。
+		releaseFirst();
+		releaseFirst();
+		expect(usePcListView.getState().transient).toEqual({ pc2: { query: 'docs', searching: true } });
+		// 保存する絞り込みは残る。
+		expect(usePcListView.getState().saved.byPc.pc1?.states).toEqual(['waiting']);
+		releaseOther();
+		expect(usePcListView.getState().transient).toEqual({});
+	});
+
 	test('ペアリングを解除した PC の分を消す', async () => {
 		const { ensurePcListViewLoaded, usePcListView } = await loadStore();
 		ensurePcListViewLoaded();
@@ -98,7 +127,8 @@ describe('PC の画面の表示条件のストア', () => {
 		release();
 		await flush();
 		const store = usePcListView.getState();
-		store.setFilter('pc1', { states: ['working'], spaces: [], query: 'x' });
+		store.setFilter('pc1', { states: ['working'], spaces: [] });
+		store.setQuery('pc1', 'x');
 		store.forgetPc('pc1');
 		expect({ saved: usePcListView.getState().saved, transient: usePcListView.getState().transient }).toEqual({ saved: { group: 'space', byPc: {} }, transient: {} });
 	});

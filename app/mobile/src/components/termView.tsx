@@ -66,7 +66,8 @@ interface TermViewProps {
 /** WebView から来るメッセージ（旧形式の 'ready' / 'desync' も引き続き受ける）。 */
 type TermViewMessage =
 	| { t: 'metrics'; width: number; height: number; charWidth100: number; lineHeight100: number; rowHeights?: Record<string, number> }
-	| { t: 'scroll'; dir: 'up' | 'down'; lines: number };
+	| { t: 'scroll'; dir: 'up' | 'down'; lines: number }
+	| { t: 'warn'; text: string };
 
 /** WebView に流す HTML/CSS 用の地色。RN 側のスタイルは `colors.terminalBg`（同じ値）を使う。 */
 const TERM_BG = '#1e1e1e';
@@ -235,7 +236,28 @@ function buildHtml(): string {
 		clearTimeout(metricsTimer);
 		metricsTimer = setTimeout(reportMetrics, 180);
 	}
+	// 開発ビルドだけ: rowHeightAt（xterm の計算を写したもの）が、xterm が実際に描いた行の高さと
+	// 食い違っていないかを確かめる。xterm を更新して計算が変わると行数の見積もりが黙ってずれ、
+	// また下の行が隠れるので、0.5px 以上ずれたら RN 側へ警告を送る（console.warn で Metro のログに出る）。
+	var checkRowHeight = ${__DEV__ ? 'true' : 'false'};
+	function verifyRowHeight() {
+		var row = document.querySelector('.xterm-rows > div');
+		if (!row) {
+			return;
+		}
+		var actual = row.getBoundingClientRect().height;
+		var expected = rowHeightAt(term.options.fontSize);
+		if (actual > 0 && Math.abs(actual - expected) >= 0.5) {
+			window.ReactNativeWebView.postMessage(JSON.stringify({
+				t: 'warn',
+				text: 'row height mismatch: xterm draws ' + actual + 'px but rowHeightAt(' + term.options.fontSize + ') = ' + expected + 'px. Re-check rowHeightAt against the bundled xterm.',
+			}));
+		}
+	}
 	function reportMetrics() {
+		if (checkRowHeight) {
+			verifyRowHeight();
+		}
 		var m = measure();
 		window.ReactNativeWebView.postMessage(JSON.stringify({
 			t: 'metrics',
@@ -288,7 +310,7 @@ function buildHtml(): string {
 			size = Math.max(followFloor, Math.min(maxFontSize, fontSize));
 			// 高さで決めた大きさは見積もりの行送りによる。実際の行の高さで入りきらなければ1pt ずつ下げる
 			// （入りきらないまま下限に当たったら、applyOverflow が上側を切って下端を見せる）。
-			while (rows > 0 && size > followFloor && rowsHeightAt(rows, size) > availHeight) {
+			while (rows > 0 && size > followFloor && rowsHeightAt(rows, size) > availHeight + 2) {
 				size--;
 			}
 		}
@@ -678,6 +700,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 						applyPinnedGridRef.current();
 					} else if (msg.t === 'scroll' && (msg.dir === 'up' || msg.dir === 'down') && msg.lines > 0) {
 						onScrollRef.current?.(msg.dir, msg.lines);
+					} else if (msg.t === 'warn' && __DEV__) {
+						console.warn('[termView]', msg.text);
 					}
 					return;
 				}
