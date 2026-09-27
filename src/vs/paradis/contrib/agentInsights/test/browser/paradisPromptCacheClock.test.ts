@@ -12,21 +12,41 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
-import { IParadisAgentStatusStore } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, ParadisBindingScope } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentInsightsService, IParadisAgentPaneInsight, IParadisAgentScopePane, PARADIS_PROMPT_CACHE_TTL_5M } from '../../common/paradisAgentInsights.js';
 import { ParadisPromptCacheClock } from '../../browser/paradisPromptCacheClock.js';
 
 const SCOPE = 'space-1';
+
+class TestScopes implements IParadisTerminalScopeService {
+	declare readonly _serviceBrand: undefined;
+	readonly changed = new Emitter<IParadisTerminalStableScopeChangeEvent>();
+	readonly onDidChangeStableScope = this.changed.event;
+	readonly revision = 0;
+	readonly scopes = new Map<number, string>();
+	getStateKeyForInstance(instanceId: number): string | undefined { return this.scopes.get(instanceId) ?? SCOPE; }
+	resolveScope(instanceId: number): ParadisBindingScope { return { kind: 'managed', stateKey: this.getStateKeyForInstance(instanceId)! }; }
+	assignInstanceScope(instanceId: number, stateKey: string): void {
+		this.scopes.set(instanceId, stateKey);
+		this.changed.fire({ instanceId, previousScope: undefined, scope: { kind: 'managed', stateKey }, revision: 1 });
+	}
+	countUnattributedTerminals(): number { return 0; }
+	adoptUnattributedTerminals(): number { return 0; }
+	undoLastTerminalAdoption(): number { return 0; }
+}
 
 class TestInsights implements IParadisAgentInsightsService {
 	declare readonly _serviceBrand: undefined;
 	readonly changed = new Emitter<void>();
 	readonly onDidChange = this.changed.event;
 	insights: IParadisAgentPaneInsight[] = [];
+	constructor(private readonly scopes: TestScopes) { }
 	getForToken(token: string): IParadisAgentPaneInsight | undefined { return this.insights.find(insight => insight.token === token); }
 	getForInstance(instanceId: number): IParadisAgentPaneInsight | undefined { return this.getForToken(`t${instanceId}`); }
 	getScopePanes(stateKey: string): readonly IParadisAgentScopePane[] {
-		return stateKey === SCOPE ? this.insights.map(insight => ({ instanceId: Number(insight.token.slice(1)), token: insight.token, title: insight.token, insight })) : [];
+		return this.insights
+			.map(insight => ({ instanceId: Number(insight.token.slice(1)), token: insight.token, title: insight.token, insight }))
+			.filter(pane => this.scopes.getStateKeyForInstance(pane.instanceId) === stateKey);
 	}
 	setInsights(insights: readonly IParadisAgentPaneInsight[]): void {
 		this.insights = [...insights];
@@ -68,11 +88,13 @@ suite('ParadisPromptCacheClock', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('keeps the Workspaces slot while a Claude pane has a cache record, so the row height does not follow each turn', () => {
-		const insights = new TestInsights();
+		const scopes = new TestScopes();
+		const insights = new TestInsights(scopes);
 		const statuses = new TestStatuses();
+		store.add(scopes.changed);
 		store.add(insights.changed);
 		store.add(statuses.changed);
-		const clock = store.add(new ParadisPromptCacheClock(insights, statuses, new TestPaneTokens(insights)));
+		const clock = store.add(new ParadisPromptCacheClock(insights, statuses, new TestPaneTokens(insights), scopes));
 		let candidateChanges = 0;
 		store.add(clock.onDidChangeCandidates(() => candidateChanges++));
 
@@ -95,16 +117,23 @@ suite('ParadisPromptCacheClock', () => {
 		kinds.push(clock.readScopeState(SCOPE, now));
 		const afterTurns = candidateChanges;
 
+		// ペインを別のスペースへ移すと、移動元から消えて移動先に出る (組み直しの合図が出る)
+		scopes.assignInstanceScope(1, 'space-2');
+		kinds.push([clock.readScopeState(SCOPE, now), clock.readScopeState('space-2', now)?.kind]);
+		const afterMove = candidateChanges;
+		scopes.assignInstanceScope(1, SCOPE);
+
 		// Codex だけなら枠を出さない
 		insights.setInsights([{ token: 't1', agent: 'codex', subagents: [], promptCache: { lastUsedAt: now, ttlMs: PARADIS_PROMPT_CACHE_TTL_5M } }]);
 		kinds.push(clock.readScopeState(SCOPE, now));
 
-		assert.deepStrictEqual({ kinds, afterAppear, afterTurns, final: candidateChanges }, {
-			kinds: [undefined, 240, { kind: 'paused', reason: 'working' }, { kind: 'paused', reason: 'expired' }, undefined],
-			// 出る・消えるのときだけ知らせる。応答の開始・終了と期限切れでは知らせない
+		assert.deepStrictEqual({ kinds, afterAppear, afterTurns, afterMove, final: candidateChanges }, {
+			kinds: [undefined, 240, { kind: 'paused', reason: 'working' }, { kind: 'paused', reason: 'expired' }, [undefined, 'paused'], undefined],
+			// 出る・消える・スペースを移るときだけ知らせる。応答の開始・終了と期限切れでは知らせない
 			afterAppear: 1,
 			afterTurns: 1,
-			final: 2,
+			afterMove: 2,
+			final: 4,
 		});
 	});
 });
