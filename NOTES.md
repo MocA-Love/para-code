@@ -186,7 +186,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 
 | ファイル | 変更内容 | 理由 |
 |---|---|---|
-| `ThirdPartyNotices.txt` | Orca（stablyai/orca、Copyright (c) 2026 Lovecast Inc.、MIT）の項目を PowerShell/EditorSyntax の前に追加 | xterm の IME パッチ（`build/npm/paradisXtermImePatch.ts`）が Orca 由来のコードを製品の `lib/xterm.js` に入れるため。コメント構文が無いのでここに記録する |
+| `ThirdPartyNotices.txt` | Orca（stablyai/orca、Copyright (c) 2026 Lovecast Inc.、MIT）の項目を PowerShell/EditorSyntax の前に追加。2026-09-28 に見出しへ Computer Use の補助アプリを足した | xterm の IME パッチ（`build/npm/paradisXtermImePatch.ts`）が Orca 由来のコードを製品の `lib/xterm.js` に入れるため。Computer Use の補助アプリ（`src/vs/paradis/contrib/computerUse/native/macos/`）もパスワード欄の判定語と ScreenCaptureKit の単一ウィンドウ撮影の設定を Orca の `native/computer-use-macos` にそろえている。コメント構文が無いのでここに記録する |
 | `product.json` | `nameShort`/`nameLong`/`applicationName`/`dataFolderName`/`win32*`/`darwinBundleIdentifier`等ブランディング全般を「Para Code」向けに変更、`extensionsGallery`を追加（Open VSX）、`voiceWsUrl`を削除。upstream 1.139 で追加された `linuxDesktopName`（Linux の `.desktop`/appdata のファイル名と `StartupWMClass`）は `ltd.paradis.ParaCode` にした | Phase 2ブランディング + Open VSX切り替え |
 | `product.json` | `quality: "stable"` / `updateUrl` / `downloadUrl` を追加。`updateUrl`はカスタムドメイン`https://paracode-updates.paradis.ltd`（初期デプロイ時の`https://para-code-update-server.cloudflare8234.workers.dev`から切り替え済み、動作確認済み）。**`downloadUrl`のみ`https://updates.paradis.ltd/download`の暫定プレースホルダーのまま**（linux用の「更新あり時に開く案内ページ」で必須ではない） | 自動アップデート基盤の有効化。`quality`未設定だと`abstractUpdateService.ts`の`getProductQuality()`がundefinedを返し更新機構自体が無効化される |
 | （現在は差分なし。下の経緯参照） | `builtInExtensions` の `ms-vscode.vscode-js-profile-table` の `sha256` は現在 upstream記録値（marketplace版 `a962a1e6…`）のまま | 2026-08-11時点ではOpen VSX版がmarketplace版と再パッケージによりバイト不一致（差分は`extension.vsixmanifest`・`package.json`整形・同梱ライセンスファイル名・`telemetry.json`有無のみ、実行コードはバイト単位で同一と確認済み）だったため、forkは`extensionsGallery`をOpen VSXに向けている都合上、Open VSX実測値`50d00270…`に**意図的に差し替えていた**。2026-08-27、Open VSXが再度パッケージを更新し**marketplace版とバイト完全一致**（`shasum -a 256`一致を確認）するようになったため、この差し替えは不要になり撤回した（リリースCIが`Checksum mismatch`で落ちたのを機に発覚）。**upstreamがこの拡張のバージョンを上げるたびに再発しうる**: `curl -fsSL https://open-vsx.org/vscode/gallery/publishers/ms-vscode/vsextensions/vscode-js-profile-table/<版>/vspackage \| shasum -a 256` と `curl -fsSL https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-vscode/vsextensions/vscode-js-profile-table/<版>/vspackage \| shasum -a 256` を突き合わせ、不一致ならOpen VSX実測値に差し替える（一致するようになったら差し替えは戻してよい） |
@@ -247,6 +247,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/native/ParaCodeWidgets/ParaCodeWidgets.entitlements` | 新規追加（fork所有）。Widget Extension の entitlements（追跡用コピー。実体は gitignore された `ios/ParaCodeWidgets/`）。App Group `group.ltd.paradis.paracode.mobile` だけを持つ | ホーム画面・ロック画面のウィジェットが、アプリ・通知拡張と App Group の要約（`widget-snapshot.json` / `widget-settings.json` / `widget-outbox.json`）を受け渡すため（復元手順は同ディレクトリ README 参照）。plist のためマーカーを埋め込めない |
 | `app/mobile/native/NotifyExtension/NotifyExtension.entitlements` | `com.apple.security.application-groups`（`group.ltd.paradis.paracode.mobile`）を追加 | 通知拡張がアプリの閉じている間にウィジェットの要約の要対応を書き換えるため（`WidgetShared.swift` の `WidgetStore.applyNotification`）。実体の `ios/NotifyExtension/` にも同じものを当てる。plist のためマーカーを埋め込めない |
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `lucide-react-native@^1.48.0` を依存に追加 | モバイルの画面の作り直し（Orca に合わせたアイコン）で使うアイコン集。JS だけのパッケージで、描画は既存の `react-native-svg` を使う |
+| `build/paradis/computerUse/paradis-computer-use-entitlements.plist` | 新規追加（fork所有）。中身は空の `<dict/>` | Computer Use の補助アプリ（`Para Code Computer Use.app`）に渡す entitlements。アクセシビリティと画面収録は entitlements ではなく TCC で決まるので何も要らない。`build/darwin/sign.ts` の PARA-PATCH と CI の「Pre-notarize Computer Use helper」が参照する。plist のためマーカーを書かない。補助アプリの `Info.plist` は `buildHelper.ts` がビルドのたびに生成するのでリポジトリに置いていない |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -655,6 +656,29 @@ upstream 取り込み時に確認すること:
 - `adb install` の出力の `Success` の判定、`pm grant` が失敗を出力にだけ書く場合の文言、`aapt2 dump packagename` の出力
 
 実機（iOS 27 シミュレータ、2026-09-27 の再レビュー）で確かめたこと: ピンチが2本の指として効く（ホストの `input/touch` の `fingerId`）、向きの名前4つ、インストールのたびの承認、OS のアプリへの権限の拒否、ペインの外からの要求・インストール・起動・権限の拒否。指は要求を送る前に「下ろした」と記録し、失敗・取り消しでも必ず上げる（押したままだとその後の入力を受け付けなくなる）。
+
+## Computer Use は同梱の補助アプリに TCC の許可を閉じ込める（computerUse、2026-09-28、フェーズ7 B3）
+
+設計は研究リポジトリの `phase7-b3/design.md`。この版は設計書 7 章の段取りのうち、回答待ちの設問（`q.html` の Q97〜Q101）に左右されない土台で、読み取りだけを入れた。クリック・文字入力・貼り付け、許可したアプリの一覧と取り消し、OS の許可のやり直し（`tccutil reset`）はまだ無い。
+
+| 層 | 置き場所 | 中身 |
+|---|---|---|
+| 補助アプリ（Swift） | `src/vs/paradis/contrib/computerUse/native/macos/` | `Para Code Computer Use.app`（bundle id `ltd.paradis.paracode.computeruse`、`LSUIElement`、macOS 14 以上、universal）。命令は `handshake`・`status`・`permissions`・`listApps`・`listWindows`・`screenshotWindow`（ScreenCaptureKit の単一ウィンドウ）・`accessibilityTree`・`shutdown` |
+| ビルド | `build/paradis/computerUse/buildHelper.ts`・`embedHelper.ts` | swiftc で arm64 と x86_64 を作って `lipo`、`.app` に包んで ad-hoc 署名。`--test` で Swift のテスト、`--if-stale` で古いときだけ作る |
+| shared process | `contrib/computerUse/node/` | 補助アプリの起動と接続（`paradisComputerUseHelperClient.ts`）、ペインとアプリの組ごとの許可の台帳（メモリだけ）、MCP ツール 4 件（`computer_status`・`computer_list_apps`・`computer_list_windows`・`computer_get_app_state`）、状態のチャネル |
+| 画面 | `contrib/computerUse/electron-browser/`・`browser/` | 承認ダイアログ（ページ共有と同じ `askApproval`、`cooldownKey` は `computer:<bundle id>`）、状態を見るコマンド `paradis.computerUse.showStatus`、設定 `paradis.computerUse.enabled`（既定オフ、APPLICATION）、設定画面の「Computer Use」節 |
+
+補助アプリは shared process から `open -n -g -j` で起動する。Para Code の子として exec すると TCC の許可が Para Code 本体で評価されうるため。手元（macOS 27、ad-hoc 署名）で `open -n` から起動した補助アプリは `responsibility_get_pid_responsible_for_pid` が自分自身を返した（Developer ID 署名と公証の後も同じかは未確認）。この関数が見つからない OS では確認を飛ばし、自分以外が返ったら `misattributed` で機能を止める。
+
+補助アプリに命令できる者はアプリごとの承認を飛ばせるので、次を全部行う: ソケットとトークンは userData の下の 0700 のフォルダ（パスが 103 バイトを超えるときは一時フォルダの `mkdtemp`）、トークンは 256 bit の乱数で補助アプリが読んだ直後に消す、受ける接続は 1 本だけで受けたら listen をやめてソケットのファイルも消す、最初の要求のトークンが違えば答えずに終わる、接続相手（`LOCAL_PEERTOKEN`）の署名を確かめる。補助アプリにチーム ID がある（リリース）ときは、相手とその親が同じチームの Developer ID で署名され、親の識別子が `ltd.paradis.paracode`、相手がその下（`.helper` など）、親の親が launchd であることを求める。ad-hoc の補助アプリ（手元のビルドだけ）は、相手の親の bundle id が Para Code か `com.github.Electron` であることだけを見る。
+
+残る穴（受け入れる）: `ELECTRON_RUN_AS_NODE=1` で Para Code の実行ファイルを動かすと同じ署名のプロセスを作れる。親が main でなければ止まるが、main の子である拡張機能ホストの拡張機能は通り得る。拡張機能はもともと利用者の権限で何でもできる前提なので防がない。
+
+常に断るアプリはパスワードマネージャー 11 件（Orca の 8 件に `com.apple.Passwords`・`com.agilebits.onepassword7`・`com.1password.1password-launcher`）、キーチェーンアクセス、Para Code 自身（`ltd.paradis.paracode` とその下、開発時の `com.github.Electron`）。Q97（システム設定と認証のダイアログ）は `PARADIS_COMPUTER_USE_SYSTEM_SURFACES` に並べてあり、回答が A なら `PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES` を true にするだけで効く。承認ダイアログの「操作も許可」は、操作系のツールが入るまで `PARADIS_COMPUTER_USE_OPERATE_AVAILABLE`（false）で出さない。
+
+同梱: 手元の `npm run gulp vscode-darwin-<arch>-min` は `build/gulpfile.vscode.ts` の PARA-PATCH から `paradisComputerUseHelperPackageTask` を呼び、補助アプリを作って `Contents/Helpers/` に入れる（失敗は警告だけ。`PARADIS_COMPUTER_USE_HELPER=0` で飛ばせる）。CI（`CI` がある）では gulp は何もせず、`para-release.yml` の 3 段（Build / Pre-notarize / Embed、どれも `continue-on-error`）に任せる。Embed は Pre-notarize が Apple に受け入れられたとき書く目印（`.build/paradis/computerUse/prenotarized`）があるときだけ入れる。`workflow_dispatch` の `computer_use_helper` を false にすると 3 段とも飛ばす。`build/darwin/sign.ts` の PARA-PATCH は補助アプリに空の entitlements を渡す 3 行だけ。本体の公証が補助アプリのせいで拒否された場合に補助アプリを外して出し直す段は無い（Pre-notarize で先に潰す前提）。
+
+手元で試すとき: `node build/paradis/computerUse/buildHelper.ts --out <どこか> --allow-any-peer-for-testing` で接続相手の確認を外したビルドを作れる（node から直接つなぐため）。既定の出力先には書けず、`Info.plist` に `ParadisTestingBuild` が付いて `embedHelper.ts` が埋め込みを断る。ad-hoc の補助アプリはビルドのたびに TCC から別物と見なされる。ビルドのテストは `node --test build/paradis/computerUse/*.test.ts`（`build/package.json` の `test` の対象には入れていない）。
 
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 

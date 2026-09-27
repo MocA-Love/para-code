@@ -2061,7 +2061,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---------------------------------------------------------
 
-Orca (IME handling in the terminal, derived work)
+Orca (IME handling in the terminal and the Computer Use helper for macOS, derived work)
 https://github.com/stablyai/orca
 
 MIT License
