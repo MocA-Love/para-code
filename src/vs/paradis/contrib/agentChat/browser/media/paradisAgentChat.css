@@ -896,3 +896,33 @@
 .monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor .paradis-agent-chat-bubble {
 	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder);
 }
+
+/* 本文・コード・ツールの出力・差分は選んでコピーできるようにする（ワークベンチは body で user-select: none）。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-list,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-holder,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-detail {
+	-webkit-user-select: text;
+	user-select: text;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-list button,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-sign {
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-agent-chat:focus {
+	outline: none;
+}
+
+.monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-item.selected,
+.monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-item.selected,
+.monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor .paradis-agent-chat-option.selected,
+.monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor .paradis-agent-chat-option.selected {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-contrastActiveBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}

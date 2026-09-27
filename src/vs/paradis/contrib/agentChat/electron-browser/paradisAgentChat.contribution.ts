@@ -15,7 +15,7 @@
 // 重ねる先は共有ドットと同じ `paradisRegisterEditorTerminalOverlay`（fork 所有の SessionTerminalEditor
 // が持つ口）で、upstream のファイルには触れない。
 
-import { RunOnceScheduler, IntervalTimer } from '../../../../base/common/async.js';
+import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
@@ -26,11 +26,14 @@ import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, IContextKey, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { PromptInputState } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
 import { IEditorCommandsContext } from '../../../../workbench/common/editor.js';
@@ -42,16 +45,17 @@ import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/servic
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisEditorTerminalOverlay, paradisRegisterEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
 import { IParadisAgentInsightsService } from '../../agentInsights/common/paradisAgentInsights.js';
-import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
-import { ParadisAgentQuestionAnswer, paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
+import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
-import { paradisSendAgentInteractionKeys } from '../browser/paradisAgentTuiInput.js';
+import { IParadisAgentChatTerminal, ParadisAgentChatInput } from '../browser/paradisAgentChatInput.js';
 import { ParadisAgentChatSendKey, PARADIS_AGENT_CHAT_HISTORY_LIMIT } from '../browser/paradisAgentChatComposer.js';
+import { IParadisAgentChatService } from '../browser/paradisAgentChatService.js';
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
-import { IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
-import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentInteraction, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
+import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
+import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
+import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
-import { paradisQuestionReadyMarker } from '../common/paradisAgentTranscriptParser.js';
 import '../browser/media/paradisAgentChat.css';
 
 const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
@@ -67,8 +71,6 @@ const WATCH_RENEW_INTERVAL = 10_000;
 const VISIBLE_SAFETY_REFRESH_INTERVAL = 5_000;
 /** スラッシュコマンドの一覧を使い回す時間。 */
 const COMMAND_CACHE_TTL = 60_000;
-/** 質問・承認の打鍵の間隔（モバイルと同じ）。 */
-const INTERACTION_KEY_DELAY = 300;
 
 // ターミナルにフォーカスがあるときも ⌘⇧J をシェルへ流さず、このコマンドで受ける。
 // upstream の既定リストへ起動時に追記するだけで、terminal.ts は変更しない（terminalFontZoom と同じ）。
@@ -132,25 +134,20 @@ class ParadisAgentChatOverlay extends Disposable implements IParadisEditorTermin
 	}
 }
 
-class ParadisAgentChatController extends Disposable implements IWorkbenchContribution, IParadisAgentChatViewHost {
+class ParadisAgentChatController extends Disposable implements IParadisAgentChatService, IParadisAgentChatViewHost {
 
-	static readonly ID = 'workbench.contrib.paradisAgentChat';
-	private static _instance: ParadisAgentChatController | undefined;
-
-	/** コマンドから引くための現在のインスタンス（ウィンドウに1つ）。 */
-	static get instance(): ParadisAgentChatController | undefined {
-		return ParadisAgentChatController._instance;
-	}
+	declare readonly _serviceBrand: undefined;
 
 	private readonly source: IParadisAgentChatSource;
+	private readonly input: ParadisAgentChatInput;
+	/** ペインごとのカードの状態（表示やタブを切り替えても失わない）。 */
+	private readonly cardStateByToken = new Map<string, IParadisAgentChatCardStates>();
 	private readonly watcherId = generateUuid();
 	private readonly sessions = this._register(new DisposableMap<string, ParadisAgentChatSession>());
 	private readonly chatModeInstances = new Set<number>();
 	private readonly overlays = new Set<ParadisAgentChatOverlay>();
 	private readonly drafts = new Map<string, string>();
 	private readonly histories = new Map<string, string[]>();
-	/** この画面から打鍵で答え終えた interaction（`token\0kind\0id`）。中継が消すまでの間も文を送れるようにする。 */
-	private readonly answeredInteractions = new Set<string>();
 	private readonly commandCache = new Map<string, { readonly at: number; readonly promise: Promise<readonly IParadisAgentChatCommand[]> }>();
 	private readonly groupListeners = this._register(new DisposableMap<IEditorGroup, IDisposable>());
 	private readonly instanceListeners = this._register(new DisposableMap<number, IDisposable>());
@@ -171,13 +168,12 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		ParadisAgentChatController._instance = this;
-		this._register(toDisposable(() => {
-			if (ParadisAgentChatController._instance === this) {
-				ParadisAgentChatController._instance = undefined;
-			}
-		}));
 		this.source = ProxyChannel.toService<IParadisAgentChatSource>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
+		this.input = new ParadisAgentChatInput({
+			source: this.source,
+			terminal: (instanceId, token) => this.chatTerminal(instanceId, token),
+			session: token => this.session(token),
+		});
 		this.enabled = this.configurationService.getValue<boolean>(PARADIS_AGENT_CHAT_ENABLED_SETTING) !== false;
 
 		this._register(paradisRegisterEditorTerminalOverlay(container => {
@@ -269,6 +265,8 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 			this.instanceListeners.deleteAndDispose(instanceId);
 		}
 		this.updateAll();
+		// 変化の知らせを受けるペイン（チャット表示中）が変わったので、中継へすぐ知らせ直す。
+		this.watchScheduler.schedule();
 		if (!moveFocus) {
 			return;
 		}
@@ -276,6 +274,13 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 			this.focusChatInput(instanceId);
 		} else {
 			instance?.focus(true);
+		}
+	}
+
+	toggleFromCommand(context: unknown): void {
+		const instanceId = this.targetInstanceId(context);
+		if (instanceId !== undefined) {
+			this.toggle(instanceId);
 		}
 	}
 
@@ -377,11 +382,8 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 				this.drafts.delete(token);
 				this.histories.delete(token);
 				this.commandCache.delete(token);
-				for (const key of [...this.answeredInteractions]) {
-					if (key.startsWith(`${token}\0`)) {
-						this.answeredInteractions.delete(key);
-					}
-				}
+				this.cardStateByToken.delete(token);
+				this.input.forget(token);
 			}
 		}
 	}
@@ -392,7 +394,8 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 	 */
 	private renewWatch(): void {
 		const tokens = this.enabled ? this.paneTokenService.listPaneTokens().map(entry => entry.token) : [];
-		this.source.watchAgentChat(this.watcherId, tokens).catch(error => this.logService.trace('[paradisAgentChat] watch failed', String(error)));
+		const visible = this.enabled ? [...this.visibleTokens()] : [];
+		this.source.watchAgentChat(this.watcherId, tokens, visible).catch(error => this.logService.trace('[paradisAgentChat] watch failed', String(error)));
 	}
 
 	private visibleTokens(): Set<string> {
@@ -456,161 +459,87 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 		return this.keybindingService.lookupKeybinding(PARADIS_AGENT_CHAT_TOGGLE_COMMAND)?.getLabel() ?? undefined;
 	}
 
+	cardStates(token: string): IParadisAgentChatCardStates {
+		let states = this.cardStateByToken.get(token);
+		if (states === undefined) {
+			states = { questions: new Map(), approvals: new Map() };
+			this.cardStateByToken.set(token, states);
+		}
+		return states;
+	}
+
 	showTerminal(instanceId: number): void {
 		this.setChatMode(instanceId, false, true);
 	}
 
-	// ---- ターミナルへの入力 --------------------------------------------------------------------
+	// ---- ターミナルへの入力（ParadisAgentChatInput） ---------------------------------------------
 
 	/** 入力先のターミナル。タブが閉じた・ペインが別の会話に替わったなら undefined。 */
-	private liveInstance(instanceId: number, token: string): ITerminalInstance | undefined {
+	private chatTerminal(instanceId: number, token: string): IParadisAgentChatTerminal | undefined {
 		const instance = this.terminalService.getInstanceFromId(instanceId);
-		return instance !== undefined && !instance.isDisposed && this.tokenFor(instanceId) === token ? instance : undefined;
+		if (instance === undefined || instance.isDisposed || this.tokenFor(instanceId) !== token) {
+			return undefined;
+		}
+		let terminal = this.chatTerminals.get(instance);
+		if (terminal === undefined) {
+			terminal = paradisChatTerminalFor(instance);
+			this.chatTerminals.set(instance, terminal);
+		}
+		return terminal;
 	}
+
+	private readonly chatTerminals = new WeakMap<ITerminalInstance, IParadisAgentChatTerminal>();
 
 	async sendMessage(instanceId: number, token: string, text: string): Promise<string | undefined> {
-		const instance = this.liveInstance(instanceId, token);
-		if (instance === undefined) {
-			return localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません");
+		const error = await this.input.sendMessage(instanceId, token, text);
+		if (error === undefined) {
+			this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
 		}
-		const session = this.session(token);
-		await session.refresh();
-		if (session.state === undefined) {
-			return localize('paradisAgentChat.errorNoSession', "エージェントの会話が見つかりません");
-		}
-		// 質問・承認の画面に文字を流すと、先頭の文字が選択肢の操作として食われる（TM23 と同じ理由）。
-		if (!this.isAnsweredOrNone(token, session.state.interaction)) {
-			return localize('paradisAgentChat.errorInteraction', "エージェントが回答を待っています。先に質問・許可の確認に答えてください");
-		}
-		try {
-			const outcome = await paradisSendAgentMessageToTui(
-				text,
-				(value, execute, bracketedPasteMode) => instance.sendText(value, execute ?? false, bracketedPasteMode),
-				async () => {
-					if (this.liveInstance(instanceId, token) !== instance) {
-						return false;
-					}
-					await session.refresh();
-					return session.state !== undefined && this.isAnsweredOrNone(token, session.state.interaction);
-				},
-			);
-			if (!outcome.executed) {
-				return outcome.consumed
-					? localize('paradisAgentChat.errorPastedNotSent', "貼り付けた後に状態が変わったため、Enter を送りませんでした。ターミナルで確かめてください")
-					: localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました");
-			}
-		} catch (error) {
-			this.logService.warn('[paradisAgentChat] send failed', error);
-			return localize('paradisAgentChat.errorSend', "ターミナルへ送れませんでした");
-		}
-		this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
-		return undefined;
+		return error;
 	}
 
-	private isAnsweredOrNone(token: string, interaction: IParadisAgentInteraction | null): boolean {
-		return interaction === null || this.answeredInteractions.has(`${token}\0${interaction.kind}\0${interaction.id}`);
+	answerQuestions(instanceId: number, token: string, group: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<string | undefined> {
+		return this.input.answerQuestions(instanceId, token, group, answers);
 	}
 
-	/** 待っている interaction がまだ同じか（中継から取り直して確かめる）。 */
-	private async interactionStillPending(token: string, kind: 'question' | 'approval', id: string): Promise<boolean> {
-		const session = this.sessions.get(token);
-		if (session === undefined) {
-			return false;
-		}
-		await session.refresh();
-		const interaction = session.state?.interaction;
-		return interaction?.kind === kind && interaction.id === id;
-	}
-
-	async answerQuestions(instanceId: number, token: string, group: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<string | undefined> {
-		const instance = this.liveInstance(instanceId, token);
-		if (instance === undefined) {
-			return localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません");
-		}
-		if (!(await this.interactionStillPending(token, 'question', group))) {
-			return localize('paradisAgentChat.errorQuestionGone', "この質問はもう回答を待っていません");
-		}
-		const questions = this.sessions.get(token)?.state?.pendingQuestions ?? [];
-		// 選択肢の数が変わっていないか（中継がモバイルの回答に対して行う確認と同じ）。
-		const matches = questions.length === answers.length && answers.every((answer, index) => {
-			const question = questions[index];
-			const optionCount = question?.options?.length ?? 0;
-			if (answer.kind === 'option') {
-				return question?.multiSelect !== true && answer.index < optionCount;
-			}
-			if (answer.kind === 'multi') {
-				return question?.multiSelect === true && answer.indices.every(value => value < optionCount);
-			}
-			return answer.optionCount === optionCount;
-		});
-		if (!matches) {
-			return localize('paradisAgentChat.errorQuestionChanged', "質問の選択肢が変わりました。もう一度選んでください");
-		}
-		const parts = paradisAgentQuestionKeySequence(questions.map(question => ({ optionCount: question.options?.length ?? 0, multiSelect: question.multiSelect === true })), answers);
-		return this.sendInteractionKeys(instanceId, token, instance, 'question', group, parts, paradisQuestionReadyMarker(questions[0]));
-	}
-
-	async answerApproval(instanceId: number, token: string, interactionId: string, choiceId: string): Promise<string | undefined> {
-		const instance = this.liveInstance(instanceId, token);
-		if (instance === undefined) {
-			return localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません");
-		}
-		if (!(await this.interactionStillPending(token, 'approval', interactionId))) {
-			return localize('paradisAgentChat.errorApprovalGone', "この確認はもう回答を待っていません");
-		}
-		if (paradisIsCodexDaemonApprovalInteraction(interactionId)) {
-			// Codex の app-server 経由の承認は、キーではなく構造化された回答で返す（モバイルと同じ経路）。
-			const answered = await this.source.answerAgentChatApproval(token, interactionId, choiceId).catch(() => false);
-			void this.sessions.get(token)?.refresh();
-			return answered ? undefined : localize('paradisAgentChat.errorApprovalSend', "Codex へ回答を送れませんでした。ターミナルで答えてください");
-		}
-		if (choiceId !== 'yes' && choiceId !== 'no') {
-			return localize('paradisAgentChat.errorApprovalChoice', "この選択肢はここからは選べません。ターミナルで答えてください");
-		}
-		const agent = this.sessions.get(token)?.state?.agent ?? 'claude';
-		return this.sendInteractionKeys(instanceId, token, instance, 'approval', interactionId, paradisAgentApprovalKeySequence(agent, choiceId), undefined);
-	}
-
-	private async sendInteractionKeys(instanceId: number, token: string, instance: ITerminalInstance, kind: 'question' | 'approval', id: string, parts: readonly string[], readyMarker: string | undefined): Promise<string | undefined> {
-		if (parts.length === 0) {
-			return localize('paradisAgentChat.errorNoKeys', "送る内容がありません");
-		}
-		// モバイルと同じ claim を取る。取れなければ、別の場所（スマホ・この画面）から送った回答が反映待ち。
-		if (!(await this.source.claimAgentChatInteraction(token, kind, id).catch(() => false))) {
-			return localize('paradisAgentChat.errorLocked', "送った回答がターミナルに反映されるのを待っています。変わらない場合はターミナルで確かめてください");
-		}
-		let stopReason: string | undefined;
-		let keysSent = 0;
-		try {
-			const sent = await paradisSendAgentInteractionKeys(instance, parts, INTERACTION_KEY_DELAY, readyMarker, async () => {
-				if (this.liveInstance(instanceId, token) !== instance) {
-					stopReason = localize('paradisAgentChat.errorTerminalChanged', "送り先のターミナルが変わりました");
-					return false;
-				}
-				if (!(await this.interactionStillPending(token, kind, id))) {
-					// ターミナル側で先に答えた・別の質問に変わった。消えた質問の跡地へ打鍵しない。
-					stopReason = localize('paradisAgentChat.errorInteractionChanged', "途中で回答待ちが終わったため、残りのキーを送りませんでした");
-					return false;
-				}
-				keysSent++;
-				return true;
-			});
-			if (sent) {
-				this.answeredInteractions.add(`${token}\0${kind}\0${id}`);
-			}
-			return sent ? undefined : stopReason;
-		} catch (error) {
-			this.logService.warn('[paradisAgentChat] interaction keys failed', error);
-			return localize('paradisAgentChat.errorSend', "ターミナルへ送れませんでした");
-		} finally {
-			// 1つでも打鍵したら、TUI が消費するまで同じ interaction へ打ち直させない（二重の打鍵が入力欄へ流れるため）。
-			void this.source.releaseAgentChatInteraction(token, kind, id, keysSent > 0).catch(() => undefined);
-			void this.sessions.get(token)?.refresh();
-		}
+	answerApproval(instanceId: number, token: string, interactionId: string, choiceId: string): Promise<string | undefined> {
+		return this.input.answerApproval(instanceId, token, interactionId, choiceId);
 	}
 }
 
-registerWorkbenchContribution2(ParadisAgentChatController.ID, ParadisAgentChatController, WorkbenchPhase.AfterRestored);
+/** ITerminalInstance を、チャットの入力が使う形へ写す。 */
+function paradisChatTerminalFor(instance: ITerminalInstance): IParadisAgentChatTerminal {
+	return {
+		sendText: (text, shouldExecute, bracketedPasteMode) => instance.sendText(text, shouldExecute, bracketedPasteMode),
+		readScreen: () => paradisVisibleTerminalText(instance),
+		foreground: () => {
+			const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
+			if (detection === undefined) {
+				return 'unknown';
+			}
+			// シェルのプロンプトが入力を待っている＝前面にエージェントはいない。再読み込みの後は実行中の
+			// コマンド名が失われるので、名前が分からないだけでは「いない」とはみなさない。
+			if (detection.promptInputModel.state === PromptInputState.Input) {
+				return 'shell';
+			}
+			const executing = detection.executingCommand;
+			if (executing === undefined || executing.trim().length === 0) {
+				return 'unknown';
+			}
+			return paradisInteractiveAgentCommand(executing) !== undefined ? 'agent' : 'other';
+		},
+		bracketedPasteMode: () => instance.xterm?.raw.modes.bracketedPasteMode === true,
+	};
+}
+
+/** サービスを起動時に作る（コマンドは accessor からサービスを引く）。 */
+class ParadisAgentChatStartup implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisAgentChat';
+	constructor(@IParadisAgentChatService _service: IParadisAgentChatService) { }
+}
+
+registerSingleton(IParadisAgentChatService, ParadisAgentChatController, InstantiationType.Delayed);
+registerWorkbenchContribution2(ParadisAgentChatStartup.ID, ParadisAgentChatStartup, WorkbenchPhase.AfterRestored);
 
 const chatToggleWhen = ContextKeyExpr.and(
 	ActiveEditorContext.isEqualTo(terminalEditorId),
@@ -643,11 +572,7 @@ registerAction2(class ParadisToggleAgentChatAction extends Action2 {
 		});
 	}
 
-	run(_accessor: ServicesAccessor, context?: unknown): void {
-		const controller = ParadisAgentChatController.instance;
-		const instanceId = controller?.targetInstanceId(context);
-		if (controller !== undefined && instanceId !== undefined) {
-			controller.toggle(instanceId);
-		}
+	run(accessor: ServicesAccessor, context?: unknown): void {
+		accessor.get(IParadisAgentChatService).toggleFromCommand(context);
 	}
 });

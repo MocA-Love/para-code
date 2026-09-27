@@ -20,7 +20,7 @@ import { ParadisAgentQuestionAnswer } from '../../../mobileRelay/common/paradisA
 import { IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
-import { IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
+import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
 
 class TestHost implements IParadisAgentChatViewHost {
 	readonly answers: { group: string; answers: readonly ParadisAgentQuestionAnswer[] }[] = [];
@@ -39,6 +39,8 @@ class TestHost implements IParadisAgentChatViewHost {
 	async getFullText(): Promise<string | undefined> { return undefined; }
 	async getImage(): Promise<IParadisAgentChatImageData | undefined> { return { mediaType: 'image/png', data: 'AAAA' }; }
 	getToggleKeybindingLabel(): string | undefined { return '⌘⇧J'; }
+	private readonly states: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map() };
+	cardStates(): IParadisAgentChatCardStates { return this.states; }
 	getSendKey(): ParadisAgentChatSendKey { return 'enter'; }
 	getDraft(): string { return ''; }
 	setDraft(): void { }

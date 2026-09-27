@@ -60,7 +60,55 @@ export function paradisScreenShowsMarker(screen: string, marker: string): boolea
 }
 
 /**
- * 打鍵を流し始めてよい状態になるまで待つ。
+ * 画面に、エージェントの TUI が利用者の回答を待つ画面（許可の確認・質問の選択肢）が出ているか。
+ *
+ * デスクトップのチャット表示が文を送る前と、許可の確認へ打鍵する前に使う。送った文の Enter が許可の
+ * 既定の「Yes」や質問のハイライト中の選択肢を確定してしまうのを防ぐため。【推測】文言は Claude Code
+ * 2.1 系と Codex 0.14x の表示から取った（実測したキー注入の文言ではない）。TUI の文言が変わると
+ * 見落とす（＝従来どおり送る）方向に外れる。
+ */
+export function paradisScreenShowsAgentPrompt(screen: string): boolean {
+	const compact = screen.replace(/\s+/g, '').toLowerCase();
+	return PARADIS_AGENT_PROMPT_MARKERS.some(marker => compact.includes(marker));
+}
+
+/** 回答待ちの画面に出る文言（空白を除いた小文字）。 */
+const PARADIS_AGENT_PROMPT_MARKERS: readonly string[] = [
+	// Claude Code の許可の確認（Bash / 編集 / 作成 / その他）
+	'doyouwanttoproceed?',
+	'doyouwanttomakethisedit',
+	'doyouwanttocreate',
+	'doyouwanttoallow',
+	// Claude Code の AskUserQuestion の操作説明
+	'entertoselect',
+	// Codex の承認
+	'wouldyouliketorunthefollowingcommand',
+	'wouldyouliketomakethefollowingedits',
+	'allowcommand?',
+];
+
+/** 打鍵の送り先（ITerminalInstance の必要な部分だけ。テストで差し替えられるように）。 */
+export interface IParadisAgentTuiTarget {
+	sendText(text: string, shouldExecute: boolean): Promise<void>;
+}
+
+/** 打鍵を始める前の確かめ方。 */
+export interface IParadisAgentTuiReadyOptions {
+	/** 今の画面の見えている範囲。 */
+	readonly readScreen: () => string;
+	/** 画面にこれが出たら流し始める（質問の選択肢ラベル、または判定関数）。 */
+	readonly ready: string | ((screen: string) => boolean) | undefined;
+	/**
+	 * true なら、目印が無い・待っても出ないときは流さない（デスクトップ）。false なら流す（モバイル。
+	 * 利用者はその場で画面を見られないので、取りこぼしを減らすための待ちであって門ではない）。
+	 */
+	readonly strict: boolean;
+	/** 計測で経路を分けるため。 */
+	readonly source: 'mobile' | 'desktop';
+}
+
+/**
+ * 打鍵を流し始めてよい状態になるまで待つ。流してよければ true。
  *
  * TUI は「質問を描く」のと「選択肢リストがキーボードフォーカスを取る」のが同時ではない。
  * その隙間に届いたキーは**入力欄へ吸われて消える**（Claude Code 2.1.223 で実測。待たずに
@@ -69,11 +117,8 @@ export function paradisScreenShowsMarker(screen: string, marker: string): boolea
  *
  * 目印は質問自身の選択肢ラベル（paradisQuestionReadyMarker）。TUI のフッタ文言に
  * 頼ると、表示が変わったときに黙って壊れる。
- *
- * 目印が無い場合と、待っても現れない場合は**そのまま流す**。ここは取りこぼしを減らすための
- * ものであって、送信を止める門ではない（画面の読み取りに失敗して回答できなくなる方が悪い）。
  */
-export async function paradisWaitForAgentInteractionTarget(instance: ITerminalInstance, readyMarker: string | undefined, partCount: number): Promise<void> {
+export async function paradisWaitForAgentInteractionTarget(options: IParadisAgentTuiReadyOptions, partCount: number): Promise<boolean> {
 	const startedAt = Date.now();
 	const settle = () => new Promise<void>(resolve => setTimeout(resolve, INTERACTION_READY_SETTLE_MS));
 	// この待ちが効いているかは本番でしか分からない。目印を見つけられたのか、時間切れだったのか、
@@ -89,30 +134,40 @@ export async function paradisWaitForAgentInteractionTarget(instance: ITerminalIn
 			safe_wait_ms: Date.now() - startedAt,
 			// 1つだけの回答（単問・単一選択、承認）は取りこぼすと拾い直せない。
 			safe_key_parts: partCount,
+			safe_source: options.source,
 		}, () => { });
 	};
-	if (readyMarker === undefined) {
+	const ready = options.ready;
+	if (ready === undefined) {
+		record('no-marker');
+		if (options.strict) {
+			return false;
+		}
 		// 目印を作れない回答（承認など）は、少なくとも先頭を0msで叩かない。
 		// 承認の「はい」は `1` に続けて Enter を送るので、先頭が入力欄へ吸われると
 		// **Enterがその `1` をエージェントへのメッセージとして送信してしまう**。
 		await settle();
-		record('no-marker');
-		return;
+		return true;
 	}
+	const matches = typeof ready === 'string' ? (screen: string) => paradisScreenShowsMarker(screen, ready) : ready;
 	const deadline = startedAt + INTERACTION_READY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
-		if (paradisScreenShowsMarker(paradisVisibleTerminalText(instance), readyMarker)) {
+		if (matches(options.readScreen())) {
 			// 描かれてからフォーカスが移るまでのわずかな隙間を越えるための一拍。
 			await settle();
 			record('marker-seen');
-			return;
+			return true;
 		}
 		await new Promise<void>(resolve => setTimeout(resolve, INTERACTION_READY_POLL_MS));
 	}
-	// 目印が見つからないまま時間切れ。ここは取りこぼしを減らすためのものであって
-	// 送信を止める門ではないので、そのまま流す（画面の読み取りに失敗して回答できなくなる方が悪い）。
-	await settle();
 	record('timed-out');
+	if (options.strict) {
+		return false;
+	}
+	// 目印が見つからないまま時間切れ。モバイルではそのまま流す（画面の読み取りに失敗して回答できなく
+	// なる方が悪い）。
+	await settle();
+	return true;
 }
 
 /**
@@ -123,27 +178,29 @@ export async function paradisWaitForAgentInteractionTarget(instance: ITerminalIn
  * 経路で答えられた／別の質問に変わった」窓がある。ここを飛ばすと、消えた質問の跡地へ数字を
  * 打ち込むことになり、続く Enter でそれがエージェントへのメッセージとして送信される。
  *
- * @returns 全部流せたら true。途中で止めたら false。
+ * @returns 全部流せたら 'sent'、途中で止めたら 'stopped'、流し始める前に目印を確かめられなかったら 'not-ready'。
  */
 export async function paradisSendAgentInteractionKeys(
-	instance: ITerminalInstance,
+	target: IParadisAgentTuiTarget,
 	parts: readonly string[],
 	delayMs: number,
-	readyMarker: string | undefined,
+	readyOptions: IParadisAgentTuiReadyOptions,
 	beforeEachKey: () => Promise<boolean>,
-): Promise<boolean> {
+): Promise<'sent' | 'stopped' | 'not-ready'> {
 	// **最初の1打鍵を待たずに流さないこと。** TUI が選択肢リストへキーボードフォーカスを
 	// 移す前に届いたキーは、リストではなく入力欄へ吸われて消える（Claude Code 2.1.223 で
 	// 実測）。キー列が1つだけの回答は、これを落とすと拾い直す機会が無い。
-	await paradisWaitForAgentInteractionTarget(instance, readyMarker, parts.length);
+	if (!(await paradisWaitForAgentInteractionTarget(readyOptions, parts.length))) {
+		return 'not-ready';
+	}
 	for (let index = 0; index < parts.length; index++) {
 		if (index > 0) {
 			await new Promise<void>(resolve => setTimeout(resolve, delayMs));
 		}
 		if (!(await beforeEachKey())) {
-			return false;
+			return 'stopped';
 		}
-		await instance.sendText(parts[index], false);
+		await target.sendText(parts[index], false);
 	}
-	return true;
+	return 'sent';
 }

@@ -53,21 +53,29 @@ export class ParadisAgentChatSession extends Disposable {
 	 */
 	refresh(): Promise<void> {
 		if (this._inFlight === undefined) {
-			this._inFlight = this.fetch().finally(() => this._inFlight = undefined);
-			return this._inFlight;
+			return this.startFetch();
 		}
 		if (this._next === undefined) {
-			const previous = this._inFlight;
-			this._next = previous.then(() => {
+			this._next = this._inFlight.then(() => {
 				this._next = undefined;
 				if (this._store.isDisposed) {
 					return;
 				}
-				this._inFlight = this.fetch().finally(() => this._inFlight = undefined);
-				return this._inFlight;
+				// 待っている間に別の呼び出しが先に取得を始めていたら、それに相乗りする（同時に2本走らせない）。
+				return this._inFlight ?? this.startFetch();
 			});
 		}
 		return this._next;
+	}
+
+	private startFetch(): Promise<void> {
+		const fetching: Promise<void> = this.fetch().finally(() => {
+			if (this._inFlight === fetching) {
+				this._inFlight = undefined;
+			}
+		});
+		this._inFlight = fetching;
+		return fetching;
 	}
 
 	private async fetch(): Promise<void> {

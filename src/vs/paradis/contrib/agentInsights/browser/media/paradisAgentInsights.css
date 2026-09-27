@@ -38,7 +38,9 @@
 /* The terminal find widget (.simple-find-part-wrapper, right: 18px, z-index 10..33) opens over the
  * same corner. Step aside while it is shown so the badge never covers its buttons or eats the clicks
  * meant for them; the share dot at right: 6px stays clear of the widget and is left alone. */
-.monaco-workbench .terminal-overflow-guard.terminal-editor:has(.simple-find-part.visible) .paradis-prompt-cache-badge {
+/* While the agent chat covers the terminal (agentChat, `paradis-agent-chat-active`) the find widget is
+ * hidden with the terminal, so keep the badge. */
+.monaco-workbench .terminal-overflow-guard.terminal-editor:not(.paradis-agent-chat-active):has(.simple-find-part.visible) .paradis-prompt-cache-badge {
 	display: none;
 }
 

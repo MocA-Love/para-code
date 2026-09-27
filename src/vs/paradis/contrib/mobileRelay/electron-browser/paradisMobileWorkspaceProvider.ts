@@ -69,7 +69,7 @@ import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, 
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
-import { paradisSendAgentInteractionKeys } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
@@ -1446,7 +1446,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// （paradisSendAgentInteractionKeys。待ちの間に PC で答えられた・別の質問に変わった場合に、
 				// 消えた質問の跡地へ打鍵しないため）。
 				const stopped: { reason?: { readonly code: string; readonly message: string } } = {};
-				const sent = await paradisSendAgentInteractionKeys(instance, parts, msg.delayMs as number, msg.readyMarker as string | undefined, async () => {
+				const sent = await paradisSendAgentInteractionKeys(instance, parts, msg.delayMs as number, {
+					readScreen: () => paradisVisibleTerminalText(instance),
+					ready: msg.readyMarker as string | undefined,
+					strict: false,
+					source: 'mobile',
+				}, async () => {
 					const currentInstance = this.findAuthoritativePaneInstance(msg.id as number, msg.token as string);
 					if (currentInstance !== instance) {
 						stopped.reason = { code: 'stale-session', message: '操作対象のターミナルが変わりました' };
@@ -1463,7 +1468,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					return true;
 				});
-				if (!sent) {
+				if (sent !== 'sent') {
 					if (stopped.reason !== undefined) {
 						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', stopped.reason.code, stopped.reason.message);
 					}

@@ -8,6 +8,7 @@
 
 // デスクトップのチャット表示の設定。画面そのものは electron-browser 側（会話を shared process から引く）。
 
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -23,14 +24,18 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentChat.enabled', "エディタエリアのターミナルで動いている Claude Code / Codex を、同じタブの中でチャット表示に切り替えられるようにします（`⌘⇧J` またはタブ列の吹き出しのボタン）。チャットで送った文と回答はターミナルへ入力されます。"),
+			markdownDescription: isMacintosh
+				? localize('paradis.agentChat.enabledMac', "エディタエリアのターミナルで動いている Claude Code / Codex を、同じタブの中でチャット表示に切り替えられるようにします（`⌘⇧J` またはタブ列の吹き出しのボタン）。チャットで送った文と回答はターミナルへ入力されます。")
+				: localize('paradis.agentChat.enabledOther', "エディタエリアのターミナルで動いている Claude Code / Codex を、同じタブの中でチャット表示に切り替えられるようにします（`Ctrl+Shift+J` またはタブ列の吹き出しのボタン）。チャットで送った文と回答はターミナルへ入力されます。オンの間は、エージェントのタブで `Ctrl+Shift+J` がシェルへ送られません。"),
 		},
 		[PARADIS_AGENT_CHAT_SEND_KEY_SETTING]: {
 			type: 'string',
 			enum: ['enter', 'modEnter'],
 			enumDescriptions: [
 				localize('paradis.agentChat.sendKey.enter', "Enter で送信し、Shift+Enter で改行します。"),
-				localize('paradis.agentChat.sendKey.modEnter', "⌘Enter（Windows / Linux では Ctrl+Enter）で送信し、Enter で改行します。"),
+				isMacintosh
+					? localize('paradis.agentChat.sendKey.modEnterMac', "⌘Enter で送信し、Enter で改行します。")
+					: localize('paradis.agentChat.sendKey.modEnterOther', "Ctrl+Enter で送信し、Enter で改行します。"),
 			],
 			default: 'enter',
 			scope: ConfigurationScope.APPLICATION,
