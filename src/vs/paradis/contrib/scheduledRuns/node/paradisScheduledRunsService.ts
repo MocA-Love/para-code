@@ -41,8 +41,11 @@ import {
 	PARADIS_SCHEDULED_RUN_HISTORY_LIMIT,
 	PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH,
 	PARADIS_SCHEDULED_RUN_LEASE_MS,
+	PARADIS_SCHEDULED_RUN_MIN_PENDING_MS,
 	PARADIS_SCHEDULED_RUN_MAX_DEFINITIONS,
 	PARADIS_SCHEDULED_RUN_TIMEOUT_MS,
+	paradisRevalidateStoredDefinition,
+	paradisSanitizeScheduledRunPrompt,
 	paradisValidateScheduledRunDraft,
 } from '../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
@@ -60,6 +63,8 @@ export function paradisAgentFromTranscriptPath(path: string | undefined): 'claud
 
 /** 判定の間隔。 */
 export const PARADIS_SCHEDULED_RUNS_TICK_MS = 30_000;
+/** 判定の間隔がこれより空いたら、スリープからの復帰とみなす。 */
+export const PARADIS_SCHEDULED_RUNS_RESUME_GAP_MS = 2 * 60_000;
 /** 制限時間を過ぎてもウィンドウから終了の報告が来ないときに、こちらで打ち切りと記録するまでの余裕。 */
 const TIMEOUT_GRACE_MS = 5 * 60_000;
 
@@ -119,6 +124,9 @@ export class ParadisScheduledRunsService extends Disposable {
 	/** 実行中の記録 → そのエージェントのペイントークン（メモリだけに持つ）。 */
 	private readonly paneTokens = new Map<string, string>();
 
+	/** 前回の判定の時刻（スリープからの復帰を見分ける）。 */
+	private lastTickAt: number | undefined;
+
 	private readonly ready: Promise<void>;
 	private writeChain: Promise<void> = Promise.resolve();
 	private readonly timer = this._register(new IntervalTimer());
@@ -151,7 +159,15 @@ export class ParadisScheduledRunsService extends Disposable {
 			this.logService.error('[ParadisScheduledRuns] could not read the saved schedules; starting empty', error);
 		}
 		if (stored) {
-			this.definitions = [...stored.definitions];
+			// ファイルは形しか確かめていない。中身も保存のときと同じ規則で確かめ直し、通らない定義は
+			// 無効にする（手で書き換えて「作成直後は無効」や回数の上限を外されないように）
+			this.definitions = stored.definitions.map(definition => {
+				const { definition: checked, problem } = paradisRevalidateStoredDefinition(definition);
+				if (problem !== undefined) {
+					this.logService.warn(`[ParadisScheduledRuns] disabled a saved schedule that no longer passes validation: ${problem}`);
+				}
+				return checked;
+			});
 			this.runs = [...stored.runs];
 			this.lastEvaluatedAt = { ...stored.lastEvaluatedAt };
 		}
@@ -219,7 +235,7 @@ export class ParadisScheduledRunsService extends Disposable {
 			modelId: draft.modelId,
 			effortId: draft.effortId,
 			permissionId: draft.permissionId,
-			prompt: draft.prompt,
+			prompt: paradisSanitizeScheduledRunPrompt(draft.prompt),
 			dailyLimit: draft.dailyLimit,
 		};
 		let definition: IParadisScheduledRunDefinition;
@@ -247,6 +263,10 @@ export class ParadisScheduledRunsService extends Disposable {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
 		const now = this.clock.now();
+		if (existing.enabled === enabled) {
+			// 押し直しでは判定の起点を動かさない（直前の時刻を黙って逃さないように）
+			return { ok: true, definition: existing };
+		}
 		const definition = { ...existing, enabled, updatedAt: now };
 		this.definitions = this.definitions.map(candidate => candidate.id === id ? definition : candidate);
 		// 有効にした時点より前の時刻は拾わない（無効だった間の時刻を「逃した」と扱わない）
@@ -366,27 +386,38 @@ export class ParadisScheduledRunsService extends Disposable {
 			...(report.sawAgentStatus ? { sawAgentStatus: true } : {}),
 			...(finished ? { finishedAt: now } : {}),
 		});
+		if (finished && !this.definitions.some(definition => definition.id === run.definitionId)) {
+			// 定義を消した後に終わった回。残す先が無いのでその場で消す
+			this.runs = this.runs.filter(candidate => candidate.id !== run.id);
+		}
 		this.commit();
 		return true;
 	}
 
-	/** 受け持っている実行が生きていることを知らせる。 */
-	async heartbeat(ctx: string, runIds: readonly string[]): Promise<void> {
+	/**
+	 * 受け持っている実行が生きていることを知らせる。
+	 *
+	 * 受け付けなかった実行（もう終わった・不明にした・別のウィンドウのもの）の id を返す。
+	 * ウィンドウはそれを受けて自分の見張りを止め、ターミナルを閉じる（記録の上で終わった実行が
+	 * 動き続け、重複の安全装置が外れるのを防ぐ）。
+	 */
+	async heartbeat(ctx: string, runIds: readonly string[]): Promise<string[]> {
 		await this.ready;
 		const now = this.clock.now();
 		const ids = new Set(runIds);
-		let changed = false;
+		const accepted = new Set<string>();
 		this.runs = this.runs.map(run => {
 			if (ids.has(run.id) && run.claimedBy === ctx && paradisIsActiveRunStatus(run.status)) {
-				changed = true;
+				accepted.add(run.id);
 				return { ...run, heartbeatAt: now };
 			}
 			return run;
 		});
-		if (changed) {
+		if (accepted.size > 0) {
 			// 生存報告だけでは画面を作り直さない（毎分の再描画を避ける）
 			this.persist();
 		}
+		return runIds.filter(id => !accepted.has(id));
 	}
 
 	/** まだ誰も拾っていない実行（開いたばかりのウィンドウが最初に聞く）。 */
@@ -443,6 +474,10 @@ export class ParadisScheduledRunsService extends Disposable {
 	/** 1 回分の判定。テストからも呼ぶ。 */
 	tick(): void {
 		const now = this.clock.now();
+		// 前回の判定から大きく時間が飛んでいたら、スリープからの復帰とみなす。ウィンドウの生存報告も
+		// 同じだけ止まっていたので、この回はリース切れを数えず、生存報告の時刻を今へ寄せる
+		const resumed = this.lastTickAt !== undefined && now - this.lastTickAt > PARADIS_SCHEDULED_RUNS_RESUME_GAP_MS;
+		this.lastTickAt = now;
 		let changed = false;
 		const toRequest: IParadisScheduledRunRecord[] = [];
 
@@ -473,7 +508,7 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 			if (decision.run) {
 				changed = true;
-				const guard = paradisCheckRunGuards(definition, this.runs, decision.run.trigger, now);
+				const guard = paradisCheckRunGuards(definition, this.runs, decision.run.trigger, now, decision.run.scheduledFor);
 				if (guard !== undefined) {
 					this.addRun(this.skippedRecord(definition, decision.run.trigger, decision.run.scheduledFor, now, guard));
 				} else {
@@ -485,8 +520,9 @@ export class ParadisScheduledRunsService extends Disposable {
 		// 開始待ち・実行中の見直し
 		for (const run of [...this.runs]) {
 			if (run.status === 'pending') {
-				const due = run.scheduledFor ?? run.createdAt;
-				if (now - due > PARADIS_SCHEDULED_RUN_CATCH_UP_MS) {
+				// 予定から 12 時間、ただし遅れて作った開始待ちにも作成から最低 1 時間は残す
+				const expiresAt = Math.max((run.scheduledFor ?? run.createdAt) + PARADIS_SCHEDULED_RUN_CATCH_UP_MS, run.createdAt + PARADIS_SCHEDULED_RUN_MIN_PENDING_MS);
+				if (now > expiresAt) {
 					changed = true;
 					this.updateRun(run.id, { status: 'skipped', reason: 'noWindowTooOld', finishedAt: now });
 				} else if (!toRequest.includes(run)) {
@@ -494,9 +530,15 @@ export class ParadisScheduledRunsService extends Disposable {
 					toRequest.push(run);
 				}
 			} else if (paradisIsActiveRunStatus(run.status)) {
-				if (run.heartbeatAt !== undefined && now - run.heartbeatAt > PARADIS_SCHEDULED_RUN_LEASE_MS) {
+				if (resumed) {
+					this.updateRun(run.id, { heartbeatAt: now });
+				} else if (run.heartbeatAt !== undefined && now - run.heartbeatAt > PARADIS_SCHEDULED_RUN_LEASE_MS) {
 					changed = true;
 					this.updateRun(run.id, { status: 'lost', reason: 'heartbeatLost', finishedAt: now });
+					// 受け持ちのウィンドウがまだ生きていれば止めてもらう（記録の上で終わった回を動かし続けない）
+					if (run.claimedBy !== undefined) {
+						this._onDidRequestStop.fire({ runId: run.id, claimedBy: run.claimedBy });
+					}
 				} else if (run.startedAt !== undefined && now - run.startedAt > PARADIS_SCHEDULED_RUN_TIMEOUT_MS + TIMEOUT_GRACE_MS) {
 					changed = true;
 					this.updateRun(run.id, { status: 'timedOut', reason: 'timeout', finishedAt: now });
@@ -579,9 +621,6 @@ export class ParadisScheduledRunsService extends Disposable {
 	private prune(definitionId: string): void {
 		const own = this.runs.filter(run => run.definitionId === definitionId);
 		let excess = own.length - PARADIS_SCHEDULED_RUN_HISTORY_LIMIT;
-		if (excess <= 0) {
-			return;
-		}
 		const removable = own
 			.filter(run => !paradisIsActiveRunStatus(run.status) && run.space === undefined)
 			.sort((a, b) => a.createdAt - b.createdAt);
@@ -592,6 +631,17 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 			drop.add(run.id);
 			excess--;
+		}
+		// スペースを持つ記録は片付け候補のために残すが、外で消されたスペースの分が際限なく溜まらないよう、
+		// 上限の 2 倍を超えたら古いものから消す
+		const remaining = own.filter(run => !drop.has(run.id));
+		let spaceExcess = remaining.length - PARADIS_SCHEDULED_RUN_HISTORY_LIMIT * 2;
+		for (const run of remaining.filter(candidate => !paradisIsActiveRunStatus(candidate.status)).sort((a, b) => a.createdAt - b.createdAt)) {
+			if (spaceExcess <= 0) {
+				break;
+			}
+			drop.add(run.id);
+			spaceExcess--;
 		}
 		this.runs = this.runs.filter(run => !drop.has(run.id));
 	}

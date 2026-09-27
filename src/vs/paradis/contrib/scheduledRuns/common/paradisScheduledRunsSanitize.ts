@@ -19,7 +19,7 @@ import {
 
 const REPORT_STATUSES: ReadonlySet<string> = new Set(['running', 'needsAttention', 'completed', 'timedOut', 'failed', 'cancelled']);
 const REASONS: ReadonlySet<string> = new Set<ParadisScheduledRunReason>([
-	'dailyLimit', 'overlap', 'tooSoon', 'missedTooOld', 'noWindowTooOld', 'disabled', 'deleted',
+	'dailyLimit', 'overlap', 'globalConcurrency', 'globalDailyLimit', 'tooSoon', 'missedTooOld', 'noWindowTooOld', 'disabled', 'deleted',
 	'timeoutWhileWaiting', 'timeoutNoStatus', 'timeout', 'terminalClosed', 'windowClosed', 'userStopped',
 	'repositoryMissing', 'launchFailed', 'heartbeatLost',
 ]);

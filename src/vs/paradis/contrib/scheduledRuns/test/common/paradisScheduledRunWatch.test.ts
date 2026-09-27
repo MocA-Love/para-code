@@ -31,8 +31,8 @@ suite('paradisScheduledRunWatch', () => {
 		assert.deepStrictEqual(play([undefined, 'working', 'permission', 'permission', 'working', 'review', 'working']).reports, ['needsAttention', 'running', 'completed']);
 	});
 
-	test('treats a status that disappears after work as completed, but not before any status', () => {
-		assert.deepStrictEqual([play([undefined, undefined]).reports, play(['working', undefined]).reports], [[], ['completed']]);
+	test('does not complete when the status disappears, since that also happens when polling fails', () => {
+		assert.deepStrictEqual([play([undefined, undefined]).reports, play(['working', undefined, 'working']).reports, play(['working', undefined]).state.phase], [[], [], 'running']);
 	});
 
 	test('explains why a run timed out', () => {

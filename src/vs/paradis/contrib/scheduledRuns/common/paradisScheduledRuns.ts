@@ -35,6 +35,12 @@ export const PARADIS_SCHEDULED_RUN_ON_TIME_MS = 3 * PARADIS_MINUTE_MS;
 /** 1 日の回数上限の既定値と範囲。 */
 export const PARADIS_SCHEDULED_RUN_DEFAULT_DAILY_LIMIT = 3;
 export const PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT = 24;
+/** 全体で同時に動かす定期実行の数の上限（手動を含む）。 */
+export const PARADIS_SCHEDULED_RUN_MAX_CONCURRENT = 3;
+/** 全体で 1 日に自動で始める回数の上限。 */
+export const PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL = 30;
+/** 遅れて作った開始待ちにも、少なくともこれだけは拾われる猶予を残す。 */
+export const PARADIS_SCHEDULED_RUN_MIN_PENDING_MS = 60 * PARADIS_MINUTE_MS;
 /** 毎回新しいスペースを作るとき、片付け候補にせず残す件数。 */
 export const PARADIS_SCHEDULED_RUN_KEEP_SPACES = 5;
 /** 1 つの定期実行について残す履歴の件数。 */
@@ -131,6 +137,8 @@ export type ParadisScheduledRunTrigger = 'schedule' | 'catchUp' | 'manual';
 export type ParadisScheduledRunReason =
 	| 'dailyLimit'
 	| 'overlap'
+	| 'globalConcurrency'
+	| 'globalDailyLimit'
 	| 'tooSoon'
 	| 'missedTooOld'
 	| 'noWindowTooOld'
@@ -280,6 +288,38 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 	return undefined;
 }
 
+/**
+ * 指示から制御文字を落とす（保存するとき）。改行とタブは表示のために残す。
+ *
+ * 指示はターミナルへ打鍵されるコマンドの一部になる。`\x03`（行を捨てる）や `\x15`、ESC などが
+ * 混ざると、引用の外でシェルに解釈されうる。
+ */
+export function paradisSanitizeScheduledRunPrompt(prompt: string): string {
+	return prompt.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]/g, '');
+}
+
+/** 起動するときの指示（制御文字を落とし、改行とタブも空白にして 1 行にする）。 */
+export function paradisScheduledRunLaunchPrompt(prompt: string): string {
+	return paradisSanitizeScheduledRunPrompt(prompt).replace(/[\n\t]+/g, ' ').trim();
+}
+
+/**
+ * ファイルから読んだ定義を、保存のときと同じ規則で確かめ直す。
+ *
+ * 通らなければ無効に戻し（回数は範囲に収める）、理由を返す。指示の制御文字もここで落とす。
+ */
+export function paradisRevalidateStoredDefinition(definition: IParadisScheduledRunDefinition): { readonly definition: IParadisScheduledRunDefinition; readonly problem?: string } {
+	const dailyLimit = Number.isInteger(definition.dailyLimit)
+		? Math.min(PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT, Math.max(1, definition.dailyLimit))
+		: PARADIS_SCHEDULED_RUN_DEFAULT_DAILY_LIMIT;
+	const cleaned: IParadisScheduledRunDefinition = { ...definition, dailyLimit, prompt: paradisSanitizeScheduledRunPrompt(definition.prompt) };
+	const problem = paradisValidateScheduledRunDraft(cleaned);
+	if (problem === undefined) {
+		return { definition: cleaned };
+	}
+	return { definition: { ...cleaned, enabled: false }, problem };
+}
+
 // ---------- 時刻の判定 ----------
 
 /** その日（ローカル時刻）の 0 時。 */
@@ -343,37 +383,65 @@ export function paradisDecideDue(schedule: IParadisCronSchedule, lastEvaluatedAt
 	};
 }
 
-/** 回数上限に数える記録か（スキップは数えない）。 */
+/** 回数上限に数える記録か（スキップと取りやめは数えない）。 */
 function countsTowardLimit(run: IParadisScheduledRunRecord): boolean {
-	return run.status !== 'skipped';
+	return run.status !== 'skipped' && !(run.status === 'cancelled' && run.startedAt === undefined);
 }
 
-/** 安全装置で止める理由。止めないなら undefined。 */
+/** 回数を数える日付の基準（予定の時刻。後から実行した回も予定の日に数える）。 */
+function limitTime(run: Pick<IParadisScheduledRunRecord, 'scheduledFor' | 'createdAt'>): number {
+	return run.scheduledFor ?? run.createdAt;
+}
+
+/**
+ * 安全装置で止める理由。止めないなら undefined。
+ *
+ * `scheduledFor` は今回の予定の時刻（手動なら undefined）。回数は予定の時刻の日付で数え、
+ * 最短間隔は予定の時刻どうし（どちらかが手動なら作成時刻）で比べる。判定の遅れ（0〜30 秒）で
+ * ちょうど 15 分間隔の式が「間隔」で落ちないようにするため。
+ */
 export function paradisCheckRunGuards(
 	definition: IParadisScheduledRunDefinition,
 	runs: readonly IParadisScheduledRunRecord[],
 	trigger: ParadisScheduledRunTrigger,
 	now: number,
+	scheduledFor?: number,
 ): ParadisScheduledRunReason | undefined {
 	const own = runs.filter(run => run.definitionId === definition.id);
 	// 同じものは同時に1つ（手動でも同じ）
 	if (own.some(run => paradisIsActiveRunStatus(run.status))) {
 		return 'overlap';
 	}
+	// 全体で同時に動かす数の上限（手動でも同じ）
+	if (runs.filter(run => paradisIsActiveRunStatus(run.status)).length >= PARADIS_SCHEDULED_RUN_MAX_CONCURRENT) {
+		return 'globalConcurrency';
+	}
 	if (trigger === 'manual') {
 		// 手動の実行は利用者が今ボタンを押したものなので、回数と間隔では止めない（回数には数える）
 		return undefined;
 	}
-	const dayStart = paradisStartOfLocalDay(now);
-	const today = own.filter(run => countsTowardLimit(run) && run.createdAt >= dayStart).length;
-	if (today >= definition.dailyLimit) {
+	const current = scheduledFor ?? now;
+	const dayStart = paradisStartOfLocalDay(current);
+	const dayEnd = paradisStartOfLocalDay(dayStart + 36 * 60 * PARADIS_MINUTE_MS);
+	const sameDay = (run: IParadisScheduledRunRecord) => countsTowardLimit(run) && limitTime(run) >= dayStart && limitTime(run) < dayEnd;
+	if (own.filter(sameDay).length >= definition.dailyLimit) {
 		return 'dailyLimit';
 	}
-	const minGap = PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES * PARADIS_MINUTE_MS;
-	if (own.some(run => countsTowardLimit(run) && now - run.createdAt < minGap)) {
-		return 'tooSoon';
+	if (runs.filter(sameDay).length >= PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL) {
+		return 'globalDailyLimit';
 	}
-	return undefined;
+	const minGap = PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES * PARADIS_MINUTE_MS;
+	const tooSoon = own.some(run => {
+		if (!countsTowardLimit(run)) {
+			return false;
+		}
+		if (scheduledFor !== undefined && run.scheduledFor !== undefined) {
+			return Math.abs(scheduledFor - run.scheduledFor) < minGap;
+		}
+		// 手動の回との比較は作成時刻どうし。判定の遅れの分だけ許す
+		return now - run.createdAt < minGap - PARADIS_SCHEDULED_RUN_ON_TIME_MS;
+	});
+	return tooSoon ? 'tooSoon' : undefined;
 }
 
 /**
@@ -381,11 +449,12 @@ export function paradisCheckRunGuards(
  * `PARADIS_SCHEDULED_RUN_KEEP_SPACES` 件より古いもの）。自動では消さない。
  *
  * 同じスペースが2回載ることはない（スペースは実行ごとに作るため）が、念のため state key で
- * 重複を除く。実行中のものは候補にしない。
+ * 重複を除く。実行中のものは候補にしない。`isAlive` で、もう消えたスペースを除く。
  */
-export function paradisCleanupCandidateSpaces(definitionId: string, runs: readonly IParadisScheduledRunRecord[]): IParadisScheduledRunRecord[] {
+export function paradisCleanupCandidateSpaces(definitionId: string, runs: readonly IParadisScheduledRunRecord[], isAlive: (space: IParadisScheduledRunSpace) => boolean = () => true): IParadisScheduledRunRecord[] {
+	// 消えたスペースは「新しい 5 件」に数えない（先に生きているものへ絞ってから切る）
 	const withSpace = runs
-		.filter(run => run.definitionId === definitionId && run.space !== undefined)
+		.filter(run => run.definitionId === definitionId && run.space !== undefined && isAlive(run.space))
 		.sort((a, b) => b.createdAt - a.createdAt);
 	const seen = new Set<string>();
 	const unique = withSpace.filter(run => {
@@ -420,6 +489,8 @@ export function paradisScheduledRunReasonLabel(reason: ParadisScheduledRunReason
 	switch (reason) {
 		case 'dailyLimit': return localize('paradis.scheduledRuns.reason.dailyLimit', "1 日の回数上限に達したため実行しませんでした");
 		case 'overlap': return localize('paradis.scheduledRuns.reason.overlap', "前の回がまだ動いていたため実行しませんでした");
+		case 'globalConcurrency': return localize('paradis.scheduledRuns.reason.globalConcurrency', "ほかの定期実行が {0} つ動いていたため実行しませんでした", PARADIS_SCHEDULED_RUN_MAX_CONCURRENT);
+		case 'globalDailyLimit': return localize('paradis.scheduledRuns.reason.globalDailyLimit', "定期実行全体の 1 日の上限（{0} 回）に達したため実行しませんでした", PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL);
 		case 'tooSoon': return localize('paradis.scheduledRuns.reason.tooSoon', "前の回から {0} 分たっていないため実行しませんでした", PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES);
 		case 'missedTooOld': return localize('paradis.scheduledRuns.reason.missedTooOld', "スリープ中・終了中に過ぎた {0} 回分は 12 時間より前なので実行しませんでした", run?.skippedCount ?? 1);
 		case 'noWindowTooOld': return localize('paradis.scheduledRuns.reason.noWindowTooOld', "実行できるウィンドウが開かないまま 12 時間たちました");

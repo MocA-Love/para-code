@@ -12,6 +12,7 @@
 // 保存先は `<userData>/paradis/scheduledRuns.json`（フォルダ 0700、ファイル 0600）。エージェントへの
 // 指示の本文が入るため、本人だけが読める権限で書く。
 
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { Event } from '../../../../base/common/event.js';
 import { join } from '../../../../base/common/path.js';
@@ -121,25 +122,63 @@ export function paradisParseScheduledRunsState(raw: string): IParadisScheduledRu
 	return { version: 1, definitions, runs, lastEvaluatedAt };
 }
 
+/** 定義の中身の指紋（書き込み時と読み込み時で比べる）。 */
+export function paradisScheduledRunDefinitionDigest(definition: IParadisScheduledRunDefinition): string {
+	const { id, name, enabled, schedule, target, agentId, modelId, effortId, permissionId, prompt, dailyLimit } = definition;
+	return createHash('sha256').update(JSON.stringify([id, name, enabled, schedule, target.kind, target.repositoryUri, target.repositoryName, target.baseRef ?? '', agentId, modelId ?? '', effortId ?? '', permissionId ?? '', prompt, dailyLimit])).digest('hex');
+}
+
+/**
+ * 保存先。定義の中身の指紋を別のファイル（`scheduledRuns.digest.json`）に持ち、読み込んだときに
+ * 前回 Para Code が書いた中身から変わっていた有効な定義は無効に戻す。Para Code の外で書き換えられた
+ * 定義（エージェントが書き足したものなど）が、利用者の確認なしに次の起動から動き出さないようにする。
+ */
 export function createParadisScheduledRunsFileStore(userDataPath: string): IParadisScheduledRunsStore {
 	const directory = join(userDataPath, 'paradis');
 	const file = join(directory, 'scheduledRuns.json');
+	const digestFile = join(directory, 'scheduledRuns.digest.json');
+	const readText = async (path: string): Promise<string | undefined> => {
+		try {
+			return await fs.readFile(path, 'utf8');
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+				return undefined;
+			}
+			throw error;
+		}
+	};
 	return {
 		async read() {
-			let raw: string;
-			try {
-				raw = await fs.readFile(file, 'utf8');
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-					return undefined;
-				}
-				throw error;
+			const raw = await readText(file);
+			if (raw === undefined) {
+				return undefined;
 			}
-			return paradisParseScheduledRunsState(raw);
+			const state = paradisParseScheduledRunsState(raw);
+			if (!state) {
+				return undefined;
+			}
+			let digests: Record<string, unknown> = {};
+			try {
+				const parsed: unknown = JSON.parse(await readText(digestFile) ?? '{}');
+				digests = isRecord(parsed) ? parsed : {};
+			} catch {
+				digests = {};
+			}
+			return {
+				...state,
+				definitions: state.definitions.map(definition => definition.enabled && digests[definition.id] !== paradisScheduledRunDefinitionDigest(definition)
+					? { ...definition, enabled: false }
+					: definition),
+			};
 		},
 		async write(state) {
 			await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+			const digests: Record<string, string> = {};
+			for (const definition of state.definitions) {
+				digests[definition.id] = paradisScheduledRunDefinitionDigest(definition);
+			}
 			await paradisWriteFileAtomic(file, Buffer.from(JSON.stringify(state, undefined, '\t')));
+			await paradisWriteFileAtomic(digestFile, Buffer.from(JSON.stringify(digests)));
 		},
 	};
 }

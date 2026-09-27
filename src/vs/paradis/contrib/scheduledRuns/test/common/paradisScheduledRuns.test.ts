@@ -24,6 +24,8 @@ import {
 	paradisCheckRunGuards,
 	paradisCleanupCandidateSpaces,
 	paradisDecideDue,
+	paradisSanitizeScheduledRunPrompt,
+	paradisScheduledRunLaunchPrompt,
 	paradisValidateScheduledRunDraft,
 } from '../../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunReport } from '../../common/paradisScheduledRunsSanitize.js';
@@ -133,6 +135,33 @@ suite('paradisScheduledRuns decisions', () => {
 		], ['overlap', 'overlap', 'dailyLimit', undefined, 'tooSoon', undefined]);
 	});
 
+	test('compares scheduled times for the minimum interval, and counts late runs on their scheduled day', () => {
+		const d = definition({ schedule: '*/15 * * * *', dailyLimit: 1 });
+		// 前の回は判定が遅れて 25 秒後に作られ、今回は 2 秒後。予定どうしならちょうど 15 分
+		const previous = run({ scheduledFor: at(2026, 9, 25, 9, 0), createdAt: at(2026, 9, 25, 9, 0) + 25_000 });
+		assert.strictEqual(paradisCheckRunGuards(definition({ schedule: '*/15 * * * *' }), [previous], 'schedule', at(2026, 9, 25, 9, 15) + 2_000, at(2026, 9, 25, 9, 15)), undefined);
+		// 23:50 の回を 0:05 に後から実行しても、翌日の回数には数えない
+		const late = run({ scheduledFor: at(2026, 9, 25, 23, 50), createdAt: at(2026, 9, 26, 0, 5) });
+		assert.strictEqual(paradisCheckRunGuards(d, [late], 'schedule', at(2026, 9, 26, 9, 0), at(2026, 9, 26, 9, 0)), undefined);
+	});
+
+	test('limits concurrent runs and the daily total across all schedules', () => {
+		const now = at(2026, 9, 25, 12, 0);
+		const others = (status: IParadisScheduledRunRecord['status'], count: number) => Array.from({ length: count }, (_, index) => run({ id: `o${index}`, definitionId: `other${index}`, status, createdAt: now - HOUR, scheduledFor: now - HOUR }));
+		assert.deepStrictEqual([
+			paradisCheckRunGuards(definition(), others('running', 3), 'manual', now),
+			paradisCheckRunGuards(definition(), others('completed', 30), 'schedule', now, now),
+			paradisCheckRunGuards(definition(), others('completed', 30), 'manual', now),
+		], ['globalConcurrency', 'globalDailyLimit', undefined]);
+	});
+
+	test('strips control characters from prompts', () => {
+		assert.deepStrictEqual([
+			paradisSanitizeScheduledRunPrompt('a\x03b\x15c\x1bd\r\ne\tf\x9b'),
+			paradisScheduledRunLaunchPrompt('line 1\nline 2\t\x03end '),
+		], ['abcd\ne\tf', 'line 1 line 2 end']);
+	});
+
 	test('lists spaces older than the newest five as cleanup candidates', () => {
 		const runs = Array.from({ length: 8 }, (_, index) => run({
 			id: `r${index}`, createdAt: index,
@@ -140,6 +169,8 @@ suite('paradisScheduledRuns decisions', () => {
 			space: { stateKey: `worktree:${index}`, name: `s${index}`, branch: `b${index}`, uri: `file:///w${index}` },
 		}));
 		assert.deepStrictEqual(paradisCleanupCandidateSpaces('d1', runs).map(candidate => candidate.id), ['r2', 'r0']);
+		// 新しい 5 件のうち 3 件が消えていれば、残りは 5 件に満たないので候補は無い
+		assert.deepStrictEqual(paradisCleanupCandidateSpaces('d1', runs, space => !['worktree:7', 'worktree:6', 'worktree:5'].includes(space.stateKey)).map(candidate => candidate.id), []);
 	});
 
 	test('validates drafts', () => {
