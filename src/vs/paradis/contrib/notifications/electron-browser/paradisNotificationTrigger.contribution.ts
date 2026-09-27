@@ -10,14 +10,16 @@
 // 通知サウンド + OS通知 + Aivis読み上げをトリガーする。workspaceSwitch の状態表示と同じ
 // renderer-local snapshot producerを購読し、同じ取得済みsnapshotからペイン単位の遷移を検知する。
 
-import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { timeout } from '../../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -30,6 +32,11 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
 import { paradisRevealNotifiedPane } from './paradisNotificationReveal.js';
+import { IParadisAgentPaneInsight } from '../../agentInsights/common/paradisAgentInsights.js';
+import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
+// 台帳の窓口（registerSingleton）はここで確実に読み込む。受信箱の UI が無効でも記録は続ける。
+import '../../notificationInbox/electron-browser/paradisNotificationInboxService.js';
+import { IParadisNotificationInboxService, ParadisInboxDelivery } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { ParadisAgentStatusNotificationConsumer, ParadisAgentStatusNotificationTracker, ParadisAgentNotifyStatus } from './paradisAgentStatusNotificationTracker.js';
 
 /** {{event}} の読み上げ用ラベル（日本語）。 */
@@ -51,11 +58,22 @@ const STR_TITLE_REVIEW = 'エージェントの作業が完了しました';
 const STR_TITLE_PERMISSION = 'エージェントが対応を求めています';
 
 /**
+ * 完了の通知に載せる最後の発言が、完了の少し前のものか。これより古い発言しか取れないときは、
+ * 会話ログの読み取りがまだ追いついていない見込みが高いので、少し待って取り直す。
+ */
+const FRESH_MESSAGE_WINDOW_MS = 60_000;
+const MESSAGE_RETRY_DELAY_MS = 700;
+const MESSAGE_RETRY_COUNT = 2;
+
+/**
  * ペイン単位の 'review' / 'permission' 遷移を検知して通知をトリガーする workbench contribution。
  */
 export class ParadisNotificationTrigger extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisNotificationTrigger';
+
+	/** 破棄されたら、発言の取り直しの待ちを打ち切る。 */
+	private readonly _lifetime = new CancellationTokenSource();
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -71,8 +89,11 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisAgentStatusSnapshotService snapshotService: IParadisAgentStatusSnapshotService,
+		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@IParadisNotificationInboxService private readonly inboxService: IParadisNotificationInboxService,
 	) {
 		super();
+		this._register(toDisposable(() => this._lifetime.dispose(true)));
 
 		// fatal エラーで Aivis が一時停止された時、shared process からのイベントを受けて可視通知を出す。
 		this._register(this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL)
@@ -104,38 +125,93 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		if (instanceId === undefined) {
 			return; // ペインが別ウィンドウ or 終了済み
 		}
+		const transitionAt = Date.now();
 
 		// 設定「Para Code を見ている間も通知する」が有効なら、フォーカス由来の抑制を行わない
 		const notifyWhileFocused = this.settingsService.getNotifyWhileFocused();
 		const isVisibleAndFocused = paradisIsWorkbenchWindowFocused();
 		const stateKey = this.terminalScopeService.getStateKeyForInstance(instanceId);
 
-		if (stateKey === undefined) {
-			// スコープ外のターミナル (Workspacesビュー未登録フォルダ / エディタ領域ターミナル)。
-			// アイコン変化はスコープ概念に紐づくため対象外だが、音 + OS通知 + Aivis は
-			// ワークスペースフォルダ名をプレースホルダにして発火させる。
-			// 抑制条件は「このウィンドウが可視かつフォーカス中」のみ。
-			if (isVisibleAndFocused && !notifyWhileFocused) {
-				return;
-			}
-			await this._notify(undefined, instanceId, status, await this._resolveFallbackPlaceholders(status, instanceId));
-			return;
-		}
-
 		// 抑制ルール: 対象スコープが見えていて (アクティブ) かつウィンドウがフォーカスされている場合は鳴らさない。
+		// スコープ外のターミナル (Workspacesビュー未登録フォルダ / エディタ領域ターミナル) は
+		// 「このウィンドウが可視かつフォーカス中」だけで判定する。
 		// document.hidden (最小化・別スペース) の場合は常に鳴らす。
-		const isActiveScope = stateKey === this.workspaceSwitchService.activeStateKey;
-		if (isActiveScope && isVisibleAndFocused && !notifyWhileFocused) {
+		const isActiveScope = stateKey === undefined || stateKey === this.workspaceSwitchService.activeStateKey;
+		const suppressedByFocus = isActiveScope && isVisibleAndFocused && !notifyWhileFocused;
+
+		// スコープ外のターミナルはアイコン変化の対象外（スコープ概念に紐づくため）だが、音 + OS通知 + Aivis は
+		// ワークスペースフォルダ名をプレースホルダにして発火させる。
+		const placeholders = stateKey === undefined
+			? await this._resolveFallbackPlaceholders(status, instanceId)
+			: await this._resolvePlaceholders(stateKey, status, instanceId);
+		const message = await this._resolveMessage(token, status, transitionAt);
+
+		if (suppressedByFocus) {
+			// 鳴らさないが台帳には残す。見ていたスペースで起きたものなので既読にしておく。
+			this._record(token, instanceId, stateKey, status, placeholders, message, 'focused');
 			return;
 		}
 
-		await this._notify(stateKey, instanceId, status, await this._resolvePlaceholders(stateKey, status, instanceId));
+		await this._notify(stateKey, instanceId, status, placeholders, token, message);
+	}
+
+	/**
+	 * 通知に載せる内容。完了は最後の発言、許可待ち・質問は待っている内容（無ければ最後の発言）。
+	 * モバイル中継が会話ログから読んだものを引く（モバイル連携が無効でも読める。agentInsights 参照）。
+	 */
+	private async _resolveMessage(token: string, status: ParadisAgentNotifyStatus, transitionAt: number): Promise<string | undefined> {
+		const channel = this.sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL);
+		let text: string | undefined;
+		for (let attempt = 0; attempt <= MESSAGE_RETRY_COUNT; attempt++) {
+			if (attempt > 0) {
+				try {
+					await timeout(MESSAGE_RETRY_DELAY_MS, this._lifetime.token);
+				} catch {
+					return text; // 破棄された
+				}
+			}
+			let insight: IParadisAgentPaneInsight | undefined;
+			try {
+				insight = (await channel.call<readonly IParadisAgentPaneInsight[]>('getAgentPaneInsights', [[token]]))[0];
+			} catch (error) {
+				this.logService.trace('[ParadisNotifications] failed to read the last agent message', String(error));
+				return text;
+			}
+			const candidate = status !== 'review' && insight?.interaction !== undefined
+				? { text: insight.interaction.text, at: insight.interaction.at }
+				: insight?.lastMessage;
+			text = candidate?.text ?? text;
+			// セッションが確定していないペイン（insight が無い）は、待っても出てこないので取り直さない。
+			if (status !== 'review' || insight === undefined || (candidate !== undefined && (candidate.at === undefined || candidate.at >= transitionAt - FRESH_MESSAGE_WINDOW_MS))) {
+				break;
+			}
+		}
+		return text;
+	}
+
+	/** 通知の台帳へ1件書く（鳴らさなかったものも書く）。 */
+	private _record(token: string, instanceId: number, stateKey: string | undefined, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders, message: string | undefined, delivery: ParadisInboxDelivery): void {
+		const space = placeholders.space || STR_UNKNOWN_SPACE;
+		void this.inboxService.record({
+			kind: status,
+			paneToken: token,
+			instanceId,
+			windowId: this.nativeHostService.windowId,
+			...(stateKey !== undefined ? { stateKey } : {}),
+			space,
+			...(placeholders.worktree && placeholders.worktree !== space ? { worktree: placeholders.worktree } : {}),
+			...(placeholders.tab ? { tab: placeholders.tab } : {}),
+			...(message ? { message } : {}),
+			delivery,
+			read: delivery === 'focused',
+		});
 	}
 
 	/** 音 + OS通知 + Aivis を発火する (stateKey === undefined はスコープ外フォールバック)。 */
-	private async _notify(stateKey: string | undefined, instanceId: number, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
-		// おやすみモード中は音・OS通知・Aivis発話を一括抑制する。
+	private async _notify(stateKey: string | undefined, instanceId: number, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders, token: string, message: string | undefined): Promise<void> {
+		// おやすみモード中は音・OS通知・Aivis発話を一括抑制する（台帳には残す。数えるが鳴らさない）。
 		if (this.settingsService.getDoNotDisturb().enabled) {
+			this._record(token, instanceId, stateKey, status, placeholders, message, 'doNotDisturb');
 			return;
 		}
 
@@ -147,6 +223,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		// 上限があり、超過した発話は捨てられる）。
 		const osEnabled = this.settingsService.getOsNotificationsEnabled()
 			&& (needsAction ? this.settingsService.getOsNotifyOnPermission() : this.settingsService.getOsNotifyOnReview());
+		this._record(token, instanceId, stateKey, status, placeholders, message, osEnabled ? 'notified' : 'silent');
 		if (osEnabled) {
 			this._showOsNotification(stateKey, instanceId, status, placeholders);
 		}
