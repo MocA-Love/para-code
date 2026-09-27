@@ -22,7 +22,7 @@ suite('ParadisSessionIndexController', () => {
 
 	test('is on without any setting and without asking, turns off only when the setting is false, and leaves short terms to the old search', async () => {
 		const calls: string[] = [];
-		const channel = { call: async (command: string) => { calls.push(command); return { covered: [], matches: [] }; }, listen: () => { throw new Error('unused'); } } as unknown as IChannel;
+		const channel = { call: async (command: string) => { calls.push(command); return { terms: ['needle'], uncovered: [], matches: [] }; }, listen: () => { throw new Error('unused'); } } as unknown as IChannel;
 		const configuration = new TestConfigurationService();
 		const instantiation = store.add(new TestInstantiationService());
 		instantiation.stub(IConfigurationService, configuration);
@@ -43,7 +43,7 @@ suite('ParadisSessionIndexController', () => {
 		const searched = await controller.search('needle', ['c']);
 		assert.deepStrictEqual({ byDefault, updatingByDefault, off, searchWhenOff, shortTerm, searched, calls }, {
 			byDefault: 'on', updatingByDefault: true, off: 'off', searchWhenOff: undefined, shortTerm: undefined,
-			searched: { covered: [], matches: [] }, calls: ['indexUpdate', 'indexSearch'],
+			searched: { terms: ['needle'], uncovered: [], matches: [] }, calls: ['indexUpdate', 'indexSearch'],
 		});
 	});
 });

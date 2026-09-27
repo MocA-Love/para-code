@@ -22,8 +22,13 @@ import { paradisReadTranscriptLines } from './paradisTranscriptLineReader.js';
 let store: { readonly path: string; readonly store: ParadisSessionIndexStore } | undefined;
 /** 索引への書き込みは1本ずつ（同じ接続で BEGIN を重ねない）。 */
 let indexQueue: Promise<unknown> = Promise.resolve();
-/** 索引の削除が来たら立てる。実行中の更新は行の切れ目でこれを見て止まる。次の更新の開始で下ろす。 */
-let aborted = false;
+/** 頼まれた更新に振る通し番号。 */
+let updateGeneration = 0;
+/**
+ * 打ち切り要求が来た時点で最後に頼まれていた更新の番号。これ以下の番号の更新は、実行中なら行の切れ目で、
+ * 列に並んでいるなら始まった時点で止まる。打ち切りの後に頼まれた更新（番号が大きい）は止めない。
+ */
+let abortedThrough = 0;
 
 function openStore(dbPath: string): ParadisSessionIndexStore {
 	if (store?.path !== dbPath) {
@@ -44,6 +49,29 @@ function queued<T>(run: () => Promise<T> | T): Promise<T> {
 	return next;
 }
 
+/** SQLite が「DB が壊れている」と返したか（SQLITE_CORRUPT / SQLITE_NOTADB）。 */
+function isCorruption(error: unknown): boolean {
+	const code = (error as { errcode?: unknown } | undefined)?.errcode;
+	const message = error instanceof Error ? error.message : String(error);
+	return code === 11 || code === 26 || /malformed|not a database/i.test(message);
+}
+
+/**
+ * 開いた後で DB が壊れていると分かったら、接続を閉じてファイル一式を消す。索引は会話ログから作り直せるので、
+ * 次の依頼で新しい DB を作る（壊れたまま更新も検索も失敗し続けないように）。
+ */
+async function withCorruptionRecovery<T>(dbPath: string, run: () => T | Promise<T>): Promise<T> {
+	try {
+		return await run();
+	} catch (error) {
+		if (isCorruption(error)) {
+			closeStore();
+			paradisRemoveIndexFiles(dbPath);
+		}
+		throw error;
+	}
+}
+
 async function parseFiles(request: Extract<ParadisActivityWorkerRequest, { op: 'parse' }>): Promise<ParadisActivityParseReply> {
 	const results: (ReturnType<ParadisActivityTranscriptParser['finish']> | null)[] = [];
 	for (const file of request.files) {
@@ -62,23 +90,22 @@ async function handle(request: ParadisActivityWorkerRequest): Promise<unknown> {
 	switch (request.op) {
 		case 'parse':
 			return parseFiles(request);
-		case 'indexUpdate':
-			return queued(() => {
-				aborted = false;
-				return openStore(request.dbPath).update(request.files, { includeToolOutput: request.includeToolOutput }, () => !aborted);
-			});
+		case 'indexUpdate': {
+			const generation = ++updateGeneration;
+			return queued(() => withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).update(request.files, { includeToolOutput: request.includeToolOutput }, () => generation > abortedThrough)));
+		}
 		case 'indexPrune':
-			return queued(() => existsSync(request.dbPath) ? openStore(request.dbPath).prune(request.retentionThresholdMs, request.includeToolOutput) : 0);
+			return queued(() => existsSync(request.dbPath) ? withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).prune(request.retentionThresholdMs, request.includeToolOutput)) : 0);
 		case 'indexSearch':
 			// 更新の列には並ばない。更新は別の接続で書いているので、読みは WAL で並行できる。
 			if (store?.path !== request.dbPath && !existsSync(request.dbPath)) {
 				return { terms: [], uncovered: request.catalogIds, matches: [] };
 			}
-			return openStore(request.dbPath).search(request.query, request.catalogIds);
+			return withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).search(request.query, request.catalogIds));
 		case 'indexStats':
-			return existsSync(request.dbPath) ? openStore(request.dbPath).stats() : { files: 0, messages: 0 };
+			return existsSync(request.dbPath) ? withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).stats()) : { files: 0, messages: 0 };
 		case 'indexAbort':
-			aborted = true;
+			abortedThrough = updateGeneration;
 			return undefined;
 		case 'indexDelete':
 			return queued(() => {
