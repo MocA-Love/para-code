@@ -2568,6 +2568,8 @@ export default defineConfig(
 						'vs/sessions/services/*/~',
 						// PARA-PATCH: terminalGrid のセルが agentBrowser のペインインジケータ（DIフリーなヘルパー）を使うための import
 						'vs/paradis/contrib/agentBrowser/~',
+						// PARA-PATCH: editor terminals place the prompt cache countdown badge (DI-free helper from agentInsights)
+						'vs/paradis/contrib/agentInsights/~',
 						// PARA-PATCH: sessions/contrib/github が GitHub API 利用状況ダッシュボードへ呼び出しを転送するための共通型/関数import（common層のみ。
 						// 末尾は既にcommonという末端レイヤー名なので'~'にせず'**'で完結させる。'~'にするとlayer別に更にネストして展開されてしまう）
 						'vs/paradis/contrib/githubMetrics/common/**',

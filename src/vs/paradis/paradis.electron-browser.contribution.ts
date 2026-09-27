@@ -53,6 +53,7 @@ import './contrib/sessionResume/electron-browser/paradisSessionResume.contributi
 import './contrib/githubMetrics/electron-browser/paradisGithubMetrics.contribution.js';
 import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
 import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contribution.js';
+import './contrib/agentInsights/electron-browser/paradisAgentInsights.contribution.js';
 import './contrib/browserLiveWindow/electron-browser/paradisBrowserLiveWindow.contribution.js';
 import './contrib/browserZoomIndicator/electron-browser/paradisBrowserZoomIndicator.contribution.js';
 import './contrib/healthBeacon/electron-browser/paradisHealthBeacon.contribution.js';
