@@ -214,4 +214,31 @@ suite('ParadisCsvTableView', () => {
 			'miss|',
 		]);
 	});
+	test('keeps the selection and scroll position when the file reloads with the find widget open', async () => {
+		const { view, grid } = createHarness(store);
+		view.setDocument(csv('k,v\na,hit\nb,x\nc,y\n'), false);
+		view.layout();
+		await settle();
+		key(grid, 'f', { primary: true });
+		const input = view.element.querySelector<HTMLInputElement>('.paradis-office-find-widget input')!;
+		input.value = 'hit';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		// The user moves on to another cell, then the file changes on disk and reloads.
+		mouseDown(cell(grid, 3, 1)!);
+		view.setDocument(csv('k,v\na,hit\nb,x\nc,y\nd,hit\n'), true);
+		view.layout();
+		await settle();
+		deepStrictEqual({
+			selected: describeCell(grid, 3, 1),
+			firstMatch: describeCell(grid, 1, 2),
+			newMatch: describeCell(grid, 4, 2),
+			status: view.element.querySelector('.paradis-office-find-status')?.textContent,
+		}, {
+			selected: 'c|paradis-csv-active paradis-csv-selected',
+			firstMatch: 'hit|paradis-csv-match',
+			newMatch: 'hit|paradis-csv-match',
+			status: '2 \u4ef6',
+		});
+	});
 });

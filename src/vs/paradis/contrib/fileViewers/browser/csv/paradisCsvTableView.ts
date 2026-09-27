@@ -212,9 +212,10 @@ export class ParadisCsvTableView extends Disposable {
 			height: Math.max(1, this._host.clientHeight),
 		}).catch(onUnexpectedError);
 		if (previousSort && previousSort.column < document.columnCount) {
-			this._applySort({ column: previousSort.column, direction: previousSort.direction, pending: true });
+			this._applySort({ column: previousSort.column, direction: previousSort.direction, pending: true }, false);
 		} else if (preserveView) {
-			this._findWidget.refresh();
+			// 再読込では一致と件数だけを更新し、選択やスクロールを先頭の一致へ動かさない。
+			this._findWidget.refresh({ navigate: false });
 		}
 		this._options.onDidChangeState();
 	}
@@ -653,7 +654,8 @@ export class ParadisCsvTableView extends Disposable {
 		this._applySort(next);
 	}
 
-	private _applySort(next: ParadisCsvSortState | undefined): void {
+	/** `navigateFind` は、並べ替えた後の検索で先頭の一致へ移動するか（ユーザーの並べ替え = true、再読込 = false）。 */
+	private _applySort(next: ParadisCsvSortState | undefined, navigateFind = true): void {
 		this._sortRequest.value?.cancel();
 		const document = this._document;
 		const generation = this._generation;
@@ -661,7 +663,7 @@ export class ParadisCsvTableView extends Disposable {
 		if (!next || !document) {
 			this._sortRequest.clear();
 			this._order = undefined;
-			this._afterOrderChanged();
+			this._afterOrderChanged(navigateFind);
 			return;
 		}
 		const request = new CancellationTokenSource();
@@ -673,7 +675,7 @@ export class ParadisCsvTableView extends Disposable {
 			}
 			this._order = order;
 			this._sort = { ...next, pending: false };
-			this._afterOrderChanged();
+			this._afterOrderChanged(navigateFind);
 		}, error => {
 			if (!isCancellationError(error)) {
 				onUnexpectedError(error);
@@ -681,13 +683,13 @@ export class ParadisCsvTableView extends Disposable {
 		});
 	}
 
-	private _afterOrderChanged(): void {
+	private _afterOrderChanged(navigateFind: boolean): void {
 		// 検索結果は表示順の行で持っているので、並びが変わったら探し直してもらう。
 		this._search = undefined;
 		this._matchKeys = new Set();
 		this._currentMatchKey = undefined;
 		this._findWidget.setSearchProvider(this._searchProvider);
-		this._findWidget.refresh();
+		this._findWidget.refresh({ navigate: navigateFind });
 		this._rerender();
 		this._options.onDidChangeState();
 	}
