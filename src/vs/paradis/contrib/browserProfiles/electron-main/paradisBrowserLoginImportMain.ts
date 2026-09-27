@@ -14,8 +14,9 @@
 //  - 鍵を読むのは importCookies のときだけ。列挙（listSources/listDomains）では読まない
 //    ＝キーチェーンの確認ダイアログを不用意に出さない。
 //  - キーチェーンへは書き込まない（読み取りのみ）。
-//  - 導出鍵と `security` の stdout Buffer は取り込みの最後に fill(0) で潰す。JS 文字列になった
-//    Cookie の値は GC まで残る（プロセス内・main のみ・外へは件数しか出さない）。
+//  - 導出鍵は取り込みの最後に fill(0)、鍵の元にした（連結後の）パスワード Buffer も導出直後に fill(0)
+//    で潰す。ただし `execFile` が内部で持つ連結前の stdout チャンクは触れないので消せない。復号後の
+//    Cookie の値は JS 文字列になり GC まで残る（プロセス内・main のみ・外へは件数しか出さない）。
 //  - 取り込み先は名前付きプロファイルの partition だけ。さらに main 側でも台帳と照合し、
 //    実在すること・エージェントが作ったものでないことを確かめてから書く。
 
@@ -118,6 +119,9 @@ export class ParadisBrowserLoginImportMainService implements IParadisBrowserLogi
 			const { rows } = await paradisReadCookieDatabase(copy.path);
 			const groups = paradisGroupCookieDomains(rows);
 			const domains = [...groups.entries()]
+				// 取り込める候補が 0 件のドメイン（Partitioned だけ・SameSite=None 非Secure だけ等）は一覧に出さない。
+				// 取り込めない理由付き（Google 等）は情報として残す。
+				.filter(([, info]) => !info.importable || info.count > 0)
 				.map(([domain, info]) => ({ domain, cookieCount: info.count, importable: info.importable, ...(info.reason ? { reason: info.reason } : {}) }))
 				.sort((a, b) => a.domain.localeCompare(b.domain));
 			return { domains, needsKeychainConsent };
@@ -170,16 +174,24 @@ export class ParadisBrowserLoginImportMainService implements IParadisBrowserLogi
 			await copy.dispose();
 			return { ...empty, error: localize('paradis.loginImport.keychainDenied', "キーチェーンの許可が下りなかったため取り込めませんでした。もう一度お試しのうえ「許可」を押してください。") };
 		}
+		// 鍵の確認を待つ間に取り込み先が消えた/種類が変わったかもしれない。書き込みの直前にもう一度照合する。
+		if (!(await this._isImportableDestination(request.destinationProfileId))) {
+			password.fill(0);
+			await copy.dispose();
+			return { ...empty, error: localize('paradis.loginImport.destNotAllowed', "取り込み先のプロファイルが見つからないか、取り込みできない種類です。") };
+		}
+		// 復号鍵は連結後のパスワード写しから導き、その写しはすぐ潰す。ただし `execFile` が内部で
+		// 保持する連結前の stdout チャンクは触れないので消せない（実態に合わせた記述）。
 		const macKey = paradisDeriveMacCookieKey(password);
-		password.fill(0); // 鍵を導出したら元のパスワード Buffer は潰す。
+		password.fill(0);
 
-		const targetSession = session.fromPartition(partition.partition);
 		let importedCookies = 0;
 		let skipped = 0;
 		let sessionCookies = 0;
 		const importedDomains = new Set<string>();
 		const failedDomains = new Set<string>();
 		try {
+			const targetSession = session.fromPartition(partition.partition);
 			const { schemaVersion, rows } = await paradisReadCookieDatabase(copy.path);
 			for (const row of rows) {
 				const domain = paradisCookieHostToDomain(row.hostKey);

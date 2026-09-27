@@ -178,33 +178,31 @@ export function paradisIsDomainCookie(hostKey: string): boolean {
  * Google のログインが置かれるドメインか（登録可能ドメイン = eTLD+1 単位で判定）。
  *
  * Google のセッション本体（`SID` など）は `accounts.google.com` ではなく `.google.com` に
- * 置かれ、`.youtube.com` や国別の `.google.co.jp` にも写しがある。ホスト完全一致では漏れるので、
- * ブランドのラベル（`google` / `youtube` / `googleusercontent` / `gmail`）が登録可能ドメインの
- * SLD に来るものを、そのサブドメインごとすべて取り込み不可にする。過剰にブロックする側（安全側）に倒す。
+ * 置かれ、`.youtube.com` や国別の `.google.co.jp`、`googlemail.com` / `blogger.com` /
+ * `youtubekids.com` / `googlesource.com` などの別ブランドにも写しがある。ホスト完全一致では
+ * 漏れるので、ブランドのラベルが登録可能ドメインの SLD に来るものを、そのサブドメインごと
+ * すべて取り込み不可にする（`.google` TLD も含む）。過剰にブロックする側（安全側）に倒す。
  */
 export function paradisIsGoogleLoginHost(host: string): boolean {
 	const domain = paradisCookieHostToDomain(host);
 	// 末尾が `<brand>.<tld>` または `<brand>.<ccSLD>.<cctld>`（google.co.jp / google.com.br 等）。
-	return /(^|\.)(google|youtube|googleusercontent|gmail)\.([a-z]{2,4}\.)?[a-z]{2,}$/.test(domain);
+	const brand = /(^|\.)(google|youtube|googlemail|blogger|youtubekids|googlesource|googleusercontent|gmail)\.([a-z]{2,4}\.)?[a-z]{2,}$/;
+	// `.google` TLD（`domains.google` など）。
+	return brand.test(domain) || /(^|\.)google$/.test(domain);
 }
 
 /**
- * Google のログインセッションに使う Cookie 名か。ドメイン判定を擦り抜けた場合の二段目の網。
- * どちらか一方に当たれば取り込まない。
+ * Google のログインセッションに使う Cookie 名か。**Google 系ドメインでしか意味を持たない**ので、
+ * 呼び出し側は Google ドメインのときにだけ使う（無関係なサイトの `SID` を落とさないため）。
  */
 const PARADIS_GOOGLE_LOGIN_COOKIE_NAMES: ReadonlySet<string> = new Set([
-	'SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LSID', 'OSID', 'ACCOUNT_CHOOSER', 'LOGIN_INFO',
+	'SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LSID', 'OSID', 'SIDCC', 'ACCOUNT_CHOOSER', 'LOGIN_INFO',
 	'__Host-GAPS', '__Host-1PLSID', '__Host-3PLSID',
 ]);
 
 export function paradisIsGoogleLoginCookieName(name: string): boolean {
 	return PARADIS_GOOGLE_LOGIN_COOKIE_NAMES.has(name)
-		|| (name.startsWith('__Secure-') && /(PSID|PAPISID)/.test(name));
-}
-
-/** ホストか Cookie 名のどちらかが Google のログインに当たるか。 */
-export function paradisIsGoogleLoginCookie(host: string, name: string): boolean {
-	return paradisIsGoogleLoginHost(host) || paradisIsGoogleLoginCookieName(name);
+		|| (name.startsWith('__Secure-') && /(PSID|PAPISID|OSID)/.test(name));
 }
 
 /**

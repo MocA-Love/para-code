@@ -33,7 +33,6 @@ import {
 	paradisCookieSetUrl,
 	ParadisElectronSameSite,
 	paradisIsDomainCookie,
-	paradisIsGoogleLoginCookie,
 	paradisIsGoogleLoginHost,
 } from '../common/paradisBrowserLoginImport.js';
 
@@ -401,7 +400,9 @@ export function paradisCookieSkipReason(row: IParadisRawCookieRow, nowSeconds: n
 	if (paradisChromiumExpiry(row.expiresUtc, nowSeconds).kind === 'expired') {
 		return 'expired';
 	}
-	if (paradisIsGoogleLoginCookie(row.hostKey, row.name)) {
+	// Google のログインはドメイン単位で弾く（Cookie 名の網は Google ドメインでしか意味を持たないので、
+	// 無関係なサイトの `SID` を落とさないため、ここでは名前で弾かない）。
+	if (paradisIsGoogleLoginHost(row.hostKey)) {
 		return 'google';
 	}
 	// Partitioned Cookie（CHIPS）は Electron の cookies.set でパーティションを指定できないので写さない。
@@ -415,9 +416,12 @@ export function paradisCookieSkipReason(row: IParadisRawCookieRow, nowSeconds: n
 	if (row.sameSite === 0 && !row.isSecure) {
 		return 'samesite';
 	}
-	// v10 暗号でも平文 value でもない（例: linux の v11）行は写せない。
-	if (row.encryptedValue.length === 0 && row.plainValue.length === 0) {
-		return 'novalue';
+	// 平文 value も無く、暗号化済みでも v10（macOS の対応形式）でない行は写せない（例: linux の v11、
+	// Windows の app-bound v20）。件数からも外すため、鍵が無くても分かるここで弾く。
+	if (row.plainValue.length === 0) {
+		if (row.encryptedValue.length < 3 || row.encryptedValue.subarray(0, 3).toString('ascii') !== 'v10') {
+			return 'novalue';
+		}
 	}
 	return undefined;
 }

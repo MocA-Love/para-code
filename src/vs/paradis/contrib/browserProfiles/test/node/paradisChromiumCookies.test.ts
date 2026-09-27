@@ -23,7 +23,7 @@ import {
 	paradisChromiumSameSite,
 	paradisCookiePrefixRulesOk,
 	paradisCookieSetUrl,
-	paradisIsGoogleLoginCookie,
+	paradisIsGoogleLoginCookieName,
 	paradisIsGoogleLoginHost,
 } from '../../common/paradisBrowserLoginImport.js';
 import {
@@ -113,16 +113,19 @@ suite('Paradis Chromium cookie import (node)', () => {
 		assert.strictEqual(paradisCookiePrefixRulesOk('__Secure-x', { secure: false, path: '/', domainCookie: false }), false);
 		assert.strictEqual(paradisCookiePrefixRulesOk('plain', { secure: false, path: '/x', domainCookie: true }), true);
 
-		// H1: Google のログインは、accounts だけでなく .google.com / .youtube.com / 国別も除外する。
+		// H1/N7: Google のログインは、accounts だけでなく .google.com / .youtube.com / 国別、
+		// googlemail / blogger / youtubekids / googlesource、.google TLD も除外する。
 		assert.deepStrictEqual(
-			['.google.com', 'accounts.google.com', '.google.co.jp', 'www.google.com.br', '.youtube.com', 'mail.google.com'].map(paradisIsGoogleLoginHost),
-			[true, true, true, true, true, true],
+			['.google.com', 'accounts.google.com', '.google.co.jp', 'www.google.com.br', '.youtube.com', 'mail.google.com',
+				'.googlemail.com', '.blogger.com', '.youtubekids.com', '.googlesource.com', 'domains.google'].map(paradisIsGoogleLoginHost),
+			[true, true, true, true, true, true, true, true, true, true, true],
 		);
 		assert.deepStrictEqual(['github.com', 'mygoogle.com', 'example.com'].map(paradisIsGoogleLoginHost), [false, false, false]);
-		// Cookie 名でも弾く（ドメイン判定を擦り抜けた場合の網）。
-		assert.strictEqual(paradisIsGoogleLoginCookie('example.com', 'SAPISID'), true);
-		assert.strictEqual(paradisIsGoogleLoginCookie('example.com', '__Secure-1PSID'), true);
-		assert.strictEqual(paradisIsGoogleLoginCookie('example.com', 'session'), false);
+		// N7: Cookie 名の網（Google ドメインでのみ使う）。__Secure-OSID と SIDCC も含める。
+		assert.deepStrictEqual(
+			['SAPISID', '__Secure-1PSID', '__Secure-OSID', 'SIDCC', 'session'].map(paradisIsGoogleLoginCookieName),
+			[true, true, true, true, false],
+		);
 
 		assert.strictEqual(paradisCookieSetUrl('.github.com', '/', true), 'https://github.com/');
 		assert.strictEqual(paradisCookieSetUrl('localhost', 'app', false), 'http://localhost/app');
@@ -156,6 +159,10 @@ suite('Paradis Chromium cookie import (node)', () => {
 			{ host_key: '.example.com', name: 'chips', encrypted_value: encryptV10('p', TEST_KEYCHAIN_PASSWORD), top_frame_site_key: 'https://other.example', expires_utc: toExpiresUtc(now + 1000) },
 			{ host_key: 'app.example.com', name: '__Host-sess', encrypted_value: encryptV10('host-value', TEST_KEYCHAIN_PASSWORD), path: '/', is_secure: 1, expires_utc: toExpiresUtc(now + 1000) },
 			{ host_key: 'app.example.com', name: '__Host-bad', encrypted_value: encryptV10('bad', TEST_KEYCHAIN_PASSWORD), path: '/nested', is_secure: 1, expires_utc: toExpiresUtc(now + 1000) },
+			// N4: Google と無関係なサイトの `SID` は普通の Cookie として取り込む（名前だけで落とさない）。
+			{ host_key: '.someapp.test', name: 'SID', encrypted_value: encryptV10('app-sid', TEST_KEYCHAIN_PASSWORD), expires_utc: toExpiresUtc(now + 1000) },
+			// N5: v10 でない暗号化行（例: linux の v11）は件数からも外す。
+			{ host_key: '.legacy.test', name: 'x', encrypted_value: Buffer.concat([Buffer.from('v11'), Buffer.from('unreadable')]), expires_utc: toExpiresUtc(now + 1000) },
 		], 23);
 
 		const { schemaVersion, rows } = await paradisReadCookieDatabase(dbPath);
@@ -168,13 +175,17 @@ suite('Paradis Chromium cookie import (node)', () => {
 		// example.com は CHIPS の1件だけなので候補は0、app.example.com は __Host-sess の1件だけ。
 		assert.deepStrictEqual(groups.get('example.com'), { count: 0, importable: true });
 		assert.deepStrictEqual(groups.get('app.example.com'), { count: 1, importable: true });
+		// N4: 無関係なサイトの SID は候補として数える。N5: v11 は候補に入れない（count 0）。
+		assert.deepStrictEqual(groups.get('someapp.test'), { count: 1, importable: true });
+		assert.deepStrictEqual(groups.get('legacy.test'), { count: 0, importable: true });
 
 		const key = paradisDeriveMacCookieKey(TEST_KEYCHAIN_PASSWORD);
 		const decrypt = (row: IParadisRawCookieRow) => paradisDecryptCookieValueV10(row.encryptedValue, key, row.hostKey, schemaVersion);
-		const selected = new Set(['github.com', 'google.com', 'youtube.com', 'google.co.jp', 'example.com', 'app.example.com']);
+		const selected = new Set(['github.com', 'google.com', 'youtube.com', 'google.co.jp', 'example.com', 'app.example.com', 'someapp.test', 'legacy.test']);
 		const imported = rows.map(row => paradisToImportableCookie(row, selected, decrypt, now)).filter((cookie): cookie is NonNullable<typeof cookie> => cookie !== undefined);
 
 		assert.deepStrictEqual(imported.map(cookie => `${cookie.name}@${cookie.url}`).sort(), [
+			'SID@http://someapp.test/',
 			'__Host-sess@https://app.example.com/',
 			'gh_session@https://github.com/',
 		]);
