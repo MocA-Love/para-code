@@ -343,17 +343,30 @@ tmux サーバーの環境変数は、サーバーを起こしたペインのも
 
 `codex app-server` と stdio で話すクライアントは `src/vs/paradis/node/paradisCodexAppServerRpc.ts` の1つにまとめ、limitsMonitor（使用量の取得。shared process と REH）とこの機能（リセットの読み取りと消費）が共有している。エラーの文言は limitsMonitor の Sentry 用の分類（`classifyCodexRpcFailure`）が前提にしているので、変えるときは両方のテストを見ること。
 
-**切替は「新しく開くターミナルへ `CODEX_HOME` を渡す」だけ**で、PC 全体の認証は書き換えない（Codex 側の決定）。選択は shared process が `userData/paradis/codexAccounts/codex-account-selection.json` に1つだけ持ち、全ウィンドウへイベントで配る（アカウントの選択は全ウィンドウ共通、という決定）。renderer は `IParadisCodexLaunchHomeService`（browser 層）に反映し、`paradisPaneTokenService` が PTY 起動直前に env へ入れる。起動直後に shared process の返事が間に合わないターミナルのため、最後の値をアプリ全体の保存領域にも控えている。SSH の接続先で動くターミナルには渡さない（選択はこの PC のホームを指すため）。
+**切替は「新しく開くターミナルへ `CODEX_HOME` を渡す」だけ**で、PC 全体の認証は書き換えない（Codex 側の決定）。選択は shared process が `userData/paradis/codexAccounts/codex-account-selection.json` に1つだけ持ち、全ウィンドウへイベントで配る（アカウントの選択は全ウィンドウ共通、という決定）。選ぶ・見直すは1本ずつ流す。renderer は `IParadisCodexLaunchHomeService`（browser 層）に反映し、`paradisPaneTokenService` が PTY 起動直前に env へ入れる。SSH の接続先で動くターミナルには渡さない（選択はこの PC のホームを指すため）。
 
-- 既定のホーム（`$CODEX_HOME` か `~/.codex`）を選んでいるときは何も渡さない。ユーザー自身の `CODEX_HOME` を潰さないため
+- 既定のホーム（`$CODEX_HOME` か `~/.codex`）を選んでいるときは何も渡さない。ユーザー自身の `CODEX_HOME` を潰さないため。呼び出し側が env に `CODEX_HOME` を入れていれば（会話の再開など）そちらを優先する
+- 前回の選択を保存しておいて起動直後から使うことはしない（保存した後にホームが消えていても確かめられないため）。shared process の返事が届く前に開いたターミナルは既定のホームで開く
+- 選んだホームが消えたり（使用量パネルからの削除）ログアウトしたりしたら、既定のホームへ戻して全ウィンドウへ知らせる。shared process がホームディレクトリを監視し、`.codex*` の増減で見直す。ホームの中の `auth.json` だけが消えた（`codex logout`）場合は、次に状態を読んだとき（パネルを開く・ウィンドウを開く）に見直す
 - 切り替えた時点で既に動いている Codex は前のアカウントのまま。そのウィンドウに1つでもあれば通常の通知を1回だけ出す（入力を止めるチップは出さない、という決定）。「Codex が動いているか」はシェル統合の実行中コマンド、無ければプロセス名で見る
-- 切り替えると、ログイン済みのホームどうしで `sessions/YYYY/MM/DD/rollout-*.jsonl` をハードリンクし合う（`paradisCodexSessionLinker.ts`）。既存のファイルは上書きせず、シンボリックリンクは辿らず、別ボリュームは飛ばす。起動後60秒にも1回走る。一時ホームで確かめた範囲では、リンクしただけの rollout を別ホームの app-server の `thread/list` と `thread/read` が拾った（codex-cli 0.155.1）
 
-`~/.codex` が1つだと仮定していた箇所は `paradisCodexHomes()`（全ホーム、読む側）と `paradisCodexAccountHomes()`（ログイン済みだけ、書く側）に寄せた。transcript の許可 root、Codex かどうかの判定、state DB の探索（主のホームが読めないときは従来どおり sessions/ の走査に落ちる）、会話の再開一覧、ターミナルのタブ名、hook の設置と取り外し、para-browser MCP の登録、`[tui].terminal_title` の書き込みが対象。hook は各ホームの `hooks.json` へ実ファイルで置く（シンボリックリンクにしない）ので、Codex の信頼はホームごとに1回ずつ要る。
+**会話ログの共有**: 切り替えると、**切替元と切替先の2ホームの間だけ**で `sessions/YYYY/MM/DD/rollout-*.jsonl` をハードリンクし合う（`paradisCodexSessionLinker.ts`）。起動後60秒にも、最後の切替の2ホームの間で1回走る。全アカウントへ広げないのは、仕事用のホームの会話を別の組織のアカウントで `resume` すると、会話の内容がそのアカウントへ送られるため。設定 `paradis.codexAccounts.shareConversations`（既定オン）でやめられる（オフにしても、すでに共有した記録は消さない）。
 
-**リセットクレジット**は app-server の `account/rateLimits/read` の `rateLimitResetCredits` で残数と期限を読み、`account/rateLimitResetCredit/consume`（`idempotencyKey` 必須）で使う。二重消費は shared process の台帳（`userData/paradis/codexAccounts/codex-reset-credit-ledger.json`）で防ぐ。消費は shared process の中で1本ずつ直列に流し、確認ダイアログで見せた提示（残数・明細・取得時刻）と違えば断る。provider へ出す前に「送信済み・結果不明」を書き、結果を受けてから「確定」を書く。途中で落ちたら、次の操作は同じ鍵の再送になる（provider 側で1回にまとめられる）。台帳が壊れていたら消費しない。**実アカウントでの消費は試していない。**
+- 既存のファイルは上書きせず、シンボリックリンクは辿らず、別ボリュームは飛ばす。新しく作るディレクトリは 0700
+- 前回の実行の終わりに各ホームにあった会話を `userData/paradis/codexAccounts/codex-session-links.json` に控え、控えにあったのに今は無い会話（ユーザーが削除・アーカイブした）は足し戻さない
+- 一時ホームで確かめた範囲では、リンクしただけの rollout を別ホームの app-server の `thread/list` と `thread/read` が拾った（codex-cli 0.155.1）
+- 会話の再開一覧は全ホームから集める。既定以外のホームで見つかった会話には、そのホームを添え、再開するターミナルへ `CODEX_HOME` として渡す（選んでいるアカウントのホームには無いことがあるため）
 
-モバイルへ送る使用量には、Codex の選択中アカウントに既存の任意項目 `active` を、読み取り済みのリセットの残りに新しい任意項目 `resetCredits` を足しただけで、既存の項目の形は変えていない。
+**扱う Codex ホームの一覧**は `agentBrowser/node/paradisAgentHome.ts` の `paradisCodexHomes()` だけで決める（codexAccounts もこれを使う）。既定のホームと、Para Code が作る `~/.codex-<数字>` と、設定 `paradis.limitsMonitor.codexHomes` で足したもののうち、ログイン済み（`auth.json` がある）のもの。`~/.codex-backup` のように手で作ったものには hook も設定も書かない。transcript を読んでよい範囲、Codex かどうかの判定、state DB の探索（主のホームが読めないときは従来どおり sessions/ の走査に落ちる）、会話の再開一覧、ターミナルのタブ名、hook の設置、para-browser MCP の登録（「セットアップ／修正」を押したとき）、`[tui].terminal_title` の書き込みがこの一覧を見る。hook の取り外しだけは、ログアウトしたホームも含む `paradisCodexHomeCandidates()` を見る。この一覧はこの PC の shared process で codexAccounts が有効にしたときだけ広がり、SSH の接続先（REH）では従来どおり既定のホームだけ。設定で足したホームの書き方（`~`、末尾の区切り）は `paradisNormalizeCodexHomePath` でそろえ、使用量パネルと切替が同じホームを同じ id で扱う。hook は各ホームの `hooks.json` へ実ファイルで置く（シンボリックリンクにしない）ので、Codex の信頼はホームごとに1回ずつ要る。
+
+**リセットクレジット**の残数と期限は、使用量と同じく各ホームの `auth.json` のアクセストークンで ChatGPT のバックエンド `GET /backend-api/wham/rate-limit-reset-credits` を読む（Orca と同じ。パネルを開くたびに app-server を起こさないため。応答の形は Orca のソースから写したもので、実アカウントでは未確認【要確認】）。使うのは app-server の `account/rateLimitResetCredit/consume`（`idempotencyKey` 必須）。二重消費は shared process の台帳（`userData/paradis/codexAccounts/codex-reset-credit-ledger.json`）で防ぐ。
+
+- 消費は shared process の中で1本ずつ直列に流し、確認ダイアログで見せた提示（残数・明細・取得時刻）と違えば断る
+- 範囲は ChatGPT の account_id で決める（分からないときだけホーム）。同じアカウントで2つのホームにログインしていても、片方の「結果不明」はもう片方にも効く
+- app-server を起こしてから、provider へ出す直前に「送信済み・結果不明」を書き、結果を受けてから「確定」を書く。起動に失敗したときと、app-server が認証の無さで断ったとき（provider へ届いていない）は何も残さない。それ以外で落ちたら、次の操作は同じ鍵の再送になる（provider 側で1回にまとめられる）。結果不明の再送は24時間まで。過ぎたら新しい提示で押せる（同じ提示への2回目は断る）
+- 台帳が壊れていたら消費しない。**実アカウントでの消費は試していない**
+
+モバイルへ送る使用量には、Codex の選択中アカウントに既存の任意項目 `active`（モバイルは「使用中」と出す）を、読み取り済みのリセットの残りに新しい任意項目 `resetCredits` を足した。Codex 側で既存の項目の形は変えていない（Claude 側の変化は上の Claude の節を参照）。
 
 ## 内蔵ブラウザの前面オーバーレイ機構（overlayManager、2026-08-15整備）
 
