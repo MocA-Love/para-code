@@ -77,8 +77,13 @@ class FakeHost {
 	appRotates = true;
 	failTouchAfter: number | undefined;
 	onTouch: (() => void) | undefined;
+	/** スクショ1枚にかかる時間（偽の時計を進める）。 */
+	onScreenshot: (() => void) | undefined;
+	screenshots = 0;
 	async requestBinary(path: string): Promise<Uint8Array> {
 		this.calls.push({ method: 'GET', path });
+		this.screenshots++;
+		this.onScreenshot?.();
 		return pngHeader(this.screenshot.width, this.screenshot.height);
 	}
 	async request(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -196,6 +201,8 @@ interface ISetupOptions {
 	readonly caller?: ParadisMcpCallerKind;
 	readonly answer?: unknown;
 	readonly installAnswer?: unknown;
+	readonly precheck?: unknown;
+	readonly clock?: { t: number };
 	readonly onWindowCall?: (request: IParadisMcpOwningWindowRequest) => void;
 }
 
@@ -210,7 +217,8 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const files = fakeFiles({ ...FILES }, { '/Users/example/Build/Link.app': '/Users/example/Build/Notes.txt' });
 		const staging = new FakeStaging();
 		const commands = new ParadisMobileDeviceCommands(runner.run, files, {}, 'darwin', '/Users/example', staging);
-		const provider = new ParadisMobileDeviceOpsToolProvider(ledger, host, commands, new NullLogService(), async () => { });
+		const clock = options.clock;
+		const provider = new ParadisMobileDeviceOpsToolProvider(ledger, host, commands, new NullLogService(), async ms => { if (clock) { clock.t += ms; } }, clock ? () => clock.t : undefined);
 		let callerChecks = 0;
 		const context: IParadisMcpToolCallContext = {
 			classifyCaller: async () => {
@@ -220,6 +228,9 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			callOwningWindow: async <T>(request: IParadisMcpOwningWindowRequest): Promise<ParadisMcpOwningWindowResult<T>> => {
 				windowCalls.push(request);
 				options.onWindowCall?.(request);
+				if (request.method === 'precheckInstall') {
+					return { ok: true, value: (options.precheck ?? { outcome: 'clear' }) as T };
+				}
 				const answer = request.method === 'approveInstall' ? options.installAnswer : options.answer;
 				return { ok: true, value: (answer ?? { outcome: 'approved', stateKey: 'space-1' }) as T };
 			},
@@ -341,6 +352,48 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		});
 	});
 
+	test('the screen size is remembered per device: gestures reuse it, rotation and launch take a new one, a miss re-measures once', async () => {
+		const { ledger, host, call } = setup();
+		ledger.give(PANE, IPHONE);
+		const shots: number[] = [];
+		await call('mobile_gesture', { kind: 'long_press', x: 100, y: 200 });
+		shots.push(host.screenshots);
+		await call('mobile_gesture', { kind: 'swipe', direction: 'up' });
+		await call('mobile_gesture', { kind: 'pinch', scale: 2 });
+		shots.push(host.screenshots);
+		await call('mobile_launch_app', { appId: 'com.example.myapp' });
+		await call('mobile_gesture', { kind: 'long_press', x: 100, y: 200 });
+		shots.push(host.screenshots);
+		// 利用者が手で横にした（覚えた値は縦のまま）: 横の座標は、断る前に一度取り直して通る
+		host.screenshot = { width: 2400, height: 1200 };
+		const sideways = await call('mobile_gesture', { kind: 'long_press', x: 700, y: 100 });
+		shots.push(host.screenshots);
+		assert.deepStrictEqual([shots, sideways.isError], [[1, 1, 2, 3], false]);
+	});
+
+	test('rotation that the app does not follow stops looking within about two seconds', async () => {
+		const clock = { t: 0 };
+		const { ledger, host, call } = setup({ clock });
+		ledger.give(PANE, IPHONE);
+		host.appRotates = false;
+		host.onScreenshot = () => clock.t += 900;
+		const rotated = JSON.parse((await call('mobile_rotate', { orientation: 'landscape-left' })).body);
+		// 速いスクショ（0.4 秒）なら2枚見ても2秒に収まる
+		const fastClock = { t: 0 };
+		const fast = setup({ clock: fastClock });
+		fast.ledger.give(PANE, IPHONE);
+		fast.host.appRotates = false;
+		fast.host.onScreenshot = () => fastClock.t += 400;
+		await fast.call('mobile_rotate', { orientation: 'landscape-left' });
+		assert.deepStrictEqual({
+			slow: { shots: host.screenshots, elapsed: clock.t, noted: typeof rotated.note === 'string' },
+			fast: { shots: fast.host.screenshots, elapsed: fastClock.t },
+		}, {
+			slow: { shots: 1, elapsed: 1_400, noted: true },
+			fast: { shots: 2, elapsed: 1_550 },
+		});
+	});
+
 	test('gestures: long press, a directional swipe with a bounded duration, and a pinch that always lifts both fingers', async () => {
 		const { ledger, host, call } = setup();
 		ledger.give(PANE, IPHONE);
@@ -407,7 +460,8 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		assert.deepStrictEqual({
 			results,
 			android: android.isError,
-			approvals: windowCalls.map(request => [request.method, request.args[1]]),
+			approvals: windowCalls.filter(request => request.method === 'approveInstall').map(request => [request.method, request.args[1]]),
+			prechecks: windowCalls.filter(request => request.method === 'precheckInstall').map(request => request.args[1]),
 			runs: runner.runs,
 		}, {
 			results: {
@@ -419,6 +473,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 				ios: { installed: true, device: 'iPhone 17', path: '/Users/example/Build/My.app', note: 'Para Code installed a copy it made of this path before asking the user; later changes to the path are not included.', appId: 'com.example.myapp' },
 			},
 			android: false,
+			prechecks: [{ deviceId: 'ios:iphone', deviceName: 'iPhone 17' }, { deviceId: 'android:pixel', deviceName: 'Pixel 9' }],
 			approvals: [
 				['approveInstall', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: '/Users/example/Build/My.app', appId: 'com.example.myapp', appName: 'My App' }],
 				// aapt2 が無いのでパッケージ名は読めない（ダイアログは「読めませんでした」と出す）
@@ -452,6 +507,28 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			// どちらも写しは消す
 			[...declined.staging.removed, ...switched.staging.removed],
 		], [false, true, 0, ['/tmp/stage-1', '/tmp/stage-1']]);
+	});
+
+	test('install: checks the automatic refusal and a pending answer before copying, and runs one install per pane at a time', async () => {
+		const refused = setup({ precheck: { outcome: 'recentlyDenied' } });
+		refused.ledger.give(PANE, IPHONE);
+		const busy = setup({ precheck: { outcome: 'busy' } });
+		busy.ledger.give(PANE, IPHONE);
+		const parallel = setup();
+		parallel.ledger.give(PANE, IPHONE);
+		const [first, second] = await Promise.all([
+			parallel.call('mobile_install_app', { path: '/Users/example/Build/My.app' }),
+			parallel.call('mobile_install_app', { path: '/Users/example/Build/My.app' }),
+		]);
+		assert.deepStrictEqual({
+			refused: [(await refused.call('mobile_install_app', { path: '/Users/example/Build/My.app' })).isError, refused.staging.copies.length, refused.windowCalls.map(request => request.method)],
+			busy: [(await busy.call('mobile_install_app', { path: '/Users/example/Build/My.app' })).isError, busy.staging.copies.length],
+			parallel: [first.isError, second.isError, parallel.staging.copies.length],
+		}, {
+			refused: [true, 0, ['precheckInstall']],
+			busy: [true, 0],
+			parallel: [false, true, 1],
+		});
 	});
 
 	test('install and launch refuse SSH panes and devices that are not running', async () => {
