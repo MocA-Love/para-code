@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisFishHistoryFileName, paradisSpaceHistoryDirectory, paradisSpaceHistoryId } from '../../common/paradisTerminalSpaceHistory.js';
+import { paradisFishHistoryFileName, paradisParseCreatedHistoryIds, paradisSpaceHistoryDirectory, paradisSpaceHistoryId } from '../../common/paradisTerminalSpaceHistory.js';
 
 suite('paradisTerminalSpaceHistory', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -20,16 +20,20 @@ suite('paradisTerminalSpaceHistory', () => {
 			stable: repositoryId === paradisSpaceHistoryId('0b0f2c4e-9a55-4d59-a8c2-7f1b8c1e2d3a'),
 			distinct: repositoryId !== worktreeId,
 			safe: /^[0-9a-f]{16}$/.test(repositoryId) && /^[0-9a-f]{16}$/.test(worktreeId),
-			directory: paradisSpaceHistoryDirectory('/data/terminal-history/', 'abc', '/'),
-			windowsDirectory: paradisSpaceHistoryDirectory('C:\\data\\terminal-history', 'abc', '\\'),
+			directory: paradisSpaceHistoryDirectory('/data/terminal-history/', 'abc'),
+			windowsDirectory: paradisSpaceHistoryDirectory('C:/data/terminal-history', 'abc'),
 			fish: paradisFishHistoryFileName('abc'),
+			createdIds: [...paradisParseCreatedHistoryIds(JSON.stringify([['0123456789abcdef', 'space-a'], ['../escape', 'space-b'], ['fedcba9876543210', ''], 'garbage']))],
+			brokenCreatedIds: paradisParseCreatedHistoryIds('{').size,
 		}, {
 			stable: true,
 			distinct: true,
 			safe: true,
 			directory: '/data/terminal-history/abc',
-			windowsDirectory: 'C:\\data\\terminal-history\\abc',
+			windowsDirectory: 'C:/data/terminal-history/abc',
 			fish: 'paracode_abc_history',
+			createdIds: [['0123456789abcdef', 'space-a']],
+			brokenCreatedIds: 0,
 		});
 	});
 });
