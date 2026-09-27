@@ -334,6 +334,22 @@ tmux サーバーの環境変数は、サーバーを起こしたペインのも
 
 どちらも「worktree → 元のリポジトリの根」で信頼を引くため、新しい worktree に信頼を書き込む必要は無い。CLI の版上げで挙動が変わったら、この表の手順で測り直すこと（Claude は `hasCompletedOnboarding` と `customApiKeyResponses.approved` を仕込んだ一時 `.claude.json` + ダミーの API キー、Codex は一時 `auth.json` にダミーの `OPENAI_API_KEY` と `check_for_update_on_startup = false` で、ログインや更新の画面を飛ばせる。Para Code のターミナルから測るときは `env -i` で `PARA_CODE_*` / `CLAUDE_CODE_*` を落とす）。
 
+## Codex の複数アカウント（切替とリセットクレジット、2026-09-27）
+
+実体は `src/vs/paradis/contrib/codexAccounts/`（fork 所有）。Claude 側のアカウント機能とは別のディレクトリにしてある。
+
+**切替は「新しく開くターミナルへ `CODEX_HOME` を渡す」だけ**で、PC 全体の認証は書き換えない（q.html Q02 の Codex 側の決定）。選択は shared process が `userData/paradis/codexAccounts/codex-account-selection.json` に1つだけ持ち、全ウィンドウへイベントで配る（Q07）。renderer は `IParadisCodexLaunchHomeService`（browser 層）に反映し、`paradisPaneTokenService` が PTY 起動直前に env へ入れる。起動直後に shared process の返事が間に合わないターミナルのため、最後の値をアプリ全体の保存領域にも控えている。SSH の接続先で動くターミナルには渡さない（選択はこの PC のホームを指すため）。
+
+- 既定のホーム（`$CODEX_HOME` か `~/.codex`）を選んでいるときは何も渡さない。ユーザー自身の `CODEX_HOME` を潰さないため
+- 切り替えた時点で既に動いている Codex は前のアカウントのまま。そのウィンドウに1つでもあれば通常の通知を1回だけ出す（Q06。入力は止めない）。「Codex が動いているか」はシェル統合の実行中コマンド、無ければプロセス名で見る
+- 切り替えると、ログイン済みのホームどうしで `sessions/YYYY/MM/DD/rollout-*.jsonl` をハードリンクし合う（`paradisCodexSessionLinker.ts`）。既存のファイルは上書きせず、シンボリックリンクは辿らず、別ボリュームは飛ばす。起動後60秒にも1回走る。一時ホームで確かめた範囲では、リンクしただけの rollout を別ホームの app-server の `thread/list` と `thread/read` が拾った（codex-cli 0.155.1）
+
+`~/.codex` が1つだと仮定していた箇所は `paradisCodexHomes()`（全ホーム、読む側）と `paradisCodexAccountHomes()`（ログイン済みだけ、書く側）に寄せた。transcript の許可 root、Codex かどうかの判定、state DB の探索（主のホームが読めないときは従来どおり sessions/ の走査に落ちる）、会話の再開一覧、ターミナルのタブ名、hook の設置と取り外し、para-browser MCP の登録、`[tui].terminal_title` の書き込みが対象。hook は各ホームの `hooks.json` へ実ファイルで置く（シンボリックリンクにしない）ので、Codex の信頼はホームごとに1回ずつ要る。
+
+**リセットクレジット**は app-server の `account/rateLimits/read` の `rateLimitResetCredits` で残数と期限を読み、`account/rateLimitResetCredit/consume`（`idempotencyKey` 必須）で使う。二重消費は shared process の台帳（`userData/paradis/codexAccounts/codex-reset-credit-ledger.json`）で防ぐ。消費は shared process の中で1本ずつ直列に流し、確認ダイアログで見せた提示（残数・明細・取得時刻）と違えば断る。provider へ出す前に「送信済み・結果不明」を書き、結果を受けてから「確定」を書く。途中で落ちたら、次の操作は同じ鍵の再送になる（provider 側で1回にまとめられる）。台帳が壊れていたら消費しない。**実アカウントでの消費は試していない。**
+
+モバイルへ送る使用量には、Codex の選択中アカウントに既存の任意項目 `active` を、読み取り済みのリセットの残りに新しい任意項目 `resetCredits` を足しただけで、既存の項目の形は変えていない。
+
 ## 内蔵ブラウザの前面オーバーレイ機構（overlayManager、2026-08-15整備）
 
 内蔵ブラウザ（`src/vs/platform/browserView/`）はElectronのネイティブ `WebContentsView` として実装されている。ネイティブビューはOS合成レイヤーで描画されるため、通常のDOM要素はCSSの `z-index` では絶対に上書きできない。
