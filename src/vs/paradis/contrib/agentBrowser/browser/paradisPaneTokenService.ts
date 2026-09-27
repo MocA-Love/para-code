@@ -155,7 +155,13 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			? explicitCodexHome
 			: this.environmentService.remoteAuthority === undefined ? this.codexLaunchHomeService.getLaunchHome() : undefined;
 		shellLaunchConfig.env = paradisApplyCodexLaunchHome(shellLaunchConfig.env, codexHome);
-		this.codexLaunchHomeService.recordPaneHome(token, codexHome);
+		// 開いたときのホームを覚えるのは新しく開いたペインだけ。再接続したペインのプロセスは元の env
+		// （前回起動したときの CODEX_HOME）のまま動いているので、いまの選択を記録すると食い違う。
+		// 記録しないペインは、切替の通知で「切替の直前の選択で開いたもの」とみなされる
+		// （paradisCodexAccounts.contribution.ts）。
+		if (attachTarget === undefined) {
+			this.codexLaunchHomeService.recordPaneHome(token, codexHome);
+		}
 	}
 
 	/**

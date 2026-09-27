@@ -77,12 +77,18 @@ suite('Paradis pane token service', () => {
 	// 一致することを確かめる。
 	test('gives a restored terminal the same pane token env as when it was new, even if attach falls back to a new shell', () => {
 		const onDidCreateInstance = new Emitter<ITerminalInstance>();
+		// 開いたときの Codex のホームは新しく開いたペインだけ覚える。再接続したペインのプロセスは前回の
+		// CODEX_HOME のまま動いているので、いまの選択を記録してはいけない。
+		const recorded: [string, string | undefined][] = [];
 		const service = new ParadisPaneTokenService(
 			{ onDidCreateInstance: onDidCreateInstance.event } as unknown as ITerminalInstanceService,
 			{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code` } as unknown as IWorkbenchEnvironmentService,
 			{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
 			new TestConfigurationService(),
-			codexLaunchHomeStub(undefined),
+			{
+				getLaunchHome: () => '/home/test/.codex-2',
+				recordPaneHome: (token: string, homePath: string | undefined) => recorded.push([token, homePath]),
+			} as unknown as IParadisCodexLaunchHomeService,
 		);
 		try {
 			const createdConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
@@ -111,17 +117,22 @@ suite('Paradis pane token service', () => {
 				restored: restoredConfig.env,
 				registered: service.getTokenForInstance(7),
 				revivedPaneId: revivedConfig.env?.PARA_CODE_TERMINAL_PANE_ID,
+				recorded,
 			}, {
 				created: {
 					PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 					PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+					CODEX_HOME: '/home/test/.codex-2',
 				},
 				restored: {
 					PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 					PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+					CODEX_HOME: '/home/test/.codex-2',
 				},
 				registered: PANE_TOKEN,
 				revivedPaneId: revivedToken,
+				// 新しく開いた1回分だけ。再接続した2回（id 2・3）は記録しない
+				recorded: [[PANE_TOKEN, '/home/test/.codex-2']],
 			});
 		} finally {
 			service.dispose();
