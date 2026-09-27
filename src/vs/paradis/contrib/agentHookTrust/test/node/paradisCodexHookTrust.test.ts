@@ -243,23 +243,32 @@ suite('ParadisCodexHookTrust', () => {
 			const homesChanged = store.add(new Emitter<void>());
 			const hooksChanged: (() => void)[] = [];
 			const watched: string[] = [];
+			const pendingHomes = new Set<string>();
+			const unwatchable = new Set<string>();
 			const scheduled: (() => void)[] = [];
 			const events: string[] = [];
 			let fingerprint = 'fp1';
 			let ledger: Record<string, string> = {};
 			const backend: IParadisCodexHookTrustBackend = {
-				inspect: async home => { events.push(`inspect:${home}`); return { codexHome: home, hooksPath: `${home}/hooks.json`, supported: true, pending: [], managedCount: 0 } satisfies IParadisCodexHookTrustStatus; },
+				inspect: async home => { events.push(`inspect:${home}`); return { codexHome: home, hooksPath: `${home}/hooks.json`, supported: true, pending: pendingHomes.has(home) ? [{ key: `${home}/hooks.json:stop:0:0`, eventName: 'Stop', trustStatus: 'untrusted', currentHash: 'h' }] : [], managedCount: 1 } satisfies IParadisCodexHookTrustStatus; },
 				grant: async home => { events.push(`grant:${home}`); return { outcome: 'granted', codexHome: home, hooksPath: `${home}/hooks.json`, grantedEvents: ['stop'] } satisfies IParadisCodexHookTrustGrantResult; },
 				fingerprint: async () => fingerprint,
 				readLedger: async () => ({ ...ledger }),
 				writeLedger: async value => { ledger = value; },
-				watchHooks: (home, listener) => { hooksChanged.push(listener); watched.push(home); return toDisposable(() => watched.splice(watched.indexOf(home), 1)); },
+				watchHooks: (home, listener) => {
+					if (unwatchable.has(home)) {
+						return undefined;
+					}
+					hooksChanged.push(listener);
+					watched.push(home);
+					return toDisposable(() => watched.splice(watched.indexOf(home), 1));
+				},
 				schedule: (_delay, callback): IDisposable => { scheduled.push(callback); return toDisposable(() => { const index = scheduled.indexOf(callback); if (index >= 0) { scheduled.splice(index, 1); } }); },
 			};
 			const clock = { now: 0 };
 			const service = store.add(new ParadisCodexHookTrustService(backend, { listHomes: () => homes, onDidChangeHomes: homesChanged.event, now: () => clock.now }, () => mode, modeChanged.event, new NullLogService()));
 			return {
-				service, events, clock, watched,
+				service, events, clock, watched, pendingHomes, unwatchable,
 				setHomes(value: readonly string[]) { homes = value; homesChanged.fire(); },
 				ledger: () => ledger,
 				setMode(value: string) { mode = value; modeChanged.fire(); },
@@ -328,6 +337,37 @@ suite('ParadisCodexHookTrust', () => {
 				events: ['grant:/home/u/.codex', 'grant:/home/u/.codex-2', 'grant:/home/u/.codex-3'],
 				watched: ['/home/u/.codex', '/home/u/.codex-3'],
 				ledger: ['/home/u/.codex', '/home/u/.codex-2', '/home/u/.codex-3'],
+			});
+		});
+
+		test('監視を張れなかったホーム（まだ無い）は覚えず、次の確認で張り直す', async () => {
+			const env = setup('auto', ['/home/u/.codex']);
+			env.unwatchable.add('/home/u/.codex-2');
+			env.setHomes(['/home/u/.codex', '/home/u/.codex-2']);
+			const before = [...env.watched];
+			env.unwatchable.clear();
+			await env.flush();
+			assert.deepStrictEqual({ before, after: env.watched }, { before: ['/home/u/.codex'], after: ['/home/u/.codex', '/home/u/.codex-2'] });
+		});
+
+		test('ask の確認は全ホームを調べ、「信頼する」は全ホームへ付ける。off なら全部 skipped', async () => {
+			const env = setup('ask', ['/home/u/.codex', '/home/u/.codex-2']);
+			// 既定のホームは信頼済みで、アカウント用のホームにだけ未信頼の hook がある
+			env.pendingHomes.add('/home/u/.codex-2');
+			const statuses = await env.service.getStatusAll();
+			const granted = await env.service.grantAll();
+			env.setMode('off');
+			const off = await env.service.grantAll();
+			assert.deepStrictEqual({
+				pending: statuses.map(status => [status.codexHome, status.pending.length]),
+				granted: granted.map(result => [result.codexHome, result.outcome]),
+				off: off.map(result => result.outcome),
+				events: env.events,
+			}, {
+				pending: [['/home/u/.codex', 0], ['/home/u/.codex-2', 1]],
+				granted: [['/home/u/.codex', 'granted'], ['/home/u/.codex-2', 'granted']],
+				off: ['skipped', 'skipped'],
+				events: ['inspect:/home/u/.codex', 'inspect:/home/u/.codex-2', 'grant:/home/u/.codex', 'grant:/home/u/.codex-2'],
 			});
 		});
 

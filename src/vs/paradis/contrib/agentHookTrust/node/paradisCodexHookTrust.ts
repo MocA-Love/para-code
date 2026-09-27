@@ -285,8 +285,11 @@ export interface IParadisCodexHookTrustBackend {
 	fingerprint(codexHome: string): Promise<string | undefined>;
 	readLedger(): Promise<Record<string, string>>;
 	writeLedger(ledger: Record<string, string>): Promise<void>;
-	/** CODEX_HOME の中の hooks.json の変化を知らせる。 */
-	watchHooks(codexHome: string, listener: () => void): IDisposable;
+	/**
+	 * CODEX_HOME の中の hooks.json の変化を知らせる。監視を張れなければ（ホームがまだ無い等）undefined。
+	 * 張った後に止まったら `onStopped` を呼ぶ（次の確認のときに張り直す）。
+	 */
+	watchHooks(codexHome: string, listener: () => void, onStopped: () => void): IDisposable | undefined;
 	schedule(delayMs: number, callback: () => void): IDisposable;
 }
 
@@ -361,7 +364,15 @@ export class ParadisCodexHookTrustService extends Disposable {
 		}
 		for (const home of homes) {
 			if (!this.watchers.has(home)) {
-				this.watchers.set(home, this.backend.watchHooks(home, () => this.scheduleAuto(this.options.changeDelayMs ?? DEFAULT_CHANGE_DELAY_MS)));
+				const watcher = this.backend.watchHooks(home, () => this.scheduleAuto(this.options.changeDelayMs ?? DEFAULT_CHANGE_DELAY_MS), () => {
+					if (this.watchers.get(home) === watcher) {
+						this.watchers.deleteAndDispose(home);
+					}
+				});
+				// 張れなかったホームは覚えない（Codex を初めて使ってホームができた後に、次の確認で張る）
+				if (watcher !== undefined) {
+					this.watchers.set(home, watcher);
+				}
 			}
 		}
 	}
@@ -395,6 +406,19 @@ export class ParadisCodexHookTrustService extends Disposable {
 			return Promise.reject(new Error('unsupported CODEX_HOME'));
 		}
 		return this.enqueue(home, () => this.backend.inspect(home));
+	}
+
+	/**
+	 * 一覧の全ホームの状態（画面側の `ask` の確認用）。hook を置く先の全ホームを調べ、どこか1つに
+	 * 未信頼の hook があれば確かめられるようにする。
+	 */
+	getStatusAll(): Promise<IParadisCodexHookTrustStatus[]> {
+		return Promise.all(this.homes().map(home => this.enqueue(home, () => this.backend.inspect(home))));
+	}
+
+	/** 一覧の全ホームへ {@link grant} する（画面側の「信頼する」）。 */
+	grantAll(): Promise<IParadisCodexHookTrustGrantResult[]> {
+		return Promise.all(this.homes().map(home => this.grant(home)));
 	}
 
 	/**
@@ -510,6 +534,8 @@ export class ParadisCodexHookTrustChannel implements IServerChannel<string> {
 		switch (command) {
 			case 'getStatus': return this.service.getStatus(arg) as Promise<T>;
 			case 'grant': return this.service.grant(arg) as Promise<T>;
+			case 'getStatusAll': return this.service.getStatusAll() as Promise<T>;
+			case 'grantAll': return this.service.grantAll() as Promise<T>;
 			case 'claimPrompt': return Promise.resolve(this.service.claimPrompt()) as Promise<T>;
 			case 'releasePrompt': return Promise.resolve(this.service.releasePrompt(arg === true)) as Promise<T>;
 		}
@@ -581,18 +607,22 @@ export function createParadisCodexHookTrustBackend(userDataPath: string, getEnv:
 			return ledger;
 		},
 		writeLedger: ledger => paradisWriteFileAtomic(ledgerPath, Buffer.from(JSON.stringify({ version: 1, homes: ledger }, undefined, '\t'))),
-		watchHooks(codexHome, listener) {
+		watchHooks(codexHome, listener, onStopped) {
 			try {
 				const watcher = watch(codexHome, { persistent: false }, (_eventType, fileName) => {
 					if (fileName === null || fileName.toString() === 'hooks.json') {
 						listener();
 					}
 				});
-				watcher.on('error', error => logService.trace(`[ParadisCodexHookTrust] watcher for ${codexHome} stopped`, error));
+				watcher.on('error', error => {
+					logService.trace(`[ParadisCodexHookTrust] watcher for ${codexHome} stopped`, error);
+					watcher.close();
+					onStopped();
+				});
 				return toDisposable(() => watcher.close());
 			} catch {
-				// ホームがまだ無い（Codex を入れていない）。起動時の確認だけで足りる
-				return Disposable.None;
+				// ホームがまだ無い（Codex を入れていない）。次の確認で張り直す
+				return undefined;
 			}
 		},
 		schedule(delayMs, callback) {

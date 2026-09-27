@@ -24,7 +24,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCodexResetConsumeRequest, PARADIS_CODEX_ACCOUNTS_CHANNEL, PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING } from '../common/paradisCodexAccounts.js';
-import { paradisEnableCodexAccountHomes, paradisSetConfiguredCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisEnableCodexAccountHomes, paradisNotifyCodexHomesChanged, paradisSetConfiguredCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisCodexAccountsService } from './paradisCodexAccountsService.js';
 
 /** 設定で足した Codex ホーム（limitsMonitor と同じ設定を読む）。 */
@@ -85,7 +85,8 @@ ParadisSharedProcessContributions.register('codexAccounts', ({ server, accessor 
 	store.add(configurationService.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(CODEX_HOMES_SETTING)) {
 			applyConfiguredHomes();
-			void service.revalidate();
+			// 選択の見直し（このサービス）、hook の信頼の監視、MCP 設定の反映がこの通知を聞いている
+			paradisNotifyCodexHomesChanged();
 		}
 	}));
 	server.registerChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL, new ParadisCodexAccountsChannel(service));

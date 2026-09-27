@@ -53,7 +53,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// hooks.json と config.toml は PC 全体で1つなので、ワークスペースごとに変えられても意味が無い
 			scope: ConfigurationScope.APPLICATION,
 			// allow-any-unicode-next-line
-			markdownDescription: localize('paradis.agentHooks.codexTrust', "Codex は、hook を使う前に「この hook を信頼しますか」と確かめます。Para Code が状態通知のために設置した hook（`~/.codex/hooks.json`）に、Para Code が代わりに信頼を付けるかどうかです。対象は Para Code が設置した hook だけで、あなた自身の hook の信頼は変えません。信頼は Codex の設定（`~/.codex/config.toml`）に Codex 自身が書き込みます。"),
+			markdownDescription: localize('paradis.agentHooks.codexTrust', "Codex は、hook を使う前に「この hook を信頼しますか」と確かめます。Para Code が状態通知のために設置した hook（`~/.codex/hooks.json` と、使用量パネルで追加した Codex のアカウントのホーム `~/.codex-2` など・`paradis.limitsMonitor.codexHomes` で足したホームの `hooks.json`）に、Para Code が代わりに信頼を付けるかどうかです。対象は Para Code が設置した hook だけで、あなた自身の hook の信頼は変えません。信頼はそれぞれのホームの Codex の設定（`config.toml`）に Codex 自身が書き込みます。"),
 		}
 	}
 });
@@ -98,9 +98,11 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 		}
 		let shown = false;
 		try {
-			const status = await channel.call<IParadisCodexHookTrustStatus>('getStatus');
-			if (status.supported && status.pending.length > 0 && !this._store.isDisposed && this.mode === 'ask') {
-				this.ask(status);
+			// hook は全ての Codex ホーム（既定のホームとアカウント用のホーム）に置くので、全部を見る
+			const statuses = await channel.call<IParadisCodexHookTrustStatus[]>('getStatusAll');
+			const pending = statuses.filter(status => status.supported && status.pending.length > 0);
+			if (pending.length > 0 && !this._store.isDisposed && this.mode === 'ask') {
+				this.ask(pending);
 				shown = true;
 			}
 		} finally {
@@ -108,13 +110,14 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 		}
 	}
 
-	private ask(status: IParadisCodexHookTrustStatus): void {
-		const events = [...new Set(status.pending.map(listing => listing.eventName).filter(name => name.length > 0))];
+	private ask(statuses: readonly IParadisCodexHookTrustStatus[]): void {
+		const listings = statuses.flatMap(status => status.pending);
+		const events = [...new Set(listings.map(listing => listing.eventName).filter(name => name.length > 0))];
 		const eventText = events.length > MAX_EVENTS_IN_MESSAGE ? `${events.slice(0, MAX_EVENTS_IN_MESSAGE).join(', ')}, …` : events.join(', ');
 		this.notificationService.prompt(
 			Severity.Info,
 			// allow-any-unicode-next-line
-			localize('paradis.codexHookTrust.ask', "Para Code が状態通知のために設置した Codex の hook（{0} の {1} 件: {2}）を、信頼済みにしますか？ 信頼が無いと、Codex の状態表示と通知が働きません。信頼するのは Para Code が設置した hook だけで、以後 Para Code が設置し直したときも自動で信頼します（設定で変えられます）。", status.hooksPath, status.pending.length, eventText),
+			localize('paradis.codexHookTrust.ask', "Para Code が状態通知のために設置した Codex の hook（{0} の {1} 件: {2}）を、信頼済みにしますか？ 信頼が無いと、Codex の状態表示と通知が働きません。信頼するのは Para Code が設置した hook だけで、以後 Para Code が設置し直したときも自動で信頼します（設定で変えられます）。", statuses.map(status => status.hooksPath).join(', '), listings.length, eventText),
 			[
 				{
 					// allow-any-unicode-next-line
@@ -133,26 +136,26 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 
 	private async trust(): Promise<void> {
 		await this.configurationService.updateValue(PARADIS_CODEX_HOOK_TRUST_SETTING, 'auto', ConfigurationTarget.USER);
-		let result: IParadisCodexHookTrustGrantResult;
+		let results: IParadisCodexHookTrustGrantResult[];
 		try {
-			result = await this.sharedProcessService.getChannel(PARADIS_CODEX_HOOK_TRUST_CHANNEL).call<IParadisCodexHookTrustGrantResult>('grant');
+			results = await this.sharedProcessService.getChannel(PARADIS_CODEX_HOOK_TRUST_CHANNEL).call<IParadisCodexHookTrustGrantResult[]>('grantAll');
 		} catch (error) {
 			this.logService.warn('[ParadisCodexHookTrust] grant failed', error);
 			this.showFailed();
 			return;
 		}
-		switch (result.outcome) {
-			case 'granted':
-				// allow-any-unicode-next-line
-				this.notificationService.info(localize('paradis.codexHookTrust.granted', "Para Code が設置した Codex の hook（{0} 件）を信頼済みにしました。", result.grantedEvents.length));
-				return;
-			case 'already-trusted':
-			case 'nothing-installed':
-			case 'skipped':
-				return;
-			default:
-				this.logService.warn(`[ParadisCodexHookTrust] grant ended with ${result.outcome}: ${result.detail ?? ''}`);
-				this.showFailed();
+		const failed = results.filter(result => result.outcome !== 'granted' && result.outcome !== 'already-trusted' && result.outcome !== 'nothing-installed' && result.outcome !== 'skipped');
+		for (const result of failed) {
+			this.logService.warn(`[ParadisCodexHookTrust] grant for ${result.codexHome} ended with ${result.outcome}: ${result.detail ?? ''}`);
+		}
+		if (failed.length > 0) {
+			this.showFailed();
+			return;
+		}
+		const granted = results.reduce((total, result) => total + (result.outcome === 'granted' ? result.grantedEvents.length : 0), 0);
+		if (granted > 0) {
+			// allow-any-unicode-next-line
+			this.notificationService.info(localize('paradis.codexHookTrust.granted', "Para Code が設置した Codex の hook（{0} 件）を信頼済みにしました。", granted));
 		}
 	}
 
