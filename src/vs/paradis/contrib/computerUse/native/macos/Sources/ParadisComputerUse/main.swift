@@ -1,0 +1,66 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// Para Code Computer Use.app の入り口。
+//
+// shared process が `open -n -g "Para Code Computer Use.app" --args --agent --socket <path> --token-file <path>` で
+// 起動する。LaunchServices から起動することで、TCC の許可（アクセシビリティ・画面収録）がこのアプリ自身に付く
+// （Para Code 本体の子として exec すると、Para Code の許可で評価されうる。設計書 1.2）。
+
+import AppKit
+import Foundation
+
+/** 相手の親として求める Para Code の main の bundle id。ビルド時に Info.plist へ書く。 */
+private func paradisMainBundleIdentifier() -> String {
+	return (Bundle.main.object(forInfoDictionaryKey: "ParadisMainBundleIdentifier") as? String) ?? "ltd.paradis.paracode"
+}
+
+private final class ParadisAgentDelegate: NSObject, NSApplicationDelegate {
+	private let server: ParadisAgentServer
+
+	init(server: ParadisAgentServer) {
+		self.server = server
+	}
+
+	func applicationDidFinishLaunching(_ notification: Notification) {
+		let server = self.server
+		let thread = Thread {
+			server.run()
+		}
+		thread.name = "paradis-computer-use-agent"
+		thread.start()
+	}
+}
+
+switch paradisParseArguments(Array(CommandLine.arguments.dropFirst())) {
+case .agent(let socketPath, let tokenFile):
+	guard let token = paradisConsumeTokenFile(tokenFile) else {
+		paradisExit(.badArguments, "token file is missing or malformed")
+	}
+	let desktop = ParadisDesktop()
+	let handler = ParadisRequestHandler(backend: desktop, expectedToken: token, selfPid: getpid())
+	let server = ParadisAgentServer(socketPath: socketPath, handler: handler, helperIdentity: paradisSelfSigningIdentity(), mainBundleIdentifier: paradisMainBundleIdentifier())
+	let application = NSApplication.shared
+	application.setActivationPolicy(.accessory)
+	let delegate = ParadisAgentDelegate(server: server)
+	application.delegate = delegate
+	application.run()
+case .permissionStatus:
+	let desktop = ParadisDesktop()
+	let (responsibility, responsiblePid) = desktop.responsibility()
+	var result = desktop.permissions().json
+	result["responsibility"] = responsibility.rawValue
+	if let responsiblePid {
+		result["responsiblePid"] = Int(responsiblePid)
+	}
+	if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), let text = String(data: data, encoding: .utf8) {
+		print(text)
+	}
+	exit(0)
+case .usage:
+	paradisExit(.usage, "Para Code Computer Use is started by Para Code. It cannot be used on its own.")
+}
