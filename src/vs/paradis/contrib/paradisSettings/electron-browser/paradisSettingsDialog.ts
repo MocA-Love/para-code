@@ -16,9 +16,7 @@
 
 import './media/paradisSettingsDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -28,6 +26,7 @@ import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '.
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
+import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 
 const $ = dom.$;
@@ -1016,17 +1015,6 @@ export class ParadisSettingsDialog extends Disposable {
 		this._searchInput.type = 'text';
 		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
 		this._register(dom.addDisposableListener(this._searchInput, 'input', () => this._applySearchFilter()));
-		// 検索欄内の Escape は「検索語クリア」として扱い、ダイアログは閉じない
-		// (空のときはそのまま背景側の Escape ハンドラへ渡して閉じる)。
-		this._register(dom.addDisposableListener(this._searchInput, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape && this._searchInput.value.length > 0) {
-				event.preventDefault();
-				event.stopPropagation();
-				this._searchInput.value = '';
-				this._applySearchFilter();
-			}
-		}));
 
 		dom.append(header, $('.psd-autosave')).textContent = STR_AUTOSAVE;
 
@@ -1051,13 +1039,6 @@ export class ParadisSettingsDialog extends Disposable {
 				this.dispose();
 			}
 		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape) {
-				event.preventDefault();
-				this.dispose();
-			}
-		}));
 
 		// 別ウィンドウ・設定エディタ側からの変更にも追従させる
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -1069,6 +1050,21 @@ export class ParadisSettingsDialog extends Disposable {
 		}));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
+		// 開く前のフォーカスを覚えて閉じたら戻す・Esc・描き直しの後のフォーカス・後から開いたモーダルを前に出す
+		this._register(new ParadisModalFocus({
+			backdrop: this._backdrop,
+			modal,
+			// 検索欄に文字があれば Esc は「検索語のクリア」、空なら閉じる
+			onEscape: () => {
+				if (this._searchInput.value.length > 0 && this._searchInput.ownerDocument.activeElement === this._searchInput) {
+					this._searchInput.value = '';
+					this._applySearchFilter();
+				} else {
+					this.dispose();
+				}
+			},
+			close: () => this.dispose(),
+		}));
 		this._activateNavItem(SECTIONS[0].id);
 		modal.focus();
 	}

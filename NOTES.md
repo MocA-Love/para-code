@@ -317,6 +317,15 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 
 **運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。2026-09-27 からは共通の印 `paradis-modal-backdrop` を登録済みなので、新しいモーダルは backdrop にこのクラスを併記するだけでよい（`overlayManager.ts` への追加は不要。定期実行・スキルのモーダルが実例）。
 
+### fork の自前モーダルのフォーカスと重なり順（paradisModalFocus、2026-09-27、フェーズ8）
+
+「設定 (Para Code)」・定期実行・スキルの 3 つのモーダルは `paradisSettings/browser/paradisModalFocus.ts` の `ParadisModalFocus` を使う。
+- 開く前のフォーカスを覚え、閉じたらそこへ戻す（戻さないと BODY に落ち、続けて打った文字が消える。実機確認の別件1）
+- Esc はウィンドウで先に受けるので、描き直しでフォーカスが BODY に落ちていても閉じられる。フォーカスが別の場所（確認ダイアログなど）にあるときと、日本語入力の変換中は受けない。設定の検索欄に文字があるときの Esc は検索語のクリア
+- 中身を描き直してフォーカスしていた要素が消えたら、同じ見た目のボタン（無ければモーダル）へ戻す（MutationObserver）
+- 同じウィンドウで別のモーダルを開いたら、前のものは閉じる。z-index の段（定期実行・スキルの 2570、確認ダイアログの 2575、設定の 2700）を変えずに「後から開いたものが前」を守るため（設定を開いたままパレットから定期実行を開くと、設定の裏に出ていた。別件4）
+- 使用量ダッシュボード・通知設定・セッション履歴など、ほかの fork のモーダルはまだ使っていない
+
 ## 内蔵ブラウザの倍率インジケータ（browserZoomIndicator、2026-08-20追加）
 
 `src/vs/paradis/contrib/browserZoomIndicator/` に実装。upstream のファイルは無変更で、公開されている拡張点だけを使う（`BrowserEditor.registerContribution()` と `BrowserWidgetLocation.PostUrl`）。
