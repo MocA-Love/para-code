@@ -52,7 +52,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'browsers-outline',
 				title: 'iPad をウィンドウで使うとき、左上のウィンドウのボタンに見出しが重ならないようにしました',
-				body: 'iPad ではターミナルの文字の既定を 12pt にしました。',
+				body: '閉じる・最小化・並べるの3つのボタンの右から、戻るボタンと見出しを並べます。',
+			},
+			{
+				icon: 'text-outline',
+				title: 'iPad では、ターミナルの文字の既定を 12pt にしました',
+				body: '設定で文字の大きさを変えていれば、そちらを使います。',
 			},
 			{
 				icon: 'arrow-undo-outline',

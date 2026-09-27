@@ -10,10 +10,13 @@ import { create } from 'zustand';
  * ここへ置く。左の列（PC の画面）はこれを見て「隠すボタンを出すか」を決め、行を押したときに
  * 「開いていたものを閉じてから新しいセッションを開く」（Orca と同じく、詳細の列は積み増さず入れ替える）。
  *
- * **PC の画面はルートの Stack に2枚以上積まれることがある**（通知のタップで別の PC のセッションへ入る、
- * 通知の一覧から入り直す、など）。そのため詳細の列は器（`_layout.tsx`）ごとに1件ずつ、置いた順に持つ。
- * 前面にあるのは最後に置いたもので、上の画面が外れると1つ前が前面に戻る（中身の「開いているか」は各自が
- * 持ち続けるので、下の画面は積まれる前の状態のまま戻る）。
+ * **PC の画面は2枚以上積まれることがある**（通知のタップで別の PC のセッションへ入る、通知の一覧から
+ * 入り直す、など）。そのため詳細の列は器（`_layout.tsx`）ごとに1件ずつ持ち、最後の1件を前面とみなす。
+ * 置いた順だけでは決めない: 器が作り直されずに前面へ戻る場合（Expo Router の singular による並べ替えなど。
+ * いまの器の Stack では起こさないようにしている。`app/pc/_layout.tsx`）には根の attach が走り直さないので、
+ * 器は前面に来るたびに `bringToFront` で自分を末尾へ移す。
+ * 上の画面が外れると1つ前が前面に戻る（中身の「開いているか」は各自が持ち続けるので、下の画面は積まれる前の
+ * 状態のまま戻る）。
  */
 export interface DetailColumnEntry {
 	/** 器（`_layout.tsx`）ごとの印。器と根・セッションの画面は `DetailColumnKeyContext` で同じ値を共有する。 */
@@ -26,10 +29,12 @@ export interface DetailColumnEntry {
 }
 
 interface DetailColumnStore {
-	/** 置いた順（最後が前面）。2列でないときは空。 */
+	/** 最後が前面。2列でないときは空。 */
 	readonly entries: readonly DetailColumnEntry[];
-	/** 詳細の列を置く。戻り値で外す。 */
+	/** 詳細の列を置く（前面に置く）。戻り値で外す。 */
 	attach(key: string, pcId: string, popToTop: () => void): () => void;
+	/** その器が前面に来た（無ければ何もしない）。 */
+	bringToFront(key: string): void;
 	setOpen(key: string, open: boolean): void;
 }
 
@@ -44,6 +49,13 @@ export const useDetailColumn = create<DetailColumnStore>()((set, get) => ({
 				set(state => ({ entries: state.entries.filter(item => item.key !== key) }));
 			}
 		};
+	},
+	bringToFront(key) {
+		const entries = get().entries;
+		const entry = entries.find(item => item.key === key);
+		if (entry !== undefined && entries[entries.length - 1] !== entry) {
+			set({ entries: [...entries.filter(item => item !== entry), entry] });
+		}
 	},
 	setOpen(key, open) {
 		const current = get().entries.find(item => item.key === key);

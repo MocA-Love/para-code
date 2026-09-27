@@ -10,7 +10,7 @@ import { stackWithoutRoute } from '../../../src/features/pc/pcStackAnchor.js';
 import { hapticSelection } from '../../../src/haptics.js';
 import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
 import { ColumnResizeHandle } from '../../../src/ipad/columnResizeHandle.js';
-import { DetailColumnKeyContext, useDetailColumnOpen } from '../../../src/ipad/detailColumn.js';
+import { DetailColumnKeyContext, useDetailColumn, useDetailColumnOpen } from '../../../src/ipad/detailColumn.js';
 import { sidebarWidthFor } from '../../../src/ipad/ipadLayout.js';
 import { useIpadLayout } from '../../../src/ipad/ipadLayoutStore.js';
 import { useShortcutSlot } from '../../../src/ipad/shortcutRegistry.js';
@@ -58,6 +58,14 @@ export default function PcLayout() {
 	// 自分の詳細の列の印。PC の画面が2枚積まれても、それぞれ自分の列の様子だけを読む（`detailColumn.ts`）。
 	const columnKey = useId();
 	const detailOpen = useDetailColumnOpen(columnKey);
+	// 前面に来たら自分の詳細の列を前面とみなさせる。器が作り直されずに前面へ戻った場合、根（`index.tsx`）の
+	// attach は走り直さない（`detailColumn.ts`）。
+	// 初めて置かれたとき・1列から2列に戻ったときは、子の根の attach が先に走ってから、ここで前面に移す。
+	useEffect(() => {
+		if (focused && regular) {
+			useDetailColumn.getState().bringToFront(columnKey);
+		}
+	}, [focused, regular, columnKey]);
 	const collapsed = useAppStore(s => s.sidebarCollapsed);
 	const setCollapsed = useAppStore(s => s.setSidebarCollapsed);
 	const savedSidebarWidth = useIpadLayout(s => s.sidebarWidth);

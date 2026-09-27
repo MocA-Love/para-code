@@ -14,17 +14,15 @@ import { colors } from '../../src/theme.js';
  * 積まれていた（左の列は A の一覧のまま、1列で戻ると A の一覧へ戻る）。
  *
  * ここで画面名を `[pcId]` にすると、別の PC なら新しい器がこの Stack に積まれ、同じ PC なら今の器の中に積まれる。
+ * すでに下に積んである PC へ push したときも、その器を並べ替えずに新しい器を積む。
  *
- * **器は `pcId` で見分ける（`dangerouslySingular`。id は画面名の `[pcId]` を引数の値で置き換えたもの）。**
- * 起動中に届いたリンクなどの `navigate` は、前面の画面と画面名が同じなら、そのルートを使い回して引数だけ
- * 差し替える（Expo Router の StackClient）。見分けが無いと、A の器の引数だけが B に変わり、中の Stack は
- * A のセッションのまま残った。見分けがあれば、別の PC なら新しい器を積み、すでに積んである PC ならその器を
- * 前面へ戻す。
+ * **器に `getId` / `dangerouslySingular` を付けない。** 付けると、下に積んである PC へ push したときに、その器を
+ * 作り直さずに最前面へ並べ替える（StackClient。「THIS ACTION IS DANGEROUS」と注記がある）。実際に、並べ替えた
+ * 後で戻ると JS の状態は進むのにネイティブの画面が変わらなくなった（2026-09-27、iPad シミュレータ）。
+ * 付けない代わりに、`navigate`（前面の画面と画面名が同じならルートを使い回して引数だけ差し替える）で PC の中へ
+ * 入らない。アプリの中は push / replace だけを使い、起動中に OS から届くリンクは中継の画面を経由させる
+ * （`src/features/links/runningPcLink.ts`）。
  */
 export default function PcStackLayout() {
-	return (
-		<Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
-			<Stack.Screen name="[pcId]" dangerouslySingular />
-		</Stack>
-	);
+	return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />;
 }
