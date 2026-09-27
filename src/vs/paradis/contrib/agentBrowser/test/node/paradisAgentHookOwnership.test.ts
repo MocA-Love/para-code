@@ -301,7 +301,7 @@ suite('ParadisAgentHookOwnership', () => {
 	/**
 	 * 2つのペインで共有した tmux サーバー（実機の ps と同じ形）。サーバーの環境はペイン A のもので、
 	 * ペイン B から作ったセッション y の claude もペイン A のトークンでhookを送る:
-	 *   ペイン A: 100 (zsh, shellPid) ← 150 (tmux クライアント x)
+	 *   ペイン A: 100 (zsh) ← 150 (tmux クライアント x)
 	 *   ペイン B: 200 (zsh) ← 250 (tmux クライアント y)
 	 *   1 (launchd) ← 500 (tmux サーバー) ← 520 (claude x) ← 526 (notify)
 	 *                                     ← 620 (claude y) ← 626 (notify)
@@ -321,50 +321,71 @@ suite('ParadisAgentHookOwnership', () => {
 		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
 	}
 
-	test('a claude from another pane sharing the tmux server does not succeed the pane owner', async () => {
-		const results = [];
-		for (const shellPid of [100, undefined]) {
-			const tree = sharedTmuxTree();
-			const ownership = ownershipWith(tree);
-			const origins = [
-				(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, shellPid })).origin,
-				(await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2, shellPid })).origin,
-			];
-			// x の claude が終わる。
-			tree.delete(520);
-			tree.delete(526);
-			tree.delete(150);
-			origins.push((await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 3, shellPid })).origin);
-			results.push(origins);
-		}
-		// ペインのシェルが分からない構成（接続先など）は従来どおり昇格させる。
-		assert.deepStrictEqual(results, [['owner', 'invalid', 'invalid'], ['owner', 'invalid', 'owner']]);
-	});
-
-	test('an agent restarted from the same tmux shell succeeds the pane owner', async () => {
-		// tmux の中のシェルで claude を起動し直す: 前の所有者を起動したシェル (510) の配下なら後継になる。
-		// 別のセッションのシェル (610) の配下のエージェントは後継にならない。
-		const tree = new Map([
-			[1, proc(1, 0, '/sbin/launchd')],
-			[100, proc(100, 1, '/bin/zsh -il')],
-			[150, proc(150, 100, 'tmux new-session -s x')],
-			[500, proc(500, 1, 'tmux new-session -s x')],
-			[510, proc(510, 500, '-zsh')],
-			[520, proc(520, 510, 'claude')],
-			[526, proc(526, 520, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
-			[610, proc(610, 500, '-zsh')],
-			[620, proc(620, 610, 'claude')],
-			[626, proc(626, 620, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
-		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+	test('known limitation: a claude from another pane sharing the tmux server succeeds the pane owner', async () => {
+		// 既知の制限（NOTES.md「hook 所有者判定の既知の制限」）: 共有サーバーの y はペイン A の
+		// トークンでhookを送る。x が生きている間は invalid だが、x が終わると y が後継になり、
+		// y の状態がペイン A に出る。後継をペインのシェルの配下に絞ると、同じペインで tmux の
+		// エージェントを起動し直したときに状態が出なくなる（下のテスト）ので、絞っていない。
+		const tree = sharedTmuxTree();
 		const ownership = ownershipWith(tree);
-		const origins = [(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, shellPid: 100 })).origin];
+		const origins = [
+			(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 })).origin,
+			(await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 })).origin,
+		];
+		// x の claude が終わる。
 		tree.delete(520);
 		tree.delete(526);
-		origins.push((await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2, shellPid: 100 })).origin);
-		tree.set(530, proc(530, 510, 'codex'));
-		tree.set(536, proc(536, 530, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh'));
-		origins.push((await ownership.classify({ token: 'a', hookPid: 536, transcriptPath: CODEX_TRANSCRIPT, at: 3, shellPid: 100 })).origin);
+		tree.delete(150);
+		origins.push((await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 3 })).origin);
 		assert.deepStrictEqual(origins, ['owner', 'invalid', 'owner']);
+	});
+
+	test('an agent restarted in the same pane through tmux succeeds the pane owner', async () => {
+		// 実機で確かめた5つの形。どれもペインのシェル (100) は hook の祖先にいない（直接起動の前の所有者を除く）。
+		type Process = [pid: number, ppid: number, command: string];
+		const cases: { readonly name: string; readonly before: Process[]; readonly after: Process[] }[] = [
+			{
+				name: 'same tmux shell',
+				before: [[150, 100, 'tmux -L d new-session -s w'], [500, 1, 'tmux -L d new-session -s w'], [510, 500, '-zsh'], [520, 510, 'claude']],
+				after: [[150, 100, 'tmux -L d new-session -s w'], [500, 1, 'tmux -L d new-session -s w'], [510, 500, '-zsh'], [530, 510, 'claude']],
+			},
+			{
+				name: 'another window of the same session',
+				before: [[150, 100, 'tmux -L d new-session -s w'], [500, 1, 'tmux -L d new-session -s w'], [510, 500, '-zsh'], [520, 510, 'claude']],
+				after: [[150, 100, 'tmux -L d new-session -s w'], [500, 1, 'tmux -L d new-session -s w'], [510, 500, '-zsh'], [610, 500, '-zsh'], [530, 610, 'claude']],
+			},
+			{
+				name: 'recreated session',
+				before: [[150, 100, 'tmux -L d new-session -s w'], [500, 1, 'tmux -L d new-session -s w'], [510, 500, '-zsh'], [520, 510, 'claude']],
+				after: [[160, 100, 'tmux -L d new-session -s w2'], [700, 1, 'tmux -L d new-session -s w2'], [710, 700, '-zsh'], [530, 710, 'claude']],
+			},
+			{
+				name: 'tmux new-session -s x2 claude after -s x claude',
+				before: [[150, 100, 'tmux new-session -s x claude'], [500, 1, 'tmux new-session -s x claude'], [520, 500, 'claude']],
+				after: [[160, 100, 'tmux new-session -s x2 claude'], [800, 1, 'tmux new-session -s x2 claude'], [530, 800, 'claude']],
+			},
+			{
+				name: 'tmux after a directly started claude',
+				before: [[520, 100, 'claude']],
+				after: [[160, 100, 'tmux new-session -s x claude'], [900, 1, 'tmux new-session -s x claude'], [530, 900, 'claude']],
+			},
+		];
+		const results: [string, string[]][] = [];
+		for (const { name, before, after } of cases) {
+			const base: Process[] = [[1, 0, '/sbin/launchd'], [100, 1, '/bin/zsh -il']];
+			const toTree = (processes: Process[]) => new Map(processes.map(([pid, ppid, command]) => [pid, proc(pid, ppid, command)] as [number, IParadisHookProcessInfo]));
+			const tree = toTree([...base, ...before, [526, 520, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh']]);
+			const ownership = new ParadisAgentHookOwnership({ snapshot: async () => tree });
+			const origins = [(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 })).origin];
+			// 前の所有者が終わり、同じペインで起動し直す。
+			tree.clear();
+			for (const [pid, info] of toTree([...base, ...after, [536, 530, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh']])) {
+				tree.set(pid, info);
+			}
+			origins.push((await ownership.classify({ token: 'a', hookPid: 536, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 })).origin);
+			results.push([name, origins]);
+		}
+		assert.deepStrictEqual(results, cases.map(({ name }) => [name, ['owner', 'owner']]));
 	});
 
 	test('first hook bootstraps the emitting agent as the pane owner', async () => {

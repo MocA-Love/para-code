@@ -287,6 +287,16 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 - 複数ホーム（`~/.codex-N`）は `ParadisCodexHookTrustService.autoGrant(home)` / チャネルの `grant`・`getStatus` にホームを渡せば同じ手順で動く。IPC 経由で任意のパスに codex を起こさないよう、受け付けるのは既定のホームと `~/.codex-<名前>` だけ。フェーズ2で hook をそこへ置くときは、置いたあとに `autoGrant(home)` を呼ぶこと（今は既定のホームしか監視していない）
 - `codex` は Node のスクリプトなので、shared process の PATH に `node` が無いと `env: node: No such file or directory` で起動できない。ログインシェルの環境（`ParadisCachedShellEnv`）を使っているので通常は問題ないが、失敗したときの outcome は `failed` で detail にこの文言が出る
 
+### hook 所有者判定の既知の制限: 共有した tmux サーバー（2026-09-27）
+
+hook の発信元の仕分けは `src/vs/paradis/contrib/agentBrowser/node/paradisAgentHookOwnership.ts` にあります。所有者のエージェントが終わると、同じペインのトークンで次に hook を送ってきたエージェントが後継の所有者になります。
+
+tmux サーバーの環境変数は、サーバーを起こしたペインのものです。2つのペインで同じ tmux サーバーを使うと、ペイン B から作ったセッションのエージェントも、ペイン A のトークン（`PARA_CODE_TERMINAL_PANE_ID`）で hook を送ります。ペイン A の所有者が生きている間は `invalid` で捨てますが、所有者が終わるとペイン B のエージェントが後継になり、その状態がペイン A のタブに出ます（実機で再現済み）。ペイン A がまだ一度もエージェントを動かしていないときも、同じ理由でペイン B のエージェントが最初の所有者になります（推測、実機では未確認）。
+
+後継を「hook の祖先にペインのシェルがいるとき」に絞る修正は入れて、実機確認の後に外しました。tmux の中のエージェントの祖先は tmux サーバー → launchd で、ペインのシェルを通りません。そのため絞ると、同じペインで tmux のエージェントを起動し直したときに、5つの形のうち4つで状態が出なくなりました（同じセッションの別ウィンドウ、作り直したセッション、`tmux new-session -s x2 claude` の打ち直し、直接起動の後の tmux）。こちらは tmux を使う人がエージェントを2回起動すれば必ず起きるので、共有サーバーの取り違えより影響が大きいと判断しました。両方の形は `paradisAgentHookOwnership.test.ts` に固定してあります。
+
+将来の直し方の案は、tmux のクライアントでペインとセッションを対応づけることです。tmux の中で動く hook は `$TMUX`（ソケット・サーバー pid・セッション）と `$TMUX_PANE` を持っています。notify スクリプトがこれを送り、shared process が `tmux -S <socket> list-clients -t <session> -F '#{client_pid}'` でそのセッションに付いているクライアントを調べます。クライアントの祖先にこのペインのシェル（`paradisAgentBrowserService.ts` の `_paneShells` の `shellPid`）がいれば、このペインのエージェントとして後継を認めます。ペイン B のエージェントのセッションには、ペイン B のシェルの下のクライアントしか付いていないので弾けます。notify スクリプトの版上げ（schema v4）と、hook ごとに tmux を1回起動するコストの扱いが要ります。
+
 ### worktree の「このフォルダを信頼しますか」は元のリポジトリから引き継がれる（2026-09-27 実測、実装なし）
 
 当初の方針は「worktree に信頼が引き継がれなければ、元のリポジトリが信頼済みのときだけ、スペース作成時に worktree のパスへ信頼を書き込む」だったが、両方の CLI とも引き継ぐので実装していない。一時 HOME / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` で、`git worktree add ../repo-worktrees/wt`（Para Code の既定の置き場所と同じ、リポジトリの外の兄弟ディレクトリ）を作って TUI を起動して確かめた。
