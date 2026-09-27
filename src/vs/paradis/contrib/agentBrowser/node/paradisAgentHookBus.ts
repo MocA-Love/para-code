@@ -172,6 +172,18 @@ export function fireParadisAgentTurnEnded(token: string): void {
 	turnEndedEmitter.fire({ token, at: Date.now() });
 }
 
+const awaitingUserEmitter = new Emitter<{ readonly token: string; readonly at: number }>();
+/**
+ * エージェントが完了ではなく、止まって利用者の次の指示を待っている（許可を拒否された等。どの hook も来ない）。
+ * 受け側（ParadisAgentBrowserService）はペインを状態なし（idle）へ移す。確認待ち（review）にはしない
+ * （review は完了の通知の対象）。
+ */
+export const onParadisAgentAwaitingUser: Event<{ readonly token: string; readonly at: number }> = awaitingUserEmitter.event;
+
+export function fireParadisAgentAwaitingUser(token: string): void {
+	awaitingUserEmitter.fire({ token, at: Date.now() });
+}
+
 // --- ペインアクティビティ（transcript由来の実行状態） ---------------------------------------------
 //
 // hookイベントだけでは分からない「transcriptを読まないと分からない状態」を、
