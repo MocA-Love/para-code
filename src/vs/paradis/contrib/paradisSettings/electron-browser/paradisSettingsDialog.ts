@@ -442,17 +442,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-usage',
-		key: 'paradis.limitsMonitor.cswapPath',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.cswapPath', "claude-swap のパス"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.cswapPathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
-		// allow-any-unicode-next-line
-		placeholder: localize('paradis.settings.unset', "(未設定)"),
-		keywords: 'cswap claude-swap executable path limits monitor',
-	},
-	{
-		sectionId: 'psd-sec-usage',
 		key: 'paradis.limitsMonitor.codexHomes',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.codexHomes', "追加で見る Codex のフォルダ"),

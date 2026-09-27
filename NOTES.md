@@ -64,6 +64,29 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - セッション履歴の行メニューの結果（コピーした・見つからない・失敗した）はモーダルの中に出す。通知の層（2545）はモーダル（2700）の下にあって見えないため。作業フォルダを開く前にディレクトリか確かめ、macOS のバンドル（`.app` など）は Finder で場所を見せるだけにする
 - 一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の方法で探す）
 
+## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
+
+Claude の使用量の取得・アカウントの保存・PC 全体の切り替えは、shared process の `src/vs/paradis/contrib/limitsMonitor/node/paradisClaudeAccountService.ts` が1か所で持ち、チャネル `paradisClaudeAccounts` で全ウィンドウへ配ります。登録は `ParadisSharedProcessContributions`（`paradisClaudeAccounts.contribution.ts` → `paradis.sharedProcess.contribution.ts`）で、upstream のファイルは触っていません。REH には足していません。SSH で繋いでいる間も Claude の分は手元に聞き、切り替えるのはこの PC のログインだけです（接続先の Claude のログインは変えない）。Codex の分は従来どおり `paradisLimitsMonitorChannel.ts`（接続中は REH）で、レンダラーの `ParadisLimitsMonitorClient.getSnapshot()` が2つを合わせます。
+
+| 対象 | 場所 | 誰が書くか |
+|---|---|---|
+| いまのログインの認証情報 | macOS: キーチェーン `Claude Code-credentials`（アカウント名は `$USER`、英数字と `._-` 以外を含むと `claude-code-user`）。それ以外: `~/.claude/.credentials.json` | Claude Code。Para Code は切り替えのときだけ書く |
+| いまのログインの身元 | `~/.claude.json` の `oauthAccount`（古い版は `~/.claude/.config.json`） | 同上。「使用中」はこの値と登録済みアカウントの照合で決める |
+| 登録したアカウントの一覧 | ユーザーデータの `paradis-claude-accounts/accounts.json`（秘密でない値だけ、0600） | Para Code |
+| 登録したアカウントの認証情報 | macOS: キーチェーン `Para Code Claude Accounts`（アカウント名は登録 UUID）。Windows / Linux: safeStorage で暗号化した `paradis-claude-accounts/secrets/<UUID>.enc`。暗号化できない環境では保存を断る | Para Code |
+
+実装で踏みやすい点:
+
+- 使用量 API は `GET https://api.anthropic.com/api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`）です。Orca・claude-swap・claude 2.1.283 のバイナリで同じ URL を確認しました。上限は「身元 × User-Agent の種類」ごとに1時間約 28〜30 回（claude-swap の実測）なので、User-Agent は `ParaCode-LimitsMonitor/1.0` にして他のツールと回数を取り合わないようにしています
+- 取得間隔は claude-swap の `poll_policy.py` を `common/paradisClaudePollPolicy.ts` へ移植しました（180 秒は取り直さない、通常 3〜10 分、使用中が 85% 以上で動いている間 1 分、429 は Retry-After（1 時間規模なら +15 分）、無ければ 5 分待ち、その後 1 時間は 6 分以上 ×1.5 で最大 30 分）。10 分間どのウィンドウからも聞かれなければ止まります
+- 使用中のアカウントのトークンは更新しません。リフレッシュトークンは使い捨てで、ここで更新すると動いている Claude Code の手元のトークンが無効になるためです。代わりに Claude Code が書き戻した新しいトークンを保存し直します（期限が保存済みより古いもの、トークン欄が空のものは取り込まない）。控えのアカウントだけ、期限の 5 分前から Para Code が更新して保存します
+- 切り替えは Claude Code 自身のロック（`~/.claude/.oauth_refresh.lock` → `~/.claude.lock` → `~/.claude.json.lock`、proper-lockfile 互換の mkdir 方式）を取った中で行い、書く前の状態を控えて失敗したら戻します。登録していないログインが使用中のときは上書きせずに止めます（そのログインのリフレッシュトークンを失うため）。`~/.claude.json` が壊れているときも書きません
+- 動いている Claude Code は、キーチェーンを約 30 秒ごとに読み直すので次の発言から新しいアカウントになります（claude-swap の説明による。実機で要確認）。`~/.claude/.credentials.json` が既にあるときは同じ中身で書き直して更新時刻を変え、読み直しを促します
+- アカウント追加は一時ディレクトリを `CLAUDE_CONFIG_DIR` と `CLAUDE_SECURESTORAGE_CONFIG_DIR` にして `claude auth login --claudeai` を動かし、そのディレクトリ用のキーチェーン項目（`Claude Code-credentials-<sha256 先頭8桁>`）と `.claude.json` から拾います。古い Claude Code が既定の項目へ書いた場合だけ、既定の項目を元へ戻します（待っている間に Claude Code 自身が更新しただけのときは戻さない）
+- claude-swap は撤去しました（設問 Q3）。移行期間は `~/.claude-swap-backup/sequence.json`（Linux は `$XDG_DATA_HOME/claude-swap/`）を読むだけで、まだ登録していないアカウントをパネルに並べ、1回だけ通知で登録し直しを案内します。claude-swap のデータには書き込みません
+- 使用量パネルへプロバイダ固有の操作を足す口は `electron-browser/paradisLimitsPanelContributions.ts` です。`ParadisLimitsPanelContributions.register(クラス)` し、`renderAccountActions`（カード下端のボタン列）と `renderProviderFooter`（節の末尾）を実装します。Claude の「このアカウントを使う」「Para Code に登録」もこの口で足しています（`paradisClaudeAccountActions.ts`）
+- テストはすべて一時ディレクトリの HOME とメモリのキーチェーン、偽の HTTP で動き、本物の `~/.claude`・キーチェーン・API には触れません（`test/node/paradisClaudeTestUtils.ts`）
+
 ## リポジトリ構成
 
 - `upstream`: `https://github.com/microsoft/vscode.git`（push無効化済み、fetch専用）
