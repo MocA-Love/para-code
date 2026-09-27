@@ -13,13 +13,9 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { ParadisLimitsProvider } from '../common/paradisLimitsMonitor.js';
-import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../common/paradisAgentLogoPaths.js';
+import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../../common/paradisAgentLogoPaths.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-
-const CLAUDE_PATH = PARADIS_CLAUDE_LOGO_PATH;
-
-const CODEX_PATH = PARADIS_CODEX_LOGO_PATH;
 
 /**
  * エージェントCLI(Claude Code / Codex)の本物のロゴSVG(グリフのみ)をcontainerへ追加して返す。
@@ -31,7 +27,7 @@ export function appendParadisAgentLogoSvg(container: HTMLElement, provider: Para
 	svg.setAttribute('viewBox', '0 0 600 600');
 	svg.setAttribute('aria-hidden', 'true');
 	const path = document.createElementNS(SVG_NS, 'path');
-	path.setAttribute('d', provider === 'claude' ? CLAUDE_PATH : CODEX_PATH);
+	path.setAttribute('d', provider === 'claude' ? PARADIS_CLAUDE_LOGO_PATH : PARADIS_CODEX_LOGO_PATH);
 	path.setAttribute('fill', 'currentColor');
 	svg.appendChild(path);
 	container.appendChild(svg);

@@ -9,8 +9,8 @@
 // エージェント CLI（Claude Code / Codex）のロゴのパスデータ。どちらも viewBox 0 0 600 600 の
 // グリフだけで、色は使う側が決める（fill="currentColor" や CSS の mask）。
 // パスデータは @dev.icons/react/mono (MIT) の ClaudeCode / OpenaiIcon から移植。
-// DOM を組み立てる側（paradisLimitsLogos.ts、electron-browser）と CSS で描く側（ターミナルタブの
-// アイコン、browser）の両方から使うため common に置く。
+// DOM を組み立てる側（limitsMonitor の paradisLimitsLogos.ts、electron-browser）と CSS で描く側
+// （ターミナルタブのアイコン、browser）の両方から使うため、contrib 共通の src/vs/paradis/common に置く。
 
 /** @dev.icons/react/mono "ClaudeCode"。viewBox 0 0 600 600。 */
 export const PARADIS_CLAUDE_LOGO_PATH = 'M525 273.7h75v77.6h-75V427h-37.2v73H450v-73h-37.2v73H375v-73H225v73h-37.8v-73H150v73h-37.8v-73H75v-75.7H0v-77.6h75V125h450zm-375 0h37.2v-71.1H150zm262.8 0H450v-71.1h-37.2z';

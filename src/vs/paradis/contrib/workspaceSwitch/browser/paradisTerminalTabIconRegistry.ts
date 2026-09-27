@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// エディタのターミナルタブの左のアイコンを、エージェントの状態で差し替えるための口（Q52 案B）。
+// エディタのターミナルタブの左のアイコンを、エージェントの状態で差し替えるための口。
 //
 // upstream の `TerminalEditorInput.getIcon()` / `getLabelExtraClasses()` がここを引き、提供元が
 // 答えたときだけ upstream のアイコンの代わりに使う。提供元は `terminalTabStatus` の
