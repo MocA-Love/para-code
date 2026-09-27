@@ -19,6 +19,10 @@ function getElectronVersion(): string {
 }
 
 function getEntitlementsForFile(filePath: string): string {
+	// PARA-PATCH: the Para Code Computer Use helper gets empty entitlements (Accessibility and Screen Recording come from TCC, not entitlements).
+	if (filePath.includes('/Para Code Computer Use.app')) {
+		return path.join(baseDir, 'paradis', 'computerUse', 'paradis-computer-use-entitlements.plist');
+	}
 	if (filePath.includes(' Helper (GPU).app')) {
 		return path.join(baseDir, 'azure-pipelines', 'darwin', 'helper-gpu-entitlements.plist');
 	} else if (filePath.includes(' Helper (Renderer).app')) {
