@@ -75,7 +75,6 @@ import {
 	paradisAgentIdeKeySequence,
 	paradisAgentIdeMessagePrefix,
 	paradisAgentIdeNeedsHuman,
-	paradisAgentIdeScreenShowsPrompt,
 	paradisAgentIdeStatusLabel,
 	paradisAgentIdeTailLines,
 	paradisAgentIdeUntrustedTitle,
@@ -170,8 +169,14 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		super();
 		this._loadLedger();
 		// 再読み込みの直後は、前のセッションで作ったターミナルがまだ一覧に戻っていない（常駐から再接続する）。
-		// 戻るのを待ってから、もう居ないものを台帳から掃除する（ツールを一度も呼ばないまま閉じた子など）
-		this._register(disposableTimeout(() => this._pruneLedger(), LEDGER_PRUNE_DELAY_MS));
+		// 端末の接続（SSH の再接続を含む）が済んでから、さらに少し待って、もう居ないものを台帳から掃除する
+		// （ツールを一度も呼ばないまま閉じた子など）。子の印は掃除では消さない（遅れて戻った子が作成の
+		// 制限から外れないように）。子の印は件数の上限だけで絞る
+		void this.terminalService.whenConnected.then(() => {
+			if (!this._store.isDisposed) {
+				this._register(disposableTimeout(() => this._pruneLedger(), LEDGER_PRUNE_DELAY_MS));
+			}
+		});
 		this._register(this.terminalService.onDidDisposeInstance(instance => {
 			// ウィンドウを閉じる・再読み込みするときの破棄では消さない（ターミナルは常駐して戻ってくる）
 			if (this.lifecycleService.willShutdown) {
@@ -231,7 +236,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			case 'resolveWriteTarget': {
 				const target = this._resolveWritable(callerToken, request.terminal);
 				return target.ok
-					? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value), agent: this._runsAgent(target.value), screen: this._screen(target.value.instance, 0) ?? '' } }
+					? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value), agent: this._runsAgent(target.value), screen: this._screen(target.value.instance, 0) } }
 					: target;
 			}
 			case 'sendInput': return this._sendInput(callerToken, request.terminal, request.text);
@@ -328,12 +333,6 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			if (!live.has(callerId) && ledger.terminals.size === 0) {
 				// 呼び出し元のペインが居なくなり、作ったターミナルも残っていない（スペースは残すと閉じられないだけ）
 				this._ledgers.delete(callerId);
-				changed = true;
-			}
-		}
-		for (const id of [...this._children]) {
-			if (!live.has(id)) {
-				this._children.delete(id);
 				changed = true;
 			}
 		}
@@ -682,14 +681,18 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			return fail(NEEDS_HUMAN);
 		}
 		if (key === 'enter') {
+			// 画面の確認はシェルかエージェントかによらず掛ける。読めないときは確かめられないので送らない。
+			// 貼った本文が確認の文言に似ている場合の見逃しは shared process 側が扱う（こちらは Enter の直前の最後の見張り）
+			const screen = this._screen(target.instance, 0);
+			if (screen === undefined) {
+				return fail('Para Code cannot read that terminal\'s screen right now, so it does not press Enter there. Retry in a moment.');
+			}
 			if (!this._runsAgent(target)) {
 				if (!this._setting(PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING)) {
 					return fail(PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE);
 				}
 			} else if (status === 'working') {
 				return fail('The agent in that terminal is working right now, so Para Code does not press Enter there.');
-			} else if (paradisAgentIdeScreenShowsPrompt(this._screen(target.instance, 0) ?? '')) {
-				return fail('That terminal shows a confirmation prompt on screen, so Para Code does not press Enter there. Tell the user instead.');
 			}
 		}
 		const applicationMode = target.instance.xterm?.raw.modes.applicationCursorKeysMode === true;
