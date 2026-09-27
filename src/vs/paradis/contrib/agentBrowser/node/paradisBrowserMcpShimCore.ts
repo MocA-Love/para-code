@@ -9,6 +9,7 @@
 import type * as http from 'http';
 import { randomUUID } from 'crypto';
 import { closeSync, openSync, promises as fs, readSync } from 'fs';
+import { PARADIS_MCP_PAGE_OPS_TOOLS } from './paradisBrowserPageOpsTools.js';
 
 export const PARADIS_MCP_CONNECT_TIMEOUT_MS = 5_000;
 export const PARADIS_MCP_HEALTH_TIMEOUT_MS = 5_000;
@@ -220,6 +221,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			properties: {
 				url: { type: 'string', description: 'Optional http(s) URL to load. Omit to open a blank tab.' },
 				background: { type: 'boolean', description: 'Open the tab without bringing it to the front of its editor group (default false). Tools still work on a background tab.' },
+				private: { type: 'boolean', description: 'Open the tab in browser storage used by this terminal pane only (in memory, not shared with other panes, the user or your other non-private tabs). Needed for set_extra_http_headers, set_http_credentials and set_request_rules. Default false.' },
 			},
 			additionalProperties: false,
 		},
@@ -266,6 +268,8 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			additionalProperties: false,
 		},
 	},
+	// Extra browser operations (mouse, PDF, headers, HTTP auth, request rules, download, highlight).
+	...PARADIS_MCP_PAGE_OPS_TOOLS,
 ] as const;
 
 export interface IParadisMcpPortFileRecord {

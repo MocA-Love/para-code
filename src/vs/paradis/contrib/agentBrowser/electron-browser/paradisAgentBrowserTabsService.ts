@@ -199,7 +199,12 @@ export interface IParadisAgentBrowserTabsService {
 	/** 上限の確認とタブを開く処理の間に、同じペインの別の呼び出しが割り込まないよう枠を取る。 */
 	reserveSlot(token: string): IDisposable | undefined;
 
-	openTab(token: string | undefined, url: string | undefined, background: boolean): Promise<IParadisOpenAgentTabResult>;
+	/**
+	 * `privateAffinity` があれば、そのペイン専用の保存領域（その affinity のエージェントの保存領域）で開く。
+	 * shared process がペインのトークンから作って渡す（ヘッダ・HTTP 認証・リクエストのルールを掛けられるのは
+	 * この保存領域のタブだけ）。
+	 */
+	openTab(token: string | undefined, url: string | undefined, background: boolean, privateAffinity?: string): Promise<IParadisOpenAgentTabResult>;
 	listTabs(token: string | undefined): IParadisListAgentTabsResult;
 	selectTab(token: string | undefined, tabId: string): Promise<IParadisSelectAgentTabResult>;
 	closeTab(token: string | undefined, tabId: string): Promise<IParadisCloseAgentTabResult>;
@@ -351,7 +356,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	// #region ツールの実体
 
-	async openTab(token: string | undefined, url: string | undefined, background: boolean): Promise<IParadisOpenAgentTabResult> {
+	async openTab(token: string | undefined, url: string | undefined, background: boolean, privateAffinity?: string): Promise<IParadisOpenAgentTabResult> {
 		if (token === undefined) {
 			return { ok: false, reason: 'paneUnresolved' };
 		}
@@ -375,7 +380,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			// upstream の共有確認は出ない（upstream の open_browser ツールと同じ扱い）。
 			input = await this._browserViewWorkbenchService.createBrowserView({
 				owner: { type: 'user' },
-				session: { scope: BrowserViewStorageScope.Agent },
+				session: privateAffinity !== undefined
+					? { scope: BrowserViewStorageScope.Agent, affinity: privateAffinity }
+					: { scope: BrowserViewStorageScope.Agent },
 				initialAudiences: [{ type: 'agent' }],
 			});
 			this.registerAgentTab(token, input);

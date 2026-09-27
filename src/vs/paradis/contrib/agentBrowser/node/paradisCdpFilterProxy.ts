@@ -45,6 +45,7 @@ import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
 import { ParadisCdpIsolatedWorldFilter } from './paradisCdpIsolatedWorldFilter.js';
+import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent } from './paradisCdpCookieFilter.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -468,6 +469,12 @@ const SHARED_STATE_DENIED_METHODS = new Set([
 	'Network.setCookie',
 	'Network.setCookies',
 	'Network.deleteCookies',
+	// Cookie の読み書き（q.html Q69）: 旧い Page.getCookies、Cookie の扱いの設定、ページの Cookie 付きで
+	// 取りに行ってヘッダを返す Network.loadNetworkResource
+	'Page.getCookies',
+	'Page.deleteCookie',
+	'Network.setCookieControls',
+	'Network.loadNetworkResource',
 	'Page.setDownloadBehavior',
 ]);
 
@@ -1095,6 +1102,7 @@ export function paradisProxyPageUpgrade(
 			// 常時拒否メソッドはページレベル接続でも遮断する（Page.close等は共有ビューを破壊する）
 			const denied = ALWAYS_DENIED_METHODS.get(msg.method)
 				?? sharedStateDeniedMessage(msg.method)
+				?? paradisCookieAndRewriteDeniedMessage(msg.method, msg.params)
 				?? (msg.method.startsWith('Target.') ? `${msg.method} is not permitted on a page-scoped CDP connection.` : undefined)
 				?? (LAYOUT_MANAGED_DENIED_METHODS.has(msg.method) ? `${msg.method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}` : undefined);
 			if (denied !== undefined) {
@@ -1242,6 +1250,8 @@ export function paradisProxyPageUpgrade(
 				if (typeof response?.id === 'number' && Number.isSafeInteger(response.id)) {
 					completeForwardedRequestBarrier(forwardedRequestBarriers, response.id, response.sessionId);
 				}
+				// Cookie を落としたイベント（q.html Q69）。落とさなければ undefined で、元のフレームを送る。
+				let cookieSanitized: string | undefined;
 				if (response) {
 					const sessionKey = typeof response.sessionId === 'string' ? response.sessionId : '';
 					if (typeof response.id === 'number') {
@@ -1257,6 +1267,10 @@ export function paradisProxyPageUpgrade(
 						}
 						if (verdict !== 'forward') {
 							return;
+						}
+						const sanitizedParams = paradisSanitizeCookieBearingEvent(response.method, response.params);
+						if (sanitizedParams !== undefined) {
+							cookieSanitized = JSON.stringify({ ...response, params: sanitizedParams });
 						}
 					}
 				}
@@ -1274,7 +1288,7 @@ export function paradisProxyPageUpgrade(
 				}
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
 					// U+FFFD replacement can grow the frame, so size the backpressure check on what is actually sent.
-					const forwarded = reencodeUtf8(data);
+					const forwarded = cookieSanitized ?? reencodeUtf8(data);
 					if (!sendWithBoundedBackpressure(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true)) {
 						closeBoth();
 					}
@@ -1659,7 +1673,7 @@ export async function paradisProxyBrowserUpgrade(
 					rejectRequest(message, `${message.method} is not permitted on a target-scoped CDP session.`);
 					return;
 				}
-				const sharedStateDenied = sharedStateDeniedMessage(message.method);
+				const sharedStateDenied = sharedStateDeniedMessage(message.method) ?? paradisCookieAndRewriteDeniedMessage(message.method, message.params);
 				if (sharedStateDenied !== undefined) {
 					rejectRequest(message, sharedStateDenied);
 					return;
@@ -2010,6 +2024,12 @@ export async function paradisProxyBrowserUpgrade(
 						sendInternal('Debugger.resume', {}, message.sessionId);
 					}
 					if (verdict !== 'forward') {
+						return;
+					}
+					// Cookie のヘッダと一覧はエージェントへ届けない（q.html Q69）
+					const sanitizedParams = paradisSanitizeCookieBearingEvent(message.method, message.params);
+					if (sanitizedParams !== undefined) {
+						sendToClient({ ...message, params: sanitizedParams });
 						return;
 					}
 				}

@@ -156,6 +156,7 @@ function createFixture(): {
 			closeConnectionsForToken: (token: string) => effects.push(`close:${token}`),
 			retireToken: (token: string) => effects.push(`retireGateway:${token}`),
 		},
+		_pageOps: { releaseOwner: () => undefined },
 		_devtoolsProxy: {
 			retire: (token: string, generation: number) => effects.push(`retire:${token}:${generation}`),
 			listTools: async () => [],
@@ -583,6 +584,20 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(await fixture.service.notifyTerminalExit(connectionA, 'token-b'), false);
 		assert.strictEqual(await fixture.service.acknowledgePaneStatus(connectionA, 'token-b'), false);
 		assert.strictEqual(fixture.bindings.has('token-b'), true);
+	});
+
+	test('a pane\'s page overrides are released at the new generation when its sharing ends', async () => {
+		const fixture = createFixture();
+		const released: string[] = [];
+		Reflect.set(fixture.service, '_pageOps', { releaseOwner: (token: string, generation: number) => released.push(`${token}:${generation}`) });
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }]));
+		fixture.seedBinding('token');
+		const generationBefore = Reflect.get(fixture.service, '_nextBindingGeneration') as number;
+		assert.strictEqual(await fixture.service.unbind(connection, 'token'), true);
+		// The release carries the generation that retired the binding, so main drops everything set before it.
+		assert.deepStrictEqual(released, [`token:${generationBefore + 1}`]);
 	});
 
 	test('returns one status snapshot scoped to the caller connection including owned hook-only tokens', async () => {
@@ -1271,6 +1286,32 @@ suite('ParadisAgentBrowser authority integration', () => {
 			bodies.push(response.body);
 		}
 		assert.deepStrictEqual({ refused: bodies.every(body => body.includes('could not confirm')), windowCalls }, { refused: true, windowCalls: 0 });
+	});
+
+	test('the extra browser operations refuse a caller that cannot be verified, without reaching electron-main', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		fixture.seedBinding('token');
+		const before = fixture.mainCalls.length;
+		const bodies: string[] = [];
+		for (const [name, args] of [
+			['set_http_credentials', { origin: 'https://intranet.example.com', username: 'u', password: 'p' }],
+			['set_request_rules', { rules: [] }],
+			['mouse_action', { action: 'wheel', x: 1, y: 1, delta_y: 10 }],
+			['get_page_network_overrides', {}],
+		] as const) {
+			// The test socket has no peer port, so the caller cannot be verified.
+			const request = new TestRequest('POST', '/?pane=token');
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })));
+			request.emit('end');
+			await pending;
+			bodies.push(response.body);
+		}
+		assert.deepStrictEqual({ refused: bodies.every(body => body.includes('could not confirm')), mainCalls: fixture.mainCalls.length - before }, { refused: true, mainCalls: 0 });
 	});
 
 	test('the unconfirmed release mark outlives the status entry when the viewer acknowledges the review', async () => {
