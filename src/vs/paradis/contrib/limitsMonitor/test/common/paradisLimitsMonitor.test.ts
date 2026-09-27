@@ -10,7 +10,6 @@ import {
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsSeverity,
-	paradisLimitsStatusFromCswap,
 	paradisLimitsWorstPercent,
 	paradisNormalizeCodexLimitWindows,
 } from '../../common/paradisLimitsMonitor.js';
@@ -18,37 +17,11 @@ import {
 suite('ParadisLimitsMonitor', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	// cswap(json_output.py)のセンチネル7種。契約が変わったときにここが落ちてほしい。
-	test('maps every cswap usageStatus to a status the UI can explain', () => {
-		const map = (usageStatus: string | undefined) => {
-			const { status, unavailableReason } = paradisLimitsStatusFromCswap(usageStatus);
-			return { status, unavailableReason, relogin: paradisLimitsNeedsRelogin(status) };
-		};
-
-		assert.deepStrictEqual({
-			ok: map('ok'),
-			// Claude Code自身が更新するので、ユーザーの操作は要らない
-			tokenExpired: map('token_expired'),
-			// リフレッシュトークンが死んでいる。これだけが本当に再ログインを要する
-			reloginRequired: map('relogin_required'),
-			noCredentials: map('no_credentials'),
-			apiKey: map('api_key'),
-			keychainUnavailable: map('keychain_unavailable'),
-			// 制限到達で再取得が止まっている場合が多く、エラーではない
-			unavailable: map('unavailable'),
-			missing: map(undefined),
-			unknown: map('something_new'),
-		}, {
-			ok: { status: 'ok', unavailableReason: undefined, relogin: false },
-			tokenExpired: { status: 'refreshing', unavailableReason: undefined, relogin: false },
-			reloginRequired: { status: 'relogin_required', unavailableReason: undefined, relogin: true },
-			noCredentials: { status: 'no_credentials', unavailableReason: undefined, relogin: true },
-			apiKey: { status: 'unavailable', unavailableReason: 'api_key', relogin: false },
-			keychainUnavailable: { status: 'unavailable', unavailableReason: 'keychain_unavailable', relogin: false },
-			unavailable: { status: 'unavailable', unavailableReason: 'not_fetched', relogin: false },
-			missing: { status: 'unavailable', unavailableReason: 'not_fetched', relogin: false },
-			unknown: { status: 'error', unavailableReason: undefined, relogin: true },
-		});
+	test('only states that re-login can fix ask for a re-login', () => {
+		assert.deepStrictEqual(
+			(['ok', 'refreshing', 'relogin_required', 'no_credentials', 'unavailable', 'error'] as const).map(status => [status, paradisLimitsNeedsRelogin(status)]),
+			[['ok', false], ['refreshing', false], ['relogin_required', true], ['no_credentials', true], ['unavailable', false], ['error', true]],
+		);
 	});
 
 	test('normalizes Codex rate-limit windows by duration', () => {

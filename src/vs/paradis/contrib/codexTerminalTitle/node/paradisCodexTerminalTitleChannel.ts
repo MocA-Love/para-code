@@ -15,7 +15,7 @@ import { isAbsolute, relative, resolve } from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisCodexThreadPromptRequest,
@@ -145,7 +145,8 @@ export class ParadisCodexTerminalTitleService {
 
 	constructor(
 		private readonly logService: ILogService,
-		private readonly codexHome: string = paradisCodexHome(),
+		// 省略時は Para Code が扱う全 Codex ホーム（アカウントを切り替えると別ホームで動くため）。
+		private readonly codexHome: string | undefined = undefined,
 		private readonly rolloutScanLimits: IRolloutScanLimits = DEFAULT_ROLLOUT_SCAN_LIMITS,
 	) { }
 
@@ -155,9 +156,19 @@ export class ParadisCodexTerminalTitleService {
 			|| (request.invocation !== 'start' && request.invocation !== 'resume')) {
 			return {};
 		}
+		for (const codexHome of this.codexHome !== undefined ? [this.codexHome] : paradisCodexHomes()) {
+			const result = await this.findThreadPromptInHome(request, codexHome);
+			if (result.prompt !== undefined || result.rolloutScanExhausted) {
+				return result;
+			}
+		}
+		return {};
+	}
+
+	private async findThreadPromptInHome(request: IParadisCodexThreadPromptRequest, codexHome: string): Promise<IParadisCodexThreadPromptResult> {
 		let database: import('node:sqlite').DatabaseSync | undefined;
 		try {
-			const databasePath = await this.findLatestStateDatabase();
+			const databasePath = await this.findLatestStateDatabase(codexHome);
 			if (!databasePath) {
 				return {};
 			}
@@ -186,7 +197,7 @@ export class ParadisCodexTerminalTitleService {
 				return { prompt };
 			}
 			const rolloutPath = request.skipRolloutScan ? undefined : nonEmptyString(row.rollout_path);
-			return rolloutPath ? await readFirstUserPrompt(this.codexHome, rolloutPath, this.rolloutScanLimits) : {};
+			return rolloutPath ? await readFirstUserPrompt(codexHome, rolloutPath, this.rolloutScanLimits) : {};
 		} catch (error) {
 			// Not reported when the reporter is unwired (REH has no Sentry SDK), so this is a
 			// no-op there and only reaches Sentry from the shared process. Warning severity because
@@ -199,8 +210,8 @@ export class ParadisCodexTerminalTitleService {
 		}
 	}
 
-	private async findLatestStateDatabase(): Promise<string | undefined> {
-		const names = await fs.readdir(this.codexHome);
+	private async findLatestStateDatabase(codexHome: string): Promise<string | undefined> {
+		const names = await fs.readdir(codexHome).catch(() => [] as string[]);
 		const name = names
 			.map(name => ({ name, version: /^state_(\d+)\.sqlite$/.exec(name)?.[1] }))
 			.filter((entry): entry is { name: string; version: string } => entry.version !== undefined)
@@ -209,8 +220,8 @@ export class ParadisCodexTerminalTitleService {
 			return undefined;
 		}
 		const [realHome, realDatabase] = await Promise.all([
-			fs.realpath(this.codexHome),
-			fs.realpath(resolve(this.codexHome, name)),
+			fs.realpath(codexHome),
+			fs.realpath(resolve(codexHome, name)),
 		]);
 		return isPathInside(realHome, realDatabase) ? realDatabase : undefined;
 	}

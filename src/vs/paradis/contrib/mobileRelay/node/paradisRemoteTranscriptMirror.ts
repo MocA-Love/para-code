@@ -28,7 +28,7 @@ import { dirname, isAbsolute, join, sep } from '../../../../base/common/path.js'
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisIsAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
-import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisClaudeConfigDir, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 
 /** userDataPath 直下に作る、写しの置き場の名前。 */
 const MIRROR_DIR_NAME = 'paradisRemoteTranscripts';
@@ -124,7 +124,8 @@ export function paradisIsRemoteAgentTranscriptPath(path: string | undefined, rem
 	}
 	// エージェントの設定ホーム配下だと分かる形だけを受ける。CLAUDE_CONFIG_DIR / CODEX_HOME を
 	// 接続先で移している場合は対象外になるが、素性の分からないパスを写しに行くよりは安全側に倒す
-	if (!path.includes('/.claude/') && !path.includes('/.codex/')) {
+	// Codex はアカウントごとのホーム（`/.codex-2/` 等）も受ける。
+	if (!path.includes('/.claude/') && !/\/\.codex(?:-[\w.]+)?\//.test(path)) {
 		return false;
 	}
 	// 接続先から届いたと分かっている hook は、綴りが手元のホームと重なっていても接続先のもの。
@@ -132,7 +133,7 @@ export function paradisIsRemoteAgentTranscriptPath(path: string | undefined, rem
 	if (paradisIsAgentHookRemoteHostId(remoteHostId)) {
 		return true;
 	}
-	for (const root of [paradisClaudeConfigDir(), paradisCodexHome()]) {
+	for (const root of [paradisClaudeConfigDir(), ...paradisCodexHomes()]) {
 		if (path === root || path.startsWith(root + sep) || (sep !== '/' && path.startsWith(root + '/'))) {
 			return false;
 		}

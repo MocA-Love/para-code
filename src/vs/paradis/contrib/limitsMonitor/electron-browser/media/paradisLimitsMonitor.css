@@ -444,47 +444,6 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-/* ---------- cswap setup guide ---------- */
-
-.paradis-limits-panel .plm-install {
-	padding: 4px 14px 12px;
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-}
-
-.paradis-limits-panel .plm-install-message,
-.paradis-limits-panel .plm-install-hint {
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.6;
-}
-
-.paradis-limits-panel .plm-install-command {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
-	border-radius: 4px;
-	padding: 4px 4px 4px 10px;
-}
-
-.paradis-limits-panel .plm-install-command code {
-	flex: 1;
-	font-family: var(--monaco-monospace-font);
-	font-size: 11px;
-	overflow-x: auto;
-	white-space: nowrap;
-}
-
-.paradis-limits-panel .plm-install-link {
-	color: var(--vscode-textLink-foreground);
-	cursor: pointer;
-}
-
-.paradis-limits-panel .plm-install-link:hover {
-	text-decoration: underline;
-}
-
 .paradis-limits-panel .plm-error-row {
 	display: flex;
 	align-items: center;
@@ -494,6 +453,7 @@
 }
 
 .paradis-limits-panel .plm-relogin-btn,
+.paradis-limits-panel .plm-card-action-btn,
 .paradis-limits-setup .pls-btn {
 	background: var(--vscode-button-secondaryBackground, #313131);
 	border: 1px solid var(--vscode-contrastBorder, transparent);
@@ -509,8 +469,52 @@
 }
 
 .paradis-limits-panel .plm-relogin-btn:hover,
+.paradis-limits-panel .plm-card-action-btn:hover:not(:disabled),
 .paradis-limits-setup .pls-btn:hover {
 	background: var(--vscode-button-secondaryHoverBackground, #3c3c3c);
+}
+
+/* 差し込み部品（paradisLimitsPanelContributions.ts）のボタン列。メーターの下の右端に置く。 */
+.paradis-limits-panel .plm-card-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.paradis-limits-panel .plm-card-action-btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.paradis-limits-panel .plm-card-action-note {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+/* Claude のカードの値が古いときの添え書き。 */
+.paradis-limits-panel .plm-card-stale {
+	margin-top: 4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	text-align: right;
+}
+
+/* 差し込み部品がプロバイダの節の末尾に足す案内・カード列。 */
+.paradis-limits-panel .plm-provider-footer {
+	padding: 4px 14px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.6;
+}
+
+.paradis-limits-panel .plm-legacy-list {
+	margin: 0;
+	padding-left: 16px;
 }
 
 .paradis-limits-panel .plm-footer {
@@ -678,18 +682,6 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-
-.paradis-limits-setup .pls-input {
-	width: 100%;
-	box-sizing: border-box;
-	background: var(--vscode-input-background);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 3px;
-	color: var(--vscode-input-foreground);
-	font-size: 12px;
-	padding: 6px 8px;
-	font-family: var(--monaco-monospace-font);
 }
 
 .paradis-limits-setup .pls-error {

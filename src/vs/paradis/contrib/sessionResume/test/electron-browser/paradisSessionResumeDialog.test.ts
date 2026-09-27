@@ -587,9 +587,12 @@ suite('paradisResumeAgentInWorkspace', () => {
 			sendText: async (command: string, shouldExecute: boolean) => { events.push(`send:${command}:${shouldExecute}`); },
 		} as unknown as ITerminalInstance;
 		const terminalService = {
-			createTerminal: async (terminalOptions: { cwd?: URI; location?: TerminalLocation }) => {
+			createTerminal: async (terminalOptions: { cwd?: URI; location?: TerminalLocation; config?: { env?: Record<string, string> } }) => {
 				assert.strictEqual(terminalOptions.cwd?.toString(), URI.file('/repo-worktrees/feature').toString());
 				assert.strictEqual(terminalOptions.location, TerminalLocation.Editor);
+				if (terminalOptions.config?.env) {
+					events.push(`env:${JSON.stringify(terminalOptions.config.env)}`);
+				}
 				events.push('create');
 				return instance;
 			},
@@ -635,6 +638,17 @@ suite('paradisResumeAgentInWorkspace', () => {
 			dangerouslyBypassPermissions,
 		};
 	}
+
+	// 既定以外のホームで見つかった Codex の会話は、そのホームで再開する（選んでいるアカウントのホームには無いことがある）。
+	test('resumes a Codex conversation in the home it was found in', async () => {
+		const fixture = createFixture();
+		fixture.ready.complete();
+		await paradisResumeAgentInWorkspace(fixture.accessor, { ...request('codex'), codexHome: '/home/user/.codex-2' });
+		const claude = createFixture();
+		claude.ready.complete();
+		await paradisResumeAgentInWorkspace(claude.accessor, { ...request('claude'), codexHome: '/home/user/.codex-2' });
+		assert.deepStrictEqual([fixture.events[0], claude.events[0]], ['env:{"CODEX_HOME":"/home/user/.codex-2"}', 'create']);
+	});
 
 	test('waits for process readiness before opening, assigning, activating, and sending', async () => {
 		const fixture = createFixture({ activeStateKey: 'worktree:feature' });

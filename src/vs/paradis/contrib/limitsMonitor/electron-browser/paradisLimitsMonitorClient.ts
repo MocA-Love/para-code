@@ -7,9 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // renderer から shared process のリミットモニターチャネルを呼ぶ薄いクライアント。
-// 設定値(cswapパス・追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
+// 設定値(追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
 // このクライアント経由でのみバックエンドへアクセスする。
+//
+// Claude の分は別のチャネル（PARADIS_CLAUDE_ACCOUNTS_CHANNEL）から取り、Codex の分と1つの
+// スナップショットに合わせて返す。Claude のチャネルは SSH で繋いでいる間も常に手元の shared process
+// に聞く（切り替えるのはこの PC のログインで、保存した認証情報もこの PC にしか無いため）。
 
+import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -24,9 +29,9 @@ import {
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsDuplicateDecision
 } from '../common/paradisLimitsMonitor.js';
+import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClaudeSwitchResult, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
-export const PARADIS_LIMITS_SETTING_CSWAP_PATH = 'paradis.limitsMonitor.cswapPath';
 export const PARADIS_LIMITS_SETTING_CODEX_HOMES = 'paradis.limitsMonitor.codexHomes';
 
 export class ParadisLimitsMonitorClient {
@@ -53,11 +58,7 @@ export class ParadisLimitsMonitorClient {
 	}
 
 	private fetchOptions(bypassCache: boolean): IParadisLimitsFetchOptions {
-		const options: { bypassCache?: boolean; cswapPath?: string; codexHomes?: string[] } = {};
-		const cswapPath = this.configurationService.getValue<string>(PARADIS_LIMITS_SETTING_CSWAP_PATH);
-		if (typeof cswapPath === 'string' && cswapPath.trim().length > 0) {
-			options.cswapPath = cswapPath.trim();
-		}
+		const options: { bypassCache?: boolean; codexHomes?: string[] } = {};
 		const codexHomes = this.configurationService.getValue<string[]>(PARADIS_LIMITS_SETTING_CODEX_HOMES);
 		if (Array.isArray(codexHomes) && codexHomes.length > 0) {
 			options.codexHomes = codexHomes.filter(entry => typeof entry === 'string' && entry.trim().length > 0);
@@ -68,8 +69,41 @@ export class ParadisLimitsMonitorClient {
 		return options;
 	}
 
-	getSnapshot(bypassCache = false): Promise<IParadisLimitsSnapshot> {
-		return this.channel.call<IParadisLimitsSnapshot>('getSnapshot', [this.fetchOptions(bypassCache)]);
+	private get claudeChannel() {
+		return this.sharedProcessService.getChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL);
+	}
+
+	/** Claude の取得結果・登録・切り替えで状態が変わったとき（どのウィンドウの操作でも）に発火する。 */
+	get onDidChangeClaudeState(): Event<void> {
+		return this.claudeChannel.listen<void>('onDidChangeState');
+	}
+
+	/**
+	 * Claude の状態。`refresh` は手動の更新で、180 秒より古い結果だけ取り直す。取り直した結果は
+	 * {@link onDidChangeClaudeState} の後にもう一度聞くと届く。
+	 */
+	async getClaudeState(refresh = false, passive = false): Promise<IParadisClaudeAccountsState> {
+		try {
+			return await this.claudeChannel.call<IParadisClaudeAccountsState>('getState', [{ refresh, passive }]);
+		} catch (error) {
+			return { claude: { accounts: [], sourceError: (error as Error).message }, switching: false };
+		}
+	}
+
+	/** Codex 側のスナップショットに Claude の状態を差し込む。 */
+	static mergeClaudeState(snapshot: IParadisLimitsSnapshot, claudeState: IParadisClaudeAccountsState): IParadisLimitsSnapshot {
+		// 「N 秒前に更新」は最後に問い合わせた時刻（Codex の取得時刻）のままにする。Claude は
+		// アカウントごとに数分〜十数分おきに取るので、古さはカードごとの fetchedAt で見せる
+		// （最も古い値に合わせると、手動で更新しても「25 分前」のまま動かなかった）。
+		return { ...snapshot, claude: claudeState.claude };
+	}
+
+	async getSnapshot(bypassCache = false): Promise<IParadisLimitsSnapshot> {
+		const [snapshot, claudeState] = await Promise.all([
+			this.channel.call<IParadisLimitsSnapshot>('getSnapshot', [this.fetchOptions(bypassCache)]),
+			this.getClaudeState(bypassCache),
+		]);
+		return ParadisLimitsMonitorClient.mergeClaudeState(snapshot, claudeState);
 	}
 
 	/** Codexアカウント追加(existingHome指定時は既存ホームの再ログイン)を開始する。 */
@@ -112,17 +146,36 @@ export class ParadisLimitsMonitorClient {
 		return this.channel.call<void>('resolveCodexDuplicate', [sessionId, decision]);
 	}
 
-	/** Claudeアカウント追加(slot指定時は既存スロットの再ログイン)を開始する。 */
-	startClaudeSetup(slot?: number): Promise<IParadisLimitsSetupHandle> {
-		return this.channel.call<IParadisLimitsSetupHandle>('startClaudeSetup', [slot]);
+	/** Claude アカウントの追加（`managedId` を渡すとそのアカウントの再ログイン）を始める。 */
+	startClaudeLogin(managedId?: string): Promise<IParadisLimitsSetupHandle> {
+		return this.claudeChannel.call<IParadisLimitsSetupHandle>('startLogin', [managedId]);
+	}
+
+	getClaudeSetupState(sessionId: string): Promise<IParadisLimitsSetupState> {
+		return this.claudeChannel.call<IParadisLimitsSetupState>('getSetupState', [sessionId]);
+	}
+
+	cancelClaudeSetup(sessionId: string): Promise<void> {
+		return this.claudeChannel.call<void>('cancelSetup', [sessionId]);
+	}
+
+	/** いまの Claude のログインを Para Code に登録する。 */
+	registerLiveClaudeAccount(): Promise<IParadisClaudeRegisterResult> {
+		return this.claudeChannel.call<IParadisClaudeRegisterResult>('registerLiveAccount', []);
+	}
+
+	/** この PC の Claude のログインを、登録したアカウントに切り替える（全ウィンドウ共通）。 */
+	switchClaudeAccount(managedId: string): Promise<IParadisClaudeSwitchResult> {
+		return this.claudeChannel.call<IParadisClaudeSwitchResult>('switchAccount', [managedId]);
+	}
+
+	/** Claude アカウントの登録を消す（この PC のログインはそのまま）。 */
+	removeClaudeAccount(managedId: string): Promise<boolean> {
+		return this.claudeChannel.call<boolean>('removeAccount', [managedId]);
 	}
 
 	getSetupState(sessionId: string): Promise<IParadisLimitsSetupState> {
 		return this.channel.call<IParadisLimitsSetupState>('getSetupState', [sessionId]);
-	}
-
-	submitClaudeSetupCode(sessionId: string, code: string): Promise<void> {
-		return this.channel.call<void>('submitClaudeSetupCode', [sessionId, code]);
 	}
 
 	cancelSetup(sessionId: string): Promise<void> {

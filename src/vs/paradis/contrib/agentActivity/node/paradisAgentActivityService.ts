@@ -18,7 +18,7 @@ import { Event } from '../../../../base/common/event.js';
 import { dirname, join, resolve } from '../../../../base/common/path.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisSessionCatalogId } from '../../sessionResume/node/paradisSessionResumeChannel.js';
 import {
 	IParadisActivityFileSummary,
@@ -80,7 +80,13 @@ export interface IParadisAgentActivityServiceOptions {
 	/** 起動時の保存日数・ツール出力の反映を遅らせる時間（テスト用。既定 60 秒）。 */
 	readonly startupPruneDelayMs?: number;
 	readonly claudeHome?: () => string;
-	readonly codexHome?: () => string;
+	/**
+	 * 読む Codex ホームの一覧。既定はフェーズ2 の `paradisCodexHomes()`（既定のホーム、ログイン済みの
+	 * `~/.codex-<数字>`、設定で足したホーム）。hook を置く先・会話の再開一覧と同じ一覧を見る。
+	 */
+	readonly codexHomes?: () => readonly string[];
+	/** スペースの作業フォルダから、そこで動くエージェントのホームを解決する（WSL の判定。既定は `paradisResolveAgentHomes`）。 */
+	readonly resolveAgentHomes?: (cwd: string) => IParadisAgentHomes;
 	readonly now?: () => number;
 }
 
@@ -96,7 +102,13 @@ export class ParadisAgentActivityService extends Disposable {
 	private indexDeleting: Promise<void> | undefined;
 	private reconciling: Promise<void> = Promise.resolve();
 	private readonly claudeHome: () => string;
-	private readonly codexHome: () => string;
+	private readonly codexHomes: () => readonly string[];
+	private readonly resolveAgentHomes: (cwd: string) => IParadisAgentHomes;
+	/**
+	 * スペースの作業フォルダから見つけた WSL のディストロ側のホーム（キーは Claude と Codex のホームの組）。
+	 * 使用量の問い合わせで渡されたスペースから覚え、以後の列挙（作業実績・全文索引を含む）で読む。
+	 */
+	private readonly wslHomes = new Map<string, { readonly claude: string; readonly codex: string }>();
 	private readonly now: () => number;
 
 	constructor(
@@ -106,7 +118,8 @@ export class ParadisAgentActivityService extends Disposable {
 		super();
 		this._register(options.worker);
 		this.claudeHome = options.claudeHome ?? paradisClaudeConfigDir;
-		this.codexHome = options.codexHome ?? paradisCodexHome;
+		this.codexHomes = options.codexHomes ?? (() => paradisCodexHomes());
+		this.resolveAgentHomes = options.resolveAgentHomes ?? paradisResolveAgentHomes;
 		this.now = options.now ?? Date.now;
 		if (options.onDidChangeIndexSettings) {
 			this._register(options.onDidChangeIndexSettings(() => void this.reconcileIndex(false)));
@@ -120,7 +133,7 @@ export class ParadisAgentActivityService extends Disposable {
 
 	async spaceUsage(request: IParadisSpaceUsageRequest): Promise<IParadisSpaceUsageResult> {
 		const range = this.normalizeRange(request);
-		const spaces = this.normalizeSpaces(request?.spaces);
+		const spaces = this.withWslAliases(this.normalizeSpaces(request?.spaces));
 		const { summaries, scannedFiles, failedFiles } = await this.collect(range.sinceMs);
 		const aliases = await this.withRealPaths(spaces);
 		const buckets = paradisAggregateSpaceUsage(summaries, range, paradisCreateSpaceMatcher(aliases, !isLinux));
@@ -160,6 +173,37 @@ export class ParadisAgentActivityService extends Disposable {
 			if (roots.length > 0) {
 				result.push({ key: space.key.slice(0, 1000), name: space.name.slice(0, 500), roots });
 			}
+		}
+		return result;
+	}
+
+	/**
+	 * WSL の中を指すスペースは、そこで動くエージェントがディストロ側のホームへ会話ログを書き、作業フォルダを
+	 * Linux の表記（`/home/u/repo`）で記録する。そのホームを列挙の対象に覚え、Linux の表記も突き合わせに加える
+	 * （会話の再開一覧・モバイルと同じ `paradisResolveAgentHomes` で解決する）。
+	 */
+	private withWslAliases(spaces: readonly IParadisSpaceUsageSpace[]): IParadisSpaceUsageSpace[] {
+		// 覚えるのは今回渡されたスペースの分だけ（消したスペースのディストロを読み続けない）。同じディストロを
+		// `\\wsl$` と `\\wsl.localhost` の両方の綴りで登録していても、1回だけ読む。
+		const found = new Map<string, { readonly claude: string; readonly codex: string }>();
+		const result = spaces.map(space => {
+			const linuxRoots: string[] = [];
+			for (const root of space.roots) {
+				const homes = this.resolveAgentHomes(root);
+				if (homes.wsl !== undefined) {
+					const linuxHome = homes.wsl.homeUncPath.slice(`\\\\${homes.wsl.host}\\${homes.wsl.distro}`.length);
+					const key = `${homes.wsl.distro.toLowerCase()}\0${linuxHome}`;
+					if (!found.has(key)) {
+						found.set(key, { claude: homes.claude, codex: homes.codex });
+					}
+					linuxRoots.push(homes.matchCwd);
+				}
+			}
+			return linuxRoots.length > 0 ? { ...space, roots: [...new Set([...space.roots, ...linuxRoots])] } : space;
+		});
+		this.wslHomes.clear();
+		for (const [key, homes] of found) {
+			this.wslHomes.set(key, homes);
 		}
 		return result;
 	}
@@ -217,18 +261,41 @@ export class ParadisAgentActivityService extends Disposable {
 		return next;
 	}
 
-	/** Claude Code と Codex の会話ログを列挙する。シンボリックリンクはたどらない。 */
+	/**
+	 * Claude Code と Codex の会話ログを列挙する。シンボリックリンクはたどらない。
+	 *
+	 * Codex はアカウントごとのホーム（`~/.codex-2` など）も全部読む。切り替えた2つのホームの間では
+	 * 会話ログをハードリンクし合う（codexAccounts の paradisCodexSessionLinker.ts）ので、同じファイル
+	 * （dev と inode が同じ）は先に見つけた1つ（既定のホームに近い方）だけにする（同じ会話を2回数えない）。
+	 * 突き合わせは Codex の会話だけで行い（ハードリンクするのは Codex だけ）、inode は bigint で比べる
+	 * （Windows の NTFS の file ID は 2^53 を超えることがあり、number では別のファイルが同じ値に丸まる）。
+	 * inode が 0（返さないファイルシステム）なら突き合わせない。
+	 * 全文索引の会話は、先に見つけたパスで catalogId を作る。会話の再開一覧はホームごとの state DB の
+	 * 更新時刻が新しい行を残すので、同じ会話でも別のパスを指すことがある（その会話は索引に無いものとして
+	 * 従来の検索で探す。結果は同じで、遅くなるだけ）。
+	 */
 	private async listTranscripts(): Promise<ITranscriptFile[]> {
 		const files: ITranscriptFile[] = [];
+		const seen = new Set<string>();
+		let truncated = false;
 		const add = async (path: string, agent: ITranscriptFile['agent'], subagentFile: boolean) => {
 			if (files.length >= MAX_FILES) {
+				truncated = true;
 				return;
 			}
 			try {
-				const stat = await fs.lstat(path);
-				if (stat.isFile()) {
-					files.push({ path, agent, subagentFile, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs });
+				const stat = await fs.lstat(path, { bigint: true });
+				if (!stat.isFile()) {
+					return;
 				}
+				const identity = agent === 'codex' && stat.ino !== BigInt(0) ? `${stat.dev}:${stat.ino}` : undefined;
+				if (identity !== undefined) {
+					if (seen.has(identity)) {
+						return;
+					}
+					seen.add(identity);
+				}
+				files.push({ path, agent, subagentFile, dev: Number(stat.dev), ino: Number(stat.ino), size: Number(stat.size), mtimeMs: Number(stat.mtimeNs) / 1e6 });
 			} catch { /* 列挙の途中で消えた */ }
 		};
 		const readDir = async (path: string): Promise<Dirent[]> => {
@@ -239,7 +306,33 @@ export class ParadisAgentActivityService extends Disposable {
 			}
 		};
 
-		const projects = join(this.claudeHome(), 'projects');
+		const wslHomes = [...this.wslHomes.values()];
+		for (const claudeHome of new Set([this.claudeHome(), ...wslHomes.map(homes => homes.claude)])) {
+			await this.listClaudeTranscripts(claudeHome, readDir, add);
+		}
+
+		const walkCodex = async (path: string, depth: number): Promise<void> => {
+			for (const entry of await readDir(path)) {
+				const child = join(path, entry.name);
+				if (entry.isDirectory() && depth < 4) {
+					await walkCodex(child, depth + 1);
+				} else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+					await add(child, 'codex', false);
+				}
+			}
+		};
+		for (const codexHome of new Set([...this.codexHomes(), ...wslHomes.map(homes => homes.codex)])) {
+			await walkCodex(join(codexHome, 'sessions'), 0);
+		}
+		if (truncated) {
+			// Claude を先に数えるので、上限に届くと後のホームの Codex の会話が数えられない
+			this.logService.warn(`[ParadisAgentActivity] listed only the first ${MAX_FILES} transcripts; the rest are not counted`);
+		}
+		return files;
+	}
+
+	private async listClaudeTranscripts(claudeHome: string, readDir: (path: string) => Promise<Dirent[]>, add: (path: string, agent: ITranscriptFile['agent'], subagentFile: boolean) => Promise<void>): Promise<void> {
+		const projects = join(claudeHome, 'projects');
 		for (const project of await readDir(projects)) {
 			if (!project.isDirectory()) {
 				continue;
@@ -258,19 +351,6 @@ export class ParadisAgentActivityService extends Disposable {
 				}
 			}
 		}
-
-		const walkCodex = async (path: string, depth: number): Promise<void> => {
-			for (const entry of await readDir(path)) {
-				const child = join(path, entry.name);
-				if (entry.isDirectory() && depth < 4) {
-					await walkCodex(child, depth + 1);
-				} else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
-					await add(child, 'codex', false);
-				}
-			}
-		};
-		await walkCodex(join(this.codexHome(), 'sessions'), 0);
-		return files;
 	}
 
 	// ---- 全文索引 ----------------------------------------------------------------------------

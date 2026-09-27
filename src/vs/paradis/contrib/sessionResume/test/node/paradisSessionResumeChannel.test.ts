@@ -1172,4 +1172,40 @@ suite('ParadisSessionResume', () => {
 		assert.strictEqual(swapped, true);
 		assert.deepStrictEqual(results, []);
 	});
+
+	test('lists a conversation hard-linked into another Codex home only once', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');
+		await fs.mkdir(secondSessions, { recursive: true });
+		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');
+		await writeLines(codexPath, [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		await fs.link(codexPath, join(secondSessions, 'rollout-codex-session.jsonl'));
+		const service = new ParadisSessionResumeService({
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const sessions = await service.list(createListRequest());
+
+		assert.deepStrictEqual(sessions.map(session => [session.agent, session.id, session.codexHome]), [['codex', 'codex-session', codexHome]]);
+	});
+
+	test('remembers the Codex home of a conversation that only another home has', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');
+		await fs.mkdir(secondSessions, { recursive: true });
+		await writeLines(join(secondSessions, 'rollout-other-session.jsonl'), [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'other-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		const service = new ParadisSessionResumeService({
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const sessions = await service.list(createListRequest());
+
+		assert.deepStrictEqual(sessions.map(session => [session.id, session.codexHome]), [['other-session', secondHome]]);
+	});
 });

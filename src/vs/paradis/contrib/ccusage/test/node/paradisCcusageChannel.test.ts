@@ -12,7 +12,7 @@ import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisWarmLeaseScheduler } from '../../../../common/paradisWarmLease.js';
-import { ParadisCcusageChannel, ParadisCcusageService } from '../../node/paradisCcusageChannel.js';
+import { ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv } from '../../node/paradisCcusageChannel.js';
 
 interface IExecResult {
 	readonly stdout?: string;
@@ -543,6 +543,19 @@ suite('ParadisCcusageService', () => {
 			timeout: undefined,
 			maxBuffer: 64 * 1024 * 1024,
 			windowsHide: true,
+		});
+	});
+
+	// Codex のアカウントを切り替えると別のホームへ会話ログを書くので、全ホームをカンマ区切りで渡す。
+	// ホームが1つなら利用者の CODEX_HOME をそのまま使い、カンマを含むパスは区切りと見分けられないので外す。
+	test('passes every Codex home to ccusage as a comma-separated CODEX_HOME only when there are several', () => {
+		const env = { PATH: '/bin', CODEX_HOME: '/custom/codex' };
+		assert.deepStrictEqual({
+			several: paradisCcusageCodexHomeEnv(env, ['/home/u/.codex', '/home/u/.codex-2', '/home/u/odd,name']).CODEX_HOME,
+			single: paradisCcusageCodexHomeEnv(env, ['/custom/codex']),
+		}, {
+			several: '/home/u/.codex,/home/u/.codex-2',
+			single: env,
 		});
 	});
 });

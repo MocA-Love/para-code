@@ -58,6 +58,11 @@ export interface IParadisResumeSession {
 	readonly gitBranch?: string;
 	/** ユーザーの依頼が1つも無い会話（起動しただけで閉じたもの）。「空を隠す」で隠す。 */
 	readonly empty?: boolean;
+	/**
+	 * Codex の会話が見つかったホーム（既定のホームを含む）。再開するターミナルへ `CODEX_HOME` として
+	 * 渡す（選んでいるアカウントのホームには無いことがあるため）。
+	 */
+	readonly codexHome?: string;
 }
 
 /** 「…」メニューのコピー・開く操作に使う詳細。 */

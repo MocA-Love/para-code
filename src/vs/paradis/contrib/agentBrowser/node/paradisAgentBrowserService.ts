@@ -44,7 +44,7 @@ import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } f
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
-import { paradisCodexHome } from './paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
@@ -632,7 +632,16 @@ export class ParadisAgentBrowserService extends Disposable {
 				reportParadisDiagnosticError('owned', 'agent-browser', 'configure-mcp', error ?? new Error(message), { phase: 'setup' });
 				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error));
 			},
+			// アカウントを切り替えた先の Codex（~/.codex-2 等）にも同じ設定を入れる。
+			() => paradisCodexHomes(),
 		);
+		// ホームが増えたら（アカウントの追加・ログイン、設定で足した）、既定のホームでセットアップ済みの
+		// 設定をそこへも入れる。セットアップや修正のときだけでは、後から増えたホームに入らない。
+		this._register(onDidChangeParadisCodexHomes(() => {
+			void this._currentGatewayPort().then(port => this._mcpSetupController.propagateToCodexHomes(port)).catch(error => {
+				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to add the MCP settings to new Codex homes', error));
+			});
+		}));
 		// 設定でオフにできる。オフに切り替わったその時だけ取り外し、起動時には取り外さない
 		// （paradisAgentHooksAutoInstall.ts）。
 		this._register(new ParadisAgentHooksAutoInstall({
