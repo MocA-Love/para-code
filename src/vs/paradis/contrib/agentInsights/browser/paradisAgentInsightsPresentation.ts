@@ -57,7 +57,7 @@ function paneHeading(pane: IParadisAgentScopePane): string {
 /**
  * スペース一覧のエージェントのドットに乗せるホバー。今まで出していた状態の内訳（`summary`）の下に、
  * ペインごとのサブエージェント一覧を足す。サブエージェントが1つも無ければ undefined を返し、
- * 呼び出し側は従来どおり内訳の文字列だけを出す（常時表示はしない、Q22 案C）。
+ * 呼び出し側は従来どおり内訳の文字列だけを出す（常時は出さず、ホバーしたときだけ一覧にする）。
  */
 export function paradisScopeSubagentsHoverMarkdown(summary: string, panes: readonly IParadisAgentScopePane[], now: number): MarkdownString | undefined {
 	const withSubagents = panes.filter(pane => pane.insight.subagents.length > 0);
@@ -77,8 +77,9 @@ export function paradisScopeSubagentsHoverMarkdown(summary: string, panes: reado
 			const role = subagent.role === 'teammate'
 				? localize('paradis.agentInsights.teammate', "チームメイト")
 				: localize('paradis.agentInsights.subagent', "サブエージェント");
-			const indent = '  '.repeat(Math.max(0, (subagent.depth ?? 1) - 1));
-			const line = localize('paradis.agentInsights.subagentLine', "{0}{1} · {2} · {3}", indent, subagent.label, paradisSubagentStatusLabel(subagent.status), subagentElapsed(subagent, now));
+			// 入れ子は矢印の数で示す。先頭の空白は Markdown の描画で潰れて字下げにならないため使わない
+			const nesting = '\u21b3'.repeat(Math.max(0, (subagent.depth ?? 1) - 1));
+			const line = localize('paradis.agentInsights.subagentLine', "{0}{1} · {2} · {3}", nesting ? `${nesting} ` : '', subagent.label, paradisSubagentStatusLabel(subagent.status), subagentElapsed(subagent, now));
 			markdown.appendMarkdown(`\n- ${subagentIcon(subagent)} ${escapeMarkdownSyntaxTokens(line)} _${escapeMarkdownSyntaxTokens(role)}_`);
 		}
 		const rest = pane.insight.subagents.length - shown.length;
@@ -104,4 +105,11 @@ export function paradisPromptCacheTooltip(remainingMs: number, ttlMs: number): s
 		paradisFormatPromptCacheRemaining(remainingMs),
 		paradisPromptCacheTtlLabel(ttlMs),
 	);
+}
+
+/** 数えていないときのツールチップ（スペース一覧で炎を薄く残している間）。 */
+export function paradisPromptCachePausedTooltip(reason: 'working' | 'expired'): string {
+	return reason === 'working'
+		? localize('paradis.agentInsights.promptCacheWorking', "Claude が応答中です。応答が終わると、プロンプトキャッシュが切れるまでの残り時間を表示します。")
+		: localize('paradis.agentInsights.promptCacheExpired', "Claude のプロンプトキャッシュは切れています。次の依頼は割高になります。");
 }

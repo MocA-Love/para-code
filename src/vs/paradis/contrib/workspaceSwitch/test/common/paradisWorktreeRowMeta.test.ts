@@ -69,14 +69,19 @@ suite('ParadisWorktreeRowMeta', () => {
 			// 重複は最初の1件だけ残す
 			{ id: 'diff', visible: false, align: 'left' },
 			{ id: 'notes', visible: false, align: 'left' },
-			// pr / issues / promptCache は書かれていないので既定の順序のまま末尾へ足される
+			// pr / issues / promptCache は書かれていないので既定の順序のまま末尾へ足される。
+			// 後から足した promptCache だけは、自分で並びを決めた人の行を勝手に伸ばさないよう非表示で足す
 		]), [
 			{ id: 'diff', visible: true, align: 'right' },
 			{ id: 'notes', visible: false, align: 'left' },
 			{ id: 'pr', visible: true, align: 'left' },
 			{ id: 'issues', visible: true, align: 'left' },
-			{ id: 'promptCache', visible: true, align: 'left' },
+			{ id: 'promptCache', visible: false, align: 'left' },
 		]);
+		// 設定を触っていない人 (未設定・空配列) には既定どおり表示で出る
+		assert.deepStrictEqual(
+			[undefined, []].map(value => paradisNormalizeWorktreeRowMeta(value).find(entry => entry.id === 'promptCache')?.visible),
+			[true, true]);
 	});
 
 	test('moving an item changes the left/right layout order', () => {
