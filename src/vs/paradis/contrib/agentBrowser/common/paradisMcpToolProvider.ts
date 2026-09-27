@@ -62,6 +62,14 @@ export interface IParadisMcpToolProvider {
 	instructions?(): string | undefined;
 }
 
+/**
+ * MCP の接続元の分類。
+ * - `pane`: 呼び出し元ペインのシェルの子孫（手元のエージェント）
+ * - `tunnel`: shared process 自身が起こしたプロセス（SSH の接続先から戻ってくる経路）。どのペインかは確かめられない
+ * - `unverified`: どちらでもない・確かめられなかった
+ */
+export type ParadisMcpCallerKind = 'pane' | 'tunnel' | 'unverified';
+
 /** 呼び出し元ペインを所有するウィンドウへの1回の呼び出し。 */
 export interface IParadisMcpOwningWindowRequest {
 	readonly channelName: string;
@@ -101,13 +109,16 @@ export interface IParadisMcpToolCallContext {
 	 * 画面側の表示は 2 秒ごとの取り直しで遅れるので、送ってよいかの判断はこちらで行う。
 	 */
 	getPaneAgentStatus(paneToken: string): IParadisMcpPaneAgentStatus | undefined;
-	/** そのペインから hook が一度でも届いたか（hook が効いていない相手を見分けるため）。 */
+	/**
+	 * そのペインから本物の hook が一度でも届いたか（hook が効いていない相手を見分けるため）。
+	 * transcript から推した開始は含めない。
+	 */
 	hasAgentHookHistory(paneToken: string): boolean;
 	/**
-	 * 接続元のプロセスが、呼び出し元ペインのシェルの子孫か。トークンは同じユーザーの別プロセスからも
-	 * 読めるので、操作系のツールはこれが真のときだけ動かす。SSH 越しの接続など確かめられないときは偽。
+	 * 接続元のプロセスの分類。トークンは同じユーザーの別プロセスからも読めるので、操作系のツールは
+	 * `pane` のときだけ、読み取り系は `pane` か `tunnel`（SSH の戻り経路）のときだけ動かす。
 	 */
-	verifyCallerProcess(): Promise<boolean>;
+	classifyCaller(): Promise<ParadisMcpCallerKind>;
 }
 
 // --- 登録口 ----------------------------------------------------------------------------------
