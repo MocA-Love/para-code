@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// ターミナルの右クリックメニューに「エージェントにプロンプトを挿入」を出す（Q57 A / TM23）。
+// ターミナルの右クリックメニューに「エージェントにプロンプトを挿入」を出す（TM23）。
 //
 // 中身はエージェント向けプロンプト（action: agent-prompt）のプリセット。選ぶと、右クリックした
 // ターミナル（右クリックで xterm にフォーカスが移り、アクティブなターミナルになる）で動いている

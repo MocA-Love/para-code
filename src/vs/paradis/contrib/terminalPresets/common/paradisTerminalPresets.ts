@@ -76,7 +76,7 @@ export const PARADIS_PRESET_LAYOUTS = ['tabs', 'split', 'current', 'smart'] as c
 export type ParadisPresetLayout = typeof PARADIS_PRESET_LAYOUTS[number];
 
 /**
- * プリセットの種別（Q57 A / TM23）。
+ * プリセットの種別（TM23）。
  *   - run: コマンドを実行する（Enter を送る。従来のプリセット）
  *   - insert: コマンドをアクティブなターミナルの入力欄へ入れるだけ（Enter を送らない）。本文は
  *     prompt に1行1コマンドで書き、&& でつないだ1行にして入れる
