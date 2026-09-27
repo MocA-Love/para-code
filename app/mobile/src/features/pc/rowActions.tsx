@@ -5,9 +5,10 @@ import { useRouter } from 'expo-router';
 import { Archive, CheckCheck, Folder, GitBranch, NotebookPen, Pencil, Pin, PinOff, Trash2 } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
+import { resetDetailColumnFor } from '../../ipad/detailColumn.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../store.js';
 import { useParaToast } from '../../paraToast.js';
-import { routes } from '../../routes.js';
+import { routes, type RouteHref } from '../../routes.js';
 import { ActionSheet, ConfirmDrawer, TextInputDrawer, type ActionSheetAction } from '../../ui/index.js';
 
 /** 長押し・⋯ の操作の対象（行1つ）。 */
@@ -53,6 +54,14 @@ export function RowActions({ pcId, target, onClose }: {
 	const [confirmingDelete, setConfirmingDelete] = useState(false);
 	const toast = useParaToast(s => s.show);
 
+	// 2列では詳細の列を積み増さず入れ替える（行を押してセッションを開くときと同じ。`openSession` を参照）。
+	const openInDetail = (href: RouteHref) => {
+		if (pcId !== undefined) {
+			resetDetailColumnFor(pcId);
+		}
+		router.push(href);
+	};
+
 	const actions: ActionSheetAction[] = [];
 	if (held !== undefined) {
 		const key = pinKeyForTerminal(held);
@@ -60,9 +69,9 @@ export function RowActions({ pcId, target, onClose }: {
 		const { spaceId } = held;
 		if (pcId !== undefined && spaceId !== undefined) {
 			actions.push(
-				{ label: 'ソース管理', icon: GitBranch, onPress: () => router.push(routes.sourceControl(pcId, spaceId)) },
-				{ label: 'ファイル', icon: Folder, onPress: () => router.push(routes.files(pcId, spaceId)) },
-				{ label: 'メモ', hint: held.spaceName !== undefined ? `${held.spaceName} のメモ` : 'このスペースのメモ', icon: NotebookPen, onPress: () => router.push(routes.note(pcId, spaceId)) },
+				{ label: 'ソース管理', icon: GitBranch, onPress: () => openInDetail(routes.sourceControl(pcId, spaceId)) },
+				{ label: 'ファイル', icon: Folder, onPress: () => openInDetail(routes.files(pcId, spaceId)) },
+				{ label: 'メモ', hint: held.spaceName !== undefined ? `${held.spaceName} のメモ` : 'このスペースのメモ', icon: NotebookPen, onPress: () => openInDetail(routes.note(pcId, spaceId)) },
 			);
 		}
 		actions.push(

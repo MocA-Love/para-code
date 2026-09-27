@@ -26,6 +26,7 @@ import {
 	pcSupportsLaunchIntoSpace,
 	type LaunchTarget,
 } from './launchForm.js';
+import { resetDetailColumnFor } from '../../ipad/detailColumn.js';
 
 type Sheet = 'form' | 'space' | 'kind' | 'permission';
 
@@ -179,7 +180,9 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 			launchedSpace.current = undefined;
 			onClose();
 			if (spaceId !== undefined && pcId !== undefined) {
-				router.push(routes.session(pcId, spaceId));
+				// 2列では詳細の列の中身を入れ替える。ホームから起動したときも PC の中の Stack の根を下に敷く。
+				resetDetailColumnFor(pcId);
+				router.push(routes.session(pcId, spaceId), { withAnchor: true });
 			}
 			return;
 		}

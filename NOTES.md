@@ -181,6 +181,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 | `app/protocol/package.json` / `app/protocol/tsconfig.json` | 新規追加（fork所有）。モバイルリレープロトコル共有パッケージのマニフェストとTypeScript設定 | PC・relay・モバイル間で型とプロトコル定義を共有するため |
 | `app/relay/package.json` / `app/relay/tsconfig.json` | 新規追加（fork所有）。モバイルリレーサーバーのマニフェストとTypeScript設定 | Para Codeモバイルリレーをビルド・実行するため |
 | `app/mobile/modules/para-live-activity/expo-module.config.json` | 新規追加（fork所有）。Para Live Activity Expo moduleのプラットフォーム・モジュール登録設定 | iOS Live ActivityネイティブモジュールをExpoから検出・読み込みするため |
+| `app/mobile/modules/para-ipad-input/expo-module.config.json` | 新規追加（fork所有）。`apple.modules: ["ParaIpadInputModule"]` | iPad の外付けキーボードのショートカット（UIKeyCommand）とポインタのホバー（UIPointerInteraction）のローカル Expo モジュールを検出・読み込みするため。JSONのためマーカー不可。同モジュールの Swift・podspec・index.ts には PARA-CODE ヘッダーあり。取り込んだら `app/mobile/ios` で `pod install` が要る |
 | `app/mobile/assets/icon.png` / `app/mobile/assets/pairing-logo.png` | 新規追加（fork所有バイナリ）。モバイルアプリアイコンとペアリング画面用ロゴ | Para CodeモバイルのブランディングとペアリングUI表示のため |
 | `app/mobile/native/ParaCodeWidgets/Info.plist` | 新規追加（fork所有）。Live Activity / Dynamic Island Widget Extensionの設定ファイル | ParaCodeWidgets拡張のbundle情報と実行設定を追跡・復元するため |
 | `mise.toml` | 新規追加（fork所有）。Node.jsツールチェーンのバージョン固定。コメント構文はあるが、`PARA-CODE`を冒頭へ置くとupstream hygieneのcopyright検査に失敗するためファイル内マーカーの代わりに本台帳で管理 | Para Code開発環境のNode.jsバージョンを統一しつつ、不適切なMicrosoft copyrightを付与しないため |
@@ -740,6 +741,64 @@ iPad対応で実際に手で当てた設定:
 **既知の制限（許容して出す）**: 幅700ptをまたぐリサイズ（Split Viewへの出入り）では、`(tabs)/_layout.tsx` が `NativeTabs` と `Tabs` のコンポーネント型そのものを入れ替えるため、タブ配下4画面が作り直される（ターミナルのWebViewの表示内容が消えて再同期がかかる）。選択中のタブとルート側スタック（`/agent`・`/browser` 等）は保たれる。iPhoneのiOS 26ネイティブタブバーを捨てないかぎり避けられないトレードオフなので、リサイズという明示操作に限って許容している。
 
 **未対応（v2以降）**: ブラウザ/ターミナルを会話の横に並べるフローティングパネル（`app/mobile/mock/ipad.html` の案Bにあるドラッグ幅変更パネル）、Filesタブの2ペイン化、サイドバーの折りたたみ。現状は右カラム全体を覆うpush遷移。
+
+### 2列を案 A「Orca 忠実の2列」に作り直した（2026-09-27）
+
+上の `IpadShell`（全画面の左にワークスペースのサイドバー）は、作り直し（PC → スペース → セッションの押し進む階層）の後は使われていなかった。これを置き換え、Orca モバイルの iPad と同じ master-detail にした。見た目と動きの正解はリポジトリ外のモック `paracode-ipad/ipad-a.html`。**上の「タブは幅で実装を切り替える」「既知の制限」は旧実装の話で、いまの `app/` には当てはまらない**（`(tabs)` は `legacy-screens/` に退避済み）。
+
+| 場所 | 役割 |
+|---|---|
+| `app/mobile/app/pc/[pcId]/_layout.tsx` | 2列の器。左の列に PC の画面（`src/features/pc/pcScreen.tsx`）、右の列（詳細の列）にセッション・ソース管理などの Stack。1列では左の列を幅 0 にし、詳細の列の根（`index.tsx`）に PC の画面を出す |
+| `app/mobile/app/pc/[pcId]/index.tsx` | 詳細の列の根。2列では「エージェントが開かれていません」。列を根まで戻す手段と「何か開いているか」を `src/ipad/detailColumn.ts` に置く |
+| `app/mobile/src/ipad/ipadLayout.ts`（テストあり） | 左の列 280〜560pt（既定 340）、ドックは詳細の列 ≥ 640pt、ドックの幅 280〜560pt で本体に 360pt 残す |
+| `app/mobile/src/ipad/ipadLayoutStore.ts` | 左の列とドックの幅（ドラッグを離したときに Keychain へ保存）。左の列を隠す状態は既存の `sidebarCollapsed`（ブラウザのタブの「広く見る」と共有） |
+| `app/mobile/src/ipad/sessionDock.tsx` ほか | セッションの右のドック。中身はルートと同じ `SourceControlPanel` / `FileTreePanel` / `SpaceNotePanel`（`dock` を渡すと見出しが X になり、差分・ファイルへ進むときはドックを閉じて押し進める） |
+| `app/mobile/src/ipad/shortcuts.ts`（テストあり）・`shortcutRegistry.ts`・`shortcutHost.tsx` | 外付けキーボードのショートカットの一覧と操作の対応、画面ごとの受け口、ネイティブへの受け渡し |
+| `app/mobile/modules/para-ipad-input/` | 新しいローカルの Expo モジュール。UIKeyCommand（⌘ 長押しの一覧に出す名前つき）と、ポインタのホバー（UIPointerInteraction の highlight / hover）の入れ物 `ParaPointerHover` |
+
+**`pod install` が要る**: 新しいローカルの Expo モジュール（`modules/para-ipad-input`）を足したので、このブランチを取り込んだら `cd app/mobile/ios && pod install` を1回実行する（`ios/` は gitignore 対象なので、各自の Mac で）。`Info.plist`・entitlements・`project.pbxproj` の手作業は無い（pod install が Pods のプロジェクトを更新するだけ）。`native/` へ写すものも無い。
+
+設計で決めたこと（同種の実装で迷うところ）:
+
+- **1列 ⇄ 2列 で木の形を変えない**: 詳細の列の Stack は常に同じ位置にあり、左の列は幅だけで出し入れする。左の列の中身（PC の画面）は2列のときだけ描くが、これは Stack の兄弟なので Stack は作り直されない。詳細の列の根だけは `regular ? 置き場 : PC の画面` と中身を入れ替える（一覧の状態はそこで作り直されるが、セッションは残る）
+- **左の列の行を押すと、詳細の列は積み増さず入れ替える**: `openSession`（と行の操作シートのソース管理・ファイル・メモ）が `resetDetailColumnFor(pcId)` で詳細の列を根まで戻してから積む。2列のときだけセッションの画面の `animation` を `none` にする（Orca と同じく、押し進む動きを付けない）
+- **詳細の列の様子（`detailColumn.ts`）は器ごとに置いた順で持つ**: ルートの Stack に PC の画面が2枚積まれることがある（通知の一覧を経由して別の PC のセッションへ入る、など）。1枠だけで持つと、上の画面が外れたときの片付けで枠が空になり、下の画面で左の列を隠すボタン・⌘\ が消えた。器（`_layout.tsx`）が `useId()` の印を `DetailColumnKeyContext` で根・セッションへ渡し、各自は自分の印の分だけを読む。入れ替え（`resetDetailColumnFor`）は最後に置いた＝前面の列にだけ効く
+- **左の列の「戻る」は `router.back()` を使わない**: `router.back()` は前面の（一番深い）Stack に効くので、2列で右にセッションが開いていると、PC の画面を閉じる代わりにセッションを閉じてしまう。`useNavigation().goBack()` で、自分のいる Stack から閉じる
+- **Esc は閉じるもの（シート・ドック）があるときだけ取る**: ショートカットは「いまの画面で受け口があるもの」だけをネイティブへ渡す（⌘ 長押しの一覧にも、その画面で効くものだけが出る）。なお外付けキーボードの Esc をターミナルへ送る経路は元から無い
+- **入力欄より先に効かせる（`wantsPriorityOverSystemBehavior`）のは、入力欄の標準の動きとぶつかるものだけ**（`shortcuts.ts` の `overridesTextInput`。⌘[ ⌘]・⌘Return・⌥⌘↑↓）。全部に付けると、日本語の変換中の Esc（変換の取り消し）までシート・ドックを閉じる側が奪う
+- **UIKeyCommand はルートの UIViewController に付け、何もフォーカスを持っていないときだけ見えない起点をファーストレスポンダにする**（`ParaKeyCommandAnchor`）。入力欄や WebView がフォーカスを持っているときは、そこからチェーンをたどってルートの画面まで届く
+- **ターミナルの文字の既定は iPad だけ 12pt**（`defaultTerminalFontSize`）。保存済みの設定に文字サイズがあればそちらを使う
+- **ポインタの効果（UIPointerInteraction）の置き場所を React の管理するビューにしない**: 効果が出ている間（押した後に消えていく約0.5秒も含む）、UIKit は台やポータルのビューを `UITargetedPreview` の `target.container` へ `insertSubview(_:at:)` で差し込む。置き場所を指定しないと包んだビューの親になり、React が番号で子を足し外しする階層に余計なビューが挟まる。その間にドックを開いてつまみを足すと1つ手前に入り、閉じるときに `Attempt to unmount a view which has a different index` で落ちた（2026-09-27、ヘッダーのソース管理ボタンを2回押して再現）。`ParaPointerHoverView` は React の子を内側の `contentHost` に入れ、効果の置き場所を自分自身にしている。ネイティブのビューで同じ効果（`UIContextMenuInteraction` のプレビューなども同類）を足すときは同じ形にする
+- **ネイティブの入れ物で包むと、中の Pressable の hitSlop が効かなくなる**: RN の `betterHitTest` は子が枠からはみ出していないと枠の外の点を捨て、素の UIView も自分の枠で切る。`ParaPointerHover` で包んだ見出しのボタンが、iPad でだけ 44pt から見た目の大きさ（24〜36pt）に縮んでいた。`ParaPointerHoverView` と中身の入れ物（`ParaPointerHoverContentHost`）の `hitTest(_:with:)` で、枠の外の点も React の子に聞き直している。lldb でアプリにアタッチし、Swift の式で `view.window!.hitTest(view.convert(点, to: window), with: nil)` を呼ぶと、画面を触らずに確かめられる
+- **PC の外からセッションへ直接入るときは `withAnchor: true` で押す**（通知のタップ・ホームの「再開」・`/open-session`・起動のシート・通知の一覧）。付けないと PC の中の Stack が `[session]` だけになり、詳細の列の根（`index.tsx`）が無いので、2列の入れ替え・左の列を隠すボタンが効かず、1列では戻るとホームまで飛ぶ
+- **PC の器は `app/pc/_layout.tsx` の Stack に積む（画面名を `[pcId]` にする）**: Expo Router は遷移先の置き場所を「今の画面と遷移先の画面名がどの階層で食い違うか」で決め、動的な引数を比べるのは画面名が `[pcId]` のように括弧だけのときに限る（`findDivergentState` / `matchDynamicName`）。この入れ物が無いとルートの Stack での画面名が `pc/[pcId]` になり、PC A のセッションの上から PC B のセッションを開くと B のセッションが A の器に積まれた（左の列は A の一覧のまま、1列で戻ると A の一覧へ）。main はルートの Stack が平らだったので起きていなかった。あわせて次が要る
+  - **`[pcId]` に `getId` / `dangerouslySingular` を付けない**。付けると、下に積んである PC へ push したときにその器を同じ key のまま最前面へ並べ替え（StackClient に「THIS ACTION IS DANGEROUS」と注記あり）、実際に並べ替えの後で戻ると JS の状態は進むのにネイティブの画面が変わらなくなった。付けない代わりに `navigate` で PC の中へ入らない（前面の画面と画面名が同じなら、ルートを使い回して引数だけ差し替えるため、A の器が B の引数を持つ）。アプリの中は push / replace だけを使い、起動中に OS から届く `/pc/…` のリンクは `+native-intent` が中継の画面（`/open-session?to=…`）経由に書き換える（`src/features/links/runningPcLink.ts`）。起動時のリンクはパスから状態を組み立てるので書き換えない
+  - **PC の外から PC の中を開く入口（OS の通知のタップ・通知の一覧・中継の画面）は `openPcRoute`（`src/features/pc/pcOpenPlan.ts` の純関数で決める）を通す**。規則: 器の Stack に同じ PC の器は1枚だけ。開きたい PC の器が器の Stack にあれば、その上の器を閉じて（pop）そこへ戻り、その中で開く。行き先が PC の画面（器の根）なら積まずに器の中を根まで戻す（根を2枚にすると、上の根が同じ印で詳細の列の様子を上書きし、閉じるときに消して2列が壊れた。`index.tsx` も列の一番下の根だけが attach する）。いまその器に出ている画面と同じ（パスと `tab` が一致）なら開き直さず、`latest` があればその画面へ SET_PARAMS で渡す。2列では器の中（詳細の列）を根まで戻してから開く（行を押したときと同じ入れ替え）。無ければ上に新しい器を積む。器の Stack が前面（通知の一覧・中継の画面ならそのすぐ下）に無いときだけ、ルートに新しい器の Stack を積む。戻る順は「開いた画面 → その器で下にあった画面 → その器の下の器」。これが無いと、起動中に Live Activity・ウィジェットを押すたび、また別の PC の通知を交互に押すたびに器が積み増された。コンテナの状態は Expo Router の `__root` 1枚に包まれているので、ルートの Stack はその中を見る
+  - 詳細の列の前面は、器が前面に来たときに `bringToFront` で決め直す（器が作り直されずに前面へ戻っても、根の attach は走り直さないため）
+  - `withAnchor` は全階層に `initial: false` を付けるので、器を積む Stack にも先頭の画面（`[pcId]`）が引数なしで1枚敷かれる。器（`[pcId]/_layout.tsx`）は `pcId` が無ければ何も描かず、`src/features/pc/pcStackAnchor.ts` で自分を Stack から取り除く
+- **`withAnchor` で敷かれた根のルートの引数には `pcId` が入らない**。PC の画面と根は `usePcRouteId()`（`src/features/pc/pcRouteContext.ts`。器が自分の引数から渡す）で PC を引く
+
+シミュレータでの確認の手順と落とし穴（2026-09-27）:
+
+- Xcode 27 には Simulator.app が無く、DeviceHub が代わり。iOS 27 のシミュレータのランタイムが入っていない Mac では `xcodebuild -downloadPlatform iOS` が「Preparing to download...」で止まったままになった（MobileAsset のダウンロードが進まない）。`/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/*.xml` の `__BaseURL` + `__RelativePath` を curl で落とし、`aea decrypt -key-value base64:<ArchiveDecryptionKey>` → 中の pbzx を展開 → `aa extract` → `xcrun simctl runtime add <dmg>` で入れられた
+- 向きは開発ビルドの `__paraDev.orientation(true|false)`（`requestGeometryUpdate`）で変えられるが、アプリを起動し直した後は「The current windowing mode does not allow for programmatic changes to interface orientation」で断られることがある。そのときは縦の幅を `__paraDev.setWidth(834)` で代用した
+- 外付けキーボードのキーをシミュレータへ送る手段が無かった（DeviceHub の操作は画面の自動操作が要る）ので、開発ビルドの `__paraDev.fireKey(id)` で「登録した UIKeyCommand をレスポンダチェーン経由で送る」ことで確かめた。`__paraDev.keyCommands()` で登録されているものと、いまのファーストレスポンダが読める
+
+開発用（`__DEV__` のときだけ）: ペアリングの無いシミュレータでは、Metro の CDP から `globalThis.__paraDev.demo()` で見本のデータ（`src/dev/demoData.ts`）を入れ、`__paraDev.setWidth(600)` でアプリの幅を狭めて 1列を確かめる（`src/dev/devWidthFrame.tsx`。`setWidth(undefined)` で戻す）。
+
+### ウィンドウアプリの左上の操作ボタンを見出しが避ける（2026-09-27）
+
+iPadOS 26 以降のウィンドウアプリでは、左上に閉じる・最小化・並べるの3点（ウィンドウ操作ボタン）が出る。OS 標準の `UINavigationBar` は自動で避けるが、このアプリの見出しは React Native で描いた自前の帯（全 Stack が `headerShown: false`）なので、何もしないと戻るボタンとタイトルに重なった。
+
+- 測るのはネイティブ（`modules/para-ipad-input` の `ParaWindowControlsObserver`）。ルートの view の `edgeInsets(for: .safeArea(cornerAdaptation: .horizontal))` から素の `safeAreaInsets` を引いた先頭の幅を、JS へ `onWindowControlsInset` で送る。Apple の推奨（WWDC25「Make your UIKit app more flexible」）は `layoutGuide(for: .margins(cornerAdaptation: .horizontal))` で「上端の帯はボタンの右端から始める」こと。見出しは自分の余白を持っているので、ここでは margins ではなく safeArea の領域を使う
+- 変化の合図は、ルートの view に敷いた見えない `ParaWindowControlsProbe` の `layoutSubviews` / `safeAreaInsetsDidChange`。大きさが変わらずに領域だけ動く場合に備えて、中の view を `layoutGuide(for:)` に貼り付けてある
+- JS は `useWindowControlsInset()`（`src/ipad/windowControls.tsx`）1つ。`ScreenHeader`（`safeTop` のときだけ）・`PcHeader` の上段・`HomeTopBar` が先頭の余白に足す。2列の詳細の列は `app/pc/[pcId]/_layout.tsx` が `WindowLeadingEdge value={!showSidebar}` で包み、左の列が出ている間は 0 になる。ドックの見出しは `safeTop={false}` なので足さない
+
+落とし穴:
+
+- **corner adaptation は操作ボタンだけでなく、画面やウィンドウの角の丸みにも値を返す。** 実測（Xcode 27 / iOS 27 シミュレータ）では、iPhone 17 Pro の縦向きで素のセーフエリアが左右 0 なのに、この領域は左右とも 18 だった。iPad のウィンドウアプリ（幅 469）では左 66・右 9.5。差をそのまま使うと iPhone や全画面の iPad の見出しまでずれるので、先頭の側が末尾の側より大きいときだけボタンがあるとみなしている。念のため iPad 以外は常に 0
+- `.margins(cornerAdaptation:)` / `.safeArea(cornerAdaptation:)` は Swift だけの書き方（ObjC では `UIViewLayoutRegion`）。iOS 26 以降なので `#available(iOS 26.0, *)` で囲む
+- 開発ビルドでは `__paraDev.windowControls()` で各領域の生の値が読める（1回目の呼び出しで主スレッドに測らせ、2回目で読む）
 
 ## 常駐ターミナル（pty デーモン）で踏みうる罠（2026-08-20）
 

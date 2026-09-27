@@ -13,6 +13,7 @@ import { CenterSpinner, OfflineBanner, SpaceGateBody, useReadableColumn } from '
 import { fileViewerHref } from './codeRoutes.js';
 import { FilesSearchBar, FindResultRow, GrepResultRow, TreeRowView } from './filesParts.js';
 import type { TreeRow } from './fileTree.js';
+import type { PanelDock } from './panelDock.js';
 import type { CodeSpace } from './useCodeSpace.js';
 import { useFileSearch, type FileSearchState } from './useFileSearch.js';
 import { useFileTree } from './useFileTree.js';
@@ -20,8 +21,11 @@ import { useFileTree } from './useFileTree.js';
 /**
  * ファイルのツリー（Orca の MobileFileExplorerPanel）。見出しの右の虫めがねで検索欄を出し、
  * 名前（全階層のパス）か内容（全文）で探す。ファイルを押すとビューアへ進む。
+ *
+ * iPad のセッションの右のドック（`dock`）でも使う。そのときは見出しの左が閉じる（X）になり、ファイルを
+ * 押すとドックを閉じて詳細の列でビューアへ進む。
  */
-export function FileTreePanel({ codeSpace, reveal }: { codeSpace: CodeSpace; reveal: string | undefined }) {
+export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpace; reveal: string | undefined; dock?: PanelDock }) {
 	const router = useRouter();
 	const tree = useFileTree(codeSpace, reveal);
 	const [searchOpen, setSearchOpen] = useState(false);
@@ -57,9 +61,15 @@ export function FileTreePanel({ codeSpace, reveal }: { codeSpace: CodeSpace; rev
 	}, [highlightIndex, tree.highlighted]);
 
 	const openFile = (path: string, line?: number) => {
-		if (codeSpace.pcId !== undefined && codeSpace.spaceId !== undefined) {
-			router.push(fileViewerHref(codeSpace.pcId, codeSpace.spaceId, path, line));
+		if (codeSpace.pcId === undefined || codeSpace.spaceId === undefined) {
+			return;
 		}
+		const href = fileViewerHref(codeSpace.pcId, codeSpace.spaceId, path, line);
+		if (dock !== undefined) {
+			dock.navigate(href);
+			return;
+		}
+		router.push(href);
 	};
 
 	const toggleSearch = () => {
@@ -74,6 +84,7 @@ export function FileTreePanel({ codeSpace, reveal }: { codeSpace: CodeSpace; rev
 				title="ファイル"
 				subtitle={subtitle.length > 0 ? subtitle : undefined}
 				surface="panel"
+				{...(dock !== undefined ? { safeTop: false, backIcon: X, backLabel: 'ファイルを閉じる', onBack: dock.close } : {})}
 				right={<HeaderButton icon={searchOpen ? X : Search} label={searchOpen ? '検索を閉じる' : 'ファイルを検索'} onPress={toggleSearch} active={searchOpen} />}
 			>
 				{searchOpen ? <FilesSearchBar mode={mode} onChangeMode={setMode} onChangeQuery={setQuery} editable={codeSpace.live} /> : null}

@@ -13,6 +13,7 @@ import { AgentSpinner, AgentStateDot, Icon, agentKindFromStatus, iconSize } from
 import { AgentLogo } from './agentLogo.js';
 import { agentLogoKind, agentRowLine, formatElapsedShort } from './agentRowLine.js';
 import { useStatusSince } from './statusSinceStore.js';
+import { PointerHover } from '../../ipad/pointerHover.js';
 
 /**
  * PC の画面の1行（Orca の WorktreeListRow ＋ WorktreeAgentRow の形。モックの `wtRow`）。
@@ -56,6 +57,8 @@ export const AgentListRow = memo(function AgentListRow({
 	// 未読のベル: 答えを待っているもの（要対応）と、作業を終えてまだ見ていないもの（未確認）。
 	const unread = kind === 'attention' || kind === 'review';
 	return (
+		// iPad のポインタを乗せると行に薄い色が重なる（ポインタの形は変えない）。
+		<PointerHover effect="tint" cornerRadius={0}>
 		<Pressable
 			style={({ pressed }) => [styles.row, current ? styles.rowCurrent : undefined, pressed ? styles.rowPressed : undefined]}
 			onPress={() => onOpen(terminalKey)}
@@ -95,6 +98,7 @@ export const AgentListRow = memo(function AgentListRow({
 					{at !== undefined ? <Text style={styles.time}>{formatElapsedShort(at, now)}</Text> : null}
 				</View>
 			</View>
+			<PointerHover effect="highlight" cornerRadius={radius.button}>
 			<Pressable
 				style={({ pressed }) => [styles.more, pressed ? styles.morePressed : undefined]}
 				hitSlop={hitSlopToMinimum(MORE_SIZE, MORE_SIZE)}
@@ -107,7 +111,9 @@ export const AgentListRow = memo(function AgentListRow({
 			>
 				<Icon icon={Ellipsis} size={iconSize.md} color={colors.textMuted} />
 			</Pressable>
+			</PointerHover>
 		</Pressable>
+		</PointerHover>
 	);
 });
 

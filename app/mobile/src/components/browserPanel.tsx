@@ -52,7 +52,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 		browserSelection: s.browserSelection, setBrowserSelection: s.setBrowserSelection,
 		sidebarCollapsed: s.sidebarCollapsed, setSidebarCollapsed: s.setSidebarCollapsed,
 	})));
-	// iPadの常設サイドバーを一時的に畳んでミラー映像を広げるボタン（regular幅でのみ意味を持つ）。
+	// iPadの2列の左の列を隠してミラー映像を広げるボタン（regular幅でのみ意味を持つ）。
 	const regular = useIsRegularWidth();
 	const live = connection === 'online' && pcOnline && sessionProtocolReady;
 	const cachedSelection = browserSelection;
@@ -498,9 +498,9 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 					editable={live}
 				/>
 				{regular ? (
-					// iPadの常設サイドバーを畳んでミラー映像面を広げるボタン。機能1(IpadShellの開閉ボタン)と
-					// 同じ `sidebarCollapsed` を共有するため、ここで畳むと他の画面へ移ってもレールのまま
-					// （アプリ再起動後も同じ）。ラベルはその実際の動作に合わせている。
+					// iPadの2列の左の列を隠してミラー映像面を広げるボタン。左の列を隠す操作
+					// （`app/pc/[pcId]/_layout.tsx`）と同じ `sidebarCollapsed` を共有するため、ここで隠すと
+					// 他の画面へ移っても隠れたまま（アプリ再起動後も同じ）。
 					<Pressable
 						onPress={() => { hapticImpact('light'); setSidebarCollapsed(!sidebarCollapsed); }}
 						hitSlop={14}

@@ -418,7 +418,7 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 									}
 									setSelectedTerminalKey(terminalKey);
 									// スタック画面から navigate するとタブ群がもう1枚積まれるので、畳んで既存の (tabs) へ戻す
-									// （会話画面のリンク行・iPad サイドバーの ipadSelectTab.ts と同じ作法）。
+									// （会話画面のリンク行と同じ作法）。
 									closeThen(() => {
 										if (router.canDismiss()) {
 											router.dismissTo('/terminal');

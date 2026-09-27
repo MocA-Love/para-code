@@ -17,6 +17,8 @@ import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { errorKind } from './errorKind.js';
 import { ModelPill } from './modelDrawer.js';
 import { SlashCommandList } from './slashCommandList.js';
+import { useIsFocused } from 'expo-router';
+import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 
 /** 丸いボタン（モックの `.cib` / `.csend`: 40）。当たり判定は 44 に広げる。 */
 const ROUND = 40;
@@ -267,6 +269,9 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	}, [uploading, fsUpload, draftKey, replaceActiveInput]);
 
 	const sendDisabled = submitting || !sendable || codexSlashCatalogPending || (answering && answerRefreshing);
+	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ条件で送る。
+	const focused = useIsFocused();
+	useShortcutSlot('send', focused ? { send: () => { if (!sendDisabled) { hapticImpact('medium'); submit(); } } } : undefined);
 	return (
 		<View style={styles.root}>
 			{showSlashMenu ? (

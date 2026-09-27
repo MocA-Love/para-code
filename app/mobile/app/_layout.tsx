@@ -1,17 +1,21 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet } from 'react-native';
-import { DarkTheme, Stack, ThemeProvider, useRouter } from 'expo-router';
+import { DarkTheme, Stack, ThemeProvider, useNavigationContainerRef, useRouter } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import * as Sentry from '@sentry/react-native';
 import { useAppStore } from '../src/appState.js';
+import { openPcRoute } from '../src/features/pc/openPcRoute.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
 import { ToastHost } from '../src/ui/toast.js';
 import { DevProbe } from '../src/devProbe.js';
+import { DevWidthFrame } from '../src/dev/devWidthFrame.js';
+import { useIpadLayout } from '../src/ipad/ipadLayoutStore.js';
+import { ShortcutHost } from '../src/ipad/shortcutHost.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { startWidgetSync } from '../src/widgets/widgetSync.js';
 import { colors } from '../src/theme.js';
@@ -44,6 +48,9 @@ interface NotificationDeepLinkData {
  * ライト（白背景）のため、これを明示的に上書きしないと画面遷移時や初回レンダリング時に
  * ネイティブ側のデフォルト背景（白）が一瞬見えてしまう。
  */
+/** 開発ビルドだけ、アプリの幅を狭めて見せる枠で包む（`src/dev/devWidthFrame.tsx`）。 */
+const RootFrame = __DEV__ ? DevWidthFrame : Fragment;
+
 const appTheme = {
 	...DarkTheme,
 	colors: {
@@ -67,6 +74,7 @@ const appTheme = {
  */
 function RootLayout() {
 	const router = useRouter();
+	const container = useNavigationContainerRef();
 	const init = useAppStore(s => s.init);
 	const setSelectedWs = useAppStore(s => s.setSelectedWs);
 	const setSelectedTerminalKey = useAppStore(s => s.setSelectedTerminalKey);
@@ -95,6 +103,8 @@ function RootLayout() {
 		void loadThemeColors();
 		// 会話画面を開いた瞬間にクイック返信の行が遅れて出ないよう、起動時に読んでおく。
 		useQuickReplies.getState().load();
+		// iPad の2列の幅（左の列・ドック）。最初に2列を描くときに保存した幅で出す。
+		useIpadLayout.getState().load();
 	}, [init]);
 
 	const tryNavigate = useCallback(() => {
@@ -149,8 +159,9 @@ function RootLayout() {
 			setSelectedWs(destination.spaceId);
 		}
 		setSelectedTerminalKey(target.terminalKey);
-		router.push(destination.href);
-	}, [router, setSelectedWs, setSelectedTerminalKey]);
+		// PC の中を開いているなら、その中で開く（同じ PC の器は増やさない。`openPcRoute`）。
+		openPcRoute(router, container, destination.href, 'focus');
+	}, [router, container, setSelectedWs, setSelectedTerminalKey]);
 
 	useEffect(() => {
 		unlockedRef.current = unlocked;
@@ -202,6 +213,7 @@ function RootLayout() {
 		<GestureHandlerRootView style={styles.root}>
 			{/* 開発ビルドだけ、表示中の画面をデバッガから読めるようにする（__DEV__ は実行中に変わらない） */}
 			{__DEV__ ? <DevProbe /> : null}
+			<RootFrame>
 			<ThemeProvider value={appTheme}>
 				<AuthGate onUnlock={handleUnlock}>
 					{/* OS 標準の Stack だけ。**OS のナビゲーションバーは出さない**——各画面が
@@ -218,8 +230,11 @@ function RootLayout() {
 					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。ロック中に出さないよう
 					    AuthGateの内側に置く */}
 					<ToastHost />
+					{/* iPad の外付けキーボードのショートカット。ロック中に効かないよう AuthGate の内側に置く */}
+					<ShortcutHost />
 				</AuthGate>
 			</ThemeProvider>
+			</RootFrame>
 		</GestureHandlerRootView>
 	);
 }
