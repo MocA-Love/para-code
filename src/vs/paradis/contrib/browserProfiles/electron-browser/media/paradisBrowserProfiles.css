@@ -350,12 +350,17 @@
 	border-color: var(--vscode-inputValidation-errorBorder, transparent);
 }
 
-.paradis-browser-profile-modal .pbpm-btn:hover {
+.paradis-browser-profile-modal .pbpm-btn:not(:disabled):hover {
 	background-color: var(--vscode-button-secondaryHoverBackground);
 }
 
-.paradis-browser-profile-modal .pbpm-btn.primary:hover {
+.paradis-browser-profile-modal .pbpm-btn.primary:not(:disabled):hover {
 	background-color: var(--vscode-button-hoverBackground);
+}
+
+.paradis-browser-profile-modal .pbpm-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
 }
 
 .paradis-browser-profile-modal .pbpm-btn:focus-visible {
@@ -611,6 +616,8 @@
 .paradis-browser-profile-modal .pbpm-import-list {
 	max-height: 220px;
 	overflow-y: auto;
+	/* スクロールバーの領域を常に確保し、件数の文字にオーバーレイのバーが重ならないようにする。 */
+	scrollbar-gutter: stable;
 	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
 	border-radius: var(--vscode-cornerRadius-small, 4px);
 }

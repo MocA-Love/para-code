@@ -14,7 +14,9 @@
 // 押した時だけ main が鍵を読む（macOS はキーチェーンの確認ダイアログ）ので、その旨を先に案内する。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
@@ -40,6 +42,8 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 	// （CLAUDE.md「繰り返し呼ばれるメソッド内で作った disposable をクラスへ register しない」）。
 	private readonly _sourceStore = this._register(new DisposableStore());
 	private readonly _renderStore = this._register(new DisposableStore());
+	// ドメインの行だけは検索の入力ごとに作り直すので、行のリスナーは別の store に分けて毎回捨てる。
+	private readonly _rowStore = this._register(new DisposableStore());
 	private readonly _destStore = this._register(new DisposableStore());
 	// フォーカス巡回対象も領域ごとに持ち、再描画のたびに入れ替える（際限なく増やさない）。
 	private _sourceFocusables: HTMLElement[] = [];
@@ -61,6 +65,8 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 	private _destinationRow!: HTMLElement;
 	private _importButton: HTMLButtonElement | undefined;
 	private _summary: HTMLElement | undefined;
+	private _searchInput: HTMLInputElement | undefined;
+	private _listElement: HTMLElement | undefined;
 
 	constructor(
 		@IMainProcessService mainProcessService: IMainProcessService,
@@ -232,31 +238,41 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		searchInput.placeholder = localize('paradis.loginImport.searchPlaceholder', "ドメインを検索");
 		searchInput.value = this._search;
 		searchInput.setAttribute('aria-label', localize('paradis.loginImport.searchPlaceholder', "ドメインを検索"));
-		this._domainFocusables.push(searchInput);
+		this._searchInput = searchInput;
 		this._renderStore.add(dom.addDisposableListener(searchInput, dom.EventType.INPUT, () => {
 			this._search = searchInput.value;
-			this._renderDomainRows(listElement);
+			this._renderDomainRows();
 		}));
 
 		const listElement = dom.append(this._domainSection, $('.pbpm-import-list'));
 		listElement.setAttribute('role', 'group');
-		this._renderDomainRows(listElement);
+		this._listElement = listElement;
+		this._renderDomainRows();
 
 		this._summary = dom.append(this._domainSection, $('.pbpm-import-summary'));
 		this._updateSummary();
-		this._rebuildFocusables();
 	}
 
-	private _renderDomainRows(listElement: HTMLElement): void {
+	private _renderDomainRows(): void {
+		const listElement = this._listElement;
+		if (!listElement || !this._searchInput) {
+			return;
+		}
+		// 検索の入力ごとに呼ばれるので、行のリスナーは毎回捨てる（積み上げない）。
+		this._rowStore.clear();
 		dom.clearNode(listElement);
+		// 検索欄のあとにチェックボックスを Tab の巡回へ入れる（キーボードだけでも選べるように）。
+		this._domainFocusables = [this._searchInput];
 		const query = this._search.trim().toLowerCase();
 		const domains = (this._domainListing?.domains ?? []).filter(group => query.length === 0 || group.domain.includes(query));
 		if (domains.length === 0) {
 			dom.append(listElement, $('.pbpm-hint')).textContent = query.length > 0
 				? localize('paradis.loginImport.noMatch', "一致するドメインがありません。")
 				: localize('paradis.loginImport.noDomains', "取り込めるドメインがありません。");
+			this._rebuildFocusables();
 			return;
 		}
+		const checkboxes: HTMLInputElement[] = [];
 		for (const group of domains) {
 			const row = dom.append(listElement, $('label.pbpm-import-row')) as HTMLLabelElement;
 			row.classList.toggle('is-disabled', !group.importable);
@@ -265,7 +281,11 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			checkbox.checked = this._selectedDomains.has(group.domain);
 			checkbox.disabled = !group.importable;
 			checkbox.setAttribute('aria-label', group.domain);
-			this._renderStore.add(dom.addDisposableListener(checkbox, dom.EventType.CHANGE, () => {
+			if (group.importable) {
+				this._domainFocusables.push(checkbox);
+				checkboxes.push(checkbox);
+			}
+			this._rowStore.add(dom.addDisposableListener(checkbox, dom.EventType.CHANGE, () => {
 				if (checkbox.checked) {
 					this._selectedDomains.add(group.domain);
 				} else {
@@ -274,12 +294,23 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 				this._updateSummary();
 				this._updateImportButton();
 			}));
+			// 一覧の中は矢印キーで隣のチェックボックスへ移動できるようにする。
+			this._rowStore.add(dom.addDisposableListener(checkbox, dom.EventType.KEY_DOWN, event => {
+				const keyboardEvent = new StandardKeyboardEvent(event);
+				if (keyboardEvent.keyCode === KeyCode.DownArrow || keyboardEvent.keyCode === KeyCode.UpArrow) {
+					keyboardEvent.preventDefault();
+					const index = checkboxes.indexOf(checkbox);
+					const next = keyboardEvent.keyCode === KeyCode.DownArrow ? index + 1 : index - 1;
+					checkboxes[(next + checkboxes.length) % checkboxes.length]?.focus();
+				}
+			}));
 			dom.append(row, $('.pbpm-import-domain')).textContent = group.domain;
 			const meta = dom.append(row, $('.pbpm-import-meta'));
 			meta.textContent = group.importable
 				? localize('paradis.loginImport.cookieCount', "Cookie {0}件", group.cookieCount)
 				: (group.reason ?? localize('paradis.loginImport.cannotImport', "取り込めません"));
 		}
+		this._rebuildFocusables();
 	}
 
 	private _updateSummary(): void {
