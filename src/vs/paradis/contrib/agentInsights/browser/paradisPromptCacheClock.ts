@@ -10,7 +10,7 @@ import { IntervalTimer, TimeoutTimer } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentInsightsService, IParadisAgentPaneInsight, PARADIS_PROMPT_CACHE_WARNING_MS, paradisVisiblePromptCacheRemainingMs } from '../common/paradisAgentInsights.js';
 
 /** 1ペイン分の残り時間。 */
@@ -67,10 +67,14 @@ export class ParadisPromptCacheClock extends Disposable {
 		@IParadisAgentInsightsService private readonly insightsService: IParadisAgentInsightsService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
+		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 	) {
 		super();
 		this._register(this.insightsService.onDidChange(() => this.reevaluate()));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.reevaluate()));
+		// ペインが別のスペースへ移ると、枠を出す行が変わる（移動元から消え、移動先に出る）
+		this._register(this.terminalScopeService.onDidChangeStableScope(() => this.reevaluate()));
+		this._register(this.paneTokenService.onDidChange(() => this.reevaluate()));
 		this.reevaluate();
 	}
 
@@ -129,7 +133,10 @@ export class ParadisPromptCacheClock extends Disposable {
 		for (const { instanceId, token } of this.paneTokenService.listPaneTokens()) {
 			const insight = this.insightsService.getForToken(token);
 			if (insight?.agent === 'claude' && insight.promptCache) {
-				candidates.push(token);
+				// 指紋にはペインの所属スペースも入れる。トークンだけだと、ペインを別のスペースへ
+				// 移しても変化が無いことになり、移動元の行に枠が残って移動先に出ない
+				const scope = this.terminalScopeService.resolveScope(instanceId);
+				candidates.push(`${token}\0${scope.kind === 'managed' ? scope.stateKey : ''}`);
 			}
 			const reading = this.read(insight, instanceId, now);
 			if (!reading) {
