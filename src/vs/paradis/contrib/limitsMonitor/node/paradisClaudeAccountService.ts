@@ -90,6 +90,8 @@ const DEMAND_WINDOW_MS = 10 * 60_000;
 const ACTIVE_EXPIRED_RETRY_S = 300;
 /** 403 など、すぐには直らない失敗の待ち時間の下限。 */
 const FORBIDDEN_RETRY_S = 600;
+/** 使用量を取っている間にいまのログインが変わったとき、取り直すまでの秒数。 */
+const LOGIN_CHANGED_RETRY_S = 60;
 /** 終わったログインの状態を残しておく時間（ダイアログの最後の問い合わせ用）。 */
 const SETUP_RETENTION_MS = 5 * 60_000;
 /** アカウント追加の一時ディレクトリの名前の頭。 */
@@ -613,6 +615,12 @@ export class ParadisClaudeAccountService extends Disposable {
 		return record.copiedFromLiveLogin === true && legacy.some(entry => paradisClaudeIdentitiesMatch(recordIdentity(record), { email: entry.email, organizationUuid: entry.organizationUuid }));
 	}
 
+	/** 使用量を取ったトークンと身元が、いまのログインのままか（取っている間に変わっていないか）。 */
+	private async isSameActiveLogin(target: IParadisClaudeTarget, accessToken: string): Promise<boolean> {
+		const [live, identity] = await Promise.all([this.liveAuth.readCredentials(), this.liveAuth.readIdentity(true)]);
+		return paradisClaudeAccessToken(live.value) === accessToken && paradisClaudeIdentitiesMatch(target.identity, identity);
+	}
+
 	private async fetchTarget(target: IParadisClaudeTarget, state: IParadisClaudeUsageState, context: IParadisClaudePollContext): Promise<void> {
 		let credentials: string | undefined;
 		const sharedLineage = !target.active && target.record !== undefined && this.sharesLineageWithCswap(target.record, context.legacy);
@@ -689,6 +697,13 @@ export class ParadisClaudeAccountService extends Disposable {
 				this.noteFetch(state);
 				result = await this.oauth.fetchUsage(retryToken);
 			}
+		}
+
+		if (result.kind === 'ok' && target.active && !await this.isSameActiveLogin(target, accessToken)) {
+			// 取っている間にいまのログインが変わった（`claude /login`、切り替え）。別のアカウントの使用量を
+			// このカードに出さないよう結果を捨て、少し置いて取り直す（身元が読めない間に取り続けないよう間を空ける）。
+			state.nextPollAt = this.now() + LOGIN_CHANGED_RETRY_S * 1000;
+			return;
 		}
 
 		const now = this.now();

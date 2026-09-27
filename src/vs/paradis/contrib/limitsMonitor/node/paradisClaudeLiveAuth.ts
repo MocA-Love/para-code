@@ -40,6 +40,13 @@ const KEYCHAIN_ACCOUNT_PATTERN = /^[a-zA-Z0-9._-]+$/;
 const CREDENTIALS_LOCK_STALE_MS = 60_000;
 /** `~/.claude.json` のロックは 10 秒で古いとみなす（proper-lockfile の既定）。 */
 const CONFIG_LOCK_STALE_MS = 10_000;
+/**
+ * 安全な保存先（キーチェーン・`.credentials.json`）への書き込みロック `<設定フォルダ>/.storage-write`。
+ * Claude Code 2.1.283 は proper-lockfile で `{ realpath: false, retries: { retries: 10, minTimeout: 100,
+ * maxTimeout: 1000 }, stale: 15000 }` として取り、その中でキャッシュを捨てて読み直してから書く
+ * （`mcpOAuth` の更新もこの経路）。同じ 15 秒で古いとみなす。
+ */
+const STORAGE_WRITE_LOCK_STALE_MS = 15_000;
 /** 持っている間に mtime を更新する間隔（Claude Code の 5 秒より少し短く）。 */
 const LOCK_TOUCH_INTERVAL_MS = 3_000;
 /** ロック1つあたり待つ上限。Claude Code はトークン更新の往復1回ぶんしか持たない。 */
@@ -50,6 +57,28 @@ export class ParadisClaudeLockTimeoutError extends Error { }
 
 /** `~/.claude.json` は在るのに読めない（壊れている）。上書きすると設定を失うので書かない。 */
 export class ParadisClaudeConfigUnreadableError extends Error { }
+
+/** 書き換えの途中で `~/.claude.json` がほかから書き換えられた。 */
+class ParadisClaudeConfigChangedError extends Error { }
+
+/** `~/.claude.json` がほかから書き換えられていたときに、読み直して組み立て直す回数の上限。 */
+const CONFIG_WRITE_ATTEMPTS = 3;
+
+/** `~/.claude.json` の中身を読む（無ければ空）。壊れていれば {@link ParadisClaudeConfigUnreadableError}。 */
+function parseGlobalConfig(raw: string | undefined): Record<string, unknown> {
+	if (raw === undefined) {
+		return {};
+	}
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+			throw new Error('not an object');
+		}
+		return parsed as Record<string, unknown>;
+	} catch {
+		throw new ParadisClaudeConfigUnreadableError('the Claude global config exists but could not be parsed');
+	}
+}
 
 export interface IParadisClaudeLiveCredentials {
 	/** credentials JSON。どこにも無ければ undefined。 */
@@ -145,6 +174,14 @@ async function readFileIfExists(filePath: string): Promise<string | undefined> {
  */
 export function paradisWriteClaudeFileAtomically(filePath: string, contents: string): Promise<void> {
 	return paradisWriteFileAtomic(filePath, contents, { newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false });
+}
+
+/**
+ * macOS 以外の `~/.claude/.credentials.json` を書く。Claude Code と同じく symlink は辿らずに断り
+ * （`O_NOFOLLOW`）、既存の権限にかかわらず 0600 にする。
+ */
+function paradisWriteClaudeCredentialsFile(filePath: string, contents: string): Promise<void> {
+	return paradisWriteFileAtomic(filePath, contents, { forceMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false, rejectSymlink: true });
 }
 
 export class ParadisClaudeLiveAuth {
@@ -247,7 +284,11 @@ export class ParadisClaudeLiveAuth {
 	}
 
 	/**
-	 * Claude Code の3つのロックを Claude Code と同じ順に取り、その中で `fn` を実行する。
+	 * Claude Code のロックを取り、その中で `fn` を実行する。トークン更新の `.oauth_refresh.lock`・
+	 * `~/.claude.lock`・`~/.claude.json.lock` に続けて、安全な保存先の書き込みロック
+	 * `~/.claude/.storage-write.lock` を最後に取る（Claude Code もトークン更新の中で保存先のロックを取る
+	 * ので、この順なら待ち合って止まることはない）。キーチェーンと `~/.claude.json` の読み直し・書き換え・
+	 * 戻しはすべてこの中で行う。
 	 * @throws {@link ParadisClaudeLockTimeoutError} ロックを取れなかったとき（何も書いていない）
 	 */
 	async withLocks<T>(fn: () => Promise<T>): Promise<T> {
@@ -258,6 +299,8 @@ export class ParadisClaudeLiveAuth {
 			releases.push(await acquireDirectoryLock(`${this.configHome}.lock`, CREDENTIALS_LOCK_STALE_MS, timeoutMs, this.now));
 			const configPath = await this.globalConfigPath();
 			releases.push(await acquireDirectoryLock(`${configPath}.lock`, CONFIG_LOCK_STALE_MS, timeoutMs, this.now));
+			// proper-lockfile の `realpath: false` と同じく、`<ファイル>.lock` のディレクトリを字面のまま作る
+			releases.push(await acquireDirectoryLock(path.join(this.configHome, '.storage-write.lock'), STORAGE_WRITE_LOCK_STALE_MS, timeoutMs, this.now));
 			return await fn();
 		} finally {
 			for (const release of releases.reverse()) {
@@ -298,18 +341,7 @@ export class ParadisClaudeLiveAuth {
 	async activate(oauthOnlyJson: string, oauthAccount: unknown, snapshot: IParadisClaudeLiveSnapshot): Promise<void> {
 		// `~/.claude.json` が壊れていたら、何も書く前に止める。
 		const configPath = await this.globalConfigPath();
-		let config: Record<string, unknown> = {};
-		if (snapshot.globalConfig !== undefined) {
-			try {
-				const parsed: unknown = JSON.parse(snapshot.globalConfig);
-				if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-					throw new Error('not an object');
-				}
-				config = parsed as Record<string, unknown>;
-			} catch {
-				throw new ParadisClaudeConfigUnreadableError('the Claude global config exists but could not be parsed');
-			}
-		}
+		parseGlobalConfig(snapshot.globalConfig);
 
 		if (this.usesKeychain) {
 			await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount ?? this.keychainAccountNames()[0], paradisReplaceClaudeOAuth(snapshot.keychainValue, oauthOnlyJson));
@@ -321,11 +353,33 @@ export class ParadisClaudeLiveAuth {
 				await fs.promises.utimes(this.credentialsPath, time, time);
 			}
 		} else {
-			await paradisWriteClaudeFileAtomically(this.credentialsPath, paradisReplaceClaudeOAuth(snapshot.credentialsFile, oauthOnlyJson));
+			await paradisWriteClaudeCredentialsFile(this.credentialsPath, paradisReplaceClaudeOAuth(snapshot.credentialsFile, oauthOnlyJson));
 		}
 
-		config.oauthAccount = oauthAccount;
-		await paradisWriteClaudeFileAtomically(configPath, JSON.stringify(config, null, 2));
+		// Claude Code はプロジェクトの設定などをロックを取らずに `~/.claude.json` へ書くことがある。読んだ
+		// ときのままかを置き換える直前に確かめ、変わっていたら読み直して組み立て直す（その変更を消さない）。
+		let raw = snapshot.globalConfig;
+		for (let attempt = 0; ; attempt++) {
+			const config = parseGlobalConfig(raw);
+			config.oauthAccount = oauthAccount;
+			const expected = raw;
+			try {
+				await paradisWriteFileAtomic(configPath, JSON.stringify(config, null, 2), {
+					newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false,
+					beforeReplace: async () => {
+						if (await readFileIfExists(configPath) !== expected) {
+							throw new ParadisClaudeConfigChangedError('the Claude global config changed while switching');
+						}
+					},
+				});
+				break;
+			} catch (error) {
+				if (!(error instanceof ParadisClaudeConfigChangedError) || attempt >= CONFIG_WRITE_ATTEMPTS - 1) {
+					throw error;
+				}
+				raw = await readFileIfExists(configPath);
+			}
+		}
 		this.configCache = undefined;
 	}
 
@@ -427,7 +481,7 @@ export class ParadisClaudeLiveAuth {
 			if (await readFileIfExists(this.credentialsPath) === snapshot.credentialsFile) {
 				// 変わっていない
 			} else if (snapshot.credentialsFile !== undefined) {
-				await paradisWriteClaudeFileAtomically(this.credentialsPath, snapshot.credentialsFile);
+				await paradisWriteClaudeCredentialsFile(this.credentialsPath, snapshot.credentialsFile);
 			} else {
 				await fs.promises.rm(this.credentialsPath, { force: true });
 			}

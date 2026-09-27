@@ -216,4 +216,79 @@ suite('ParadisClaudeAccountService switching', () => {
 
 		assert.deepStrictEqual({ second: second.outcome, locked: locked.outcome, afterRelease: afterRelease.outcome }, { second: 'busy', locked: 'locked', afterRelease: 'switched' });
 	});
+
+	// dotfiles から symlink した `~/.claude.json` は、リンクを残したまま実体を書き換える。
+	// 置き換える直前に Claude Code が `~/.claude.json` を書いていたら、読み直してその変更も残す。
+	test('keeps a symlinked ~/.claude.json a link and keeps a change Claude Code wrote while switching', async () => {
+		const harness = await createHarness();
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('alice-1', 'alice-r1', Date.now() + HOUR));
+		const realConfig = path.join(harness.home, 'dotfiles-claude.json');
+		await fs.promises.writeFile(realConfig, JSON.stringify({ oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com'), numStartups: 1 }));
+		await fs.promises.symlink(realConfig, path.join(harness.home, '.claude.json'));
+		// キーチェーンを書いた直後（~/.claude.json を書く前）に Claude Code がプロジェクトの設定を書く
+		const write = harness.keychain.write.bind(harness.keychain);
+		harness.keychain.write = async (service, account, value) => {
+			await write(service, account, value);
+			if (service === PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE) {
+				await fs.promises.writeFile(realConfig, JSON.stringify({ oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com'), numStartups: 2 }));
+			}
+		};
+
+		const result = await harness.service.switchAccount(BOB);
+		assert.deepStrictEqual({
+			outcome: result.outcome,
+			isLink: (await fs.promises.lstat(path.join(harness.home, '.claude.json'))).isSymbolicLink(),
+			config: JSON.parse(await fs.promises.readFile(realConfig, 'utf8')),
+		}, {
+			outcome: 'switched',
+			isLink: true,
+			config: { oauthAccount: paradisTestOauthAccount('u-bob', 'bob@example.com'), numStartups: 2 },
+		});
+	});
+
+	// Claude Code は安全な保存先（キーチェーン）を `~/.claude/.storage-write.lock`（proper-lockfile、
+	// 15 秒で古いとみなす）の中で読み直して書く。切り替えも同じロックの中で書き、持ち主がいる間は
+	// 書かずに `locked` で止める。15 秒より古いロックは持ち主がいないとみなして取る。
+	test('writes the keychain and ~/.claude.json only while holding Claude Code\'s .storage-write lock', async () => {
+		const harness = await createHarness();
+		const lockPath = path.join(harness.home, '.claude', '.storage-write.lock');
+		const heldWhileWriting: boolean[] = [];
+		const write = harness.keychain.write.bind(harness.keychain);
+		harness.keychain.write = async (service, account, value) => {
+			if (service === PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE) {
+				heldWhileWriting.push(fs.existsSync(lockPath));
+			}
+			return write(service, account, value);
+		};
+		const aliceLive = paradisTestCredentials('alice-1', 'alice-r1', Date.now() + HOUR);
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, aliceLive);
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+		const configBefore = await fs.promises.readFile(path.join(harness.home, '.claude.json'), 'utf8');
+
+		// Claude Code が保存先を書いている最中
+		await fs.promises.mkdir(lockPath, { recursive: true });
+		const locked = await harness.service.switchAccount(BOB);
+		const untouched = {
+			keychain: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === aliceLive,
+			config: await fs.promises.readFile(path.join(harness.home, '.claude.json'), 'utf8') === configBefore,
+		};
+		// 持ち主が落ちて 15 秒以上更新されていないロック
+		const old = new Date(Date.now() - 20_000);
+		await fs.promises.utimes(lockPath, old, old);
+		const afterStale = await harness.service.switchAccount(BOB);
+
+		assert.deepStrictEqual({
+			locked: locked.outcome,
+			untouched,
+			afterStale: afterStale.outcome,
+			heldWhileWriting,
+			released: fs.existsSync(lockPath),
+		}, {
+			locked: 'locked',
+			untouched: { keychain: true, config: true },
+			afterStale: 'switched',
+			heldWhileWriting: [true],
+			released: false,
+		});
+	});
 });
