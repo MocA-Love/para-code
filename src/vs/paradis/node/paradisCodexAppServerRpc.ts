@@ -89,6 +89,8 @@ export const paradisStartCodexAppServerRpc: ParadisCodexAppServerRpcFactory = as
 class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCodexAppServerRpc {
 
 	private readonly child: cp.ChildProcessWithoutNullStreams;
+	/** 終了した・起動できなかった・破棄した理由。以後の要求はすぐこれで断る。 */
+	private closedError: Error | undefined;
 	private buffer = '';
 	private nextId = 1;
 	private readonly pending = new Map<number, { readonly method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -107,12 +109,24 @@ class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCode
 			// 終了コードとシグナルは Sentry へ載せる（limitsMonitor）。文言には含めたまま。
 			const error = new Error(`codex app-server exited (code=${code}, signal=${signal})`);
 			Object.assign(error, { exitCode: code, exitSignal: signal });
+			this.closedError ??= error;
 			this.failAll(error);
 		});
-		this.child.on('error', error => this.failAll(new Error(`failed to launch codex app-server: ${error.message}`)));
+		this.child.on('error', error => {
+			const launchError = new Error(`failed to launch codex app-server: ${error.message}`);
+			this.closedError ??= launchError;
+			this.failAll(launchError);
+		});
 		// stdin が閉じた後の書き込みで EPIPE が未処理例外にならないようにする。
 		this.child.stdin?.on('error', error => this.failAll(new Error(`codex app-server stdin failed: ${error.message}`)));
-		this._register({ dispose: () => this.terminate() });
+		this._register({
+			dispose: () => {
+				// 待っている要求は時間切れを待たせずにその場で断る
+				this.closedError ??= new Error('codex app-server session disposed');
+				this.failAll(this.closedError);
+				this.terminate();
+			},
+		});
 	}
 
 	private onStdout(chunk: Buffer): void {
@@ -151,6 +165,10 @@ class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCode
 	}
 
 	async request(method: string, params: unknown, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): Promise<unknown> {
+		// 終わった app-server へは送らない（書き込みが EPIPE にならないと、時間切れまで待たされる）
+		if (this.closedError !== undefined) {
+			throw this.closedError;
+		}
 		const id = this.nextId++;
 		const payload = JSON.stringify({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) });
 		const result = new Promise<unknown>((resolve, reject) => {
