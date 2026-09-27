@@ -16,9 +16,7 @@
 
 import './media/paradisSettingsDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -28,6 +26,8 @@ import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '.
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
+import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
+import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 
 const $ = dom.$;
 
@@ -100,6 +100,15 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		navLabel: localize('paradis.settings.navBrowser', "ブラウザ共有"),
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headBrowser', "ブラウザ共有"),
+	},
+	{
+		id: 'psd-sec-agentide',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navAgentIde', "エージェントの操作"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headAgentIde', "エージェントの操作"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.descAgentIde', "エージェントが Para Code の MCP ツールで、ほかのターミナルの画面を読んだり入力を送ったりできます。自分のスペースのターミナルの一覧・画面の読み取り・待機はいつでも使えます。"),
 	},
 	{
 		id: 'psd-sec-terminal',
@@ -499,6 +508,61 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			auto: localize('paradis.settings.codexHookTrust.auto', "自動で付ける"),
 			// allow-any-unicode-next-line
 			off: localize('paradis.settings.codexHookTrust.off', "付けない"),
+		},
+	},
+
+	// --- エージェントの操作 ---
+	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.allowActions',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeAllowActions', "エージェントがターミナルとスペースを操作できるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeAllowActionsDesc', "ほかのターミナルへの入力、Claude Code / Codex の起動、スペースの作成、自分で作ったターミナルを閉じることを許可します。起動されたエージェントは、呼び出したエージェントのサンドボックスと許可設定の外で動きます。許可待ち・質問中・作業中のエージェントへは Enter を送りません。Web ページなどに仕込まれた指示が別のエージェントへ伝わる危険があるので、必要なときだけオンにしてください。"),
+		keywords: 'agent mcp terminal send input launch space worktree orchestration',
+	},
+	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.actionScope',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeActionScope', "入力を送れる範囲"),
+		keywords: 'agent scope space window',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			space: localize('paradis.settings.agentIdeActionScope.space', "同じスペースだけ"),
+			// allow-any-unicode-next-line
+			window: localize('paradis.settings.agentIdeActionScope.window', "同じウィンドウ全体"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.readOtherSpaces',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeReadOtherSpaces', "別のスペースのターミナルも読めるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeReadOtherSpacesDesc', "オフの間、エージェントが読めるのは自分のスペースのターミナルと、自分が作ったものだけです。オンにすると、別のリポジトリで表示した秘密が外へ持ち出される危険があります。"),
+		keywords: 'agent read screen other space window',
+	},
+	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.allowShellCommands',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeAllowShellCommands', "エージェントがシェルでコマンドを実行できるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeAllowShellCommandsDesc', "Claude Code / Codex の動いていないシェルへの Enter、シェルのターミナルを開くこと、スペース作成時の setup スクリプトと自動実行を許可します。これらのコマンドはエージェントのサンドボックスと許可設定の外で、あなたの権限のまま実行されます。"),
+		keywords: 'agent shell command enter sandbox setup script',
+	},
+	{
+		sectionId: 'psd-sec-agentide',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeSkills', "Claude Code と Codex にスキルを設置"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeSkillsDesc', "エージェントが Para Code の使い方を思い出しやすくなる短いスキルファイルを置きます（~/.claude/skills と ~/.agents/skills）。置く前に場所を確かめ、既にあるファイルは上書きするかを聞きます。"),
+		keywords: 'skill skills claude codex SKILL.md guide',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.agentIdeSkillsAction', "スキルを設置…"),
+			commandId: PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID,
 		},
 	},
 	{
@@ -951,17 +1015,6 @@ export class ParadisSettingsDialog extends Disposable {
 		this._searchInput.type = 'text';
 		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
 		this._register(dom.addDisposableListener(this._searchInput, 'input', () => this._applySearchFilter()));
-		// 検索欄内の Escape は「検索語クリア」として扱い、ダイアログは閉じない
-		// (空のときはそのまま背景側の Escape ハンドラへ渡して閉じる)。
-		this._register(dom.addDisposableListener(this._searchInput, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape && this._searchInput.value.length > 0) {
-				event.preventDefault();
-				event.stopPropagation();
-				this._searchInput.value = '';
-				this._applySearchFilter();
-			}
-		}));
 
 		dom.append(header, $('.psd-autosave')).textContent = STR_AUTOSAVE;
 
@@ -986,13 +1039,6 @@ export class ParadisSettingsDialog extends Disposable {
 				this.dispose();
 			}
 		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape) {
-				event.preventDefault();
-				this.dispose();
-			}
-		}));
 
 		// 別ウィンドウ・設定エディタ側からの変更にも追従させる
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -1004,6 +1050,21 @@ export class ParadisSettingsDialog extends Disposable {
 		}));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
+		// 開く前のフォーカスを覚えて閉じたら戻す・Esc・描き直しの後のフォーカス・後から開いたモーダルを前に出す
+		this._register(new ParadisModalFocus({
+			backdrop: this._backdrop,
+			modal,
+			// 検索欄に文字があれば Esc は「検索語のクリア」、空なら閉じる
+			onEscape: () => {
+				if (this._searchInput.value.length > 0 && this._searchInput.ownerDocument.activeElement === this._searchInput) {
+					this._searchInput.value = '';
+					this._applySearchFilter();
+				} else {
+					this.dispose();
+				}
+			},
+			close: () => this.dispose(),
+		}));
 		this._activateNavItem(SECTIONS[0].id);
 		modal.focus();
 	}

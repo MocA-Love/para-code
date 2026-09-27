@@ -315,7 +315,16 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
   5. `paradis-limits-setup-overlay`（利用上限コード登録ダイアログ）
   - 境界事例（アンカー式ポップオーバーで全画面モーダルではないため優先度低）: `.paradis-limits-panel`、`.paradis-resource-monitor-panel`
 
-**運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。
+**運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。2026-09-27 からは共通の印 `paradis-modal-backdrop` を登録済みなので、新しいモーダルは backdrop にこのクラスを併記するだけでよい（`overlayManager.ts` への追加は不要。定期実行・スキルのモーダルが実例）。
+
+### fork の自前モーダルのフォーカスと重なり順（paradisModalFocus、2026-09-27、フェーズ8）
+
+「設定 (Para Code)」・定期実行・スキルの 3 つのモーダルは `paradisSettings/browser/paradisModalFocus.ts` の `ParadisModalFocus` を使う。
+- 開く前のフォーカスを覚え、閉じたらそこへ戻す（戻さないと BODY に落ち、続けて打った文字が消える。実機確認の別件1）
+- Esc はウィンドウで先に受けるので、描き直しでフォーカスが BODY に落ちていても閉じられる。フォーカスが別の場所（確認ダイアログなど）にあるときと、日本語入力の変換中は受けない。設定の検索欄に文字があるときの Esc は検索語のクリア
+- 中身を描き直してフォーカスしていた要素が消えたら、同じ見た目のボタン（無ければモーダル）へ戻す（MutationObserver）
+- 同じウィンドウで別のモーダルを開いたら、前のものは閉じる。z-index の段（定期実行・スキルの 2570、確認ダイアログの 2575、設定の 2700）を変えずに「後から開いたものが前」を守るため（設定を開いたままパレットから定期実行を開くと、設定の裏に出ていた。別件4）
+- 使用量ダッシュボード・通知設定・セッション履歴など、ほかの fork のモーダルはまだ使っていない
 
 ## 内蔵ブラウザの倍率インジケータ（browserZoomIndicator、2026-08-20追加）
 
@@ -873,6 +882,70 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 - エディタのターミナルのバッジは、ターミナルの検索ウィジェットと同じ右上の角に出る。検索ウィジェットが開いている間は CSS（`:has(.simple-find-part.visible)`）で隠し、ボタンを覆ったりクリックを奪ったりしないようにしている
 - エディタエリアのターミナルのバッジは、ペインインジケータと同じく DI を持たない `SessionTerminalEditor` から置く。値の供給元はモジュールのレジストリ（`setParadisPromptCacheBadgeHost`）で、`vs/sessions/contrib/*` から `vs/paradis/contrib/agentInsights/~` を import するための許可を `eslint.config.js` に足している
 
+## エージェント向けの IDE 操作ツールとガイド（agentIde、2026-09-27、フェーズ8 担当A）
+
+O1（Q75）と O4（Q79）。`src/vs/paradis/contrib/agentIde/` に実装し、para-browser MCP サーバーへツールを12個足した。upstream のファイルは触っていない（`sharedProcessMain.ts` も触らずに済むよう、ツールのプロバイダの登録口を足した）。フェーズ8のレビュー（security H1/H2/M1〜M6/L4、correctness 4/7/8/13/14/15、architecture M1〜M4/L1〜L8）を受けて権限を絞り直した。
+
+| ツール | 種類 | 権限 |
+|---|---|---|
+| `read_para_code_guide` / `list_spaces` / `list_terminals` / `read_terminal` / `wait_for_terminal` | 読み取り（MCP 注釈 `readOnlyHint`） | 常に使える（ただし接続元がそのペインの中か、SSH の戻り経路であることを確かめる）。読めるのは自分のスペースのターミナルと自分が作ったものだけ。別のスペースは `paradis.agentIde.readOtherSpaces`（既定オフ）か、送信の範囲を「同じウィンドウ全体」にしたとき。`read_terminal` の既定は見えている画面 + 上 10 行で、スクロールバックは `scrollback_lines` で明示 |
+| `send_terminal_input` / `send_terminal_key` | 送信（`destructiveHint`） | `paradis.agentIde.allowActions`（既定オフ）＋接続元の確認。同じスペース（`actionScope=window` で同じウィンドウ全体）と自分が作ったもの。自分自身・許可待ち・質問中へは何も送らない。Enter は下の規則 |
+| `launch_agent` / `create_terminal` / `create_space` | 作成（`destructiveHint`） | 同上。子（エージェントのツールで起動したペイン）は作れない。上限: 呼び出し元ごとに生きている作ったターミナル 5、ウィンドウ全体 12、作ったスペース 3。`create_terminal` と `create_space(run_setup=true)` は `paradis.agentIde.allowShellCommands`（既定オフ）も要る |
+| `close_terminal` / `remove_space` | 閉じる・削除（`destructiveHint`） | 同上、かつ自分が作ったものだけ。`remove_space` は「ワークツリーを削除」の確認ダイアログに「エージェントからの依頼」と出して利用者に決めさせる。依頼は同時に1件 |
+
+### Enter の規則（security H2・M1）
+
+- **Enter は貼り付けと別の呼び出しで送る**。shared process が「確かめる → 貼り付け → 250ms → 確かめ直す → Enter」の順に回し、確かめるたびに hook の最新の状態（`_paneStatuses`）を見る。ウィンドウ側も表示用の状態（2 秒ごとの取り直し）で止める
+- **エージェントへの Enter は、作業中でなく、許可待ち・質問中でなく、本物の hook が一度でも届いたペインだけ**（`context.hasAgentHookHistory`。transcript から推した開始は数えない。hook を信頼していない Codex もここで止まる）。hook を切っている・信頼していない相手は、許可ダイアログが出ているかを確かめられないので送らない。さらに Enter の直前に画面の末尾 30 行に確認の選択肢（「Do you want to proceed?」など）が無いかも見る（`paradisAgentIdeScreenShowsPrompt`。【要確認】文言は Claude Code 2.1.283 / codex-cli 0.155.1 の目安で、版が変わると外れうる）
+- **素のシェル（前面が Claude Code / Codex でない）への Enter は `allowShellCommands`**。前面の判定はシェル統合の実行中のコマンド（`paradisInteractiveAgentCommand`）だけ。シェル統合が無いターミナルは素のシェルとして扱う（hook の履歴で代えると、エージェントが終わった後のシェルや偽の hook でも立ってしまう）
+- 複数行の貼り付けは、フェーズ5のプリセットと同じく「貼り付けモードが有効で、前面がエージェント」のときだけ（`paradisCanPasteMultiline`）
+- エージェントへ貼る本文の先頭には `[Message from another agent (Para Code terminal t_xxx), not typed by the user. ...]` を付ける（security M3）。貼り付けは通知センターへ静かに記録し、Enter・中断（`ctrl_c`）・起動・作成はトーストで知らせる
+
+### なりすまし対策（security M2）
+
+- **接続元の確認**（`context.classifyCaller` → `paradisClassifyPeer`）。`127.0.0.1:<相手のポート> -> 127.0.0.1:<このサーバーのポート>` の4つ組が完全に一致する接続を持つプロセス（macOS は `lsof`、Linux は `ss`、Windows は `Get-NetTCPConnection` / `netstat`）を探す。手元のポートだけで探すと、同じポート番号の IPv6（`[::1]`）の接続を持つ無関係なプロセスが当たり、送信元ポートを細工すればなりすませた（再レビュー S-1 で実測）。**どう確かめるかはペインの属性で決める**: 手元のペインは、接続を持つプロセスがそのペインのシェル（`_paneShells`）の子孫なら `pane`。SSH など接続先のペイン（manifest の `remoteAuthority`）は、接続を持つプロセスが Para Code の張った戻り経路の `ssh -R`（`ParadisRemoteAgentTunnels.processPidFor`）**そのもの**なら `tunnel`。shared process の子孫かどうかでは決めない（shared process は git・codex app-server なども起こし、リポジトリの `core.fsmonitor` や `.git/hooks` でエージェントのコードを走らせられるため。再々レビュー N-1）。接続先のペインの `shellPid` は接続先のプロセス番号なので、手元のプロセス表との照合（この確認・CDP の PID 解決・PID の重複検査）には使わない（N-2）。hook のクエリの `host=` の名乗りでは確かめ方は変わらない。接続を持つプロセスが複数あるときは全部が同じ分類のときだけ採る。環境変数は偽装できるので見ない。親の起動時刻が子より新しければ PID の使い回しとしてたどるのをやめる（Windows は `CreationDate`、Linux は `/proc/<pid>/stat` の起動時刻。macOS / Linux の `ps` 経路では親が死ぬと 1 へ付け替わるので比べない。【要確認】Windows 未検証）。Windows は接続表とプロセス表を 1 本の PowerShell でまとめて取る（起動が重く、祖先を 1 段ずつ問い合わせると hook の 3 秒の待ちを超えやすいため。【要確認】実測していない）。結果は接続（keep-alive）とトークンの組ごとに覚え、シェルの PID や戻り経路の ssh が変わったら判定し直す。**操作系は `pane` だけ、読み取り系は `pane` か `tunnel`**。SSH の接続先のエージェントは読み取りだけ使える。**`tunnel` が示すのは「戻り経路を通って来た」ことだけ**（R3-4）: 接続先のペインのトークンを持っていれば、接続先の同じユーザーのプロセス、接続先の別のユーザー（`-R` は接続先の 127.0.0.1 で待つので誰でも繋げる）、手元の同じユーザーのプロセス（制御口 `ssh -S <userData>/pcx/ctl-*.sock` や利用者の鍵で接続先へ入れる）のどれでも `tunnel` になる。そのため接続先のペインでは、偽の hook で許可待ちを解けうる。そのため IDE ツールは、接続先のペイン**へ**の Enter を送らない（文字を入れるだけは可。利用者に送ってもらう）。接続先のペイン**から**の操作系も使えない（操作系は `pane` だけ）。フェーズ7 のブラウザのツールのうち、利用者に承認を求めるもの・ページやプロファイルを開く / 切り替える / 消すもの（`request_browser_page`・`open_browser_tab`・`select_browser_tab`・`close_browser_tab`・`open_browser_profile`・`create_browser_profile`・`switch_browser_profile`・`delete_browser_profile`）も `pane` か `tunnel` に限った（R3-3）。一覧だけのもの（`list_browser_tabs`・`list_browser_profiles`・`get_shared_page` など）はダイアログを出さず名前を返すだけなので、トークンだけで使えるままにした。CDP ゲートウェイの接続元の特定（`paradisResolvePaneTokenForPeerPort`）も同じ4つ組で探すが、**CDP は `?pane=` と環境変数でもトークンを受け取るので、トークンを知っていれば操作できる**（前からの仕様。MCP の接続元の確認とは別。N-8）
+- **hook の偽装対策**: notify スクリプトはトークンを URL（curl の argv）に載せず、`curl --config -` で標準入力から `Authorization: Bearer` ヘッダーとして渡す（PowerShell 版も `-Headers`）。スクリプトは起動のたびに内容を比べて置き直すので、既存の利用者の手元・SSH 先の分も置き換わる。ただし版（`notify-v3`）は上げていないので、古い版の Para Code（並べて使う別ビルドや、同じ SSH 先に繋ぐ古い版）が起動すると、トークンを URL に載せる内容へ置き戻す。サーバーは `?pane=` も受け付け続けるので動作は壊れない（版を上げると `settings.json` の hook を書き換えることになるので見送った。N-11）。**hook を捨てるのは、許可待ち・質問中のペインで接続元が確かめられない（`pane` / `tunnel` でない）ときだけ**。それ以外の状態では確かめない（hook は頻繁に来るので `lsof` を毎回起こさないため。それ以外の状態を偽装しても、許可ダイアログを Enter で押させることにはつながらない）。curl の待ち（3 秒）が先に切れた後も確かめと状態の更新は続けるが、**効くのは接続の探索が切れる前に済んだ場合だけ**（R3-7）。探索は `ESTABLISHED` の行だけを見るので、curl が先に切れて接続が `FIN_WAIT` / `TIME_WAIT` になると見つからず、hook のプロセスも終わっているので `unverified` になる。確実にするにはスクリプトとの取り決め（門が掛かる状態のときだけ待ちを延ばしてもらう返事など）が要る（未対応）。transcript から許可待ち・質問中が解かれたときは印（`_unconfirmedReleaseTokens`）を付け、IDE 操作ツールはその間 Enter を送らない（transcript は同じユーザーの別プロセスが追記できる。N-9）。**印は hook を捨てる条件には使わない**（R3-1）。印の付いたペインに hook が来たら 1 回だけ接続元を確かめ、確かめられれば印を外す。確かめられなければ hook はそのまま処理し（hook のバス・定期実行の見張り・モバイルの会話は止めない）、印は残して「確かめられないペイン」として覚え、以後は問い合わせない。このペインへの Enter は「利用者に頼んで」と断る。次の許可待ちで確かめた hook が来れば両方外れる。**印は状態の項目とは別に持つ**（`context.getUnconfirmedRelease`）。状態は既読（`acknowledgePaneStatus`）や idle の hook で消えるが、印はそれでは外れない（表示中のスペースで既読になった後に Enter が通っていた。実機確認3 の NG）。**確認を通らない構成（N-10）**: 前の Codex ペインの app-server を採用（adopt）した場合、tmux・screen・zellij の中で動かしたエージェント、WSL・dev container など戻り経路の ssh を持たない接続先のペインは、送り主がペインのシェルの子孫でも Para Code の戻り経路でもないので、IDE ツールが読み取りを含めて使えない。許可待ちの間の hook も無視されるので、利用者が答えた後も表示が許可待ちのまま残りうる（transcript の追跡で解ければ戻る。定期実行ではその回が「要対応」のまま打ち切られうる）。質問に答えた後は IDE ツールの Enter が「利用者に頼んで」と断られ続ける
+- **戻り経路の ssh の `-o ControlPath=none`**（R3-8）: 制御口のパスが長すぎて置けないとき（`--user-data-dir` の長い開発ビルドなど、100 バイト超）だけ付ける。そのとき戻り経路の ssh は利用者の既存の `ControlMaster` に相乗りせず、`BatchMode=yes` で新しく認証する。パスワードや二段階認証をマスターの確立で済ませている接続先では、戻り経路が張れず hook も MCP も届かなくなる（前は相乗りで張れていたが、`-R` の接続を利用者のマスターが持つので接続元の確認は通らなかった）。通常の構成（制御口を置ける）は前から `-M -S <制御口>` で利用者の `ControlPath` を上書きしていたので変わらない
+- 裏のタブ（`paradisInactive`）は一度もアクティブにならず `TerminalEditorInput.group` が付かないので、park の判定（`parkExplicitlyScopedEditorIfInactive`）は入力を含むグループを `editorGroupsService` から探して、補助ウィンドウに見えているスペースを park しない（R3-9）。シェルの種類が起動直後にまだ届いていないときは、バックスラッシュを含む指示に限って最大 2 秒待ってから引用を決める（R3-11）。Enter の直前の画面の確認は、shared process（貼る前・貼った後）とウィンドウ側（Enter の直前）の両方で行い、貼った本文の部分は、呼び出し側の申告ではなく実際に貼った本文で除いて探す（空白と罫線を落として照合。R3-6）。`list_terminals` の `on_screen` は「今のスペースのターミナル」だけに付け、補助ウィンドウに見えている別スペースのターミナルには付けない。`ITerminalInstance.isVisible` は画面から外れても `false` に戻らない（`TerminalEditor.setInput` が前のインスタンスを `detachFromElement()` するだけ、park も戻さない）ため、見えているかの判定に使えない（実機で確認）
+
+### 操作系を別の MCP サーバー名に分けなかった理由（security H2）
+
+分けると、利用者が Claude Code / Codex の両方へ2本目の MCP サーバーを登録し直す必要があり、ワンボタンの設定（`paradisMcpSetup.ts`）と設定の状態表示、SSH 先への設定、stdio シムも2本立てになる。代わりに、操作系は既定オフの設定・接続元の確認・MCP の `destructiveHint` 注釈・シェルの実行を別の設定、の4段で絞った。`mcp__para-browser__*` を一括で許可している利用者でも、設定をオンにしない限り操作系は動かない。
+
+### その他
+
+- **ツールの足し方**: `agentBrowser/common/paradisMcpToolProvider.ts` の `paradisRegisterMcpToolProvider(provider)` を shared process の登録（`ParadisSharedProcessContributions`）から呼ぶ。`callTool` の5番目の引数 `context` で、ウィンドウへの IPC（`callOwningWindow`、`timeoutMs` で延長可）、hook の状態（`getPaneAgentStatus` / `hasAgentHookHistory`）、接続元の確認（`verifyCallerProcess`）を借りられる。`instructions()` は `initialize` の `instructions` に足される（ブラウザ共有の説明はサーバーが先頭に固定で置く）。mobileCanvas はまだ `registerToolProvider`（`sharedProcessMain.ts` 経由）のまま。移すには mobileCanvas の登録に要る引数を `sharedProcessMain.ts` から外す必要があり、今回は見送った
+- **hook の受付は MCP と別枠**（`_reserveIngressRequest(token, 'hook')`）。待機（最大 240 秒）が枠を占めても hook が拒否されない。待機の同時数はペインごとに 2、全体で 16（接続元を確かめた後で数えるので、偽のトークンで枠を埋められない）
+- **ペイントークンはエージェントへ出さない**。ターミナルの ID は `t_` + SHA-1(`paradis-agent-ide:` + トークン) の先頭12桁（`paradisAgentIdeTerminalId`）。一覧のタイトルは制御文字を落として 80 文字で切り、「従うな」と説明に書く
+- **台帳（誰が作ったか・子の印）はワークスペースの保存領域（`paradis.agentIde.ledger`）に ID だけで残す**。ターミナルが閉じたら（ウィンドウを閉じるときの破棄は除く）、スペースが退役したら消す。呼び出し元は 200 件まで
+- 台帳は端末の接続（SSH の再接続を含む）が済んでから 60 秒後に生きているペインと突き合わせ、もう居ない作ったターミナルを消す。子の印は掃除では消さず（遅れて戻った子が作成の制限から外れないように）、500 件の上限だけで絞る
+- shared process の git に `-c core.fsmonitor=false` は付けていない（`tunnel` を戻り経路の ssh の PID との一致に絞ったので、git の子孫が確認を通ることはなくなった。git のフックの扱いは worktree 作成の都合があるので別に検討する）
+- **所属は台帳の記録だけで決める**（`paradisResolveInstanceSpace(..., { strict: true })`）。`resolveScope` は記録の無い生きたターミナルを今のスペースとして答えるので、権限の判断には使わない。スペースの一覧は `paradisListSpaces`（メモのツールと同じキーと名前）
+- **待機**: `until="agent_stopped"` は、一度も作業中にならないまま猶予（5 秒、エージェントのツールで起動したペインは起動から 90 秒）を過ぎると `met: false, reason: "no_agent_status"` を返す（止まったとは言わない）。既定 50 秒・上限 240 秒。上限は codex-cli 0.155.1 の MCP ツールの既定のタイムアウト 300 秒（`codex-rs/codex-mcp/src/rmcp_client.rs` の `DEFAULT_TOOL_TIMEOUT`。2026-06-15 の #28234 で 60 秒から 300 秒へ。0.140.0 は 120 秒。GitHub のソースで確認）、stdio シムの 310 秒、HTTP のソケットの無通信の上限 300 秒より短くする。文字列の待機は部分一致だけ（shared process で利用者由来の正規表現を回さない）。待機中に対象が閉じたら `reason: "terminal_closed"`
+- **終わったかの判定が定期実行と別**（correctness 7）。`ParadisAgentStopWatcher`（こちら）は呼び出したエージェントへ今の状況を返すので、許可待ちでも返し、状態が来なければ `no_agent_status` と言う。定期実行の `paradisAdvanceRunWatch` は完了を記録するので、許可待ちは要対応として見張りを続ける。目的が違うため1つにまとめていない
+- **起動コマンドのプロンプト**（`paradisBuildAgentCommand`）は入口で制御文字を落とす（`src/vs/paradis/common/paradisTerminalControlCharacters.ts`。MCP の送信本文と同じ関数）。PowerShell は U+2018〜U+201B も二重にし、fish はバックスラッシュとシングルクオートをエスケープする（security M6。fish と pwsh の実機では未確認）
+- **起動するエージェントの権限モードは渡せない**（テンプレートの既定のまま）。利用者の CLI の既定（`defaultMode` やカスタムテンプレート）は引き継ぐ
+- 設定は4つとも `ConfigurationScope.APPLICATION` + `restricted`。ただしエージェントは利用者の `settings.json` を書き換えられるので、設定で完全には守れない（ガイドとツールの説明で「自分で変えるな」と書いているだけ）
+- **起動 API のフォーカス**（architecture M1・実機確認 NG1）: `paradisLaunchAgentInWorkspace` の `preserveFocus` と作成フローの `preserveFocus` / `runAutoRunPresets` を足した。`true` なら**裏のタブとして**開き（`TerminalEditorLocation.paradisInactive` → エディタの `inactive`。`preserveFocus` だけではタブがアクティブになり、利用者が打っていたターミナルが裏へ回って打鍵が失われた）、`setActiveInstance` も呼ばない。場所のオブジェクトは毎回作り直す（terminalService が `viewColumn` を書き換えるため）。`launch_agent`・`create_terminal`・`create_space` と、定期実行（既存スペースへの起動と新しいスペースの作成の両方）がこれを使う。スペースへターミナルを開く手順は `paradisOpenEditorTerminalInSpace` にまとめた（`paradisResumeAgentInWorkspace` とプレビューの所属判定はまだ別）。シェルの種類が分からない（ラッパー経由の起動）ときは、バックスラッシュを含む指示を起動コマンドへ入れずに断り、そのために開いたターミナルは閉じる（fish の引用が閉じ損ねるため。作成ダイアログのプレビューは bash の表記で組むので例外にならない）。起動時の実行ファイル名で種類が決まり、中で `exec fish` する構成は POSIX 式のまま【要確認】
+- 【要確認】`remove_space` の確認ダイアログは `window.dialogStyle=custom` のとき z-index 2575 で、fork の 2700 のモーダルの裏に入りうる（regression 7）
+
+### スキルファイルの設置（O4）
+
+「設定 (Para Code)」→「エージェントの操作」→「スキルを設置…」（コマンド `paradis.agentIde.installSkills`）を押したときだけ書く。置き場所は shared process が決め、画面からパスは受け取らない。
+
+- Claude Code: `$CLAUDE_CONFIG_DIR/skills/para-code/SKILL.md`（既定 `~/.claude/skills/...`）。`CLAUDE_CONFIG_DIR` はログインシェルの環境から読む（スキル管理画面の `process.shellEnv()` と揃える。GUI 起動の shared process の `process.env` には rc だけで export した値が入らない）
+- Codex: `~/.agents/skills/para-code/SKILL.md`。codex-cli 0.155.1 の利用者スキルの置き場所（`codex-rs/ext/skills/src/host_roots.rs`）。`$CODEX_HOME/skills` は非推奨として読まれるだけなので使わない
+- 中身は「MCP の `read_para_code_guide` を呼べ」と指すだけの入口で、本文はアプリが返す（Orca の orca-cli スキルと同じ考え方。版がずれない）
+- 置く前に場所と状態（新規・同じ・別の内容・ファイルでない）を見せて確認し、別の内容があれば上書きするかを別に聞く。上書きは、確認したときの中身の指紋（SHA-256）と書く直前の中身が一致したときだけ。新規は排他作成（`wx`）、上書きは同じフォルダの一時ファイルへ書いて確かめ直してから `rename`（確かめた後に `SKILL.md` がリンクへ差し替えられても、先へ書かない）。`skills/`・`para-code/`・`SKILL.md` のどれかがシンボリックリンクなら触らない。手元の PC にだけ置く（SSH 先・WSL への導入はスキル管理（O6）の範囲）
+
+### 担当B（定期実行 O3 など）と共有している部品
+
+| 用途 | 置き場所 | API |
+|---|---|---|
+| エージェントの起動（フォーカスを奪わない） | `workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.ts`（フェーズ1） | `paradisLaunchAgentInWorkspace({ ..., preserveFocus: true })` / `paradisRunWorktreeCreateFlow(request, { switchToCreated: false, preserveFocus: true })`。どちらも `{ instanceId, paneToken }` を返す |
+| 起動コマンドへ入れる文字の整形 | `src/vs/paradis/common/paradisTerminalControlCharacters.ts` | `paradisStripTerminalControlCharacters(text)`（`paradisBuildAgentCommand` の入口で自動で通る） |
+| 人の答えを待っているか | `agentIde/common/paradisAgentIde.ts` | `paradisAgentIdeNeedsHuman(paradisAgentIdeStatusLabel(status))` |
+
 ## ターミナルの共通化・スペース別履歴・タブの状態表示（2026-09-27、フェーズ5 担当A）
 
 TM1 / TM2 / TM11 / TM18 / TM22。ロジックはすべて `src/vs/paradis/contrib/` の新規ファイル（`terminalSharedPanel` / `terminalSpaceHistory` / `terminalTabStatus` / `terminalResumeBanner`）にあり、upstream 側の変更は次の表だけ。
@@ -995,6 +1068,40 @@ upstream のディクテーションは Foundry Local のネイティブ部品�
 - macOS の x64 は upstream が対応していない。Linux は glibc 2.34 以上。マイクが出る条件は `chatIsEnabled`（`chat.disableAIFeatures` で消える）。macOS のマイク許可ダイアログの本文は `build/darwin/sign.ts` が書く "Visual Studio Code" 表記のまま（有効化するときに直す）
 
 音声入力の間は Para Code の読み上げを止める（`notifications/electron-browser/paradisDictationAudioHold.contribution.ts`、音声入力を配布していなくても拡張機能や開発版の音声入力で働く）。shared process の `AudioScheduler.setHeld` が、再生中の afplay 等を止め、通知音を捨て、新しい発話を溜めて終わってから読む。止めるのはどれか1つのウィンドウでも音声入力中のとき（接続ごとに持ち、接続が切れたら外す。ウィンドウは起動時に自分の状態を送り直し、音声入力中は状態が動くたびに送り直す）。上限はウィンドウごとに 10 分で、過ぎたウィンドウだけを外す（モデルの初回ダウンロード中や、upstream のセッション数が戻らなかったときに通知が鳴らなくなり続けないため）。**Agent Sessions ウィンドウの音声入力では止まらない。** この仕組みは通常ウィンドウの集約ファイルからしか読み込まれず、Sessions ウィンドウのチャット入力にマイクが出るかは【要確認】（出るなら Sessions 側からも読み込む）。**外部の aivis-mcp は止めていない。** 止める口（`aivis --mute`）がおやすみモードと共有で、解除のときにおやすみモードのミュートやユーザー自身のミュートまで解いてしまうため。
+
+## 定期実行とスキル管理（2026-09-27、フェーズ8 担当B、O3・O6）
+
+### 定期実行（`src/vs/paradis/contrib/scheduledRuns/`）
+
+時刻の判定と記録は shared process（`node/paradisScheduledRunsService.ts`、登録口経由）、起動と見張りはウィンドウ（`electron-browser/paradisScheduledRunsRunner.contribution.ts`）が持つ。upstream の変更は `overlayManager.ts` の1行（下の「内蔵ブラウザの裏に隠れない」）だけ。
+
+- 保存先は `<userData>/paradis/scheduledRuns.json`（フォルダ 0700、ファイル 0600。指示の本文が入るため）。定義の中身の指紋（鍵の無い sha256）を `scheduledRuns.digest.json` に別に書き、読み込んだときに指紋が合わない有効な定義は無効に戻す。**防げるのは定義のファイルだけを書き換えた・書き足した場合まで**で、両方を書き換える相手（指紋の作り方を知るスクリプト・エージェント）は防げない。鍵で守るにはキーチェーン等が要り、shared process からはまだ使えないため見送った。読み込んだ定義は保存と同じ検証にかけ直し、通らないものは無効にして回数を範囲に収める。無効に戻したときはログに出し、定義に理由（`disabledReason`）を付けて画面に「無効（要確認）」と注意を出す（有効にし直すか保存すると消える）。指紋のファイルを消すと、有効な定義はすべて無効に戻る。記録は状態・きっかけ・時刻の型まで確かめ、合わないものは読み込まない。30 秒ごとに判定し、記録が変わったときだけ書く。判定した時刻（`lastEvaluatedAt`）は記録と一緒にしか書かないが、時刻が来れば必ず記録（実行かスキップ）が増えるので、起動し直しても同じ時刻を2回実行しない
+- 時刻は 5 項目の cron 式をローカル時刻で解釈する自前の実装（`common/paradisScheduleCron.ts`）。画面の選択肢（毎日・平日・毎週・数時間ごと）は cron へ落とす。タイムゾーンは持たない（Orca も保存するだけで計算には使っていない）
+- 安全装置の判定は `common/paradisScheduledRuns.ts` の純粋な関数: 作成直後は shared process が必ず `enabled: false` で保存／同じ定義の実行が開始待ち〜要対応の間は次の時刻を「スキップ（重複）」／1 日の回数（既定 3、1〜24、ローカル時刻の 0 時区切り、スキップは数えない）／最短 15 分（式の検証と、前の回から 15 分たっていない時刻のスキップ）／起動から 30 分で打ち切り。**手動の「今すぐ実行」は重複と全体の同時数だけを止め、回数と間隔では止めない（その定義の 1 日の回数には数えるが、全体の 30 回には数えない）**。全体では同時に 3 本（開始待ちは数えず、ウィンドウが `claim` するときに空きを確かめる。空きが無ければ開始待ちのまま次の判定で配り直す。どのウィンドウも開いていないリポジトリの回がほかを止めないように）、1 日に自動で始めるのは合計 30 回まで（`globalConcurrency` / `globalDailyLimit`）。回数は予定の時刻の日付で数える（23:50 の回を 0:05 に後から実行しても前の日に数える）。最短間隔は、予定の時刻どうしが 15 分未満か、実際に記録を作った時刻どうしが 12 分（15 分から判定の遅れ 3 分を引いたもの）未満なら止める。予定どうしで比べるのは判定の遅れで `*/15` が落ちないため、作成時刻でも比べるのは後から実行する回（予定の時刻が古い）が直前の回とくっついて走らないため
+- 逃した時刻: 一番新しい 1 回だけを候補にし、12 時間以内なら実行（遅れが 3 分を超えたら「後から」と記録）、それより前で 12 時間以内の分はその 1 回にまとめ、12 時間より古い分は件数ごと 1 件の「スキップ」にする。有効にした時点・時刻を変えた時点より前は見ない
+- 実行の受け渡し: shared process が「開始待ち」を作ってイベントで配り、対象のリポジトリ（`URI.toString()` の一致）を開いているウィンドウが `claim` する。先に取れた 1 つだけが実行する。誰も取らなければ判定のたびに配り直し、開いたばかりのウィンドウも起動時に開始待ちを聞くので、**ウィンドウが 0 枚なら次に開いたウィンドウが拾う**。予定から 12 時間（遅れて作った開始待ちは作成から最低 1 時間）拾われなければ「スキップ」
+- 見張り: ウィンドウは 1 分ごとに生存報告を送る。3 分途絶えたら shared process が「不明」にし、受け持ちのウィンドウへ停止を頼む。生存報告は受け付けなかった実行の id を返し、ウィンドウはそれを受けてターミナルを閉じる（記録の上で終わった回が動き続けて重複の安全装置が外れないように）。判定の間隔が 90 秒より空いたらスリープからの復帰とみなし（生存報告は 60 秒おきなので、最後の報告からの経過が 150 秒以下に収まり、リース 180 秒に 30 秒の余裕が残る）、その回はリース切れを数えずに生存報告の時刻を今へ寄せる。ウィンドウ側の 30 分の打ち切りは `setTimeout` に加えて生存報告のたびに壁時計でも確かめる（スリープ中は `setTimeout` が進まないため）。制限時間 + 5 分を過ぎても終わりの報告が無ければ shared process 側でも「時間切れ」にし、受け持ちへ停止を頼む。アプリを起動し直したときに残っていた実行中の記録は「不明」、開始待ちは「取りやめ（アプリを終了した）」にする（ファイルに開始待ちを書き足して、安全装置を通らずに起動させないため）。定義を消した後に「不明」「時間切れ」になった記録は次の判定で消す
+- 起動はフェーズ1の起動 API をそのまま使う（`paradisLaunchAgentInWorkspace` / `paradisRunWorktreeCreateFlow` の `switchToCreated: false`）。新しいスペースでは、手で作るときと同じく setup スクリプトと自動実行プリセットも走らせる（判断: どちらも利用者が自分のリポジトリに設定したもので、作ったスペースを動く状態にするのに要る。リポジトリ側の `.paracode.json` のプリセットは承認の署名が無ければ走らない）。**指示はエージェントの起動引数で渡す**（`paradisBuildAgentCommand`）。フェーズ5の「貼り付けで入れる」プリセットは、すでに動いているエージェントへ足すためのもので、毎回新しく起動する定期実行では使っていない
+- 完了の判定はペイン単位の状態（`IParadisAgentStatusStore.getInstanceStatus`）で、`review` を見たら完了（`common/paradisScheduledRunWatch.ts`）。利用者がそのスペースを見ているときは画面側が `review` をその場で既読にして状態から消すので、見張りには `review` が見えない。そのためステータスストアに「既読にして消した」印（`wasReviewAcknowledged`。`paradisAgentStatusSnapshotConsumer` が `setInstanceStates` の 3 番目の引数で渡す。次の状態が届くと消える）を持たせ、これが立っていれば完了とする。**印が無く状態が消えただけでは完了にしない**（画面側は状態の取得に続けて失敗すると全ペインの状態を消すので、作業中の回を完了にして見張りを外してしまう）。`permission` / `question` の間は「要対応」。**要対応の通知は既存のペイン単位の通知（PC のトーストとモバイル）がそのまま出す**ので、定期実行側からは通知を足していない（二重になるため）。完了してもターミナルは閉じない。hook が届かない環境では状態が来ないので、30 分で「時間切れ（状態が届かなかった）」になる
+- ウィンドウを閉じる（再読み込みを含む）ときは、そのウィンドウで動いている定期実行のターミナルを閉じて「停止」と報告する。見張りの無いまま動かし続けないため。【要確認】常駐ターミナル（pty デーモン）を使っているときに本当にプロセスまで止まるか
+- 最後の発言と会話 ID: ウィンドウが起動直後にペイントークンを shared process へ渡し（メモリだけに持ち、記録には書かない）、shared process が hook のバス（`onParadisAgentHookEvent`）から Stop の `last_assistant_message`（先頭 400 文字）と `session_id` を拾う。トークン数と推定コストは、画面を開いたときに ccusage の `fetchRecentSessions`（使用量ダッシュボードと同じ 90 日の指定でキャッシュを分け合う）を会話 ID で引く。**Codex の回は出ない**（ccusage のセッション一覧が Claude Code だけのため）
+- 毎回新しいスペースを作る設定のスペースは、記録の `space` で覚える（ブランチ名は `scheduled-<定義 id の先頭6字>-<月日>-<時分>`）。新しい 5 件より古いものを片付け候補に出し、「削除…」は既存のワークツリー削除コマンド（確認・teardown つき）に任せる。記録の上限（1 定義 100 件）で消すときはスペースを持たない終わった記録から消し、それでも 200 件を超えたらスペースを持つ記録も古い順に消す（外で消されたスペースの記録が際限なく溜まらないように）。片付け候補は、まだあるスペースに絞ってから新しい 5 件を除く
+- モーダルの重ね順は 2570（ワークベンチのモーダル 2575 の下）。削除の確認に `IDialogService` を使うため。通知のトースト（2545）は下に隠れるので、結果はモーダルの中に出す
+- 担当A（操作ツール）との関係: 「エージェントを起動する」はどちらもフェーズ1の起動 API。「終わったか」の判定は**意図して別々に持つ**。agentIde の `ParadisAgentStopWatcher` は「相手の番が終わったか」を見るので許可待ち・質問中も止まったとみなし、状態が無い相手は猶予で止まったとみなす。定期実行の `paradisAdvanceRunWatch` は許可待ちを「要対応」として見張り続け、状態が無い・消えただけでは完了にしない（30 分の打ち切りで「状態が届かなかった」と記録する）
+- 指示は保存のときに制御文字を落とし、起動のときに改行とタブも空白にして 1 行にする（`paradisScheduledRunLaunchPrompt`）。シェルごとの引用は起動 API 側（`paradisBuildAgentCommand`）の担当
+- 内蔵ブラウザの裏に隠れない: 定期実行とスキルのモーダルの backdrop には共通の印 `paradis-modal-backdrop` を付け、`overlayManager.ts` の `OVERLAY_DEFINITIONS` にこの1つだけを登録した（PARA-PATCH）。**今後の fork の DOM モーダルは backdrop にこのクラスを併記すれば、`overlayManager.ts` を触らずに済む**
+- 未対応: 事前チェックのコマンド（Orca の precheck）、実行前に前回の端末を使い回すこと、SSH の接続先だけにあるリポジトリをウィンドウを閉じた後に動かすこと（接続中のウィンドウが拾えば動く）
+
+### スキル管理（`src/vs/paradis/contrib/skillsManager/`）
+
+歯車メニュー「スキル」のモーダル。読み書きはすべて `IFileService` で行う（`common/paradisSkills.ts`）。手元（file）・SSH の接続先（vscode-remote）・WSL（Windows から見た UNC）を同じ手順で扱える。upstream の変更は定期実行と共通の `overlayManager.ts` の1行だけ。
+
+- 見るフォルダ（`electron-browser/paradisSkillRoots.ts`）: この PC の `$CLAUDE_CONFIG_DIR`（無ければ `~/.claude`）`/skills`、`$CODEX_HOME`（無ければ `~/.codex`）`/skills`、`~/.agents/skills`、このウィンドウの手元のリポジトリの `.claude/skills` と `.agents/skills`。環境変数はシェルの環境（`process.shellEnv()`）から読み、絶対パスのときだけ使う。SSH は**このウィンドウが接続しているときだけ**、ホームは接続先から受け取ったものだけを使う（`paradisRemoteUserHome`）。接続先の `$CLAUDE_CONFIG_DIR` などは見ない。WSL は Windows で WSL の中のリポジトリを登録しているときだけ、そのディストロのホームを見る。Claude Code のプラグインのスキルは見ない（Q81 の範囲外）
+- スキルはフォルダの直下の `<名前>/SKILL.md`。frontmatter の `name` / `description` を読む（無ければ見出しと最初の段落）。Codex の `skills/.system/` は同梱として一覧に出すが消させない
+- 各フォルダは `realpath` で実体を解き、実体が同じフォルダ（`~/.claude/skills` → `~/.agents/skills` のリンク、ホームをリポジトリとして登録した場合など）は先に並んだ方にだけスキルを出す（`paradisDedupeSkillListings`）。同じスキルを2か所に出すと、片方の削除で両方が消えることが分からないため
+- 削除と導入は、ボタンを押して `IDialogService` の確認に「はい」と答えたときだけ。削除は直下のフォルダだけを受け付け、表示後にリンク／フォルダが入れ替わっていたら止める。ごみ箱が使えるマシン（手元）ではごみ箱へ移す。リンクはリンクだけを消す。親がリンクで実体が別の場所にあるときは、確認に実体のパスを出す
+- 導入は、スキルのフォルダ自体がリンクなら実体を写す（同じプロバイダ内のコピーはリンクをそのまま複製するため）。**フォルダの中にリンクがあるスキルは導入しない**（マシンをまたぐ写しはリンクをたどるので、`x -> ~/.ssh` の中身を接続先へ送りうる）。隣の一時フォルダ（名前に乱数を含む）へ写し、写したものと元をもう一度調べてリンクが増えていないか確かめてから、既にあるものを退避して入れ替え、成功したら退避を消す。入れ替えに失敗したら途中まで置かれたものを外して退避を戻す。戻すのにも失敗したときは退避の場所をエラーに出して残す（消さない）。調べてから写すまで・確認してから消すまでの間の変化は、写した後の再検査と削除直前の再確認で狭めているが、完全には防げない。40MB・2000 ファイルまで。`realpath` の結果は Windows ではネイティブ形式なので URI 形式へ直し、手元のパスは大文字小文字を区別せずに比べる（【要確認】Windows 実機は未確認）。確認には写す元と導入先を出し、リポジトリの中のスキルをユーザー単位へ入れるときは注意を出す
+- 未対応: 接続していない SSH ホストへの導入（読み取り専用の `IParadisRemoteHostBrowser` しか無いため）、WSL の中の `$CODEX_HOME`、スキルの更新通知（Orca の同梱スキル向けの機能）
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 

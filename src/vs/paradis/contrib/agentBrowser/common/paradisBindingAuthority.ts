@@ -22,6 +22,11 @@ export type ParadisBindingAuthorityScope =
 export interface IParadisBindingAuthorityPane {
 	readonly token: string;
 	readonly shellPid?: number;
+	/**
+	 * SSH など接続先で動くペインなら、その接続先（remote authority）。`shellPid` は接続先の番号なので、
+	 * 手元のプロセス表とは照合しない（接続元の確認は Para Code の戻り経路との一致で行う）。
+	 */
+	readonly remoteAuthority?: string;
 	readonly scope: ParadisBindingAuthorityScope;
 }
 
@@ -197,8 +202,11 @@ function parseScope(value: unknown): ParadisBindingAuthorityScope | undefined {
 	return undefined;
 }
 
+/** remote authority の長さの上限（`ssh-remote+<host>` などの形）。 */
+const MAX_REMOTE_AUTHORITY_LENGTH = 1024;
+
 function parsePane(value: unknown): IParadisBindingAuthorityPane | undefined {
-	if (!isRecord(value) || !hasExactKeys(value, ['token', 'scope'], ['shellPid'])) {
+	if (!isRecord(value) || !hasExactKeys(value, ['token', 'scope'], ['shellPid', 'remoteAuthority'])) {
 		return undefined;
 	}
 	const token = value.token;
@@ -208,14 +216,22 @@ function parsePane(value: unknown): IParadisBindingAuthorityPane | undefined {
 		|| scope === undefined) {
 		return undefined;
 	}
+	let remoteAuthority: string | undefined;
+	if (Object.hasOwn(value, 'remoteAuthority')) {
+		if (!isBoundedNonEmptyString(value.remoteAuthority, MAX_REMOTE_AUTHORITY_LENGTH)) {
+			return undefined;
+		}
+		remoteAuthority = value.remoteAuthority;
+	}
+	const remote = remoteAuthority !== undefined ? { remoteAuthority } : {};
 	if (Object.hasOwn(value, 'shellPid')) {
 		const shellPid = value.shellPid;
 		if (!isPositiveSafeInteger(shellPid)) {
 			return undefined;
 		}
-		return Object.freeze({ token, shellPid, scope });
+		return Object.freeze({ token, shellPid, ...remote, scope });
 	}
-	return Object.freeze({ token, scope });
+	return Object.freeze({ token, ...remote, scope });
 }
 
 function parseBrowserView(value: unknown): IParadisBindingAuthorityBrowserView | undefined {
@@ -265,7 +281,8 @@ function paradisParseBindingAuthorityManifestUnsafe(value: unknown): IParadisBin
 		const pane = parsePane(valuePane);
 		if (pane === undefined
 			|| tokens.has(pane.token)
-			|| (pane.shellPid !== undefined && shellPids.has(pane.shellPid))) {
+			// 接続先のペインの番号は接続先のプロセス表のもので、手元の番号と重なりうる
+			|| (pane.shellPid !== undefined && pane.remoteAuthority === undefined && shellPids.has(pane.shellPid))) {
 			throw new Error('Invalid binding authority manifest');
 		}
 		tokens.add(pane.token);

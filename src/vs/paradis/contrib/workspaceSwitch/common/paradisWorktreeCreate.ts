@@ -15,7 +15,8 @@ import { Event } from '../../../../base/common/event.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { GeneralShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, PosixShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { ParadisWorkspaceLifecycleKind } from './paradisWorkspaceLifecycle.js';
 
@@ -435,12 +436,35 @@ export function paradisResolveAgentLaunchFlags(template: IParadisAgentCommandTem
 	return { model, effort, permission };
 }
 
+/** 種類の分からないシェルへバックスラッシュを含む指示を渡そうとしたときのエラー（利用者向けの文言）。 */
+// allow-any-unicode-next-line
+export const PARADIS_AGENT_PROMPT_UNKNOWN_SHELL_BACKSLASH = localize('paradis.agentPrompt.unknownShellBackslash', "新しいターミナルのシェルの種類が分からないため、バックスラッシュ（\\）を含む指示を安全に渡せません。指示からバックスラッシュを除くか、Para Code が種類を判別できるシェルで起動してください。");
+
+/**
+ * 種類の分からないシェルへバックスラッシュを含む指示を渡そうとしたときのエラー。`message` は利用者向け（日本語）、
+ * `agentMessage` はエージェント（MCP）へ返す英文。
+ */
+export class ParadisAgentPromptQuotingError extends Error {
+	readonly agentMessage = 'The instruction contains a backslash, and the shell of the new terminal could not be identified, so Para Code cannot quote it safely and did not start the agent. Remove the backslashes (for example write paths with forward slashes) and try again.';
+
+	constructor() {
+		super(PARADIS_AGENT_PROMPT_UNKNOWN_SHELL_BACKSLASH);
+		this.name = 'ParadisAgentPromptQuotingError';
+	}
+}
+
 function paradisQuotePosixShellArg(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** fish はシングルクオートの中でもバックスラッシュ + `'` とバックスラッシュ2つをエスケープとして読むので、POSIX 式の置換では閉じ損ねる。 */
+function paradisQuoteFishArg(value: string): string {
+	return `'${value.replace(/[\\']/g, '\\$&')}'`;
+}
+
+/** PowerShell は U+2018〜U+201B もシングルクオートとして扱うので、ASCII の `'` と同じく二重にする。 */
 function paradisQuotePowerShellArg(value: string): string {
-	return `'${value.replace(/'/g, '$&$&')}'`;
+	return `'${value.replace(/['\u2018-\u201b]/g, '$&$&')}'`;
 }
 
 function paradisEncodeUtf16LeBase64(value: string): string {
@@ -495,16 +519,26 @@ function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTem
  * プロンプトが空の場合は引数自体を付けない（`claude ''` のような空引数はTUIの初回入力を
  * 汚すため。{prompt} プレースホルダは空置換して連続スペースを正規化する）。
  */
-export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
+export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
+	// プロンプトは利用者だけでなくエージェント（MCP）や定期実行の定義からも来るので、全経路でここで落とす
+	const prompt = paradisStripTerminalControlCharacters(rawPrompt);
 	if (prompt.trim().length === 0) {
 		return paradisApplyPromptToTemplate(template, '', options).replace(/ {2,}/g, ' ').trim();
 	}
 	if (shellType === WindowsShellType.CommandPrompt) {
 		return paradisBuildCommandPromptAgentCommand(template, prompt, options);
 	}
+	// シェルの種類が分からない（tmux や `exec fish` などのラッパー経由の起動）と POSIX 式で引用するが、
+	// fish はシングルクオートの中のバックスラッシュをエスケープとして読むので、`\` を含む指示は
+	// 閉じ損ねて後ろがコマンドとして動きうる。確かめられないものは起動しない
+	if (shellType === undefined && prompt.includes('\\')) {
+		throw new ParadisAgentPromptQuotingError();
+	}
 	const quoted = shellType === GeneralShellType.PowerShell
 		? paradisQuotePowerShellArg(prompt)
-		: paradisQuotePosixShellArg(prompt);
+		: shellType === PosixShellType.Fish
+			? paradisQuoteFishArg(prompt)
+			: paradisQuotePosixShellArg(prompt);
 	return paradisApplyPromptToTemplate(template, quoted, options);
 }
 

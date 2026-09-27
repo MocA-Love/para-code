@@ -733,7 +733,7 @@ interface ITerminalEditorInputObject {
 	readonly hideFromUser?: boolean;
 	readonly reconnectionProperties?: IReconnectionProperties;
 	readonly shellIntegrationNonce: string;
-	/** PARA-CODE: The id was resolved in the current pty host and cannot address an older ledger. */
+	/** PARA-PATCH: The id was resolved in the current pty host and cannot address an older ledger. */
 	readonly paradisResolvedToCurrentPtyId?: boolean;
 }
 
@@ -773,12 +773,12 @@ export interface ICreateTerminalOptions {
 	skipContributedProfileCheck?: boolean;
 
 	/**
-	 * PARA-CODE: Fail-closed editor group identity used by the optional terminal-on-split flow.
+	 * PARA-PATCH: Fail-closed editor group identity used by the optional terminal-on-split flow.
 	 * This must never be converted through a view-column mapping.
 	 */
 	paradisExactEditorGroup?: IEditorGroup;
 
-	/** PARA-CODE: Internal renderer-to-extension-host creation authority; never exposed in the extension API. */
+	/** PARA-PATCH: Internal renderer-to-extension-host creation authority; never exposed in the extension API. */
 	paradisTerminalCreationScopeLease?: string;
 }
 
@@ -786,8 +786,10 @@ export interface TerminalEditorLocation {
 	viewColumn: GroupIdentifier | SIDE_GROUP_TYPE | ACTIVE_GROUP_TYPE | AUX_WINDOW_GROUP_TYPE;
 	preserveFocus?: boolean;
 	auxiliary?: IEditorOptions['auxiliary'];
-	/** PARA-CODE: Object identity guard for an exact destination editor group. */
+	/** PARA-PATCH: Object identity guard for an exact destination editor group. */
 	paradisExactEditorGroup?: IEditorGroup;
+	/** PARA-PATCH: Open as a background tab: neither the tab nor its group becomes active (agent and scheduled launches). */
+	paradisInactive?: boolean;
 }
 
 /**

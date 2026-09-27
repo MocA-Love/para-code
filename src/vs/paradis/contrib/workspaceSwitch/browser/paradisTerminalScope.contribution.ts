@@ -616,7 +616,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (this.editorGroupsService.isEditorInputRetained?.(input)) {
 			return;
 		}
-		const visibleScope = input.group ? this.auxiliaryWindowScopeService.resolveGroup(input.group) : undefined;
+		// 裏のタブとして開いた入力（エージェントや定期実行の起動）は一度もアクティブにならないので
+		// `input.group` が付かない。そのときは入力を含むグループを探す（補助ウィンドウに見えているスペースを park しない）
+		const group = input.group ?? this.editorGroupsService.groups?.find(candidate => candidate.contains(input));
+		const visibleScope = group ? this.auxiliaryWindowScopeService.resolveGroup(group) : undefined;
 		if (stateKey === undefined
 			|| stateKey === this.workspaceSwitchService.activeStateKey
 			|| (visibleScope?.kind === 'managed' && visibleScope.stateKey === stateKey)

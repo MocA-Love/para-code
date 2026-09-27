@@ -222,6 +222,12 @@ export interface IParadisSpaceEntry {
 	readonly space: string;
 	readonly name: string;
 	readonly kind: 'repository' | 'worktree';
+	/** 属するリポジトリ（リポジトリ本体なら自分自身）の ID。 */
+	readonly repositoryId: string;
+	/** スペースのルート（リポジトリ本体 / worktree のディレクトリ）。 */
+	readonly uri: URI;
+	/** worktree のスペースのときだけ。 */
+	readonly worktree?: IParadisWorktree;
 }
 
 /**
@@ -234,7 +240,7 @@ export function paradisListSpaces(
 ): IParadisSpaceEntry[] {
 	const entries: IParadisSpaceEntry[] = [];
 	for (const repository of repositories) {
-		entries.push({ space: repository.id, name: repository.name, kind: 'repository' });
+		entries.push({ space: repository.id, name: repository.name, kind: 'repository', repositoryId: repository.id, uri: repository.uri });
 		for (const worktree of worktreeService.getWorktrees(repository.id)) {
 			if (worktree.missing) {
 				continue;
@@ -244,6 +250,9 @@ export function paradisListSpaces(
 				// allow-any-unicode-next-line
 				name: `${repository.name} ✦ ${worktree.name}`,
 				kind: 'worktree',
+				repositoryId: repository.id,
+				uri: worktree.uri,
+				worktree,
 			});
 		}
 	}
@@ -260,7 +269,46 @@ export function paradisListSpaces(
  */
 export const PARADIS_UNATTRIBUTED_TERMINAL_SCOPE = 'paradis:unattributed-terminals';
 
+/**
+ * Workspaces ビューの「ワークツリーを削除」（確認ダイアログつき）。登録は electron-browser の
+ * contribution にあるが、そこを import すると登録の副作用が走るので、ID だけをここに置く。
+ */
+export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
+
 export const IParadisTerminalScopeService = createDecorator<IParadisTerminalScopeService>('paradisTerminalScopeService');
+
+/**
+ * ターミナル（インスタンス）が属するスペース。台帳の記録を優先し、無ければ確定したスコープだけを見る。
+ * 切り替え中・再接続中などの未確定（pending）は undefined（今のスペースで埋めない）。
+ *
+ * `strict` のときは台帳の記録だけを使い、共通ターミナルと所属不明の待避中のものは undefined にする。
+ * `resolveScope` は記録の無い生きたターミナルを今のスペースとして答えるので、権限の判断
+ * （IDE 操作ツールの「同じスペースだけ」）にはそれを使わない。
+ */
+export function paradisResolveInstanceSpace(
+	scopeService: Pick<IParadisTerminalScopeService, 'getStateKeyForInstance' | 'resolveScope' | 'isSharedPanelTerminal'>,
+	activeStateKey: string | undefined,
+	instanceId: number,
+	options?: { readonly strict?: boolean },
+): string | undefined {
+	if (options?.strict) {
+		if (scopeService.isSharedPanelTerminal?.(instanceId)) {
+			return undefined;
+		}
+		const recorded = scopeService.getStateKeyForInstance(instanceId);
+		return recorded === PARADIS_UNATTRIBUTED_TERMINAL_SCOPE ? undefined : recorded;
+	}
+	const recorded = scopeService.getStateKeyForInstance(instanceId);
+	if (recorded !== undefined) {
+		return recorded;
+	}
+	const scope = scopeService.resolveScope(instanceId);
+	return scope.kind === 'managed'
+		? scope.stateKey
+		: scope.kind === 'unscoped'
+			? activeStateKey
+			: undefined;
+}
 export const IParadisBrowserScopeService = createDecorator<IParadisBrowserScopeService>('paradisBrowserScopeService');
 export const IParadisAuxiliaryWindowScopeService = createDecorator<IParadisAuxiliaryWindowScopeService>('paradisAuxiliaryWindowScopeService');
 
@@ -577,8 +625,17 @@ export interface IParadisAgentStatusStore {
 	getScopeIssueUrls(stateKey: string): readonly string[];
 	/** ポーラー専用。代表値は内訳から導出するため、書き込みは内訳のみで行う */
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void;
-	/** ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新） */
-	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void;
+	/**
+	 * 完了（review）を、利用者がそのスペースを見ていたために画面側がその場で既読にして状態から消した
+	 * インスタンスか。状態の取得失敗で消えた場合と見分けるのに使う（定期実行の完了判定）。
+	 * そのインスタンスに次の状態が届くと false に戻る。
+	 */
+	wasReviewAcknowledged?(instanceId: number): boolean;
+	/**
+	 * ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新）。
+	 * `acknowledgedInstanceIds` はこの回に review を既読にして状態から外したインスタンス。
+	 */
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>): void;
 	/** モバイルリレー専用（hook 以外の根拠でセッションが確定しているペインの一括更新）。 */
 	setDiscoveredAgentPaneTokens(paneTokens: ReadonlySet<string>): void;
 	/** ポーラー専用（スコープごとに検出済み Issue URL の一括更新）。 */
