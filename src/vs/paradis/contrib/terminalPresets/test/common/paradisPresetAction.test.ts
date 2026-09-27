@@ -8,8 +8,10 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { GeneralShellType } from '../../../../../platform/terminal/common/terminal.js';
 import {
 	isValidPresetDefinition,
+	paradisBuildInsertCommandsText,
 	paradisAgentPromptAvailability,
 	paradisBuildPresetInsertText,
 	paradisGetPresetTasks,
@@ -25,11 +27,13 @@ suite('ParadisPresetAction', () => {
 		assert.deepStrictEqual({
 			agentPrompt: isValidPresetDefinition({ name: 'Review', action: 'agent-prompt', prompt: 'review this' }),
 			emptyPrompt: isValidPresetDefinition({ name: 'Review', action: 'agent-prompt', prompt: '  ' }),
-			insert: isValidPresetDefinition({ name: 'Log', action: 'insert', commands: ['git log'] }),
+			insert: isValidPresetDefinition({ name: 'Log', action: 'insert', prompt: 'git log' }),
+			// 挿入の本文を commands に置いた定義は無効（古い版が Enter 付きで実行する形を作らない）
+			insertWithCommands: isValidPresetDefinition({ name: 'Log', action: 'insert', commands: ['git log'] }),
 			// 新しい版の種別を古い解釈（Enter 付きで実行）へ倒さない
 			unknown: isValidPresetDefinition({ name: 'X', action: 'launch-agent', commands: ['rm -rf ~'] }),
 			legacy: isValidPresetDefinition({ name: 'Build', commands: ['npm run build'] }),
-		}, { agentPrompt: true, emptyPrompt: false, insert: true, unknown: false, legacy: true });
+		}, { agentPrompt: true, emptyPrompt: false, insert: true, insertWithCommands: false, unknown: false, legacy: true });
 	});
 
 	test('agent prompts never become shell tasks', () => {
@@ -45,7 +49,7 @@ suite('ParadisPresetAction', () => {
 		// 指紋は「このマシンだけ隠したプリセット」の保存キーにも使うので、従来の定義で変えない
 		const legacy = { name: 'Build', commands: ['npm run build'] };
 		assert.strictEqual(paradisPresetFingerprint(legacy), paradisPresetFingerprint({ ...legacy, action: 'run' }));
-		assert.notStrictEqual(paradisPresetFingerprint(legacy), paradisPresetFingerprint({ ...legacy, action: 'insert' }));
+		assert.notStrictEqual(paradisPresetFingerprint(legacy), paradisPresetFingerprint({ ...legacy, action: 'insert', prompt: 'npm run build' }));
 	});
 
 	test('builds insert text that cannot submit on its own', () => {
@@ -60,6 +64,14 @@ suite('ParadisPresetAction', () => {
 			escapeStripped: 'a[201~b',
 			empty: undefined,
 		});
+	});
+
+	test('insert presets always become a single line', () => {
+		assert.deepStrictEqual([
+			paradisBuildInsertCommandsText('git fetch\n\n  git log --oneline\n', GeneralShellType.Bash),
+			paradisBuildInsertCommandsText('a\nb', GeneralShellType.PowerShell),
+			paradisBuildInsertCommandsText('  \n', GeneralShellType.Bash),
+		], ['git fetch && git log --oneline', 'a; if ($?) { b }', undefined]);
 	});
 
 	test('only inserts into an agent that is not waiting for an answer', () => {
