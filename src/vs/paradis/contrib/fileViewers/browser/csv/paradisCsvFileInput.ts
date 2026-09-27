@@ -15,8 +15,11 @@ import { Codicon } from '../../../../../base/common/codicons.js';
 import { extname } from '../../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
+import { ITextEditorService } from '../../../../../workbench/services/textfile/common/textEditorService.js';
 import { ParadisFileViewerInput, ParadisFileViewerInputSerializer } from '../paradisFileViewerInput.js';
 
 /** CSV ビューアの EditorPane / EditorInput 識別子。 */
@@ -61,6 +64,24 @@ export class ParadisCsvFileInput extends ParadisFileViewerInput {
 export class ParadisCsvFileInputSerializer extends ParadisFileViewerInputSerializer {
 	protected override createInput(instantiationService: IInstantiationService, resource: URI): ParadisFileViewerInput {
 		return instantiationService.createInstance(ParadisCsvFileInput, resource);
+	}
+
+	override deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
+		// 表ビューアを設定で切った後の復元は、表ではなく通常のテキストエディタで開く。
+		const disabled = instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService).getValue<boolean>(PARADIS_CSV_VIEWER_ENABLED_KEY) === false);
+		if (!disabled) {
+			return super.deserialize(instantiationService, serializedEditor);
+		}
+		try {
+			const data = JSON.parse(serializedEditor) as { resource?: string };
+			if (typeof data.resource !== 'string') {
+				return undefined;
+			}
+			const resource = URI.parse(data.resource);
+			return instantiationService.invokeFunction(accessor => accessor.get(ITextEditorService).createTextEditor({ resource }));
+		} catch {
+			return undefined;
+		}
 	}
 }
 
