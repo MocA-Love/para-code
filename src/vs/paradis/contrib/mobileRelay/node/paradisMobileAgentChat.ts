@@ -51,7 +51,7 @@ import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, 
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
+import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -2683,16 +2683,29 @@ class TranscriptTailer {
 		}
 	}
 
+	/** 直前の user 行（ユーザーの発言か tool_result）の時刻＝次のリクエストを送った時刻の近似。 */
+	private promptRequestStartedAt: number | undefined;
+
 	/**
 	 * assistant 行の usage からプロンプトキャッシュの使い方を拾う（デスクトップ表示専用）。
+	 * 起点は応答を書き終えた時刻ではなく、その応答を求めたリクエストの時刻（直前の user 行）。
 	 * 読み込みだけのリクエストは有効期限の長さを変えないので、直前に書いたときの長さを引き継ぐ。
 	 */
 	private observePromptCache(line: Record<string, unknown>): void {
-		const usage = paradisReadClaudePromptCacheUsage(line);
-		if (usage === undefined || (this.promptCache !== undefined && usage.at < this.promptCache.lastUsedAt)) {
+		const requestStart = paradisReadClaudeRequestStart(line);
+		if (requestStart !== undefined) {
+			this.promptRequestStartedAt = requestStart;
 			return;
 		}
-		this.promptCache = { lastUsedAt: usage.at, ttlMs: usage.ttlMs ?? this.promptCache?.ttlMs ?? PARADIS_PROMPT_CACHE_TTL_5M };
+		const usage = paradisReadClaudePromptCacheUsage(line);
+		if (usage === undefined) {
+			return;
+		}
+		const usedAt = this.promptRequestStartedAt !== undefined && this.promptRequestStartedAt <= usage.at ? this.promptRequestStartedAt : usage.at;
+		if (this.promptCache !== undefined && usedAt < this.promptCache.lastUsedAt) {
+			return;
+		}
+		this.promptCache = { lastUsedAt: usedAt, ttlMs: usage.ttlMs ?? this.promptCache?.ttlMs ?? PARADIS_PROMPT_CACHE_TTL_5M };
 	}
 
 	/** 直近に注入した承認要求の内容キー（PermissionRequest hookの再発火による重複注入の抑止）。 */
@@ -3133,6 +3146,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * モバイルがあるときだけ動くため、デスクトップはそれに頼らず hook から直接覚えておく。
 	 */
 	private readonly desktopInteractions = new Map<string, IParadisAgentPaneInteraction>();
+	/** tailer から作った待ち内容を最初に見た時刻（内容が変わるまで同じ時刻を返すため）。 */
+	private readonly desktopTailerInteractionSeenAt = new Map<string, { readonly key: string; readonly at: number }>();
 	/** 前回知らせた時点の様子の指紋。変わったペインがあるときだけ知らせる。 */
 	private readonly desktopInsightSignatures = new Map<string, string>();
 	private desktopInsightTimer: ReturnType<typeof setTimeout> | undefined;
@@ -5206,7 +5221,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				break;
 			}
 		}
-		const interaction = this.desktopInteractions.get(token) ?? (tailer !== undefined ? this.desktopInteractionFromTailer(tailer) : undefined);
+		const interaction = this.desktopInteractions.get(token) ?? (tailer !== undefined ? this.desktopInteractionFromTailer(token, tailer) : undefined);
 		const promptCache = session.agent === 'claude' ? tailer?.promptCache : undefined;
 		return {
 			token,
@@ -5219,23 +5234,37 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** hook から拾えなかったとき（再起動直後など）に、tailer が持っている未決着の質問・承認から作る。 */
-	private desktopInteractionFromTailer(tailer: TranscriptTailer): IParadisAgentPaneInteraction | undefined {
+	private desktopInteractionFromTailer(token: string, tailer: TranscriptTailer): IParadisAgentPaneInteraction | undefined {
+		let found: Omit<IParadisAgentPaneInteraction, 'at'> & { readonly at?: number } | undefined;
 		if (tailer.pendingQuestions.size > 0) {
 			for (let index = tailer.messages.length - 1; index >= 0; index--) {
 				const message = tailer.messages[index];
 				if (message.kind === 'question' && message.toolUseId !== undefined && tailer.pendingQuestions.has(message.toolUseId)) {
-					return { kind: 'question', text: paradisOneLine(message.text, 200), at: message.ts ?? Date.now() };
+					found = { kind: 'question', text: paradisOneLine(message.text, 200), ...(message.ts !== undefined ? { at: message.ts } : {}) };
+					break;
 				}
 			}
 		}
-		const current = tailer.currentInteraction();
+		const current = found === undefined ? tailer.currentInteraction() : null;
 		if (current?.kind === 'approval') {
 			const text = [current.title, current.detail].filter((part): part is string => part !== undefined && part.length > 0).join(': ');
 			if (text.length > 0) {
-				return { kind: 'permission', text: paradisOneLine(text, 200), at: Date.now() };
+				found = { kind: 'permission', text: paradisOneLine(text, 200) };
 			}
 		}
-		return undefined;
+		if (found === undefined) {
+			this.desktopTailerInteractionSeenAt.delete(token);
+			return undefined;
+		}
+		// 時刻が記録に無いものは「最初に見えた時刻」を覚えて使い回す。毎回 Date.now() を入れると
+		// 指紋が確認のたびに変わり、変化の知らせが出続けて全ウィンドウが取り直してしまう。
+		const key = `${found.kind}\0${found.text}`;
+		let seen = this.desktopTailerInteractionSeenAt.get(token);
+		if (seen?.key !== key) {
+			seen = { key, at: found.at ?? Date.now() };
+			this.desktopTailerInteractionSeenAt.set(token, seen);
+		}
+		return { kind: found.kind, text: found.text, at: found.at ?? seen.at };
 	}
 
 	/**
@@ -5308,6 +5337,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const token of [...this.desktopInteractions.keys()]) {
 			if (!live.has(token)) {
 				this.desktopInteractions.delete(token);
+			}
+		}
+		for (const token of [...this.desktopTailerInteractionSeenAt.keys()]) {
+			if (!live.has(token)) {
+				this.desktopTailerInteractionSeenAt.delete(token);
 			}
 		}
 		let changed = false;

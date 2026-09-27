@@ -53,9 +53,11 @@ suite('ParadisMobileAgentChat desktop insights', () => {
 	test('exposes subagents, the last message, the pending question and the prompt cache without sending anything to mobile', () => withClaudeHome(async claudeHome => {
 		const token = 'pane-desktop-insights';
 		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-1.jsonl');
+		// 起点は応答を書き終えた時刻 (10:00) ではなく、その応答を求めたリクエストの時刻 (直前の user 行)
+		const requestSent = '2026-09-27T09:59:00.000Z';
 		const lastUsed = '2026-09-27T10:00:00.000Z';
 		await writeFile(transcriptPath, [
-			JSON.stringify({ type: 'user', timestamp: '2026-09-27T09:59:00.000Z', message: { role: 'user', content: 'キャッシュの既定値を調べて' } }),
+			JSON.stringify({ type: 'user', timestamp: requestSent, message: { role: 'user', content: 'キャッシュの既定値を調べて' } }),
 			JSON.stringify({
 				type: 'assistant', timestamp: lastUsed, message: {
 					role: 'assistant', model: 'claude-opus-4-5', content: [{ type: 'text', text: '原因は TTL の\n既定値でした' }],
@@ -98,7 +100,7 @@ suite('ParadisMobileAgentChat desktop insights', () => {
 				subagents: [['reviewer-1', 'running']],
 				lastMessage: '原因は TTL の 既定値でした',
 				interaction: { kind: 'question', text: 'TTL を 1 時間に延ばしますか?' },
-				promptCache: { lastUsedAt: Date.parse(lastUsed), ttlMs: PARADIS_PROMPT_CACHE_TTL_1H },
+				promptCache: { lastUsedAt: Date.parse(requestSent), ttlMs: PARADIS_PROMPT_CACHE_TTL_1H },
 			});
 
 			// 質問が決着したら消える
