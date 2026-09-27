@@ -41,7 +41,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
-import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
+import { paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisNormalizeCodexHomePath, paradisNotifyCodexHomesChanged } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisLimitsAccount,
@@ -67,8 +67,12 @@ const SNAPSHOT_CACHE_TTL_MS = 150_000;
 const USAGE_HTTP_TIMEOUT_MS = 30_000;
 /** app-server RPCのリクエストタイムアウト（初期化は paradisCodexAppServerRpc.ts 側の15秒）。 */
 const RPC_REQUEST_TIMEOUT_MS = 10_000;
-/** RPCフォールバックも失敗したホームの再試行抑止時間(毎ポーリングでcodexを起動しないため)。 */
+/** RPCが失敗したホームの再試行抑止時間(毎ポーリングでcodexを起動しないため)。 */
 const RPC_FAILURE_COOLDOWN_MS = 10 * 60_000;
+/** 同じホームで RPC を起こす最短の間隔（Orca の MIN_REFETCH_MS）。その間は wham/usage で読む。 */
+const MIN_RPC_INTERVAL_MS = 5 * 60_000;
+/** ホームをまたいで RPC を起こすときの間隔（Orca の INACTIVE_CODEX_PROBE_STAGGER_MS）。 */
+const RPC_STAGGER_MS = 2_000;
 /** ログイン/セットアップセッションの完了までの制限時間。 */
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 /** 完了/失敗したセットアップセッションを保持する時間(rendererの最終ポーリング用)。 */
@@ -119,11 +123,8 @@ function isCodexAuthFailure(error: unknown): boolean {
 		return true;
 	}
 	// 数字では判定しない。RPCのエラー文にはリクエストIDや所要msが混ざるので、`401` 単独で
-	// 拾うと本物の障害まで無言で握りつぶす。認証を指す語が出ていることを条件にする。
-	const message = error instanceof Error ? error.message : String(error ?? '');
-	// `authentication required` は app-server が未認証ホームに返す文言(codex 0.154 では
-	// `codex account …` / `chatgpt …` の2系統)で、これも再ログインでしか解決しない。
-	return /unauthorized|forbidden|re-?login|token (?:has )?expired|expired token|authentication required/i.test(message);
+	// 拾うと本物の障害まで無言で握りつぶす。認証を指す語が出ていることを条件にする（Orca と同じ一覧）。
+	return paradisIsCodexAuthError(error);
 }
 
 // ---------- wham/usage レスポンス型(CodexBar CodexOAuthUsageFetcher.swift と同じマッピング) ----------
@@ -199,6 +200,13 @@ export class ParadisLimitsMonitorService {
 	private inflightKey: string | undefined;
 	/** RPCフォールバックまで失敗したCodexホーム → 失敗時刻(クールダウン用)。 */
 	private readonly rpcFailureAt = new Map<string, number>();
+	/** RPC が認証切れと答えたホームと、そのときの auth.json（ログインし直したら試し直す）。 */
+	private readonly rpcAuthFailure = new Map<string, { readonly at: number; readonly authStamp: string | undefined }>();
+	/** ホームごとに最後に RPC を起こした時刻。 */
+	private readonly lastRpcAt = new Map<string, number>();
+	/** RPC をホームをまたいで1つずつ流す列と、最後の RPC が終わった時刻。 */
+	private rpcQueue: Promise<void> = Promise.resolve();
+	private lastRpcEndAt = 0;
 	/**
 	 * Sentryへ報告済みのCodexホーム。クールダウン明けごとに同じ失敗が再発するため
 	 * (2026-08〜09に1台から90日で2,400件)、ホームごとにプロセス生存中1回だけ報告し、
@@ -474,35 +482,27 @@ export class ParadisLimitsMonitorService {
 
 		// Orca（codex-fetcher.ts）と同じく、`codex app-server` の RPC から先に取る。トークンの更新と
 		// auth.json の書き戻しは codex 自身がする。RPC で取れないときだけ wham/usage を使う。
-		// 認証切れ以外で RPC に失敗したホームは、しばらく RPC を飛ばして wham/usage だけにする
-		// （そのたびに app-server を起こさない）。画面を読む方式（PTY の /status）は使わない。
+		// 画面を読む方式（PTY の /status）は使わない。app-server を起こしすぎないよう、次の抑えを入れる
+		// （Orca と同じ考え方）:
+		// - 同じホームの RPC は最短 5 分おき（Orca の MIN_REFETCH_MS）。その間は wham/usage（HTTP だけ）で読む
+		// - 認証切れ以外で失敗したホームは 10 分間 RPC を飛ばす
+		// - 認証切れのホームは、10 分たつか auth.json が変わる（ログインし直した）まで RPC を飛ばす
+		// - RPC はホームをまたいで1つずつ、2 秒ずつずらして起こす（Orca の INACTIVE_CODEX_PROBE_STAGGER_MS）
+		const now = this.now();
+		const authStamp = await this.authStamp(homePath);
+		const authBackoff = this.rpcAuthFailure.get(homePath);
+		const inAuthBackoff = authBackoff !== undefined && now - authBackoff.at < RPC_FAILURE_COOLDOWN_MS && authBackoff.authStamp === authStamp;
 		const lastFailure = this.rpcFailureAt.get(homePath);
-		const rpcCoolingDown = lastFailure !== undefined && Date.now() - lastFailure < RPC_FAILURE_COOLDOWN_MS;
-		if (!rpcCoolingDown) {
-			try {
-				const viaRpc = await this.fetchCodexAccountViaRpc(homePath);
-				this.rpcFailureAt.delete(homePath);
-				this.rpcFailureReported.delete(homePath);
-				return { account: { ...base, email: viaRpc.email ?? email, ...await this.supplementRpcWindows(viaRpc, accessToken, accountId), status: 'ok' }, accountId };
-			} catch (error) {
-				if (isCodexAuthFailure(error)) {
-					// 認証切れは再ログインでしか直らない（Orca も PTY へは落ちずにそのまま返す）。パネルは
-					// status='relogin_required' を受けて「再ログイン…」を出す（paradisLimitsMonitorPanel.ts）。
-					return { account: { ...base, email, status: 'relogin_required', statusDetail: (error as Error).message }, accountId };
-				}
-				this.rpcFailureAt.set(homePath, Date.now());
-				if (!this.rpcFailureReported.has(homePath)) {
-					this.rpcFailureReported.add(homePath);
-					const { exitCode, exitSignal } = error as { exitCode?: number | null; exitSignal?: string | null };
-					reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
-						phase: 'refresh',
-						transport: 'stdio',
-						safe_error_kind: classifyCodexRpcFailure(error),
-						...(typeof exitCode === 'number' ? { safe_exit_code: exitCode } : {}),
-						...(typeof exitSignal === 'string' ? { signal: exitSignal } : {}),
-					});
-				}
-				this.logService.warn(`[ParadisLimitsMonitor] codex app-server failed for ${base.homeLabel}; reading wham/usage instead: ${(error as Error).message}`);
+		const inFailureCooldown = lastFailure !== undefined && now - lastFailure < RPC_FAILURE_COOLDOWN_MS;
+		const lastRpc = this.lastRpcAt.get(homePath);
+		const dueForRpc = lastRpc === undefined || now - lastRpc >= MIN_RPC_INTERVAL_MS;
+
+		let rpcTried = false;
+		if (!inAuthBackoff && !inFailureCooldown && dueForRpc) {
+			rpcTried = true;
+			const viaRpc = await this.tryCodexRpc(homePath, base.homeLabel);
+			if (viaRpc.kind !== 'failed') {
+				return this.rpcResult(viaRpc, homePath, base, email, accountId);
 			}
 		}
 
@@ -511,11 +511,116 @@ export class ParadisLimitsMonitorService {
 			return { account: { ...base, email, ...this.mapWhamUsage(usage), status: 'ok' }, accountId };
 		} catch (error) {
 			const httpStatus = (error as { httpStatus?: number }).httpStatus;
-			if (httpStatus === 401 || httpStatus === 403) {
+			if (httpStatus !== 401 && httpStatus !== 403) {
+				return { account: { ...base, email, status: 'error', statusDetail: (error as Error).message }, accountId };
+			}
+			if (inAuthBackoff) {
+				// codex もさっき認証切れと答えた。ログインし直すまで直らない。
 				return { account: { ...base, email, status: 'relogin_required', statusDetail: 'access token expired (re-login required)' }, accountId };
 			}
-			return { account: { ...base, email, status: 'error', statusDetail: (error as Error).message }, accountId };
+			if (!rpcTried && !inFailureCooldown) {
+				// アクセストークンの期限が切れただけかもしれない。間隔を待たずに codex に更新させる。
+				const viaRpc = await this.tryCodexRpc(homePath, base.homeLabel);
+				if (viaRpc.kind !== 'failed') {
+					return this.rpcResult(viaRpc, homePath, base, email, accountId);
+				}
+			}
+			// codex で更新できない（app-server が動かない）。再ログインで直るとは限らないので、要再ログインにはしない。
+			return { account: { ...base, email, status: 'error', statusDetail: 'access token expired and codex app-server is unavailable to refresh it' }, accountId };
 		}
+	}
+
+	/** auth.json の更新時刻と大きさ（ログインし直したかの判断に使う）。 */
+	private async authStamp(homePath: string): Promise<string | undefined> {
+		try {
+			const stat = await fs.promises.stat(path.join(homePath, 'auth.json'));
+			return `${stat.mtimeMs}:${stat.size}`;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** RPC で取る。ホームをまたいで1つずつ、前の RPC から 2 秒あけて起こす。 */
+	private async tryCodexRpc(homePath: string, homeLabel: string | undefined): Promise<{ kind: 'ok'; value: Awaited<ReturnType<ParadisLimitsMonitorService['fetchCodexAccountViaRpc']>> } | { kind: 'auth'; error: Error } | { kind: 'failed' }> {
+		const run = async () => {
+			const wait = this.lastRpcEndAt + RPC_STAGGER_MS - this.now();
+			if (wait > 0) {
+				await this.delay(wait);
+			}
+			this.lastRpcAt.set(homePath, this.now());
+			try {
+				return await this.fetchCodexAccountViaRpc(homePath);
+			} finally {
+				this.lastRpcEndAt = this.now();
+			}
+		};
+		const queued = this.rpcQueue.then(run, run);
+		this.rpcQueue = queued.then(() => undefined, () => undefined);
+		try {
+			const value = await queued;
+			this.rpcFailureAt.delete(homePath);
+			this.rpcFailureReported.delete(homePath);
+			this.rpcAuthFailure.delete(homePath);
+			return { kind: 'ok', value };
+		} catch (error) {
+			if (isCodexAuthFailure(error)) {
+				// 認証切れは再ログインでしか直らない（Orca も PTY へは落ちずにそのまま返す）。
+				this.rpcAuthFailure.set(homePath, { at: this.now(), authStamp: await this.authStamp(homePath) });
+				return { kind: 'auth', error: error as Error };
+			}
+			this.rpcFailureAt.set(homePath, this.now());
+			const kind = classifyCodexRpcFailure(error);
+			// codex を入れていない人は毎回同じ理由で失敗するので報告しない（パネルは wham/usage で出せる）。
+			if (kind !== 'binary-missing' && !this.rpcFailureReported.has(homePath)) {
+				this.rpcFailureReported.add(homePath);
+				const { exitCode, exitSignal } = error as { exitCode?: number | null; exitSignal?: string | null };
+				reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
+					phase: 'refresh',
+					transport: 'stdio',
+					safe_error_kind: kind,
+					...(typeof exitCode === 'number' ? { safe_exit_code: exitCode } : {}),
+					...(typeof exitSignal === 'string' ? { signal: exitSignal } : {}),
+				});
+			}
+			this.logService.warn(`[ParadisLimitsMonitor] codex app-server failed for ${homeLabel}; reading wham/usage instead: ${(error as Error).message}`);
+			return { kind: 'failed' };
+		}
+	}
+
+	private async rpcResult(viaRpc: { kind: 'ok'; value: Awaited<ReturnType<ParadisLimitsMonitorService['fetchCodexAccountViaRpc']>> } | { kind: 'auth'; error: Error }, homePath: string, base: { provider: 'codex'; id: string; homeLabel: string; removable: boolean }, email: string | undefined, accountId: string | undefined): Promise<ICodexAccountResult> {
+		if (viaRpc.kind === 'auth') {
+			// パネルは status='relogin_required' を受けて「再ログイン…」を出す（paradisLimitsMonitorPanel.ts）。
+			return { account: { ...base, email, status: 'relogin_required', statusDetail: viaRpc.error.message }, accountId };
+		}
+		// codex が RPC の中でトークンを更新していることがあるので、足す分は読み直したトークンで読む。
+		const fresh = await this.readAuthTokens(homePath);
+		const windows = fresh.accessToken !== undefined
+			? await this.supplementRpcWindows(viaRpc.value, fresh.accessToken, fresh.accountId ?? accountId)
+			: { planType: viaRpc.value.planType, fiveHour: viaRpc.value.windows.fiveHour, sevenDay: viaRpc.value.windows.sevenDay };
+		return { account: { ...base, email: viaRpc.value.email ?? email, ...windows, status: 'ok' }, accountId };
+	}
+
+	private async readAuthTokens(homePath: string): Promise<{ accessToken?: string; accountId?: string }> {
+		try {
+			const auth = JSON.parse(await fs.promises.readFile(path.join(homePath, 'auth.json'), 'utf8')) as ICodexAuthJson;
+			const rawAccountId = auth.tokens?.account_id;
+			return {
+				accessToken: typeof auth.tokens?.access_token === 'string' && auth.tokens.access_token.length > 0 ? auth.tokens.access_token : undefined,
+				accountId: typeof rawAccountId === 'string' && rawAccountId.trim().length > 0 ? rawAccountId.trim() : undefined,
+			};
+		} catch {
+			return {};
+		}
+	}
+
+	/** 時刻（テストで差し替える）。 */
+	protected now(): number {
+		return Date.now();
+	}
+
+	/** 待つ（テストで差し替える）。 */
+	protected delay(ms: number): Promise<void> {
+		return timeout(ms);
 	}
 
 	/**
@@ -574,7 +679,8 @@ export class ParadisLimitsMonitorService {
 			if (accountId) {
 				headers['ChatGPT-Account-Id'] = accountId;
 			}
-			const response = await fetch('https://chatgpt.com/backend-api/wham/usage', { method: 'GET', headers, signal: controller.signal });
+			// トークンを chatgpt.com の外へ転送させない
+			const response = await fetch('https://chatgpt.com/backend-api/wham/usage', { method: 'GET', headers, redirect: 'error', signal: controller.signal });
 			if (!response.ok) {
 				const error = new Error(`Codex usage API returned ${response.status}`) as Error & { httpStatus: number };
 				error.httpStatus = response.status;
@@ -622,7 +728,7 @@ export class ParadisLimitsMonitorService {
 		const command = await this.resolveCommand('codex', undefined);
 		const env = { ...await this.getExecEnv(), CODEX_HOME: homePath };
 		// initialize の失敗は開始関数の中で子プロセスを片付けてから投げる。
-		const rpc = await paradisStartCodexAppServerRpc(command, env, this.logService, 'para-code-limits-monitor');
+		const rpc = await paradisStartCodexAppServerRpc(command, env, this.logService, 'para-code-limits-monitor', { shortLivedProbe: true });
 		try {
 			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_REQUEST_TIMEOUT_MS) as IRpcRateLimitsResult;
 			let account: IRpcAccountResult | undefined;

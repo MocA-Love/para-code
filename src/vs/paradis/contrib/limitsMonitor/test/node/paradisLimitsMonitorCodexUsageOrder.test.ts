@@ -22,6 +22,9 @@ type ParadisFakeRpcAnswer = { readonly email?: string; readonly planType?: strin
 
 class ParadisFakeCodexUsageService extends ParadisLimitsMonitorService {
 	readonly calls: string[] = [];
+	clock = 1_000_000;
+	/** RPC の中で codex がトークンを更新したことにする（auth.json を書き換える）。 */
+	onRpc: (() => void) | undefined;
 	rpcAnswer: ParadisFakeRpcAnswer = { email: 'rpc@example.com', planType: 'plus', windows: { fiveHour: { usedPercent: 10 }, sevenDay: { usedPercent: 20 } } };
 	whamAnswer: IWhamUsageResponse | Error = {
 		plan_type: 'pro',
@@ -31,18 +34,27 @@ class ParadisFakeCodexUsageService extends ParadisLimitsMonitorService {
 
 	protected override async fetchCodexAccountViaRpc(homePath: string): Promise<{ email?: string; planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }> {
 		this.calls.push(`rpc:${homePath}`);
+		this.onRpc?.();
 		if (this.rpcAnswer instanceof Error) {
 			throw this.rpcAnswer;
 		}
 		return this.rpcAnswer;
 	}
 
-	protected override async fetchWhamUsage(): Promise<IWhamUsageResponse> {
-		this.calls.push('wham');
+	protected override async fetchWhamUsage(accessToken: string): Promise<IWhamUsageResponse> {
+		this.calls.push(`wham:${accessToken}`);
 		if (this.whamAnswer instanceof Error) {
 			throw this.whamAnswer;
 		}
 		return this.whamAnswer;
+	}
+
+	protected override now(): number {
+		return this.clock;
+	}
+
+	protected override async delay(): Promise<void> {
+		this.calls.push('stagger');
 	}
 
 	fetch(homePath: string): Promise<ICodexAccountResult> {
@@ -76,52 +88,98 @@ suite('ParadisLimitsMonitor Codex usage order', () => {
 		return { status, email, planType, fiveHour: fiveHour?.usedPercent, sevenDay: sevenDay?.usedPercent, scoped: scoped?.map(window => window.label), statusDetail };
 	}
 
-	test('reads the app-server first and adds only the extra windows from wham/usage', async () => {
+	test('reads the app-server first, adds only the extra windows from wham/usage, and waits 5 minutes before the next app-server', async () => {
 		const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
-		const result = await service.fetch(codexHome);
+		const first = summary(await service.fetch(codexHome));
+		service.clock += 60_000;
+		const within = summary(await service.fetch(codexHome));
+		service.clock += 5 * 60_000;
+		await service.fetch(codexHome);
 		service.dispose();
-		assert.deepStrictEqual({ result: summary(result), calls: service.calls }, {
-			result: { status: 'ok', email: 'rpc@example.com', planType: 'plus', fiveHour: 10, sevenDay: 20, scoped: ['codex-spark'], statusDetail: undefined },
-			calls: [`rpc:${codexHome}`, 'wham'],
+		assert.deepStrictEqual({ first, within, calls: service.calls }, {
+			first: { status: 'ok', email: 'rpc@example.com', planType: 'plus', fiveHour: 10, sevenDay: 20, scoped: ['codex-spark'], statusDetail: undefined },
+			// 5 分以内は app-server を起こさず、wham/usage だけで読む
+			within: { status: 'ok', email: undefined, planType: 'pro', fiveHour: 55, sevenDay: 66, scoped: ['codex-spark'], statusDetail: undefined },
+			calls: [`rpc:${codexHome}`, 'wham:test-token', 'wham:test-token', `rpc:${codexHome}`, 'wham:test-token'],
 		});
 	});
 
 	// Orca の supplementCodexSessionWindow と同じく、RPC に5時間の枠が無く週の枠だけなら wham/usage で埋める。
-	test('fills a missing five-hour window from wham/usage when the app-server only returned the weekly one', async () => {
+	// codex が RPC の中でトークンを更新したら、足す分は新しいトークンで読む。
+	test('fills a missing five-hour window from wham/usage with the token codex refreshed during the RPC', async () => {
 		const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
 		service.rpcAnswer = { planType: 'plus', windows: { sevenDay: { usedPercent: 20 } } };
+		service.onRpc = () => writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { access_token: 'refreshed-token', account_id: 'acct-1' } }));
 		const filled = summary(await service.fetch(codexHome));
-		service.whamAnswer = httpError(401);
-		const kept = summary(await service.fetch(codexHome));
 		service.dispose();
-		assert.deepStrictEqual({ filled, kept }, {
+		assert.deepStrictEqual({ filled, calls: service.calls }, {
 			filled: { status: 'ok', email: undefined, planType: 'plus', fiveHour: 55, sevenDay: 66, scoped: ['codex-spark'], statusDetail: undefined },
-			kept: { status: 'ok', email: undefined, planType: 'plus', fiveHour: undefined, sevenDay: 20, scoped: undefined, statusDetail: undefined },
+			calls: [`rpc:${codexHome}`, 'wham:refreshed-token'],
 		});
 	});
 
-	test('falls back to wham/usage when the app-server fails, and skips the app-server for a while after that', async () => {
+	// 認証切れ以外で RPC に失敗したら wham/usage で読み、10 分間は RPC を飛ばす。その間の 401 は、codex で
+	// 更新できないだけなので「要再ログイン」にしない（以前と同じ）。
+	test('falls back to wham/usage when the app-server fails, and does not ask to re-login for a 401 while skipping it', async () => {
 		const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
 		service.rpcAnswer = new Error('codex app-server exited (code=1, signal=null)');
 		const first = summary(await service.fetch(codexHome));
+		service.clock += 6 * 60_000;
 		const second = summary(await service.fetch(codexHome));
 		service.whamAnswer = httpError(401);
 		const expired = summary(await service.fetch(codexHome));
 		service.dispose();
-		assert.deepStrictEqual({ first, second, expired: expired.status, calls: service.calls }, {
+		assert.deepStrictEqual({ first, second, expired: [expired.status, expired.statusDetail], calls: service.calls }, {
 			first: { status: 'ok', email: undefined, planType: 'pro', fiveHour: 55, sevenDay: 66, scoped: ['codex-spark'], statusDetail: undefined },
 			second: { status: 'ok', email: undefined, planType: 'pro', fiveHour: 55, sevenDay: 66, scoped: ['codex-spark'], statusDetail: undefined },
-			expired: 'relogin_required',
-			calls: [`rpc:${codexHome}`, 'wham', 'wham', 'wham'],
+			expired: ['error', 'access token expired and codex app-server is unavailable to refresh it'],
+			calls: [`rpc:${codexHome}`, 'wham:test-token', 'wham:test-token', 'wham:test-token'],
 		});
 	});
 
-	// 認証切れは再ログインでしか直らないので、wham/usage へは落ちない（Orca も同じ）。
-	test('reports re-login without falling back when the app-server says authentication is required', async () => {
+	// wham/usage の 401 は、アクセストークンの期限が切れただけかもしれない。5 分の間隔を待たずに codex に更新させる。
+	test('lets codex refresh an expired access token right away when wham/usage returns 401 between app-server reads', async () => {
 		const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
-		service.rpcAnswer = new Error('codex account authentication required to read rate limits');
+		await service.fetch(codexHome);
+		service.clock += 60_000;
+		service.whamAnswer = httpError(401);
 		const result = summary(await service.fetch(codexHome));
 		service.dispose();
-		assert.deepStrictEqual({ status: result.status, calls: service.calls }, { status: 'relogin_required', calls: [`rpc:${codexHome}`] });
+		assert.deepStrictEqual({ status: result.status, calls: service.calls }, {
+			status: 'ok',
+			calls: [`rpc:${codexHome}`, 'wham:test-token', 'wham:test-token', `rpc:${codexHome}`, 'wham:test-token'],
+		});
+	});
+
+	// 認証切れは再ログインでしか直らないので、wham/usage へは落ちない（Orca も同じ）。ログインし直すか 10 分たつまで
+	// app-server を起こさない。
+	test('reports re-login when the app-server says authentication is required, and waits for a new login before trying again', async () => {
+		const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
+		service.rpcAnswer = new Error('codex account authentication required to read rate limits');
+		const first = summary(await service.fetch(codexHome));
+		service.clock += 6 * 60_000;
+		service.whamAnswer = httpError(401);
+		const waiting = summary(await service.fetch(codexHome));
+		// ログインし直した（auth.json が変わった）
+		writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { access_token: 'new-login', account_id: 'acct-1' } }));
+		service.rpcAnswer = { planType: 'plus', windows: { fiveHour: { usedPercent: 1 }, sevenDay: { usedPercent: 2 } } };
+		service.whamAnswer = { plan_type: 'plus' };
+		const relogged = summary(await service.fetch(codexHome));
+		service.dispose();
+		assert.deepStrictEqual({ statuses: [first.status, waiting.status, relogged.status], calls: service.calls }, {
+			statuses: ['relogin_required', 'relogin_required', 'ok'],
+			calls: [`rpc:${codexHome}`, 'wham:test-token', `rpc:${codexHome}`, 'wham:new-login'],
+		});
+	});
+
+	// ホームが複数あっても、app-server は1つずつ、前のものが終わってから 2 秒あけて起こす。
+	test('starts app-servers for several homes one at a time with a stagger', async () => {
+		const secondHome = join(root, '.codex-2');
+		mkdirSync(secondHome);
+		writeFileSync(join(secondHome, 'auth.json'), JSON.stringify({ tokens: { access_token: 'second-token', account_id: 'acct-2' } }));
+		const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
+		await Promise.all([service.fetch(codexHome), service.fetch(secondHome)]);
+		service.dispose();
+		assert.deepStrictEqual(service.calls.filter(call => !call.startsWith('wham:')), [`rpc:${codexHome}`, 'stagger', `rpc:${secondHome}`]);
 	});
 });

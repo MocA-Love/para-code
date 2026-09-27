@@ -43,7 +43,20 @@ export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (e
 	};
 
 	const pid = child.pid;
-	if ((options?.platform ?? process.platform) !== 'win32' || typeof pid !== 'number') {
+	const platform = options?.platform ?? process.platform;
+	if (platform !== 'win32' && options?.processGroup && typeof pid === 'number' && child.exitCode === null && child.signalCode === null) {
+		// 自分のプロセスグループで起こした子（spawn の detached）は、グループごと止める。子が起こした
+		// 孫（codex app-server のプラグイン・MCP など）まで残さない。
+		try {
+			(options.groupKill ?? ((groupId, signal) => process.kill(-groupId, signal)))(pid, 'SIGTERM');
+			return;
+		} catch (error) {
+			reportError(error);
+			killDirectly();
+			return;
+		}
+	}
+	if (platform !== 'win32' || typeof pid !== 'number') {
 		killDirectly();
 		return;
 	}
@@ -66,6 +79,10 @@ export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (e
 
 export interface IParadisChildProcessTreeTerminationOptions {
 	readonly platform?: NodeJS.Platform;
+	/** POSIX: 子を自分のプロセスグループで起こした（spawn の `detached`）。グループごと止める。 */
+	readonly processGroup?: boolean;
+	/** テスト用。グループへシグナルを送る。 */
+	readonly groupKill?: (groupId: number, signal: NodeJS.Signals) => void;
 	readonly treeKill?: typeof killTree;
 	readonly terminator?: (child: cp.ChildProcess) => void;
 }

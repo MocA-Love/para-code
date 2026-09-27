@@ -138,11 +138,14 @@ export function paradisDetachedAgentCliEnv(env: NodeJS.ProcessEnv): NodeJS.Proce
  *
  * `args` は固定文字列だけを渡すこと（{@link paradisWrapWindowsScriptShim} の注意を参照）。
  */
-export function paradisSpawnAgentCli(command: string, args: readonly string[], options: { readonly env: NodeJS.ProcessEnv; readonly cwd?: string }): cp.ChildProcessWithoutNullStreams {
+export function paradisSpawnAgentCli(command: string, args: readonly string[], options: { readonly env: NodeJS.ProcessEnv; readonly cwd?: string; readonly processGroup?: boolean }): cp.ChildProcessWithoutNullStreams {
 	const shim = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
 	return cp.spawn(shim?.file ?? command, shim?.args ?? [...args], {
 		env: options.env,
 		cwd: options.cwd,
+		// POSIX で自分のプロセスグループを持たせる（止めるときにグループごと止めるため。
+		// paradisKillChildProcessTree の processGroup）。Windows はツリーごと止めるので要らない。
+		detached: options.processGroup === true && process.platform !== 'win32',
 		stdio: ['pipe', 'pipe', 'pipe'],
 		windowsHide: true,
 		windowsVerbatimArguments: shim !== undefined,
