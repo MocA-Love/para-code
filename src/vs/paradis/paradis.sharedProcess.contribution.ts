@@ -33,6 +33,7 @@ import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/limitsMonitor/node/paradisClaudeAccounts.contribution.js';
+import './contrib/codexAccounts/node/paradisCodexAccountsChannel.js';
 
 /**
  * 登録済みの shared process 向け contribution をすべて呼ぶ。
