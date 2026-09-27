@@ -1765,7 +1765,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
-	// 下部パネルは「どのスペースにも属さない共通ターミナル」（Q39 案C）。前のバージョンが別のスペースの
+	// 下部パネルは「どのスペースにも属さない共通ターミナル」。前のバージョンが別のスペースの
 	// 所属を台帳へ書いていても、切り替えで隠れず、そのスペースを消しても閉じない。設定を切ると従来どおり
 	// スペースごとに退避することも同じシナリオで確かめる（台帳の書き方が変わっていないことの確認を兼ねる）。
 	test('keeps the shared panel terminal visible across switches and alive when its old space is removed', async () => {

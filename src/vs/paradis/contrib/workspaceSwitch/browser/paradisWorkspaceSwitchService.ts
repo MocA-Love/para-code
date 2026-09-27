@@ -1863,7 +1863,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	private restorePanelVisibilityFor(stateKey: string): void {
-		// 共通ターミナル（Q39 案C）の置き場を、スペースを切り替えただけで閉じたり開いたりしない。
+		// 共通ターミナルの置き場を、スペースを切り替えただけで閉じたり開いたりしない。
 		// 設定は起動時の値で揃える（所属の判定側 `paradisTerminalScope` と同じ）。
 		if (this._sharedTerminalPanel) {
 			return;

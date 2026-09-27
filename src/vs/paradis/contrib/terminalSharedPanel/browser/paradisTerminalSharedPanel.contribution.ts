@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 下部パネルの共通ターミナル（Q39 案C・Q87 案A）。
+// 下部パネルの共通ターミナル。
 //
 // スペースへ所属させない・退避しない判定は `paradisTerminalScope.contribution.ts` が持つ
 // （スペースの所属台帳と同じ場所で判定しないと、台帳の方から所属が付き直る）。ここでは
