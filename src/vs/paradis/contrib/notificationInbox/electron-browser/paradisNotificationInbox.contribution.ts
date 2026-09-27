@@ -12,3 +12,4 @@
 import '../browser/paradisNotificationInboxSettings.js';
 import './paradisNotificationInboxService.js';
 import './paradisNotificationInboxSync.contribution.js';
+import './paradisNotificationInboxBell.contribution.js';
