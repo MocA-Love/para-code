@@ -561,8 +561,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 				agent: this._runsAgent(terminal),
 				...(terminal.token === callerToken ? { self: true } : {}),
 				...(created?.terminals.has(terminal.id) ? { created_by_you: true } : {}),
-				// 補助ウィンドウに見えているターミナルも、メインが別のスペースを表示していても画面に出ている
-				...((terminal.space !== undefined && terminal.space === active) || terminal.instance.isVisible === true ? { on_screen: true } : {}),
+				...(terminal.space !== undefined && terminal.space === active ? { on_screen: true } : {}),
 				can_send: canSend,
 			};
 		});
