@@ -20,6 +20,7 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { createParadisEditorTerminalIndicator, IParadisEditorTerminalIndicatorController } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneIndicator.js';
+import { createParadisPromptCacheBadge, IParadisPromptCacheBadgeController } from '../../../../paradis/contrib/agentInsights/browser/paradisPromptCacheBadge.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { TerminalEditor } from '../../../../workbench/contrib/terminal/browser/terminalEditor.js';
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
@@ -31,6 +32,8 @@ import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/brow
 export class SessionTerminalEditor extends TerminalEditor {
 
 	private _paradisIndicator: IParadisEditorTerminalIndicatorController | undefined;
+	/** 共有ドットの左に出すプロンプトキャッシュの残り時間（agentInsights）。 */
+	private _paradisPromptCacheBadge: IParadisPromptCacheBadgeController | undefined;
 
 	protected override createEditor(parent: HTMLElement): void {
 		super.createEditor(parent);
@@ -40,16 +43,19 @@ export class SessionTerminalEditor extends TerminalEditor {
 		const overflowGuard = parent.querySelector<HTMLElement>('.terminal-overflow-guard.terminal-editor');
 		if (overflowGuard) {
 			this._paradisIndicator = this._register(createParadisEditorTerminalIndicator(overflowGuard));
+			this._paradisPromptCacheBadge = this._register(createParadisPromptCacheBadge(overflowGuard));
 		}
 	}
 
 	override async setInput(newInput: TerminalEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(newInput, options, context, token);
 		this._paradisIndicator?.setInstance(newInput.terminalInstance?.instanceId);
+		this._paradisPromptCacheBadge?.setInstance(newInput.terminalInstance?.instanceId);
 	}
 
 	override clearInput(): void {
 		super.clearInput();
 		this._paradisIndicator?.setInstance(undefined);
+		this._paradisPromptCacheBadge?.setInstance(undefined);
 	}
 }

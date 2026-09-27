@@ -56,6 +56,7 @@ import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, 
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLookupBatch, ParadisIssueState } from '../../../common/paradisIssueDetection.js';
 import { IParadisAgentInsightsService, IParadisAgentScopePane } from '../../agentInsights/common/paradisAgentInsights.js';
 import { paradisScopeSubagentsHoverMarkdown } from '../../agentInsights/browser/paradisAgentInsightsPresentation.js';
+import { IParadisPromptCacheChip, ParadisPromptCacheChips } from '../../agentInsights/browser/paradisPromptCacheChips.js';
 import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_WORKTREE_ROW_HEIGHT, PARADIS_WORKTREE_ROW_META_SETTING_ID, ParadisWorktreeMetaId, paradisCanMoveWorktreeMeta, paradisMoveWorktreeMeta, paradisNormalizeWorktreeRowMeta, paradisSetWorktreeMetaAlign, paradisSetWorktreeMetaVisible, paradisWorktreeMetaLabel, paradisWorktreeMetaOrder, paradisWorktreeMetaShown, paradisWorktreeRowHasMeta, paradisWorktreeRowHeight } from '../common/paradisWorktreeRowMeta.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
@@ -375,6 +376,8 @@ interface IWorktreeTemplateData {
 	readonly diff: HTMLElement;
 	readonly diffAdded: HTMLElement;
 	readonly diffRemoved: HTMLElement;
+	/** プロンプトキャッシュの残り時間 (炎アイコン + 4:12)。数字は時計の合図で書き換わる */
+	readonly promptCache: IParadisPromptCacheChip;
 	/** ピン留めの留め外しボタン。未ピンは行のホバー時のみ、ピン済みは常に見える (CSS) */
 	readonly pin: HTMLElement;
 	readonly pinIcon: HTMLElement;
@@ -452,7 +455,7 @@ function prStateLabel(state: ParadisPrState): string {
 }
 
 /** メタを1つも持たない行の presence (毎回オブジェクトを作らないよう共有する)。 */
-const PARADIS_NO_WORKTREE_META: IParadisWorktreeMetaPresence = Object.freeze({ pr: false, issues: false, diff: false, notes: false });
+const PARADIS_NO_WORKTREE_META: IParadisWorktreeMetaPresence = Object.freeze({ pr: false, issues: false, diff: false, notes: false, promptCache: false });
 
 class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
 
@@ -633,6 +636,8 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		 * 3段の中身が2段の高さに押し込まれる形で静かに壊れるため)。
 		 */
 		private readonly getMetaPresence: (worktree: IParadisWorktree) => IParadisWorktreeMetaPresence,
+		/** メタ段の「プロンプトキャッシュの残り時間」の枠を作る係 (agentInsights) */
+		private readonly promptCacheChips: ParadisPromptCacheChips,
 		/** ドットのホバーに足すサブエージェント一覧の材料 (スペースに確実に属するペインだけ) */
 		private readonly getScopePanes: (stateKey: string) => readonly IParadisAgentScopePane[],
 	) { }
@@ -720,6 +725,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const diff = DOM.append(meta, DOM.$('.paradis-worktree-diff'));
 		const diffAdded = DOM.append(diff, DOM.$('span.paradis-worktree-diff-added'));
 		const diffRemoved = DOM.append(diff, DOM.$('span.paradis-worktree-diff-removed'));
+		const promptCache = this.promptCacheChips.create(meta, templateDisposables);
 		// ピンの留め外し。PR チップと同じく、行のクリック (切り替え) へ届く前に止める
 		const pinContext: { worktree?: IParadisWorktree } = {};
 		const pin = DOM.append(row, DOM.$('.paradis-worktree-pin'));
@@ -736,7 +742,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			}));
 		}
 		const pinHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pin, ''));
-		return { row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['issues', issue], ['diff', diff], ['notes', note]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
+		return { row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['issues', issue], ['diff', diff], ['notes', note], ['promptCache', promptCache.element]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, promptCache, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
@@ -746,7 +752,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		// の両方が揃ったときだけ。1つも残らなければ段ごと隠れ、行は2段 (44px) に戻る
 		// (高さ側の判定は WorkspaceTreeDelegate.getHeight が同じ getMetaPresence で行う)
 		const metaEntries = this.getMetaEntries();
-		const metaPresence = worktree.missing ? { pr: false, issues: false, diff: false, notes: false } : this.getMetaPresence(worktree);
+		const metaPresence = worktree.missing ? PARADIS_NO_WORKTREE_META : this.getMetaPresence(worktree);
 		this.applyMetaOrder(templateData, metaEntries);
 		templateData.meta.classList.toggle('hidden', !paradisWorktreeRowHasMeta(metaEntries, metaPresence));
 		// この行への切り替えが進行中。チェックはもう付いている (active) が、まだ着いていないことを
@@ -822,6 +828,10 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			templateData.diffAdded.textContent = '';
 			templateData.diffRemoved.textContent = '';
 		}
+
+		const promptCacheShown = paradisWorktreeMetaShown(metaEntries, metaPresence, 'promptCache');
+		templateData.promptCache.element.classList.toggle('hidden', !promptCacheShown);
+		templateData.promptCache.setScope(promptCacheShown ? stateKey : undefined);
 
 		const noteSummary = worktree.missing ? undefined : this.getNoteSummary(worktree);
 		const hasOpenTasks = !!noteSummary && noteSummary.open > 0;
@@ -1023,6 +1033,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	private treeIndent = DEFAULT_TREE_INDENT;
 	/** メタ段 (案E) の表示/並び順/寄せ。設定 paradis.workspaceSwitch.rowMeta に追従する */
 	private rowMeta = PARADIS_DEFAULT_WORKTREE_ROW_META;
+	/** メタ段のプロンプトキャッシュ残り時間。出る・消えるときだけツリーを組み直す (renderBody で作る) */
+	private promptCacheChips: ParadisPromptCacheChips | undefined;
 	/** ビュー下端に固定される「いま開いているスペースのメモ」欄 */
 	private notesPanel: ParadisSpaceNotesPanel | undefined;
 	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
@@ -1124,6 +1136,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			}
 		}));
 		const getBreakdown = (stateKey: string) => this.agentStatusStore.getScopeBreakdown(stateKey);
+		const promptCacheChips = this.promptCacheChips = this._register(this.instantiationService.createInstance(ParadisPromptCacheChips));
+		this._register(promptCacheChips.onDidChangeVisibility(() => this.updateTree()));
 		const repositoryRenderer = new RepositoryRenderer(
 			repository => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id),
 			repository => this.repositoryBreakdown(repository),
@@ -1150,6 +1164,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			worktree => this.workspaceSwitchService.pendingSwitchTargetKey === worktreeStateKeyFor(worktree),
 			() => this.rowMeta,
 			worktree => this.worktreeMetaPresence(worktree),
+			promptCacheChips,
 			stateKey => this.agentInsightsService.getScopePanes(stateKey)
 		);
 		const creatingRenderer = new CreatingSpaceRenderer(
@@ -1591,6 +1606,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			issues: this.agentStatusStore.getScopeIssueUrls(stateKey).length > 0,
 			diff: !!diffStat && (diffStat.insertions > 0 || diffStat.deletions > 0),
 			notes: noteSummary.open > 0,
+			promptCache: this.promptCacheChips?.hasScope(stateKey) ?? false,
 		};
 	}
 
