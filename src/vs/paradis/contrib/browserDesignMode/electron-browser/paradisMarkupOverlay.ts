@@ -6,7 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// スクリーンショットへの書き込み（Markup、B2 / Q63 A）。
+// スクリーンショットへの書き込み（Markup、B2）。別タブの画像編集ではなく、ページを見たまま
+// 同じ位置に描ける形にしている。
 //
 // ボタンを押すとページのスクリーンショットを撮り、同じ位置に静止画として重ね、その上に浮いた
 // 道具バーで描く。描いている間ページは静止画なので、動画や読み込み中の表示で絵がずれない。
@@ -30,7 +31,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
-import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import {
 	IParadisMarkupDocument,
 	IParadisMarkupPoint,
@@ -85,6 +86,7 @@ export class ParadisMarkupOverlay extends Disposable {
 	private readonly redoButton: HTMLButtonElement;
 	private readonly clearButton: HTMLButtonElement;
 	private readonly addButton: HTMLButtonElement;
+	private readonly status: HTMLElement;
 	private readonly imageUrl: string;
 
 	private doc: IParadisMarkupDocument = paradisCreateMarkupDocument();
@@ -129,8 +131,10 @@ export class ParadisMarkupOverlay extends Disposable {
 		const bar = append(this.root, $('.paradis-markup-toolbar'));
 		bar.style.left = `${area.left + area.width / 2}px`;
 		bar.style.top = `${area.top + 8}px`;
-		const status = append(bar, $('span.paradis-markup-status'));
-		status.textContent = localize('paradis.markup.status', "静止画で書き込み中");
+		this.status = append(bar, $('span.paradis-markup-status'));
+		this.status.setAttribute('role', 'status');
+		this.status.setAttribute('aria-live', 'polite');
+		this.setStatus(undefined);
 
 		const tools: IToolDefinition[] = [
 			{ tool: 'pen', icon: Codicon.edit, label: localize('paradis.markup.pen', "ペン") },
@@ -204,6 +208,15 @@ export class ParadisMarkupOverlay extends Disposable {
 		this.root.remove();
 		getWindow(this.root).URL.revokeObjectURL(this.imageUrl);
 		super.dispose();
+	}
+
+	/**
+	 * 道具バーの左端に結果を出す（undefined で既定の文言に戻す）。通知のトーストは内蔵ブラウザの
+	 * 裏に隠れることがあるので、書き込み中の結果はここに出す。
+	 */
+	private setStatus(text: string | undefined, error = false): void {
+		this.status.textContent = text ?? localize('paradis.markup.status', "静止画で書き込み中");
+		this.status.classList.toggle('error', error);
 	}
 
 	/** 外から閉じる（エディタのページが替わったときなど）。 */
@@ -293,6 +306,9 @@ export class ParadisMarkupOverlay extends Disposable {
 	}
 
 	private registerCanvasListeners(): void {
+		// 押したときの既定の動作（フォーカスの移動）を止める。止めないと、文字の入力欄を出した直後に
+		// フォーカスが重ね板へ移り、入力欄の blur で空のまま閉じてしまう
+		this._register(addDisposableListener(this.canvas, EventType.MOUSE_DOWN, (event: MouseEvent) => event.preventDefault()));
 		this._register(addDisposableListener(this.canvas, EventType.POINTER_DOWN, (event: PointerEvent) => {
 			if (event.button !== 0) {
 				return;
@@ -364,7 +380,13 @@ export class ParadisMarkupOverlay extends Disposable {
 		this.textInput.style.fontSize = `${fontSize}px`;
 		this.textInput.style.color = this.color;
 		this.textInput.style.display = 'block';
-		this.textInput.focus();
+		// 押した操作の後始末（フォーカスの移動）が済んでから入力欄へ移す
+		const input = this.textInput;
+		getWindow(input).requestAnimationFrame(() => {
+			if (!this.closed && this.textAt === point) {
+				input.focus();
+			}
+		});
 	}
 
 	private commitText(): void {
@@ -450,9 +472,9 @@ export class ParadisMarkupOverlay extends Disposable {
 			const blob = await this.compose();
 			const targetWindow = getWindow(this.root);
 			await targetWindow.navigator.clipboard.write([new targetWindow.ClipboardItem({ 'image/png': blob })]);
-			this.notificationService.info(localize('paradis.markup.copied', "書き込んだ画像をクリップボードへコピーしました。"));
+			this.setStatus(localize('paradis.markup.copied', "書き込んだ画像をクリップボードへコピーしました"));
 		} catch (error) {
-			this.notificationService.error(localize('paradis.markup.copyFailed', "画像をコピーできませんでした: {0}", String(error)));
+			this.setStatus(localize('paradis.markup.copyFailed', "画像をコピーできませんでした: {0}", String(error)), true);
 		}
 	}
 
@@ -468,7 +490,9 @@ export class ParadisMarkupOverlay extends Disposable {
 				png = new Uint8Array(await (await this.compose()).arrayBuffer());
 			} catch (error) {
 				this.addButton.disabled = false;
-				this.notificationService.error(localize('paradis.markup.composeFailed', "画像を作れませんでした: {0}", String(error)));
+				const message = localize('paradis.markup.composeFailed', "画像を作れませんでした: {0}", String(error));
+				this.setStatus(message, true);
+				this.notificationService.notify({ severity: Severity.Error, message, sticky: true });
 				return;
 			}
 		}
