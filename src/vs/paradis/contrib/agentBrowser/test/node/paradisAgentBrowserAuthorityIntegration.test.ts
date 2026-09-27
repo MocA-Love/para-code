@@ -124,6 +124,8 @@ function createFixture(): {
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
 		_agentHookTokens: new Set<string>(),
+		_hookReportedTokens: new Set<string>(),
+		_callerClassifications: new WeakMap<object, Map<string, string>>(),
 		// プロセス表なし = 発信元不特定の fail-closed ポリシー（同一/無transcriptは素通し）。
 		_hookOwnership: new ParadisAgentHookOwnership({ snapshot: async () => undefined }),
 		_seenTokens: new Set<string>(),
