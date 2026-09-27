@@ -770,6 +770,23 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 存在確認と先行 stat の締め切り (1500ms ずつ) を実時間で待つので遅いテスト。
+	test('still switches by state key to a worktree when the existence check never answers', async function () {
+		this.timeout(10_000);
+		const testDisposables = new DisposableStore();
+		try {
+			const stuck = URI.file('/workspace-a-worktrees/stuck');
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], () => new Promise<Partial<IFileStat>>(() => { }));
+
+			await harness.workspaceSwitchService.switchToStateKey(paradisWorktreeStateKey(stuck));
+
+			assert.strictEqual(harness.workspaceSwitchService.activeStateKey, paradisWorktreeStateKey(stuck));
+		} finally {
+			paradisResetTerminalInputGateForTest();
+			testDisposables.dispose();
+		}
+	});
+
 	test('cancels earlier prepared retirements and keeps the repository when a descendant vetoes removal', async () => {
 		const testDisposables = new DisposableStore();
 		try {
