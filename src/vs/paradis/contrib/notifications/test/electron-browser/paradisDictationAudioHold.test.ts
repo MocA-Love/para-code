@@ -57,7 +57,8 @@ suite('Paradis dictation audio hold', () => {
 		onDidEnd.fire();
 		hold.dispose();
 
-		// 起動時の false（再読み込み前の状態を解く）→ 準備開始で true → Idle で false → 拡張の音声入力で true → false
-		assert.deepStrictEqual(sent, [false, true, false, true, false]);
+		// 起動時の false（再読み込み前の状態を解く）→ 音声入力中は状態が動くたびに true を送り直す
+		// → Idle で false → 拡張の音声入力で true → false
+		assert.deepStrictEqual(sent, [false, true, true, true, false, true, false]);
 	});
 });

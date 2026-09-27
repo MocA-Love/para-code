@@ -31,6 +31,7 @@ import {
 	AivisTaskRunner,
 	AudioScheduler,
 } from './paradisAudioScheduler.js';
+import { ParadisDictationHold } from '../common/paradisDictationHold.js';
 import {
 	CUSTOM_RINGTONE_ID,
 	getRingtoneFilename,
@@ -192,9 +193,6 @@ export class ParadisNotificationsService extends Disposable {
 	/** notifyAudio の直近要求で鳴らすべき通知音。scheduler.playRingtone() の直前に同期でセットする。 */
 	private _currentRingtone: { readonly id: string; readonly volume: number } | undefined;
 
-	/** 音声入力で読み上げを止めておける上限。 */
-	private static readonly DICTATION_HOLD_LIMIT_MS = 10 * 60_000;
-
 	/** 通知音と Aivis 再生の重なりを調停する単一スケジューラ。 */
 	private readonly _scheduler: AudioScheduler;
 
@@ -202,10 +200,11 @@ export class ParadisNotificationsService extends Disposable {
 	private readonly _audioPlayers = new Set<ChildProcess>();
 	/** 音声入力で止めたプレイヤー。その終了は失敗として扱わない。 */
 	private readonly _stoppedPlayers = new WeakSet<ChildProcess>();
-	/** 音声入力（ディクテーション）中のウィンドウ（接続）。1つでもあれば読み上げを止める。 */
-	private readonly _dictatingClients = new Set<string>();
-	/** 音声入力で止めたままにできる上限（モデルの初回ダウンロードで長く止まり続けるのを防ぐ）。 */
-	private _dictationHoldTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 音声入力（ディクテーション）中のウィンドウ（接続）。1つでもあれば読み上げを止める。上限はウィンドウごと。 */
+	private readonly _dictationHold = this._register(new ParadisDictationHold(
+		held => this._applyDictationHold(held),
+		client => this.logService.warn(`[ParadisNotifications] dictation in ${client} kept the audio on hold for too long; no longer holding for it`),
+	));
 
 	constructor(private readonly logService: ILogService) {
 		super();
@@ -332,35 +331,16 @@ export class ParadisNotificationsService extends Disposable {
 	 * 読み直さない）、その後に届いた発話は溜めておいて、音声入力が終わってから読み上げる。
 	 */
 	setDictationActive(client: string, active: boolean): void {
-		if (active) {
-			this._dictatingClients.add(client);
-		} else {
-			this._dictatingClients.delete(client);
-		}
-		this._applyDictationHold();
+		this._dictationHold.set(client, active);
 	}
 
-	private _applyDictationHold(): void {
-		const held = this._dictatingClients.size > 0;
-		if (held === this._scheduler.isHeld) {
-			return;
-		}
+	private _applyDictationHold(held: boolean): void {
 		this._scheduler.setHeld(held);
-		if (this._dictationHoldTimer !== undefined) {
-			clearTimeout(this._dictationHoldTimer);
-			this._dictationHoldTimer = undefined;
-		}
 		if (held) {
 			for (const player of this._audioPlayers) {
 				this._stoppedPlayers.add(player);
 				player.kill();
 			}
-			this._dictationHoldTimer = setTimeout(() => {
-				this._dictationHoldTimer = undefined;
-				this.logService.warn('[ParadisNotifications] dictation kept the audio on hold for too long; resuming notifications');
-				this._dictatingClients.clear();
-				this._applyDictationHold();
-			}, ParadisNotificationsService.DICTATION_HOLD_LIMIT_MS);
 		}
 	}
 
@@ -374,13 +354,6 @@ export class ParadisNotificationsService extends Disposable {
 				this.setDictationActive(client, false);
 			}
 		}));
-		this._register({
-			dispose: () => {
-				if (this._dictationHoldTimer !== undefined) {
-					clearTimeout(this._dictationHoldTimer);
-				}
-			}
-		});
 	}
 
 	/** ringtoneId から実ファイルパスを解決して再生し、完了を待つ。解決不可なら即 resolve（＝スキップ）。 */

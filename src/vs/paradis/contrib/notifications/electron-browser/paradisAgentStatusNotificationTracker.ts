@@ -51,10 +51,12 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 			const previous = this._previousStatus.get(paneStatus.token);
 			const previousChangedAt = this._previousChangedAt.get(paneStatus.token);
 			this._previousStatus.set(paneStatus.token, paneStatus.status);
-			this._previousChangedAt.set(paneStatus.token, paneStatus.changedAt);
 			if (previous === paneStatus.status) {
+				// hook は同じ状態のままでもイベントのたびに changedAt を書き直すので、状態が変わったときの
+				// 時刻だけを覚える（完了の直前の working に入った時刻＝ターンの作業の開始、を保つ）。
 				continue;
 			}
+			this._previousChangedAt.set(paneStatus.token, paneStatus.changedAt);
 
 			this._pendingActionTimers.deleteAndDispose(paneStatus.token);
 			if (paneStatus.status === 'review') {

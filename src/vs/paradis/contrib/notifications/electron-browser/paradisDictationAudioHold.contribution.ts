@@ -64,7 +64,9 @@ export class ParadisDictationAudioHold extends Disposable implements IWorkbenchC
 	}
 
 	private send(active: boolean, force = false): void {
-		if (active === this.active && !force) {
+		// 「音声入力中」は状態が動くたびに送り直す。shared process はウィンドウごとの上限（10分）で
+		// 外すことがあるので、次の音声入力の知らせで止め直してもらう。
+		if (active === this.active && !active && !force) {
 			return;
 		}
 		this.active = active;
