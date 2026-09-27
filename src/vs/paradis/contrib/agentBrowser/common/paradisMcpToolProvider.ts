@@ -96,8 +96,9 @@ export interface IParadisMcpPaneAgentStatus {
 	/**
 	 * 許可待ち・質問中が hook ではなく transcript（同じユーザーの別プロセスが追記できる）から解かれ、
 	 * その後に接続元を確かめた hook がまだ来ていない。この間は状態を信用しない（Enter を送らない）。
+	 * `unverifiable` は、その後の hook の接続元を確かめられなかった（tmux・WSL など）ペイン。
 	 */
-	readonly unconfirmedRelease?: boolean;
+	readonly unconfirmedRelease?: 'pending' | 'unverifiable';
 }
 
 /**

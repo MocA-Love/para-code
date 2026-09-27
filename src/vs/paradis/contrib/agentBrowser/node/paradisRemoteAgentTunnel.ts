@@ -288,12 +288,6 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 
 	/**
-	 * 接続先への経路を用意する。既にあれば（張れていても、まだ試行中でも）その結果に相乗りする。
-	 * @param owner どのウィンドウの求めか。同じ接続先へ複数のウィンドウが繋いでいるとき、
-	 * 1枚閉じただけで全員の経路を畳まないために数えておく。
-	 * @returns 接続先で実際に割り当てられた番号。張れなかった／使い切って諦めた場合は undefined
-	 */
-	/**
 	 * その接続先への戻り経路を張っている `ssh`（`-R` の本体）の PID。張れていなければ undefined。
 	 * 戻り経路から来た接続（接続先の hook と MCP）は、手元ではこのプロセスが相手になるので、
 	 * 接続元の確認はこの PID との一致で行う。
@@ -303,6 +297,12 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		return typeof pid === 'number' && pid > 0 ? pid : undefined;
 	}
 
+	/**
+	 * 接続先への経路を用意する。既にあれば（張れていても、まだ試行中でも）その結果に相乗りする。
+	 * @param owner どのウィンドウの求めか。同じ接続先へ複数のウィンドウが繋いでいるとき、
+	 * 1枚閉じただけで全員の経路を畳まないために数えておく。
+	 * @returns 接続先で実際に割り当てられた番号。張れなかった／使い切って諦めた場合は undefined
+	 */
 	ensure(remoteAuthority: string, port: number, owner?: string): Promise<number | undefined> {
 		if (!Number.isInteger(port) || port <= 0 || port > 65535) {
 			return Promise.resolve(undefined);

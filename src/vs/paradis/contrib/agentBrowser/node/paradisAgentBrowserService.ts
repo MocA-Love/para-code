@@ -259,6 +259,17 @@ const PARADIS_AGENT_TAB_TOOL_NAMES: ReadonlySet<string> = new Set(['open_browser
 /** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
 const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']);
 
+/**
+ * 呼び出し元のプロセスを確かめてから動かすツール（利用者に承認を求めるもの、ページやプロファイルを開く・
+ * 切り替える・消すもの）。一覧だけのツールは含めない。
+ */
+const PARADIS_CALLER_VERIFIED_TOOL_NAMES: ReadonlySet<string> = new Set([
+	'open_browser_profile', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile',
+	'open_browser_tab', 'select_browser_tab', 'close_browser_tab', 'request_browser_page',
+]);
+
+const CALLER_UNVERIFIED_BROWSER_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from Para Code\'s SSH port forwarding), so it does not open, switch or delete browser pages or profiles for it. Start this agent CLI from a terminal inside Para Code.';
+
 /** para-browser側の静的ツール名（chrome-devtools-mcp側で同名ツールが現れた場合に隠すための予約集合）。 */
 const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.map(tool => tool.name));
 
@@ -445,6 +456,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 信用しない（Enter を送らない）。確かめた hook が来たら外す。
 	 */
 	private readonly _unconfirmedReleaseTokens = new Set<string>();
+	/** 印が付いたまま、hook の接続元を確かめられなかったペイン（tmux・WSL など）。IDE 操作ツールの Enter は利用者に任せる。 */
+	private readonly _unconfirmableTokens = new Set<string>();
 	/** 接続（keep-alive）ごとの、接続元プロセスの分類の結果。接続が消えれば一緒に消える。 */
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/**
@@ -992,13 +1005,16 @@ export class ParadisAgentBrowserService extends Disposable {
 				: pane.shellPid !== undefined && !terminalExited
 					? pane.shellPid
 					: undefined;
+			// 不完全な manifest で番号を引き継ぐときは、接続先の印も引き継ぐ（番号だけ引き継ぐと、接続先の番号が
+			// 手元の番号として扱われる）
+			const desiredRemoteAuthority = preserveRecoveryPid ? existing.remoteAuthority : pane.remoteAuthority;
 			if (existing !== undefined
-				&& (existing.windowCtx !== windowCtx || existing.shellPid !== desiredShellPid || existing.remoteAuthority !== pane.remoteAuthority)) {
+				&& (existing.windowCtx !== windowCtx || existing.shellPid !== desiredShellPid || existing.remoteAuthority !== desiredRemoteAuthority)) {
 				this._paneShells.delete(pane.token);
 				this._runNonThrowingCleanup('gateway-connections', () => this._cdpGateway.closeConnectionsForToken(pane.token));
 			}
 			if (desiredShellPid !== undefined) {
-				this._paneShells.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid, ...(pane.remoteAuthority !== undefined ? { remoteAuthority: pane.remoteAuthority } : {}) });
+				this._paneShells.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid, ...(desiredRemoteAuthority !== undefined ? { remoteAuthority: desiredRemoteAuthority } : {}) });
 				// A quarantined token re-entering as a live pane under a different shell PID is a genuinely
 				// new binding lifecycle (e.g. the pane was reopened after its window was closed). Lift the
 				// isolation so a closed-window quarantine that never receives a TerminalExit can recover.
@@ -1049,13 +1065,14 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (desiredShellPid === undefined) {
 				projected.delete(pane.token);
 			} else {
-				const retiringTokens = pane.remoteAuthority === undefined ? retiringTokensByPid.get(desiredShellPid) : undefined;
+				const desiredRemoteAuthority = preserveRecoveryPid ? existing.remoteAuthority : pane.remoteAuthority;
+				const retiringTokens = desiredRemoteAuthority === undefined ? retiringTokensByPid.get(desiredShellPid) : undefined;
 				if (retiringTokens !== undefined && [...retiringTokens].some(token => token !== pane.token)) {
 					// Retirement can be conservatively preserved by an ABA check. Never transfer its
 					// PID to another token until a later manifest observes the completed retirement.
 					throw new Error('Shell PID retirement is not yet committed');
 				}
-				projected.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid, ...(pane.remoteAuthority !== undefined ? { remoteAuthority: pane.remoteAuthority } : {}) });
+				projected.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid, ...(desiredRemoteAuthority !== undefined ? { remoteAuthority: desiredRemoteAuthority } : {}) });
 			}
 		}
 		const ownersByPid = new Map<number, string>();
@@ -1342,6 +1359,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._agentHookTokens.delete(token);
 		this._hookReportedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
+		this._unconfirmableTokens.delete(token);
 		this._seenTokens.delete(token);
 		if (!preserveTerminalExit) {
 			this._terminalExitedTokens.delete(token);
@@ -1614,7 +1632,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
 			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
 				const entry = this._paneStatuses.get(paneToken);
-				return entry ? { status: entry.status, changedAt: entry.changedAt, ...(this._unconfirmedReleaseTokens.has(paneToken) ? { unconfirmedRelease: true } : {}) } : undefined;
+				const unconfirmedRelease = this._unconfirmedReleaseTokens.has(paneToken)
+					? (this._unconfirmableTokens.has(paneToken) ? 'unverifiable' as const : 'pending' as const)
+					: undefined;
+				return entry ? { status: entry.status, changedAt: entry.changedAt, ...(unconfirmedRelease !== undefined ? { unconfirmedRelease } : {}) } : undefined;
 			},
 		};
 	}
@@ -1622,9 +1643,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	/**
 	 * 接続元のプロセスを分類する。トークンだけでは本人と言えない（同じユーザーのプロセスは他ペインの
 	 * 環境変数を `ps eww` で読める）ので、`127.0.0.1:<相手> -> 127.0.0.1:<このサーバー>` の接続を持つ
-	 * プロセスが、そのペインのシェルの子孫か（`pane`）、このプロセスが起こした SSH の戻り経路などの
-	 * 子孫か（`tunnel`）を見る。環境変数は偽装できるので見ない。
+	 * プロセスを調べる。手元のペインなら、そのペインのシェルの子孫のとき `pane`。SSH など接続先のペインなら、
+	 * Para Code が張った戻り経路の `ssh -R` のプロセスそのもののとき `tunnel`（接続先のどのプロセスからかは
+	 * 分からない）。どちらで確かめるかはペインの属性で決まる。環境変数は偽装できるので見ない。
 	 * 同じ接続（keep-alive）とトークンの組の結果は、接続が閉じるまで覚えておく（1 回に `lsof` / `ps` を数回起こすため）。
+	 * シェルの PID や戻り経路が変わったら覚えた結果は使わない。
 	 */
 	private async _classifyCaller(token: string, socket: Socket | undefined): Promise<ParadisMcpCallerKind> {
 		if (!socket || this._port === undefined || typeof socket.remotePort !== 'number' || socket.localPort !== this._port) {
@@ -2314,7 +2337,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 相手（curl の 3 秒の待ち）が先に切れても、確かめと状態の更新は最後まで続ける（Windows では
 			// 確かめが遅く、承認の後の hook を落とすと許可待ちのまま残るため）。
 			const currentStatus = eventType ? this._paneStatuses.get(token)?.status : undefined;
-			if (currentStatus === 'permission' || currentStatus === 'question' || (eventType && this._unconfirmedReleaseTokens.has(token))) {
+			if (currentStatus === 'permission' || currentStatus === 'question') {
 				const caller = await this._classifyCaller(token, req.socket as Socket);
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendIngressRejected(res);
@@ -2327,6 +2350,22 @@ export class ParadisAgentBrowserService extends Disposable {
 					return;
 				}
 				this._unconfirmedReleaseTokens.delete(token);
+				this._unconfirmableTokens.delete(token);
+			} else if (eventType && eventType !== 'TerminalExit' && this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token)) {
+				// transcript から許可待ちが解かれた後の印は、確かめた hook でだけ外す。確かめられない hook も
+				// 捨てずに処理する（tmux・WSL などでは確かめを通れないので、捨てると定期実行の見張りやモバイルの
+				// 会話が止まる）。印は IDE 操作ツールの Enter を断る条件にだけ使う。確かめられなかったペインは
+				// 次の許可待ちで確かめが通るまで問い合わせない（hook のたびに lsof を起こさない）
+				const caller = await this._classifyCaller(token, req.socket as Socket);
+				if (!this.isIngressLeaseCurrent(ingressLease)) {
+					this._sendIngressRejected(res);
+					return;
+				}
+				if (caller === 'unverified') {
+					this._unconfirmableTokens.add(token);
+				} else {
+					this._unconfirmedReleaseTokens.delete(token);
+				}
 			}
 			// 発信元プロセスの所有権分類。ペイントークンはターミナル配下の全子プロセスへ
 			// 継承されるため、所有エージェントの配下で動く別エージェント（例: plugin 経由の
@@ -2342,7 +2381,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				// 番号が偶然ぶつかると、そのプロセスが所有者として焼かれ、以後この接続先の hook が
 				// 丸ごと 'invalid' で無言に落ち続ける（接続先の会話が一切出ない状態に戻る）。
 				// 素性の分からない発信元として、pid を使わない fail-closed 側の判定へ倒す。
-				const hookPid = remoteHostId !== undefined ? undefined : parsedPid;
+				// 接続先かどうかはクエリの `host=` だけでなくペインの属性でも見る（`host=` の無い古いスクリプトや偽装）
+				const hookPid = remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined ? undefined : parsedPid;
 				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now() });
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendIngressRejected(res);
@@ -2371,6 +2411,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					this._agentHookTokens.delete(token);
 					this._hookReportedTokens.delete(token);
 					this._unconfirmedReleaseTokens.delete(token);
+					this._unconfirmableTokens.delete(token);
 				} else {
 					this._agentHookTokens.add(token);
 					this._hookReportedTokens.add(token);
@@ -2635,6 +2676,18 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
 			return this._callDevtoolsTool(ingressLease, name, params?.arguments, signal);
+		}
+
+		// 利用者に承認を求める・ページやプロファイルを開く / 切り替える / 消すツールは、トークンだけでなく
+		// 接続元のプロセスも確かめる（トークンは同じユーザーの別プロセスが読めるので、他のペインの名で
+		// 共有を頼めてしまう）。SSH の接続先のエージェントは戻り経路の ssh（tunnel）として通す。
+		// 一覧だけのツールと、ブラウザの共有そのもの（CDP ゲートウェイ）はこれまでどおり
+		if (PARADIS_CALLER_VERIFIED_TOOL_NAMES.has(name)) {
+			const caller = await this._classifyCaller(token, socket);
+			this._requireIngressLease(ingressLease);
+			if (caller === 'unverified') {
+				return this._toolError(CALLER_UNVERIFIED_BROWSER_MESSAGE);
+			}
 		}
 
 		if (name === 'preview_file') {
@@ -3859,6 +3912,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._agentHookTokens.clear();
 		this._hookReportedTokens.clear();
 		this._unconfirmedReleaseTokens.clear();
+		this._unconfirmableTokens.clear();
 		this._seenTokens.clear();
 		this._terminalExitedTokens.clear();
 		this._rendererConnections.clear();
