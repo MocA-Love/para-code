@@ -7,8 +7,10 @@
 
 // 起動の引数と、1 本の接続で受けた要求の振り分け。
 //
-// 今の版で受ける命令は読み取りだけ（状態・許可の確認・アプリとウィンドウの一覧・単一ウィンドウのスクショ・
-// アクセシビリティのツリー）。クリックや文字入力はまだ無い。
+// 読み取り（状態・許可の確認・アプリとウィンドウの一覧・単一ウィンドウのスクショ・アクセシビリティのツリー）と、
+// 操作（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー・ホットキー）を受ける。
+// 引数の形と、送らないキーの組み合わせはここで確かめ、OS に触れる前に断る。
+// どのアプリを操作してよいか（承認）は shared process が決める。補助アプリは受けた pid に送るだけ。
 
 import Foundation
 
@@ -68,6 +70,16 @@ struct ParadisPermissionSnapshot: Equatable {
 	}
 }
 
+/** クリックなどの的。ウィンドウ左上を原点とするポイントか、直前に読んだツリーの番号。 */
+enum ParadisPointerTarget: Equatable {
+	case point(x: Double, y: Double)
+	case element(Int)
+}
+
+enum ParadisMouseButton: String {
+	case left, right
+}
+
 protocol ParadisDesktopBackend: AnyObject {
 	func permissions() -> ParadisPermissionSnapshot
 	func responsibility() -> (ParadisResponsibility, Int32?)
@@ -76,6 +88,13 @@ protocol ParadisDesktopBackend: AnyObject {
 	func listWindows(pid: Int32) throws -> [[String: Any]]
 	func screenshotWindow(pid: Int32, windowId: UInt32, maxLongEdge: Int) throws -> [String: Any]
 	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int) throws -> [String: Any]
+	func activateApp(pid: Int32, windowId: UInt32?) throws -> [String: Any]
+	func click(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers) throws -> [String: Any]
+	func drag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget) throws -> [String: Any]
+	func scroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double) throws -> [String: Any]
+	func typeText(pid: Int32, units: [ParadisTypedUnit]) throws -> [String: Any]
+	func pasteText(pid: Int32, text: String) throws -> [String: Any]
+	func pressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any]
 }
 
 // MARK: - 振り分け
@@ -162,6 +181,51 @@ final class ParadisRequestHandler {
 		case "screenshotWindow":
 			let longEdge = try optionalIntParam(params, "maxLongEdge", minimum: 64, maximum: paradisMaxScreenshotLongEdge) ?? paradisDefaultScreenshotLongEdge
 			return try backend.screenshotWindow(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, maxLongEdge: longEdge)
+		case "activateApp":
+			return try backend.activateApp(pid: try pidParam(params), windowId: try windowIdParam(params, required: false))
+		case "click":
+			let button = try enumParam(params, "button", ParadisMouseButton.init(rawValue:)) ?? .left
+			let clickCount = try optionalIntParam(params, "clickCount", minimum: 1, maximum: 3) ?? 1
+			return try backend.click(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, target: try targetParam(params), button: button, clickCount: clickCount, modifiers: try modifiersParam(params))
+		case "drag":
+			guard let from = params["from"] as? [String: Any], let to = params["to"] as? [String: Any] else {
+				throw ParadisHelperError.invalidArgument("\"from\" and \"to\" must be objects with elementIndex or x and y")
+			}
+			return try backend.drag(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, from: try targetParam(from), to: try targetParam(to))
+		case "scroll":
+			guard let direction = try enumParam(params, "direction", ParadisScrollDirection.init(rawValue:)) else {
+				throw ParadisHelperError.invalidArgument("\"direction\" must be up, down, left or right")
+			}
+			let pages = try optionalNumberParam(params, "pages", minimum: 0.1, maximum: 10) ?? 1
+			let target = params["elementIndex"] != nil || params["x"] != nil || params["y"] != nil ? try targetParam(params) : nil
+			return try backend.scroll(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, target: target, direction: direction, pages: pages)
+		case "typeText":
+			guard let text = params["text"] as? String else {
+				throw ParadisHelperError.invalidArgument("\"text\" must be a string")
+			}
+			return try backend.typeText(pid: try pidParam(params), units: try paradisTypedUnits(text))
+		case "pasteText":
+			guard let text = params["text"] as? String, !text.isEmpty else {
+				throw ParadisHelperError.invalidArgument("\"text\" must be a non-empty string")
+			}
+			guard text.count <= paradisMaxPasteTextLength else {
+				throw ParadisHelperError.invalidArgument("\"text\" is longer than \(paradisMaxPasteTextLength) characters")
+			}
+			return try backend.pasteText(pid: try pidParam(params), text: text)
+		case "pressKey":
+			guard let key = params["key"] as? String, paradisModifier(named: key) == nil, let keyCode = paradisKeyCode(named: key) else {
+				throw ParadisHelperError.invalidArgument("\"key\" must be one key name such as return, escape, tab, up or a")
+			}
+			return try backend.pressChord(pid: try pidParam(params), chord: try allowedChord(ParadisKeyChord(keyCode: keyCode, modifiers: [])))
+		case "hotkey":
+			guard let keys = params["keys"] as? [String], keys.count >= 2, keys.count <= 5 else {
+				throw ParadisHelperError.invalidArgument("\"keys\" must list one to four modifiers and one key, such as [\"cmd\", \"s\"]")
+			}
+			let chord = try paradisParseChord(keys)
+			guard !chord.modifiers.isEmpty else {
+				throw ParadisHelperError.invalidArgument("a hotkey needs at least one modifier; use pressKey for a single key")
+			}
+			return try backend.pressChord(pid: try pidParam(params), chord: try allowedChord(chord))
 		case "accessibilityTree":
 			let maxNodes = try optionalIntParam(params, "maxNodes", minimum: 1, maximum: paradisMaxAXMaxNodes) ?? paradisDefaultAXMaxNodes
 			let maxDepth = try optionalIntParam(params, "maxDepth", minimum: 1, maximum: paradisMaxAXMaxDepth) ?? paradisDefaultAXMaxDepth
@@ -209,6 +273,63 @@ final class ParadisRequestHandler {
 			throw ParadisHelperError.invalidArgument("\"windowId\" must be a positive integer")
 		}
 		return UInt32(windowId)
+	}
+
+	private func allowedChord(_ chord: ParadisKeyChord) throws -> ParadisKeyChord {
+		if let reason = paradisBlockedChordReason(chord) {
+			throw ParadisHelperError(code: "key_blocked", message: reason)
+		}
+		return chord
+	}
+
+	private func targetParam(_ params: [String: Any]) throws -> ParadisPointerTarget {
+		if let raw = params["elementIndex"] {
+			guard let index = paradisExactInt(raw), index >= 0, index < paradisMaxAXMaxNodes else {
+				throw ParadisHelperError.invalidArgument("\"elementIndex\" must be an element number from the last accessibility tree")
+			}
+			return .element(index)
+		}
+		guard let x = paradisFiniteNumber(params["x"]), let y = paradisFiniteNumber(params["y"]), x >= 0, y >= 0, x <= 100_000, y <= 100_000 else {
+			throw ParadisHelperError.invalidArgument("give either \"elementIndex\" or \"x\" and \"y\" in points from the window's top-left corner")
+		}
+		return .point(x: x, y: y)
+	}
+
+	private func modifiersParam(_ params: [String: Any]) throws -> ParadisModifiers {
+		guard let raw = params["modifiers"] else {
+			return []
+		}
+		guard let names = raw as? [String], names.count <= 4 else {
+			throw ParadisHelperError.invalidArgument("\"modifiers\" must be a list such as [\"cmd\", \"shift\"]")
+		}
+		var modifiers: ParadisModifiers = []
+		for name in names {
+			guard let modifier = paradisModifier(named: name), modifier != .function else {
+				throw ParadisHelperError.invalidArgument("unknown modifier \"\(paradisSanitizeText(name, maxLength: 20))\"")
+			}
+			modifiers.insert(modifier)
+		}
+		return modifiers
+	}
+
+	private func enumParam<T>(_ params: [String: Any], _ name: String, _ make: (String) -> T?) throws -> T? {
+		guard let raw = params[name] else {
+			return nil
+		}
+		guard let text = raw as? String, let value = make(text) else {
+			throw ParadisHelperError.invalidArgument("\"\(name)\" has an unknown value")
+		}
+		return value
+	}
+
+	private func optionalNumberParam(_ params: [String: Any], _ name: String, minimum: Double, maximum: Double) throws -> Double? {
+		guard let raw = params[name] else {
+			return nil
+		}
+		guard let value = paradisFiniteNumber(raw), value >= minimum, value <= maximum else {
+			throw ParadisHelperError.invalidArgument("\"\(name)\" must be a number from \(minimum) to \(maximum)")
+		}
+		return value
 	}
 
 	private func optionalIntParam(_ params: [String: Any], _ name: String, minimum: Int, maximum: Int) throws -> Int? {
