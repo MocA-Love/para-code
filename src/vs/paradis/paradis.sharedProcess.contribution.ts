@@ -31,6 +31,7 @@ import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.js';
 import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
+import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 
 /**
  * 登録済みの shared process 向け contribution をすべて呼ぶ。
