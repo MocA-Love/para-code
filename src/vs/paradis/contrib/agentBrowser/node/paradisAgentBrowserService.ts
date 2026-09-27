@@ -50,6 +50,7 @@ import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
+import { paradisPeerDescendsFromPid } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
@@ -108,6 +109,8 @@ const MAX_PANE_TOKEN_LENGTH = 200;
 const MAX_HOOK_EVENT_LENGTH = 200;
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
+/** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 const MAX_ACTIVE_MOBILE_VOICE_REQUESTS = 2;
 const MAX_ACTIVE_MOBILE_VOICE_BYTES = 16 * 1024 * 1024;
@@ -468,6 +471,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _activeRequestControllers = new Set<AbortController>();
 	private readonly _activeIngressRequestsByToken = new Map<string, number>();
 	private _activeIngressRequestCount = 0;
+	/**
+	 * hook の受付は MCP と別枠で数える。MCP の待機ツール（最大 240 秒）が枠を占めても、
+	 * 許可待ち・完了の hook が拒否されないようにするため。
+	 */
+	private readonly _activeHookRequestsByToken = new Map<string, number>();
+	private _activeHookRequestCount = 0;
 	private _activeMobileVoiceRequestCount = 0;
 	private _activeMobileVoiceBytes = 0;
 	// lease未設定のticketは拡張機能ホスト由来（ペインを持たない）。音声取込だけに使える。
@@ -1546,8 +1555,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** プロバイダが足したサーバーの説明（`initialize` の `instructions`）。 */
-	private _serverInstructions(): string | undefined {
-		const parts: string[] = [];
+	private _serverInstructions(): string {
+		// ブラウザの説明はこのサーバー自身のものなので、プロバイダの有無に関係なく先頭に置く
+		const parts: string[] = [PARADIS_BROWSER_MCP_INSTRUCTIONS];
 		for (const provider of this._allToolProviders()) {
 			try {
 				const text = provider.instructions?.();
@@ -1558,12 +1568,26 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] MCP instructions provider failed', error));
 			}
 		}
-		return parts.length > 0 ? parts.join('\n\n') : undefined;
+		return parts.join('\n\n');
 	}
 
 	/** プロバイダへ渡す、この呼び出し（ingress lease）に結び付いた機能。 */
-	private _toolCallContext(ingressLease: IParadisAgentBrowserIngressLease): IParadisMcpToolCallContext {
+	private _toolCallContext(ingressLease: IParadisAgentBrowserIngressLease, peerPort: number | undefined): IParadisMcpToolCallContext {
 		return {
+			hasAgentHookHistory: (paneToken: string): boolean => this._agentHookTokens.has(paneToken),
+			verifyCallerProcess: async (): Promise<boolean> => {
+				// トークンだけでは本人と言えない（同じユーザーのプロセスは他ペインの環境変数を読める）。
+				// 接続元のプロセスが、そのペインのシェルの子孫であることを確かめる。環境変数は偽装できるので見ない
+				const pane = this._paneShells.get(ingressLease.token);
+				if (!pane || peerPort === undefined || !Number.isSafeInteger(pane.shellPid) || pane.shellPid <= 1) {
+					return false;
+				}
+				try {
+					return await paradisPeerDescendsFromPid(peerPort, process.pid, pane.shellPid);
+				} catch {
+					return false;
+				}
+			},
 			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
 			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
 				const entry = this._paneStatuses.get(paneToken);
@@ -1969,7 +1993,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 
 			try {
-				const result = await this._dispatch(ingressLease, rpc, controller.signal);
+				const result = await this._dispatch(ingressLease, rpc, controller.signal, req.socket.remotePort);
 				if (!controller.signal.aborted && this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendJsonRpc(res, { jsonrpc: '2.0', id: rpc.id, result });
 				} else if (!controller.signal.aborted) {
@@ -2155,7 +2179,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			res.end(JSON.stringify({ error: 'Agent hook rejected.' }));
 			return;
 		}
-		const ingressReservation = this._reserveIngressRequest(token);
+		const ingressReservation = this._reserveIngressRequest(token, 'hook');
 		if (ingressReservation === undefined) {
 			this._sendIngressCapacityRejected(res);
 			return;
@@ -2465,13 +2489,13 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
-	private async _dispatch(ingressLease: IParadisAgentBrowserIngressLease, rpc: IJsonRpcRequest, signal?: AbortSignal): Promise<unknown> {
+	private async _dispatch(ingressLease: IParadisAgentBrowserIngressLease, rpc: IJsonRpcRequest, signal?: AbortSignal, peerPort?: number): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		switch (rpc.method) {
 			case 'initialize': {
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
-				const instructions = this._serverInstructions();
+				const instructions: string | undefined = this._serverInstructions();
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
@@ -2491,13 +2515,13 @@ export class ParadisAgentBrowserService extends Disposable {
 				return { tools: [...TOOLS, ...provided, ...tools] };
 			}
 			case 'tools/call':
-				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal);
+				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal, peerPort);
 			default:
 				throw new JsonRpcMethodError(-32601, `Method not found: ${rpc.method}`);
 		}
 	}
 
-	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal): Promise<unknown> {
+	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, peerPort?: number): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		const name = typeof params?.name === 'string' ? params.name : undefined;
@@ -2506,7 +2530,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (!TOOLS.some(t => t.name === name)) {
 			// PARA-PATCH: 登録されたツールプロバイダに先に当てる（自分のツールでなければundefinedを返す約束）
-			const context = this._toolCallContext(ingressLease);
+			const context = this._toolCallContext(ingressLease, peerPort);
 			for (const provider of this._allToolProviders()) {
 				const result = await provider.callTool(token, name, params?.arguments, signal, context);
 				this._requireIngressLease(ingressLease);
@@ -3516,15 +3540,24 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 	}
 
-	private _reserveIngressRequest(token: string): { dispose(): void } | undefined {
-		const tokenCount = this._activeIngressRequestsByToken.get(token) ?? 0;
+	private _reserveIngressRequest(token: string, pool: 'default' | 'hook' = 'default'): { dispose(): void } | undefined {
+		const byToken = pool === 'hook' ? this._activeHookRequestsByToken : this._activeIngressRequestsByToken;
+		const readTotal = () => pool === 'hook' ? this._activeHookRequestCount : this._activeIngressRequestCount;
+		const writeTotal = (value: number) => {
+			if (pool === 'hook') {
+				this._activeHookRequestCount = value;
+			} else {
+				this._activeIngressRequestCount = value;
+			}
+		};
+		const tokenCount = byToken.get(token) ?? 0;
 		if (this._serverDisposed
-			|| this._activeIngressRequestCount >= MAX_ACTIVE_INGRESS_REQUESTS
+			|| readTotal() >= MAX_ACTIVE_INGRESS_REQUESTS
 			|| tokenCount >= MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN) {
 			return undefined;
 		}
-		this._activeIngressRequestCount++;
-		this._activeIngressRequestsByToken.set(token, tokenCount + 1);
+		writeTotal(readTotal() + 1);
+		byToken.set(token, tokenCount + 1);
 		let released = false;
 		return {
 			dispose: () => {
@@ -3532,12 +3565,12 @@ export class ParadisAgentBrowserService extends Disposable {
 					return;
 				}
 				released = true;
-				this._activeIngressRequestCount = Math.max(0, this._activeIngressRequestCount - 1);
-				const current = this._activeIngressRequestsByToken.get(token);
+				writeTotal(Math.max(0, readTotal() - 1));
+				const current = byToken.get(token);
 				if (current === undefined || current <= 1) {
-					this._activeIngressRequestsByToken.delete(token);
+					byToken.delete(token);
 				} else {
-					this._activeIngressRequestsByToken.set(token, current - 1);
+					byToken.set(token, current - 1);
 				}
 			},
 		};
@@ -3699,6 +3732,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._activeRequestControllers.clear();
 		this._activeIngressRequestsByToken.clear();
 		this._activeIngressRequestCount = 0;
+		this._activeHookRequestsByToken.clear();
+		this._activeHookRequestCount = 0;
 		this._activeMobileVoiceRequestCount = 0;
 		this._activeMobileVoiceBytes = 0;
 		this._mobileVoiceTickets.clear();
