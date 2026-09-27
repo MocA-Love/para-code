@@ -246,7 +246,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		label: localize('paradis.settings.rowMeta', "スペース一覧に表示する情報"),
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.rowMetaDesc', "行を右クリックした「表示する情報」からも変えられます。"),
-		keywords: 'workspaces view row meta pull request issue diff notes order',
+		keywords: 'workspaces view row meta pull request issue diff notes order prompt cache',
 	},
 	{
 		sectionId: 'psd-sec-space',
