@@ -15,7 +15,8 @@ import { Event } from '../../../../base/common/event.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { GeneralShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, PosixShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { ParadisWorkspaceLifecycleKind } from './paradisWorkspaceLifecycle.js';
 
@@ -439,8 +440,14 @@ function paradisQuotePosixShellArg(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** fish はシングルクオートの中でもバックスラッシュ + `'` とバックスラッシュ2つをエスケープとして読むので、POSIX 式の置換では閉じ損ねる。 */
+function paradisQuoteFishArg(value: string): string {
+	return `'${value.replace(/[\\']/g, '\\$&')}'`;
+}
+
+/** PowerShell は U+2018〜U+201B もシングルクオートとして扱うので、ASCII の `'` と同じく二重にする。 */
 function paradisQuotePowerShellArg(value: string): string {
-	return `'${value.replace(/'/g, '$&$&')}'`;
+	return `'${value.replace(/['\u2018-\u201b]/g, '$&$&')}'`;
 }
 
 function paradisEncodeUtf16LeBase64(value: string): string {
@@ -495,7 +502,9 @@ function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTem
  * プロンプトが空の場合は引数自体を付けない（`claude ''` のような空引数はTUIの初回入力を
  * 汚すため。{prompt} プレースホルダは空置換して連続スペースを正規化する）。
  */
-export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
+export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
+	// プロンプトは利用者だけでなくエージェント（MCP）や定期実行の定義からも来るので、全経路でここで落とす
+	const prompt = paradisStripTerminalControlCharacters(rawPrompt);
 	if (prompt.trim().length === 0) {
 		return paradisApplyPromptToTemplate(template, '', options).replace(/ {2,}/g, ' ').trim();
 	}
@@ -504,7 +513,9 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 	}
 	const quoted = shellType === GeneralShellType.PowerShell
 		? paradisQuotePowerShellArg(prompt)
-		: paradisQuotePosixShellArg(prompt);
+		: shellType === PosixShellType.Fish
+			? paradisQuoteFishArg(prompt)
+			: paradisQuotePosixShellArg(prompt);
 	return paradisApplyPromptToTemplate(template, quoted, options);
 }
 
