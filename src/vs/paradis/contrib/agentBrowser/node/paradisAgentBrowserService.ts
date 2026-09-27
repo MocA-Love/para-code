@@ -54,7 +54,7 @@ import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisC
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
-import { IParadisMcpToolProvider } from '../common/paradisMcpToolProvider.js';
+import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_FILE_DROP_MAX_BYTES_LABEL, ParadisFileDropStaging, paradisBuildFileDropDragCancelCommand, paradisBuildFileDropDragCommands, paradisDecodeFileDropContent, paradisParseResolvedDropTarget, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
 
@@ -1540,6 +1540,38 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._toolProviders.push(provider);
 	}
 
+	/** 直接登録されたものと、登録口（`paradisRegisterMcpToolProvider`）から足されたものを合わせる。 */
+	private _allToolProviders(): readonly IParadisMcpToolProvider[] {
+		return [...this._toolProviders, ...paradisRegisteredMcpToolProviders()];
+	}
+
+	/** プロバイダが足したサーバーの説明（`initialize` の `instructions`）。 */
+	private _serverInstructions(): string | undefined {
+		const parts: string[] = [];
+		for (const provider of this._allToolProviders()) {
+			try {
+				const text = provider.instructions?.();
+				if (text && text.trim().length > 0) {
+					parts.push(text.trim());
+				}
+			} catch (error) {
+				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] MCP instructions provider failed', error));
+			}
+		}
+		return parts.length > 0 ? parts.join('\n\n') : undefined;
+	}
+
+	/** プロバイダへ渡す、この呼び出し（ingress lease）に結び付いた機能。 */
+	private _toolCallContext(ingressLease: IParadisAgentBrowserIngressLease): IParadisMcpToolCallContext {
+		return {
+			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
+			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
+				const entry = this._paneStatuses.get(paneToken);
+				return entry ? { status: entry.status, changedAt: entry.changedAt } : undefined;
+			},
+		};
+	}
+
 	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
 	async getGatewayEndpoint(): Promise<IParadisGatewayEndpoint> {
 		await this._serverStartPromise;
@@ -2439,10 +2471,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'initialize': {
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
+				const instructions = this._serverInstructions();
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
 					serverInfo: { name: 'para-code-agent-browser', version: '1.0.0' },
+					...(instructions !== undefined ? { instructions } : {}),
 				};
 			}
 			case 'ping':
@@ -2453,7 +2487,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				const tools = await this._listDevtoolsTools(ingressLease, signal);
 				this._requireIngressLease(ingressLease);
 				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
-				const provided = this._toolProviders.flatMap(provider => [...provider.listTools()]);
+				const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
 				return { tools: [...TOOLS, ...provided, ...tools] };
 			}
 			case 'tools/call':
@@ -2472,8 +2506,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (!TOOLS.some(t => t.name === name)) {
 			// PARA-PATCH: 登録されたツールプロバイダに先に当てる（自分のツールでなければundefinedを返す約束）
-			for (const provider of this._toolProviders) {
-				const result = await provider.callTool(token, name, params?.arguments, signal);
+			const context = this._toolCallContext(ingressLease);
+			for (const provider of this._allToolProviders()) {
+				const result = await provider.callTool(token, name, params?.arguments, signal, context);
 				this._requireIngressLease(ingressLease);
 				if (result !== undefined) {
 					return result;
@@ -3358,9 +3393,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callOwningWindow<T>(
 		ingressLease: IParadisAgentBrowserIngressLease,
-		request: { readonly channelName: string; readonly method: string; readonly args: unknown[]; readonly failureLabel: string; readonly failureMessage: string; readonly timeoutMs?: number; readonly timeoutMessage?: string },
+		request: IParadisMcpOwningWindowRequest,
 		signal?: AbortSignal,
-	): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: string }> {
+	): Promise<ParadisMcpOwningWindowResult<T>> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		const pane = this._paneShells.get(token);
