@@ -754,12 +754,14 @@ TM1 / TM2 / TM11 / TM18 / TM22。ロジックはすべて `src/vs/paradis/contri
   - 既知の穴: fish の `XDG_DATA_HOME` を変えている環境は消せない（設定の説明に書いた）。シェル統合が注入されないシェルでは効かない。更新直後は既存のスペースでも ↑ が空から始まる（全体の履歴は引き継がない。補完候補には全体の履歴が出る）
 - **タブの点（TM11）は upstream のベル表示と同じファイル装飾だが、提供元を自前で起動時に登録している**。upstream の `TabDecorationsProvider` はパネルのタブ一覧を作ったときにしか登録されない（パネルを開いていないとエディタのタブに何も出ない）ため。パネルを開くと同じ `vscode-terminal` の URI に upstream の提供元も並ぶ。ベルが二重にならないよう、upstream のベルの状態（`TerminalStatus.Bell`）が出ている間はこちらは色だけにしている。ベルは `xterm.raw.onBell` を直接購読（upstream は visual bell 設定がオフだと何も出さない）
   - 点を消すのはフォーカスと `xterm.raw.onKey` だけ。`onAnyInstanceDataInput` はカーソル位置の問い合わせへの自動応答・フォーカス報告・他の機能からの送信でも発火するので使わない
+  - 許可待ち・質問から直接終わった場合（見ているスペースではすぐ既読になり review を経ない）も完了として点を付ける
   - 見送り: 「作業中 → 状態なし」を完了とみなしている（見ているスペースの完了は状態スナップショットの側がすぐ既読にして、renderer には review が届かないため）。状態の掃除やエージェントの異常終了でも緑の点が付く。見分けるにはスナップショット側（`paradisAgentStatusSnapshotConsumer`）の既読処理を変える必要がある
 - **タブ左のアイコン（TM18）で `Codicon.loading` を返してはいけない**。`.codicon-loading` の回転がラベルのルート要素に掛かり、タブの文字ごと回る。作業中は土台を `Codicon.sync` にして、`::before` の中身を loading の文字に替えて回している。upstream の次の要素に依存しているので、取り込みで変わったら直す
   - DOM と詳細度: `.monaco-icon-label.terminal-tab[class*='codicon-']::before`、upstream の `.monaco-workbench .predefined-file-icon[class*='codicon-']::before` と `.monaco-workbench:not(.file-icons-enabled) .predefined-file-icon[class*='codicon-']::before { content: unset !important }`（こちらのセレクタは `.file-icons-enabled` 付き）
   - keyframes の名前 `codicon-spin`。loading の文字は `getCodiconFontCharacters()` から実行時に引く
   - ロゴは SVG を mask にして文字色で塗る（パスデータは `src/vs/paradis/common/paradisAgentLogoPaths.ts`）。`workbench.editor.showIcons` がオフ、またはファイルアイコンテーマなしだと出ない
 - **復元タブのバナー（TM22）**。shared process の状態スナップショットに `paneSessions`（ペイントークン → hook の session_id と、その会話で最初に報告された cwd）を足し、renderer が WORKSPACE storage の `paradis.terminal.resumeSessions` に控える。キーはペイントークンのハッシュ（トークンは MCP やペインの app-server の Bearer を兼ねるので平文では書かない。前の版の平文キーは読んだ時点で置き換える）。Codex はタイトルの `codex | <uuid>` からも拾う（パターンは `codexTerminalTitle/common` と共用）。「エージェントが終わった」の判定はシェルのプロセス ID が変わったか（ウィンドウの再読み込みでは変わらないので出ない。常駐ターミナルが引き取った `paradisAdopted` も出さない）。`hasChildProcesses` はエディタタブの直列化が終了時点の値を持ち越すので使えない。「このタブで再開」はシェル統合でプロンプト待ちかつ入力欄が空のときだけ送る（シェル統合が無いターミナルでは送らず、打つコマンドを通知で示す）。表示は共有ドットと同じ `paradisPaneIndicator.ts` の重ね合わせの口（`paradisRegisterEditorTerminalOverlay`）で、検索欄を開いている間は下へずらす
+  - **renderer の `paradisAgentStatusSnapshotService` はスナップショットを丸ごと写して凍らせる（フィールドを列挙して詰め直さない）**。列挙していた間に `paneSessions` が落ち、Claude の会話が台帳に入らずバナーが出なかった（8/24 の `agentHookTokenIssueUrls` と同じ漏れ方で2度目）。shared process 側にフィールドを足すときは、写しを直す必要は無い
 
 ## プリセットの種類・描画修復・常駐画面の保存・IME パッチ（2026-09-27、フェーズ5 担当B）
 
