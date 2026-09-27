@@ -78,12 +78,16 @@ export type ParadisPresetLayout = typeof PARADIS_PRESET_LAYOUTS[number];
 /**
  * プリセットの種別（Q57 A / TM23）。
  *   - run: コマンドを実行する（Enter を送る。従来のプリセット）
- *   - insert: コマンドをアクティブなターミナルの入力欄へ入れるだけ（Enter を送らない）
+ *   - insert: コマンドをアクティブなターミナルの入力欄へ入れるだけ（Enter を送らない）。本文は
+ *     prompt に1行1コマンドで書き、&& でつないだ1行にして入れる
  *   - agent-prompt: 今のターミナルで動いているエージェント（Claude Code / Codex）の入力欄へ
  *     プロンプトを入れる（Enter は送らない。送るかどうかはユーザーが入力欄で決める）
  *
  * 未知の値は「読み飛ばす」（{@link isValidPresetDefinition}）。新しい版で足した種別を古い版が
  * run と解釈して Enter 付きで流すと、挿入のつもりの文字列が実行されてしまうため。
+ * すでに配布した古い版（action を知らない版）にも同じ事故を起こさせないよう、run 以外の本文は
+ * commands / tasks ではなく prompt に置く。古い版は commands も tasks も無い定義を無効として
+ * 読み飛ばすので、実行されることが無い。
  */
 export const PARADIS_PRESET_ACTIONS = ['run', 'insert', 'agent-prompt'] as const;
 export type ParadisPresetAction = typeof PARADIS_PRESET_ACTIONS[number];
@@ -114,7 +118,7 @@ export interface IParadisPresetDefinition {
 	readonly id?: string;
 	/** 種別。未指定は run（{@link ParadisPresetAction}）。 */
 	readonly action?: ParadisPresetAction;
-	/** action が agent-prompt のときだけ使う、エージェントの入力欄へ入れる本文。 */
+	/** action が insert / agent-prompt のときの本文（insert は1行1コマンド）。 */
 	readonly prompt?: string;
 	/** 表示名（ボタンのツールチップ・一覧に使う）。同名の重複を許す。 */
 	readonly name: string;
@@ -805,7 +809,7 @@ export function isValidPresetDefinition(value: unknown): value is IParadisPreset
 	if (candidate.action !== undefined && !(PARADIS_PRESET_ACTIONS as readonly unknown[]).includes(candidate.action)) {
 		return false;
 	}
-	if (candidate.action === 'agent-prompt') {
+	if (candidate.action === 'agent-prompt' || candidate.action === 'insert') {
 		return typeof candidate.prompt === 'string' && candidate.prompt.trim().length > 0;
 	}
 	if (Array.isArray(candidate.tasks)) {
@@ -826,17 +830,29 @@ export function paradisPresetAction(definition: IParadisPresetDefinition): Parad
  * - 制御文字は落とす（改行とタブを除く）。ESC が残ると、貼り付けの終わり（ESC[201~）を
  *   本文の途中で偽造できてしまい、残りが打鍵として解釈される
  * - 末尾の改行・空白は落とす。送った瞬間に Enter と同じ意味になり「挿入だけ」が崩れるため
- * - 貼り付けモード（bracketed paste）が使えない相手には、改行とタブを空白へ均して1行にする。
- *   改行はそのまま Enter として届き、1行ずつ実行・送信されてしまう。タブは Claude Code の
- *   TUI では質問の切り替えに食われる（NOTES / メモの「Claude Code TUI へのキー注入」）
+ * - `keepNewlines` でないときは、改行とタブを空白へ均して1行にする。改行はそのまま Enter として
+ *   届き、1行ずつ実行・送信されてしまう。タブは Claude Code の TUI では質問の切り替えに食われる
+ *   （NOTES / メモの「Claude Code TUI へのキー注入」）。改行を残してよいのは、貼り付けモードで
+ *   送れて、しかも受け取る側が貼り付けモードを本当に扱える（エージェントが前面で動いている）と
+ *   確かめられたときだけ。xterm の貼り付けモードの記録は「最後に出力された ESC[?2004h/l」でしか
+ *   なく、エージェントが後始末をせずに落ちると、対応していないシェルでも立ったままになる
  */
-export function paradisBuildPresetInsertText(text: string, bracketedPasteMode: boolean): string | undefined {
+export function paradisBuildPresetInsertText(text: string, keepNewlines: boolean): string | undefined {
 	let normalized = text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]/g, '');
 	normalized = normalized.replace(/\s+$/, '');
-	if (!bracketedPasteMode) {
+	if (!keepNewlines) {
 		normalized = normalized.replace(/[\n\t]+/g, ' ');
 	}
 	return normalized.trim().length > 0 ? normalized : undefined;
+}
+
+/**
+ * 「挿入だけ」の本文（1行1コマンド）を、入力欄へ入れる1行にする。改行は常に残さない
+ * （貼り付けモードの有無に関わらず、Enter として届く経路を作らない）。
+ */
+export function paradisBuildInsertCommandsText(prompt: string, shellType: TerminalShellType): string | undefined {
+	const commands = prompt.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+	return paradisBuildPresetInsertText(paradisJoinPresetCommands(commands, shellType), false);
 }
 
 /** エージェント向けプロンプトを今のターミナルへ入れられるか。 */
@@ -877,8 +893,8 @@ export function paradisAgentPromptAvailability(hasTerminal: boolean, isAgent: bo
  *   - split: コマンドごとに1タスク、split
  */
 export function paradisGetPresetTasks(definition: IParadisPresetDefinition): { readonly tasks: readonly IParadisPresetTask[]; readonly layout: ParadisPresetLayout } {
-	if (paradisPresetAction(definition) === 'agent-prompt') {
-		// エージェント向けはシェルのコマンドを持たない（本文は prompt）。タスクとして扱うと、
+	if (paradisPresetAction(definition) !== 'run') {
+		// 挿入だけ・エージェント向けはシェルで実行するタスクを持たない（本文は prompt）。タスクとして扱うと、
 		// 種別を見ない経路が本文をシェルで実行してしまう。
 		return { tasks: [], layout: 'current' };
 	}
@@ -910,7 +926,7 @@ export function paradisGetPresetTasks(definition: IParadisPresetDefinition): { r
 
 /** 全タスクの全コマンドを1つの文字列にする（確認ダイアログ・一覧プレビュー用）。 */
 export function paradisPresetCommandSignature(definition: IParadisPresetDefinition, separator = '\n'): string {
-	if (paradisPresetAction(definition) === 'agent-prompt') {
+	if (paradisPresetAction(definition) !== 'run') {
 		return (definition.prompt ?? '').trim();
 	}
 	return paradisGetPresetTasks(definition).tasks.flatMap(task => task.commands).join(separator);
@@ -942,6 +958,11 @@ export function paradisPresetTooltip(preset: IParadisResolvedPreset, qualifier: 
  */
 export function paradisPresetApprovalSignature(definition: IParadisPresetDefinition): string {
 	const parts: string[] = [];
+	if (paradisPresetAction(definition) !== 'run') {
+		// 挿入の本文も承認の対象にする（今は autoRun もモバイルも run しか扱わないが、本文だけの
+		// 書き換えで承認をすり抜けられる形にしておかない）
+		parts.push(`#${paradisPresetAction(definition)}:${definition.prompt ?? ''}`);
+	}
 	const presetCwd = definition.cwd?.trim();
 	if (presetCwd) {
 		parts.push(`#cwd:${presetCwd}`);

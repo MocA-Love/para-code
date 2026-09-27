@@ -60,6 +60,7 @@ import {
 	paradisJoinPresetCommands,
 	paradisPresetAction,
 	paradisBuildPresetInsertText,
+	paradisBuildInsertCommandsText,
 	paradisAgentPromptAvailability,
 	ParadisAgentPromptAvailability,
 } from '../common/paradisTerminalPresets.js';
@@ -1091,8 +1092,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	 * （または forceNewTerminal）ときだけ新しく作り、そのときは cwd を作成時に渡す。
 	 */
 	private async _insertCommands(preset: IParadisResolvedPreset, options: IParadisRunPresetOptions | undefined): Promise<void> {
-		const commands = paradisGetPresetTasks(preset).tasks.flatMap(task => task.commands);
-		if (commands.length === 0) {
+		if (!(preset.prompt ?? '').trim()) {
 			return;
 		}
 		let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
@@ -1104,7 +1104,11 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			}
 		}
 		await this._waitForTerminalProcess(instance);
-		const text = paradisBuildPresetInsertText(paradisJoinPresetCommands(commands, instance.shellType), instance.xterm?.raw.modes.bracketedPasteMode === true);
+		// 待っている間に状態が変わりうるので、送る直前に確かめる。エージェントが許可・質問の回答を
+		// 待っている相手へ入れると、先頭の文字が選択肢の操作として食われる（許可してしまうことがある）
+		this._throwIfAwaitingAnswer(instance);
+		// 改行は常に残さない（1行にまとめて入れる。Enter として届く経路を作らない）
+		const text = paradisBuildInsertCommandsText(preset.prompt ?? '', instance.shellType);
 		options?.onDidStart?.();
 		if (text !== undefined) {
 			await instance.sendText(text, false, true);
@@ -1112,14 +1116,23 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		instance.focus(true);
 	}
 
+	/** そのターミナルのエージェントが許可・質問の回答を待っているなら、入れずに理由を投げる。 */
+	private _throwIfAwaitingAnswer(instance: ITerminalInstance): void {
+		if (this.agentStatusStore.isAgentInstance(instance.instanceId)
+			&& paradisAgentPromptAvailability(true, true, this.agentStatusStore.getInstanceStatus(instance.instanceId)) === ParadisAgentPromptAvailability.AwaitingAnswer) {
+			throw new Error(STR_AGENT_PROMPT_AWAITING);
+		}
+	}
+
 	/**
 	 * エージェント向けプロンプト: 今のターミナルで動いているエージェントの入力欄へ、貼り付けとして
 	 * 入れる（Enter は送らない）。新しいターミナルは作らない——入れる相手は「今の会話」であって、
-	 * 空のシェルへ入れても意味が無い（Q57 A。新しい会話を始めるのは Orca の方式で、採らなかった）。
+	 * 空のシェルへ入れても意味が無い（新しい会話を始めて渡す Orca の方式は採らなかった）。
 	 * 入れられないときは理由を例外で返し、呼び出し側（ボタン・メニュー）が通知に出す。
 	 */
 	private async _insertAgentPrompt(preset: IParadisResolvedPreset, options: IParadisRunPresetOptions | undefined): Promise<void> {
 		const instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
+		// 判定と送信の間に await を挟まない（状態の読み取りから送るまでを1続きにする）
 		const availability = paradisAgentPromptAvailability(
 			instance !== undefined,
 			instance !== undefined && this.agentStatusStore.isAgentInstance(instance.instanceId),
@@ -1136,7 +1149,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (!instance) {
 			return;
 		}
-		const text = paradisBuildPresetInsertText(preset.prompt ?? '', instance.xterm?.raw.modes.bracketedPasteMode === true);
+		// 改行を残すのは、貼り付けモードで送れて、しかもシェル統合でコマンド（＝エージェント）が
+		// 前面で実行中だと確かめられたときだけ。確かめられなければ1行に均す（シェルへ届いても
+		// 1行ずつ実行されない）
+		const agentInForeground = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand !== undefined;
+		const keepNewlines = instance.xterm?.raw.modes.bracketedPasteMode === true && agentInForeground;
+		const text = paradisBuildPresetInsertText(preset.prompt ?? '', keepNewlines);
 		options?.onDidStart?.();
 		if (text !== undefined) {
 			await instance.sendText(text, false, true);

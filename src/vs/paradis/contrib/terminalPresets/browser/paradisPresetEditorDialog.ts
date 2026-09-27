@@ -163,11 +163,15 @@ const STR_ACTION_INSERT = localize('paradis.presetEditor.action.insert', "入力
 // allow-any-unicode-next-line
 const STR_ACTION_AGENT_PROMPT = localize('paradis.presetEditor.action.agentPrompt', "エージェント向けプロンプト（今のエージェントの入力欄へ入れる）");
 // allow-any-unicode-next-line
-const STR_ACTION_HINT_INSERT = localize('paradis.presetEditor.action.hintInsert', "アクティブなターミナルの入力欄にコマンドを入れます。複数のコマンドは && でつないだ1行になります。");
+const STR_ACTION_HINT_INSERT = localize('paradis.presetEditor.action.hintInsert', "アクティブなターミナルの入力欄にコマンドを入れます（Enter は送りません）。複数のコマンドは && でつないだ1行になります。エージェントが許可や質問の回答を待っている間は入れません。");
 // allow-any-unicode-next-line
 const STR_ACTION_HINT_AGENT_PROMPT = localize('paradis.presetEditor.action.hintAgentPrompt', "ターミナルの右クリックメニュー「エージェントにプロンプトを挿入」や、タブバーのボタンから使えます。Claude Code / Codex が動いているターミナルの入力欄に貼り付けとして入り、送信はしません。");
 // allow-any-unicode-next-line
 const STR_PROMPT = localize('paradis.presetEditor.prompt', "プロンプト");
+// allow-any-unicode-next-line
+const STR_INSERT_COMMANDS = localize('paradis.presetEditor.insertCommands', "入れるコマンド（1行に1つ）");
+// allow-any-unicode-next-line
+const STR_INSERT_COMMANDS_PLACEHOLDER = localize('paradis.presetEditor.insertCommandsPlaceholder', "例: git log --oneline -20");
 // allow-any-unicode-next-line
 const STR_PROMPT_PLACEHOLDER = localize('paradis.presetEditor.promptPlaceholder', "例: 変更点をレビューして、問題があれば箇条書きで挙げてください");
 // allow-any-unicode-next-line
@@ -1087,8 +1091,8 @@ class ParadisPresetEditorDialog extends Disposable {
 				folder: preset.folder,
 				action: preset.action,
 				prompt: preset.prompt,
-				tasks: paradisPresetAction(preset) === 'agent-prompt' ? undefined : tasks.tasks.map(task => ({ name: task.name, cwd: task.cwd, commands: [...task.commands] })),
-				layout: paradisPresetAction(preset) === 'agent-prompt' ? undefined : tasks.layout,
+				tasks: paradisPresetAction(preset) !== 'run' ? undefined : tasks.tasks.map(task => ({ name: task.name, cwd: task.cwd, commands: [...task.commands] })),
+				layout: paradisPresetAction(preset) !== 'run' ? undefined : tasks.layout,
 				icon: preset.icon,
 				cwd: preset.cwd,
 				pinned: preset.pinned,
@@ -1950,8 +1954,14 @@ class ParadisPresetEditorDialog extends Disposable {
 		};
 		const updateActionVisibility = (): void => {
 			const action = actionSelect.value as ParadisPresetAction;
-			const commandsVisible = action !== 'agent-prompt';
-			setRowVisible(promptField, action === 'agent-prompt');
+			const commandsVisible = action === 'run';
+			// 挿入だけ・エージェント向けの本文は prompt に置く（古い版が commands を Enter 付きで実行しないように）
+			setRowVisible(promptField, action !== 'run');
+			const promptLabel = promptField.previousElementSibling as HTMLElement | null;
+			if (promptLabel) {
+				promptLabel.textContent = action === 'insert' ? STR_INSERT_COMMANDS : STR_PROMPT;
+			}
+			promptInput.placeholder = action === 'insert' ? STR_INSERT_COMMANDS_PLACEHOLDER : STR_PROMPT_PLACEHOLDER;
 			setRowVisible(tasksField, commandsVisible);
 			setRowVisible(addTaskBtn.parentElement as HTMLElement, commandsVisible);
 			// 並べ方と既定の作業ディレクトリは「実行」だけ（入れるだけは今のターミナルへ入れる）
@@ -2161,7 +2171,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				return;
 			}
 			const action = actionSelect.value as ParadisPresetAction;
-			const tasks: IParadisPresetTask[] = action === 'agent-prompt' ? [] : taskDrafts
+			const tasks: IParadisPresetTask[] = action !== 'run' ? [] : taskDrafts
 				.map(draft => ({
 					name: draft.name.trim() || undefined,
 					cwd: draft.cwd.trim() || undefined,
@@ -2169,11 +2179,11 @@ class ParadisPresetEditorDialog extends Disposable {
 				}))
 				.filter(task => task.commands.length > 0);
 			const prompt = promptInput.value.replace(/\s+$/, '');
-			if (action === 'agent-prompt' && prompt.trim().length === 0) {
-				errorEl.textContent = STR_PROMPT_REQUIRED;
+			if (action !== 'run' && prompt.trim().length === 0) {
+				errorEl.textContent = action === 'insert' ? STR_COMMANDS_REQUIRED : STR_PROMPT_REQUIRED;
 				return;
 			}
-			if (action !== 'agent-prompt' && tasks.length === 0) {
+			if (action === 'run' && tasks.length === 0) {
 				errorEl.textContent = STR_COMMANDS_REQUIRED;
 				return;
 			}
@@ -2192,8 +2202,8 @@ class ParadisPresetEditorDialog extends Disposable {
 				folder: folderInput.value.trim() || undefined,
 				// run は書かない（既定値。従来の定義と同じ形のまま保存し、古い版でも読めるようにする）
 				action: action === 'run' ? undefined : action,
-				prompt: action === 'agent-prompt' ? prompt : undefined,
-				tasks: action === 'agent-prompt' ? undefined : tasks,
+				prompt: action !== 'run' ? prompt : undefined,
+				tasks: action !== 'run' ? undefined : tasks,
 				layout: action === 'run' ? layoutSelect.value as ParadisPresetLayout : undefined,
 				icon: iconInput.value.trim() || undefined,
 				cwd: action === 'run' ? cwdInput.value.trim() || undefined : undefined,

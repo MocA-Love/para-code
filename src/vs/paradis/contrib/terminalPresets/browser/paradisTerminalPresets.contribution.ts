@@ -90,7 +90,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 						],
 						description: localize('paradis.terminal.presets.action', "プリセットの種別。既定は run。")
 					},
-					prompt: { type: 'string', maxLength: PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH, description: localize('paradis.terminal.presets.prompt', "action が agent-prompt のときにエージェントの入力欄へ入れる本文。") },
+					prompt: { type: 'string', maxLength: PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH, description: localize('paradis.terminal.presets.prompt', "action が insert / agent-prompt のときの本文。insert は1行に1コマンドで書き、&& でつないだ1行にして入力欄へ入れます。agent-prompt はエージェントの入力欄へ入れるプロンプトです。") },
 					commands: {
 						type: 'array',
 						items: { type: 'string' },
