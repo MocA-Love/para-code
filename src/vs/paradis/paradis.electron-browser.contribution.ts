@@ -72,3 +72,4 @@ import './contrib/remoteTerminals/electron-browser/paradisRemoteTerminalShutdown
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonStatusBar.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonShutdown.contribution.js';
 import './contrib/unfocusedDimming/electron-browser/paradisUnfocusedDimming.contribution.js';
+import './contrib/terminalResumeBanner/electron-browser/paradisTerminalResumeBanner.contribution.js';

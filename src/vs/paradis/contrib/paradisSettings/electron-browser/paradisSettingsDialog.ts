@@ -604,6 +604,34 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.sharedPanel.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sharedPanel', "下部パネルのターミナルをスペース共通にする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.sharedPanelDesc', "スペースを切り替えても入れ替わらず、スペースを削除しても閉じません。変更はウィンドウの再読み込み後に反映されます。"),
+		keywords: 'terminal panel shared common space workspace',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.sharedPanel.cwd',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sharedPanelCwd', "共通ターミナルを開くフォルダ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.sharedPanelCwdDesc', "空のときはホームフォルダで開きます。"),
+		placeholder: '~',
+		keywords: 'terminal panel shared cwd folder home start',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.historyPerSpace.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.historyPerSpace', "シェルの履歴をスペースごとに分ける"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.historyPerSpaceDesc', "↑ キーで出る履歴がスペースごとになります。スペースを削除すると履歴も消えます。下部パネルの共通ターミナルは対象外です。"),
+		keywords: 'terminal shell history histfile space zsh bash fish',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
 		key: 'paradis.terminal.shiftEnterNewline',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.shiftEnter', "Shift+Enter で改行を入力する"),

@@ -733,6 +733,23 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 - エディタのターミナルのバッジは、ターミナルの検索ウィジェットと同じ右上の角に出る。検索ウィジェットが開いている間は CSS（`:has(.simple-find-part.visible)`）で隠し、ボタンを覆ったりクリックを奪ったりしないようにしている
 - エディタエリアのターミナルのバッジは、ペインインジケータと同じく DI を持たない `SessionTerminalEditor` から置く。値の供給元はモジュールのレジストリ（`setParadisPromptCacheBadgeHost`）で、`vs/sessions/contrib/*` から `vs/paradis/contrib/agentInsights/~` を import するための許可を `eslint.config.js` に足している
 
+## ターミナルの共通化・スペース別履歴・タブの状態表示（2026-09-27、フェーズ5 担当A）
+
+TM1 / TM2 / TM11 / TM18 / TM22。ロジックはすべて `src/vs/paradis/contrib/` の新規ファイル（`terminalSharedPanel` / `terminalSpaceHistory` / `terminalTabStatus` / `terminalResumeBanner`）にあり、upstream 側の変更は次の表だけ。
+
+| ファイル | 行数 | 中身 |
+|---|---|---|
+| `terminalInstanceService.ts` | 2 | `paradisPrepareTerminalLaunch(shellLaunchConfig, target)`（import + 呼び出し）。`workspaceSwitch/common/paradisTerminalLaunchPreparers.ts` に登録した関数が PTY 起動前に `cwd` / `env` を足す |
+| `terminalEditorInput.ts` | +7 / -1 | タブ左のアイコンの差し替え点（`getIcon` / `getLabelExtraClasses` に各2行、描き直しの購読1行、import 1行。-1 は購読の配列の直前の行へカンマを足した分）。提供元は `workspaceSwitch/browser/paradisTerminalTabIconRegistry.ts` |
+| `shellIntegration-rc.zsh` / `-bash.sh` / `.fish` | 7 / 7 / 8 | ユーザーの rc の後で `HISTFILE`（fish は `fish_history`）をスペースの履歴へ切り替え、変数を unset |
+
+- **下部パネルは共通ターミナル（設定 `paradis.terminal.sharedPanel.enabled`、既定オン、再読み込みで反映）**。判定は `paradisTerminalScope.contribution.ts` の `isSharedPanelInstance`（`instance.target === TerminalLocation.Panel`）で、タグ付け・park・退役・台帳への記録をすべて飛ばし、`resolveScope` は `unscoped` を返す。前のバージョンが台帳へ書いたパネル端末の所属は初見で消すので、**更新直後は、それまで他のスペースに退避していたパネルのターミナルが全部パネルに並ぶ**。パネルの開閉もスペースごとには切り替えない（`paradisWorkspaceSwitchService.restorePanelVisibilityFor`）。エディタのタブへ移すとその時点のスペースの持ち物になる
+  - モバイル: `unscoped` は `paradisResolveMobileTerminalStateKey` が「今のスペース」に割り当てて見せる（形式は変えていない）。Para Browser の共有は `paradisEvaluateBindingScopeEligibility` がスペースの違いとして断るので、共通ターミナルのエージェントはブラウザを共有できない
+- **スペース別のシェル履歴（`paradis.terminal.historyPerSpace.enabled`、既定オン）**。`PARA_CODE_SPACE_HISTORY_DIR` / `_ID` で渡し、置き場所はローカルが `<userData>/terminal-history/<sha1(stateKey) 先頭16桁>/`、SSH 先が `~/.para-code/terminal-history/...`。fish は置き場所を変えられないので `~/.local/share/fish/paracode_<id>_history`。スペースの削除で消す（閉じたシェルの終了時の書き戻しに備えて10秒後にもう1度）。既知の穴: fish の `XDG_DATA_HOME` を変えている環境は消せない。補完候補（`terminalHistorySuggest`）は今も `~/.zsh_history` 等の全体の履歴を読む。シェル統合が注入されないシェルでは効かない
+- **タブの点（TM11）は upstream のベル表示と同じファイル装飾だが、提供元を自前で起動時に登録している**。upstream の `TabDecorationsProvider` はパネルのタブ一覧を作ったときにしか登録されないため（計画書の実機確認8）。ベルは `xterm.raw.onBell` を直接購読（upstream は visual bell 設定がオフだと何も出さない）
+- **タブ左のアイコン（TM18）で `Codicon.loading` を返してはいけない**。`.codicon-loading` の回転がラベルのルート要素に掛かり、タブの文字ごと回る。作業中は土台を `Codicon.sync` にして、CSS で `::before` の中身を loading のグリフに替えて回している。ロゴは SVG を mask にして文字色で塗る（パスデータは `limitsMonitor/common/paradisAgentLogoPaths.ts`）。`workbench.editor.showIcons` がオフだと出ない
+- **復元タブのバナー（TM22）**。shared process の状態スナップショットに `paneSessions`（ペイントークン → hook の session_id）を足し、renderer が WORKSPACE storage の `paradis.terminal.resumeSessions` に控える（Codex はタイトルの `codex | <uuid>` からも拾う）。「エージェントが終わった」の判定はシェルのプロセス ID が変わったか（ウィンドウの再読み込みでは変わらないので出ない。常駐ターミナルが引き取った `paradisAdopted` も出さない）。`hasChildProcesses` はエディタタブの直列化が終了時点の値を持ち越すので使えない。表示は共有ドットと同じ `paradisPaneIndicator.ts` の重ね合わせの口（`paradisRegisterEditorTerminalOverlay`）
+
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
 HTML プレビューは、ファイルの属するワークスペースフォルダーを 127.0.0.1 のローカルサーバへ載せ、
