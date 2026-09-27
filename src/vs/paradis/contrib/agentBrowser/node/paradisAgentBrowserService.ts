@@ -2390,7 +2390,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				// 素性の分からない発信元として、pid を使わない fail-closed 側の判定へ倒す。
 				// 接続先かどうかはクエリの `host=` だけでなくペインの属性でも見る（`host=` の無い古いスクリプトや偽装）
 				const hookPid = remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined ? undefined : parsedPid;
-				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now() });
+				// 所有者の後継をペインのシェルの配下に絞るための手元のシェル番号（接続先のペインでは使わない）。
+				const paneShell = this._paneShells.get(token);
+				const shellPid = paneShell !== undefined && paneShell.remoteAuthority === undefined && Number.isSafeInteger(paneShell.shellPid) && paneShell.shellPid > 1 ? paneShell.shellPid : undefined;
+				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now(), shellPid });
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendIngressRejected(res);
 					return;

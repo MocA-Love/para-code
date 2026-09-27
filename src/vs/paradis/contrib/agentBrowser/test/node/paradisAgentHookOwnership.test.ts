@@ -82,10 +82,10 @@ suite('ParadisAgentHookOwnership', () => {
 			'node /home/user/.local/share/pnpm/global/5/node_modules/@anthropic-ai/claude-code/cli.js',
 			// ps は argv を引用符なしで空白区切りにする。
 			'/bin/sh /Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin/codex --model x',
-			'node /Users/John Smith/.npm-global/bin/claude --resume',
+			'node /Users/John Smith/.npm-global/bin/codex --model x',
 			'"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\resources\\app\\resources\\paradis\\bin\\paradisCodexPaneLauncher.cjs"',
 			'"C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\Para Code.exe" "C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\resources\\app\\resources\\paradis\\bin\\paradisCodexPaneLauncher.cjs"',
-		].map(paradisHookAgentKindFromCommandLine), ['claude', 'claude', 'codex', 'claude', 'codex', 'codex']);
+		].map(paradisHookAgentKindFromCommandLine), ['claude', 'claude', 'codex', 'codex', 'codex', 'codex']);
 	});
 
 	test('does not treat programs that merely pass claude as an argument as agents', () => {
@@ -105,16 +105,18 @@ suite('ParadisAgentHookOwnership', () => {
 			'npm exec claude',
 			'bunx claude',
 			'bun x claude',
-			// スクリプトのパスが拡張子まで揃っていれば、後ろの引数をつながない。
+			// スクリプトのパスが拡張子まで揃っている・実在するファイル・引数が相対パスなら、後ろの引数をつながない。
 			'node /repo/scripts/run.js logs/claude',
-		].map(paradisHookAgentKindFromCommandLine), [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+			`node ${process.execPath} scripts/claude`,
+			'bash /Users/u/bin/run ./codex',
+			'bash /Users/u/bin/run ../bin/claude',
+		].map(paradisHookAgentKindFromCommandLine), [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
 	});
 
 	/**
-	 * `tmux new-session -s x claude` の再現ツリー。tmux サーバーはデーモン化して launchd の子になり、
-	 * 起動したクライアントと同じ起動行を持つ:
-	 *   1 (launchd) ← 500 (tmux サーバー) ← 510 (-zsh) ← 520 (claude, 所有者)
-	 *     ← 525 (sh) ← 526 (notify script)
+	 * `tmux new-session -s x claude` の再現ツリー（実機の ps と同じ形）。tmux サーバーはデーモン化して
+	 * launchd の子になり、起動したクライアントと同じ起動行を持つ。claude はサーバーの直下:
+	 *   1 (launchd) ← 500 (tmux サーバー) ← 520 (claude, 所有者) ← 525 (sh) ← 526 (notify script)
 	 *   ペイン側: 100 (zsh) ← 150 (tmux クライアント)
 	 */
 	function tmuxTree(): Map<number, IParadisHookProcessInfo> {
@@ -123,8 +125,7 @@ suite('ParadisAgentHookOwnership', () => {
 			[100, proc(100, 1, '/bin/zsh -il')],
 			[150, proc(150, 100, 'tmux new-session -s x claude')],
 			[500, proc(500, 1, 'tmux new-session -s x claude')],
-			[510, proc(510, 500, '-zsh')],
-			[520, proc(520, 510, 'claude')],
+			[520, proc(520, 500, 'claude')],
 			[525, proc(525, 520, '/bin/sh -c notify')],
 			[526, proc(526, 525, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
 			[530, proc(530, 520, 'node /home/user/.claude/plugins/cache/openai-codex/codex/1.0.3/scripts/app-server-broker.mjs serve')],
@@ -255,6 +256,115 @@ suite('ParadisAgentHookOwnership', () => {
 			{ origin: 'owner', agentKind: 'codex' },
 			{ origin: 'nested', agentKind: 'codex' },
 		]);
+	});
+
+	/**
+	 * Windows の npm 版 Claude Code（ps が `process.title` を反映しないので `node …\cli.js` のまま見える）:
+	 *   100 (pwsh) ← 200 (cmd /c claude.cmd) ← 210 (node cli.js, 所有者の本体) ← 215 (notify)
+	 */
+	function windowsNpmClaudeTree(): Map<number, IParadisHookProcessInfo> {
+		return new Map([
+			[1, proc(1, 0, 'C:\\WINDOWS\\Explorer.EXE')],
+			[100, proc(100, 1, '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoLogo')],
+			[200, proc(200, 100, 'C:\\WINDOWS\\system32\\cmd.exe /d /s /c ""C:\\Users\\user\\AppData\\Roaming\\npm\\claude.cmd""')],
+			[210, proc(210, 200, WINDOWS_NPM_CLAUDE)],
+			[215, proc(215, 210, 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Users\\user\\.para-code\\hooks\\notify-v3.ps1')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+	}
+	const WINDOWS_NPM_CLAUDE = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js"';
+
+	test('a claude started by Windows npm Claude Code stays nested however it is started', async () => {
+		const results = [];
+		for (const launch of [
+			// Node の `shell: true`（cmd.exe）経由。cmd は claude.cmd を同じプロセスで実行し、node を子にする。
+			[[300, 210, 'C:\\WINDOWS\\system32\\cmd.exe /d /s /c "claude -p summarize"'], [310, 300, `${WINDOWS_NPM_CLAUDE} -p summarize`]],
+			// Git Bash 経由。npm の sh シムは exec で node に置き換わる。
+			[[300, 210, '"C:\\Program Files\\Git\\usr\\bin\\bash.exe" -c "claude -p summarize"'], [310, 300, `${WINDOWS_NPM_CLAUDE} -p summarize`]],
+			// 本体が直接 spawn。
+			[[310, 210, `${WINDOWS_NPM_CLAUDE} -p summarize`]],
+		] as [number, number, string][][]) {
+			const tree = windowsNpmClaudeTree();
+			for (const [pid, ppid, command] of launch) {
+				tree.set(pid, proc(pid, ppid, command));
+			}
+			tree.set(315, proc(315, 310, 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Users\\user\\.para-code\\hooks\\notify-v3.ps1'));
+			const ownership = ownershipWith(tree);
+			results.push([
+				(await ownership.classify({ token: 't', hookPid: 215, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 })).origin,
+				(await ownership.classify({ token: 't', hookPid: 315, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 })).origin,
+				(await ownership.classify({ token: 't', hookPid: 215, transcriptPath: CLAUDE_TRANSCRIPT, at: 3 })).origin,
+			]);
+		}
+		assert.deepStrictEqual(results, [['owner', 'nested', 'owner'], ['owner', 'nested', 'owner'], ['owner', 'nested', 'owner']]);
+	});
+
+	/**
+	 * 2つのペインで共有した tmux サーバー（実機の ps と同じ形）。サーバーの環境はペイン A のもので、
+	 * ペイン B から作ったセッション y の claude もペイン A のトークンでhookを送る:
+	 *   ペイン A: 100 (zsh, shellPid) ← 150 (tmux クライアント x)
+	 *   ペイン B: 200 (zsh) ← 250 (tmux クライアント y)
+	 *   1 (launchd) ← 500 (tmux サーバー) ← 520 (claude x) ← 526 (notify)
+	 *                                     ← 620 (claude y) ← 626 (notify)
+	 */
+	function sharedTmuxTree(): Map<number, IParadisHookProcessInfo> {
+		return new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[150, proc(150, 100, 'tmux new-session -s x claude')],
+			[200, proc(200, 1, '/bin/zsh -il')],
+			[250, proc(250, 200, 'tmux new-session -s y claude')],
+			[500, proc(500, 1, 'tmux new-session -s x claude')],
+			[520, proc(520, 500, 'claude')],
+			[526, proc(526, 520, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+			[620, proc(620, 500, 'claude')],
+			[626, proc(626, 620, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+	}
+
+	test('a claude from another pane sharing the tmux server does not succeed the pane owner', async () => {
+		const results = [];
+		for (const shellPid of [100, undefined]) {
+			const tree = sharedTmuxTree();
+			const ownership = ownershipWith(tree);
+			const origins = [
+				(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, shellPid })).origin,
+				(await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2, shellPid })).origin,
+			];
+			// x の claude が終わる。
+			tree.delete(520);
+			tree.delete(526);
+			tree.delete(150);
+			origins.push((await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 3, shellPid })).origin);
+			results.push(origins);
+		}
+		// ペインのシェルが分からない構成（接続先など）は従来どおり昇格させる。
+		assert.deepStrictEqual(results, [['owner', 'invalid', 'invalid'], ['owner', 'invalid', 'owner']]);
+	});
+
+	test('an agent restarted from the same tmux shell succeeds the pane owner', async () => {
+		// tmux の中のシェルで claude を起動し直す: 前の所有者を起動したシェル (510) の配下なら後継になる。
+		// 別のセッションのシェル (610) の配下のエージェントは後継にならない。
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[150, proc(150, 100, 'tmux new-session -s x')],
+			[500, proc(500, 1, 'tmux new-session -s x')],
+			[510, proc(510, 500, '-zsh')],
+			[520, proc(520, 510, 'claude')],
+			[526, proc(526, 520, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+			[610, proc(610, 500, '-zsh')],
+			[620, proc(620, 610, 'claude')],
+			[626, proc(626, 620, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const ownership = ownershipWith(tree);
+		const origins = [(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, shellPid: 100 })).origin];
+		tree.delete(520);
+		tree.delete(526);
+		origins.push((await ownership.classify({ token: 'a', hookPid: 626, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2, shellPid: 100 })).origin);
+		tree.set(530, proc(530, 510, 'codex'));
+		tree.set(536, proc(536, 530, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh'));
+		origins.push((await ownership.classify({ token: 'a', hookPid: 536, transcriptPath: CODEX_TRANSCRIPT, at: 3, shellPid: 100 })).origin);
+		assert.deepStrictEqual(origins, ['owner', 'invalid', 'owner']);
 	});
 
 	test('first hook bootstraps the emitting agent as the pane owner', async () => {

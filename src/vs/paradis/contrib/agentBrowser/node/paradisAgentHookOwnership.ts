@@ -19,12 +19,14 @@
 // プロセス (emitter)」を特定して、ペインごとの所有者と照合する:
 //   - emitter が現所有者と同一プロセス (PID+開始時刻) → owner（/clear 等のrebindも許可）
 //   - 現所有者が emitter の祖先に生存           → nested（子エージェント。状態を汚染させない）
-//   - 現所有者が死亡/PID再利用                  → owner を昇格
+//   - 現所有者が死亡/PID再利用                  → owner を昇格（ペインのシェルか、前の所有者を
+//                                                   起動したシェルの配下からだけ。下の doClassify 参照）
 //   - 現所有者が生存しているのに祖先にいない     → invalid（誤配送。破棄）
 // PIDが取れない場合（旧スクリプト・プロセス消滅・ps失敗）は fail-closed:
 // 既知の所有者と同じtranscriptへのイベントだけを通す。
 
 import { exec } from 'child_process';
+import { statSync } from 'fs';
 import { promisify } from 'util';
 import { sep } from '../../../../base/common/path.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
@@ -63,6 +65,12 @@ interface IOwnerRecord {
 	agentKind: ParadisHookAgentKind | undefined;
 	transcriptPath: string | undefined;
 	at: number;
+	/**
+	 * 所有者の直接の親がシェルなら、そのプロセス（tmux のペインのシェル等）。所有者が終わった後、
+	 * 同じシェルから起動し直したエージェントを後継として認めるのに使う。
+	 */
+	anchorPid?: number;
+	anchorStartKey?: string;
 }
 
 /** transcript_path からエージェント種別を判定する（mobileRelay 側の判定と同一規約）。 */
@@ -176,6 +184,14 @@ function agentKindOfBasename(basename: string): ParadisHookAgentKind | undefined
 	return undefined;
 }
 
+function isExistingFile(filePath: string): boolean {
+	try {
+		return statSync(filePath).isFile();
+	} catch {
+		return false;
+	}
+}
+
 /** ラッパーが実行するスクリプトのパスからエージェント種別を返す。 */
 function agentKindOfScriptPath(scriptPath: string): ParadisHookAgentKind | undefined {
 	const basename = normalizedBasename(scriptPath);
@@ -194,23 +210,29 @@ function agentKindOfScriptPath(scriptPath: string): ParadisHookAgentKind | undef
  * 空白区切りで出すので、`/Applications/Para Code.app/…/codex` や `/Users/John Smith/…/claude`
  * のような空白入りのパスは複数のトークンに割れる。1トークンで判定できなければ、`-`・`/` で
  * 始まらない後続のトークンを空白でつないで判定し直す（`/` を含む断片をつないだ時点で試す）。
+ * 最初のトークンが実在するファイル（`/usr/local/bin/tsx scripts/claude` の tsx 等）なら、それで
+ * パスは完結しているのでつながない。`./`・`../` で始まる相対パスの引数もつながない。
+ * 残る誤判定は、実在しないパスに `x/claude` のような引数が続く形だけで、その場合も
+ * 最外側の所有者が外へずれて状態が出ない側に倒れる（乗っ取り側には倒れない）。
  */
 function agentKindOfScriptOperand(tokens: readonly ICommandLineToken[], index: number): ParadisHookAgentKind | undefined {
-	let scriptPath = tokens[index].value;
+	const firstFragment = tokens[index].value;
+	let scriptPath = firstFragment;
 	const direct = agentKindOfScriptPath(scriptPath);
-	if (direct !== undefined || !scriptPath.includes('/')) {
+	if (direct !== undefined || !scriptPath.startsWith('/')) {
 		return direct;
 	}
 	for (let next = index + 1; next < tokens.length && next <= index + MAX_PATH_SPACE_JOINS; next++) {
 		const fragment = tokens[next].value;
-		if (SCRIPT_FILE_EXTENSION.test(scriptPath) || /^[-/]/.test(fragment)) {
+		if (SCRIPT_FILE_EXTENSION.test(scriptPath) || /^(?:[-/]|\.\.?\/)/.test(fragment)) {
 			return undefined;
 		}
 		scriptPath += ' ' + fragment;
 		if (fragment.includes('/')) {
 			const kind = agentKindOfScriptPath(scriptPath);
 			if (kind !== undefined) {
-				return kind;
+				// ファイルの存在確認は、つないだ結果がエージェントに当たったときだけ行う。
+				return isExistingFile(firstFragment) ? undefined : kind;
 			}
 		}
 	}
@@ -219,6 +241,28 @@ function agentKindOfScriptOperand(tokens: readonly ICommandLineToken[], index: n
 
 function launcherMatch(kind: ParadisHookAgentKind | undefined): IAgentCommandMatch | undefined {
 	return kind !== undefined ? { kind, launcher: true } : undefined;
+}
+
+/**
+ * ランタイム（node・bun・deno）が実行するスクリプトの判定。Claude Code はそのプロセスで動く本体
+ * （Windows の npm 版は `node …\cli.js` のまま見え、macOS / Linux でも `process.title` を反映しない
+ * ランタイムでは同じ）なので本体の形にする。起動役の形にすると、本体がシェル経由や直接起動した
+ * 子の Claude Code が所有者と1体に合わさり、子のhookが所有者として通ってしまう。
+ * 親に残って vendor の本体を子として起動する codex の `bin/codex.js` と、Para Code の
+ * ランチャーだけが起動役の形になる。
+ */
+function runtimeScriptMatch(kind: ParadisHookAgentKind | undefined): IAgentCommandMatch | undefined {
+	return kind === 'claude' ? { kind, launcher: false } : launcherMatch(kind);
+}
+
+/** シェル（`-zsh` のようなログインシェルの表記を含む）のプロセスか。 */
+function isShellCommandLine(command: string): boolean {
+	const first = tokenizeCommandLine(command)[0];
+	if (first === undefined) {
+		return false;
+	}
+	const program = normalizedBasename(first.value).replace(/^-/, '');
+	return SHELL_BASENAMES.has(program) || POWERSHELL_BASENAMES.has(program) || program === 'cmd';
 }
 
 /** `command` の先頭のプログラムを解釈してエージェントを判定する。 */
@@ -268,7 +312,7 @@ function agentMatchOfTokens(command: string, tokens: readonly ICommandLineToken[
 		for (let i = 1; i < tokens.length; i++) {
 			const value = tokens[i].value;
 			if (value === '--') {
-				return i + 1 < tokens.length ? launcherMatch(agentKindOfScriptOperand(tokens, i + 1)) : undefined;
+				return i + 1 < tokens.length ? runtimeScriptMatch(agentKindOfScriptOperand(tokens, i + 1)) : undefined;
 			}
 			if (RUNTIME_INLINE_CODE_OPTIONS.has(value)) {
 				return undefined;
@@ -287,7 +331,7 @@ function agentMatchOfTokens(command: string, tokens: readonly ICommandLineToken[
 				subcommandAllowed = false;
 				continue;
 			}
-			return launcherMatch(agentKindOfScriptOperand(tokens, i));
+			return runtimeScriptMatch(agentKindOfScriptOperand(tokens, i));
 		}
 		return undefined;
 	}
@@ -439,6 +483,14 @@ export class ParadisDefaultHookProcessInspector implements IParadisHookProcessIn
 	}
 }
 
+export interface IParadisHookClassifyInput {
+	readonly token: string;
+	readonly hookPid: number | undefined;
+	readonly transcriptPath: string | undefined;
+	readonly at: number;
+	readonly shellPid?: number;
+}
+
 export interface IParadisHookClassification {
 	readonly origin: ParadisHookOrigin;
 	/** nested の場合の子エージェント種別（活動ツリーへの投影に使う）。 */
@@ -460,7 +512,11 @@ export class ParadisAgentHookOwnership {
 		this.owners.delete(token);
 	}
 
-	async classify(input: { readonly token: string; readonly hookPid: number | undefined; readonly transcriptPath: string | undefined; readonly at: number }): Promise<IParadisHookClassification> {
+	/**
+	 * @param input.shellPid ペインのシェルの手元のプロセス番号。分からない（接続先のペイン等）
+	 * なら undefined で、所有者の後継を祖先関係で絞らない。
+	 */
+	async classify(input: IParadisHookClassifyInput): Promise<IParadisHookClassification> {
 		try {
 			return await this.doClassify(input);
 		} catch {
@@ -469,8 +525,8 @@ export class ParadisAgentHookOwnership {
 		}
 	}
 
-	private async doClassify(input: { readonly token: string; readonly hookPid: number | undefined; readonly transcriptPath: string | undefined; readonly at: number }): Promise<IParadisHookClassification> {
-		const { token, hookPid, transcriptPath, at } = input;
+	private async doClassify(input: IParadisHookClassifyInput): Promise<IParadisHookClassification> {
+		const { token, hookPid, transcriptPath, at, shellPid } = input;
 		const eventKind = transcriptPath !== undefined ? paradisHookAgentKindForTranscript(transcriptPath) : undefined;
 		if (hookPid === undefined) {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
@@ -488,6 +544,12 @@ export class ParadisAgentHookOwnership {
 		let owner = this.owners.get(token);
 		const ownerProcess = owner?.pid !== undefined ? snapshot.get(owner.pid) : undefined;
 		const ownerAlive = owner?.pid !== undefined && ownerProcess !== undefined && this.startKeyMatches(owner.startKey, ownerProcess.startKey);
+		if (owner !== undefined && owner.pid !== undefined && !ownerAlive && !this.maySucceedOwner(chain, owner, shellPid)) {
+			// 死んだ所有者の後継は、ペインのシェルか前の所有者を起動したシェルの配下からだけ選ぶ。
+			// tmux サーバーは最初に起こしたペインのトークンを環境に持ち続けるので、別のペインから
+			// 同じサーバーに作ったセッションのエージェントも、このペインのトークンでhookを送ってくる。
+			return { origin: 'invalid', agentKind: emitterKind };
+		}
 		if (owner === undefined || owner.pid === undefined || !ownerAlive) {
 			// 所有者が未確定（初回・旧スクリプト由来のtranscriptのみのレコード）または死亡
 			// （PID再利用含む）→ このチェーンで「ペインのシェルに最も近い（最外側の）エージェント
@@ -495,10 +557,14 @@ export class ParadisAgentHookOwnership {
 			// hookより先にネストした子のhookが届いた場合（shared process 再起動直後など）に
 			// 子が所有者として bootstrap されてしまう。
 			const outermost = this.findOutermostAgent(chain) ?? emitter;
+			const outermostIndex = chain.findIndex(entry => entry.pid === outermost.pid);
+			const parent = outermostIndex >= 0 ? chain[outermostIndex + 1] : undefined;
+			const anchor = parent !== undefined && isShellCommandLine(parent.command) ? parent : undefined;
 			owner = {
 				pid: outermost.pid, startKey: outermost.startKey,
 				agentKind: paradisHookAgentKindFromCommandLine(outermost.command),
 				transcriptPath: outermost.pid === emitter.pid ? transcriptPath : undefined, at,
+				...(anchor !== undefined ? { anchorPid: anchor.pid, anchorStartKey: anchor.startKey } : {}),
 			};
 			this.setOwner(token, owner);
 		}
@@ -516,6 +582,19 @@ export class ParadisAgentHookOwnership {
 		}
 		// 所有者が生存しているのに祖先関係が無い = 兄弟や誤配送。ペイン状態を触らせない。
 		return { origin: 'invalid', agentKind: emitterKind };
+	}
+
+	/**
+	 * 死んだ所有者の後継を、このチェーンから選んでよいか。ペインのシェルが分からなければ
+	 * 絞らない。チェーンにペインのシェルがいるか、前の所有者を起動したシェル（tmux のペインの
+	 * シェルで claude を起動し直した場合など）が生きたままチェーンにいれば認める。
+	 */
+	private maySucceedOwner(chain: readonly IParadisHookProcessInfo[], previous: IOwnerRecord, shellPid: number | undefined): boolean {
+		if (shellPid === undefined || chain.some(entry => entry.pid === shellPid)) {
+			return true;
+		}
+		const anchorPid = previous.anchorPid;
+		return anchorPid !== undefined && chain.some(entry => entry.pid === anchorPid && this.startKeyMatches(previous.anchorStartKey, entry.startKey));
 	}
 
 	/** チェーン内で最も祖先側（ペインのシェルに最も近い）のエージェントプロセスを返す。 */
