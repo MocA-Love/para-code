@@ -16,6 +16,7 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -36,7 +37,7 @@ import { IParadisAgentPaneInsight } from '../../agentInsights/common/paradisAgen
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
 // 台帳の窓口（registerSingleton）はここで確実に読み込む。受信箱の UI が無効でも記録は続ける。
 import '../../notificationInbox/electron-browser/paradisNotificationInboxService.js';
-import { IParadisNotificationInboxService, ParadisInboxDelivery } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, ParadisInboxDelivery, paradisNotificationBody, paradisNotificationPreview } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { ParadisAgentStatusNotificationConsumer, ParadisAgentStatusNotificationTracker, ParadisAgentNotifyStatus } from './paradisAgentStatusNotificationTracker.js';
 
 /** {{event}} の読み上げ用ラベル（日本語）。 */
@@ -89,6 +90,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisAgentStatusSnapshotService snapshotService: IParadisAgentStatusSnapshotService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@IParadisNotificationInboxService private readonly inboxService: IParadisNotificationInboxService,
 	) {
@@ -225,7 +227,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 			&& (needsAction ? this.settingsService.getOsNotifyOnPermission() : this.settingsService.getOsNotifyOnReview());
 		this._record(token, instanceId, stateKey, status, placeholders, message, osEnabled ? 'notified' : 'silent');
 		if (osEnabled) {
-			this._showOsNotification(stateKey, instanceId, status, placeholders);
+			this._showOsNotification(stateKey, instanceId, status, placeholders, message);
 		}
 
 		const muted = this.settingsService.getSoundsMuted();
@@ -346,11 +348,14 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		}
 	}
 
-	private _showOsNotification(stateKey: string | undefined, instanceId: number, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): void {
+	private _showOsNotification(stateKey: string | undefined, instanceId: number, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders, message: string | undefined): void {
 		const title = status === 'review' ? STR_TITLE_REVIEW : STR_TITLE_PERMISSION;
-		const body = placeholders.worktree && placeholders.worktree !== placeholders.space
+		const location = placeholders.worktree && placeholders.worktree !== placeholders.space
 			? `${placeholders.space ?? ''} (${placeholders.worktree})`
 			: placeholders.space;
+		// 最後の発言の冒頭を載せる（q.html Q35 案A）。ロック画面や画面共有で見えるのを避けたい人は設定で切る。
+		const includeMessage = this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING) !== false;
+		const body = paradisNotificationBody(location, includeMessage ? paradisNotificationPreview(message) : undefined);
 
 		this.hostService.showToast({ title, body, silent: true }, CancellationToken.None).then(result => {
 			// クリックでこのウィンドウを前面に出し、スペースを切り替えて該当ペインへフォーカスする

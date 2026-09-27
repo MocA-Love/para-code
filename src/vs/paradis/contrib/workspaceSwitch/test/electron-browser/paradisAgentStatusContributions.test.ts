@@ -104,6 +104,7 @@ suite('Paradis agent status contribution wiring', () => {
 			{ notify: () => undefined } as never,
 			logService,
 			producer,
+			{ getValue: () => undefined } as never,
 			{ windowId: 1 } as never,
 			{ record: async () => undefined } as never,
 		));

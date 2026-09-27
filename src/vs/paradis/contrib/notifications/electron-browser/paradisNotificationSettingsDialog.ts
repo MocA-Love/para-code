@@ -21,6 +21,7 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -37,6 +38,7 @@ import { ParadisDoNotDisturbSection } from './paradisDoNotDisturbSection.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer.js';
 import { openParadisYouTubeImportDialog } from './paradisYouTubeImportDialog.js';
+import { PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING } from '../../notificationInbox/common/paradisNotificationInbox.js';
 
 const $ = dom.$;
 
@@ -92,6 +94,10 @@ const STR_OS_EVENTS_LABEL = localize('paradis.notif.osEventsLabel', "通知す�
 const STR_OS_EVENT_PERMISSION = localize('paradis.notif.osEventPermission', "対応待ち");
 // allow-any-unicode-next-line
 const STR_OS_EVENT_REVIEW = localize('paradis.notif.osEventReview', "作業完了");
+// allow-any-unicode-next-line
+const STR_OS_MESSAGE_LABEL = localize('paradis.notif.osMessageLabel', "エージェントの最後の発言を載せる");
+// allow-any-unicode-next-line
+const STR_OS_MESSAGE_HINT = localize('paradis.notif.osMessageHint', "通知の本文に最後の発言（許可待ち・質問では待っている内容）の冒頭を 80 字ほど載せます。ロック画面や画面共有中に中身が見えるのを避けたい場合はオフにします");
 // allow-any-unicode-next-line
 const STR_FOCUSED_TOGGLE_LABEL = localize('paradis.notif.focusedToggleLabel', "Para Code を見ている間も通知する");
 // allow-any-unicode-next-line
@@ -206,6 +212,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -626,6 +633,18 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			};
 			eventCheckbox(STR_OS_EVENT_PERMISSION, this.settingsService.getOsNotifyOnPermission(), value => this.settingsService.setOsNotifyOnPermission(value));
 			eventCheckbox(STR_OS_EVENT_REVIEW, this.settingsService.getOsNotifyOnReview(), value => this.settingsService.setOsNotifyOnReview(value));
+
+			// --- 本文に最後の発言を載せる（settings.json の設定。q.html Q35） ---
+			const messageRow = dom.append(container, $('.setting-row'));
+			const messageLabels = dom.append(messageRow, $('.sr-main'));
+			dom.append(messageLabels, $('.sr-label')).textContent = STR_OS_MESSAGE_LABEL;
+			dom.append(messageLabels, $('.sr-desc')).textContent = STR_OS_MESSAGE_HINT;
+			const messageToggle = dom.append(messageRow, $('input.pns-toggle')) as HTMLInputElement;
+			messageToggle.type = 'checkbox';
+			messageToggle.checked = this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING) !== false;
+			this._renderDisposables.add(dom.addDisposableListener(messageToggle, 'change', () => {
+				void this.configurationService.updateValue(PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, messageToggle.checked);
+			}));
 		}
 
 		// --- フォーカス中も通知する ---
