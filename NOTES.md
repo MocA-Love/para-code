@@ -344,21 +344,32 @@ grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/
 
 ## 内蔵ブラウザのダウンロード一覧、エージェントのタブとプロファイル（2026-09-27、フェーズ7 担当A）
 
-ダウンロードの一覧（q.html Q73 案B）は main が権威で、renderer は写しを持つだけ。`will-download` はセッションごとに配線済み（`browserSession.ts` の既存 PARA-PATCH）なので、そこから main に1つだけある `ParadisBrowserDownloadsTracker` へ集め、`paradisBrowserDownloads` チャネルで流す。renderer からは main が振った id しか受け取らず、パスは受け取らない。実行ファイル（拡張子で判定、拡張子なしも含む）は renderer がボタンを出さないうえ、main も開くのを断る。ボタンは `MenuId.BrowserActionsToolbar` のアクションを `IActionViewItemService` で自前の項目に差し替えたもので、進み具合の輪と未確認の点を持つ。一覧は main のメモリだけにあり、再起動で消える（ファイルは消えない）。
+ダウンロードの一覧は main が権威で、renderer は写しを持つだけ。`will-download` はセッションごとに配線済み（`browserSession.ts` の既存 PARA-PATCH）なので、そこから main に1つだけある `ParadisBrowserDownloadsTracker` へ集め、`paradisBrowserDownloads` チャネルで流す。チャネルへ渡すのは操作だけの薄い面で、一覧の実体（`track` や `dispose`）は renderer から呼べない。renderer からは main が振った id しか受け取らず、パスは受け取らない。ボタンは `MenuId.BrowserActionsToolbar` のアクションを `IActionViewItemService` で自前の項目に差し替えたもので、進み具合の輪と未確認の点を持つ。一覧は main のメモリだけにあり、再起動で消える（ファイルは消えない）。
+
+「開く」を出すのは、開いても表示されるだけの種類（`paradisIsOpenableDownload` の許可リスト）で、しかもエージェントのタブ（Agent スコープ、エージェントが作りユーザーがまだ使っていないプロファイル）から落ちてきたものでないときだけ。それ以外は「フォルダで表示」だけにし、main も Agent スコープ由来と許可リスト外は開くのを断る（エージェントが作ったプロファイルかどうかは renderer の台帳にしか無いので、そこは renderer の表示だけで守っている）。出どころは `paradisBrowserDownloadsMain.ts` が Electron のセッションから BrowserSession を引いて決める（`paradisBrowserDownloads.ts` から BrowserSession を import すると `browserSession.ts` と循環するため、登録口を分けた）。
+
+完了したファイルには、OS の隔離の印が無ければ付ける（macOS は `xattr -w com.apple.quarantine`、Windows は `Zone.Identifier` に `ZoneId=3`）。Chromium でこれを付けるのは埋め込み側（Chrome の DownloadManagerDelegate）で、Electron が付けるとは限らないため、完了のたびに有無を確かめている。【要確認】実機で Electron 43 が既に付けているか（付けていれば何もしない作りなので害は無い）。
 
 | upstream のファイル | 行 | 内容 |
 |---|---|---|
-| `src/vs/code/electron-main/app.ts` | import 1行 + 登録 1行 | `paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)` |
+| `src/vs/code/electron-main/app.ts` | import 1行 + 登録 1行 | `paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)`（`browserDownloads/electron-main/paradisBrowserDownloadsMain.ts`） |
 | `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts` | 1行 | `paradis-browser-downloads-popover` を QuickInput 扱いで登録（ネイティブビューの裏に隠れないように） |
 
-エージェントのタブ（Q70 案A）と共有の「要求 → 承認」（Q88 案A）は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。ペインとページの共有は 1 対 1 のまま変えていない（CDP ゲートウェイとフィルタは共有中の1枚しか見せない）。複数のタブは「共有するタブを移す」ことで扱う。
+エージェントのタブと、ページ共有の「エージェントが要求 → ユーザーが承認」は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。ペインとページの共有は 1 対 1 のまま変えていない（CDP ゲートウェイとフィルタは共有中の1枚しか見せない）。複数のタブは「共有するタブを移す」ことで扱う。
 
 - エージェントが開くタブは Agent スコープ（ユーザーのログイン情報を持たず、ネットワークの制限が掛かる）で、共有相手を最初からエージェントにして作る。そのため upstream の共有確認は出ない（upstream 自身の open_browser ツールと同じ扱い）
-- 誰がどのタブを開いたか・どのユーザーのタブを承認済みかの台帳（`ParadisAgentTabLedger`）はウィンドウのメモリだけにある。再読み込みすると忘れ、エージェントが開いたタブは普通のタブとして残る（エージェントはもう閉じられない＝安全側）
-- 承認ダイアログは `custom: true` のワークベンチ内ダイアログにしている。ネイティブのシートは時間切れで閉じられず、内蔵ブラウザの上にも確実には出ないため。承認されても、upstream の共有確認（「今後表示しない」を選んでいなければ）がもう1回出る
-- 待ち時間は renderer 110 秒・shared process 120 秒。`_callOwningWindow` の既定 10 秒を、このツールと `open_browser_tab`（読み込み待ち）だけ延ばしている
+- ユーザーのタブを使えるのは、そのタブが共有されている間だけ。エージェントが自分のタブへ共有を移したら、戻るにはもう一度 `request_browser_page` で頼む。承認の記録を別に持つと、ユーザーから見えない（共有ボタンで止められない）まま使い続けられるため。共有していないタブの URL は origin だけ返す
+- 誰がどのタブを開いたかの台帳（`ParadisAgentTabLedger`）はウィンドウのメモリだけにある。再読み込みすると忘れ、エージェントが開いたタブは普通のタブとして残る（エージェントはもう閉じられない＝安全側）。別のスペースへ退避中のタブは閉じない（エディタを通さずに捨てると復元が壊れる）
+- 承認ダイアログ（`askApproval`、プロファイルの承認でも使う）は `custom: true` のワークベンチ内ダイアログで、「拒否」を先頭（既定のフォーカス）に置き、cancelButton を付けない（Esc と閉じるボタンは拒否になる）。表示から 1 秒以内の承認は打ちかけの Enter とみなして聞き直す。ペイン名はエージェントが OSC で変えられるので、制御文字と双方向制御を落とし、ターミナル番号とスペース名を並べる
+- fork の自前ダイアログ（z-index 2600〜2800）が開いていても隠れないよう、承認ダイアログの modal block だけ 2850 に上げている（`media/paradisAgentApproval.css`）。「fork の UI は 2575 より上げない」の例外で、止めて答えを求めるセキュリティの確認だから
+- 待ち時間は renderer 50 秒（ダイアログから共有の完了までの1本の締め切り）・shared process 55 秒。Codex の MCP ツールの既定の時間切れ（60 秒）より短い。締め切り後に共有が成立したら外す。shared process は時間切れや MCP の取り消しを CancellationToken で renderer へ伝え、ダイアログを閉じさせる。`_callOwningWindow` の既定 10 秒を延ばしているのは、承認を伴う呼び出しと `open_browser_tab`（読み込み待ち）
 
-エージェントによるプロファイル操作（B9）は既存の `paradisBrowserProfileMcp` チャネルに相乗りした。台帳の各プロファイルに `createdByAgent: true` を持たせ、エージェントが消せるのはそれだけ。切替は「エージェントが自分で開いたタブ」に限り、ネットワークの制限が有効な間は断る（`open_browser_profile` と同じ判断）。`open_browser_profile` で開いたタブもエージェントのタブとして台帳に載り、上限 5 枚に数える。
+エージェントによるプロファイル操作は既存の `paradisBrowserProfileMcp` チャネルに相乗りした。
+
+- 台帳の `createdByAgent: true` は「エージェントが作り、ユーザーがまだ自分で使っていない」印。ユーザーが UI から開く・切り替える・名前や色を変えると外れる（`claimForUser`）。ユーザーがエージェントのタブの中でログインした場合は検知できず、印は残る
+- `list_browser_profiles` が名前を出すのは印の付いたものだけで、ユーザーのプロファイルは数だけ返す。ユーザーのプロファイルを `open_browser_profile` / `switch_browser_profile` で使うときは承認ダイアログを通す
+- 削除できるのは作ったペインのエージェントだけ（`agentOwner` はペイントークンの SHA-1 の先頭 16 桁。トークンそのものは保存しない）。CLI を起動し直すとトークンが変わるので、その後は作ったエージェントでも消せない（安全側）
+- 切替は「エージェントが自分で開いたタブ」に限り、ネットワークの制限が有効な間は断る（`open_browser_profile` と同じ判断）。`open_browser_profile` で開いたタブもエージェントのタブとして台帳に載り、上限 5 枚に数える
 
 ## 内蔵ブラウザの Design Mode とスクリーンショットへの書き込み（browserDesignMode、2026-09-27、フェーズ7 担当B）
 
