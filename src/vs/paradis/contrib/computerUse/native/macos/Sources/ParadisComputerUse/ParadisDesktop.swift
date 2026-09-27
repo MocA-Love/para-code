@@ -9,7 +9,7 @@
 //
 // 許可の無い機能は、OS の API を呼ぶ前に確かめて断る。ScreenCaptureKit は許可が無いと OS の確認を
 // 出すことがあるので、`CGPreflightScreenCaptureAccess()`（確認を出さない）で先に止める。
-// 入力（クリック・文字）はこの版には無い。
+// 入力（クリック・キー・文字・貼り付け）は ParadisInput.swift。
 
 import AppKit
 import ApplicationServices
@@ -19,7 +19,19 @@ import ImageIO
 import ScreenCaptureKit
 import UniformTypeIdentifiers
 
+/** 直前に読んだツリーの要素（番号でクリックするため）。番号は次に読むまで有効。 */
+struct ParadisElementSnapshot {
+	let pid: Int32
+	let windowId: UInt32?
+	let elements: [AXUIElement]
+}
+
 final class ParadisDesktop: ParadisDesktopBackend {
+
+	/** 直前に読んだツリー。要求は 1 本の接続で順に処理するので、鍵は要らない。 */
+	var lastSnapshot: ParadisElementSnapshot?
+	/** この補助アプリが最後に合成入力を送った時刻（Q101 の判定で自分の入力を除くため）。 */
+	var lastSyntheticEventAt: Date?
 
 	func permissions() -> ParadisPermissionSnapshot {
 		return ParadisPermissionSnapshot(accessibility: AXIsProcessTrusted(), screenRecording: CGPreflightScreenCaptureAccess())
@@ -73,7 +85,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		}
 	}
 
-	private func requireRunningApp(_ pid: Int32) throws {
+	func requireRunningApp(_ pid: Int32) throws {
 		let running = paradisOnMain { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false }
 		guard running else {
 			throw ParadisHelperError(code: "app_not_found", message: "no running application has pid \(pid)")
@@ -121,6 +133,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		let window = try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
 		let windowFrame = paradisFrame(window) ?? .zero
 		var nodes: [ParadisAXNode] = []
+		var elements: [AXUIElement] = []
 		var truncated = false
 		// 深さ優先で番号を振る（画面の上から下の順に近くなる）
 		var stack: [(AXUIElement, Int)] = [(window, 0)]
@@ -130,6 +143,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 				break
 			}
 			nodes.append(paradisDescribe(element, index: nodes.count, depth: depth, origin: windowFrame.origin))
+			elements.append(element)
 			if depth + 1 > maxDepth {
 				if !paradisElements(element, kAXChildrenAttribute).isEmpty {
 					truncated = true
@@ -140,6 +154,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 				stack.append((child, depth + 1))
 			}
 		}
+		lastSnapshot = ParadisElementSnapshot(pid: pid, windowId: windowId, elements: elements)
 		return [
 			"text": paradisRenderAXTree(nodes, truncated: truncated),
 			"nodeCount": nodes.count,
@@ -148,7 +163,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		]
 	}
 
-	private func paradisPickWindow(_ windows: [AXUIElement], application: AXUIElement, windowId: UInt32?, pid: Int32) throws -> AXUIElement {
+	func paradisPickWindow(_ windows: [AXUIElement], application: AXUIElement, windowId: UInt32?, pid: Int32) throws -> AXUIElement {
 		guard let windowId else {
 			if let focused = paradisElement(application, kAXFocusedWindowAttribute) {
 				return focused
@@ -309,17 +324,17 @@ private func paradisPngData(_ image: CGImage) -> Data? {
 
 // MARK: - AX の小道具
 
-private typealias ParadisAXWindowIdFunction = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+typealias ParadisAXWindowIdFunction = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
 
 /** `_AXUIElementGetWindow`（非公開）。無ければ位置と大きさで照合する。 */
-private func paradisAXWindowIdFunction() -> ParadisAXWindowIdFunction? {
+func paradisAXWindowIdFunction() -> ParadisAXWindowIdFunction? {
 	guard let handle = dlopen(nil, RTLD_NOW), let symbol = dlsym(handle, "_AXUIElementGetWindow") else {
 		return nil
 	}
 	return unsafeBitCast(symbol, to: ParadisAXWindowIdFunction.self)
 }
 
-private func paradisCopy(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+func paradisCopy(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
 	var value: CFTypeRef?
 	guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
 		return nil
@@ -335,14 +350,14 @@ private func paradisBool(_ element: AXUIElement, _ attribute: String) -> Bool? {
 	return (paradisCopy(element, attribute) as? NSNumber)?.boolValue
 }
 
-private func paradisElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+func paradisElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
 	guard let value = paradisCopy(element, attribute), CFGetTypeID(value) == AXUIElementGetTypeID() else {
 		return nil
 	}
 	return (value as! AXUIElement)
 }
 
-private func paradisElements(_ element: AXUIElement, _ attribute: String) -> [AXUIElement] {
+func paradisElements(_ element: AXUIElement, _ attribute: String) -> [AXUIElement] {
 	guard let array = paradisCopy(element, attribute) as? [AnyObject] else {
 		return []
 	}
@@ -369,7 +384,7 @@ private func paradisValueText(_ element: AXUIElement) -> String? {
 	return nil
 }
 
-private func paradisFrame(_ element: AXUIElement) -> CGRect? {
+func paradisFrame(_ element: AXUIElement) -> CGRect? {
 	guard let positionValue = paradisCopy(element, kAXPositionAttribute), let sizeValue = paradisCopy(element, kAXSizeAttribute),
 		CFGetTypeID(positionValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID()
 	else {
