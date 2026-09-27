@@ -7,7 +7,7 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
- * 復元したターミナルタブの右上のバナー（Q53 案B）。共有ドット（top 4px / right 6px / 16px 角）の
+ * 復元したターミナルタブの右上のバナー。共有ドット（top 4px / right 6px / 16px 角）の
  * 左に並べ、ドットを隠さない。ターミナルの上に浮く面なので、エディタの中の浮く部品（検索
  * ウィジェット等）と同じ editorWidget の色・影・角丸（large）に揃える。ウィンドウ透過と
  * Modern UI が既定なので、背景は不透明な editorWidget.background を使う（透けると下の文字と重なる）。
@@ -90,4 +90,12 @@
 	width: auto;
 	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
 	font-size: var(--vscode-fontSize-label1);
+}
+
+/*
+ * ターミナルの検索欄（右上、upstream の simple-find-part）を開いている間は、その下へずらす。
+ * 検索欄はターミナルの要素の中、バナーは overflow guard の直下なので、:has で見る。
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor:has(.simple-find-part.visible) > .paradis-terminal-resume-banner {
+	top: var(--vscode-spacing-size400);
 }

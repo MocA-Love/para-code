@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
+import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
 
 suite('paradisTerminalResumeBanner', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,7 +31,7 @@ suite('paradisTerminalResumeBanner', () => {
 		});
 	});
 
-	test('round-trips the ledger and drops broken, expired and unsafe rows', () => {
+	test('round-trips the ledger keyed by a token hash and drops broken, expired and unsafe rows', () => {
 		const now = 1_800_000_000_000;
 		const kept = { agent: 'claude' as const, sessionId: 'session-1', cwd: '/Users/example/repo', title: 'Fix login', at: now - 1000 };
 		const raw = JSON.stringify([
@@ -41,14 +41,21 @@ suite('paradisTerminalResumeBanner', () => {
 			{ token: 'token-d', agent: 'codex', sessionId: '-x', at: now },
 			'garbage',
 		]);
+		// 前の版はトークンをそのままキーにしていた。読んだ時点でハッシュへ置き換え、書き出しにも残さない。
 		const parsed = paradisParseResumeLedger(raw, now);
+		const key = paradisResumeLedgerKey('token-a');
+		const serialized = paradisSerializeResumeLedger(parsed);
 		assert.deepStrictEqual({
 			parsed: [...parsed],
-			roundTrip: [...paradisParseResumeLedger(paradisSerializeResumeLedger(parsed), now)],
+			roundTrip: [...paradisParseResumeLedger(serialized, now)],
+			tokenWritten: serialized.includes('token-a'),
+			keyShape: /^[0-9a-f]{40}$/.test(key),
 			broken: paradisParseResumeLedger('{not json', now).size,
 		}, {
-			parsed: [['token-a', kept]],
-			roundTrip: [['token-a', kept]],
+			parsed: [[key, kept]],
+			roundTrip: [[key, kept]],
+			tokenWritten: false,
+			keyShape: true,
 			broken: 0,
 		});
 	});

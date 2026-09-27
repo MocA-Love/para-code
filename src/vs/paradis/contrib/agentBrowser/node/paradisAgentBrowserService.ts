@@ -1276,7 +1276,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (agent === undefined) {
 			return;
 		}
-		const nextCwd = cwd ?? (previous?.sessionId === sessionId ? previous.cwd : undefined);
+		// 同じ会話の間は最初に報告された作業ディレクトリを使い続ける。後の hook の cwd は、ツールが
+		// `cd` した先になることがあり、分岐（`claude --resume <id> --fork-session`）がそこでは会話を
+		// 見つけられない（Claude Code は会話をプロジェクトのフォルダごとに持つ）。
+		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
 		this._paneSessions.set(token, { agent, sessionId, at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}) });
 	}
 

@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 復元したターミナルタブから前の会話を続ける（Q53 案B・Q54 案A）。
+// 復元したターミナルタブから前の会話を続ける。
 //
 // 1. エージェントの hook が報告する会話（shared process の状態スナップショットの `paneSessions`）と、
 //    Codex が起動時にタイトルへ出すスレッド ID を、ペイントークンごとに台帳へ控える
@@ -36,7 +36,7 @@ import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAg
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
-import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
+import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
 const LEDGER_STORAGE_KEY = 'paradis.terminal.resumeSessions';
 /** 台帳の書き出しをまとめる間隔。hook はツールを使うたびに届くので、毎回は書かない。 */
@@ -113,10 +113,11 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	private onSnapshot(snapshot: IParadisAgentStatusSnapshot): void {
 		for (const session of snapshot.paneSessions ?? []) {
 			const instance = this.findInstanceByToken(session.token);
-			const previous = this._ledger.get(session.token);
+			const key = paradisResumeLedgerKey(session.token);
+			const previous = this._ledger.get(key);
 			const title = (instance === undefined ? undefined : paradisResumeTitleFromTab(instance.title))
 				?? (previous?.sessionId === session.sessionId ? previous.title : undefined);
-			this.upsert(session.token, {
+			this.upsert(key, {
 				agent: session.agent,
 				sessionId: session.sessionId,
 				at: session.at,
@@ -131,7 +132,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	}
 
 	private onTitleChanged(instance: ITerminalInstance): void {
-		const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+		const token = this.ledgerKeyForInstance(instance.instanceId);
 		if (token === undefined) {
 			return;
 		}
@@ -171,8 +172,17 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		this._persistScheduler.schedule();
 	}
 
+	/**
+	 * 台帳のキー。ペイントークンはペインの app-server や MCP の Bearer を兼ねるので、そのままでは
+	 * ディスクへ書かない（ハッシュにする）。
+	 */
+	private ledgerKeyForInstance(instanceId: number): string | undefined {
+		const token = this.paneTokenService.getTokenForInstance(instanceId);
+		return token === undefined ? undefined : paradisResumeLedgerKey(token);
+	}
+
 	private forgetInstance(instance: ITerminalInstance): void {
-		const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+		const token = this.ledgerKeyForInstance(instance.instanceId);
 		if (token !== undefined && this._ledger.delete(token)) {
 			this._dirtyTokens.add(token);
 			this._persistScheduler.schedule();
@@ -239,7 +249,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			if (instance.isDisposed || !paradisRestoredShellWasRestarted(previousPid, instance.processId, adopted)) {
 				return;
 			}
-			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+			const token = this.ledgerKeyForInstance(instance.instanceId);
 			const entry = token === undefined ? undefined : this._restoredLedger.get(token);
 			if (token === undefined || entry === undefined || this._ledger.get(token)?.sessionId !== entry.sessionId) {
 				return;
@@ -266,6 +276,13 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		const instance = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
 		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume');
 		if (instance === undefined || command === undefined) {
+			return;
+		}
+		// コマンドと Enter を送るので、シェルが入力を待っていて入力欄が空のときだけにする。別の
+		// プログラム（ssh 先のシェル、vim など）が前面に居ると、そちらへ入ってしまう。
+		const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
+		if (commandDetection === undefined || commandDetection.executingCommand !== undefined || commandDetection.promptInputModel.value.trim().length > 0) {
+			this.notificationService.info(localize('paradis.resumeBanner.notAtPrompt', "シェルが入力を待っていて入力欄が空のときに押してください。いま動いているプログラムを終えるか、入力欄を空にしてからもう一度押します。"));
 			return;
 		}
 		this.withdrawOffer(instanceId);

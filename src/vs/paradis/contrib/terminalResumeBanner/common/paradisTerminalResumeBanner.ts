@@ -6,13 +6,28 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 復元したターミナルタブから前の会話を続ける（Q53 案B・Q54 案A）ための台帳と、コマンドの組み立て。
+// 復元したターミナルタブから前の会話を続けるための台帳と、コマンドの組み立て。
 //
 // Para Code を終了して開き直すと、エディタのターミナルタブは中身ごと戻るが、中で動いていた
 // Claude Code / Codex は終了してシェルに戻っている。そのタブで何の会話が動いていたかを、
 // ペイントークン（シェル統合の nonce。再起動をまたいで変わらない）ごとに控えておく。
 
-import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
+import { StringSHA1 } from '../../../../base/common/hash.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
+import { paradisCodexThreadIdFromTerminalTitle } from '../../codexTerminalTitle/common/paradisCodexTerminalTitle.js';
+
+const LEDGER_KEY_PATTERN = /^[0-9a-f]{40}$/;
+
+/**
+ * 台帳のキー（ペイントークンのハッシュ）。ペイントークンは MCP やペインの app-server の Bearer を
+ * 兼ねるので、平文ではディスクへ書かない。同期で引けることが要る（タブの切り替えのたびに引く）
+ * ので SHA-1 を使う。目的は「読めても元のトークンに戻せない」ことで、衝突への強さは要らない。
+ */
+export function paradisResumeLedgerKey(token: string): string {
+	const sha = new StringSHA1();
+	sha.update(`paradis-resume-ledger:${token}`);
+	return sha.digest();
+}
 
 /** 1つのタブで最後に動いていた会話。 */
 export interface IParadisResumeLedgerEntry {
@@ -61,7 +76,8 @@ export function paradisParseResumeLedger(raw: string | undefined, now: number): 
 			|| typeof at !== 'number' || !Number.isFinite(at) || now - at > PARADIS_RESUME_LEDGER_TTL_MS) {
 			continue;
 		}
-		result.set(token, {
+		// 前の版はトークンをそのままキーにしていた。読んだ時点でハッシュへ置き換える。
+		result.set(LEDGER_KEY_PATTERN.test(token) ? token : paradisResumeLedgerKey(token), {
 			agent,
 			sessionId,
 			at,
@@ -89,13 +105,7 @@ export function paradisSerializeResumeLedger(ledger: ReadonlyMap<string, IParadi
  * 通らなければ undefined。
  */
 export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork'): string | undefined {
-	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
-		return undefined;
-	}
-	if (agent === 'claude') {
-		return mode === 'fork' ? `claude --resume ${sessionId} --fork-session` : `claude --resume ${sessionId}`;
-	}
-	return mode === 'fork' ? `codex fork ${sessionId}` : `codex resume ${sessionId}`;
+	return paradisAgentResumeCommandLine(agent, sessionId, mode);
 }
 
 /**
@@ -114,7 +124,7 @@ export function paradisResumeTitleFromTab(title: string): string | undefined {
 
 /** Codex が起動直後にタイトルへ出すスレッド ID（`codex | <uuid>`）。 */
 export function paradisCodexThreadIdFromTitle(title: string): string | undefined {
-	return /^(?:codex \| )?([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(title.trim())?.[1];
+	return paradisCodexThreadIdFromTerminalTitle(title.trim());
 }
 
 /**
