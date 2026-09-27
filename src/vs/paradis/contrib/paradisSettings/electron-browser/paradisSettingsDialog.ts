@@ -636,7 +636,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.daemonSaveScreens', "PC を再起動しても画面を戻す"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.daemonSaveScreensDesc', "ターミナルを残しているとき、画面をディスクに保存しておき、PC の再起動後に直前の画面とタブを戻します。保存は30日で消えます。"),
+		description: localize('paradis.settings.daemonSaveScreensDesc', "ターミナルを残しているとき、画面とシェルの環境変数をディスクに保存しておき、PC の再起動後に直前の画面とタブを戻します。本人だけが読めるファイルに書き、30日で消えます。"),
 		keywords: 'terminal daemon save screen restore reboot scrollback disk',
 	},
 	{
@@ -654,7 +654,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.renderRepairRecord', "描き直したときの画面を記録する"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.renderRepairRecordDesc', "ログのフォルダに画面の画像と文字を最大4件残します。秘密情報が写ることがあります。"),
+		description: localize('paradis.settings.renderRepairRecordDesc', "不具合の調査用です。ログのフォルダに前後の画面の画像と欠けていた場所を最大4件・7日まで残します。画像には秘密情報が写ることがあります。"),
 		keywords: 'terminal render repair record screenshot logs evidence',
 	},
 	{
