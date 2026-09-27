@@ -276,9 +276,12 @@
 	background-color: transparent !important;
 }
 
-/* The sticky list header keeps a (translucent) fill: fully transparent, the rows scrolling under it
- * would show through and the two lines of text would overlap. */
-.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-head,
+/* The sticky list header must hide the rows scrolling under it, so it gets at least a 90% fill even
+ * when the window opacity is set lower (otherwise both lines of text show through and overlap). */
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-head {
+	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) max(90%, var(--paradis-transparency-opacity, 90%)), transparent) !important;
+}
+
 .paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-card,
 .paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-group {
 	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
