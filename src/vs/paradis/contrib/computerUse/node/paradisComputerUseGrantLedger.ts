@@ -22,8 +22,12 @@ export interface IParadisComputerUseGrantEntry {
 }
 
 export class ParadisComputerUseGrantLedger {
-	/** `<ペイントークン>\n<bundle id（小文字）>` → 決定。挿入順を古い順として使う。 */
-	private readonly _entries = new Map<string, { readonly bundleId: string; readonly grant: ParadisComputerUseGrant }>();
+	/**
+	 * `<ペイントークン>\n<bundle id（小文字）>` → 決定。挿入順を古い順として使う。
+	 * `operateRefused` は、読み取りは許されたが操作は断られた（初回に「読み取りのみ」を選んだ・格上げを拒否した）。
+	 * その後の操作の求めは聞き直さずに断る。
+	 */
+	private readonly _entries = new Map<string, { readonly bundleId: string; readonly grant: ParadisComputerUseGrant; readonly operateRefused: boolean }>();
 
 	constructor(private readonly _maxEntries: number = DEFAULT_MAX_ENTRIES) { }
 
@@ -31,10 +35,15 @@ export class ParadisComputerUseGrantLedger {
 		return this._entries.get(keyOf(paneToken, bundleId))?.grant;
 	}
 
-	set(paneToken: string, bundleId: string, grant: ParadisComputerUseGrant): void {
+	/** 操作を断られたか（読み取りは許されている）。 */
+	operateRefused(paneToken: string, bundleId: string): boolean {
+		return this._entries.get(keyOf(paneToken, bundleId))?.operateRefused === true;
+	}
+
+	set(paneToken: string, bundleId: string, grant: ParadisComputerUseGrant, operateRefused: boolean = false): void {
 		const key = keyOf(paneToken, bundleId);
 		this._entries.delete(key);
-		this._entries.set(key, { bundleId, grant });
+		this._entries.set(key, { bundleId, grant, operateRefused: grant === 'read' && operateRefused });
 		while (this._entries.size > this._maxEntries) {
 			const oldest = this._entries.keys().next();
 			if (oldest.done) {

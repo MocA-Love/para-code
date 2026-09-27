@@ -59,10 +59,37 @@ suite('ParadisComputerUseApprovalChannel', () => {
 		}, { readOnly: 'read', operate: 'operate', hasAlternative: true, lines: 5 });
 	});
 
-	test('an upgrade offers only deny and operate', async () => {
+	test('an upgrade offers only deny and operate, a first request to operate also offers read-only', async () => {
 		const upgrade = setup('approve');
-		const outcome = await upgrade.call('pane-a', { appName: 'Notes', bundleId: 'com.apple.Notes', requested: 'operate', offerOperate: true });
-		assert.deepStrictEqual({ outcome, alternative: upgrade.asked[0].alternative }, { outcome: 'operate', alternative: undefined });
+		const outcome = await upgrade.call('pane-a', { appName: 'Notes', bundleId: 'com.apple.Notes', requested: 'operate', upgrade: true, offerOperate: true });
+		const first = setup('alternative');
+		const firstOutcome = await first.call('pane-a', { appName: 'Notes', bundleId: 'com.apple.Notes', requested: 'operate', upgrade: false, offerOperate: true });
+		assert.deepStrictEqual({
+			outcome,
+			alternative: upgrade.asked[0].alternative,
+			upgradeMessage: upgrade.asked[0].message,
+			firstOutcome,
+			firstHasAlternative: first.asked[0].alternative !== undefined,
+		}, {
+			outcome: 'operate',
+			alternative: undefined,
+			upgradeMessage: 'PANE のエージェントが、「Notes」を操作したいと求めています',
+			firstOutcome: 'read',
+			firstHasAlternative: true,
+		});
+	});
+
+	test('warns that operating a terminal can run commands, and always says Computer Use runs outside the agent\'s limits', async () => {
+		const terminal = setup('approve');
+		await terminal.call('pane-a', { appName: 'Terminal', bundleId: 'com.apple.Terminal', requested: 'operate', upgrade: false, offerOperate: true });
+		const notes = setup('approve');
+		await notes.call('pane-a', { appName: 'Notes', bundleId: 'com.apple.Notes', requested: 'operate', upgrade: false, offerOperate: true });
+		const commands = 'このアプリを操作すると、コマンドをあなたの権限で実行できます。';
+		const outside = 'Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。';
+		assert.deepStrictEqual({
+			terminal: [terminal.asked[0].detail.includes(commands), terminal.asked[0].detail.includes(outside)],
+			notes: [notes.asked[0].detail.includes(commands), notes.asked[0].detail.includes(outside)],
+		}, { terminal: [true, true], notes: [false, true] });
 	});
 
 	test('passes refusals through and does not ask for unknown panes or malformed bundle ids', async () => {
