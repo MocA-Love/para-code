@@ -30,6 +30,7 @@
 
 import * as fs from 'fs';
 import { dirname, join } from '../../../../base/common/path.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { IParadisCodexSessionLinkSummary } from '../common/paradisCodexAccounts.js';
 
 const YEAR_PATTERN = /^\d{4}$/;
@@ -114,10 +115,7 @@ async function writeLedger(ledgerPath: string, ledger: ILinkLedger): Promise<voi
 		homes: Object.fromEntries([...ledger.seen].map(([home, paths]) => [home, [...paths].sort()])),
 		origins: Object.fromEntries([...ledger.origins].sort(([a], [b]) => a.localeCompare(b))),
 	};
-	await fs.promises.mkdir(dirname(ledgerPath), { recursive: true, mode: 0o700 });
-	const temporaryPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
-	await fs.promises.writeFile(temporaryPath, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
-	await fs.promises.rename(temporaryPath, ledgerPath);
+	await paradisWriteFileAtomic(ledgerPath, JSON.stringify(payload), { newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false });
 }
 
 async function readDirectoryNames(directory: string, pattern: RegExp, kind: 'directory' | 'file'): Promise<string[]> {

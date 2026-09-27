@@ -27,7 +27,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
+import { isAbsolute, join } from '../../../../base/common/path.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { onDidChangeParadisCodexHomes, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -45,6 +45,7 @@ import {
 	paradisMapCodexBackendResetCredits
 } from '../common/paradisCodexAccounts.js';
 import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, ParadisCodexRpcError, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
 import { paradisLinkCodexSessions } from './paradisCodexSessionLinker.js';
@@ -317,10 +318,7 @@ export class ParadisCodexAccountsService extends Disposable {
 	}
 
 	private async writeSelection(selection: IStoredSelection): Promise<void> {
-		await fs.promises.mkdir(dirname(this.selectionPath), { recursive: true, mode: 0o700 });
-		const temporaryPath = `${this.selectionPath}.${process.pid}.${this.now()}.tmp`;
-		await fs.promises.writeFile(temporaryPath, JSON.stringify({ version: 1, ...selection }), { encoding: 'utf8', mode: 0o600 });
-		await fs.promises.rename(temporaryPath, this.selectionPath);
+		await paradisWriteFileAtomic(this.selectionPath, JSON.stringify({ version: 1, ...selection }), { newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false });
 		this.selection = selection;
 	}
 

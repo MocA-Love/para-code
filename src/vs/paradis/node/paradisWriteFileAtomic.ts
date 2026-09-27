@@ -16,6 +16,10 @@
 import { randomUUID } from 'crypto';
 import { accessSync, chmodSync, constants as fsConstants, lstatSync, promises as fs, readlinkSync, realpathSync, renameSync, Stats, statSync, unlinkSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve } from '../../base/common/path.js';
+import { Promises as pfs } from '../../base/node/pfs.js';
+
+/** Windows で相手が一瞬開いているだけの EPERM / EBUSY を待つ上限（`vs/base/node/pfs` のリトライ付き rename）。 */
+const WINDOWS_RENAME_RETRY_MS = 5_000;
 
 /** symlink の段数の上限（OS の ELOOP と同程度）。循環していたら諦めてリンクそのものへ書く。 */
 const MAX_SYMLINK_HOPS = 40;
@@ -130,20 +134,47 @@ export interface IParadisWriteFileAtomicOptions {
 	 * false なら例外にする（中途半端に書くより、書かない方が安全な認証情報や設定）。
 	 */
 	readonly fallbackToInPlace?: boolean;
+	/**
+	 * 既存のファイルの権限を引き継がず、必ずこの権限にする（認証情報を 0644 のまま置かない）。
+	 */
+	readonly forceMode?: number;
+	/**
+	 * symlink なら辿らずに失敗させる（認証情報を、リンク先の知らない場所へ書かない。Claude Code が
+	 * `.credentials.json` を `O_NOFOLLOW` で書くのと同じ）。
+	 */
+	readonly rejectSymlink?: boolean;
 }
 
 /**
  * 一時ファイルへ書いて fsync し、rename で置き換える。symlink のときは実体の側を置き換える
  * （リンク自体を普通のファイルで潰さない）。元の権限は umask に削られないよう当て直す。
+ *
+ * 同期版（{@link paradisWriteFileAtomicSync}）との違い: 読み取り専用のファイル（書き込みビットが無い）も
+ * 置き換える（rename はディレクトリの権限で通る）。ハードリンクも置き換えるので、もう片方のリンクは古い
+ * 中身のまま残る。どちらも、これを使う userData の小さな JSON・Claude のログイン情報・MCP 設定では
+ * 以前からの挙動で、hook の設置（利用者が手で固定・リンクしていることがある）だけが同期版で守っている。
  */
 export async function paradisWriteFileAtomic(path: string, content: Buffer | string, options: IParadisWriteFileAtomicOptions = {}): Promise<void> {
-	const target = resolveWriteTarget(path);
-	let mode = options.newFileMode ?? 0o600;
-	try {
-		mode = (await fs.stat(target)).mode & 0o777;
-	} catch (error) {
-		if (!isNotFound(error)) {
-			throw error;
+	if (options.rejectSymlink) {
+		try {
+			if ((await fs.lstat(path)).isSymbolicLink()) {
+				throw Object.assign(new Error(`ELOOP: refusing to write through a symbolic link, open '${path}'`), { code: 'ELOOP', path });
+			}
+		} catch (error) {
+			if (!isNotFound(error)) {
+				throw error;
+			}
+		}
+	}
+	const target = options.rejectSymlink ? path : resolveWriteTarget(path);
+	let mode = options.forceMode ?? options.newFileMode ?? 0o600;
+	if (options.forceMode === undefined) {
+		try {
+			mode = (await fs.stat(target)).mode & 0o777;
+		} catch (error) {
+			if (!isNotFound(error)) {
+				throw error;
+			}
 		}
 	}
 	if (options.createParentMode !== undefined) {
@@ -162,7 +193,7 @@ export async function paradisWriteFileAtomic(path: string, content: Buffer | str
 		}
 		await options.beforeReplace?.();
 		try {
-			await fs.rename(temporary, target);
+			await pfs.rename(temporary, target, WINDOWS_RENAME_RETRY_MS);
 		} catch (error) {
 			if (options.fallbackToInPlace === false) {
 				throw error;
