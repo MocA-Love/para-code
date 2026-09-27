@@ -15,8 +15,11 @@ function isNotFound(error: unknown): boolean {
 }
 
 /**
- * 一時ファイルへ書いて rename で置き換える。symlink のときは実体の側を置き換える
- * （リンク自体を普通のファイルで潰さない）。元の権限は引き継ぐ。
+ * 一時ファイルへ書いて fsync し、rename で置き換える。symlink のときは実体の側を置き換える
+ * （リンク自体を普通のファイルで潰さない）。元の権限は umask に削られないよう当て直す。
+ *
+ * 置き場所は userData のような Para Code 専用の場所を想定している（ハードリンクは考えない）。
+ * rename が失敗したとき（Windows で相手が開いたままなど）は、その場へ直接書く。
  */
 export async function paradisWriteFileAtomic(path: string, content: Buffer): Promise<void> {
 	let target = path;
@@ -37,8 +40,19 @@ export async function paradisWriteFileAtomic(path: string, content: Buffer): Pro
 	}
 	const temporary = join(dirname(target), `.${basename(target)}.paradis-${randomUUID()}.tmp`);
 	try {
-		await fs.writeFile(temporary, content, { mode, flag: 'wx' });
-		await fs.rename(temporary, target);
+		const handle = await fs.open(temporary, 'wx', mode);
+		try {
+			await handle.writeFile(content);
+			await handle.chmod(mode);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		try {
+			await fs.rename(temporary, target);
+		} catch {
+			await fs.writeFile(target, content);
+		}
 	} finally {
 		await fs.unlink(temporary).catch(() => undefined);
 	}

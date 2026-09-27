@@ -65,7 +65,7 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 
 	static readonly ID = 'paradis.codexHookTrustPrompt';
 
-	/** hook の自動設置が先に済むのを待つ。 */
+	/** hook の自動設置（shared process）が先に済むのを待つ。起動直後の復元とも重ねない。 */
 	private static readonly STARTUP_DELAY_MS = 15_000;
 
 	constructor(
@@ -91,15 +91,21 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 			return;
 		}
 		const channel = this.sharedProcessService.getChannel(PARADIS_CODEX_HOOK_TRUST_CHANNEL);
-		// 窓が複数あっても、確かめるのは1つだけ
+		// 窓が複数あっても、確かめるのは1つだけ。札は、実際に通知を出したときだけ使い切る
+		// （調べられなかった・まだ hook が無かったときは返して、ほかの窓や次の機会に回す）
 		if (!await channel.call<boolean>('claimPrompt')) {
 			return;
 		}
-		const status = await channel.call<IParadisCodexHookTrustStatus>('getStatus');
-		if (!status.supported || status.pending.length === 0 || this._store.isDisposed || this.mode !== 'ask') {
-			return;
+		let shown = false;
+		try {
+			const status = await channel.call<IParadisCodexHookTrustStatus>('getStatus');
+			if (status.supported && status.pending.length > 0 && !this._store.isDisposed && this.mode === 'ask') {
+				this.ask(status);
+				shown = true;
+			}
+		} finally {
+			await channel.call('releasePrompt', shown);
 		}
-		this.ask(status);
 	}
 
 	private ask(status: IParadisCodexHookTrustStatus): void {
@@ -156,4 +162,4 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 	}
 }
 
-registerWorkbenchContribution2(ParadisCodexHookTrustPrompt.ID, ParadisCodexHookTrustPrompt, WorkbenchPhase.Eventually);
+registerWorkbenchContribution2(ParadisCodexHookTrustPrompt.ID, ParadisCodexHookTrustPrompt, WorkbenchPhase.AfterRestored);

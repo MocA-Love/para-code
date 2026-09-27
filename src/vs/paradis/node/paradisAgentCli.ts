@@ -65,6 +65,10 @@ export async function paradisResolveAgentCli(name: ParadisAgentCliName, env: Nod
 	const candidateDirs = isWindows
 		? [join(home, '.local', 'bin'), join(home, 'AppData', 'Roaming', 'npm')]
 		: [join(home, '.local', 'bin'), join(home, '.npm-global', 'bin'), join(home, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+	if (name === 'claude') {
+		// 旧来の「ローカルインストール」（`claude migrate-installer` 以前）の置き場所
+		candidateDirs.push(join(home, '.claude', 'local'));
+	}
 	for (const dir of candidateDirs) {
 		for (const candidate of names) {
 			const fullPath = join(dir, candidate);
