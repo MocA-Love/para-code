@@ -649,7 +649,10 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 - **ターミナルのサジェストの吹き出しは、ターミナル単体の文字サイズに追従しない**。吹き出し（`terminalSuggestAddon.ts`）は `XtermTerminal.getFont()` ではなく `ITerminalConfigurationService.getFont()` を直接読むので設定の文字サイズで描かれ、fork の差分（`getFont()` の PARA-PATCH）は通らない
 - **⌘⇧T のエディタ側の履歴はウィンドウ全体で1本**。fork はスペースごとに「ターミナル」と「エディタを閉じた印」を並べて持つが、エディタの中身は upstream の閉じたエディタの履歴（`workbench.action.reopenClosedEditor`）が持ち、そちらはスペース別ではない。スペース B で押しても、印がエディタならスペース A で最後に閉じたファイルが開くことがある。upstream の履歴から消えた分（上限を超えた・ファイルが消えた等）とも印がずれ、その場合は別のファイルが開くか何も起きない
 
-フォーカスの無いビューの減光（TM7、upstream の `accessibility.dimUnfocused.enabled` を既定オン）は、ウィンドウが非アクティブの間は打ち消す（`contrib/unfocusedDimming/`）。Chromium はウィンドウがフォーカスを失うと、フォーカスを持っていた要素にも `:focus-within` を当てなくなる（`document.activeElement` は残る。Para Code の Electron で2つのウィンドウを使って実測）ので、upstream の `:not(:focus-within)` の規則だけだと、別のアプリへ切り替えただけで全部が薄くなる。打ち消しの CSS は `unfocusedViewDimmingContribution.ts` の規則を1つずつ写してある。**upstream が減光の対象を増やしたら、`paradisUnfocusedDimming.css` にも同じ形で足す。**
+フォーカスの無いビューの減光（TM7、upstream の `accessibility.dimUnfocused.enabled` を既定オン）は、ウィンドウが非アクティブの間は打ち消す（`contrib/unfocusedDimming/electron-browser/`）。Chromium はウィンドウがフォーカスを失うと、フォーカスを持っていた要素にも `:focus-within` を当てなくなる（`document.activeElement` は残る。Para Code の Electron で2つのウィンドウを使って実測）ので、upstream の `:not(:focus-within)` の規則だけだと、別のアプリへ切り替えただけで全部が薄くなる。
+
+- 「非アクティブ」はネイティブのウィンドウ（BrowserWindow）単位で判定する（`INativeHostService.onDidFocusMainOrAuxiliaryWindow` / `onDidBlurMainOrAuxiliaryWindow` と各ウィンドウの `vscodeWindowId` を突き合わせる。補助ウィンドウも別々）。`document.hasFocus()` で判定すると、内蔵ブラウザ（同じウィンドウの中の別の WebContentsView）をクリックしただけでワークベンチの document が blur し、同じウィンドウの中なのに減光が全部消える（実機で確認）。そのため機能ごと electron-browser に置き、Web ビルドは upstream の動きのまま
+- 打ち消しの CSS は `unfocusedViewDimmingContribution.ts` の規則を1つずつ写してある。**upstream が減光の対象を増やしたら、`paradisUnfocusedDimming.css` にも同じ形で足す。** 取り込み時は `grep -c "rules.add(" src/vs/workbench/contrib/accessibility/browser/unfocusedViewDimmingContribution.ts` と、`paradisUnfocusedDimming.css` の `html.paradis-window-inactive` で始まるセレクタの数（今は 9）が一致するかを見る
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 

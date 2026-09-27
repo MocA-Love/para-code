@@ -12,7 +12,9 @@
  * Chromium はウィンドウがフォーカスを失うと、フォーカスを持っていた要素にも :focus-within を
  * 当てなくなる (document.activeElement は残る)。upstream の減光は
  * ":not(:focus-within)" で選んでいるので、そのままだと別のアプリへ切り替えた瞬間に
- * エディタもターミナルも全部が薄くなる。
+ * エディタもターミナルも全部が薄くなる。クラスはネイティブのウィンドウ単位のフォーカスで付ける
+ * (paradisUnfocusedDimming.contribution.ts)。内蔵ブラウザへのフォーカスはウィンドウの中の話
+ * なので、そのときは付かない。
  *
  * セレクタは unfocusedViewDimmingContribution.ts の規則をそのまま写し、先頭に
  * html.paradis-window-inactive を足して詳細度で必ず勝たせている。upstream が減光の対象を
