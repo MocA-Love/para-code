@@ -7,9 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService } from '../../node/paradisAgentModelCatalog.js';
+import { IParadisRunAgentCliOptions } from '../../../../node/paradisAgentCli.js';
+import { PARADIS_CLAUDE_MODEL_LIST_ARGS, PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG } from '../../common/paradisAgentModelCatalog.js';
+import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService, paradisProbeClaudeModels, paradisWithPrivateWorkDir } from '../../node/paradisAgentModelCatalog.js';
 
 suite('ParadisAgentModelCatalogService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -80,5 +85,56 @@ suite('ParadisAgentModelCatalogService', () => {
 			later: ['codex:codex-model-2'],
 			probes: ['codex@codex-cli 0.155.1', 'codex@codex-cli 0.155.1'],
 		});
+	});
+
+	const CLAUDE_OK = JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: 'x', response: { models: [{ value: 'opus', description: 'Opus 5.5 · x', supportsEffort: true, supportedEffortLevels: ['low'] }] } } }) + '\n';
+
+	test('--no-session-persistence を知らない CLI では、そのフラグだけ外して1回だけ取り直す', async () => {
+		const calls: { args: readonly string[]; cwd: string | undefined }[] = [];
+		const run = async (_command: string, args: readonly string[], options: IParadisRunAgentCliOptions) => {
+			calls.push({ args, cwd: options.cwd });
+			return args.includes(PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG)
+				? { stdout: '', stderr: `error: unknown option '${PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG}'`, exitCode: 1 }
+				: { stdout: CLAUDE_OK, stderr: '', exitCode: 0 };
+		};
+		const models = await paradisProbeClaudeModels({ command: '/bin/claude', env: {} }, '/work', run);
+		assert.deepStrictEqual({ models: models.map(model => model.id), calls }, {
+			models: ['opus'],
+			calls: [
+				{ args: PARADIS_CLAUDE_MODEL_LIST_ARGS, cwd: '/work' },
+				{ args: PARADIS_CLAUDE_MODEL_LIST_ARGS.filter(arg => arg !== PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG), cwd: '/work' },
+			],
+		});
+	});
+
+	test('ほかの理由で一覧が空なら取り直さない（フラグを外すのは、そのフラグで断られたときだけ）', async () => {
+		let count = 0;
+		const models = await paradisProbeClaudeModels({ command: '/bin/claude', env: {} }, '/work', async () => {
+			count++;
+			return { stdout: '{"type":"control_response","response":{"subtype":"error"}}\n', stderr: 'not logged in', exitCode: 0 };
+		});
+		assert.deepStrictEqual({ models, count }, { models: [], count: 1 });
+	});
+
+	test('作業ディレクトリは自分専用で作り、成功しても失敗しても消す', async () => {
+		const parent = await fs.mkdtemp(join(tmpdir(), 'paradis-models-test-'));
+		try {
+			const seen: { path: string; mode: number; empty: boolean }[] = [];
+			const inspect = async (workDir: string) => {
+				seen.push({ path: workDir, mode: (await fs.stat(workDir)).mode & 0o777, empty: (await fs.readdir(workDir)).length === 0 });
+				await fs.writeFile(join(workDir, 'leftover'), 'x');
+			};
+			const ok = await paradisWithPrivateWorkDir(parent, async workDir => { await inspect(workDir); return 'ok'; });
+			const failed = await paradisWithPrivateWorkDir(parent, async workDir => { await inspect(workDir); throw new Error('boom'); }).then(() => 'resolved', (error: Error) => error.message);
+			assert.deepStrictEqual({
+				ok, failed,
+				modes: seen.map(entry => entry.mode),
+				empty: seen.map(entry => entry.empty),
+				inParent: seen.every(entry => entry.path.startsWith(parent)),
+				left: await fs.readdir(parent),
+			}, { ok: 'ok', failed: 'boom', modes: [0o700, 0o700], empty: [true, true], inParent: true, left: [] });
+		} finally {
+			await fs.rm(parent, { recursive: true, force: true });
+		}
 	});
 });
