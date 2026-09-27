@@ -451,6 +451,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-usage',
+		key: 'paradis.codexAccounts.shareConversations',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexShareConversations', "Codex のアカウントを切り替えたとき会話を共有する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexShareConversationsDesc', "切り替えた2つのアカウントの間だけで会話の履歴を共有し、どちらのアカウントでも過去の会話を再開できるようにします。仕事用と個人用など、会話の中身を別のアカウントに見せたくないときはオフにします。"),
+		keywords: 'codex account switch share conversations sessions link',
+	},
+	{
+		sectionId: 'psd-sec-usage',
 		key: 'paradis.resourceMonitor.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.resourceMonitor', "CPU・メモリをタイトルバーに表示"),
