@@ -76,6 +76,9 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 export function registerParadisNotifications(server: IPCServer<string>, logService: ILogService): ParadisNotificationsService {
 	const service = new ParadisNotificationsService(logService);
 	server.registerChannel(PARADIS_NOTIFICATIONS_CHANNEL, new ParadisNotificationsChannel(service));
-	service.trackClientDisconnects(Event.map(server.onDidRemoveConnection, connection => connection.ctx));
+	service.trackClientDisconnects(
+		Event.map(server.onDidRemoveConnection, connection => connection.ctx),
+		client => server.connections.some(connection => connection.ctx === client),
+	);
 	return service;
 }
