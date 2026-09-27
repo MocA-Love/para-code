@@ -10,11 +10,16 @@
 // （送り先は送るときに一覧から選ぶ。注釈を溜めて1回で渡せ、作業中のエージェントを細切れに
 // 止めずに済むため）。
 //
-// 入れ方はフェーズ5の「エージェント向けプリセット」と同じ規則にしてある:
+// 入れ方はフェーズ5の「エージェント向けプリセット」と同じ規則にしてあり、判定と整形の処理も
+// プリセットのもの（terminalPresets/common/paradisTerminalPresets.ts）をそのまま使う:
 //  - Enter は送らない（送るかどうかはユーザーが入力欄で決める）
-//  - 貼り付け（bracketed paste）として送る
-//  - 質問・許可の確認が出ている間は入れない（入れた文字が選択肢の操作に食われる）
-// 加えて、本文にはページ由来の値が入るので、改行は常に1行へ均す（プリセットは条件付きで残す）。
+//  - 貼り付け（bracketed paste）として送る。制御文字は paradisBuildPresetInsertText で落とす
+//  - 質問・許可の確認が出ている間は入れない（入れた文字が選択肢の操作に食われる）。
+//    paradisAgentPromptAvailability / paradisThrowIfAgentAwaitingAnswer で判定する
+// 違いは2つ。本文にはページ由来の値が入るので、改行は常に1行へ均す（paradisBuildPresetInsertText を
+// 常に keepNewlines = false で呼ぶ。プリセットは条件付きで残す）。回答待ちの判定は hook の実績が
+// 無いペインの状態も使う（requireAgentInstance = false。プリセットの「挿入だけ」は hook の実績が
+// あるペインだけを見る）。
 // 画像は userData 配下へ PNG を保存し、そのパスを本文の後ろへ1つずつ貼る（エージェントの TUI が
 // 画像の貼り付けと同じ扱いで読めるように。MCP で渡す方式は後から足せる）。
 // ターミナルへファイルをドロップしたときと同じ書き方にするので、Claude Code / Codex が画像として
@@ -46,11 +51,14 @@ import { IParadisAgentStatusStore, IParadisBrowserScopeService, IParadisWorkspac
 import { paradisConfiguredAgents, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import {
+	ParadisAgentPromptAvailability,
+	paradisAgentPromptAvailability,
+	paradisBuildPresetInsertText,
+	paradisThrowIfAgentAwaitingAnswer,
+} from '../../terminalPresets/common/paradisTerminalPresets.js';
+import {
 	IParadisDesignAnnotation,
 	IParadisDesignImageReference,
-	ParadisDesignTargetAvailability,
-	paradisBuildAgentInsertText,
-	paradisDesignTargetAvailability,
 	paradisFormatDesignAnnotations,
 } from '../common/paradisDesignModeFormat.js';
 import { IParadisDesignModeService } from './paradisDesignModeService.js';
@@ -102,7 +110,9 @@ export function paradisDesignTargetEntries(
 			agentKind: pane.agentKind === 'shell' ? 'agent' : pane.agentKind,
 			status,
 			sharedWithPage: pane.binding?.pageId === pageId,
-			available: paradisDesignTargetAvailability(status) === ParadisDesignTargetAvailability.Ready,
+			// 一覧に載せる時点でエージェントのペインに限っているので、hook の実績が無くても
+			// エージェントとして扱い、回答待ちかどうかだけを見る
+			available: paradisAgentPromptAvailability(true, true, status) === ParadisAgentPromptAvailability.Ready,
 		});
 	}
 	const rank = (entry: IParadisDesignTargetEntry) => (entry.sharedWithPage ? 0 : 2) + (entry.available ? 0 : 1);
@@ -313,13 +323,15 @@ export class ParadisDesignModeSender {
 	private async _copy(annotations: readonly IParadisDesignAnnotation[]): Promise<void> {
 		const { references } = await this._prepareImages(annotations, true);
 		// クリップボードはターミナルを通らないので、改行は残す（制御文字だけ落とす）
-		await this.clipboardService.writeText(paradisBuildAgentInsertText(paradisFormatDesignAnnotations(annotations, references, this._formatOptions()), true) ?? '');
+		await this.clipboardService.writeText(paradisBuildPresetInsertText(paradisFormatDesignAnnotations(annotations, references, this._formatOptions()), true) ?? '');
 	}
 
+	/**
+	 * 回答待ちのペインへは入れない。hook の実績が無いペインでも、状態が届いていれば使う
+	 * （送り先はエージェントのペインに限っている。hook が無ければ入れる前に確認も出す）。
+	 */
 	private _throwIfAwaitingAnswer(instance: ITerminalInstance): void {
-		if (paradisDesignTargetAvailability(this.agentStatusStore.getInstanceStatus(instance.instanceId)) === ParadisDesignTargetAvailability.AwaitingAnswer) {
-			throw new Error(localize('paradis.designMode.send.awaiting', "エージェントが質問か許可の確認を出しているため、入れられません。先に回答してください。"));
-		}
+		paradisThrowIfAgentAwaitingAnswer(this.agentStatusStore, instance.instanceId, false, localize('paradis.designMode.send.awaiting', "エージェントが質問か許可の確認を出しているため、入れられません。先に回答してください。"));
 	}
 
 	/**
@@ -352,15 +364,16 @@ export class ParadisDesignModeSender {
 		this._throwIfAwaitingAnswer(instance);
 		// 改行は常に1行へ均す。ページ由来の値が入るので、送る瞬間にエージェントが終わっていて
 		// 貼り付けを解さないシェルへ届いても、行としては実行されない
-		const body = paradisBuildAgentInsertText(text, false);
+		const body = paradisBuildPresetInsertText(text, false);
 		if (body !== undefined) {
 			await instance.sendText(body, false, true);
 		}
 		for (const path of paths) {
 			await timeout(PASTE_GAP_MS);
-			this._throwIfAwaitingAnswer(instance);
 			const quoted = await preparePathForShell(path, instance.shellLaunchConfig.executable ?? 'sh', instance.title, instance.shellType, undefined, instance.os);
-			const pasted = paradisBuildAgentInsertText(quoted, false);
+			const pasted = paradisBuildPresetInsertText(quoted, false);
+			// 確かめてから送るまでの間に await を挟まない（パスの整形を待つ間にも状態は変わりうる）
+			this._throwIfAwaitingAnswer(instance);
 			if (pasted !== undefined) {
 				await instance.sendText(' ', false, false);
 				await instance.sendText(pasted, false, true);

@@ -9,11 +9,13 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType } from '../../../../../platform/terminal/common/terminal.js';
+import { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import {
 	isValidPresetDefinition,
 	paradisBuildInsertCommandsText,
 	paradisAgentPromptAvailability,
 	paradisBuildPresetInsertText,
+	paradisThrowIfAgentAwaitingAnswer,
 	paradisGetPresetTasks,
 	paradisPresetAction,
 	paradisPresetCommandSignature,
@@ -83,5 +85,32 @@ suite('ParadisPresetAction', () => {
 			paradisAgentPromptAvailability(true, true, 'working'),
 			paradisAgentPromptAvailability(true, true, undefined),
 		], ['noTerminal', 'notAgent', 'awaitingAnswer', 'awaitingAnswer', 'ready', 'ready']);
+	});
+
+	test('stops right before sending only when the agent is waiting for an answer', () => {
+		// 1: hook の実績あり・質問中 / 2: hook の実績なし・許可待ち（transcript 由来）/ 3: hook の実績あり・作業中 / 4: 状態なし
+		const hookAgents = new Set([1, 3]);
+		const statuses = new Map<number, ParadisAgentStatus>([[1, 'question'], [2, 'permission'], [3, 'working']]);
+		const store = {
+			isAgentInstance: (instanceId: number) => hookAgents.has(instanceId),
+			getInstanceStatus: (instanceId: number) => statuses.get(instanceId),
+		};
+		const stops = (instanceId: number, requireAgentInstance: boolean) => {
+			try {
+				paradisThrowIfAgentAwaitingAnswer(store, instanceId, requireAgentInstance, 'awaiting');
+				return false;
+			} catch (error) {
+				return (error as Error).message === 'awaiting';
+			}
+		};
+		assert.deepStrictEqual({
+			// プリセットの「挿入だけ」: hook の実績があるペインだけを見る
+			insertPreset: [1, 2, 3, 4].map(instanceId => stops(instanceId, true)),
+			// Design Mode: 届いた状態はすべて使う
+			designMode: [1, 2, 3, 4].map(instanceId => stops(instanceId, false)),
+		}, {
+			insertPreset: [true, false, false, false],
+			designMode: [true, true, false, false],
+		});
 	});
 });
