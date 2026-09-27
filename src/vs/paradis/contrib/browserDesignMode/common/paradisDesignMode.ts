@@ -59,8 +59,11 @@ export const PARADIS_DESIGN_SECRET_PATTERNS: readonly string[] = [
 	'passwd',
 ];
 
-/** 渡してよい属性名（aria-* は常に可）。 */
-const SAFE_ATTRIBUTE_NAMES = new Set(['id', 'class', 'name', 'type', 'role', 'href', 'src', 'alt', 'title', 'placeholder', 'for', 'action', 'method']);
+/**
+ * 渡してよい属性名。画面に出ない文字（title・alt・aria-*）はページが見えない指示を置ける
+ * 場所なので渡さない（ページ側の仕掛けと同じ規則を main でも守る）。
+ */
+const SAFE_ATTRIBUTE_NAMES = new Set(['id', 'class', 'name', 'type', 'role', 'href', 'src', 'placeholder', 'for', 'action', 'method']);
 
 /** 取り出す計算済みスタイル。 */
 export const PARADIS_DESIGN_STYLE_PROPERTIES = [
@@ -85,7 +88,7 @@ export interface IParadisPickedElement {
 	readonly tagName: string;
 	/** ページ内で一意になるよう組んだ CSS セレクタ。 */
 	readonly selector: string;
-	/** 人が読むための短い位置（id / aria-label / role / クラスで組む）。 */
+	/** 人が読むための短い位置（id / role / クラスで組む）。 */
 	readonly path: string;
 	readonly textSnippet: string;
 	readonly htmlSnippet: string;
@@ -201,7 +204,7 @@ export function paradisClampPickedElement(raw: unknown): IParadisPickedElement |
 	if (value.attributes && typeof value.attributes === 'object') {
 		for (const [key, attribute] of Object.entries(value.attributes as Record<string, unknown>).slice(0, 40)) {
 			const name = key.toLowerCase();
-			if (!SAFE_ATTRIBUTE_NAMES.has(name) && !name.startsWith('aria-')) {
+			if (!SAFE_ATTRIBUTE_NAMES.has(name)) {
 				continue;
 			}
 			const text = clampString(attribute, 500);
@@ -209,6 +212,9 @@ export function paradisClampPickedElement(raw: unknown): IParadisPickedElement |
 				attributes[name] = '[redacted]';
 			} else if (name === 'href' || name === 'src' || name === 'action') {
 				attributes[name] = paradisDesignSanitizeUrl(text);
+			} else if (name === 'id' && !/^[A-Za-z][A-Za-z0-9_:.-]{0,39}$/.test(text)) {
+				// 識別子らしくない id（文章を詰め込んだもの）は渡さない
+				continue;
 			} else {
 				attributes[name] = text;
 			}

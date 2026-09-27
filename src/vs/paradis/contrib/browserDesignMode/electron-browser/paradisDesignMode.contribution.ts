@@ -13,9 +13,9 @@
 //
 // キーは ⇧⌥⌘C（Windows / Linux は Ctrl+Shift+Alt+C）。upstream の「Comment on Elements」⌥⌘C の
 // 隣に置いた。当初の ⌥⌘D は macOS の既定で「Dock を自動的に表示/非表示」に取られ、押すと Dock の
-// 設定が切り替わってしまうのでやめた。⇧⌥⌘C はワークベンチでは「相対パスのコピー」だが、内蔵
-// ブラウザのエディタにはファイルのパスが無いので、ブラウザのエディタが前面のときだけこちらが受ける
-// （upstream が ⌥⌘C の「パスのコピー」を同じように上書きしているのと同じ扱い）。
+// 設定が切り替わってしまうのでやめた。⇧⌥⌘C はワークベンチでは「相対パスのコピー」（エクスプローラー
+// やエディタで使う）なので、フォーカスが内蔵ブラウザのエディタの中にあるときだけこちらが受ける。
+// ブラウザが前面のエディタでも、エクスプローラーやターミナルにフォーカスがあれば元の割り当てが効く。
 
 import './media/paradisDesignMode.css';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -26,7 +26,7 @@ import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextke
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { BROWSER_EDITOR_ACTIVE, BrowserActionCategory, BrowserActionGroup, BrowserEditor, CONTEXT_BROWSER_HAS_ERROR, CONTEXT_BROWSER_HAS_URL } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { BROWSER_EDITOR_ACTIVE, BrowserActionCategory, BrowserActionGroup, BrowserEditor, CONTEXT_BROWSER_FOCUSED, CONTEXT_BROWSER_HAS_ERROR, CONTEXT_BROWSER_HAS_URL } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { CONTEXT_PARADIS_DESIGN_MODE_ACTIVE, CONTEXT_PARADIS_MARKUP_ACTIVE, ParadisDesignModeFeature } from './paradisDesignModeFeature.js';
 import './paradisDesignModeService.js';
 
@@ -56,7 +56,9 @@ registerAction2(class extends Action2 {
 			},
 			keybinding: {
 				weight: KeybindingWeight.WorkbenchContrib + 1,
-				when: BROWSER_EDITOR_ACTIVE,
+				// CONTEXT_BROWSER_FOCUSED はブラウザのエディタのスコープにだけ立つので、フォーカスが
+				// エディタの外（エクスプローラー・ターミナル等）にあるときは当たらない
+				when: ContextKeyExpr.and(BROWSER_EDITOR_ACTIVE, CONTEXT_BROWSER_FOCUSED),
 				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyMod.Alt | KeyCode.KeyC,
 			},
 		});
