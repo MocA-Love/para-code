@@ -19,8 +19,7 @@
 // 結び付いていることがある。標準入力は閉じずに開けたままにする（Orca と同じ）。
 
 import * as cp from 'child_process';
-import * as fs from 'fs';
-import * as path from '../../../../base/common/path.js';
+import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
 
@@ -62,26 +61,13 @@ export class ParadisClaudeCliLoginRunner implements IParadisClaudeLoginRunner {
 	) { }
 
 	private async resolveClaude(env: NodeJS.ProcessEnv): Promise<string> {
-		const isWindows = process.platform === 'win32';
-		const names = isWindows ? ['claude.exe', 'claude.cmd'] : ['claude'];
-		// 相対パスの要素は除く（存在を確かめる場所と、一時ディレクトリで起動する場所で指す先がずれるため）。
-		const pathDirs = (env.PATH ?? env.Path ?? '').split(path.delimiter).filter(dir => dir.length > 0 && path.isAbsolute(dir));
-		// GUI から起動した Para Code はログインシェルの PATH を継がないことがあるので、よくある場所も見る。
-		const commonDirs = isWindows
-			? [path.join(this.homedir, '.local', 'bin'), path.join(this.homedir, 'AppData', 'Roaming', 'npm')]
-			: [path.join(this.homedir, '.local', 'bin'), path.join(this.homedir, '.claude', 'local'), path.join(this.homedir, '.npm-global', 'bin'), path.join(this.homedir, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
-		for (const dir of [...pathDirs, ...commonDirs]) {
-			for (const name of names) {
-				const candidate = path.join(dir, name);
-				try {
-					await fs.promises.access(candidate, isWindows ? fs.constants.F_OK : fs.constants.X_OK);
-					return candidate;
-				} catch {
-					// 次の候補
-				}
-			}
+		// PATH の相対パスの要素は除き、GUI から起動して PATH を継いでいないときはよくある場所も見る
+		// （候補の場所は paradisResolveAgentCli と共通）。
+		const found = await paradisResolveAgentCli('claude', env, { homeDir: this.homedir });
+		if (found === undefined) {
+			throw new Error('claude not found (install Claude Code first)');
 		}
-		throw new Error('claude not found (install Claude Code first)');
+		return found;
 	}
 
 	private async spawnClaude(args: string[], configDir: string): Promise<cp.ChildProcess> {

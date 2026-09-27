@@ -9,7 +9,8 @@
 // shared process から Claude Code / Codex の CLI を短時間だけ起こすための共通部品。
 //
 // - 実行ファイルの解決: GUI 起動ではログインシェルの PATH が継承されないことがあるので、
-//   PATH で見つからなければ、よくあるインストール先を直接見る（limitsMonitor と同じ候補）。
+//   PATH で見つからなければ、よくあるインストール先を直接見る。limitsMonitor・ccusage・codexAccounts・
+//   Claude のアカウント追加・hook の信頼・モデル一覧がここを使う（候補の場所はここだけで決める）。
 // - Para Code のペイン用ランチャー（`resources/paradis/bin/codex`）は PATH から外して探す。
 //   あれはターミナルの中で使う入口で、裏で CLI を起こす用途に挟む意味が無い。
 // - 起動した子プロセスは、時間切れでも必ずツリーごと止める。
@@ -17,17 +18,22 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import { homedir } from 'os';
-import { delimiter, join } from '../../base/common/path.js';
+import { delimiter, isAbsolute, join } from '../../base/common/path.js';
 import { findExecutable } from '../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../common/paradisWindowsScriptShim.js';
 import { paradisKillChildProcessTree } from './paradisKillChildProcess.js';
 
-export type ParadisAgentCliName = 'claude' | 'codex';
+export type ParadisAgentCliName = 'claude' | 'codex' | 'ccusage';
 
 export interface IParadisResolveAgentCliOptions {
 	/** PATH から外すディレクトリ（Para Code のペイン用ランチャーの置き場所など）。 */
 	readonly excludeDirs?: readonly string[];
-	/** テスト用。既定は実ファイルの有無。 */
+	/**
+	 * PATH 上にあるかを、ファイルを探す代わりにこの関数で確かめる（`<名前> --version` を動かして
+	 * 確かめる limitsMonitor・ccusage 用）。true ならその名前（パスではなく）を返す。
+	 */
+	readonly isOnPath?: (name: string) => Promise<boolean>;
+	/** 既定は実行できるファイルか（Windows はファイルがあるか）。 */
 	readonly fileExists?: (path: string) => Promise<boolean>;
 	/** テスト用。既定は `os.homedir()`。 */
 	readonly homeDir?: string;
@@ -35,7 +41,38 @@ export interface IParadisResolveAgentCliOptions {
 }
 
 function defaultFileExists(path: string): Promise<boolean> {
-	return new Promise(resolve => fs.access(path, fs.constants.F_OK, error => resolve(!error)));
+	const mode = process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK;
+	return new Promise(resolve => fs.access(path, mode, error => resolve(!error)));
+}
+
+/** 探すファイル名（Windows は拡張子つきを先に）。 */
+export function paradisAgentCliFileNames(name: ParadisAgentCliName, platform: NodeJS.Platform = process.platform): string[] {
+	if (platform !== 'win32') {
+		return [name];
+	}
+	// ccusage は npm のシム（.cmd）で入ることがほとんどなので、それを先に見る
+	return name === 'ccusage' ? [`${name}.cmd`, `${name}.exe`, name] : [`${name}.exe`, `${name}.cmd`, name];
+}
+
+/** PATH に無いときに直接見る、よくあるインストール先（見る順）。 */
+export function paradisAgentCliFallbackDirs(name: ParadisAgentCliName, home: string = homedir(), platform: NodeJS.Platform = process.platform): string[] {
+	const isWindows = platform === 'win32';
+	if (name === 'ccusage') {
+		return isWindows
+			? [join(home, 'AppData', 'Roaming', 'npm'), join(home, '.bun', 'bin')]
+			: [join(home, '.npm-global', 'bin'), join(home, '.bun', 'bin'), join(home, '.local', 'bin'), join(home, '.deno', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+	}
+	const dirs = isWindows
+		? [join(home, '.local', 'bin'), join(home, 'AppData', 'Roaming', 'npm')]
+		: [join(home, '.local', 'bin'), join(home, '.npm-global', 'bin'), join(home, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+	if (name === 'claude') {
+		// 旧来の「ローカルインストール」（`claude migrate-installer` 以前）の置き場所
+		dirs.push(join(home, '.claude', 'local'));
+	} else if (isWindows) {
+		// Windows の Codex のインストーラーの置き場所
+		dirs.push(join(home, '.codex', 'bin'));
+	}
+	return dirs;
 }
 
 function samePath(a: string, b: string, platform: NodeJS.Platform): boolean {
@@ -52,24 +89,24 @@ function samePath(a: string, b: string, platform: NodeJS.Platform): boolean {
 export async function paradisResolveAgentCli(name: ParadisAgentCliName, env: NodeJS.ProcessEnv, options: IParadisResolveAgentCliOptions = {}): Promise<string | undefined> {
 	const platform = options.platform ?? process.platform;
 	const fileExists = options.fileExists ?? defaultFileExists;
-	const excludeDirs = (options.excludeDirs ?? []).filter(dir => dir.length > 0);
-	const pathValue = env.PATH ?? env.Path ?? '';
-	const paths = pathValue.split(delimiter).filter(entry => entry.length > 0 && !excludeDirs.some(dir => samePath(entry, dir, platform)));
-	const found = await findExecutable(name, undefined, paths, env, fileExists);
-	if (found !== undefined) {
-		return found;
+	const names = paradisAgentCliFileNames(name, platform);
+	if (options.isOnPath !== undefined) {
+		for (const candidate of names) {
+			if (await options.isOnPath(candidate)) {
+				return candidate;
+			}
+		}
+	} else {
+		const excludeDirs = (options.excludeDirs ?? []).filter(dir => dir.length > 0);
+		const pathValue = env.PATH ?? env.Path ?? '';
+		// 相対パスの要素は除く（確かめる場所と、別の作業ディレクトリで起動する場所で指す先がずれるため）。
+		const paths = pathValue.split(delimiter).filter(entry => entry.length > 0 && isAbsolute(entry) && !excludeDirs.some(dir => samePath(entry, dir, platform)));
+		const found = paths.length > 0 ? await findExecutable(name, undefined, paths, env, fileExists) : undefined;
+		if (found !== undefined) {
+			return found;
+		}
 	}
-	const home = options.homeDir ?? homedir();
-	const isWindows = platform === 'win32';
-	const names = isWindows ? [`${name}.exe`, `${name}.cmd`, name] : [name];
-	const candidateDirs = isWindows
-		? [join(home, '.local', 'bin'), join(home, 'AppData', 'Roaming', 'npm')]
-		: [join(home, '.local', 'bin'), join(home, '.npm-global', 'bin'), join(home, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
-	if (name === 'claude') {
-		// 旧来の「ローカルインストール」（`claude migrate-installer` 以前）の置き場所
-		candidateDirs.push(join(home, '.claude', 'local'));
-	}
-	for (const dir of candidateDirs) {
+	for (const dir of paradisAgentCliFallbackDirs(name, options.homeDir ?? homedir(), platform)) {
 		for (const candidate of names) {
 			const fullPath = join(dir, candidate);
 			if (await fileExists(fullPath)) {
