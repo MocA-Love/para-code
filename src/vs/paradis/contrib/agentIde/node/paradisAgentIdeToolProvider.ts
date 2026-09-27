@@ -92,6 +92,8 @@ const WORKING_MESSAGE = 'The agent in that terminal is working right now, so Par
 const NO_HOOKS_MESSAGE = 'Para Code cannot see the status of the agent in that terminal (its hooks have never reported), so it cannot tell whether a permission prompt is on screen and does not press Enter there. Ask the user to turn on the agent hooks in Para Code settings, or to send it themselves.';
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses actions. This always happens for agents connected over SSH; reading tools still work there.';
 const READ_CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane, so it refuses the request. Start this agent CLI from a terminal inside Para Code.';
+const UNCONFIRMED_RELEASE_MESSAGE = 'That agent was waiting for a permission or question answer, and Para Code has not yet confirmed from the agent itself that it moved on, so it does not press Enter there yet. Wait with wait_for_terminal and try again.';
+const SCREEN_UNREADABLE_MESSAGE = 'Para Code cannot read that terminal\'s screen right now (it may not have been drawn yet), so it cannot check for a confirmation prompt and does not press Enter. Retry in a moment.';
 const PROMPT_ON_SCREEN_MESSAGE = 'That terminal shows a confirmation prompt on screen (for example a permission question), so Para Code does not press Enter there. Tell the user instead.';
 const TOO_MANY_WAITS_MESSAGE = 'Too many wait_for_terminal calls are running at once. Wait for the current ones to return before starting another.';
 
@@ -198,7 +200,11 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 	 * 送ってよい相手かを、ウィンドウの範囲判定と hook の最新の状態で確かめる。断る理由を返す。
 	 * @param wantsEnter Enter を送るか（コマンドの実行・プロンプトの送信になる）
 	 */
-	private async _checkTarget(paneToken: string, terminal: string, wantsEnter: boolean, toolName: string, context: IParadisMcpToolCallContext, signal: AbortSignal | undefined): Promise<string | undefined> {
+	/**
+	 * @param skipScreenCheck 画面の確認を飛ばす（貼り付けた本文そのものが確認の文言に似ていて、
+	 * 貼り付けた後の画面では見分けられないとき。貼り付ける前の確認は必ず行う）
+	 */
+	private async _checkTarget(paneToken: string, terminal: string, wantsEnter: boolean, toolName: string, context: IParadisMcpToolCallContext, signal: AbortSignal | undefined, skipScreenCheck = false): Promise<string | undefined> {
 		const target = await this._callWindow(paneToken, { op: 'resolveWriteTarget', terminal }, toolName, context, signal);
 		if (!target.ok) {
 			return target.error;
@@ -210,18 +216,27 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		if (!wantsEnter) {
 			return undefined;
 		}
+		const token = target.internal?.paneToken;
+		// transcript から許可待ちが解かれ、まだ確かめた hook が来ていない（追記で偽装できる）
+		if (token !== undefined && context.getPaneAgentStatus(token)?.unconfirmedRelease === true) {
+			return UNCONFIRMED_RELEASE_MESSAGE;
+		}
+		// 状態が正しくても、画面に確認の選択肢が出ていたら Enter を送らない（hook の遅れや偽装への備え）。
+		// 素のシェルでも同じ。画面を読めないときは確かめようがないので送らない
+		const screen = target.internal?.screen;
+		if (screen === undefined) {
+			return SCREEN_UNREADABLE_MESSAGE;
+		}
+		if (!skipScreenCheck && paradisAgentIdeScreenShowsPrompt(screen)) {
+			return PROMPT_ON_SCREEN_MESSAGE;
+		}
 		if (target.internal?.agent !== true) {
 			return this.settings.shellCommands() ? undefined : PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE;
 		}
 		if (status === 'working') {
 			return WORKING_MESSAGE;
 		}
-		// 状態が正しくても、画面に確認の選択肢が出ていたら Enter を送らない（hook の遅れや偽装への備え）
-		if (paradisAgentIdeScreenShowsPrompt(target.internal?.screen ?? '')) {
-			return PROMPT_ON_SCREEN_MESSAGE;
-		}
 		// hook が一度も届いていない相手は、許可待ちかどうかを確かめられない（安全側に倒す）
-		const token = target.internal?.paneToken;
 		if (token === undefined || !context.hasAgentHookHistory(token)) {
 			return NO_HOOKS_MESSAGE;
 		}
@@ -247,7 +262,9 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 				return toolText(pasted.data);
 			}
 			await this.clock.sleep(PASTE_SETTLE_MS, signal);
-			const after = await this._checkTarget(paneToken, terminal, true, toolName, context, signal);
+			// 貼った本文が確認の文言に似ていると、貼った後の画面では本物の確認と見分けられないので、
+			// そのときだけ貼った後の画面の確認を飛ばす（貼る前の確認と hook の状態の確認は残る）
+			const after = await this._checkTarget(paneToken, terminal, true, toolName, context, signal, paradisAgentIdeScreenShowsPrompt(text));
 			if (after !== undefined) {
 				return toolError(`The text was typed, but Enter was not pressed: ${after}`);
 			}

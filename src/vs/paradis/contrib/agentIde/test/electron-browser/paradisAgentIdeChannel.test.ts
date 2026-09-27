@@ -105,6 +105,7 @@ suite('ParadisAgentIdeChannel', () => {
 				get instances() { return live().map(terminal => instances.get(terminal.instanceId)!); },
 				safeDisposeTerminal: async (instance: ITerminalInstance) => instance.dispose(),
 				onDidDisposeInstance: onDidDisposeInstance.event,
+				whenConnected: Promise.resolve(),
 			}),
 			upcastPartial<ITerminalGroupService>({ paradisParkedGroups: [] }),
 			upcastPartial<ITerminalEditorService>({}),
@@ -210,8 +211,7 @@ suite('ParadisAgentIdeChannel', () => {
 		// Without shell integration Para Code cannot tell an agent is running, so it counts as a plain shell.
 		const noIntegration = blocked.add(6, REPOSITORY.id);
 		noIntegration.shellIntegration = false;
-		const prompting = blocked.add(7, REPOSITORY.id);
-		prompting.screenText = 'Do you want to proceed?';
+
 		const allowed = setup({ shellCommands: true });
 		const allowedShell = allowed.add(4, REPOSITORY.id, undefined, null);
 		assert.deepStrictEqual([
@@ -219,10 +219,9 @@ suite('ParadisAgentIdeChannel', () => {
 			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(shell), key: 'ctrl_c' })).ok,
 			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(busy), key: 'enter' })).ok,
 			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(noIntegration), key: 'enter' })).ok,
-			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(prompting), key: 'enter' })).ok,
 			(await allowed.channel.run(allowed.caller.token, { op: 'sendKey', terminal: id(allowedShell), key: 'enter' })).ok,
 			(await blocked.channel.run(blocked.caller.token, { op: 'createTerminal' })).ok,
-		], [false, true, false, false, false, true, false]);
+		], [false, true, false, false, true, false]);
 	});
 
 	test('multi-line text is only pasted into an agent in the foreground', async () => {

@@ -113,6 +113,24 @@ suite('ParadisAgentIdeToolProvider', () => {
 		}, { refused: [true, true, 0], actionsEnabled: false, note: 'string' });
 	});
 
+	test('Enter is refused after a release that no verified hook confirmed yet', async () => {
+		const { provider, context, statuses } = setup();
+		statuses.set(TARGET, { status: 'working', changedAt: 1, unconfirmedRelease: true });
+		statuses.set(TARGET, { status: 'review', changedAt: 2, unconfirmedRelease: true });
+		const result = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
+		assert.strictEqual(result.isError, true);
+	});
+
+	test('pasted text that looks like a prompt does not block its own Enter, but a prompt already on screen does', async () => {
+		const typed = setup();
+		const own = text(await typed.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'Reply (y/n) when done', press_enter: true }, undefined, typed.context));
+		// the fake window shows the pasted text after the paste
+		const onScreen = setup();
+		onScreen.state.screen = 'Do you want to proceed?';
+		const blocked = text(await onScreen.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'hello', press_enter: true }, undefined, onScreen.context));
+		assert.deepStrictEqual([own.isError, blocked.isError, ops(onScreen.calls)], [false, true, ['resolveWriteTarget']]);
+	});
+
 	test('Enter is refused while a confirmation prompt is on screen', async () => {
 		const { provider, context, state, calls } = setup();
 		state.screen = 'Bash command\n  rm -rf build\nDo you want to proceed?\n\u276f 1. Yes\n  2. No';

@@ -253,6 +253,7 @@ export function paradisAgentIdeUntrustedTitle(title: string): string {
  * Enter を送る直前の最後の備え。hook の状態は遅れて届くことがあり、偽装もされうるので、画面そのものも見る。
  * 【要確認】文言は Claude Code 2.1.283 / codex-cli 0.155.1 の確認画面から拾った目安で、版が変わると
  * 外れうる（外れても hook の状態の確認は残る）。誤って当たったときは Enter を送らないだけ（安全側）。
+ * 文言による目安なので、確認の画面を必ず見分けられるわけではない。
  */
 export function paradisAgentIdeScreenShowsPrompt(screen: string): boolean {
 	const tail = screen.split('\n').slice(-30).join('\n');
@@ -260,7 +261,8 @@ export function paradisAgentIdeScreenShowsPrompt(screen: string): boolean {
 }
 
 const PROMPT_PATTERNS: readonly RegExp[] = [
-	/Do you want to (?:proceed|make this edit|create|delete|allow|run|use)/i,
+	/Do you want to (?:proceed|make this edit|create|delete|allow|run|use|overwrite)/i,
+	/Do you trust the (?:contents|files) (?:of|in) this/i,
 	/Would you like to (?:run|make|apply|allow|proceed)/i,
 	/\bYes, (?:proceed|and don't ask again|allow)/i,
 	/Press enter to confirm/i,
