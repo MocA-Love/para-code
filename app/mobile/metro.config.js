@@ -53,6 +53,12 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
 // （例: fileViewer.tsx が読む Office ビューアの復旧状態機械 paradisOfficeRecovery.ts）。
 // Metro は watchFolders の外のファイルを解決しないため、その置き場所だけを加える。
 // `src/vs` 全体を加えると VS Code 本体の巨大なツリーを監視することになるので、ディレクトリ単位で足す。
+//
+// この watchFolders が export（`expo export:embed`、Xcode の "Bundle React Native code and images"）でも
+// 効くのは、app.json の `experiments.onDemandFilesystem: false` があるから。既定（true）のままだと
+// @expo/cli の withMetroMultiPlatformAsync が export 時だけ watchFolders を [projectRoot] に切り詰め、
+// 残りを遅延読み込み（fallback）に任せる。その fallback は serverRoot（app/）の外へ出られないため、
+// リポジトリ直下の src/vs は「存在しない」扱いになり、開発サーバーでは通るのに export だけ解決に失敗する。
 config.watchFolders = [
 	...(config.watchFolders ?? []),
 	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'fileViewers', 'common'),
