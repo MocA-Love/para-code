@@ -10,8 +10,9 @@
  * 今度は同じ PC の器を作り直さずに最前面へ並べ替えるようになり、並べ替えた後にネイティブの画面と JS の
  * 状態が食い違って、戻っても画面が変わらなくなった（2026-09-27、iPad シミュレータで再現）。
  *
- * 中継の画面はルートの Stack に積まれ、そこから `router.replace(…, { withAnchor: true })` で開き直す。
- * 置き換えはルートの階層で起きるので、器の Stack が新しく1つ積まれ、使い回しも並べ替えも起きない。
+ * 中継の画面はルートの Stack に積まれ、自分を閉じてから `openPcRoute`（`src/features/pc/pcOpenPlan.ts` の規則）で
+ * 開き直す。すぐ下が器の Stack ならその中で開き（同じ画面が出ていれば閉じるだけ、同じ PC の器があればそこまで
+ * 戻る）、そうでなければ自分を行き先に置き換える。使い回しも並べ替えも起きず、同じリンクを何度押しても器は増えない。
  * 起動時のリンク（アプリが閉じていた）は画面の状態をパスから組み立てるので、この問題は無く、書き換えない。
  */
 
@@ -32,7 +33,27 @@ export function relayRunningPcLink(path: string): string {
 	return `/open-session?${RELAY_TARGET_PARAM}=${encodeURIComponent(normalized)}`;
 }
 
-/** 中継の画面が受け取った行き先を使ってよいか（PC の中の画面だけ。ほかは無視してホームへ）。 */
+/**
+ * 中継の画面が受け取った行き先を使ってよいか（PC の中の画面だけ。ほかは無視してホームへ）。
+ * `/pc/x/../../settings` のように PC の外へ出る書き方は通さない: 区切りが空・`.`・`..` のもの、符号化を
+ * 戻すとそうなるもの（`%2e%2e` など）、戻すと `/` や `\` を含むもの、符号化が壊れているものは拒む。
+ */
 export function isPcPath(target: string): boolean {
-	return /^\/pc\/[^/?#]+/.test(target);
+	const end = target.search(/[?#]/);
+	const pathname = (end >= 0 ? target.slice(0, end) : target).replace(/\/$/, '');
+	const segments = pathname.split('/');
+	if (segments[0] !== '' || segments[1] !== 'pc' || segments.length < 3) {
+		return false;
+	}
+	return segments.slice(2).every(isPlainSegment);
+}
+
+function isPlainSegment(segment: string): boolean {
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(segment);
+	} catch {
+		return false;
+	}
+	return decoded !== '' && decoded !== '.' && decoded !== '..' && !/[/\\]/.test(decoded);
 }

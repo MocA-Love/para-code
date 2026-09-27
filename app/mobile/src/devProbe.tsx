@@ -4,6 +4,8 @@ import { useEffect } from 'react';
 import { useGlobalSearchParams, useNavigationContainerRef, usePathname, useRouter } from 'expo-router';
 import { useAppStore } from './appState.js';
 import { installDemoData } from './dev/demoData.js';
+import { openPcRoute } from './features/pc/openPcRoute.js';
+import type { RouteHref } from './routes.js';
 import { setDevWidthOverride } from './hooks/useSizeClass.js';
 import { dispatchShortcut } from './ipad/shortcutHost.js';
 import { useDetailColumn } from './ipad/detailColumn.js';
@@ -45,6 +47,8 @@ export function DevProbe() {
 			fireKey: devFireKeyCommand,
 			// 画面の積み方（Stack ごとのルート名の並び）。2列で詳細の列が積み増されていないかを見る。
 			stacks: () => describeStacks(navigation.getRootState()),
+			// 通知のタップ（`focus`）・通知の一覧と中継の画面（`overlay`）と同じ開き方。
+			openPc: (href: RouteHref, from: 'focus' | 'overlay' = 'focus') => openPcRoute(router, navigation, href, from),
 			// ナビゲーションの状態そのもの（ルートの引数まで見るとき）。
 			rootState: () => JSON.stringify(navigation.getRootState()),
 		};
