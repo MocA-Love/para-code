@@ -15,6 +15,8 @@ export interface IParadisSessionResumeEditorTarget {
 	readonly agent: ParadisResumeAgent;
 	readonly sessionId: string;
 	readonly currentSpace: boolean;
+	/** Codex の会話が既定以外のホームにあるとき、そのホーム。 */
+	readonly codexHome?: string;
 }
 
 export interface IParadisSessionResumeEditorOptions {
@@ -57,5 +59,6 @@ export async function paradisResumeSessionFromEditor(
 		agent: target.agent,
 		sessionId: target.sessionId,
 		dangerouslyBypassPermissions: options.dangerouslyBypassPermissions,
+		...(target.codexHome !== undefined ? { codexHome: target.codexHome } : {}),
 	});
 }

@@ -1157,6 +1157,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				agent: session.agent,
 				sessionId: session.id,
 				currentSpace: session.currentSpace,
+				...(session.agent === 'codex' && session.codexHome !== undefined ? { codexHome: session.codexHome } : {}),
 			}, options, {
 				switchToStateKey: stateKey => this.workspaceSwitchService.switchToStateKey(stateKey),
 				resumeAgent: async request => { await this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, request); },
