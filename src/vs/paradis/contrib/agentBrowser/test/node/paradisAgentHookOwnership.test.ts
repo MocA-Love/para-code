@@ -57,6 +57,95 @@ suite('ParadisAgentHookOwnership', () => {
 		], ['claude', 'claude', 'codex', undefined, undefined, undefined]);
 	});
 
+	test('keeps recognizing the regular launch forms of claude and codex', () => {
+		assert.deepStrictEqual([
+			'codex',
+			'env FOO=1 claude',
+			'/usr/bin/env -u OLD FOO=1 BAR=2 codex exec',
+			'node --require /x/preload.js /usr/local/bin/claude',
+			'bun run /x/node_modules/.bin/claude',
+			'npx claude',
+			'npx -y claude@latest',
+			'node /home/user/.npm/_npx/abc/node_modules/.bin/claude',
+			'/bin/sh -c claude --resume',
+			'/bin/zsh -lc "env FOO=1 claude --resume"',
+			'C:\\Users\\user\\.local\\bin\\claude.exe --resume',
+			'"C:\\Program Files\\Claude\\claude.exe" --resume',
+			'"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"',
+			'C:\\WINDOWS\\system32\\cmd.exe /d /s /c ""C:\\Users\\user\\AppData\\Roaming\\npm\\codex.cmd" exec"',
+			'pwsh -NoProfile -File C:\\Users\\user\\AppData\\Roaming\\npm\\claude.ps1',
+		].map(paradisHookAgentKindFromCommandLine), ['codex', 'claude', 'codex', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'codex', 'codex', 'claude']);
+	});
+
+	test('does not treat programs that merely pass claude as an argument as agents', () => {
+		assert.deepStrictEqual([
+			'tmux new-session -s x claude',
+			'tmux -L work new -d claude --resume',
+			'screen -S x claude',
+			'zellij run -- codex',
+			'caffeinate -i claude',
+			'vim /repo/claude',
+			'node -e require("claude")',
+			'/bin/zsh -c source /home/user/.claude/shell-snapshots/snapshot.sh && eval \'claude -p x\'',
+			'npx -y @anthropic-ai/claude-code',
+			'-zsh',
+		].map(paradisHookAgentKindFromCommandLine), [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+	});
+
+	/**
+	 * `tmux new-session -s x claude` の再現ツリー。tmux サーバーはデーモン化して launchd の子になり、
+	 * 起動したクライアントと同じ起動行を持つ:
+	 *   1 (launchd) ← 500 (tmux サーバー) ← 510 (-zsh) ← 520 (claude, 所有者)
+	 *     ← 525 (sh) ← 526 (notify script)
+	 *   ペイン側: 100 (zsh) ← 150 (tmux クライアント)
+	 */
+	function tmuxTree(): Map<number, IParadisHookProcessInfo> {
+		return new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[150, proc(150, 100, 'tmux new-session -s x claude')],
+			[500, proc(500, 1, 'tmux new-session -s x claude')],
+			[510, proc(510, 500, '-zsh')],
+			[520, proc(520, 510, 'claude')],
+			[525, proc(525, 520, '/bin/sh -c notify')],
+			[526, proc(526, 525, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+			[530, proc(530, 520, 'node /home/user/.claude/plugins/cache/openai-codex/codex/1.0.3/scripts/app-server-broker.mjs serve')],
+			[540, proc(540, 530, '/opt/codex/vendor/bin/codex app-server')],
+			[545, proc(545, 540, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+	}
+
+	test('claude inside a tmux server whose command line contains claude owns the pane', async () => {
+		const ownership = ownershipWith(tmuxTree());
+		assert.deepStrictEqual([
+			await ownership.classify({ token: 't', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 }),
+			await ownership.classify({ token: 't', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 2 }),
+		], [{ origin: 'owner', agentKind: 'claude' }, { origin: 'owner', agentKind: 'claude' }]);
+	});
+
+	test('a nested codex under claude inside tmux still cannot hijack the pane', async () => {
+		// d3bae4a490a が防いだ乗っ取り: 子のhookが先に届いても、所有者のあとに届いても nested。
+		const ownership = ownershipWith(tmuxTree());
+		assert.deepStrictEqual([
+			await ownership.classify({ token: 't', hookPid: 545, transcriptPath: CODEX_TRANSCRIPT, at: 1 }),
+			await ownership.classify({ token: 't', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 2 }),
+			await ownership.classify({ token: 't', hookPid: 545, transcriptPath: CODEX_TRANSCRIPT, at: 3 }),
+		], [{ origin: 'nested', agentKind: 'codex' }, { origin: 'owner', agentKind: 'claude' }, { origin: 'nested', agentKind: 'codex' }]);
+	});
+
+	test('claude launched through npx owns the pane', async () => {
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[600, proc(600, 100, 'npx -y @anthropic-ai/claude-code')],
+			[610, proc(610, 600, 'node /home/user/.npm/_npx/abc/node_modules/.bin/claude')],
+			[615, proc(615, 610, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const ownership = ownershipWith(tree);
+		const result = await ownership.classify({ token: 't', hookPid: 615, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		assert.deepStrictEqual(result, { origin: 'owner', agentKind: 'claude' });
+	});
+
 	test('first hook bootstraps the emitting agent as the pane owner', async () => {
 		const ownership = ownershipWith(standardTree());
 		const result = await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
