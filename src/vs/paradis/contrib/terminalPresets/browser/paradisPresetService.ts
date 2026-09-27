@@ -36,6 +36,7 @@ import { editorGroupToColumn } from '../../../../workbench/services/editor/commo
 import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisPresetDefinition,
@@ -1152,7 +1153,10 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		// 改行を残すのは、貼り付けモードで送れて、しかもシェル統合でコマンド（＝エージェント）が
 		// 前面で実行中だと確かめられたときだけ。確かめられなければ1行に均す（シェルへ届いても
 		// 1行ずつ実行されない）
-		const agentInForeground = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand !== undefined;
+		const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+		// 実行中のコマンドが Claude Code / Codex だと確かめる（エージェントが落ちた後に別の
+		// 対話プログラムを起動していると、そちらは貼り付けを扱えないことがある）
+		const agentInForeground = executing !== undefined && paradisInteractiveAgentCommand(executing) !== undefined;
 		const keepNewlines = instance.xterm?.raw.modes.bracketedPasteMode === true && agentInForeground;
 		const text = paradisBuildPresetInsertText(preset.prompt ?? '', keepNewlines);
 		options?.onDidStart?.();
