@@ -512,7 +512,7 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 	readonly sessionId: string;
 	readonly dangerouslyBypassPermissions?: boolean;
 	/**
-	 * Codex の会話が既定以外のホームにあるとき、そのホーム。この PC のターミナルに限り `CODEX_HOME`
+	 * Codex の会話が見つかったホーム（既定のホームを含む）。この PC のターミナルに限り `CODEX_HOME`
 	 * として渡し、選んでいるアカウントより優先する（その会話はそのホームにしか無いことがあるため）。
 	 */
 	readonly codexHome?: string;

@@ -15,7 +15,7 @@ export interface IParadisSessionResumeEditorTarget {
 	readonly agent: ParadisResumeAgent;
 	readonly sessionId: string;
 	readonly currentSpace: boolean;
-	/** Codex の会話が既定以外のホームにあるとき、そのホーム。 */
+	/** Codex の会話が見つかったホーム（既定のホームを含む）。 */
 	readonly codexHome?: string;
 }
 
