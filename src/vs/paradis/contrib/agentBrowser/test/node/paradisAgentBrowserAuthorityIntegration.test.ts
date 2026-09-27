@@ -121,6 +121,7 @@ function createFixture(): {
 		_terminalExitedTokens: new Set<string>(),
 		_paneShells: paneShells,
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
+		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
 		_agentHookTokens: new Set<string>(),
 		// プロセス表なし = 発信元不特定の fail-closed ポリシー（同一/無transcriptは素通し）。
@@ -601,6 +602,33 @@ suite('ParadisAgentBrowser authority integration', () => {
 			paneStatuses: [{ token: 'status-a', status: 'permission', changedAt: 11, cwd: '/repo/a' }],
 			agentHookTokens: ['status-a', 'hook-only-a'],
 		});
+	});
+
+	// 再起動後に復元したタブから前の会話を続けるための手がかり。hook の session_id を
+	// ペインごとに控え、会話を終えた（SessionEnd）ら外す。呼び出し元のウィンドウの分だけを返す。
+	test('reports the conversation running in each pane of the caller and drops it once the session ends', async () => {
+		const fixture = createFixture();
+		const connectionA = {};
+		const connectionB = {};
+		fixture.service.registerRendererConnection('window:1', connectionA);
+		fixture.service.registerRendererConnection('window:2', connectionB);
+		await fixture.service.syncBindingAuthority(connectionA, authorityManifest(1, true, [{ token: 'claude-a' }, { token: 'codex-a' }, { token: 'ended-a' }]));
+		await fixture.service.syncBindingAuthority(connectionB, authorityManifest(1, true, [{ token: 'claude-b' }]));
+		const record = (token: string, event: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd?: string) =>
+			Reflect.apply(Reflect.get(fixture.service, '_recordPaneSession'), fixture.service, [token, event, sessionId, transcriptPath, cwd]);
+		record('claude-a', 'UserPromptSubmit', 'session-claude', '/Users/example/.claude/projects/repo/session-claude.jsonl', '/repo/a');
+		// ツールが cd した後の hook。分岐は会話を始めたフォルダで行うので、最初の cwd を保つ。
+		record('claude-a', 'PostToolUse', 'session-claude', '/Users/example/.claude/projects/repo/session-claude.jsonl', '/repo/a/packages/web');
+		record('codex-a', 'Stop', 'session-codex', '/Users/example/.codex/sessions/2026/rollout-session-codex.jsonl');
+		record('ended-a', 'UserPromptSubmit', 'session-ended', '/Users/example/.claude/projects/repo/session-ended.jsonl');
+		record('ended-a', 'SessionEnd', 'session-ended', undefined);
+		record('claude-b', 'UserPromptSubmit', 'session-b', '/Users/example/.claude/projects/repo/session-b.jsonl');
+
+		const snapshot = await fixture.service.listAgentStatusSnapshot(connectionA);
+		assert.deepStrictEqual(snapshot.paneSessions?.map(session => ({ ...session, at: typeof session.at })), [
+			{ token: 'claude-a', agent: 'claude', sessionId: 'session-claude', cwd: '/repo/a', at: 'number' },
+			{ token: 'codex-a', agent: 'codex', sessionId: 'session-codex', at: 'number' },
+		]);
 	});
 
 	test('resolves eligibility and sweeps stale fallback status once for one atomic snapshot', async () => {

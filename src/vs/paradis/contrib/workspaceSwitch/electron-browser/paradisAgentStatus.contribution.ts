@@ -87,6 +87,7 @@ export class ParadisAgentStatusPoller extends Disposable implements IWorkbenchCo
 			},
 			logPollFailure: error => this.logService.trace('[ParadisAgentStatus] poll failed', String(error)),
 			isWindowFocused: paradisIsWorkbenchWindowFocused,
+			isTerminalFocused: instanceId => this.terminalService.instances.some(instance => instance.instanceId === instanceId && instance.hasFocus),
 		}));
 	}
 

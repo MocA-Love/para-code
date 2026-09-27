@@ -35,6 +35,7 @@ import {
 	PARADIS_CODEX_TERMINAL_TITLE_CHANNEL,
 	PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING,
 	PARADIS_CODEX_TERMINAL_TITLE_ITEMS,
+	PARADIS_CODEX_THREAD_TITLE_PATTERN,
 } from '../common/paradisCodexTerminalTitle.js';
 
 // `[tui].terminal_title` asks for the app name (PARADIS_CODEX_TERMINAL_TITLE_ITEMS), so the title
@@ -42,7 +43,7 @@ import {
 // user who edited that config themselves, or a Codex build that renders the items differently,
 // should not lose the feature outright. That raw title is what the tab shows until the transient
 // title below replaces it with something readable.
-const CODEX_THREAD_TITLE_PATTERN = /^(?:codex \| )?([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+const CODEX_THREAD_TITLE_PATTERN = PARADIS_CODEX_THREAD_TITLE_PATTERN;
 const TRANSIENT_TITLE_OWNER_PREFIX = 'para.codexTerminalTitle';
 // Codex prints the thread id as its title the moment the TUI starts, but it only writes the
 // thread row (and therefore any title, first user message, or rollout) once the first turn is

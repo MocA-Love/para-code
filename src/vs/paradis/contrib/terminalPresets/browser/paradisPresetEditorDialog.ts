@@ -65,7 +65,10 @@ import {
 	paradisPresetQualifier,
 	paradisPresetQualifiers,
 	paradisPresetScopeKey,
+	ParadisPresetAction,
 	ParadisPresetLayout,
+	PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH,
+	paradisPresetAction,
 	ParadisPresetNameConflict,
 	ParadisPresetSource,
 	PARADIS_PRESET_HOST_LOCAL,
@@ -151,6 +154,28 @@ const STR_ICON = localize('paradis.presetEditor.icon', "アイコン（一覧を
 const STR_ICON_EMPTY = localize('paradis.presetEditor.iconEmpty', "一致するアイコンがありません。");
 // allow-any-unicode-next-line
 const STR_CWD = localize('paradis.presetEditor.cwd', "既定の作業ディレクトリ（任意。ターミナル側で未指定のときに使用。相対パスはリポジトリルート基準）");
+// allow-any-unicode-next-line
+const STR_ACTION = localize('paradis.presetEditor.action', "種別");
+// allow-any-unicode-next-line
+const STR_ACTION_RUN = localize('paradis.presetEditor.action.run', "コマンドを実行する（Enter を送る）");
+// allow-any-unicode-next-line
+const STR_ACTION_INSERT = localize('paradis.presetEditor.action.insert', "入力欄に入れるだけ（Enter を送らない）");
+// allow-any-unicode-next-line
+const STR_ACTION_AGENT_PROMPT = localize('paradis.presetEditor.action.agentPrompt', "エージェント向けプロンプト（今のエージェントの入力欄へ入れる）");
+// allow-any-unicode-next-line
+const STR_ACTION_HINT_INSERT = localize('paradis.presetEditor.action.hintInsert', "アクティブなターミナルの入力欄にコマンドを入れます（Enter は送りません）。複数のコマンドは && でつないだ1行になります。エージェントが許可や質問の回答を待っている間は入れません。");
+// allow-any-unicode-next-line
+const STR_ACTION_HINT_AGENT_PROMPT = localize('paradis.presetEditor.action.hintAgentPrompt', "ターミナルの右クリックメニュー「エージェントにプロンプトを挿入」や、タブバーのボタンから使えます。Claude Code / Codex が動いているターミナルの入力欄に貼り付けとして入り、送信はしません。");
+// allow-any-unicode-next-line
+const STR_PROMPT = localize('paradis.presetEditor.prompt', "プロンプト");
+// allow-any-unicode-next-line
+const STR_INSERT_COMMANDS = localize('paradis.presetEditor.insertCommands', "入れるコマンド（1行に1つ）");
+// allow-any-unicode-next-line
+const STR_INSERT_COMMANDS_PLACEHOLDER = localize('paradis.presetEditor.insertCommandsPlaceholder', "例: git log --oneline -20");
+// allow-any-unicode-next-line
+const STR_PROMPT_PLACEHOLDER = localize('paradis.presetEditor.promptPlaceholder', "例: 変更点をレビューして、問題があれば箇条書きで挙げてください");
+// allow-any-unicode-next-line
+const STR_PROMPT_REQUIRED = localize('paradis.presetEditor.promptRequired', "プロンプトを入力してください。");
 // allow-any-unicode-next-line
 const STR_LAYOUT = localize('paradis.presetEditor.layout', "ターミナルの並べ方");
 // allow-any-unicode-next-line
@@ -358,6 +383,12 @@ const TOAST_REMOVE_DELAY = 2400;
 
 // アイコンピッカーに出す全codicon（アルファベット順）。モジュールロード時に一度だけ確定する。
 const ALL_CODICONS = getAllCodicons().sort((a, b) => a.id.localeCompare(b.id));
+
+const ACTION_LABELS: readonly { action: ParadisPresetAction; label: string }[] = [
+	{ action: 'run', label: STR_ACTION_RUN },
+	{ action: 'insert', label: STR_ACTION_INSERT },
+	{ action: 'agent-prompt', label: STR_ACTION_AGENT_PROMPT },
+];
 
 const LAYOUT_LABELS: readonly { layout: ParadisPresetLayout; label: string }[] = [
 	{ layout: 'tabs', label: STR_LAYOUT_TABS },
@@ -1036,7 +1067,13 @@ class ParadisPresetEditorDialog extends Disposable {
 		}
 		this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {
 			this.dispose();
-			await this.presetService.runPreset(preset);
+			try {
+				await this.presetService.runPreset(preset);
+			} catch (error) {
+				// エージェント向けは「今のターミナルでエージェントが動いていない」等の理由で入れられない
+				// ことがあり、その理由は例外のメッセージで届く。
+				await this.dialogService.error(STR_OPERATION_FAILED, error instanceof Error ? error.message : String(error));
+			}
 		}));
 		const editBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
 		editBtn.textContent = STR_EDIT;
@@ -1052,8 +1089,10 @@ class ParadisPresetEditorDialog extends Disposable {
 				name: strDuplicateName(preset.name),
 				description: preset.description,
 				folder: preset.folder,
-				tasks: tasks.tasks.map(task => ({ name: task.name, cwd: task.cwd, commands: [...task.commands] })),
-				layout: tasks.layout,
+				action: preset.action,
+				prompt: preset.prompt,
+				tasks: paradisPresetAction(preset) !== 'run' ? undefined : tasks.tasks.map(task => ({ name: task.name, cwd: task.cwd, commands: [...task.commands] })),
+				layout: paradisPresetAction(preset) !== 'run' ? undefined : tasks.layout,
 				icon: preset.icon,
 				cwd: preset.cwd,
 				pinned: preset.pinned,
@@ -1721,6 +1760,24 @@ class ParadisPresetEditorDialog extends Disposable {
 			folderInput.setAttribute('list', 'ppe-folder-datalist');
 		}
 
+		// 種別（実行 / 入力欄に入れるだけ / エージェント向け）。種別で意味を持たない行は隠す。
+		const actionField = field(STR_ACTION);
+		const actionSelect = dom.append(actionField, $('select.ppe-input.ppe-select')) as HTMLSelectElement;
+		for (const { action, label } of ACTION_LABELS) {
+			const option = dom.append(actionSelect, $('option')) as HTMLOptionElement;
+			option.value = action;
+			option.textContent = label;
+		}
+		actionSelect.value = editing ? paradisPresetAction(editing) : 'run';
+		const actionHint = dom.append(actionField, $('.ppe-check-hint'));
+
+		const promptField = field(STR_PROMPT);
+		const promptInput = dom.append(promptField, $('textarea.ppe-input.ppe-commands')) as HTMLTextAreaElement;
+		promptInput.rows = 5;
+		promptInput.maxLength = PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH;
+		promptInput.placeholder = STR_PROMPT_PLACEHOLDER;
+		promptInput.value = editing?.prompt ?? '';
+
 		// タスク（＝ターミナル）カードの編集領域。ドラフトは配列で持ち、追加・削除・並べ替えのたびに再描画する
 		interface ITaskDraft { name: string; cwd: string; commands: string }
 		const initialTasks: readonly IParadisPresetTask[] = editing ? paradisGetPresetTasks(editing).tasks : [];
@@ -1884,7 +1941,40 @@ class ParadisPresetEditorDialog extends Disposable {
 		updatePinnedLabelVisibility();
 		this._viewStore.add(dom.addDisposableListener(pinnedInput, 'change', updatePinnedLabelVisibility));
 		const autoRunInput = checkbox(STR_AUTORUN, editing?.autoRun === true, displayControl);
-		dom.append(displayControl, $('.ppe-check-hint')).textContent = STR_AUTORUN_HINT;
+		const autoRunHint = dom.append(displayControl, $('.ppe-check-hint'));
+		autoRunHint.textContent = STR_AUTORUN_HINT;
+
+		// 種別ごとの行の出し分け。行はラベル列（直前の兄弟）とコントロール列の2セルで1行。
+		const setRowVisible = (control: HTMLElement, visible: boolean): void => {
+			control.style.display = visible ? '' : 'none';
+			const label = control.previousElementSibling as HTMLElement | null;
+			if (label) {
+				label.style.display = visible ? '' : 'none';
+			}
+		};
+		const updateActionVisibility = (): void => {
+			const action = actionSelect.value as ParadisPresetAction;
+			const commandsVisible = action === 'run';
+			// 挿入だけ・エージェント向けの本文は prompt に置く（古い版が commands を Enter 付きで実行しないように）
+			setRowVisible(promptField, action !== 'run');
+			const promptLabel = promptField.previousElementSibling as HTMLElement | null;
+			if (promptLabel) {
+				promptLabel.textContent = action === 'insert' ? STR_INSERT_COMMANDS : STR_PROMPT;
+			}
+			promptInput.placeholder = action === 'insert' ? STR_INSERT_COMMANDS_PLACEHOLDER : STR_PROMPT_PLACEHOLDER;
+			setRowVisible(tasksField, commandsVisible);
+			setRowVisible(addTaskBtn.parentElement as HTMLElement, commandsVisible);
+			// 並べ方と既定の作業ディレクトリは「実行」だけ（入れるだけは今のターミナルへ入れる）
+			setRowVisible(layoutSelect.parentElement as HTMLElement, action === 'run');
+			setRowVisible(cwdInput.parentElement as HTMLElement, action === 'run');
+			// スペース作成直後の自動実行も「実行」だけ
+			for (const element of [autoRunInput.parentElement as HTMLElement, autoRunHint]) {
+				element.style.display = action === 'run' ? '' : 'none';
+			}
+			actionHint.textContent = action === 'insert' ? STR_ACTION_HINT_INSERT : action === 'agent-prompt' ? STR_ACTION_HINT_AGENT_PROMPT : '';
+		};
+		updateActionVisibility();
+		this._viewStore.add(dom.addDisposableListener(actionSelect, 'change', updateActionVisibility));
 
 		// 保存先（既存編集時は変更不可）
 		const folder = this.contextService.getWorkspace().folders[0];
@@ -2044,6 +2134,8 @@ class ParadisPresetEditorDialog extends Disposable {
 			name: nameInput.value,
 			description: descriptionInput.value,
 			folder: folderInput.value,
+			action: actionSelect.value,
+			prompt: promptInput.value,
 			tasks: taskDrafts.map(draft => ({ name: draft.name, cwd: draft.cwd, commands: draft.commands })),
 			layout: layoutSelect.value,
 			icon: iconInput.value,
@@ -2078,14 +2170,20 @@ class ParadisPresetEditorDialog extends Disposable {
 				errorEl.textContent = STR_NAME_REQUIRED;
 				return;
 			}
-			const tasks: IParadisPresetTask[] = taskDrafts
+			const action = actionSelect.value as ParadisPresetAction;
+			const tasks: IParadisPresetTask[] = action !== 'run' ? [] : taskDrafts
 				.map(draft => ({
 					name: draft.name.trim() || undefined,
 					cwd: draft.cwd.trim() || undefined,
 					commands: draft.commands.split('\n').map(line => line.trim()).filter(line => line.length > 0),
 				}))
 				.filter(task => task.commands.length > 0);
-			if (tasks.length === 0) {
+			const prompt = promptInput.value.replace(/\s+$/, '');
+			if (action !== 'run' && prompt.trim().length === 0) {
+				errorEl.textContent = action === 'insert' ? STR_COMMANDS_REQUIRED : STR_PROMPT_REQUIRED;
+				return;
+			}
+			if (action === 'run' && tasks.length === 0) {
 				errorEl.textContent = STR_COMMANDS_REQUIRED;
 				return;
 			}
@@ -2102,13 +2200,16 @@ class ParadisPresetEditorDialog extends Disposable {
 				name,
 				description: descriptionInput.value.trim() || undefined,
 				folder: folderInput.value.trim() || undefined,
-				tasks,
-				layout: layoutSelect.value as ParadisPresetLayout,
+				// run は書かない（既定値。従来の定義と同じ形のまま保存し、古い版でも読めるようにする）
+				action: action === 'run' ? undefined : action,
+				prompt: action !== 'run' ? prompt : undefined,
+				tasks: action !== 'run' ? undefined : tasks,
+				layout: action === 'run' ? layoutSelect.value as ParadisPresetLayout : undefined,
 				icon: iconInput.value.trim() || undefined,
-				cwd: cwdInput.value.trim() || undefined,
+				cwd: action === 'run' ? cwdInput.value.trim() || undefined : undefined,
 				pinned: pinnedInput.checked,
 				pinnedLabel: pinnedInput.checked && pinnedLabelInput.checked ? true : undefined,
-				autoRun: autoRunInput.checked,
+				autoRun: action === 'run' && autoRunInput.checked,
 				appliesTo: userRadio.checked && appliesTo.length > 0 ? appliesTo : undefined,
 				hosts,
 			};

@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
+import { IShellLaunchConfig, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { INotificationHandle, INotificationService, IPromptChoice, Severity } from '../../../../../platform/notification/common/notification.js';
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
@@ -18,6 +18,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { paradisResetSharedPanelStartupValueForTest } from '../../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
 import { IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { Workspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
@@ -1762,10 +1765,96 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 下部パネルは「どのスペースにも属さない共通ターミナル」。前のバージョンが別のスペースの
+	// 所属を台帳へ書いていても、切り替えで隠れず、そのスペースを消しても閉じない。設定を切ると従来どおり
+	// スペースごとに退避することも同じシナリオで確かめる（台帳の書き方が変わっていないことの確認を兼ねる）。
+	test('keeps the shared panel terminal visible across switches and alive when its old space is removed', async () => {
+		const run = async (sharedPanel: boolean) => {
+			const testDisposables = new DisposableStore();
+			try {
+				let disposed = false;
+				const instance = createRestoredTerminalInstance(4301, { initialCwd: '/workspace-b' });
+				Object.assign(instance, { target: TerminalLocation.Panel, dispose: () => { disposed = true; } });
+				const group = createTerminalGroup([instance]);
+				const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+				// 設定はウィンドウの起動時の値を1度だけ読む。ここでは所属の判定側が読む前に差し替える。
+				paradisResetSharedPanelStartupValueForTest();
+				await harness.configurationService.setUserConfiguration('paradis.terminal.sharedPanel.enabled', sharedPanel);
+				await harness.workspaceSwitchService.switchRepository('space-a');
+				const scope = harness.installTerminalScope(async () => { }, {
+					groups: [group],
+					worktreeReady: true,
+					connected: true,
+					connectionState: TerminalConnectionState.Connected,
+					persistentProcessScopes: [[4301, 'space-b']],
+				});
+				await settle();
+				harness.fireGroupsChanged();
+				await settle();
+				const parkedInSpaceA = harness.parkedGroups.has(group);
+				// 設定をオフに戻したときのために、消した所属を控えてあるか。
+				const formerScopes = harness.storageService.get('paradis.workspaceSwitch.sharedPanelFormerScopes', StorageScope.WORKSPACE);
+				const resolvedInSpaceA = scope.resolveScope(4301);
+				const scopeInSpaceA = resolvedInSpaceA.kind === 'managed' ? `managed:${resolvedInSpaceA.stateKey}` : resolvedInSpaceA.kind;
+				await harness.workspaceSwitchService.switchRepository('space-b');
+				const parkedInSpaceB = harness.parkedGroups.has(group);
+				await harness.workspaceSwitchService.switchRepository('space-a');
+				await harness.workspaceSwitchService.removeRepository('space-b');
+				await settle();
+				return {
+					formerScopes: formerScopes === undefined ? undefined : [...(paradisParseTerminalNonceScopeStorage(formerScopes) ?? [])],
+					parkedInSpaceA,
+					parkedInSpaceB,
+					scopeInSpaceA,
+					stateKey: scope.getStateKeyForInstance(4301),
+					disposedWithSpaceB: disposed,
+				};
+			} finally {
+				paradisResetSharedPanelStartupValueForTest();
+				testDisposables.dispose();
+			}
+		};
+
+		assert.deepStrictEqual({ shared: await run(true), perSpace: await run(false) }, {
+			// 共通ターミナルは台帳に所属を持たず、尋ねられたら今のスペース（最後は space-a）と答える。
+			shared: { formerScopes: [['nonce-4301', 'space-b']], parkedInSpaceA: false, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-a', stateKey: 'space-a', disposedWithSpaceB: false },
+			perSpace: { formerScopes: undefined, parkedInSpaceA: true, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-b', stateKey: undefined, disposedWithSpaceB: true },
+		});
+	});
+
+	// 共通扱いはユーザーが開いたシェルだけ。パネルで動かしたタスクはそのスペースの作業の一部なので、
+	// 切り替えで退避し、スペースを削除したら一緒に閉じる。
+	test('keeps a task terminal in the panel owned by its space even while the panel is shared', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			paradisResetSharedPanelStartupValueForTest();
+			const instance = createRestoredTerminalInstance(4401, { initialCwd: '/workspace-b' });
+			Object.assign(instance, { target: TerminalLocation.Panel, shellLaunchConfig: { attachPersistentProcess: { id: 4401, type: 'Task' } } });
+			const group = createTerminalGroup([instance]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const scope = harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReady: true,
+				connected: true,
+				connectionState: TerminalConnectionState.Connected,
+				persistentProcessScopes: [[4401, 'space-b']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.deepStrictEqual({ parked: harness.parkedGroups.has(group), stateKey: scope.getStateKeyForInstance(4401) }, { parked: true, stateKey: 'space-b' });
+		} finally {
+			paradisResetSharedPanelStartupValueForTest();
+			testDisposables.dispose();
+		}
+	});
+
 });
 
 interface IWorkspaceSwitchIntegrationHarness {
 	readonly workspaceSwitchService: ParadisWorkspaceSwitchService;
+	readonly configurationService: TestConfigurationService;
 	readonly editorScopeService: ParadisEditorScopeService;
 	readonly parts: IEditorGroupsService;
 	readonly terminalEditorService: Pick<ITerminalEditorService, 'instances'>;
@@ -1970,6 +2059,7 @@ async function createHarness(
 	const instantiationService = workbenchInstantiationService(undefined, testDisposables);
 	instantiationService.stub(IWorkspaceContextService, contextService);
 	const storageService = instantiationService.get(IStorageService);
+	const configurationService = instantiationService.get(IConfigurationService) as TestConfigurationService;
 	storageService.store(
 		PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY,
 		JSON.stringify([...repositories.map(repository => ({
@@ -2071,6 +2161,7 @@ async function createHarness(
 		{ withProgress: (_options, task) => task({ report: () => { } }) } as IProgressService,
 		notificationService,
 		instantiationService.get(ILifecycleService),
+		configurationService,
 	));
 
 	const parkedGroups = new Set<ITerminalGroup>();
@@ -2089,6 +2180,7 @@ async function createHarness(
 
 	return {
 		workspaceSwitchService,
+		configurationService,
 		storageService,
 		parkedGroups,
 		persistedNonceScopes(): readonly (readonly [string, string])[] {
@@ -2201,6 +2293,7 @@ async function createHarness(
 				new NullLogService(),
 				notificationService,
 				{ getConnection: () => null } as unknown as IRemoteAgentService,
+				configurationService,
 			);
 			testDisposables.add(scope);
 			return scope;

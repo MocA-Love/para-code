@@ -71,4 +71,8 @@ registerParadisRemoteTranscriptMirrorContribution();
 import './contrib/remoteTerminals/electron-browser/paradisRemoteTerminalShutdown.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonStatusBar.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonShutdown.contribution.js';
+import './contrib/ptyDaemon/electron-browser/paradisTerminalScreens.contribution.js';
+import './contrib/terminalRenderer/electron-browser/paradisRenderRepair.contribution.js';
+import './contrib/terminalIme/browser/paradisTerminalImeInputGate.contribution.js';
 import './contrib/unfocusedDimming/electron-browser/paradisUnfocusedDimming.contribution.js';
+import './contrib/terminalResumeBanner/electron-browser/paradisTerminalResumeBanner.contribution.js';

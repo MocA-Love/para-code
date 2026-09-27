@@ -50,3 +50,6 @@ import './contrib/terminalLinkMenu/browser/paradisTerminalLinkMenu.contribution.
 import './contrib/terminalReopen/browser/paradisReopenClosedTerminal.contribution.js';
 import './contrib/agentInsights/browser/paradisAgentInsights.contribution.js';
 import './contrib/agentActivity/browser/paradisSessionIndexSettings.contribution.js';
+import './contrib/terminalSharedPanel/browser/paradisTerminalSharedPanel.contribution.js';
+import './contrib/terminalSpaceHistory/browser/paradisTerminalSpaceHistory.contribution.js';
+import './contrib/terminalTabStatus/browser/paradisTerminalTabStatus.contribution.js';

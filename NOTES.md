@@ -154,6 +154,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 | ファイル | 変更内容 | 理由 |
 |---|---|---|
+| `ThirdPartyNotices.txt` | Orca（stablyai/orca、Copyright (c) 2026 Lovecast Inc.、MIT）の項目を PowerShell/EditorSyntax の前に追加 | xterm の IME パッチ（`build/npm/paradisXtermImePatch.ts`）が Orca 由来のコードを製品の `lib/xterm.js` に入れるため。コメント構文が無いのでここに記録する |
 | `product.json` | `nameShort`/`nameLong`/`applicationName`/`dataFolderName`/`win32*`/`darwinBundleIdentifier`等ブランディング全般を「Para Code」向けに変更、`extensionsGallery`を追加（Open VSX）、`voiceWsUrl`を削除。upstream 1.139 で追加された `linuxDesktopName`（Linux の `.desktop`/appdata のファイル名と `StartupWMClass`）は `ltd.paradis.ParaCode` にした | Phase 2ブランディング + Open VSX切り替え |
 | `product.json` | `quality: "stable"` / `updateUrl` / `downloadUrl` を追加。`updateUrl`はカスタムドメイン`https://paracode-updates.paradis.ltd`（初期デプロイ時の`https://para-code-update-server.cloudflare8234.workers.dev`から切り替え済み、動作確認済み）。**`downloadUrl`のみ`https://updates.paradis.ltd/download`の暫定プレースホルダーのまま**（linux用の「更新あり時に開く案内ページ」で必須ではない） | 自動アップデート基盤の有効化。`quality`未設定だと`abstractUpdateService.ts`の`getProductQuality()`がundefinedを返し更新機構自体が無効化される |
 | （現在は差分なし。下の経緯参照） | `builtInExtensions` の `ms-vscode.vscode-js-profile-table` の `sha256` は現在 upstream記録値（marketplace版 `a962a1e6…`）のまま | 2026-08-11時点ではOpen VSX版がmarketplace版と再パッケージによりバイト不一致（差分は`extension.vsixmanifest`・`package.json`整形・同梱ライセンスファイル名・`telemetry.json`有無のみ、実行コードはバイト単位で同一と確認済み）だったため、forkは`extensionsGallery`をOpen VSXに向けている都合上、Open VSX実測値`50d00270…`に**意図的に差し替えていた**。2026-08-27、Open VSXが再度パッケージを更新し**marketplace版とバイト完全一致**（`shasum -a 256`一致を確認）するようになったため、この差し替えは不要になり撤回した（リリースCIが`Checksum mismatch`で落ちたのを機に発覚）。**upstreamがこの拡張のバージョンを上げるたびに再発しうる**: `curl -fsSL https://open-vsx.org/vscode/gallery/publishers/ms-vscode/vsextensions/vscode-js-profile-table/<版>/vspackage \| shasum -a 256` と `curl -fsSL https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-vscode/vsextensions/vscode-js-profile-table/<版>/vspackage \| shasum -a 256` を突き合わせ、不一致ならOpen VSX実測値に差し替える（一致するようになったら差し替えは戻してよい） |
@@ -732,6 +733,94 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 - 設定を自分で書いた（「表示する情報」を触った）人の並びに `promptCache` が無いときは、**非表示で**末尾へ足す（すべて非表示にして2段表示を選んでいた人の行が、更新しただけで3段に伸びないように）。後から項目を足すときは `PARADIS_WORKTREE_META_ADDED_LATER` に入れる
 - エディタのターミナルのバッジは、ターミナルの検索ウィジェットと同じ右上の角に出る。検索ウィジェットが開いている間は CSS（`:has(.simple-find-part.visible)`）で隠し、ボタンを覆ったりクリックを奪ったりしないようにしている
 - エディタエリアのターミナルのバッジは、ペインインジケータと同じく DI を持たない `SessionTerminalEditor` から置く。値の供給元はモジュールのレジストリ（`setParadisPromptCacheBadgeHost`）で、`vs/sessions/contrib/*` から `vs/paradis/contrib/agentInsights/~` を import するための許可を `eslint.config.js` に足している
+
+## ターミナルの共通化・スペース別履歴・タブの状態表示（2026-09-27、フェーズ5 担当A）
+
+TM1 / TM2 / TM11 / TM18 / TM22。ロジックはすべて `src/vs/paradis/contrib/` の新規ファイル（`terminalSharedPanel` / `terminalSpaceHistory` / `terminalTabStatus` / `terminalResumeBanner`）にあり、upstream 側の変更は次の表だけ。
+
+| ファイル | 行数 | 中身 |
+|---|---|---|
+| `terminalInstanceService.ts` | 2 | `paradisPrepareTerminalLaunch(shellLaunchConfig, target)`（import + 呼び出し）。`workspaceSwitch/common/paradisTerminalLaunchPreparers.ts` に登録した関数が PTY 起動前に `cwd` / `env` を足す |
+| `terminalEditorInput.ts` | +7 / -1 | タブ左のアイコンの差し替え点（`getIcon` / `getLabelExtraClasses` に各2行、描き直しの購読1行、import 1行。-1 は購読の配列の直前の行へカンマを足した分）。提供元は `workspaceSwitch/browser/paradisTerminalTabIconRegistry.ts` |
+| `shellIntegration-rc.zsh` / `-bash.sh` / `.fish` | 9 / 9 / 8 | ユーザーの rc の後で `HISTFILE`（fish は `fish_history`）をスペースの履歴へ切り替え、変数を unset。フォルダは umask 077 で作り 0700 にそろえる（macOS の `chmod` は `--` を受け付けないので付けない） |
+
+- **ターミナルを作る直前の処理を足すときは、`paradisRegisterTerminalLaunchPreparer` に登録する**。`TerminalInstanceService.createInstance` には fork の行が3本（`paradisPrepareTerminalIdentity`・`paradisPrepareTerminalPaneEnv`・`paradisPrepareTerminalLaunch`）あり、これ以上 upstream の行は増やさない
+- **下部パネルは共通ターミナル（設定 `paradis.terminal.sharedPanel.enabled`、既定オン、再読み込みで反映）**。設定はウィンドウで最初に読んだ値を `paradisSharedPanelEnabledAtStartup` から使う（所属の判定・パネルの開閉・開始フォルダ・シェル履歴の4か所がずれないため）。判定は `paradisTerminalScope.contribution.ts` の `isSharedPanelInstance`（`target === TerminalLocation.Panel` かつユーザーが開いたシェル。タスク・拡張機能・feature・隠しのターミナルは従来どおりスペースに属し、削除で閉じる）。タグ付け・park・退役・台帳への記録をすべて飛ばす。パネルの開閉もスペースごとには切り替えない
+  - **所属を尋ねられたら「今のスペース」と答える**（`resolveScope` は `managed(今のスペース)`、`getStateKeyForInstance` は今のスペース。台帳には書かない）。共通ターミナルのエージェントの許可待ち・完了のモバイル通知、スペース一覧の状態、Para Browser の共有が、今見ているスペースのものとして働く。ただし持ち主ではないので、見つけた Issue の URL はスペースへ付けず、完了の既読も「スペースを開いている」ではなくそのターミナルにフォーカスがあるときだけにする（`IParadisTerminalScopeService.isSharedPanelTerminal` で見分ける。`paradisAgentStatusSnapshotConsumer`）。スペースを切り替えると答えが変わるので、共有中のブラウザは binding model の `_reconcileStableScopeChange` が外す（前のスペースのブラウザは裏に隠れるため）。モバイルへ送る形式は変えていない
+  - 前のバージョンが台帳へ書いたパネル端末の所属は初見で消すので、**更新直後は、それまで他のスペースに退避していたパネルのターミナルが全部パネルに並ぶ**（1度だけ通知。このウィンドウでエディタのタブからパネルへ移しただけの端末は数えない）。消した所属は `paradis.workspaceSwitch.sharedPanelFormerScopes`（nonce → stateKey）へ控え、設定をオフにして再読み込みすると nonce 台帳へ戻す。前のセッションの pid（attach 先）でも引くこと（再起動で pid が振り直されるので、今の pid だけでは見落とす）
+  - 開始フォルダは設定 `paradis.terminal.sharedPanel.cwd`（空ならホーム。upstream の `terminal.integrated.cwd` と同じく `restricted`）。空で `terminal.integrated.cwd` が設定されていればそちらに従う。存在しないフォルダは起動時と設定の変更時に確かめてホームへ落とす（存在しないフォルダを渡すと、それ以降のパネルのターミナルがすべて起動に失敗する）
+- **スペース別のシェル履歴（`paradis.terminal.historyPerSpace.enabled`、既定オン）**。`PARA_CODE_SPACE_HISTORY_DIR` / `_ID` で渡し、置き場所はローカルが `<userData>/terminal-history/<sha1(stateKey) 先頭16桁>/`（Windows でも区切りは `/`）、SSH 先が `~/.para-code/terminal-history/...`（接続先が Windows のときは使わない）。fish は置き場所を変えられないので `~/.local/share/fish/paracode_<id>_history`。スペースの削除で消す（閉じたシェルの終了時の書き戻しに備えて10秒後にもう1度。その間に同じスペースでターミナルを開いたら2回目は取り消す）。削除を受け損ねた分は、このワークスペースで作った id の控え（`paradis.terminal.historyPerSpace.createdIds`）から、起動時（worktree の列挙が終わった後）に片付ける。**列挙は一時的に失敗しても成功扱いで終わる**（`paradisWorktreeService.refresh`）ので、1回見つからなかっただけでは消さない。3回続けて見つからず、しかも履歴が14日以上書かれていないものだけを消す（`paradisShouldDeleteOrphanHistory`）。userData は全ワークスペースで共有なので、控えに無いフォルダには触らない
+  - 補完候補（`terminalHistorySuggest`）は、アクティブなターミナルのスペースの履歴ファイルを最初に並べ、VS Code 内部の履歴（全スペース共通）、`~/.zsh_history` 等の全体の履歴の順に続ける。復元したエディタのターミナルは起動時の環境変数が残っていないので、今のスペースの履歴を読む
+  - 既知の穴: fish の `XDG_DATA_HOME` を変えている環境は消せない（設定の説明に書いた）。シェル統合が注入されないシェルでは効かない。更新直後は既存のスペースでも ↑ が空から始まる（全体の履歴は引き継がない。補完候補には全体の履歴が出る）
+- **タブの点（TM11）は upstream のベル表示と同じファイル装飾だが、提供元を自前で起動時に登録している**。upstream の `TabDecorationsProvider` はパネルのタブ一覧を作ったときにしか登録されない（パネルを開いていないとエディタのタブに何も出ない）ため。パネルを開くと同じ `vscode-terminal` の URI に upstream の提供元も並ぶ。ベルが二重にならないよう、upstream のベルの状態（`TerminalStatus.Bell`）が出ている間はこちらは色だけにしている。ベルは `xterm.raw.onBell` を直接購読（upstream は visual bell 設定がオフだと何も出さない）
+  - 点を消すのはフォーカスと `xterm.raw.onKey` だけ。`onAnyInstanceDataInput` はカーソル位置の問い合わせへの自動応答・フォーカス報告・他の機能からの送信でも発火するので使わない
+  - 許可待ち・質問から直接終わった場合（見ているスペースではすぐ既読になり review を経ない）も完了として点を付ける
+  - 見送り: 「作業中 → 状態なし」を完了とみなしている（見ているスペースの完了は状態スナップショットの側がすぐ既読にして、renderer には review が届かないため）。状態の掃除やエージェントの異常終了でも緑の点が付く。見分けるにはスナップショット側（`paradisAgentStatusSnapshotConsumer`）の既読処理を変える必要がある
+- **タブ左のアイコン（TM18）で `Codicon.loading` を返してはいけない**。`.codicon-loading` の回転がラベルのルート要素に掛かり、タブの文字ごと回る。作業中は土台を `Codicon.sync` にして、`::before` の中身を loading の文字に替えて回している。upstream の次の要素に依存しているので、取り込みで変わったら直す
+  - DOM と詳細度: `.monaco-icon-label.terminal-tab[class*='codicon-']::before`、upstream の `.monaco-workbench .predefined-file-icon[class*='codicon-']::before` と `.monaco-workbench:not(.file-icons-enabled) .predefined-file-icon[class*='codicon-']::before { content: unset !important }`（こちらのセレクタは `.file-icons-enabled` 付き）
+  - keyframes の名前 `codicon-spin`。loading の文字は `getCodiconFontCharacters()` から実行時に引く
+  - ロゴは SVG を mask にして文字色で塗る（パスデータは `src/vs/paradis/common/paradisAgentLogoPaths.ts`）。`workbench.editor.showIcons` がオフ、またはファイルアイコンテーマなしだと出ない
+- **復元タブのバナー（TM22）**。shared process の状態スナップショットに `paneSessions`（ペイントークン → hook の session_id と、その会話で最初に報告された cwd）を足し、renderer が WORKSPACE storage の `paradis.terminal.resumeSessions` に控える。キーはペイントークンのハッシュ（トークンは MCP やペインの app-server の Bearer を兼ねるので平文では書かない。前の版の平文キーは読んだ時点で置き換える）。Codex はタイトルの `codex | <uuid>` からも拾う（パターンは `codexTerminalTitle/common` と共用）。「エージェントが終わった」の判定はシェルのプロセス ID が変わったか（ウィンドウの再読み込みでは変わらないので出ない。常駐ターミナルが引き取った `paradisAdopted` も出さない）。`hasChildProcesses` はエディタタブの直列化が終了時点の値を持ち越すので使えない。「このタブで再開」はシェル統合でプロンプト待ちかつ入力欄が空のときだけ送る（シェル統合が無いターミナルでは送らず、打つコマンドを通知で示す）。表示は共有ドットと同じ `paradisPaneIndicator.ts` の重ね合わせの口（`paradisRegisterEditorTerminalOverlay`）で、検索欄を開いている間は下へずらす
+  - **renderer の `paradisAgentStatusSnapshotService` はスナップショットを丸ごと写して凍らせる（フィールドを列挙して詰め直さない）**。列挙していた間に `paneSessions` が落ち、Claude の会話が台帳に入らずバナーが出なかった（8/24 の `agentHookTokenIssueUrls` と同じ漏れ方で2度目）。shared process 側にフィールドを足すときは、写しを直す必要は無い
+
+## プリセットの種類・描画修復・常駐画面の保存・IME パッチ（2026-09-27、フェーズ5 担当B）
+
+TM23 / TM12 / TM14 / TM16。upstream への変更は `localTerminalBackend.ts`（1行 + import）、`build/npm/postinstall.ts`（呼び出し2か所 + import）、`build/filters.ts`（除外2行）、`eslint.config.js`（許可1行）、`ThirdPartyNotices.txt`（Orca の項目。下の台帳に記載）だけ。
+
+依存している既存の PARA-PATCH 点: `xtermTerminal.ts` の `recreateRendererAfterWindowChange`（TM12。upstream のメソッドではなく fork が足したもの）、`terminalService.ts` の終了時に画面保存を飛ばす分岐（TM14 が埋める穴）、`paradisTerminalInputGate.ts` のゲート（TM16 の入力経路にも効かせている）。
+
+### ターミナルの画面を含むファイルは main で 0600 に書く
+
+TM14 の保存画面と TM12 の記録は、renderer の `IFileService` ではなく main プロセスのチャネル（`terminalPrivateFiles`）で書く。`IFileService` は権限を指定できず 0644 になるため。フォルダは 0700、ファイルは 0600 で、一時ファイルに書いてから置き換える。チャネルは app.ts に行を足さないよう、常駐の状態チャネルの登録（`paradisRegisterPtyDaemonStatus`）から一緒に立てている。ワークスペース ID は英数字と `_-` だけを受け付ける（ファイル名になるため）。
+
+### コマンドプリセットの種類（TM23）
+
+プリセットに `action`（`run` / `insert` / `agent-prompt`）と `prompt` を足した。`run` は書かない（従来の定義と同じ形のまま保存する）。
+
+- **`run` 以外の本文は `commands` / `tasks` ではなく `prompt` に置く**。すでに配布した古い版は `action` を知らないので、`commands` があると Enter 付きで実行してしまう。`prompt` だけの定義は古い版では無効として読み飛ばされる。新しい版でも、未知の `action` は読み飛ばす
+- `insert` は1行1コマンドの本文を `&&` でつないだ1行にして入れる。**改行は常に残さない**
+- `agent-prompt` の改行を残すのは、貼り付けモードで送れて、しかもシェル統合で前面の実行中コマンドが Claude Code / Codex（`paradisInteractiveAgentCommand`）だと確かめられたときだけ。xterm の貼り付けモードの記録は最後に出た `ESC[?2004h/l` でしかなく、エージェントが後始末をせずに落ちると、対応していないシェルでも立ったままになるため
+- エージェントが許可・質問の回答を待っている（`question` / `permission`）ターミナルには、`agent-prompt` も `insert` も入れない（先頭の文字が選択肢の操作として食われる）。状態は送る直前に読む
+- エージェントかどうかは「hook が1度でも発火したか」（`IParadisAgentStatusStore.isAgentInstance`）。エージェントを終了した後のシェルにも入るが、1行に均して Enter は送らないので実行はされない。タブのアイコン（TM18）・再開バナー（TM22）と判定が揃っていない（アーキテクチャレビュー L1、未対応）
+- モバイルの一覧と autoRun からは `run` 以外を外している（入れ先の「今のターミナル」がモバイルからは見えない）。承認の署名には `prompt` も入れてある
+- 指紋（`paradisPresetFingerprint`）には `run` 以外のときだけ種類を足す。指紋は「このマシンだけ隠したリポジトリのプリセット」の保存キーにも使っているので、従来のプリセットの指紋を変えると隠したものが出てくる
+
+### 描画ずれの自動修復（TM12）
+
+`terminalRenderer/electron-browser/paradisRenderRepair.contribution.ts`。そのターミナルが見えるようになったときと、そのターミナルにフォーカスが入ったとき（ウィンドウに戻る・スリープから復帰すると、前にフォーカスのあった要素にフォーカスが戻るので、ここに入る）にだけ WebGL の画面を抜き取り、Orca の方式（文字のあるセルの中央に背景色以外の画素が1つも無ければ欠け）で判定する。2回（250ms 空けて）続けて、ビューポートの文字が同じまま同じセルが欠けていたら、`recreateRendererAfterWindowChange` で作り直す。ウィンドウ全体のフォーカスでは見ない（見えている全ターミナルの画面を読み戻すと重い）。
+
+- 「測れなかった」（欠け 95% 以上）ときは、回数を trace ログに出す（`[ParadisRenderRepair] could not measure`）。実機で読み取りが効いているかはこれで確かめる。画面全体が消える型の描画ずれは、この理由で修復しない
+- 判定は保守的にしてある: 文字 200 セル以上・欠け 8% 以上 95% 未満・2回で欠けの位置が半分以上重なる。95% 以上は「測れなかった」とみなす（WebGL は `preserveDrawingBuffer` なしで作られており、読み取りの時点でバッファが消えていると全セルが欠けて見える）。細い記号と罫線（`.` `_` `'` `─` など）はセルの中央にインクが無いので数えない。修復後 60 秒は同じターミナルを検査しない。修復後もまだ欠けて見えるなら判定の方が外れているとみなし、そのターミナルでは以後検査しない
+- **【要確認】実機で、正常な画面の欠けの割合がほぼ 0 になるか**（`drawImage` で描画バッファを読めているか）をまだ確かめていない。読めていなければ機能は何もしないだけ（95% 以上で判定しない）
+- **xterm の非公開のプロパティを読んでいる**: `_core._renderService._isPaused` と `_core._renderService._renderer.value` の `_canvas` / `_charAtlas` / `_themeService.colors.background.rgba` / `dimensions.device.cell`。xterm か addon-webgl を上げたら、`lib/xterm.js` と `addon-webgl/lib/addon-webgl.js` にこれらの名前が残っているかを `grep` で確かめる（merge-upstream スキルにも書いた）。消えていても検査が走らなくなるだけで、例外にはならない
+- 記録（既定オフ、`paradis.terminal.renderRepair.recordScreen`）は `<ユーザーデータ>/logs/paradisTerminalRender/<時刻>-<乱数>/`（`before.png` / `after.png` / `info.json`）。`info.json` には画面の文字を入れず、欠けていたセルの座標だけを入れる。logs 直下に1つ置き（upstream の古いログ掃除は日時名のフォルダしか消さない）、記録するたびに7日より古いものを消し、4件を超えたら古いものから消す。Sentry へは件数と割合だけ送る（`render-desync-repaired`、info）
+
+### 常駐ターミナルの画面のディスク保存（TM14）
+
+常駐を使うと、アプリを閉じるときの upstream の画面保存（`persistTerminalState`）を飛ばしている（`terminalService.ts` の PARA-PATCH。起こし直すと生きているプロセスと二重になる）。そのため PC を再起動すると画面もタブも戻らず、常駐を使わない方が再起動に強い状態だった。
+
+- 保存: `ptyDaemon/electron-browser/paradisTerminalScreens.contribution.ts`。**常駐が端末を抱えている間だけ**（`getStatus()` の `running` と、常駐が答えた本数が保存する本数以上あること。`running` は「台帳の常駐プロセスが生きている」という意味で、pty ホストがそれを使っているかまでは表さないので、本数で補う。設定を入れた直後で再起動していないとき・アプリの中の pty ホストに落ちているときは書かない）、pty ホストの `serializeTerminalState` を `<ユーザーデータ>/paradisTerminalScreens/<ワークスペース>.json` へ書く。保存時の常駐の pid と起動時刻も書く。5分ごと（出力があったときだけ。無くても30分に1回）、ターミナルを閉じた2秒後、アプリを閉じる前（`onBeforeShutdown`、上限2秒）。間隔が長めなのは、直列化が端末ごとに cwd の取得（macOS では lsof）とバッファ全体の書き出しを伴うため。対象は upstream が閉じるときに畳む範囲と同じ（待避中のグループとエディタの端末を含む）。1本も無くなったらファイルを消す
+- **保存物にはシェルの起動条件の環境変数とシェル統合の nonce が入る**。main が書く前に、秘密の変数（`PARA_CODE_TERMINAL_PANE_ID`、`PARA_CODE_VOICE_TOKEN`、`PARA_CODE_CODEX_APP_SERVER_*`、`PARADIS_PTY_*`。名指しで落とす）とペイントークン（`processDetails.paradisPaneToken`）を落とし、`processLaunchConfig.env`（起動元から引き継いだ全環境変数）は空にする（upstream は復元のときに `shellLaunchConfig.env` から作り直す）。スペース別の履歴（`PARA_CODE_SPACE_HISTORY_*`）や MCP のポートファイルは起こし直したシェルにも要るので残す。ペイン用の値は復元のときにペイントークンのサービスで付け直す。**ペイントークンは nonce から決まるので、このファイルを読めればトークンも分かる**（nonce はエディタのタブと起こし直した端末を結び付けるのに要るので残している）。そのためファイルは本人だけが読める権限で書く。main での解析と書き出しは1回ずつ
+- 復元: `localTerminalBackend.ts` の `getTerminalLayoutInfo` で、ストレージに保存物が無いときだけ `paradisTakeSavedTerminalScreens` を呼び、返ってきた文字列を upstream の復元へそのまま流す。配置はストレージの `terminal.integrated.layoutInfo`（常駐のときも upstream が書き続けている）を upstream が使う
+- **戻すのは、保存したときの常駐（pid と起動時刻の組）がどこにも居ないと言えるときだけ**（`paradisDecideSavedScreens`）。今の常駐か、別ビルドの常駐（更新前のもの、`status.foreign`）として生きていれば使わない。常駐がまだ動いていなければ最大6秒（1秒おき）待つ。PC を再起動した直後は常駐の起動が pty ホストより遅れるため。それでも動いていなければ、**main プロセスの起動時刻（性能計測の印 `code/didStartMain`）が保存より後か**で決める。後なら、保存物のプロセスを抱えうるアプリの中の pty ホストも居ないので戻す。前なら（ウィンドウの再読み込み）戻さない。使ったらファイルを消す（2回使うと、起こし直したシェルを次の起動でまた起こす）
+- 判断が「分からない」で終わったときはファイルを残し、保存側は判断が付くまで上書きしない（上書きすると戻すはずの画面が消える）
+- 保存物があって常駐が動いていないときは、ターミナルの復元が最大6秒遅れる
+- 【要確認】`reattachAcrossUpdates` の常駐で、更新をまたいだときに今の常駐の pid と起動時刻が変わるか。変わって、かつ更新前の常駐が `foreign` に出ないなら、更新のたびに起こし直しが走る
+- 復元の前に保存が走ると、戻すはずの画面を空で上書きする。保存は `take` が済むまで（呼ばれなければ起動から2分）始めない
+- 30日より古いものは使わずに消す。開かれなくなったワークスペースの分は、起動5分後に保存フォルダを一度見回って消す。設定 `paradis.terminal.daemon.saveScreens`（既定 true）を切るとその場で消す
+- **常駐そのものは既定オフのまま**。実機での再起動の確認がまだで、「Terminal: Attach to Session」が残した端末を巻き添えにする件と、SSH 先の環境変数の件（上の節）が残っているため
+- Windows は常駐を使っていないので何もしない（upstream の保存・復元がそのまま働く）。保存の仕組み自体は OS に依存しないので、上の「開けるときの筋道」で Windows の常駐を開ければそのまま効く
+
+### xterm の IME パッチ（TM16）
+
+`build/npm/paradisXtermImePatch.ts` が postinstall で、`node_modules/@xterm/xterm/src/`（配布物に同梱の beta.304 のソース）へ `build/npm/paradisXtermIme/xterm-ime.patch` を当て、esbuild でバンドルし直して `lib/xterm.js`（UMD で包む）と `lib/xterm.mjs` を置き換える。差分は Orca（MIT）の `@xterm__xterm@6.1.0-beta.303.patch` のうち IME の src 部分（CompositionHelper / CoreBrowserTerminal / Types / WidthCache の export）だけ。Orca の lib/ は beta.303 のビルド結果なので使えない。無関係な SortedList の修正は外した。
+
+- **xterm を上げたら**: `PARADIS_XTERM_IME_TARGET_VERSION` と違う版には当てない。手元の install では警告だけ出して素の xterm で動き、**CI（環境変数 `CI`）では install を失敗させる**（当たらないまま配布物を作ると日本語入力の修正が黙って抜ける）。新しい版の `src/` に `git apply --check` が通るか確かめ、通れば版の定数を書き換える。通らなければ Orca の新しいパッチから作り直す（merge-upstream スキルにも書いた）
+- 当てたかどうかは `lib/xterm.js` の先頭の印（`v2`）で見る。npm が入れ直せば印ごと消えてまた当たる。印の版を上げると、前の版で作り直したものも作り直す（`src/` が当てた後のものなら逆向きの `--check` で確かめてそのまま使う）
+- Orca の MIT の表示は、作り直したバンドルの先頭（esbuild の banner）、パッチファイルの冒頭、`ThirdPartyNotices.txt` の3か所に入れてある
+- パッチは `_inputEvent` の先頭に IME の確定を送る経路を足すので、スペース切り替え中の入力ゲートが素通りされうる。`terminalIme/browser/paradisTerminalImeInputGate.contribution.ts` が、ゲート中は xterm の要素のキャプチャ段階で `input` を止め、ゲート中に始まった変換（`compositionstart` / `update` / `end`）も丸ごと xterm に見せない（変換の確定で文字を送る素の xterm の経路もこれで止まる）。ゲートの前から続いている変換だけは、途中で止めると xterm が変換中のまま残るので通す
+- Web ビルド（`remote/web` の xterm）には当てていない
+- パッチには不可視文字（U+200E）と2スペースのインデントが入るので、`build/filters.ts` の unicode / indentation の検査から `build/npm/paradisXtermIme/**` を外してある
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 

@@ -15,6 +15,7 @@ import { ITerminalInstance, ITerminalInstanceService, terminalEditorId } from '.
 import { getColorClass, getUriClasses } from './terminalIcon.js';
 // PARA-PATCH: editor terminals need the same 'keep it running on the remote' decision
 import { paradisJoinKeptDetaches, paradisShouldKeepTerminalProcessAlive } from './paradisTerminalShutdownPolicy.js';
+import { paradisGetTerminalTabIcon, paradisOnDidChangeTerminalTabIcon } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalTabIconRegistry.js'; // PARA-PATCH: agent state icons on editor terminal tabs
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig, TerminalExitReason, TerminalLocation, TerminalSettingId } from '../../../../platform/terminal/common/terminal.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
@@ -164,7 +165,8 @@ export class TerminalEditorInput extends EditorInput implements IEditorCloseHand
 			instance.onIconChanged(() => this._onDidChangeLabel.fire()),
 			instanceOnDidFocusListener,
 			instanceOnDidBlurListener,
-			instance.statusList.onDidChangePrimaryStatus(() => this._onDidChangeLabel.fire())
+			instance.statusList.onDidChangePrimaryStatus(() => this._onDidChangeLabel.fire()),
+			paradisOnDidChangeTerminalTabIcon(instanceId => instanceId === instance.instanceId && this._onDidChangeLabel.fire()), // PARA-PATCH: redraw when the agent state icon changes
 		];
 
 		this._register(toDisposable(() => {
@@ -207,6 +209,8 @@ export class TerminalEditorInput extends EditorInput implements IEditorCloseHand
 	}
 
 	override getIcon(): ThemeIcon | undefined {
+		const paradisTabIcon = paradisGetTerminalTabIcon(this._terminalInstance); // PARA-PATCH: agent state icon replaces the terminal icon
+		if (paradisTabIcon) { return paradisTabIcon.icon; } // PARA-PATCH
 		if (!this._terminalInstance || !ThemeIcon.isThemeIcon(this._terminalInstance.icon)) {
 			return undefined;
 		}
@@ -218,6 +222,8 @@ export class TerminalEditorInput extends EditorInput implements IEditorCloseHand
 			return [];
 		}
 		const extraClasses: string[] = ['terminal-tab', 'predefined-file-icon'];
+		const paradisTabIcon = paradisGetTerminalTabIcon(this._terminalInstance); // PARA-PATCH: skip the user's icon color/URI classes while the state icon is shown
+		if (paradisTabIcon) { return [...extraClasses, ...paradisTabIcon.extraClasses]; } // PARA-PATCH
 		const colorClass = getColorClass(this._terminalInstance);
 		if (colorClass) {
 			extraClasses.push(colorClass);

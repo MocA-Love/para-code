@@ -1,0 +1,67 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * エディタのターミナルタブ左のアイコン（状態があれば状態、無ければエージェントのロゴ）。
+ *
+ * アイコンはタブのラベル自身の ::before に codicon として描かれる（upstream のターミナルタブと同じ
+ * 仕組み）。ここではその ::before だけを描き替える。セレクタは upstream の
+ * `.monaco-workbench .predefined-file-icon[class*='codicon-']::before` より強くし、
+ * `[class*='codicon-']` を必ず含める（`workbench.editor.showIcons` がオフのときはアイコンの
+ * クラスが付かないので、こちらも出なくなる）。`.file-icons-enabled` も付ける。ファイルアイコン
+ * テーマを外していると upstream はこのアイコンを消すので、こちらも出さない。
+ *
+ * 色が付くのは「あなたの操作待ち」（許可待ち・質問）だけで、タブの見出しの点と同じ charts.red
+ * （スペース一覧でも許可待ちは赤、作業中は黄）。
+ */
+
+.monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab.paradis-terminal-tab-waiting[class*='codicon-']::before {
+	color: var(--vscode-charts-red, #ef4444) !important;
+}
+
+/*
+ * 作業中は codicon の loading を回す。ラベルに `codicon-loading` を付けるとラベル全体が回る
+ * (upstream の `.codicon-loading { animation }`)ので、土台は別の codicon にして中身だけ差し替える。
+ * 中身（loading の文字）は contribution が codicon の登録から引いて実行時に足す。
+ */
+.monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab.paradis-terminal-tab-working[class*='codicon-']::before {
+	text-align: center;
+	/* 回転の中心を ::before の箱の中心に揃える（左右の余白が同じなのでグリフの中心と一致する） */
+	transform-origin: center center;
+	/* upstream の codicon の回転と同じ速さ・同じ間引き（CPU を抑える） */
+	animation: codicon-spin 1.5s steps(30) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab.paradis-terminal-tab-working[class*='codicon-']::before {
+		animation: none;
+	}
+}
+
+/* 見ていない完了。色は付けず、形（●）だけで伝える。 */
+.monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab.paradis-terminal-tab-done[class*='codicon-']::before {
+	transform: scale(0.75);
+}
+
+/*
+ * Claude / OpenAI のロゴ。SVG を mask にして、タブの文字色（currentColor）で塗る。
+ * mask の画像はロゴごとに contribution が実行時に足す（パスデータを1か所で持つため）。
+ * ファイルアイコンテーマが ::before に背景画像を入れることがあるので、明示的に消す。
+ */
+.monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab.paradis-terminal-tab-logo[class*='codicon-']::before {
+	content: '' !important;
+	background-image: none !important;
+	background-color: currentColor;
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	mask-position: center;
+	-webkit-mask-size: 13px 13px;
+	mask-size: 13px 13px;
+	opacity: 0.9;
+}
