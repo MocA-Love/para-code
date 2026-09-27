@@ -632,10 +632,16 @@ export interface IParadisAgentStatusStore {
 	 */
 	wasReviewAcknowledged?(instanceId: number): boolean;
 	/**
+	 * 完了ではなく、止まって利用者の次の指示を待っているために状態が消えた（idle になった）インスタンスか
+	 * （許可の拒否）。状態の消滅を完了と数えないのに使う（タブの緑の点）。次の状態が届くと false に戻る。
+	 */
+	wasStoppedForUser?(instanceId: number): boolean;
+	/**
 	 * ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新）。
 	 * `acknowledgedInstanceIds` はこの回に review を既読にして状態から外したインスタンス。
+	 * `stoppedForUserInstanceIds` は、止まって次の指示を待っているために状態が消えているインスタンス（毎回の全量）。
 	 */
-	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>): void;
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>, stoppedForUserInstanceIds?: ReadonlySet<number>): void;
 	/** モバイルリレー専用（hook 以外の根拠でセッションが確定しているペインの一括更新）。 */
 	setDiscoveredAgentPaneTokens(paneTokens: ReadonlySet<string>): void;
 	/** ポーラー専用（スコープごとに検出済み Issue URL の一括更新）。 */

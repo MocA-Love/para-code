@@ -126,6 +126,7 @@ function createFixture(): {
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
+		_awaitingUserTokens: new Set<string>(),
 		_agentHookTokens: new Set<string>(),
 		_hookReportedTokens: new Set<string>(),
 		_unconfirmedReleaseTokens: new Set<string>(),
@@ -694,10 +695,20 @@ suite('ParadisAgentBrowser authority integration', () => {
 		const settle = (token: string) => (fixture.service as unknown as { _settlePaneAwaitingUser(token: string): void })._settlePaneAwaitingUser(token);
 		settle('denied-token');
 		settle('review-token');
+		const statuses = await fixture.service.listPaneStatuses(connection);
+		// 画面側が状態の消滅を完了と数えないよう、次に状態が付くまで知らせる
+		const whileStopped = (await fixture.service.listAgentStatusSnapshot(connection)).awaitingUserTokens;
+		Reflect.get(fixture.service, '_paneStatuses').set('denied-token', { status: 'working', changedAt: 5 });
+		const afterNextTurn = (await fixture.service.listAgentStatusSnapshot(connection)).awaitingUserTokens;
+		Reflect.get(fixture.service, '_paneStatuses').delete('denied-token');
+		const afterNextTurnEnds = (await fixture.service.listAgentStatusSnapshot(connection)).awaitingUserTokens;
 
-		assert.deepStrictEqual(await fixture.service.listPaneStatuses(connection), [
-			{ token: 'review-token', status: 'review', changedAt: 4 },
-		]);
+		assert.deepStrictEqual({ statuses, whileStopped, afterNextTurn, afterNextTurnEnds }, {
+			statuses: [{ token: 'review-token', status: 'review', changedAt: 4 }],
+			whileStopped: ['denied-token'],
+			afterNextTurn: undefined,
+			afterNextTurnEnds: undefined,
+		});
 	});
 
 	test('keeps legacy status and hook-token list commands independently available', async () => {

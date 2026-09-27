@@ -252,7 +252,8 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 			if (current === previous && !this._attention.has(instance.instanceId)) {
 				continue;
 			}
-			this.setAttention(instance, paradisNextAttentionOnStatus(previous, current, this._attention.get(instance.instanceId), this.isWatching(instance)));
+			const stoppedForUser = current === undefined && this.agentStatusStore.wasStoppedForUser?.(instance.instanceId) === true;
+			this.setAttention(instance, paradisNextAttentionOnStatus(previous, current, this._attention.get(instance.instanceId), this.isWatching(instance), stoppedForUser));
 			this.refreshTabIcon(instance);
 		}
 	}

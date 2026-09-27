@@ -732,6 +732,7 @@ function createServiceFixture(generation: number): {
 		_paneStatuses: new Map(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),
+		_awaitingUserTokens: new Set<string>(),
 		_agentHookTokens: new Set(),
 		_hookReportedTokens: new Set(),
 		_unconfirmedReleaseTokens: new Set(),

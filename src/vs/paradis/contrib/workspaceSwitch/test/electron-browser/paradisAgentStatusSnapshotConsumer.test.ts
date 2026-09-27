@@ -109,6 +109,14 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		assert.deepStrictEqual([...fixture.statusStore.agentInstanceIds], [1, 2]);
 	});
 
+	test('passes the panes that stopped for the user to the store by instance', () => {
+		const fixture = createFixture();
+		fixture.instanceByToken.set('denied', 3);
+		fixture.producer.publish({ sequence: 1, snapshot: { paneStatuses: [], agentHookTokens: ['denied'], awaitingUserTokens: ['denied', 'unknown-token'] } });
+
+		assert.deepStrictEqual({ stopped: [...fixture.statusStore.stoppedForUserInstanceIds], statuses: entries(fixture.statusStore.instanceStatuses) }, { stopped: [3], statuses: [] });
+	});
+
 	// 共通ターミナル（下部パネル）は「今のスペース」と答えるが持ち主ではない。見つけた Issue を
 	// 今のスペースへ付けず、スペースを開いているだけでは完了を既読にしない（そのターミナルに
 	// フォーカスがあるときだけ）。
@@ -375,6 +383,7 @@ class TestStatusStore implements IParadisAgentStatusStore {
 	instanceStatuses = new Map<number, ParadisAgentStatus>();
 	agentInstanceIds = new Set<number>();
 	acknowledgedInstanceIds = new Set<number>();
+	stoppedForUserInstanceIds = new Set<number>();
 	scopeIssueUrls = new Map<string, readonly string[]>();
 
 	getScopeStatus(): ParadisAgentStatus | undefined { return undefined; }
@@ -387,10 +396,11 @@ class TestStatusStore implements IParadisAgentStatusStore {
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void {
 		this.scopeBreakdowns = new Map(breakdowns);
 	}
-	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>): void {
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>, stoppedForUserInstanceIds?: ReadonlySet<number>): void {
 		this.instanceStatuses = new Map(statuses);
 		this.agentInstanceIds = new Set(agentInstanceIds);
 		this.acknowledgedInstanceIds = new Set(acknowledgedInstanceIds);
+		this.stoppedForUserInstanceIds = new Set(stoppedForUserInstanceIds);
 	}
 	setScopeIssueUrls(issueUrls: ReadonlyMap<string, ReadonlySet<string>>): void {
 		this.scopeIssueUrls = new Map([...issueUrls].map(([key, urls]) => [key, [...urls]] as const));
