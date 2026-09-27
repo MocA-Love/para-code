@@ -92,9 +92,10 @@ export class ParadisLimitsMonitorClient {
 
 	/** Codex 側のスナップショットに Claude の状態を差し込む。 */
 	static mergeClaudeState(snapshot: IParadisLimitsSnapshot, claudeState: IParadisClaudeAccountsState): IParadisLimitsSnapshot {
-		// 「N 秒前に更新」は古い方に合わせる（Claude は数分おきにしか取りに行かないため）。
-		const fetchedAt = claudeState.oldestFetchedAt !== undefined ? Math.min(snapshot.fetchedAt, claudeState.oldestFetchedAt) : snapshot.fetchedAt;
-		return { ...snapshot, claude: claudeState.claude, fetchedAt };
+		// 「N 秒前に更新」は最後に問い合わせた時刻（Codex の取得時刻）のままにする。Claude は
+		// アカウントごとに数分〜十数分おきに取るので、古さはカードごとの fetchedAt で見せる
+		// （最も古い値に合わせると、手動で更新しても「25 分前」のまま動かなかった）。
+		return { ...snapshot, claude: claudeState.claude };
 	}
 
 	async getSnapshot(bypassCache = false): Promise<IParadisLimitsSnapshot> {

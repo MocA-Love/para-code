@@ -40,6 +40,8 @@ import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLim
 const $ = dom.$;
 
 const PANEL_WIDTH = 400;
+/** この分数より古い Claude の値には、カードに古さを書き添える。 */
+const STALE_CARD_MINUTES = 5;
 
 export interface IParadisLimitsMonitorPanelOptions {
 	readonly initialSnapshot: IParadisLimitsSnapshot | undefined;
@@ -349,6 +351,14 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			}
 			if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
 				dom.append(card, $('.plm-error-row')).textContent = localize('paradis.limitsMonitor.noWindows', "使用状況データがありません");
+			}
+			// Claude はアカウントごとに数分〜十数分おきに取るので、古い値にはそのことを書き添える
+			// （パネル下端の「N 秒前に更新」は最後に問い合わせた時刻で、カードの値の古さとは限らない）。
+			if (account.provider === 'claude' && account.fetchedAt !== undefined) {
+				const minutes = Math.floor((Date.now() - account.fetchedAt) / 60_000);
+				if (minutes >= STALE_CARD_MINUTES) {
+					dom.append(card, $('.plm-card-stale')).textContent = localize('paradis.limitsMonitor.staleCard', "{0}分前の値", minutes);
+				}
 			}
 		}
 		this.renderAccountActions(card, account);
