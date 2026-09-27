@@ -18,6 +18,7 @@ import './media/paradisSettingsDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -812,7 +813,11 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.agentChat', "エージェントのターミナルをチャット表示に切り替える"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.agentChatDesc', "Claude Code / Codex が動いているターミナルタブを、⌘⇧J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。"),
+		description: isMacintosh
+			// allow-any-unicode-next-line
+			? localize('paradis.settings.agentChatDescMac', "Claude Code / Codex が動いているターミナルタブを、⌘⇧J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。")
+			// allow-any-unicode-next-line
+			: localize('paradis.settings.agentChatDescOther', "Claude Code / Codex が動いているターミナルタブを、Ctrl+Shift+J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。"),
 		keywords: 'agent chat claude codex terminal toggle cmd shift j',
 	},
 	{
@@ -825,7 +830,11 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			// allow-any-unicode-next-line
 			enter: localize('paradis.settings.agentChatSendKeyEnter', "Enter で送信（Shift+Enter で改行）"),
 			// allow-any-unicode-next-line
-			modEnter: localize('paradis.settings.agentChatSendKeyModEnter', "⌘Enter で送信（Enter で改行）"),
+			modEnter: isMacintosh
+				// allow-any-unicode-next-line
+				? localize('paradis.settings.agentChatSendKeyModEnterMac', "⌘Enter で送信（Enter で改行）")
+				// allow-any-unicode-next-line
+				: localize('paradis.settings.agentChatSendKeyModEnterOther', "Ctrl+Enter で送信（Enter で改行）"),
 		},
 	},
 

