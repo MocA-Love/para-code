@@ -49,3 +49,4 @@ import './contrib/terminalFontZoom/browser/paradisTerminalFontZoom.contribution.
 import './contrib/terminalLinkMenu/browser/paradisTerminalLinkMenu.contribution.js';
 import './contrib/terminalReopen/browser/paradisReopenClosedTerminal.contribution.js';
 import './contrib/agentInsights/browser/paradisAgentInsights.contribution.js';
+import './contrib/agentActivity/browser/paradisSessionIndexSettings.contribution.js';
