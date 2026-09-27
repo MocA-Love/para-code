@@ -131,9 +131,12 @@ export class AudioScheduler {
 	private aivisBusy = false;
 	private queue: QueueEntry[] = [];
 	private paused = false;
+	/** 音声入力（ディクテーション）中。新しい再生を始めない（キューは捨てない）。 */
+	private held = false;
 	private rateLimit?: AivisRateLimit;
 	private disposed = false;
 	private ringtoneIdleWaiters: Array<() => void> = [];
+	private releaseWaiters: Array<() => void> = [];
 	private ringtoneSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 	private aivisPlaySafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -141,7 +144,8 @@ export class AudioScheduler {
 
 	playRingtone(): void {
 		if (this.disposed) { return; }
-		if (this.ringtoneBusy || this.aivisBusy) { return; }
+		// 音声入力中の通知音はマイクに拾われるだけなので捨てる（通知音は情報を持たない）。
+		if (this.held || this.ringtoneBusy || this.aivisBusy) { return; }
 		this.ringtoneBusy = true;
 		// 多重防御: deps.playRingtone が onComplete を呼び忘れる（契約違反）と waitForRingtoneIdle が
 		// 永久にハングし Aivis キュー全体が止まる。安全タイマーがビジーフラグを強制解放する。
@@ -217,6 +221,36 @@ export class AudioScheduler {
 		return this.paused;
 	}
 
+	get isHeld(): boolean {
+		return this.held;
+	}
+
+	/**
+	 * 音声入力（ディクテーション）の間、読み上げを止める（q.html Q38）。
+	 *
+	 * 止めている間は通知音を捨て、Aivis の発話は始めずにキューへ溜める（上限は通常どおり）。
+	 * 解除したら溜まった分を順に読み上げる。再生中の発話を途中で切るのは呼び出し側
+	 * （再生プロセスを持っている ParadisNotificationsService）の役目。
+	 */
+	setHeld(held: boolean): void {
+		if (this.disposed || this.held === held) { return; }
+		this.held = held;
+		if (!held) {
+			const waiters = this.releaseWaiters;
+			this.releaseWaiters = [];
+			for (const resolve of waiters) { resolve(); }
+			void this.pump();
+		}
+	}
+
+	/** 合成中に音声入力が始まった発話は、解除まで再生を待たせる（合成し直さない）。 */
+	private waitForRelease(): Promise<void> {
+		if (!this.held || this.disposed) { return Promise.resolve(); }
+		return new Promise<void>(resolve => {
+			this.releaseWaiters.push(resolve);
+		});
+	}
+
 	/** 一時停止状態を解除する（ユーザーが APIキーを修正した後など）。 */
 	resume(): void {
 		if (this.disposed) { return; }
@@ -234,15 +268,16 @@ export class AudioScheduler {
 			clearTimeout(this.aivisPlaySafetyTimer);
 			this.aivisPlaySafetyTimer = null;
 		}
-		// 進行中の runOne() が永久ハングしないよう、待機中の ringtone-idle waiter を全て起こす。
-		const waiters = this.ringtoneIdleWaiters;
+		// 進行中の runOne() が永久ハングしないよう、待機中の ringtone-idle / 解除待ちの waiter を全て起こす。
+		const waiters = [...this.ringtoneIdleWaiters, ...this.releaseWaiters];
 		this.ringtoneIdleWaiters = [];
+		this.releaseWaiters = [];
 		for (const resolve of waiters) { resolve(); }
 	}
 
 	private async pump(): Promise<void> {
 		if (this.aivisBusy) { return; }
-		if (this.disposed || this.paused) { return; }
+		if (this.disposed || this.paused || this.held) { return; }
 		const entry = this.queue.shift();
 		if (!entry) { return; }
 		this.aivisBusy = true;
@@ -250,7 +285,7 @@ export class AudioScheduler {
 			await this.runOne(entry.runner);
 		} finally {
 			this.aivisBusy = false;
-			if (!this.disposed && !this.paused && this.queue.length > 0) {
+			if (!this.disposed && !this.paused && !this.held && this.queue.length > 0) {
 				void this.pump();
 			}
 		}
@@ -268,6 +303,7 @@ export class AudioScheduler {
 				// 合成は通知音と並行してよい（単なるネットワーク呼び出し）が、再生は2つの音声が
 				// 重ならないよう通知音の完了を待つ。
 				await this.waitForRingtoneIdle();
+				await this.waitForRelease();
 				if (this.disposed) { return; }
 				try {
 					await this.playWithSafetyTimeout(runner, audio);

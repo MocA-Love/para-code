@@ -29,7 +29,7 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 		}
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(ctx: string, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'getCustomRingtoneInfo': return this.service.getCustomRingtoneInfo() as Promise<T>;
@@ -61,6 +61,8 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 			case 'playAivis': return this.service.playAivis(args[0] as Parameters<ParadisNotificationsService['playAivis']>[0]) as Promise<T>;
 			case 'notifyAudio': { this.service.notifyAudio(args[0] as Parameters<ParadisNotificationsService['notifyAudio']>[0]); return Promise.resolve(undefined as T); }
 			case 'resumeAivis': { this.service.resumeAivis(); return Promise.resolve(undefined as T); }
+			// 音声入力中は読み上げを止める。止めるかどうかはウィンドウ（接続）ごとに持つ。
+			case 'setDictationActive': { this.service.setDictationActive(ctx, args[0] === true); return Promise.resolve(undefined as T); }
 
 			default:
 				throw new Error(`Method not found: ${command}`);
@@ -74,5 +76,6 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 export function registerParadisNotifications(server: IPCServer<string>, logService: ILogService): ParadisNotificationsService {
 	const service = new ParadisNotificationsService(logService);
 	server.registerChannel(PARADIS_NOTIFICATIONS_CHANNEL, new ParadisNotificationsChannel(service));
+	service.trackClientDisconnects(Event.map(server.onDidRemoveConnection, connection => connection.ctx));
 	return service;
 }

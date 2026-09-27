@@ -53,6 +53,8 @@ jobs:
     env:
       NPM_ARCH: ${{ matrix.arch }}
       VSCODE_ARCH: ${{ matrix.arch }}
+      # Read by build/gulpfile.vscode.ts to stamp product.json's dictationRuntime (see the step below).
+      DICTATION_RUNTIME_RESULTS_FILE: ${{ github.workspace }}/.build/dictation-runtime/darwin-${{ matrix.arch }}.json
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -103,6 +105,14 @@ jobs:
           fi
           echo "SDK OK:"
           ls extensions/copilot/node_modules/@github/copilot/sdk | head
+
+      # Upstream's built-in dictation downloads its native runtime (Foundry Local + onnxruntime)
+      # on first use, because packaging strips it from node_modules (getFoundryLocalExcludeFilter).
+      # The download URL only reaches product.json when this step writes the results file; without
+      # it the mic button shows up but dictation fails. VSCODE_PUBLISH is unset, so this never
+      # uploads anything: it only stamps upstream's CDN URL (q.html Q38).
+      - name: Stamp dictation runtime URL
+        run: node build/dictation-runtime/produce.ts --vscode-platform=darwin --arch=${{ matrix.arch }}
 
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
@@ -204,6 +214,7 @@ jobs:
     env:
       NPM_ARCH: ${{ matrix.arch }}
       VSCODE_ARCH: ${{ matrix.arch }}
+      DICTATION_RUNTIME_RESULTS_FILE: ${{ github.workspace }}/.build/dictation-runtime/win32-${{ matrix.arch }}.json
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -229,6 +240,10 @@ jobs:
         run: node build/lib/builtInExtensions.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # See the darwin job: stamps the dictation runtime URL into product.json, uploads nothing.
+      - name: Stamp dictation runtime URL
+        run: node build/dictation-runtime/produce.ts --vscode-platform=win32 --arch=${{ matrix.arch }}
 
       - name: Package (vscode-win32-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-win32-${{ matrix.arch }}-min"
@@ -270,6 +285,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VSCODE_ARCH: x64
+      DICTATION_RUNTIME_RESULTS_FILE: ${{ github.workspace }}/.build/dictation-runtime/linux-x64.json
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -317,6 +333,10 @@ jobs:
         working-directory: cli
         env:
           VSCODE_CLI_PRODUCT_JSON: ${{ github.workspace }}/product.json
+
+      # See the darwin job: stamps the dictation runtime URL into product.json, uploads nothing.
+      - name: Stamp dictation runtime URL
+        run: node build/dictation-runtime/produce.ts --vscode-platform=linux --arch=x64
 
       - name: Package (vscode-linux-x64-min)
         run: npm run gulp "vscode-linux-x64-min"

@@ -132,6 +132,41 @@ suite('AudioScheduler', () => {
 		]);
 	});
 
+	test('holds playback while dictating and plays the queued work after release', async () => {
+		const events: string[] = [];
+		let ringtones = 0;
+		const firstSynthesis = new DeferredPromise<AivisSynthesizeResult>();
+		const firstSynthesisStarted = new DeferredPromise<void>();
+		const scheduler = track(createScheduler({ playRingtone: onComplete => { ringtones++; onComplete(); } }));
+
+		// 合成中に音声入力が始まった発話は、解除まで再生を待つ
+		scheduler.enqueueAivis({
+			synthesize: () => {
+				events.push('synthesize:first');
+				void firstSynthesisStarted.complete();
+				return firstSynthesis.p;
+			},
+			play: async audio => { events.push(`play:${audio.toString()}`); },
+		});
+		await firstSynthesisStarted.p;
+		scheduler.setHeld(true);
+		scheduler.playRingtone();
+		scheduler.enqueueAivis(successfulRunner('second', events));
+		await firstSynthesis.complete({ audio: Buffer.from('first') });
+		for (let i = 0; i < 10; i++) {
+			await Promise.resolve();
+		}
+		const whileHeld = { events: [...events], ringtones, queued: scheduler.aivisQueueSize };
+
+		scheduler.setHeld(false);
+		await waitForIdle(scheduler);
+
+		assert.deepStrictEqual({ whileHeld, afterRelease: events }, {
+			whileHeld: { events: ['synthesize:first'], ringtones: 0, queued: 1 },
+			afterRelease: ['synthesize:first', 'play:first', 'synthesize:second', 'play:second'],
+		});
+	});
+
 	test('waits for the exhausted rate-limit window before synthesizing the next task', async () => {
 		const events: string[] = [];
 		const sleeps: number[] = [];
