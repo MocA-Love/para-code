@@ -59,7 +59,7 @@ export const enum PermissionCategory {
  * category gates. Each maps to a distinct Electron device-selection event but is
  * surfaced to the user through one unified request/selection flow.
  */
-export type BrowserDeviceType = 'usb' | 'serial' | 'hid' | 'bluetooth';
+export type BrowserDeviceType = 'usb' | 'serial' | 'hid' | 'bluetooth' | 'webauthn'; // PARA-PATCH: passkey account chooser reuses the device chooser flow
 
 /**
  * A single hardware device offered to the user during a device-chooser flow.

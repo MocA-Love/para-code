@@ -36,6 +36,15 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 修正: 通常ウィンドウでも有効にしたい機能（ターミナル2Dグリッドのsplit action等）は、`sessions.common.main.ts`ではなく、既存のDI差し替えポイント（`terminalGroupService.ts`、workbench側で常にロードされる）から直接副作用importするよう変更した。詳細は`CLAUDE.md`の「contributionの登録方法」を参照
 - **教訓**: `src/vs/sessions/`配下は「Agent Sessions window専用のworkbenchレイヤー」という説明を字面通りに受け取ると見誤る。実際に通常ウィンドウで機能させたい場合は、必ず実機（`scripts/code.sh`で起動した通常ウィンドウ）でコマンドパレット等から動作確認すること。型チェック・lintが通ってもロードパスの問題は検出できない
 
+## shared process / REH サーバーへの fork チャネルの登録口（2026-09-27）
+
+新しいチャネルを足すたびに `sharedProcessMain.ts` と `serverServices.ts` へ PARA-PATCH を足さなくて済むよう、登録口を1つにまとめた。`src/vs/paradis/common/paradisProcessContributions.ts` の `ParadisSharedProcessContributions` / `ParadisServerContributions` に `register('<id>', ({ server, accessor }) => ...)` し、集約ファイル `src/vs/paradis/paradis.sharedProcess.contribution.ts` / `paradis.server.contribution.ts` へ副作用 import を1行足すだけでよい。upstream 側は各ファイル1回の呼び出しだけ。
+
+- `accessor` は同期的にしか使えない（`invokeFunction` の中から呼ぶ）。`await` の後で `accessor.get` しない
+- 1つが例外を投げても残りは登録を続ける。同じ id が2回来たら後から来た方を捨て、`instantiate` のときにログへ出す（登録はモジュール読み込み中に走るので、例外にすると集約ファイルの import ごと落ちてプロセスの起動を巻き込む）
+- 型の上では Promise を返せないが、`() => void` として async 関数が紛れ込んだ場合は、失敗をログへ出す
+- 既存の `registerParadis*` 直呼びはまだ移していない。agentBrowser → mobileCanvas / mobileRelay のように値を渡し合うものと、REH で pty ホストのサービスを受け取るものがあり、1つずつ引数の出どころを確かめてから移す
+
 ## リポジトリ構成
 
 - `upstream`: `https://github.com/microsoft/vscode.git`（push無効化済み、fetch専用）
@@ -227,6 +236,23 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 
 あわせて二次問題2件を修正: (1) `paradisNotificationTrigger.contribution.ts` — スコープ未解決（Workspacesビュー未登録フォルダ/エディタ領域ターミナル）でも、ウィンドウが可視+フォーカス中でなければワークスペースフォルダ名をプレースホルダに音+OS通知+Aivisを発火（アイコン変化はスコープ概念依存のため対象外のまま）。(2) `paradisAgentStatus.contribution.ts` — アクティブスコープの review 即acknowledge に「ウィンドウが可視かつフォーカス中」条件を追加（非フォーカス時に通知トリガーの遷移検知を先食いして握り潰す競合の解消）。
 
+### hook の位置を動かさない理由と、自動設置の ON/OFF（2026-09-27）
+
+Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.json のパス>:<イベント>:<定義の位置>:<hookの位置>"]` の鍵で記録する（手元の config.toml で確認）。以前の `paradisMergeAgentHooksJson` は自hookを毎回いったん全部外して末尾へ付け直していたため、自hookより後ろにユーザーの hook があると、設置し直すたびにユーザー側の位置がずれ、信頼が黙って外れ得た。今は既に置いてある自hookをその位置のまま最新の定義へ差し替え、まだ無いイベントだけ末尾へ足す。
+
+設定ファイルの書き換えは、手元では同じディレクトリの一時ファイルへ書いてから `rename` で差し替える（`paradisWriteFileAtomicallySync`）。symlink は多段でも最後まで辿った実体の側を差し替え（リンク先がまだ無い場合も辿る）、元の mode（`~/.claude.json` の 0600 など）を引き継ぐ。次の場合は差し替えない。
+
+- 所有者の書き込みビットが無い、または `access(W_OK)` が通らないファイル（`chmod 444` で固定している等）は、その場へ書くときと同じく失敗させて触らない。`rename` はディレクトリの権限だけで通るので、差し替えると読み取り専用の意図を黙って破る
+- ハードリンク（リンク数が2以上）はその場へ書く。差し替えると片方だけが新しい中身になる
+- 一時ファイルを作れない（ディレクトリに書き込めない）・`rename` が通らない（Windows で他のプロセスが開いている等）ときは、従来どおりその場へ書く
+
+既知の制約: 一時ファイルへは所有者・ACL・拡張属性（macOS の `com.apple.*` 等）を引き継がないので、差し替え後はそれらが消える（mode だけは引き継ぐ）。書いてから `rename` までの間にプロセスが落ちると、同じディレクトリに `.<元の名前>.paradis-<uuid>.tmp` が残り、誰も片付けない（Claude Code / Codex はこの名前を読まない）。SSH 接続先のファイルは一時ファイルを経由しない。接続先は `IFileService` 越しにしか触れず、そこでの原子的な書き込み（`atomic: { postfix }`）は元の mode を引き継げず（一時ファイルが umask の既定で作られて元の名前に置き換わる）、symlink にも使えないため。代わりに、書く直前に読み直して、組み立てている間に変わっていたら読み直した中身から組み立て直す。
+
+設定 `paradis.agentHooks.enabled`（既定オン）で自動設置を止められる。取り外すのは**オンからオフへ切り替わったその時だけ**で（shared process の `ParadisAgentHooksAutoInstall`、SSH 接続中のウィンドウは接続先の分を `paradisRemoteAgentHooks.contribution.ts` が外す）、起動時にオフでも取り外さない。hook の設定ファイルは PC 全体で1つなので、起動時に外すと同じ PC の別の Para Code（開発版など）が使っている hook まで消えるため。逆に、別の Para Code がオンのまま動いていれば、こちらで外しても向こうの整合処理（ファイル監視と60秒ごとの監査）が置き直す。notify スクリプト自体は消さない。
+
+- 接続先の設置（ポートが変わるたびの書き直し）と取り外しは、同じ `Sequencer` で1本ずつ流す（`ParadisRemoteAgentHookFiles`）。設置は1ファイルごと・書く直前に設定を見直すので、途中でオフに切り替わっても古い判断で hook を書き戻さない。切り替えた時点で接続先のホームがまだ分からない、またはファイルが読めない・書き換えが3回続いて反映できなかったときは「取り外し待ち」を保持し、30秒ごとの見直しか次の設置で処理する。失敗し続けても警告は 1, 2, 4, 8… 回目だけ出す
+- オフにしたときの警告は、通知では出さず「設定 (Para Code)」ダイアログの行の中に出す場合がある。通知の層（z-index 2545）はダイアログの背景（2700）より下で、ダイアログを開いたままだと裏に隠れて「元に戻す」が押せないため。ダイアログが開いているか（`paradisIsSettingsDialogOpen()`）で出し分け、層の順序そのものは他のダイアログやモーダルとの重なりに関わるので変えない。警告と設定の登録は、取り外す側がデスクトップにしか無いので electron-browser に置いている
+
 ## 内蔵ブラウザの前面オーバーレイ機構（overlayManager、2026-08-15整備）
 
 内蔵ブラウザ（`src/vs/platform/browserView/`）はElectronのネイティブ `WebContentsView` として実装されている。ネイティブビューはOS合成レイヤーで描画されるため、通常のDOM要素はCSSの `z-index` では絶対に上書きできない。
@@ -254,6 +280,23 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 - 倍率の増減は `BrowserEditorZoomSupport` へ委譲する（`model.zoomIn()` を直接呼ぶと、読み上げ `accessibilityService.status()` とコンテキストキー更新を素通りする）
 - **「既定 = 100%」ではない**。`workbench.browser.pageZoom` の既定値は「ウィンドウに合わせる」で、アプリのUI倍率を上げていると既定は 110% 等になる。淡色表示とリセットの文言は `IBrowserZoomService.getEffectiveZoomIndex(undefined, false)` から毎回引く
 - ウィジェットは URL ボックスの内側（`.browser-url-bar-widgets`、`overflow: hidden` で右端から刈られる）に入る。order 90 で upstream のボタン（共有 50 / お気に入り 60）より後ろに置き、詰まったときに先に消えるのはこちら側にしてある
+
+## 内蔵ブラウザのパスキー選択は upstream のデバイス選択に乗せている（browserWebAuthn、2026-09-27）
+
+セキュリティキー等に複数のアカウントが入っているとき、どのアカウントでログインするかを選ばせる。Electron の `select-webauthn-account` を受け、upstream が USB / HID / シリアル / Bluetooth の機器選択に使っている流れ（main の `_beginDeviceRequest` → renderer の QuickPick → `selectDevice`）へそのまま流す。選択 UI を自前で持たないので、upstream のファイルへの変更は次の6行（3ファイル、import 2行を含む）だけ。
+
+| ファイル | 触った箇所 | 内容 |
+|---|---|---|
+| `src/vs/platform/browserView/common/browserPermissions.ts:62` | `BrowserDeviceType` | `'webauthn'` を足す |
+| `src/vs/platform/browserView/electron-main/browserSessionPermissions.ts:284`（import は `:27`） | コンストラクタの末尾 | `paradisInstallWebAuthnAccountChooser` でイベントを配線する |
+| `src/vs/workbench/contrib/browserView/electron-browser/features/browserPermissionsFeature.ts:180`（import は `:38`） | `deviceTypeLabel` | `'webauthn'` の表示名 |
+| 同 `:200` | `showDevicePicker` | `'webauthn'` のときだけタイトルと案内文をアカウント選択向けに替え、探索中の表示（busy）を消す |
+
+**upstream 取り込み時は `BrowserDeviceType` で分岐している箇所を洗い直す。** `switch` に `assertNever` があれば型検査で気付けるが、`if (deviceType === 'usb')` のような分岐や、機器の種類ごとの表を増やされた場合は黙って `'webauthn'` が素通りする。
+
+```sh
+grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/vs --include='*.ts' | grep -v '/paradis/'
+```
 
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
@@ -580,6 +623,37 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 ### `terminal.integrated.enablePersistentSessions` をセッション途中で off にした場合
 
 既に開いている端末は生成時の値で `shouldPersist=true` のままなので「残す」と答えられるが、次回起動時は `_reconnectToLocalTerminals()` が走らないため、24時間の孤児になる。設定を触ってから再起動しない、という狭い条件。塞ぐなら常駐側の `prepare` でこの設定を見て `end` へ倒す（接続先側にも同じ穴がある）。
+
+### 常駐の内部用の環境変数はシェルへ渡さない（2026-09-27）
+
+製品版のターミナルのシェルに `PARADIS_PTY_HOST_STATE_DIR=~/Library/Application Support/Para Code` が入っており、そこから開発版を起動すると、開発版のターミナルが製品版の常駐に作られていた。main が `process.env` に入れっぱなしにした値を pty ホストが継ぎ、`PtyService.getEnvironment()`（= `{ ...process.env }`）がターミナルの基底環境として renderer へ返していたのが経路。SSH 先ではサーバーの `process.env` から `buildUserEnvironment` 経由で同じように漏れる。
+
+- すべてのターミナルが通る `paradisCreateTerminalProcess`（`ptyDaemon/node/paradisTerminalProcessFactory.ts`）で、`paradisPtyEnvHygiene.ts` の一覧（`PARADIS_PTY_HOST_STATE_DIR` と `PARADIS_PTY_DAEMON_SOCKET` / `_LEDGER` / `_BUILD_ID` / `_BUILD_KEY`）をシェルの環境から落とす。ローカル・SSH 先・常駐経由のどれもここを通る
+- ローカルでは、main の `process.env` へ入れるのをやめ、pty ホストを起こす `start()` の間だけ足す（`ParadisScopedEnvPtyHostStarter`）。拡張ホストなど main が起こす他のプロセスへも漏れなくなった
+- 【未対応】SSH 先の REH サーバーは pty ホストを遅延 fork するため同じ手が使えず、サーバーの `process.env` に残る。シェルへは上の除去で届かないが、接続先の拡張ホストが起こす子プロセスには残る
+- ペイントークン（`PARA_CODE_TERMINAL_PANE_ID`）、`PARA_CODE_MCP_PORT_FILE`、`PARA_CODE_VOICE_TOKEN`、`PARA_CODE_CODEX_*`、`PARACODE_PROJECT_ROOT_PATH` はシェルの中のエージェントやスクリプトが読むために入れているので残す。`PARADIS_MIRROR_CAPTURE_VIEW` と `PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS` は開発者が手で設定する診断用で、fork は設定しない
+
+## エディタエリアのターミナル操作の仕掛け（2026-09-27、フェーズ1 担当B）
+
+TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規ファイルで完結し、upstream への変更は `xtermTerminal.ts` の `getFont()` 1か所（+ import 1行）だけ。upstream 取り込み時に壊れやすいのは次の3点で、どれも upstream 側のファイルに印が無いので、ここで追う。
+
+- **コマンドを `DEFAULT_COMMANDS_TO_SKIP_SHELL` へ起動時に追記している**（`terminalFontZoom` と `terminalReopen` のモジュール先頭）。`terminal.ts` は変更していない。upstream がこの配列を `readonly` にしたり、`TerminalConfigurationService` がモジュール読み込み時にスキップ集合を固めるように変わったら、ターミナルにフォーカスがあるときの `⌘=` / `⌘⇧T` がシェルへ流れる（Windows/Linux で顕著。macOS は ⌘ キーが xterm を素通りするので気づきにくい）。
+- **右クリックしたリンクは xterm の非公開 API `raw._core.linkifier.currentLink` から読む**（`terminalLinkMenu`）。xterm を上げたら、実行時に読まれる `node_modules/@xterm/xterm/lib/xterm.js`（`package.json` の `main`。`lib/xterm.mjs` ではない）に `get linkifier(){` と `get currentLink(){` が残っているかを `grep` で確かめる。消えていてもメニュー項目が出なくなるだけで、例外にはならない。メニューは右クリックの mousedown と contextmenu の両方で取り直す（Shift+右クリックは upstream の `handleMouseEvent` が mousedown の直後に開くため）。
+- **`⌘⇧T` は fork のコマンドが weight +1 で先に受け、ターミナル以外なら `workbench.action.reopenClosedEditor` へそのまま渡す**（`terminalReopen`）。upstream の `TerminalEditorInput.canReopen()` が `true` になったら（= upstream がターミナルの開き直しを始めたら）、二重に開くのでこちらを畳む。
+
+ターミナルごとの文字サイズ（TM21）は、shell integration の nonce をキーに WORKSPACE storage（`paradis.terminal.fontZoom`、最大 200 件）へ差分を保存し、リロード後の再接続で戻す。nonce はスペースの park/revive と同じ同一性（`paradisTerminalEditorPark.ts` 参照）。キーの割り当ては upstream の `workbench.action.zoomIn` / `zoomOut` / `zoomReset` と同じにしてある（リセットはテンキーの `⌘0` だけ。数字キーの `⌘0` は upstream の `workbench.action.focusSideBar`）。
+
+既知の制約（どれも直していない）:
+
+- **別のウィンドウへ移したターミナルは文字サイズが元に戻る**。移動元では `onDidRequestDetach` → `detachProcessAndDispose(TerminalExitReason.User)` で畳まれ、ふつうに閉じたとき（`dispose(TerminalExitReason.User)`）と見分ける手がかりがインスタンスに無いので、記録は消える。消さずに残しても、保存先が WORKSPACE storage なので移動先のウィンドウ（別のワークスペース）からは読めない
+- **ターミナルのサジェストの吹き出しは、ターミナル単体の文字サイズに追従しない**。吹き出し（`terminalSuggestAddon.ts`）は `XtermTerminal.getFont()` ではなく `ITerminalConfigurationService.getFont()` を直接読むので設定の文字サイズで描かれ、fork の差分（`getFont()` の PARA-PATCH）は通らない
+- **⌘⇧T のエディタ側の履歴はウィンドウ全体で1本**。fork はスペースごとに「ターミナル」と「エディタを閉じた印」を並べて持つが、エディタの中身は upstream の閉じたエディタの履歴（`workbench.action.reopenClosedEditor`）が持ち、そちらはスペース別ではない。スペース B で押しても、印がエディタならスペース A で最後に閉じたファイルが開くことがある。upstream の履歴から消えた分（上限を超えた・ファイルが消えた等）とも印がずれ、その場合は別のファイルが開くか何も起きない
+
+フォーカスの無いビューの減光（TM7、upstream の `accessibility.dimUnfocused.enabled` を既定オン）は、ウィンドウが非アクティブの間は打ち消す（`contrib/unfocusedDimming/electron-browser/`）。Chromium はウィンドウがフォーカスを失うと、フォーカスを持っていた要素にも `:focus-within` を当てなくなる（`document.activeElement` は残る。Para Code の Electron で2つのウィンドウを使って実測）ので、upstream の `:not(:focus-within)` の規則だけだと、別のアプリへ切り替えただけで全部が薄くなる。
+
+- 「非アクティブ」はネイティブのウィンドウ（BrowserWindow）単位で判定する（`INativeHostService.onDidFocusMainOrAuxiliaryWindow` / `onDidBlurMainOrAuxiliaryWindow` と各ウィンドウの `vscodeWindowId` を突き合わせる。補助ウィンドウも別々）。`document.hasFocus()` で判定すると、内蔵ブラウザ（同じウィンドウの中の別の WebContentsView）をクリックしただけでワークベンチの document が blur し、同じウィンドウの中なのに減光が全部消える（実機で確認）。そのため機能ごと electron-browser に置き、Web ビルドは upstream の動きのまま
+- 印は各ウィンドウのワークベンチのコンテナ（`ILayoutService.getContainer(window)`、`.monaco-workbench`）の `data-paradis-window-inactive` 属性に付ける。`<html>` / `<body>` やクラスには付けない。upstream の `auxiliaryWindowService.ts`（`trackAttributes` の3行）がメインの `<html>` と `<body>` の属性すべてと、コンテナの class を補助ウィンドウへ写し続けるので、メインへフォーカスが戻って印が外れると補助ウィンドウの印まで消え、補助ウィンドウの中が薄くなる（実機で確認）。取り込み時に upstream がコンテナの写しを class 以外へ広げていないか（`trackAttributes(this.layoutService.mainContainer, container, ['class'])` のままか）を確かめる
+- 打ち消しの CSS は `unfocusedViewDimmingContribution.ts` の規則を1つずつ写してある。**upstream が減光の対象を増やしたら、`paradisUnfocusedDimming.css` にも同じ形で足す。** 取り込み時は `grep -c "rules.add(" src/vs/workbench/contrib/accessibility/browser/unfocusedViewDimmingContribution.ts` と、`paradisUnfocusedDimming.css` の `.monaco-workbench[data-paradis-window-inactive]` で始まるセレクタの数（今は 9）が一致するかを見る
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 

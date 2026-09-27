@@ -35,6 +35,7 @@ import {
 	BrowserEditor,
 	BrowserEditorContribution,
 } from '../browserEditor.js';
+import { paradisPrepareWebAuthnAccountPicker, paradisWebAuthnDeviceTypeLabel } from '../../../../../paradis/contrib/browserWebAuthn/common/paradisBrowserWebAuthn.js'; // PARA-PATCH: passkey account chooser
 
 /**
  * Surfaces per-origin permission prompts and a management picker for the active
@@ -176,6 +177,7 @@ function deviceTypeLabel(deviceType: BrowserDeviceType): string {
 		case 'serial': return localize('browser.device.kind.serial', "a serial port");
 		case 'hid': return localize('browser.device.kind.hid', "an HID device");
 		case 'bluetooth': return localize('browser.device.kind.bluetooth', "a Bluetooth device");
+		case 'webauthn': return paradisWebAuthnDeviceTypeLabel(); // PARA-PATCH: passkey account chooser
 		default: assertNever(deviceType);
 	}
 }
@@ -195,6 +197,7 @@ function showDevicePicker(quickInputService: IQuickInputService, model: IBrowser
 	picker.ignoreFocusOut = true;
 	// Still scanning: the list may keep growing until the user picks or cancels.
 	picker.busy = true;
+	if (request.deviceType === 'webauthn') { paradisPrepareWebAuthnAccountPicker(picker, displayOrigin(origin)); } // PARA-PATCH: passkey chooser wording, no scanning spinner
 
 	let resolved = false;
 	let finished = false;

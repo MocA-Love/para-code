@@ -5,28 +5,28 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { ParadisKeepAwakeMode } from './paradisKeepAwake.js';
+import { ParadisKeepAwakeBlockerMode } from './paradisKeepAwake.js';
 
-type ActiveParadisKeepAwakeMode = Exclude<ParadisKeepAwakeMode, 'off'>;
+type ActiveParadisKeepAwakeBlockerMode = Exclude<ParadisKeepAwakeBlockerMode, 'off'>;
 
 export type ParadisKeepAwakeFailureOperation = 'blocker-start-failed' | 'blocker-stop-failed';
 
 export interface IParadisKeepAwakeControllerOptions {
-	start(mode: ActiveParadisKeepAwakeMode): Promise<number>;
+	start(mode: ActiveParadisKeepAwakeBlockerMode): Promise<number>;
 	stop(id: number): Promise<void>;
-	onDidChangeMode(mode: ParadisKeepAwakeMode): void;
+	onDidChangeMode(mode: ParadisKeepAwakeBlockerMode): void;
 	report(operation: ParadisKeepAwakeFailureOperation, error: unknown): void;
 }
 
 export class ParadisKeepAwakeController extends Disposable {
 
-	private readonly blockers = new Map<number, ActiveParadisKeepAwakeMode>();
-	private requestedMode: ParadisKeepAwakeMode = 'off';
-	private _actualMode: ParadisKeepAwakeMode = 'off';
+	private readonly blockers = new Map<number, ActiveParadisKeepAwakeBlockerMode>();
+	private requestedMode: ParadisKeepAwakeBlockerMode = 'off';
+	private _actualMode: ParadisKeepAwakeBlockerMode = 'off';
 	private queue: Promise<void> = Promise.resolve();
 	private disposing = false;
 
-	get actualMode(): ParadisKeepAwakeMode {
+	get actualMode(): ParadisKeepAwakeBlockerMode {
 		return this._actualMode;
 	}
 
@@ -34,7 +34,7 @@ export class ParadisKeepAwakeController extends Disposable {
 		super();
 	}
 
-	setMode(mode: ParadisKeepAwakeMode): Promise<void> {
+	setMode(mode: ParadisKeepAwakeBlockerMode): Promise<void> {
 		if (!this.disposing) {
 			this.requestedMode = mode;
 		}
@@ -101,7 +101,7 @@ export class ParadisKeepAwakeController extends Disposable {
 	}
 
 	private publishActualMode(): void {
-		let actual: ParadisKeepAwakeMode = 'off';
+		let actual: ParadisKeepAwakeBlockerMode = 'off';
 		for (const mode of this.blockers.values()) {
 			if (mode === 'display') {
 				actual = 'display';

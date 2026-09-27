@@ -1757,6 +1757,9 @@ export default defineConfig(
 						// PARA-PATCH: browserSession.ts が名前付きブラウザプロファイルの persist:
 						// パーティション名 (paradisBrowserProfilePartition) を解くための逆方向 import
 						'vs/paradis/contrib/browserProfiles/~',
+						// PARA-PATCH: browserSessionPermissions.ts がパスキーのアカウント選択
+						// (paradisInstallWebAuthnAccountChooser) を配線するための逆方向 import
+						'vs/paradis/contrib/browserWebAuthn/~',
 						// PARA-PATCH: ptyHostMain.ts が常駐ターミナル(pty デーモン)として起きたときの
 						// ソケット確保と寿命管理を呼ぶための逆方向 import
 						'vs/paradis/contrib/ptyDaemon/~',
@@ -1930,6 +1933,9 @@ export default defineConfig(
 						// PARA-PATCH: browserViewWorkbenchService.ts が名前付きブラウザプロファイルの
 						// ルーティング (paradisResolveBrowserSessionOptions) を通すための逆方向 import
 						'vs/paradis/contrib/browserProfiles/~',
+						// PARA-PATCH: browserPermissionsFeature.ts がパスキーのアカウント選択の表示名
+						// (paradisWebAuthnDeviceTypeLabel) を読むための逆方向 import
+						'vs/paradis/contrib/browserWebAuthn/~',
 						// PARA-PATCH: relauncher.contribution.ts がワークスペース切替時の拡張ホスト再起動抑止フラグ
 						// (isParadisManagedWorkspaceWindow) を読むための逆方向 import。
 						// scm.service.contribution.ts のスコープ付き ISCMViewService 差し替えも同じ許可を使う。
@@ -2100,6 +2106,13 @@ export default defineConfig(
 						'vs/code/~',
 						// PARA-PATCH: sharedProcessMain.ts が fork独自の agentBrowser サービス（MCPサーバー）を登録するための import
 						'vs/paradis/contrib/*/~',
+						// PARA-PATCH: sharedProcessMain.ts が fork 独自チャネルの集約入り口
+						// (registerParadisSharedProcessContributions) を1回呼ぶための import。
+						// 集約入り口は electron-utility 層なので、Node の使える層からだけ許す
+						{
+							'when': 'hasNode',
+							'pattern': 'vs/paradis/paradis.sharedProcess.contribution.js'
+						},
 						{
 							'when': 'hasBrowser',
 							'pattern': 'vs/workbench/workbench.web.main.js'
@@ -2185,6 +2198,9 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts が接続先でリッスン中のポート一覧を答えるチャネル
 						// (registerParadisPortListForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/portList/~',
+						// PARA-PATCH: serverServices.ts が fork 独自チャネルの集約入り口
+						// (registerParadisServerContributions) を1回呼ぶための逆方向 import
+						'vs/paradis/paradis.server.contribution.js',
 						'vs/server/~'
 					]
 				},
@@ -2280,6 +2296,30 @@ export default defineConfig(
 						'vs/workbench/contrib/*/~',
 						'vs/workbench/workbench.common.main.js',
 						'vs/paradis/paradis.electron-browser.contribution.js' // PARA-PATCH: fork独自機能（Electron専用API依存）の集約import入り口
+					]
+				},
+				{
+					// PARA-PATCH: shared process 向け fork独自チャネルの集約入り口（sharedProcessMain.ts から1回だけ呼ばれる）
+					'target': 'src/vs/paradis/paradis.sharedProcess.contribution.ts',
+					'layer': 'electron-utility',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/paradis/~',
+						'vs/paradis/contrib/*/~'
+					]
+				},
+				{
+					// PARA-PATCH: REH サーバー向け fork独自チャネルの集約入り口（serverServices.ts から1回だけ呼ばれる）
+					'target': 'src/vs/paradis/paradis.server.contribution.ts',
+					'layer': 'node',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/paradis/~',
+						'vs/paradis/contrib/*/~'
 					]
 				},
 				{

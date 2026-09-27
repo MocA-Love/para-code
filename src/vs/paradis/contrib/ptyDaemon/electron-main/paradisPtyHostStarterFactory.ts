@@ -21,10 +21,13 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IReconnectConstants } from '../../../../platform/terminal/common/terminal.js';
 import { ElectronPtyHostStarter } from '../../../../platform/terminal/electron-main/electronPtyHostStarter.js';
+import { validatedIpcMain } from '../../../../base/parts/ipc/electron-main/ipcMain.js';
 import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
+import { paradisDeletePtyDaemonEnv } from '../common/paradisPtyEnvHygiene.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
+import { ParadisScopedEnvPtyHostStarter } from './paradisScopedEnvPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
@@ -107,8 +110,18 @@ export function paradisCreatePtyHostStarter(
 	lifecycleMainService: ILifecycleMainService,
 	logService: ILogService,
 	productService: IProductService,
+	/** テスト用。起こす側が受ける IPC（既定は main の本物）。 */
+	ipc: Pick<typeof validatedIpcMain, 'on' | 'removeListener'> = validatedIpcMain,
 ): IPtyHostStarter {
-	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService);
+	// 親から受け継いだ常駐の内部用の変数は、どの分岐に進むにしても最初に消す。Para Code の
+	// ターミナルから起動された別の Para Code が、親の常駐の置き場所を持ったまま起きると、
+	// ここで起こす pty ホストや拡張ホストがそれを継いで親の常駐へ繋ぎに行く。
+	const inherited = paradisDeletePtyDaemonEnv(process.env);
+	if (inherited.length > 0) {
+		logService.info(`[ParadisPtyHost] ignoring inherited pty daemon variables: ${inherited.join(', ')}`);
+	}
+
+	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService, ipc);
 
 	// 更新をまたいで繋ぎ直せる薄い常駐。**pty ホストはアプリの中のまま**で、その中から常駐へ
 	// 繋ぐので、ここは今までどおりの起こし方でよい。渡すのは置き場所だけ
@@ -129,8 +142,9 @@ export function paradisCreatePtyHostStarter(
 			logService.warn(`[ParadisPtyHost] not using a daemon: the socket path is too long for this platform (${hostPaths.socketPath.length} chars at ${hostPaths.socketPath}). Try a shorter --user-data-dir.`);
 			return inApp();
 		}
-		process.env[PARADIS_PTY_HOST_STATE_DIR] = environmentMainService.userDataPath;
-		return inApp();
+		// 置き場所は pty ホストを起こす瞬間だけ渡す。main の `process.env` へ入れっぱなしにすると、
+		// 拡張ホストなど main が起こすものすべてに漏れる（paradisScopedEnvPtyHostStarter.ts）。
+		return new ParadisScopedEnvPtyHostStarter(inApp(), { [PARADIS_PTY_HOST_STATE_DIR]: environmentMainService.userDataPath });
 	}
 
 	if (configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) !== true) {
@@ -185,5 +199,6 @@ export function paradisCreatePtyHostStarter(
 		environmentMainService,
 		lifecycleMainService,
 		logService,
+		ipc,
 	);
 }

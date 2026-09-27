@@ -291,7 +291,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			() => instantiationService.invokeFunction(paradisGetWorktreeCreateForm),
 			request => instantiationService.invokeFunction(paradisCreateWorktreeHeadless, request),
 			// 既存スペースへのエージェント起動（モバイルのホーム＋ボタン）
-			request => instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, request),
+			// 起動したペインの識別子（ペイントークンを含む）はモバイルへ渡さないので捨てる
+			async request => { await instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, request); },
 			// PR 状態はPC版 Workspaces ビューと同じコマンド経由（gh 実行は shared process へ委譲）
 			// コマンドは UriComponents[] を期待する。文字列パス（fsPath 等）をそのまま渡すと
 			// URI.revive がパースに失敗する（このバグで PR 状態がずっと出ていなかった）。

@@ -23,6 +23,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// upstream 1.139 で Modern UI のタブ既定が connected（アクティブタブがエディタ面とつながる形）に変わった。
 		// connected はタブ帯に不透明な背景を敷くため、ウィンドウ透過中にタブ帯だけ透けなくなる。1.134 までと同じ pill を既定に戻す。
 		'workbench.experimental.modernUIEditorTabStyle': 'pill',
+		// エディタを分割してターミナルを並べたとき、いま入力が入る列を見分けやすくするため、
+		// フォーカスの無いエディタ/ターミナルの中身を薄くする upstream の減光を既定でオンにする（Q42 A / TM7）。
+		// 薄くする度合い（accessibility.dimUnfocused.opacity）は upstream の既定のまま。
+		// ウィンドウ透過中はターミナル/エディタ自身の背景が透明（paradisWindowTransparency.css）なので、
+		// filter: opacity は文字だけを薄くし、背後の半透明レイヤーの濃さは変わらない。
+		'accessibility.dimUnfocused.enabled': true,
 		'workbench.iconTheme': 'material-icon-theme',
 		'workbench.colorTheme': 'Houston',
 		// ステータスバーの Bongo Cat（pixl-garden.BongoCat）を表示するための必須設定。

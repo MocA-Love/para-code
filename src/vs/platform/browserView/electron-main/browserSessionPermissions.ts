@@ -24,6 +24,7 @@ import {
 } from '../common/browserPermissions.js';
 import { IBrowserViewPermissionRequestEvent, IBrowserViewStorageKeys, isInMemoryStorageScope } from '../common/browserView.js';
 import type { BrowserSession } from './browserSession.js';
+import { paradisInstallWebAuthnAccountChooser } from '../../../paradis/contrib/browserWebAuthn/electron-main/paradisBrowserWebAuthn.js'; // PARA-PATCH: passkey account chooser
 
 /** Time the main process waits for a prompt answer before a non-persisted deny. */
 const PROMPT_TIMEOUT_MS = 30_000;
@@ -280,6 +281,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 				this._removeDevice(target.webContents, 'hid', details.device.deviceId);
 			}
 		});
+		paradisInstallWebAuthnAccountChooser(electronSession, frame => this._frameTarget(frame), request => this._beginDeviceRequest(request)); // PARA-PATCH: pick a passkey account via the device chooser
 	}
 
 	connectStorage(storage: IApplicationStorageMainService): void {
