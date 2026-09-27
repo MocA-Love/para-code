@@ -51,6 +51,8 @@ const WIDTH_SAMPLE_RECORDS = 200;
 const SORT_INDICATOR_WIDTH = 14;
 /** 1 回のコピーで扱うセル数の上限。超える分は先頭の行だけにする。 */
 const MAXIMUM_COPY_CELLS = 2_000_000;
+/** 1 回のコピーで作る文字列の長さの上限（クリップボードへ送る量を抑える）。 */
+const MAXIMUM_COPY_CHARACTERS = 16 * 1024 * 1024;
 const MAXIMUM_PREVIEW_CONTEXT = 30;
 
 interface CellPosition {
@@ -109,7 +111,7 @@ export class ParadisCsvTableView extends Disposable {
 	private readonly _userColumnWidths = new Map<number, number>();
 	private _rowNumberWidth = 48;
 	private _selection: CsvSelection = { anchor: { row: 1, column: 1 }, active: { row: 1, column: 1 }, wholeRows: false };
-	private _search: { readonly key: string; readonly queryLength: number; readonly document: ParadisCsvDocument; readonly order: Uint32Array | undefined; readonly result: ParadisCsvSearchResult } | undefined;
+	private _search: { readonly key: string; readonly document: ParadisCsvDocument; readonly order: Uint32Array | undefined; readonly result: ParadisCsvSearchResult } | undefined;
 	private _matchKeys = new Set<number>();
 	private _currentMatchKey: number | undefined;
 	private _findWasVisible = false;
@@ -153,7 +155,13 @@ export class ParadisCsvTableView extends Disposable {
 	 * 並べ替え・変更した列幅を引き継ぐ。
 	 */
 	setDocument(document: ParadisCsvDocument | undefined, preserveView: boolean): void {
+		if (this._store.isDisposed) {
+			return;
+		}
 		this._generation++;
+		// 列幅のドラッグ中に中身が変わったら、古い列番号で幅を当てないよう打ち切る。
+		this._dragStore.clear();
+		this._pendingResize.clear();
 		this._sortRequest.value?.cancel();
 		this._sortRequest.clear();
 		this._search = undefined;
@@ -205,8 +213,16 @@ export class ParadisCsvTableView extends Disposable {
 		}).catch(onUnexpectedError);
 		if (previousSort && previousSort.column < document.columnCount) {
 			this._applySort({ column: previousSort.column, direction: previousSort.direction, pending: true });
+		} else if (preserveView) {
+			this._findWidget.refresh();
 		}
 		this._options.onDidChangeState();
+	}
+
+	override dispose(): void {
+		// MutableDisposable は CancellationTokenSource を取り消さずに捨てるので、先に取り消して並べ替えを止める。
+		this._sortRequest.value?.cancel();
+		super.dispose();
 	}
 
 	/** 表示領域の大きさが変わった。 */
@@ -422,6 +438,11 @@ export class ParadisCsvTableView extends Disposable {
 			this._selectAll();
 			return;
 		}
+		// Alt 付き（macOS の Cmd+Alt+←/→ でのエディタ切替、Windows の Alt+← の戻る）と、Ctrl/Cmd+PageUp/PageDown
+		// （タブ切替）はワークベンチのショートカットに任せる。
+		if (event.altKey || (primary && (key === 'PageUp' || key === 'PageDown'))) {
+			return;
+		}
 		const next = this._navigate(key, primary);
 		if (!next) {
 			return;
@@ -468,16 +489,19 @@ export class ParadisCsvTableView extends Disposable {
 		const maximumRows = Math.max(1, Math.floor(MAXIMUM_COPY_CELLS / width));
 		const bottom = Math.min(rect.bottom, rect.top + maximumRows - 1);
 		const rows: string[][] = [];
-		for (let row = rect.top; row <= bottom; row++) {
-			const fields = document.getRecord(this._recordForRow(row));
+		let characters = 0;
+		for (let row = rect.top; row <= bottom && characters <= MAXIMUM_COPY_CHARACTERS; row++) {
+			const fields = document.parseRecord(this._recordForRow(row));
 			const values: string[] = [];
 			for (let column = rect.left; column <= rect.right; column++) {
-				values.push(fields[column - 1] ?? '');
+				const value = fields[column - 1] ?? '';
+				characters += value.length + 1;
+				values.push(value);
 			}
 			rows.push(values);
 		}
 		await this._options.writeClipboard(formatParadisCsvAsTsv(rows));
-		if (bottom < rect.bottom) {
+		if (rect.top + rows.length - 1 < rect.bottom) {
 			this._options.notify(localize('paradis.csv.copyTruncated', "選択範囲が大きいため、先頭の {0} 行だけをコピーしました。", rows.length));
 		}
 	}
@@ -663,6 +687,7 @@ export class ParadisCsvTableView extends Disposable {
 		this._matchKeys = new Set();
 		this._currentMatchKey = undefined;
 		this._findWidget.setSearchProvider(this._searchProvider);
+		this._findWidget.refresh();
 		this._rerender();
 		this._options.onDidChangeState();
 	}
@@ -682,38 +707,41 @@ export class ParadisCsvTableView extends Disposable {
 			if (token.isCancellationRequested || document !== this._document) {
 				return { results: [], total: 0, capped: false };
 			}
-			search = { key, queryLength: query.text.length, document, order, result };
+			search = { key, document, order, result };
 			this._search = search;
 			this._matchKeys = new Set(result.matches.map(match => this._cellKey(match.row, match.column + 1)));
 			this._currentMatchKey = undefined;
 			this._findWasVisible = this._findWidget.isVisible();
 			this._rerender();
 		}
-		return this._searchPage(search.result, search.queryLength, cursor);
+		return this._searchPage(search.result, cursor);
 	};
 
-	private _searchPage(result: ParadisCsvSearchResult, queryLength: number, cursor: string | undefined): ParadisOfficeSearchPage {
+	private _searchPage(result: ParadisCsvSearchResult, cursor: string | undefined): ParadisOfficeSearchPage {
 		const offset = cursor ? Number(cursor) : 0;
 		const start = Number.isSafeInteger(offset) && offset > 0 ? offset : 0;
 		const end = Math.min(result.matches.length, start + PARADIS_OFFICE_SEARCH_PAGE_SIZE);
 		return {
-			results: result.matches.slice(start, end).map(match => this._toSearchResult(match, queryLength)),
+			results: result.matches.slice(start, end).map(match => this._toSearchResult(match)),
 			nextCursor: end < result.matches.length ? String(end) : undefined,
 			total: result.matches.length,
 			capped: result.capped,
 		};
 	}
 
-	private _toSearchResult(match: ParadisCsvMatch, length: number): ParadisOfficeSearchResult {
-		const value = match.value.replace(/[\r\n\t]/g, ' ');
+	private _toSearchResult(match: ParadisCsvMatch): ParadisOfficeSearchResult {
+		// 巨大なセル（閉じない引用符など）でも前後だけを切り出してから整形する。
+		const length = match.length;
+		const clean = (text: string) => text.replace(/[\r\n\t]/g, ' ');
+		const value = match.value;
 		const locator = `${match.row}:${match.column}`;
 		return {
 			id: locator,
 			locator,
 			preview: {
-				before: value.slice(Math.max(0, match.offset - MAXIMUM_PREVIEW_CONTEXT), match.offset),
-				match: value.slice(match.offset, match.offset + length),
-				after: value.slice(match.offset + length, match.offset + length + MAXIMUM_PREVIEW_CONTEXT),
+				before: clean(value.slice(Math.max(0, match.offset - MAXIMUM_PREVIEW_CONTEXT), match.offset)),
+				match: clean(value.slice(match.offset, match.offset + Math.min(length, 200))),
+				after: clean(value.slice(match.offset + length, match.offset + length + MAXIMUM_PREVIEW_CONTEXT)),
 			},
 			locationBadge: {
 				kind: 'sheet',
