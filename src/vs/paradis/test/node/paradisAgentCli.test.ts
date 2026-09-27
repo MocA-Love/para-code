@@ -45,7 +45,7 @@ import { paradisAgentCliFallbackDirs, paradisResolveAgentCli } from '../../node/
 			claude: `${HOME}/.claude/local/claude`,
 			missing: undefined,
 			dirs: {
-				claude: [`${HOME}/.local/bin`, `${HOME}/.npm-global/bin`, `${HOME}/.bun/bin`, '/opt/homebrew/bin', '/usr/local/bin', `${HOME}/.claude/local`],
+				claude: [`${HOME}/.local/bin`, `${HOME}/.claude/local`, `${HOME}/.npm-global/bin`, `${HOME}/.bun/bin`, '/opt/homebrew/bin', '/usr/local/bin'],
 				codex: [`${HOME}/.local/bin`, `${HOME}/.npm-global/bin`, `${HOME}/.bun/bin`, '/opt/homebrew/bin', '/usr/local/bin'],
 				ccusage: [`${HOME}/.npm-global/bin`, `${HOME}/.bun/bin`, `${HOME}/.local/bin`, `${HOME}/.deno/bin`, '/opt/homebrew/bin', '/usr/local/bin'],
 			},

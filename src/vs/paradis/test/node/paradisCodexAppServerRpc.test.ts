@@ -91,6 +91,35 @@ rl.on('line', line => {
 		}
 	});
 
+	// 終わった app-server への要求は時間切れを待たずに断り、破棄したら待っている要求もその場で断る。
+	test('rejects requests right away after the app-server exits or the session is disposed', async () => {
+		const command = fakeCodex(`
+const rl = require('readline').createInterface({ input: process.stdin });
+rl.on('line', line => {
+	const message = JSON.parse(line);
+	if (message.method === 'initialize') { process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n'); return; }
+	if (message.method === 'quit') { process.exit(3); }
+	// それ以外には答えない
+});
+`);
+		const exiting = await paradisStartCodexAppServerRpc(command, process.env, new NullLogService());
+		const quit = await exiting.request('quit', {}, 5_000).then(() => 'answered', (error: Error) => error.message);
+		const started = Date.now();
+		const afterExit = await exiting.request('hooks/list', {}, 5_000).then(() => 'answered', (error: Error) => error.message);
+		const afterExitMs = Date.now() - started;
+		exiting.dispose();
+
+		const waiting = await paradisStartCodexAppServerRpc(command, process.env, new NullLogService());
+		const pending = waiting.request('hooks/list', {}, 5_000).then(() => 'answered', (error: Error) => error.message);
+		waiting.dispose();
+		assert.deepStrictEqual({
+			quit: quit.startsWith('codex app-server exited'),
+			afterExit: afterExit.startsWith('codex app-server exited'),
+			fast: afterExitMs < 1_000,
+			pending: await pending,
+		}, { quit: true, afterExit: true, fast: true, pending: 'codex app-server session disposed' });
+	});
+
 	test('reports the exit code of an app-server that dies during initialize', async () => {
 		const command = fakeCodex(`process.exit(2);`);
 		const failure = await paradisStartCodexAppServerRpc(command, process.env, new NullLogService()).then(() => undefined, error => error) as Error & { exitCode?: number };

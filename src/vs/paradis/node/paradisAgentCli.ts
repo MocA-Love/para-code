@@ -66,8 +66,9 @@ export function paradisAgentCliFallbackDirs(name: ParadisAgentCliName, home: str
 		? [join(home, '.local', 'bin'), join(home, 'AppData', 'Roaming', 'npm')]
 		: [join(home, '.local', 'bin'), join(home, '.npm-global', 'bin'), join(home, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
 	if (name === 'claude') {
-		// 旧来の「ローカルインストール」（`claude migrate-installer` 以前）の置き場所
-		dirs.push(join(home, '.claude', 'local'));
+		// 旧来の「ローカルインストール」（`claude migrate-installer` 以前）の置き場所。ネイティブ版の
+		// `~/.local/bin` の次に見る（Homebrew や `/usr/local/bin` に古い版が残っていても、こちらを先に採る）
+		dirs.splice(1, 0, join(home, '.claude', 'local'));
 	} else if (isWindows) {
 		// Windows の Codex のインストーラーの置き場所
 		dirs.push(join(home, '.codex', 'bin'));
