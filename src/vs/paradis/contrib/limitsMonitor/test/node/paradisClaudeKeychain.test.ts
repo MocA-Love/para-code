@@ -6,14 +6,14 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// `security` の起動を偽物に差し替え、キーチェーンへの書き方（引数で渡すこと）を確かめる。
+// `security` の起動を偽物に差し替え、キーチェーンへの書き方（標準入力か引数か）を確かめる。
 // 本物の `security` もキーチェーンも使わない。
 
 import assert from 'assert';
 import type * as cp from 'child_process';
 import { PassThrough, Writable } from 'stream';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisSecurityProcess, ParadisKeychainError, ParadisSecurityCliKeychain } from '../../node/paradisClaudeKeychain.js';
+import { IParadisSecurityProcess, ParadisKeychainError, ParadisSecurityCliKeychain, PARADIS_SECURITY_STDIN_LINE_LIMIT } from '../../node/paradisClaudeKeychain.js';
 
 interface ISecurityCall {
 	readonly command: string;
@@ -78,31 +78,59 @@ function hexOf(value: string): string {
 	return Buffer.from(value, 'utf8').toString('hex');
 }
 
+/** `security -i` へ渡す1行（Claude Code 2.1.283 と同じ形）。 */
+function stdinLine(account: string, service: string, value: string): string {
+	return `add-generic-password -U -a "${account}" -s "${service}" -X "${hexOf(value)}"\n`;
+}
+
 suite('Paradis Claude keychain (security CLI)', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const SERVICE = 'Claude Code-credentials';
+	const CLAUDE_CODE = 'Claude Code-credentials';
+	const CLAUDE_CODE_SCOPED = 'Claude Code-credentials-1a2b3c4d';
+	const PARA_CODE = 'Para Code Claude Accounts';
 	const ACCOUNT = 'example';
 
-	// Orca と同じく、長さに関係なく常に引数で渡す（標準入力は繋がない）。値は Claude Code と同じ16進（-X）。
-	test('always writes the value through the arguments of /usr/bin/security, short or long', async () => {
+	// Claude Code の項目は、Orca と同じく長さに関係なく常に引数で渡す（標準入力は繋がない）。値は Claude Code と同じ16進（-X）。
+	test('always writes Claude Code items through the arguments of /usr/bin/security, short or long', async () => {
 		const { keychain, calls } = createKeychain();
 		const short = JSON.stringify({ claudeAiOauth: { accessToken: 'token' } });
 		const long = JSON.stringify({ claudeAiOauth: { accessToken: 'token' }, mcpOAuth: { big: 'x'.repeat(3000) } });
-		await keychain.write(SERVICE, ACCOUNT, short);
-		await keychain.write(SERVICE, ACCOUNT, long);
-		assert.deepStrictEqual(calls, [short, long].map(value => ({
+		await keychain.write(CLAUDE_CODE, ACCOUNT, short);
+		await keychain.write(CLAUDE_CODE_SCOPED, ACCOUNT, short);
+		await keychain.write(CLAUDE_CODE, ACCOUNT, long);
+		assert.deepStrictEqual(calls, [[CLAUDE_CODE, short], [CLAUDE_CODE_SCOPED, short], [CLAUDE_CODE, long]].map(([service, value]) => ({
 			command: '/usr/bin/security',
-			args: ['add-generic-password', '-U', '-a', ACCOUNT, '-s', SERVICE, '-X', hexOf(value)],
+			args: ['add-generic-password', '-U', '-a', ACCOUNT, '-s', service, '-X', hexOf(value)],
 			stdin: 'ignore',
 			input: undefined,
 		})));
 	});
 
-	test('fails when security exits with an error', async () => {
-		const { keychain, calls } = createKeychain(36);
-		const result = await keychain.write(SERVICE, ACCOUNT, 'small').then(() => 'written', error => error instanceof ParadisKeychainError ? 'keychain error' : 'other');
-		assert.deepStrictEqual({ result, mode: calls[0].args[0] }, { result: 'keychain error', mode: 'add-generic-password' });
+	// Para Code 自身の保存分は、以前どおり標準入力で渡し、1行が 4,032 バイトを超えるときだけ引数で渡す。
+	test('writes Para Code items through security -i and only an over-long line through the arguments', async () => {
+		const prefixBytes = Buffer.byteLength(stdinLine(ACCOUNT, PARA_CODE, ''));
+		const longest = 'a'.repeat(Math.floor((PARADIS_SECURITY_STDIN_LINE_LIMIT - prefixBytes) / 2));
+		const { keychain, calls } = createKeychain();
+		await keychain.write(PARA_CODE, ACCOUNT, longest);
+		await keychain.write(PARA_CODE, ACCOUNT, `${longest}a`);
+		assert.deepStrictEqual({ limit: PARADIS_SECURITY_STDIN_LINE_LIMIT, calls }, {
+			limit: 4032,
+			calls: [
+				{ command: '/usr/bin/security', args: ['-i'], stdin: 'pipe', input: stdinLine(ACCOUNT, PARA_CODE, longest) },
+				{ command: '/usr/bin/security', args: ['add-generic-password', '-U', '-a', ACCOUNT, '-s', PARA_CODE, '-X', hexOf(`${longest}a`)], stdin: 'ignore', input: undefined },
+			],
+		});
+	});
+
+	test('fails when security exits with an error on either path', async () => {
+		const short = createKeychain(0, 'security: SecKeychainItemCreateFromContent: failed\n');
+		const argv = createKeychain(36);
+		const results = await Promise.all([
+			short.keychain.write(PARA_CODE, ACCOUNT, 'small').then(() => 'written', error => error instanceof ParadisKeychainError ? 'keychain error' : 'other'),
+			argv.keychain.write(CLAUDE_CODE, ACCOUNT, 'small').then(() => 'written', error => error instanceof ParadisKeychainError ? 'keychain error' : 'other'),
+		]);
+		assert.deepStrictEqual({ results, modes: [short.calls[0].args[0], argv.calls[0].args[0]] }, { results: ['keychain error', 'keychain error'], modes: ['-i', 'add-generic-password'] });
 	});
 });
